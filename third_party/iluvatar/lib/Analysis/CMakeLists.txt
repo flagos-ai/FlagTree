@@ -15,4 +15,5 @@ add_triton_library(TritonAnalysis
   TritonIR
   TritonGPUIR
   #TritonNvidiaGPUIR
+  FlagTree_${FLAGTREE_BACKEND}_TritonAnalysis
 )

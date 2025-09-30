@@ -6,19 +6,27 @@
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "python/src/plugin.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Conversion/MLIRTypes.h"
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_heads
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#else
+#include "python/src/plugin.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#endif
+
 #include "triton/Tools/LinearLayout.h"
 #include "triton/Tools/StrUtil.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
+
+#include "flagtree_spec.h"
 
 #define DEBUG_TYPE "ttgpu_to_llvm"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -27,6 +35,7 @@
 using namespace mlir;
 using namespace mlir::triton;
 
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_functionPtr
 using emitOffsetForTCULayoutFunc = SmallVector<SmallVector<unsigned>> (*)(
     const triton::gpu::IluvatarMmaEncodingAttr &, RankedTensorType);
 DEFINE_LOAD_FUNC(emitOffsetForTCULayout)
@@ -39,6 +48,7 @@ DEFINE_LOAD_FUNC(emitBaseIndexForTCULayout)
 using remapOffsetFunc = Value (*)(Value, Value, RankedTensorType, bool,
                                   Location, RewriterBase &, int, bool);
 DEFINE_LOAD_FUNC(remapOffset)
+#endif
 
 // Shortcuts for some commonly used LLVM ops to keep code simple and intuitive
 // Operators
@@ -245,8 +255,13 @@ Value createConstantF64(Location loc, OpBuilder &rewriter, double v);
 Value createNaNConstant(Location loc, OpBuilder &rewriter, Type type);
 
 /// Create an index type constant.
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_createIndexConstant
+Value createIndexConstant(OpBuilder &builder, Location loc,
+                          const TypeConverter *converter, int64_t value);
+#else
 Value createIndexConstant(OpBuilder &builder, Location loc,
                           TypeConverter *converter, int64_t value);
+#endif
 
 /// Create an integer constant of \param width bits.
 Value createLLVMIntegerConstant(OpBuilder &builder, Location loc, short width,
@@ -359,11 +374,23 @@ Value addStringToModule(Location loc, ConversionPatternRewriter &rewriter,
 // the smem buffer. Recall that the smem buffer will only store a single replica
 // when converting distributed to distributed layout. Also, a replica is the
 // smallest CTA tile that is common between input and output layouts.
-SmallVector<Value> getMultiDimOffset(
-    Attribute layout, Location loc, ConversionPatternRewriter &rewriter,
-    const TargetInfoBase &targetInfo, unsigned elemId, RankedTensorType type,
-    ArrayRef<unsigned> multiDimCTAInRepId, ArrayRef<unsigned> shapePerCTATile,
-    bool isTrans = false, bool stNotRd = false);
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG
+SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
+                                     ConversionPatternRewriter &rewriter,
+                                     const TargetInfoBase &targetInfo,
+                                     unsigned elemId, RankedTensorType type,
+                                     ArrayRef<unsigned> multiDimCTAInRepId,
+                                     ArrayRef<unsigned> shapePerCTATile);
+#else
+SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
+                                     ConversionPatternRewriter &rewriter,
+                                     const TargetInfoBase &targetInfo,
+                                     unsigned elemId, RankedTensorType type,
+                                     ArrayRef<unsigned> multiDimCTAInRepId,
+                                     ArrayRef<unsigned> shapePerCTATile,
+                                     FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG spec_arg1 = false,
+                                     FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG spec_arg2 = false);
+#endif
 
 // Given a multiDimOffset, this function wraps around each dimension to be
 // within shape.
@@ -434,7 +461,11 @@ using ::mlir::triton::gpu::AMDWmmaEncodingAttr;
 using ::mlir::triton::gpu::BlockedEncodingAttr;
 using ::mlir::triton::gpu::CTALayoutAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
+
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_IluvatarMmaEncodingAttr
 using ::mlir::triton::gpu::IluvatarMmaEncodingAttr;
+#endif
+
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
 
@@ -1128,11 +1159,13 @@ emitBaseIndexForLayoutImpl(Location loc, RewriterBase &rewriter,
     if (mmaLayout.isAmpere() || mmaLayout.isHopper())
       result = emitBaseIndexWithinCTAForMmaLayoutV2V3(loc, rewriter, mmaLayout,
                                                       type);
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitBaseIndexForLayoutImpl
   } else if (auto mmaLayout = mlir::dyn_cast<IluvatarMmaEncodingAttr>(layout)) {
     if (mmaLayout.isVolta()) {
       DEFINE_CALL_LOAD_FUNC(iluvatar, emitBaseIndexForTCULayout)
       result = func(loc, rewriter, mmaLayout, type);
     }
+#endif
   } else if (auto mfmaLayout = mlir::dyn_cast<AMDMfmaEncodingAttr>(layout)) {
     result = emitBaseIndexForMfmaLayout(loc, rewriter, mfmaLayout, type);
   } else if (auto wmmaLayout = mlir::dyn_cast<AMDWmmaEncodingAttr>(layout)) {
@@ -1201,12 +1234,14 @@ emitOffsetForLayout(Attribute layout, RankedTensorType type) {
     if (mmaLayout.isHopper())
       return emitOffsetForMmaLayoutV3(mmaLayout, type);
   }
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitOffsetForLayout
   if (auto mmaLayout = dyn_cast<IluvatarMmaEncodingAttr>(layout)) {
     if (mmaLayout.isVolta()) {
       DEFINE_CALL_LOAD_FUNC(iluvatar, emitOffsetForTCULayout)
       return func(mmaLayout, type);
     }
   }
+#endif
   if (auto mfmaLayout = mlir::dyn_cast<AMDMfmaEncodingAttr>(layout)) {
     return emitOffsetForMfmaLayout(mfmaLayout, type);
   }
@@ -1362,7 +1397,7 @@ inline DenseMap<unsigned, Value> getSwizzledSharedPtrs(
     }
     // compute phase = (row // perPhase) % maxPhase
     Value phase = urem(udiv(idxRow, i32_val(perPhase)), i32_val(maxPhase));
-#if defined(__ILUVATAR__)
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs
     // corex swizzle
     bool isRow = outOrder[0] == 1;
     Value off = NULL;
@@ -1524,7 +1559,7 @@ inline void storeDistributedToShared(Value src, ArrayRef<Value> inVals,
   // If the shmem layout is not swizzled, we can trivially vectorize stores
   // across the whole width of the most-minor dimension of the shape, because
   // Triton requires all the dims are powers of 2.
-#ifdef __ILUVATAR__
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared
   unsigned outVec = dstSharedLayout.getVec();
 #else
   unsigned outVec = dstSharedLayout.getMaxPhase() == 1
@@ -1641,5 +1676,17 @@ inline bool isLayoutMmaV1(Attribute layout) {
 }
 
 } // namespace mlir
+
+namespace SharedToDotOperandMMAv1 {
+
+using CoordTy = SmallVector<Value>;
+using ValueTable = std::map<std::pair<int, int>, std::pair<Value, Value>>;
+
+SmallVector<CoordTy>
+getMNCoords(Value thread, Location loc, ConversionPatternRewriter &rewriter,
+            ArrayRef<unsigned int> wpt, const NvidiaMmaEncodingAttr &mmaLayout,
+            ArrayRef<int64_t> shape, bool isARow, bool isBRow, bool isAVec4,
+            bool isBVec4);
+} // namespace SharedToDotOperandMMAv1
 
 #endif

@@ -35,4 +35,5 @@ add_triton_library(TritonGPUToLLVM
     TritonGPUTransforms
     #TritonNvidiaGPUTransforms
     # NVGPUIR
+    FlagTree_${FLAGTREE_BACKEND}_TritonConversionTritonGPUToLLVM
 )

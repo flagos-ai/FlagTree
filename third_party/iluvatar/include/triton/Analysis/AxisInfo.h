@@ -13,6 +13,8 @@
 #include <optional>
 #include <type_traits>
 
+#include "flagtree_spec.h"
+
 namespace mlir::triton {
 
 //===----------------------------------------------------------------------===//
@@ -25,6 +27,20 @@ public:
   typedef SmallVector<int64_t> DimVectorT;
 
 public:
+#ifndef FLAGTREE_SPEC_AxisInfo_CorexFlag
+  AxisInfo() : AxisInfo({}, {}, {}) {}
+
+  AxisInfo(DimVectorT contiguity, DimVectorT divisibility, DimVectorT constancy)
+      : AxisInfo(contiguity, divisibility, constancy, std::nullopt) {}
+
+  AxisInfo(DimVectorT contiguity, DimVectorT divisibility, DimVectorT constancy,
+           std::optional<int64_t> constantValue)
+      : contiguity(contiguity), divisibility(divisibility),
+        constancy(constancy), constantValue(constantValue) {
+    assert(divisibility.size() == contiguity.size());
+    assert(constancy.size() == contiguity.size());
+  }
+#else
   AxisInfo() : AxisInfo({}, {}, {}, {}) {}
 
   AxisInfo(DimVectorT contiguity, DimVectorT divisibility, DimVectorT constancy,
@@ -40,6 +56,7 @@ public:
     assert(divisibility.size() == contiguity.size());
     assert(constancy.size() == contiguity.size());
   }
+#endif
 
   // contiguity[d] is the length of the shortest sequence of contiguous integers
   // along dimension d.
@@ -110,25 +127,37 @@ public:
   int64_t getConstancy(size_t dim) const { return constancy[dim]; }
   const DimVectorT &getConstancy() const { return constancy; }
 
+#ifdef FLAGTREE_SPEC_AxisInfo_CorexFlag
   // corexFlag is used to determine whether special instructions can be used to
   // accelerate data loading.
   int64_t getCorexFlag(size_t dim) const { return corexFlag[dim]; }
   const DimVectorT &getCorexFlag() const { return corexFlag; }
+#endif
 
   int getRank() const { return contiguity.size(); }
 
   std::optional<int64_t> getConstantValue() const { return constantValue; }
 
+#ifdef FLAGTREE_SPEC_AxisInfo_initPessimisticStateFromFunc_ARG
   template <class T>
   static void
   initPessimisticStateFromFunc(int argNumber, T funcOp, DimVectorT *contiguity,
                                DimVectorT *divisibility, DimVectorT *constancy,
-                               DimVectorT *corex_stride);
+                               FLAGTREE_SPEC_AxisInfo_initPessimisticStateFromFunc_ARG spec_arg);
+#else
+  template <class T>
+  static void
+  initPessimisticStateFromFunc(int argNumber, T funcOp, DimVectorT *contiguity,
+                               DimVectorT *divisibility, DimVectorT *constancy);
+#endif
 
   bool operator==(const AxisInfo &other) const {
     return contiguity == other.contiguity &&
            divisibility == other.divisibility && constancy == other.constancy &&
-           corexFlag == other.corexFlag && constantValue == other.constantValue;
+#ifdef FLAGTREE_SPEC_AxisInfo_CorexFlag
+           corexFlag == other.corexFlag &&
+#endif
+           constantValue == other.constantValue;
   }
 
   static AxisInfo getPessimisticValueState(Value value);
@@ -145,7 +174,9 @@ public:
     print("contiguity", contiguity);
     print(", divisibility", divisibility);
     print(", constancy", constancy);
+#ifdef FLAGTREE_SPEC_AxisInfo_CorexFlag
     print(", corexflag", corexFlag);
+#endif
     os << ", constant_value = ";
     if (constantValue)
       os << *constantValue;
@@ -157,9 +188,12 @@ private:
   DimVectorT contiguity;
   DimVectorT divisibility;
   DimVectorT constancy;
+
   // The constant value of the lattice if we can infer it.
   std::optional<int64_t> constantValue;
+#ifdef FLAGTREE_SPEC_AxisInfo_CorexFlag
   DimVectorT corexFlag;
+#endif
 };
 
 // Module level axis info analysis based on the call graph, assuming that we do

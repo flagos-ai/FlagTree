@@ -8,6 +8,8 @@
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 
+#include "flagtree_spec.h"
+
 using namespace mlir;
 using namespace mlir::triton;
 
@@ -102,12 +104,14 @@ public:
       // test_core::test_fp8_dot_acc
       return resultVals;
     }
+#ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_maybeDeduplicate
     if (isa<IluvatarMmaEncodingAttr, DotOperandEncodingAttr>(baseEncoding)) {
       // TODO: this logic seems incorrect for mma layout. Skip for now.
       // The following test crashes and some other miscompile:
       // test_core::test_fp8_dot_acc
       return resultVals;
     }
+#endif
 
     SmallVector<unsigned> elemsPerThread = getElemsPerThread(rtType);
     int rank = elemsPerThread.size();
@@ -188,7 +192,7 @@ public:
     // element type
     auto resultElementTy = getElementTypeOrSelf(resultTy);
     Type elemTy = this->getTypeConverter()->convertType(resultElementTy);
-#ifdef __ILUVATAR__
+#ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_matchAndRewrite
     auto srcType = this->getTypeConverter()->convertType(resultTy);
     if (auto structTy = dyn_cast<LLVM::LLVMStructType>(srcType))
       elemTy = structTy.getBody()[0];

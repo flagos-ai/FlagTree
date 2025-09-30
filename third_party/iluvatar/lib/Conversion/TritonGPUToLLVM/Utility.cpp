@@ -10,15 +10,7 @@
 
 namespace SharedToDotOperandMMAv1 {
 
-using CoordTy = SmallVector<Value>;
-using ValueTable = std::map<std::pair<int, int>, std::pair<Value, Value>>;
-
-using getMNCoordsFunc = SmallVector<CoordTy> (*)(
-    Value, Location, ConversionPatternRewriter &, ArrayRef<unsigned int>,
-    const IluvatarMmaEncodingAttr &, ArrayRef<int64_t>, int, int, bool);
-DEFINE_LOAD_FUNC(getMNCoords)
-
-static SmallVector<CoordTy>
+SmallVector<CoordTy>
 getMNCoords(Value thread, Location loc, ConversionPatternRewriter &rewriter,
             ArrayRef<unsigned int> wpt, const NvidiaMmaEncodingAttr &mmaLayout,
             ArrayRef<int64_t> shape, bool isARow, bool isBRow, bool isAVec4,
@@ -299,12 +291,14 @@ Value createNaNConstant(Location loc, OpBuilder &rewriter, Type type) {
 }
 
 // Create an index type constant.
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_createIndexConstant
 Value createIndexConstant(OpBuilder &builder, Location loc,
-                          TypeConverter *converter, int64_t value) {
+                          const TypeConverter *converter, int64_t value) {
   Type ty = converter->convertType(builder.getIndexType());
   return builder.create<LLVM::ConstantOp>(loc, ty,
                                           builder.getIntegerAttr(ty, value));
 }
+#endif
 
 // Create an integer constant of \param width bits.
 Value createLLVMIntegerConstant(OpBuilder &builder, Location loc, short width,
@@ -474,13 +468,13 @@ Value addStringToModule(Location loc, ConversionPatternRewriter &rewriter,
   return stringStart;
 }
 
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG
 SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
                                      ConversionPatternRewriter &rewriter,
                                      const TargetInfoBase &targetInfo,
                                      unsigned elemId, RankedTensorType type,
                                      ArrayRef<unsigned> multiDimCTAInRepId,
-                                     ArrayRef<unsigned> shapePerCTATile,
-                                     bool isTrans, bool stNotRd) {
+                                     ArrayRef<unsigned> shapePerCTATile) {
   auto shape = type.getShape();
   unsigned rank = shape.size();
   if (auto blockedLayout = dyn_cast<BlockedEncodingAttr>(layout)) {
@@ -609,22 +603,6 @@ SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
     }
     return multiDimOffset;
   }
-  if (auto mmaLayout = mlir::dyn_cast<IluvatarMmaEncodingAttr>(layout)) {
-    assert(rank == 2 && "Unexpected rank");
-    SmallVector<Value> multiDimOffset(rank);
-    Value threadId = getThreadId(rewriter, loc);
-    if (mmaLayout.isVolta()) {
-      int bitwidth = type.getElementType().getIntOrFloatBitWidth();
-      int elemVecSize = stNotRd ? (32 / bitwidth) : 1;
-      static auto func = SharedToDotOperandMMAv1::load_getMNCoords_func(
-          "iluvatar", "getMNCoords");
-      auto coords = func(threadId, loc, rewriter, mmaLayout.getWarpsPerCTA(),
-                         mmaLayout, shape, bitwidth, elemVecSize, isTrans);
-      return coords[elemId];
-    } else {
-      llvm_unreachable("Unexpected MMALayout version");
-    }
-  }
   if (isa<AMDMfmaEncodingAttr, AMDWmmaEncodingAttr>(layout)) {
     auto multiDimBase =
         emitBaseIndexForLayout(loc, rewriter, targetInfo, layout, type, false);
@@ -644,6 +622,7 @@ SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
   }
   llvm_unreachable("unexpected layout in getMultiDimOffset");
 }
+#endif
 
 SmallVector<Value> getWrappedMultiDimOffset(
     ConversionPatternRewriter &rewriter, Location loc,

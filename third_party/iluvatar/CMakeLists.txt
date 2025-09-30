@@ -1,3 +1,5 @@
+include_directories(backend/flagtree_backend_specialization/include)
+add_subdirectory(backend/flagtree_backend_specialization/lib)
 add_subdirectory(include)
 add_subdirectory(lib)
 find_package(Python3 REQUIRED COMPONENTS Development Interpreter)
@@ -19,7 +21,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
       NAMES
         iluvatarTritonPlugin.so
       PATHS
-      ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}
       REQUIRED
       )
       add_triton_plugin(TritonILUVATAR
