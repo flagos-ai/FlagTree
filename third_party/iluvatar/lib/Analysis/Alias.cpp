@@ -1,9 +1,15 @@
 #include "triton/Analysis/Alias.h"
 
+#include "flagtree_spec.h"
+
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+
+#ifndef FLAGTREE_SPEC_Dialect_TritonNvidiaGPU_IR_Dialect_head
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#endif
 
 namespace mlir {
 
