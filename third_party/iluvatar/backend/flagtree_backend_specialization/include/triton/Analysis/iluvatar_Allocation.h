@@ -1,0 +1,8 @@
+#ifndef ILUVATAR_TRITON_ANALYSIS_ALLOCATION_H
+#define ILUVATAR_TRITON_ANALYSIS_ALLOCATION_H
+
+#define FLAGTREE_SPEC_Analysis_Allocation_namespace
+#define FLAGTREE_SPEC_Analysis_Allocation_getRepShapeForCvtLayout
+#define FLAGTREE_SPEC_Analysis_Allocation_getScratchConfigForCvtLayout
+
+#endif // ILUVATAR_TRITON_ANALYSIS_ALLOCATION_H

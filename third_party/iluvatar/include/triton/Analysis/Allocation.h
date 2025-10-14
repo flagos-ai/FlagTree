@@ -15,6 +15,10 @@
 namespace mlir {
 
 namespace triton {
+
+std::pair<SmallVector<unsigned>, SmallVector<unsigned>>
+getCvtOrder(Attribute srcLayout, Attribute dstLayout);
+
 class AllocationAnalysis;
 
 SmallVector<unsigned>
