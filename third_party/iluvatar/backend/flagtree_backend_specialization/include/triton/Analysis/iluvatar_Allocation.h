@@ -4,5 +4,7 @@
 #define FLAGTREE_SPEC_Analysis_Allocation_namespace
 #define FLAGTREE_SPEC_Analysis_Allocation_getRepShapeForCvtLayout
 #define FLAGTREE_SPEC_Analysis_Allocation_getScratchConfigForCvtLayout
+#define FLAGTREE_SPEC_Analysis_Allocation_AllocationAnalysis_getScratchValueSize
+#define FLAGTREE_SPEC_Analysis_Allocation_AllocationAnalysis_dump
 
 #endif // ILUVATAR_TRITON_ANALYSIS_ALLOCATION_H

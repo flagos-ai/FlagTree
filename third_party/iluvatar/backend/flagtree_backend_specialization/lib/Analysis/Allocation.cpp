@@ -140,5 +140,11 @@ getScratchConfigForCvtLayout(triton::gpu::ConvertLayoutOp op, unsigned &inVec,
   return repShape;
 }
 
+unsigned getScratchValueSizeElems(const SmallVector<unsigned> &smemShape) {
+  if (smemShape.empty())
+    return 0;
+  return std::accumulate(smemShape.begin(), smemShape.end(), 1u, std::multiplies<>());
+}
+
 }
 }

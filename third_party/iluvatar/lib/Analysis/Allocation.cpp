@@ -292,10 +292,11 @@ private:
       unsigned inVec = 0;
       unsigned outVec = 0;
       auto smemShape = getScratchConfigForCvtLayout(cvtLayout, inVec, outVec);
-      unsigned elems = 0;
-      if (!smemShape.empty())
-        elems = std::accumulate(smemShape.begin(), smemShape.end(), 1,
+      unsigned elems = std::accumulate(smemShape.begin(), smemShape.end(), 1,
                                 std::multiplies{});
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_AllocationAnalysis_getScratchValueSize
+      elems = getScratchValueSizeElems(smemShape);
+#endif
       auto bytes =
           isa<triton::PointerType>(srcTy.getElementType())
               ? elems * kPtrBitWidth / 8
@@ -641,6 +642,7 @@ private:
     }
   }
 
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_AllocationAnalysis_dump
   void dump() const {
     llvm::outs() << "DUMP: "
                  << "\n";
@@ -658,6 +660,7 @@ private:
                    << bufferIter.second.end() << ")\n";
     }
   }
+#endif
 
 private:
   Operation *operation;

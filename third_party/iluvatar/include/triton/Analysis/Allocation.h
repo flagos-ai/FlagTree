@@ -26,6 +26,8 @@ getScratchConfigForCvtLayout(triton::gpu::ConvertLayoutOp op, unsigned &inVec,
                              unsigned &outVec);
 SmallVector<unsigned> getRepShapeForCvtLayout(triton::gpu::ConvertLayoutOp op);
 
+unsigned getScratchValueSizeElems(const SmallVector<unsigned> &smemShape);
+
 } // namespace triton
 
 /// Modified from llvm-15.0: llvm/ADT/AddressRanges.h
