@@ -146,5 +146,23 @@ unsigned getScratchValueSizeElems(const SmallVector<unsigned> &smemShape) {
   return std::accumulate(smemShape.begin(), smemShape.end(), 1u, std::multiplies<>());
 }
 
+void AllocationAnalysis_dump(llvm::MapVector<Allocation::BufferT *, Interval<size_t>> bufferRange) {
+  llvm::outs() << "DUMP: "
+                << "\n";
+  for (auto bufferIter : bufferRange) {
+    llvm::outs() << "ID= " << bufferIter.first->id << "\n";
+    if (bufferIter.first->kind == Allocation::BufferT::BufferKind::Explicit)
+      llvm::outs() << "     Kind= Explict\n";
+    else if (bufferIter.first->kind == Allocation::BufferT::BufferKind::Scratch)
+      llvm::outs() << "     Kind= Scratch\n";
+    else if (bufferIter.first->kind == Allocation::BufferT::BufferKind::Virtual)
+      llvm::outs() << "     Kind= Virtual\n";
+    llvm::outs() << "     Size= " << bufferIter.first->size << "\n";
+    llvm::outs() << "     Offs= " << bufferIter.first->offset << "\n";
+    llvm::outs() << "     Interval= [" << bufferIter.second.start() << ", "
+                  << bufferIter.second.end() << ")\n";
+  }
+}
+
 }
 }
