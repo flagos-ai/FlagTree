@@ -12,6 +12,8 @@
 #include <atomic>
 #include <limits>
 
+#include "flagtree_spec.h"
+
 namespace mlir {
 
 namespace triton {
