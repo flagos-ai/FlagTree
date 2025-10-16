@@ -6,13 +6,15 @@
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include <limits.h>
 
 #define DEBUG_TYPE "axis-info"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace mlir::triton {
+
+#ifndef FLAGTREE_SPEC_AxisInfo_class
+
 namespace {
 
 int64_t gcdImpl(int64_t a, int64_t b, int64_t *x, int64_t *y) {
@@ -108,8 +110,6 @@ public:
     AxisInfo::DimVectorT contiguity;
     AxisInfo::DimVectorT divisibility;
     AxisInfo::DimVectorT constancy;
-    AxisInfo::DimVectorT corexFlag;
-
     auto constantValue = getConstantValue(op, lhsInfo, rhsInfo);
     for (auto d = 0; d < rank; ++d) {
       if (constantValue.has_value()) {
@@ -118,16 +118,13 @@ public:
             std::max(lhsInfo.getConstancy(d), rhsInfo.getConstancy(d)));
         divisibility.push_back(
             highestPowOf2Divisor<int64_t>(constantValue.value()));
-        corexFlag.push_back(getCorexFlag(op, lhsInfo, rhsInfo, d));
       } else {
         contiguity.push_back(getContiguity(op, lhsInfo, rhsInfo, d));
         constancy.push_back(getConstancy(op, lhsInfo, rhsInfo, d));
         divisibility.push_back(getDivisibility(op, lhsInfo, rhsInfo, d));
-        corexFlag.push_back(getCorexFlag(op, lhsInfo, rhsInfo, d));
       }
     }
-    return AxisInfo(contiguity, divisibility, constancy, constantValue,
-                    corexFlag);
+    return AxisInfo(contiguity, divisibility, constancy, constantValue);
   }
 
 protected:
@@ -149,11 +146,6 @@ protected:
   virtual std::optional<int64_t> getConstantValue(OpTy op, const AxisInfo &lhs,
                                                   const AxisInfo &rhs) {
     return {};
-  }
-
-  virtual int64_t getCorexFlag(OpTy op, const AxisInfo &lhs,
-                               const AxisInfo &rhs, int dim) {
-    return 0;
   }
 };
 
@@ -238,8 +230,7 @@ public:
     auto end = op.getEnd();
     return AxisInfo(/*contiguity=*/{end - start},
                     /*divisibility=*/{highestPowOf2Divisor(start)},
-                    /*constancy=*/{1},
-                    /*corexFlag=*/{start});
+                    /*constancy=*/{1});
   }
 };
 
@@ -256,22 +247,18 @@ public:
     if (intAttr || boolAttr) {
       int64_t value{};
       if (intAttr)
-        // value = intAttr.getValue().getZExtValue();
-        value = intAttr.getValue().getSExtValue();
+        value = intAttr.getValue().getZExtValue();
       else
         value = boolAttr.getValue() ? 1 : 0;
       return AxisInfo(/*contiguity=*/{1},
                       /*divisibility=*/{highestPowOf2Divisor(value)},
                       /*constancy=*/{1},
-                      /*knownConstantValue=*/{value},
-                      /*corexFlag*/ {value});
+                      /*knownConstantValue=*/{value});
     }
     // TODO: generalize to dense attr
     auto splatAttr = dyn_cast<SplatElementsAttr>(op.getValue());
     if (splatAttr && splatAttr.getElementType().isIntOrIndex()) {
-      // int64_t value = splatAttr.template
-      // getSplatValue<APInt>().getZExtValue();
-      int64_t value = splatAttr.template getSplatValue<APInt>().getSExtValue();
+      int64_t value = splatAttr.template getSplatValue<APInt>().getZExtValue();
       TensorType ty = cast<TensorType>(splatAttr.getType());
       return AxisInfo(
           /*contiguity=*/AxisInfo::DimVectorT(ty.getRank(), 1),
@@ -279,8 +266,7 @@ public:
           AxisInfo::DimVectorT(ty.getRank(), highestPowOf2Divisor(value)),
           /*constancy=*/
           AxisInfo::DimVectorT(ty.getShape().begin(), ty.getShape().end()),
-          /*knownConstantValue=*/{value},
-          /*corexFlag*/ AxisInfo::DimVectorT(ty.getRank(), value));
+          /*knownConstantValue=*/{value});
     }
     return AxisInfo();
   }
@@ -352,32 +338,6 @@ private:
     }
     return {};
   }
-
-  int64_t getCorexFlag(OpTy op, const AxisInfo &lhs, const AxisInfo &rhs,
-                       int dim) override {
-    if constexpr (std::is_same_v<OpTy, arith::AddIOp> ||
-                  std::is_same_v<OpTy, LLVM::AddOp>) {
-      return lhs.getCorexFlag(dim) + rhs.getCorexFlag(dim);
-    } else if constexpr (std::is_same_v<OpTy, triton::AddPtrOp>) {
-      if (triton::getPointeeBitWidth(op.getPtr().getType()) % 8 != 0)
-        return 0;
-      auto sme_dim =
-          64 / (triton::getPointeeBitWidth(op.getPtr().getType()) / 8);
-      if (lhs.getCorexFlag(dim) == INT32_MAX ||
-          rhs.getCorexFlag(dim) == INT32_MAX)
-        return INT32_MAX;
-      if (dim == 0) {
-        if (rhs.getCorexFlag(dim) % sme_dim == 0)
-          return lhs.getCorexFlag(dim);
-        return lhs.getCorexFlag(dim) + rhs.getCorexFlag(dim);
-      } else {
-        return lhs.getCorexFlag(dim);
-      }
-    } else if constexpr (std::is_same_v<OpTy, arith::SubIOp>) {
-      return lhs.getCorexFlag(dim) - rhs.getCorexFlag(dim);
-    }
-    return 0;
-  }
 };
 
 class MulIOpAxisInfoVisitor final : public BinaryOpVisitorImpl<arith::MulIOp> {
@@ -428,37 +388,6 @@ private:
         rhs.getConstantValue().has_value())
       return {lhs.getConstantValue().value() * rhs.getConstantValue().value()};
     return {};
-  }
-
-  int64_t getCorexFlag(arith::MulIOp op, const AxisInfo &lhs,
-                       const AxisInfo &rhs, int dim) override {
-    if (lhs.getCorexFlag(dim) == INT32_MAX &&
-        rhs.getCorexFlag(dim) == INT32_MAX)
-      return INT32_MAX;
-    if (lhs.getRank() == 1) {
-      if (lhs.getCorexFlag(dim) == INT32_MAX)
-        return rhs.getCorexFlag(dim);
-      else if (rhs.getCorexFlag(dim) == INT32_MAX)
-        return lhs.getCorexFlag(dim);
-    } else {
-      bool lhsIsContiguity = false;
-      bool rhsIsContiguity = false;
-      for (int i = 0; i < lhs.getRank(); i++) {
-        if (lhs.getContiguity(i) > 1)
-          lhsIsContiguity = true;
-        if (rhs.getContiguity(i) > 1)
-          rhsIsContiguity = true;
-      }
-      if (lhs.getCorexFlag(dim) == INT32_MAX && lhsIsContiguity)
-        return rhs.getCorexFlag(dim);
-      else if (lhs.getCorexFlag(dim) == INT32_MAX && !lhsIsContiguity)
-        return INT32_MAX;
-      if (rhs.getCorexFlag(dim) == INT32_MAX && rhsIsContiguity)
-        return lhs.getCorexFlag(dim);
-      else if (rhs.getCorexFlag(dim) == INT32_MAX && !rhsIsContiguity)
-        return INT32_MAX;
-    }
-    return lhs.getCorexFlag(dim) * rhs.getCorexFlag(dim);
   }
 };
 
@@ -523,16 +452,6 @@ private:
         rhs.getConstantValue().has_value())
       return {lhs.getConstantValue().value() / rhs.getConstantValue().value()};
     return {};
-  }
-
-  int64_t getCorexFlag(OpTy op, const AxisInfo &lhs, const AxisInfo &rhs,
-                       int dim) override {
-    if (lhs.getCorexFlag(dim) == INT32_MAX ||
-        rhs.getCorexFlag(dim) == INT32_MAX)
-      return INT32_MAX;
-    if (rhs.getCorexFlag(dim) > 0)
-      return lhs.getCorexFlag(dim) / rhs.getCorexFlag(dim);
-    return 0;
   }
 };
 
@@ -599,16 +518,6 @@ private:
       return {0};
     return {};
   }
-
-  int64_t getCorexFlag(OpTy op, const AxisInfo &lhs, const AxisInfo &rhs,
-                       int dim) override {
-    if (lhs.getCorexFlag(dim) == INT32_MAX ||
-        rhs.getCorexFlag(dim) == INT32_MAX)
-      return INT32_MAX;
-    if (rhs.getCorexFlag(dim))
-      return lhs.getCorexFlag(dim) % rhs.getCorexFlag(dim);
-    return 0;
-  }
 };
 
 class SplatOpAxisInfoVisitor final
@@ -625,36 +534,15 @@ public:
     AxisInfo::DimVectorT contiguity;
     AxisInfo::DimVectorT divisibility;
     AxisInfo::DimVectorT constancy;
-    AxisInfo::DimVectorT corexFlag;
     for (int d = 0; d < retTy.getRank(); ++d) {
       contiguity.push_back(1);
       divisibility.push_back(opInfo.getDivisibility(0));
       constancy.push_back(retTy.getShape()[d]);
-      corexFlag.push_back(opInfo.getCorexFlag(0));
     }
     return AxisInfo(contiguity, divisibility, constancy,
-                    operands[0]->getValue().getConstantValue(), corexFlag);
+                    operands[0]->getValue().getConstantValue());
   }
 };
-
-static bool useSme(const Value &va) {
-  for (auto use : va.getUsers()) {
-    if (auto convOp = llvm::dyn_cast<triton::gpu::ConvertLayoutOp>(use)) {
-      auto tensorType =
-          convOp->getResult(0).getType().dyn_cast<RankedTensorType>();
-      if (!tensorType ||
-          (!tensorType.getEncoding()
-                .isa<triton::gpu::DotOperandEncodingAttr>() &&
-           !tensorType.getEncoding().isa<triton::gpu::SharedEncodingAttr>()))
-        return false;
-    } else if (auto transOp = llvm::dyn_cast<triton::TransOp>(use)) {
-      return useSme(transOp->getResult(0));
-    } else {
-      return false;
-    }
-  }
-  return true;
-}
 
 class LoadOpAxisInfoVisitor final : public AxisInfoVisitorImpl<triton::LoadOp> {
 public:
@@ -673,48 +561,16 @@ public:
     AxisInfo::DimVectorT contiguity;
     AxisInfo::DimVectorT divisibility;
     AxisInfo::DimVectorT constancy;
-    AxisInfo::DimVectorT corexFlag;
-    // only dot load use sme
-    bool isUseSme = maskInfo.has_value() ? false : useSme(op->getResult(0));
 
     for (int d = 0; d < ptrInfo.getRank(); ++d) {
       contiguity.push_back(1);
       divisibility.push_back(1);
       constancy.push_back(
           gcd(ptrInfo.getConstancy(d),
-              (maskInfo.has_value() && (d < maskInfo->getRank()))
-                  ? maskInfo->getConstancy(d)
-                  : 0));
-      corexFlag.push_back(
-          isUseSme ? ptrInfo.getCorexFlag(d)
-                   : (ptrInfo.getCorexFlag(d) == INT32_MAX ? INT32_MAX : 0));
-    }
-    return AxisInfo(contiguity, divisibility, constancy, corexFlag);
-  }
-};
-
-class TransOpAxisInfoVisitor final
-    : public AxisInfoVisitorImpl<triton::TransOp> {
-public:
-  using AxisInfoVisitorImpl<triton::TransOp>::AxisInfoVisitorImpl;
-
-  AxisInfo
-  getAxisInfo(triton::TransOp op,
-              ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
-    AxisInfo opInfo = operands[0]->getValue();
-    AxisInfo::DimVectorT contiguity;
-    AxisInfo::DimVectorT divisibility;
-    AxisInfo::DimVectorT constancy;
-    AxisInfo::DimVectorT corexFlag;
-
-    for (int d = 0; d < opInfo.getRank(); ++d) {
-      contiguity.push_back(1);
-      divisibility.push_back(1);
-      constancy.push_back(1);
-      corexFlag.push_back(opInfo.getCorexFlag(d));
+              maskInfo.has_value() ? maskInfo->getConstancy(d) : 0));
     }
 
-    return AxisInfo(contiguity, divisibility, constancy, corexFlag);
+    return AxisInfo(contiguity, divisibility, constancy);
   }
 };
 
@@ -730,7 +586,6 @@ public:
     AxisInfo::DimVectorT contiguity = opInfo.getContiguity();
     AxisInfo::DimVectorT divisibility = opInfo.getDivisibility();
     AxisInfo::DimVectorT constancy = opInfo.getConstancy();
-    AxisInfo::DimVectorT corexFlag = opInfo.getCorexFlag();
     int64_t newDivisibility = 1;
     if (opInfo.getConstantValue().has_value()) {
       // The tensor is constant, same as ConstantOpAxisInfoVisitor
@@ -749,9 +604,8 @@ public:
     contiguity.insert(contiguity.begin() + op.getAxis(), 1);
     divisibility.insert(divisibility.begin() + op.getAxis(), newDivisibility);
     constancy.insert(constancy.begin() + op.getAxis(), 1);
-    corexFlag.insert(corexFlag.begin() + op.getAxis(), corexFlag[0]);
     return AxisInfo(contiguity, divisibility, constancy,
-                    operands[0]->getValue().getConstantValue(), corexFlag);
+                    operands[0]->getValue().getConstantValue());
   }
 };
 
@@ -773,16 +627,14 @@ public:
     AxisInfo::DimVectorT contiguity;
     AxisInfo::DimVectorT divisibility;
     AxisInfo::DimVectorT constancy;
-    AxisInfo::DimVectorT corexFlag;
     for (int d = 0; d < retTy.getRank(); ++d) {
       contiguity.push_back(opShape[d] == 1 ? 1 : opInfo.getContiguity(d));
       divisibility.push_back(opInfo.getDivisibility(d));
       constancy.push_back(opShape[d] == 1 ? retShape[d]
                                           : opInfo.getConstancy(d));
-      corexFlag.push_back(opInfo.getCorexFlag(d));
     }
     return AxisInfo(contiguity, divisibility, constancy,
-                    operands[0]->getValue().getConstantValue(), corexFlag);
+                    operands[0]->getValue().getConstantValue());
   }
 };
 
@@ -794,22 +646,15 @@ public:
   AxisInfo
   getAxisInfo(OpTy op,
               ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
-
-    auto lhsInfo = operands[0]->getValue();
-    auto rhsInfo = operands[1]->getValue();
-    if (isa<IntegerType>(op.getType()))
-      return AxisInfo({1}, {1}, {1},
-                      {compare(getPredicate(op), lhsInfo.getCorexFlag(0),
-                               rhsInfo.getCorexFlag(0))
-                           ? 1
-                           : 0});
     auto resTy = dyn_cast<RankedTensorType>(op.getType());
     if (!resTy)
       return AxisInfo();
     auto shape = resTy.getShape();
     short rank = resTy.getRank();
+    auto lhsInfo = operands[0]->getValue();
+    auto rhsInfo = operands[1]->getValue();
 
-    AxisInfo::DimVectorT contiguity, divisibility, constancy, corexFlag;
+    AxisInfo::DimVectorT contiguity, divisibility, constancy;
     std::optional<int64_t> constantValue;
     for (short d = 0; d < rank; ++d) {
       int64_t constHint = 1;
@@ -857,17 +702,13 @@ public:
                                                   rhsInfo.getDivisibility(d))));
         }
       }
+
       constancy.push_back(constHint);
       divisibility.push_back(1);
       contiguity.push_back(1);
-      corexFlag.push_back(compare(getPredicate(op), lhsInfo.getCorexFlag(d),
-                                  rhsInfo.getCorexFlag(d))
-                              ? 1
-                              : 0);
     }
 
-    return AxisInfo(contiguity, divisibility, constancy, constantValue,
-                    corexFlag);
+    return AxisInfo(contiguity, divisibility, constancy, constantValue);
   }
 
 private:
@@ -938,7 +779,7 @@ public:
     auto rhsInfo = operands[2]->getValue();
     auto rank = lhsInfo.getRank();
 
-    AxisInfo::DimVectorT contiguity, divisibility, constancy, corexFlag;
+    AxisInfo::DimVectorT contiguity, divisibility, constancy;
     std::optional<int64_t> constantValue;
     if (operands[0]->getValue().getConstantValue().has_value()) {
       if (operands[0]->getValue().getConstantValue() == 0) {
@@ -994,13 +835,8 @@ public:
           lhsInfo.getConstantValue() == rhsInfo.getConstantValue())
         constantValue = lhsInfo.getConstantValue();
     }
-    auto condCorexFlag = operands[0]->getValue().getCorexFlag(0);
-    if (condCorexFlag == 0)
-      corexFlag = rhsInfo.getCorexFlag();
-    else
-      corexFlag = lhsInfo.getCorexFlag();
-    return AxisInfo(contiguity, divisibility, constancy, constantValue,
-                    corexFlag);
+
+    return AxisInfo(contiguity, divisibility, constancy, constantValue);
   }
 };
 
@@ -1130,28 +966,21 @@ public:
     auto rhsInfo = operands[1]->getValue();
     auto rank = lhsInfo.getRank();
     std::optional<int64_t> constantValue;
-    AxisInfo::DimVectorT corexFlag;
     if (lhsInfo.getConstantValue().has_value() &&
         rhsInfo.getConstantValue().has_value()) {
       if constexpr (std::is_same_v<OpTy, arith::MaxSIOp> ||
                     std::is_same_v<OpTy, arith::MaxUIOp>) {
         constantValue = {std::max(lhsInfo.getConstantValue().value(),
                                   rhsInfo.getConstantValue().value())};
-        for (auto d = 0; d < rank; ++d)
-          corexFlag.push_back(
-              std::max(lhsInfo.getCorexFlag(d), rhsInfo.getCorexFlag(d)));
       } else if constexpr (std::is_same_v<OpTy, arith::MinSIOp> ||
                            std::is_same_v<OpTy, arith::MinUIOp>) {
         constantValue = {std::min(lhsInfo.getConstantValue().value(),
                                   rhsInfo.getConstantValue().value())};
-        for (auto d = 0; d < rank; ++d)
-          corexFlag.push_back(
-              std::min(lhsInfo.getCorexFlag(d), rhsInfo.getCorexFlag(d)));
       }
       return AxisInfo(/*knownContiguity=*/AxisInfo::DimVectorT(rank, 1),
                       /*knownDivisibility=*/AxisInfo::DimVectorT(rank, 1),
                       /*knownConstancy=*/AxisInfo::DimVectorT(rank, 1),
-                      /*constantValue=*/constantValue, corexFlag);
+                      /*constantValue=*/constantValue);
     } else {
       AxisInfo::DimVectorT contiguity, divisibility, constancy;
       for (auto d = 0; d < rank; ++d) {
@@ -1161,11 +990,8 @@ public:
             std::min(lhsInfo.getDivisibility(d), rhsInfo.getDivisibility(d)));
         contiguity.push_back(
             std::min(lhsInfo.getContiguity(d), rhsInfo.getContiguity(d)));
-        corexFlag.push_back(
-            std::min(lhsInfo.getCorexFlag(d), rhsInfo.getCorexFlag(d)));
       }
-      return AxisInfo(contiguity, divisibility, constancy, std::nullopt,
-                      corexFlag);
+      return AxisInfo(contiguity, divisibility, constancy, std::nullopt);
     }
   }
 };
@@ -1217,7 +1043,6 @@ AxisInfoAnalysis::AxisInfoAnalysis(DataFlowSolver &solver)
                   MaxMinOpAxisInfoVisitor<arith::MinSIOp>,
                   MaxMinOpAxisInfoVisitor<arith::MinUIOp>>();
   visitors.append<LoadOpAxisInfoVisitor>();
-  visitors.append<TransOpAxisInfoVisitor>();
 }
 
 void AxisInfoAnalysis::visitOperation(
@@ -1229,28 +1054,12 @@ void AxisInfoAnalysis::visitOperation(
     if (op->getValue().getRank() == 0)
       setToEntryState((dataflow::Lattice<AxisInfo> *)op);
   AxisInfo curr = visitors.apply(op, operands);
-
-  // op->dump();
-  // std::string str;
-  // llvm::raw_string_ostream output(str);
-  // str = "";
-  // curr.print(output);
-  // std::cout << "curr valInfo " << str << std::endl;
-
-  // for (auto *result : results) {
-  //   str = "";
-  //   result->getValue().print(output);
-  //   std::cout << "init res valInfo " << str << std::endl;
-  // }
-
   if (curr.getRank() == 0)
     return setAllToEntryStates(results);
   // override with hint
   auto newContiguity = curr.getContiguity();
   auto newDivisibility = curr.getDivisibility();
   auto newConstancy = curr.getConstancy();
-  auto newCorexFlag = curr.getCorexFlag();
-
   if (Attribute attr = op->getDiscardableAttr("tt.contiguity")) {
     auto vals = cast<DenseElementsAttr>(attr).getValues<int>();
     newContiguity = AxisInfo::DimVectorT(vals.begin(), vals.end());
@@ -1263,23 +1072,11 @@ void AxisInfoAnalysis::visitOperation(
     auto vals = cast<DenseElementsAttr>(attr).getValues<int>();
     newConstancy = AxisInfo::DimVectorT(vals.begin(), vals.end());
   }
-  if (Attribute attr = op->getDiscardableAttr("tt.corex_stride")) {
-    auto vals = cast<DenseElementsAttr>(attr).getValues<int>();
-    newCorexFlag = AxisInfo::DimVectorT(vals.begin(), vals.end());
-  }
-
   curr = AxisInfo(newContiguity, newDivisibility, newConstancy,
-                  curr.getConstantValue(), newCorexFlag);
-
+                  curr.getConstantValue());
   // join all lattice elements
   for (auto *result : results)
     propagateIfChanged(result, result->join(curr));
-
-  // for (auto *result : results) {
-  //   str = "";
-  //   result->getValue().print(output);
-  //   std::cout << "res valInfo " << str << std::endl;
-  // }
 }
 
 void AxisInfoAnalysis::visitForOpInductionVar(
@@ -1290,16 +1087,16 @@ void AxisInfoAnalysis::visitForOpInductionVar(
   AxisInfo::DimVectorT knownContiguity(1, 1);
   AxisInfo::DimVectorT knownDivisibility(1, 1);
   AxisInfo::DimVectorT knownConstancy(1, 1);
-  AxisInfo::DimVectorT knownCorexFlag(1, 0);
   knownDivisibility[0] = gcd(lb.getDivisibility(0), step.getDivisibility(0));
-  auto inductionVar = AxisInfo(knownContiguity, knownDivisibility,
-                               knownConstancy, knownCorexFlag);
+  auto inductionVar =
+      AxisInfo(knownContiguity, knownDivisibility, knownConstancy);
   (void)argLattices[0]->join(inductionVar);
 }
 
 } // anonymous namespace
+#endif
 
-#ifndef FLAGTREE_SPEC_AxisInfo_initPessimisticStateFromFunc_ARG
+#ifndef FLAGTREE_SPEC_AxisInfo_AxisInfo_functions
 template <class T>
 void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
                                             DimVectorT *contiguity,
@@ -1321,7 +1118,6 @@ void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
     }
   }
 }
-#endif
 
 /*static*/ AxisInfo AxisInfo::getPessimisticValueState(Value value) {
   auto rank = 1;
@@ -1334,7 +1130,6 @@ void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
   DimVectorT knownContiguity(rank, 1);
   DimVectorT knownDivisibility(rank, 1);
   DimVectorT knownConstancy(rank, 1);
-  DimVectorT knownCorexFlag(rank, 0);
 
   BlockArgument blockArg = dyn_cast<BlockArgument>(value);
 
@@ -1343,13 +1138,13 @@ void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
     if (auto fun = dyn_cast<FunctionOpInterface>(op))
       initPessimisticStateFromFunc(blockArg.getArgNumber(), fun,
                                    &knownContiguity, &knownDivisibility,
-                                   &knownConstancy, &knownCorexFlag);
+                                   &knownConstancy);
     // llvm codegen check alignment to generate vector load/store
     // would be nice if this wasn't the case
     else if (auto fun = dyn_cast<LLVM::LLVMFuncOp>(op))
       initPessimisticStateFromFunc(blockArg.getArgNumber(), fun,
                                    &knownContiguity, &knownDivisibility,
-                                   &knownConstancy, &knownCorexFlag);
+                                   &knownConstancy);
   } else if (Operation *op = value.getDefiningOp()) {
     if (isa<RegionBranchOpInterface>(op)) {
       // scf::ForOp, scf::IfOp, scf::WhileOp
@@ -1373,14 +1168,9 @@ void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
       auto vals = cast<DenseElementsAttr>(attr).getValues<int>();
       knownConstancy = DimVectorT(vals.begin(), vals.end());
     }
-    if (Attribute attr = op->getDiscardableAttr("tt.corex_stride")) {
-      auto vals = cast<DenseElementsAttr>(attr).getValues<int>();
-      knownCorexFlag = DimVectorT(vals.begin(), vals.end());
-    }
   }
 
-  return AxisInfo(knownContiguity, knownDivisibility, knownConstancy,
-                  std::nullopt, knownCorexFlag);
+  return AxisInfo(knownContiguity, knownDivisibility, knownConstancy);
 }
 
 /*static*/ AxisInfo AxisInfo::join(const AxisInfo &lhs, const AxisInfo &rhs) {
@@ -1389,25 +1179,22 @@ void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
     return rhs;
   if (rhs.getRank() == 0)
     return lhs;
-
   DimVectorT contiguity;
   DimVectorT divisibility;
   DimVectorT constancy;
-  DimVectorT corexFlag;
   for (auto d = 0; d < lhs.getRank(); ++d) {
     contiguity.push_back(gcd(lhs.getContiguity(d), rhs.getContiguity(d)));
     divisibility.push_back(gcd(lhs.getDivisibility(d), rhs.getDivisibility(d)));
     constancy.push_back(gcd(lhs.getConstancy(d), rhs.getConstancy(d)));
-    corexFlag.push_back(gcd(lhs.getCorexFlag(d), rhs.getCorexFlag(d)));
   }
   std::optional<int64_t> constantValue;
   if (lhs.getConstantValue().has_value() &&
       rhs.getConstantValue().has_value() &&
       lhs.getConstantValue() == rhs.getConstantValue())
     constantValue = lhs.getConstantValue();
-  return AxisInfo(contiguity, divisibility, constancy, constantValue,
-                  corexFlag);
+  return AxisInfo(contiguity, divisibility, constancy, constantValue);
 }
+#endif
 
 unsigned ModuleAxisInfoAnalysis::getPtrContiguity(Value ptr) {
   auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
@@ -1479,6 +1266,7 @@ unsigned ModuleAxisInfoAnalysis::getMaskAlignment(Value mask) {
   return alignment;
 }
 
+#ifndef FLAGTREE_SPEC_AxisInfo_class
 void ModuleAxisInfoAnalysis::initialize(FunctionOpInterface funcOp) {
   std::unique_ptr<DataFlowSolver> solver = createDataFlowSolver();
   AxisInfoAnalysis *analysis = solver->load<AxisInfoAnalysis>();
@@ -1506,7 +1294,9 @@ void ModuleAxisInfoAnalysis::initialize(FunctionOpInterface funcOp) {
     }
   });
 }
+#endif
 
+#ifndef FLAGTREE_SPEC_AxisInfo_ModuleAxisInfoAnalysis_update
 void ModuleAxisInfoAnalysis::update(CallOpInterface callOp,
                                     FunctionOpInterface callee) {
   auto caller = callOp->getParentOfType<FunctionOpInterface>();
@@ -1529,8 +1319,8 @@ void ModuleAxisInfoAnalysis::update(CallOpInterface callOp,
     setAttrFn("tt.contiguity", axisInfo.getContiguity(0));
     setAttrFn("tt.divisibility", axisInfo.getDivisibility(0));
     setAttrFn("tt.constancy", axisInfo.getConstancy(0));
-    setAttrFn("tt.corex_stride", axisInfo.getCorexFlag(0));
   }
 }
+#endif
 
 } // namespace mlir::triton

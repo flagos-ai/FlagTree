@@ -3,5 +3,8 @@
 
 #define FLAGTREE_SPEC_AxisInfo_CorexFlag
 #define FLAGTREE_SPEC_AxisInfo_initPessimisticStateFromFunc_ARG AxisInfo::DimVectorT *
+#define FLAGTREE_SPEC_AxisInfo_class
+#define FLAGTREE_SPEC_AxisInfo_AxisInfo_functions
+#define FLAGTREE_SPEC_AxisInfo_ModuleAxisInfoAnalysis_update
 
 #endif // ILUVATAR_TRITON_ANALYSIS_AXISINFO_H
