@@ -13,9 +13,12 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
-#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_heads
+#ifdef __NVIDIA__
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-#else
+#endif
+
+#include "flagtree_spec.h"
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_heads
 #include "python/src/plugin.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #endif
@@ -25,8 +28,6 @@
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
-
-#include "flagtree_spec.h"
 
 #define DEBUG_TYPE "ttgpu_to_llvm"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")

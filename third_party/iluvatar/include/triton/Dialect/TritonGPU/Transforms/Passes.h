@@ -3,11 +3,10 @@
 
 #include "mlir/Pass/Pass.h"
 
-#include "flagtree_spec.h"
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_head
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#else
+#ifdef __NVIDIA__
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#else
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #endif
 
 namespace mlir {

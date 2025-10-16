@@ -4,8 +4,7 @@
 #include "mlir/Support/LLVM.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-
-#ifndef FLAGTREE_SPEC_Dialect_TritonNvidiaGPU_IR_Dialect_head
+#ifdef __NVIDIA__
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #endif
 

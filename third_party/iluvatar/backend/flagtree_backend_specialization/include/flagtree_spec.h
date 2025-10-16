@@ -1,4 +1,3 @@
-#include "triton/Analysis/iluvatar_Alias.h"
 #include "triton/Analysis/iluvatar_Allocation.h"
 #include "triton/Analysis/iluvatar_AxisInfo.h"
 #include "triton/Analysis/iluvatar_Membar.h"
@@ -10,5 +9,4 @@
 #include "triton/Dialect/Triton/IR/iluvatar_Dialect.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/iluvatar_Dialect.h"
-#include "triton/Dialect/TritonGPU/Transforms/iluvatar_Passes.h"
 #include "triton/Tools/Sys/iluvatar_GetEnv.hpp"
