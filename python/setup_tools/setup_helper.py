@@ -353,8 +353,8 @@ download_flagtree_third_party("triton_shared", condition=(not flagtree_backend))
 download_flagtree_third_party("flir", condition=(flagtree_backend == "ascend"), hock=utils.ascend.precompile_hook_flir,
                               required=True)
 
-#download_flagtree_third_party("ascend", condition=(flagtree_backend == "ascend"), hock=utils.ascend.precompile_hook,
-#                              required=True)
+download_flagtree_third_party("ascend", condition=(flagtree_backend == "ascend"), hock=utils.ascend.precompile_hook,
+                              required=True)
 
 handle_flagtree_backend()
 
