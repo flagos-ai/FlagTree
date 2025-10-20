@@ -6,6 +6,8 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <vector>
 
+#include "flagtree_spec.h"
+
 using namespace mlir;
 using namespace mlir::triton;
 
@@ -341,8 +343,13 @@ private:
         auto elemTy = getElementType(op, i);
         Value readPtr = gep(ptr_ty(rewriter.getContext(), 3), elemTy,
                             smemBases[i], readOffset);
-        acc[i] = targetInfo.loadShared(rewriter, loc, readPtr, elemTy,
-                                       threadIsNeeded);
+#ifndef FLAGTREE_SPEC_ReduceOpToLLVM_accumulatePartialReductions
+        acc[i] = targetInfo.loadShared(rewriter, loc, getTypeConverter(),
+                                       readPtr, elemTy, threadIsNeeded);
+#else
+        acc[i] = targetInfo.loadShared(rewriter, loc,
+                                       readPtr, elemTy, threadIsNeeded);
+#endif
       }
       warpReduce(rewriter, loc, acc, op, sizeInterWarps, 1 /* interleave */);
       // only the first thread in each sizeInterWarps is writing
