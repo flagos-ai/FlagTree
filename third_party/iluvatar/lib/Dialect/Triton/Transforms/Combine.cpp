@@ -14,6 +14,8 @@
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/Triton/Transforms/Passes.h.inc"
 
+#include "flagtree_spec.h"
+
 namespace mlir::triton {
 namespace {
 
@@ -131,12 +133,19 @@ public:
     if (splatCond != condSelect)
       return failure();
 
+#ifndef FLAGTREE_SPEC_Dialect_Triton_Transforms_Combine_CombineSelectMaskedLoadPattern
+    rewriter.replaceOpWithNewOp<LoadOp>(
+        op, loadOp.getPtr(), loadOp.getMask(), /*other=*/falseValue,
+        loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
+        loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+#else
     rewriter.replaceOpWithNewOp<LoadOp>(
         op, loadOp.getPtr(), loadOp.getMask(), /*other=*/falseValue,
         loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
         loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
         loadOp.getInputStride(), loadOp.getInputStride(),
         loadOp.getInputStride());
+#endif
     return success();
   }
 };
@@ -239,7 +248,9 @@ public:
     patterns.add<CombineDotAddFRevPattern>(context);
     // %}
     patterns.add<CombineSelectMaskedLoadPattern>(context);
-    // patterns.add<CombineAddPtrPattern>(context);
+#ifndef FLAGTREE_SPEC_Dialect_Triton_Transforms_Combine_CombineAddPtrPattern
+    patterns.add<CombineAddPtrPattern>(context);
+#endif
     patterns.add<CombineBroadcastConstantPattern>(context);
     patterns.add<CombineBroadcastMulReducePattern>(context);
 

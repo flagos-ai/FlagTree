@@ -1,0 +1,7 @@
+#ifndef ILUVATAR_TRITON_DIALECT_TRITON_TRANSFORMS_Combine_H_
+#define ILUVATAR_TRITON_DIALECT_TRITON_TRANSFORMS_Combine_H_
+
+#define FLAGTREE_SPEC_Dialect_Triton_Transforms_Combine_CombineSelectMaskedLoadPattern
+#define FLAGTREE_SPEC_Dialect_Triton_Transforms_Combine_CombineAddPtrPattern
+
+#endif // ILUVATAR_TRITON_DIALECT_TRITON_TRANSFORMS_Combine_H_
