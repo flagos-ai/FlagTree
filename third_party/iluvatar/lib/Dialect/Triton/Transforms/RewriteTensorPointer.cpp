@@ -13,6 +13,8 @@ using namespace mlir;
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/Triton/Transforms/Passes.h.inc"
 
+#include "flagtree_spec.h"
+
 namespace {
 
 /// An additional struct to record the meta information of operations
@@ -24,7 +26,9 @@ private:
   SmallVector<Value> strides;
   SmallVector<Value> offsets;
   ArrayRef<int64_t> tensorShape;
+#ifdef FLAGTREE_SPEC_Dialect_Triton_Transforms_RewriteTensorPointer_RewritedInfo
   ArrayRef<int32_t> order;
+#endif
 
   // A cache to avoid generating the same offset with range
   DenseMap<unsigned, Value> cachedOffsetWithRange;
@@ -34,6 +38,17 @@ public:
 
   RewritedInfo(const RewritedInfo &other) = default;
 
+#ifndef FLAGTREE_SPEC_Dialect_Triton_Transforms_RewriteTensorPointer_RewritedInfo
+  RewritedInfo(Value base, const SmallVector<Value> &shape,
+               const SmallVector<Value> &strides,
+               const SmallVector<Value> &offsets,
+               const ArrayRef<int64_t> &tensorShape)
+      : base(base), shape(shape), strides(strides), offsets(offsets),
+        tensorShape(tensorShape) {
+    assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
+           shape.size() == tensorShape.size());
+  }
+#else
   RewritedInfo(Value base, const SmallVector<Value> &shape,
                const SmallVector<Value> &strides,
                const SmallVector<Value> &offsets,
@@ -44,6 +59,7 @@ public:
     assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
            shape.size() == tensorShape.size() && shape.size() == order.size());
   }
+#endif
 
   unsigned int length() const { return shape.size(); }
 
@@ -51,7 +67,7 @@ public:
 
   SmallVector<Value> getOffsets() { return offsets; }
 
-#if defined(__ILUVATAR__)
+#ifdef FLAGTREE_SPEC_Dialect_Triton_Transforms_RewriteTensorPointer_RewritedInfo_getContiguousStride
   Value getContiguousStride() {
     if (strides.size() == 2)
       return strides[order[1]];
@@ -249,9 +265,15 @@ public:
     }
 
     // Save information
+#ifndef FLAGTREE_SPEC_Dialect_Triton_Transforms_RewriteTensorPointer_RewritedInfo_rewriteMakeTensorPtrOp
+    rewritedInfo[op.getResult()] =
+        RewritedInfo(op.getBase(), op.getShape(), op.getStrides(), i64Offsets,
+                     tensorType.getShape());
+#else
     rewritedInfo[op.getResult()] =
         RewritedInfo(op.getBase(), op.getShape(), op.getStrides(), i64Offsets,
                      tensorType.getShape(), op.getOrderAttr());
+#endif
 
     // Erase the original operation
     eraser.push(op);
@@ -319,7 +341,7 @@ public:
 
     // Create a new operation
     if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
-#if defined(__ILUVATAR__)
+#ifdef FLAGTREE_SPEC_Dialect_Triton_Transforms_RewriteTensorPointer_RewritedInfo_rewriteLoadStoreOp
       Value newResult;
       Value resStride = info.getContiguousStride();
       if (!newMask && !newOther && resStride) {

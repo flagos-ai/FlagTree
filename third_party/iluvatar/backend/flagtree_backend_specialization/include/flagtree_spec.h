@@ -15,3 +15,4 @@
 #include "triton/Conversion/TritonGPUToLLVM/iluvatar_TypeConverter.h"
 #include "triton/Dialect/Triton/IR/iluvatar_Ops.h"
 #include "triton/Dialect/Triton/Transforms/iluvatar_Combine.h"
+#include "triton/Dialect/Triton/Transforms/iluvatar_RewriteTensorPointer.h"
