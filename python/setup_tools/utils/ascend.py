@@ -4,7 +4,9 @@ from pathlib import Path
 from setup_tools.utils.tools import flagtree_root_dir, flagtree_submodule_dir, DownloadManager, Module
 
 def precompile_hook_flir(*args, **kargs):
-    default_backends = ["nvidia"]
+    default_backends = kargs["default_backends"]
+    if 'amd' in default_backends:
+        default_backends.remove('amd')
     default_backends.append('flir')
 
 downloader = DownloadManager()

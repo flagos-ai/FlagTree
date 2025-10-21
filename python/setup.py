@@ -564,7 +564,7 @@ download_and_copy(
 if helper.flagtree_backend:
     if helper.flagtree_backend in ("ascend"):
         backends = [
-            *BackendInstaller.copy(["nvidia"] + helper.extend_backends),
+            *BackendInstaller.copy(helper.default_backends + helper.extend_backends),
             *BackendInstaller.copy_externals(),
         ]
     else:
