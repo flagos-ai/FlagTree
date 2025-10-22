@@ -12,8 +12,13 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#ifdef __NVIDIA__
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#endif
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/Support/Debug.h"
+
+#include "flagtree_spec.h"
 
 //===----------------------------------------------------------------------===//
 // This file will create a schedule that will be handed over to the pipeline
@@ -88,7 +93,7 @@ static bool pipelineLoop(scf::ForOp forOp, int numStages) {
 
   if (failed(newForOp))
     return false;
-#ifndef __ILUVATAR__
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_SoftwarePipeliner_pipelineLoop
   mlir::triton::asyncLaunchDots(newForOp.value());
 #endif
   return true;
@@ -116,25 +121,26 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
         loops.push_back(forOp);
     });
 
-#ifdef __ILUVATAR__
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_SoftwarePipeliner_PipelinePass_runOnOperation
+    if (loops.empty())
+      return;
+#else
     ModuleOp mod = getOperation();
     auto i32_ty = IntegerType::get(mod->getContext(), 32);
-#endif
 
     if (loops.empty()) {
-#ifdef __ILUVATAR__
       mod->setAttr("triton_gpu.dot.num-stages",
                    IntegerAttr::get(i32_ty, llvm::APInt(32, 1)));
-#endif
       return;
     }
+#endif
 
     llvm::SmallSetVector<scf::ForOp, 8> outerLoops;
     for (scf::ForOp forOp : loops) {
       auto outerLoop = dyn_cast<scf::ForOp>(forOp->getParentOp());
       int loopNumStages = getNumStagesOrDefault(forOp);
       bool pipelined = pipelineLoop(forOp, loopNumStages);
-#ifndef __ILUVATAR__
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_SoftwarePipeliner_PipelinePass_runOnOperation
       if (pipelined && outerLoop && getNumStagesOrDefault(outerLoop) > 1)
         outerLoops.insert(outerLoop);
 #endif
@@ -149,16 +155,20 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
         getOperation().getContext()->getLoadedDialect<arith::ArithDialect>();
     RewritePatternSet patterns(getOperation().getContext());
     arithDialect->getCanonicalizationPatterns(patterns);
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_SoftwarePipeliner_PipelinePass_runOnOperation
+    if (applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))
+            .failed())
+      return signalPassFailure();
+#else
     if (applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))
             .failed()) {
-#ifdef __ILUVATAR__
       mod->setAttr("triton_gpu.dot.num-stages",
                    IntegerAttr::get(i32_ty, llvm::APInt(32, 1)));
-#endif
       return signalPassFailure();
     }
+#endif
 
-#ifndef __ILUVATAR__
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_SoftwarePipeliner_PipelinePass_runOnOperation
     // Try to pipeline the outer loop to overlap the prologue and epilogue of
     // the inner loop.
     for (scf::ForOp outerLoop : outerLoops)

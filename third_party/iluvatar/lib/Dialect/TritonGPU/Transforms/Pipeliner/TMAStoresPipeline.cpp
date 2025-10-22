@@ -1,10 +1,15 @@
 #include "Schedule.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __NVIDIA__
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#endif
 
 using namespace mlir;
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
+#ifdef __NVIDIA__
 namespace ttng = mlir::triton::nvidia_gpu;
+#endif
 
 static SmallVector<tt::ExperimentalDescriptorStoreOp>
 getTMAStores(scf::ForOp forOp) {
