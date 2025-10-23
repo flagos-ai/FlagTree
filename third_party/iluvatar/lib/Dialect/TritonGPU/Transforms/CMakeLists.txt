@@ -1,5 +1,5 @@
 if(FLAGTREE_BACKEND STREQUAL "iluvatar")
-  set(_EXTRA_LINK_LIBS "")
+  set(_EXTRA_LINK_LIBS FlagTree_${FLAGTREE_BACKEND}_TritonDialectTritonGPUTransforms)
   set(_EXTRA_LINK_CPP "")
 else()
   set(_EXTRA_LINK_LIBS "TritonNvidiaGPUIR")

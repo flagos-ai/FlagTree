@@ -25,3 +25,4 @@
 #include "triton/Dialect/TritonGPU/Transforms/iluvatar_Prefetch.h"
 #include "triton/Dialect/TritonGPU/Transforms/iluvatar_ReduceDataDuplication.h"
 #include "triton/Dialect/TritonGPU/Transforms/iluvatar_RemoveLayoutConversions.h"
+#include "triton/Dialect/TritonGPU/Transforms/iluvatar_Utility.h"

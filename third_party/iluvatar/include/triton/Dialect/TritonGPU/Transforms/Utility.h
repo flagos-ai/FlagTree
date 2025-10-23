@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <numeric>
 
+#include "flagtree_spec.h"
+
 namespace mlir {
 
 namespace triton {
