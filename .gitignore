@@ -22,7 +22,6 @@ python/triton/backends/
 third_party/iluvatar/iluvatarTritonPlugin.so
 third_party/triton_shared/
 third_party/xpu/backend/xpu3
-third_party/ascend
 
 # Proton
 python/triton/profiler
