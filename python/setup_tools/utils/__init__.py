@@ -11,7 +11,8 @@ flagtree_submodules = {
                  dst_path=os.path.join(flagtree_submodule_dir, "triton_shared")),
     "ascend":
     tools.Module(name="ascend", url="https://gitcode.com/FlagTree/triton-ascend.git",
-                 dst_path=os.path.join(flagtree_submodule_dir, "triton_ascend"), spec_submodule="third_party/ascendnpu-ir"),
+                 dst_path=os.path.join(flagtree_submodule_dir,
+                                       "triton_ascend"), spec_submodule="third_party/ascendnpu-ir"),
 }
 
 

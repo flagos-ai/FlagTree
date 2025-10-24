@@ -1,7 +1,7 @@
 import os
 import shutil
 from pathlib import Path
-from setup_tools.utils.tools import flagtree_root_dir, Module, flagtree_submodule_dir, DownloadManager
+from setup_tools.utils.tools import flagtree_root_dir, flagtree_submodule_dir, DownloadManager
 
 downloader = DownloadManager()
 

@@ -29,6 +29,7 @@ class Module:
     dst_path: str = None
     spec_submodule: str = None
 
+
 def dir_rollback(deep, base_path):
     while (deep):
         base_path = os.path.dirname(base_path)
