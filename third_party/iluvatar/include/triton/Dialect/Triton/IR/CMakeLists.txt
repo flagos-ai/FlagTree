@@ -1,6 +1,10 @@
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
 set(LLVM_TARGET_DEFINITIONS TritonOps.td)
+set(BACKEND_SPEC_TD ${BACKEND_SPEC_INCLUDE_DIR}/triton/Dialect/Triton/IR/TritonOps.td)
+if(EXISTS ${BACKEND_SPEC_TD})
+  set(LLVM_TARGET_DEFINITIONS ${BACKEND_SPEC_TD})
+endif()
 mlir_tablegen(Ops.h.inc -gen-op-decls)
 mlir_tablegen(Ops.cpp.inc -gen-op-defs)
 mlir_tablegen(OpsEnums.h.inc -gen-enum-decls)

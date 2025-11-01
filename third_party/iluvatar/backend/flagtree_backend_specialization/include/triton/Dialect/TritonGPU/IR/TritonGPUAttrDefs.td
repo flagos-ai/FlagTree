@@ -246,7 +246,8 @@ compared to 1*64 when the hasLeadingOffset is false.
     "unsigned":$maxPhase,
     ArrayRefParameter<"unsigned">:$order,
     "CTALayoutAttr":$CTALayout,
-    "bool":$hasLeadingOffset
+    "bool":$hasLeadingOffset,
+    "bool":$useTcu
   );
 
   let builders = [
@@ -256,7 +257,13 @@ compared to 1*64 when the hasLeadingOffset is false.
                      "ArrayRef<unsigned>":$order,
                      "CTALayoutAttr":$CTALayout), [{
         bool hasLeadingOffset = false; // default value
-        return $_get(context, vec, perPhase, maxPhase, order, CTALayout, hasLeadingOffset);
+        bool useTcu;
+#if defined(__ILUVATAR__)
+        useTcu = true;
+#else
+        useTcu = false;
+#endif
+        return $_get(context, vec, perPhase, maxPhase, order, CTALayout, hasLeadingOffset, useTcu);
     }]>,
 
     AttrBuilder<(ins "DotOperandEncodingAttr":$dotOpEnc,
@@ -332,13 +339,22 @@ compared to 1*64 when the hasLeadingOffset is false.
           }
         }
 
+        int opIdx = dotOpEnc.getOpIdx();
+        // ---- begin Iluvatar ----
+        if (auto mmaEnc = mlir::dyn_cast<IluvatarMmaEncodingAttr>(dotOpEnc.getParent())) {
+          if (mmaEnc.isVolta()) {
+            // iluvatar not use swizzle, so use perPhase to store opIdx
+            return get(context, 1, opIdx, 1, order, CTALayout);
+          }
+        }
 
+        // ---- begin Nvidia ----
         auto mmaEnc = mlir::dyn_cast<NvidiaMmaEncodingAttr>(dotOpEnc.getParent());
 
         if(!mmaEnc)
           return get(context, 1, 1, 1, order, CTALayout);
 
-        int opIdx = dotOpEnc.getOpIdx();
+        // int opIdx = dotOpEnc.getOpIdx();
         auto shapePerCTA = getShapePerCTA(CTALayout.getCTASplitNum(), shape);
 
         // number of rows per phase
@@ -401,7 +417,7 @@ compared to 1*64 when the hasLeadingOffset is false.
         if (mmaEnc.isHopper()) {
           llvm_unreachable("SharedEncodingAttr builder when the MMAEncodingAttr"
                            " is Hopper has not been implemented yet");
-          return $_get(context, 1, 1, 1, order, CTALayout, true);
+          return $_get(context, 1, 1, 1, order, CTALayout, true, false);
         }
 
         // ---- not implemented ----
@@ -452,7 +468,13 @@ compared to 1*64 when the hasLeadingOffset is false.
           llvm_unreachable("unsupported shared memory layout for MMAv3");
         }
 
-        return $_get(context, vec, perPhase, maxPhase, order, CTALayout, true);
+        bool useTcu;
+#if defined(__ILUVATAR__)
+        useTcu = true;
+#else
+        useTcu = false;
+#endif
+        return $_get(context, vec, perPhase, maxPhase, order, CTALayout, true, useTcu);
     }]>
   ];
 
@@ -679,7 +701,9 @@ for
     // CTALayout is optional in the textual IR.  If omitted, we infer it to be a
     // single CTA (so CTAsPerCGA = [1,...,1], CTASplitNum = [1,...,1],
     // CTAOrder=[n,n-1,...,0]).
-    "CTALayoutAttr":$CTALayout
+    "CTALayoutAttr":$CTALayout,
+    "unsigned":$loadType,
+    ArrayRefParameter<"unsigned">:$smeWarpsPerCTA
   );
   let genVerifyDecl = 1;
 
@@ -693,6 +717,7 @@ for
       unsigned rank = sizePerThread.size();
       SmallVector<unsigned, 4> threadsPerWarp(rank);
       SmallVector<unsigned, 4> warpsPerCTA(rank);
+      SmallVector<unsigned, 4> smeWpt(rank);
       SmallVector<int64_t> shapePerCTA = getShapePerCTA(CTALayout.getCTASplitNum(), shape);
 
       unsigned remainingLanes = numThreadsPerWarp;
@@ -718,7 +743,7 @@ for
       threadsPerWarp[order[rank - 1]] = numThreadsPerWarp / prevLanes;
       warpsPerCTA[order[rank - 1]] = numWarps / prevWarps;
 
-      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout);
+      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout, 0, smeWpt);
     }]>,
 
     AttrBuilder<(ins "ArrayRef<int64_t>":$shape,
@@ -746,7 +771,30 @@ for
 
       CTALayoutAttr CTALayout = CTALayoutAttr::get(context, CTAsPerCGA, CTASplitNum, CTAOrder);
       return get(context, shape, sizePerThread, order, numWarps, numThreadsPerWarp, CTALayout);
+    }]>,
+
+    #define GET_ILUVATAR_BLOKED_LAYOUT_BUILDER
+    #ifdef FLAGTREE_PLUGIN
+    include "TritonILUVATARGPUToLLVM/TritonGPUAttrDefs.td"
+    #else
+    AttrBuilder<(ins "unsigned":$loadType,
+                      "unsigned":$numWarps,
+                      "Type": $eltTy,
+                      "ArrayRef<int64_t>":$shape,
+                      "ArrayRef<unsigned>":$order,
+                      "ArrayRef<unsigned>":$sizePerThread,
+                      "ArrayRef<unsigned>":$threadsPerWarp,
+                      "ArrayRef<unsigned>":$warpsPerCTA,
+                      "unsigned":$numCTAs), [{
+      SmallVector<unsigned> wpt({1, 1});
+      auto impl = load_AttrBuilder_func("iluvatar", "blockedLayoutBuilder");
+      CTALayoutAttr CTALayout = impl(loadType, numWarps, eltTy,
+          shape, order, sizePerThread, threadsPerWarp, warpsPerCTA, numCTAs,
+          wpt, context);
+      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout, loadType, wpt);
     }]>
+    #endif
+
   ];
 
   let extraClassDeclaration = extraDistributedDeclaration # [{
@@ -1197,6 +1245,54 @@ For example, the matrix L corresponding to blockTileSize=[32,16] is:
   let hasCustomAssemblyFormat = 1;
 }
 
+def IluvatarMmaEncodingAttr : DistributedEncoding<"IluvatarMmaEncoding", "iluvatar_mma_encoding", [MmaEncodingTrait]> {
+  let mnemonic = "iluvatar_mma";
+
+  let description = [{
+An encoding for tensors that have been produced by tensor cores.
+
+}];
+
+  let parameters = (
+    ins
+    "unsigned":$versionMajor,
+    "unsigned":$versionMinor,
+    ArrayRefParameter<"unsigned">:$warpsPerCTA__,
+    "CTALayoutAttr":$CTALayout,
+    ArrayRefParameter<"unsigned">:$instrShape
+  );
+
+  // let builders = [];
+
+  let extraClassDeclaration = extraDistributedDeclaration # [{
+    bool isVolta() const;
+    unsigned getElemsPerThreadOfOperand(int opIdx, ArrayRef<int64_t> shape) const;
+
+    bool supportReduction() const {
+      return true;
+    };
+    SmallVector<unsigned> getSizePerThreadForOperands(unsigned opIdx) const;
+    SmallVector<unsigned> getShapePerCTATileForDotOperands(ArrayRef<int64_t> shape, int opIdx) const;
+    unsigned getTotalElemsPerThreadForOperands(ArrayRef<int64_t> shape, Type eltTy, int kWidth, int opIdx) const;
+
+    SmallVector<int> getTCUShapePerWarp(int bitwidth) const;
+    SmallVector<unsigned> getTCUShapePerCTA(int bitwidth) const;
+    SmallVector<int> getTCURep(ArrayRef<int64_t> shape, int bitwidth, int opIdx) const;
+
+    SmallVector<unsigned> getContigPerThread() {
+      assert(isVolta());
+      auto rank = getWarpsPerCTA().size();
+      SmallVector<unsigned> contigPerThread(rank, 1);
+      if (isVolta() && getVersionMinor() == 1) {
+        contigPerThread[rank - 1] = 2;
+      }
+      return contigPerThread;
+    };
+  }];
+
+  let hasCustomAssemblyFormat = 1;
+}
+
 def SliceEncodingAttr : DistributedEncoding<"SliceEncoding", "slice_encoding"> {
   let mnemonic = "slice";
 
@@ -1232,7 +1328,8 @@ def SliceEncodingAttr : DistributedEncoding<"SliceEncoding", "slice_encoding"> {
     ins
     "unsigned":$dim,
     // TODO: constraint here to only take distributed encodings
-    "Attribute":$parent
+    "Attribute":$parent,
+    DefaultValuedParameter<"bool", "false">:$noWarpReduce
   );
 
   let extraClassDeclaration = extraDistributedDeclaration # [{
@@ -1272,20 +1369,32 @@ elements along the K dim, or they use all elements of the tensor along the K dim
     ins
     "unsigned":$opIdx,
     "Attribute":$parent,
-    DefaultValuedParameter<"unsigned", "0">:$kWidth
+    DefaultValuedParameter<"unsigned", "0">:$kWidth,
+    "unsigned":$useSme
   );
 
   let builders = [
-        // Specially for MMAV1(Volta)
+    // Specially for MMAV1(Volta)
     AttrBuilder<(ins "unsigned":$opIdx,
                      "Attribute":$parent,
                      "Type":$eltTy), [{
       NvidiaMmaEncodingAttr parentAttr = mlir::dyn_cast<NvidiaMmaEncodingAttr>(parent);
       if (!parentAttr || !parentAttr.isAmpere())
-        return $_get(context, opIdx, parent, 0);
+        return $_get(context, opIdx, parent, 0, 0);
       unsigned bitwidth = eltTy.getIntOrFloatBitWidth();
       unsigned MMAv2kWidth = 32 / bitwidth;
-      return $_get(context, opIdx, parent, MMAv2kWidth);
+      return $_get(context, opIdx, parent, MMAv2kWidth, 0);
+    }]>,
+
+    // Specially for MR/BI150
+    AttrBuilder<(ins "unsigned":$opIdx,
+                     "Attribute":$parent,
+                     "Type":$eltTy,
+                     "unsigned":$useSme), [{
+      IluvatarMmaEncodingAttr parentAttr = mlir::dyn_cast<IluvatarMmaEncodingAttr>(parent);
+      unsigned bitwidth = eltTy.getIntOrFloatBitWidth();
+      unsigned kWidth = 32 / bitwidth;
+      return $_get(context, opIdx, parent, kWidth, useSme);
     }]>
   ];
 

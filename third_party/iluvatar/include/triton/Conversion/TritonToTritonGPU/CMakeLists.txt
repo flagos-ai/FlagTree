@@ -1,3 +1,7 @@
 set(LLVM_TARGET_DEFINITIONS Passes.td)
+set(BACKEND_SPEC_TD ${BACKEND_SPEC_INCLUDE_DIR}/triton/Conversion/TritonToTritonGPU/Passes.td)
+if(EXISTS ${BACKEND_SPEC_TD})
+  set(LLVM_TARGET_DEFINITIONS ${BACKEND_SPEC_TD})
+endif()
 mlir_tablegen(Passes.h.inc -gen-pass-decls --name TritonToTritonGPU)
 add_public_tablegen_target(TritonConversionPassIncGen)

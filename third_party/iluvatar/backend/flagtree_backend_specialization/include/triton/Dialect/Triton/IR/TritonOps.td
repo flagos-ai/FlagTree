@@ -227,16 +227,18 @@ def TT_AdvanceOp : TT_Op<"advance",
 // Load/Store Ops
 //
 def TT_LoadOp : TT_Op<"load", [
-  SameLoadStoreOperandsAndResultShape,
-  SameLoadStoreOperandsAndResultEncoding,
+  // SameLoadStoreOperandsAndResultShape,
+  // SameLoadStoreOperandsAndResultEncoding,
   AttrSizedOperandSegments,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
   DeclareOpInterfaceMethods<InferTypeOpInterface>,
   TypesMatchWith<"result matches ptr type", "ptr", "result", "getPointeeType($_self)">,
   TypesMatchWith<"mask type matches ptr type", "ptr", "mask", "getI1SameShape(getPointeeType($_self))",
-                 "($_op.getOperands().size() <= 1) || std::equal_to<>()">,
+                //  "($_op.getOperands().size() <= 1) || std::equal_to<>()">,
+                "($_op.getOperands().size() != 2) || std::equal_to<>()">,
   TypesMatchWith<"other matches ptr type", "ptr", "other", "getPointeeType($_self)",
-                 "($_op.getOperands().size() <= 2) || std::equal_to<>()">
+                //  "($_op.getOperands().size() <= 2) || std::equal_to<>()">
+                "($_op.getOperands().size() != 3) || std::equal_to<>()">
 ]> {
     let summary = "Load from a tensor of pointers or from a tensor pointer";
 
@@ -250,7 +252,9 @@ def TT_LoadOp : TT_Op<"load", [
       OptionalAttr<TT_PaddingOptionAttr>:$padding,
       DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
       DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict,
-      DefaultValuedAttr<BoolAttr, "false">:$isVolatile
+      DefaultValuedAttr<BoolAttr, "false">:$isVolatile,
+      Optional<TT_IntLike>:$inputStride,
+      Optional<TT_IntLike>:$placeHolder0, Optional<TT_IntLike>:$placeHolder1
     );
 
     let results = (outs TT_Type:$result);
@@ -276,27 +280,28 @@ def TT_LoadOp : TT_Op<"load", [
                        "triton::EvictionPolicy":$evict, "bool":$isVolatile)>
     ];
 
-    // Specify `cacheModifier` and `evictionPolicy` explicitly in the
-    // assemblyFormat instead of as part of attr-dict so that they get printed
-    // as strings rather than opaque integers.
-    //
-    // Note there's no comma between `other` and `cacheModifier` and between
-    // `cacheModifier` and `evictionPolicy`.  This is due to an apparent
-    // limitation in the MLIR custom-format parser.  In oilist, the initial
-    // keywords of each clause have to be unique, so they can't be `,`.
-    //
-    // Even if we gave up on order-independence and used vanilla optional
-    // clauses, the format (`,` `foo` `=` $foo^)? (`,` `bar` `=` $bar^)?  will
-    // not match the string ", bar = 0" because after the initial comma (first
-    // token of the first optional clause) we expect to see "foo".
-    let assemblyFormat = [{
-      $ptr (`,` $mask^)? (`,` $other^)?
-      oilist(
-        `cacheModifier` `=` $cache |
-        `evictionPolicy` `=` $evict
-      )
-      attr-dict `:` type($ptr)
-    }];
+    // // Specify `cacheModifier` and `evictionPolicy` explicitly in the
+    // // assemblyFormat instead of as part of attr-dict so that they get printed
+    // // as strings rather than opaque integers.
+
+    // // Note there's no comma between `other` and `cacheModifier` and between
+    // // `cacheModifier` and `evictionPolicy`.  This is due to an apparent
+    // // limitation in the MLIR custom-format parser.  In oilist, the initial
+    // // keywords of each clause have to be unique, so they can't be `,`.
+
+    // // Even if we gave up on order-independence and used vanilla optional
+    // // clauses, the format (`,` `foo` `=` $foo^)? (`,` `bar` `=` $bar^)?  will
+    // // not match the string ", bar = 0" because after the initial comma (first
+    // // token of the first optional clause) we expect to see "foo".
+    // let assemblyFormat = [{
+    //   $ptr (`,` $mask^)? (`,` $other^)?
+    //   oilist(
+    //     `cacheModifier` `=` $cache |
+    //     `evictionPolicy` `=` $evict
+    //   )
+    //   attr-dict `:` type($ptr)
+    // }];
+    let hasCustomAssemblyFormat = 1;
 
     let hasCanonicalizer = 1;
 }
@@ -667,11 +672,11 @@ def TT_ReduceOp: TT_Op<"reduce",
                         SingleBlock,
                         DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
     let summary = "Reduction using generic combination algorithm";
-    let arguments = (ins Variadic<TT_Tensor>:$srcs, I32Attr:$axis);
+    let arguments = (ins Variadic<TT_Tensor>:$srcs, I32Attr:$axis, BoolAttr:$noWarpReduce);
     let results = (outs Variadic<TT_Type>:$result);
     let regions = (region SizedRegion<1>:$combineOp);
     let builders = [
-        OpBuilder<(ins "ValueRange":$srcs, "int":$axis)>,
+        OpBuilder<(ins "ValueRange":$srcs, "int":$axis, "bool":$noWarpReduce)>,
     ];
     let hasVerifier = 1;
     let hasRegionVerifier = 1;

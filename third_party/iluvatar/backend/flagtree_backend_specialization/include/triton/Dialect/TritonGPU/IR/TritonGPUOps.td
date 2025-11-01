@@ -75,12 +75,29 @@ def TTG_AsyncCommitGroupOp : TTG_Op<"async_commit_group"> {
 def TTG_AsyncCopyGlobalToLocalOp : TTG_Op<"async_copy_global_to_local", [
   AttrSizedOperandSegments,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+
+  // Possible operand compositions, sorted by number of operands:
+  //   [src, result]
+  //   [src, result, mask]
+  //   [src, result, mask, other]
+  //   [src, result, inputStride, placeHolder0, placeHolder1]
+  //   [src, result, mask, inputStride, placeHolder0, placeHolder1]
+  //   [src, result, mask, other, inputStride, placeHolder0, placeHolder1]
   TypesMatchWith<"infer mask type from src type",
-                 "src", "mask", "getI1SameShape($_self)",
-                 "($_op.getOperands().size() <= 3) || std::equal_to<>()">,
+                "src", "mask", "getI1SameShape($_self)",
+                "($_op.getOperands().size() <= 2 || $_op.getOperands().size() == 5) || std::equal_to<>()">,
   TypesMatchWith<"infer other type from src type",
                  "src", "other", "getPointeeType($_self)",
-                 "($_op.getOperands().size() <= 4) || std::equal_to<>()">
+                "($_op.getOperands().size() != 4 && $_op.getOperands().size() != 7) || std::equal_to<>()">,
+  TypesMatchWith<"inputStride type is i32 or i64 when operand count >=5",
+                "src", "inputStride", "getI32Type($_self)",
+                "($_op.getOperands().size() <= 4 || $inputStride.getType().isInteger(64)) || std::equal_to<>()">,
+  TypesMatchWith<"placeHolder0 type is i32 or i64 when operand count >=5",
+                "src", "placeHolder0", "getI32Type($_self)",
+                "($_op.getOperands().size() <= 4 || $placeHolder0.getType().isInteger(64)) || std::equal_to<>()">,
+  TypesMatchWith<"placeHolder1 type is i32 or i64 when operand count >=5",
+                "src", "placeHolder1", "getI32Type($_self)",
+                "($_op.getOperands().size() <= 4 || $placeHolder1.getType().isInteger(64)) || std::equal_to<>()">,
 ]> {
   let summary = "copy data from global memory to local memory asynchronously";
 
@@ -92,13 +109,14 @@ def TTG_AsyncCopyGlobalToLocalOp : TTG_Op<"async_copy_global_to_local", [
   }];
 
   let arguments = (
-    ins TT_PtrTensor:$src,
+    ins TT_Tensor:$src,
     TT_MemDescType:$result,
     Optional<I1Tensor>:$mask,
     Optional<TT_Type>:$other,
     DefaultValuedAttr<TT_CacheModifierAttr, "triton::CacheModifier::NONE">:$cache,
     DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict,
-    DefaultValuedAttr<BoolAttr, "false">:$isVolatile
+    DefaultValuedAttr<BoolAttr, "false">:$isVolatile,
+    Optional<TT_Type>:$inputStride, Optional<TT_Type>:$placeHolder0, Optional<TT_Type>:$placeHolder1
   );
 
   let builders = [
@@ -117,6 +135,9 @@ def TTG_AsyncCopyGlobalToLocalOp : TTG_Op<"async_copy_global_to_local", [
       }
       return validLoadBytes;
     }
+    static Type getI32Type(Type srcType) {
+      return IntegerType::get(srcType.getContext(), 32);
+    }
   }];
 
   // Specify cacheModifier and evictionPolicy explicitly, instead of leaving
@@ -125,11 +146,14 @@ def TTG_AsyncCopyGlobalToLocalOp : TTG_Op<"async_copy_global_to_local", [
   //
   // Note there are no commas between other, cacheModifier, and evictionPolicy,
   // due to limitations in MLIR's asm parser.
-  let assemblyFormat = [{
-    $src `,` $result (`mask` $mask^)? (`other` $other^)?
-    oilist(`cacheModifier` `=` $cache | `evictionPolicy` `=` $evict)
-    attr-dict `:` type($src) `->` type($result)
-  }];
+    let assemblyFormat = [{
+     $src `,` $result (`mask` $mask^)? (`other` $other^)?
+     (`inputStride` $inputStride^)? (`placeHolder0` $placeHolder0^)? (`placeHolder1` $placeHolder1^)?
+     oilist(`cacheModifier` `=` $cache | `evictionPolicy` `=` $evict)
+     attr-dict `:` type($src) `->` type($result)
+    }];
+
+  //let hasCustomAssemblyFormat = 1;
 }
 
 

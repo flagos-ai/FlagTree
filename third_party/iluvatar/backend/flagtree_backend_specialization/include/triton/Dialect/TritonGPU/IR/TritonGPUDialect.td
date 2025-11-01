@@ -44,6 +44,15 @@ def TritonGPU_Dialect : Dialect {
       }
       return cast<IntegerAttr>(threadsPerWarp).getInt();
     }
+
+#ifdef __ILUVATAR__
+    static int getDotNumStages(ModuleOp mod) {
+      if(!mod->hasAttr("triton_gpu.dot.num-stages"))
+        llvm::report_fatal_error(
+            "TritonGPU module should contain a triton_gpu.dot.num-stages attribute");
+      return mod->getAttrOfType<IntegerAttr>("triton_gpu.dot.num-stages").getInt();
+    }
+#endif
   }];
 
   let useDefaultTypePrinterParser = 1;

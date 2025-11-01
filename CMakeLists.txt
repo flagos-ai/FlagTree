@@ -86,12 +86,19 @@ if(NOT WIN32)
 endif()
 
 # Compiler flags
+## flagtree spec include dir
+set(BACKEND_SPEC_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/backend/flagtree_backend_specialization/include)
+if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_SPEC_INCLUDE_DIR})
+  include_directories(${BACKEND_SPEC_INCLUDE_DIR})
+endif()
+## flagtree third_party include dir
 set(BACKEND_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/include)
 if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
   include_directories(${BACKEND_INCLUDE_DIR})
 else()
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
+## CMAKE_CXX_FLAGS
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -D__STDC_FORMAT_MACROS  -fPIC -std=gnu++17")
 
 if(FLAGTREE_BACKEND STREQUAL "metax")
@@ -176,8 +183,6 @@ else()
 endif()
 include_directories(${PROJECT_SOURCE_DIR}/third_party)
 include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
-# flagtree spec include dir
-include_directories(${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/backend/flagtree_backend_specialization/include)
 
 # link_directories(${LLVM_LIBRARY_DIR})
 if(NOT FLAGTREE_BACKEND)
