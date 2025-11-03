@@ -261,7 +261,8 @@ private:
 };
 
 namespace triton {
-  void AllocationAnalysis_dump(llvm::MapVector<Allocation::BufferT *, Interval<size_t>> bufferRange);
+void AllocationAnalysis_dump(
+    llvm::MapVector<Allocation::BufferT *, Interval<size_t>> bufferRange);
 } // namespace triton
 
 } // namespace mlir

@@ -1092,12 +1092,12 @@ createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
         return lhs.distToUse < rhs.distToUse;
       })->distToUse;
 #else
-  int numBuffers =
-      std::max_element(
-          llvm::make_second_range(loadToInfo).begin(),
-          llvm::make_second_range(loadToInfo).end(),
-          [](auto &lhs, auto &rhs) { return lhs.distToUse < rhs.distToUse; })
-          ->distToUse;
+  int numBuffers = std::max_element(llvm::make_second_range(loadToInfo).begin(),
+                                    llvm::make_second_range(loadToInfo).end(),
+                                    [](auto &lhs, auto &rhs) {
+                                      return lhs.distToUse < rhs.distToUse;
+                                    })
+                       ->distToUse;
   numBuffers++;
 #endif
   bool hasMMAV3 =

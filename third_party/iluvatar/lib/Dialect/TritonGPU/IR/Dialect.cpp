@@ -465,13 +465,12 @@ BlockedEncodingAttr::verify(function_ref<InFlightDiagnostic()> emitError,
                             ArrayRef<unsigned> warpsPerCTA,
                             ArrayRef<unsigned> order, CTALayoutAttr CTALayout) {
 #else
-LogicalResult 
-BlockedEncodingAttr::verify(function_ref<InFlightDiagnostic()> emitError,
-                            ArrayRef<unsigned> sizePerThread,
-                            ArrayRef<unsigned> threadsPerWarp,
-                            ArrayRef<unsigned> warpsPerCTA,
-                            ArrayRef<unsigned> order, CTALayoutAttr CTALayout,
-                            unsigned loadType, ArrayRef<unsigned> smeWarpsPerCTA) {
+LogicalResult BlockedEncodingAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError,
+    ArrayRef<unsigned> sizePerThread, ArrayRef<unsigned> threadsPerWarp,
+    ArrayRef<unsigned> warpsPerCTA, ArrayRef<unsigned> order,
+    CTALayoutAttr CTALayout, unsigned loadType,
+    ArrayRef<unsigned> smeWarpsPerCTA) {
 #endif
   if (sizePerThread.size() != threadsPerWarp.size() ||
       threadsPerWarp.size() != warpsPerCTA.size() ||
@@ -1231,10 +1230,9 @@ Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
                                                 sizePerThread, threadsPerWarp,
                                                 warpsPerCTA, order, *CTALayout);
 #else
-  return parser.getChecked<BlockedEncodingAttr>(parser.getContext(),
-                                                sizePerThread, threadsPerWarp,
-                                                warpsPerCTA, order, *CTALayout,
-                                                loadType, smeWarpsPerCTA);
+  return parser.getChecked<BlockedEncodingAttr>(
+      parser.getContext(), sizePerThread, threadsPerWarp, warpsPerCTA, order,
+      *CTALayout, loadType, smeWarpsPerCTA);
 #endif
 }
 
@@ -1684,9 +1682,9 @@ Attribute SharedEncodingAttr::parse(AsmParser &parser, Type type) {
                                                perPhase, maxPhase, order,
                                                *CTALayout, hasLeadingOffset);
 #else
-  return parser.getChecked<SharedEncodingAttr>(parser.getContext(), vec,
-                                               perPhase, maxPhase, order,
-                                               *CTALayout, hasLeadingOffset, useTcu);
+  return parser.getChecked<SharedEncodingAttr>(
+      parser.getContext(), vec, perPhase, maxPhase, order, *CTALayout,
+      hasLeadingOffset, useTcu);
 #endif
 }
 
@@ -2442,10 +2440,11 @@ struct TritonGPUInferLayoutInterface
   using DialectInferLayoutInterface::DialectInferLayoutInterface;
 
 #ifdef FLAGTREE_SPEC_Dialect_Triton_IR_Dialect_inferReduceOpEncoding_ARG
-  LogicalResult
-  inferReduceOpEncoding(Attribute operandEncoding, unsigned axis,
-                        FLAGTREE_SPEC_Dialect_Triton_IR_Dialect_inferReduceOpEncoding_ARG spec_arg,
-                        Attribute &resultEncoding) const override {
+  LogicalResult inferReduceOpEncoding(
+      Attribute operandEncoding, unsigned axis,
+      FLAGTREE_SPEC_Dialect_Triton_IR_Dialect_inferReduceOpEncoding_ARG
+          spec_arg,
+      Attribute &resultEncoding) const override {
     resultEncoding = SliceEncodingAttr::get(getDialect()->getContext(), axis,
                                             operandEncoding, spec_arg);
     return success();
@@ -2933,11 +2932,11 @@ struct TritonGPUInferLayoutInterface
       return ret;
     };
     dstEnc = BlockedEncodingAttr::get(
-        enc.getContext(),                    //
-        append(enc.getSizePerThread(), 2),   //
-        append(enc.getThreadsPerWarp(), 1),  //
-        append(enc.getWarpsPerCTA(), 1),     //
-        appendMinorDim(enc.getOrder()),      //
+        enc.getContext(),                   //
+        append(enc.getSizePerThread(), 2),  //
+        append(enc.getThreadsPerWarp(), 1), //
+        append(enc.getWarpsPerCTA(), 1),    //
+        appendMinorDim(enc.getOrder()),     //
 #ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_TritonGPUInferLayoutInterface_inferJoinOpEncoding
         CTALayoutAttr::get(enc.getContext(), //
                            append(enc.getCTAsPerCGA(), 1),
@@ -2948,8 +2947,8 @@ struct TritonGPUInferLayoutInterface
                            append(enc.getCTAsPerCGA(), 1),
                            append(enc.getCTASplitNum(), 1),
                            appendMinorDim(enc.getCTAOrder())),
-                           enc.getLoadType(), //
-                           enc.getSmeWarpsPerCTA());
+        enc.getLoadType(), //
+        enc.getSmeWarpsPerCTA());
 #endif
     return success();
   }
@@ -3004,7 +3003,7 @@ struct TritonGPUInferLayoutInterface
                            ArrayRef(enc.getCTAsPerCGA()).drop_back(1),
                            ArrayRef(enc.getCTASplitNum()).drop_back(1),
                            ArrayRef(enc.getCTAOrder()).drop_front(1)),
-                           enc.getLoadType(), enc.getSmeWarpsPerCTA());
+        enc.getLoadType(), enc.getSmeWarpsPerCTA());
 #endif
     return success();
   }

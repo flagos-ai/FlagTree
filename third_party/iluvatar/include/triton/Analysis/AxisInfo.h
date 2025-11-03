@@ -140,10 +140,10 @@ public:
 
 #ifdef FLAGTREE_SPEC_AxisInfo_initPessimisticStateFromFunc_ARG
   template <class T>
-  static void
-  initPessimisticStateFromFunc(int argNumber, T funcOp, DimVectorT *contiguity,
-                               DimVectorT *divisibility, DimVectorT *constancy,
-                               FLAGTREE_SPEC_AxisInfo_initPessimisticStateFromFunc_ARG spec_arg);
+  static void initPessimisticStateFromFunc(
+      int argNumber, T funcOp, DimVectorT *contiguity, DimVectorT *divisibility,
+      DimVectorT *constancy,
+      FLAGTREE_SPEC_AxisInfo_initPessimisticStateFromFunc_ARG spec_arg);
 #else
   template <class T>
   static void

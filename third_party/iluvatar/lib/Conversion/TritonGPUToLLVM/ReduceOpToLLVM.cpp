@@ -347,8 +347,8 @@ private:
         acc[i] = targetInfo.loadShared(rewriter, loc, getTypeConverter(),
                                        readPtr, elemTy, threadIsNeeded);
 #else
-        acc[i] = targetInfo.loadShared(rewriter, loc,
-                                       readPtr, elemTy, threadIsNeeded);
+        acc[i] = targetInfo.loadShared(rewriter, loc, readPtr, elemTy,
+                                       threadIsNeeded);
 #endif
       }
       warpReduce(rewriter, loc, acc, op, sizeInterWarps, 1 /* interleave */);

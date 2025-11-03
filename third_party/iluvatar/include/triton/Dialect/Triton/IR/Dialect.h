@@ -39,9 +39,11 @@ public:
                        Attribute &resultEncoding) const = 0;
 
 #ifdef FLAGTREE_SPEC_Dialect_Triton_IR_Dialect_inferReduceOpEncoding_ARG
-  virtual LogicalResult
-  inferReduceOpEncoding(Attribute operandEncoding, unsigned axis,
-                        FLAGTREE_SPEC_Dialect_Triton_IR_Dialect_inferReduceOpEncoding_ARG spec_arg, Attribute &resultEncoding) const = 0;
+  virtual LogicalResult inferReduceOpEncoding(
+      Attribute operandEncoding, unsigned axis,
+      FLAGTREE_SPEC_Dialect_Triton_IR_Dialect_inferReduceOpEncoding_ARG
+          spec_arg,
+      Attribute &resultEncoding) const = 0;
 #else
   virtual LogicalResult
   inferReduceOpEncoding(Attribute operandEncoding, unsigned axis,

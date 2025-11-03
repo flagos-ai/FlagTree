@@ -419,14 +419,14 @@ scf::ForOp Prefetcher::createNewForOp() {
                              dotEncoding, builder, kOff, kShape);
 #else
         Attribute dotOperandEncodingA = dot.getA().getType().getEncoding();
-        Value aRem =
-            generatePrefetch(mapping.lookup(dot2aLoopArg[dot]), 0, false,
-                             dotEncoding, builder, dotOperandEncodingA, kOff, kShape);
+        Value aRem = generatePrefetch(mapping.lookup(dot2aLoopArg[dot]), 0,
+                                      false, dotEncoding, builder,
+                                      dotOperandEncodingA, kOff, kShape);
         cloneElementwiseOps(aRem, dot2aVals[dot], builder);
         Attribute dotOperandEncodingB = dot.getB().getType().getEncoding();
-        Value bRem =
-            generatePrefetch(mapping.lookup(dot2bLoopArg[dot]), 1, false,
-                             dotEncoding, builder, dotOperandEncodingB, kOff, kShape);
+        Value bRem = generatePrefetch(mapping.lookup(dot2bLoopArg[dot]), 1,
+                                      false, dotEncoding, builder,
+                                      dotOperandEncodingB, kOff, kShape);
 #endif
         cloneElementwiseOps(bRem, dot2bVals[dot], builder);
         builder.restoreInsertionPoint(insertionPoint);
@@ -460,14 +460,16 @@ scf::ForOp Prefetcher::createNewForOp() {
                                       dotEncoding, builder);
 #else
     Attribute dotOperandEncodingA = dot.getA().getType().getEncoding();
-    Value aToYield = generatePrefetch(mapping.lookup(dot2aYield[dot]), 0, true,
-                                      dotEncoding, builder, dotOperandEncodingA);
+    Value aToYield =
+        generatePrefetch(mapping.lookup(dot2aYield[dot]), 0, true, dotEncoding,
+                         builder, dotOperandEncodingA);
     cloneElementwiseOps(aToYield, dot2aVals[dot], builder);
     yieldValues.push_back(aToYield);
     // bToYield
     Attribute dotOperandEncodingB = dot.getB().getType().getEncoding();
-    Value bToYield = generatePrefetch(mapping.lookup(dot2bYield[dot]), 1, true,
-                                      dotEncoding, builder, dotOperandEncodingB);
+    Value bToYield =
+        generatePrefetch(mapping.lookup(dot2bYield[dot]), 1, true, dotEncoding,
+                         builder, dotOperandEncodingB);
 #endif
     cloneElementwiseOps(bToYield, dot2bVals[dot], builder);
     yieldValues.push_back(bToYield);

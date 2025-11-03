@@ -188,4 +188,4 @@ bool isMmaToDotShortcut(RankedTensorType srcTy, RankedTensorType dstTy) {
          !srcTy.getElementType().isF32();
 }
 
-}
+} // namespace mlir

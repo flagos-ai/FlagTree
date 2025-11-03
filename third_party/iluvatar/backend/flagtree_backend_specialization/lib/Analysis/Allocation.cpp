@@ -143,12 +143,14 @@ getScratchConfigForCvtLayout(triton::gpu::ConvertLayoutOp op, unsigned &inVec,
 unsigned getScratchValueSizeElems(const SmallVector<unsigned> &smemShape) {
   if (smemShape.empty())
     return 0;
-  return std::accumulate(smemShape.begin(), smemShape.end(), 1u, std::multiplies<>());
+  return std::accumulate(smemShape.begin(), smemShape.end(), 1u,
+                         std::multiplies<>());
 }
 
-void AllocationAnalysis_dump(llvm::MapVector<Allocation::BufferT *, Interval<size_t>> bufferRange) {
+void AllocationAnalysis_dump(
+    llvm::MapVector<Allocation::BufferT *, Interval<size_t>> bufferRange) {
   llvm::outs() << "DUMP: "
-                << "\n";
+               << "\n";
   for (auto bufferIter : bufferRange) {
     llvm::outs() << "ID= " << bufferIter.first->id << "\n";
     if (bufferIter.first->kind == Allocation::BufferT::BufferKind::Explicit)
@@ -160,9 +162,9 @@ void AllocationAnalysis_dump(llvm::MapVector<Allocation::BufferT *, Interval<siz
     llvm::outs() << "     Size= " << bufferIter.first->size << "\n";
     llvm::outs() << "     Offs= " << bufferIter.first->offset << "\n";
     llvm::outs() << "     Interval= [" << bufferIter.second.start() << ", "
-                  << bufferIter.second.end() << ")\n";
+                 << bufferIter.second.end() << ")\n";
   }
 }
 
-}
-}
+} // namespace triton
+} // namespace mlir

@@ -9,9 +9,9 @@
 #include <string>
 
 #ifdef FLAGTREE_SPEC_Tools_Sys_GetEnv_head
-#include <optional>
 #include <dlfcn.h>
 #include <filesystem>
+#include <optional>
 namespace fs = std::filesystem;
 #endif
 

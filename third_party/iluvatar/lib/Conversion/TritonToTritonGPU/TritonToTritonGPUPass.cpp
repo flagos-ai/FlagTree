@@ -858,11 +858,10 @@ public:
 
 #ifdef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_createConvertTritonToTritonGPUPass_ARG
 std::unique_ptr<OperationPass<ModuleOp>>
-mlir::triton::createConvertTritonToTritonGPUPass(const std::string &target,
-                                                 int numWarps,
-                                                 int threadsPerWarp,
-                                                 int numCTAs,
-                                                 FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_createConvertTritonToTritonGPUPass_ARG spec_arg) {
+mlir::triton::createConvertTritonToTritonGPUPass(
+    const std::string &target, int numWarps, int threadsPerWarp, int numCTAs,
+    FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_createConvertTritonToTritonGPUPass_ARG
+        spec_arg) {
   return std::make_unique<::ConvertTritonToTritonGPU>(
       target, numWarps, threadsPerWarp, numCTAs, spec_arg);
 }

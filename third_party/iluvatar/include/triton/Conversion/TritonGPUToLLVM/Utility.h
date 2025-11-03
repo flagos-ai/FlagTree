@@ -383,14 +383,14 @@ SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
                                      ArrayRef<unsigned> multiDimCTAInRepId,
                                      ArrayRef<unsigned> shapePerCTATile);
 #else
-SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
-                                     ConversionPatternRewriter &rewriter,
-                                     const TargetInfoBase &targetInfo,
-                                     unsigned elemId, RankedTensorType type,
-                                     ArrayRef<unsigned> multiDimCTAInRepId,
-                                     ArrayRef<unsigned> shapePerCTATile,
-                                     FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG spec_arg1 = false,
-                                     FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG spec_arg2 = false);
+SmallVector<Value> getMultiDimOffset(
+    Attribute layout, Location loc, ConversionPatternRewriter &rewriter,
+    const TargetInfoBase &targetInfo, unsigned elemId, RankedTensorType type,
+    ArrayRef<unsigned> multiDimCTAInRepId, ArrayRef<unsigned> shapePerCTATile,
+    FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG
+        spec_arg1 = false,
+    FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG
+        spec_arg2 = false);
 #endif
 
 // Given a multiDimOffset, this function wraps around each dimension to be
@@ -1683,11 +1683,12 @@ namespace SharedToDotOperandMMAv1 {
 using CoordTy = SmallVector<Value>;
 using ValueTable = std::map<std::pair<int, int>, std::pair<Value, Value>>;
 
-SmallVector<CoordTy>
-getMNCoords(Value thread, Location loc, ConversionPatternRewriter &rewriter,
-            ArrayRef<unsigned int> wpt, const NvidiaMmaEncodingAttr &mmaLayout,
-            ArrayRef<int64_t> shape, bool isARow, bool isBRow, bool isAVec4,
-            bool isBVec4);
+SmallVector<CoordTy> getMNCoords(Value thread, Location loc,
+                                 ConversionPatternRewriter &rewriter,
+                                 ArrayRef<unsigned int> wpt,
+                                 const NvidiaMmaEncodingAttr &mmaLayout,
+                                 ArrayRef<int64_t> shape, bool isARow,
+                                 bool isBRow, bool isAVec4, bool isBVec4);
 } // namespace SharedToDotOperandMMAv1
 
 #endif

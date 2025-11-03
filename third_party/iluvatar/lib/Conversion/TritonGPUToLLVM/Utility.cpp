@@ -9,11 +9,12 @@
 
 namespace SharedToDotOperandMMAv1 {
 
-SmallVector<CoordTy>
-getMNCoords(Value thread, Location loc, ConversionPatternRewriter &rewriter,
-            ArrayRef<unsigned int> wpt, const NvidiaMmaEncodingAttr &mmaLayout,
-            ArrayRef<int64_t> shape, bool isARow, bool isBRow, bool isAVec4,
-            bool isBVec4) {
+SmallVector<CoordTy> getMNCoords(Value thread, Location loc,
+                                 ConversionPatternRewriter &rewriter,
+                                 ArrayRef<unsigned int> wpt,
+                                 const NvidiaMmaEncodingAttr &mmaLayout,
+                                 ArrayRef<int64_t> shape, bool isARow,
+                                 bool isBRow, bool isAVec4, bool isBVec4) {
   static constexpr std::array<int, 3> fpw{{2, 2, 1}};
 
   auto *ctx = thread.getContext();
