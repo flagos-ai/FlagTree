@@ -30,6 +30,15 @@ SmallVector<Value> packI32(const SmallVector<Value> &inValues, Type srcTy,
 
 Type getElementType(Value value);
 
+#ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_maybeDeduplicate
+bool maybeDeduplicate_baseEncoding(Attribute baseEncoding);
+#endif
+
+#ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_matchAndRewrite
+void matchAndRewrite_elemTy(const mlir::TypeConverter *typeConverter,
+                            mlir::Type &elemTy, const mlir::Type &resultTy);
+#endif
+
 class MultipleOperandsRange
     : public iterator_range<SmallVector<SmallVector<Value>>::iterator> {
   using ContainerT = SmallVector<SmallVector<Value>>;
@@ -105,12 +114,7 @@ public:
       return resultVals;
     }
 #ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_maybeDeduplicate
-    if (isa<IluvatarMmaEncodingAttr, DotOperandEncodingAttr>(baseEncoding)) {
-      // TODO: this logic seems incorrect for mma layout. Skip for now.
-      // The following test crashes and some other miscompile:
-      // test_core::test_fp8_dot_acc
-      return resultVals;
-    }
+    if (maybeDeduplicate_baseEncoding(baseEncoding)) return resultVals;
 #endif
 
     SmallVector<unsigned> elemsPerThread = getElemsPerThread(rtType);
@@ -193,9 +197,7 @@ public:
     auto resultElementTy = getElementTypeOrSelf(resultTy);
     Type elemTy = this->getTypeConverter()->convertType(resultElementTy);
 #ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_matchAndRewrite
-    auto srcType = this->getTypeConverter()->convertType(resultTy);
-    if (auto structTy = dyn_cast<LLVM::LLVMStructType>(srcType))
-      elemTy = structTy.getBody()[0];
+    matchAndRewrite_elemTy(this->getTypeConverter(), elemTy, resultTy);
 #endif
     SmallVector<SmallVector<Value>> allOperands;
     for (auto operand : adaptor.getOperands()) {
