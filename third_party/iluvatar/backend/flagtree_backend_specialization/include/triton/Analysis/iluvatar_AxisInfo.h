@@ -2,8 +2,8 @@
 #define ILUVATAR_TRITON_ANALYSIS_AXISINFO_H
 
 #include "mlir/Analysis/DataFlow/SparseAnalysis.h"
-#include "llvm/Support/raw_ostream.h"
 #include "mlir/Support/LLVM.h"
+#include "llvm/Support/raw_ostream.h"
 
 #define FLAGTREE_SPEC_AxisInfo_CorexFlag
 #define FLAGTREE_SPEC_AxisInfo_class

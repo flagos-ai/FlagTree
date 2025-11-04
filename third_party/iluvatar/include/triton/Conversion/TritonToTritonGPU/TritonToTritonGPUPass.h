@@ -36,7 +36,9 @@ createConvertTritonToTritonGPUPass(const std::string &target, int numWarps,
 #endif
 
 #ifdef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_ConvertTritonToTritonGPU_setAttrNumStagesForDot
-void ConvertTritonToTritonGPU_setAttrNumStagesForDot(ModuleOp& mod, IntegerType i32_ty, int numStages);
+void ConvertTritonToTritonGPU_setAttrNumStagesForDot(ModuleOp &mod,
+                                                     IntegerType i32_ty,
+                                                     int numStages);
 #endif
 
 } // namespace triton

@@ -14,10 +14,10 @@
 
 namespace mlir {
 
-SetVector<Operation *>
-multiRootGetSlice(Operation *op, TransitiveFilter backwardFilter = nullptr,
-                  TransitiveFilter forwardFilter = nullptr,
-                  FLAGTREE_SPEC_Utility_multiRootGetSlice_ARG omitBlockArguments = true);
+SetVector<Operation *> multiRootGetSlice(
+    Operation *op, TransitiveFilter backwardFilter = nullptr,
+    TransitiveFilter forwardFilter = nullptr,
+    FLAGTREE_SPEC_Utility_multiRootGetSlice_ARG omitBlockArguments = true);
 
 } // namespace mlir
 

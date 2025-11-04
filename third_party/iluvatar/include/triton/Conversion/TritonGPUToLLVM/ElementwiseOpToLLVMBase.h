@@ -114,7 +114,8 @@ public:
       return resultVals;
     }
 #ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_maybeDeduplicate
-    if (maybeDeduplicate_baseEncoding(baseEncoding)) return resultVals;
+    if (maybeDeduplicate_baseEncoding(baseEncoding))
+      return resultVals;
 #endif
 
     SmallVector<unsigned> elemsPerThread = getElemsPerThread(rtType);
