@@ -31,7 +31,9 @@ getScratchConfigForCvtLayout(triton::gpu::ConvertLayoutOp op, unsigned &inVec,
                              unsigned &outVec);
 SmallVector<unsigned> getRepShapeForCvtLayout(triton::gpu::ConvertLayoutOp op);
 
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_AllocationAnalysis_getScratchValueSize
 unsigned getScratchValueSizeElems(const SmallVector<unsigned> &smemShape);
+#endif
 
 } // namespace triton
 
@@ -185,9 +187,11 @@ private:
   /// BufferId -> Buffer
   using BufferSetT = std::map<BufferId, BufferT>;
 
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_AllocationAnalysis_dump
 public:
   friend class AllocationAnalysis;
   static void dump(llvm::MapVector<BufferT *, Interval<size_t>> bufferRange);
+#endif
 
 private:
   template <BufferT::BufferKind Kind, typename KeyType, typename... Args>
