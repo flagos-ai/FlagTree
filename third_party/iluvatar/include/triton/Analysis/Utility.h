@@ -216,14 +216,18 @@ bool shouldUseDistSmem(Attribute srcLayout, Attribute dstLayout);
 SetVector<Operation *>
 multiRootTopologicalSort(const SetVector<Operation *> &toSort);
 
-#ifdef FLAGTREE_SPEC_Utility_Function
+#ifdef FLAGTREE_SPEC_Utility_isMmaToDotSlowShortcut
 bool isMmaToDotSlowShortcut(RankedTensorType &srcTy, RankedTensorType &dstTy);
+#endif
 
+#ifdef FLAGTREE_SPEC_Utility_getBackwardSliceCorex
 /// This function dones't use assertion check.
 void getBackwardSliceCorex(Operation *op, SetVector<Operation *> *backwardSlice,
                            TransitiveFilter filter = nullptr,
                            bool omitBlockArguments = false);
+#endif
 
+#ifdef FLAGTREE_SPEC_Utility_getBackwardSliceImplCorex
 void getBackwardSliceImplCorex(Operation *op,
                                SetVector<Operation *> *backwardSlice,
                                TransitiveFilter filter,

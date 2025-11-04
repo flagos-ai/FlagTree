@@ -5,7 +5,9 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Support/LLVM.h"
 
-#define FLAGTREE_SPEC_Utility_Function
+#define FLAGTREE_SPEC_Utility_isMmaToDotSlowShortcut
+#define FLAGTREE_SPEC_Utility_getBackwardSliceCorex
+#define FLAGTREE_SPEC_Utility_getBackwardSliceImplCorex
 #define FLAGTREE_SPEC_Utility_multiRootGetSlice_ARG bool
 #define FLAGTREE_SPEC_Analysis_Utility_maybeSharedAllocationOp
 #define FLAGTREE_SPEC_Analysis_Utility_supportMMA
