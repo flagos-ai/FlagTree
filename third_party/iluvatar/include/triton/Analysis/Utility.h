@@ -195,6 +195,7 @@ bool isMfmaToDotShortcut(RankedTensorType &srcTy, RankedTensorType &dstTy);
 bool isMmaToDotShortcut(RankedTensorType srcTy, RankedTensorType dstTy);
 
 bool isMmaToMmaShortcut(RankedTensorType srcTy, RankedTensorType dstTy);
+
 #ifdef FLAGTREE_SPEC_Analysis_Utility_isMmaToMmaShortcut
 bool isMmaToMmaShortcut(Attribute srcEncoding, Attribute dstEncoding);
 #endif
@@ -231,12 +232,7 @@ void getBackwardSliceImplCorex(Operation *op,
 #endif
 
 /// This uses the toplogicalSort above
-#ifdef FLAGTREE_SPEC_Utility_multiRootGetSlice_ARG
-SetVector<Operation *>
-multiRootGetSlice(Operation *op, TransitiveFilter backwardFilter = nullptr,
-                  TransitiveFilter forwardFilter = nullptr,
-                  FLAGTREE_SPEC_Utility_multiRootGetSlice_ARG spec_arg = true);
-#else
+#ifndef FLAGTREE_SPEC_Utility_multiRootGetSlice_ARG
 SetVector<Operation *>
 multiRootGetSlice(Operation *op, TransitiveFilter backwardFilter = nullptr,
                   TransitiveFilter forwardFilter = nullptr);

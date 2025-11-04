@@ -9,6 +9,9 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __NVIDIA__
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#endif
 #include <atomic>
 #include <limits>
 
