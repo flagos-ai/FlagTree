@@ -21,8 +21,10 @@ namespace mlir {
 
 namespace triton {
 
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_getCvtOrder
 std::pair<SmallVector<unsigned>, SmallVector<unsigned>>
 getCvtOrder(Attribute srcLayout, Attribute dstLayout);
+#endif
 
 class AllocationAnalysis;
 

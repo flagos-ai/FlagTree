@@ -40,7 +40,11 @@ namespace triton {
 // Bitwidth of pointers
 constexpr int kPtrBitWidth = 64;
 
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_getCvtOrder
 std::pair<SmallVector<unsigned>, SmallVector<unsigned>>
+#else
+static std::pair<SmallVector<unsigned>, SmallVector<unsigned>>
+#endif
 getCvtOrder(Attribute srcLayout, Attribute dstLayout) {
   // REBASE TODO: add IluvatarMmaEncodingAttr case?
   auto srcMmaLayout = mlir::dyn_cast<NvidiaMmaEncodingAttr>(srcLayout);
