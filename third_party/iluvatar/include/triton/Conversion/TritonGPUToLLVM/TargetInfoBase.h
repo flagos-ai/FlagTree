@@ -15,17 +15,17 @@ public:
   virtual Value ballot(ConversionPatternRewriter &rewriter, Location loc,
                        Type type, Value cmp) const = 0;
 
-#ifndef FLAGTREE_SPEC_TargetInfoBase_function
+#ifdef FLAGTREE_SPEC_TargetInfoBase_function
+  virtual Value storeShared(ConversionPatternRewriter &rewriter, Location loc,
+                            Value ptr, Value val, Value pred) const = 0;
+  virtual Value loadShared(ConversionPatternRewriter &rewriter, Location loc,
+                           Value ptr, Type elemTy, Value pred) const = 0;
+#else
   virtual void storeShared(ConversionPatternRewriter &rewriter, Location loc,
                            Value ptr, Value val, Value pred) const = 0;
   virtual Value loadShared(ConversionPatternRewriter &rewriter, Location loc,
                            const TypeConverter *converter, Value ptr,
                            Type elemTy, Value pred) const = 0;
-#else
-  virtual Value storeShared(ConversionPatternRewriter &rewriter, Location loc,
-                            Value ptr, Value val, Value pred) const = 0;
-  virtual Value loadShared(ConversionPatternRewriter &rewriter, Location loc,
-                           Value ptr, Type elemTy, Value pred) const = 0;
 #endif
 
   virtual Value shuffleXor(ConversionPatternRewriter &rewriter, Location loc,

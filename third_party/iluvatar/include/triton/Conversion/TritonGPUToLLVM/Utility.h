@@ -256,12 +256,12 @@ Value createConstantF64(Location loc, OpBuilder &rewriter, double v);
 Value createNaNConstant(Location loc, OpBuilder &rewriter, Type type);
 
 /// Create an index type constant.
-#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_createIndexConstant
-Value createIndexConstant(OpBuilder &builder, Location loc,
-                          const TypeConverter *converter, int64_t value);
-#else
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_createIndexConstant
 Value createIndexConstant(OpBuilder &builder, Location loc,
                           TypeConverter *converter, int64_t value);
+#else
+Value createIndexConstant(OpBuilder &builder, Location loc,
+                          const TypeConverter *converter, int64_t value);
 #endif
 
 /// Create an integer constant of \param width bits.
@@ -375,14 +375,7 @@ Value addStringToModule(Location loc, ConversionPatternRewriter &rewriter,
 // the smem buffer. Recall that the smem buffer will only store a single replica
 // when converting distributed to distributed layout. Also, a replica is the
 // smallest CTA tile that is common between input and output layouts.
-#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG
-SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
-                                     ConversionPatternRewriter &rewriter,
-                                     const TargetInfoBase &targetInfo,
-                                     unsigned elemId, RankedTensorType type,
-                                     ArrayRef<unsigned> multiDimCTAInRepId,
-                                     ArrayRef<unsigned> shapePerCTATile);
-#else
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG
 SmallVector<Value> getMultiDimOffset(
     Attribute layout, Location loc, ConversionPatternRewriter &rewriter,
     const TargetInfoBase &targetInfo, unsigned elemId, RankedTensorType type,
@@ -391,6 +384,13 @@ SmallVector<Value> getMultiDimOffset(
         spec_arg1 = false,
     FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG
         spec_arg2 = false);
+#else
+SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
+                                     ConversionPatternRewriter &rewriter,
+                                     const TargetInfoBase &targetInfo,
+                                     unsigned elemId, RankedTensorType type,
+                                     ArrayRef<unsigned> multiDimCTAInRepId,
+                                     ArrayRef<unsigned> shapePerCTATile);
 #endif
 
 // Given a multiDimOffset, this function wraps around each dimension to be

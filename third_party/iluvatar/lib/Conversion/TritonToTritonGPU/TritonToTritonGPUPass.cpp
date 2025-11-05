@@ -172,15 +172,7 @@ struct TritonExpandDimsPattern
     auto retCTAOrder = insertOrder(argCTALayout.getCTAOrder(), op.getAxis());
     auto retCTALayout = triton::gpu::CTALayoutAttr::get(
         getContext(), retCTAsPerCGA, retCTASplitNum, retCTAOrder);
-#ifndef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_TritonExpandDimsPattern_matchAndRewrite
-    triton::gpu::BlockedEncodingAttr retEncoding =
-        triton::gpu::BlockedEncodingAttr::get(getContext(), retSizePerThread,
-                                              retThreadsPerWarp, retWarpsPerCTA,
-                                              retOrder, retCTALayout);
-    // convert operand to slice of return type
-    Attribute newArgEncoding = triton::gpu::SliceEncodingAttr::get(
-        getContext(), op.getAxis(), retEncoding);
-#else
+#ifdef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_TritonExpandDimsPattern_matchAndRewrite
     SmallVector<unsigned, 4> smeCTA(retShape.size());
     triton::gpu::BlockedEncodingAttr retEncoding =
         triton::gpu::BlockedEncodingAttr::get(
@@ -189,6 +181,14 @@ struct TritonExpandDimsPattern
     // convert operand to slice of return type
     Attribute newArgEncoding = triton::gpu::SliceEncodingAttr::get(
         getContext(), op.getAxis(), retEncoding, false);
+#else
+    triton::gpu::BlockedEncodingAttr retEncoding =
+        triton::gpu::BlockedEncodingAttr::get(getContext(), retSizePerThread,
+                                              retThreadsPerWarp, retWarpsPerCTA,
+                                              retOrder, retCTALayout);
+    // convert operand to slice of return type
+    Attribute newArgEncoding = triton::gpu::SliceEncodingAttr::get(
+        getContext(), op.getAxis(), retEncoding);
 #endif
     RankedTensorType newArgType = RankedTensorType::get(
         argType.getShape(), argType.getElementType(), newArgEncoding);
@@ -323,18 +323,18 @@ struct TritonCatPattern : public OpConversionPattern<triton::CatOp> {
     auto newRetSizePerThread = retSizePerThread;
     newRetSizePerThread[retOrder[0]] *=
         newRetTotalElemsPerThread / retTotalElemsPerThread;
-#ifndef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_TritonCatPattern_matchAndRewrite
-    triton::gpu::BlockedEncodingAttr newRetEncoding =
-        triton::gpu::BlockedEncodingAttr::get(
-            getContext(), newRetSizePerThread, retThreadsPerWarp,
-            retWarpsPerCTA, retOrder, retEncoding.getCTALayout());
-#else
+#ifdef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_TritonCatPattern_matchAndRewrite
     SmallVector<unsigned, 4> smeCTA(retShape.size());
     triton::gpu::BlockedEncodingAttr newRetEncoding =
         triton::gpu::BlockedEncodingAttr::get(
             getContext(), newRetSizePerThread, retThreadsPerWarp,
             retWarpsPerCTA, retOrder, retEncoding.getCTALayout(), false,
             smeCTA);
+#else
+    triton::gpu::BlockedEncodingAttr newRetEncoding =
+        triton::gpu::BlockedEncodingAttr::get(
+            getContext(), newRetSizePerThread, retThreadsPerWarp,
+            retWarpsPerCTA, retOrder, retEncoding.getCTALayout());
 #endif
     auto newRetType = RankedTensorType::get(retShape, retType.getElementType(),
                                             newRetEncoding);
@@ -406,17 +406,17 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
           append(defaultEnc.getThreadsPerWarp(), 1),
           append(defaultEnc.getWarpsPerCTA(), 1),
           prepend(defaultEnc.getOrder(), rank - 1),
-#ifndef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_TritonSplitOpPattern_matchAndRewrite
-          CTALayoutAttr::get(getContext(),
-                             append(defaultEnc.getCTAsPerCGA(), 1),
-                             append(defaultEnc.getCTASplitNum(), 1),
-                             prepend(defaultEnc.getCTAOrder(), rank - 1)));
-#else
+#ifdef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_TritonSplitOpPattern_matchAndRewrite
           CTALayoutAttr::get(getContext(),
                              append(defaultEnc.getCTAsPerCGA(), 1),
                              append(defaultEnc.getCTASplitNum(), 1),
                              prepend(defaultEnc.getCTAOrder(), rank - 1)),
           defaultEnc.getLoadType(), defaultEnc.getSmeWarpsPerCTA());
+#else
+          CTALayoutAttr::get(getContext(),
+                             append(defaultEnc.getCTAsPerCGA(), 1),
+                             append(defaultEnc.getCTASplitNum(), 1),
+                             prepend(defaultEnc.getCTAOrder(), rank - 1)));
 #endif
       srcTy = RankedTensorType::get(srcTy.getShape(), srcTy.getElementType(),
                                     srcEnc);
@@ -474,13 +474,13 @@ struct TritonReducePattern : public OpConversionPattern<triton::ReduceOp> {
   LogicalResult
   matchAndRewrite(triton::ReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-#ifndef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_TritonReducePattern_matchAndRewrite
-    auto newReduce = rewriter.create<triton::ReduceOp>(
-        op.getLoc(), adaptor.getOperands(), adaptor.getAxis());
-#else
+#ifdef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_TritonReducePattern_matchAndRewrite
     auto newReduce = rewriter.create<triton::ReduceOp>(
         op.getLoc(), adaptor.getOperands(), adaptor.getAxis(),
         adaptor.getNoWarpReduce());
+#else
+    auto newReduce = rewriter.create<triton::ReduceOp>(
+        op.getLoc(), adaptor.getOperands(), adaptor.getAxis());
 #endif
     addNamedAttrs(newReduce, adaptor.getAttributes());
 
@@ -781,15 +781,7 @@ class ConvertTritonToTritonGPU
 public:
   ConvertTritonToTritonGPU() = default;
   // constructor with some parameters set explicitly.
-#ifndef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_ConvertTritonToTritonGPU
-  ConvertTritonToTritonGPU(const std::string &target, int numWarps,
-                           int threadsPerWarp, int numCTAs) {
-    this->numWarps = numWarps;
-    this->threadsPerWarp = threadsPerWarp;
-    this->numCTAs = numCTAs;
-    this->target = target;
-  }
-#else
+#ifdef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_ConvertTritonToTritonGPU
   ConvertTritonToTritonGPU(const std::string &target, int numWarps,
                            int threadsPerWarp, int numCTAs, int numStages) {
     this->numWarps = numWarps;
@@ -797,6 +789,14 @@ public:
     this->numCTAs = numCTAs;
     this->target = target;
     this->numStages = numStages;
+  }
+#else
+  ConvertTritonToTritonGPU(const std::string &target, int numWarps,
+                           int threadsPerWarp, int numCTAs) {
+    this->numWarps = numWarps;
+    this->threadsPerWarp = threadsPerWarp;
+    this->numCTAs = numCTAs;
+    this->target = target;
   }
 #endif
 
