@@ -11,13 +11,12 @@ using namespace mlir::triton;
 using ::mlir::triton::gpu::BlockedEncodingAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::getTotalElemsPerThread;
+#ifdef FLAGTREE_SPEC_Using_BackendMmaEncodingAttr
+FLAGTREE_SPEC_Using_BackendMmaEncodingAttr;
+#endif
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SharedEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
-
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_TypeConverter_namespace
-using ::mlir::triton::gpu::IluvatarMmaEncodingAttr;
-#endif
 
 #ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_TypeConverter_TritonGPUToLLVMTypeConverter
 TritonGPUToLLVMTypeConverter::TritonGPUToLLVMTypeConverter(

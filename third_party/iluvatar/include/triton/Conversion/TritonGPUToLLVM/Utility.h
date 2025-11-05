@@ -463,10 +463,9 @@ using ::mlir::triton::gpu::BlockedEncodingAttr;
 using ::mlir::triton::gpu::CTALayoutAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_IluvatarMmaEncodingAttr
-using ::mlir::triton::gpu::IluvatarMmaEncodingAttr;
+#ifdef FLAGTREE_SPEC_Using_BackendMmaEncodingAttr
+FLAGTREE_SPEC_Using_BackendMmaEncodingAttr;
 #endif
-
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
 

@@ -23,8 +23,8 @@ using ::mlir::triton::gpu::getShapePerCTA;
 using ::mlir::triton::gpu::getShapePerCTATile;
 using ::mlir::triton::gpu::getSizePerThread;
 using ::mlir::triton::gpu::getUniqueContigPerThread;
-#ifdef FLAGTREE_SPEC_Analysis_Allocation_namespace
-using ::mlir::triton::gpu::IluvatarMmaEncodingAttr;
+#ifdef FLAGTREE_SPEC_Using_BackendMmaEncodingAttr
+FLAGTREE_SPEC_Using_BackendMmaEncodingAttr;
 #endif
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SharedEncodingAttr;

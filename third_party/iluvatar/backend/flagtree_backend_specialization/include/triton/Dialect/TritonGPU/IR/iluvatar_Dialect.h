@@ -18,4 +18,7 @@
 #define FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_TritonGPUInferLayoutInterface_inferSplitOpEncoding
 #define FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_CanonicalizeConvertFromConvert_matchAndRewrite
 
+#define FLAGTREE_SPEC_Using_BackendMmaEncodingAttr                             \
+  using ::mlir::triton::gpu::IluvatarMmaEncodingAttr
+
 #endif // ILUVATAR_TRITON_DIALECT_TRITONGPU_IR_DIALECT_H_
