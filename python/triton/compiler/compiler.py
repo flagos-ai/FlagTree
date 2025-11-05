@@ -4,7 +4,6 @@ import json
 from .._C.libtriton import get_cache_invalidating_env_vars, ir
 from ..backends import backends
 from ..backends.compiler import GPUTarget, AttrsDescriptor
-from ..backends.ascend.compiler import AscendAttrsDescriptor
 from .. import __version__
 from ..runtime.autotuner import OutOfResources
 from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager
@@ -12,7 +11,6 @@ from ..runtime.driver import driver
 from ..tools.disasm import get_sass
 # TODO: this shouldn't be here
 from .code_generator import ast_to_ttir
-from .errors import MLIRCompilationError
 from pathlib import Path
 import re
 import functools
@@ -87,8 +85,9 @@ class ASTSource:
             for k in self.constants.keys():
                 if not isinstance(k, str):
                     raise TypeError("Constants keys must be string")
-        if self.attrs is None:
-            self.attrs = AscendAttrsDescriptor()
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        flagtree_backend_specialization("ext_ASTSource_attrs", self)
 
     def hash(self):
         sorted_sig = [v for k, v in sorted(self.signature.items())]
@@ -252,12 +251,11 @@ def compile(src, target=None, options=None):
         # cache hit!
         metadata = json.loads(Path(metadata_path).read_text())
         return CompiledKernel(src, metadata_group, hash)
-    compile_speed_opt = os.getenv("TRITON_ASCEND_COMPILE_SPEED_OPT", 'false').lower() in ('true', '1')
-    if (compile_speed_opt):
-        ttir_path = f"{file_name}.ttir"
-        if (metadata_path is None) and (fn_cache_manager.has_file(ttir_path)):
-            # Already compile once but failed. So directly return
-            raise Exception("already failed once")
+
+    # flagtree backend specialization
+    from triton.runtime.driver import flagtree_backend_specialization
+    flagtree_backend_specialization("opt_ascend_compile_speed", file_name, metadata_path, fn_cache_manager)
+
     # initialize metadata
     metadata = {
         "hash": hash,
@@ -287,14 +285,10 @@ def compile(src, target=None, options=None):
         try:
             next_module = compile_ir(module, metadata)
         except Exception as e:
-            if (ext == "ttadapter"):
-                stage_name = "ConvertTritonIRToLinalgIR"
-            elif (ext == "npubin"):
-                stage_name = "ConvertLinalgRToBinary"
-            else:
-                stage_name = "MLIRCompile"
-            error_detail = e.stderr.decode('utf-8') if hasattr(e, 'stderr') and e.stderr else str(e)
-            raise MLIRCompilationError(stage_name, error_detail)
+            # flagtree backend specialization
+            from triton.runtime.driver import flagtree_backend_specialization
+            flagtree_backend_specialization("handle_compile_error", e, ext)
+
         ir_filename = f"{file_name}.{ext}"
         if (fn_override_manager is not None and (full_name := fn_override_manager.get_file(ir_filename)) is not None):
             print(f"\nOverriding kernel with file {full_name}")
@@ -406,9 +400,12 @@ class CompiledKernel:
         # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
         self.module, self.function, self.n_regs, self.n_spills = driver.active.utils.load_binary(
             self.name, self.kernel, self.metadata.shared, device)
-
-    # This mechanism introduces heavy runtime overhead.
-    # Commenting __getattribute__ requires explicitly calling _init_handles()
+    def __getattribute__(self, name):
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        if name == 'run' and flagtree_backend_specialization("is_CompiledKernel_getattribute_need_init_handles"):
+            self._init_handles()
+        return super().__getattribute__(name)
 
     def launch_metadata(self, grid, stream, *args):
         if CompiledKernel.launch_enter_hook is None:
@@ -431,8 +428,11 @@ class CompiledKernel:
         self._init_handles()
 
         def runner(*args, stream=None):
-            if stream is None:
-                stream = self.metadata.stream
+
+            # flagtree backend specialization
+            from triton.runtime.driver import flagtree_backend_specialization
+            flagtree_backend_specialization("set_CompiledKernel_metadata_stream", self, stream)
+
             if stream is None:
                 device = driver.active.get_current_device()
                 stream = driver.active.get_current_stream(device)
