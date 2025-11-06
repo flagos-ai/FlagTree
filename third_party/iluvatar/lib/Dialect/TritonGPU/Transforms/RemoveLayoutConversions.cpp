@@ -26,8 +26,6 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <memory>
 
-#include "flagtree_spec.h"
-
 namespace mlir {
 namespace triton {
 namespace gpu {
