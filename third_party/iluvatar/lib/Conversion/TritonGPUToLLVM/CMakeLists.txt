@@ -1,7 +1,9 @@
 if (FLAGTREE_BACKEND)
     set(NVGPUIR "")
+    set(NVGPUTransforms "")
 else()
     set(NVGPUIR "NVGPUIR")
+    set(NVGPUTransforms "TritonNvidiaGPUTransforms")
 endif()
 
 set(_EXTRA_LINK_LIBS FlagTree_${FLAGTREE_BACKEND}_TritonConversionTritonGPUToLLVM)
@@ -44,6 +46,7 @@ add_triton_library(TritonGPUToLLVM
     TritonIR
     TritonGPUIR
     TritonGPUTransforms
+    ${NVGPUTransforms}
     ${NVGPUIR}
     ${_EXTRA_LINK_LIBS}
 )

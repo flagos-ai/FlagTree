@@ -1,7 +1,3 @@
-#include "flagtree_spec.h"
-
-#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ReduceOpToLLVM_cpp
-
 #include "ReduceScanCommon.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Support/LLVM.h"
@@ -345,8 +341,13 @@ private:
         auto elemTy = getElementType(op, i);
         Value readPtr = gep(ptr_ty(rewriter.getContext(), 3), elemTy,
                             smemBases[i], readOffset);
+#ifdef __ILUVATAR__
+        acc[i] = targetInfo.loadShared(rewriter, loc, readPtr, elemTy,
+                                       threadIsNeeded);
+#else
         acc[i] = targetInfo.loadShared(rewriter, loc, getTypeConverter(),
                                        readPtr, elemTy, threadIsNeeded);
+#endif
       }
       warpReduce(rewriter, loc, acc, op, sizeInterWarps, 1 /* interleave */);
       // only the first thread in each sizeInterWarps is writing
@@ -438,5 +439,3 @@ void mlir::triton::populateReduceOpToLLVMPatterns(
     const TargetInfoBase &targetInfo, PatternBenefit benefit) {
   patterns.add<ReduceOpConversion>(typeConverter, targetInfo, benefit);
 }
-
-#endif
