@@ -1,6 +1,6 @@
 #include "flagtree_spec.h"
 
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Prefetch_Prefetcher_cpp
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Prefetch_cpp
 
 //===----------------------------------------------------------------------===//
 //
