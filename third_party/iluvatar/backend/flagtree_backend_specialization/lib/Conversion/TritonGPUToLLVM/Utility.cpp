@@ -9,6 +9,22 @@ DEFINE_LOAD_FUNC(getMNCoords)
 
 } // namespace SharedToDotOperandMMAv1
 
+using namespace mlir;
+using namespace mlir::triton;
+
+using emitOffsetForTCULayoutFunc = SmallVector<SmallVector<unsigned>> (*)(
+    const triton::gpu::IluvatarMmaEncodingAttr &, RankedTensorType);
+DEFINE_LOAD_FUNC(emitOffsetForTCULayout)
+
+using emitBaseIndexForTCULayoutFunc = SmallVector<Value> (*)(
+    Location, RewriterBase &, const triton::gpu::IluvatarMmaEncodingAttr &,
+    RankedTensorType);
+DEFINE_LOAD_FUNC(emitBaseIndexForTCULayout)
+
+using remapOffsetFunc = Value (*)(Value, Value, RankedTensorType, bool,
+                                  Location, RewriterBase &, int, bool);
+DEFINE_LOAD_FUNC(remapOffset)
+
 namespace mlir {
 
 SmallVector<Value> 

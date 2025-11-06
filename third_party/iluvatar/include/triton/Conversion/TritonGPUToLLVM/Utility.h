@@ -36,21 +36,6 @@
 using namespace mlir;
 using namespace mlir::triton;
 
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_functionPtr
-using emitOffsetForTCULayoutFunc = SmallVector<SmallVector<unsigned>> (*)(
-    const triton::gpu::IluvatarMmaEncodingAttr &, RankedTensorType);
-DEFINE_LOAD_FUNC(emitOffsetForTCULayout)
-
-using emitBaseIndexForTCULayoutFunc = SmallVector<Value> (*)(
-    Location, RewriterBase &, const triton::gpu::IluvatarMmaEncodingAttr &,
-    RankedTensorType);
-DEFINE_LOAD_FUNC(emitBaseIndexForTCULayout)
-
-using remapOffsetFunc = Value (*)(Value, Value, RankedTensorType, bool,
-                                  Location, RewriterBase &, int, bool);
-DEFINE_LOAD_FUNC(remapOffset)
-#endif
-
 // Shortcuts for some commonly used LLVM ops to keep code simple and intuitive
 // Operators
 #define inttofloat(...) rewriter.create<LLVM::SIToFPOp>(loc, __VA_ARGS__)
