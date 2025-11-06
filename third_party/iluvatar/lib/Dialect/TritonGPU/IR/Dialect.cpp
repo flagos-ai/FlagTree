@@ -1,3 +1,7 @@
+#include "flagtree_spec.h"
+
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_cpp
+
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <numeric>
@@ -8,9 +12,6 @@
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_plugin
-#include "triton/Dialect/TritonGPU/IR/TritonGPUAttrDefsPlugin.h"
-#endif
 #include "triton/Tools/StrUtil.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/TypeSwitch.h"
@@ -457,21 +458,12 @@ LogicalResult CTALayoutAttr::verify(
   return success();
 }
 
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_BlockedEncodingAttr_verify
 LogicalResult
 BlockedEncodingAttr::verify(function_ref<InFlightDiagnostic()> emitError,
                             ArrayRef<unsigned> sizePerThread,
                             ArrayRef<unsigned> threadsPerWarp,
                             ArrayRef<unsigned> warpsPerCTA,
                             ArrayRef<unsigned> order, CTALayoutAttr CTALayout) {
-#else
-LogicalResult BlockedEncodingAttr::verify(
-    function_ref<InFlightDiagnostic()> emitError,
-    ArrayRef<unsigned> sizePerThread, ArrayRef<unsigned> threadsPerWarp,
-    ArrayRef<unsigned> warpsPerCTA, ArrayRef<unsigned> order,
-    CTALayoutAttr CTALayout, unsigned loadType,
-    ArrayRef<unsigned> smeWarpsPerCTA) {
-#endif
   if (sizePerThread.size() != threadsPerWarp.size() ||
       threadsPerWarp.size() != warpsPerCTA.size() ||
       warpsPerCTA.size() != order.size()) {
@@ -547,16 +539,9 @@ static LogicalResult parseIntAttrValue(AsmParser &parser, Attribute attr,
   return success();
 }
 
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_parseBoolAttrValue
 static LogicalResult parseBoolAttrValue(AsmParser &parser, Attribute attr,
                                         bool &value, StringRef desc) {
   auto boolAttr = mlir::dyn_cast<BoolAttr>(attr);
-#else
-static LogicalResult parseBoolAttrValue(AsmParser &parser,
-                                        const NamedAttribute &attr, bool &value,
-                                        StringRef desc) {
-  auto boolAttr = mlir::dyn_cast<BoolAttr>(attr.getValue());
-#endif
   if (!boolAttr) {
     parser.emitError(parser.getNameLoc(), "expected an bool type in ") << desc;
     return failure();
@@ -591,7 +576,7 @@ static LogicalResult parseUInt(AsmParser &parser, const NamedAttribute &attr,
 
 static LogicalResult parseBool(AsmParser &parser, const NamedAttribute &attr,
                                bool &value, StringRef desc) {
-  return parseBoolAttrValue(parser, attr, value, desc);
+  return parseBoolAttrValue(parser, attr.getValue(), value, desc);
 };
 
 // Print the CTALayout if it's not equal to the default.
@@ -614,7 +599,7 @@ static void maybePrintCTALayout(mlir::MLIRContext *context,
 #include "triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.cpp.inc"
 
 SliceEncodingAttr BlockedEncodingAttr::squeeze(int axis) {
-  return SliceEncodingAttr::get(getContext(), axis, *this, false);
+  return SliceEncodingAttr::get(getContext(), axis, *this);
 }
 SmallVector<unsigned>
 BlockedEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
@@ -932,43 +917,6 @@ unsigned NvidiaMmaEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
 }
 
 //
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_IluvatarMmaEncodingAttr_functions
-using getElemsPerThreadFunc = SmallVector<unsigned> (*)(
-    const IluvatarMmaEncodingAttr *, ArrayRef<int64_t>, Type);
-
-getElemsPerThreadFunc load_get_elems_per_thread_func(const char *backend_name,
-                                                     const char *func_name) {
-  void *symbol = load_backend_symbol(backend_name, func_name);
-  return reinterpret_cast<getElemsPerThreadFunc>(symbol);
-}
-
-SmallVector<unsigned>
-IluvatarMmaEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
-                                           Type eltTy) const {
-  static auto getElemsPerThread =
-      load_get_elems_per_thread_func("iluvatar", "getElemsPerThread");
-  return getElemsPerThread(this, shape, eltTy);
-}
-
-using getTotalElemsPerThreadFunc = unsigned (*)(const IluvatarMmaEncodingAttr *,
-                                                ArrayRef<int64_t>, Type);
-
-getTotalElemsPerThreadFunc
-load_get_total_elems_per_thread_func(const char *backend_name,
-                                     const char *func_name) {
-  void *symbol = load_backend_symbol(backend_name, func_name);
-  return reinterpret_cast<getTotalElemsPerThreadFunc>(symbol);
-}
-
-unsigned
-IluvatarMmaEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
-                                                Type eltTy) const {
-  static auto func = load_get_total_elems_per_thread_func(
-      "iluvatar", "getTotalElemsPerThread");
-  return func(this, shape, eltTy);
-}
-#endif
-//
 
 SmallVector<unsigned>
 SharedEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
@@ -1070,15 +1018,9 @@ SmallVector<unsigned> DotOperandEncodingAttr::getShapePerCTATile(
   }
 }
 
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_DotOperandEncodingAttr_verify
 LogicalResult DotOperandEncodingAttr::verify(
     ::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     unsigned opIdx, Attribute parent, unsigned kWidth) {
-#else
-LogicalResult DotOperandEncodingAttr::verify(
-    ::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
-    unsigned opIdx, Attribute parent, unsigned kWidth, unsigned useSme) {
-#endif
   if (opIdx != 0 && opIdx != 1) {
     return emitError()
            << "triton_gpu.dot_op opIdx paramenter can be 0 or 1, got: "
@@ -1113,12 +1055,6 @@ LogicalResult DotOperandEncodingAttr::verify(
                 "MFMA parent";
     return success();
   }
-
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_DotOperandEncodingAttr_verify
-  if (auto parentAttr = mlir::dyn_cast<IluvatarMmaEncodingAttr>(parent)) {
-    return success();
-  }
-#endif
 
   if (auto parentAttr = mlir::dyn_cast<BlockedEncodingAttr>(parent)) {
     if (kWidth != 0)
@@ -1166,10 +1102,6 @@ Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
   SmallVector<unsigned> threadsPerWarp;
   SmallVector<unsigned> warpsPerCTA;
   SmallVector<unsigned> order;
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_BlockedEncodingAttr_parse
-  unsigned loadType = 0;
-  SmallVector<unsigned> smeWarpsPerCTA;
-#endif
   std::optional<SmallVector<unsigned>> CTAsPerCGA;
   std::optional<SmallVector<unsigned>> CTASplitNum;
   std::optional<SmallVector<unsigned>> CTAOrder;
@@ -1205,14 +1137,6 @@ Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
       if (parseIntArrayAttr(parser, attr, CTAOrder.emplace(), "CTAOrder")
               .failed())
         return {};
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_BlockedEncodingAttr_parse
-    } else if (attr.getName() == "loadType") {
-      loadType = attr.getValue().cast<IntegerAttr>().getInt();
-    } else if (attr.getName() == "smeWarpsPerCTA") {
-      if (parseIntArrayAttr(parser, attr, smeWarpsPerCTA, "smeWarpsPerCTA")
-              .failed())
-        return {};
-#endif
     } else {
       parser.emitError(parser.getNameLoc(), "unexpected key: ")
           << attr.getName().strref();
@@ -1225,15 +1149,9 @@ Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
   if (!CTALayout.has_value())
     return {};
 
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_BlockedEncodingAttr_parse
   return parser.getChecked<BlockedEncodingAttr>(parser.getContext(),
                                                 sizePerThread, threadsPerWarp,
                                                 warpsPerCTA, order, *CTALayout);
-#else
-  return parser.getChecked<BlockedEncodingAttr>(
-      parser.getContext(), sizePerThread, threadsPerWarp, warpsPerCTA, order,
-      *CTALayout, loadType, smeWarpsPerCTA);
-#endif
 }
 
 void BlockedEncodingAttr::print(mlir::AsmPrinter &printer) const {
@@ -1241,13 +1159,7 @@ void BlockedEncodingAttr::print(mlir::AsmPrinter &printer) const {
           << "sizePerThread = [" << ArrayRef(getSizePerThread()) << "]"
           << ", threadsPerWarp = [" << ArrayRef(getThreadsPerWarp()) << "]"
           << ", warpsPerCTA = [" << ArrayRef(getWarpsPerCTA()) << "]"
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_BlockedEncodingAttr_print
           << ", order = [" << getOrder() << "]";
-#else
-          << ", order = [" << getOrder() << "]"
-          << ", loadType = " << getLoadType() << ", smeWarpsPerCTA = ["
-          << getSmeWarpsPerCTA() << "]";
-#endif
 
   maybePrintCTALayout(getContext(), printer, getCTALayout(),
                       /*rank=*/getSizePerThread().size());
@@ -1493,86 +1405,6 @@ void AMDWmmaEncodingAttr::print(AsmPrinter &printer) const {
 }
 
 //===----------------------------------------------------------------------===//
-// Iluvatar MMA encoding
-//===----------------------------------------------------------------------===//
-
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_IluvatarMmaEncodingAttr_functions
-Attribute IluvatarMmaEncodingAttr::parse(AsmParser &parser, Type type) {
-  if (parser.parseLess().failed())
-    return {};
-  DictionaryAttr dict;
-  if (parser.parseAttribute(dict).failed())
-    return {};
-  if (parser.parseGreater().failed())
-    return {};
-
-  unsigned versionMajor = 0;
-  unsigned versionMinor = 0;
-  SmallVector<unsigned> warpsPerCTA;
-  std::optional<SmallVector<unsigned>> CTAsPerCGA;
-  std::optional<SmallVector<unsigned>> CTASplitNum;
-  std::optional<SmallVector<unsigned>> CTAOrder;
-  SmallVector<unsigned> instrShape;
-
-  for (const NamedAttribute &attr : dict) {
-    if (attr.getName() == "versionMajor") {
-      if (parseUInt(parser, attr, versionMajor, "versionMajor").failed())
-        return {};
-    }
-    if (attr.getName() == "versionMinor") {
-      if (parseUInt(parser, attr, versionMinor, "versionMinor").failed())
-        return {};
-    }
-    if (attr.getName() == "warpsPerCTA") {
-      if (parseIntArrayAttr(parser, attr, warpsPerCTA, "warpsPerCTA").failed())
-        return {};
-    }
-    if (attr.getName() == "CTAsPerCGA") {
-      if (parseIntArrayAttr(parser, attr, CTAsPerCGA.emplace(), "CTAsPerCGA")
-              .failed())
-        return {};
-    }
-    if (attr.getName() == "CTASplitNum") {
-      if (parseIntArrayAttr(parser, attr, CTASplitNum.emplace(), "CTASplitNum")
-              .failed())
-        return {};
-    }
-    if (attr.getName() == "CTAOrder") {
-      if (parseIntArrayAttr(parser, attr, CTAOrder.emplace(), "CTAOrder")
-              .failed())
-        return {};
-    }
-    if (attr.getName() == "instrShape") {
-      if (parseIntArrayAttr(parser, attr, instrShape, "instrShape").failed()) {
-        return {};
-      }
-    }
-  }
-
-  std::optional<CTALayoutAttr> CTALayout = getCTALayoutOrError(
-      parser, CTAsPerCGA, CTASplitNum, CTAOrder, /*rank=*/warpsPerCTA.size());
-  if (!CTALayout.has_value())
-    return {};
-
-  return parser.getChecked<IluvatarMmaEncodingAttr>(
-      parser.getContext(), versionMajor, versionMinor, warpsPerCTA, *CTALayout,
-      instrShape);
-}
-
-void IluvatarMmaEncodingAttr::print(AsmPrinter &printer) const {
-  printer << "<{"
-          << "versionMajor = " << getVersionMajor()
-          << ", versionMinor = " << getVersionMinor() //
-          << ", warpsPerCTA = [" << ArrayRef(getWarpsPerCTA()) << "]";
-
-  maybePrintCTALayout(getContext(), printer, getCTALayout(),
-                      /*rank=*/getWarpsPerCTA().size());
-
-  printer << ", instrShape = [" << getInstrShape() << "]}>";
-}
-#endif
-
-//===----------------------------------------------------------------------===//
 // Sliced Encoding
 //===----------------------------------------------------------------------===//
 
@@ -1585,23 +1417,13 @@ Attribute SliceEncodingAttr::parse(AsmParser &parser, Type type) {
   if (parser.parseGreater().failed())
     return {};
   unsigned dim = mlir::cast<IntegerAttr>(attrs.get("dim")).getInt();
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_SliceEncodingAttr_parse
   Attribute parent = attrs.get("parent");
   return parser.getChecked<SliceEncodingAttr>(parser.getContext(), dim, parent);
-#else
-  bool noWarpReduce = attrs.get("noWarpReduce").cast<BoolAttr>().getValue();
-  Attribute parent = attrs.get("parent");
-  return parser.getChecked<SliceEncodingAttr>(parser.getContext(), dim, parent,
-                                              noWarpReduce);
-#endif
 }
 
 void SliceEncodingAttr::print(mlir::AsmPrinter &printer) const {
   printer << "<{"
           << "dim = " << getDim() << ", "
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_SliceEncodingAttr_print
-          << "noWarpReduce = " << getNoWarpReduce() << ", "
-#endif
           << "parent = " << getParent() << "}>";
 }
 
@@ -1627,9 +1449,6 @@ Attribute SharedEncodingAttr::parse(AsmParser &parser, Type type) {
   std::optional<SmallVector<unsigned>> CTASplitNum;
   std::optional<SmallVector<unsigned>> CTAOrder;
   bool hasLeadingOffset = false;
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_SharedEncodingAttr_parse
-  bool useTcu = false;
-#endif
 
   for (const NamedAttribute &attr : dict) {
     if (attr.getName() == "vec") {
@@ -1660,11 +1479,6 @@ Attribute SharedEncodingAttr::parse(AsmParser &parser, Type type) {
       if (parseBool(parser, attr, hasLeadingOffset, "hasLeadingOffset")
               .failed())
         return {};
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_SharedEncodingAttr_parse
-    } else if (attr.getName() == "useTcu") {
-      if (parseBool(parser, attr, useTcu, "useTcu").failed())
-        return {};
-#endif
     } else {
       parser.emitError(parser.getNameLoc(), "unexpected key: ")
           << attr.getName().strref();
@@ -1677,15 +1491,9 @@ Attribute SharedEncodingAttr::parse(AsmParser &parser, Type type) {
   if (!CTALayout.has_value())
     return {};
 
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_SharedEncodingAttr_parse
   return parser.getChecked<SharedEncodingAttr>(parser.getContext(), vec,
                                                perPhase, maxPhase, order,
                                                *CTALayout, hasLeadingOffset);
-#else
-  return parser.getChecked<SharedEncodingAttr>(
-      parser.getContext(), vec, perPhase, maxPhase, order, *CTALayout,
-      hasLeadingOffset, useTcu);
-#endif
 }
 
 void SharedEncodingAttr::print(AsmPrinter &printer) const {
@@ -1696,12 +1504,7 @@ void SharedEncodingAttr::print(AsmPrinter &printer) const {
           << ", order = [" << getOrder() << "]";
   maybePrintCTALayout(getContext(), printer, getCTALayout(),
                       /*rank=*/getOrder().size());
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_SharedEncodingAttr_print
   printer << ", hasLeadingOffset = " << getHasLeadingOffset() << "}>";
-#else
-  printer << ", hasLeadingOffset = " << getHasLeadingOffset()
-          << ", useTcu = " << getUseTcu() << "}>";
-#endif
 }
 
 //===----------------------------------------------------------------------===//
@@ -2285,111 +2088,6 @@ NvidiaMmaEncodingAttr::getSizePerThreadForOperands(unsigned opIdx) const {
 }
 
 //===----------------------------------------------------------------------===//
-// Iluvatar Mma encoding
-//===----------------------------------------------------------------------===//
-
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_IluvatarMmaEncodingAttr_functions
-using isVoltaFunc = bool (*)(const IluvatarMmaEncodingAttr *);
-DEFINE_LOAD_FUNC(isVolta)
-bool IluvatarMmaEncodingAttr::isVolta() const {
-  auto isVolta = load_isVolta_func("iluvatar", "isVolta");
-  return isVolta(this);
-}
-
-#define DEFINE_GET_SMALLVECTOR_FUNC(var_name)                                  \
-  using var_name##Func =                                                       \
-      SmallVector<unsigned> (*)(const IluvatarMmaEncodingAttr *);              \
-  DEFINE_LOAD_FUNC(var_name)                                                   \
-  SmallVector<unsigned> IluvatarMmaEncodingAttr::var_name() const {            \
-    static auto func = load_##var_name##_func("iluvatar", "" #var_name);       \
-    return func(this);                                                         \
-  }
-
-DEFINE_GET_SMALLVECTOR_FUNC(getCTAsPerCGA)
-DEFINE_GET_SMALLVECTOR_FUNC(getCTAOrder)
-DEFINE_GET_SMALLVECTOR_FUNC(getCTASplitNum)
-DEFINE_GET_SMALLVECTOR_FUNC(getWarpsPerCTA)
-DEFINE_GET_SMALLVECTOR_FUNC(getWarpOrder)
-DEFINE_GET_SMALLVECTOR_FUNC(getThreadsPerWarp)
-DEFINE_GET_SMALLVECTOR_FUNC(getThreadOrder)
-DEFINE_GET_SMALLVECTOR_FUNC(getSizePerThread)
-
-using getShapePerCTATileFunc = SmallVector<unsigned> (*)(
-    const IluvatarMmaEncodingAttr *, ArrayRef<int64_t>);
-DEFINE_LOAD_FUNC(getShapePerCTATile)
-
-SmallVector<unsigned> IluvatarMmaEncodingAttr::getShapePerCTATile(
-    ArrayRef<int64_t> tensorShape) const {
-  auto func = load_getShapePerCTATile_func("iluvatar", "getShapePerCTATile");
-  return func(this, tensorShape);
-}
-
-using getTCUShapePerWarpFunc =
-    SmallVector<int> (*)(const IluvatarMmaEncodingAttr *, int);
-DEFINE_LOAD_FUNC(getTCUShapePerWarp)
-
-SmallVector<int>
-IluvatarMmaEncodingAttr::getTCUShapePerWarp(int bitwidth) const {
-  auto func = load_getTCUShapePerWarp_func("iluvatar", "getTCUShapePerWarp");
-  return func(this, bitwidth);
-}
-
-using getTCUShapePerCTAFunc =
-    SmallVector<unsigned> (*)(const IluvatarMmaEncodingAttr *, int);
-DEFINE_LOAD_FUNC(getTCUShapePerCTA)
-
-SmallVector<unsigned>
-IluvatarMmaEncodingAttr::getTCUShapePerCTA(int bitwidth) const {
-  auto func = load_getTCUShapePerCTA_func("iluvatar", "getTCUShapePerCTA");
-  return func(this, bitwidth);
-}
-
-using getTCURepFunc = SmallVector<int> (*)(const IluvatarMmaEncodingAttr *,
-                                           ArrayRef<int64_t>, int, int);
-DEFINE_LOAD_FUNC(getTCURep)
-
-SmallVector<int> IluvatarMmaEncodingAttr::getTCURep(ArrayRef<int64_t> shape,
-                                                    int bitwidth,
-                                                    int opIdx) const {
-  auto func = load_getTCURep_func("iluvatar", "getTCURep");
-  return func(this, shape, bitwidth, opIdx);
-}
-
-using getTotalElemsPerThreadForOperandsFunc = unsigned (*)(
-    const IluvatarMmaEncodingAttr *, ArrayRef<int64_t>, Type, int, int);
-DEFINE_LOAD_FUNC(getTotalElemsPerThreadForOperands)
-
-unsigned IluvatarMmaEncodingAttr::getTotalElemsPerThreadForOperands(
-    ArrayRef<int64_t> shape, Type eltTy, int kWidth, int opIdx) const {
-  auto func = load_getTotalElemsPerThreadForOperands_func(
-      "iluvatar", "getTotalElemsPerThreadForOperands");
-  return func(this, shape, eltTy, kWidth, opIdx);
-}
-
-using getShapePerCTATileForDotOperandsFunc = SmallVector<unsigned> (*)(
-    const IluvatarMmaEncodingAttr *, ArrayRef<int64_t>, int);
-DEFINE_LOAD_FUNC(getShapePerCTATileForDotOperands)
-
-SmallVector<unsigned> IluvatarMmaEncodingAttr::getShapePerCTATileForDotOperands(
-    ArrayRef<int64_t> shape, int opIdx) const {
-  auto func = load_getShapePerCTATileForDotOperands_func(
-      "iluvatar", "getShapePerCTATileForDotOperands");
-  return func(this, shape, opIdx);
-}
-
-using getSizePerThreadForOperandsFunc =
-    SmallVector<unsigned> (*)(const IluvatarMmaEncodingAttr *, unsigned);
-DEFINE_LOAD_FUNC(getSizePerThreadForOperands)
-
-SmallVector<unsigned>
-IluvatarMmaEncodingAttr::getSizePerThreadForOperands(unsigned opIdx) const {
-  auto func = load_getSizePerThreadForOperands_func(
-      "iluvatar", "getSizePerThreadForOperands");
-  return func(this, opIdx);
-}
-#endif
-
-//===----------------------------------------------------------------------===//
 // DotOperand Encoding
 //===----------------------------------------------------------------------===//
 SmallVector<unsigned> DotOperandEncodingAttr::getThreadsPerWarp() const {
@@ -2439,17 +2137,6 @@ struct TritonGPUInferLayoutInterface
     : public triton::DialectInferLayoutInterface {
   using DialectInferLayoutInterface::DialectInferLayoutInterface;
 
-#ifdef FLAGTREE_SPEC_Dialect_Triton_IR_Dialect_inferReduceOpEncoding_ARG
-  LogicalResult inferReduceOpEncoding(
-      Attribute operandEncoding, unsigned axis,
-      FLAGTREE_SPEC_Dialect_Triton_IR_Dialect_inferReduceOpEncoding_ARG
-          spec_arg,
-      Attribute &resultEncoding) const override {
-    resultEncoding = SliceEncodingAttr::get(getDialect()->getContext(), axis,
-                                            operandEncoding, spec_arg);
-    return success();
-  }
-#else
   LogicalResult
   inferReduceOpEncoding(Attribute operandEncoding, unsigned axis,
                         Attribute &resultEncoding) const override {
@@ -2457,7 +2144,6 @@ struct TritonGPUInferLayoutInterface
                                             operandEncoding);
     return success();
   }
-#endif
 
   // Infer the encoding of a tt.trans(x) given the encoding of x.
   //
@@ -2527,17 +2213,10 @@ struct TritonGPUInferLayoutInterface
       if (failed(ctaLayout)) {
         return failure();
       }
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_TritonGPUInferLayoutInterface_inferTransOpEncoding
       resultEncoding = SharedEncodingAttr::get(
           getDialect()->getContext(), enc.getVec(), enc.getPerPhase(),
           enc.getMaxPhase(), applyPermutation(invOrderUnsigned, enc.getOrder()),
           *ctaLayout, enc.getHasLeadingOffset());
-#else
-      resultEncoding = SharedEncodingAttr::get(
-          getDialect()->getContext(), enc.getVec(), enc.getPerPhase(),
-          enc.getMaxPhase(), applyPermutation(invOrderUnsigned, enc.getOrder()),
-          *ctaLayout, enc.getHasLeadingOffset(), enc.getUseTcu());
-#endif
       return success();
     }
 
@@ -2552,22 +2231,12 @@ struct TritonGPUInferLayoutInterface
       if (failed(ctaLayout)) {
         return failure();
       }
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_TritonGPUInferLayoutInterface_inferTransOpEncoding
       resultEncoding = BlockedEncodingAttr::get(
           getDialect()->getContext(),
           applyPermutation(enc.getSizePerThread(), order),
           applyPermutation(enc.getThreadsPerWarp(), order),
           applyPermutation(enc.getWarpsPerCTA(), order),
           applyPermutation(invOrderUnsigned, enc.getOrder()), *ctaLayout);
-#else
-      resultEncoding = BlockedEncodingAttr::get(
-          getDialect()->getContext(),
-          applyPermutation(enc.getSizePerThread(), order),
-          applyPermutation(enc.getThreadsPerWarp(), order),
-          applyPermutation(enc.getWarpsPerCTA(), order),
-          applyPermutation(invOrderUnsigned, enc.getOrder()), *ctaLayout,
-          enc.getLoadType(), enc.getSmeWarpsPerCTA());
-#endif
       return success();
     }
 
@@ -2899,12 +2568,9 @@ struct TritonGPUInferLayoutInterface
         /*CTASplitNum=*/SmallVector<unsigned>(dstShape.size(), 1),
         /*CTAOrder=*/llvm::to_vector(llvm::seq<unsigned>(dstShape.size())));
 
-    unsigned loadType = src.getLoadType();
-    ArrayRef<unsigned> smeWarpsPerCTA = src.getSmeWarpsPerCTA();
-
-    dstEnc = BlockedEncodingAttr::get(
-        src.getContext(), dstSizePerThread, dstThreadsPerWarp, dstWarpsPerCTA,
-        dstOrder, CTALayout, loadType, smeWarpsPerCTA);
+    dstEnc = BlockedEncodingAttr::get(src.getContext(), dstSizePerThread,
+                                      dstThreadsPerWarp, dstWarpsPerCTA,
+                                      dstOrder, CTALayout);
 
     return success();
   }
@@ -2932,24 +2598,15 @@ struct TritonGPUInferLayoutInterface
       return ret;
     };
     dstEnc = BlockedEncodingAttr::get(
-        enc.getContext(),                   //
-        append(enc.getSizePerThread(), 2),  //
-        append(enc.getThreadsPerWarp(), 1), //
-        append(enc.getWarpsPerCTA(), 1),    //
-        appendMinorDim(enc.getOrder()),     //
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_TritonGPUInferLayoutInterface_inferJoinOpEncoding
+        enc.getContext(),                    //
+        append(enc.getSizePerThread(), 2),   //
+        append(enc.getThreadsPerWarp(), 1),  //
+        append(enc.getWarpsPerCTA(), 1),     //
+        appendMinorDim(enc.getOrder()),      //
         CTALayoutAttr::get(enc.getContext(), //
                            append(enc.getCTAsPerCGA(), 1),
                            append(enc.getCTASplitNum(), 1),
                            appendMinorDim(enc.getCTAOrder())));
-#else
-        CTALayoutAttr::get(enc.getContext(), //
-                           append(enc.getCTAsPerCGA(), 1),
-                           append(enc.getCTASplitNum(), 1),
-                           appendMinorDim(enc.getCTAOrder())),
-        enc.getLoadType(), //
-        enc.getSmeWarpsPerCTA());
-#endif
     return success();
   }
 
@@ -2993,18 +2650,10 @@ struct TritonGPUInferLayoutInterface
         ArrayRef(enc.getThreadsPerWarp()).drop_back(1),
         ArrayRef(enc.getWarpsPerCTA()).drop_back(1),
         ArrayRef(enc.getOrder()).drop_front(1),
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_TritonGPUInferLayoutInterface_inferSplitOpEncoding
         CTALayoutAttr::get(enc.getContext(), //
                            ArrayRef(enc.getCTAsPerCGA()).drop_back(1),
                            ArrayRef(enc.getCTASplitNum()).drop_back(1),
                            ArrayRef(enc.getCTAOrder()).drop_front(1)));
-#else
-        CTALayoutAttr::get(enc.getContext(), //
-                           ArrayRef(enc.getCTAsPerCGA()).drop_back(1),
-                           ArrayRef(enc.getCTASplitNum()).drop_back(1),
-                           ArrayRef(enc.getCTAOrder()).drop_front(1)),
-        enc.getLoadType(), enc.getSmeWarpsPerCTA());
-#endif
     return success();
   }
 };
@@ -3105,14 +2754,8 @@ struct CanonicalizeConvertFromConvert
     // heuristic to accommodate fused attention.
     auto srcType = op.getSrc().getType();
     auto dstType = op.getType();
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_CanonicalizeConvertFromConvert_matchAndRewrite
     if (mlir::isa<DotOperandEncodingAttr>(dstType.getEncoding()) &&
         mlir::isa<NvidiaMmaEncodingAttr>(srcType.getEncoding()))
-#else
-    if (mlir::isa<DotOperandEncodingAttr>(dstType.getEncoding()) &&
-        (mlir::isa<NvidiaMmaEncodingAttr>(srcType.getEncoding()) ||
-         mlir::isa<IluvatarMmaEncodingAttr>(srcType.getEncoding())))
-#endif
       return failure();
 
     // for hopper MMAv3
@@ -3181,12 +2824,6 @@ struct CanonicalizeConvertFromConvert
     // cvt(cvt(x, type1), type2) -> cvt(x, type2)
     if (auto cvt = dyn_cast<ConvertLayoutOp>(arg)) {
       auto srcType = op.getSrc().getType();
-#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_CanonicalizeConvertFromConvert_matchAndRewrite
-      if (triton::gpu::isMmaConvertLayout(cvt))
-        return failure();
-      if (triton::gpu::isSliceMmaConvertLayout(arg, true, false))
-        return mlir::failure();
-#endif
       rewriter.replaceOpWithNewOp<triton::gpu::ConvertLayoutOp>(
           op, op->getResultTypes().front(), cvt.getSrc());
       return success();
@@ -3342,3 +2979,5 @@ LogicalResult TritonGPUDialect::verifyOperationAttribute(Operation *op,
   // TODO: fill this.
   return success();
 }
+
+#endif
