@@ -10,6 +10,59 @@ DEFINE_LOAD_FUNC(getMNCoords)
 } // namespace SharedToDotOperandMMAv1
 
 namespace mlir {
+
+SmallVector<Value> 
+emitBaseIndexForLayoutImpl_result(Location loc,
+                                  RewriterBase &rewriter,
+                                  const Attribute &layout,
+                                  RankedTensorType type) {
+  SmallVector<Value> result;
+  if (auto mmaLayout = mlir::dyn_cast<IluvatarMmaEncodingAttr>(layout)) {
+    if (mmaLayout.isVolta()) {
+      DEFINE_CALL_LOAD_FUNC(iluvatar, emitBaseIndexForTCULayout);
+      result = func(loc, rewriter, mmaLayout, type);
+    }
+  }
+  return result;
+}
+
+SmallVector<SmallVector<unsigned>>
+emitOffsetForLayout_return(const IluvatarMmaEncodingAttr &mmaLayout,
+                           RankedTensorType type) {
+  if (mmaLayout.isVolta()) {
+    DEFINE_CALL_LOAD_FUNC(iluvatar, emitOffsetForTCULayout)
+    return func(mmaLayout, type);
+  }
+  llvm_unreachable("unsupported emitOffsetForLayout");
+}
+
+Value getSwizzledSharedPtrs_ret(Location loc, RewriterBase &rewriter,
+                                RankedTensorType srcTy, ArrayRef<Value> idx,
+                                triton::gpu::SharedEncodingAttr resSharedLayout,
+                                Type resElemTy, SharedMemoryObject smemObj,
+                                Type dstPtrTy, Value dstPtrBase,
+                                Value idxRow, Value idxCol,
+                                ArrayRef<unsigned> outOrder,
+                                unsigned perPhase, Value strideRow,
+                                Value strideCol) {
+  bool isRow = outOrder[0] == 1;
+  Value off = NULL;
+  auto capability = getNVIDIAComputeCapability(
+      smemObj.base.getDefiningOp()->getParentOfType<ModuleOp>());
+  if (resSharedLayout.getUseTcu() && outOrder.size() == 2) {
+    DEFINE_CALL_LOAD_FUNC(iluvatar, remapOffset)
+    off = func(idx[0], idx[1], srcTy, isRow, loc, rewriter, capability,
+               !perPhase);
+  } else {
+    off = add(mul(idxCol, strideCol), mul(idxRow, strideRow));
+  }
+  return gep(dstPtrTy, resElemTy, dstPtrBase, off);
+}
+
+unsigned storeDistributedToShared_outVec(triton::gpu::SharedEncodingAttr layout){
+  return layout.getVec();
+}
+
 namespace LLVM {
 using namespace mlir::triton;
 using mlir::triton::gpu::getOrder;

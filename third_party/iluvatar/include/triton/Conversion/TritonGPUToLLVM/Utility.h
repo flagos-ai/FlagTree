@@ -469,6 +469,36 @@ FLAGTREE_SPEC_Using_BackendMmaEncodingAttr;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
 
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitBaseIndexForLayoutImpl
+SmallVector<Value>
+emitBaseIndexForLayoutImpl_result(Location loc,
+                                  RewriterBase &rewriter,
+                                  const Attribute &layout,
+                                  RankedTensorType type);
+#endif
+
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitOffsetForLayout
+SmallVector<SmallVector<unsigned>>
+emitOffsetForLayout_return(const IluvatarMmaEncodingAttr &mmaLayout,
+                           RankedTensorType type);
+#endif
+
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs
+Value getSwizzledSharedPtrs_ret(Location loc, RewriterBase &rewriter,
+                                RankedTensorType srcTy, ArrayRef<Value> idx,
+                                triton::gpu::SharedEncodingAttr resSharedLayout,
+                                Type resElemTy, SharedMemoryObject smemObj,
+                                Type dstPtrTy, Value dstPtrBase,
+                                Value idxRow, Value idxCol,
+                                ArrayRef<unsigned> outOrder,
+                                unsigned perPhase, Value strideRow,
+                                Value strideCol);
+#endif
+
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared
+unsigned storeDistributedToShared_outVec(triton::gpu::SharedEncodingAttr layout);
+#endif
+
 inline Value dot(RewriterBase &rewriter, Location loc, ArrayRef<Value> offsets,
                  ArrayRef<Value> strides) {
   assert(offsets.size() == strides.size());
@@ -1159,12 +1189,9 @@ emitBaseIndexForLayoutImpl(Location loc, RewriterBase &rewriter,
     if (mmaLayout.isAmpere() || mmaLayout.isHopper())
       result = emitBaseIndexWithinCTAForMmaLayoutV2V3(loc, rewriter, mmaLayout,
                                                       type);
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitBaseIndexForLayoutImpl
-  } else if (auto mmaLayout = mlir::dyn_cast<IluvatarMmaEncodingAttr>(layout)) {
-    if (mmaLayout.isVolta()) {
-      DEFINE_CALL_LOAD_FUNC(iluvatar, emitBaseIndexForTCULayout)
-      result = func(loc, rewriter, mmaLayout, type);
-    }
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitBaseIndexForLayoutImpl // ??
+  } else if (mlir::dyn_cast<IluvatarMmaEncodingAttr>(layout)) {
+    result = emitBaseIndexForLayoutImpl_result(loc, rewriter, layout, type);
 #endif
   } else if (auto mfmaLayout = mlir::dyn_cast<AMDMfmaEncodingAttr>(layout)) {
     result = emitBaseIndexForMfmaLayout(loc, rewriter, mfmaLayout, type);
@@ -1234,13 +1261,9 @@ emitOffsetForLayout(Attribute layout, RankedTensorType type) {
     if (mmaLayout.isHopper())
       return emitOffsetForMmaLayoutV3(mmaLayout, type);
   }
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitOffsetForLayout
-  if (auto mmaLayout = dyn_cast<IluvatarMmaEncodingAttr>(layout)) {
-    if (mmaLayout.isVolta()) {
-      DEFINE_CALL_LOAD_FUNC(iluvatar, emitOffsetForTCULayout)
-      return func(mmaLayout, type);
-    }
-  }
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitOffsetForLayout // ??
+  if (auto mmaLayout = dyn_cast<IluvatarMmaEncodingAttr>(layout))
+    return emitOffsetForLayout_return(mmaLayout, type);
 #endif
   if (auto mfmaLayout = mlir::dyn_cast<AMDMfmaEncodingAttr>(layout)) {
     return emitOffsetForMfmaLayout(mfmaLayout, type);
@@ -1297,7 +1320,6 @@ emitIndices(Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
 
 /* ---------------- */
 /* ---------------- */
-
 inline DenseMap<unsigned, Value> getSwizzledSharedPtrs(
     Location loc, const TargetInfoBase &target, unsigned inVec,
     RankedTensorType srcTy, triton::gpu::SharedEncodingAttr resSharedLayout,
@@ -1397,20 +1419,11 @@ inline DenseMap<unsigned, Value> getSwizzledSharedPtrs(
     }
     // compute phase = (row // perPhase) % maxPhase
     Value phase = urem(udiv(idxRow, i32_val(perPhase)), i32_val(maxPhase));
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs // NO
     // corex swizzle
-    bool isRow = outOrder[0] == 1;
-    Value off = NULL;
-    auto capability = getNVIDIAComputeCapability(
-        smemObj.base.getDefiningOp()->getParentOfType<ModuleOp>());
-    if (resSharedLayout.getUseTcu() && idx.size() == 2) {
-      DEFINE_CALL_LOAD_FUNC(iluvatar, remapOffset)
-      off = func(idx[0], idx[1], srcTy, isRow, loc, rewriter, capability,
-                 !perPhase);
-    } else {
-      off = add(mul(idxCol, strideCol), mul(idxRow, strideRow));
-    }
-    ret[elemIdx] = gep(dstPtrTy, resElemTy, dstPtrBase, off);
+    ret[elemIdx] = getSwizzledSharedPtrs_ret(
+        loc, rewriter, srcTy, idx, resSharedLayout, resElemTy, smemObj, dstPtrTy,
+        dstPtrBase, idxRow, idxCol, outOrder, perPhase, strideRow, strideCol);
 #else
     // extract dynamic/static offset for immediate offsetting
     unsigned immedateOffCol = 0;
@@ -1559,12 +1572,11 @@ inline void storeDistributedToShared(Value src, ArrayRef<Value> inVals,
   // If the shmem layout is not swizzled, we can trivially vectorize stores
   // across the whole width of the most-minor dimension of the shape, because
   // Triton requires all the dims are powers of 2.
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared
-  unsigned outVec = dstSharedLayout.getVec();
-#else
   unsigned outVec = dstSharedLayout.getMaxPhase() == 1
                         ? dstTy.getShape()[inOrd[0]]
                         : dstSharedLayout.getVec();
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared // YES
+  outVec = storeDistributedToShared_outVec(dstSharedLayout);
 #endif
   unsigned minVec = std::min(outVec, inVec);
   unsigned numElems = triton::gpu::getTotalElemsPerThread(srcTy);
