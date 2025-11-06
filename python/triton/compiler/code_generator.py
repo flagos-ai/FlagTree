@@ -155,10 +155,12 @@ class ContainsReturnChecker(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> bool:
         # There couldn't be an early return
+        # x = ...
         return False
 
     def visit_AugAssign(self, node: ast.AugAssign) -> bool:
         # There couldn't be an early return
+        # x += ...
         return False
 
     def visit_Module(self, node: ast.Module) -> bool:
@@ -168,6 +170,13 @@ class ContainsReturnChecker(ast.NodeVisitor):
         return self._visit_stmts(node.body)
 
     def visit_If(self, node: ast.If) -> bool:
+        # TODO: optimize the following case in which we actually don't have
+        # a return when static_cond is false:
+        # if dynamic_cond
+        #   if static_cond
+        #     func_with_return
+        #   else
+        #     func_without_return
         ret = self._visit_stmts(node.body)
         if node.orelse:
             ret = ret or self._visit_stmts(node.orelse)
@@ -192,6 +201,9 @@ class CodeGenerator(ast.NodeVisitor):
         self.begin_line = begin_line - 1
         self.builder.set_loc(file_name, begin_line, 0)
         self.builder.options = options
+        # dict of functions provided by the backend. Below are the list of possible functions:
+        # Convert custom types not natively supported on HW.
+        # convert_custom_types(intput_tensor, dtype, fp_downcast_rounding=None, _builder=None)
         self.builder.codegen_fns = codegen_fns
         self.builder.module_map = {} if module_map is None else module_map
         self.module = self.builder.create_module() if module is None else module
@@ -474,7 +486,10 @@ class CodeGenerator(ast.NodeVisitor):
         return self.visit_Assign(node)
 
     def visit_Assign(self, node):
-        # flagtree: First, do normal assignment processing
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        flagtree_backend_specialization("anno_CodeGenerator_visit_Assign")
+
         _names = []
         if isinstance(node, ast.AnnAssign):
             _names += [self.visit(node.target)]
@@ -498,30 +513,10 @@ class CodeGenerator(ast.NodeVisitor):
                not isinstance(value, native_nontensor_types):
                 value = language.semantic.to_tensor(value, self.builder)
             self.set_value(name, value)
-        
-        # flagtree: After normal processing, check if we need to add hint annotation
-        if hasattr(node, 'lineno') and hasattr(self, 'jit_fn'):
-            line_num = node.lineno
-            # TODO: reparse needed in case we need to deal with complex cases, will be redesigned later
-            function_def = self.jit_fn.parse()
-            line_flagtree_hints = getattr(function_def.body[0], 'line_flagtree_hints', {})
-            flagtree_hints = line_flagtree_hints.get(line_num)
-            
-            # Check if this is a tl.load call with dot_pad_only_k hint
-            if (flagtree_hints and 'dot_pad_only_k' in flagtree_hints and
-                isinstance(node.value, ast.Call) and 
-                isinstance(node.value.func, ast.Attribute) and
-                isinstance(node.value.func.value, ast.Name) and 
-                node.value.func.value.id == 'tl' and 
-                node.value.func.attr == 'load'):
-                
-                # Add hint annotation to the loaded tensor(s)
-                for name, value in zip(names, values):
-                    if _is_triton_value(value):
-                        # print(f"[FLAGTREE] Creating hint annotation for tensor: {flagtree_hints}")
-                        # Create hint annotation
-                        hint_val = self.builder.get_unit_attr()
-                        self.builder.create_annotation(value.handle, 'dot_pad_only_k', hint_val)
+
+        #flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        flagtree_backend_specialization("ext_CodeGenerator_visit_Assign_hint_anno", self, node, names, values)
 
     def visit_AugAssign(self, node):
         name = node.target.id
@@ -828,6 +823,8 @@ class CodeGenerator(ast.NodeVisitor):
             liveins, insert_block = sr
             ip, last_loc = self._get_insertion_point_and_loc()
 
+            # loop body (the after region)
+            # loop_block = self.builder.create_block()
             dummy = self.builder.create_block()
             self.builder.set_insertion_point_to_start(dummy)
             self.scf_stack.append(node)
@@ -921,8 +918,11 @@ class CodeGenerator(ast.NodeVisitor):
             return
         num_stages = None
         loop_unroll_factor = None
-        bind_sub_block = None
-        if IteratorClass in [language.range, language.parallel]:
+
+        #flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        bind_sub_block = flagtree_backend_specialization("init_bind_sub_block")
+        if IteratorClass in [language.range] + ([language.parallel] if flagtree_backend_specialization("is_visit_For_support_parallel") else []):
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -932,8 +932,9 @@ class CodeGenerator(ast.NodeVisitor):
             step = iterator.step
             num_stages = iterator.num_stages
             loop_unroll_factor = iterator.loop_unroll_factor
-            if (IteratorClass is language.parallel):
-                bind_sub_block = iterator.bind_sub_block
+
+            #flagtree backend specialization
+            bind_sub_block = flagtree_backend_specialization("set_bind_sub_block_when_parallel", IteratorClass, iterator, bind_sub_block)
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -943,20 +944,10 @@ class CodeGenerator(ast.NodeVisitor):
             step = iter_args[2] if len(iter_args) > 2 else self.visit(ast.Num(1))
         else:
             raise RuntimeError('Only `range` and `static_range` iterators are currently supported')
-        
-        # flagtree: After normal processing, check if we need to override bind_sub_block
-        if hasattr(node, 'lineno') and hasattr(self, 'jit_fn'):
-            line_num = node.lineno
-            # TODO: reparse needed in case we need to deal with complex cases, will be redesigned later
-            function_def = self.jit_fn.parse()
-            line_flagtree_hints = getattr(function_def.body[0], 'line_flagtree_hints', {})
-            flagtree_hints = line_flagtree_hints.get(line_num)
-            
-            # Check if this is a range/for loop with bind_sub_block hint
-            if flagtree_hints and 'bind_sub_block' in flagtree_hints:
-                bind_sub_block = True
-                # print(f"[FLAGTREE] Found bind_sub_block hint at line {line_num}")
-        
+
+        #flagtree backend specialization
+        bind_sub_block = flagtree_backend_specialization("check_override_bind_sub_block", self, node, bind_sub_block)
+
         # handle negative constant step (not supported by scf.for in MLIR)
         negative_step = False
         if _is_constexpr(step) and step.value < 0:
@@ -1021,7 +1012,8 @@ class CodeGenerator(ast.NodeVisitor):
             if loop_unroll_factor is not None:
                 for_op.set_attr("tt.loop_unroll_factor", self.builder.get_int32_attr(loop_unroll_factor))
             if (bind_sub_block is not None) and bind_sub_block:
-                for_op.set_attr("bind_sub_block", self.builder.get_bool_attr(bind_sub_block))
+                #flagtree backend specialization
+                flagtree_backend_specialization("forop_setattr_for_bind_sub_block", self, for_op, bind_sub_block)
 
             self.scf_stack.append(node)
             self.builder.set_insertion_point_to_start(for_op.get_body(0))
@@ -1105,7 +1097,11 @@ class CodeGenerator(ast.NodeVisitor):
                 generator.visit(fn.parse())
             except Exception as e:
                 # Wrap the error in the callee with the location of the call.
-                raise CompilationError(self.jit_fn.src, self.cur_node, repr(e)) from e
+
+                #flagtree backend specialization
+                from triton.runtime.driver import flagtree_backend_specialization
+                raise CompilationError(self.jit_fn.src, self.cur_node,
+                                       repr(e) if flagtree_backend_specialization('need_repr_in_CodeGenerator_CompilationError') else None) from e
 
             callee_ret_type = generator.ret_type
             self.function_ret_types[fn_name] = callee_ret_type
@@ -1149,7 +1145,11 @@ class CodeGenerator(ast.NodeVisitor):
                 # itself).  But when calling a function, we raise as `from e` to
                 # preserve the traceback of the original error, which may e.g.
                 # be in core.py.
-                raise CompilationError(self.jit_fn.src, node, repr(e)) from e
+
+                #flagtree backend specialization
+                from triton.runtime.driver import flagtree_backend_specialization
+                raise CompilationError(self.jit_fn.src, node,
+                                       repr(e) if flagtree_backend_specialization('need_repr_in_CodeGenerator_CompilationError') else None) from e
 
         if fn in self.builtin_namespace.values():
             args = map(_unwrap_if_constexpr, args)
