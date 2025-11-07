@@ -1,19 +1,28 @@
 from __future__ import annotations
 
-from typing import List, TYPE_CHECKING, Any, Union, Dict
+from typing import List
 
+# flagtree backend specialization
+from triton.runtime.driver import flagtree_backend_specialization
+from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from .language import core
-    IterableType = Union[list[Any], tuple[Any, ...], core.tuple, core.tuple_type]
-    ObjPath = tuple[int, ...]
+    IterableType, ObjPath = flagtree_backend_specialization('get_language_utils_IterableType_ObjPath')
 
-TRITON_MAX_TENSOR_NUMEL = 1048576
+
+TRITON_MAX_TENSOR_NUMEL = flagtree_backend_specialization('get_triton_max_tensor_numel')
+
+
+def is_power_of_two(x):
+    return (x & (x - 1)) == 0
+
 
 def validate_block_shape(shape: List[int]):
     numel = 1
     for i, d in enumerate(shape):
         if not isinstance(d, int):
             raise TypeError(f"Shape element {i} must have type `constexpr[int]`, got `constexpr[{type(d)}]")
+        if flagtree_backend_specialization('is_block_shape_check_power_of_two') and not is_power_of_two(d):
+            raise ValueError(f"Shape element {i} must be a power of 2")
         numel *= d
 
     if numel > TRITON_MAX_TENSOR_NUMEL:
@@ -21,19 +30,11 @@ def validate_block_shape(shape: List[int]):
     return numel
 
 
-BITWIDTH_DICT: Dict[str, int] = {
-    **{f"u{n}": n
-       for n in (1, 8, 16, 32, 64)},
-    **{f"i{n}": n
-       for n in (1, 8, 16, 32, 64)},
-    **{f"fp{n}": n
-       for n in (16, 32, 64)},
-    **{f"fp8{suffix}": 8
-       for suffix in ("e4nv", "e4b15", "e4b8", "e5", "e5b16")},
-    "bf16": 16,
-    "void": 0,
-}
+# flagtree backend specialization
+from triton.runtime.driver import flagtree_backend_specialization
+BITWIDTH_DICT = flagtree_backend_specialization('get_language_utils_BITWIDTH_DICT')
 
 
-def get_primitive_bitwidth(dtype: str) -> int:
-    return BITWIDTH_DICT[dtype]
+# flagtree backend specialization
+from triton.runtime.driver import flagtree_backend_func_specialization
+get_primitive_bitwidth = flagtree_backend_func_specialization("get_primitive_bitwidth")
