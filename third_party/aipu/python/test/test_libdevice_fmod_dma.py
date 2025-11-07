@@ -24,8 +24,8 @@ def fmod_kernel(
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
-    x = tl.load(x_ptr + offsets, mask=mask)
-    y = tl.load(y_ptr + offsets, mask=mask)
+    x = tl.load(x_ptr + offsets, mask=mask)  #@hint: dma
+    y = tl.load(y_ptr + offsets, mask=mask)  #@hint: dma
     z = tl.extra.aipu.libdevice.fmod(x, y)
     tl.store(y_ptr + offsets, z, mask=mask)
 

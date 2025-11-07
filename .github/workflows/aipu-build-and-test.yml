@@ -65,11 +65,24 @@ jobs:
         run: |
           source ~/env_setup.sh
           python3.10 third_party/aipu/python/test/test_01_vector_add.py
-          python3.10 third_party/aipu/python/test/test_02_fused_softmax.py
-          python3.10 third_party/aipu/python/test/test_libdevice_fmod.py
-          python3.10 third_party/aipu/python/test/test_libdevice_pow.py
-          python3.10 third_party/aipu/python/test/test_codegen_dma.py
           python3.10 third_party/aipu/python/test/test_01_vector_add_shared_memory.py
+          python3.10 third_party/aipu/python/test/test_01_vector_add_dma.py
+          python3.10 third_party/aipu/python/test/test_02_fused_softmax.py
+          python3.10 third_party/aipu/python/test/test_02_fused_softmax_shared_memory.py
+          python3.10 third_party/aipu/python/test/test_02_fused_softmax_dma.py
+          python3.10 third_party/aipu/python/test/test_libdevice_fmod.py
+          python3.10 third_party/aipu/python/test/test_libdevice_fmod_shared_memory.py
+          python3.10 third_party/aipu/python/test/test_libdevice_fmod_dma.py
+          python3.10 third_party/aipu/python/test/test_libdevice_pow.py
+          python3.10 third_party/aipu/python/test/test_libdevice_pow_shared_memory.py
+          python3.10 third_party/aipu/python/test/test_libdevice_pow_dma.py
+          python3.10 third_party/aipu/python/test/test_codegen_dma.py
+          python3.10 third_party/aipu/python/test/test_01_vector_add_structured_1d.py
           python3.10 third_party/aipu/python/test/test_01_vector_add_structured_1d_shared_memory.py
+          python3.10 third_party/aipu/python/test/test_01_vector_add_structured_1d_dma.py
           python3.10 third_party/aipu/python/test/min.py
+          python3.10 third_party/aipu/python/test/min_shared_memory.py
+          #python3.10 third_party/aipu/python/test/min_dma.py
           python3.10 third_party/aipu/python/test/var_mean.py
+          python3.10 third_party/aipu/python/test/var_mean_shared_memory.py
+          #python3.10 third_party/aipu/python/test/var_mean_dma.py

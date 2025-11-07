@@ -2,7 +2,15 @@ import torch
 import triton
 import triton.language as tl
 
-DEVICE = triton.runtime.driver.active.get_active_torch_device()
+# active driver
+driver = triton.runtime.driver.active
+# torch.cuda, torch.aipu, torch.npu
+torch_device_fn = triton.runtime.driver.active.get_device_interface()
+# device
+if hasattr(driver, "get_active_torch_device"):
+    device = triton.runtime.driver.active.get_active_torch_device()
+else:
+    device = triton.runtime.driver.active.get_current_device()
 
 
 @triton.jit()
@@ -25,8 +33,12 @@ def pow_kernel(
 def test_libdevice_pow():
     torch.manual_seed(0)
     size = 98432
-    x = torch.rand(size, dtype=torch.float32, device=DEVICE)
-    output_triton = torch.rand(size, device=DEVICE)
+    x = torch.rand(size, dtype=torch.float32, device=device)
+    output_triton = torch.rand(size, device=device)
     n_elements = x.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
     pow_kernel[grid](x, output_triton, n_elements, BLOCK_SIZE=1024)
+
+
+if __name__ == "__main__":
+    test_libdevice_pow()

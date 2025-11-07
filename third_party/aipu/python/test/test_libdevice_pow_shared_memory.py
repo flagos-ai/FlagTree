@@ -14,7 +14,7 @@ else:
 
 
 @triton.jit()
-def fmod_kernel(
+def pow_kernel(
     x_ptr,
     y_ptr,
     n_elements,
@@ -24,21 +24,21 @@ def fmod_kernel(
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
-    x = tl.load(x_ptr + offsets, mask=mask)
-    y = tl.load(y_ptr + offsets, mask=mask)
-    z = tl.extra.aipu.libdevice.fmod(x, y)
+    x = tl.load(x_ptr + offsets, mask=mask)  #@hint: shared_memory
+    y = tl.load(y_ptr + offsets, mask=mask)  #@hint: shared_memory
+    z = tl.extra.aipu.libdevice.pow(x, y)
     tl.store(y_ptr + offsets, z, mask=mask)
 
 
-def test_libdevice_fmod():
+def test_libdevice_pow():
     torch.manual_seed(0)
     size = 98432
     x = torch.rand(size, dtype=torch.float32, device=device)
     output_triton = torch.rand(size, device=device)
     n_elements = x.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
-    fmod_kernel[grid](x, output_triton, n_elements, BLOCK_SIZE=1024)
+    pow_kernel[grid](x, output_triton, n_elements, BLOCK_SIZE=1024)
 
 
 if __name__ == "__main__":
-    test_libdevice_fmod()
+    test_libdevice_pow()
