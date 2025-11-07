@@ -64,7 +64,7 @@ python3 -m pip install . --no-build-isolation -v
 # 推荐使用镜像 Ubuntu 22.04
 mkdir -p ~/.flagtree/aipu; cd ~/.flagtree/aipu
 # 模拟环境中使用 x64 版本，在 ARM 开发板上使用 arm64 版本
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.3.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz
 tar zxvf llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.3.0.tar.gz
 cd ${YOUR_CODE_DIR}/flagtree/
 git checkout -b triton_v3.3.x origin/triton_v3.3.x
