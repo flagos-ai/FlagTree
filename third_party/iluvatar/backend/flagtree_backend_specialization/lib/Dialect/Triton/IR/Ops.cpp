@@ -1,7 +1,3 @@
-#include "flagtree_spec.h"
-
-#ifndef FLAGTREE_SPEC_Dialect_Triton_IR_Ops_cpp
-
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -15,6 +11,95 @@
 
 namespace mlir {
 namespace triton {
+
+#ifdef __ILUVATAR__
+// Parser & printer for assembly forms
+ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
+  // Parse operands
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> allOperands;
+
+  SMLoc allOperandLoc = parser.getCurrentLocation();
+  if (parser.parseOperandList(allOperands) ||
+      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
+    return failure();
+
+  // Operand types
+  SmallVector<Type> operandTypes;
+
+  // Parse `optional(type(ptr)) -> type(result)`
+  Type ptrType, resultType;
+  if (parser.parseType(resultType))
+    return failure();
+  if (parser.parseOptionalArrow().succeeded()) {
+    ptrType = resultType;
+    if (parser.parseType(resultType))
+      return failure();
+    operandTypes.push_back(ptrType);
+    result.addTypes(resultType);
+  } else {
+    operandTypes.push_back(getPointerTypeSameShape(resultType));
+    result.addTypes(resultType);
+  }
+
+  // Determine `mask` and `other`
+  int hasMask = 0, hasOther = 0;
+  if (allOperands.size() == 2) {
+    operandTypes.push_back(getI1SameShape(resultType));
+    hasMask = 1;
+  }
+  if (allOperands.size() == 3) {
+    operandTypes.push_back(getI1SameShape(resultType));
+    operandTypes.push_back(resultType);
+    hasMask = 1;
+    hasOther = 1;
+  }
+  // Determine `inputStride`
+  int hasStride = 0;
+  if (allOperands.size() == 4) {
+    operandTypes.push_back(
+        IntegerType::get(parser.getBuilder().getContext(), 32));
+    operandTypes.push_back(
+        IntegerType::get(parser.getBuilder().getContext(), 32)); // placeHolder0
+    operandTypes.push_back(
+        IntegerType::get(parser.getBuilder().getContext(), 32)); // placeHolder1
+    hasStride = 1;
+  }
+
+  if (parser.resolveOperands(allOperands, operandTypes, allOperandLoc,
+                             result.operands))
+    return failure();
+
+  // Deduce `operandSegmentSizes` from the number of the operands
+  auto operandSegmentSizesAttrName =
+      LoadOp::getOperandSegmentSizesAttrName(result.name);
+  result.addAttribute(
+      operandSegmentSizesAttrName,
+      parser.getBuilder().getDenseI32ArrayAttr(
+          {1, hasMask, hasOther, hasStride, hasStride, hasStride}));
+
+  return success();
+}
+#endif
+
+#ifdef __ILUVATAR__
+void LoadOp::print(OpAsmPrinter &printer) {
+  printer << " ";
+  printer << getOperation()->getOperands();
+
+  // `operandSegmentSizes` can be deduced, so we don't print it.
+  printer.printOptionalAttrDict(getOperation()->getAttrs(),
+                                {getOperandSegmentSizesAttrName()});
+
+  // `type(ptr) -> type(result)`
+  printer << " : ";
+  // `type(ptr)` is optional during parsing, we only print for tensor pointers
+  if (isTensorPointerType(getPtr().getType())) {
+    printer.printStrippedAttrOrType(getPtr().getType());
+    printer << " -> ";
+  }
+  printer.printStrippedAttrOrType(getResult().getType());
+}
+#endif
 
 void LoadOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
@@ -39,6 +124,18 @@ namespace mlir {
 namespace triton {
 
 //-- LoadOp --
+#ifdef __ILUVATAR__
+static Type getLoadOpResultType(OpBuilder &builder, Type ptrType) {
+  auto ptrTensorType = ptrType.dyn_cast<RankedTensorType>();
+  if (!ptrTensorType)
+    return ptrType.cast<PointerType>().getPointeeType();
+  auto shape = ptrTensorType.getShape();
+  Type elementType =
+      ptrTensorType.getElementType().cast<PointerType>().getPointeeType();
+  return RankedTensorType::get(shape, elementType);
+}
+#endif
+
 void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    CacheModifier cache, EvictionPolicy evict, bool isVolatile) {
   LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{},
@@ -74,6 +171,7 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    Value mask, Value other, ArrayRef<int32_t> boundaryCheck,
                    std::optional<PaddingOption> padding, CacheModifier cache,
                    EvictionPolicy evict, bool isVolatile) {
+#ifndef __ILUVATAR__
   auto paddingAttr =
       padding.has_value()
           ? PaddingOptionAttr::get(builder.getContext(), padding.value())
@@ -81,6 +179,39 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
   LoadOp::build(builder, state, ptr, mask, other,
                 builder.getDenseI32ArrayAttr(boundaryCheck), paddingAttr, cache,
                 evict, isVolatile);
+#else
+  // Operands
+  state.addOperands(ptr);
+  if (mask) {
+    state.addOperands(mask);
+    if (other) {
+      state.addOperands(other);
+    }
+  }
+
+  // Attributes
+  state.addAttribute(getOperandSegmentSizesAttrName(state.name),
+                     builder.getDenseI32ArrayAttr(
+                         {1, (mask ? 1 : 0), (other ? 1 : 0), 0, 0, 0}));
+  state.addAttribute(
+      getBoundaryCheckAttrName(state.name),
+      DenseI32ArrayAttr::get(builder.getContext(), boundaryCheck));
+  if (padding.has_value()) {
+    state.addAttribute(
+        getPaddingAttrName(state.name),
+        PaddingOptionAttr::get(builder.getContext(), padding.value()));
+  }
+  state.addAttribute(getCacheAttrName(state.name),
+                     CacheModifierAttr::get(builder.getContext(), cache));
+  state.addAttribute(getEvictAttrName(state.name),
+                     EvictionPolicyAttr::get(builder.getContext(), evict));
+  state.addAttribute(getIsVolatileAttrName(state.name),
+                     builder.getBoolAttr(isVolatile));
+
+  // Result type
+  Type resultType = getLoadOpResultType(builder, ptr.getType());
+  state.addTypes({resultType});
+#endif
 }
 
 // load(ptr, splat(1), ...)        -> load(ptr, ...)
@@ -106,10 +237,19 @@ struct CanonicalizeMaskedLoadPattern : public OpRewritePattern<LoadOp> {
 
     if (splatMask.getSplatValue<IntegerAttr>().getValue() == true) {
       // mask = splat(1)
+#ifndef __ILUVATAR__
       rewriter.replaceOpWithNewOp<LoadOp>(
           loadOp, loadOp.getType(), loadOp.getPtr(), Value(), Value(),
           loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+#else
+      rewriter.replaceOpWithNewOp<LoadOp>(
+          loadOp, loadOp.getType(), loadOp.getPtr(), Value(), Value(),
+          loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
+          loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
+          loadOp.getInputStride(), loadOp.getInputStride(),
+          loadOp.getInputStride());
+#endif
     } else {
       // mask = splat(0)
 
@@ -338,6 +478,7 @@ LogicalResult MakeRangeOp::verify() {
 }
 
 //-- ReduceOp --
+#ifndef __ILUVATAR__
 static LogicalResult
 inferReduceReturnShape(const RankedTensorType &argTy, const Type &retEltTy,
                        int axis, SmallVectorImpl<Type> &inferredReturnTypes) {
@@ -368,7 +509,42 @@ inferReduceReturnShape(const RankedTensorType &argTy, const Type &retEltTy,
   }
   return success();
 }
+#else
+static LogicalResult
+inferReduceReturnShape(const RankedTensorType &argTy, const Type &retEltTy,
+                       int axis, bool noWarpReduce,
+                       SmallVectorImpl<Type> &inferredReturnTypes) {
+  auto retShape = argTy.getShape().vec();
+  retShape.erase(retShape.begin() + axis);
+  if (retShape.empty()) {
+    // 0d-tensor -> scalar
+    inferredReturnTypes.push_back(retEltTy);
+  } else {
+    // nd-tensor where n >= 1
+    // infer encoding
+    Attribute argEncoding = argTy.getEncoding();
+    Attribute retEncoding;
+    if (argEncoding) {
+      Dialect &dialect = argEncoding.getDialect();
+      auto inferLayoutInterface =
+          dyn_cast<DialectInferLayoutInterface>(&dialect);
+      if (inferLayoutInterface
+              ->inferReduceOpEncoding(argEncoding, axis, noWarpReduce,
+                                      retEncoding)
+              .failed()) {
+        llvm::report_fatal_error("failed to infer layout for ReduceOp");
+        return failure();
+      }
+    }
+    // create type
+    inferredReturnTypes.push_back(
+        RankedTensorType::get(retShape, retEltTy, retEncoding));
+  }
+  return success();
+}
+#endif
 
+#ifndef __ILUVATAR__
 void ReduceOp::build(OpBuilder &builder, OperationState &state,
                      ValueRange operands, int axis) {
   SmallVector<Type> inferredReturnTypes;
@@ -380,6 +556,21 @@ void ReduceOp::build(OpBuilder &builder, OperationState &state,
 
   ReduceOp::build(builder, state, inferredReturnTypes, operands, axis);
 }
+#else
+void ReduceOp::build(OpBuilder &builder, OperationState &state,
+                     ValueRange operands, int axis, bool noWarpReduce) {
+  SmallVector<Type> inferredReturnTypes;
+  for (unsigned i = 0; i < operands.size(); ++i) {
+    auto argTy = cast<RankedTensorType>(operands[i].getType());
+    auto retEltTy = argTy.getElementType();
+    (void)inferReduceReturnShape(argTy, retEltTy, axis, noWarpReduce,
+                                 inferredReturnTypes);
+  }
+
+  ReduceOp::build(builder, state, inferredReturnTypes, operands, axis,
+                  noWarpReduce);
+}
+#endif
 
 LogicalResult ReduceOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
@@ -387,10 +578,18 @@ LogicalResult ReduceOp::inferReturnTypes(
     SmallVectorImpl<Type> &inferredReturnTypes) {
   Properties *prop = properties.as<Properties *>();
   int axis = prop->axis.getInt();
+#ifdef __ILUVATAR__
+  bool noWarpReduce = prop->noWarpReduce.getValue();
+#endif
   for (auto arg : operands) {
     auto argTy = cast<RankedTensorType>(arg.getType());
     auto retEltTy = argTy.getElementType();
+#ifndef __ILUVATAR__
     if (inferReduceReturnShape(argTy, retEltTy, axis, inferredReturnTypes)
+#else
+    if (inferReduceReturnShape(argTy, retEltTy, axis, noWarpReduce,
+                               inferredReturnTypes)
+#endif
             .failed()) {
       return failure();
     }
@@ -513,7 +712,11 @@ void ScanOp::build(OpBuilder &builder, OperationState &state,
   state.addAttribute("reverse", builder.getBoolAttr(reverse));
   for (auto arg : operands)
     inferredReturnTypes.push_back(arg.getType());
+#ifndef __ILUVATAR__
   ReduceOp::build(builder, state, inferredReturnTypes, operands, axis);
+#else
+  ScanOp::build(builder, state, inferredReturnTypes, operands, axis, reverse);
+#endif
 }
 
 LogicalResult
@@ -984,5 +1187,3 @@ void ExternElementwiseOp::getEffects(
 
 } // namespace triton
 } // namespace mlir
-
-#endif
