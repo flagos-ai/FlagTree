@@ -2,6 +2,7 @@ include_directories(${PROJECT_BINARY_DIR}/third_party/iluvatar/lib/Dialect/Trito
 
 add_triton_library(FlagTree_iluvatar_TritonDialectTritonTransforms
   Combine.cpp
+  RewriteTensorPointer.cpp
 
   DEPENDS
   TritonTableGen
