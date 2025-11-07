@@ -4,7 +4,7 @@ import builtins
 import os
 import time
 import inspect
-from typing import Dict, List
+from typing import Dict
 
 from .jit import KernelInterface
 from .errors import OutOfResources
@@ -28,6 +28,7 @@ class Autotuner(KernelInterface):
         rep=None,
         use_cuda_graph=False,
         do_bench=None,
+        # flagtree backend specialization
         auto_profile_dir=None,
     ):
         """
@@ -36,9 +37,15 @@ class Autotuner(KernelInterface):
             'top_k': number of configs to bench
             'prune_num_stages_by'(optional): a function used to prune num_stages. It takes configs:List[Config] as its input, and returns pruned configs.
         """
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+
         if not configs:
             self.configs = [
-                Config({})
+                flagtree_backend_specialization('get_spec_default_Autotuner_configs')
+                if flagtree_backend_specialization('has_spec_default_Autotuner_configs')
+                else Config({}, num_warps=4, num_stages=2, num_ctas=1, num_buffers_warp_spec=0, num_consumer_groups=0,
+                            reg_dec_producer=0, reg_inc_consumer=0)
             ]
         else:
             self.configs = configs
@@ -100,7 +107,9 @@ class Autotuner(KernelInterface):
         self.num_warmups = warmup
         self.num_reps = rep
         self.use_cuda_graph = use_cuda_graph
-        self.auto_profile_dir = auto_profile_dir
+
+        # flagtree backend specialization
+        flagtree_backend_specialization('set_Autotuner_auto_profile_dir', self, auto_profile_dir)
 
         # If we got explicitly called via the old interface, raise a warning
         # and proceed with the old behavior.
@@ -133,7 +142,7 @@ class Autotuner(KernelInterface):
             self.do_bench = do_bench
 
     def _bench(self, *args, config, **meta):
-        from ..compiler.errors import CompileTimeAssertionFailure, MLIRCompilationError
+        from ..compiler.errors import CompileTimeAssertionFailure
 
         # check for conflicts, i.e. meta-parameters both provided
         # as kwargs and by the autotuner
@@ -162,46 +171,15 @@ class Autotuner(KernelInterface):
                     raise
 
             self.post_hook(full_nargs, exception=None)
+
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
 
         try:
             return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
-        except (OutOfResources, CompileTimeAssertionFailure, MLIRCompilationError) as e:
+        except (OutOfResources, CompileTimeAssertionFailure) + \
+                flagtree_backend_specialization("ext_Autotuner_do_bench_MLIRCompilationError") as e:
             return [float("inf"), float("inf"), float("inf")]
-
-    def _profile(self, *args, config, **meta):
-        from triton.testing import do_bench_npu
-
-        # check for conflicts, i.e. meta-parameters both provided
-        # as kwargs and by the autotuner
-        conflicts = meta.keys() & config.kwargs.keys()
-        if conflicts:
-            raise ValueError(f"Conflicting meta-parameters: {', '.join(conflicts)}."
-                             " Make sure that you don't re-define auto-tuned symbols.")
-        # augment meta-parameters with tunable ones
-        current = dict(meta, **config.all_kwargs())
-        full_nargs = {**self.nargs, **current}
-
-        def kernel_call():
-            if config.pre_hook:
-                config.pre_hook(full_nargs)
-            self.pre_hook(full_nargs)
-            try:
-                self.fn.run(
-                    *args,
-                    **current,
-                )
-            except Exception as e:
-                try:
-                    self.post_hook(full_nargs, exception=e)
-                finally:
-                    # Throw exception raised by `self.fn.run`
-                    raise
-
-            self.post_hook(full_nargs, exception=None)
-
-        do_bench_npu(
-            kernel_call, prof_dir=self.auto_profile_dir, keep_res=True
-        )
 
     def run(self, *args, **kwargs):
         self.nargs = dict(zip(self.arg_names, args))
@@ -234,8 +212,10 @@ class Autotuner(KernelInterface):
             print(f"Triton autotuning for function {self.base_fn.__name__} finished after "
                   f"{self.bench_time:.2f}s; best config selected: {self.best_config};")
 
-        if not used_cached_result and self.auto_profile_dir is not None:
-            self._profile(*args, config=self.best_config, **kwargs)
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        flagtree_backend_specialization('ext_Autotuner_profile', self, used_cached_result, args, kwargs)
+
         if config.pre_hook is not None:
             full_nargs = {**self.nargs, **kwargs, **config.all_kwargs()}
             config.pre_hook(full_nargs)
@@ -315,18 +295,14 @@ class Config:
         self.maxnreg = maxnreg
         self.pre_hook = pre_hook
 
-                    
-        # BiShengIR Options allowed for autotune
-        self.multibuffer = bishengir_options.get("multibuffer", None) # Compiler Default True
-        self.unit_flag = bishengir_options.get("unit_flag", None) # Compiler Default False
-        self.limit_auto_multi_buffer_only_for_local_buffer = bishengir_options.get("limit_auto_multi_buffer_only_for_local_buffer", None) # Compiler Default False
-        self.limit_auto_multi_buffer_of_local_buffer = bishengir_options.get("limit_auto_multi_buffer_of_local_buffer", None) # Compiler Default no-limit
-        self.set_workspace_multibuffer = bishengir_options.get("set_workspace_multibuffer", None) # Compiler Default 1
-        self.enable_hivm_auto_cv_balance = bishengir_options.get("enable_hivm_auto_cv_balance", None) # Compiler Default True
-        self.tile_mix_vector_loop = bishengir_options.get("tile_mix_vector_loop", None) # Compiler Default 1
-        self.tile_mix_cube_loop = bishengir_options.get("tile_mix_cube_loop", None) # Compiler Default 1
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        flagtree_backend_specialization('set_Config_BiShengIR_options', self, bishengir_options)
 
     def all_kwargs(self):
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+
         return {
             **self.kwargs, **{
                 k: v
@@ -339,17 +315,7 @@ class Config:
                     ("reg_dec_producer", self.reg_dec_producer),
                     ("reg_inc_consumer", self.reg_inc_consumer),
                     ("maxnreg", self.maxnreg),
-
-                    ("multibuffer", self.multibuffer),
-                    ("enable_hivm_auto_cv_balance", self.enable_hivm_auto_cv_balance),
-                    ("unit_flag", self.unit_flag),
-                    ("limit_auto_multi_buffer_only_for_local_buffer", \
-                        self.limit_auto_multi_buffer_only_for_local_buffer),
-                    ("limit_auto_multi_buffer_of_local_buffer", self.limit_auto_multi_buffer_of_local_buffer),
-                    ("set_workspace_multibuffer", self.set_workspace_multibuffer),
-                    ("tile_mix_vector_loop", self.tile_mix_vector_loop),
-                    ("tile_mix_cube_loop", self.tile_mix_cube_loop),
-                ) if v is not None
+                ) + flagtree_backend_specialization('ext_Config_all_kwargs', self) if v is not None
             }
         }
 
@@ -366,15 +332,10 @@ class Config:
         res.append(f"reg_inc_consumer: {self.reg_inc_consumer}")
         res.append(f"maxnreg: {self.maxnreg}")
 
-        res.append(f"multibuffer: {self.multibuffer}")
-        res.append(f"enable_hivm_auto_cv_balance: {self.enable_hivm_auto_cv_balance}")
-        res.append(f"unit_flag: {self.unit_flag}")
-        res.append(f"limit_auto_multi_buffer_only_for_local_buffer: \
-            {self.limit_auto_multi_buffer_only_for_local_buffer}")
-        res.append(f"limit_auto_multi_buffer_of_local_buffer: {self.limit_auto_multi_buffer_of_local_buffer}")
-        res.append(f"set_workspace_multibuffer: {self.set_workspace_multibuffer}")
-        res.append(f"tile_mix_vector_loop: {self.tile_mix_vector_loop}")
-        res.append(f"tile_mix_cube_loop: {self.tile_mix_cube_loop}")
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        flagtree_backend_specialization('ext_Config_to_str', res, self)
+
         return ", ".join(res)
 
 
@@ -440,15 +401,16 @@ def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_va
     """
 
     def decorator(fn):
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
         if split_params or tiling_params:
-            from .autotiling_tuner import AutoTilingTuner
-            return AutoTilingTuner(fn, fn.arg_names, configs, key, reset_to_zero, restore_value, pre_hook=pre_hook,
-                                   post_hook=post_hook, prune_configs_by=prune_configs_by, warmup=warmup, rep=rep,
-                                   use_cuda_graph=use_cuda_graph, do_bench=do_bench, auto_profile_dir=auto_profile_dir,
-                                   split_params=split_params, tiling_params=tiling_params, low_dims=low_dims,
-                                   dual_reduction=dual_reduction, persistent_reduction=persistent_reduction)
-        else:
-            return Autotuner(fn, fn.arg_names, configs, key, reset_to_zero, restore_value, pre_hook=pre_hook,
+            return flagtree_backend_specialization('new_AutoTilingTuner', fn, configs, key, reset_to_zero, restore_value, pre_hook,
+                                                   post_hook, prune_configs_by, warmup, rep,
+                                                   use_cuda_graph, do_bench, auto_profile_dir,
+                                                   split_params, tiling_params, low_dims,
+                                                   dual_reduction, persistent_reduction)
+
+        return Autotuner(fn, fn.arg_names, configs, key, reset_to_zero, restore_value, pre_hook=pre_hook,
                              post_hook=post_hook, prune_configs_by=prune_configs_by, warmup=warmup, rep=rep,
                              use_cuda_graph=use_cuda_graph, do_bench=do_bench, auto_profile_dir=auto_profile_dir)
 

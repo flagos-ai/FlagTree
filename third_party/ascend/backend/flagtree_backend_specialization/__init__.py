@@ -2,6 +2,7 @@ from .triton.compiler.compiler import *
 from .triton.compiler.errors import *
 from .triton.compiler.code_generator import *
 from .triton.runtime.jit import *
+from .triton.runtime.autotuner import *
 
 __all__  = [
     # compiler.compiler
@@ -31,5 +32,15 @@ __all__  = [
     'is_JITFunction_spec_attr',
     'get_JITFunction_spec_attr',
     'maps_line_numbers_to_comment_hints',
-    'attach_line_number_to_comment_mapping'
+    'attach_line_number_to_comment_mapping',
+    # runtime.autotuner
+    'set_Autotuner_auto_profile_dir',
+    'has_spec_default_Autotuner_configs',
+    'get_spec_default_Autotuner_configs',
+    'ext_Autotuner_do_bench_MLIRCompilationError',
+    'ext_Autotuner_profile',
+    'set_Config_BiShengIR_options',
+    'ext_Config_all_kwargs',
+    'ext_Config_to_str',
+    'new_AutoTilingTuner'
 ]
