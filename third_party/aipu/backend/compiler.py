@@ -142,7 +142,6 @@ class AIPUBackend(BaseBackend):
         pm.add("func.func(cse)")
         pm.add("func.func(reconcile-unrealized-casts)")
         pm.run(mod.operation)
-        pm.run(mod.operation)
 
         # Post aipu pass.
         transform.binding_tid(mod, ctx)

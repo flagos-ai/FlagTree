@@ -63,6 +63,7 @@ jobs:
       - name: FlagTree Test on AIPU
         shell: bash
         run: |
+          set -x
           source ~/env_setup.sh
           python3.10 third_party/aipu/python/test/test_01_vector_add.py
           python3.10 third_party/aipu/python/test/test_01_vector_add_shared_memory.py

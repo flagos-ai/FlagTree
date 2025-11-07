@@ -57,6 +57,7 @@ jobs:
       - name: FlagTree Test on Tsingmicro
         shell: bash
         run: |
+          set -x
           source ~/env.sh
           python3.11 -c 'import triton; print(triton.__path__)'
           /usr/local/lib/python3.11/dist-packages/triton/backends/tsingmicro/bin/tsingmicro-opt --version

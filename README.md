@@ -64,7 +64,7 @@ python3 -m pip install . --no-build-isolation -v
 # Recommended: Use Ubuntu 22.04
 mkdir -p ~/.flagtree/aipu; cd ~/.flagtree/aipu
 # x64 in the simulated environment, arm64 on the ARM development board
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.3.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz
 tar zxvf llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.3.0.tar.gz
 cd ${YOUR_CODE_DIR}/flagtree/
 git checkout -b triton_v3.3.x origin/triton_v3.3.x
