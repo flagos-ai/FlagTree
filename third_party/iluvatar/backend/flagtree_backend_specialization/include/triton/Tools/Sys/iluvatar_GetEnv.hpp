@@ -2,7 +2,8 @@
 #define ILUVATAR_TRITON_TOOLS_SYS_GETENV_HPP
 
 #define FLAGTREE_SPEC_Tools_Sys_GetEnv_head
-#define FLAGTREE_SPEC_Tools_Sys_GetEnv_ILUIR_ENABLE_DUMP
+#define FLAGTREE_SPEC_Tools_Sys_GetEnv_BACKEND_IR_ENABLE_DUMP                  \
+  "ILUIR_ENABLE_DUMP"
 #define FLAGTREE_SPEC_Tools_Sys_GetEnv_funtions
 
 #endif // ILUVATAR_TRITON_TOOLS_SYS_GETENV_HPP

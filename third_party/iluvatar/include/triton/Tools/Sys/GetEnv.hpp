@@ -35,8 +35,8 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "TRITON_LLVM_DEBUG_ONLY",
     "USE_TTGIR_LOC",
     "NVPTX_ENABLE_DUMP",
-#ifdef FLAGTREE_SPEC_Tools_Sys_GetEnv_ILUIR_ENABLE_DUMP
-    "ILUIR_ENABLE_DUMP",
+#ifdef FLAGTREE_SPEC_Tools_Sys_GetEnv_BACKEND_IR_ENABLE_DUMP
+    FLAGTREE_SPEC_Tools_Sys_GetEnv_BACKEND_IR_ENABLE_DUMP,
 #endif
     // clang-format on
 };

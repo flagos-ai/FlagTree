@@ -453,8 +453,11 @@ SmallVector<Value> emitBaseIndexForLayoutImpl_BackendMmaEncodingAttr(
 #endif
 
 #ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitOffsetForLayout_BackendMmaEncodingAttr
+#ifdef FLAGTREE_SPEC_BackendMmaEncodingAttr
 SmallVector<SmallVector<unsigned>> emitOffsetForLayout_BackendMmaEncodingAttr(
-    const IluvatarMmaEncodingAttr &mmaLayout, RankedTensorType type);
+    const FLAGTREE_SPEC_BackendMmaEncodingAttr &mmaLayout,
+    RankedTensorType type);
+#endif
 #endif
 
 #ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs_backend
