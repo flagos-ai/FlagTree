@@ -8,9 +8,6 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "flagtree_spec.h"
-#ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_head
-#include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
-#endif
 
 using namespace mlir::triton::gpu;
 
