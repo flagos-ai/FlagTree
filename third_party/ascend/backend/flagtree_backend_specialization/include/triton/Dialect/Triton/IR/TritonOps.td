@@ -18,6 +18,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td" // Pure
 include "mlir/Interfaces/CastInterfaces.td" // CastOpInterface
 include "mlir/Interfaces/CallInterfaces.td" // CallOpInterface
 include "triton/Dialect/Triton/IR/TritonTypeInterfaces.td"
+include "triton/Dialect/Triton/IR/TritonOpInterfaces.td"
 
 
 //
@@ -541,6 +542,30 @@ def TT_SplitOp : TT_Op<"split", [
     let assemblyFormat = "$src attr-dict `:` type($src) `->` type($outLHS)";
 }
 
+def TT_SortOp : TT_Op<"sort", [
+  NoMemoryEffect,
+  DeclareOpInterfaceMethods<InferTypeOpInterface>
+]> {
+  let summary = "Sorts a tensor along a given dimension and returns sorted values.";
+  let description = [{
+    Sorts the elements of the input tensor along the specified dimension.
+    Returns one tensor:
+    The sorted tensor (same shape and element type as input).
+  }];
+
+  let arguments = (ins
+    TT_Tensor:$src,       // Input tensor
+    I64Attr:$dim,         // Dimension to sort along
+    BoolAttr:$descending  // Sort order
+  );
+
+  let results = (outs
+    TT_Tensor:$sorted    // Sorted values
+  );
+
+  let assemblyFormat = "$src `,` $dim `,` $descending attr-dict `:` type($src) `->` type($sorted)";
+}
+
 def TT_TransOp : TT_Op<"trans", [Pure,
                                  DeclareOpInterfaceMethods<InferTypeOpInterface>,
                                  SameOperandsAndResultElementType]> {
@@ -687,8 +712,8 @@ def TT_DotScaledOp : TT_Op<"dot_scaled", [Pure,
       ins
       // inputs are integer types as they are packed types and we currently
       // don't have a representation for those.
-      TT_IntTensor:$lhs,
-      TT_IntTensor:$rhs,
+      TT_FpIntTensor:$lhs,
+      TT_FpIntTensor:$rhs,
       TT_FloatTensor:$c,
       TT_IntTensor:$lhs_scale,
       Optional<TT_IntTensor>:$rhs_scale,
@@ -700,8 +725,9 @@ def TT_DotScaledOp : TT_Op<"dot_scaled", [Pure,
 
     // Not sure why I need to fully specify the optional group, but otherwise it complains when loading the mlir file
     let assemblyFormat = [{
-      $lhs `,` $lhs_scale `,` $rhs (`,`) : (`,` $rhs_scale^ `,`)? $c `lhs` `=` $lhs_type `rhs` `=` $rhs_type attr-dict
-      `:` type($lhs) `,` type($lhs_scale) `*` type($rhs) (`,` type($rhs_scale)^)? `->` type($d)
+      $lhs `,` $rhs `,` $c `,` $lhs_scale (`,` $rhs_scale^)?
+      `lhs` `=` $lhs_type `rhs` `=` $rhs_type attr-dict
+      `:` type($lhs) `,` type($rhs) `,` type($c) `,` type($lhs_scale) (`,` type($rhs_scale)^)? `->` type($d)
     }];
 }
 
@@ -869,6 +895,32 @@ def TT_HistogramOp : TT_Op<"histogram", [Pure]> {
 }
 
 //
+// Gather Op
+//
+def TT_GatherOp : TT_Op<"gather", [Pure,
+    DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "local gather operation";
+  let description = [{
+    Gather elements from the input tensor using the indices tensor along a
+    single specified axis. The output tensor has the same shape as the indices
+    tensor. The input and indices tensors must have the same number of
+    dimension, and each dimension of the indices tensor that is not the gather
+    dimension cannot be greater than the corresponding dimension in the input
+    tensor.
+  }];
+
+  let arguments = (ins TT_Tensor:$src, TT_IntTensor:$indices, I32Attr:$axis);
+  let results = (outs TT_Tensor:$result);
+
+  let assemblyFormat = [{
+    $src `[` $indices `]` attr-dict `:`
+    functional-type(operands, results)
+  }];
+
+  let hasVerifier = 1;
+}
+
+//
 // Print Op
 //
 def TT_PrintOp : TT_Op<"print", [SameVariadicOperandSize, MemoryEffects<[MemWrite<GlobalMemory>]>]> {
@@ -945,6 +997,89 @@ def TT_MakeTensorPtrOp : TT_Op<"make_tensor_ptr",
   ];
 }
 
+//
+// Make Tensor Descriptor Op
+//
+def TT_MakeTensorDescOp : TT_Op<"make_tensor_descriptor", [
+    Pure,
+    SameVariadicOperandSize,
+]> {
+  let summary = "Make a tensor descriptor type with meta information of the parent tensor and block size";
+
+  let description = [{
+      `tt.make_tensor_descriptor` takes both meta information of the parent tensor and the block size,
+      and returns a descriptor object which can be used to load/store from the tensor in global memory.
+  }];
+
+  let arguments = (ins
+    TT_Ptr:$base,
+    Variadic<I32>:$shape,
+    Variadic<I64>:$strides
+  );
+
+  let results = (outs TT_TensorDescType:$result);
+
+  let assemblyFormat = "$base `,` `[` $shape `]` `,` `[` $strides `]` attr-dict `:` type($base) `,` type($result)";
+
+  let builders = [
+    OpBuilder<(ins "Value":$base, "ValueRange":$shape, "ValueRange":$strides, "ArrayRef<int32_t>":$blockShape, "bool":$isSignedInteger)>
+  ];
+
+  let extraClassDeclaration = [{
+    ArrayRef<int64_t> getTensorShape() {
+      return getType().getBlockType().getShape();
+    }
+  }];
+}
+
+def TT_DescriptorLoadOp : TT_Op<"descriptor_load", [TT_DescriptorOpInterface]> {
+  let summary = "Load from descriptor";
+  let description = [{
+    This operation will be lowered to Nvidia TMA load operation on targets supporting it.
+    `desc` is a tensor descriptor object.
+    The destination tensor type and shape must match the descriptor otherwise the result is undefined.
+  }];
+  let arguments = (ins
+    Arg<TT_TensorDescType, "", [MemRead<GlobalMemory>]>:$desc,
+    Variadic<I32>:$indices,
+    DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
+    DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict
+  );
+
+  let results = (outs TT_Tensor:$result);
+
+  let assemblyFormat = [{
+    $desc `[` $indices `]`
+    oilist(
+      `cacheModifier` `=` $cache |
+      `evictionPolicy` `=` $evict
+    )
+    attr-dict `:` qualified(type($desc)) `->` type($result)
+  }];
+
+  let hasVerifier = 1;
+}
+
+def TT_DescriptorStoreOp : TT_Op<"descriptor_store", [TT_DescriptorStoreLikeOpInterface]> {
+  let summary = "store value based on descriptor";
+  let description = [{
+    This operation will be lowered to Nvidia TMA store operation on targets supporting it.
+    `desc` is a tensor descriptor object.
+    The shape and types of `src` must match the descriptor otherwise the result is undefined.
+  }];
+  let arguments = (ins
+    Arg<TT_TensorDescType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$desc,
+    TT_Tensor:$src,
+    Variadic<I32>:$indices
+  );
+
+  let assemblyFormat = [{
+    $desc `[` $indices `]` `,` $src
+    attr-dict `:` qualified(type($desc)) `,` type($src)
+  }];
+  let hasVerifier = 1;
+}
+
 // The following ops, including `call`, `func`, and `return` are copied and modified from
 // https://github.com/llvm/llvm-project/blob/main/mlir/include/mlir/Dialect/Func/IR/FuncOps.td
 // We could revert it back once MLIR has a better inliner interface.
@@ -966,7 +1101,10 @@ def CallOp : TT_Op<"call", [CallOpInterface, /*MemRefsNormalizable, */DeclareOpI
     ```
   }];
 
-  let arguments = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$operands);
+  let arguments = (ins FlatSymbolRefAttr:$callee,
+                   Variadic<AnyType>:$operands,
+                   OptionalAttr<DictArrayAttr>:$arg_attrs,  // triton_v3.3.x
+                   OptionalAttr<DictArrayAttr>:$res_attrs); // triton_v3.3.x
   let results = (outs Variadic<AnyType>);
 
   let builders = [
@@ -1256,5 +1394,42 @@ def TT_ExperimentalTensormapFenceproxyAcquireOp: TT_Op<
     }];
 }
 
+
+//
+// Annotation Op
+//
+def TT_AnnotationOp : TT_Op<"annotation", [Pure, MemoryEffects<[MemWrite]>]> {
+  let summary = "Annotate a tensor with key-value attribute pairs";
+  let description = [{
+    `tt.annotation` operation can be used to annotate a tensor with
+    key-value attribute pairs.
+
+    Example:
+    ```mlir
+    tt.annotation %target {key : val}
+    ```
+  }];
+  let arguments = (ins TT_Tensor:$src);
+  let assemblyFormat = [{
+    $src attr-dict `:` type($src)
+  }];
+}
+
+//
+// Custom Op
+//
+def TT_CustomOp : TT_Op<"custom",  [Pure, MemoryEffects<[MemWrite]>]> {
+  let summary = "self-defined custom operation";
+  let description = [{
+    `tt.custom` triton custom op is designed to pass self-defined custom operation.
+
+    Example:
+    ```tt.custom {str_args = ["sync_block_wait", "cube"]} loc(#loc12)
+    ```
+  }];
+  let arguments = (ins StrAttr:$op_name, ArrayAttr:$str_args, Variadic<AnyType>:$args);
+
+  let assemblyFormat = "$op_name attr-dict ($args^ `:` type($args))?";
+}
 
 #endif // Triton_OPS
