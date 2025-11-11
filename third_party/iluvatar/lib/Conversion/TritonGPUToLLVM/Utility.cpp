@@ -151,7 +151,7 @@ LLVM::LLVMFuncOp appendOrGetExternFuncOp(ConversionPatternRewriter &rewriter,
 }
 } // namespace triton::gpu
 
-#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_applyLinearLayout
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_applyLinearLayout_disable
 SmallVector<std::pair<StringAttr, Value>>
 applyLinearLayout(Location loc, RewriterBase &rewriter,
                   const LinearLayout &layout,
@@ -423,7 +423,7 @@ Value linearize(ConversionPatternRewriter &rewriter, Location loc,
   return linear;
 }
 
-#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_addStringToModule
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_addStringToModule_disable
 Value addStringToModule(Location loc, ConversionPatternRewriter &rewriter,
                         StringRef key, StringRef content) {
   auto moduleOp = rewriter.getBlock()->getParent()->getParentOfType<ModuleOp>();

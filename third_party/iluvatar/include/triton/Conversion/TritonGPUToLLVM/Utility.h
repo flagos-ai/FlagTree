@@ -446,31 +446,27 @@ FLAGTREE_SPEC_Using_BackendMmaEncodingAttr;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
 
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitBaseIndexForLayoutImpl
-SmallVector<Value> emitBaseIndexForLayoutImpl_result(Location loc,
-                                                     RewriterBase &rewriter,
-                                                     const Attribute &layout,
-                                                     RankedTensorType type);
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitBaseIndexForLayoutImpl_BackendMmaEncodingAttr
+SmallVector<Value> emitBaseIndexForLayoutImpl_BackendMmaEncodingAttr(
+    Location loc, RewriterBase &rewriter, const Attribute &layout,
+    RankedTensorType type);
 #endif
 
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitOffsetForLayout
-SmallVector<SmallVector<unsigned>>
-emitOffsetForLayout_return(const IluvatarMmaEncodingAttr &mmaLayout,
-                           RankedTensorType type);
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitOffsetForLayout_BackendMmaEncodingAttr
+SmallVector<SmallVector<unsigned>> emitOffsetForLayout_BackendMmaEncodingAttr(
+    const IluvatarMmaEncodingAttr &mmaLayout, RankedTensorType type);
 #endif
 
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs
-Value getSwizzledSharedPtrs_ret(Location loc, RewriterBase &rewriter,
-                                RankedTensorType srcTy, ArrayRef<Value> idx,
-                                triton::gpu::SharedEncodingAttr resSharedLayout,
-                                Type resElemTy, SharedMemoryObject smemObj,
-                                Type dstPtrTy, Value dstPtrBase, Value idxRow,
-                                Value idxCol, ArrayRef<unsigned> outOrder,
-                                unsigned perPhase, Value strideRow,
-                                Value strideCol);
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs_backend
+Value getSwizzledSharedPtrs_backend(
+    Location loc, RewriterBase &rewriter, RankedTensorType srcTy,
+    ArrayRef<Value> idx, triton::gpu::SharedEncodingAttr resSharedLayout,
+    Type resElemTy, SharedMemoryObject smemObj, Type dstPtrTy, Value dstPtrBase,
+    Value idxRow, Value idxCol, ArrayRef<unsigned> outOrder, unsigned perPhase,
+    Value strideRow, Value strideCol);
 #endif
 
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared_outVec
 unsigned
 storeDistributedToShared_outVec(triton::gpu::SharedEncodingAttr layout);
 #endif
@@ -1165,9 +1161,12 @@ emitBaseIndexForLayoutImpl(Location loc, RewriterBase &rewriter,
     if (mmaLayout.isAmpere() || mmaLayout.isHopper())
       result = emitBaseIndexWithinCTAForMmaLayoutV2V3(loc, rewriter, mmaLayout,
                                                       type);
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitBaseIndexForLayoutImpl
-  } else if (mlir::dyn_cast<IluvatarMmaEncodingAttr>(layout)) {
-    result = emitBaseIndexForLayoutImpl_result(loc, rewriter, layout, type);
+#ifdef FLAGTREE_SPEC_BackendMmaEncodingAttr
+  } else if (mlir::dyn_cast<FLAGTREE_SPEC_BackendMmaEncodingAttr>(layout)) {
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitBaseIndexForLayoutImpl_BackendMmaEncodingAttr
+    result = emitBaseIndexForLayoutImpl_BackendMmaEncodingAttr(loc, rewriter,
+                                                               layout, type);
+#endif
 #endif
   } else if (auto mfmaLayout = mlir::dyn_cast<AMDMfmaEncodingAttr>(layout)) {
     result = emitBaseIndexForMfmaLayout(loc, rewriter, mfmaLayout, type);
@@ -1237,9 +1236,11 @@ emitOffsetForLayout(Attribute layout, RankedTensorType type) {
     if (mmaLayout.isHopper())
       return emitOffsetForMmaLayoutV3(mmaLayout, type);
   }
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitOffsetForLayout
-  if (auto mmaLayout = dyn_cast<IluvatarMmaEncodingAttr>(layout))
-    return emitOffsetForLayout_return(mmaLayout, type);
+#ifdef FLAGTREE_SPEC_BackendMmaEncodingAttr
+  if (auto mmaLayout = dyn_cast<FLAGTREE_SPEC_BackendMmaEncodingAttr>(layout))
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_emitOffsetForLayout_BackendMmaEncodingAttr
+    return emitOffsetForLayout_BackendMmaEncodingAttr(mmaLayout, type);
+#endif
 #endif
   if (auto mfmaLayout = mlir::dyn_cast<AMDMfmaEncodingAttr>(layout)) {
     return emitOffsetForMfmaLayout(mfmaLayout, type);
@@ -1395,9 +1396,8 @@ inline DenseMap<unsigned, Value> getSwizzledSharedPtrs(
     }
     // compute phase = (row // perPhase) % maxPhase
     Value phase = urem(udiv(idxRow, i32_val(perPhase)), i32_val(maxPhase));
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs
-    // corex swizzle
-    ret[elemIdx] = getSwizzledSharedPtrs_ret(
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs_backend
+    ret[elemIdx] = getSwizzledSharedPtrs_backend(
         loc, rewriter, srcTy, idx, resSharedLayout, resElemTy, smemObj,
         dstPtrTy, dstPtrBase, idxRow, idxCol, outOrder, perPhase, strideRow,
         strideCol);
@@ -1552,7 +1552,7 @@ inline void storeDistributedToShared(Value src, ArrayRef<Value> inVals,
   unsigned outVec = dstSharedLayout.getMaxPhase() == 1
                         ? dstTy.getShape()[inOrd[0]]
                         : dstSharedLayout.getVec();
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared_outVec
   outVec = storeDistributedToShared_outVec(dstSharedLayout);
 #endif
   unsigned minVec = std::min(outVec, inVec);

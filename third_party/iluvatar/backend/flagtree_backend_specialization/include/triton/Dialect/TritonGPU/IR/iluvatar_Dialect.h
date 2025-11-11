@@ -6,5 +6,7 @@
 
 #define FLAGTREE_SPEC_Using_BackendMmaEncodingAttr                             \
   using ::mlir::triton::gpu::IluvatarMmaEncodingAttr
+#define FLAGTREE_SPEC_BackendMmaEncodingAttr                                   \
+  ::mlir::triton::gpu::IluvatarMmaEncodingAttr
 
 #endif // ILUVATAR_TRITON_DIALECT_TRITONGPU_IR_DIALECT_H_
