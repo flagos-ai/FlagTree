@@ -1,5 +1,8 @@
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 
+#include "python/src/plugin.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+
 namespace SharedToDotOperandMMAv1 {
 
 using getMNCoordsFunc = SmallVector<CoordTy> (*)(

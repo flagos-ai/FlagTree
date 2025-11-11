@@ -1,7 +1,6 @@
 #ifndef ILUVATAR_TRITON_CONVERSION_TRITONGPU_TO_LLVM_UTILITY_H
 #define ILUVATAR_TRITON_CONVERSION_TRITONGPU_TO_LLVM_UTILITY_H
 
-#define FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_heads
 #define FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_createIndexConstant
 #define FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG \
   bool

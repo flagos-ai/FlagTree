@@ -1,5 +1,8 @@
 #include "triton/Analysis/Membar.h"
+
+#include "python/src/plugin.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 using getLoadIncNum_RankedTensorTypeFunc = unsigned (*)(
     RankedTensorType &, int, int, llvm::ArrayRef<unsigned>, unsigned);
