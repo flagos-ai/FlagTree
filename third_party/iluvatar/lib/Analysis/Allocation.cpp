@@ -46,7 +46,6 @@ std::pair<SmallVector<unsigned>, SmallVector<unsigned>>
 static std::pair<SmallVector<unsigned>, SmallVector<unsigned>>
 #endif
 getCvtOrder(Attribute srcLayout, Attribute dstLayout) {
-  // REBASE TODO: add IluvatarMmaEncodingAttr case?
   auto srcMmaLayout = mlir::dyn_cast<NvidiaMmaEncodingAttr>(srcLayout);
   auto srcDotLayout = mlir::dyn_cast<DotOperandEncodingAttr>(srcLayout);
   auto dstMmaLayout = mlir::dyn_cast<NvidiaMmaEncodingAttr>(dstLayout);
