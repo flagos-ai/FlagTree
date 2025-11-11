@@ -84,8 +84,7 @@ template void
     decomposeTensorCoreToDotLayoutConversion<triton::gpu::AMDMfmaEncodingAttr>(
         ModuleOp, ShortcutFn);
 #ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_DecomposeUnsupportedConversions
-template void decomposeTensorCoreToDotLayoutConversion<
-    triton::gpu::IluvatarMmaEncodingAttr>(ModuleOp, ShortcutFn);
+FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_DecomposeUnsupportedConversions;
 #endif
 
 void decomposeBlockedToDotLayoutConversion(ModuleOp module) {
