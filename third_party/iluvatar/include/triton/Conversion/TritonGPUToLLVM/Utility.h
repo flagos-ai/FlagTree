@@ -1674,10 +1674,10 @@ inline bool isLayoutMmaV1(Attribute layout) {
 
 } // namespace mlir
 
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMNCoords
 namespace SharedToDotOperandMMAv1 {
 
 using CoordTy = SmallVector<Value>;
-using ValueTable = std::map<std::pair<int, int>, std::pair<Value, Value>>;
 
 SmallVector<CoordTy> getMNCoords(Value thread, Location loc,
                                  ConversionPatternRewriter &rewriter,
@@ -1685,6 +1685,8 @@ SmallVector<CoordTy> getMNCoords(Value thread, Location loc,
                                  const NvidiaMmaEncodingAttr &mmaLayout,
                                  ArrayRef<int64_t> shape, bool isARow,
                                  bool isBRow, bool isAVec4, bool isBVec4);
+
 } // namespace SharedToDotOperandMMAv1
+#endif
 
 #endif

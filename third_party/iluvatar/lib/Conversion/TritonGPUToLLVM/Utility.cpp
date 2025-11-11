@@ -9,12 +9,20 @@
 
 namespace SharedToDotOperandMMAv1 {
 
-SmallVector<CoordTy> getMNCoords(Value thread, Location loc,
-                                 ConversionPatternRewriter &rewriter,
-                                 ArrayRef<unsigned int> wpt,
-                                 const NvidiaMmaEncodingAttr &mmaLayout,
-                                 ArrayRef<int64_t> shape, bool isARow,
-                                 bool isBRow, bool isAVec4, bool isBVec4) {
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMNCoords
+using CoordTy = SmallVector<Value>;
+#endif
+using ValueTable = std::map<std::pair<int, int>, std::pair<Value, Value>>;
+
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMNCoords
+SmallVector<CoordTy>
+#else
+static SmallVector<CoordTy>
+#endif
+getMNCoords(Value thread, Location loc, ConversionPatternRewriter &rewriter,
+            ArrayRef<unsigned int> wpt, const NvidiaMmaEncodingAttr &mmaLayout,
+            ArrayRef<int64_t> shape, bool isARow, bool isBRow, bool isAVec4,
+            bool isBVec4) {
   static constexpr std::array<int, 3> fpw{{2, 2, 1}};
 
   auto *ctx = thread.getContext();
