@@ -11,8 +11,8 @@ using namespace mlir::triton;
 using ::mlir::triton::gpu::BlockedEncodingAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::getTotalElemsPerThread;
-#ifdef FLAGTREE_SPEC_Using_BackendMmaEncodingAttr
-FLAGTREE_SPEC_Using_BackendMmaEncodingAttr;
+#ifdef FLAGTREE_SPEC_BackendMmaEncodingAttr
+using FLAGTREE_SPEC_BackendMmaEncodingAttr;
 #endif
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SharedEncodingAttr;

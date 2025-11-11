@@ -4,8 +4,6 @@
 #define FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_functions
 #define FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_cpp
 
-#define FLAGTREE_SPEC_Using_BackendMmaEncodingAttr                             \
-  using ::mlir::triton::gpu::IluvatarMmaEncodingAttr
 #define FLAGTREE_SPEC_BackendMmaEncodingAttr                                   \
   ::mlir::triton::gpu::IluvatarMmaEncodingAttr
 
