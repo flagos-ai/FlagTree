@@ -1,6 +1,6 @@
 include_directories(${PROJECT_SOURCE_DIR}/lib/Dialect/TritonGPU/Transforms/Pipeliner)
 
-add_triton_library(FlagTree_iluvatar_TritonDialectTritonGPUTransforms
+add_triton_library(FlagTree_iluvatar_TritonGPUTransforms
   OptimizeDotOperands.cpp
   OptimizeThreadLocality.cpp
   Pipeliner/MatmulLoopPipeline.cpp

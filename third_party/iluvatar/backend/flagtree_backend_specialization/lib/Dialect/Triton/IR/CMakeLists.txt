@@ -1,4 +1,4 @@
-add_triton_library(FlagTree_iluvatar_TritonDialectTritonIR
+add_triton_library(FlagTree_iluvatar_TritonIR
   Ops.cpp
 
   DEPENDS

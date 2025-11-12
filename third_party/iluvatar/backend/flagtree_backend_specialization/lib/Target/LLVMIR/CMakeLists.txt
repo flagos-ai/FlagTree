@@ -1,4 +1,4 @@
-add_triton_library(FlagTree_iluvatar_TritonTargetLLVMIR
+add_triton_library(FlagTree_iluvatar_TritonLLVMIR
   LLVMDIScope.cpp
 
   DEPENDS

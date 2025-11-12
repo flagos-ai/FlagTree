@@ -1,4 +1,4 @@
-add_triton_library(FlagTree_iluvatar_TritonConversionTritonGPUToLLVM
+add_triton_library(FlagTree_iluvatar_TritonGPUToLLVM
   ElementwiseOpToLLVM.cpp
   ReduceOpToLLVM.cpp
   TypeConverter.cpp

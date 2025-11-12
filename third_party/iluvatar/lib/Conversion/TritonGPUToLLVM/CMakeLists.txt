@@ -6,10 +6,7 @@ else()
     set(NVGPUTransforms "TritonNvidiaGPUTransforms")
 endif()
 
-set(_EXTRA_LINK_LIBS FlagTree_${FLAGTREE_BACKEND}_TritonConversionTritonGPUToLLVM)
-if(NOT TARGET ${_EXTRA_LINK_LIBS})
-  set(_EXTRA_LINK_LIBS "")
-endif()
+get_flagtree_backend_lib("TritonGPUToLLVM" _EXTRA_LINK_LIBS)
 
 add_triton_library(TritonGPUToLLVM
     ConvertLayoutOpToLLVM/SharedToDotOperandFMA.cpp

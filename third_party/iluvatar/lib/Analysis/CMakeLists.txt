@@ -4,10 +4,7 @@ else()
     set(NVGPUIR "TritonNvidiaGPUIR")
 endif()
 
-set(_EXTRA_LINK_LIBS FlagTree_${FLAGTREE_BACKEND}_TritonAnalysis)
-if(NOT TARGET ${_EXTRA_LINK_LIBS})
-  set(_EXTRA_LINK_LIBS "")
-endif()
+get_flagtree_backend_lib("TritonAnalysis" _EXTRA_LINK_LIBS)
 
 add_triton_library(TritonAnalysis
   AxisInfo.cpp
