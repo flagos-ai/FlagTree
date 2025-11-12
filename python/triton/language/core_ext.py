@@ -20,7 +20,7 @@ from triton.language.core import (
     mul,
 )
 from typing import Optional
-from . import semantic
+from . import semantic_ext as semantic
 from .tensor_descriptor import tensor_descriptor, tensor_descriptor_base
 
 
