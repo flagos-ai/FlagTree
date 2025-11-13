@@ -21,6 +21,7 @@ jobs:
         shell: bash
         run: |
           export FLAGTREE_BACKEND=ascend
+          export NPUIR=af5499b3b9f3dbab50b2834bcfff5da5c2a1d920
           source ~/env.sh
           cd python
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
