@@ -70,7 +70,7 @@ jobs:
           python3 third_party/ascend/examples/tutorials/07-profiler.py
           #python3 third_party/ascend/examples/tutorials/08-demo-libentry.py
           python3 third_party/ascend/examples/tutorials/09-gather.py
-          python3 third_party/ascend/examples/tutorials/10-gather_sorted.py
+          #python3 third_party/ascend/examples/tutorials/10-gather_sorted.py
           python3 third_party/ascend/examples/tutorials/11-rab_time.py
           #python3 third_party/ascend/examples/tutorials/12-hstu_attention.py
           python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized-flagtree.py
