@@ -1,4 +1,5 @@
-name: Metax-Build-And-Test
+
+name: Xpu-Build-And-Test
 
 on:
   push:
@@ -11,10 +12,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  metax-build-and-test:
-    runs-on: metax
+  xpu-build-and-test:
+    runs-on: xpu
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
       - name: Checkout code (attempt 1)
         id: checkout1
         uses: actions/checkout@v5
@@ -46,18 +53,17 @@ jobs:
         if: success()
         run: echo "Checkout completed successfully"
 
-      - name: FlagTree Build on Metax
+      - name: FlagTree Build on Xpu
         shell: bash
         run: |
           set -x
           pip uninstall -y triton
-          source ~/env.sh
-          export FLAGTREE_BACKEND=metax
+          export FLAGTREE_BACKEND=xpu
           cd python
-          MAX_JOBS=32 python3.10 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Metax
+      - name: FlagTree Test on Xpu
         shell: bash
         run: |
           set -x
-          python3.10 -m pytest -s third_party/metax/python/test/unit
+          python3 -m pytest -s third_party/xpu/python/test/unit
