@@ -55,6 +55,7 @@ jobs:
       - name: FlagTree Build on Hcu
         shell: bash
         run: |
+          set -x
           pip uninstall -y triton
           export FLAGTREE_BACKEND=hcu
           cd python
@@ -63,5 +64,6 @@ jobs:
       - name: FlagTree Test on Hcu
         shell: bash
         run: |
+          set -x
           cd third_party/hcu/python/test/unit
           sh flagtree_test.sh

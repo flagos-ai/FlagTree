@@ -48,6 +48,7 @@ jobs:
       - name: FlagTree Build on Ascend
         shell: bash
         run: |
+          set -x
           pip uninstall -y triton
           export FLAGTREE_BACKEND=ascend
           source ~/env.sh
@@ -57,6 +58,7 @@ jobs:
       - name: FlagTree Test on Ascend
         shell: bash
         run: |
+          set -x
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
           python3 third_party/tests/ascend/vector-add.py
           python3 third_party/ascend/examples/tutorials/01-vector-add.py

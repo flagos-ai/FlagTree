@@ -49,6 +49,7 @@ jobs:
       - name: FlagTree Build on Iluvatar
         shell: bash
         run: |
+          set -x
           pip uninstall -y triton
           export FLAGTREE_BACKEND=iluvatar
           source ~/env.sh
@@ -58,6 +59,7 @@ jobs:
       - name: FlagTree Test on Iluvatar
         shell: bash
         run: |
+          set -x
           CUDA_VISIBLE_DEVICES=15 python3 -m pytest -s third_party/iluvatar/python/test/unit
           ./python/build/cmake.linux-x86_64-cpython-3.10/bin/triton-opt --pass-pipeline='builtin.module(convert-triton-to-tritongpu{target="cuda:CC" num-warps=4 threads-per-warp=32 num-ctas=1})'  ./test/bin/iluvatar/add_kernel.ttir
           ./python/build/cmake.linux-x86_64-cpython-3.10/bin/triton-opt --convert-arith-to-llvm ./test/bin/iluvatar/add_kernel.ttgir

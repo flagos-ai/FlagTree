@@ -55,6 +55,7 @@ jobs:
       - name: FlagTree Build on Cambricon
         shell: bash
         run: |
+          set -x
           pip uninstall -y triton
           export FLAGTREE_BACKEND=cambricon
           cd python

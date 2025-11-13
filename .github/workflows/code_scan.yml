@@ -55,6 +55,7 @@ jobs:
       - name: Scan flagtree repo
         shell: bash
         run: |
+          set -x
           git config --global --add safe.directory ../flagtree
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             echo "This is a pull request event. PR number is ${{ github.event.pull_request.number }}"
@@ -70,6 +71,7 @@ jobs:
       - name: Code Scan Report
         shell: bash
         run: |
+          set -x
           git config --global --add safe.directory ../flagtree
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             PR_ID=${{ github.event.pull_request.number }}

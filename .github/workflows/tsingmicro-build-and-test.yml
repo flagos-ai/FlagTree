@@ -1,18 +1,18 @@
-name: Metax-Build-And-Test
+name: Tsingmicro-Build-And-Test
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "triton_v3.3.x" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "triton_v3.3.x" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  metax-build-and-test:
-    runs-on: metax
+  tsingmicro-build-and-test:
+    runs-on: tsingmicro
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Checkout code (attempt 1)
@@ -46,18 +46,20 @@ jobs:
         if: success()
         run: echo "Checkout completed successfully"
 
-      - name: FlagTree Build on Metax
+      - name: FlagTree Build on Tsingmicro
         shell: bash
         run: |
           set -x
           pip uninstall -y triton
           source ~/env.sh
-          export FLAGTREE_BACKEND=metax
+          export FLAGTREE_BACKEND=tsingmicro
           cd python
-          MAX_JOBS=32 python3.10 -m pip install . --no-build-isolation
+          python3.11 -m pip install . --no-build-isolation -v
 
-      - name: FlagTree Test on Metax
+      - name: FlagTree Test on Tsingmicro
         shell: bash
         run: |
           set -x
-          python3.10 -m pytest -s third_party/metax/python/test/unit
+          source ~/env.sh
+          python3.11 -c 'import triton; print(triton.__path__)'
+          /usr/local/lib/python3.11/dist-packages/triton/backends/tsingmicro/bin/tsingmicro-opt --version

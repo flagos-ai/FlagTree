@@ -55,6 +55,7 @@ jobs:
       - name: FlagTree Build on Mthreads
         shell: bash
         run: |
+          set -x
           pip uninstall -y triton
           export FLAGTREE_BACKEND=mthreads
           cd python
@@ -63,6 +64,7 @@ jobs:
       - name: FlagTree Test on Mthreads
         shell: bash
         run: |
+          set -x
           ./python/build/cmake.linux-x86_64-cpython-3.10/bin/triton-opt --pass-pipeline='builtin.module(convert-triton-to-tritongpu{target="cuda:CC" num-warps=4 threads-per-warp=32 num-ctas=1})'  ./test/bin/mthreads/add_kernel.ttir
           ./python/build/cmake.linux-x86_64-cpython-3.10/bin/triton-opt --convert-ub-to-llvm ./test/bin/mthreads/add_kernel.ttgir
           python3 -m pytest -s third_party/mthreads/python/test/unit
