@@ -4,9 +4,9 @@ on:
   schedule:
     - cron: '0 21 * * *'
   push:
-    branches: [ "main" ]
+    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
