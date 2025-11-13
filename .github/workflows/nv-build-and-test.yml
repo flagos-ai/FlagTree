@@ -96,4 +96,6 @@ jobs:
         shell: bash
         run: |
           python3.11 -m pytest -s python/test/unit
-          python3.11 -m pytest -s python/test/operators
+          if [ -d "python/test/operators" ]; then
+            python3.11 -m pytest -s python/test/operators
+          fi

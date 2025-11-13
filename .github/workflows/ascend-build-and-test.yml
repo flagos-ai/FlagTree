@@ -59,18 +59,18 @@ jobs:
         run: |
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
           python3 third_party/tests/ascend/vector-add.py
-          python3 third_party/ascend/ascend/examples/tutorials/01-vector-add.py
-          python3 third_party/ascend/ascend/examples/tutorials/02-fused-softmax.py
-          python3 third_party/ascend/ascend/examples/tutorials/03-layer-norm.py
-          python3 third_party/ascend/ascend/examples/tutorials/04-fused-attention.py
-          python3 third_party/ascend/ascend/examples/tutorials/05-matrix-multiplication-flagtree.py
-          python3 third_party/ascend/ascend/examples/tutorials/06-demo-autotune.py
-          python3 third_party/ascend/ascend/examples/tutorials/07-profiler.py
-          python3 third_party/ascend/ascend/examples/tutorials/08-demo-libentry.py
-          python3 third_party/ascend/ascend/examples/tutorials/09-gather.py
-          python3 third_party/ascend/ascend/examples/tutorials/10-gather_sorted.py
-          python3 third_party/ascend/ascend/examples/tutorials/11-rab_time.py
-          python3 third_party/ascend/ascend/examples/tutorials/12-hstu_attention.py
-          python3 third_party/ascend/ascend/examples/tutorials/13-matrix-multiplication-optimized-flagtree.py
-          python3 third_party/ascend/ascend/examples/tutorials/13-matrix-multiplication-optimized.py
-          python3 third_party/ascend/ascend/examples/tutorials/14-accuracy-comparison.py
+          python3 third_party/ascend/examples/tutorials/01-vector-add.py
+          python3 third_party/ascend/examples/tutorials/02-fused-softmax.py
+          python3 third_party/ascend/examples/tutorials/03-layer-norm.py
+          python3 third_party/ascend/examples/tutorials/04-fused-attention.py
+          python3 third_party/ascend/examples/tutorials/05-matrix-multiplication-flagtree.py
+          python3 third_party/ascend/examples/tutorials/06-demo-autotune.py
+          python3 third_party/ascend/examples/tutorials/07-profiler.py
+          python3 third_party/ascend/examples/tutorials/08-demo-libentry.py
+          python3 third_party/ascend/examples/tutorials/09-gather.py
+          python3 third_party/ascend/examples/tutorials/10-gather_sorted.py
+          python3 third_party/ascend/examples/tutorials/11-rab_time.py
+          python3 third_party/ascend/examples/tutorials/12-hstu_attention.py
+          python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized-flagtree.py
+          python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized.py
+          python3 third_party/ascend/examples/tutorials/14-accuracy-comparison.py
