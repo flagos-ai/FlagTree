@@ -150,7 +150,7 @@ class DownloadManager:
         if not os.path.exists(module.dst_path):
             succ = self.clone_module(module)
         else:
-            print(f'Found third_party {module.name} at {module.dst_path}\n')
+            print(f'[INFO] : Found third_party {module.name} at {module.dst_path}\n')
             return True
         if not succ and required:
             raise RuntimeError(
