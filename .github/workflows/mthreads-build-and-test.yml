@@ -13,7 +13,7 @@ concurrency:
 jobs:
   mthreads-build-and-test:
     runs-on: mthreads
-    if: ${{ github.repository == 'FlagTree/flagtree' }}
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
         shell: bash
