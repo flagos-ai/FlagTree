@@ -1,9 +1,15 @@
 import os
 import shutil
 from pathlib import Path
-from setup_tools.utils.tools import flagtree_root_dir, flagtree_submodule_dir, DownloadManager
+from setup_tools.utils.tools import flagtree_root_dir, flagtree_submodule_dir, DownloadManager, Module
 
 downloader = DownloadManager()
+
+ascend_npuir_commit = os.environ.get("NPUIR", "")
+
+submodules = (Module(name="ascendnpu-ir", url="https://gitcode.com/Ascend/AscendNPU-IR.git",
+                     commit_id=ascend_npuir_commit, dst_path=os.path.join(flagtree_submodule_dir,
+                                                                          "ascend/third_party/ascendnpu-ir")), )
 
 
 def get_backend_cmake_args(*args, **kargs):
@@ -119,6 +125,8 @@ def precompile_hock(*args, **kargs):
     shutil.copytree(patch_src_path, patch_path, dirs_exist_ok=True)
     shutil.copytree(project_thirdparty_path, ascend_thirdparty_path, dirs_exist_ok=True)
     shutil.rmtree(project_path)
+    if ascend_npuir_commit:
+        [downloader.download(module=submodule, required=False) for submodule in submodules]
     cmake_patch_copy()
     patched_code = """  set(triton_abs_dir "${TRITON_ROOT_DIR}/include/triton/Dialect/Triton/IR") """
     src_code = """set(triton_abs_dir"""
