@@ -5,9 +5,10 @@
 #include "passes.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h"
 #include "triton-shared/TritonToHFusion/TritonToHFusion.h"
+#include "triton-shared/TritonLinearize/TritonLinearize.h"
+#include "triton-shared/TritonToLinalgIncubated/TritonToLinalgPass.h"
 #include "triton-shared/TritonToHIVM/TritonToHIVM.h"
 #include "triton-shared/TritonToLLVM/TritonToLLVM.h"
-#include "triton-shared/TritonLinearize/TritonLinearize.h"
 
 #define PY_SSIZE_T_CLEAN
 #include <pybind11/pybind11.h>
@@ -16,15 +17,29 @@ namespace py = pybind11;
 void init_triton_ascend_passes_convert(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_triton_to_linalg_pipeline",
                      mlir::triton::createTritonToLinalgExperimentalPass);
-  ADD_PASS_WRAPPER_0("add_triton_to_llvm",
-                     mlir::triton::createTritonToLLVMPass);
-  ADD_PASS_WRAPPER_0("add_triton_to_hfusion",
-                     mlir::triton::createTritonToHFusionPass);
-  ADD_PASS_WRAPPER_0("add_triton_to_hivm",
-                     mlir::triton::createTritonToHIVMPass);
   ADD_PASS_WRAPPER_0("add_triton_linearize",
                      mlir::triton::createTritonLinearizePass);
+  ADD_PASS_WRAPPER_0("add_triton_to_hivm",
+                     mlir::triton::createTritonToHIVMPass);
+  ADD_PASS_WRAPPER_0("add_triton_to_hfusion",
+                     mlir::triton::createTritonToHFusionPass);
+  ADD_PASS_WRAPPER_0("add_triton_to_llvm",
+                     mlir::triton::createTritonToLLVMPass);
+  m.def(
+      "add_triton_to_linalg_incubated",
+      [](mlir::PassManager &pm,
+         bool global_kernel,
+         bool named_ops,
+         bool enable_nd2nz_on_vector) {
+        pm.addPass(mlir::triton::conv::createTritonToLinalgIncubatedPass(
+            global_kernel, named_ops, enable_nd2nz_on_vector));
+      },
+      py::arg("pm"),
+      py::arg("global_kernel"),
+      py::arg("named_ops"),
+      py::arg("enable_nd2nz_on_vector"));
 }
+
 
 // register ascend passes to triton
 void init_triton_ascend(py::module &&m) {

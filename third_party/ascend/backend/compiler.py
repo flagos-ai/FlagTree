@@ -68,18 +68,56 @@ def make_ttir(mod, metadata, opt):
 def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
     pm = ir.pass_manager(mod.context)
     pm.enable_debug()
+    enable_nd2nz_on_vector = metadata["enable_nd2nz_on_vector"]
     # Add pass here.
-    ascend.passes.convert.add_triton_to_linalg_pipeline(pm)
-    ascend.passes.convert.add_triton_to_llvm(pm)
-    ascend.passes.convert.add_triton_to_hfusion(pm)
-    ascend.passes.convert.add_triton_to_hivm(pm)
+    #ascend.passes.convert.add_triton_to_linalg_pipeline(pm)
     ascend.passes.convert.add_triton_linearize(pm)
+    ascend.passes.convert.add_triton_to_hivm(pm)
+    ascend.passes.convert.add_triton_to_hfusion(pm)
+    ascend.passes.convert.add_triton_to_llvm(pm)
+    ascend.passes.convert.add_triton_to_linalg_incubated(
+    pm,
+    global_kernel=False,
+    named_ops=True,
+    enable_nd2nz_on_vector=enable_nd2nz_on_vector
+    )
     pm.run(mod)
     return str(mod)
+    # use triton_adapter to lower Triton-MLIR to linalg
+    # Get Triton-MLIR as string
     '''
-    with open('/home/zhengyang/FlagTree/triton-op-ir/ops/01_vector_add/cache_ascend/add_kernel.ttadapter', 'r', encoding='utf-8') as f:
-        content = f.read()
-    return content
+    ttir_code = str(mod)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src_path = os.path.join(tmpdir, "kernel.ttir.mlir")
+        dst_path = os.path.join(tmpdir, "kernel.ttadapter.mlir")
+        Path(src_path).write_text(ttir_code)
+        triton_adapter_opt_path = _get_triton_adapter_opt_path()
+
+        enable_nd2nz_on_vector = metadata["enable_nd2nz_on_vector"]
+        cmd_list = [
+            triton_adapter_opt_path,
+            src_path,
+            "--discrete-mask-access-conversion",
+            "--triton-to-annotation",
+            "--triton-to-unstructure",
+            "--triton-to-hivm",
+            "--bubble-up-operation",
+            f"--triton-to-linalg=global-kernel=false named-ops={named_ops} "\
+            f"enable-nd2nz-on-vector={enable_nd2nz_on_vector}",
+            "-o",
+            dst_path,
+        ]
+        if _is_ascend_sanitizer_enabled() or not _is_debug_line_info_disabled():
+            cmd_list += ["--mlir-print-debuginfo"]  # pass debug info
+
+        ret = subprocess.run(cmd_list, capture_output=True, check=True)
+        if opt.debug:
+            dump_manager = get_dump_manager(metadata["hash"])
+            dump_manager.put(
+                Path(dst_path).read_text(), "kernel.ttadapter.mlir", binary=False
+            )
+
+        return Path(dst_path).read_text()
     '''
 
 
