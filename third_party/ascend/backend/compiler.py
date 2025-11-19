@@ -73,6 +73,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
     ascend.passes.convert.add_triton_to_llvm(pm)
     ascend.passes.convert.add_triton_to_hfusion(pm)
     ascend.passes.convert.add_triton_to_hivm(pm)
+    ascend.passes.convert.add_triton_linearize(pm)
     pm.run(mod)
     return str(mod)
     '''

@@ -7,6 +7,7 @@
 #include "triton-shared/TritonToHFusion/TritonToHFusion.h"
 #include "triton-shared/TritonToHIVM/TritonToHIVM.h"
 #include "triton-shared/TritonToLLVM/TritonToLLVM.h"
+#include "triton-shared/TritonLinearize/TritonLinearize.h"
 
 #define PY_SSIZE_T_CLEAN
 #include <pybind11/pybind11.h>
@@ -21,6 +22,8 @@ void init_triton_ascend_passes_convert(py::module &&m) {
                      mlir::triton::createTritonToHFusionPass);
   ADD_PASS_WRAPPER_0("add_triton_to_hivm",
                      mlir::triton::createTritonToHIVMPass);
+  ADD_PASS_WRAPPER_0("add_triton_linearize",
+                     mlir::triton::createTritonLinearizePass);
 }
 
 // register ascend passes to triton
