@@ -9,7 +9,7 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 
-#include "triton/../../../backend/flagtree_backend_specialization/include/flagtree_spec.h"
+#include "flagtree_spec.h"
 
 namespace mlir {
 namespace triton {

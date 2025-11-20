@@ -8,7 +8,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/Support/ErrorHandling.h"
 
-#include "triton/../../../backend/flagtree_backend_specialization/include/flagtree_spec.h"
+#include "flagtree_spec.h"
 
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
