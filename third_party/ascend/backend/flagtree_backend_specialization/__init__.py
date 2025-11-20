@@ -4,6 +4,7 @@ from .triton.compiler.code_generator import *
 from .triton.runtime.jit import *
 from .triton.runtime.autotuner import *
 from .triton.language._utils import *
+from .triton.language.core import *
 from .triton.language.semantic import *
 from .triton.testing import *
 
@@ -47,6 +48,34 @@ __all__  = [
     # language._utils
     'is_block_shape_check_power_of_two',
     'get_primitive_bitwidth',
+    # language.core
+    "ext_cast_set_overflow_modes",
+    "ext_cast_check_overflow_mode",
+    "ext_trans_unwrap_iterable",
+    "check_dot_deprecated_param_allow_tf32",
+    "check_dot_invalid_input_precision",
+    "ext_core_gather",
+    "ext_core_insert_slice",
+    "ext_core_extract_slice",
+    "ext_core_get_element",
+    "ext_core_add",
+    "ext_core_radd",
+    "ext_core_sub",
+    "ext_core_rsub",
+    "ext_core_mul",
+    "ext_core_rmul",
+    "ext_core_lshift",
+    "ext_core_rshift",
+    "ext_core_compile_hint",
+    "ext_core_sort",
+    "ext_core_multibuffer",
+    "ext_core_sync_block_all",
+    "ext_core_sync_block_set",
+    "ext_core_sync_block_wait",
+    "ext_core_load_tensor_descriptor",
+    "ext_core_store_tensor_descriptor",
+    "ext_core_make_tensor_descriptor",
+    "ext_core_dtype_to_ir",
     # language.semantic
     "is_arange_check_power_of_two",
     "check_arange_less_than_max_numel",

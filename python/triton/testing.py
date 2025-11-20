@@ -522,35 +522,6 @@ from .language.tensor_descriptor import (
     tensor_descriptor,
     tensor_descriptor_type,
 )
-
-from .language.core_ext import (
-    dot,
-    cast,
-    gather,
-    get_element,
-    insert_slice,
-    extract_slice,
-    trans,
-    __add__,
-    __radd__,
-    __sub__,
-    __rsub__,
-    __mul__,
-    __rmul__,
-    __lshift__,
-    __rshift__,
-    parallel,
-    compile_hint,
-    make_tensor_descriptor,
-    load_tensor_descriptor,
-    store_tensor_descriptor,
-    multibuffer,
-    sync_block_all,
-    sync_block_set,
-    sync_block_wait,
-    dtype_to_ir,
-    sort
-)
 from .language.standard_ext import flip, sigmoid, softmax, isfinited, finitef, rint, atan2
 from .language.math_ext import (
     umulhi,
@@ -573,36 +544,11 @@ from .language.math_ext import (
 )
 from . import language
 
-language.cast = cast
-language.dot = dot
 language.flip = flip
 language.sigmoid = sigmoid
 language.softmax = softmax
-language.gather = gather
-language.insert_slice = insert_slice
-language.extract_slice = extract_slice
-language.get_element = get_element
-language.tensor.__add__ = __add__
-language.tensor.__radd__ = __radd__
-language.tensor.__sub__ = __sub__
-language.tensor.__rsub__ = __rsub__
-language.tensor.__mul__ = __mul__
-language.tensor.__rmul__ = __rmul__
-language.tensor.__lshift__ = __lshift__
-language.tensor.__rshift__ = __rshift__
-language.trans = trans
-language.parallel = parallel
-language.compile_hint = compile_hint
-language.sort = sort
-language.multibuffer = multibuffer
-language.sync_block_all = sync_block_all
-language.sync_block_set = sync_block_set
-language.sync_block_wait = sync_block_wait
-language.make_tensor_descriptor = make_tensor_descriptor
 language.tensor_descriptor = tensor_descriptor
 language.tensor_descriptor_type = tensor_descriptor_type
-language.load_tensor_descriptor = load_tensor_descriptor
-language.store_tensor_descriptor = store_tensor_descriptor
 
 language.umulhi = umulhi
 language.exp = exp
@@ -619,7 +565,6 @@ language.erf = erf
 language.tanh = tanh
 language.floor = floor
 language.ceil = ceil
-language.core.dtype.to_ir = dtype_to_ir
 language.fma = fma
 language.math.umulhi = umulhi
 language.math.exp = exp
