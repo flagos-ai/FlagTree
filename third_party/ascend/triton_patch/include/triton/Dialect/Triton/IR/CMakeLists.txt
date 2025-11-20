@@ -4,7 +4,7 @@ file(RELATIVE_PATH patch_rel_dir "${CMAKE_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_D
 string(REPLACE "triton_patch" "third_party/triton" triton_rel_dir "${patch_rel_dir}")
   set(triton_abs_dir "${TRITON_ROOT_DIR}/include/triton/Dialect/Triton/IR") # message(STATUS "triton_abs_dir: ${triton_abs_dir}")
 
-set(LLVM_TARGET_DEFINITIONS TritonOps.td)
+set(LLVM_TARGET_DEFINITIONS ${triton_abs_dir}/TritonOps.td)
 set(BACKEND_SPEC_TD ${BACKEND_SPEC_INCLUDE_DIR}/triton/Dialect/Triton/IR/TritonOps.td)
 if(EXISTS ${BACKEND_SPEC_TD})
   set(LLVM_TARGET_DEFINITIONS ${BACKEND_SPEC_TD})
@@ -21,8 +21,7 @@ mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs)
 # add_mlir_doc(TritonDialect TritonDialect dialects/ -gen-dialect-doc)
 
 # TODO: When upgrading to Triton 3.4.0, enable the commented line below and remove the current line.
-# set(LLVM_TARGET_DEFINITIONS ${triton_abs_dir}/TritonTypes.td)
-set(LLVM_TARGET_DEFINITIONS TritonTypes.td)
+set(LLVM_TARGET_DEFINITIONS ${triton_abs_dir}/TritonTypes.td)
 set(BACKEND_SPEC_TD ${BACKEND_SPEC_INCLUDE_DIR}/triton/Dialect/Triton/IR/TritonTypes.td)
 if(EXISTS ${BACKEND_SPEC_TD})
   set(LLVM_TARGET_DEFINITIONS ${BACKEND_SPEC_TD})
