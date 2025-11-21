@@ -9,6 +9,8 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 
+#include "flagtree_spec.h"
+
 namespace mlir {
 namespace triton {
 
@@ -818,6 +820,7 @@ OpFoldResult AdvanceOp::fold(FoldAdaptor adaptor) {
 // https://github.com/llvm/llvm-project/blob/main/mlir/lib/Dialect/Func/IR/FuncOps.cpp
 // We could revert it back once MLIR has a better inliner interface.
 //-- FuncOp --
+#ifndef FLAGTREE_SPEC_Dialect_Triton_IR_Ops_build
 void FuncOp::build(OpBuilder &builder, OperationState &state, StringRef name,
                    FunctionType type, ArrayRef<NamedAttribute> attrs,
                    ArrayRef<DictionaryAttr> argAttrs) {
@@ -834,6 +837,7 @@ void FuncOp::build(OpBuilder &builder, OperationState &state, StringRef name,
       builder, state, argAttrs, /*resultAttrs=*/std::nullopt,
       getArgAttrsAttrName(state.name), getResAttrsAttrName(state.name));
 }
+#endif
 
 ParseResult FuncOp::parse(OpAsmParser &parser, OperationState &result) {
   auto buildFuncType =
@@ -912,6 +916,7 @@ LogicalResult ReturnOp::verify() {
 }
 
 // -- JoinOp --
+#ifndef FLAGTREE_SPEC_Dialect_Triton_IR_Ops_inferReturnTypes
 LogicalResult
 JoinOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location,
                          ValueRange operands, DictionaryAttr attributes,
@@ -943,6 +948,7 @@ JoinOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location,
       RankedTensorType::get(retShape, srcTy.getElementType(), retEnc));
   return success();
 }
+#endif
 
 // -- SplitOp --
 LogicalResult SplitOp::inferReturnTypes(

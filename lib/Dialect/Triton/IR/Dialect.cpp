@@ -15,6 +15,10 @@
 #include "triton/Dialect/Triton/IR/Dialect.cpp.inc"
 #include "triton/Dialect/Triton/IR/TritonTypeInterfaces.cpp.inc"
 
+#ifdef FLAGTREE_SPEC_Dialect_Triton_IR_OpInterfaces_inc
+#include "triton/Dialect/Triton/IR/OpInterfaces.cpp.inc"
+#endif
+
 using namespace mlir;
 using namespace mlir::triton;
 

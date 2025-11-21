@@ -8,6 +8,8 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/Support/ErrorHandling.h"
 
+#include "flagtree_spec.h"
+
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
 
@@ -64,6 +66,7 @@ LogicalResult OpTrait::impl::verifySameOperandsAndResultEncoding(
   return verifySameOperandsEncoding(op, allowTensorPointerType);
 }
 
+#ifndef FLAGTREE_SPEC_Dialect_Triton_IR_TRAITS_verifyTensorSize
 LogicalResult OpTrait::impl::verifyTensorSize(Operation *op) {
   for (auto opType : op->getOperandTypes()) {
     if (auto tensorType = dyn_cast<RankedTensorType>(opType)) {
@@ -97,6 +100,7 @@ LogicalResult OpTrait::impl::verifyTensorSize(Operation *op) {
   }
   return success();
 }
+#endif
 
 // Check that the Triton layouts on op's operands and return types are valid.
 // For example, we check that the number of warps per block in a Triton GPU
