@@ -6,7 +6,7 @@
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h"
 #include "triton-shared/TritonToHFusion/TritonToHFusion.h"
 #include "triton-shared/TritonLinearize/TritonLinearize.h"
-#include "triton-shared/TritonToLinalgIncubated/TritonToLinalgPass.h"
+#include "triton-shared/TritonToLinalgIncubated/TritonToLinalgIncubatedPass.h"
 #include "triton-shared/TritonToHIVM/TritonToHIVM.h"
 #include "triton-shared/TritonToLLVM/TritonToLLVM.h"
 
@@ -31,7 +31,7 @@ void init_triton_ascend_passes_convert(py::module &&m) {
          bool global_kernel,
          bool named_ops,
          bool enable_nd2nz_on_vector) {
-        pm.addPass(mlir::triton::conv::createTritonToLinalgIncubatedPass(
+        pm.addPass(mlir::triton::Incubated::createTritonToLinalgIncubatedPass(
             global_kernel, named_ops, enable_nd2nz_on_vector));
       },
       py::arg("pm"),
