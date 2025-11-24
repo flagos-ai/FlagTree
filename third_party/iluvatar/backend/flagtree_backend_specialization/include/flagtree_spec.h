@@ -1,3 +1,6 @@
+#ifndef ILUVATAR_FLAGTREE_SPEC_H
+#define ILUVATAR_FLAGTREE_SPEC_H
+
 #include "triton/Analysis/iluvatar_Allocation.h"
 #include "triton/Analysis/iluvatar_AxisInfo.h"
 #include "triton/Analysis/iluvatar_Membar.h"
@@ -27,3 +30,5 @@
 #include "triton/Dialect/TritonGPU/Transforms/iluvatar_Utility.h"
 #include "triton/Target/LLVMIR/iluvatar_LLVMDIScope.h"
 #include "triton/Tools/Sys/iluvatar_GetEnv.hpp"
+
+#endif // ILUVATAR_FLAGTREE_SPEC_H
