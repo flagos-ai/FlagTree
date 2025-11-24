@@ -29,8 +29,8 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
         gcc = shutil.which("gcc")
         cc = gcc if gcc is not None else clang
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        cc = flagtree_backend_specialization("get_cc", clang, gcc) or cc
+        from triton.runtime.driver import spec
+        cc = spec("get_cc", clang, gcc) or cc
         if cc is None:
             raise RuntimeError("Failed to find C compiler. Please specify via CC environment variable.")
     # This function was renamed and made public in Python 3.10

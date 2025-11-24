@@ -3,7 +3,7 @@ import torch
 import triton
 import triton.language as tl
 import pytest
-from triton.backends.iluvatar.flagtree_backend_specialization.triton.runtime.build import is_corex
+from triton.backends.iluvatar.spec.triton.runtime.build import is_corex
 
 
 @pytest.mark.parametrize('use_cuda_graph', [False, True])

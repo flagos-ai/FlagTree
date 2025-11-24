@@ -40,7 +40,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endif()
 endif()
 
-add_subdirectory(backend/flagtree_backend_specialization/lib)
+add_subdirectory(backend/spec/lib)
 add_subdirectory(${PROJECT_SOURCE_DIR}/include
                  ${PROJECT_BINARY_DIR}/include)
 add_subdirectory(${PROJECT_SOURCE_DIR}/lib

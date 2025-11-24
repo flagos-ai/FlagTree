@@ -7,6 +7,6 @@ from .matmul import _matmul, get_higher_dtype, matmul
 __all__ = ["blocksparse", "_cross_entropy", "cross_entropy", "_matmul", "matmul", "attention", "get_higher_dtype"]
 
 # flagtree backend specialization
-from triton.runtime.driver import flagtree_backend_specialization
+from triton.runtime.driver import spec
 
-__all__ = flagtree_backend_specialization("ops_modify_all", __all__) or __all__
+__all__ = spec("ops_modify_all", __all__) or __all__

@@ -1271,8 +1271,8 @@ def kernel_suffix(signature, specialization):
         if i in specialization.divisible_by_16:
             suffix += 'd'
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        suffix = flagtree_backend_specialization("kernel_suffix_by_divisibility", specialization, i, suffix) or suffix
+        from triton.runtime.driver import spec
+        suffix = spec("kernel_suffix_by_divisibility", specialization, i, suffix) or suffix
     return suffix
 
 
@@ -1288,8 +1288,8 @@ def ast_to_ttir(fn, specialization, context, options, codegen_fns):
     new_constants = {k: True if k in tys and tys[k] == "i1" else 1 for k in attrs.equal_to_1}
     # flagtree backend specialization
     new_attrs = {k: [("tt.divisibility", 16)] for k in attrs.divisible_by_16}
-    from triton.runtime.driver import flagtree_backend_specialization
-    new_attrs = flagtree_backend_specialization("generate_new_attrs_in_ast_to_ttir", attrs) or new_attrs
+    from triton.runtime.driver import spec
+    new_attrs = spec("generate_new_attrs_in_ast_to_ttir", attrs) or new_attrs
 
     all_constants = constants.copy()
     all_constants.update(new_constants)
