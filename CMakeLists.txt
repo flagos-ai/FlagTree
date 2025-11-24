@@ -60,6 +60,18 @@ function(get_flagtree_backend_lib lib_name output_lib)
   set(${output_lib} ${ret} PARENT_SCOPE)
 endfunction()
 
+# FLAGTREE SPEC TD FILE GET FUNC
+function(set_flagtree_backend_td output_td td_filename)
+  set(ret ${td_filename})
+  file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)
+  set(BACKEND_SPEC_TD ${BACKEND_SPEC_ROOT}/${relative_path}/${td_filename})
+  if(EXISTS ${BACKEND_SPEC_TD})
+    set(ret ${BACKEND_SPEC_TD})
+  endif()
+  set(${output_td} ${ret} PARENT_SCOPE)
+endfunction()
+
 project(triton)
 include(CTest)
 

@@ -1,7 +1,3 @@
-set(LLVM_TARGET_DEFINITIONS Passes.td)
-set(BACKEND_SPEC_TD ${BACKEND_SPEC_INCLUDE_DIR}/triton/Dialect/TritonGPU/Transforms/Passes.td)
-if(EXISTS ${BACKEND_SPEC_TD})
-  set(LLVM_TARGET_DEFINITIONS ${BACKEND_SPEC_TD})
-endif()
+set_flagtree_backend_td(LLVM_TARGET_DEFINITIONS Passes.td)
 mlir_tablegen(Passes.h.inc -gen-pass-decls -name TritonGPU)
 add_public_tablegen_target(TritonGPUTransformsIncGen)
