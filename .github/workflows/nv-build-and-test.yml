@@ -108,7 +108,7 @@ jobs:
       - name: FlagTree Test with FlagGems
         shell: bash
         run: |
-          cd ..
+          cd ../..
           python3.11 -m pytest -s python/test/unit
           python3.11 -m pytest -s python/test/operators
           git clone https://github.com/flagos-ai/FlagGems.git
