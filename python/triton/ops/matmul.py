@@ -153,8 +153,8 @@ def _kernel(A, B, C, M, N, K,  #
 
 class _matmul(torch.autograd.Function):
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_func_specialization
-    kernel = flagtree_backend_func_specialization("matmul_kernel") or _kernel
+    from triton.runtime.driver import spec_func
+    kernel = spec_func("matmul_kernel") or _kernel
 
     _locks = {}
 
