@@ -1,9 +1,3 @@
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Dialect_Triton_Transforms_Combine_cpp
-
 #include <memory>
 
 #include "mlir/IR/BuiltinAttributes.h"
@@ -99,7 +93,7 @@ bool isAddPtrOffsetCombinable(Value first, Value second) {
 // TODO(csigg): remove after next LLVM integrate.
 using FastMathFlags = arith::FastMathFlags;
 
-#include "TritonCombine.inc"
+#include "Dialect/Triton/Transforms/TritonCombine.inc"
 
 // select(cond, load(ptrs, splat(cond), ???), other)
 //   => load(ptrs, splat(cond), other)
@@ -137,10 +131,19 @@ public:
     if (splatCond != condSelect)
       return failure();
 
+#ifndef __ILUVATAR__
     rewriter.replaceOpWithNewOp<LoadOp>(
         op, loadOp.getPtr(), loadOp.getMask(), /*other=*/falseValue,
         loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
         loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+#else
+    rewriter.replaceOpWithNewOp<LoadOp>(
+        op, loadOp.getPtr(), loadOp.getMask(), /*other=*/falseValue,
+        loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
+        loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
+        loadOp.getInputStride(), loadOp.getInputStride(),
+        loadOp.getInputStride());
+#endif
     return success();
   }
 };
@@ -243,7 +246,9 @@ public:
     patterns.add<CombineDotAddFRevPattern>(context);
     // %}
     patterns.add<CombineSelectMaskedLoadPattern>(context);
+#ifndef __ILUVATAR__
     patterns.add<CombineAddPtrPattern>(context);
+#endif
     patterns.add<CombineBroadcastConstantPattern>(context);
     patterns.add<CombineBroadcastMulReducePattern>(context);
 
@@ -259,5 +264,3 @@ std::unique_ptr<mlir::Pass> createCombineOpsPass() {
 }
 
 } // namespace mlir::triton
-
-#endif

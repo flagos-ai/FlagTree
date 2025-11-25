@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_ReduceDataDuplication_cpp
+
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -89,3 +95,5 @@ public:
 } // namespace gpu
 } // namespace triton
 } // namespace mlir
+
+#endif

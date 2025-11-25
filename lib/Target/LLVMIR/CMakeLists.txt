@@ -1,3 +1,5 @@
+get_flagtree_backend_lib("TritonLLVMIR" _EXTRA_LINK_LIBS)
+
 add_triton_library(TritonLLVMIR
         LLVMDIScope.cpp
         LLVMIRBreakPhiStruct.cpp
@@ -20,6 +22,7 @@ add_triton_library(TritonLLVMIR
         MLIRSupport
         MLIRTargetLLVMIRExport
         TritonGPUToLLVM
+        ${_EXTRA_LINK_LIBS}
         )
 
 set_source_files_properties(

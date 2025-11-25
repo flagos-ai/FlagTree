@@ -1,3 +1,11 @@
+if (FLAGTREE_BACKEND)
+    set(NVGPUIR "")
+else()
+    set(NVGPUIR "TritonNvidiaGPUIR")
+endif()
+
+get_flagtree_backend_lib("TritonAnalysis" _EXTRA_LINK_LIBS)
+
 add_triton_library(TritonAnalysis
   AxisInfo.cpp
   Allocation.cpp
@@ -14,5 +22,6 @@ add_triton_library(TritonAnalysis
   MLIRLLVMDialect
   TritonIR
   TritonGPUIR
-  TritonNvidiaGPUIR
+  ${NVGPUIR}
+  ${_EXTRA_LINK_LIBS}
 )

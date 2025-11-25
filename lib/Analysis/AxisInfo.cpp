@@ -12,6 +12,9 @@
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace mlir::triton {
+
+#ifndef FLAGTREE_SPEC_AxisInfo_classes
+
 namespace {
 
 int64_t gcdImpl(int64_t a, int64_t b, int64_t *x, int64_t *y) {
@@ -1091,7 +1094,9 @@ void AxisInfoAnalysis::visitForOpInductionVar(
 }
 
 } // anonymous namespace
+#endif
 
+#ifndef FLAGTREE_SPEC_AxisInfo_AxisInfo_functions
 template <class T>
 void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
                                             DimVectorT *contiguity,
@@ -1189,6 +1194,7 @@ void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
     constantValue = lhs.getConstantValue();
   return AxisInfo(contiguity, divisibility, constancy, constantValue);
 }
+#endif
 
 unsigned ModuleAxisInfoAnalysis::getPtrContiguity(Value ptr) {
   auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
@@ -1260,6 +1266,7 @@ unsigned ModuleAxisInfoAnalysis::getMaskAlignment(Value mask) {
   return alignment;
 }
 
+#ifndef FLAGTREE_SPEC_AxisInfo_classes
 void ModuleAxisInfoAnalysis::initialize(FunctionOpInterface funcOp) {
   std::unique_ptr<DataFlowSolver> solver = createDataFlowSolver();
   AxisInfoAnalysis *analysis = solver->load<AxisInfoAnalysis>();
@@ -1287,7 +1294,9 @@ void ModuleAxisInfoAnalysis::initialize(FunctionOpInterface funcOp) {
     }
   });
 }
+#endif
 
+#ifndef FLAGTREE_SPEC_AxisInfo_ModuleAxisInfoAnalysis_update
 void ModuleAxisInfoAnalysis::update(CallOpInterface callOp,
                                     FunctionOpInterface callee) {
   auto caller = callOp->getParentOfType<FunctionOpInterface>();
@@ -1312,5 +1321,6 @@ void ModuleAxisInfoAnalysis::update(CallOpInterface callOp,
     setAttrFn("tt.constancy", axisInfo.getConstancy(0));
   }
 }
+#endif
 
 } // namespace mlir::triton

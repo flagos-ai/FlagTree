@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_cpp
+
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <numeric>
@@ -2975,3 +2981,5 @@ LogicalResult TritonGPUDialect::verifyOperationAttribute(Operation *op,
   // TODO: fill this.
   return success();
 }
+
+#endif

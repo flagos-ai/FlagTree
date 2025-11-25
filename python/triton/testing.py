@@ -11,8 +11,8 @@ def nvsmi(attrs):
     attrs = ','.join(attrs)
     cmd = ['nvidia-smi', '-i', '0', '--query-gpu=' + attrs, '--format=csv,noheader,nounits']
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    cmd = flagtree_backend_specialization("backend_smi_cmd", attrs) or cmd
+    from triton.runtime.driver import spec
+    cmd = spec("backend_smi_cmd", attrs) or cmd
     out = subprocess.check_output(cmd)
     ret = out.decode(sys.stdout.encoding).split(',')
     ret = [int(x) for x in ret]
@@ -383,8 +383,8 @@ def get_dram_gbps(device=None):
         device = torch.cuda.current_device()
     mem_clock_khz = driver.active.utils.get_device_properties(device)["mem_clock_rate"]  # in kHz
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    mem_clock_khz = flagtree_backend_specialization("get_mem_clock_khz") or mem_clock_khz
+    from triton.runtime.driver import spec
+    mem_clock_khz = spec("get_mem_clock_khz") or mem_clock_khz
     bus_width = driver.active.utils.get_device_properties(device)["mem_bus_width"]
     bw_gbps = mem_clock_khz * bus_width * 2 / 1e6 / 8  # In GB/s
     return bw_gbps
@@ -401,9 +401,9 @@ def get_max_tensorcore_tflops(dtype, clock_rate, device=None):
     capability = torch.cuda.get_device_capability(device)
     if capability[0] < 8:
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        flagtree_backend_specialization("dtype_and_corex_assert", dtype)
-        assert dtype == torch.float16 or flagtree_backend_specialization("is_get_tflops_support_capability_lt_8")
+        from triton.runtime.driver import spec
+        spec("dtype_and_corex_assert", dtype)
+        assert dtype == torch.float16 or spec("is_get_tflops_support_capability_lt_8")
         ops_per_sub_core = 256  # 2 4x4x4 Tensor Cores
     else:
         if dtype in [torch.float32, torch.int32]:

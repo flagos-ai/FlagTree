@@ -8,10 +8,17 @@
 #include "llvm/ADT/STLExtras.h"
 
 namespace SharedToDotOperandMMAv1 {
+
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMNCoords
 using CoordTy = SmallVector<Value>;
+#endif
 using ValueTable = std::map<std::pair<int, int>, std::pair<Value, Value>>;
 
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMNCoords
+SmallVector<CoordTy>
+#else
 static SmallVector<CoordTy>
+#endif
 getMNCoords(Value thread, Location loc, ConversionPatternRewriter &rewriter,
             ArrayRef<unsigned int> wpt, const NvidiaMmaEncodingAttr &mmaLayout,
             ArrayRef<int64_t> shape, bool isARow, bool isBRow, bool isAVec4,
@@ -144,6 +151,7 @@ LLVM::LLVMFuncOp appendOrGetExternFuncOp(ConversionPatternRewriter &rewriter,
 }
 } // namespace triton::gpu
 
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_applyLinearLayout_disable
 SmallVector<std::pair<StringAttr, Value>>
 applyLinearLayout(Location loc, RewriterBase &rewriter,
                   const LinearLayout &layout,
@@ -203,6 +211,7 @@ applyLinearLayout(Location loc, RewriterBase &rewriter,
 
   return outIndices;
 }
+#endif
 
 std::optional<SmallVector<SmallVector<Value>>>
 emitIndicesUsingLinearLayouts(Location loc, RewriterBase &rewriter,
@@ -291,12 +300,14 @@ Value createNaNConstant(Location loc, OpBuilder &rewriter, Type type) {
 }
 
 // Create an index type constant.
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_createIndexConstant
 Value createIndexConstant(OpBuilder &builder, Location loc,
                           const TypeConverter *converter, int64_t value) {
   Type ty = converter->convertType(builder.getIndexType());
   return builder.create<LLVM::ConstantOp>(loc, ty,
                                           builder.getIntegerAttr(ty, value));
 }
+#endif
 
 // Create an integer constant of \param width bits.
 Value createLLVMIntegerConstant(OpBuilder &builder, Location loc, short width,
@@ -412,6 +423,7 @@ Value linearize(ConversionPatternRewriter &rewriter, Location loc,
   return linear;
 }
 
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_addStringToModule_disable
 Value addStringToModule(Location loc, ConversionPatternRewriter &rewriter,
                         StringRef key, StringRef content) {
   auto moduleOp = rewriter.getBlock()->getParent()->getParentOfType<ModuleOp>();
@@ -445,7 +457,9 @@ Value addStringToModule(Location loc, ConversionPatternRewriter &rewriter,
       gep(ptr_ty(ctx), i8_ty, globalPtr, SmallVector<Value>({zero}));
   return stringStart;
 }
+#endif
 
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getMultiDimOffset_ARG
 SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
                                      ConversionPatternRewriter &rewriter,
                                      const TargetInfoBase &targetInfo,
@@ -599,6 +613,7 @@ SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
   }
   llvm_unreachable("unexpected layout in getMultiDimOffset");
 }
+#endif
 
 SmallVector<Value> getWrappedMultiDimOffset(
     ConversionPatternRewriter &rewriter, Location loc,

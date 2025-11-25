@@ -7,6 +7,10 @@
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 using namespace mlir::triton::gpu;
 
 namespace mlir::triton::gpu {
@@ -19,6 +23,7 @@ Type getElementType(Value value) {
 }
 // MMA encoding has a different order depending on the element's bit width;
 // reorder if we're in this case.
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVMBase_reorderValues
 SmallVector<Value> reorderValues(const SmallVector<Value> &values, Type inType,
                                  Type ouType) {
   auto inTensorTy = dyn_cast<RankedTensorType>(inType);
@@ -78,7 +83,9 @@ SmallVector<Value> reorderValues(const SmallVector<Value> &values, Type inType,
   }
   llvm_unreachable("unimplemented code path");
 }
+#endif
 
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVMBase_unpackI32
 SmallVector<Value> unpackI32(const SmallVector<Value> &inValues, Type srcTy,
                              ConversionPatternRewriter &rewriter, Location loc,
                              const LLVMTypeConverter *typeConverter) {
@@ -100,7 +107,9 @@ SmallVector<Value> unpackI32(const SmallVector<Value> &inValues, Type srcTy,
   }
   return outValues;
 }
+#endif
 
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVMBase_packI32
 SmallVector<Value> packI32(const SmallVector<Value> &inValues, Type srcTy,
                            ConversionPatternRewriter &rewriter, Location loc,
                            const LLVMTypeConverter *typeConverter) {
@@ -123,6 +132,7 @@ SmallVector<Value> packI32(const SmallVector<Value> &inValues, Type srcTy,
   }
   return outValues;
 }
+#endif
 
 int getNumElementsPerThreads(Type type,
                              const LLVMTypeConverter *typeConverter) {

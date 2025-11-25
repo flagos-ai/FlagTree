@@ -1,6 +1,6 @@
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
-set(LLVM_TARGET_DEFINITIONS TritonGPUOps.td)
+set_flagtree_backend_td(LLVM_TARGET_DEFINITIONS TritonGPUOps.td)
 mlir_tablegen(Dialect.h.inc -gen-dialect-decls -dialect=triton_gpu)
 mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs -dialect=triton_gpu)
 mlir_tablegen(Ops.h.inc -gen-op-decls)
@@ -11,7 +11,7 @@ add_mlir_doc(TritonGPUDialect TritonGPUDialect dialects/ -gen-dialect-doc)
 add_mlir_doc(TritonGPUOps TritonGPUOps dialects/ -gen-op-doc)
 add_public_tablegen_target(TritonGPUTableGen)
 
-set(LLVM_TARGET_DEFINITIONS TritonGPUAttrDefs.td)
+set_flagtree_backend_td(LLVM_TARGET_DEFINITIONS TritonGPUAttrDefs.td)
 mlir_tablegen(TritonGPUAttrInterfaces.h.inc -gen-attr-interface-decls)
 mlir_tablegen(TritonGPUAttrInterfaces.cpp.inc -gen-attr-interface-defs)
 mlir_tablegen(TritonGPUAttrDefs.h.inc -gen-attrdef-decls)

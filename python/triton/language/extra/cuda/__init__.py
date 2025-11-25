@@ -8,6 +8,6 @@ __all__ = [
 ]
 
 # flagtree backend specialization
-from triton.runtime.driver import flagtree_backend_specialization
+from triton.runtime.driver import spec
 
-__all__ = flagtree_backend_specialization("language_extra_cuda_modify_all", __all__) or __all__
+__all__ = spec("language_extra_cuda_modify_all", __all__) or __all__

@@ -3,6 +3,10 @@
 
 #include "mlir/Pass/Pass.h"
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 namespace mlir {
 namespace triton {
 
@@ -11,7 +15,9 @@ std::unique_ptr<Pass> createCombineOpsPass();
 std::unique_ptr<Pass> createReorderBroadcastPass();
 std::unique_ptr<Pass> createRewriteTensorPointerPass();
 
+#ifndef FLAGTREE_SPEC_Dialect_Triton_Transforms_Passes_createExpressionRestructingPass
 std::unique_ptr<Pass> createExpressionRestructingPass();
+#endif
 } // namespace triton
 
 #define GEN_PASS_REGISTRATION

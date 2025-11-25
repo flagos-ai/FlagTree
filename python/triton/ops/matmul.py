@@ -36,8 +36,8 @@ def init_to_zero(name):
 def get_configs_io_bound():
     configs = []
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    if flagtree_backend_specialization("only_supports_num_stages_le_2"):
+    from triton.runtime.driver import spec
+    if spec("only_supports_num_stages_le_2"):
         return configs
     for num_stages in [2, 3, 4, 5, 6]:
         for block_m in [16, 32]:
@@ -153,8 +153,8 @@ def _kernel(A, B, C, M, N, K,  #
 
 class _matmul(torch.autograd.Function):
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_func_specialization
-    kernel = flagtree_backend_func_specialization("matmul_kernel") or _kernel
+    from triton.runtime.driver import spec_func
+    kernel = spec_func("matmul_kernel") or _kernel
 
     _locks = {}
 
@@ -206,8 +206,8 @@ class _matmul(torch.autograd.Function):
         # launch kernel
         grid = lambda META: (cdiv(M, META['BLOCK_M']) * cdiv(N, META['BLOCK_N']), META['SPLIT_K'])
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        flagtree_backend_specialization("matmul_kernel", grid, a, b, c, M, N, K, acc_dtype, input_precision, fp8_fast_accum, ab_dtype) or \
+        from triton.runtime.driver import spec
+        spec("matmul_kernel", grid, a, b, c, M, N, K, acc_dtype, input_precision, fp8_fast_accum, ab_dtype) or \
         _kernel[grid](
             a, b, c, M, N, K,  #
             a.stride(0), a.stride(1),  #

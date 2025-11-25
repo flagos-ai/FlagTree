@@ -376,14 +376,13 @@ class _attention(torch.autograd.Function):
         # only support for Ampere now
         capability = torch.cuda.get_device_capability()
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        if capability[0] < 8 and not flagtree_backend_specialization("always_support_flash_attention"):
+        from triton.runtime.driver import spec
+        if capability[0] < 8 and not spec("always_support_flash_attention"):
             raise RuntimeError("Flash attention currently only supported for compute capability >= 80")
         BLOCK_M = 128
         BLOCK_N = 64
         num_stages = 4
-        BLOCK_M, BLOCK_N, num_stages = flagtree_backend_specialization("attention_forward_config") or (BLOCK_M, BLOCK_N,
-                                                                                                       num_stages)
+        BLOCK_M, BLOCK_N, num_stages = spec("attention_forward_config") or (BLOCK_M, BLOCK_N, num_stages)
         # shape constraints
         Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
         assert Lq == Lk and Lk == Lv
@@ -423,9 +422,8 @@ class _attention(torch.autograd.Function):
         BLOCK = 128
         num_warps = 8
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        BLOCK, num_warps = flagtree_backend_specialization("attention_backward_config",
-                                                           ctx.BLOCK_DMODEL) or (BLOCK, num_warps)
+        from triton.runtime.driver import spec
+        BLOCK, num_warps = spec("attention_backward_config", ctx.BLOCK_DMODEL) or (BLOCK, num_warps)
 
         if is_hip():
             # Bwd pass runs out of shared memory on HIP with larger block size.
@@ -453,8 +451,8 @@ class _attention(torch.autograd.Function):
         )
 
         # call flagtree specialization out of jit function
-        from triton.runtime.driver import flagtree_backend_specialization
-        COMPUTE_DQ_LIKE_MMA_V3 = bool(flagtree_backend_specialization("compute_dq_like_mma_v3") or False)
+        from triton.runtime.driver import spec
+        COMPUTE_DQ_LIKE_MMA_V3 = bool(spec("compute_dq_like_mma_v3") or False)
 
         _bwd_kernel[(ctx.grid[1], cdiv(seq_len_kv, BLOCK) if sequence_parallel else 1)](
             q, k, v, ctx.sm_scale,  #

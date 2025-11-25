@@ -6,6 +6,10 @@
 
 #include <set>
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 namespace mlir {
 
 class OpBuilder;
@@ -42,6 +46,16 @@ struct BlockInfo {
     syncReadIntervals.clear();
     syncWriteIntervals.clear();
   }
+
+#ifdef FLAGTREE_SPEC_BlockInfo_erase
+  // type: 0 all | 1 del W from other R |2 del R from other W
+  void erase(BlockInfo &other, int type = 0);
+#endif
+
+#ifdef FLAGTREE_SPEC_BlockInfo_printIntervals
+  // for debug
+  void printIntervals();
+#endif
 
   /// Compares two BlockInfo objects.
   bool operator==(const BlockInfo &other) const {

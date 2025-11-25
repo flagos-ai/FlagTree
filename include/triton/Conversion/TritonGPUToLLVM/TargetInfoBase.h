@@ -3,6 +3,10 @@
 
 #include "triton/Conversion/MLIRTypes.h"
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 namespace mlir::triton {
 class TargetInfoBase {
 public:
@@ -13,11 +17,18 @@ public:
   virtual Value ballot(ConversionPatternRewriter &rewriter, Location loc,
                        Type type, Value cmp) const = 0;
 
+#ifdef FLAGTREE_SPEC_TargetInfoBase_function
+  virtual Value storeShared(ConversionPatternRewriter &rewriter, Location loc,
+                            Value ptr, Value val, Value pred) const = 0;
+  virtual Value loadShared(ConversionPatternRewriter &rewriter, Location loc,
+                           Value ptr, Type elemTy, Value pred) const = 0;
+#else
   virtual void storeShared(ConversionPatternRewriter &rewriter, Location loc,
                            Value ptr, Value val, Value pred) const = 0;
   virtual Value loadShared(ConversionPatternRewriter &rewriter, Location loc,
                            const TypeConverter *converter, Value ptr,
                            Type elemTy, Value pred) const = 0;
+#endif
 
   virtual Value shuffleXor(ConversionPatternRewriter &rewriter, Location loc,
                            Value val, int i) const = 0;
