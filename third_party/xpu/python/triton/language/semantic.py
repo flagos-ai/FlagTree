@@ -906,9 +906,11 @@ def _str_to_eviction_policy(eviction_policy):
 
 
 def _str_to_offset_state_policy(offset_state_policy):
-    offset_state = ir.OFFSET_STATE_POLICY.UNKNOWN  # default
+    offset_state = ir.OFFSET_STATE_POLICY.EMPTY  # default
     if offset_state_policy:
-        if offset_state_policy == "discrete_same":
+        if offset_state_policy == "unknown":
+            offset_state = ir.OFFSET_STATE_POLICY.UNKNOWN
+        elif offset_state_policy == "discrete_same":
             offset_state = ir.OFFSET_STATE_POLICY.DISCRETE_SAME
         elif offset_state_policy == "continuous":
             offset_state = ir.OFFSET_STATE_POLICY.CONTINUOUS

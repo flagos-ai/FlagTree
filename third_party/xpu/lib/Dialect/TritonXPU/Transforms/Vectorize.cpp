@@ -234,8 +234,12 @@ struct TritonXPUVectorizePass
 
     bool isVectorized = false;
     TypeSwitch<const Operation *>(op)
-        .Case<triton::xpu::GM2LMOp>([&](auto loadOp) { isVectorized = true; })
-        .Case<triton::xpu::LM2GMOp>([&](auto loadOp) { isVectorized = true; })
+        .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) { isVectorized = true; })
+        .Case<triton::xpu::GM2LMMaskOp>(
+            [&](auto gm2lmmaskOp) { isVectorized = true; })
+        .Case<triton::xpu::LM2GMOp>([&](auto lm2gmOp) { isVectorized = true; })
+        .Case<triton::xpu::LM2GMMaskOp>(
+            [&](auto lm2gmmaskOp) { isVectorized = true; })
         .Case<triton::xpu::GetCoreIdOp>(
             [&](auto coreIdOp) { isVectorized = true; })
         .Case<triton::GetProgramIdOp>(
@@ -349,6 +353,15 @@ struct TritonXPUVectorizePass
           auto rhs = cmpFOp.getRhs();
           isVectorized = binLikeOpVectorize(lhs, rhs, visited, vectorizedOps);
         })
+        .Case<arith::TruncIOp>([&](auto truncIOp) {
+          isVectorized = false;
+          if (auto extElemwiseOp = dyn_cast<triton::ExternElementwiseOp>(
+                  truncIOp.getIn().getDefiningOp())) {
+            isVectorized =
+                vectorize(extElemwiseOp.getOperands().front().getDefiningOp(),
+                          visited, vectorizedOps);
+          }
+        })
         .Case<triton::xpu::CmpFOp>([&](auto cmpFOp) {
           auto lhs = cmpFOp.getLhs();
           auto rhs = cmpFOp.getRhs();
@@ -431,6 +444,11 @@ struct TritonXPUVectorizePass
             //   isVectorized =
             //       isVectorized && vectorize(prevOp, visited, vectorizedOps);
             // }
+          } else if (symbol == "_ZN3xpu5isnanEf") {
+            isVectorized = true;
+            for (auto operand : extElemwiseOp.getOperands()) {
+              isVectorized = vectorize(prevOp, visited, vectorizedOps);
+            }
           } else if (symbol == "_ZN3xpu6rsqrtfEf") {
             auto outType =
                 getElementTypeOrSelf(extElemwiseOp.getResult().getType());
@@ -566,12 +584,16 @@ struct TritonXPUVectorizePass
     for (auto *op : vectorizedOps) {
       TypeSwitch<Operation *>(op)
           .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) { (void)gm2lmOp; })
+          .Case<triton::xpu::GM2LMMaskOp>(
+              [&](auto gm2lmmaskOp) { (void)gm2lmmaskOp; })
           .Case<triton::xpu::LoadOp>([&](auto loadOp) {
             auto newVectorizedTensorTy =
                 getVectorType(loadOp.getResult().getType());
             loadOp.getResult().setType(newVectorizedTensorTy);
           })
           .Case<triton::xpu::LM2GMOp>([&](auto lm2gmOp) { (void)lm2gmOp; })
+          .Case<triton::xpu::LM2GMMaskOp>(
+              [&](auto lm2gmmaskOp) { (void)lm2gmmaskOp; })
           .Case<triton::xpu::StoreOp>([&](auto storeOp) { (void)storeOp; })
           .Case<ARITH_BINARY_FLOAT_OP>([&](auto binOp) {
             auto newVectorizedTensorTy =
@@ -682,6 +704,25 @@ struct TritonXPUVectorizePass
             cmpFOp.replaceAllUsesWith(newCmpFOp.getResult());
             cmpFOp.erase();
           })
+          .Case<arith::TruncIOp>([&](auto truncIOp) {
+            auto extElemwiseOp = cast<triton::ExternElementwiseOp>(
+                truncIOp.getIn().getDefiningOp());
+
+            auto newVectorizedTensorTy =
+                getVectorType(truncIOp.getResult().getType(), 32);
+
+            OpBuilder builder(extElemwiseOp);
+
+            auto newExtElemwiseOp = builder.create<triton::ExternElementwiseOp>(
+                extElemwiseOp.getLoc(), newVectorizedTensorTy,
+                extElemwiseOp.getOperands().front(), extElemwiseOp.getLibname(),
+                extElemwiseOp.getLibpath(), "_ZN3xpu6visnanEDv16_f",
+                extElemwiseOp.getPure());
+
+            truncIOp.replaceAllUsesWith(newExtElemwiseOp.getResult());
+            truncIOp.erase();
+            extElemwiseOp.erase();
+          })
           .Case<triton::xpu::CmpFOp>([&](auto cmpFOp) {
             auto rhsTy = cmpFOp.getRhs().getType();
             Type elemTy = getElementTypeOrSelf(getElementTypeOrSelf(rhsTy));
@@ -724,6 +765,18 @@ struct TritonXPUVectorizePass
             } else if (symbol == "_ZN3xpu5isinfEf") {
               auto newExtElemwiseOp =
                   createLibdeviceOp(extElemwiseOp, "_ZN3xpu6visinfEDv16_f",
+                                    newVectorizedTensorTy);
+              extElemwiseOp.replaceAllUsesWith(newExtElemwiseOp.getResult());
+              extElemwiseOp.erase();
+            } else if (symbol == "_ZN3xpu5isnanEf") {
+              auto inTy = extElemwiseOp.getOperands().front().getType();
+              Type elemTy = getElementTypeOrSelf(getElementTypeOrSelf(inTy));
+              auto newVectorizedTensorTy =
+                  getVectorType(extElemwiseOp.getResult().getType(),
+                                elemTy.getIntOrFloatBitWidth(), true);
+
+              auto newExtElemwiseOp =
+                  createLibdeviceOp(extElemwiseOp, "_ZN3xpu6visnanEDv16_f",
                                     newVectorizedTensorTy);
               extElemwiseOp.replaceAllUsesWith(newExtElemwiseOp.getResult());
               extElemwiseOp.erase();
@@ -905,10 +958,21 @@ struct TritonXPUVectorizePass
         for (auto user : extUIOp.getOut().getUsers()) {
           if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(user)) {
             if (auto outTensorTy = dyn_cast<RankedTensorType>(outTy)) {
+              auto lhsTy = cmpFOp.getLhs().getType();
+              auto lhsElemTy =
+                  getElementTypeOrSelf(getElementTypeOrSelf(lhsTy));
+              auto context = storeOp.getContext();
+              if (lhsElemTy.isF32()) {
+                auto dtype = DtypeAttr::get(context, Dtype::FP32);
+                storeOp->setAttr("dtype", dtype);
+              } else if (lhsElemTy.isF16()) {
+                auto dtype = DtypeAttr::get(context, Dtype::FP16);
+                storeOp->setAttr("dtype", dtype);
+              } else {
+                llvm_unreachable(
+                    "CompareExtUI8Fusion only supports FP32 or FP16");
+              }
               OpBuilder builder(extUIOp);
-              // auto newTensorTy = RankedTensorType::get(
-              //     outTensorTy.getShape(), builder.getI32Type(),
-              //     outTensorTy.getEncoding());
               auto newTensorTy = RankedTensorType::get(
                   outTensorTy.getShape(), builder.getIntegerType(32, false),
                   outTensorTy.getEncoding());
@@ -918,6 +982,74 @@ struct TritonXPUVectorizePass
               extUIOp.getOut().replaceAllUsesWith(newCmpFOp.getResult());
               extUIOp.erase();
               cmpFOp.erase();
+              BF16ToFP32VecOpt = false;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  void doCompareTruncI8Fusion(arith::TruncIOp truncIOp) {
+    auto inTy = truncIOp.getIn().getType();
+    auto outTy = truncIOp.getOut().getType();
+    auto inElemTy = getElementTypeOrSelf(inTy);
+    auto outElemTy = getElementTypeOrSelf(outTy);
+    // Only Vectorize Do Fusion
+    auto rowsPerCore = 1;
+    if (auto outTensorTy = mlir::dyn_cast<RankedTensorType>(outTy)) {
+      auto rank = outTensorTy.getShape().size();
+      if (rank > 1) {
+        rowsPerCore = mlir::cast<triton::xpu::ClusterLayoutAttr>(
+                          outTensorTy.getEncoding())
+                          .getSizePerCore()[0];
+      }
+    }
+    unsigned numElems = getTotalElemsPerThread(outTy) / rowsPerCore;
+    Type elemTy = getElementTypeOrSelf(outTy);
+    auto elemWidth = elemTy.getIntOrFloatBitWidth();
+    auto vectorWidth = 512 / elemWidth;
+    if (numElems < vectorWidth || numElems % vectorWidth > 0 ||
+        !vectorizedTyValid(elemTy))
+      return;
+    // Fuse ExtElemwiseOp(i8) + TruncIOp(i8) + StoreOp = newExtElemwiseOp(i32) +
+    // StoreOp
+    if (auto extElemwiseOp =
+            truncIOp.getIn().getDefiningOp<triton::ExternElementwiseOp>()) {
+      if (extElemwiseOp.getSymbol() == "_ZN3xpu5isnanEf" &&
+          inElemTy.isInteger(32) && outElemTy.isInteger(8)) {
+        for (auto user : truncIOp.getOut().getUsers()) {
+          if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(user)) {
+            if (auto outTensorTy = dyn_cast<RankedTensorType>(outTy)) {
+              auto inTy = extElemwiseOp.getOperands().front().getType();
+              auto inElemTy = getElementTypeOrSelf(getElementTypeOrSelf(inTy));
+              auto context = storeOp.getContext();
+              if (inElemTy.isF32()) {
+                auto dtype = DtypeAttr::get(context, Dtype::FP32);
+                storeOp->setAttr("dtype", dtype);
+              } else if (inElemTy.isF16()) {
+                auto dtype = DtypeAttr::get(context, Dtype::FP16);
+                storeOp->setAttr("dtype", dtype);
+              } else {
+                llvm_unreachable(
+                    "CompareExtUI8Fusion only supports FP32 or FP16");
+              }
+              OpBuilder builder(truncIOp);
+              auto newTensorTy = RankedTensorType::get(
+                  outTensorTy.getShape(), builder.getIntegerType(32),
+                  outTensorTy.getEncoding());
+              auto newExtElemwiseOp =
+                  builder.create<triton::ExternElementwiseOp>(
+                      truncIOp.getLoc(), newTensorTy,
+                      extElemwiseOp.getOperands().front(),
+                      extElemwiseOp.getLibname(), extElemwiseOp.getLibpath(),
+                      extElemwiseOp.getSymbol(), extElemwiseOp.getPure());
+
+              truncIOp.getOut().replaceAllUsesWith(
+                  newExtElemwiseOp.getResult());
+              truncIOp.erase();
+              extElemwiseOp.erase();
+              BF16ToFP32VecOpt = false;
             }
           }
         }
@@ -939,13 +1071,21 @@ struct TritonXPUVectorizePass
 
     TypeSwitch<const Operation *>(op)
         .Case<triton::xpu::LoadOp>([&](auto loadOp) {
-          auto gm2lmOp =
-              cast<triton::xpu::GM2LMOp>(loadOp.getPtr().getDefiningOp());
-          OffsetState offsetState =
-              static_cast<OffsetState>(gm2lmOp.getOffsetState());
-          if (offsetState == OffsetState::DiscreteSame &&
-              isLoadVectorized(loadOp))
-            canSVOpt = true;
+          if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMOp>(
+                  loadOp.getPtr().getDefiningOp())) {
+            OffsetState offsetState =
+                static_cast<OffsetState>(gm2lmOp.getOffsetState());
+            if (offsetState == OffsetState::DiscreteSame &&
+                isLoadVectorized(loadOp))
+              canSVOpt = true;
+          } else if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMMaskOp>(
+                         loadOp.getPtr().getDefiningOp())) {
+            OffsetState offsetState =
+                static_cast<OffsetState>(gm2lmOp.getOffsetState());
+            if (offsetState == OffsetState::DiscreteSame &&
+                isLoadVectorized(loadOp))
+              canSVOpt = true;
+          }
         })
         .Case<triton::xpu::BroadcastOp>([&](auto bcOp) {
           auto src = bcOp.getSrc();
@@ -1319,10 +1459,13 @@ struct TritonXPUVectorizePass
 
     // Compare Fusion
     // [cmpf, extui] -> [vcmpf(castToI8=True)]
-    bool isCompareFusion = this->compareFusion;
-    if (isCompareFusion) {
+    if (this->compareFusion) {
       mod.walk([&](arith::ExtUIOp extUIOp) { doCompareExtUI8Fusion(extUIOp); });
     }
+    mod.walk(
+        [&](arith::TruncIOp truncIOp) { doCompareTruncI8Fusion(truncIOp); });
+    // llvm::errs() << "After doCompareTruncI8Fusion:\n";
+    // mod.dump();
 
     // Eliminate SelectOp For bufferSize X Col Size
     // TODO[dyq]: open isMultipleOfBank
@@ -1483,7 +1626,6 @@ private:
   llvm::SetVector<triton::xpu::LoadOp> vectorizedLoadOps;
   llvm::SetVector<triton::xpu::VConstOp> vectorizedConstOps;
   bool maximumFusion = true;
-  bool _compareFusion = true;
   bool SV_Fusion = true;
   bool VMAC_Fusion = true;
   bool cvtOp_clean = true;

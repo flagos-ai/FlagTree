@@ -92,7 +92,7 @@ bool replaceAtomicOp(mlir::ModuleOp m) {
 
     auto storeOp = builder.create<triton::xpu::StoreOp>(
         loc, ptr, arithOp->getResults()[0], mask, Value(), -1, false,
-        MemorySyncMode::SYNC);
+        Dtype::UNKNOWN, MemorySyncMode::SYNC);
     atomicRMWOp.erase();
   });
 
@@ -479,6 +479,7 @@ struct TritonXPUCreateGM2LMPass
 
     llvm::SmallSetVector<Operation *, 4> opToErase;
     Value emptyBufPtr;
+    Value emptyLen;
 
     // FIXME: Sometimes (test_core.py::test_bin_op_constexpr)
     // `triton::LoadOp` and `triton::StoreOp` can not be replaced
@@ -504,7 +505,7 @@ struct TritonXPUCreateGM2LMPass
       OpBuilder builder(storeOp);
       auto newStoreOp = builder.create<triton::xpu::StoreOp>(
           loc, storeOp.getPtr(), storeOp.getValue(), storeOp.getMask(), Value(),
-          -1, false, storeOp.getSyncMode());
+          -1, false, Dtype::UNKNOWN, storeOp.getSyncMode());
       opToErase.insert(storeOp);
       offsetStateMap[newStoreOp] =
           static_cast<int32_t>(storeOp.getOffsetState()) -
@@ -515,38 +516,84 @@ struct TritonXPUCreateGM2LMPass
       OpBuilder builder(loadOp);
       auto loc = loadOp.getLoc();
       auto lmPtrType = addrspaceCast(loadOp.getPtr().getType(), 0);
-      bool handwrittenOffsetState = offsetStateMap[loadOp] != -1;
+      bool handwrittenOffsetState = offsetStateMap[loadOp] != -2;
       int offsetState = handwrittenOffsetState
                             ? offsetStateMap[loadOp]
                             : static_cast<int32_t>(OffsetState::Unknown);
       if (xpuArch == 2) {
         if (loadOp.getResult().hasOneUse()) {
           if (auto extFOp = dyn_cast<arith::ExtFOp>(*(loadOp->user_begin()))) {
-            auto gm2lmOp = builder.create<triton::xpu::GM2LMOp>(
-                loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
-                loadOp.getOther(), emptyBufPtr, offsetState, -1, -1, -1, -1, -1,
-                false, loadOp.getSyncMode(), hasAtomicSim, false,
-                handwrittenOffsetState);
-            loadOp.setOperand(0, gm2lmOp.getResult());
-            loadOp.getResult().setType(extFOp.getType());
-            extFOp.getResult().replaceAllUsesWith(loadOp.getResult());
-            opToErase.insert(extFOp);
+            if (this->isUseMaskZero) {
+              auto gm2lmOp = builder.create<triton::xpu::GM2LMMaskOp>(
+                  loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
+                  loadOp.getOther(), emptyLen, emptyBufPtr, offsetState, -1, -1,
+                  -1, -1, -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
+                  handwrittenOffsetState);
+              loadOp.setOperand(0, gm2lmOp.getResult());
+              loadOp.getResult().setType(extFOp.getType());
+              extFOp.getResult().replaceAllUsesWith(loadOp.getResult());
+              opToErase.insert(extFOp);
+              // Remove Mask in loadOp
+              if (loadOp.getMask()) {
+                auto operandSegmentSizesAttr =
+                    loadOp->getAttrOfType<DenseI32ArrayAttr>(
+                        "operandSegmentSizes");
+                SmallVector<int, 4> operandSegmentSizes(
+                    operandSegmentSizesAttr.asArrayRef());
+                --operandSegmentSizes[1]; // 0: ptr, 1: mask, 2: other
+                loadOp->setAttr(
+                    "operandSegmentSizes",
+                    builder.getDenseI32ArrayAttr(operandSegmentSizes));
+                loadOp->eraseOperands(1);
+              }
+            } else {
+              auto gm2lmOp = builder.create<triton::xpu::GM2LMOp>(
+                  loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
+                  loadOp.getOther(), emptyBufPtr, offsetState, -1, -1, -1, -1,
+                  -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
+                  handwrittenOffsetState);
+              loadOp.setOperand(0, gm2lmOp.getResult());
+              loadOp.getResult().setType(extFOp.getType());
+              extFOp.getResult().replaceAllUsesWith(loadOp.getResult());
+              opToErase.insert(extFOp);
+            }
             return;
           }
         }
       }
-      auto gm2lmOp = builder.create<triton::xpu::GM2LMOp>(
-          loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(), loadOp.getOther(),
-          emptyBufPtr, offsetState, -1, -1, -1, -1, -1, false,
-          loadOp.getSyncMode(), hasAtomicSim, false, handwrittenOffsetState);
-      loadOp.setOperand(0, gm2lmOp.getResult());
+      if (this->isUseMaskZero) {
+        auto gm2lmOp = builder.create<triton::xpu::GM2LMMaskOp>(
+            loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
+            loadOp.getOther(), emptyLen, emptyBufPtr, offsetState, -1, -1, -1,
+            -1, -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
+            handwrittenOffsetState);
+        loadOp.setOperand(0, gm2lmOp.getResult());
+        // Remove Mask in loadOp
+        if (loadOp.getMask()) {
+          auto operandSegmentSizesAttr =
+              loadOp->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
+          SmallVector<int, 4> operandSegmentSizes(
+              operandSegmentSizesAttr.asArrayRef());
+          --operandSegmentSizes[1]; // 0: ptr, 1: mask, 2: other
+          loadOp->setAttr("operandSegmentSizes",
+                          builder.getDenseI32ArrayAttr(operandSegmentSizes));
+          loadOp->eraseOperands(1);
+        }
+      } else {
+        auto gm2lmOp = builder.create<triton::xpu::GM2LMOp>(
+            loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
+            loadOp.getOther(), emptyBufPtr, offsetState, -1, -1, -1, -1, -1,
+            false, loadOp.getSyncMode(), hasAtomicSim, false,
+            handwrittenOffsetState);
+        loadOp.setOperand(0, gm2lmOp.getResult());
+      }
     });
 
     m.walk([&](triton::xpu::StoreOp storeOp) {
       OpBuilder builder(storeOp);
       auto loc = storeOp.getLoc();
       auto storeVal = storeOp.getValue();
-      bool handwrittenOffsetState = offsetStateMap[storeOp] != -1;
+      bool handwrittenOffsetState = offsetStateMap[storeOp] != -2;
       int offsetState = handwrittenOffsetState
                             ? offsetStateMap[storeOp]
                             : static_cast<int32_t>(OffsetState::Unknown);
@@ -559,11 +606,30 @@ struct TritonXPUCreateGM2LMPass
         }
       }
       storeOp->setOperand(1, storeVal);
-      auto lm2gmOp = builder.create<triton::xpu::LM2GMOp>(
-          loc, storeOp.getPtr(), storeVal, storeOp.getMask(), emptyBufPtr, -1,
-          offsetState, -1, -1, storeOp.getSyncMode(), hasAtomicSim,
-          handwrittenOffsetState);
-      lm2gmOp->moveAfter(storeOp);
+      if (this->isUseMaskZero) {
+        auto lm2gmOp = builder.create<triton::xpu::LM2GMMaskOp>(
+            loc, storeOp.getPtr(), storeVal, storeOp.getMask(), emptyLen,
+            emptyBufPtr, -1, offsetState, -1, -1, storeOp.getSyncMode(),
+            hasAtomicSim, handwrittenOffsetState);
+        lm2gmOp->moveAfter(storeOp);
+        // Remove Mask in storeOp
+        if (storeOp.getMask()) {
+          auto operandSegmentSizesAttr =
+              storeOp->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
+          SmallVector<int, 4> operandSegmentSizes(
+              operandSegmentSizesAttr.asArrayRef());
+          --operandSegmentSizes[2]; // 0: ptr, 1: value, 2: mask
+          storeOp->setAttr("operandSegmentSizes",
+                           builder.getDenseI32ArrayAttr(operandSegmentSizes));
+          storeOp->eraseOperands(2);
+        }
+      } else {
+        auto lm2gmOp = builder.create<triton::xpu::LM2GMOp>(
+            loc, storeOp.getPtr(), storeVal, storeOp.getMask(), emptyBufPtr, -1,
+            offsetState, -1, -1, storeOp.getSyncMode(), hasAtomicSim,
+            handwrittenOffsetState);
+        lm2gmOp->moveAfter(storeOp);
+      }
     });
 
     for (auto op : opToErase) {

@@ -87,6 +87,24 @@ public:
               }
             }
           }
+        } else if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMMaskOp>(user)) {
+          offsetState = static_cast<OffsetState>(gm2lmOp.getOffsetState());
+          cache = gm2lmOp.getCache();
+          start = std::min(start, op2Line[gm2lmOp]);
+          for (auto gm2lmUser : gm2lmOp->getUsers()) {
+            if (auto loadOp = dyn_cast<triton::xpu::LoadOp>(gm2lmUser)) {
+              end = std::max(end, op2Line[loadOp]);
+            } else {
+              if (auto user = findUserOp<triton::xpu::LoadOp>(gm2lmUser)) {
+                if (auto userLoadOp = dyn_cast<triton::xpu::LoadOp>(user)) {
+                  offsetState = userLoadOp.getIsDiscrete()
+                                    ? OffsetState::Discrete
+                                    : offsetState;
+                  end = std::max(end, op2Line[userLoadOp]);
+                }
+              }
+            }
+          }
         } else if (auto loadOp = dyn_cast<triton::xpu::LoadOp>(user)) {
           offsetState =
               loadOp.getIsDiscrete() ? OffsetState::Discrete : offsetState;
@@ -94,6 +112,9 @@ public:
         } else if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(user)) {
           start = std::min(start, op2Line[storeOp]);
         } else if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMOp>(user)) {
+          offsetState = static_cast<OffsetState>(lm2gmOp.getOffsetState());
+          end = std::max(end, op2Line[lm2gmOp]);
+        } else if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMMaskOp>(user)) {
           offsetState = static_cast<OffsetState>(lm2gmOp.getOffsetState());
           end = std::max(end, op2Line[lm2gmOp]);
         } else {

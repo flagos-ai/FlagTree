@@ -22,7 +22,7 @@ struct XPUReduceOpConversion
 
   inline SmallVector<SmallVector<Value>>
   emitIndices(Location loc, RewriterBase &rewriter,
-              const TargetInfoBase &target, Attribute layout,
+              const xpu::TargetInfo &target, Attribute layout,
               RankedTensorType type, const Value &loopIdx) const {
     SmallVector<int64_t> shape(type.getShape());
 
@@ -153,10 +153,9 @@ struct XPUReduceOpConversion
     auto srcValues = unpackInputs(loc, op, adaptor, rewriter);
 
     // Init shared memory for mask.
-    if (!helper.isCoreSynchronous()) {
+    if (!targetInfo.getXPUIsUseMaskZero() && !helper.isCoreSynchronous()) {
       initSharedMemory(helper, rewriter, loc);
     }
-
     std::map<SmallVector<unsigned>, SmallVector<Value>> accs;
     std::map<SmallVector<unsigned>, SmallVector<Value>> indices;
     // First reduce all the values along axis within each thread.
@@ -181,7 +180,7 @@ struct XPUReduceOpConversion
   }
 
 private:
-  const TargetInfoBase &targetInfo;
+  const xpu::TargetInfo &targetInfo;
 
   inline bool isNeedLoopCacheResult(triton::xpu::ReduceOp op) const {
     if (op.getAxis() == 1) {

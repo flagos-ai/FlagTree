@@ -59,7 +59,9 @@ public:
               [&](auto threadIdOp) { prefix = "coreId_"; })
           .Case<triton::GetProgramIdOp>(
               [&](auto getProgramIdOp) { prefix = "clusterId_"; })
-          .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) { prefix = "gm2lm_"; });
+          .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) { prefix = "gm2lm_"; })
+          .Case<triton::xpu::GM2LMMaskOp>(
+              [&](auto gm2lmOp) { prefix = "gm2lm_mask_"; });
       return prefix + std::to_string(mockVal);
     }
   };
@@ -166,7 +168,8 @@ public:
       if (isa<triton::xpu::InterleaveOp>(currentOp) ||
           isa<triton::MakeRangeOp>(currentOp) ||
           isa<arith::ConstantOp>(currentOp) ||
-          (isa<triton::xpu::GM2LMOp>(currentOp) && currentOp != startOp)) {
+          (isa<triton::xpu::GM2LMOp, triton::xpu::GM2LMMaskOp>(currentOp) &&
+           currentOp != startOp)) {
         continue;
       }
 
@@ -279,6 +282,10 @@ public:
           .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) {
             SmallVector<int> mockVals = getGM2LMOpMockVals();
             mockDataItems.emplace_back(MockData(gm2lmOp, 0, mockVals));
+          })
+          .Case<triton::xpu::GM2LMMaskOp>([&](auto gm2lmOp) {
+            SmallVector<int> mockVals = getGM2LMOpMockVals();
+            mockDataItems.emplace_back(MockData(gm2lmOp, 0, mockVals));
           });
     }
     return mockDataItems;
@@ -350,6 +357,24 @@ public:
   xpuGm2lmOpCalFunc(triton::xpu::GM2LMOp op,
                     DenseMap<Operation *, SmallVector<int>> &op2OffsetVal,
                     int mockVal = 0) {
+
+    auto offsetState = static_cast<OffsetState>(op.getOffsetState());
+    int32_t op_lrie = op.getLrie();
+    assert((offsetState == OffsetState::DiscreteSame || op_lrie > 1) &&
+           "Mocked GM2LMOp must be DiscreteSame");
+
+    auto result = op.getResult();
+    auto resTy = mlir::dyn_cast<RankedTensorType>(result.getType());
+    auto resShape = resTy.getShape();
+    unsigned numElems = resShape[resShape.size() - 1];
+
+    return SmallVector<int>(numElems, mockVal);
+  }
+
+  SmallVector<int>
+  xpuGm2lmmaskOpCalFunc(triton::xpu::GM2LMMaskOp op,
+                        DenseMap<Operation *, SmallVector<int>> &op2OffsetVal,
+                        int mockVal = 0) {
 
     auto offsetState = static_cast<OffsetState>(op.getOffsetState());
     int32_t op_lrie = op.getLrie();
@@ -622,6 +647,11 @@ public:
                 static_cast<OffsetState>(gm2lmOp.getOffsetState());
             // We can mock DiscreteSame OffsetState
             return offsetState != OffsetState::DiscreteSame;
+          } else if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMMaskOp>(op)) {
+            auto offsetState =
+                static_cast<OffsetState>(gm2lmOp.getOffsetState());
+            // We can mock DiscreteSame OffsetState
+            return offsetState != OffsetState::DiscreteSame;
           }
           return false;
         }) != opChain.end();
@@ -659,6 +689,11 @@ public:
               auto mockVal = op2MockVal[xpuGm2lmOp];
               op2OffsetVal[xpuGm2lmOp] =
                   xpuGm2lmOpCalFunc(xpuGm2lmOp, op2OffsetVal, mockVal);
+            })
+            .Case<triton::xpu::GM2LMMaskOp>([&](auto xpuGm2lmOp) {
+              auto mockVal = op2MockVal[xpuGm2lmOp];
+              op2OffsetVal[xpuGm2lmOp] =
+                  xpuGm2lmmaskOpCalFunc(xpuGm2lmOp, op2OffsetVal, mockVal);
             })
             .Case<triton::xpu::LoadOp>([&](auto xpuLoadOp) {
               auto mockVal = op2MockVal[xpuLoadOp];
@@ -1117,10 +1152,17 @@ public:
     mlir::ModuleOp m = getOperation();
     mlir::ModuleOp mod = getOperation();
 
-    mod.walk([&](mlir::Operation *op) {
-      TypeSwitch<const Operation *>(op).Case<XPU_MEMORY_OP>(
-          [&](auto memoryOp) { legalizeOffset(memoryOp); });
-    });
+    if (this->isUseMaskZero) {
+      mod.walk([&](mlir::Operation *op) {
+        TypeSwitch<const Operation *>(op).Case<XPU_MEMORY_MASK_OP>(
+            [&](auto memoryOp) { legalizeOffset(memoryOp); });
+      });
+    } else {
+      mod.walk([&](mlir::Operation *op) {
+        TypeSwitch<const Operation *>(op).Case<XPU_MEMORY_OP>(
+            [&](auto memoryOp) { legalizeOffset(memoryOp); });
+      });
+    }
 
     mod.walk([&](mlir::Operation *op) { op2Line[op] = line++; });
 
@@ -1205,6 +1247,104 @@ public:
     });
 
     mod.walk([&](triton::xpu::SM2GMOp sm2gmOp) {
+      // TODO: Deal with other offset states in SM2GM, especially 2D case in
+      // reduction
+      OffsetState offsetState = OffsetState::Continuous;
+      if (dumpFlag) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "\n=======================================\n"
+                   << sm2gmOp << "\n[OffsetState]: " << offsetState
+                   << "\n=======================================\n");
+      }
+
+      OpBuilder builder(sm2gmOp);
+      int32_t offsetStateInt = static_cast<int32_t>(offsetState);
+      sm2gmOp->setAttr("offsetState",
+                       builder.getSI32IntegerAttr(offsetStateInt));
+      findUnsupportedOp = false; // reset
+    });
+
+    mod.walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
+      if (dumpFlag)
+        LLVM_DEBUG(llvm::dbgs()
+                   << "\n=======================================\n");
+      OffsetState offsetState =
+          gm2lmOp.getHandwrittenOffsetState()
+              ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
+              : getOffsetState(gm2lmOp);
+      if (dumpFlag) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "\n"
+                   << gm2lmOp << "\n[OffsetState]: " << offsetState
+                   << "\n=======================================\n");
+      }
+      // In case `fixedStride` being modified by cluster(s) whose
+      // OffsetState is Continuous.
+      if (offsetState == OffsetState::Discrete) {
+        fixedStride = -1;
+      } else if (offsetState == OffsetState::Unknown &&
+                 (fixedStride == 1 | fixedStride == 0)) {
+        // Multi Memory State Like (Unknown & Continuous)
+        fixedStride = -1;
+      }
+
+      OpBuilder builder(gm2lmOp);
+      int32_t offsetStateInt = static_cast<int32_t>(offsetState);
+      gm2lmOp->setAttr("offsetState",
+                       builder.getSI32IntegerAttr(offsetStateInt));
+      gm2lmOp->setAttr("fixedStride", builder.getSI32IntegerAttr(fixedStride));
+      gm2lmOp->setAttr("rowLen", builder.getIntegerAttr(
+                                     builder.getIntegerType(64, true), rowLen));
+      gm2lmOp->setAttr(
+          "rowStride",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), rowStride));
+      gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(lrie));
+      auto loadOp = cast<triton::xpu::LoadOp>(gm2lmOp->getNextNode());
+      loadOp->setOperand(0, gm2lmOp);
+      loadOp->setAttr("stride", builder.getSI32IntegerAttr(fixedStride));
+      loadOp->setAttr("isDiscrete", builder.getBoolAttr(offsetState ==
+                                                        OffsetState::Discrete));
+      fixedStride = -1; // reset
+      rowLen = -1;
+      rowStride = -1;
+      findUnsupportedOp = false;
+    });
+
+    mod.walk([&](triton::xpu::LM2GMMaskOp lm2gmOp) {
+      if (dumpFlag)
+        LLVM_DEBUG(llvm::dbgs()
+                   << "\n=======================================\n");
+      OffsetState offsetState =
+          lm2gmOp.getHandwrittenOffsetState()
+              ? static_cast<OffsetState>(lm2gmOp.getOffsetState())
+              : getOffsetState(lm2gmOp);
+      // Only able to handle continuous and unknown cases.
+      if (offsetState != OffsetState::Continuous &&
+          offsetState != OffsetState::LocallyContinuous) {
+        offsetState = OffsetState::Unknown;
+      }
+      if (dumpFlag) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "\n"
+                   << lm2gmOp << "\n[OffsetState]: " << offsetState
+                   << "\n=======================================\n");
+      }
+      OpBuilder builder(lm2gmOp);
+      // offsetState = OffsetState::Continuous;
+      int32_t offsetStateInt = static_cast<int32_t>(offsetState);
+      lm2gmOp->setAttr("offsetState",
+                       builder.getSI32IntegerAttr(offsetStateInt));
+      lm2gmOp->setAttr("rowLen", builder.getIntegerAttr(
+                                     builder.getIntegerType(64, true), rowLen));
+      lm2gmOp->setAttr(
+          "rowStride",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), rowStride));
+      findUnsupportedOp = false; // reset
+      rowLen = -1;
+      rowStride = -1;
+    });
+
+    mod.walk([&](triton::xpu::SM2GMMaskOp sm2gmOp) {
       // TODO: Deal with other offset states in SM2GM, especially 2D case in
       // reduction
       OffsetState offsetState = OffsetState::Continuous;

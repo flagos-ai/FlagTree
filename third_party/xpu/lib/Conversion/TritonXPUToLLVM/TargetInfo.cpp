@@ -206,6 +206,7 @@ void TargetInfo::assertFail(ConversionPatternRewriter &rewriter, Location loc,
 
 uint32_t TargetInfo::getXPUArch() const { return this->xpu_arch; }
 uint32_t TargetInfo::getXPUBufferSize() const { return this->buffer_size; }
+bool TargetInfo::getXPUIsUseMaskZero() const { return this->isUseMaskZero; }
 
 } // namespace xpu
 } // namespace triton

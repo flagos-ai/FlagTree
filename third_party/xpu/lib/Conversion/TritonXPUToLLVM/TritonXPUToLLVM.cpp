@@ -52,8 +52,9 @@ struct ConvertTritonXPUToLLVM
     : public triton::impl::ConvertTritonXPUToLLVMBase<ConvertTritonXPUToLLVM> {
   using ConvertTritonXPUToLLVMBase::ConvertTritonXPUToLLVMBase;
 
-  ConvertTritonXPUToLLVM(uint32_t xpu_arch, uint32_t buffer_size)
-      : ConvertTritonXPUToLLVMBase({xpu_arch, buffer_size}) {}
+  ConvertTritonXPUToLLVM(uint32_t xpu_arch, uint32_t buffer_size,
+                         bool isUseMaskZero)
+      : ConvertTritonXPUToLLVMBase({xpu_arch, buffer_size, isUseMaskZero}) {}
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
@@ -98,7 +99,7 @@ struct ConvertTritonXPUToLLVM
     OpBuilder::InsertPoint indexInsertPoint;
 
     RewritePatternSet patterns(context);
-    triton::xpu::TargetInfo targetInfo(xpu_arch, buffer_size);
+    triton::xpu::TargetInfo targetInfo(xpu_arch, buffer_size, isUseMaskZero);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
     // Make benefit for XPU specific patterns higher so they apply before common
     // patterns
@@ -219,8 +220,10 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonXPUToLLVMPass() {
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertTritonXPUToLLVMPass(uint32_t xpu_arch, uint32_t buffer_size) {
-  return std::make_unique<ConvertTritonXPUToLLVM>(xpu_arch, buffer_size);
+createConvertTritonXPUToLLVMPass(uint32_t xpu_arch, uint32_t buffer_size,
+                                 bool isUseMaskZero) {
+  return std::make_unique<ConvertTritonXPUToLLVM>(xpu_arch, buffer_size,
+                                                  isUseMaskZero);
 }
 
 } // namespace triton

@@ -16,6 +16,7 @@ add_triton_library(TritonXPUTransforms
   OtherSim.cpp
   MemoryCache.cpp
   MemoryInplace.cpp
+  CFToSCF.cpp
 
   DEPENDS
   TritonXPUTransformsIncGen

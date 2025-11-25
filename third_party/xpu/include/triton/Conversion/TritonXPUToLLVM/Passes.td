@@ -24,6 +24,9 @@ def ConvertTritonXPUToLLVM: Pass<"convert-triton-xpu-to-llvm", "mlir::ModuleOp">
         Option<"buffer_size", "buffer_size",
                "uint32_t", /*default*/"128",
                "Buffer Size of LM">,
+        Option<"isUseMaskZero", "is-use-mask-zero",
+               "bool", /*default*/"0",
+               "Whether Use Mask Zero Method">,
    ];
 }
 

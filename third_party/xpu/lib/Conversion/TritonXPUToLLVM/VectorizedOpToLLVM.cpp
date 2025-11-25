@@ -124,6 +124,9 @@ struct XPUVectorizedOpsConversionBase {
     else if (elemTy.isInteger(32))
       return LLVM::getFixedVectorType(LLVM::type::i32Ty(ctx),
                                       getVectorSize(type));
+    else if (elemTy.isInteger(8))
+      return LLVM::getFixedVectorType(LLVM::type::i8Ty(ctx),
+                                      getVectorSize(type));
     else if (elemTy.isBF16())
       return LLVM::getFixedVectorType(LLVM::type::bf16Ty(ctx),
                                       getVectorSize(type));

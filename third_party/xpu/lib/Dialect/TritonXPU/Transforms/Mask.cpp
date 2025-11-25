@@ -110,6 +110,48 @@ public:
         }
       }
     });
+
+    m.walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
+      auto len = gm2lmOp.getLen();
+      if (len) {
+        auto subIOp = len.getDefiningOp<mlir::arith::SubIOp>();
+        if (!subIOp) {
+          OpBuilder builder(gm2lmOp);
+          auto loc = gm2lmOp->getLoc();
+          gm2lmOp->setAttr("offsetState",
+                           builder.getSI32IntegerAttr(
+                               static_cast<int32_t>(OffsetState::Unknown)));
+        }
+      }
+    });
+
+    m.walk([&](triton::xpu::LM2GMMaskOp lm2gmOp) {
+      auto len = lm2gmOp.getLen();
+      if (len) {
+        auto subIOp = len.getDefiningOp<mlir::arith::SubIOp>();
+        if (!subIOp) {
+          OpBuilder builder(lm2gmOp);
+          auto loc = lm2gmOp->getLoc();
+          lm2gmOp->setAttr("offsetState",
+                           builder.getSI32IntegerAttr(
+                               static_cast<int32_t>(OffsetState::Unknown)));
+        }
+      }
+    });
+
+    m.walk([&](triton::xpu::SM2GMMaskOp sm2gmOp) {
+      auto len = sm2gmOp.getLen();
+      if (len) {
+        auto subIOp = len.getDefiningOp<mlir::arith::SubIOp>();
+        if (!subIOp) {
+          OpBuilder builder(sm2gmOp);
+          auto loc = sm2gmOp->getLoc();
+          sm2gmOp->setAttr("offsetState",
+                           builder.getSI32IntegerAttr(
+                               static_cast<int32_t>(OffsetState::Unknown)));
+        }
+      }
+    });
   }
 
   void addThreadIdMask(mlir::scf::IfOp ifOp, triton::xpu::LoadOp loadOp) {
@@ -384,6 +426,28 @@ public:
       }
     });
 
+    m->walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
+      auto tensorTy = gm2lmOp.getResult().getType();
+      if (auto rankTensorTy = mlir::dyn_cast<RankedTensorType>(tensorTy)) {
+        auto gEncoding = mlir::cast<triton::xpu::ClusterLayoutAttr>(
+            rankTensorTy.getEncoding());
+        auto coresPerGroup = gEncoding.getCoresPerGroup();
+        auto groupsPerCluster = gEncoding.getGroupsPerCluster();
+
+        atomicSim = (llvm::find_if(coresPerGroup,
+                                   [](unsigned int num) { return num != 1; }) ==
+                     coresPerGroup.end()) &&
+                    (llvm::find_if(groupsPerCluster, [](unsigned int num) {
+                       return num != 1;
+                     }) == groupsPerCluster.end());
+
+        if (findUserOp<triton::ReduceOp>(gm2lmOp) ||
+            findUserOp<triton::xpu::ReduceOp>(gm2lmOp)) {
+          atomicSim = false;
+        }
+      }
+    });
+
     if (!atomicSim)
       return;
 
@@ -482,14 +546,26 @@ public:
         getOpChain(cmpiOpUsers, cmpiOp);
         for (auto user : cmpiOpUsers) {
           Value mask;
-          if (auto loadOp = dyn_cast<triton::xpu::GM2LMOp>(user)) {
-            mask = loadOp.getLen();
-          }
-          if (auto storeOp = dyn_cast<triton::xpu::LM2GMOp>(user)) {
-            mask = storeOp.getLen();
-          }
-          if (auto storeOp = dyn_cast<triton::xpu::SM2GMOp>(user)) {
-            mask = storeOp.getLen();
+          if (this->isUseMaskZero) {
+            if (auto loadOp = dyn_cast<triton::xpu::GM2LMMaskOp>(user)) {
+              mask = loadOp.getMask();
+            }
+            if (auto storeOp = dyn_cast<triton::xpu::LM2GMMaskOp>(user)) {
+              mask = storeOp.getMask();
+            }
+            if (auto storeOp = dyn_cast<triton::xpu::SM2GMMaskOp>(user)) {
+              mask = storeOp.getMask();
+            }
+          } else {
+            if (auto loadOp = dyn_cast<triton::xpu::GM2LMOp>(user)) {
+              mask = loadOp.getLen();
+            }
+            if (auto storeOp = dyn_cast<triton::xpu::LM2GMOp>(user)) {
+              mask = storeOp.getLen();
+            }
+            if (auto storeOp = dyn_cast<triton::xpu::SM2GMOp>(user)) {
+              mask = storeOp.getLen();
+            }
           }
           if (mask) {
             if (mask == cmpiOp.getResult()) {
@@ -568,132 +644,174 @@ public:
       }
 
       for (auto user : users) {
-        if (auto loadOp = dyn_cast<triton::xpu::GM2LMOp>(user)) {
-          loadOp.setOperand(1, elemLenOp.getResult());
-        } else if (auto storeOp = dyn_cast<triton::xpu::LM2GMOp>(user)) {
-          storeOp.setOperand(2, elemLenOp.getResult());
-        } else if (auto storeOp = dyn_cast<triton::xpu::SM2GMOp>(user)) {
-          storeOp.setOperand(1, elemLenOp.getResult());
+        if (this->isUseMaskZero) {
+          if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMMaskOp>(user)) {
+            auto operandSegmentSizesAttr =
+                gm2lmOp->getAttrOfType<DenseI32ArrayAttr>(
+                    "operandSegmentSizes");
+            SmallVector<int32_t, 4> operandSegmentSizes(
+                operandSegmentSizesAttr.asArrayRef());
+            ++operandSegmentSizes[3]; // 0: ptr, 1: mask, 2: other, 3: len, 4:
+                                      // bufPtr
+            gm2lmOp->setAttr("operandSegmentSizes",
+                             builder.getDenseI32ArrayAttr(operandSegmentSizes));
+            int numOperand = gm2lmOp->getNumOperands();
+            gm2lmOp->insertOperands(gm2lmOp->getNumOperands(), {elemLenOp});
+          } else if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMMaskOp>(user)) {
+            auto operandSegmentSizesAttr =
+                lm2gmOp->getAttrOfType<DenseI32ArrayAttr>(
+                    "operandSegmentSizes");
+            SmallVector<int, 5> operandSegmentSizes(
+                operandSegmentSizesAttr.asArrayRef());
+            ++operandSegmentSizes[3]; // 0: ptr, 1: value, 2: mask, 3: len, 4:
+                                      // bufPtr
+            lm2gmOp->setAttr("operandSegmentSizes",
+                             builder.getDenseI32ArrayAttr(operandSegmentSizes));
+            lm2gmOp->insertOperands(lm2gmOp->getNumOperands(), {elemLenOp});
+          } else if (auto sm2gmOp = dyn_cast<triton::xpu::SM2GMMaskOp>(user)) {
+            auto operandSegmentSizesAttr =
+                sm2gmOp->getAttrOfType<DenseI32ArrayAttr>(
+                    "operandSegmentSizes");
+            SmallVector<int, 5> operandSegmentSizes(
+                operandSegmentSizesAttr.asArrayRef());
+            ++operandSegmentSizes[3]; // 0: ptr, 1: value, 2: mask, 3: len, 4:
+                                      // bufPtr
+            sm2gmOp->setAttr("operandSegmentSizes",
+                             builder.getDenseI32ArrayAttr(operandSegmentSizes));
+            sm2gmOp->insertOperands(lm2gmOp->getNumOperands(), {elemLenOp});
+          }
+        } else {
+          if (auto loadOp = dyn_cast<triton::xpu::GM2LMOp>(user)) {
+            loadOp.setOperand(1, elemLenOp.getResult());
+          } else if (auto storeOp = dyn_cast<triton::xpu::LM2GMOp>(user)) {
+            storeOp.setOperand(2, elemLenOp.getResult());
+          } else if (auto storeOp = dyn_cast<triton::xpu::SM2GMOp>(user)) {
+            storeOp.setOperand(1, elemLenOp.getResult());
+          }
         }
       }
     }
 
-    // Step 3. Create scf::IfOp to deal with tailing
-    cmpiOps = multiRootTopologicalSort(cmpiOps);
-    llvm::SmallVector<Operation *> sortedCmpiOps;
-    for (auto it = cmpiOps.begin(); it != cmpiOps.end(); ++it) {
-      sortedCmpiOps.emplace_back(*it);
-    }
-    llvm::SmallVector<llvm::SetVector<Operation *>> ifBlockTrees;
-    for (int i = 0; i < sortedCmpiOps.size(); ++i) {
-      Operation *op = sortedCmpiOps[i];
-      OpBuilder builder(op);
-      mlir::Block *block = op->getBlock();
-      auto loc = builder.getUnknownLoc();
-      // ops to be moved into ifblock and later earsed
-      llvm::SetVector<Operation *> opsToMoveAndErase;
-      // Get the ops that from current to the end of the block
-      mlir::Operation *terminator = block->getTerminator();
-      auto it = op->getIterator();
-      ++it;
-      for (; &*it != terminator; ++it) {
-        opsToMoveAndErase.insert(&*it);
+    if (!this->isUseMaskZero) {
+      // Step 3. Create scf::IfOp to deal with tailing
+      cmpiOps = multiRootTopologicalSort(cmpiOps);
+      llvm::SmallVector<Operation *> sortedCmpiOps;
+      for (auto it = cmpiOps.begin(); it != cmpiOps.end(); ++it) {
+        sortedCmpiOps.emplace_back(*it);
       }
-      if (auto yieldOp = dyn_cast<scf::YieldOp>(terminator)) {
-        if (yieldOp.getResults().size() > 0) {
-          opsToMoveAndErase.insert(terminator);
+      llvm::SmallVector<llvm::SetVector<Operation *>> ifBlockTrees;
+      for (int i = 0; i < sortedCmpiOps.size(); ++i) {
+        Operation *op = sortedCmpiOps[i];
+        OpBuilder builder(op);
+        mlir::Block *block = op->getBlock();
+        auto loc = builder.getUnknownLoc();
+        // ops to be moved into ifblock and later earsed
+        llvm::SetVector<Operation *> opsToMoveAndErase;
+        // Get the ops that from current to the end of the block
+        mlir::Operation *terminator = block->getTerminator();
+        auto it = op->getIterator();
+        ++it;
+        for (; &*it != terminator; ++it) {
+          opsToMoveAndErase.insert(&*it);
         }
-      }
-      auto sortedOpsToMoveAndErase = sortOpTreeBwd(opsToMoveAndErase);
-      ifBlockTrees.emplace_back(sortedOpsToMoveAndErase);
-      // Create scf::IfOp
-      builder.setInsertionPoint(terminator);
-      mlir::scf::IfOp newIfOp;
-      if (auto cmpiOp = dyn_cast<mlir::arith::CmpIOp>(op)) {
-        auto cond = builder.create<triton::xpu::ExtractOp>(
-            loc, builder.getI1Type(), builder.getI32IntegerAttr(0),
-            cmpiOp.getResult());
         if (auto yieldOp = dyn_cast<scf::YieldOp>(terminator)) {
           if (yieldOp.getResults().size() > 0) {
-            newIfOp = builder.create<mlir::scf::IfOp>(
-                loc, yieldOp.getResults().getType(), cond,
-                /*withElseRegion=*/true);
-            builder.setInsertionPointToStart(newIfOp.thenBlock());
-          } else {
+            opsToMoveAndErase.insert(terminator);
+          }
+        }
+        auto sortedOpsToMoveAndErase = sortOpTreeBwd(opsToMoveAndErase);
+        ifBlockTrees.emplace_back(sortedOpsToMoveAndErase);
+        // Create scf::IfOp
+        builder.setInsertionPoint(terminator);
+        mlir::scf::IfOp newIfOp;
+        if (auto cmpiOp = dyn_cast<mlir::arith::CmpIOp>(op)) {
+          auto cond = builder.create<triton::xpu::ExtractOp>(
+              loc, builder.getI1Type(), builder.getI32IntegerAttr(0),
+              cmpiOp.getResult());
+          if (auto yieldOp = dyn_cast<scf::YieldOp>(terminator)) {
+            if (yieldOp.getResults().size() > 0) {
+              newIfOp = builder.create<mlir::scf::IfOp>(
+                  loc, yieldOp.getResults().getType(), cond,
+                  /*withElseRegion=*/true);
+              builder.setInsertionPointToStart(newIfOp.thenBlock());
+            } else {
+              newIfOp =
+                  builder.create<mlir::scf::IfOp>(loc, cond,
+                                                  /*withElseRegion=*/false);
+              builder.setInsertionPointToStart(newIfOp.thenBlock());
+            }
+          } else if (auto funcRetureOp =
+                         dyn_cast<triton::ReturnOp>(terminator)) {
             newIfOp = builder.create<mlir::scf::IfOp>(loc, cond,
                                                       /*withElseRegion=*/false);
             builder.setInsertionPointToStart(newIfOp.thenBlock());
           }
-        } else if (auto funcRetureOp = dyn_cast<triton::ReturnOp>(terminator)) {
-          newIfOp = builder.create<mlir::scf::IfOp>(loc, cond,
-                                                    /*withElseRegion=*/false);
-          builder.setInsertionPointToStart(newIfOp.thenBlock());
+        } else {
+          llvm_unreachable("cmpiOp only is mlir::arith::CmpIOp");
         }
-      } else {
-        llvm_unreachable("cmpiOp only is mlir::arith::CmpIOp");
-      }
 
-      mlir::IRMapping mapping;
-      for (int j = sortedOpsToMoveAndErase.size() - 1; j >= 0; --j) {
-        auto bodyOp = sortedOpsToMoveAndErase[j];
-        auto newBodyOp = builder.clone(*bodyOp, mapping); // Clone bodyOps
-        if (auto reduceOp = dyn_cast<triton::xpu::ReduceOp>(bodyOp)) {
-          auto newReduceOp = cast<triton::xpu::ReduceOp>(newBodyOp);
-          ReduceOpHelper helper(reduceOp);
-          ReduceOpHelper newHelper(newReduceOp);
-          newHelper.setReduceId(helper.getReduceId());
-          newHelper.setReduceNum(helper.getReduceNum());
-        } else if (auto storeOp = dyn_cast<triton::xpu::StoreSMOp>(bodyOp)) {
-          SMHelper helper(storeOp);
-          SMHelper newHelper(newBodyOp);
-          newHelper.setOffset(helper.getOffset());
-        } else if (auto sm2gmOp = dyn_cast<triton::xpu::SM2GMOp>(bodyOp)) {
-          SMHelper helper(sm2gmOp);
-          SMHelper newHelper(newBodyOp);
-          newHelper.setOffset(helper.getOffset());
-        }
-      }
-
-      if (auto yieldOp = dyn_cast<scf::YieldOp>(terminator)) {
-        if (yieldOp.getResults().size() > 0) {
-          builder.setInsertionPointToStart(newIfOp.elseBlock());
-          auto block = yieldOp->getBlock();
-          auto *region = block->getParent();
-          auto *parentOp = region->getParentOp();
-          if (auto parentForOp = dyn_cast<scf::ForOp>(parentOp)) {
-            // Create YiledOp For newIfOp
-            if (parentForOp.getRegionIterArgs().size() > 0) {
-              builder.create<mlir::scf::YieldOp>(
-                  loc, parentForOp.getRegionIterArgs());
-            }
-            // Create YiledOp For YieldOp's ParentOp
-            builder.setInsertionPointToEnd(parentForOp.getBody());
-            auto ifResults = newIfOp.getResults();
-            builder.create<mlir::scf::YieldOp>(loc, ifResults);
-          } else if (auto parentIfOp = dyn_cast<scf::IfOp>(parentOp)) {
-            // Create YiledOp For newIfOp
-            auto elseYieldOp = parentIfOp.elseYield();
-            auto elseResults = elseYieldOp.getResults();
-            builder.create<mlir::scf::YieldOp>(loc, elseResults);
-            // Create YiledOp For YieldOp's ParentOp
-            builder.setInsertionPointToEnd(parentIfOp.getBody());
-            builder.create<mlir::scf::YieldOp>(loc, newIfOp.getResults());
-          } else {
-            llvm_unreachable("Unknown Mask YiledOp Pattern");
+        mlir::IRMapping mapping;
+        for (int j = sortedOpsToMoveAndErase.size() - 1; j >= 0; --j) {
+          auto bodyOp = sortedOpsToMoveAndErase[j];
+          auto newBodyOp = builder.clone(*bodyOp, mapping); // Clone bodyOps
+          if (auto reduceOp = dyn_cast<triton::xpu::ReduceOp>(bodyOp)) {
+            auto newReduceOp = cast<triton::xpu::ReduceOp>(newBodyOp);
+            ReduceOpHelper helper(reduceOp);
+            ReduceOpHelper newHelper(newReduceOp);
+            newHelper.setReduceId(helper.getReduceId());
+            newHelper.setReduceNum(helper.getReduceNum());
+          } else if (auto storeOp = dyn_cast<triton::xpu::StoreSMOp>(bodyOp)) {
+            SMHelper helper(storeOp);
+            SMHelper newHelper(newBodyOp);
+            newHelper.setOffset(helper.getOffset());
+          } else if (auto sm2gmOp = dyn_cast<triton::xpu::SM2GMOp>(bodyOp)) {
+            SMHelper helper(sm2gmOp);
+            SMHelper newHelper(newBodyOp);
+            newHelper.setOffset(helper.getOffset());
           }
         }
-      }
 
-      // update next iteration of sortedCmpiOps
-      for (int k = i + 1; k < sortedCmpiOps.size(); ++k) {
-        auto mappedMaskVal =
-            mapping.lookupOrDefault(sortedCmpiOps[k]->getResult(0));
-        sortedCmpiOps[k] = mappedMaskVal.getDefiningOp();
-      }
-      // Erase Old Ops
-      for (auto op : sortedOpsToMoveAndErase) {
-        if (op->getParentOp() != nullptr) {
-          op->erase();
+        if (auto yieldOp = dyn_cast<scf::YieldOp>(terminator)) {
+          if (yieldOp.getResults().size() > 0) {
+            builder.setInsertionPointToStart(newIfOp.elseBlock());
+            auto block = yieldOp->getBlock();
+            auto *region = block->getParent();
+            auto *parentOp = region->getParentOp();
+            if (auto parentForOp = dyn_cast<scf::ForOp>(parentOp)) {
+              // Create YiledOp For newIfOp
+              if (parentForOp.getRegionIterArgs().size() > 0) {
+                builder.create<mlir::scf::YieldOp>(
+                    loc, parentForOp.getRegionIterArgs());
+              }
+              // Create YiledOp For YieldOp's ParentOp
+              builder.setInsertionPointToEnd(parentForOp.getBody());
+              auto ifResults = newIfOp.getResults();
+              builder.create<mlir::scf::YieldOp>(loc, ifResults);
+            } else if (auto parentIfOp = dyn_cast<scf::IfOp>(parentOp)) {
+              // Create YiledOp For newIfOp
+              auto elseYieldOp = parentIfOp.elseYield();
+              auto elseResults = elseYieldOp.getResults();
+              builder.create<mlir::scf::YieldOp>(loc, elseResults);
+              // Create YiledOp For YieldOp's ParentOp
+              builder.setInsertionPointToEnd(parentIfOp.getBody());
+              builder.create<mlir::scf::YieldOp>(loc, newIfOp.getResults());
+            } else {
+              llvm_unreachable("Unknown Mask YiledOp Pattern");
+            }
+          }
+        }
+
+        // update next iteration of sortedCmpiOps
+        for (int k = i + 1; k < sortedCmpiOps.size(); ++k) {
+          auto mappedMaskVal =
+              mapping.lookupOrDefault(sortedCmpiOps[k]->getResult(0));
+          sortedCmpiOps[k] = mappedMaskVal.getDefiningOp();
+        }
+        // Erase Old Ops
+        for (auto op : sortedOpsToMoveAndErase) {
+          if (op->getParentOp() != nullptr) {
+            op->erase();
+          }
         }
       }
     }

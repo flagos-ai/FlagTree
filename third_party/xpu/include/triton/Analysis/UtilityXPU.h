@@ -29,6 +29,22 @@ template <> struct is_xpu_memory_op<triton::xpu::SM2GMOp> {
   static const bool value = true;
 };
 
+#define XPU_MEMORY_MASK_OP                                                     \
+  triton::xpu::GM2LMMaskOp, triton::xpu::LM2GMMaskOp, triton::xpu::SM2GMMaskOp
+
+template <class T> struct is_xpu_memory_mask_op {
+  static const bool value = false;
+};
+template <> struct is_xpu_memory_op<triton::xpu::GM2LMMaskOp> {
+  static const bool value = true;
+};
+template <> struct is_xpu_memory_op<triton::xpu::LM2GMMaskOp> {
+  static const bool value = true;
+};
+template <> struct is_xpu_memory_op<triton::xpu::SM2GMMaskOp> {
+  static const bool value = true;
+};
+
 #define ARITH_PTR_UNARY_OP arith::ExtSIOp
 
 #define ARITH_PTR_BINARY_OP                                                    \

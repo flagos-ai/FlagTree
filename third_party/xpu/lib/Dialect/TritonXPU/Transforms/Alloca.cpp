@@ -58,7 +58,30 @@ public:
               gm2lmOp->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
           SmallVector<int32_t> operandSegmentSizes(
               operandSegmentSizesAttr.asArrayRef());
-          ++(operandSegmentSizes.back()); // 0: ptr, 1: len, 2: other, 3: bufPtr
+          ++(operandSegmentSizes.back()); // 0: ptr, 1: mask, 2: len, 3: bufPtr
+          gm2lmOp->setAttr("operandSegmentSizes",
+                           builder.getDenseI32ArrayAttr(operandSegmentSizes));
+
+          gm2lmOp->insertOperands(gm2lmOp->getNumOperands(), {allocaOp});
+
+          allocaOp->moveBefore(gm2lmOp);
+        }
+      } else if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMMaskOp>(
+                     loadOp.getPtr().getDefiningOp())) {
+        if (!visitedOps.count(gm2lmOp)) {
+          visitedOps.insert(gm2lmOp);
+          auto offsetState = static_cast<OffsetState>(gm2lmOp.getOffsetState());
+          size = offsetState == OffsetState::DiscreteSame
+                     ? std::min(static_cast<int64_t>(coreNum), size)
+                     : size;
+          auto allocaOp =
+              builder.create<triton::xpu::AllocaOp>(loc, lmPtrType, size);
+
+          auto operandSegmentSizesAttr =
+              gm2lmOp->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
+          SmallVector<int32_t> operandSegmentSizes(
+              operandSegmentSizesAttr.asArrayRef());
+          ++(operandSegmentSizes.back()); // 0: ptr, 1: mask, 2: len, 3: bufPtr
           gm2lmOp->setAttr("operandSegmentSizes",
                            builder.getDenseI32ArrayAttr(operandSegmentSizes));
 
@@ -102,6 +125,28 @@ public:
 
         allocaOp->moveBefore(storeOp);
         storeOp->setOperand(0, allocaOp);
+      } else if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMMaskOp>(
+                     storeOp->getNextNode())) {
+        auto allocaOp =
+            builder.create<triton::xpu::AllocaOp>(loc, lmPtrType, size);
+
+        auto operandSegmentSizesAttr =
+            lm2gmOp->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
+        SmallVector<int, 4> operandSegmentSizes(
+            operandSegmentSizesAttr.asArrayRef());
+        ++operandSegmentSizes[4]; // 0: ptr, 1: value, 2: mask, 3: len, 4:
+                                  // bufPtr
+        lm2gmOp->setAttr("operandSegmentSizes",
+                         builder.getDenseI32ArrayAttr(operandSegmentSizes));
+        lm2gmOp->insertOperands(lm2gmOp->getNumOperands(), {allocaOp});
+        // remove value from lm2gm
+        --operandSegmentSizes[1];
+        lm2gmOp->setAttr("operandSegmentSizes",
+                         builder.getDenseI32ArrayAttr(operandSegmentSizes));
+        lm2gmOp->eraseOperands(1);
+
+        allocaOp->moveBefore(storeOp);
+        storeOp->setOperand(0, allocaOp);
       } else {
         llvm_unreachable("Only support LM2GM as next node of store");
       }
@@ -133,6 +178,17 @@ public:
             if (auto lm2gmOp =
                     dyn_cast<triton::xpu::LM2GMOp>(storeOp->getNextNode())) {
               if (auto gmlmOp = dyn_cast<triton::xpu::GM2LMOp>(
+                      loadOp.getPtr().getDefiningOp())) {
+                if (gmlmOp.getPtr().getType() == lm2gmOp.getPtr().getType()) {
+                  lm2gmOp->setOperand(lm2gmOp->getNumOperands() - 1,
+                                      loadOp.getPtr());
+                  loadStoreOps.push_back(storeOp);
+                  loadStoreOps.push_back(loadOp);
+                }
+              }
+            } else if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMMaskOp>(
+                           storeOp->getNextNode())) {
+              if (auto gmlmOp = dyn_cast<triton::xpu::GM2LMMaskOp>(
                       loadOp.getPtr().getDefiningOp())) {
                 if (gmlmOp.getPtr().getType() == lm2gmOp.getPtr().getType()) {
                   lm2gmOp->setOperand(lm2gmOp->getNumOperands() - 1,

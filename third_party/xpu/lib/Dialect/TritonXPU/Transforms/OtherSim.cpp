@@ -112,7 +112,50 @@ public:
             gm2lmOp.getBufPtr().getDefiningOp<triton::xpu::AllocaOp>();
         auto otherSimOp = builder.create<triton::xpu::StoreOp>(
             loc, allocaOp, extractOther, Value(), idx, -1, false,
-            MemorySyncMode::SYNC);
+            Dtype::UNKNOWN, MemorySyncMode::SYNC);
+      }
+    });
+
+    m.walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
+      auto loc = gm2lmOp.getLoc();
+      OpBuilder builder(gm2lmOp);
+      if (auto other = gm2lmOp.getOther()) {
+        Value extractOther = other;
+        unsigned iterNum = 1;
+        if (auto otherTy = dyn_cast<RankedTensorType>(other.getType())) {
+          int64_t numUnroll = getNumUnroll(otherTy);
+          int64_t numCol = getNumCol(otherTy);
+          iterNum = ceil<int64_t>(numCol, numUnroll);
+          auto shape = otherTy.getShape().vec();
+          shape[shape.size() - 1] = ceil<int64_t>(shape.back(), iterNum);
+          auto clusterEncoding =
+              cast<triton::xpu::ClusterLayoutAttr>(otherTy.getEncoding());
+          auto newClusterEncoding =
+              createEncoding(context, clusterEncoding, iterNum);
+          auto newOtherTensorTy = RankedTensorType::get(
+              shape, otherTy.getElementType(), newClusterEncoding);
+          extractOther = builder.create<triton::xpu::ExtractSliceOp>(
+              loc, newOtherTensorTy, other);
+        }
+
+        // Create ForOp for UnrollControl
+        auto low = builder.create<mlir::arith::ConstantOp>(
+            loc, builder.getIndexAttr(0));
+        auto upper = builder.create<mlir::arith::ConstantOp>(
+            loc, builder.getIndexAttr(iterNum));
+        auto step = builder.create<mlir::arith::ConstantOp>(
+            loc, builder.getIndexAttr(1));
+        auto forLoopOp = builder.create<scf::ForOp>(loc, low, upper, step);
+        builder.setInsertionPointToStart(forLoopOp.getBody());
+        Value idx = builder.create<mlir::arith::IndexCastOp>(
+            loc, builder.getI32Type(), forLoopOp.getInductionVar());
+
+        // Store Other to LM
+        auto allocaOp =
+            gm2lmOp.getBufPtr().getDefiningOp<triton::xpu::AllocaOp>();
+        auto otherSimOp = builder.create<triton::xpu::StoreOp>(
+            loc, allocaOp, extractOther, Value(), idx, -1, false,
+            Dtype::UNKNOWN, MemorySyncMode::SYNC);
       }
     });
   }

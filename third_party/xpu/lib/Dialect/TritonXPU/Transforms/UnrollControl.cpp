@@ -111,7 +111,8 @@ public:
                      SetVector<Operation *> &excludeChainOps, Operation *rootOp,
                      bool isTop2Bottom = true, bool needBefore = false) {
     if (!op || visitedOps.count(op) ||
-        isa<triton::xpu::GM2LMOp, triton::xpu::LM2GMOp, scf::YieldOp,
+        isa<triton::xpu::GM2LMOp, triton::xpu::GM2LMMaskOp,
+            triton::xpu::LM2GMOp, triton::xpu::LM2GMMaskOp, scf::YieldOp,
             triton::xpu::ReduceOp, triton::xpu::ReduceReturnOp,
             triton::xpu::ScanOp, triton::xpu::ScanReturnOp>(op)) {
       return;
@@ -242,7 +243,8 @@ public:
                                SetVector<Operation *> &excludeChainOps,
                                Operation *rootOp) {
     if (!op || visitedOps.count(op) ||
-        isa<triton::xpu::GM2LMOp, triton::xpu::LM2GMOp, scf::YieldOp,
+        isa<triton::xpu::GM2LMOp, triton::xpu::GM2LMMaskOp,
+            triton::xpu::LM2GMOp, triton::xpu::LM2GMMaskOp, scf::YieldOp,
             triton::xpu::ReduceOp, triton::xpu::ReduceReturnOp,
             triton::xpu::ScanOp, triton::xpu::ScanReturnOp>(op)) {
       return;
@@ -814,6 +816,11 @@ public:
         if (gm2lmOp) {
           gm2lmOps.emplace_back(gm2lmOp);
         }
+        auto gm2lmmaskOp =
+            findDefOpBwd<triton::xpu::GM2LMMaskOp>(loadOp.getPtr());
+        if (gm2lmmaskOp) {
+          gm2lmOps.emplace_back(gm2lmmaskOp);
+        }
       }
       if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(op)) {
         auto alloca = findDefOpBwd<triton::xpu::AllocaOp>(storeOp.getPtr());
@@ -989,6 +996,16 @@ public:
               getOpChainBwd(excludeChainOps, memoryOp.getLen().getDefiningOp());
             }
           })
+          .Case<XPU_MEMORY_MASK_OP>([&](auto memoryOp) {
+            getOpChainBwd(excludeChainOps, memoryOp.getPtr().getDefiningOp());
+            if (memoryOp.getMask()) {
+              getOpChainBwd(excludeChainOps,
+                            memoryOp.getMask().getDefiningOp());
+            }
+            if (memoryOp.getLen()) {
+              getOpChainBwd(excludeChainOps, memoryOp.getLen().getDefiningOp());
+            }
+          })
           .Case<triton::xpu::LoadOp, triton::xpu::StoreOp>([&](auto acessOp) {
             if (acessOp.getMask()) {
               getOpChainBwd(excludeChainOps, acessOp.getMask().getDefiningOp());
@@ -1004,6 +1021,16 @@ public:
       TypeSwitch<const Operation *>(op)
           .Case<XPU_MEMORY_OP>([&](auto memoryOp) {
             getOpChainBwd(excludeChainOps, memoryOp.getPtr().getDefiningOp());
+            if (memoryOp.getLen()) {
+              getOpChainBwd(excludeChainOps, memoryOp.getLen().getDefiningOp());
+            }
+          })
+          .Case<XPU_MEMORY_MASK_OP>([&](auto memoryOp) {
+            getOpChainBwd(excludeChainOps, memoryOp.getPtr().getDefiningOp());
+            if (memoryOp.getMask()) {
+              getOpChainBwd(excludeChainOps,
+                            memoryOp.getMask().getDefiningOp());
+            }
             if (memoryOp.getLen()) {
               getOpChainBwd(excludeChainOps, memoryOp.getLen().getDefiningOp());
             }
@@ -1046,24 +1073,43 @@ public:
           int64_t numUnroll = getNumUnroll(resType);
           if (numCol > numUnroll && numCol % numUnroll == 0) {
             auto lmPtr = loadOp.getPtr();
-            auto gm2lmOp = cast<triton::xpu::GM2LMOp>(
-                findDefOpBwd<triton::xpu::GM2LMOp>(lmPtr));
-            auto gmPtrOp = cast<triton::AddPtrOp>(
-                findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr()));
-            auto offset = gmPtrOp.getOffset();
-            auto newLmPtr = builder.create<triton::AddPtrOp>(
-                loc, lmPtr.getType(), lmPtr, offset);
-            SetVector<Operation *> ptrVisitedOps;
-            SetVector<Operation *> ptrExcludeChainOps;
-            getUnrollTree(newLmPtr, newUnrollOpTree, ptrVisitedOps,
-                          ptrExcludeChainOps, newLmPtr, false);
-            if (!newUnrollOpTree.empty()) {
-              newUnrollOpTree = sortOpTree(newUnrollOpTree);
+            if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMOp>(
+                    findDefOpBwd<triton::xpu::GM2LMOp>(lmPtr))) {
+              auto gmPtrOp = cast<triton::AddPtrOp>(
+                  findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr()));
+              auto offset = gmPtrOp.getOffset();
+              auto newLmPtr = builder.create<triton::AddPtrOp>(
+                  loc, lmPtr.getType(), lmPtr, offset);
+              SetVector<Operation *> ptrVisitedOps;
+              SetVector<Operation *> ptrExcludeChainOps;
+              getUnrollTree(newLmPtr, newUnrollOpTree, ptrVisitedOps,
+                            ptrExcludeChainOps, newLmPtr, false);
+              if (!newUnrollOpTree.empty()) {
+                newUnrollOpTree = sortOpTree(newUnrollOpTree);
+              }
+              gm2lmOp->setAttr("offsetState",
+                               builder.getSI32IntegerAttr(static_cast<int32_t>(
+                                   OffsetState::Continuous)));
+              loadOp.setOperand(0, newLmPtr);
+            } else if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMMaskOp>(
+                           findDefOpBwd<triton::xpu::GM2LMMaskOp>(lmPtr))) {
+              auto gmPtrOp = cast<triton::AddPtrOp>(
+                  findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr()));
+              auto offset = gmPtrOp.getOffset();
+              auto newLmPtr = builder.create<triton::AddPtrOp>(
+                  loc, lmPtr.getType(), lmPtr, offset);
+              SetVector<Operation *> ptrVisitedOps;
+              SetVector<Operation *> ptrExcludeChainOps;
+              getUnrollTree(newLmPtr, newUnrollOpTree, ptrVisitedOps,
+                            ptrExcludeChainOps, newLmPtr, false);
+              if (!newUnrollOpTree.empty()) {
+                newUnrollOpTree = sortOpTree(newUnrollOpTree);
+              }
+              gm2lmOp->setAttr("offsetState",
+                               builder.getSI32IntegerAttr(static_cast<int32_t>(
+                                   OffsetState::Continuous)));
+              loadOp.setOperand(0, newLmPtr);
             }
-            gm2lmOp->setAttr("offsetState",
-                             builder.getSI32IntegerAttr(static_cast<int32_t>(
-                                 OffsetState::Continuous)));
-            loadOp.setOperand(0, newLmPtr);
           }
         }
       }
@@ -1088,22 +1134,39 @@ public:
         auto lmAddPtr =
             cast<triton::AddPtrOp>(findDefOpBwd<triton::AddPtrOp>(lmPtr));
         auto lmOffset = lmAddPtr.getOffset();
-        auto gm2lmOp = cast<triton::xpu::GM2LMOp>(
-            findDefOpBwd<triton::xpu::GM2LMOp>(lmPtr));
-        auto gmPtrOp = cast<triton::AddPtrOp>(
-            findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr()));
-        auto gmOffset = gmPtrOp.getOffset();
-        auto extractOp = builder.create<triton::xpu::ExtractOp>(
-            loc, getElementTypeOrSelf(gmOffset), builder.getI32IntegerAttr(0),
-            gmOffset);
-        auto splatOp =
-            builder.create<triton::SplatOp>(loc, lmOffset.getType(), extractOp);
-        auto offset = builder.create<arith::SubIOp>(loc, lmOffset.getType(),
-                                                    lmOffset, splatOp);
-        lmAddPtr.setOperand(1, offset);
-        lmAddPtr->moveAfter(offset);
-        if (gm2lmOp->getOperand(0) == lmAddPtr.getResult())
-          gm2lmOp->moveAfter(lmAddPtr);
+        if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMOp>(
+                findDefOpBwd<triton::xpu::GM2LMOp>(lmPtr))) {
+          auto gmPtrOp = cast<triton::AddPtrOp>(
+              findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr()));
+          auto gmOffset = gmPtrOp.getOffset();
+          auto extractOp = builder.create<triton::xpu::ExtractOp>(
+              loc, getElementTypeOrSelf(gmOffset), builder.getI32IntegerAttr(0),
+              gmOffset);
+          auto splatOp = builder.create<triton::SplatOp>(
+              loc, lmOffset.getType(), extractOp);
+          auto offset = builder.create<arith::SubIOp>(loc, lmOffset.getType(),
+                                                      lmOffset, splatOp);
+          lmAddPtr.setOperand(1, offset);
+          lmAddPtr->moveAfter(offset);
+          if (gm2lmOp->getOperand(0) == lmAddPtr.getResult())
+            gm2lmOp->moveAfter(lmAddPtr);
+        } else if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMMaskOp>(
+                       findDefOpBwd<triton::xpu::GM2LMMaskOp>(lmPtr))) {
+          auto gmPtrOp = cast<triton::AddPtrOp>(
+              findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr()));
+          auto gmOffset = gmPtrOp.getOffset();
+          auto extractOp = builder.create<triton::xpu::ExtractOp>(
+              loc, getElementTypeOrSelf(gmOffset), builder.getI32IntegerAttr(0),
+              gmOffset);
+          auto splatOp = builder.create<triton::SplatOp>(
+              loc, lmOffset.getType(), extractOp);
+          auto offset = builder.create<arith::SubIOp>(loc, lmOffset.getType(),
+                                                      lmOffset, splatOp);
+          lmAddPtr.setOperand(1, offset);
+          lmAddPtr->moveAfter(offset);
+          if (gm2lmOp->getOperand(0) == lmAddPtr.getResult())
+            gm2lmOp->moveAfter(lmAddPtr);
+        }
       }
     });
   }
@@ -1161,7 +1224,7 @@ public:
           loc, ptrTy, tensorSize * vecSize);
       auto initStoreOp = builder.create<triton::xpu::StoreOp>(
           loc, newAllocaOp, initForArg, Value(), Value(), -1, false,
-          MemorySyncMode::SYNC);
+          Dtype::UNKNOWN, MemorySyncMode::SYNC);
       newAllocaOp->moveBefore(forOp);
       initStoreOp->moveBefore(forOp);
       // Create Load for Input
@@ -1176,7 +1239,7 @@ public:
       inputLoadOp->moveBefore(&block.front());
       // Create Store for Output
       auto outputStoreOp = builder.create<triton::xpu::StoreOp>(
-          loc, newAllocaOp, yield, Value(), Value(), -1, false,
+          loc, newAllocaOp, yield, Value(), Value(), -1, false, Dtype::UNKNOWN,
           MemorySyncMode::SYNC);
       outputStoreOp->moveBefore(yieldOp);
       storeOps.emplace_back(outputStoreOp);
@@ -1558,11 +1621,12 @@ public:
     }
 
     m.walk([&](triton::xpu::StoreOp storeOp) {
+      auto dtype = storeOp.getDtype();
       auto valTy = storeOp.getValue().getType();
       auto ptrTy = storeOp.getPtr().getType();
       auto valElemTy = getElementTypeOrSelf(getElementTypeOrSelf(valTy));
       auto ptrElemTy = getElementTypeOrSelf(getElementTypeOrSelf(ptrTy));
-      if (valElemTy.isInteger(32) &&
+      if (dtype == Dtype::FP32 && valElemTy.isInteger(32) &&
           cast<triton::PointerType>(ptrElemTy).getPointeeType().isInteger(8)) {
         numUnrollPerCore = 4;
       }

@@ -27,6 +27,9 @@ def TritonXPUCreateGM2LM : Pass<"tritonxpu-create-gm2lm", "mlir::ModuleOp"> {
     Option<"oneCoreActOnly", "core0-act-only",
            "bool", /*default*/"0",
            "Core0 Calculation Activation Only">,
+    Option<"isUseMaskZero", "is-use-mask-zero",
+           "bool", /*default*/"0",
+           "Whether Use Mask Zero Method">,
   ];
 }
 
@@ -49,6 +52,9 @@ def TritonXPULegalize : Pass<"tritonxpu-legalize", "mlir::ModuleOp"> {
     Option<"groupsPerCluster", "groups-per-cluster",
             "uint32_t", /*default*/"1",
             "groups per cluster">,
+    Option<"isUseMaskZero", "is-use-mask-zero",
+           "bool", /*default*/"0",
+           "Whether Use Mask Zero Method">,
   ];
 }
 
@@ -64,6 +70,9 @@ def TritonXPUMask : Pass<"tritonxpu-mask", "mlir::ModuleOp"> {
     Option<"oneCoreActOnly", "core0-act-only",
            "bool", /*default*/"0",
            "Core0 Calculation Activation Only">,
+    Option<"isUseMaskZero", "is-use-mask-zero",
+           "bool", /*default*/"0",
+           "Whether Use Mask Zero Method">,
   ];
 }
 
@@ -135,7 +144,10 @@ def TritonXPUUnrollControl : Pass<"tritonxpu-unroll-control", "mlir::ModuleOp"> 
             "buffer size for local memory">,
     Option<"coreNum", "core-num",
             "uint32_t", /*default*/"64",
-            "core num">
+            "core num">,
+    Option<"isUseMaskZero", "is-use-mask-zero",
+           "bool", /*default*/"0",
+           "Whether Use Mask Zero Method">,
   ];
 }
 
@@ -163,7 +175,10 @@ def TritonXPUOffsetAnalysis : Pass<"tritonxpu-offset-analysis", "mlir::ModuleOp"
            "detail dump flag">,
     Option<"bufferSize", "lm-buflen",
             "uint32_t", /*default*/"128",
-            "buffer size for local memory">
+            "buffer size for local memory">,
+    Option<"isUseMaskZero", "is-use-mask-zero",
+           "bool", /*default*/"0",
+           "Whether Use Mask Zero Method">,
   ];
 }
 
@@ -290,6 +305,28 @@ def TritonXPUMemoryInplace : Pass<"tritonxpu-memory-inplace", "mlir::ModuleOp"> 
             "uint32_t", /*default*/"64",
             "core num">
   ];
+}
+
+def TritonXPUFuncConvert : Pass<"tritonxpu-func-convert", "mlir::ModuleOp"> {
+  let summary = "Func Convert for XPU.";
+  let description = [{
+    Func Convert.
+  }];
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+
+  let options = [
+    Option<"toMlir", "to-mlir",
+            "bool", /*default*/"0",
+            "from triton::FuncOp to func::FuncOp or not">
+  ];
+}
+
+def TritonXPUCFToSCF : Pass<"tritonxpu-cf-to-scf", "mlir::ModuleOp"> {
+  let summary = "CF To SCF for XPU.";
+  let description = [{
+    CF To SCF.
+  }];
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
 }
 
 #endif // TRITONXPU_PASSES

@@ -51,23 +51,19 @@ struct TritonXPULoopGrid
 
       func.setType(newFuncType);
 
-      SmallVector<Operation *> operationsToMove;
-      SmallVector<Operation *> terminatorsToErase;
-
-      for (auto &body : func.getBlocks()) {
-        for (auto &op : body.getOperations()) {
-          if (&op == body.getTerminator()) {
-            terminatorsToErase.push_back(&op);
-          } else {
-            operationsToMove.push_back(&op);
-          }
-        }
-      }
-
       auto &body = func.getBody().front();
       for (unsigned int i = 0; i < TRITON_PROGRAM_INFO_ARG_COUNT; i++) {
         body.addArgument(i32Ty, func.getLoc());
       }
+
+      // Filter operations based on the condition
+      SmallVector<Operation *> operations;
+      for (auto &op : body.getOperations()) {
+        if (!isa<triton::ReturnOp>(op)) {
+          operations.push_back(&op);
+        }
+      }
+
       b.setInsertionPoint(&body, body.begin());
       auto loc = b.getUnknownLoc();
       auto idxTy = b.getIndexType();
@@ -85,23 +81,9 @@ struct TritonXPULoopGrid
       auto step = b.create<arith::IndexCastOp>(loc, idxTy, numCluster);
       auto loopGrid = b.create<scf::ForOp>(loc, lower, upper, step);
 
-      for (auto op : operationsToMove) {
+      for (auto op : operations) {
         op->moveBefore(loopGrid.getBody()->getTerminator());
       }
-      for (Operation *term : terminatorsToErase) {
-        term->erase();
-      }
-      SmallVector<mlir::Block *> blocksToDelete;
-      for (auto &bodyBlock : func.getBlocks()) {
-        if (&bodyBlock != &func.getBody().front()) {
-          blocksToDelete.push_back(&bodyBlock);
-        }
-      }
-      for (mlir::Block *block : blocksToDelete) {
-        block->erase();
-      }
-      b.setInsertionPointAfter(loopGrid);
-      b.create<triton::ReturnOp>(loc);
 
       b.setInsertionPointToStart(loopGrid.getBody());
       Value index =

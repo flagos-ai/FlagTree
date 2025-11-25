@@ -123,6 +123,9 @@ struct TritonXPUStoreControl
           if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMOp>(user)) {
             ifBodyOps.insert(storeOp);
             ifBodyOps.insert(lm2gmOp);
+          } else if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMMaskOp>(user)) {
+            ifBodyOps.insert(storeOp);
+            ifBodyOps.insert(lm2gmOp);
           }
         }
         if (ifBodyOps.empty()) {

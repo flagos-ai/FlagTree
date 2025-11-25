@@ -94,7 +94,7 @@ void getOpChainBwd(llvm::SetVector<Operation *> &opChain, Operation *op) {
 void getOpChainFwd(llvm::SetVector<Operation *> &opChain, Operation *op) {
   opChain.insert(op);
 
-  if (isa<triton::xpu::LM2GMOp>(op)) {
+  if (isa<triton::xpu::LM2GMOp, triton::xpu::LM2GMMaskOp>(op)) {
     return;
   }
 

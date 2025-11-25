@@ -354,16 +354,27 @@ struct TritonXPULegalizePass
 
     // Find SM2GM ptr op chain
     llvm::SetVector<Operation *> sm2gmPtrLenOpChain;
-    m.walk([&](triton::xpu::SM2GMOp sm2gmOp) {
-      sm2gmPtrLenOpChain.insert(sm2gmOp);
-      getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getPtr().getDefiningOp());
-      if (sm2gmOp.getLen()) {
-        getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getLen().getDefiningOp());
-      }
-    });
+    if (this->isUseMaskZero) {
+      m.walk([&](triton::xpu::SM2GMMaskOp sm2gmOp) {
+        sm2gmPtrLenOpChain.insert(sm2gmOp);
+        getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getPtr().getDefiningOp());
+        if (sm2gmOp.getMask()) {
+          getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getMask().getDefiningOp());
+        }
+      });
+    } else {
+      m.walk([&](triton::xpu::SM2GMOp sm2gmOp) {
+        sm2gmPtrLenOpChain.insert(sm2gmOp);
+        getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getPtr().getDefiningOp());
+        if (sm2gmOp.getLen()) {
+          getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getLen().getDefiningOp());
+        }
+      });
+    }
 
     llvm::SetVector<Operation *> endOps;
     m.walk([&](triton::xpu::LM2GMOp lm2gmOp) { endOps.insert(lm2gmOp); });
+    m.walk([&](triton::xpu::LM2GMMaskOp lm2gmOp) { endOps.insert(lm2gmOp); });
     m.walk([&](triton::xpu::SM2GMOp sm2gmOp) { endOps.insert(sm2gmOp); });
     m.walk([&](triton::AtomicRMWOp rmwOp) { endOps.insert(rmwOp); });
 
@@ -395,6 +406,13 @@ struct TritonXPULegalizePass
             tensorTypes.emplace_back(loadResType);
           }
           if (auto storeOp = dyn_cast<triton::xpu::LM2GMOp>(op)) {
+            auto storeValType = storeOp.getValue().getType();
+            LLVM_DEBUG(llvm::dbgs()
+                       << "[tensorTypes emplace_back]-storeValType: "
+                       << storeValType << "\n");
+            tensorTypes.emplace_back(storeValType);
+          }
+          if (auto storeOp = dyn_cast<triton::xpu::LM2GMMaskOp>(op)) {
             auto storeValType = storeOp.getValue().getType();
             LLVM_DEBUG(llvm::dbgs()
                        << "[tensorTypes emplace_back]-storeValType: "
@@ -510,9 +528,22 @@ struct TritonXPULegalizePass
         }
       });
 
+      m.walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
+        if (findUserOp<triton::ReduceOp>(gm2lmOp) ||
+            findUserOp<triton::xpu::ReduceOp>(gm2lmOp)) {
+          atomicSim = false;
+        }
+      });
+
       if (atomicSim) {
         int32_t lrie = 1;
         m.walk([&](triton::xpu::GM2LMOp gm2lmOp) {
+          int32_t _lrie = gm2lmOp.getLrie();
+          if (_lrie > 1) {
+            lrie = _lrie;
+          }
+        });
+        m.walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
           int32_t _lrie = gm2lmOp.getLrie();
           if (_lrie > 1) {
             lrie = _lrie;
@@ -538,21 +569,33 @@ struct TritonXPULegalizePass
       llvm::SetVector<Operation *> innerChain = innerChains[i];
       llvm::SetVector<Operation *> outerChain = outerChains[i];
 
+      bool isCreateInnerMROp = false;
+      triton::MakeRangeOp newInnerMRAlreadyCreateOp;
       for (auto it = outerChain.begin(); it != outerChain.end(); ++it) {
         Operation *outerOp = *it;
         if (inOpChain(innerChain, outerOp)) { // Common MROp
           if (auto rangeOp = dyn_cast<triton::MakeRangeOp>(outerOp)) {
             // Find MROp's Whose User is ExpandDimsOp(dim=0)
-            for (auto user : rangeOp->getUsers()) {
+            SetVector<Operation *> outerRangeUsers(rangeOp->getUsers().begin(),
+                                                   rangeOp->getUsers().end());
+            for (auto user : outerRangeUsers) {
               if (auto op = findUserOp<triton::ExpandDimsOp>(user)) {
                 auto expandDimsOp = cast<triton::ExpandDimsOp>(op);
                 if (expandDimsOp.getAxis() == 0) {
                   // Recover MakeRangeOp
                   OpBuilder builder(rangeOp);
                   auto loc = builder.getUnknownLoc();
-                  auto newMakeRangeOp = builder.create<triton::MakeRangeOp>(
-                      loc, rangeOp.getType(), rangeOp.getStart(),
-                      rangeOp.getEnd());
+
+                  triton::MakeRangeOp newInnerRangeOp;
+                  if (!isCreateInnerMROp) {
+                    newInnerRangeOp = builder.create<triton::MakeRangeOp>(
+                        loc, rangeOp.getType(), rangeOp.getStart(),
+                        rangeOp.getEnd());
+                    newInnerMRAlreadyCreateOp = newInnerRangeOp;
+                    isCreateInnerMROp = true;
+                  } else {
+                    newInnerRangeOp = newInnerMRAlreadyCreateOp;
+                  }
 
                   // Link To InnerChain
                   auto operands = user->getOperands();
@@ -561,14 +604,14 @@ struct TritonXPULegalizePass
                     auto operand = *_it;
                     if (operand == rangeOp) {
                       user->setOperand(std::distance(operands.begin(), _it),
-                                       newMakeRangeOp);
+                                       newInnerRangeOp);
                     }
                   }
 
                   // Now the old common mrOp is only used by outerChain
-                  innerChains[i].insert(newMakeRangeOp);
+                  innerChains[i].insert(newInnerRangeOp);
                   innerChains[i].remove(rangeOp);
-                  sortedOpTrees[i].insert(newMakeRangeOp);
+                  sortedOpTrees[i].insert(newInnerRangeOp);
                   sortedOpTrees[i] = sortOpTreeBwd(sortedOpTrees[i]);
                 }
               }
@@ -577,6 +620,8 @@ struct TritonXPULegalizePass
         }
       }
     }
+
+    // llvm::errs() << "after Duplicate the MakeRangeOp:\n" << m << "\n";
 
     // for (auto [i, opTree] : llvm::enumerate(allOpTrees)) {
     //   LLVM_DEBUG(llvm::dbgs() << "\nDump OpTree-" << i << ":\n");
@@ -605,17 +650,36 @@ struct TritonXPULegalizePass
     };
 
     auto printCSV = [&](mlir::ModuleOp &mod) {
-      LLVM_DEBUG(llvm::dbgs() << "{\n");
-      LLVM_DEBUG(llvm::dbgs() << "Operation,Chain Info\n");
+      llvm::errs() << "{\n";
+      llvm::errs() << "Operation,Chain Info\n";
 
       // 遍历 mod 中的所有操作
       mod.walk([&](mlir::Operation *op) {
         if (dyn_cast<triton::FuncOp>(op) || dyn_cast<mlir::ModuleOp>(op))
           return;
+
         // 获取操作的字符串表示，记得处理逗号和换行符
         std::string opStr;
         llvm::raw_string_ostream os(opStr);
-        op->print(os);
+        if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+          os << "scf.for ";
+          os << forOp.getInductionVar() << " = " << forOp.getLowerBound()
+             << " to " << forOp.getUpperBound() << " step " << forOp.getStep();
+          if (forOp->getNumOperands() > 0) {
+            os << " iter_args(";
+            auto args = forOp.getRegionIterArgs();
+            auto inits = forOp.getInitArgs();
+            for (unsigned i = 0; i < args.size(); ++i) {
+              if (i)
+                os << ", ";
+              os << args[i] << " = " << inits[i];
+            }
+            os << ")";
+          }
+        } else {
+          op->print(os);
+        }
+
         // 替换逗号和换行符
         std::replace(opStr.begin(), opStr.end(), ',', ';');
         std::replace(opStr.begin(), opStr.end(), '\n', ' ');
@@ -624,9 +688,9 @@ struct TritonXPULegalizePass
         std::string chainInfo = getInnerChainInfo(op);
 
         // 输出一行
-        LLVM_DEBUG(llvm::dbgs() << opStr << "," << chainInfo << "\n");
+        llvm::errs() << "\t" << opStr << "," << chainInfo << "\n";
       });
-      LLVM_DEBUG(llvm::dbgs() << "}\n");
+      llvm::errs() << "}\n";
     };
 
     // printCSV(m);
@@ -1144,22 +1208,51 @@ struct TritonXPULegalizePass
     });
 
     // MakeRange Replace Protection
+    SetVector<Operation *> outMakeRanges;
+    m.walk([&](triton::ExpandDimsOp expandDimOp) {
+      if (expandDimOp.getAxis() == 1) {
+        if (auto mrOp =
+                findDefOpBwd<triton::MakeRangeOp>(expandDimOp.getSrc())) {
+          outMakeRanges.insert(mrOp);
+        }
+      }
+    });
     m.walk([&](triton::MakeRangeOp mrOp) {
       OpBuilder builder(mrOp);
       auto loc = mrOp->getLoc();
       uint32_t start = mrOp.getStart();
       uint32_t end = mrOp.getEnd();
       uint32_t realSize = end - start;
-      auto newMakeRangeOp = builder.create<triton::xpu::MakeRangeOp>(
-          loc, mrOp.getType(), builder.getI32IntegerAttr(start),
-          builder.getI32IntegerAttr(end), builder.getI32IntegerAttr(realSize),
-          Value(), Value());
-      mrOp->replaceAllUsesWith(newMakeRangeOp->getResults());
+      if (outMakeRanges.count(mrOp)) {
+        size_t groupSize = std::ceil(this->coreNum / this->groupsPerCluster);
+        size_t rowsPerCore = 1; // TODO: Set Real Data
+        auto idx = builder.create<mlir::arith::ConstantOp>(
+            loc, builder.getI32IntegerAttr(0));
+        auto newOutRangeOp = builder.create<triton::xpu::OutRangeOp>(
+            loc, mrOp.getType(), groupSize, rowsPerCore, idx);
+        mrOp->replaceAllUsesWith(newOutRangeOp->getResults());
+      } else {
+        auto newMakeRangeOp = builder.create<triton::xpu::MakeRangeOp>(
+            loc, mrOp.getType(), builder.getI32IntegerAttr(start),
+            builder.getI32IntegerAttr(end), builder.getI32IntegerAttr(realSize),
+            Value(), Value());
+        mrOp->replaceAllUsesWith(newMakeRangeOp->getResults());
+      }
     });
 
     // GM2LM Cache
     SmallVector<SetVector<Operation *>> lmCacheChains;
     m.walk([&](triton::xpu::GM2LMOp gm2lmOp) {
+      OpBuilder builder(gm2lmOp);
+      auto loc = gm2lmOp->getLoc();
+      if (gm2lmOp.getCache()) {
+        SetVector<Operation *> lmCacheChain;
+        getOpChainBwd(lmCacheChain, gm2lmOp);
+        SetVector<Operation *> sortedLmCacheChain = sortOpTreeBwd(lmCacheChain);
+        lmCacheChains.emplace_back(sortedLmCacheChain);
+      }
+    });
+    m.walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
       OpBuilder builder(gm2lmOp);
       auto loc = gm2lmOp->getLoc();
       if (gm2lmOp.getCache()) {

@@ -28,7 +28,8 @@ namespace xpu {
 
 std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonXPUToLLVMPass();
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertTritonXPUToLLVMPass(uint32_t xpu_arch, uint32_t buffer_size);
+createConvertTritonXPUToLLVMPass(uint32_t xpu_arch, uint32_t buffer_size,
+                                 bool isUseMaskZero);
 
 #define GEN_PASS_REGISTRATION
 #include "triton/Conversion/TritonXPUToLLVM/Passes.h.inc"

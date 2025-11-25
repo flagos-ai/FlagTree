@@ -73,6 +73,62 @@ def TTX_LM2GMOp : TTX_Op<"lm2gm", [AttrSizedOperandSegments, MemoryEffects<[MemW
                          BoolAttr:$handwrittenOffsetState);
 }
 
+def TTX_SM2GMOp : TTX_Op<"sm2gm", [AttrSizedOperandSegments]> {
+    let summary = "sm2gm";
+    let arguments = (ins TT_PtrLike:$ptr,
+                         Optional<TTX_Type>:$value,
+                         Optional<TT_IntLike>:$len,
+                         Optional<TT_PtrLike>:$bufPtr,
+                         SI32Attr:$offsetState);
+}
+
+def TTX_GM2LMMaskOp : TTX_Op<"gm2lm_mask", [AttrSizedOperandSegments,  MemoryEffects<[MemRead<GlobalMemory>]>]> {
+    let summary = "gm2lm";
+    let arguments = (ins TT_PtrLike:$ptr,
+                         Optional<TT_BoolLike>:$mask,
+                         Optional<TT_Type>:$other,
+                         Optional<TT_IntLike>:$len,
+                         Optional<TT_PtrLike>:$bufPtr,
+                         SI32Attr:$offsetState,
+                         SI32Attr:$fixedStride,
+                         SI64Attr:$rowLen,
+                         SI64Attr:$rowStride,
+                         SI32Attr:$lrie,
+                         SI32Attr:$tensorColSize,
+                         BoolAttr:$SVOpt,
+                         TT_SyncAttr: $syncMode,
+                         BoolAttr:$atomicSim,
+                         BoolAttr:$cache,
+                         BoolAttr:$handwrittenOffsetState);
+    let results = (outs TT_PtrLike:$result);
+}
+
+def TTX_LM2GMMaskOp : TTX_Op<"lm2gm_mask", [AttrSizedOperandSegments, MemoryEffects<[MemWrite<GlobalMemory>]>]> {
+    let summary = "lm2gm";
+    let arguments = (ins TT_PtrLike:$ptr,
+                         TTX_UIType:$value,
+                         Optional<TT_BoolLike>:$mask,
+                         Optional<TT_IntLike>:$len,
+                         Optional<TT_PtrLike>:$bufPtr,
+                         SI32Attr:$tensorColSize,
+                         SI32Attr:$offsetState,
+                         SI64Attr:$rowLen,
+                         SI64Attr:$rowStride,
+                         TT_SyncAttr: $syncMode,
+                         BoolAttr:$atomicSim,
+                         BoolAttr:$handwrittenOffsetState);
+}
+
+def TTX_SM2GMMaskOp : TTX_Op<"sm2gm_mask", [AttrSizedOperandSegments]> {
+    let summary = "sm2gm";
+    let arguments = (ins TT_PtrLike:$ptr,
+                         Optional<TTX_Type>:$value,
+                         Optional<TT_BoolLike>:$mask,
+                         Optional<TT_IntLike>:$len,
+                         Optional<TT_PtrLike>:$bufPtr,
+                         SI32Attr:$offsetState);
+}
+
 def TTX_LoadOp : TTX_Op<"load", [AttrSizedOperandSegments,
                                  MemoryEffects<[MemRead]>]> {
     let summary = "load";
@@ -98,16 +154,8 @@ def TTX_StoreOp : TTX_Op<"store", [AttrSizedOperandSegments,
                      Optional<TT_Int>:$index,
                      SI32Attr:$tensorColSize,
                      BoolAttr:$bf16Tofp32Unordered,
+                     TT_DtypeAttr:$dtype,
                      TT_SyncAttr: $syncMode);
-}
-
-def TTX_SM2GMOp : TTX_Op<"sm2gm", [AttrSizedOperandSegments]> {
-    let summary = "sm2gm";
-    let arguments = (ins TT_PtrLike:$ptr,
-                         Optional<TTX_Type>:$value,
-                         Optional<TT_IntLike>:$len,
-                         Optional<TT_PtrLike>:$bufPtr,
-                         SI32Attr:$offsetState);
 }
 
 def TTX_StoreSMOp : TTX_Op<"storeSM", [MemoryEffects<[MemWrite]>, AttrSizedOperandSegments]> {

@@ -15,8 +15,9 @@ namespace xpu {
 
 class TargetInfo : public mlir::triton::TargetInfoBase {
 public:
-  TargetInfo(uint32_t xpu_arch, uint32_t buffer_size)
-      : xpu_arch(xpu_arch), buffer_size(buffer_size) {}
+  TargetInfo(uint32_t xpu_arch, uint32_t buffer_size, bool isUseMaskZero)
+      : xpu_arch(xpu_arch), buffer_size(buffer_size),
+        isUseMaskZero(isUseMaskZero) {}
 
   bool supportMaximumMinimum() const override;
 
@@ -65,10 +66,12 @@ public:
 
   uint32_t getXPUArch() const;
   uint32_t getXPUBufferSize() const;
+  bool getXPUIsUseMaskZero() const;
 
 private:
   uint32_t xpu_arch;
   uint32_t buffer_size;
+  bool isUseMaskZero;
 };
 } // namespace xpu
 } // namespace triton

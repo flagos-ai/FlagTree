@@ -50,9 +50,10 @@ void init_triton_xpu_passes_conversion(py::module &&m) {
         });
 
   m.def("add_convert_tritonxpu_to_llvm_pass",
-        [](mlir::PassManager &self, uint32_t xpu_arch, uint32_t buffer_size) {
+        [](mlir::PassManager &self, uint32_t xpu_arch, uint32_t buffer_size,
+           bool isUseMaskZero) {
           self.addPass(mlir::triton::createConvertTritonXPUToLLVMPass(
-              xpu_arch, buffer_size));
+              xpu_arch, buffer_size, isUseMaskZero));
         });
 }
 
@@ -60,22 +61,23 @@ void init_triton_xpu_passes_transform(py::module &&m) {
   // Function Pass
   m.def("add_tritonxpu_gm2lm_pass",
         [](mlir::PassManager &self, uint32_t xpu_arch, bool atomicSim,
-           bool oneCoreActOnly) {
+           bool oneCoreActOnly, bool isUseMaskZero) {
           self.addPass(mlir::triton::xpu::createTritonXPUCreateGM2LM(
-              {xpu_arch, atomicSim, oneCoreActOnly}));
+              {xpu_arch, atomicSim, oneCoreActOnly, isUseMaskZero}));
         });
 
   m.def("add_tritonxpu_legalize_pass",
         [](mlir::PassManager &self, uint32_t buffer_size, uint32_t core_num,
-           uint32_t groups_per_cluster) {
+           uint32_t groups_per_cluster, bool isUseMaskZero) {
           self.addPass(mlir::triton::xpu::createTritonXPULegalize(
-              {buffer_size, core_num, groups_per_cluster}));
+              {buffer_size, core_num, groups_per_cluster, isUseMaskZero}));
         });
 
-  m.def("add_tritonxpu_mask_pass", [](mlir::PassManager &self,
-                                      bool oneCoreActOnly) {
-    self.addPass(mlir::triton::xpu::createTritonXPUMask({oneCoreActOnly}));
-  });
+  m.def("add_tritonxpu_mask_pass",
+        [](mlir::PassManager &self, bool oneCoreActOnly, bool isUseMaskZero) {
+          self.addPass(mlir::triton::xpu::createTritonXPUMask(
+              {oneCoreActOnly, isUseMaskZero}));
+        });
 
   m.def("add_tritonxpu_alloca_pass",
         [](mlir::PassManager &self, uint32_t buffer_size, uint32_t core_num) {
@@ -97,9 +99,10 @@ void init_triton_xpu_passes_transform(py::module &&m) {
   });
 
   m.def("add_tritonxpu_unroll_control_pass",
-        [](mlir::PassManager &self, uint32_t buffer_size, uint32_t core_num) {
+        [](mlir::PassManager &self, uint32_t buffer_size, uint32_t core_num,
+           bool isUseMaskZero) {
           self.addPass(mlir::triton::xpu::createTritonXPUUnrollControl(
-              {buffer_size, core_num}));
+              {buffer_size, core_num, isUseMaskZero}));
         });
 
   m.def("add_tritonxpu_other_sim_pass",
@@ -110,9 +113,10 @@ void init_triton_xpu_passes_transform(py::module &&m) {
 
   // Optimization Pass
   m.def("add_tritonxpu_offset_state_pass",
-        [](mlir::PassManager &self, bool dump_flag, uint32_t buffer_size) {
+        [](mlir::PassManager &self, bool dump_flag, uint32_t buffer_size,
+           bool isUseMaskZero) {
           self.addPass(mlir::triton::xpu::createTritonXPUOffsetAnalysis(
-              {dump_flag, buffer_size}));
+              {dump_flag, buffer_size, isUseMaskZero}));
         });
 
   m.def("add_tritonxpu_core_tiling_pass",
@@ -152,6 +156,10 @@ void init_triton_xpu_passes_transform(py::module &&m) {
           self.addPass(mlir::triton::xpu::createTritonXPUMemoryInplace(
               {buffer_size, core_num}));
         });
+
+  m.def("add_tritonxpu_cf_to_scf_pass", [](mlir::PassManager &self) {
+    self.addPass(mlir::triton::xpu::createTritonXPUCFToSCF());
+  });
 }
 
 namespace mlir::triton::xpu {
@@ -347,7 +355,8 @@ void init_triton_xpu(py::module &&m) {
     double interval;
   };
 
-  m.def("get_buffer_len", [](mlir::ModuleOp &mod, unsigned maxBufferSize) {
+  m.def("get_buffer_len", [](mlir::ModuleOp &mod, unsigned maxBufferSize,
+                             int elemBytes) {
     unsigned bufferLen = maxBufferSize;
 
     auto _get_buffer_len = [&](mlir::Type &ptrTy, unsigned maxBufferSize,
@@ -375,6 +384,7 @@ void init_triton_xpu(py::module &&m) {
       auto ptrTy = storeOp.getPtr().getType();
       _get_buffer_len(ptrTy, maxBufferSize, bufferLen);
     });
+    bufferLen = elemBytes == 0 ? bufferLen : maxBufferSize / elemBytes;
     return bufferLen;
   });
 }

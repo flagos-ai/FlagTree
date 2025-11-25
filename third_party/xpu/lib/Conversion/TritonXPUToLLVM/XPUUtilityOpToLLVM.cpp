@@ -31,9 +31,8 @@ struct XPUExtractOpConversion
     // Get the LLVM values
     auto llTensors = unpackLLElements(loc, llTensor, rewriter);
 
-    // TODO[dyq]: necessary?
-    // assert(index >= 0 && index < llTensors.size() &&
-    //        "Get Invalid Index For triton::xpu::ExtractOp");
+    assert(index >= 0 && index < llTensors.size() &&
+           "Get Invalid Index For triton::xpu::ExtractOp");
 
     // Modifition Logic
     rewriter.replaceOp(op, {llTensors[index]});
