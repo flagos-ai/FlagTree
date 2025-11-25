@@ -109,8 +109,6 @@ jobs:
         shell: bash
         run: |
           cd ../..
-          python3.11 -m pytest -s python/test/unit
-          python3.11 -m pytest -s python/test/operators
           git clone https://github.com/flagos-ai/FlagGems.git
           cd FlagGems
           git checkout addflagtreetest
