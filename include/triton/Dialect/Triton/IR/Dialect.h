@@ -17,7 +17,9 @@
 #include "triton/Dialect/Triton/IR/Traits.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 
+#if __has_include("flagtree_spec.h")
 #include "flagtree_spec.h"
+#endif
 #ifdef FLAGTREE_SPEC_Dialect_Triton_IR_OpInterfaces_head
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #endif

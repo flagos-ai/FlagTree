@@ -3,6 +3,9 @@
 
 add_subdirectory(backend/flagtree_backend_specialization/lib)
 
+add_compile_options("-Wno-deprecated-declarations")
+add_compile_options("-Wno-error=deprecated-declarations")
+
 add_triton_plugin(TritonAscend ${CMAKE_CURRENT_SOURCE_DIR}/triton_ascend.cpp)
 target_include_directories(TritonAscend PRIVATE ${CMAKE_SOURCE_DIR}/third_party/flir/include)
 

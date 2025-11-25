@@ -33,8 +33,6 @@ elseif(FLAGTREE_BACKEND STREQUAL "mthreads")
 elseif(FLAGTREE_BACKEND STREQUAL "ascend")
   set(CMAKE_C_COMPILER clang)
   set(CMAKE_CXX_COMPILER clang++)
-  add_compile_options("-Wno-deprecated-declarations")
-  add_compile_options("-Wno-error=deprecated-declarations")
 endif()
 set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
 if(FLAGTREE_PLUGIN)
@@ -50,13 +48,20 @@ function(get_flagtree_backend_lib lib_name output_lib)
   set(${output_lib} ${ret} PARENT_SCOPE)
 endfunction()
 
+# FLAGTREE SPEC TD FILE GET FUNC
+function(set_flagtree_backend_td output_td td_filename)
+  set(ret ${td_filename})
+  file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)
+  set(BACKEND_SPEC_TD ${BACKEND_SPEC_ROOT}/${relative_path}/${td_filename})
+  if(EXISTS ${BACKEND_SPEC_TD})
+    set(ret ${BACKEND_SPEC_TD})
+  endif()
+  set(${output_td} ${ret} PARENT_SCOPE)
+endfunction()
+
 project(triton)
 include(CTest)
-
-if (FLAGTREE_BACKEND STREQUAL "ascend")
-  set(TRITON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-  set(PATCHED_TRITON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ascend/triton_patch")
-endif()
 
 if(NOT WIN32)
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -100,13 +105,14 @@ if(TRITON_BUILD_UT)
 endif()
 
 # Compiler flags
+set(FLAGTREE_BACKEND_DIR ${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND})
 ## flagtree spec include dir
-set(BACKEND_SPEC_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/backend/flagtree_backend_specialization/include)
+set(BACKEND_SPEC_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/backend/flagtree_backend_specialization/include)
 if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_SPEC_INCLUDE_DIR})
   include_directories(${BACKEND_SPEC_INCLUDE_DIR})
 endif()
 ## flagtree third_party include dir
-set(BACKEND_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/include)
+set(BACKEND_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/include)
 if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
   include_directories(${BACKEND_INCLUDE_DIR})
 else()
@@ -217,11 +223,7 @@ endif()
 # ------
 if(TRITON_BUILD_PYTHON_MODULE)
   message(STATUS "Adding Python module")
-  set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/python/src)
-
-  set(PATCHED_PYTHON_SRC_PATH ${PATCHED_TRITON_ROOT_DIR}/python/src)
-  include_directories(${PYTHON_SRC_PATH})
-
+  set(PYTHON_SRC_PATH ${FLAGTREE_BACKEND_DIR}/python/src)
   if(NOT (FLAGTREE_BACKEND AND EXISTS "${PYTHON_SRC_PATH}"))
     set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
   endif()
@@ -398,11 +400,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
                 ${PYTHON_SRC_PATH}/interpreter.cc
                 ${PYTHON_SRC_PATH}/llvm.cc)
   else()
-    if(FLAGTREE_BACKEND STREQUAL "ascend")
-      set(PYTHON_IR_SRC_PATH ${PATCHED_PYTHON_SRC_PATH})
-    else()
-      set(PYTHON_IR_SRC_PATH ${PYTHON_SRC_PATH})
-    endif()
     add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                 ${PYTHON_IR_SRC_PATH}/ir.cc
                 ${PYTHON_SRC_PATH}/passes.cc
