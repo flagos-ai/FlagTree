@@ -523,25 +523,6 @@ from .language.tensor_descriptor import (
     tensor_descriptor_type,
 )
 from .language.standard_ext import flip, sigmoid, softmax, isfinited, finitef, rint, atan2
-from .language.math_ext import (
-    umulhi,
-    exp,
-    exp2,
-    log,
-    log2,
-    cos,
-    sin,
-    sqrt,
-    sqrt_rn,
-    rsqrt,
-    div_rn,
-    erf,
-    tanh,
-    floor,
-    ceil,
-    _check_dtype,
-    fma,
-)
 from . import language
 
 language.flip = flip
@@ -550,75 +531,40 @@ language.softmax = softmax
 language.tensor_descriptor = tensor_descriptor
 language.tensor_descriptor_type = tensor_descriptor_type
 
-language.umulhi = umulhi
-language.exp = exp
-language.exp2 = exp2
-language.log = log
-language.log2 = log2
-language.cos = cos
-language.sin = sin
-language.sqrt = sqrt
-language.sqrt_rn = sqrt_rn
-language.rsqrt = rsqrt
-language.div_rn = div_rn
-language.erf = erf
-language.tanh = tanh
-language.floor = floor
-language.ceil = ceil
-language.fma = fma
-language.math.umulhi = umulhi
-language.math.exp = exp
-language.math.exp2 = exp2
-language.math.log = log
-language.math.log2 = log2
-language.math.cos = cos
-language.math.sin = sin
-language.math.sqrt = sqrt
-language.math.sqrt_rn = sqrt_rn
-language.math.rsqrt = rsqrt
-language.math.div_rn = div_rn
-language.math.erf = erf
-language.math.tanh = tanh
-language.math.floor = floor
-language.math.ceil = ceil
-language.math._check_dtype = _check_dtype
-language.math.fma = fma
-language.math.isnan = language.extra.ascend.libdevice.isnan
-language.math.isinf = language.extra.ascend.libdevice.isinf
-language.math.reciprocal = language.extra.ascend.libdevice.reciprocal
-language.math.log1p = language.extra.ascend.libdevice.log1p
-language.math.relu = language.extra.ascend.libdevice.relu
-language.math.tan = language.extra.ascend.libdevice.tan
-language.math.atan = language.extra.ascend.libdevice.atan
+language.umulhi = language.extra.ascend.libdevice.umulhi
+language.exp = language.extra.ascend.libdevice.exp
+language.exp2 = language.extra.ascend.libdevice.exp2
+language.log = language.extra.ascend.libdevice.log
+language.log2 = language.extra.ascend.libdevice.log2
+language.cos = language.extra.ascend.libdevice.cos
+language.sin = language.extra.ascend.libdevice.sin
+language.sqrt = language.extra.ascend.libdevice.sqrt
+language.sqrt_rn = language.extra.ascend.libdevice.sqrt_rn
+language.rsqrt = language.extra.ascend.libdevice.rsqrt
+language.div_rn = language.extra.ascend.libdevice.div_rn
+language.erf = language.extra.ascend.libdevice.erf
+language.tanh = language.extra.ascend.libdevice.tanh
+language.floor = language.extra.ascend.libdevice.floor
+language.ceil = language.extra.ascend.libdevice.ceil
+language.fma = language.extra.ascend.libdevice.fma
+language.math.umulhi = language.extra.ascend.libdevice.umulhi
+language.math.exp = language.extra.ascend.libdevice.exp
+language.math.exp2 = language.extra.ascend.libdevice.exp2
+language.math.log = language.extra.ascend.libdevice.log
+language.math.log2 = language.extra.ascend.libdevice.log2
+language.math.cos = language.extra.ascend.libdevice.cos
+language.math.sin = language.extra.ascend.libdevice.sin
+language.math.sqrt = language.extra.ascend.libdevice.sqrt
+language.math.sqrt_rn = language.extra.ascend.libdevice.sqrt_rn
+language.math.rsqrt = language.extra.ascend.libdevice.rsqrt
+language.math.div_rn = language.extra.ascend.libdevice.div_rn
+language.math.erf = language.extra.ascend.libdevice.erf
 language.math.tanh = language.extra.ascend.libdevice.tanh
-language.math.ilogb = language.extra.ascend.libdevice.ilogb
-language.math.ldexp = language.extra.ascend.libdevice.ldexp
-language.math.pow = language.extra.ascend.libdevice.pow
-language.math.flip = language.extra.ascend.libdevice.flip
-language.math.atan2 = language.extra.ascend.libdevice.atan2
-language.math.div_rz = language.extra.ascend.libdevice.div_rz
-language.math.fmod = language.extra.ascend.libdevice.fmod
-language.math.trunc = language.extra.ascend.libdevice.trunc
-language.math.round = language.extra.ascend.libdevice.round
+language.math.floor = language.extra.ascend.libdevice.floor
+language.math.ceil = language.extra.ascend.libdevice.ceil
+language.math._check_dtype = language.extra.ascend.libdevice._check_dtype
+language.math.fma = language.extra.ascend.libdevice.fma
 language.math.finitef = finitef
 language.math.isfinited = isfinited
 language.math.rint = rint
 language.math.atan2 = atan2
-language.extra.ascend.libdevice.umulhi = language.math.umulhi
-language.extra.ascend.libdevice.exp = language.math.exp
-language.extra.ascend.libdevice.exp2 = language.math.exp2
-language.extra.ascend.libdevice.log = language.math.log
-language.extra.ascend.libdevice.log2 = language.math.log2
-language.extra.ascend.libdevice.cos = language.math.cos
-language.extra.ascend.libdevice.sin = language.math.sin
-language.extra.ascend.libdevice.sqrt = language.math.sqrt
-language.extra.ascend.libdevice.sqrt_rn = language.math.sqrt_rn
-language.extra.ascend.libdevice.rsqrt = language.math.rsqrt
-language.extra.ascend.libdevice.div_rn = language.math.div_rn
-language.extra.ascend.libdevice.erf = language.math.erf
-language.extra.ascend.libdevice.tanh = language.math.tanh
-language.extra.ascend.libdevice.floor = language.math.floor
-language.extra.ascend.libdevice.ceil = language.math.ceil
-language.extra.ascend.libdevice.fdiv = language.math.fdiv
-language.extra.ascend.libdevice.fma = language.math.fma
-language.extra.ascend.libdevice.abs = language.math.abs
