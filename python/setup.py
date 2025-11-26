@@ -596,7 +596,7 @@ download_and_copy(
 )
 
 if helper.flagtree_backend:
-    if helper.flagtree_backend in ("aipu", "tsingmicro"):
+    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame"):
         backends = [
             *BackendInstaller.copy(helper.default_backends + helper.extend_backends),
             *BackendInstaller.copy_externals(),

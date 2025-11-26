@@ -9,7 +9,7 @@ from . import utils
 
 extend_backends = []
 default_backends = ["nvidia", "amd"]
-plugin_backends = ["cambricon", "ascend", "aipu", "tsingmicro"]
+plugin_backends = ["cambricon", "ascend", "aipu", "tsingmicro", "enflame"]
 ext_sourcedir = "triton/_C/"
 flagtree_backend = os.getenv("FLAGTREE_BACKEND", "").lower()
 flagtree_plugin = os.getenv("FLAGTREE_PLUGIN", "").lower()
@@ -378,6 +378,21 @@ cache.store(
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
+)
+
+# enflame
+cache.store(
+    file="llvm-d752c5b-gcc9-x64",
+    condition=("enflame" == flagtree_backend),
+    ## TODO upload enflame llvm to blob storage
+    url = f"https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm-d752c5b-gcc9-x64.tar.gz
+    pre_hock=lambda: check_env('KURAMA_LLVM_DIR_GCU300'),
+    post_hock=lambda path: set_env({
+      'KURAMA_LLVM_DIR_GCU300': path,
+      'LLVM_INCLUDE_DIRS': Path(path) / "include",
+      'LLVM_LIBRARY_DIR': Path(path) / "lib",
+      'LLVM_SYSPATH': path,
+    }),
 )
 
 # tsingmicro
