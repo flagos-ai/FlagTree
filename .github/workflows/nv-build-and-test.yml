@@ -112,4 +112,5 @@ jobs:
           git clone https://github.com/flagos-ai/FlagGems.git
           cd FlagGems
           git checkout addflagtreetest
+          export GEMS_VENDOR=nvidia
           python3.11 -m pytest -s --mode=quick --limit-cases=1
