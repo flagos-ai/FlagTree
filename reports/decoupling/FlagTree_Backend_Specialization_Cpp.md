@@ -65,7 +65,7 @@ using FLAGTREE_SPEC_BackendMmaEncodingAttr;
 ```
 
 #### 2.2.2 宏定义及头文件包含（注意修改文件名及头部宏）
-- __third_party/iluvatar/backend/spec/__include/triton/Dialect/TritonGPU/IR/iluvatar_Dialect.h
+- <strong>third_party/iluvatar/backend/spec/</strong>include/triton/Dialect/TritonGPU/IR/iluvatar_Dialect.h
 ```c++
 #define FLAGTREE_SPEC_BackendMmaEncodingAttr                                   \
   ::mlir::triton::gpu::IluvatarMmaEncodingAttr
