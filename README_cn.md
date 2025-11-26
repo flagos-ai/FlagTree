@@ -23,17 +23,6 @@ python3 -m pip install . --no-build-isolation -v
 自动下载依赖库的速度可能受限于网络环境，编译前可自行下载至缓存目录 ~/.flagtree（可通过环境变量 FLAGTREE_CACHE_DIR 修改），无需自行设置 LLVM_BUILD_DIR 等环境变量。 <br>
 各后端完整编译命令如下： <br>
 
-[enflame](https://github.com/FlagTree/flagtree/tree/main/third_party/enflame/)
-```shell
-# 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-enflame
-mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
-wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm-d752c5b-gcc9-x64.tar.gz
-tar zxvf enflame-llvm-d752c5b-gcc9-x64.tar.gz
-cd ${YOUR_CODE_DIR}/flagtree/python
-export FLAGTREE_BACKEND=enflame
-python3 -m pip install . --no-build-isolation -v
-```
-
 [iluvatar](https://github.com/FlagTree/flagtree/tree/main/third_party/iluvatar/)
 ```shell
 # 推荐使用镜像 Ubuntu 20.04
@@ -125,7 +114,16 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=hcu
 python3 -m pip install . --no-build-isolation -v
 ```
-
+[enflame](https://github.com/FlagTree/flagtree/tree/main/third_party/enflame/)
+```shell
+# 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-enflame
+mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm-d752c5b-gcc9-x64.tar.gz
+tar zxvf enflame-llvm-d752c5b-gcc9-x64.tar.gz
+cd ${YOUR_CODE_DIR}/flagtree/python
+export FLAGTREE_BACKEND=enflame
+python3 -m pip install . --no-build-isolation -v
+```
 [nvidia](/third_party/nvidia/)
 使用默认的构建命令，可以构建安装 nvidia、amd、triton_shared cpu 后端：
 ```shell
