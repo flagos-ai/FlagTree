@@ -61,3 +61,13 @@ jobs:
         run: |
           set -x
           python3.10 -m pytest -s third_party/metax/python/test/unit
+
+      - name: FlagTree Test with FlagGems
+        shell: bash
+        run: |
+          cd ../..
+          git clone https://github.com/flagos-ai/FlagGems.git
+          cd FlagGems
+          git checkout addflagtreetest
+          python3.11 -m pytest -s --mode=quick --limit-cases=1
+
