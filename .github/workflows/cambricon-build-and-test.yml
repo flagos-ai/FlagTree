@@ -65,6 +65,7 @@ jobs:
         shell: bash
         run: |
           cd ../..
+          rm -rf FlagGems
           git clone https://github.com/flagos-ai/FlagGems.git
           cd FlagGems
           git checkout addflagtreetest
