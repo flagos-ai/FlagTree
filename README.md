@@ -114,7 +114,7 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=hcu
 python3 -m pip install . --no-build-isolation -v
 ```
-[enflame](https://github.com/FlagTree/flagtree/tree/main/third_party/enflame/)
+[enflame](https://github.com/FlagTree/flagtree/triton_v3.3.x/main/third_party/enflame/)
 ```shell
 # 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-enflame
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
