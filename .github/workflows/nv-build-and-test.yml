@@ -114,4 +114,4 @@ jobs:
           cd FlagGems
           git checkout addflagtreetest
           export GEMS_VENDOR=nvidia
-          python3.11 -m pytest -s --mode=quick --limit-cases=1 --skipped-unselected-nodeids
+          python3.11 -m pytest -s --mode=quick --limit-cases=1 --skipped-spectest

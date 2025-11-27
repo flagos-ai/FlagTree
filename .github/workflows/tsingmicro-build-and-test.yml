@@ -72,4 +72,4 @@ jobs:
           git clone https://github.com/flagos-ai/FlagGems.git
           cd FlagGems
           git checkout addflagtreetest
-          python3.11 -m pytest -s --mode=quick --limit-cases=1 --skipped-unselected-nodeids
+          python3.11 -m pytest -s --mode=quick --limit-cases=1 --skipped-spectest
