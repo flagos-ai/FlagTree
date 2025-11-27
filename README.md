@@ -116,7 +116,7 @@ python3 -m pip install . --no-build-isolation -v
 ```
 [enflame](https://github.com/FlagTree/flagtree/triton_v3.3.x/main/third_party/enflame/)
 ```shell
-# 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-enflame
+# 推荐使用镜像 TODO: 添加镜像url
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
 wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm-d752c5b-gcc9-x64.tar.gz
 tar zxvf enflame-llvm-d752c5b-gcc9-x64.tar.gz
