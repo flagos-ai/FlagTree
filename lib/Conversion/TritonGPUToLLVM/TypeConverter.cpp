@@ -11,10 +11,14 @@ using namespace mlir::triton;
 using ::mlir::triton::gpu::BlockedEncodingAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::getTotalElemsPerThread;
+#ifdef FLAGTREE_SPEC_BackendMmaEncodingAttr
+using FLAGTREE_SPEC_BackendMmaEncodingAttr;
+#endif
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SharedEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
 
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_TypeConverter_TritonGPUToLLVMTypeConverter
 TritonGPUToLLVMTypeConverter::TritonGPUToLLVMTypeConverter(
     MLIRContext *ctx, LowerToLLVMOptions &option,
     const DataLayoutAnalysis *analysis)
@@ -45,6 +49,7 @@ TritonGPUToLLVMTypeConverter::TritonGPUToLLVMTypeConverter(
     return IntegerType::get(type.getContext(), 16);
   });
 }
+#endif
 
 Type TritonGPUToLLVMTypeConverter::convertTritonPointerType(
     triton::PointerType type) {
@@ -71,6 +76,7 @@ Type TritonGPUToLLVMTypeConverter::convertTritonPointerType(
   return LLVM::LLVMPointerType::get(ctx, type.getAddressSpace());
 }
 
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_TypeConverter_getElementTypeForStruct
 Type TritonGPUToLLVMTypeConverter::getElementTypeForStruct(
     TensorOrMemDesc type) {
   auto ctx = type.getContext();
@@ -87,6 +93,7 @@ Type TritonGPUToLLVMTypeConverter::getElementTypeForStruct(
   assert(bitwidth <= 32);
   return IntegerType::get(ctx, 32);
 }
+#endif
 
 Type TritonGPUToLLVMTypeConverter::convertTritonTensorType(
     RankedTensorType type) {

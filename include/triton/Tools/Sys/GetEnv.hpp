@@ -8,6 +8,10 @@
 #include <sstream>
 #include <string>
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 namespace mlir::triton {
 
 inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
@@ -28,6 +32,9 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "TRITON_LLVM_DEBUG_ONLY",
     "USE_TTGIR_LOC",
     "NVPTX_ENABLE_DUMP",
+#ifdef FLAGTREE_SPEC_Tools_Sys_GetEnv_BACKEND_IR_ENABLE_DUMP
+    FLAGTREE_SPEC_Tools_Sys_GetEnv_BACKEND_IR_ENABLE_DUMP,
+#endif
     // clang-format on
 };
 
@@ -75,6 +82,7 @@ inline std::optional<bool> isEnvValueBool(std::string str) {
     return false;
   return std::nullopt;
 }
+
 } // namespace tools
 } // namespace mlir::triton
 

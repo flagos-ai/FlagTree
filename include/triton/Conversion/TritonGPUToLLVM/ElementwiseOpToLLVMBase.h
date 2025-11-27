@@ -8,6 +8,10 @@
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 using namespace mlir;
 using namespace mlir::triton;
 
@@ -27,6 +31,15 @@ SmallVector<Value> packI32(const SmallVector<Value> &inValues, Type srcTy,
                            const LLVMTypeConverter *typeConverter);
 
 Type getElementType(Value value);
+
+#ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_maybeDeduplicate
+bool maybeDeduplicate_baseEncoding(Attribute baseEncoding);
+#endif
+
+#ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_matchAndRewrite
+void matchAndRewrite_elemTy(const mlir::TypeConverter *typeConverter,
+                            mlir::Type &elemTy, const mlir::Type &resultTy);
+#endif
 
 class MultipleOperandsRange
     : public iterator_range<SmallVector<SmallVector<Value>>::iterator> {
@@ -102,6 +115,10 @@ public:
       // test_core::test_fp8_dot_acc
       return resultVals;
     }
+#ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_maybeDeduplicate
+    if (maybeDeduplicate_baseEncoding(baseEncoding))
+      return resultVals;
+#endif
 
     SmallVector<unsigned> elemsPerThread = getElemsPerThread(rtType);
     int rank = elemsPerThread.size();
@@ -182,6 +199,9 @@ public:
     // element type
     auto resultElementTy = getElementTypeOrSelf(resultTy);
     Type elemTy = this->getTypeConverter()->convertType(resultElementTy);
+#ifdef FLAGTREE_SPEC_ElementwiseOpConversionBase_matchAndRewrite
+    matchAndRewrite_elemTy(this->getTypeConverter(), elemTy, resultTy);
+#endif
     SmallVector<SmallVector<Value>> allOperands;
     for (auto operand : adaptor.getOperands()) {
       auto argTy = op->getOperand(0).getType();

@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Pipeliner_SoftwarePipeliner_cpp
+
 #include "PipelineExpander.h"
 #include "PipeliningUtility.h"
 #include "Schedule.h"
@@ -12,7 +18,9 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#ifdef __NVIDIA__
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#endif
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/Support/Debug.h"
 
@@ -162,3 +170,5 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
 } // namespace gpu
 } // namespace triton
 } // namespace mlir
+
+#endif

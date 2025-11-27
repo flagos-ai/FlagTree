@@ -11,7 +11,9 @@
 #include "mlir/IR/TypeUtilities.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#ifdef __NVIDIA__
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#endif
 #include <set>
 #include <type_traits>
 
@@ -27,7 +29,9 @@ using ::mlir::triton::gpu::CTALayoutAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
+#ifdef __NVIDIA__
 namespace ttng = ::mlir::triton::nvidia_gpu;
+#endif
 
 namespace mlir::triton {
 class ReduceOp;

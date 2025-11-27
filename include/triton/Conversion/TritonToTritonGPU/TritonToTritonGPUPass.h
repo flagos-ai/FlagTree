@@ -4,6 +4,10 @@
 #include <memory>
 #include <optional>
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 namespace mlir {
 
 class ModuleOp;
@@ -23,7 +27,19 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonToTritonGPUPass();
 // Create the pass with numWarps set explicitly.
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonToTritonGPUPass(const std::string &target, int numWarps,
+#ifndef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_createConvertTritonToTritonGPUPass_ARG
                                    int threadsPerWarp = 32, int numCTAs = 1);
+#else
+                                   int threadsPerWarp = 32, int numCTAs = 1,
+                                   FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_createConvertTritonToTritonGPUPass_ARG
+                                       spec_arg = 1);
+#endif
+
+#ifdef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_ConvertTritonToTritonGPU_setAttrNumStagesForDot
+void ConvertTritonToTritonGPU_setAttrNumStagesForDot(ModuleOp &mod,
+                                                     IntegerType i32_ty,
+                                                     int numStages);
+#endif
 
 } // namespace triton
 } // namespace mlir

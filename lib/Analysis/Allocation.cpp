@@ -23,6 +23,9 @@ using ::mlir::triton::gpu::getShapePerCTA;
 using ::mlir::triton::gpu::getShapePerCTATile;
 using ::mlir::triton::gpu::getSizePerThread;
 using ::mlir::triton::gpu::getUniqueContigPerThread;
+#ifdef FLAGTREE_SPEC_BackendMmaEncodingAttr
+using FLAGTREE_SPEC_BackendMmaEncodingAttr;
+#endif
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SharedEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
@@ -37,7 +40,11 @@ namespace triton {
 // Bitwidth of pointers
 constexpr int kPtrBitWidth = 64;
 
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_getCvtOrder
+std::pair<SmallVector<unsigned>, SmallVector<unsigned>>
+#else
 static std::pair<SmallVector<unsigned>, SmallVector<unsigned>>
+#endif
 getCvtOrder(Attribute srcLayout, Attribute dstLayout) {
   auto srcMmaLayout = mlir::dyn_cast<NvidiaMmaEncodingAttr>(srcLayout);
   auto srcDotLayout = mlir::dyn_cast<DotOperandEncodingAttr>(srcLayout);
@@ -57,6 +64,7 @@ getCvtOrder(Attribute srcLayout, Attribute dstLayout) {
   return {inOrd, outOrd};
 }
 
+#ifndef FLAGTREE_SPEC_Analysis_Allocation_getRepShapeForCvtLayout
 SmallVector<unsigned> getRepShapeForCvtLayout(triton::gpu::ConvertLayoutOp op) {
   auto srcTy = op.getSrc().getType();
   auto dstTy = op.getType();
@@ -101,7 +109,9 @@ SmallVector<unsigned> getRepShapeForCvtLayout(triton::gpu::ConvertLayoutOp op) {
   }
   return repShape;
 }
+#endif
 
+#ifndef FLAGTREE_SPEC_Analysis_Allocation_getScratchConfigForCvtLayout
 SmallVector<unsigned>
 getScratchConfigForCvtLayout(triton::gpu::ConvertLayoutOp op, unsigned &inVec,
                              unsigned &outVec) {
@@ -153,6 +163,7 @@ getScratchConfigForCvtLayout(triton::gpu::ConvertLayoutOp op, unsigned &inVec,
   repShape[paddedDim] += pad;
   return repShape;
 }
+#endif
 
 // TODO: extend beyond scalars
 SmallVector<unsigned> getScratchConfigForAtomicRMW(triton::AtomicRMWOp op) {
@@ -284,6 +295,9 @@ private:
       auto smemShape = getScratchConfigForCvtLayout(cvtLayout, inVec, outVec);
       unsigned elems = std::accumulate(smemShape.begin(), smemShape.end(), 1,
                                        std::multiplies{});
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_AllocationAnalysis_getScratchValueSizeElems
+      elems = getScratchValueSizeElems(smemShape);
+#endif
       auto bytes =
           isa<triton::PointerType>(srcTy.getElementType())
               ? elems * kPtrBitWidth / 8
@@ -628,6 +642,10 @@ private:
           std::max(allocation->sharedMemorySize, x->offset + x->size);
     }
   }
+
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_AllocationAnalysis_dump
+  void dump() const { Allocation::dump(bufferRange); }
+#endif
 
 private:
   Operation *operation;

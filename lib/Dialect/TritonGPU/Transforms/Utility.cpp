@@ -13,7 +13,9 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#ifdef __NVIDIA__
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#endif
 #include "llvm/Support/Debug.h"
 #define DEBUG_TYPE "ttg-utility"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -109,6 +111,7 @@ unsigned getElementBitWidth(RankedTensorType type) {
   return typeForMem.getIntOrFloatBitWidth();
 }
 
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility_getNumElementsPerThread
 unsigned getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
                                  ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   Value val = getMemAccessPtr(op);
@@ -129,6 +132,7 @@ unsigned getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
                         << ", alignment: " << alignment);
   return currPerThread;
 }
+#endif
 
 //===----------------------------------------------------------------------===//
 // GraphDumper
@@ -286,11 +290,13 @@ std::string GraphLayoutMarker::getColor(const Type &type) const {
 }
 // -------------------------------------------------------------------------- //
 
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility_static_inferDstEncoding
 static std::optional<Attribute> inferDstEncoding(triton::ReduceOp op,
                                                  Attribute encoding) {
   return triton::gpu::SliceEncodingAttr::get(op->getContext(), op.getAxis(),
                                              encoding);
 }
+#endif
 
 static std::optional<Attribute> inferDstEncoding(triton::ExpandDimsOp op,
                                                  Attribute encoding) {
@@ -336,11 +342,13 @@ static std::optional<Attribute> inferSrcEncoding(triton::ReduceOp op,
   return sliceEncoding.getParent();
 }
 
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility_static_inferSrcEncoding
 static std::optional<Attribute> inferSrcEncoding(triton::ExpandDimsOp op,
                                                  Attribute encoding) {
   return triton::gpu::SliceEncodingAttr::get(op->getContext(), op.getAxis(),
                                              encoding);
 }
+#endif
 
 static std::optional<Attribute> inferSrcEncoding(JoinOp op, Attribute dstEnc) {
   // Split is the inverse of join.
@@ -433,6 +441,7 @@ static std::optional<Attribute> inferSrcEncoding(triton::ReshapeOp op,
                                    op.getAllowReorder());
 }
 
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility_inferSrcEncoding
 std::optional<Attribute> inferSrcEncoding(Operation *op, Attribute encoding) {
   if (isa<triton::ScanOp>(op)) {
     // Scan only supports blocked encoding at the moment.
@@ -462,7 +471,9 @@ std::optional<Attribute> inferSrcEncoding(Operation *op, Attribute encoding) {
 
   return std::nullopt;
 }
+#endif
 
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility_inferDstEncoding
 std::optional<Attribute> inferDstEncoding(Operation *op, Attribute encoding) {
   if (isa<triton::ScanOp>(op)) {
     if (!isa<triton::gpu::BlockedEncodingAttr>(encoding))
@@ -489,6 +500,7 @@ std::optional<Attribute> inferDstEncoding(Operation *op, Attribute encoding) {
 
   return std::nullopt;
 }
+#endif
 
 bool isSingleValue(Value value) {
   // Don't consider load as expensive if it is loading a scalar.

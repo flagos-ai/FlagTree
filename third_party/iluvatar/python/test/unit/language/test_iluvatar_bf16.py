@@ -6,7 +6,7 @@ import torch
 
 import triton
 import triton.language as tl
-from triton.backends.iluvatar.flagtree_backend_specialization.triton.runtime.build import is_corex
+from triton.backends.iluvatar.spec.triton.runtime.build import is_corex
 
 import pytest
 

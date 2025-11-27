@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Dialect_Triton_Transforms_RewriteTensorPointer_cpp
+
 #include <memory>
 #include <stack>
 
@@ -570,3 +576,5 @@ public:
 std::unique_ptr<Pass> triton::createRewriteTensorPointerPass() {
   return std::make_unique<RewriteTensorPointerPass>();
 }
+
+#endif

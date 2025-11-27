@@ -7,6 +7,10 @@
 #include "llvm/ADT/ArrayRef.h"
 #include <vector>
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 namespace mlir {
 namespace triton {
 
@@ -21,6 +25,7 @@ bool preProcessLoopAndGetSchedule(scf::ForOp &forOp, int numStages,
 bool getOuterLoopSchedule(scf::ForOp &forOp, int numStages,
                           mlir::triton::PipeliningOption &options);
 
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Schedule_functions
 /// Pipeline the TMA stores in the loop.
 bool pipelineTMAStores(scf::ForOp forOp);
 
@@ -29,6 +34,7 @@ bool pipelineTMAStores(scf::ForOp forOp);
 // TODO: this should be included as part of the pipeline but currently the wgmma
 // wait modeling is problematic.
 void asyncLaunchDots(scf::ForOp forOp);
+#endif
 
 /// Post process the pipelined loop by updating the wait ops with the right
 /// number of groups in flight.

@@ -97,6 +97,7 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
   auto barrierOp = builder->create<gpu::BarrierOp>(op->getLoc());
 }
 
+#ifndef FLAGTREE_SPEC_Analysis_Membar_MembarAnalysis_update
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
                             OpBuilder *builder) {
@@ -175,4 +176,6 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
   // the current op's read/write buffers.
   blockInfo->join(curBlockInfo);
 }
+#endif
+
 } // namespace mlir

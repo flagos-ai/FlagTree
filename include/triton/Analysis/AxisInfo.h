@@ -13,6 +13,10 @@
 #include <optional>
 #include <type_traits>
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 namespace mlir::triton {
 
 //===----------------------------------------------------------------------===//
@@ -20,6 +24,7 @@ namespace mlir::triton {
 //===----------------------------------------------------------------------===//
 
 /// This lattice value represents known information on the axes of a lattice.
+#ifndef FLAGTREE_SPEC_AxisInfo
 class AxisInfo {
 public:
   typedef SmallVector<int64_t> DimVectorT;
@@ -151,6 +156,7 @@ private:
   // The constant value of the lattice if we can infer it.
   std::optional<int64_t> constantValue;
 };
+#endif
 
 // Module level axis info analysis based on the call graph, assuming that we do
 // not have recursive functions.

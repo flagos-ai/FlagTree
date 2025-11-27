@@ -1,3 +1,6 @@
 add_subdirectory(Triton)
 add_subdirectory(TritonGPU)
-add_subdirectory(TritonNvidiaGPU)
+
+if(IS_COMPILE_TritonNvidiaGPU)
+  add_subdirectory(TritonNvidiaGPU)
+endif()

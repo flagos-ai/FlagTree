@@ -61,20 +61,20 @@ driver = DriverConfig()
 
 
 # flagtree backend specialization
-def flagtree_backend_specialization(function_name: str, *args, **kwargs):
-    if hasattr(driver.active, "flagtree_backend_specialization"):
-        flagtree_backend_specialization = driver.active.flagtree_backend_specialization
-        if hasattr(flagtree_backend_specialization, function_name):
-            func = getattr(flagtree_backend_specialization, function_name)
+def spec(function_name: str, *args, **kwargs):
+    if hasattr(driver.active, "spec"):
+        spec = driver.active.spec
+        if hasattr(spec, function_name):
+            func = getattr(spec, function_name)
             return func(*args, **kwargs)
     return None
 
 
 # flagtree backend func specialization
-def flagtree_backend_func_specialization(function_name: str):
-    if hasattr(driver.active, "flagtree_backend_specialization"):
-        flagtree_backend_specialization = driver.active.flagtree_backend_specialization
-        if hasattr(flagtree_backend_specialization, function_name):
-            func = getattr(flagtree_backend_specialization, function_name)
+def spec_func(function_name: str):
+    if hasattr(driver.active, "spec"):
+        spec = driver.active.spec
+        if hasattr(spec, function_name):
+            func = getattr(spec, function_name)
             return func
     return None

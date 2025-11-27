@@ -850,8 +850,8 @@ def _str_to_load_cache_modifier(cache_modifier):
     cache = ir.CACHE_MODIFIER.NONE  # default
     if cache_modifier:
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        ext_cache = flagtree_backend_specialization("ext_str_to_load_cache_modifier", cache_modifier)
+        from triton.runtime.driver import spec
+        ext_cache = spec("ext_str_to_load_cache_modifier", cache_modifier)
         if cache_modifier == ".ca":
             cache = ir.CACHE_MODIFIER.CA
         elif cache_modifier == ".cg":
@@ -1170,9 +1170,8 @@ def atom_red_typechecking_impl(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, 
     if element_ty is tl.float16 and op != 'add':
         raise ValueError("atomic_" + op + " does not support fp16")
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    if element_ty in [tl.int1, tl.int8, tl.int16
-                      ] + ([] if flagtree_backend_specialization("is_atomic_support_bf16") else [tl.bfloat16]):
+    from triton.runtime.driver import spec
+    if element_ty in [tl.int1, tl.int8, tl.int16] + ([] if spec("is_atomic_support_bf16") else [tl.bfloat16]):
         raise ValueError("atomic_" + op + " does not support " + str(element_ty))
     if ptr.type.is_block():
         if mask is not None:
@@ -1276,8 +1275,8 @@ def atomic_add(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, sem: str, scope:
     op = ir.ATOMIC_OP.FADD if sca_ty.is_floating() else ir.ATOMIC_OP.ADD
     rett = tl.tensor(builder.create_atomic_rmw(op, ptr.handle, val.handle, mask.handle, sem, scope), val.type)
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    return flagtree_backend_specialization("atomin_add_int64", sca_ty, builder, val, ptr, mask, sem, scope) or rett
+    from triton.runtime.driver import spec
+    return spec("atomic_add_int64", sca_ty, builder, val, ptr, mask, sem, scope) or rett
 
 
 def atomic_and(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, sem: str, scope: str, builder: ir.builder) -> tl.tensor:

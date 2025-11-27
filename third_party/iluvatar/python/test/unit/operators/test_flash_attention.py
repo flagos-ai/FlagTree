@@ -4,7 +4,7 @@ import os
 
 import triton
 import triton.ops
-from triton.backends.iluvatar.flagtree_backend_specialization.triton.runtime.build import is_corex
+from triton.backends.iluvatar.spec.triton.runtime.build import is_corex
 
 
 @pytest.mark.interpreter

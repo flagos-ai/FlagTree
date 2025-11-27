@@ -15,6 +15,10 @@
 #define GET_OP_CLASSES
 #include "triton/Dialect/TritonGPU/IR/Ops.h.inc"
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 namespace mlir {
 namespace triton {
 namespace gpu {
@@ -113,6 +117,19 @@ bool isExpensiveCat(CatOp cat, Attribute targetEncoding);
 
 // Return true if a view between the two types cannot be implemented as a no-op.
 bool isExpensiveView(Type srcType, Type dstType);
+
+#ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_functions
+bool isMma(Attribute layout);
+
+bool isSliceMmaWithDim(Attribute layout, int targetDim);
+
+bool isMmaOrSliceMma(Attribute layout);
+
+bool isMmaConvertLayout(Operation *op);
+
+bool isSliceMmaConvertLayout(Operation *op, bool srcNoWarpReduce,
+                             bool dstNoWarpReduce);
+#endif
 
 // Return a blocked encoding where the shape is distributed contiguously amongst
 // the threads, warps, CTAs with 1 element per threads.

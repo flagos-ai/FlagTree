@@ -1,7 +1,6 @@
-add_subdirectory(backend/flagtree_backend_specialization/lib)
-add_subdirectory(include)
-add_subdirectory(lib)
-find_package(Python3 REQUIRED COMPONENTS Development Interpreter)
+add_compile_options("-Wno-deprecated-declarations")
+add_compile_options("-Wno-error=deprecated-declarations")
+
 option(EDITABLE_MODE "Build in developer (editable) mode" OFF)
 if(EDITABLE_MODE)
   set(ILUVATAR_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -41,4 +40,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endif()
 endif()
 
+add_subdirectory(backend/spec/lib)
+add_subdirectory(${PROJECT_SOURCE_DIR}/include
+                 ${PROJECT_BINARY_DIR}/include)
+add_subdirectory(${PROJECT_SOURCE_DIR}/lib
+                 ${PROJECT_BINARY_DIR}/lib)
 add_subdirectory(bin)

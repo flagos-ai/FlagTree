@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Dialect_Triton_IR_Ops_cpp
+
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -980,3 +986,5 @@ void ExternElementwiseOp::getEffects(
 
 } // namespace triton
 } // namespace mlir
+
+#endif

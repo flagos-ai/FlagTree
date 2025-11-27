@@ -7,6 +7,10 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 namespace mlir {
 
 inline bool isZeroConst(Value v) {
@@ -194,6 +198,10 @@ bool isMmaToDotShortcut(RankedTensorType srcTy, RankedTensorType dstTy);
 
 bool isMmaToMmaShortcut(RankedTensorType srcTy, RankedTensorType dstTy);
 
+#ifdef FLAGTREE_SPEC_Analysis_Utility_isMmaToMmaShortcut
+bool isMmaToMmaShortcut(Attribute srcEncoding, Attribute dstEncoding);
+#endif
+
 // Return true if the src and dst layout match.
 bool matchMmaV3AndDotOperandLayout(RankedTensorType srcTy,
                                    RankedTensorType dstTy);
@@ -210,10 +218,35 @@ bool shouldUseDistSmem(Attribute srcLayout, Attribute dstLayout);
 SetVector<Operation *>
 multiRootTopologicalSort(const SetVector<Operation *> &toSort);
 
+#ifdef FLAGTREE_SPEC_Utility_isMmaToDotSlowShortcut
+bool isMmaToDotSlowShortcut(RankedTensorType &srcTy, RankedTensorType &dstTy);
+#endif
+
+#ifdef FLAGTREE_SPEC_Utility_getBackwardSliceCorex
+/// This function dones't use assertion check.
+void getBackwardSliceCorex(Operation *op, SetVector<Operation *> *backwardSlice,
+                           TransitiveFilter filter = nullptr,
+                           bool omitBlockArguments = false);
+#endif
+
+#ifdef FLAGTREE_SPEC_Utility_getBackwardSliceImplCorex
+void getBackwardSliceImplCorex(Operation *op,
+                               SetVector<Operation *> *backwardSlice,
+                               TransitiveFilter filter,
+                               bool omitBlockArguments = false);
+
+#endif
+
 /// This uses the toplogicalSort above
 SetVector<Operation *>
 multiRootGetSlice(Operation *op, TransitiveFilter backwardFilter = nullptr,
+#ifndef FLAGTREE_SPEC_Utility_multiRootGetSlice_ARG
                   TransitiveFilter forwardFilter = nullptr);
+#else
+                  TransitiveFilter forwardFilter = nullptr,
+                  FLAGTREE_SPEC_Utility_multiRootGetSlice_ARG
+                      omitBlockArguments = true);
+#endif
 
 /// Create a basic DataFlowSolver with constant and dead code analysis included.
 std::unique_ptr<DataFlowSolver> createDataFlowSolver();

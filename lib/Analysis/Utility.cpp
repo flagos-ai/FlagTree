@@ -13,7 +13,9 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __NVIDIA__
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#endif
 #include "triton/Tools/Sys/GetEnv.hpp"
 
 namespace mlir {
@@ -399,6 +401,7 @@ unsigned ScanLoweringHelper::getAxisBlockStride() {
   llvm_unreachable("Axis not found in order");
 }
 
+#ifndef FLAGTREE_SPEC_Analysis_Utility_maybeSharedAllocationOp
 bool maybeSharedAllocationOp(Operation *op) {
   // TODO(Keren): This function can be replaced by adding
   // MemoryEffectOpInterface. We can then use the MemoryEffectOpInterface to
@@ -412,6 +415,7 @@ bool maybeSharedAllocationOp(Operation *op) {
           dialect->getTypeID() == TypeID::get<arith::ArithDialect>() ||
           dialect->getTypeID() == TypeID::get<tensor::TensorDialect>());
 }
+#endif
 
 static bool supportMFMAGranularity(int m, int n, int k) {
   // these limitations are dtype dependent, in future we may relax them
@@ -532,6 +536,7 @@ bool supportWMMA(triton::DotOp op) {
   return true;
 }
 
+#ifndef FLAGTREE_SPEC_Analysis_Utility_supportMMA
 bool supportMMA(triton::DotOp op, int version) {
   // Refer to mma section for the data type supported by Volta and Hopper
   // Tensor Core in
@@ -565,7 +570,9 @@ bool supportMMA(triton::DotOp op, int version) {
   }
   return supportMMA(op.getA(), version) && supportMMA(op.getB(), version);
 }
+#endif
 
+#ifndef FLAGTREE_SPEC_Analysis_Utility_supportMMA
 bool supportMMA(Value value, int version) {
   // Tell whether a DotOp support MMA by the operand type(either $a or $b).
   // We cannot get both the operand types(in TypeConverter), here we assume the
@@ -581,6 +588,7 @@ bool supportMMA(Value value, int version) {
          (elemTy.isF32() && version >= 2) ||
          (elemTy.isInteger(8) && version >= 2);
 }
+#endif
 
 bool isMfmaToDotShortcut(RankedTensorType &srcTy, RankedTensorType &dstTy) {
   auto srcLayout = srcTy.getEncoding();
@@ -600,6 +608,7 @@ bool isMfmaToDotShortcut(RankedTensorType &srcTy, RankedTensorType &dstTy) {
          (srcTy.getElementType().isF16() || srcTy.getElementType().isBF16());
 }
 
+#ifndef FLAGTREE_SPEC_Analysis_Utility_isMmaToMmaShortcut
 static bool isMmaToMmaShortcut(Attribute srcEncoding, Attribute dstEncoding) {
   auto src = dyn_cast<NvidiaMmaEncodingAttr>(srcEncoding);
   auto dst = dyn_cast<NvidiaMmaEncodingAttr>(dstEncoding);
@@ -610,6 +619,7 @@ static bool isMmaToMmaShortcut(Attribute srcEncoding, Attribute dstEncoding) {
          src.getWarpsPerCTA()[1] == 1 && dst.getVersionMajor() == 3 &&
          dst.getWarpsPerCTA()[1] == 1;
 }
+#endif
 
 bool isMmaToMmaShortcut(RankedTensorType srcTy, RankedTensorType dstTy) {
   return isMmaToMmaShortcut(srcTy.getEncoding(), dstTy.getEncoding());
@@ -630,6 +640,7 @@ bool matchMmaV3AndDotOperandLayout(RankedTensorType srcTy,
   return ans;
 }
 
+#ifndef FLAGTREE_SPEC_Analysis_Utility_isMmaToDotShortcut
 bool isMmaToDotShortcut(RankedTensorType srcTy, RankedTensorType dstTy) {
   if (matchMmaV3AndDotOperandLayout(srcTy, dstTy))
     return true;
@@ -645,6 +656,7 @@ bool isMmaToDotShortcut(RankedTensorType srcTy, RankedTensorType dstTy) {
          dotOperandLayout.getParent() == mmaLayout &&
          !srcTy.getElementType().isF32();
 }
+#endif
 
 namespace {
 
@@ -778,6 +790,7 @@ multiRootTopologicalSort(const SetVector<Operation *> &toSort) {
   return res;
 }
 
+#ifndef FLAGTREE_SPEC_Utility_multiRootGetSlice_ARG
 SetVector<Operation *> multiRootGetSlice(Operation *op,
                                          TransitiveFilter backwardFilter,
                                          TransitiveFilter forwardFilter) {
@@ -805,6 +818,7 @@ SetVector<Operation *> multiRootGetSlice(Operation *op,
   }
   return multiRootTopologicalSort(slice);
 }
+#endif
 
 namespace {
 // Copied from TestDeadCodeAnalysis.cpp, because some dead code analysis

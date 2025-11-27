@@ -1,6 +1,6 @@
 add_subdirectory(include)
 add_subdirectory(lib)
-find_package(Python3 REQUIRED COMPONENTS Development Interpreter)
+
 if(EDITABLE_MODE)
   set(MTHREADS_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 else()

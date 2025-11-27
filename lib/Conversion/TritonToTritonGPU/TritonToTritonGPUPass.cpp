@@ -19,6 +19,8 @@
 #include "triton/Conversion/TritonToTritonGPU/Passes.h.inc"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
+#ifndef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_classes
+
 namespace {
 
 using namespace mlir;
@@ -794,6 +796,11 @@ public:
     mod->setAttr(AttrTargetName,
                  StringAttr::get(context, this->target.getValue()));
 
+#ifdef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_ConvertTritonToTritonGPU_setAttrNumStagesForDot
+    ConvertTritonToTritonGPU_setAttrNumStagesForDot(mod, i32_ty,
+                                                    numStages.getValue());
+#endif
+
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
 
@@ -806,6 +813,7 @@ public:
 
 } // namespace
 
+#ifndef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_createConvertTritonToTritonGPUPass_ARG
 std::unique_ptr<OperationPass<ModuleOp>>
 mlir::triton::createConvertTritonToTritonGPUPass(const std::string &target,
                                                  int numWarps,
@@ -814,8 +822,11 @@ mlir::triton::createConvertTritonToTritonGPUPass(const std::string &target,
   return std::make_unique<::ConvertTritonToTritonGPU>(target, numWarps,
                                                       threadsPerWarp, numCTAs);
 }
+#endif
 
 std::unique_ptr<OperationPass<ModuleOp>>
 mlir::triton::createConvertTritonToTritonGPUPass() {
   return std::make_unique<::ConvertTritonToTritonGPU>();
 }
+
+#endif

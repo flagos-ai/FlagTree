@@ -9,19 +9,35 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __NVIDIA__
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#endif
 #include <atomic>
 #include <limits>
+
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
 
 namespace mlir {
 
 namespace triton {
+
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_getCvtOrder
+std::pair<SmallVector<unsigned>, SmallVector<unsigned>>
+getCvtOrder(Attribute srcLayout, Attribute dstLayout);
+#endif
+
 class AllocationAnalysis;
 
 SmallVector<unsigned>
 getScratchConfigForCvtLayout(triton::gpu::ConvertLayoutOp op, unsigned &inVec,
                              unsigned &outVec);
 SmallVector<unsigned> getRepShapeForCvtLayout(triton::gpu::ConvertLayoutOp op);
+
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_AllocationAnalysis_getScratchValueSizeElems
+unsigned getScratchValueSizeElems(const SmallVector<unsigned> &smemShape);
+#endif
 
 } // namespace triton
 
@@ -174,6 +190,12 @@ private:
   using AliasBufferMapT = llvm::MapVector<Value, llvm::SetVector<BufferT *>>;
   /// BufferId -> Buffer
   using BufferSetT = std::map<BufferId, BufferT>;
+
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_AllocationAnalysis_dump
+public:
+  friend class AllocationAnalysis;
+  static void dump(llvm::MapVector<BufferT *, Interval<size_t>> bufferRange);
+#endif
 
 private:
   template <BufferT::BufferKind Kind, typename KeyType, typename... Args>
