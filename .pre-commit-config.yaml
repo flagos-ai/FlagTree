@@ -26,6 +26,7 @@ repos:
         exclude: |
           (?x)(
             ^python/triton/runtime/.*|
+            ^python/test/ops/|
             ^test/|
             ^docs/conf.py$
           )
