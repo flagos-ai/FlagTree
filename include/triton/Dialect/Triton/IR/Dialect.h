@@ -20,7 +20,7 @@
 #if __has_include("flagtree_spec.h")
 #include "flagtree_spec.h"
 #endif
-#ifdef FLAGTREE_SPEC_Dialect_Triton_IR_OpInterfaces_head
+#if __has_include("triton/Dialect/Triton/IR/OpInterfaces.h")
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #endif
 
