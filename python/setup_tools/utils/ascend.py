@@ -15,6 +15,29 @@ submodules = (Module(name="ascendnpu-ir", url="https://gitee.com/ascend/ascendnp
                      commit_id="1922371c42749fda534d6395b7ed828b5c9f36d4",
                      dst_path=os.path.join(flagtree_submodule_dir, "ascend/third_party/ascendnpu-ir")), )
 
+def install_extension(*args, **kargs):
+    """Copy libtriton.so from build directory to python/triton/_C/"""
+    build_ext = kargs['build_ext']
+
+    # Source: build/lib.xxx/triton/_C/libtriton.so
+    # The build_lib attribute points to the build directory where files are placed
+    src_file = os.path.join(build_ext.build_lib, "triton", "_C", "libtriton.so")
+
+    # Target directory in python/triton/_C/
+    python_root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    dst_dir = os.path.join(python_root_dir, "triton", "_C")
+    dst_file = os.path.join(dst_dir, "libtriton.so")
+
+    # Ensure target directory exists
+    os.makedirs(dst_dir, exist_ok=True)
+
+    # Copy the file
+    if os.path.exists(src_file):
+        print(f"Copying {src_file} to {dst_file}")
+        shutil.copy(src_file, dst_file)
+    else:
+        print(f"Warning: Source file {src_file} not found! (expected at {src_file})")
+
 '''
 def get_backend_cmake_args(*args, **kargs):
     build_ext = kargs['build_ext']
