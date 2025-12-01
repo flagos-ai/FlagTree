@@ -1,31 +1,31 @@
-[中文版](./README_cn.md)
+[English](./README.md)
 
 ## FlagTree
 
-FlagTree is an open source, unified compiler for multiple AI chips project dedicated to developing a diverse ecosystem of AI chip compilers and related tooling platforms, thereby fostering and strengthening the upstream and downstream Triton ecosystem. Currently in its initial phase, the project aims to maintain compatibility with existing adaptation solutions while unifying the codebase to rapidly implement single-repository multi-backend support. For upstream model users, it provides unified compilation capabilities across multiple backends; for downstream chip manufacturers, it offers examples of Triton ecosystem integration.
+FlagTree 是面向多种 AI 芯片的开源、统一编译器。FlagTree 致力于打造多元 AI 芯片编译器及相关工具平台，发展和壮大 Triton 上下游生态。项目当前处于初期，目标是兼容现有适配方案，统一代码仓库，快速实现单仓库多后端支持。对于上游模型用户，提供多后端的统一编译能力；对于下游芯片厂商，提供 Triton 生态接入范例。
 
-## Install from source
-Installation dependencies (ensure you use the correct python3.x version):
+## 从源代码安装
+安装依赖（注意使用正确的 python3.x 执行）：
 ```shell
 apt install zlib1g zlib1g-dev libxml2 libxml2-dev  # ubuntu
 cd python; python3 -m pip install -r requirements.txt
 ```
 
-Building and Installation (Recommended for environments with good network connectivity):
+构建安装（网络畅通环境下推荐使用）：
 ```shell
 cd python
 export FLAGTREE_BACKEND=backendxxx
 python3 -m pip install . --no-build-isolation -v
 ```
 
-## Tips for building
+## 构建技巧
 
-Automatic dependency library downloads may be limited by network conditions. You can manually download to the cache directory ~/.flagtree (modifiable via the FLAGTREE_CACHE_DIR environment variable). No need to manually set LLVM environment variables such as LLVM_BUILD_DIR.
-Complete build commands for each backend:
+自动下载依赖库的速度可能受限于网络环境，编译前可自行下载至缓存目录 ~/.flagtree（可通过环境变量 FLAGTREE_CACHE_DIR 修改），无需自行设置 LLVM_BUILD_DIR 等环境变量。 <br>
+各后端完整编译命令如下： <br>
 
 [iluvatar](https://github.com/FlagTree/flagtree/tree/main/third_party/iluvatar/)
 ```shell
-# Recommended: Use Ubuntu 20.04
+# 推荐使用镜像 Ubuntu 20.04
 mkdir -p ~/.flagtree/iluvatar; cd ~/.flagtree/iluvatar
 wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.3.0.tar.gz
 tar zxvf iluvatar-llvm18-x86_64_v0.3.0.tar.gz
@@ -37,7 +37,7 @@ python3 -m pip install . --no-build-isolation -v
 ```
 [xpu (klx)](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/)
 ```shell
-# Recommended: Use the Docker image (22GB) https://su.bcebos.com/klx-sdk-release-public/xpytorch/docker/ubuntu2004_v030/ubuntu_2004_x86_64_v30.tar
+# 推荐使用镜像（22GB）https://su.bcebos.com/klx-sdk-release-public/xpytorch/docker/ubuntu2004_v030/ubuntu_2004_x86_64_v30.tar
 mkdir -p ~/.flagtree/xpu; cd ~/.flagtree/xpu
 wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/XTDK-llvm19-ubuntu2004_x86_64_v0.3.0.tar.gz
 tar zxvf XTDK-llvm19-ubuntu2004_x86_64_v0.3.0.tar.gz
@@ -49,7 +49,7 @@ python3 -m pip install . --no-build-isolation -v
 ```
 [mthreads](https://github.com/FlagTree/flagtree/tree/main/third_party/mthreads/)
 ```shell
-# Recommended: Use the Dockerfile flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-mthreads
+# 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-mthreads
 mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
 wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64_v0.1.0.tar.gz
 tar zxvf mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64_v0.1.0.tar.gz
@@ -61,9 +61,9 @@ python3 -m pip install . --no-build-isolation -v
 ```
 [aipu (arm npu)](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/)
 ```shell
-# Recommended: Use Ubuntu 22.04
+# 推荐使用镜像 Ubuntu 22.04
 mkdir -p ~/.flagtree/aipu; cd ~/.flagtree/aipu
-# x64 in the simulated environment, arm64 on the ARM development board
+# 模拟环境中使用 x64 版本，在 ARM 开发板上使用 arm64 版本
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz
 tar zxvf llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.3.0.tar.gz
 cd ${YOUR_CODE_DIR}/flagtree/
@@ -73,7 +73,7 @@ python3 -m pip install . --no-build-isolation -v
 ```
 [tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/)
 ```shell
-# Recommended: Use Ubuntu 20.04
+# 推荐使用镜像 Ubuntu 20.04
 mkdir -p ~/.flagtree/tsingmicro; cd ~/.flagtree/tsingmicro
 wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64_v0.2.0.tar.gz
 tar zxvf tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64_v0.2.0.tar.gz
@@ -87,15 +87,15 @@ python3 -m pip install . --no-build-isolation -v
 ```
 [ascend](https://github.com/FlagTree/flagtree/blob/triton_v3.2.x/python/setup_tools/setup_helper.py)
 ```shell
-# Recommended: Use the Dockerfile flagtree/dockerfiles/Dockerfile-ubuntu20.04-python3.9-ascend
-# After registering an account at https://www.hiascend.com/developer/download/community/result?module=cann,
-# download the cann-toolkit and cann-kernels for the corresponding platform.
-# Here we use the A3 processor with AArch64 architecture as an example to demonstrate how to install.
+# 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu20.04-python3.9-ascend
+# 在 https://www.hiascend.com/developer/download/community/result?module=cann
+# 注册账号后下载对应平台的 cann-toolkit、cann-kernels
+# 这里以 AArch64 架构的 A3 处理器为例展示如何安装
 chmod +x Ascend-cann-toolkit_8.2.RC1.alpha002_linux-aarch64.run
 ./Ascend-cann-toolkit_8.2.RC1.alpha002_linux-aarch64.run --install
 chmod +x Atlas-A3-cann-kernels_8.1.RC1_linux-aarch64.run
 ./Atlas-A3-cann-kernels_8.1.RC1_linux-aarch64.run --install
-# build
+# 编译安装
 mkdir -p ~/.flagtree/ascend; cd ~/.flagtree/ascend
 wget https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-b5cc222d-ubuntu-arm64.tar.gz
 tar zxvf llvm-b5cc222d-ubuntu-arm64.tar.gz
@@ -106,7 +106,7 @@ python3 -m pip install . --no-build-isolation -v
 ```
 [hcu](https://github.com/FlagTree/flagtree/tree/main/third_party/hcu/)
 ```shell
-# Recommended: Use the Dockerfile flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-hcu
+# 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-hcu
 mkdir -p ~/.flagtree/hcu; cd ~/.flagtree/hcu
 wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
 tar zxvf hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
@@ -116,35 +116,35 @@ python3 -m pip install . --no-build-isolation -v
 ```
 
 [nvidia](/third_party/nvidia/)
-To build with default backends nvidia, amd, triton_shared cpu:
+使用默认的构建命令，可以构建安装 nvidia、amd、triton_shared cpu 后端：
 ```shell
-# manually download LLVM
+# 自行下载 llvm
 cd ${YOUR_LLVM_DOWNLOAD_DIR}
 wget https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-a66376b0-ubuntu-x64.tar.gz
 tar zxvf llvm-a66376b0-ubuntu-x64.tar.gz
-# build
+# 编译安装
 cd ${YOUR_CODE_DIR}/flagtree/python
 export LLVM_SYSPATH=${YOUR_LLVM_DOWNLOAD_DIR}/llvm-a66376b0-ubuntu-x64
 export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
 export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 unset FLAGTREE_BACKEND
 python3 -m pip install . --no-build-isolation -v
-# If you need to build other backends afterward, you should clear LLVM-related environment variables
+# 如果接下来需要编译安装其他后端，应清空 LLVM 相关环境变量
 unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR
 ```
 
-## Running tests
+## 运行测试
 
-After installation, you can run tests in the backend directory:
+安装完成后可以在后端目录下运行测试：
 ```shell
 cd third_party/backendxxx/python/test
 python3 -m pytest -s
 ```
 
-## Contributing
+## 关于贡献
 
-Contributions to FlagTree development are welcome. Please refer to [CONTRIBUTING.md](/CONTRIBUTING_cn.md) for details.
+欢迎参与 FlagTree 的开发并贡献代码，详情请参考[CONTRIBUTING.md](/CONTRIBUTING_cn.md)。
 
-## License
+## 许可证
 
-FlagTree is licensed under the [MIT license](/LICENSE).
+FlagTree 使用 [MIT license](/LICENSE)。

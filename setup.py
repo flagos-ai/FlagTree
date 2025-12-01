@@ -525,7 +525,6 @@ class CMakeBuild(build_ext):
         subprocess.check_call(["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env)
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
-     #   subprocess.check_call(["cmake", "--install", "."], cwd=cmake_dir)
         helper.install_extension(build_ext=self)
 
 
