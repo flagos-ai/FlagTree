@@ -27,10 +27,10 @@ git checkout triton_v3.3.x
 
 ```bash
 # 加载预构建的容器镜像
-curl -sL http://10.9.114.26:8419/251128/enflame-flagtree-0.3.1.tar.gz | docker load
+curl -sL https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.3.1.tar.gz | docker load
 
 # 或手动下载后加载
-wget http://10.9.114.26:8419/251128/enflame-flagtree-0.3.1.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.3.1.tar.gz
 docker load -i enflame-flagtree-0.3.1.tar.gz
 ```
 
@@ -99,8 +99,8 @@ docker exec -it enflame-flagtree bash
 ```
 mkdir -p ~/.flagtree/enflame
 cd ~/.flagtree/enflame
-wget http://minio.idc.sse/public/mirror/enflame/llvm-d752c5b-gcc9-x64.tar.gz
-tar -xzf llvm-d752c5b-gcc9-x64.tar.gz
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
+tar -xzf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 ```
 
 ### 2. 配置构建环境
