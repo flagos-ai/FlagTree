@@ -8,12 +8,11 @@ FlagTree 是面向多种 AI 芯片的开源、统一编译器。FlagTree 致力�
 安装依赖（注意使用正确的 python3.x 执行）：
 ```shell
 apt install zlib1g zlib1g-dev libxml2 libxml2-dev  # ubuntu
-cd python; python3 -m pip install -r requirements.txt
+python3 -m pip install -r python/requirements.txt
 ```
 
 构建安装（网络畅通环境下推荐使用）：
 ```shell
-cd python
 export FLAGTREE_BACKEND=backendxxx
 python3 -m pip install . --no-build-isolation -v
 ```
