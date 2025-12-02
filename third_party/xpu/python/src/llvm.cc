@@ -424,6 +424,15 @@ void init_triton_llvm(py::module &&m) {
           }
         }
 
+        {
+          auto optMap = llvm::cl::getRegisteredOptions();
+          auto optIt = optMap.find("xpu-ensure-ieee754-semantic");
+          if (optIt != optMap.end()) {
+            auto optPtr = static_cast<llvm::cl::opt<bool> *>(optIt->second);
+            *optPtr = true;
+          }
+        }
+
         PipelineTuningOptions tuningOptions;
         tuningOptions.LoopUnrolling = false;
         tuningOptions.LoopInterleaving = true;
