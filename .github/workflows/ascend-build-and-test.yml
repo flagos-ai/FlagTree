@@ -56,21 +56,21 @@ jobs:
           python3 python/test/ops/min_dim/min_dim_ascend_perf.py
           python3 python/test/ops/sum_dim/sum_dim.py
           python3 python/test/ops/varmean/var_mean_ascend.py
-          pip install pandas
-          pip install einops
-          pytest third_party/ascend/examples/pytest_ut --ignore=third_party/ascend/examples/pytest_ut/test_atomic_and.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_atomic_cas.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_atomic_or.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_atomic_xchg.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_atomic_xor.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_cumprod.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_cumsum.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_dot_scaled.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_eq.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_flip.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_ge.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_le.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_pointer_type.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_sort.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_sum_vector.py \
-                                                       --ignore=third_party/ascend/examples/pytest_ut/test_xor_sum.py
+          python3 -m pip install pandas
+          python3 -m pip install einops
+          python3 -m pytest third_party/ascend/examples/pytest_ut --ignore=third_party/ascend/examples/pytest_ut/test_atomic_and.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_atomic_cas.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_atomic_or.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_atomic_xchg.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_atomic_xor.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_cumprod.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_cumsum.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_dot_scaled.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_eq.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_flip.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_ge.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_le.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_pointer_type.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_sort.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_sum_vector.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_xor_sum.py
