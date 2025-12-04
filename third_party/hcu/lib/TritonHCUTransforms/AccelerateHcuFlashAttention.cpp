@@ -20,6 +20,22 @@ using triton::gpu::BlockedEncodingAttr;
 using triton::gpu::ConvertLayoutOp;
 using triton::gpu::HCUMfmaEncodingAttr;
 
+void collectDependentDotOps(Operation *op,
+                            std::vector<Operation *> &dependentDotOps) {
+  for (Value operand : op->getOperands()) {
+    if (Operation *defOp = operand.getDefiningOp()) {
+      int count =
+          std::count(dependentDotOps.begin(), dependentDotOps.end(), defOp);
+      if (defOp->getBlock() == op->getBlock() && count <= 0) {
+        collectDependentDotOps(defOp, dependentDotOps);
+        if (isa<triton::DotOp>(defOp)) {
+          dependentDotOps.push_back(defOp);
+        }
+      }
+    }
+  }
+}
+
 /*
  * 1. transpose=false, mfma->dotOp<0, mfma>
  * mfma: transpose=false, interleave=false
@@ -87,6 +103,12 @@ public:
     // auto old_nsB = oldB.getSrc().getDefiningOp<ConvertLayoutOp>(); // convert
     // blocked -> shared if (!old_nsB) return mlir::failure(); auto
     // sharedEncoding = ttg::SharedEncodingAttr::get();
+
+    std::vector<Operation *> dependentDotOps;
+    collectDependentDotOps(op, dependentDotOps);
+    if (dependentDotOps.empty()) {
+      return failure();
+    }
 
     bool isTransposed = false;
     bool interleave = true; // isSecondDot(dotOp);
