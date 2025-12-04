@@ -1,0 +1,78 @@
+name: Ascend-Build-And-Test
+
+on:
+  push:
+    branches: [ "triton_v3.2.x" ]
+  pull_request:
+    branches: [ "triton_v3.2.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ascend-build-and-test:
+    runs-on: ascend
+    steps:
+      - name: Checkout code (attempt 1)
+        id: checkout1
+        uses: actions/checkout@v5
+        continue-on-error: true
+
+      - name: Sleep before checkout2
+        if: steps.checkout1.outcome == 'failure'
+        run: |
+          echo "First checkout attempt failed. Sleeping for 120 seconds before retry..."
+          sleep 120
+
+      - name: Checkout code (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@v5
+        continue-on-error: true
+
+      - name: Sleep before final checkout
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        run: |
+          echo "Second checkout attempt failed. Sleeping for 180 seconds before final retry..."
+          sleep 180
+
+      - name: Checkout code (final attempt)
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@v5
+
+      - name: Verify checkout success
+        if: success()
+        run: echo "Checkout completed successfully"
+
+      - name: FlagTree Build on Ascend
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          export FLAGTREE_BACKEND=ascend
+          source ~/env.sh
+          cd python
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on Ascend
+        shell: bash
+        run: |
+          set -x
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          python3 third_party/tests/ascend/vector-add.py
+          python3 third_party/ascend/examples/tutorials/01-vector-add.py
+          python3 third_party/ascend/examples/tutorials/02-fused-softmax.py
+          python3 third_party/ascend/examples/tutorials/03-layer-norm.py
+          #python3 third_party/ascend/examples/tutorials/04-fused-attention.py
+          python3 third_party/ascend/examples/tutorials/05-matrix-multiplication.py
+          python3 third_party/ascend/examples/tutorials/06-demo-autotune.py
+          python3 third_party/ascend/examples/tutorials/07-profiler.py
+          python3 third_party/ascend/examples/tutorials/08-demo-libentry.py
+          python3 third_party/ascend/examples/tutorials/09-gather.py
+          python3 third_party/ascend/examples/tutorials/10-gather_sorted.py
+          python3 third_party/ascend/examples/tutorials/11-rab_time.py
+          #python3 third_party/ascend/examples/tutorials/12-hstu_attention.py
+          python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized-flagtree.py
+          python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized.py
+          python3 third_party/ascend/examples/tutorials/14-accuracy-comparison.py

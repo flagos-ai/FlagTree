@@ -1,0 +1,83 @@
+name: code-scan
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  scan-code-and-report:
+    runs-on: scan
+    if: ${{ github.repository == 'FlagTree/flagtree' }}
+    concurrency:
+      group: scan-code-and-report-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Checkout code (attempt 1)
+        id: checkout1
+        uses: actions/checkout@v5
+        continue-on-error: true
+
+      - name: Sleep before checkout2
+        if: steps.checkout1.outcome == 'failure'
+        run: |
+          echo "First checkout attempt failed. Sleeping for 120 seconds before retry..."
+          sleep 120
+
+      - name: Checkout code (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@v5
+        continue-on-error: true
+
+      - name: Sleep before final checkout
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        run: |
+          echo "Second checkout attempt failed. Sleeping for 180 seconds before final retry..."
+          sleep 180
+
+      - name: Checkout code (final attempt)
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@v5
+
+      - name: Verify checkout success
+        if: success()
+        run: echo "Checkout completed successfully"
+
+      - name: Scan flagtree repo
+        shell: bash
+        run: |
+          set -x
+          git config --global --add safe.directory ../flagtree
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "This is a pull request event. PR number is ${{ github.event.pull_request.number }}"
+            PR_ID=${{ github.event.pull_request.number }}
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            PR_NUMBER=$(git log -1 --pretty=format:'%s' | grep -oE '#[0-9]+' | grep -oE '[0-9]+')
+            echo "This is a push event. The relate PR number is ${PR_NUMBER}"
+            PR_ID=${PR_NUMBER}
+          fi
+
+          python /work/flag_tree/code_can/scan_code.py --pr ${PR_ID} --hash ${GITHUB_SHA} --attempt ${GITHUB_RUN_ATTEMPT}
+
+      - name: Code Scan Report
+        shell: bash
+        run: |
+          set -x
+          git config --global --add safe.directory ../flagtree
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            PR_ID=${{ github.event.pull_request.number }}
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            PR_NUMBER=$(git log -1 --pretty=format:'%s' | grep -oE '#[0-9]+' | grep -oE '[0-9]+')
+            PR_ID=${PR_NUMBER}
+          fi
+          echo "Repo Scan report:"
+          echo "http://120.92.44.177/tree_scan_report/PR${PR_ID}-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}.html"

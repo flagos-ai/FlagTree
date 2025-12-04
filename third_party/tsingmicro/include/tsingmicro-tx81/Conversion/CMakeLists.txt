@@ -1,0 +1,4 @@
+add_subdirectory(LinalgTiling)
+add_subdirectory(MKToTx81)
+add_subdirectory(Tx81ToLLVM)
+add_subdirectory(Tx81MemrefToLLVM)

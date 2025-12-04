@@ -1,0 +1,16 @@
+add_mlir_dialect_library(
+  MLIRAddressTransforms
+  AddrToLLVM.cpp
+  ADDITIONAL_HEADER_DIRS
+  ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/Address
+  DEPENDS
+  MLIRAddressPassIncGen
+  LINK_LIBS
+  PUBLIC
+  MLIRArithDialect
+  MLIRDataLayoutInterfaces
+  MLIRIR
+  MLIRIndexDialect
+  MLIRPass
+  MLIRSupport
+)

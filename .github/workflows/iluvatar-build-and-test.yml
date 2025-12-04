@@ -1,0 +1,70 @@
+name: Iluvatar-Build-And-Test
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  iluvatar-build-and-test:
+    runs-on: iluvatar
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Checkout code (attempt 1)
+        id: checkout1
+        uses: actions/checkout@v5
+        continue-on-error: true
+
+      - name: Sleep before checkout2
+        if: steps.checkout1.outcome == 'failure'
+        run: |
+          echo "First checkout attempt failed. Sleeping for 120 seconds before retry..."
+          sleep 120
+
+      - name: Checkout code (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@v5
+        continue-on-error: true
+
+      - name: Sleep before final checkout
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        run: |
+          echo "Second checkout attempt failed. Sleeping for 180 seconds before final retry..."
+          sleep 180
+
+      - name: Checkout code (final attempt)
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@v5
+
+      - name: Verify checkout success
+        if: success()
+        run: echo "Checkout completed successfully"
+
+      - name: FlagTree Build on Iluvatar
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          export FLAGTREE_BACKEND=iluvatar
+          source ~/env.sh
+          cd python
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on Iluvatar
+        shell: bash
+        run: |
+          set -x
+          CUDA_VISIBLE_DEVICES=15 python3 -m pytest -s third_party/iluvatar/python/test/unit
+          ./python/build/cmake.linux-x86_64-cpython-3.10/bin/triton-opt --pass-pipeline='builtin.module(convert-triton-to-tritongpu{target="cuda:CC" num-warps=4 threads-per-warp=32 num-ctas=1})'  ./test/bin/iluvatar/add_kernel.ttir
+          ./python/build/cmake.linux-x86_64-cpython-3.10/bin/triton-opt --convert-arith-to-llvm ./test/bin/iluvatar/add_kernel.ttgir
+          cd python/tutorials
+          python3 01-vector-add.py
+          python3 04-low-memory-dropout.py
+          python3 07-extern-functions.py
+          python3 08-grouped-gemm.py

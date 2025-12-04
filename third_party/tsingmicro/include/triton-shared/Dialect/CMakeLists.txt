@@ -1,0 +1,2 @@
+add_subdirectory(TritonTilingExt)
+add_subdirectory(TritonStructured)
