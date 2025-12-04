@@ -139,7 +139,7 @@ __all__  = [
     "rint",
     "atan2",
     # language.math
-    "spec_libdevice_math_func",
+    "relu",
     # testing
     'is_do_bench_npu',
     'ext_do_bench_npu',

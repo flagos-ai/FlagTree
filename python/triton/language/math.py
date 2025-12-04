@@ -6,6 +6,13 @@ from typing import List
 T = core.TypeVar('T')
 
 
+def spec_math_func(spec):
+    import sys
+    spec_func = spec.relu
+    setattr(sys.modules["triton.language"], spec_func.__name__, spec_func)
+    setattr(sys.modules["triton.language.math"], spec_func.__name__, spec_func)
+
+
 def _check_dtype(dtypes: List[str]) -> T:
     """
     We're following libdevice's convention to check accepted data types for math functions.
