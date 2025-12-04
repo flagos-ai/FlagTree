@@ -557,7 +557,6 @@ language.math.isnan = language.extra.ascend.libdevice.isnan
 language.math.isinf = language.extra.ascend.libdevice.isinf
 language.math.reciprocal = language.extra.ascend.libdevice.reciprocal
 language.math.log1p = language.extra.ascend.libdevice.log1p
-language.math.relu = language.extra.ascend.libdevice.relu
 language.math.tan = language.extra.ascend.libdevice.tan
 language.math.atan = language.extra.ascend.libdevice.atan
 language.math.tanh = language.extra.ascend.libdevice.tanh

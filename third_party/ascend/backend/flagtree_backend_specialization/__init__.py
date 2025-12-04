@@ -7,6 +7,7 @@ from .triton.language._utils import *
 from .triton.language.core import *
 from .triton.language.standard import *
 from .triton.language.semantic import *
+from .triton.language.math import *
 from .triton.testing import *
 
 __all__  = [
@@ -137,6 +138,8 @@ __all__  = [
     "finitef",
     "rint",
     "atan2",
+    # language.math
+    "spec_libdevice_math_func",
     # testing
     'is_do_bench_npu',
     'ext_do_bench_npu',
