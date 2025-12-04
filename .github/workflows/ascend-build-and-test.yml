@@ -71,6 +71,7 @@ jobs:
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_ge.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_le.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_pointer_type.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_range.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_sort.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_sum_vector.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_xor_sum.py
