@@ -2,6 +2,7 @@ from math import pi as math_pi
 from triton.language import core, math
 from triton.language.core import float32, int1
 from triton.language.extra.ascend.libdevice import flip as ascend_flip
+from triton.runtime.jit import jit
 
 def flip(x, dim=None):
     """
@@ -14,6 +15,9 @@ def flip(x, dim=None):
     """
     return ascend_flip(x, dim)
 
+@core._tensor_member_fn
+@jit
+@math._add_math_1arg_docstr("sigmoid")
 def sigmoid(x):
     _is_int8_type: core.constexpr = x.dtype.is_int8()
     core.static_assert(not _is_int8_type, f"Expected dtype fp16/fp32/bf16, but got int8 or int1")

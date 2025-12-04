@@ -4,8 +4,14 @@ from ..runtime.jit import jit
 from . import core
 from . import math
 from functools import wraps
+import sys
 
 # constexpr utilities
+
+
+# flagtree backend language.standard func specialization
+def spec_standard_func(spec_func):
+    setattr(sys.modules[__name__], spec_func.__name__, spec_func)
 
 
 def _log2(i: core.constexpr):
@@ -21,25 +27,6 @@ def _is_power_of_two(i: core.constexpr):
     n = i.value
     return core.constexpr((n & (n - 1)) == 0 and n != 0)
 
-
-# def _replace_func_impl(new_func_name):
-#     """replace impl"""
-#     def decorator(original_func):
-#         from triton.runtime.driver import flagtree_backend_func_specialization
-#         new_func = flagtree_backend_func_specialization(new_func_name)
-#         return new_func
-#     return decorator
-
-def _replace_func_impl(new_func_name):
-    """replace impl"""
-    def decorator(original_func):
-        @wraps(original_func)
-        def wrapper(*args, **kwargs):
-            from triton.runtime.driver import flagtree_backend_func_specialization
-            new_func = flagtree_backend_func_specialization(new_func_name)
-            return new_func(*args, **kwargs)
-        return wrapper
-    return decorator
 
 # -----------------------
 # Standard library
@@ -63,7 +50,6 @@ def cdiv(x, div):
 @core._tensor_member_fn
 @jit
 @math._add_math_1arg_docstr("sigmoid")
-@_replace_func_impl("sigmoid")
 def sigmoid(x):
     return 1 / (1 + math.exp(-x))
 
@@ -71,7 +57,6 @@ def sigmoid(x):
 @core._tensor_member_fn
 @jit
 @math._add_math_1arg_docstr("softmax")
-@_replace_func_impl("softmax")
 def softmax(x, ieee_rounding=False):
     z = x - max(x, 0)
     num = math.exp(z)
@@ -423,7 +408,6 @@ def _get_flip_dim(dim, shape):
 
 @core._tensor_member_fn
 @jit
-@_replace_func_impl("flip")
 def flip(x, dim=None):
     """
     Flips a tensor `x` along the dimension `dim`.
@@ -478,7 +462,6 @@ def interleave(a, b):
 @core._tensor_member_fn
 @jit
 @math._add_math_1arg_docstr("isfinited")
-@_replace_func_impl("isfinited")
 def isfinited(x):
     ...
 
@@ -486,7 +469,6 @@ def isfinited(x):
 @core._tensor_member_fn
 @jit
 @math._add_math_1arg_docstr("finitef")
-@_replace_func_impl("finitef")
 def finitef(x):
     ...
 
@@ -494,13 +476,11 @@ def finitef(x):
 @core._tensor_member_fn
 @jit
 @math._add_math_1arg_docstr("rint")
-@_replace_func_impl("rint")
 def rint(x):
     ...
 
 @core._tensor_member_fn
 @jit
 @math._add_math_2arg_docstr("atan2")
-@_replace_func_impl("atan2")
 def atan2(y, x):
     ...

@@ -108,6 +108,8 @@ class NPUDriver(DriverBase):
         # flagtree backend specialization
         from triton.backends.ascend import flagtree_backend_specialization
         self.flagtree_backend_specialization = flagtree_backend_specialization
+        from triton.language.standard import spec_standard_func
+        spec_standard_func(flagtree_backend_specialization.sigmoid)
         super().__init__()
 
     @classmethod
