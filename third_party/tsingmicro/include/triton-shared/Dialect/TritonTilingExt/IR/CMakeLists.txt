@@ -1,0 +1,11 @@
+set(LLVM_TARGET_DEFINITIONS TritonTilingExtOps.td)
+mlir_tablegen(TritonTilingExtOpsDialect.h.inc -gen-dialect-decls -dialect=ttx)
+mlir_tablegen(TritonTilingExtOpsDialect.cpp.inc -gen-dialect-defs -dialect=ttx)
+mlir_tablegen(TritonTilingExtOps.h.inc -gen-op-decls)
+mlir_tablegen(TritonTilingExtOps.cpp.inc -gen-op-defs)
+add_public_tablegen_target(TritonTilingExtOpsIncGen)
+
+set(LLVM_TARGET_DEFINITIONS TritonTilingExtInterfaces.td)
+mlir_tablegen(TritonTilingExtInterfaces.h.inc -gen-op-interface-decls)
+mlir_tablegen(TritonTilingExtInterfaces.cpp.inc -gen-op-interface-defs)
+add_public_tablegen_target(TritonTilingExtInterfacesIncGen)

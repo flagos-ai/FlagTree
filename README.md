@@ -1,290 +1,149 @@
-<div align="center">
-  <img src="https://lh5.googleusercontent.com/wzQKEsTFkrgNQO9JjhGH5wFvslJr1saLtLaJ_a6Fp_gNENpvt3VG7BmztwngU9hFJaU4CPwGiw1opQtDvTkLrxWRbO_a12Q-pdESWHgtmheIHcPbOL5ZMC4TSiJVe5ty1w=w3517" alt="Triton logo">
-</div>
+[中文版](./README_cn.md)
 
-| **`Documentation`** | **`Nightly Wheels`** |
-|-------------------- | -------------------- |
-| [![Documentation](https://github.com/triton-lang/triton/actions/workflows/documentation.yml/badge.svg)](https://triton-lang.org/) | [![Wheels](https://github.com/triton-lang/triton/actions/workflows/wheels.yml/badge.svg)](https://github.com/triton-lang/triton/actions/workflows/wheels.yml) |
+## FlagTree
 
-# Triton
+FlagTree is an open source, unified compiler for multiple AI chips project dedicated to developing a diverse ecosystem of AI chip compilers and related tooling platforms, thereby fostering and strengthening the upstream and downstream Triton ecosystem. Currently in its initial phase, the project aims to maintain compatibility with existing adaptation solutions while unifying the codebase to rapidly implement single-repository multi-backend support. For upstream model users, it provides unified compilation capabilities across multiple backends; for downstream chip manufacturers, it offers examples of Triton ecosystem integration.
 
-This is the development repository of Triton, a language and compiler for writing highly efficient custom Deep-Learning primitives. The aim of Triton is to provide an open-source environment to write fast code at higher productivity than CUDA, but also with higher flexibility than other existing DSLs.
-
-The foundations of this project are described in the following MAPL2019 publication: [Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations](http://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf). Please consider citing this work if you use Triton!
-
-The [official documentation](https://triton-lang.org) contains installation instructions and tutorials.  See also these third-party [Triton puzzles](https://github.com/srush/Triton-Puzzles), which can all be run using the Triton interpreter -- no GPU required.
-
-# Quick Installation
-
-You can install the latest stable release of Triton from pip:
-
+## Install from source
+Installation dependencies (ensure you use the correct python3.x version):
 ```shell
-pip install triton
+apt install zlib1g zlib1g-dev libxml2 libxml2-dev  # ubuntu
+python3 -m pip install -r python/requirements.txt
 ```
 
-Binary wheels are available for CPython 3.10-3.14.
-
-# Install from source
-
+Building and Installation (Recommended for environments with good network connectivity):
 ```shell
-git clone https://github.com/triton-lang/triton.git
-cd triton
-
-pip install -r python/requirements.txt # build-time dependencies
-pip install -e .
+export FLAGTREE_BACKEND=backendxxx
+python3 -m pip install . --no-build-isolation -v
 ```
 
-Or with a virtualenv:
+## Tips for building
 
+Automatic dependency library downloads may be limited by network conditions. You can manually download to the cache directory ~/.flagtree (modifiable via the FLAGTREE_CACHE_DIR environment variable). No need to manually set LLVM environment variables such as LLVM_BUILD_DIR.
+Complete build commands for each backend:
+
+[iluvatar](https://github.com/FlagTree/flagtree/tree/main/third_party/iluvatar/)
 ```shell
-git clone https://github.com/triton-lang/triton.git
-cd triton
-
-python -m venv .venv --prompt triton
-source .venv/bin/activate
-
-pip install -r python/requirements.txt # build-time dependencies
-pip install -e .
+# Recommended: Use Ubuntu 20.04
+mkdir -p ~/.flagtree/iluvatar; cd ~/.flagtree/iluvatar
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.3.0.tar.gz
+tar zxvf iluvatar-llvm18-x86_64_v0.3.0.tar.gz
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.30-glibcxx3.4.28-cxxabi1.3.12-ubuntu-x86_64_v0.3.0.tar.gz
+tar zxvf iluvatarTritonPlugin-cpython3.10-glibc2.30-glibcxx3.4.28-cxxabi1.3.12-ubuntu-x86_64_v0.3.0.tar.gz
+cd ${YOUR_CODE_DIR}/flagtree/python
+export FLAGTREE_BACKEND=iluvatar
+python3 -m pip install . --no-build-isolation -v
 ```
-
-# Building with a custom LLVM
-
-Triton uses LLVM to generate code for GPUs and CPUs.  Normally, the Triton build
-downloads a prebuilt LLVM, but you can also build and use LLVM from source.
-
-LLVM does not have a stable API, so the Triton build will not work at an
-arbitrary LLVM version.
-
-For convenience, use the following command to build LLVM and install Triton with the custom LLVM:
-
+[xpu (klx)](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/)
 ```shell
-make dev-install-llvm
+# Recommended: Use the Docker image (22GB) https://su.bcebos.com/klx-sdk-release-public/xpytorch/docker/ubuntu2004_v030/ubuntu_2004_x86_64_v30.tar
+mkdir -p ~/.flagtree/xpu; cd ~/.flagtree/xpu
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/XTDK-llvm19-ubuntu2004_x86_64_v0.3.0.tar.gz
+tar zxvf XTDK-llvm19-ubuntu2004_x86_64_v0.3.0.tar.gz
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xre-Linux-x86_64_v0.3.0.tar.gz
+tar zxvf xre-Linux-x86_64_v0.3.0.tar.gz
+cd ${YOUR_CODE_DIR}/flagtree/python
+export FLAGTREE_BACKEND=xpu
+python3 -m pip install . --no-build-isolation -v
 ```
-
-<details>
-<summary>
-Alternatively, follow these steps to build LLVM from source manually.
-</summary>
-
-1. Find the version of LLVM that Triton builds against.  Check
-`cmake/llvm-hash.txt` to see the current version. For example, if it says:
-       49af6502c6dcb4a7f7520178bd14df396f78240c.
-
-   This means that the version of Triton you have builds against
-   [LLVM](https://github.com/llvm/llvm-project) 49af6502.
-
-2. `git checkout` LLVM at this revision.  Optionally, make additional
-   modifications to LLVM.
-
-3. [Build LLVM](https://llvm.org/docs/CMake.html).  For example, you might run:
-
-       $ cd $HOME/llvm-project  # your clone of LLVM.
-       $ mkdir build
-       $ cd build
-       $ cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_ASSERTIONS=ON ../llvm -DLLVM_ENABLE_PROJECTS="mlir;llvm;lld" -DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU"
-       $ ninja
-
-4. Grab a snack, this will take a while.
-
-5. Build Triton as above, but set the following environment variables:
-
-       # Modify as appropriate to point to your LLVM build.
-       $ export LLVM_BUILD_DIR=$HOME/llvm-project/build
-
-       $ cd <triton install>
-       $ LLVM_INCLUDE_DIRS=$LLVM_BUILD_DIR/include \
-         LLVM_LIBRARY_DIR=$LLVM_BUILD_DIR/lib \
-         LLVM_SYSPATH=$LLVM_BUILD_DIR \
-         pip install -e .
-
-</details>
-
-# Tips for building
-
-- Set `TRITON_BUILD_WITH_CLANG_LLD=true` as an environment variable to use clang
-  and lld.  lld in particular results in faster builds.
-
-- Set `TRITON_BUILD_WITH_CCACHE=true` to build with ccache.
-
-- Set `TRITON_HOME=/some/path` to change the location of the `.triton`
-  directory where Triton's cache is located and downloads are stored
-  during the build. By default, this is the user's home directory. It
-  can be changed anytime.
-
-- If you're running out of memory when building Triton, specify the `MAX_JOBS`
-  environment variable (to the `pip install -e .` command) to limit the
-  number of jobs.
-
-- Pass `--no-build-isolation` to `pip install` to make nop builds faster.
-  Without this, every invocation of `pip install` uses a different symlink to
-  cmake, and this forces ninja to rebuild most of the `.a` files.
-
-- The build system creates a `compile_commands.json` file under the Triton repo
-  directory. This file is used by VSCode IntelliSense and clangd to provide
-  code completion and other features for C++ code.
-
-  If IntelliSense does not work, you can try the following steps:
-
-    - Do a local build. Run command `pip install -e .`.
-    - Get the full path to the `compile_commands.json` file produced by the build:
-      `find ./build -name 'compile_commands.json' | xargs readlink -f`.
-      You might get a full path similar to `/Users/{username}/triton/build/cmake.macosx-11.1-arm64-cpython-3.12/compile_commands.json`.
-    - In VSCode, install the
-      [C/C++
-      extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools),
-      then open the command palette (`Shift + Command + P` on Mac, or `Shift +
-      Ctrl + P` on Windows/Linux) and open `C/C++: Edit Configurations (UI)`.
-    - Open "Advanced Settings" and paste the full path to
-      `compile_commands.json` into the "Compile Commands" textbox.
-
-# Running tests
-
-There currently isn't a turnkey way to run all the Triton tests, but you can
-follow the following recipe:
-
+[mthreads](https://github.com/FlagTree/flagtree/tree/main/third_party/mthreads/)
 ```shell
-# One-time setup.  Note this will reinstall local Triton because torch
-# overwrites it with the public version.
-$ make dev-install
-
-# To run all tests (requires a GPU)
-$ make test
-
-# Or, to run tests without a gpu
-$ make test-nogpu
+# Recommended: Use the Dockerfile flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-mthreads
+mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64_v0.1.0.tar.gz
+tar zxvf mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64_v0.1.0.tar.gz
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.3.0.tar.gz
+tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.3.0_v0.3.0.tar.gz
+cd ${YOUR_CODE_DIR}/flagtree/python
+export FLAGTREE_BACKEND=mthreads
+python3 -m pip install . --no-build-isolation -v
+```
+[aipu (arm npu)](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/)
+```shell
+# Recommended: Use Ubuntu 22.04
+mkdir -p ~/.flagtree/aipu; cd ~/.flagtree/aipu
+# x64 in the simulated environment, arm64 on the ARM development board
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz
+tar zxvf llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.3.0.tar.gz
+cd ${YOUR_CODE_DIR}/flagtree/
+git checkout -b triton_v3.3.x origin/triton_v3.3.x
+export FLAGTREE_BACKEND=aipu
+python3 -m pip install . --no-build-isolation -v
+```
+[tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/)
+```shell
+# Recommended: Use Ubuntu 20.04
+mkdir -p ~/.flagtree/tsingmicro; cd ~/.flagtree/tsingmicro
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64_v0.2.0.tar.gz
+tar zxvf tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64_v0.2.0.tar.gz
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_release_20250814_195126_v0.2.0.tar.gz
+tar zxvf tx8_depends_release_20250814_195126_v0.2.0.tar.gz
+export TX8_DEPS_ROOT=~/.flagtree/tsingmicro/tx8_deps
+cd ${YOUR_CODE_DIR}/flagtree/
+git checkout -b triton_v3.3.x origin/triton_v3.3.x
+export FLAGTREE_BACKEND=tsingmicro
+python3 -m pip install . --no-build-isolation -v
+```
+[ascend](https://github.com/FlagTree/flagtree/blob/triton_v3.2.x/python/setup_tools/setup_helper.py)
+```shell
+# Recommended: Use the Dockerfile flagtree/dockerfiles/Dockerfile-ubuntu20.04-python3.9-ascend
+# After registering an account at https://www.hiascend.com/developer/download/community/result?module=cann,
+# download the cann-toolkit and cann-kernels for the corresponding platform.
+# Here we use the A3 processor with AArch64 architecture as an example to demonstrate how to install.
+chmod +x Ascend-cann-toolkit_8.2.RC1.alpha002_linux-aarch64.run
+./Ascend-cann-toolkit_8.2.RC1.alpha002_linux-aarch64.run --install
+chmod +x Atlas-A3-cann-kernels_8.1.RC1_linux-aarch64.run
+./Atlas-A3-cann-kernels_8.1.RC1_linux-aarch64.run --install
+# build
+mkdir -p ~/.flagtree/ascend; cd ~/.flagtree/ascend
+wget https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-b5cc222d-ubuntu-arm64.tar.gz
+tar zxvf llvm-b5cc222d-ubuntu-arm64.tar.gz
+cd ${YOUR_CODE_DIR}/flagtree/python
+git checkout -b triton_v3.2.x origin/triton_v3.2.x
+export FLAGTREE_BACKEND=ascend
+python3 -m pip install . --no-build-isolation -v
+```
+[hcu](https://github.com/FlagTree/flagtree/tree/main/third_party/hcu/)
+```shell
+# Recommended: Use the Dockerfile flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-hcu
+mkdir -p ~/.flagtree/hcu; cd ~/.flagtree/hcu
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
+tar zxvf hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
+cd ${YOUR_CODE_DIR}/flagtree/python
+export FLAGTREE_BACKEND=hcu
+python3 -m pip install . --no-build-isolation -v
 ```
 
-# Tips for hacking
-
-For detailed instructions on how to debug Triton's frontend, please refer to this [tutorial](https://triton-lang.org/main/programming-guide/chapter-3/debugging.html). The following includes additional tips for hacking on Triton's backend.
-
-**Configuration knobs**
-
-See [`python/triton/knobs.py`](python/triton/knobs.py) for the full list of configuration knobs. You can set those knobs directly in python or use environment variables to control them. Below are some of the environment variables you can specify (see `knobs.py` for the full list):
-
-- `MLIR_ENABLE_DUMP=1` dumps the IR before every MLIR pass Triton runs, for all
-   kernels. Use `MLIR_ENABLE_DUMP=kernelName` to dump for a specific kernel only.
-  - Triton cache can interfere with the dump. In cases where `MLIR_ENABLE_DUMP=1` does not work, try cleaning your triton cache: `rm -r ~/.triton/cache/*`.
-- `MLIR_DUMP_PATH` specifies where `MLIR_ENABLE_DUMP` will dump to. If unset will dump to stderr.
-- `LLVM_IR_ENABLE_DUMP=1` dumps the IR before every pass run over the LLVM IR.
-- `TRITON_REPRODUCER_PATH=<reproducer_path>` will generate an MLIR reproducer file
-  at `<reproducer_path>` before each MLIR compiler stage. If any of the stages fail,
-  `<reproducer_path>` will be a local MLIR reproducer captured right before the failing pass.
-- `TRITON_INTERPRET=1` uses the Triton interpreter instead of running on the
-  GPU.  You can insert Python breakpoints in your kernel code!
-- `TRITON_ENABLE_LLVM_DEBUG=1` passes `-debug` to LLVM, printing a lot of
-  debugging information to stdout.  If this is too noisy, run with just
-  `TRITON_LLVM_DEBUG_ONLY` instead to limit the output.
-  - An alternative way to reduce output noisiness is running with
-  `LLVM_IR_ENABLE_DUMP=1`, extract the IR before the LLVM pass of interest, and
-  then run LLVM's `opt` standalone, perhaps passing `-debug-only=foo` on the
-  command line.
-
-- `TRITON_LLVM_DEBUG_ONLY=<comma-separated>` is the equivalent of LLVM's
-  `-debug-only` command-line option. This limits the LLVM debug output to
-  specific pass or component names (which are specified using `#define
-  DEBUG_TYPE` throughout LLVM and Triton) in order to allow the debug output to
-  be less noisy. `TRITON_LLVM_DEBUG_ONLY` allows for one or more comma
-  separated values to be specified (eg
-  `TRITON_LLVM_DEBUG_ONLY="tritongpu-remove-layout-conversions"` or
-  `TRITON_LLVM_DEBUG_ONLY="tritongpu-remove-layout-conversions,regalloc"`).
-- `TRITON_ENABLE_ASAN=1` invokes the LLVM address sanitizer for
-  memory leak and out of bounds access detection. Currently only supported on the AMD
-  backend. This must be run using the ASAN libraries documented [here](https://rocm.docs.amd.com/projects/llvm-project/en/latest/conceptual/using-gpu-sanitizer.html).
-  - When enabling the address sanitizer it is recommended to disable various memory caching strategies
-  both within the ROCm stack and PyTorch. This will give the address sanitizer the best chance at finding the
-  memory fault where it originates. See this [test](https://github.com/triton-lang/triton/blob/main/third_party/amd/python/test/test_address_sanitizer.py) for more details.
-
-- `USE_IR_LOC={ttir,ttgir}` reparses the IR such that the location information
-  will be the line number of the IR file with that particular extension,
-  instead of line number of the python file. This can provide a direct mapping
-  from the IR to llir/ptx. When used with performance tools, it can provide a
-  breakdown on IR instructions.
-- `TRITON_PRINT_AUTOTUNING=1` prints out the best autotuning config and total time
-  spent for each kernel after autotuning is complete.
-- `DISABLE_LLVM_OPT` will disable llvm optimizations for make_llir and make_ptx
-  if its value is true when parsing as Bool. Otherwise, it will be parsed as a list
-  of flags to disable llvm optimizations. One usage case is
-  `DISABLE_LLVM_OPT="disable-lsr"`
-  Loop strength reduction is known to cause up to 10% performance changes for
-  certain kernels with register pressure.
-- `TRITON_ALWAYS_COMPILE=1` forces to compile kernels regardless of cache hit.
-- `MLIR_ENABLE_TIMING` dumps the timing information for each MLIR pass.
-- `LLVM_ENABLE_TIMING` dumps the timing information for each LLVM pass.
-- `TRITON_DEFAULT_FP_FUSION` overrides the default behavior of allowing fp fusion (mul+add->fma).
-- `MLIR_ENABLE_DIAGNOSTICS=<comma-separated>` controls diagnostic emission in MLIR.
-  Options are: `warnings`, `remarks`, `stacktraces`, `operations`.
-  Use comma-separated values to customize output. For example,
-  `MLIR_ENABLE_DIAGNOSTICS=remarks,operations` enables remarks and IR operations,
-  while `MLIR_ENABLE_DIAGNOSTICS=warnings,stacktraces` enables warnings with
-  stacktraces. By default, only errors are shown. Setting `warnings` includes
-  errors and warnings; `remarks` includes errors, warnings, and remarks.
-- `MLIR_ENABLE_REMARK` is deprecated. Please use `MLIR_ENABLE_DIAGNOSTICS=remarks`.
-- `TRITON_KERNEL_DUMP` enables the dumping of the IR from each compilation stage and the final ptx/amdgcn.
-- `TRITON_DUMP_DIR` specifies the directory to save the dumped IR and ptx/amdgcn when `TRITON_KERNEL_DUMP` is set to 1.
-- `TRITON_KERNEL_OVERRIDE` enables the override of the compiled kernel with a user-specified IR/ptx/amdgcn at the beginning of each compilation stage.
-- `TRITON_OVERRIDE_DIR` specifies the directory from which to load the IR/ptx/amdgcn files when `TRITON_KERNEL_OVERRIDE` is set to 1.
-- `TRITON_F32_DEFAULT` sets the default input precision of `tl.dot` when using 32-bit floats, which can be either `ieee`, `tf32`, or `tf32x3`.
-- `TRITON_FRONT_END_DEBUGGING=1` disables exception wrapping when an error occurs in the compiler frontend, allowing the full stack trace to be seen.
-- `TRITON_DISABLE_LINE_INFO=1` removes all line information from the module.
-
-> [!NOTE]
-> Some of these environment variables don't have a knob in `knobs.py`-- those are only relevant to the C++ layer(s), hence they don't exist in the python layer.
-
-**Kernel Override Steps**
-
-```bash
-export TRITON_ALWAYS_COMPILE=1
-export TRITON_KERNEL_DUMP=1
-export TRITON_DUMP_DIR=<dump_dir>
-export TRITON_KERNEL_OVERRIDE=1
-export TRITON_OVERRIDE_DIR=<override_dir>
-# Step 1: Run the kernel once to dump kernel's IRs and ptx/amdgcn in $TRITON_DUMP_DIR
-# Step 2: Copy $TRITON_DUMP_DIR/<kernel_hash> to $TRITON_OVERRIDE_DIR
-# Step 3: Delete the stages that you do not want to override and modify the stage you do want to override
-# Step 4: Run the kernel again to see the overridden result
+[nvidia](/third_party/nvidia/)
+To build with default backends nvidia, amd, triton_shared cpu:
+```shell
+# manually download LLVM
+cd ${YOUR_LLVM_DOWNLOAD_DIR}
+wget https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-8957e64a-ubuntu-x64.tar.gz
+tar zxvf llvm-8957e64a-ubuntu-x64.tar.gz
+# build
+cd ${YOUR_CODE_DIR}/flagtree/
+export LLVM_SYSPATH=${YOUR_LLVM_DOWNLOAD_DIR}/llvm-8957e64a-ubuntu-x64
+export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
+export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
+unset FLAGTREE_BACKEND
+python3 -m pip install . --no-build-isolation -v
+# If you need to build other backends afterward, you should clear LLVM-related environment variables
+unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR
 ```
 
+## Running tests
 
-# Changelog
+After installation, you can run tests in the backend directory:
+```shell
+cd third_party/backendxxx/python/test
+python3 -m pytest -s
+```
 
-Version 2.0 is out! New features include:
+## Contributing
 
-- Many, many bug fixes
-- Performance improvements
-- Backend rewritten to use MLIR
-- Support for kernels that contain back-to-back matmuls (e.g., flash attention)
+Contributions to FlagTree development are welcome. Please refer to [CONTRIBUTING.md](/CONTRIBUTING_cn.md) for details.
 
-# Contributing
+## License
 
-Community contributions are more than welcome, whether it be to fix bugs or to add new features at [github](https://github.com/triton-lang/triton/). For more detailed instructions, please visit our [contributor's guide](CONTRIBUTING.md).
-
-# Compatibility
-
-Supported Platforms:
-
-- Linux
-
-Supported Hardware:
-
-- NVIDIA GPUs (Compute Capability 8.0+)
-- AMD GPUs (ROCm 6.2+)
-- Under development: CPUs
-
-# Development Container (Dev Container)
-
-**Dev Containers** for the Triton project are available from
-the [triton-dev-containers repository](https://github.com/redhat-et/triton-dev-containers).
-
-### Key Benefits:
-- **Consistency**: All developers can work with the same development
-  environment, ensuring uniform behavior across different systems.
-- **Isolation**: The container prevents potential conflicts with software
-  installed on your local machine.
-- **Portability**: Easily share the development environment with team members,
-  minimizing onboarding time and setup issues.
-
-### How to Use the Dev Container:
-
-For detailed instructions on how to use the dev containers, please see
-the [dev container user guide](https://github.com/redhat-et/triton-dev-containers/blob/main/.devcontainer/devcontainer.md).
+FlagTree is licensed under the [MIT license](/LICENSE).

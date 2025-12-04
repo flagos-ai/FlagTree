@@ -1,0 +1,91 @@
+name: AIPU-Build-And-Test
+
+on:
+  push:
+    branches: [ "triton_v3.3.x" ]
+  pull_request:
+    branches: [ "triton_v3.3.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  aipu-build-and-test:
+    runs-on: aipu
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Checkout code (attempt 1)
+        id: checkout1
+        uses: actions/checkout@v5
+        continue-on-error: true
+
+      - name: Sleep before checkout2
+        if: steps.checkout1.outcome == 'failure'
+        run: |
+          echo "First checkout attempt failed. Sleeping for 120 seconds before retry..."
+          sleep 120
+
+      - name: Checkout code (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@v5
+        continue-on-error: true
+
+      - name: Sleep before final checkout
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        run: |
+          echo "Second checkout attempt failed. Sleeping for 180 seconds before final retry..."
+          sleep 180
+
+      - name: Checkout code (final attempt)
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@v5
+
+      - name: Verify checkout success
+        if: success()
+        run: echo "Checkout completed successfully"
+
+      - name: FlagTree Build on AIPU
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          source ~/env_setup.sh
+          export FLAGTREE_BACKEND=aipu
+          cd python
+          MAX_JOBS=32 python3.10 -m pip install . --no-build-isolation -v
+
+      - name: FlagTree Test on AIPU
+        shell: bash
+        run: |
+          set -x
+          source ~/env_setup.sh
+          python3.10 third_party/aipu/python/test/test_01_vector_add.py
+          python3.10 third_party/aipu/python/test/test_01_vector_add_shared_memory.py
+          python3.10 third_party/aipu/python/test/test_01_vector_add_dma.py
+          python3.10 third_party/aipu/python/test/test_02_fused_softmax.py
+          python3.10 third_party/aipu/python/test/test_02_fused_softmax_shared_memory.py
+          python3.10 third_party/aipu/python/test/test_02_fused_softmax_dma.py
+          python3.10 third_party/aipu/python/test/test_libdevice_fmod.py
+          python3.10 third_party/aipu/python/test/test_libdevice_fmod_shared_memory.py
+          python3.10 third_party/aipu/python/test/test_libdevice_fmod_dma.py
+          python3.10 third_party/aipu/python/test/test_libdevice_pow.py
+          python3.10 third_party/aipu/python/test/test_libdevice_pow_shared_memory.py
+          python3.10 third_party/aipu/python/test/test_libdevice_pow_dma.py
+          python3.10 third_party/aipu/python/test/test_codegen_dma.py
+          python3.10 third_party/aipu/python/test/test_01_vector_add_structured_1d.py
+          python3.10 third_party/aipu/python/test/test_01_vector_add_structured_1d_shared_memory.py
+          python3.10 third_party/aipu/python/test/test_01_vector_add_structured_1d_dma.py
+          python3.10 third_party/aipu/python/test/min.py
+          python3.10 third_party/aipu/python/test/min_shared_memory.py
+          #python3.10 third_party/aipu/python/test/min_dma.py
+          python3.10 third_party/aipu/python/test/var_mean.py
+          python3.10 third_party/aipu/python/test/var_mean_shared_memory.py
+          #python3.10 third_party/aipu/python/test/var_mean_dma.py

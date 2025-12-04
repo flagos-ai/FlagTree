@@ -1,0 +1,13 @@
+add_mlir_dialect_library(
+  MLIRAddress
+  AddressDialect.cpp
+  ADDITIONAL_HEADER_DIRS
+  ${PROJECT_SOURCE_DIR}/mlir/Dialect/Address
+  DEPENDS
+  MLIRAddressOpsIncGen
+  LINK_LIBS
+  PUBLIC
+  MLIRIR
+  MLIRInferTypeOpInterface
+  MLIRFuncDialect
+)

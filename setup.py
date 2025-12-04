@@ -42,6 +42,7 @@ except ImportError:
 
 
 sys.path.insert(0, os.path.dirname(__file__))
+from setup_tools import setup_helper as helper
 
 from python.build_helpers import get_base_dir, get_cmake_dir
 
@@ -463,6 +464,7 @@ class CMakeBuild(build_ext):
             "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external]),
             "-DTRITON_WHEEL_DIR=" + wheeldir
         ]
+        cmake_args += helper.get_backend_cmake_args(build_ext=self)
         if lit_dir is not None:
             cmake_args.append("-DLLVM_EXTERNAL_LIT=" + lit_dir)
         cmake_args.extend(thirdparty_cmake_args)
@@ -527,6 +529,7 @@ class CMakeBuild(build_ext):
         update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
+        helper.install_extension(build_ext=self)
 
 
 def download_and_copy_dependencies():
@@ -603,7 +606,19 @@ def download_and_copy_dependencies():
     )
 
 
-backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+if helper.flagtree_backend:
+    if helper.flagtree_backend in ("aipu", "tsingmicro"):
+        backends = [
+            *BackendInstaller.copy(helper.default_backends + helper.extend_backends),
+            *BackendInstaller.copy_externals(),
+        ]
+    else:
+        backends = [*BackendInstaller.copy(helper.extend_backends), *BackendInstaller.copy_externals()]
+else:
+    print(helper.default_backends)
+    backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+
+#backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
 
 
 def get_package_dirs():
@@ -651,6 +666,11 @@ def get_packages():
             for x in os.listdir(backend.tools_dir):
                 yield f"triton.tools.extra.{x}"
 
+    if helper.flagtree_backend == "xpu":
+        yield f"triton.language.extra.xpu"
+    elif helper.flagtree_backend == "mthreads":
+        yield f"triton/language/extra/musa"
+
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         yield "triton.profiler"
 
@@ -682,6 +702,16 @@ def add_link_to_backends(external_only):
                 update_symlink(install_dir, src_dir)
 
 
+package_data_tools = ["compile.h", "compile.c"]
+if helper.flagtree_backend == "xpu":
+    package_data_tools += ["compile_xpu.h", "compile_xpu.c"]
+#  package_data = {
+#       "triton/tools/extra": sum((b.tools_package_data for b in backends), []),
+#  **{f"triton/backends/{b.name}": b.package_data
+#  for b in backends}, "triton/language/extra": sum((b.language_package_data for b in backends), [])
+# }
+
+
 def add_link_to_proton():
     proton_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "third_party", "proton", "proton"))
     proton_install_dir = os.path.join(os.path.dirname(__file__), "python", "triton", "profiler")
@@ -699,6 +729,7 @@ class plugin_bdist_wheel(bdist_wheel):
     def run(self):
         add_links(external_only=True)
         super().run()
+        helper.post_install()
 
 
 class plugin_develop(develop):
@@ -830,6 +861,7 @@ setup(
     extras_require={
         "build": [
             "cmake>=3.20,<4.0",
+            "GitPython",
             "lit",
         ],
         "tests": [

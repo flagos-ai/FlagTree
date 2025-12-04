@@ -36,3 +36,23 @@ class DriverConfig:
 
 
 driver = DriverConfig()
+
+
+# flagtree backend specialization
+def spec(function_name: str, *args, **kwargs):
+    if hasattr(driver.active, "spec"):
+        spec = driver.active.spec
+        if hasattr(spec, function_name):
+            func = getattr(spec, function_name)
+            return func(*args, **kwargs)
+    return None
+
+
+# flagtree backend func specialization
+def spec_func(function_name: str):
+    if hasattr(driver.active, "spec"):
+        spec = driver.active.spec
+        if hasattr(spec, function_name):
+            func = getattr(spec, function_name)
+            return func
+    return None

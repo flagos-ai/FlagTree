@@ -12,6 +12,38 @@ set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
+# FLAGTREE Options
+set(FLAGTREE_BACKEND "$ENV{FLAGTREE_BACKEND}")
+if(FLAGTREE_BACKEND)
+    add_definitions(-DFLAGTREE_BACKEND=\"${FLAGTREE_BACKEND}\")
+endif()
+
+if(NOT FLAGTREE_BACKEND)
+  add_definitions(-D__NVIDIA__)
+  add_definitions(-D__AMD__)
+elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
+  add_definitions(-D__ILUVATAR__)
+  remove_definitions(-D_GLIBCXX_USE_CXX11_ABI=1)
+  add_definitions(-D_GLIBCXX_USE_CXX11_ABI=0)
+elseif(FLAGTREE_BACKEND STREQUAL "mthreads")
+  set(ENV{PATH} "$ENV{LLVM_SYSPATH}/bin:$ENV{PATH}")
+  set(CMAKE_C_COMPILER clang)
+  set(CMAKE_CXX_COMPILER clang++)
+  set(ENV{FLAGTREE_PLUGIN} $ENV{FLAGTREE_BACKEND})
+elseif(FLAGTREE_BACKEND STREQUAL "aipu")
+  set(CMAKE_C_COMPILER clang-16)
+  set(CMAKE_CXX_COMPILER clang++-16)
+  add_definitions(-D__NVIDIA__)
+  add_definitions(-D__AMD__)
+elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
+  set(CMAKE_C_COMPILER clang)
+  set(CMAKE_CXX_COMPILER clang++)
+endif()
+set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
+if(FLAGTREE_PLUGIN)
+  add_definitions(-D__FLAGTREE_PLUGIN__)
+endif()
+
 project(triton CXX C)
 include(CTest)
 
@@ -19,8 +51,13 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # Options
 option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
-option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
-option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
+if(FLAGTREE_BACKEND)
+  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" OFF)
+  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" OFF)
+else()
+  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
+  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
+endif()
 option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
 set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
 
@@ -82,7 +119,12 @@ if(TRITON_BUILD_UT)
 endif()
 
 # Compiler flags
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+set(BACKEND_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/include)
+if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
+  include_directories(${BACKEND_INCLUDE_DIR})
+else()
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+endif()
 if(NOT MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS  -fPIC -std=gnu++17")
 else()
@@ -139,14 +181,23 @@ endfunction()
 
 set_property(GLOBAL PROPERTY TRITON_PLUGINS "")
 function(add_triton_plugin name)
-  set_property(GLOBAL APPEND PROPERTY TRITON_PLUGINS ${name})
-  add_triton_object(${name} ${ARGN})
+  cmake_parse_arguments(ARG "" "SHARED_LIB" "LINK_LIBS" ${ARGN})
+  if(ARG_SHARED_LIB)
+    set_property(GLOBAL APPEND PROPERTY TRITON_PLUGINS ${ARG_SHARED_LIB})
+  else()
+    set_property(GLOBAL APPEND PROPERTY TRITON_PLUGINS ${name})
+    add_triton_object(${name} ${ARGN})
+  endif()
 endfunction()
 
 
 # Disable warnings that show up in external code (gtest;pybind11)
 if(NOT MSVC)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default -fvisibility=hidden")
+  if(FLAGTREE_BACKEND)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default")
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default -fvisibility=hidden")
+  endif()
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4244 /wd4624 /wd4715 /wd4530")
 endif()
@@ -154,14 +205,26 @@ endif()
 include_directories(".")
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${LLVM_INCLUDE_DIRS})
-include_directories(${PROJECT_SOURCE_DIR}/include)
-include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_INCLUDE_DIR})
+  include_directories(${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/include)
+  include_directories(${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND}/include) # Tablegen'd files
+else()
+  include_directories(${PROJECT_SOURCE_DIR}/include)
+  include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+endif()
 include_directories(${PROJECT_SOURCE_DIR}/third_party)
 include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
 
 # link_directories(${LLVM_LIBRARY_DIR})
-add_subdirectory(include)
-add_subdirectory(lib)
+if (FLAGTREE_BACKEND MATCHES "^(cambricon|aipu|tsingmicro)$")
+  include_directories(${PROJECT_SOURCE_DIR}/include)
+  include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+  add_subdirectory(include)
+  add_subdirectory(lib)
+elseif(NOT FLAGTREE_BACKEND)
+  add_subdirectory(include)
+  add_subdirectory(lib)
+endif()
 
 # TODO: Figure out which target is sufficient to fix errors; triton is
 # apparently not enough. Currently set linking libstdc++fs for all targets
@@ -176,12 +239,20 @@ endif()
 # ------
 if(TRITON_BUILD_PYTHON_MODULE)
   message(STATUS "Adding Python module")
-  set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
+  set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/python/src)
+  if(NOT (FLAGTREE_BACKEND AND EXISTS "${PYTHON_SRC_PATH}"))
+    set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
+  endif()
   include_directories(${PYTHON_SRC_PATH})
 
   # Python Interpreter is used to run lit tests
   find_package(Python3 REQUIRED COMPONENTS Development.Module Interpreter)
   find_package(pybind11 CONFIG REQUIRED HINTS "${Python3_SITELIB}")
+  include_directories(${Python3_INCLUDE_DIRS})
+  include_directories(${pybind11_INCLUDE_DIR})
+  link_directories(${Python3_LIBRARY_DIRS})
+  link_libraries(${Python3_LIBRARIES})
+  add_link_options(${Python3_LINK_OPTIONS})
 
   if (DEFINED TRITON_PLUGIN_DIRS)
     foreach(PLUGIN_DIR ${TRITON_PLUGIN_DIRS})
@@ -205,6 +276,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endforeach()
 
   if (TRITON_BUILD_PROTON)
+    add_definitions(-D__PROTON__)
     add_subdirectory(third_party/proton)
   endif()
   # We always build proton dialect
@@ -251,6 +323,67 @@ if(TRITON_BUILD_PYTHON_MODULE)
     pybind11::headers
 
   )
+  if(FLAGTREE_BACKEND STREQUAL "iluvatar")
+    set(TRITON_LIBRARIES
+      ${triton_libs}
+      ${triton_plugins}
+
+      # mlir
+      MLIRNVVMDialect
+      MLIRNVVMToLLVMIRTranslation
+      MLIRGPUToNVVMTransforms
+      MLIRGPUToGPURuntimeTransforms
+      MLIRGPUTransforms
+      MLIRIR
+      MLIRControlFlowToLLVM
+      MLIRBytecodeWriter
+      MLIRPass
+      MLIRTransforms
+      MLIRLLVMDialect
+      MLIRSupport
+      MLIRTargetLLVMIRExport
+      MLIRMathToLLVM
+      MLIRGPUDialect
+      MLIRSCFToControlFlow
+      MLIRIndexToLLVM
+
+      # LLVM
+      LLVMPasses
+      LLVMIluvatarCodeGen
+      LLVMIluvatarAsmParser
+    )
+  elseif(FLAGTREE_BACKEND STREQUAL "xpu")
+    set(TRITON_LIBRARIES
+      ${triton_libs}
+      ${triton_plugins}
+
+      # mlir
+      MLIRIR
+      MLIRControlFlowToLLVM
+      MLIRBytecodeWriter
+      MLIRPass
+      MLIRTransforms
+      MLIRLLVMDialect
+      MLIRSupport
+      MLIRTargetLLVMIRExport
+      MLIRMathToLLVM
+      MLIRGPUDialect
+      MLIRSCFToControlFlow
+      MLIRIndexToLLVM
+
+      # LLVM
+      LLVMPasses
+      LLVMXPUCodeGen
+      LLVMXPUAsmParser
+    )
+  elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
+    list(APPEND TRITON_LIBRARIES
+	  # riscv
+      LLVMRISCVCodeGen
+      LLVMRISCVAsmParser
+    )
+  endif()
+
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
      CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" OR # macOS arm64
      CMAKE_OSX_ARCHITECTURES MATCHES "arm64")  # also macOS arm64
@@ -283,12 +416,16 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   set(TRITON_BACKENDS_TUPLE "(${TRITON_BACKENDS_TUPLE})")
   add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
-  add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
-                  ${PYTHON_SRC_PATH}/ir.cc
-                  ${PYTHON_SRC_PATH}/gluon_ir.cc
-                  ${PYTHON_SRC_PATH}/passes.cc
-                  ${PYTHON_SRC_PATH}/interpreter.cc
-                  ${PYTHON_SRC_PATH}/llvm.cc)
+  if(FLAGTREE_BACKEND STREQUAL "cambricon")
+    add_library(triton SHARED)
+  else()
+    add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
+                ${PYTHON_SRC_PATH}/ir.cc
+                ${PYTHON_SRC_PATH}/gluon_ir.cc
+                ${PYTHON_SRC_PATH}/passes.cc
+                ${PYTHON_SRC_PATH}/interpreter.cc
+                ${PYTHON_SRC_PATH}/llvm.cc)
+  endif()
 
   # Link triton with its dependencies
   target_link_libraries(triton PRIVATE ${TRITON_LIBRARIES})
@@ -341,8 +478,11 @@ endif()
 find_package(Threads REQUIRED)
 
 add_subdirectory(third_party/f2reduce)
-add_subdirectory(bin)
-add_subdirectory(test)
+
+if(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(aipu|tsingmicro)$")
+  add_subdirectory(bin)
+  add_subdirectory(test)
+endif()
 
 if(TRITON_BUILD_UT)
   add_subdirectory(unittest)
