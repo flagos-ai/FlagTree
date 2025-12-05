@@ -247,6 +247,39 @@ def TTG_MemDescSubsliceOp : TTG_Op<"memdesc_subslice", [Pure, MemDescViewTrait]>
   let hasVerifier = 1;
 }
 
+def TTG_SplitKSubsliceOp : TTG_Op<"splitk_subslice", [Pure, MemDescViewTrait]> {
+  let summary = "take a subview of the descriptor.";
+
+  let description = [{
+    This operation returns a new descriptor representing a subview of the logical tensor.
+    It doesn't affect the underlying memory.
+
+    For example, suppose that
+     - the input shape is 32x16xf16,
+     - the output shape is 8x16xf16, and
+     - offsets = [2, 1].
+    Then in Python syntax, the subview covers input[2:8+2, 1:16+1] where input is
+    the logical tensor.
+
+    The offsets must be larger or equal to the tile of the tensor (or zero).
+  }];
+
+  let arguments = (ins TTG_MemDescType:$src, Variadic<AnyType>:$offsets);
+  
+  // Use qualified() otherwise "!ttg.memdesc<X>" is printed as "<X>".
+  // Render offsets inline as %src[0, 0] via a custom directive, but keep
+  // the overall parse/print generated from this assemblyFormat.
+  //let assemblyFormat = [{
+  //  $src `[` custom<Offsets>($offsets) `]` attr-dict `:` qualified(type($src))
+  //  `->` qualified(type($result))
+  //}];
+
+  let results = (outs TTG_MemDescType:$result);
+
+  
+  //let hasVerifier = 1;
+}
+
 def TTG_MemDescTransOp : TTG_Op<"memdesc_trans", [Pure,
                                                   MemDescViewTrait,
                                                   TransposeOpInterface,

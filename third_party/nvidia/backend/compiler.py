@@ -297,6 +297,7 @@ class CUDABackend(BaseBackend):
             nvidia.passes.ttnvgpuir.add_remove_tmem_tokens(pm)
         else:
             passes.ttir.add_triton_licm(pm)
+        passes.ttgpuir.add_process_splitk(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_loop_aware_cse(pm)
         passes.ttgpuir.add_prefetch(pm)

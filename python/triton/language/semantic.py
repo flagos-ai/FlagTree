@@ -1937,3 +1937,15 @@ class TritonSemantic(Generic[TensorTy]):
                                                             [s.handle for s in strides], block_shape, is_signed_int,
                                                             padding)
         return tl.tensor_descriptor(handle, shape, strides, type)
+
+    def extract_slice(self, ful: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int], _builder: ir.builder) -> tl.tensor:
+        assert(len(ful.shape) == len(offsets))
+        assert(len(ful.shape) == len(sizes))
+        assert(len(ful.shape) == len(strides))
+        assert(all([s>=1 for s in sizes]))
+        assert(all([s>=0 for s in strides]))
+
+        new_offsets = [o.handle for o in offsets]
+        ret_type = tl.block_type(ful.type.scalar, sizes)
+        out = self.builder.create_splitk_extract_slice(ful.handle, new_offsets, sizes, strides)
+        return tl.tensor(out, ret_type)

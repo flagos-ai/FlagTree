@@ -27,6 +27,7 @@ from .standard import (
     zeros_like,
 )
 from .core import (
+    extract_slice,
     PropagateNan,
     TRITON_MAX_TENSOR_NUMEL,
     load_tensor_descriptor,
@@ -135,6 +136,7 @@ from .random import (
 from . import target_info
 
 __all__ = [
+    "extract_slice",
     "PropagateNan",
     "TRITON_MAX_TENSOR_NUMEL",
     "load_tensor_descriptor",

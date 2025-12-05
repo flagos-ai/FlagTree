@@ -262,6 +262,15 @@ def TritonGPUOptimizeDotOperands : Pass<"tritongpu-optimize-dot-operands", "mlir
   ];
 }
 
+def TritonGPUProcessSplitK : Pass<"tritongpu-process-splitk", "mlir::ModuleOp"> {
+  let summary = "process splitk";
+
+  let description = [{
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect"];
+}
+
 def TritonGPUProcessSharedMemoryHint : Pass<"tritongpu-process-shared-memory-hint", "mlir::ModuleOp"> {
   let summary = "process shared memory hint";
 

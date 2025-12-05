@@ -1572,6 +1572,40 @@ void init_triton_ir(py::module &&m) {
              auto op = self.create<SplitOp>(a);
              return std::vector<Value>(op->result_begin(), op->result_end());
            })
+      .def("create_splitk_subslice",
+          [](TritonOpBuilder &self, Type resultType, Value src,
+            std::vector<Value> &offsets) -> Value {
+            return self.create<ttg::SplitKSubsliceOp>(resultType, src, offsets);
+          })
+      .def("create_splitk_extract_slice",
+           [](TritonOpBuilder &self, Value &ful, std::vector<Value> &offs_vec,
+              std::vector<int32_t> &sizs_vec, std::vector<int32_t> &strd_vec) -> Value {
+              // llvm::SmallVector<Value> offsets;
+              // for (const auto &o : offs_vec) {
+              //     offsets.push_back(o);
+              // }
+
+              // llvm::SmallVector<int32_t> sizes;
+              llvm::SmallVector<int64_t> retSizes;
+              for (const auto &s : sizs_vec) {
+                  // sizes.push_back(s);
+                  retSizes.push_back(s);
+              }
+
+              // llvm::SmallVector<int32_t> strides;
+              // for (const auto &s : strd_vec) {
+              //     strides.push_back(s);
+              // }
+              // for (const auto &s : sizs_vec) {
+              //     retSizes.push_back(s);
+              // }
+              
+              auto retTy = RankedTensorType::get(retSizes,
+                  cast<RankedTensorType>(ful.getType()).getElementType());
+
+              // return self.create<tt::SplitKExtractSliceOp>(retTy, ful, offsets, sizes, strides);
+              return self.create<tt::SplitKExtractSliceOp>(retTy, ful, offs_vec, sizs_vec, strd_vec);
+           })
       // Implements tl.trans and tl.permute.
       .def("create_trans",
            [](TritonOpBuilder &self, Value &arg, std::vector<int> &order)

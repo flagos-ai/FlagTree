@@ -3404,3 +3404,26 @@ def binary_op_type_legalization(lhs, rhs, semantic):
 def extern(fn):
     """A decorator for external functions."""
     return builtin(fn)
+
+@_tensor_member_fn
+@builtin
+def extract_slice(ful, offsets, sizes, strides, _builder=None, _generator=None, _semantic=None) -> tensor:
+    """
+    Extract a tensor from another tensor as specified by the operation’s offsets, sizes and strides arguments.
+
+    :param ful: The tensor to split.
+    :type ful: Tensor
+    :param offsets:
+    :type offsets: tuple of ints
+    :param sizes:
+    :type sizes: tuple of ints
+    :param strides:
+    :type strides: tuple of ints
+    """
+    assert len(ful.shape) > 0
+    new_offsets = [
+        _semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
+        for o in offsets
+    ]
+    sub = _semantic.extract_slice(ful, new_offsets, sizes, strides, _builder)
+    return sub

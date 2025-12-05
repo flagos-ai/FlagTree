@@ -1,5 +1,6 @@
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
+  ProcessSplitK.cpp
   ProcessSharedMemoryHint.cpp
   Coalesce.cpp
   F32DotTC.cpp

@@ -547,6 +547,42 @@ struct MemDescSubsliceOpConversion
   }
 };
 
+struct SplitKSubsliceOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::SplitKSubsliceOp> {
+  using ConvertOpToLLVMPattern<
+      triton::gpu::SplitKSubsliceOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::SplitKSubsliceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    auto *ctx = op->getContext();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto srcTy = op.getSrc().getType();
+    auto destTy = op.getResult().getType();
+    auto llvmElemTy = getTypeConverter()->convertType(srcTy.getElementType());
+    auto layoutOrder = getOrder(srcTy);
+    auto enc = srcTy.getEncoding();
+
+    auto smemObj = getSharedMemoryObjectFromStruct(loc, adaptor.getSrc(),
+                                                   llvmElemTy, rewriter);
+    auto opOffsetVals = op.getOffsets();
+
+    auto base = smemObj.getBase();
+    auto elemPtrTy = base.getType();
+    // Accumulate the logical offsets
+    SmallVector<Value> offsetVals;
+    for (auto [oldOffVal, opOff] :
+         llvm::zip(smemObj.getOffsets(), opOffsetVals)) {
+      offsetVals.push_back(b.add(oldOffVal, opOff));
+    }
+    smemObj = SharedMemoryObject(base, llvmElemTy, offsetVals);
+    auto retVal = getStructFromSharedMemoryObject(loc, smemObj, rewriter);
+    rewriter.replaceOp(op, retVal);
+    return success();
+  }
+};
+
 struct MemDescReinterpretOpConversion
     : public ConvertOpToLLVMPattern<MemDescReinterpretOp> {
   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
@@ -586,7 +622,7 @@ void mlir::triton::populateViewOpToLLVMPatterns(
       typeConverter, benefit);
   patterns.add<TransOpConversion>(typeConverter, benefit);
   patterns.add<BroadcastOpConversion>(typeConverter, benefit);
-  patterns.add<MemDescSubsliceOpConversion, MemDescIndexOpConversion>(
+  patterns.add<MemDescSubsliceOpConversion, MemDescIndexOpConversion, SplitKSubsliceOpConversion>(
       typeConverter, benefit);
   patterns.add<MemDescReinterpretOpConversion>(typeConverter, benefit);
 }

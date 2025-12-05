@@ -1433,5 +1433,19 @@ def TT_DescriptorScatterOp : TT_Op<"descriptor_scatter", [TT_DescriptorStoreLike
   let hasVerifier = 1;
 }
 
+def TT_SplitKExtractSliceOp : TT_Op<"splitk_extract_slice", [Pure]> {
+  let summary = "";
+  let description = [{}];
+
+  let arguments = (ins
+    TT_Tensor:$src,
+    Variadic<AnyType>:$offsets,
+    DenseI32ArrayAttr:$sizes,
+    DenseI32ArrayAttr:$strides
+  );
+
+  let results = (outs TT_Tensor:$result);
+}
+
 
 #endif // Triton_OPS
