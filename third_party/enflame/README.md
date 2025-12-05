@@ -20,7 +20,7 @@ Flagtree is a high-performance computing framework optimized for Enflame acceler
 cd ~
 git clone https://github.com/flagos-ai/flagtree.git
 cd flagtree
-git checkout triton_v3.3.x
+git checkout -b triton_v3.3.x origin/triton_v3.3.x
 ```
 
 ### 2. Prepare Docker Image

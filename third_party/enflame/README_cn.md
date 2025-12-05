@@ -20,7 +20,7 @@ Flagtree 是针对燧原加速器优化的高性能计算框架。本代码仓�
 cd ~
 git clone https://github.com/flagos-ai/flagtree.git
 cd flagtree
-git checkout triton_v3.3.x
+git checkout -b triton_v3.3.x origin/triton_v3.3.x
 ```
 
 ### 2. 准备 Docker 镜像
