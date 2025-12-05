@@ -1,7 +1,7 @@
-import os
 import shutil
 from pathlib import Path
 from build_helpers import get_cmake_dir
+
 
 def install_extension(*args, **kargs):
     cmake_dir = get_cmake_dir()
@@ -14,8 +14,8 @@ def install_extension(*args, **kargs):
         lines = f.readlines()
     for i, line in enumerate(lines):
         if 'def is_active():' in line:
-            if not 'return False' in lines[i+1]:
-                lines.insert(i+1, '        return False\n')
+            if 'return False' not in lines[i + 1]:
+                lines.insert(i + 1, '        return False\n')
             break
     with open(drvfile, 'w') as f:
         f.writelines(lines)
