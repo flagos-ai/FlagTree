@@ -1485,6 +1485,7 @@ def expand_dims(input, axis, _builder=None):
     return ret
 
 
+# flagtree backend specialization add new params: "overflow_mode"
 @_tensor_member_fn
 @builtin
 def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcast: bool = False, overflow_mode: Optional[str] = None, _builder=None):

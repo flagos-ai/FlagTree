@@ -1100,8 +1100,9 @@ class CodeGenerator(ast.NodeVisitor):
 
                 #flagtree backend specialization
                 from triton.runtime.driver import flagtree_backend_specialization
-                raise CompilationError(self.jit_fn.src, self.cur_node,
-                                       repr(e) if flagtree_backend_specialization('need_repr_in_CodeGenerator_CompilationError') else None) from e
+                if flagtree_backend_specialization('need_repr_in_CodeGenerator_CompilationError'):
+                    raise CompilationError(self.jit_fn.src, self.cur_node, repr(e)) from e
+                raise CompilationError(self.jit_fn.src, self.cur_node, None) from e
 
             callee_ret_type = generator.ret_type
             self.function_ret_types[fn_name] = callee_ret_type
@@ -1148,8 +1149,9 @@ class CodeGenerator(ast.NodeVisitor):
 
                 #flagtree backend specialization
                 from triton.runtime.driver import flagtree_backend_specialization
-                raise CompilationError(self.jit_fn.src, node,
-                                       repr(e) if flagtree_backend_specialization('need_repr_in_CodeGenerator_CompilationError') else None) from e
+                if flagtree_backend_specialization('need_repr_in_CodeGenerator_CompilationError'):
+                    raise CompilationError(self.jit_fn.src, node, repr(e)) from e
+                raise CompilationError(self.jit_fn.src, node, None) from e
 
         if fn in self.builtin_namespace.values():
             args = map(_unwrap_if_constexpr, args)
