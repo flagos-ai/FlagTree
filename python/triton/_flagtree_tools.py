@@ -3,19 +3,18 @@ import os
 import textwrap
 import inspect
 import tempfile
-import csv
 from io import StringIO
-from pathlib import Path
 import contextlib
 import math
+import ast
 import statistics
 import triton.runtime as runtime
 
 
 def flagtree_do_bench(fn, warmup=25, rep=100, quantiles=None, return_mode="mean"):
-    bench = FlagtreeBench(warmup=warmup, rep=rep, quantiles=quantiles, return_mode=return_mode)
-    bench.do_bench(fn=fn)
-    return bench._get_index()
+    bench = FlagtreeBench(current_fn=fn, warmup=warmup, rep=rep, quantiles=quantiles, return_mode=return_mode)
+    bench.do_bench()
+    return 0
 
 
 '''
@@ -132,20 +131,21 @@ class IndentedBuffer:
 
 class FlagtreeBench:
 
-    def __init__(self, warmup=100, rep=100, quantiles=None, return_mode="mean", metrics='gpu__time_duration'):
+    def __init__(self, current_fn, warmup=100, rep=100, quantiles=None, return_mode="mean",
+                 metrics='gpu__time_duration'):
         if FlagtreeBench.check_ncu():
+            self._current_fn = current_fn
             self.metrics = metrics
             self.warmup = warmup
             self.rep = rep
             self.quantiles = quantiles
             self.return_mode = return_mode
-            self.function_paths = []
-            self.import_modules = []
+            self.triton_funcs = []
             self._get_package_path()
             self._create_temp_file()
+            print(self.python_exec.file, self.out_csv.file)
 
-    staticmethod
-
+    @staticmethod
     def check_ncu():
         cmd = ["ncu", "--query-metrics"]
         try:
@@ -159,55 +159,71 @@ class FlagtreeBench:
             return False
 
     @staticmethod
-    def is_triton_jit_decorated(obj, max_depth=10):
+    def gather_triton_jit_kernel(mod):
         '''
             attrs temporarily adds specialized support to the kernel of flag_gems.
             About flag_gems see https://github.com/flagos-ai/FlagGems
         '''
-        attrs = ['AnonymousLibTunerImpl', 'LibEntry', 'JITFunction']
-        if hasattr(obj, '__class__') and obj.__class__.__name__ in attrs:
-            return True
+        if FlagtreeBench.is_from_sitepackages(mod):
+            return set()
 
-    def _get_kernels(self, _fn):
-        import ast
+        kernels = set()
+        attrs = ['AnonymousLibTunerImpl', 'LibEntry', 'JITFunction']
+        for node in dir(mod):
+            if node.startswith('__'):
+                continue
+            obj = getattr(mod, node)
+            if hasattr(obj, '__class__') and obj.__class__.__name__ in attrs:
+                kernels.add(node)
+        return kernels
+
+    @staticmethod
+    def is_from_sitepackages(mod):
+        return 'site-packages' in mod.__file__
+
+    def _get_current_function_used_mod(self, _fn=None):
+        _fn = _fn or self._current_fn
+        func_global_dict = _fn.__globals__
         source = inspect.getsource(_fn)
         tree = ast.parse(source)
-        globals_dict = _fn.__globals__
-        calls = []
+        modules = set()
+        calls = set()
+        deps_path = set()
+        triton_jit_kernels = set()
 
-        class CallVisitor(ast.NodeVisitor):
+        class Visitor(ast.NodeVisitor):
+
+            def visit_Attribute(self, node):
+                if isinstance(node.value, ast.Name):
+                    mod_name = node.value.id
+                    mod_instance = func_global_dict[mod_name]
+                    if hasattr(mod_instance, '__file__'):
+                        mod_dir_path = os.path.dirname(mod_instance.__file__)
+                        deps_path.add(mod_dir_path)
+                    modules.add(mod_name)
+                self.generic_visit(node)
 
             def visit_Call(self, node):
                 if isinstance(node.func, ast.Name):
-                    calls.append({'name': node.func.id})
+                    fun_name = node.func.id
+                    func_instance = func_global_dict[fun_name]
+                    mod_instance = __import__(func_instance.__module__)
+                    triton_jit_kernels.update(FlagtreeBench.gather_triton_jit_kernel(mod_instance))
+                    if hasattr(mod_instance, '__file__'):
+                        mod_dir_path = os.path.dirname(mod_instance.__file__)
+                        deps_path.add(mod_dir_path)
+                    calls.add((fun_name, mod_instance.__name__))
+
                 elif isinstance(node.func, ast.Attribute):
-                    calls.append({'name': node.func.attr})
+                    fun_name = node.func.attr
+                    if isinstance(node.func.value, ast.Name):
+                        mod = node.func.value.id
+                        mod_instance = func_global_dict[mod]
+                        triton_jit_kernels.update(FlagtreeBench.gather_triton_jit_kernel(mod_instance))
                 self.generic_visit(node)
 
-        visitor = CallVisitor()
-        visitor.visit(tree)
-        jit_funcs = []
-        for call in calls:
-            name = call['name']
-            if name not in globals_dict:
-                continue
-            entity = globals_dict[call['name']]
-            if callable(entity):
-                module = __import__(entity.__module__)
-            else:
-                module = entity
-            _path = module.__file__
-            self.function_paths.append(_path)
-            module_name = _path.split('/')[-1]
-            module_name = Path(module_name).stem
-            self.import_modules.append((name, module_name))
-            for name in dir(module):
-                if name.startswith('__'):
-                    continue
-                obj = getattr(module, name)
-                if FlagtreeBench.is_triton_jit_decorated(obj=obj):
-                    jit_funcs.append(name)
-        self.triton_funcs = jit_funcs
+        Visitor().visit(tree)
+        return (calls, modules, deps_path)
 
     def _get_package_path(self):
         self.user_package_path = os.environ.get('BENCH_MODULE_PATH', '')
@@ -225,31 +241,16 @@ class FlagtreeBench:
 
     def _exec(self):
         runtime.driver.active.clear_cache(self.bench_cache)
-        cmd = [
-            "ncu", "--metrics", self.metrics, "--csv", "--log-file", self.out_csv.name, "python3", self.python_exec.name
-        ]
+        cmd = ["ncu", "--metrics", self.metrics, "python3", self.python_exec.name]
         print(f"[INFO]: ncu running on {self.python_exec.name}")
-        subprocess.run(cmd, capture_output=True, check=True)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, text=True)
+        self.clean_out = "\n".join(line for line in result.stdout.splitlines() if not line.startswith("==PROF=="))
 
     def _get_index(self):
-        # indexs = ['avg', 'max', 'min', 'sum']
-        _index_package = {}
-        kernel_name = ''
-        with open(self.out_csv.name, newline="", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                for jit in self.triton_funcs:
-                    if jit in row:
-                        index_name = row[12].split('.')[-1]
-                        index_val = float(row[14]) / 1e6
-                        kernel_name = jit
-                        if jit not in _index_package:
-                            _index_package.update({jit: {index_name: index_val}})
-                        else:
-                            _index_package[jit].update({index_name: index_val})
-        return _index_package[kernel_name]['avg']
+        ...
 
     def _gen_import_and_path(self, script_code: IndentedBuffer, path_mode='insert'):
+        calls, modules, deps_path = self._get_current_function_used_mod()
         sys_path_action_str = '0, '
         if path_mode == 'insert':
             script_code.writeline('import torch')
@@ -259,34 +260,37 @@ class FlagtreeBench:
             sys_path_action_str = ''
         if self.user_package_path != '':
             script_code.writeline(f"sys.path.{path_mode}({sys_path_action_str}'{self.user_package_path}')")
-        for path in self.function_paths:
+        for path in deps_path:
             if not os.path.isdir(path):
                 path = os.path.dirname(path)
             script_code.writeline(f"sys.path.{path_mode}({sys_path_action_str}'{path}')")
         if path_mode == 'insert':
-            for module_message in self.import_modules:
-                fn, module = module_message
-                script_code.writeline(f"from {module} import {fn}")
+            for mod in modules:
+                script_code.writeline(f'import {mod}')
+            for call, mod in calls:
+                script_code.writeline(f"from {mod} import {call}")
 
-    def _generate_script(self, fn):
-        fn_src_code_string = textwrap.dedent(inspect.getsource(fn))
+    def _generate_script(self, _fn=None):
+        _fn = _fn or self._current_fn
+        fn_src_code_string = textwrap.dedent(inspect.getsource(_fn))
         script_code = IndentedBuffer()
         self._gen_import_and_path(script_code, path_mode='insert')
 
         script_code.writeline(fn_src_code_string)
-        script_code.writeline(f'{fn.__name__}()')
+        script_code.writeline(f'{_fn.__name__}()')
         script_code.writeline("torch.cuda.synchronize()")
 
         self._gen_import_and_path(script_code, path_mode='remove')
         self.script = script_code.getvalue()
         self._write_script(self.script)
 
-    def _pre_operation(self, fn):
+    def _pre_operation(self, _fn=None):
         '''
             Referred to triton.testing.do_bench
         '''
+        _fn = _fn or self._current_fn
         di = runtime.driver.active.get_device_interface()
-        fn()
+        _fn()
         di.synchronize()
         cache = runtime.driver.active.get_empty_cache_for_benchmark()
 
@@ -296,26 +300,25 @@ class FlagtreeBench:
         start_event.record()
         for _ in range(5):
             runtime.driver.active.clear_cache(cache)
-            fn()
+            _fn()
         end_event.record()
         di.synchronize()
         estimate_ms = start_event.elapsed_time(end_event) / 5
 
         # compute number of warmup and repeat
         n_warmup = max(1, int(self.warmup / estimate_ms))
-        # n_repeat = max(1, int(self.rep / estimate_ms))
 
         self.bench_cache = cache
         for _ in range(n_warmup):
-            fn()
+            _fn()
 
-    def do_bench(self, fn):
+    def do_bench(self):
         '''
             Measure the GPU kernel time of fn() using ncu.
             Generate a temporary Python file and then run it with 'ncu'.
         '''
-        self._get_kernels(fn)
-        self._generate_script(fn=fn)
-        self._pre_operation(fn=fn)
+        self.used_mods = self._get_current_function_used_mod()
+        self._generate_script()
+        self._pre_operation()
         self._exec()
         self.index_set = self._get_index()
