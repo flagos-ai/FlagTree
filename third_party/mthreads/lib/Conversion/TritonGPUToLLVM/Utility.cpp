@@ -597,6 +597,136 @@ SmallVector<Value> getMultiDimOffset(Attribute layout, Location loc,
     multiDimOffset[1] = add(multiDimBase[1], i32_val(offsets[elemId][1]));
     return multiDimOffset;
   }
+  if (auto mmaLayout = mlir::dyn_cast<MthreadsWMmaEncodingAttr>(layout)) {
+    if (mmaLayout.isQY2()) {
+      assert(rank == 2 && "Unexpected rank");
+      auto shapePerCTA = getShapePerCTA(mmaLayout, shape);
+      auto instrShape = mmaLayout.getInstrShape();
+      SmallVector<Value> mmaColIdx(2);
+      SmallVector<Value> mmaRowIdx(4);
+      Value threadId = getThreadId(rewriter, loc);
+      auto threadsPerWarp = mmaLayout.getThreadsPerWarp();
+      Value warpSize = i32_val(product(threadsPerWarp));
+      Value laneId = urem(threadId, warpSize);
+      Value warpId = udiv(threadId, warpSize);
+      SmallVector<Value> multiDimWarpId(2);
+      auto warpsPerCTA = mmaLayout.getWarpsPerCTA();
+      auto warpOrder = triton::gpu::getWarpOrder(mmaLayout);
+      multiDimWarpId =
+          delinearize(rewriter, loc, warpId, warpsPerCTA, warpOrder);
+      Value _2 = i32_val(2);
+      Value _4 = i32_val(4);
+      Value _8 = i32_val(8);
+      Value _16 = i32_val(16);
+      Value _24 = i32_val(24);
+      Value _32 = i32_val(32);
+      Value _64 = i32_val(64);
+
+      multiDimWarpId[rank - 1] = urem(
+          multiDimWarpId[rank - 1],
+          i32_val(ceil<unsigned>(shapePerCTA[rank - 1], instrShape[rank - 1])));
+      multiDimWarpId[rank - 2] = urem(
+          multiDimWarpId[rank - 2],
+          i32_val(ceil<unsigned>(shapePerCTA[rank - 2], instrShape[rank - 2])));
+
+      Value mmaRowBaseStartId = mul(udiv(laneId, _64), _4);
+      Value mmaRowBaseOffsetId = urem(udiv(laneId, _8), _4);
+      Value mmaRowBaseId = add(mmaRowBaseStartId, mmaRowBaseOffsetId);
+      Value mmaColBaseStartId = mul(urem(udiv(laneId, _32), _2), _8);
+      Value mmaColBaseOffsetId = urem(laneId, _8);
+      Value mmaColBaseId = add(mmaColBaseStartId, mmaColBaseOffsetId);
+      Value mmaRow0 = mmaRowBaseId;
+      Value mmaRow1 = add(mmaRow0, _8);
+      Value mmaRow2 = add(mmaRow0, _16);
+      Value mmaRow3 = add(mmaRow0, _24);
+      Value mmaCol0 = mmaColBaseId;
+      Value mmaCol1 = add(mmaCol0, _16);
+      // Add warp offset
+      Value rowWarpOffset =
+          mul(multiDimWarpId[rank - 2], i32_val(instrShape[rank - 2]));
+      Value colWarpOffset =
+          mul(multiDimWarpId[rank - 1], i32_val(instrShape[rank - 1]));
+      mmaRowIdx[0] = add(mmaRow0, rowWarpOffset);
+      mmaRowIdx[1] = add(mmaRow1, rowWarpOffset);
+      mmaRowIdx[2] = add(mmaRow2, rowWarpOffset);
+      mmaRowIdx[3] = add(mmaRow3, rowWarpOffset);
+      mmaColIdx[0] = add(mmaCol0, colWarpOffset);
+      mmaColIdx[1] = add(mmaCol1, colWarpOffset);
+
+      SmallVector<Value> multiDimOffset(rank);
+      multiDimOffset[rank - 2] = mmaRowIdx[(elemId / 2) % 4]; // in mma
+      multiDimOffset[rank - 1] = mmaColIdx[elemId % 2];
+      multiDimOffset[rank - 2] =
+          add(multiDimOffset[rank - 2], i32_val(multiDimCTAInRepId[rank - 2] *
+                                                shapePerCTATile[rank - 2]));
+      multiDimOffset[rank - 1] =
+          add(multiDimOffset[rank - 1], i32_val(multiDimCTAInRepId[rank - 1] *
+                                                shapePerCTATile[rank - 1]));
+      return multiDimOffset;
+    }
+  }
+  if (auto mmaLayout = mlir::dyn_cast<MthreadsMmaEncodingAttr>(layout)) {
+    auto shapePerCTA = getShapePerCTA(mmaLayout, shape);
+    auto curInstrShape = mmaLayout.getInstrShape();
+    SmallVector<unsigned> baseInstrShape = {4, 8};
+    SmallVector<Value> mmaColIdx(2);
+    SmallVector<Value> mmaRowIdx(2);
+    Value threadId = getThreadId(rewriter, loc);
+    Value warpSize = i32_val(32);
+    Value laneId = urem(threadId, warpSize);
+    Value warpId = udiv(threadId, warpSize);
+    // TODO: fix the bug in MMAEncodingAttr document
+    SmallVector<Value> multiDimWarpId(2);
+    auto warpsPerCTA = mmaLayout.getWarpsPerCTA();
+    auto warpOrder = triton::gpu::getWarpOrder(mmaLayout);
+    multiDimWarpId = delinearize(rewriter, loc, warpId, warpsPerCTA, warpOrder);
+    Value _1 = i32_val(1);
+    Value _2 = i32_val(2);
+    Value _4 = i32_val(4);
+    Value _8 = i32_val(8);
+    Value _16 = i32_val(16);
+    if (mmaLayout.isPH1()) {
+      Value mmaSquadIdM = udiv(multiDimWarpId[rank - 2], _4);
+      Value mmaWarpIdInSquadM = urem(multiDimWarpId[rank - 2], _4);
+
+      Value mmaSquadSizeM = i32_val(curInstrShape[rank - 2] * 4);
+      Value mmaSquadOffsetM = mul(mmaSquadIdM, mmaSquadSizeM);
+      Value mmaWarpOffsetInSquadM =
+          mul(mmaWarpIdInSquadM, i32_val(baseInstrShape[rank - 2]));
+
+      Value mmaRowBaseId = udiv(laneId, _8);
+      Value mmaColBaseId = urem(laneId, _8);
+
+      mmaRowIdx[0] =
+          add(add(mmaRowBaseId, mmaWarpOffsetInSquadM), mmaSquadOffsetM);
+      Value colWarpOffset =
+          mul(multiDimWarpId[rank - 1], i32_val(curInstrShape[rank - 1]));
+      mmaColIdx[0] = add(mmaColBaseId, colWarpOffset);
+    } else {
+      llvm_unreachable("Unexpected MMALayout version");
+    }
+
+    SmallVector<Value> multiDimOffset(rank);
+    if (mmaLayout.isPH1()) {
+      unsigned numInstrRepN =
+          curInstrShape[rank - 1] / baseInstrShape[rank - 1];
+      unsigned instrRepIdM = elemId / numInstrRepN;
+      unsigned instrRepIdN = elemId % numInstrRepN;
+      multiDimOffset[0] = mmaRowIdx[0];
+      multiDimOffset[1] = mmaColIdx[0];
+      multiDimOffset[0] =
+          add(multiDimOffset[0],
+              i32_val((4 * baseInstrShape[rank - 2]) * instrRepIdM));
+      multiDimOffset[1] = add(multiDimOffset[1], i32_val(8 * instrRepIdN));
+      multiDimOffset[0] = add(multiDimOffset[0], i32_val(multiDimCTAInRepId[0] *
+                                                         shapePerCTATile[0]));
+      multiDimOffset[1] = add(multiDimOffset[1], i32_val(multiDimCTAInRepId[1] *
+                                                         shapePerCTATile[1]));
+    } else {
+      llvm_unreachable("Unexpected MMALayout version");
+    }
+    return multiDimOffset;
+  }
   llvm_unreachable("unexpected layout in getMultiDimOffset");
 }
 

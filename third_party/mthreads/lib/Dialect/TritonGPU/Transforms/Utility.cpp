@@ -271,6 +271,8 @@ std::string GraphLayoutMarker::getColor(const Type &type) const {
       return "yellow";
     else if (isa<triton::gpu::NvidiaMmaEncodingAttr>(layout))
       return "lightslateblue";
+    else if (isa<triton::gpu::MthreadsWMmaEncodingAttr>(layout))
+      return "blue";
     else if (isa<triton::gpu::DotOperandEncodingAttr>(layout))
       return "orange";
     else if (isa<triton::gpu::SharedEncodingAttr>(layout))
@@ -830,6 +832,26 @@ int getNVIDIAComputeCapability(Operation *module) {
          "expected target attribute to be prefixed with \"cuda:\"");
 
   StringRef capabilityStr = ref.drop_front(5); // drop the "cuda:"
+  int computeCapability;
+  bool parseError = capabilityStr.getAsInteger(10, computeCapability);
+  assert(!parseError &&
+         "invalid compute capability string in target attribute");
+
+  return computeCapability;
+}
+
+int getMthreadsComputeCapability(Operation *module) {
+  assert(module->hasAttr(triton::AttrTargetName) &&
+         "Expected a target attribute on the module operation");
+
+  StringAttr targetAttr =
+      cast<StringAttr>(module->getAttr(triton::AttrTargetName));
+
+  StringRef ref = targetAttr.strref();
+  assert(ref.starts_with("musa:") &&
+         "expected target attribute to be prefixed with \"musa:\"");
+
+  StringRef capabilityStr = ref.drop_front(5); // drop the "musa:"
   int computeCapability;
   bool parseError = capabilityStr.getAsInteger(10, computeCapability);
   assert(!parseError &&

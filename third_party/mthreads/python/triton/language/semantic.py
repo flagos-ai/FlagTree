@@ -2,6 +2,8 @@ from __future__ import annotations  # remove after python 3.11
 
 from typing import List, Optional, Sequence, Tuple, TypeVar
 
+import os
+
 from .._C.libtriton import ir
 from . import core as tl
 from . import math
@@ -1037,12 +1039,12 @@ def load(ptr: tl.tensor, mask: Optional[tl.tensor], other: Optional[tl.tensor], 
         return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder)
 
 
-def descriptor_load(desc_ptr: tl.tensor, offsets, cache_modifier: str, eviction_policy: str, type,
+def descriptor_load(desc_ptr: tl.tensor, offsets, cache_modifier: str, eviction_policy: str, type, is_transpose: bool,
                     builder: ir.builder) -> tl.tensor:
     offsets = _convert_to_ir_values(builder, offsets, require_i64=False)
     x = builder.create_descriptor_load(desc_ptr.handle, offsets, type.to_ir(builder),
                                        _str_to_load_cache_modifier(cache_modifier),
-                                       _str_to_eviction_policy(eviction_policy))
+                                       _str_to_eviction_policy(eviction_policy), is_transpose)
     return tl.tensor(x, type)
 
 
@@ -1320,8 +1322,7 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
         out_dtype: tl.dtype, builder: ir.builder) -> tl.tensor:
 
     def assert_dtypes_valid(lhs_dtype, rhs_dtype, options):
-        # TODO(lingfeng.qiu): Disable dot with fp8 for backend musa.
-        if (not options.allow_fp8e4nv) or (options.backend_name == "musa"):
+        if not options.allow_fp8e4nv:
             assert not lhs_dtype.is_fp8e4nv() and not rhs_dtype.is_fp8e4nv(
             ), "Dot op does not support fp8e4nv on CUDA arch < 90"
             if lhs_dtype.is_fp8() and rhs_dtype.is_fp8():
@@ -1353,6 +1354,13 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
                 assert lhs_dtype == rhs_dtype, f"First input ({lhs_dtype}) and second input ({rhs_dtype}) must have the same dtype!"
 
     assert lhs.type.is_block() and rhs.type.is_block()
+
+    backend_name = getattr(builder.options, "backend_name", "")
+    if backend_name == "musa" and os.getenv("MUSA_ENABLE_SQMMA") != "1":
+        if lhs.dtype.is_fp8() or rhs.dtype.is_fp8():
+            lhs = cast(lhs, tl.float16, builder)
+            rhs = cast(rhs, tl.float16, builder)
+
     assert_dtypes_valid(lhs.dtype, rhs.dtype, builder.options)
     if lhs.dtype.is_fp8e4b15() or rhs.dtype.is_fp8e4b15():
         lhs = cast(lhs, tl.float16, builder)

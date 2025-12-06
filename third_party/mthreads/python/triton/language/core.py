@@ -1599,7 +1599,7 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
 
 
 @builtin
-def _experimental_descriptor_load(desc_pointer, offsets, shape, dtype, _builder=None):
+def _experimental_descriptor_load(desc_pointer, offsets, shape, dtype, is_transpose=False, _builder=None):
     """
     Experimental feature to access TMA descriptors loads. This is an escape hatch to easily exercise TTGIR operations.
     This will be removed in the future and shouldn't be used in production code.
@@ -1607,7 +1607,7 @@ def _experimental_descriptor_load(desc_pointer, offsets, shape, dtype, _builder=
     This loads a tensor of data based on the descriptor and offsets.
     """
     type = block_type(dtype, shape)
-    return semantic.descriptor_load(desc_pointer, offsets, "", "", type, _builder)
+    return semantic.descriptor_load(desc_pointer, offsets, "", "", type, is_transpose, _builder)
 
 
 @builtin

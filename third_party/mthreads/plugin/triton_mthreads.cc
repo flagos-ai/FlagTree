@@ -1,5 +1,10 @@
-﻿#include "TritonMTGPUToLLVM/MUSATranslation.h"
+﻿#include "Dialect/MTGPU/IR/Dialect.h"
+#include "Dialect/TritonMthreadsGPU/IR/Dialect.h"
+#include "Dialect/TritonMthreadsGPU/Transforms/Passes.h"
+#include "MTGPUToLLVM/MTGPUToLLVMPass.h"
+#include "TritonMTGPUToLLVM/MUSATranslation.h"
 #include "TritonMTGPUToLLVM/Passes.h"
+#include "TritonMTGPUTransforms/Passes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/MTGPU/MTGPUToLLVMIRTranslation.h"
 #include "passes.h"
@@ -31,6 +36,19 @@ PLUGIN_EXPORT void init_triton_mthreads_passes_ttgpuir(py::module &&m) {
   m.def("add_mtgpu_builtin_func_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createConvertMTGPUBuiltinFuncToLLVMPass());
   });
+  ADD_PASS_WRAPPER_1("add_accelerate_matmul",
+                     mlir::createTritonMTGPUAccelerateMatmulPass, bool);
+  ADD_PASS_WRAPPER_0("add_accelerate_matmul",
+                     mlir::triton::createTritonMTGPUAccelerateMatmulPass);
+}
+
+PLUGIN_EXPORT void init_triton_mthreads_passes_ttmtgpuir(py::module &&m) {
+  ADD_PASS_WRAPPER_0("add_tme_lowering",
+                     mlir::createTritonMthreadsGPUTMELoweringPass);
+  ADD_PASS_WRAPPER_0("add_mtgpu_to_llvm",
+                     mlir::triton::createConvertMTGPUToLLVMPass);
+  ADD_PASS_OPTION_WRAPPER_1("add_mtgpu_pipeline", createTritonMTGPUPipeline,
+                            int);
 }
 
 PLUGIN_EXPORT void init_triton_mthreads(py::module &&m) {
@@ -38,10 +56,13 @@ PLUGIN_EXPORT void init_triton_mthreads(py::module &&m) {
 
   auto passes = m.def_submodule("passes");
   init_triton_mthreads_passes_ttgpuir(passes.def_submodule("ttgpuir"));
+  init_triton_mthreads_passes_ttmtgpuir(passes.def_submodule("ttmtgpuir"));
 
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
+    registry.insert<mlir::triton::mthreads_gpu::TritonMthreadsGPUDialect,
+                    mlir::triton::mtgpu::MTGPUDialect>();
     mlir::registerMTGPUDialectTranslation(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();

@@ -15,6 +15,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
   )
   target_link_libraries(mthreadsTritonPlugin PRIVATE
     TritonMTGPUToLLVM
+    MTGPUToLLVM
+    TritonMTGPUTransforms
+    MTGPUIR
+    TritonMthreadsGPUIR
+    TritonMthreadsGPUTransforms
     # Py
     ${Python3_LIBRARIES}
     ${PYTHON_LDFLAGS}

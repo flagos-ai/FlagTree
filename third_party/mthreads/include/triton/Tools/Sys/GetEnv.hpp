@@ -32,8 +32,11 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "MUSA_LLVMIR_ENABLE_DUMP",
     "MUASM_ENABLE_DUMP",
     "MTCC_ENABLE_ASM_BIN_PATH",
+    "MTGPU_REPLACE_LL",
+    "MTGPU_REPLACE_BIN",
     "MTCC_BIN_PATH",
     "MUSA_ENABLE_FP8_BURST2",
+    "MUSA_ENABLE_SQMMA",
     // clang-format on
 };
 

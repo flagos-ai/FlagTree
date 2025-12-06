@@ -131,7 +131,7 @@ def rcp64h(arg0, _builder=None):
 def rsqrt(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("__nv_rsqrtf", core.dtype("fp32")),
+            (core.dtype("fp32"), ): ("llvm.musa.rsq", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("__nv_rsqrt", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
