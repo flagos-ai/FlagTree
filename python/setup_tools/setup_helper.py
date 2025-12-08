@@ -402,7 +402,6 @@ cache.store(
 cache.store(
     file="llvm-d752c5b-gcc9-x64",
     condition=("enflame" == flagtree_backend),
-    ## TODO upload enflame llvm to blob storage
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz",
     pre_hock=lambda: check_env('KURAMA_LLVM_DIR_GCU300'),
     post_hock=lambda path: set_env({

@@ -114,7 +114,7 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=hcu
 python3 -m pip install . --no-build-isolation -v
 ```
-[enflame](https://github.com/FlagTree/flagtree/triton_v3.3.x/main/third_party/enflame/)
+[enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/)
 ```shell
 # 推荐使用镜像: https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.3.1.tar.gz
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
