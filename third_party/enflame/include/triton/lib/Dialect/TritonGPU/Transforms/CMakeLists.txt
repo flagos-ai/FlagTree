@@ -1,0 +1,50 @@
+add_triton_library(TritonGPUTransforms
+  AccelerateMatmul.cpp
+  Coalesce.cpp
+  F32DotTC.cpp
+  FuseNestedLoops.cpp
+  CombineTensorSelectAndIf.cpp
+  DecomposeScaledBlocked.cpp
+  ReduceDataDuplication.cpp
+  OptimizeAccumulatorInit.cpp
+  OptimizeDotOperands.cpp
+  OptimizeThreadLocality.cpp
+  Pipeliner/AssignLatencies.cpp
+  Pipeliner/LowerLoops.cpp
+  Pipeliner/ScheduleLoops.cpp
+  Pipeliner/WGMMAPipeline.cpp
+  Pipeliner/PipelineExpander.cpp
+  Pipeliner/TestPipelineAssignLatencies.cpp
+  Pipeliner/TestPipelineScheduleLoop.cpp
+  Pipeliner/TestPipelineLowerLoop.cpp
+  Pipeliner/SoftwarePipeliner.cpp
+  Pipeliner/TC05MMAPipeline.cpp
+  Pipeliner/TMAStoresPipeline.cpp
+  Pipeliner/ModifiedAccMMAPipeline.cpp
+  Pipeliner/PipeliningUtility.cpp
+  Pipeliner/Schedule.cpp
+  Prefetch.cpp
+  RemoveLayoutConversions.cpp
+  ReorderInstructions.cpp
+  CoalesceAsyncCopy.cpp
+  Utility.cpp
+  TaskIdPropagate.cpp
+  WSTaskPartition.cpp
+  WSDataPartition.cpp
+  WSCodePartition.cpp
+  WSLowering.cpp
+  PingPong.cpp
+  WSCanonicalization.cpp
+
+  DEPENDS
+  TritonGPUTransformsIncGen
+
+  LINK_LIBS PUBLIC
+  MLIRTransforms
+  MLIRTransformUtils
+  TritonAnalysis
+  TritonIR
+  TritonGPUIR
+  TritonNvidiaGPUIR
+  MLIRTransformUtils
+)

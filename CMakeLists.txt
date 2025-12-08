@@ -213,7 +213,7 @@ include_directories(${PROJECT_SOURCE_DIR}/third_party)
 include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
 
 # link_directories(${LLVM_LIBRARY_DIR})
-if (FLAGTREE_BACKEND MATCHES "^(cambricon|aipu|tsingmicro)$")
+if (FLAGTREE_BACKEND MATCHES "^(cambricon|aipu|tsingmicro|enflame)$")
   include_directories(${PROJECT_SOURCE_DIR}/include)
   include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
   add_subdirectory(include)
