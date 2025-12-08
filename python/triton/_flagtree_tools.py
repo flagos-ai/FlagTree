@@ -5,56 +5,16 @@ import inspect
 import tempfile
 from io import StringIO
 import contextlib
-import math
 import ast
-import statistics
+import pandas as pd
 import triton.runtime as runtime
 
 
-def flagtree_do_bench(fn, warmup=25, rep=100, quantiles=None, return_mode="mean"):
+def flagtree_do_bench(fn, warmup=10, rep=5, quantiles=None, return_mode="mean"):
+    assert return_mode in ["mean", "min", "max", "sum"]
     bench = FlagtreeBench(current_fn=fn, warmup=warmup, rep=rep, quantiles=quantiles, return_mode=return_mode)
     bench.do_bench()
-    return 0
-
-
-'''
-    function _quantile and _summarize_statistics is from .testing.
-    if used directly, it will lead to circular dependencies
-'''
-
-
-def _quantile(a, q):
-    n = len(a)
-    a = sorted(a)
-
-    def get_quantile(q):
-        if not (0 <= q <= 1):
-            raise ValueError("Quantiles must be in the range [0, 1]")
-        point = q * (n - 1)
-        lower = math.floor(point)
-        upper = math.ceil(point)
-        t = point - lower
-        return (1 - t) * a[lower] + t * a[upper]
-
-    return [get_quantile(q) for q in q]
-
-
-def _summarize_statistics(times, quantiles, return_mode):
-    if quantiles is not None:
-        ret = _quantile(times, quantiles)
-        if len(ret) == 1:
-            ret = ret[0]
-        return ret
-    if return_mode == "all":
-        return times
-    elif return_mode == "min":
-        return min(times)
-    elif return_mode == "max":
-        return max(times)
-    elif return_mode == "mean":
-        return statistics.mean(times)
-    elif return_mode == "median":
-        return statistics.median(times)
+    return bench.results[return_mode]
 
 
 '''
@@ -131,8 +91,7 @@ class IndentedBuffer:
 
 class FlagtreeBench:
 
-    def __init__(self, current_fn, warmup=100, rep=100, quantiles=None, return_mode="mean",
-                 metrics='gpu__time_duration'):
+    def __init__(self, current_fn, warmup=10, rep=5, quantiles=None, return_mode="mean", metrics='gpu__time_duration'):
         if FlagtreeBench.check_ncu():
             self._current_fn = current_fn
             self.metrics = metrics
@@ -143,7 +102,6 @@ class FlagtreeBench:
             self.triton_funcs = []
             self._get_package_path()
             self._create_temp_file()
-            print(self.python_exec.file, self.out_csv.file)
 
     @staticmethod
     def check_ncu():
@@ -153,9 +111,9 @@ class FlagtreeBench:
             print("[INFO]: ncu check successfully")
             return True
         except Exception as err_msg:
-            print(f"[Hint] The inability to invoke ncu on this machine"
+            print(f"\033[31m[Error] The inability to invoke ncu on this machine"
                   f"might be due to issues such as the absence of ncu, "
-                  f"lack of permissions, or a version that is too low. Specifically {err_msg}")
+                  f"lack of permissions, or a version that is too low. Specifically \n{err_msg}\033[0m")
             return False
 
     @staticmethod
@@ -198,7 +156,7 @@ class FlagtreeBench:
                     mod_name = node.value.id
                     mod_instance = func_global_dict[mod_name]
                     if hasattr(mod_instance, '__file__'):
-                        mod_dir_path = os.path.dirname(mod_instance.__file__)
+                        mod_dir_path = os.path.dirname(os.path.dirname(mod_instance.__file__))
                         deps_path.add(mod_dir_path)
                     modules.add(mod_name)
                 self.generic_visit(node)
@@ -241,13 +199,40 @@ class FlagtreeBench:
 
     def _exec(self):
         runtime.driver.active.clear_cache(self.bench_cache)
-        cmd = ["ncu", "--metrics", self.metrics, "python3", self.python_exec.name]
+        cmd = [
+            "ncu",
+            "--metrics",
+            self.metrics,
+            "--csv",
+            "--log-file",
+            self.out_csv.name,
+            "python3",
+            self.python_exec.name,
+        ]
         print(f"[INFO]: ncu running on {self.python_exec.name}")
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, text=True)
-        self.clean_out = "\n".join(line for line in result.stdout.splitlines() if not line.startswith("==PROF=="))
+        subprocess.run(cmd, check=True)
+        self._pure_csv_log()
+
+    def _pure_csv_log(self):
+        FILTER_PREFIXES = ["==PROF=", "==ERROR=", "==WARNING="]
+        with open(self.out_csv.name, 'r') as csv_f:
+            lines = csv_f.readlines()
+        new_lines = [line for line in lines if not any(line.startswith(prefix) for prefix in FILTER_PREFIXES)]
+        with open(self.out_csv.name, "w") as csv_f:
+            csv_f.writelines(new_lines)
 
     def _get_index(self):
-        ...
+        indexs = ['avg', 'max', 'min', 'sum']
+        patterns = "at::|std::"
+        index_dict = dict.fromkeys(indexs, 0)
+        df = pd.read_csv(self.out_csv.name)
+        metric_values = df[~df["Kernel Name"].str.contains(patterns, regex=True)][["Metric Name", "Metric Value"]]
+        for _, row in metric_values.iterrows():
+            metric_name = str(row['Metric Name']).split('.')[-1]
+            gpu_time = float(row['Metric Value']) / 1e6
+            index_dict[metric_name] += gpu_time
+        index_dict['mean'] = index_dict['avg']
+        return index_dict
 
     def _gen_import_and_path(self, script_code: IndentedBuffer, path_mode='insert'):
         calls, modules, deps_path = self._get_current_function_used_mod()
@@ -321,4 +306,4 @@ class FlagtreeBench:
         self._generate_script()
         self._pre_operation()
         self._exec()
-        self.index_set = self._get_index()
+        self.results = self._get_index()
