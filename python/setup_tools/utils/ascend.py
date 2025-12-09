@@ -11,9 +11,9 @@ def precompile_hook_flir(*args, **kargs):
 
 downloader = DownloadManager()
 
-submodules = (Module(name="ascendnpu-ir", url="https://gitee.com/ascend/ascendnpu-ir.git",
-                     commit_id="1922371c42749fda534d6395b7ed828b5c9f36d4",
-                     dst_path=os.path.join(flagtree_submodule_dir, "ascend/third_party/ascendnpu-ir")), )
+submodules = (Module(name="ascendnpu-ir", url="https://gitcode.com/qq_42979146/AscendNPU-IR.git",
+                     branch="ascend_with_flir",
+                     dst_path=os.path.join(flagtree_submodule_dir, "ascendnpu-ir")), )
 
 '''
 def get_backend_cmake_args(*args, **kargs):
