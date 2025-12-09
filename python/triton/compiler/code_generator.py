@@ -12,7 +12,7 @@ from types import ModuleType
 from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, List
 
 from .. import knobs, language
-from .._C.libtriton import ir, gluon_ir
+from .._C.libtriton import ir, gluon_ir, flagtree_ir
 from ..language import constexpr, str_to_ty, tensor, tuple as tl_tuple
 from ..language.core import _unwrap_if_constexpr, base_value, base_type
 # ideally we wouldn't need any runtime component
@@ -295,14 +295,18 @@ class BoundJITMethod:
 class CodeGenerator(ast.NodeVisitor):
 
     def __init__(self, context, prototype, gscope, function_name, jit_fn: JITFunction, *, options, codegen_fns,
-                 module_map, is_gluon, module=None, is_kernel=False, function_types: Optional[Dict] = None,
+                 module_map, extension, module=None, is_kernel=False, function_types: Optional[Dict] = None,
                  noinline=False, caller_context=None, file_name: Optional[str] = None, begin_line=0):
         self.context = context
-        self.is_gluon = is_gluon
-        if is_gluon:
+        self.extension = extension
+        if extension == "gluon":
             from triton.experimental.gluon.language._semantic import GluonSemantic
             self.builder = gluon_ir.GluonOpBuilder(context)
             self.semantic = GluonSemantic(self.builder)
+        elif extension == "flagtree":
+            from triton.experimental.flagtree.language._semantic import FlagTreeSemantic
+            self.builder = flagtree_ir.FlagTreeOpBuilder(context)
+            self.semantic = FlagTreeSemantic(self.builder)
         else:
             from triton.language.semantic import TritonSemantic
             self.builder = ir.builder(context)
@@ -401,6 +405,7 @@ class CodeGenerator(ast.NodeVisitor):
                     getattr(val, "__triton_aggregate__", False),  #
                     getattr(val, "__module__", "").startswith("triton.language"),  #
                     getattr(val, "__module__", "").startswith("triton.experimental.gluon.language"),  #
+                    getattr(val, "__module__", "").startswith("triton.experimental.flagtree.language"),  #
                     isinstance(val, language.dtype),  #
                     _is_namedtuple(val),
                     self._is_constexpr_global(name),  #
@@ -1315,7 +1320,7 @@ class CodeGenerator(ast.NodeVisitor):
                                       noinline=fn.noinline, file_name=file_name, begin_line=begin_line,
                                       options=self.builder.options, codegen_fns=self.builder.codegen_fns,
                                       module_map=self.builder.module_map, caller_context=caller_context,
-                                      is_gluon=self.is_gluon)
+                                      extension=self.extension)
             try:
                 generator.visit(fn.parse())
             except Exception as e:
@@ -1631,13 +1636,13 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
     proxy = namedtuple("SpecializationProxy", ["constants", "signature"])(constants, signature)
     generator = CodeGenerator(context, prototype, gscope=fn.get_capture_scope(), function_name=fn.repr(proxy),
                               jit_fn=fn, is_kernel=True, file_name=file_name, begin_line=begin_line, options=options,
-                              codegen_fns=codegen_fns, module_map=module_map, module=module, is_gluon=fn.is_gluon())
+                              codegen_fns=codegen_fns, module_map=module_map, module=module, extension=fn.extension())
     generator.visit(fn.parse())
     module = generator.module
     # module takes ownership of the context
     module.context = context
     if not module.verify_with_diagnostics():
-        if not fn.is_gluon():
+        if fn.extension() == "triton":
             print(module)
         raise RuntimeError("error encountered during parsing")
     return module

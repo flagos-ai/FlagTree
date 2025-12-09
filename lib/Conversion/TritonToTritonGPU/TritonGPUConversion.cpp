@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <numeric>
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
+#include "triton/Dialect/FlagTree/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -90,7 +92,8 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
-                             scf::SCFDialect, ub::UBDialect>(
+                             scf::SCFDialect, ub::UBDialect, LLVM::LLVMDialect,
+                             triton::flagtree::FlagTreeDialect>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
 
   // We have requirements for the data layouts
@@ -113,6 +116,15 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     }
     return true;
   });
+
+  addDynamicallyLegalDialect<triton::flagtree::FlagTreeDialect>(
+      [&](Operation *op) {
+        bool hasLegalRegions = true;
+        for (auto &region : op->getRegions()) {
+          hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
+        }
+        return hasLegalRegions && typeConverter.isLegal(op);
+      });
 }
 
 bool TritonGPUConversionTarget::isDynamicallyLegal(

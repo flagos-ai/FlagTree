@@ -630,8 +630,11 @@ def compute_cache_key(kernel_key_cache, specialization, options):
 
 class JITFunction(JITCallable, KernelInterface[T]):
 
-    def is_gluon(self):
-        return False
+    def extension(self) -> str:
+        return "triton"
+
+    def is_gluon(self) -> bool:
+        return self.extension() == "gluon"
 
     def _call_hook(
         self,

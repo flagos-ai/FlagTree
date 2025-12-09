@@ -18,6 +18,7 @@ class Language(Enum):
     """The input language being compiled by the backend."""
     TRITON = 0
     GLUON = 1
+    FLAGTREE = 2
 
 
 class BaseBackend(metaclass=ABCMeta):

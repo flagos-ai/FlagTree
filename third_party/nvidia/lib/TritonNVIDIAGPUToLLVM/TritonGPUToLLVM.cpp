@@ -4,23 +4,30 @@
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Membar.h"
+#include "triton/Conversion/FlagTreeToLLVM/DSLRegionOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/FlagTree/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 #include "Allocation.h"
 #include "PatternTritonGPUOpToLLVM.h"
+#include "triton/Conversion/FlagTreeToLLVM/ExtractOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 
@@ -68,6 +75,24 @@ public:
   }
 };
 
+class FlagTreeLLVMConversionTarget : public ConversionTarget {
+public:
+  explicit FlagTreeLLVMConversionTarget(MLIRContext &ctx,
+                                        LLVMTypeConverter &typeConverter)
+      : ConversionTarget(ctx) {
+    addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect>();
+    addIllegalDialect<flagtree::FlagTreeDialect>();
+    addDynamicallyLegalOp<flagtree::DSLRegionOp, flagtree::YieldOp>(
+        [&](Operation *op) -> bool {
+          bool hasLegalRegions = true;
+          for (auto &region : op->getRegions()) {
+            hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
+          }
+          return hasLegalRegions && typeConverter.isLegal(op);
+        });
+  }
+};
+
 struct ConvertTritonGPUToLLVM
     : public triton::impl::ConvertTritonGPUToLLVMBase<ConvertTritonGPUToLLVM> {
   using ConvertTritonGPUToLLVMBase::ConvertTritonGPUToLLVMBase;
@@ -110,6 +135,17 @@ struct ConvertTritonGPUToLLVM
 
     RewritePatternSet patterns(context);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
+    {
+      FlagTreeLLVMConversionTarget target(*context, typeConverter);
+      RewritePatternSet patterns(context);
+      mlir::triton::flagtree::populateDSLRegionOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
+      mlir::triton::flagtree::populateExtractOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
+      if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
+        return signalPassFailure();
+      }
+    }
     mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit);
     mlir::triton::NVIDIA::populateTensorMemorySubviewOpToLLVMPattern(

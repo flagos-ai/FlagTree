@@ -7,6 +7,7 @@
 #include "triton/Analysis/Membar.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#include "triton/Dialect/FlagTree/Transforms/Passes.h"
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
@@ -119,6 +120,13 @@ void init_gluon_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_inliner", gluon::createGluonInline);
 }
 
+void init_flagtree_passes(py::module &&m) {
+  ADD_PASS_WRAPPER_0("add_flagtree_convert_arg_to_memdesc",
+                     mlir::triton::flagtree::createFlagTreeConvertArgToMemDesc);
+  ADD_PASS_WRAPPER_0("add_flagtree_dsl_region_inline",
+                     mlir::triton::flagtree::createFlagTreeDSLRegionInline);
+}
+
 void init_triton_passes(py::module &&m) {
   init_triton_analysis(m.def_submodule("analysis"));
   init_triton_passes_common(m.def_submodule("common"));
@@ -127,4 +135,5 @@ void init_triton_passes(py::module &&m) {
   init_triton_passes_ttgpuir(m.def_submodule("ttgpuir"));
   init_triton_passes_llvmir(m.def_submodule("llvmir"));
   init_gluon_passes(m.def_submodule("gluon"));
+  init_flagtree_passes(m.def_submodule("flagtree"));
 }

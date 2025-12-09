@@ -1,9 +1,11 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#include "triton/Dialect/FlagTree/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -787,6 +789,41 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
   patterns.add<CFCondBranchPattern, CFBranchPattern>(typeConverter, context);
 }
 
+class FlagTreeDSLRegionOpPattern
+    : public OpConversionPattern<flagtree::DSLRegionOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(flagtree::DSLRegionOp op,
+                  flagtree::DSLRegionOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newOp = rewriter.cloneWithoutRegions<flagtree::DSLRegionOp>(op);
+    Region &body = op.getBody(), &newBody = newOp.getBody();
+    rewriter.inlineRegionBefore(body, newBody, newBody.end());
+
+    if (failed(rewriter.convertRegionTypes(&newBody, *getTypeConverter()))) {
+      return rewriter.notifyMatchFailure(op, "could not convert body types");
+    }
+    newOp->setOperands(adaptor.getOperands());
+
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+
+void populateFlagTreePatterns(TritonGPUTypeConverter &typeConverter,
+                              RewritePatternSet &patterns) {
+  MLIRContext *context = patterns.getContext();
+  patterns.add<FlagTreeDSLRegionOpPattern, GenericOpPattern<flagtree::YieldOp>,
+               GenericOpPattern<flagtree::ExtractAllocatedPtrOp>,
+               GenericOpPattern<flagtree::ExtractAlignedPtrOp>,
+               GenericOpPattern<flagtree::ExtractOffsetOp>,
+               GenericOpPattern<flagtree::ExtractSizesOp>,
+               GenericOpPattern<flagtree::ExtractStridesOp>>(typeConverter,
+                                                             context);
+}
+
 class ConvertTritonToTritonGPU
     : public triton::impl::ConvertTritonToTritonGPUBase<
           ConvertTritonToTritonGPU> {
@@ -817,6 +854,7 @@ public:
     //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
+    populateFlagTreePatterns(typeConverter, patterns);
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
 
     Builder b(&getContext());

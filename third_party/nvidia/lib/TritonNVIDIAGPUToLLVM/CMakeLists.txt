@@ -32,4 +32,5 @@ add_triton_library(TritonNVIDIAGPUToLLVM
     MLIRReconcileUnrealizedCasts
     NVGPUIR
     MLIRUBToLLVM
+    FlagTreeToLLVM
 )
