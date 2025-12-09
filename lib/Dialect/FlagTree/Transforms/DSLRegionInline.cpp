@@ -1,4 +1,5 @@
 #include "triton/Dialect/FlagTree/Transforms/DSLRegionInline.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -41,18 +42,40 @@ FlagTreeDSLRegionInlineConversion::FlagTreeDSLRegionInlineConversion(
 
 LogicalResult FlagTreeDSLRegionInlineConversion::matchAndRewrite(
     fl::DSLRegionOp op, PatternRewriter &rewriter) const {
-  Operation *module = op;
-  while (module && !isa<ModuleOp>(module)) {
-    module = module->getParentOp();
-  }
   IRMapping mapper;
-  for (auto [arg, input] :
-       llvm::zip(op.getBody().getArguments(), op.getInputs())) {
-    mapper.map(arg, input);
+  Block *parent = op->getBlock(),
+        *continuation = rewriter.splitBlock(parent, op->getIterator());
+  auto &blocks = op.getBody().getBlocks();
+  const size_t blockNum = blocks.size();
+  SmallVector<Block *> newBlocks;
+  for (auto [idx, block] : llvm::enumerate(blocks)) {
+    auto locs = llvm::map_range(
+        block.getArguments(),
+        [](BlockArgument &arg) -> Location { return arg.getLoc(); });
+    Block *newBlock =
+        rewriter.createBlock(continuation, block.getArgumentTypes(),
+                             SmallVector<Location>(locs.begin(), locs.end()));
+    for (auto [oldArg, newArg] :
+         llvm::zip(block.getArguments(), newBlock->getArguments())) {
+      mapper.map(oldArg, newArg);
+    }
+    if (idx == 0) {
+      PatternRewriter::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToEnd(parent);
+      rewriter.create<LLVM::BrOp>(op.getLoc(), op.getInputs(), newBlock);
+    }
+    mapper.map(&block, newBlock);
+    newBlocks.push_back(newBlock);
   }
-  for (Operation &operation : op.getOps()) {
-    if (!isa<fl::YieldOp>(operation)) {
-      rewriter.clone(operation, mapper);
+  for (auto [oldBlock, newBlock] : llvm::zip(blocks, newBlocks)) {
+    PatternRewriter::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToEnd(newBlock);
+    for (Operation &operation : oldBlock.getOperations()) {
+      if (isa<fl::YieldOp>(operation)) {
+        rewriter.create<LLVM::BrOp>(operation.getLoc(), continuation);
+      } else {
+        rewriter.clone(operation, mapper);
+      }
     }
   }
   rewriter.eraseOp(op);

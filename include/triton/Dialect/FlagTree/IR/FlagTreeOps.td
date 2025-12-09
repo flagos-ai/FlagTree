@@ -21,7 +21,7 @@ def FlagTree_ArgType : AnyTypeOf<[FlagTree_TensorType, LLVMPointerType, LLVMStru
 
 def FlagTree_DSLRegionOp : FlagTree_Op<"dsl_region", [IsolatedFromAbove, RecursiveMemoryEffects]> {
   let arguments = (ins Variadic<FlagTree_ArgType>:$inputs);
-  let regions = (region SizedRegion<1>:$body);
+  let regions = (region AnyRegion:$body);
   let hasVerifier = 1;
 }
 

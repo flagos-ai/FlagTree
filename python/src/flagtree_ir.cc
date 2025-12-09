@@ -34,38 +34,58 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
   for (const Value &input : inputs) {
     inputTys.push_back(input.getType());
   }
-  Block *block =
-      builder.createBlock(&body, {}, inputTys,
-                          SmallVector<Location>(inputTys.size(), getLastLoc()));
-  SmallVector<Value> extractOps;
-  for (const auto &input : body.getArguments()) {
-    if (RankedTensorType tensorTy =
-            dyn_cast<RankedTensorType>(input.getType())) {
-      extractOps.push_back(create<flagtree::ExtractAllocatedPtrOp>(input));
-      extractOps.push_back(create<flagtree::ExtractAlignedPtrOp>(input));
-      extractOps.push_back(create<flagtree::ExtractOffsetOp>(input));
-      const size_t rank = tensorTy.getRank();
-      auto sizesOp = create<flagtree::ExtractSizesOp>(rank, input);
-      auto stridesOp = create<flagtree::ExtractStridesOp>(rank, input);
-      for (const auto &result : sizesOp.getResults()) {
-        extractOps.push_back(result);
+  IRMapping mapper;
+  for (auto [idx, oldBlock] : llvm::enumerate(func.getBlocks())) {
+    if (idx == 0) {
+      Block *newBlock = builder.createBlock(
+          &body, {}, inputTys,
+          SmallVector<Location>(inputTys.size(), getLastLoc()));
+      SmallVector<Value> extractOps;
+      for (const auto &input : body.getArguments()) {
+        if (RankedTensorType tensorTy =
+                dyn_cast<RankedTensorType>(input.getType())) {
+          extractOps.push_back(create<flagtree::ExtractAllocatedPtrOp>(input));
+          extractOps.push_back(create<flagtree::ExtractAlignedPtrOp>(input));
+          extractOps.push_back(create<flagtree::ExtractOffsetOp>(input));
+          const size_t rank = tensorTy.getRank();
+          auto sizesOp = create<flagtree::ExtractSizesOp>(rank, input);
+          auto stridesOp = create<flagtree::ExtractStridesOp>(rank, input);
+          for (const auto &result : sizesOp.getResults()) {
+            extractOps.push_back(result);
+          }
+          for (const auto &result : stridesOp.getResults()) {
+            extractOps.push_back(result);
+          }
+        } else {
+          extractOps.push_back(input);
+        }
+        for (auto [funcArg, extractOp] :
+             llvm::zip(func.getArguments(), extractOps)) {
+          mapper.map(funcArg, extractOp);
+        }
       }
-      for (const auto &result : stridesOp.getResults()) {
-        extractOps.push_back(result);
-      }
+      mapper.map(&oldBlock, newBlock);
     } else {
-      extractOps.push_back(input);
+      Block *newBlock = builder.createBlock(
+          &body, {}, oldBlock.getArgumentTypes(),
+          SmallVector<Location>(oldBlock.getNumArguments(), getLastLoc()));
+      for (auto [oldArg, newArg] :
+           llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
+        mapper.map(oldArg, newArg);
+      }
+      mapper.map(&oldBlock, newBlock);
     }
   }
-  IRMapping mapper;
-  for (auto [input, funcArg] : llvm::zip(extractOps, func.getArguments())) {
-    mapper.map(funcArg, input);
-  }
-  for (auto &op : func.getBody().getOps()) {
-    if (isa<LLVM::ReturnOp>(op)) {
-      builder.create<flagtree::YieldOp>(op.getLoc());
-    } else {
-      builder.clone(op, mapper);
+  for (auto [oldBlock, newBlock] :
+       llvm::zip(func.getBlocks(), body.getBlocks())) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToEnd(&newBlock);
+    for (auto &op : oldBlock.getOperations()) {
+      if (isa<LLVM::ReturnOp>(op)) {
+        builder.create<flagtree::YieldOp>(op.getLoc());
+      } else {
+        builder.clone(op, mapper);
+      }
     }
   }
   return dslRegionOp;

@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from mlir import ir
-from mlir.dialects import arith, nvvm, tensor
+from mlir.dialects import arith, memref, nvvm, scf, func
 import torch
 import triton
 import triton.language as tl
@@ -13,17 +13,21 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 @dialect(name="mlir")
-def edsl(x: Annotated[ir.RankedTensorType, "tensor<1024xf32>"], y: Annotated[ir.RankedTensorType, "tensor<1024xf32>"],
-         output: Annotated[ir.RankedTensorType, "tensor<1024xf32>"]):
+def edsl(x: Annotated[ir.RankedTensorType, "memref<?xf32>"], y: Annotated[ir.RankedTensorType, "memref<?xf32>"],
+         output: Annotated[ir.RankedTensorType, "memref<?xf32>"]):
     tidx = nvvm.ThreadIdXOp(ir.IntegerType.get_signless(32)).res
     bidx = nvvm.BlockIdXOp(ir.IntegerType.get_signless(32)).res
     bdimx = nvvm.BlockDimXOp(ir.IntegerType.get_signless(32)).res
     idx = arith.addi(arith.muli(bidx, bdimx), tidx)
+    bdimx = arith.index_cast(ir.IndexType.get(), bdimx)
     idx = arith.index_cast(ir.IndexType.get(), idx)
-    xval = tensor.extract(x, [idx])
-    yval = tensor.extract(y, [idx])
-    result = arith.addf(xval, yval)
-    tensor.insert(result, output, [idx])
+    length = memref.dim(output, arith.constant(ir.IndexType.get(), 0))
+    for i in scf.for_(idx, length, bdimx):
+        xval = memref.load(x, [i])
+        yval = memref.load(y, [i])
+        result = arith.addf(xval, yval)
+        memref.store(result, output, [i])
+        scf.yield_([])
 
 
 @flagtree.jit
@@ -50,7 +54,7 @@ def add(x: torch.Tensor, y: torch.Tensor):
     assert x.device == DEVICE and y.device == DEVICE and output.device == DEVICE
     n_elements = output.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
-    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024, num_warps=32)
+    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024)
     return output
 
 

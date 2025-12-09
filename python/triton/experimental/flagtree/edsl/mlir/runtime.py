@@ -17,8 +17,7 @@ class EdslMLIRJITFunction(object):
                  **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.fn: Final[Any] = fn
-        self.pipeline: Final[List[str]] = ["one-shot-bufferize{bufferize-function-boundaries}", "convert-to-llvm"
-                                           ] if pipeline is None else pipeline
+        self.pipeline: Final[List[str]] = ["convert-scf-to-cf", "convert-to-llvm"] if pipeline is None else pipeline
         self.context: Final[ir.Context] = ir.Context() if context is None else context
 
     def __deepcopy__(self, memo: Dict[int, Any]) -> EdslMLIRJITFunction:

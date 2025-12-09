@@ -58,6 +58,14 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
         return node.value
 
     @override
+    def visit_For(self, node: ast.For) -> None:
+        with ir.Location.file(self.absfilename, node.lineno, node.col_offset):
+            for iters in self.visit(node.iter):
+                self.lscope[node.target.id] = iters
+                for stmt in node.body:
+                    self.visit(stmt)
+
+    @override
     def visit_FunctionDef(self, node: ast.FunctionDef) -> func.FuncOp:
 
         def convert_annotation_to_type(tynode: ast.Tuple) -> ir.Type:
