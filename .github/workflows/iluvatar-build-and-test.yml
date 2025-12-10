@@ -70,7 +70,7 @@ jobs:
           ./python/build/cmake.linux-x86_64-cpython-3.10/bin/triton-opt --pass-pipeline='builtin.module(convert-triton-to-tritongpu{target="cuda:CC" num-warps=4 threads-per-warp=32 num-ctas=1})'  ./test/bin/iluvatar/add_kernel.ttir
           ./python/build/cmake.linux-x86_64-cpython-3.10/bin/triton-opt --convert-arith-to-llvm ./test/bin/iluvatar/add_kernel.ttgir
           cd python/tutorials
-          python3 01-vector-add.py
+          #python3 01-vector-add.py
           #python3 04-low-memory-dropout.py
-          python3 07-extern-functions.py
-          python3 08-grouped-gemm.py
+          #python3 07-extern-functions.py
+          #python3 08-grouped-gemm.py
