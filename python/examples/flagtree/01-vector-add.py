@@ -1,23 +1,23 @@
 from typing import Annotated
 
 from mlir import ir
-from mlir.dialects import arith, memref, nvvm, scf, func
+from mlir.dialects import arith, memref, nvvm, scf
 import torch
 import triton
 import triton.language as tl
-from triton.experimental.flagtree.edsl import dialect
 from triton.experimental import flagtree
+from triton.experimental.flagtree.edsl import dialect
 import triton.experimental.flagtree.language as fl
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 @dialect(name="mlir")
-def edsl(x: Annotated[ir.RankedTensorType, "memref<?xf32>"], y: Annotated[ir.RankedTensorType, "memref<?xf32>"],
-         output: Annotated[ir.RankedTensorType, "memref<?xf32>"]):
-    tidx = nvvm.ThreadIdXOp(ir.IntegerType.get_signless(32)).res
-    bidx = nvvm.BlockIdXOp(ir.IntegerType.get_signless(32)).res
-    bdimx = nvvm.BlockDimXOp(ir.IntegerType.get_signless(32)).res
+def edsl(x: Annotated[ir.MemRefType, "memref<?xf32>"], y: Annotated[ir.MemRefType, "memref<?xf32>"],
+         output: Annotated[ir.MemRefType, "memref<?xf32>"]):
+    tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
+    bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
+    bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     idx = arith.addi(arith.muli(bidx, bdimx), tidx)
     bdimx = arith.index_cast(ir.IndexType.get(), bdimx)
     idx = arith.index_cast(ir.IndexType.get(), idx)

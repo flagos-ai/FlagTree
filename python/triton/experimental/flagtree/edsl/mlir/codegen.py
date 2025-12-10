@@ -36,7 +36,11 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> Any:
         [target] = node.targets
         ret = self.visit(node.value)
-        self.lscope[target.id] = ret
+        if isinstance(target, ast.Name):
+            self.lscope[target.id] = ret
+        elif isinstance(target, ast.Tuple) or isinstance(target, ast.List):
+            for elt, val in zip(target.elts, ret):
+                self.lscope[elt.id] = val
         return ret
 
     @override
@@ -61,7 +65,14 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
     def visit_For(self, node: ast.For) -> None:
         with ir.Location.file(self.absfilename, node.lineno, node.col_offset):
             for iters in self.visit(node.iter):
-                self.lscope[node.target.id] = iters
+                if isinstance(node.target, ast.Name):
+                    self.lscope[node.target.id] = iters
+                elif isinstance(node.target, ast.Tuple):
+                    assert len(node.target.elts) == len(iters)
+                    for elt, iter in zip(node.target.elts, iters):
+                        self.lscope[elt.id] = iter
+                else:
+                    raise NotImplementedError(f"unsupported for target type: {type(node.target)}")
                 for stmt in node.body:
                     self.visit(stmt)
 
@@ -105,3 +116,16 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
             return ret
         else:
             raise UnknownSymbolError(node.id)
+
+    @override
+    def visit_Subscript(self, node: ast.Subscript) -> Any:
+        lhs = self.visit(node.value)
+        slices = self.visit(node.slice)
+        return lhs[slices]
+
+    @override
+    def visit_With(self, node: ast.With) -> None:
+        [item] = node.items
+        with self.visit(item.context_expr):
+            for stmt in node.body:
+                self.visit(stmt)
