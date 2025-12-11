@@ -17,9 +17,11 @@ def quiet():
     finally:
         sys.stdout, sys.stderr = old_stdout, old_stderr
 
+
 # Taken from https://github.com/pytorch/pytorch/blob/master/tools/setup_helpers/env.py
 def check_env_flag(name: str, default: str = "") -> bool:
     return os.getenv(name, default).upper() in ["ON", "1", "YES", "TRUE", "Y"]
+
 
 def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
     suffix = sysconfig.get_config_var('EXT_SUFFIX')
@@ -44,7 +46,7 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
         scheme = 'posix_prefix'
     py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
     include_dirs = include_dirs + [srcdir, py_include_dir]
-    cc_cmd = [cc, src, "-O3", "-shared",  "-fPIC", "-o", so]
+    cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-o", so]
     if check_env_flag("TRITON_USE_MACA", "ON"):  # Default ON
         cc_cmd += [f"-D__MACA__", "-lmcruntime"]
     cc_cmd += [f'-l{lib}' for lib in libraries]

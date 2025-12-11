@@ -138,7 +138,7 @@ class Autotuner(KernelInterface):
             return do_bench(kernel_call, warmup=self.num_warmups, rep=self.num_reps, quantiles=(0.5, 0.2, 0.8))
         except (OutOfResources, CompileTimeAssertionFailure):
             return float("inf") if self.use_cuda_graph else [float("inf"), float("inf"), float("inf")]
-        
+
     def _dump_cache(self, path, config):
         cache_dict = dict(**config.all_kwargs())
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -170,7 +170,7 @@ class Autotuner(KernelInterface):
             config_dict = json.load(file)
         config = self._parse_config_dict(config_dict)
         return config
-    
+
     def _config_cache_path(self, key):
         base_path = os.path.join(default_cache_dir(), "configs")
         user_defined_path = os.environ.get("TRITON_AUTOTUNE_CONFIG_PATH")
@@ -205,7 +205,7 @@ class Autotuner(KernelInterface):
                     config = self._load_cache(self._config_cache_path(key))
                     if config is not None:
                         self.cache[key] = config
-                if key not in self.cache:   
+                if key not in self.cache:
                     # prune configs
                     used_cached_result = False
                     pruned_configs = self.prune_configs(kwargs)

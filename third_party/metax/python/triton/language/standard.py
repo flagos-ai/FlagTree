@@ -64,6 +64,7 @@ def softmax(x, dim=None, keep_dims=False, ieee_rounding=False):
     den = sum(num, _dim, keep_dims=keep_dims)
     return math.fdiv(num, den, ieee_rounding)
 
+
 @core._tensor_member_fn
 @jit
 def ravel(x):
@@ -289,6 +290,7 @@ def xor_sum(input, axis=None, keep_dims=False, _builder=None, _generator=None):
     input = core._promote_bfloat16_to_float32(input, _builder=_builder)
     return core.reduce(input, axis, _xor_combine, keep_dims=keep_dims, _builder=_builder, _generator=_generator)
 
+
 # or reduction
 
 
@@ -303,6 +305,7 @@ def _or_combine(x, y):
 def reduce_or(input, axis, keep_dims=False):
     core.static_assert(input.type.scalar.is_int(), "reduce_or only supported for integers")
     return core.reduce(input, axis, _or_combine, keep_dims=keep_dims)
+
 
 # cumsum
 
@@ -360,7 +363,6 @@ def _compare_and_swap(x, flip, i: core.constexpr):
     return ret
 
 
-
 @jit
 def _bitonic_merge_hypercube(x, stage: core.constexpr, order: core.constexpr):
     '''
@@ -382,12 +384,14 @@ def _bitonic_merge_hypercube(x, stage: core.constexpr, order: core.constexpr):
         x = _compare_and_swap(x, flip, stage - 1 - i)
     return x
 
+
 @jit
 def _bitonic_merge(x, stage: core.constexpr, order: core.constexpr, n_dims: core.constexpr):
     h = core.reshape(x, [2] * _log2(x.numel))
     h = _bitonic_merge_hypercube(h, stage, order)
     x = core.reshape(h, x.shape)
     return x
+
 
 @jit
 def sort_impl(x, k: core.constexpr = None, dim: core.constexpr = None, descending: core.constexpr = core.CONSTEXPR_0):
@@ -439,6 +443,7 @@ def sort(x, dim: core.constexpr = None, descending: core.constexpr = core.CONSTE
 def topk(x, k: core.constexpr, dim: core.constexpr = None):
     return sort_impl(x, k=k, dim=dim, descending=True)
 
+
 @jit
 def bitonic_merge(x, dim: core.constexpr = None, descending: core.constexpr = core.CONSTEXPR_0):
     # handle default dimension or check that it is the most minor dim
@@ -446,6 +451,7 @@ def bitonic_merge(x, dim: core.constexpr = None, descending: core.constexpr = co
     core.static_assert(_dim == len(x.shape) - 1, "only minor dimension is currently supported")
     n_dims: core.constexpr = _log2(x.shape[-1])
     return _bitonic_merge(x, n_dims, descending, n_dims)
+
 
 # flip
 

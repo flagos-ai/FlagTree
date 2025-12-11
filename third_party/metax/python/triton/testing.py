@@ -78,6 +78,7 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, return_mode="mean"):
     times = torch.tensor(ret)
     return getattr(torch, return_mode)(times).item()
 
+
 # return time (seconds)
 # currently only support ns, us, ms & s
 def get_time_s(info):
@@ -86,7 +87,7 @@ def get_time_s(info):
     if "Self CUDA time total:" not in line:
         return -1
     str_val = line[22:].strip()
-    if "ns" in line :
+    if "ns" in line:
         val = float(str_val[:-2])
         val = float(val / 1000000000)
     elif "us" in line:
@@ -99,21 +100,25 @@ def get_time_s(info):
         val = float(str_val[:-1])
     else:
         assert 0
-        
+
     return val
+
 
 def profile(fn, max_retry=10):
     import torch
+
     def run(fn):
         with torch.profiler.profile(
-                            activities=[torch.profiler.ProfilerActivity.CUDA, torch.profiler.ProfilerActivity.CPU],
-                            record_shapes=False,
-                        ) as profiler:
+                activities=[torch.profiler.ProfilerActivity.CUDA, torch.profiler.ProfilerActivity.CPU],
+                record_shapes=False,
+        ) as profiler:
             fn()
-        info = profiler.key_averages(group_by_input_shape=False).table(sort_by="cuda_time_total", max_name_column_width=1000, row_limit=-1)
+        info = profiler.key_averages(group_by_input_shape=False).table(sort_by="cuda_time_total",
+                                                                       max_name_column_width=1000, row_limit=-1)
         # print(info)
-        t =  get_time_s(info)
+        t = get_time_s(info)
         return t
+
     t = -1
     retry = 0
     while t == -1 and retry < max_retry:
@@ -125,10 +130,7 @@ def profile(fn, max_retry=10):
     return t
 
 
-def do_bench(fn, warmup=25, rep=100, grad_to_none=None,
-             quantiles=None,
-             fast_flush=True,
-             return_mode="mean"):
+def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, fast_flush=True, return_mode="mean"):
     assert return_mode in ["min", "max", "mean", "median"]
     import torch
     """
@@ -207,7 +209,7 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None,
             end_event[i].record()
     # Record clocks
     torch.cuda.synchronize()
-    if use_profile: 
+    if use_profile:
         times = torch.tensor(tt, dtype=torch.float) * 1000  # mulple 1000 to convert second to ms
     else:
         times = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)

@@ -11,6 +11,7 @@ import numbers
 T = TypeVar('T')
 TensorTy = TypeVar('TensorTy')
 
+
 class IncompatibleTypeErrorImpl(Exception):
 
     def __init__(self, type_a, type_b):
@@ -108,6 +109,7 @@ def computation_type_impl(a_ty: tl.dtype, a_is_scalar: bool, b_ty: tl.dtype, b_i
                         "this is unlikely to result in a useful answer. Cast them to the same signedness.")
     return integer_promote_impl(a_ty, b_ty)
 
+
 def to_tensor(x, builder, check_type: bool = True):
     if isinstance(x, bool):
         return tl.tensor(builder.get_int1(x), tl.int1)
@@ -144,6 +146,7 @@ def to_tensor(x, builder, check_type: bool = True):
     if check_type:
         raise TypeError(f"cannot convert {x} of type {type(x)} to tensor")
     return x
+
 
 # ===----------------------------------------------------------------------===//
 #                               Binary Operators
@@ -782,7 +785,8 @@ def _str_to_rounding_mode(rounding_mode: Optional[str]):
         return ir.ROUNDING_MODE.RTNE_NO_NAN
     if rounding_mode == 'rtz':
         return ir.ROUNDING_MODE.RTZ
-    raise ValueError(f"Invalid rounding mode: {rounding_mode}. Supported rounding modes are 'rtne' and 'rtz' and 'rtne_no_nan'.")
+    raise ValueError(
+        f"Invalid rounding mode: {rounding_mode}. Supported rounding modes are 'rtne' and 'rtz' and 'rtne_no_nan'.")
 
 
 def bitcast(input: tl.tensor, dst_ty: tl.dtype, builder: ir.builder) -> tl.tensor:
@@ -1038,7 +1042,8 @@ def _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, evicti
     # Build IR
     # param 'is_pipeline' is only available on MACA
     return tl.tensor(
-        builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile, is_pipeline), dst_ty)
+        builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile,
+                                           is_pipeline), dst_ty)
 
 
 def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, is_pipeline, builder):
@@ -1101,7 +1106,7 @@ def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_
 
 
 def load(ptr: tl.tensor, mask: Optional[tl.tensor], other: Optional[tl.tensor], boundary_check: Tuple,
-         padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool, is_pipeline: bool, 
+         padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool, is_pipeline: bool,
          builder: ir.builder) -> tl.tensor:
     # Cache, eviction and padding options
     # param 'is_pipeline' is only available on MACA
@@ -1111,10 +1116,12 @@ def load(ptr: tl.tensor, mask: Optional[tl.tensor], other: Optional[tl.tensor], 
 
     if ptr.type.is_ptr() and ptr.type.element_ty.is_block():
         # Load by a block pointer: `pointer_type<block_type<>>`
-        return _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, is_pipeline, builder)
+        return _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, is_pipeline,
+                                   builder)
     else:
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
-        return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, is_pipeline, builder)
+        return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, is_pipeline,
+                            builder)
 
 
 def descriptor_load(desc_ptr: tl.tensor, offsets, cache_modifier: str, eviction_policy: str, type,
@@ -1562,9 +1569,11 @@ def associative_scan(inputs: Sequence[tl.tensor], axis: int, region_builder_fn, 
 
     return tuple(wrap_tensor(scan_op.get_result(i), inputs[i].type.scalar, shape) for i in range(len(inputs)))
 
+
 # ===----------------------------------------------------------------------===
 #                               Gather
 # ===----------------------------------------------------------------------===
+
 
 def gather(src: TensorTy, index: TensorTy, axis: int, builder: ir.builder) -> TensorTy:
     assert index.dtype.is_int(), "index must be an integer tensor"
@@ -1583,6 +1592,7 @@ def gather(src: TensorTy, index: TensorTy, axis: int, builder: ir.builder) -> Te
 
     gather = builder.create_gather(src.handle, index.handle, axis)
     return wrap_tensor(gather, src.type.scalar, index.type.shape)
+
 
 # ===----------------------------------------------------------------------===
 #                               Histogram
