@@ -215,7 +215,11 @@ class CodeGenerator(ast.NodeVisitor):
                  codegen_fns, debug=None, module=None, is_kernel=False, function_types: Optional[Dict] = None,
                  noinline=False, file_name: Optional[str] = None, begin_line=0):
         self.context = context
-        self.builder = ir.builder(context)
+        try:
+            from triton._C.libtriton import distributed
+            self.builder = distributed.ir.DistributedOpBuilder(context)
+        except ImportError:
+            self.builder = ir.builder(context)
         self.file_name = file_name
         # node.lineno starts from 1, so we need to subtract 1
         self.begin_line = begin_line - 1

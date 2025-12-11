@@ -750,6 +750,9 @@ class JITFunction(KernelInterface[T]):
         self.__globals__ = fn.__globals__
         self.__module__ = fn.__module__
 
+    def get_capture_scope(self):
+        return self.__globals__ | inspect.getclosurevars(self.fn).nonlocals
+
     @property
     def cache_key(self):
         # TODO : hash should be attribute of `self`
@@ -786,6 +789,14 @@ class JITFunction(KernelInterface[T]):
         kernel = compile(src, None, options)
         self.cache[device][key] = kernel
         return kernel
+
+    def _unsafe_update_src(self, new_src):
+        """
+        The only method allowed to modify src.
+        Bypasses the __setattr__ restriction by calling super().__setattr__ directly.
+        """
+        self.hash = None
+        super().__setattr__('src', new_src)
 
     # we do not parse `src` in the constructor because
     # the user might want to monkey-patch self.src dynamically.

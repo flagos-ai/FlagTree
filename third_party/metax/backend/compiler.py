@@ -1,14 +1,16 @@
-''' Copyright (c) 2025 by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved. '''
+# Copyright (c) 2025 by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 from triton.backends.compiler import BaseBackend, GPUTarget
-from triton._C.libtriton import ir, passes, llvm, metax
-
+from triton._C.libtriton import ir, passes, metax
+try:
+    #from triton._C.libtriton import distributed
+    enable_dist = True
+except ImportError:
+    enable_dist = False
 from dataclasses import dataclass
 import functools
 from typing import Any, Tuple, Optional
 import hashlib
 import re
-import tempfile
-import signal
 import os
 import subprocess
 from pathlib import Path
@@ -76,6 +78,32 @@ def parse_option(string):
     return [item for item in string.split(';') if item]
 
 
+def get_lld_version():
+    maca_path = os.environ.get('MACA_PATH')
+    assert maca_path, "Not found MACA_PATH"
+    lld_path = maca_path + "/mxgpu_llvm/bin/ld.lld"
+    try:
+        result = subprocess.run([lld_path, '--version'], capture_output=True, text=True, timeout=10)
+        version_output = result.stdout
+
+        version_match = re.search(r'LLD\s+(\d+)\.\d+\.\d+', version_output)
+        if not version_match:
+            version_match = re.search(r'lld\s+(\d+)\.\d+\.\d+', version_output, re.IGNORECASE)
+
+        if version_match:
+            major_version = int(version_match.group(1))
+            return major_version
+        else:
+            return 0
+
+    except FileNotFoundError:
+        return 0
+    except subprocess.TimeoutExpired:
+        return 0
+    except Exception:
+        return 0
+
+
 @dataclass(frozen=True)
 class MACAOptions:
     num_warps: int = 4
@@ -98,6 +126,7 @@ class MACAOptions:
     # MACA: new args
     pipeline: str = "basic"
     scenario: str = ""
+    arch: str = None
     extra_options: str = ""
     pipeline_load_num: int = -1
 
@@ -199,6 +228,10 @@ class MACABackend(BaseBackend):
         single_shm = "singleshm" in scenarios
         use_opt_maca_mma = True
         use_opt_maca_mma = (opt.pipeline != "" and not os.getenv("TRITON_DISABLE_MACA_OPT_MMA"))
+        dot_operands_out_loop = ("dot_operands_out_loop" in scenarios
+                                 or os.getenv("TRITON_ENABLE_MACA_OPT_MOVE_DOT_OPERANDS_OUT_LOOP"))
+        cvt_shm_no_pad = ("cvt_shm_no_pad" in scenarios and not os.getenv("TRITON_DISABLE_MACA_OPT_CVT_SHM_NO_PAD"))
+        merge_convert_layout = os.getenv("TRITON_ENABLE_MACA_MERGE_CONVERT_LAYOUT")
         # TTIR -> TTGIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
@@ -213,8 +246,11 @@ class MACABackend(BaseBackend):
         if opt.pipeline == "cpasync":
             disable_prefetch = True
             metax.passes.ttgpuir.add_tritonmetaxgpu_change_layout_for_int8_pass(pm, opt.num_stages, opt.pipeline)
-        metax.passes.ttgpuir.add_accelerate_matmul(pm, opt.num_stages, disable_prefetch, store_coalesce, "c500")
+        metax.passes.ttgpuir.add_accelerate_matmul(pm, opt.num_stages, disable_prefetch, store_coalesce, capability)
         passes.ttgpuir.add_remove_layout_conversions(pm)
+        if not os.getenv("TRITON_DISABLE_CONSTANCY_LOAD_LAYOUT_OPT"):
+            metax.passes.ttgpuir.add_tritonmetaxgpu_change_layout_for_constancy_load_layout(pm)
+            passes.ttgpuir.add_remove_layout_conversions(pm)
         if store_coalesce:
             metax.passes.ttgpuir.add_tritonmetaxgpu_change_layout_from_repn_to_elemn_pass(pm)
             metax.passes.ttgpuir.add_tritonmetaxgpu_optimize_cstore_pass(pm, opt.num_stages)
@@ -254,10 +290,14 @@ class MACABackend(BaseBackend):
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
         passes.ttgpuir.add_reorder_instructions(pm)
-        if os.getenv("TRITON_ENABLE_MACA_OPT_MOVE_DOT_OPERANDS_OUT_LOOP"):
+        if dot_operands_out_loop:
             metax.passes.ttgpuir.add_tritonmetaxgpu_move_dot_operands_out_loop_pass(pm)
         if not os.getenv("TRITON_DISABLE_MACA_MERGE_EQUAL_SHARED_LAYOUT"):
             metax.passes.ttgpuir.add_tritonmetaxgpu_merge_equal_shared_layout_pass(pm)
+        if cvt_shm_no_pad:
+            metax.passes.ttgpuir.add_tritonmetaxgpu_change_convert_layout_attr(pm, False, False, True, False)
+        if merge_convert_layout:
+            metax.passes.ttgpuir.add_tritonmetaxgpu_merge_convert_layout_pass(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
@@ -279,7 +319,19 @@ class MACABackend(BaseBackend):
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
         passes.ttgpuir.add_allocate_shared_memory(pm)
-        metax.passes.ttgpuir.add_to_llvmir(pm, capability)
+
+        scenarios = parse_option(options.scenario)
+        enSmIdxCache = ("smemOffsetCache" in scenarios or os.getenv("TRITON_ENABLE_SMEM_OFFSET_CACHE"))
+        enSmIndexOpt = ("smemIndexOpt" in scenarios or os.getenv("TRITON_ENABLE_BSM_INDEX_OPT"))
+        if not enSmIdxCache:
+            isEnSmIdxCache = False
+        else:
+            isEnSmIdxCache = True
+        if not enSmIndexOpt:
+            isEnSmIndexOpt = False
+        else:
+            isEnSmIndexOpt = True
+        metax.passes.ttgpuir.add_to_llvmir(pm, capability, isEnSmIdxCache, isEnSmIndexOpt)
         passes.convert.add_arith_to_llvmir(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
@@ -296,10 +348,10 @@ class MACABackend(BaseBackend):
     @staticmethod
     def make_llir(src, metadata, options, capability):
         mlir_opt_path = os.path.dirname(__file__) + "/bin/mlir-opt"
-        opted_mlir = metax.mlir_opt(src, mlir_opt_path)
-        mlir_translate_path = os.path.dirname(__file__) + "/bin/mlir-translate"
         maca_path = os.environ.get('MACA_PATH')
         assert maca_path, "Not found MACA_PATH"
+        llvm_version = get_lld_version()
+        opted_mlir = metax.mlir_opt(src, mlir_opt_path, llvm_version)
         llir = metax.translate_mlir_to_llir(opted_mlir, maca_path)
         if options.extern_libs:
             paths = [path for (name, path) in options.extern_libs]
@@ -318,7 +370,7 @@ class MACABackend(BaseBackend):
             raise RuntimeError('mxcc_arch is None (not specified)')
         compile_options = ""
         if (opt.pipeline == "basic" or opt.pipeline == "basic-prefetch") and "mla" not in scenarios:
-            compile_options = " -mllvm -metaxgpu-sched-regpressure=false -mllvm -metaxgpu-PostRA-Scheduler=false -mllvm -metaxgpu-mma-sched=true "
+            compile_options = " -mllvm -metaxgpu-sched-regpressure=false "
             if "fullstage" in scenarios:
                 compile_options += " -mllvm -metaxgpu-vectorize-slp=true -mllvm -metaxgpu-igroup "
             else:
@@ -330,7 +382,8 @@ class MACABackend(BaseBackend):
             compile_options += " -mllvm -metaxgpu-sinkload=false -mllvm -metaxgpu-vectorize-slp=true -mllvm -metaxgpu-igroup -mllvm -metaxgpu-aggressive-4g-addr-opt=true \
                                 -mllvm -metaxgpu-shl-add-combine=false -mllvm -misched-postra=true -mllvm -enable-post-misched=true "
 
-            if os.getenv("TRITON_ENABLE_MACA_COMPILER_INT8_OPT"):
+            disable_int8_opt = ("disable_int8_opt" in scenarios) or (os.getenv("TRITON_DISABLE_MACA_COMPILER_INT8_OPT"))
+            if not disable_int8_opt:
                 compile_options += " -mllvm -metaxgpu-slp-vectorize-i8=true"
 
             if "unroll" in scenarios:
@@ -360,6 +413,18 @@ class MACABackend(BaseBackend):
                 compile_options = " -mllvm -metaxgpu-mma-sched=true -mllvm -map-use-pk-fma=1 -mllvm -metaxgpu-split-regalloc=true -mllvm -metaxgpu-aggressive-fold=true "
         if opt.extra_options != "":
             compile_options = opt.extra_options
+        if capability == 86:
+            compile_options += " --offload-arch=xcore1500 "
+        if capability == 89:
+            compile_options += " --offload-arch=xcore1600 "
+        # llvm19 workaround
+        llvm_version = get_lld_version()
+        if llvm_version == 19:
+            compile_options += " -mllvm -metaxgpu-merge-copy-postra=false"
+            compile_options += " -mllvm --vectorize-slp=false"
+        # TODO: remove llvm19 workaround for aggressive-4g-addr-opt
+        if ("noaddropt" in scenarios) or (os.getenv("TRITON_DISABLE_MACA_COMPILER_4G_ADDR_OPT")):
+            compile_options = compile_options.replace("-mllvm -metaxgpu-aggressive-4g-addr-opt=true ", "")
         return metax.translate_llvmir_to_mcfatbin(src, mxcc_arch, os.environ.get('MACA_PATH'), compile_options)
 
     def add_stages(self, stages, options):

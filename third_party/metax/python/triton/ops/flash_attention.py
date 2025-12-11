@@ -373,7 +373,7 @@ class _attention(torch.autograd.Function):
         capability = torch.cuda.get_device_capability()
         if capability[0] < 8:
             raise RuntimeError("Flash attention currently only supported for compute capability >= 80")
-        BLOCK_M = 128
+        BLOCK_M = 64
         BLOCK_N = 64
         # shape constraints
         Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
@@ -396,7 +396,7 @@ class _attention(torch.autograd.Function):
             BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_DMODEL=Lk,  #
             IS_CAUSAL=causal,  #
             num_warps=num_warps,  #
-            num_stages=4  #
+            num_stages=1  #
         )
 
         ctx.save_for_backward(q, k, v, o, L)
@@ -411,7 +411,7 @@ class _attention(torch.autograd.Function):
     def backward(ctx, do):
         capability = torch.cuda.get_device_capability()
         MMA_V3 = capability[0] >= 9
-        BLOCK = 128
+        BLOCK = 64
 
         if is_hip():
             # Bwd pass runs out of shared memory on HIP with larger block size.

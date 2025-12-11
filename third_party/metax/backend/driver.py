@@ -2,7 +2,6 @@
 import functools
 import os
 import hashlib
-import subprocess
 import tempfile
 from pathlib import Path
 from triton.runtime.build import _build
@@ -75,6 +74,7 @@ class MacaUtils(object):
         self.get_device_properties = mod.get_device_properties
         # self.cuOccupancyMaxActiveClusters = mod.cuOccupancyMaxActiveClusters
         self.set_printf_fifo_size = mod.set_printf_fifo_size
+        self.get_device_capability = mod.get_device_capability
         # self.fill_1d_tma_descriptor = mod.fill_1d_tma_descriptor
         # self.fill_2d_tma_descriptor = mod.fill_2d_tma_descriptor
 
@@ -317,13 +317,9 @@ class MacaLauncher(object):
 class MacaDriver(GPUDriver):
 
     def __init__(self):
-        # self.utils = MacaUtils()  # TODO: make static
+        self.utils = MacaUtils()  # TODO: make static
         self.launcher_cls = MacaLauncher
         super().__init__()
-
-    @property
-    def utils(self):
-        return MacaUtils()
 
     def get_current_target(self):
         device = self.get_current_device()

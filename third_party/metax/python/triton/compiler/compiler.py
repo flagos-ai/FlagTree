@@ -278,10 +278,15 @@ def compile(src, target=None, options=None):
         filter_traceback(e)
         raise
     use_ttgir_loc = os.environ.get("USE_TTGIR_LOC", "0") == "1"
+    dump_all = os.environ.get("TRITON_CACHE_DUMP_ALL", "0") == "1"
     for ext, compile_ir in list(stages.items())[first_stage:]:
         next_module = compile_ir(module, metadata)
         ir_filename = f"{src.name}.{ext}"
-        metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
+        if not dump_all:
+            if ext != "mlir" and ext != "llir":
+                metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
+        else:
+            metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
         if fn_dump_manager is not None:
             fn_dump_manager.put(next_module, ir_filename)
         if (fn_override_manager is not None and fn_override_manager.has_file(ir_filename)):
