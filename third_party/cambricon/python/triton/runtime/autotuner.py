@@ -68,7 +68,14 @@ class Autotuner(KernelInterface):
                 for name in self.reset_to_zero:
                     kwargs[name].zero_()
                 if not reset_only:
-                    self.restore_copies = {name: kwargs[name].clone() for name in self.restore_value}
+                    self.restore_copies = {name: kwargs[name] for name in self.restore_value}
+                    for name in self.restore_value:
+                        if hasattr(kwargs[name], "_base"):
+                            kwargs[name] = kwargs[name]._base.cpu().mlu()
+                        elif hasattr(kwargs[name], "base"):
+                            kwargs[name] = kwargs[name].base.cpu().mlu()
+                        else:
+                            kwargs[name] = kwargs[name].cpu().mlu()
 
             self.pre_hook = _pre_hook
 
@@ -79,7 +86,7 @@ class Autotuner(KernelInterface):
 
             def _post_hook(kwargs, exception):
                 for name in self.restore_value:
-                    kwargs[name].copy_(self.restore_copies[name])
+                    kwargs[name] = self.restore_copies[name]
                 self.restore_copies = {}
 
             self.post_hook = _post_hook
