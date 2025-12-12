@@ -1151,7 +1151,7 @@ class CodeGenerator(ast.NodeVisitor):
         flatten = False
         warp_specialize = False
         disable_licm = False
-        if IteratorClass is language.range:
+        if IteratorClass in [language.range, language.extra.tle.pipeline]:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now

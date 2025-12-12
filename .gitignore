@@ -27,7 +27,12 @@ python/triton/backends/*
 !python/triton/backends/driver.py
 
 # Language extras
-python/triton/language/extra
+python/triton/language/extra/*
+!python/triton/language/extra/tle/
+!python/triton/language/extra/tle/**
+!python/triton/language/extra/__init__.py
+!python/triton/language/extra/libdevice.py
+
 
 # Tools extras
 python/triton/tools/extra
@@ -89,3 +94,6 @@ docs/sg_execution_times.rst
 
 # macOS
 .DS_Store
+
+# Claude Code guidance
+CLAUDE.md
