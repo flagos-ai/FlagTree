@@ -1,8 +1,12 @@
-﻿#include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
+﻿#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
+#include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
@@ -122,6 +126,58 @@ std::string translateLLVMIRToASM(llvm::Module &module,
   // emit machine code
   std::string result;
   {
+    // Fix __nvvm_reflect issue, copy from triton_iluvatar.cc
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+
+    fam.registerPass([&] { return machine->getTargetIRAnalysis(); });
+
+    llvm::PipelineTuningOptions pto;
+    pto.SLPVectorization = true;
+    pto.InlinerThreshold = 0x100000;
+
+    llvm::PassInstrumentationCallbacks pic;
+
+    llvm::StandardInstrumentations si(module.getContext(), false);
+    si.registerCallbacks(pic, &mam);
+
+    llvm::PassBuilder pb(machine.get(), pto, std::nullopt, &pic);
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    int32_t opt_level = 3;
+    llvm::OptimizationLevel ol;
+    switch (opt_level) {
+    case 0:
+      ol = llvm::OptimizationLevel::O0;
+      break;
+    case 1:
+      ol = llvm::OptimizationLevel::O1;
+      break;
+    case 2:
+      ol = llvm::OptimizationLevel::O2;
+      break;
+    case 3:
+      ol = llvm::OptimizationLevel::O3;
+      break;
+    }
+
+    llvm::ModulePassManager mpm;
+    mpm.addPass(llvm::VerifierPass());
+    if (ol == llvm::OptimizationLevel::O0) {
+      mpm.addPass(pb.buildO0DefaultPipeline(ol));
+    } else {
+      mpm.addPass(pb.buildPerModuleDefaultPipeline(ol));
+    }
+    mpm.addPass(llvm::VerifierPass());
+
+    mpm.run(module, mam);
+
     llvm::raw_string_ostream stream(result);
     llvm::buffer_ostream pstream(stream);
     for (llvm::Function &f : module.functions())
@@ -238,6 +294,13 @@ void init_triton_llvm(py::module &&m) {
   m.def(
       "to_module",
       [](mlir::ModuleOp &mod, llvm::LLVMContext &ctx) {
+        // Ensure NVVM translation interface is registered on the current
+        // context.
+        mlir::DialectRegistry registry;
+        mlir::registerNVVMDialectTranslation(registry);
+        mlir::MLIRContext &mlirCtx = *mod.getContext();
+        mlirCtx.appendDialectRegistry(registry);
+        mlirCtx.getOrLoadDialect<mlir::NVVM::NVVMDialect>();
         return mlir::translateModuleToLLVMIR(mod, ctx);
       },
       py::keep_alive<0, 2>());

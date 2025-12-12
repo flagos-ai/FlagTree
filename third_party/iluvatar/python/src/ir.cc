@@ -721,10 +721,8 @@ void init_triton_ir(py::module &&m) {
              return self.getBuilder().getI64Type();
            })
       .def("get_fp8e4nv_ty",
-           // TODO: fp8e4nv is using Float8E4M3FNUZType, which
-           // does not seem right. It should use FloatE4M3FNType
            [](TritonOpBuilder &self) -> Type {
-             return self.getBuilder().getType<Float8E4M3FNUZType>();
+             return self.getBuilder().getType<Float8E4M3FNType>();
            })
       .def("get_fp8e4b8_ty",
            [](TritonOpBuilder &self) -> Type {
@@ -1206,6 +1204,13 @@ void init_triton_ir(py::module &&m) {
              return self.create<LoadOp>(ptrs, cacheModifier, evictionPolicy,
                                         isVolatile);
            })
+      .def("create_sme_load",
+           [](TritonOpBuilder &self, Value &ptrs, Value &stride,
+              CacheModifier cacheModifier, EvictionPolicy evictionPolicy,
+              bool isVolatile) -> Value {
+             return self.create<LoadOp>(ptrs, cacheModifier, evictionPolicy,
+                                        isVolatile, stride);
+           })
       .def("create_store",
            [](TritonOpBuilder &self, Value &ptrs, Value &value,
               CacheModifier cacheModifier,
@@ -1236,6 +1241,15 @@ void init_triton_ir(py::module &&m) {
              return self.create<LoadOp>(ptrs, mask, other.value_or(Value()),
                                         cacheModifier, evictionPolicy,
                                         isVolatile);
+           })
+      .def("create_masked_sme_load",
+           [](TritonOpBuilder &self, Value &ptrs, Value &mask,
+              std::optional<Value> &other, Value &stride,
+              CacheModifier cacheModifier, EvictionPolicy evictionPolicy,
+              bool isVolatile) -> Value {
+             return self.create<LoadOp>(ptrs, mask, other.value_or(Value()),
+                                        cacheModifier, evictionPolicy,
+                                        isVolatile, stride);
            })
       .def("create_masked_store",
            [](TritonOpBuilder &self, Value &ptrs, Value &val, Value &mask,

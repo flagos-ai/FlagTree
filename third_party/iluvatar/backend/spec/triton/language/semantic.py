@@ -58,3 +58,17 @@ def atomic_add_int64(sca_ty, builder, val, ptr, mask, sem, scope):
         return old_value
     else:
         return None
+
+
+def corex_sme(x, values):
+
+    import triton.language as tl
+    from triton._C.libtriton import ir
+
+    # only support 2d tensor
+    if len(values) == 1:
+        values.append(values[0])
+    if len(values) != 2:
+        raise ValueError("Shape of input to corex_sme only support 2d tensor")
+    x.handle.set_attr("tt.corex_stride", ir.make_attr(values, x.handle.get_context()))
+    return x

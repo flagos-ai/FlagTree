@@ -11,6 +11,59 @@ namespace mlir {
 
 using namespace triton;
 
+SmallVector<unsigned, 3> mmaVersionToInstrShape(int version,
+                                                const ArrayRef<int64_t> &shape,
+                                                TensorOrMemDesc type,
+                                                int numWarps) {
+  if (version == 1)
+    return {16, 16};
+  else if (version == 2) {
+    auto rank = shape.size();
+    SmallVector<unsigned, 3> ret(rank, 1);
+    ret[rank - 1] = 8;
+    ret[rank - 2] = 16;
+    return ret;
+  } else if (version == 3) {
+    unsigned k = 256 / type.getElementTypeBitWidth();
+    if (shape[0] % 64 != 0 || shape[1] % 8 != 0) {
+      assert(false && "type not supported");
+      return {0, 0, 0};
+    }
+    auto eltType = type.getElementType();
+    SmallVector<unsigned> validN;
+
+    // MMAv3 with larger instruction shape is preferred.
+    if (eltType.isFloat8E5M2() || eltType.isFloat8E4M3FN() ||
+        eltType.isFloat8E4M3FNUZ() || eltType.isF16() || eltType.isBF16() ||
+        eltType.isF32()) {
+      validN.assign({256, 248, 240, 232, 224, 216, 208, 200, 192, 184, 176,
+                     168, 160, 152, 144, 136, 128, 120, 112, 104, 96,  88,
+                     80,  72,  64,  56,  48,  40,  32,  24,  16,  8});
+    }
+
+    if (eltType.isInteger(8)) {
+      validN.assign({224, 208, 192, 176, 160, 144, 128, 112, 96, 80, 64, 48, 32,
+                     24, 16, 8});
+    }
+
+    unsigned m = 16;
+    unsigned mWarps = std::max<unsigned>(shape[0] / m, 1);
+    unsigned nWarps = std::max<unsigned>(numWarps / mWarps, 1);
+    unsigned maxN = std::max<unsigned>(shape[1] / nWarps, 8);
+    for (auto n : validN) {
+      if (shape[1] % n == 0 && n <= maxN) {
+        return {m, n, k};
+      }
+    }
+
+    assert(false && "type not supported");
+    return {0, 0, 0};
+  } else {
+    assert(false && "version not supported");
+    return {0, 0};
+  }
+}
+
 unsigned getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
                                  ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   Value val = getMemAccessPtr(op);
@@ -238,6 +291,116 @@ std::optional<Attribute> inferDstEncoding(Operation *op, Attribute encoding) {
     return inferDstEncoding(reshape, encoding);
 
   return std::nullopt;
+}
+
+// Check if the convert will be a no-op in codegen.
+static bool isFreeConvert(Operation *op) {
+  auto convertOp = dyn_cast<triton::gpu::ConvertLayoutOp>(op);
+  if (!convertOp)
+    return false;
+  return isMmaToMmaShortcut(convertOp.getSrc().getType(), convertOp.getType());
+}
+
+LogicalResult
+getConvertBackwardSlice(Value root, SetVector<Value> &slice,
+                        Attribute rootEncoding,
+                        DenseMap<Value, Attribute> &layout,
+                        std::function<bool(Operation *)> stopPropagation) {
+  DenseSet<std::pair<Value, Attribute>> seen;
+  SmallVector<std::pair<Value, Attribute>> queue;
+
+  auto enqueue = [&](Value operand, Attribute encoding) {
+    auto x = std::make_pair(operand, encoding);
+    if (!seen.insert(x).second) {
+      return; // Already enqueued, skip
+    }
+    queue.push_back(x);
+  };
+  enqueue(root, rootEncoding);
+
+  while (!queue.empty()) {
+    auto [currentValue, encoding] = queue.back();
+    queue.pop_back();
+    if (!isa<RankedTensorType>(currentValue.getType()))
+      continue;
+#ifndef __ILUVATAR__
+    // Skip propagating through for op results for now.
+    // TODO: enable this based on needs.
+    if (currentValue.getDefiningOp<scf::ForOp>())
+      return failure();
+#endif
+    slice.insert(currentValue);
+    if (layout.find(currentValue) != layout.end()) {
+      if (layout[currentValue] != encoding)
+        return failure();
+    }
+    layout[currentValue] = encoding;
+
+    if (auto ifOp = currentValue.getDefiningOp<scf::IfOp>()) {
+      auto results = ifOp.getResults();
+      unsigned argIdx = mlir::cast<OpResult>(currentValue).getResultNumber();
+
+      auto thenValue = ifOp.thenYield().getOperand(argIdx);
+      auto elseValue = ifOp.elseYield().getOperand(argIdx);
+
+      enqueue(thenValue, encoding);
+      enqueue(elseValue, encoding);
+
+      continue;
+    }
+#ifdef __ILUVATAR__
+    if (auto forOp = currentValue.getDefiningOp<scf::ForOp>()) {
+      if (auto blkEncoding =
+              dyn_cast<triton::gpu::BlockedEncodingAttr>(encoding)) {
+        if (blkEncoding.getLoadType() != 1 || !blkEncoding.getSmeMask())
+          return failure();
+      } else {
+        return failure();
+      }
+      unsigned argIdx = mlir::cast<OpResult>(currentValue).getResultNumber();
+      Value yieldOperand = forOp.getBody()->getTerminator()->getOperand(argIdx);
+      enqueue(yieldOperand, encoding);
+      continue;
+    }
+#endif
+
+    if (auto *definingOp = currentValue.getDefiningOp()) {
+      // If the op has multiple results we need to update all results layout.
+      for (Value result : definingOp->getResults()) {
+        if (result == currentValue || !isa<RankedTensorType>(result.getType()))
+          continue;
+        enqueue(result, encoding);
+      }
+      if (!isFreeConvert(definingOp) &&
+          canFoldIntoConversion(definingOp, encoding))
+        continue;
+      if (stopPropagation && stopPropagation(definingOp))
+        continue;
+      if (isa<triton::CatOp>(definingOp))
+        return failure();
+      for (Value operand : definingOp->getOperands()) {
+        auto srcEncoding = inferSrcEncoding(definingOp, encoding);
+        if (!srcEncoding)
+          return failure();
+        enqueue(operand, *srcEncoding);
+      }
+      continue;
+    }
+    auto blockArg = cast<BlockArgument>(currentValue);
+    Block *block = blockArg.getOwner();
+    Operation *parentOp = block->getParentOp();
+    if (auto forOp = dyn_cast<scf::ForOp>(parentOp)) {
+      OpOperand *initOperand = forOp.getTiedLoopInit(blockArg);
+      Value yieldOperand = forOp.getBody()->getTerminator()->getOperand(
+          blockArg.getArgNumber() - forOp.getNumInductionVars());
+      enqueue(initOperand->get(), encoding);
+      enqueue(yieldOperand, encoding);
+      continue;
+    }
+    // TODO: add support for WhileOp and other region types.
+    return failure();
+  }
+  return success();
 }
 
 } // namespace mlir

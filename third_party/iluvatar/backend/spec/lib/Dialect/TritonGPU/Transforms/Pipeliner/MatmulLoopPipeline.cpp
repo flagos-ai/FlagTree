@@ -592,8 +592,16 @@ assignMemoryLayouts(llvm::SmallVector<std::tuple<Operation *, int, Operation *>>
       //    improvement and may even hurt performance by increasing register
       //    pressure.
       LDBG("Load " << *loadOp << " has width " << width);
+#ifdef __ILUVATAR__
+      if (auto srcLayout =
+              tensorTy.getEncoding()
+                  .dyn_cast<mlir::triton::gpu::BlockedEncodingAttr>())
+        if (!loadOp.getMask() && width < 32)
+          continue;
+#else
       if (width < 32)
         continue;
+#endif
     }
 
     if (auto dot = dyn_cast<tt::DotOp>(use)) {

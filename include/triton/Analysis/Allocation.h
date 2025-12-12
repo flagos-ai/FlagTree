@@ -39,6 +39,12 @@ SmallVector<unsigned> getRepShapeForCvtLayout(triton::gpu::ConvertLayoutOp op);
 unsigned getScratchValueSizeElems(const SmallVector<unsigned> &smemShape);
 #endif
 
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_MmaToMmaScratchHook
+bool Analysis_Allocation_AllocationAnalysis_isMmaToMma(
+    Operation *op, Attribute srcEncoding, Attribute dstEncoding,
+    unsigned scratchAlignment, size_t &extraBytes);
+#endif
+
 } // namespace triton
 
 /// Modified from llvm-15.0: llvm/ADT/AddressRanges.h

@@ -201,7 +201,15 @@ class _matmul(torch.autograd.Function):
         output_dtype = to_tl_type(output_dtype)
 
         # Tensor cores support input with mixed float8 types.
-        if a.dtype in [tl.float8e4nv, tl.float8e5] and b.dtype in [tl.float8e4nv, tl.float8e5]:
+        supports_native_fp8 = (a.dtype in [tl.float8e4nv, tl.float8e5] and b.dtype in [tl.float8e4nv, tl.float8e5])
+
+        # flagtree backend specialization
+        from triton.runtime.driver import spec
+        override = spec("matmul_supports_native_fp8", supports_native_fp8, a.dtype, b.dtype)
+        if override is not None:
+            supports_native_fp8 = override
+
+        if supports_native_fp8:
             ab_dtype = None
         # launch kernel
         grid = lambda META: (cdiv(M, META['BLOCK_M']) * cdiv(N, META['BLOCK_N']), META['SPLIT_K'])

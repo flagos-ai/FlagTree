@@ -28,16 +28,28 @@ def get_corex_sme(enable_sme=True):
 
 class CallVisitor(ast.NodeVisitor):
 
-    def __init__(self, globals):
+    def __init__(self, globals, current_src, visited=None):
         super().__init__()
-        self.use_sme = False
         self.globals = globals
+        self.visited = visited if visited is not None else set()
+        self.use_sme = 'dot' in current_src
 
     def visit_Call(self, node):
+        if self.use_sme:
+            return
+
         if isinstance(node.func, ast.Name):
             val = self.globals.get(node.func.id, None)
-            if isinstance(val, JITFunction):
-                self.use_sme = val.use_corex_load_inc
+            if isinstance(val, JITFunction) and val not in self.visited:
+                self.visited.add(val)
+                sub_visitor = CallVisitor(val.__globals__, val.src, self.visited)
+                sub_visitor.visit(ast.parse(val.src))
+                self.use_sme = sub_visitor.use_sme
+                if self.use_sme:
+                    return
+
+        if not self.use_sme:
+            self.generic_visit(node)
 
 
 def device_of(arg):
@@ -76,8 +88,11 @@ def get_corex_param(arg):
         if arg.dim() >= 2:
             # Remove dimension of 1
             squeezed_arg = arg.squeeze()
-            if squeezed_arg.dim() >= 2 and (squeezed_arg.stride()[-1] == 1 or squeezed_arg.stride()[-2] == 1):
-                res_stride = squeezed_arg.stride()[-1] * squeezed_arg.stride()[-2]
+            if squeezed_arg.dim() >= 2:
+                try:
+                    res_stride = squeezed_arg.shape[squeezed_arg.stride().index(1)]
+                except ValueError as e:
+                    pass
         else:
             return 1
     elif isinstance(arg, int):
@@ -88,7 +103,7 @@ def get_corex_param(arg):
 
 def ext_JITFunction_get_config(jitFunction, divisible_by_16, equal_to_1, *args):
     from triton.compiler import AttrsDescriptor
-    enable_sme = get_corex_sme(jitFunction.use_corex_load_inc or jitFunction.visitor.use_sme)
+    enable_sme = get_corex_sme(jitFunction.visitor.use_sme)
     corex_param = {
         param.num: get_corex_param(arg)
         for param, arg in zip(jitFunction.params, args)
@@ -107,7 +122,7 @@ def get_JITFunction_key(jitFunction, bound_args, sig_and_spec, constexpr_vals, e
     backend = jitFunction.make_backend(target)
     options = backend.parse_options(kwargs)
     only_save_best_config_cache = os.environ.get("TRITON_ONLY_SAVE_BEST_CONFIG_CACHE", "0") == "1"
-    options.use_sme = get_corex_sme(jitFunction.use_corex_load_inc or jitFunction.visitor.use_sme)
+    options.use_sme = get_corex_sme(jitFunction.visitor.use_sme)
     #need get sme_param
     configs = None
     if options.use_sme:
@@ -137,7 +152,7 @@ def is_JITFunction_support_cpu(*args):
 
 
 def get_JITFunction_options(jitFunction, target, backend, options, bound_args):
-    options.use_sme = get_corex_sme(jitFunction.use_corex_load_inc or jitFunction.visitor.use_sme)
+    options.use_sme = get_corex_sme(jitFunction.visitor.use_sme)
     #need get sme_param
     configs = None
     if options.use_sme:
@@ -151,6 +166,5 @@ def ext_JITFunction_init(jitFunction):
     # use to record fn cache files
     jitFunction.hash_cache_file = None
     jitFunction.so_path = None
-    jitFunction.use_corex_load_inc = 'dot' in jitFunction.src
-    jitFunction.visitor = CallVisitor(jitFunction.__globals__)
+    jitFunction.visitor = CallVisitor(jitFunction.__globals__, jitFunction.src)
     jitFunction.visitor.visit(ast.parse(jitFunction.src))

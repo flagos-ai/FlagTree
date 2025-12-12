@@ -25,6 +25,9 @@ public:
   Type convertTritonTensorType(RankedTensorType type);
   Type convertMemDescType(MemDescType type);
   Type convertAsyncToken(triton::gpu::AsyncTokenType type);
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_TypeConverter_convertCorexDescType
+  Type convertCorexDescType(CorexDescType type);
+#endif
 };
 
 #endif

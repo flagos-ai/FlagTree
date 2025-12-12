@@ -74,7 +74,7 @@ class CUDABackend(BaseBackend):
         args = {k: opts[k] for k in CUDAOptions.__dataclass_fields__.keys() if k in opts}
         # args["allow_fp8e4nv"] = self.capability >= 89
         # args["allow_fp8e4b15"] = self.capability < 90
-        args["allow_fp8e4nv"] = False
+        args["allow_fp8e4nv"] = True
         args["allow_fp8e4b15"] = False
         args["max_num_imprecise_acc_default"] = 2**30 if self.capability == 90 else 0
         return CUDAOptions(**args)
@@ -202,11 +202,7 @@ class CUDABackend(BaseBackend):
         return ret
 
     @staticmethod
-    def make_cubin(src, metadata, options, capability):
-        names = re.findall(r"define iluvatar_kernel void @([a-zA-Z_][a-zA-Z0-9_]*)", src)
-        assert len(names) == 1
-        metadata["name"] = names[0]
-
+    def _get_target_config(capability):
         triple = "bi-iluvatar-ilurt"
         proc = "ivcore11"
         if capability == 70:
@@ -217,6 +213,21 @@ class CUDABackend(BaseBackend):
             proc = "ivcore20"
         else:
             print("iluvatar not support current compute capability", capability)
+        return triple, proc
+
+    @staticmethod
+    def make_asm(src, metadata, options, capability):
+        triple, proc = CUDABackend._get_target_config(capability)
+        asm = llvm.translate_to_asm(src, triple, proc, '', [], options.enable_fp_fusion, False)
+        return asm
+
+    @staticmethod
+    def make_cubin(src, metadata, options, capability):
+        names = re.findall(r"define iluvatar_kernel void @([a-zA-Z_][a-zA-Z0-9_]*)", src)
+        assert len(names) == 1
+        metadata["name"] = names[0]
+
+        triple, proc = CUDABackend._get_target_config(capability)
         cubin = iluvatar.translate_llvmir_to_cubin(src, triple, proc, '', [], options.enable_fp_fusion, False)
         return cubin
 
@@ -224,6 +235,7 @@ class CUDABackend(BaseBackend):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
         stages["ttgir"] = lambda src, metadata: self.make_ttgir(src, metadata, options, self.capability)
         stages["llir"] = lambda src, metadata: self.make_llir(src, metadata, options, self.capability)
+        stages["asm"] = lambda src, metadata: self.make_asm(src, metadata, options, self.capability)
         stages["cubin"] = lambda src, metadata: self.make_cubin(src, metadata, options, self.capability)
 
     @functools.lru_cache()

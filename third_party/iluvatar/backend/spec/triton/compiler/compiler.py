@@ -26,6 +26,12 @@ def set_src_fn_hash_cache_file(ir_source, src, hash):
         src.fn.hash_cache_file = hash
 
 
+def update_compile_module_after_stage(module, next_module, ext: str):
+    if ext != "asm":
+        return next_module
+    return module
+
+
 def set_src_fn_so_path(ir_source, src):
     from triton.runtime.driver import driver
     if not ir_source:

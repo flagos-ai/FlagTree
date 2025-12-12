@@ -119,6 +119,9 @@ bool isExpensiveCat(CatOp cat, Attribute targetEncoding);
 bool isExpensiveView(Type srcType, Type dstType);
 
 #ifdef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_functions
+
+unsigned getTotalElemsPerThread(CorexDescType type);
+
 bool isMma(Attribute layout);
 
 bool isSliceMmaWithDim(Attribute layout, int targetDim);

@@ -109,7 +109,7 @@ def TTG_AsyncCopyGlobalToLocalOp : TTG_Op<"async_copy_global_to_local", [
   }];
 
   let arguments = (
-    ins TT_Tensor:$src,
+    ins TT_Type:$src,
     TT_MemDescType:$result,
     Optional<I1Tensor>:$mask,
     Optional<TT_Type>:$other,
@@ -166,7 +166,7 @@ def TTG_LocalAllocOp : TTG_Op<"local_alloc", [DeclareOpInterfaceMethods<MemoryEf
 
     Explicitly deallocating a buffer is optional; see local_dealloc.
   }];
-  let arguments = (ins Optional<TT_Tensor>:$src);
+  let arguments = (ins Optional<TT_Type>:$src);
 
   let assemblyFormat = [{$src attr-dict `:` functional-type(operands, results)}];
 

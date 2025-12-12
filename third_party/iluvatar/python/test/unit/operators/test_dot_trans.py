@@ -24,11 +24,8 @@ torch.manual_seed(0)
                           for BCol in [False, True]
                           for num_warps in [1, 2, 4]
                           for disable_sme in ["0", "1"]
-                          for dataType in ["float16", "bfloat16"]])
+                          for dataType in ["float16", "bfloat16", "float32"]])
 def test_sme_and_swizzle_layout_trans(M, N, K, AT, BT, ACol, BCol, num_warps, disable_sme, dataType, device='cuda'):
-    capability = torch.cuda.get_device_capability()
-    if capability[0] == 8:
-        pytest.skip("Skipping on QS now)")
 
     @triton.jit
     def kernel(
@@ -73,7 +70,7 @@ def test_sme_and_swizzle_layout_trans(M, N, K, AT, BT, ACol, BCol, num_warps, di
 
     os.environ['TRITON_DISABLE_SME'] = disable_sme  #when disable_sme=1, this test swizzle trans
     #run test
-    dataType = {"float16": torch.float16, "bfloat16": torch.bfloat16}[dataType]
+    dataType = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[dataType]
     a = .1 * torch.randn((K, M) if (AT ^ ACol) else (M, K), device='cuda', dtype=dataType)
     b = .1 * torch.randn((N, K) if (BT ^ BCol) else (K, N), device='cuda', dtype=dataType)
 
@@ -107,9 +104,6 @@ def test_sme_and_swizzle_layout_trans(M, N, K, AT, BT, ACol, BCol, num_warps, di
                                                                       for num_warps in [1, 2, 4]
                                                                       for dataType in ["float16", "bfloat16"]])
 def test_multi_dot_trans(M, N, K, AT, BT, CT, num_warps, dataType, device='cuda'):
-    capability = torch.cuda.get_device_capability()
-    if capability[0] == 8:
-        pytest.skip("Skipping on QS now)")
 
     @triton.jit
     def kernel(

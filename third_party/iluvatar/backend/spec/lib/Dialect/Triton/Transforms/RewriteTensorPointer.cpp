@@ -24,9 +24,8 @@ private:
   SmallVector<Value> strides;
   SmallVector<Value> offsets;
   ArrayRef<int64_t> tensorShape;
-#ifdef __ILUVATAR__
   ArrayRef<int32_t> order;
-#endif
+  Attribute attr;
 
   // A cache to avoid generating the same offset with range
   DenseMap<unsigned, Value> cachedOffsetWithRange;
@@ -36,28 +35,16 @@ public:
 
   RewritedInfo(const RewritedInfo &other) = default;
 
-#ifndef __ILUVATAR__
-  RewritedInfo(Value base, const SmallVector<Value> &shape,
-               const SmallVector<Value> &strides,
-               const SmallVector<Value> &offsets,
-               const ArrayRef<int64_t> &tensorShape)
-      : base(base), shape(shape), strides(strides), offsets(offsets),
-        tensorShape(tensorShape) {
-    assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
-           shape.size() == tensorShape.size());
-  }
-#else
   RewritedInfo(Value base, const SmallVector<Value> &shape,
                const SmallVector<Value> &strides,
                const SmallVector<Value> &offsets,
                const ArrayRef<int64_t> &tensorShape,
-               const ArrayRef<int32_t> &order)
+               const ArrayRef<int32_t> &order, Attribute attr = nullptr)
       : base(base), shape(shape), strides(strides), offsets(offsets),
-        tensorShape(tensorShape), order(order) {
+        tensorShape(tensorShape), order(order), attr(attr) {
     assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
            shape.size() == tensorShape.size() && shape.size() == order.size());
   }
-#endif
 
   unsigned int length() const { return shape.size(); }
 
@@ -71,6 +58,8 @@ public:
       return strides[order[1]];
     return NULL;
   }
+
+  Attribute getUserAttr() { return attr; }
 #endif
 
   void setOffset(unsigned i, Value newOffset) {
@@ -262,16 +251,15 @@ public:
       i64Offsets.push_back(i64Offset);
     }
 
+    Attribute userAttr = nullptr;
+    if (Attribute attr = op->getDiscardableAttr("tt.corex_stride")) {
+      userAttr = attr;
+    }
+
     // Save information
-#ifndef __ILUVATAR__
     rewritedInfo[op.getResult()] =
         RewritedInfo(op.getBase(), op.getShape(), op.getStrides(), i64Offsets,
-                     tensorType.getShape());
-#else
-    rewritedInfo[op.getResult()] =
-        RewritedInfo(op.getBase(), op.getShape(), op.getStrides(), i64Offsets,
-                     tensorType.getShape(), op.getOrderAttr());
-#endif
+                     tensorType.getShape(), op.getOrderAttr(), userAttr);
 
     // Erase the original operation
     eraser.push(op);
@@ -339,10 +327,10 @@ public:
 
     // Create a new operation
     if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
-#ifdef __ILUVATAR__
+#if defined(__ILUVATAR__)
       Value newResult;
       Value resStride = info.getContiguousStride();
-      if (!newMask && !newOther && resStride) {
+      if (resStride) {
         Value matStride = builder.create<arith::TruncIOp>(
             loadOp.getLoc(), builder.getI32Type(), resStride);
         newResult = builder.create<triton::LoadOp>(
@@ -355,6 +343,9 @@ public:
             loadOp.getLoc(), newPtr, newMask, newOther, loadOp.getCache(),
             loadOp.getEvict(), loadOp.getIsVolatile());
       }
+      if (info.getUserAttr())
+        newResult.getDefiningOp()->setAttr("tt.corex_stride",
+                                           info.getUserAttr());
       op->getResult(0).replaceAllUsesWith(newResult);
 #else
       auto newResult = builder.create<triton::LoadOp>(

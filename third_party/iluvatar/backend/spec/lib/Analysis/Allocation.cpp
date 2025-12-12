@@ -19,6 +19,12 @@ SmallVector<unsigned> getRepShapeForCvtLayout(triton::gpu::ConvertLayoutOp op) {
   auto dstTy = op.getType();
   Attribute srcLayout = srcTy.getEncoding();
   Attribute dstLayout = dstTy.getEncoding();
+  auto srcShape = srcTy.getShape();
+  auto dstShape = dstTy.getShape();
+
+  if (areLayoutsEquivalent(srcLayout, dstLayout, srcShape, dstShape)) {
+    return {};
+  }
 
   if (shouldUseDistSmem(srcLayout, dstLayout)) {
     // TODO: padding to avoid bank conflicts
@@ -44,6 +50,8 @@ SmallVector<unsigned> getRepShapeForCvtLayout(triton::gpu::ConvertLayoutOp op) {
   if (auto srcMmaLayout = mlir::dyn_cast<IluvatarMmaEncodingAttr>(srcLayout)) {
     if (mlir::isa<DotOperandEncodingAttr>(dstLayout)) {
       if (isMmaToDotShortcut(srcTy, dstTy)) {
+        return {};
+      } else if (isMmaToDotShortcutForB(srcTy, dstTy)) {
         return {};
       } else if (isMmaToDotSlowShortcut(srcTy, dstTy)) {
         return getShapePerCTATile(srcMmaLayout);
@@ -132,6 +140,11 @@ getScratchConfigForCvtLayout(triton::gpu::ConvertLayoutOp op, unsigned &inVec,
     paddedDim = dstBlockedLayout.getOrder()[0];
   }
   unsigned pad = std::max(inVec, outVec);
+  // TODO: FIXME
+  if (mlir::dyn_cast<BlockedEncodingAttr>(srcLayout) &&
+      mlir::isa<IluvatarMmaEncodingAttr>(dstLayout)) {
+    pad = 0;
+  }
   if (mlir::dyn_cast<IluvatarMmaEncodingAttr>(srcLayout) &&
       mlir::isa<BlockedEncodingAttr>(dstLayout)) {
     pad = 16;
@@ -145,6 +158,34 @@ unsigned getScratchValueSizeElems(const SmallVector<unsigned> &smemShape) {
     return 0;
   return std::accumulate(smemShape.begin(), smemShape.end(), 1u,
                          std::multiplies<>());
+}
+
+bool Analysis_Allocation_AllocationAnalysis_isMmaToMma(
+    Operation *op, Attribute srcEncoding, Attribute dstEncoding,
+    unsigned /*scratchAlignment*/, size_t &extraBytes) {
+
+  auto srcMmaEncoding =
+      dyn_cast<FLAGTREE_SPEC_BackendMmaEncodingAttr>(srcEncoding);
+  auto dstMmaEncoding =
+      dyn_cast<FLAGTREE_SPEC_BackendMmaEncodingAttr>(dstEncoding);
+
+  // Not an Iluvatar MMA -> MMA case: hand back to common path.
+  if (!srcMmaEncoding || !dstMmaEncoding)
+    return false;
+
+  extraBytes = 0;
+
+  if (srcMmaEncoding.getVersionMajor() == 1 &&
+      srcMmaEncoding.getVersionMinor() == 0 &&
+      dstMmaEncoding.getVersionMajor() == 1 &&
+      dstMmaEncoding.getVersionMinor() == 4) {
+    int numWarps = triton::gpu::TritonGPUDialect::getNumWarps(
+        op->getParentOfType<ModuleOp>());
+    extraBytes = static_cast<size_t>(numWarps) * 1024;
+  }
+
+  // Handled (even if extraBytes stays 0).
+  return true;
 }
 
 } // namespace triton

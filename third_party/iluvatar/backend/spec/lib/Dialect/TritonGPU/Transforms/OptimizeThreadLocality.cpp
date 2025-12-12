@@ -121,8 +121,7 @@ class TritonGPUOptimizeThreadLocalityPass
       if (!(isa<triton::gpu::BlockedEncodingAttr>(srcEncoding) && rank > 1))
         return;
       for (auto operand : reduce->getOperands()) {
-        auto def = operand.getDefiningOp();
-        if (!isa<triton::LoadOp>(def))
+        if (!operand.getDefiningOp<triton::LoadOp>())
           return;
       }
       auto elemsPerThread =
@@ -423,7 +422,7 @@ private:
     SmallVector<unsigned, 4> smeCTA(rank);
     auto blocked3d = triton::gpu::BlockedEncodingAttr::get(
         reduce.getContext(), sizePerThread3d, threadsPerWarp3d, warsPerCTA3d,
-        order3d, ctaLayout3d, false, smeCTA);
+        order3d, ctaLayout3d, false, smeCTA, false);
 #endif
     return blocked3d;
   }

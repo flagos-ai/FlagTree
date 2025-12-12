@@ -6,6 +6,7 @@
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <limits.h>
 
 #define DEBUG_TYPE "axis-info"
@@ -111,6 +112,7 @@ public:
     AxisInfo::DimVectorT corexFlag;
 
     auto constantValue = getConstantValue(op, lhsInfo, rhsInfo);
+    auto stride = getStride(op, lhsInfo, rhsInfo);
     for (auto d = 0; d < rank; ++d) {
       if (constantValue.has_value()) {
         contiguity.push_back(1);
@@ -127,7 +129,7 @@ public:
       }
     }
     return AxisInfo(contiguity, divisibility, constancy, constantValue,
-                    corexFlag);
+                    corexFlag, stride);
   }
 
 protected:
@@ -154,6 +156,10 @@ protected:
   virtual int64_t getCorexFlag(OpTy op, const AxisInfo &lhs,
                                const AxisInfo &rhs, int dim) {
     return 0;
+  }
+
+  virtual int64_t getStride(OpTy op, const AxisInfo &lhs, const AxisInfo &rhs) {
+    return lhs.getStride() ? lhs.getStride() : rhs.getStride();
   }
 };
 
@@ -355,28 +361,50 @@ private:
 
   int64_t getCorexFlag(OpTy op, const AxisInfo &lhs, const AxisInfo &rhs,
                        int dim) override {
+    if (lhs.getCorexFlag(dim) == INT32_MAX ||
+        rhs.getCorexFlag(dim) == INT32_MAX)
+      return INT32_MAX;
+    auto resTy = dyn_cast<RankedTensorType>(op.getType());
+    int64_t res = 0;
     if constexpr (std::is_same_v<OpTy, arith::AddIOp> ||
                   std::is_same_v<OpTy, LLVM::AddOp>) {
-      return lhs.getCorexFlag(dim) + rhs.getCorexFlag(dim);
-    } else if constexpr (std::is_same_v<OpTy, triton::AddPtrOp>) {
-      if (triton::getPointeeBitWidth(op.getPtr().getType()) % 8 != 0)
-        return 0;
-      auto sme_dim =
-          64 / (triton::getPointeeBitWidth(op.getPtr().getType()) / 8);
-      if (lhs.getCorexFlag(dim) == INT32_MAX ||
-          rhs.getCorexFlag(dim) == INT32_MAX)
-        return INT32_MAX;
-      if (dim == 0) {
-        if (rhs.getCorexFlag(dim) % sme_dim == 0)
+      if (resTy) {
+        auto shape = resTy.getShape();
+        if (rhs.getConstancy(dim) == shape[dim])
           return lhs.getCorexFlag(dim);
-        return lhs.getCorexFlag(dim) + rhs.getCorexFlag(dim);
-      } else {
-        return lhs.getCorexFlag(dim);
+        else if (lhs.getConstancy(dim) == shape[dim])
+          return rhs.getCorexFlag(dim);
       }
+      res = lhs.getCorexFlag(dim) + rhs.getCorexFlag(dim);
+    } else if constexpr (std::is_same_v<OpTy, triton::AddPtrOp>) {
+      if (resTy) {
+        auto shape = resTy.getShape();
+        if (lhs.getContiguity(dim) != shape[dim] &&
+            rhs.getConstancy(dim) == shape[dim])
+          return lhs.getCorexFlag(dim);
+      }
+      res = lhs.getCorexFlag(dim) + rhs.getCorexFlag(dim);
     } else if constexpr (std::is_same_v<OpTy, arith::SubIOp>) {
-      return lhs.getCorexFlag(dim) - rhs.getCorexFlag(dim);
+      if (resTy) {
+        auto shape = resTy.getShape();
+        if (rhs.getConstancy(dim) == shape[dim])
+          return lhs.getCorexFlag(dim);
+        else if (lhs.getConstancy(dim) == shape[dim])
+          return rhs.getCorexFlag(dim);
+      }
+      res = lhs.getCorexFlag(dim) - rhs.getCorexFlag(dim);
     }
-    return 0;
+    return res;
+  }
+
+  int64_t getStride(OpTy op, const AxisInfo &lhs,
+                    const AxisInfo &rhs) override {
+    if constexpr (std::is_same_v<OpTy, triton::AddPtrOp>) {
+      auto resTy = dyn_cast<RankedTensorType>(op.getType());
+      if (!resTy && lhs.getStride() == 0)
+        return lhs.getCorexFlag(0);
+    }
+    return lhs.getStride() ? lhs.getStride() : rhs.getStride();
   }
 };
 
@@ -435,30 +463,32 @@ private:
     if (lhs.getCorexFlag(dim) == INT32_MAX &&
         rhs.getCorexFlag(dim) == INT32_MAX)
       return INT32_MAX;
-    if (lhs.getRank() == 1) {
+    auto resTy = dyn_cast<RankedTensorType>(op.getType());
+    if (!resTy) {
       if (lhs.getCorexFlag(dim) == INT32_MAX)
         return rhs.getCorexFlag(dim);
       else if (rhs.getCorexFlag(dim) == INT32_MAX)
         return lhs.getCorexFlag(dim);
-    } else {
-      bool lhsIsContiguity = false;
-      bool rhsIsContiguity = false;
-      for (int i = 0; i < lhs.getRank(); i++) {
-        if (lhs.getContiguity(i) > 1)
-          lhsIsContiguity = true;
-        if (rhs.getContiguity(i) > 1)
-          rhsIsContiguity = true;
-      }
-      if (lhs.getCorexFlag(dim) == INT32_MAX && lhsIsContiguity)
-        return rhs.getCorexFlag(dim);
-      else if (lhs.getCorexFlag(dim) == INT32_MAX && !lhsIsContiguity)
-        return INT32_MAX;
-      if (rhs.getCorexFlag(dim) == INT32_MAX && rhsIsContiguity)
-        return lhs.getCorexFlag(dim);
-      else if (rhs.getCorexFlag(dim) == INT32_MAX && !rhsIsContiguity)
-        return INT32_MAX;
+      else
+        return rhs.getCorexFlag(dim) * lhs.getCorexFlag(dim);
     }
-    return lhs.getCorexFlag(dim) * rhs.getCorexFlag(dim);
+    auto shape = resTy.getShape();
+    bool lhsIsContiguity = lhs.getContiguity(dim) == shape[dim];
+    bool rhsIsContiguity = rhs.getContiguity(dim) == shape[dim];
+
+    if ((lhs.getCorexFlag(dim) == INT32_MAX ||
+         rhs.getConstancy(dim) == shape[dim]) &&
+        lhsIsContiguity)
+      return rhs.getCorexFlag(dim);
+    else if (lhs.getCorexFlag(dim) == INT32_MAX && !lhsIsContiguity)
+      return INT32_MAX;
+    if ((rhs.getCorexFlag(dim) == INT32_MAX ||
+         lhs.getConstancy(dim) == shape[dim]) &&
+        rhsIsContiguity)
+      return lhs.getCorexFlag(dim);
+    else if (rhs.getCorexFlag(dim) == INT32_MAX && !rhsIsContiguity)
+      return INT32_MAX;
+    return INT32_MAX;
   }
 };
 
@@ -630,14 +660,32 @@ public:
       contiguity.push_back(1);
       divisibility.push_back(opInfo.getDivisibility(0));
       constancy.push_back(retTy.getShape()[d]);
-      corexFlag.push_back(opInfo.getCorexFlag(0));
+      if (isa<triton::PointerType>(op->getOperand(0).getType()) &&
+          opInfo.getCorexFlag(0) != INT32_MAX)
+        corexFlag.push_back(0);
+      else
+        corexFlag.push_back(opInfo.getCorexFlag(0));
+    }
+    if (isa<triton::PointerType>(op->getOperand(0).getType())) {
+      int64_t stride = opInfo.getCorexFlag(0);
+      if (opInfo.getStride() > 0)
+        stride = opInfo.getStride();
+      return AxisInfo(contiguity, divisibility, constancy,
+                      operands[0]->getValue().getConstantValue(), corexFlag,
+                      stride);
     }
     return AxisInfo(contiguity, divisibility, constancy,
                     operands[0]->getValue().getConstantValue(), corexFlag);
   }
 };
 
-static bool useSme(const Value &va) {
+static bool useSme(const Value &va, bool has_mask) {
+  // use load with mask only support sme
+  auto capability = getNVIDIAComputeCapability(
+      va.getDefiningOp()->getParentOfType<ModuleOp>());
+  if (capability == 80 && has_mask)
+    return false;
+
   for (auto use : va.getUsers()) {
     if (auto convOp = llvm::dyn_cast<triton::gpu::ConvertLayoutOp>(use)) {
       auto tensorType =
@@ -648,7 +696,7 @@ static bool useSme(const Value &va) {
            !tensorType.getEncoding().isa<triton::gpu::SharedEncodingAttr>()))
         return false;
     } else if (auto transOp = llvm::dyn_cast<triton::TransOp>(use)) {
-      return useSme(transOp->getResult(0));
+      return useSme(transOp->getResult(0), has_mask);
     } else {
       return false;
     }
@@ -667,16 +715,27 @@ public:
     // will also extend to output.
     AxisInfo ptrInfo = operands[0]->getValue();
     std::optional<AxisInfo> maskInfo;
-    if (operands.size() > 1) {
+    if (operands.size() > 1 && operands.size() != 4) {
       maskInfo = operands[1]->getValue();
     }
+    // If this load carries a stride, it means that the loadOp needs to use SME
+    bool hasStride = (operands.size() >= 4);
+
     AxisInfo::DimVectorT contiguity;
     AxisInfo::DimVectorT divisibility;
     AxisInfo::DimVectorT constancy;
     AxisInfo::DimVectorT corexFlag;
-    // only dot load use sme
-    bool isUseSme = maskInfo.has_value() ? false : useSme(op->getResult(0));
-
+    int64_t stride = ptrInfo.getStride();
+    // only dot load use sme && need contiguity
+    bool isUseSme = false;
+    auto tensorTy = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+    if (tensorTy) {
+      isUseSme = useSme(op->getResult(0), maskInfo.has_value());
+      auto layout = tensorTy.getEncoding();
+      auto shape = tensorTy.getShape();
+      auto order = triton::gpu::getOrder(layout);
+      isUseSme &= (shape[order[0]] == ptrInfo.getContiguity(order[0]));
+    }
     for (int d = 0; d < ptrInfo.getRank(); ++d) {
       contiguity.push_back(1);
       divisibility.push_back(1);
@@ -685,11 +744,17 @@ public:
               (maskInfo.has_value() && (d < maskInfo->getRank()))
                   ? maskInfo->getConstancy(d)
                   : 0));
-      corexFlag.push_back(
-          isUseSme ? ptrInfo.getCorexFlag(d)
-                   : (ptrInfo.getCorexFlag(d) == INT32_MAX ? INT32_MAX : 0));
+      if (hasStride) {
+        corexFlag.push_back(64);
+        stride = 64;
+      } else {
+        corexFlag.push_back(
+            isUseSme ? ptrInfo.getCorexFlag(d)
+                     : (ptrInfo.getCorexFlag(d) == INT32_MAX ? INT32_MAX : 0));
+      }
     }
-    return AxisInfo(contiguity, divisibility, constancy, corexFlag);
+    return AxisInfo(contiguity, divisibility, constancy, std::nullopt,
+                    corexFlag, stride);
   }
 };
 
@@ -711,10 +776,14 @@ public:
       contiguity.push_back(1);
       divisibility.push_back(1);
       constancy.push_back(1);
-      corexFlag.push_back(opInfo.getCorexFlag(d));
+      if (opInfo.getRank() == 1)
+        corexFlag.push_back(opInfo.getCorexFlag(d));
+      else
+        corexFlag.push_back(opInfo.getCorexFlag(d ^ 1));
     }
 
-    return AxisInfo(contiguity, divisibility, constancy, corexFlag);
+    return AxisInfo(contiguity, divisibility, constancy, std::nullopt,
+                    corexFlag, opInfo.getStride());
   }
 };
 
@@ -750,8 +819,10 @@ public:
     divisibility.insert(divisibility.begin() + op.getAxis(), newDivisibility);
     constancy.insert(constancy.begin() + op.getAxis(), 1);
     corexFlag.insert(corexFlag.begin() + op.getAxis(), corexFlag[0]);
+    corexFlag[op.getAxis()] = 0;
     return AxisInfo(contiguity, divisibility, constancy,
-                    operands[0]->getValue().getConstantValue(), corexFlag);
+                    operands[0]->getValue().getConstantValue(), corexFlag,
+                    opInfo.getStride());
   }
 };
 
@@ -782,7 +853,8 @@ public:
       corexFlag.push_back(opInfo.getCorexFlag(d));
     }
     return AxisInfo(contiguity, divisibility, constancy,
-                    operands[0]->getValue().getConstantValue(), corexFlag);
+                    operands[0]->getValue().getConstantValue(), corexFlag,
+                    opInfo.getStride());
   }
 };
 
@@ -865,9 +937,10 @@ public:
                               ? 1
                               : 0);
     }
-
+    auto stride =
+        lhsInfo.getStride() ? lhsInfo.getStride() : rhsInfo.getStride();
     return AxisInfo(contiguity, divisibility, constancy, constantValue,
-                    corexFlag);
+                    corexFlag, stride);
   }
 
 private:
@@ -995,12 +1068,16 @@ public:
         constantValue = lhsInfo.getConstantValue();
     }
     auto condCorexFlag = operands[0]->getValue().getCorexFlag(0);
-    if (condCorexFlag == 0)
+    int64_t stride = 0;
+    if (condCorexFlag == 0) {
       corexFlag = rhsInfo.getCorexFlag();
-    else
+      stride = rhsInfo.getStride();
+    } else {
       corexFlag = lhsInfo.getCorexFlag();
+      stride = lhsInfo.getStride();
+    }
     return AxisInfo(contiguity, divisibility, constancy, constantValue,
-                    corexFlag);
+                    corexFlag, stride);
   }
 };
 
@@ -1131,6 +1208,8 @@ public:
     auto rank = lhsInfo.getRank();
     std::optional<int64_t> constantValue;
     AxisInfo::DimVectorT corexFlag;
+    auto stride =
+        lhsInfo.getStride() ? lhsInfo.getStride() : rhsInfo.getStride();
     if (lhsInfo.getConstantValue().has_value() &&
         rhsInfo.getConstantValue().has_value()) {
       if constexpr (std::is_same_v<OpTy, arith::MaxSIOp> ||
@@ -1151,7 +1230,7 @@ public:
       return AxisInfo(/*knownContiguity=*/AxisInfo::DimVectorT(rank, 1),
                       /*knownDivisibility=*/AxisInfo::DimVectorT(rank, 1),
                       /*knownConstancy=*/AxisInfo::DimVectorT(rank, 1),
-                      /*constantValue=*/constantValue, corexFlag);
+                      /*constantValue=*/constantValue, corexFlag, stride);
     } else {
       AxisInfo::DimVectorT contiguity, divisibility, constancy;
       for (auto d = 0; d < rank; ++d) {
@@ -1165,7 +1244,7 @@ public:
             std::min(lhsInfo.getCorexFlag(d), rhsInfo.getCorexFlag(d)));
       }
       return AxisInfo(contiguity, divisibility, constancy, std::nullopt,
-                      corexFlag);
+                      corexFlag, stride);
     }
   }
 };
@@ -1230,19 +1309,21 @@ void AxisInfoAnalysis::visitOperation(
       setToEntryState((dataflow::Lattice<AxisInfo> *)op);
   AxisInfo curr = visitors.apply(op, operands);
 
-  // op->dump();
-  // std::string str;
-  // llvm::raw_string_ostream output(str);
-  // str = "";
-  // curr.print(output);
-  // std::cout << "curr valInfo " << str << std::endl;
+  char *debugVar = getenv("DEBUG_SME_AXISINFO");
+  std::string str;
+  llvm::raw_string_ostream output(str);
+  if (debugVar && strcmp(debugVar, "1") == 0) {
+    op->dump();
+    str = "";
+    curr.print(output);
+    std::cout << "curr valInfo " << str << std::endl;
 
-  // for (auto *result : results) {
-  //   str = "";
-  //   result->getValue().print(output);
-  //   std::cout << "init res valInfo " << str << std::endl;
-  // }
-
+    for (auto *result : results) {
+      str = "";
+      result->getValue().print(output);
+      std::cout << "init res valInfo " << str << std::endl;
+    }
+  }
   if (curr.getRank() == 0)
     return setAllToEntryStates(results);
   // override with hint
@@ -1250,6 +1331,7 @@ void AxisInfoAnalysis::visitOperation(
   auto newDivisibility = curr.getDivisibility();
   auto newConstancy = curr.getConstancy();
   auto newCorexFlag = curr.getCorexFlag();
+  int64_t stride = curr.getStride();
 
   if (Attribute attr = op->getDiscardableAttr("tt.contiguity")) {
     auto vals = cast<DenseElementsAttr>(attr).getValues<int>();
@@ -1266,20 +1348,23 @@ void AxisInfoAnalysis::visitOperation(
   if (Attribute attr = op->getDiscardableAttr("tt.corex_stride")) {
     auto vals = cast<DenseElementsAttr>(attr).getValues<int>();
     newCorexFlag = AxisInfo::DimVectorT(vals.begin(), vals.end());
+    stride = newCorexFlag[0];
   }
 
   curr = AxisInfo(newContiguity, newDivisibility, newConstancy,
-                  curr.getConstantValue(), newCorexFlag);
+                  curr.getConstantValue(), newCorexFlag, stride);
 
   // join all lattice elements
   for (auto *result : results)
     propagateIfChanged(result, result->join(curr));
 
-  // for (auto *result : results) {
-  //   str = "";
-  //   result->getValue().print(output);
-  //   std::cout << "res valInfo " << str << std::endl;
-  // }
+  if (debugVar && strcmp(debugVar, "1") == 0) {
+    for (auto *result : results) {
+      str = "";
+      result->getValue().print(output);
+      std::cout << "res valInfo " << str << std::endl;
+    }
+  }
 }
 
 void AxisInfoAnalysis::visitForOpInductionVar(
@@ -1290,10 +1375,10 @@ void AxisInfoAnalysis::visitForOpInductionVar(
   AxisInfo::DimVectorT knownContiguity(1, 1);
   AxisInfo::DimVectorT knownDivisibility(1, 1);
   AxisInfo::DimVectorT knownConstancy(1, 1);
-  AxisInfo::DimVectorT knownCorexFlag(1, 0);
+  AxisInfo::DimVectorT knownCorexFlag(1, INT32_MAX);
   knownDivisibility[0] = gcd(lb.getDivisibility(0), step.getDivisibility(0));
   auto inductionVar = AxisInfo(knownContiguity, knownDivisibility,
-                               knownConstancy, knownCorexFlag);
+                               knownConstancy, std::nullopt, knownCorexFlag);
   (void)argLattices[0]->join(inductionVar);
 }
 
@@ -1335,7 +1420,8 @@ void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
   DimVectorT knownContiguity(rank, 1);
   DimVectorT knownDivisibility(rank, 1);
   DimVectorT knownConstancy(rank, 1);
-  DimVectorT knownCorexFlag(rank, 0);
+  DimVectorT knownCorexFlag(rank, INT32_MAX);
+  int64_t stride = 0;
 
   BlockArgument blockArg = dyn_cast<BlockArgument>(value);
 
@@ -1377,11 +1463,12 @@ void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
     if (Attribute attr = op->getDiscardableAttr("tt.corex_stride")) {
       auto vals = cast<DenseElementsAttr>(attr).getValues<int>();
       knownCorexFlag = DimVectorT(vals.begin(), vals.end());
+      stride = knownCorexFlag[0];
     }
   }
 
   return AxisInfo(knownContiguity, knownDivisibility, knownConstancy,
-                  std::nullopt, knownCorexFlag);
+                  std::nullopt, knownCorexFlag, stride);
 }
 
 /*static*/ AxisInfo AxisInfo::join(const AxisInfo &lhs, const AxisInfo &rhs) {
@@ -1406,8 +1493,11 @@ void AxisInfo::initPessimisticStateFromFunc(int argNumber, T funcOp,
       rhs.getConstantValue().has_value() &&
       lhs.getConstantValue() == rhs.getConstantValue())
     constantValue = lhs.getConstantValue();
-  return AxisInfo(contiguity, divisibility, constancy, constantValue,
-                  corexFlag);
+  int64_t stride = 0;
+  if (lhs.getStride() || rhs.getStride())
+    stride = lhs.getStride() ? lhs.getStride() : rhs.getStride();
+  return AxisInfo(contiguity, divisibility, constancy, constantValue, corexFlag,
+                  stride);
 }
 
 void ModuleAxisInfoAnalysis::initialize(FunctionOpInterface funcOp) {

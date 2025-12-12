@@ -15,12 +15,53 @@ import torch
 import triton
 import triton.language as tl
 
+version = tuple(map(int, triton.__version__.split('.')[:2]))
+
+if version >= (2, 0) and version < (3, 0):
+    from triton.language.math import fast_dividef
+elif version >= (3, 0):
+    from triton.language.extra.cuda.libdevice import fast_dividef
+else:
+    raise ValueError(f"不支持的 Triton 版本: {triton.__version__}")
+
 
 @triton.jit
-def _fwd_kernel(Q, K, V, sm_scale, L, M, Out, stride_qz, stride_qh, stride_qm, stride_qk, stride_kz, stride_kh,
-                stride_kn, stride_kk, stride_vz, stride_vh, stride_vk, stride_vn, stride_oz, stride_oh, stride_om,
-                stride_on, Z, H, N_CTX, BLOCK_M: tl.constexpr, BLOCK_SK: tl.constexpr, BLOCK_SN: tl.constexpr,
-                BLOCK_OK: tl.constexpr, BLOCK_ON: tl.constexpr, BLOCK_DMODEL: tl.constexpr):
+def _fwd_kernel(
+    Q,
+    K,
+    V,
+    sm_scale,
+    L,
+    M,
+    Out,
+    stride_qz,
+    stride_qh,
+    stride_qm,
+    stride_qk,
+    stride_kz,
+    stride_kh,
+    stride_kn,
+    stride_kk,
+    stride_vz,
+    stride_vh,
+    stride_vk,
+    stride_vn,
+    stride_oz,
+    stride_oh,
+    stride_om,
+    stride_on,
+    H,
+    KV_H,
+    N_CTX,
+    BLOCK_M: tl.constexpr,
+    BLOCK_SK: tl.constexpr,
+    BLOCK_SN: tl.constexpr,
+    BLOCK_OK: tl.constexpr,
+    BLOCK_ON: tl.constexpr,
+    BLOCK_DMODEL: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+):
     sm_scale *= 1.44269504  # 1/log(2)
     start_m = tl.program_id(0)
     start_z = tl.program_id(1)
@@ -28,24 +69,30 @@ def _fwd_kernel(Q, K, V, sm_scale, L, M, Out, stride_qz, stride_qh, stride_qm, s
 
     # initialize offsets
     offs_zh = ((start_z * H) + start_h)
+    if GROUP_SIZE != 1:
+        start_h_kv = start_h // GROUP_SIZE
+    else:
+        start_h_kv = start_h
+    kv_offs_zh = ((start_z * KV_H) + start_h_kv)
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_k = tl.arange(0, BLOCK_SK)
     offs_d = tl.arange(0, BLOCK_DMODEL)
     offs_n = tl.arange(0, BLOCK_SN)
     off_q = offs_zh * stride_qh + offs_m[:, None] * stride_qm + offs_k[None, :] * stride_qk
-    off_k = offs_zh * stride_kh + offs_n[None, :] * stride_kn + offs_k[:, None] * stride_kk
-    off_v = offs_zh * stride_vh + offs_n[:, None] * stride_vk + offs_d[None, :] * stride_vn
+    off_k = kv_offs_zh * stride_kh + offs_n[None, :] * stride_kn + offs_k[:, None] * stride_kk
+    off_v = kv_offs_zh * stride_vh + offs_n[:, None] * stride_vk + offs_d[None, :] * stride_vn
     # Initialize pointers to Q, K, V
     q_ptrs = Q + off_q
     k_ptrs = K + off_k
     v_ptrs = V + off_v
     # initialize pointer to m and l
     m_prev = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
-    l_prev = tl.zeros([BLOCK_M], dtype=tl.float32)
+    l_prev = tl.zeros([BLOCK_M], dtype=tl.float32) + 1.0
     acc = tl.zeros([BLOCK_M, BLOCK_DMODEL], dtype=tl.float32)
 
     # loop over k, v and update accumulator
-    for start_n in range(0, N_CTX, BLOCK_SN):
+    hi = (start_m + 1) * BLOCK_M if IS_CAUSAL else N_CTX
+    for start_n in range(0, hi, BLOCK_SN):
 
         # 1st Gemm using tiling K = BLOCK_K
         qk = tl.zeros([BLOCK_M, BLOCK_SN], dtype=tl.float32)
@@ -60,16 +107,19 @@ def _fwd_kernel(Q, K, V, sm_scale, L, M, Out, stride_qz, stride_qh, stride_qm, s
             k_ptrs_loop += BLOCK_SK * stride_kk
         # compute scaling constant
         qk *= sm_scale
+        if IS_CAUSAL:
+            if start_n >= start_m * BLOCK_M:
+                qk = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), qk, float("-inf"))
+        v = tl.load(v_ptrs)
         m_curr = tl.maximum(tl.max(qk, 1), m_prev)
         alpha = tl.math.exp2(m_prev - m_curr)
         p = tl.math.exp2(qk - m_curr[:, None])
+        l_prev = l_prev * alpha + tl.sum(p, 1)
 
         # scale and update acc
         acc *= alpha[:, None]
-        v = tl.load(v_ptrs)
         acc += tl.dot(p.to(Q.dtype.element_ty), v)
         # update m_prev and l_prev
-        l_prev = l_prev * alpha + tl.sum(p, 1)
         m_prev = m_curr
 
         # update pointers (k_ptrs is already contiguous)
@@ -79,7 +129,7 @@ def _fwd_kernel(Q, K, V, sm_scale, L, M, Out, stride_qz, stride_qh, stride_qm, s
     start_m = tl.program_id(0)
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     # write back l and m
-    acc = acc / l_prev[:, None]
+    acc = fast_dividef(acc, l_prev[:, None])
     l_ptrs = L + offs_zh * N_CTX + offs_m
     tl.store(l_ptrs, m_prev + tl.math.log2(l_prev))
 
@@ -223,12 +273,24 @@ empty = torch.empty(128, device="cuda")
 class _attention(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q, k, v, sm_scale):
-        BLOCK_M = 256
-        BLOCK_SK = 32
-        BLOCK_SN = 128
-        BLOCK_OK = 128
-        BLOCK_ON = 128
+    def forward(ctx, q, k, v, causal, sm_scale):
+        capability = torch.cuda.get_device_capability()
+        if capability[0] == 7:
+            BLOCK_M = 256
+            BLOCK_SK = 32
+            BLOCK_SN = 128
+            BLOCK_OK = 128
+            BLOCK_ON = 128
+            num_warps = 16
+        elif capability[0] == 8:
+            BLOCK_M = 128
+            BLOCK_SK = 64
+            BLOCK_SN = 128
+            BLOCK_OK = 128
+            BLOCK_ON = 128
+            num_warps = 8
+        else:
+            assert False, "Iluvatar device not supported yet!"
 
         # shape constraints
         Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
@@ -238,18 +300,21 @@ class _attention(torch.autograd.Function):
         grid = (triton.cdiv(q.shape[2], BLOCK_M), q.shape[0], q.shape[1])
         L = torch.empty((q.shape[0] * q.shape[1], q.shape[2]), device=q.device, dtype=torch.float32)
         m = torch.empty((q.shape[0] * q.shape[1], q.shape[2]), device=q.device, dtype=torch.float32)
-        num_warps = 16
+        N, H, N_CTX, HEAD_DIM = q.shape
+        KV_H, KV_N_CTX = k.shape[1], k.shape[2]
+        group_size = H // KV_H
 
         _fwd_kernel[grid](q, k, v, sm_scale, L, m, o, q.stride(0), q.stride(1), q.stride(2), q.stride(3), k.stride(0),
                           k.stride(1), k.stride(2), k.stride(3), v.stride(0), v.stride(1), v.stride(2), v.stride(3),
-                          o.stride(0), o.stride(1), o.stride(2), o.stride(3), q.shape[0], q.shape[1], q.shape[2],
-                          BLOCK_M=BLOCK_M, BLOCK_SK=BLOCK_SK, BLOCK_SN=BLOCK_SN, BLOCK_OK=BLOCK_OK, BLOCK_ON=BLOCK_ON,
-                          BLOCK_DMODEL=Lk, num_warps=num_warps, num_stages=2, maxnreg=128)
+                          o.stride(0), o.stride(1), o.stride(2), o.stride(3), H, KV_H, KV_N_CTX, BLOCK_M=BLOCK_M,
+                          BLOCK_SK=BLOCK_SK, BLOCK_SN=BLOCK_SN, BLOCK_OK=BLOCK_OK, BLOCK_ON=BLOCK_ON, BLOCK_DMODEL=Lk,
+                          IS_CAUSAL=causal, GROUP_SIZE=group_size, num_warps=num_warps, num_stages=2, maxnreg=128)
 
         ctx.save_for_backward(q, k, v, o, L, m)
         ctx.grid = grid
         ctx.sm_scale = sm_scale
         ctx.BLOCK_DMODEL = Lk
+        ctx.causal = causal
         return o
 
     @staticmethod
@@ -311,35 +376,47 @@ class _attention(torch.autograd.Function):
             num_stages=1,
         )
         # print(h.asm["ttgir"])
-        return dq, dk, dv, None
+        return dq, dk, dv, None, None
 
 
 attention = _attention.apply
 
 
-@pytest.mark.parametrize('Z, H, N_CTX, D_HEAD', [(4, 48, 1024, 64)])
-def test_op(Z, H, N_CTX, D_HEAD, dtype=torch.float16, causal=False, test_backward=True):
+@pytest.mark.parametrize('Z, H, KV_H, N_CTX, D_HEAD', [(1, 4, 1, 1024, 128)])
+@pytest.mark.parametrize('causal', [False, True])
+def test_op(Z, H, KV_H, N_CTX, D_HEAD, dtype=torch.float16, causal=False, test_backward=True, sdpa=True):
     torch.manual_seed(20)
     q = torch.empty((Z, H, N_CTX, D_HEAD), dtype=dtype, device="cuda").normal_(mean=0.1, std=0.2).requires_grad_()
-    k = torch.empty((Z, H, N_CTX, D_HEAD), dtype=dtype, device="cuda").normal_(mean=0.4, std=0.2).requires_grad_()
-    v = torch.empty((Z, H, N_CTX, D_HEAD), dtype=dtype, device="cuda").normal_(mean=0.3, std=0.2).requires_grad_()
+    k = torch.empty((Z, KV_H, N_CTX, D_HEAD), dtype=dtype, device="cuda").normal_(mean=0.4, std=0.2).requires_grad_()
+    v = torch.empty((Z, KV_H, N_CTX, D_HEAD), dtype=dtype, device="cuda").normal_(mean=0.3, std=0.2).requires_grad_()
     sm_scale = 0.2
     dout = torch.randn_like(q)
     # reference implementation
-    p = torch.matmul(q, k.transpose(2, 3)) * sm_scale
-    if causal:
-        M = torch.tril(torch.ones((N_CTX, N_CTX), device="cuda"))
-        p[:, :, M == 0] = float("-inf")
-    p = torch.softmax(p.float(), dim=-1).half()
-    # p = torch.exp(p)
-    ref_out = torch.matmul(p, v)
+    if sdpa:
+        # call torch sdpa API
+        ref_out = torch.nn.functional.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            scale=sm_scale,
+            is_causal=causal,
+        )
+    else:
+        # naive version:
+        p = torch.matmul(q, k.transpose(2, 3)) * sm_scale
+        if causal:
+            M = torch.tril(torch.ones((N_CTX, N_CTX), device="cuda"))
+            p[:, :, M == 0] = float("-inf")
+        p = torch.softmax(p.float(), dim=-1).half()
+        # p = torch.exp(p)
+        ref_out = torch.matmul(p, v)
     if test_backward:
         ref_out.backward(dout)
         ref_dv, v.grad = v.grad.clone(), None
         ref_dk, k.grad = k.grad.clone(), None
         ref_dq, q.grad = q.grad.clone(), None
     # triton implementation
-    tri_out = attention(q, k, v, sm_scale)
+    tri_out = attention(q, k, v, causal, sm_scale)
     # print(ref_out)
     # print(tri_out)
     if test_backward:
@@ -358,11 +435,11 @@ def test_op(Z, H, N_CTX, D_HEAD, dtype=torch.float16, causal=False, test_backwar
     print("= " * 30)
 
     atol = 1e-2
-    torch.testing.assert_allclose(ref_out, tri_out, atol=atol, rtol=0, equal_nan=True)
+    torch.testing.assert_close(ref_out, tri_out, atol=atol, rtol=0, equal_nan=True)
     if test_backward:
-        torch.testing.assert_allclose(ref_dv, tri_dv, atol=atol, rtol=0, equal_nan=True)
-        torch.testing.assert_allclose(ref_dk, tri_dk, atol=atol, rtol=0, equal_nan=True)
-        torch.testing.assert_allclose(ref_dq, tri_dq, atol=atol, rtol=0, equal_nan=True)
+        torch.testing.assert_close(ref_dv, tri_dv, atol=atol, rtol=0, equal_nan=True)
+        torch.testing.assert_close(ref_dk, tri_dk, atol=atol, rtol=0, equal_nan=True)
+        torch.testing.assert_close(ref_dq, tri_dq, atol=atol, rtol=0, equal_nan=True)
 
 
 try:
@@ -375,48 +452,62 @@ except BaseException:
     except BaseException:
         FLASH_VER = None
 HAS_FLASH = FLASH_VER is not None
+HAS_FLASH = False
 
 # BATCH, N_HEADS, N_CTX, D_HEAD = 4, 48, 4096, 64
-BATCH, N_HEADS, N_CTX, D_HEAD = 1, 64, 4096, 128
+BATCH, H, KV_H, N_CTX, D_HEAD = 1, 4, 1, 4096, 128
 # vary seq length for fixed head and batch=4
 configs = [
     triton.testing.Benchmark(
-        x_names=['N_CTX'], x_vals=[2**i for i in range(10, 14)], line_arg='provider',
-        line_vals=['triton'] + (['flash'] if HAS_FLASH else []),
-        line_names=['Triton'] + ([f'Flash-{FLASH_VER}'] if HAS_FLASH else []), styles=[('red', '-'), ('blue', '-')],
-        ylabel='ms', plot_name=f'fused-attention-batch{BATCH}-head{N_HEADS}-d{D_HEAD}-{mode}',
-        args={'H': N_HEADS, 'BATCH': BATCH, 'D_HEAD': D_HEAD, 'dtype': torch.float16, 'mode': mode}) for mode in [
+        x_names=['N_CTX'], x_vals=[2**i for i in range(10, 16)], line_arg='provider',
+        line_vals=['triton', 'torch'] + (['flash'] if HAS_FLASH else []),
+        line_names=['Triton', 'torch'] + ([f'Flash-{FLASH_VER}'] if HAS_FLASH else []), styles=[('red', '-'),
+                                                                                                ('blue', '-'),
+                                                                                                ('green', '-')],
+        ylabel='ms', plot_name=f'fused-attention-batch{BATCH}-head{H}-kvhead{KV_H}-d{D_HEAD}-{mode}--mask{causal}',
+        args={
+            'H': H,
+            'KV_H': KV_H,
+            'BATCH': BATCH,
+            'D_HEAD': D_HEAD,
+            'dtype': torch.float16,
+            'mode': mode,
+            'causal': causal,
+        }) for mode in [
             'fwd',
+        ] for causal in [
+            True,
         ]
 ]
 
 
 @triton.testing.perf_report(configs)
-def bench_flash_attention(BATCH, H, N_CTX, D_HEAD, mode, provider, dtype=torch.float16, device="cuda"):
+def bench_flash_attention(BATCH, H, KV_H, N_CTX, D_HEAD, causal, mode, provider, dtype=torch.float16, device="cuda"):
     assert mode in ['fwd', 'bwd']
     warmup = 1000
     rep = 1000
     sm_scale = 1.3
     if provider == "triton":
         q = torch.randn((BATCH, H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
-        k = torch.randn((BATCH, H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
-        v = torch.randn((BATCH, H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
-        fn = lambda: attention(q, k, v, sm_scale)
+        k = torch.randn((BATCH, KV_H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
+        v = torch.randn((BATCH, KV_H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
+        fn = lambda: attention(q, k, v, causal, sm_scale)
         if mode == 'bwd':
             o = fn()
             do = torch.randn_like(o)
             fn = lambda: o.backward(do, retain_graph=True)
         ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
     if provider == "flash":
-        qkv = torch.randn((BATCH, N_CTX, 3, H, D_HEAD), dtype=dtype, device=device, requires_grad=True)
+        qkv = torch.randn((3, BATCH, H, N_CTX, D_HEAD), dtype=dtype, device=device, requires_grad=True)
+        qkv = qkv.permute(1, 3, 0, 2, 4)  # (BATCH, N_CTX, 3, H, D_HEAD)
         if FLASH_VER == 1:
             lengths = torch.full((BATCH, ), fill_value=N_CTX, device=device)
             cu_seqlens = torch.zeros((BATCH + 1, ), device=device, dtype=torch.int32)
             cu_seqlens[1:] = lengths.cumsum(0)
             qkv = qkv.reshape(BATCH * N_CTX, 3, H, D_HEAD)
-            fn = lambda: flash_attn_func(qkv, cu_seqlens, 0., N_CTX, causal=False)
+            fn = lambda: flash_attn_func(qkv, cu_seqlens, 0., N_CTX, causal=causal)
         elif FLASH_VER == 2:
-            fn = lambda: flash_attn_func(qkv, softmax_scale=sm_scale, causal=False)
+            fn = lambda: flash_attn_func(qkv, softmax_scale=sm_scale, causal=causal)
         else:
             raise ValueError(f'unknown {FLASH_VER = }')
         if mode == 'bwd':
@@ -424,7 +515,20 @@ def bench_flash_attention(BATCH, H, N_CTX, D_HEAD, mode, provider, dtype=torch.f
             do = torch.randn_like(o)
             fn = lambda: o.backward(do, retain_graph=True)
         ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
-    total_flops = 2. * BATCH * H * N_CTX * N_CTX * D_HEAD
+    if provider == 'torch':
+        q = torch.randn((BATCH, H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
+        k = torch.randn((BATCH, KV_H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
+        v = torch.randn((BATCH, KV_H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
+        fn = lambda: torch.nn.functional.scaled_dot_product_attention(q, k, v, scale=sm_scale, is_causal=causal)
+        if mode == 'bwd':
+            o = fn()
+            do = torch.randn_like(o)
+            fn = lambda: o.backward(do, retain_graph=True)
+        ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
+    flops_per_matmul = 2.0 * BATCH * H * N_CTX * N_CTX * D_HEAD
+    total_flops = 2 * flops_per_matmul
+    if causal:
+        total_flops *= 0.5
     if mode == 'bwd':
         total_flops *= 2.5  # 2.0(bwd) + 0.5(recompute)
     # return total_flops / ms * 1e-9
@@ -432,6 +536,7 @@ def bench_flash_attention(BATCH, H, N_CTX, D_HEAD, mode, provider, dtype=torch.f
 
 
 if __name__ == "__main__":
-    Z, H, N_CTX, D_HEAD = 1, 1, 4096, 128
-    test_op(Z, H, N_CTX, D_HEAD, dtype=torch.float16, causal=False, test_backward=False)
+    Z, H, KV_H, N_CTX, D_HEAD = 1, 16, 4, 4096, 128
+    test_op(Z, H, KV_H, N_CTX, D_HEAD, dtype=torch.float16, causal=False, test_backward=False)
+    test_op(Z, H, KV_H, N_CTX, D_HEAD, dtype=torch.float16, causal=True, test_backward=False)
     bench_flash_attention.run(save_path='.', print_data=True)

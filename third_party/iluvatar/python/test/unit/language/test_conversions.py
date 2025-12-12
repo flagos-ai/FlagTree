@@ -7,6 +7,7 @@ import torch
 import pytest
 import triton
 import triton.language as tl
+from triton.backends.iluvatar.spec.triton.runtime.build import is_corex
 
 def is_interpreter():
     return os.environ.get('TRITON_INTERPRET', '0') == '1'
@@ -19,6 +20,24 @@ def is_hip():
 
 def is_on_mi300():
     return is_hip() and triton.runtime.driver.active.get_current_target().arch in ('gfx940', 'gfx941', 'gfx942')
+
+
+COREX_FP8_DTYPES = {
+    'float8e4m3fn',
+    'float8e4m3fnuz',
+    'float8e5m2',
+    'float8e5m2fnuz',
+}
+
+TL_DTYPE_ALIAS = {
+    'float8e4m3fn': 'float8e4nv',
+    'float8e4m3fnuz': 'float8e4b8',
+    'float8e5m2': 'float8e5',
+    'float8e5m2fnuz': 'float8e5b16',
+}
+
+def get_tl_dtype(name):
+    return getattr(tl, TL_DTYPE_ALIAS.get(name, name))
 
 def matching_int(dtype):
     if dtype.primitive_bitwidth == 8:
@@ -261,34 +280,31 @@ def upcast_test(src_dtype, dst_dtype, exponent_bits, mantissa_bits, exponent_bia
 @pytest.mark.parametrize("src_dtype, dst_dtype", [
     ('float16', 'float32'),
     ('bfloat16', 'float32'),
-
-    # ('float8e5', 'float16'),
-    # ('float8e5', 'bfloat16'),
-    # ('float8e5', 'float32'),
-
-    # ('float8e4b15', 'float16'),
-    # ('float8e4b15', 'bfloat16'), # Unsupported conversion from f8E4M3B11FNUZ to bf16
-    # ('float8e4b15', 'float32'),
-
-    # ('float8e4nv', 'float16'),
-    # ('float8e4nv', 'bfloat16'),
-    # ('float8e4nv', 'float32'),
-
-    # ('float8e4b8', 'float32'),
-    # ('float8e4b8', 'float16'),
-
-    # ('float8e5b16', 'float32'),
-    # ('float8e5b16', 'float16'),
+    ('float8e4m3fn', 'float16'),
+    ('float8e4m3fn', 'bfloat16'),
+    ('float8e4m3fn', 'float32'),
+    ('float8e4m3fnuz', 'float16'),
+    ('float8e4m3fnuz', 'bfloat16'),
+    ('float8e4m3fnuz', 'float32'),
+    ('float8e5m2', 'float16'),
+    ('float8e5m2', 'bfloat16'),
+    ('float8e5m2', 'float32'),
+    ('float8e5m2fnuz', 'float16'),
+    ('float8e5m2fnuz', 'bfloat16'),
+    ('float8e5m2fnuz', 'float32'),
 ])
 def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 
-    if src_dtype == 'float8e4nv' and is_cuda() and torch.cuda.get_device_capability(0) < (9, 0):
+    if src_dtype == 'float8e4nv' and is_cuda() and not is_corex() and torch.cuda.get_device_capability(0) < (9, 0):
         pytest.skip("float8e4nv upcast tests only supported on NVGPU with compute capability 9.0+")
 
     if src_dtype in ('float8e4nv', 'float8e4b15') and is_hip():
         pytest.skip(f"{src_dtype} upcast tests not supported on ROCm")
 
-    if src_dtype in ('float8e4b8', 'float8e5b16') and (is_cuda() or not is_on_mi300()):
+    if src_dtype in COREX_FP8_DTYPES and not is_corex():
+        pytest.skip(f"{src_dtype} upcast tests only enabled on CoreX backend")
+
+    if src_dtype in ('float8e4b8', 'float8e5b16') and ((is_cuda() and not is_corex()) or not is_on_mi300()):
         pytest.skip("{src_dtype} upcast tests only supported on AMDGPU MI300")
 
     # dtype : (exponent_bits, mantissa_bits, exponent_bias, max_repr)
@@ -298,45 +314,45 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
         'float8e5': (5, 2, 15, 0x7b),
         'float8e4b8': (4, 3, 8, 0x7f),
         'float8e5b16': (5, 2, 16, 0x7f),
+        'float8e4m3fn': (4, 3, 7, 0x7e),
+        'float8e4m3fnuz': (4, 3, 8, 0x7f),
+        'float8e5m2': (5, 2, 15, 0x7b),
+        'float8e5m2fnuz': (5, 2, 16, 0x7f),
         'float16': (5, 10, 15, 0x7bff),
         'bfloat16': (8, 7, 127, 0x7f7f),
     }[src_dtype]
 
-    upcast_test(getattr(tl, src_dtype), getattr(tl, dst_dtype), *stuff, device=device)
+    upcast_test(get_tl_dtype(src_dtype), get_tl_dtype(dst_dtype), *stuff, device=device)
 
 @pytest.mark.parametrize("src_dtype, dst_dtype, rounding, max_repr", [
     ('float32', 'float16', 'rtne', 0x477fe000),
     ('float32', 'float16', 'rtz', 0x477fe000),
     ('float32', 'bfloat16', 'rtne', 0x7f7f0000),
-    # ('float32', 'bfloat16', 'rtz', 0x7f7f0000),
-    # ('float32', 'float8e5', 'rtne', 0x47600000),
-    # ('float32', 'float8e5', 'rtz', 0x47600000),
-    # ('float32', 'float8e4nv', 'rtne', 0x43e00000),
-    # ('float32', 'float8e4b8', 'rtne', 0x43700000),
-    # ('float32', 'float8e5b16', 'rtne', 0x47600000),
-    # ('float32', 'float8e4b15', 'rtne', 0x3fe00000), # Skip, no HW rtne conversion from f32 to f8e4b15
-
-    # ('bfloat16', 'float8e5', 'rtne', 0x4760),
-    # ('bfloat16', 'float8e4nv', 'rtne', 0x43e0),
-
-    # ('float16', 'float8e5', 'rtne', 0x7b00),
-    # ('float16', 'float8e4nv', 'rtne', 0x5f00),
-
-    # ('bfloat16', 'float8e5b16', 'rtne', 0x4760),
-    # ('bfloat16', 'float8e4b8', 'rtne', 0x4370),
-
-    # ('float16', 'float8e5b16', 'rtne', 0x7b00),
-    # ('float16', 'float8e4b8', 'rtne', 0x5b80),
+    ('float32', 'float8e4m3fn', 'rtne', 0x43e00000),
+    ('float32', 'float8e4m3fnuz', 'rtne', 0x43700000),
+    ('float32', 'float8e5m2', 'rtne', 0x47600000),
+    ('float32', 'float8e5m2fnuz', 'rtne', 0x47600000),
+    ('bfloat16', 'float8e4m3fn', 'rtne', 0x43e0),
+    ('bfloat16', 'float8e4m3fnuz', 'rtne', 0x4370),
+    ('bfloat16', 'float8e5m2', 'rtne', 0x4760),
+    ('bfloat16', 'float8e5m2fnuz', 'rtne', 0x4760),
+    ('float16', 'float8e4m3fn', 'rtne', 0x5f00),
+    ('float16', 'float8e4m3fnuz', 'rtne', 0x5b80),
+    ('float16', 'float8e5m2', 'rtne', 0x7b00),
+    ('float16', 'float8e5m2fnuz', 'rtne', 0x7b00),
 ])
 def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
 
-    if src_dtype != 'float32' and is_cuda() and torch.cuda.get_device_capability(0) < (9, 0):
+    if src_dtype != 'float32' and is_cuda() and not is_corex() and torch.cuda.get_device_capability(0) < (9, 0):
         pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
 
-    if dst_dtype in ('float8e5', 'float8e4nv') and rounding == 'rtne' and (is_hip() or torch.cuda.get_device_capability(0) < (9, 0)):
+    if dst_dtype in ('float8e5', 'float8e4nv') and rounding == 'rtne' and (is_hip() or (is_cuda() and not is_corex() and torch.cuda.get_device_capability(0) < (9, 0))):
         pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on NVGPU with compute capability 9.0+")
 
-    if dst_dtype in ('float8e5b16', 'float8e4b8') and rounding == 'rtne' and (is_cuda() or not is_on_mi300()):
+    if dst_dtype in COREX_FP8_DTYPES and not is_corex():
+        pytest.skip(f"{dst_dtype} downcast tests only enabled on CoreX backend")
+
+    if dst_dtype in ('float8e5b16', 'float8e4b8') and rounding == 'rtne' and ((is_cuda() and not is_corex()) or not is_on_mi300()):
         pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on AMDGPU MI300")
 
     # dtype : (exponent_bits, mantissa_bits, exponent_bias)
@@ -348,7 +364,11 @@ def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
         'float8e4nv': (4, 3, 7),
         'float8e4b8': (4, 3, 8),
         'float8e5b16': (5, 2, 16),
+        'float8e4m3fn': (4, 3, 7),
+        'float8e4m3fnuz': (4, 3, 8),
+        'float8e5m2': (5, 2, 15),
+        'float8e5m2fnuz': (5, 2, 16),
     }[dst_dtype]
 
     for i in range(256):
-        downcast_test(getattr(tl, src_dtype), getattr(tl, dst_dtype), rounding, *stuff, max_repr, i, device=device)
+        downcast_test(get_tl_dtype(src_dtype), get_tl_dtype(dst_dtype), rounding, *stuff, max_repr, i, device=device)

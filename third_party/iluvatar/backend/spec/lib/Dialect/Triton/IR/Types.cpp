@@ -1,9 +1,3 @@
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Dialect_Triton_IR_Types_cpp
-
 #include "triton/Dialect/Triton/IR/Types.h"
 
 #include "mlir/IR/DialectImplementation.h" // required by `Types.cpp.inc`
@@ -100,6 +94,40 @@ void MemDescType::print(AsmPrinter &printer) const {
   printer << ">";
 }
 
+Type CorexDescType::parse(AsmParser &parser) {
+  if (parser.parseLess())
+    return Type();
+
+  SmallVector<int64_t> dimensions;
+  if (parser.parseDimensionList(dimensions, /*allowDynamic=*/false))
+    return Type();
+
+  Type elementType;
+  if (parser.parseType(elementType))
+    return Type();
+
+  Attribute encoding;
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseAttribute(encoding))
+      return Type();
+  }
+  if (parser.parseGreater())
+    return Type();
+
+  return CorexDescType::get(parser.getContext(), dimensions, elementType,
+                            encoding);
+}
+
+void CorexDescType::print(AsmPrinter &printer) const {
+  printer << "<";
+  for (auto dim : getShape())
+    printer << dim << "x";
+  printer << getElementType();
+  if (getEncoding())
+    printer << ", " << getEncoding();
+  printer << ">";
+}
+
 namespace mlir {
 
 namespace triton {
@@ -124,7 +152,8 @@ Type getPointeeType(Type type) {
     // Tensor of pointers
     auto shape = tensorTy.getShape();
     auto ptrType = dyn_cast<PointerType>(tensorTy.getElementType());
-    Type pointeeType = ptrType.getPointeeType();
+    Type pointeeType =
+        ptrType ? ptrType.getPointeeType() : tensorTy.getElementType();
     return RankedTensorType::get(shape, pointeeType, tensorTy.getEncoding());
   } else if (auto ptrType = dyn_cast<PointerType>(type)) {
     // scalar pointer
@@ -175,5 +204,3 @@ Type getElementTypeOfTensorPointerType(Type type) {
 } // namespace triton
 
 } // namespace mlir
-
-#endif // FLAGTREE_SPEC_Dialect_Triton_IR_Types_cpp

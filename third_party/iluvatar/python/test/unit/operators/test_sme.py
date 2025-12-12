@@ -93,6 +93,70 @@ def test_16x32_f16_dot():
     return torch.allclose(C, D, atol=1e-3, rtol=1e-3), check_mlir(F, [(32, 0)])
 
 
+@triton.jit
+def test_corex_sme_kernel(addrs, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, use_sme: tl.constexpr):
+    A = tl.load(addrs).to(tl.pointer_type(tl.float16))
+    B = tl.load(addrs + 1).to(tl.pointer_type(tl.float16))
+    C = tl.load(addrs + 2).to(tl.pointer_type(tl.float16))
+    M_offs = tl.arange(0, M)
+    N_offs = tl.arange(0, N)
+    K_offs = tl.arange(0, K)
+    A_offset = A + M_offs[:, None] * K + K_offs[None, :]
+    if use_sme:
+        tl.corex_sme(A_offset, 32)
+    A_vals = tl.load(A_offset)
+    B_vals = tl.load(B + K_offs[:, None] * N + N_offs[None, :])
+    C_vals = tl.dot(A_vals, B_vals)
+    tl.store(C + M_offs[:, None] * N + N_offs[None, :], C_vals)
+
+
+@triton.jit
+def test_corex_stride_kernel(addrs, A_stride, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
+    A = tl.load(addrs).to(tl.pointer_type(tl.float16))
+    B = tl.load(addrs + 1).to(tl.pointer_type(tl.float16))
+    C = tl.load(addrs + 2).to(tl.pointer_type(tl.float16))
+    M_offs = tl.arange(0, M)
+    N_offs = tl.arange(0, N)
+    K_offs = tl.arange(0, K)
+    A_offset = A + M_offs[:, None] * K + K_offs[None, :]
+    a_stride = tl.load(A_stride)
+    A_vals = tl.load(A_offset, stride=a_stride)
+    B_vals = tl.load(B + K_offs[:, None] * N + N_offs[None, :])
+    C_vals = tl.dot(A_vals, B_vals)
+    tl.store(C + M_offs[:, None] * N + N_offs[None, :], C_vals)
+
+
+@pytest.mark.skip(reason="iluvatar: ir.parse_mlir_module failed in CI")
+@print_result_decorator
+def test_corex_stride():
+    A = torch.randn((16, 32), dtype=torch.half, device="cuda")
+    B = torch.randn((32, 16), dtype=torch.half, device="cuda")
+    C = torch.zeros((16, 16), dtype=torch.half, device="cuda")
+    addrs = [A.data_ptr(), B.data_ptr(), C.data_ptr()]
+    addr_input = torch.tensor(addrs, device="cuda")
+    A_stride = torch.tensor(32, dtype=torch.int32, device="cuda")
+    F = test_corex_stride_kernel[(1, )](addr_input, A_stride, 16, 16, 32)
+    D = A @ B
+    assert check_mlir(F, [(64, 0)])
+    return torch.allclose(C, D, atol=1e-3, rtol=1e-3), check_mlir(F, [(64, 0)])
+
+
+@pytest.mark.skip(reason="iluvatar: ir.parse_mlir_module failed in CI")
+@print_result_decorator
+def test_corex_sme():
+    A = torch.randn((16, 32), dtype=torch.half, device="cuda")
+    B = torch.randn((32, 16), dtype=torch.half, device="cuda")
+    C = torch.zeros((16, 16), dtype=torch.half, device="cuda")
+    addrs = [A.data_ptr(), B.data_ptr(), C.data_ptr()]
+    addr_input = torch.tensor(addrs, device="cuda")
+    O = test_corex_sme_kernel[(1, )](addr_input, 16, 16, 32, 0)
+    assert check_mlir(O, [(0, 0)])
+    F = test_corex_sme_kernel[(1, )](addr_input, 16, 16, 32, 1)
+    assert check_mlir(F, [(32, 0)])
+    D = A @ B
+    return torch.allclose(C, D, atol=1e-3, rtol=1e-3), check_mlir(F, [(32, 0)])
+
+
 @pytest.mark.skip(reason="iluvatar: ir.parse_mlir_module failed in CI")
 @print_result_decorator
 def test_16x32_i8_dot():
@@ -566,6 +630,9 @@ def _fwd_batch_mla_paged_attention_stage1(q_nope, q_pe, ckv_cache, kpe_cache, ou
 @pytest.mark.skip(reason="iluvatar: ir.parse_mlir_module failed in CI")
 @print_result_decorator
 def test_batch_mla():
+    capability = torch.cuda.get_device_capability()
+    if capability[0] == 8:
+        pytest.skip("QS do not support load result used by both TransOp and DotOp when dtype=float32 for now.")
     kv_len = [128, 1275, 1275, 1273]
     qo_len = [125, 1, 1, 1]
     num_heads = 128
@@ -648,7 +715,98 @@ def test_batch_mla():
     return True, check_mlir(F, [(512, 512), (64, 64), (0, 512)])
 
 
+@triton.jit
+def nested_kernel_d2(A, B, C, M_offs, N_offs, K_offs, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
+    A_vals = tl.load(A + M_offs[:, None] * K + K_offs[None, :])
+    B_vals = tl.load(B + K_offs[:, None] * N + N_offs[None, :])
+    C_vals = tl.dot(A_vals, B_vals)
+    tl.store(C + M_offs[:, None] * N + N_offs[None, :], C_vals)
+
+
+@triton.jit
+def nested_kernel_d1(A, B, C, M_offs, N_offs, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
+    K_offs = tl.arange(0, K)
+    nested_kernel_d2(A, B, C, M_offs, N_offs, K_offs, M, N, K)
+
+
+@triton.jit
+def nested_kernel(A, B, C, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
+    M_offs = tl.arange(0, M)
+    N_offs = tl.arange(0, N)
+    nested_kernel_d1(A, B, C, M_offs, N_offs, M, N, K)
+
+
+@pytest.mark.skip(reason="iluvatar: ir.parse_mlir_module failed in CI")
+@print_result_decorator
+def test_nested_dot():
+    M, N, K = 16, 16, 32
+    dtype = torch.half
+    A = torch.randn((M, K), dtype=dtype, device='cuda')
+    B = torch.randn((K, N), dtype=dtype, device='cuda')
+    C = torch.randn((M, N), dtype=dtype, device='cuda')
+    F = nested_kernel[(1, )](A, B, C, M, N, K)
+    D = A @ B
+    assert check_mlir(F, [(32, 0)])
+    return torch.allclose(C, D, atol=1e-3, rtol=1e-3), check_mlir(F, [(32, 0)])
+
+
+@triton.jit
+def mask_sme_kernel(q_ptr, k_ptr, o_ptr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, mask: tl.constexpr,
+                    other: tl.constexpr, outTy: tl.constexpr):
+
+    rm = tl.arange(0, M)  # (M,)
+    rk = tl.arange(0, K)  # (K,)
+
+    q_ptrs = q_ptr + rm[:, None] * K + rk[None, :]
+    # With mask load
+    q = tl.load(q_ptrs, mask=rk[None, :] < mask, other=other)
+
+    cn = tl.arange(0, N)
+    k_ptrs = k_ptr + rk[:, None] + cn[None, :] * K
+    bk = tl.load(k_ptrs, mask=rk[:, None] < mask, other=other)
+
+    acc = tl.dot(q, bk)  # (M, N)
+    o_ptrs = o_ptr + rm[:, None] * N + cn[None, :]
+    tl.store(o_ptrs, acc.to(outTy))
+
+
+@pytest.mark.skip(reason="iluvatar: ir.parse_mlir_module failed in CI")
+@print_result_decorator
+def test_mask_sme():
+    M, K, N = 64, 256, 64
+    mask = K // 2
+    other = 3.0
+    #fp16 test case
+    q = torch.randn((M, K), dtype=torch.float16, device="cuda")
+    k = torch.randn((N, K), dtype=torch.float16, device="cuda")
+    out = torch.empty((M, N), dtype=torch.float16, device="cuda")
+
+    q_ref = q.clone()
+    k_ref = k.clone()
+    q_ref[:, mask:] = other
+    k_ref[:, mask:] = other
+    ref = q_ref @ k_ref.T
+
+    F = mask_sme_kernel[(1, )](q, k, out, M, N, K, mask=mask, other=other, outTy=tl.float16)
+    assert check_mlir(F, [(256, 256)])
+    #int8 test case
+    q_8 = torch.randint(-128, 127, (M, K), dtype=torch.int8, device="cuda")
+    k_8 = torch.randint(-128, 127, (N, K), dtype=torch.int8, device="cuda")
+    out_8 = torch.empty((M, N), dtype=torch.int32, device="cuda")
+    q_ref8 = q_8.clone()
+    k_ref8 = k_8.clone()
+    q_ref8[:, mask:] = other
+    k_ref8[:, mask:] = other
+    ref_8 = q_ref8 @ k_ref8.T
+
+    I = mask_sme_kernel[(1, )](q_8, k_8, out_8, M, N, K, mask=mask, other=other, outTy=tl.int32)
+    assert check_mlir(I, [(256, 256)])
+    return torch.allclose(ref, out), torch.allclose(ref_8, out_8)
+
+
 if __name__ == "__main__":
+    test_corex_sme()
+    test_corex_stride()
     test_16x32_f16_dot()
     test_16x32_i8_dot()
     test_16x32_f16_trans_dot()
@@ -663,3 +821,5 @@ if __name__ == "__main__":
     # test_dot_stride()
     test_vllm_paged_attention()
     test_batch_mla()
+    test_nested_dot()
+    test_mask_sme()

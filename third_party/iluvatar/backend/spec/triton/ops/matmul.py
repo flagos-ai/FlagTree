@@ -5,6 +5,10 @@ def only_supports_num_stages_le_2():
     return True
 
 
+def matmul_supports_native_fp8(default: bool, a_dtype, b_dtype):
+    return False
+
+
 def get_configs_compute_bound():
     import torch
     from triton import Config
@@ -14,7 +18,7 @@ def get_configs_compute_bound():
             for block_n in [32, 64, 128, 256]:
                 for block_k in [32, 64, 128]:
                     for num_stages in [1, 2, 3]:
-                        num_warps = 16 if block_m >= 128 or block_n >= 128 or block_k >= 128 else 8
+                        num_warps = 8 if (block_m * block_n / 256 <= 8) else 16
                         configs.append(
                             Config({'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k, 'SPLIT_K': 1},
                                    num_stages=num_stages, num_warps=num_warps))
@@ -96,24 +100,42 @@ def matmul_kernel(grid, a, b, c, M, N, K, acc_dtype, input_precision, fp8_fast_a
         A = A + (ram[:, None] * stride_am + rk[None, :] * stride_ak)
         B = B + (rk[:, None] * stride_bk + rbn[None, :] * stride_bn)
         acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=acc_dtype)
-        for k in range(0, tl.cdiv(K, BLOCK_K * SPLIT_K)):
-            if EVEN_K:
+        if EVEN_K:
+            for k in range(0, tl.cdiv(K, BLOCK_K * SPLIT_K)):
                 a = tl.load(A)
                 b = tl.load(B)
-            else:
-                k_remaining = K - k * (BLOCK_K * SPLIT_K)
-                _0 = tl.zeros((1, 1), dtype=C.dtype.element_ty)
-                a = tl.load(A, mask=rk[None, :] < k_remaining, other=_0)
-                b = tl.load(B, mask=rk[:, None] < k_remaining, other=_0)
-            if AB_DTYPE is not None:
-                a = a.to(AB_DTYPE)
-                b = b.to(AB_DTYPE)
+                if AB_DTYPE is not None:
+                    a = a.to(AB_DTYPE)
+                    b = b.to(AB_DTYPE)
+                if fp8_fast_accum:
+                    acc = tl.dot(a, b, acc, out_dtype=acc_dtype, input_precision=input_precision)
+                else:
+                    acc += tl.dot(a, b, out_dtype=acc_dtype, input_precision=input_precision)
+                A += BLOCK_K * SPLIT_K * stride_ak
+                B += BLOCK_K * SPLIT_K * stride_bk
+        else:
+            loop_num = tl.cdiv(K, BLOCK_K * SPLIT_K) - 1
+            for k in range(0, loop_num):
+                a = tl.load(A)
+                b = tl.load(B)
+                if AB_DTYPE is not None:
+                    a = a.to(AB_DTYPE)
+                    b = b.to(AB_DTYPE)
+                if fp8_fast_accum:
+                    acc = tl.dot(a, b, acc, out_dtype=acc_dtype, input_precision=input_precision)
+                else:
+                    acc += tl.dot(a, b, out_dtype=acc_dtype, input_precision=input_precision)
+                A += BLOCK_K * SPLIT_K * stride_ak
+                B += BLOCK_K * SPLIT_K * stride_bk
+
+            _0 = tl.zeros((1, 1), dtype=C.dtype.element_ty)
+            k_remaining = K - loop_num * (BLOCK_K * SPLIT_K)
+            a = tl.load(A, mask=rk[None, :] < k_remaining, other=_0)
+            b = tl.load(B, mask=rk[:, None] < k_remaining, other=_0)
             if fp8_fast_accum:
                 acc = tl.dot(a, b, acc, out_dtype=acc_dtype, input_precision=input_precision)
             else:
                 acc += tl.dot(a, b, out_dtype=acc_dtype, input_precision=input_precision)
-            A += BLOCK_K * SPLIT_K * stride_ak
-            B += BLOCK_K * SPLIT_K * stride_bk
         acc = acc.to(C.dtype.element_ty)
         # rematerialize rm and rn to save registers
         rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -125,6 +147,9 @@ def matmul_kernel(grid, a, b, c, M, N, K, acc_dtype, input_precision, fp8_fast_a
             tl.store(C, acc, mask=mask)
         else:
             tl.atomic_add(C, acc, mask=mask)
+
+    if hasattr(matmul_kernel, "configs"):
+        _kernel.configs = matmul_kernel.configs
 
     return _kernel[grid](
         a, b, c, M, N, K,  #

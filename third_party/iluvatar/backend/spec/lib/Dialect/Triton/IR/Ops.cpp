@@ -12,7 +12,6 @@
 namespace mlir {
 namespace triton {
 
-#ifdef __ILUVATAR__
 // Parser & printer for assembly forms
 ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
   // Parse operands
@@ -43,11 +42,11 @@ ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
 
   // Determine `mask` and `other`
   int hasMask = 0, hasOther = 0;
-  if (allOperands.size() == 2) {
+  if (allOperands.size() == 2 || allOperands.size() == 5) {
     operandTypes.push_back(getI1SameShape(resultType));
     hasMask = 1;
   }
-  if (allOperands.size() == 3) {
+  if (allOperands.size() == 3 || allOperands.size() == 6) {
     operandTypes.push_back(getI1SameShape(resultType));
     operandTypes.push_back(resultType);
     hasMask = 1;
@@ -55,7 +54,7 @@ ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
   }
   // Determine `inputStride`
   int hasStride = 0;
-  if (allOperands.size() == 4) {
+  if (allOperands.size() > 3) {
     operandTypes.push_back(
         IntegerType::get(parser.getBuilder().getContext(), 32));
     operandTypes.push_back(
@@ -79,9 +78,7 @@ ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
 
   return success();
 }
-#endif
 
-#ifdef __ILUVATAR__
 void LoadOp::print(OpAsmPrinter &printer) {
   printer << " ";
   printer << getOperation()->getOperands();
@@ -99,7 +96,6 @@ void LoadOp::print(OpAsmPrinter &printer) {
   }
   printer.printStrippedAttrOrType(getResult().getType());
 }
-#endif
 
 void LoadOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
@@ -124,7 +120,6 @@ namespace mlir {
 namespace triton {
 
 //-- LoadOp --
-#ifdef __ILUVATAR__
 static Type getLoadOpResultType(OpBuilder &builder, Type ptrType) {
   auto ptrTensorType = ptrType.dyn_cast<RankedTensorType>();
   if (!ptrTensorType)
@@ -134,13 +129,20 @@ static Type getLoadOpResultType(OpBuilder &builder, Type ptrType) {
       ptrTensorType.getElementType().cast<PointerType>().getPointeeType();
   return RankedTensorType::get(shape, elementType);
 }
-#endif
 
 void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    CacheModifier cache, EvictionPolicy evict, bool isVolatile) {
   LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{},
                 /*boundaryCheck=*/ArrayRef<int32_t>{}, /*padding=*/std::nullopt,
-                cache, evict, isVolatile);
+                cache, evict, isVolatile, {});
+}
+
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
+                   CacheModifier cache, EvictionPolicy evict, bool isVolatile,
+                   Value inputStride) {
+  LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{},
+                /*boundaryCheck=*/ArrayRef<int32_t>{}, /*padding=*/std::nullopt,
+                cache, evict, isVolatile, inputStride);
 }
 
 void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
@@ -148,7 +150,7 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    std::optional<PaddingOption> padding, CacheModifier cache,
                    EvictionPolicy evict, bool isVolatile) {
   LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{}, boundaryCheck,
-                padding, cache, evict, isVolatile);
+                padding, cache, evict, isVolatile, {});
 }
 
 void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
@@ -156,7 +158,8 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    bool isVolatile) {
   LoadOp::build(builder, state, ptr, mask, /*other=*/{},
                 /*boundaryCheck=*/ArrayRef<int32_t>{},
-                /*padding=*/std::nullopt, cache, evict, isVolatile);
+                /*padding=*/std::nullopt, cache, evict, isVolatile,
+                /*stride*/ {});
 }
 
 void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
@@ -164,22 +167,22 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    EvictionPolicy evict, bool isVolatile) {
   LoadOp::build(builder, state, ptr, mask, other,
                 /*boundaryCheck=*/ArrayRef<int32_t>{},
-                /*padding=*/std::nullopt, cache, evict, isVolatile);
+                /*padding=*/std::nullopt, cache, evict, isVolatile, {});
+}
+
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
+                   Value mask, Value other, CacheModifier cache,
+                   EvictionPolicy evict, bool isVolatile, Value inputStride) {
+  LoadOp::build(builder, state, ptr, mask, other,
+                /*boundaryCheck=*/ArrayRef<int32_t>{},
+                /*padding=*/std::nullopt, cache, evict, isVolatile,
+                inputStride);
 }
 
 void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    Value mask, Value other, ArrayRef<int32_t> boundaryCheck,
                    std::optional<PaddingOption> padding, CacheModifier cache,
-                   EvictionPolicy evict, bool isVolatile) {
-#ifndef __ILUVATAR__
-  auto paddingAttr =
-      padding.has_value()
-          ? PaddingOptionAttr::get(builder.getContext(), padding.value())
-          : PaddingOptionAttr();
-  LoadOp::build(builder, state, ptr, mask, other,
-                builder.getDenseI32ArrayAttr(boundaryCheck), paddingAttr, cache,
-                evict, isVolatile);
-#else
+                   EvictionPolicy evict, bool isVolatile, Value inputStride) {
   // Operands
   state.addOperands(ptr);
   if (mask) {
@@ -189,10 +192,17 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
     }
   }
 
+  if (inputStride) {
+    state.addOperands(inputStride);
+    state.addOperands(inputStride);
+    state.addOperands(inputStride);
+  }
   // Attributes
-  state.addAttribute(getOperandSegmentSizesAttrName(state.name),
-                     builder.getDenseI32ArrayAttr(
-                         {1, (mask ? 1 : 0), (other ? 1 : 0), 0, 0, 0}));
+  state.addAttribute(
+      getOperandSegmentSizesAttrName(state.name),
+      builder.getDenseI32ArrayAttr(
+          {1, (mask ? 1 : 0), (other ? 1 : 0), (inputStride ? 1 : 0),
+           (inputStride ? 1 : 0), (inputStride ? 1 : 0)}));
   state.addAttribute(
       getBoundaryCheckAttrName(state.name),
       DenseI32ArrayAttr::get(builder.getContext(), boundaryCheck));
@@ -211,7 +221,6 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
   // Result type
   Type resultType = getLoadOpResultType(builder, ptr.getType());
   state.addTypes({resultType});
-#endif
 }
 
 // load(ptr, splat(1), ...)        -> load(ptr, ...)
@@ -237,19 +246,12 @@ struct CanonicalizeMaskedLoadPattern : public OpRewritePattern<LoadOp> {
 
     if (splatMask.getSplatValue<IntegerAttr>().getValue() == true) {
       // mask = splat(1)
-#ifndef __ILUVATAR__
-      rewriter.replaceOpWithNewOp<LoadOp>(
-          loadOp, loadOp.getType(), loadOp.getPtr(), Value(), Value(),
-          loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
-          loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
-#else
       rewriter.replaceOpWithNewOp<LoadOp>(
           loadOp, loadOp.getType(), loadOp.getPtr(), Value(), Value(),
           loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
           loadOp.getInputStride(), loadOp.getInputStride(),
           loadOp.getInputStride());
-#endif
     } else {
       // mask = splat(0)
 
