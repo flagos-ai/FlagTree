@@ -2,47 +2,14 @@
 # the repo. Unless a later match takes precedence,
 # @global-owner1 and @global-owner2 will be requested for
 # review when someone opens a pull request.
-*       @ptillet
+*       @zhzhcookie
 
 # --------
-# Analyses
+# Setup
 # --------
-# Alias analysis
-include/triton/Analysis/Alias.h @Jokeren
-lib/Analysis/Alias.cpp @Jokeren
-# Allocation analysis
-include/triton/Analysis/Allocation.h @Jokeren
-lib/Analysis/Allocation.cpp @Jokeren
-# Membar analysis
-include/triton/Analysis/Membar.h @Jokeren
-lib/Analysis/Membar.cpp @Jokeren
-# AxisInfo analysis
-include/triton/Analysis/AxisInfo.h @ptillet
-lib/Analysis/AxisInfo.cpp @ptillet
-# Utilities
-include/triton/Analysis/Utility.h @Jokeren
-lib/Analysis/Utility.cpp @Jokeren
-
-# ----------
-# Dialects
-# ----------
-# Pipeline pass
-lib/Dialect/TritonGPU/Transforms/Pipeline.cpp @ptillet
-# Prefetch pass
-lib/Dialect/TritonGPU/Transforms/Prefetch.cpp @ptillet
-# Coalesce pass
-lib/Dialect/TritonGPU/Transforms/Coalesce.cpp @ptillet
-# Layout simplification pass
-lib/Dialect/TritonGPU/Transforms/Combine.cpp @ptillet
-
-# -----------
-# Conversions
-# -----------
-# TritonToTritonGPU
-include/triton/Conversion/TritonToTritonGPU/ @ptillet
-lib/Dialect/TritonGPU/Transforms/TritonGPUConversion.cpp @ptillet
+python/setup.py @Galaxy1458
+python/setup_tools/* @Galaxy1458
 
 # -----------
 # third_party
 # -----------
-third_party/amd/ @antiagainst @zhanglx13
