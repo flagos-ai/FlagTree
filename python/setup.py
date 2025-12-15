@@ -544,7 +544,6 @@ class plugin_bdist_wheel(bdist_wheel):
 
     def run(self):
         add_links()
-       # helper.copy_plugin()
         bdist_wheel.run(self)
         helper.post_install()
 
