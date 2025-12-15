@@ -359,6 +359,7 @@ class CMakeBuild(build_ext):
         # lit is used by the test suite
         thirdparty_cmake_args = get_thirdparty_packages([get_pybind11_package_info(), get_llvm_package_info()])
         extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.path)))
+        print("extdir",extdir)
         # create build directories
         if not os.path.exists(self.build_temp):
             os.makedirs(self.build_temp)
@@ -543,6 +544,7 @@ class plugin_bdist_wheel(bdist_wheel):
 
     def run(self):
         add_links()
+       # helper.copy_plugin()
         bdist_wheel.run(self)
         helper.post_install()
 
@@ -559,7 +561,7 @@ package_data_tools = helper.get_package_data_tools()
 
 package_data = {
     "triton/tools": package_data_tools,
-    "": ["*TritonPlugin.so"],
+    "": ["*.so"],
     **{f"triton/backends/{b.name}": b.package_data
        for b in backends},
 }
