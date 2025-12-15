@@ -33,6 +33,7 @@ if os.getenv("MACA_PATH") is not None:
         "__nv_log2f": "mc_math_func_log2f",
         "__nv_log2": "mc_math_func_log2",
         "__nv_logf": "mc_math_func_logf",
+        "__nv_log1p": "mc_math_func_log1pf",
         "__nv_powf": "mc_math_func_powf_inline",
         "__nv_pow": "mc_math_func_pow",
         "__nv_norm4df": "mc_math_func_norm4df",
@@ -121,6 +122,238 @@ if os.getenv("MACA_PATH") is not None:
         "__nv_roundf": "mc_math_func_roundf",
         "__nv_sqrtf": "mc_math_func_sqrtf",
         "__nv_fmaf": "mc_math_func_fmaf",
+        "__nv_abs": "mc_math_func_abs",
+        "__nv_brev": "mc_math_func_brev",
+        "__nv_brevll": "mc_math_func_brevll",
+        "__nv_byte_perm": "mc_math_func_byte_perm",
+        "__nv_cbrt": "mc_math_func_cbrt",
+        "__nv_cbrtf": "mc_math_func_cbrtf",
+        "__nv_ceil": "mc_math_func_ceil",
+        "__nv_clz": "mc_math_func_clz",
+        "__nv_clzll": "mc_math_func_clzll",
+        "__nv_cosf": "mc_math_func_cosf",
+        "__nv_cospi": "mc_math_func_cospi",
+        "__nv_cospif": "mc_math_func_cospif",
+        "__nv_cyl_bessel_i0": "mc_math_func_cyl_bessel_i0",
+        "__nv_cyl_bessel_i0f": "mc_math_func_cyl_bessel_i0f",
+        "__nv_cyl_bessel_i1": "mc_math_func_cyl_bessel_i1",
+        "__nv_cyl_bessel_i1f": "mc_math_func_cyl_bessel_i1f",
+        "__nv_dadd_rd": "mc_math_func_dadd_rd",
+        "__nv_dadd_rn": "mc_math_func_dadd_rn",
+        "__nv_dadd_ru": "mc_math_func_dadd_ru",
+        "__nv_dadd_rz": "mc_math_func_dadd_rz",
+        "__nv_ddiv_rd": "mc_math_func_ddiv_rd",
+        "__nv_ddiv_rn": "mc_math_func_ddiv_rn",
+        "__nv_ddiv_ru": "mc_math_func_ddiv_ru",
+        "__nv_ddiv_rz": "mc_math_func_ddiv_rz",
+        "__nv_dmul_rd": "mc_math_func_dmul_rd",
+        "__nv_dmul_rn": "mc_math_func_dmul_rn",
+        "__nv_dmul_ru": "mc_math_func_dmul_ru",
+        "__nv_dmul_rz": "mc_math_func_dmul_rz",
+        "__nv_double2float_rd": "mc_math_func___double2float_rd",
+        "__nv_double2float_rn": "mc_math_func___double2float_rn",
+        "__nv_double2float_ru": "mc_math_func___double2float_ru",
+        "__nv_double2float_rz": "mc_math_func___double2float_rz",
+        "__nv_double2hiint": "mc_math_func___double2hiint",
+        "__nv_double2int_rd": "mc_math_func___double2int_rd",
+        "__nv_double2int_rn": "mc_math_func___double2int_rn",
+        "__nv_double2int_ru": "mc_math_func___double2int_ru",
+        "__nv_double2int_rz": "mc_math_func___double2int_rz",
+        "__nv_double2ll_rd": "mc_math_func___double2ll_rd",
+        "__nv_double2ll_rn": "mc_math_func___double2ll_rn",
+        "__nv_double2ll_ru": "mc_math_func___double2ll_ru",
+        "__nv_double2ll_rz": "mc_math_func___double2ll_rz",
+        "__nv_double2loint": "mc_math_func___double2loint",
+        "__nv_double2uint_rd": "mc_math_func___double2uint_rd",
+        "__nv_double2uint_rn": "mc_math_func___double2uint_rn",
+        "__nv_double2uint_ru": "mc_math_func___double2uint_ru",
+        "__nv_double2uint_rz": "mc_math_func___double2uint_rz",
+        "__nv_double2ull_rd": "mc_math_func___double2ull_rd",
+        "__nv_double2ull_rn": "mc_math_func___double2ull_rn",
+        "__nv_double2ull_ru": "mc_math_func___double2ull_ru",
+        "__nv_double2ull_rz": "mc_math_func___double2ull_rz",
+        "__nv_double_as_longlong": "mc_math_func___double_as_longlong",
+        "__nv_drcp_rd": "mc_math_func_drcp_rd",
+        "__nv_drcp_rn": "mc_math_func_drcp_rn",
+        "__nv_drcp_ru": "mc_math_func_drcp_ru",
+        "__nv_drcp_rz": "mc_math_func_drcp_rz",
+        "__nv_dsqrt_rd": "mc_math_func_dsqrt_rd",
+        "__nv_dsqrt_rn": "mc_math_func_dsqrt_rn",
+        "__nv_dsqrt_ru": "mc_math_func_dsqrt_ru",
+        "__nv_dsqrt_rz": "mc_math_func_dsqrt_rz",
+        "__nv_dsub_rd": "mc_math_func_dsub_rd",
+        "__nv_dsub_rn": "mc_math_func_dsub_rn",
+        "__nv_dsub_ru": "mc_math_func_dsub_ru",
+        "__nv_dsub_rz": "mc_math_func_dsub_rz",
+        "__nv_erfc": "mc_math_func_erfc",
+        "__nv_erfcinv": "mc_math_func_erfcinv",
+        "__nv_erfcinvf": "mc_math_func_erfcinvf",
+        "__nv_erfcx": "mc_math_func_erfcx",
+        "__nv_erfcxf": "mc_math_func_erfcxf",
+        "__nv_erfinv": "mc_math_func_erfinv",
+        "__nv_erfinvf": "mc_math_func_erfinvf",
+        "__nv_exp10": "mc_math_func_exp10",
+        "__nv_exp10f": "mc_math_func_exp10f",
+        "__nv_exp2": "mc_math_func_exp2",
+        "__nv_expm1": "mc_math_func_expm1",
+        "__nv_fabs": "mc_math_func_fabs",
+        "__nv_fabsf": "mc_math_func_fabsf",
+        "__nv_fadd_rd": "mc_math_func_fadd_rd",
+        "__nv_fadd_rn": "mc_math_func_fadd_rn",
+        "__nv_fadd_ru": "mc_math_func_fadd_ru",
+        "__nv_fadd_rz": "mc_math_func_fadd_rz",
+        "__nv_fdim": "mc_math_func_fdim",
+        "__nv_fdimf": "mc_math_func_fdimf",
+        "__nv_fdiv_rd": "mc_math_func_fdiv_rd",
+        "__nv_fdiv_ru": "mc_math_func_fdiv_ru",
+        "__nv_ffsll": "mc_math_func_ffsll",
+        "__nv_float2int_rd": "mc_math_func___float2int_rd",
+        "__nv_float2int_rn": "mc_math_func___float2int_rn",
+        "__nv_float2int_ru": "mc_math_func___float2int_ru",
+        "__nv_float2int_rz": "mc_math_func___float2int_rz",
+        "__nv_float2ll_rd": "mc_math_func___float2ll_rd",
+        "__nv_float2ll_rn": "mc_math_func___float2ll_rn",
+        "__nv_float2ll_ru": "mc_math_func___float2ll_ru",
+        "__nv_float2ll_rz": "mc_math_func___float2ll_rz",
+        "__nv_float2uint_rd": "mc_math_func___float2uint_rd",
+        "__nv_float2uint_rn": "mc_math_func___float2uint_rn",
+        "__nv_float2uint_ru": "mc_math_func___float2uint_ru",
+        "__nv_float2uint_rz": "mc_math_func___float2uint_rz",
+        "__nv_float2ull_rd": "mc_math_func___float2ull_rd",
+        "__nv_float2ull_rn": "mc_math_func___float2ull_rn",
+        "__nv_float2ull_ru": "mc_math_func___float2ull_ru",
+        "__nv_float2ull_rz": "mc_math_func___float2ull_rz",
+        "__nv_float_as_int": "mc_math_func___float_as_int",
+        "__nv_float_as_uint": "mc_math_func___float_as_uint",
+        "__nv_fma": "mc_math_func_fma",
+        "__nv_fmaf_rd": "mc_math_func_fmaf_rd",
+        "__nv_fmaf_rn": "mc_math_func_fmaf_rn",
+        "__nv_fmaf_ru": "mc_math_func_fmaf_ru",
+        "__nv_fmaf_rz": "mc_math_func_fmaf_rz",
+        "__nv_fma_rd": "mc_math_func_fma_rd",
+        "__nv_fma_rn": "mc_math_func_fma_rn",
+        "__nv_fma_ru": "mc_math_func_fma_ru",
+        "__nv_fma_rz": "mc_math_func_fma_rz",
+        "__nv_fmod": "mc_math_func_fmod",
+        "__nv_fmul_rd": "mc_math_func_fmul_rd",
+        "__nv_fmul_rn": "mc_math_func_fmul_rn",
+        "__nv_fmul_ru": "mc_math_func_fmul_ru",
+        "__nv_fmul_rz": "mc_math_func_fmul_rz",
+        "__nv_frcp_rd": "mc_math_func_frcp_rd",
+        "__nv_frcp_rn": "mc_math_func_frcp_rn",
+        "__nv_frcp_ru": "mc_math_func_frcp_ru",
+        "__nv_frcp_rz": "mc_math_func_frcp_rz",
+        "__nv_frsqrt_rn": "mc_math_func_frsqrt_rn",
+        "__nv_fsqrt_rd": "mc_math_func_fsqrt_rd",
+        "__nv_fsqrt_rn": "mc_math_func_fsqrt_rn",
+        "__nv_fsqrt_ru": "mc_math_func_fsqrt_ru",
+        "__nv_fsqrt_rz": "mc_math_func_fsqrt_rz",
+        "__nv_fsub_rd": "mc_math_func_fsub_rd",
+        "__nv_fsub_rn": "mc_math_func_fsub_rn",
+        "__nv_fsub_ru": "mc_math_func_fsub_ru",
+        "__nv_fsub_rz": "mc_math_func_fsub_rz",
+        "__nv_hadd": "mc_math_func_urhadd",
+        "__nv_hiloint2double": "mc_math_func___hiloint2double",
+        "__nv_ilogb": "mc_math_func_ilogb",
+        "__nv_ilogbf": "mc_math_func_ilogbf",
+        "__nv_int2double_rn": "mc_math_func___int2double_rn",
+        "__nv_int2float_rd": "mc_math_func___int2float_rd",
+        "__nv_int2float_rn": "mc_math_func___uint2float_rn",
+        "__nv_int2float_ru": "mc_math_func___int2float_ru",
+        "__nv_int2float_rz": "mc_math_func___int2float_rz",
+        "__nv_int_as_float": "mc_math_func___int_as_float",
+        "__nv_isinfd": "mc_math_func_sin",
+        "__nv_j0": "mc_math_func_j0",
+        "__nv_j0f": "mc_math_func_j0f",
+        "__nv_j1": "mc_math_func_j1",
+        "__nv_j1f": "mc_math_func_j1f",
+        "__nv_jn": "mc_math_func_jn",
+        "__nv_jnf": "mc_math_func_jnf",
+        "__nv_ldexp": "mc_math_func_ldexp",
+        "__nv_ldexpf": "mc_math_func_ldexpf",
+        "__nv_lgamma": "mc_math_func_lgamma",
+        "__nv_ll2double_rd": "mc_math_func___ull2double_rd",
+        "__nv_ll2double_rn": "mc_math_func___ull2double_rn",
+        "__nv_ll2double_ru": "mc_math_func___ll2double_ru",
+        "__nv_ll2double_rz": "mc_math_func___ll2double_rz",
+        "__nv_ll2float_rd": "mc_math_func___ull2float_rd",
+        "__nv_ll2float_rn": "mc_math_func___ll2float_rn",
+        "__nv_ll2float_ru": "mc_math_func___ll2float_ru",
+        "__nv_ll2float_rz": "mc_math_func___ull2float_rz",
+        "__nv_llabs": "mc_math_func_llabs",
+        "__nv_llrint": "mc_math_func_llrint",
+        "__nv_llrintf": "mc_math_func_llrintf",
+        "__nv_llround": "mc_math_func_llround",
+        "__nv_llroundf": "mc_math_func_llroundf",
+        "__nv_log10": "mc_math_func_log10",
+        "__nv_log10f": "mc_math_func_log10f",
+        "__nv_logb": "mc_math_func_logb",
+        "__nv_logbf": "mc_math_func_logbf",
+        "__nv_longlong_as_double": "mc_math_func___longlong_as_double",
+        "__nv_mul24": "mc_math_func_mul24",
+        "__nv_mul64hi": "mc_math_func_mul64hi",
+        "__nv_mulhi": "mc_math_func_mulhi",
+        "__nv_nearbyint": "mc_math_func_nearbyint",
+        "__nv_norm3d": "mc_math_func_norm3d",
+        "__nv_norm3df": "mc_math_func_norm3df",
+        "__nv_normcdf": "mc_math_func_normcdf",
+        "__nv_normcdff": "mc_math_func_normcdff",
+        "__nv_normcdfinv": "mc_math_func_normcdfinv",
+        "__nv_normcdfinvf": "mc_math_func_normcdfinvf",
+        "__nv_popc": "mc_math_func_popc",
+        "__nv_popcll": "mc_math_func_popcll",
+        "__nv_powi": "mc_math_func_powi",
+        "__nv_rcbrt": "mc_math_func_rcbrt",
+        "__nv_rcbrtf": "mc_math_func_rcbrtf",
+        # maca unsupported
+        # "__nv_rcp64h": None,
+        "__nv_remainder": "mc_math_func_remainder",
+        "__nv_remainderf": "mc_math_func_remainderf",
+        "__nv_rhadd": "mc_math_func_rhadd",
+        "__nv_rhypot": "mc_math_func_rhypot",
+        "__nv_rhypotf": "mc_math_func_rhypotf",
+        "__nv_rint": "mc_math_func_rint",
+        "__nv_rnorm3d": "mc_math_func_rnorm3d",
+        "__nv_rnorm3df": "mc_math_func_rnorm3df",
+        "__nv_rnorm4d": "mc_math_func_rnorm4d",
+        "__nv_rnorm4df": "mc_math_func_rnorm4df",
+        "__nv_round": "mc_math_func_round",
+        "__nv_sad": "mc_math_func_sad",
+        "__nv_saturatef": "mc_math_func_saturatef",
+        "__nv_scalbn": "mc_math_func_scalbn",
+        "__nv_signbitd": "mc_math_func_signbit",
+        "__nv_sinf": "mc_math_func_sinf",
+        "__nv_sinpi": "mc_math_func_sinpi",
+        "__nv_sinpif": "mc_math_func_sinpif",
+        "__nv_tan": "mc_math_func_tan",
+        "__nv_tanh": "mc_math_func_tanh",
+        "__nv_tgamma": "mc_math_func_tgamma",
+        "__nv_tgammaf": "mc_math_func_tgammaf",
+        "__nv_trunc": "mc_math_func_trunc",
+        "__nv_uhadd": "mc_math_func_uhadd",
+        "__nv_uint2double_rn": "mc_math_func___uint2double_rn",
+        "__nv_uint2float_rd": "mc_math_func___uint2float_rd",
+        "__nv_uint2float_rn": "mc_math_func___uint2float_rn",
+        "__nv_uint2float_ru": "mc_math_func___uint2float_ru",
+        "__nv_uint2float_rz": "mc_math_func___uint2float_rz",
+        "__nv_uint_as_float": "mc_math_func___uint_as_float",
+        "__nv_ull2double_rd": "mc_math_func___ull2double_rd",
+        "__nv_ull2double_rn": "mc_math_func___ull2double_rn",
+        "__nv_ull2double_ru": "mc_math_func___ull2double_ru",
+        "__nv_ull2double_rz": "mc_math_func___ull2double_rz",
+        "__nv_ull2float_rd": "mc_math_func___ull2float_rd",
+        "__nv_ull2float_rn": "mc_math_func___ull2float_rn",
+        "__nv_ull2float_ru": "mc_math_func___ull2float_ru",
+        "__nv_ull2float_rz": "mc_math_func___ull2float_rz",
+        "__nv_umul24": "mc_math_func_umul24",
+        "__nv_urhadd": "mc_math_func_urhadd",
+        "__nv_usad": "mc_math_func_usad",
+        "__nv_y0": "mc_math_func_y0",
+        "__nv_y0f": "mc_math_func_y0f",
+        "__nv_y1": "mc_math_func_y1",
+        "__nv_y1f": "mc_math_func_y1f",
+        "__nv_yn": "mc_math_func_yn",
+        "__nv_ynf": "mc_math_func_ynf",
     }
 else:
     USE_MACA = False
@@ -265,6 +498,11 @@ class dtype:
         SIGNED = 0
         UNSIGNED = 1
 
+    class KIND(Enum):
+        BOOLEAN = 0
+        INTEGRAL = 1
+        FLOATING = 2
+
     def __init__(self, name):
         if hasattr(name, 'value'):
             name = name.value
@@ -394,6 +632,30 @@ class dtype:
 
     def is_bool(self):
         return self.is_int1()
+
+    def kind(self):
+        # Return int value following the type ordering bool < integer < fp
+        if self.is_bool():
+            return dtype.KIND.BOOLEAN
+        elif self.is_int():
+            return dtype.KIND.INTEGRAL
+        else:
+            assert self.is_floating()
+            return dtype.KIND.FLOATING
+
+    def get_int_max_value(self):
+        if self.is_int_signed():
+            return 2**(self.int_bitwidth - 1) - 1
+        if self.is_int_unsigned():
+            return 2**self.int_bitwidth - 1
+        assert False
+
+    def get_int_min_value(self):
+        if self.is_int_signed():
+            return -2**(self.int_bitwidth - 1)
+        if self.is_int_unsigned():
+            return 0
+        assert False
 
     @staticmethod
     def is_dtype(type_str):
@@ -807,6 +1069,38 @@ class constexpr:
 CONSTEXPR_0 = constexpr(0)
 
 
+def _unwrap_if_constexpr(o):
+    return o.value if isinstance(o, constexpr) else o
+
+
+def constexpr_function(f):
+    """
+    Wraps an arbitrary Python function so that it can be called at
+    compile-time on constexpr arguments in a Triton function and
+    returns a constexpr result.
+    """
+
+    @wraps(f)
+    def wrapper(*args, _semantic=None, **kwargs):
+        # de-constexpr arguments and discard the _semantic keyword argument:
+        args = [_unwrap_if_constexpr(x) for x in args]
+        kwargs = {k: _unwrap_if_constexpr(v) for (k, v) in kwargs.items()}
+
+        # call the raw Python function f:
+        res = f(*args, **kwargs)
+
+        # convert result back to a Triton constexpr:
+        if knobs.runtime.interpret:
+            return res  # No constexpr in interpreter
+        return constexpr(res)
+
+    # disguise the function as a Triton builtin to avoid raising an error
+    # that we're calling a non-JIT function from within a Triton kernel:
+    wrapper.__triton_builtin__ = True
+    wrapper.__module__ = constexpr_function.__module__
+    return wrapper
+
+
 def check_bit_width(value, shift_value):
     if isinstance(value, tensor) and isinstance(shift_value, constexpr):
         bitwidth = value.type.scalar.primitive_bitwidth
@@ -885,32 +1179,32 @@ class tensor:
 
     @builtin
     def __truediv__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.truediv(self, other, _builder)
 
     @builtin
     def __rtruediv__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.truediv(other, self, _builder)
 
     @builtin
     def __floordiv__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.floordiv(self, other, _builder)
 
     @builtin
     def __rfloordiv__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.floordiv(other, self, _builder)
 
     @builtin
     def __mod__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.mod(self, other, _builder)
 
     @builtin
     def __rmod__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.mod(other, self, _builder)
 
     # unary operators
@@ -926,50 +1220,50 @@ class tensor:
 
     @builtin
     def __and__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.and_(self, other, _builder)
 
     @builtin
     def __rand__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.and_(other, self, _builder)
 
     @builtin
     def __or__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.or_(self, other, _builder)
 
     @builtin
     def __ror__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.or_(other, self, _builder)
 
     @builtin
     def __xor__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.xor_(self, other, _builder)
 
     @builtin
     def __rxor__(self, other, _builder=None):
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.xor_(other, self, _builder)
 
     @builtin
     def __lshift__(self, other, _builder=None):
         check_bit_width(self, other)
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.shl(self, other, _builder)
 
     @builtin
     def __rlshift__(self, other, _builder=None):
         check_bit_width(other, self)
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         return semantic.shl(other, self, _builder)
 
     @builtin
     def __rshift__(self, other, _builder=None):
         check_bit_width(self, other)
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         if self.dtype.is_int_signed():
             return semantic.ashr(self, other, _builder)
         else:
@@ -978,7 +1272,7 @@ class tensor:
     @builtin
     def __rrshift__(self, other, _builder=None):
         check_bit_width(other, self)
-        other = _to_tensor(other, _builder)
+        other = _unwrap_if_constexpr(other)
         if self.dtype.is_int_signed():
             return semantic.ashr(other, self, _builder)
         else:
@@ -1067,14 +1361,15 @@ class tensor:
 
     @builtin
     def __getitem__(self, slices, _builder=None):
-        if isinstance(slices, (slice, constexpr)) or slices is None:
+        if isinstance(slices, (builtins.slice, constexpr)) or slices is None:
             slices = [slices]
         ret = self
         for dim, sl in enumerate(slices):
-            if sl is None or isinstance(sl, constexpr) and sl.value is None:
+            if _unwrap_if_constexpr(sl) is None:
                 ret = semantic.expand_dims(ret, dim, _builder)
-            elif isinstance(sl, slice) and sl.start is None and sl.stop is None and sl.step is None:
-                pass
+            elif isinstance(sl, (builtins.slice)) and all(
+                    _unwrap_if_constexpr(arg) is None for arg in (sl.start, sl.stop, sl.step)):
+                pass  # an unsqueeze
             else:
                 raise ValueError(f"unsupported tensor index: {sl}")
         return ret
@@ -1089,6 +1384,9 @@ class tensor:
         """
         Alias for :py:func:`tensor.cast`.
         """
+        dtype = _unwrap_if_constexpr(dtype)
+        fp_downcast_rounding = _unwrap_if_constexpr(fp_downcast_rounding)
+        bitcast = _unwrap_if_constexpr(bitcast)
         # Triton doesn't like core functions calling other core functions, so we
         # just copy-paste the implementation of cast here.  It's not too bad.
         if isinstance(bitcast, constexpr):
@@ -1183,6 +1481,9 @@ class tensor:
     def associative_scan(self, axis, combine_fn, reverse=False) -> tensor:
         ...
 
+    def gather(self, indices, axis) -> tensor:
+        ...
+
     def histogram(self, num_bins) -> tensor:
         ...
 
@@ -1214,6 +1515,9 @@ class tensor:
         ...
 
     def xor_sum(self, axis=None, keep_dims=False) -> tensor:
+        ...
+
+    def reduce_or(self, axis=None, keep_dims=False) -> tensor:
         ...
 
     def cumsum(self, axis=0, reverse=False) -> tensor:
@@ -1646,7 +1950,7 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
 
 @builtin
 def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", cache_modifier="", eviction_policy="",
-         volatile=False, _builder=None):
+         volatile=False, pipeline=True, _builder=None):
     """
     Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
 
@@ -1687,6 +1991,8 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     :type eviction_policy: str, optional
     :param volatile: changes volatile option in NVIDIA PTX
     :type volatile: bool, optional
+    :param pipeline: control whether pipeline optimization is performend in MACA
+    :type pipeline: bool, optional
     """
     # `mask` and `other` can be constexpr
     mask = _constexpr_to_value(mask)
@@ -1699,8 +2005,9 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     cache_modifier = _constexpr_to_value(cache_modifier)
     eviction_policy = _constexpr_to_value(eviction_policy)
     volatile = _constexpr_to_value(volatile)
+    pipeline = _constexpr_to_value(pipeline)
     return semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,
-                         volatile, _builder)
+                         volatile, pipeline, _builder)
 
 
 @builtin
@@ -2208,6 +2515,67 @@ def histogram(input, num_bins, _builder=None, _generator=None):
     """
     num_bins = _constexpr_to_value(num_bins)
     return semantic.histogram(input, num_bins, _builder)
+
+
+@_tensor_member_fn
+@builtin
+def gather(src, index, axis, _builder=None):
+    """Gather from a tensor along a given dimension.
+
+    :param src: the source tensor
+    :type src: Tensor
+    :param index: the index tensor
+    :type index: Tensor
+    :param axis: the dimension to gather along
+    :type axis: int
+
+    """
+    axis = _unwrap_if_constexpr(axis)
+    return semantic.gather(src, index, axis, _builder)
+
+
+@builtin
+def inline_intrinsic_elementwise(intrinsic: str, args: Sequence, dtype: Union[dtype, Sequence[dtype]], is_pure: bool,
+                                 _builder=None):
+    '''
+    '''
+    intrinsic = _constexpr_to_value(intrinsic)
+    is_pure = _constexpr_to_value(is_pure)
+
+    # Wrap `dtype` in a tuple if it's not already.
+    try:
+        iter(dtype)  # type: ignore
+        has_multiple_outputs = True
+    except TypeError:
+        has_multiple_outputs = False
+        dtype = (dtype, )  # type: ignore
+
+    dtype = typing.cast(Sequence[_DtypeClass], dtype)
+
+    res_tys = dtype
+    if dispatch_args := [_to_tensor(arg, _builder) for arg in args]:
+        bin_op_type_checking = partial(
+            semantic.binary_op_type_checking_impl,
+            builder=_builder,
+            arithmetic_check=False,
+            allow_lhs_ptr=True,
+            allow_rhs_ptr=True,
+        )
+        broadcast_arg = dispatch_args[0]
+        # Get the broadcast shape over all the arguments
+        for item in dispatch_args:
+            _, broadcast_arg = bin_op_type_checking(item, broadcast_arg)
+        if broadcast_arg.shape:
+            # Change the shape of each argument based on the broadcast shape
+            for i, item in enumerate(dispatch_args):
+                dispatch_args[i], _ = bin_op_type_checking(item, broadcast_arg)
+            res_tys = [block_type(dt, broadcast_arg.shape) for dt in dtype]
+    handles = [t.handle for t in dispatch_args]
+    call = _builder.create_inline_intrinsic(intrinsic, handles, [ty.to_ir(_builder) for ty in res_tys], is_pure)
+
+    if not has_multiple_outputs:
+        return tensor(call.get_result(0), res_tys[0])
+    return tuple(tensor(call.get_result(i), ty) for i, ty in enumerate(res_tys))
 
 
 # -----------------------

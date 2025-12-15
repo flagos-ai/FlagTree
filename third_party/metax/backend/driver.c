@@ -51,6 +51,33 @@ static bool gpuAssert(mcError_t code, const char *file, int line) {
     }                                                                          \
   } while (0)
 
+static PyObject *getDeviceCapability(PyObject *self, PyObject *args) {
+  int device_id;
+  if (!PyArg_ParseTuple(args, "i", &device_id))
+    return NULL;
+  int capability = 0;
+  MCdevice device;
+  mcDeviceGet(&device, device_id);
+  mcDeviceProp_t device_prop;
+  MACA_CHECK_AND_RETURN_NULL(mcGetDeviceProperties(&device_prop, device_id));
+  int major = device_prop.major;
+  switch (major) {
+  case 10:
+    capability = 80;
+    break;
+  case 15:
+    capability = 86;
+    break;
+  case 16:
+    capability = 89;
+    break;
+  default:
+    assert(false && "init device capabilities failed");
+    break;
+  }
+  return Py_BuildValue("{s:i}", "capability", capability);
+}
+
 static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   int device_id;
   if (!PyArg_ParseTuple(args, "i", &device_id))
@@ -60,9 +87,7 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   mcDeviceGet(&device, device_id);
 
   // create a struct to hold device properties
-  int max_shared_mem =
-      64 *
-      1024; // 64KB, no CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN
+  int max_shared_mem = 64 * 1024; // 64KB, default C500
   int max_num_regs;
   int multiprocessor_count;
   int warp_size = 64;
@@ -70,7 +95,9 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   int mem_clock_rate;
   int mem_bus_width;
   MACA_CHECK_AND_RETURN_NULL(mcDeviceGetAttribute(
-      &max_num_regs, mcDeviceAttributeMaxSharedMemoryPerBlock, device));
+      &max_shared_mem, mcDeviceAttributeMaxSharedMemoryPerBlock, device));
+  MACA_CHECK_AND_RETURN_NULL(mcDeviceGetAttribute(
+      &max_num_regs, mcDeviceAttributeMaxRegistersPerBlock, device));
   MACA_CHECK_AND_RETURN_NULL(mcDeviceGetAttribute(
       &multiprocessor_count, mcDeviceAttributeMultiProcessorCount, device));
   MACA_CHECK_AND_RETURN_NULL(
@@ -179,6 +206,8 @@ static PyMethodDef ModuleMethods[] = {
      "Load provided cubin into CUDA driver"},
     {"get_device_properties", getDeviceProperties, METH_VARARGS,
      "Get the properties for a given device"},
+    {"get_device_capability", getDeviceCapability, METH_VARARGS,
+     "Get the capabilitity for a given device"},
     {"set_printf_fifo_size", setPrintfFifoSize, METH_VARARGS,
      "Python interface for cuCtxSetLimit(CU_LIMIT_PRINTF_FIFO_SIZE, x), which "
      "controls how many bytes can be streamed from kernels before data starts "
