@@ -38,9 +38,8 @@ def dot_check_hf32_input_precision(input_precision, ir, lhs, rhs, ret_scalar_ty)
 def is_dot_check_max_num_imprecise_acc():
     return False
 
-def reset_dot_max_num_imprecise_acc(max_num_imprecise_acc):
-    max_num_imprecise_acc = 0
-    return max_num_imprecise_acc
+def reset_dot_max_num_imprecise_acc():
+    return 0
 
 def check_was_bool_to_int8_dtype(input):
     if hasattr(input, 'was_bool_to_int8'):

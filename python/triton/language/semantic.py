@@ -1637,9 +1637,12 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
         else:
             max_num_imprecise_acc = 0
     else:
+        # flagtree backend specialization
         if flagtree_backend_specialization('is_dot_check_max_num_imprecise_acc') and lhs.dtype.is_fp8() and rhs.dtype.is_fp8() and max_num_imprecise_acc > K:
             raise ValueError(f"max_num_imprecise_acc ({max_num_imprecise_acc}) must be <= K ({K})")
-    max_num_imprecise_acc = flagtree_backend_specialization('reset_dot_max_num_imprecise_acc', max_num_imprecise_acc)
+
+    # flagtree backend specialization
+    max_num_imprecise_acc = flagtree_backend_specialization('reset_dot_max_num_imprecise_acc') or max_num_imprecise_acc
     return tl.tensor(builder.create_dot(lhs.handle, rhs.handle, acc_handle, input_precision, max_num_imprecise_acc),
                      ret_ty)
 
