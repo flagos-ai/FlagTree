@@ -16,7 +16,7 @@ __all__  = [
     'opt_ascend_compile_speed',
     'set_CompiledKernel_metadata_stream',
     'handle_compile_error',
-    'is_CompiledKernel_getattribute_need_init_handles',
+    'compiledKernel_getattribute_disable_init_handles',
     # compiler.code_generator
     'anno_CodeGenerator_visit_Assign',
     'ext_CodeGenerator_visit_Assign_hint_anno',

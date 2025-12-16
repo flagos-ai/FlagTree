@@ -403,7 +403,7 @@ class CompiledKernel:
     def __getattribute__(self, name):
         # flagtree backend specialization
         from triton.runtime.driver import flagtree_backend_specialization
-        if name == 'run' and flagtree_backend_specialization("is_CompiledKernel_getattribute_need_init_handles"):
+        if name == 'run' and not flagtree_backend_specialization("compiledKernel_getattribute_disable_init_handles"):
             self._init_handles()
         return super().__getattribute__(name)
 

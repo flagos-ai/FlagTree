@@ -28,5 +28,5 @@ def handle_compile_error(e, ext):
     error_detail = e.stderr.decode('utf-8') if hasattr(e, 'stderr') and e.stderr else str(e)
     raise MLIRCompilationError(stage_name, error_detail)
 
-def is_CompiledKernel_getattribute_need_init_handles():
-    return False
+def compiledKernel_getattribute_disable_init_handles():
+    return True
