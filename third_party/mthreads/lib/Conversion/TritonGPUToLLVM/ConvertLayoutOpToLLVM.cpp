@@ -20,6 +20,7 @@ using ::mlir::triton::gpu::getShapePerCTATile;
 using ::mlir::triton::gpu::getSizePerThread;
 using ::mlir::triton::gpu::getTotalElemsPerThread;
 using ::mlir::triton::gpu::isaDistributedLayout;
+using ::mlir::triton::gpu::MthreadsWMmaEncodingAttr;
 using ::mlir::triton::gpu::SharedEncodingAttr;
 
 namespace {
@@ -134,7 +135,8 @@ public:
 private:
   bool isSupported(Attribute srcLayout, Attribute dstLayout) const {
     return isaDistributedLayout(srcLayout) && isaDistributedLayout(dstLayout) &&
-           !isLayoutMmaV1(srcLayout) && !isLayoutMmaV1(dstLayout);
+           !isLayoutMmaV1(srcLayout) && !isLayoutMmaV1(dstLayout) &&
+           !isMthreadsMmaLayout(srcLayout) && !isMthreadsMmaLayout(dstLayout);
   }
   // shared memory rd/st for blocked or mma layout with data padding
   void processReplica(Location loc, ConversionPatternRewriter &rewriter,

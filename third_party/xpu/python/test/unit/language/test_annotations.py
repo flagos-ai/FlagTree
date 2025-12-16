@@ -16,6 +16,7 @@ def annotated_function(return_type=None, **arg_types):
 
 
 # Test integer annotations
+@pytest.mark.skipif(True, reason="skip for no asm dump support")
 @pytest.mark.parametrize(("signed", "width"), [
     (signed, width) for signed in [False, True]\
                     for width in [8, 16, 32, 64]

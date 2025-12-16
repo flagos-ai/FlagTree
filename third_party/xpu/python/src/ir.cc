@@ -34,13 +34,8 @@ namespace py = pybind11;
 using namespace mlir;
 using namespace triton;
 
-#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
-#define DUMP() self.dump()
-#define PRINT(...) self.print(__VA_ARGS__)
-#else
 #define DUMP()
 #define PRINT(...)
-#endif
 
 // A custom op builder that keeps track of the last location
 class TritonOpBuilder {
@@ -1592,14 +1587,8 @@ void init_triton_ir(py::module &&m) {
       .def("enable_debug",
            [](PassManager &self) {
              auto *context = self.getContext();
-#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
-             bool haveDiagnostics =
-                 ::triton::tools::getBoolEnv("MLIR_ENABLE_DIAGNOSTICS");
-             bool haveDump = ::triton::tools::getBoolEnv("MLIR_ENABLE_DUMP");
-#else
              bool haveDiagnostics = false;
              bool haveDump = false;
-#endif
              if (haveDiagnostics || haveDump) {
                context->disableMultithreading();
              }
@@ -1626,60 +1615,6 @@ void init_triton_ir(py::module &&m) {
              }
            })
       .def("run", [](PassManager &self, ModuleOp &mod) {
-#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
-        // TODO: maybe dump module to file and print error for better
-        // diagnostics
-        auto reproducerPath =
-            triton::tools::getStrEnv("TRITON_REPRODUCER_PATH");
-        if (!reproducerPath.empty()) {
-          auto anchorName = self.getOpAnchorName();
-          auto passes = self.getPasses();
-          Operation *op = mod.getOperation();
-          makeReproducer(anchorName, passes, op, reproducerPath);
-        }
-
-        if (triton::tools::getBoolEnv("TRITON_ENABLE_LLVM_DEBUG")) {
-          ::llvm::DebugFlag = true;
-        }
-
-        if (auto debugOnly = triton::tools::getStrEnv("TRITON_LLVM_DEBUG_ONLY");
-            !debugOnly.empty()) {
-          bool enableTritonLogging = false;
-          llvm::SmallVector<StringRef, 3> split;
-          llvm::SmallVector<std::string, 3> storage;
-          llvm::SmallVector<const char *, 16> debugTypes;
-
-          StringRef(debugOnly.c_str()).split(split, ',');
-          llvm::transform(split, std::back_inserter(debugTypes),
-                          [&storage, &enableTritonLogging](StringRef str) {
-                            if (str == "triton")
-                              enableTritonLogging = true;
-                            // StringRefs are not always null-terminated.
-                            // The purpose for this storage pattern is to
-                            // produce a collection of C-strings that are.
-                            storage.push_back(str.str());
-                            return storage.back().c_str();
-                          });
-          if (enableTritonLogging) {
-            debugTypes.insert(debugTypes.end(), {
-                                                    "ttgpu_to_llvm",
-                                                    "tritonxpu-core-tiling",
-                                                    "tritonxpu-interleave",
-                                                    "tritonxpu-legalize",
-                                                    "tritonxpu-memory-async",
-                                                    "tritonxpu-offset-analysis",
-                                                    "tritonxpu-store-control",
-                                                    "tritonxpu-unroll-control",
-                                                    "tritonxpu-vectorize",
-                                                    "tritonsdnn-combine",
-                                                });
-          }
-
-          ::llvm::DebugFlag = true;
-          ::llvm::setCurrentDebugTypes(debugTypes.data(), debugTypes.size());
-        }
-#endif
-
         bool haveTiming = ::triton::tools::getBoolEnv("MLIR_ENABLE_TIMING");
         if (haveTiming) {
           self.enableTiming();

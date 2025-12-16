@@ -424,12 +424,11 @@ struct TritonXPUVectorizePass
           assert(extElemwiseOp.getOperands().size() > 0 &&
                  "Unexcepted ExternElementwiseOp Operand");
           if (symbol == "_ZN3xpu5tanhfEf") {
-            isVectorized = false;
-            // isVectorized = true;
-            // for (auto operand : extElemwiseOp.getOperands()) {
-            //   isVectorized =
-            //       isVectorized && vectorize(prevOp, visited, vectorizedOps);
-            // }
+            isVectorized = true;
+            for (auto operand : extElemwiseOp.getOperands()) {
+              isVectorized =
+                  isVectorized && vectorize(prevOp, visited, vectorizedOps);
+            }
           } else if (symbol == "_ZN3xpu3erfEf") {
             isVectorized = true;
             for (auto operand : extElemwiseOp.getOperands()) {
@@ -1490,7 +1489,10 @@ struct TritonXPUVectorizePass
 
     if (ReduceVec) {
       // For [Load -> Reduce] || [Broadcast -> Reduce]
-      mod.walk([&](triton::xpu::ReduceOp redOp) {
+      llvm::SetVector<triton::xpu::ReduceOp> reduceOps;
+      mod.walk([&](triton::xpu::ReduceOp redOp) { reduceOps.insert(redOp); });
+
+      for (auto redOp : reduceOps) {
         for (int i = 0; i < redOp.getOperands().size() - 1; ++i) {
           auto reduceOperand = redOp.getOperands()[i];
           auto reduceOperandOp = reduceOperand.getDefiningOp();
@@ -1552,7 +1554,7 @@ struct TritonXPUVectorizePass
             }
           }
         }
-      });
+      }
     }
 
     // For [Broadcast -> Store]

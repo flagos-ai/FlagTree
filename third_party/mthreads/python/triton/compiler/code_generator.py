@@ -248,6 +248,7 @@ class CodeGenerator(ast.NodeVisitor):
         # Are we currently visiting an ast.arg's default value?  These have some
         # special handling.
         self.visiting_arg_default_value = False
+        self.uses_tme = False
 
     builtin_namespace: Dict[str, Any] = {_.__name__: _ for _ in (len, list, range, float, int, isinstance, getattr)}
     builtin_namespace.update((
@@ -1101,6 +1102,9 @@ class CodeGenerator(ast.NodeVisitor):
 
         kws = dict(self.visit(keyword) for keyword in node.keywords)
         args = [self.visit(arg) for arg in node.args]
+        experimental_descriptor_store = getattr(language.core, "_experimental_descriptor_store", None)
+        if fn in (language.core._experimental_descriptor_load, experimental_descriptor_store):
+            self.uses_tme = True
         if fn is language.core.device_assert:  # TODO: this should not be so hardcoded
             if not self.debug:
                 return
@@ -1299,4 +1303,5 @@ def ast_to_ttir(fn, specialization, context, options, codegen_fns):
     ret = generator.module
     # module takes ownership of the context
     ret.context = context
+    ret.uses_tme = generator.uses_tme
     return ret

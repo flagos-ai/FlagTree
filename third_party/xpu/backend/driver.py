@@ -1,8 +1,9 @@
 import os
+import sys
 import hashlib
 import tempfile
 import functools
-import subprocess
+from typing import List
 from pathlib import Path
 
 from triton.runtime.build import _build
@@ -12,10 +13,17 @@ from triton.backends.driver import GPUDriver
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 arch = int(os.environ.get('TRITON_XPU_ARCH', '3'))
+# 因为这里是还没有进入到compile阶段的一个判定，然后xpu4及以上不走这个target，所以就暂时仍使用xpu3的头文件和链接库，之后会在compile阶段再次判定
+if arch >= 4:
+    arch = 3
 include_dir = [os.path.join(dirname, f"xpu{arch}", "include")]
 libdevice_dir = os.path.join(dirname, f"xpu{arch}", "lib")
 library_dir = os.path.join(dirname, f"xpu{arch}", "so")
-libraries = ['xpurt']
+if (os.path.exists(os.path.join(library_dir, "libLaunch_shared.a"))
+        or os.path.exists(os.path.join(library_dir, "liblaunch_shared.so"))):
+    libraries = ['launch', 'xpurt', 'launch_shared']
+else:
+    libraries = ['launch', 'xpurt']
 
 
 def get_xpu_spec(xpu_arch, is_sdnn=False):
@@ -48,15 +56,43 @@ def compile_module_from_src(src, name):
             src_path = os.path.join(tmpdir, "main.c")
             with open(src_path, "w") as f:
                 f.write(src)
-            # print(f"src_path = {src_path}")
             so = _build(name, src_path, tmpdir, library_dirs(), include_dir, libraries)
             with open(so, "rb") as f:
                 cache_path = cache.put(f.read(), f"{name}.so", binary=True)
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(name, cache_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+
+    # check  compiled library cache
+    if not os.path.exists(cache_path):
+        raise RuntimeError(f"Compiled library not found: {cache_path}")
+
+    if not os.access(cache_path, os.R_OK):
+        raise RuntimeError(f"Compiled library not readable: {cache_path}")
+
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(name, cache_path)
+        if spec is None:
+            raise RuntimeError(f"Could not create module spec from {cache_path}")
+        mod = importlib.util.module_from_spec(spec)
+
+        # try import compiled module
+        try:
+            spec.loader.exec_module(mod)
+        except Exception as e:
+            # 检查共享库依赖
+            import subprocess
+            result = subprocess.run(['ldd', cache_path], capture_output=True, text=True)
+            print(f"Shared library dependencies for {cache_path}:")
+            print(result.stdout)
+            if result.stderr:
+                print(f"ldd errors: {result.stderr}")
+            raise e
+
+        return mod
+    except Exception as e:
+        print(f"Error loading module {name} from {cache_path}:")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error message: {e}")
+        raise
 
 
 # ------------------------
@@ -86,10 +122,17 @@ def ty_to_cpp(ty):
     }[ty]
 
 
-def make_launcher(constants, signature, ids, xpu_arch):
+def make_launcher(constants, signature, ids, metadata):
+    xpu_arch = metadata.xpu_arch
+    is_sdnn = metadata.is_sdnn
+    ewtable = metadata.ewtable
+    tensor_args = metadata.tensor_args
+    kernel_name = metadata.name
+
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors, such as tensor descriptors for CUDA.
-    arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
+    arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" + (f", int64_t arg{i}_numel" if ty[0] == "*" else "")
+                          for i, ty in signature.items())
 
     def _extracted_type(ty):
         if ty[0] == '*':
@@ -112,24 +155,42 @@ def make_launcher(constants, signature, ids, xpu_arch):
             "uint64_t": "K",
         }[ty]
 
-    def generate_argument_set_code(signature, constants, xpu_arch):
-        newline = "\n    "
-        eightBytesTypes = ['void *', 'int64_t', 'uint64_t', 'double']
-        lines = []
+    def generate_kernel_params(signature, constants, type_mapping=None):
+        params = []
+        if type_mapping is None:
+            type_mapping = {
+                '*fp32': 1,
+                '*f64': 2,
+                '*int32': 3,
+                '*int64': 4,
+                'bool': 5,
+                '*fp16': 6,
+                '*bf16': 7,
+                'int32': 8,
+                'int64': 9,
+                'int8': 10,
+                'int16': 11,
+            }
+
         for i, ty in signature.items():
             if i in constants:
                 continue
-            is_align_to_8 = (ty_to_cpp(ty) in eightBytesTypes) and (xpu_arch == 3 or xpu_arch == 4)
-            if is_align_to_8:
-                offset_align_to_8_line = "offset = alignSizeTo8Bytes(offset);"
-                lines.append(offset_align_to_8_line)
-            align_fn = "alignSizeTo8Bytes" if is_align_to_8 else "alignSizeTo4Bytes"
-            xpu_check_line = f"XPU_CHECK(xpu_launch_argument_set(&arg{i}, sizeof(arg{i}), offset));"
-            offset_increment_line = f"offset += {align_fn}(sizeof(arg{i}));"
-            lines.append(f"{xpu_check_line}    {offset_increment_line}")
+            type_enum = type_mapping.get(ty, 0)
+            params.append(f"{{{i}l, (int64_t)&arg{i}, (int64_t)(sizeof(arg{i})), "
+                          f"{f'arg{i}_numel' if i in tensor_args else '0l'}, "
+                          f"{type_enum}l}}")
+        return f"{{ {', '.join(params) + (', ' if params else ' ')}{{0l, 0l, 0l, 0l, 0l}} }}"
 
-        return newline.join(lines)
+    def generate_const_params(constants):
+        params = []
+        for i, val in constants.items():
+            if isinstance(val, bool):
+                params.append(f"{{{i}l, 5, {1 if val else 0}l}}")
+            elif isinstance(val, int):
+                params.append(f"{{{i}l, 4, {val}l}}")
+        return f"{{ {', '.join(params) + (', ' if params else ' ')}{{0l, 0l, 0l}} }}"
 
+    # drop type info
     args_format = ''.join([format_of(_extracted_type(ty)) for ty in signature.values()])
     format = "iiiKKOOOO" + args_format
 
@@ -173,14 +234,6 @@ static inline void xpuAssert(int code, const char *file, int line,
 
 #define XPU_CHECK(ans) {{ xpuAssert((ans), __FILE__, __LINE__, #ans); }}
 
-static inline size_t alignSizeTo4Bytes(size_t size) {{
-    return (size + 3) & ~3;
-}}
-
-static inline size_t alignSizeTo8Bytes(size_t size) {{
-    return (size + 7) & ~7;
-}}
-
 enum {{
   kINVALID = 0,
   kL3,
@@ -211,29 +264,29 @@ static inline int xpu4PointerCheck(void *ptr) {{
   return kGM;
 }}
 
-inline int min(int a, int b) {{
-  return a < b ? a : b;
-}}
+unsigned char ewtable[] = {{ {read_data_to_hexstr(ewtable)} }};
+
+int xpuLaunchKernel(const char *kernel_name, void *func, int gridX, int gridY, int gridZ, int ncluster,
+                    int ncores, void *stream, void **kernelParams, void **kernelConsts, void **extra);
 
 static void _launch(int gridX, int gridY, int gridZ, int clusterDimX, int clusterDimY, int clusterDimZ, XPUStream stream, XPUFunc function{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
   if (gridX*gridY*gridZ > 0) {{
-    size_t offset = 0;
-    {generate_argument_set_code(signature, constants, xpu_arch)}
-    // printf("gridXYZ=[%d, %d, %d]\\n", gridX, gridY, gridZ);
-    int nclusters = {get_xpu_spec(xpu_arch)[0]};
-    int ncores = {get_xpu_spec(xpu_arch)[1]};
-    xpu_launch_argument_set(&gridX, sizeof(gridX), offset+0);
-    xpu_launch_argument_set(&gridY, sizeof(gridY), offset+4);
-    xpu_launch_argument_set(&gridZ, sizeof(gridZ), offset+8);
-    XPU_CHECK(xpu_launch_config(min(gridX*gridY*gridZ, nclusters), ncores)); // TODO[dyq]: should we set stream config
-    // xpu_kernel_debug_reset();
-    XPU_CHECK(xpu_launch_async(function));
+    // printf("gridX: %d, gridY: %d, gridZ: %d\\n", gridX, gridY, gridZ);
+    int nclusters = {get_xpu_spec(xpu_arch, is_sdnn)[0]};
+    int ncores = {get_xpu_spec(xpu_arch, is_sdnn)[1]};
+    int64_t kernel_params[][5] = {generate_kernel_params(signature, constants)};
+    int64_t kernel_consts[][3] = {generate_const_params(constants)};
+    void *extra_data[] = {{ {"&ewtable[0]" if ewtable else "nullptr"} }};
+
+    // asm("int3");
+    XPU_CHECK(xpuLaunchKernel(\"{kernel_name}\", function, gridX, gridY, gridZ, nclusters, ncores, stream, (void **)&kernel_params[0][0], (void **)&kernel_consts[0][0], &extra_data[0]));
   }}
 }}
 // XPU_SPEC_END
 
 typedef struct _DevicePtrInfo {{
     void *dev_ptr;
+    int64_t numel;
     bool valid;
 }} DevicePtrInfo;
 
@@ -250,30 +303,41 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
     return ptr_info;
   }}
   PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
-  if(ptr){{
+  PyObject *len = PyObject_GetAttrString(obj, "numel");
+  if(ptr && len){{
     PyObject *empty_tuple = PyTuple_New(0);
-    PyObject *ret = PyObject_Call(ptr, empty_tuple, NULL);
+    PyObject *ret_ptr = PyObject_Call(ptr, empty_tuple, NULL);
+    PyObject *ret_len = PyObject_Call(len, empty_tuple, NULL);
     Py_DECREF(empty_tuple);
     Py_DECREF(ptr);
-    if (!PyLong_Check(ret)) {{
+    Py_DECREF(len);
+    if (!PyLong_Check(ret_ptr)) {{
       PyErr_SetString(PyExc_TypeError, "data_ptr method of Pointer object must return 64-bit int");
       ptr_info.valid = false;
       return ptr_info;
     }}
-    ptr_info.dev_ptr = PyLong_AsVoidPtr(ret);
+    if (!PyLong_Check(ret_len)) {{
+      PyErr_SetString(PyExc_TypeError, "numel method of Pointer object must return 64-bit int");
+      ptr_info.valid = false;
+      return ptr_info;
+    }}
+    ptr_info.dev_ptr = PyLong_AsVoidPtr(ret_ptr);
     if(!ptr_info.dev_ptr)
       return ptr_info;
-    void *dev_ptr = PyLong_AsVoidPtr(ret);
+    void *dev_ptr = PyLong_AsVoidPtr(ret_ptr);
+    int64_t numel = PyLong_AsLong(ret_len);
     if (xpu{xpu_arch}PointerCheck(dev_ptr) == kINVALID) {{
         PyErr_Format(PyExc_ValueError,
                      "Pointer argument (at %d) cannot be accessed from Triton (cpu tensor?)", idx);
         ptr_info.valid = false;
     }}
     ptr_info.dev_ptr = dev_ptr;
-    Py_DECREF(ret);  // Thanks ChatGPT!
+    ptr_info.numel = numel;
+    Py_DECREF(ret_ptr);  // Thanks ChatGPT!
+    Py_DECREF(ret_len);  // Thanks ChatGPT!
     return ptr_info;
   }}
-  PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
+  PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr and numel method");
   ptr_info.valid = false;
   return ptr_info;
 }}
@@ -311,7 +375,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   // raise exception asap
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
   Py_BEGIN_ALLOW_THREADS;
-  _launch(gridX, gridY, gridZ, clusterDimX, clusterDimY, clusterDimZ, (XPUStream)_stream, (XPUFunc)_function{', ' + ', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items()) if len(signature) > 0 else ''});
+  _launch(gridX, gridY, gridZ, clusterDimX, clusterDimY, clusterDimZ, (XPUStream)_stream, (XPUFunc)_function{', ' + ', '.join(f"ptr_info{i}.dev_ptr, ptr_info{i}.numel" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items()) if len(signature) > 0 else ''});
   Py_END_ALLOW_THREADS;
   if (PyErr_Occurred()) {{
     return NULL;
@@ -332,7 +396,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 }}
 
 static PyMethodDef ModuleMethods[] = {{
-  {{"launch", launch, METH_VARARGS, "Entry point for all kernels with this signature"}},
+  {{"launch", (PyCFunction)launch, METH_VARARGS | METH_KEYWORDS, "Entry point for all kernels with this signature"}},
   {{NULL, NULL, 0, NULL}} // sentinel
 }};
 
@@ -357,6 +421,7 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
 
 
 class XPUUtils(object):
+    procedure: List[int] = [0, 0, 0]
 
     def __init__(self):
         mod = compile_module_from_src(Path(os.path.join(dirname, "driver.c")).read_text(), "xpu_utils")
@@ -372,8 +437,7 @@ class XPULauncher(object):
         cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
-
-        src = make_launcher(constants, signature, ids, metadata.xpu_arch)
+        src = make_launcher(constants, signature, ids, metadata)
         mod = compile_module_from_src(src, "__triton_launcher")
         self.launch = mod.launch
 
@@ -384,13 +448,9 @@ class XPULauncher(object):
 class XPUDriver(GPUDriver):
 
     def __init__(self):
-        # self.utils = XPUUtils()
+        self.utils = XPUUtils()
         self.launcher_cls = XPULauncher
         super().__init__()
-
-    @property
-    def utils(self):
-        return XPUUtils()
 
     @staticmethod
     def is_active():

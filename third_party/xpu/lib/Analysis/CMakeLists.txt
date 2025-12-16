@@ -17,3 +17,5 @@ add_triton_library(TritonAnalysis
   TritonGPUIR
   TritonNvidiaGPUIR
 )
+
+add_subdirectory(NewAnalysis)

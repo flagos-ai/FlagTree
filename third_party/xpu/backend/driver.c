@@ -112,15 +112,16 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
   const char *name;
   const char *data;
   Py_ssize_t data_size;
+  int is_sdnn_kernel;
   uint64_t printf_buf_offset;
-  if (!PyArg_ParseTuple(args, "ss#K", &name, &data, &data_size,
-                        &printf_buf_offset)) {
+  if (!PyArg_ParseTuple(args, "ss#iK", &name, &data, &data_size,
+                        &is_sdnn_kernel, &printf_buf_offset)) {
     return NULL;
   }
 
   // Create XPUFunc
   XPUFunc pfunc;
-  int type = KT_CLUSTER;
+  int type = is_sdnn_kernel ? KT_SDCDNN : KT_CLUSTER;
   uint64_t code_addr = reinterpret_cast<uint64_t>(data);
   uint32_t code_byte_size = static_cast<uint32_t>(data_size);
   uint32_t code_pc = 0;

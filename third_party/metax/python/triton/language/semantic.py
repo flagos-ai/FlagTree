@@ -6,8 +6,10 @@ from typing import List, Optional, Sequence, Tuple, TypeVar
 from .._C.libtriton import ir
 from . import core as tl
 from . import math
+import numbers
 
 T = TypeVar('T')
+TensorTy = TypeVar('TensorTy')
 
 
 class IncompatibleTypeErrorImpl(Exception):
@@ -57,7 +59,19 @@ def integer_promote_impl(a_ty: tl.dtype, b_ty: tl.dtype) -> tl.dtype:
     raise TypeError(f"unexpected signedness {a_sn} and {b_sn}")
 
 
-def computation_type_impl(a_ty: tl.dtype, b_ty: tl.dtype, div_or_mod: bool) -> tl.dtype:
+def computation_type_impl(a_ty: tl.dtype, a_is_scalar: bool, b_ty: tl.dtype, b_is_scalar: bool,
+                          div_or_mod: bool) -> tl.dtype:
+    # 0) For scalars we follow semantics similar to PyTorch, namely:
+    # - If the scalar is of a lower or equal kind (bool < uint < int < fp),
+    #   it doesn't participate in the promotion
+    if a_is_scalar != b_is_scalar:
+        scalar_ty, tensor_ty = (a_ty, b_ty) if a_is_scalar else (b_ty, a_ty)
+        if scalar_ty.kind().value <= tensor_ty.kind().value:
+            # Upcast because of 3) and 4) below!
+            if div_or_mod and (tensor_ty in (tl.float16, tl.bfloat16)):
+                return tl.float32
+            return tensor_ty
+
     # 1) if one operand is double, the other is implicitly
     #    converted to double
     if a_ty.is_fp64() or b_ty.is_fp64():
@@ -75,21 +89,63 @@ def computation_type_impl(a_ty: tl.dtype, b_ty: tl.dtype, div_or_mod: bool) -> t
         else:
             return tl.float16
     # 4) return bf16 only if both operands are of bf16
-    if a_ty.is_bf16() or b_ty.is_bf16():
+    if a_ty.is_bf16() and b_ty.is_bf16():
         if div_or_mod:
             return tl.float32
-        if a_ty.is_bf16() and b_ty.is_bf16():
+        else:
             return tl.bfloat16
+    if a_ty.is_bf16() or b_ty.is_bf16():
         return tl.float32
+    # 5) return fp16 if operands are different fp8
+    if a_ty.is_fp8() and b_ty.is_fp8():
+        return a_ty if a_ty == b_ty else tl.float16
     if not a_ty.is_int() or not b_ty.is_int():
         raise TypeError(f"unexpected type {a_ty} and {b_ty}")
-    # 5 ) both operands are integer and undergo
+    # 6 ) both operands are integer and undergo
     #    integer promotion
     if div_or_mod and a_ty.int_signedness != b_ty.int_signedness:
         raise TypeError("Cannot use /, #, or % with " + a_ty.__repr__() + " and " + b_ty.__repr__() +
                         " because they have different signedness;"
                         "this is unlikely to result in a useful answer. Cast them to the same signedness.")
     return integer_promote_impl(a_ty, b_ty)
+
+
+def to_tensor(x, builder, check_type: bool = True):
+    if isinstance(x, bool):
+        return tl.tensor(builder.get_int1(x), tl.int1)
+    # Note: compile-time const integers are represented by unsigned values
+    elif isinstance(x, int):
+        if -2**31 <= x < 2**31:
+            dtype = tl.int32
+        elif 2**31 <= x < 2**32:
+            dtype = tl.uint32
+        elif -2**63 <= x < 2**63:
+            dtype = tl.int64
+        elif 2**63 <= x < 2**64:
+            dtype = tl.uint64
+        else:
+            raise ValueError(f'Nonrepresentable integer {x}.')
+        return full((), x, dtype=dtype, builder=builder)
+    elif isinstance(x, float):
+        min_float32 = 2**-126
+        max_float32 = (2 - 2**-23) * 2**127
+        abs_x = __builtins__['abs'](x)
+        if abs_x == float("inf") or\
+           abs_x == 0.0 or \
+           x != x or \
+           min_float32 <= abs_x <= max_float32:
+            dtype = tl.float32
+        else:
+            dtype = tl.float64
+        return full((), x, dtype=dtype, builder=builder)
+
+    elif isinstance(x, tl.constexpr):
+        return to_tensor(x.value, builder)
+    elif isinstance(x, tl.tensor):
+        return x
+    if check_type:
+        raise TypeError(f"cannot convert {x} of type {type(x)} to tensor")
+    return x
 
 
 # ===----------------------------------------------------------------------===//
@@ -109,20 +165,41 @@ def check_ptr_type_impl(type_a: tl.dtype, type_b: tl.dtype, allow_ptr_a: bool) -
             raise IncompatibleTypeErrorImpl(type_a, type_b)
 
 
-def binary_op_type_checking_impl(lhs: tl.tensor, rhs: tl.tensor, builder: ir.builder, allow_lhs_ptr=False,
-                                 allow_rhs_ptr=False, arithmetic_check=True,
+def binary_op_type_checking_impl(lhs: tl.tensor | numbers.Number, rhs: tl.tensor | numbers.Number, builder: ir.builder,
+                                 allow_lhs_ptr=False, allow_rhs_ptr=False, arithmetic_check=True,
                                  div_or_mod=False) -> Tuple[tl.tensor, tl.tensor]:
-    # implicit broadcasting
-    lhs, rhs = broadcast_impl_value(lhs, rhs, builder)
+    lhs_is_scalar = isinstance(lhs, numbers.Number)
+    rhs_is_scalar = isinstance(rhs, numbers.Number)
+    if lhs_is_scalar:
+        lhs_scalar = lhs
+        lhs = tl._to_tensor(lhs, builder)
+    if rhs_is_scalar:
+        rhs_scalar = rhs
+        rhs = tl._to_tensor(rhs, builder)
+
     # implicit typecasting
     lhs_sca_ty = lhs.type.scalar
     rhs_sca_ty = rhs.type.scalar
     check_ptr_type_impl(lhs_sca_ty, rhs_sca_ty, allow_lhs_ptr)
     check_ptr_type_impl(rhs_sca_ty, lhs_sca_ty, allow_rhs_ptr)
     if arithmetic_check and not lhs_sca_ty.is_ptr() and not rhs_sca_ty.is_ptr():
-        ret_sca_ty = computation_type_impl(lhs_sca_ty, rhs_sca_ty, div_or_mod)
-        lhs = cast(lhs, ret_sca_ty, builder)
-        rhs = cast(rhs, ret_sca_ty, builder)
+        ret_sca_ty = computation_type_impl(lhs_sca_ty, lhs_is_scalar, rhs_sca_ty, rhs_is_scalar, div_or_mod)
+        if (lhs_is_scalar and lhs_scalar < 0 and ret_sca_ty.is_int_unsigned()
+                or rhs_is_scalar and rhs_scalar < 0 and ret_sca_ty.is_int_unsigned()):
+            raise ValueError("Cannot perform a binary operation between an unsigned tensor and a negative scalar. "
+                             "Perform a explicit cast on one of them.")
+        if ret_sca_ty.is_int():
+            if lhs_is_scalar and not (ret_sca_ty.get_int_min_value() <= lhs_scalar <= ret_sca_ty.get_int_max_value()):
+                raise ValueError(f"Scalar {lhs_scalar} is out of range for type {ret_sca_ty}")
+            if rhs_is_scalar and not (ret_sca_ty.get_int_min_value() <= rhs_scalar <= ret_sca_ty.get_int_max_value()):
+                raise ValueError(f"Scalar {rhs_scalar} is out of range for type {ret_sca_ty}")
+        lhs = full(
+            (), lhs_scalar, dtype=ret_sca_ty, builder=builder) if lhs_is_scalar else cast(lhs, ret_sca_ty, builder)
+        rhs = full(
+            (), rhs_scalar, dtype=ret_sca_ty, builder=builder) if rhs_is_scalar else cast(rhs, ret_sca_ty, builder)
+
+    # implicit broadcasting
+    lhs, rhs = broadcast_impl_value(lhs, rhs, builder)
     return lhs, rhs
 
 
@@ -310,7 +387,7 @@ def clamp(x: tl.tensor, min: tl.tensor, max: tl.tensor, propagate_nan: tl.Propag
 
 def bitwise_op_type_checking_impl(input: tl.tensor, other: tl.tensor,
                                   builder: ir.builder) -> Tuple[tl.tensor, tl.tensor]:
-    input, other = binary_op_type_checking_impl(input, other, builder, False, False, False)
+    input, other = binary_op_type_checking_impl(input, other, builder)
     input_sca_ty = input.type.scalar
     other_sca_ty = other.type.scalar
     if not input_sca_ty.is_int() or not other_sca_ty.is_int():
@@ -945,7 +1022,7 @@ def _canonicalize_boundary_check(boundary_check, block_shape):
     return ()
 
 
-def _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder):
+def _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, is_pipeline, builder):
     # Load by a block pointer: `pointer_type<block_type<>>`
     # Block pointer can not have `mask` and `other` arguments
     if mask is not None or other is not None:
@@ -963,11 +1040,13 @@ def _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, evicti
     boundary_check = _canonicalize_boundary_check(boundary_check, dst_ty.get_block_shapes())
 
     # Build IR
+    # param 'is_pipeline' is only available on MACA
     return tl.tensor(
-        builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile), dst_ty)
+        builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile,
+                                           is_pipeline), dst_ty)
 
 
-def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder):
+def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, is_pipeline, builder):
     # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
     if not ptr.type.scalar.is_ptr():
         raise ValueError(f"Unsupported ptr type {ptr.type.__repr__()} in `tl.load`")
@@ -1017,28 +1096,32 @@ def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_
         dst_ty = elt_ty
 
     # Build IR
+    # param 'is_pipeline' is only available on MACA
     if mask is None:
-        return tl.tensor(builder.create_load(ptr.handle, cache, eviction, is_volatile), dst_ty)
+        return tl.tensor(builder.create_load(ptr.handle, cache, eviction, is_volatile, is_pipeline), dst_ty)
     else:
         return tl.tensor(
             builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache, eviction,
-                                       is_volatile), dst_ty)
+                                       is_volatile, is_pipeline), dst_ty)
 
 
 def load(ptr: tl.tensor, mask: Optional[tl.tensor], other: Optional[tl.tensor], boundary_check: Tuple,
-         padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool,
+         padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool, is_pipeline: bool,
          builder: ir.builder) -> tl.tensor:
     # Cache, eviction and padding options
+    # param 'is_pipeline' is only available on MACA
     cache = _str_to_load_cache_modifier(cache_modifier)
     eviction = _str_to_eviction_policy(eviction_policy)
     padding = _str_to_padding_option(padding_option)
 
     if ptr.type.is_ptr() and ptr.type.element_ty.is_block():
         # Load by a block pointer: `pointer_type<block_type<>>`
-        return _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder)
+        return _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, is_pipeline,
+                                   builder)
     else:
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
-        return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder)
+        return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, is_pipeline,
+                            builder)
 
 
 def descriptor_load(desc_ptr: tl.tensor, offsets, cache_modifier: str, eviction_policy: str, type,
@@ -1485,6 +1568,30 @@ def associative_scan(inputs: Sequence[tl.tensor], axis: int, region_builder_fn, 
     scan_op.verify()
 
     return tuple(wrap_tensor(scan_op.get_result(i), inputs[i].type.scalar, shape) for i in range(len(inputs)))
+
+
+# ===----------------------------------------------------------------------===
+#                               Gather
+# ===----------------------------------------------------------------------===
+
+
+def gather(src: TensorTy, index: TensorTy, axis: int, builder: ir.builder) -> TensorTy:
+    assert index.dtype.is_int(), "index must be an integer tensor"
+
+    rank = len(src.type.shape)
+    assert len(index.type.shape) == rank, "source and index tensors must have the same rank"
+
+    assert -rank <= axis < rank, f"gather axis {axis} must be < source rank ({rank})"
+    if axis < 0:
+        axis += rank
+
+    for d in range(rank):
+        if d == axis:
+            continue
+        assert index.type.shape[d] == src.type.shape[d], f"index dim {axis} must match the corresponding source dim"
+
+    gather = builder.create_gather(src.handle, index.handle, axis)
+    return wrap_tensor(gather, src.type.scalar, index.type.shape)
 
 
 # ===----------------------------------------------------------------------===

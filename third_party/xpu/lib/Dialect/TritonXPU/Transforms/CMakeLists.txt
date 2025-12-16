@@ -24,3 +24,10 @@ add_triton_library(TritonXPUTransforms
   LINK_LIBS PUBLIC
   TritonAnalysis
 )
+
+add_xpu_sdnn_object(FuncConvert
+  ${CMAKE_CURRENT_SOURCE_DIR}/FuncConvert.o
+
+  LINK_LIBS
+  TritonAnalysis
+)

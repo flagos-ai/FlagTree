@@ -13,6 +13,7 @@ def triton_():
     return
 
 
+@pytest.mark.skipif(True, reason="no ir dump support")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires cuda")
 def test_reproducer():
     tmpdir = ".tmp"

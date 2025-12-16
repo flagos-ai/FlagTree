@@ -139,16 +139,6 @@ std::string translateLLVMIRToASM(llvm::Module &module,
     shortPtr->setValue(true);
   }
 
-#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
-  if (triton::tools::getBoolEnv("LLVM_IR_ENABLE_DUMP")) {
-    auto optIt = options.find("print-after-all");
-    if (optIt != options.end()) {
-      auto optPtr = static_cast<llvm::cl::opt<bool> *>(optIt->second);
-      *optPtr = true;
-    }
-  }
-#endif
-
   {
     uint32_t LMSizeLimit = -1;
     std::string LMSizeLimitStr =
@@ -291,9 +281,6 @@ void init_triton_llvm(py::module &&m) {
           [](llvm::Module *self) {
             std::string str;
             llvm::raw_string_ostream os(str);
-#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
-            os << *self;
-#endif
             return os.str();
           },
           ret::take_ownership)
@@ -389,19 +376,6 @@ void init_triton_llvm(py::module &&m) {
         PassInstrumentationCallbacks passInstrCb;
         StandardInstrumentations standardInstr(mod->getContext(),
                                                /*DebugLogging*/ true);
-
-#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
-        if (mlir::triton::tools::getBoolEnv("LLVM_IR_ENABLE_DUMP")) {
-          auto optMap = llvm::cl::getRegisteredOptions();
-          auto optIt = optMap.find("print-after-all");
-          if (optIt != optMap.end()) {
-            auto optPtr = static_cast<llvm::cl::opt<bool> *>(optIt->second);
-            *optPtr = true;
-          }
-          standardInstr.registerCallbacks(passInstrCb, &mam);
-          instrCbPtr = &passInstrCb;
-        }
-#endif
 
         {
           uint32_t LMSizeLimit = -1;

@@ -171,20 +171,22 @@ static void applyLastElemScanOnSM(SmallVector<SmallVector<Value>> &srcValues,
     }
   }
 
-  auto dump2DSmallVector = [](const SmallVector<SmallVector<Value>> &srcValues,
-                              std::string str) {
-    assert(srcValues.size() > 0 && srcValues[0].size() > 0);
-    llvm::errs() << "shape: " << srcValues.size() << "x" << srcValues[0].size()
-                 << "\n";
-    for (auto [i, srcValue] : llvm::enumerate(srcValues)) {
-      llvm::errs() << str << "[" << i << "]: ";
+  // auto dump2DSmallVector = [](const SmallVector<SmallVector<Value>>
+  // &srcValues,
+  //                             std::string str) {
+  //   assert(srcValues.size() > 0 && srcValues[0].size() > 0);
+  //   llvm::errs() << "shape: " << srcValues.size() << "x" <<
+  //   srcValues[0].size()
+  //                << "\n";
+  //   for (auto [i, srcValue] : llvm::enumerate(srcValues)) {
+  //     llvm::errs() << str << "[" << i << "]: ";
 
-      for (auto [j, srcVal] : llvm::enumerate(srcValue)) {
-        llvm::errs() << srcVal << ", ";
-      }
-      llvm::errs() << "\n ";
-    }
-  };
+  //     for (auto [j, srcVal] : llvm::enumerate(srcValue)) {
+  //       llvm::errs() << srcVal << ", ";
+  //     }
+  //     llvm::errs() << "\n ";
+  //   }
+  // };
 
   //   llvm::errs() << "\n [After readValues] Dump readValues:\n";
   //   dump2DSmallVector(readValues, "readValues");
@@ -229,6 +231,31 @@ static void applyLastElemScanOnSM(SmallVector<SmallVector<Value>> &srcValues,
     }
   }
 
+  // [dump] dump accs result
+  if (/*dump_Out_SMValue*/ false) {
+    auto operandIdx = 1; // 第一个输入
+
+    for (int core_id_offset = 0; core_id_offset < 64; ++core_id_offset) {
+      auto elemTy = accs[core_id_offset][operandIdx].getType();
+
+      std::string calFunc;
+      if (elemTy.isF32()) {
+        calFunc = "_ZN3xpu15printFloat_specEfiii";
+      } else if (elemTy.isInteger(32)) {
+        calFunc = "_ZN3xpu13printInt_specEiiii";
+      } else if (elemTy.isInteger(64)) {
+        calFunc = "_ZN3xpu15printInt64_specEliii";
+      }
+
+      ValueRange operandValueRange(
+          {accs[core_id_offset][operandIdx], /*cluster_id*/ i32_val(0),
+           /*core_id*/ i32_val(0),
+           /*custom_id*/ i32_val(200 + core_id_offset)});
+      mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
+                                        operandValueRange, loc);
+    }
+  }
+
   //   llvm::errs() << "\n [After accumulate readValues] Dump accs:\n";
   //   dump2DSmallVector(accs, "accs");
 
@@ -245,6 +272,34 @@ static void applyLastElemScanOnSM(SmallVector<SmallVector<Value>> &srcValues,
     }
   }
 
+  // [dump][sm] operand-0: sm_acc[0]-sm_acc[63]   or  operand-1
+  // sm_acc[64]-sm_acc[127] sm_acc = sm[128]
+  if (/*dump_Out_SMValue*/ false) {
+    auto operandIdx = 1; // 第一个输入
+
+    for (int core_id_offset = 0; core_id_offset < 64; ++core_id_offset) {
+      auto elemTy = smemTypes[operandIdx];
+      Value loadPtr = gep(ptr_ty(rewriter.getContext(), 2), elemTy,
+                          accSmemBases[operandIdx], i32_val(core_id_offset));
+      Value loadVal = load_sm(elemTy, loadPtr);
+
+      std::string calFunc;
+      if (elemTy.isF32()) {
+        calFunc = "_ZN3xpu15printFloat_specEfiii";
+      } else if (elemTy.isInteger(32)) {
+        calFunc = "_ZN3xpu13printInt_specEiiii";
+      } else if (elemTy.isInteger(64)) {
+        calFunc = "_ZN3xpu15printInt64_specEliii";
+      }
+
+      ValueRange operandValueRange(
+          {loadVal, /*cluster_id*/ i32_val(0), /*core_id*/ i32_val(0),
+           /*custom_id*/ i32_val(600 + core_id_offset)});
+      mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
+                                        operandValueRange, loc);
+    }
+  }
+
   rewriter.create<LLVM::BrOp>(loc, mergeBlock);
   rewriter.setInsertionPointToStart(mergeBlock);
 }
@@ -254,7 +309,7 @@ static void applyCoreElemScanWithSMAcc(
     ConversionPatternRewriter &rewriter, const TargetInfoBase &targetInfo,
     ScanLoweringHelper &helper, SmallVector<Value> smemBases,
     SmallVector<Value> accSmemBases, SmallVector<Type> smemTypes, Value groupId,
-    Value laneId) {
+    Value laneId, triton::xpu::ScanOp op) {
   Location loc = helper.getXPULoc();
   Value threadId = getThreadId(rewriter, loc);
 
@@ -283,16 +338,36 @@ static void applyCoreElemScanWithSMAcc(
     cur_core_acc_val[operandIdx] = load_sm(elemTy, readCurCoreAccValOnSMPtrs);
   }
 
-  auto dump1DSmallVector = [](const SmallVector<Value> &results,
-                              std::string str) {
-    assert(results.size() > 0);
-    llvm::errs() << "shape: " << results.size() << "\n";
-    llvm::errs() << str << ": ";
-    for (auto [i, srcValue] : llvm::enumerate(results)) {
-      llvm::errs() << srcValue << ", ";
+  // [dump][lm] core load sm[coreId] data to lm
+  if (/*dump_Out_SMValue*/ false) {
+    auto operandIdx = 1;
+    auto elemTy = cur_core_acc_val[operandIdx].getType();
+
+    std::string calFunc;
+    if (elemTy.isF32()) {
+      calFunc = "_ZN3xpu10printFloatEfi";
+    } else if (elemTy.isInteger(32)) {
+      calFunc = "_ZN3xpu8printIntEii";
+    } else if (elemTy.isInteger(64)) {
+      calFunc = "_ZN3xpu10printInt64Eli";
     }
-    llvm::errs() << "\n ";
-  };
+
+    ValueRange operandValueRange({cur_core_acc_val[operandIdx],
+                                  /*custom_id*/ i32_val(300)});
+    mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op, operandValueRange,
+                                      loc);
+  }
+
+  // auto dump1DSmallVector = [](const SmallVector<Value> &results,
+  //                             std::string str) {
+  //   assert(results.size() > 0);
+  //   llvm::errs() << "shape: " << results.size() << "\n";
+  //   llvm::errs() << str << ": ";
+  //   for (auto [i, srcValue] : llvm::enumerate(results)) {
+  //     llvm::errs() << srcValue << ", ";
+  //   }
+  //   llvm::errs() << "\n ";
+  // };
 
   //   llvm::errs()
   //       << "\n [After readCurCoreAccValOnSMPtrs] Dump cur_core_acc_val:\n";
@@ -311,6 +386,27 @@ static void applyCoreElemScanWithSMAcc(
   for (unsigned srcIndex = 0; srcIndex < srcValues.size(); srcIndex++) {
     newSrcValues[srcIndex] =
         accumulate(helper, rewriter, cur_core_acc_val, srcValues[srcIndex]);
+  }
+
+  // [dump][lm] final srcValues
+  if (/*dump_Out_SMValue*/ false) {
+    auto coreElemIdx = 0;
+    auto operandIdx = 0;
+    auto elemTy = newSrcValues[coreElemIdx][operandIdx].getType();
+
+    std::string calFunc;
+    if (elemTy.isF32()) {
+      calFunc = "_ZN3xpu10printFloatEfi";
+    } else if (elemTy.isInteger(32)) {
+      calFunc = "_ZN3xpu8printIntEii";
+    } else if (elemTy.isInteger(64)) {
+      calFunc = "_ZN3xpu10printInt64Eli";
+    }
+
+    ValueRange operandValueRange({newSrcValues[coreElemIdx][operandIdx],
+                                  /*custom_id*/ i32_val(3000)});
+    mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op, operandValueRange,
+                                      loc);
   }
 
   for (unsigned srcIndex = 0; srcIndex < srcValues.size(); srcIndex++) {
@@ -357,36 +453,35 @@ struct XPUScanOpConversion
     auto loc = op.getLoc();
     // indices will store the index of the op operands in descending order
     // of their bitwidths
-    std::vector<unsigned> indices(op.getNumOperands() - 1); // skip loopIndex
-    std::iota(indices.begin(), indices.end(), 0);
+    // std::vector<unsigned> indices(op.getNumOperands() - 1); // skip loopIndex
+    // std::iota(indices.begin(), indices.end(), 0);
 
-    std::sort(indices.begin(), indices.end(), [&](unsigned i, unsigned j) {
-      if (i == op.getNumOperands() - 1 ||
-          j == op.getNumOperands() - 1) { // skip loopIndex
-        return false;
-      }
-      return op.getElementTypes()[i].getIntOrFloatBitWidth() >
-             op.getElementTypes()[j].getIntOrFloatBitWidth();
-    });
+    // std::sort(indices.begin(), indices.end(), [&](unsigned i, unsigned j) {
+    //   if (i == op.getNumOperands() - 1 ||
+    //       j == op.getNumOperands() - 1) { // skip loopIndex
+    //     return false;
+    //   }
+    //   return op.getElementTypes()[i].getIntOrFloatBitWidth() >
+    //          op.getElementTypes()[j].getIntOrFloatBitWidth();
+    // });
 
     // Assign base index to each operand in their order in indices
     std::map<unsigned, Value> indexToBase;
-    indexToBase[indices[0]] =
+    indexToBase[0] =
         LLVM::getSharedMemoryBase(loc, rewriter, op.getOperation());
     // add prev reduceOp used sm bytes offset
-    indexToBase[indices[0]] =
-        gep(ptr_ty(rewriter.getContext(), 2), getElementType(op, indices[0]),
-            indexToBase[indices[0]], i32_val(prevSMOffset));
+    indexToBase[0] =
+        gep(ptr_ty(rewriter.getContext(), 2), getElementType(op, 0),
+            indexToBase[0], i32_val(prevSMOffset));
 
-    offsets.push_back(
-        (getElementType(op, indices[0]).getIntOrFloatBitWidth() * elems) / 8);
+    offsets.push_back((getElementType(op, 0).getIntOrFloatBitWidth() * elems) /
+                      8);
     for (unsigned i = 1; i < (op.getNumOperands() - 1); ++i) { // skip loopIndex
-      indexToBase[indices[i]] = gep(
-          ptr_ty(rewriter.getContext(), 2), getElementType(op, indices[i - 1]),
-          indexToBase[indices[i - 1]], i32_val(elems));
+      indexToBase[i] =
+          gep(ptr_ty(rewriter.getContext(), 2), getElementType(op, i),
+              indexToBase[i - 1], i32_val(elems));
       offsets.push_back(
-          (getElementType(op, indices[i - 1]).getIntOrFloatBitWidth() * elems) /
-          8);
+          (getElementType(op, i).getIntOrFloatBitWidth() * elems) / 8);
     }
 
     // smemBases[k] is the base pointer for the k-th operand
@@ -400,17 +495,17 @@ struct XPUScanOpConversion
     SmallVector<Value> accCacheSmemBases(op.getNumOperands() -
                                          1); // skip loopIndex
     std::map<unsigned, Value> indexToBaseForAccCache;
-    indexToBaseForAccCache[indices[0]] = gep(ptr_ty(rewriter.getContext(), 2),
-                                             getElementType(op, indices.back()),
-                                             smemBases.back(), i32_val(elems));
-    offsets.push_back(
-        (getElementType(op, indices[0]).getIntOrFloatBitWidth() * elems) / 8);
+    indexToBaseForAccCache[0] = gep(ptr_ty(rewriter.getContext(), 2),
+                                    getElementType(op, op.getNumOperands() - 2),
+                                    smemBases.back(), i32_val(elems));
+    offsets.push_back((getElementType(op, 0).getIntOrFloatBitWidth() * elems) /
+                      8);
     for (unsigned i = 1; i < (op.getNumOperands() - 1); ++i) { // skip loopIndex
-      indexToBaseForAccCache[indices[i]] = gep(
-          ptr_ty(rewriter.getContext(), 2), getElementType(op, indices[i - 1]),
-          indexToBaseForAccCache[indices[i - 1]], i32_val(1));
+      indexToBaseForAccCache[i] =
+          gep(ptr_ty(rewriter.getContext(), 2), getElementType(op, i),
+              indexToBaseForAccCache[i - 1], i32_val(elems));
       offsets.push_back(
-          (getElementType(op, indices[0]).getIntOrFloatBitWidth() * elems) / 8);
+          (getElementType(op, i).getIntOrFloatBitWidth() * elems) / 8);
     }
 
     for (unsigned i = 0; i < (op.getNumOperands() - 1); ++i) { // skip loopIndex
@@ -462,6 +557,8 @@ struct XPUScanOpConversion
     Value groupId = udiv(threadId, groupSize);
     Value laneId = urem(threadId, groupSize);
 
+    // dim-0: coreElems
+    // dim-1: operandNums
     auto srcValues =
         unpackInputs(loc, op, adaptor, rewriter, *getTypeConverter());
 
@@ -483,16 +580,26 @@ struct XPUScanOpConversion
     // llvm::errs() << "\n [After unpackInputs] Dump srcValues:\n";
     // dump2DSmallVector(srcValues, "srcValues");
 
-    // auto dump_FSrcValues = [&]() {
-    //   std::string calFunc = "_ZN3xpu10printFloatEfi";
+    // [dump][lm] operand-0: src[:][0]   or  operand-1 src[:][1]
+    if (/*dump_srcValue*/ false) {
+      auto operandIdx = 1;
+      std::string calFunc;
+      auto elemTy = srcValues[0][operandIdx].getType();
 
-    //   for (size_t cnt = 0; cnt < srcValues[0].size(); ++cnt) {
-    //     ValueRange operandValueRange({srcValues[0][cnt], i32_val(cnt +
-    //     400)}); mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
-    //                                       operandValueRange, loc);
-    //   }
-    // };
-    // dump_FSrcValues();
+      for (size_t cnt = 0; cnt < srcValues.size(); ++cnt) {
+        if (elemTy.isF32()) {
+          calFunc = "_ZN3xpu10printFloatEfi";
+        } else if (elemTy.isInteger(32)) {
+          calFunc = "_ZN3xpu8printIntEii";
+        } else if (elemTy.isInteger(64)) {
+          calFunc = "_ZN3xpu10printInt64Eli";
+        }
+        ValueRange operandValueRange(
+            {srcValues[cnt][operandIdx], i32_val(cnt + 400)});
+        mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
+                                          operandValueRange, loc);
+      }
+    }
 
     if (op.getReverse()) {
       llvm_unreachable("wait support reverse");
@@ -505,26 +612,17 @@ struct XPUScanOpConversion
     // llvm::errs() << "\n [After scanThreadContiguousElements] Dump
     // srcValues:\n"; dump2DSmallVector(srcValues, "srcValues");
 
-    // auto dump_FSrcValues = [&]() {
-    //   std::string calFunc = "_ZN3xpu10printFloatEfi";
-
-    //   for (size_t cnt = 0; cnt < srcValues[0].size(); ++cnt) {
-    //     ValueRange operandValueRange({srcValues[0][cnt], i32_val(cnt +
-    //     400)}); mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
-    //                                       operandValueRange, loc);
-    //   }
-    // };
-    // dump_FSrcValues();
-
     if (!helper.isCoreSynchronous()) {
-      //   llvm::errs() << "\n [Before getSmemBases]:\n";
-      //   helper.dumpSMOffsets();
+      // llvm::errs() << "\n [Before getSmemBases]:\n"
+      //              << op->getParentOfType<ModuleOp>() << "\n";
+      // helper.dumpSMOffsets();
 
       auto elems = helper.getScratchSizeInElemsXPU();
       auto [smemBases, accSmemBases] = getSmemBases(op, elems, rewriter);
 
-      //   llvm::errs() << "\n [After getSmemBases]:\n";
-      //   helper.dumpSMOffsets();
+      // llvm::errs() << "\n [After getSmemBases]:\n"
+      //              << op->getParentOfType<ModuleOp>() << "\n";
+      // helper.dumpSMOffsets();
 
       SmallVector<Type> smemTypes(op.getNumOperands() -
                                   1); // skip skip loopIndex
@@ -538,20 +636,35 @@ struct XPUScanOpConversion
       storeGroupAccumulator(srcValues, rewriter, helper, laneId, groupId,
                             smemBases, smemTypes);
 
-      //   for (int core_id_offset = 0; core_id_offset < 64; ++core_id_offset) {
-      //     auto elemTy = smemTypes[0];
-      //     Value loadPtr = gep(ptr_ty(rewriter.getContext(), 2), elemTy,
-      //                         smemBases[0], i32_val(core_id_offset));
-      //     Value loadVal = load_sm(elemTy, loadPtr);
-      //     std::string calFunc = "_ZN3xpu10printFloatEfi";
-      //     ValueRange operandValueRange({loadVal, i32_val(400 +
-      //     core_id_offset)}); mlir::LLVM::XPU::createDeviceCall(calFunc,
-      //     rewriter, op,
-      //                                       operandValueRange, loc);
-      //   }
+      // [dump][sm] operand-0: sm[0]-sm[63]   or  operand-1 sm[64]-sm[127]
+      if (/*dump_In_SMValue*/ false) {
+        auto operandIdx = 1; // 第一个输入
 
-      //   llvm::errs() << "\n After storeGroupAccumulator:"
-      //                << op->getParentOfType<ModuleOp>() << "\n";
+        for (int core_id_offset = 0; core_id_offset < 64; ++core_id_offset) {
+          auto elemTy = smemTypes[operandIdx];
+          Value loadPtr = gep(ptr_ty(rewriter.getContext(), 2), elemTy,
+                              smemBases[operandIdx], i32_val(core_id_offset));
+          Value loadVal = load_sm(elemTy, loadPtr);
+
+          std::string calFunc;
+          if (elemTy.isF32()) {
+            calFunc = "_ZN3xpu15printFloat_specEfiii";
+          } else if (elemTy.isInteger(32)) {
+            calFunc = "_ZN3xpu13printInt_specEiiii";
+          } else if (elemTy.isInteger(64)) {
+            calFunc = "_ZN3xpu15printInt64_specEliii";
+          }
+
+          ValueRange operandValueRange(
+              {loadVal, /*cluster_id*/ i32_val(0), /*core_id*/ i32_val(0),
+               /*custom_id*/ i32_val(500 + core_id_offset)});
+          mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
+                                            operandValueRange, loc);
+        }
+      }
+
+      // llvm::errs() << "\n After storeGroupAccumulator:\n"
+      //              << op->getParentOfType<ModuleOp>() << "\n";
       //   llvm::errs() << "\n [After storeGroupAccumulator] Dump srcValues:\n";
       //   dump2DSmallVector(srcValues, "srcValues");
 
@@ -561,29 +674,80 @@ struct XPUScanOpConversion
       // based on warpId.
       applyLastElemScanOnSM(srcValues, rewriter, targetInfo, helper, smemBases,
                             accSmemBases, smemTypes, groupId, laneId, op);
-      //   llvm::errs() << "\n After applyLastElemScanOnSM:"
-      //                << op->getParentOfType<ModuleOp>() << "\n";
+      // llvm::errs() << "\n After applyLastElemScanOnSM:\n"
+      //              << op->getParentOfType<ModuleOp>() << "\n";
 
-      //   for (int core_id_offset = 0; core_id_offset < 64; ++core_id_offset) {
-      //     auto elemTy = smemTypes[0];
-      //     Value loadPtr = gep(ptr_ty(rewriter.getContext(), 2), elemTy,
-      //                         accSmemBases[0], i32_val(core_id_offset));
-      //     Value loadVal = load_sm(elemTy, loadPtr);
-      //     std::string calFunc = "_ZN3xpu10printFloatEfi";
-      //     ValueRange operandValueRange({loadVal, i32_val(500 +
-      //     core_id_offset)}); mlir::LLVM::XPU::createDeviceCall(calFunc,
-      //     rewriter, op,
-      //                                       operandValueRange, loc);
-      //   }
       xpu_barrier();
 
+      // [dump][sm] operand-0: sm_acc[0]-sm_acc[63]   or  operand-1
+      // sm_acc[64]-sm_acc[127] sm_acc = sm[128]
+      if (/*dump_Out_SMValue*/ false) {
+        auto operandIdx = 1; // 第一个输入
+
+        for (int core_id_offset = 0; core_id_offset < 64; ++core_id_offset) {
+          auto elemTy = smemTypes[operandIdx];
+          Value loadPtr =
+              gep(ptr_ty(rewriter.getContext(), 2), elemTy,
+                  accSmemBases[operandIdx], i32_val(core_id_offset));
+          Value loadVal = load_sm(elemTy, loadPtr);
+
+          std::string calFunc;
+          if (elemTy.isF32()) {
+            calFunc = "_ZN3xpu15printFloat_specEfiii";
+          } else if (elemTy.isInteger(32)) {
+            calFunc = "_ZN3xpu13printInt_specEiiii";
+          } else if (elemTy.isInteger(64)) {
+            calFunc = "_ZN3xpu15printInt64_specEliii";
+          }
+
+          ValueRange operandValueRange(
+              {loadVal, /*cluster_id*/ i32_val(0), /*core_id*/ i32_val(0),
+               /*custom_id*/ i32_val(600 + core_id_offset)});
+          mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
+                                            operandValueRange, loc);
+        }
+      }
+      xpu_barrier();
+
+      // llvm::errs() << "\n Before applyCoreElemScanWithSMAcc:\n"
+      //              << op->getParentOfType<ModuleOp>() << "\n";
       // Then update each chunk of contiguous elements by
       // adding the accumulated value from the previous lane.
       applyCoreElemScanWithSMAcc(srcValues, rewriter, targetInfo, helper,
                                  smemBases, accSmemBases, smemTypes, groupId,
-                                 laneId);
-      //   llvm::errs() << "\n After applyCoreElemScanWithSMAcc:"
-      //                << op->getParentOfType<ModuleOp>() << "\n";
+                                 laneId, op);
+      // llvm::errs() << "\n After applyCoreElemScanWithSMAcc:\n"
+      //              << op->getParentOfType<ModuleOp>() << "\n";
+
+      // dump operand-0: sm_acc[0]-sm_acc[63]   or  operand-1
+      // sm_acc[64]-sm_acc[127] sm_acc = sm[128]
+      if (/*dump_Out_SMValue*/ false) {
+        auto operandIdx = 0; // 第一个输入
+
+        for (int core_id_offset = 0; core_id_offset < 64; ++core_id_offset) {
+          auto elemTy = smemTypes[operandIdx];
+          Value loadPtr =
+              gep(ptr_ty(rewriter.getContext(), 2), elemTy,
+                  accSmemBases[operandIdx], i32_val(core_id_offset));
+          Value loadVal = load_sm(elemTy, loadPtr);
+
+          std::string calFunc;
+          if (elemTy.isF32()) {
+            calFunc = "_ZN3xpu15printFloat_specEfiii";
+          } else if (elemTy.isInteger(32)) {
+            calFunc = "_ZN3xpu13printInt_specEiiii";
+          } else if (elemTy.isInteger(64)) {
+            calFunc = "_ZN3xpu15printInt64_specEliii";
+          }
+
+          ValueRange operandValueRange(
+              {loadVal, /*cluster_id*/ i32_val(0), /*core_id*/ i32_val(0),
+               /*custom_id*/ i32_val(700 + core_id_offset)});
+          mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
+                                            operandValueRange, loc);
+        }
+      }
+
       //   llvm::errs() << "\n [After applyCoreElemScanWithSMAcc] Dump
       //   srcValues:\n"; dump2DSmallVector(srcValues, "srcValues");
 

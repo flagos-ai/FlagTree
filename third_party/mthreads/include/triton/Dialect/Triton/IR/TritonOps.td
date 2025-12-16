@@ -1107,7 +1107,8 @@ def TT_ExperimentalDescriptorLoadOp : TT_Op<"experimental_descriptor_load", [
       TT_PtrType:$desc_ptr,
       Variadic<I32>:$indices,
       DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
-      DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict
+      DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict,
+      DefaultValuedAttr<BoolAttr, "false">:$isTranspose
     );
 
     let results = (outs TT_Tensor:$result);

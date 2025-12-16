@@ -12,11 +12,12 @@ import os
 import subprocess
 from pathlib import Path
 import shutil
+import warnings
 
 
 def get_kernel_name(src: str, pattern: str) -> str:
     assert src
-    for line in src.split('\n'):
+    for line in src.split("\n"):
         line = line.strip()
         if line.startswith(pattern):
             return line.split()[-1]
@@ -49,10 +50,11 @@ class MUSAOptions:
     allow_fp8e4b15: bool = False
     default_dot_input_precision: str = "tf32"
     allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "ieee")
-    max_num_imprecise_acc_default: bool = None
+    max_num_imprecise_acc_default: int = 0
     extern_libs: dict = None
     debug: bool = False
-    backend_name: str = 'musa'
+    backend_name: str = "musa"
+    en_wmma: bool = False
 
     def __post_init__(self):
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
@@ -92,6 +94,8 @@ class MUSABackend(BaseBackend):
     def parse_options(self, opts) -> Any:
         opts["capability"] = self.capability
         opts["allow_fp8e4nv"] = self.capability >= 31
+        opts["en_wmma"] = (opts.get("en_wmma") if opts.get("en_wmma") is not None else
+                           (os.getenv("ENABLE_MUSA_MMA", "false").lower() != "false"))
         args = {k: opts[k] for k in MUSAOptions.__dataclass_fields__.keys() if k in opts}
         return MUSAOptions(**args)
 
@@ -132,20 +136,51 @@ class MUSABackend(BaseBackend):
 
     @staticmethod
     def make_ttgir(mod, metadata, opt, capability, warp_size):
+        enable_sqmma = os.environ.get("MUSA_ENABLE_SQMMA")
+        uses_tme = getattr(mod, "uses_tme", None)
+        if uses_tme is None:
+            mod_str = ""
+            try:
+                mod_str = mod.str()
+            except Exception:
+                mod_str = ""
+            uses_tme = ("tt.experimental_descriptor_load" in mod_str
+                        or "triton_gpu.experimental_descriptor_load" in mod_str)
+        should_add_pipeline = False
+        if enable_sqmma and opt.num_stages > 1:
+            if not uses_tme:
+                warnings.warn(
+                    "MUSA backend: num_stages>1 requested without using TME; falling back to num_stages=1.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                metadata["num_stages"] = 1
+            else:
+                should_add_pipeline = True
         # TTIR -> TTGIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.ttir.add_convert_to_ttgpuir(pm, f"musa:{capability}", opt.num_warps, warp_size, opt.num_ctas)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
-        passes.ttgpuir.add_remove_layout_conversions(pm)
+        if enable_sqmma:
+            passes.ttgpuir.add_optimize_thread_locality(pm)
+            mthreads.passes.ttgpuir.add_accelerate_matmul(pm)
+            passes.ttgpuir.add_remove_layout_conversions(pm)
+        else:
+            passes.ttgpuir.add_remove_layout_conversions(pm)
+            mthreads.passes.ttgpuir.add_accelerate_matmul(pm, opt.en_wmma)
+            passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.common.add_cse(pm)
         passes.ttgpuir.add_combine_tensor_select_and_if(pm)
+        if enable_sqmma and should_add_pipeline:
+            mthreads.passes.ttmtgpuir.add_mtgpu_pipeline(pm, opt.num_stages)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
         passes.ttgpuir.add_reorder_instructions(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
+        mthreads.passes.ttmtgpuir.add_tme_lowering(pm)
         passes.common.add_canonicalizer(pm)
         pm.run(mod)
         return mod
@@ -164,6 +199,7 @@ class MUSABackend(BaseBackend):
         passes.convert.add_index_to_llvmir(pm)
         passes.ttgpuir.add_allocate_shared_memory(pm)
         mthreads.passes.ttgpuir.add_to_llvmir(pm, capability)
+        mthreads.passes.ttmtgpuir.add_mtgpu_to_llvm(pm)
         passes.convert.add_arith_to_llvmir(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)

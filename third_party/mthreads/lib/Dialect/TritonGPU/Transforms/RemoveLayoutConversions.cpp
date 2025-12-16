@@ -202,7 +202,7 @@ void LayoutRematerialization::cleanup() {
 }
 
 // Look ahead to at the transitive uses and see if there is a convert to mma
-// operations.
+// operations. TODO: rewrite this function with switch-case
 bool hasConvertToMMATransisitiveUse(Operation *op, Attribute encoding) {
   SmallVector<Value> queue = {op->getResult(0)};
   SetVector<Operation *> forwardSlice;
@@ -229,6 +229,18 @@ bool hasConvertToMMATransisitiveUse(Operation *op, Attribute encoding) {
             return false;
           }
         }
+        if (tensorType &&
+            isa<MthreadsWMmaEncodingAttr>(tensorType.getEncoding())) {
+          // FIXME:
+          auto mmaInstrShape =
+              cast<MthreadsWMmaEncodingAttr>(encoding).getInstrShape();
+          if (tensorType.getShape()[tensorType.getRank() - 2] <
+                  mmaInstrShape[0] ||
+              tensorType.getShape()[tensorType.getRank() - 1] <
+                  mmaInstrShape[1]) {
+            return false;
+          }
+        }
       }
 
       if (auto convertOp = dyn_cast<ConvertLayoutOp>(op)) {
@@ -239,9 +251,21 @@ bool hasConvertToMMATransisitiveUse(Operation *op, Attribute encoding) {
         if (isa<triton::gpu::AMDMfmaEncodingAttr,
                 triton::gpu::AMDWmmaEncodingAttr>(dstEncoding))
           return true;
+        if (isa<triton::gpu::MthreadsWMmaEncodingAttr>(dstEncoding)) {
+          return true;
+        }
+        if (auto mmaLayout = dyn_cast<MthreadsMmaEncodingAttr>(dstEncoding))
+          return (mmaLayout.getVersionMajor() >= 3) ? true
+                                                    : mmaLayout == encoding;
         if (isa<triton::gpu::DotOperandEncodingAttr>(dstEncoding)) {
           if (auto mmaLayout = dyn_cast<NvidiaMmaEncodingAttr>(encoding)) {
             return mmaLayout.getVersionMajor() > 1;
+          } else if (mlir::isa<triton::gpu::MthreadsWMmaEncodingAttr>(
+                         encoding)) {
+            return true; // add mthreads mma layout
+          } else if (auto mmaLayout =
+                         dyn_cast<MthreadsMmaEncodingAttr>(encoding)) {
+            return mmaLayout.getVersionMajor() >= 3;
           } else {
             assert((mlir::isa<triton::gpu::AMDMfmaEncodingAttr,
                               triton::gpu::AMDWmmaEncodingAttr>(encoding)));
@@ -249,14 +273,27 @@ bool hasConvertToMMATransisitiveUse(Operation *op, Attribute encoding) {
           }
         }
       }
+
       bool isMMAV3 =
           isa<NvidiaMmaEncodingAttr>(encoding) &&
           cast<NvidiaMmaEncodingAttr>(encoding).getVersionMajor() == 3;
       if (isMMAV3 && (isa<LocalAllocOp>(op) || isa<LocalStoreOp>(op)))
         return true;
+
+      bool isWMMA = isa<MthreadsWMmaEncodingAttr>(encoding);
+      if (isWMMA && (isa<LocalAllocOp>(op) || isa<LocalStoreOp>(op)))
+        return true;
+
+      bool isSQMMA =
+          isa<MthreadsMmaEncodingAttr>(encoding) &&
+          cast<MthreadsMmaEncodingAttr>(encoding).getVersionMajor() == 3;
+      if (isSQMMA && (isa<LocalAllocOp>(op) || isa<LocalStoreOp>(op)))
+        return true;
+
       auto yield = dyn_cast<scf::YieldOp>(op);
       if (!yield)
         continue;
+
       if (auto ifOp = dyn_cast<scf::IfOp>(yield->getParentOp())) {
         for (OpOperand &operand : yield->getOpOperands()) {
           Operation *def = operand.get().getDefiningOp();
@@ -266,6 +303,7 @@ bool hasConvertToMMATransisitiveUse(Operation *op, Attribute encoding) {
             queue.push_back(ifOp.getResult(operand.getOperandNumber()));
         }
       }
+
       auto forOp = dyn_cast<scf::ForOp>(yield.getOperation()->getParentOp());
       if (!forOp)
         continue;

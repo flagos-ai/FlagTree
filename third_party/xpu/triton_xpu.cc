@@ -3,6 +3,8 @@
 // Copyright (C) 2025 by Kunlunxin. All rights reserved.
 //
 //===----------------------------------------------------------------------===//
+#include <cmath>
+#include <optional>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
@@ -21,8 +23,6 @@
 #include "llvm/IR/LLVMContext.h"  // llvm::LLVMContext
 
 #include "passes.h"
-
-// mlir::triton::createTritonToLinalgExperimentalPass
 
 #include "triton/Conversion/TritonToTritonXPU/Passes.h"    // mlir::triton::createConvertTritonToTritonXPUPass
 #include "triton/Conversion/TritonXPUToLLVM/Passes.h"      // mlir::triton::createConvertTritonXPUToLLVMPass
@@ -100,9 +100,9 @@ void init_triton_xpu_passes_transform(py::module &&m) {
 
   m.def("add_tritonxpu_unroll_control_pass",
         [](mlir::PassManager &self, uint32_t buffer_size, uint32_t core_num,
-           bool isUseMaskZero) {
+           bool isUseMaskZero, uint32_t unroll_num) {
           self.addPass(mlir::triton::xpu::createTritonXPUUnrollControl(
-              {buffer_size, core_num, isUseMaskZero}));
+              {buffer_size, core_num, isUseMaskZero, unroll_num}));
         });
 
   m.def("add_tritonxpu_other_sim_pass",
@@ -157,10 +157,18 @@ void init_triton_xpu_passes_transform(py::module &&m) {
               {buffer_size, core_num}));
         });
 
+  m.def("add_tritonxpu_func_convert_pass", [](mlir::PassManager &self,
+                                              bool to_mlir) {
+    self.addPass(mlir::triton::xpu::createTritonXPUFuncConvert({to_mlir}));
+  });
+
   m.def("add_tritonxpu_cf_to_scf_pass", [](mlir::PassManager &self) {
     self.addPass(mlir::triton::xpu::createTritonXPUCFToSCF());
   });
 }
+
+void init_triton_sdnn_passes_conversion(py::module &&m);
+void init_triton_sdnn_passes_transform(py::module &&m);
 
 namespace mlir::triton::xpu {
 
@@ -284,7 +292,8 @@ void init_triton_xpu_llvm(py::module &&m) {
   });
 
   m.def("amend_func", [](llvm::Module *llvm_mod, mlir::ModuleOp mlir_mod,
-                         llvm::LLVMContext &ctx, int xpu_arch) {
+                         llvm::LLVMContext &ctx, int xpu_arch,
+                         bool isSdnnKernel = false) {
     llvm::DenseMap<llvm::StringRef, mlir::triton::xpu::XPUMetadata> XPUMetadata;
     extractXPUMetadata(mlir_mod, &XPUMetadata);
 
@@ -292,6 +301,10 @@ void init_triton_xpu_llvm(py::module &&m) {
       auto it = XPUMetadata.find(func.getName());
       if (it != XPUMetadata.end())
         mlir::triton::xpu::amendLLVMFunc(&func, it->second, xpu_arch);
+      if (isSdnnKernel) {
+        auto targetFeat = std::string("+cdnn") + std::to_string(xpu_arch);
+        func.addFnAttr("target-features", targetFeat);
+      }
     }
   });
 
@@ -321,14 +334,14 @@ void init_triton_xpu_llvm(py::module &&m) {
         if (isObject)
           return py::bytes(obj);
         else
-#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
-          return py::str(obj);
-#else
           return py::str("");
-#endif
       },
       ret::take_ownership);
 }
+
+extern void insertTritonSDNNDialect(mlir::DialectRegistry &registry);
+extern void defineIsSDNNKernel(py::module &m);
+extern void defineGetLutInfo(py::module &m);
 
 void init_triton_xpu(py::module &&m) {
   m.doc() = "Python bindings to the XPU Triton backend";
@@ -336,24 +349,87 @@ void init_triton_xpu(py::module &&m) {
   auto passes = m.def_submodule("passes");
   init_triton_xpu_passes_conversion(passes.def_submodule("ttxpuir"));
   init_triton_xpu_passes_transform(passes.def_submodule("ttxpuir"));
+  init_triton_sdnn_passes_conversion(passes.def_submodule("ttsdnnir"));
+  init_triton_sdnn_passes_transform(passes.def_submodule("ttsdnnir"));
   init_triton_xpu_llvm(m.def_submodule("llvm"));
 
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
     registry.insert<mlir::triton::xpu::TritonXPUDialect>();
+    insertTritonSDNNDialect(registry);
     registerLLVMXPUDialectTranslation(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
 
-  struct LutInfo {
-    int dtype; // 0 - f32; 1 - f16
-    int mode;  // 0 - KB;  1 - INTER
-    int size;
-    double min;
-    double interval;
-  };
+  // check if it is a sdnn kernel
+  defineIsSDNNKernel(m); // is_sdnn_kernel
+
+  m.def("get_tensor_args", [](mlir::ModuleOp &mod,
+                              std::vector<int64_t> &tensorArgs) {
+    mod.walk([&](mlir::triton::FuncOp funcOp) {
+      tensorArgs.clear();
+      for (auto arg : funcOp.getArguments()) {
+        auto ptrTy = mlir::dyn_cast<mlir::triton::PointerType>(arg.getType());
+        if (!ptrTy || !ptrTy.getPointeeType().isBF16())
+          continue;
+
+        llvm::SmallVector<mlir::Value, 8> worklist = {arg};
+        llvm::DenseSet<mlir::Value> visited;
+        while (!worklist.empty()) {
+          mlir::Value current = worklist.pop_back_val();
+          if (!visited.insert(current).second)
+            continue;
+
+          for (auto &use : current.getUses()) {
+            llvm::TypeSwitch<mlir::Operation *>(use.getOwner())
+                .Case([&](mlir::triton::LoadOp loadOp) {
+                  if (mlir::triton::xpu::hasUserOfType<mlir::triton::DotOp>(
+                          loadOp))
+                    tensorArgs.push_back(arg.getArgNumber());
+                })
+                .Case([&](mlir::RegionBranchOpInterface regionOp) {
+                  for (mlir::Region &region : regionOp->getRegions()) {
+                    for (mlir::Block &block : region) {
+                      auto idx = block.getNumArguments() -
+                                 regionOp->getNumOperands() +
+                                 use.getOperandNumber();
+                      worklist.push_back(block.getArgument(idx));
+                    }
+                  }
+                })
+                .Case([&](mlir::scf::YieldOp yieldOp) {
+                  auto res =
+                      yieldOp->getParentOp()->getResult(use.getOperandNumber());
+                  worklist.push_back(res);
+                })
+                .Default([&](mlir::Operation *op) {
+                  for (auto res : op->getResults()) {
+                    worklist.push_back(res);
+                  }
+                });
+          }
+        }
+      }
+    });
+
+    mod.walk([&](mlir::func::FuncOp funcOp) {
+      std::vector<int64_t> _tensorArgs;
+      for (auto argIdx : tensorArgs) {
+        auto arg = funcOp.getArgument(argIdx);
+        auto memrefTy = mlir::cast<mlir::UnrankedMemRefType>(arg.getType());
+        if (memrefTy.getElementType().isF16()) {
+          _tensorArgs.push_back(argIdx);
+        }
+      }
+      tensorArgs = _tensorArgs;
+    });
+
+    return tensorArgs;
+  });
+
+  defineGetLutInfo(m);
 
   m.def("get_buffer_len", [](mlir::ModuleOp &mod, unsigned maxBufferSize,
                              int elemBytes) {

@@ -628,6 +628,9 @@ class InterpreterBuilder:
     def create_inline_asm(self, inlineAsm, constraints, values, type, isPure, pack):
         raise NotImplementedError("inline_asm not supported in interpreter mode")
 
+    def create_inline_intrinsic(self, inlineIntrinsic, values, type, isPure):
+        raise NotImplementedError("inline_asm not supported in interpreter mode")
+
     def create_print(self, prefix, hex, values):
         # Interpreter's device_print function has a different format than Triton's device_print
         msg = f"({self.grid_idx[0]}, {self.grid_idx[1]}, {self.grid_idx[2]})"

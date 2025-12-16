@@ -1,8 +1,8 @@
 add_triton_library(MLIRLLVMXPUToLLVMIRTranslation
   LLVMXPUToLLVMIRTranslation.cpp
 
-#   DEPENDS
-#   MLIRXPUConversionsIncGen
+  # DEPENDS
+  # MLIRXPUConversionsIncGen
 
 #   LINK_COMPONENTS
 #   Core
@@ -13,4 +13,8 @@ add_triton_library(MLIRLLVMXPUToLLVMIRTranslation
 #   MLIRLLVMDialect
 #   MLIRSupport
 #   MLIRTargetLLVMIRExport
+)
+
+add_xpu_sdnn_object(MLIRLLVMXPUToLLVMIRTranslationSDNN
+  ${CMAKE_CURRENT_SOURCE_DIR}/XPUToIRTranslationForSDNN.cpp.o
 )

@@ -1246,10 +1246,11 @@ void init_triton_ir(py::module &&m) {
       .def("create_descriptor_load",
            [](TritonOpBuilder &self, Value &desc_ptr,
               std::vector<Value> &indices, Type type,
-              CacheModifier cacheModifier,
-              EvictionPolicy evictionPolicy) -> Value {
+              CacheModifier cacheModifier, EvictionPolicy evictionPolicy,
+              bool isTranspose) -> Value {
              return self.create<ExperimentalDescriptorLoadOp>(
-                 type, desc_ptr, indices, cacheModifier, evictionPolicy);
+                 type, desc_ptr, indices, cacheModifier, evictionPolicy,
+                 isTranspose);
            })
       .def("create_descriptor_store",
            [](TritonOpBuilder &self, Value &desc_ptr, Value value,

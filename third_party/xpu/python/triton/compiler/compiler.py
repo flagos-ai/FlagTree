@@ -96,7 +96,12 @@ class ASTSource:
         self.attrs = attrs
         # ===-------------------- For XPytorch Inductor -----------------------===
         # Pytorch(v2.0.1) Inductor Can't Generate AttrsDescriptor()
-        self.attrs = None
+        try:
+            import torch
+            if torch.__version__ < "2.1":
+                self.attrs = None
+        finally:
+            pass
         # ===------------------------------------------------------------------===
         if isinstance(self.signature, str):
             self.signature = {k: v.strip() for k, v in enumerate(self.signature.split(","))}
@@ -421,7 +426,7 @@ class CompiledKernel:
         # ===-------------------- For Triton XPU -----------------------===
         if (self.metadata.backend_name == 'xpu'):
             self.module, self.function, self.n_regs, self.n_spills = driver.active.utils.load_binary(
-                self.name, self.kernel, self.metadata.printf_buf_offset)
+                self.name, self.kernel, self.metadata.is_sdnn, self.metadata.printf_buf_offset)
             return
         # ===-----------------------------------------------------------===
         self.module, self.function, self.n_regs, self.n_spills = driver.active.utils.load_binary(

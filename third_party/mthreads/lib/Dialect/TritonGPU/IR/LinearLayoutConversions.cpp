@@ -398,6 +398,57 @@ LinearLayout hopperMmaToLinearLayout(ArrayRef<int64_t> shape,
   return combineCtaCgaWithShape(ctaLayout, mma.getCTALayout(), shape);
 }
 
+LinearLayout ph1MmaToLinearLayout(ArrayRef<int64_t> shape,
+                                  MthreadsMmaEncodingAttr mma) {
+  int rank = shape.size();
+  assert(mma.isPH1());
+  assert(rank == 2);
+
+  // wgmma operates on groups of 4 warps.
+  assert(product(mma.getWarpsPerCTA()) % 4 == 0);
+
+  // Check that it's a known MMA layout.
+  assert(mma.getInstrShape().size() == 3);
+  int m = mma.getInstrShape()[0];
+  int n = mma.getInstrShape()[1];
+  int k = mma.getInstrShape()[2];
+  // assert(m == 16);
+  // assert(n == 16 || n == 32 || n == 64 || n == 128 || n == 256);
+  // assert(k == 8 || k == 16 || k == 32);
+
+  MLIRContext *ctx = mma.getContext();
+  LinearLayout ctaLayout(
+      // {{S("register"), {{1, 0}, {0, 8}}},
+      //  {S("lane"), {{2, 0}, {4, 0}, {0, 1}, {0, 2}, {0, 4}}}},
+      {{S("register"), {}},
+       {S("lane"), {{1, 0}, {2, 0}, {4, 0}, {0, 1}, {0, 2}}}},
+      {S("dim1"), S("dim0")});
+
+  // Expand the `register` dimension so the size of dim1 matches `n`.
+  auto warpsPerCTA = mma.getWarpsPerCTA();
+  auto staticDim0Size = ctaLayout.getOutDimSize(S("dim0"));
+  auto staticDim1Size = ctaLayout.getOutDimSize(S("dim1"));
+  ctaLayout *=
+      LinearLayout::identity1D(n / staticDim1Size, S("register"), S("dim1"));
+  if (warpsPerCTA[0] / 4 != 0) {
+    ctaLayout *= LinearLayout::identity1D(4, S("warp"), S("dim0"));
+  }
+  ctaLayout *=
+      LinearLayout::identity1D(m / staticDim0Size, S("register"), S("dim0"));
+
+  // Expand the `warp` dimension according to warpsPerCTA.
+  //
+  // It's weird that this is order [0,1] when MMAv2's warpsPerCTA is [1,0], but
+  // this really does seem to be correct.
+  ctaLayout *=
+      identityND(S("warp"),
+                 {mma.getWarpsPerCTA()[0] / 4, mma.getWarpsPerCTA()[1]},
+                 /*order=*/{0, 1}, {S("dim0"), S("dim1")})
+          .transposeOuts(ctaLayout.getOutDimNames());
+
+  return combineCtaCgaWithShape(ctaLayout, mma.getCTALayout(), shape);
+}
+
 std::optional<LinearLayout> toLinearLayout(ArrayRef<int64_t> shape,
                                            SliceEncodingAttr slice) {
   MLIRContext *ctx = slice.getContext();
@@ -476,6 +527,11 @@ std::optional<LinearLayout> toLinearLayout(ArrayRef<int64_t> shape,
     }
     if (mma.isHopper()) {
       return hopperMmaToLinearLayout(shape, mma);
+    }
+  }
+  if (auto mma = dyn_cast<MthreadsMmaEncodingAttr>(layout)) {
+    if (mma.isPH1()) {
+      return ph1MmaToLinearLayout(shape, mma);
     }
   }
   if (auto slice = dyn_cast<SliceEncodingAttr>(layout)) {

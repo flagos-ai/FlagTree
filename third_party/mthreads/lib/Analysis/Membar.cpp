@@ -47,7 +47,10 @@ void MembarAnalysis::resolve(FunctionOpInterface funcOp,
     auto inputBlockInfo = inputBlockInfoMap[block];
     SmallVector<Block *> successors;
     for (auto &op : block->getOperations()) {
-      if (op.hasTrait<OpTrait::IsTerminator>()) {
+      if (op.getDialect()->getNamespace() == "triton_mthreads_gpu") {
+        // triton_mthreads_gpu control barrier by yourself.
+        continue;
+      } else if (op.hasTrait<OpTrait::IsTerminator>()) {
         visitTerminator(&op, successors);
       } else {
         update(&op, &inputBlockInfo, funcBlockInfoMap, builder);
@@ -147,7 +150,8 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     }
     // XXX(Keren): This is a hack as we cannot set side effects for dot ops, but
     // on hopper they do have side effects. Need to clean it up
-    if (auto dotOp = dyn_cast<triton::DotOp>(op)) {
+    if (isa<triton::DotOp>(op) && !getenv("MUSA_ENABLE_SQMMA")) {
+      auto dotOp = cast<triton::DotOp>(op);
       for (auto value : dotOp.getOperands()) {
         for (auto bufferId : allocation->getBufferIds(value)) {
           if (bufferId != Allocation::InvalidBufferId)

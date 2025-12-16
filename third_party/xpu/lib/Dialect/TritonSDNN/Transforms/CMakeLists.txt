@@ -1,0 +1,41 @@
+add_xpu_sdnn_object(TritonSDNNTransforms
+  ${CMAKE_CURRENT_SOURCE_DIR}/TritonSDNNConversion.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/Bufferize.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/ConvertType.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/EWActTable.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/Legalize.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/Combine.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/CombinePatterns.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/CombineBefore.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/LoopGrid.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/Pipeline.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/MultipleBuffer.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/Utility.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/SchedulePrintOp.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/RemoveDsOp.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/StripAllOp.cpp.o
+
+  LINK_LIBS
+  TritonIR
+  TritonSDNNIR
+  MLIRTransformUtils
+  MLIRLinalgTransformOps
+  MLIRLinalgTransforms
+  MLIRLinalgDialect
+  MLIRControlFlowDialect
+  MLIRControlFlowTransforms
+  MLIRSCFDialect
+  MLIRSCFTransforms
+  MLIRArithDialect
+  MLIRArithTransforms
+  MLIRArithValueBoundsOpInterfaceImpl
+  MLIRAffineDialect
+  MLIRAffineTransforms
+  MLIRTensorDialect
+  MLIRTensorTransforms
+  MLIRTensorInferTypeOpInterfaceImpl
+  MLIRBufferizationDialect
+  MLIRBufferizationTransforms
+  MLIRMemRefDialect
+  MLIRMemRefTransforms
+)
