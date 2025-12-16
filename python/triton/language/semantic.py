@@ -1575,10 +1575,11 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
     else:
         # flagtree backend specialization
         from triton.runtime.driver import flagtree_backend_specialization
+        ext_dot_operand_types = flagtree_backend_specialization('ext_dot_operand_types') or ()
         assert lhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16,
-                             tl.float32) + flagtree_backend_specialization('ext_dot_lhs_supported_type'), f"Unsupported lhs dtype {lhs.dtype}"
+                             tl.float32) + ext_dot_operand_types, f"Unsupported lhs dtype {lhs.dtype}"
         assert rhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16,
-                             tl.float32) + flagtree_backend_specialization('ext_dot_rhs_supported_type'), f"Unsupported rhs dtype {rhs.dtype}"
+                             tl.float32) + ext_dot_operand_types, f"Unsupported rhs dtype {rhs.dtype}"
         assert lhs.dtype == rhs.dtype, f"Both operands must be same dtype. Got {lhs.dtype} and {rhs.dtype}"
 
     if lhs.dtype.is_fp8e4b15() or rhs.dtype.is_fp8e4b15():

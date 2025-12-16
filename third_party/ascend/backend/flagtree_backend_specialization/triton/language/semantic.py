@@ -27,10 +27,7 @@ def check_unsupported_fp8_fp64(src_sca_ty, dst_sca_ty):
         raise ValueError("[fp8, fp64] is unsupported on Ascend for now."
                          "Source scalar type is " + str(src_sca_ty) + " and destination type is " + str(dst_sca_ty))
 
-def ext_dot_lhs_supported_type():
-    return (tl.int1,)
-
-def ext_dot_rhs_supported_type():
+def ext_dot_operand_types():
     return (tl.int1,)
 
 def dot_check_hf32_input_precision(input_precision, ir, lhs, rhs, ret_scalar_ty):
