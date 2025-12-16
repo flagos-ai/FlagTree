@@ -568,9 +568,14 @@ class JITFunction(KernelInterface[T]):
         device = driver.active.get_current_device()
 
         # flagtree backend specialization
+        stream = driver.active.get_current_stream(device)
         from triton.runtime.driver import flagtree_backend_specialization
-        if flagtree_backend_specialization("is_set_stream_in_kwargs", kwargs):
-            stream = driver.active.get_current_stream(device)
+        if flagtree_backend_specialization("enable_stream_in_kwargs"):
+            if "stream" not in kwargs.keys():
+                stream = driver.active.get_current_stream(device)
+            else:
+                stream = None
+
         target = driver.active.get_current_target()
         backend = make_backend(target)
 
@@ -597,7 +602,7 @@ class JITFunction(KernelInterface[T]):
 
             # flagtree backend specialization
             from triton.runtime.driver import flagtree_backend_specialization
-            if flagtree_backend_specialization("is_stream_option_deprecated"):
+            if not flagtree_backend_specialization("enable_stream_in_kwargs"):
                 assert "stream" not in kwargs, "stream option is deprecated; current stream will be used"
 
             for k in excess_kwargs:
@@ -662,11 +667,15 @@ class JITFunction(KernelInterface[T]):
             # flagtree backend specialization
             from triton.runtime.driver import flagtree_backend_specialization
             flagtree_backend_specialization("check_grid_size", grid_0, grid_1, grid_2)
-            stream = flagtree_backend_specialization("set_stream_from_kwargs", kwargs, stream)
+            if flagtree_backend_specialization("enable_stream_in_kwargs"):
+                if ('stream' in kwargs.keys()):
+                    stream = kwargs["stream"]
 
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *non_constexpr_vals)
 
+            # flagtree backend specialization
+            from triton.runtime.driver import flagtree_backend_specialization
             flagtree_backend_specialization("explicit_load_kernel_library", kernel)
 
             kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
