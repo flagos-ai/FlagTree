@@ -1,8 +1,5 @@
-def is_set_stream_in_kwargs(kwargs):
-    return True if ('stream' not in kwargs.keys()) else False
-
-def is_stream_option_deprecated():
-    return False
+def enable_stream_in_kwargs(kwargs):
+    return True
 
 def ignore_params_in_JITFunction_run(kwargs, excess_kwargs):
     ignor_params = ["debug", "sanitize_overflow", "llvm_version", "kernel_name", \
@@ -15,11 +12,6 @@ def ignore_params_in_JITFunction_run(kwargs, excess_kwargs):
             not_work_params.append(k)
     if len(not_work_params) != 0:
         print("[WARNING] Please DO NOT tune args {}!".format(not_work_params))
-
-def set_stream_from_kwargs(kwargs, stream):
-    if ('stream' in kwargs.keys()):
-        return kwargs["stream"]
-    return stream
 
 def check_grid_size(grid_0, grid_1, grid_2):
     import os

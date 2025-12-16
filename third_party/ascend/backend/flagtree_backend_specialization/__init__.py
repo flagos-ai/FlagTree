@@ -27,10 +27,8 @@ __all__  = [
     'forop_setattr_for_bind_sub_block',
     'need_repr_in_CodeGenerator_CompilationError',
     # runtime.jit
-    'is_set_stream_in_kwargs',
-    'is_stream_option_deprecated',
+    'enable_stream_in_kwargs',
     'ignore_params_in_JITFunction_run',
-    'set_stream_from_kwargs',
     'check_grid_size',
     'explicit_load_kernel_library',
     'is_JITFunction_spec_attr',
