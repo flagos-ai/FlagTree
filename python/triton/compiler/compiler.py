@@ -344,6 +344,7 @@ class LazyDict:
 class AsmDict(dict):
 
     def __missing__(self, key):
+
         if key == "sass":
             value = get_sass(self["cubin"])
         else:
@@ -402,6 +403,7 @@ class CompiledKernel:
         # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
         self.module, self.function, self.n_regs, self.n_spills = driver.active.utils.load_binary(
             self.name, self.kernel, self.metadata.shared, device)
+
     def __getattribute__(self, name):
         # flagtree backend specialization
         from triton.runtime.driver import flagtree_backend_specialization

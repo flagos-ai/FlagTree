@@ -14,9 +14,8 @@ T = TypeVar('T')
 # flagtree backend language.semantic func specialization
 def spec_semantic_func(spec):
     import sys
-    semantic_spec_func_list = spec.semantic_ext_spec_func_list
 
-    for spec_func_name in semantic_spec_func_list:
+    for spec_func_name in spec.semantic_ext_spec_func_list:
         if hasattr(spec, spec_func_name):
             spec_func = getattr(spec, "ext_semantic_" + spec_func_name)
             # triton.language.semantic
@@ -483,12 +482,10 @@ def xor_(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.tensor:
 def logical_and(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.tensor:
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    if hasattr(input, 'was_bool_to_int8'):
-        input = flagtree_backend_specialization('check_was_bool_to_int8_dtype_and_cast', input, builder)
+    input = flagtree_backend_specialization('cast_bool_to_specified_dtype', input, builder) or input
     if not input.type.is_int1():
         input = bitcast(input, tl.dtype("int1"), builder)
-    if hasattr(other, 'was_bool_to_int8'):
-        other = flagtree_backend_specialization('check_was_bool_to_int8_dtype_and_cast', other, builder)
+    other = flagtree_backend_specialization('cast_bool_to_specified_dtype', other, builder) or other
     if not other.type.is_int1():
         other = bitcast(other, tl.dtype("int1"), builder)
     return and_(input, other, builder)
@@ -497,12 +494,10 @@ def logical_and(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.t
 def logical_or(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.tensor:
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    if hasattr(input, 'was_bool_to_int8'):
-        input = flagtree_backend_specialization('check_was_bool_to_int8_dtype_and_cast', input, builder)
+    input = flagtree_backend_specialization('cast_bool_to_specified_dtype', input, builder) or input
     if not input.type.is_int1():
         input = bitcast(input, tl.dtype("int1"), builder)
-    if hasattr(other, 'was_bool_to_int8'):
-        other = flagtree_backend_specialization('check_was_bool_to_int8_dtype_and_cast', other, builder)
+    other = flagtree_backend_specialization('cast_bool_to_specified_dtype', other, builder) or other
     if not other.type.is_int1():
         other = bitcast(other, tl.dtype("int1"), builder)
     return or_(input, other, builder)
@@ -511,8 +506,7 @@ def logical_or(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.te
 def not_(input: tl.tensor, builder: ir.builder):
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    if hasattr(input, 'was_bool_to_int8'):
-        input = flagtree_backend_specialization('check_was_bool_to_int8_dtype_and_cast', input, builder)
+    input = flagtree_backend_specialization('cast_bool_to_specified_dtype', input, builder) or input
 
     if not input.type.is_int1():
         input = bitcast(input, tl.dtype("int1"), builder)
@@ -559,10 +553,11 @@ def minus(input: tl.tensor, builder: ir.builder) -> tl.tensor:
 def invert(input: tl.tensor, builder: tl.tensor) -> tl.tensor:
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    if hasattr(input, 'was_bool_to_int8'):
-        input = flagtree_backend_specialization('check_was_bool_to_int8_dtype_and_cast', input, builder)
+    input = flagtree_backend_specialization('cast_bool_to_specified_dtype', input, builder) or input
 
     input_sca_ty = input.type.scalar
+    # flagtree backend specialization
+    from triton.runtime.driver import flagtree_backend_specialization
     flagtree_backend_specialization('check_unexpected_dtype_float', input)
     if input_sca_ty.is_ptr() or input_sca_ty.is_floating():
         raise ValueError("wrong type argument to unary invert (" + input_sca_ty.__repr__() + ")")
@@ -681,7 +676,7 @@ def arange(start: int, end: int, builder: ir.builder) -> tl.tensor:
     range = end - start
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    if flagtree_backend_specialization('is_arange_check_power_of_two') and (range & (range - 1)) != 0:
+    if not flagtree_backend_specialization('arange_disable_check_power_of_two') and (range & (range - 1)) != 0:
         raise ValueError("arange's range must be a power of 2")
     flagtree_backend_specialization('check_arange_less_than_max_numel', range)
     shape = [range]
@@ -1159,8 +1154,7 @@ def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_
 
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    if other is None:
-        other = flagtree_backend_specialization('set_load_legacy_other_input', builder)
+    other = flagtree_backend_specialization('set_load_legacy_other_input', other, builder) or other
     # For a pointer of scalar, check the type of `mask` and `other`
     if not ptr.type.is_block():
         if mask and mask.type.is_block():
@@ -1205,7 +1199,7 @@ def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_
         ret = tl.tensor(
             builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache, eviction,
                                        is_volatile), dst_ty)
-    if is_bool and flagtree_backend_specialization('cast_back_when_load_legacy_ptr_is_bool'):
+    if is_bool and not flagtree_backend_specialization('disable_cast_back_when_load_legacy_ptr_is_bool'):
         ret = cast(ret, tl.int1, builder)
 
     flagtree_backend_specialization('set_attr_was_bool_to_int8', ret, is_bool)
@@ -1378,7 +1372,7 @@ def atomic_cas(ptr: tl.tensor, cmp: tl.tensor, val: tl.tensor, sem: str, scope: 
     element_ty = ptr.type.scalar.element_ty
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    if element_ty.primitive_bitwidth not in [16, 32, 64] and flagtree_backend_specialization('is_atomic_cas_need_element_bitwidth_check'):
+    if not flagtree_backend_specialization('atomic_cas_disable_element_bitwidth_check') and element_ty.primitive_bitwidth not in [16, 32, 64]:
         raise ValueError("atomic_cas only supports elements with width {16, 32, 64}")
 
     flagtree_backend_specialization('ext_atomic_cas_element_typechecking', element_ty)
@@ -1395,9 +1389,9 @@ def atom_red_typechecking_impl(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, 
     element_ty = ptr.type.scalar.element_ty
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    if element_ty is tl.float16 and op != 'add' and flagtree_backend_specialization('is_atomic_need_original_check'):
+    if not flagtree_backend_specialization('atomic_disable_original_check') and element_ty is tl.float16 and op != 'add':
         raise ValueError("atomic_" + op + " does not support fp16")
-    if element_ty in [tl.int1, tl.int8, tl.int16, tl.bfloat16] and flagtree_backend_specialization('is_atomic_need_original_check'):
+    if not flagtree_backend_specialization('atomic_disable_original_check') and element_ty in [tl.int1, tl.int8, tl.int16, tl.bfloat16]:
         raise ValueError("atomic_" + op + " does not support " + str(element_ty))
 
     # flagtree backend specialization
@@ -1638,7 +1632,7 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
             max_num_imprecise_acc = 0
     else:
         # flagtree backend specialization
-        if flagtree_backend_specialization('is_dot_check_max_num_imprecise_acc') and lhs.dtype.is_fp8() and rhs.dtype.is_fp8() and max_num_imprecise_acc > K:
+        if not flagtree_backend_specialization('dot_disable_check_max_num_imprecise_acc') and lhs.dtype.is_fp8() and rhs.dtype.is_fp8() and max_num_imprecise_acc > K:
             raise ValueError(f"max_num_imprecise_acc ({max_num_imprecise_acc}) must be <= K ({K})")
 
     # flagtree backend specialization
@@ -1685,8 +1679,8 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format, rhs: tl.tensor,
     assert lhs_rank == rhs_rank == 2 or lhs_rank == rhs_rank == 3, f"Both inputs must be either 2D or 3D; (lhs: {lhs.shape} vs rhs: {rhs.shape})"
     lhs_format_enum = _str_to_fp_type(lhs_format)
     rhs_format_enum = _str_to_fp_type(rhs_format)
-    assert lhs_format in ("e2m1", "e4m3", "e5m2") or not flagtree_backend_specialization('is_dot_scaled_need_original_check'), f"NYI: lhs_format {lhs_format}"
-    assert rhs_format in ("e4m3", "e5m2") or not flagtree_backend_specialization('is_dot_scaled_need_original_check'), f"NYI: rhs_format {rhs_format}"
+    assert flagtree_backend_specialization('dot_scaled_disable_original_check') or lhs_format in ("e2m1", "e4m3", "e5m2"), f"NYI: lhs_format {lhs_format}"
+    assert flagtree_backend_specialization('dot_scaled_disable_original_check') or rhs_format in ("e4m3", "e5m2"), f"NYI: rhs_format {rhs_format}"
     flagtree_backend_specialization('ext_dot_scaled_check_lhs_rhs_format', lhs_format, rhs_format)
 
     rhs_scale_is_none = isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None
@@ -1704,11 +1698,11 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format, rhs: tl.tensor,
     M = lhs.type.shape[-2]
     K, N = rhs.type.shape[-2:]
     PACKED = 2 if lhs_format == "e2m1" else 1
-    assert K == PACKED * lhs.type.shape[
-        -1] or not flagtree_backend_specialization('is_dot_scaled_need_original_check'), \
+    assert flagtree_backend_specialization('dot_scaled_disable_original_check') or K == PACKED * lhs.type.shape[
+        -1], \
         f"Reduction dimension should pack the same number of elements; (lhs: {lhs.shape} vs rhs: {rhs.shape})"
     flagtree_backend_specialization('check_dot_scaled_pack_size', PACKED, K, lhs_format, lhs, rhs)
-    assert K >= 64 or not flagtree_backend_specialization('is_dot_scaled_need_original_check'), f"scaled_dot NYI for K < 64. Got {K=}"
+    assert flagtree_backend_specialization('dot_scaled_disable_original_check') or K >= 64, f"scaled_dot NYI for K < 64. Got {K=}"
     B = lhs.type.shape[0] if lhs_rank == 3 else None
 
     ret_ty = tl.block_type(out_dtype, [B, M, N] if B else [M, N])
@@ -1719,7 +1713,8 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format, rhs: tl.tensor,
         acc_handle = acc.handle
         assert acc.type == ret_ty
     rhs_scale_handle = None if rhs_scale_is_none else rhs_scale.handle
-    lhs_scale_handle = flagtree_backend_specialization('set_dot_scaled_lhs_scale_handle', lhs_scale, lhs_scale_is_none)
+    # flagtree backend specialization
+    lhs_scale_handle = flagtree_backend_specialization('set_dot_scaled_lhs_scale_handle', lhs_scale, lhs_scale_is_none) or lhs_scale_handle
     return tl.tensor(
         builder.create_dot_scaled(lhs.handle, lhs_scale.handle, lhs_format_enum, rhs.handle, rhs_scale_handle,
                                   rhs_format_enum, acc_handle), ret_ty)

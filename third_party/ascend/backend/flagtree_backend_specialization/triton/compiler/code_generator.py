@@ -1,7 +1,3 @@
-def anno_CodeGenerator_visit_Assign():
-    # flagtree: First, do normal assignment processing
-    return
-
 def ext_CodeGenerator_visit_Assign_hint_anno(code_generator, node, names, values):
     import ast
     from triton.compiler.code_generator import _is_triton_value
@@ -29,11 +25,9 @@ def ext_CodeGenerator_visit_Assign_hint_anno(code_generator, node, names, values
                     hint_val = code_generator.builder.get_unit_attr()
                     code_generator.builder.create_annotation(value.handle, 'dot_pad_only_k', hint_val)
 
-def init_bind_sub_block():
-    return None
-
-def is_visit_For_support_parallel():
-    return True
+def visit_For_ext_support():
+    import triton.language as language
+    return [language.parallel]
 
 def set_bind_sub_block_when_parallel(IteratorClass, iterator, bind_sub_block):
     import triton.language as language

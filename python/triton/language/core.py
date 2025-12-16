@@ -25,12 +25,11 @@ PropagateNan = ir.PROPAGATE_NAN
 # flagtree backend language.core func specialization
 def spec_core_func(spec):
     import sys
-    core_spec_func_list = spec.core_ext_spec_func_list
 
     current_module_name = __name__
     parent_module_name = '.'.join(current_module_name.split('.')[:-1])
 
-    for spec_func_name in core_spec_func_list:
+    for spec_func_name in spec.core_ext_spec_func_list:
         if hasattr(spec, spec_func_name):
             spec_func = getattr(spec, spec_func_name)
             # triton.language
@@ -1536,9 +1535,9 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
     if bitcast:
         return semantic.bitcast(input, dtype, _builder)
     # flagtree backend specialization
-    ret = semantic.cast(input, dtype, _builder, fp_downcast_rounding)
-    flagtree_backend_specialization('ext_cast_check_overflow_mode', overflow_mode, overflow_modes, ret, _builder)
-    return ret
+    rett = semantic.cast(input, dtype, _builder, fp_downcast_rounding)
+    flagtree_backend_specialization('ext_cast_check_overflow_mode', overflow_mode, overflow_modes, rett, _builder)
+    return rett
 
 
 # -----------------------
@@ -1584,6 +1583,7 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
     else:
         # flagtree backend specialization
         flagtree_backend_specialization('check_dot_invalid_input_precision', input_precision)
+
     input_precision = _constexpr_to_value(input_precision)
     out_dtype = _constexpr_to_value(out_dtype)
     max_num_imprecise_acc = _constexpr_to_value(max_num_imprecise_acc)

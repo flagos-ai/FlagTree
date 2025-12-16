@@ -7,8 +7,8 @@ if TYPE_CHECKING:
     ObjPath = tuple[int, ...]
 
 
-def is_block_shape_check_power_of_two():
-    return False
+def block_shape_disable_check_power_of_two():
+    return True
 
 
 BITWIDTH_DICT: Dict[str, int] = {

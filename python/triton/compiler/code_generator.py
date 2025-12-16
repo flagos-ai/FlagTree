@@ -486,10 +486,6 @@ class CodeGenerator(ast.NodeVisitor):
         return self.visit_Assign(node)
 
     def visit_Assign(self, node):
-        # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        flagtree_backend_specialization("anno_CodeGenerator_visit_Assign")
-
         _names = []
         if isinstance(node, ast.AnnAssign):
             _names += [self.visit(node.target)]
@@ -919,10 +915,8 @@ class CodeGenerator(ast.NodeVisitor):
         num_stages = None
         loop_unroll_factor = None
 
-        #flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        bind_sub_block = flagtree_backend_specialization("init_bind_sub_block")
-        if IteratorClass in [language.range] + ([language.parallel] if flagtree_backend_specialization("is_visit_For_support_parallel") else []):
+        bind_sub_block = None
+        if IteratorClass in [language.range] + flagtree_backend_specialization("visit_For_ext_support") or []:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -933,7 +927,8 @@ class CodeGenerator(ast.NodeVisitor):
             num_stages = iterator.num_stages
             loop_unroll_factor = iterator.loop_unroll_factor
 
-            #flagtree backend specialization
+            # flagtree backend specialization
+            from triton.runtime.driver import flagtree_backend_specialization
             bind_sub_block = flagtree_backend_specialization("set_bind_sub_block_when_parallel", IteratorClass, iterator, bind_sub_block)
         elif IteratorClass is range:
             # visit iterator arguments
@@ -945,7 +940,8 @@ class CodeGenerator(ast.NodeVisitor):
         else:
             raise RuntimeError('Only `range` and `static_range` iterators are currently supported')
 
-        #flagtree backend specialization
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
         bind_sub_block = flagtree_backend_specialization("check_override_bind_sub_block", self, node, bind_sub_block)
 
         # handle negative constant step (not supported by scf.for in MLIR)
@@ -1011,8 +1007,8 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.num_stages", self.builder.get_int32_attr(num_stages))
             if loop_unroll_factor is not None:
                 for_op.set_attr("tt.loop_unroll_factor", self.builder.get_int32_attr(loop_unroll_factor))
-            if (bind_sub_block is not None) and bind_sub_block:
-                #flagtree backend specialization
+            if bind_sub_block:
+                # flagtree backend specialization
                 flagtree_backend_specialization("forop_setattr_for_bind_sub_block", self, for_op, bind_sub_block)
 
             self.scf_stack.append(node)
@@ -1098,7 +1094,7 @@ class CodeGenerator(ast.NodeVisitor):
             except Exception as e:
                 # Wrap the error in the callee with the location of the call.
 
-                #flagtree backend specialization
+                # flagtree backend specialization
                 from triton.runtime.driver import flagtree_backend_specialization
                 if flagtree_backend_specialization('need_repr_in_CodeGenerator_CompilationError'):
                     raise CompilationError(self.jit_fn.src, self.cur_node, repr(e)) from e

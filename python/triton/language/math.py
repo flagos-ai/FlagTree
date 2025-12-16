@@ -9,13 +9,11 @@ T = core.TypeVar('T')
 # flagtree backend language.math func specialization
 def spec_math_func(spec):
     import sys
-    base_math_func_list = spec.math_ext_base_func_list
-    ext_math_func_list = spec.math_ext_spec_func_list
 
     current_module_name = __name__
     parent_module_name = '.'.join(current_module_name.split('.')[:-1])
 
-    for spec_func_name in base_math_func_list:
+    for spec_func_name in spec.math_ext_base_func_list:
         if hasattr(spec, spec_func_name):
             spec_func = getattr(spec, spec_func_name)
             # triton.language
@@ -23,7 +21,7 @@ def spec_math_func(spec):
             # triton.language.math
             setattr(sys.modules[__name__], spec_func.__name__, spec_func)
 
-    for spec_func_name in ext_math_func_list:
+    for spec_func_name in spec.math_ext_spec_func_list:
         if hasattr(spec, spec_func_name):
             spec_func = getattr(spec, spec_func_name)
             # triton.language.math

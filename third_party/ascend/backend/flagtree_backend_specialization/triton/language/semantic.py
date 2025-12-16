@@ -10,8 +10,8 @@ from .tensor_descriptor import (
     tensor_descriptor
 )
 
-def is_arange_check_power_of_two():
-    return False
+def arange_disable_check_power_of_two():
+    return True
 
 def check_arange_less_than_max_numel(range):
     if range > TRITON_MAX_TENSOR_NUMEL:
@@ -35,8 +35,8 @@ def dot_check_hf32_input_precision(input_precision, ir, lhs, rhs, ret_scalar_ty)
         if (not lhs.dtype.is_fp32() or not rhs.dtype.is_fp32() or not ret_scalar_ty.is_fp32()):
             raise ValueError("input_precision = 'hf32' must be used with f32 * f32 = f32 on Ascend")
 
-def is_dot_check_max_num_imprecise_acc():
-    return False
+def dot_disable_check_max_num_imprecise_acc():
+    return True
 
 def reset_dot_max_num_imprecise_acc():
     return 0
@@ -46,9 +46,10 @@ def check_was_bool_to_int8_dtype(input):
         if input.type.scalar.is_int8():
             raise TypeError(f"unexpected type bool")
 
-def check_was_bool_to_int8_dtype_and_cast(input, builder):
-    assert input.type.scalar.is_int8(), "input wat bool to int8. However, input.type is not int8."
-    return cast(input, tl.int1, builder)
+def cast_bool_to_specified_dtype(input, builder):
+    if hasattr(input, 'was_bool_to_int8'):
+        assert input.type.scalar.is_int8(), "input wat bool to int8. However, input.type is not int8."
+        return cast(input, tl.int1, builder)
 
 def check_unexpected_dtype_float(input):
     if input.type.scalar.is_floating():
@@ -58,18 +59,20 @@ def check_unexpected_dtype_bool(dtype):
     if dtype.is_bool():
         raise TypeError(f"Unexpected dtype {dtype}")
 
-def set_load_legacy_other_input(builder):
-    return to_tensor(0, builder)
+def set_load_legacy_other_input(other, builder):
+    if other is None:
+        return to_tensor(0, builder)
+    return other
 
-def cast_back_when_load_legacy_ptr_is_bool():
-    return False
+def disable_cast_back_when_load_legacy_ptr_is_bool():
+    return True
 
 def set_attr_was_bool_to_int8(ret, is_bool):
     if is_bool:
         ret.was_bool_to_int8 = True
 
-def is_atomic_need_original_check():
-    return False
+def atomic_disable_original_check():
+    return True
 
 def ext_atomic_element_typechecking(element_ty, op):
     # Add `tl.int64` restriction for NPU
@@ -83,8 +86,8 @@ def ext_atomic_element_typechecking(element_ty, op):
         raise ValueError(f"atomic_{op} does not support {str(element_ty)}. "
                          "All support dtypes are int8, int16, int32, float16, float32, bfloat16.")
 
-def is_atomic_cas_need_element_bitwidth_check():
-    return False
+def atomic_cas_disable_element_bitwidth_check():
+    return True
 
 def ext_atomic_cas_element_typechecking(element_ty):
     if element_ty in [tl.int1, tl.int8, tl.float64, tl.bfloat16]:
@@ -120,8 +123,8 @@ def ext_dot_scaled_validate_rhs_dtype(rhs):
 def ext_dot_scaled_check_same_dtype(lhs, rhs):
     assert lhs.dtype == rhs.dtype, f"lhs rhs matrix must get same dtype"
 
-def is_dot_scaled_need_original_check():
-    return False
+def dot_scaled_disable_original_check():
+    return True
 
 def ext_dot_scaled_check_lhs_rhs_format(lhs_format, rhs_format):
     lhs_format: str = lhs_format.value
