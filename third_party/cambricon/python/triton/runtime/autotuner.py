@@ -5,10 +5,61 @@ import os
 import time
 import inspect
 from typing import Dict
+from collections import defaultdict
+
+import torch
 
 from .jit import KernelInterface
 from .errors import OutOfResources
 from .driver import driver
+
+
+def decompose_values(kwargs):
+    decomposed_copies = {}
+    for k, v in kwargs.items():
+        if hasattr(v, "_base"):
+            if type(v).__name__ == "Tensor":
+                decomposed_copies.update({k: v})
+            elif type(v).__name__ == "StridedBuffer":
+                decomposed_copies.update({k: v._base})
+        elif hasattr(v, "base"):
+            if type(v).__name__ == "TensorWrapper":
+                decomposed_copies.update({k: v.base})
+    return decomposed_copies
+
+
+def get_extra_restore_value(decomposed_copies, restore_value):
+    restore_map = defaultdict(list)
+    for name in restore_value:
+        restore_map[decomposed_copies[name].data_ptr()].append(name)
+    for name in decomposed_copies.keys():
+        if name not in restore_value and decomposed_copies[name].data_ptr() in restore_map.keys():
+            restore_value.append(name)
+            restore_map[decomposed_copies[name].data_ptr()].append(name)
+    return restore_map
+
+
+def clone_with_raw_features(t_mlu):
+    shape = t_mlu.shape
+    stride = t_mlu.stride()
+    dtype = t_mlu.dtype
+    device = t_mlu.device
+
+    cpu_storage = t_mlu.untyped_storage().cpu()
+    new_mlu = torch.tensor(cpu_storage, dtype=dtype, device=device).as_strided(shape, stride)
+    return new_mlu
+
+
+def restore_raw_values(kwargs, restore_value):
+    restore_copies = {}
+    decomposed_copies = decompose_values(kwargs)
+    restore_map = get_extra_restore_value(decomposed_copies, restore_value)
+    for _, name_list in restore_map.items():
+        new_arg = clone_with_raw_features(decomposed_copies[name_list[0]])
+        for name in name_list:
+            restore_copies.update({name: kwargs[name]})
+            kwargs[name] = new_arg
+    return restore_copies
 
 
 class Autotuner(KernelInterface):
@@ -53,6 +104,7 @@ class Autotuner(KernelInterface):
         self.restore_value = []
         if restore_value is not None:
             self.restore_value = list(restore_value)
+        self.restore_copies = {}
 
         # Hook to reset or restore for required tensors
         self.pre_hook = lambda kwargs, reset_only=False: 0
@@ -68,14 +120,9 @@ class Autotuner(KernelInterface):
                 for name in self.reset_to_zero:
                     kwargs[name].zero_()
                 if not reset_only:
-                    self.restore_copies = {name: kwargs[name] for name in self.restore_value}
-                    for name in self.restore_value:
-                        if hasattr(kwargs[name], "_base"):
-                            kwargs[name] = kwargs[name]._base.cpu().mlu()
-                        elif hasattr(kwargs[name], "base"):
-                            kwargs[name] = kwargs[name].base.cpu().mlu()
-                        else:
-                            kwargs[name] = kwargs[name].cpu().mlu()
+                    self.restore_copies = restore_raw_values(kwargs, self.restore_value)
+                else:
+                    self.restore_copies = {}
 
             self.pre_hook = _pre_hook
 
@@ -155,9 +202,16 @@ class Autotuner(KernelInterface):
             if config.pre_hook:
                 config.pre_hook(full_nargs)
             self.pre_hook(full_nargs)
+            new_args = list(args)
+            for i, arg in enumerate(new_args):
+                if hasattr(arg, "data_ptr"):
+                    for name, new_val in self.restore_copies.items():
+                        if arg is new_val:
+                            new_args[i] = full_nargs[name]
+                            break
             try:
                 self.fn.run(
-                    *args,
+                    *new_args,
                     **current,
                 )
             except Exception as e:
