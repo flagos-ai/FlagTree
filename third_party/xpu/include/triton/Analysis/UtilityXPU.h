@@ -172,18 +172,18 @@ template <typename opType> Operation *findUserOp(Operation *op) {
   return findUserOpImpl<opType>(op, visitedOps);
 }
 
-template <typename opType> Operation *findDefOpBwd(const Value &val) {
+template <typename opType> opType findDefOpBwd(const Value &val) {
   if (!val || !val.getDefiningOp()) {
     return nullptr;
   }
   auto op = val.getDefiningOp();
   if (op && isa<opType>(op)) {
-    return op;
+    return cast<opType>(op);
   }
   for (auto operand : op->getOperands()) {
     op = findDefOpBwd<opType>(operand);
     if (op) {
-      return op;
+      return cast<opType>(op);
     }
   }
   return nullptr;

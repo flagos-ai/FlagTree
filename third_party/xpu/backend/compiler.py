@@ -91,6 +91,7 @@ class XPUOptions:
     core_num: int = 64
     buffer_size_limit: int = int(os.environ.get("TRITONXPU_BUFFER_SIZE", 512))
     groups_per_cluster: int = int(os.environ.get("TRITONXPU_GROUPS_PER_CLUSTER", 1))
+    unroll_num: int = int(os.environ.get("TRITONXPU_UNROLL_NUM", 2))
     is_use_mask_zero: bool = int(os.environ.get("TRITONXPU_IS_USE_MASK_ZERO", 0))
     extern_libs: dict = None
     is_sdnn: bool = False
@@ -211,6 +212,7 @@ class XPUBackend(BaseBackend):
         max_buffer_size = metadata["buffer_size_limit"]
         elem_bytes = int(os.environ.get("TRITONXPU_ELEMBYTES", 0))
         groups_per_cluster = metadata["groups_per_cluster"]
+        unroll_num = metadata["unroll_num"]
         XPUBackend.buffer_len = xpu.get_buffer_len(mod, max_buffer_size, elem_bytes)
         # print(f"XPUBackend.buffer_len = {XPUBackend.buffer_len}")
         core_num = metadata["core_num"]
@@ -308,8 +310,9 @@ class XPUBackend(BaseBackend):
                 xpu.passes.ttxpuir.add_tritonxpu_memory_async_pass(pm,
                                                                    0) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
             if not metadata["isCloseUnrollControl"]:
-                xpu.passes.ttxpuir.add_tritonxpu_unroll_control_pass(
-                    pm, XPUBackend.buffer_len, core_num, is_use_mask_zero) if not TTXPU_O_CLOSE_OPT else None
+                xpu.passes.ttxpuir.add_tritonxpu_unroll_control_pass(pm, XPUBackend.buffer_len, core_num,
+                                                                     is_use_mask_zero,
+                                                                     unroll_num) if not TTXPU_O_CLOSE_OPT else None
             xpu.passes.ttxpuir.add_tritonxpu_store_control_pass(pm) if not TTXPU_O_CLOSE_OPT else None
             if not TTXPU_F_OHTER_VALUE_SIM:
                 xpu.passes.ttxpuir.add_tritonxpu_other_sim_pass(pm, XPUBackend.buffer_len, core_num)

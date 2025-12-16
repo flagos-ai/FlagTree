@@ -1036,34 +1036,49 @@ __device__ inline float tanhf(float input) {
 
 __device__ inline float32x16_t vtanhf(float32x16_t input) {
   int len = 16;
-  __simd__ float input_lm[len];
+  __simd__ float mul_lm[len];
   __simd__ float exp_lm[len];
-  __simd__ float inv_exp_lm[len];
-  vstore_lm_float32x16(input_lm, input);
+  __simd__ float add_lm[len];
+  __simd__ float div_lm[len];
+  float32x16_t _mul = svmul_float32x16(2.0, input);
+  vstore_lm_float32x16(mul_lm, _mul);
   mfence_lm();
-  for (int k = 0; k < len; k++) {
-    float input_tmp = *(input_lm + k);
-    float exp_tmp = exp(input_tmp);
-    float inv_exp_tmp = 1 / exp_tmp;
-    *(exp_lm + k) = exp_tmp;
-    *(inv_exp_lm + k) = inv_exp_tmp;
+  for (int k = 0; k < len; k += 4) {
+    float mul_tmp0 = *(mul_lm + k);
+    float mul_tmp1 = *(mul_lm + k + 1);
+    float mul_tmp2 = *(mul_lm + k + 2);
+    float mul_tmp3 = *(mul_lm + k + 3);
+    float exp_tmp0 = exp(mul_tmp0);
+    float exp_tmp1 = exp(mul_tmp1);
+    float exp_tmp2 = exp(mul_tmp2);
+    float exp_tmp3 = exp(mul_tmp3);
+    *(exp_lm + k) = exp_tmp0;
+    *(exp_lm + k + 1) = exp_tmp1;
+    *(exp_lm + k + 2) = exp_tmp2;
+    *(exp_lm + k + 3) = exp_tmp3;
   }
   mfence_lm();
   float32x16_t _exp = vload_lm_float32x16(exp_lm);
-  float32x16_t _inv_exp = vload_lm_float32x16(inv_exp_lm);
-  float32x16_t _sub = vvsub_float32x16(_exp, _inv_exp);
-  float32x16_t _add = vvadd_float32x16(_exp, _inv_exp);
-  vstore_lm_float32x16(exp_lm, _sub);
-  vstore_lm_float32x16(inv_exp_lm, _add);
+  float32x16_t _add = svadd_float32x16(1.0, _exp);
+  vstore_lm_float32x16(add_lm, _add);
   mfence_lm();
-  for (int k = 0; k < len; k++) {
-    float sub_tmp = *(exp_lm + k);
-    float add_tmp = *(inv_exp_lm + k);
-    float res_tmp = sub_tmp / add_tmp;
-    *(input_lm + k) = res_tmp;
+  for (int k = 0; k < len; k += 4) {
+    float add_tmp0 = *(add_lm + k);
+    float add_tmp1 = *(add_lm + k + 1);
+    float add_tmp2 = *(add_lm + k + 2);
+    float add_tmp3 = *(add_lm + k + 3);
+    float div_tmp0 = -2.0f / add_tmp0;
+    float div_tmp1 = -2.0f / add_tmp1;
+    float div_tmp2 = -2.0f / add_tmp2;
+    float div_tmp3 = -2.0f / add_tmp3;
+    *(div_lm + k) = div_tmp0;
+    *(div_lm + k + 1) = div_tmp1;
+    *(div_lm + k + 2) = div_tmp2;
+    *(div_lm + k + 3) = div_tmp3;
   }
   mfence_lm();
-  float32x16_t res = vload_lm_float32x16(input_lm);
+  float32x16_t _div = vload_lm_float32x16(div_lm);
+  float32x16_t res = svadd_float32x16(1.0, _div);
   return res;
 }
 

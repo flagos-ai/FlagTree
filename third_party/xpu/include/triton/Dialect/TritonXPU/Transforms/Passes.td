@@ -148,6 +148,9 @@ def TritonXPUUnrollControl : Pass<"tritonxpu-unroll-control", "mlir::ModuleOp"> 
     Option<"isUseMaskZero", "is-use-mask-zero",
            "bool", /*default*/"0",
            "Whether Use Mask Zero Method">,
+    Option<"unrollNum", "unroll-num",
+           "uint32_t", /*default*/"2",
+           "unroll num">,
   ];
 }
 

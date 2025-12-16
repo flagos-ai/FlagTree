@@ -100,9 +100,9 @@ void init_triton_xpu_passes_transform(py::module &&m) {
 
   m.def("add_tritonxpu_unroll_control_pass",
         [](mlir::PassManager &self, uint32_t buffer_size, uint32_t core_num,
-           bool isUseMaskZero) {
+           bool isUseMaskZero, uint32_t unroll_num) {
           self.addPass(mlir::triton::xpu::createTritonXPUUnrollControl(
-              {buffer_size, core_num, isUseMaskZero}));
+              {buffer_size, core_num, isUseMaskZero, unroll_num}));
         });
 
   m.def("add_tritonxpu_other_sim_pass",
