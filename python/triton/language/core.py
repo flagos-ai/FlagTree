@@ -1311,7 +1311,9 @@ def trans(input: tensor, *dims, _builder=None):
 
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    dims = flagtree_backend_specialization('ext_trans_unwrap_iterable', dims)
+    unwrapped_dims = flagtree_backend_specialization('ext_trans_unwrap_iterable', dims)
+    if unwrapped_dims is not None:
+        dims = unwrapped_dims
 
     return semantic.permute(input, dims, _builder)
 

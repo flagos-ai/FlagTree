@@ -174,11 +174,12 @@ class Autotuner(KernelInterface):
 
         # flagtree backend specialization
         from triton.runtime.driver import flagtree_backend_specialization
+        ext_do_bench_MLIRCompilationError = flagtree_backend_specialization("ext_Autotuner_do_bench_MLIRCompilationError")
+        ext_do_bench_MLIRCompilationError = () if ext_do_bench_MLIRCompilationError is None else ext_do_bench_MLIRCompilationError
 
         try:
             return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
-        except (OutOfResources, CompileTimeAssertionFailure) + \
-                flagtree_backend_specialization("ext_Autotuner_do_bench_MLIRCompilationError") as e:
+        except (OutOfResources, CompileTimeAssertionFailure) + ext_do_bench_MLIRCompilationError as e:
             return [float("inf"), float("inf"), float("inf")]
 
     def run(self, *args, **kwargs):
@@ -302,7 +303,8 @@ class Config:
     def all_kwargs(self):
         # flagtree backend specialization
         from triton.runtime.driver import flagtree_backend_specialization
-        ext_Config_all_kwargs = flagtree_backend_specialization('ext_Config_all_kwargs', self) or ()
+        ext_Config_all_kwargs = flagtree_backend_specialization('ext_Config_all_kwargs', self)
+        ext_Config_all_kwargs = () if ext_Config_all_kwargs is None else ext_Config_all_kwargs
 
         return {
             **self.kwargs, **{

@@ -916,7 +916,11 @@ class CodeGenerator(ast.NodeVisitor):
         loop_unroll_factor = None
 
         bind_sub_block = None
-        if IteratorClass in [language.range] + flagtree_backend_specialization("visit_For_ext_support") or []:
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        ext_it_class_support = flagtree_backend_specialization("visit_For_ext_support")
+        ext_it_class_support = [] if ext_it_class_support is None else ext_it_class_support
+        if IteratorClass in [language.range] + ext_it_class_support:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -928,8 +932,9 @@ class CodeGenerator(ast.NodeVisitor):
             loop_unroll_factor = iterator.loop_unroll_factor
 
             # flagtree backend specialization
-            from triton.runtime.driver import flagtree_backend_specialization
-            bind_sub_block = flagtree_backend_specialization("set_bind_sub_block_when_parallel", IteratorClass, iterator, bind_sub_block)
+            new_bind_sub_block = flagtree_backend_specialization("set_bind_sub_block_when_parallel", IteratorClass, iterator, bind_sub_block)
+            if new_bind_sub_block is not None:
+                bind_sub_block = new_bind_sub_block
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -941,8 +946,9 @@ class CodeGenerator(ast.NodeVisitor):
             raise RuntimeError('Only `range` and `static_range` iterators are currently supported')
 
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        bind_sub_block = flagtree_backend_specialization("check_override_bind_sub_block", self, node, bind_sub_block)
+        new_bind_sub_block = flagtree_backend_specialization("check_override_bind_sub_block", self, node, bind_sub_block)
+        if new_bind_sub_block is not None:
+            bind_sub_block = new_bind_sub_block
 
         # handle negative constant step (not supported by scf.for in MLIR)
         negative_step = False
