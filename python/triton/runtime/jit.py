@@ -570,7 +570,7 @@ class JITFunction(KernelInterface[T]):
         # flagtree backend specialization
         stream = driver.active.get_current_stream(device)
         from triton.runtime.driver import flagtree_backend_specialization
-        if flagtree_backend_specialization("enable_stream_in_kwargs"):
+        if flagtree_backend_specialization("enable_stream_in_kwargs", kwargs):
             if "stream" not in kwargs.keys():
                 stream = driver.active.get_current_stream(device)
             else:
@@ -602,7 +602,7 @@ class JITFunction(KernelInterface[T]):
 
             # flagtree backend specialization
             from triton.runtime.driver import flagtree_backend_specialization
-            if not flagtree_backend_specialization("enable_stream_in_kwargs"):
+            if not flagtree_backend_specialization("enable_stream_in_kwargs", kwargs):
                 assert "stream" not in kwargs, "stream option is deprecated; current stream will be used"
 
             for k in excess_kwargs:
@@ -667,8 +667,8 @@ class JITFunction(KernelInterface[T]):
             # flagtree backend specialization
             from triton.runtime.driver import flagtree_backend_specialization
             flagtree_backend_specialization("check_grid_size", grid_0, grid_1, grid_2)
-            if flagtree_backend_specialization("enable_stream_in_kwargs"):
-                if ('stream' in kwargs.keys()):
+            if flagtree_backend_specialization("enable_stream_in_kwargs", kwargs):
+                if ("stream" in kwargs.keys()):
                     stream = kwargs["stream"]
 
             # launch kernel
