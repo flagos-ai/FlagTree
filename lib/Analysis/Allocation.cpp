@@ -287,8 +287,16 @@ private:
         return;
       }
 #ifdef FLAGTREE_SPEC_Analysis_Allocation_MmaToMmaScratchHook
-      if (MmaToMmaScratchHook(op, srcEncoding, dstEncoding, scratchAlignment)) {
-        return;
+      {
+        size_t extraBytes = 0;
+        if (Analysis_Allocation_AllocationAnalysis_isMmaToMma(
+                op, srcEncoding, dstEncoding, scratchAlignment, extraBytes)) {
+          if (extraBytes > 0) {
+            maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(
+                op, extraBytes, scratchAlignment);
+          }
+          return;
+        }
       }
 #endif
       // ConvertLayoutOp with both input/output non-shared_layout

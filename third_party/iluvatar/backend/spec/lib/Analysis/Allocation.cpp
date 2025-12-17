@@ -161,7 +161,7 @@ unsigned getScratchValueSizeElems(const SmallVector<unsigned> &smemShape) {
                          std::multiplies<>());
 }
 
-bool isMmaToMma(
+bool Analysis_Allocation_AllocationAnalysis_isMmaToMma(
     Operation *op, Attribute srcEncoding, Attribute dstEncoding,
     unsigned /*scratchAlignment*/, size_t &extraBytes) {
 
@@ -187,18 +187,6 @@ bool isMmaToMma(
 
   // Handled (even if extraBytes stays 0).
   return true;
-}
-
-bool MmaToMmaScratchHook(Operation *op, Attribute srcEncoding, Attribute dstEncoding, unsigned scratchAlignment) {
-  size_t extraBytes = 0;
-  if (isMmaToMma(op, srcEncoding, dstEncoding, scratchAlignment, extraBytes)) {
-    if (extraBytes > 0) {
-      maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(
-          op, extraBytes, scratchAlignment);
-    }
-    return true;
-  }
-  reeturn false;
 }
 
 } // namespace triton
