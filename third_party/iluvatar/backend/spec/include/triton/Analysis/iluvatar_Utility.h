@@ -10,7 +10,5 @@
 #define FLAGTREE_SPEC_Analysis_Utility_supportMMA
 #define FLAGTREE_SPEC_Analysis_Utility_isMmaToMmaShortcut
 #define FLAGTREE_SPEC_Analysis_Utility_isMmaToDotShortcut
-#define FLAGTREE_SPEC_Analysis_Utility_isMmaToDotShortcutForB
-#define FLAGTREE_SPEC_Analysis_Utility_areLayoutsEquivalent
 
 #endif // ILUVATAR_TRITON_ANALYSIS_UTILITY_H

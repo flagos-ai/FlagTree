@@ -40,9 +40,7 @@ unsigned getScratchValueSizeElems(const SmallVector<unsigned> &smemShape);
 #endif
 
 #ifdef FLAGTREE_SPEC_Analysis_Allocation_MmaToMmaScratchHook
-bool Analysis_Allocation_AllocationAnalysis_isMmaToMma(
-    Operation *op, Attribute srcEncoding, Attribute dstEncoding,
-    unsigned scratchAlignment, size_t &extraBytes);
+bool MmaToMmaScratchHook(Operation *op, Attribute srcEncoding, Attribute dstEncoding, unsigned scratchAlignment);
 #endif
 
 } // namespace triton

@@ -205,9 +205,9 @@ class _matmul(torch.autograd.Function):
 
         # flagtree backend specialization
         from triton.runtime.driver import spec
-        override = spec("matmul_supports_native_fp8", supports_native_fp8, a.dtype, b.dtype)
-        if override is not None:
-            supports_native_fp8 = override
+        override_supports_native_fp8 = spec("matmul_supports_native_fp8", supports_native_fp8, a.dtype, b.dtype)
+        if override_supports_native_fp8 is not None:
+            supports_native_fp8 = override_supports_native_fp8
 
         if supports_native_fp8:
             ab_dtype = None
