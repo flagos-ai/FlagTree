@@ -18,7 +18,6 @@ device_mapping = {"xpu": "xpu", "mthreads": "musa", "ascend": "ascend", "cambric
 language_extra_backends = ['xpu', 'mthreads', "cambricon"]
 activated_module = utils.activate(flagtree_backend)
 downloader = utils.tools.DownloadManager()
-
 set_llvm_env = lambda path: set_env({
     'LLVM_INCLUDE_DIRS': os.path.join(path, "include"),
     'LLVM_LIBRARY_DIR': os.path.join(path, "lib"),
@@ -401,15 +400,15 @@ cache = FlagTreeCache()
 cache.store(
     file="iluvatar-llvm18-x86_64",
     condition=("iluvatar" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.4.0.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.3.0.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
 
 cache.store(
     file="iluvatarTritonPlugin.so", condition=("iluvatar" == flagtree_backend) and (flagtree_plugin == ''), url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.4.0.tar.gz",
-    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="d1c5f54c")
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.30-glibcxx3.4.28-cxxabi1.3.12-ubuntu-x86_64_v0.3.0.tar.gz",
+    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="015b9af8")
 
 # klx xpu
 cache.store(
@@ -440,15 +439,14 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 cache.store(
     file="mthreads-llvm19-glibc2.35-glibcxx3.4.30-x64",
     condition=("mthreads" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm19-glibc2.35-glibcxx3.4.30-x64_v0.4.0.tar.gz",
+    url=activated_module.get_resources_url('llvm'),
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
 
-cache.store(
-    file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (flagtree_plugin == ''), url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.4.0.tar.gz",
-    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="2f5f04a2")
+cache.store(file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (flagtree_plugin == ''),
+            url=activated_module.get_resources_url('plugin'), copy_dst_path=f"third_party/{flagtree_backend}",
+            md5_digest=activated_module.get_resources_hash('plugin'))
 
 # ascend
 cache.store(

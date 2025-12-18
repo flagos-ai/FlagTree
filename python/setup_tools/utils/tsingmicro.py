@@ -8,3 +8,11 @@ def get_backend_cmake_args(*args, **kargs):
     return [
         "-DCMAKE_INSTALL_PREFIX=" + src_ext_path,
     ]
+
+
+def get_resources_url(resource_name):
+    ...
+
+
+def get_resources_hash(resource_name):
+    ...
