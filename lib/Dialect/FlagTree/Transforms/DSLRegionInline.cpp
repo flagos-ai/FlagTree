@@ -3,6 +3,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Value.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/FlagTree/IR/Dialect.h"
@@ -45,6 +46,13 @@ LogicalResult FlagTreeDSLRegionInlineConversion::matchAndRewrite(
   IRMapping mapper;
   Block *parent = op->getBlock(),
         *continuation = rewriter.splitBlock(parent, op->getIterator());
+  continuation->addArguments(
+      op->getResultTypes(),
+      SmallVector<Location>(op->getNumResults(), op.getLoc()));
+  for (auto [oldResult, newArg] :
+       llvm::zip(op.getResults(), continuation->getArguments())) {
+    rewriter.replaceAllUsesWith(oldResult, newArg);
+  }
   auto &blocks = op.getBody().getBlocks();
   const size_t blockNum = blocks.size();
   SmallVector<Block *> newBlocks;
@@ -71,8 +79,13 @@ LogicalResult FlagTreeDSLRegionInlineConversion::matchAndRewrite(
     PatternRewriter::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToEnd(newBlock);
     for (Operation &operation : oldBlock.getOperations()) {
-      if (isa<fl::YieldOp>(operation)) {
-        rewriter.create<LLVM::BrOp>(operation.getLoc(), continuation);
+      if (auto yieldOp = dyn_cast<fl::YieldOp>(operation)) {
+        rewriter.create<LLVM::BrOp>(
+            operation.getLoc(),
+            llvm::map_to_vector(
+                yieldOp.getOperands(),
+                [&mapper](Value v) -> Value { return mapper.lookup(v); }),
+            continuation);
       } else {
         rewriter.clone(operation, mapper);
       }

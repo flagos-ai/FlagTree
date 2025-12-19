@@ -9,6 +9,7 @@ include "triton/Dialect/FlagTree/IR/FlagTreeDialect.td"
 include "triton/Dialect/FlagTree/IR/FlagTreeAttrDefs.td"
 include "triton/Dialect/Triton/IR/TritonInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
+include "triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUTypes.td"
 
 class FlagTree_Op<string mnemonic, list<Trait> traits = []> :
@@ -19,14 +20,16 @@ class FlagTree_Op<string mnemonic, list<Trait> traits = []> :
 def FlagTree_TensorType : AnyTypeOf<[TT_Type, TTG_MemDescType]>;
 def FlagTree_ArgType : AnyTypeOf<[FlagTree_TensorType, LLVMPointerType, LLVMStructType]>;
 
-def FlagTree_DSLRegionOp : FlagTree_Op<"dsl_region", [IsolatedFromAbove, RecursiveMemoryEffects]> {
+def FlagTree_DSLRegionOp : FlagTree_Op<"dsl_region", [IsolatedFromAbove, MemDescViewTrait, RecursiveMemoryEffects]> {
   let arguments = (ins Variadic<FlagTree_ArgType>:$inputs);
+  let results = (outs Variadic<FlagTree_ArgType>:$outputs);
   let regions = (region AnyRegion:$body);
   let hasVerifier = 1;
 }
 
 def FlagTree_YieldOp : FlagTree_Op<"yield", [Pure, Terminator, ReturnLike, HasParent<"DSLRegionOp">]> {
-  let assemblyFormat = " attr-dict ";
+  let arguments = (ins Variadic<FlagTree_ArgType>:$inputs);
+  let assemblyFormat = "attr-dict ($inputs^ `:` type($inputs))?";
 }
 
 def FlagTree_ExtractAllocatedPtrOp : FlagTree_Op<"extract_allocated_ptr", [Pure, HasParent<"DSLRegionOp">]> {
@@ -61,6 +64,13 @@ def FlagTree_ExtractStridesOp : FlagTree_Op<"extract_strides", [Pure, HasParent<
   let results = (outs Variadic<I64>:$strides);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($strides)";
   let builders = [OpBuilder<(ins "size_t":$num, "Value":$input)>];
+}
+
+def FlagTree_PackOp : FlagTree_Op<"pack", [MemDescViewTrait, Pure, HasParent<"DSLRegionOp">]> {
+  let arguments = (ins LLVMStructType:$input);
+  let results = (outs FlagTree_TensorType:$output);
+  let assemblyFormat = "$input attr-dict `:` type($input) `to` type($output)";
+  let hasVerifier = 1;
 }
 
 #endif

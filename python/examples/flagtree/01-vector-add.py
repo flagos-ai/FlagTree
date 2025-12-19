@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Tuple
 
 from mlir import ir
 from mlir.dialects import arith, memref, nvvm, scf
@@ -6,23 +6,20 @@ import torch
 import triton
 import triton.language as tl
 from triton.experimental import flagtree
-from triton.experimental.flagtree.edsl import dialect
+from triton.experimental.flagtree.edsl import dialect, Input, InOut
 import triton.experimental.flagtree.language as fl
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 @dialect(name="mlir")
-def edsl(x: Annotated[ir.MemRefType, "memref<?xf32>"], y: Annotated[ir.MemRefType, "memref<?xf32>"],
-         output: Annotated[ir.MemRefType, "memref<?xf32>"]):
+def edsl(output: InOut["?xf32"], x: Input["?xf32"], y: Input["?xf32"]):
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
-    bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
-    idx = arith.addi(arith.muli(bidx, bdimx), tidx)
+    tidx = arith.index_cast(ir.IndexType.get(), tidx)
     bdimx = arith.index_cast(ir.IndexType.get(), bdimx)
-    idx = arith.index_cast(ir.IndexType.get(), idx)
     length = memref.dim(output, arith.constant(ir.IndexType.get(), 0))
-    for i in scf.for_(idx, length, bdimx):
+    for i in scf.for_(tidx, length, bdimx):
         xval = memref.load(x, [i])
         yval = memref.load(y, [i])
         result = arith.addf(xval, yval)
@@ -45,7 +42,7 @@ def add_kernel(
     x = tl.load(x_ptr + offsets, mask=mask)
     y = tl.load(y_ptr + offsets, mask=mask)
     output = tl.zeros_like(x)
-    fl.call(edsl, [x, y, output])
+    output = fl.call(edsl, [output], [x, y])
     tl.store(output_ptr + offsets, output, mask=mask)
 
 
@@ -59,7 +56,7 @@ def add(x: torch.Tensor, y: torch.Tensor):
 
 
 if __name__ == "__main__":
-    x = torch.randn(1024, device=DEVICE)
-    y = torch.randn(1024, device=DEVICE)
+    x = torch.randn(2048, device=DEVICE)
+    y = torch.randn(2048, device=DEVICE)
     z = add(x, y)
-    assert torch.allclose(x + y, z)
+    assert torch.allclose(x + y, z), (x + y, z)

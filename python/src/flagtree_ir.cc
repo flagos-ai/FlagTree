@@ -10,6 +10,7 @@
 #include "pybind11/stl.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/FlagTree/IR/Dialect.h"
+#include "llvm/ADT/SmallVectorExtras.h"
 
 namespace py = pybind11;
 
@@ -17,29 +18,34 @@ class FlagTreeOpBuilder : public TritonOpBuilder {
 public:
   flagtree::DSLRegionOp
   createEdslRegionByLLVMFunc(std::string_view text, std::string_view fnname,
+                             const std::vector<Value> &outputs,
                              const std::vector<Value> &inputs);
 };
 
 flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
     std::string_view text, std::string_view fnname,
-    const std::vector<Value> &inputs) {
+    const std::vector<Value> &outputs, const std::vector<Value> &inputs) {
   ParserConfig config(getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   LLVM::LLVMFuncOp func = module->lookupSymbol<LLVM::LLVMFuncOp>(fnname);
   OpBuilder &builder = getBuilder();
-  flagtree::DSLRegionOp dslRegionOp = create<flagtree::DSLRegionOp>(inputs);
+  SmallVector<Type> outputTys = llvm::map_to_vector(
+      outputs, [](Value value) -> Type { return value.getType(); });
+  SmallVector<Value> operands = llvm::to_vector(
+      llvm::concat<Value>(SmallVector<Value>(outputs.begin(), outputs.end()),
+                          SmallVector<Value>(inputs.begin(), inputs.end())));
+  flagtree::DSLRegionOp dslRegionOp =
+      create<flagtree::DSLRegionOp>(outputTys, operands);
   OpBuilder::InsertionGuard guard(builder);
   Region &body = dslRegionOp.getBody();
-  SmallVector<Type> inputTys;
-  for (const Value &input : inputs) {
-    inputTys.push_back(input.getType());
-  }
+  SmallVector<Type> operandTys = llvm::map_to_vector(
+      operands, [](Value value) -> Type { return value.getType(); });
   IRMapping mapper;
   for (auto [idx, oldBlock] : llvm::enumerate(func.getBlocks())) {
     if (idx == 0) {
       Block *newBlock = builder.createBlock(
-          &body, {}, inputTys,
-          SmallVector<Location>(inputTys.size(), getLastLoc()));
+          &body, {}, operandTys,
+          SmallVector<Location>(operandTys.size(), getLastLoc()));
       SmallVector<Value> extractOps;
       for (const auto &input : body.getArguments()) {
         if (RankedTensorType tensorTy =
@@ -80,11 +86,18 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
        llvm::zip(func.getBlocks(), body.getBlocks())) {
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToEnd(&newBlock);
-    for (auto &op : oldBlock.getOperations()) {
-      if (isa<LLVM::ReturnOp>(op)) {
-        builder.create<flagtree::YieldOp>(op.getLoc());
+    for (Operation &operation : oldBlock.getOperations()) {
+      if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
+        SmallVector<Value> yields;
+        for (auto [result, operand] :
+             llvm::zip(dslRegionOp.getResults(), returnOp.getOperands())) {
+          flagtree::PackOp packOp = builder.create<flagtree::PackOp>(
+              operation.getLoc(), result.getType(), mapper.lookup(operand));
+          yields.push_back(packOp.getOutput());
+        }
+        builder.create<flagtree::YieldOp>(operation.getLoc(), yields);
       } else {
-        builder.clone(op, mapper);
+        builder.clone(operation, mapper);
       }
     }
   }
@@ -96,8 +109,14 @@ void init_flagtree_ir(py::module &&m) {
 
   py::class_<flagtree::DSLRegionOp>(m, "DSLRegionOp", py::module_local(),
                                     py::dynamic_attr())
-      .def("get_operation", &flagtree::DSLRegionOp::getOperation)
-      .def("get_body", &flagtree::DSLRegionOp::getBody, ret::reference)
+      .def(
+          "get_results",
+          [](flagtree::DSLRegionOp &op) -> std::vector<OpResult> {
+            auto results_range = op->getResults();
+            return std::vector<OpResult>(results_range.begin(),
+                                         results_range.end());
+          },
+          ret::reference)
       .def("dump", &flagtree::DSLRegionOp::dump);
 
   py::class_<flagtree::YieldOp>(m, "YieldOp", py::module_local(),

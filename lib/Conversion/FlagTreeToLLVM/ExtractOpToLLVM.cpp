@@ -8,6 +8,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "llvm/Support/LogicalResult.h"
+#include <numeric>
 
 namespace {
 
@@ -68,8 +69,6 @@ ExtractAllocatedPtrOpConversion::ExtractAllocatedPtrOpConversion(
 LogicalResult ExtractAllocatedPtrOpConversion::matchAndRewrite(
     fl::ExtractAllocatedPtrOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
-  // rewriter.replaceOpWithNewOp<fl::ExtractAllocatedPtrOp>(
-  //     op, op->getResultTypes(), adaptor.getOperands());
   LLVM::ExtractValueOp newOp = rewriter.create<LLVM::ExtractValueOp>(
       op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
   rewriter.replaceAllUsesWith(op, newOp);
@@ -133,12 +132,16 @@ LogicalResult ExtractStridesOpConversion::matchAndRewrite(
   if (ttg::MemDescType memdesc =
           dyn_cast<ttg::MemDescType>(op.getInput().getType())) {
     SmallVector<Value> strides;
-    for (int i = 0; i < memdesc.getRank(); ++i) {
+    ArrayRef<int64_t> shape = memdesc.getShape();
+    int64_t numel = std::accumulate(shape.begin(), shape.end(), 1,
+                                    std::multiplies<int64_t>());
+    for (int64_t size : memdesc.getShape()) {
+      numel /= size;
       auto newOp = rewriter.create<arith::ConstantOp>(
-          op.getLoc(), rewriter.getI64IntegerAttr(1));
+          op.getLoc(), rewriter.getI64IntegerAttr(numel));
       strides.push_back(newOp);
     }
-    rewriter.replaceOpWithMultiple(op, SmallVector(memdesc.getRank(), strides));
+    rewriter.replaceOpWithMultiple(op, strides);
     return success();
   } else {
     return failure();
