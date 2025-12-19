@@ -10,9 +10,8 @@ flagtree_submodules = {
                  commit_id="380b87122c88af131530903a702d5318ec59bb33",
                  dst_path=os.path.join(flagtree_submodule_dir, "triton_shared")),
     "ascend":
-    tools.Module(name="ascend", url="https://gitcode.com/FlagTree/triton-ascend.git",
-                 dst_path=os.path.join(flagtree_submodule_dir, "triton_ascend"),
-                 spec_submodule="third_party/ascendnpu-ir" if ascend.ascend_npuir_commit is None else None),
+    tools.Module(name="ascend", url="https://gitee.com/XcoreSigma/triton-ascend.git",
+                 dst_path=os.path.join(flagtree_submodule_dir, "triton_ascend")),
 }
 
 

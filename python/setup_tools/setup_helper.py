@@ -419,6 +419,12 @@ cache.store(
     post_hock=set_llvm_env,
 )
 
+cache.store(
+    file="bishengcompiler",
+    condition=("ascend" == flagtree_backend),
+    url="https://github.com/flagos-ai/flagtree/releases/download/v0.3.0-build-deps/bishengcompiler.zip",
+)
+
 # aipu
 cache.store(
     file="llvm-a66376b0-ubuntu-x64",
