@@ -78,14 +78,22 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
 
     @override
     def visit_FunctionDef(self, node: ast.FunctionDef) -> func.FuncOp:
-
-        def convert_annotation_to_type(tynode: ast.Tuple) -> ir.Type:
-            [_, tynode] = tynode.slice.dims
-            return ir.Type.parse(self.visit(tynode))
-
         with self.context, ir.Location.file(self.absfilename, node.lineno, node.col_offset):
-            fnty: ir.FunctionType = ir.FunctionType.get(
-                [convert_annotation_to_type(arg.annotation) for arg in node.args.args], [])
+            operand_tys: List[ir.Type] = []
+            output_tys: List[ir.Type] = []
+            output_indices: List[int] = []
+            for idx, arg in enumerate(node.args.args):
+                if arg.annotation.value.id == "InOut":
+                    ty: ir.Type = ir.Type.parse(f"memref<{arg.annotation.slice.value}, 3>")
+                    operand_tys += [ty]
+                    output_tys += [ty]
+                    output_indices += [idx]
+                elif arg.annotation.value.id == "Input":
+                    ty: ir.Type = ir.Type.parse(f"memref<{arg.annotation.slice.value}, 3>")
+                    operand_tys += [ty]
+                else:
+                    raise NotImplementedError(f"unsupported argument annotation: {ast.dump(arg.annotation)}")
+            fnty: ir.FunctionType = ir.FunctionType.get(operand_tys, output_tys)
             fn: func.FuncOp = func.FuncOp(node.name, fnty, visibility="public")
             block: ir.Block = fn.add_entry_block()
             for k, arg in zip(map(lambda arg: arg.arg, node.args.args), block.arguments):
@@ -93,7 +101,7 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
             with ir.InsertionPoint(block):
                 for stmt in node.body:
                     self.visit(stmt)
-                func.return_([])
+                func.return_([block.arguments[idx] for idx in output_indices])
             return fn
 
     @override

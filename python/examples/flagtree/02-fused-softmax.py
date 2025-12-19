@@ -6,7 +6,7 @@ import torch
 import triton
 import triton.language as tl
 from triton.experimental import flagtree
-from triton.experimental.flagtree.edsl import dialect
+from triton.experimental.flagtree.edsl import dialect, InOut, Input
 import triton.experimental.flagtree.language as fl
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
@@ -22,7 +22,7 @@ def naive_softmax(x):
 
 
 @dialect(name="mlir")
-def edsl(y: Annotated[ir.MemRefType, "memref<?xf32>"], x: Annotated[ir.MemRefType, "memref<?xf32>"]):
+def edsl(y: InOut["?xf32"], x: Input["?xf32"]):
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
@@ -119,7 +119,7 @@ def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n
         softmax_output = tl.zeros_like(row)
         output_row_start_ptr = output_ptr + row_idx * output_row_stride
         output_ptrs = output_row_start_ptr + col_offsets
-        fl.call(edsl, [softmax_output, row])
+        softmax_output = fl.call(edsl, [softmax_output], [row])
         tl.store(output_ptrs, softmax_output, mask=mask)
 
 

@@ -1,7 +1,13 @@
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "triton/Dialect/FlagTree/IR/Dialect.h"
 
 namespace mlir::triton::flagtree {
+
+// TODO(EDSL): define shared address space as a constant in the
+// initialization, and plan to replace it by `getSharedAddressSpace()` method
+// from targetInfo in the future
+constexpr int kSharedAddressSpace = 3;
 
 LogicalResult DSLRegionOp::verify() {
   Region &body = getBody();
@@ -25,14 +31,16 @@ LogicalResult DSLRegionOp::verify() {
 void ExtractAllocatedPtrOp::build(::mlir::OpBuilder &odsBuilder,
                                   ::mlir::OperationState &odsState,
                                   Value tensor) {
-  Type ty = LLVM::LLVMPointerType::get(odsBuilder.getContext());
+  Type ty =
+      LLVM::LLVMPointerType::get(odsBuilder.getContext(), kSharedAddressSpace);
   build(odsBuilder, odsState, ty, tensor);
 }
 
 void ExtractAlignedPtrOp::build(::mlir::OpBuilder &odsBuilder,
                                 ::mlir::OperationState &odsState,
                                 Value tensor) {
-  Type ty = LLVM::LLVMPointerType::get(odsBuilder.getContext());
+  Type ty =
+      LLVM::LLVMPointerType::get(odsBuilder.getContext(), kSharedAddressSpace);
   build(odsBuilder, odsState, ty, tensor);
 }
 
@@ -48,6 +56,18 @@ void ExtractStridesOp::build(::mlir::OpBuilder &odsBuilder,
                              Value tensor) {
   SmallVector<Type> tys(num, odsBuilder.getI64Type());
   build(odsBuilder, odsState, tys, tensor);
+}
+
+LogicalResult PackOp::verify() {
+  TypedValue<LLVM::LLVMStructType> input = getInput();
+  ArrayRef<Type> body = input.getType().getBody();
+  if (body.size() < 3 || body.size() % 2 != 1 ||
+      !isa<LLVM::LLVMPointerType>(body[0]) ||
+      !isa<LLVM::LLVMPointerType>(body[1])) {
+    return emitOpError() << "expects input struct to have at least 3 elements, "
+                            "with the first two being pointer types.";
+  }
+  return success();
 }
 
 } // namespace mlir::triton::flagtree

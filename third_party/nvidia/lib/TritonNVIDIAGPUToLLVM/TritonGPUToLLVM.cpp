@@ -28,6 +28,7 @@
 #include "Allocation.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/FlagTreeToLLVM/ExtractOpToLLVM.h"
+#include "triton/Conversion/FlagTreeToLLVM/PackOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 
@@ -142,6 +143,8 @@ struct ConvertTritonGPUToLLVM
           typeConverter, patterns, benefit);
       mlir::triton::flagtree::populateExtractOpToLLVMPatterns(
           typeConverter, patterns, benefit);
+      mlir::triton::flagtree::populatePackOpToLLVMPatterns(typeConverter,
+                                                           patterns, benefit);
       if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
         return signalPassFailure();
       }

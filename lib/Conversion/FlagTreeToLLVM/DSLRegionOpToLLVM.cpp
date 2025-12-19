@@ -38,6 +38,9 @@ LogicalResult DSLRegionOpConversion::matchAndRewrite(
     return rewriter.notifyMatchFailure(op, "could not convert body types");
   }
   newOp->setOperands(adaptor.getOperands());
+  for (OpResult result : newOp.getResults()) {
+    result.setType(getTypeConverter()->convertType(result.getType()));
+  }
   rewriter.replaceOp(op, newOp->getResults());
 
   return success();

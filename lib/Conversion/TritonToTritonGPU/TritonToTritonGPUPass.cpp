@@ -802,6 +802,9 @@ public:
       return rewriter.notifyMatchFailure(op, "could not convert body types");
     }
     newOp->setOperands(adaptor.getOperands());
+    for (OpResult result : newOp.getResults()) {
+      result.setType(getTypeConverter()->convertType(result.getType()));
+    }
 
     rewriter.replaceOp(op, newOp->getResults());
     return success();
@@ -816,8 +819,8 @@ void populateFlagTreePatterns(TritonGPUTypeConverter &typeConverter,
                GenericOpPattern<flagtree::ExtractAlignedPtrOp>,
                GenericOpPattern<flagtree::ExtractOffsetOp>,
                GenericOpPattern<flagtree::ExtractSizesOp>,
-               GenericOpPattern<flagtree::ExtractStridesOp>>(typeConverter,
-                                                             context);
+               GenericOpPattern<flagtree::ExtractStridesOp>,
+               GenericOpPattern<flagtree::PackOp>>(typeConverter, context);
 }
 
 class ConvertTritonToTritonGPU

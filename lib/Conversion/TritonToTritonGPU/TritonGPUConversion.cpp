@@ -89,8 +89,7 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
-                             scf::SCFDialect, ub::UBDialect, LLVM::LLVMDialect,
-                             triton::flagtree::FlagTreeDialect>(
+                             scf::SCFDialect, ub::UBDialect, LLVM::LLVMDialect>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
 
   // We have requirements for the data layouts

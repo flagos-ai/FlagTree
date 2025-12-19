@@ -17,9 +17,10 @@ class EdslMLIRJITFunction(object):
                  **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.fn: Final[Any] = fn
+        # TODO(EDSL): expose pipeline option for customization in `dialect`
         self.pipeline: Final[List[str]] = [
             "convert-scf-to-cf", "finalize-memref-to-llvm", "convert-arith-to-llvm", "convert-cf-to-llvm",
-            "convert-func-to-llvm", "convert-index-to-llvm", "convert-nvvm-to-llvm"
+            "convert-func-to-llvm", "convert-index-to-llvm", "convert-nvvm-to-llvm", "cse"
         ] if pipeline is None else pipeline
         self.context: Final[ir.Context] = ir.Context() if context is None else context
 
@@ -42,14 +43,19 @@ class EdslMLIRJITFunction(object):
     def globals(self) -> Dict[str, Any]:
         return {k: v for k, v in self.fn.__globals__.items() if not k.startswith("__")}
 
-    def make_ir(self) -> ir.Module:
-        codegen: EdslMLIRCodeGenerator = EdslMLIRCodeGenerator(self.absfilename, {}, self.globals, self.context)
-        return codegen.visit(self.ast)
+    @cached_property
+    def codegen(self) -> EdslMLIRCodeGenerator:
+        return EdslMLIRCodeGenerator(self.absfilename, {}, self.globals, self.context)
 
-    def make_llir(self, module: Optional[ir.Module] = None) -> ir.Module:
-        mod: ir.Module = module if module is not None else self.make_ir()
-        context: ir.Context = module.context if module is not None else self.context
-        with context:
+    @property
+    def ir(self) -> ir.Module:
+        mod: ir.Module = self.codegen.visit(self.ast)
+        return mod
+
+    @cached_property
+    def llvm(self) -> ir.Module:
+        mod: ir.Module = self.ir
+        with self.context:
             pm: PassManager = PassManager()
             pm.enable_verifier(True)
             for p in self.pipeline:
