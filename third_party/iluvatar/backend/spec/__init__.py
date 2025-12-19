@@ -39,7 +39,6 @@ __all__ = [
     "ext_JITFunction_spec_of",
     "ext_JITFunction_get_config",
     "get_JITFunction_key",
-    "is_JITFunction_support_cpu",
     "get_JITFunction_options",
     "ext_JITFunction_init",
     "backend_smi_cmd",

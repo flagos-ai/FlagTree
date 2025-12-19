@@ -276,7 +276,6 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
     ptr_info.dev_ptr = PyLong_AsUnsignedLongLong(ret);
     if(!ptr_info.dev_ptr)
       return ptr_info;
-    /*
     uint64_t dev_ptr;
     int status = cuPointerGetAttribute(&dev_ptr, CU_POINTER_ATTRIBUTE_DEVICE_POINTER, ptr_info.dev_ptr);
     if (status == CUDA_ERROR_INVALID_VALUE) {{
@@ -288,7 +287,6 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
         ptr_info.valid = false;
     }}
     ptr_info.dev_ptr = dev_ptr;
-    */
     Py_DECREF(ret);  // Thanks ChatGPT!
     return ptr_info;
   }}

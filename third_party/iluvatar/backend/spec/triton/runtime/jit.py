@@ -52,20 +52,6 @@ class CallVisitor(ast.NodeVisitor):
             self.generic_visit(node)
 
 
-def device_of(arg):
-    if hasattr(arg, "device") and hasattr(arg.device, "type"):
-        return arg.device.type
-    else:
-        return ""
-
-
-def pinned_memory_of(arg):
-    if hasattr(arg, "is_pinned") and callable(arg.is_pinned):
-        return arg.is_pinned()
-    else:
-        return False
-
-
 def ext_JITFunction_spec_of(arg):
     return (arg % 16 == 0, arg % JITFunction.divisibility_8 == 0, arg == 1)
 
@@ -139,16 +125,6 @@ def get_JITFunction_key(jitFunction, bound_args, sig_and_spec, constexpr_vals, e
     else:
         key = ''.join(sig_and_spec) + str((constexpr_vals, excess_kwargs)) + str(options.hash_corex)
     return key
-
-
-def is_JITFunction_support_cpu(*args):
-    pinned_memory_flags = [pinned_memory_of(arg) for arg in args]
-    device_types = [device_of(arg) for arg in args]
-    device_types = [_device_type for _device_type in device_types if _device_type != ""]
-    is_cpu = device_types and all(device_type == "cpu" for device_type in device_types)
-    is_pinned_memory = any(pinned_memory_flag for pinned_memory_flag in pinned_memory_flags)
-    if is_cpu and not is_pinned_memory:
-        raise ValueError("Cannot find backend for cpu")
 
 
 def get_JITFunction_options(jitFunction, target, backend, options, bound_args):
