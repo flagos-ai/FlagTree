@@ -66,4 +66,5 @@ jobs:
         shell: bash
         run: |
           set -x
+          source ~/env.sh
           python3.10 -m pytest -s third_party/metax/python/test/unit
