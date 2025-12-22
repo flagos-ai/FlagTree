@@ -437,7 +437,7 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 
 # mthreads
 cache.store(
-    file="mthreads-llvm19-glibc2.35-glibcxx3.4.30-x64",
+    file="mthreads-llvm19-glibc2.35-glibcxx3.4.30",
     condition=("mthreads" == flagtree_backend),
     url=activated_module.get_resources_url('llvm'),
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
