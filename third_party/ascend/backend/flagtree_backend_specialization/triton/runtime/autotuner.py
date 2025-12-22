@@ -13,7 +13,7 @@ def ext_Autotuner_do_bench_MLIRCompilationError():
     return (MLIRCompilationError,)
 
 def _profile(autotuner, *args, config, **meta):
-    from triton.testing import do_bench
+    from ..testing import do_bench_npu
 
     # check for conflicts, i.e. meta-parameters both provided
     # as kwargs and by the autotuner
@@ -49,7 +49,7 @@ def _profile(autotuner, *args, config, **meta):
 
 def ext_Autotuner_profile(autotuner, used_cached_result, args, kwargs):
     if not used_cached_result and autotuner.auto_profile_dir is not None:
-        _profile(*args, config=autotuner.best_config, **kwargs)
+        _profile(autotuner, *args, config=autotuner.best_config, **kwargs)
 
 def default_Config_arg_is_none():
     return True

@@ -181,8 +181,9 @@ class AutoTilingTuner(Autotuner):
                 f"{self.bench_time:.2f}s; best config selected: {self.best_config};"
             )
 
-        if not used_cached_result and self.auto_profile_dir is not None:
-            self._profile(*args, config=self.best_config, **kwargs)
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        flagtree_backend_specialization('ext_Autotuner_profile', self, used_cached_result, args, kwargs)
         if config.pre_hook is not None:
             full_nargs = {**self.nargs, **kwargs, **config.all_kwargs()}
             config.pre_hook(full_nargs)
