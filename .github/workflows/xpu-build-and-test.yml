@@ -73,7 +73,12 @@ jobs:
                 continue
               fi
               echo "Checking file: '$file'"
-              if [[ ! "$file" =~ (\.(md|txt)$|CODEOWNERS$) ]]; then
+              if [[ "$file" == ".github/workflows/xpu-build-and-test.yml" ]]; then
+                echo "  -> This workflow file changed, need to run build/test"
+                ONLY_DOCS_CHANGED=false
+                break
+              fi
+              if [[ ! "$file" =~ (\.(md|yml|txt)$|CODEOWNERS$) ]]; then
                 echo "  -> Not a docs file"
                 ONLY_DOCS_CHANGED=false
                 break
@@ -84,7 +89,6 @@ jobs:
           echo "only_docs_changed=$ONLY_DOCS_CHANGED" >> $GITHUB_OUTPUT
           if [ "$ONLY_DOCS_CHANGED" == "true" ]; then
             echo "✅ Only documentation files were modified. Skipping build and test."
-            echo "Changed files are limited to: *.md, *.txt, CODEOWNERS"
             exit 0
           fi
 
