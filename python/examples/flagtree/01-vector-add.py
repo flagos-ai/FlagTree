@@ -1,5 +1,3 @@
-from typing import Annotated, Tuple
-
 from mlir import ir
 from mlir.dialects import arith, memref, nvvm, scf
 import torch
@@ -13,7 +11,7 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 @dialect(name="mlir")
-def edsl(output: InOut["?xf32"], x: Input["?xf32"], y: Input["?xf32"]):
+def edsl(output: InOut["?xf32"], x: Input["?xf32"], y: Input["?xf32"]):  # noqa: F722
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
