@@ -18,7 +18,7 @@ jobs:
       - name: Set up Install Dependencies
         run: |
           DEBIAN_FRONTEND=noninteractive apt-get update -y
-          DEBIAN_FRONTEND=noninteractive apt-get install -y git autotools-dev wget gcc g++ build-essential cmake
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git autotools-dev wget gcc g++ build-essential cmake libc6
           
           wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
           dpkg -i cuda-keyring_1.1-1_all.deb
