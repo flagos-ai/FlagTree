@@ -78,14 +78,13 @@ jobs:
               if [ -z "$file" ]; then
                 continue
               fi
-              echo "Checking file: '$file'"
               if [[ "$file" == "$CURRENT_WORKFLOW" ]]; then
-                echo "  -> This workflow file changed, need to run build/test"
+                echo "'$file' -> This workflow file changed, need to run build/test"
                 ONLY_DOCS_CHANGED=false
                 break
               fi
               if [[ ! "$file" =~ (\.(md|yml|txt)$|CODEOWNERS$) ]]; then
-                echo "  -> Not a docs file"
+                echo "'$file' -> Not a docs file, need to run build/test"
                 ONLY_DOCS_CHANGED=false
                 break
               fi
