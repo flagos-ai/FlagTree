@@ -1,3 +1,27 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -13,6 +37,42 @@
 
 namespace mlir {
 namespace triton {
+
+void EmbeddingGatherOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
+                       triton::GlobalMemory::get());
+}
+
+void GatherOutToUbOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects)
+{
+  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
+                       triton::GlobalMemory::get());
+}
+
+void IndirectLoadOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
+                       triton::GlobalMemory::get());
+}
+
+// FlipOp
+LogicalResult FlipOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location, ValueRange operands,
+                                       DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+                                       SmallVectorImpl<Type> &inferredReturnTypes)
+{
+    auto inputTy = dyn_cast<RankedTensorType>(operands[0].getType());
+    if (!inputTy) {
+        if (location)
+            return emitOptionalError(location, "expected ranked tensor for flip input");
+        return failure();
+    }
+    inferredReturnTypes.push_back(inputTy);
+    return success();
+}
 
 //-- SortOp --
 LogicalResult SortOp::inferReturnTypes(
@@ -203,6 +263,49 @@ LogicalResult GatherOp::inferReturnTypes(
   inferredReturnTypes.push_back(
       RankedTensorType::get(indicesType.getShape(), srcType.getElementType(),
                             indicesType.getEncoding()));
+  return success();
+}
+
+//-- IndexSelectSimdOp --
+LogicalResult IndexSelectSimdOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  
+  // Get operands using adaptor
+  IndexSelectSimdOpAdaptor adaptor(operands, attributes, properties, regions);
+  
+  // Get element type from src pointer
+  Type elemType;
+  if (auto ptrType = dyn_cast<triton::PointerType>(adaptor.getSrc().getType())) {
+    elemType = ptrType.getPointeeType();
+  } else {
+    return failure();
+  }
+  
+  // Get index shape to determine the size of dim
+  auto indicesType = dyn_cast<RankedTensorType>(adaptor.getIndex().getType());
+  if (!indicesType)
+    return failure();
+  int64_t numIndices = indicesType.getShape()[0];
+  
+  // Use adaptor to get attributes - this is the compatible way
+  int32_t dim = adaptor.getDim();
+  auto readShapeAttr = adaptor.getReadShape();
+  
+  // Build result shape: read_shape but with dim replaced by numIndices
+  SmallVector<int64_t> resultShape;
+  for (size_t i = 0; i < readShapeAttr.size(); ++i) {
+    if (i == static_cast<size_t>(dim)) {
+      resultShape.push_back(numIndices);
+    } else {
+      resultShape.push_back(readShapeAttr[i]);
+    }
+  }
+  
+  // Create result tensor type
+  inferredReturnTypes.push_back(RankedTensorType::get(resultShape, elemType));
+  
   return success();
 }
 
