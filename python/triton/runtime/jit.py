@@ -586,6 +586,10 @@ class JITFunction(KernelInterface[T]):
         if self.binder is None:
             self.create_binder(backend)
 
+        # flagtree backend specialization
+        if self.extra_option and flagtree_backend_specialization("enable_extra_option"):
+            kwargs.update(self.extra_option)
+
         bound_args, sig_and_spec, constexpr_vals, non_constexpr_vals, excess_kwargs = self.binder(*args, **kwargs)
 
         # compute cache key
@@ -683,7 +687,7 @@ class JITFunction(KernelInterface[T]):
         return kernel
 
     def __init__(self, fn, version=None, do_not_specialize=None, do_not_specialize_on_alignment=None, debug=None,
-                 noinline=None, repr=None, launch_metadata=None):
+                 noinline=None, repr=None, launch_metadata=None, extra_option=None):
         do_not_specialize = do_not_specialize if do_not_specialize else []
         do_not_specialize_on_alignment = do_not_specialize_on_alignment if do_not_specialize_on_alignment else []
 
@@ -696,6 +700,8 @@ class JITFunction(KernelInterface[T]):
         self.starting_line_number = inspect.getsourcelines(fn)[1]
         self.repr = lambda _: fn.__name__ if repr is None else repr(_)
         self.launch_metadata = launch_metadata
+        # flagtree backend specialization
+        self.extra_option = extra_option
 
         self.binder = None
 
@@ -837,6 +843,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    options: Optional[dict] = None,
 ) -> Callable[[T], JITFunction[T]]:
     ...
 
@@ -851,6 +858,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    options: Optional[dict] = None,
 ) -> Union[JITFunction[T], Callable[[T], JITFunction[T]]]:
     """
     Decorator for JIT-compiling a function using the Triton compiler.
@@ -887,6 +895,7 @@ def jit(
                 noinline=noinline,
                 repr=repr,
                 launch_metadata=launch_metadata,
+                extra_option=options,
             )
 
     if fn is not None:

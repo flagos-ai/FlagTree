@@ -32,6 +32,7 @@ __all__  = [
     'get_JITFunction_spec_attr',
     'maps_line_numbers_to_comment_hints',
     'attach_line_number_to_comment_mapping',
+    'enable_extra_option',
     # runtime.autotuner
     'set_Autotuner_auto_profile_dir',
     'has_spec_default_Autotuner_configs',

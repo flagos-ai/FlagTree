@@ -57,6 +57,7 @@ def default_Config_arg_is_none():
 def set_Config_extra_options(config, bishengir_options):
     # BiShengIR Options allowed for autotune
     config.multibuffer = bishengir_options.get("multibuffer", None) # Compiler Default True
+    config.sync_solver = bishengir_options.get("sync_solver", None) # Compiler Default False
     config.unit_flag = bishengir_options.get("unit_flag", None) # Compiler Default False
     config.limit_auto_multi_buffer_only_for_local_buffer = bishengir_options.get("limit_auto_multi_buffer_only_for_local_buffer", None) # Compiler Default False
     config.limit_auto_multi_buffer_of_local_buffer = bishengir_options.get("limit_auto_multi_buffer_of_local_buffer", None) # Compiler Default no-limit
@@ -69,6 +70,7 @@ def ext_Config_all_kwargs(config):
     return (
         ("multibuffer", config.multibuffer),
         ("enable_hivm_auto_cv_balance", config.enable_hivm_auto_cv_balance),
+        ("sync_solver", config.sync_solver),
         ("unit_flag", config.unit_flag),
         ("limit_auto_multi_buffer_only_for_local_buffer", \
             config.limit_auto_multi_buffer_only_for_local_buffer),
@@ -81,6 +83,7 @@ def ext_Config_all_kwargs(config):
 def ext_Config_to_str(res, config):
     res.append(f"multibuffer: {config.multibuffer}")
     res.append(f"enable_hivm_auto_cv_balance: {config.enable_hivm_auto_cv_balance}")
+    res.append(f"sync_solver: {config.sync_solver}")
     res.append(f"unit_flag: {config.unit_flag}")
     res.append(f"limit_auto_multi_buffer_only_for_local_buffer: \
         {config.limit_auto_multi_buffer_only_for_local_buffer}")
