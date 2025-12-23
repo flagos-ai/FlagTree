@@ -99,8 +99,9 @@ jobs:
           set -x
           pip uninstall -y triton
           git config --global --add safe.directory /__w/flagtree/flagtree
-          export Python3_ROOT_DIR=/usr/bin/python3
-          export Python3_INCLUDE_DIR=/usr/include/python3.10
+          export Python3_INCLUDE_DIRS=/usr/include/python3.10
+          export Python3_LIBRARIES=/usr/lib/x86_64-linux-gnu/libpython3.10.so
+          export pybind11_DIR=$(python3 -m pybind11 --cmakedir)
           export CMAKE_MAKE_PROGRAM=$(which ninja)
           export PIP_NO_CACHE_DIR=1
           cd /__w/flagtree/flagtree/python
