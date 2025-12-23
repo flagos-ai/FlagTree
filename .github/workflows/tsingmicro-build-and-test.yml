@@ -1,10 +1,11 @@
 name: Tsingmicro-Build-And-Test
 
 on:
-  push:
-    branches: [ "triton_v3.3.x" ]
-  pull_request:
-    branches: [ "triton_v3.3.x" ]
+  # push:
+  #   branches: [ "triton_v3.3.x" ]
+  # pull_request:
+  #   branches: [ "triton_v3.3.x" ]
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

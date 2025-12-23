@@ -1,0 +1,57 @@
+name: Test Coordinator
+
+on:
+  push:
+    branches:
+      - main
+      - triton_v3.2.x
+      - triton_v3.3.x
+  pull_request:
+    branches:
+      - main
+      - triton_v3.2.x
+      - triton_v3.3.x
+      
+jobs:
+  ubuntu-native-aipu:
+    if: github.ref_name == 'triton_v3.3.x'
+    uses: ./.github/workflows/aipu-build-and-test.yml
+
+  ubuntu-native-ascend:
+    if: github.ref_name == 'triton_v3.2.x'
+    uses: ./.github/workflows/ascend-build-and-test.yml
+
+  ubuntu-native-cambricon:
+    if: github.ref_name == 'main'
+    uses: ./.github/workflows/cambricon-build-and-test.yml
+
+  ubuntu-native-hcu:
+    if: github.ref_name == 'main'
+    uses: ./.github/workflows/hcu-build-and-test.yml
+
+  ubuntu-native-iluvatar:
+    if: github.ref_name == 'main'
+    uses: ./.github/workflows/iluvatar-build-and-test.yml
+
+  ubuntu-native-metax:
+    if: github.ref_name == 'main'
+    uses: ./.github/workflows/metax-build-and-test.yml
+
+  ubuntu-native-mthreads:
+    if: github.ref_name == 'main'
+    uses: ./.github/workflows/mthreads-build-and-test.yml
+
+  ubuntu-native-nv:
+    if: |
+      github.ref_name == 'main' || 
+      github.ref_name == 'triton_v3.2.x' || 
+      github.ref_name == 'triton_v3.3.x'
+    uses: ./.github/workflows/nv-build-and-test.yml
+
+  ubuntu-native-tsingmicro:
+    if: github.ref_name == 'triton_v3.3.x'
+    uses: ./.github/workflows/tsingmicro-build-and-test.yml
+
+  ubuntu-native-xpu:
+    if: github.ref_name == 'main'
+    uses: ./.github/workflows/xpu-build-and-test.yml

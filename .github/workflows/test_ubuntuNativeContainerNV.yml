@@ -1,0 +1,162 @@
+name: Run Container ubuntu-native
+
+on:
+  push:
+   branches:
+     - main
+  pull_request:
+   branches:
+     - main
+#   schedule:
+#     - cron: '0 21 * * *'
+#   workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-in-ubuntu-container:
+    runs-on: ubuntu-latest
+    container:
+      image:  ubuntu:22.04
+
+    steps:
+      - name: Set up Python and Install Dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv git autotools-dev wget gcc g++ build-essential cmake ninja-build
+          DEBIAN_FRONTEND=noninteractive apt-get install -y python3.10-dev python3-distutils
+          pip3 install --upgrade pip setuptools wheel
+          pip3 install pybind11
+
+          # DEBIAN_FRONTEND=noninteractive apt-get update -y
+          # DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          #   python3 python3-pip python3-venv git \
+          #   build-essential cmake ninja-build \
+          #   python3.10-dev python3-distutils  
+          # pip3 install --upgrade pip setuptools wheel
+          # pip3 install pybind11
+
+          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          dpkg -i cuda-keyring_1.1-1_all.deb
+          DEBIAN_FRONTEND=noninteractive apt-get update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-drivers cuda-toolkit
+          DEBIAN_FRONTEND=noninteractive apt-get install -y libnccl2 libnccl-dev
+      
+
+      - name: Verify Python and pybind11 paths
+        shell: bash
+        run: |
+          PYBIND11_DIR=$(python3 -m pybind11 --cmakedir)
+          echo "pybind11 CMake dir: $PYBIND11_DIR"
+          if [ ! -d "$PYBIND11_DIR" ]; then
+            echo "Error: pybind11 CMake directory not found at $PYBIND11_DIR"
+            exit 1
+          fi
+          if [ ! -f "$PYBIND11_DIR/pybind11-config.cmake" ]; then
+            echo "Error: pybind11-config.cmake not found at $PYBIND11_DIR"
+            exit 1
+          fi
+          echo "pybind11-config.cmake found at $PYBIND11_DIR"
+
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: true
+          set-safe-directory: true
+
+      - name: Detect Target Branch
+        shell: bash
+        run: |
+          set -x
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET_BRANCH="${{ github.base_ref }}"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+          fi
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$TARGET_BRANCH"
+
+      - name: Prepare LLVM for NVidia
+        shell: bash
+        run: |
+          case "${{ env.TARGET_BRANCH }}" in
+            "main")          LLVM_HASH="10dc3a8e" ;;
+            "triton_v3.2.x") LLVM_HASH="86b69c31" ;;
+            "triton_v3.3.x") LLVM_HASH="a66376b0" ;;
+            "triton_v3.4.x") LLVM_HASH="8957e64a" ;;
+            "triton_v3.5.x") LLVM_HASH="7d5de303" ;;
+            *)               LLVM_HASH="10dc3a8e" ;; 
+          esac
+          
+          LLVM_DIR="$HOME/.flagtree/llvm_builds"
+          LLVM_FILE="llvm-${LLVM_HASH}-ubuntu-x64"
+          mkdir -p "$LLVM_DIR"
+          cd "$LLVM_DIR"
+
+          if [ ! -d "${LLVM_FILE}" ]; then
+            echo "Downloading LLVM ${LLVM_HASH}..."
+            wget -q "https://oaitriton.blob.core.windows.net/public/llvm-builds/${LLVM_FILE}.tar.gz"
+            tar -zxf "${LLVM_FILE}.tar.gz"
+            rm "${LLVM_FILE}.tar.gz"
+          else
+            echo "LLVM ${LLVM_HASH} already exists, skipping download."
+          fi          
+          echo "LLVM_SYSPATH=$LLVM_DIR/${LLVM_FILE}" >> $GITHUB_ENV
+          echo "LLVM_LIBRARY_DIR=$LLVM_DIR/${LLVM_FILE}/lib" >> $GITHUB_ENV
+
+      - name: FlagTree Build on NVidia (Main branch)
+        if: ${{ env.TARGET_BRANCH == 'main' }}
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          git config --global --add safe.directory /__w/flagtree/flagtree
+          export CMAKE_MAKE_PROGRAM=$(which ninja)
+          export PIP_NO_CACHE_DIR=1
+          cd /__w/flagtree/flagtree/python
+
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation \
+            -C="--cmake-args=-DPython3_EXECUTABLE=/usr/bin/python3" \
+            -C="--cmake-args=-DPython3_INCLUDE_DIR=/usr/include/python3.10" \
+            -C="--cmake-args=-DPython3_LIBRARY=/usr/lib/x86_64-linux-gnu/libpython3.10.so" \
+            -C="--cmake-args=-Dpybind11_DIR=$PYBIND11_DIR" \
+            -v
+            
+      - name: FlagTree Build on NVidia (triton_v3.2.x branch)
+        if: ${{ env.TARGET_BRANCH == 'triton_v3.2.x' }}
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          cd /__w/flagtree/flagtree/python
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Build on NVidia (triton_v3.3.x branch)
+        if: ${{ env.TARGET_BRANCH == 'triton_v3.3.x' }}
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          cd /__w/flagtree/flagtree/python
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on NVidia
+        shell: bash
+        run: |
+          set -x
+          python3 -m pytest -s python/test/unit
+          if [ -d "python/test/operators" ]; then
+            python3 -m pytest -s python/test/operators
+          fi

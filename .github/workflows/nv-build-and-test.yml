@@ -3,10 +3,11 @@ name: NV-Build-And-Test
 on:
   schedule:
     - cron: '0 21 * * *'
-  push:
-    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x" ]
-  pull_request:
-    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x" ]
+  # push:
+  #   branches: [ "main", "triton_v3.2.x", "triton_v3.3.x" ]
+  # pull_request:
+  #   branches: [ "main", "triton_v3.2.x", "triton_v3.3.x" ]
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
