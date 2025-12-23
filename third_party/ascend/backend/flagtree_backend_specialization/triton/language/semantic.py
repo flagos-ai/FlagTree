@@ -62,8 +62,8 @@ def check_unexpected_dtype_bool(dtype):
     if dtype.is_bool():
         raise TypeError(f"Unexpected dtype {dtype}")
 
-def set_load_legacy_other_input(other, builder):
-    if other is None:
+def set_load_legacy_other_input(other, care_padding, builder):
+    if other is None and care_padding == True:
         return to_tensor(0, builder)
     return other
 
@@ -79,15 +79,18 @@ def atomic_disable_original_check():
 
 def ext_atomic_element_typechecking(element_ty, op):
     # Add `tl.int64` restriction for NPU
-    if element_ty in [tl.int1, tl.int64, tl.float16, tl.float32, tl.float64, tl.bfloat16] and op in ['or', 'xor']:
+    if element_ty in [tl.int1, tl.float16, tl.float32, tl.float64, tl.bfloat16] and op in ['or', 'xor']:
         raise ValueError(f"atomic_{op} does not support {str(element_ty)}. "
-                         "All support dtypes are int8, int16, int32.")
-    if element_ty in [tl.int1, tl.int64, tl.float64, tl.bfloat16] and op == 'xchg':
+                         "All support dtypes are int8, int16, int32, int64.")
+    if element_ty in [tl.int1, tl.float64, tl.bfloat16] and op == 'xchg':
         raise ValueError(f"atomic_{op} does not support {str(element_ty)}. "
-                         "All support dtypes are int8, int16, int32, float16, float32.")
-    if element_ty in [tl.int1, tl.int64, tl.float64]:
+                         "All support dtypes are int8, int16, int32, int64, float16, float32.")
+    if element_ty in [tl.int1, tl.int64, tl.float64] and op in ['add', 'max', 'min']:
         raise ValueError(f"atomic_{op} does not support {str(element_ty)}. "
                          "All support dtypes are int8, int16, int32, float16, float32, bfloat16.")
+    if element_ty in [tl.int1, tl.float64]:
+        raise ValueError(f"atomic_{op} does not support {str(element_ty)}. "
+                         "All support dtypes are int8, int16, int32, int64, float16, float32, bfloat16.")
 
 def atomic_cas_disable_element_bitwidth_check():
     return True
@@ -390,7 +393,57 @@ def ext_semantic_make_tensor_descriptor(
                                                     [s.handle for s in strides], block_shape, is_signed_int)
     return tensor_descriptor(handle, shape, strides, desc_block_type)
 
+def ext_semantic_gather_load(
+    src: tl.tensor,
+    gather_dim: int,
+    gather_indices: tl.tensor,
+    src_shape: List[tl.tensor],  # Can be int or tl.tensor
+    src_offset: List[tl.tensor],  # Can be int or tl.tensor
+    read_shape: List[int],  # Can be int or tl.tensor
+    builder: ir.builder
+) -> tl.tensor:
+    """
+    Gather load operation that loads data from multiple indices along a dimension.
+    Args:
+        src: Source tensor pointer (in GM)
+        gather_dim: Dimension along which to gather
+        gather_indices: 1D tensor of indices to gather (in UB)
+        src_shape: Complete shape of source tensor (can be int or tensor)
+        src_offset: Starting offset for reading (can be int or tensor)
+        read_shape: Size to read (tile shape, can be int or tensor)
+        builder: IR builder
+
+    Returns:
+        Result tensor in UB
+
+    Constraints:
+        - read_shape[gather_dim] must be -1
+        - src_offset[gather_dim] can be -1 (ignored)
+    """
+    # Validate inputs
+    ndim = len(src_shape)
+    assert len(src_offset) == ndim, \
+        f"src_offset length {len(src_offset)} must match src_shape length {ndim}"
+    assert len(read_shape) == ndim, \
+        f"read_shape length {len(read_shape)} must match src_shape length {ndim}"
+    assert 0 <= gather_dim < ndim, \
+        f"gather_dim={gather_dim} must be in range [0, {ndim})"
+    assert len(gather_indices.shape) == 1, \
+        f"gather_indices must be 1D tensor, got {len(gather_indices.shape)}D"
+
+    newsrc_shape = [o.handle for o in src_shape]
+    newsrc_offset = [o.handle for o in src_offset]
+    # Create output type
+    return_shape = [
+        gather_indices.shape[0] if i == gather_dim else read_shape[i]
+        for i in range(ndim)
+    ]
+    element_ty = src.type.element_ty
+    output_ty = tl.block_type(element_ty, return_shape)
+    out = builder.create_gather_load(src.handle, gather_indices.handle, gather_dim, newsrc_shape, newsrc_offset, read_shape, return_shape)
+    return tl.tensor(out, output_ty)
+
 semantic_ext_spec_func_list = [
     "gather", "insert_slice", "extract_slice", "get_element", "compile_hint",
-    "custom_op", "sort", "scalar_constant", "make_scalar", "make_tensor_descriptor"
+    "custom_op", "sort", "scalar_constant", "make_scalar", "make_tensor_descriptor", "gather_load"
 ]

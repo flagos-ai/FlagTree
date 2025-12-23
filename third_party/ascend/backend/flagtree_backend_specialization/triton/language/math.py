@@ -2,6 +2,8 @@ import triton.language as language
 from . import standard
 softmax = standard.softmax
 sigmoid = standard.sigmoid
+argmax = standard.argmax
+argmin = standard.argmin
 umulhi = language.extra.ascend.libdevice.umulhi
 exp = language.extra.ascend.libdevice.exp
 exp2 = language.extra.ascend.libdevice.exp2
@@ -19,6 +21,7 @@ floor = language.extra.ascend.libdevice.floor
 ceil = language.extra.ascend.libdevice.ceil
 fma = language.extra.ascend.libdevice.fma
 _check_dtype = language.extra.ascend.libdevice._check_dtype
+cdiv = language.extra.ascend.libdevice.cdiv
 
 isnan = language.extra.ascend.libdevice.isnan
 isinf = language.extra.ascend.libdevice.isinf
@@ -44,7 +47,8 @@ round = language.extra.ascend.libdevice.round
 math_ext_base_func_list = [
     "umulhi", "exp", "exp2", "log", "log2", "cos",
     "sin", "sqrt", "sqrt_rn", "rsqrt", "div_rn", "erf",
-    "tanh", "floor", "ceil", "fma", "_check_dtype", "softmax", "sigmoid"
+    "tanh", "floor", "ceil", "fma", "_check_dtype", "softmax", "sigmoid",
+    "cdiv", "argmax", "argmin"
 ]
 math_ext_spec_func_list = [
     "isnan", "isinf", "reciprocal", "relu", "log1p", "tan",

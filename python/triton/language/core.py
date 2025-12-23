@@ -1537,9 +1537,9 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
     if bitcast:
         return semantic.bitcast(input, dtype, _builder)
     # flagtree backend specialization
-    rett = semantic.cast(input, dtype, _builder, fp_downcast_rounding)
+    ret = semantic.cast(input, dtype, _builder, fp_downcast_rounding)
     flagtree_backend_specialization('ext_cast_check_overflow_mode', overflow_mode, overflow_modes, rett, _builder)
-    return rett
+    return ret
 
 
 # -----------------------
@@ -1622,7 +1622,7 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
 
 @builtin
 def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", cache_modifier="", eviction_policy="",
-         volatile=False, _builder=None):
+         volatile=False, care_padding = True, _builder=None):
     """
     Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
 
@@ -1664,6 +1664,12 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     :type eviction_policy: str, optional
     :param volatile: changes volatile option in NVIDIA PTX
     :type volatile: bool, optional
+
+    :param care_padding: represents whether user cares about padding value or not, default is True, works as below:
+        1. if 'other' is not None, 'care_padding' takes no effect.
+        2. if 'other' is None and 'care_padding' = True, loaded tensor will fill zeroes on masked places.
+        3. if 'other' is None and 'care_padding' = False, masked places on loaded tensor will be random values, and tl.load may have a better performence.
+    :type care_padding: bool, optional
     """
     # `mask` and `other` can be constexpr
     mask = _constexpr_to_value(mask)
@@ -1676,8 +1682,12 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     cache_modifier = _constexpr_to_value(cache_modifier)
     eviction_policy = _constexpr_to_value(eviction_policy)
     volatile = _constexpr_to_value(volatile)
+    # flagtree backend specialization
+    from triton.runtime.driver import flagtree_backend_specialization
+    if flagtree_backend_specialization("enable_care_padding_load"):
+        care_padding = _constexpr_to_value(care_padding)
     return semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,
-                         volatile, _builder)
+                         volatile, care_padding, _builder)
 
 
 @builtin

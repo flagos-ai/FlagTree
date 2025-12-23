@@ -48,6 +48,7 @@ __all__  = [
     'block_shape_disable_check_power_of_two',
     'get_primitive_bitwidth',
     # language.core
+    "enable_care_padding_load",
     "ext_cast_set_overflow_modes",
     "ext_cast_check_overflow_mode",
     "ext_trans_unwrap_iterable",
@@ -74,6 +75,7 @@ __all__  = [
     "load_tensor_descriptor",
     "store_tensor_descriptor",
     "make_tensor_descriptor",
+    "gather_load",
     "dtype_to_ir",
     "parallel",
     "core_ext_spec_func_list",
@@ -156,6 +158,7 @@ __all__  = [
     "ceil",
     "fma",
     "_check_dtype",
+    "cdiv",
     "isnan",
     "isinf",
     "reciprocal",

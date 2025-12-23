@@ -1,5 +1,6 @@
 from functools import wraps
 from typing import List
+import numbers
 from triton.language import core
 from triton.language.math import _add_math_1arg_docstr, _add_math_2arg_docstr, _add_math_3arg_docstr
 from triton.language import semantic
@@ -326,3 +327,33 @@ def round(arg0, _builder=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("__hmf_roundf", core.dtype("fp32")),
         }, is_pure=True, _builder=_builder)
+
+@core.extern
+@_add_math_2arg_docstr("cdiv")
+@core._tensor_member_fn
+def cdiv(x, div, _builder=None):
+    if isinstance(x, core.constexpr):
+        x = x.value
+    if isinstance(div, core.constexpr):
+        div = div.value
+    from math import ceil as py_ceil
+    if isinstance(x, numbers.Number) and isinstance(div, numbers.Number):
+        if isinstance(x, bool) or isinstance(div, bool):
+            raise TypeError("cdiv does not support boolean type")
+        if isinstance(x, int) and isinstance(div, int):
+            res = x //div
+            rem = x % div
+            return res + (1 if rem != 0 else 0)
+        else:
+            return py_ceil(x / div)
+
+    x = semantic.to_tensor(x, _builder)
+    div = semantic.to_tensor(div, _builder)
+    x_scalar_type = x.type.scalar
+    div_scalar_type = div.type.scalar
+    if x_scalar_type.is_bool() or div_scalar_type.is_bool():
+        raise TypeError("cdiv does not support boolean type")
+    else:
+        div_res = semantic.truediv(x, div, _builder)
+        cdiv_res = core.tensor(_builder.create_ceil(div_res.handle), div_res.type)
+        return semantic.cast(cdiv_res, x_scalar_type, _builder)

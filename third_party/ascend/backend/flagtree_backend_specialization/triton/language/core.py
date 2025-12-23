@@ -19,6 +19,9 @@ from triton.language.core import (
 
 from .tensor_descriptor import tensor_descriptor, tensor_descriptor_base
 
+def enable_care_padding_load():
+    return True
+
 def ext_cast_set_overflow_modes():
     return ["trunc", "saturate"]
 
@@ -326,6 +329,106 @@ def make_tensor_descriptor(
     """
     return semantic_spec.ext_semantic_make_tensor_descriptor(base, shape, strides, block_shape, _builder)
 
+@builtin
+def gather_load(
+    src,
+    gather_dim,
+    gather_indices,
+    src_shape,
+    src_offset,
+    read_shape,
+    _builder=None
+) -> tensor:
+    """
+    Parallel gather load operation from Global Memory to Unified Buffer.
+
+    Gathers data from multiple indices along a specified dimension and loads
+    them as tiles from GM directly to UB with zero-copy semantics.
+
+    :param src: Source tensor pointer (in GM)
+    :type src: tensor (pointer type)
+    :param gather_dim: The dimension along which to gather
+    :type gather_dim: int or constexpr
+    :param gather_indices: 1D tensor of indices to gather (in UB)
+    :type gather_indices: tensor
+    :param src_shape: Complete shape of the source tensor (can be int or tensor)
+    :type src_shape: List[Union[int, tensor]]
+    :param src_offset: Starting offset for reading (can be int or tensor)
+    :type src_offset: List[Union[int, tensor]]
+    :param read_shape: Size to read (tile shape, can be int or tensor)
+    :type read_shape: List[Union[int, tensor]]
+
+    **Constraints:**
+
+    - ``read_shape[gather_dim]`` must be ``-1``
+    - ``src_offset[gather_dim]`` can be ``-1`` (will be ignored)
+    - Boundary handling: ``src_offset + read_shape > src_shape`` automatically
+      truncates to ``src_shape`` boundary
+    - Does not check if ``gather_indices`` contains out-of-bounds values
+
+    **Example:**
+
+    .. code-block:: python
+
+        @triton.jit
+        def kernel(src_ptr, output_ptr, indices_ptr, M, N, D, ...):
+            # Load indices (e.g., [5, 10, 15, 20])
+            indices = tl.load(indices_ptr + tl.arange(0, 4))
+
+            # Example 1: Static shapes (constants)
+            # Gather load from dimension 1
+            # src: [8, 100, 256], gather at dim=1
+            # Read: [4, ?, 128] starting from [4, ?, 128]
+            result = tl.gather_load(
+                src_ptr,
+                gather_dim=1,
+                gather_indices=indices,
+                src_shape=[8, 100, 256],
+                src_offset=[4, -1, 128],
+                read_shape=[4, -1, 128]
+            )
+            # result shape: [4, 4, 128]
+
+            # Example 2: Dynamic shapes (variables)
+            result2 = tl.gather_load(
+                src_ptr,
+                gather_dim=1,
+                gather_indices=indices,
+                src_shape=[M, N, D],
+                src_offset=[4, -1, 128],
+                read_shape=[4, -1, 128]
+            )
+
+            tl.store(output_ptr + ..., result)
+
+    :return: Result tensor in UB with shape where ``gather_dim`` is replaced
+        by the length of ``gather_indices``
+    :rtype: tensor
+    """
+    gather_dim = _constexpr_to_value(gather_dim)
+
+    # Process shape parameters: convert constexpr to values, keep tensors as-is
+    def process_param(val):
+        """Convert constexpr to value, keep tensor or int as-is"""
+        if isinstance(val, tensor):
+            return val
+        else:
+            return _constexpr_to_value(val)
+
+    newsrc_shape = [
+        semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
+        for o in src_shape
+    ]
+    newsrc_offset = [
+        semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
+        for o in src_offset
+    ]
+    assert len(gather_indices.shape) == 1, "gather_indices must be a 1D tensor"
+
+    return semantic_spec.gather_load(
+        src, gather_dim, gather_indices, newsrc_shape, newsrc_offset, read_shape, _builder
+    )
+
 def dtype_to_ir(self, builder: ir.builder) -> ir.type:
     if self.name.startswith("fp8"):
         raise ValueError(f'unexpected type fp8.')
@@ -382,5 +485,5 @@ core_ext_spec_func_list = [
     "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__", "__lshift__",
     "__rshift__", "compile_hint", "sort", "multibuffer", "sync_block_all",
     "sync_block_set", "sync_block_wait", "load_tensor_descriptor",
-    "store_tensor_descriptor", "make_tensor_descriptor", "dtype_to_ir", "parallel"
+    "store_tensor_descriptor", "make_tensor_descriptor", "gather_load", "dtype_to_ir", "parallel"
 ]

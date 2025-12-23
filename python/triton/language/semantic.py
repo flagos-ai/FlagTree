@@ -316,12 +316,6 @@ def floordiv(input: tl.tensor | numbers.Number, other: tl.tensor | numbers.Numbe
     input, other = binary_op_type_checking_impl(input, other, builder, False, False, True, True)
     input_scalar_ty = input.type.scalar
     other_scalar_ty = other.type.scalar
-
-    # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_was_bool_to_int8_dtype', input)
-    flagtree_backend_specialization('check_was_bool_to_int8_dtype', other)
-
     if input_scalar_ty.is_int() and other_scalar_ty.is_int():
         ret_ty = integer_promote_impl(input_scalar_ty, other_scalar_ty)
         input = cast(input, ret_ty, builder)
@@ -349,12 +343,6 @@ def mod(input: tl.tensor | numbers.Number, other: tl.tensor | numbers.Number, bu
     scalar_ty = input.type.scalar
     other_scalar_ty = other.type.scalar
     # float % float
-
-    # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_was_bool_to_int8_dtype', input)
-    flagtree_backend_specialization('check_was_bool_to_int8_dtype', other)
-
     if scalar_ty.is_floating():
         # input - input.div(other, rounding_mode="floor") * other
         floor = math.floor(fdiv(input, other, False, builder), _builder=builder)
@@ -1142,7 +1130,7 @@ def _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, evicti
         builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile), dst_ty)
 
 
-def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder):
+def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, care_padding, builder):
     # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
     if not ptr.type.scalar.is_ptr():
         raise ValueError(f"Unsupported ptr type {ptr.type.__repr__()} in `tl.load`")
@@ -1157,7 +1145,7 @@ def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_
 
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    new_other = flagtree_backend_specialization('set_load_legacy_other_input', other, builder)
+    new_other = flagtree_backend_specialization('set_load_legacy_other_input', other, care_padding, builder)
     if new_other is not None:
         other = new_other
     # For a pointer of scalar, check the type of `mask` and `other`
@@ -1212,7 +1200,7 @@ def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_
 
 
 def load(ptr: tl.tensor, mask: Optional[tl.tensor], other: Optional[tl.tensor], boundary_check: Tuple,
-         padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool,
+         padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool, care_padding: bool,
          builder: ir.builder) -> tl.tensor:
     # Cache, eviction and padding options
     cache = _str_to_load_cache_modifier(cache_modifier)
@@ -1224,7 +1212,7 @@ def load(ptr: tl.tensor, mask: Optional[tl.tensor], other: Optional[tl.tensor], 
         return _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder)
     else:
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
-        return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder)
+        return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, care_padding, builder)
 
 
 def descriptor_load(desc_ptr: tl.tensor, offsets, cache_modifier: str, eviction_policy: str, type,
@@ -1394,11 +1382,6 @@ def atom_red_typechecking_impl(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, 
     element_ty = ptr.type.scalar.element_ty
     # flagtree backend specialization
     from triton.runtime.driver import flagtree_backend_specialization
-    if not flagtree_backend_specialization('atomic_disable_original_check') and element_ty is tl.float16 and op != 'add':
-        raise ValueError("atomic_" + op + " does not support fp16")
-    if not flagtree_backend_specialization('atomic_disable_original_check') and element_ty in [tl.int1, tl.int8, tl.int16, tl.bfloat16]:
-        raise ValueError("atomic_" + op + " does not support " + str(element_ty))
-
     # flagtree backend specialization
     flagtree_backend_specialization("ext_atomic_element_typechecking", element_ty, op)
 
