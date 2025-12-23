@@ -118,13 +118,13 @@ def test_op(BLOCK_M, BLOCK_N, BLOCK_K, SPLIT_K, NWARP, NSTAGE, M, N, K, AT, BT, 
             F8_FASTACCUM, ACC_DTYPE, OUTPUT_DTYPE):
     capability = torch.cuda.get_device_capability()
     if is_corex():
-        if "float8" in ADTYPE or "float8" in BDTYPE:
-            pytest.skip("Iluvatar devices do not support float8 for now")
         if (ADTYPE == "int8" and BDTYPE == "bfloat16") or (ADTYPE == "float16" and BDTYPE == "int8"):
             pytest.skip("Iluvatar devices do not support this for now")
+        if "float8e4b15" in (ADTYPE, BDTYPE):
+            pytest.skip("Iluvatar backend skips float8e4b15 until PyTorch exposes the dtype.")
         if capability[0] == 8:
-            if ADTYPE == "float32" or BDTYPE == "float32":
-                pytest.skip("matmuls do not support float32 on QS now")
+            if "float16" in ADTYPE + BDTYPE and "float32" in ADTYPE + BDTYPE:
+                pytest.skip("Do not support fp16/bf16 and fp32 mixed-precision on QS for now")
     else:
         if capability[0] < 7:
             pytest.skip("Only test tl.dot() on devices with sm >= 70")

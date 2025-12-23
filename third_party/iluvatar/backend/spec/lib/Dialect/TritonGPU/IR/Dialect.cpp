@@ -153,6 +153,11 @@ unsigned getTotalElemsPerThread(Type type) {
                                 tensorType.getElementType());
 }
 
+unsigned getTotalElemsPerThread(CorexDescType type) {
+  return getTotalElemsPerThread(type.getEncoding(), type.getShape(),
+                                type.getElementType());
+}
+
 SmallVector<unsigned> getThreadsPerWarp(Attribute layout) {
   if (auto distributedLayout = dyn_cast<DistributedEncodingTrait>(layout)) {
     return distributedLayout.getThreadsPerWarp();
@@ -329,6 +334,12 @@ SmallVector<unsigned> getOrder(Attribute layout) {
       order[i] = rank - 1 - i;
     if (auto mfmaLayout = dyn_cast<AMDMfmaEncodingAttr>(layout)) {
       if (mfmaLayout.getIsTransposed()) {
+        std::swap(order[rank - 2], order[rank - 1]);
+      }
+    }
+    if (auto tcuLayout = dyn_cast<IluvatarMmaEncodingAttr>(layout)) {
+      if (tcuLayout.getVersionMajor() == 1 &&
+          tcuLayout.getVersionMinor() == 4) {
         std::swap(order[rank - 2], order[rank - 1]);
       }
     }
@@ -540,7 +551,7 @@ LogicalResult BlockedEncodingAttr::verify(
     ArrayRef<unsigned> sizePerThread, ArrayRef<unsigned> threadsPerWarp,
     ArrayRef<unsigned> warpsPerCTA, ArrayRef<unsigned> order,
     CTALayoutAttr CTALayout, unsigned loadType,
-    ArrayRef<unsigned> smeWarpsPerCTA) {
+    ArrayRef<unsigned> smeWarpsPerCTA, bool smeMask) {
 #endif
   if (sizePerThread.size() != threadsPerWarp.size() ||
       threadsPerWarp.size() != warpsPerCTA.size() ||
@@ -1246,6 +1257,7 @@ Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
 #ifdef __ILUVATAR__
   unsigned loadType = 0;
   SmallVector<unsigned> smeWarpsPerCTA;
+  bool smeMask = false;
 #endif
   std::optional<SmallVector<unsigned>> CTAsPerCGA;
   std::optional<SmallVector<unsigned>> CTASplitNum;
@@ -1289,6 +1301,9 @@ Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
       if (parseIntArrayAttr(parser, attr, smeWarpsPerCTA, "smeWarpsPerCTA")
               .failed())
         return {};
+    } else if (attr.getName() == "smeMask") {
+      if (parseBool(parser, attr, smeMask, "smeMask").failed())
+        return {};
 #endif
     } else {
       parser.emitError(parser.getNameLoc(), "unexpected key: ")
@@ -1309,7 +1324,7 @@ Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
 #else
   return parser.getChecked<BlockedEncodingAttr>(
       parser.getContext(), sizePerThread, threadsPerWarp, warpsPerCTA, order,
-      *CTALayout, loadType, smeWarpsPerCTA);
+      *CTALayout, loadType, smeWarpsPerCTA, smeMask);
 #endif
 }
 
@@ -1323,7 +1338,8 @@ void BlockedEncodingAttr::print(mlir::AsmPrinter &printer) const {
 #else
           << ", order = [" << getOrder() << "]"
           << ", loadType = " << getLoadType() << ", smeWarpsPerCTA = ["
-          << getSmeWarpsPerCTA() << "]";
+          << getSmeWarpsPerCTA() << "]"
+          << ", smeMask = " << getSmeMask();
 #endif
 
   maybePrintCTALayout(getContext(), printer, getCTALayout(),
@@ -2643,7 +2659,7 @@ struct TritonGPUInferLayoutInterface
           applyPermutation(enc.getThreadsPerWarp(), order),
           applyPermutation(enc.getWarpsPerCTA(), order),
           applyPermutation(invOrderUnsigned, enc.getOrder()), *ctaLayout,
-          enc.getLoadType(), enc.getSmeWarpsPerCTA());
+          enc.getLoadType(), enc.getSmeWarpsPerCTA(), enc.getSmeMask());
 #endif
       return success();
     }
@@ -2985,7 +3001,7 @@ struct TritonGPUInferLayoutInterface
     ArrayRef<unsigned> smeWarpsPerCTA = src.getSmeWarpsPerCTA();
     dstEnc = BlockedEncodingAttr::get(
         src.getContext(), dstSizePerThread, dstThreadsPerWarp, dstWarpsPerCTA,
-        dstOrder, CTALayout, loadType, smeWarpsPerCTA);
+        dstOrder, CTALayout, loadType, smeWarpsPerCTA, src.getSmeMask());
 #endif
 
     return success();
@@ -3030,7 +3046,7 @@ struct TritonGPUInferLayoutInterface
                            append(enc.getCTASplitNum(), 1),
                            appendMinorDim(enc.getCTAOrder())),
         enc.getLoadType(), //
-        enc.getSmeWarpsPerCTA());
+        enc.getSmeWarpsPerCTA(), enc.getSmeMask());
 #endif
     return success();
   }
@@ -3085,7 +3101,7 @@ struct TritonGPUInferLayoutInterface
                            ArrayRef(enc.getCTAsPerCGA()).drop_back(1),
                            ArrayRef(enc.getCTASplitNum()).drop_back(1),
                            ArrayRef(enc.getCTAOrder()).drop_front(1)),
-        enc.getLoadType(), enc.getSmeWarpsPerCTA());
+        enc.getLoadType(), enc.getSmeWarpsPerCTA(), enc.getSmeMask());
 #endif
     return success();
   }

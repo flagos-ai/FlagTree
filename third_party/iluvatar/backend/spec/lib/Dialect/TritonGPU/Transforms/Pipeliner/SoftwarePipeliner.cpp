@@ -112,6 +112,20 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
   }
 
   void runOnOperation() override {
+#ifdef __ILUVATAR__
+    ModuleOp mod = getOperation();
+    auto i32_ty = IntegerType::get(mod->getContext(), 32);
+    int forcedStages = numStages;
+    if (auto attr =
+            mod->getAttrOfType<IntegerAttr>("triton_gpu.dot.num-stages"))
+      forcedStages = attr.getInt();
+    if (forcedStages <= 1) {
+      mod->setAttr("triton_gpu.dot.num-stages",
+                   IntegerAttr::get(i32_ty, llvm::APInt(32, 1)));
+      return;
+    }
+#endif
+
     SmallVector<scf::ForOp> loops;
     getOperation()->walk([&](scf::ForOp forOp) {
       // Bail out for loops with num_stage <= 1.
@@ -119,19 +133,13 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
         loops.push_back(forOp);
     });
 
-#ifndef __ILUVATAR__
-    if (loops.empty())
-      return;
-#else
-    ModuleOp mod = getOperation();
-    auto i32_ty = IntegerType::get(mod->getContext(), 32);
-
     if (loops.empty()) {
+#ifdef __ILUVATAR__
       mod->setAttr("triton_gpu.dot.num-stages",
                    IntegerAttr::get(i32_ty, llvm::APInt(32, 1)));
+#endif
       return;
     }
-#endif
 
     llvm::SmallSetVector<scf::ForOp, 8> outerLoops;
     for (scf::ForOp forOp : loops) {

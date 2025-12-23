@@ -54,10 +54,12 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     return op;
   }
   if (auto asyncCopyOp = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_PipeliningUtility_predicateOp_asyncCopyOp
     rewriter.setInsertionPoint(asyncCopyOp);
     Value mask = getPredMask(rewriter, asyncCopyOp.getSrc().getType(),
                              asyncCopyOp.getMask(), pred);
     asyncCopyOp.getMaskMutable().assign(mask);
+#endif
     return op;
   }
   if (auto loadOp = dyn_cast<tt::LoadOp>(op)) {

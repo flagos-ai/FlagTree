@@ -2,5 +2,6 @@
 #define ILUVATAR_TRITON_DIALECT_TRITONGPU_TRANSFORMS_PIPELININGUTILITY_H_
 
 #define FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_PipeliningUtility_predicateOp
+#define FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_PipeliningUtility_predicateOp_asyncCopyOp
 
 #endif // ILUVATAR_TRITON_DIALECT_TRITONGPU_TRANSFORMS_PIPELININGUTILITY_H_

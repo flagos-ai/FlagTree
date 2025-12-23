@@ -277,7 +277,13 @@ def TT_LoadOp : TT_Op<"load", [
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
                        "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "Value":$inputStride)>,
+        // SME load for iluvatar
+        OpBuilder<(ins "Value":$ptr, "triton::CacheModifier":$cache,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "Value":$inputStride)>,
+        // SME mask load for iluvatar
+        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other, "triton::CacheModifier":$cache,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "Value":$inputStride)>
     ];
 
     // // Specify `cacheModifier` and `evictionPolicy` explicitly in the

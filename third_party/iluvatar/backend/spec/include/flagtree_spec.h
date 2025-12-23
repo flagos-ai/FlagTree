@@ -14,6 +14,7 @@
 #include "triton/Conversion/TritonToTritonGPU/iluvatar_TritonToTritonGPUPass.h"
 #include "triton/Dialect/Triton/IR/iluvatar_Dialect.h"
 #include "triton/Dialect/Triton/IR/iluvatar_Ops.h"
+#include "triton/Dialect/Triton/IR/iluvatar_Types.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #include "triton/Dialect/Triton/Transforms/iluvatar_Combine.h"
 #include "triton/Dialect/Triton/Transforms/iluvatar_RewriteTensorPointer.h"

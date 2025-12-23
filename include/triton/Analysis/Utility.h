@@ -11,6 +11,10 @@
 #include "flagtree_spec.h"
 #endif
 
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
 namespace mlir {
 
 inline bool isZeroConst(Value v) {
@@ -24,6 +28,12 @@ inline bool isZeroConst(Value v) {
     return denseAttr.isSplat() && denseAttr.getSplatValue<APInt>().isZero();
   return false;
 }
+
+#ifdef FLAGTREE_SPEC_Analysis_Utility_supportMFMATypes
+// flagtree backend specialization hook: allow backends to override MFMA type
+// support checks.
+bool supportMFMATypes(Type a, Type b);
+#endif
 
 class ReduceOpHelper {
 public:

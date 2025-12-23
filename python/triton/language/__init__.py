@@ -249,6 +249,11 @@ __all__ = [
     "zeros_like",
 ]
 
+# flagtree backend specialization
+from triton.runtime.driver import spec
+
+__all__ = spec("language_modify_all", __all__) or __all__
+
 
 def str_to_ty(name):
     if name[0] == "*":

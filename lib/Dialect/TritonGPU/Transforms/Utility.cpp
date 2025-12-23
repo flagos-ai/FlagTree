@@ -25,6 +25,7 @@ namespace mlir {
 
 using namespace triton;
 
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility_mmaVersionToInstrShape
 SmallVector<unsigned, 3> mmaVersionToInstrShape(int version,
                                                 const ArrayRef<int64_t> &shape,
                                                 TensorOrMemDesc type,
@@ -76,6 +77,7 @@ SmallVector<unsigned, 3> mmaVersionToInstrShape(int version,
     return {0, 0};
   }
 }
+#endif
 
 bool isLoadFromTensorPtr(triton::LoadOp op) {
   return mlir::triton::isTensorPointerType(op.getPtr().getType());
@@ -683,6 +685,7 @@ static bool isFreeConvert(Operation *op) {
   return isMmaToMmaShortcut(convertOp.getSrc().getType(), convertOp.getType());
 }
 
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility_getConvertBackwardSlice
 LogicalResult
 getConvertBackwardSlice(Value root, SetVector<Value> &slice,
                         Attribute rootEncoding,
@@ -766,6 +769,7 @@ getConvertBackwardSlice(Value root, SetVector<Value> &slice,
   }
   return success();
 }
+#endif
 
 // TODO(thomas): this is duplicated with what is in GPUToLLVM
 //  Convert an \param index to a multi-dim coordinate given \param shape and

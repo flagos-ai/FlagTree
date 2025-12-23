@@ -56,6 +56,9 @@ elif is_hip() or is_corex():
 else:
     THREADS_PER_WARP = 32
 
+cc = torch.cuda.get_device_capability()
+cc = cc[0] * 10 + cc[1]
+
 
 def _bitwidth(dtype: str) -> int:
     # ex.: "int64" -> 64
@@ -2493,7 +2496,7 @@ def test_scan_layouts(M, N, src_layout, axis, device):
 
     ir = f"""
     #blocked = {src_layout}
-    module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "triton_gpu.num-warps" = 4 : i32, "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
+    module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "triton_gpu.num-warps" = 4 : i32, triton_gpu.target = "cuda:{cc}", "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
     tt.func public @kernel_0d1d(%arg0: !tt.ptr<i32> {{tt.divisibility = 16 : i32}}, %arg1: !tt.ptr<i32> {{tt.divisibility = 16 : i32}}) {{
       %cst = arith.constant dense<{N}> : tensor<{M}x1xi32, #blocked>
       %0 = tt.make_range {{end = {M} : i32, start = 0 : i32}} : tensor<{M}xi32, #triton_gpu.slice<{{dim = 1, noWarpReduce=false, parent = #blocked}}>>
@@ -2648,7 +2651,7 @@ def test_reduce_layouts(M, N, src_layout, axis, epilogue_kind, dtype_str, reduce
     #blocked = {blocked}
     #src = {src_layout}
     #one_d_layout = {one_d_layout}
-    module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "triton_gpu.num-warps" = {num_warps} : i32, "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
+    module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "triton_gpu.num-warps" = {num_warps} : i32, triton_gpu.target = "cuda:{cc}", "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
     tt.func public @kernel_0d1d2c3d4c(%arg0: !tt.ptr<{ty}> {{tt.divisibility = 16 : i32}}, %arg1: i32 {{tt.divisibility = 16 : i32}}, %arg2: !tt.ptr<{ty}> {{tt.divisibility = 16 : i32}}) {{
         %0 = tt.make_range {{end = {M} : i32, start = 0 : i32}} : tensor<{M}xi32, #{GPU_DIALECT}.slice<{{dim = 1, noWarpReduce=false, parent = #blocked}}>>
         %1 = tt.expand_dims %0 {{axis = 1 : i32}} : tensor<{M}xi32, #{GPU_DIALECT}.slice<{{dim = 1, noWarpReduce=false, parent = #blocked}}>> -> tensor<{M}x1xi32, #blocked>
@@ -2707,7 +2710,7 @@ def test_store_op(M, src_layout, device):
 
     ir = f"""
     #src = {src_layout}
-    module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "{GPU_DIALECT}.num-warps" = 4 : i32, "{GPU_DIALECT}.num-ctas" = 1 : i32, "{GPU_DIALECT}.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
+    module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "{GPU_DIALECT}.num-warps" = 4 : i32, {GPU_DIALECT}.target = "cuda:{cc}", "{GPU_DIALECT}.num-ctas" = 1 : i32, "{GPU_DIALECT}.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
         tt.func public @kernel(%arg0: !tt.ptr<f32> {{tt.divisibility = 16 : i32}}, %arg1: !tt.ptr<f32> {{tt.divisibility = 16 : i32}}) {{
             %0 = tt.make_range {{end = {M} : i32, start = 0 : i32}} : tensor<{M}xi32, #{GPU_DIALECT}.slice<{{dim = 1, noWarpReduce=false, parent = #src}}>>
             %1 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<{M}x!tt.ptr<f32>, #{GPU_DIALECT}.slice<{{dim = 1, noWarpReduce=false, parent = #src}}>>
@@ -2759,7 +2762,7 @@ def test_convert1d(M, src_layout, dst_layout, src_dim, dst_dim, device):
     ir = f"""
     #dst = {dst_layout}
     #src = {src_layout}
-    module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "{GPU_DIALECT}.num-warps" = 4 : i32, "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
+    module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "{GPU_DIALECT}.num-warps" = 4 : i32, {GPU_DIALECT}.target = "cuda:{cc}", "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
         tt.func public @kernel(%arg0: !tt.ptr<i32> {{tt.divisibility = 16 : i32}}, %arg1: !tt.ptr<i32> {{tt.divisibility = 16 : i32}}) {{
             %0 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<{M}x!tt.ptr<i32>, #{GPU_DIALECT}.slice<{{dim = {src_dim}, noWarpReduce=false, parent = #src}}>>
             %1 = tt.make_range {{end = {M} : i32, start = 0 : i32}} : tensor<{M}xi32, #{GPU_DIALECT}.slice<{{dim = {src_dim}, noWarpReduce=false, parent = #src}}>>
@@ -2829,7 +2832,7 @@ def test_chain_reduce(M, N, src_layout, op, device, first_axis):
         tt.reduce.return %14 : i32"""
     ir = f"""
     #src = {src_layout}
-    module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "{GPU_DIALECT}.num-warps" = 4 : i32, "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
+    module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "{GPU_DIALECT}.num-warps" = 4 : i32, {GPU_DIALECT}.target = "cuda:{cc}", "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
     tt.func public @sum_kernel_0d1d(%arg0: !tt.ptr<i32> {{tt.divisibility = 16 : i32}}, %arg1: !tt.ptr<i32> {{tt.divisibility = 16 : i32}}) {{
         %cst = arith.constant dense<{N}> : tensor<{M}x1xi32, #src>
         %0 = tt.make_range {{end = {M} : i32, start = 0 : i32}} : tensor<{M}xi32, #{GPU_DIALECT}.slice<{{dim = 1, noWarpReduce=false, parent = #src}}>>
@@ -3074,11 +3077,11 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
             if is_corex():
                 if in_dtype == 'float8e4nv' or in_dtype == "float8e5":
                     pytest.skip("float8e5/float8e4nv not supported on iluvatar devices")
-                if out_dtype != "float32":
-                    pytest.skip("iluvatar devices only support out_dtype==float32")
+                if out_dtype == "float16":
+                    pytest.skip("iluvatar devices do not support out_dtype==float16")
                 if capability[0] == 8:
-                    if in_dtype == 'float32' or in_dtype == 'int8':
-                        pytest.skip("tl.dot do not support float32 or int8 on QS now")
+                    if in_dtype == 'int8':
+                        pytest.skip("tl.dot do not support int8 on QS now")
                     if out_dtype == 'float16':
                         pytest.skip("tl.dot do not support out_dtype=float16 on QS now)")
                     if in_dtype == 'bfloat16':
@@ -4909,10 +4912,8 @@ def test_convert2d(M, N, src_layout, interm_layout, dst_layout, dtype, device):
     """
 
     if is_corex():
-        cc = torch.cuda.get_device_capability()
-        CC_INT = cc[0] * 10 + cc[1]
         ir = layouts + f"""
-                module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "triton_gpu.num-warps" = 4 : i32, "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32, triton_gpu.target = "cuda:{CC_INT}"}} {{
+                module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "triton_gpu.num-warps" = 4 : i32, "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32, triton_gpu.target = "cuda:{cc}"}} {{
             tt.func public @kernel_0d1d(%arg0: !tt.ptr<f16> {{tt.divisibility = 16 : i32}}, %arg1: !tt.ptr<f16> {{tt.divisibility = 16 : i32}}) {{
                 %cst = arith.constant dense<{N}> : tensor<{M}x1xi32, #src>
                 %0 = tt.make_range {{end = {M} : i32, start = 0 : i32}} : tensor<{M}xi32, #triton_gpu.slice<{{dim = 1, noWarpReduce=false, parent = #src}}>>
@@ -4936,7 +4937,7 @@ def test_convert2d(M, N, src_layout, interm_layout, dst_layout, dtype, device):
             """
     else:
         ir = layouts + f"""
-        module attributes {{"triton_gpu.num-warps" = 4 : i32, "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
+        module attributes {{"triton_gpu.num-warps" = 4 : i32, "triton_gpu.num-ctas" = 1 : i32, triton_gpu.target = "cuda:{cc}", "triton_gpu.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
     tt.func public @kernel_0d1d(%arg0: !tt.ptr<f16> {{tt.divisibility = 16 : i32}}, %arg1: !tt.ptr<f16> {{tt.divisibility = 16 : i32}}) {{
         %cst = arith.constant dense<{N}> : tensor<{M}x1xi32, #src>
         %0 = tt.make_range {{end = {M} : i32, start = 0 : i32}} : tensor<{M}xi32, #triton_gpu.slice<{{dim = 1, noWarpReduce=false, parent = #src}}>>
@@ -5032,7 +5033,7 @@ def test_convertmma2mma(M, N, mma_pair, dtype, device):
         """
 
         ir = layouts + f"""
-        module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "triton_gpu.num-warps" = {num_warps} : i32, "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = 32 : i32}} {{
+        module attributes {{"triton_gpu.dot.num-stages" = 1 : i32, "triton_gpu.num-warps" = {num_warps} : i32, triton_gpu.target = "cuda:{cc}", "triton_gpu.num-ctas" = 1 : i32, "triton_gpu.threads-per-warp" = 32 : i32}} {{
         tt.func public @kernel_0d1d(%arg0: !tt.ptr<f16> {{tt.divisibility = 16 : i32}}, %arg1: !tt.ptr<f16> {{tt.divisibility = 16 : i32}}) {{
         %cst = arith.constant dense<{N}> : tensor<{M}x1xi32, #src>
         %0 = tt.make_range {{end = {M} : i32, start = 0 : i32}} : tensor<{M}xi32, #triton_gpu.slice<{{dim = 1, noWarpReduce=false, parent = #src}}>>

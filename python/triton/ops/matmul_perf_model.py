@@ -180,5 +180,6 @@ def early_config_prune(configs, named_args, **kwargs):
             pruned_configs.append(random_config)
             # flagtree backend specialization
             from triton.runtime.driver import spec
-            pruned_configs = spec("get_pruned_configs", capability, v, BLOCK_M, BLOCK_N, BLOCK_K) or pruned_configs
+            pruned_configs = spec("get_pruned_configs", capability, v, dtype, BLOCK_M, BLOCK_N,
+                                  BLOCK_K) or pruned_configs
     return pruned_configs

@@ -26,14 +26,15 @@ public:
 
   AxisInfo(DimVectorT contiguity, DimVectorT divisibility, DimVectorT constancy,
            DimVectorT corexFlag)
-      : AxisInfo(contiguity, divisibility, constancy, std::nullopt, corexFlag) {
-  }
+      : AxisInfo(contiguity, divisibility, constancy, std::nullopt, corexFlag,
+                 0) {}
 
   AxisInfo(DimVectorT contiguity, DimVectorT divisibility, DimVectorT constancy,
-           std::optional<int64_t> constantValue, DimVectorT corexFlag)
+           std::optional<int64_t> constantValue, DimVectorT corexFlag,
+           int64_t stride = 0)
       : contiguity(contiguity), divisibility(divisibility),
         constancy(constancy), corexFlag(corexFlag),
-        constantValue(constantValue) {
+        constantValue(constantValue), stride(stride) {
     assert(divisibility.size() == contiguity.size());
     assert(constancy.size() == contiguity.size());
   }
@@ -111,6 +112,7 @@ public:
   // accelerate data loading.
   int64_t getCorexFlag(size_t dim) const { return corexFlag[dim]; }
   const DimVectorT &getCorexFlag() const { return corexFlag; }
+  int64_t getStride() const { return stride; }
 
   int getRank() const { return contiguity.size(); }
 
@@ -125,7 +127,8 @@ public:
   bool operator==(const AxisInfo &other) const {
     return contiguity == other.contiguity &&
            divisibility == other.divisibility && constancy == other.constancy &&
-           corexFlag == other.corexFlag && constantValue == other.constantValue;
+           corexFlag == other.corexFlag &&
+           constantValue == other.constantValue && stride == other.stride;
   }
 
   static AxisInfo getPessimisticValueState(Value value);
@@ -148,6 +151,7 @@ public:
       os << *constantValue;
     else
       os << "<none>";
+    os << ", stride_value = " << stride;
   }
 
 private:
@@ -155,9 +159,9 @@ private:
   DimVectorT divisibility;
   DimVectorT constancy;
   // The constant value of the lattice if we can infer it.
-
   std::optional<int64_t> constantValue;
   DimVectorT corexFlag;
+  int64_t stride;
 };
 
 } // namespace mlir::triton

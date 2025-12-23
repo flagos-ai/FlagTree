@@ -241,7 +241,7 @@ class MUSABackend(BaseBackend):
             print("// -----// LLVM IR")
             print(src)
 
-        opt_option = "-mtgpu-enable-const-calc=1 -mtgpu-if-convert=1 -mtgpu-tiny-offset-hint=1 -mtgpu-alloc-shared-memory-from-zero=1"
+        opt_option = "-mtgpu-enable-const-calc=1 -mtgpu-tiny-offset-hint=0 -mtgpu-alloc-shared-memory-from-zero=1 -mtgpu-if-convert=0 -mtgpu-combine-instr-with-burst=0 -mtgpu-combine-fop-instr=0"
         if (os.environ.get("MUSA_ENABLE_LLC_OPT", "0") == "1"):
             opt_option = "-mtgpu-opt-level=1"
 

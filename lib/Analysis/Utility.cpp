@@ -431,6 +431,7 @@ static bool supportMFMAGranularity(int m, int n, int k) {
   return false;
 }
 
+#ifndef FLAGTREE_SPEC_Analysis_Utility_supportMFMATypes
 bool supportMFMATypes(Type a, Type b) {
   if (a.getIntOrFloatBitWidth() != b.getIntOrFloatBitWidth())
     return false;
@@ -458,6 +459,7 @@ bool supportMFMATypes(Type a, Type b) {
     return false;
   return true;
 }
+#endif
 
 bool supportMFMA(triton::DotOp op) {
   auto aTy = cast<RankedTensorType>(op.getA().getType());

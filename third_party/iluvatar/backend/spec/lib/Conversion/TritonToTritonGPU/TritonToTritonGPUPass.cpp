@@ -5,14 +5,19 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Index/IR/IndexDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "llvm/ADT/APSInt.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <numeric>
 
 #define GEN_PASS_CLASSES
@@ -39,6 +44,84 @@ namespace {
 using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::triton::gpu;
+
+#ifdef __ILUVATAR__
+constexpr static char AttrFp8NumStageWarned[] =
+    "triton.iluvatar.fp8.num-stage.warned";
+
+static bool typeIncludesFp8(Type type) {
+  if (!type)
+    return false;
+  if (auto floatTy = dyn_cast<FloatType>(type))
+    return floatTy.isFloat8E4M3FN() || floatTy.isFloat8E4M3FNUZ() ||
+           floatTy.isFloat8E5M2() || floatTy.isFloat8E5M2FNUZ();
+  if (auto shapedTy = dyn_cast<ShapedType>(type))
+    return typeIncludesFp8(shapedTy.getElementType());
+  if (auto ptrTy = dyn_cast<triton::PointerType>(type))
+    return typeIncludesFp8(ptrTy.getPointeeType());
+  if (auto memDescTy = dyn_cast<triton::MemDescType>(type))
+    return typeIncludesFp8(memDescTy.getElementType());
+  return false;
+}
+
+static bool valueOriginatesFromFp8(Value val, DenseSet<Operation *> &visited) {
+  if (typeIncludesFp8(val.getType()))
+    return true;
+  Operation *def = val.getDefiningOp();
+  if (!def || !visited.insert(def).second)
+    return false;
+  if (auto fpCast = dyn_cast<triton::FpToFpOp>(def)) {
+    if (typeIncludesFp8(fpCast.getSrc().getType()))
+      return true;
+    return valueOriginatesFromFp8(fpCast.getSrc(), visited);
+  }
+  for (Value operand : def->getOperands()) {
+    if (!operand.getType().isa<RankedTensorType>())
+      continue;
+    if (valueOriginatesFromFp8(operand, visited))
+      return true;
+  }
+  return false;
+}
+
+static bool valueOriginatesFromFp8(Value val) {
+  DenseSet<Operation *> visited;
+  return valueOriginatesFromFp8(val, visited);
+}
+
+static bool dotConsumesFp8(triton::DotOp dot) {
+  return valueOriginatesFromFp8(dot.getOperand(0)) ||
+         valueOriginatesFromFp8(dot.getOperand(1));
+}
+
+static bool moduleHasFp8Dot(ModuleOp mod) {
+  bool needsClamp = false;
+  mod.walk([&](triton::DotOp dot) -> WalkResult {
+    if (dotConsumesFp8(dot)) {
+      needsClamp = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return needsClamp;
+}
+
+static void emitFp8StageOverrideWarning(ModuleOp mod, int32_t requested,
+                                        int32_t forced) {
+  if (mod->hasAttr(AttrFp8NumStageWarned))
+    return;
+  std::string msg =
+      (llvm::Twine("num_stages>1 requested for fp8 kernels but only ") +
+       llvm::Twine(forced) +
+       llvm::Twine(" stage is supported on the ILUVATAR backend; forcing "
+                   "num_stages=") +
+       llvm::Twine(forced) + llvm::Twine("."))
+          .str();
+  mod.emitWarning() << msg;
+  llvm::errs() << "[Triton][ILUVATAR] " << msg << "\n";
+  mod->setAttr(AttrFp8NumStageWarned, UnitAttr::get(mod.getContext()));
+}
+#endif
 
 // pass named attrs (e.g., tt.contiguity) from Triton to Triton
 static void addNamedAttrs(Operation *op, DictionaryAttr dictAttrs) {
@@ -192,7 +275,7 @@ struct TritonExpandDimsPattern
     triton::gpu::BlockedEncodingAttr retEncoding =
         triton::gpu::BlockedEncodingAttr::get(
             getContext(), retSizePerThread, retThreadsPerWarp, retWarpsPerCTA,
-            retOrder, retCTALayout, false, smeCTA);
+            retOrder, retCTALayout, false, smeCTA, false);
     // convert operand to slice of return type
     Attribute newArgEncoding = triton::gpu::SliceEncodingAttr::get(
         getContext(), op.getAxis(), retEncoding, false);
@@ -343,8 +426,8 @@ struct TritonCatPattern : public OpConversionPattern<triton::CatOp> {
     triton::gpu::BlockedEncodingAttr newRetEncoding =
         triton::gpu::BlockedEncodingAttr::get(
             getContext(), newRetSizePerThread, retThreadsPerWarp,
-            retWarpsPerCTA, retOrder, retEncoding.getCTALayout(), false,
-            smeCTA);
+            retWarpsPerCTA, retOrder, retEncoding.getCTALayout(), false, smeCTA,
+            false);
 #else
     triton::gpu::BlockedEncodingAttr newRetEncoding =
         triton::gpu::BlockedEncodingAttr::get(
@@ -426,7 +509,8 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
                              append(defaultEnc.getCTAsPerCGA(), 1),
                              append(defaultEnc.getCTASplitNum(), 1),
                              prepend(defaultEnc.getCTAOrder(), rank - 1)),
-          defaultEnc.getLoadType(), defaultEnc.getSmeWarpsPerCTA());
+          defaultEnc.getLoadType(), defaultEnc.getSmeWarpsPerCTA(),
+          defaultEnc.getSmeMask());
 #else
           CTALayoutAttr::get(getContext(),
                              append(defaultEnc.getCTAsPerCGA(), 1),
@@ -852,10 +936,17 @@ public:
     }
     mod->setAttr(AttrTargetName,
                  StringAttr::get(context, this->target.getValue()));
-
+#ifdef __ILUVATAR__
+    int32_t effectiveNumStages = numStages.getValue();
+    if (effectiveNumStages > 1 && moduleHasFp8Dot(mod))
+      effectiveNumStages = 1;
+    if (effectiveNumStages != numStages.getValue())
+      emitFp8StageOverrideWarning(mod, numStages.getValue(),
+                                  effectiveNumStages);
+#endif
 #ifdef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass_ConvertTritonToTritonGPU_setAttrNumStagesForDot
     ConvertTritonToTritonGPU_setAttrNumStagesForDot(mod, i32_ty,
-                                                    numStages.getValue());
+                                                    effectiveNumStages);
 #endif
 
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))

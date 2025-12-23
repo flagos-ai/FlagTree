@@ -703,7 +703,8 @@ for
     // CTAOrder=[n,n-1,...,0]).
     "CTALayoutAttr":$CTALayout,
     "unsigned":$loadType,
-    ArrayRefParameter<"unsigned">:$smeWarpsPerCTA
+    ArrayRefParameter<"unsigned">:$smeWarpsPerCTA,
+    "bool":$smeMask
   );
   let genVerifyDecl = 1;
 
@@ -743,7 +744,7 @@ for
       threadsPerWarp[order[rank - 1]] = numThreadsPerWarp / prevLanes;
       warpsPerCTA[order[rank - 1]] = numWarps / prevWarps;
 
-      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout, 0, smeWpt);
+      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout, 0, smeWpt, false);
     }]>,
 
     AttrBuilder<(ins "ArrayRef<int64_t>":$shape,
@@ -785,13 +786,14 @@ for
                       "ArrayRef<unsigned>":$sizePerThread,
                       "ArrayRef<unsigned>":$threadsPerWarp,
                       "ArrayRef<unsigned>":$warpsPerCTA,
-                      "unsigned":$numCTAs), [{
+                      "unsigned":$numCTAs,
+                      "bool":$mask), [{
       SmallVector<unsigned> wpt({1, 1});
       auto impl = load_AttrBuilder_func("iluvatar", "blockedLayoutBuilder");
       CTALayoutAttr CTALayout = impl(loadType, numWarps, eltTy,
           shape, order, sizePerThread, threadsPerWarp, warpsPerCTA, numCTAs,
           wpt, context);
-      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout, loadType, wpt);
+      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout, loadType, wpt, mask);
     }]>
     #endif
 
@@ -1249,7 +1251,7 @@ def IluvatarMmaEncodingAttr : DistributedEncoding<"IluvatarMmaEncoding", "iluvat
   let mnemonic = "iluvatar_mma";
 
   let description = [{
-An encoding for tensors that have been produced by tensor cores.
+ An encoding for tensors that have been produced by tensor cores.
 
 }];
 
@@ -1283,8 +1285,11 @@ An encoding for tensors that have been produced by tensor cores.
       assert(isVolta());
       auto rank = getWarpsPerCTA().size();
       SmallVector<unsigned> contigPerThread(rank, 1);
-      if (isVolta() && getVersionMinor() == 1) {
-        contigPerThread[rank - 1] = 2;
+      if (isVolta()) {
+        if (getVersionMinor() == 1)
+          contigPerThread[rank - 1] = 2;
+        else if (getVersionMinor() == 4)
+          contigPerThread[rank - 2] = 2;
       }
       return contigPerThread;
     };

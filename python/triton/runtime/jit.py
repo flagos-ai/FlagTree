@@ -637,10 +637,6 @@ class JITFunction(KernelInterface[T]):
                    kwargs) or key
         kernel = self.cache[device].get(key, None)
 
-        # flagtree backend specialization
-        from triton.runtime.driver import spec
-        spec("is_JITFunction_support_cpu", *args)
-
         if kernel is None:
             # Kernel is not cached; we have to compile.
             target = driver.active.get_current_target()

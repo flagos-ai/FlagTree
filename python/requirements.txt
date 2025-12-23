@@ -5,3 +5,4 @@ GitPython
 pytest
 scipy
 filelock
+nanobind

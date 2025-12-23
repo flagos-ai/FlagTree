@@ -25,7 +25,7 @@ using emitBaseIndexForTCULayoutFunc = SmallVector<Value> (*)(
 DEFINE_LOAD_FUNC(emitBaseIndexForTCULayout)
 
 using remapOffsetFunc = Value (*)(Value, Value, RankedTensorType, bool,
-                                  Location, RewriterBase &, int, bool);
+                                  Location, RewriterBase &, int, bool, bool);
 DEFINE_LOAD_FUNC(remapOffset)
 
 namespace mlir {
@@ -57,7 +57,7 @@ Value getSwizzledSharedPtrs_backend(
     ArrayRef<Value> idx, triton::gpu::SharedEncodingAttr resSharedLayout,
     Type resElemTy, SharedMemoryObject smemObj, Type dstPtrTy, Value dstPtrBase,
     Value idxRow, Value idxCol, ArrayRef<unsigned> outOrder, unsigned perPhase,
-    Value strideRow, Value strideCol) {
+    Value strideRow, Value strideCol, bool use_trans) {
   bool isRow = outOrder[0] == 1;
   Value off = NULL;
   auto capability = getNVIDIAComputeCapability(
@@ -65,7 +65,7 @@ Value getSwizzledSharedPtrs_backend(
   if (resSharedLayout.getUseTcu() && outOrder.size() == 2) {
     DEFINE_CALL_LOAD_FUNC(iluvatar, remapOffset)
     off = func(idx[0], idx[1], srcTy, isRow, loc, rewriter, capability,
-               !perPhase);
+               !perPhase, use_trans);
   } else {
     off = add(mul(idxCol, strideCol), mul(idxRow, strideRow));
   }

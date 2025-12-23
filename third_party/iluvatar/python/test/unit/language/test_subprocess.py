@@ -43,9 +43,6 @@ def is_interpreter():
     ("device_print_pointer", "int32"),
 ])
 def test_print(func_type: str, data_type: str):
-    capability = torch.cuda.get_device_capability()
-    if capability[0] == 8 and data_type in ["float16", "float32"]:
-        pytest.skip("QS need vprint3.")
     proc = subprocess.Popen([sys.executable, print_path, func_type, data_type], stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, shell=False)
     outs, err = proc.communicate()

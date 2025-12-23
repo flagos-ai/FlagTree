@@ -468,7 +468,7 @@ Value getSwizzledSharedPtrs_backend(
     ArrayRef<Value> idx, triton::gpu::SharedEncodingAttr resSharedLayout,
     Type resElemTy, SharedMemoryObject smemObj, Type dstPtrTy, Value dstPtrBase,
     Value idxRow, Value idxCol, ArrayRef<unsigned> outOrder, unsigned perPhase,
-    Value strideRow, Value strideCol);
+    Value strideRow, Value strideCol, bool use_trans = false);
 #endif
 
 #ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared_outVec
@@ -1306,7 +1306,14 @@ inline DenseMap<unsigned, Value> getSwizzledSharedPtrs(
     Location loc, const TargetInfoBase &target, unsigned inVec,
     RankedTensorType srcTy, triton::gpu::SharedEncodingAttr resSharedLayout,
     Type resElemTy, SharedMemoryObject smemObj, RewriterBase &rewriter,
-    SmallVectorImpl<Value> &offsetVals, SmallVectorImpl<Value> &srcStrides) {
+    SmallVectorImpl<Value> &offsetVals,
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs_ARG
+    SmallVectorImpl<Value> &srcStrides) {
+#else
+    SmallVectorImpl<Value> &srcStrides,
+    FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs_ARG
+        spec_arg = false) {
+#endif
   // This utility computes the pointers for accessing the provided swizzled
   // shared memory layout `resSharedLayout`. More specifically, it computes,
   // for all indices (row, col) of `srcEncoding` such that idx % inVec = 0,
@@ -1405,7 +1412,11 @@ inline DenseMap<unsigned, Value> getSwizzledSharedPtrs(
     ret[elemIdx] = getSwizzledSharedPtrs_backend(
         loc, rewriter, srcTy, idx, resSharedLayout, resElemTy, smemObj,
         dstPtrTy, dstPtrBase, idxRow, idxCol, outOrder, perPhase, strideRow,
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs_ARG
         strideCol);
+#else
+        strideCol, spec_arg);
+#endif
 #else
     // extract dynamic/static offset for immediate offsetting
     unsigned immedateOffCol = 0;
@@ -1531,7 +1542,13 @@ inline void storeDistributedToShared(Value src, ArrayRef<Value> inVals,
                                      ArrayRef<Value> dstStrides, Value dst,
                                      Value smemBase, Type elemTy, Location loc,
                                      ConversionPatternRewriter &rewriter,
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared_ARG
                                      const TargetInfoBase &target) {
+#else
+                                     const TargetInfoBase &target,
+                                     FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_storeDistributedToShared_ARG
+                                         spec_arg = false) {
+#endif
   auto srcTy = cast<RankedTensorType>(src.getType());
   auto srcShape = srcTy.getShape();
   auto rank = srcShape.size();
@@ -1571,9 +1588,17 @@ inline void storeDistributedToShared(Value src, ArrayRef<Value> inVals,
 
   DenseMap<unsigned, Value> sharedPtrs =
       getSwizzledSharedPtrs(loc, target, inVec, srcTy, dstSharedLayout, elemTy,
+#ifndef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_Utility_getSwizzledSharedPtrs_ARG
                             smemObj, rewriter, offsetVals, srcStrides);
   LDBG("storeDistributedToShared: numElems = " << numElems << " minVec = "
                                                << minVec << " " << wordTy);
+#else
+                            smemObj, rewriter, offsetVals, srcStrides,
+                            spec_arg);
+  LDBG("storeDistributedToShared: numElems = " << numElems << " minVec = "
+                                               << minVec << " " << wordTy
+                                               << " spec_arg = " << spec_arg);
+#endif
   for (unsigned i = 0; i < numElems; ++i) {
     if (i % minVec == 0)
       word = undef(wordTy);

@@ -286,6 +286,19 @@ private:
         // Conversions from/to shared memory do not need scratch memory.
         return;
       }
+#ifdef FLAGTREE_SPEC_Analysis_Allocation_MmaToMmaScratchHook
+      {
+        size_t extraBytes = 0;
+        if (Analysis_Allocation_AllocationAnalysis_isMmaToMma(
+                op, srcEncoding, dstEncoding, scratchAlignment, extraBytes)) {
+          if (extraBytes > 0) {
+            maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(
+                op, extraBytes, scratchAlignment);
+          }
+          return;
+        }
+      }
+#endif
       // ConvertLayoutOp with both input/output non-shared_layout
       // TODO: Besides of implementing ConvertLayoutOp via shared memory, it's
       //       also possible to realize it with other approaches in restricted
