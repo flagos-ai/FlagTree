@@ -3,6 +3,14 @@ import shutil
 import glob
 
 
+def get_resources_url(resource_name):
+    ...
+
+
+def get_resources_hash(resource_name):
+    ...
+
+
 def get_package_data_tools():
     return ["mlu_compile.h", "mlu_compile.mlu", "mlu_compile.py", "mlu_link.py"]
 
