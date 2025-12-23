@@ -27,7 +27,8 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get update -y
           DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv git autotools-dev wget gcc g++ build-essential cmake ninja-build
           DEBIAN_FRONTEND=noninteractive apt-get install -y python3-dev pybind11-dev python3-distutils
-          pip3 install pybind11 -q
+          pip3 install --upgrade pip setuptools wheel
+          pip3 install pybind11
 
           wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
           dpkg -i cuda-keyring_1.1-1_all.deb
@@ -98,7 +99,10 @@ jobs:
           set -x
           pip uninstall -y triton
           git config --global --add safe.directory /__w/flagtree/flagtree
-          export CMAKE_MAKE_PROGRAM=$(which make)
+          export Python3_ROOT_DIR=/usr/bin/python3
+          export Python3_INCLUDE_DIR=/usr/include/python3.10
+          export CMAKE_MAKE_PROGRAM=$(which ninja)
+          export PIP_NO_CACHE_DIR=1
           cd /__w/flagtree/flagtree/python
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
