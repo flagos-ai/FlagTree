@@ -56,6 +56,12 @@ jobs:
       - name: Check if only docs files changed
         id: check_files
         run: |
+          # Extract current workflow file path from github.workflow_ref
+          # Format: owner/repo/.github/workflows/file.yml@ref
+          WORKFLOW_REF="${{ github.workflow_ref }}"
+          CURRENT_WORKFLOW=$(echo "$WORKFLOW_REF" | sed 's/.*\/\(\.github\/workflows\/[^@]*\)@.*/\1/')
+          echo "Current workflow file: $CURRENT_WORKFLOW"
+
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }})
           else
@@ -73,7 +79,7 @@ jobs:
                 continue
               fi
               echo "Checking file: '$file'"
-              if [[ "$file" == ".github/workflows/xpu-build-and-test.yml" ]]; then
+              if [[ "$file" == "$CURRENT_WORKFLOW" ]]; then
                 echo "  -> This workflow file changed, need to run build/test"
                 ONLY_DOCS_CHANGED=false
                 break
