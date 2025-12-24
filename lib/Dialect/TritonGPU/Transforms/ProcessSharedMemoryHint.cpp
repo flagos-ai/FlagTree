@@ -75,7 +75,7 @@ struct ProcessSharedMemoryHintPass
     auto context = ty.getContext();
     auto ctaLayout = triton::gpu::getCTALayout(ty.getEncoding());
     auto order = triton::gpu::getOrder(ty);
-    auto sharedEnc = triton::gpu::SwizzledSharedEncodingAttr::get(context, 1, 1, 1, order, ctaLayout);
+    auto sharedEnc = triton::gpu::SwizzledSharedEncodingAttr::get(context, 8, 1, 8, order, ctaLayout);
     auto sharedMemorySpace = triton::gpu::SharedMemorySpaceAttr::get(context);
     auto memdescType = triton::gpu::MemDescType::get(bufferShape, ty.getElementType(), sharedEnc, sharedMemorySpace, true);
 
