@@ -1619,7 +1619,7 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
 # Non-Atomic Memory Operations
 # -----------------------
 
-
+# flagtree backend specialization add new params: "care_padding"
 @builtin
 def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", cache_modifier="", eviction_policy="",
          volatile=False, care_padding = True, _builder=None):

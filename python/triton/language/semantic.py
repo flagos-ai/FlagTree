@@ -1130,6 +1130,7 @@ def _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, evicti
         builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile), dst_ty)
 
 
+# flagtree backend specialization add new params: "care_padding"
 def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, care_padding, builder):
     # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
     if not ptr.type.scalar.is_ptr():
@@ -1199,6 +1200,7 @@ def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_
     return ret
 
 
+# flagtree backend specialization add new params: "care_padding"
 def load(ptr: tl.tensor, mask: Optional[tl.tensor], other: Optional[tl.tensor], boundary_check: Tuple,
          padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool, care_padding: bool,
          builder: ir.builder) -> tl.tensor:
