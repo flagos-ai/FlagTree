@@ -52,7 +52,12 @@ jobs:
         if: success()
         run: echo "Checkout completed successfully"
 
+      - name: Check if only docs files changed
+        id: check_files
+        uses: ./.github/actions/check-docs-only
+
       - name: FlagTree Build on Cambricon
+        if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x

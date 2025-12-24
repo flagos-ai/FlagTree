@@ -47,6 +47,7 @@ cd python; python3 -m pip install -r requirements.txt
 cd python
 export FLAGTREE_BACKEND=backendxxx
 python3 -m pip install . --no-build-isolation -v
+cd; python3 -c 'import triton; print(triton.__path__)'
 ```
 
 ## 构建技巧
@@ -54,7 +55,7 @@ python3 -m pip install . --no-build-isolation -v
 自动下载依赖库的速度可能受限于网络环境，编译前可自行下载至缓存目录 ~/.flagtree（可通过环境变量 FLAGTREE_CACHE_DIR 修改），无需自行设置 LLVM_BUILD_DIR 等环境变量。 <br>
 各后端完整构建命令如下： <br>
 
-[iluvatar](https://github.com/FlagTree/flagtree/tree/main/third_party/iluvatar/)
+[iluvatar](https://github.com/FlagTree/flagtree/tree/main/third_party/iluvatar/) <br>
 对应的 Triton 版本为 3.1
 ```shell
 # 推荐使用镜像 Ubuntu 20.04
@@ -67,7 +68,7 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=iluvatar
 python3 -m pip install . --no-build-isolation -v
 ```
-[xpu (klx)](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/)
+[xpu (klx)](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/) <br>
 对应的 Triton 版本为 3.0
 ```shell
 # 推荐使用镜像（22GB）https://su.bcebos.com/klx-sdk-release-public/xpytorch/docker/ubuntu2004_v030/ubuntu_2004_x86_64_v30.tar
@@ -81,20 +82,27 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=xpu
 python3 -m pip install . --no-build-isolation -v
 ```
-[mthreads](https://github.com/FlagTree/flagtree/tree/main/third_party/mthreads/)
+[mthreads](https://github.com/FlagTree/flagtree/tree/main/third_party/mthreads/) <br>
 对应的 Triton 版本为 3.1
 ```shell
 # 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-mthreads
 mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
+# x64
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm19-glibc2.35-glibcxx3.4.30-x64_v0.4.0.tar.gz
 tar zxvf mthreads-llvm19-glibc2.35-glibcxx3.4.30-x64_v0.4.0.tar.gz
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.4.0.tar.gz
-tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.4.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x64_v0.4.1.tar.gz
+tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x64_v0.4.1.tar.gz
+# aarch64
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm19-glibc2.35-glibcxx3.4.30-aarch64_v0.4.0.tar.gz
+tar zxvf mthreads-llvm19-glibc2.35-glibcxx3.4.30-aarch64_v0.4.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-aarch64_v0.4.0.tar.gz
+tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-aarch64_v0.4.0.tar.gz
+#
 cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=mthreads
 python3 -m pip install . --no-build-isolation -v
 ```
-[aipu (arm npu)](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/)
+[aipu (arm npu)](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/) <br>
 对应的 Triton 版本为 3.3
 ```shell
 # 推荐使用镜像 Ubuntu 22.04
@@ -107,7 +115,7 @@ git checkout -b triton_v3.3.x origin/triton_v3.3.x
 export FLAGTREE_BACKEND=aipu
 python3 -m pip install . --no-build-isolation -v
 ```
-[tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/)
+[tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/) <br>
 对应的 Triton 版本为 3.3
 ```shell
 # 推荐使用镜像 Ubuntu 20.04
@@ -122,7 +130,7 @@ git checkout -b triton_v3.3.x origin/triton_v3.3.x
 export FLAGTREE_BACKEND=tsingmicro
 python3 -m pip install . --no-build-isolation -v
 ```
-[ascend](https://github.com/FlagTree/flagtree/blob/triton_v3.2.x/python/setup_tools/setup_helper.py)
+[ascend](https://github.com/FlagTree/flagtree/blob/triton_v3.2.x/third_party/ascend) <br>
 对应的 Triton 版本为 3.3，基于 aarch64 平台
 ```shell
 # 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.11-ascend
@@ -139,14 +147,14 @@ chmod +x Atlas-A3-cann-kernels_8.3.RC1.alpha001_linux-aarch64.run
 ./Atlas-A3-cann-kernels_8.3.RC1.alpha001_linux-aarch64.run --install
 # 构建安装
 mkdir -p ~/.flagtree/ascend; cd ~/.flagtree/ascend
-wget https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-b5cc222d-ubuntu-arm64.tar.gz
-tar zxvf llvm-b5cc222d-ubuntu-arm64.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-aarch64-python311-compat_v0.3.0.tar.gz
+tar zxvf llvm-a66376b0-ubuntu-aarch64-python311-compat_v0.3.0.tar.gz
 cd ${YOUR_CODE_DIR}/flagtree/python
 git checkout -b triton_v3.2.x origin/triton_v3.2.x
 export FLAGTREE_BACKEND=ascend
 python3 -m pip install . --no-build-isolation -v
 ```
-[hcu](https://github.com/FlagTree/flagtree/tree/main/third_party/hcu/)
+[hcu](https://github.com/FlagTree/flagtree/tree/main/third_party/hcu/) <br>
 对应的 Triton 版本为 3.0
 ```shell
 # 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-hcu
@@ -157,7 +165,7 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=hcu
 python3 -m pip install . --no-build-isolation -v
 ```
-[enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/)
+[enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) <br>
 对应的 Triton 版本为 3.3
 ```shell
 # 推荐使用镜像: https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.3.1.tar.gz
@@ -169,7 +177,7 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
-[nvidia](/third_party/nvidia/)
+[nvidia](/third_party/nvidia/) <br>
 使用默认的构建命令，可以构建安装 nvidia、amd、triton_shared cpu 后端：
 ```shell
 cd ${YOUR_LLVM_DOWNLOAD_DIR}

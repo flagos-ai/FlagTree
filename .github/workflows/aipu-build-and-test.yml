@@ -52,7 +52,12 @@ jobs:
         if: success()
         run: echo "Checkout completed successfully"
 
+      - name: Check if only docs files changed
+        id: check_files
+        uses: ./.github/actions/check-docs-only
+
       - name: FlagTree Build on AIPU
+        if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x
@@ -63,6 +68,7 @@ jobs:
           MAX_JOBS=32 python3.10 -m pip install . --no-build-isolation -v
 
       - name: FlagTree Test on AIPU
+        if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x

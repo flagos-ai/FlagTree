@@ -1,0 +1,53 @@
+name: 'Check if only docs changed'
+description: 'Check if only documentation files were modified'
+outputs:
+  only_docs_changed:
+    description: 'Whether only documentation files were changed'
+    value: ${{ steps.check_files.outputs.only_docs_changed }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check if only docs files changed
+      id: check_files
+      shell: bash
+      run: |
+        # Extract current workflow file path from github.workflow_ref
+        # Format: owner/repo/.github/workflows/file.yml@ref
+        WORKFLOW_REF="${{ github.workflow_ref }}"
+        CURRENT_WORKFLOW=$(echo "$WORKFLOW_REF" | sed 's/.*\/\(\.github\/workflows\/[^@]*\)@.*/\1/')
+        echo "Current workflow file: $CURRENT_WORKFLOW"
+
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }})
+        else
+          FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+        fi
+
+        ONLY_DOCS_CHANGED=true
+        if [ -z "$FILES" ]; then
+          echo "No files changed"
+          ONLY_DOCS_CHANGED=false
+        else
+          while IFS= read -r file; do
+            # Skip empty lines
+            if [ -z "$file" ]; then
+              continue
+            fi
+            if [[ "$file" == "$CURRENT_WORKFLOW" ]]; then
+              echo "'$file' -> This workflow file changed, need to run build/test"
+              ONLY_DOCS_CHANGED=false
+              break
+            fi
+            if [[ ! "$file" =~ (\.(md|yml|txt)$|CODEOWNERS$) ]]; then
+              echo "'$file' -> Not a docs file, need to run build/test"
+              ONLY_DOCS_CHANGED=false
+              break
+            fi
+          done <<< "$FILES"
+        fi
+
+        echo "only_docs_changed=$ONLY_DOCS_CHANGED" >> $GITHUB_OUTPUT
+        if [ "$ONLY_DOCS_CHANGED" == "true" ]; then
+          echo "✅ Only documentation files were modified. Will skip build and test."
+        fi
