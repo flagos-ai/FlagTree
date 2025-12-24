@@ -50,23 +50,6 @@ class BackendInstaller:
         dir_mapping = {"mlu": "cambricon"}
         actual_dir_name = dir_mapping.get(backend_name, backend_name)
 
-        if backend_name == "ascend":
-            from setup_tools.utils.ascend import submodules
-            import git
-
-            for module in submodules:
-                if os.path.exists(module.dst_path):
-                    shutil.rmtree(module.dst_path)
-
-                print(f"Clone {module.name} into {module.dst_path} ...")
-                repo = git.Repo.clone_from(module.url, module.dst_path)
-                if module.commit_id:
-                    repo.git.checkout(module.commit_id)
-                elif module.branch:
-                    repo.git.checkout(module.branch)
-                elif module.tag:
-                    repo.git.checkout(module.tag)
-    
         # Initialize submodule if there is one for in-tree backends.
         if not is_external:
             root_dir = os.path.join(os.pardir, "third_party")
@@ -77,8 +60,7 @@ class BackendInstaller:
                 # Check if the submodule is defined in .gitmodules
                 check_result = subprocess.run(
                     ["git", "config", "-f", ".gitmodules", "--get-regexp", f"submodule.*{actual_dir_name}.path"],
-                    check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=os.pardir
-                )
+                    check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=os.pardir)
                 # Only execute git submodule update for actual git submodules
                 if check_result.returncode == 0:
                     subprocess.run(["git", "submodule", "update", "--init", f"{actual_dir_name}"], check=True,
