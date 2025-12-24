@@ -271,7 +271,7 @@ class CUDABackend(BaseBackend):
         nvidia.passes.ttnvgpuir.add_optimize_descriptor_encoding(pm)
         passes.ttir.add_loop_aware_cse(pm)
         if capability // 10 in [8, 9]:
-            passes.ttgpuir.add_fuse_nested_loops(pm)
+            passes.ttgpuir.add_fuse_nested_loops(pm, opt.num_stages)
             passes.common.add_canonicalizer(pm)
             passes.ttir.add_triton_licm(pm)
             passes.common.add_canonicalizer(pm)

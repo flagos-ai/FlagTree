@@ -1035,8 +1035,14 @@ void FuseNestedLoopsPass::runOnOperation() {
     SmallVector<LoopNest> nests;
     findLoopNests(func, nests);
     for (LoopNest &nest : nests) {
-      if (!shouldFuse(nest))
-        continue;
+      if (!shouldFuse(nest)) {
+        scf::ForOp outer = nest.root->loop;
+        Location loc = outer.getLoc();
+        ImplicitLocOpBuilder b(loc, outer);
+
+        outer->setAttr(mlir::triton::kNumStagesAttrName, b.getI32IntegerAttr(numStages));
+        continue; 
+      }
       if (!nest.root->loop->hasAttr(kAlwaysFuseAttrName) &&
           failed(preprocessLoopNest(nest, domInfo)))
         continue;

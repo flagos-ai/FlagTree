@@ -94,6 +94,11 @@ def TritonGPUFuseNestedLoops : Pass<"tritongpu-fuse-nested-loops", "mlir::Module
     "mlir::arith::ArithDialect",
     "mlir::ub::UBDialect",
   ];
+
+  let options = [
+    Option<"numStages", "num-stages", "int32_t", /*default*/"3",
+           "number of pipeline stages">
+  ];
 }
 
 def TritonGPUAutomaticWarpSpecialization : Pass<"tritongpu-automatic-warp-specialization", "mlir::ModuleOp"> {

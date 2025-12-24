@@ -101,6 +101,11 @@ SmallVector<unsigned, 4> argSort(const SmallVector<int64_t> &arr) {
 }
 
 Value getMemAccessPtr(Operation *op) {
+  if (auto es = dyn_cast<triton::SplitKExtractSliceOp>(op)) {
+    auto src = es.getSrc();
+    auto loadOp = src.getDefiningOp<triton::LoadOp>();
+    return loadOp.getPtr();
+  }
   if (auto ld = dyn_cast<triton::LoadOp>(op))
     return ld.getPtr();
   if (auto atomic = dyn_cast<triton::AtomicRMWOp>(op))
@@ -1131,8 +1136,13 @@ getSharedEncIfAllUsersAreDotEnc(Value val, bool &incompatible) {
                .has_value())
         return std::nullopt;
     } else {
-      if (!isa<ttg::LocalLoadOp, ttg::ConvertLayoutOp>(user))
+      if (!isa<ttg::LocalLoadOp, ttg::ConvertLayoutOp, tt::SplitKExtractSliceOp>(user))
         return std::nullopt;
+
+      if (auto op = dyn_cast<triton::SplitKExtractSliceOp>(user)) {
+        user = *user->getUsers().begin();
+      }
+
       auto srcTy = cast<triton::gpu::TensorOrMemDesc>(val.getType());
       auto dstTy = cast<RankedTensorType>(user->getResult(0).getType());
 

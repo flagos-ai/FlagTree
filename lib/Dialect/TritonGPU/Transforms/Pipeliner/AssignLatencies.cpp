@@ -27,6 +27,8 @@ namespace {
 
 // Return true if the preconditions for pipelining the loop are met.
 bool preCondition(scf::ForOp forOp) {
+  return true;
+
   // Skip loop with distance > 1 for now.
   // TODO: relax the constraint in the expander.
   if (loopHasDistGreaterThanOne(forOp))

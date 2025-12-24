@@ -31,6 +31,8 @@ bool hasGpuBarriers(scf::ForOp forOp) {
 
 // Return true if the preconditions for pipelining the loop are met.
 bool isSafeToPipeline(scf::ForOp forOp) {
+  return true;  
+
   // Skip loop with distance > 1.
   if (loopHasDistGreaterThanOne(forOp))
     return false;
