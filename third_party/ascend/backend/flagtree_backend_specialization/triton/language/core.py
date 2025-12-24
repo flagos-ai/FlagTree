@@ -425,7 +425,7 @@ def gather_load(
     ]
     assert len(gather_indices.shape) == 1, "gather_indices must be a 1D tensor"
 
-    return semantic_spec.gather_load(
+    return semantic_spec.ext_semantic_gather_load(
         src, gather_dim, gather_indices, newsrc_shape, newsrc_offset, read_shape, _builder
     )
 
