@@ -26,6 +26,15 @@ def install_extension(*args, **kargs):
     python_root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     dst_ext_path = os.path.join(python_root_dir, "triton/backends/ascend/triton-adapter-opt")
     shutil.copy(src_ext_path, dst_ext_path)
+    try:
+        ascend_toolkit_path = os.environ.get('ASCEND_TOOLKIT_PATH', '/usr/local/Ascend/ascend-toolkit')
+        hivmc_dst_path = ascend_toolkit_path.join('/8.3.RC1/bisheng_toolkit/bishengir/bin/hivmc')
+        hivmc_src_path = Path.home() / '.flagtree' / 'ascend' / 'bishengcompiler' / 'hivmc'
+        shutil.copy(hivmc_dst_path, hivmc_dst_path.join('.bak'))
+        shutil.copy(hivmc_src_path, hivmc_dst_path)
+    except Exception as e:
+        print(f"[INFO] {e}")
+        # raise RuntimeError(e)
 
 
 def create_symlink_for_triton(link_map):
