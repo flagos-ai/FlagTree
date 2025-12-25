@@ -70,7 +70,7 @@ def dir_rollback(deep, base_path):
 
 def enable_flagtree_third_party(name):
     if name in ["triton_shared"]:
-        return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'OFF'
+        return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
     else:
         return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
