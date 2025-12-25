@@ -6,6 +6,7 @@ FlagTree is an open source, unified compiler for multiple AI chips project dedic
 Each backend is based on different versions of triton, and therefore resides in different protected branches ([main](https://github.com/flagos-ai/flagtree/tree/main) for triton 3.1, [triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x), [triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x), [triton_v3.4.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.4.x), [triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)). All these protected branches have equal status. <br>
 
 ## Latest News
+* 2025/12/24 Support pull and install whl.
 * 2025/12/08 Added [enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) backend integration (based on Triton 3.3), and added CI/CD.
 * 2025/11/26 Add FlagTree_Backend_Specialization Unified Design Document [FlagTree_Backend_Specialization](reports/decoupling/).
 * 2025/10/28 Provides offline build support (pre-downloaded dependency packages), improving the build experience when network environment is limited. See usage instructions below.
@@ -51,7 +52,7 @@ python3 -m pip install . --no-build-isolation -v
 cd; python3 -c 'import triton; print(triton.__path__)'
 ```
 
-## Tips for building
+### Tips for building
 
 Automatic dependency library downloads may be limited by network conditions. You can manually download to the cache directory ~/.flagtree (modifiable via the FLAGTREE_CACHE_DIR environment variable). No need to manually set LLVM environment variables such as LLVM_BUILD_DIR.
 Complete build commands for each backend:
@@ -69,7 +70,7 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=iluvatar
 python3 -m pip install . --no-build-isolation -v
 ```
-[xpu (klx)](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/) <br>
+klx [xpu](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/) <br>
 Based on Triton 3.0, x64
 ```shell
 # Recommended: Use the Docker image (22GB) https://su.bcebos.com/klx-sdk-release-public/xpytorch/docker/ubuntu2004_v030/ubuntu_2004_x86_64_v30.tar
@@ -218,7 +219,7 @@ python3 -m pip install . --no-build-isolation -v
 unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR
 ```
 
-## Offline Build Support: Pre-downloading Dependency Packages
+### Offline Build Support: Pre-downloading Dependency Packages
 The above introduced how dependencies can be manually downloaded for various FlagTree backends during build time to avoid network environment limitations. Since Triton builds originally come with some dependency packages, we provide pre-downloaded packages that can be manually installed in your environment to prevent getting stuck at the automatic download stage during the build process.
 ```shell
 cd ${YOUR_CODE_DIR}/flagtree/python
@@ -237,6 +238,25 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-tri
 sh scripts/offline_build_unpack.sh ./offline-build-pack-triton-3.3.x-linux-x64.zip ~/.triton
 # After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 ```
+
+## Non-Source Installation
+If you do not wish to build from source, you can directly pull and install whl (supports some backends).
+
+```shell
+# Note: First install PyTorch, then execute the following commands
+python3 -m pip uninstall -y triton
+RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
+```
+|Backend |Install cmd|Triton version|Python version|
+|--------|-----------|--------------|--------------|
+|nvidia  |python3 -m pip install flagtree==0.3.0rc1 $RES            |3.1|3.10, 3.11, 3.12|
+|nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.2 $RES        |3.2|3.10, 3.11, 3.12|
+|nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.3 $RES        |3.3|3.10, 3.11, 3.12|
+|iluvatar|python3 -m pip install flagtree==0.3.0rc2+iluvatar3.1 $RES|3.1|3.10|
+|mthreads|python3 -m pip install flagtree==0.3.0rc3+mthreads3.1 $RES|3.1|3.10|
+|ascend  |python3 -m pip install flagtree==0.3.0rc1+ascend3.2 $RES  |3.2|3.11|
+|hcu     |python3 -m pip install flagtree==0.3.0rc2+hcu3.0 $RES     |3.0|3.10|
+|enflame |python3 -m pip install flagtree==0.3.0rc1+enflame3.3 $RES |3.3|3.10|
 
 ## Running tests
 
