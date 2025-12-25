@@ -6,7 +6,7 @@ FlagTree is an open source, unified compiler for multiple AI chips project dedic
 Each backend is based on different versions of triton, and therefore resides in different protected branches ([main](https://github.com/flagos-ai/flagtree/tree/main) for triton 3.1, [triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x), [triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x), [triton_v3.4.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.4.x), [triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)). All these protected branches have equal status. <br>
 
 ## Latest News
-* 2025/12/24 Support pull and install whl.
+* 2025/12/24 Support pull and install [whl](/README.md#non-source-installation).
 * 2025/12/08 Added [enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) backend integration (based on Triton 3.3), and added CI/CD.
 * 2025/11/26 Add FlagTree_Backend_Specialization Unified Design Document [FlagTree_Backend_Specialization](reports/decoupling/).
 * 2025/10/28 Provides offline build support (pre-downloaded dependency packages), improving the build experience when network environment is limited. See usage instructions below.
@@ -257,6 +257,7 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |ascend  |python3 -m pip install flagtree==0.3.0rc1+ascend3.2 $RES  |3.2|3.11|
 |hcu     |python3 -m pip install flagtree==0.3.0rc2+hcu3.0 $RES     |3.0|3.10|
 |enflame |python3 -m pip install flagtree==0.3.0rc1+enflame3.3 $RES |3.3|3.10|
+The flagtree version all have corresponding git tags.
 
 ## Running tests
 

@@ -6,7 +6,7 @@ FlagTree 是面向多种 AI 芯片的开源、统一编译器。FlagTree 致力�
 各后端基于不同版本的 triton 适配，因此位于不同的主干分支（[main](https://github.com/flagos-ai/flagtree/tree/main) for triton 3.1、[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)、[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)、[triton_v3.4.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.4.x)、[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)），各主干分支均为保护分支且地位相等。<br>
 
 ## 新特性
-* 2025/12/24 支持拉取和安装 whl 包。
+* 2025/12/24 支持拉取和安装 [whl](/README_cn.md#非源码安装)。
 * 2025/12/08 新增接入 [enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) 后端（对应 Triton 3.3），加入 CI/CD。
 * 2025/11/26 添加 FlagTree 后端特化统一设计文档 [FlagTree_Backend_Specialization](reports/decoupling/)。
 * 2025/10/28 提供离线构建支持（预下载依赖包），改善网络环境受限时的构建体验，使用方法见后文。
@@ -240,14 +240,14 @@ sh scripts/offline_build_unpack.sh ./offline-build-pack-triton-3.3.x-linux-x64.z
 ```
 
 ## 非源码安装
-如果不希望从源码安装，可以直接拉取安装 whl 包（支持部分后端）。
+如果不希望从源码安装，可以直接拉取安装 whl（支持部分后端）。
 ```shell
 # 注意：先安装 PyTorch，然后执行下列命令
 python3 -m pip uninstall -y triton
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
 ```
-|后端     |安装命令    |Triton 版本|支持的 Python 版本|
-|--------|-----------|----------|----------------|
+|后端     |安装命令|Triton 版本|支持的 Python 版本|
+|--------|-------|----------|----------------|
 |nvidia  |python3 -m pip install flagtree==0.3.0rc1 $RES            |3.1|3.10, 3.11, 3.12|
 |nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.2 $RES        |3.2|3.10, 3.11, 3.12|
 |nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.3 $RES        |3.3|3.10, 3.11, 3.12|
@@ -256,6 +256,7 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |ascend  |python3 -m pip install flagtree==0.3.0rc1+ascend3.2 $RES  |3.2|3.11|
 |hcu     |python3 -m pip install flagtree==0.3.0rc2+hcu3.0 $RES     |3.0|3.10|
 |enflame |python3 -m pip install flagtree==0.3.0rc1+enflame3.3 $RES |3.3|3.10|
+其中 flagtree 版本号均有对应的 git tag。
 
 ## 运行测试
 
@@ -272,7 +273,7 @@ python3 test_xxx.py
 
 ## 关于贡献
 
-欢迎参与 FlagTree 的开发并贡献代码，详情请参考[CONTRIBUTING.md](/CONTRIBUTING_cn.md)。
+欢迎参与 FlagTree 的开发并贡献代码，详情请参考 [CONTRIBUTING.md](/CONTRIBUTING_cn.md)。
 
 ## 许可证
 
