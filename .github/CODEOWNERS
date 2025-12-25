@@ -8,7 +8,7 @@
 # Setup
 # --------
 setup.py @Galaxy1458
-python/setup_tools/* @Galaxy1458
+python/setup_tools/** @Galaxy1458
 
 # -----------
 # third_party

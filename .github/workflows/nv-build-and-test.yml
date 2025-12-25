@@ -25,7 +25,7 @@ jobs:
 
       - name: Checkout code (attempt 1)
         id: checkout1
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         continue-on-error: true
 
       - name: Sleep before checkout2
@@ -37,7 +37,7 @@ jobs:
       - name: Checkout code (attempt 2)
         id: checkout2
         if: steps.checkout1.outcome == 'failure'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         continue-on-error: true
 
       - name: Sleep before final checkout
@@ -48,11 +48,15 @@ jobs:
 
       - name: Checkout code (final attempt)
         if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Verify checkout success
         if: success()
         run: echo "Checkout completed successfully"
+
+      - name: Check if only docs files changed
+        id: check_files
+        uses: ./.github/actions/check-docs-only
 
       - name: Detect Target Branch
         shell: bash
@@ -66,8 +70,8 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
-      - name: FlagTree Build on NVidia (Main branch)
-        if: ${{ env.TARGET_BRANCH == 'main' }}
+      - name: FlagTree Build on NVidia (main branch)
+        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'main' }}
         shell: bash
         run: |
           set -x
@@ -77,7 +81,7 @@ jobs:
           MAX_JOBS=32 python3.11 -m pip install . --no-build-isolation
 
       - name: FlagTree Build on NVidia (triton_v3.2.x branch)
-        if: ${{ env.TARGET_BRANCH == 'triton_v3.2.x' }}
+        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.2.x' }}
         shell: bash
         run: |
           set -x
@@ -87,7 +91,7 @@ jobs:
           MAX_JOBS=32 python3.11 -m pip install . --no-build-isolation
 
       - name: FlagTree Build on NVidia (triton_v3.3.x branch)
-        if: ${{ env.TARGET_BRANCH == 'triton_v3.3.x' }}
+        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.3.x' }}
         shell: bash
         run: |
           set -x
@@ -97,6 +101,7 @@ jobs:
           MAX_JOBS=32 python3.11 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on NVidia
+        if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x
