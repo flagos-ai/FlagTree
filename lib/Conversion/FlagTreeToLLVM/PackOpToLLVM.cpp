@@ -28,6 +28,7 @@ PackOpConversion::PackOpConversion(LLVMTypeConverter &typeConverter,
 LogicalResult
 PackOpConversion::matchAndRewrite(fl::PackOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const {
+  auto regionOp = op->getParentOfType<triton::flagtree::DSLRegionOp>();
   if (ttg::MemDescType memdesc =
           dyn_cast<ttg::MemDescType>(op.getOutput().getType())) {
     LLVM::LLVMStructType llvmStructType =
@@ -36,17 +37,17 @@ PackOpConversion::matchAndRewrite(fl::PackOp op, OpAdaptor adaptor,
         op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
     Value llvmStruct =
         rewriter.create<LLVM::PoisonOp>(op.getLoc(), llvmStructType);
-    llvmStruct = rewriter.create<LLVM::InsertValueOp>(
+    LLVM::InsertValueOp insertOp = rewriter.create<LLVM::InsertValueOp>(
         op.getLoc(), llvmStructType, llvmStruct, basePtr,
         SmallVector<int64_t>{0});
     for (int64_t i = 1; i < llvmStructType.getBody().size(); ++i) {
-      auto zeroOp = rewriter.create<LLVM::ConstantOp>(
+      LLVM::ConstantOp zeroOp = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), rewriter.getIntegerType(32), 0);
-      llvmStruct = rewriter.create<LLVM::InsertValueOp>(
-          op.getLoc(), llvmStructType, llvmStruct, zeroOp,
+      insertOp = rewriter.create<LLVM::InsertValueOp>(
+          op.getLoc(), llvmStructType, insertOp, zeroOp,
           SmallVector<int64_t>{i});
     }
-    rewriter.replaceAllOpUsesWith(op, llvmStruct);
+    rewriter.replaceOp(op, insertOp->getResults());
     return success();
   } else {
     return failure();

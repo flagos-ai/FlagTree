@@ -13,6 +13,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Analysis/Allocation.h"
@@ -81,7 +82,8 @@ public:
   explicit FlagTreeLLVMConversionTarget(MLIRContext &ctx,
                                         LLVMTypeConverter &typeConverter)
       : ConversionTarget(ctx) {
-    addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect>();
+    addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect, math::MathDialect,
+                    NVVM::NVVMDialect>();
     addIllegalDialect<flagtree::FlagTreeDialect>();
     addDynamicallyLegalOp<flagtree::DSLRegionOp, flagtree::YieldOp>(
         [&](Operation *op) -> bool {

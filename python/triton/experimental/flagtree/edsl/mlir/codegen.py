@@ -91,6 +91,9 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
                 elif arg.annotation.value.id == "Input":
                     ty: ir.Type = ir.Type.parse(f"memref<{arg.annotation.slice.value}, 3>")
                     operand_tys += [ty]
+                elif arg.annotation.value.id == "Num":
+                    ty: ir.Type = ir.Type.parse(arg.annotation.slice.value)
+                    operand_tys += [ty]
                 else:
                     raise NotImplementedError(f"unsupported argument annotation: {ast.dump(arg.annotation)}")
             fnty: ir.FunctionType = ir.FunctionType.get(operand_tys, output_tys)

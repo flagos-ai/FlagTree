@@ -1,6 +1,7 @@
 from typing import TypeVar
 
 from triton._C.libtriton.flagtree_ir import FlagTreeOpBuilder
+import triton.language as tl
 from triton.language.core import tensor
 from triton.language.semantic import TritonSemantic
 
@@ -20,4 +21,4 @@ class FlagTreeSemantic(TritonSemantic[TensorTy]):
         if len(tensors) == 1:
             return tensors[0]
         else:
-            return tensors
+            return tl.tuple(tensors)

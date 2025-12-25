@@ -1,5 +1,10 @@
+from mlir.dialects import arith, memref, nvvm, scf
+from mlir import ir
 import torch
 import triton
+from triton.experimental import flagtree
+from triton.experimental.flagtree.edsl import dialect, Input, InOut, Num
+import triton.experimental.flagtree.language as fl
 import triton.language as tl
 
 
@@ -22,6 +27,41 @@ def convert_to_uint32(x):
     return bits_uint
 
 
+@dialect(name="mlir")
+def edsl(l_threshold_bin_id_buf: InOut["?xi32"], l_new_topk_buf: InOut["?xi32"],  # noqa: F722
+         s_histogram: Input["?xi32"], l_new_topk: Num["i32"]):  # noqa: F722, F821
+    tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
+    bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
+    tidx = arith.index_cast(ir.IndexType.get(), tidx)
+    bdimx = arith.index_cast(ir.IndexType.get(), bdimx)
+    RADIX = memref.dim(l_threshold_bin_id_buf, arith.constant(ir.IndexType.get(), 0))
+    for i in scf.for_(tidx, RADIX, bdimx):
+        lh = memref.load(s_histogram, [i])
+        rh = memref.load(s_histogram, [arith.addi(i, arith.constant(ir.IndexType.get(), 1))])
+        nested_if = scf.if_([],
+                            arith.andi(arith.cmpi(arith.CmpIPredicate.sgt, lh, l_new_topk),
+                                       arith.cmpi(arith.CmpIPredicate.sle, rh, l_new_topk)))
+        nested_thenblock = nested_if.opview.thenRegion.blocks.append()
+        with ir.InsertionPoint(nested_thenblock):
+            memref.store(arith.index_cast(ir.IntegerType.get_signless(32), i), l_threshold_bin_id_buf,
+                         [arith.constant(ir.IndexType.get(), 0)])
+            scf.yield_([])
+        scf.yield_([])
+    nvvm.barrier0()
+    ifop = scf.if_([], arith.cmpi(arith.CmpIPredicate.eq, tidx, arith.constant(ir.IndexType.get(), 0)))
+    thenblock = ifop.opview.thenRegion.blocks.append()
+    with ir.InsertionPoint(thenblock):
+        l_threshold_bin_id = memref.load(l_threshold_bin_id_buf, [arith.constant(ir.IndexType.get(), 0)])
+        l_new_topk = arith.subi(
+            l_new_topk,
+            memref.load(s_histogram, [
+                arith.addi(arith.index_cast(ir.IndexType.get(), l_threshold_bin_id),
+                           arith.constant(ir.IndexType.get(), 1))
+            ]))
+        memref.store(l_new_topk, l_new_topk_buf, [arith.constant(ir.IndexType.get(), 0)])
+        scf.yield_([])
+
+
 @triton.autotune(
     configs=[
         triton.Config({"BS": 32, "BSS": 32}, num_stages=1, num_warps=1),
@@ -35,7 +75,7 @@ def convert_to_uint32(x):
     ],
     key=["S", "K"],
 )
-@triton.jit
+@flagtree.jit
 def kernel_bucket_sort_topk(  # grid(B, BS)
         inputs,  # (B, S) Note: no H because MLA is based on MQA and MHA, not GQA
         indices,  # (B, K) topk index array
@@ -76,12 +116,20 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
 
     s_histogram = s_histogram.cumsum(0, reverse=True)  # Suffix sum
     # -----------------------------------
-    mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
+    # mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
 
-    cond = (s_histogram > l_new_topk) & ((s_histogram.gather(mv_idx, 0) <= l_new_topk) | (mv_idx == 0))
-    l_threshold_bin_id = cond.argmax(0)
+    # cond = (s_histogram > l_new_topk) & ((s_histogram.gather(mv_idx, 0) <= l_new_topk) | (mv_idx == 0))
+    # l_threshold_bin_id = cond.argmax(0)
 
-    l_new_topk -= tl.where(tl.arange(0, HISTOGRAM_SIZE) == l_threshold_bin_id + 1, s_histogram, 0).max(0)
+    # l_new_topk -= tl.where(tl.arange(0, HISTOGRAM_SIZE) == l_threshold_bin_id + 1, s_histogram, 0).max(0)
+    # -----------------------------------
+    # -----------------------------------
+    l_threshold_bin_id_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
+    l_new_topk_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
+    l_threshold_bin_id_buf, l_new_topk_buf = fl.call(edsl, [l_threshold_bin_id_buf, l_new_topk_buf],
+                                                     [s_histogram, l_new_topk])
+    l_threshold_bin_id = l_threshold_bin_id_buf.max(0)
+    l_new_topk = l_new_topk_buf.max(0)
     # -----------------------------------
     # ------TileLang Implementation------
     # if tx < RADIX:
