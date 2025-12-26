@@ -57,7 +57,7 @@ cd; python3 -c 'import triton; print(triton.__path__)'
 自动下载依赖库的速度可能受限于网络环境，编译前可自行下载至缓存目录 ~/.flagtree（可通过环境变量 FLAGTREE_CACHE_DIR 修改），无需自行设置 LLVM_BUILD_DIR 等环境变量。 <br>
 各后端完整构建命令如下： <br>
 
-[iluvatar](https://github.com/FlagTree/flagtree/tree/main/third_party/iluvatar/) <br>
+* [iluvatar](https://github.com/FlagTree/flagtree/tree/main/third_party/iluvatar/) <br>
 对应的 Triton 版本为 3.1，基于 x64 平台
 ```shell
 # 推荐使用镜像 Ubuntu 20.04
@@ -70,7 +70,7 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=iluvatar
 python3 -m pip install . --no-build-isolation -v
 ```
-klx [xpu](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/) <br>
+* klx [xpu](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/) <br>
 对应的 Triton 版本为 3.0，基于 x64 平台
 ```shell
 # 推荐使用镜像（22GB）https://su.bcebos.com/klx-sdk-release-public/xpytorch/docker/ubuntu2004_v030/ubuntu_2004_x86_64_v30.tar
@@ -84,7 +84,7 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=xpu
 python3 -m pip install . --no-build-isolation -v
 ```
-[mthreads](https://github.com/FlagTree/flagtree/tree/main/third_party/mthreads/) <br>
+* [mthreads](https://github.com/FlagTree/flagtree/tree/main/third_party/mthreads/) <br>
 对应的 Triton 版本为 3.1，基于 x64/aarch64 平台
 ```shell
 # 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-mthreads
@@ -104,7 +104,7 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=mthreads
 python3 -m pip install . --no-build-isolation -v
 ```
-arm [aipu](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/) <br>
+* arm [aipu](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/) <br>
 对应的 Triton 版本为 3.3，基于 x64/arm64 平台
 ```shell
 # 推荐使用镜像 Ubuntu 22.04
@@ -117,7 +117,7 @@ git checkout -b triton_v3.3.x origin/triton_v3.3.x
 export FLAGTREE_BACKEND=aipu
 python3 -m pip install . --no-build-isolation -v
 ```
-[tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/) <br>
+* [tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/) <br>
 对应的 Triton 版本为 3.3，基于 x64 平台
 ```shell
 # 推荐使用镜像 Ubuntu 20.04
@@ -132,7 +132,7 @@ git checkout -b triton_v3.3.x origin/triton_v3.3.x
 export FLAGTREE_BACKEND=tsingmicro
 python3 -m pip install . --no-build-isolation -v
 ```
-[ascend](https://github.com/FlagTree/flagtree/blob/triton_v3.2.x/third_party/ascend) <br>
+* [ascend](https://github.com/FlagTree/flagtree/blob/triton_v3.2.x/third_party/ascend) <br>
 对应的 Triton 版本为 3.2，基于 aarch64 平台
 ```shell
 # 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.11-ascend
@@ -156,7 +156,7 @@ git checkout -b triton_v3.2.x origin/triton_v3.2.x
 export FLAGTREE_BACKEND=ascend
 python3 -m pip install . --no-build-isolation -v
 ```
-[hcu](https://github.com/FlagTree/flagtree/tree/main/third_party/hcu/) <br>
+* [hcu](https://github.com/FlagTree/flagtree/tree/main/third_party/hcu/) <br>
 对应的 Triton 版本为 3.0，基于 x64 平台
 ```shell
 # 推荐使用镜像 flagtree/dockerfiles/Dockerfile-ubuntu22.04-python3.10-hcu
@@ -167,7 +167,7 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=hcu
 python3 -m pip install . --no-build-isolation -v
 ```
-[enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) <br>
+* [enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) <br>
 对应的 Triton 版本为 3.3，基于 x64 平台
 ```shell
 # 推荐使用镜像: https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.3.1.tar.gz
@@ -179,7 +179,7 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
-[nvidia](/third_party/nvidia/) <br>
+* [nvidia](/third_party/nvidia/) <br>
 使用默认的构建命令，可以构建安装 nvidia、amd、triton_shared cpu 后端：
 ```shell
 cd ${YOUR_LLVM_DOWNLOAD_DIR}
@@ -261,15 +261,14 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 
 ## 运行测试
 
-安装完成后可以在设备支持的环境下运行测试：
+安装完成后一般可以在设备支持的环境下运行测试，具体后端支持的测试可前往对应分支的 .github/workflow/backendxxx-build-and-test.yml 查看。
 ```shell
 # nvidia
-cd python/test
+cd python/test/unit
 python3 -m pytest -s
 # other backends
-cd third_party/backendxxx/python/test
+cd third_party/backendxxx/python/test/unit
 python3 -m pytest -s
-python3 test_xxx.py
 ```
 
 ## 关于贡献

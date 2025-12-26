@@ -24,6 +24,8 @@ jobs:
       - name: Checkout code (attempt 1)
         id: checkout1
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
         continue-on-error: true
 
       - name: Sleep before checkout2
@@ -36,6 +38,8 @@ jobs:
         id: checkout2
         if: steps.checkout1.outcome == 'failure'
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
         continue-on-error: true
 
       - name: Sleep before final checkout
@@ -47,6 +51,8 @@ jobs:
       - name: Checkout code (final attempt)
         if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Verify checkout success
         if: success()
