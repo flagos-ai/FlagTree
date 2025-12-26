@@ -131,17 +131,6 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
     l_threshold_bin_id = l_threshold_bin_id_buf.max(0)
     l_new_topk = l_new_topk_buf.max(0)
     # -----------------------------------
-    # ------TileLang Implementation------
-    # if tx < RADIX:
-    #     # find threshold bin id
-    #     T.sync_threads(3, RADIX)
-    #     if s_histogram[tx] > l_new_topk and s_histogram[tx + 1] <= l_new_topk:
-    #         s_threshold_bin_id[0] = tx
-    # T.sync_threads()
-    # l_threshold_bin_id = s_threshold_bin_id[0]
-    # l_new_topk = l_new_topk - s_histogram[l_threshold_bin_id + 1]
-    # T.sync_threads()
-    # -----------------------------------
     sum = 0
     thre_bin_sum = 0
     for s in range(TS):
@@ -204,10 +193,20 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
                            (24 - round * 8)) & 0xFF  # Ensure all bits except the last eight are zero
             s_histogram += inval_int32.to(tl.int32).histogram(HISTOGRAM_SIZE)
         s_histogram = s_histogram.cumsum(0, reverse=True)  # Suffix sum
-        mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
-        cond = (s_histogram > l_new_topk) & ((s_histogram.gather(mv_idx, 0) <= l_new_topk) | (mv_idx == 0))
-        l_threshold_bin_id = cond.argmax(0)
-        l_new_topk -= tl.where(tl.arange(0, HISTOGRAM_SIZE) == l_threshold_bin_id + 1, s_histogram, 0).max(0)
+        # -----------------------------------
+        # mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
+        # cond = (s_histogram > l_new_topk) & ((s_histogram.gather(mv_idx, 0) <= l_new_topk) | (mv_idx == 0))
+        # l_threshold_bin_id = cond.argmax(0)
+        # l_new_topk -= tl.where(tl.arange(0, HISTOGRAM_SIZE) == l_threshold_bin_id + 1, s_histogram, 0).max(0)
+        # -----------------------------------
+        # -----------------------------------
+        l_threshold_bin_id_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
+        l_new_topk_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
+        l_threshold_bin_id_buf, l_new_topk_buf = fl.call(edsl, [l_threshold_bin_id_buf, l_new_topk_buf],
+                                                         [s_histogram, l_new_topk])
+        l_threshold_bin_id = l_threshold_bin_id_buf.max(0)
+        l_new_topk = l_new_topk_buf.max(0)
+        # -----------------------------------
         thre_bin_sum, old_thre_bin_sum = 0, thre_bin_sum
 
         for s in range(ss):
