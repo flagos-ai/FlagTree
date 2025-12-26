@@ -23,8 +23,8 @@ class FlagtreeConfigs:
     language_extra_backends: tuple = ('xpu', 'mthreads', "cambricon")
     ext_sourcedir: str = "triton/_C/"
     flagtree_root_dir: str = field(default_factory=_get_flagtree_root)
-    flagtree_backend: str | None = field(default_factory=lambda: os.environ.get("FLAGTREE_BACKEND"))
-    flagtree_plugin: str | None = field(default_factory=lambda: os.environ.get("FLAGTREE_PLUGIN"))
+    flagtree_backend: str = field(default_factory=lambda: os.environ.get("FLAGTREE_BACKEND"))
+    flagtree_plugin: str = field(default_factory=lambda: os.environ.get("FLAGTREE_PLUGIN"))
     extend_backends: list = field(default_factory=list)
     activated_module: any = None
     flagtree_submodule_dir: str = ''
