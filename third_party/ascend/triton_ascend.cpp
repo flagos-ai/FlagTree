@@ -28,8 +28,6 @@ void init_triton_ascend_passes_convert(py::module &&m) {
                      mlir::triton::createTritonLinearizePass);
   ADD_PASS_WRAPPER_0("add_triton_to_annotation",
                      mlir::triton::createTritonToAnnotationPass);
-  ADD_PASS_WRAPPER_0("add_triton_to_unstructure",
-                     mlir::triton::createTritonToUnstructureIncubatedPass);
   ADD_PASS_WRAPPER_0("add_triton_to_hivm",
                      mlir::triton::createTritonToHIVMPass);
   ADD_PASS_WRAPPER_0("add_triton_to_hfusion",
@@ -38,6 +36,21 @@ void init_triton_ascend_passes_convert(py::module &&m) {
                      mlir::triton::createTritonToLLVMPass);
   ADD_PASS_WRAPPER_0("add_bubble_up_operation",
                      mlir::triton::createBubbleUpOperationPass);
+  m.def(
+      "add_triton_to_unstructure_incubated",
+      [](mlir::PassManager &pm,
+         bool compile_on_910_95,
+         bool force_simt_template) {
+       TritonToUnstructureIncubatedOptions options;
+       options.compileOn91095 = compile_on_910_95;
+       options.forceSimtTemplate = force_simt_template;
+       pm.addPass(
+         mlir::triton::createTritonToUnstructureIncubatedPass(options));
+      },
+      py::arg("pm"),
+      py::arg("compile_on_910_95"),
+      py::arg("force_simt_template")
+);
   m.def(
       "add_triton_to_linalg_incubated",
       [](mlir::PassManager &pm,
