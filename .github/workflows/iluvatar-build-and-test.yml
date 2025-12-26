@@ -15,9 +15,17 @@ jobs:
     runs-on: iluvatar
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
       - name: Checkout code (attempt 1)
         id: checkout1
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
         continue-on-error: true
 
       - name: Sleep before checkout2
@@ -29,7 +37,9 @@ jobs:
       - name: Checkout code (attempt 2)
         id: checkout2
         if: steps.checkout1.outcome == 'failure'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
         continue-on-error: true
 
       - name: Sleep before final checkout
@@ -40,13 +50,20 @@ jobs:
 
       - name: Checkout code (final attempt)
         if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Verify checkout success
         if: success()
         run: echo "Checkout completed successfully"
 
+      - name: Check if only docs files changed
+        id: check_files
+        uses: ./.github/actions/check-docs-only
+
       - name: FlagTree Build on Iluvatar
+        if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x
@@ -57,10 +74,12 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on Iluvatar
+        if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x
-          CUDA_VISIBLE_DEVICES=15 python3 -m pytest -s third_party/iluvatar/python/test/unit
+          source ~/env.sh
+          python3 -m pytest -s third_party/iluvatar/python/test/unit
           ./python/build/cmake.linux-x86_64-cpython-3.10/bin/triton-opt --pass-pipeline='builtin.module(convert-triton-to-tritongpu{target="cuda:CC" num-warps=4 threads-per-warp=32 num-ctas=1})'  ./test/bin/iluvatar/add_kernel.ttir
           ./python/build/cmake.linux-x86_64-cpython-3.10/bin/triton-opt --convert-arith-to-llvm ./test/bin/iluvatar/add_kernel.ttgir
           cd python/tutorials
