@@ -5,7 +5,7 @@ import tarfile
 import zipfile
 from io import BytesIO
 import urllib.request
-from typing import Final, Mapping
+from typing import Mapping
 from types import MappingProxyType
 import importlib.util
 from dataclasses import dataclass, field
@@ -17,11 +17,11 @@ def _get_flagtree_root() -> str:
 
 @dataclass
 class FlagtreeConfigs:
-    default_backends: Final[tuple[str, ...]] = ("nvidia", "amd")
-    plugin_backends: Final[tuple[str, ...]] = ("ascend", "aipu", "tsingmicro")
-    use_cuda_toolkit_backends: Final[tuple[str, ...]] = ('aipu', )
-    language_extra_backends: Final[tuple[str, ...]] = ('xpu', 'mthreads', "cambricon")
-    ext_sourcedir: Final[str] = "triton/_C/"
+    default_backends: tuple = ("nvidia", "amd")
+    plugin_backends: tuple = ("ascend", "aipu", "tsingmicro")
+    use_cuda_toolkit_backends: tuple = ('aipu', )
+    language_extra_backends: tuple = ('xpu', 'mthreads', "cambricon")
+    ext_sourcedir: str = "triton/_C/"
     flagtree_root_dir: str = field(default_factory=_get_flagtree_root)
     flagtree_backend: str | None = field(default_factory=lambda: os.environ.get("FLAGTREE_BACKEND"))
     flagtree_plugin: str | None = field(default_factory=lambda: os.environ.get("FLAGTREE_PLUGIN"))
@@ -57,8 +57,6 @@ class FlagtreeConfigs:
 
 
 flagtree_configs = FlagtreeConfigs()
-
-print(flagtree_configs.flagtree_root_dir)
 
 
 @dataclass
