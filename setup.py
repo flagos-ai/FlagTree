@@ -291,7 +291,7 @@ def get_llvm_package_info():
     llvm_installed = is_llvm_wheel_installed(LLVM_WHEEL_PKG)
     llvm_envs = has_llvm_env_vars()
     # rule1 : if both call erroe
-    if llvm_installed and llvm_envs:
+    if llvm_installed and llvm_envs and not os.environ.get("USE_LLVM_WHEEL_BUILD"):
         raise RuntimeError(
             "ERROR: LLVM wheel is installed, but LLVM-related environment variables are set:\n"
             f"  {llvm_envs}\n"
@@ -307,6 +307,7 @@ def get_llvm_package_info():
         print("  root:   ", llvm_root)
         
         # will not appear out of python process
+        os.environ["USE_LLVM_WHEEL_BUILD"] = "1"
         os.environ["LLVM_SYSPATH"] = llvm_root
         os.environ["LLVM_INCLUDE_DIRS"] = include_dir
         os.environ["LLVM_LIBRARY_DIR"] = lib_dir
