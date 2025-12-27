@@ -209,5 +209,4 @@ class TestTLEPipelineEndToEnd:
 
 
 if __name__ == "__main__":
-    # 直接运行测试
     pytest.main([__file__, "-v", "-s"])

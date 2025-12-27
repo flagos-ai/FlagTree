@@ -44,7 +44,7 @@ void init_triton_passes(pybind11::module &&m);
 void init_triton_stacktrace_hook(pybind11::module &m);
 void init_gluon_ir(pybind11::module &&m);
 // flagtree tle
-void init_triton_tle(pybind11::module &&m); // 添加TLE模块声明
+void init_triton_tle(pybind11::module &&m);
 FOR_EACH_P(DECLARE_BACKEND, TRITON_BACKENDS_TUPLE)
 
 PYBIND11_MODULE(libtriton, m) {
@@ -57,6 +57,7 @@ PYBIND11_MODULE(libtriton, m) {
   init_triton_llvm(m.def_submodule("llvm"));
   init_gluon_ir(m.def_submodule("gluon_ir"));
   // flagtree tle
-  init_triton_tle(m.def_submodule("tle")); // 在IR模块后初始化TLE模块
+  init_triton_tle(
+      m.def_submodule("tle")); // Initialize TLE module after IR module
   FOR_EACH_P(INIT_BACKEND, TRITON_BACKENDS_TUPLE)
 }

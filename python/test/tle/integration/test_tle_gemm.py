@@ -15,7 +15,7 @@ import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle as tle
-# 关闭 TF32，强制纯 FP32 累加
+# Disable TF32, force pure FP32 accumulation
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
 
@@ -72,7 +72,6 @@ def tle_gemm(A, B, C, BLOCK_M=64, BLOCK_N=64, BLOCK_K=64):
     K_B, N = B.shape
     assert K == K_B
 
-    # ✅ 强制 row-major stride
     stride_am = A.stride(0)
     stride_ak = A.stride(1)
     stride_bk = B.stride(0)
@@ -115,5 +114,4 @@ class TestTLEGEMM:
 
 
 if __name__ == "__main__":
-    # 直接运行测试
     pytest.main([__file__, "-v", "-s"])
