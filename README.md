@@ -49,6 +49,7 @@ Building and Installation (Recommended for environments with good network connec
 cd python
 export FLAGTREE_BACKEND=backendxxx
 python3 -m pip install . --no-build-isolation -v
+python3 -m pip show flagtree
 cd; python3 -c 'import triton; print(triton.__path__)'
 ```
 
@@ -80,6 +81,8 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/XTDK-llvm19-ubuntu2004
 tar zxvf XTDK-llvm19-ubuntu2004_x86_64_v0.3.0.tar.gz
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xre-Linux-x86_64_v0.3.0.tar.gz
 tar zxvf xre-Linux-x86_64_v0.3.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xpu-liblaunch_shared_so-ubuntu-x64_v0.3.0.tar.gz
+tar zxvf xpu-liblaunch_shared_so-ubuntu-x64_v0.3.0.tar.gz
 cd ${YOUR_CODE_DIR}/flagtree/python
 export FLAGTREE_BACKEND=xpu
 python3 -m pip install . --no-build-isolation -v
