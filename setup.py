@@ -194,10 +194,8 @@ def is_linux_os(id):
             return f'ID="{id}"' in os_release_content
     return False
 
-# related functions for llvm
+# llvm related functions
 LLVM_ENV_VARS = [
-    # "LLVM_BUILD_DIR" # no matter which method, you have to set this env mannually to let triton know it should use your LLVM
-    "TRITON_LLVM_SYSTEM_SUFFIX",
     "LLVM_INCLUDE_DIRS",
     "LLVM_LIBRARY_DIR",
     "LLVM_SYSPATH",
@@ -231,8 +229,6 @@ def get_llvm_paths_from_wheel(pkg_name: str):
     return include_dir, lib_dir, llvm_root
 
 # llvm
-# 原始的逻辑也是返回一个Package对象, 增加legacy 
-# 现在看上去没走legacy，但是只生成了package，没有确定已经存在
 def get_llvm_package_info_legacy():
     system = platform.system()
     try:
@@ -306,7 +302,7 @@ def get_llvm_package_info():
         print("  lib:    ", lib_dir)
         print("  root:   ", llvm_root)
         
-        # will not appear out of python process
+        # env variables will not appear out of python process
         os.environ["USE_LLVM_WHEEL_BUILD"] = "1"
         os.environ["LLVM_SYSPATH"] = llvm_root
         os.environ["LLVM_INCLUDE_DIRS"] = include_dir
@@ -314,7 +310,6 @@ def get_llvm_package_info():
 
         return Package(
             "llvm",
-            # this match the legacy naming convention
             "llvm-C.lib",
             "",
             "LLVM_INCLUDE_DIRS",
