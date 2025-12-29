@@ -1,18 +1,20 @@
-name: Hcu-Build-And-Test
+name: Hopper-Build-And-Test
 
 on:
+  schedule:
+    - cron: '0 21 * * *'
   push:
-    branches: [ "main" ]
+    branches: [ "triton_v3.4.x", "triton_v3.5.x" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "triton_v3.4.x", "triton_v3.5.x" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  hcu-build-and-test:
-    runs-on: hcu
+  hopper-build-and-test:
+    runs-on: hopper
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
@@ -62,20 +64,45 @@ jobs:
         id: check_files
         uses: ./.github/actions/check-docs-only
 
-      - name: FlagTree Build on Hcu
-        if: steps.check_files.outputs.only_docs_changed != 'true'
+      - name: Detect Target Branch
+        shell: bash
+        run: |
+          set -x
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET_BRANCH="${{ github.base_ref }}"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+          fi
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$TARGET_BRANCH"
+
+      - name: FlagTree Build on NVidia (triton_v3.4.x branch)
+        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.4.x' }}
         shell: bash
         run: |
           set -x
           pip uninstall -y triton
-          export FLAGTREE_BACKEND=hcu
-          cd python
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+          source ~/env-3.4.sh
+          MAX_JOBS=32 python3.12 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Hcu
+      - name: FlagTree Build on NVidia (triton_v3.5.x branch)
+        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          source ~/env-3.5.sh
+          MAX_JOBS=32 python3.12 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on NVidia
         if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x
-          cd third_party/hcu/python/test/unit
-          sh flagtree_test.sh
+          python3.12 -m pytest -s python/test/unit/cuda
+          python3.12 -m pytest -s python/test/unit/instrumentation
+          python3.12 -m pytest -s python/test/unit/language
+          python3.12 -m pytest -s python/test/unit/runtime
+          if [ -d "python/test/operators" ]; then
+            python3.12 -m pytest -s python/test/operators
+          fi
