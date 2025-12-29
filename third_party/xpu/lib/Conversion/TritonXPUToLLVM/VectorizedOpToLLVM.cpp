@@ -1075,6 +1075,7 @@ void mlir::triton::xpu::populateTTXPUVectorizedOpToLLVMConversionPatterns(
   patterns.add<UnaryOpConversion<triton::xpu::VExpFOp, LLVM::Exp2Op>,
                UnaryOpConversion<triton::xpu::VSqrtFOp, LLVM::SqrtOp>,
                UnaryOpConversion<triton::xpu::VAbsFOp, LLVM::FAbsOp>,
+               UnaryOpConversion<triton::xpu::VLogFOp, LLVM::Log2Op>,
                UnaryOpConversion<triton::xpu::VSIToFPOp, LLVM::SIToFPOp>>(
       typeConverter, benefit, targetInfo);
   patterns.add<VOpConversionLibCall<triton::xpu::VSinFOp>,

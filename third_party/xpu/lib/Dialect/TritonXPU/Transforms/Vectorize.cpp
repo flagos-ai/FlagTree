@@ -31,7 +31,7 @@ using OperationTree = llvm::SetVector<mlir::Operation *>;
 
 #define MATH_UNARY_OP                                                          \
   math::ExpOp, math::SqrtOp, math::SinOp, math::CosOp, arith::ExtFOp,          \
-      arith::TruncFOp, math::AbsFOp
+      arith::TruncFOp, math::AbsFOp, math::LogOp
 
 #define REDUCE_COMBINE_OP COMBINE_OP, triton::xpu::ReduceReturnOp
 
@@ -436,6 +436,12 @@ struct TritonXPUVectorizePass
               isVectorized =
                   isVectorized && vectorize(prevOp, visited, vectorizedOps);
             }
+          } else if (symbol == "_ZN3xpu5atanfEf") {
+            isVectorized = true;
+            for (auto operand : extElemwiseOp.getOperands()) {
+              isVectorized =
+                  isVectorized && vectorize(prevOp, visited, vectorizedOps);
+            }
           } else if (symbol == "_ZN3xpu5isinfEf") {
             isVectorized = false;
             // TODO: check visinf logic
@@ -760,6 +766,12 @@ struct TritonXPUVectorizePass
             } else if (symbol == "_ZN3xpu3erfEf") {
               auto newExtElemwiseOp = createLibdeviceOp(
                   extElemwiseOp, "_ZN3xpu4verfEDv16_f", newVectorizedTensorTy);
+              extElemwiseOp.replaceAllUsesWith(newExtElemwiseOp.getResult());
+              extElemwiseOp.erase();
+            } else if (symbol == "_ZN3xpu5atanfEf") {
+              auto newExtElemwiseOp =
+                  createLibdeviceOp(extElemwiseOp, "_ZN3xpu6vatanfEDv16_f",
+                                    newVectorizedTensorTy);
               extElemwiseOp.replaceAllUsesWith(newExtElemwiseOp.getResult());
               extElemwiseOp.erase();
             } else if (symbol == "_ZN3xpu5isinfEf") {

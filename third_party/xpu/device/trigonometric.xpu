@@ -906,6 +906,104 @@ __device__ inline float atanf(float a) {
     return res;
 }
 
+static __device__ inline float32x16_t vset_zero() {
+    float32x16_t ret;
+    __asm__ __volatile__("vxor.s.mz %0{mr1}, %0, %0":"=v"(ret):);
+    return ret;
+}
+
+static constexpr uint32_t inf = 0x7F800000;
+
+__device__ float32x16_t vatanf(float32x16_t vl) {
+    float32x16_t v1_0;
+    float32x16_t v2_0;
+    float32x16_t v3_0;
+    float32x16_t v4_0;
+    float32x16_t v5_0;
+    __simd__ float tmp_lm0[16];
+
+    float32x16_t f6 = svadd_float32x16(-5.674867153167725f, vset_zero());    // f6(a) = -5.674867153167725f
+    v1_0 = vl;                                              // f1 = x
+
+    unsigned int mask0_p1 = svlt_float32x16(0.0f, v1_0);    // p1 = (0 < f1);
+
+    v2_0 = vabs_float32x16(v1_0);    // f2 = abs(x)
+
+    unsigned int mask0_p2 = svlt_float32x16(1.0f, v2_0);    // %p2 = (1 < %f2)
+
+    unsigned int mask0_p3 = svlt_float32x16(*(float*)&inf, v2_0);    // %p3 = %f2 > +INF，排除NaN/Inf
+
+    vstore_lm_float32x16(tmp_lm0, v2_0);    // store f2 (即abs(x)）in tmp_lm0
+
+    mfence_lm();
+    for (int i = 0; i < 16; i++) {
+        if (mask0_p2 >> i & 0x01) {
+            tmp_lm0[i] = 1.0f / tmp_lm0[i];    //%f25 = 1 / abs(x)（abs(x) > 1时，求倒数）
+        }
+    }
+    mfence_lm();
+    v2_0 = vload_lm_float32x16(tmp_lm0);    // load %f25
+
+    v3_0 = vvmul_float32x16(v2_0, v2_0);    //%f5 = %f25 * %f25（t^2，t=abs(x)或1/abs(x)）
+
+    v4_0 = svmac_float32x16(-0.8233629465103149f, v3_0, f6);    //%f8 = %f5 * b + a(%f6)
+
+    f6 = svadd_float32x16(-6.565555095672607f, vset_zero());    //%f9
+
+    v4_0 = vvmac_float32x16(v4_0, v3_0, f6);    //%f10 = %f8 * %f5 + c(%f9)
+
+    v4_0 = vvmul_float32x16(v3_0, v4_0);    // %f11 = %f5 * %f10
+
+    v4_0 = vvmul_float32x16(v2_0, v4_0);    // %f12 = %f25 * %f11
+
+    v5_0 = svadd_float32x16(11.33538818359375f, v3_0);    // %f13 = %f5 + d
+
+    f6 = svadd_float32x16(28.84246826171875f, vset_zero());    //%f14
+
+    v5_0 = vvmac_float32x16(v5_0, v3_0, f6);    // %f15 = %f13 * %f5 + e(f14)
+
+    f6 = svadd_float32x16(19.696670532226562f, vset_zero());    //%f16
+
+    v5_0 = vvmac_float32x16(v5_0, v3_0, f6);    // %f17 = %f15 * %f5 + f(%f16)
+
+    vstore_lm_float32x16(tmp_lm0, v5_0);    // store f17 in tmp_lm0
+    mfence_lm();
+    for (int i = 0; i < 16; i++) {
+        tmp_lm0[i] = 1.0f / tmp_lm0[i];    //%f18 = 1.0 / %f17
+    }
+    mfence_lm();
+    v5_0 = vload_lm_float32x16(tmp_lm0);    // load %f18
+
+    v2_0 = vvmac_float32x16(v5_0, v4_0, v2_0);    // %f19 = %f12 * %f18 + %f25
+
+    v3_0 = svsub_float32x16(1.5707963705062866f, v2_0);    // %f21 = π/2 - %f19
+
+    v2_0 = svmul_float32x16_mz(1.0f, v2_0, ~mask0_p2);
+
+    v3_0 = svmul_float32x16_mz(1.0f, v3_0, mask0_p2);
+
+    v2_0 = vvadd_float32x16(v2_0, v3_0);    // %f22 = %p2 ? (π/2 - %f19) : %f19
+
+    mask0_p2 = svlt_float32x16(0.0f, v2_0);    // p2 = (0 < %f22);
+
+    mask0_p1 = mask0_p1 ^ mask0_p2;
+
+    v3_0 = svmul_float32x16_mz(-1.0f, v2_0, mask0_p1);
+
+    v4_0 = svmul_float32x16_mz(1.0f, v2_0, ~mask0_p1);
+
+    v3_0 = vvadd_float32x16(v4_0, v3_0);    // %f23 = 恢复符号后的结果
+
+    v2_0 = svmul_float32x16_mz(1.0f, v2_0, mask0_p3);
+
+    v3_0 = svmul_float32x16_mz(1.0f, v3_0, ~mask0_p3);
+
+    v2_0 = vvadd_float32x16(v2_0, v3_0);    // %f24 = %p3 ? %f23 : %f22
+
+    return v2_0;
+}
+
+
 #define BUILTIN_DIV_F32(X, Y)           \
   ({                                    \
     float _div_x = X;                   \
