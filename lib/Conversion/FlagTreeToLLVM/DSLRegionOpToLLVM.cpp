@@ -20,6 +20,13 @@ struct DSLRegionOpConversion : public ConvertOpToLLVMPattern<fl::DSLRegionOp> {
                   ConversionPatternRewriter &rewriter) const override;
 };
 
+struct YieldOpConversion : public ConvertOpToLLVMPattern<fl::YieldOp> {
+  YieldOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit);
+  LogicalResult
+  matchAndRewrite(fl::YieldOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
 } // namespace
 
 DSLRegionOpConversion::DSLRegionOpConversion(LLVMTypeConverter &typeConverter,
@@ -46,8 +53,20 @@ LogicalResult DSLRegionOpConversion::matchAndRewrite(
   return success();
 }
 
+YieldOpConversion::YieldOpConversion(LLVMTypeConverter &typeConverter,
+                                     PatternBenefit benefit)
+    : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+LogicalResult
+YieldOpConversion::matchAndRewrite(fl::YieldOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<fl::YieldOp>(op, adaptor.getOperands());
+  return success();
+}
+
 void fl::populateDSLRegionOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
-  patterns.add<DSLRegionOpConversion>(typeConverter, benefit);
+  patterns.add<DSLRegionOpConversion, YieldOpConversion>(typeConverter,
+                                                         benefit);
 }

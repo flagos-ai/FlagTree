@@ -95,11 +95,20 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
     for (Operation &operation : oldBlock.getOperations()) {
       if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
         SmallVector<Value> yields;
-        for (auto [result, operand] :
-             llvm::zip(dslRegionOp.getResults(), returnOp.getOperands())) {
+        if (dslRegionOp.getNumResults() == 1) {
           flagtree::PackOp packOp = builder.create<flagtree::PackOp>(
-              operation.getLoc(), result.getType(), mapper.lookup(operand));
+              operation.getLoc(), dslRegionOp.getResult(0).getType(),
+              mapper.lookup(returnOp.getArg()));
           yields.push_back(packOp.getOutput());
+        } else {
+          for (auto [idx, result] : llvm::enumerate(dslRegionOp.getResults())) {
+            LLVM::ExtractValueOp operand = builder.create<LLVM::ExtractValueOp>(
+                operation.getLoc(), mapper.lookup(returnOp.getArg()),
+                SmallVector<int64_t>{static_cast<int64_t>(idx)});
+            flagtree::PackOp packOp = builder.create<flagtree::PackOp>(
+                operation.getLoc(), result.getType(), operand);
+            yields.push_back(packOp.getOutput());
+          }
         }
         builder.create<flagtree::YieldOp>(operation.getLoc(), yields);
       } else {

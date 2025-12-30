@@ -1,7 +1,5 @@
-from typing import Annotated
-
 from mlir import ir
-from mlir.dialects import arith, linalg, math, memref, nvvm, scf
+from mlir.dialects import arith, memref, nvvm, scf
 import torch
 import triton
 import triton.language as tl

@@ -1,5 +1,3 @@
-from typing import Annotated
-
 from mlir import ir
 from mlir.dialects import arith, math, memref, nvvm, scf
 import torch
@@ -22,7 +20,7 @@ def naive_softmax(x):
 
 
 @dialect(name="mlir")
-def edsl(y: InOut["?xf32"], x: Input["?xf32"]):
+def edsl(y: InOut["?xf32"], x: Input["?xf32"]):  # noqa: F722
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
