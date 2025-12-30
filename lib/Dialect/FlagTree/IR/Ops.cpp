@@ -27,22 +27,6 @@ LogicalResult DSLRegionOp::verify() {
   return success();
 }
 
-// void ExtractAllocatedPtrOp::build(::mlir::OpBuilder &odsBuilder,
-//                                   ::mlir::OperationState &odsState,
-//                                   Value tensor) {
-//   Type ty =
-//       LLVM::LLVMPointerType::get(odsBuilder.getContext(), kSharedAddressSpace);
-//   build(odsBuilder, odsState, ty, tensor);
-// }
-
-// void ExtractAlignedPtrOp::build(::mlir::OpBuilder &odsBuilder,
-//                                 ::mlir::OperationState &odsState,
-//                                 Value tensor) {
-//   Type ty =
-//       LLVM::LLVMPointerType::get(odsBuilder.getContext(), kSharedAddressSpace);
-//   build(odsBuilder, odsState, ty, tensor);
-// }
-
 void ExtractSizesOp::build(::mlir::OpBuilder &odsBuilder,
                            ::mlir::OperationState &odsState, size_t num,
                            Value tensor) {
