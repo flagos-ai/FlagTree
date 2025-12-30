@@ -56,8 +56,10 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
         if (RankedTensorType tensorTy =
                 dyn_cast<RankedTensorType>(input.getType())) {
           Type ty = LLVM::LLVMPointerType::get(getContext(), as);
-          extractOps.push_back(create<flagtree::ExtractAllocatedPtrOp>(ty, input));
-          extractOps.push_back(create<flagtree::ExtractAlignedPtrOp>(ty, input));
+          extractOps.push_back(
+              create<flagtree::ExtractAllocatedPtrOp>(ty, input));
+          extractOps.push_back(
+              create<flagtree::ExtractAlignedPtrOp>(ty, input));
           extractOps.push_back(create<flagtree::ExtractOffsetOp>(input));
           const size_t rank = tensorTy.getRank();
           auto sizesOp = create<flagtree::ExtractSizesOp>(rank, input);

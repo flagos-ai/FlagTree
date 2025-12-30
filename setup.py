@@ -194,12 +194,14 @@ def is_linux_os(id):
             return f'ID="{id}"' in os_release_content
     return False
 
+
 # llvm related functions
 LLVM_ENV_VARS = [
     "LLVM_INCLUDE_DIRS",
     "LLVM_LIBRARY_DIR",
     "LLVM_SYSPATH",
 ]
+
 
 def has_llvm_env_vars() -> List[str]:
     return [k for k in LLVM_ENV_VARS if k in os.environ]
@@ -221,12 +223,11 @@ def get_llvm_paths_from_wheel(pkg_name: str):
     elif spec.submodule_search_locations:
         llvm_root = next(iter(spec.submodule_search_locations))
     else:
-        raise RuntimeError(
-            f"LLVM wheel '{pkg_name}' is found but has no filesystem location"
-        )
+        raise RuntimeError(f"LLVM wheel '{pkg_name}' is found but has no filesystem location")
     include_dir = os.path.join(llvm_root, "include")
     lib_dir = os.path.join(llvm_root, "lib")
     return include_dir, lib_dir, llvm_root
+
 
 # llvm
 def get_llvm_package_info_legacy():
@@ -288,11 +289,9 @@ def get_llvm_package_info():
     llvm_envs = has_llvm_env_vars()
     # rule1 : if both exist, fail
     if llvm_installed and llvm_envs and not os.environ.get("USE_LLVM_WHEEL_BUILD"):
-        raise RuntimeError(
-            "ERROR: LLVM wheel is installed, but LLVM-related environment variables are set:\n"
-            f"  {llvm_envs}\n"
-            "Please unset them to avoid conflicts."
-        )
+        raise RuntimeError("ERROR: LLVM wheel is installed, but LLVM-related environment variables are set:\n"
+                           f"  {llvm_envs}\n"
+                           "Please unset them to avoid conflicts.")
     # rule2：wheel installed & no env → use wheel
     if llvm_installed:
         include_dir, lib_dir, llvm_root = get_llvm_paths_from_wheel(LLVM_WHEEL_PKG)
@@ -302,18 +301,12 @@ def get_llvm_package_info():
         os.environ["LLVM_INCLUDE_DIRS"] = include_dir
         os.environ["LLVM_LIBRARY_DIR"] = lib_dir
 
-        return Package(
-            "llvm",
-            "llvm-C.lib",
-            "",
-            "LLVM_INCLUDE_DIRS",
-            "LLVM_LIBRARY_DIR",
-            "LLVM_SYSPATH"
-        )
+        return Package("llvm", "llvm-C.lib", "", "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH")
 
     # rule3: no wheel & env → use env
     print("[DECISION] LLVM wheel not found, fallback to legacy logic")
     return get_llvm_package_info_legacy()
+
 
 def open_url(url):
     user_agent = 'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0'
