@@ -42,7 +42,7 @@ except ImportError:
 
 
 sys.path.insert(0, os.path.dirname(__file__))
-from setup_tools import setup_helper as helper
+from python.setup_tools import setup_helper as helper
 
 from python.build_helpers import get_base_dir, get_cmake_dir
 

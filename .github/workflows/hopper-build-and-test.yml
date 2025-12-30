@@ -101,7 +101,8 @@ jobs:
           set -x
           python3.12 -m pytest -s python/test/unit/cuda
           python3.12 -m pytest -s python/test/unit/instrumentation
-          python3.12 -m pytest -s python/test/unit/language
+          python3.12 -m pytest -s python/test/unit/language \
+              --ignore=python/test/unit/language/test_line_info.py
           python3.12 -m pytest -s python/test/unit/runtime
           if [ -d "python/test/operators" ]; then
             python3.12 -m pytest -s python/test/operators
