@@ -45,7 +45,7 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
       operands, [](Value value) -> Type { return value.getType(); });
   IRMapping mapper;
   auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(func.getArgument(0).getType());
-  unsigned as = ptrTy.getAddressSpace();
+  uint32_t as = ptrTy.getAddressSpace();
   for (auto [idx, oldBlock] : llvm::enumerate(func.getBlocks())) {
     if (idx == 0) {
       Block *newBlock = builder.createBlock(
