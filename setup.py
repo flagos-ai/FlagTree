@@ -836,6 +836,7 @@ setup(
     description=
     "A unified compiler supporting multiple AI chip backends for custom Deep Learning operations, which is forked from triton-lang/triton.",
     long_description=long_description,
+    long_description_content_type="text/markdown",
     install_requires=[
         "importlib-metadata; python_version < '3.10'",
     ],
