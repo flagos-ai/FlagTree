@@ -6,10 +6,13 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Support/LLVM.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/FlagTree/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Types.h"
+#include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "llvm/ADT/SmallVectorExtras.h"
 
 namespace py = pybind11;
@@ -41,6 +44,8 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
   SmallVector<Type> operandTys = llvm::map_to_vector(
       operands, [](Value value) -> Type { return value.getType(); });
   IRMapping mapper;
+  auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(func.getArgument(0).getType());
+  uint32_t as = ptrTy.getAddressSpace();
   for (auto [idx, oldBlock] : llvm::enumerate(func.getBlocks())) {
     if (idx == 0) {
       Block *newBlock = builder.createBlock(
@@ -50,8 +55,11 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
       for (const auto &input : body.getArguments()) {
         if (RankedTensorType tensorTy =
                 dyn_cast<RankedTensorType>(input.getType())) {
-          extractOps.push_back(create<flagtree::ExtractAllocatedPtrOp>(input));
-          extractOps.push_back(create<flagtree::ExtractAlignedPtrOp>(input));
+          Type ty = LLVM::LLVMPointerType::get(getContext(), as);
+          extractOps.push_back(
+              create<flagtree::ExtractAllocatedPtrOp>(ty, input));
+          extractOps.push_back(
+              create<flagtree::ExtractAlignedPtrOp>(ty, input));
           extractOps.push_back(create<flagtree::ExtractOffsetOp>(input));
           const size_t rank = tensorTy.getRank();
           auto sizesOp = create<flagtree::ExtractSizesOp>(rank, input);

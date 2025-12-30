@@ -28,8 +28,8 @@ def convert_to_uint32(x):
 
 
 @dialect(name="mlir")
-def edsl(l_threshold_bin_id_buf: InOut["?xi32"], l_new_topk_buf: InOut["?xi32"],  # noqa: F722
-         s_histogram: Input["?xi32"], l_new_topk: Num["i32"]):  # noqa: F722, F821
+def edsl(l_threshold_bin_id_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["memref<?xi32, 3>"],  # noqa: F722
+         s_histogram: Input["memref<?xi32, 3>"], l_new_topk: Num["i32"]):  # noqa: F722, F821
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)

@@ -36,14 +36,12 @@ def FlagTree_ExtractAllocatedPtrOp : FlagTree_Op<"extract_allocated_ptr", [Pure,
   let arguments = (ins FlagTree_ArgType:$input);
   let results = (outs LLVMPointerType:$ptr);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
-  let builders = [OpBuilder<(ins "Value":$input)>];
 }
 
 def FlagTree_ExtractAlignedPtrOp : FlagTree_Op<"extract_aligned_ptr", [Pure, HasParent<"DSLRegionOp">]> {
   let arguments = (ins FlagTree_ArgType:$input);
   let results = (outs LLVMPointerType:$ptr);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
-  let builders = [OpBuilder<(ins "Value":$input)>];
 }
 
 def FlagTree_ExtractOffsetOp : FlagTree_Op<"extract_offset", [Pure, HasParent<"DSLRegionOp">]> {

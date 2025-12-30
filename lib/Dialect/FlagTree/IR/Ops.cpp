@@ -7,7 +7,6 @@ namespace mlir::triton::flagtree {
 // TODO(EDSL): define shared address space as a constant in the
 // initialization, and plan to replace it by `getSharedAddressSpace()` method
 // from targetInfo in the future
-constexpr int kSharedAddressSpace = 3;
 
 LogicalResult DSLRegionOp::verify() {
   Region &body = getBody();
@@ -26,22 +25,6 @@ LogicalResult DSLRegionOp::verify() {
     }
   }
   return success();
-}
-
-void ExtractAllocatedPtrOp::build(::mlir::OpBuilder &odsBuilder,
-                                  ::mlir::OperationState &odsState,
-                                  Value tensor) {
-  Type ty =
-      LLVM::LLVMPointerType::get(odsBuilder.getContext(), kSharedAddressSpace);
-  build(odsBuilder, odsState, ty, tensor);
-}
-
-void ExtractAlignedPtrOp::build(::mlir::OpBuilder &odsBuilder,
-                                ::mlir::OperationState &odsState,
-                                Value tensor) {
-  Type ty =
-      LLVM::LLVMPointerType::get(odsBuilder.getContext(), kSharedAddressSpace);
-  build(odsBuilder, odsState, ty, tensor);
 }
 
 void ExtractSizesOp::build(::mlir::OpBuilder &odsBuilder,

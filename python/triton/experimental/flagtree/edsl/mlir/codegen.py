@@ -84,12 +84,12 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
             output_indices: List[int] = []
             for idx, arg in enumerate(node.args.args):
                 if arg.annotation.value.id == "InOut":
-                    ty: ir.Type = ir.Type.parse(f"memref<{arg.annotation.slice.value}, 3>")
+                    ty: ir.Type = ir.Type.parse(arg.annotation.slice.value)
                     operand_tys += [ty]
                     output_tys += [ty]
                     output_indices += [idx]
                 elif arg.annotation.value.id == "Input":
-                    ty: ir.Type = ir.Type.parse(f"memref<{arg.annotation.slice.value}, 3>")
+                    ty: ir.Type = ir.Type.parse(arg.annotation.slice.value)
                     operand_tys += [ty]
                 elif arg.annotation.value.id == "Num":
                     ty: ir.Type = ir.Type.parse(arg.annotation.slice.value)

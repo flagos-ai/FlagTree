@@ -48,7 +48,7 @@ def get_autotune_config():
 
 
 @dialect(name="mlir")
-def edsl(c: InOut["?x?xf32"], a: Input["?x?xf16"], b: Input["?x?xf16"]):  # noqa: F722
+def edsl(c: InOut["memref<?x?xf32, 3>"], a: Input["memref<?x?xf16, 3>"], b: Input["memref<?x?xf16, 3>"]):  # noqa: F722
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
