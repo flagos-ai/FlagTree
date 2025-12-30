@@ -1,5 +1,6 @@
 # flagtree tle
 add_triton_library(TritonTLETransforms
+  TleLowerAsyncLoad.cpp
   TleLowerTmaCopy.cpp
 
   DEPENDS

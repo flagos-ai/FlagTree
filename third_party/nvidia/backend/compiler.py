@@ -308,6 +308,7 @@ class CUDABackend(BaseBackend):
         nvidia.passes.ttnvgpuir.add_interleave_tmem(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
         passes.ttgpuir.add_reorder_instructions(pm)
+        tle.passes.add_lower_async_load(pm)
         passes.ttir.add_loop_aware_cse(pm)
         passes.common.add_symbol_dce(pm)
         if capability // 10 >= 9:
