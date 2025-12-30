@@ -292,6 +292,24 @@ def check_env(env_val):
     return os.environ.get(env_val, '') != ''
 
 
+def uninstall_triton():
+    is_bdist_wheel = any(cmd in sys.argv for cmd in ['bdist_wheel', 'egg_info', 'sdist'])
+    if is_bdist_wheel:
+        return
+    try:
+        import pkg_resources
+        import subprocess
+        try:
+            pkg_resources.get_distribution('triton')
+            print("Detected existing 'triton' package. Uninstalling to avoid conflicts...")
+            subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", "triton"])
+            print("Successfully uninstalled 'triton'.")
+        except pkg_resources.DistributionNotFound:
+            print("'triton' package not found, no need to uninstall.")
+    except Exception as e:
+        print(f"Warning: Failed to check/uninstall triton: {e}")
+
+
 offline_handler = utils.OfflineBuildManager()
 if offline_handler.is_offline:
     print("[INFO] FlagTree Offline Build: Use offline build for triton origin toolkits")
