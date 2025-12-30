@@ -735,6 +735,7 @@ class plugin_bdist_wheel(bdist_wheel):
 class plugin_develop(develop):
 
     def run(self):
+        helper.uninstall_triton()
         add_links(external_only=False)
         super().run()
 
@@ -756,6 +757,7 @@ class plugin_egg_info(egg_info):
 class plugin_install(install):
 
     def run(self):
+        helper.uninstall_triton()
         add_links(external_only=True)
         super().run()
 
@@ -806,9 +808,6 @@ def get_git_version_suffix():
         return get_git_commit_hash()
 
 
-# keep it separate for easy substitution
-TRITON_VERSION = "3.5.1" + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", "")
-
 # Dynamically define supported Python versions and classifiers
 MIN_PYTHON = (3, 10)
 MAX_PYTHON = (3, 14)
@@ -825,13 +824,18 @@ PYTHON_CLASSIFIERS = [
 ]
 CLASSIFIERS = BASE_CLASSIFIERS + PYTHON_CLASSIFIERS
 
+readme_path = os.path.join(get_base_dir(), "README.md")
+with open(readme_path, "r", encoding="utf-8") as fh:
+    long_description = fh.read()
+
 setup(
-    name=os.environ.get("TRITON_WHEEL_NAME", "triton"),
-    version=TRITON_VERSION,
-    author="Philippe Tillet",
-    author_email="phil@openai.com",
-    description="A language and compiler for custom Deep Learning operations",
-    long_description="",
+    name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
+    version="0.3.0" + os.environ.get("FLAGTREE_WHEEL_VERSION_SUFFIX", ""),
+    author="FlagOS",
+    author_email="contact@flagos.io",
+    description=
+    "A unified compiler supporting multiple AI chip backends for custom Deep Learning operations, which is forked from triton-lang/triton.",
+    long_description=long_description,
     install_requires=[
         "importlib-metadata; python_version < '3.10'",
     ],
