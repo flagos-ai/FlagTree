@@ -10,6 +10,7 @@ from triton.language.core import (
     constexpr,
     tensor,
     range,
+    float32,
     check_bit_width,
     _unwrap_if_constexpr,
     add,
@@ -18,6 +19,12 @@ from triton.language.core import (
 )
 
 from .tensor_descriptor import tensor_descriptor, tensor_descriptor_base
+
+try:
+    import acl
+    is_compile_on_910_95 = acl.get_soc_name().startswith("Ascend910_95")
+except Exception as e:
+    is_compile_on_910_95 = False
 
 def enable_care_padding_load():
     return True
@@ -154,6 +161,11 @@ def __rmul__(self, other, _builder=None):
     return mul(other, self, sanitize_overflow=False, _builder=_builder)
 
 @builtin
+def __mod__(self, other, _builder=None):
+    other = _unwrap_if_constexpr(other)
+    return semantic.mod(self, other, _builder)
+
+@builtin
 def __lshift__(self, other, _builder=None):
     if self.type.scalar.is_floating():
         raise TypeError(f"unexpected type {self.type.scalar}")
@@ -171,6 +183,16 @@ def __rshift__(self, other, _builder=None):
         return semantic.ashr(self, other, _builder)
     else:
         return semantic.lshr(self, other, _builder)
+
+@builtin
+def flip(ptr, dim=-1, _builder=None, _generator=None):
+    try:
+        dim = int(dim.value) if hasattr(dim, "value") else int(dim)
+    except Exception as e:
+        raise TypeError(f"dim must be an integer (or tl.constexpr int), got {dim!r}") from e
+
+    dim = len(ptr.shape) - 1 if dim == -1 else dim
+    return semantic_spec.ext_semantic_flip(ptr, dim, _builder, _generator)
 
 @builtin
 def compile_hint(ptr, hint_name, hint_val=None, _builder=None):
@@ -330,27 +352,319 @@ def make_tensor_descriptor(
     return semantic_spec.ext_semantic_make_tensor_descriptor(base, shape, strides, block_shape, _builder)
 
 @builtin
-def gather_load(
+def index_select(src: tensor, idx: tensor, bound, lstdim_blksiz, offsets, numels, _builder=None):
+    """
+    Embedding
+    :src_ptr:
+    :idx:
+    """
+    bound = _constexpr_to_value(bound)
+    lstdim_blksiz = _constexpr_to_value(lstdim_blksiz)
+    return semantic_spec.ext_semantic_embedding_gather(src, idx, bound, lstdim_blksiz, offsets, numels, _builder)
+
+@builtin
+def index_put(
+    ptr: tensor,
+    index: tensor,
+    value: tensor,
+    dim: int,
+    index_boundary: int,
+    end_offset: tuple,
+    start_offset: tuple,
+    dst_stride: tuple,
+    _builder=None
+):
+    """
+    Index put values from a tensor into a destination tensor.
+
+    Index put operation for different tensor ranks:
+    1. 2D index scatter (0 <= dim < 1):
+        1.1 dim = 0
+        out[index[i]][start_offset[1]:end_offset[1]] = value[i][0:end_offset[1]-start_offset[1]]
+    2. 3D index scatter (0 <= dim < 2):
+        2.1 dim = 0
+            out[index[i]][start_offset[1]:end_offset[1]][start_offset[2]:end_offset[2]]
+                = value[i][0:end_offset[1]-start_offset[1]][0:end_offset[2]-start_offset[2]]
+        2.2 dim = 1
+            out[start_offset[0]:end_offset[0]][index[j]][start_offset[2]:end_offset[2]]
+                = value[0:end_offset[0]-start_offset[0]][j][0:end_offset[2]-start_offset[2]]
+
+
+    :param ptr: pointer type, the destination tensor pointer (in GM)
+    :param index: tensor, a index to scatter (in UB)
+    :param value: tensor, a value to store (in UB)
+    :param dim: int32, the dimension to scatter along
+    :param index_boundary: int64, the upper boundary for index values
+    :param end_offset: tuple of int, the offsets of each dimension for the end of the scatter region
+    :param start_offset: tuple of int, the offsets of each dimension for the start of the scatter region
+    :param dst_stride: tuple of int, the stride of each dimension of destination tensor
+
+    Constraints
+    ***********
+    - `ptr` and `value` must have the same rank.
+    - `ptr.dtype` only supports `float16`, `bfloat16`, `float32` currently.
+    - `index` must be an integer tensor. If `index.rank` != 1, it will be reshaped to 1D.
+    - `index.numel` must equal `value.shape[dim]`.
+    - `value` support 2~5D tensors.
+    - `dim` must be valid (0 <= dim < rank(value) - 1).
+
+    Example
+    *******
+    .. code-block:: python
+
+        import torch
+        import triton
+        import triton.language as tl
+        from triton.language.extra.ascend.libdevice import index_put
+
+        @triton.jit
+        def simple_index_put_kernel(value_ptr, index_ptr, dst_ptr):
+            # index tile shape: [2]
+            index_local = tl.arange(0, 2)
+            x1_local = tl.arange(0, 2)[None, :]  # shape=(1,2)
+
+            index_tile = tl.load(index_ptr + index_local)
+            value_tile = tl.load(value_ptr + index_local[:, None]*2 + x1_local)
+
+            index_put(
+                ptr=dst_ptr,
+                index=index_tile,
+                value=value_tile,
+                dim=0,
+                index_boundary=4,
+                end_offset=(2, 2),
+                start_offset=(0, 0),
+                dst_stride=(2, 1)
+            )
+
+        dst = torch.zeros((4,2), device='npu', dtype=torch.float32)
+        value = torch.tensor([[1.,2.], [3.,4.]], device='npu')
+        index = torch.tensor([2, 0], device='npu')
+
+        simple_index_put_kernel[(1,)](value, index, dst)
+        print("IndexPut result:", dst) # ref:[[3.,4.], [0.,0.], [1.,2.], [0.,0.]]
+    """
+    dim = _constexpr_to_value(dim)
+    index_boundary = _constexpr_to_value(index_boundary)
+    return semantic_spec.ext_semantic_index_put(ptr, index, value, dim, index_boundary,
+                              end_offset, start_offset, dst_stride, _builder)
+
+@builtin
+def gather_out_to_ub(
+    src: tensor,
+    index: tensor,
+    index_boundary: int,
+    dim: int,
+    src_stride: tuple,
+    end_offset: tuple,
+    start_offset: tuple,
+    other=None,
+    _builder=None
+):
+    """
+    Gather from a source tensor in Global Memory (GM) to Unified Buffer (UB)
+    along a specified dimension with out-of-bound handling.
+
+    Gather operation for different tensor ranks:
+    1. 1D index gather:
+        out[i] = src[start_offset[0] + index[i]]
+    2. 2D index gather (0 <= dim < 2):
+        2.1 dim = 0
+            out[i][j] = src[start_offset[0] + index[i][j]][start_offset[1] + j]
+        2.2 dim = 1
+            out[i][j] = src[start_offset[0] + i][start_offset[1] + index[i][j]]
+    3. 3D index gather (0 <= dim < 3):
+        3.1 dim = 0
+            out[i][j][k] = src[start_offset[0] + index[i][j][k]][start_offset[1] + j][start_offset[2] + k]
+        3.2 dim = 1
+            out[i][j][k] = src[start_offset[0] + i][start_offset[1] + index[i][j][k]][start_offset[2] + k]
+        3.3 dim = 2
+            out[i][j][k] = src[start_offset[0] + i][start_offset[1] + j][start_offset[2] + index[i][j][k]]
+
+    :param src: pointer type, the source tensor pointer (in GM)
+    :param index: tensor, a tensor to gather (in UB)
+    :param index_boundary: int64, the upper boundary for index values
+    :param dim: int32, the dimension to gather along
+    :param src_stride: tuple of int64, the stride of each dimension of src tensor
+    :param end_offset: tuple of int32, the end offsets of each dimension for index tensor
+    :param start_offset: tuple of int32, the start offsets of each dimension for index tensor
+    :param other(Optional): scalar value, the default value when index is out of boundary (in UB)
+    :return: tensor, with the same shape as `index.shape` (in UB)
+
+    Constraints
+    ***********
+    - `src` and `index` must have the same rank.
+    - `src.dtype` only supports `float16`, `bfloat16`, `float32` currently.
+    - `index` must be an integer tensor, with rank between 1 and 5.
+    - `dim` must be valid (0 <= dim < rank(index)).
+    - `other` must be a scalar value.
+    - For every dimension `i` not equal to `dim`, `index.size[i]` <= `src.size[i]`.
+    - The output shape is the same as `index.shape`. If `index` is None, \
+        the output tensor will be an empty tensor with the same shape as `index`.
+
+    Example
+    *******
+    .. code-block:: python
+
+        import torch
+        import triton
+        import triton.language as tl
+        from triton.language.extra.ascend.libdevice import gather_out_to_ub
+
+        @triton.jit
+        def simple_gather_kernel(src_ptr, index_ptr, out_ptr):
+            # index tile shape: [2,2]
+            y0_local = tl.arange(0, 2)[:, None]  # [0,1] rows
+            x1_local = tl.arange(0, 2)[None, :]  # [0,1] cols
+            mask = (y0_local < 2) & (x1_local < 2)
+
+            # Load index tile to UB
+            index = tl.load(index_ptr + y0_local*2 + x1_local, mask)
+
+            # Call gather_out_to_ub: gather values from src along dim=0
+            gathered = gather_out_to_ub(
+                src=src_ptr,
+                index=index,
+                index_boundary=4,
+                dim=0,
+                src_stride=(2, 1),
+                end_offset=(2, 2),
+                start_offset=(0, 0)
+            )
+
+            tl.store(out_ptr + y0_local*2 + x1_local, gathered, mask)
+
+        src = torch.tensor([[1.,2.], [3.,4.], [5.,6.], [7.,8.]], device='npu')
+        index = torch.tensor([[0,1], [2,3]], device='npu')
+        out = torch.empty((2,2), device='npu', dtype=torch.float32)
+
+        simple_gather_kernel[(1,)](src, index, out)
+        print("Gather result:", out)  # ref: [[1.,4.], [5.,8.]]
+    """
+    dim = _constexpr_to_value(dim)
+    index_boundary = _constexpr_to_value(index_boundary)
+    return semantic_spec.ext_semantic_gather_out_to_ub(
+        src, index, index_boundary, dim,
+        src_stride, end_offset, start_offset, other, _builder
+    )
+
+@builtin
+def scatter_ub_to_out(
+    ptr: tensor,
+    value: tensor,
+    index: tensor,
+    index_boundary: int,
+    dim: int,
+    dst_stride: tuple,
+    end_offset: tuple,
+    start_offset: tuple,
+    _builder=None
+):
+    """
+    Scatter a tile from Unified Buffer (UB) into a destination tensor in Global Memory (GM)
+    along a specified dimension, with index-boundary checking.
+
+    Scatter operation for different tensor ranks:
+    1. 1D index scatter:
+        out[start_offset[0] + index[i]] = value[i]
+    2. 2D index scatter (0 <= dim < 2):
+        2.1 dim = 0
+            out[start_offset[0] + index[i][j]][start_offset[1] + j] = value[i][j]
+        2.2 dim = 1
+            out[start_offset[0] + i][start_offset[1] + index[i][j]] = value[i][j]
+    3. 3D index scatter (0 <= dim < 3):
+        3.1 dim = 0
+            out[start_offset[0] + index[i][j][k]][start_offset[1] + j][start_offset[2] + k] = value[i][j][k]
+        3.2 dim = 1
+            out[start_offset[0] + i][start_offset[1] + index[i][j][k]][start_offset[2] + k] = value[i][j][k]
+        3.3 dim = 2
+            out[start_offset[0] + i][start_offset[1] + j][start_offset[2] + index[i][j][k]] = value[i][j][k]
+
+    :param ptr: pointer type, the destination tensor pointer (in GM)
+    :param value: tensor, a tile value to store (in UB)
+    :param index: tensor, a index to scatter (in UB)
+    :param index_boundary: int64, the upper boundary for index values
+    :param dim: int32, the dimension to scatter along
+    :param dst_stride: tuple of int64, the stride of each dimension of destination tensor
+    :param end_offset: tuple of int32, the end offsets of each dimension for index tensor
+    :param start_offset: tuple of int32, the start offsets of each dimension for index tensor
+
+    Constraints
+    ***********
+    - `ptr`, `index` and `value` must have the same rank.
+    - `ptr.dtype` only supports `float16`, `bfloat16`, `float32` currently.
+    - `index` must be an integer tensor, with rank between 1 and 5.
+    - `dim` must be valid (0 <= dim < rank(index)).
+    - For every dimension `i` not equal to `dim`, `index.size[i]` <= `ptr.size[i]`.
+    - The output shape is the same as `index.shape`. If `index` is None, \
+        the output tensor will be an empty tensor with the same shape as `index`.
+
+    Example
+    *******
+    .. code-block:: python
+
+        import torch
+        import triton
+        import triton.language as tl
+        from triton.language.extra.ascend.libdevice import scatter_ub_to_out
+
+        @triton.jit
+        def simple_scatter_kernel(value_ptr, index_ptr, dst_ptr):
+            # index tile shape: [2,2]
+            y0_local = tl.arange(0, 2)[:, None]  # [0,1] rows
+            x1_local = tl.arange(0, 2)[None, :]  # [0,1] cols
+            mask = (y0_local < 2) & (x1_local < 2)
+
+            value = tl.load(value_ptr + y0_local*2 + x1_local, mask)
+            index = tl.load(index_ptr + y0_local*2 + x1_local, mask)
+
+            scatter_ub_to_out(
+                ptr=dst_ptr,
+                value=value,
+                index=index,
+                index_boundary=4,
+                dim=0,
+                dst_stride=(2, 1),
+                end_offset=(2, 2),
+                start_offset=(0, 0)
+            )
+
+        dst = torch.zeros((4,2), device='npu', dtype=torch.float32)
+        value = torch.tensor([[1.,2.], [3.,4.]], device='npu')
+        index = torch.tensor([[1,2], [3,0]], device='npu')
+
+        simple_scatter_kernel[(1,)](value, index, dst)
+        print("Scatter result:", dst)  # ref:[[0.,4.], [1.,0.], [0.,2.], [3.,0.]]
+    """
+    dim = _constexpr_to_value(dim)
+    index_boundary = _constexpr_to_value(index_boundary)
+    return semantic_spec.ext_semantic_scatter_ub_to_out(
+        ptr, value, index, index_boundary, dim,
+        dst_stride, end_offset, start_offset, _builder
+    )
+
+@builtin
+def index_select_simd(
     src,
-    gather_dim,
-    gather_indices,
+    dim,
+    index,
     src_shape,
     src_offset,
     read_shape,
     _builder=None
 ) -> tensor:
     """
-    Parallel gather load operation from Global Memory to Unified Buffer.
+    Parallel index_select operation from Global Memory to Unified Buffer (SIMD version).
 
-    Gathers data from multiple indices along a specified dimension and loads
+    Selects data from multiple indices along a specified dimension and loads
     them as tiles from GM directly to UB with zero-copy semantics.
 
     :param src: Source tensor pointer (in GM)
     :type src: tensor (pointer type)
-    :param gather_dim: The dimension along which to gather
-    :type gather_dim: int or constexpr
-    :param gather_indices: 1D tensor of indices to gather (in UB)
-    :type gather_indices: tensor
+    :param dim: The dimension along which to select indices
+    :type dim: int or constexpr
+    :param index: 1D tensor of indices to select (in UB)
+    :type index: tensor
     :param src_shape: Complete shape of the source tensor (can be int or tensor)
     :type src_shape: List[Union[int, tensor]]
     :param src_offset: Starting offset for reading (can be int or tensor)
@@ -360,11 +674,11 @@ def gather_load(
 
     **Constraints:**
 
-    - ``read_shape[gather_dim]`` must be ``-1``
-    - ``src_offset[gather_dim]`` can be ``-1`` (will be ignored)
+    - ``read_shape[dim]`` must be ``-1``
+    - ``src_offset[dim]`` can be ``-1`` (will be ignored)
     - Boundary handling: ``src_offset + read_shape > src_shape`` automatically
       truncates to ``src_shape`` boundary
-    - Does not check if ``gather_indices`` contains out-of-bounds values
+    - Does not check if ``index`` contains out-of-bounds values
 
     **Example:**
 
@@ -376,13 +690,13 @@ def gather_load(
             indices = tl.load(indices_ptr + tl.arange(0, 4))
 
             # Example 1: Static shapes (constants)
-            # Gather load from dimension 1
-            # src: [8, 100, 256], gather at dim=1
+            # Index select from dimension 1
+            # src: [8, 100, 256], index_select at dim=1
             # Read: [4, ?, 128] starting from [4, ?, 128]
-            result = tl.gather_load(
+            result = libdevice.index_select_simd(
                 src_ptr,
-                gather_dim=1,
-                gather_indices=indices,
+                dim=1,
+                index=indices,
                 src_shape=[8, 100, 256],
                 src_offset=[4, -1, 128],
                 read_shape=[4, -1, 128]
@@ -390,10 +704,10 @@ def gather_load(
             # result shape: [4, 4, 128]
 
             # Example 2: Dynamic shapes (variables)
-            result2 = tl.gather_load(
+            result2 = libdevice.index_select_simd(
                 src_ptr,
-                gather_dim=1,
-                gather_indices=indices,
+                dim=1,
+                index=indices,
                 src_shape=[M, N, D],
                 src_offset=[4, -1, 128],
                 read_shape=[4, -1, 128]
@@ -401,11 +715,11 @@ def gather_load(
 
             tl.store(output_ptr + ..., result)
 
-    :return: Result tensor in UB with shape where ``gather_dim`` is replaced
-        by the length of ``gather_indices``
+    :return: Result tensor in UB with shape where ``dim`` is replaced
+        by the length of ``index``
     :rtype: tensor
     """
-    gather_dim = _constexpr_to_value(gather_dim)
+    dim = _constexpr_to_value(dim)
 
     # Process shape parameters: convert constexpr to values, keep tensors as-is
     def process_param(val):
@@ -423,15 +737,16 @@ def gather_load(
         semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
         for o in src_offset
     ]
-    assert len(gather_indices.shape) == 1, "gather_indices must be a 1D tensor"
+    assert len(index.shape) == 1, "index must be a 1D tensor"
 
-    return semantic_spec.ext_semantic_gather_load(
-        src, gather_dim, gather_indices, newsrc_shape, newsrc_offset, read_shape, _builder
+    return semantic_spec.ext_semantic_index_select_simd(
+        src, dim, index, newsrc_shape, newsrc_offset, read_shape, _builder
     )
 
 def dtype_to_ir(self, builder: ir.builder) -> ir.type:
-    if self.name.startswith("fp8"):
-        raise ValueError(f'unexpected type fp8.')
+    if not is_compile_on_910_95:
+        if self.name.startswith("fp8"):
+            raise ValueError(f'unexpected type fp8.')
 
     if self.name == 'void':
         return builder.get_void_ty()
@@ -465,6 +780,96 @@ def dtype_to_ir(self, builder: ir.builder) -> ir.type:
         return builder.get_double_ty()
     raise ValueError(f'fail to convert {self} to ir type')
 
+@builtin
+def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, out_dtype=float32, lhs_k_pack=True, rhs_k_pack=True, _builder=None):
+    """
+    Returns the matrix product of two blocks in microscaling format.
+    lhs and rhs use microscaling formats described here:
+    https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
+    :param lhs: The first tensor to be multiplied.
+    :type lhs: 2D tensor of f8, f6 or f4 format packed in int32 format.
+    :param lhs_scale: Scale factor for lhs tensor.
+    :type lhs_scale: ue8m0 float8 type (currently represented as an int8 tensor).
+    :param lhs_format: format of the lhs tensor, available formats: {:code:`e4m3`, :code: `e5m2`, :code:`e2m3`, :code:`e3m2`, :code:`e2m1`}.
+    :param rhs: The second tensor to be multiplied.
+    :type rhs: 2D tensor of f8, f6 or f4 format packed in int32 format.
+    :param rhs_scale: Scale factor for rhs tensor.
+    :type rhs_scale: ue8m0 float8 type (currently represented as an int8 tensor).
+    :param rhs_format: format of the rhs tensor, available formats: {:code:`e4m3`, :code: `e5m2`, :code:`e2m3`, :code:`e3m2`, :code:`e2m1`}.
+    :param acc: The accumulator tensor. If not None, the result is added to this tensor.
+    """
+    out_dtype = _constexpr_to_value(out_dtype)
+    assert out_dtype == float32, "Only float32 is supported for out_dtype at the moment"
+    return semantic.dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, out_dtype, lhs_k_pack, rhs_k_pack, _builder)
+
+class range():
+    """
+    Iterator that counts upward forever.
+
+    .. highlight:: python
+    .. code-block:: python
+
+        @triton.jit
+        def kernel(...):
+            for i in tl.range(10, num_stages=3):
+                ...
+    :note: This is a special iterator used to implement similar semantics to Python's :code:`range` in the context of
+        :code:`triton.jit` functions. In addition, it allows user to pass extra attributes to the compiler.
+    :param arg1: the start value.
+    :param arg2: the end value.
+    :param step: the step value.
+    :param num_stages: pipeline the loop into this many stages (so there are
+        :code:`num_stages` iterations of the loop in flight at once).
+
+        Note this is subtly different than passing :code:`num_stages` as a
+        kernel argument.  The kernel argument only pipelines loads that feed
+        into :code:`dot` operations, while this attribute tries to pipeline most
+        (though not all) loads in this loop.
+    :param loop_unroll_factor: Tells the Triton IR level loop unroller how many
+        times to unroll a for loop that this range is used with. Less than 2 for
+        this value implies no unrolling.
+    :param disallow_acc_multi_buffer: If true, prevent the accumulator of the dot
+        operation in the loop to be multi-buffered, if applicable.
+    :param flatten: automatically flatten the loop nest starting at this loop to
+        create a single flattened loop. The compiler will try to pipeline the
+        flattened loop which can avoid stage stalling.
+    :param warp_specialize: Enable automatic warp specialization on the loop.
+        The compiler will attempt to partition memory, MMA, and vector
+        operations in the loop into separate async partitions. This will
+        increase the total number of warps required by the kernel.
+    :param disable_licm: Tells the compiler it shouldn't hoist loop invariant
+        code outside the loop. This is often useful to avoid creating long liveranges
+        within a loop.
+
+        Note that warp specialization is only supported on Blackwell GPUs and
+        only works on simple matmul loops. Support for arbitrary loops will be
+        expanded over time.
+    """
+
+    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
+                 disallow_acc_multi_buffer=False, flatten=False, warp_specialize=False, disable_licm=False):
+        if step is None:
+            self.step = constexpr(1)
+        else:
+            self.step = step
+        if arg2 is None:
+            self.start = constexpr(0)
+            self.end = arg1
+        else:
+            self.start = arg1
+            self.end = arg2
+        self.num_stages = num_stages
+        self.loop_unroll_factor = loop_unroll_factor
+        self.disallow_acc_multi_buffer = disallow_acc_multi_buffer
+        self.flatten = flatten
+        self.warp_specialize = warp_specialize
+        self.disable_licm = disable_licm
+
+    def __iter__(self):
+        raise RuntimeError("tl.range can only be used in @triton.jit'd functions")
+
+    def __next__(self):
+        raise RuntimeError("tl.range can only be used in @triton.jit'd functions")
 
 class parallel(range):
     """
@@ -482,8 +887,9 @@ class parallel(range):
 
 core_ext_spec_func_list = [
     "gather", "insert_slice", "extract_slice", "get_element", "__add__",
-    "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__", "__lshift__",
+    "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__", "__mod__", "__lshift__",
     "__rshift__", "compile_hint", "sort", "multibuffer", "sync_block_all",
     "sync_block_set", "sync_block_wait", "load_tensor_descriptor",
-    "store_tensor_descriptor", "make_tensor_descriptor", "gather_load", "dtype_to_ir", "parallel"
+    "store_tensor_descriptor", "make_tensor_descriptor", "index_select_simd", "dtype_to_ir", "parallel",
+    "index_select", "index_put", "gather_out_to_ub", "scatter_ub_to_out", "dot_scaled", "range"
 ]
