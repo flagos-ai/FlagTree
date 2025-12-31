@@ -1,3 +1,0 @@
-Device_id,OP Type,Core Type,Count,Total Time(us),Min Time(us),Avg Time(us),Max Time(us),Ratio(%)
-0,triton_kernel_add,AI_VECTOR_CORE,30,644.14,21.3,21.471,21.66,90.584
-0,Add,AI_VECTOR_CORE,30,66.96,1.94,2.232,2.7,9.416

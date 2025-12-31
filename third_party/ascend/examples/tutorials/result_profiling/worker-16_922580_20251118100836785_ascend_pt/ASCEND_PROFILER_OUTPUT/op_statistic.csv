@@ -1,3 +1,0 @@
-OP Type,Core Type,Count,Total Time(us),Min Time(us),Avg Time(us),Max Time(us),Ratio(%)
-triton_kernel_add,AI_VECTOR_CORE,30,68.02,2.16,2.267,2.52,51.228
-Add,AI_VECTOR_CORE,30,64.76,1.94,2.158,2.56,48.772

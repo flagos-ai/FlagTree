@@ -1,5 +1,0 @@
-Level,API Name,Time(us),Count,Avg(us),Min(us),Max(us),Variance
-acl,aclnnAdd,494.69,30,16.49,13.76,23.37,5.47
-acl,aclnnAddGetWorkspaceSize,1361.57,30,45.386,44.62,46.82,0.252
-acl,aclrtSynchronizeDeviceWithTimeout,91.68,1,91.68,91.68,91.68,0
-node,launch,437.58,60,7.293,5.47,14.72,2.677

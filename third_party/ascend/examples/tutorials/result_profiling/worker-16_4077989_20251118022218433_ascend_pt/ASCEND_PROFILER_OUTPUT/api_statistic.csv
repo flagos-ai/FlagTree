@@ -1,4 +1,0 @@
-Level,API Name,Time(us),Count,Avg(us),Min(us),Max(us),Variance
-acl,aclnnAdd,581.49,30,19.383,9.31,135.18,519.206
-acl,aclrtSynchronizeDeviceWithTimeout,50.29,1,50.29,50.29,50.29,0
-node,launch,599.79,60,9.996,4.85,97.42,149.44
