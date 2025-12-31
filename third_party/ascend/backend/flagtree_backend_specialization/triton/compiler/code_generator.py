@@ -1,3 +1,9 @@
+def ext_CodeGenerator_builder_with_compile_mode():
+    return True
+
+def has_for_op_ext_attr():
+    return True
+
 def ext_CodeGenerator_visit_Assign_hint_anno(code_generator, node, names, values):
     import ast
     from triton.compiler.code_generator import _is_triton_value
