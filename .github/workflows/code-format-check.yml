@@ -21,3 +21,6 @@ jobs:
       with:
         python-version: '3.11'
     - uses: pre-commit/action@v3.0.1
+    - uses: stefanzweifel/git-auto-commit-action@v4
+      with:
+        commit_message: Apply code-format changes
