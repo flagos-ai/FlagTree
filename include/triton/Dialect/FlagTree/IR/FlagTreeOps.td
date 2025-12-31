@@ -64,6 +64,12 @@ def FlagTree_ExtractStridesOp : FlagTree_Op<"extract_strides", [Pure, HasParent<
   let builders = [OpBuilder<(ins "size_t":$num, "Value":$input)>];
 }
 
+def FlagTree_ExtractPtrOp : FlagTree_Op<"extract_ptr", [Pure, HasParent<"DSLRegionOp">]> {
+  let arguments = (ins TT_Ptr:$input);
+  let results = (outs LLVMPointerType:$ptr);
+  let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
+}
+
 def FlagTree_PackOp : FlagTree_Op<"pack", [MemDescViewTrait, Pure, HasParent<"DSLRegionOp">]> {
   let arguments = (ins LLVMStructType:$input);
   let results = (outs FlagTree_TensorType:$output);

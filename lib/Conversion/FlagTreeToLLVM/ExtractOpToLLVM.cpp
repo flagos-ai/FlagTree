@@ -1,6 +1,7 @@
 #include "triton/Conversion/FlagTreeToLLVM/ExtractOpToLLVM.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
@@ -60,7 +61,16 @@ struct ExtractStridesOpConversion
   matchAndRewrite(fl::ExtractStridesOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override;
 };
-}; // namespace
+
+struct ExtractPtrOpConversion
+    : public ConvertOpToLLVMPattern<fl::ExtractPtrOp> {
+  ExtractPtrOpConversion(LLVMTypeConverter &typeConverter,
+                         PatternBenefit benefit);
+  LogicalResult
+  matchAndRewrite(fl::ExtractPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+} // namespace
 
 ExtractAllocatedPtrOpConversion::ExtractAllocatedPtrOpConversion(
     LLVMTypeConverter &typeConverter, PatternBenefit benefit)
@@ -148,10 +158,27 @@ LogicalResult ExtractStridesOpConversion::matchAndRewrite(
   }
 }
 
+ExtractPtrOpConversion::ExtractPtrOpConversion(LLVMTypeConverter &typeConverter,
+                                               PatternBenefit benefit)
+    : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+LogicalResult ExtractPtrOpConversion::matchAndRewrite(
+    fl::ExtractPtrOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  auto input = adaptor.getInput();
+  if (isa<LLVM::LLVMPointerType>(input.getType())) {
+    rewriter.replaceOp(op, input);
+    return success();
+  } else {
+    return failure();
+  }
+}
+
 void fl::populateExtractOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                          RewritePatternSet &patterns,
                                          PatternBenefit benefit) {
   patterns.add<ExtractAllocatedPtrOpConversion, ExtractAlignedPtrOpConversion,
                ExtractOffsetOpConversion, ExtractSizesOpConversion,
-               ExtractStridesOpConversion>(typeConverter, benefit);
+               ExtractStridesOpConversion, ExtractPtrOpConversion>(
+      typeConverter, benefit);
 }

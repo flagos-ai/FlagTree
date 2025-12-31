@@ -1,27 +1,37 @@
 from mlir import ir
-from mlir.dialects import arith, memref, nvvm, scf
+from mlir.dialects import arith, llvm, nvvm, scf
 import torch
 import triton
 import triton.language as tl
 from triton.experimental import flagtree
-from triton.experimental.flagtree.edsl import dialect, Input, InOut
+from triton.experimental.flagtree.edsl import dialect, Input
 import triton.experimental.flagtree.language as fl
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 @dialect(name="mlir")
-def edsl(output: InOut["memref<?xf32, 3>"], x: Input["memref<?xf32, 3>"], y: Input["memref<?xf32, 3>"]):  # noqa: F722
+def edsl(output: Input["!llvm.ptr<1>"], x: Input["!llvm.ptr<1>"], y: Input["!llvm.ptr<1>"],  # noqa: F722,
+         n_elements: Input["i32"]):  # noqa: F821
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
+    bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
     bdimx = arith.index_cast(ir.IndexType.get(), bdimx)
-    length = memref.dim(output, arith.constant(ir.IndexType.get(), 0))
-    for i in scf.for_(tidx, length, bdimx):
-        xval = memref.load(x, [i])
-        yval = memref.load(y, [i])
-        result = arith.addf(xval, yval)
-        memref.store(result, output, [i])
+    bidx = arith.index_cast(ir.IndexType.get(), bidx)
+    idx = arith.addi(arith.muli(bidx, bdimx), tidx)
+    n_elements = arith.index_cast(ir.IndexType.get(), n_elements)
+    for i in scf.for_(idx, n_elements, bdimx):
+        i = arith.index_cast(ir.IntegerType.get_signless(32), i)
+        ptrty = ir.Type.parse("!llvm.ptr<1>")
+        f32ty = ir.Type.parse("f32")
+        xptr = llvm.getelementptr(ptrty, x, [i], [-2147483648], f32ty, 0)
+        yptr = llvm.getelementptr(ptrty, y, [i], [-2147483648], f32ty, 0)
+        xval = llvm.load(f32ty, xptr)
+        yval = llvm.load(f32ty, yptr)
+        outval = arith.addf(xval, yval)
+        outptr = llvm.getelementptr(ptrty, output, [i], [-2147483648], f32ty, 0)
+        llvm.store(outval, outptr)
         scf.yield_([])
 
 
@@ -33,15 +43,7 @@ def add_kernel(
     n_elements,
     BLOCK_SIZE: tl.constexpr,
 ):
-    pid = tl.program_id(axis=0)
-    block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
-    x = tl.load(x_ptr + offsets, mask=mask)
-    y = tl.load(y_ptr + offsets, mask=mask)
-    output = tl.zeros_like(x)
-    output = fl.call(edsl, [output], [x, y])
-    tl.store(output_ptr + offsets, output, mask=mask)
+    fl.call(edsl, [], [output_ptr, x_ptr, y_ptr, n_elements])
 
 
 def add(x: torch.Tensor, y: torch.Tensor):

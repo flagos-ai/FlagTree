@@ -70,6 +70,10 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
           for (const auto &result : stridesOp.getResults()) {
             extractOps.push_back(result);
           }
+        } else if (auto ptrTy =
+                       dyn_cast<triton::PointerType>(input.getType())) {
+          extractOps.push_back(create<flagtree::ExtractPtrOp>(
+              LLVM::LLVMPointerType::get(getContext(), as), input));
         } else {
           extractOps.push_back(input);
         }

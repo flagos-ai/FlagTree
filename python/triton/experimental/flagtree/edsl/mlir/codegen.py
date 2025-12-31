@@ -135,6 +135,14 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
         return lhs[slices]
 
     @override
+    def visit_UnaryOp(self, node) -> Any:
+        operand = self.visit(node.operand)
+        if isinstance(node.op, ast.USub):
+            return -operand
+        else:
+            raise NotImplementedError(f"unsupported unary op: {type(node.op)}")
+
+    @override
     def visit_With(self, node: ast.With) -> None:
         [item] = node.items
         with self.visit(item.context_expr):
