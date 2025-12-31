@@ -155,13 +155,16 @@ __all__  = [
     "ext_semantic_scatter_ub_to_out",
     "semantic_ext_spec_func_list",
     # language.standard
-    "flip",
     "sigmoid",
     "softmax",
     "isfinited",
     "finitef",
     "rint",
     "atan2",
+    "argmax",
+    "argmin",
+    "topk",
+    "max",
     "standard_ext_spec_func_list",
     # language.math
     "umulhi",
