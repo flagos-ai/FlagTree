@@ -313,7 +313,7 @@ class CUDABackend(BaseBackend):
         if capability // 10 >= 9:
             # flagtree tle
             # Apply TLE TMA copy lowering before standard NVIDIA TMA lowering
-            tle.tle_passes.add_lowering_tma_copy(pm)
+            tle.passes.add_lower_tma_copy(pm)
             nvidia.passes.ttnvgpuir.add_tma_lowering(pm)
         nvidia.passes.ttnvgpuir.add_fence_insertion(pm, capability)
         nvidia.passes.ttnvgpuir.add_lower_mma(pm)

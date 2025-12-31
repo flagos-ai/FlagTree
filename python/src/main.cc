@@ -43,8 +43,6 @@ void init_triton_interpreter(pybind11::module &&m);
 void init_triton_passes(pybind11::module &&m);
 void init_triton_stacktrace_hook(pybind11::module &m);
 void init_gluon_ir(pybind11::module &&m);
-// flagtree tle
-void init_triton_tle(pybind11::module &&m);
 FOR_EACH_P(DECLARE_BACKEND, TRITON_BACKENDS_TUPLE)
 
 PYBIND11_MODULE(libtriton, m) {
