@@ -27,8 +27,8 @@ def convert_to_uint32(x):
 
 
 @dialect(name="mlir")
-def edsl(l_threshold_bin_id_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["memref<?xi32, 3>"],  # noqa: F722
-         s_histogram: Input["memref<?xi32, 3>"], l_new_topk: Input["i32"]):  # noqa: F722, F821
+def edsl0(l_threshold_bin_id_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["memref<?xi32, 3>"],  # noqa: F722
+          s_histogram: Input["memref<?xi32, 3>"], l_new_topk: Input["i32"]):  # noqa: F722, F821
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
@@ -61,16 +61,37 @@ def edsl(l_threshold_bin_id_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOu
         scf.yield_([])
 
 
+@dialect(name="mlir")
+def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices: InOut["memref<?xi32, 3>"],  # noqa: F722, F821
+          s_input_idx: InOut["memref<?xi32, 3>"], inputs: Input["!llvm.ptr<1>"],  # noqa: F722, F821
+          s_histogram: Input["memref<?xi32, 3>"], l_start_idx: Input["i32"],  # noqa: F722, F821
+          l_end_idx: Input["i32"],  # noqa: F722, F821
+          S: Input["i32"], l_threshold_bin_id: Input["i32"], l_new_topk: Input["i32"],  # noqa: F722, F821
+          BS: Input["i32"]):  # noqa: F722, F821
+    tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
+    zero = arith.constant(ir.IndexType.get(), 0)
+    for s in scf.for_(zero, arith.index_cast(ir.IndexType.get(), arith.ceildivsi(S, BS))):
+        nvvm.barrier0()
+        input_idx = arith.addi(arith.muli(arith.index_cast(ir.IntegerType.get_signless(32), s), BS), tidx)
+        ifop = scf.if_([],
+                       arith.andi(arith.cmpi(arith.CmpIPredicate.slt, input_idx, arith.minsi(l_end_idx, S)),
+                                  arith.cmpi(arith.CmpIPredicate.sge, input_idx, l_start_idx)))
+        thenblock = ifop.opview.thenRegion.blocks.append()
+        with ir.InsertionPoint(thenblock):
+            scf.yield_([])
+        scf.yield_([])
+
+
 @triton.autotune(
     configs=[
-        triton.Config({"BS": 32, "BSS": 32}, num_stages=1, num_warps=1),
-        triton.Config({"BS": 64, "BSS": 32}, num_stages=1, num_warps=1),
-        triton.Config({"BS": 512, "BSS": 64}, num_stages=2, num_warps=2),
-        triton.Config({"BS": 1024, "BSS": 256}, num_stages=2, num_warps=2),
-        triton.Config({"BS": 2048, "BSS": 256}, num_stages=2, num_warps=4),
-        triton.Config({"BS": 4096, "BSS": 512}, num_stages=3, num_warps=4),
+        # triton.Config({"BS": 32, "BSS": 32}, num_stages=1, num_warps=1),
+        # triton.Config({"BS": 64, "BSS": 32}, num_stages=1, num_warps=1),
+        # triton.Config({"BS": 512, "BSS": 64}, num_stages=2, num_warps=2),
+        # triton.Config({"BS": 1024, "BSS": 256}, num_stages=2, num_warps=2),
+        # triton.Config({"BS": 2048, "BSS": 256}, num_stages=2, num_warps=4),
+        # triton.Config({"BS": 4096, "BSS": 512}, num_stages=3, num_warps=4),
         triton.Config({"BS": 8192, "BSS": 512}, num_stages=3, num_warps=8),
-        triton.Config({"BS": 8192, "BSS": 1024}, num_stages=3, num_warps=8),
+        # triton.Config({"BS": 8192, "BSS": 1024}, num_stages=3, num_warps=8),
     ],
     key=["S", "K"],
 )
@@ -78,7 +99,7 @@ def edsl(l_threshold_bin_id_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOu
 def kernel_bucket_sort_topk(  # grid(B, BS)
         inputs,  # (B, S) Note: no H because MLA is based on MQA and MHA, not GQA
         indices,  # (B, K) topk index array
-        s_input_ids,  # Data indices to be filtered in the next round
+        s_input_ids,  # Data indices to be filtered in the next round # s_input_idx --load from gmem--> s_input_ids --load from gmem--> inputs
         starts,  # for variable length
         ends,  # for variable length
         S: tl.constexpr,  # sequence length
@@ -125,23 +146,22 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
     # -----------------------------------
     l_threshold_bin_id_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
     l_new_topk_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
-    l_threshold_bin_id_buf, l_new_topk_buf = tle_raw.call(edsl, [l_threshold_bin_id_buf, l_new_topk_buf],
+    l_threshold_bin_id_buf, l_new_topk_buf = tle_raw.call(edsl0, [l_threshold_bin_id_buf, l_new_topk_buf],
                                                           [s_histogram, l_new_topk])
     l_threshold_bin_id = l_threshold_bin_id_buf.max(0)
     l_new_topk = l_new_topk_buf.max(0)
     # -----------------------------------
     sum = 0
     thre_bin_sum = 0
+    '''triton begin'''
     for s in range(TS):
         input_idx = s * BS + tl.arange(0, BS)
         input_mask = ((input_idx < l_end_idx) & (input_idx >= l_start_idx) & (input_idx < S))
         input = tl.load(s_base + input_idx, input_mask, other=float("-inf")).to(tl.float32)
         inval_int16 = convert_to_uint16(input)
-        # This method would slow down the speed, so using other=float("-inf") saves time.
 
         over_thre = inval_int16.to(tl.int32) > l_threshold_bin_id
         cur_sum = over_thre.to(tl.int32).sum(-1)
-
         eq_thre = inval_int16.to(tl.int32) == l_threshold_bin_id
         thre_bin_cur_sum = eq_thre.to(tl.int32).sum(-1)
 
@@ -151,7 +171,7 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
         concat_mask = tl.cat(over_thre, eq_thre, True)
         concat_input = tl.cat(input_idx, input_idx, True)
         concat_pointer_matrix = tl.cat(
-            indices_base + sum + topk_idx - 1,
+            indices_base + sum + topk_idx - 1,  # sum 是栈顶位置
             s_input_ids_base + thre_bin_sum + thre_bin_idx - 1,
             True,
         )
@@ -159,6 +179,58 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
 
         thre_bin_sum += thre_bin_cur_sum
         sum += cur_sum
+    '''triton end'''
+    '''edsl
+
+    thre_bin_sum (tilelang.s_num_input[0]) = fl.call([],[(tilelang.input), (tilelang.s_histogram),(tilelang.s_num_input)])
+
+    '''
+    sum = K - l_new_topk
+    '''tilelang
+    l_end_idx = ~
+    l_start_idx = ~
+    seq_len = S
+    bx = i_b
+    l_threshold_bin_id = ~
+    s_num_input = thre_bin_sum
+    BLOCK_SIZE = BS
+    index = indices
+    -----------------------
+    l_bin_id32 = inval_int16
+    bin_id = inval_int16
+
+
+    for s in T.serial(T.ceildiv(seq_len, BLOCK_SIZE)):
+        T.sync_threads()
+        input_idx = s * BLOCK_SIZE + tx
+        if input_idx < l_end_idx and input_idx >= l_start_idx and input_idx < seq_len:
+            # bin_id = convert_to_uint16(input[bx, input_idx])
+            bin_id = convert_to_uint16(s_base[input_idx])
+            l_bin_id32 = T.Cast(T.int32, bin_id)
+            if l_bin_id32 > l_threshold_bin_id:
+                pos = T.atomic_add(s_histogram[l_bin_id32 + 1], 1, return_prev=True)
+                # index[bx, pos] = input_idx
+                indices_base[pos] = input_idx
+
+            elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
+                pos = T.atomic_add(s_num_input[0], 1, return_prev=True)
+                #s_input_idx[0, pos] = input_idx
+                s_input_ids_base[pos] = input_idx
+
+    '''
+
+    thre_bin_sum_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
+    #s_input_idx = tl.zeros([4096], dtype=tl.int32)
+    s = S
+    bs = BS
+    indices_buf = tl.zeros([K], dtype=tl.int32)
+    s_input_ids_buf = tl.zeros([SMEM_INPUT_SIZE], dtype=tl.int32)
+    thre_bin_sum_buf, indices_buf, s_input_ids_buf = tle_raw.call(
+        edsl1, [thre_bin_sum_buf, indices_buf, s_input_ids_buf],
+        [inputs, s_histogram, l_start_idx, l_end_idx, s, l_threshold_bin_id, l_new_topk, bs])
+    tl.store(indices + i_b * K + tl.arange(0, K), indices_buf)
+    tl.store(s_input_ids + i_b * SMEM_INPUT_SIZE + tl.arange(0, SMEM_INPUT_SIZE), s_input_ids_buf)
+    thre_bin_sum = thre_bin_sum_buf.max(0)
 
     round = 0
     while round < 4 and l_new_topk > 0:
@@ -201,7 +273,7 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
         # -----------------------------------
         l_threshold_bin_id_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
         l_new_topk_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
-        l_threshold_bin_id_buf, l_new_topk_buf = tle_raw.call(edsl, [l_threshold_bin_id_buf, l_new_topk_buf],
+        l_threshold_bin_id_buf, l_new_topk_buf = tle_raw.call(edsl0, [l_threshold_bin_id_buf, l_new_topk_buf],
                                                               [s_histogram, l_new_topk])
         l_threshold_bin_id = l_threshold_bin_id_buf.max(0)
         l_new_topk = l_new_topk_buf.max(0)
