@@ -81,6 +81,8 @@ def validate(n_elements):
 
 
 import sys
+
+
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         x_names=["size"],
