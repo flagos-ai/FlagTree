@@ -115,16 +115,16 @@ jobs:
         run: |
           set -x
           # python tutorials
-          python3 01-vector-add.py --only_unit_test
-          python3 02-fused-softmax.py --only_unit_test
-          python3 03-matrix-multiplication.py --only_unit_test
-          python3 04-low-memory-dropout.py
-          python3 05-layer-norm.py --only_unit_test
-          python3 06-fused-attention.py --only_unit_test
-          python3 07-extern-functions.py
-          python3 08-grouped-gemm.py --only_unit_test
-          python3 09-persistent-matmul.py --only_unit_test
-          python3 11-programmatic-dependent-launch.py --only_unit_test
+          python3 python/tutorials/01-vector-add.py --only_unit_test
+          python3 python/tutorials/02-fused-softmax.py --only_unit_test
+          python3 python/tutorials/03-matrix-multiplication.py --only_unit_test
+          python3 python/tutorials/04-low-memory-dropout.py
+          python3 python/tutorials/05-layer-norm.py --only_unit_test
+          python3 python/tutorials/06-fused-attention.py --only_unit_test
+          python3 python/tutorials/07-extern-functions.py
+          python3 python/tutorials/08-grouped-gemm.py --only_unit_test
+          python3 python/tutorials/09-persistent-matmul.py --only_unit_test
+          python3 python/tutorials/11-programmatic-dependent-launch.py --only_unit_test
           # python unit test
           python3 -m pytest -s python/test/unit/cuda
           python3 -m pytest -s python/test/unit/instrumentation
