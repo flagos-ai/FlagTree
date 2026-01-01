@@ -249,7 +249,7 @@ def TT_LoadOp : TT_Op<"load", [
       DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
       DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict,
       DefaultValuedAttr<BoolAttr, "false">:$isVolatile,
-      DefaultValuedAttr<StrAttr, "\"\"">:$flagtree_hints
+      DefaultValuedAttr<StrAttr, "\"\"">:$flagtree_hints  // flagtree hints
     );
 
     let results = (outs TT_Type:$result);
@@ -257,41 +257,27 @@ def TT_LoadOp : TT_Op<"load", [
     let builders = [
         // A tensor of pointers or a pointer to a scalar
         OpBuilder<(ins "Value":$ptr, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "mlir::StringAttr":$flagtree_hints)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
         // A tensor pointer with boundary check and padding
         OpBuilder<(ins "Value":$ptr, "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "mlir::StringAttr":$flagtree_hints)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
         // A tensor of pointers or a pointer to a scalar with mask
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "mlir::StringAttr":$flagtree_hints)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
         // A tensor of pointers or a pointer to a scalar with mask and other
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "mlir::StringAttr":$flagtree_hints)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
         // A utility function to build the operation with all attributes
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
                        "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "mlir::StringAttr":$flagtree_hints)>,
-
-        // A tensor of pointers or a pointer to a scalar
-        OpBuilder<(ins "Value":$ptr, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
-        // A tensor pointer with boundary check and padding
-        OpBuilder<(ins "Value":$ptr, "ArrayRef<int32_t>":$boundaryCheck,
-                       "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
-        // A tensor of pointers or a pointer to a scalar with mask
-        OpBuilder<(ins "Value":$ptr, "Value":$mask, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
-        // A tensor of pointers or a pointer to a scalar with mask and other
-        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
-        // A utility function to build the operation with all attributes
-        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
-                       "ArrayRef<int32_t>":$boundaryCheck,
-                       "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>
     ];
 
     // Specify `cacheModifier` and `evictionPolicy` explicitly in the
