@@ -83,7 +83,7 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
       padding.has_value()
           ? PaddingOptionAttr::get(builder.getContext(), padding.value())
           : PaddingOptionAttr();
-  if (!flagtree_hints)  // flagtree hints: if not provided, use empty string
+  if (!flagtree_hints) // flagtree hints: if not provided, use empty string
     flagtree_hints = builder.getStringAttr("");
   LoadOp::build(builder, state, ptr, mask, other,
                 builder.getDenseI32ArrayAttr(boundaryCheck), paddingAttr, cache,
