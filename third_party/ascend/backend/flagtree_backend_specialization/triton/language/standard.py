@@ -1,7 +1,7 @@
 from math import pi as math_pi
 from triton.language import core, math
 from triton.language.core import float32, int1, int32
-from triton.language.standard import sum
+from triton.language.standard import max as real_max, sum
 from triton.language.standard import _log2
 from triton.runtime.jit import jit
 
