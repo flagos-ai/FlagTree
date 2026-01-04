@@ -81,8 +81,6 @@ def validate(n_elements):
     print(f"add: {torch_vs_add}")
 
 
-
-
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         x_names=["size"],
