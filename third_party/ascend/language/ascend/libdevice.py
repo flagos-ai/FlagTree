@@ -599,7 +599,7 @@ def cyl_bessel_i0(arg0: core.tensor, _builder: ir.builder):
     a_n_2 = 0
     a_n_1 = 0
     a_n = param1[0]
-    for i in range(1, 30):
+    for i in constexpr(range(1, 30)):
         a_n_2 = a_n_1
         a_n_1 = a_n
         a_n = semantic.sub(semantic.mul(x_a, a_n_1, True, _builder), a_n_2, True, _builder)
@@ -610,7 +610,7 @@ def cyl_bessel_i0(arg0: core.tensor, _builder: ir.builder):
     b_n_2 = 0
     b_n_1 = 0
     b_n = param2[0]
-    for i in range(1, 25):
+    for i in constexpr(range(1, 25)):
         b_n_2 = b_n_1
         b_n_1 = b_n
         b_n = semantic.sub(semantic.mul(x_b, b_n_1, True, _builder), b_n_2, True, _builder)
