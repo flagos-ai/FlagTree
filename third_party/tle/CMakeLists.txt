@@ -6,3 +6,5 @@ if(TRITON_BUILD_PYTHON_MODULE)
   add_triton_plugin(TritonTLE ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle.cc LINK_LIBS TritonTLETransforms TritonIR)
   target_link_libraries(TritonTLE PRIVATE Python3::Module pybind11::headers)
 endif()
+
+add_subdirectory(test)

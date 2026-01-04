@@ -109,5 +109,4 @@ jobs:
           fi
 
           python3.12 -m pytest -s python/test/tle/integration
-          python3.12 -m pytest -s python/test/tle/mlir
           python3.12 -m pytest -s python/test/tle/unit
