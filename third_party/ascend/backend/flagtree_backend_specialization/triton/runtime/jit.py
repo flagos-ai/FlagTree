@@ -3,7 +3,8 @@ def enable_stream_in_kwargs(kwargs):
 
 def ignore_params_in_JITFunction_run(kwargs, excess_kwargs):
     ignor_params = ["debug", "sanitize_overflow", "llvm_version", "kernel_name", \
-                "allowed_dot_input_precisions", "multibuffer", "stream"]
+        "allowed_dot_input_precisions", "multibuffer", "stream", "inject_barrier_all", \
+        "inject_block_all", "limit_auto_multi_buffer_only_for_local_buffer"]
     not_work_params = []
     for k in kwargs:
         if k in ignor_params:

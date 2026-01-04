@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import sys
 from dataclasses import dataclass
 from typing import (
     Dict,
@@ -12,6 +13,7 @@ from .utils import (
     get_byte_per_numel,
     next_power_of_2,
     num_vector_core,
+    num_ub_max,
 )
 from .autotuner import Config
 
@@ -43,7 +45,26 @@ class KernelMeta:
         dtype: torch.dtype,
         persistent_reduction: bool,
         dual_reduction: bool,
+        input_ptr_num: int,
+
     ):
+        """
+        :param split_params: a dict of axis name: argument name, the argument is an adjustable parameter in a split axis, such as 'XBLOCK'.
+            The axis name must be in key's axis names. Do not add prefix 'r' before the axis name.
+            This param can be empty. Note that the auto tiling feature will be disabled when the split_params and tiling_params are both empty.
+            The split axis can usually be identified according to `tl.program_id()` expression.
+        :type split_params: Dict[str, str]
+        :param tiling_params: a dict of axis name: argument name, the argument is an adjustable parameter in a tiling axis, such as 'XBLOCK_SUB'.
+            The axis name must be in key's axis names. Do not add prefix 'r' before the axis name.
+            This param can be empty. Note that the auto tiling feature will be disabled when the split_params and tiling_params are both empty.
+            The tiling axis can usually be identified according to `tl.arange()` expression.
+        :type tiling_params: Dict[str, str]
+        :param low_dims: a list of axis name in which the corresponding axis is low dim aixs.
+            The axis name must be in key's axis names. Do not add prefix 'r' before the axis name.
+        :type low_dims: List[str]
+        :param dual_reduction: performing reduction on more than one axis.
+        :param persistent_reduction: there is no splitting in reduction axis.
+        """
         self._validate_axis(axis_sizes, split_params, tiling_params, low_dims)
 
         axis_dict = {}
@@ -78,6 +99,7 @@ class KernelMeta:
         self.dtype = dtype
         self.persistent_reduction = persistent_reduction
         self.dual_reduction = dual_reduction
+        self.input_ptr_num = input_ptr_num
 
     @classmethod
     def _validate_axis(
@@ -116,9 +138,7 @@ Generate possible candidate tiling configs for benchmarking
 """
 class TileGenerator:
     num_warps = 1
-    num_stages = 1
-    stop_bytes = 1024
-    max_tile_bytes = 16384 * 4
+    num_stages = 1 
 
     def __init__(self, kernel_meta: KernelMeta):
         self.kernel_meta = kernel_meta
@@ -126,20 +146,18 @@ class TileGenerator:
         self.dual_reduction = self.kernel_meta.dual_reduction
 
         self.blocks = self.init_blocks_info(kernel_meta)
-        self.split_magic_nums = []
-        for axis in self.kernel_meta.axis_info:
-            if axis.is_split_axis:
-                self.split_magic_nums.append(
-                    (axis.length + num_vector_core - 1) // num_vector_core
-                )
-            else:
-                self.split_magic_nums.append(-1)
-
-        self.candidates_blk_sizes: List[Tuple[int, ...]] = []
-        self.configs = {}
+        self.numels = [axis.length for axis in kernel_meta.axis_info]
+        self.candidate_blocks = []
+        self.configs = []
         self.dtype_bytes = get_byte_per_numel(kernel_meta.dtype)
-        self.stop_numel = self.stop_bytes // self.dtype_bytes
-        self.max_tile_numel = self.max_tile_bytes // self.dtype_bytes
+ 
+        self.input_ptr_num = 3 if kernel_meta.input_ptr_num == 0 else min(kernel_meta.input_ptr_num, 3)
+        self.max_numel_threshold = num_ub_max // self.input_ptr_num * 1024
+        self.max_total_numel = functools.reduce(lambda x, y: x * y, [x.block_size for x in self.blocks]) if self.blocks else 1
+        self.tiny_kernel = self.max_total_numel < 128 * 1024
+        self.stop_numel = min(1024 // self.dtype_bytes, self.max_total_numel // (num_vector_core * 2)) if self.tiny_kernel else 1024 // self.dtype_bytes
+        self. max_programs_num = 65535
+
 
     @classmethod
     def init_blocks_info(cls, kernel_meta: KernelMeta) -> List[BlockInfo]:
@@ -159,78 +177,108 @@ class TileGenerator:
     def get_key_from_dict(cls, kwargs: Dict[str, int]):
         return tuple(sorted(kwargs.items()))
 
-    def valid_tile_numel(self, tile_numel: int) -> bool:
-        return tile_numel <= self.max_tile_numel
+    def calcu_last_split_blocks(self, axis_idx):
+        splits = 1
+        for x in self.kernel_meta.split_axis:
+            if x.index != axis_idx:
+                splits = splits * ((self.numels[x.index] + self.blocks[x.index].block_size - 1) // self.blocks[x.index].block_size)
+            else:
+                break
 
-    def calculate_tile_numel(self) -> int:
+        last_splits = num_vector_core // splits
+        last_blocks = (self.numels[axis_idx] + last_splits - 1) // last_splits
+        return last_blocks
+
+
+    def aligned_numel(self, numel):
+        min_numel = 32 // self.dtype_bytes
+        if numel <= min_numel:
+            return numel
+        aligned = ((numel + min_numel - 1) // min_numel) * min_numel
+        return aligned
+
+    def valid_tile_numel(self, tile_numel):
+        byte_num = self.dtype_bytes
+        max_numel = self.max_numel_threshold // byte_num
+        return tile_numel <= max_numel
+
+    def calculate_tile_numel(self):
         tile_numel = 1
         for axis in self.kernel_meta.axis_info:
             if axis.is_tiling_axis:
                 tile_numel *= self.blocks[axis.index].sub_block_size
             else:
-                # this axis's tiling size is the same as block size
                 tile_numel *= self.blocks[axis.index].block_size
 
         return tile_numel
 
-    def add_to_configs(self, cand_sizes) -> None:
-        kwargs = {}
+    def fill_config(self, cfg, candi_block):
         for axis in self.kernel_meta.axis_info:
             if not (axis.is_split_axis or axis.is_tiling_axis):
                 continue
-
             block_info = self.blocks[axis.index]
             if axis.is_split_axis:
-                kwargs[block_info.block_name] = cand_sizes[axis.index]
+                cfg[block_info.block_name] = candi_block[axis.index]
             if axis.is_tiling_axis:
-                kwargs[block_info.sub_block_name] = next_power_of_2(
-                    block_info.sub_block_size
-                )
+                tiling_numel = self.aligned_numel(block_info.sub_block_size)
+                cfg[block_info.sub_block_name] = min(tiling_numel, candi_block[axis.index])
 
-        tile_numel = 1
-        for axis in self.kernel_meta.axis_info:
-            if not (axis.is_split_axis or axis.is_tiling_axis):
-                tile_numel *= self.blocks[axis.index].block_size
-                continue
+    def find_config(self, cfg):
+        for config_var in self.configs:
+            if config_var.kwargs == cfg:
+                return True
+        return False
 
-            if axis.is_tiling_axis:
-                tile_numel *= kwargs.get(self.blocks[axis.index].sub_block_name, 1)
-            else:
-                tile_numel *= kwargs.get(self.blocks[axis.index].block_name, 1)
+    def add_to_configs(self, candi_block):
+        newcfg = {}
+        self.fill_config(newcfg, candi_block)
+        tile_numel = self.calculate_tile_numel()
+        stop_numel_threshold = 0 if len(self.configs) < 10 or self.tiny_kernel else self.stop_numel + 100
+        if self.valid_tile_numel(tile_numel) and not self.find_config(newcfg) and tile_numel >= stop_numel_threshold:
+            self.configs.append(Config(newcfg, num_warps=1, num_stages=1))
+            return True
+        return False
 
-        key = self.get_key_from_dict(kwargs)
-        if self.valid_tile_numel(tile_numel) and key not in self.configs:
-            self.configs[key] = Config(
-                kwargs, num_warps=self.num_warps, num_stages=self.num_stages
-            )
+    def desecnd_all_low_dims_with_all_blocks(self):
+        restore_sub_blocks = {}
+        for axis in self.kernel_meta.low_dims_axis:
+            restore_sub_blocks[axis.index] = self.blocks[axis.index].sub_block_size
+        self.descend_all_low_dims()
+        for axis in self.kernel_meta.low_dims_axis:
+            self.blocks[axis.index].sub_block_size = restore_sub_blocks[axis.index]
 
-    def descend_one_axis(self, axis_idx: int, is_split=False) -> bool:
+    def descend_one_axis(self, axis_idx: int, is_split=False):
         def calc_total_programs():
             grids = []
             for axis in self.kernel_meta.split_axis:
+                numel = self.numels[axis.index]
                 block_size = self.blocks[axis.index].block_size
-                programs = (axis.length + block_size - 1) // block_size
+                programs = (numel + block_size - 1) // block_size
                 grids.append(programs)
 
-            return functools.reduce(lambda x, y: x * y, grids) if grids else 1
+            total_programs = functools.reduce(lambda x, y: x * y, grids) if grids else 1
+            return total_programs
 
         reached_stop_numel = False
-        slow_descend_split = False
-        magic_descend_split = False
-        if not is_split and len(self.candidates_blk_sizes) == 0:
-            self.candidates_blk_sizes.append(
+        slow_decend_split = False
+        num_vector_core_tile = num_vector_core
+        max_programs_num = num_vector_core_tile if self.kernel_meta.tiling_axis else self.max_programs_num
+        if not is_split and len(self.candidate_blocks) == 0:
+            self.candidate_blocks.append(
                 tuple([x.block_size for x in self.blocks])
             )
 
         axis = self.kernel_meta.axis_info[axis_idx]
         while True:
-            for cand_sizes in self.candidates_blk_sizes:
-                self.add_to_configs(cand_sizes)
+            for candi_block in self.candidate_blocks:
+                if self.add_to_configs(candi_block):
+                    self.desecnd_all_low_dims_with_all_blocks()
 
             # tile numel reached threshold
             tile_numel = self.calculate_tile_numel()
             if tile_numel <= self.stop_numel:
-                self.add_to_configs([x.block_size for x in self.blocks])
+                if self.add_to_configs([x.block_size for x in self.blocks]):
+                    self.desecnd_all_low_dims_with_all_blocks()
                 reached_stop_numel = True
                 break
 
@@ -240,7 +288,8 @@ class TileGenerator:
                 else self.blocks[axis_idx].sub_block_size
             )
             if numel == 1:
-                self.add_to_configs([x.block_size for x in self.blocks])
+                if self.add_to_configs([x.block_size for x in self.blocks]):
+                    self.desecnd_all_low_dims_with_all_blocks()
                 break
 
             if is_split:
@@ -248,72 +297,89 @@ class TileGenerator:
                     reached_stop_numel = True
                     break
                 total_programs = calc_total_programs()
-                if total_programs > num_vector_core:
-                    break
-                if total_programs > num_vector_core // 2 or self.dual_reduction:
-                    if len(self.candidates_blk_sizes) > 2:
-                        self.candidates_blk_sizes.pop(0)
-                    self.candidates_blk_sizes.append(
-                        tuple([x.block_size for x in self.blocks])
-                    )
+                if total_programs > num_vector_core_tile:
+                    if len(self.configs) == 0:
+                        num_vector_core_tile = max_programs_num
+                        slow_decend_split = (total_programs > num_vector_core_tile // 2)
+                    if total_programs > num_vector_core_tile:
+                        last_blocks = self.calcu_last_split_blocks(axis_idx)
+                        if last_blocks != self.blocks[axis_idx].block_size:
+                            self.blocks[axis_idx].block_size = last_blocks
+                            self.candidate_blocks.append(tuple([x.block_size for x in self.blocks]))
+                        break
+                   
+                program_threshold = num_vector_core // 8 if self.tiny_kernel else num_vector_core // 2
+                if total_programs > program_threshold or self.dual_reduction:
+                    if len(self.candidate_blocks) > 2:
+                        self.candidate_blocks.pop(0)
+                    self.candidate_blocks.append(tuple([x.block_size for x in self.blocks]))
+                    if self.tiny_kernel:
+                        self.add_to_configs(list(tuple([x.block_size for x in self.blocks])))
+                    slow_decend_split = (total_programs > num_vector_core_tile // 2)
 
-                if (
-                    not magic_descend_split
-                    and (numel // 2) <= self.split_magic_nums[axis_idx]
-                ):
-                    self.blocks[axis_idx].block_size = self.split_magic_nums[axis_idx]
+                if not slow_decend_split:
+                    self.blocks[axis_idx].block_size = numel // 2
                     self.blocks[axis_idx].sub_block_size = self.blocks[axis_idx].block_size
-                    magic_descend_split = True
-                    continue
-
-                self.blocks[axis_idx].block_size = numel // 2
-                self.blocks[axis_idx].sub_block_size = self.blocks[axis_idx].block_size
-                if calc_total_programs() > num_vector_core:
-                    slow_descend_split = True
-                step = numel // 4 if numel // 4 > 1 else 1
-                self.blocks[axis_idx].block_size = (
-                    numel // 2 if not slow_descend_split else numel - step
-                )
-                self.blocks[axis_idx].sub_block_size = self.blocks[axis_idx].block_size
+                else:
+                    step = numel // 4 if numel // 4 > 1 else 1
+                    self.blocks[axis_idx].block_size = numel - step
+                    self.blocks[axis_idx].sub_block_size = self.blocks[axis_idx].block_size
+                total_programs = calc_total_programs()
+                if self.blocks[axis_idx].block_size == 1 and (total_programs > program_threshold or self.dual_reduction):
+                    self.candidate_blocks.append(tuple([x.block_size for x in self.blocks]))
             else:
-                self.blocks[axis_idx].sub_block_size = next_power_of_2(numel // 2)
-
+                if numel >= 32:
+                    self.blocks[axis_idx].sub_block_size = next_power_of_2(numel // 2)
+                else:  # numel >4 and numel < 128 :
+                    numel = self.blocks[axis_idx].sub_block_size
+                    self.blocks[axis_idx].sub_block_size = numel - 1
         return reached_stop_numel
 
-    def descend_all_low_dims(self) -> None:
+
+    def descend_all_low_dims(self):
         low_dim_numels = [self.blocks[x.index].sub_block_size for x in self.kernel_meta.low_dims_axis]
         if not low_dim_numels:
-            return
+            return False
 
         def descend_all_axis(min_numel):
+            
             for axis in self.kernel_meta.low_dims_axis:
                 if axis.is_reduction and self.persistent_reduction:
                     continue
+
                 numel = self.blocks[axis.index].sub_block_size
                 if numel == 1:
                     continue
                 if min_numel > 1 and abs(numel - min_numel) / min_numel < 0.2:
                     continue
-                self.blocks[axis.index].sub_block_size = next_power_of_2(numel // 2)
+                if numel >= 128:
+                    self.blocks[axis.index].sub_block_size = next_power_of_2(numel // 2)
+                else:  # numel >4 and numel < 128 :
+                    numel = self.blocks[axis.index].sub_block_size
+                    numel = numel // 2
+                    self.blocks[axis.index].sub_block_size = min(self.aligned_numel(numel), next_power_of_2(numel))
 
-        if len(self.candidates_blk_sizes) == 0:
+        if len(self.candidate_blocks) == 0:
             # means there is no split axis and tiling_not_low_dim axis
             # so we need to init the candidates_blk_sizes
-            self.candidates_blk_sizes.append(
+            self.candidate_blocks.append(
                 tuple([x.block_size for x in self.blocks])
             )
+
         count = 0
         tile_numel = self.calculate_tile_numel()
         while tile_numel > self.stop_numel and count < 100:
             count += 1
             tile_numel = self.calculate_tile_numel()
-            for cand_sizes in self.candidates_blk_sizes:
-                self.add_to_configs(cand_sizes)
+            for candi_block in self.candidate_blocks:
+                self.add_to_configs(candi_block)
             min_numel = min(low_dim_numels)
             descend_all_axis(min_numel)
             new_tile_numel = self.calculate_tile_numel()
             if tile_numel == new_tile_numel:
                 descend_all_axis(0)
+
+        return tile_numel < self.stop_numel
 
     def descend_split_tiling(self):
 
@@ -327,40 +393,30 @@ class TileGenerator:
             for axis in self.kernel_meta.split_axis:
                 if self.descend_one_axis(axis.index, is_split=True):
                     return True
+
             return self.calculate_tile_numel() <= self.stop_numel
 
         def descend_tiling_not_low_dims():
             for axis in tiling_not_low_dims:
                 if axis.is_reduction and self.persistent_reduction:
                     continue
+
                 if self.descend_one_axis(axis.index):
                     return True
             return self.calculate_tile_numel() <= self.stop_numel
 
-        def descend_low_dims():
-            for axis in self.kernel_meta.tiling_axis:
-                if axis.is_reduction and self.persistent_reduction:
-                    continue
-                if axis in tiling_not_low_dims:
-                    continue
-                if self.descend_one_axis(axis.index):
-                    return True
-            return self.calculate_tile_numel() <= self.stop_numel
 
         while True:
             # descend split axis
             if descend_split_axis():
                 break
-
-            if len(self.candidates_blk_sizes) > 0:
-                candi_blk = self.candidates_blk_sizes[0]
-                for i, blk_size in enumerate(candi_blk):
+            if len(self.candidate_blocks) > 0:
+                candi_block = self.candidate_blocks[0]
+                for i, blk_size in enumerate(candi_block):
                     self.blocks[i].sub_block_size = blk_size
-
             # descend tiling but not low dims
             if descend_tiling_not_low_dims():
                 break
-
-            # descend low dims
+            # descend low dims, need to descend all axis at the same time
             self.descend_all_low_dims()
             break

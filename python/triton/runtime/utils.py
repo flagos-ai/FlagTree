@@ -9,9 +9,17 @@ prop = driver.active.utils.get_device_properties(device)
 
 num_cube_core = prop["num_aicore"]
 num_vector_core = prop["num_aicore"]
+# flagtree backend specialization: num_ub_max
+num_ub_max = 192
 
-if "Ascend910B" in target.arch:
+# flagtree backend specialization
+ASCEND_VARIANTS = ["Ascend910B", "Ascend910_93", "Ascend910_95"]
+if any(variant in target.arch for variant in ASCEND_VARIANTS):
     num_vector_core = num_cube_core * 2
+
+# flagtree backend specialization
+if '910_95' in target.arch:
+    num_ub_max = 256
 
 # wrapper npu 32 bytes align, get and pass unalign info to triton meta
 # then autotune choose tiling param and send them to bishengIR
@@ -31,7 +39,8 @@ byte_per_numel = {
     torch.complex128: 16,  # torch.complex128
 }
 
-valid_axis_names = {
+# flagtree backend specialization: replace '{}' with '[]'
+valid_axis_names = [
     "x",
     "y",
     "z",
@@ -44,7 +53,7 @@ valid_axis_names = {
     "rw",
     "rv",
     "rt",
-}
+]
 
 
 def get_byte_per_numel(dtype: torch.dtype) -> int:

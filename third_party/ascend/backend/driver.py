@@ -152,6 +152,8 @@ class NPUDriver(DriverBase):
         spec_standard_func(flagtree_backend_specialization)
         from triton.language.math import spec_math_func
         spec_math_func(flagtree_backend_specialization)
+        from triton.testing import spec_testing_func
+        spec_testing_func(flagtree_backend_specialization)
         super().__init__()
 
     @classmethod
@@ -687,10 +689,10 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
     #ifdef ENABLE_GRID_WARN_PRINT
       static bool warned = false;
       if (!warned && blockNum > (uint32_t){num_physical_blocks}) {{
-        printf("WARNING: Grid %u > physical limit {num_physical_blocks}, performance maybe reduced.\\n",blockNum); 
+        printf("WARNING: Grid %u > physical limit {num_physical_blocks}, performance maybe reduced.\\n",blockNum);
         warned = true;
     }}
-    #endif  
+    #endif
 
     {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if enable_auto_map_parallel_blocks else ''}
     {'cce::internal::DebugTunnelData *DTData = cce::internal::DebugTunnel::Open(blockNum);' if enable_device_print else ''}

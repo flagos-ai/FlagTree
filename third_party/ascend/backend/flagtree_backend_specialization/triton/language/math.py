@@ -1,5 +1,6 @@
 import triton.language as language
 from . import standard
+from . import core
 softmax = standard.softmax
 sigmoid = standard.sigmoid
 argmax = standard.argmax
@@ -34,7 +35,7 @@ tanh = language.extra.ascend.libdevice.tanh
 ilogb = language.extra.ascend.libdevice.ilogb
 ldexp = language.extra.ascend.libdevice.ldexp
 pow = language.extra.ascend.libdevice.pow
-flip = standard.flip
+flip = core.flip
 atan2 = standard.atan2
 rint = standard.rint
 finitef = standard.finitef

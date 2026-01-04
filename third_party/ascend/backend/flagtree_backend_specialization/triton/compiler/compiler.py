@@ -26,6 +26,7 @@ def handle_compile_error(e, ext):
     else:
         stage_name = "MLIRCompile"
     error_detail = e.stderr.decode('utf-8') if hasattr(e, 'stderr') and e.stderr else str(e)
+    error_detail += f"\n\n[INFO]: The compiled kernel cache is in {fn_cache_manager.cache_dir}\n\n"
     raise MLIRCompilationError(stage_name, error_detail)
 
 def compiledKernel_getattribute_disable_init_handles():

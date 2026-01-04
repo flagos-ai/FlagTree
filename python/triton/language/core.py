@@ -37,6 +37,14 @@ def spec_core_func(spec):
             # triton.language.core
             setattr(sys.modules[__name__], spec_func.__name__, spec_func)
 
+    tensor_model_name = __name__ + ".tensor"
+
+    for spec_func_name in spec.core_tensor_ext_spec_func_list:
+        if hasattr(spec, spec_func_name):
+            spec_func = getattr(spec, spec_func_name)
+            # triton.language.tensor
+            setattr(sys.modules[tensor_model_name], spec_func.__name__, spec_func)
+
 
 def builtin(fn: T) -> T:
     """Mark a function as a builtin."""

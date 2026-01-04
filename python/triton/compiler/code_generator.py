@@ -195,7 +195,13 @@ class CodeGenerator(ast.NodeVisitor):
                  codegen_fns, module_map, module=None, is_kernel=False, function_types: Optional[Dict] = None,
                  noinline=False, file_name: Optional[str] = None, begin_line=0):
         self.context = context
-        self.builder = ir.builder(context)
+        # flagtree backend specialization
+        from triton.runtime.driver import flagtree_backend_specialization
+        opt_compile_mode = flagtree_backend_specialization("ext_CodeGenerator_builder_with_compile_mode", options)
+        if opt_compile_mode:
+            self.builder = ir.builder(context, compile_mode=opt_compile_mode)
+        else:
+            self.builder = ir.builder(context)
         self.file_name = file_name
         # node.lineno starts from 1, so we need to subtract 1
         self.begin_line = begin_line - 1
@@ -914,6 +920,8 @@ class CodeGenerator(ast.NodeVisitor):
             return
         num_stages = None
         loop_unroll_factor = None
+        # flagtree backend specialization: add more ForOp attributes
+        for_op_ext_attrs = (False, False, False, False)
 
         # flagtree backend specialization
         from triton.runtime.driver import flagtree_backend_specialization
@@ -930,9 +938,9 @@ class CodeGenerator(ast.NodeVisitor):
             step = iterator.step
             num_stages = iterator.num_stages
             loop_unroll_factor = iterator.loop_unroll_factor
-
             # flagtree backend specialization
-            from triton.runtime.driver import flagtree_backend_specialization
+            for_op_ext_attrs = flagtree_backend_specialization("for_op_ext_attrs", iterator)
+            # flagtree backend specialization
             new_bind_sub_block = flagtree_backend_specialization("set_bind_sub_block_when_parallel", IteratorClass, iterator, bind_sub_block)
             if new_bind_sub_block is not None:
                 bind_sub_block = new_bind_sub_block
@@ -1015,6 +1023,10 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.num_stages", self.builder.get_int32_attr(num_stages))
             if loop_unroll_factor is not None:
                 for_op.set_attr("tt.loop_unroll_factor", self.builder.get_int32_attr(loop_unroll_factor))
+            # flagtree backend specialization
+            from triton.runtime.driver import flagtree_backend_specialization
+            flagtree_backend_specialization("for_op_set_ext_attrs",
+                                            for_op, self.builder, for_op_ext_attrs)
             # flagtree backend specialization
             if bind_sub_block:
                 from triton.runtime.driver import flagtree_backend_specialization
