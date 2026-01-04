@@ -1153,8 +1153,8 @@ class CodeGenerator(ast.NodeVisitor):
         disable_licm = False
         # flagtree tle
         try:
-            from ..experimental import tle
-            tle_pipeline = tle.pipeline
+            from ..experimental.tle import language as tle
+            tle_pipeline = tle.nvidia.pipeline
         except ImportError:
             tle_pipeline = None
 

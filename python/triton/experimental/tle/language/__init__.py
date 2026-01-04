@@ -5,3 +5,5 @@ from .core import (
 __all__ = [
     "load",
 ]
+
+from . import nvidia

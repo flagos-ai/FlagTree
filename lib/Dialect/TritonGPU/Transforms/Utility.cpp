@@ -1599,7 +1599,10 @@ bool comesFromLoadOrBlockArg(Value v) {
   // If this is problematic we can totally drop them
   return isa<BlockArgument>(v) ||
          (v.getDefiningOp() &&
-          isa<LoadOp, DescriptorLoadOp, DescriptorGatherOp>(v.getDefiningOp()));
+          (isa<LoadOp, DescriptorLoadOp, DescriptorGatherOp>(v.getDefiningOp()) ||
+           (v.getDefiningOp()->hasAttrOfType<StringAttr>("tt.memory_space") &&
+            v.getDefiningOp()->getAttrOfType<StringAttr>("tt.memory_space")
+                .getValue() == "shared_memory")));
 }
 
 SmallVector<Value> getTiedArgs(Operation *op, int resultIdx) {

@@ -3,6 +3,7 @@
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/Support/Debug.h"
 #include <iostream>
 
@@ -11,7 +12,7 @@ namespace mlir::triton::tle {
 #define GEN_PASS_DEF_TRITONTLELOWERASYNCLOAD
 #include "tle/dialect/include/Transforms/Passes.h.inc"
 
-#define DEBUG_TYPE "tritontle-lower-async-load"
+#define DEBUG_TYPE "triton-tle-lower-async-load"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
@@ -36,28 +37,46 @@ class TritonTleLowerAsyncLoadPass
         return use.getOwner() != localAlloc;
       });
 
-      // Replace new local load + local alloc + local load with the new local
-      // load
       for (auto localLoadUser : localLoad->getUsers()) {
         if (auto localAllocOp =
                 llvm::dyn_cast<triton::gpu::LocalAllocOp>(localLoadUser)) {
-          if (localAllocOp == localAlloc)
-            continue;
           for (auto allocUser : localAllocOp->getUsers()) {
             if (auto otherLocalLoadOp =
                     llvm::dyn_cast<triton::gpu::LocalLoadOp>(allocUser)) {
+              // Replace new local load + local alloc + local load with the new
+              // local load
               if (otherLocalLoadOp.getType() == localLoad.getType()) {
-                otherLocalLoadOp->replaceAllUsesWith(localLoad);
+                if (otherLocalLoadOp != localLoad)
+                  otherLocalLoadOp->replaceAllUsesWith(localLoad);
               } else {
                 builder.setInsertionPointAfter(otherLocalLoadOp);
                 auto newLocalLoad = createLocalLoad(builder, otherLocalLoadOp,
                                                     localAlloc, asyncCopy);
                 otherLocalLoadOp->replaceAllUsesWith(newLocalLoad);
               }
+            } else if (auto otherMemDescTransOp =
+                           llvm::dyn_cast<triton::gpu::MemDescTransOp>(
+                               allocUser)) {
+              // Replace new local alloc + local load + local alloc + trans with
+              // the new local alloc + new trans
+              builder.setInsertionPointAfter(otherMemDescTransOp);
+              auto newMemDescTransOp =
+                  builder.create<triton::gpu::MemDescTransOp>(
+                      otherMemDescTransOp.getLoc(), localAlloc,
+                      otherMemDescTransOp.getOrder());
+              otherMemDescTransOp->replaceAllUsesWith(newMemDescTransOp);
+            } else if (auto otherWarpGroupDotOp =
+                           llvm::dyn_cast<triton::nvidia_gpu::WarpGroupDotOp>(
+                               allocUser)) {
+              for (size_t idx = 0; idx < otherWarpGroupDotOp->getNumOperands();
+                   ++idx)
+                if (otherWarpGroupDotOp->getOperand(idx) == localAllocOp)
+                  otherWarpGroupDotOp.setOperand(idx, localAlloc);
             }
           }
         }
       }
+
       srcOp->removeAttr("tt.load.async");
     });
   }

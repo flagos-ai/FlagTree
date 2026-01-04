@@ -4,6 +4,7 @@ from .core import (
     pipeline,
     alloc,
     copy,
+    memory_space,
     local_load,
     local_store,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "local_load",
     "local_store",
     "layout",
+    "memory_space",
     "shared_layout",
     "swizzled_shared_layout",
     "tensor_memory_layout",
