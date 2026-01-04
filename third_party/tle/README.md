@@ -46,13 +46,13 @@ def kernel(a_ptr, b_ptr, c_ptr, n, BLOCK_SIZE: tl.constexpr):
 ## Testing
 
 ```bash
-cd /root/code/triton/python/test/tle
+cd python/test/tle
 python run_tests.py
 ```
 
 ## Learn More
 
-See integration examples in `/root/code/triton/python/test/tle/integration/`:
+See integration examples in `python/test/tle/integration/`:
 - `test_tle_pipeline_e2e.py` - Pipeline usage
 - `test_tle_gemm.py` - GEMM with TLE
 - `test_tle_tma_copy.py` - TMA operations
