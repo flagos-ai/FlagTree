@@ -921,10 +921,7 @@ class CodeGenerator(ast.NodeVisitor):
         num_stages = None
         loop_unroll_factor = None
         # flagtree backend specialization: add more ForOp attributes
-        disallow_acc_multi_buffer = False
-        flatten = False
-        warp_specialize = False
-        disable_licm = False
+        for_op_ext_attrs = (False, False, False, False)
 
         # flagtree backend specialization
         from triton.runtime.driver import flagtree_backend_specialization
@@ -942,12 +939,7 @@ class CodeGenerator(ast.NodeVisitor):
             num_stages = iterator.num_stages
             loop_unroll_factor = iterator.loop_unroll_factor
             # flagtree backend specialization
-            from triton.runtime.driver import flagtree_backend_specialization
-            if flagtree_backend_specialization("has_for_op_ext_attr"):
-                disallow_acc_multi_buffer = iterator.disallow_acc_multi_buffer
-                flatten = iterator.flatten
-                warp_specialize = iterator.warp_specialize
-                disable_licm = iterator.disable_licm
+            for_op_ext_attrs = flagtree_backend_specialization("for_op_ext_attrs", iterator)
             # flagtree backend specialization
             new_bind_sub_block = flagtree_backend_specialization("set_bind_sub_block_when_parallel", IteratorClass, iterator, bind_sub_block)
             if new_bind_sub_block is not None:
@@ -1033,8 +1025,8 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.loop_unroll_factor", self.builder.get_int32_attr(loop_unroll_factor))
             # flagtree backend specialization
             from triton.runtime.driver import flagtree_backend_specialization
-            flagtree_backend_specialization("for_op_ext_attr",
-                                            for_op, self.builder, disallow_acc_multi_buffer, flatten, warp_specialize, disable_licm)
+            flagtree_backend_specialization("for_op_set_ext_attrs",
+                                            for_op, self.builder, for_op_ext_attrs)
             # flagtree backend specialization
             if bind_sub_block:
                 from triton.runtime.driver import flagtree_backend_specialization
