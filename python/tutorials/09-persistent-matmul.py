@@ -21,6 +21,7 @@ Note that currently this tutorial will fail on devices with a small shared memor
 
 import argparse
 import itertools
+import sys
 
 import torch
 import triton
@@ -735,7 +736,6 @@ if __name__ == "__main__":
 
         if args.only_unit_test:
             validate(16, 16, 16, dtype)
-            import sys
             sys.exit(0)
 
         validate(32, 32, 32, dtype)

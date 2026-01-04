@@ -10,6 +10,7 @@ For PTX reference on programmatic dependent launch see https://docs.nvidia.com/c
     python 11-programmatic-dependent-launch.py
 """
 
+import sys
 import torch
 import triton
 import triton.language as tl
@@ -80,7 +81,6 @@ def validate(n_elements):
     print(f"add: {torch_vs_add}")
 
 
-import sys
 
 
 @triton.testing.perf_report(
