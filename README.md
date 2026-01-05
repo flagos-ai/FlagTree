@@ -54,8 +54,8 @@ cd python; python3 -m pip install -r requirements.txt
 Building and Installation (Recommended for environments with good network connectivity):
 ```shell
 cd python
-export FLAGTREE_BACKEND=${backend_name}
-python3 -m pip install . --no-build-isolation -v    # automatically uninstall triton
+export FLAGTREE_BACKEND=${backend_name}  # Using the backend names from the table above, do not specify for nvidia/amd/triton-shared
+python3 -m pip install . --no-build-isolation -v  # Automatically uninstall triton
 python3 -m pip show flagtree
 cd; python3 -c 'import triton; print(triton.__path__)'
 ```

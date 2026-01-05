@@ -54,8 +54,8 @@ cd python; python3 -m pip install -r requirements.txt
 构建安装（网络畅通环境下推荐使用）：
 ```shell
 cd python
-export FLAGTREE_BACKEND=${backend_name}
-python3 -m pip install . --no-build-isolation -v    # 自动卸载 triton
+export FLAGTREE_BACKEND=${backend_name}  # 使用上文表格中的后端名称，nvidia/amd/triton-shared 不指定
+python3 -m pip install . --no-build-isolation -v  # 自动卸载 triton
 python3 -m pip show flagtree
 cd; python3 -c 'import triton; print(triton.__path__)'
 ```
