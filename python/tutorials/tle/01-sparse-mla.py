@@ -117,7 +117,7 @@ def triton_sparse_mla_fwd(q, kv, indices, sm_scale: tl.constexpr, output, lse, s
 
 def triton_sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, return_p_sum: bool = False, d_v=512):
     is_causal = True
-    assert return_p_sum == False, "This kernel file is for fwd only"
+    assert not return_p_sum, "This kernel file is for fwd only"
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
     B, SQ, H, DT = q.shape
     _, S, VG, _ = kv.shape
