@@ -1,4 +1,3 @@
-# Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
 # flagtree tle
 from .core import (
     pipeline,

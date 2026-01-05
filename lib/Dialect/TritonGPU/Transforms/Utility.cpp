@@ -1600,6 +1600,7 @@ bool comesFromLoadOrBlockArg(Value v) {
   return isa<BlockArgument>(v) ||
          (v.getDefiningOp() &&
           (isa<LoadOp, DescriptorLoadOp, DescriptorGatherOp>(v.getDefiningOp()) ||
+          // flagtree tle.gpu.memory_space: Also accept values coming from shared memory
            (v.getDefiningOp()->hasAttrOfType<StringAttr>("tt.memory_space") &&
             v.getDefiningOp()->getAttrOfType<StringAttr>("tt.memory_space")
                 .getValue() == "shared_memory")));
