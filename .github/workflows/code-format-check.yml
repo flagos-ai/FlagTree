@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
+      with:
+        token: ${{ secrets.BOT_PAT_TOKEN || github.token }}
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
@@ -25,3 +27,6 @@ jobs:
       if: always()
       with:
         commit_message: Apply code-format changes
+        commit_user_name: flagtree-bot
+        commit_user_email: flagtree_ai@163.com
+        commit_author: flagtree-bot <flagtree_ai@163.com>
