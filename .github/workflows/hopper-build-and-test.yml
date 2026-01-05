@@ -136,5 +136,8 @@ jobs:
             python3 -m pytest -s python/test/operators
           fi
           # flagtree tle
+          # python tutorials
+          python3 python/tutorials/tle/01-sparse-mla.py
+          # python unit test
           python3 -m pytest -s python/test/tle/integration
           python3 -m pytest -s python/test/tle/unit

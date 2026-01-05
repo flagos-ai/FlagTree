@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # flagtree tle
-# Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
 """
 TLE Test Runner
 

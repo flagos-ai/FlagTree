@@ -14,7 +14,7 @@ import pytest
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle as tle
+import triton.experimental.tle.language.gpu as tle
 
 
 @triton.jit
