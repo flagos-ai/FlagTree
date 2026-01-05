@@ -13,7 +13,7 @@ T = TypeVar('T')
 TensorTy = TypeVar('TensorTy')
 
 
-class IncompatibleTypeErrorImpl(Exception):  
+class IncompatibleTypeErrorImpl(Exception):
 
     def __init__(self, type_a, type_b):
         self.type_a = type_a
