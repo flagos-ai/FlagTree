@@ -109,7 +109,7 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
       llvm::concat<Value>(SmallVector<Value>(outputs.begin(), outputs.end()),
                           SmallVector<Value>(inputs.begin(), inputs.end())));
   
-  // Stage 2: Create DSLRegionOp
+  // Stage 2: Create DSLRegionOp, create new body
   // The arg_type_hints contain the EDSL function parameter type declarations (e.g., "memref<?xi32, 3>", "i32")
   // These are stored as an ArrayAttr of StringAttrs in the DSLRegionOp's "arg_type_hints" attribute
   ArrayAttr typeHintsAttr = nullptr;
@@ -135,7 +135,7 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
       operands, [](Value value) -> Type { return value.getType(); });
   IRMapping mapper;
   
-  // Stage 3: Argument type conversion and validation
+  // Stage 3: Argument type conversion and and establish mapping relationships
   // Convert TT IR types (DSLRegionOp operands) to LLVM types (LLVM function arguments)
   // For each DSLRegionOp operand:
   //   1. Check its TT IR type (tensor, pointer, scalar)
@@ -158,6 +158,7 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
           &body, {}, operandTys,
           SmallVector<Location>(operandTys.size(), getLastLoc()));
       
+      // Set insertion point to start: extract operations will be inserted at the beginning
       builder.setInsertionPointToStart(newBlock);
       
       // Iterate through DSLRegionOp operands and create extract operations
@@ -307,7 +308,6 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
         llvm::errs() << "[WARNING] Mismatch in LLVM argument count. "
                      << "Consumed " << llvm_arg_idx << " args, but function has " << func.getNumArguments() << " args\n";
       }
-      
       mapper.map(&oldBlock, newBlock);
     } else {
       // For other blocks, just map block arguments
@@ -321,9 +321,13 @@ flagtree::DSLRegionOp FlagTreeOpBuilder::createEdslRegionByLLVMFunc(
       mapper.map(&oldBlock, newBlock);
     }
   }
+
+  // Stage 4: Clone the LLVM function body to the DSLRegionOp body
   for (auto [oldBlock, newBlock] :
        llvm::zip(func.getBlocks(), body.getBlocks())) {
     OpBuilder::InsertionGuard guard(builder);
+    // Use setInsertionPointToEnd because extract operations were inserted at the start in Stage 3
+    // Clone operations will be inserted after extract operations
     builder.setInsertionPointToEnd(&newBlock);
     for (Operation &operation : oldBlock.getOperations()) {
       if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
