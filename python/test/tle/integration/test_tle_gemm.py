@@ -14,7 +14,7 @@ import pytest
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle as tle
+import triton.experimental.tle.language.gpu as tle
 # Disable TF32, force pure FP32 accumulation
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False

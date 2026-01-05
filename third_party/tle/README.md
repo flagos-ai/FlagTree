@@ -21,7 +21,7 @@ TLE is a language extension for Triton that exposes shared memory and pipeline c
 ```python
 import triton
 import triton.language as tl
-import triton.experimental.tle as tle
+import triton.experimental.tle.language as tle
 
 @triton.jit
 def kernel(a_ptr, b_ptr, c_ptr, n, BLOCK_SIZE: tl.constexpr):

@@ -1,4 +1,3 @@
-# Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
 # flagtree tle
 """
 TLE (Triton Language Extensions) Semantic Analysis Module

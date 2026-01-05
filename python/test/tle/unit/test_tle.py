@@ -14,8 +14,8 @@ Tests core functionality of TLE module, including:
 import pytest
 import torch
 import triton.language as tl
-from triton.experimental.tle import (pipeline, buffered_tensor, swizzled_shared_layout)
-from triton.experimental.tle.nvidia.semantic import TLESemanticError, TLESemantic
+from triton.experimental.tle.language.gpu import (pipeline, buffered_tensor, swizzled_shared_layout)
+from triton.experimental.tle.language.gpu.semantic import TLESemanticError, TLESemantic
 
 
 class TestLayoutEncoding:
@@ -152,7 +152,7 @@ class TestIntegration:
 
     def test_tle_module_import(self):
         """Test TLE module import"""
-        import triton.experimental.tle as tle
+        import triton.experimental.tle.language.gpu as tle
 
         # Check if main functions are importable
         assert hasattr(tle, 'alloc')
@@ -164,7 +164,7 @@ class TestIntegration:
 
     def test_tle_functions_have_docstrings(self):
         """Test TLE functions have docstrings"""
-        import triton.experimental.tle as tle
+        import triton.experimental.tle.language.gpu as tle
 
         # Check if main functions have documentation
         assert tle.alloc.__doc__ is not None
@@ -177,7 +177,7 @@ class TestIntegration:
         """Test TLE compatibility with CUDA (if GPU available)"""
         # This test should run in environments with GPU
         # Since TLE operations need specific hardware support, only basic import testing here
-        import triton.experimental.tle as tle
+        import triton.experimental.tle.language as tle
 
         # Ensure TLE module can be imported normally in GPU environment
         assert tle is not None
