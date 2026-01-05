@@ -23,33 +23,18 @@ spar_mla_fwd_configs = [
     key=['K', 'is_causal'],
 )
 @triton.jit
-def triton_sparse_mla_fwd(
-    q,
-    kv,
-    indices,
-    sm_scale: tl.constexpr,
-    output,
-    lse,
-    stride_qb, stride_qh, stride_qm, stride_qd,
-    stride_kvb, stride_kvg, stride_kvn, stride_kvd,
-    stride_tb, stride_tg, stride_tm, stride_tt,  # topk，for indices
-    stride_ob, stride_oh, stride_om, stride_od,
-    stride_lb, stride_lh, stride_lm,
-    B: tl.constexpr,
-    SQ: tl.constexpr,  # seqlen
-    SKV: tl.constexpr,
-    K: tl.constexpr,  # topk
-    D: tl.constexpr,  # QKV dim
-    TD: tl.constexpr,  # tail dim
-    DP: tl.constexpr,
-    TDP: tl.constexpr,
-    H: tl.constexpr,  # q_head_dim
-    G: tl.constexpr,  # group_size
-    VG: tl.constexpr,  # H/G KV groups
-    BK: tl.constexpr,
-    BH: tl.constexpr,
-    is_causal: tl.constexpr
-):
+def triton_sparse_mla_fwd(q, kv, indices, sm_scale: tl.constexpr, output, lse, stride_qb, stride_qh, stride_qm,
+                          stride_qd, stride_kvb, stride_kvg, stride_kvn, stride_kvd, stride_tb, stride_tg, stride_tm,
+                          stride_tt,  # topk，for indices
+                          stride_ob, stride_oh, stride_om, stride_od, stride_lb, stride_lh, stride_lm, B: tl.constexpr,
+                          SQ: tl.constexpr,  # seqlen
+                          SKV: tl.constexpr, K: tl.constexpr,  # topk
+                          D: tl.constexpr,  # QKV dim
+                          TD: tl.constexpr,  # tail dim
+                          DP: tl.constexpr, TDP: tl.constexpr, H: tl.constexpr,  # q_head_dim
+                          G: tl.constexpr,  # group_size
+                          VG: tl.constexpr,  # H/G KV groups
+                          BK: tl.constexpr, BH: tl.constexpr, is_causal: tl.constexpr):
     i_b, i_sq, i_gbh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_g, i_bh = i_gbh // G, i_gbh % G
     q_base = q + i_b * stride_qb + i_sq * stride_qm + i_gbh * (BH * stride_qh)
@@ -149,7 +134,7 @@ def triton_sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, return_p_sum:
     assert indices.shape == (B, SQ, VG, K)
     G = H // VG
     if sm_scale is None:
-        sm_scale = DT ** -0.5
+        sm_scale = DT**-0.5
     BH = 32
     NH = triton.cdiv(G, BH)
     BK = 32
@@ -157,19 +142,14 @@ def triton_sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, return_p_sum:
     lse = torch.full((B, SQ, H), float('-inf'), device=q.device, dtype=q.dtype)
     grid = (B, SQ, VG * NH)  # (SQ//BQ, B*H)
     triton_sparse_mla_fwd[grid](
-        q, kv, indices, sm_scale,
-        output, lse,
-        q.stride(0), q.stride(2), q.stride(1), q.stride(3),  # [B, H, SQ, DT]
+        q, kv, indices, sm_scale, output, lse, q.stride(0), q.stride(2), q.stride(1), q.stride(3),  # [B, H, SQ, DT]
         kv.stride(0), kv.stride(2), kv.stride(1), kv.stride(3),  # [B, VG, SKV, DT]
         indices.stride(0), indices.stride(2), indices.stride(1), indices.stride(3),  # [B, VG, SQ, K]
         output.stride(0), output.stride(2), output.stride(1), output.stride(3),  # [B, H, SQ, D]
         lse.stride(0), lse.stride(2), lse.stride(1),  # [B, H, SQ]
-        B, SQ, S, K, D, TD, DP, TDP, H, G, VG,
-        BK,
-        BH,
+        B, SQ, S, K, D, TD, DP, TDP, H, G, VG, BK, BH,
         # BD,
-        is_causal
-    )
+        is_causal)
     # sparse_mla_fwd[grid](q, kv, indices, output)
     return output, lse
 
@@ -190,9 +170,10 @@ def ref_sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, is_casual=True, 
     b, _, _, dim_v = v.shape
     g_index = g
     h_index = h // g
-    compressed_casual_mask = torch.arange(
-        0, sq, dtype=torch.int32, device="cuda").view(-1, 1) >= torch.arange(
-            1 - 1, sk * 1, 1, dtype=torch.int32, device="cuda").view(1, -1)
+    compressed_casual_mask = torch.arange(0, sq, dtype=torch.int32,
+                                          device="cuda").view(-1,
+                                                              1) >= torch.arange(1 - 1, sk * 1, 1, dtype=torch.int32,
+                                                                                 device="cuda").view(1, -1)
 
     mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
     mask = mask[..., :-1]
@@ -212,15 +193,7 @@ def ref_sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, is_casual=True, 
     return o.to(torch.bfloat16)
 
 
-def test_sparse_mla_fwd(B=1,
-                        S=4096,
-                        SKV=4096,
-                        H=128,
-                        HKV=1,
-                        DQK=576,
-                        DV=512,
-                        topk=2048,
-                        dtype=torch.bfloat16):
+def test_sparse_mla_fwd(B=1, S=4096, SKV=4096, H=128, HKV=1, DQK=576, DV=512, topk=2048, dtype=torch.bfloat16):
     torch.random.manual_seed(0)
     q = torch.randn((B, S, H, DQK), dtype=dtype, device="cuda").requires_grad_(True)
     kv = torch.randn((B, SKV, HKV, DQK), dtype=dtype, device="cuda").requires_grad_(True)
@@ -248,5 +221,4 @@ def test_sparse_mla_fwd(B=1,
 
 
 if __name__ == "__main__":
-    test_sparse_mla_fwd(
-        B=1, S=128, SKV=1024, H=32, HKV=1, DQK=256 + 32, DV=256, topk=64, dtype=torch.bfloat16)
+    test_sparse_mla_fwd(B=1, S=128, SKV=1024, H=32, HKV=1, DQK=256 + 32, DV=256, topk=64, dtype=torch.bfloat16)
