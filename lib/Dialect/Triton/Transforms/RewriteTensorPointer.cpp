@@ -313,7 +313,8 @@ public:
     if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
       auto newResult = builder.create<triton::LoadOp>(
           loadOp.getLoc(), newPtr, newMask, newOther, loadOp.getCache(),
-          loadOp.getEvict(), loadOp.getIsVolatile());
+          loadOp.getEvict(), loadOp.getIsVolatile(),
+          loadOp.getFlagtreeHintsAttr()); // flagtree hints
       op->getResult(0).replaceAllUsesWith(newResult);
     } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
       builder.create<triton::StoreOp>(storeOp.getLoc(), newPtr,

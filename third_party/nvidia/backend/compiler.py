@@ -1,5 +1,6 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, nvidia
+from triton._C.libtriton import tle
 from triton import knobs
 from triton.runtime.errors import PTXASError
 
@@ -258,6 +259,7 @@ class CUDABackend(BaseBackend):
         passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 32, opt.num_ctas)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
+        passes.ttgpuir.add_process_shared_memory_hint(pm)  # flagtree hints
         if capability // 10 >= 8:
             passes.ttgpuir.add_f32_dot_tc(pm)
         # TODO(Qingyi): Move PlanCTAPass to the front of CoalescePass
@@ -309,6 +311,8 @@ class CUDABackend(BaseBackend):
         passes.ttir.add_loop_aware_cse(pm)
         passes.common.add_symbol_dce(pm)
         if capability // 10 >= 9:
+            # flagtree tle: Apply TLE TMA copy lowering before standard NVIDIA TMA lowering
+            tle.passes.add_lower_tma_copy(pm)
             nvidia.passes.ttnvgpuir.add_tma_lowering(pm)
         nvidia.passes.ttnvgpuir.add_fence_insertion(pm, capability)
         nvidia.passes.ttnvgpuir.add_lower_mma(pm)

@@ -262,6 +262,18 @@ def TritonGPUOptimizeDotOperands : Pass<"tritongpu-optimize-dot-operands", "mlir
   ];
 }
 
+// flagtree hints # @hint: shared_memory
+def TritonGPUProcessSharedMemoryHint : Pass<"tritongpu-process-shared-memory-hint", "mlir::ModuleOp"> {
+  let summary = "process shared memory hint";
+
+  let description = [{
+    The pass only process load op with `@hint: shared_memory` annotation.
+    Manaully specify the data that needs to be loaded into shared memory.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect"];
+}
+
 def TritonGPUCoalesce: Pass<"tritongpu-coalesce", "mlir::ModuleOp"> {
   let summary = "coalesce";
 

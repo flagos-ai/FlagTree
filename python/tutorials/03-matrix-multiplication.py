@@ -149,6 +149,7 @@ You will specifically learn about:
 # Final Result
 # ------------
 
+import sys
 import torch
 
 import triton
@@ -388,6 +389,9 @@ if TORCH_HAS_FP8 and is_cuda():
         print("✅ Triton and Torch match")
     else:
         print("❌ Triton and Torch differ")
+
+if '--only_unit_test' in sys.argv:
+    sys.exit(0)
 
 # %%
 # Benchmark

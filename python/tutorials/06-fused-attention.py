@@ -14,6 +14,7 @@ Extra Credits:
 """
 
 import pytest
+import sys
 import torch
 import os
 
@@ -139,7 +140,8 @@ configs = [
     for s in NUM_STAGES_OPTIONS \
     for w in [4, 8]\
 ]
-if "PYTEST_VERSION" in os.environ:
+
+if "PYTEST_VERSION" in os.environ or '--only_unit_test' in sys.argv:
     # Use a single config in testing for reproducibility
     configs = [
         triton.Config(dict(BLOCK_M=128, BLOCK_N=64), num_stages=2, num_warps=4, pre_hook=_host_descriptor_pre_hook),
@@ -688,9 +690,9 @@ TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
 BATCH, N_HEADS = 4, 32
 # vary seq length for fixed head and batch=4
 configs = []
-for HEAD_DIM in [64, 128]:
+for HEAD_DIM in [64, 128] if '--only_unit_test' not in sys.argv else [64]:
     for mode in ["fwd", "bwd"]:
-        for causal in [True, False]:
+        for causal in [True, False] if '--only_unit_test' not in sys.argv else [False]:
             # Enable warpspec for causal fwd on Hopper
             enable_ws = mode == "fwd" and (is_blackwell() or (is_hopper() and not causal))
             for warp_specialize in [False, True] if enable_ws else [False]:
@@ -759,4 +761,4 @@ def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, warp_specialize, mo
 
 if __name__ == "__main__":
     # only works on post-Ampere GPUs right now
-    bench_flash_attention.run(save_path=".", print_data=True)
+    bench_flash_attention.run(save_path="." if '--only_unit_test' not in sys.argv else None, print_data=True)

@@ -27,6 +27,7 @@ of gemms. The scheduling is static and we do it on device.
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 from typing import Optional
+import sys
 import torch
 
 import triton
@@ -398,6 +399,9 @@ if supports_tma():
     tri_tma_out = group_gemm_tma_fn(group_A, group_B_T)
     for i in range(group_size):
         assert torch.allclose(ref_out[i], tri_tma_out[i], atol=1e-2, rtol=1e-2)
+
+if '--only_unit_test' in sys.argv:
+    sys.exit(0)
 
 
 # only launch the kernel, no tensor preparation here to remove all overhead

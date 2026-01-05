@@ -56,6 +56,8 @@ void init_triton_passes_ttgpuir(py::module &&m) {
   using namespace mlir;
   using namespace mlir::triton::gpu;
   using namespace mlir::triton::instrument;
+  ADD_PASS_WRAPPER_0("add_process_shared_memory_hint",
+                     createTritonGPUProcessSharedMemoryHint); // flagtree hints
   ADD_PASS_WRAPPER_0("add_coalesce", createTritonGPUCoalesce);
   ADD_PASS_WRAPPER_0("add_optimize_thread_locality",
                      createTritonGPUOptimizeThreadLocality);

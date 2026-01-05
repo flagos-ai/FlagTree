@@ -2,6 +2,7 @@
 #define TRITON_ATTR_DEFS
 
 include "mlir/IR/EnumAttr.td"
+include "mlir/IR/AttrTypeBase.td"
 
 // Attributes for LoadOp and StoreOp
 def TT_CacheModifierAttr : I32EnumAttr<
