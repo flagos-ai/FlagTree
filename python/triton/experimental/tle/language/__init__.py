@@ -6,4 +6,4 @@ __all__ = [
     "load",
 ]
 
-from . import nvidia
+from . import gpu

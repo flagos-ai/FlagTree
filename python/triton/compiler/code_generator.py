@@ -1154,7 +1154,7 @@ class CodeGenerator(ast.NodeVisitor):
         # flagtree tle
         try:
             from ..experimental.tle import language as tle
-            tle_pipeline = tle.nvidia.pipeline
+            tle_pipeline = tle.gpu.pipeline
         except ImportError:
             tle_pipeline = None
 
