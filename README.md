@@ -15,7 +15,7 @@ Each backend is based on different versions of triton, and therefore resides in 
 ## Latest News
 * 2025/12/24 Support pull and install [Wheel](/README.md#non-source-installation).
 * 2025/12/08 Added [enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) backend integration (based on Triton 3.3), and added CI/CD.
-* 2025/11/26 Add FlagTree_Backend_Specialization Unified Design Document [FlagTree_Backend_Specialization](reports/decoupling/).
+* 2025/11/26 Add FlagTree_Backend_Specialization Unified Design Document [FlagTree_Backend_Specialization](/documents/decoupling/).
 * 2025/10/28 Provides offline build support (pre-downloaded dependency packages), improving the build experience when network environment is limited. See usage instructions below.
 * 2025/09/30 Support flagtree_hints for shared memory on GPGPU.
 * 2025/09/29 SDK storage migrated to ksyuncs, improving download stability.

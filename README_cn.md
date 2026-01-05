@@ -15,7 +15,7 @@ FlagTree 是面向多种 AI 芯片的开源、统一编译器。FlagTree 致力�
 ## 新特性
 * 2025/12/24 支持拉取和安装 [Wheel](/README_cn.md#非源码安装)。
 * 2025/12/08 新增接入 [enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) 后端（对应 Triton 3.3），加入 CI/CD。
-* 2025/11/26 添加 FlagTree 后端特化统一设计文档 [FlagTree_Backend_Specialization](reports/decoupling/)。
+* 2025/11/26 添加 FlagTree 后端特化统一设计文档 [FlagTree_Backend_Specialization](/documents/decoupling/)。
 * 2025/10/28 提供离线构建支持（预下载依赖包），改善网络环境受限时的构建体验，使用方法见后文。
 * 2025/09/30 在 GPGPU 上支持编译指导 shared memory。
 * 2025/09/29 SDK 存储迁移至金山云，大幅提升下载稳定性。
