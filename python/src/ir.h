@@ -3,11 +3,13 @@
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/ArrayRef.h"
 #include <memory>
-
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include <pybind11/stl_bind.h>
 typedef int AsyncTaskId;
 void setAsyncTaskIds(mlir::Operation *op,
                      llvm::ArrayRef<AsyncTaskId> asyncTaskIds);
-
+namespace py = pybind11;
 // A custom op builder that keeps track of the last location
 class TritonOpBuilder {
 public:
@@ -103,3 +105,7 @@ private:
   bool lineInfoEnabled =
       !mlir::triton::tools::getBoolEnv("TRITON_DISABLE_LINE_INFO");
 };
+// flagtree tle
+namespace ir {
+extern py::class_<TritonOpBuilder> *getBuilderClass();
+} // namespace ir
