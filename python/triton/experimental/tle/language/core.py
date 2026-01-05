@@ -1,8 +1,5 @@
 # flagtree tle
 import triton.language.core as tl
-from typing import Optional, Sequence
-from enum import Enum
-from triton._C.libtriton import ir
 
 # -----------------------
 # Non-Atomic Memory Operations
@@ -55,8 +52,7 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     :param volatile: changes volatile option in NVIDIA PTX
     :type volatile: bool, optional
     """
-    x = tl.load(pointer, mask=mask, other=other, boundary_check=boundary_check,
-                padding_option=padding_option, cache_modifier=cache_modifier,
-                eviction_policy=eviction_policy, volatile=volatile, _semantic=_semantic)
+    x = tl.load(pointer, mask=mask, other=other, boundary_check=boundary_check, padding_option=padding_option,
+                cache_modifier=cache_modifier, eviction_policy=eviction_policy, volatile=volatile, _semantic=_semantic)
     x.handle.set_attr("tt.load.async", _semantic.builder.get_bool_attr(is_async))
     return x

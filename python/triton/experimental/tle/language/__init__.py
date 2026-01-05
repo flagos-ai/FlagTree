@@ -1,7 +1,6 @@
 # flagtree tle
 from .core import (
-    load,
-)
+    load, )
 
 __all__ = [
     "load",

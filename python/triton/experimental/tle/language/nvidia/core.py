@@ -3,7 +3,6 @@ import triton.language.core as tl
 from typing import Optional, Sequence
 from enum import Enum
 from . import types as tle
-from triton._C.libtriton import ir
 
 from triton.language.core import (
     constexpr,
@@ -26,6 +25,7 @@ class pipeline(range):
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
 
+
 @tl.builtin
 def memory_space(input, space, _builder=None, _semantic=None):
     '''
@@ -39,6 +39,7 @@ def memory_space(input, space, _builder=None, _semantic=None):
     space = tl._unwrap_if_constexpr(space)
     input.handle.set_attr("tt.memory_space", _semantic.builder.get_string_attr(space))
     return input
+
 
 @tl.builtin
 def alloc(
