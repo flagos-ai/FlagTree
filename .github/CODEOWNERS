@@ -11,5 +11,12 @@ setup.py @Galaxy1458
 python/setup_tools/** @Galaxy1458
 
 # -----------
+# tle
+# -----------
+python/test/tle @sunnycase
+python/triton/experimental/tle @sunnycase
+third_party/tle @sunnycase
+
+# -----------
 # third_party
 # -----------
