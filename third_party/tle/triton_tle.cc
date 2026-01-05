@@ -204,9 +204,7 @@ void init_tle_raw_ir(py::module &&m) {
         SmallVector<Type> operandTys = llvm::map_to_vector(
             operands, [](Value value) -> Type { return value.getType(); });
         IRMapping mapper;
-        auto ptrTy =
-            dyn_cast<LLVM::LLVMPointerType>(func.getArgument(0).getType());
-        uint32_t as = ptrTy.getAddressSpace();
+        uint32_t start_idx = 0;
         for (auto [idx, oldBlock] : llvm::enumerate(func.getBlocks())) {
           if (idx == 0) {
             Block *newBlock = builder.createBlock(
@@ -216,6 +214,9 @@ void init_tle_raw_ir(py::module &&m) {
             for (const auto &input : body.getArguments()) {
               if (RankedTensorType tensorTy =
                       dyn_cast<RankedTensorType>(input.getType())) {
+                uint32_t as = cast<LLVM::LLVMPointerType>(
+                                  func.getArgument(start_idx).getType())
+                                  .getAddressSpace();
                 Type ty = LLVM::LLVMPointerType::get(self.getContext(), as);
                 extractOps.push_back(
                     self.create<tle::ExtractAllocatedPtrOp>(ty, input));
@@ -232,12 +233,19 @@ void init_tle_raw_ir(py::module &&m) {
                 for (const auto &result : stridesOp.getResults()) {
                   extractOps.push_back(result);
                 }
+                start_idx += (3 + 2 * rank);
               } else if (auto ptrTy =
                              dyn_cast<triton::PointerType>(input.getType())) {
+                uint32_t as = cast<LLVM::LLVMPointerType>(
+                                  func.getArgument(start_idx).getType())
+                                  .getAddressSpace();
+                Type ty = LLVM::LLVMPointerType::get(self.getContext(), as);
                 extractOps.push_back(self.create<tle::ExtractPtrOp>(
                     LLVM::LLVMPointerType::get(self.getContext(), as), input));
+                start_idx += 1;
               } else {
                 extractOps.push_back(input);
+                start_idx += 1;
               }
               for (auto [funcArg, extractOp] :
                    llvm::zip(func.getArguments(), extractOps)) {
