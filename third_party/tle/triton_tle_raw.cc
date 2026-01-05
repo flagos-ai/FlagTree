@@ -365,9 +365,14 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
       mapper.map(&oldBlock, newBlock);
     }
   }
+
+  // Stage 4: Clone the LLVM function body to the DSLRegionOp body
   for (auto [oldBlock, newBlock] :
        llvm::zip(func.getBlocks(), body.getBlocks())) {
     OpBuilder::InsertionGuard guard(builder);
+    // Use setInsertionPointToEnd because extract operations were inserted at
+    // the start in Stage 3 Clone operations will be inserted after extract
+    // operations
     builder.setInsertionPointToEnd(&newBlock);
     for (Operation &operation : oldBlock.getOperations()) {
       if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
