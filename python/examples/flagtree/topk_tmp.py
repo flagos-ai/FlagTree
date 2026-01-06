@@ -201,6 +201,147 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices: InOut["memref<?x
         scf.yield_([])
 
 
+@dialect(name="mlir")
+def edsl2(sum_buf: InOut["memref<?xi32, 3>"], thre_bin_sum_buf: InOut["memref<?xi32, 3>"],
+          indices: Input["!llvm.ptr<1>"], inputs: Input["!llvm.ptr<1>"], s_input_ids_base: Input["!llvm.ptr<1>"],
+          S: Input["i32"], K: Input["i32"], SMEM_INPUT_SIZE: Input["i32"],
+          l_threshold_bin_id: Input["i32"], l_new_topk: Input["i32"],
+          BSS: Input["i32"], old_thre_bin_sum: Input["i32"], sum: Input["i32"],
+          thre_bin_sum: Input["i32"], round: Input["i32"], padding_num: Input["f32"]):
+    """
+    TileLang equivalent:
+    old_thre_bin_sum = ~
+    seq_len = S
+    bx = i_b
+    l_threshold_bin_id = ~
+    sum = ~
+    thre_bin_sum = ~
+    round = ~
+    padding_num = ~
+    BLOCK_SIZE = BSS
+    s_num_over = sum_buf[0]
+    s_num_eq = thre_bin_sum_buf[0]
+    
+    for s in T.serial(T.ceildiv(old_thre_bin_sum, BLOCK_SIZE)):
+        T.sync_threads()
+        s_input_idx = s * BLOCK_SIZE + tx
+        if s_input_idx < old_thre_bin_sum:
+            input_idx = s_input_ids_base[s_input_idx]
+            if input_idx >= 0 and input_idx < seq_len:
+                s_input = s_base[input_idx]
+                inval_int32 = (convert_to_uint32(s_input) >> (24 - round * 8)) & 0xFF
+                if inval_int32 > l_threshold_bin_id:
+                    pos = T.atomic_add(s_num_over[0], 1, return_prev=True)
+                    indices_base[sum + pos] = input_idx
+                elif inval_int32 == l_threshold_bin_id and l_new_topk > 0:
+                    pos = T.atomic_add(s_num_eq[0], 1, return_prev=True)
+                    s_input_ids_base[thre_bin_sum + pos] = input_idx
+    """
+    # tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
+    # bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
+    # zero = arith.constant(ir.IndexType.get(), 0)
+    # one = arith.constant(ir.IndexType.get(), 1)
+    # num_iters = arith.ceildivsi(old_thre_bin_sum, BSS)
+    # num_iters_idx = arith.index_cast(ir.IndexType.get(), num_iters)
+    
+    # i32_ty = ir.IntegerType.get_signless(32)
+    # f32_ty = ir.F32Type.get()
+    # ptr_ty = ir.Type.parse("!llvm.ptr<1>")
+    # zero_i32 = arith.constant(i32_ty, 0)
+    # one_i32 = arith.constant(i32_ty, 1)
+    # zero_idx = arith.constant(ir.IndexType.get(), 0)
+    
+    # # TileLang: for s in T.serial(T.ceildiv(old_thre_bin_sum, BLOCK_SIZE)):
+    # for s in scf.for_(zero, num_iters_idx, one):
+    #     # TileLang: T.sync_threads()
+    #     nvvm.barrier0()
+        
+    #     # TileLang: s_input_idx = s * BLOCK_SIZE + tx
+    #     s_i32 = arith.index_cast(i32_ty, s)
+    #     s_input_idx_i32 = arith.addi(arith.muli(s_i32, BSS), tidx)
+        
+    #     # TileLang: if s_input_idx < old_thre_bin_sum:
+    #     cond1 = arith.cmpi(arith.CmpIPredicate.slt, s_input_idx_i32, old_thre_bin_sum)
+        
+    #     ifop = scf.if_([], cond1)
+    #     thenblock = ifop.opview.thenRegion.blocks.append()
+    #     with ir.InsertionPoint(thenblock):
+    #         # TileLang: input_idx = s_input_ids_base[s_input_idx]
+    #         s_input_idx_idx = arith.index_cast(ir.IndexType.get(), s_input_idx_i32)
+    #         input_idx_i32 = memref.load(s_input_ids_base, [s_input_idx_idx])
+            
+    #         # TileLang: if input_idx >= 0 and input_idx < seq_len:
+    #         cond2 = arith.cmpi(arith.CmpIPredicate.sge, input_idx_i32, zero_i32)
+    #         cond3 = arith.cmpi(arith.CmpIPredicate.slt, input_idx_i32, S)
+    #         cond_valid = arith.andi(cond2, cond3)
+            
+    #         ifop2 = scf.if_([], cond_valid)
+    #         thenblock2 = ifop2.opview.thenRegion.blocks.append()
+    #         with ir.InsertionPoint(thenblock2):
+    #             # TileLang: s_input = s_base[input_idx] = inputs[i_b * S + input_idx]
+    #             base_offset = arith.muli(bidx, S)
+    #             full_offset = arith.addi(base_offset, input_idx_i32)
+                
+    #             input_ptr = llvm.getelementptr(ptr_ty, inputs, [full_offset], [-2147483648], f32_ty, 0)
+    #             s_input = llvm.load(f32_ty, input_ptr)
+                
+    #             # TileLang: inval_int32 = (convert_to_uint32(s_input) >> (24 - round * 8)) & 0xFF
+    #             # Convert to uint32: convert_to_uint32 logic
+    #             s_input_i32 = arith.bitcast(i32_ty, s_input)
+                
+    #             is_neg = arith.cmpf(arith.CmpFPredicate.OLT, s_input, arith.constant(f32_ty, 0.0))
+    #             mask_0xFFFFFFFF = arith.constant(i32_ty, 0xFFFFFFFF)
+    #             mask_0x80000000 = arith.constant(i32_ty, 0x80000000)
+                
+    #             neg_bits = arith.andi(arith.xori(s_input_i32, mask_0xFFFFFFFF), mask_0xFFFFFFFF)
+    #             pos_bits = arith.ori(s_input_i32, mask_0x80000000)
+    #             processed_bits = arith.select(is_neg, neg_bits, pos_bits)
+                
+    #             # Calculate shift: (24 - round * 8)
+    #             round_times_8 = arith.muli(round, arith.constant(i32_ty, 8))
+    #             shift_amount = arith.subi(arith.constant(i32_ty, 24), round_times_8)
+    #             shifted = arith.shrui(processed_bits, shift_amount)
+    #             mask_0xFF = arith.constant(i32_ty, 0xFF)
+    #             inval_int32 = arith.andi(shifted, mask_0xFF)
+                
+    #             # TileLang: if inval_int32 > l_threshold_bin_id:
+    #             over_thre = arith.cmpi(arith.CmpIPredicate.sgt, inval_int32, l_threshold_bin_id)
+    #             over_thre_if = scf.if_([], over_thre)
+    #             over_thre_then = over_thre_if.opview.thenRegion.blocks.append()
+    #             with ir.InsertionPoint(over_thre_then):
+    #                 # TileLang: pos = T.atomic_add(s_num_over[0], 1, return_prev=True)
+    #                 pos = memref.atomic_rmw(arith.AtomicRMWKind.addi, one_i32, sum_buf, [zero_idx])
+    #                 # Calculate write position: indices_base[sum + pos] = input_idx
+    #                 pos_with_sum = arith.addi(sum, pos)
+    #                 pos_with_sum_idx = arith.index_cast(ir.IndexType.get(), pos_with_sum)
+    #                 # TileLang: indices_base[sum + pos] = input_idx
+    #                 memref.store(input_idx_i32, indices, [pos_with_sum_idx])
+    #                 scf.yield_([])
+                
+    #             # TileLang: elif inval_int32 == l_threshold_bin_id and l_new_topk > 0:
+    #             over_thre_else = over_thre_if.opview.elseRegion.blocks.append()
+    #             with ir.InsertionPoint(over_thre_else):
+    #                 eq_thre = arith.cmpi(arith.CmpIPredicate.eq, inval_int32, l_threshold_bin_id)
+    #                 l_new_topk_gt_zero = arith.cmpi(arith.CmpIPredicate.sgt, l_new_topk, zero_i32)
+    #                 eq_thre_and_topk = arith.andi(eq_thre, l_new_topk_gt_zero)
+    #                 eq_thre_if = scf.if_([], eq_thre_and_topk)
+    #                 eq_thre_then = eq_thre_if.opview.thenRegion.blocks.append()
+    #                 with ir.InsertionPoint(eq_thre_then):
+    #                     # TileLang: pos = T.atomic_add(s_num_eq[0], 1, return_prev=True)
+    #                     pos = memref.atomic_rmw(arith.AtomicRMWKind.addi, one_i32, thre_bin_sum_buf, [zero_idx])
+    #                     # Calculate write position: s_input_ids_base[thre_bin_sum + pos] = input_idx
+    #                     pos_with_thre_bin_sum = arith.addi(thre_bin_sum, pos)
+    #                     pos_with_thre_bin_sum_idx = arith.index_cast(ir.IndexType.get(), pos_with_thre_bin_sum)
+    #                     # TileLang: s_input_ids_base[thre_bin_sum + pos] = input_idx
+    #                     memref.store(input_idx_i32, s_input_ids, [pos_with_thre_bin_sum_idx])
+    #                     scf.yield_([])
+    #                 scf.yield_([])
+                
+    #             scf.yield_([])
+    #         scf.yield_([])
+    #     scf.yield_([])
+
+
 @triton.autotune(
     configs=[
         # triton.Config({"BS": 32, "BSS": 32}, num_stages=1, num_warps=1),
@@ -264,7 +405,7 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
     # -----------------------------------
     sum = K - l_new_topk
     
-    thre_bin_sum_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
+    thre_bin_sum_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32) #有必要这么大吗？
     s = S
     bs = BS
     indices_buf = tl.full([K], -1, dtype=tl.int32)  # Initialize with -1 to match triton version
@@ -307,34 +448,45 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
         # -----------------------------------
         thre_bin_sum, old_thre_bin_sum = 0, thre_bin_sum
 
-        for s in range(ss):
-            s_input_idx = s * BSS + tl.arange(0, BSS)
-            s_input_idx_mask = s_input_idx < old_thre_bin_sum
-            input_idx = tl.load(s_input_ids_base + s_input_idx, s_input_idx_mask, other=-1)
-            s_input_mask = s_input_idx_mask
-            s_input = tl.load(s_base + input_idx, s_input_mask, other=padding_num).to(tl.float32)
-            inval_int32 = (convert_to_uint32(s_input) >> (24 - round * 8)) & 0xFF
+        # for s in range(ss):
+        #     s_input_idx = s * BSS + tl.arange(0, BSS)
+        #     s_input_idx_mask = s_input_idx < old_thre_bin_sum
+        #     input_idx = tl.load(s_input_ids_base + s_input_idx, s_input_idx_mask, other=-1)
+        #     s_input_mask = s_input_idx_mask
+        #     s_input = tl.load(s_base + input_idx, s_input_mask, other=padding_num).to(tl.float32)
+        #     inval_int32 = (convert_to_uint32(s_input) >> (24 - round * 8)) & 0xFF
 
-            over_thre = inval_int32.to(tl.int32) > l_threshold_bin_id
-            cur_sum = over_thre.to(tl.int32).sum(-1)
-            eq_thre = inval_int32.to(tl.int32) == l_threshold_bin_id
-            thre_bin_cur_sum = eq_thre.to(tl.int32).sum(-1)
+        #     over_thre = inval_int32.to(tl.int32) > l_threshold_bin_id
+        #     cur_sum = over_thre.to(tl.int32).sum(-1)
+        #     eq_thre = inval_int32.to(tl.int32) == l_threshold_bin_id
+        #     thre_bin_cur_sum = eq_thre.to(tl.int32).sum(-1)
 
-            topk_idx = over_thre.to(tl.int32).cumsum(-1)
-            thre_bin_idx = eq_thre.to(tl.int32).cumsum(-1)
+        #     topk_idx = over_thre.to(tl.int32).cumsum(-1)
+        #     thre_bin_idx = eq_thre.to(tl.int32).cumsum(-1)
 
-            concat_mask = tl.cat(over_thre, eq_thre, True)
-            concat_input = tl.cat(input_idx, input_idx, True)
-            concat_pointer_matrix = tl.cat(
-                indices_base + sum + topk_idx - 1,
-                s_input_ids_base + thre_bin_sum + thre_bin_idx - 1,
-                True,
-            )
+        #     concat_mask = tl.cat(over_thre, eq_thre, True)
+        #     concat_input = tl.cat(input_idx, input_idx, True)
+        #     concat_pointer_matrix = tl.cat(
+        #         indices_base + sum + topk_idx - 1,
+        #         s_input_ids_base + thre_bin_sum + thre_bin_idx - 1,
+        #         True,
+        #     )
 
-            tl.store(concat_pointer_matrix, concat_input, mask=concat_mask)
+        #     tl.store(concat_pointer_matrix, concat_input, mask=concat_mask)
 
-            thre_bin_sum += thre_bin_cur_sum
-            sum += cur_sum
+        #     thre_bin_sum += thre_bin_cur_sum
+        #     sum += cur_sum
+        sum_buf = tl.zeros([1], dtype=tl.int32)
+        thre_bin_sum_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32) #有必要这么大吗？
+        s_val = S
+        k_val = K
+        smem_input_size_val = SMEM_INPUT_SIZE
+        bss_val = BSS
+        sum_buf, thre_bin_sum_buf = fl.call(edsl2, 
+            [sum_buf, thre_bin_sum_buf],
+            [indices,inputs, s_input_ids_base,  s_val, k_val, smem_input_size_val, l_threshold_bin_id, l_new_topk, bss_val, old_thre_bin_sum, sum, thre_bin_sum, round, padding_num])
+        sum += sum_buf.max(0)
+        thre_bin_sum = thre_bin_sum_buf.max(0)
 
         round += 1
 
