@@ -15,12 +15,16 @@ class FlagTreeSemantic(TritonSemantic[TensorTy]):
         super().__init__(builder, *args, **kwargs)
 
     def call(self, func, outputs, inputs):
-        # Extract type hints from function AST
+        # Extract type hints and argument names from function AST
         arg_type_hints = []
+        arg_names = []
         if hasattr(func, 'ast') and func.ast.body:
             func_def = func.ast.body[0]
             if isinstance(func_def, ast.FunctionDef):
                 for arg in func_def.args.args:
+                    # Extract argument name
+                    arg_names.append(arg.arg)
+                    # Extract type hint
                     if arg.annotation:
                         if isinstance(arg.annotation, ast.Subscript):
                             # Handle type hints like Input["memref<?xi32, 3>"]
@@ -40,7 +44,7 @@ class FlagTreeSemantic(TritonSemantic[TensorTy]):
             f"{func.llvm}", func.fnname,
             [output.handle for output in outputs],
             [input.handle for input in inputs],
-            arg_type_hints)
+            arg_type_hints, arg_names)
         tensors = [tensor(result, output.type) for result, output in zip(dsl_region_op.get_results(), outputs)]
         if len(tensors) == 1:
             return tensors[0]
