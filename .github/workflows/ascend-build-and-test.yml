@@ -94,5 +94,4 @@ jobs:
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_linearize_permute.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_logical_and.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_logical_or.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_multi_return.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_triton_unified_attention.py
