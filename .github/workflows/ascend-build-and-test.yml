@@ -90,13 +90,9 @@ jobs:
           python3 python/test/ops/min_dim/min_dim_ascend_perf.py
           python3 python/test/ops/sum_dim/sum_dim.py
           python3 python/test/ops/varmean/var_mean_ascend.py
-          python3 -m pytest third_party/ascend/examples/pytest_ut --ignore=third_party/ascend/examples/pytest_ut/test_cumprod.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_cumsum.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_flip.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_index_select.py \
+          python3 -m pytest third_party/ascend/examples/pytest_ut --ignore=third_party/ascend/examples/pytest_ut/test_index_select.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_linearize_permute.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_logical_and.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_logical_or.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_multi_return.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_sum_vector.py \
                                                                   --ignore=third_party/ascend/examples/pytest_ut/test_triton_unified_attention.py
