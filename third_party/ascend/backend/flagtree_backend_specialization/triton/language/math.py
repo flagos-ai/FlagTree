@@ -31,7 +31,6 @@ relu = language.extra.ascend.libdevice.relu
 log1p = language.extra.ascend.libdevice.log1p
 tan = language.extra.ascend.libdevice.tan
 atan = language.extra.ascend.libdevice.atan
-tanh = language.extra.ascend.libdevice.tanh
 ilogb = language.extra.ascend.libdevice.ilogb
 ldexp = language.extra.ascend.libdevice.ldexp
 pow = language.extra.ascend.libdevice.pow
@@ -53,6 +52,6 @@ math_ext_base_func_list = [
 ]
 math_ext_spec_func_list = [
     "isnan", "isinf", "reciprocal", "relu", "log1p", "tan",
-    "atan", "tanh", "ilogb", "ldexp", "pow", "flip", "atan2",
+    "atan", "ilogb", "ldexp", "pow", "flip", "atan2",
     "div_rz", "fmod", "trunc", "round", "rint", "finitef", "isfinited"
 ]

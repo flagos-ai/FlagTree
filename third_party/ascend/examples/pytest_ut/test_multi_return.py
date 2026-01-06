@@ -24,7 +24,6 @@ import pytest
 import torch
 import torch_npu
 import triton
-from triton.language.math import tanh
 import triton.language as tl
 
 device = 'npu'
@@ -165,7 +164,7 @@ def liger_cross_entropy_kernel(
     d = 0.0  # d is the sum. use the notation from the paper
     ori_X_y = tl.load(X_ptr + y).cast(tl.float32)  # we need to store the original value of X_y for the loss calculation
     if HAS_SOFTCAPPING:
-        ori_X_y = softcap * tanh(ori_X_y / softcap)
+        ori_X_y = softcap * tl.math.tanh(ori_X_y / softcap)
 
     # Label smoothing is a general case of normal cross entropy
     scaled_x_sum = 0.0
@@ -180,7 +179,7 @@ def liger_cross_entropy_kernel(
             # Ensure float32 precision for softmax calculation
         ).cast(tl.float32)
         if HAS_SOFTCAPPING:
-            X_block = softcap * tanh(X_block / softcap)
+            X_block = softcap * tl.math.tanh(X_block / softcap)
         block_max = tl.max(X_block)
         if label_smoothing > 0:
             # scale X beforehand to avoid overflow
@@ -208,7 +207,7 @@ def liger_cross_entropy_kernel(
             # Ensure float32 precision for softmax calculation
         ).cast(tl.float32)
         if HAS_SOFTCAPPING:
-            intermediate = tanh(X_block / softcap)
+            intermediate = tl.math.tanh(X_block / softcap)
             X_block = softcap * intermediate
 
         if not HAS_WEIGHT:
@@ -243,7 +242,7 @@ def liger_cross_entropy_kernel(
             X_block = dloss_ori + dloss_smooth + dz_loss
 
         # chain rule softcapping
-        # d(softcap * tanh(x / softcap)) = (1 - tanh^2(x / softcap))
+        # d(softcap * tl.math.tanh(x / softcap)) = (1 - tl.math.tanh^2(x / softcap))
         if HAS_SOFTCAPPING:
             X_block = X_block * (1 - intermediate * intermediate)
 
