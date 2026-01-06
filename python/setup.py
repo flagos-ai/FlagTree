@@ -444,7 +444,8 @@ class CMakeBuild(build_ext):
             "-DTRITON_BUILD_PYTHON_MODULE=ON", "-DPython3_EXECUTABLE:FILEPATH=" + sys.executable,
             "-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON", "-DPYTHON_INCLUDE_DIRS=" + python_include_dir,
             "-DTRITON_CODEGEN_BACKENDS=" + ';'.join([b.name for b in backends if not b.is_external]),
-            "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external])
+            "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external]),
+            "-DNPUIR_BUILD_WITH_LLVM_MAJOR_VERSION_21_OR_LATAR=ON", # for ascendnpu-ir
         ]
         cmake_args += helper.get_backend_cmake_args(build_ext=self)
         if lit_dir is not None:
