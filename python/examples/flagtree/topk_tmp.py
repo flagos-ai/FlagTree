@@ -109,15 +109,6 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices: InOut["memref<?x
     one_i32 = arith.constant(i32_ty, 1)
     zero_idx = arith.constant(ir.IndexType.get(), 0)
     
-    # Explicitly reference s_histogram before the loop to ensure it's treated as a function parameter
-    # rather than being incorrectly identified as iter_args by LLVM conversion.
-    # Load a dummy value to establish s_histogram as a function-scoped value, not loop-carried.
-    # Also create a dimension operation to ensure s_histogram is properly converted to memref
-    dummy_idx = arith.constant(ir.IndexType.get(), 0)
-    _ = memref.load(s_histogram, [dummy_idx])
-    # Get dimension to ensure s_histogram is properly materialized as memref
-    _ = memref.dim(s_histogram, zero_idx)
-    
     # TileLang: for s in T.serial(T.ceildiv(seq_len, BLOCK_SIZE)):
     for s in scf.for_(zero, num_iters_idx, one):
         # TileLang: T.sync_threads()
@@ -187,19 +178,23 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices: InOut["memref<?x
                 scf.yield_([])
             
             # TileLang: elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
-            eq_thre = arith.cmpi(arith.CmpIPredicate.eq, l_bin_id32, l_threshold_bin_id)
-            l_new_topk_gt_zero = arith.cmpi(arith.CmpIPredicate.sgt, l_new_topk, zero_i32)
-            eq_thre_and_topk = arith.andi(eq_thre, l_new_topk_gt_zero)
-            eq_thre_if = scf.if_([], eq_thre_and_topk)
-            eq_thre_then = eq_thre_if.opview.thenRegion.blocks.append()
-            with ir.InsertionPoint(eq_thre_then):
-                # TileLang: pos = T.atomic_add(s_num_input[0], 1, return_prev=True)
-                # s_num_input = thre_bin_sum_buf[0]
-                pos = memref.atomic_rmw(arith.AtomicRMWKind.addi, one_i32, thre_bin_sum_buf, [zero_idx])
-                # pos is already i32, convert to index for memref.store
-                pos_idx = arith.index_cast(ir.IndexType.get(), pos)
-                # TileLang: s_input_ids_base[pos] = input_idx
-                memref.store(input_idx_back_i32, s_input_idx, [pos_idx])
+            # 嵌套在 else 分支中实现 elif 语义
+            over_thre_else = over_thre_if.opview.elseRegion.blocks.append()
+            with ir.InsertionPoint(over_thre_else):
+                eq_thre = arith.cmpi(arith.CmpIPredicate.eq, l_bin_id32, l_threshold_bin_id)
+                l_new_topk_gt_zero = arith.cmpi(arith.CmpIPredicate.sgt, l_new_topk, zero_i32)
+                eq_thre_and_topk = arith.andi(eq_thre, l_new_topk_gt_zero)
+                eq_thre_if = scf.if_([], eq_thre_and_topk)
+                eq_thre_then = eq_thre_if.opview.thenRegion.blocks.append()
+                with ir.InsertionPoint(eq_thre_then):
+                    # TileLang: pos = T.atomic_add(s_num_input[0], 1, return_prev=True)
+                    # s_num_input = thre_bin_sum_buf[0]
+                    pos = memref.atomic_rmw(arith.AtomicRMWKind.addi, one_i32, thre_bin_sum_buf, [zero_idx])
+                    # pos is already i32, convert to index for memref.store
+                    pos_idx = arith.index_cast(ir.IndexType.get(), pos)
+                    # TileLang: s_input_ids_base[pos] = input_idx
+                    memref.store(input_idx_back_i32, s_input_idx, [pos_idx])
+                    scf.yield_([])
                 scf.yield_([])
             
             scf.yield_([])
@@ -272,10 +267,10 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
     thre_bin_sum_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
     s = S
     bs = BS
-    indices_buf = tl.zeros([K], dtype=tl.int32)
+    indices_buf = tl.full([K], -1, dtype=tl.int32)  # Initialize with -1 to match triton version
     s_input_ids_buf = tl.zeros([SMEM_INPUT_SIZE], dtype=tl.int32)
-    thre_bin_sum_buf, indices_buf, s_input_ids_buf = fl.call(
-        edsl1, [thre_bin_sum_buf, indices_buf, s_input_ids_buf],
+    thre_bin_sum_buf, indices_buf, s_input_ids_buf = fl.call(edsl1, 
+        [thre_bin_sum_buf, indices_buf, s_input_ids_buf],
         [inputs, s_histogram, l_start_idx, l_end_idx, s, l_threshold_bin_id, l_new_topk, bs])
     tl.store(indices + i_b * K + tl.arange(0, K), indices_buf)
     tl.store(s_input_ids + i_b * SMEM_INPUT_SIZE + tl.arange(0, SMEM_INPUT_SIZE), s_input_ids_buf)
@@ -295,14 +290,20 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
             inval_int32 = (convert_to_uint32(s_input) >>
                            (24 - round * 8)) & 0xFF
             s_histogram += inval_int32.to(tl.int32).histogram(HISTOGRAM_SIZE)
-        s_histogram = s_histogram.cumsum(0, reverse=True)  # Suffix sum
-        # -----------------------------------
-        l_threshold_bin_id_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
-        l_new_topk_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
-        l_threshold_bin_id_buf, l_new_topk_buf = fl.call(edsl0, [l_threshold_bin_id_buf, l_new_topk_buf],
-                                                         [s_histogram, l_new_topk])
-        l_threshold_bin_id = l_threshold_bin_id_buf.max(0)
-        l_new_topk = l_new_topk_buf.max(0)
+        s_histogram = s_histogram.cumsum(0, reverse=True)  
+        
+        # Suffix sum
+        mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
+        cond = (s_histogram > l_new_topk) & ((s_histogram.gather(mv_idx, 0) <= l_new_topk) | (mv_idx == 0))
+        l_threshold_bin_id = cond.argmax(0)
+        l_new_topk -= tl.where(tl.arange(0, HISTOGRAM_SIZE) == l_threshold_bin_id + 1, s_histogram, 0).max(0)
+        # # -----------------------------------
+        # l_threshold_bin_id_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
+        # l_new_topk_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
+        # l_threshold_bin_id_buf, l_new_topk_buf = fl.call(edsl0, [l_threshold_bin_id_buf, l_new_topk_buf],
+        #                                                  [s_histogram, l_new_topk])
+        # l_threshold_bin_id = l_threshold_bin_id_buf.max(0)
+        # l_new_topk = l_new_topk_buf.max(0)
         # -----------------------------------
         thre_bin_sum, old_thre_bin_sum = 0, thre_bin_sum
 
