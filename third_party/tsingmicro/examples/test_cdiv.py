@@ -7,7 +7,6 @@ import benchmark
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-
 @triton.jit
 def cdiv_kernel(
     x_ptr,
@@ -45,7 +44,7 @@ def cdiv_triton(x, y):
     output = torch.empty_like(x)
 
     # Define block size
-    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
+    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
     print("grid value is ", grid)
 
     x = x.to(DEVICE)
@@ -62,14 +61,15 @@ def cdiv_triton(x, y):
     output = output.to('cpu')
     return output
 
-
 @pytest.mark.parametrize("size, dtype", [  #
-    (size, dtype) for size in [98432] for dtype in [torch.int32]
+    (size, dtype)
+    for size in [98432]
+    for dtype in [torch.int32]
 ])
 def test_cdiv(size, dtype, device="cpu"):
     # Generate random input tensor
-    x = torch.randint(1, 100, (size, ), device=device, dtype=dtype)
-    y = torch.randint(1, 100, (size, ), device=device, dtype=dtype)
+    x = torch.randint(1, 100, (size,), device=device, dtype=dtype)
+    y = torch.randint(1, 100, (size,), device=device, dtype=dtype)
 
     # Call the Triton kernel
     output = cdiv_triton(x, y)
@@ -78,8 +78,10 @@ def test_cdiv(size, dtype, device="cpu"):
     expected = (x + y - 1) // y
 
     # compare
-    print(f"The maximum difference between torch and triton is "
-          f"{torch.max(torch.abs(expected - output))}")
+    print(
+        f"The maximum difference between torch and triton is "
+        f"{torch.max(torch.abs(expected - output))}"
+    )
     # Verify the result
     torch.testing.assert_close(output, expected, atol=1e-2, rtol=0)
 
@@ -90,8 +92,8 @@ def benchmark_cdiv_triton(size, dtype, provider):
         raise ValueError("This benchmark is only for the Triton provider.")
 
     # Generate random input data
-    x = torch.randint(1, 100, (size, ), device="cpu", dtype=dtype)
-    y = torch.randint(1, 100, (size, ), device="cpu", dtype=dtype)
+    x = torch.randint(1, 100, (size,), device="cpu", dtype=dtype)
+    y = torch.randint(1, 100, (size,), device="cpu", dtype=dtype)
 
     # Run the Triton kernel
     output = cdiv_triton(x, y)

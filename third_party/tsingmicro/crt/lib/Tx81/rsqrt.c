@@ -1,5 +1,7 @@
 //===------------------------ rsqrt.c -------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,6 +13,7 @@
 
 void __RsqrtVV(uint64_t *src, uint64_t *dst, uint32_t elem_count,
                uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmArith *cmd = g_intrinsic()->arith_pointer;
   TsmArithInstr inst = {I_CGRA,
@@ -28,4 +31,5 @@ void __RsqrtVV(uint64_t *src, uint64_t *dst, uint32_t elem_count,
   TsmExecute(&inst);
 
   // Destroy the command buffer.
+  
 }

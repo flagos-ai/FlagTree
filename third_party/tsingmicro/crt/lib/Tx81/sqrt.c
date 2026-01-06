@@ -1,5 +1,7 @@
 //===------------------------ sqrt.c --------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -10,6 +12,7 @@
 #include "tx81.h"
 
 void __SqrtVV(uint64_t *src, uint64_t *dst, uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmArith *cmd = g_intrinsic()->arith_pointer;
   TsmArithInstr inst = {I_CGRA,
@@ -27,4 +30,5 @@ void __SqrtVV(uint64_t *src, uint64_t *dst, uint32_t elem_count, uint16_t fmt) {
   TsmExecute(&inst);
 
   // Destroy the command buffer.
+  
 }

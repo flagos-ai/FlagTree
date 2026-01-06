@@ -1,5 +1,7 @@
 //===---------------------- reduce.c --------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -8,10 +10,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "tx81.h"
-
+#include "op_reduce_mul_impl.h"
 // The arguments list is aligned with TsmConv in Tx81Ops.td
 void __ReduceSum(uint64_t *src, uint64_t *dst, uint32_t dim, uint16_t src_n,
                  uint16_t src_h, uint16_t src_w, uint16_t src_c, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create reduce command buffer.
   TsmReduce *cmd = g_intrinsic()->reduce_pointer;
   TsmReduceInstr inst = {I_CGRA,
@@ -29,10 +32,12 @@ void __ReduceSum(uint64_t *src, uint64_t *dst, uint32_t dim, uint16_t src_n,
   TsmExecute(&inst);
   TsmWaitfinish();
   // Destroy the command buffer.
+  
 }
 
 void __ReduceAvg(uint64_t *src, uint64_t *dst, uint32_t dim, uint16_t src_n,
                  uint16_t src_h, uint16_t src_w, uint16_t src_c, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create reduce command buffer.
   TsmReduce *cmd = g_intrinsic()->reduce_pointer;
   TsmReduceInstr inst = {I_CGRA,
@@ -50,10 +55,12 @@ void __ReduceAvg(uint64_t *src, uint64_t *dst, uint32_t dim, uint16_t src_n,
   TsmExecute(&inst);
   TsmWaitfinish();
   // Destroy the command buffer.
+  
 }
 
 void __ReduceMax(uint64_t *src, uint64_t *dst, uint32_t dim, uint16_t src_n,
                  uint16_t src_h, uint16_t src_w, uint16_t src_c, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create reduce command buffer.
   TsmReduce *cmd = g_intrinsic()->reduce_pointer;
   TsmReduceInstr inst = {I_CGRA,
@@ -72,10 +79,12 @@ void __ReduceMax(uint64_t *src, uint64_t *dst, uint32_t dim, uint16_t src_n,
   TsmExecute(&inst);
   TsmWaitfinish();
   // Destroy the command buffer.
+  
 }
 
 void __ReduceMin(uint64_t *src, uint64_t *dst, uint32_t dim, uint16_t src_n,
                  uint16_t src_h, uint16_t src_w, uint16_t src_c, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create reduce command buffer.
   TsmReduce *cmd = g_intrinsic()->reduce_pointer;
   TsmReduceInstr inst = {I_CGRA,
@@ -95,4 +104,14 @@ void __ReduceMin(uint64_t *src, uint64_t *dst, uint32_t dim, uint16_t src_n,
   TsmWaitfinish();
 
   // Destroy the command buffer.
+  
+}
+void __ReduceMul(uint64_t *src, uint64_t *dst, uint32_t dim, uint16_t src_n,
+                 uint16_t src_h, uint16_t src_w, uint16_t src_c, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
+
+  // TODO
+  Data_Shape shape1 = {src_n, src_h, src_w, src_c};
+  op_reduce_mul_impl(src, dst, shape1, dim, fmt);
+
 }

@@ -8,9 +8,9 @@
 #ifndef TRITON_ANALYSIS_OPFOLDRESULT_UTILS_H
 #define TRITON_ANALYSIS_OPFOLDRESULT_UTILS_H
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 
 #include <optional>
 
@@ -60,10 +60,8 @@ OpFoldResult maxOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
                      const Location loc, OpBuilder &b);
 
 OpFoldResult compareOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
-                         const arith::CmpIPredicate pred,
-                         const OpFoldResult trueVal,
-                         const OpFoldResult falseVal, const Location loc,
-                         OpBuilder &b);
+                    const arith::CmpIPredicate pred, const OpFoldResult trueVal,
+                    const OpFoldResult falseVal, const Location loc, OpBuilder &b);
 } // namespace mlir
 
 #endif

@@ -20,7 +20,6 @@ add_triton_library(TritonToCoreDialects
   MLIRTensorDialect
   MLIRTransforms
   MLIRSupport
-  TritonAnalysis
   TritonIR
   TritonTransforms
   ZTCAnalysis

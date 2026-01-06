@@ -1,5 +1,7 @@
 //===------------------------- mxfp_scale_bf16.c --------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -23,8 +25,9 @@
  * @param dst            Destination BF16 data pointer
  * @param elem_count     Total elements in source (must be blocks*32)
  */
-void __mxfpScaleBf16(uint16_t *value, uint8_t *scale, uint16_t *dst,
+void __mxfpScaleBF16(uint16_t *value, uint8_t *scale, uint16_t *dst,
                      uint32_t elem_count) {
+  INTRNISIC_RUN_SWITCH;
   const int scaling_block_size = 32; // MXFP4 block size per OCP spec
 
   // Obtain hardware-specific memory mapping for scale factors
@@ -61,4 +64,5 @@ void __mxfpScaleBf16(uint16_t *value, uint8_t *scale, uint16_t *dst,
                Fmt_BF16);
     TsmExecute(&inst);
   }
+
 }

@@ -1,22 +1,24 @@
 //===--------------------- Tx81ToLLVMPass.cpp -----------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 
-#include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
-#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "llvm/Support/Debug.h"
+#include "mlir/Support/LLVM.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/Support/LLVM.h"
-#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
 #include "tsingmicro-tx81/Conversion/Tx81ToLLVM/Tx81ToLLVM.h"
 #include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
-#include "llvm/Support/Debug.h"
 #include <memory>
 #include <mlir/IR/DialectRegistry.h>
 #include <mlir/Transforms/Passes.h>
@@ -31,12 +33,13 @@ using namespace triton;
 
 namespace {
 
+
 class Tx81ToLLVMPass : public Tx81ToLLVMBase<Tx81ToLLVMPass> {
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<LLVM::LLVMDialect, tx::Tx81Dialect, arith::ArithDialect,
-                func::FuncDialect, memref::MemRefDialect, scf::SCFDialect>();
+    registry.insert<LLVM::LLVMDialect, tx::Tx81Dialect,
+                    arith::ArithDialect, func::FuncDialect,
+                    memref::MemRefDialect, scf::SCFDialect>();
   }
 
   void runOnOperation() override {
@@ -71,6 +74,7 @@ public:
 
 } // namespace
 
-std::unique_ptr<OperationPass<ModuleOp>> triton::createTx81ToLLVMPass() {
+std::unique_ptr<OperationPass<ModuleOp>>
+triton::createTx81ToLLVMPass() {
   return std::make_unique<Tx81ToLLVMPass>();
 }

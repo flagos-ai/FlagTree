@@ -18,6 +18,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "mlir/IR/Dialect.h"
 
 //===----------------------------------------------------------------------===//
 // MagicKernel Operations
@@ -28,5 +29,6 @@
 // TritonStructured operations.
 #define GET_OP_CLASSES
 #include "magic-kernel/Dialect/IR/MagicKernelOps.h.inc"
+
 
 #endif // MLIR_DIALECT_MAGIC_KERNEL_IR_DIALECT_H_

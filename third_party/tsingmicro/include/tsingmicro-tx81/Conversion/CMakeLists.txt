@@ -1,4 +1,7 @@
 add_subdirectory(LinalgTiling)
+add_subdirectory(LinalgFusion)
 add_subdirectory(MKToTx81)
 add_subdirectory(Tx81ToLLVM)
 add_subdirectory(Tx81MemrefToLLVM)
+add_subdirectory(AllocateSharedMemory)
+add_subdirectory(ExportKernelSymbols)

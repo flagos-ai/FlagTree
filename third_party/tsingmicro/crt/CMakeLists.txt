@@ -94,6 +94,8 @@ else()
 
   include_directories(${TX8_DEPS_ROOT}/include)
   include_directories(${TX8_DEPS_ROOT}/${XUANTIE_NAME}/riscv64-unknown-elf/include)
+  include_directories(${TX8_DEPS_ROOT}/include/bsp/xuantie_riscv_tx81/board_riscv_tx81/include)
+  include_directories(${TX8_DEPS_ROOT}/include/rtthread/include)
 
   # Define RISC-V specific compile options
   set(RISCV_COMPILE_OPTIONS
@@ -108,6 +110,18 @@ else()
     # 只需要定义，不需要链接，编译kernel.so的时候链接profile
     set(RISCV_COMPILE_OPTIONS ${RISCV_COMPILE_OPTIONS}
       -DUSE_PROFILE
+    )
+  endif()
+
+  if (NO_INTRNISIC_RUN)
+    set(RISCV_COMPILE_OPTIONS ${RISCV_COMPILE_OPTIONS}
+      -DNO_INTRNISIC_RUN
+    )
+  endif()
+
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(RISCV_COMPILE_OPTIONS ${RISCV_COMPILE_OPTIONS}
+      -DRT_USING_DEBUG
     )
   endif()
 

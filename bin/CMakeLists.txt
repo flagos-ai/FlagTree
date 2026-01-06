@@ -3,6 +3,9 @@ get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
 
 add_llvm_executable(triton-opt triton-opt.cpp PARTIAL_SOURCES_INTENDED)
+# TODO: Workaround include path
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/tsingmicro/include)
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/../third_party/tsingmicro/include)
 
 # TODO: what's this?
 llvm_update_compile_flags(triton-opt)

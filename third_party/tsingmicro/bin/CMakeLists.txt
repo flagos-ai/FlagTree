@@ -7,6 +7,7 @@ get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
 # include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/tsingmicro/include)
 # include_directories(${CMAKE_CURRENT_BINARY_DIR}/../third_party/tsingmicro/include)
 
+message("cmake tsingmicro bin begin")
 add_llvm_executable(tsingmicro-opt tsingmicro-opt.cpp PARTIAL_SOURCES_INTENDED)
 
 # TODO: what's this?

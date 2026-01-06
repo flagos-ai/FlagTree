@@ -6,33 +6,32 @@ import benchmark
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-
 # `triton.jit`'ed functions can be auto-tuned by using the `triton.autotune` decorator, which consumes:
 #   - A list of `triton.Config` objects that define different configurations of
 #       meta-parameters (e.g., `BLOCK_SIZE_M`) and compilation options (e.g., `num_warps`) to try
 #   - An auto-tuning *key* whose change in values will trigger evaluation of all the
 #       provided configs
-# @triton.autotune(
-#     configs=[
-#         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3,
-#                       num_warps=8),
-#         triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-#                       num_warps=4),
-#         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-#                       num_warps=4),
-#         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-#                       num_warps=4),
-#         triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-#                       num_warps=4),
-#         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-#                       num_warps=4),
-#         triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
-#                       num_warps=2),
-#         triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
-#                       num_warps=2),
-#     ],
-#     key=['M', 'N', 'K'],
-# )
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3,
+                      num_warps=8),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
+                      num_warps=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
+                      num_warps=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
+                      num_warps=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
+                      num_warps=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
+                      num_warps=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
+                      num_warps=2),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
+                      num_warps=2),
+    ],
+    key=['M', 'N', 'K'],
+)
 @triton.jit
 def matmul_kernel(
         # Pointers to matrices
@@ -111,6 +110,7 @@ def matmul_kernel(
     tl.store(c_ptrs, c, mask=c_mask)
 
 
+
 # We can fuse `leaky_relu` by providing it as an `ACTIVATION` meta-parameter in `_matmul`.
 @triton.jit
 def leaky_relu(x):
@@ -136,7 +136,7 @@ def matmul(a, b, activation=""):
         b.stride(0), b.stride(1),  #
         c.stride(0), c.stride(1),  #
         ACTIVATION=activation,  #
-        BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=128, GROUP_SIZE_M=8)
+    )
     return c
 
 
@@ -146,16 +146,16 @@ def test_matmul(device):
     cols1 = 167
     rows2 = 167
     cols2 = 321
-    a = torch.randn((rows1, cols1), device=device, dtype=torch.float32)
-    b = torch.randn((rows2, cols2), device=device, dtype=torch.float32)
-    # a = torch.full((rows1, cols1), 1, device='cpu', dtype=torch.float32)
-    # b = torch.full((rows2, cols2), 1, device='cpu', dtype=torch.float32)
-    a = a.to(DEVICE)
-    b = b.to(DEVICE)
+    # a = torch.randn((rows1, cols1), device=device, dtype=torch.float32)
+    # b = torch.randn((rows2, cols2), device=device, dtype=torch.float32)
+    a_ = torch.full((rows1, cols1), 1, device='cpu', dtype=torch.float32)
+    b_ = torch.full((rows2, cols2), 1, device='cpu', dtype=torch.float32)
+    a=a_.to(DEVICE)
+    b=b_.to(DEVICE)
     triton_output = matmul(a, b)
-    triton_output = triton_output.to("cpu")
-
-    torch_output = torch.matmul(a, b)
+    triton_output=triton_output.to("cpu")
+    
+    torch_output = torch.matmul(a_, b_)
     torch.testing.assert_close(triton_output, torch_output, atol=1e-2, rtol=0)
 
 
@@ -171,6 +171,8 @@ def bench_matmul(M, N, K, provider):
 
 if __name__ == "__main__":
     # benchmark.select_cpu_backend()
-    for X in [128 * i for i in range(2, 7)]:
-        for provider in ['torch', 'triton']:
-            bench_matmul(X, X, X, provider)
+    # test_matmul(179,167,321,torch.float32)
+    test_matmul("txda")
+    # for X in [128 * i for i in range(2, 7)]:
+    #     for provider in ['torch', 'triton']:
+    #         bench_matmul(X, X, X, provider)

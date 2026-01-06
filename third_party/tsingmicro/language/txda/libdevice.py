@@ -1,7 +1,6 @@
 from triton.language import core
 from triton.language.math import *
 
-
 @core.extern
 def clz(arg0, _builder=None):
     return core.extern_elementwise(
@@ -72,6 +71,7 @@ def rcp64h(arg0, _builder=None):
     }, is_pure=True, _builder=_builder)
 
 
+
 @core.extern
 def trunc(arg0, _builder=None):
     return core.extern_elementwise(
@@ -129,6 +129,7 @@ def fast_dividef(arg0, arg1, _builder=None):
     return core.extern_elementwise("", "", [arg0, arg1], {
         (core.dtype("fp32"), core.dtype("fp32")): ("__nv_fast_fdividef", core.dtype("fp32")),
     }, is_pure=True, _builder=_builder)
+
 
 
 @core.extern
@@ -193,7 +194,6 @@ def rcp_ru(arg0, _builder=None):
             (core.dtype("fp64"), ): ("__nv_drcp_ru", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
-
 @core.extern
 def sqrt_rz(arg0, _builder=None):
     return core.extern_elementwise(
@@ -219,7 +219,6 @@ def sqrt_ru(arg0, _builder=None):
             (core.dtype("fp32"), ): ("__nv_fsqrt_ru", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("__nv_dsqrt_ru", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
-
 
 @core.extern
 def add_rn(arg0, arg1, _builder=None):
@@ -812,7 +811,6 @@ def fast_cosf(arg0, _builder=None):
         (core.dtype("fp32"), ): ("__nv_fast_cosf", core.dtype("fp32")),
     }, is_pure=True, _builder=_builder)
 
-
 @core.extern
 def fast_logf(arg0, _builder=None):
     return core.extern_elementwise("", "", [arg0], {
@@ -1017,7 +1015,6 @@ def nextafter(arg0, arg1, _builder=None):
             (core.dtype("fp64"), core.dtype("fp64")): ("__nv_nextafter", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
-
 @core.extern
 def sinpi(arg0, _builder=None):
     return core.extern_elementwise(
@@ -1044,7 +1041,6 @@ def tan(arg0, _builder=None):
             (core.dtype("fp64"), ): ("__nv_tan", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
-
 @core.extern
 def exp10(arg0, _builder=None):
     return core.extern_elementwise(
@@ -1070,7 +1066,6 @@ def sinh(arg0, _builder=None):
             (core.dtype("fp32"), ): ("__nv_sinhf", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("__nv_sinh", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
-
 
 @core.extern
 def tanh(arg0, _builder=None):
@@ -1314,6 +1309,10 @@ def cyl_bessel_i1(arg0, _builder=None):
             (core.dtype("fp64"), ): ("__nv_cyl_bessel_i1", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
+@core.extern
+def erf(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_erf(x.handle), x.type)
 
 @core.extern
 def erfinv(arg0, _builder=None):
@@ -1413,7 +1412,6 @@ def remainder(arg0, arg1, _builder=None):
             (core.dtype("fp64"), core.dtype("fp64")): ("__nv_remainder", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
-
 @core.extern
 def pow(arg0, arg1, _builder=None):
     return core.extern_elementwise(
@@ -1423,7 +1421,6 @@ def pow(arg0, arg1, _builder=None):
             (core.dtype("fp32"), core.dtype("fp32")): ("__nv_powf", core.dtype("fp32")),
             (core.dtype("fp64"), core.dtype("fp64")): ("__nv_pow", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
-
 
 @core.extern
 def tgamma(arg0, _builder=None):
@@ -1484,3 +1481,4 @@ def isfinited(arg0, _builder=None):
     return core.extern_elementwise("", "", [arg0], {
         (core.dtype("fp64"), ): ("__nv_isfinited", core.dtype("int32")),
     }, is_pure=True, _builder=_builder).to(core.int1, _builder=_builder)
+

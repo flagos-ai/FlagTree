@@ -175,7 +175,7 @@ def Address_ToMemRefOp : Address_Op<"to_memref", [Pure]> {
   let summary = "Converts an address to a memref.";
   let description = [{
     The `addr.to_memref` operation converts an `address` to a `memref` with
-    static shape.
+    static shape. 
     Example:
 
     ```mlir

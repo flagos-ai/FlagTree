@@ -1169,7 +1169,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   if (other) {
     assert(mask && "other value used while no masks are specified");
 
-    scalarOther = triton::utils::getScalarValue(other, loc, builder);
+    scalarOther = triton::getScalarValue(other, loc, builder);
     if (!scalarOther) {
       op->emitRemark("other value used in masked load produced by "
                      "unsupported instruction");
@@ -1321,6 +1321,89 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   return success();
 }
 
+LogicalResult PtrAnalysis::rewriteAtomicRMWOp(triton::AtomicRMWOp op,
+                                              bool useUnsafeMask) {
+  auto ptr = ptrMap.lookupOrNull(op.getPtr());
+  auto val = op.getVal();
+  auto mask = op.getMask();
+  auto loc = op.getLoc();
+
+  if (!ptr) {
+    op->emitRemark("PtrAnalysis: pointer is not replace with tts.make_tptr so "
+                   "AtomicCASOp cannot be rewritten");
+    return failure();
+  }
+
+  auto ptrType = dyn_cast<triton::PointerType>(ptr.getType());
+  if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
+    op->emitRemark("PtrAnalysis: scalar AtomicCASOp will not be rewritten");
+    return failure();
+  }
+
+  ArrayRef<OpFoldResult> dims;
+  mlir::triton::MaskState mstate(useUnsafeMask);
+
+  OpBuilder builder(op);
+
+  // Analyze the mask operand to determine at runtime the size of the data
+  // are moving.
+  if (mask) {
+    if (mstate.parse(mask, loc, builder).failed()) {
+      op->emitRemark("MaskAnalysis failed");
+      return failure();
+    }
+    dims = mstate.dims;
+  }
+
+  auto atomicRMWOp = builder.create<tts::AtomicRMWOp>(
+      loc, op.getType(), ptr, val, dims, op.getAtomicRmwOpAttr(),
+      op.getSemAttr(), op.getScopeAttr());
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "creating tts::atomic_rmw:\n";
+    atomicRMWOp->dump();
+  });
+
+  op.replaceAllUsesWith(atomicRMWOp.getResult());
+  op->erase();
+  return success();
+}
+
+LogicalResult PtrAnalysis::rewriteAtomicCASOp(triton::AtomicCASOp op) {
+  auto ptr = ptrMap.lookupOrNull(op.getPtr());
+  auto cmp = op.getCmp();
+  auto val = op.getVal();
+
+  auto loc = op.getLoc();
+
+  if (!ptr) {
+    op->emitRemark("PtrAnalysis: pointer is not replace with tts.make_tptr so "
+                   "AtomicCASOp cannot be rewritten");
+    return failure();
+  }
+
+  auto ptrType = dyn_cast<triton::PointerType>(ptr.getType());
+  if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
+    op->emitRemark("PtrAnalysis: scalar AtomicCASOp will not be rewritten");
+    return failure();
+  }
+
+  OpBuilder builder(op);
+
+  auto atomicCASOp = builder.create<tts::AtomicCASOp>(
+      loc, op.getType(), ptr, cmp, val, nullptr, op.getSemAttr(),
+      op.getScopeAttr());
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "creating tts::atomic_cas:\n";
+    atomicCASOp->dump();
+  });
+
+  op.replaceAllUsesWith(atomicCASOp.getResult());
+  op->erase();
+  return success();
+}
+
 LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
   LLVM_DEBUG({
     llvm::dbgs() << "rewriting rootOp\n";
@@ -1367,6 +1450,20 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
         .Case<triton::StoreOp>([&](auto store) {
           if (rewriteStoreOp(store, useUnsafeMask).failed()) {
             store->emitRemark("PtrAnalysis: Failed to rewrite StoreOp");
+            return WalkResult::advance();
+          }
+          return WalkResult::skip();
+        })
+        .Case<triton::AtomicRMWOp>([&](auto atomicRMW) {
+          if (rewriteAtomicRMWOp(atomicRMW, useUnsafeMask).failed()) {
+            atomicRMW->emitRemark("PtrAnalysis: Failed to rewrite AtomicRMWOp");
+            return WalkResult::advance();
+          }
+          return WalkResult::skip();
+        })
+        .Case<triton::AtomicCASOp>([&](auto atomicCAS) {
+          if (rewriteAtomicCASOp(atomicCAS).failed()) {
+            atomicCAS->emitRemark("PtrAnalysis: Failed to rewrite AtomicCASOp");
             return WalkResult::advance();
           }
           return WalkResult::skip();

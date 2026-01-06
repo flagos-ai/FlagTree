@@ -161,7 +161,7 @@ public:
       return llvm::all_of(
           llvm::concat<Value>(op->getOperands(), op->getResults()),
           [&](Value v) {
-            return !mlir::triton::utils::isPtrTypeLike(v.getType());
+            return !mlir::triton::isPtrTypeLike(v.getType());
           });
     });
 

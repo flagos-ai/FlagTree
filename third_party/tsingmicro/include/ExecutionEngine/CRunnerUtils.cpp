@@ -16,7 +16,7 @@
 #include "Msan.h"
 
 #ifndef _WIN32
-#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) ||     \
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || \
     defined(__DragonFly__)
 #include <cstdlib>
 #else
@@ -37,7 +37,10 @@
 #ifdef MLIR_CRUNNERUTILS_DEFINE_FUNCTIONS
 
 namespace {
-template <typename V> void stdSort(uint64_t n, V *p) { std::sort(p, p + n); }
+template <typename V>
+void stdSort(uint64_t n, V *p) {
+  std::sort(p, p + n);
+}
 
 } // namespace
 

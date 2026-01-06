@@ -1,5 +1,7 @@
 //===------------------------ channelnorm.c -------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -12,6 +14,7 @@
 
 void __ChannelNorm(uint64_t *src, uint64_t *dst, uint16_t n, uint16_t h,
                    uint16_t w, uint16_t c, uint16_t c0, uint16_t bit_width) {
+  INTRNISIC_RUN_SWITCH;
   int calign_base = bit_width == 8 ? 128 : 64;
   int dtype_size = bit_width / 8;
   int cx = c / calign_base;
@@ -78,10 +81,13 @@ void __ChannelNorm(uint64_t *src, uint64_t *dst, uint16_t n, uint16_t h,
     TsmExecute(&dm_param);
     TsmWaitfinish();
   }
+
+  
 }
 
 void __DechannelNorm(uint64_t *src, uint64_t *dst, uint16_t n, uint16_t h,
                      uint16_t w, uint16_t c, uint16_t c0, uint16_t bit_width) {
+  INTRNISIC_RUN_SWITCH;
   int calign_base = bit_width == 8 ? 128 : 64;
   int dtype_size = bit_width / 8;
   int cx = c / calign_base;
@@ -149,4 +155,6 @@ void __DechannelNorm(uint64_t *src, uint64_t *dst, uint16_t n, uint16_t h,
     TsmExecute(&dm_param);
     TsmWaitfinish();
   }
+
+  
 }

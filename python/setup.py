@@ -50,29 +50,21 @@ class BackendInstaller:
 
     @staticmethod
     def prepare(backend_name: str, backend_src_dir: str = None, is_external: bool = False):
-        dir_mapping = {"mlu": "cambricon"}
-        actual_dir_name = dir_mapping.get(backend_name, backend_name)
         # Initialize submodule if there is one for in-tree backends.
         if not is_external:
             root_dir = os.path.join(os.pardir, "third_party")
-            assert actual_dir_name in os.listdir(
-                root_dir), f"{actual_dir_name} is requested for install but not present in {root_dir}"
+            assert backend_name in os.listdir(
+                root_dir), f"{backend_name} is requested for install but not present in {root_dir}"
 
             try:
-                # flagtree: check if the submodule is defined in .gitmodules
-                check_result = subprocess.run(
-                    ["git", "config", "-f", ".gitmodules", "--get-regexp", f"submodule.*{actual_dir_name}.path"],
-                    check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=os.pardir)
-                # flagtree: only execute git submodule update for actual git submodules
-                if check_result.returncode == 0:
-                    subprocess.run(["git", "submodule", "update", "--init", f"{actual_dir_name}"], check=True,
-                                   stdout=subprocess.DEVNULL, cwd=root_dir)
+                subprocess.run(["git", "submodule", "update", "--init", f"{backend_name}"], check=True,
+                               stdout=subprocess.DEVNULL, cwd=root_dir)
             except subprocess.CalledProcessError:
                 pass
             except FileNotFoundError:
                 pass
 
-            backend_src_dir = os.path.join(root_dir, actual_dir_name)
+            backend_src_dir = os.path.join(root_dir, backend_name)
 
         backend_path = os.path.abspath(os.path.join(backend_src_dir, "backend"))
         assert os.path.exists(backend_path), f"{backend_path} does not exist!"
@@ -88,7 +80,7 @@ class BackendInstaller:
         for file in ["compiler.py", "driver.py"]:
             assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
 
-        install_dir = os.path.join(os.path.dirname(__file__), "triton", "backends", actual_dir_name)
+        install_dir = os.path.join(os.path.dirname(__file__), "triton", "backends", backend_name)
         package_data = [f"{os.path.relpath(p, backend_path)}/*" for p, _, _, in os.walk(backend_path)]
 
         language_package_data = []
@@ -296,6 +288,8 @@ def get_thirdparty_packages(packages: list):
         input_exists = os.path.exists(version_file_path)
         input_compatible = input_exists and Path(version_file_path).read_text() == p.url
 
+        if is_offline_build() and not input_defined:
+            raise RuntimeError(f"Requested an offline build but {p.syspath_var_name} is not set")
         if not is_offline_build() and not input_defined and not input_compatible:
             with contextlib.suppress(Exception):
                 shutil.rmtree(package_root_dir)
@@ -324,6 +318,8 @@ def get_thirdparty_packages(packages: list):
 
 
 def download_and_copy(name, src_func, dst_path, variable, version, url_func):
+    if is_offline_build():
+        return
     triton_cache_path = get_triton_cache_path()
     if variable in os.environ:
         return
@@ -344,7 +340,7 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
         curr_version = re.search(r"V([.|\d]+)", curr_version)
         assert curr_version is not None, f"No version information for {dst_path}"
         download = download or curr_version.group(1) != version
-    if download and not is_offline_build():
+    if download:
         print(f'downloading and extracting {url} ...')
         file = tarfile.open(fileobj=open_url(url), mode="r|*")
         file.extractall(path=tmp_path)
@@ -436,6 +432,7 @@ class CMakeBuild(build_ext):
         thirdparty_cmake_args = get_thirdparty_packages([get_llvm_package_info()])
         thirdparty_cmake_args += self.get_pybind11_cmake_args()
         extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.path)))
+        ext_base_dir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.name)))
         # create build directories
         if not os.path.exists(self.build_temp):
             os.makedirs(self.build_temp)
@@ -476,6 +473,7 @@ class CMakeBuild(build_ext):
                 "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld",
                 "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld",
                 "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld",
+                f"-DCMAKE_INSTALL_PREFIX={ext_base_dir}",
             ]
 
         # Note that asan doesn't work with binaries that use the GPU, so this is
@@ -604,7 +602,7 @@ download_and_copy(
 )
 
 if helper.flagtree_backend:
-    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame"):
+    if helper.flagtree_backend in ("aipu", "tsingmicro"):
         backends = [
             *BackendInstaller.copy(helper.default_backends + helper.extend_backends),
             *BackendInstaller.copy_externals(),
@@ -654,7 +652,6 @@ def add_links():
 class plugin_install(install):
 
     def run(self):
-        helper.uninstall_triton()
         add_links()
         install.run(self)
         helper.post_install()
@@ -663,7 +660,6 @@ class plugin_install(install):
 class plugin_develop(develop):
 
     def run(self):
-        helper.uninstall_triton()
         add_links()
         develop.run(self)
         helper.post_install()
@@ -779,19 +775,13 @@ def get_git_version_suffix():
         return get_git_commit_hash()
 
 
-readme_path = os.path.join(get_base_dir(), "README.md")
-with open(readme_path, "r", encoding="utf-8") as fh:
-    long_description = fh.read()
-
 setup(
-    name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
-    version="0.3.0" + os.environ.get("FLAGTREE_WHEEL_VERSION_SUFFIX", ""),
-    author="FlagOS",
-    author_email="contact@flagos.io",
-    description=
-    "A unified compiler supporting multiple AI chip backends for custom Deep Learning operations, which is forked from triton-lang/triton.",
-    long_description=long_description,
-    long_description_content_type="text/markdown",
+    name=os.environ.get("TRITON_WHEEL_NAME", "triton"),
+    version="3.3.0" + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", ""),
+    author="Philippe Tillet",
+    author_email="phil@openai.com",
+    description="A language and compiler for custom Deep Learning operations",
+    long_description="",
     install_requires=["setuptools>=40.8.0"],
     packages=get_packages(),
     package_dir=helper.CommonUtils.get_package_dir(get_packages()),

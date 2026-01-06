@@ -6,7 +6,6 @@ import benchmark
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-
 @triton.jit
 def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_cols, BLOCK_SIZE: tl.constexpr):
     # The rows of the softmax are independent, so we parallelize across those
@@ -63,7 +62,6 @@ def softmax(x):
     y = y.to('cpu')
     return y
 
-
 def test_softmax(device):
     torch.manual_seed(0)
     x = torch.randn(1823, 781, device=device)
@@ -77,9 +75,9 @@ def bench_softmax(size, provider):
     torch.manual_seed(0)
     x = torch.randn(size, size, device='cpu')
     if provider == 'torch':
-        torch.softmax(x, axis=1)
+       torch.softmax(x, axis=1)
     if provider == 'triton':
-        softmax(x)
+       softmax(x)
 
 
 if __name__ == "__main__":

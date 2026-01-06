@@ -1,5 +1,7 @@
 //===------------------------ rdma.c --------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -10,10 +12,11 @@
 #include "tx81.h"
 #include <stdio.h>
 
-// Only support rank = 4.
-void __Rdma4d(uint64_t *src, uint64_t *dst, int *src_shape, int *src_stride,
-              int *dst_shape, int *dst_stride, int rank, uint32_t elem_bytes,
-              uint32_t fmt) {
+void __Rdma4d(void *restrict dest, const void *restrict src,
+              uint32_t elem_count, uint32_t stride0, uint32_t iteration0,
+              uint32_t stride1, uint32_t iteration1, uint32_t stride2,
+              uint32_t iteration2, uint32_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   TsmRdma *rdma = g_intrinsic()->rdma_pointer;
   TsmRdmaInstr inst = {I_RDMA,
                        {
@@ -23,19 +26,35 @@ void __Rdma4d(uint64_t *src, uint64_t *dst, int *src_shape, int *src_stride,
                            0,
                        }};
 
-  rdma->AddSrcDst(&inst, (uint64_t)src, (uint64_t)dst, (Data_Format)fmt);
-  rdma->ConfigStrideIteration(&inst, src_shape[3], src_stride[2], src_shape[2],
-                              src_stride[1], src_shape[1], src_stride[0],
-                              src_shape[0]);
+  rdma->AddSrcDst(&inst, (uint64_t)src, (uint64_t)dest, (Data_Format)fmt);
+  rdma->ConfigStrideIteration(&inst, elem_count, stride0, iteration0, stride1,
+                              iteration1, stride2, iteration2);
   TsmExecute(&inst);
   TsmWaitfinish();
+}
+
+void __Rdma1d(void *restrict dest, const void *restrict src,
+              uint32_t elem_count, uint32_t fmt) {
+  TsmRdma *rdma = g_intrinsic()->rdma_pointer;
+  TsmRdmaInstr inst = {I_RDMA,
+                       {
+                           0,
+                       },
+                       {
+                           0,
+                       }};
+  rdma->Rdma1d(&inst, (uint64_t)src, (uint64_t)dest, elem_count,
+               (Data_Format)fmt);
+  TsmExecute(&inst);
+  TsmWaitfinish();
+
 }
 
 // Rdma line by line.
 void __RdmaVectorize(char *srcPtr, char *dstPtr, int *src_shape,
                      int *src_stride, int *dst_shape, int *dst_stride, int rank,
-                     uint32_t elem_bytes, uint32_t fmt, int innermost_rank,
-                     int inner_elem_count) {
+                     uint32_t elem_bytes, uint32_t fmt, int innermost_rank, int inner_elem_count) {
+  INTRNISIC_RUN_SWITCH;
   TsmRdma *rdma = g_intrinsic()->rdma_pointer;
   TsmRdmaInstr inst = {I_RDMA,
                        {
@@ -52,8 +71,8 @@ void __RdmaVectorize(char *srcPtr, char *dstPtr, int *src_shape,
   // Initialize index and scale strides.
   for (int rankp = 0; rankp < rank; ++rankp) {
     indices[rankp] = 0;
-    srcStrides[rankp] = src_stride[rankp] * elem_bytes;
-    dstStrides[rankp] = dst_stride[rankp] * elem_bytes;
+    srcStrides[rankp] = (int64_t)src_stride[rankp] * (int64_t)elem_bytes;
+    dstStrides[rankp] = (int64_t)dst_stride[rankp] * (int64_t)elem_bytes;
   }
 
   for (;;) {
@@ -80,15 +99,17 @@ void __RdmaVectorize(char *srcPtr, char *dstPtr, int *src_shape,
       // Else, reset to 0 and undo the advancement of the linear index that
       // this axis had. Then continue with the axis one outer.
       indices[axis] = 0;
-      readIndex -= src_shape[axis] * srcStrides[axis];
-      writeIndex -= dst_shape[axis] * dstStrides[axis];
+      readIndex -= (int64_t)newIndex * srcStrides[axis];
+      writeIndex -= (int64_t)newIndex * dstStrides[axis];
     }
   }
+
 }
 
 void __Rdma(uint64_t *src, uint64_t *dst, int *src_shape, int *src_stride,
             int *dst_shape, int *dst_stride, int rank, uint32_t elem_bytes,
             uint32_t fmt) {
+  INTRNISIC_RUN_SWITCH;
 
   // Dynamic shape, kernel implementation will cause shape equal to 0
   for (int i = 0; i < rank; i++) {
@@ -100,20 +121,19 @@ void __Rdma(uint64_t *src, uint64_t *dst, int *src_shape, int *src_stride,
   // If inner dim stride is 1, use scalar rdma.
   if (src_stride[rank - 1] != 1 || dst_stride[rank - 1] != 1) {
     __RdmaVectorize((char *)src, (char *)dst, src_shape, src_stride, dst_shape,
-                    dst_stride, rank, elem_bytes, Fmt_INT8, rank - 1,
-                    elem_bytes);
+                  dst_stride, rank, elem_bytes, Fmt_INT8, rank - 1, elem_bytes);
     return;
   }
   legalizeMemoryOpAttribute(src_shape, src_stride, dst_shape, dst_stride, rank,
                             &elem_bytes, &fmt);
 
-  if (rank == 4 && is_contiguous(dst_shape, dst_stride, elem_bytes)) {
-    __Rdma4d(src, dst, src_shape, src_stride, dst_shape, dst_stride, rank,
-             elem_bytes, fmt);
+  if (rank == 4 && no_reverse_memory_access(src_stride, rank) &&
+      is_contiguous(dst_shape, dst_stride, rank)) {
+    __Rdma4d(dst, src, src_shape[3], src_stride[2], src_shape[2], src_stride[1],
+             src_shape[1], src_stride[0], src_shape[0], fmt);
     return;
   }
 
   __RdmaVectorize((char *)src, (char *)dst, src_shape, src_stride, dst_shape,
-                  dst_stride, rank, elem_bytes, fmt, rank - 2,
-                  src_shape[rank - 1]);
+                  dst_stride, rank, elem_bytes, fmt, rank - 2 , src_shape[rank - 1]);
 }

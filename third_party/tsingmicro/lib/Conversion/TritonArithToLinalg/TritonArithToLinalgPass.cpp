@@ -5,12 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -161,9 +161,7 @@ public:
       });
     }
 
-    if (!assertToCf) {
-      target.addLegalOp<triton::AssertOp>();
-    }
+    target.addLegalOp<triton::AssertOp>();
 
     triton::populateTritonArithToLinalgConversionPatterns(
         pidsToFuncArgs, addptrToLinalg, assertToCf, patterns);

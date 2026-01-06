@@ -1262,7 +1262,7 @@ class CodeGenerator(ast.NodeVisitor):
             try:
                 # Special handling for tl.load with hints
                 if fn.__name__ == "load" and flagtree_hints is not None:
-                    print(f"[FLAGTREE] tl.load at line {line_num} has annotation {flagtree_hints}")
+                    print(f"tl.load at line {line_num} has annotation {flagtree_hints}")
                     if 'flagtree_hints' not in kws:
                         kws['flagtree_hints'] = ""
                     if flagtree_hints not in kws['flagtree_hints']:

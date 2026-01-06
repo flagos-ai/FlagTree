@@ -103,9 +103,7 @@ class Autotuner(KernelInterface):
 
         # If we got explicitly called via the old interface, raise a warning
         # and proceed with the old behavior.
-        # TODO(CP-25158): Skip triton benchmark until support.
-        device_name = driver.active.get_device_interface().__name__
-        if (warmup is not None or rep is not None or use_cuda_graph) and device_name != "aipu":
+        if warmup is not None or rep is not None or use_cuda_graph:
             import warnings
             warnings.warn(("warmup, rep, and use_cuda_graph parameters are deprecated. See "
                            "https://github.com/triton-lang/triton/pull/4496 for details."), DeprecationWarning,

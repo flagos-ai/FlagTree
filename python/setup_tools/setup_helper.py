@@ -2,6 +2,10 @@ import os
 import shutil
 import sys
 import functools
+import tarfile
+import zipfile
+from io import BytesIO
+import urllib.request
 from pathlib import Path
 import hashlib
 from distutils.sysconfig import get_python_lib
@@ -9,14 +13,13 @@ from . import utils
 
 extend_backends = []
 default_backends = ["nvidia", "amd"]
-plugin_backends = ["cambricon", "ascend", "aipu", "tsingmicro", "enflame"]
+plugin_backends = ["cambricon", "ascend", "aipu", "tsingmicro"]
 ext_sourcedir = "triton/_C/"
 flagtree_backend = os.getenv("FLAGTREE_BACKEND", "").lower()
 flagtree_plugin = os.getenv("FLAGTREE_PLUGIN", "").lower()
 offline_build = os.getenv("FLAGTREE_PLUGIN", "OFF")
 device_mapping = {"xpu": "xpu", "mthreads": "musa", "ascend": "ascend"}
 activated_module = utils.activate(flagtree_backend)
-downloader = utils.tools.DownloadManager()
 
 set_llvm_env = lambda path: set_env({
     'LLVM_INCLUDE_DIRS': Path(path) / "include",
@@ -68,23 +71,13 @@ def dir_rollback(deep, base_path):
     return Path(base_path)
 
 
-def enable_flagtree_third_party(name):
-    if name in ["triton_shared"]:
-        return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
-    else:
-        return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
-
-
 def download_flagtree_third_party(name, condition, required=False, hock=None):
     if condition:
-        if enable_flagtree_third_party(name):
-            submodule = utils.flagtree_submodules[name]
-            downloader.download(module=submodule, required=required)
-            if callable(hock):
-                hock(third_party_base_dir=utils.flagtree_submodule_dir, backend=submodule,
-                     default_backends=default_backends)
-        else:
-            print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
+        submoduel = utils.flagtree_submoduels[name]
+        utils.download_module(submoduel, required)
+        if callable(hock):
+            hock(third_party_base_dir=utils.flagtree_submoduel_dir, backend=submoduel,
+                 default_backends=default_backends)
 
 
 def post_install():
@@ -135,6 +128,41 @@ class FlagTreeCache:
             while chunk := file.read(4096):
                 md5_hash.update(chunk)
         return md5_hash.hexdigest()
+
+    def _download(self, url, path, file_name):
+        MAX_RETRY_COUNT = 4
+        user_agent = 'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0'
+        headers = {
+            'User-Agent': user_agent,
+        }
+        request = urllib.request.Request(url, None, headers)
+        retry_count = MAX_RETRY_COUNT
+        content = None
+        print(f'downloading {url} ...')
+        while (retry_count):
+            try:
+                with urllib.request.urlopen(request, timeout=300) as response:
+                    content = response.read()
+                    break
+            except Exception:
+                retry_count -= 1
+                print(f"\n[{MAX_RETRY_COUNT - retry_count}] retry to downloading and extracting {url}")
+
+        if retry_count == 0:
+            raise RuntimeError("The download failed, probably due to network problems")
+
+        print(f'extracting {url} ...')
+        file_bytes = BytesIO(content)
+        file_names = []
+        if url.endswith(".zip"):
+            with zipfile.ZipFile(file_bytes, "r") as file:
+                file.extractall(path=path)
+                file_names = file.namelist()
+        else:
+            with tarfile.open(fileobj=file_bytes, mode="r|*") as file:
+                file.extractall(path=path)
+                file_names = file.getnames()
+        os.rename(Path(path) / file_names[0], Path(path) / file_name)
 
     def check_file(self, file_name=None, url=None, path=None, md5_digest=None):
         origin_file_path = None
@@ -197,7 +225,7 @@ class FlagTreeCache:
                     return
 
         if is_url and not self.check_file(file_name=file, url=url, md5_digest=md5_digest):
-            downloader.download(url=url, path=path, file_name=file)
+            self._download(url, path, file_name=file)
 
         if copy_dst_path is not None:
             file_lists = [file] if files is None else list(files)
@@ -291,34 +319,7 @@ def check_env(env_val):
     return os.environ.get(env_val, '') != ''
 
 
-def uninstall_triton():
-    is_bdist_wheel = any(cmd in sys.argv for cmd in ['bdist_wheel', 'egg_info', 'sdist'])
-    if is_bdist_wheel:
-        return
-    try:
-        import pkg_resources
-        import subprocess
-        try:
-            pkg_resources.get_distribution('triton')
-            print("Detected existing 'triton' package. Uninstalling to avoid conflicts...")
-            subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", "triton"])
-            print("Successfully uninstalled 'triton'.")
-        except pkg_resources.DistributionNotFound:
-            print("'triton' package not found, no need to uninstall.")
-    except Exception as e:
-        print(f"Warning: Failed to check/uninstall triton: {e}")
-
-
-offline_handler = utils.OfflineBuildManager()
-if offline_handler.is_offline:
-    print("[INFO] FlagTree Offline Build: Use offline build for triton origin toolkits")
-    offline_handler.handle_triton_origin_toolkits()
-    offline_build = True
-else:
-    print('[INFO] FlagTree Offline Build: No offline build for triton origin toolkits')
-    offline_build = False
-
-download_flagtree_third_party("triton_shared", hock=utils.default.precompile_hock, condition=(not flagtree_backend))
+# download_flagtree_third_party("triton_shared", hock=utils.default.precompile_hock, condition=(not flagtree_backend))
 
 download_flagtree_third_party("flir", condition=(flagtree_backend == "aipu"), hock=utils.aipu.precompile_hock,
                               required=True)
@@ -329,29 +330,29 @@ cache = FlagTreeCache()
 
 # iluvatar
 cache.store(
+    file="iluvatarTritonPlugin.so", condition=("iluvatar" == flagtree_backend) and (flagtree_plugin == ''), url=
+    "https://github.com/FlagTree/flagtree/releases/download/v0.1.0-build-deps/iluvatarTritonPlugin-cpython3.10-glibc2.30-glibcxx3.4.28-cxxabi1.3.12-ubuntu-x86_64.tar.gz",
+    copy_dst_path="third_party/iluvatar", md5_digest="7d4e136c")
+
+cache.store(
     file="iluvatar-llvm18-x86_64",
     condition=("iluvatar" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.3.0.tar.gz",
+    url="https://github.com/FlagTree/flagtree/releases/download/v0.1.0-build-deps/iluvatar-llvm18-x86_64.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
 
-cache.store(
-    file="iluvatarTritonPlugin.so", condition=("iluvatar" == flagtree_backend) and (flagtree_plugin == ''), url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.30-glibcxx3.4.28-cxxabi1.3.12-ubuntu-x86_64_v0.3.0.tar.gz",
-    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="015b9af8")
-
-# klx xpu
+# xpu(kunlunxin)
 cache.store(
     file="XTDK-llvm18-ubuntu2004_x86_64",
     condition=("xpu" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/XTDK-llvm19-ubuntu2004_x86_64_v0.3.0.tar.gz",
+    url="https://github.com/FlagTree/flagtree/releases/download/v0.1.0-build-deps/XTDK-llvm18-ubuntu2004_x86_64.tar",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
 
 cache.store(file="xre-Linux-x86_64", condition=("xpu" == flagtree_backend),
-            url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xre-Linux-x86_64_v0.3.0.tar.gz",
+            url="https://github.com/FlagTree/flagtree/releases/download/v0.1.0-build-deps/xre-Linux-x86_64.tar.gz",
             copy_dst_path='python/_deps/xre3')
 
 cache.store(
@@ -370,15 +371,11 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 cache.store(
     file="mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64",
     condition=("mthreads" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64_v0.1.0.tar.gz",
+    url=
+    "https://github.com/FlagTree/flagtree/releases/download/v0.1.0-build-deps/mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
-
-cache.store(
-    file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (flagtree_plugin == ''), url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.3.0.tar.gz",
-    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="2a9ca0b8")
 
 # ascend
 cache.store(
@@ -391,25 +388,11 @@ cache.store(
 
 # aipu
 cache.store(
-    file="llvm-a66376b0-ubuntu-x64-clang16-lld16",
+    file="llvm-a66376b0-ubuntu-x64",
     condition=("aipu" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz",
+    url="https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-a66376b0-ubuntu-x64.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
-)
-
-# enflame
-cache.store(
-    file="llvm-d752c5b-gcc9-x64",
-    condition=("enflame" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz",
-    pre_hock=lambda: check_env('KURAMA_LLVM_DIR_GCU300'),
-    post_hock=lambda path: set_env({
-        'KURAMA_LLVM_DIR_GCU300': path,
-        'LLVM_INCLUDE_DIRS': Path(path) / "include",
-        'LLVM_LIBRARY_DIR': Path(path) / "lib",
-        'LLVM_SYSPATH': path,
-    }),
 )
 
 # tsingmicro
@@ -417,27 +400,7 @@ cache.store(
     file="tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64",
     condition=("tsingmicro" == flagtree_backend),
     url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64_v0.2.0.tar.gz",
-    pre_hock=lambda: check_env('LLVM_SYSPATH'),
-    post_hock=set_llvm_env,
-)
-
-cache.store(
-    file="tx8_deps",
-    condition=("tsingmicro" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_release_20250814_195126_v0.2.0.tar.gz",
-    pre_hock=lambda: check_env('TX8_DEPS_ROOT'),
-    post_hock=lambda path: set_env({
-        'LLVM_SYSPATH': path,
-    }),
-)
-
-# hcu
-cache.store(
-    file="hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64",
-    condition=("hcu" == flagtree_backend),
-    url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz",
+    "https://github.com/FlagTree/flagtree/releases/download/v0.2.0-build-deps/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )

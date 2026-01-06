@@ -9,7 +9,6 @@ import benchmark
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-
 @triton.jit
 def embedding_kernel(
     out_ptr,  # pointer to the output
@@ -30,11 +29,11 @@ def embedding_kernel(
     embedding_weight = tl.load(weight_ptr + cols, mask, other=0.0)
     tl.store(out_ptr + cols, embedding_weight, mask)
 
-
 class Embedding(torch.autograd.Function):
-
     @staticmethod
-    def forward(ctx, weight, indices, padding_idx=-1, scale_grad_by_freq=False, sparse=False):
+    def forward(
+        ctx, weight, indices, padding_idx=-1, scale_grad_by_freq=False, sparse=False
+    ):
 
         assert not sparse, "Currently do not support sparse format"
 
@@ -44,15 +43,15 @@ class Embedding(torch.autograd.Function):
         BLOCK_SIZE = triton.next_power_of_2(N)
         indices = indices.contiguous()
         weight = weight.contiguous()
-        output = torch.empty((*indices.shape, N), device=indices.device, dtype=weight.dtype)
+        output = torch.empty(
+            (*indices.shape, N), device=indices.device, dtype=weight.dtype
+        )
 
-        output = output.to(DEVICE)
-        indices = indices.to(DEVICE)
-        weight = weight.to(DEVICE)
-        embedding_kernel[
-            M,
-        ](output, indices, weight, N, BLOCK_SIZE)
-        output = output.to("cpu")
+        output=output.to(DEVICE)
+        indices=indices.to(DEVICE)
+        weight=weight.to(DEVICE)
+        embedding_kernel[M,](output, indices, weight, N, BLOCK_SIZE)
+        output=output.to("cpu")
         ctx.M = M
         ctx.N = N
         ctx.num_weights = weight.shape[0]
@@ -63,13 +62,14 @@ class Embedding(torch.autograd.Function):
 
         return output
 
-
 def embedding(weight, indices, padding_idx=-1, scale_grad_by_freq=False, sparse=False):
     return Embedding.apply(weight, indices, padding_idx, scale_grad_by_freq, sparse)
 
-
 @pytest.mark.parametrize("M, N, dtype", [  #
-    (M, N, dtype) for M in [1152] for N in [2048] for dtype in [torch.float32]
+    (M, N, dtype)
+    for M in [1152]
+    for N in [2048]
+    for dtype in [torch.float32]
 ])
 def test_embedding(M, N, dtype, device='cpu'):
     torch.manual_seed(0)
@@ -84,10 +84,11 @@ def test_embedding(M, N, dtype, device='cpu'):
     torch_output = torch_embedding(indices)
 
     # compare
-    print(f"The maximum difference between torch and triton is "
-          f"{torch.max(torch.abs(torch_output - triton_output))}")
+    print(
+        f"The maximum difference between torch and triton is "
+        f"{torch.max(torch.abs(torch_output - triton_output))}"
+    )
     assert torch.allclose(triton_output, torch_output, atol=1e-5, rtol=0)
-
 
 if __name__ == "__main__":
     # benchmark.select_cpu_backend()

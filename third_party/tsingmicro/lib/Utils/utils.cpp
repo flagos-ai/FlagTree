@@ -11,9 +11,10 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#include "utils/ReduceScanCommon.h"
 #include "llvm/ADT/TypeSwitch.h"
 
-namespace mlir::triton::utils {
+namespace mlir::triton {
 
 bool isPtrTypeLike(Type t) {
   if (auto tensorType = dyn_cast<RankedTensorType>(t)) {
@@ -181,4 +182,129 @@ Value declareTx81Function(ModuleOp module, OpBuilder &builder, Location loc,
       loc, LLVM::LLVMPointerType::get(builder.getContext()), name);
 }
 
-} // namespace mlir::triton::utils
+TypedAttr getRedBaseAttr(OpBuilder &builder, Operation *redOp,
+                         Type constantType) {
+  const int64_t bitWidth = constantType.getIntOrFloatBitWidth();
+
+  auto attr = llvm::TypeSwitch<Operation *, TypedAttr>(redOp)
+                  .Case([&](arith::AddFOp) {
+                    return builder.getFloatAttr(constantType, 0.f);
+                  })
+                  .Case([&](arith::AddIOp) {
+                    return builder.getIntegerAttr(constantType, 0);
+                  })
+                  .Case([&](arith::MulFOp) {
+                    return builder.getFloatAttr(constantType, 1.f);
+                  })
+                  .Case([&](arith::MulIOp) {
+                    return builder.getIntegerAttr(constantType, 1);
+                  })
+                  .Case<arith::MaximumFOp, arith::MaxNumFOp>([&](auto) {
+                    return builder.getFloatAttr(
+                        constantType, -std::numeric_limits<float>::infinity());
+                  })
+                  .Case<arith::MinimumFOp, arith::MinNumFOp>([&](auto) {
+                    return builder.getFloatAttr(
+                        constantType, std::numeric_limits<float>::infinity());
+                  })
+                  .Case([&](arith::MinSIOp) {
+                    return builder.getIntegerAttr(constantType,
+                                                  llvm::maxIntN(bitWidth));
+                  })
+                  .Case([&](arith::MinUIOp) {
+                    return builder.getIntegerAttr(constantType,
+                                                  llvm::maxUIntN(bitWidth));
+                  })
+                  .Case([&](arith::MaxSIOp) {
+                    return builder.getIntegerAttr(constantType,
+                                                  llvm::minIntN(bitWidth));
+                  })
+                  .Case([&](arith::MaxUIOp) {
+                    return builder.getIntegerAttr(constantType, 0);
+                  })
+                  .Case([&](arith::OrIOp) {
+                    return builder.getIntegerAttr(constantType, 0);
+                  })
+                  .Case([&](arith::XOrIOp) {
+                    return builder.getIntegerAttr(constantType, 0);
+                  })
+                  .Case([&](arith::AndIOp) {
+                    return builder.getIntegerAttr(constantType,
+                                                  llvm::maxUIntN(bitWidth));
+                  })
+                  .Default([](Operation *op) {
+                    op->dump();
+                    llvm_unreachable("Reduction op not yet supported");
+                    return nullptr;
+                  });
+  return attr;
+}
+
+arith::ConstantOp getRedBaseConstOp(ConversionPatternRewriter &rewriter,
+                                    Operation *redOp, Type constantType) {
+  auto attr = getRedBaseAttr(rewriter, redOp, constantType);
+  return rewriter.create<arith::ConstantOp>(redOp->getLoc(), constantType,
+                                            attr);
+}
+
+bool isTypeRestrictedTargetSupportedReductionOp(mlir::Operation *redOp) {
+  return isa<arith::AddFOp, arith::MaximumFOp, arith::MaxNumFOp,
+             arith::MinimumFOp, arith::MinNumFOp>(redOp);
+}
+
+bool isTargetSupportedReductionOp(mlir::Operation *redOp) {
+  return isTypeRestrictedTargetSupportedReductionOp(redOp) ||
+         isa<arith::AddIOp, arith::MaxSIOp, arith::MinSIOp>(redOp);
+}
+
+bool isReduceLogicOp(mlir::Operation *redOp) {
+  return isa<arith::XOrIOp, arith::AndIOp, arith::OrIOp>(redOp);
+}
+
+bool isTypeRestrictedTargetSupportedReduceToElementWiseOp(
+    mlir::Operation *redOp) {
+  return isa<arith::MulFOp>(redOp) || isReduceLogicOp(redOp);
+}
+
+bool isTargetSupportedReduceToElementWiseOp(mlir::Operation *redOp) {
+  return isTypeRestrictedTargetSupportedReduceToElementWiseOp(redOp) ||
+         isa<arith::MulIOp>(redOp);
+}
+
+bool isTritonAllowedReductionOp(Operation *redOp) {
+  return isTargetSupportedReductionOp(redOp) ||
+         isTargetSupportedReduceToElementWiseOp(redOp) ||
+         isa<arith::MinUIOp, arith::MaxUIOp>(redOp);
+}
+
+bool isTargetSupportedFloatType(Type elementType) {
+  // Check if the operation is a supported type.
+  return elementType.isBF16() || elementType.isF16() || elementType.isF32() ||
+         elementType.isTF32();
+}
+
+bool isTargetSupportedType(Type elementType) {
+  // Check if the operation is a supported type.
+  return isTargetSupportedFloatType(elementType) || elementType.isInteger(8);
+}
+
+bool isReductionOpAndTypeSupportedByTarget(mlir::Operation *redOp,
+                                           Type elementType) {
+  return isTypeRestrictedTargetSupportedReductionOp(redOp) &&
+         isTargetSupportedFloatType(elementType);
+}
+
+bool isReduceToElementWiseOpAndTypeSupportedByTarget(mlir::Operation *redOp,
+                                                     Type elementType,
+                                                     int64_t elemCount,
+                                                     int64_t rank) {
+
+  // I1 type need special handle (Memref type i1 need 8bit alignment)
+  // NOTE: Here can optimize 64 to 8 element
+  return (isa<arith::MulFOp>(redOp) &&
+          isTargetSupportedFloatType(elementType)) ||
+         (isReduceLogicOp(redOp) &&
+          !(elementType.isInteger(1) && (rank > 1 || elemCount <= 64)));
+}
+
+} // namespace mlir::triton

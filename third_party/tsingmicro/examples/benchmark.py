@@ -6,8 +6,7 @@ import triton
 # Unfortunately, we can't use triton.testing.perf_report and triton.testing.do_bench for CPU backend because
 # they are very specific to cuda
 
-
-def measure(repeats=20, percentiles=(), timers={'Wall': time.perf_counter, 'CPU': time.process_time}):
+def measure(repeats=20, percentiles=(), timers={'Wall':time.perf_counter, 'CPU':time.process_time}):
     """
     Decorator to benchmark a function.
 
@@ -26,9 +25,7 @@ def measure(repeats=20, percentiles=(), timers={'Wall': time.perf_counter, 'CPU'
         * Minimum and maximum times.
         * Computed percentiles for each timer.
     """
-
     def decorator(func):
-
         @wraps(func)
         def wrapper(*args, **kwargs):
             print(f"{func.__name__}{args} {kwargs}, {repeats} times, all results in seconds")
@@ -59,7 +56,5 @@ def measure(repeats=20, percentiles=(), timers={'Wall': time.perf_counter, 'CPU'
                 print(f"max={max_time:.6f}")
 
             return result
-
         return wrapper
-
     return decorator

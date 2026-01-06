@@ -46,16 +46,19 @@
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "tsingmicro-tx81/Conversion/LinalgTiling/Passes.h"
+#include "tsingmicro-tx81/Conversion/LinalgFusion/Passes.h"
 #include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
 
 #include "magic-kernel/Conversion/CoreDialectsToMK/Passes.h"
 #include "magic-kernel/Conversion/LegalizeTensorFormLoops/Passes.h"
 #include "magic-kernel/Conversion/LinalgToMK/Passes.h"
 #include "mlir/Dialect/Linalg/Passes.h"
+#include "tsingmicro-tx81/Conversion/AllocateSharedMemory/Passes.h"
 #include "tsingmicro-tx81/Conversion/MKToTx81/Passes.h"
 #include "tsingmicro-tx81/Conversion/Tx81MemrefToLLVM/Passes.h"
 #include "tsingmicro-tx81/Conversion/Tx81ToLLVM/KernelArgBufferPass.h"
 #include "tsingmicro-tx81/Conversion/Tx81ToLLVM/Passes.h"
+#include "tsingmicro-tx81/Conversion/ExportKernelSymbols/Passes.h"
 
 #include "magic-kernel/Transforms/BufferizableOpInterfaceImpl.h"
 
@@ -112,10 +115,13 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerLegalizeTensorFormLoopsPass();
   mlir::addr::registerAddrToLLVMPass();
   mlir::triton::registerLinalgTilingPass();
+  mlir::triton::registerLinalgFusionPass();
 
   // TsingMicro specific conversion passes
   mlir::triton::registerMKToTx81Pass();
+  mlir::triton::alloc::registerAllocateSharedMemoryPass();
   mlir::triton::registerTx81ToLLVMPass();
+  mlir::triton::registerExportKernelSymbols();
   mlir::triton::registerKernelArgBufferPass();
 
   // TritonAMDGPUToLLVM passes

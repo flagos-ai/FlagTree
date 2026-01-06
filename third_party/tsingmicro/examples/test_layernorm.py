@@ -27,7 +27,6 @@ import benchmark
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-
 @triton.jit
 def _layer_norm_fwd_fused(
     X,  # pointer to the input
@@ -97,12 +96,12 @@ class LayerNorm(torch.autograd.Function):
         # heuristics for number of warps
         num_warps = min(max(BLOCK_SIZE // 256, 1), 8)
 
-        x_arg_dev = x_arg.to(DEVICE)
-        y_dev = y.to(DEVICE)
-        weight_dev = weight.to(DEVICE)
-        bias_dev = bias.to(DEVICE)
-        mean_dev = mean.to(DEVICE)
-        rstd_dev = rstd.to(DEVICE)
+        x_arg_dev=x_arg.to(DEVICE)
+        y_dev=y.to(DEVICE)
+        weight_dev=weight.to(DEVICE)
+        bias_dev=bias.to(DEVICE)
+        mean_dev=mean.to(DEVICE)
+        rstd_dev=rstd.to(DEVICE)
         # enqueue kernel
         # _layer_norm_fwd_fused[(M, )](  #
         #     x_arg, y, weight, bias, mean, rstd,  #
@@ -113,8 +112,8 @@ class LayerNorm(torch.autograd.Function):
             x_arg_dev, y_dev, weight_dev, bias_dev, mean_dev, rstd_dev,  #
             x_arg.stride(0), N, eps,  #
             BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_ctas=1)
-        x = x_arg_dev.to("cpu")
-        y = y_dev.to("cpu")
+        x=x_arg_dev.to("cpu")
+        y=y_dev.to("cpu")
 
         ctx.save_for_backward(x, weight, bias, mean, rstd)
         ctx.BLOCK_SIZE = BLOCK_SIZE
@@ -124,7 +123,11 @@ class LayerNorm(torch.autograd.Function):
 
 
 @pytest.mark.parametrize("M, N, dtype, eps", [  #
-    (M, N, dtype, eps) for M in [1151] for N in [8192] for dtype in [torch.float16] for eps in [1e-5]
+    (M, N, dtype, eps)
+    for M in [1151]
+    for N in [8192]
+    for dtype in [torch.float16]
+    for eps in [1e-5]
 ])
 def test_layer_norm(M, N, dtype, eps, device):
     layer_norm = LayerNorm.apply
@@ -172,6 +175,7 @@ def bench_layernorm(size, provider):
 
     # compare
     assert torch.allclose(y_tri, y_ref, atol=1e-2, rtol=0)
+
 
 
 if __name__ == "__main__":

@@ -23,28 +23,28 @@ namespace {
 
 //===--------------------------- Match ArgMinMax --------------------------===//
 
-// We're looking for an op that looks like this:
-//
-// %9:2 = "tt.reduce"(%8, %3) <{axis = 0 : i32}> ({
-// ^bb0(%arg9: f32, %arg10: i32, %arg11: f32, %arg12: i32):
-// -------------------------------------------------
-// `matchTieBreakValue`                                |
-//   %11 = arith.cmpf oeq, %arg9, %arg11 : f32         |
-//   %12 = arith.cmpi slt, %arg10, %arg12 : i32        |   1.
-//   %13 = arith.andi %11, %12 : i1                    |
-// -------------------------------------------------   |-> `matchShouldUpdate`
-// `matchUpdateCondition`                              |
-//   %14 = arith.cmpf ogt, %arg9, %arg11 : f32         |   2.
-// -------------------------------------------------   |
-//   %15 = arith.ori %14, %13 : i1                     |
-// -------------------------------------------------
-//   %16 = arith.select %15, %arg9, %arg11 : f32
-//   %17 = arith.select %15, %arg10, %arg12 : i32
+  // We're looking for an op that looks like this:
+  //
+  // %9:2 = "tt.reduce"(%8, %3) <{axis = 0 : i32}> ({
+  // ^bb0(%arg9: f32, %arg10: i32, %arg11: f32, %arg12: i32):
+  // -------------------------------------------------
+  // `matchTieBreakValue`                                |
+  //   %11 = arith.cmpf oeq, %arg9, %arg11 : f32         |
+  //   %12 = arith.cmpi slt, %arg10, %arg12 : i32        |   1.
+  //   %13 = arith.andi %11, %12 : i1                    |
+  // -------------------------------------------------   |-> `matchShouldUpdate`
+  // `matchUpdateCondition`                              |
+  //   %14 = arith.cmpf ogt, %arg9, %arg11 : f32         |   2.
+  // -------------------------------------------------   |
+  //   %15 = arith.ori %14, %13 : i1                     |
+  // -------------------------------------------------
+  //   %16 = arith.select %15, %arg9, %arg11 : f32
+  //   %17 = arith.select %15, %arg10, %arg12 : i32
 
 static LogicalResult matchTieBreakResult(Value currValue, Value currIndex,
-                                         Value reduceValue, Value reduceIndex,
-                                         mlir::Block::iterator &it,
-                                         Value &tileBreakValue) {
+                                  Value reduceValue, Value reduceIndex,
+                                  mlir::Block::iterator &it,
+                                  Value &tileBreakValue) {
   // Match the following (section 1. of the above)
   //
   //   %11 = arith.cmpf oeq, %arg9, %arg11 : f32
@@ -56,7 +56,7 @@ static LogicalResult matchTieBreakResult(Value currValue, Value currIndex,
   //   tie = value1 == value2 and index1 < index2
 
   // matching: %11 = arith.cmpf oeq, %arg9, %arg11 : f32
-  auto &cmpOp = *it++;
+  auto& cmpOp = *it++;
   Value eqCmpOp;
   if (auto eqCmpFOp = dyn_cast<arith::CmpFOp>(cmpOp)) {
     if (eqCmpFOp.getPredicate() != arith::CmpFPredicate::OEQ ||
@@ -92,7 +92,8 @@ static LogicalResult matchTieBreakResult(Value currValue, Value currIndex,
 }
 
 static LogicalResult matchComparisonResult(Value currValue, Value currIndex,
-                                           Value reduceValue, Value reduceIndex,
+                                           Value reduceValue,
+                                           Value reduceIndex,
                                            mlir::Block::iterator &it,
                                            Value &comparisonResult,
                                            bool isArgMin) {
@@ -121,13 +122,14 @@ static LogicalResult matchComparisonResult(Value currValue, Value currIndex,
   return success();
 }
 
-static LogicalResult
-matchShouldUpdateValue(Value currValue, Value currIndex, Value reduceValue,
-                       Value reduceIndex, mlir::Block::iterator &it,
-                       Value &shouldUpdate, bool isArgMin) {
+static LogicalResult matchShouldUpdateValue(Value currValue, Value currIndex,
+                                      Value reduceValue, Value reduceIndex,
+                                      mlir::Block::iterator &it,
+                                      Value &shouldUpdate,
+                                      bool isArgMin) {
   Value tieResult;
-  if (failed(matchTieBreakResult(currValue, currIndex, reduceValue, reduceIndex,
-                                 it, tieResult))) {
+  if (failed(matchTieBreakResult(currValue, currIndex, reduceValue,
+                                  reduceIndex, it, tieResult))) {
     return failure();
   }
 
@@ -140,8 +142,8 @@ matchShouldUpdateValue(Value currValue, Value currIndex, Value reduceValue,
 
   // matching: %15 = arith.ori %14, %13 : i1
   auto orOp = dyn_cast<arith::OrIOp>(*it++);
-  if (!orOp || orOp.getLhs() != comparisonResult ||
-      orOp.getRhs() != tieResult) {
+  if (!orOp || orOp.getLhs() != comparisonResult
+            || orOp.getRhs() != tieResult) {
     return failure();
   }
 
@@ -149,15 +151,17 @@ matchShouldUpdateValue(Value currValue, Value currIndex, Value reduceValue,
   return success();
 }
 
-LogicalResult matchSelect(mlir::Block::iterator &opsIt, Value curr,
-                          Value reduce, Value shouldUpdate, Value &result) {
+LogicalResult matchSelect(mlir::Block::iterator &opsIt,
+                          Value curr, Value reduce,
+                          Value shouldUpdate, Value &result) {
   auto selectOp = dyn_cast<arith::SelectOp>(*opsIt++);
   if (!selectOp) {
     return failure();
   }
 
   if (selectOp.getCondition() != shouldUpdate ||
-      curr != selectOp.getTrueValue() || reduce != selectOp.getFalseValue()) {
+      curr != selectOp.getTrueValue() ||
+      reduce != selectOp.getFalseValue()) {
     return failure();
   }
 
@@ -168,8 +172,9 @@ LogicalResult matchSelect(mlir::Block::iterator &opsIt, Value curr,
 
 LogicalResult matchArgMinMax(Value currValue, Value currIndex,
                              Value reduceValue, Value reduceIndex,
-                             mlir::Block::iterator &opsIt, Value &indexResult,
-                             Value &valueResult, bool isArgMin) {
+                             mlir::Block::iterator &opsIt,
+                             Value &indexResult, Value& valueResult,
+                             bool isArgMin) {
   Value shouldUpdate;
   if (failed(matchShouldUpdateValue(currValue, currIndex, reduceValue,
                                     reduceIndex, opsIt, shouldUpdate,
@@ -179,15 +184,15 @@ LogicalResult matchArgMinMax(Value currValue, Value currIndex,
 
   // matching: %16 = arith.select %15, %arg9, %arg11 : f32
   Value valueSelectOp;
-  if (failed(matchSelect(opsIt, currValue, reduceValue, shouldUpdate,
-                         valueSelectOp))) {
+  if (failed(matchSelect(opsIt, currValue, reduceValue,
+                         shouldUpdate, valueSelectOp))) {
     return failure();
   }
 
   // matching:%17 = arith.select %15, %arg10, %arg12 : i32
   Value indexSelectOp;
-  if (failed(matchSelect(opsIt, currIndex, reduceIndex, shouldUpdate,
-                         indexSelectOp))) {
+  if (failed(matchSelect(opsIt, currIndex, reduceIndex,
+                         shouldUpdate, indexSelectOp))) {
     return failure();
   }
 
@@ -197,6 +202,6 @@ LogicalResult matchArgMinMax(Value currValue, Value currIndex,
   return success();
 }
 
-} // namespace
+}
 
 #endif

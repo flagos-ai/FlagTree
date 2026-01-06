@@ -7,7 +7,6 @@ import benchmark
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-
 @triton.jit
 def cos_kernel(
     x_ptr,
@@ -43,7 +42,7 @@ def cos_triton(x):
     output = torch.empty_like(x)
 
     # Define block size
-    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
+    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
     print("grid value is ", grid)
 
     x = x.to(DEVICE)
@@ -58,9 +57,10 @@ def cos_triton(x):
     output = output.to('cpu')
     return output
 
-
 @pytest.mark.parametrize("size, dtype", [  #
-    (size, dtype) for size in [98432] for dtype in [torch.float32]
+    (size, dtype)
+    for size in [98432]
+    for dtype in [torch.float32]
 ])
 def test_cos(size, dtype, device="cpu"):
     # Create a random tensor
@@ -73,10 +73,11 @@ def test_cos(size, dtype, device="cpu"):
     expected = torch.cos(x)
 
     # compare
-    print(f"The maximum difference between torch and triton is "
-          f"{torch.max(torch.abs(expected - output))}")
+    print(
+        f"The maximum difference between torch and triton is "
+        f"{torch.max(torch.abs(expected - output))}"
+    )
     torch.testing.assert_close(output, expected, atol=1e-2, rtol=0)
-
 
 @benchmark.measure()
 def benchmark_cos_triton(size, dtype, provider):

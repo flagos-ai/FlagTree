@@ -12,14 +12,12 @@ from triton.runtime.cache import get_cache_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
 
-
 # The riscv compiler
 def _get_llvm_bin_path(bin_name: str) -> str:
     path = os.getenv("LLVM_SYSPATH", "")
     if path == "":
         raise Exception("LLVM_SYSPATH is not set.")
     return os.path.join(path, "bin", bin_name)
-
 
 # The riscv c header files and libraries path.
 def _get_libc_root() -> str:
@@ -51,29 +49,26 @@ def _ty_to_cpp(ty):
         "fp64": "double",
     }[ty]
 
-
 def _extracted_type(ty):
     if ty[0] == '*':
         return "PyObject*"
     return _ty_to_cpp(ty)
 
-
 def _format_of(ty):
     return {
-        "PyObject*": "O",
-        "float": "f",
-        "double": "d",
-        "long": "l",
-        "int8_t": "b",
-        "int16_t": "h",
-        "int32_t": "i",
-        "int64_t": "l",
-        "uint8_t": "B",
-        "uint16_t": "H",
-        "uint32_t": "I",
-        "uint64_t": "K",
+      "PyObject*": "O",
+      "float": "f",
+      "double": "d",
+      "long": "l",
+      "int8_t": "b",
+      "int16_t": "h",
+      "int32_t": "i",
+      "int64_t": "l",
+      "uint8_t": "B",
+      "uint16_t": "H",
+      "uint32_t": "I",
+      "uint64_t": "K",
     }[ty]
-
 
 def _generate_launcher(constants, signature, kernel_name):
     arg_decls = ', '.join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
@@ -81,13 +76,10 @@ def _generate_launcher(constants, signature, kernel_name):
     format = "iiiOOOO" + args_format
     args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
 
-    kernel_arg_decls = ', '.join(
-        _ty_to_cpp(ty) if ty[0] != "*" else f"int64_t, void*" for i, ty in signature.items() if i not in constants)
+    kernel_arg_decls = ', '.join(_ty_to_cpp(ty) if ty[0] != "*" else f"int64_t, void*" for i, ty in signature.items() if i not in constants)
     kernel_arg_decls += ', ' if kernel_arg_decls else ''
 
-    kernel_parameters = ', '.join(f"static_cast<{_ty_to_cpp(ty)}>(arg{i})" if ty[0] != "*" else f"0, &ptr_arg{i}"
-                                  for i, ty in signature.items()
-                                  if i not in constants)
+    kernel_parameters = ', '.join(f"static_cast<{_ty_to_cpp(ty)}>(arg{i})" if ty[0] != "*" else f"0, &ptr_arg{i}" for i, ty in signature.items() if i not in constants)
     kernel_parameters += ', ' if kernel_parameters else ''
 
     return f"""
@@ -254,14 +246,16 @@ def compile_module(launcher_src, kernel_placeholder_name):
     libc_lib = os.path.join(_get_libc_root(), "riscv64-unknown-elf", "lib")
     include_dir = os.path.join(cpu_backend_path, "include")
 
-    def launch(gridX, gridY, gridZ, stream, cu_function, kernel_metadata, launch_metadata, launch_enter_hook,
-               launch_exit_hook, *args):
+    def launch(
+        gridX, gridY, gridZ, stream, cu_function,
+        kernel_metadata, launch_metadata,
+        launch_enter_hook, launch_exit_hook, *args):
         # Unlike CUDA/HIP, we cannot easily pass function pointer across different pybind libraries.
         # Let's compile a kernel every time.
         # The cu_function parameter actually contains our assembly source code.
         # See CPUUtils.load_binary method.
         asm_src = cu_function
-        kernel_name = kernel_metadata[6]  # see pack_metadata in compiler.py
+        kernel_name = kernel_metadata[6] # see pack_metadata in compiler.py
         src = launcher_src.replace(kernel_placeholder_name, kernel_name)
 
         key = hashlib.md5(src.encode("utf-8") + asm_src).hexdigest()
@@ -271,27 +265,31 @@ def compile_module(launcher_src, kernel_placeholder_name):
         cache_path = cache.get_file(filename)
 
         if cache_path is None:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                asm_src_path = os.path.join(tmpdir, "kernel.s")
-                launcher_src_path = os.path.join(tmpdir, "main.cxx")
-                so_path = os.path.join(tmpdir, "kernel.so")
-                Path(asm_src_path).write_bytes(asm_src)
-                Path(launcher_src_path).write_text(src)
-                # Compile it together.
-                subprocess.check_call([
-                    clang, "-std=c++17", "--target=riscv64-unknown-elf", launcher_src_path, asm_src_path,
-                    f"-I{libc_inc}", f"-I{py_include_dir}", f"-I{include_dir}", f"-I{libc_lib}", f"-L{py_lib_dir}",
-                    "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
-                ])
+          with tempfile.TemporaryDirectory() as tmpdir:
+              asm_src_path = os.path.join(tmpdir, "kernel.s")
+              launcher_src_path = os.path.join(tmpdir, "main.cxx")
+              so_path = os.path.join(tmpdir, "kernel.so")
+              Path(asm_src_path).write_bytes(asm_src)
+              Path(launcher_src_path).write_text(src)
+              # Compile it together.
+              subprocess.check_call([
+                clang, "-std=c++17", "--target=riscv64-unknown-elf",
+                launcher_src_path, asm_src_path, f"-I{libc_inc}",
+                f"-I{py_include_dir}", f"-I{include_dir}", f"-I{libc_lib}",
+                f"-L{py_lib_dir}",
+                "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
+              ])
 
-                with open(so_path, "rb") as f:
-                    cache_path = cache.put(f.read(), filename, binary=True)
+              with open(so_path, "rb") as f:
+                cache_path = cache.put(f.read(), filename, binary=True)
 
         # Load and launch the compiled kernel.
         spec = importlib.util.spec_from_file_location(name, cache_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod.launch(gridX, gridY, gridZ, kernel_metadata, launch_metadata, launch_enter_hook, launch_exit_hook,
+        return mod.launch(gridX, gridY, gridZ,
+                          kernel_metadata, launch_metadata,
+                          launch_enter_hook, launch_exit_hook,
                           *args)
 
     return launch
@@ -315,8 +313,8 @@ class CPULauncher(object):
         self.launch(*args, **kwargs)
 
 
-class CPUUtils(object):
 
+class CPUUtils(object):
     def __new__(cls):
         if not hasattr(cls, "instance"):
             cls.instance = super(CPUUtils, cls).__new__(cls)
@@ -334,8 +332,11 @@ class CPUUtils(object):
     @staticmethod
     def get_device_properties(device):
         return {
-            "max_shared_mem": 2**20, "multiprocessor_count": None, "sm_clock_rate": None, "mem_clock_rate": None,
-            "mem_bus_width": None
+          "max_shared_mem": 2 ** 20,
+          "multiprocessor_count": None,
+          "sm_clock_rate": None,
+          "mem_clock_rate": None,
+          "mem_bus_width": None
         }
 
     # Important note:
@@ -344,11 +345,12 @@ class CPUUtils(object):
     # module every time.
     @staticmethod
     def load_binary(name, kernel_asm, shared, device):
-        return (None,  # module
-                kernel_asm,  # function
-                None,  # n_regs
-                None  # n_spills
-                )
+        return (
+          None,       # module
+          kernel_asm, # function
+          None,       # n_regs
+          None        # n_spills
+        )
 
 
 class CPUDriver(DriverBase):
