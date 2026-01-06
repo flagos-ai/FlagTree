@@ -22,7 +22,8 @@ def Tle_ArgType : AnyTypeOf<[Tle_TensorType, LLVMPointerType, LLVMStructType]>;
 
 def Tle_DSLRegionOp : Tle_Op<"dsl_region", [IsolatedFromAbove, MemDescViewTrait, RecursiveMemoryEffects]> {
   let arguments = (ins Variadic<Tle_ArgType>:$inputs,
-    OptionalAttr<ArrayAttr>:$arg_type_hints);
+    OptionalAttr<ArrayAttr>:$edsl_param_types,
+    OptionalAttr<ArrayAttr>:$edsl_param_names);
   let results = (outs Variadic<Tle_ArgType>:$outputs);
   let regions = (region AnyRegion:$body);
   let hasVerifier = 1;

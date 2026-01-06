@@ -7,42 +7,10 @@
 #include <regex>
 #include <string>
 
-// Create a DSLRegionOp that wraps an LLVM function, performing type
-// conversion from
-// Triton IR types to LLVM types based on EDSL function declarations.
-//
-// Overview:
-// 1. Parse the LLVM IR text and extract the target function using
-// Triton's MLIR context
-// 2. Create a DSLRegionOp with EDSL function type hints stored in
-// attributes
-// 3. Perform argument type conversion: TT IR types -> LLVM types (via
-// extract operations)
-//    - DSLRegionOp's operands are TT IR types (tensor, pointer, scalar)
-//    - EDSL function declarations (stored in arg_type_hints attribute)
-//    specify expected types
-//    - LLVM function arguments are already in LLVM types
-//    - We need to verify consistency: TT type -> EDSL type hint -> LLVM
-//    func arg type
-//
-// Example type conversion for tensor:
-//   - TT IR: tensor<128xi32> (RankedTensorType)
-//   - EDSL hint: "memref<?xi32, 3>" (stored in arg_type_hints attribute)
-//   - LLVM func: 5 args = allocated_ptr<3>, aligned_ptr<3>, offset,
-//   size[0], stride[0]
-//   - Conversion: Extract tensor into 5 LLVM values using
-//   ExtractAllocatedPtrOp, etc.
-//
-// Example type conversion for scalar:
-//   - TT IR: i32 (IntegerType)
-//   - EDSL hint: "i32"
-//   - LLVM func: 1 arg = i32
-//   - Conversion: Use block argument directly
-
 using namespace mlir;
 namespace tle = triton::tle;
 
-// Helper function to parse address space from EDSL type hint
+// Helper function to parse address space from EDSL parameter type
 // Returns the address space if found, or std::nullopt if not found/parse failed
 static std::optional<uint32_t>
 parseAddressSpaceFromTypeHint(const std::string &typeHint) {
@@ -59,7 +27,7 @@ parseAddressSpaceFromTypeHint(const std::string &typeHint) {
       return static_cast<uint32_t>(std::stoul(memref_match[1].str()));
     } catch (...) {
       llvm::errs()
-          << "[ERROR] Failed to parse address space from memref type hint: "
+          << "[ERROR] Failed to parse address space from memref param type: "
           << typeHint << "\n";
       return std::nullopt;
     }
@@ -74,25 +42,57 @@ parseAddressSpaceFromTypeHint(const std::string &typeHint) {
       return static_cast<uint32_t>(std::stoul(ptr_match[1].str()));
     } catch (...) {
       llvm::errs()
-          << "[ERROR] Failed to parse address space from llvm.ptr type hint: "
+          << "[ERROR] Failed to parse address space from llvm.ptr param type: "
           << typeHint << "\n";
       return std::nullopt;
     }
   }
 
   // If type hint is not empty but doesn't match expected formats, report error
-  llvm::errs() << "[ERROR] Unsupported type hint format: " << typeHint << "\n";
+  llvm::errs() << "[ERROR] Unsupported EDSL parameter type format: " << typeHint
+               << "\n";
   llvm::errs() << "[ERROR] Expected format: \"memref<shape, address_space>\" "
                   "or \"llvm.ptr<address_space>\"\n";
   return std::nullopt;
 }
 
+// Create a DSLRegionOp that wraps an LLVM function, performing type conversion
+// from Triton IR types to LLVM types based on EDSL function declarations.
+//
+// Overview:
+// 1. Parse the LLVM IR text and extract the target function using Triton's MLIR
+// context
+// 2. Create a DSLRegionOp with EDSL function parameter types stored in
+// attributes
+// 3. Perform argument type conversion: TT IR types -> LLVM types (via extract
+// operations)
+//    - DSLRegionOp's operands are TT IR types (tensor, pointer, scalar)
+//    - EDSL function declarations (stored in edsl_param_types attribute)
+//    specify expected types
+//    - LLVM function arguments are already in LLVM types
+//    - We need to verify consistency: TT type -> EDSL param type -> LLVM func
+//    arg type
+//
+// Example type conversion for tensor:
+//   - TT IR: tensor<128xi32> (RankedTensorType)
+//   - EDSL param type: "memref<?xi32, 3>" (stored in edsl_param_types
+//   attribute)
+//   - LLVM func: 5 args = allocated_ptr<3>, aligned_ptr<3>, offset, size[0],
+//   stride[0]
+//   - Conversion: Extract tensor into 5 LLVM values using
+//   ExtractAllocatedPtrOp, etc.
+//
+// Example type conversion for scalar:
+//   - TT IR: i32 (IntegerType)
+//   - EDSL param type: "i32"
+//   - LLVM func: 1 arg = i32
+//   - Conversion: Use block argument directly
 tle::DSLRegionOp createEdslRegionByLLVMFunc(
     TritonOpBuilder &self, std::string_view text, std::string_view fnname,
     const std::vector<Value> &outputs, const std::vector<Value> &inputs,
-    const std::vector<std::string>
-        &arg_type_hints) { // Stage 1: Parse LLVM IR and extract function using
-                           // Triton's MLIR context
+    const std::vector<std::string> &arg_type_hints,
+    const std::vector<std::string> &arg_names) {
+  // Stage 1: Parse LLVM IR and extract function using Triton's MLIR context
   ParserConfig config(self.getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   LLVM::LLVMFuncOp func = module->lookupSymbol<LLVM::LLVMFuncOp>(fnname);
@@ -104,23 +104,41 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
       llvm::concat<Value>(SmallVector<Value>(outputs.begin(), outputs.end()),
                           SmallVector<Value>(inputs.begin(), inputs.end())));
 
-  // Stage 2: Create DSLRegionOp
-  // The arg_type_hints contain the EDSL function parameter type declarations
+  // Stage 2: Create DSLRegionOp, create new body
+  // The edsl_param_types contain the EDSL function parameter type declarations
   // (e.g., "memref<?xi32, 3>", "i32") These are stored as an ArrayAttr of
-  // StringAttrs in the DSLRegionOp's "arg_type_hints" attribute
-  ArrayAttr typeHintsAttr = nullptr;
+  // StringAttrs in the DSLRegionOp's "edsl_param_types" attribute The
+  // edsl_param_names contain the EDSL function parameter names (e.g.,
+  // "sum_buf", "indices") These are stored as an ArrayAttr of StringAttrs in
+  // the DSLRegionOp's "edsl_param_names" attribute
+  ArrayAttr edslParamTypesAttr = nullptr;
   if (!arg_type_hints.empty()) {
-    SmallVector<Attribute> typeHintAttrs;
+    SmallVector<Attribute> typeAttrs;
     for (const auto &typeHint : arg_type_hints) {
-      typeHintAttrs.push_back(StringAttr::get(self.getContext(), typeHint));
+      typeAttrs.push_back(StringAttr::get(self.getContext(), typeHint));
     }
-    typeHintsAttr = ArrayAttr::get(self.getContext(), typeHintAttrs);
+    edslParamTypesAttr = ArrayAttr::get(self.getContext(), typeAttrs);
+  }
+
+  ArrayAttr edslParamNamesAttr = nullptr;
+  if (!arg_names.empty()) {
+    SmallVector<Attribute> nameAttrs;
+    for (const auto &name : arg_names) {
+      nameAttrs.push_back(StringAttr::get(self.getContext(), name));
+    }
+    edslParamNamesAttr = ArrayAttr::get(self.getContext(), nameAttrs);
   }
 
   SmallVector<NamedAttribute> attrs;
-  if (typeHintsAttr) {
-    attrs.push_back(NamedAttribute(
-        StringAttr::get(self.getContext(), "arg_type_hints"), typeHintsAttr));
+  if (edslParamTypesAttr) {
+    attrs.push_back(
+        NamedAttribute(StringAttr::get(self.getContext(), "edsl_param_types"),
+                       edslParamTypesAttr));
+  }
+  if (edslParamNamesAttr) {
+    attrs.push_back(
+        NamedAttribute(StringAttr::get(self.getContext(), "edsl_param_names"),
+                       edslParamNamesAttr));
   }
 
   tle::DSLRegionOp dslRegionOp =
@@ -131,7 +149,7 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
       operands, [](Value value) -> Type { return value.getType(); });
   IRMapping mapper;
 
-  // Stage 3: Argument type conversion and validation
+  // Stage 3: Argument type conversion and and establish mapping relationships
   // Convert TT IR types (DSLRegionOp operands) to LLVM types (LLVM function
   // arguments) For each DSLRegionOp operand:
   //   1. Check its TT IR type (tensor, pointer, scalar)
@@ -145,7 +163,7 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
   // Type conversion examples:
   //   - TT tensor<128xi32> + EDSL "memref<?xi32, 3>" -> LLVM 5 args (ptr<3>,
   //   ptr<3>, offset, size, stride)
-  //   - TT ptr<f32> + EDSL "llvm.ptr<1>" -> LLVM 1 arg (ptr<1>)
+  //   - TT ptr<f32> + EDSL param type "llvm.ptr<1>" -> LLVM 1 arg (ptr<1>)
   //   - TT i32 + EDSL "i32" -> LLVM 1 arg (i32, passed through directly)
   uint32_t llvm_arg_idx = 0;     // Track position in LLVM function arguments
   SmallVector<Value> extractOps; // Collect all extract operations for mapping
@@ -157,11 +175,23 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
           &body, {}, operandTys,
           SmallVector<Location>(operandTys.size(), self.getLastLoc()));
 
+      // Set insertion point to start: extract operations will be inserted at
+      // the beginning
       builder.setInsertionPointToStart(newBlock);
 
       // Iterate through DSLRegionOp operands and create extract operations
-      // Note: operands = [outputs..., inputs...], arg_type_hints corresponds to
-      // all operands
+      // Note: operands = [outputs..., inputs...], edsl_param_types corresponds
+      // to all operands Extract edsl_param_names from attribute
+      SmallVector<std::string> edsl_param_names_from_attr;
+      if (auto edslParamNamesAttr =
+              dslRegionOp->getAttrOfType<ArrayAttr>("edsl_param_names")) {
+        for (auto nameAttr : edslParamNamesAttr) {
+          if (auto strAttr = dyn_cast<StringAttr>(nameAttr)) {
+            edsl_param_names_from_attr.push_back(strAttr.str());
+          }
+        }
+      }
+
       for (size_t operand_idx = 0; operand_idx < operands.size();
            ++operand_idx) {
         Value operand = operands[operand_idx];
@@ -169,16 +199,39 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
         std::string arg_type = operand_idx < arg_type_hints.size()
                                    ? arg_type_hints[operand_idx]
                                    : "";
+        std::string arg_name = operand_idx < edsl_param_names_from_attr.size()
+                                   ? edsl_param_names_from_attr[operand_idx]
+                                   : "";
 
         // Case 1: TT Tensor type conversion
         // TT IR: RankedTensorType (e.g., tensor<128xi32>)
-        // EDSL hint: "memref<?xi32, 3>" (stored in arg_type_hints attribute)
-        // LLVM func: 3 + 2*rank args = allocated_ptr<address_space>,
+        // EDSL param type: "memref<?xi32, 3>" (stored in edsl_param_types
+        // attribute) LLVM func: 3 + 2*rank args = allocated_ptr<address_space>,
         // aligned_ptr<address_space>, offset, sizes[rank], strides[rank]
         // Conversion: Create ExtractAllocatedPtrOp, ExtractAlignedPtrOp,
         // ExtractOffsetOp, ExtractSizesOp, ExtractStridesOp
         if (RankedTensorType tensorTy =
                 dyn_cast<RankedTensorType>(blockArg.getType())) {
+          // Type consistency check: verify EDSL parameter type matches actual
+          // Triton type If EDSL param type is "llvm.ptr<...>", it requires
+          // triton::PointerType, not RankedTensorType
+          if (!arg_type.empty()) {
+            std::regex ptr_regex(R"(!?llvm\.ptr<\d+>)");
+            if (std::regex_match(arg_type, ptr_regex)) {
+              llvm::errs() << "[ERROR] Type mismatch for operand "
+                           << operand_idx;
+              if (!arg_name.empty()) {
+                llvm::errs() << " (parameter: " << arg_name << ")";
+              }
+              llvm::errs() << "\n";
+              llvm::errs() << "[ERROR] EDSL param type: " << arg_type
+                           << " (expects triton::PointerType)\n";
+              llvm::errs() << "[ERROR] Actual Triton type: "
+                           << blockArg.getType() << " (RankedTensorType)\n";
+              assert(false && "EDSL type hint mismatch: llvm.ptr requires "
+                              "triton::PointerType, but got RankedTensorType");
+            }
+          }
           const size_t rank = tensorTy.getRank();
           size_t expected_llvm_args =
               3 + 2 * rank; // allocated_ptr, aligned_ptr, offset, sizes...,
@@ -200,7 +253,7 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
                                  func.getArgument(llvm_arg_idx).getType())
                                  .getAddressSpace();
 
-          // Parse expected address space from EDSL type hint (e.g.,
+          // Parse expected address space from EDSL parameter type (e.g.,
           // "memref<?xi32, 3>" -> 3)
           uint32_t expected_as = llvm_as; // Default to LLVM's address space
           if (auto parsed_as = parseAddressSpaceFromTypeHint(arg_type)) {
@@ -249,12 +302,31 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
 
           // Case 2: TT Pointer type conversion
           // TT IR: triton::PointerType (e.g., ptr<f32>)
-          // EDSL hint: "llvm.ptr<1>" (stored in arg_type_hints attribute)
-          // LLVM func: 1 arg = ptr<address_space>
-          // Conversion: Create ExtractPtrOp to convert TT pointer to LLVM
-          // pointer
+          // EDSL param type: "llvm.ptr<1>" (stored in edsl_param_types
+          // attribute) LLVM func: 1 arg = ptr<address_space> Conversion: Create
+          // ExtractPtrOp to convert TT pointer to LLVM pointer
         } else if (auto ptrTy =
                        dyn_cast<triton::PointerType>(blockArg.getType())) {
+          // Type consistency check: verify EDSL parameter type matches actual
+          // Triton type If EDSL param type is "memref<...>", it requires
+          // RankedTensorType, not triton::PointerType
+          if (!arg_type.empty()) {
+            std::regex memref_regex(R"(!?memref<[^>]*,\s*\d+\s*>)");
+            if (std::regex_match(arg_type, memref_regex)) {
+              llvm::errs() << "[ERROR] Type mismatch for operand "
+                           << operand_idx;
+              if (!arg_name.empty()) {
+                llvm::errs() << " (parameter: " << arg_name << ")";
+              }
+              llvm::errs() << "\n";
+              llvm::errs() << "[ERROR] EDSL param type: " << arg_type
+                           << " (expects RankedTensorType)\n";
+              llvm::errs() << "[ERROR] Actual Triton type: "
+                           << blockArg.getType() << " (triton::PointerType)\n";
+              assert(false && "EDSL type hint mismatch: memref requires "
+                              "RankedTensorType, but got triton::PointerType");
+            }
+          }
           size_t expected_llvm_args = 1;
 
           // Verify we have enough LLVM arguments
@@ -273,7 +345,7 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
                                  func.getArgument(llvm_arg_idx).getType())
                                  .getAddressSpace();
 
-          // Parse expected address space from EDSL type hint (e.g.,
+          // Parse expected address space from EDSL parameter type (e.g.,
           // "llvm.ptr<1>" -> 1)
           uint32_t expected_as = llvm_as; // Default to LLVM's address space
           if (auto parsed_as = parseAddressSpaceFromTypeHint(arg_type)) {
@@ -312,6 +384,28 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
           // needed)
         } else if (isa<IntegerType>(blockArg.getType()) ||
                    isa<FloatType>(blockArg.getType())) {
+          // Type consistency check: verify EDSL parameter type matches actual
+          // Triton type Scalars should not have memref or llvm.ptr param types
+          if (!arg_type.empty()) {
+            std::regex memref_regex(R"(!?memref<[^>]*,\s*\d+\s*>)");
+            std::regex ptr_regex(R"(!?llvm\.ptr<\d+>)");
+            bool is_memref_hint = std::regex_match(arg_type, memref_regex);
+            bool is_ptr_hint = std::regex_match(arg_type, ptr_regex);
+            if (is_memref_hint || is_ptr_hint) {
+              llvm::errs() << "[ERROR] Type mismatch for operand "
+                           << operand_idx;
+              if (!arg_name.empty()) {
+                llvm::errs() << " (parameter: " << arg_name << ")";
+              }
+              llvm::errs() << "\n";
+              llvm::errs() << "[ERROR] EDSL param type: " << arg_type
+                           << " (expects tensor or pointer type)\n";
+              llvm::errs() << "[ERROR] Actual Triton type: "
+                           << blockArg.getType() << " (scalar type)\n";
+              assert(false && "EDSL type hint mismatch: memref/llvm.ptr "
+                              "requires tensor/pointer type, but got scalar");
+            }
+          }
           size_t expected_llvm_args = 1;
 
           // Verify we have enough LLVM arguments
@@ -339,7 +433,7 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
                        << " at operand index " << operand_idx << "\n";
           llvm::errs() << "[ERROR] Expected one of: RankedTensorType, "
                           "triton::PointerType, IntegerType, FloatType\n";
-          llvm::errs() << "[ERROR] EDSL type hint: " << arg_type << "\n";
+          llvm::errs() << "[ERROR] EDSL param type: " << arg_type << "\n";
           assert(false && "Unsupported operand type");
         }
       }
@@ -351,7 +445,6 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
                      << " args, but function has " << func.getNumArguments()
                      << " args\n";
       }
-
       mapper.map(&oldBlock, newBlock);
     } else {
       // For other blocks, just map block arguments

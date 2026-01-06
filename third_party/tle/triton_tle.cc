@@ -57,7 +57,8 @@ namespace tle = triton::tle;
 extern tle::DSLRegionOp createEdslRegionByLLVMFunc(
     TritonOpBuilder &self, std::string_view text, std::string_view fnname,
     const std::vector<Value> &outputs, const std::vector<Value> &inputs,
-    const std::vector<std::string> &arg_type_hints);
+    const std::vector<std::string> &arg_type_hints,
+    const std::vector<std::string> &arg_names);
 
 void init_triton_tle_ir(py::module &&m) {
   using ret = py::return_value_policy;
