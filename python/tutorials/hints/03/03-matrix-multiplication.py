@@ -396,7 +396,6 @@ if TORCH_HAS_FP8 and is_cuda():
     else:
         print("❌ Triton and Torch differ")
 
-
 # %%
 # Benchmark
 # ---------
