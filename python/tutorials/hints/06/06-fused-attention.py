@@ -255,7 +255,8 @@ def _attn_bwd_preprocess(O, DO,  #
     off_n = tl.arange(0, HEAD_DIM)
     # load
     o = tl.load(O + off_hz * HEAD_DIM * N_CTX + off_m[:, None] * HEAD_DIM + off_n[None, :])  # @hint: shared_memory
-    do = tl.load(DO + off_hz * HEAD_DIM * N_CTX + off_m[:, None] * HEAD_DIM + off_n[None, :]).to(tl.float32)  # @hint: shared_memory
+    do = tl.load(DO + off_hz * HEAD_DIM * N_CTX + off_m[:, None] * HEAD_DIM + off_n[None, :]).to(
+        tl.float32)  # @hint: shared_memory
     delta = tl.sum(o * do, axis=1)
     # write-back
     tl.store(Delta + off_hz * N_CTX + off_m, delta)
@@ -695,7 +696,8 @@ for HEAD_DIM in [64, 128] if '--only_unit_test' not in sys.argv else [64]:
         for causal in [True, False] if '--only_unit_test' not in sys.argv else [False]:
             # Enable warpspec for causal fwd on Hopper
             enable_ws = mode == "fwd" and (is_blackwell() or (is_hopper() and not causal))
-            for warp_specialize in ([False, True] if enable_ws else [False]) if '--only_unit_test' not in sys.argv else [enable_ws]:
+            for warp_specialize in (
+                [False, True] if enable_ws else [False]) if '--only_unit_test' not in sys.argv else [enable_ws]:
                 configs.append(
                     triton.testing.Benchmark(
                         x_names=["N_CTX"],
