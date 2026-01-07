@@ -14,6 +14,7 @@ Extra Credits:
 """
 
 import pytest
+import sys
 import torch
 import os
 
@@ -140,7 +141,6 @@ configs = [
     for w in [4, 8]\
 ]
 
-import sys
 if "PYTEST_VERSION" in os.environ or '--only_unit_test' in sys.argv:
     # Use a single config in testing for reproducibility
     configs = [

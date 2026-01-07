@@ -32,6 +32,7 @@ In doing so, you will learn about:
 #
 # Let's first take a look at the baseline implementation.
 
+import sys
 import tabulate
 import torch
 
@@ -85,7 +86,6 @@ print(tabulate.tabulate([
     ["output"] + output.tolist(),
 ]))
 
-import sys
 if '--only_unit_test' in sys.argv:
     sys.exit(0)
 

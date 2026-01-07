@@ -17,6 +17,7 @@ Triton automatically selects the correct underlying device function to invoke ba
 
 import torch
 
+import sys
 import triton
 import triton.language as tl
 import inspect
@@ -48,8 +49,6 @@ def asin_kernel(
 #  Using the default libdevice library path
 # -----------------------------------------
 # We can use the default libdevice library path encoded in `triton/language/math.py`
-
-import sys
 
 torch.manual_seed(0)
 size = 98432

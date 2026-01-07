@@ -149,6 +149,7 @@ You will specifically learn about:
 # Final Result
 # ------------
 
+import sys
 import torch
 
 import triton
@@ -160,8 +161,6 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
-
-import sys
 
 def get_cuda_autotune_config():
     return [
@@ -396,6 +395,7 @@ if TORCH_HAS_FP8 and is_cuda():
         print("✅ Triton and Torch match")
     else:
         print("❌ Triton and Torch differ")
+
 
 # %%
 # Benchmark
