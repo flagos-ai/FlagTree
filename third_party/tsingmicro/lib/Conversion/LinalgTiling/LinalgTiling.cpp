@@ -15,11 +15,11 @@
 #include "tsingmicro-tx81/Conversion/LinalgTiling/LinalgTiling.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "utils/utils.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "linalg-tiling"
@@ -49,13 +49,19 @@ struct TilingReduceRewrite : public OpRewritePattern<linalg::ReduceOp> {
     }
 
     auto dim = dims[0];
-    auto inputType = cast<MemRefType>(op.getInputs()[0].getType());
+    auto inputType = cast<RankedTensorType>(op.getInputs()[0].getType());
     auto inputShape = inputType.getShape();
 
     // Tiling if shape[dim]>32768
     if (inputShape[dim] < 32768) {
       return failure();
     }
+
+    auto regionOps = getRegionOps(op);
+    // FIXME: Move after type conversion pass
+    if (regionOps.size() != 1 ||
+        !triton::isTargetSupportedReductionOp(regionOps.front()))
+      return failure();
 
     linalg::LinalgTilingOptions tilingOptions;
     auto tileSizes = SmallVector<int64_t>(inputShape);
@@ -65,10 +71,11 @@ struct TilingReduceRewrite : public OpRewritePattern<linalg::ReduceOp> {
     tileSizes[dim] = 16384;
     tilingOptions.setTileSizes(tileSizes);
 
-    if (failed(linalg::tileLinalgOp(rewriter, op, tilingOptions)))
+    auto tiled = linalg::tileLinalgOp(rewriter, op, tilingOptions);
+    if (failed(tiled))
       return rewriter.notifyMatchFailure(op, "operation not supported yet.");
 
-    rewriter.eraseOp(op);
+    rewriter.replaceOp(op, tiled.value().tensorResults);
     return success();
   }
 };

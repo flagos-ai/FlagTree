@@ -12,6 +12,7 @@
 
 #include "Address/Dialect/IR/AddressDialect.h"
 #include "Address/Transforms/Passes.h"
+#include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
 #include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Conversion/ConvertToLLVM/ToLLVMInterface.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
@@ -38,6 +39,9 @@ using namespace mlir::addr;
 namespace {
 struct AddrToLLVM : public ::mlir::addr::impl::AddrToLLVMBase<AddrToLLVM> {
   using Base::Base;
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<addr::AddressDialect, LLVM::LLVMDialect>();
+  }
 
   void runOnOperation() override;
 };
@@ -280,6 +284,33 @@ struct AddressTypeConversionPattern : public ConversionPattern {
   }
 };
 
+struct MKBitCastConversionPattern : public OpConversionPattern<mk::BitcastOp> {
+  using OpConversionPattern<mk::BitcastOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(mk::BitcastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    // Result type should have same layout and address space as the source type.
+    auto sourceType = op.getSrc().getType();
+    assert(isa<MemRefType>(sourceType));
+    auto rankedMemRefType = cast<MemRefType>(sourceType);
+
+    auto memrefToPtr = rewriter.create<addr::FromMemRefOp>(
+        loc, addr::AddressType::get(rewriter.getContext()), adaptor.getSrc());
+
+    auto resultMemrefType = cast<MemRefType>(op->getResultTypes()[0]);
+
+    MemRefType resultType = MemRefType::get(
+        resultMemrefType.getShape(), resultMemrefType.getElementType(),
+        resultMemrefType.getLayout(), resultMemrefType.getMemorySpace());
+
+    rewriter.replaceOpWithNewOp<addr::ToMemRefOp>(op, resultType, memrefToPtr);
+    return success();
+  }
+};
+
 void AddrToLLVM::runOnOperation() {
   ModuleOp module = getOperation();
   StringRef dataLayout;
@@ -311,6 +342,9 @@ void AddrToLLVM::runOnOperation() {
                   FromUnrankedMemRefOpConversion, ToMemRefOpConversion,
                   ToUnrankedMemRefOpConversion, PtrAddOpConversion>(
       typeConverter);
+  // WORKAROUND: Bufferize not support addr dialect, so convert mk::bitcast here
+  patterns.add<MKBitCastConversionPattern>(patterns.getContext());
+
   // populateFuncToLLVMConversionPatterns(typeConverter, patterns, symbolTable);
   if (failed(applyPartialConversion(module, target, std::move(patterns))))
     signalPassFailure();

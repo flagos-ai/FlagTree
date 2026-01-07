@@ -226,7 +226,7 @@ public:
 
     getOperation().walk([&](FunctionOpInterface func) {
       for (auto arg : func.getArguments()) {
-        if (!triton::utils::isPtrTypeLike(arg.getType())) {
+        if (!triton::isPtrTypeLike(arg.getType())) {
           continue;
         }
 
@@ -271,7 +271,6 @@ public:
 
         auto res =
             llvm::TypeSwitch<Operation *, LogicalResult>(user)
-
                 .Case<arith::SelectOp>([&](arith::SelectOp op) {
                   auto ptr = op->getOperand(0);
 
@@ -381,7 +380,7 @@ public:
                   auto res = op->getResult(0);
                   auto resType = res.getType();
 
-                  if (!triton::utils::isPtrTypeLike(resType)) {
+                  if (!triton::isPtrTypeLike(resType)) {
                     return success();
                   }
 
@@ -475,6 +474,12 @@ public:
 
                   return success();
                 })
+                .Case<triton::AtomicRMWOp, triton::AtomicCASOp>(
+                    [&](Operation *op) {
+                      ptrUsers.push_back(op);
+                      return success();
+                    })
+
                 .Case<scf::YieldOp>([](auto) { return success(); })
                 .Case<triton::CatOp>([](triton::CatOp op) {
                   op->emitError("Do not support gather / scatter with multiple "
@@ -503,7 +508,7 @@ public:
                 auto other = load.getOther();
 
                 if (other) {
-                  other = triton::utils::getScalarValue(other, loc, b);
+                  other = triton::getScalarValue(other, loc, b);
                   if (!other) {
                     load->emitError("cannot parse `other` value for load");
                     return failure();
@@ -568,6 +573,28 @@ public:
 
                 offsetOpnd.set(accumulatedOffset);
 
+                return success();
+              })
+              .Case<triton::AtomicCASOp>([&](triton::AtomicCASOp atomicOp) {
+                auto offsetInfo = offsetMap.at(atomicOp.getPtr());
+                auto casOp = b.create<tts::AtomicCASOp>(
+                    loc, atomicOp.getType(), offsetInfo.ptr, atomicOp.getCmp(),
+                    atomicOp.getVal(), offsetInfo.offset, atomicOp.getSemAttr(),
+                    atomicOp.getScopeAttr());
+                atomicOp->replaceAllUsesWith(casOp->getResults());
+                atomicOp->erase();
+
+                return success();
+              })
+              .Case<triton::AtomicRMWOp>([&](triton::AtomicRMWOp atomicOp) {
+                auto offsetInfo = offsetMap.at(atomicOp.getPtr());
+                auto rmwOp = b.create<tts::IndexedAtomicRMWOp>(
+                    loc, atomicOp.getType(), offsetInfo.ptr, atomicOp.getVal(),
+                    atomicOp.getMask(), offsetInfo.offset,
+                    atomicOp.getAtomicRmwOpAttr(), atomicOp.getSemAttr(),
+                    atomicOp.getScopeAttr());
+                atomicOp->replaceAllUsesWith(rmwOp->getResults());
+                atomicOp->erase();
                 return success();
               })
 

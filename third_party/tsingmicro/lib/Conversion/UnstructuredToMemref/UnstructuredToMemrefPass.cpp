@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 
@@ -51,6 +52,26 @@ static MemRefType getMemrefTypeForScalarPtr(triton::PointerType ptrType,
   auto elemType = ptrType.getPointeeType();
   auto memrefType = MemRefType::get({1}, elemType, layout);
   return memrefType;
+}
+
+static Value getMemrefTypeForScalarValue(Location loc,
+                                         ConversionPatternRewriter &rewriter,
+                                         Value value) {
+  if (!value.getType().isIntOrIndexOrFloat()) {
+    return nullptr;
+  }
+  auto memref =
+      rewriter
+          .create<memref::AllocOp>(loc, MemRefType::get({1}, value.getType()))
+          .getResult();
+  rewriter.create<memref::StoreOp>(
+      loc, value, memref,
+      ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, 0)});
+  return rewriter.create<memref::ReinterpretCastOp>(
+      loc, MemRefType::get({1}, value.getType()), memref,
+      /*offset=*/0,
+      /*sizes=*/ArrayRef<int64_t>{1},
+      /*strides=*/ArrayRef<int64_t>{1});
 }
 
 struct ScalarLoadConverter : public OpConversionPattern<tts::GatherOp> {
@@ -132,10 +153,9 @@ struct ScalarStoreConverter : public OpConversionPattern<tts::ScatterOp> {
         ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)} /*strides*/);
 
     auto storeVal = scatterOp.getValue();
-    auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
-
-    rewriter.create<affine::AffineStoreOp>(loc, storeVal, memref, zeroMap,
-                                           std::nullopt);
+    rewriter.create<memref::StoreOp>(
+        loc, storeVal, memref,
+        ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, 0)});
     rewriter.eraseOp(scatterOp);
 
     return success();
@@ -215,13 +235,13 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
     auto genericOp = rewriter.create<linalg::GenericOp>(
         loc, TypeRange{resultType}, inputs, ValueRange{emptyTensor}, affineMaps,
         iteratorTypes, [&](OpBuilder &b, Location loc, ValueRange args) {
-          auto getValueAtIndex = [baseTensor](OpBuilder &b, Location loc,
+          auto getValueAtIndex = [baseMemref](OpBuilder &b, Location loc,
                                               Value index) -> Value {
             Value index0 =
                 b.create<arith::IndexCastOp>(loc, b.getIndexType(), index);
 
-            return b.create<tensor::ExtractOp>(loc, baseTensor,
-                                               ValueRange{index0});
+            return b.create<memref::LoadOp>(loc, baseMemref,
+                                            ValueRange{index0});
           };
 
           auto offset = args[0];
@@ -363,16 +383,225 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
   }
 };
 
+struct ScalarAtomicRMWOpConverter
+    : public OpConversionPattern<tts::IndexedAtomicRMWOp> {
+  using OpConversionPattern<tts::IndexedAtomicRMWOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tts::IndexedAtomicRMWOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto value = adaptor.getValue();
+    if (isa<RankedTensorType>(value.getType())) {
+      return failure();
+    }
+
+    auto loc = op->getLoc();
+
+    // Calculate the ptr from the offset
+    auto ptr = adaptor.getPtr();
+    auto offset = adaptor.getOffset();
+    auto index = rewriter.create<arith::IndexCastOp>(
+        loc, rewriter.getIndexType(), offset);
+    auto rankedMemref = rewriter.create<memref::ReinterpretCastOp>(
+        loc, ptr, getAsOpFoldResult(index),
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)} /*sizes*/,
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)} /*strides*/);
+
+    auto inputTensorType =
+        RankedTensorType::get(SmallVector<int64_t>(1, 1), value.getType());
+
+    auto empty = rewriter.create<tensor::EmptyOp>(
+        loc, inputTensorType.getShape(), inputTensorType.getElementType());
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto valueTensor = rewriter.create<tensor::InsertOp>(
+        loc, inputTensorType, value, empty, ValueRange{zero});
+
+    auto init = rewriter.create<tensor::EmptyOp>(
+        loc, inputTensorType.getShape(), inputTensorType.getElementType());
+    if (op.getMask()) {
+      // If there is a mask, we need to check it before performing the
+      // atomic RMW operation.
+      auto mask = op.getMask();
+      auto ifOp = rewriter.create<scf::IfOp>(
+          loc, mask,
+          [&](OpBuilder &b, Location loc) {
+            // TODO: Support other types of inputs and outputs: f32.
+            auto atomic = rewriter
+                              .create<mk::AtomicRMWOp>(
+                                  loc, inputTensorType, rankedMemref,
+                                  valueTensor, init, op.getAtomicRmwOpAttr(),
+                                  op.getSemAttr(), op.getScopeAttr())
+                              ->getResult(0);
+
+            auto resultValue = rewriter.create<tensor::ExtractOp>(
+                loc, atomic, ValueRange{zero});
+
+            b.create<scf::YieldOp>(loc, resultValue.getResult());
+          },
+          [&](OpBuilder &b, Location loc) {
+            // else branch
+            Value zero =
+                b.create<arith::ConstantOp>(loc, b.getZeroAttr(op.getType()));
+            b.create<scf::YieldOp>(loc, zero);
+          });
+
+      rewriter.replaceOp(op, ifOp);
+    } else {
+
+      auto atomic =
+          rewriter
+              .create<mk::AtomicRMWOp>(
+                  loc, inputTensorType, rankedMemref, valueTensor, init,
+                  op.getAtomicRmwOpAttr(), op.getSemAttr(), op.getScopeAttr())
+              ->getResult(0);
+
+      auto resultValue =
+          rewriter.create<tensor::ExtractOp>(loc, atomic, ValueRange{zero});
+
+      rewriter.replaceOp(op, resultValue.getResult());
+    }
+
+    return success();
+  }
+};
+
+struct ScalarAtomicCASOpConverter
+    : public OpConversionPattern<tts::AtomicCASOp> {
+  using OpConversionPattern<tts::AtomicCASOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tts::AtomicCASOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op.getOffset())
+      return failure();
+
+    if (!op.getType().isIntOrIndexOrFloat()) {
+      return failure();
+    }
+
+    auto loc = op->getLoc();
+    auto ptr = adaptor.getPtr();
+    auto cmp = adaptor.getCmp();
+    auto value = adaptor.getValue();
+
+    if (isa<RankedTensorType>(value.getType())) {
+      return failure();
+    }
+
+    // Calculate the ptr from the offset
+    auto offset = adaptor.getOffset();
+    auto index = rewriter.create<arith::IndexCastOp>(
+        loc, rewriter.getIndexType(), offset);
+    auto rankedMemref = rewriter.create<memref::ReinterpretCastOp>(
+        loc, ptr, getAsOpFoldResult(index),
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)} /*sizes*/,
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)} /*strides*/);
+
+    auto inputTensorType =
+        RankedTensorType::get(SmallVector<int64_t>(1, 1), value.getType());
+
+    auto empty = rewriter.create<tensor::EmptyOp>(
+        loc, inputTensorType.getShape(), inputTensorType.getElementType());
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto valueTensor = rewriter.create<tensor::InsertOp>(
+        loc, inputTensorType, value, empty, ValueRange{zero});
+    auto cmpTensor = rewriter.create<tensor::InsertOp>(
+        loc, inputTensorType, cmp, empty, ValueRange{zero});
+
+    auto init = rewriter.create<tensor::EmptyOp>(
+        loc, inputTensorType.getShape(), inputTensorType.getElementType());
+
+    // TODO: Support other types of inputs and outputs: f32.
+    auto atomic = rewriter
+                      .create<mk::AtomicCASOp>(
+                          loc, inputTensorType, rankedMemref, cmpTensor,
+                          valueTensor, init, op.getSemAttr(), op.getScopeAttr())
+                      ->getResult(0);
+
+    auto resultValue =
+        rewriter.create<tensor::ExtractOp>(loc, atomic, ValueRange{zero});
+
+    rewriter.replaceOp(op, resultValue.getResult());
+
+    return success();
+  }
+};
+
+template <typename TTS_AtomicOp>
+struct IndexedAtomicOpConverter : public OpConversionPattern<TTS_AtomicOp> {
+  using OpConversionPattern<TTS_AtomicOp>::OpConversionPattern;
+  using OpAdaptor = typename TTS_AtomicOp::Adaptor;
+
+  LogicalResult
+  matchAndRewrite(TTS_AtomicOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto resultTensorType =
+        dyn_cast<RankedTensorType>(op.getResult().getType());
+    if (!resultTensorType) {
+      return failure();
+    }
+
+    SmallVector<Value> inputs(op->getOperands().begin() + 1,
+                              op->getOperands().end());
+
+    SmallVector<Value> outputs = {rewriter.create<tensor::EmptyOp>(
+        op->getLoc(), resultTensorType.getShape(),
+        resultTensorType.getElementType())};
+    assert(op->getResultTypes().size() == 1);
+
+    auto scalarResultType =
+        cast<TensorType>(op->getResultTypes().front()).getElementType();
+
+    // NOTE: linalg.generic cannot nested with linalg.generic (mk.atomic will
+    // generate linalg.generic inside), so we need to use scf.for to build the
+    // loop
+    auto shape = resultTensorType.getShape();
+    auto loc = op->getLoc();
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    SmallVector<Value> lbs, ubs, steps;
+    for (auto [i, size] : enumerate(shape)) {
+      auto sizeValue = rewriter.create<arith::ConstantIndexOp>(loc, size);
+      lbs.push_back(zero);
+      ubs.push_back(sizeValue);
+      steps.push_back(one);
+    }
+    auto loopNest = scf::buildLoopNest(
+        rewriter, loc, lbs, ubs, steps, outputs,
+        [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange indices,
+            ValueRange iterArgs) {
+          SmallVector<Value> regionInputs(op.getNumOperands());
+          regionInputs.front() = adaptor.getPtr();
+          std::transform(inputs.begin(), inputs.end(), regionInputs.begin() + 1,
+                         [&](auto val) {
+                           return rewriter.create<tensor::ExtractOp>(loc, val,
+                                                                     indices);
+                         });
+          auto *scalarOp = nestedBuilder.create(
+              loc, op->getName().getIdentifier(), regionInputs,
+              scalarResultType, op->getAttrs());
+
+          auto outValTensor = nestedBuilder.create<tensor::InsertOp>(
+              loc, scalarOp->getResult(0), iterArgs[0], indices);
+          return SmallVector<Value>{outValTensor};
+        });
+
+    rewriter.replaceOp(op, loopNest.results);
+
+    return success();
+  }
+};
+
 class UnstructuredToMemrefPass
     : public UnstructuredToMemrefBase<UnstructuredToMemrefPass> {
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
-                linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
-                tensor::TensorDialect, bufferization::BufferizationDialect,
-                memref::MemRefDialect, ttx::TritonTilingExtDialect>();
+    registry.insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
+                    linalg::LinalgDialect, affine::AffineDialect,
+                    scf::SCFDialect, tensor::TensorDialect,
+                    bufferization::BufferizationDialect, memref::MemRefDialect,
+                    ttx::TritonTilingExtDialect, mk::MagicKernelDialect>();
   }
 
   void runOnOperation() override {
@@ -386,14 +615,19 @@ public:
         linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
         cf::ControlFlowDialect, tensor::TensorDialect,
         bufferization::BufferizationDialect, memref::MemRefDialect,
-        ttx::TritonTilingExtDialect>();
+        ttx::TritonTilingExtDialect, mk::MagicKernelDialect>();
 
-    target.addIllegalOp<tts::GatherOp, tts::ScatterOp>();
+    target.addIllegalOp<tts::GatherOp, tts::ScatterOp, tts::IndexedAtomicRMWOp,
+                        tts::AtomicCASOp>();
 
     PtrToUnrankedMemrefConverter typeConverter;
 
     patterns.add<GatherConverter, ScatterConverter, ScalarLoadConverter,
-                 ScalarStoreConverter>(typeConverter, patterns.getContext());
+                 ScalarStoreConverter, ScalarAtomicRMWOpConverter,
+                 IndexedAtomicOpConverter<tts::IndexedAtomicRMWOp>,
+                 ScalarAtomicCASOpConverter,
+                 IndexedAtomicOpConverter<tts::AtomicCASOp>>(
+        typeConverter, patterns.getContext());
 
     if (failed(applyPartialConversion(moduleOp, target, std::move(patterns))))
       signalPassFailure();

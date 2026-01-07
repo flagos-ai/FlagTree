@@ -273,6 +273,11 @@ public:
 
   LogicalResult rewriteStoreOp(triton::StoreOp op, bool useUnsafeMask = false);
 
+  LogicalResult rewriteAtomicRMWOp(triton::AtomicRMWOp op,
+                                   bool useUnsafeMask = false);
+
+  LogicalResult rewriteAtomicCASOp(triton::AtomicCASOp op);
+
   LogicalResult rewriteOp(Operation *op, bool useUnsafeMask = false);
 };
 

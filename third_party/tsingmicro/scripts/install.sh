@@ -11,15 +11,15 @@ script_path=$(realpath "$0")
 script_dir=$(dirname "$script_path")
 project_dir=$(realpath "$script_dir/../../..")
 
-use_venv=OFF
+use_venv=ON
 if [ $# -gt 0 ]; then
-    if [[ "${1,,}" == "venv" ]]; then
-        use_venv=ON
+    if [[ "${1,,}" == "no_venv" ]]; then
+        use_venv=OFF
     fi
 fi
 
 if [ "x$use_venv" == "xON" ]; then
-    python3 -m venv $project_dir/.venv --prompt flagtree
+    python3 -m venv $project_dir/.venv --prompt triton
     source $project_dir/.venv/bin/activate
 fi
 
@@ -27,10 +27,13 @@ setup_proxy
 
 apt install git
 apt install lld
+apt install ccache
 
-triton_origin_req=python/requirements.txt
+# pip uninstall triton
+
+triton_origin_req=$project_dir/python/requirements.txt
 if [ ! -f $triton_origin_req ]; then
-    triton_origin_req=requirements.txt
+    triton_origin_req=$script_dir/requirements.txt
 fi
 
 if [ ! -f $triton_origin_req ]; then
@@ -38,4 +41,4 @@ if [ ! -f $triton_origin_req ]; then
     exit
 fi
 pip3 install -r $triton_origin_req
-pip3 install -r requirements_ts.txt
+pip3 install -r $script_dir/requirements_ts.txt

@@ -1,5 +1,7 @@
 //===------------------- Tx81MemrefToLLVMPass.cpp--------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 
@@ -76,11 +78,6 @@ public:
     if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
       signalPassFailure();
     }
-
-    // Record spm usage.
-    moduleOp->setAttr("triton_tsm.spm_use",
-                      mlir::IntegerAttr::get(
-                          mlir::IntegerType::get(context, 32), spmPointer));
   }
 };
 

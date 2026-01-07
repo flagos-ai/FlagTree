@@ -7,6 +7,7 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -92,6 +93,20 @@ void StoreOp::build(OpBuilder &b, OperationState &state, Value ptr, Value value,
   dispatchIndexOpFoldResults(dims, dynamicDims, staticDims);
 
   build(b, state, ptr, value, dynamicDims, b.getDenseI64ArrayAttr(staticDims));
+}
+
+void AtomicRMWOp::build(OpBuilder &b, OperationState &state, mlir::Type result,
+                        Value ptr, Value value, ArrayRef<OpFoldResult> dims,
+                        triton::RMWOpAttr atomicRMWOp,
+                        triton::MemSemanticAttr sem,
+                        triton::MemSyncScopeAttr scope) {
+  SmallVector<int64_t> staticDims;
+  SmallVector<Value> dynamicDims;
+
+  dispatchIndexOpFoldResults(dims, dynamicDims, staticDims);
+
+  build(b, state, result, ptr, value, dynamicDims,
+        b.getDenseI64ArrayAttr(staticDims), atomicRMWOp, sem, scope);
 }
 
 LogicalResult GetStructuredStateOp::verify() {

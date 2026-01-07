@@ -1,5 +1,7 @@
 //===------------------------ logic.c -------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,6 +13,7 @@
 
 void __AndVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
              uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmLogic *cmd = g_intrinsic()->logic_pointer;
   TsmLogicInstr inst = {I_CGRA,
@@ -32,6 +35,7 @@ void __AndVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
 
 void __OrVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
             uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmLogic *cmd = g_intrinsic()->logic_pointer;
   TsmLogicInstr inst = {I_CGRA,
@@ -53,6 +57,7 @@ void __OrVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
 
 void __XorVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
              uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmLogic *cmd = g_intrinsic()->logic_pointer;
   TsmLogicInstr inst = {I_CGRA,
@@ -73,6 +78,7 @@ void __XorVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
 }
 
 void __BoolNotV(uint64_t *src, uint64_t *dst, uint32_t elem_count) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmLogic *cmd = g_intrinsic()->logic_pointer;
   TsmLogicInstr inst = {I_CGRA,
@@ -92,6 +98,7 @@ void __BoolNotV(uint64_t *src, uint64_t *dst, uint32_t elem_count) {
 
 void __BoolAndV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                 uint32_t elem_count) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmLogic *cmd = g_intrinsic()->logic_pointer;
   TsmLogicInstr inst = {I_CGRA,
@@ -112,6 +119,7 @@ void __BoolAndV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __BoolOrV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                uint32_t elem_count) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmLogic *cmd = g_intrinsic()->logic_pointer;
   TsmLogicInstr inst = {I_CGRA,
@@ -132,6 +140,7 @@ void __BoolOrV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __BoolXorV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                 uint32_t elem_count) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmLogic *cmd = g_intrinsic()->logic_pointer;
   TsmLogicInstr inst = {I_CGRA,

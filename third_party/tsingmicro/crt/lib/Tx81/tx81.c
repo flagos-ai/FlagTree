@@ -1,5 +1,7 @@
 //===------------------------- tx81.c--------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 
@@ -10,13 +12,72 @@
 extern "C" {
 #endif
 
-bool is_contiguous(int *shape, int *strides, int elem_bytes) {
-  int expected_stride = elem_bytes;
-  for (int i = 0; i < 4; i++) {
-    if (strides[i] != expected_stride) {
+bool is_contiguous(int *shape, int *strides, int rank) {
+  int expected_stride = 1;
+  for (int i = rank - 1; i >= 0; i--) {
+    if (shape[i] != 1 && strides[i] != expected_stride) {
       return false;
     }
     expected_stride *= shape[i];
+  }
+  return true;
+}
+uint64_t next_power_of_two_64(uint64_t x) {
+  if (x == 0) {
+    return 1;
+  }
+  x--;
+  x |= x >> 1;
+  x |= x >> 2;
+  x |= x >> 4;
+  x |= x >> 8;
+  x |= x >> 16;
+  x |= x >> 32;
+  return x + 1;
+}
+
+uint32_t get_dtype_size_new(Data_Format fmt) {
+  switch (fmt) {
+  case Fmt_INT8:
+    return sizeof(int8_t);
+  case Fmt_INT16:
+  case Fmt_FP16:
+  case Fmt_BF16:
+    return sizeof(int16_t);
+  case Fmt_INT32:
+  case Fmt_FP32:
+  case Fmt_TF32:
+    return sizeof(int32_t);
+  case Fmt_INT64:
+    return sizeof(int64_t);
+  default:
+    assert(false && "Unsupported format\n");
+    return 0;
+  }
+}
+
+uint32_t get_cx_align_base_new(uint32_t c, Data_Format fmt) {
+  switch (fmt) {
+  case Fmt_INT8:
+    return c < 128 ? (c < 4 ? 4 : next_power_of_two_64(c)) : 128;
+  case Fmt_INT16:
+  case Fmt_FP16:
+  case Fmt_BF16:
+  case Fmt_INT32:
+  case Fmt_FP32:
+  case Fmt_TF32:
+    return c < 64 ? (c < 4 ? 4 : next_power_of_two_64(c)) : 64;
+  default:
+    assert(false && "Unsupported format\n");
+    return 0;
+  }
+}
+
+bool no_reverse_memory_access(int *stride, int rank) {
+  for (int i = 1; i < rank; i++) {
+    if (stride[i] < 0) {
+      return false;
+    }
   }
   return true;
 }

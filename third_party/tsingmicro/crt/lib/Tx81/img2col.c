@@ -1,5 +1,7 @@
 //===------------------------ img2col.c -----------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,6 +17,7 @@ void __Img2col(uint64_t *src, uint16_t src_n, uint16_t src_h, uint16_t src_w,
                uint64_t dst_elem_num, uint16_t swr_n, uint16_t swr_h,
                uint16_t swr_w, uint16_t swr_c, uint16_t pdr_n, uint16_t pdr_h,
                uint16_t pdr_w, uint16_t pdr_c, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmDataMove *cmd = g_intrinsic()->datamove_pointer;
   TsmDataMoveInstr inst = {I_CGRA,

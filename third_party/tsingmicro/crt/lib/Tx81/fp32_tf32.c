@@ -1,4 +1,6 @@
 //===------------------------ fp32_tf32.c ---------------------------------===//
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -10,6 +12,7 @@
 
 void __FP32_TF32(uint64_t *src, uint64_t *dst, uint32_t elem_count,
                  RND_MODE round) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmConvert *cmd = g_intrinsic()->convert_pointer;
   TsmConvertInstr inst = {I_CGRA,
@@ -24,6 +27,6 @@ void __FP32_TF32(uint64_t *src, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
-
+  TsmWaitfinish();
   // Destroy the command buffer.
 }
