@@ -161,6 +161,8 @@ def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
 
+import sys
+
 def get_cuda_autotune_config():
     return [
         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3,
@@ -196,6 +198,9 @@ def get_cuda_autotune_config():
                       num_warps=4),
         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4,
                       num_warps=4)
+    ] if '--only_unit_test' not in sys.argv else [
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4,
+                      num_warps=4),
     ]
 
 
@@ -371,6 +376,9 @@ if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
 else:
     print("❌ Triton and Torch differ")
 
+if '--only_unit_test' in sys.argv:
+    sys.exit(0)
+
 TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
 if TORCH_HAS_FP8 and is_cuda():
     torch.manual_seed(0)
@@ -388,10 +396,6 @@ if TORCH_HAS_FP8 and is_cuda():
         print("✅ Triton and Torch match")
     else:
         print("❌ Triton and Torch differ")
-
-import sys
-if '--only_unit_test' in sys.argv:
-    sys.exit(0)
 
 # %%
 # Benchmark

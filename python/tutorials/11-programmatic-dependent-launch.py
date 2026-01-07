@@ -86,7 +86,7 @@ import sys
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         x_names=["size"],
-        x_vals=[2**i for i in range(23, 28 if '--only_unit_test' not in sys.argv else 24, 1)],
+        x_vals=[2**i for i in range(23, 28 if '--simple_benchmark' not in sys.argv else 24, 1)],
         x_log=False,
         line_arg="provider",
         line_vals=["pdl-fp32", "fp32"],
@@ -114,6 +114,8 @@ if __name__ == "__main__":
 
     if supports_pdl():
         validate(1024)
-        benchmark.run(print_data=True, show_plots=True, save_path="." if '--only_unit_test' not in sys.argv else None)
+        if '--only_unit_test' in sys.argv:
+            sys.exit(0)
+        benchmark.run(print_data=True, show_plots=True, save_path="." if '--simple_benchmark' not in sys.argv else None)
     else:
         print("PDL is not supported on this device")
