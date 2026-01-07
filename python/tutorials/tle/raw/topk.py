@@ -2,9 +2,8 @@ from mlir.dialects import arith, memref, nvvm, scf
 from mlir import ir
 import torch
 import triton
-from triton.experimental import flagtree
-from triton.experimental.flagtree.edsl import dialect, Input, InOut
-import triton.experimental.flagtree.language as fl
+from triton.experimental.tle.raw import dialect, InOut, Input
+import triton.experimental.tle.language.raw as tle_raw
 import triton.language as tl
 
 
@@ -75,7 +74,7 @@ def edsl(l_threshold_bin_id_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOu
     ],
     key=["S", "K"],
 )
-@flagtree.jit
+@triton.jit
 def kernel_bucket_sort_topk(  # grid(B, BS)
         inputs,  # (B, S) Note: no H because MLA is based on MQA and MHA, not GQA
         indices,  # (B, K) topk index array
@@ -126,8 +125,8 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
     # -----------------------------------
     l_threshold_bin_id_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
     l_new_topk_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
-    l_threshold_bin_id_buf, l_new_topk_buf = fl.call(edsl, [l_threshold_bin_id_buf, l_new_topk_buf],
-                                                     [s_histogram, l_new_topk])
+    l_threshold_bin_id_buf, l_new_topk_buf = tle_raw.call(edsl, [l_threshold_bin_id_buf, l_new_topk_buf],
+                                                          [s_histogram, l_new_topk])
     l_threshold_bin_id = l_threshold_bin_id_buf.max(0)
     l_new_topk = l_new_topk_buf.max(0)
     # -----------------------------------
@@ -202,8 +201,8 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
         # -----------------------------------
         l_threshold_bin_id_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
         l_new_topk_buf = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
-        l_threshold_bin_id_buf, l_new_topk_buf = fl.call(edsl, [l_threshold_bin_id_buf, l_new_topk_buf],
-                                                         [s_histogram, l_new_topk])
+        l_threshold_bin_id_buf, l_new_topk_buf = tle_raw.call(edsl, [l_threshold_bin_id_buf, l_new_topk_buf],
+                                                              [s_histogram, l_new_topk])
         l_threshold_bin_id = l_threshold_bin_id_buf.max(0)
         l_new_topk = l_new_topk_buf.max(0)
         # -----------------------------------

@@ -7,7 +7,7 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
-#include "triton/Dialect/FlagTree/IR/Dialect.h"
+#include "tle/dialect/include/IR/Dialect.h" // flagtree tle
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -116,14 +116,14 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     return true;
   });
 
-  addDynamicallyLegalDialect<triton::flagtree::FlagTreeDialect>(
-      [&](Operation *op) {
-        bool hasLegalRegions = true;
-        for (auto &region : op->getRegions()) {
-          hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
-        }
-        return hasLegalRegions && typeConverter.isLegal(op);
-      });
+  addDynamicallyLegalDialect<triton::tle::TleDialect // flagtree tle
+                             >([&](Operation *op) {
+    bool hasLegalRegions = true;
+    for (auto &region : op->getRegions()) {
+      hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
+    }
+    return hasLegalRegions && typeConverter.isLegal(op);
+  });
 }
 
 bool TritonGPUConversionTarget::isDynamicallyLegal(

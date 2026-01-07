@@ -3,9 +3,8 @@ from mlir.dialects import arith, memref, nvvm, scf
 import torch
 import triton
 import triton.language as tl
-from triton.experimental import flagtree
-from triton.experimental.flagtree.edsl import dialect, InOut, Input
-import triton.experimental.flagtree.language as fl
+from triton.experimental.tle.raw import dialect, InOut, Input
+import triton.experimental.tle.language.raw as tle_raw
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -75,7 +74,7 @@ def edsl(c: InOut["memref<?x?xf32, 3>"], a: Input["memref<?x?xf16, 3>"], b: Inpu
     configs=get_autotune_config(),
     key=['M', 'N', 'K'],
 )
-@flagtree.jit
+@triton.jit
 def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn,
                   BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
                   GROUP_SIZE_M: tl.constexpr, ACTIVATION: tl.constexpr):
@@ -105,7 +104,7 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk,
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
         b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
-        accumulator = fl.call(edsl, [accumulator], [a, b])
+        accumulator = tle_raw.call(edsl, [accumulator], [a, b])
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
     if ACTIVATION == "leaky_relu":

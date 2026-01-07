@@ -12,7 +12,7 @@ from types import ModuleType
 from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, List
 
 from .. import knobs, language
-from .._C.libtriton import ir, gluon_ir, flagtree_ir
+from .._C.libtriton import ir, gluon_ir
 from ..language import constexpr, str_to_ty, tensor, tuple as tl_tuple
 from ..language.core import _unwrap_if_constexpr, base_value, base_type
 # ideally we wouldn't need any runtime component
@@ -303,10 +303,6 @@ class CodeGenerator(ast.NodeVisitor):
             from triton.experimental.gluon.language._semantic import GluonSemantic
             self.builder = gluon_ir.GluonOpBuilder(context)
             self.semantic = GluonSemantic(self.builder)
-        elif extension == "flagtree":
-            from triton.experimental.flagtree.language._semantic import FlagTreeSemantic
-            self.builder = flagtree_ir.FlagTreeOpBuilder(context)
-            self.semantic = FlagTreeSemantic(self.builder)
         else:
             from triton.language.semantic import TritonSemantic
             self.builder = ir.builder(context)

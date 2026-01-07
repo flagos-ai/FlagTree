@@ -426,7 +426,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
     add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                 ${PYTHON_SRC_PATH}/ir.cc
                 ${PYTHON_SRC_PATH}/gluon_ir.cc
-                ${PYTHON_SRC_PATH}/flagtree_ir.cc
                 ${PYTHON_SRC_PATH}/passes.cc
                 ${PYTHON_SRC_PATH}/interpreter.cc
                 ${PYTHON_SRC_PATH}/llvm.cc)

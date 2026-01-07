@@ -257,7 +257,7 @@ class CUDABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         dump_enabled = pm.enable_debug()
         passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 32, opt.num_ctas)
-        passes.flagtree.add_flagtree_convert_arg_to_memdesc(pm)
+        tle.raw_passes.add_tle_convert_arg_to_memdesc(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_process_shared_memory_hint(pm)  # flagtree hints
@@ -381,7 +381,7 @@ class CUDABackend(BaseBackend):
         if CUDABackend.instrumentation:
             CUDABackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
 
-        passes.flagtree.add_flagtree_dsl_region_inline(pm)
+        tle.raw_passes.add_tle_dsl_region_inline(pm)
 
         pm.run(mod)
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)

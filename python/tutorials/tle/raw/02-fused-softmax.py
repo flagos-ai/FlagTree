@@ -3,9 +3,8 @@ from mlir.dialects import arith, math, memref, nvvm, scf
 import torch
 import triton
 import triton.language as tl
-from triton.experimental import flagtree
-from triton.experimental.flagtree.edsl import dialect, InOut, Input
-import triton.experimental.flagtree.language as fl
+from triton.experimental.tle.raw import dialect, InOut, Input
+import triton.experimental.tle.language.raw as tle_raw
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -103,7 +102,7 @@ def edsl(y: InOut["memref<?xf32, 3>"], x: Input["memref<?xf32, 3>"]):  # noqa: F
         scf.yield_([])
 
 
-@flagtree.jit
+@triton.jit
 def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols,
                    BLOCK_SIZE: tl.constexpr):
     row_start = tl.program_id(0)
@@ -117,7 +116,7 @@ def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n
         softmax_output = tl.zeros_like(row)
         output_row_start_ptr = output_ptr + row_idx * output_row_stride
         output_ptrs = output_row_start_ptr + col_offsets
-        softmax_output = fl.call(edsl, [softmax_output], [row])
+        softmax_output = tle_raw.call(edsl, [softmax_output], [row])
         tl.store(output_ptrs, softmax_output, mask=mask)
 
 

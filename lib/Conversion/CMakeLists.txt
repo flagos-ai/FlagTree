@@ -1,4 +1,3 @@
-add_subdirectory(FlagTreeToLLVM)
 add_subdirectory(TritonToTritonGPU)
 add_subdirectory(TritonGPUToLLVM)
 add_subdirectory(TritonInstrumentToLLVM)

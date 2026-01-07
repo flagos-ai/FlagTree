@@ -3,9 +3,8 @@ from mlir.dialects import arith, llvm, nvvm, scf
 import torch
 import triton
 import triton.language as tl
-from triton.experimental import flagtree
-from triton.experimental.flagtree.edsl import dialect, Input
-import triton.experimental.flagtree.language as fl
+from triton.experimental.tle.raw import dialect, Input
+import triton.experimental.tle.language.raw as tle_raw
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -35,7 +34,7 @@ def edsl(output: Input["!llvm.ptr<1>"], x: Input["!llvm.ptr<1>"], y: Input["!llv
         scf.yield_([])
 
 
-@flagtree.jit
+@triton.jit
 def add_kernel(
     x_ptr,
     y_ptr,
@@ -43,7 +42,7 @@ def add_kernel(
     n_elements,
     BLOCK_SIZE: tl.constexpr,
 ):
-    fl.call(edsl, [], [output_ptr, x_ptr, y_ptr, n_elements])
+    tle_raw.call(edsl, [], [output_ptr, x_ptr, y_ptr, n_elements])
 
 
 def add(x: torch.Tensor, y: torch.Tensor):

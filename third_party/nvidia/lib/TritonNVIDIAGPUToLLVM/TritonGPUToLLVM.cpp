@@ -16,20 +16,20 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Membar.h"
-#include "triton/Conversion/FlagTreeToLLVM/DSLRegionOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
-#include "triton/Dialect/FlagTree/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 #include "Allocation.h"
 #include "PatternTritonGPUOpToLLVM.h"
-#include "triton/Conversion/FlagTreeToLLVM/ExtractOpToLLVM.h"
-#include "triton/Conversion/FlagTreeToLLVM/PackOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 
@@ -77,15 +77,15 @@ public:
   }
 };
 
-class FlagTreeLLVMConversionTarget : public ConversionTarget {
+class TleLLVMConversionTarget : public ConversionTarget {
 public:
-  explicit FlagTreeLLVMConversionTarget(MLIRContext &ctx,
-                                        LLVMTypeConverter &typeConverter)
+  explicit TleLLVMConversionTarget(MLIRContext &ctx,
+                                   LLVMTypeConverter &typeConverter)
       : ConversionTarget(ctx) {
     addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect, math::MathDialect,
                     NVVM::NVVMDialect>();
-    addIllegalDialect<flagtree::FlagTreeDialect>();
-    addDynamicallyLegalOp<flagtree::DSLRegionOp, flagtree::YieldOp>(
+    addIllegalDialect<tle::TleDialect>();
+    addDynamicallyLegalOp<tle::DSLRegionOp, tle::YieldOp>(
         [&](Operation *op) -> bool {
           bool hasLegalRegions = true;
           for (auto &region : op->getRegions()) {
@@ -139,14 +139,14 @@ struct ConvertTritonGPUToLLVM
     RewritePatternSet patterns(context);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
     {
-      FlagTreeLLVMConversionTarget target(*context, typeConverter);
+      TleLLVMConversionTarget target(*context, typeConverter);
       RewritePatternSet patterns(context);
-      mlir::triton::flagtree::populateDSLRegionOpToLLVMPatterns(
-          typeConverter, patterns, benefit);
-      mlir::triton::flagtree::populateExtractOpToLLVMPatterns(
-          typeConverter, patterns, benefit);
-      mlir::triton::flagtree::populatePackOpToLLVMPatterns(typeConverter,
+      mlir::triton::tle::populateDSLRegionOpToLLVMPatterns(typeConverter,
                                                            patterns, benefit);
+      mlir::triton::tle::populateExtractOpToLLVMPatterns(typeConverter,
+                                                         patterns, benefit);
+      mlir::triton::tle::populatePackOpToLLVMPatterns(typeConverter, patterns,
+                                                      benefit);
       if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
         return signalPassFailure();
       }
