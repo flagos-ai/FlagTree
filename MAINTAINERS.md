@@ -3,7 +3,7 @@
 | **Github ID** | **Email Address**        |
 | ------------- | ------------------------ |
 | menchunlei    | menchunlei@163.com       |
-| zhzhcookie    | zhengyang@baai.ac.cn     |
+| zhzhcookie    | zhengyang\_pku@163.com   |
 | sunnycase     | sunnycase@live.cn        |
 | hxl0809       | hxl0809@163.com          |
 | i3wanna2      | 15910307812@163.com      |
