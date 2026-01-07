@@ -1,5 +1,7 @@
 //===------------------------ memset.c ------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,6 +13,7 @@
 
 void __Memset(char *dst, int value, int *dst_shape, int *dst_stride, int rank,
               uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmPeripheral *cmd = g_intrinsic()->peripheral_pointer;
   TsmDataMoveInstr inst = {I_CGRA,

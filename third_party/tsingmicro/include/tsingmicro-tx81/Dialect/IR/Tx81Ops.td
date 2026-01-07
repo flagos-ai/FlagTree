@@ -1,6 +1,8 @@
 
 //===---------------------- Tx81Ops.td ------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -94,6 +96,66 @@ def WdmaOp : Tx81Op<"wdma", [
   );
 
   let results = (outs I64:$dst); // The dest address in DDR
+}
+
+def Rdma4dOp : Tx81Op<"rdma4d"> {
+  let arguments = (
+    ins
+    MemRefOrInt:$target,             // The target address in SPM
+    MemRefOrInt:$source,             // The source address in DDR
+    I32:$elem_count,
+    I32:$stride0,
+    I32:$iteration0,
+    I32:$stride1,
+    I32:$iteration1,
+    I32:$stride2,
+    I32:$iteration2,
+    I32Attr:$fmt                     // elem fmt
+  );
+
+  let results = (outs);
+}
+
+def Wdma4dOp : Tx81Op<"wdma4d"> {
+  let arguments = (
+    ins
+    MemRefOrInt:$target,             // The target address in DDR
+    MemRefOrInt:$source,             // The source address in SPM
+    I32:$elem_count,
+    I32:$stride0,
+    I32:$iteration0,
+    I32:$stride1,
+    I32:$iteration1,
+    I32:$stride2,
+    I32:$iteration2,
+    I32Attr:$fmt                     // elem fmt
+  );
+
+  let results = (outs);
+}
+
+def Rdma1dOp : Tx81Op<"rdma1d"> {
+  let arguments = (
+    ins
+    MemRefOrInt:$target,             // The target address in SPM
+    MemRefOrInt:$source,             // The source address in DDR
+    I32:$elem_count,
+    I32Attr:$fmt                     // elem fmt
+  );
+
+  let results = (outs);
+}
+
+def Wdma1dOp : Tx81Op<"wdma1d"> {
+  let arguments = (
+    ins
+    MemRefOrInt:$target,             // The target address in DDR
+    MemRefOrInt:$source,             // The source address in SPM
+    I32:$elem_count,
+    I32Attr:$fmt                     // elem fmt
+  );
+
+  let results = (outs);
 }
 
 def MemCopyOp : Tx81Op<"memcpy", [
@@ -573,6 +635,25 @@ def Tanh : ActivationOp<"tanh", []> {
 def Sigmoid : ActivationOp<"sigmoid", []> {
   let summary = "Logistic sigmoid";
 }
+def GeluNone : ActivationOp<"gelu_none", []> {
+  let summary = "Gaussian Error Linear Unit by None";
+  let arguments = (ins
+    MemRefOrInt:$input,              // Input vector address
+    Arg<MemRefOrInt, "the target memref", [MemWrite]>:$out,  // Out vector address
+    AnySignlessIntegerOrIndex:$elem_count,   // Number of input elements
+    I16Attr:$fmt           // The data format of src & dst
+  );
+}
+def GeluTanh : ActivationOp<"gelu_tanh", []> {
+  let summary = "Gaussian Error Linear Unit by Tanh";
+  let arguments = (ins
+    MemRefOrInt:$input,              // Input vector address
+    Arg<MemRefOrInt, "intermediate buffer", [MemWrite]>:$buffer,// Buffer vector address
+    Arg<MemRefOrInt, "the target memref", [MemWrite]>:$out,  // Out vector address
+    AnySignlessIntegerOrIndex:$elem_count,   // Number of input elements
+    I16Attr:$fmt           // The data format of src & dst
+  );
+}
 def Relu : ActivationOp<"relu", []> {
   let summary = "Rectified linear unit";
 }
@@ -619,7 +700,7 @@ def ReduceSumOp : Reduce<"reduce_sum">;
 def ReduceAvgOp : Reduce<"reduce_avg">;
 def ReduceMaxOp : Reduce<"reduce_max">;
 def ReduceMinOp : Reduce<"reduce_min">;
-
+def ReduceMulOp : Reduce<"reduce_mul">;
 // =============================================================================
 // 4.15. TsmMaskDataMove
 // =============================================================================
@@ -791,10 +872,15 @@ def TF32ToFP32Op : NormalConvertOp<"tf32_fp32", []> {
   let summary = "Data format from tf32 to fp16";
 }
 
+// Ref: mlir/include/mlir/IR/BuiltinTypes.td
 // Micro scaling format conversion operations
 def FP8E4M3ToBF16Op : NormalConvertOp<"fp8E4M3_bf16", []> {
   let summary = "Convert data format from FP8 (4 exponent bits, 3 mantissa bits) to BF16";
 }
+def FP8E4M3FNToBF16Op : NormalConvertOp<"fp8E4M3FN_bf16", []> {
+  let summary = "Convert data format from FP8 (4 exponent bits, 3 mantissa bits) to BF16, with NAN no inf";
+}
+
 def FP8E5M2ToBF16Op : NormalConvertOp<"fp8E5M2_bf16", []> {
   let summary = "Convert data format from FP8 (5 exponent bits, 2 mantissa bits) to BF16";
 }
@@ -802,8 +888,22 @@ def FP4E2M1ToBF16Op : NormalConvertOp<"fp4E2M1_bf16", []> {
   let summary = "Convert data format from FP4 (2 exponent bits, 1 mantissa bit) to BF16";
 }
 
-def MXFPScaleBF16Op : Tx81Op<"MXFP_scale_bf16", []> {
-  let summary = "Scaling up bf16 tensor with e8m0 scale.";
+def FP8E4M3ToFP16Op : NormalConvertOp<"fp8E4M3_fp16", []> {
+  let summary = "Convert data format from FP8 (4 exponent bits, 3 mantissa bits) to FP16";
+}
+def FP8E4M3FNToFP16Op : NormalConvertOp<"fp8E4M3FN_fp16", []> {
+  let summary = "Convert data format from FP8 (4 exponent bits, 3 mantissa bits) to FP16, with NAN no inf";
+}
+
+def FP8E5M2ToFP16Op : NormalConvertOp<"fp8E5M2_fp16", []> {
+  let summary = "Convert data format from FP8 (5 exponent bits, 2 mantissa bits) to FP16";
+}
+def FP4E2M1ToFP16Op : NormalConvertOp<"fp4E2M1_fp16", []> {
+  let summary = "Convert data format from FP4 (2 exponent bits, 1 mantissa bit) to FP16";
+}
+
+class MXFPScaleOp<string mnemonic> : Tx81Op<mnemonic, []> {
+  let summary = "Scaling up bf16/fp16 tensor with e8m0 scale.";
 
   let description = [{
     Performs conversion of MXFP numbers to BF16/FP16 format according to the
@@ -821,6 +921,9 @@ def MXFPScaleBF16Op : Tx81Op<"MXFP_scale_bf16", []> {
 
   let results = (outs Variadic<I64>:$output);  // Output tensor address in SPM
 }
+
+def MXFPScaleBF16Op : MXFPScaleOp<"MXFP_scale_bf16"> {}
+def MXFPScaleFP16Op : MXFPScaleOp<"MXFP_scale_fp16"> {}
 
 // =============================================================================
 // 4.20. TsmPeripheral instructions
@@ -1069,6 +1172,22 @@ def BarrierOp : Tx81Op<"barrier"> {
   let summary = "Synchronizes all work items";
   let description = [{
     The "barrier" op synchronizes all work items.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+def AtomicBarrierInOp : Tx81Op<"atomic_barrier_in", [MemoryEffects<[MemRead, MemAlloc]>]> {
+  let summary = "Synchronizes all work items before input";
+  let description = [{
+    The "barrier in" op synchronizes all work items.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+def AtomicBarrierOutOp : Tx81Op<"atomic_barrier_out", [MemoryEffects<[MemAlloc, MemWrite]>]> {
+  let summary = "Synchronizes all work items after output";
+  let description = [{
+    The "barrier out" op synchronizes all work items.
   }];
   let assemblyFormat = "attr-dict";
 }

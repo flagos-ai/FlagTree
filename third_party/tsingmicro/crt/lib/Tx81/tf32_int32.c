@@ -1,4 +1,6 @@
 //===------------------------ tf32_int32.c --------------------------------===//
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -10,6 +12,7 @@
 
 void __TF32_INT32(uint64_t *src, uint64_t *dst, uint32_t elem_count,
                   RND_MODE round) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmConvert *cmd = g_intrinsic()->convert_pointer;
   TsmConvertInstr inst = {I_CGRA,

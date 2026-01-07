@@ -1,5 +1,7 @@
 //===------------------------ gemm.c --------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -16,6 +18,7 @@ void __Gemm(int64_t *srcA, int64_t *srcB, int64_t *srcBias, int64_t *dst,
             int32_t reluMode, bool enBias, bool enNegScale, int64_t *negScale,
             bool enPosScale, int64_t *posScale, int64_t srcFmt,
             int64_t dstFmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create gemm command buffer.
   TsmGemm *gemm = g_intrinsic()->gemm_pointer;
   TsmNeInstr inst = {I_NEUR,

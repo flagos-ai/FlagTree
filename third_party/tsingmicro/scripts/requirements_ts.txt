@@ -4,3 +4,4 @@ torch==2.7.0
 torchvision
 pytest
 pyyaml
+pybind11

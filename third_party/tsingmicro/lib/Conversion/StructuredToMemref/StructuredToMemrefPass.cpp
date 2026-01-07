@@ -107,11 +107,12 @@ class StructuredToMemrefPass
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
-                    linalg::LinalgDialect, affine::AffineDialect,
-                    scf::SCFDialect, tensor::TensorDialect,
-                    bufferization::BufferizationDialect, triton::TritonDialect,
-                    ttx::TritonTilingExtDialect, memref::MemRefDialect>();
+    registry
+        .insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
+                linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
+                tensor::TensorDialect, bufferization::BufferizationDialect,
+                triton::TritonDialect, ttx::TritonTilingExtDialect,
+                memref::MemRefDialect, mk::MagicKernelDialect>();
   }
 
   void runOnOperation() override {
@@ -125,7 +126,7 @@ public:
         linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
         cf::ControlFlowDialect, tensor::TensorDialect,
         bufferization::BufferizationDialect, ttx::TritonTilingExtDialect,
-        memref::MemRefDialect, addr::AddressDialect, mk::MagicKernelDialect>();
+        memref::MemRefDialect, mk::MagicKernelDialect>();
 
     target.addIllegalOp<tts::LoadOp, tts::StoreOp, tts::MakeTensorPtrOp>();
 

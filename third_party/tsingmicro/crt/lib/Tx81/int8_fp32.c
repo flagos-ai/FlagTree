@@ -1,4 +1,6 @@
 //===------------------------ int8_fp32.c ---------------------------------===//
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -10,6 +12,7 @@
 
 void __INT8_FP32(uint64_t *src, uint64_t *dst, uint32_t zp,
                  uint32_t elem_count) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmConvert *cmd = g_intrinsic()->convert_pointer;
   TsmConvertInstr inst = {I_CGRA,

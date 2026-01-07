@@ -1,5 +1,8 @@
 // ===------------------------ print.c ------------------------------------===//
 
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
+
 // ===---------------------------------------------------------------------===//
 
 // Enable tx8 kernel printf support
@@ -16,7 +19,7 @@ void __Print(const char *__restrict fmt, ...) {
 
   // FIXME: va_list memory layout is specific to the platform.
 #ifndef USE_SIM_MODE
-  monitor_write_log(__FILE__, __func__, __LINE__, (char *)fmt, args);
+  tsm_ep_log(__FILE__, __func__, __LINE__, KCORE_LOG_ERROR, fmt, args);
 #else
   vprintf(fmt, args);
 #endif

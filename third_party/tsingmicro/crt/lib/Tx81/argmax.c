@@ -1,5 +1,7 @@
 //===------------------------ argmax.c ------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,7 +13,30 @@
 
 void __ArgMax(uint64_t *src, uint64_t *dst0, uint64_t *dst1,
               uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
+  volatile void *max_val =
+      (volatile void *)get_spm_memory_mapping((uint64_t)dst0);
+  volatile void *max_idx =
+      (volatile void *)get_spm_memory_mapping((uint64_t)dst1);
+  if (elem_count == 1) {
+    volatile void *src_data =
+        (volatile void *)get_spm_memory_mapping((uint64_t)src);
+    *(uint32_t *)max_idx = 0;
+    switch (fmt) {
+    case Fmt_FP16:
+    case Fmt_BF16:
+      *(uint16_t *)max_val = *(uint16_t *)src_data;
+      break;
+    case Fmt_FP32:
+    case Fmt_TF32:
+      *(uint32_t *)max_val = *(uint32_t *)src_data;
+      break;
+    default:
+      assert(0 && "ArgMax: Unsupport dtype");
+    }
+    return;
+  }
   TsmPeripheral *cmd = g_intrinsic()->peripheral_pointer;
   TsmPeripheralInstr inst = {I_CGRA,
                              {
@@ -29,8 +54,20 @@ void __ArgMax(uint64_t *src, uint64_t *dst0, uint64_t *dst1,
 
   TsmWaitfinish();
 
-  *(float *)dst0 = *(float *)inst.param.wb_data0;
-  *(int32_t *)dst1 = *(int32_t *)inst.param.wb_data1;
+  switch (fmt) {
+  case Fmt_FP16:
+  case Fmt_BF16:
+    *(uint16_t *)max_val = *(uint16_t *)&inst.param.wb_data0;
+    break;
+  case Fmt_FP32:
+  case Fmt_TF32:
+    *(uint32_t *)max_val = *(uint32_t *)&inst.param.wb_data0;
+    break;
+  default:
+    assert(0 && "ArgMax: Unsupport dtype");
+  }
+
+  *(uint32_t *)max_idx = *(uint32_t *)&inst.param.wb_data1;
 
   // Destroy the command buffer.
 }

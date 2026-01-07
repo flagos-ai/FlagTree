@@ -5,6 +5,7 @@ add_triton_library(LinalgToMagicKernel
   DEPENDS
   MagicKernelTableGen
   LinalgToMKConversionPassIncGen
+  TritonUtils
 
   LINK_LIBS PUBLIC
   MLIRArithDialect
@@ -16,4 +17,5 @@ add_triton_library(LinalgToMagicKernel
   MLIRSupport
   TritonIR
   TritonTransforms
+  TritonUtils
 )

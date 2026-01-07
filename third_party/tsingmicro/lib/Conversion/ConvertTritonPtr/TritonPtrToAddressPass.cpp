@@ -160,9 +160,7 @@ public:
     target.addDynamicallyLegalOp<arith::SelectOp>([](auto op) {
       return llvm::all_of(
           llvm::concat<Value>(op->getOperands(), op->getResults()),
-          [&](Value v) {
-            return !mlir::triton::utils::isPtrTypeLike(v.getType());
-          });
+          [&](Value v) { return !mlir::triton::isPtrTypeLike(v.getType()); });
     });
 
     patterns.add<PtrToIntConverter, IntToPtrConverter, SelectOpConverter,
