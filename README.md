@@ -4,6 +4,7 @@
 
 FlagTree is an open source, unified compiler for multiple AI chips project dedicated to developing a diverse ecosystem of AI chip compilers and related tooling platforms, thereby fostering and strengthening the upstream and downstream Triton ecosystem. Currently in its initial phase, the project aims to maintain compatibility with existing adaptation solutions while unifying the codebase to rapidly implement single-repository multi-backend support. For upstream model users, it provides unified compilation capabilities across multiple backends; for downstream chip manufacturers, it offers examples of Triton ecosystem integration. <br>
 Each backend is based on different versions of triton, and therefore resides in different protected branches. All these protected branches have equal status.
+
 |Branch|Vendor|Backend|Triton version|
 |------|------|-------|--------------|
 |[main](https://github.com/flagos-ai/flagtree/tree/main)|NVIDIA<br>AMD<br>x86_64 cpu<br>ILUVATAR（天数智芯）<br>Moore Threads（摩尔线程）<br>KLX<br>MetaX（沐曦股份）<br>HYGON（海光信息）|[nvidia](/third_party/nvidia/)<br>[amd](/third_party/amd/)<br>[triton-shared](https://github.com/microsoft/triton-shared)<br>[iluvatar](/third_party/iluvatar/)<br>[mthreads](/third_party/mthreads/)<br>[xpu](/third_party/xpu/)<br>[metax](/third_party/metax/)<br>[hcu](third_party/hcu/)|3.1<br>3.1<br>3.1<br>3.1<br>3.1<br>3.0<br>3.1<br>3.0|
@@ -13,6 +14,7 @@ Each backend is based on different versions of triton, and therefore resides in 
 |[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|NVIDIA<br>AMD|[nvidia](https://github.com/FlagTree/flagtree/tree/triton_v3.5.x/third_party/nvidia/)<br>[amd](https://github.com/FlagTree/flagtree/tree/triton_v3.5.x/third_party/amd/)|3.5|
 
 ## Latest News
+
 * 2025/12/24 Support pull and install [Wheel](/README.md#non-source-installation).
 * 2025/12/08 Added [enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) backend integration (based on Triton 3.3), and added CI/CD.
 * 2025/11/26 Add FlagTree_Backend_Specialization Unified Design Document [FlagTree_Backend_Specialization](/documents/decoupling/).
@@ -38,14 +40,16 @@ Each backend is based on different versions of triton, and therefore resides in 
 * 2025/06/03 Added [metax](https://github.com/FlagTree/flagtree/tree/main/third_party/metax/) backend integration (based on Triton 3.1), and added CI/CD.
 * 2025/05/22 FlagGems LibEntry adapted to triton_v3.3.x version.
 * 2025/05/21 [FLIR](https://github.com/flagos-ai/flir) began supporting conversion functionality to middle layer.
-* 2025/04/09 Added arm [aipu](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/) backend integration (based on Triton 3.3), provided a torch standard extension [example](https://github.com/flagos-ai/flagtree/blob/triton_v3.3.x/third_party/aipu/backend/aipu_torch_dev.cpp), and added CI/CD.
+* 2025/04/09 Added [aipu](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/) backend integration (based on Triton 3.3), provided a torch standard extension [example](https://github.com/flagos-ai/flagtree/blob/triton_v3.3.x/third_party/aipu/backend/aipu_torch_dev.cpp), and added CI/CD.
 * 2025/03/26 Integrated security compliance scanning.
-* 2025/03/19 Added klx [xpu](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/) backend integration (based on Triton 3.0), and added CI/CD.
+* 2025/03/19 Added [xpu](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/) backend integration (based on Triton 3.0), and added CI/CD.
 * 2025/03/19 Added [mthreads](https://github.com/FlagTree/flagtree/tree/main/third_party/mthreads/) backend integration (based on Triton 3.1), and added CI/CD.
 * 2025/03/12 Added [iluvatar](https://github.com/FlagTree/flagtree/tree/main/third_party/iluvatar/) backend integration (based on Triton 3.1), and added CI/CD.
 
 ## Install from source
+
 Installation dependencies (ensure you use the correct python3.x version):
+
 ```shell
 apt install zlib1g zlib1g-dev libxml2 libxml2-dev  # ubuntu
 cd python; python3 -m pip install -r requirements.txt
@@ -53,25 +57,27 @@ cd python; python3 -m pip install -r requirements.txt
 
 Building and Installation (Recommended for environments with good network connectivity):
 ```shell
-cd python
 # Set FLAGTREE_BACKEND using the backend name from the table above
 export FLAGTREE_BACKEND=${backend_name}  # nvidia/amd/triton-shared do not set it
+cd python  # For Triton 3.1, 3.2, 3.3, you need to enter the python directory to build
 python3 -m pip install . --no-build-isolation -v  # Automatically uninstall triton
 python3 -m pip show flagtree
-cd; python3 -c 'import triton; print(triton.__path__)'
+cd ${ANY_OTHER_PATH}; python3 -c 'import triton; print(triton.__path__)'
 ```
 
 - [Tips for building](/documents/build.md#tips-for-building)
 - [Offline build support: pre-downloading dependency packages](/documents/build.md#offline-build-support)
 
 ## Non-Source Installation
+
 If you do not wish to build from source, you can directly pull and install whl (supports some backends).
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
-python3 -m pip uninstall -y triton    # TODO: automatically uninstall triton
+python3 -m pip uninstall -y triton  # TODO: automatically uninstall triton
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
 ```
+
 |Backend |Install cmd (versions have corresponding git tags)|Triton version|Python version|
 |--------|--------------------------------------------------|--------------|--------------|
 |nvidia  |python3 -m pip install flagtree==0.3.0rc1 $RES            |3.1|3.10, 3.11, 3.12|

@@ -8,7 +8,9 @@ FlagTree 设计的后端统一特化，目的是整合后端接入范式，对�
 得益于 Python 的语法能力，通过统一的接口 spec、spec_func 接入特化函数字符串，特化函数由后端按需添加。当多后端对同一段主干代码有特化需求时，应协调保障多方特化功能。<br>
 
 ## 2. 接口
+
 FlagTree 为 Python 代码的后端特化提供两种接口：spec 接口特化函数实现，spec_func 接口特化函数定义。由于调用了当前活动驱动类中的成员，只能在活动后端发现并激活后使用，因此一般来说只能用于一个局部作用域内。如果用在 py 文件的全局作用域且该文件在启动初期被 import，则会报错。
+
 - python/triton/runtime/driver.py
 ```python
 # flagtree backend specialization
@@ -20,6 +22,7 @@ def spec(function_name: str, *args, **kwargs):
             return func(*args, **kwargs)
     return None
 ```
+
 ```python
 # flagtree backend func specialization
 def spec_func(function_name: str):
@@ -32,7 +35,9 @@ def spec_func(function_name: str):
 ```
 
 ## 3. 后端入口注册
+
 后端驱动类下需添加 spec 成员，注册该后端目录下的特化实现入口（以 iluvatar 后端为例）。注意原有的 utils 成员需改成 property，否则会循环注册。
+
 - third_party/iluvatar/backend/driver.py
 ```python
 class BackendDriver(GPUDriver):
@@ -53,7 +58,9 @@ class BackendDriver(GPUDriver):
 ### 4.1 情形一：特化函数实现（spec）
 
 #### 4.1.1 第一步：调用统一特化
+
 本例中，缺省实现是 return tl.tensor(...)，特化函数起名为 atomic_add_int64。
+
 - python/triton/language/semantic.py
 ```python
 def atomic_add(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, sem: str, scope: str, builder: ir.builder) -> tl.tensor:
@@ -65,6 +72,7 @@ def atomic_add(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, sem: str, scope:
 ```
 
 #### 4.1.2 第二步：注册特化方法
+
 - <strong>third_party/iluvatar/backend/spec/</strong>\_\_init\_\_.py
 ```python
 from .triton.language.semantic import *
@@ -74,6 +82,7 @@ __all__ = [
 ```
 
 #### 4.1.3 第三步：实现特化函数
+
 - <strong>third_party/iluvatar/backend/spec/</strong>triton/language/semantic.py
 ```python
 def atomic_add_int64(sca_ty, builder, val, ptr, mask, sem, scope):
@@ -86,6 +95,7 @@ def atomic_add_int64(sca_ty, builder, val, ptr, mask, sem, scope):
 ### 4.2 情形二：特化函数定义（spec_func）
 
 #### 4.2.1 第一步：调用统一特化
+
 - python/triton/ops/matmul.py
 ```python
 @jit
@@ -100,6 +110,7 @@ class _matmul(torch.autograd.Function):
 ```
 
 #### 4.2.2 第二步：注册特化方法
+
 - <strong>third_party/iluvatar/backend/spec/</strong>\_\_init\_\_.py
 ```python
 from .triton.ops.matmul import *
@@ -109,6 +120,7 @@ __all__ = [
 ```
 
 #### 4.2.3 第三步：实现特化函数
+
 - <strong>third_party/iluvatar/backend/spec/</strong>triton/ops/matmul.py
 ```python
 def matmul_kernel(grid, a, b, c, M, N, K, ...):
@@ -122,10 +134,13 @@ def matmul_kernel(grid, a, b, c, M, N, K, ...):
 ```
 
 ### 4.3 情形三：添加新的方法（例如 spec_semantic_func）
+
 在 python/triton/language/ 目录下常有后端需要添加新的 tl 原语。上文介绍过，spec_func 在例如 semantic.py 的全局 scope 下是不能调用的，因此添加方法需要使用本节介绍的方案。
 
 #### 4.3.1 第一步：调用统一特化
+
 自动遍历后端定义在 core_ext_spec_func_list 列表中的方法，加入到本模块（tl.core）。当然，也可以按需加入到其他模块（例如 tl）。注意对于 semantic.py 方法名需加上 ext_semantic_ 前缀，与 core.py 的重名函数区分开。
+
 - python/triton/language/core.py
 ```python
 def spec_core_func(spec):
@@ -143,6 +158,7 @@ def spec_core_func(spec):
 ```
 
 #### 4.3.2 第二步：注册后端入口
+
 - third_party/ascend/backend/driver.py
 ```python
 class NPUDriver(DriverBase):
@@ -172,6 +188,7 @@ __all__  = [
 ```
 
 #### 4.3.3 第三步：实现特化函数
+
 - <strong>third_party/ascend/backend/spec/</strong>triton/language/core.py
 ```python
 @_tensor_member_fn
@@ -185,9 +202,11 @@ core_ext_spec_func_list = [
 ```
 
 ### 4.4 情形四：修改或新增 tl.math 方法
+
 第一、第二步与 4.3 大体一致，第三步的区别在于应按 Triton 规范实现于 libdevice.py。
 
 #### 4.4.1 第一步：调用统一特化
+
 ```python
 def spec_math_func(spec):
     import sys
@@ -210,6 +229,7 @@ def spec_math_func(spec):
 ```
 
 #### 4.4.2 第二步：注册后端入口
+
 - third_party/ascend/backend/driver.py
 ```python
 class NPUDriver(DriverBase):
@@ -225,6 +245,7 @@ class NPUDriver(DriverBase):
 ```
 
 #### 4.4.3 第三步：实现特化函数
+
 - <strong>third_party/ascend/backend/spec/</strong>triton/language/math.py
 ```python
 import triton.language as language
@@ -236,6 +257,7 @@ math_ext_spec_func_list = [
     "isnan", ...  # 后端向 tl.math 新增的方法
 ]
 ```
+
 - third_party/ascend/language/ascend/libdevice.py
 ```python
 from triton.language import core, semantic
