@@ -85,6 +85,10 @@ print(tabulate.tabulate([
     ["output"] + output.tolist(),
 ]))
 
+import sys
+if '--only_unit_test' in sys.argv:
+    sys.exit(0)
+
 # %%
 # Seeded dropout
 # --------------
