@@ -162,6 +162,8 @@ def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
 
+import sys
+
 def get_cuda_autotune_config():
     return [
         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3,
@@ -395,6 +397,7 @@ if TORCH_HAS_FP8 and is_cuda():
         print("✅ Triton and Torch match")
     else:
         print("❌ Triton and Torch differ")
+
 
 # %%
 # Benchmark
