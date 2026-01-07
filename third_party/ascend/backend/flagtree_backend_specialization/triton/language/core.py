@@ -10,6 +10,7 @@ from triton.language.core import (
     constexpr,
     tensor,
     range,
+    float32,
     check_bit_width,
     _unwrap_if_constexpr,
     add,
@@ -18,6 +19,15 @@ from triton.language.core import (
 )
 
 from .tensor_descriptor import tensor_descriptor, tensor_descriptor_base
+
+try:
+    import acl
+    is_compile_on_910_95 = acl.get_soc_name().startswith("Ascend910_95")
+except Exception as e:
+    is_compile_on_910_95 = False
+
+def enable_care_padding_load():
+    return True
 
 def ext_cast_set_overflow_modes():
     return ["trunc", "saturate"]
@@ -151,6 +161,11 @@ def __rmul__(self, other, _builder=None):
     return mul(other, self, sanitize_overflow=False, _builder=_builder)
 
 @builtin
+def __mod__(self, other, _builder=None):
+    other = _unwrap_if_constexpr(other)
+    return semantic.mod(self, other, _builder)
+
+@builtin
 def __lshift__(self, other, _builder=None):
     if self.type.scalar.is_floating():
         raise TypeError(f"unexpected type {self.type.scalar}")
@@ -168,6 +183,16 @@ def __rshift__(self, other, _builder=None):
         return semantic.ashr(self, other, _builder)
     else:
         return semantic.lshr(self, other, _builder)
+
+@builtin
+def flip(ptr, dim=-1, _builder=None, _generator=None):
+    try:
+        dim = int(dim.value) if hasattr(dim, "value") else int(dim)
+    except Exception as e:
+        raise TypeError(f"dim must be an integer (or tl.constexpr int), got {dim!r}") from e
+
+    dim = len(ptr.shape) - 1 if dim == -1 else dim
+    return semantic_spec.ext_semantic_flip(ptr, dim, _builder, _generator)
 
 @builtin
 def compile_hint(ptr, hint_name, hint_val=None, _builder=None):
@@ -326,9 +351,21 @@ def make_tensor_descriptor(
     """
     return semantic_spec.ext_semantic_make_tensor_descriptor(base, shape, strides, block_shape, _builder)
 
+@builtin
+def index_select(src: tensor, idx: tensor, bound, lstdim_blksiz, offsets, numels, _builder=None):
+    """
+    Embedding
+    :src_ptr:
+    :idx:
+    """
+    bound = _constexpr_to_value(bound)
+    lstdim_blksiz = _constexpr_to_value(lstdim_blksiz)
+    return semantic_spec.ext_semantic_embedding_gather(src, idx, bound, lstdim_blksiz, offsets, numels, _builder)
+
 def dtype_to_ir(self, builder: ir.builder) -> ir.type:
-    if self.name.startswith("fp8"):
-        raise ValueError(f'unexpected type fp8.')
+    if not is_compile_on_910_95:
+        if self.name.startswith("fp8"):
+            raise ValueError(f'unexpected type fp8.')
 
     if self.name == 'void':
         return builder.get_void_ty()
@@ -362,6 +399,96 @@ def dtype_to_ir(self, builder: ir.builder) -> ir.type:
         return builder.get_double_ty()
     raise ValueError(f'fail to convert {self} to ir type')
 
+@builtin
+def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, out_dtype=float32, _builder=None, lhs_k_pack=True, rhs_k_pack=True):
+    """
+    Returns the matrix product of two blocks in microscaling format.
+    lhs and rhs use microscaling formats described here:
+    https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
+    :param lhs: The first tensor to be multiplied.
+    :type lhs: 2D tensor of f8, f6 or f4 format packed in int32 format.
+    :param lhs_scale: Scale factor for lhs tensor.
+    :type lhs_scale: ue8m0 float8 type (currently represented as an int8 tensor).
+    :param lhs_format: format of the lhs tensor, available formats: {:code:`e4m3`, :code: `e5m2`, :code:`e2m3`, :code:`e3m2`, :code:`e2m1`}.
+    :param rhs: The second tensor to be multiplied.
+    :type rhs: 2D tensor of f8, f6 or f4 format packed in int32 format.
+    :param rhs_scale: Scale factor for rhs tensor.
+    :type rhs_scale: ue8m0 float8 type (currently represented as an int8 tensor).
+    :param rhs_format: format of the rhs tensor, available formats: {:code:`e4m3`, :code: `e5m2`, :code:`e2m3`, :code:`e3m2`, :code:`e2m1`}.
+    :param acc: The accumulator tensor. If not None, the result is added to this tensor.
+    """
+    out_dtype = _constexpr_to_value(out_dtype)
+    assert out_dtype == float32, "Only float32 is supported for out_dtype at the moment"
+    return semantic.dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, out_dtype, _builder, lhs_k_pack, rhs_k_pack)
+
+class range():
+    """
+    Iterator that counts upward forever.
+
+    .. highlight:: python
+    .. code-block:: python
+
+        @triton.jit
+        def kernel(...):
+            for i in tl.range(10, num_stages=3):
+                ...
+    :note: This is a special iterator used to implement similar semantics to Python's :code:`range` in the context of
+        :code:`triton.jit` functions. In addition, it allows user to pass extra attributes to the compiler.
+    :param arg1: the start value.
+    :param arg2: the end value.
+    :param step: the step value.
+    :param num_stages: pipeline the loop into this many stages (so there are
+        :code:`num_stages` iterations of the loop in flight at once).
+
+        Note this is subtly different than passing :code:`num_stages` as a
+        kernel argument.  The kernel argument only pipelines loads that feed
+        into :code:`dot` operations, while this attribute tries to pipeline most
+        (though not all) loads in this loop.
+    :param loop_unroll_factor: Tells the Triton IR level loop unroller how many
+        times to unroll a for loop that this range is used with. Less than 2 for
+        this value implies no unrolling.
+    :param disallow_acc_multi_buffer: If true, prevent the accumulator of the dot
+        operation in the loop to be multi-buffered, if applicable.
+    :param flatten: automatically flatten the loop nest starting at this loop to
+        create a single flattened loop. The compiler will try to pipeline the
+        flattened loop which can avoid stage stalling.
+    :param warp_specialize: Enable automatic warp specialization on the loop.
+        The compiler will attempt to partition memory, MMA, and vector
+        operations in the loop into separate async partitions. This will
+        increase the total number of warps required by the kernel.
+    :param disable_licm: Tells the compiler it shouldn't hoist loop invariant
+        code outside the loop. This is often useful to avoid creating long liveranges
+        within a loop.
+
+        Note that warp specialization is only supported on Blackwell GPUs and
+        only works on simple matmul loops. Support for arbitrary loops will be
+        expanded over time.
+    """
+
+    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
+                 disallow_acc_multi_buffer=False, flatten=False, warp_specialize=False, disable_licm=False):
+        if step is None:
+            self.step = constexpr(1)
+        else:
+            self.step = step
+        if arg2 is None:
+            self.start = constexpr(0)
+            self.end = arg1
+        else:
+            self.start = arg1
+            self.end = arg2
+        self.num_stages = num_stages
+        self.loop_unroll_factor = loop_unroll_factor
+        self.disallow_acc_multi_buffer = disallow_acc_multi_buffer
+        self.flatten = flatten
+        self.warp_specialize = warp_specialize
+        self.disable_licm = disable_licm
+
+    def __iter__(self):
+        raise RuntimeError("tl.range can only be used in @triton.jit'd functions")
+
+    def __next__(self):
+        raise RuntimeError("tl.range can only be used in @triton.jit'd functions")
 
 class parallel(range):
     """
@@ -379,8 +506,14 @@ class parallel(range):
 
 core_ext_spec_func_list = [
     "gather", "insert_slice", "extract_slice", "get_element", "__add__",
-    "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__", "__lshift__",
+    "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__", "__mod__", "__lshift__",
     "__rshift__", "compile_hint", "sort", "multibuffer", "sync_block_all",
     "sync_block_set", "sync_block_wait", "load_tensor_descriptor",
-    "store_tensor_descriptor", "make_tensor_descriptor", "dtype_to_ir", "parallel"
+    "store_tensor_descriptor", "make_tensor_descriptor", "dtype_to_ir", "parallel",
+    "index_select", "dot_scaled", "range"
+]
+
+core_tensor_ext_spec_func_list = [
+    "__add__", "__radd__", "__sub__", "__rsub__", "__mul__",
+    "__rmul__", "__mod__", "__lshift__", "__rshift__"
 ]

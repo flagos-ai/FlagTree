@@ -106,10 +106,7 @@ tt.func public @addptr_bitcast_bool_1_scalar(%arg0: !tt.ptr<i1>, %arg1: !tt.ptr<
   // CHECK: %[[VAL_c0:.*]] = arith.constant 0 : index
   // CHECK: %[[RECAST0:.*]] = memref.reinterpret_cast [[ARG_0:%.+]] to offset: [0], sizes: [1], strides: [1] : memref<?xi8> to memref<1xi8, strided<[1]>>
   %0 = tt.bitcast %arg0 : !tt.ptr<i1> -> !tt.ptr<i8>
-  // CHECK:           %[[ALLOC:.*]] = memref.alloc() : memref<1xi8>
-  // CHECK:           memref.copy %[[RECAST0]], %[[ALLOC]] : memref<1xi8, strided<[1]>> to memref<1xi8>
-  // CHECK:           %[[TENSOR:.*]] = bufferization.to_tensor %[[ALLOC]] restrict writable : memref<1xi8>
-  // CHECK:           %[[VAL_0:.*]] = tensor.extract %[[TENSOR]]{{\[}}%[[VAL_c0]]] : tensor<1xi8>
+  // CHECK: %[[VAL_0:.*]] =  memref.load %reinterpret_cast[%[[VAL_c0]]] : memref<1xi8, strided<[1]>>
   %1 = tt.load %0 : !tt.ptr<i8>
   %2 = tt.addptr %arg1, %c0_i32 : !tt.ptr<i1>, i32
   %3 = tt.bitcast %2 : !tt.ptr<i1> -> !tt.ptr<i8>

@@ -1,3 +1,23 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 import math
 import pytest
 import torch
@@ -7,6 +27,7 @@ import triton.language as tl
 
 import test_common
 from test_common import TestUtils
+import numpy as np
 filtered_dtype = [dtype for dtype in TestUtils.full_dtype if dtype not in {'uint32', 'bfloat16', 'int8', 'bool'}]
 
 
@@ -391,3 +412,64 @@ def test_atomic_cas_1d(x_dtype_str, shape):
     expected = torch.where(out_temp == c_temp[0:shape[0]], x_temp[0:shape[0]], out_temp)
     expected = torch.where(expected == c_temp[shape[0]:(x_shape[0])], x_temp[shape[0]:(x_shape[0])], expected)
     torch.testing.assert_close(out, expected)
+    
+
+@pytest.mark.parametrize('param_list',
+                         [
+                             ['uint16', (32, 32), 2],
+                             ['uint32', (32, 32), 2],
+                             ['uint64', (32, 32), 2],
+                         ]
+                         )
+def test_atomic_cas_uint(param_list):
+    dtype, shape, ncore = param_list
+    block_size = shape[0] * shape[1] // ncore
+    split_size = shape[0] // ncore
+
+    import random
+    cmp_val = [random.randint(0, 10) for _ in range(ncore)]
+    
+    cmp_cpu_parts = []
+    for i in range(ncore):
+        part = torch.ones(split_size, shape[1], dtype=eval(f'torch.{dtype}')) * cmp_val[i]
+        cmp_cpu_parts.append(part)
+    cmp_cpu = torch.cat(cmp_cpu_parts, dim=0)
+    cmp = cmp_cpu.to("npu")
+  
+    val_cpu = torch.randint(low=0, high=10, size=shape, dtype=eval(f'torch.{dtype}')).cpu()
+    val = val_cpu.to("npu")
+
+    pointer_cpu = torch.randint(low=0, high=10, size=(split_size, shape[1]), dtype=eval(f'torch.{dtype}')).cpu()
+    pointer = pointer_cpu.to("npu")
+    pointer_old_cpu = torch.full_like(pointer_cpu, -10).cpu()
+    pointer_old = pointer_old_cpu.to("npu")
+    pointer_ref_cpu = pointer_cpu.clone()
+    
+    pointer_ref_np = pointer_cpu.numpy()
+    val_np = val_cpu.numpy()
+    for i in range(ncore):
+        val_subview_np = val_np[(i * split_size):((i + 1) * split_size)]
+        pointer_ref_np = np.where(
+            pointer_ref_np == cmp_val[i], 
+            val_subview_np, 
+            pointer_ref_np
+        )
+    pointer_ref_cpu = torch.from_numpy(pointer_ref_np)
+    pointer_ref = pointer_ref_cpu.to("npu")
+
+    @triton.jit
+    def atomic_cas_uint(in_ptr0, in_ptr1, out_ptr0, out_ptr1, n_elements, BLOCK_SIZE: tl.constexpr):
+        xoffset = tl.program_id(0) * BLOCK_SIZE
+        xindex = xoffset + tl.arange(0, BLOCK_SIZE)[:]
+        yindex = tl.arange(0, BLOCK_SIZE)[:]
+        xmask = xindex < n_elements
+        x0 = xindex
+        x1 = yindex
+        val = tl.load(in_ptr0 + (x0), xmask)
+        cmp = tl.load(in_ptr1 + (x0), xmask)
+        tmp1 = tl.atomic_cas(out_ptr0 + (x1), cmp, val)
+        tl.store(out_ptr1 + (x1), tmp1, xmask)
+
+    n_elements = shape[0] * shape[1]
+    atomic_cas_uint[ncore, 1, 1](val, cmp, pointer, pointer_old, n_elements, BLOCK_SIZE=split_size * shape[1])
+    test_common.validate_cmp(dtype, pointer, pointer_ref)

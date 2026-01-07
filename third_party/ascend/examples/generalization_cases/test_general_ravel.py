@@ -1,5 +1,23 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 
 import triton
 import triton.language as tl
@@ -146,3 +164,33 @@ def test_ravel_4d_5d(shape, dtype):
     triton_ravel_4d_5d[grid](output, x, *blocks, *blocks, *strides)
 
     test_common.validate_cmp(dtype, ans, output)
+
+@triton.jit
+def fn_npu_dtype(output_ptr, x_ptr,XB : tl.constexpr,YB : tl.constexpr,ZB : tl.constexpr):
+    xidx=tl.arange(0,XB)
+    yidx=tl.arange(0,YB)
+    zidx=tl.arange(0,ZB)
+
+    idx=xidx[:,None,None]*YB*ZB+yidx[None,:,None]*ZB+zidx[None,None,:]
+
+    X = tl.load(x_ptr+idx)
+
+    ret = tl.ravel(X)
+
+    oidx=tl.arange(0,XB*YB*ZB)
+    tl.store(output_ptr+oidx,ret)
+
+@pytest.mark.parametrize('sigtype, dtype, XB, YB, ZB',
+                        [
+                           ('bfloat16',torch.bfloat16,2,8,4),
+                           ('uint8',torch.uint8,1,256,16),
+                           ('bool',torch.bool,1,1,2),
+                        ]
+                        )
+def test_ravel_u(sigtype, dtype, XB, YB, ZB):
+    x = test_common.generate_tensor((XB,YB,ZB), sigtype).npu()
+    ans = torch.ravel(x)
+    output = test_common.generate_tensor((1,XB*YB*ZB), sigtype).npu()
+    output = output.reshape(-1)
+    fn_npu_dtype[1,1,1](output,x, XB, YB, ZB)
+    test_common.validate_cmp(sigtype,output,ans)

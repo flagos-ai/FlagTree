@@ -8,36 +8,24 @@ inductor_skip_list=(
   "test_lazy_register.py"
 )
 
-TEST_inductor="${WORKSPACE}/ascend/examples/inductor_cases"
+TEST_inductor="${WORKSPACE}/triton-ascend/ascend/examples/inductor_cases"
 # 定义统计文件路径
-SUMMARY_FILE="${WORKSPACE}/ascend/examples/summary.txt"
+SUMMARY_FILE="${WORKSPACE}/triton-ascend/ascend/examples/summary.txt"
 
 # install daily torch_npu
 current_date=$(date +%Y%m%d)
-wget https://pytorch-package.obs.cn-north-4.myhuaweicloud.com/pta/Daily/v2.6.0/${current_date}.3/pytorch_v2.6.0_py311.tar.gz
+wget https://pytorch-package.obs.cn-north-4.myhuaweicloud.com/pta/Daily/v2.6.0/${current_date}.2/pytorch_v2.6.0_py311.tar.gz
 tar -zxvf pytorch_v2.6.0_py311.tar.gz
 pip install *.dev${current_date}-cp311-cp311-manylinux_2_28_aarch64.whl
 
-# remove inductor and triton cache
-if [ -d /tmp/torchinductor_* ];then
-  rm -rf /tmp/torchinductor_*
-fi
-
-if [ -d ~/.triton/dump ];then
-  rm -rf ~/.triton/dump
-fi
-
-if [ -d ~/.triton/cache ];then
-  rm -rf ~/.triton/cache
-fi
-
 cd ${TEST_inductor}
 git init
-git remote add origin http://gitee.com/ascend/pytorch.git
+git remote add origin https://gitcode.com/Ascend/pytorch.git
 git config core.sparsecheckout true
 echo "test/_inductor" >> .git/info/sparse-checkout
 git pull origin v2.6.0:master
 TEST_inductor_cases_path="${TEST_inductor}/test/_inductor"
+cp ../conftest.py ${TEST_inductor_cases_path}
 cd ${TEST_inductor_cases_path}
 export PYTHONPATH="${PYTHONPATH}:${TEST_inductor_cases_path}"
 
@@ -59,7 +47,7 @@ INDUCTOR_CASE_LOG_FILE="$LOG_DIR/test_inductor_case_$(date +%Y%m%d).log"
 start_time=$(date +"%Y-%m-%d %H:%M:%S")
 
 # 执行测试并生成JUnit报告
-pytest -n 16 --dist=loadfile . \
+python -m pytest -n 16 --dist=loadfile . \
   --junitxml="$LOG_DIR/results.xml" \
   2>&1 | tee "$INDUCTOR_CASE_LOG_FILE"
 
@@ -132,7 +120,6 @@ inductor 测试用例结果摘要:
 错误用例:       $error_tests
 ------------------------
 通过率:         ${pass_rate}% (成功/总数)
-并行度:         16个进程
 ------------------------
 "
 
@@ -143,7 +130,7 @@ echo "$stats_summary"
 echo "$stats_summary" >> $SUMMARY_FILE
 
 # 保存原始日志文件
-cp "$INDUCTOR_CASE_LOG_FILE" "/home/daily_log/"
+cp "$INDUCTOR_CASE_LOG_FILE" "/home/pr_test_log"
 
 # 清理临时文件
 rm -rf "$LOG_DIR"

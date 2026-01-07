@@ -1,5 +1,24 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+
 import pytest
 
 import triton
@@ -232,7 +251,6 @@ def fn_broadcast_to_multi_d(to_ptr, from_ptr, F_L: tl.constexpr, F_M: tl.constex
 
     tl.store(to_ptr + to_offsets, ret_data)
 
-
 @pytest.mark.shape_4d_5d
 @pytest.mark.parametrize('shapes', [
     [(1, 64, 16, 1), (2, 64, 16, 2)],
@@ -279,3 +297,24 @@ def test_broadcast_to_5d(shapes, dtype):
         triton_to_shape.append(None)
     fn_broadcast_to_multi_d[grid](y, x, *triton_from_shape, *triton_to_shape)
     assert(torch.equal(y, expected))
+
+XS : tl.constexpr = 2
+YS : tl.constexpr = 4
+ZS : tl.constexpr = 8
+NUMEL : tl.constexpr = XS * ZS
+
+@triton.jit
+def fn_broadcast_to(output_ptr, input_ptr, length):
+    col_offsets = tl.arange(0, NUMEL)
+    input = tl.load(input_ptr + col_offsets)
+    result = input.reshape((XS, 1, ZS)).broadcast_to((XS, YS, ZS)).reshape((XS * YS * ZS))
+    brc_col_offsets = tl.arange(0, NUMEL * YS)
+    tl.store(output_ptr + brc_col_offsets, result)
+
+@pytest.mark.parametrize('dtype', ["uint8","int8","int16","int32", "int64", "float16", "float32", "bfloat16","bool"])
+def test_broadcast_to_alltype(dtype):
+    length = NUMEL
+    input = test_common.generate_tensor((XS, 1, ZS), dtype).npu()
+    output = test_common.generate_tensor((XS,YS,ZS), dtype).npu()
+    fn_broadcast_to[1,1,1](output, input, length, debug=True)
+    assert(torch.equal(output, input.repeat(1, YS, 1)))

@@ -1,7 +1,17 @@
-from typing import List
+from typing import List, Optional, Union, Tuple
+import numbers
 import triton.language as tl
 from triton._C.libtriton import ir
-from triton.language.semantic import to_tensor, bitcast, wrap_tensor, cast
+import triton.language.core as core
+import triton.language.standard as standard
+from triton.language.semantic import (
+    to_tensor,
+    bitcast,
+    wrap_tensor,
+    cast, not_equal,
+    permute, reshape,
+    _canonicalize_boundary_check
+)
 from triton.language._utils import TRITON_MAX_TENSOR_NUMEL
 from .tensor_descriptor import (
     _unwrap_if_constexpr,
@@ -9,6 +19,26 @@ from .tensor_descriptor import (
     block_type,
     tensor_descriptor
 )
+
+try:
+    import acl
+    is_compile_on_910_95 = acl.get_soc_name().startswith("Ascend910_95")
+except Exception as e:
+    is_compile_on_910_95 = False
+
+def ret_if_not_create_int_cast(src_sca_ty, dst_sca_ty, input, builder):
+    if not is_compile_on_910_95 and \
+        (src_sca_ty.is_int_unsigned() or dst_sca_ty.is_int_unsigned()) and \
+        src_sca_ty.int_bitwidth >= dst_sca_ty.int_bitwidth:
+        return cast(cast(input, tl.float32, builder), dst_sca_ty, builder)
+    return None
+
+def check_arange_range_power_of_two(range, builder):
+    # Check if compile_mode is simt, then range must be a power of 2
+    if builder.is_simt_mode():
+        # Check if range is a power of 2
+        if (range & (range - 1)) != 0:
+            raise ValueError("arange's range must be a power of 2")
 
 def arange_disable_check_power_of_two():
     return True
@@ -23,9 +53,10 @@ def is_cast_src_dst_scalar_type_equal(src_sca_ty, dst_sca_ty):
     return False
 
 def check_unsupported_fp8_fp64(src_sca_ty, dst_sca_ty):
-    if (src_sca_ty.is_fp8() or dst_sca_ty.is_fp8()) or (src_sca_ty.is_fp64() or dst_sca_ty.is_fp64()):
-        raise ValueError("[fp8, fp64] is unsupported on Ascend for now."
-                         "Source scalar type is " + str(src_sca_ty) + " and destination type is " + str(dst_sca_ty))
+    if not is_compile_on_910_95:
+        if (src_sca_ty.is_fp8() or dst_sca_ty.is_fp8()) or (src_sca_ty.is_fp64() or dst_sca_ty.is_fp64()):
+            raise ValueError("[fp8, fp64] is unsupported on Ascend for now."
+                            "Source scalar type is " + str(src_sca_ty) + " and destination type is " + str(dst_sca_ty))
 
 def ext_dot_operand_types():
     return (tl.int1,)
@@ -36,7 +67,7 @@ def dot_check_hf32_input_precision(input_precision, ir, lhs, rhs, ret_scalar_ty)
             raise ValueError("input_precision = 'hf32' must be used with f32 * f32 = f32 on Ascend")
 
 def dot_disable_check_max_num_imprecise_acc():
-    return True
+    print("max_num_imprecise_acc in tl.dot is not supported on Ascend yet. Thus it is ignored.")
 
 def reset_dot_max_num_imprecise_acc():
     return 0
@@ -62,8 +93,8 @@ def check_unexpected_dtype_bool(dtype):
     if dtype.is_bool():
         raise TypeError(f"Unexpected dtype {dtype}")
 
-def set_load_legacy_other_input(other, builder):
-    if other is None:
+def set_load_legacy_other_input(other, mask, care_padding, builder):
+    if mask is not None and other is None and care_padding == True:
         return to_tensor(0, builder)
     return other
 
@@ -76,18 +107,6 @@ def set_attr_was_bool_to_int8(ret, is_bool):
 
 def atomic_disable_original_check():
     return True
-
-def ext_atomic_element_typechecking(element_ty, op):
-    # Add `tl.int64` restriction for NPU
-    if element_ty in [tl.int1, tl.int64, tl.float16, tl.float32, tl.float64, tl.bfloat16] and op in ['or', 'xor']:
-        raise ValueError(f"atomic_{op} does not support {str(element_ty)}. "
-                         "All support dtypes are int8, int16, int32.")
-    if element_ty in [tl.int1, tl.int64, tl.float64, tl.bfloat16] and op == 'xchg':
-        raise ValueError(f"atomic_{op} does not support {str(element_ty)}. "
-                         "All support dtypes are int8, int16, int32, float16, float32.")
-    if element_ty in [tl.int1, tl.int64, tl.float64]:
-        raise ValueError(f"atomic_{op} does not support {str(element_ty)}. "
-                         "All support dtypes are int8, int16, int32, float16, float32, bfloat16.")
 
 def atomic_cas_disable_element_bitwidth_check():
     return True
@@ -116,6 +135,17 @@ def is_float_format_support_bf16():
 
 def is_float_format_support_fp16():
     return True
+
+def floating_mod_returning_tensor(builder, input, other):
+    return tl.tensor(builder.create_mod(input.handle, other.handle), input.type)
+
+def logical_check_int1_bitcast(input, dst_sca_ty, dst_bits, builder):
+    src_sca_ty = input.type.scalar
+    src_bits = src_sca_ty.primitive_bitwidth
+    if src_bits == dst_bits or src_sca_ty.is_ptr() or dst_sca_ty.is_ptr():
+        input = bitcast(input, tl.dtype("int1"), builder)
+    else:
+        input = not_equal(input, 0, builder)
 
 def ext_dot_scaled_validate_lhs_dtype(lhs):
     assert lhs.dtype == tl.bfloat16 or lhs.dtype == tl.float16, f"lhs matrix dtype must be bf16 or fp16"
@@ -153,6 +183,19 @@ def check_dot_scaled_lhs_scale_dtype(lhs_scale):
 def check_dot_scaled_rhs_scale_dtype(rhs_scale, rhs_scale_is_none):
     if not rhs_scale_is_none:
         assert isinstance(rhs_scale, tl.tensor) and rhs_scale.dtype == tl.int8, f"rhs_scale must be int8 tensor"
+
+def dot_scaled_lrhs_k_pack(lhs_k_pack, rhs_k_pack, builder):
+    if lhs_k_pack == False:
+        dims = (1, 0)
+        dims = core._unwrap_iterable(dims)
+        tmp_lhs = permute(lhs, dims, builder)
+        lhs = reshape(tmp_lhs, (lhs.shape[0], lhs.shape[1]), True, builder)
+
+    if rhs_k_pack == False:
+        dims = (1, 0)
+        dims = core._unwrap_iterable(dims)
+        tmp_rhs = permute(rhs, dims, builder)
+        rhs = reshape(tmp_rhs, (rhs.shape[0], rhs.shape[1]), True, builder)
 
 def _bitcast_to_fp_type(val, float_format, builder):
     triton_ty = {"e5m2": tl.float8e5, "e4m3": tl.float8e4nv, "bf16": tl.bfloat16, "fp16": tl.float16}.get(float_format)
@@ -194,8 +237,8 @@ def set_dot_scaled_lhs_scale_handle(lhs_scale, lhs_scale_is_none):
 
 def ext_semantic_gather(src: tl.tensor, index: tl.tensor, axis: int, builder: ir.builder) -> tl.tensor:
     assert index.dtype.is_int(), "index must be an integer tensor"
-    if not src.dtype.is_floating():
-        raise ValueError(f"Expected dtype fp16/fp32/bf16, but got {src.dtype}")
+    if not (src.dtype.is_floating() or src.dtype.is_int8()):
+        raise ValueError(f"Expected dtype fp16/fp32/bf16/f8E5M2/f8E4M3FN/int8, but got {src.dtype}")
 
     rank = len(src.type.shape)
     assert len(index.type.shape) == rank, "source and index tensors must have the same rank"
@@ -243,6 +286,9 @@ def ext_semantic_get_element(src: tl.tensor, indice: List[tl.tensor], builder: i
     return wrap_tensor(result, src.type.scalar, None)
 
 def ext_semantic_compile_hint(ptr: tl.tensor, hint_name: str, hint_val, builder: ir.builder):
+    # simt mode does not support hint annotations
+    if builder.is_simt_mode():
+        return
     if not hint_val:
         hint_val = builder.get_unit_attr()
     elif isinstance(hint_val, bool):
@@ -283,11 +329,11 @@ def ext_semantic_sort(ptr: tl.tensor, dim: int, descending, builder: ir.builder)
         values: tl.tensor，排序后的值（类型与输入一致）
     """
 
-    allowed_types = {tl.int8, tl.int16, tl.bfloat16, tl.float16, tl.float32}
+    allowed_types = {tl.int8, tl.int16, tl.bfloat16, tl.float16, tl.float32, tl.int32, tl.int64, tl.float8e4nv, tl.float8e5}
     base_ty = ptr.type.scalar if hasattr(ptr.type, "scalar") else ptr.type
     if base_ty not in allowed_types:
         raise TypeError(
-            f"tt.sort only supports int8, int16, bfloat16, float16, float32, "
+            f"tt.sort only supports int8, int16, bfloat16, float16, float32, int32, int64, float8e4nv, float8e5"
             f"but got {ptr.type}"
         )
 
@@ -390,7 +436,502 @@ def ext_semantic_make_tensor_descriptor(
                                                     [s.handle for s in strides], block_shape, is_signed_int)
     return tensor_descriptor(handle, shape, strides, desc_block_type)
 
+def ext_semantic_index_select_simd(
+    src: tl.tensor,
+    dim: int,
+    index: tl.tensor,
+    src_shape: List[Union[int, tl.tensor]],
+    src_offset: List[Union[int, tl.tensor]],
+    read_shape: List[Union[int, tl.tensor]],
+    builder: ir.builder
+) -> tl.tensor:
+    """
+    Index select operation (SIMD version) that loads data from multiple indices along a dimension.
+
+    Args:
+        src: Source tensor pointer (in GM)
+        dim: Dimension along which to select indices
+        index: 1D tensor of indices to select (in UB)
+        src_shape: Complete shape of source tensor. Each element can be int or tensor.
+        src_offset: Starting offset for reading. Each element can be int or tensor.
+        read_shape: Size to read (tile shape). Each element can be int or tensor.
+        builder: IR builder
+
+    Returns:
+        Result tensor in UB
+
+    Constraints:
+        - read_shape[dim] must be -1
+        - src_offset[dim] can be -1 (ignored)
+        - All list parameters must have the same length (ndim)
+    """
+    # Validate inputs
+    ndim = len(src_shape)
+    assert len(src_offset) == ndim, \
+        f"src_offset length {len(src_offset)} must match src_shape length {ndim}"
+    assert len(read_shape) == ndim, \
+        f"read_shape length {len(read_shape)} must match src_shape length {ndim}"
+    assert 0 <= dim < ndim, \
+        f"dim={dim} must be in range [0, {ndim})"
+    assert len(index.shape) == 1, \
+        f"index must be 1D tensor, got {len(index.shape)}D"
+    assert dim < ndim - 1, \
+        f"index_select_simd cannot support trailing dimension as dim={dim}, ndim={ndim}"
+
+    newsrc_shape = [o.handle for o in src_shape]
+    newsrc_offset = [o.handle for o in src_offset]
+    # Create output type
+    return_shape = [
+        index.shape[0] if i == dim else read_shape[i]
+        for i in range(ndim)
+    ]
+    element_ty = src.type.element_ty
+    output_ty = tl.block_type(element_ty, return_shape)
+    out = builder.create_index_select_simd(src.handle, index.handle, dim, newsrc_shape, newsrc_offset, read_shape, return_shape)
+    return tl.tensor(out, output_ty)
+
+def ext_semantic__load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder):
+    # Load by a block pointer: pointer_type<block_type<>>
+    # Block pointer can not have mask and other arguments
+    if mask is not None or other is not None:
+        raise ValueError("mask and other arguments cannot be specified for loading block pointers")
+
+    elt_ty = ptr.type.element_ty.element_ty
+    assert elt_ty != tl.int1, "`tl.int1` should be rewrited in `tl.make_block_ptr`"
+    if elt_ty.is_int() and padding == ir.PADDING_OPTION.PAD_NAN:
+        raise ValueError("Padding option `nan` is not supported for integer block pointers")
+
+    # `dst_ty` is de-referenced type of the pointer type
+    dst_ty = ptr.type.element_ty
+
+    # Check `boundary_check` argument
+    boundary_check = _canonicalize_boundary_check(boundary_check, dst_ty.get_block_shapes())
+
+    if boundary_check and padding is None:
+        padding = ir.PADDING_OPTION.PAD_ZERO
+
+    # Build IR
+    return tl.tensor(
+        builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile), dst_ty)
+
+def ext_semantic_flip_simd(ptr: tl.tensor, dim: int, builder: ir.builder):
+    """
+    Triton flip operation for simd
+
+    Args:
+        ptr: tl.tensor, input tensor
+        dim: int, dimension to flip (can be negative, normalized here)
+        builder: ir.builder, underlying IR builder
+    Returns:
+        flipped: tl.tensor, same type and shape as input
+    """
+
+    shape = getattr(ptr, "shape", None)
+    if shape is None or shape == ():
+        shape = getattr(getattr(ptr, "type", None), "shape", None)
+
+    rank = None
+    if shape is not None:
+        try:
+            rank = len(shape)
+        except Exception:
+            rank = len(list(shape))
+
+    if rank is not None:
+        if rank < 1:
+            raise ValueError("tt.flip requires tensor rank >= 1")
+        norm_dim = dim if dim >= 0 else dim + rank
+        if not (0 <= norm_dim < rank):
+            raise ValueError(
+                f"tt.flip got invalid dim={dim} for shape {tuple(shape)}"
+            )
+        dim = norm_dim
+    else:
+        if dim < 0:
+            raise ValueError(
+                "tt.flip with unknown rank requires non-negative dim"
+            )
+
+    flipped_vals = builder.create_flip(ptr.handle, dim)
+    flipped = tl.tensor(flipped_vals, type=ptr.type)
+    return flipped
+
+def _get_flip_dim(dim, shape):
+    dim = _unwrap_if_constexpr(dim)
+    shape = _unwrap_if_constexpr(shape)
+    if dim is None:
+        dim = len(shape) - 1
+    if dim < 0:  # flip doesn't work if dim < 0 because the xor-swap for loop will start/end at the wrong index
+        dim += len(shape)
+    return core.constexpr(dim)
+
+def _log2(i: core.constexpr):
+    log2 = 0
+    n = core.constexpr(i).value
+    while n > 1:
+        n >>= 1
+        log2 += 1
+    return core.constexpr(log2)
+
+def ext_semantic_flip(ptr: tl.tensor, dim: int, builder: ir.builder, generator=None):
+    """
+    Flips a tensor `ptr` along the dimension `dim`.
+
+    :param ptr: the first input tensor
+    :type ptr: tl.tensor
+    :param dim: the dimension to flip along
+    :type dim: int
+    :param generator: the code generator (required for reduce operations)
+    :type generator: generator object
+    """
+
+    # If compile_mode is not simt, use the simd implementation
+    if not builder.is_simt_mode():
+        return ext_semantic_flip_simd(ptr, dim, builder)
+    core.static_assert(-len(ptr.shape) <= dim and dim < len(ptr.shape), _builder=builder)
+    _dim: core.constexpr = _get_flip_dim(dim, ptr.shape)
+    core.static_assert(standard._is_power_of_two(ptr.shape[_dim]), _builder=builder)
+    steps: core.constexpr = _log2(ptr.shape[_dim])
+    # If steps is 0, return the original tensor
+    if steps == 0:
+        return ptr
+    # reshape the swap dimension to (2, 2, ..., 2)
+    idtype = core.get_int_dtype(bitwidth=ptr.dtype.primitive_bitwidth, signed=True)
+    y = core.reshape(ptr.to(idtype, bitcast=True, _builder=builder), ptr.shape.__getitem__(slice(None, _dim)) + [2] * steps + ptr.shape.__getitem__(slice(_dim + 1, None)), _builder=builder)
+    for i in ext_semantic_static_range(steps):
+        y = y.__xor__(standard.xor_sum(y, _dim + i, True, _builder=builder, _generator=generator), _builder=builder)
+    ptr = core.reshape(y, ptr.shape, _builder=builder).to(ptr.dtype, bitcast=True, _builder=builder)
+    return ptr
+
+class ext_semantic_static_range:
+    """
+    Iterator for non-JIT Python functions that need to iterate over constexpr values.
+    This is used in functions like flip that are called during compilation.
+    """
+    def __init__(self, arg1, arg2=None, step=None):
+        if step is None:
+            self.step = core.constexpr(1)
+        else:
+            self.step = step
+        if arg2 is None:
+            self.start = core.constexpr(0)
+            self.end = arg1
+        else:
+            self.start = arg1
+            self.end = arg2
+
+    def __iter__(self):
+        # Extract actual values from constexpr objects for iteration
+        start_val = core._constexpr_to_value(self.start)
+        end_val = core._constexpr_to_value(self.end)
+        step_val = core._constexpr_to_value(self.step)
+        # Store as regular Python integers for iteration
+        self._current = start_val
+        self._end = end_val
+        self._step = step_val
+        return self
+
+    def __next__(self):
+        if self._current >= self._end:
+            raise StopIteration
+        value = self._current
+        self._current += self._step
+        return value
+
+def _convert_elem_to_ir_value(builder, elem, require_i64):
+    if isinstance(elem, int):
+        elem = tl.constexpr(elem)
+    if isinstance(elem, tl.constexpr):
+        if require_i64:
+            assert -2**63 <= elem.value < 2**63, f"Block pointers only support 64 bit `shape/strides`, " \
+                f"got a value {elem.value} which is out of the range"
+            return builder.get_int64(elem.value)
+        else:
+            assert -2**31 <= elem.value < 2**31, f"Block pointers only support 32 bit `offsets/block_shape`, " \
+                f"got a value {elem.value} which is out of the range"
+            return builder.get_int32(elem.value)
+    elif isinstance(elem, tl.tensor):
+        if require_i64:
+            return builder.create_int_cast(elem.handle, builder.get_int64_ty(), elem.dtype.is_int_signed())
+        else:
+            return builder.create_int_cast(elem.handle, builder.get_int32_ty(), elem.dtype.is_int_signed())
+    else:
+        assert False, f"Unsupported element type in shape/strides/offsets: {type(elem)}"
+
+def ext_semantic_embedding_gather(src: tl.tensor, idx: tl.tensor, bound: int, blksiz: int, offsets: Tuple, numels: Tuple, builder: ir.builder) -> tl.tensor:
+    """
+    Embedding
+    :src_ptr:
+    :idx:
+    """
+    assert idx.dtype.is_int(), "index must be an integer tensor"
+    if not src.dtype.element_ty.is_floating():
+        raise ValueError(f"Expected dtype fp16/fp32/bf16, but got {src.dtype.element_ty}")
+
+    require_i64 = idx.dtype.is_int64()
+    # require_i64 = True
+    offsets = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in offsets]
+    numels = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in numels]
+    ret = builder.create_embedding_gather(src.handle, idx.handle, bound, blksiz, offsets, numels)
+    ret_shape = [_unwrap_if_constexpr(s) for s in idx.shape]
+    ret_shape.append(blksiz)
+    return wrap_tensor(ret, src.dtype.element_ty, ret_shape)
+
+def ext_semantic_index_put(
+    ptr: tl.tensor,
+    index: tl.tensor,
+    value: tl.tensor,
+    dim: int,
+    index_boundary: int,
+    end_offset: Tuple,
+    start_offset: Tuple,
+    dst_stride: Tuple,
+    builder: ir.builder
+):
+    """
+    Index put values from a tensor into a destination tensor.
+
+    Index put operation for different tensor ranks:
+    1. 2D index scatter (0 <= dim < 1):
+        1.1 dim = 0
+        out[index[i]][start_offset[1]:end_offset[1]] = value[i][0:end_offset[1]-start_offset[1]]
+    2. 3D index scatter (0 <= dim < 2):
+        2.1 dim = 0
+            out[index[i]][start_offset[1]:end_offset[1]][start_offset[2]:end_offset[2]]
+                = value[i][0:end_offset[1]-start_offset[1]][0:end_offset[2]-start_offset[2]]
+        2.2 dim = 1
+            out[start_offset[0]:end_offset[0]][index[j]][start_offset[2]:end_offset[2]]
+                = value[0:end_offset[0]-start_offset[0]][j][0:end_offset[2]-start_offset[2]]
+
+    Args:
+    - ptr: pointer type, the destination tensor pointer (in GM)
+    - index: tensor, a index to scatter (in UB)
+    - value: tensor, a value to store (in UB)
+    - dim: int32, the dimension to scatter along
+    - index_boundary: int64, the upper boundary for index values
+    - end_offset: tuple of int, the offsets of each dimension for the end of the scatter region
+    - start_offset: tuple of int, the offsets of each dimension for the start of the scatter region
+    - dst_stride: tuple of int, the stride of each dimension of destination tensor
+
+    Constraints:
+    - `ptr` and `value` must have the same rank.
+    - `ptr.dtype` only supports `float16`, `bfloat16`, `float32` currently.
+    - `index` must be an integer tensor. If `index.rank` != 1, it will be reshaped to 1D.
+    - `index.numel` must equal `value.shape[dim]`.
+    - `value` support 2~5D tensors.
+    - `dim` must be valid (0 <= dim < rank(value) - 1).
+    """
+    assert index.dtype.is_int(), "index must be an integer tensor"
+    if not ptr.dtype.element_ty.is_floating():
+        raise ValueError(f"Expected dtype fp16/fp32/bf16, but got {ptr.dtype.element_ty}")
+    if not isinstance(dim, int):
+        raise ValueError("dim must be of type tl.constexpr")
+
+    v_rank = len(value.shape)
+    idx_rank = len(index.shape)
+    if v_rank < 2 or v_rank > 5:
+        raise ValueError(f"value rank must be in [2, 5], got value rank={v_rank}")
+    if dim < 0 or dim >= v_rank - 1:
+        raise ValueError(f"dim must satisfy 0<=dim<value.rank-1 ({v_rank-1}), got dim={dim}")
+
+    if idx_rank != 1:
+        # flatten index to 1D, shape (index.numel,)
+        flat_numel = index.numel
+        index = reshape(index, (flat_numel,), True, builder)
+        idx_rank = 1
+
+    if value.shape[dim] != index.shape[0]:
+        raise ValueError(
+            f"index.numel must equal value.shape[dim], "
+            f"but got index.numel={index.numel.value}, value.shape[dim]={value.shape[dim].value}"
+        )
+
+    require_i64 = index.dtype.is_int64()
+    end_offset = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in end_offset]
+    start_offset = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in start_offset]
+    dst_stride = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in dst_stride]
+
+    if len(end_offset) != v_rank or len(start_offset) != v_rank or len(dst_stride) != v_rank:
+        raise ValueError(f"len(end_offset)==len(start_offset)==len(dst_stride)==value.rank required, "
+                         f"got {len(end_offset)}, {len(start_offset)}, {len(dst_stride)}, {v_rank}")
+
+    return tl.tensor(builder.create_index_put(ptr.handle, index.handle, value.handle, dim,
+                                              index_boundary, end_offset, start_offset, dst_stride), tl.void)
+
+def ext_semantic_gather_out_to_ub(
+    src: tl.tensor,
+    index: tl.tensor,
+    index_boundary: int,
+    dim: int,
+    src_stride: Tuple,
+    end_offset: Tuple,
+    start_offset: Tuple,
+    other: Optional[numbers.Number] = None,
+    _builder: ir.builder = None
+):
+    """
+    Gather from a source tensor in Global Memory (GM) to Unified Buffer (UB)
+    along a specified dimension with out-of-bound handling.
+
+    Gather operation for different tensor ranks:
+    1. 1D index gather:
+        out[i] = src[start_offset[0] + index[i]]
+    2. 2D index gather (0 <= dim < 2):
+        2.1 dim = 0
+            out[i][j] = src[start_offset[0] + index[i][j]][start_offset[1] + j]
+        2.2 dim = 1
+            out[i][j] = src[start_offset[0] + i][start_offset[1] + index[i][j]]
+    3. 3D index gather (0 <= dim < 3):
+        3.1 dim = 0
+            out[i][j][k] = src[start_offset[0] + index[i][j][k]][start_offset[1] + j][start_offset[2] + k]
+        3.2 dim = 1
+            out[i][j][k] = src[start_offset[0] + i][start_offset[1] + index[i][j][k]][start_offset[2] + k]
+        3.3 dim = 2
+            out[i][j][k] = src[start_offset[0] + i][start_offset[1] + j][start_offset[2] + index[i][j][k]]
+
+    Args:
+    - src: pointer type, the source tensor pointer (in GM)
+    - index: tensor, a tensor to gather (in UB)
+    - index_boundary: int64, the upper boundary for index values
+    - dim: int32, the dimension to gather along
+    - src_stride: tuple of int64, the stride of each dimension of src tensor
+    - end_offset: tuple of int32, the end offsets of each dimension for index tensor
+    - start_offset: tuple of int32, the start offsets of each dimension for index tensor
+    - other(Optional): scalar value, the default value when index is out of boundary (in UB)
+
+    Returns:
+        a tensor, with the same shape as `index.shape` (in UB)
+
+    Constraints:
+    - `src` and `index` must have the same rank.
+    - `src.dtype` only supports `float16`, `bfloat16`, `float32` currently.
+    - `index` must be an integer tensor, with rank between 1 and 5.
+    - `dim` must be valid (0 <= dim < rank(index)).
+    - `other` must be a scalar value.
+    - For every dimension `i` not equal to `dim`, `index.size[i]` <= `src.size[i]`.
+    - The output shape is the same as `index.shape`. If `index` is None, \
+        the output tensor will be an empty tensor with the same shape as `index`.
+
+    """
+    assert index.dtype.is_int(), "index must be an integer tensor"
+    if not src.dtype.element_ty.is_floating():
+        raise ValueError(f"Expected dtype fp16/fp32/bf16, but got {src.dtype.element_ty}")
+
+    if not isinstance(index_boundary, int):
+        raise ValueError("index_boundary must be of type tl.constexpr")
+    if not isinstance(dim, int):
+        raise ValueError("dim must be of type tl.constexpr")
+
+    idx_rank = len(index.shape)
+    if idx_rank < 1 or idx_rank > 5:
+        raise ValueError(f"index rank must be in [1, 5], got rank={idx_rank}")
+    if dim < 0 or dim >= idx_rank:
+        raise ValueError(f"dim must satisfy 0<=dim<index.rank ({idx_rank}), got dim={dim}")
+
+    if other is not None:
+        other = cast(other, src.dtype.element_ty, _builder)
+
+    # src stride need to be i64
+    src_stride = [_convert_elem_to_ir_value(_builder, elem, True) for elem in src_stride]
+    # end offset and start offset need to be i32
+    end_offset = [_convert_elem_to_ir_value(_builder, elem, False) for elem in end_offset]
+    start_offset = [_convert_elem_to_ir_value(_builder, elem, False) for elem in start_offset]
+
+    if len(src_stride) != idx_rank or len(end_offset) != idx_rank or len(start_offset) != idx_rank:
+        raise ValueError(f"len(src_stride)==len(end_offset)==len(start_offset)==index.rank required, "
+                         f"got {len(src_stride)}, {len(end_offset)}, {len(start_offset)}, {idx_rank}")
+
+    ret = _builder.create_gather_out_to_ub(
+        src.handle,
+        index.handle,
+        index_boundary,
+        dim,
+        src_stride,
+        end_offset,
+        start_offset,
+        other if other else None
+    )
+    ret_shape = [_unwrap_if_constexpr(s) for s in index.shape]
+    return wrap_tensor(ret, src.dtype.element_ty, ret_shape)
+
+def ext_semantic_scatter_ub_to_out(
+    ptr: tl.tensor,
+    value: tl.tensor,
+    index: tl.tensor,
+    index_boundary: int,
+    dim: int,
+    dst_stride: tuple,
+    end_offset: tuple,
+    start_offset: tuple,
+    _builder=None
+):
+    """
+    Scatter a tile from Unified Buffer (UB) into a destination tensor in Global Memory (GM)
+    along a specified dimension, with index-boundary checking.
+
+    Args:
+    - ptr: pointer type, the destination tensor pointer (in GM)
+    - value: tensor, a tile value to store (in UB)
+    - index: tensor, a tile index to scatter (in UB)
+    - index_boundary: int, the upper boundary for index values
+    - dim: int, the dimension to scatter along
+    - dst_stride: tuple of int, the stride of each dimension of destination tensor
+    - end_offset: tuple of int32, the end offsets of each dimension for index tensor
+    - start_offset: tuple of int32, the start offsets of each dimension for index tensor
+
+    Constraints:
+    - `ptr` and `index` must have the same rank.
+    - `ptr.dtype` only supports `float16`, `bfloat16`, `float32` currently.
+    - `index` must be an integer tensor, with rank between 1 and 5.
+    - `dim` must be valid (0 <= dim < rank(index)).
+    - For every dimension `i` not equal to `dim`, `index.size[i]` <= `ptr.size[i]`.
+    - The output shape is the same as `index.shape`. If `index` is None, \
+        the output tensor will be an empty tensor with the same shape as `index`.
+
+    """
+    assert index.dtype.is_int(), "index must be an integer tensor"
+    if not ptr.dtype.element_ty.is_floating():
+        raise ValueError(f"Expected dtype fp16/fp32/bf16, but got {ptr.dtype.element_ty}")
+
+    if not isinstance(index_boundary, int):
+        raise ValueError("index_boundary must be of type tl.constexpr")
+    if not isinstance(dim, int):
+        raise ValueError("dim must be of type tl.constexpr")
+
+    idx_rank = len(index.shape)
+    if idx_rank < 1 or idx_rank > 5:
+        raise ValueError(f"index rank must be in [1, 5], got rank={idx_rank}")
+    if dim < 0 or dim >= idx_rank:
+        raise ValueError(f"dim must satisfy 0<=dim<index.rank (index.rank={idx_rank}), got dim={dim}")
+
+    # dst stride are always i64
+    dst_stride = [_convert_elem_to_ir_value(_builder, elem, True) for elem in dst_stride]
+    # end offset and start offset need to be i32
+    end_offset = [_convert_elem_to_ir_value(_builder, elem, False) for elem in end_offset]
+    start_offset = [_convert_elem_to_ir_value(_builder, elem, False) for elem in start_offset]
+
+    if len(dst_stride) != idx_rank or len(end_offset) != idx_rank or len(start_offset) != idx_rank:
+        raise ValueError(f"len(dst_stride)==len(end_offset)==len(start_offset)==index.rank required, "
+                         f"got {len(dst_stride)}, {len(end_offset)}, {len(start_offset)}, {idx_rank}")
+
+    return tl.tensor(
+        _builder.create_scatter_ub_to_out(
+            ptr.handle,
+            value.handle,
+            index.handle,
+            index_boundary,
+            dim,
+            dst_stride,
+            end_offset,
+            start_offset
+        ),
+        tl.void
+    )
+
+
 semantic_ext_spec_func_list = [
     "gather", "insert_slice", "extract_slice", "get_element", "compile_hint",
-    "custom_op", "sort", "scalar_constant", "make_scalar", "make_tensor_descriptor"
+    "custom_op", "sort", "scalar_constant", "make_scalar", "make_tensor_descriptor", "index_select_simd",
+    "flip_simd", "flip", "static_range", "embedding_gather", "index_put", "gather_out_to_ub",
+    "scatter_ub_to_out", "_load_block_pointer"
 ]

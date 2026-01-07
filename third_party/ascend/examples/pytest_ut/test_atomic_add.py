@@ -1,3 +1,23 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 import triton
 import triton.language as tl
 import pytest
@@ -30,6 +50,7 @@ def atomic_add_supply(
     x1 = yindex
     tmp0 = tl.load(in_ptr0 + (x0), xmask)
     tmp1 = tl.atomic_add(out_ptr0 + (x1), tmp0, xmask)
+
 @pytest.mark.parametrize('param_list',
                          [
                              ['int16', (32, 32), 2],
@@ -53,26 +74,6 @@ def test_atomic_add(param_list):
     y_ref = x1 + 0
     x1_ref = x1 + ncore * x0_value
 
-    n_elements = shape[0] * shape[1]
-    atomic_add[ncore, 1, 1](x0, x1, y, n_elements, BLOCK_SIZE=split_size * shape[1])
-    test_common.validate_cmp(dtype, x1, x1_ref)
-
-@pytest.mark.parametrize('invalid_param_list',
-                         [
-                             ['int64', (32, 32), 2],
-                         ]
-                         )
-@test_common.raises_with_match(triton.compiler.errors.CompilationError, "not support int64")
-def test_atomic_add_invalid(invalid_param_list):
-    dtype, shape, ncore = invalid_param_list
-    block_size = shape[0] * shape[1] / ncore
-    split_size = shape[0] // ncore
-    x0_value = 3
-    x0 = torch.full(shape, x0_value, dtype = eval(f'torch.{dtype}')).npu()
-    x1 = torch.full((split_size, shape[1]), 2, dtype = eval(f'torch.{dtype}')).npu()
-    y = torch.full((split_size, shape[1]), -10, dtype = eval(f'torch.{dtype}')).npu()
-    y_ref = x1 + 0
-    x1_ref = x1 + ncore * x0_value
     n_elements = shape[0] * shape[1]
     atomic_add[ncore, 1, 1](x0, x1, y, n_elements, BLOCK_SIZE=split_size * shape[1])
     test_common.validate_cmp(dtype, x1, x1_ref)

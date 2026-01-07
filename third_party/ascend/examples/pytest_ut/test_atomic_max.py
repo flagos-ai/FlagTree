@@ -1,3 +1,23 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 import triton
 import triton.language as tl
 import pytest
@@ -39,7 +59,6 @@ def triton_test_fn_atomic_max_dma_supply(
                          [
                              ['int16', (32, 32), 2],
                              ['float16', (32, 32), 2],
-                             ['float32', (32, 32), 2],
                              ['float32', (128, 128), 8],
                              ['float32', (32768, 16), 32],
                              ['int32', (32, 32), 2],
@@ -68,33 +87,6 @@ def test_atomic_max(param_list):
     n_elements = shape[0] * shape[1]
     triton_test_fn_atomic_max_dma[ncore, 1, 1](x0, x1, y, n_elements, BLOCK_SIZE=split_size * shape[1])
     test_common.validate_cmp(dtype, x1, x1_ref)
-
-
-@pytest.mark.parametrize('invalid_param_list',
-                         [
-                             ['int64', (32, 32), 2],
-                         ]
-                         )
-@test_common.raises_with_match(triton.compiler.errors.CompilationError, "not support int64")
-def test_atomic_max_invalid(invalid_param_list):
-    dtype, shape, ncore = invalid_param_list
-    block_size = shape[0] * shape[1] / ncore
-    split_size = shape[0] // ncore
-    x0 = test_common.generate_tensor(shape, dtype)
-    x1 = test_common.generate_tensor((split_size, shape[1]), dtype)
-    y = test_common.generate_tensor((split_size, shape[1]), dtype)
-
-    merged_tensor = torch.cat((x0, x1), dim=0)
-    chunks = torch.stack(torch.chunk(merged_tensor, ncore+1, dim=0))
-    x1_ref = torch.max(chunks, dim=0)[0]
-    x0 = x0.npu()
-    x1 = x1.npu()
-    y = y.npu()
-
-    n_elements = shape[0] * shape[1]
-    triton_test_fn_atomic_max_dma[ncore, 1, 1](x0, x1, y, n_elements, BLOCK_SIZE=split_size * shape[1])
-    test_common.validate_cmp(dtype, x1, x1_ref)
-
 
 @pytest.mark.parametrize('shape', [(3, 1), (13, 1), (32, 1), (256, 1)])
 @pytest.mark.parametrize('dtype', ['float32'])

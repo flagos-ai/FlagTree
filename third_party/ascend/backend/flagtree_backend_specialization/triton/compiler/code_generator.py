@@ -1,3 +1,23 @@
+def ext_CodeGenerator_builder_with_compile_mode(options):
+    return "simt" if options.force_simt_only else "simd"
+
+def for_op_ext_attrs(iterator):
+    return (iterator.disallow_acc_multi_buffer,
+            iterator.flatten,
+            iterator.warp_specialize,
+            iterator.disable_licm)
+
+def for_op_set_ext_attrs(for_op, builder, ext_attrs):
+    disallow_acc_multi_buffer, flatten, warp_specialize, disable_licm = ext_attrs
+    if disallow_acc_multi_buffer:
+        for_op.set_attr("tt.disallow_acc_multi_buffer", builder.get_unit_attr())
+    if flatten:
+        for_op.set_attr("tt.flatten", builder.get_unit_attr())
+    if warp_specialize:
+        for_op.set_attr("tt.warp_specialize", builder.get_unit_attr())
+    if disable_licm:
+        for_op.set_attr("tt.disable_licm", builder.get_unit_attr())
+
 def ext_CodeGenerator_visit_Assign_hint_anno(code_generator, node, names, values):
     import ast
     from triton.compiler.code_generator import _is_triton_value

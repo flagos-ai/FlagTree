@@ -1,3 +1,23 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 import math
 import pytest
 import torch
@@ -7,7 +27,7 @@ import triton.language as tl
 
 import test_common
 from test_common import TestUtils
-filtered_dtype = [dtype for dtype in TestUtils.full_dtype if dtype not in {'uint32', 'float16', 'float32', 'bfloat16', 'int64', 'bool'}]
+filtered_dtype = [dtype for dtype in TestUtils.full_dtype if dtype not in {'float16', 'float32', 'bfloat16', 'bool'}]
 
 
 @triton.jit
@@ -427,21 +447,6 @@ def atomic_and(in_ptr0, out_ptr0, n_elements, BLOCK_SIZE: tl.constexpr,
         tl.atomic_and(out_ptr0 + (out_index), tmp0, xmask, "acq_rel", "test")
 
 
-invalid_types_int = [
-    'int64',
-    'bool'
-]
-
-@pytest.mark.parametrize("sigtype", invalid_types_int)
-@test_common.raises_with_match(triton.compiler.errors.CompilationError, "All support dtypes are int8, int16, int32, float16, float32, bfloat16")
-def test_invalid_types_int(sigtype):
-    N = 32
-    x = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    y = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-
-    atomic_and[1, 1, 1](x, y, 1, 1, 32)
-
-
 invalid_types_float = [
     'float16',
     'float32',
@@ -511,3 +516,49 @@ def test_atomic_sem_vs_scope(sem: str, scope: str):
                          SCOPE=scope)
                          
     torch.testing.assert_close(cur, base)
+
+
+@pytest.mark.parametrize('param_list',
+                         [
+                             ['uint8', (32, 32), 2],
+                             ['uint16', (32, 32), 2],
+                             ['uint32', (32, 32), 2],
+                             ['uint64', (32, 32), 2],
+                         ]
+                         )
+def test_atomic_and_uint(param_list):
+    dtype, shape, ncore = param_list
+    block_size = shape[0] * shape[1] // ncore
+    split_size = shape[0] // ncore
+
+    val_cpu = torch.randint(low=0, high=10, size=shape, dtype=eval(f'torch.{dtype}')).cpu()
+    val = val_cpu.to("npu")
+
+    pointer_cpu = torch.randint(low=0, high=10, size=(split_size, shape[1]), dtype=eval(f'torch.{dtype}')).cpu()
+    pointer = pointer_cpu.to("npu")
+    pointer_old_cpu = torch.full_like(pointer_cpu, -10).cpu()
+    pointer_old = pointer_old_cpu.to("npu")
+    pointer_ref_cpu = pointer_cpu.clone()
+    
+    for i in range(ncore - 1):
+        pointer_ref_cpu &= val_cpu[(i * split_size):((i + 1) * split_size)]
+
+    pointer_ref_last = pointer_ref_cpu.clone()
+    pointer_ref_cpu &= val_cpu[((ncore - 1) * split_size):(ncore * split_size)]
+    pointer_ref = pointer_ref_cpu.to("npu")
+
+    @triton.jit
+    def atomic_and_uint(in_ptr0, out_ptr0, out_ptr1, n_elements, BLOCK_SIZE: tl.constexpr):
+        xoffset = tl.program_id(0) * BLOCK_SIZE
+        xindex = xoffset + tl.arange(0, BLOCK_SIZE)[:]
+        yindex = tl.arange(0, BLOCK_SIZE)[:]
+        xmask = xindex < n_elements
+        x0 = xindex
+        x1 = yindex
+        tmp0 = tl.load(in_ptr0 + (x0), xmask)
+        tmp1 = tl.atomic_and(out_ptr0 + (x1), tmp0, xmask)
+        tl.store(out_ptr1 + (x1), tmp1, xmask)
+
+    n_elements = shape[0] * shape[1]
+    atomic_and_uint[ncore, 1, 1](val, pointer, pointer_old, n_elements, BLOCK_SIZE=split_size * shape[1])
+    test_common.validate_cmp(dtype, pointer, pointer_ref)

@@ -1,5 +1,23 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 
 import triton
 import triton.language as tl
@@ -166,3 +184,35 @@ def test_npu_5d(shape, dtype, dim):
     fn_npu_multi_d[grid](output, x, *triton_shape, len(shape), dim)
 
     torch.testing.assert_close(output, expected)
+
+@triton.jit
+def fn_npu_(output_ptr, x_ptr,XB : tl.constexpr,YB : tl.constexpr,ZB : tl.constexpr):
+    xidx=tl.arange(0,XB)
+    yidx=tl.arange(0,YB)
+    zidx=tl.arange(0,ZB)
+
+    idx=xidx[:,None,None]*YB*ZB+yidx[None,:,None]*ZB+zidx[None,None,:]
+
+    X = tl.load(x_ptr+idx)
+
+    ret = tl.expand_dims(X,2)
+
+    oidx=xidx[:,None,None,None]*YB*ZB+yidx[None,:,None,None]*ZB+tl.arange(0,1)[None,None,:,None]+zidx[None,None,None,:]
+
+    tl.store(output_ptr+oidx,ret)
+
+paras = [
+    ('bfloat16',eval('torch.bfloat16'),1,255,8,8,4),
+    ('uint8',eval('torch.uint8'),1,125,1,256,16),
+    ('uint16',eval('torch.uint16'),1,256,2,2,3),
+    ('uint32',eval('torch.uint32'),1,256,8,8,4),
+    ('uint64',eval('torch.uint64'),1,256,8,8,4),
+    ('bool',eval('torch.bool'),0,2,1,1,2),
+]
+@pytest.mark.parametrize('para_type,data_type,low,top,XB,YB,ZB', paras)
+def test_expand_dims(para_type,data_type,low,top,XB,YB,ZB):
+    x = torch.randint(low=low,high=top,size=(XB,YB,ZB),dtype=data_type).npu()
+    a = x.unsqueeze(2)
+    output = torch.randint(1, (XB,YB,1,ZB), dtype=data_type).npu()
+    fn_npu_[1,1,1](output,x, XB=XB, YB=YB, ZB=ZB, debug=True)
+    test_common.validate_cmp(para_type, output, a)

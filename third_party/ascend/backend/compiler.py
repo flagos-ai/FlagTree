@@ -13,8 +13,10 @@ from typing import Any, Dict, Optional, Tuple, Union
 from triton._C.libtriton import ir, passes, ascend
 from triton.backends.ascend.utils import (
     _check_bishengir_api_change,
+    _check_bishengir_able_save_ir,
     _check_bishengir_is_regbased,
     _enable_unpublished_feature,
+    _enable_print_ub_bits,
     _get_kernel_target,
     _get_llvm_path,
     _get_mlir_path,
@@ -24,6 +26,7 @@ from triton.backends.ascend.utils import (
     _is_debug_line_info_disabled,
     _is_auto_map_parallel_blocks_enabled,
     downgrade_llir,
+    force_disable_ffts,
 )
 from triton.backends.ascend.driver import (
     NPUUtils
@@ -37,6 +40,11 @@ from triton.backends.compiler import (
 from triton.runtime import driver
 from triton.runtime.cache import get_dump_manager
 
+try:
+    import acl
+    is_compile_on_910_95 = acl.get_soc_name().startswith("Ascend910_95")
+except Exception as e:
+    is_compile_on_910_95 = False
 
 # TODO: materialize the concrete min shape
 def min_dot_size(target: GPUTarget):
@@ -56,6 +64,7 @@ def make_ttir(mod, metadata, opt):
     passes.common.add_cse(pm)
     passes.common.add_licm(pm)
     passes.common.add_symbol_dce(pm)
+    passes.ttir.add_loop_unroll(pm)
     pm.run(mod)
     if opt.debug:
         dump_manager = get_dump_manager(metadata["hash"])
@@ -66,28 +75,50 @@ def make_ttir(mod, metadata, opt):
 
 
 def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
+    # use triton_adapter to lower Triton-MLIR to linalg
+    # Get Triton-MLIR as string
     pm = ir.pass_manager(mod.context)
     pm.enable_debug()
+
+    #  metadata.setdefault("enable_select_analysis", False)
+    #  metadata.setdefault("compile_on_910_95", False)
+    #  metadata.setdefault("force_simt_template", False)
+
     enable_nd2nz_on_vector = metadata["enable_nd2nz_on_vector"]
+    enable_select_analysis = metadata["enable_select_analysis"]
+    compile_on_910_95 = metadata["compile_on_910_95"]
+    force_simt_template = metadata["force_simt_template"]
+    enable_linearize = metadata["enable_linearize"]
+
     # Add pass here.
     # ascend.passes.convert.add_triton_to_linalg_pipeline(pm)
-    ascend.passes.convert.add_triton_linearize(pm)
-    ascend.passes.convert.add_triton_discretemaskaccessconversion(pm)
+    if enable_linearize:
+        ascend.passes.convert.add_triton_linearize(pm)
+    ascend.passes.convert.add_triton_discretemaskaccessconversion(
+    pm,
+    compile_on_910_95 = compile_on_910_95,
+    force_simt_template = force_simt_template,
+    )
     ascend.passes.convert.add_triton_to_annotation(pm)
-    ascend.passes.convert.add_triton_to_unstructure(pm)
+    ascend.passes.convert.add_triton_to_unstructure_incubated(
+    pm,
+    compile_on_910_95 = compile_on_910_95,
+    force_simt_template = force_simt_template,
+    )
     ascend.passes.convert.add_triton_to_hivm(pm)
     ascend.passes.convert.add_triton_to_hfusion(pm)
     ascend.passes.convert.add_triton_to_llvm(pm)
     ascend.passes.convert.add_bubble_up_operation(pm)
     ascend.passes.convert.add_triton_to_linalg_incubated(
     pm,
-    global_kernel=False,
-    named_ops=named_ops,
-    enable_nd2nz_on_vector=enable_nd2nz_on_vector
+    global_kernel = False,
+    named_ops = named_ops,
+    enable_nd2nz_on_vector = enable_nd2nz_on_vector,
+    enable_select_analysis = enable_select_analysis,
+    compile_on_910_95 = compile_on_910_95,
     )
     pm.run(mod)
     return str(mod)
-
 
 def linalg_to_llir(linalg: str, metadata, opt):
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -223,6 +254,9 @@ def _parse_linalg_metadata(linalg: str, metadata: dict):
     # Example: mix_mode = "aiv" -> aiv
     MIX_MODE_REGEX = r'mix_mode\s*=\s*"([^"]+)"'
 
+    # Example: parallel_mode = "mix_simd_simt" -> mix_simd_simt
+    PARALLEL_MODE_REGEX = r'parallel_mode\s*=\s*"([^"]+)"'
+
     # Example: func.func @gather_sorted_kernel(%arg0: ...) -> gather_sorted_kernel
     KERNEL_NAME_REGEX = r"func\.func\s+@(\w+)"
 
@@ -237,18 +271,52 @@ def _parse_linalg_metadata(linalg: str, metadata: dict):
     metadata["shared"] = 1
     # the mix mode is also encoded into metadata['name'] for runtime to distinguish
     metadata["mix_mode"] = re.search(MIX_MODE_REGEX, linalg).group(1)
+    metadata["parallel_mode"] = re.search(PARALLEL_MODE_REGEX, linalg).group(1)
     metadata["kernel_name"] = re.search(KERNEL_NAME_REGEX, linalg).group(1)
     # Use while space to split kernel_name and mix_mode.
     # Check the function load_binary in npu_driver.py.
     metadata["name"] = metadata["kernel_name"] + " " + metadata["mix_mode"]
     # Parse all tensor kinds from arguments
     metadata["tensor_kinds"] = [int(kind) for _, kind in re.findall(TENSOR_KIND_REGEX, linalg)]
+    # init the ub bits of triton kernel for inductor autotune using
+    metadata["required_ub_bits"] = 0
     # remove the mix_mode attribute
     linalg = re.sub(REMOVE_MIX_MODE_REGEX, "", linalg)
     return linalg, metadata
 
 
-def linalg_to_bin_enable_npu_compile(linalg: str, metadata, opt):
+def _parse_ttir_metadata(ttir: str, metadata: dict):
+    """
+    Parse TTIR to extract metadata required for NPU compilation.
+    Extracts and updates the following fields in metadata:
+      - kernel_name
+      - shared (currently hardcoded)
+    """
+    # --- Regular expressions and examples ---
+    # Example: tt.func @gather_sorted_kernel(%arg0: ...) -> gather_sorted_kernel
+    KERNEL_NAME_REGEX = r"tt\.func\spublic\s+@(\w+)"
+
+    # Example: %arg1: memref<?xf32> {tt.divisibility = 16 : i32, tt.tensor_kind = 0 : i32} -> ('1', '0')
+    TENSOR_KIND_REGEX = r'%arg(\d+):[^,)]*?\{[^}]*?tt\.tensor_kind\s*=\s*([^:\s}]+)\s*:[^}]*?\}'
+
+    # Note: Compiled Kernel requires to estimate size of shared memory to occupy
+    # Currently, NPU backend does not limit on shared memory
+    metadata["shared"] = 1
+    # Note: Currently, for TTIR inputs, we only support vector kernels.
+    metadata["mix_mode"] = "aiv"
+    metadata["kernel_name"] = re.search(KERNEL_NAME_REGEX, ttir).group(1)
+    metadata["name"] = metadata["kernel_name"] + " " + metadata["mix_mode"]
+    # Parse all tensor kinds from arguments
+    metadata["tensor_kinds"] = [int(kind) for _, kind in re.findall(TENSOR_KIND_REGEX, ttir)]
+    return metadata
+
+
+def get_common_bishengir_compile_options(metadata):
+    bishengir_target = metadata['target'].arch
+    bishengir_target_opt = f"--target={bishengir_target}"
+    return [bishengir_target_opt]
+
+def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
     linalg, metadata = _parse_linalg_metadata(linalg, metadata)
     with tempfile.TemporaryDirectory() as tmpdir:
         ttadapter_path = os.path.join(tmpdir, "kernel.ttadapter.mlir")
@@ -258,26 +326,28 @@ def linalg_to_bin_enable_npu_compile(linalg: str, metadata, opt):
             bin_file_with_ext = "kernel.o"
         else:
             bin_file_with_ext = "kernel_reloc.o"
-        if _check_bishengir_is_regbased():
-            bishengir_hivm_opt = "--reg-based=true"
-        else:
-            bishengir_hivm_opt = "--enable-hivm-compile=true"
         bin_path = os.path.join(tmpdir, bin_file_with_ext)
         callback_path = os.path.join(tmpdir, "libkernel.so")
-        _compile_option_list = []
-        if _enable_unpublished_feature():
-            _compile_option_list += [
-                f"--target={NPUUtils().get_arch()}",
-            ]
+        _compile_option_list = get_common_bishengir_compile_options(metadata)
         multibuffer = metadata["multibuffer"]
         if multibuffer is not None:
             _compile_option_list += [
                 f"--enable-auto-multi-buffer={multibuffer}",
             ]
+        enable_auto_bind_sub_block = metadata["enable_auto_bind_sub_block"]
+        if enable_auto_bind_sub_block is not None:
+            _compile_option_list += [
+                f"--enable-auto-bind-sub-block={enable_auto_bind_sub_block}",
+            ]
+        if force_disable_ffts():
+            _compile_option_list += ["--disable-ffts"]
         if _is_ascend_sanitizer_enabled():
             _compile_option_list += ["--enable-sanitizer=true"]
         if not _is_debug_line_info_disabled():
             _compile_option_list += ["--enable-debug-info=true"]
+
+        if _enable_print_ub_bits():
+            _compile_option_list += ["--enable-print-memory-allocated-size"]
 
         enable_hivm_auto_cv_balance = metadata["enable_hivm_auto_cv_balance"]
         if enable_hivm_auto_cv_balance is not None:
@@ -298,7 +368,7 @@ def linalg_to_bin_enable_npu_compile(linalg: str, metadata, opt):
         if limit_auto_multi_buffer_only_for_local_buffer is not None:
             _compile_option_list += \
                 [f"--limit-auto-multi-buffer-only-for-local-buffer={limit_auto_multi_buffer_only_for_local_buffer}"]
-                
+
         set_workspace_multibuffer = metadata["set_workspace_multibuffer"]
         if set_workspace_multibuffer is not None:
             _compile_option_list += \
@@ -325,6 +395,126 @@ def linalg_to_bin_enable_npu_compile(linalg: str, metadata, opt):
         if npu_compiler_path.endswith("bishengir-compile"):
             _compile_option_list += [
                 "--enable-hfusion-compile=true",
+                "--enable-triton-kernel-compile=true",
+            ]
+        cmd_list = (
+            [npu_compiler_path, ttadapter_path]
+            + _compile_option_list
+            + ["-o", bin_file]
+        )
+
+        ret = subprocess.run(cmd_list, capture_output=True, check=True)
+        match = re.search(r'UB\s+size\s*=\s*(\d+)\s*bits', ret.stdout.decode('utf-8'))
+        if match:
+            # get the ub bits of triton kernel from bisheng for inductor autotune using
+            metadata["required_ub_bits"] = int(match.group(1))
+        if Path(callback_path).is_file():
+            lib = ctypes.CDLL(callback_path)
+            __get_metadata_attr_by_callback(lib, "_infer_workspace_shape_function", metadata, "workspace_size")
+            __get_metadata_attr_by_callback(lib, "_infer_sync_block_lock_num_function", metadata, "lock_num")
+            __get_metadata_attr_by_callback(lib, "_infer_sync_block_lock_init_function", metadata, "lock_init_val")
+
+        return Path(bin_path).read_bytes()
+
+
+def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
+    linalg, metadata = _parse_linalg_metadata(linalg, metadata)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ttadapter_path = os.path.join(tmpdir, "kernel.ttadapter.mlir")
+        Path(ttadapter_path).write_text(linalg)
+        bin_file = os.path.join(tmpdir, "kernel")
+        if _check_bishengir_api_change():
+            bin_file_with_ext = "kernel.o"
+        else:
+            bin_file_with_ext = "kernel_reloc.o"
+        if _check_bishengir_is_regbased():
+            bishengir_hivm_opt = "--reg-based=true"
+        else:
+            bishengir_hivm_opt = "--enable-hivm-compile=true"
+        bin_path = os.path.join(tmpdir, bin_file_with_ext)
+        callback_path = os.path.join(tmpdir, "libkernel.so")
+        _compile_option_list = [
+            f"--target={NPUUtils().get_arch()}",
+        ]
+        multibuffer = metadata["multibuffer"]
+        if multibuffer is not None:
+            _compile_option_list += [
+                f"--enable-auto-multi-buffer={multibuffer}",
+            ]
+        enable_auto_bind_sub_block = metadata["enable_auto_bind_sub_block"]
+        if enable_auto_bind_sub_block is not None:
+            _compile_option_list += [
+                f"--enable-auto-bind-sub-block={enable_auto_bind_sub_block}",
+            ]
+        if _is_ascend_sanitizer_enabled():
+            _compile_option_list += ["--enable-sanitizer=true"]
+        if not _is_debug_line_info_disabled():
+            _compile_option_list += ["--enable-debug-info=true"]
+
+        if _enable_print_ub_bits():
+            _compile_option_list += ["--enable-print-memory-allocated-size"]
+
+        enable_hivm_auto_cv_balance = metadata["enable_hivm_auto_cv_balance"]
+        if enable_hivm_auto_cv_balance is not None:
+            _compile_option_list += \
+                [f"--enable-hivm-auto-cv-balance={enable_hivm_auto_cv_balance}"]
+
+        sync_solver = metadata["sync_solver"]
+        if sync_solver is not None:
+            _compile_option_list += \
+                [f"--enable-hivm-graph-sync-solver={sync_solver}"]
+
+        unit_flag = metadata["unit_flag"]
+        if unit_flag is not None:
+            _compile_option_list += \
+                [f"--enable-hivm-unit-flag-sync={unit_flag}"]
+
+        inject_barrier_all = metadata["inject_barrier_all"]
+        if inject_barrier_all is not None:
+            _compile_option_list += \
+                [f"--enable-hivm-inject-barrier-all-sync={inject_barrier_all}"]
+
+        inject_block_all = metadata["inject_block_all"]
+        if inject_block_all is not None:
+            _compile_option_list += \
+                [f"--enable-hivm-inject-block-all-sync={inject_block_all}"]
+
+        limit_auto_multi_buffer_only_for_local_buffer = metadata["limit_auto_multi_buffer_only_for_local_buffer"]
+        if limit_auto_multi_buffer_only_for_local_buffer is not None:
+            _compile_option_list += \
+                [f"--limit-auto-multi-buffer-only-for-local-buffer={limit_auto_multi_buffer_only_for_local_buffer}"]
+
+        set_workspace_multibuffer = metadata["set_workspace_multibuffer"]
+        if set_workspace_multibuffer is not None:
+            _compile_option_list += \
+                [f"--set-workspace-multibuffer={set_workspace_multibuffer}"]
+
+        tile_mix_vector_loop = metadata["tile_mix_vector_loop"]
+        if tile_mix_vector_loop is not None:
+            _compile_option_list += \
+                [f"--tile-mix-vector-loop={tile_mix_vector_loop}"]
+
+        tile_mix_cube_loop = metadata["tile_mix_cube_loop"]
+        if tile_mix_cube_loop is not None:
+            _compile_option_list += \
+                [f"--tile-mix-cube-loop={tile_mix_cube_loop}"]
+
+        auto_multi_buffer = metadata["limit_auto_multi_buffer_of_local_buffer"]
+        if auto_multi_buffer is not None:
+            _compile_option_list += \
+                [f"--limit-auto-multi-buffer-of-local-buffer={auto_multi_buffer}"]
+
+        disable_auto_inject_block_sync = metadata["disable_auto_inject_block_sync"]
+        if disable_auto_inject_block_sync is not None:
+            _compile_option_list += \
+                [f"--disable-auto-inject-block-sync={disable_auto_inject_block_sync}"]
+
+        if _is_auto_map_parallel_blocks_enabled():
+            _compile_option_list += ["--enable-auto-blockify-loop"]
+        npu_compiler_path = _get_npucompiler_path()
+        if npu_compiler_path.endswith("bishengir-compile"):
+            _compile_option_list += [
+                "--enable-hfusion-compile=true",
                 bishengir_hivm_opt,
                 "--enable-triton-kernel-compile=true",
             ]
@@ -334,6 +524,10 @@ def linalg_to_bin_enable_npu_compile(linalg: str, metadata, opt):
             + ["-o", bin_file]
         )
         ret = subprocess.run(cmd_list, capture_output=True, check=True)
+        match = re.search(r'UB\s+size\s*=\s*(\d+)\s*bits', ret.stdout.decode('utf-8'))
+        if match:
+            # get the ub bits of triton kernel from bisheng for inductor autotune using
+            metadata["required_ub_bits"] = int(match.group(1))
         if Path(callback_path).is_file():
             lib = ctypes.CDLL(callback_path)
             __get_metadata_attr_by_callback(lib, "_infer_workspace_shape_function", metadata, "workspace_size")
@@ -351,14 +545,17 @@ class NPUOptions:
     kernel_name: str = "triton_"
 
     cluster_dims: tuple = (1, 1, 1)
-    num_warps: int = -1
-    num_ctas: int = -1
-    num_stages: int = 2
+    num_warps: int = 4
+    num_ctas: int = 1
+    num_stages: int = 1
+    warp_size: int = 32
     num_buffers_warp_spec: int = 0
     num_consumer_groups: int = 0
     reg_dec_producer: int = 0
     reg_inc_consumer: int = 0
 
+    compile_on_910_95: bool = is_compile_on_910_95
+    enable_linearize: bool = False
     enable_warp_specialization: bool = False
     enable_nd2nz_on_vector: bool = False
     enable_persistent: bool = False
@@ -369,17 +566,39 @@ class NPUOptions:
     max_num_imprecise_acc_default: bool = None
     extern_libs: dict = None
 
-    multibuffer: bool = None
+    multibuffer: bool = not is_compile_on_910_95
+    enable_auto_bind_sub_block: bool = not is_compile_on_910_95
+    enable_select_analysis: bool = is_compile_on_910_95
     enable_hivm_auto_cv_balance: bool = None
+    sync_solver: bool = None
     unit_flag: bool = None
     inject_barrier_all: bool = None
+    inject_block_all: bool = None
     limit_auto_multi_buffer_only_for_local_buffer: bool = None
     limit_auto_multi_buffer_of_local_buffer: str = None
     set_workspace_multibuffer: int = None
     tile_mix_vector_loop: int = None
     tile_mix_cube_loop: int = None
+    disable_auto_inject_block_sync: bool = None
 
     stream: int = None
+    parallel_mode: str = "simd"
+    force_simt_only: bool = False
+    force_simt_template: bool = False
+    # compile_mode: "simd" (default), "unstructured_in_simt", "simt_only"
+    # When compile_mode is provided, it automatically sets other fields
+    compile_mode: str = "simd"
+
+    def __post_init__(self):
+        # Parse compile_mode and set related fields
+        if self.compile_mode == "simd":
+            object.__setattr__(self, "parallel_mode", "simd")
+        elif self.compile_mode == "unstructured_in_simt":
+            # For historical compatibility reasons, force_simt_template will still be used.
+            object.__setattr__(self, "force_simt_template", True)
+        elif self.compile_mode == "simt_only":
+            object.__setattr__(self, "force_simt_only", True)
+            object.__setattr__(self, "parallel_mode", "simt")
 
     def hash(self):
         key = "_".join([f"{name}-{val}" for name, val in self.__dict__.items()])
@@ -417,6 +636,35 @@ class AscendAttrsDescriptor(AttrsDescriptor):
     # We comment out the following func but keep it for future reference.
     def _add_backend_properties(self, params=None, values=None):
         pass
+
+
+def ttir_to_npubin(mod, metadata, opt):
+    # Get Triton-MLIR as string
+    ttir_code = str(mod)
+    metadata = _parse_ttir_metadata(ttir_code, metadata)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # prepare input
+        src_path = os.path.join(tmpdir, "kernel.ttir.mlir")
+        Path(src_path).write_text(ttir_code)
+        # prepare output
+        bin_file = os.path.join(tmpdir, "kernel")
+        bin_path = os.path.join(tmpdir, "kernel.o")
+        # build compile options
+        _compile_option_list = get_common_bishengir_compile_options(metadata)
+        if opt.force_simt_only:
+            _compile_option_list += ["--enable-triton-ir-compile"]
+            _compile_option_list += ["--pure-simt"]
+            _compile_option_list += [f"--num-warps={opt.num_warps}"]
+            _compile_option_list += [f"--threads-per-warp={opt.warp_size}"]
+
+        npu_compiler_path = _get_npucompiler_path()
+        cmd_list = (
+            [npu_compiler_path, src_path]
+            + _compile_option_list
+            + ["-o", bin_file]
+        )
+        ret = subprocess.run(cmd_list, capture_output=True, check=True)
+        return Path(bin_path).read_bytes()
 
 
 class AscendBackend(BaseBackend):
@@ -485,14 +733,28 @@ class AscendBackend(BaseBackend):
     def add_stages(self, stages, options):
         if self.target.backend == "npu":
             stages["ttir"] = lambda src, metadata: make_ttir(src, metadata, options)
+            if options.force_simt_only:
+                stages["npubin"] = (
+                    lambda src, metadata: ttir_to_npubin(
+                        src, metadata, options
+                    )
+                )
+                return
             stages["ttadapter"] = lambda src, metadata: ttir_to_linalg(
                 src, metadata, options, named_ops=True
             )
-            stages["npubin"] = (
-                lambda src, metadata: linalg_to_bin_enable_npu_compile(
-                    src, metadata, options
+            if options.compile_on_910_95:
+                stages["npubin"] = (
+                    lambda src, metadata: linalg_to_bin_enable_npu_compile_910_95(
+                        src, metadata, options
+                    )
                 )
-            )
+            else:
+                stages["npubin"] = (
+                    lambda src, metadata: linalg_to_bin_enable_npu_compile_A2_A3(
+                        src, metadata, options
+                    )
+                )
         else:
             stages["ttir"] = lambda src, metadata: make_ttir(src, metadata, options)
             stages["ttadapter"] = lambda src, metadata: ttir_to_linalg(

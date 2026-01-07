@@ -3,7 +3,8 @@ def enable_stream_in_kwargs(kwargs):
 
 def ignore_params_in_JITFunction_run(kwargs, excess_kwargs):
     ignor_params = ["debug", "sanitize_overflow", "llvm_version", "kernel_name", \
-                "allowed_dot_input_precisions", "multibuffer", "stream"]
+        "allowed_dot_input_precisions", "multibuffer", "stream", "inject_barrier_all", \
+        "inject_block_all", "limit_auto_multi_buffer_only_for_local_buffer"]
     not_work_params = []
     for k in kwargs:
         if k in ignor_params:
@@ -51,3 +52,6 @@ def maps_line_numbers_to_comment_hints(jit_fn):
 def attach_line_number_to_comment_mapping(tree, line_flagtree_hints):
     # Attach the line number to comment mapping to the function definition node
     tree.body[0].line_flagtree_hints = line_flagtree_hints
+
+def enable_extra_option():
+    return True

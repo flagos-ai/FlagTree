@@ -1,11 +1,29 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+
 from typing import Optional
 import pytest
 import torch
 import torch_npu
 import triton
-from triton.language.math import tanh
 import triton.language as tl
 
 device = 'npu'
@@ -146,7 +164,7 @@ def liger_cross_entropy_kernel(
     d = 0.0  # d is the sum. use the notation from the paper
     ori_X_y = tl.load(X_ptr + y).cast(tl.float32)  # we need to store the original value of X_y for the loss calculation
     if HAS_SOFTCAPPING:
-        ori_X_y = softcap * tanh(ori_X_y / softcap)
+        ori_X_y = softcap * tl.math.tanh(ori_X_y / softcap)
 
     # Label smoothing is a general case of normal cross entropy
     scaled_x_sum = 0.0
@@ -161,7 +179,7 @@ def liger_cross_entropy_kernel(
             # Ensure float32 precision for softmax calculation
         ).cast(tl.float32)
         if HAS_SOFTCAPPING:
-            X_block = softcap * tanh(X_block / softcap)
+            X_block = softcap * tl.math.tanh(X_block / softcap)
         block_max = tl.max(X_block)
         if label_smoothing > 0:
             # scale X beforehand to avoid overflow
@@ -189,7 +207,7 @@ def liger_cross_entropy_kernel(
             # Ensure float32 precision for softmax calculation
         ).cast(tl.float32)
         if HAS_SOFTCAPPING:
-            intermediate = tanh(X_block / softcap)
+            intermediate = tl.math.tanh(X_block / softcap)
             X_block = softcap * intermediate
 
         if not HAS_WEIGHT:
@@ -224,7 +242,7 @@ def liger_cross_entropy_kernel(
             X_block = dloss_ori + dloss_smooth + dz_loss
 
         # chain rule softcapping
-        # d(softcap * tanh(x / softcap)) = (1 - tanh^2(x / softcap))
+        # d(softcap * tl.math.tanh(x / softcap)) = (1 - tl.math.tanh^2(x / softcap))
         if HAS_SOFTCAPPING:
             X_block = X_block * (1 - intermediate * intermediate)
 

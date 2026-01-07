@@ -12,10 +12,15 @@ from triton.runtime.cache import get_cache_manager, get_dump_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
 from triton.backends.ascend.utils import (
+    _precompile_npu_hash,
+    _precompile_npu_ext,
     _build_npu_ext,
     _check_cxx11_abi,
     convert_sigtype_to_int,
     _is_auto_map_parallel_blocks_enabled,
+    get_ascend_arch_from_env,
+    is_ffts_supported,
+    force_disable_ffts,
 )
 
 class NPUUtils(object):
@@ -26,17 +31,18 @@ class NPUUtils(object):
 
     def __init__(self):
         dirname = os.path.dirname(os.path.realpath(__file__))
-        src = Path(os.path.join(dirname, "npu_utils.cpp")).read_text()
-        key = hashlib.sha256(src.encode("utf-8")).hexdigest()
+        src_path = os.path.join(dirname, "npu_utils.cpp")
+        src = Path(src_path).read_text()
+        key = hashlib.md5(src.encode("utf-8")).hexdigest()
         cache = get_cache_manager(key)
         fname = "npu_utils.so"
         cache_path = cache.get_file(fname)
         if cache_path is None:
             with tempfile.TemporaryDirectory() as tmpdir:
-                src_path = os.path.join(tmpdir, "npu_utils.cpp")
-                with open(src_path, "w") as f:
+                tmp_src_path = os.path.join(tmpdir, "npu_utils.cpp")
+                with open(tmp_src_path, "w") as f:
                     f.write(src)
-                so = _build_npu_ext("npu_utils", src_path, tmpdir)
+                so = _build_npu_ext("npu_utils", None, tmp_src_path)
                 with open(so, "rb") as f:
                     cache_path = cache.put(f.read(), fname, binary=True)
         import importlib.util
@@ -44,6 +50,8 @@ class NPUUtils(object):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         self.npu_utils_mod = mod
+        # setup for remote run
+        env_arch = get_ascend_arch_from_env()
 
     def load_binary(self, name, kernel, shared, device):
         fnname, mix_mode = name.split()
@@ -71,25 +79,36 @@ class NPUUtils(object):
     def get_aivector_core_num(self):
         return self.get_device_properties("npu")["num_vectorcore"]
 
+    @functools.lru_cache()
+    def set_device_limit(self, device, ty, val):
+        """
+        Set npu device limit
+
+        Args:
+            device: Device id
+            ty: The type of the limit, valid types include:
+                "LOW_POWER_TIMEOUT", "WARP_STACK_SIZE", "DVG_WARP_STACK_SIZE", "STACK_SIZE"
+            val: The specific meaning of the value depends on the type of limit.
+        """
+        self.npu_utils_mod.set_device_limit(device, ty, val)
+
 
 class NPULauncher(object):
     def __init__(self, src, metadata):
+        self.compile_only = os.getenv("TRITON_COMPILE_ONLY", 'false').lower() in ('true', '1')
+        self.enable_msprof_register_tensor = os.getenv("TRITON_REGISTER_TENSOR_MSPROF", 'false').lower() in ('true', '1')
         debug_mode = metadata.debug
-        workspace_size = int(metadata.workspace_size) \
-                              if hasattr(metadata, 'workspace_size') else -1
-        lock_init_value = int(metadata.lock_init_value) \
-                              if hasattr(metadata, 'lock_init_value') else 0
-        lock_num = int(metadata.lock_num) \
-                              if hasattr(metadata, 'lock_num') else -1
+        header_src = generate_npu_header_src()
         constants = src.constants if hasattr(src, "constants") else dict()
         cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
-        mix_mode = metadata.mix_mode
-        wrapper_src = generate_npu_wrapper_src(constants, signature, \
-                                               workspace_size, mix_mode, \
-                                               lock_num, lock_init_value)
-        so_launcher_path = make_npu_launcher_stub(wrapper_src, debug_mode)
+        wrapper_src = generate_npu_wrapper_src(constants, signature, metadata)
+        so_launcher_path = make_npu_launcher_stub(header_src, wrapper_src, metadata.debug)
+        # setup for remote run
+        # TODO: use a var to pack all vars required to run on a remote machine
+        self.mix_mode = metadata.mix_mode
+        self.shared = metadata.shared
         # initialize launcher
         import importlib.util
         spec = importlib.util.spec_from_file_location("__triton_launcher", so_launcher_path)
@@ -98,8 +117,25 @@ class NPULauncher(object):
         self.launch = getattr(mod, "launch")
 
     def __call__(self, *args, **kwargs):
-        self.launch(*args, **kwargs)
-
+        if self.compile_only:
+            cache_manager = get_cache_manager(args[5]['hash'])
+            print("[INFO]: skip running kernel")
+            print(f"[INFO]: The compiled kernel cache is in {cache_manager.cache_dir}")
+        if self.enable_msprof_register_tensor:
+            import torch
+            tensor_params = [arg for arg in args if isinstance(arg, torch.Tensor)]
+            tensor_params_shape = []
+            for t in tensor_params:
+                tensor_params_shape.append([s for s in t.shape])
+            # args[5] must be the packed metadata.
+            # Check the launch wrapper in which PyArg_ParseTuple specifies the ordering of args
+            args[5]['tensor_params_shape'] = tensor_params_shape
+        else:
+            if self.compile_only:
+                return
+            profiler_registered = self.launch(*args, **kwargs)
+            import triton
+            triton.backends.ascend.utils.TRITON_PROFILER_REGISTERED = True if profiler_registered == 1 else False
 
 class NPUDriver(DriverBase):
     def __init__(self):
@@ -116,6 +152,8 @@ class NPUDriver(DriverBase):
         spec_standard_func(flagtree_backend_specialization)
         from triton.language.math import spec_math_func
         spec_math_func(flagtree_backend_specialization)
+        from triton.testing import spec_testing_func
+        spec_testing_func(flagtree_backend_specialization)
         super().__init__()
 
     @classmethod
@@ -136,7 +174,11 @@ class NPUDriver(DriverBase):
 
     def get_current_target(self):
         backend = "npu"
-        arch = self.utils.get_arch()
+        env_target = get_ascend_arch_from_env()
+        if env_target:
+            arch = env_target
+        else:
+            arch = self.utils.get_arch()
         warp_size = 0
         return GPUTarget(backend, arch, warp_size)
 
@@ -164,9 +206,10 @@ class NPUDriver(DriverBase):
         # TODO: use CANN API instead of torchnpu
         import torch
         import torch_npu
+        from torch_npu._C import _npu_getCurrentRawStream
         if device is None:
             device = self.get_current_device()
-        return torch.npu.current_stream(device).npu_stream
+        return _npu_getCurrentRawStream(device)
 
     def get_benchmarker(self):
         from triton.testing import do_bench
@@ -182,12 +225,21 @@ class NPUDriver(DriverBase):
         return torch.empty(cache_size // 4, dtype=torch.int, device='npu')
 
 
-def make_npu_launcher_stub(src, debug=False):
+def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     """
     Generate the launcher stub to launch the kernel
     """
+    precompile_hash = _precompile_npu_hash(header_src)
+    cache = get_cache_manager(precompile_hash)
+    header_path = cache.get_file("precompiled.h")
+    gch_path = cache.get_file("precompiled.h.gch")
+    # if precompile header file and its gch file not exist, do precompile
+    if header_path is None and gch_path is None:
+        header_path = cache.put(header_src, "precompiled.h", binary=False)
+        _precompile_npu_ext(header_path)
+
     # try to get cached file
-    so_cache_key = hashlib.sha256(src.encode("utf-8")).hexdigest()
+    so_cache_key = hashlib.sha256(wrapper_src.encode("utf-8")).hexdigest()
     so_cache_manager = get_cache_manager(so_cache_key)
     # append the cxx11_abi value to the launcher name to avoid
     # linking to a launcher with wrong cxx11_abi.
@@ -198,30 +250,32 @@ def make_npu_launcher_stub(src, debug=False):
 
     if debug:
         dump_manager = get_dump_manager(so_cache_key)
+        if header_path is not None:
+            print(f"Dumping precompiled.h to {dump_manager.cache_dir}")
+            dump_manager.put(header_src, "precompiled.h", binary=False)
         print(f"Dumping {name}.cxx to {dump_manager.cache_dir}")
-        dump_manager.put(src, f"{name}.cxx", binary = False)
+        dump_manager.put(wrapper_src, f"{name}.cxx", binary = False)
 
     cache_path = so_cache_manager.get_file(so_name)
     if cache_path is not None:
         return cache_path
 
+    kernel_launcher_type = "torch"
+    enable_taskqueue = os.getenv("TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
+    if not enable_taskqueue:
+        kernel_launcher_type = None
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        if debug:
-            so_cache_manager.put(src, f"{name}.cxx", binary=False)
         src_path = os.path.join(tmpdir, f"{name}.cxx")
         with open(src_path, "w") as f:
-            f.write(src)
-        enable_taskqueue = os.getenv("TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
-        if (enable_taskqueue):
-            kernel_launcher_type = "torch"
-        else:
-            kernel_launcher_type = None
-        so = _build_npu_ext(name, src_path, tmpdir, kernel_launcher=kernel_launcher_type)
+            f.write(wrapper_src)
+        so_path = _build_npu_ext(name, header_path, src_path, kernel_launcher=kernel_launcher_type, precompile=True)
         if debug:
-            with open(so, "rb") as f:
-                return dump_manager.put(f.read(), so_name, binary=True)
-        with open(so, "rb") as f:
-            return so_cache_manager.put(f.read(), so_name, binary=True)
+            with open(so_path, "rb") as f:
+                dump_manager.put(f.read(), so_name, binary=True)
+        with open(so_path, "rb") as f:
+            so_cache_path = so_cache_manager.put(f.read(), so_name, binary=True)
+    return so_cache_path
 
 
 def extract_device_print_code_from_cann():
@@ -291,10 +345,64 @@ def extract_device_print_code_from_cann():
         read_header('internal/debug_tunnel/tunnel_impl.h')
     ])
 
+def generate_npu_header_src():
+    enable_taskqueue = os.getenv(
+        "TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
+    return f"""
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+#ifndef TRITON_NPU_HEADERS
+#define TRITON_NPU_HEADERS
+
+#include <assert.h>
+#include <stdbool.h>
+#include <string>
+#include <sys/syscall.h>
+#include <vector>
+#include <Python.h>
+#include "experiment/runtime/runtime/rt.h"
+#include <ATen/ATen.h>
+#include <acl/acl.h>
+#include <torch_npu/csrc/core/npu/NPUWorkspaceAllocator.h>
+{'#include <torch_npu/csrc/framework/OpCommand.h>' if enable_taskqueue else ''}
+
+#endif
+"""
 
 # the template is from triton-adapter HEAD. Wrapping the generated kernel binary into a python module
-def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, lock_num, lock_ini_val):
+def generate_npu_wrapper_src(constants, signature, metadata):
     import os
+    workspace_size = int(metadata.workspace_size) \
+                          if hasattr(metadata, 'workspace_size') else -1
+    lock_init_value = int(metadata.lock_init_value) \
+                          if hasattr(metadata, 'lock_init_value') else 0
+    lock_num = int(metadata.lock_num) \
+                          if hasattr(metadata, 'lock_num') else -1
+    mix_mode = metadata.mix_mode
+    compile_on_910_95 = metadata.compile_on_910_95
+    parallel_mode = metadata.parallel_mode
+    enable_simt = ("simt" in parallel_mode) or metadata.force_simt_only
 
     def _ty_to_cpp(ty):
         if ty[0] == '*':
@@ -355,11 +463,16 @@ def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, loc
     format = "iiiKKOOOO" + ''.join([_format_of(_extracted_ty(ty)) for ty in signature.values()])
 
     grid_info = {'X': 'i32', 'Y': 'i32', 'Z': 'i32'}
+    # TODO: automatically check if gather load ops are used.
 
+    arch = get_ascend_arch_from_env()
+    target_support_ffts = is_ffts_supported(arch) and (not force_disable_ffts())
     enable_device_print = os.getenv(
         "TRITON_DEVICE_PRINT", 'false').lower() in ('true', '1')
     enable_taskqueue = os.getenv(
         "TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
+    enable_grid_warn_print = os.getenv(
+        "TRITON_GRID_WARN_PRINT", 'false').lower() in ('true', '1')
     enable_auto_map_parallel_blocks = _is_auto_map_parallel_blocks_enabled()
     npu_utils = NPUUtils()
     num_physical_blocks = npu_utils.get_aivector_core_num(
@@ -533,19 +646,29 @@ extern "C" {
     }}
 """
 
-    return f"""
-#include <assert.h>
-#include <stdbool.h>
-#include <string>
-#include <sys/syscall.h>
-#include <vector>
-#define PY_SSIZE_T_CLEAN
-#include <Python.h>
-{'#include <torch_npu/csrc/framework/OpCommand.h>' if enable_taskqueue else ''}
-#include "experiment/runtime/runtime/rt.h"
-#include <torch_npu/csrc/core/npu/NPUCachingAllocator.h>
-{extract_device_print_code_from_cann() if enable_device_print else ''}
+    cpp_kernel_launch = f"""
+    ret = rtKernelLaunch(func, blockNum, static_cast<void*>(&args), sizeof(args), NULL, stream);
+"""
+    if compile_on_910_95 and enable_simt:
+        cpp_kernel_launch = """
+    rtArgsEx_t argsInfo = {};
+    argsInfo.args = static_cast<void*>(&args);
+    argsInfo.argsSize = sizeof(args);
+    rtTaskCfgInfo_t cfgInfo = {};
+    cfgInfo.localMemorySize = 216 * 1024;
+    ret = rtKernelLaunchWithFlagV2(func, blockNum, &argsInfo, NULL, stream, 0, &cfgInfo);
+"""
 
+    precompile_headers = f"""
+#include "precompiled.h"
+"""
+
+    return f"""
+{precompile_headers}
+{'#define __CCE_ENABLE_PRINT__' if enable_device_print else ''}
+{extract_device_print_code_from_cann() if enable_device_print else ''}
+#define PY_SSIZE_T_CLEAN
+{'#define ENABLE_GRID_WARN_PRINT' if enable_grid_warn_print else ''}
 #define TENSOR_KIND_INPUT 0
 #define TENSOR_KIND_OUTPUT 1
 #define TENSOR_KIND_INPUT_OUTPUT 2
@@ -562,27 +685,34 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
   name.append(kernelName);
   {'auto launch_call = [=]() -> rtError_t' if enable_taskqueue else ''} {{
     uint32_t blockNum = gridX * gridY * gridZ;
+
+    #ifdef ENABLE_GRID_WARN_PRINT
+      static bool warned = false;
+      if (!warned && blockNum > (uint32_t){num_physical_blocks}) {{
+        printf("WARNING: Grid %u > physical limit {num_physical_blocks}, performance maybe reduced.\\n",blockNum);
+        warned = true;
+    }}
+    #endif
+
     {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if enable_auto_map_parallel_blocks else ''}
     {'cce::internal::DebugTunnelData *DTData = cce::internal::DebugTunnel::Open(blockNum);' if enable_device_print else ''}
     rtError_t ret;
-    void *ffts_addr = NULL;
-    uint32_t ffts_len; ret = rtGetC2cCtrlAddr((uint64_t*)&ffts_addr, &ffts_len);
-    if (ret != RT_ERROR_NONE) {{
-      return {'ret' if enable_taskqueue else ''};
-    }}
-    c10::DataPtr syncBlockLock_ptr;
-    c10::DataPtr workspace_addr_ptr;
+    {'void *ffts_addr = NULL; uint32_t ffts_len; ret = rtGetC2cCtrlAddr((uint64_t*)&ffts_addr, &ffts_len);' if target_support_ffts else ''}
+    {'if (ret != RT_ERROR_NONE) return ret;' if (target_support_ffts and enable_taskqueue) else 'if (ret != RT_ERROR_NONE) return;' if (target_support_ffts and (not enable_taskqueue)) else ''}
+    // stub argument for workspace
+    void *syncBlockLock_ptr = NULL;
+    void *workspace_addr_ptr = NULL;
     uint16_t ModuleId = 0;
-    auto* npu_allocator = c10_npu::NPUCachingAllocator::get();
     {f'''
     uint64_t syncBlockLockSize = {lock_num} * sizeof(int64_t);
-    syncBlockLock_ptr = npu_allocator->allocate(syncBlockLockSize);
+    at::Tensor syncBlockLock_tensor = at_npu::native::allocate_workspace(syncBlockLockSize, stream);
+    syncBlockLock_ptr = const_cast<void *>(syncBlockLock_tensor.storage().data());
     if (!syncBlockLock_ptr) {{
       {alloc_success_code if enable_taskqueue else sync_lock_fail_code}
     }}
-    std::vector<int64_t> lockInitData({lock_num}, {lock_ini_val});
+    std::vector<int64_t> lockInitData({lock_num}, {lock_init_value});
     ret = rtMemcpy(
-        syncBlockLock_ptr.get(), syncBlockLockSize,
+        syncBlockLock_ptr, syncBlockLockSize,
         reinterpret_cast<void *>(lockInitData.data()), syncBlockLockSize,
         RT_MEMCPY_HOST_TO_DEVICE
     );
@@ -592,32 +722,34 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
     ''' if lock_num > 0 else ''}
     {f'''
     uint64_t totalWorkSpaceSize = {workspace_size} * blockNum;
-    workspace_addr_ptr = npu_allocator->allocate(totalWorkSpaceSize);
+    at::Tensor workspace_tensor = at_npu::native::allocate_workspace(totalWorkSpaceSize, stream);
+    workspace_addr_ptr = const_cast<void *>(workspace_tensor.storage().data());
     if (!workspace_addr_ptr) {{
       {alloc_success_code if enable_taskqueue else workspace_fail_code}
     }}
     ''' if workspace_size > 0 else ''}
+    {'if (ret != RT_ERROR_NONE) return ret;' if (workspace_size > 0 and enable_taskqueue) else 'if (ret != RT_ERROR_NONE) return;' if (workspace_size > 0 and not enable_taskqueue) else ''}
     struct __attribute__((packed)) {{
-      void* ffts_addr __attribute__((aligned(8)));
-      void* syncBlockLock __attribute__((aligned(8)));
-      void* workspace_addr __attribute__((aligned(8)));
+      {'void* ffts_addr __attribute__((aligned(8)));' if target_support_ffts else ''}
+      {'void* syncBlockLock __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
+      {'void* workspace_addr __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
       {' '.join(f'{_ty_to_cpp(ty)} arg{i} __attribute__((aligned({4 if ty[0] != "*" and ty[-2:] != "64" else 8})));' for i, ty in signature.items() if i not in constants)}
       {' '.join(f'{_ty_to_cpp(ty)} grid{mark} __attribute__((aligned(4)));' for mark, ty in grid_info.items())}
       {'void* DTData __attribute__((aligned(8)));' if enable_device_print else ''}
     }} args = {{
-      static_cast<void*>(ffts_addr),
-      {f'syncBlockLock_ptr.get()' if lock_num > 0 else 'nullptr'},
-      {f'workspace_addr_ptr.get()' if workspace_size > 0 else 'nullptr'},
+      {'static_cast<void*>(ffts_addr),' if target_support_ffts else ''}
+      {('static_cast<void*>(syncBlockLock_ptr),' if lock_num > 0 else 'nullptr,') if not metadata.force_simt_only else ''}
+      {('static_cast<void*>(workspace_addr_ptr),' if workspace_size > 0 else 'nullptr,') if not metadata.force_simt_only else ''}
       {(', '.join(f'static_cast<{_ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if i not in constants) + ',') if len(signature) > 0 else ''}
       {', '.join(f'static_cast<{_ty_to_cpp(ty)}>(grid{mark})' for mark, ty in grid_info.items())}
       {', static_cast<void*>(DTData)' if enable_device_print else ''}
     }};
     {cpp_msprof_call_before_launch}
-    ret = rtKernelLaunch(func, blockNum, static_cast<void*>(&args), sizeof(args), NULL, stream);
+    {cpp_kernel_launch}
     {'void *&stream_ref = const_cast<void*&>(stream);' if enable_device_print else ''}
     {'cce::internal::DebugTunnel::Close(DTData, stream_ref);' if enable_device_print else ''}
     {cpp_msprof_call_after_launch}
-    {'return ret;' if enable_taskqueue else ''}
+    {'return ret;' if enable_taskqueue else 'ret = rtStreamSynchronize(stream);'}
    }};
    {'at_npu::native::OpCommand cmd; cmd.Name(name.c_str()).SetCustomHandler(launch_call).Run();' if enable_taskqueue else ''}
   return;

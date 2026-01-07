@@ -1,14 +1,37 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 import functools
+import hashlib
 import os
 import re
 import shutil
 import subprocess
 import sysconfig
 from pathlib import Path
+import logging
+from platform import python_version
 
 import pybind11
+
+
+def get_logger(logger_name, logger_level_str):
+    '''
+    '''
+    logging_level_mapping = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+    logger = logging.getLogger(logger_name)
+    logger.propagate = False
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.setLevel(logging_level_mapping.get(logger_level_str.upper(), "INFO"))
+    logger.addHandler(console_handler)
+    return logger
 
 
 def downgrade_llir(llir):
@@ -113,11 +136,24 @@ def _get_bisheng_path() -> str:
     return bisheng_path
 
 
+def _is_valid_bishengir_path(path: str) -> bool:
+    if not path or not isinstance(path, str):
+        return False
+    if os.path.basename(path) != "bishengir-compile":
+        return False
+    if not os.path.isfile(path) or not os.access(path, os.X_OK):
+        return False
+    return True
+
+
 # grep bishengir-compile's option limit-auto-multi-buffer-buffer to check
 # if bishengir-compile is a newer version which does not generate kernel_reloc.o
 # any more.
 def _check_bishengir_api_change() -> bool:
     bishengir_path = _get_npucompiler_path()
+    if not _is_valid_bishengir_path(bishengir_path):
+        print(f"ERROR: Invalid bishengir path format: {bishengir_path}")
+        return False
     try:
         result = subprocess.run(
             [bishengir_path, "--help"],
@@ -138,6 +174,9 @@ def _check_bishengir_api_change() -> bool:
 
 def _check_bishengir_is_regbased() -> bool:
     bishengir_path = _get_npucompiler_path()
+    if not _is_valid_bishengir_path(bishengir_path):
+        print(f"ERROR: Invalid bishengir path format: {bishengir_path}")
+        return False
     try:
         result = subprocess.run(
             [bishengir_path, "--help"],
@@ -157,7 +196,7 @@ def _check_bishengir_is_regbased() -> bool:
 
 
 @functools.lru_cache(None)
-def _get_ascend_path() -> str:
+def _get_ascend_path() -> Path:
     path = os.getenv("ASCEND_HOME_PATH", "")
     if path == "":
         raise EnvironmentError(
@@ -175,19 +214,16 @@ def _is_debug_line_info_disabled() -> bool:
 
 
 def _is_auto_map_parallel_blocks_enabled() -> bool:
-    if not _enable_unpublished_feature():
-        return False
     return os.getenv("TRITON_ALL_BLOCKS_PARALLEL", "false").lower() in ("true", "1")
 
 
 def _enable_unpublished_feature() -> bool:
     return os.getenv("ENABLE_UNPUBLISHED_FEATURE", "false").lower() in ("true", "1")
 
+def _enable_print_ub_bits() -> bool:
+    return os.getenv("ENABLE_PRINT_UB_BITS", "false").lower() in ("true", "1")
 
-def _build_npu_ext(obj_name: str, src_path, src_dir, *, kernel_launcher=None) -> str:
-    suffix = sysconfig.get_config_var("EXT_SUFFIX")
-    so_path = os.path.join(src_dir, f"{obj_name}{suffix}")
-
+def _get_cxx():
     cxx = os.environ.get("CC")
     if cxx is None:
         clangxx = shutil.which("clang++")
@@ -195,7 +231,43 @@ def _build_npu_ext(obj_name: str, src_path, src_dir, *, kernel_launcher=None) ->
         cxx = clangxx if clangxx is not None else gxx
         if cxx is None:
             raise RuntimeError("Failed to find C++ compiler")
-    cc_cmd = [cxx, src_path]
+    return cxx
+
+def _get_cxx_precompiled(header_path):
+    cc_cmd = []
+    cxx = os.environ.get("CC")
+    if cxx is None:
+        clangxx = shutil.which("clang++")
+        gxx = shutil.which("g++")
+        if clangxx is not None:
+            cc_cmd += [clangxx, "-include", header_path]
+        elif gxx is not None:
+            cc_cmd += [gxx]
+        else:
+            raise RuntimeError("Failed to find C++ compiler")
+    else:
+        cc_cmd += [cxx]
+    return cc_cmd
+
+def _precompile_npu_hash(header_src):
+    import sys
+    import torch
+    import torch_npu
+    cxx = _get_cxx()
+    py_version = sys.version
+    torch_version = torch.version.git_version
+    torch_npu_version = torch_npu.version.git_version
+    asc_path = _get_ascend_path().name
+    version_txt = [header_src, cxx, py_version, torch_version, torch_npu_version, asc_path]
+    hash_txt = hashlib.sha256("_".join(version_txt).encode("utf-8")).hexdigest()
+    return hash_txt
+
+def _precompile_npu_ext(header_path):
+    src_dir = os.path.dirname(header_path)
+    gch_path = os.path.join(src_dir, "precompiled.h.gch")
+    cxx = _get_cxx()
+
+    cc_cmd = [cxx, "-x", "c++-header", header_path]
     # disable all warnings
     cc_cmd += [f"-w"]
     # find the python library
@@ -211,7 +283,65 @@ def _build_npu_ext(obj_name: str, src_path, src_dir, *, kernel_launcher=None) ->
     cc_cmd += [f"-I{py_include_dir}"]
     # device_print.h
     cc_cmd += [f"-I{os.path.dirname(os.path.realpath(__file__))}"]
+    # find the ascend library
     asc_path = _get_ascend_path()
+    cc_cmd += [
+        f"-I{os.path.join(asc_path, 'include')}",
+        f"-I{os.path.join(asc_path, 'include/experiment')}",
+        f"-I{os.path.join(asc_path, 'include/experiment/msprof')}",
+        f"-I{pybind11.get_include()}",
+    ]
+    import torch
+    import torch_npu
+
+    torch_path = os.path.dirname(os.path.realpath(torch.__file__))
+    torch_npu_path = os.path.dirname(os.path.realpath(torch_npu.__file__))
+    use_cxx11_abi = _check_cxx11_abi()
+    cc_cmd += [
+        f"-I{os.path.join(torch_path, 'include')}",
+        f"-I{os.path.join(torch_npu_path, 'include')}",
+        f"-D_GLIBCXX_USE_CXX11_ABI={use_cxx11_abi}",
+    ]
+
+    cc_cmd += ["-std=c++17", "-shared", "-fPIC", "-o", gch_path]
+
+    ret = subprocess.check_call(cc_cmd)
+
+    if ret != 0:
+        print(f"Unable to precompile header file, ret is: {ret}")
+
+    return header_path
+
+def _build_npu_ext(obj_name: str, header_path, src_path, *, kernel_launcher="torch", precompile=False) -> str:
+    suffix = sysconfig.get_config_var("EXT_SUFFIX")
+    src_dir = os.path.dirname(src_path)
+    so_path = os.path.join(src_dir, f"{obj_name}{suffix}")
+    if precompile:
+        cc_cmd = _get_cxx_precompiled(header_path)
+        cc_cmd += [src_path]
+    else:
+        cxx = _get_cxx()
+        cc_cmd = [cxx, src_path]
+    # disable all warnings
+    cc_cmd += [f"-w"]
+    # find the python library
+    if hasattr(sysconfig, "get_default_scheme"):
+        scheme = sysconfig.get_default_scheme()
+    else:
+        scheme = sysconfig._get_default_scheme()
+    # 'posix_local' is a custom scheme on Debian. However, starting Python 3.10, the default install
+    # path changes to include 'local'. This change is required to use triton with system-wide python.
+    if scheme == "posix_local":
+        scheme = "posix_prefix"
+    py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
+    cc_cmd += [f"-I{py_include_dir}"]
+    # device_print.h
+    cc_cmd += [f"-I{os.path.dirname(os.path.realpath(__file__))}"]
+    # find the ascend library
+    asc_path = _get_ascend_path()
+    if header_path is not None:
+        cc_cmd += [f"-I{os.path.dirname(header_path)}"]
+
     cc_cmd += [
         f"-I{os.path.join(asc_path, 'include')}",
         f"-I{os.path.join(asc_path, 'include/experiment')}",
@@ -221,7 +351,8 @@ def _build_npu_ext(obj_name: str, src_path, src_dir, *, kernel_launcher=None) ->
         "-lruntime",
         "-lascendcl",
     ]
-
+    # FIXME: check why this condition works wrong in parall scene
+    # if kernel_launcher == "torch":
     import torch
     import torch_npu
 
@@ -236,14 +367,18 @@ def _build_npu_ext(obj_name: str, src_path, src_dir, *, kernel_launcher=None) ->
         f"-D_GLIBCXX_USE_CXX11_ABI={use_cxx11_abi}",
     ]
 
-    cc_cmd += ["-std=c++17", "-shared", "-fPIC", "-o", so_path]
+    cc_cmd += ["-std=c++17", "-shared", "-fPIC", "-Winvalid-pch", "-o", so_path]
 
-    ret = subprocess.check_call(cc_cmd)
+    result = subprocess.run(cc_cmd, capture_output=True, text=True)
 
-    if ret == 0:
+    if result.returncode == 0:
         return so_path
     else:
-        raise RuntimeError("Failed to compile " + src_path)
+        if "precompiled.h.gch" in result.stderr:
+            # only for clang++, when precompile invalid, fallback to normal compile
+            return _build_npu_ext(obj_name, header_path, src_path, precompile=False)
+        else:
+            raise RuntimeError(f"Failed to compile {src_path}, error: {result.stderr}")
 
 
 def _get_kernel_target(metadata: dict):
@@ -281,6 +416,8 @@ def convert_sigtype_to_int(sigty: str):
         "i32": 3,  # INT32
         "i64": 9,  # INT64
         # Unsigned integer types
+        "u8": 4,  # UINT8
+        "u16": 7,  # UINT16
         "u32": 8,  # UINT32
         "u64": 10,  # UINT64
         # Floating point types
@@ -288,8 +425,102 @@ def convert_sigtype_to_int(sigty: str):
         "bf16": 27,  # DT_BF16
         "fp32": 0,  # FLOAT
         "fp64": 11,  # DOUBLE
+        "fp8e5": 35,  # FLOAT8_E5M2
+        "fp8e4nv": 36,  # FLOAT8_E4M3FN
     }
     if sigty not in MAP_SIGTYPE_TO_INT:
         raise ValueError(f"Unsupported data type: {sigty}")
 
     return MAP_SIGTYPE_TO_INT[sigty]
+
+
+def convert_torch_dtype_to_numpy(torch_dtype):
+    import torch
+    import numpy as np
+    TORCH_TO_NUMPY_DTYPE = {
+        torch.float32: np.float32,
+        torch.float64: np.float64,
+        torch.float16: np.float16,
+        torch.int8: np.int8,
+        torch.uint8: np.uint8,
+        torch.int16: np.int16,
+        torch.int32: np.int32,
+        torch.int64: np.int64,
+        torch.bool: np.bool_,
+        torch.complex64: np.complex64,
+        torch.complex128: np.complex128,
+    }
+    return TORCH_TO_NUMPY_DTYPE[torch_dtype]
+
+
+def _check_bishengir_able_save_ir() -> bool:
+    bishengir_path = _get_npucompiler_path()
+    if not _is_valid_bishengir_path(bishengir_path):
+        print(f"ERROR: Invalid bishengir path format: {bishengir_path}")
+        return False
+    try:
+        result = subprocess.run(
+            [bishengir_path, "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode == 0 and 'save-linked-ir' in result.stdout:
+            return True
+        else:
+            return False
+    except Exception as e:
+        print(f"ERROR: {e}")
+        return False
+
+def get_ascend_arch_from_env():
+    arch = os.getenv("TRITON_ASCEND_ARCH", "")
+    if arch == "":
+        # User does not set arch by ENV. Thus directly return.
+        return arch
+    # User sets arch by ENV. Thus we need to check if it is supported.
+    valid_arch_list = [
+        "Ascend910B1",
+        "Ascend910B2",
+        "Ascend910B3",
+        "Ascend910B4",
+        "Ascend910_9362",
+        "Ascend910_9372",
+        "Ascend910_9381",
+        "Ascend910_9382",
+        "Ascend910_9391",
+        "Ascend910_9392",
+        "Ascend310B1",
+        "Ascend310B2",
+        "Ascend310B3",
+        "Ascend310B4",
+        "Ascend910_9579",
+        "Ascend910_9581",
+        "Ascend910_9589",
+        "Ascend910_9599",
+    ]
+    is_valid = arch in valid_arch_list
+    if not is_valid:
+        valid_arch_str = ", ".join(valid_arch_list)
+        raise ValueError(f"TRITON_ASCEND_ARCH = {arch} is invalid!"
+                         f"Candidates are [{valid_arch_str}]")
+    return arch
+
+
+def is_ffts_supported(arch: str):
+    '''
+    Cases:
+    - empty str: User does not specify arch, thus it runs on 910B/910D both of which support ffts. Return True.
+    - Ascend310B4: 310B4 does not support ffts. Return False.
+    - Other arch: 910B/910D supports ffts. Return True.
+    '''
+    if arch in ["Ascend910A", "Ascend310B4"]:
+        return False
+    return True
+
+
+def force_disable_ffts():
+    '''
+    '''
+    disable_ffts = os.getenv("TRITON_DISABLE_FFTS", "false").lower() in ("true", "1")
+    return disable_ffts

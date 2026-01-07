@@ -1,0 +1,62 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+import pytest
+
+import triton
+import triton.language as tl
+import triton.language.extra.ascend.libdevice as libdevice
+import test_common
+
+import torch
+import torch_npu
+import numpy as np
+
+
+def torch_modified_bessel_i0(x0):
+    return torch.special.modified_bessel_i0(x0)
+
+
+@triton.jit
+def triton_modified_bessel_i0(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.constexpr):
+    offset = tl.program_id(0) * XBLOCK
+    base1 = tl.arange(0, XBLOCK_SUB)
+    loops1: tl.constexpr = XBLOCK // XBLOCK_SUB
+    for loop1 in range(loops1):
+        x0 = offset + (loop1 * XBLOCK_SUB) + base1
+        tmp0 = tl.load(in_ptr0 + (x0), None)
+        tmp1 = libdevice.cyl_bessel_i0(tmp0)
+        tl.store(out_ptr0 + (x0), tmp1, None)
+
+
+@pytest.mark.parametrize('param_list',
+                            [
+                                ['float32', (2, 4096, 8), 2, 32768, 1024],
+                                ['float16', (2, 4096, 8), 2, 32768, 1024],
+                            ])
+def test_modified_bessel_i0(param_list):
+    dtype, shape, ncore, xblock, xblock_sub = param_list
+    np_x0 = test_common.generate_numpy(shape, dtype)
+    y_ref = np.i0(np_x0)
+    y_ref = torch.from_numpy(y_ref).to(eval('torch.' + dtype))
+    x0 = torch.from_numpy(np_x0).to(eval('torch.' + dtype)).npu()
+    y_cal = torch.zeros(shape, dtype = eval('torch.' + dtype)).npu()
+    triton_modified_bessel_i0[ncore, 1, 1](x0, y_cal, xblock, xblock_sub)
+    test_common.validate_cmp(dtype, y_cal, y_ref)

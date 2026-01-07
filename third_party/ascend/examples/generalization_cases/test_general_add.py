@@ -1,6 +1,24 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
-# Only floating point clamp is supported
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+
 import pytest
 
 import triton
@@ -9,6 +27,7 @@ import torch
 import test_common
 from test_common import TestUtils
 import logging
+import numpy as np
 
 
 @triton.jit
@@ -393,3 +412,24 @@ def test_add_2d_to_5d(x_dtype_str, y_dtype_str, param_list):
         raise ValueError(f"Unsupported tensor dim: {ndim}")
     expected = out_temp + y_temp + x0_temp
     torch.testing.assert_close(out, expected)
+
+
+@pytest.mark.parametrize('shape', TestUtils.test_shape1d)
+@pytest.mark.parametrize('dtype', ['uint16', 'uint32', 'uint64'])
+def test_add_uint(shape, dtype):
+    torch_dtype = eval('torch.' + dtype)
+    np_x0 = test_common.generate_numpy(shape, dtype)
+    np_x1 = test_common.generate_numpy(shape, dtype)
+    np_x2 = test_common.generate_numpy(shape, dtype)  
+
+    x0 = torch.from_numpy(np_x0).to(torch_dtype).npu()
+    x1 = torch.from_numpy(np_x1).to(torch_dtype).npu()
+    x2 = torch.from_numpy(np_x2).to(torch_dtype).npu()   
+
+    #numpy result
+    ans_numpy = np_x0 + np_x1
+    z_ref1 = torch.from_numpy(ans_numpy).npu()
+
+    triton_res = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
+    triton_add[1, 1, shape[0]](triton_res, x0, x1, x2, 1, 1, 1, 1, 1, shape[0]) 
+    test_common.validate_cmp(dtype, z_ref1, triton_res)

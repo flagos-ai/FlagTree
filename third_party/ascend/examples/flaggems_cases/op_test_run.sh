@@ -1,21 +1,19 @@
 #!/bin/bash
 
 # 获取传入参数
-param="$1"
-input_ops="$2"
-device_count="${3:-1}"           # 默认使用1个设备
-threads_per_device="${4:-64}"    # 每个设备线程数，默认64
+device_count="${1:-1}"           # 默认使用1个设备
+threads_per_device="${2:-64}"    # 每个设备线程数，默认64
 
 # 定义路径
 DIR_TESTS="tests"
 DIR_BENCHMARK="benchmark"
-DAILY_LOG_DIR="/home/daily_log"
+PR_LOG_DIR="/home/pr_test_log"
 TIMESTAMP=$(date +"%Y%m%d")
 LOG_ARCHIVE="test_flaggems_logs_${TIMESTAMP}.tar.gz"
-SUMMARY_FILE="${WORKSPACE}/ascend/examples/summary.txt"  # 新增：统计信息文件
+SUMMARY_FILE="${WORKSPACE}/triton-ascend/ascend/examples/summary.txt"  # 新增：统计信息文件
 
 # 检查日志目录
-mkdir -p "$DAILY_LOG_DIR" || { echo "无法创建日志目录 $DAILY_LOG_DIR"; exit 1; }
+mkdir -p "$PR_LOG_DIR" || { echo "无法创建日志目录 $PR_LOG_DIR"; exit 1; }
 
 # 中央计数器文件定义
 COUNTER_FILE=$(mktemp)
@@ -138,7 +136,7 @@ run_tests_thread() {
 
         # 执行正确性测试并记录时间
         start_op=$(date +%s)
-        pytest -m $task_name --dist=loadfile --ref cpu -sv &> "$log_file"
+        python -m pytest -m $task_name --dist=loadfile --ref cpu -sv &> "$log_file"
         exit_code=$?
         duration=$(( $(date +%s) - start_op ))
 
@@ -177,77 +175,15 @@ run_tests_thread() {
     done
 }
 
-# 线程执行函数 - 性能测试
-run_benchmark_thread() {
-    local device_id=$1
-    local thread_id=$2
-    local device_log_dir=$3
-    local thread_log_dir="$device_log_dir/thread_${thread_id}"
-    mkdir -p "$thread_log_dir"
-
-    while true; do
-        task_name=$(get_next_task)
-        [[ -z "$task_name" ]] && break
-
-        echo "[设备 $device_id-线程 $thread_id] 正在执行: pytest -m $task_name --level core --record log"
-        log_file="${thread_log_dir}/benchmark_${task_name}.log"
-        perf_file="${thread_log_dir}/perf_${task_name}.log"
-
-        # 执行性能测试并记录时间
-        start_op=$(date +%s)
-        pytest -m $task_name --level core --record "$perf_file" &> "$log_file"
-        exit_code=$?
-        duration=$(( $(date +%s) - start_op ))
-
-        # 根据退出码记录不同状态
-        case $exit_code in
-            0)
-                status="success"
-                ;;
-            1)
-                status="failure"
-                ;;
-            2)  # pytest跳过用例的退出码
-                status="skipped"
-                ;;
-            *)
-                status="error"
-                ;;
-        esac
-
-        # 记录统计结果
-        record_stats $device_id $status
-
-        # 原子更新完成计数
-        new_completed=$(update_progress)
-
-        # 获取最新进度状态
-        read completed total < <(get_progress)
-        progress=$(( completed * 100 / total ))
-
-        # 输出结果
-        if [ $exit_code -ne 0 ]; then
-            echo "[错误] [$device_id-$thread_id] $task_name 性能测试失败! (用时 ${duration}s, 进度: $completed/$total)"
-        else
-            echo "[成功] [$device_id-$thread_id] $task_name 性能测试完成! (用时 ${duration}s, 进度: $completed/$total)"
-        fi
-    done
-}
-
 # 设备主函数
 run_device() {
     local device_id=$1
-    local mode=$2
     local device_log_dir="device_${device_id}_logs"
     mkdir -p "$device_log_dir"
 
     # 创建设备内的线程池
     for ((thread_id=0; thread_id < threads_per_device; thread_id++)); do
-        if [ "$mode" == "tests" ]; then
-            run_tests_thread $device_id $thread_id "$device_log_dir" &
-        elif [ "$mode" == "benchmark" ]; then
-            run_benchmark_thread $device_id $thread_id "$device_log_dir" &
-        fi
+        run_tests_thread $device_id $thread_id "$device_log_dir" &
     done
 
     # 等待设备内所有线程完成
@@ -256,47 +192,18 @@ run_device() {
 }
 
 # 根据参数执行测试
-if [ "$param" == "tests" ]; then
-    cd "$DIR_TESTS" || { echo "无法进入目录 $DIR_TESTS"; exit 1; }
+cd "$DIR_TESTS" || { echo "无法进入目录 $DIR_TESTS"; exit 1; }
 
-    # 创建全局任务队列
-    init_task_queue OPS
+# 创建全局任务队列
+init_task_queue OPS
 
-    # 启动设备主进程
-    for ((device_id=0; device_id < device_count; device_id++)); do
-        (
-            export ASCEND_RT_VISIBLE_DEVICES=$device_id
-            run_device $device_id "tests"
-        ) &
-    done
-
-elif [ "$param" == "benchmark" ]; then
-    cd "$DIR_BENCHMARK" || { echo "无法进入目录 $DIR_BENCHMARK"; exit 1; }
-
-    # 性能测试使用单线程模式（保证准确性）
-    if [ "$threads_per_device" -gt 1 ]; then
-        echo "警告：性能测试模式下自动设置为单线程模式（每个设备1个线程）"
-        threads_per_device=1
-    fi
-
-    # 创建全局任务队列
-    init_task_queue OPS
-
-    # 启动设备主进程
-    for ((device_id=0; device_id < device_count; device_id++)); do
-        (
-            export ASCEND_RT_VISIBLE_DEVICES=$device_id
-            run_device $device_id "benchmark"
-        ) &
-    done
-
-else
-    echo "参数错误! 用法:"
-    echo "正确性测试: $0 tests \"算子列表\" [设备数量] [线程数]"
-    echo "性能测试:   $0 benchmark \"算子列表\" [设备数量] [线程数]"
-    cleanup_tasks
-    exit 1
-fi
+# 启动设备主进程
+for ((device_id=0; device_id < device_count; device_id++)); do
+    (
+        export ASCEND_RT_VISIBLE_DEVICES=$device_id
+        run_device $device_id
+    ) &
+done
 
 # 等待所有设备完成
 wait
@@ -359,7 +266,6 @@ fi
 # 生成统计信息摘要
 {
     echo "===================== flaggems测试统计摘要 ====================="
-    echo "执行类型:       ${param^}"
     echo "开始时间:       $(date -d @$start_time '+%Y-%m-%d %H:%M:%S')"
     echo "结束时间:       $(date '+%Y-%m-%d %H:%M:%S')"
     echo "测试日期:       $(date '+%Y-%m-%d')"
@@ -389,7 +295,6 @@ fi
     echo "--------------------------------------------------------"
     echo "设备数量:       $device_count"
     echo "每设备线程数:   $threads_per_device"
-    echo "并行效率:       $(( (total_success + total_failure + total_error) * 100 / (device_count * threads_per_device * total_time) )) OPS/线程秒"
     echo "========================================================"
     echo ""
 } | tee -a $SUMMARY_FILE  # 追加到统计文件并同时输出到控制台
@@ -400,10 +305,10 @@ if [ ${#log_dirs[@]} -gt 0 ]; then
     echo "归档日志文件到 $LOG_ARCHIVE"
     tar -czf "$LOG_ARCHIVE" "${log_dirs[@]}"
 
-    if mv "$LOG_ARCHIVE" "$DAILY_LOG_DIR"; then
-        echo "日志已保存到: $DAILY_LOG_DIR/$LOG_ARCHIVE"
+    if mv "$LOG_ARCHIVE" "$PR_LOG_DIR"; then
+        echo "日志已保存到: $PR_LOG_DIR/$LOG_ARCHIVE"
     else
-        echo "警告：日志移动到 $DAILY_LOG_DIR 失败"
+        echo "警告：日志移动到 $PR_LOG_DIR 失败"
     fi
 
     # 清理临时日志

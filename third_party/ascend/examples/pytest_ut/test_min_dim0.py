@@ -1,5 +1,24 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+
 import pytest
 
 import triton
@@ -42,9 +61,14 @@ def test_min_dim0_3d():
     triton_cal = triton_func(x0, dim)
     test_common.validate_cmp("float32", triton_cal, torch_ref)
 
-def standard_min(x0,dim,dtype):
+
+def standard_min(x0, dim, dtype):
+    # fix with aclnnMinDim support list:[DT_FLOAT,DT_FLOAT16,DT_INT64,DT_BOOL,DT_BFLOAT16,].
+    if x0.dtype == torch.int8:
+        x0 = x0.to(torch.int64)
     res, index = torch.min(x0, dim)
-    return res
+    return res.to(dtype)
+
 
 @triton.jit
 def triton_min_dim0(in_ptr0, out_ptr0, M : tl.constexpr, N : tl.constexpr, MNUMEL: tl.constexpr, NNUMEL: tl.constexpr):

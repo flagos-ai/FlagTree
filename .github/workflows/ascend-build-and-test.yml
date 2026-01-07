@@ -77,19 +77,21 @@ jobs:
           python3 third_party/ascend/examples/tutorials/02-fused-softmax.py
           python3 third_party/ascend/examples/tutorials/03-layer-norm.py
           python3 third_party/ascend/examples/tutorials/04-fused-attention.py
-          python3 third_party/ascend/examples/tutorials/05-matrix-multiplication.py
           python3 third_party/ascend/examples/tutorials/06-demo-autotune.py
           python3 third_party/ascend/examples/tutorials/07-profiler.py
           python3 third_party/ascend/examples/tutorials/09-gather.py
           python3 third_party/ascend/examples/tutorials/10-gather_sorted.py
-          python3 third_party/ascend/examples/tutorials/12-hstu_attention.py
+          python3 third_party/ascend/examples/tutorials/11-rab_time.py
           python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized.py
+          python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized-flagtree.py
           python3 third_party/ascend/examples/tutorials/14-accuracy-comparison.py
           python3 python/test/ops/01_vector_add/01_vector_add.py
           python3 python/test/ops/abs/abs.py
+          python3 python/test/ops/addmm/addmm.py
           python3 python/test/ops/addmm/addmm_ascend.py
           python3 python/test/ops/amax/amax.py
           python3 python/test/ops/amax/amax_ascend_perf.py
+          python3 python/test/ops/apply_rotary_pos_emb/apply_rotary_pos_emb.py
           python3 python/test/ops/apply_rotary_pos_emb/apply_rotary_pos_emb_ascend.py
           python3 python/test/ops/argmin/argmin.py
           python3 python/test/ops/argmin/argmin_ascend_perf.py
@@ -99,20 +101,8 @@ jobs:
           python3 python/test/ops/min_dim/min_dim_ascend_perf.py
           python3 python/test/ops/sum_dim/sum_dim.py
           python3 python/test/ops/varmean/var_mean_ascend.py
-          python3 -m pytest third_party/ascend/examples/pytest_ut --ignore=third_party/ascend/examples/pytest_ut/test_atomic_and.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_atomic_cas.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_atomic_or.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_atomic_xchg.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_atomic_xor.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_cumprod.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_cumsum.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_dot_scaled.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_eq.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_flip.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_ge.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_le.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_pointer_type.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_range.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_sort.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_sum_vector.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_xor_sum.py
+          python3 -m pytest third_party/ascend/examples/pytest_ut --ignore=third_party/ascend/examples/pytest_ut/test_index_select.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_linearize_permute.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_logical_and.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_logical_or.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_triton_unified_attention.py

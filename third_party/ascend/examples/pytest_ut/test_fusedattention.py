@@ -1,3 +1,23 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 """
 Fused Attention
 ===============
@@ -27,16 +47,18 @@ DEVICE = "npu"
 def _attn_fwd_inner(acc_ptr, l_i, m_i, q,  # Accumulator, local l, local m, query vector
                     K_block_ptr, V_block_ptr,  # Key and value block pointers for current stage
                     start_m, qk_scale,  # Starting position of current query block, qk scale factor
-                    BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  #
-                    STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  #
-                    N_CTX: tl.constexpr, fp8_v: tl.constexpr):
-    # range of values handled by this stage
+                    BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  # Block size constants
+                    STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  # Current stage flag, m and n offset indices
+                    N_CTX: tl.constexpr, fp8_v: tl.constexpr):  # Total context length, whether to enable FP8 for value precision
+    # Set the processing range [lo, hi) for the current stage (in column block units)
     # causal = true
     # stage = 1
-    # 因果注意力，顾名思义，它在计算时会限制信息的流动，只允许模型看到当前位置及之前的位置
-    # 的信息。也就是说，当前位置的输出只能依赖于该位置及其之前的输入，而不能访问当前位置
-    # 之后的信息。因果注意力保证了数据的顺序性，避免了“未来信息”的泄露。
-    # 但是后面的逻辑也会触发
+    # Causal attention, as the name implies, restricts the flow of information during computation,
+    # only allowing the model to see the current and previous positions.
+    # In other words, the output at the current position can only depend on the input at or before this position,
+    # and cannot access information from future positions.
+    # Causal attention ensures sequential order and prevents "leakage of future information."
+    # But the following logic will also be triggered
     if STAGE == 1:
         # Stage 1: process all tokens before the query block
         tl.static_assert(BLOCK_M >= BLOCK_N)
@@ -49,7 +71,7 @@ def _attn_fwd_inner(acc_ptr, l_i, m_i, q,  # Accumulator, local l, local m, quer
     # causal = False (no need for masking)
     else:
         lo, hi = 0, N_CTX  # Process the entire context
-    
+
     # Adjust K and V block pointers to the starting position `lo`
     K_block_ptr = tl.advance(K_block_ptr, (lo, 0))  # K is [HEAD_DIM, N_CTX], shift along the second dim by lo
     V_block_ptr = tl.advance(V_block_ptr, (lo, 0))  # V is [N_CTX, HEAD_DIM], shift along the first dim by lo
@@ -125,16 +147,16 @@ def _attn_fwd_inner(acc_ptr, l_i, m_i, q,  # Accumulator, local l, local m, quer
 
 @triton.jit
 def _attn_fwd(Q, K, V, M, Out, acc, sm_scale,
-              stride_qz: tl.constexpr, stride_qh: tl.constexpr, stride_qm: tl.constexpr, stride_qk: tl.constexpr,  #
-              stride_kz: tl.constexpr, stride_kh: tl.constexpr, stride_kn: tl.constexpr, stride_kk: tl.constexpr,  #
-              stride_vz: tl.constexpr, stride_vh: tl.constexpr, stride_vn: tl.constexpr, stride_vk: tl.constexpr,  #
-              stride_oz: tl.constexpr, stride_oh: tl.constexpr, stride_om: tl.constexpr, stride_on: tl.constexpr,  #
-              Z: tl.constexpr, H: tl.constexpr, 
-              N_CTX: tl.constexpr,  #
-              HEAD_DIM: tl.constexpr,  #
-              BLOCK_M: tl.constexpr,  #
-              BLOCK_N: tl.constexpr,  #
-              STAGE: tl.constexpr  #
+              stride_qz: tl.constexpr, stride_qh: tl.constexpr, stride_qm: tl.constexpr, stride_qk: tl.constexpr,
+              stride_kz: tl.constexpr, stride_kh: tl.constexpr, stride_kn: tl.constexpr, stride_kk: tl.constexpr,
+              stride_vz: tl.constexpr, stride_vh: tl.constexpr, stride_vn: tl.constexpr, stride_vk: tl.constexpr,
+              stride_oz: tl.constexpr, stride_oh: tl.constexpr, stride_om: tl.constexpr, stride_on: tl.constexpr,
+              Z: tl.constexpr, H: tl.constexpr,
+              N_CTX: tl.constexpr,
+              HEAD_DIM: tl.constexpr,
+              BLOCK_M: tl.constexpr,
+              BLOCK_N: tl.constexpr,
+              STAGE: tl.constexpr
               ):
     # Total number of blocks in sequence dimension (M)
     NUM_BLOCKS_M = N_CTX // BLOCK_M
@@ -299,16 +321,14 @@ attention = _attention.apply
 @pytest.mark.parametrize("Z, H, N_CTX, HEAD_DIM, causal, dtype, BM, BN", [
     (1, 1, 128, 128, False, torch.float16, 32, 128),
     (1, 1, 128, 128, False, torch.bfloat16, 64, 128),
-    (1, 2, 128, 128, False, torch.float16, 32, 128),
     (1, 2, 256, 256, False, torch.bfloat16, 32, 256),
     (2, 2, 128, 256, False, torch.float16, 64, 128),
-    (4, 32, 32, 64, False, torch.bfloat16, 32, 32),
     (4, 32, 64, 64, False, torch.float16, 32, 64),
-    (4, 32, 1024, 64, False, torch.bfloat16, 64, 64),
-    (4, 32, 4096, 64, False, torch.float16, 64, 64),
+    (4, 32, 1024, 64, False, torch.bfloat16, 64, 128),
+    (4, 32, 4096, 64, False, torch.float16, 128, 128),
 ])
 def test_op(Z, H, N_CTX, HEAD_DIM, causal, dtype, BM, BN):
-    # 过滤非整切案例, N_CTX 需整除 BM 和 BN, 且 HEAD_DIM 需整除 16
+    # Filter out non-integer cases; N_CTX must be divisible by BM and BN, and HEAD_DIM must be divisible by 16.
     if N_CTX % BM != 0 or N_CTX % BN != 0 or HEAD_DIM % 16 != 0:
         pytest.skip("Skipping non-divisible case")
 
@@ -316,7 +336,7 @@ def test_op(Z, H, N_CTX, HEAD_DIM, causal, dtype, BM, BN):
     q = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=dtype, device=DEVICE).normal_(mean=0.0, std=0.5).requires_grad_())
     k = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=dtype, device=DEVICE).normal_(mean=0.0, std=0.5).requires_grad_())
     v = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=dtype, device=DEVICE).normal_(mean=0.0, std=0.5).requires_grad_())
-  
+
     sm_scale = 0.5
 
     tri_out = attention(q, k, v, causal, sm_scale, BM, BN)
@@ -333,15 +353,14 @@ def test_op(Z, H, N_CTX, HEAD_DIM, causal, dtype, BM, BN):
             )[0]
 
     torch.testing.assert_close(ref_out, tri_out, atol=1e-2, rtol=1e-2, equal_nan=True)
+    print(f"[PASSED] Attention shape:({Z}, {H}, {N_CTX}, {HEAD_DIM}), BM: {BM}, BN: {BN}, dtype: {dtype}")
 
 
 if __name__ == "__main__":
     test_op(1, 1, 128, 128, causal=False, dtype=torch.float16, BM=32, BN=128)
     test_op(1, 1, 128, 128, causal=False, dtype=torch.bfloat16, BM=64, BN=128)
-    test_op(1, 2, 128, 128, causal=False, dtype=torch.float16, BM=32, BN=128)
     test_op(1, 2, 256, 256, causal=False, dtype=torch.bfloat16, BM=32, BN=256)
     test_op(2, 2, 128, 256, causal=False, dtype=torch.float16, BM=64, BN=128)
-    test_op(4, 32, 32, 64, causal=False, dtype=torch.bfloat16, BM=32, BN=32)
     test_op(4, 32, 64, 64, causal=False, dtype=torch.float16, BM=32, BN=64)
-    test_op(4, 32, 1024, 64, causal=False, dtype=torch.bfloat16, BM=64, BN=64)
-    test_op(4, 32, 4096, 64, causal=False, dtype=torch.float16, BM=64, BN=64)
+    test_op(4, 32, 1024, 64, causal=False, dtype=torch.bfloat16, BM=64, BN=128)
+    test_op(4, 32, 4096, 64, causal=False, dtype=torch.float16, BM=128, BN=128)

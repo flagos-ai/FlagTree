@@ -1,10 +1,29 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 import math
 import numpy as np
 import torch
 import torch_npu
 import triton
 import triton.language as tl
-import triton.language.extra.ascend.libdevice as libdevice
 import test_common
 import pytest
 from test_common import TestUtils, check_ub_mem_overflow, get_dtype_size
@@ -60,67 +79,6 @@ def test_gather(src_shape, indices_shape, axis):
     ref = torch.gather(src, axis, indices)
     result = triton_gather(src, axis, indices)
     torch.testing.assert_close(result, ref, rtol=0, atol=0)
-
-
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float16', (11, 12, 256, 512), 48],
-                             ['bfloat16', (11, 12, 256, 512), 48],
-                             ['float32', (11, 12, 256, 512), 48],   
-                         ])
-def test_gather_flip(param_list):
-
-    def torch_func(inp, idx):
-        return torch.gather(input=inp, dim=-1, index=idx)
-
-    @triton.jit
-    def triton_kernel(dst_ptr, src_ptr, idx_ptr,
-                    XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr,
-                    R0_BLOCK: tl.constexpr, R1_BLOCK: tl.constexpr):
-        pid = tl.program_id(0)
-        poff = pid * XBLOCK
-        x0_idx_base = 0
-        r1_idx = tl.arange(0, R1_BLOCK)
-        loop0 = (XBLOCK + XBLOCK_SUB - 1) // XBLOCK_SUB
-        for xsub_id in tl.range(loop0):
-            x0_idx = poff + xsub_id * XBLOCK_SUB + x0_idx_base
-            idx_idx = idx_ptr + x0_idx * R1_BLOCK + r1_idx
-            idx_blk = tl.load(idx_idx)
-            idx_min = tl.min(idx_blk, axis=0)
-            src_idx = src_ptr + x0_idx * R0_BLOCK + idx_min + r1_idx
-            src_blk = tl.load(src_idx)
-            fliped_blk = libdevice.flip(src_blk, 0)
-            dst_idx = dst_ptr + x0_idx * R1_BLOCK + r1_idx
-            tl.store(dst_idx, fliped_blk)
-
-    def triton_func(p2c_out, p2c_att, p2c_pos, ncore):
-        nrows = p2c_att.shape[0] * p2c_att.shape[1] * p2c_att.shape[2]
-        xs = nrows // ncore
-        assert(xs * ncore == nrows)
-        xss = 1 # must be 1
-        r0s = p2c_att.shape[3]
-        r1s = p2c_att.shape[2]
-        triton_kernel[ncore, 1, 1](p2c_out, p2c_att, p2c_pos,
-                    XBLOCK=xs, XBLOCK_SUB=xss,
-                    R0_BLOCK=r0s, R1_BLOCK=r1s)
-        return p2c_out
-
-    dtype, shape, ncore = param_list
-    M0, M1, N0, N1 = shape
-    r0 = torch.arange(N0)
-    c0 = torch.arange(N0)
-    p2c_pos = r0[:, None] - c0[None, :] + N0-1
-    p2c_pos = p2c_pos.broadcast_to((M0, M1, N0, N0))
-    p2c_pos = p2c_pos.npu()
-    if (p2c_pos.dtype == torch.int64):
-        p2c_pos = p2c_pos.to(torch.int32)
-    assert(np.all(np.diff(p2c_pos.cpu()) == -1))
-    p2c_att = test_common.generate_tensor(shape, dtype).npu()
-    p2c_out = test_common.generate_tensor(p2c_pos.shape, dtype).npu()
-
-    p2c_ref = torch_func(p2c_att, p2c_pos)
-    triton_func(p2c_out, p2c_att, p2c_pos, ncore)
-    test_common.validate_cmp(dtype, p2c_out, p2c_ref)
 
 
 @triton.jit
@@ -188,8 +146,5 @@ def test_gather_4d_5d(src_shape, indices_shape, axis):
 
 
 if __name__ == "__main__":
-    param_list = ['float16', (11, 12, 256, 512), 48]
-    test_gather_flip(param_list)
-    print("success: test_gather_flip")
     test_gather([4, 64], [4, 32], 1)
     print("success: test_gather")

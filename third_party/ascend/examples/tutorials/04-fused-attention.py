@@ -1,3 +1,23 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 """
 Fused Attention
 ===============
@@ -127,12 +147,12 @@ def _attn_fwd_inner(acc_ptr, l_i, m_i, q,  # Accumulator, local l, local m, quer
 
 @triton.jit
 def _attn_fwd(Q, K, V, M, Out, acc, sm_scale,
-              stride_qz: tl.constexpr, stride_qh: tl.constexpr, stride_qm: tl.constexpr, stride_qk: tl.constexpr, 
-              stride_kz: tl.constexpr, stride_kh: tl.constexpr, stride_kn: tl.constexpr, stride_kk: tl.constexpr, 
-              stride_vz: tl.constexpr, stride_vh: tl.constexpr, stride_vn: tl.constexpr, stride_vk: tl.constexpr, 
-              stride_oz: tl.constexpr, stride_oh: tl.constexpr, stride_om: tl.constexpr, stride_on: tl.constexpr, 
+              stride_qz: tl.constexpr, stride_qh: tl.constexpr, stride_qm: tl.constexpr, stride_qk: tl.constexpr,
+              stride_kz: tl.constexpr, stride_kh: tl.constexpr, stride_kn: tl.constexpr, stride_kk: tl.constexpr,
+              stride_vz: tl.constexpr, stride_vh: tl.constexpr, stride_vn: tl.constexpr, stride_vk: tl.constexpr,
+              stride_oz: tl.constexpr, stride_oh: tl.constexpr, stride_om: tl.constexpr, stride_on: tl.constexpr,
               Z: tl.constexpr, H: tl.constexpr,
-              N_CTX: tl.constexpr, 
+              N_CTX: tl.constexpr,
               HEAD_DIM: tl.constexpr,
               BLOCK_M: tl.constexpr,
               BLOCK_N: tl.constexpr,
@@ -301,16 +321,14 @@ attention = _attention.apply
 @pytest.mark.parametrize("Z, H, N_CTX, HEAD_DIM, causal, dtype, BM, BN", [
     (1, 1, 128, 128, False, torch.float16, 32, 128),
     (1, 1, 128, 128, False, torch.bfloat16, 64, 128),
-    (1, 2, 128, 128, False, torch.float16, 32, 128),
     (1, 2, 256, 256, False, torch.bfloat16, 32, 256),
     (2, 2, 128, 256, False, torch.float16, 64, 128),
-    (4, 32, 32, 64, False, torch.bfloat16, 32, 32),
     (4, 32, 64, 64, False, torch.float16, 32, 64),
-    (4, 32, 1024, 64, False, torch.bfloat16, 64, 64),
-    (4, 32, 4096, 64, False, torch.float16, 64, 64),
+    (4, 32, 1024, 64, False, torch.bfloat16, 64, 128),
+    (4, 32, 4096, 64, False, torch.float16, 128, 128),
 ])
 def test_op(Z, H, N_CTX, HEAD_DIM, causal, dtype, BM, BN):
-    # 过滤非整切案例, N_CTX 需整除 BM 和 BN, 且 HEAD_DIM 需整除 16
+    # Filter out non-integer cases; N_CTX must be divisible by BM and BN, and HEAD_DIM must be divisible by 16.
     if N_CTX % BM != 0 or N_CTX % BN != 0 or HEAD_DIM % 16 != 0:
         pytest.skip("Skipping non-divisible case")
 
@@ -333,22 +351,16 @@ def test_op(Z, H, N_CTX, HEAD_DIM, causal, dtype, BM, BN):
             next_tockens=65535,
             sparse_mode=0,
             )[0]
-    
-    try:
-        torch.testing.assert_close(ref_out, tri_out, atol=1e-2, rtol=1e-2, equal_nan=True)
-        print(f"Test Fused-Attention PASS!")
-    except AssertionError as e:
-        print(f"Test Fused-Attention FAILED: ({Z},{H},{N_CTX},{HEAD_DIM}), causal={causal}, dtype={dtype}, BM={BM}, BN={BN}")
-        print(f"Error: {e}")
+
+    torch.testing.assert_close(ref_out, tri_out, atol=1e-2, rtol=1e-2, equal_nan=True)
+    print(f"[PASSED] Attention shape:({Z}, {H}, {N_CTX}, {HEAD_DIM}), BM: {BM}, BN: {BN}, dtype: {dtype}")
 
 
 if __name__ == "__main__":
     test_op(1, 1, 128, 128, causal=False, dtype=torch.float16, BM=32, BN=128)
     test_op(1, 1, 128, 128, causal=False, dtype=torch.bfloat16, BM=64, BN=128)
-    test_op(1, 2, 128, 128, causal=False, dtype=torch.float16, BM=32, BN=128)
     test_op(1, 2, 256, 256, causal=False, dtype=torch.bfloat16, BM=32, BN=256)
     test_op(2, 2, 128, 256, causal=False, dtype=torch.float16, BM=64, BN=128)
-    test_op(4, 32, 32, 64, causal=False, dtype=torch.bfloat16, BM=32, BN=32)
     test_op(4, 32, 64, 64, causal=False, dtype=torch.float16, BM=32, BN=64)
-    test_op(4, 32, 1024, 64, causal=False, dtype=torch.bfloat16, BM=64, BN=64)
-    test_op(4, 32, 4096, 64, causal=False, dtype=torch.float16, BM=64, BN=64)
+    test_op(4, 32, 1024, 64, causal=False, dtype=torch.bfloat16, BM=64, BN=128)
+    test_op(4, 32, 4096, 64, causal=False, dtype=torch.float16, BM=128, BN=128)
