@@ -6,7 +6,7 @@ FlagTree 是面向多种 AI 芯片的开源、统一编译器。FlagTree 致力�
 各后端基于不同版本的 triton 适配，因此位于不同的主干分支，各主干分支均为保护分支且地位相等：<br>
 
 |主干分支|厂商|后端|Triton 版本|
-|-------|---|---|-----------|
+|:------|:--|:--|:----------|
 |[main](https://github.com/flagos-ai/flagtree/tree/main)|NVIDIA<br>AMD<br>x86_64 cpu<br>ILUVATAR（天数智芯）<br>Moore Threads（摩尔线程）<br>KLX<br>MetaX（沐曦股份）<br>HYGON（海光信息）|[nvidia](/third_party/nvidia/)<br>[amd](/third_party/amd/)<br>[triton-shared](https://github.com/microsoft/triton-shared)<br>[iluvatar](/third_party/iluvatar/)<br>[mthreads](/third_party/mthreads/)<br>[xpu](/third_party/xpu/)<br>[metax](/third_party/metax/)<br>[hcu](third_party/hcu/)|3.1<br>3.1<br>3.1<br>3.1<br>3.1<br>3.0<br>3.1<br>3.0|
 |[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)|NVIDIA<br>AMD<br>Huawei Ascend（华为昇腾）<br>Cambricon（寒武纪）|[nvidia](https://github.com/FlagTree/flagtree/tree/triton_v3.2.x/third_party/nvidia/)<br>[amd](https://github.com/FlagTree/flagtree/tree/triton_v3.2.x/third_party/amd/)<br>[ascend](https://github.com/FlagTree/flagtree/blob/triton_v3.2.x/third_party/ascend)<br>[cambricon](https://github.com/FlagTree/flagtree/tree/triton_v3.2.x/third_party/cambricon/)|3.2|
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|NVIDIA<br>AMD<br>x86_64 cpu<br>ARM China<br>Tsingmicro（清微智能）<br>Enflame（燧原）|[nvidia](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/nvidia/)<br>[amd](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/amd/)<br>[triton-shared](https://github.com/microsoft/triton-shared)<br>[aipu](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/)<br>[tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/)<br>[enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/)|3.3|
@@ -15,6 +15,7 @@ FlagTree 是面向多种 AI 芯片的开源、统一编译器。FlagTree 致力�
 
 ## 新特性
 
+* 2026/01/08 添加 [HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)、[TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE)、[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/EDSL) 等新功能 WIKI。
 * 2025/12/24 支持拉取和安装 [Wheel](/README_cn.md#非源码安装)。
 * 2025/12/08 新增接入 [enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) 后端（对应 Triton 3.3），加入 CI/CD。
 * 2025/11/26 添加 FlagTree 后端特化统一设计文档 [FlagTree_Backend_Specialization](/documents/decoupling/)。
