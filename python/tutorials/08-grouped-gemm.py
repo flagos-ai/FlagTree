@@ -88,6 +88,13 @@ def num_sms():
             'BLOCK_SIZE_K': 64,
             'NUM_SM': num_sms(),
         }),
+    ] if '--only_unit_test' not in sys.argv else [
+        triton.Config({
+            'BLOCK_SIZE_M': 128,
+            'BLOCK_SIZE_N': 128,
+            'BLOCK_SIZE_K': 64,
+            'NUM_SM': num_sms(),
+        }),
     ],
     key=['group_size'],
 )
@@ -395,7 +402,7 @@ ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
 for i in range(group_size):
     assert torch.allclose(ref_out[i], tri_out[i], atol=1e-2, rtol=1e-2)
 
-if supports_tma():
+if supports_tma() and '--only_unit_test' not in sys.argv:
     tri_tma_out = group_gemm_tma_fn(group_A, group_B_T)
     for i in range(group_size):
         assert torch.allclose(ref_out[i], tri_tma_out[i], atol=1e-2, rtol=1e-2)
