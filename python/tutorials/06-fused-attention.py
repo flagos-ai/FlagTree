@@ -686,7 +686,7 @@ try:
 except BaseException:
     HAS_FLASH = False
 
-TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
+TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2') if '--only_unit_test' not in sys.argv else False
 BATCH, N_HEADS = 4, 32
 # vary seq length for fixed head and batch=4
 configs = []
@@ -695,7 +695,8 @@ for HEAD_DIM in [64, 128] if '--only_unit_test' not in sys.argv else [64]:
         for causal in [True, False] if '--only_unit_test' not in sys.argv else [False]:
             # Enable warpspec for causal fwd on Hopper
             enable_ws = mode == "fwd" and (is_blackwell() or (is_hopper() and not causal))
-            for warp_specialize in [False, True] if enable_ws else [False]:
+            for warp_specialize in (
+                [False, True] if enable_ws else [False]) if '--only_unit_test' not in sys.argv else [enable_ws]:
                 configs.append(
                     triton.testing.Benchmark(
                         x_names=["N_CTX"],
