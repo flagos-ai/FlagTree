@@ -2,6 +2,7 @@
 
 ## <img width="30" height="30" alt="FlagTree-GitHub" src="https://github.com/user-attachments/assets/d8d24c81-6f46-4adc-94e2-b89b03afcb43" /> FlagTree
 
+FlagTree is part of [FlagOS](https://flagos.io/), a unified, open-source AI system software stack that aims to foster an open technology ecosystem by seamlessly integrating various models, systems and chips. By "develop once, migrate across various chips", FlagOS aims to unlock the full computational potential of hardware, break down the barriers between different chip software stacks, and effectively reduce migration costs. <br>
 FlagTree is an open source, unified compiler for multiple AI chips project dedicated to developing a diverse ecosystem of AI chip compilers and related tooling platforms, thereby fostering and strengthening the upstream and downstream Triton ecosystem. Currently in its initial phase, the project aims to maintain compatibility with existing adaptation solutions while unifying the codebase to rapidly implement single-repository multi-backend support. For upstream model users, it provides unified compilation capabilities across multiple backends; for downstream chip manufacturers, it offers examples of Triton ecosystem integration. <br>
 Each backend is based on different versions of triton, and therefore resides in different protected branches. All these protected branches have equal status.
 
