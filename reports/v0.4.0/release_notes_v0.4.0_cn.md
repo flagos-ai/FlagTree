@@ -25,9 +25,9 @@ FlagTree 继承前一版本的能力，持续集成新的后端，壮大生态�
 
 FlagTree 设计的后端统一特化，目的是整合后端接入范式，对后端的特化实现清晰化管理，为后端适配 Triton 版本升级迁移提供工程基础。详见 [FlagTree_Backend_Specialization](/documents/decoupling/)，已应用于 iluvatar、ascend 等后端。
 
-* 编译指导 flagtree_hints
+* 编译指导：HINTS
 
-在 GPGPU 上支持编译指导 shared memory + async copy 并在 triton_v3.5.x 分支上验证。更多内容可参考[wiki](https://github.com/flagos-ai/FlagTree/wiki/HINTS)。
+在 GPGPU 上支持编译指导 shared memory + async copy 并在 triton_v3.5.x 分支上验证。更多内容可参考 [wiki](https://github.com/flagos-ai/FlagTree/wiki/HINTS)。
 
 * Triton 语言扩展：TLE
 
@@ -47,5 +47,5 @@ FlagTree 设计的后端统一特化，目的是整合后端接入范式，对�
 
 FLIR 计划集成更多后端，2026 Q1 完成 tsingmicro 后端接入。 <br>
 保护分支 triton_v3.4.x 计划接入新后端。 <br>
-HINTS 计划GPU后端优化shared memory hints以更好地和Triton已有pass协作，同时进行功能升级。<br>
-TLE-Raw 计划在算子中验证性能提升机会，优化与Triton的衔接，同时寻找其他可用的接入语言。<br>
+HINTS 计划对 GPGPU 后端优化 shared memory hints 以更好地和 Triton 已有 pass 协作，同时进行功能升级。<br>
+TLE-Raw 计划在算子中验证性能提升机会，优化与 Triton 的衔接，同时寻找其他可用的接入语言。<br>
