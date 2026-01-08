@@ -26,7 +26,7 @@ module {
 
 // CHECK-DAG:   [[MAP_0_:#.+]] = affine_map<(d0) -> (d0)>
 // CHECK-LABEL:  func.func @add_kernel_01234(
-// CHECK-SAME:   %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, [[PARAM_0_:%.+]]: memref<?xf32> {tt.tensor_kind = 0 : i32}, [[PARAM_1_:%.+]]: memref<?xf32> {tt.tensor_kind = 0 : i32}, [[PARAM_2_:%.+]]: memref<?xf32> {tt.tensor_kind = 1 : i32}, 
+// CHECK-SAME:   %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, [[PARAM_0_:%.+]]: memref<?xf32> {tt.tensor_kind = 0 : i32}, [[PARAM_1_:%.+]]: memref<?xf32> {tt.tensor_kind = 0 : i32}, [[PARAM_2_:%.+]]: memref<?xf32> {tt.tensor_kind = 1 : i32},
 // CHECK-SAME:   [[PARAM_3_:%.+]]: i32, %arg6: i32, %arg7: i32, %arg8: i32, %arg9: i32, %arg10: i32, %arg11: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 // CHECK-DAG:       [[CST_1024_:%.+]] = arith.constant 1024 : index
 // CHECK-DAG:       [[CST_1024_1_:%.+]] = arith.constant 1024 : i32

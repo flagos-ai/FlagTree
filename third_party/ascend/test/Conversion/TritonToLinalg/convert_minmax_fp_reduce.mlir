@@ -67,4 +67,3 @@ module {
 // CHECK:  %[[VAL_9:.*]] = memref.reinterpret_cast [[ARG_0:%.+]] to offset: [0], sizes: [1], strides: [1] : memref<?xf32> to memref<1xf32, strided<[1]>>
 // CHECK:  bufferization.materialize_in_destination %[[VAL_8]] in writable %[[VAL_9]] : (tensor<1xf32>, memref<1xf32, strided<[1]>>) -> ()
 // CHECK:  return
-

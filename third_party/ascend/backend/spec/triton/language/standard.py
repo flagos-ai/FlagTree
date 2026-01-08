@@ -16,6 +16,7 @@ def sigmoid(x):
     core.static_assert(_is_floating_type == True, f"Expected dtype fp16/fp32/bf16, but got {core.constexpr(x.dtype)}")
     return (1 / (1 + math.exp(-x.to(core.float32)))).to(x.dtype)
 
+
 @core._tensor_member_fn
 @jit
 @math._add_math_1arg_docstr("softmax")
@@ -29,6 +30,7 @@ def softmax(x, ieee_rounding=False):
     den = sum(num, 0)
     return math.fdiv(num, den, ieee_rounding).to(x.dtype)
 
+
 @core._tensor_member_fn
 @jit
 @math._add_math_1arg_docstr("isfinited")
@@ -41,6 +43,7 @@ def isfinited(x):
     inf_mask = math.isinf(x)
     return (~nan_mask & ~inf_mask).to(int1)
 
+
 @core._tensor_member_fn
 @jit
 @math._add_math_1arg_docstr("finitef")
@@ -51,6 +54,7 @@ def finitef(x):
     nan_mask = math.isnan(x)
     inf_mask = math.isinf(x)
     return (~nan_mask & ~inf_mask).to(int1)
+
 
 @core._tensor_member_fn
 @jit
@@ -71,13 +75,12 @@ def rint(x):
     # Apply bankers rounding rules:
     # - If fractional part is 0.5: keep integer part if even, add 1 if odd
     # - Otherwise: round to the nearest integer directly
-    return core.where(
-        is_half,
-        core.where(is_even, floor_x, floor_x + 1.0),
-        core.where(x >= 0, math.floor(x + 0.5), math.ceil(x - 0.5))
-    )
+    return core.where(is_half, core.where(is_even, floor_x, floor_x + 1.0),
+                      core.where(x >= 0, math.floor(x + 0.5), math.ceil(x - 0.5)))
+
 
 pi: core.constexpr = math_pi
+
 
 @core._tensor_member_fn
 @jit
@@ -99,6 +102,7 @@ def atan2(y, x):
     add_pi = core.where((x < 0) & (y >= 0), pi, 0.0)
     sub_pi = core.where((x < 0) & (y < 0), -pi, 0.0)
     return (base + add_pi + sub_pi).to(x.dtype)
+
 
 @jit
 def _argmax_combine(value1, index1, value2, index2, tie_break_left):
@@ -129,14 +133,15 @@ def _elementwise_max_default(a, b):
 
 @jit
 def _elementwise_max_propagate_nan(a, b):
-    return core.maximum(a, b, propagate_nan = core.PropagateNan.ALL)
+    return core.maximum(a, b, propagate_nan=core.PropagateNan.ALL)
 
 
 @core._tensor_member_fn
 @jit
 @core._add_reduction_docstr("maximum", return_indices_arg="return_indices",
                             tie_break_arg="return_indices_tie_break_left")
-def max(input, axis=None, return_indices=False, return_indices_tie_break_left=True, keep_dims=False, propagate_nan = False):
+def max(input, axis=None, return_indices=False, return_indices_tie_break_left=True, keep_dims=False,
+        propagate_nan=False):
     input = core._promote_bfloat16_to_float32(input)
     if return_indices:
         if return_indices_tie_break_left:
@@ -161,6 +166,7 @@ def max(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
 def argmax(input, axis, tie_break_left=True, keep_dims=False):
     (_, ret) = max(input, axis, return_indices=True, return_indices_tie_break_left=tie_break_left, keep_dims=keep_dims)
     return ret
+
 
 @jit
 def _argmin_combine(value1, index1, value2, index2, tie_break_left):
@@ -221,7 +227,9 @@ def argmin(input, axis, tie_break_left=True, keep_dims=False):
 def _xor_combine(a, b):
     return a ^ b
 
+
 # xor sum
+
 
 @core._tensor_member_fn
 @jit
@@ -230,7 +238,9 @@ def xor_sum(x, axis=None, keep_dims=False):
     core.static_assert(x.type.scalar.is_int(), "xor_sum only supported for integers")
     return core.reduce(x, axis, _xor_combine, keep_dims=keep_dims)
 
+
 # sort
+
 
 @jit
 def _indicator(n_dims: core.constexpr, j: core.constexpr):
@@ -325,5 +335,7 @@ def sort_impl(x, k: core.constexpr = None, dim: core.constexpr = None, descendin
 def topk(x, k: core.constexpr, dim: core.constexpr = None):
     return sort_impl(x, k=k, dim=dim, descending=True)
 
-standard_ext_spec_api_list = ["sigmoid", "softmax", "isfinited", "finitef", "rint", "atan2", "argmax", "argmin",
-                               "topk", "max"]
+
+standard_ext_spec_api_list = [
+    "sigmoid", "softmax", "isfinited", "finitef", "rint", "atan2", "argmax", "argmin", "topk", "max"
+]

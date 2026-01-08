@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import torch
 import torch_npu
 import triton
@@ -33,7 +32,7 @@ def torch_func(x0):
 
 
 @pytest.mark.parametrize("dtype", _32bit_dtypes)
-@pytest.mark.parametrize("shape", [(1,), (3,), (8,), (37,), (64,), (781,)])
+@pytest.mark.parametrize("shape", [(1, ), (3, ), (8, ), (37, ), (64, ), (781, )])
 def test_sum(dtype, shape):
 
     @libentry()
@@ -61,7 +60,7 @@ def _reduce_combine(a, b):
 
 
 @pytest.mark.parametrize("dtype", _32bit_dtypes)
-@pytest.mark.parametrize("shape", [(1,), (3,), (8,), (37,), (64,), (781,)])
+@pytest.mark.parametrize("shape", [(1, ), (3, ), (8, ), (37, ), (64, ), (781, )])
 def test_reduce_sum(dtype, shape):
 
     @libentry()

@@ -90,17 +90,11 @@ def assign_draft_cache_locs(
     iter_offest = tl.arange(0, iter_upper)
     for topk_id in range(topk):
         indices = tl.load(
-            prefix_base
-            + topk_id * num_new_pages_per_topk_ * page_size
-            + last_page_len
-            + iter_offest,
+            prefix_base + topk_id * num_new_pages_per_topk_ * page_size + last_page_len + iter_offest,
             mask=iter_offest < speculative_num_steps,
         )
         tl.store(
-            out_cache_loc
-            + pid * topk * speculative_num_steps
-            + topk_id * speculative_num_steps
-            + iter_offest,
+            out_cache_loc + pid * topk * speculative_num_steps + topk_id * speculative_num_steps + iter_offest,
             indices,
             mask=iter_offest < speculative_num_steps,
         )

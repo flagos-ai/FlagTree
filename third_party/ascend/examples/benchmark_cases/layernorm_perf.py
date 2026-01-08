@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Layer Normalization
 ====================
@@ -62,66 +61,62 @@ DEVICE = "npu"
 
 
 @triton.jit
-def _layer_norm_fwd_fused(
-    X,  # pointer to the input
-    Y,  # pointer to the output
-    W,  # pointer to the weights
-    B,  # pointer to the biases
-    Mean,  # pointer to the mean
-    Rstd,  # pointer to the 1/std
-    stride,  # how much to increase the pointer when moving by 1 row
-    N,
-    M,  # number of columns in X
-    eps,  # epsilon to avoid division by zero
-    XBLOCK_SIZE: tl.constexpr,
-    RBLOCK_SIZE: tl.constexpr
-):
+def _layer_norm_fwd_fused(X,  # pointer to the input
+                          Y,  # pointer to the output
+                          W,  # pointer to the weights
+                          B,  # pointer to the biases
+                          Mean,  # pointer to the mean
+                          Rstd,  # pointer to the 1/std
+                          stride,  # how much to increase the pointer when moving by 1 row
+                          N, M,  # number of columns in X
+                          eps,  # epsilon to avoid division by zero
+                          XBLOCK_SIZE: tl.constexpr, RBLOCK_SIZE: tl.constexpr):
     # Map the program id to the row of X and Y it should compute.
     row_begin = tl.program_id(0) * RBLOCK_SIZE
-    row_idx = row_begin + tl.arange(0,RBLOCK_SIZE)
+    row_idx = row_begin + tl.arange(0, RBLOCK_SIZE)
     row_mask = row_idx < M
-    row_offsets = row_idx[:,None]*stride
+    row_offsets = row_idx[:, None] * stride
     # Compute mean
 
     _mean = tl.zeros((RBLOCK_SIZE, XBLOCK_SIZE), dtype=tl.float32)
     for off in range(0, N, XBLOCK_SIZE):
         col_idx = off + tl.arange(0, XBLOCK_SIZE)
         col_mask = col_idx < N
-        mask = row_mask[:,None] & col_mask[None,:]
-        a = tl.load(X + row_offsets + col_idx[None,:], mask=mask, other=0.).to(tl.float32)
+        mask = row_mask[:, None] & col_mask[None, :]
+        a = tl.load(X + row_offsets + col_idx[None, :], mask=mask, other=0.).to(tl.float32)
         _mean += a
-    mean = tl.sum(_mean, axis=1, keep_dims = True) / N
+    mean = tl.sum(_mean, axis=1, keep_dims=True) / N
 
     # Compute variance
     _var = tl.zeros((RBLOCK_SIZE, XBLOCK_SIZE), dtype=tl.float32)
     for off in range(0, N, XBLOCK_SIZE):
         col_idx = off + tl.arange(0, XBLOCK_SIZE)
         col_mask = col_idx < N
-        mask = row_mask[:,None] & col_mask[None,:]
-        x = tl.load(X + row_offsets + col_idx[None,:], mask=mask, other=0.).to(tl.float32)
+        mask = row_mask[:, None] & col_mask[None, :]
+        x = tl.load(X + row_offsets + col_idx[None, :], mask=mask, other=0.).to(tl.float32)
         x = tl.where(mask, x - mean, 0.)
         _var += x * x
     var = tl.sum(_var, axis=1, keep_dims=True) / N
 
     rstd = 1 / tl.sqrt(var + eps)
-    
+
     # Write mean / rstd
-    tl.store(Mean + row_idx[:,None], mean, mask = row_mask[:,None])
-    tl.store(Rstd + row_idx[:,None], rstd, mask = row_mask[:,None])
+    tl.store(Mean + row_idx[:, None], mean, mask=row_mask[:, None])
+    tl.store(Rstd + row_idx[:, None], rstd, mask=row_mask[:, None])
     # mean = mean.broadcast_to((RBLOCK_SIZE, XBLOCK_SIZE))
     # rstd = rstd.broadcast_to((RBLOCK_SIZE, XBLOCK_SIZE))
     # Normalize and apply linear transformation
     for off in range(0, N, XBLOCK_SIZE):
         col_idx = off + tl.arange(0, XBLOCK_SIZE)
         col_mask = col_idx < N
-        mask = row_mask[:,None] & col_mask[None,:]
-        w = tl.load(W + col_idx, mask=col_mask).reshape((1,XBLOCK_SIZE))
-        b = tl.load(B + col_idx, mask=col_mask).reshape((1,XBLOCK_SIZE))
-        x = tl.load(X + row_offsets + col_idx[None,:], mask=mask, other=0.).to(tl.float32)
+        mask = row_mask[:, None] & col_mask[None, :]
+        w = tl.load(W + col_idx, mask=col_mask).reshape((1, XBLOCK_SIZE))
+        b = tl.load(B + col_idx, mask=col_mask).reshape((1, XBLOCK_SIZE))
+        x = tl.load(X + row_offsets + col_idx[None, :], mask=mask, other=0.).to(tl.float32)
         x_hat = (x - mean) * rstd
         y = x_hat * w + b
         # Write output
-        tl.store(Y + row_offsets + col_idx[None,:], y, mask=mask)
+        tl.store(Y + row_offsets + col_idx[None, :], y, mask=mask)
 
 
 # %%
@@ -253,15 +248,16 @@ def _layer_norm_bwd_dwdb(DW,  # pointer to the partial sum of weights gradient
 # Here we focus on inputs that have Less than 64KB per feature.
 # Specifically, one can set :code:`'mode': 'backward'` to benchmark the backward pass.
 
-
 device = torch.npu.current_device()
 stream = torch.npu.current_stream(device).npu_stream
 kernels = {}
 
+
 class LayerNorm(torch.autograd.Function):
+
     @staticmethod
     def forward(ctx, x, normalized_shape, weight, bias, eps):
-        
+
         # allocate output
         y = torch.empty_like(x)
         # reshape input data into 2D tensor
@@ -274,23 +270,29 @@ class LayerNorm(torch.autograd.Function):
         MAX_FUSED_SIZE = 65536 // x.element_size()
         XBLOCK_SIZE = 256
         RBLOCK_SIZE = 32
-        NUM_CORE = (M -1) // RBLOCK_SIZE + 1
+        NUM_CORE = (M - 1) // RBLOCK_SIZE + 1
         num_warps = min(max((N - 1) // XBLOCK_SIZE + 1, 1), 8)
         # enqueue kernel
 
-        kernel, num_programs = kernels.get(XBLOCK_SIZE^RBLOCK_SIZE, (None, NUM_CORE))
+        kernel, num_programs = kernels.get(XBLOCK_SIZE ^ RBLOCK_SIZE, (None, NUM_CORE))
         if kernel is None:
-            kernel = _layer_norm_fwd_fused.warmup( x_arg, y, weight, bias, mean, rstd,  #
-                                            x_arg.stride(0), N, M, eps,  #
-                                            XBLOCK_SIZE = XBLOCK_SIZE,
-                                            RBLOCK_SIZE = RBLOCK_SIZE,
-                                            grid=(NUM_CORE,))
+            kernel = _layer_norm_fwd_fused.warmup(x_arg, y, weight, bias, mean, rstd,  #
+                                                  x_arg.stride(0), N, M, eps,  #
+                                                  XBLOCK_SIZE=XBLOCK_SIZE, RBLOCK_SIZE=RBLOCK_SIZE, grid=(NUM_CORE, ))
             kernel._init_handles()
-            kernels[XBLOCK_SIZE^RBLOCK_SIZE] = (kernel, num_programs)
+            kernels[XBLOCK_SIZE ^ RBLOCK_SIZE] = (kernel, num_programs)
 
-        kernel[(num_programs,1,1 )](  #
-            x_arg, y, weight, bias, mean, rstd,  #
-            x_arg.stride(0), N, M, eps,  #
+        kernel[(num_programs, 1, 1)](  #
+            x_arg,
+            y,
+            weight,
+            bias,
+            mean,
+            rstd,  #
+            x_arg.stride(0),
+            N,
+            M,
+            eps,  #
             stream=stream,
         )
 
@@ -361,19 +363,15 @@ def test_layer_norm(M, N, dtype, eps=1e-5, device=DEVICE):
     assert torch.allclose(y_tri, y_ref, atol=1e-2, rtol=0)
 
 
-
 @triton.testing.perf_report(
-    triton.testing.Benchmark(
-        x_names=['N'],
-        x_vals=[512 * i for i in range(20, 30)],
-        line_arg='provider',
-        line_vals=['triton', 'torch'] + (['apex'] if HAS_APEX else []),
-        line_names=['Triton', 'Torch'] + (['Apex'] if HAS_APEX else []),
-        styles=[('blue', '-'), ('green', '-'), ('orange', '-')],
-        ylabel='GB/s',
-        plot_name='layer-norm-backward',
-        args={'M': 3072, 'dtype': torch.float16, 'mode': 'forward'}, # 4096 better
-    ))
+    triton.testing.Benchmark(x_names=['N'], x_vals=[512 * i for i in range(20, 30)], line_arg='provider',
+                             line_vals=['triton', 'torch'] + (['apex'] if HAS_APEX else []),
+                             line_names=['Triton', 'Torch'] + (['Apex'] if HAS_APEX else []), styles=[('blue', '-'),
+                                                                                                      ('green', '-'),
+                                                                                                      ('orange', '-')],
+                             ylabel='GB/s', plot_name='layer-norm-backward',
+                             args={'M': 3072, 'dtype': torch.float16, 'mode': 'forward'},  # 4096 better
+                             ))
 def bench_layer_norm(M, N, dtype, provider, mode='forward', eps=1e-5, device=DEVICE):
     # create data
     x_shape = (M, N)
@@ -399,27 +397,28 @@ def bench_layer_norm(M, N, dtype, provider, mode='forward', eps=1e-5, device=DEV
 
     # forward pass
     if mode == 'forward':
-        gbps = lambda ms: ms*1000
+        gbps = lambda ms: ms * 1000
         ms, min_ms, max_ms = triton.testing.do_bench(y_fwd, quantiles=quantiles, rep=500)
     # backward pass
     if mode == 'backward':
         y = y_fwd()
-        gbps = lambda ms: ms*1000
+        gbps = lambda ms: ms * 1000
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: y.backward(dy, retain_graph=True), quantiles=quantiles,
                                                      grad_to_none=[x], rep=500)
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
-def benchmark_test(fn, fn_triton, args =(), name="gen_fn", times=100, repeat=10):
+
+def benchmark_test(fn, fn_triton, args=(), name="gen_fn", times=100, repeat=10):
     print(f"--------------------benchmark_{name} for {times * repeat} times--------------------")
     stream = torch.npu.current_stream()
     # warm_up
     stream.synchronize()
-    for _ in range(10) :
+    for _ in range(10):
         fn_triton(*args)
     stream.synchronize()
 
     start = time.perf_counter()
-    for _ in range(times * repeat) :
+    for _ in range(times * repeat):
         fn_triton(*args)
     stream.synchronize()
     end = time.perf_counter()
@@ -428,17 +427,16 @@ def benchmark_test(fn, fn_triton, args =(), name="gen_fn", times=100, repeat=10)
     time_compiled *= 1000000
     print(f"time_triton:{time_compiled:.6f}")
 
-
     print(f"Runing eager {name} for {times * repeat} times")
-    
+
     # warm_up
     stream.synchronize()
-    for _ in range(10) :
+    for _ in range(10):
         std = fn(*args)
     stream.synchronize()
 
     start = time.perf_counter()
-    for _ in range(times * repeat) :
+    for _ in range(times * repeat):
         std = fn(*args)
     stream.synchronize()
     end = time.perf_counter()
@@ -446,22 +444,23 @@ def benchmark_test(fn, fn_triton, args =(), name="gen_fn", times=100, repeat=10)
     time_eager *= 1000000
     print(f"time_eager:{time_eager:.6f}")
 
-    accelerated = (time_eager - time_compiled)/time_compiled*100
+    accelerated = (time_eager - time_compiled) / time_compiled * 100
     print(f"Accelerated: {accelerated:.4f}% eager takes {time_eager:.3f} us, triton takes {time_compiled:.3f} us")
 
     return accelerated, time_eager, time_compiled
 
+
 test_layer_norm(1151, 8192, torch.float16)
 
 M = 2048
-N = 8192 # 12288 12800  13312 13000
+N = 8192  # 12288 12800  13312 13000
 x_shape = (M, N)
 w_shape = (x_shape[-1], )
 weight = torch.rand(w_shape, dtype=torch.float16, device='npu', requires_grad=True)
 bias = torch.rand(w_shape, dtype=torch.float16, device='npu', requires_grad=True)
 x = -2.3 + 0.5 * torch.randn(x_shape, dtype=torch.float16, device='npu')
 eps = 1e-5
-benchmark_test(torch.nn.functional.layer_norm,layer_norm,args=(x, w_shape, weight, bias, eps))
+benchmark_test(torch.nn.functional.layer_norm, layer_norm, args=(x, w_shape, weight, bias, eps))
 
 # %%
 # References

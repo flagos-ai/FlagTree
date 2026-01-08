@@ -39,6 +39,7 @@ shapes = [
     # 781,
 ]
 
+
 @pytest.mark.parametrize("sigtype", types)
 @pytest.mark.parametrize("N", shapes)
 def test_isnan(sigtype, N):
@@ -47,7 +48,6 @@ def test_isnan(sigtype, N):
         res = torch.isnan(x0)
         return res
 
-
     @triton.jit
     def triton_kernel(out_ptr0, in_ptr0, N: tl.constexpr):
         idx = tl.arange(0, N)
@@ -55,13 +55,12 @@ def test_isnan(sigtype, N):
         ret = tl.extra.ascend.libdevice.isnan(x0)
         tl.store(out_ptr0 + idx, ret)
 
-
     def triton_func(x0, N):
         out = torch.zeros(x0.shape, dtype=torch.bool).npu()
         triton_kernel[1, 1, 1](out, x0, N)
         return out
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
     x0[1] = float('nan')
 
     torch_ref = torch_func(x0)
@@ -69,9 +68,11 @@ def test_isnan(sigtype, N):
     test_common.validate_cmp("bool", triton_cal, torch_ref)
     assert triton_cal[1] == True
 
+
 invalid_types = [
     "int32",
 ]
+
 
 @pytest.mark.parametrize("sigtype", invalid_types)
 @pytest.mark.parametrize("N", shapes)
@@ -82,7 +83,6 @@ def test_isnan_invalid_dtype(sigtype, N):
         res = torch.isnan(x0)
         return res
 
-
     @triton.jit
     def triton_kernel(out_ptr0, in_ptr0, N: tl.constexpr):
         idx = tl.arange(0, N)
@@ -90,13 +90,12 @@ def test_isnan_invalid_dtype(sigtype, N):
         ret = tl.extra.ascend.libdevice.isnan(x0)
         tl.store(out_ptr0 + idx, ret)
 
-
     def triton_func(x0, N):
         out = torch.zeros(x0.shape, dtype=torch.bool).npu()
         triton_kernel[1, 1, 1](out, x0, N)
         return out
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
     x0[1] = float('nan')
 
     torch_ref = torch_func(x0)

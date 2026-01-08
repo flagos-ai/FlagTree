@@ -40,7 +40,7 @@ module {
 
 // CHECK-DAG:   [[MAP_0_:#.+]] = affine_map<(d0) -> (d0)>
 // CHECK-LABEL:  func.func @softmax_kernel_012345
-// CHECK-SAME:   (%[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, [[PARAM_0_:%.+]]: memref<?xf32> {tt.tensor_kind = 1 : i32}, [[PARAM_1_:%.+]]: memref<?xf32> {tt.tensor_kind = 0 : i32},  
+// CHECK-SAME:   (%[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, [[PARAM_0_:%.+]]: memref<?xf32> {tt.tensor_kind = 1 : i32}, [[PARAM_1_:%.+]]: memref<?xf32> {tt.tensor_kind = 0 : i32},
 // CHECK-SAME:  [[PARAM_2_:%.+]]: i32, [[PARAM_3_:%.+]]: i32, [[PARAM_4_:%.+]]: i32, %arg7: i32, %arg8: i32, %arg9: i32, %arg10: i32, %arg11: i32, %arg12: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 // CHECK:       [[CST:%.+]] = arith.constant 0.000000e+00 : f32
 // CHECK-DAG:       [[CST_0_:%.+]] = arith.constant 0xFF800000 : f32
@@ -65,7 +65,7 @@ module {
 // CHECK:           [[VAR_reduced_:%.+]] = linalg.reduce ins([[VAR_5_]] : tensor<128xf32>) outs([[VAR_6_]] : tensor<f32>) dimensions = [0]
 // CHECK:             ([[in_1:%.+]]: f32, [[init_1:%.+]]: f32) {
 // CHECK:                   [[VAR_18_:%.+]] = arith.cmpf ogt, [[in_1]], [[init_1]] : f32
-// CHECK:                   [[VAR_19_:%.+]] = arith.select [[VAR_18_]], [[in_1]], [[init_1]] : f32            
+// CHECK:                   [[VAR_19_:%.+]] = arith.select [[VAR_18_]], [[in_1]], [[init_1]] : f32
 // CHECK:                   linalg.yield [[VAR_19_]] : f32
 // CHECK:             }
 // CHECK-DAG:       [[VAR_extracted_:%.+]] = tensor.extract [[VAR_reduced_]][] : tensor<f32>

@@ -66,13 +66,9 @@ def generate_draft_decode_kv_indices(
     else:
         prefix_len = seq_len
         last_page_len = prefix_len % page_size
-        num_new_pages_per_topk = (
-            last_page_len + num_steps + page_size - 1
-        ) // page_size
+        num_new_pages_per_topk = (last_page_len + num_steps + page_size - 1) // page_size
         prefix_base = seq_len // page_size * page_size
-        start = (
-            prefix_base + topk_id * num_new_pages_per_topk * page_size + last_page_len
-        )
+        start = (prefix_base + topk_id * num_new_pages_per_topk * page_size + last_page_len)
         extend_data = tl.load(
             token_pool_ptr + start + extend_offset,
             mask=extend_offset < iters,

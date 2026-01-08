@@ -79,9 +79,7 @@ def post_reorder_triton_kernel(
         for start_offset in tl.range(0, hidden_size, BLOCK_SIZE):
             offset = start_offset + vec
             mask = offset < hidden_size
-            tl.store(
-                store_ptr + offset, tl.zeros([BLOCK_SIZE], dtype=InDtype), mask=mask
-            )
+            tl.store(store_ptr + offset, tl.zeros([BLOCK_SIZE], dtype=InDtype), mask=mask)
 
 
 def test_context_fwd_kernel(ptfile_path):
@@ -90,10 +88,9 @@ def test_context_fwd_kernel(ptfile_path):
     except Exception as e:
         pytest.fail(f"load file {ptfile_path} failed: {str(e)}")
 
-
     input_data = test_common.convert_tensor_with_device_type(data["input_data"], device_type='npu')
     post_reorder_triton_kernel[data['grid']](**input_data)
-    
+
     try:
         test_common.compare_data_precision(data["gpu_output"], input_data, device_type='cpu')
     except ValueError as e:

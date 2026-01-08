@@ -16,7 +16,6 @@ if hasattr(driver, "get_active_torch_device"):
 else:
     device = triton.runtime.driver.active.get_current_device()
 
-
 _MIN_FLOAT32_VAL = tl.constexpr(torch.finfo(torch.float32).min)
 _MAX_FLOAT32_VAL = tl.constexpr(torch.finfo(torch.float32).max)
 _MIN_FLOAT16_VAL = tl.constexpr(torch.finfo(torch.float16).min)
@@ -69,7 +68,7 @@ def _get_iinfo_val(
 @triton.jit
 def _compare_and_swap(x, ids, flip, i: core.constexpr, n_dims: core.constexpr):
     n_outer: core.constexpr = x.numel >> n_dims
-    shape: core.constexpr = [n_outer * 2**i, 2, 2 ** (n_dims - i - 1)]
+    shape: core.constexpr = [n_outer * 2**i, 2, 2**(n_dims - i - 1)]
 
     # tl.device_print("shape is: ", shape)
     y = core.reshape(x, shape)
@@ -82,12 +81,8 @@ def _compare_and_swap(x, ids, flip, i: core.constexpr, n_dims: core.constexpr):
     left = core.reshape(left, x.shape)
     right = core.reshape(right, x.shape)
 
-    left_idx = core.broadcast_to(tl.sum(y_idx * (1 - mask), 1)[:, None, :], shape).to(
-        ids.dtype
-    )
-    right_idx = core.broadcast_to(tl.sum(y_idx * mask, 1)[:, None, :], shape).to(
-        ids.dtype
-    )
+    left_idx = core.broadcast_to(tl.sum(y_idx * (1 - mask), 1)[:, None, :], shape).to(ids.dtype)
+    right_idx = core.broadcast_to(tl.sum(y_idx * mask, 1)[:, None, :], shape).to(ids.dtype)
     left_idx = core.reshape(left_idx, ids.shape)
     right_idx = core.reshape(right_idx, ids.shape)
 
@@ -130,9 +125,7 @@ def _compare_and_swap(x, ids, flip, i: core.constexpr, n_dims: core.constexpr):
 
 
 @triton.jit
-def _bitonic_merge(
-    x, ids, stage: core.constexpr, order: core.constexpr, n_dims: core.constexpr
-):
+def _bitonic_merge(x, ids, stage: core.constexpr, order: core.constexpr, n_dims: core.constexpr):
     """
     order_type 0 == ascending
     order_type 1 == descending
@@ -146,10 +139,8 @@ def _bitonic_merge(
     # if flip = 00110011... then all the elements will be re-arranged alternatingly (with
     # a stride of 2) at this stage
     if order == 2:
-        shape: core.constexpr = [n_outer * 2 ** (n_dims - 1 - stage), 2, 2**stage]
-        flip = core.reshape(
-            core.broadcast_to(core.arange(0, 2)[None, :, None], shape), x.shape
-        )
+        shape: core.constexpr = [n_outer * 2**(n_dims - 1 - stage), 2, 2**stage]
+        flip = core.reshape(core.broadcast_to(core.arange(0, 2)[None, :, None], shape), x.shape)
     else:
         flip = order
     # perform `stage` rounds of `compare-and-swap`
@@ -194,9 +185,7 @@ def sort_kernel(
         in_val = tl.load(in_ptr, mask=mask, other=mask_val).to(tl.int32)
     index_val = tl.arange(0, BLOCK_SIZE)
 
-    sorted_in_val, sorted_index_val = argsort(
-        in_val, index_val, 0, descending=DESCENDING
-    )
+    sorted_in_val, sorted_index_val = argsort(in_val, index_val, 0, descending=DESCENDING)
     tl.store(out_ptr, sorted_in_val, mask=mask)
     tl.store(out_index_ptr, sorted_index_val, mask=mask)
 
@@ -221,7 +210,9 @@ def sort(inp, dim=-1, descending=False):
     out_index = torch.empty_like(inp, dtype=torch.int64)
 
     with torch_device_fn.device(inp.device):
-        sort_kernel[batch_size,](
+        sort_kernel[
+            batch_size,
+        ](
             inp,
             out,
             out_index,
@@ -257,10 +248,8 @@ def check(name, ref, res, equal_nan=False, reduce_dim=1, atol=1e-4):
         torch.complex64: 1.3e-6,
     }
     res = res.cpu()
-    print(
-        f"The maximum difference out {name} between torch and triton is "
-        f"{torch.max(torch.abs(ref - res))}"
-    )
+    print(f"The maximum difference out {name} between torch and triton is "
+          f"{torch.max(torch.abs(ref - res))}")
     rtol = RESOLUTION[ref.dtype]
     assert torch.allclose(res, ref, atol=atol * reduce_dim, rtol=rtol), (res, ref)
 

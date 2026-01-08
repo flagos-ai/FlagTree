@@ -41,19 +41,14 @@ sample_texts = ["This is a positive example.", "This might be negative."] * 128
 model_ = AutoModelForTokenClassification.from_pretrained("./microsoft/deberta-v3-large", device_map="npu:0")
 model_.eval()
 
-inputs = tokenizer(
-    sample_texts,
-    max_length=512,
-    padding="longest",
-    truncation=True,
-    return_tensors="pt",
-    add_special_tokens=True
-).to("npu:0")
+inputs = tokenizer(sample_texts, max_length=512, padding="longest", truncation=True, return_tensors="pt",
+                   add_special_tokens=True).to("npu:0")
 
 
 def model(**model_inputs):
     with torch.no_grad():
         return model_(**model_inputs).logits
+
 
 y = model(**inputs)
 logging.info("result eager: " + str(torch.flatten(y)[:100]))

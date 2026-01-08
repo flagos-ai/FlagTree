@@ -3,6 +3,7 @@ def ext_ASTSource_attrs(ast_source):
     if ast_source.attrs is None:
         ast_source.attrs = AscendAttrsDescriptor()
 
+
 def opt_ascend_compile_speed(file_name, metadata_path, fn_cache_manager):
     import os
     compile_speed_opt = os.getenv("TRITON_ASCEND_COMPILE_SPEED_OPT", 'false').lower() in ('true', '1')
@@ -12,10 +13,12 @@ def opt_ascend_compile_speed(file_name, metadata_path, fn_cache_manager):
             # Already compile once but failed. So directly return
             raise Exception("already failed once")
 
+
 def set_CompiledKernel_metadata_stream(compiled_kernel, stream):
     if stream is None:
         return stream
     return compiled_kernel.metadata.stream
+
 
 def handle_compile_error(e, ext):
     from .errors import MLIRCompilationError
@@ -28,6 +31,7 @@ def handle_compile_error(e, ext):
     error_detail = e.stderr.decode('utf-8') if hasattr(e, 'stderr') and e.stderr else str(e)
     error_detail += f"\n\n[INFO]: The compiled kernel cache is in {fn_cache_manager.cache_dir}\n\n"
     raise MLIRCompilationError(stage_name, error_detail)
+
 
 def compiledKernel_getattribute_disable_init_handles():
     return True

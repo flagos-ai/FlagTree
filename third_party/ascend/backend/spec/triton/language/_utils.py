@@ -27,5 +27,3 @@ BITWIDTH_DICT: Dict[str, int] = {
 
 def get_primitive_bitwidth(dtype: str) -> int:
     return BITWIDTH_DICT[dtype]
-
-

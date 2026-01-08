@@ -25,12 +25,9 @@ import triton.language as tl
 import pytest
 import test_common
 
+
 ### add
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_add_calc(param_list):
 
     @triton.jit
@@ -46,18 +43,15 @@ def test_scalar_add_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### sub
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_sub_calc(param_list):
 
     @triton.jit
@@ -73,18 +67,15 @@ def test_scalar_sub_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### mul
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_mul_calc(param_list):
 
     @triton.jit
@@ -100,18 +91,15 @@ def test_scalar_mul_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### div
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_div_calc(param_list):
 
     @triton.jit
@@ -127,18 +115,15 @@ def test_scalar_div_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### remf
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_remf_calc(param_list):
 
     @triton.jit
@@ -154,18 +139,15 @@ def test_scalar_remf_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### negf
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_negf_calc(param_list):
 
     @triton.jit
@@ -181,18 +163,15 @@ def test_scalar_negf_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### cmpf
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_cmpf_calc(param_list):
 
     @triton.jit
@@ -208,18 +187,15 @@ def test_scalar_cmpf_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### ceil
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_ceil_calc(param_list):
 
     @triton.jit
@@ -235,18 +211,15 @@ def test_scalar_ceil_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### floor
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_floor_calc(param_list):
 
     @triton.jit
@@ -262,19 +235,16 @@ def test_scalar_floor_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### maximum(propagate_nan == tl.PropagateNan.ALL)
 # setting propagate_nan=tl.PropagateNan.ALL to generate arith::MaximumFOp
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_maximum_nanall_calc(param_list):
 
     @triton.jit
@@ -292,19 +262,16 @@ def test_scalar_maximum_nanall_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### maximum(propagate_nan == tl.PropagateNan.NONE)
 # setting propagate_nan=tl.PropagateNan.NONE to generate arith::MaxNumFOp
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_maximum_nannone_calc(param_list):
 
     @triton.jit
@@ -322,19 +289,16 @@ def test_scalar_maximum_nannone_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### minimum(propagate_nan == tl.PropagateNan.ALL)
 # setting propagate_nan=tl.PropagateNan.ALL to generate arith::MinimumFOp
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_minimum_nanall_calc(param_list):
 
     @triton.jit
@@ -352,19 +316,16 @@ def test_scalar_minimum_nanall_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### minimum(propagate_nan == tl.PropagateNan.NONE)
 # setting propagate_nan=tl.PropagateNan.NONE to generate arith::MinNumFOp
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_minimum_nannone_calc(param_list):
 
     @triton.jit
@@ -382,18 +343,15 @@ def test_scalar_minimum_nannone_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### extf
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float16', 'float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float16', 'float32', 16]])
 def test_scalar_extf_calc(param_list):
 
     @triton.jit
@@ -409,18 +367,15 @@ def test_scalar_extf_calc(param_list):
         return torch.tensor(y)
 
     src_dtype, dst_dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), src_dtype).npu()
+    x0 = test_common.generate_tensor((N, ), src_dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dst_dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dst_dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dst_dtype, y_cal[0], y_ref)
 
+
 ### truncf
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 'float16', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 'float16', 16]])
 def test_scalar_truncf_calc(param_list):
 
     @triton.jit
@@ -436,18 +391,15 @@ def test_scalar_truncf_calc(param_list):
         return torch.tensor(y)
 
     src_dtype, dst_dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), src_dtype).npu()
+    x0 = test_common.generate_tensor((N, ), src_dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dst_dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dst_dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dst_dtype, y_cal[0], y_ref)
 
+
 ### exp
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_exp_calc(param_list):
 
     @triton.jit
@@ -463,18 +415,15 @@ def test_scalar_exp_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### exp2
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_exp_calc(param_list):
 
     @triton.jit
@@ -490,18 +439,15 @@ def test_scalar_exp_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### log
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_log_calc(param_list):
 
     @triton.jit
@@ -519,18 +465,15 @@ def test_scalar_log_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### log2
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_log2_calc(param_list):
 
     @triton.jit
@@ -548,18 +491,15 @@ def test_scalar_log2_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### sin
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_sin_calc(param_list):
 
     @triton.jit
@@ -575,18 +515,15 @@ def test_scalar_sin_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### cos
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_cos_calc(param_list):
 
     @triton.jit
@@ -602,18 +539,15 @@ def test_scalar_cos_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### abs
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_abs_calc(param_list):
 
     @triton.jit
@@ -629,18 +563,15 @@ def test_scalar_abs_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### erf
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_erf_calc(param_list):
 
     @triton.jit
@@ -656,18 +587,15 @@ def test_scalar_erf_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### sqrt
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_sqrt_calc(param_list):
 
     @triton.jit
@@ -685,18 +613,15 @@ def test_scalar_sqrt_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### rsqrt
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_rsqrt_calc(param_list):
 
     @triton.jit
@@ -714,18 +639,15 @@ def test_scalar_rsqrt_calc(param_list):
         return y.clone().detach()
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### tanh
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_tanh_calc(param_list):
 
     @triton.jit
@@ -741,18 +663,15 @@ def test_scalar_tanh_calc(param_list):
         return y.clone().detach()
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
 
+
 ### sum
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', 16]
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [['float32', 16]])
 def test_scalar_sum_calc(param_list):
 
     @triton.jit
@@ -766,8 +685,8 @@ def test_scalar_sum_calc(param_list):
         return torch.tensor(y)
 
     dtype, N = param_list
-    x0 = test_common.generate_tensor((N,), dtype).npu()
+    x0 = test_common.generate_tensor((N, ), dtype).npu()
     y_ref = torch_func(x0)
-    y_cal = test_common.generate_tensor((1,), dtype).npu()
+    y_cal = test_common.generate_tensor((1, ), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)

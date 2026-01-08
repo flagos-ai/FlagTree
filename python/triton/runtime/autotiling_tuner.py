@@ -15,26 +15,12 @@ class AutoTilingTuner(Autotuner):
     Automatic generateing candidate tiling configs and evaluating their performance to get the best config.
     """
 
-    def __init__(
-        self,
-        fn,
-        arg_names,
-        configs,
-        key,
-        reset_to_zero,
-        restore_value,
-        pre_hook=None,
-        post_hook=None,
-        prune_configs_by: Dict = None,
-        warmup=None,
-        rep=None,
-        use_cuda_graph=False,
-        do_bench=None,
-        auto_profile_dir=None
-    ):
+    def __init__(self, fn, arg_names, configs, key, reset_to_zero, restore_value, pre_hook=None, post_hook=None,
+                 prune_configs_by: Dict = None, warmup=None, rep=None, use_cuda_graph=False, do_bench=None,
+                 auto_profile_dir=None):
         """
         :param key: a list of argument name, where the change of arguments in value will triger re-generating candidates configs and evaluating.
-            The parameters in the list will be assigned axis names in sequence, with the axis name being in 
+            The parameters in the list will be assigned axis names in sequence, with the axis name being in
             {'x','y','z','w','v','t','rx','ry','rz','rw','rv','rt}, where the prefix 'r' means a reduction axis.
             Only the axis name in this param should add perfix 'r' if it's a reduction axis.
         :type key: List[str]
@@ -73,9 +59,7 @@ class AutoTilingTuner(Autotuner):
         self.keys = {axis: param for axis, param in zip(valid_axis_names, key)}
         self.print_autotuning = os.getenv("TRITON_PRINT_AUTOTUNING", None) == "1"
 
-    def _gen_tile_configs(
-        self, kv_dict: Dict[str, int], dtype: torch.dtype
-    ) -> List[Config]:
+    def _gen_tile_configs(self, kv_dict: Dict[str, int], dtype: torch.dtype) -> List[Config]:
         from .tile_generator import KernelMeta, TileGenerator
 
         axis_sizes = {}
@@ -83,9 +67,7 @@ class AutoTilingTuner(Autotuner):
             if not is_valid_axis_name(k):
                 continue
             if not isinstance(v, int):
-                raise ValueError(
-                    f"Not supported dim type: {type(v)}, `int` is the only supported type"
-                )
+                raise ValueError(f"Not supported dim type: {type(v)}, `int` is the only supported type")
             axis_sizes[k] = v
 
         kernel_meta = KernelMeta(
@@ -104,9 +86,7 @@ class AutoTilingTuner(Autotuner):
         self.gen_configs.clear()
         self.gen_configs = tile_gen.configs
         if len(self.gen_configs) == 0:
-            print(
-                "[WARNING] The generated candidate tiling configs are empty based on provided parameters!"
-            )
+            print("[WARNING] The generated candidate tiling configs are empty based on provided parameters!")
 
         if len(self.gen_configs) == 0 and len(self.user_configs) == 0:
             return [
@@ -139,11 +119,7 @@ class AutoTilingTuner(Autotuner):
         for _, arg in _args.items():
             if hasattr(arg, "dtype"):
                 key.append(str(arg.dtype))
-                dtype = (
-                    arg.dtype
-                    if get_byte_per_numel(arg.dtype) >= get_byte_per_numel(dtype)
-                    else dtype
-                )
+                dtype = (arg.dtype if get_byte_per_numel(arg.dtype) >= get_byte_per_numel(dtype) else dtype)
         if dtype is None:
             raise NotImplementedError("Not support for non-Tensor inputs")
 
@@ -163,11 +139,9 @@ class AutoTilingTuner(Autotuner):
                 self.tiling_params = self.autoparse_tiling_params(miss_params)
             miss_params = [arg for arg in miss_params if arg not in self.tiling_params.values()]
             if miss_params:
-                raise ValueError(
-                    f"Missing required arguments: {miss_params}. "
-                    f"These arguments must be explicitly provided and cannot be automatically tuned. "
-                    f"Please ensure that these arguments are passed when calling the function."
-                )
+                raise ValueError(f"Missing required arguments: {miss_params}. "
+                                 f"These arguments must be explicitly provided and cannot be automatically tuned. "
+                                 f"Please ensure that these arguments are passed when calling the function.")
 
             # prune configs
             self.configs = self._gen_tile_configs(_kv_dict, dtype)
@@ -190,10 +164,8 @@ class AutoTilingTuner(Autotuner):
 
         self.best_config = config
         if os.getenv("TRITON_PRINT_AUTOTUNING", None) == "1" and not used_cached_result:
-            print(
-                f"Triton autotuning for function {self.base_fn.__name__} finished after "
-                f"{self.bench_time:.2f}s; best config selected: {self.best_config};"
-            )
+            print(f"Triton autotuning for function {self.base_fn.__name__} finished after "
+                  f"{self.bench_time:.2f}s; best config selected: {self.best_config};")
 
         if not used_cached_result and self.auto_profile_dir is not None:
             self._profile(*args, config=self.best_config, **kwargs)
@@ -210,7 +182,7 @@ class AutoTilingTuner(Autotuner):
 
     def autoparse_split_params(self, candidates_params: List[str]) -> Dict[str, str]:
         """
-        Extracts the split axis parameters from triton kernel code. 
+        Extracts the split axis parameters from triton kernel code.
         """
         if self.print_autotuning:
             print(f"Triton autotuning: Starting split params parsing...")
@@ -218,12 +190,10 @@ class AutoTilingTuner(Autotuner):
         parser = SplitAxesParser(func_ast, self.keys, candidates_params)
         split_axes = parser.parse()
         if self.print_autotuning:
-            print(
-                f"Triton autotuning: Split params parsing complete. "
-                f"Split params: {split_axes}"
-            )
+            print(f"Triton autotuning: Split params parsing complete. "
+                  f"Split params: {split_axes}")
         return split_axes
-    
+
     def autoparse_tiling_params(self, candidates_params: List[str]) -> Dict[str, str]:
         """
         Extracts the tiling axis parameters from triton kernel code.
@@ -234,12 +204,10 @@ class AutoTilingTuner(Autotuner):
         parser = TilingAxesParser(func_ast, self.keys, candidates_params)
         tiling_axes = parser.parse()
         if self.print_autotuning:
-            print(
-                f"Triton autotuning: Tiling params parsing complete. "
-                f"Tiling params: {tiling_axes}"
-            )
+            print(f"Triton autotuning: Tiling params parsing complete. "
+                  f"Tiling params: {tiling_axes}")
         return tiling_axes
-    
+
     def autoparse_low_dims(self) -> List[str]:
         """
         Extracts the low dimension axis from triton kernel code.
@@ -250,12 +218,10 @@ class AutoTilingTuner(Autotuner):
         parser = LowDimsAxesParser(func_ast, self.keys)
         low_dims = parser.parse()
         if self.print_autotuning:
-            print(
-                f"Triton autotuning: Low dims axes parsing complete. "
-                f"Keys: {self.keys}, Low dims: {low_dims}"
-            )
+            print(f"Triton autotuning: Low dims axes parsing complete. "
+                  f"Keys: {self.keys}, Low dims: {low_dims}")
         return low_dims
-    
+
     def autoparse_ptr_nums(self, miss_params: List[str]) -> int:
         """
         Counts the number of pointer parameters from triton kernel code.
@@ -266,8 +232,6 @@ class AutoTilingTuner(Autotuner):
         parser = PtrNumsParser(func_ast, miss_params)
         ptr_nums, ptr_params = parser.parse()
         if self.print_autotuning:
-            print(
-                f"Triton autotuning: Pointer nums parsing complete. "
-                f"Pointer params: {ptr_params}, pointer nums: {ptr_nums}"
-            )
+            print(f"Triton autotuning: Pointer nums parsing complete. "
+                  f"Pointer params: {ptr_params}, pointer nums: {ptr_nums}")
         return ptr_nums

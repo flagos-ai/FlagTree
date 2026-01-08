@@ -780,9 +780,9 @@ class JITFunction(KernelInterface[T]):
 
         # flagtree backend specialization
         from triton.runtime.driver import spec
-        src = ASTSource(self, signature, constants,
-                        spec('get_JITFunction_spec_attr', deserialized_obj)
-                        or AttrsDescriptor.from_dict(deserialized_obj['attrs']))
+        src = ASTSource(
+            self, signature, constants,
+            spec('get_JITFunction_spec_attr', deserialized_obj) or AttrsDescriptor.from_dict(deserialized_obj['attrs']))
         options = {
             key: tuple(value) if isinstance(value, list) else value
             for key, value in deserialized_obj['options'].items()

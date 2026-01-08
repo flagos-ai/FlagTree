@@ -26,11 +26,14 @@ try:
 except Exception as e:
     is_compile_on_910_95 = False
 
+
 def enable_care_padding_load():
     return True
 
+
 def ext_cast_set_overflow_modes():
     return ["trunc", "saturate"]
+
 
 def ext_cast_check_overflow_mode(overflow_mode, overflow_modes, ret, _builder):
     if overflow_mode is not None:
@@ -39,19 +42,21 @@ def ext_cast_check_overflow_mode(overflow_mode, overflow_modes, ret, _builder):
         else:
             raise ValueError(f"Unknown overflow_mode:{overflow_mode} is found.")
 
+
 def ext_trans_unwrap_iterable(dims):
     return _unwrap_iterable(dims)
 
+
 def check_dot_deprecated_param_allow_tf32(allow_tf32):
-    assert (
-        not allow_tf32
-    ), "allow_tf32 is deprecated, please use input_precision='hf32' on Ascend instead."
+    assert (not allow_tf32), "allow_tf32 is deprecated, please use input_precision='hf32' on Ascend instead."
+
 
 def check_dot_invalid_input_precision(input_precision):
     assert input_precision not in [
-            "tf32",
-            "tf32x3",
-        ], "input_precision == tf32 or tf32x3 is invalid, please use input_precision='hf32' on Ascend instead."
+        "tf32",
+        "tf32x3",
+    ], "input_precision == tf32 or tf32x3 is invalid, please use input_precision='hf32' on Ascend instead."
+
 
 @_tensor_member_fn
 @builtin
@@ -66,6 +71,7 @@ def gather(src, index, axis, _builder=None):
     """
     axis = _constexpr_to_value(axis)
     return semantic_spec.ext_semantic_gather(src, index, axis, _builder)
+
 
 @_tensor_member_fn
 @builtin
@@ -86,12 +92,10 @@ def insert_slice(ful, sub, offsets, sizes, strides, _builder=None, _generator=No
     """
     assert len(ful.shape) > 0
     assert len(ful.shape) == len(sub.shape)
-    new_offsets = [
-        semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
-        for o in offsets
-    ]
+    new_offsets = [semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o for o in offsets]
     out = semantic_spec.ext_semantic_insert_slice(ful, sub, new_offsets, sizes, strides, _builder)
     return out
+
 
 @_tensor_member_fn
 @builtin
@@ -109,12 +113,10 @@ def extract_slice(ful, offsets, sizes, strides, _builder=None, _generator=None) 
     :type strides: tuple of ints
     """
     assert len(ful.shape) > 0
-    new_offsets = [
-        semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
-        for o in offsets
-    ]
+    new_offsets = [semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o for o in offsets]
     sub = semantic_spec.ext_semantic_extract_slice(ful, new_offsets, sizes, strides, _builder)
     return sub
+
 
 @_tensor_member_fn
 @builtin
@@ -130,40 +132,45 @@ def get_element(src, indice, _builder=None, _generator=None):
     :type indice: tuple of ints
     """
     assert len(src.shape) > 0
-    new_indice = [
-        semantic.to_tensor(i, _builder) if isinstance(i, constexpr) else i
-        for i in indice
-    ]
+    new_indice = [semantic.to_tensor(i, _builder) if isinstance(i, constexpr) else i for i in indice]
     return semantic_spec.ext_semantic_get_element(src, new_indice, _builder)
+
 
 @builtin
 def __add__(self, other, _builder=None):
     return add(self, other, sanitize_overflow=False, _builder=_builder)
 
+
 @builtin
 def __radd__(self, other, _builder=None):
     return add(other, self, sanitize_overflow=False, _builder=_builder)
+
 
 @builtin
 def __sub__(self, other, _builder=None):
     return sub(self, other, sanitize_overflow=False, _builder=_builder)
 
+
 @builtin
 def __rsub__(self, other, _builder=None):
     return sub(other, self, sanitize_overflow=False, _builder=_builder)
+
 
 @builtin
 def __mul__(self, other, _builder=None):
     return mul(self, other, sanitize_overflow=False, _builder=_builder)
 
+
 @builtin
 def __rmul__(self, other, _builder=None):
     return mul(other, self, sanitize_overflow=False, _builder=_builder)
+
 
 @builtin
 def __mod__(self, other, _builder=None):
     other = _unwrap_if_constexpr(other)
     return semantic.mod(self, other, _builder)
+
 
 @builtin
 def __lshift__(self, other, _builder=None):
@@ -172,6 +179,7 @@ def __lshift__(self, other, _builder=None):
     check_bit_width(self, other)
     other = _unwrap_if_constexpr(other)
     return semantic.shl(self, other, _builder)
+
 
 @builtin
 def __rshift__(self, other, _builder=None):
@@ -184,6 +192,7 @@ def __rshift__(self, other, _builder=None):
     else:
         return semantic.lshr(self, other, _builder)
 
+
 @builtin
 def flip(ptr, dim=-1, _builder=None, _generator=None):
     try:
@@ -194,8 +203,10 @@ def flip(ptr, dim=-1, _builder=None, _generator=None):
     dim = len(ptr.shape) - 1 if dim == -1 else dim
     return semantic_spec.ext_semantic_flip(ptr, dim, _builder, _generator)
 
+
 @builtin
 def compile_hint(ptr, hint_name, hint_val=None, _builder=None):
+
     def _unwrap(val):
         return _unwrap_if_constexpr(val) if val else val
 
@@ -207,6 +218,7 @@ def compile_hint(ptr, hint_name, hint_val=None, _builder=None):
         hint_val = _unwrap(hint_val)
     hint_val = _unwrap_if_constexpr(hint_val) if hint_val else hint_val
     semantic_spec.ext_semantic_compile_hint(ptr, hint_name, hint_val, _builder)
+
 
 @builtin
 def sort(ptr, dim=-1, descending=False, _builder=None):
@@ -238,6 +250,7 @@ def sort(ptr, dim=-1, descending=False, _builder=None):
         semantic_spec.ext_semantic_compile_hint(ret, "overflow_mode", constexpr("saturate"), _builder)
     return ret
 
+
 @builtin
 def multibuffer(src: tensor, size, _builder=None):
     """
@@ -249,6 +262,7 @@ def multibuffer(src: tensor, size, _builder=None):
     assert isinstance(buffer_size, int) and buffer_size == 2, f"only support bufferize equals 2"
     semantic_spec.ext_semantic_compile_hint(src, "multi_buffer", buffer_size, _builder)
 
+
 @builtin
 def sync_block_all(mode, event_id, _builder=None):
     mode = _constexpr_to_value(mode)
@@ -258,41 +272,50 @@ def sync_block_all(mode, event_id, _builder=None):
     assert mode == "all_cube" or mode == "all_vector" or mode == "all", f"ERROR: mode = {mode}, only supports all_cube/all_vector/all"
     semantic_spec.ext_semantic_custom_op(_builder, "sync_block_all", mode=mode, event_id=event_id)
 
+
 @builtin
 def sync_block_set(sender, receiver, event_id, _builder=None):
     sender = _constexpr_to_value(sender)
     receiver = _constexpr_to_value(receiver)
     event_id = _constexpr_to_value(event_id)
-    assert isinstance(sender, str) and (sender == "cube" or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
-    assert isinstance(receiver, str) and (receiver == "cube" or receiver == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
+    assert isinstance(sender, str) and (sender == "cube"
+                                        or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
+    assert isinstance(receiver, str) and (receiver == "cube" or receiver
+                                          == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
     if sender == receiver:
         raise ValueError(f'Unexpected pair: {sender} -> {receiver}, only supports cube -> vector or vector -> cube')
     semantic_spec.ext_semantic_custom_op(_builder, "sync_block_set", sender=sender, event_id=event_id)
+
 
 @builtin
 def sync_block_wait(sender, receiver, event_id, _builder=None):
     sender = _constexpr_to_value(sender)
     receiver = _constexpr_to_value(receiver)
     event_id = _constexpr_to_value(event_id)
-    assert isinstance(sender, str) and (sender == "cube" or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
-    assert isinstance(receiver, str) and (receiver == "cube" or receiver == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
+    assert isinstance(sender, str) and (sender == "cube"
+                                        or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
+    assert isinstance(receiver, str) and (receiver == "cube" or receiver
+                                          == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
     if sender == receiver:
         raise ValueError(f'Unexpected pair: {sender} -> {receiver}, only supports cube -> vector or vector -> cube')
     semantic_spec.ext_semantic_custom_op(_builder, "sync_block_wait", sender=sender, event_id=event_id)
 
+
 @builtin
 def load_tensor_descriptor(desc: tensor_descriptor_base, offsets: Sequence[Union[constexpr, tensor]],
-                                    _builder=None) -> tensor:
+                           _builder=None) -> tensor:
     """Load a block of data from a tensor descriptor."""
     return desc.load(offsets, _builder=_builder)
 
+
 @builtin
 def store_tensor_descriptor(desc: tensor_descriptor_base, offsets: Sequence[Union[constexpr, tensor]], value: tensor,
-                                     _builder=None) -> tensor:
+                            _builder=None) -> tensor:
     """Store a block of data to a tensor descriptor."""
     return desc.store(offsets, value, _builder=_builder)
+
 
 @builtin
 def make_tensor_descriptor(
@@ -351,6 +374,7 @@ def make_tensor_descriptor(
     """
     return semantic_spec.ext_semantic_make_tensor_descriptor(base, shape, strides, block_shape, _builder)
 
+
 @builtin
 def index_select(src: tensor, idx: tensor, bound, lstdim_blksiz, offsets, numels, _builder=None):
     """
@@ -361,6 +385,7 @@ def index_select(src: tensor, idx: tensor, bound, lstdim_blksiz, offsets, numels
     bound = _constexpr_to_value(bound)
     lstdim_blksiz = _constexpr_to_value(lstdim_blksiz)
     return semantic_spec.ext_semantic_embedding_gather(src, idx, bound, lstdim_blksiz, offsets, numels, _builder)
+
 
 def dtype_to_ir(self, builder: ir.builder) -> ir.type:
     if not is_compile_on_910_95:
@@ -399,8 +424,10 @@ def dtype_to_ir(self, builder: ir.builder) -> ir.type:
         return builder.get_double_ty()
     raise ValueError(f'fail to convert {self} to ir type')
 
+
 @builtin
-def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, out_dtype=float32, _builder=None, lhs_k_pack=True, rhs_k_pack=True):
+def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, out_dtype=float32, _builder=None,
+               lhs_k_pack=True, rhs_k_pack=True):
     """
     Returns the matrix product of two blocks in microscaling format.
     lhs and rhs use microscaling formats described here:
@@ -419,7 +446,9 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
     """
     out_dtype = _constexpr_to_value(out_dtype)
     assert out_dtype == float32, "Only float32 is supported for out_dtype at the moment"
-    return semantic.dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, out_dtype, _builder, lhs_k_pack, rhs_k_pack)
+    return semantic.dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, out_dtype, _builder,
+                               lhs_k_pack, rhs_k_pack)
+
 
 class range():
     """
@@ -490,6 +519,7 @@ class range():
     def __next__(self):
         raise RuntimeError("tl.range can only be used in @triton.jit'd functions")
 
+
 class parallel(range):
     """
     Iterator that counts upward forever, with parallel execution semantics.
@@ -500,20 +530,20 @@ class parallel(range):
         This is used in the mixed cube-vector kernel on 910B. The number of vector cores is determined by the number of
         iteration in this loop. Currently on 910B, max 2 vector cores could be used.
     """
-    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None, bind_sub_block: bool = False):
+
+    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
+                 bind_sub_block: bool = False):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
         self.bind_sub_block = bind_sub_block
 
+
 core_ext_spec_api_list = [
-    "gather", "insert_slice", "extract_slice", "get_element", "__add__",
-    "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__", "__mod__", "__lshift__",
-    "__rshift__", "compile_hint", "sort", "multibuffer", "sync_block_all",
-    "sync_block_set", "sync_block_wait", "load_tensor_descriptor",
-    "store_tensor_descriptor", "make_tensor_descriptor", "dtype_to_ir", "parallel",
-    "index_select", "dot_scaled", "range"
+    "gather", "insert_slice", "extract_slice", "get_element", "__add__", "__radd__", "__sub__", "__rsub__", "__mul__",
+    "__rmul__", "__mod__", "__lshift__", "__rshift__", "compile_hint", "sort", "multibuffer", "sync_block_all",
+    "sync_block_set", "sync_block_wait", "load_tensor_descriptor", "store_tensor_descriptor", "make_tensor_descriptor",
+    "dtype_to_ir", "parallel", "index_select", "dot_scaled", "range"
 ]
 
 core_tensor_ext_spec_api_list = [
-    "__add__", "__radd__", "__sub__", "__rsub__", "__mul__",
-    "__rmul__", "__mod__", "__lshift__", "__rshift__"
+    "__add__", "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__", "__mod__", "__lshift__", "__rshift__"
 ]

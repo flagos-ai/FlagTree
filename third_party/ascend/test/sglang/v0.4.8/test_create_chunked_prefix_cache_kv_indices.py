@@ -33,7 +33,7 @@ import test_common
 def create_chunked_prefix_cache_kv_indices(
     req_to_token_ptr,  # (max_batch, max_context_len,)
     req_pool_indices_ptr,  # (batch_size,)
-    chunk_start_idx_ptr,  # (batch_size,) 
+    chunk_start_idx_ptr,  # (batch_size,)
     chunk_seq_lens_ptr,  # (batch_size,)
     chunk_cu_seq_lens_ptr,  # (batch_size + 1,)
     chunk_kv_indices_ptr,  # (num_chunk_tokens,)
@@ -55,16 +55,10 @@ def create_chunked_prefix_cache_kv_indices(
         offset = tl.arrange(0, BLOCK_SIZE) + i * BLOCK_SIZE
         mask = offset < chunk_seq_len
         data = tl.load(
-            req_to_token_ptr
-            + req_pool_index * req_to_token_ptr_stride
-            + chunk_start_pos
-            + offset,
+            req_to_token_ptr + req_pool_index * req_to_token_ptr_stride + chunk_start_pos + offset,
             mask=mask,
         )
-        tl.store(
-            chunk_kv_indices_ptr + chunk_kv_indices_offset + offset, data, mask=mask
-        )
-
+        tl.store(chunk_kv_indices_ptr + chunk_kv_indices_offset + offset, data, mask=mask)
 
 
 def test_context_fwd_kernel(ptfile_path):

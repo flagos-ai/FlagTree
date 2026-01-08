@@ -4,20 +4,20 @@
 
 module {
   tt.func public @fn_broadcast_to(%arg0: !tt.ptr<i16> , %arg1: !tt.ptr<i16> , %arg2: i32 ) {
-    %0 = tt.make_range {end = 16 : i32, start = 0 : i32} : tensor<16xi32> 
-    %1 = tt.splat %arg1 : !tt.ptr<i16> -> tensor<16x!tt.ptr<i16>> 
-    %2 = tt.addptr %1, %0 : tensor<16x!tt.ptr<i16>>, tensor<16xi32> 
-    %3 = tt.load %2 : tensor<16x!tt.ptr<i16>> 
-    %4 = tt.reshape %3 : tensor<16xi16> -> tensor<2x1x8xi16> 
-    %5 = tt.broadcast %4 : tensor<2x1x8xi16> -> tensor<2x4x8xi16> 
-    %6 = tt.reshape %5 : tensor<2x4x8xi16> -> tensor<64xi16> 
-    %7 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32> 
-    %8 = tt.splat %arg0 : !tt.ptr<i16> -> tensor<64x!tt.ptr<i16>> 
-    %9 = tt.addptr %8, %7 : tensor<64x!tt.ptr<i16>>, tensor<64xi32> 
-    tt.store %9, %6 : tensor<64x!tt.ptr<i16>> 
-    tt.return 
-  } 
-} 
+    %0 = tt.make_range {end = 16 : i32, start = 0 : i32} : tensor<16xi32>
+    %1 = tt.splat %arg1 : !tt.ptr<i16> -> tensor<16x!tt.ptr<i16>>
+    %2 = tt.addptr %1, %0 : tensor<16x!tt.ptr<i16>>, tensor<16xi32>
+    %3 = tt.load %2 : tensor<16x!tt.ptr<i16>>
+    %4 = tt.reshape %3 : tensor<16xi16> -> tensor<2x1x8xi16>
+    %5 = tt.broadcast %4 : tensor<2x1x8xi16> -> tensor<2x4x8xi16>
+    %6 = tt.reshape %5 : tensor<2x4x8xi16> -> tensor<64xi16>
+    %7 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+    %8 = tt.splat %arg0 : !tt.ptr<i16> -> tensor<64x!tt.ptr<i16>>
+    %9 = tt.addptr %8, %7 : tensor<64x!tt.ptr<i16>>, tensor<64xi32>
+    tt.store %9, %6 : tensor<64x!tt.ptr<i16>>
+    tt.return
+  }
+}
 
 // CHECK-LABEL:   func.func @fn_broadcast_to
 // CHECK-SAME: %arg0: memref<?xi16>
@@ -29,20 +29,20 @@ module {
 
 module {
   tt.func public @fn_broadcast_to(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32> , %arg2: i32 )  {
-    %0 = tt.make_range {end = 16 : i32, start = 0 : i32} : tensor<16xi32> 
-    %1 = tt.splat %arg1 : !tt.ptr<i32> -> tensor<16x!tt.ptr<i32>> 
-    %2 = tt.addptr %1, %0 : tensor<16x!tt.ptr<i32>>, tensor<16xi32> 
-    %3 = tt.load %2 : tensor<16x!tt.ptr<i32>> 
-    %4 = tt.reshape %3 : tensor<16xi32> -> tensor<2x1x8xi32> 
-    %5 = tt.broadcast %4 : tensor<2x1x8xi32> -> tensor<2x4x8xi32> 
-    %6 = tt.reshape %5 : tensor<2x4x8xi32> -> tensor<64xi32> 
-    %7 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32> 
-    %8 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<64x!tt.ptr<i32>> 
-    %9 = tt.addptr %8, %7 : tensor<64x!tt.ptr<i32>>, tensor<64xi32> 
-    tt.store %9, %6 : tensor<64x!tt.ptr<i32>> 
-    tt.return 
-  } 
-} 
+    %0 = tt.make_range {end = 16 : i32, start = 0 : i32} : tensor<16xi32>
+    %1 = tt.splat %arg1 : !tt.ptr<i32> -> tensor<16x!tt.ptr<i32>>
+    %2 = tt.addptr %1, %0 : tensor<16x!tt.ptr<i32>>, tensor<16xi32>
+    %3 = tt.load %2 : tensor<16x!tt.ptr<i32>>
+    %4 = tt.reshape %3 : tensor<16xi32> -> tensor<2x1x8xi32>
+    %5 = tt.broadcast %4 : tensor<2x1x8xi32> -> tensor<2x4x8xi32>
+    %6 = tt.reshape %5 : tensor<2x4x8xi32> -> tensor<64xi32>
+    %7 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+    %8 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<64x!tt.ptr<i32>>
+    %9 = tt.addptr %8, %7 : tensor<64x!tt.ptr<i32>>, tensor<64xi32>
+    tt.store %9, %6 : tensor<64x!tt.ptr<i32>>
+    tt.return
+  }
+}
 
 // CHECK-LABEL:   func.func @fn_broadcast_to
 // CHECK-SAME: %arg0: memref<?xi32>

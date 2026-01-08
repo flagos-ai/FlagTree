@@ -32,6 +32,7 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
         # Write x + y back to DRAM.
         tl.store(output_ptr + offsets, output, mask=mask)
 
+
 @triton.jit
 def add_kernel_any_grid(x_ptr,  # *Pointer* to first input vector.
                         y_ptr,  # *Pointer* to second input vector.
@@ -50,12 +51,10 @@ def add_kernel_any_grid(x_ptr,  # *Pointer* to first input vector.
     tl.store(output_ptr + offsets, output, mask=mask)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (98432,), 1024],
-                             ['float16', (98432,), 1024],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (98432, ), 1024],
+    ['float16', (98432, ), 1024],
+])
 def test_case(param_list, monkeypatch):
     monkeypatch.setenv("TRITON_DISABLE_FFTS", "1")
     dtype, shape, xblock = param_list
@@ -70,12 +69,10 @@ def test_case(param_list, monkeypatch):
     monkeypatch.delenv("TRITON_DISABLE_FFTS")
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (98432,), 1024],
-                             ['float16', (98432,), 1024],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (98432, ), 1024],
+    ['float16', (98432, ), 1024],
+])
 def test_any_grid(param_list, monkeypatch):
     monkeypatch.setenv("TRITON_DISABLE_FFTS", "1")
     dtype, shape, xblock = param_list

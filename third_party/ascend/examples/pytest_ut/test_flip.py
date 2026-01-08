@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 
@@ -27,4 +26,3 @@ import torch_npu
 import pytest
 import test_common
 from triton.runtime.libentry import libentry
-

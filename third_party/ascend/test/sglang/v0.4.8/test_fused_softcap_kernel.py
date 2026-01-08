@@ -27,6 +27,7 @@ import triton.language as tl
 sys.path.append("..")
 import test_common
 
+
 #source: python\sglang\srt\layers\elementwise.py
 @triton.jit
 def fused_softcap_kernel(
@@ -48,6 +49,7 @@ def fused_softcap_kernel(
     bottom = exped + 1
     output = top / bottom * softcap_const
     tl.store(output_ptr + offsets, output, mask=mask)
+
 
 def test_fused_softcap_kernel(ptfile_path):
     try:

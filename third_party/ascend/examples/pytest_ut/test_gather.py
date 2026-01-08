@@ -26,6 +26,7 @@ import numpy as np
 import test_common
 import pytest
 
+
 @pytest.mark.skip(reason="waiting for the compiler to support.")
 @pytest.mark.parametrize("src_shape, indices_shape, axis", [
     ([4, 4], [8, 4], 0),
@@ -53,13 +54,9 @@ def test_gather(src_shape, indices_shape, axis):
 
     def triton_gather(src: torch.Tensor, axis: int, indices: torch.Tensor):
         output = torch.empty(indices.shape, dtype=src.dtype, device=src.device)
-        gather_kernel[(1, )](src, indices, output, axis,
-                             src.shape[0], src.shape[1],
-                             src.stride(0), src.stride(1),
-                             indices.shape[0], indices.shape[1],
-                             indices.stride(0), indices.stride(1),
-                             output.shape[0], output.shape[1],
-                             output.stride(0), output.stride(1))
+        gather_kernel[(1, )](src, indices, output, axis, src.shape[0], src.shape[1],
+                             src.stride(0), src.stride(1), indices.shape[0], indices.shape[1], indices.stride(0),
+                             indices.stride(1), output.shape[0], output.shape[1], output.stride(0), output.stride(1))
         return output
 
     DEV = "npu"
@@ -68,6 +65,7 @@ def test_gather(src_shape, indices_shape, axis):
     ref = torch.gather(src, axis, indices)
     result = triton_gather(src, axis, indices)
     torch.testing.assert_close(result, ref, rtol=0, atol=0)
+
 
 if __name__ == "__main__":
     test_gather([4, 64], [4, 32], 1)

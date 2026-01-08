@@ -1025,8 +1025,7 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.loop_unroll_factor", self.builder.get_int32_attr(loop_unroll_factor))
             # flagtree backend specialization
             from triton.runtime.driver import spec
-            spec("for_op_set_ext_attrs",
-                                            for_op, self.builder, for_op_ext_attrs)
+            spec("for_op_set_ext_attrs", for_op, self.builder, for_op_ext_attrs)
             # flagtree backend specialization
             if bind_sub_block:
                 from triton.runtime.driver import spec

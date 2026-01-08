@@ -497,7 +497,7 @@ def TT_GatherOutToUbOp : TT_Op<"gather_out_to_ub", [
     let assemblyFormat = [{
       $src `:` type($src) `,` $index `:` type($index) `,`
       $indexBoundary `:` type($indexBoundary) `,` $dim `:` type($dim) `,`
-     `[` $srcStride `:` type($srcStride) `]` `,` `[` $endOffset `:` type($endOffset) `]` `,` 
+     `[` $srcStride `:` type($srcStride) `]` `,` `[` $endOffset `:` type($endOffset) `]` `,`
      `[` $startOffset `:` type($startOffset) `]` (`,` $other^ `:` type($other))?
       attr-dict `->` type($result)
     }];
@@ -562,12 +562,12 @@ def TT_IndexSelectSimdOp : TT_Op<"index_select_simd", [
   AttrSizedOperandSegments
 ]> {
     let summary = "Index select SIMD operation from global memory";
-    
+
     let description = [{
-        Index select operation (SIMD version) that loads data from multiple indices along a 
-        specified dimension. The operation selects data from GM and loads them 
+        Index select operation (SIMD version) that loads data from multiple indices along a
+        specified dimension. The operation selects data from GM and loads them
         as tiles directly to UB with zero-copy semantics.
-        
+
         The operation takes:
         - src: Source pointer (in GM)
         - index: 1D tensor of indices to select (already in UB)
@@ -575,7 +575,7 @@ def TT_IndexSelectSimdOp : TT_Op<"index_select_simd", [
         - src_shape: Complete shape of the source tensor
         - src_offset: Starting offset for reading
         - read_shape: Size to read (tile shape)
-        
+
         Constraints:
         - read_shape[dim] must be -1
         - src_offset[dim] can be -1 (will be ignored)
@@ -1783,7 +1783,7 @@ def TT_IndirectStoreOp : TT_Op<"indirect_store", [
     Built-in operation emitted by the compiler for unstructured (discrete) memory
     accesses.These are not written directly in the user IR.
 
-    Store values from UB based to GM on per-element offsets. 
+    Store values from UB based to GM on per-element offsets.
 
     The operation takes:
     - src: Source pointer

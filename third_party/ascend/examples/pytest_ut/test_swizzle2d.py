@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 import torch
@@ -41,19 +40,14 @@ def fn_npu_(output_ptr, x_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.conste
     tl.store(x_ptr + tl.arange(0, 4), yy)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['int32', (2, 256, 16), 1, 2, 256, 16],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['int32', (2, 256, 16), 1, 2, 256, 16],
+])
 def test_case(param_list):
     dtype, shape, ncore, XB, YB, ZB = param_list
-    x = test_common.generate_tensor((4,), dtype).npu()
-    a = torch.tensor([[0, 2, 1, 3],
-                      [4, 6, 5, 7],
-                      [8, 10, 9, 11],
-                      [12, 14, 13, 15]], dtype=eval('torch.' + dtype)).npu()
-    output = torch.randint(1, (4,), dtype=eval('torch.' + dtype)).npu()
+    x = test_common.generate_tensor((4, ), dtype).npu()
+    a = torch.tensor([[0, 2, 1, 3], [4, 6, 5, 7], [8, 10, 9, 11], [12, 14, 13, 15]], dtype=eval('torch.' + dtype)).npu()
+    output = torch.randint(1, (4, ), dtype=eval('torch.' + dtype)).npu()
     fn_npu_[ncore, 1, 1](output, x, XB, YB, ZB)
     print(f"output={output}")
     triton_ret = output[:, None] * 4 + x[None, :]

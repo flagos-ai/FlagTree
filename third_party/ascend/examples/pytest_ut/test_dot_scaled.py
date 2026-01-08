@@ -51,7 +51,7 @@ def test_scaled_dot(M, N, K, rhs_scale, normal_type, num_warps, acc_num):
     def dot_scale_kernel(a_base, stride_a0, stride_a1, a_scale, b_base, stride_b0, stride_b1, b_scale, out,
                          BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, type_a: tl.constexpr,
                          type_b: tl.constexpr, acc_num: tl.constexpr):
-                         
+
         PACKED_BLOCK_K_A: tl.constexpr = BLOCK_K
         PACKED_BLOCK_K_B: tl.constexpr = BLOCK_K
         a_ptr = a_base + tl.arange(0, BLOCK_M)[:, None] * stride_a0 + tl.arange(0,
@@ -74,9 +74,9 @@ def test_scaled_dot(M, N, K, rhs_scale, normal_type, num_warps, acc_num):
         accumulator = tl.dot_scaled(a, a_scale, type_a, b, b_scale, type_b, acc=accumulator, out_dtype=tl.float32)
         if acc_num is not None:
             for _ in range(acc_num):
-                accumulator = tl.dot_scaled(a, a_scale, type_a, b, b_scale, type_b, acc=accumulator, 
+                accumulator = tl.dot_scaled(a, a_scale, type_a, b, b_scale, type_b, acc=accumulator,
                                             out_dtype=tl.float32)
-        
+
         out_ptr = out + tl.arange(0, BLOCK_M)[:, None] * BLOCK_N + tl.arange(0, BLOCK_N)[None, :]
         tl.store(out_ptr, accumulator.to(a.dtype))
 
@@ -137,8 +137,8 @@ def test_scaled_dot(M, N, K, rhs_scale, normal_type, num_warps, acc_num):
 
     kernel_kwargs = {"num_warps": num_warps}
     z = x.new_empty((M, N), dtype=x.dtype)
-    pgm = dot_scale_kernel[(1, )](x, *x.stride(), scale_x, y, *y.stride(), scale_y, z, M, N, K, type_a, type_b,
-                                  acc_num, **kernel_kwargs)
+    pgm = dot_scale_kernel[(1, )](x, *x.stride(), scale_x, y, *y.stride(), scale_y, z, M, N, K, type_a, type_b, acc_num,
+                                  **kernel_kwargs)
     z_ref = golden_ref(x, scale_x, y, scale_y)
     if acc_num is not None:
         z_ref = z_ref * (acc_num + 1)

@@ -46,15 +46,15 @@ def _normalize_tuple(t):
     return normalized_tuple
 
 
-def descriptor_load(desc: tensor_descriptor_base, offsets, cache_modifier: str,
-                    eviction_policy: str, builder: ir.builder) -> tensor:
+def descriptor_load(desc: tensor_descriptor_base, offsets, cache_modifier: str, eviction_policy: str,
+                    builder: ir.builder) -> tensor:
     assert isinstance(desc, tensor_descriptor_base)
     ndim = len(desc.block_shape)
     assert len(offsets) == ndim, f"expected {ndim} offsets, but got {len(offsets)}"
 
     offsets = _convert_to_ir_values(builder, offsets, require_i64=False)
     x = builder.create_descriptor_load(desc.handle, offsets, _str_to_load_cache_modifier(cache_modifier),
-                                            _str_to_eviction_policy(eviction_policy))
+                                       _str_to_eviction_policy(eviction_policy))
     return tensor(x, desc.block_type)
 
 
@@ -69,7 +69,6 @@ def descriptor_store(desc: tensor_descriptor_base, value: tensor, offsets, build
     validate_store_like(desc, value, offsets)
     offsets = _convert_to_ir_values(builder, offsets, require_i64=False)
     return tensor(builder.create_descriptor_store(desc.handle, value.handle, offsets), real_void)
-
 
 
 class base_value(_value):

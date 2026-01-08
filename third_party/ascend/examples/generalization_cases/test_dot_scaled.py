@@ -40,34 +40,28 @@ from triton.language.extra import libdevice
 
 @triton.jit
 def dot_scale_kernel(a_base, stride_a0: tl.constexpr, stride_a1: tl.constexpr, a_scale, b_base, stride_b0: tl.constexpr,
-                     stride_b1: tl.constexpr, b_scale, out,
-                     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, type_a: tl.constexpr,
-                     type_b: tl.constexpr, acc_num: tl.constexpr):
+                     stride_b1: tl.constexpr, b_scale, out, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+                     BLOCK_K: tl.constexpr, type_a: tl.constexpr, type_b: tl.constexpr, acc_num: tl.constexpr):
     PACKED_BLOCK_K_A: tl.constexpr = BLOCK_K
     PACKED_BLOCK_K_B: tl.constexpr = BLOCK_K
     str_a0: tl.constexpr = stride_a0
-    a_ptr = a_base + tl.arange(0, BLOCK_M)[:, None] * stride_a0 + tl.arange(0,
-                                                                            str_a0)[None, :] * stride_a1
-    b_ptr = b_base + tl.arange(0, PACKED_BLOCK_K_B)[:, None] * stride_b0 + tl.arange(0,
-                                                                                     BLOCK_N)[None, :] * stride_b1
+    a_ptr = a_base + tl.arange(0, BLOCK_M)[:, None] * stride_a0 + tl.arange(0, str_a0)[None, :] * stride_a1
+    b_ptr = b_base + tl.arange(0, PACKED_BLOCK_K_B)[:, None] * stride_b0 + tl.arange(0, BLOCK_N)[None, :] * stride_b1
 
     a = tl.load(a_ptr)
     b = tl.load(b_ptr)
     SCALE_BLOCK_K: tl.constexpr = BLOCK_K // 32
     accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     if a_scale is not None:
-        scale_a_ptr = a_scale + tl.arange(0, BLOCK_M)[:, None] * SCALE_BLOCK_K + tl.arange(0,
-                                                                                           SCALE_BLOCK_K)[None, :]
+        scale_a_ptr = a_scale + tl.arange(0, BLOCK_M)[:, None] * SCALE_BLOCK_K + tl.arange(0, SCALE_BLOCK_K)[None, :]
         a_scale = tl.load(scale_a_ptr)
     if b_scale is not None:
-        scale_b_ptr = b_scale + tl.arange(0, BLOCK_N)[:, None] * SCALE_BLOCK_K + tl.arange(0,
-                                                                                           SCALE_BLOCK_K)[None, :]
+        scale_b_ptr = b_scale + tl.arange(0, BLOCK_N)[:, None] * SCALE_BLOCK_K + tl.arange(0, SCALE_BLOCK_K)[None, :]
         b_scale = tl.load(scale_b_ptr)
     accumulator = tl.dot_scaled(a, a_scale, type_a, b, b_scale, type_b, acc=accumulator, out_dtype=tl.float32)
     if acc_num is not None:
         for _ in range(acc_num):
-            accumulator = tl.dot_scaled(a, a_scale, type_a, b, b_scale, type_b, acc=accumulator,
-                                        out_dtype=tl.float32)
+            accumulator = tl.dot_scaled(a, a_scale, type_a, b, b_scale, type_b, acc=accumulator, out_dtype=tl.float32)
 
     out_ptr = out + tl.arange(0, BLOCK_M)[:, None] * BLOCK_N + tl.arange(0, BLOCK_N)[None, :]
     tl.store(out_ptr, accumulator.to(a.dtype))
@@ -119,7 +113,7 @@ def test_scaled_dot(M, N, K, rhs_scale, normal_type, num_warps, acc_num):
             comp_dtype = torch.float16 if ty == "fp16" else torch.bfloat16
             ret = torch.randn(shape, dtype=comp_dtype, device=device)
             # Clamp to avoid relative error issues
-            ret.clamp_(-2 ** comp_dtype_max_exp, 2 ** comp_dtype_max_exp - 1)
+            ret.clamp_(-2**comp_dtype_max_exp, 2**comp_dtype_max_exp - 1)
         else:
             ret = torch.randint(256, shape, dtype=torch.int8, device=device)
         return ret
@@ -140,8 +134,8 @@ def test_scaled_dot(M, N, K, rhs_scale, normal_type, num_warps, acc_num):
 
     kernel_kwargs = {"num_warps": num_warps}
     z = x.new_empty((M, N), dtype=x.dtype)
-    pgm = dot_scale_kernel[(1,)](x, *x.stride(), scale_x, y, *y.stride(), scale_y, z, M, N, K, type_a, type_b,
-                                 acc_num, **kernel_kwargs)
+    pgm = dot_scale_kernel[(1, )](x, *x.stride(), scale_x, y, *y.stride(), scale_y, z, M, N, K, type_a, type_b, acc_num,
+                                  **kernel_kwargs)
     z_ref = golden_ref(x, scale_x, y, scale_y)
     if acc_num is not None:
         z_ref = z_ref * (acc_num + 1)
@@ -161,22 +155,13 @@ def test_4d_dot(B, M, N, K):
 
     x2d = x4d.view(-1, N)  # shape (B*B*M, N)
     y2d = y4d.view(-1, K)  # shape (B*B*N, K)
-    scale_x = torch.randint(-10, 10, (x2d.shape[0], N // 32),
-                            dtype=torch.int8, device=device)
-    scale_y = torch.randint(-10, 10, (y2d.shape[1], N // 32),
-                            dtype=torch.int8, device=device)
+    scale_x = torch.randint(-10, 10, (x2d.shape[0], N // 32), dtype=torch.int8, device=device)
+    scale_y = torch.randint(-10, 10, (y2d.shape[1], N // 32), dtype=torch.int8, device=device)
 
-    z = torch.empty((x2d.shape[0], y2d.shape[0]),
-                    dtype=x2d.dtype, device=device)
+    z = torch.empty((x2d.shape[0], y2d.shape[0]), dtype=x2d.dtype, device=device)
     acc_num = None
-    dot_scale_kernel[(1,)](
-        x2d, *x2d.stride(), scale_x,
-        y2d, *y2d.stride(), None,
-        z,
-        x2d.shape[0], y2d.shape[0], K,
-        "fp16", "fp16", None,
-        num_warps=4
-    )
+    dot_scale_kernel[(1, )](x2d, *x2d.stride(), scale_x, y2d, *y2d.stride(), None, z, x2d.shape[0], y2d.shape[0], K,
+                            "fp16", "fp16", None, num_warps=4)
     z_ref = golden_ref(x2d, scale_x, y2d, None)
     if acc_num is not None:
         z_ref = z_ref * (acc_num + 1)
@@ -188,8 +173,7 @@ def test_4d_dot(B, M, N, K):
 
 @pytest.mark.parametrize("B, M, N, K", [(2, 16, 16, 32)])
 @test_common.raises_with_match(triton.compiler.errors.CompilationError,
-                               r"lhs last dimension .* must equal rhs penultimate dimension"
-                               )
+                               r"lhs last dimension .* must equal rhs penultimate dimension")
 def test_2d_dot_invaild_shape(B, M, N, K):
     device = "npu"
     torch.manual_seed(0)
@@ -199,22 +183,13 @@ def test_2d_dot_invaild_shape(B, M, N, K):
 
     x2d = x4d.view(-1, N)  # shape (B*B*M, N)
     y2d = y4d.view(-1, K)  # shape (B*B*N, K)
-    scale_x = torch.randint(-10, 10, (x2d.shape[0], N // 32),
-                            dtype=torch.int8, device=device)
-    scale_y = torch.randint(-10, 10, (y2d.shape[1], N // 32),
-                            dtype=torch.int8, device=device)
+    scale_x = torch.randint(-10, 10, (x2d.shape[0], N // 32), dtype=torch.int8, device=device)
+    scale_y = torch.randint(-10, 10, (y2d.shape[1], N // 32), dtype=torch.int8, device=device)
 
-    z = torch.empty((x2d.shape[0], y2d.shape[0]),
-                    dtype=x2d.dtype, device=device)
+    z = torch.empty((x2d.shape[0], y2d.shape[0]), dtype=x2d.dtype, device=device)
     acc_num = None
-    dot_scale_kernel[(1,)](
-        x2d, *x2d.stride(), scale_x,
-        y2d, *y2d.stride(), None,
-        z,
-        x2d.shape[0], y2d.shape[0], K,
-        "fp16", "fp16", None,
-        num_warps=4
-    )
+    dot_scale_kernel[(1, )](x2d, *x2d.stride(), scale_x, y2d, *y2d.stride(), None, z, x2d.shape[0], y2d.shape[0], K,
+                            "fp16", "fp16", None, num_warps=4)
 
 
 VALID_MAIN_DTYPES = {
@@ -246,20 +221,16 @@ from itertools import product
 
 
 def is_legal_dtype(lhs_dtype, rhs_dtype, lhs_scale_dtype, rhs_scale_dtype):
-    return (
-            lhs_dtype in VALID_MAIN_DTYPES and
-            rhs_dtype in VALID_MAIN_DTYPES and
-            lhs_scale_dtype is torch.int8 and
-            rhs_scale_dtype is torch.int8
-    )
+    return (lhs_dtype in VALID_MAIN_DTYPES and rhs_dtype in VALID_MAIN_DTYPES and lhs_scale_dtype is torch.int8
+            and rhs_scale_dtype is torch.int8)
 
 
 illegal_cases = []
 for lhs, rhs, lhs_s, rhs_s in product(
         VALID_MAIN_DTYPES | ILLEGAL_MAIN_DTYPES,
         VALID_MAIN_DTYPES | ILLEGAL_MAIN_DTYPES,
-        {torch.int8} | ILLEGAL_SCALE_DTYPES,
-        {torch.int8} | ILLEGAL_SCALE_DTYPES,
+    {torch.int8} | ILLEGAL_SCALE_DTYPES,
+    {torch.int8} | ILLEGAL_SCALE_DTYPES,
 ):
 
     if not is_legal_dtype(lhs, rhs, lhs_s, rhs_s):
@@ -273,8 +244,7 @@ illegal_cases = sorted(set(illegal_cases), key=lambda t: tuple(str(i) for i in t
     illegal_cases,
 )
 @test_common.raises_with_match(Exception, r"(?i)invalid|unsupported|dtype")
-def test_invalid_dtype_should_fail(lhs_dtype, rhs_dtype,
-                                   lhs_scale_dtype, rhs_scale_dtype):
+def test_invalid_dtype_should_fail(lhs_dtype, rhs_dtype, lhs_scale_dtype, rhs_scale_dtype):
     device = "npu"
     M, N, K = 32, 32, 64
     num_warps = 4
@@ -293,11 +263,17 @@ def test_invalid_dtype_should_fail(lhs_dtype, rhs_dtype,
     rhs_scale = make_scale((N, K // 32), rhs_scale_dtype)
     z = torch.empty((M, N), dtype=lhs_dtype, device=device)
 
-    dot_scale_kernel[(1,)](
-        x, *x.stride(), lhs_scale,
-        y, *y.stride(), rhs_scale,
+    dot_scale_kernel[(1, )](
+        x,
+        *x.stride(),
+        lhs_scale,
+        y,
+        *y.stride(),
+        rhs_scale,
         z,
-        M, N, K,
+        M,
+        N,
+        K,
         str(lhs_dtype).split('.')[-1],
         str(rhs_dtype).split('.')[-1],
         None,

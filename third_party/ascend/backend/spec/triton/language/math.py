@@ -1,6 +1,7 @@
 import triton.language as language
 from . import standard
 from . import core
+
 softmax = standard.softmax
 sigmoid = standard.sigmoid
 argmax = standard.argmax
@@ -45,13 +46,10 @@ trunc = language.extra.ascend.libdevice.trunc
 round = language.extra.ascend.libdevice.round
 
 math_ext_base_api_list = [
-    "umulhi", "exp", "exp2", "log", "log2", "cos",
-    "sin", "sqrt", "sqrt_rn", "rsqrt", "div_rn", "erf",
-    "tanh", "floor", "ceil", "fma", "_check_dtype", "softmax", "sigmoid",
-    "cdiv", "argmax", "argmin"
+    "umulhi", "exp", "exp2", "log", "log2", "cos", "sin", "sqrt", "sqrt_rn", "rsqrt", "div_rn", "erf", "tanh", "floor",
+    "ceil", "fma", "_check_dtype", "softmax", "sigmoid", "cdiv", "argmax", "argmin"
 ]
 math_ext_spec_api_list = [
-    "isnan", "isinf", "reciprocal", "relu", "log1p", "tan",
-    "atan", "ilogb", "ldexp", "pow", "flip", "atan2",
-    "div_rz", "fmod", "trunc", "round", "rint", "finitef", "isfinited"
+    "isnan", "isinf", "reciprocal", "relu", "log1p", "tan", "atan", "ilogb", "ldexp", "pow", "flip", "atan2", "div_rz",
+    "fmod", "trunc", "round", "rint", "finitef", "isfinited"
 ]

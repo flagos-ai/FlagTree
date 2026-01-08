@@ -21,8 +21,8 @@ module {
   }
 }
 // CHECK-LABEL:   func.func @kernel_low_mask(
-// CHECK-SAME:          %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, 
-// CHECK-SAME:         %[[VAL_0:.*]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, %[[VAL_1:.*]]: memref<?xbf16> {tt.tensor_kind = 1 : i32}, %[[VAL_2:.*]]: i32, %[[ARG_3:.*]]: i32, %[[ARG_4:.*]]: i32, %[[ARG_5:.*]]: i32, %[[ARG_6:.*]]: i32, %[[ARG_7:.*]]: i32, %[[ARG_8:.*]]: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} { 
+// CHECK-SAME:          %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>,
+// CHECK-SAME:         %[[VAL_0:.*]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, %[[VAL_1:.*]]: memref<?xbf16> {tt.tensor_kind = 1 : i32}, %[[VAL_2:.*]]: i32, %[[ARG_3:.*]]: i32, %[[ARG_4:.*]]: i32, %[[ARG_5:.*]]: i32, %[[ARG_6:.*]]: i32, %[[ARG_7:.*]]: i32, %[[ARG_8:.*]]: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 
 // CHECK-DAG:           %[[VAL_5:.*]] = arith.constant 0 : index
 // CHECK-DAG:           %[[VAL_6:.*]] = arith.constant 0xFF80 : bf16
@@ -71,7 +71,7 @@ module {
   }
 }
 // CHECK-LABEL:   func.func @kernel_high_mask(
-// CHECK-SAME:          %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, %[[PA_0:.*]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, %[[PA_1:.*]]: memref<?xbf16> {tt.tensor_kind = 1 : i32}, %[[PA_2:.*]]: i32, %[[ARG_3:.*]]: i32, %[[ARG_4:.*]]: i32, %[[ARG_5:.*]]: i32, %[[ARG_6:.*]]: i32, %[[ARG_7:.*]]: i32, %[[ARG_8:.*]]: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} { 
+// CHECK-SAME:          %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, %[[PA_0:.*]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, %[[PA_1:.*]]: memref<?xbf16> {tt.tensor_kind = 1 : i32}, %[[PA_2:.*]]: i32, %[[ARG_3:.*]]: i32, %[[ARG_4:.*]]: i32, %[[ARG_5:.*]]: i32, %[[ARG_6:.*]]: i32, %[[ARG_7:.*]]: i32, %[[ARG_8:.*]]: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 // CHECK-DAG:           %[[CONST_NAN:.*]] = arith.constant 0xFF80 : bf16
 // CHECK-DAG:           %[[CONST_128:.*]] = arith.constant 128 : index
 // CHECK-DAG:           %[[CONST_0:.*]] = arith.constant 0 : index

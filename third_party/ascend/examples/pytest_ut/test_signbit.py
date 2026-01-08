@@ -26,6 +26,7 @@ import pytest
 import test_common
 import triton.language.extra.ascend.libdevice as libdevice
 
+
 @triton.jit
 def triton_signbit(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     xoffset = tl.program_id(0) * XBLOCK
@@ -36,12 +37,11 @@ def triton_signbit(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: 
         y = libdevice.signbit(x0)
         tl.store(out_ptr0 + xindex, y, xmask)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float16', (2, 4096, 8), 2, 32768, 1024],
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
+
+@pytest.mark.parametrize('param_list', [
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_signbit_case(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x = test_common.generate_tensor(shape, dtype).npu()
@@ -50,12 +50,11 @@ def test_signbit_case(param_list):
     triton_signbit[ncore, 1, 1](x, y_cal, x.numel(), xblock, xblock_sub)
     test_common.validate_cmp('bool', y_cal, y_ref)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float16', (2, 4096, 8), 2, 32768, 1024],
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
+
+@pytest.mark.parametrize('param_list', [
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_all_blocks_parallel(param_list, monkeypatch):
     monkeypatch.setenv("TRITON_ALL_BLOCKS_PARALLEL", "1")
     dtype, shape, ncore, xblock, xblock_sub = param_list

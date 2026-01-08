@@ -35,9 +35,8 @@ def torch_pointwise(x, y):
 
 
 @triton.jit
-def fn_npu_(output_ptr, x_ptr, y_ptr, z_ptr,
-            XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr,
-            XNUMEL: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_(output_ptr, x_ptr, y_ptr, z_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, XNUMEL: tl.constexpr,
+            YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     xoffs = tl.program_id(0) * XB
     yoffs = tl.program_id(1) * YB
     zoffs = tl.program_id(2) * ZB
@@ -58,15 +57,24 @@ def fn_npu_(output_ptr, x_ptr, y_ptr, z_ptr,
 
 @triton.jit
 def triton_mod_4d(
-        output_ptr, x_ptr, y_ptr,
-        BLOCK_SIZE: tl.constexpr, SUB_BLOCK: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
+    output_ptr,
+    x_ptr,
+    y_ptr,
+    BLOCK_SIZE: tl.constexpr,
+    SUB_BLOCK: tl.constexpr,
+    SHAPE_0: tl.constexpr,
+    SHAPE_1: tl.constexpr,
+    SHAPE_2: tl.constexpr,
+    SHAPE_3: tl.constexpr,
+    STRIDE_0: tl.constexpr,
+    STRIDE_1: tl.constexpr,
+    STRIDE_2: tl.constexpr,
+    STRIDE_3: tl.constexpr,
 ):
     pid = tl.program_id(0)
     for loop in range(0, tl.cdiv(BLOCK_SIZE, SUB_BLOCK)):
         base_idx = tl.arange(0, SUB_BLOCK)
-        pid_tensor = tl.full((SUB_BLOCK,), pid * BLOCK_SIZE + loop * SUB_BLOCK, dtype=tl.int32)
+        pid_tensor = tl.full((SUB_BLOCK, ), pid * BLOCK_SIZE + loop * SUB_BLOCK, dtype=tl.int32)
         tmp0 = (pid_tensor + base_idx)[:, None, None, None]
         tmp1 = tl.arange(0, SHAPE_1)[None, :, None, None]
         tmp2 = tl.arange(0, SHAPE_2)[None, None, :, None]
@@ -81,17 +89,26 @@ def triton_mod_4d(
 
 @triton.jit
 def triton_mod_5d(
-        output_ptr, x_ptr, y_ptr,
-        BLOCK_SIZE: tl.constexpr, SUB_BLOCK: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-        SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
-        STRIDE_4: tl.constexpr,
+    output_ptr,
+    x_ptr,
+    y_ptr,
+    BLOCK_SIZE: tl.constexpr,
+    SUB_BLOCK: tl.constexpr,
+    SHAPE_0: tl.constexpr,
+    SHAPE_1: tl.constexpr,
+    SHAPE_2: tl.constexpr,
+    SHAPE_3: tl.constexpr,
+    SHAPE_4: tl.constexpr,
+    STRIDE_0: tl.constexpr,
+    STRIDE_1: tl.constexpr,
+    STRIDE_2: tl.constexpr,
+    STRIDE_3: tl.constexpr,
+    STRIDE_4: tl.constexpr,
 ):
     pid = tl.program_id(0)
     for loop in range(0, tl.cdiv(BLOCK_SIZE, SUB_BLOCK)):
         base_idx = tl.arange(0, SUB_BLOCK)
-        pid_tensor = tl.full((SUB_BLOCK,), pid * BLOCK_SIZE + loop * SUB_BLOCK, dtype=tl.int32)
+        pid_tensor = tl.full((SUB_BLOCK, ), pid * BLOCK_SIZE + loop * SUB_BLOCK, dtype=tl.int32)
         tmp0 = (pid_tensor + base_idx)[:, None, None, None, None]
         tmp1 = tl.arange(0, SHAPE_1)[None, :, None, None, None]
         tmp2 = tl.arange(0, SHAPE_2)[None, None, :, None, None]
@@ -145,8 +162,8 @@ def test_case2(dtype, shape):
     test_common.validate_cmp(dtype, ans, output)
 
 
-@pytest.mark.parametrize('shape',
-                         TestUtils.test_shape4d + [(25, 2, 3, 31), (2, 2, 39, 23), (17, 27, 3, 3), (3, 2, 27, 37)])
+@pytest.mark.parametrize('shape', TestUtils.test_shape4d + [(25, 2, 3, 31), (2, 2, 39, 23), (17, 27, 3, 3),
+                                                            (3, 2, 27, 37)])
 @pytest.mark.parametrize('dtype', ['int8', 'int16', 'int32', 'int64', 'float16', 'float32', 'bfloat16'])
 def test_mod_4d(shape, dtype):
     logging.log(logging.DEBUG, f"shape = {shape}")
@@ -169,7 +186,7 @@ def test_mod_4d(shape, dtype):
     n = x.numel()
     block_size = min(triton.next_power_of_2(n), 64)
     sub_block_size = 1
-    grid = (triton.cdiv(n, block_size),)
+    grid = (triton.cdiv(n, block_size), )
     print(" ")
     print(f"=== loops: {triton.cdiv(block_size, sub_block_size)}")
     print(f"=== grid : {grid}")
@@ -201,7 +218,7 @@ def test_mod_5d(shape, dtype):
     n = x.numel()
     block_size = min(triton.next_power_of_2(n), 32)
     sub_block_size = 1
-    grid = (triton.cdiv(n, block_size),)
+    grid = (triton.cdiv(n, block_size), )
     print(" ")
     print(f"=== loops: {triton.cdiv(block_size, sub_block_size)}")
     print(f"=== grid : {grid}")

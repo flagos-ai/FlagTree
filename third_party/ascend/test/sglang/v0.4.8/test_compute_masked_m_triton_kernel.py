@@ -44,10 +44,9 @@ def test_context_fwd_kernel(ptfile_path):
     except Exception as e:
         pytest.fail(f"load file {ptfile_path} failed: {str(e)}")
 
-
     input_data = test_common.convert_tensor_with_device_type(data["input_data"], device_type='npu')
-    compute_masked_m_triton_kernel[data['grid']](**input_data) 
-    
+    compute_masked_m_triton_kernel[data['grid']](**input_data)
+
     try:
         test_common.compare_data_precision(data["gpu_output"], input_data, device_type='cpu')
     except ValueError as e:

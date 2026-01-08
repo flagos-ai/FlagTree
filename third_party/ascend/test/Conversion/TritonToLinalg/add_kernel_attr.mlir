@@ -1,4 +1,4 @@
-// RUN: triton-adapter-opt --triton-to-linalg %s | FileCheck %s 
+// RUN: triton-adapter-opt --triton-to-linalg %s | FileCheck %s
 module {
   tt.func public @num_programs(%arg0: !tt.ptr<i32>) {
     %0 = tt.get_num_programs x : i32

@@ -24,6 +24,7 @@ import torch
 import pytest
 import test_common
 
+
 def torch_minimum(x0, x1):
     res = torch.minimum(x0, x1)
     return res
@@ -41,12 +42,11 @@ def triton_minimum(in_ptr0, in_ptr1, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBL
         tl.store(out_ptr0 + x_index, tmp2, xmask)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                             ['float16', (2, 4096, 8), 2, 32768, 1024],
-                             ['int8', (2, 4096, 8), 2, 32768, 1024],
-                         ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+    ['int8', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_minimum(param_list):
     # 生成数据
     dtype, shape, ncore, xblock, xblock_sub = param_list

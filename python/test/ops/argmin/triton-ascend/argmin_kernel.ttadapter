@@ -23,7 +23,7 @@ module {
       linalg.yield %17 : i32
     } -> tensor<16xi32>
     %7 = tensor.empty() : tensor<8x16xi32>
-    %broadcasted = linalg.broadcast ins(%6 : tensor<16xi32>) outs(%7 : tensor<8x16xi32>) dimensions = [0] 
+    %broadcasted = linalg.broadcast ins(%6 : tensor<16xi32>) outs(%7 : tensor<8x16xi32>) dimensions = [0]
     %8:2 = scf.for %arg11 = %c0_i32 to %arg4 step %c16_i32 iter_args(%arg12 = %1, %arg13 = %3) -> (tensor<8xf32>, tensor<8xi64>)  : i32 {
       %16 = arith.index_cast %4 : i32 to index
       %17 = arith.index_cast %arg4 : i32 to index
@@ -89,4 +89,3 @@ module {
     return
   }
 }
-

@@ -51,7 +51,7 @@ def test_compute_seg_indptr_triton_kernel(ptfile_path):
         data = torch.load(ptfile_path, map_location=torch.device('cpu'), weights_only=False)
     except Exception as e:
         pytest.fail(f"load file {ptfile_path} failed: {str(e)}")
-        
+
     input_data = test_common.convert_tensor_with_device_type(data["input_data"], device_type='npu')
 
     compute_seg_indptr_triton_kernel[data["grid"]](**input_data)

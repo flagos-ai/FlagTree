@@ -25,28 +25,19 @@ def get_autotune_config():
 )
 @triton.jit
 def matmul_kernel(
-    # Pointers to matrices
-    a_ptr,
-    b_ptr,
-    c_ptr,
-    # Matrix dimensions
-    M,
-    N,
-    K,
-    # The stride variables represent how much to increase the ptr by when moving by 1
-    # element in a particular dimension. E.g. `stride_am` is how much to increase `a_ptr`
-    # by to get the element one row down (A has M rows).
-    stride_am,
-    stride_ak,  #
-    stride_bk,
-    stride_bn,  #
-    stride_cm,
-    stride_cn,
-    # Meta-parameters
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,  #
-    ACTIVATION: tl.constexpr,  #
+        # Pointers to matrices
+        a_ptr, b_ptr, c_ptr,
+        # Matrix dimensions
+        M, N, K,
+        # The stride variables represent how much to increase the ptr by when moving by 1
+        # element in a particular dimension. E.g. `stride_am` is how much to increase `a_ptr`
+        # by to get the element one row down (A has M rows).
+        stride_am, stride_ak,  #
+        stride_bk, stride_bn,  #
+        stride_cm, stride_cn,
+        # Meta-parameters
+        BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
+        ACTIVATION: tl.constexpr,  #
 ):
     """Kernel for computing the matmul C = A x B.
     A has shape (M, K), B has shape (K, N) and C has shape (M, N)
@@ -119,9 +110,7 @@ def matmul_kernel(
     # Comment out the following lines to enable split the workload to two vector cores using flagtree hints
     SUB_BLK_M: tl.constexpr = BLOCK_SIZE_M // 2
     for s in range(0, 2):  # @hint: bind_sub_block
-        vec_sub_blk = tl.extract_slice(
-            accumulator, (s * SUB_BLK_M, 0), (SUB_BLK_M, BLOCK_SIZE_N), (1, 1)
-        )
+        vec_sub_blk = tl.extract_slice(accumulator, (s * SUB_BLK_M, 0), (SUB_BLK_M, BLOCK_SIZE_N), (1, 1))
         if ACTIVATION == "leaky_relu_custom":
             vec_sub_blk = leaky_relu_custom(vec_sub_blk)
         c_sub_blk = vec_sub_blk.to(tl.float16)
@@ -161,22 +150,13 @@ def matmul(a, b, activation=""):
     # Allocates output.
     c = torch.empty((M, N), device=a.device, dtype=torch.float16)
     # 1D launch kernel where each block gets its own program.
-    grid = lambda META: (
-        triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
-    )
+    grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
     matmul_kernel[grid](
-        a,
-        b,
-        c,  #
-        M,
-        N,
-        K,  #
-        a.stride(0),
-        a.stride(1),  #
-        b.stride(0),
-        b.stride(1),  #
-        c.stride(0),
-        c.stride(1),  #
+        a, b, c,  #
+        M, N, K,  #
+        a.stride(0), a.stride(1),  #
+        b.stride(0), b.stride(1),  #
+        c.stride(0), c.stride(1),  #
         ACTIVATION=activation,  #
     )
     return c

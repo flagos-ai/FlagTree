@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 
@@ -30,10 +29,11 @@ import pytest
 import test_common
 
 NBLOCKS = 1
-XS : tl.constexpr = 2
-YS : tl.constexpr = 4
-ZS : tl.constexpr = 8
-NUMEL : tl.constexpr = XS * ZS
+XS: tl.constexpr = 2
+YS: tl.constexpr = 4
+ZS: tl.constexpr = 8
+NUMEL: tl.constexpr = XS * ZS
+
 
 @triton.jit
 def fn_broadcast(in_ptr0, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: tl.constexpr):
@@ -55,4 +55,3 @@ def test_broadcast_alltype(dtype):
     output = torch.zeros((XS, YS, ZS), dtype=eval('torch.' + dtype)).npu()
     fn_broadcast[1, 1, 1](input, output, XS, YS, ZS)
     test_common.validate_cmp(dtype, ans, output)
-    

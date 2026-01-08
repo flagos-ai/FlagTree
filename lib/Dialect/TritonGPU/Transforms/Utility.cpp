@@ -47,7 +47,7 @@ SmallVector<unsigned, 3> mmaVersionToInstrShape(int version,
     if (eltType.isFloat8E5M2() || eltType.isFloat8E4M3FN() ||
         eltType.isFloat8E4M3FNUZ() || eltType.isF16() || eltType.isBF16() ||
         eltType.isF32()) {
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
     if (llvm::isa<Float8E5M2Type, Float8E4M3FNType, Float8E4M3FNUZType>(
             eltType) ||
         eltType.isF16() || eltType.isBF16() || eltType.isF32()) {

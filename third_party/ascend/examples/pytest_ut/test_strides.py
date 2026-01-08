@@ -62,10 +62,11 @@ def mv_kernel(
 def mv(inp, vec):
     assert inp.shape[1] == vec.shape[0], "incompatible dimensions"
     N, M = inp.shape
-    out = torch.empty((N,), device=inp.device, dtype=inp.dtype)
-    
-    def grid(META): 
-        return (triton.cdiv(N, META["BLOCK_N"]),)
+    out = torch.empty((N, ), device=inp.device, dtype=inp.dtype)
+
+    def grid(META):
+        return (triton.cdiv(N, META["BLOCK_N"]), )
+
     mv_kernel[grid](
         inp,
         vec,
@@ -120,9 +121,7 @@ def assert_close(res, ref, dtype, equal_nan=False, reduce_dim=1):
 def gems_assert_close(res, ref, dtype, equal_nan=False, reduce_dim=1):
     res = res.to("cpu")
     assert ref.device == torch.device("cpu")
-    assert_close(
-        res, ref, dtype, equal_nan=equal_nan, reduce_dim=reduce_dim
-    )
+    assert_close(res, ref, dtype, equal_nan=equal_nan, reduce_dim=reduce_dim)
 
 
 @pytest.mark.mv
@@ -130,7 +129,7 @@ def gems_assert_close(res, ref, dtype, equal_nan=False, reduce_dim=1):
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_accuracy_mv(M, N, dtype):
     matrix = torch.randn((N, M), dtype=dtype, device="npu")
-    vector = torch.randn((M,), dtype=dtype, device="npu")
+    vector = torch.randn((M, ), dtype=dtype, device="npu")
     ref_matrix = to_reference(matrix, True)
     ref_vector = to_reference(vector, True)
 
@@ -139,4 +138,3 @@ def test_accuracy_mv(M, N, dtype):
     res_out = mv(matrix, vector)
 
     gems_assert_close(res_out, ref_out, dtype, reduce_dim=M)
-

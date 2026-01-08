@@ -26,6 +26,7 @@ import triton.language as tl
 
 import pytest
 
+
 @triton.jit
 def triton_kernel(x_ptr, y_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(axis=0)
@@ -40,12 +41,14 @@ def triton_kernel(x_ptr, y_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr
     out_msk = out_idx < n_elements
     tl.store(output_ptr + out_idx, out_sub, mask=out_msk)
 
+
 def triton_func(x: torch.Tensor, y: torch.Tensor):
     output = torch.empty_like(x)
     n_elements = output.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
     triton_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024)
     return output
+
 
 def test_extract_slice():
     size = 1024

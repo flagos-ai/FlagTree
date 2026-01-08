@@ -30,9 +30,7 @@ import test_common
 
 # source: python\sglang\srt\layers\moe\ep_moe\kernels.py
 @triton.jit
-def deepep_compute_src2dst_triton_kernel(
-    reorder_ids, src2dst, num_toks, num_minus_one, BLOCK_SIZE: tl.constexpr
-):
+def deepep_compute_src2dst_triton_kernel(reorder_ids, src2dst, num_toks, num_minus_one, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(axis=0)
     dst_id = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = dst_id < num_toks

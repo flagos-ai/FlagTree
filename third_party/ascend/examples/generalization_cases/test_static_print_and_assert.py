@@ -8,26 +8,29 @@ import functools
 import os
 import re
 
-shape = (8,)
+shape = (8, )
 XS = 8
 
-XVALS_INT = [0, 
-             -128, # torch.iinfo(torch.int8).min
-             127, # torch.iinfo(torch.int8).max
-             -32768, # torch.iinfo(torch.int16).min
-             32767, # torch.iinfo(torch.int16).max
-             -2147483648, # torch.iinfo(torch.int32).min
-             2147483647, # torch.iinfo(torch.int32).max
-             9223372036854775807] # torch.iinfo(torch.int64).max
-             
-XVALS_FP = [0.0000000000e+00, # 0
-            1.1921000009e-07, # torch.finfo(torch.float32).eps
-            9.7655999707e-04, # torch.finfo(torch.float16).eps
-            7.8125000000e-03, # torch.finfo(torch.bfloat16).eps
-            3.4027999388e+38, # torch.finfo(torch.float32).max
-            6.5504000000e+04, # torch.finfo(torch.float16).max
-            3.3894999515e+38, # torch.finfo(torch.bfloat16).max
-            1.0000000000e+00] # 1
+XVALS_INT = [
+    0, -128,  # torch.iinfo(torch.int8).min
+    127,  # torch.iinfo(torch.int8).max
+    -32768,  # torch.iinfo(torch.int16).min
+    32767,  # torch.iinfo(torch.int16).max
+    -2147483648,  # torch.iinfo(torch.int32).min
+    2147483647,  # torch.iinfo(torch.int32).max
+    9223372036854775807
+]  # torch.iinfo(torch.int64).max
+
+XVALS_FP = [
+    0.0000000000e+00,  # 0
+    1.1921000009e-07,  # torch.finfo(torch.float32).eps
+    9.7655999707e-04,  # torch.finfo(torch.float16).eps
+    7.8125000000e-03,  # torch.finfo(torch.bfloat16).eps
+    3.4027999388e+38,  # torch.finfo(torch.float32).max
+    6.5504000000e+04,  # torch.finfo(torch.float16).max
+    3.3894999515e+38,  # torch.finfo(torch.bfloat16).max
+    1.0000000000e+00
+]  # 1
 
 
 def torch_func(x0, x1):

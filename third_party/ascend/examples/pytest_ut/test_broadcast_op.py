@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 
@@ -30,10 +29,11 @@ import pytest
 import test_common
 
 NBLOCKS = 1
-XS : tl.constexpr = 2
-YS : tl.constexpr = 4
-ZS : tl.constexpr = 8
-NUMEL : tl.constexpr = XS * ZS
+XS: tl.constexpr = 2
+YS: tl.constexpr = 4
+ZS: tl.constexpr = 8
+NUMEL: tl.constexpr = XS * ZS
+
 
 @triton.jit
 def fn_broadcast_to(output_ptr, input_ptr, length):
@@ -44,13 +44,11 @@ def fn_broadcast_to(output_ptr, input_ptr, length):
     tl.store(output_ptr + brc_col_offsets, result)
 
 
-
-
 @pytest.mark.parametrize('dtype', ["float32"])
 def test_broadcast_to(dtype):
     length = NUMEL
     dtype = eval(f"torch.{dtype}")
     x = torch.randn((XS, 1, ZS), dtype=dtype).npu()
     output = torch.randn((XS, YS, ZS), dtype=dtype).npu()
-    fn_broadcast_to[NBLOCKS,1,1](output, x, length, debug=True)
-    assert(torch.equal(output, x.repeat(1, YS, 1)))
+    fn_broadcast_to[NBLOCKS, 1, 1](output, x, length, debug=True)
+    assert (torch.equal(output, x.repeat(1, YS, 1)))

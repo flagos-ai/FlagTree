@@ -117,9 +117,7 @@ def _get_npucompiler_path() -> str:
     if npu_compiler_path is None:
         npu_compiler_root = os.getenv("TRITON_NPU_COMPILER_PATH", "")
         if npu_compiler_root is None:
-            raise EnvironmentError(
-                "Couldn't find executable bishengir-compile or TRITON_NPU_COMPILER_PATH."
-            )
+            raise EnvironmentError("Couldn't find executable bishengir-compile or TRITON_NPU_COMPILER_PATH.")
         npu_compiler_path = os.path.join(npu_compiler_root, "npuc")
     return npu_compiler_path
 
@@ -129,9 +127,7 @@ def _get_bisheng_path() -> str:
     if bisheng_path is None:
         npu_compiler_root = os.getenv("TRITON_NPU_COMPILER_PATH", "")
         if npu_compiler_root is None:
-            raise EnvironmentError(
-                "Couldn't find executable bisheng or TRITON_NPU_COMPILER_PATH"
-            )
+            raise EnvironmentError("Couldn't find executable bisheng or TRITON_NPU_COMPILER_PATH")
         bisheng_path = os.path.join(npu_compiler_root, "ccec")
     return bisheng_path
 
@@ -199,9 +195,7 @@ def _check_bishengir_is_regbased() -> bool:
 def _get_ascend_path() -> Path:
     path = os.getenv("ASCEND_HOME_PATH", "")
     if path == "":
-        raise EnvironmentError(
-            "ASCEND_HOME_PATH is not set, source <ascend-toolkit>/set_env.sh first"
-        )
+        raise EnvironmentError("ASCEND_HOME_PATH is not set, source <ascend-toolkit>/set_env.sh first")
     return Path(path)
 
 
@@ -220,8 +214,10 @@ def _is_auto_map_parallel_blocks_enabled() -> bool:
 def _enable_unpublished_feature() -> bool:
     return os.getenv("ENABLE_UNPUBLISHED_FEATURE", "false").lower() in ("true", "1")
 
+
 def _enable_print_ub_bits() -> bool:
     return os.getenv("ENABLE_PRINT_UB_BITS", "false").lower() in ("true", "1")
+
 
 def _get_cxx():
     cxx = os.environ.get("CC")
@@ -232,6 +228,7 @@ def _get_cxx():
         if cxx is None:
             raise RuntimeError("Failed to find C++ compiler")
     return cxx
+
 
 def _get_cxx_precompiled(header_path):
     cc_cmd = []
@@ -249,6 +246,7 @@ def _get_cxx_precompiled(header_path):
         cc_cmd += [cxx]
     return cc_cmd
 
+
 def _precompile_npu_hash(header_src):
     import sys
     import torch
@@ -261,6 +259,7 @@ def _precompile_npu_hash(header_src):
     version_txt = [header_src, cxx, py_version, torch_version, torch_npu_version, asc_path]
     hash_txt = hashlib.sha256("_".join(version_txt).encode("utf-8")).hexdigest()
     return hash_txt
+
 
 def _precompile_npu_ext(header_path):
     src_dir = os.path.dirname(header_path)
@@ -311,6 +310,7 @@ def _precompile_npu_ext(header_path):
         print(f"Unable to precompile header file, ret is: {ret}")
 
     return header_path
+
 
 def _build_npu_ext(obj_name: str, header_path, src_path, *, kernel_launcher="torch", precompile=False) -> str:
     suffix = sysconfig.get_config_var("EXT_SUFFIX")
@@ -472,6 +472,7 @@ def _check_bishengir_able_save_ir() -> bool:
     except Exception as e:
         print(f"ERROR: {e}")
         return False
+
 
 def get_ascend_arch_from_env():
     arch = os.getenv("TRITON_ASCEND_ARCH", "")

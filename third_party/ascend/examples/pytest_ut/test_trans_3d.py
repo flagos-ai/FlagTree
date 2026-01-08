@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import logging
 import math
 
@@ -41,9 +40,7 @@ def fn_npu_102(output_ptr, x_ptr, YB: tl.constexpr, ZB: tl.constexpr, KB: tl.con
 
     ret = tl.trans(X, 1, 0, 2)
 
-    oidx = (
-        zidx[:, None, None] * YB * KB + yidx[None, :, None] * KB + kidx[None, None, :]
-    )
+    oidx = (zidx[:, None, None] * YB * KB + yidx[None, :, None] * KB + kidx[None, None, :])
 
     tl.store(output_ptr + oidx, ret)
 
@@ -59,9 +56,7 @@ def fn_npu_021(output_ptr, x_ptr, YB: tl.constexpr, ZB: tl.constexpr, KB: tl.con
 
     ret = tl.trans(X, (0, 2, 1))
 
-    oidx = (
-        yidx[:, None, None] * ZB * KB + kidx[None, :, None] * ZB + zidx[None, None, :]
-    )
+    oidx = (yidx[:, None, None] * ZB * KB + kidx[None, :, None] * ZB + zidx[None, None, :])
 
     tl.store(output_ptr + oidx, ret)
 

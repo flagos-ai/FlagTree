@@ -75,9 +75,7 @@ def copy_all_layer_kv_cache(
     for i in range(num_loop):
         copy_offset = tl.arange(0, BLOCK_SIZE) + i * BLOCK_SIZE
         mask = (num_locs_offset < num_locs)[:, None] & (copy_offset < stride)[None, :]
-        value = tl.load(
-            data_ptr + src_locs[:, None] * stride + copy_offset[None, :], mask=mask
-        )
+        value = tl.load(data_ptr + src_locs[:, None] * stride + copy_offset[None, :], mask=mask)
         value *= 1
         tl.store(
             data_ptr + tgt_locs[:, None] * stride + copy_offset[None, :],
@@ -111,9 +109,7 @@ def copy_all_layer_kv_cache2(
     for i in range(num_loop):
         copy_offset = tl.arange(0, BLOCK_SIZE) + i * BLOCK_SIZE
         mask = (num_locs_offset < num_locs)[:, None] & (copy_offset < stride)[None, :]
-        value = tl.load(
-            data_ptr + (src_locs[:, None] * stride + copy_offset[None, :]), mask=mask
-        )
+        value = tl.load(data_ptr + (src_locs[:, None] * stride + copy_offset[None, :]), mask=mask)
         value *= 1
         tl.store(
             data_ptr + (tgt_locs[:, None] * stride + copy_offset[None, :]),
@@ -122,10 +118,9 @@ def copy_all_layer_kv_cache2(
         )
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float16', (10, 10), 'npu'],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float16', (10, 10), 'npu'],
+])
 def test_copy(param_list):
     dtype, shape, device = param_list
     data = torch.zeros(shape, dtype=eval('torch.' + dtype), device=device)
@@ -136,55 +131,38 @@ def test_copy(param_list):
 
     data_ptr = torch.tensor([data.data_ptr()], dtype=torch.uint64, device=device)
     stride = shape[1]
-    copy[(1,)](data_ptr, tgt_loc, src_loc, 1, stride, 1)
+    copy[(1, )](data_ptr, tgt_loc, src_loc, 1, stride, 1)
     data_ref[0, :] += 1
     test_common.validate_cmp(dtype, data, data_ref)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float16', 3, 20, 16, 4, 16, 'npu'],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float16', 3, 20, 16, 4, 16, 'npu'],
+])
 def test_hoistbroadcast_compare(param_list):
     dtype, layer_num, page_num, page_size, head_num, head_dim, device = param_list
-    kv_buffer = torch.randn(
-        (2, layer_num, page_num, page_size, head_num, head_dim),
-        dtype=eval('torch.' + dtype),
-        device=device
-    )
+    kv_buffer = torch.randn((2, layer_num, page_num, page_size, head_num, head_dim), dtype=eval('torch.' + dtype),
+                            device=device)
     kv_buffer_ref = kv_buffer.clone()
     k_buffer = kv_buffer[0]
     v_buffer = kv_buffer[1]
     k_buffer_ref = kv_buffer_ref[0]
     v_buffer_ref = kv_buffer_ref[1]
 
-    data_ptrs = torch.tensor(
-        [x.data_ptr() for x in [k_buffer]] + [x.data_ptr() for x in [v_buffer]],
-        dtype=torch.uint64,
-        device=device
-    )
-    data_ptrs_ref = torch.tensor(
-        [x.data_ptr() for x in [k_buffer_ref]] + [x.data_ptr() for x in [v_buffer_ref]],
-        dtype=torch.uint64,
-        device=device
-    )
+    data_ptrs = torch.tensor([x.data_ptr() for x in [k_buffer]] + [x.data_ptr() for x in [v_buffer]],
+                             dtype=torch.uint64, device=device)
+    data_ptrs_ref = torch.tensor([x.data_ptr() for x in [k_buffer_ref]] + [x.data_ptr() for x in [v_buffer_ref]],
+                                 dtype=torch.uint64, device=device)
 
-    data_strides = torch.cat(
-        [torch.tensor(
-            [np.prod(x.shape[1:]) * x.dtype.itemsize for x in k_buffer],
-            device=device
-        ),
-        torch.tensor(
-            [np.prod(x.shape[1:]) * x.dtype.itemsize for x in v_buffer],
-            device=device
-        )], 
-        dim=0
-    )
+    data_strides = torch.cat([
+        torch.tensor([np.prod(x.shape[1:]) * x.dtype.itemsize for x in k_buffer], device=device),
+        torch.tensor([np.prod(x.shape[1:]) * x.dtype.itemsize for x in v_buffer], device=device)
+    ], dim=0)
     data_strides_ref = data_strides.clone()
 
     src_loc = torch.tensor([0], dtype=torch.int32, device=device)
     tgt_loc = torch.tensor([0], dtype=torch.int32, device=device)
-    
-    copy_all_layer_kv_cache[(len(data_ptrs),)](data_ptrs, data_strides, tgt_loc, src_loc, len(tgt_loc), 1)
-    copy_all_layer_kv_cache2[(len(data_ptrs_ref),)](data_ptrs_ref, data_strides_ref, tgt_loc, src_loc, len(tgt_loc), 1)
+
+    copy_all_layer_kv_cache[(len(data_ptrs), )](data_ptrs, data_strides, tgt_loc, src_loc, len(tgt_loc), 1)
+    copy_all_layer_kv_cache2[(len(data_ptrs_ref), )](data_ptrs_ref, data_strides_ref, tgt_loc, src_loc, len(tgt_loc), 1)
     test_common.validate_cmp(dtype, kv_buffer, kv_buffer_ref)

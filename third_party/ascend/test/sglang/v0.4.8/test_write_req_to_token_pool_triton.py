@@ -57,10 +57,7 @@ def write_req_to_token_pool_triton(
         mask = offset < (seq_len - pre_len)
         value = tl.load(out_cache_loc + cumsum_start + offset, mask=mask)
         tl.store(
-            req_to_token_ptr
-            + req_pool_index * req_to_token_ptr_stride
-            + offset
-            + pre_len,
+            req_to_token_ptr + req_pool_index * req_to_token_ptr_stride + offset + pre_len,
             value,
             mask=mask,
         )

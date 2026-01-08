@@ -85,7 +85,7 @@ def var_mean(x, dim=None, *, correction=None, keepdim=False):
         var = torch.empty(shape, dtype=x.dtype, device=x.device)
         mean = torch.empty(shape, dtype=x.dtype, device=x.device)
 
-        grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]),)
+        grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]), )
         with torch_device_fn.device(x.device):
             var_mean_welford_kernel[grid](x, var, mean, M, N, correction)
 
@@ -107,21 +107,15 @@ if __name__ == "__main__":
     ref_inp = inp.cpu()
 
     # op
-    ref_var, ref_mean = torch.var_mean(
-        ref_inp, dim, correction=correction, keepdim=keepdim
-    )
+    ref_var, ref_mean = torch.var_mean(ref_inp, dim, correction=correction, keepdim=keepdim)
     res_var, res_mean = var_mean(inp, dim, correction=correction, keepdim=keepdim)
 
     # check
     res_var = res_var.cpu()
-    print(
-        f"The maximum difference var between torch and triton is "
-        f"{torch.max(torch.abs(ref_var - res_var))}"
-    )
+    print(f"The maximum difference var between torch and triton is "
+          f"{torch.max(torch.abs(ref_var - res_var))}")
     assert torch.allclose(res_var, ref_var), (res_var, ref_var)
     res_mean = res_mean.cpu()
-    print(
-        f"The maximum difference mean between torch and triton is "
-        f"{torch.max(torch.abs(ref_mean - res_mean))}"
-    )
+    print(f"The maximum difference mean between torch and triton is "
+          f"{torch.max(torch.abs(ref_mean - res_mean))}")
     assert torch.allclose(res_mean, ref_mean), (res_mean, ref_mean)

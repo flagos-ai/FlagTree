@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Fused Softmax
 =============
@@ -64,16 +63,10 @@ def softmax_kernel(
         # Load the row into SRAM, using a mask since BLOCK_SIZE may be > than n_cols
         row = tl.load(input_ptrs, mask=mask, other=-float("inf"))
         # Subtract maximum for numerical stability
-        row_minus_max = row - tl.max(row, axis=1).reshape(XBLOCK_SUB, 1).broadcast_to(
-            XBLOCK_SUB, BLOCK_SIZE
-        )
+        row_minus_max = row - tl.max(row, axis=1).reshape(XBLOCK_SUB, 1).broadcast_to(XBLOCK_SUB, BLOCK_SIZE)
         # Note that exponentiation in Triton is fast but approximate (i.e., think __expf in CUDA)
         numerator = tl.exp(row_minus_max)
-        denominator = (
-            tl.sum(numerator, axis=1)
-            .reshape(XBLOCK_SUB, 1)
-            .broadcast_to(XBLOCK_SUB, BLOCK_SIZE)
-        )
+        denominator = (tl.sum(numerator, axis=1).reshape(XBLOCK_SUB, 1).broadcast_to(XBLOCK_SUB, BLOCK_SIZE))
         softmax_output = numerator / denominator
         # Write back output to DRAM
         output_ptrs = output_ptr + (row_offsets * output_row_stride + col_offsets)
@@ -92,9 +85,7 @@ def softmax_autotune(x):
     y = torch.empty_like(x)
     grid = lambda meta: (triton.cdiv(n_rows, meta["XBLOCK"]), 1, 1)
     # Create a number of persistent programs.
-    softmax_kernel[grid](
-        y, x, x.stride(0), y.stride(0), n_rows, n_cols, BLOCK_SIZE=BLOCK_SIZE
-    )
+    softmax_kernel[grid](y, x, x.stride(0), y.stride(0), n_rows, n_cols, BLOCK_SIZE=BLOCK_SIZE)
     return y
 
 

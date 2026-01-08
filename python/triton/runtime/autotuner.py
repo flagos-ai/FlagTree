@@ -284,8 +284,8 @@ class Config:
     """
 
     # flagtree backend specialization add new params: "force_simt_template", "enable_linearize", "extra_options"
-    def __init__(self, kwargs, num_warps=None, num_stages=None, num_ctas=None, num_buffers_warp_spec=None, num_consumer_groups=None,
-                 reg_dec_producer=None, reg_inc_consumer=None, maxnreg=None, pre_hook=None,
+    def __init__(self, kwargs, num_warps=None, num_stages=None, num_ctas=None, num_buffers_warp_spec=None,
+                 num_consumer_groups=None, reg_dec_producer=None, reg_inc_consumer=None, maxnreg=None, pre_hook=None,
                  force_simt_template=False, enable_linearize=False, **extra_options):
         # flagtree backend specialization
         from triton.runtime.driver import spec
@@ -356,9 +356,8 @@ class Config:
 
 
 # flagtree backend specialization add new params: "hints", "auto_profile_dir"
-def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None,
-             pre_hook=None, post_hook=None, warmup=None, rep=None, use_cuda_graph=False, do_bench=None,
-             hints=None, auto_profile_dir=None):
+def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None,
+             warmup=None, rep=None, use_cuda_graph=False, do_bench=None, hints=None, auto_profile_dir=None):
     """
     Decorator for auto-tuning a :code:`triton.jit`'d function.
 
@@ -420,9 +419,8 @@ def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_va
     def decorator(fn):
         # flagtree backend specialization
         from triton.runtime.driver import spec
-        ret = spec('new_AutoTilingTuner', hints, fn, configs, key, reset_to_zero, restore_value, pre_hook,
-                                              post_hook, prune_configs_by, warmup, rep,
-                                              use_cuda_graph, do_bench, auto_profile_dir)
+        ret = spec('new_AutoTilingTuner', hints, fn, configs, key, reset_to_zero, restore_value, pre_hook, post_hook,
+                   prune_configs_by, warmup, rep, use_cuda_graph, do_bench, auto_profile_dir)
         if ret is not None:
             return ret
         return Autotuner(fn, fn.arg_names, configs, key, reset_to_zero, restore_value, pre_hook=pre_hook,

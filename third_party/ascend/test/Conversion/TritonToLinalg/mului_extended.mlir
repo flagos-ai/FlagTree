@@ -22,4 +22,3 @@ module {
 //CHECK: %[[VAL0:.*]] = bufferization.to_tensor %alloc restrict writable : memref<128xi32>
 //CHECK: %[[VAL1:.*]] = bufferization.to_tensor %alloc_1 restrict writable : memref<128xi32>
 //CHECK: %[[VAL2:.*]], %[[VAL3:.*]] = arith.mulsi_extended %in, %in_3 : i32
-

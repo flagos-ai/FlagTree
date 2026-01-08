@@ -1,18 +1,18 @@
 /*
  * Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
  */
+#include "incubated/Conversion/BubbleUpOperation/BubbleUpOperation.h"
+#include "incubated/Conversion/DiscreteMaskAccessConversion/DiscreteMaskAccessConversionPass.h"
+#include "incubated/Conversion/TritonLinearize/TritonLinearize.h"
+#include "incubated/Conversion/TritonToAnnotation/TritonToAnnotation.h"
+#include "incubated/Conversion/TritonToLinalgIncubated/TritonToLinalgIncubatedPass.h"
+#include "incubated/Conversion/TritonToUnstructureIncubated/UnstructureConversionPass.h"
 #include "mlir/Pass/PassManager.h"
-#include "passes.h"
 #include "npu/Conversion/TritonToHFusion/TritonToHFusion.h"
 #include "npu/Conversion/TritonToHIVM/TritonToHIVM.h"
 #include "npu/Conversion/TritonToLLVM/TritonToLLVM.h"
-#include "incubated/Conversion/DiscreteMaskAccessConversion/DiscreteMaskAccessConversionPass.h"
+#include "passes.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h"
-#include "incubated/Conversion/TritonLinearize/TritonLinearize.h"
-#include "incubated/Conversion/TritonToLinalgIncubated/TritonToLinalgIncubatedPass.h"
-#include "incubated/Conversion/TritonToUnstructureIncubated/UnstructureConversionPass.h"
-#include "incubated/Conversion/BubbleUpOperation/BubbleUpOperation.h"
-#include "incubated/Conversion/TritonToAnnotation/TritonToAnnotation.h"
 
 #define PY_SSIZE_T_CLEAN
 #include <pybind11/pybind11.h>
@@ -36,52 +36,40 @@ void init_triton_ascend_passes_convert(py::module &&m) {
                      mlir::triton::createBubbleUpOperationPass);
   m.def(
       "add_triton_discretemaskaccessconversion",
-      [](mlir::PassManager &pm,
-         bool compile_on_910_95,
+      [](mlir::PassManager &pm, bool compile_on_910_95,
          bool force_simt_template) {
-       DiscreteMaskAccessConversionOptions options;
-       options.compileOn91095 = compile_on_910_95;
-       options.forceSimtTemplate = force_simt_template;
-       pm.addPass(
-         mlir::triton::createDiscreteMaskAccessConversionPass(options));
+        DiscreteMaskAccessConversionOptions options;
+        options.compileOn91095 = compile_on_910_95;
+        options.forceSimtTemplate = force_simt_template;
+        pm.addPass(
+            mlir::triton::createDiscreteMaskAccessConversionPass(options));
       },
-      py::arg("pm"),
-      py::arg("compile_on_910_95"),
-      py::arg("force_simt_template")
-);
+      py::arg("pm"), py::arg("compile_on_910_95"),
+      py::arg("force_simt_template"));
   m.def(
       "add_triton_to_unstructure_incubated",
-      [](mlir::PassManager &pm,
-         bool compile_on_910_95,
+      [](mlir::PassManager &pm, bool compile_on_910_95,
          bool force_simt_template) {
-       TritonToUnstructureIncubatedOptions options;
-       options.compileOn91095 = compile_on_910_95;
-       options.forceSimtTemplate = force_simt_template;
-       pm.addPass(
-         mlir::triton::createTritonToUnstructureIncubatedPass(options));
+        TritonToUnstructureIncubatedOptions options;
+        options.compileOn91095 = compile_on_910_95;
+        options.forceSimtTemplate = force_simt_template;
+        pm.addPass(
+            mlir::triton::createTritonToUnstructureIncubatedPass(options));
       },
-      py::arg("pm"),
-      py::arg("compile_on_910_95"),
-      py::arg("force_simt_template")
-);
+      py::arg("pm"), py::arg("compile_on_910_95"),
+      py::arg("force_simt_template"));
   m.def(
       "add_triton_to_linalg_incubated",
-      [](mlir::PassManager &pm,
-         bool global_kernel,
-         bool named_ops,
-         bool enable_nd2nz_on_vector,
-	 bool enable_select_analysis,
+      [](mlir::PassManager &pm, bool global_kernel, bool named_ops,
+         bool enable_nd2nz_on_vector, bool enable_select_analysis,
          bool compile_on_910_95) {
         pm.addPass(mlir::triton::Incubated::createTritonToLinalgIncubatedPass(
-            global_kernel, named_ops, enable_nd2nz_on_vector, enable_select_analysis, compile_on_910_95));
+            global_kernel, named_ops, enable_nd2nz_on_vector,
+            enable_select_analysis, compile_on_910_95));
       },
-      py::arg("pm"),
-      py::arg("global_kernel"),
-      py::arg("named_ops"),
-      py::arg("enable_nd2nz_on_vector"),
-      py::arg("enable_select_analysis"),
-      py::arg("compile_on_910_95") 
-);
+      py::arg("pm"), py::arg("global_kernel"), py::arg("named_ops"),
+      py::arg("enable_nd2nz_on_vector"), py::arg("enable_select_analysis"),
+      py::arg("compile_on_910_95"));
 }
 
 // register ascend passes to triton

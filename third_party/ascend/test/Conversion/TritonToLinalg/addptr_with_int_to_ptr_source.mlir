@@ -16,20 +16,20 @@ module {
 // CHECK:           %[[arg0:.*]]: memref<?xi64> {tt.tensor_kind = 0 : i32},
 // CHECK:           %[[arg1:.*]]: memref<?xi64> {tt.tensor_kind = 1 : i32},
 // CHECK:           %[[VAL_10:.*]] = arith.constant 0 : index
-// CHECK:           %[[VAL_11:.*]] = memref.reinterpret_cast %[[VAL_2:.*]] to offset: [0], sizes: [1], strides: [1] : memref<?xi64> to memref<1xi64, strided<[1]>>	
-// CHECK:           %[[VAL_12:.*]] = memref.load %[[VAL_11]]{{\[}}%[[VAL_10]]] : memref<1xi64, strided<[1]>>	
-// CHECK:           %[[VAL_13:.*]] = arith.constant 8 : i64	
-// CHECK:           %[[VAL_14:.*]] = arith.constant 1 : index	
-// CHECK:           %[[VAL_15:.*]] = arith.constant 0 : i64	
-// CHECK:           %[[VAL_16:.*]] = arith.muli %[[VAL_15]], %[[VAL_13]] : i64	
-// CHECK:           %[[VAL_17:.*]] = arith.addi %[[VAL_12]], %[[VAL_16]] : i64	
-// CHECK:           %[[VAL_18:.*]] = hivm.hir.pointer_cast(%[[VAL_17]]) {{\[}}%[[VAL_14]]] : memref<?xi64>	
-// CHECK:           annotation.mark %[[VAL_18]]	
-// CHECK:           %[[VAL_19:.*]] = memref.reinterpret_cast %[[VAL_18]] to offset: [0], sizes: [1], strides: [1] : memref<?xi64> to memref<1xi64, strided<[1]>>	
-// CHECK:           %[[VAL_20:.*]] = memref.load %[[VAL_19]]{{\[}}%[[VAL_10]]] : memref<1xi64, strided<[1]>>	
-// CHECK:           %[[VAL_21:.*]] = tensor.empty() : tensor<1xi64>	
-// CHECK:           %[[VAL_22:.*]] = linalg.fill ins(%[[VAL_20]] : i64) outs(%[[VAL_21]] : tensor<1xi64>) -> tensor<1xi64>	
-// CHECK:           %[[VAL_23:.*]] = memref.reinterpret_cast %[[VAL_3:.*]] to offset: [0], sizes: [1], strides: [1] : memref<?xi64> to memref<1xi64, strided<[1]>>	
+// CHECK:           %[[VAL_11:.*]] = memref.reinterpret_cast %[[VAL_2:.*]] to offset: [0], sizes: [1], strides: [1] : memref<?xi64> to memref<1xi64, strided<[1]>>
+// CHECK:           %[[VAL_12:.*]] = memref.load %[[VAL_11]]{{\[}}%[[VAL_10]]] : memref<1xi64, strided<[1]>>
+// CHECK:           %[[VAL_13:.*]] = arith.constant 8 : i64
+// CHECK:           %[[VAL_14:.*]] = arith.constant 1 : index
+// CHECK:           %[[VAL_15:.*]] = arith.constant 0 : i64
+// CHECK:           %[[VAL_16:.*]] = arith.muli %[[VAL_15]], %[[VAL_13]] : i64
+// CHECK:           %[[VAL_17:.*]] = arith.addi %[[VAL_12]], %[[VAL_16]] : i64
+// CHECK:           %[[VAL_18:.*]] = hivm.hir.pointer_cast(%[[VAL_17]]) {{\[}}%[[VAL_14]]] : memref<?xi64>
+// CHECK:           annotation.mark %[[VAL_18]]
+// CHECK:           %[[VAL_19:.*]] = memref.reinterpret_cast %[[VAL_18]] to offset: [0], sizes: [1], strides: [1] : memref<?xi64> to memref<1xi64, strided<[1]>>
+// CHECK:           %[[VAL_20:.*]] = memref.load %[[VAL_19]]{{\[}}%[[VAL_10]]] : memref<1xi64, strided<[1]>>
+// CHECK:           %[[VAL_21:.*]] = tensor.empty() : tensor<1xi64>
+// CHECK:           %[[VAL_22:.*]] = linalg.fill ins(%[[VAL_20]] : i64) outs(%[[VAL_21]] : tensor<1xi64>) -> tensor<1xi64>
+// CHECK:           %[[VAL_23:.*]] = memref.reinterpret_cast %[[VAL_3:.*]] to offset: [0], sizes: [1], strides: [1] : memref<?xi64> to memref<1xi64, strided<[1]>>
 // CHECK:           bufferization.materialize_in_destination %[[VAL_22]] in writable %[[VAL_23]] : (tensor<1xi64>, memref<1xi64, strided<[1]>>) -> ()
 // CHECK:           return
 // CHECK:         }

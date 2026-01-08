@@ -25,6 +25,7 @@ import torch
 import pytest
 import test_common
 
+
 def torch_pointwise(x0):
     if x0.dtype in [torch.uint8, torch.uint16, torch.uint32, torch.uint64]:
         return x0
@@ -45,27 +46,24 @@ def triton_abs(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr
         tl.store(out_ptr0 + (x0), tmp2, None)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float16', (2, 4096, 8), 32, 2048, 64],
-                            #  ['bfloat16', (2, 4096, 8), 32, 2048, 64],
-                             ['float32', (2, 4096, 8), 32, 2048, 64],
-                             ['int8', (2, 4096, 8), 32, 2048, 64],
-                            #  ['int16', (2, 4096, 8), 32, 2048, 64],
-                            #  ['int32', (2, 4096, 8), 32, 2048, 64],
-                            #  ['int64', (2, 4096, 8), 32, 2048, 64],
-                             ['uint8', (2, 4096, 8), 32, 2048, 64],
-                            #  ['uint16', (2, 4096, 8), 32, 2048, 64],
-                            #  ['uint32', (2, 4096, 8), 32, 2048, 64],
-                            #  ['uint64', (2, 4096, 8), 32, 2048, 64],
-                         ]
-                         )
-
+@pytest.mark.parametrize('param_list', [
+    ['float16', (2, 4096, 8), 32, 2048, 64],
+    #  ['bfloat16', (2, 4096, 8), 32, 2048, 64],
+    ['float32', (2, 4096, 8), 32, 2048, 64],
+    ['int8', (2, 4096, 8), 32, 2048, 64],
+    #  ['int16', (2, 4096, 8), 32, 2048, 64],
+    #  ['int32', (2, 4096, 8), 32, 2048, 64],
+    #  ['int64', (2, 4096, 8), 32, 2048, 64],
+    ['uint8', (2, 4096, 8), 32, 2048, 64],
+    #  ['uint16', (2, 4096, 8), 32, 2048, 64],
+    #  ['uint32', (2, 4096, 8), 32, 2048, 64],
+    #  ['uint64', (2, 4096, 8), 32, 2048, 64],
+])
 def test_case(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     np_x0 = test_common.generate_numpy(shape, dtype)
     x0 = torch.from_numpy(np_x0).to(eval('torch.' + dtype)).npu()
     y_ref = torch_pointwise(x0)
-    y_cal = torch.zeros(shape, dtype = eval('torch.' + dtype)).npu()
+    y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     triton_abs[ncore, 1, 1](x0, y_cal, xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)

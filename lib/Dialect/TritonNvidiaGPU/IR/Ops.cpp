@@ -78,7 +78,7 @@ bool WarpGroupDotOp::needsPartialAccumulator() {
 #if LLVM_VERSION_MAJOR < 21
   bool isFP8 = aElTy.isFloat8E5M2() || aElTy.isFloat8E4M3FN() ||
                aElTy.isFloat8E5M2FNUZ() || aElTy.isFloat8E4M3FNUZ();
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
   bool isFP8 = llvm::isa<Float8E5M2Type, Float8E4M3FNType, Float8E5M2FNUZType,
                          Float8E4M3FNUZType>(aElTy);
 #endif

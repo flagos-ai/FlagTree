@@ -1248,7 +1248,8 @@ def load(ptr: tl.tensor, mask: Optional[tl.tensor], other: Optional[tl.tensor], 
         return _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder)
     else:
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
-        return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, care_padding, builder)
+        return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, care_padding,
+                            builder)
 
 
 def descriptor_load(desc_ptr: tl.tensor, offsets, cache_modifier: str, eviction_policy: str, type,
@@ -1651,7 +1652,8 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
             max_num_imprecise_acc = 0
     else:
         # flagtree backend specialization
-        if not spec('dot_disable_check_max_num_imprecise_acc') and lhs.dtype.is_fp8() and rhs.dtype.is_fp8() and max_num_imprecise_acc > K:
+        if not spec('dot_disable_check_max_num_imprecise_acc') and lhs.dtype.is_fp8() and rhs.dtype.is_fp8(
+        ) and max_num_imprecise_acc > K:
             raise ValueError(f"max_num_imprecise_acc ({max_num_imprecise_acc}) must be <= K ({K})")
 
     # flagtree backend specialization
@@ -1686,8 +1688,8 @@ def _str_to_fp_type(float_format: Optional[str]):
 
 # flagtree backend specialization add new params: lhs_k_pack, rhs_k_pack
 def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format, rhs: tl.tensor, rhs_scale: Optional[tl.tensor],
-               rhs_format, acc: tl.tensor | None, out_dtype: tl.dtype, 
-               builder: ir.builder, lhs_k_pack=False, rhs_k_pack=False) -> tl.tensor:
+               rhs_format, acc: tl.tensor | None, out_dtype: tl.dtype, builder: ir.builder, lhs_k_pack=False,
+               rhs_k_pack=False) -> tl.tensor:
     assert lhs.type.is_block() and rhs.type.is_block()
 
     # flagtree backend specialization
@@ -1701,7 +1703,8 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format, rhs: tl.tensor,
     assert lhs_rank == rhs_rank == 2 or lhs_rank == rhs_rank == 3, f"Both inputs must be either 2D or 3D; (lhs: {lhs.shape} vs rhs: {rhs.shape})"
     lhs_format_enum = _str_to_fp_type(lhs_format)
     rhs_format_enum = _str_to_fp_type(rhs_format)
-    assert spec('dot_scaled_disable_original_check') or lhs_format in ("e2m1", "e4m3", "e5m2"), f"NYI: lhs_format {lhs_format}"
+    assert spec('dot_scaled_disable_original_check') or lhs_format in ("e2m1", "e4m3",
+                                                                       "e5m2"), f"NYI: lhs_format {lhs_format}"
     assert spec('dot_scaled_disable_original_check') or rhs_format in ("e4m3", "e5m2"), f"NYI: rhs_format {rhs_format}"
     spec('ext_dot_scaled_check_lhs_rhs_format', lhs_format, rhs_format)
 

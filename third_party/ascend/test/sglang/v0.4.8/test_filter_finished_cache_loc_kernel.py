@@ -44,19 +44,13 @@ def filter_finished_cache_loc_kernel(
     accept_length_all = tl.load(accept_length + bs_offset, mask=bs_offset < bid)
     old_start = tl.sum(accept_length_all) + bid
 
-    accept_length_filter_all = tl.load(
-        accept_length_filter + bs_offset, mask=bs_offset < bid
-    )
+    accept_length_filter_all = tl.load(accept_length_filter + bs_offset, mask=bs_offset < bid)
     new_start = tl.sum(accept_length_filter_all)
 
     copy_len = tl.load(accept_length_filter + bid)
     copy_offset = tl.arange(0, num_verify_tokens_upper)
-    value = tl.load(
-        tgt_cache_loc + old_start + copy_offset, mask=copy_offset < copy_len
-    )
-    tl.store(
-        out_cache_loc + new_start + copy_offset, value, mask=copy_offset < copy_len
-    )
+    value = tl.load(tgt_cache_loc + old_start + copy_offset, mask=copy_offset < copy_len)
+    tl.store(out_cache_loc + new_start + copy_offset, value, mask=copy_offset < copy_len)
 
 
 def test_context_fwd_kernel(ptfile_path):

@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import pytest
 import triton
 import triton.language as tl
@@ -91,6 +90,7 @@ def count_lt(in_ptr0, out_ptr0, cmp_val, dim: tl.constexpr, M: tl.constexpr, N: 
     ret = tl.sum(tmp2, dim)
     tl.store(out_ptr0 + mblk_idx, ret, mask=mmask)
 
+
 @pytest.mark.parametrize('shape', TestUtils.test_shape2d)
 @pytest.mark.parametrize('dtype', ['int8'])
 def test_count_dim1_common(shape, dtype):
@@ -103,12 +103,13 @@ def test_count_dim1_common(shape, dtype):
     else:
         cmp_val = 0.5
 
-    ans = standard_count(x0, cmp_val,1, dtype)
+    ans = standard_count(x0, cmp_val, 1, dtype)
 
-    output = torch.zeros((shape[0],), dtype = torch.float32).npu()
+    output = torch.zeros((shape[0], ), dtype=torch.float32).npu()
     count[1, xblock, 1](x0, output, cmp_val, 1, 1, rblock, xblock, rblock)
 
     test_common.validate_cmp("float32", output, ans.to(torch.float32))
+
 
 @pytest.mark.parametrize('shape', TestUtils.test_shape2d)
 @pytest.mark.parametrize('dtype', ['float32', 'float16', 'int8'])
@@ -122,12 +123,13 @@ def test_count_gt_dim1_common(shape, dtype):
     else:
         cmp_val = 0.5
 
-    ans = standard_count_gt(x0, cmp_val,1, dtype)
+    ans = standard_count_gt(x0, cmp_val, 1, dtype)
 
-    output = torch.zeros((shape[0],), dtype = torch.float32).npu()
+    output = torch.zeros((shape[0], ), dtype=torch.float32).npu()
     count_gt[1, xblock, 1](x0, output, cmp_val, 1, 1, rblock, xblock, rblock)
 
     test_common.validate_cmp("float32", output, ans.to(torch.float32))
+
 
 @pytest.mark.parametrize('shape', TestUtils.test_shape2d)
 @pytest.mark.parametrize('dtype', ['float32', 'float16', 'int8'])
@@ -141,9 +143,9 @@ def test_count_lt_dim1_common(shape, dtype):
     else:
         cmp_val = 0.5
 
-    ans = standard_count_lt(x0, cmp_val,1, dtype)
+    ans = standard_count_lt(x0, cmp_val, 1, dtype)
 
-    output = torch.zeros((shape[0],), dtype = torch.float32).npu()
+    output = torch.zeros((shape[0], ), dtype=torch.float32).npu()
     count_lt[1, xblock, 1](x0, output, cmp_val, 1, 1, rblock, xblock, rblock)
 
     test_common.validate_cmp("float32", output, ans.to(torch.float32))

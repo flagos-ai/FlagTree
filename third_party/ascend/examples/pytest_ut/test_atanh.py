@@ -28,12 +28,13 @@ import test_common
 import torch
 import torch_npu
 
+
 def torch_atanh(x0):
     return torch.atanh(x0)
 
 
 @triton.jit
-def triton_atanh(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.constexpr):
+def triton_atanh(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     offset = tl.program_id(0) * XBLOCK
     base1 = tl.arange(0, XBLOCK_SUB)
     loops1: tl.constexpr = XBLOCK // XBLOCK_SUB
@@ -44,17 +45,16 @@ def triton_atanh(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.const
         tl.store(out_ptr0 + (x0), tmp1, None)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (2, 4096, 8), 2, 32768, 1024],
-                                ['float16', (2, 4096, 8), 2, 32768, 1024],
-                                ['bfloat16', (2, 4096, 8), 2, 32768, 1024],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+    ['bfloat16', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_atanh_common(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu().clamp(-0.99, 0.99)
     y_ref = torch_atanh(x0)
-    y_cal = torch.zeros(shape, dtype = eval('torch.' + dtype)).npu()
+    y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     triton_atanh[ncore, 1, 1](x0, y_cal, xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)
 
@@ -62,17 +62,16 @@ def test_atanh_common(param_list):
 input_vals = [-1, 1]
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (2, 4096, 8), 2, 32768, 1024],
-                                ['float16', (2, 4096, 8), 2, 32768, 1024],
-                                ['bfloat16', (2, 4096, 8), 2, 32768, 1024],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+    ['bfloat16', (2, 4096, 8), 2, 32768, 1024],
+])
 @pytest.mark.parametrize('input_val', input_vals)
 def test_atanh_special(param_list, input_val):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x0 = torch.full(shape, input_val, dtype=eval('torch.' + dtype)).npu()
     y_ref = torch_atanh(x0)
-    y_cal = torch.zeros(shape, dtype = eval('torch.' + dtype)).npu()
+    y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     triton_atanh[ncore, 1, 1](x0, y_cal, xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)

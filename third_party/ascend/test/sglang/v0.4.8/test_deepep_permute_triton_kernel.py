@@ -27,6 +27,7 @@ import triton.language as tl
 sys.path.append("..")
 import test_common
 
+
 # source : python\sglang\srt\layers\moe\ep_moe\kernels.py
 @triton.jit
 def deepep_permute_triton_kernel(
@@ -57,6 +58,7 @@ def deepep_permute_triton_kernel(
             if dst_idx >= 0:
                 dst_ptr = gateup_input_ptr + dst_idx * hidden_size
                 tl.store(dst_ptr + offset, in_data, mask=mask)
+
 
 def test_deepep_permute_triton_kernel(ptfile_path):
     try:

@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import torch
 import torch_npu
 import triton
@@ -29,8 +28,8 @@ import time
 
 
 @triton.jit
-def sum_loop_high(in_ptr0, in_ptr1, in_ptr2, out_ptr0, rnumel, xnumel,
-                  XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr, RBLOCK: tl.constexpr):
+def sum_loop_high(in_ptr0, in_ptr1, in_ptr2, out_ptr0, rnumel, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr,
+                  RBLOCK: tl.constexpr):
     R = rnumel
     X = xnumel
     xoffset = tl.program_id(0) * XBLOCK
@@ -55,8 +54,7 @@ def sum_loop_high(in_ptr0, in_ptr1, in_ptr2, out_ptr0, rnumel, xnumel,
 
 
 @triton.jit
-def sum_loop_low(in_ptr0, in_ptr1, in_ptr2, out_ptr0, xnumel, ynumel,
-                 XBLOCK: tl.constexpr, RBLOCK: tl.constexpr):
+def sum_loop_low(in_ptr0, in_ptr1, in_ptr2, out_ptr0, xnumel, ynumel, XBLOCK: tl.constexpr, RBLOCK: tl.constexpr):
     X = xnumel
     Y = ynumel
     xoffset = tl.program_id(0) * XBLOCK
@@ -92,17 +90,15 @@ def bar(a, b, c):
     return y
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (64, 8192), 1, 2, 256, 16],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (64, 8192), 1, 2, 256, 16],
+])
 def test_case_1(param_list):
     dtype, shape, ncore, XB, YB, ZB = param_list
     a = test_common.generate_tensor(shape, dtype).npu()
     b = test_common.generate_tensor(shape, dtype).npu()
     c = test_common.generate_tensor(shape, dtype).npu()
-    value = torch.empty_strided((a.shape[0],), (1,)).npu()
+    value = torch.empty_strided((a.shape[0], ), (1, )).npu()
 
     std_low_ret = bar(a, b, c)
     print(f"std_low_ret = {std_low_ret[0:8]}")
@@ -121,7 +117,7 @@ def test_case_1(param_list):
     XBLOCK_SUB = min(64, max(XBLOCK // 2, 32))
     RBLOCK = 64
 
-    value2 = torch.empty_strided((a.shape[1],), (1,)).npu()
+    value2 = torch.empty_strided((a.shape[1], ), (1, )).npu()
     sum_loop_high[NBLOCKS, 1, 1](a, b, c, value2, a.shape[0], a.shape[1], XBLOCK, XBLOCK_SUB, RBLOCK)
     triton_ret2 = value2
     print(f"triton_ret2 = {triton_ret2[0:8]}")

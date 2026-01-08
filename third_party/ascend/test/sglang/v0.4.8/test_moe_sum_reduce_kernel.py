@@ -63,12 +63,10 @@ def _moe_sum_reduce_kernel(
     offs_dim = dim_start + tl.arange(0, BLOCK_DIM)
 
     for token_index in range(token_start, token_end):
-        accumulator = tl.zeros((BLOCK_DIM,), dtype=tl.float32)
+        accumulator = tl.zeros((BLOCK_DIM, ), dtype=tl.float32)
         input_t_ptr = input_ptr + token_index * input_stride_0 + offs_dim
         for i in tl.range(0, topk_num, num_stages=NUM_STAGE):
-            tmp = tl.load(
-                input_t_ptr + i * input_stride_1, mask=offs_dim < dim_end, other=0.0
-            )
+            tmp = tl.load(input_t_ptr + i * input_stride_1, mask=offs_dim < dim_end, other=0.0)
             accumulator += tmp
         accumulator = accumulator * routed_scaling_factor
         store_t_ptr = output_ptr + token_index * output_stride_0 + offs_dim

@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Gather sorted
 ===============
@@ -50,7 +49,9 @@ def torch_gather_sorted(embeddings, sorted_idxes, aux_idxes):
 
 # triton-version gather_sorted's kernel
 @triton.jit
-def gather_sorted_kernel(embeddings_ptr, sorted_indices_ptr, aux_indices_ptr, res_ptr, rows, cols, DEFAULT_VALUE: tl.constexpr, BIG_CORE_NUM: tl.constexpr, BIG_ROW_BLOCK_SIZE: tl.constexpr, COL_BLOCK_SIZE: tl.constexpr, COL_BLOCK_SIZE_SUB: tl.constexpr):
+def gather_sorted_kernel(embeddings_ptr, sorted_indices_ptr, aux_indices_ptr, res_ptr, rows, cols,
+                         DEFAULT_VALUE: tl.constexpr, BIG_CORE_NUM: tl.constexpr, BIG_ROW_BLOCK_SIZE: tl.constexpr,
+                         COL_BLOCK_SIZE: tl.constexpr, COL_BLOCK_SIZE_SUB: tl.constexpr):
     SMALL_ROW_BLOCK_SIZE = BIG_ROW_BLOCK_SIZE - 1
 
     emb_dtype = embeddings_ptr.type.element_ty
@@ -59,14 +60,15 @@ def gather_sorted_kernel(embeddings_ptr, sorted_indices_ptr, aux_indices_ptr, re
     core_idx = tl.program_id(0)
     # compute the the size and start index of block
     row_block_size = BIG_ROW_BLOCK_SIZE if (core_idx < BIG_CORE_NUM) else SMALL_ROW_BLOCK_SIZE
-    row_start_idx = (core_idx * BIG_ROW_BLOCK_SIZE) if (core_idx < BIG_CORE_NUM) else (BIG_CORE_NUM * BIG_ROW_BLOCK_SIZE + (core_idx - BIG_CORE_NUM) * SMALL_ROW_BLOCK_SIZE)
+    row_start_idx = (core_idx * BIG_ROW_BLOCK_SIZE) if (core_idx < BIG_CORE_NUM) else (
+        BIG_CORE_NUM * BIG_ROW_BLOCK_SIZE + (core_idx - BIG_CORE_NUM) * SMALL_ROW_BLOCK_SIZE)
 
     # this version has 3-buffers, initilize for buffers
     row_block_size_0 = tl.cdiv(row_block_size, 3)
     remain_row_block_size = row_block_size - row_block_size_0
     row_block_size_1 = tl.cdiv(remain_row_block_size, 2)
     row_block_size_2 = remain_row_block_size - row_block_size_1
-    
+
     row_start_idx_0 = row_start_idx
     row_start_idx_1 = row_start_idx + row_block_size_0
     row_start_idx_2 = row_start_idx + row_block_size_0 + row_block_size_1
@@ -125,7 +127,8 @@ def gather_sorted_kernel(embeddings_ptr, sorted_indices_ptr, aux_indices_ptr, re
 
 
 # triton-version gather_sorted's host
-def triton_gather_sorted(embeddings: torch.Tensor, sorted_indices: torch.Tensor, aux_indices: torch.Tensor, default_value=1.0):
+def triton_gather_sorted(embeddings: torch.Tensor, sorted_indices: torch.Tensor, aux_indices: torch.Tensor,
+                         default_value=1.0):
     # constant settings for npu
     ALIGNED = 32
     USE_SIZE = 96 * 1024
@@ -139,7 +142,8 @@ def triton_gather_sorted(embeddings: torch.Tensor, sorted_indices: torch.Tensor,
     # when writing an npu kernel using triton,
     # you should note that the difference between BLOCK_SIZE and BLOCK_SIZE_SUB
     # BLOCK_SIZE specifies the size of data that are processed in one program
-    col_size_aligned = triton.cdiv(embeddings.shape[-1] * embeddings.element_size(), ALIGNED) * ALIGNED // embeddings.element_size()
+    col_size_aligned = triton.cdiv(embeddings.shape[-1] * embeddings.element_size(),
+                                   ALIGNED) * ALIGNED // embeddings.element_size()
     # the data are scattered to multiple programs, which can not be even
     # some process more data, some process less
     big_row_block_size = triton.cdiv(n_rows, CORE_NUM)
@@ -150,7 +154,9 @@ def triton_gather_sorted(embeddings: torch.Tensor, sorted_indices: torch.Tensor,
 
     grid = (min(n_rows, CORE_NUM), triton.cdiv(n_cols, col_block_size))
     # launch the kernel
-    gather_sorted_kernel[grid](embeddings, sorted_indices, aux_indices, output, n_rows, n_cols, default_value, BIG_CORE_NUM=big_core_num, BIG_ROW_BLOCK_SIZE=big_row_block_size, COL_BLOCK_SIZE=col_block_size, COL_BLOCK_SIZE_SUB=col_block_size_sub)
+    gather_sorted_kernel[grid](embeddings, sorted_indices, aux_indices, output, n_rows, n_cols, default_value,
+                               BIG_CORE_NUM=big_core_num, BIG_ROW_BLOCK_SIZE=big_row_block_size,
+                               COL_BLOCK_SIZE=col_block_size, COL_BLOCK_SIZE_SUB=col_block_size_sub)
 
     return output
 
@@ -185,7 +191,8 @@ if __name__ == "__main__":
             for index_num in (19, 123, 4321, 54321, 100, 200, 819, 500, 700, 1000):
                 print(table_rows, table_cols, index_num, flush=True)
 
-                table, sorted_indices, aux_indices = generate_inputs((index_num,), (table_rows, table_cols), torch.float)
+                table, sorted_indices, aux_indices = generate_inputs((index_num, ), (table_rows, table_cols),
+                                                                     torch.float)
 
                 expect = torch_gather_sorted(table, sorted_indices, aux_indices).cpu()
                 torch.npu.synchronize()

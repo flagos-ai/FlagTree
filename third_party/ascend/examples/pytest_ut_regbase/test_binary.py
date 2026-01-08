@@ -17,7 +17,10 @@ FUNCTIONS_TO_TEST = {
     'add': ("x0 + x1", "x0 + x1"),
     'sub': ("x0 - x1", "x0 - x1"),
     'mul': ("x0 * x1", "x0 * x1"),
-    'div': ("x0 / x1", "x0 / x1 if x0.dtype in [torch.float32, torch.float16] else (x0.to(torch.float32) / x1.to(torch.float32)).to(x0.dtype)"),
+    'div':
+    ("x0 / x1",
+     "x0 / x1 if x0.dtype in [torch.float32, torch.float16] else (x0.to(torch.float32) / x1.to(torch.float32)).to(x0.dtype)"
+     ),
     'floordiv': ("x0 // x1", "x0 // x1"),
     'mod': ("x0 % x1", "(x0.cpu() % x1.cpu()).npu() if x0.dtype in [torch.int8, torch.int16] else x0 % x1"),
     'and': ("x0 & x1", "x0 & x1"),
@@ -42,6 +45,7 @@ FUNCTIONS_TO_TEST = {
 # Global dictionary to keep track of temporary files
 _temp_kernel_files = {}
 
+
 def _cleanup_temp_files():
     import os
     for file_path in _temp_kernel_files.values():
@@ -51,7 +55,9 @@ def _cleanup_temp_files():
         except:
             pass
 
+
 atexit.register(_cleanup_temp_files)
+
 
 def create_triton_kernel(func_name, func_pattern):
     import tempfile
@@ -102,14 +108,20 @@ def test_binary(dtype, xblock_sub, func_name):
 
     if dtype in _int_dtypes:
         skip_int_dtype_ops = [
-            'div_rn', 'fdiv',
-            ]
+            'div_rn',
+            'fdiv',
+        ]
         if func_name in skip_int_dtype_ops:
             pytest.skip(f"{func_name} only tested with float dtypes")
     if dtype in _float_dtypes:
         skip_float_dtype_ops = [
-            'mod', 'floordiv', 'cdiv', 'and', 'or', 'xor',
-            ]
+            'mod',
+            'floordiv',
+            'cdiv',
+            'and',
+            'or',
+            'xor',
+        ]
         if func_name in skip_float_dtype_ops:
             pytest.skip(f"{func_name} only tested with int dtypes")
     if func_name == 'mod' and dtype == 'int64':
@@ -118,7 +130,7 @@ def test_binary(dtype, xblock_sub, func_name):
         pytest.skip(f"{func_name} tests only bool")
 
     xblock = triton.next_power_of_2(xblock_sub)
-    shape = (xblock,)
+    shape = (xblock, )
     triton_func_op, torch_func_op = FUNCTIONS_TO_TEST[func_name]
 
     def torch_func(x0, x1):
@@ -131,9 +143,9 @@ def test_binary(dtype, xblock_sub, func_name):
 
     triton_kernel = create_triton_kernel(func_name, triton_func_op)
     triton_kernel = triton.autotune(
-            configs=get_autotune_config(),
-            key=['numel'],
-        )(triton_kernel)
+        configs=get_autotune_config(),
+        key=['numel'],
+    )(triton_kernel)
 
     def triton_func(x0, x1, out_dtype):
         y0 = torch.empty_like(x0).to(out_dtype)
@@ -148,9 +160,7 @@ def test_binary(dtype, xblock_sub, func_name):
     if func_name in ['div', 'fdiv', 'div_rn', 'cdiv', 'floordiv', 'mod']:
         x1 = fill_zero_with_one(x1)
     out_dtype = x0.dtype
-    if func_name in [
-        'gt', 'gt', 'lt', 'le', 'eq', 'ne'
-        ]:
+    if func_name in ['gt', 'gt', 'lt', 'le', 'eq', 'ne']:
         out_dtype = torch.bool
 
     triton_cal = triton_func(x0, x1, out_dtype)

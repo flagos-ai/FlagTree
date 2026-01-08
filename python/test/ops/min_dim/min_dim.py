@@ -25,7 +25,7 @@ def get_dtype_max(dtype: tl.constexpr):
         return value
     if dtype_.is_int_signed():
         width: tl.constexpr = dtype_.int_bitwidth
-        value: tl.constexpr = 2 ** (width - 1) - 1
+        value: tl.constexpr = 2**(width - 1) - 1
         return value
     if dtype_.is_int_unsigned():
         width: tl.constexpr = dtype_.int_bitwidth
@@ -89,7 +89,7 @@ def min_dim(inp, dim=None, keepdim=False):
         out_value = torch.squeeze(out_value, dim)
         out_index = torch.squeeze(out_index, dim)
 
-    grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]),)
+    grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]), )
     with torch_device_fn.device(inp.device):
         min_kernel[grid](inp, out_value, out_index, M, N)
     Min_out = namedtuple("min", ["values", "indices"])
@@ -113,14 +113,10 @@ if __name__ == "__main__":
 
     # check
     res_out_value = res_out_value.cpu()
-    print(
-        f"The maximum difference out value between torch and triton is "
-        f"{torch.max(torch.abs(ref_out_value - res_out_value))}"
-    )
+    print(f"The maximum difference out value between torch and triton is "
+          f"{torch.max(torch.abs(ref_out_value - res_out_value))}")
     assert torch.allclose(res_out_value, ref_out_value), (res_out_value, ref_out_value)
     res_out_index = res_out_index.cpu()
-    print(
-        f"The maximum difference out index between torch and triton is "
-        f"{torch.max(torch.abs(ref_out_index - res_out_index))}"
-    )
+    print(f"The maximum difference out index between torch and triton is "
+          f"{torch.max(torch.abs(ref_out_index - res_out_index))}")
     assert torch.allclose(res_out_index, ref_out_index), (res_out_index, ref_out_index)

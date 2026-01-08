@@ -72,9 +72,9 @@ module {
   }
 }
 // CHECK-LABEL:   func.func @kernel_high_mask(
-// CHECK-SAME:          %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, 
-// CHECK-SAME:          %[[VAL_0:.*]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, %[[VAL_1:.*]]: memref<?xbf16> {tt.tensor_kind = 1 : i32}, 
-// CHECK-SAME:          %[[VAL_2:.*]]: i32, %[[VAL_3:.*]]: i32, %[[VAL_4:.*]]: i32, %[[VAL_5:.*]]: i32, %[[ARG_8:.*]]: i32, %[[ARG_9:.*]]: i32, %[[ARG_10:.*]]: i32, %[[ARG_11:.*]]: i32, %[[ARG_12:.*]]: i32, %[[ARG_13:.*]]: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} { 
+// CHECK-SAME:          %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>,
+// CHECK-SAME:          %[[VAL_0:.*]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, %[[VAL_1:.*]]: memref<?xbf16> {tt.tensor_kind = 1 : i32},
+// CHECK-SAME:          %[[VAL_2:.*]]: i32, %[[VAL_3:.*]]: i32, %[[VAL_4:.*]]: i32, %[[VAL_5:.*]]: i32, %[[ARG_8:.*]]: i32, %[[ARG_9:.*]]: i32, %[[ARG_10:.*]]: i32, %[[ARG_11:.*]]: i32, %[[ARG_12:.*]]: i32, %[[ARG_13:.*]]: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 // CHECK-DAG:           %[[VAL_15:.*]] = arith.constant 0xFF80 : bf16
 // CHECK-DAG:           %[[VAL_11:.*]] = arith.constant 256 : index
 // CHECK-DAG:           %[[VAL_12:.*]] = arith.constant 128 : index

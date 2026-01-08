@@ -25,6 +25,7 @@ import torch
 import triton.language as tl
 
 import test_common
+
 sys.path.append("..")
 
 
@@ -92,24 +93,14 @@ def _fwd_kernel(
     mask_d = offs_d < Lq
     mask_dv = offs_dv < Lv
 
-    offs_q = (
-        (cur_seq_extend_start_idx + cur_block_m * BLOCK_M + offs_m[:, None])
-        * stride_qbs
-        + cur_head * stride_qh
-        + offs_d[None, :]
-    )
-    q = tl.load(
-        Q_Extend + offs_q, mask=(mask_m[:, None]) & (mask_d[None, :]), other=0.0
-    )
+    offs_q = ((cur_seq_extend_start_idx + cur_block_m * BLOCK_M + offs_m[:, None]) * stride_qbs + cur_head * stride_qh +
+              offs_d[None, :])
+    q = tl.load(Q_Extend + offs_q, mask=(mask_m[:, None]) & (mask_d[None, :]), other=0.0)
 
     if BLOCK_DPE > 0:
         offs_dpe = BLOCK_DMODEL + tl.arange(0, BLOCK_DPE)
-        offs_qpe = (
-            (cur_seq_extend_start_idx + cur_block_m * BLOCK_M + offs_m[:, None])
-            * stride_qbs
-            + cur_head * stride_qh
-            + offs_dpe[None, :]
-        )
+        offs_qpe = ((cur_seq_extend_start_idx + cur_block_m * BLOCK_M + offs_m[:, None]) * stride_qbs +
+                    cur_head * stride_qh + offs_dpe[None, :])
         qpe = tl.load(Q_Extend + offs_qpe, mask=mask_m[:, None], other=0.0)
 
     # stage 1: compute scores with prefix
@@ -123,27 +114,15 @@ def _fwd_kernel(
         start_n = tl.multiple_of(start_n, BLOCK_N)
         mask_n = (start_n + offs_n) < cur_seq_len_prefix
 
-        offs_kv_loc = tl.load(
-            kv_indices + cur_seq_kv_start_idx + start_n + offs_n, mask=mask_n, other=0
-        )
+        offs_kv_loc = tl.load(kv_indices + cur_seq_kv_start_idx + start_n + offs_n, mask=mask_n, other=0)
 
         # load k in transposed way
-        offs_buf_k = (
-            offs_kv_loc[None, :] * stride_buf_kbs
-            + cur_kv_head * stride_buf_kh
-            + offs_d[:, None]
-        )
-        k = tl.load(
-            K_Buffer + offs_buf_k, mask=(mask_n[None, :]) & (mask_d[:, None]), other=0.0
-        )
+        offs_buf_k = (offs_kv_loc[None, :] * stride_buf_kbs + cur_kv_head * stride_buf_kh + offs_d[:, None])
+        k = tl.load(K_Buffer + offs_buf_k, mask=(mask_n[None, :]) & (mask_d[:, None]), other=0.0)
 
         qk = tl.dot(q.to(k.dtype), k)
         if BLOCK_DPE > 0:
-            offs_kpe = (
-                offs_kv_loc[None, :] * stride_buf_kbs
-                + cur_kv_head * stride_buf_kh
-                + offs_dpe[:, None]
-            )
+            offs_kpe = (offs_kv_loc[None, :] * stride_buf_kbs + cur_kv_head * stride_buf_kh + offs_dpe[:, None])
             kpe = tl.load(
                 K_Buffer + offs_kpe,
                 mask=mask_n[None, :],
@@ -158,20 +137,15 @@ def _fwd_kernel(
         final_mask = mask_m[:, None] & mask_n[None, :]
         if USE_CUSTOM_MASK and not SKIP_PREFIX_CUSTOM_MASK:
             custom_mask = tl.load(
-                mask_ptr
-                + cur_seq_mask_start_idx
-                + (cur_block_m * BLOCK_M + offs_m[:, None]) * cur_seq_len
-                + start_n
-                + offs_n[None, :],
+                mask_ptr + cur_seq_mask_start_idx + (cur_block_m * BLOCK_M + offs_m[:, None]) * cur_seq_len + start_n +
+                offs_n[None, :],
                 mask=(mask_m[:, None] & mask_n[None, :]),
                 other=0,
             )
             final_mask &= custom_mask
         if SLIDING_WINDOW_SIZE > 0:
             # Add mask where q_id <= kv_id + sliding_window_size
-            window_mask = (cur_block_m * BLOCK_M + offs_m[:, None]) <= (
-                start_n + offs_n[None, :] + SLIDING_WINDOW_SIZE
-            )
+            window_mask = (cur_block_m * BLOCK_M + offs_m[:, None]) <= (start_n + offs_n[None, :] + SLIDING_WINDOW_SIZE)
             final_mask &= window_mask
         qk = tl.where(final_mask, qk, float("-inf"))
 
@@ -180,14 +154,8 @@ def _fwd_kernel(
         p = tl.exp(qk - n_e_max[:, None])
         deno = deno * re_scale + tl.sum(p, 1)
 
-        offs_buf_v = (
-            offs_kv_loc[:, None] * stride_buf_vbs
-            + cur_kv_head * stride_buf_vh
-            + offs_dv[None, :]
-        )
-        v = tl.load(
-            V_Buffer + offs_buf_v, mask=mask_n[:, None] & mask_dv[None, :], other=0.0
-        )
+        offs_buf_v = (offs_kv_loc[:, None] * stride_buf_vbs + cur_kv_head * stride_buf_vh + offs_dv[None, :])
+        v = tl.load(V_Buffer + offs_buf_v, mask=mask_n[:, None] & mask_dv[None, :], other=0.0)
         p = p.to(v.dtype)
         acc = acc * re_scale[:, None] + tl.dot(p, v)
 
@@ -195,32 +163,21 @@ def _fwd_kernel(
 
     # stage 2: compute the triangle part
 
-    cur_block_m_end = (
-        cur_seq_len_extend
-        if not IS_CAUSAL
-        else tl.minimum(cur_seq_len_extend, (cur_block_m + 1) * BLOCK_M)
-    )
+    cur_block_m_end = (cur_seq_len_extend if not IS_CAUSAL else tl.minimum(cur_seq_len_extend,
+                                                                           (cur_block_m + 1) * BLOCK_M))
     for start_n in range(0, cur_block_m_end, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
         mask_n = (start_n + offs_n) < cur_block_m_end
 
         # load k in transposed way
-        offs_k = (
-            (cur_seq_extend_start_idx + start_n + offs_n[None, :]) * stride_kbs
-            + cur_kv_head * stride_kh
-            + offs_d[:, None]
-        )
-        k = tl.load(
-            K_Extend + offs_k, mask=(mask_n[None, :]) & (mask_d[:, None]), other=0.0
-        )
+        offs_k = ((cur_seq_extend_start_idx + start_n + offs_n[None, :]) * stride_kbs + cur_kv_head * stride_kh +
+                  offs_d[:, None])
+        k = tl.load(K_Extend + offs_k, mask=(mask_n[None, :]) & (mask_d[:, None]), other=0.0)
 
         qk = tl.dot(q, k, out_dtype=tl.float32)
         if BLOCK_DPE > 0:
-            offs_kpe = (
-                (cur_seq_extend_start_idx + start_n + offs_n[None, :]) * stride_kbs
-                + cur_kv_head * stride_kh
-                + offs_dpe[:, None]
-            )
+            offs_kpe = ((cur_seq_extend_start_idx + start_n + offs_n[None, :]) * stride_kbs + cur_kv_head * stride_kh +
+                        offs_dpe[:, None])
             kpe = tl.load(
                 K_Extend + offs_kpe,
                 mask=mask_n[None, :],
@@ -235,21 +192,15 @@ def _fwd_kernel(
 
         if USE_CUSTOM_MASK:
             custom_mask = tl.load(
-                mask_ptr
-                + cur_seq_mask_start_idx
-                + (cur_block_m * BLOCK_M + offs_m[:, None]) * cur_seq_len
-                + cur_seq_len_prefix
-                + start_n
-                + offs_n[None, :],
+                mask_ptr + cur_seq_mask_start_idx + (cur_block_m * BLOCK_M + offs_m[:, None]) * cur_seq_len +
+                cur_seq_len_prefix + start_n + offs_n[None, :],
                 mask=(mask_m[:, None] & mask_n[None, :]),
                 other=0,
             )
             custom_mask &= mask_m[:, None] & mask_n[None, :]
             qk = tl.where(custom_mask, qk, float("-inf"))
         elif IS_CAUSAL:
-            mask_causual = (cur_block_m * BLOCK_M + offs_m[:, None]) >= (
-                start_n + offs_n[None, :]
-            )
+            mask_causual = (cur_block_m * BLOCK_M + offs_m[:, None]) >= (start_n + offs_n[None, :])
             mask_causual &= mask_m[:, None] & mask_n[None, :]
             qk = tl.where(mask_causual, qk, float("-inf"))
         else:
@@ -261,25 +212,16 @@ def _fwd_kernel(
         p = tl.exp(qk - n_e_max[:, None])
         deno = deno * re_scale + tl.sum(p, 1)
 
-        offs_v = (
-            (cur_seq_extend_start_idx + start_n + offs_n[:, None]) * stride_vbs
-            + cur_kv_head * stride_vh
-            + offs_dv[None, :]
-        )
-        v = tl.load(
-            V_Extend + offs_v, mask=mask_n[:, None] & mask_dv[None, :], other=0.0
-        )
+        offs_v = ((cur_seq_extend_start_idx + start_n + offs_n[:, None]) * stride_vbs + cur_kv_head * stride_vh +
+                  offs_dv[None, :])
+        v = tl.load(V_Extend + offs_v, mask=mask_n[:, None] & mask_dv[None, :], other=0.0)
         p = p.to(v.dtype)
         acc = acc * re_scale[:, None] + tl.dot(p, v)
 
         e_max = n_e_max
 
-    offs_o = (
-        (cur_seq_extend_start_idx + cur_block_m * BLOCK_M + offs_m[:, None])
-        * stride_obs
-        + cur_head * stride_oh
-        + offs_dv[None, :]
-    )
+    offs_o = ((cur_seq_extend_start_idx + cur_block_m * BLOCK_M + offs_m[:, None]) * stride_obs + cur_head * stride_oh +
+              offs_dv[None, :])
     if STORE_TRANSPOSE:
         tl.store(
             O_Extend + offs_o.T,

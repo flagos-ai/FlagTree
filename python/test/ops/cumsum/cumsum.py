@@ -40,10 +40,8 @@ def scan_part_sum_abc_kernel(
     mask = b_idx < B
     inp_ptrs = inp + offset
     inp_vals = tl.load(inp_ptrs, mask=mask)
-    if (
-        tl.constexpr(inp_vals.dtype.is_int64())
-        or tl.constexpr(inp_vals.dtype.is_uint64())
-    ) or tl.constexpr(inp_vals.dtype.is_fp64()):
+    if (tl.constexpr(inp_vals.dtype.is_int64()) or tl.constexpr(inp_vals.dtype.is_uint64())) or tl.constexpr(
+            inp_vals.dtype.is_fp64()):
         inp_vals = inp_vals
     elif tl.constexpr(inp_vals.dtype.is_int()):
         inp_vals = inp_vals.to(tl.int32)
@@ -104,9 +102,7 @@ def scan_then_fan(inp, out, A, B, C, dtype):
 
     grid = (A, part_num, C)
     with torch_device_fn.device(inp.device):
-        scan_part_sum_abc_kernel[grid](
-            inp, out, partial_sum, B, C, part_num, BLOCK_SIZE
-        )
+        scan_part_sum_abc_kernel[grid](inp, out, partial_sum, B, C, part_num, BLOCK_SIZE)
 
     if part_num >= 2:
         scan_then_fan(partial_sum, partial_sum, A, part_num, C, dtype)
@@ -167,10 +163,8 @@ def check(name, ref, res, equal_nan=False, reduce_dim=1, atol=1e-4):
         torch.complex64: 1.3e-6,
     }
     res = res.cpu()
-    print(
-        f"The maximum difference out {name} between torch and triton is "
-        f"{torch.max(torch.abs(ref - res))}"
-    )
+    print(f"The maximum difference out {name} between torch and triton is "
+          f"{torch.max(torch.abs(ref - res))}")
     rtol = RESOLUTION[ref.dtype]
     assert torch.allclose(res, ref, atol=atol * reduce_dim, rtol=rtol), (res, ref)
 

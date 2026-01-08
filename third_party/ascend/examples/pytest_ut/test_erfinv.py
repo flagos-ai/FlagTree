@@ -26,6 +26,7 @@ import pytest
 import test_common
 import triton.language.extra.ascend.libdevice as libdevice
 
+
 @triton.jit
 def triton_erfinv(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     xoffset = tl.program_id(0) * XBLOCK
@@ -36,11 +37,10 @@ def triton_erfinv(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: t
         y = libdevice.erfinv(x0)
         tl.store(out_ptr0 + xindex, y, xmask)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
+
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_erfinv_case(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x = test_common.generate_tensor(shape, dtype).npu()
@@ -48,7 +48,7 @@ def test_erfinv_case(param_list):
     x[0][0][1] = -1  # erfinv(-1) -> -∞
 
     # Avoid numerical instability near ±1
-    # Move values in (threshold, 1) to threshold and (-1, -threshold) to -threshold 
+    # Move values in (threshold, 1) to threshold and (-1, -threshold) to -threshold
     threshold = 1 - 1.1e-4
     too_close_pos = (x > threshold) & (x < 1)
     too_close_neg = (x < -threshold) & (x > -1)
@@ -59,11 +59,10 @@ def test_erfinv_case(param_list):
     triton_erfinv[ncore, 1, 1](x, y_cal, x.numel(), xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
+
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_all_blocks_parallel(param_list, monkeypatch):
     monkeypatch.setenv("TRITON_ALL_BLOCKS_PARALLEL", "1")
     dtype, shape, ncore, xblock, xblock_sub = param_list
@@ -72,7 +71,7 @@ def test_all_blocks_parallel(param_list, monkeypatch):
     x[0][0][1] = -1  # erfinv(-1) -> -∞
 
     # Avoid numerical instability near ±1
-    # Move values in (threshold, 1) to threshold and (-1, -threshold) to -threshold 
+    # Move values in (threshold, 1) to threshold and (-1, -threshold) to -threshold
     threshold = 1 - 1.1e-4
     too_close_pos = (x > threshold) & (x < 1)
     too_close_neg = (x < -threshold) & (x > -1)

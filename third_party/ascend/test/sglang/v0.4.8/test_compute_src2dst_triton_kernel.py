@@ -23,15 +23,14 @@ import pytest
 import triton
 import torch
 import triton.language as tl
+
 sys.path.append("..")
 import test_common
 
 
 # source: python\sglang\srt\layers\moe\ep_moe\kernels.py
 @triton.jit
-def compute_src2dst_triton_kernel(
-    reorder_ids, src2dst, num_toks, BLOCK_SIZE: tl.constexpr
-):
+def compute_src2dst_triton_kernel(reorder_ids, src2dst, num_toks, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(axis=0)
     dst_id = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = dst_id < num_toks
@@ -54,4 +53,3 @@ def test_compute_src2dst_triton_kernel(ptfile_path):
         test_common.compare_data_precision(data["gpu_output"], input_data, device_type='cpu')
     except ValueError as e:
         pytest.fail(f"The testcase failed")
-        

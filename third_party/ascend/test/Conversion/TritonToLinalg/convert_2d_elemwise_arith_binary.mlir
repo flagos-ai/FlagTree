@@ -31,7 +31,7 @@ module {
     }
 }
 // CHECK-LABEL:   func.func @kernel(
-// CHECK-SAME:      %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, %[[VAL_0:.*]]: memref<?xf32> {tt.tensor_kind = 0 : i32}, %[[VAL_1:.*]]: memref<?xf32> {tt.tensor_kind = 0 : i32}, %[[VAL_2:.*]]: memref<128x128xf32>, %[[VAL_3:.*]]: memref<128x128xf32>, 
+// CHECK-SAME:      %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, %[[VAL_0:.*]]: memref<?xf32> {tt.tensor_kind = 0 : i32}, %[[VAL_1:.*]]: memref<?xf32> {tt.tensor_kind = 0 : i32}, %[[VAL_2:.*]]: memref<128x128xf32>, %[[VAL_3:.*]]: memref<128x128xf32>,
 // CHECK-SAME:      %[[ARG_6:.*]]: i32, %[[ARG_7:.*]]: i32, %[[ARG_8:.*]]: i32, %[[ARG_9:.*]]: i32, %[[ARG_10:.*]]: i32, %[[ARG_11:.*]]: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 // CHECK:           %[[VAL_7:.*]] = memref.reinterpret_cast %[[VAL_0]] to offset: [0], sizes: [128, 128], strides: [1, 1] : memref<?xf32> to memref<128x128xf32, strided<[1, 1]>>
 // CHECK:           %[[VAL_8:.*]] = memref.reinterpret_cast %[[VAL_1]] to offset: [0], sizes: [128, 128], strides: [1, 1] : memref<?xf32> to memref<128x128xf32, strided<[1, 1]>>

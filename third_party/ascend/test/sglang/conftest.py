@@ -25,12 +25,7 @@ import pytest
 
 
 def pytest_addoption(parser):
-    parser.addoption(
-        "--ptfile_path",
-        type=str,
-        default=None,
-        help="the test-file path (pt file)"
-    )
+    parser.addoption("--ptfile_path", type=str, default=None, help="the test-file path (pt file)")
 
 
 @pytest.fixture(scope="function")
@@ -44,11 +39,8 @@ def ptfile_path(request):
 
         # download ptfile
         try:
-            subprocess.run(
-                ["curl", "-f", "-s", "-S", "-L", "-o", str(local_path), remote_default_ptfile_url],
-                check=True,
-                capture_output=True
-            )
+            subprocess.run(["curl", "-f", "-s", "-S", "-L", "-o",
+                            str(local_path), remote_default_ptfile_url], check=True, capture_output=True)
             print(f"default ptfile is saved to: {local_path}")
         except subprocess.CalledProcessError as e:
             pytest.fail("download default ptfile error!")

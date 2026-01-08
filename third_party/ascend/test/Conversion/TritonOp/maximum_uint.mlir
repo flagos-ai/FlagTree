@@ -189,4 +189,3 @@ module {
 // CHECK: %[[VAL_0:[A-Za-z0-9_]+]] = bufferization.to_tensor %alloc restrict writable : memref<1x22x39xi64>
 // CHECK: %[[VAL_1:[A-Za-z0-9_]+]] = bufferization.to_tensor %alloc_1 restrict writable : memref<1x22x39xi64>
 // CHECK: %[[VAL_2:[A-Za-z0-9_]+]] = arith.maxui %[[VAL_0]], %[[VAL_1]] : tensor<1x22x39xi64>
-

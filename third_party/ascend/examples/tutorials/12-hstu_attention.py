@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 HSTU Attention
 ===============
@@ -232,15 +231,65 @@ def _hstu_attn_fwd(  # noqa C901
         off_head = (start_m - seq_start * head_num // 2) // (seq_len // 2)
         start_m_1 = (start_m - seq_start * head_num // 2) % (seq_len // 2)
         start_m_2 = seq_len - start_m_1 - BLOCK_M
-        _hstu_attn_fwd_compute(Q, K, V, seq_offsets, Out, stride_qm, stride_qh, stride_kn, stride_kh,
-            stride_vn, stride_vh, stride_om, stride_oh, alpha, head_num, MAX_SEQ_LEN, off_batch, off_head,
-            start_m_1, seq_start, seq_len, CAUSAL, HAS_BIAS, head_dim, head_dim, BLOCK_M, BLOCK_N,
+        _hstu_attn_fwd_compute(
+            Q,
+            K,
+            V,
+            seq_offsets,
+            Out,
+            stride_qm,
+            stride_qh,
+            stride_kn,
+            stride_kh,
+            stride_vn,
+            stride_vh,
+            stride_om,
+            stride_oh,
+            alpha,
+            head_num,
+            MAX_SEQ_LEN,
+            off_batch,
+            off_head,
+            start_m_1,
+            seq_start,
+            seq_len,
+            CAUSAL,
+            HAS_BIAS,
+            head_dim,
+            head_dim,
+            BLOCK_M,
+            BLOCK_N,
             mask_block=mask_block,
             bias=bias,
         )
-        _hstu_attn_fwd_compute(Q, K, V, seq_offsets, Out, stride_qm, stride_qh, stride_kn, stride_kh,
-            stride_vn, stride_vh, stride_om, stride_oh, alpha, head_num, MAX_SEQ_LEN, off_batch, off_head,
-            start_m_2, seq_start, seq_len, CAUSAL, HAS_BIAS, head_dim, head_dim, BLOCK_M, BLOCK_N,
+        _hstu_attn_fwd_compute(
+            Q,
+            K,
+            V,
+            seq_offsets,
+            Out,
+            stride_qm,
+            stride_qh,
+            stride_kn,
+            stride_kh,
+            stride_vn,
+            stride_vh,
+            stride_om,
+            stride_oh,
+            alpha,
+            head_num,
+            MAX_SEQ_LEN,
+            off_batch,
+            off_head,
+            start_m_2,
+            seq_start,
+            seq_len,
+            CAUSAL,
+            HAS_BIAS,
+            head_dim,
+            head_dim,
+            BLOCK_M,
+            BLOCK_N,
             mask_block=mask_block,
             bias=bias,
         )
@@ -428,7 +477,13 @@ def _hstu_attn_bwd_one_col_block(  # noqa C901
 
 @triton.jit
 def _hstu_attn_bwd(  # noqa C901
-    Q, K, V, Grad, DQ, DK, DV,
+    Q,
+    K,
+    V,
+    Grad,
+    DQ,
+    DK,
+    DV,
     stride_qm: tl.constexpr,
     stride_qh: tl.constexpr,
     stride_kn: tl.constexpr,
@@ -515,9 +570,33 @@ def triton_hstu_attention_fwd(
     core_num = get_npu_properties('num_aicore')
     tasks = total_seq * head_num // BLOCK_M // 2
     grid = (core_num, 1, 1)
-    _hstu_attn_fwd[grid](q, k, v, seq_offsets, out, q.stride(0), q.stride(1), k.stride(0), k.stride(1),
-        v.stride(0), v.stride(1), out.stride(0), out.stride(1), alpha, batch, head_num, max_seq_len, head_dim,
-        causal, has_bias, core_num, tasks, BLOCK_M, BLOCK_N, mask, bias,
+    _hstu_attn_fwd[grid](
+        q,
+        k,
+        v,
+        seq_offsets,
+        out,
+        q.stride(0),
+        q.stride(1),
+        k.stride(0),
+        k.stride(1),
+        v.stride(0),
+        v.stride(1),
+        out.stride(0),
+        out.stride(1),
+        alpha,
+        batch,
+        head_num,
+        max_seq_len,
+        head_dim,
+        causal,
+        has_bias,
+        core_num,
+        tasks,
+        BLOCK_M,
+        BLOCK_N,
+        mask,
+        bias,
     )
     return out
 
@@ -541,11 +620,37 @@ def triton_hstu_attention_bwd(
     batch = seq_offsets.numel() - 1
     _, head_num, head_dim = q.shape
     has_bias = bias is not None
-    grid = (batch * head_num, 1,)
-    _hstu_attn_bwd[grid](q, k, v, grad, dq, dk, dv,
-        q.stride(0), q.stride(1), k.stride(0), k.stride(1), v.stride(0), v.stride(1),
-        grad.stride(0), grad.stride(1), seq_offsets, alpha, batch, head_num, max_seq_len, head_dim,
-        causal, has_bias, BLOCK_BWD, BLOCK_BWD, bias,
+    grid = (
+        batch * head_num,
+        1,
+    )
+    _hstu_attn_bwd[grid](
+        q,
+        k,
+        v,
+        grad,
+        dq,
+        dk,
+        dv,
+        q.stride(0),
+        q.stride(1),
+        k.stride(0),
+        k.stride(1),
+        v.stride(0),
+        v.stride(1),
+        grad.stride(0),
+        grad.stride(1),
+        seq_offsets,
+        alpha,
+        batch,
+        head_num,
+        max_seq_len,
+        head_dim,
+        causal,
+        has_bias,
+        BLOCK_BWD,
+        BLOCK_BWD,
+        bias,
     )
     return dq, dk, dv
 
@@ -563,7 +668,8 @@ def jagged_data_gen(batch_size, max_seq_len, num_heads, attention_dim, dataType)
     q = torch.rand((int(total_seqs), num_heads, attention_dim), dtype=dataType)
     k = torch.rand((int(total_seqs), num_heads, attention_dim), dtype=dataType)
     v = torch.rand((int(total_seqs), num_heads, attention_dim), dtype=dataType)
-    print("batch_size:", batch_size, ", max_seq_len :", max_seq_len, ", head_nums:", num_heads, ", head_dim:", attention_dim)
+    print("batch_size:", batch_size, ", max_seq_len :", max_seq_len, ", head_nums:", num_heads, ", head_dim:",
+          attention_dim)
     print("total_seqs:", total_seqs, "\nseq_lens:", seq_lens, "\nseq_offset:", seq_offset)
 
     bias = torch.empty(batch_size, num_heads, max_seq_len, max_seq_len, dtype=data_type).uniform_(-1, 1)
@@ -575,7 +681,7 @@ def dense_to_jagged(q, dense_tensor, seq_lens):
     tensor = torch.zeros_like(q)
     offset = 0
     for batch_id, seq_len in enumerate(seq_lens):
-        tensor[offset: offset + seq_len, :, :] = dense_tensor[batch_id, 0: seq_len, :, :]
+        tensor[offset:offset + seq_len, :, :] = dense_tensor[batch_id, 0:seq_len, :, :]
         offset = offset + seq_len
     return tensor
 
@@ -584,7 +690,7 @@ def jagged_to_dense(jagged_tensor, seq_lens, head_nums, atten_dim):
     need_pad_seq = []
     offset = 0
     for _, seq_len in enumerate(seq_lens):
-        src_tensor = jagged_tensor[offset: offset + seq_len, :, :].reshape(seq_len, head_nums, atten_dim)
+        src_tensor = jagged_tensor[offset:offset + seq_len, :, :].reshape(seq_len, head_nums, atten_dim)
         need_pad_seq.append(src_tensor)
         offset = offset + seq_len
 
@@ -624,8 +730,9 @@ def gloden_fwd(q, k, v, mask, alpha, seq_offset, attnBias, max_seq_len, enable_m
 
 
 def test_fwd(batch_size, max_seq_len, num_heads, attention_dim, data_type):
-    alpha = 1 # 0.5
-    _, q, k, v, bias, mask, max_seq_len, seq_offset = jagged_data_gen(batch_size, max_seq_len, num_heads, attention_dim, data_type)
+    alpha = 1  # 0.5
+    _, q, k, v, bias, mask, max_seq_len, seq_offset = jagged_data_gen(batch_size, max_seq_len, num_heads, attention_dim,
+                                                                      data_type)
     # golden 输出
     golden_output = gloden_fwd(q, k, v, mask, alpha, seq_offset, bias, max_seq_len, True, False, data_type)
     # triton 输出
@@ -655,13 +762,14 @@ def test_fwd(batch_size, max_seq_len, num_heads, attention_dim, data_type):
 
 
 def golden_bwd(grad, q, k, v, bias, mask, max_seq_len, seq_offset, enable_mask, silu_scale, enable_bias, data_type):
+
     def jagged_to_dense_bwd(jagged_tensor, seq_lens, max_seq_len, head_num, head_dim):
         batch_size = len(seq_lens)
         dense_tensor = torch.zeros(batch_size, max_seq_len, head_num, head_dim, dtype=jagged_tensor.dtype)
 
         offset = 0
         for batch_id, seq_len in enumerate(seq_lens):
-            dense_tensor[batch_id, :seq_len, :, :] = jagged_tensor[offset: offset + seq_len, :, :]
+            dense_tensor[batch_id, :seq_len, :, :] = jagged_tensor[offset:offset + seq_len, :, :]
             offset = offset + seq_len
 
         return dense_tensor
@@ -671,7 +779,7 @@ def golden_bwd(grad, q, k, v, bias, mask, max_seq_len, seq_offset, enable_mask, 
 
         offset = 0
         for batch_id, seq_len in enumerate(seq_lens):
-            tensor[offset: offset + seq_len, :, :] = dense_tensor[batch_id, 0: seq_len, :, :]
+            tensor[offset:offset + seq_len, :, :] = dense_tensor[batch_id, 0:seq_len, :, :]
             offset = offset + seq_len
 
         return tensor
@@ -683,7 +791,7 @@ def golden_bwd(grad, q, k, v, bias, mask, max_seq_len, seq_offset, enable_mask, 
     head_nums = grad.shape[1]
     head_dim = grad.shape[2]
     batch_size = bias.shape[0]
-    seq_lens = np.zeros((batch_size,)).astype(np.int64)
+    seq_lens = np.zeros((batch_size, )).astype(np.int64)
     for batch_id in range(batch_size):
         seq_lens[batch_id] = seq_offset[batch_id + 1] - seq_offset[batch_id]
     grad_dens = jagged_to_dense_bwd(grad, seq_lens, max_seq_len, head_nums, head_dim).to(data_type)
@@ -733,11 +841,12 @@ def golden_bwd(grad, q, k, v, bias, mask, max_seq_len, seq_offset, enable_mask, 
 
 
 def test_bwd(batch_size, max_seq_len, num_heads, attention_dim, data_type):
-    alpha = 1 # 0.5
-    grad, q, k, v, bias, mask, max_seq_len, seq_offset = jagged_data_gen(batch_size, max_seq_len, num_heads, attention_dim, data_type)
+    alpha = 1  # 0.5
+    grad, q, k, v, bias, mask, max_seq_len, seq_offset = jagged_data_gen(batch_size, max_seq_len, num_heads,
+                                                                         attention_dim, data_type)
     # golden 输出
-    q_grad_golden, k_grad_golden, v_grad_golden, _ = golden_bwd(grad, q, k, v, bias, mask,
-                                max_seq_len, seq_offset, True, 0, False, data_type)
+    q_grad_golden, k_grad_golden, v_grad_golden, _ = golden_bwd(grad, q, k, v, bias, mask, max_seq_len, seq_offset,
+                                                                True, 0, False, data_type)
 
     # triton 输出
     seq_offsets = torch.tensor(seq_offset, dtype=torch.int64, device=DEVICE)
@@ -774,7 +883,7 @@ if __name__ == "__main__":
     max_seq_len = 1024
     #取值: 2/4/6/8
     num_heads = 2
-    #取值: 32/64/128/256 
+    #取值: 32/64/128/256
     attention_dim = 32
     data_type = torch.float32
     print("Running hstu attention forward test:")

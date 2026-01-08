@@ -4,27 +4,17 @@ import triton.language as tl
 from triton._C.libtriton import ir
 import triton.language.core as core
 import triton.language.standard as standard
-from triton.language.semantic import (
-    to_tensor,
-    bitcast,
-    wrap_tensor,
-    cast, not_equal,
-    permute, reshape,
-    _canonicalize_boundary_check
-)
+from triton.language.semantic import (to_tensor, bitcast, wrap_tensor, cast, not_equal, permute, reshape,
+                                      _canonicalize_boundary_check)
 from triton.language._utils import TRITON_MAX_TENSOR_NUMEL
-from .tensor_descriptor import (
-    _unwrap_if_constexpr,
-    _unwrap_shape,
-    block_type,
-    tensor_descriptor
-)
+from .tensor_descriptor import (_unwrap_if_constexpr, _unwrap_shape, block_type, tensor_descriptor)
 
 try:
     import acl
     is_compile_on_910_95 = acl.get_soc_name().startswith("Ascend910_95")
 except Exception as e:
     is_compile_on_910_95 = False
+
 
 def ret_if_not_create_int_cast(src_sca_ty, dst_sca_ty, input, builder):
     if not is_compile_on_910_95 and \
@@ -33,6 +23,7 @@ def ret_if_not_create_int_cast(src_sca_ty, dst_sca_ty, input, builder):
         return cast(cast(input, tl.float32, builder), dst_sca_ty, builder)
     return None
 
+
 def check_arange_range_power_of_two(range, builder):
     # Check if compile_mode is simt, then range must be a power of 2
     if builder.is_simt_mode():
@@ -40,42 +31,53 @@ def check_arange_range_power_of_two(range, builder):
         if (range & (range - 1)) != 0:
             raise ValueError("arange's range must be a power of 2")
 
+
 def arange_disable_check_power_of_two():
     return True
 
+
 def check_arange_less_than_max_numel(range):
     if range > TRITON_MAX_TENSOR_NUMEL:
-        raise ValueError(f"end - start must be less than or equal to TRITON_MAX_TENSOR_NUMEL = {TRITON_MAX_TENSOR_NUMEL}")
+        raise ValueError(
+            f"end - start must be less than or equal to TRITON_MAX_TENSOR_NUMEL = {TRITON_MAX_TENSOR_NUMEL}")
+
 
 def is_cast_src_dst_scalar_type_equal(src_sca_ty, dst_sca_ty):
     if src_sca_ty == dst_sca_ty:
         return True
     return False
 
+
 def check_unsupported_fp8_fp64(src_sca_ty, dst_sca_ty):
     if not is_compile_on_910_95:
         if (src_sca_ty.is_fp8() or dst_sca_ty.is_fp8()) or (src_sca_ty.is_fp64() or dst_sca_ty.is_fp64()):
             raise ValueError("[fp8, fp64] is unsupported on Ascend for now."
-                            "Source scalar type is " + str(src_sca_ty) + " and destination type is " + str(dst_sca_ty))
+                             "Source scalar type is " + str(src_sca_ty) + " and destination type is " + str(dst_sca_ty))
+
 
 def ext_dot_operand_types():
-    return (tl.int1,)
+    return (tl.int1, )
+
 
 def dot_check_hf32_input_precision(input_precision, ir, lhs, rhs, ret_scalar_ty):
     if (input_precision == getattr(ir.INPUT_PRECISION, "HF32")):
         if (not lhs.dtype.is_fp32() or not rhs.dtype.is_fp32() or not ret_scalar_ty.is_fp32()):
             raise ValueError("input_precision = 'hf32' must be used with f32 * f32 = f32 on Ascend")
 
+
 def dot_disable_check_max_num_imprecise_acc():
     print("max_num_imprecise_acc in tl.dot is not supported on Ascend yet. Thus it is ignored.")
 
+
 def reset_dot_max_num_imprecise_acc():
     return 0
+
 
 def check_was_bool_to_int8_dtype(input):
     if hasattr(input, 'was_bool_to_int8'):
         if input.type.scalar.is_int8():
             raise TypeError(f"unexpected type bool")
+
 
 def cast_bool_to_specified_dtype(input, builder):
     if hasattr(input, 'was_bool_to_int8'):
@@ -85,59 +87,75 @@ def cast_bool_to_specified_dtype(input, builder):
         raise TypeError(f"unexpected type {input.type.scalar}")
     return input
 
+
 def check_unexpected_dtype_float(input):
     if input.type.scalar.is_floating():
         raise TypeError(f"unexpected type {input.type.scalar}")
 
+
 def check_unexpected_dtype_bool(dtype):
     if dtype.is_bool():
         raise TypeError(f"Unexpected dtype {dtype}")
+
 
 def set_load_legacy_other_input(other, mask, care_padding, builder):
     if mask is not None and other is None and care_padding == True:
         return to_tensor(0, builder)
     return other
 
+
 def disable_cast_back_when_load_legacy_ptr_is_bool():
     return True
+
 
 def set_attr_was_bool_to_int8(ret, is_bool):
     if is_bool:
         ret.was_bool_to_int8 = True
 
+
 def atomic_disable_original_check():
     return True
+
 
 def atomic_cas_disable_element_bitwidth_check():
     return True
 
+
 def ext_atomic_cas_element_typechecking(element_ty):
     if element_ty in [tl.int1, tl.int8, tl.float64, tl.bfloat16]:
         raise ValueError(f"atomic_cas does not support {str(element_ty)}. "
-                        "All support dtypes are int16, int32, int64, float16, float32.")
+                         "All support dtypes are int16, int32, int64, float16, float32.")
+
 
 def is_atomic_max_no_bitcast():
     return True
 
+
 def is_atomic_min_no_bitcast():
     return True
 
+
 def atomic_max_returning_tensor(ir, ptr, val, mask, sem, scope, builder):
-    return tl.tensor(
-        builder.create_atomic_rmw(ir.ATOMIC_OP.MAX, ptr.handle, val.handle, mask.handle, sem, scope), val.type)
+    return tl.tensor(builder.create_atomic_rmw(ir.ATOMIC_OP.MAX, ptr.handle, val.handle, mask.handle, sem, scope),
+                     val.type)
+
 
 def atomic_min_returning_tensor(ir, ptr, val, mask, sem, scope, builder):
-    return tl.tensor(
-        builder.create_atomic_rmw(ir.ATOMIC_OP.MIN, ptr.handle, val.handle, mask.handle, sem, scope), val.type)
+    return tl.tensor(builder.create_atomic_rmw(ir.ATOMIC_OP.MIN, ptr.handle, val.handle, mask.handle, sem, scope),
+                     val.type)
+
 
 def is_float_format_support_bf16():
     return True
 
+
 def is_float_format_support_fp16():
     return True
 
+
 def floating_mod_returning_tensor(builder, input, other):
     return tl.tensor(builder.create_mod(input.handle, other.handle), input.type)
+
 
 def logical_check_int1_bitcast(input, dst_sca_ty, dst_bits, builder):
     src_sca_ty = input.type.scalar
@@ -147,42 +165,53 @@ def logical_check_int1_bitcast(input, dst_sca_ty, dst_bits, builder):
     else:
         input = not_equal(input, 0, builder)
 
+
 def ext_dot_scaled_validate_lhs_dtype(lhs):
     assert lhs.dtype == tl.bfloat16 or lhs.dtype == tl.float16, f"lhs matrix dtype must be bf16 or fp16"
+
 
 def ext_dot_scaled_validate_rhs_dtype(rhs):
     assert rhs.dtype == tl.bfloat16 or rhs.dtype == tl.float16, f"rhs matrix dtype must be bf16 or fp16"
 
+
 def ext_dot_scaled_check_same_dtype(lhs, rhs):
     assert lhs.dtype == rhs.dtype, f"lhs rhs matrix must get same dtype"
+
 
 def dot_scaled_disable_original_check():
     return True
 
+
 def ext_dot_scaled_check_lhs_rhs_format(lhs_format, rhs_format):
     lhs_format: str = lhs_format.value
     rhs_format: str = rhs_format.value
-    allowed_formats = {"bf16", "fp16"} # unsupported fp8/4 dtype: "e2m1", "e4m3", "e5m2"
+    allowed_formats = {"bf16", "fp16"}  # unsupported fp8/4 dtype: "e2m1", "e4m3", "e5m2"
     assert lhs_format in allowed_formats, f"NYI: lhs_format {lhs_format}"
     assert rhs_format in allowed_formats, f"NYI: rhs_format {rhs_format}"
+
 
 def dot_scaled_recheck_rhs_scale_is_none(rhs_scale, rhs_scale_is_none):
     rhs_scale_is_none = rhs_scale is None or (isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None)
     return rhs_scale_is_none
 
+
 def dot_scaled_check_lhs_scale_is_none(lhs_scale):
     lhs_scale_is_none = lhs_scale is None or (isinstance(lhs_scale, tl.constexpr) and lhs_scale.value is None)
     return lhs_scale_is_none
 
+
 def is_dot_scaled_support_rhs_scale():
     return True
+
 
 def check_dot_scaled_lhs_scale_dtype(lhs_scale):
     assert isinstance(lhs_scale, tl.tensor) and lhs_scale.dtype == tl.int8, f"lhs_scale must be int8 tensor"
 
+
 def check_dot_scaled_rhs_scale_dtype(rhs_scale, rhs_scale_is_none):
     if not rhs_scale_is_none:
         assert isinstance(rhs_scale, tl.tensor) and rhs_scale.dtype == tl.int8, f"rhs_scale must be int8 tensor"
+
 
 def dot_scaled_lrhs_k_pack(lhs_k_pack, rhs_k_pack, builder):
     if lhs_k_pack == False:
@@ -197,6 +226,7 @@ def dot_scaled_lrhs_k_pack(lhs_k_pack, rhs_k_pack, builder):
         tmp_rhs = permute(rhs, dims, builder)
         rhs = reshape(tmp_rhs, (rhs.shape[0], rhs.shape[1]), True, builder)
 
+
 def _bitcast_to_fp_type(val, float_format, builder):
     triton_ty = {"e5m2": tl.float8e5, "e4m3": tl.float8e4nv, "bf16": tl.bfloat16, "fp16": tl.float16}.get(float_format)
     if triton_ty is None:
@@ -210,21 +240,23 @@ def _bitcast_to_fp_type(val, float_format, builder):
         assert val.dtype == unsigned_ty, f"Unexpected dtype for {float_format}. Got {val.dtype}"
         return bitcast(val, triton_ty, builder)
 
+
 def dot_scaled_lhs_bitcast_to_fp_type(lhs, lhs_format, builder):
     lhs_format: str = lhs_format.value
     lhs = _bitcast_to_fp_type(lhs, lhs_format, builder)
     return lhs
+
 
 def dot_scaled_rhs_bitcast_to_fp_type(rhs, rhs_format, builder):
     rhs_format: str = rhs_format.value
     rhs = _bitcast_to_fp_type(rhs, rhs_format, builder)
     return rhs
 
+
 def check_dot_scaled_dimension(lhs, rhs):
-    assert lhs.type.shape[-1] == rhs.type.shape[-2], (
-        f"lhs last dimension (columns) {lhs.shape[-1]} "
-        f"must equal rhs penultimate dimension (rows) {rhs.shape[-2]}"
-    )
+    assert lhs.type.shape[-1] == rhs.type.shape[-2], (f"lhs last dimension (columns) {lhs.shape[-1]} "
+                                                      f"must equal rhs penultimate dimension (rows) {rhs.shape[-2]}")
+
 
 def check_dot_scaled_pack_size(PACKED_A, K, lhs_format, lhs, rhs):
     lhs_format: str = lhs_format.value
@@ -232,8 +264,10 @@ def check_dot_scaled_pack_size(PACKED_A, K, lhs_format, lhs, rhs):
     assert K * PACKED_B == PACKED_A * lhs.type.shape[
         -1], f"Reduction dimension should pack the same number of elements; (lhs: {lhs.shape} vs rhs: {rhs.shape})"
 
+
 def set_dot_scaled_lhs_scale_handle(lhs_scale, lhs_scale_is_none):
     return None if lhs_scale_is_none else lhs_scale.handle
+
 
 def ext_semantic_gather(src: tl.tensor, index: tl.tensor, axis: int, builder: ir.builder) -> tl.tensor:
     assert index.dtype.is_int(), "index must be an integer tensor"
@@ -255,27 +289,32 @@ def ext_semantic_gather(src: tl.tensor, index: tl.tensor, axis: int, builder: ir
     gather = builder.create_gather(src.handle, index.handle, axis)
     return wrap_tensor(gather, src.type.scalar, index.type.shape)
 
-def ext_semantic_insert_slice(ful: tl.tensor, sub: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int], builder: ir.builder) -> tl.tensor:
-    assert(len(ful.shape) == len(offsets))
-    assert(len(ful.shape) == len(sizes))
-    assert(len(ful.shape) == len(strides))
-    assert(all([s>=1 for s in sizes]))
-    assert(all([s>=0 for s in strides]))
+
+def ext_semantic_insert_slice(ful: tl.tensor, sub: tl.tensor, offsets: List[tl.tensor], sizes: List[int],
+                              strides: List[int], builder: ir.builder) -> tl.tensor:
+    assert (len(ful.shape) == len(offsets))
+    assert (len(ful.shape) == len(sizes))
+    assert (len(ful.shape) == len(strides))
+    assert (all([s >= 1 for s in sizes]))
+    assert (all([s >= 0 for s in strides]))
     new_offsets = [o.handle for o in offsets]
     ret_type = tl.block_type(ful.type.scalar, ful.shape)
     out = builder.create_insert_slice(ful.handle, sub.handle, new_offsets, sizes, strides)
     return tl.tensor(out, ret_type)
 
-def ext_semantic_extract_slice(ful: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int], builder: ir.builder) -> tl.tensor:
-    assert(len(ful.shape) == len(offsets))
-    assert(len(ful.shape) == len(sizes))
-    assert(len(ful.shape) == len(strides))
-    assert(all([s>=1 for s in sizes]))
-    assert(all([s>=0 for s in strides]))
+
+def ext_semantic_extract_slice(ful: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int],
+                               builder: ir.builder) -> tl.tensor:
+    assert (len(ful.shape) == len(offsets))
+    assert (len(ful.shape) == len(sizes))
+    assert (len(ful.shape) == len(strides))
+    assert (all([s >= 1 for s in sizes]))
+    assert (all([s >= 0 for s in strides]))
     new_offsets = [o.handle for o in offsets]
     ret_type = tl.block_type(ful.type.scalar, sizes)
     out = builder.create_extract_slice(ful.handle, new_offsets, sizes, strides)
     return tl.tensor(out, ret_type)
+
 
 def ext_semantic_get_element(src: tl.tensor, indice: List[tl.tensor], builder: ir.builder):
     if len(src.shape) != len(indice):
@@ -284,6 +323,7 @@ def ext_semantic_get_element(src: tl.tensor, indice: List[tl.tensor], builder: i
     new_indice = [i.handle for i in indice]
     result = builder.create_extract_scalar(src.handle, new_indice)
     return wrap_tensor(result, src.type.scalar, None)
+
 
 def ext_semantic_compile_hint(ptr: tl.tensor, hint_name: str, hint_val, builder: ir.builder):
     # simt mode does not support hint annotations
@@ -304,6 +344,7 @@ def ext_semantic_compile_hint(ptr: tl.tensor, hint_name: str, hint_val, builder:
         raise ValueError(f"Unsupported hint value type: {type(hint_val)}")
     builder.create_annotation(ptr.handle, hint_name, hint_val)
 
+
 def ext_semantic_custom_op(builder: ir.builder, op_name: str, **kwargs):
     if op_name == "sync_block_all":
         return builder.create_custom_op_for_inter_core_sync(op_name, kwargs["mode"], kwargs["event_id"])
@@ -315,6 +356,7 @@ def ext_semantic_custom_op(builder: ir.builder, op_name: str, **kwargs):
         return builder.create_custom_op_for_inter_core_sync(op_name, kwargs["sender"], kwargs["event_id"])
 
     raise ValueError(f"Unsupported custom op: {op_name}")
+
 
 def ext_semantic_sort(ptr: tl.tensor, dim: int, descending, builder: ir.builder):
     """
@@ -329,13 +371,14 @@ def ext_semantic_sort(ptr: tl.tensor, dim: int, descending, builder: ir.builder)
         values: tl.tensor，排序后的值（类型与输入一致）
     """
 
-    allowed_types = {tl.int8, tl.int16, tl.bfloat16, tl.float16, tl.float32, tl.int32, tl.int64, tl.float8e4nv, tl.float8e5}
+    allowed_types = {
+        tl.int8, tl.int16, tl.bfloat16, tl.float16, tl.float32, tl.int32, tl.int64, tl.float8e4nv, tl.float8e5
+    }
     base_ty = ptr.type.scalar if hasattr(ptr.type, "scalar") else ptr.type
     if base_ty not in allowed_types:
         raise TypeError(
             f"tt.sort only supports int8, int16, bfloat16, float16, float32, int32, int64, float8e4nv, float8e5"
-            f"but got {ptr.type}"
-        )
+            f"but got {ptr.type}")
 
     shape = getattr(ptr, "shape", None)
     if shape is None or shape == ():
@@ -354,17 +397,13 @@ def ext_semantic_sort(ptr: tl.tensor, dim: int, descending, builder: ir.builder)
         last_dim = rank - 1
         norm_dim = dim if dim >= 0 else dim + rank
         if norm_dim != last_dim:
-            raise ValueError(
-                f"tt.sort only supports sorting along the last dimension "
-                f"(dim={last_dim} or -1) for shape {tuple(shape)}, but got dim={dim}"
-            )
+            raise ValueError(f"tt.sort only supports sorting along the last dimension "
+                             f"(dim={last_dim} or -1) for shape {tuple(shape)}, but got dim={dim}")
         dim = last_dim
     else:
         if dim != -1:
-            raise ValueError(
-                "tt.sort only supports the last dimension; when rank is unknown "
-                "you must pass dim=-1"
-            )
+            raise ValueError("tt.sort only supports the last dimension; when rank is unknown "
+                             "you must pass dim=-1")
 
     if hasattr(descending, "value"):
         descending = bool(descending.value)
@@ -377,6 +416,7 @@ def ext_semantic_sort(ptr: tl.tensor, dim: int, descending, builder: ir.builder)
 
     return values
 
+
 def ext_semantic_scalar_constant(value, dtype: tl.dtype, builder: ir.builder) -> tl.tensor:
     if dtype is None:
         raise ValueError("dtype must be specified when value is not a tensor")
@@ -387,19 +427,16 @@ def ext_semantic_scalar_constant(value, dtype: tl.dtype, builder: ir.builder) ->
         value = get_value_fn(value)
     return tl.tensor(value, dtype)
 
+
 def ext_semantic_make_scalar(value, dtype: tl.dtype, builder: ir.builder) -> tl.tensor:
     if isinstance(value, tl.tensor):
         assert value.numel.value == 1, "only accepts size-1 tensor"
         return cast(value, dtype, builder)
     return ext_semantic_scalar_constant(value, dtype, builder)
 
-def ext_semantic_make_tensor_descriptor(
-    base: tl.tensor,
-    shape: List[tl.tensor],
-    strides: List[tl.tensor],
-    block_shape: List[tl.constexpr],
-    builder: ir.builder
-) -> tensor_descriptor:
+
+def ext_semantic_make_tensor_descriptor(base: tl.tensor, shape: List[tl.tensor], strides: List[tl.tensor],
+                                        block_shape: List[tl.constexpr], builder: ir.builder) -> tensor_descriptor:
     ndim = len(shape)
     if not (1 <= ndim <= 5):
         raise ValueError(f"Expected 1 <= ndim <= 5 but got {ndim} dimensions")
@@ -432,19 +469,14 @@ def ext_semantic_make_tensor_descriptor(
     base_handle = base.handle
     is_signed_int = base.type.element_ty.is_int_signed()
 
-    handle = builder.create_make_tensor_descriptor(base_handle, [s.handle for s in shape],
-                                                    [s.handle for s in strides], block_shape, is_signed_int)
+    handle = builder.create_make_tensor_descriptor(base_handle, [s.handle for s in shape], [s.handle for s in strides],
+                                                   block_shape, is_signed_int)
     return tensor_descriptor(handle, shape, strides, desc_block_type)
 
-def ext_semantic_index_select_simd(
-    src: tl.tensor,
-    dim: int,
-    index: tl.tensor,
-    src_shape: List[Union[int, tl.tensor]],
-    src_offset: List[Union[int, tl.tensor]],
-    read_shape: List[Union[int, tl.tensor]],
-    builder: ir.builder
-) -> tl.tensor:
+
+def ext_semantic_index_select_simd(src: tl.tensor, dim: int, index: tl.tensor, src_shape: List[Union[int, tl.tensor]],
+                                   src_offset: List[Union[int, tl.tensor]], read_shape: List[Union[int, tl.tensor]],
+                                   builder: ir.builder) -> tl.tensor:
     """
     Index select operation (SIMD version) that loads data from multiple indices along a dimension.
 
@@ -481,14 +513,13 @@ def ext_semantic_index_select_simd(
     newsrc_shape = [o.handle for o in src_shape]
     newsrc_offset = [o.handle for o in src_offset]
     # Create output type
-    return_shape = [
-        index.shape[0] if i == dim else read_shape[i]
-        for i in range(ndim)
-    ]
+    return_shape = [index.shape[0] if i == dim else read_shape[i] for i in range(ndim)]
     element_ty = src.type.element_ty
     output_ty = tl.block_type(element_ty, return_shape)
-    out = builder.create_index_select_simd(src.handle, index.handle, dim, newsrc_shape, newsrc_offset, read_shape, return_shape)
+    out = builder.create_index_select_simd(src.handle, index.handle, dim, newsrc_shape, newsrc_offset, read_shape,
+                                           return_shape)
     return tl.tensor(out, output_ty)
+
 
 def ext_semantic__load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder):
     # Load by a block pointer: pointer_type<block_type<>>
@@ -513,6 +544,7 @@ def ext_semantic__load_block_pointer(ptr, mask, other, boundary_check, padding, 
     # Build IR
     return tl.tensor(
         builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile), dst_ty)
+
 
 def ext_semantic_flip_simd(ptr: tl.tensor, dim: int, builder: ir.builder):
     """
@@ -542,19 +574,16 @@ def ext_semantic_flip_simd(ptr: tl.tensor, dim: int, builder: ir.builder):
             raise ValueError("tt.flip requires tensor rank >= 1")
         norm_dim = dim if dim >= 0 else dim + rank
         if not (0 <= norm_dim < rank):
-            raise ValueError(
-                f"tt.flip got invalid dim={dim} for shape {tuple(shape)}"
-            )
+            raise ValueError(f"tt.flip got invalid dim={dim} for shape {tuple(shape)}")
         dim = norm_dim
     else:
         if dim < 0:
-            raise ValueError(
-                "tt.flip with unknown rank requires non-negative dim"
-            )
+            raise ValueError("tt.flip with unknown rank requires non-negative dim")
 
     flipped_vals = builder.create_flip(ptr.handle, dim)
     flipped = tl.tensor(flipped_vals, type=ptr.type)
     return flipped
+
 
 def _get_flip_dim(dim, shape):
     dim = _unwrap_if_constexpr(dim)
@@ -565,6 +594,7 @@ def _get_flip_dim(dim, shape):
         dim += len(shape)
     return core.constexpr(dim)
 
+
 def _log2(i: core.constexpr):
     log2 = 0
     n = core.constexpr(i).value
@@ -572,6 +602,7 @@ def _log2(i: core.constexpr):
         n >>= 1
         log2 += 1
     return core.constexpr(log2)
+
 
 def ext_semantic_flip(ptr: tl.tensor, dim: int, builder: ir.builder, generator=None):
     """
@@ -597,17 +628,22 @@ def ext_semantic_flip(ptr: tl.tensor, dim: int, builder: ir.builder, generator=N
         return ptr
     # reshape the swap dimension to (2, 2, ..., 2)
     idtype = core.get_int_dtype(bitwidth=ptr.dtype.primitive_bitwidth, signed=True)
-    y = core.reshape(ptr.to(idtype, bitcast=True, _builder=builder), ptr.shape.__getitem__(slice(None, _dim)) + [2] * steps + ptr.shape.__getitem__(slice(_dim + 1, None)), _builder=builder)
+    y = core.reshape(
+        ptr.to(idtype, bitcast=True, _builder=builder),
+        ptr.shape.__getitem__(slice(None, _dim)) + [2] * steps + ptr.shape.__getitem__(slice(_dim + 1, None)),
+        _builder=builder)
     for i in ext_semantic_static_range(steps):
         y = y.__xor__(standard.xor_sum(y, _dim + i, True, _builder=builder, _generator=generator), _builder=builder)
     ptr = core.reshape(y, ptr.shape, _builder=builder).to(ptr.dtype, bitcast=True, _builder=builder)
     return ptr
+
 
 class ext_semantic_static_range:
     """
     Iterator for non-JIT Python functions that need to iterate over constexpr values.
     This is used in functions like flip that are called during compilation.
     """
+
     def __init__(self, arg1, arg2=None, step=None):
         if step is None:
             self.step = core.constexpr(1)
@@ -638,6 +674,7 @@ class ext_semantic_static_range:
         self._current += self._step
         return value
 
+
 def _convert_elem_to_ir_value(builder, elem, require_i64):
     if isinstance(elem, int):
         elem = tl.constexpr(elem)
@@ -658,7 +695,9 @@ def _convert_elem_to_ir_value(builder, elem, require_i64):
     else:
         assert False, f"Unsupported element type in shape/strides/offsets: {type(elem)}"
 
-def ext_semantic_embedding_gather(src: tl.tensor, idx: tl.tensor, bound: int, blksiz: int, offsets: Tuple, numels: Tuple, builder: ir.builder) -> tl.tensor:
+
+def ext_semantic_embedding_gather(src: tl.tensor, idx: tl.tensor, bound: int, blksiz: int, offsets: Tuple,
+                                  numels: Tuple, builder: ir.builder) -> tl.tensor:
     """
     Embedding
     :src_ptr:
@@ -677,17 +716,9 @@ def ext_semantic_embedding_gather(src: tl.tensor, idx: tl.tensor, bound: int, bl
     ret_shape.append(blksiz)
     return wrap_tensor(ret, src.dtype.element_ty, ret_shape)
 
-def ext_semantic_index_put(
-    ptr: tl.tensor,
-    index: tl.tensor,
-    value: tl.tensor,
-    dim: int,
-    index_boundary: int,
-    end_offset: Tuple,
-    start_offset: Tuple,
-    dst_stride: Tuple,
-    builder: ir.builder
-):
+
+def ext_semantic_index_put(ptr: tl.tensor, index: tl.tensor, value: tl.tensor, dim: int, index_boundary: int,
+                           end_offset: Tuple, start_offset: Tuple, dst_stride: Tuple, builder: ir.builder):
     """
     Index put values from a tensor into a destination tensor.
 
@@ -737,14 +768,12 @@ def ext_semantic_index_put(
     if idx_rank != 1:
         # flatten index to 1D, shape (index.numel,)
         flat_numel = index.numel
-        index = reshape(index, (flat_numel,), True, builder)
+        index = reshape(index, (flat_numel, ), True, builder)
         idx_rank = 1
 
     if value.shape[dim] != index.shape[0]:
-        raise ValueError(
-            f"index.numel must equal value.shape[dim], "
-            f"but got index.numel={index.numel.value}, value.shape[dim]={value.shape[dim].value}"
-        )
+        raise ValueError(f"index.numel must equal value.shape[dim], "
+                         f"but got index.numel={index.numel.value}, value.shape[dim]={value.shape[dim].value}")
 
     require_i64 = index.dtype.is_int64()
     end_offset = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in end_offset]
@@ -755,20 +784,14 @@ def ext_semantic_index_put(
         raise ValueError(f"len(end_offset)==len(start_offset)==len(dst_stride)==value.rank required, "
                          f"got {len(end_offset)}, {len(start_offset)}, {len(dst_stride)}, {v_rank}")
 
-    return tl.tensor(builder.create_index_put(ptr.handle, index.handle, value.handle, dim,
-                                              index_boundary, end_offset, start_offset, dst_stride), tl.void)
+    return tl.tensor(
+        builder.create_index_put(ptr.handle, index.handle, value.handle, dim, index_boundary, end_offset, start_offset,
+                                 dst_stride), tl.void)
 
-def ext_semantic_gather_out_to_ub(
-    src: tl.tensor,
-    index: tl.tensor,
-    index_boundary: int,
-    dim: int,
-    src_stride: Tuple,
-    end_offset: Tuple,
-    start_offset: Tuple,
-    other: Optional[numbers.Number] = None,
-    _builder: ir.builder = None
-):
+
+def ext_semantic_gather_out_to_ub(src: tl.tensor, index: tl.tensor, index_boundary: int, dim: int, src_stride: Tuple,
+                                  end_offset: Tuple, start_offset: Tuple, other: Optional[numbers.Number] = None,
+                                  _builder: ir.builder = None):
     """
     Gather from a source tensor in Global Memory (GM) to Unified Buffer (UB)
     along a specified dimension with out-of-bound handling.
@@ -841,30 +864,14 @@ def ext_semantic_gather_out_to_ub(
         raise ValueError(f"len(src_stride)==len(end_offset)==len(start_offset)==index.rank required, "
                          f"got {len(src_stride)}, {len(end_offset)}, {len(start_offset)}, {idx_rank}")
 
-    ret = _builder.create_gather_out_to_ub(
-        src.handle,
-        index.handle,
-        index_boundary,
-        dim,
-        src_stride,
-        end_offset,
-        start_offset,
-        other if other else None
-    )
+    ret = _builder.create_gather_out_to_ub(src.handle, index.handle, index_boundary, dim, src_stride, end_offset,
+                                           start_offset, other if other else None)
     ret_shape = [_unwrap_if_constexpr(s) for s in index.shape]
     return wrap_tensor(ret, src.dtype.element_ty, ret_shape)
 
-def ext_semantic_scatter_ub_to_out(
-    ptr: tl.tensor,
-    value: tl.tensor,
-    index: tl.tensor,
-    index_boundary: int,
-    dim: int,
-    dst_stride: tuple,
-    end_offset: tuple,
-    start_offset: tuple,
-    _builder=None
-):
+
+def ext_semantic_scatter_ub_to_out(ptr: tl.tensor, value: tl.tensor, index: tl.tensor, index_boundary: int, dim: int,
+                                   dst_stride: tuple, end_offset: tuple, start_offset: tuple, _builder=None):
     """
     Scatter a tile from Unified Buffer (UB) into a destination tensor in Global Memory (GM)
     along a specified dimension, with index-boundary checking.
@@ -915,23 +922,12 @@ def ext_semantic_scatter_ub_to_out(
                          f"got {len(dst_stride)}, {len(end_offset)}, {len(start_offset)}, {idx_rank}")
 
     return tl.tensor(
-        _builder.create_scatter_ub_to_out(
-            ptr.handle,
-            value.handle,
-            index.handle,
-            index_boundary,
-            dim,
-            dst_stride,
-            end_offset,
-            start_offset
-        ),
-        tl.void
-    )
+        _builder.create_scatter_ub_to_out(ptr.handle, value.handle, index.handle, index_boundary, dim, dst_stride,
+                                          end_offset, start_offset), tl.void)
 
 
 semantic_ext_spec_api_list = [
-    "gather", "insert_slice", "extract_slice", "get_element", "compile_hint",
-    "custom_op", "sort", "scalar_constant", "make_scalar", "make_tensor_descriptor", "index_select_simd",
-    "flip_simd", "flip", "static_range", "embedding_gather", "index_put", "gather_out_to_ub",
-    "scatter_ub_to_out", "_load_block_pointer"
+    "gather", "insert_slice", "extract_slice", "get_element", "compile_hint", "custom_op", "sort", "scalar_constant",
+    "make_scalar", "make_tensor_descriptor", "index_select_simd", "flip_simd", "flip", "static_range",
+    "embedding_gather", "index_put", "gather_out_to_ub", "scatter_ub_to_out", "_load_block_pointer"
 ]

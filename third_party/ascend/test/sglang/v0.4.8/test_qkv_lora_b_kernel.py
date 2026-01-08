@@ -97,20 +97,17 @@ def _qkv_lora_b_kernel(
     n_offset = tl.arange(0, BLOCK_N) + pid_n * BLOCK_N
     k_offset = tl.arange(0, BLOCK_K)
 
-    x_ptrs = (x + seg_start * x_stride_0 + (qkv_id * K) * x_stride_1) + (
-        s_offset[:, None] * x_stride_0 + k_offset[None, :] * x_stride_1
-    )
-    w_ptrs = (weights + w_index * w_stride_0 + n_start * w_stride_1) + (
-        k_offset[:, None] * w_stride_2 + n_offset[None, :] * w_stride_1
-    )
+    x_ptrs = (x + seg_start * x_stride_0 +
+              (qkv_id * K) * x_stride_1) + (s_offset[:, None] * x_stride_0 + k_offset[None, :] * x_stride_1)
+    w_ptrs = (weights + w_index * w_stride_0 + n_start * w_stride_1) + (k_offset[:, None] * w_stride_2 +
+                                                                        n_offset[None, :] * w_stride_1)
 
     # Iterate to compute the block in output matrix
     partial_sum = tl.zeros((BLOCK_S, BLOCK_N), dtype=tl.float32)
     for k in range(0, tl.cdiv(K, BLOCK_K)):
         x_tile = tl.load(
             x_ptrs,
-            mask=(s_offset[:, None] < seg_len)
-            and (k_offset[None, :] < K - k * BLOCK_K),
+            mask=(s_offset[:, None] < seg_len) and (k_offset[None, :] < K - k * BLOCK_K),
             other=0.0,
         )
         w_tile = tl.load(
@@ -127,8 +124,7 @@ def _qkv_lora_b_kernel(
     partial_sum *= scaling
     partial_sum = partial_sum.to(x.dtype.element_ty)
     output_ptr = (output + seg_start * output_stride_0 + n_start * output_stride_1) + (
-        s_offset[:, None] * output_stride_0 + n_offset[None, :] * output_stride_1
-    )
+        s_offset[:, None] * output_stride_0 + n_offset[None, :] * output_stride_1)
     output_mask = (s_offset[:, None] < seg_len) and (n_offset[None, :] < n_size)
     if fuse_scaling_add:
         partial_sum += tl.load(output_ptr, mask=output_mask)

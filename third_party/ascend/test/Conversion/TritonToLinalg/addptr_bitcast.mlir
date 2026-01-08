@@ -1,6 +1,6 @@
-// RUN: triton-adapter-opt --triton-to-linalg %s --split-input-file | FileCheck %s 
+// RUN: triton-adapter-opt --triton-to-linalg %s --split-input-file | FileCheck %s
 module {
-  // CHECK-LABEL: func.func @addptr_bitcast 
+  // CHECK-LABEL: func.func @addptr_bitcast
   tt.func public @addptr_bitcast(%arg0: !tt.ptr<i1> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<f32> {tt.divisibility = 16 : i32}) attributes {noinline = false} {
     %c0_i32 = arith.constant 0 : i32
     %c64_i64 = arith.constant 64 : i64
@@ -10,7 +10,7 @@ module {
     %7 = tt.splat %arg0 : !tt.ptr<i1> -> tensor<64x!tt.ptr<i1>>
     %8 = tt.addptr %7, %6 : tensor<64x!tt.ptr<i1>>, tensor<64xi32>
     %81 = tt.bitcast %8 : tensor<64x!tt.ptr<i1>> -> tensor<64x!tt.ptr<i8>>
-    // CHECK: %[[SRC:.*]] = memref.reinterpret_cast [[ARG_0:%.+]] to offset: [0], sizes: [64], strides: [1] : memref<?xi8> to memref<64xi8, strided<[1]>>   
+    // CHECK: %[[SRC:.*]] = memref.reinterpret_cast [[ARG_0:%.+]] to offset: [0], sizes: [64], strides: [1] : memref<?xi8> to memref<64xi8, strided<[1]>>
     // CHECK: %[[DST:.*]] = memref.alloc() : memref<64xi8>
     // CHECK: memref.copy %[[SRC]], %[[DST]] : memref<64xi8, strided<[1]>> to memref<64xi8>
     %10 = tt.load %81 {cache = 1 : i32, evict = 3 : i32, isVolatile = false} : tensor<64x!tt.ptr<i8>>
@@ -25,7 +25,7 @@ module {
 // -----
 
 module {
-  // CHECK-LABEL: func.func @addptr_bitcast2 
+  // CHECK-LABEL: func.func @addptr_bitcast2
   tt.func public @addptr_bitcast2(%arg0: !tt.ptr<i1> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<f16> {tt.divisibility = 16 : i32}, %arg2: !tt.ptr<f16> {tt.divisibility = 16 : i32}) attributes {noinline = false} {
     %c1024_i32 = arith.constant 1024 : i32
     %0 = tt.get_program_id x : i32
@@ -54,7 +54,7 @@ module {
 
 module {
   // CHECK-LABEL: func.func @addptr_bitcast3
-  // CHECK-ORIG-SAME:    %[[ARG0_I8:.*]]: memref<*xi8>  
+  // CHECK-ORIG-SAME:    %[[ARG0_I8:.*]]: memref<*xi8>
   tt.func public @addptr_bitcast3(%arg0: !tt.ptr<i1> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<f16> {tt.divisibility = 16 : i32}, %arg2: !tt.ptr<f16> {tt.divisibility = 16 : i32}) attributes {noinline = false} {
     %cst = arith.constant dense<0> : tensor<1xi8>
     %c1024_i32 = arith.constant 1024 : i32
@@ -70,7 +70,7 @@ module {
     %9 = tt.addptr %8, %4 : tensor<1024x!tt.ptr<f16>>, tensor<1024xi32>
     %10 = tt.load %9 : tensor<1024x!tt.ptr<f16>>
     %11 = tt.addptr %arg0, %0 : !tt.ptr<i1>, i32
-    %12 = tt.bitcast %11 : !tt.ptr<i1> -> !tt.ptr<i8>    
+    %12 = tt.bitcast %11 : !tt.ptr<i1> -> !tt.ptr<i8>
     // CHECK: %[[REINTERPRET_CAST_2:.*]] = memref.reinterpret_cast [[ARG_0:%.+]] to offset: [%[[PID_0:.*]]], sizes: [1], strides: [1] : memref<?xi8> to memref<1xi8, strided<[1], offset: ?>>
     %13 = tt.splat %12 : !tt.ptr<i8> -> tensor<1x!tt.ptr<i8>>
     %14 = tt.load %13 : tensor<1x!tt.ptr<i8>>

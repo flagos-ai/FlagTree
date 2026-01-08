@@ -38,4 +38,3 @@ module {
 // CHECK:     bufferization.materialize_in_destination %3 in writable %reinterpret_cast_1 : (tensor<1xi32>, memref<1xi32, strided<[1], offset: 2>>) -> (
 // CHECK:     return
 // CHECK:   }
-

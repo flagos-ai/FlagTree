@@ -24,6 +24,7 @@ import triton
 import torch
 import triton.language as tl
 import test_common
+
 sys.path.append("..")
 
 
@@ -74,9 +75,7 @@ def _fwd_kernel_stage1(
 
     off_q = cur_batch * stride_qbs + cur_head * stride_qh + offs_d
 
-    kv_len_per_split = (
-        tl.cdiv(tl.cdiv(cur_batch_seq_len, kv_splits), MIN_BLOCK_KV) * MIN_BLOCK_KV
-    )
+    kv_len_per_split = (tl.cdiv(tl.cdiv(cur_batch_seq_len, kv_splits), MIN_BLOCK_KV) * MIN_BLOCK_KV)
     split_kv_start = kv_len_per_split * split_kv_id
     split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
 
@@ -93,11 +92,7 @@ def _fwd_kernel_stage1(
                 mask=offs_n < split_kv_end,
                 other=0,
             )
-            offs_buf_k = (
-                kv_loc[:, None] * stride_buf_kbs
-                + cur_kv_head * stride_buf_kh
-                + offs_d[None, :]
-            )
+            offs_buf_k = (kv_loc[:, None] * stride_buf_kbs + cur_kv_head * stride_buf_kh + offs_d[None, :])
             k = tl.load(
                 K_Buffer + offs_buf_k,
                 mask=(offs_n[:, None] < split_kv_end) & (mask_d[None, :]),
@@ -111,11 +106,7 @@ def _fwd_kernel_stage1(
 
             qk = tl.where(offs_n < split_kv_end, qk, float("-inf"))
 
-            offs_buf_v = (
-                kv_loc[:, None] * stride_buf_vbs
-                + cur_kv_head * stride_buf_vh
-                + offs_dv[None, :]
-            )
+            offs_buf_v = (kv_loc[:, None] * stride_buf_vbs + cur_kv_head * stride_buf_vh + offs_dv[None, :])
             v = tl.load(
                 V_Buffer + offs_buf_v,
                 mask=(offs_n[:, None] < split_kv_end) & (mask_dv[None, :]),
@@ -131,12 +122,7 @@ def _fwd_kernel_stage1(
             e_sum = e_sum * re_scale + tl.sum(p, 0)
             e_max = n_e_max
 
-        offs_mid_o = (
-            cur_batch * stride_mid_ob
-            + cur_head * stride_mid_oh
-            + split_kv_id * stride_mid_os
-            + offs_dv
-        )
+        offs_mid_o = (cur_batch * stride_mid_ob + cur_head * stride_mid_oh + split_kv_id * stride_mid_os + offs_dv)
 
         tl.store(
             Att_Out + offs_mid_o,
@@ -144,11 +130,7 @@ def _fwd_kernel_stage1(
             mask=(mask_dv),
         )
 
-        offs_mid_o_1 = (
-            cur_batch * stride_mid_ob
-            + cur_head * stride_mid_oh
-            + split_kv_id * stride_mid_os
-        ) // Lv
+        offs_mid_o_1 = (cur_batch * stride_mid_ob + cur_head * stride_mid_oh + split_kv_id * stride_mid_os) // Lv
 
         tl.store(
             Att_Lse + offs_mid_o_1,
@@ -174,12 +156,12 @@ def test_fwd_kernel_stage1(ptfile_path="/home/z00946769/triton-sglang/full_data/
     _fwd_kernel_stage1[data["grid"]](**input_data)
 
     # compare the results of GPU and NPU.
-    try: 
+    try:
         dict_ref, dict_cal = data["gpu_output"], input_data
         keys_ref, keys_cal = set(dict_ref.keys()), set(dict_cal.keys())
         if not keys_ref.issubset(keys_cal):
             raise ValueError("The keys of dict_ref is not subset of dict_cal")
-        
+
         for key in dict_ref.keys():
             val_a, val_b = dict_ref[key], dict_cal[key]
             if type(val_a) != type(val_b):

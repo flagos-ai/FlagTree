@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import math
 import pytest
 import random
@@ -152,8 +151,7 @@ def fn_npu_bool_3d(output_ptr, X: tl.constexpr, Y: tl.constexpr, Z: tl.constexpr
 
 
 @triton.jit
-def fn_npu_int8_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
-                   YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_int8_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     yidx = tl.arange(0, YNUMEL)
     zidx = tl.arange(0, ZNUMEL)
     Ymask = yidx < Y
@@ -165,8 +163,7 @@ def fn_npu_int8_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
 
 
 @triton.jit
-def fn_npu_int16_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
-                    YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_int16_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     yidx = tl.arange(0, YNUMEL)
     zidx = tl.arange(0, ZNUMEL)
     Ymask = yidx < Y
@@ -178,8 +175,7 @@ def fn_npu_int16_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
 
 
 @triton.jit
-def fn_npu_int32_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
-                    YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_int32_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     yidx = tl.arange(0, YNUMEL)
     zidx = tl.arange(0, ZNUMEL)
     Ymask = yidx < Y
@@ -191,8 +187,7 @@ def fn_npu_int32_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
 
 
 @triton.jit
-def fn_npu_int64_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
-                    YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_int64_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     yidx = tl.arange(0, YNUMEL)
     zidx = tl.arange(0, ZNUMEL)
     Ymask = yidx < Y
@@ -204,8 +199,7 @@ def fn_npu_int64_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
 
 
 @triton.jit
-def fn_npu_fp16_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
-                   YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_fp16_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     yidx = tl.arange(0, YNUMEL)
     zidx = tl.arange(0, ZNUMEL)
     Ymask = yidx < Y
@@ -217,8 +211,7 @@ def fn_npu_fp16_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
 
 
 @triton.jit
-def fn_npu_fp32_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
-                   YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_fp32_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     yidx = tl.arange(0, YNUMEL)
     zidx = tl.arange(0, ZNUMEL)
     Ymask = yidx < Y
@@ -230,8 +223,7 @@ def fn_npu_fp32_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
 
 
 @triton.jit
-def fn_npu_bf16_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
-                   YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_bf16_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     yidx = tl.arange(0, YNUMEL)
     zidx = tl.arange(0, ZNUMEL)
     Ymask = yidx < Y
@@ -243,8 +235,7 @@ def fn_npu_bf16_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
 
 
 @triton.jit
-def fn_npu_bool_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr,
-                   YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_bool_2d(output_ptr, Y: tl.constexpr, Z: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     yidx = tl.arange(0, YNUMEL)
     zidx = tl.arange(0, ZNUMEL)
     Ymask = yidx < Y
@@ -260,7 +251,7 @@ def fn_npu_int8_1d(output_ptr, Z: tl.constexpr, ZNUMEL: tl.constexpr):
     zidx = tl.arange(0, ZNUMEL)
     Zmask = zidx < Z
     mask = (Zmask[:])
-    ret = tl.zeros((ZNUMEL,), dtype=tl.int8)
+    ret = tl.zeros((ZNUMEL, ), dtype=tl.int8)
     oidx = zidx[:]
     tl.store(output_ptr + oidx, ret, mask=mask)
 
@@ -270,7 +261,7 @@ def fn_npu_int16_1d(output_ptr, Z: tl.constexpr, ZNUMEL: tl.constexpr):
     zidx = tl.arange(0, ZNUMEL)
     Zmask = zidx < Z
     mask = (Zmask[:])
-    ret = tl.zeros((ZNUMEL,), dtype=tl.int16)
+    ret = tl.zeros((ZNUMEL, ), dtype=tl.int16)
     oidx = zidx[:]
     tl.store(output_ptr + oidx, ret, mask=mask)
 
@@ -280,7 +271,7 @@ def fn_npu_int32_1d(output_ptr, Z: tl.constexpr, ZNUMEL: tl.constexpr):
     zidx = tl.arange(0, ZNUMEL)
     Zmask = zidx < Z
     mask = (Zmask[:])
-    ret = tl.zeros((ZNUMEL,), dtype=tl.int32)
+    ret = tl.zeros((ZNUMEL, ), dtype=tl.int32)
     oidx = zidx[:]
     tl.store(output_ptr + oidx, ret, mask=mask)
 
@@ -290,7 +281,7 @@ def fn_npu_int64_1d(output_ptr, Z: tl.constexpr, ZNUMEL: tl.constexpr):
     zidx = tl.arange(0, ZNUMEL)
     Zmask = zidx < Z
     mask = (Zmask[:])
-    ret = tl.zeros((ZNUMEL,), dtype=tl.int64)
+    ret = tl.zeros((ZNUMEL, ), dtype=tl.int64)
     oidx = zidx[:]
     tl.store(output_ptr + oidx, ret, mask=mask)
 
@@ -300,7 +291,7 @@ def fn_npu_fp16_1d(output_ptr, Z: tl.constexpr, ZNUMEL: tl.constexpr):
     zidx = tl.arange(0, ZNUMEL)
     Zmask = zidx < Z
     mask = (Zmask[:])
-    ret = tl.zeros((ZNUMEL,), dtype=tl.float16)
+    ret = tl.zeros((ZNUMEL, ), dtype=tl.float16)
     oidx = zidx[:]
     tl.store(output_ptr + oidx, ret, mask=mask)
 
@@ -310,7 +301,7 @@ def fn_npu_fp32_1d(output_ptr, Z: tl.constexpr, ZNUMEL: tl.constexpr):
     zidx = tl.arange(0, ZNUMEL)
     Zmask = zidx < Z
     mask = (Zmask[:])
-    ret = tl.zeros((ZNUMEL,), dtype=tl.float32)
+    ret = tl.zeros((ZNUMEL, ), dtype=tl.float32)
     oidx = zidx[:]
     tl.store(output_ptr + oidx, ret, mask=mask)
 
@@ -320,7 +311,7 @@ def fn_npu_bf16_1d(output_ptr, Z: tl.constexpr, ZNUMEL: tl.constexpr):
     zidx = tl.arange(0, ZNUMEL)
     Zmask = zidx < Z
     mask = (Zmask[:])
-    ret = tl.zeros((ZNUMEL,), dtype=tl.bfloat16)
+    ret = tl.zeros((ZNUMEL, ), dtype=tl.bfloat16)
     oidx = zidx[:]
     tl.store(output_ptr + oidx, ret, mask=mask)
 
@@ -330,7 +321,7 @@ def fn_npu_bool_1d(output_ptr, Z: tl.constexpr, ZNUMEL: tl.constexpr):
     zidx = tl.arange(0, ZNUMEL)
     Zmask = zidx < Z
     mask = (Zmask[:])
-    ret = tl.zeros((ZNUMEL,), dtype=tl.int1)
+    ret = tl.zeros((ZNUMEL, ), dtype=tl.int1)
     oidx = zidx[:]
     tl.store(output_ptr + oidx, ret, mask=mask)
 
@@ -432,33 +423,29 @@ dtype_mapping0d = {
 }
 
 # 生成测试用例
-testlist = [
-    (func, sigtype, dtype, shape)
-    for sigtype in test_dtype
-    for shape in test_shape0d
-    for func, dtype in [dtype_mapping0d[sigtype]]  # 直接解包映射结果
-]
+testlist = [(func, sigtype, dtype, shape)
+            for sigtype in test_dtype
+            for shape in test_shape0d
+            for func, dtype in [dtype_mapping0d[sigtype]]  # 直接解包映射结果
+            ]
 
-testlist += [
-    (func, sigtype, dtype, shape)
-    for sigtype in test_dtype
-    for shape in test_shape1d
-    for func, dtype in [dtype_mapping1d[sigtype]]  # 直接解包映射结果
-]
+testlist += [(func, sigtype, dtype, shape)
+             for sigtype in test_dtype
+             for shape in test_shape1d
+             for func, dtype in [dtype_mapping1d[sigtype]]  # 直接解包映射结果
+             ]
 
-testlist += [
-    (func, sigtype, dtype, shape)
-    for sigtype in test_dtype
-    for shape in test_shape2d
-    for func, dtype in [dtype_mapping2d[sigtype]]  # 直接解包映射结果
-]
+testlist += [(func, sigtype, dtype, shape)
+             for sigtype in test_dtype
+             for shape in test_shape2d
+             for func, dtype in [dtype_mapping2d[sigtype]]  # 直接解包映射结果
+             ]
 
-testlist += [
-    (func, sigtype, dtype, shape)
-    for sigtype in test_dtype
-    for shape in test_shape3d
-    for func, dtype in [dtype_mapping3d[sigtype]]  # 直接解包映射结果
-]
+testlist += [(func, sigtype, dtype, shape)
+             for sigtype in test_dtype
+             for shape in test_shape3d
+             for func, dtype in [dtype_mapping3d[sigtype]]  # 直接解包映射结果
+             ]
 
 
 @pytest.mark.parametrize('testfunc, sigtype, dtype, shape', testlist)
@@ -483,13 +470,13 @@ def test_npu(testfunc, sigtype, dtype, shape):
             grid = (1, 1, 1)
         testfunc[grid](output, shape0, shape1, shape0, shape1)
     if len(shape) == 1:
-        x = torch.full((shape[0],), 0, dtype=dtype).npu()
-        output = torch.randint(1, (shape[0],), dtype=dtype).npu()
+        x = torch.full((shape[0], ), 0, dtype=dtype).npu()
+        output = torch.randint(1, (shape[0], ), dtype=dtype).npu()
         testfunc[1, 1, 1](output, shape[0], shape[0])
     if len(shape) == 0:
         output = torch.randint(1, size=shape, dtype=dtype).npu()
         x = torch.zeros_like(output)
-        testfunc[(1,)](output_ptr=output, N=1)
+        testfunc[(1, )](output_ptr=output, N=1)
     test_common.validate_cmp(sigtype, output, x)
 
 
@@ -509,7 +496,7 @@ def fn_npu_multi_d(output_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.conste
         offsets = offsets[:, :, :, :, None] + tl.arange(0, NB)[None, None, None, None, :]
 
     if (YB * ZB * MB * NB) == 1:
-        ret = tl.zeros((XB,), dtype=dtype)
+        ret = tl.zeros((XB, ), dtype=dtype)
     elif (ZB * MB * NB) == 1:
         ret = tl.zeros((XB, YB), dtype=dtype)
     elif (MB * NB) == 1:
@@ -523,18 +510,14 @@ def fn_npu_multi_d(output_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.conste
 
 
 @pytest.mark.shape_4d_5d
-@pytest.mark.parametrize('param_list',
-                         [
-                             ('float32', (4, 2, 16, 16)),
-                             ('float32', (2, 4, 2, 16, 16)),
-
-                             ('float32', (4, 2, 16, 16)),
-                             ('float32', (2, 4, 2, 16, 16)),
-
-                             ('float32', (4, 2, 16, 16)),
-                             ('float32', (2, 4, 2, 16, 16)),
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ('float32', (4, 2, 16, 16)),
+    ('float32', (2, 4, 2, 16, 16)),
+    ('float32', (4, 2, 16, 16)),
+    ('float32', (2, 4, 2, 16, 16)),
+    ('float32', (4, 2, 16, 16)),
+    ('float32', (2, 4, 2, 16, 16)),
+])
 def test_case_4d_5d(param_list):
     dtype, shape = param_list
     if check_ub_mem_overflow(dtype, shape):
@@ -546,6 +529,6 @@ def test_case_4d_5d(param_list):
     triton_shape = [*shape]
     while len(triton_shape) < 5:
         triton_shape.append(1)
-    fn_npu_multi_d[(1,)](y_cal, *triton_shape)
+    fn_npu_multi_d[(1, )](y_cal, *triton_shape)
     print(f"y_cal = {torch.flatten(y_cal)[0:4]}")
     test_common.validate_cmp(dtype, y_cal, y_ref)

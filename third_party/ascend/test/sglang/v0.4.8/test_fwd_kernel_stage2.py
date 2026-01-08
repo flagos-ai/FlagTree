@@ -24,6 +24,7 @@ import triton
 import torch
 import triton.language as tl
 import test_common
+
 sys.path.append("..")
 
 
@@ -48,9 +49,7 @@ def _fwd_kernel_stage2(
     cur_batch = tl.program_id(0)
     cur_head = tl.program_id(1)
 
-    cur_batch_seq_len = tl.load(kv_indptr + cur_batch + 1) - tl.load(
-        kv_indptr + cur_batch
-    )
+    cur_batch_seq_len = tl.load(kv_indptr + cur_batch + 1) - tl.load(kv_indptr + cur_batch)
     kv_splits = tl.load(num_kv_splits + cur_batch)
 
     offs_d = tl.arange(0, BLOCK_DV)
@@ -62,18 +61,14 @@ def _fwd_kernel_stage2(
 
     offs_v = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + offs_d
     offs_logic = (cur_batch * stride_mid_ob + cur_head * stride_mid_oh) // Lv
-    kv_len_per_split = (
-        tl.cdiv(tl.cdiv(cur_batch_seq_len, kv_splits), MIN_BLOCK_KV) * MIN_BLOCK_KV
-    )
+    kv_len_per_split = (tl.cdiv(tl.cdiv(cur_batch_seq_len, kv_splits), MIN_BLOCK_KV) * MIN_BLOCK_KV)
 
     for split_kv_id in range(0, MAX_KV_SPLITS):
         split_kv_start = kv_len_per_split * split_kv_id
         split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
 
         if split_kv_end > split_kv_start:
-            tv = tl.load(
-                Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d, other=0.0
-            )
+            tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d, other=0.0)
             tlogic = tl.load(Mid_O_1 + offs_logic + split_kv_id * stride_mid_os // Lv)
             n_e_max = tl.maximum(tlogic, e_max)
 

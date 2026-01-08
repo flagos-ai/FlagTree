@@ -174,7 +174,7 @@ module {
 // CHECK-DAG:       [[VAR_5_:%.+]] = tensor.empty() : tensor<4x4xi32>
 // CHECK:           [[VAR_6_:%.+]] = linalg.broadcast ins([[VAR_1_]] : tensor<4xi32>) outs([[VAR_5_]] : tensor<4x4xi32>) dimensions = [0]
 // CHECK:           [[VAR_7_:%.+]] = tensor.empty() : tensor<4xf32>
-// CHECK-DAG:       [[VAR_8_:%.+]] = linalg.fill ins([[CST_0_]] : f32) outs([[VAR_7_]] : tensor<4xf32>) -> tensor<4xf32>     
+// CHECK-DAG:       [[VAR_8_:%.+]] = linalg.fill ins([[CST_0_]] : f32) outs([[VAR_7_]] : tensor<4xf32>) -> tensor<4xf32>
 // CHECK:           [[VAR_10_:%.+]] = linalg.fill ins([[CST_minus_1_]] : i32) outs([[VAR_0_]] : tensor<4xi32>) -> tensor<4xi32>
 // CHECK:           [[VAR_reduced_:%.+]]:2 = linalg.reduce ins([[VAR_4_]], [[VAR_6_]] : tensor<4x4xf32>, tensor<4x4xi32>) outs([[VAR_8_]], [[VAR_10_]] : tensor<4xf32>, tensor<4xi32>) dimensions = [1]
 // CHECK:             ([[in_:.+]]: f32, [[in_1_:.+]]: i32, [[init:.+]]: f32, [[init_2:.+]]: i32) {

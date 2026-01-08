@@ -29,6 +29,7 @@ import triton
 from triton._C import libentry_ascend
 import torch
 import torch_npu
+
 torch_device_fn = torch.npu
 
 from .code_cache import config_cache_dir
@@ -49,6 +50,7 @@ def quote_identifier(name: str) -> str:
 
 
 class LibTuner(triton.runtime.Autotuner):
+
     def __init__(
         self,
         fn,
@@ -103,9 +105,7 @@ class LibTuner(triton.runtime.Autotuner):
     def preload(self):
         connect = sqlite3.connect(self.cache_path)
         c = connect.cursor()
-        c.execute(
-            f"CREATE TABLE IF NOT EXISTS {self.table_name} (key TEXT PRIMARY KEY, config TEXT)"
-        )
+        c.execute(f"CREATE TABLE IF NOT EXISTS {self.table_name} (key TEXT PRIMARY KEY, config TEXT)")
         cursor = c.execute(f"SELECT key, config from {self.table_name}")
 
         for row in cursor:
@@ -136,9 +136,7 @@ class LibTuner(triton.runtime.Autotuner):
             return
         connect = sqlite3.connect(self.cache_path)
         c = connect.cursor()
-        c.execute(
-            f"CREATE TABLE IF NOT EXISTS {self.table_name} (key TEXT PRIMARY KEY, config TEXT)"
-        )
+        c.execute(f"CREATE TABLE IF NOT EXISTS {self.table_name} (key TEXT PRIMARY KEY, config TEXT)")
         for key, config in self.cache.items():
             c.execute(
                 f"INSERT OR IGNORE INTO {self.table_name} (key, config) VALUES (?, ?)",
@@ -185,6 +183,7 @@ def libtuner(
 
 
 class LibEntry(triton.KernelInterface):
+
     def __init__(
         self,
         fn,
@@ -198,14 +197,10 @@ class LibEntry(triton.KernelInterface):
             fn = fn.fn
         self.jit_function: triton.runtime.JITFunction = fn
         self.specialize_indices = [
-            p.num
-            for p in self.jit_function.params
-            if not p.is_constexpr and not p.do_not_specialize
+            p.num for p in self.jit_function.params if not p.is_constexpr and not p.do_not_specialize
         ]
         self.do_not_specialize_indices = [
-            p.num
-            for p in self.jit_function.params
-            if not p.is_constexpr and p.do_not_specialize
+            p.num for p in self.jit_function.params if not p.is_constexpr and p.do_not_specialize
         ]
         self.lock = threading.Lock()
 
@@ -218,13 +213,8 @@ class LibEntry(triton.KernelInterface):
         const_args = []  # constexpr arguments
         k_args = []  # kernel arguments
         arg_processor = libentry_ascend.ArgProcessor(self.divisibility)
-        arg_processor.classify_arguments(
-            list(args),
-            kwargs,
-            self.jit_function.params,
-            set(self.specialize_indices),
-            set(self.do_not_specialize_indices)
-        )
+        arg_processor.classify_arguments(list(args), kwargs, self.jit_function.params, set(self.specialize_indices),
+                                         set(self.do_not_specialize_indices))
 
         k_args = arg_processor.get_k_args()
 
@@ -250,22 +240,16 @@ class LibEntry(triton.KernelInterface):
                         constexprs = {**constexprs, **config.kwargs}
                     elif isinstance(fn, triton.runtime.Heuristics):
                         for v, heur in fn.values.items():
-                            constexprs[v] = heur(
-                                {
-                                    **dict(zip(fn.arg_names, args)),
-                                    **kwargs,
-                                    **constexprs,
-                                }
-                            )
+                            constexprs[v] = heur({
+                                **dict(zip(fn.arg_names, args)),
+                                **kwargs,
+                                **constexprs,
+                            })
                     else:
                         raise RuntimeError("Invalid Runtime Function")
                     fn = fn.fn
                 for p in self.jit_function.params:
-                    if (
-                        p.is_constexpr
-                        and p.name not in constexprs
-                        and (p.default is not inspect._empty)
-                    ):
+                    if (p.is_constexpr and p.name not in constexprs and (p.default is not inspect._empty)):
                         constexprs[p.name] = p.default
                 cache[entry_key] = (kernel, constexprs)
             return kernel, constexprs

@@ -59,10 +59,7 @@ def create_flashinfer_kv_indices_triton(
         offset = tl.arange(0, BLOCK_SIZE).to(tl.int64) + i * BLOCK_SIZE
         mask = offset < kv_end - kv_start
         data = tl.load(
-            req_to_token_ptr
-            + req_pool_index * req_to_token_ptr_stride
-            + kv_start
-            + offset,
+            req_to_token_ptr + req_pool_index * req_to_token_ptr_stride + kv_start + offset,
             mask=mask,
         )
         tl.store(kv_indices_ptr + kv_indices_offset + offset, data, mask=mask)

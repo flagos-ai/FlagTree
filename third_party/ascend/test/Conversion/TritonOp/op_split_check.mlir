@@ -4,44 +4,44 @@
 
 module {
   tt.func public @fn_npu_(%arg0: !tt.ptr<i64>, %arg1: !tt.ptr<i64>, %arg2: !tt.ptr<i64> ) {
-    %cst = arith.constant dense<125> : tensor<2x1xi32> 
-    %cst_0 = arith.constant dense<2> : tensor<1x125x1xi32> 
-    %cst_1 = arith.constant dense<2> : tensor<2x1x1xi32> 
-    %cst_2 = arith.constant dense<125> : tensor<2x1x1xi32> 
-    %0 = tt.make_range {end = 2 : i32, start = 0 : i32} : tensor<2xi32> 
-    %1 = tt.make_range {end = 125 : i32, start = 0 : i32} : tensor<125xi32> 
-    %2 = tt.expand_dims %0 {axis = 1 : i32} : tensor<2xi32> -> tensor<2x1xi32> 
-    %3 = tt.expand_dims %2 {axis = 2 : i32} : tensor<2x1xi32> -> tensor<2x1x1xi32> 
-    %4 = arith.muli %3, %cst_2 : tensor<2x1x1xi32> 
-    %5 = arith.muli %4, %cst_1 : tensor<2x1x1xi32> 
-    %6 = tt.expand_dims %1 {axis = 0 : i32} : tensor<125xi32> -> tensor<1x125xi32> 
-    %7 = tt.expand_dims %6 {axis = 2 : i32} : tensor<1x125xi32> -> tensor<1x125x1xi32> 
-    %8 = arith.muli %7, %cst_0 : tensor<1x125x1xi32> 
-    %9 = tt.broadcast %5 : tensor<2x1x1xi32> -> tensor<2x125x1xi32> 
-    %10 = tt.broadcast %8 : tensor<1x125x1xi32> -> tensor<2x125x1xi32> 
-    %11 = arith.addi %9, %10 : tensor<2x125x1xi32> 
-    %12 = tt.expand_dims %0 {axis = 0 : i32} : tensor<2xi32> -> tensor<1x2xi32> 
-    %13 = tt.expand_dims %12 {axis = 1 : i32} : tensor<1x2xi32> -> tensor<1x1x2xi32> 
-    %14 = tt.broadcast %11 : tensor<2x125x1xi32> -> tensor<2x125x2xi32> 
-    %15 = tt.broadcast %13 : tensor<1x1x2xi32> -> tensor<2x125x2xi32> 
-    %16 = arith.addi %14, %15 : tensor<2x125x2xi32> 
-    %17 = tt.splat %arg1 : !tt.ptr<i64> -> tensor<2x125x2x!tt.ptr<i64>> 
-    %18 = tt.addptr %17, %16 : tensor<2x125x2x!tt.ptr<i64>>, tensor<2x125x2xi32> 
-    %19 = tt.load %18 : tensor<2x125x2x!tt.ptr<i64>> 
-    %outLHS, %outRHS = tt.split %19 : tensor<2x125x2xi64> -> tensor<2x125xi64> 
-    %20 = arith.muli %2, %cst : tensor<2x1xi32> 
-    %21 = tt.broadcast %20 : tensor<2x1xi32> -> tensor<2x125xi32> 
-    %22 = tt.broadcast %6 : tensor<1x125xi32> -> tensor<2x125xi32> 
-    %23 = arith.addi %21, %22 : tensor<2x125xi32> 
-    %24 = tt.splat %arg0 : !tt.ptr<i64> -> tensor<2x125x!tt.ptr<i64>> 
-    %25 = tt.addptr %24, %23 : tensor<2x125x!tt.ptr<i64>>, tensor<2x125xi32> 
-    tt.store %25, %outLHS : tensor<2x125x!tt.ptr<i64>> 
-    %26 = tt.splat %arg2 : !tt.ptr<i64> -> tensor<2x125x!tt.ptr<i64>> 
-    %27 = tt.addptr %26, %23 : tensor<2x125x!tt.ptr<i64>>, tensor<2x125xi32> 
-    tt.store %27, %outRHS : tensor<2x125x!tt.ptr<i64>> 
-    tt.return 
-  } 
-} 
+    %cst = arith.constant dense<125> : tensor<2x1xi32>
+    %cst_0 = arith.constant dense<2> : tensor<1x125x1xi32>
+    %cst_1 = arith.constant dense<2> : tensor<2x1x1xi32>
+    %cst_2 = arith.constant dense<125> : tensor<2x1x1xi32>
+    %0 = tt.make_range {end = 2 : i32, start = 0 : i32} : tensor<2xi32>
+    %1 = tt.make_range {end = 125 : i32, start = 0 : i32} : tensor<125xi32>
+    %2 = tt.expand_dims %0 {axis = 1 : i32} : tensor<2xi32> -> tensor<2x1xi32>
+    %3 = tt.expand_dims %2 {axis = 2 : i32} : tensor<2x1xi32> -> tensor<2x1x1xi32>
+    %4 = arith.muli %3, %cst_2 : tensor<2x1x1xi32>
+    %5 = arith.muli %4, %cst_1 : tensor<2x1x1xi32>
+    %6 = tt.expand_dims %1 {axis = 0 : i32} : tensor<125xi32> -> tensor<1x125xi32>
+    %7 = tt.expand_dims %6 {axis = 2 : i32} : tensor<1x125xi32> -> tensor<1x125x1xi32>
+    %8 = arith.muli %7, %cst_0 : tensor<1x125x1xi32>
+    %9 = tt.broadcast %5 : tensor<2x1x1xi32> -> tensor<2x125x1xi32>
+    %10 = tt.broadcast %8 : tensor<1x125x1xi32> -> tensor<2x125x1xi32>
+    %11 = arith.addi %9, %10 : tensor<2x125x1xi32>
+    %12 = tt.expand_dims %0 {axis = 0 : i32} : tensor<2xi32> -> tensor<1x2xi32>
+    %13 = tt.expand_dims %12 {axis = 1 : i32} : tensor<1x2xi32> -> tensor<1x1x2xi32>
+    %14 = tt.broadcast %11 : tensor<2x125x1xi32> -> tensor<2x125x2xi32>
+    %15 = tt.broadcast %13 : tensor<1x1x2xi32> -> tensor<2x125x2xi32>
+    %16 = arith.addi %14, %15 : tensor<2x125x2xi32>
+    %17 = tt.splat %arg1 : !tt.ptr<i64> -> tensor<2x125x2x!tt.ptr<i64>>
+    %18 = tt.addptr %17, %16 : tensor<2x125x2x!tt.ptr<i64>>, tensor<2x125x2xi32>
+    %19 = tt.load %18 : tensor<2x125x2x!tt.ptr<i64>>
+    %outLHS, %outRHS = tt.split %19 : tensor<2x125x2xi64> -> tensor<2x125xi64>
+    %20 = arith.muli %2, %cst : tensor<2x1xi32>
+    %21 = tt.broadcast %20 : tensor<2x1xi32> -> tensor<2x125xi32>
+    %22 = tt.broadcast %6 : tensor<1x125xi32> -> tensor<2x125xi32>
+    %23 = arith.addi %21, %22 : tensor<2x125xi32>
+    %24 = tt.splat %arg0 : !tt.ptr<i64> -> tensor<2x125x!tt.ptr<i64>>
+    %25 = tt.addptr %24, %23 : tensor<2x125x!tt.ptr<i64>>, tensor<2x125xi32>
+    tt.store %25, %outLHS : tensor<2x125x!tt.ptr<i64>>
+    %26 = tt.splat %arg2 : !tt.ptr<i64> -> tensor<2x125x!tt.ptr<i64>>
+    %27 = tt.addptr %26, %23 : tensor<2x125x!tt.ptr<i64>>, tensor<2x125xi32>
+    tt.store %27, %outRHS : tensor<2x125x!tt.ptr<i64>>
+    tt.return
+  }
+}
 
 // CHECK-LABEL:   func.func @fn_npu_
 // CHECK-SAME: %arg0: memref<?xi64>
@@ -55,92 +55,92 @@ module {
 
 module {
   tt.func public @fn_npu_(%arg0: !tt.ptr<i32> , %arg1: !tt.ptr<i32> , %arg2: !tt.ptr<i32> )  {
-    %cst = arith.constant dense<8> : tensor<8x1xi32> 
-    %cst_0 = arith.constant dense<2> : tensor<1x8x1xi32> 
-    %cst_1 = arith.constant dense<2> : tensor<8x1x1xi32> 
-    %cst_2 = arith.constant dense<8> : tensor<8x1x1xi32> 
-    %0 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32> 
-    %1 = tt.make_range {end = 2 : i32, start = 0 : i32} : tensor<2xi32> 
-    %2 = tt.expand_dims %0 {axis = 1 : i32} : tensor<8xi32> -> tensor<8x1xi32> 
-    %3 = tt.expand_dims %2 {axis = 2 : i32} : tensor<8x1xi32> -> tensor<8x1x1xi32> 
-    %4 = arith.muli %3, %cst_2 : tensor<8x1x1xi32> 
-    %5 = arith.muli %4, %cst_1 : tensor<8x1x1xi32> 
-    %6 = tt.expand_dims %0 {axis = 0 : i32} : tensor<8xi32> -> tensor<1x8xi32> 
-    %7 = tt.expand_dims %6 {axis = 2 : i32} : tensor<1x8xi32> -> tensor<1x8x1xi32> 
-    %8 = arith.muli %7, %cst_0 : tensor<1x8x1xi32> 
-    %9 = tt.broadcast %5 : tensor<8x1x1xi32> -> tensor<8x8x1xi32> 
-    %10 = tt.broadcast %8 : tensor<1x8x1xi32> -> tensor<8x8x1xi32> 
-    %11 = arith.addi %9, %10 : tensor<8x8x1xi32> 
-    %12 = tt.expand_dims %1 {axis = 0 : i32} : tensor<2xi32> -> tensor<1x2xi32> 
-    %13 = tt.expand_dims %12 {axis = 1 : i32} : tensor<1x2xi32> -> tensor<1x1x2xi32> 
-    %14 = tt.broadcast %11 : tensor<8x8x1xi32> -> tensor<8x8x2xi32> 
-    %15 = tt.broadcast %13 : tensor<1x1x2xi32> -> tensor<8x8x2xi32> 
-    %16 = arith.addi %14, %15 : tensor<8x8x2xi32> 
-    %17 = tt.splat %arg1 : !tt.ptr<i32> -> tensor<8x8x2x!tt.ptr<i32>> 
-    %18 = tt.addptr %17, %16 : tensor<8x8x2x!tt.ptr<i32>>, tensor<8x8x2xi32> 
-    %19 = tt.load %18 : tensor<8x8x2x!tt.ptr<i32>> 
-    %outLHS, %outRHS = tt.split %19 : tensor<8x8x2xi32> -> tensor<8x8xi32> 
-    %20 = arith.muli %2, %cst : tensor<8x1xi32> 
-    %21 = tt.broadcast %20 : tensor<8x1xi32> -> tensor<8x8xi32> 
-    %22 = tt.broadcast %6 : tensor<1x8xi32> -> tensor<8x8xi32> 
-    %23 = arith.addi %21, %22 : tensor<8x8xi32> 
-    %24 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<8x8x!tt.ptr<i32>> 
-    %25 = tt.addptr %24, %23 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32> 
-    tt.store %25, %outLHS : tensor<8x8x!tt.ptr<i32>> 
-    %26 = tt.splat %arg2 : !tt.ptr<i32> -> tensor<8x8x!tt.ptr<i32>> 
-    %27 = tt.addptr %26, %23 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32> 
-    tt.store %27, %outRHS : tensor<8x8x!tt.ptr<i32>> 
-    tt.return 
-  } 
-} 
+    %cst = arith.constant dense<8> : tensor<8x1xi32>
+    %cst_0 = arith.constant dense<2> : tensor<1x8x1xi32>
+    %cst_1 = arith.constant dense<2> : tensor<8x1x1xi32>
+    %cst_2 = arith.constant dense<8> : tensor<8x1x1xi32>
+    %0 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
+    %1 = tt.make_range {end = 2 : i32, start = 0 : i32} : tensor<2xi32>
+    %2 = tt.expand_dims %0 {axis = 1 : i32} : tensor<8xi32> -> tensor<8x1xi32>
+    %3 = tt.expand_dims %2 {axis = 2 : i32} : tensor<8x1xi32> -> tensor<8x1x1xi32>
+    %4 = arith.muli %3, %cst_2 : tensor<8x1x1xi32>
+    %5 = arith.muli %4, %cst_1 : tensor<8x1x1xi32>
+    %6 = tt.expand_dims %0 {axis = 0 : i32} : tensor<8xi32> -> tensor<1x8xi32>
+    %7 = tt.expand_dims %6 {axis = 2 : i32} : tensor<1x8xi32> -> tensor<1x8x1xi32>
+    %8 = arith.muli %7, %cst_0 : tensor<1x8x1xi32>
+    %9 = tt.broadcast %5 : tensor<8x1x1xi32> -> tensor<8x8x1xi32>
+    %10 = tt.broadcast %8 : tensor<1x8x1xi32> -> tensor<8x8x1xi32>
+    %11 = arith.addi %9, %10 : tensor<8x8x1xi32>
+    %12 = tt.expand_dims %1 {axis = 0 : i32} : tensor<2xi32> -> tensor<1x2xi32>
+    %13 = tt.expand_dims %12 {axis = 1 : i32} : tensor<1x2xi32> -> tensor<1x1x2xi32>
+    %14 = tt.broadcast %11 : tensor<8x8x1xi32> -> tensor<8x8x2xi32>
+    %15 = tt.broadcast %13 : tensor<1x1x2xi32> -> tensor<8x8x2xi32>
+    %16 = arith.addi %14, %15 : tensor<8x8x2xi32>
+    %17 = tt.splat %arg1 : !tt.ptr<i32> -> tensor<8x8x2x!tt.ptr<i32>>
+    %18 = tt.addptr %17, %16 : tensor<8x8x2x!tt.ptr<i32>>, tensor<8x8x2xi32>
+    %19 = tt.load %18 : tensor<8x8x2x!tt.ptr<i32>>
+    %outLHS, %outRHS = tt.split %19 : tensor<8x8x2xi32> -> tensor<8x8xi32>
+    %20 = arith.muli %2, %cst : tensor<8x1xi32>
+    %21 = tt.broadcast %20 : tensor<8x1xi32> -> tensor<8x8xi32>
+    %22 = tt.broadcast %6 : tensor<1x8xi32> -> tensor<8x8xi32>
+    %23 = arith.addi %21, %22 : tensor<8x8xi32>
+    %24 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<8x8x!tt.ptr<i32>>
+    %25 = tt.addptr %24, %23 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32>
+    tt.store %25, %outLHS : tensor<8x8x!tt.ptr<i32>>
+    %26 = tt.splat %arg2 : !tt.ptr<i32> -> tensor<8x8x!tt.ptr<i32>>
+    %27 = tt.addptr %26, %23 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32>
+    tt.store %27, %outRHS : tensor<8x8x!tt.ptr<i32>>
+    tt.return
+  }
+}
 
 // CHECK-LABEL:   func.func @fn_npu_
 // CHECK-SAME: %arg0: memref<?xi32>
 // CHECK-SAME: %arg1: memref<?xi32>
 // CHECK-SAME: %arg2: memref<?xi32>
 
-// CHECK: %extracted_slice_0 = tensor.extract_slice %0[0, 0, 1] [8, 8, 1] [1, 1, 2] : tensor<8x8x2xi32> to tensor<8x8xi32> 
+// CHECK: %extracted_slice_0 = tensor.extract_slice %0[0, 0, 1] [8, 8, 1] [1, 1, 2] : tensor<8x8x2xi32> to tensor<8x8xi32>
 
 // -----
 // dtype uint16
 
 module {
   tt.func public @fn_npu_(%arg0: !tt.ptr<i16> , %arg1: !tt.ptr<i16> , %arg2: !tt.ptr<i16> )  {
-    %cst = arith.constant dense<2> : tensor<2x1xi32> 
-    %cst_0 = arith.constant dense<2> : tensor<1x2x1xi32> 
-    %cst_1 = arith.constant dense<2> : tensor<2x1x1xi32> 
-    %0 = tt.make_range {end = 2 : i32, start = 0 : i32} : tensor<2xi32> 
-    %1 = tt.expand_dims %0 {axis = 1 : i32} : tensor<2xi32> -> tensor<2x1xi32> 
-    %2 = tt.expand_dims %1 {axis = 2 : i32} : tensor<2x1xi32> -> tensor<2x1x1xi32> 
-    %3 = arith.muli %2, %cst_1 : tensor<2x1x1xi32> 
-    %4 = arith.muli %3, %cst_1 : tensor<2x1x1xi32> 
-    %5 = tt.expand_dims %0 {axis = 0 : i32} : tensor<2xi32> -> tensor<1x2xi32> 
-    %6 = tt.expand_dims %5 {axis = 2 : i32} : tensor<1x2xi32> -> tensor<1x2x1xi32> 
-    %7 = arith.muli %6, %cst_0 : tensor<1x2x1xi32> 
-    %8 = tt.broadcast %4 : tensor<2x1x1xi32> -> tensor<2x2x1xi32> 
-    %9 = tt.broadcast %7 : tensor<1x2x1xi32> -> tensor<2x2x1xi32> 
-    %10 = arith.addi %8, %9 : tensor<2x2x1xi32> 
-    %11 = tt.expand_dims %5 {axis = 1 : i32} : tensor<1x2xi32> -> tensor<1x1x2xi32> 
-    %12 = tt.broadcast %10 : tensor<2x2x1xi32> -> tensor<2x2x2xi32> 
-    %13 = tt.broadcast %11 : tensor<1x1x2xi32> -> tensor<2x2x2xi32> 
-    %14 = arith.addi %12, %13 : tensor<2x2x2xi32> 
-    %15 = tt.splat %arg1 : !tt.ptr<i16> -> tensor<2x2x2x!tt.ptr<i16>> 
-    %16 = tt.addptr %15, %14 : tensor<2x2x2x!tt.ptr<i16>>, tensor<2x2x2xi32> 
-    %17 = tt.load %16 : tensor<2x2x2x!tt.ptr<i16>> 
-    %outLHS, %outRHS = tt.split %17 : tensor<2x2x2xi16> -> tensor<2x2xi16> 
-    %18 = arith.muli %1, %cst : tensor<2x1xi32> 
-    %19 = tt.broadcast %18 : tensor<2x1xi32> -> tensor<2x2xi32> 
-    %20 = tt.broadcast %5 : tensor<1x2xi32> -> tensor<2x2xi32> 
-    %21 = arith.addi %19, %20 : tensor<2x2xi32> 
-    %22 = tt.splat %arg0 : !tt.ptr<i16> -> tensor<2x2x!tt.ptr<i16>> 
-    %23 = tt.addptr %22, %21 : tensor<2x2x!tt.ptr<i16>>, tensor<2x2xi32> 
-    tt.store %23, %outLHS : tensor<2x2x!tt.ptr<i16>> 
-    %24 = tt.splat %arg2 : !tt.ptr<i16> -> tensor<2x2x!tt.ptr<i16>> 
-    %25 = tt.addptr %24, %21 : tensor<2x2x!tt.ptr<i16>>, tensor<2x2xi32> 
-    tt.store %25, %outRHS : tensor<2x2x!tt.ptr<i16>> 
-    tt.return 
-  } 
-} 
+    %cst = arith.constant dense<2> : tensor<2x1xi32>
+    %cst_0 = arith.constant dense<2> : tensor<1x2x1xi32>
+    %cst_1 = arith.constant dense<2> : tensor<2x1x1xi32>
+    %0 = tt.make_range {end = 2 : i32, start = 0 : i32} : tensor<2xi32>
+    %1 = tt.expand_dims %0 {axis = 1 : i32} : tensor<2xi32> -> tensor<2x1xi32>
+    %2 = tt.expand_dims %1 {axis = 2 : i32} : tensor<2x1xi32> -> tensor<2x1x1xi32>
+    %3 = arith.muli %2, %cst_1 : tensor<2x1x1xi32>
+    %4 = arith.muli %3, %cst_1 : tensor<2x1x1xi32>
+    %5 = tt.expand_dims %0 {axis = 0 : i32} : tensor<2xi32> -> tensor<1x2xi32>
+    %6 = tt.expand_dims %5 {axis = 2 : i32} : tensor<1x2xi32> -> tensor<1x2x1xi32>
+    %7 = arith.muli %6, %cst_0 : tensor<1x2x1xi32>
+    %8 = tt.broadcast %4 : tensor<2x1x1xi32> -> tensor<2x2x1xi32>
+    %9 = tt.broadcast %7 : tensor<1x2x1xi32> -> tensor<2x2x1xi32>
+    %10 = arith.addi %8, %9 : tensor<2x2x1xi32>
+    %11 = tt.expand_dims %5 {axis = 1 : i32} : tensor<1x2xi32> -> tensor<1x1x2xi32>
+    %12 = tt.broadcast %10 : tensor<2x2x1xi32> -> tensor<2x2x2xi32>
+    %13 = tt.broadcast %11 : tensor<1x1x2xi32> -> tensor<2x2x2xi32>
+    %14 = arith.addi %12, %13 : tensor<2x2x2xi32>
+    %15 = tt.splat %arg1 : !tt.ptr<i16> -> tensor<2x2x2x!tt.ptr<i16>>
+    %16 = tt.addptr %15, %14 : tensor<2x2x2x!tt.ptr<i16>>, tensor<2x2x2xi32>
+    %17 = tt.load %16 : tensor<2x2x2x!tt.ptr<i16>>
+    %outLHS, %outRHS = tt.split %17 : tensor<2x2x2xi16> -> tensor<2x2xi16>
+    %18 = arith.muli %1, %cst : tensor<2x1xi32>
+    %19 = tt.broadcast %18 : tensor<2x1xi32> -> tensor<2x2xi32>
+    %20 = tt.broadcast %5 : tensor<1x2xi32> -> tensor<2x2xi32>
+    %21 = arith.addi %19, %20 : tensor<2x2xi32>
+    %22 = tt.splat %arg0 : !tt.ptr<i16> -> tensor<2x2x!tt.ptr<i16>>
+    %23 = tt.addptr %22, %21 : tensor<2x2x!tt.ptr<i16>>, tensor<2x2xi32>
+    tt.store %23, %outLHS : tensor<2x2x!tt.ptr<i16>>
+    %24 = tt.splat %arg2 : !tt.ptr<i16> -> tensor<2x2x!tt.ptr<i16>>
+    %25 = tt.addptr %24, %21 : tensor<2x2x!tt.ptr<i16>>, tensor<2x2xi32>
+    tt.store %25, %outRHS : tensor<2x2x!tt.ptr<i16>>
+    tt.return
+  }
+}
 
 
 // CHECK-LABEL:   func.func @fn_npu_

@@ -27,14 +27,8 @@ import test_common
 import torch
 import torch_npu
 
-def torch_save_cache_to_buffer_indirect(
-    buffer,
-    cache,
-    loc,
-    buffer_stride,
-    cache_stride,
-    BLOCK
-):
+
+def torch_save_cache_to_buffer_indirect(buffer, cache, loc, buffer_stride, cache_stride, BLOCK):
     max_len = min(buffer_stride, loc.shape[0])
     for i in range(buffer.shape[0]):
         index = (loc // BLOCK) * BLOCK + loc % BLOCK
@@ -43,13 +37,7 @@ def torch_save_cache_to_buffer_indirect(
 
 
 @triton.jit
-def save_cache_to_buffer_indirect(
-    buffer_ptr,
-    cache_ptr,
-    loc_ptr,
-    buffer_stride: tl.constexpr,
-    BLOCK: tl.constexpr
-):
+def save_cache_to_buffer_indirect(buffer_ptr, cache_ptr, loc_ptr, buffer_stride: tl.constexpr, BLOCK: tl.constexpr):
     pid_loc = tl.program_id(0)
     index = tl.arange(0, buffer_stride)
     loc = tl.load(loc_ptr + index)
@@ -61,8 +49,7 @@ def save_cache_to_buffer_indirect(
     cache_index_0 = cache_index // BLOCK
     cache_index_1 = cache_index % BLOCK
 
-
-    tmp = tl.load(cache_ptr + (BLOCK*cache_index_0 + cache_index_1))
+    tmp = tl.load(cache_ptr + (BLOCK * cache_index_0 + cache_index_1))
     tl.store(buffer_ptr + buffer_index, tmp)
 
 
@@ -76,7 +63,6 @@ def biggest_divisor(num):
 types = [
     (torch.float32, 'float32'),
 ]
-
 
 cache_shapes = [
     (5, 15),

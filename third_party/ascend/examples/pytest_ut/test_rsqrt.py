@@ -25,9 +25,11 @@ import numpy as np
 import pytest
 import test_common
 
+
 def numpy_rsqrt(x0, x1):
     res = x0 + 1.0 / (np.sqrt(x1))
     return res
+
 
 @triton.jit
 def triton_rsqrt(in_ptr0, in_ptr1, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
@@ -41,11 +43,10 @@ def triton_rsqrt(in_ptr0, in_ptr1, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOC
         tmp2 = tmp0 + tl.rsqrt(tmp1)
         tl.store(out_ptr0 + (xindex), tmp2, xmask)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                         ])
 
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_rsqrt(param_list):
     # 生成数据
     dtype, shape, ncore, xblock, xblock_sub = param_list

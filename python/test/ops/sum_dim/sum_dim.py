@@ -22,9 +22,7 @@ def sum_dim_kernel(
     BLOCK_M: tl.constexpr = 8,
     BLOCK_N: tl.constexpr = 256,
 ):
-    if tl.constexpr(inp.dtype.element_ty == tl.float16) or tl.constexpr(
-        inp.dtype.element_ty == tl.bfloat16
-    ):
+    if tl.constexpr(inp.dtype.element_ty == tl.float16) or tl.constexpr(inp.dtype.element_ty == tl.bfloat16):
         cdtype = tl.float32
     else:
         cdtype = inp.dtype.element_ty
@@ -71,7 +69,7 @@ def sum_dim_comm(inp, dim=None, keepdim=False, *, dtype=None, out=None):
         if out is None:
             out = torch.empty(shape, dtype=dtype, device=inp.device)
 
-        grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]),)
+        grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]), )
         with torch_device_fn.device(inp.device):
             sum_dim_kernel[grid](inp, out, M, N)
         if not keepdim:
@@ -99,8 +97,6 @@ if __name__ == "__main__":
 
     # check
     res_out = res_out.cpu()
-    print(
-        f"The maximum difference out value between torch and triton is "
-        f"{torch.max(torch.abs(ref_out - res_out))}"
-    )
+    print(f"The maximum difference out value between torch and triton is "
+          f"{torch.max(torch.abs(ref_out - res_out))}")
     assert torch.allclose(res_out, ref_out), (res_out, ref_out)

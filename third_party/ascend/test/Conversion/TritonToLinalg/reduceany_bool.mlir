@@ -1,4 +1,4 @@
-// RUN: triton-adapter-opt -split-input-file --triton-to-linalg %s | FileCheck %s 
+// RUN: triton-adapter-opt -split-input-file --triton-to-linalg %s | FileCheck %s
 
 // CHECK-LABEL: func.func @kernel(
 module {

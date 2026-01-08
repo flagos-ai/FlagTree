@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from . import language as tl
 from . import runtime
 
+
 # flagtree backend testing func specialization
 def spec_testing_func(spec):
     testing_spec_api_list = spec.testing_ext_spec_api_list
@@ -20,6 +21,7 @@ def spec_testing_func(spec):
             spec_api = getattr(spec, spec_api_name)
             # triton.testing
             setattr(sys.modules[__name__], spec_api.__name__, spec_api)
+
 
 def nvsmi(attrs):
     attrs = ','.join(attrs)

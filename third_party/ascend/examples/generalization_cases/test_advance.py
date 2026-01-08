@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 
@@ -33,23 +32,23 @@ from test_common import TestUtils
 def fn_npu_1d(output_ptr, x_ptr, y_ptr, z_ptr, output_ptr1, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr):
     block_ptr_in = tl.make_block_ptr(
         base=x_ptr,
-        shape=(XB,),
-        strides=(1,),
-        offsets=(5,),
-        block_shape=(XB,),
-        order=(0,),
+        shape=(XB, ),
+        strides=(1, ),
+        offsets=(5, ),
+        block_shape=(XB, ),
+        order=(0, ),
     )
-    bbptr = tl.advance(block_ptr_in, (-5,))
+    bbptr = tl.advance(block_ptr_in, (-5, ))
     # XB,YB,1
     X = tl.load(bbptr)
 
     block_ptr_out = tl.make_block_ptr(
         base=output_ptr,
-        shape=(XB,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(XB,),
-        order=(0,),
+        shape=(XB, ),
+        strides=(1, ),
+        offsets=(0, ),
+        block_shape=(XB, ),
+        order=(0, ),
     )
     tl.store(block_ptr_out, X)
 
@@ -106,11 +105,22 @@ def fn_npu_3d(output_ptr, x_ptr, y_ptr, z_ptr, output_ptr1, XB: tl.constexpr, YB
 
 
 @triton.jit
-def triton_advance_4d(output_ptr, x_ptr,
-                      BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr,
-                      SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-                      STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr,
-                      STRIDE_3: tl.constexpr, ):
+def triton_advance_4d(
+    output_ptr,
+    x_ptr,
+    BLOCK_0: tl.constexpr,
+    BLOCK_1: tl.constexpr,
+    BLOCK_2: tl.constexpr,
+    BLOCK_3: tl.constexpr,
+    SHAPE_0: tl.constexpr,
+    SHAPE_1: tl.constexpr,
+    SHAPE_2: tl.constexpr,
+    SHAPE_3: tl.constexpr,
+    STRIDE_0: tl.constexpr,
+    STRIDE_1: tl.constexpr,
+    STRIDE_2: tl.constexpr,
+    STRIDE_3: tl.constexpr,
+):
     block_ptr_in = tl.make_block_ptr(
         base=x_ptr,
         shape=(SHAPE_0, SHAPE_1, SHAPE_2, SHAPE_3),
@@ -134,13 +144,25 @@ def triton_advance_4d(output_ptr, x_ptr,
 
 
 @triton.jit
-def triton_advance_5d(output_ptr, x_ptr,
-                      BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr,
-                      BLOCK_4: tl.constexpr,
-                      SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-                      SHAPE_4: tl.constexpr,
-                      STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr,
-                      STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr, ):
+def triton_advance_5d(
+    output_ptr,
+    x_ptr,
+    BLOCK_0: tl.constexpr,
+    BLOCK_1: tl.constexpr,
+    BLOCK_2: tl.constexpr,
+    BLOCK_3: tl.constexpr,
+    BLOCK_4: tl.constexpr,
+    SHAPE_0: tl.constexpr,
+    SHAPE_1: tl.constexpr,
+    SHAPE_2: tl.constexpr,
+    SHAPE_3: tl.constexpr,
+    SHAPE_4: tl.constexpr,
+    STRIDE_0: tl.constexpr,
+    STRIDE_1: tl.constexpr,
+    STRIDE_2: tl.constexpr,
+    STRIDE_3: tl.constexpr,
+    STRIDE_4: tl.constexpr,
+):
     block_ptr_in = tl.make_block_ptr(
         base=x_ptr,
         shape=(SHAPE_0, SHAPE_1, SHAPE_2, SHAPE_3, SHAPE_4),
@@ -181,7 +203,7 @@ def test_npu(dtype, shape):
     a = x
     blocks = list(x.size())
     strides = list(x.stride())
-    grid = (1,)
+    grid = (1, )
     if len(shape) == 5:
         triton_advance_5d[grid](output, x, *blocks, *blocks, *strides)
     elif len(shape) == 4:

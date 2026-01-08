@@ -52,9 +52,7 @@ def alloc_decode_kernel(
     num_pages_before = (pre_lens + page_size - 1) // page_size
     num_new_pages = num_pages_after - num_pages_before
 
-    num_page_start_loc_self = (seq_len + page_size - 1) // page_size - (
-        pre_len + page_size - 1
-    ) // page_size
+    num_page_start_loc_self = (seq_len + page_size - 1) // page_size - (pre_len + page_size - 1) // page_size
     sum_num_new_pages = tl.sum(num_new_pages)
     new_page_start_loc = sum_num_new_pages - num_page_start_loc_self
 

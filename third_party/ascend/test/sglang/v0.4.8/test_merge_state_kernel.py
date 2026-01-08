@@ -71,9 +71,7 @@ def merge_state_kernel(
             v_a = tl.load(v_a_ptr + offsets)
             v_b = tl.load(v_b_ptr + offsets)
 
-            v_merged, s_max, d = state_merge(
-                o=v_a, m=s_a_val, d=1, other_o=v_b, other_m=s_b_val, other_d=1
-            )
+            v_merged, s_max, d = state_merge(o=v_a, m=s_a_val, d=1, other_o=v_b, other_m=s_b_val, other_d=1)
             v_merged, s_max, d = state_normalize(v_merged, s_max, d)
             v_merged_offset = (pos * num_heads + head_idx) * head_dim + tx
             tl.store(v_merged_ptr + v_merged_offset, v_merged)

@@ -7,8 +7,10 @@ import subprocess
 import importlib
 from triton.backends.ascend.utils import _get_llvm_path
 
+
 # TODO: temporarily fake CPUUtils class
 class CPUUtils(object):
+
     def __new__(cls):
         if not hasattr(cls, 'instance'):
             cls.instance = super(CPUUtils, cls).__new__(cls)
@@ -21,13 +23,15 @@ class CPUUtils(object):
         # temperoarily added properties to avoid triton-compiler complain
         # fetch available memory at runtime
         return {"max_shared_mem": 1}
-    
+
     def load_binary(self, name, kernel, shared, device):
         # TODO (temperoarily fake function) load a binary from binary object to device
         # return value are: (mod, funcptr/handle, n_regs, n_spills)
         return None, kernel, 0, 0
-    
+
+
 class CPULauncher(object):
+
     def __init__(self, src, metadata):
         kernel_name = metadata.name.split()[0]
         signature = src.signature
@@ -40,6 +44,7 @@ class CPULauncher(object):
 
 
 class CPUDriver:
+
     def __init__(self):
         self.utils = CPUUtils()
         self.launcher_cls = CPULauncher
@@ -70,8 +75,10 @@ class CPUDriver:
         # TODO: dummy stream api for cpu backend.
         return 0
 
+
 # the template is from triton-adapter HEAD. Wrapping the generated kernel assembly into a python module
 def generate_cpu_wrapper_src(constants, signature, kernel_name):
+
     def _ty_to_cpp(ty):
         if ty[0] == '*':
             return "void*"
@@ -89,7 +96,7 @@ def generate_cpu_wrapper_src(constants, signature, kernel_name):
             "f32": "float",
             "fp64": "double",
         }[ty]
-    
+
     def _extracted_ty(ty):
         if ty[0] == '*':
             return "PyObject*"
@@ -117,15 +124,17 @@ def generate_cpu_wrapper_src(constants, signature, kernel_name):
             "uint64_t": "K",
             "int64_t": "L",
         }[ty]
-    
+
     def _generate_launcher(constants, signature, kernel_name):
         arg_decls = ', '.join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
         format = "iiiOOO" + ''.join([_format_of(_extracted_ty(ty)) for ty in signature.values()])
         # to be filled
         return f"""
         """
+
     launcher_src = _generate_launcher(constants, signature, kernel_name)
     return launcher_src
+
 
 def compile_module(launcher_src):
     # This function was renamed and made public in Python 3.10
@@ -139,10 +148,8 @@ def compile_module(launcher_src):
         scheme = 'posix_prefix'
     py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
 
-    def launch(gridX, gridY, gridZ, stream, cu_function,
-               packed_metadata, launch_metadata,
-               launch_enter_hook, launch_exit_hook,
-               *args):
+    def launch(gridX, gridY, gridZ, stream, cu_function, packed_metadata, launch_metadata, launch_enter_hook,
+               launch_exit_hook, *args):
         kernel_name = packed_metadata["kernel_name"]
         cache = get_cache_manager(packed_metadata["hash"])
         filename = f"{kernel_name}_cpu_launcher.so"
@@ -159,15 +166,18 @@ def compile_module(launcher_src):
                 Path(asm_src_path).write_bytes(asm_src)
                 Path(launcher_src_path).write_text(launcher_src)
                 # Compile it together.
-                subprocess.check_call([_get_llvm_path("bin", "clang++"), launcher_src_path, asm_src_path, f"-I{py_include_dir}", f"-I{Path(__file__).resolve().parent}", "-shared", "-fPIC", "-o", so_path])
+                subprocess.check_call([
+                    _get_llvm_path("bin", "clang++"), launcher_src_path, asm_src_path, f"-I{py_include_dir}",
+                    f"-I{Path(__file__).resolve().parent}", "-shared", "-fPIC", "-o", so_path
+                ])
 
                 with open(so_path, "rb") as f:
                     cache_path = cache.put(f.read(), filename, binary=True)
-    
+
         # Load and launch the compiled kernel.
         spec = importlib.util.spec_from_file_location("__triton_adapter_ref_cpu_kernel_launcher", cache_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod.launch(gridX, gridY, gridZ, launch_enter_hook, launch_exit_hook, packed_metadata, *args)
-    
+
     return launch

@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Vector Addition
 ===============
@@ -76,6 +75,7 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
 # %%
 # Let's also declare a helper function to (1) allocate the `z` tensor
 # and (2) enqueue the above kernel with appropriate grid/block sizes:
+
 
 def add(x: torch.Tensor, y: torch.Tensor):
     output = torch.empty_like(x)

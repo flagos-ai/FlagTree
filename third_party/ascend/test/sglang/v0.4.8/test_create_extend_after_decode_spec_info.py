@@ -27,6 +27,7 @@ import triton.language as tl
 sys.path.append("..")
 import test_common
 
+
 # source : python\sglang\srt\layers\moe\ep_moe\kernels.py
 @triton.jit
 def create_extend_after_decode_spec_info(
@@ -42,9 +43,7 @@ def create_extend_after_decode_spec_info(
     seq_length = tl.load(seq_lens_ptr + pid)
     accept_length = tl.load(accept_lens_ptr + pid)
 
-    accept_len_cumsum = tl.sum(
-        tl.load(accept_lens_ptr + offsets, mask=offsets < pid, other=0)
-    )
+    accept_len_cumsum = tl.sum(tl.load(accept_lens_ptr + offsets, mask=offsets < pid, other=0))
     positions_ptr = positions_ptr + accept_len_cumsum
     mask = offsets < accept_length
     tl.store(positions_ptr + offsets, seq_length - accept_length + offsets, mask)

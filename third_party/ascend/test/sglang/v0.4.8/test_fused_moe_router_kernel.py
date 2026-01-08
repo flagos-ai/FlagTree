@@ -25,6 +25,7 @@ import pytest
 import os
 import test_common
 
+
 @triton.jit
 def fused_moe_router_kernel(
     input_ptr,  # input (bs, hidden_dim)
@@ -85,9 +86,7 @@ def fused_moe_router_kernel(
 
     if topk >= 2:
         top2 = tl.argmax(
-            tl.where(
-                tl.arange(0, num_experts) != top1, logits_softcapped, float("-inf")
-            ),
+            tl.where(tl.arange(0, num_experts) != top1, logits_softcapped, float("-inf")),
             axis=0,
         )
         tl.store(topk_ids_ptr + pid * topk + 1, top2)
@@ -99,25 +98,18 @@ def fused_moe_router_kernel(
 
     if topk > 2:
         topk_mask = tl.full(logits_softcapped.shape, 1.0, dtype=logits_softcapped.dtype)
-        topk_mask = tl.where(
-            tl.arange(0, num_experts) != top1, topk_mask, float("-inf")
-        )
-        topk_mask = tl.where(
-            tl.arange(0, num_experts) != top2, topk_mask, float("-inf")
-        )
+        topk_mask = tl.where(tl.arange(0, num_experts) != top1, topk_mask, float("-inf"))
+        topk_mask = tl.where(tl.arange(0, num_experts) != top2, topk_mask, float("-inf"))
         for i in range(2, topk):
             topi = tl.argmax(logits_softcapped + topk_mask, axis=0)
-            topk_mask = tl.where(
-                tl.arange(0, num_experts) != topi, topk_mask, float("-inf")
-            )
+            topk_mask = tl.where(tl.arange(0, num_experts) != topi, topk_mask, float("-inf"))
             tl.store(topk_ids_ptr + pid * topk + i, topi)
-            topi_v = tl.sum(
-                logits_softcapped * (tl.arange(0, num_experts) == topi), axis=0
-            )
+            topi_v = tl.sum(logits_softcapped * (tl.arange(0, num_experts) == topi), axis=0)
             tl.store(
                 topk_weights_ptr + pid * topk + i,
                 tl.exp(topi_v - top1_v) * invsumexp,
             )
+
 
 def test_fused_moe_router_kernel(ptfile_path):
     try:

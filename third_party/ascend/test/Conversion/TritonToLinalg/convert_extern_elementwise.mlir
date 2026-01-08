@@ -83,7 +83,7 @@ module {
 
 
 // CHECK-LABEL: func.func @fabs_kernel_012
-// CHECK:        [[RES:%.+]] = tt.extern_elementwise [[VAR_1:%.+]] {libname = "", libpath = "", pure = true, symbol = "__nv_fabsf"} : (tensor<32xf32>) -> tensor<32xf32> 
+// CHECK:        [[RES:%.+]] = tt.extern_elementwise [[VAR_1:%.+]] {libname = "", libpath = "", pure = true, symbol = "__nv_fabsf"} : (tensor<32xf32>) -> tensor<32xf32>
 
 // -----
 

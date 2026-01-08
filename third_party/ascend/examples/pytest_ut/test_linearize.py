@@ -27,20 +27,19 @@ import test_common
 import torch
 import torch_npu
 
-
 num_cube_core = 20
 num_vector_core = 20
 
-def foo(a, d ,shape ):
+
+def foo(a, d, shape):
     y = a.reshape(shape)
-    y = y.permute(0,2,1) + d
+    y = y.permute(0, 2, 1) + d
     return y
 
 
 @triton.jit
-def triton_gpu_revised(in_ptr0, in_ptr1, out_ptr0, ynumel, xnumel, YBLOCK : tl.constexpr, 
-                       SHAPE0:tl.constexpr, SHAPE1:tl.constexpr,SHAPE2:tl.constexpr,
-                       XBLOCK : tl.constexpr):
+def triton_gpu_revised(in_ptr0, in_ptr1, out_ptr0, ynumel, xnumel, YBLOCK: tl.constexpr, SHAPE0: tl.constexpr,
+                       SHAPE1: tl.constexpr, SHAPE2: tl.constexpr, XBLOCK: tl.constexpr):
     yoffset = tl.program_id(1) * (tl.program_id(2) + 1) * YBLOCK
     yindex = yoffset + tl.arange(0, YBLOCK)
     ymask = yindex < ynumel
@@ -49,95 +48,91 @@ def triton_gpu_revised(in_ptr0, in_ptr1, out_ptr0, ynumel, xnumel, YBLOCK : tl.c
     xmask = xindex < xnumel
     x2 = xindex[:, None]
     x2_1 = xindex[None, :]
-    y3 = yindex[ :, None]
-    y0 = (yindex % SHAPE1)[None,:]
-    y1 = (yindex // SHAPE1)[None,:]
-    tmp0 = tl.load(in_ptr0 + (x2_1 + (SHAPE2*y3)), (x2_1 < xnumel) & (y3 < ynumel) )
+    y3 = yindex[:, None]
+    y0 = (yindex % SHAPE1)[None, :]
+    y1 = (yindex // SHAPE1)[None, :]
+    tmp0 = tl.load(in_ptr0 + (x2_1 + (SHAPE2 * y3)), (x2_1 < xnumel) & (y3 < ynumel))
     tmp1 = tl.load(in_ptr1 + (y0 + (SHAPE1*x2) + (SHAPE1*SHAPE2*y1)), \
                    (xindex[:,None] < xnumel) & (yindex[None,:] < ynumel))
-                   # (x2 < xnumel) & (y0 < SHAPE1))
-                   # (xindex[:,None] < xnumel) & (yindex[None,:] < ynumel))
-    tmp10 = tmp1.permute(1,0)
+    # (x2 < xnumel) & (y0 < SHAPE1))
+    # (xindex[:,None] < xnumel) & (yindex[None,:] < ynumel))
+    tmp10 = tmp1.permute(1, 0)
     tmp2 = tmp0 + tmp10
-    tl.store(out_ptr0 + (x2_1 + (SHAPE2*y3)), tmp2, (x2_1 < xnumel) & (y3 < ynumel))
+    tl.store(out_ptr0 + (x2_1 + (SHAPE2 * y3)), tmp2, (x2_1 < xnumel) & (y3 < ynumel))
+
 
 def biggest_divisor(num):
-    for i in range(2,num):  
-        if num % i == 0:  
+    for i in range(2, num):
+        if num % i == 0:
             return num // i
     return num
 
 
-
-def find_good_yblock(ynumel,xnumel, y_upper, dtype) :
+def find_good_yblock(ynumel, xnumel, y_upper, dtype):
     y = ynumel
     x = xnumel
 
-    align_numel = 4 if dtype==torch.int64 else 8 
-    ub_upper = 3900 if dtype==torch.int64 else 8000
+    align_numel = 4 if dtype == torch.int64 else 8
+    ub_upper = 3900 if dtype == torch.int64 else 8000
 
- 
     # optimize block_dim
-    def get_block_dim(y,x) :
-        return ((xnumel + x -1 )//x) * ((y_upper+ y -1 ) // y)
-    
+    def get_block_dim(y, x):
+        return ((xnumel + x - 1) // x) * ((y_upper + y - 1) // y)
+
     count = 0
-    while( get_block_dim(y,x) < num_vector_core and y > 8 and count < 20 ) :
-        y_1 = biggest_divisor(y) 
-        if get_block_dim(y_1, x) > num_vector_core :
+    while (get_block_dim(y, x) < num_vector_core and y > 8 and count < 20):
+        y_1 = biggest_divisor(y)
+        if get_block_dim(y_1, x) > num_vector_core:
             break
         y = y_1
-        if  get_block_dim(y,x) < num_vector_core and x > align_numel :
-            x = x // 2 
+        if get_block_dim(y, x) < num_vector_core and x > align_numel:
+            x = x // 2
         count = count + 1
 
     # optimize block_size to avoid ub-overflow
-    while( y * x > ub_upper) :
+    while (y * x > ub_upper):
         y_1 = biggest_divisor(y)
-        if y_1 == y or y_1 <=align_numel:
+        if y_1 == y or y_1 <= align_numel:
             break
         y = y_1
 
-    while( y * x > ub_upper and x > align_numel) :
+    while (y * x > ub_upper and x > align_numel):
         x_1 = x // 2
-        if x_1 <= align_numel :
+        if x_1 <= align_numel:
             break
         x = x_1
-            
-    return (x,y)
 
-def triton_foo(a, d ,shape, dtype) :
+    return (x, y)
+
+
+def triton_foo(a, d, shape, dtype):
     z, y, x = shape
-    out = torch.empty_strided((z, x, y), (x*y, 1, x), device='npu', dtype=dtype)
-    XBLOCK, YBLOCK= find_good_yblock(y,x, y*z, dtype=dtype)
+    out = torch.empty_strided((z, x, y), (x * y, 1, x), device='npu', dtype=dtype)
+    XBLOCK, YBLOCK = find_good_yblock(y, x, y * z, dtype=dtype)
     print(f"XBLOCK={XBLOCK},YBLOCK={YBLOCK}, block_dim={((x + XBLOCK -1 )//XBLOCK) * (((y*z) + YBLOCK -1 ) // YBLOCK)}")
-    grid = ((x + XBLOCK -1 )//XBLOCK, ((y*z) + YBLOCK -1 ) // YBLOCK, 1) 
-    
-    triton_gpu_revised[grid](
-        a, d, out, y * z, x,
-        SHAPE0=z, SHAPE1=y, SHAPE2=x,
-        YBLOCK=YBLOCK, XBLOCK=XBLOCK,
-        enable_linearize=True
-    )
-    return out 
+    grid = ((x + XBLOCK - 1) // XBLOCK, ((y * z) + YBLOCK - 1) // YBLOCK, 1)
+
+    triton_gpu_revised[grid](a, d, out, y * z, x, SHAPE0=z, SHAPE1=y, SHAPE2=x, YBLOCK=YBLOCK, XBLOCK=XBLOCK,
+                             enable_linearize=True)
+    return out
 
 
 types = [
     (torch.float32, 'float32'),
 ]
 
+shapes = [(8, 2048, 4)]
 
-shapes = [(8,2048,4)]
 
 @pytest.mark.parametrize('dtype,sigtype', types)
 @pytest.mark.parametrize('Z,Y,X', shapes)
-def test_linearize(Z,Y,X, dtype, sigtype) :
-    shape = (Z,Y,X)
+def test_linearize(Z, Y, X, dtype, sigtype):
+    shape = (Z, Y, X)
     print(f"start data validation on shape:{shape}")
     a = test_common.generate_tensor(shape=(Z, Y * X), dtype=sigtype).npu()
     d = test_common.generate_tensor(shape=(Z, X, Y), dtype=sigtype).npu()
-    r = triton_foo( a,  d, shape, dtype)
-    r1 = foo(a, d ,shape )
+    r = triton_foo(a, d, shape, dtype)
+    r1 = foo(a, d, shape)
     test_common.validate_cmp(sigtype, r1, r)
     print(f"data validation passed")
 
@@ -170,36 +165,33 @@ def linearize_offset_kernel(
     offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N).to(tl.int64)) % N
 
     if bias_ptr is not None:
-        bias = tl.load(
-            bias_ptr + off_experts * stride_bias_e + offs_bn[None, :] * stride_bias_n
-        )
-        tl.store(output_ptr + pid*16 + tl.arange(0, 16), bias.reshape(16))
+        bias = tl.load(bias_ptr + off_experts * stride_bias_e + offs_bn[None, :] * stride_bias_n)
+        tl.store(output_ptr + pid * 16 + tl.arange(0, 16), bias.reshape(16))
 
 
-def torch_linearize_offset(bias_ptr, experts_ids_ptr, N, EM, stride_bias_e, stride_bias_n, 
-                           BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M):
+def torch_linearize_offset(bias_ptr, experts_ids_ptr, N, EM, stride_bias_e, stride_bias_n, BLOCK_SIZE_M, BLOCK_SIZE_N,
+                           GROUP_SIZE_M):
     """PyTorch reference implementation for offset handling"""
     output = torch.empty([16, 16], dtype=bias_ptr.dtype, device=bias_ptr.device)
-    
+
     num_pid_m = (EM + BLOCK_SIZE_M - 1) // BLOCK_SIZE_M
     num_pid_n = (N + BLOCK_SIZE_N - 1) // BLOCK_SIZE_N
     num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    
+
     for pid in range(16):
         group_id = pid // num_pid_in_group
         first_pid_m = group_id * GROUP_SIZE_M
         group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
         pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
         pid_n = (pid % num_pid_in_group) // group_size_m
-        
+
         off_experts = experts_ids_ptr[pid_m].to(torch.int64).item()
-        offs_bn = torch.arange(pid_n * BLOCK_SIZE_N, 
-                               (pid_n + 1) * BLOCK_SIZE_N, 
-                               dtype=torch.int64, device=bias_ptr.device) % N
-        
+        offs_bn = torch.arange(pid_n * BLOCK_SIZE_N,
+                               (pid_n + 1) * BLOCK_SIZE_N, dtype=torch.int64, device=bias_ptr.device) % N
+
         bias = bias_ptr[off_experts, offs_bn]
         output[pid] = bias
-    
+
     return output
 
 
@@ -212,14 +204,14 @@ def test_linearize_offset_handling(dtype, sigtype):
     and linearization in the compiler.
     """
     print(f"Testing linearize offset handling with dtype={sigtype}")
-    
+
     # Setup test data
     num_experts = 4
     hidden_dim = 64
     bias_ptr = torch.arange(0, num_experts * hidden_dim, dtype=dtype).npu().reshape(num_experts, hidden_dim)
     output_ptr = torch.empty([16, 16], dtype=dtype).npu()
     experts_ids_ptr = torch.tensor([1, 2, 3, 1], dtype=torch.int32).npu()
-    
+
     # Kernel parameters
     N = 64
     EM = 64
@@ -228,29 +220,17 @@ def test_linearize_offset_handling(dtype, sigtype):
     BLOCK_SIZE_M = 16
     BLOCK_SIZE_N = 16
     GROUP_SIZE_M = 4
-    
+
     # Run triton kernel
-    linearize_offset_kernel[(16,)](
-        bias_ptr=bias_ptr,
-        output_ptr=output_ptr,
-        experts_ids_ptr=experts_ids_ptr,
-        N=N,
-        EM=EM,
-        stride_bias_e=stride_bias_e,
-        stride_bias_n=stride_bias_n,
-        BLOCK_SIZE_M=BLOCK_SIZE_M,
-        BLOCK_SIZE_N=BLOCK_SIZE_N,
-        GROUP_SIZE_M=GROUP_SIZE_M,
-        enable_linearize=True
-    )
-    
+    linearize_offset_kernel[(16, )](bias_ptr=bias_ptr, output_ptr=output_ptr, experts_ids_ptr=experts_ids_ptr, N=N,
+                                    EM=EM, stride_bias_e=stride_bias_e, stride_bias_n=stride_bias_n,
+                                    BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, GROUP_SIZE_M=GROUP_SIZE_M,
+                                    enable_linearize=True)
+
     # Compute reference result
-    expected = torch_linearize_offset(
-        bias_ptr, experts_ids_ptr, N, EM, 
-        stride_bias_e, stride_bias_n,
-        BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M
-    )
-    
+    expected = torch_linearize_offset(bias_ptr, experts_ids_ptr, N, EM, stride_bias_e, stride_bias_n, BLOCK_SIZE_M,
+                                      BLOCK_SIZE_N, GROUP_SIZE_M)
+
     # Validate results
     test_common.validate_cmp(sigtype, expected, output_ptr)
     print(f"Linearize offset handling test passed")
@@ -295,29 +275,17 @@ cache_shapes = [
 def test_expand_dims_and_add(batch_size, buffer_len, dtype, sigtype):
     block = biggest_divisor(buffer_len)
     cache_len = buffer_len * 2
-    buffer = test_common.generate_tensor(
-        shape=(batch_size, 1, buffer_len), dtype=sigtype
-    ).npu()
+    buffer = test_common.generate_tensor(shape=(batch_size, 1, buffer_len), dtype=sigtype).npu()
     cache = torch.zeros(batch_size, 1, cache_len, dtype=dtype).npu()
     cache_ref = torch.zeros(batch_size, 1, cache_len, dtype=dtype).npu()
     numel = batch_size * buffer_len * 2
     torch_expand_dims_and_add(buffer, cache_ref, buffer_len, block, numel)
-    expand_dims_and_add[block, cache_len](
-        buffer, cache, buffer_len, block, numel,
-        enable_linearize=True
-    )
+    expand_dims_and_add[block, cache_len](buffer, cache, buffer_len, block, numel, enable_linearize=True)
 
     test_common.validate_cmp(sigtype, cache, cache_ref)
 
 
-def torch_save_cache_to_buffer(
-    buffer,
-    cache1,
-    cache2,
-    buffer_stride,
-    cache_stride,
-    BLOCK
-):
+def torch_save_cache_to_buffer(buffer, cache1, cache2, buffer_stride, cache_stride, BLOCK):
     idx = torch.arange(0, cache_stride)
     mask = ((idx // BLOCK) % 2 == 0)
     max_len = min(buffer_stride, mask.shape[0])
@@ -330,14 +298,7 @@ def torch_save_cache_to_buffer(
             buffer[i, 0, :max_len] = tmp[:max_len]
 
 
-def torch_save_cache_to_buffer_with_offset(
-    buffer,
-    cache1,
-    cache2,
-    buffer_stride,
-    cache_stride,
-    BLOCK
-):
+def torch_save_cache_to_buffer_with_offset(buffer, cache1, cache2, buffer_stride, cache_stride, BLOCK):
     idx = torch.arange(0, cache_stride)
     mask = ((idx // BLOCK) % 2 == 0)
     max_len = min(buffer_stride, mask.shape[0])
@@ -373,16 +334,8 @@ def torch_rearrange_and_combine_two_buffer(
         cache[i, 0, buffer_stride:] = tmp2
 
 
-def torch_save_cache_to_buffer_with_mask(
-    buffer,
-    cache1,
-    cache2,
-    mask_int,
-    buffer_stride,
-    cache_stride,
-    BLOCK,
-    MASK_NUM
-):
+def torch_save_cache_to_buffer_with_mask(buffer, cache1, cache2, mask_int, buffer_stride, cache_stride, BLOCK,
+                                         MASK_NUM):
     idx = torch.arange(0, cache_stride)
     mask_idx = torch.arange(0, buffer_stride)
     mask = ((idx // BLOCK) % 2 == 0)
@@ -423,24 +376,18 @@ def torch_rearrange_cache_with_mask(
             tmp1 = tmp1.permute(1, 0)
             tmp1 = tmp1.reshape(1, -1)
 
-            tmp2 = cache1[i, j+half_buffer_num, :]
+            tmp2 = cache1[i, j + half_buffer_num, :]
             tmp2[~mask] = 0
             tmp2 = tmp2.reshape(NUM_BLOCK, BLOCK)
             tmp2 = tmp2.permute(1, 0)
             tmp2 = tmp2.reshape(1, -1)
 
             cache2[i, j, :] = -tmp1
-            cache2[i, j+half_buffer_num, :] = tmp2
+            cache2[i, j + half_buffer_num, :] = tmp2
 
 
 @triton.jit
-def save_cache_to_buffer(
-    buffer_ptr,
-    cache_ptr1,
-    cache_ptr2,
-    buffer_stride: tl.constexpr,
-    BLOCK: tl.constexpr
-):
+def save_cache_to_buffer(buffer_ptr, cache_ptr1, cache_ptr2, buffer_stride: tl.constexpr, BLOCK: tl.constexpr):
     pid_loc = tl.program_id(0)
     buffer_offset = pid_loc * buffer_stride
     buffer_index = buffer_offset + tl.arange(0, buffer_stride)
@@ -451,21 +398,16 @@ def save_cache_to_buffer(
     cache_index_1 = cache_index % BLOCK
 
     if pid_loc % 2 == 0:
-        tmp = tl.load(cache_ptr1 + (2*BLOCK*cache_index_0 + cache_index_1))
+        tmp = tl.load(cache_ptr1 + (2 * BLOCK * cache_index_0 + cache_index_1))
         tl.store(buffer_ptr + buffer_index, tmp)
     if pid_loc % 2 == 1:
-        tmp = tl.load(cache_ptr2 + (2*BLOCK*cache_index_0 + cache_index_1))
+        tmp = tl.load(cache_ptr2 + (2 * BLOCK * cache_index_0 + cache_index_1))
         tl.store(buffer_ptr + buffer_index, tmp)
 
 
 @triton.jit
-def save_cache_to_buffer_with_offset(
-    buffer_ptr,
-    cache_ptr1,
-    cache_ptr2,
-    buffer_stride: tl.constexpr,
-    BLOCK: tl.constexpr
-):
+def save_cache_to_buffer_with_offset(buffer_ptr, cache_ptr1, cache_ptr2, buffer_stride: tl.constexpr,
+                                     BLOCK: tl.constexpr):
     pid_loc = tl.program_id(0)
     buffer_offset = pid_loc * buffer_stride
     buffer_index = buffer_offset + tl.arange(0, buffer_stride)
@@ -476,11 +418,11 @@ def save_cache_to_buffer_with_offset(
     cache_index_1 = cache_index % BLOCK
 
     if pid_loc % 2 == 0:
-        tmp = tl.load(cache_ptr1 + (2*BLOCK*cache_index_0 + cache_index_1))
+        tmp = tl.load(cache_ptr1 + (2 * BLOCK * cache_index_0 + cache_index_1))
         tl.store(buffer_ptr + buffer_index, tmp)
     if pid_loc % 2 == 1:
-        tmp = tl.load(cache_ptr2 + BLOCK + (2*BLOCK*cache_index_0 + cache_index_1))
-        tl.store(buffer_ptr + buffer_index, tmp)   
+        tmp = tl.load(cache_ptr2 + BLOCK + (2 * BLOCK * cache_index_0 + cache_index_1))
+        tl.store(buffer_ptr + buffer_index, tmp)
 
 
 @triton.jit
@@ -514,17 +456,9 @@ def rearrange_and_combine_two_buffer(
         x_index = x_index + buffer_stride * BLOCK
 
 
-
 @triton.jit
-def save_cache_to_buffer_with_mask(
-    buffer_ptr,
-    cache_ptr1,
-    cache_ptr2,
-    mask_int_ptr,
-    buffer_stride: tl.constexpr,
-    BLOCK: tl.constexpr,
-    MASK_NUM: tl.constexpr
-):
+def save_cache_to_buffer_with_mask(buffer_ptr, cache_ptr1, cache_ptr2, mask_int_ptr, buffer_stride: tl.constexpr,
+                                   BLOCK: tl.constexpr, MASK_NUM: tl.constexpr):
     pid_loc = tl.program_id(0)
 
     buffer_offset = pid_loc * buffer_stride
@@ -572,7 +506,7 @@ def rearrange_cache_with_mask(
     for i in range(2):
         buffer_num_index = buffer_num_offset + tl.arange(0, half_buffer_num)
         buffer_num_index2 = buffer_num_index[:, None]
-        
+
         tmp1 = tl.load(cache_ptr1 + buffer_stride * buffer_num_index2 + load_index)
         tmp1 = tmp1 * (2 * i - 1)
         mask1 = buffer_num_index2 < buffer_num
@@ -596,10 +530,7 @@ def test_linearize_jump_load(batch_size, buffer_len, dtype, sigtype):
     cache2 = cache2_ref.npu()
 
     torch_save_cache_to_buffer(buffer_ref, cache1_ref, cache2_ref, buffer_len, cache_len, block)
-    save_cache_to_buffer[(batch_size, 1, 1)](
-        buffer, cache1, cache2, buffer_len, block,
-        enable_linearize=True
-    )
+    save_cache_to_buffer[(batch_size, 1, 1)](buffer, cache1, cache2, buffer_len, block, enable_linearize=True)
     test_common.validate_cmp(sigtype, buffer, buffer_ref)
 
 
@@ -616,10 +547,8 @@ def test_linearize_jump_load_with_offset(batch_size, buffer_len, dtype, sigtype)
     cache2 = cache2_ref.npu()
 
     torch_save_cache_to_buffer_with_offset(buffer_ref, cache1_ref, cache2_ref, buffer_len, cache_len, block)
-    save_cache_to_buffer_with_offset[(batch_size, 1, 1)](
-        buffer, cache1, cache2, buffer_len, block,
-        enable_linearize=True
-    )
+    save_cache_to_buffer_with_offset[(batch_size, 1, 1)](buffer, cache1, cache2, buffer_len, block,
+                                                         enable_linearize=True)
     test_common.validate_cmp(sigtype, buffer, buffer_ref)
 
 
@@ -637,10 +566,8 @@ def test_linearize_rearrange(batch_size, buffer_len, dtype, sigtype):
     cache = cache_ref.npu()
 
     torch_rearrange_and_combine_two_buffer(buffer1_ref, buffer2_ref, cache_ref, buffer_len, num_block, block)
-    rearrange_and_combine_two_buffer[(batch_size, 1, 1)](
-        buffer1, buffer2, cache, buffer_len, num_block, block,
-        enable_linearize=True
-    )
+    rearrange_and_combine_two_buffer[(batch_size, 1, 1)](buffer1, buffer2, cache, buffer_len, num_block, block,
+                                                         enable_linearize=True)
     test_common.validate_cmp(sigtype, cache, cache_ref)
 
 
@@ -656,14 +583,13 @@ def test_linearize_jump_load_with_mask(batch_size, buffer_len, dtype, sigtype):
     cache1 = cache1_ref.npu()
     cache2_ref = test_common.generate_tensor(shape=(batch_size, 1, cache_len), dtype=sigtype)
     cache2 = cache2_ref.npu()
-    mask_ref = torch.arange(0, batch_size, dtype=torch.int64)*2
+    mask_ref = torch.arange(0, batch_size, dtype=torch.int64) * 2
     mask = mask_ref.npu()
     mask_num = 16
-    torch_save_cache_to_buffer_with_mask(buffer_ref, cache1_ref, cache2_ref, mask_ref, buffer_len, cache_len, block, mask_num)
-    save_cache_to_buffer_with_mask[(batch_size, 1, 1)](
-        buffer, cache1, cache2, mask, buffer_len, block, mask_num,
-        enable_linearize=True
-    )
+    torch_save_cache_to_buffer_with_mask(buffer_ref, cache1_ref, cache2_ref, mask_ref, buffer_len, cache_len, block,
+                                         mask_num)
+    save_cache_to_buffer_with_mask[(batch_size, 1, 1)](buffer, cache1, cache2, mask, buffer_len, block, mask_num,
+                                                       enable_linearize=True)
     test_common.validate_cmp(sigtype, buffer, buffer_ref)
 
 
@@ -672,15 +598,13 @@ def test_linearize_jump_load_with_mask(batch_size, buffer_len, dtype, sigtype):
 @pytest.mark.parametrize('batch_size,buffer_len', cache_shapes)
 def test_linearize_rearrange_with_mask(batch_size, buffer_len, dtype, sigtype):
     block = biggest_divisor(buffer_len)
-    num_block = int(buffer_len/block)
+    num_block = int(buffer_len / block)
     cache1_ref = test_common.generate_tensor(shape=(batch_size, 4, buffer_len), dtype=sigtype)
     cache1 = cache1_ref.npu()
     cache2_ref = torch.zeros(batch_size, 4, buffer_len, dtype=dtype)
     cache2 = cache2_ref.npu()
 
     torch_rearrange_cache_with_mask(cache1_ref, cache2_ref, 2, buffer_len, num_block, block)
-    rearrange_cache_with_mask[(batch_size, 1, 1)](
-        cache1, cache2, 2, buffer_len, num_block, block, 
-        enable_linearize=True
-    )
+    rearrange_cache_with_mask[(batch_size, 1, 1)](cache1, cache2, 2, buffer_len, num_block, block,
+                                                  enable_linearize=True)
     test_common.validate_cmp(sigtype, cache2, cache2_ref)

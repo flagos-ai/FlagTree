@@ -34,7 +34,7 @@ def _gate_up_lora_b_kernel(
     x,
     weights,
     output,
-    K,  
+    K,
     output_dim,
     x_stride_0,
     x_stride_1,
@@ -60,7 +60,7 @@ def _gate_up_lora_b_kernel(
 
     w_index = tl.load(weight_indices + batch_id)
     seg_start = tl.load(seg_indptr + batch_id)
-    n_start = gate_up_id * output_dim  
+    n_start = gate_up_id * output_dim
     rank = tl.load(lora_ranks + w_index)
     scaling = tl.load(scalings + w_index)
 
@@ -74,33 +74,28 @@ def _gate_up_lora_b_kernel(
     n_offset = tl.arange(0, BLOCK_N) + pid_n * BLOCK_N
     k_offset = tl.arange(0, BLOCK_K)
 
-    x_ptrs = (x + seg_start * x_stride_0 + (gate_up_id * K) * x_stride_1) + (
-        s_offset[:, None] * x_stride_0 + k_offset[None, :] * x_stride_1
-    )
-    w_ptrs = (weights + w_index * w_stride_0 + n_start * w_stride_1) + (
-        k_offset[:, None] * w_stride_2 + n_offset[None, :] * w_stride_1
-    )
+    x_ptrs = (x + seg_start * x_stride_0 +
+              (gate_up_id * K) * x_stride_1) + (s_offset[:, None] * x_stride_0 + k_offset[None, :] * x_stride_1)
+    w_ptrs = (weights + w_index * w_stride_0 + n_start * w_stride_1) + (k_offset[:, None] * w_stride_2 +
+                                                                        n_offset[None, :] * w_stride_1)
     partial_sum = tl.zeros((BLOCK_S, BLOCK_N), dtype=tl.float32)
-    
+
     for_num = tl.cdiv(K, BLOCK_K)
     k = 0
     x_tile = tl.load(
         x_ptrs,
-        mask=(s_offset[:, None] < seg_len)
-        and (k_offset[None, :] < K - k * BLOCK_K),
+        mask=(s_offset[:, None] < seg_len) and (k_offset[None, :] < K - k * BLOCK_K),
         other=0.0,
     )
     w_tile = tl.load(
         w_ptrs,
-        mask=(k_offset[:, None] < K - k * BLOCK_K)
-        and (n_offset[None, :] < output_dim),
+        mask=(k_offset[:, None] < K - k * BLOCK_K) and (n_offset[None, :] < output_dim),
         other=0.0,
     )
     partial_sum += tl.dot(x_tile, w_tile)
     output_ptr = (output + seg_start * output_stride_0 + n_start * output_stride_1) + (
-        s_offset[:, None] * output_stride_0 + n_offset[None, :] * output_stride_1
-    )
-    
+        s_offset[:, None] * output_stride_0 + n_offset[None, :] * output_stride_1)
+
     output_mask = (s_offset[:, None] < seg_len) and (n_offset[None, :] < output_dim)
     tl.store(output_ptr, partial_sum, mask=output_mask)
 

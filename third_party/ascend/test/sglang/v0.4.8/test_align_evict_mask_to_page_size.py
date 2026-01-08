@@ -42,9 +42,7 @@ def align_evict_mask_to_page_size(
     bid = tl.program_id(axis=0)
     seq_len = tl.load(seq_lens + bid)
     io_mask = t_range < num_draft_tokens
-    mask_row = tl.load(
-        evict_mask + bid * num_draft_tokens + t_range, mask=io_mask, other=0
-    )
+    mask_row = tl.load(evict_mask + bid * num_draft_tokens + t_range, mask=io_mask, other=0)
 
     num_trues = tl.sum(mask_row)
     num_false = num_draft_tokens - num_trues

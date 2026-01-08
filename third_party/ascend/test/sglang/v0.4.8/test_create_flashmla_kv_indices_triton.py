@@ -60,19 +60,14 @@ def create_flashmla_kv_indices_triton(
 
     for i in range(num_pages_loop):
         # index into req_to_token_ptr needs to be int64
-        paged_offset = (
-            tl.arange(0, NUM_PAGE_PER_BLOCK).to(tl.int64) + i * NUM_PAGE_PER_BLOCK
-        ) * PAGED_SIZE
+        paged_offset = (tl.arange(0, NUM_PAGE_PER_BLOCK).to(tl.int64) + i * NUM_PAGE_PER_BLOCK) * PAGED_SIZE
         paged_offset_out = tl.arange(0, NUM_PAGE_PER_BLOCK) + i * NUM_PAGE_PER_BLOCK
 
         mask = paged_offset < num_paged * PAGED_SIZE
         mask_out = paged_offset_out < num_paged
 
         data = tl.load(
-            req_to_token_ptr
-            + req_pool_index * req_to_token_ptr_stride
-            + kv_start
-            + paged_offset,
+            req_to_token_ptr + req_pool_index * req_to_token_ptr_stride + kv_start + paged_offset,
             mask=mask,
         )
         tl.store(

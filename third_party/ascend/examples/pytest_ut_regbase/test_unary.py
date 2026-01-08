@@ -28,7 +28,8 @@ FUNCTIONS_TO_TEST = {
     'erf': ("tl.erf(x0)", "torch.erf(x0)"),
     'neg': ("-x0", "-x0"),
     'not': ("not(x0)", "torch.bitwise_not(x0)"),
-    'invert': ("~x0", "( ~( x0.to(torch.int32) ) ).to(x0.dtype) if x0.dtype in [torch.float32, torch.float16] else ~x0"),
+    'invert':
+    ("~x0", "( ~( x0.to(torch.int32) ) ).to(x0.dtype) if x0.dtype in [torch.float32, torch.float16] else ~x0"),
     'ceil': ("tl.ceil(x0)", "torch.ceil(x0)"),
     'floor': ("tl.floor(x0)", "torch.floor(x0)"),
     'lshift': ("x0 << 2", "x0 << 2"),
@@ -39,6 +40,7 @@ FUNCTIONS_TO_TEST = {
 # Global dictionary to keep track of temporary files
 _temp_kernel_files = {}
 
+
 def _cleanup_temp_files():
     import os
     for file_path in _temp_kernel_files.values():
@@ -48,7 +50,9 @@ def _cleanup_temp_files():
         except:
             pass
 
+
 atexit.register(_cleanup_temp_files)
+
 
 def create_triton_kernel(func_name, func_pattern):
     import tempfile
@@ -98,20 +102,34 @@ def test_unary(dtype, xblock_sub, func_name):
 
     if dtype in _int_dtypes:
         skip_int_dtype_ops = [
-            'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'sqrt', 'rsqrt', 'sqrt_rn',
-            'sigmoid', 'erf', 'ceil', 'floor',
-            ]
+            'exp',
+            'exp2',
+            'log',
+            'log2',
+            'sin',
+            'cos',
+            'sqrt',
+            'rsqrt',
+            'sqrt_rn',
+            'sigmoid',
+            'erf',
+            'ceil',
+            'floor',
+        ]
         if func_name in skip_int_dtype_ops:
             pytest.skip(f"{func_name} only tested with float dtypes")
     if dtype in _float_dtypes:
         skip_float_dtype_ops = [
-            'not', 'invert', 'lshift', 'rshift',
-            ]
+            'not',
+            'invert',
+            'lshift',
+            'rshift',
+        ]
         if func_name in skip_float_dtype_ops:
             pytest.skip(f"{func_name} only tested with int dtypes")
 
     xblock = triton.next_power_of_2(xblock_sub)
-    shape = (xblock,)
+    shape = (xblock, )
     triton_func_op, torch_func_op = FUNCTIONS_TO_TEST[func_name]
 
     def torch_func(x0):
@@ -124,9 +142,9 @@ def test_unary(dtype, xblock_sub, func_name):
 
     triton_kernel = create_triton_kernel(func_name, triton_func_op)
     triton_kernel = triton.autotune(
-            configs=get_autotune_config(),
-            key=['numel'],
-        )(triton_kernel)
+        configs=get_autotune_config(),
+        key=['numel'],
+    )(triton_kernel)
 
     def triton_func(x0):
         y0 = torch.empty_like(x0)

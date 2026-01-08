@@ -35,8 +35,8 @@ def _sgemm_lora_a_kernel(
     x,
     weights,
     output,
-    N, 
-    K,  
+    N,
+    K,
     stack_num,
     x_stride_0,
     x_stride_1,
@@ -74,12 +74,8 @@ def _sgemm_lora_a_kernel(
     s_offset = tl.arange(0, BLOCK_S) + pid_s * BLOCK_S
     n_offset = tl.arange(0, BLOCK_N) + pid_n * BLOCK_N
     k_offset = tl.arange(0, BLOCK_K)
-    x_ptrs = (x + seg_start * x_stride_0) + (
-        s_offset[:, None] * x_stride_0 + k_offset[None, :] * x_stride_1
-    )
-    w_ptrs = (weights + w_index * w_stride_0) + (
-        k_offset[:, None] * w_stride_2 + n_offset[None, :] * w_stride_1
-    )
+    x_ptrs = (x + seg_start * x_stride_0) + (s_offset[:, None] * x_stride_0 + k_offset[None, :] * x_stride_1)
+    w_ptrs = (weights + w_index * w_stride_0) + (k_offset[:, None] * w_stride_2 + n_offset[None, :] * w_stride_1)
 
     partial_sum = tl.zeros((BLOCK_S, BLOCK_N), dtype=tl.float32)
     for k in range(0, tl.cdiv(K, BLOCK_K)):
@@ -93,16 +89,15 @@ def _sgemm_lora_a_kernel(
             mask=(k_offset[:, None] < K - k * BLOCK_K) & (n_offset[None, :] < N),
             other=0.0,
         )
-            
+
         partial_sum += tl.dot(x_tile, w_tile)
 
         x_ptrs += BLOCK_K * x_stride_1
         w_ptrs += BLOCK_K * w_stride_2
 
     partial_sum = partial_sum.to(x.dtype.element_ty)
-    output_ptr = (output + seg_start * output_stride_0) + (
-        s_offset[:, None] * output_stride_0 + n_offset[None, :] * output_stride_1
-    )
+    output_ptr = (output + seg_start * output_stride_0) + (s_offset[:, None] * output_stride_0 +
+                                                           n_offset[None, :] * output_stride_1)
     output_mask = (s_offset[:, None] < seg_len) & (n_offset[None, :] < N)
     tl.store(output_ptr, partial_sum, mask=output_mask)
 

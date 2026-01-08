@@ -25,7 +25,6 @@ import torch
 import triton
 import triton.language as tl
 
-
 sys.path.append("..")
 import test_common
 
@@ -70,10 +69,9 @@ def test_context_fwd_kernel(ptfile_path):
     except Exception as e:
         pytest.fail(f"load file {ptfile_path} failed: {str(e)}")
 
-
     input_data = test_common.convert_tensor_with_device_type(data["input_data"], device_type='npu')
-    _fwd_kernel_ep_scatter_1[data['grid']](**input_data) 
-    
+    _fwd_kernel_ep_scatter_1[data['grid']](**input_data)
+
     try:
         test_common.compare_data_precision(data["gpu_output"], input_data, device_type='cpu')
     except ValueError as e:

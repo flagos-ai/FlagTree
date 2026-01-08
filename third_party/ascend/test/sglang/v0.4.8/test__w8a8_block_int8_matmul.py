@@ -123,10 +123,11 @@ def test__w8a8_block_int8_matmul(ptfile_path):
     input_data = test_common.convert_tensor_with_device_type(data["input_data"], device_type='npu')
 
     _w8a8_block_int8_matmul[data["grid"]](**input_data)
-    
+
     # compare the results of GPU and NPU.
     # the precision of tl.dot in GPU is lower than that in NPU
     try:
-        torch.testing.assert_close(data["gpu_output"]['C'], input_data['C'].cpu(), rtol=1e-02, atol=1e-02, equal_nan=True)
+        torch.testing.assert_close(data["gpu_output"]['C'], input_data['C'].cpu(), rtol=1e-02, atol=1e-02,
+                                   equal_nan=True)
     except ValueError as e:
         pytest.fail(f"The testcase failed")

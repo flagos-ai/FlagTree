@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import pytest
 
 import triton
@@ -77,11 +76,11 @@ def test_elementwise_common(opName, tritonOp, standOp, dtype, sigtype, N, NUMEL)
     if sigtype == 'int64':
         N = map_for_64_t[N] if N in map_for_64_t else N
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype)
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype)
 
     ans = standOp(x0)
     x0 = x0.npu()
 
-    output = torch.zeros((N,), dtype=dtype).npu()
+    output = torch.zeros((N, ), dtype=dtype).npu()
     tritonOp[1, 1, 1](x0, output, N=N, NUMEL=NUMEL, debug=True)
     test_common.validate_cmp(sigtype, output, ans)

@@ -126,4 +126,3 @@ module {
 // CHECK:           bufferization.materialize_in_destination %[[VAL_112]] in writable %[[VAL_114]] : (tensor<?x?xbf16>, memref<?x?xbf16, strided<[?, ?], offset: ?>>) -> ()
 // CHECK:           return
 // CHECK:         }
-

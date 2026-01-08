@@ -196,7 +196,7 @@ class DownloadManager:
         has_specialization_submodule = module.spec_submodule is not None
         while (retry_count):
             try:
-                clone_cmd = f"git clone"
+                clone_cmd = "git clone"
                 if has_specialization_branch:
                     clone_cmd += f" -b {module.branch}"
                 clone_cmd += f" {module.url} {module.dst_path}"
@@ -206,7 +206,9 @@ class DownloadManager:
                 elif has_specialization_tag:
                     os.system(f"cd {module.dst_path} && git checkout {module.tag}")
                 if has_specialization_submodule:
-                    os.system(f"cd {module.dst_path} && git submodule update --init --recursive --force {module.spec_submodule}")
+                    os.system(
+                        f"cd {module.dst_path} && git submodule update --init --recursive --force {module.spec_submodule}"
+                    )
                 return True
             except Exception:
                 retry_count -= 1

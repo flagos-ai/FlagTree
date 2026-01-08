@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import logging
 import pytest
 import torch
@@ -140,18 +139,14 @@ def fn_npu_multi_d(output_ptr, x_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl
 
 
 @pytest.mark.shape_4d_5d
-@pytest.mark.parametrize('param_list',
-                         [
-                             ('float32', (4, 2, 16, 16)),
-                             ('float32', (2, 4, 2, 16, 16)),
-
-                             ('float32', (4, 2, 16, 16)),
-                             ('float32', (2, 4, 2, 16, 16)),
-
-                             ('float32', (4, 2, 16, 16)),
-                             ('float32', (2, 4, 2, 16, 16)),
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ('float32', (4, 2, 16, 16)),
+    ('float32', (2, 4, 2, 16, 16)),
+    ('float32', (4, 2, 16, 16)),
+    ('float32', (2, 4, 2, 16, 16)),
+    ('float32', (4, 2, 16, 16)),
+    ('float32', (2, 4, 2, 16, 16)),
+])
 def test_case_4d_5d(param_list):
     dtype, shape = param_list
     if check_ub_mem_overflow(dtype, shape):
@@ -164,12 +159,12 @@ def test_case_4d_5d(param_list):
     triton_shape = [*shape]
     while len(triton_shape) < 5:
         triton_shape.append(1)
-    fn_npu_multi_d[(1,)](y_cal, x0, *triton_shape)
+    fn_npu_multi_d[(1, )](y_cal, x0, *triton_shape)
     print(f"y_cal = {torch.flatten(y_cal)[0:4]}")
     test_common.validate_cmp(dtype, y_cal, y_ref)
 
 
 if __name__ == "__main__":
     for dtype in TestUtils.dtype_list:
-        for shape in [(37,), (37, 3), (1, 22, 39)]:
+        for shape in [(37, ), (37, 3), (1, 22, 39)]:
             test_npu(shape, dtype)

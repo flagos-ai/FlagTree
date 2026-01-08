@@ -29,7 +29,8 @@ import test_common
 
 
 @triton.jit
-def triton_unk_fused_embedding_0(in_ptr0, in_ptr1, out_ptr0, y0_numel, x1_numel, Y0BLOCK: tl.constexpr, Y0BLOCK_SUB: tl.constexpr):
+def triton_unk_fused_embedding_0(in_ptr0, in_ptr1, out_ptr0, y0_numel, x1_numel, Y0BLOCK: tl.constexpr,
+                                 Y0BLOCK_SUB: tl.constexpr):
     x1_numel = 64
     X1BLOCK_SUB: tl.constexpr = 64
     y0_offset = tl.program_id(0) * Y0BLOCK
@@ -46,7 +47,7 @@ def triton_unk_fused_embedding_0(in_ptr0, in_ptr1, out_ptr0, y0_numel, x1_numel,
 
 
 def torch_embedding_impl(in_ptr0, in_ptr1):
-    indices_flat = in_ptr0.flatten() # [6400]
+    indices_flat = in_ptr0.flatten()  # [6400]
     vocab_size = 1353406
     out_flat = torch.embedding(in_ptr1, indices_flat)  # [6400, 16]
     out = out_flat.view(128, 50, 64)
@@ -58,12 +59,12 @@ def test_kernel():
     arg1_1 = torch.randn((1353406, 64), device='npu', dtype=torch.float32)
     buf0 = torch.empty((128, 50, 64), device='npu', dtype=torch.float32)
 
-    y0_numel = 128 * 50  
+    y0_numel = 128 * 50
     x1_numel = 64
-    Y0BLOCK = 256 
-    Y0BLOCK_SUB = 16 
+    Y0BLOCK = 256
+    Y0BLOCK_SUB = 16
 
-    grid = (triton.cdiv(y0_numel, Y0BLOCK),)
+    grid = (triton.cdiv(y0_numel, Y0BLOCK), )
 
     print(f"Grid size: {grid}")
     print(f"Total programs: {grid[0]}")

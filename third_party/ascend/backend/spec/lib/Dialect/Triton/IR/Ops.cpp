@@ -46,8 +46,8 @@ void EmbeddingGatherOp::getEffects(
 }
 
 void GatherOutToUbOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects)
-{
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
   effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
                        triton::GlobalMemory::get());
 }
@@ -60,56 +60,60 @@ void IndirectLoadOp::getEffects(
 }
 
 // FlipOp
-LogicalResult FlipOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location, ValueRange operands,
-                                       DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
-                                       SmallVectorImpl<Type> &inferredReturnTypes)
-{
-    auto inputTy = dyn_cast<RankedTensorType>(operands[0].getType());
-    if (!inputTy) {
-        if (location)
-            return emitOptionalError(location, "expected ranked tensor for flip input");
-        return failure();
-    }
-    inferredReturnTypes.push_back(inputTy);
-    return success();
+LogicalResult
+FlipOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location,
+                         ValueRange operands, DictionaryAttr attributes,
+                         OpaqueProperties properties, RegionRange regions,
+                         SmallVectorImpl<Type> &inferredReturnTypes) {
+  auto inputTy = dyn_cast<RankedTensorType>(operands[0].getType());
+  if (!inputTy) {
+    if (location)
+      return emitOptionalError(location,
+                               "expected ranked tensor for flip input");
+    return failure();
+  }
+  inferredReturnTypes.push_back(inputTy);
+  return success();
 }
 
 //-- SortOp --
-LogicalResult SortOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes)
-    {
-    if (operands.size() != 1) {
-        return emitOptionalError(location, "expected exactly one operand for SortOp");
-    }
+LogicalResult
+SortOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location,
+                         ValueRange operands, DictionaryAttr attributes,
+                         OpaqueProperties properties, RegionRange regions,
+                         SmallVectorImpl<Type> &inferredReturnTypes) {
+  if (operands.size() != 1) {
+    return emitOptionalError(location,
+                             "expected exactly one operand for SortOp");
+  }
 
-    if (!isa<RankedTensorType>(operands[0].getType())) {
-        return emitOptionalError(location, "operand must be a ranked tensor type for SortOp");
-    }
+  if (!isa<RankedTensorType>(operands[0].getType())) {
+    return emitOptionalError(location,
+                             "operand must be a ranked tensor type for SortOp");
+  }
 
-    Value src = operands[0];
-    auto srcTy = cast<RankedTensorType>(src.getType());
-    auto srcShape = srcTy.getShape();
-    auto srcEnc = srcTy.getEncoding();
+  Value src = operands[0];
+  auto srcTy = cast<RankedTensorType>(src.getType());
+  auto srcShape = srcTy.getShape();
+  auto srcEnc = srcTy.getEncoding();
 
-    if (srcShape.empty()) {
+  if (srcShape.empty()) {
     return emitOptionalError(location, "input tensor must have rank >= 1");
-    }
+  }
 
-    Type sortedTy = RankedTensorType::get(srcShape, srcTy.getElementType(), srcEnc);
+  Type sortedTy =
+      RankedTensorType::get(srcShape, srcTy.getElementType(), srcEnc);
 
-    inferredReturnTypes.push_back(sortedTy);
+  inferredReturnTypes.push_back(sortedTy);
 
-    return success();
+  return success();
 }
 
 //-- MakeTensorDescOp --
 void MakeTensorDescOp::build(OpBuilder &builder, OperationState &state,
                              Value base, ValueRange shape, ValueRange strides,
                              ArrayRef<int32_t> blockShape,
-                             bool isSignedInteger)
-{
+                             bool isSignedInteger) {
   auto ptrTy = dyn_cast<triton::PointerType>(base.getType());
   if (!ptrTy) {
     llvm::report_fatal_error("Expected pointer type");
@@ -125,8 +129,7 @@ void MakeTensorDescOp::build(OpBuilder &builder, OperationState &state,
 // -- DescriptorLoadOp --
 static LogicalResult verifyDescriptorLoadStoreType(Operation *op,
                                                    TensorDescType desc,
-                                                   RankedTensorType tensor)
-{
+                                                   RankedTensorType tensor) {
   RankedTensorType block = desc.getSignlessBlockType();
   ArrayRef<int64_t> blockShape = block.getShape();
   ArrayRef<int64_t> tensorShape = tensor.getShape();
@@ -142,19 +145,17 @@ static LogicalResult verifyDescriptorLoadStoreType(Operation *op,
 
   if (blockShape == tensorShape &&
       block.getElementType() == tensor.getElementType()) {
-        return success();
-      }
+    return success();
+  }
   return op->emitOpError("tensor descriptor block and tensor types must match");
 }
 
-LogicalResult DescriptorLoadOp::verify()
-{
+LogicalResult DescriptorLoadOp::verify() {
   return verifyDescriptorLoadStoreType(*this, getDesc().getType(), getType());
 }
 
 // -- DescriptorStoreOp --
-LogicalResult DescriptorStoreOp::verify()
-{
+LogicalResult DescriptorStoreOp::verify() {
   return verifyDescriptorLoadStoreType(*this, getDesc().getType(),
                                        getSrc().getType());
 }
@@ -178,7 +179,7 @@ void FuncOp::build(OpBuilder &builder, OperationState &state, StringRef name,
   assert(type.getNumInputs() == argAttrs.size());
 #if LLVM_VERSION_MAJOR < 21
   function_interface_impl::addArgAndResultAttrs(
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
   call_interface_impl::addArgAndResultAttrs(
 #endif
       builder, state, argAttrs, /*resultAttrs=*/std::nullopt,
@@ -271,28 +272,29 @@ LogicalResult IndexSelectSimdOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
-  
+
   // Get operands using adaptor
   IndexSelectSimdOpAdaptor adaptor(operands, attributes, properties, regions);
-  
+
   // Get element type from src pointer
   Type elemType;
-  if (auto ptrType = dyn_cast<triton::PointerType>(adaptor.getSrc().getType())) {
+  if (auto ptrType =
+          dyn_cast<triton::PointerType>(adaptor.getSrc().getType())) {
     elemType = ptrType.getPointeeType();
   } else {
     return failure();
   }
-  
+
   // Get index shape to determine the size of dim
   auto indicesType = dyn_cast<RankedTensorType>(adaptor.getIndex().getType());
   if (!indicesType)
     return failure();
   int64_t numIndices = indicesType.getShape()[0];
-  
+
   // Use adaptor to get attributes - this is the compatible way
   int32_t dim = adaptor.getDim();
   auto readShapeAttr = adaptor.getReadShape();
-  
+
   // Build result shape: read_shape but with dim replaced by numIndices
   SmallVector<int64_t> resultShape;
   for (size_t i = 0; i < readShapeAttr.size(); ++i) {
@@ -302,10 +304,10 @@ LogicalResult IndexSelectSimdOp::inferReturnTypes(
       resultShape.push_back(readShapeAttr[i]);
     }
   }
-  
+
   // Create result tensor type
   inferredReturnTypes.push_back(RankedTensorType::get(resultShape, elemType));
-  
+
   return success();
 }
 

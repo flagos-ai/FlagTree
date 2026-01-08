@@ -38,4 +38,3 @@ tt.func public @triton_indirect_store_no_repeat_kernel(%arg0: !tt.ptr<f32>, %arg
 // CHECK:             call @triton_indirect_store(%[[VAL_2:.*]], %[[VAL_15:.*]], %[[VAL_16:.*]], %[[VAL_17:.*]]) : (memref<?xf32>, tensor<4096xi64>, tensor<4096xf32>, tensor<4096xi1>) -> ()
 // CHECK:             return
 // CHECK:           }
-

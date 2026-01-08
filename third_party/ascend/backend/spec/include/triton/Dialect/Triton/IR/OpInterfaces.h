@@ -1,4 +1,5 @@
-// TODO: When upgrading to Triton 3.4.0, remove this file and use the upstream Triton file.
+// TODO: When upgrading to Triton 3.4.0, remove this file and use the upstream
+// Triton file.
 #ifndef TRITON_IR_OP_INTERFACES_H_
 #define TRITON_IR_OP_INTERFACES_H_
 

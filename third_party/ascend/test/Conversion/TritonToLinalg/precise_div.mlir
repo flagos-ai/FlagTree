@@ -33,5 +33,3 @@ module {
 //CHECK: %[[VAL0:.*]] = bufferization.to_tensor %alloc restrict writable : memref<64xf32>
 //CHECK: %[[VAL1:.*]] = bufferization.to_tensor %alloc_1 restrict writable : memref<64xf32>
 //CHECK: %[[VAL2:.*]] = arith.divf %in, %in_3 : f32
-
-

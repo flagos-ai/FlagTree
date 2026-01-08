@@ -7,6 +7,7 @@ import logging
 import builtins
 from triton import runtime
 
+
 def is_do_bench_npu():
     enable_bench_npu = os.getenv("TRITON_BENCH_METHOD", 'default').lower() == 'npu'
     if torch.npu.is_available() and enable_bench_npu:
@@ -51,12 +52,14 @@ def collect_single(base_dir: str, key: str = None) -> float:
 
     return float('inf')
 
+
 def _rm_dic(keep_res, torch_path):
     if keep_res:
         return
     import shutil
     if os.path.exists(torch_path):
         shutil.rmtree(torch_path)
+
 
 def _collect_mul_prof_result(base_dir: str, kernel_dict, total, key: str = None):
     import numpy as np
@@ -91,6 +94,7 @@ def _collect_mul_prof_result(base_dir: str, kernel_dict, total, key: str = None)
         tiling_dict[config] = [avg_time]
     return tiling_dict
 
+
 def do_bench_npu(fn, warmup=5, active=30, prof_dir=None, keep_res=False):
     import torch_npu
     import multiprocessing
@@ -102,10 +106,7 @@ def do_bench_npu(fn, warmup=5, active=30, prof_dir=None, keep_res=False):
 
     experimental_config = torch_npu.profiler._ExperimentalConfig(
         aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
-        profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
-        l2_cache=False,
-        data_simplification=False
-    )
+        profiler_level=torch_npu.profiler.ProfilerLevel.Level1, l2_cache=False, data_simplification=False)
     skip_first = 1
     wait = 0
     repeat = 1
@@ -121,17 +122,16 @@ def do_bench_npu(fn, warmup=5, active=30, prof_dir=None, keep_res=False):
         base_path = os.path.join(runtime.cache.get_home_dir(), ".triton", "profile_results")
         torch_path = os.path.join(base_path, f"prof_{timestamp}_{process_name}-{pid}")
     with torch_npu.profiler.profile(
-        activities=[
-            torch_npu.profiler.ProfilerActivity.NPU
-        ],
-        schedule=torch_npu.profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=repeat, skip_first=skip_first),
-        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(torch_path),
-        record_shapes=False,
-        profile_memory=False,
-        with_stack=False,
-        with_flops=False,
-        with_modules=False,
-        experimental_config=experimental_config,
+            activities=[torch_npu.profiler.ProfilerActivity.NPU],
+            schedule=torch_npu.profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=repeat,
+                                                 skip_first=skip_first),
+            on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(torch_path),
+            record_shapes=False,
+            profile_memory=False,
+            with_stack=False,
+            with_flops=False,
+            with_modules=False,
+            experimental_config=experimental_config,
     ) as prof:
         for _ in builtins.range(total):
             fn()
@@ -141,6 +141,7 @@ def do_bench_npu(fn, warmup=5, active=30, prof_dir=None, keep_res=False):
     time = collect_single(torch_path)
     _rm_dic(keep_res, torch_path)
     return time
+
 
 def do_bench_multiple_kernel_npu(kernel_dict, active=30, prof_dir=None, keep_res=False):
     import torch
@@ -169,14 +170,12 @@ def do_bench_multiple_kernel_npu(kernel_dict, active=30, prof_dir=None, keep_res
                     future.result()
                 except Exception as ex:
                     logging.info(f"Exception raised while benchmarking function.{ex}")
+
     run_all_fns()
 
     experimental_config = torch_npu.profiler._ExperimentalConfig(
         aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
-        profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
-        l2_cache=False,
-        data_simplification=False
-    )
+        profiler_level=torch_npu.profiler.ProfilerLevel.Level1, l2_cache=False, data_simplification=False)
 
     if prof_dir is not None:
         torch_path = prof_dir
@@ -194,9 +193,7 @@ def do_bench_multiple_kernel_npu(kernel_dict, active=30, prof_dir=None, keep_res
     torch.npu.synchronize()  # shake out of any npu error
 
     with torch_npu.profiler.profile(
-            activities=[
-                torch_npu.profiler.ProfilerActivity.NPU
-            ],
+            activities=[torch_npu.profiler.ProfilerActivity.NPU],
             on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(torch_path),
             record_shapes=False,
             profile_memory=False,
@@ -216,16 +213,16 @@ def do_bench_multiple_kernel_npu(kernel_dict, active=30, prof_dir=None, keep_res
     _rm_dic(keep_res, torch_path)
     return tiling_dict
 
+
 def ext_do_bench_npu(fn, warmup, rep, quantiles, return_mode):
     import torch
     from triton.testing import _summarize_statistics
     avg_time = do_bench_npu(fn, warmup=max(5, warmup), active=max(30, rep))
     return _summarize_statistics(torch.tensor([avg_time], dtype=torch.float), quantiles, return_mode)
 
+
 def testing_spec_range(num):
     return builtins.range(num)
 
-testing_ext_spec_api_list = [
-    "do_bench_npu",
-    "do_bench_multiple_kernel_npu"
-]
+
+testing_ext_spec_api_list = ["do_bench_npu", "do_bench_multiple_kernel_npu"]

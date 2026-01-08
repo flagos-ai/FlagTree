@@ -45,12 +45,9 @@ def promote_dtype(x_dtype, y_dtype):
     # 如果两个数据类型一致，直接返回
     if x_dtype == y_dtype:
         return y_dtype
-    
+
     # 构建类型的优先级列表（从低到高）
-    priority = [
-        torch.int8, torch.int16, torch.int32,
-        torch.float16, torch.bfloat16, torch.float32
-    ]
+    priority = [torch.int8, torch.int16, torch.int32, torch.float16, torch.bfloat16, torch.float32]
 
     # 查找两种类型在优先级列表中的位置
     x_priority = priority.index(x_dtype)
@@ -77,7 +74,7 @@ def test_atomic_min(x_dtype_str, y_dtype_str, shape):
     out_dtype = promote_dtype(x_dtype, y_dtype)
     if out_dtype == torch.bfloat16:
         out_dtype = torch.float32
-    if out_dtype == torch.int8 or out_dtype == torch.int16 or out_dtype == torch.int32: # 判断是否是整数类型
+    if out_dtype == torch.int8 or out_dtype == torch.int16 or out_dtype == torch.int32:  # 判断是否是整数类型
         out = torch.full(x1.shape, torch.iinfo(out_dtype).max, dtype=out_dtype)
     else:
         out = torch.full(x1.shape, torch.finfo(out_dtype).max, dtype=out_dtype)
@@ -94,8 +91,8 @@ def test_atomic_min(x_dtype_str, y_dtype_str, shape):
         triton_test_fn_atomic_min_dma[shape[0], 1, 1](x0, x1, out, n_elements, BLOCK_SIZE=shape[1])
     elif len(shape) == 1:
         n_elements = shape[0]
-        BLOCK_SIZE = min(1024, shape[0]) # 1024:限制最大线程块大小
-        grid_size = (n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE # 向上取整
+        BLOCK_SIZE = min(1024, shape[0])  # 1024:限制最大线程块大小
+        grid_size = (n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE  # 向上取整
         triton_test_fn_atomic_min_dma[grid_size, 1, 1](x0, x1, out, n_elements, BLOCK_SIZE=BLOCK_SIZE)
 
     torch.testing.assert_close(out, out_ref)
@@ -103,24 +100,24 @@ def test_atomic_min(x_dtype_str, y_dtype_str, shape):
 
 # 3d
 testlist = [
-    (1,22,39),
-    (27,1,39),
-    (27,22,1),
-    (1,1,23),
-    (23,1,1),
-    (1,23,1),
-    (27,5,3),
-    (2,29,4),
-    (7,31,7),
-    (3,5,8),
-    (7,17,15),
-    (25,5,16),
-    (23,5,31),
-    (7,11,32),
-    (7,11,33),
-    (2,3,255),
-    (3,3,256),
-    (3,2,257),
+    (1, 22, 39),
+    (27, 1, 39),
+    (27, 22, 1),
+    (1, 1, 23),
+    (23, 1, 1),
+    (1, 23, 1),
+    (27, 5, 3),
+    (2, 29, 4),
+    (7, 31, 7),
+    (3, 5, 8),
+    (7, 17, 15),
+    (25, 5, 16),
+    (23, 5, 31),
+    (7, 11, 32),
+    (7, 11, 33),
+    (2, 3, 255),
+    (3, 3, 256),
+    (3, 2, 257),
 ]
 
 
@@ -158,7 +155,8 @@ def test_atomic_min_3d(x_dtype_str, y_dtype_str, shape):
 
 
 @triton.jit
-def atomic_min_multi_d(in_ptr0, out_ptr0, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr, NB: tl.constexpr):
+def atomic_min_multi_d(in_ptr0, out_ptr0, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr,
+                       NB: tl.constexpr):
     offsets = tl.arange(0, XB) * (YB * ZB * MB * NB)
     if (YB * ZB * MB * NB) > 1:
         offsets = offsets[:, None] + tl.arange(0, YB)[None, :] * (ZB * MB * NB)
@@ -168,7 +166,7 @@ def atomic_min_multi_d(in_ptr0, out_ptr0, XB: tl.constexpr, YB: tl.constexpr, ZB
         offsets = offsets[:, :, :, None] + tl.arange(0, MB)[None, None, None, :] * NB
     if NB > 1:
         offsets = offsets[:, :, :, :, None] + tl.arange(0, NB)[None, None, None, None, :]
-    
+
     tmp0 = tl.load(in_ptr0 + offsets)
     tl.atomic_min(out_ptr0 + offsets, tmp0)
 
@@ -202,7 +200,8 @@ def test_atomic_min_4d_5d(dtype, shape):
 
 
 @triton.jit
-def atomic_min_multi_d_2(in_ptr0, out_ptr0, out_ptr1, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr, NB: tl.constexpr):
+def atomic_min_multi_d_2(in_ptr0, out_ptr0, out_ptr1, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr,
+                         MB: tl.constexpr, NB: tl.constexpr):
     offsets = tl.arange(0, XB) * (YB * ZB * MB * NB)
     if (YB * ZB * MB * NB) > 1:
         offsets = offsets[:, None] + tl.arange(0, YB)[None, :] * (ZB * MB * NB)
@@ -212,7 +211,7 @@ def atomic_min_multi_d_2(in_ptr0, out_ptr0, out_ptr1, XB: tl.constexpr, YB: tl.c
         offsets = offsets[:, :, :, None] + tl.arange(0, MB)[None, None, None, :] * NB
     if NB > 1:
         offsets = offsets[:, :, :, :, None] + tl.arange(0, NB)[None, None, None, None, :]
-    
+
     tmp0 = tl.load(in_ptr0 + offsets)
     tmp1 = tl.load(out_ptr0 + offsets)
     tl.atomic_min(out_ptr1 + offsets, tmp0)
@@ -235,7 +234,7 @@ def test_atomic_min_4d_5d_2(x_dtype_str, y_dtype_str, shape):
     # 获取原始类型
     x_dtype = eval('torch.' + x_dtype_str)
     y_dtype = eval('torch.' + y_dtype_str)
-    
+
     if x_dtype == torch.int8 or x_dtype == torch.int16 or x_dtype == torch.int32:
         x0 = torch.randint(low=0, high=100, size=shape, dtype=x_dtype).npu()
     else:

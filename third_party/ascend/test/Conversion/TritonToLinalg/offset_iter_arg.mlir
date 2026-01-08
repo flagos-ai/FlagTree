@@ -34,9 +34,9 @@ module {
 }
 
 // CHECK-LABEL:   func.func @test_kernel(
-// CHECK-SAME:                           %[[VAL_0:.*]]: memref<?xi8>, %[[VAL_1:.*]]: memref<?xi8>, 
-// CHECK-SAME:                           %[[VAL_2:.*]]: memref<?xi32> {tt.divisibility = 16 : i32, tt.tensor_kind = 0 : i32}, 
-// CHECK-SAME:                           %[[VAL_3:.*]]: memref<?xi32> {tt.divisibility = 16 : i32, tt.tensor_kind = 1 : i32}, 
+// CHECK-SAME:                           %[[VAL_0:.*]]: memref<?xi8>, %[[VAL_1:.*]]: memref<?xi8>,
+// CHECK-SAME:                           %[[VAL_2:.*]]: memref<?xi32> {tt.divisibility = 16 : i32, tt.tensor_kind = 0 : i32},
+// CHECK-SAME:                           %[[VAL_3:.*]]: memref<?xi32> {tt.divisibility = 16 : i32, tt.tensor_kind = 1 : i32},
 // CHECK-SAME:                           %[[VAL_4:.*]]: i32, %[[VAL_5:.*]]: i32, %[[VAL_6:.*]]: i32, %[[VAL_7:.*]]: i32, %[[VAL_8:.*]]: i32, %[[VAL_9:.*]]: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 // CHECK:           %[[VAL_10:.*]] = arith.constant 300 : index
 // CHECK:           %[[VAL_11:.*]] = arith.constant 128 : index

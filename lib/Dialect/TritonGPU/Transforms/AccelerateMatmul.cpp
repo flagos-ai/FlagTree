@@ -370,7 +370,7 @@ static void decomposeMixedModeDotOp(ModuleOp mod, int computeCapability) {
     if (mmaLayout) {
 #if LLVM_VERSION_MAJOR < 21
       bool isNativeFP8 = AElType.isFloat8E5M2() || AElType.isFloat8E4M3FN();
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
       bool isNativeFP8 = llvm::isa<Float8E5M2Type, Float8E4M3FNType>(AElType);
 #endif
       // promote operands for sm < 89 since fp8 mma is not natively supported
@@ -431,13 +431,13 @@ public:
       case F8F6F4Type::E4M3:
 #if LLVM_VERSION_MAJOR < 21
         return rewriter.getFloat8E4M3FNType();
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
         return Float8E4M3FNType::get(rewriter.getContext());
 #endif
       case F8F6F4Type::E5M2:
 #if LLVM_VERSION_MAJOR < 21
         return rewriter.getFloat8E5M2Type();
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
         return Float8E5M2Type::get(rewriter.getContext());
 #endif
       default:

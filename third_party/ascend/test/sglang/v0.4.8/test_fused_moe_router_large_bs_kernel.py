@@ -11,25 +11,16 @@ import test_common
 
 
 @triton.jit
-def fused_moe_router_large_bs_kernel(
-    a_ptr,  # input (bs, hidden_dim)
-    b_ptr,  # input (num_experts, hidden_dim)
-    topk_weights_ptr,  # output (bs, topk)
-    topk_ids_ptr,  # output (bs, topk)
-    bs,
-    acc_ptr,
-    num_experts: tl.constexpr,
-    topk: tl.constexpr,  # only support topk == 1
-    moe_softcapping: tl.constexpr,
-    moe_renormalize: tl.constexpr,  # not supported
-    K: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    stride_am: tl.constexpr,
-    stride_bn: tl.constexpr,
-    stride_acc: tl.constexpr
-):
+def fused_moe_router_large_bs_kernel(a_ptr,  # input (bs, hidden_dim)
+                                     b_ptr,  # input (num_experts, hidden_dim)
+                                     topk_weights_ptr,  # output (bs, topk)
+                                     topk_ids_ptr,  # output (bs, topk)
+                                     bs, acc_ptr, num_experts: tl.constexpr,
+                                     topk: tl.constexpr,  # only support topk == 1
+                                     moe_softcapping: tl.constexpr, moe_renormalize: tl.constexpr,  # not supported
+                                     K: tl.constexpr, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
+                                     BLOCK_SIZE_K: tl.constexpr, stride_am: tl.constexpr, stride_bn: tl.constexpr,
+                                     stride_acc: tl.constexpr):
 
     # 1. get block id
     pid = tl.program_id(axis=0)
@@ -73,12 +64,8 @@ def fused_moe_router_large_bs_kernel(
     # 5. top1
     cond = tl.arange(0, BLOCK_SIZE_N)[None, :] < num_experts
     top1 = tl.argmax(tl.where(cond, logits_softcapped, float("-inf")), axis=1)
-    top1_v = tl.max(
-        tl.where(cond, logits_softcapped, float("-inf")), axis=1, keep_dims=True
-    )
-    invsumexp = 1.0 / tl.sum(
-        tl.where(cond, tl.exp(logits_softcapped - top1_v), 0.0), axis=1
-    )
+    top1_v = tl.max(tl.where(cond, logits_softcapped, float("-inf")), axis=1, keep_dims=True)
+    invsumexp = 1.0 / tl.sum(tl.where(cond, tl.exp(logits_softcapped - top1_v), 0.0), axis=1)
 
     # 6. store to output
     offs_topk = pid * topk * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
@@ -91,12 +78,10 @@ def fused_moe_router_large_bs_kernel(
     )
 
     # Debug output: Intermediate matrix storage (added for debugging, not original)
-    offs_nn = tl.arange(0, BLOCK_SIZE_N)[None, : ]
+    offs_nn = tl.arange(0, BLOCK_SIZE_N)[None, :]
     offset_acc = offs_m * stride_acc + offs_nn
     out_ptrs = acc_ptr + offset_acc
-    tl.store(
-        out_ptrs, logits_softcapped
-    )
+    tl.store(out_ptrs, logits_softcapped)
 
 
 def test_fused_moe_router_large_bs_kernel(ptfile_path):
