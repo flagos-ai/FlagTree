@@ -10,13 +10,7 @@ from . import runtime
 
 # flagtree backend testing func specialization
 def spec_testing_func(spec):
-    testing_spec_api_list = spec.testing_ext_spec_api_list
-
-    current_module_name = __name__
-    parent_module_name = '.'.join(current_module_name.split('.')[:-1])
-    math_module_name = f"{parent_module_name}.math"
-
-    for spec_api_name in testing_spec_api_list:
+    for spec_api_name in spec.testing_ext_spec_api_list:
         if hasattr(spec, spec_api_name):
             spec_api = getattr(spec, spec_api_name)
             # triton.testing

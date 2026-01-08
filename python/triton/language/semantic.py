@@ -1751,7 +1751,7 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format, rhs: tl.tensor,
         assert acc.type == ret_ty
     rhs_scale_handle = None if rhs_scale_is_none else rhs_scale.handle
     # flagtree backend specialization
-    lhs_scale_handle = spec('set_dot_scaled_lhs_scale_handle', lhs_scale, lhs_scale_is_none)
+    #lhs_scale_handle = spec('set_dot_scaled_lhs_scale_handle', lhs_scale, lhs_scale_is_none)
     return tl.tensor(
         builder.create_dot_scaled(lhs.handle, lhs_scale.handle, lhs_format_enum, rhs.handle, rhs_scale_handle,
                                   rhs_format_enum, acc_handle), ret_ty)
