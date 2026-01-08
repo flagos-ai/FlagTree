@@ -224,7 +224,9 @@ class FlagTreeCache:
     def get(self, file_name) -> Path:
         return self.cache_files[file_name]
 
+
 # -----flagtree-tle-raw-----llvm-wheel---
+
 
 class LLVMDetector:
     ENV_VARS = [
@@ -250,7 +252,7 @@ class LLVMDetector:
         import_name = pkg_name.replace("-", "_")
         spec = importlib.util.find_spec(import_name)
         if spec is None:
-             raise RuntimeError(f"LLVM wheel '{pkg_name}' found via metadata but import failed.")
+            raise RuntimeError(f"LLVM wheel '{pkg_name}' found via metadata but import failed.")
 
         if spec.origin:
             llvm_root = os.path.dirname(spec.origin)
@@ -263,16 +265,15 @@ class LLVMDetector:
         lib_dir = os.path.join(llvm_root, "lib")
         return include_dir, lib_dir, llvm_root
 
+
 def try_setup_llvm_wheel(pkg_name: str = "llvm-wheel") -> bool:
     is_installed = LLVMDetector.is_wheel_installed(pkg_name)
     has_envs = LLVMDetector.has_env_vars()
     # rule1 : if both exist, fail
     if is_installed and has_envs and not os.environ.get("USE_LLVM_WHEEL_BUILD"):
-        raise RuntimeError(
-            "ERROR: LLVM wheel is installed, but LLVM-related environment variables are set:\n"
-            f"  {has_envs}\n"
-            "Please unset them to avoid conflicts."
-        )
+        raise RuntimeError("ERROR: LLVM wheel is installed, but LLVM-related environment variables are set:\n"
+                           f"  {has_envs}\n"
+                           "Please unset them to avoid conflicts.")
 
     # rule2：wheel installed & no env → use wheel
     if is_installed:
@@ -287,7 +288,9 @@ def try_setup_llvm_wheel(pkg_name: str = "llvm-wheel") -> bool:
     # Rule 3: fallback to legacy
     return False
 
+
 # --------------------------
+
 
 class CommonUtils:
 
