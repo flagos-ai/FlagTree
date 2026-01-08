@@ -1318,8 +1318,8 @@ def trans(input: tensor, *dims, _builder=None):
         dims = (1, 0)
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    unwrapped_dims = flagtree_backend_specialization('ext_trans_unwrap_iterable', dims)
+    from triton.runtime.driver import spec
+    unwrapped_dims = spec('ext_trans_unwrap_iterable', dims)
     if unwrapped_dims is not None:
         dims = unwrapped_dims
 
@@ -1536,8 +1536,8 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
     :type overflow_mode: string, optional
     """
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    overflow_modes = flagtree_backend_specialization('ext_cast_set_overflow_modes')
+    from triton.runtime.driver import spec
+    overflow_modes = spec('ext_cast_set_overflow_modes')
 
     input = semantic.to_tensor(input, _builder)
     if isinstance(bitcast, constexpr):
@@ -1546,7 +1546,7 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
         return semantic.bitcast(input, dtype, _builder)
     # flagtree backend specialization
     rett = semantic.cast(input, dtype, _builder, fp_downcast_rounding)
-    flagtree_backend_specialization('ext_cast_check_overflow_mode', overflow_mode, overflow_modes, rett, _builder)
+    spec('ext_cast_check_overflow_mode', overflow_mode, overflow_modes, rett, _builder)
     return rett
 
 
@@ -1583,8 +1583,8 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
     assert input_precision is None or allow_tf32 is None, "Only one of input_precision and allow_tf32 can be specified"
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_dot_deprecated_param_allow_tf32', allow_tf32)
+    from triton.runtime.driver import spec
+    spec('check_dot_deprecated_param_allow_tf32', allow_tf32)
 
     if input_precision is None:
         supports_tf32 = _builder and "tf32" in _builder.options.allowed_dot_input_precisions
@@ -1592,7 +1592,7 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
         input_precision = os.getenv("TRITON_F32_DEFAULT", default_precision)
     else:
         # flagtree backend specialization
-        flagtree_backend_specialization('check_dot_invalid_input_precision', input_precision)
+        spec('check_dot_invalid_input_precision', input_precision)
 
     input_precision = _constexpr_to_value(input_precision)
     out_dtype = _constexpr_to_value(out_dtype)
@@ -1691,8 +1691,8 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     eviction_policy = _constexpr_to_value(eviction_policy)
     volatile = _constexpr_to_value(volatile)
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    if flagtree_backend_specialization("enable_care_padding_load"):
+    from triton.runtime.driver import spec
+    if spec("enable_care_padding_load"):
         care_padding = _constexpr_to_value(care_padding)
     return semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,
                          volatile, care_padding, _builder)

@@ -196,8 +196,8 @@ class CodeGenerator(ast.NodeVisitor):
                  noinline=False, file_name: Optional[str] = None, begin_line=0):
         self.context = context
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        opt_compile_mode = flagtree_backend_specialization("ext_CodeGenerator_builder_with_compile_mode", options)
+        from triton.runtime.driver import spec
+        opt_compile_mode = spec("ext_CodeGenerator_builder_with_compile_mode", options)
         if opt_compile_mode:
             self.builder = ir.builder(context, compile_mode=opt_compile_mode)
         else:
@@ -517,8 +517,8 @@ class CodeGenerator(ast.NodeVisitor):
             self.set_value(name, value)
 
         #flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        flagtree_backend_specialization("ext_CodeGenerator_visit_Assign_hint_anno", self, node, names, values)
+        from triton.runtime.driver import spec
+        spec("ext_CodeGenerator_visit_Assign_hint_anno", self, node, names, values)
 
     def visit_AugAssign(self, node):
         name = node.target.id
@@ -924,9 +924,9 @@ class CodeGenerator(ast.NodeVisitor):
         for_op_ext_attrs = (False, False, False, False)
 
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
+        from triton.runtime.driver import spec
         bind_sub_block = None
-        ext_it_class_support = flagtree_backend_specialization("visit_For_ext_support")
+        ext_it_class_support = spec("visit_For_ext_support")
         ext_it_class_support = [] if ext_it_class_support is None else ext_it_class_support
         if IteratorClass in [language.range] + ext_it_class_support:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
@@ -939,9 +939,9 @@ class CodeGenerator(ast.NodeVisitor):
             num_stages = iterator.num_stages
             loop_unroll_factor = iterator.loop_unroll_factor
             # flagtree backend specialization
-            for_op_ext_attrs = flagtree_backend_specialization("for_op_ext_attrs", iterator)
+            for_op_ext_attrs = spec("for_op_ext_attrs", iterator)
             # flagtree backend specialization
-            new_bind_sub_block = flagtree_backend_specialization("set_bind_sub_block_when_parallel", IteratorClass, iterator, bind_sub_block)
+            new_bind_sub_block = spec("set_bind_sub_block_when_parallel", IteratorClass, iterator, bind_sub_block)
             if new_bind_sub_block is not None:
                 bind_sub_block = new_bind_sub_block
         elif IteratorClass is range:
@@ -955,8 +955,8 @@ class CodeGenerator(ast.NodeVisitor):
             raise RuntimeError('Only `range` and `static_range` iterators are currently supported')
 
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        new_bind_sub_block = flagtree_backend_specialization("check_override_bind_sub_block", self, node, bind_sub_block)
+        from triton.runtime.driver import spec
+        new_bind_sub_block = spec("check_override_bind_sub_block", self, node, bind_sub_block)
         if new_bind_sub_block is not None:
             bind_sub_block = new_bind_sub_block
 
@@ -1024,13 +1024,13 @@ class CodeGenerator(ast.NodeVisitor):
             if loop_unroll_factor is not None:
                 for_op.set_attr("tt.loop_unroll_factor", self.builder.get_int32_attr(loop_unroll_factor))
             # flagtree backend specialization
-            from triton.runtime.driver import flagtree_backend_specialization
-            flagtree_backend_specialization("for_op_set_ext_attrs",
+            from triton.runtime.driver import spec
+            spec("for_op_set_ext_attrs",
                                             for_op, self.builder, for_op_ext_attrs)
             # flagtree backend specialization
             if bind_sub_block:
-                from triton.runtime.driver import flagtree_backend_specialization
-                flagtree_backend_specialization("forop_setattr_for_bind_sub_block", self, for_op, bind_sub_block)
+                from triton.runtime.driver import spec
+                spec("forop_setattr_for_bind_sub_block", self, for_op, bind_sub_block)
 
             self.scf_stack.append(node)
             self.builder.set_insertion_point_to_start(for_op.get_body(0))
@@ -1116,8 +1116,8 @@ class CodeGenerator(ast.NodeVisitor):
                 # Wrap the error in the callee with the location of the call.
 
                 # flagtree backend specialization
-                from triton.runtime.driver import flagtree_backend_specialization
-                if flagtree_backend_specialization('need_repr_in_CodeGenerator_CompilationError'):
+                from triton.runtime.driver import spec
+                if spec('need_repr_in_CodeGenerator_CompilationError'):
                     raise CompilationError(self.jit_fn.src, self.cur_node, repr(e)) from e
                 raise CompilationError(self.jit_fn.src, self.cur_node, None) from e
 
@@ -1165,8 +1165,8 @@ class CodeGenerator(ast.NodeVisitor):
                 # be in core.py.
 
                 #flagtree backend specialization
-                from triton.runtime.driver import flagtree_backend_specialization
-                if flagtree_backend_specialization('need_repr_in_CodeGenerator_CompilationError'):
+                from triton.runtime.driver import spec
+                if spec('need_repr_in_CodeGenerator_CompilationError'):
                     raise CompilationError(self.jit_fn.src, node, repr(e)) from e
                 raise CompilationError(self.jit_fn.src, node, None) from e
 

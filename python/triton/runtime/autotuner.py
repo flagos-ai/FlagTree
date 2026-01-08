@@ -38,7 +38,7 @@ class Autotuner(KernelInterface):
             'prune_num_stages_by'(optional): a function used to prune num_stages. It takes configs:List[Config] as its input, and returns pruned configs.
         """
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
+        from triton.runtime.driver import spec
 
         if not configs:
             self.configs = [
@@ -107,7 +107,7 @@ class Autotuner(KernelInterface):
         self.use_cuda_graph = use_cuda_graph
 
         # flagtree backend specialization
-        flagtree_backend_specialization('set_Autotuner_auto_profile_dir', self, auto_profile_dir)
+        spec('set_Autotuner_auto_profile_dir', self, auto_profile_dir)
 
         # If we got explicitly called via the old interface, raise a warning
         # and proceed with the old behavior.
@@ -171,8 +171,8 @@ class Autotuner(KernelInterface):
             self.post_hook(full_nargs, exception=None)
 
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        ext_do_bench_MLIRCompilationError = flagtree_backend_specialization("ext_Autotuner_do_bench_MLIRCompilationError") or ()
+        from triton.runtime.driver import spec
+        ext_do_bench_MLIRCompilationError = spec("ext_Autotuner_do_bench_MLIRCompilationError") or ()
 
         try:
             return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
@@ -196,8 +196,8 @@ class Autotuner(KernelInterface):
                 pruned_configs = self.prune_configs(kwargs)
                 bench_start = time.time()
                 # flagtree backend specialization
-                from triton.runtime.driver import flagtree_backend_specialization
-                timings = flagtree_backend_specialization("ext_Autotuner_batch_bench", self, *args, configs=pruned_configs, **kwargs) or \
+                from triton.runtime.driver import spec
+                timings = spec("ext_Autotuner_batch_bench", self, *args, configs=pruned_configs, **kwargs) or \
                     {config: self._bench(*args, config=config, **kwargs) for config in pruned_configs}
                 bench_end = time.time()
                 self.bench_time = bench_end - bench_start
@@ -214,8 +214,8 @@ class Autotuner(KernelInterface):
                   f"{self.bench_time:.2f}s; best config selected: {self.best_config};")
 
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        flagtree_backend_specialization('ext_Autotuner_profile', self, used_cached_result, args, kwargs)
+        from triton.runtime.driver import spec
+        spec('ext_Autotuner_profile', self, used_cached_result, args, kwargs)
 
         if config.pre_hook is not None:
             full_nargs = {**self.nargs, **kwargs, **config.all_kwargs()}
@@ -288,8 +288,8 @@ class Config:
                  reg_dec_producer=None, reg_inc_consumer=None, maxnreg=None, pre_hook=None,
                  force_simt_template=False, enable_linearize=False, **extra_options):
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        if not flagtree_backend_specialization('default_Config_arg_is_none'):
+        from triton.runtime.driver import spec
+        if not spec('default_Config_arg_is_none'):
             num_warps = 4 if num_warps is None else num_warps
             num_stages = 2 if num_stages is None else num_stages
             num_ctas = 1 if num_ctas is None else num_ctas
@@ -311,13 +311,13 @@ class Config:
         # flagtree backend specialization
         self.force_simt_template = force_simt_template
         self.enable_linearize = enable_linearize
-        from triton.runtime.driver import flagtree_backend_specialization
-        flagtree_backend_specialization('set_Config_extra_options', self, extra_options)
+        from triton.runtime.driver import spec
+        spec('set_Config_extra_options', self, extra_options)
 
     def all_kwargs(self):
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        ext_Config_all_kwargs = flagtree_backend_specialization('ext_Config_all_kwargs', self) or ()
+        from triton.runtime.driver import spec
+        ext_Config_all_kwargs = spec('ext_Config_all_kwargs', self) or ()
 
         return {
             **self.kwargs, **{
@@ -349,8 +349,8 @@ class Config:
         res.append(f"maxnreg: {self.maxnreg}")
 
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        flagtree_backend_specialization('ext_Config_to_str', res, self)
+        from triton.runtime.driver import spec
+        spec('ext_Config_to_str', res, self)
 
         return ", ".join(res)
 
@@ -419,8 +419,8 @@ def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_va
 
     def decorator(fn):
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        ret = flagtree_backend_specialization('new_AutoTilingTuner', hints, fn, configs, key, reset_to_zero, restore_value, pre_hook,
+        from triton.runtime.driver import spec
+        ret = spec('new_AutoTilingTuner', hints, fn, configs, key, reset_to_zero, restore_value, pre_hook,
                                               post_hook, prune_configs_by, warmup, rep,
                                               use_cuda_graph, do_bench, auto_profile_dir)
         if ret is not None:

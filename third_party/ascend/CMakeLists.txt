@@ -1,7 +1,7 @@
 #add_subdirectory(triton-adapter triton-adapter)
 #add_subdirectory(test)
 
-add_subdirectory(backend/flagtree_backend_specialization/lib)
+add_subdirectory(backend/spec/lib)
 add_subdirectory(${PROJECT_SOURCE_DIR}/include
                  ${PROJECT_BINARY_DIR}/include)
 add_subdirectory(${PROJECT_SOURCE_DIR}/lib

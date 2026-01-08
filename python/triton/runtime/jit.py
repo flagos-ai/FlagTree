@@ -569,8 +569,8 @@ class JITFunction(KernelInterface[T]):
 
         # flagtree backend specialization
         stream = driver.active.get_current_stream(device)
-        from triton.runtime.driver import flagtree_backend_specialization
-        if flagtree_backend_specialization("enable_stream_in_kwargs", kwargs):
+        from triton.runtime.driver import spec
+        if spec("enable_stream_in_kwargs", kwargs):
             if "stream" not in kwargs.keys():
                 stream = driver.active.get_current_stream(device)
             else:
@@ -587,7 +587,7 @@ class JITFunction(KernelInterface[T]):
             self.create_binder(backend)
 
         # flagtree backend specialization
-        if self.extra_option and flagtree_backend_specialization("enable_extra_option"):
+        if self.extra_option and spec("enable_extra_option"):
             kwargs.update(self.extra_option)
 
         bound_args, sig_and_spec, constexpr_vals, non_constexpr_vals, excess_kwargs = self.binder(*args, **kwargs)
@@ -605,15 +605,15 @@ class JITFunction(KernelInterface[T]):
             assert "device" not in kwargs, "device option is deprecated; current device will be used"
 
             # flagtree backend specialization
-            from triton.runtime.driver import flagtree_backend_specialization
-            if not flagtree_backend_specialization("enable_stream_in_kwargs", kwargs):
+            from triton.runtime.driver import spec
+            if not spec("enable_stream_in_kwargs", kwargs):
                 assert "stream" not in kwargs, "stream option is deprecated; current stream will be used"
 
             for k in excess_kwargs:
                 if k not in options.__dict__:
                     raise KeyError("Keyword argument %s was specified but unrecognised" % k)
 
-            flagtree_backend_specialization("ignore_params_in_JITFunction_run", kwargs, excess_kwargs)
+            spec("ignore_params_in_JITFunction_run", kwargs, excess_kwargs)
 
             bound_vals = tuple(bound_args.values())
 
@@ -669,9 +669,9 @@ class JITFunction(KernelInterface[T]):
             grid_2 = grid[2] if grid_size > 2 else 1
 
             # flagtree backend specialization
-            from triton.runtime.driver import flagtree_backend_specialization
-            flagtree_backend_specialization("check_grid_size", grid_0, grid_1, grid_2)
-            if flagtree_backend_specialization("enable_stream_in_kwargs", kwargs):
+            from triton.runtime.driver import spec
+            spec("check_grid_size", grid_0, grid_1, grid_2)
+            if spec("enable_stream_in_kwargs", kwargs):
                 if ("stream" in kwargs.keys()):
                     stream = kwargs["stream"]
 
@@ -679,8 +679,8 @@ class JITFunction(KernelInterface[T]):
             launch_metadata = kernel.launch_metadata(grid, stream, *non_constexpr_vals)
 
             # flagtree backend specialization
-            from triton.runtime.driver import flagtree_backend_specialization
-            flagtree_backend_specialization("explicit_load_kernel_library", kernel)
+            from triton.runtime.driver import spec
+            spec("explicit_load_kernel_library", kernel)
 
             kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
                        self.CompiledKernel.launch_enter_hook, self.CompiledKernel.launch_exit_hook, *non_constexpr_vals)
@@ -779,9 +779,9 @@ class JITFunction(KernelInterface[T]):
         signature = dict(deserialized_obj['signature'].items())
 
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
+        from triton.runtime.driver import spec
         src = ASTSource(self, signature, constants,
-                        flagtree_backend_specialization('get_JITFunction_spec_attr', deserialized_obj)
+                        spec('get_JITFunction_spec_attr', deserialized_obj)
                         or AttrsDescriptor.from_dict(deserialized_obj['attrs']))
         options = {
             key: tuple(value) if isinstance(value, list) else value
@@ -797,8 +797,8 @@ class JITFunction(KernelInterface[T]):
     # Our unit tests do this, for example.
     def parse(self):
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        line_flagtree_hints = flagtree_backend_specialization('maps_line_numbers_to_comment_hints', self)
+        from triton.runtime.driver import spec
+        line_flagtree_hints = spec('maps_line_numbers_to_comment_hints', self)
 
         tree = ast.parse(self.src)
         assert isinstance(tree, ast.Module)
@@ -806,7 +806,7 @@ class JITFunction(KernelInterface[T]):
         assert isinstance(tree.body[0], ast.FunctionDef)
 
         # flagtree backend specialization
-        flagtree_backend_specialization('attach_line_number_to_comment_mapping', tree, line_flagtree_hints)
+        spec('attach_line_number_to_comment_mapping', tree, line_flagtree_hints)
 
         return tree
 
