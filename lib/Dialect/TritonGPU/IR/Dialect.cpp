@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_cpp
+
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <cstdint>
@@ -3215,3 +3221,5 @@ LinearLayout triton::gpu::inferReshapeLinearLayout(ArrayRef<int64_t> srcShape,
   auto dst = reshapeLayout(ctx, src, dstShape);
   return dst;
 }
+
+#endif// FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_cpp

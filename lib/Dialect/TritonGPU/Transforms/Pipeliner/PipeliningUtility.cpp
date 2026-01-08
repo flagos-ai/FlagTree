@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_PipeliningUtility
+
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -743,3 +749,5 @@ scf::ForOp triton::lowerTMADescriptors(scf::ForOp forOp,
   }
   return forOp;
 }
+
+#endif//FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_PipeliningUtility

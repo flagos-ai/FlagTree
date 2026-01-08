@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Triton_Dialect_TritonGPU_IR_sunrise_LinearLayoutConversion
+
 #include <vector>
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -1820,3 +1826,5 @@ LinearLayout getTmemLoadLayoutSplitLongM(int M, int N, RankedTensorType oldType,
 }
 
 } // namespace mlir::triton::gpu
+
+#endif//FLAGTREE_SPEC_Triton_Dialect_TritonGPU_IR_sunrise_LinearLayoutConversion

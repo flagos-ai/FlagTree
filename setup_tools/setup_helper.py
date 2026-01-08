@@ -14,7 +14,7 @@ ext_sourcedir = "triton/_C/"
 flagtree_backend = os.getenv("FLAGTREE_BACKEND", "").lower()
 flagtree_plugin = os.getenv("FLAGTREE_PLUGIN", "").lower()
 offline_build = os.getenv("FLAGTREE_PLUGIN", "OFF")
-device_mapping = {"xpu": "xpu", "mthreads": "musa", "ascend": "ascend"}
+device_mapping = {"xpu": "xpu", "mthreads": "musa", "ascend": "ascend", "sunrise":"sunrise"}
 activated_module = utils.activate(flagtree_backend)
 downloader = utils.tools.DownloadManager()
 

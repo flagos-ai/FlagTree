@@ -1,3 +1,12 @@
+if(IS_COMPILE_TritonNvidiaGPU)
+  set(_TMA_LINK_CPP "Pipeliner/TMAStoresPipeline.cpp")
+  set(_NVIDIA_LINK_LIBS "TritonNvidiaGPUIR")
+else()
+  set(_TMA_LINK_CPP "")
+  set(_NVIDIA_LINK_LIBS "")
+endif()
+get_flagtree_backend_lib("TritonGPUTransforms" _EXTRA_LINK_LIBS)
+
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
   Canonicalize.cpp
