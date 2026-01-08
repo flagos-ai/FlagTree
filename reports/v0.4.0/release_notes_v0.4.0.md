@@ -51,4 +51,3 @@ HINTS plans to optimize shared memory hints for GPGPU backends to better collabo
 TLE-Lite plans to extend Tensor slicing and distributed primitives.<br>
 TLE-Struct plans to expose more hardware-related primitives and improve performance to approach hardware native languages.<br>
 TLE-Raw plans to verify performance improvement opportunities in operators, optimize integration with Triton, while exploring other viable integration languages.<br>
-

@@ -139,7 +139,7 @@ def matmul_kernel(grid, a, b, c, M, N, K, ...):
 
 #### 4.3.1 第一步：调用统一特化
 
-自动遍历后端定义在 core_ext_spec_func_list 列表中的方法，加入到本模块（tl.core）。当然，也可以按需加入到其他模块（例如 tl）。注意对于 semantic.py 方法名需加上 ext_semantic_ 前缀，与 core.py 的重名函数区分开。
+自动遍历后端定义在 core_ext_spec_api_list 列表中的方法，加入到本模块（tl.core）。当然，也可以按需加入到其他模块（例如 tl）。注意对于 semantic.py 方法名需加上 ext_semantic_ 前缀，与 core.py 的重名函数区分开。
 
 - python/triton/language/core.py
 ```python
@@ -148,13 +148,13 @@ def spec_core_func(spec):
     current_module_name = __name__
     parent_module_name = '.'.join(current_module_name.split('.')[:-1])
 
-    for spec_func_name in spec.core_ext_spec_func_list:
-        if hasattr(spec, spec_func_name):
-            spec_func = getattr(spec, spec_func_name)
+    for spec_api_name in spec.core_ext_spec_api_list:
+        if hasattr(spec, spec_api_name):
+            spec_api = getattr(spec, spec_api_name)
             # triton.language
-            setattr(sys.modules[parent_module_name], spec_func.__name__, spec_func)
+            setattr(sys.modules[parent_module_name], spec_api.__name__, spec_api)
             # triton.language.core
-            setattr(sys.modules[__name__], spec_func.__name__, spec_func)
+            setattr(sys.modules[__name__], spec_api.__name__, spec_api)
 ```
 
 #### 4.3.2 第二步：注册后端入口
@@ -183,7 +183,7 @@ class NPUDriver(DriverBase):
 ```python
 from .triton.language.semantic import *
 __all__  = [
-    "core_ext_spec_func_list",
+    "core_ext_spec_api_list",
 ]
 ```
 
@@ -196,7 +196,7 @@ __all__  = [
 def gather(src, index, axis, _builder=None):
     ...
 
-core_ext_spec_func_list = [
+core_ext_spec_api_list = [
     "gather", ...
 ]
 ```
@@ -213,19 +213,19 @@ def spec_math_func(spec):
     current_module_name = __name__
     parent_module_name = '.'.join(current_module_name.split('.')[:-1])
 
-    for spec_func_name in spec.math_ext_base_func_list:
-        if hasattr(spec, spec_func_name):
-            spec_func = getattr(spec, spec_func_name)
+    for spec_api_name in spec.math_ext_base_api_list:
+        if hasattr(spec, spec_api_name):
+            spec_api = getattr(spec, spec_api_name)
             # triton.language
-            setattr(sys.modules[parent_module_name], spec_func.__name__, spec_func)
+            setattr(sys.modules[parent_module_name], spec_api.__name__, spec_api)
             # triton.language.math
-            setattr(sys.modules[__name__], spec_func.__name__, spec_func)
+            setattr(sys.modules[__name__], spec_api.__name__, spec_api)
 
-    for spec_func_name in spec.math_ext_spec_func_list:
-        if hasattr(spec, spec_func_name):
-            spec_func = getattr(spec, spec_func_name)
+    for spec_api_name in spec.math_ext_spec_api_list:
+        if hasattr(spec, spec_api_name):
+            spec_api = getattr(spec, spec_api_name)
             # triton.language.math
-            setattr(sys.modules[__name__], spec_func.__name__, spec_func)
+            setattr(sys.modules[__name__], spec_api.__name__, spec_api)
 ```
 
 #### 4.4.2 第二步：注册后端入口
@@ -250,10 +250,10 @@ class NPUDriver(DriverBase):
 ```python
 import triton.language as language
 exp = language.extra.ascend.libdevice.exp
-math_ext_base_func_list = [
+math_ext_base_api_list = [
     "exp", ...  # tl.math 原有方法，但实现有特化，例如支持的 dtype 不同
 ]
-math_ext_spec_func_list = [
+math_ext_spec_api_list = [
     "isnan", ...  # 后端向 tl.math 新增的方法
 ]
 ```
