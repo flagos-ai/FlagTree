@@ -6,6 +6,9 @@ from pathlib import Path
 import hashlib
 from distutils.sysconfig import get_python_lib
 from . import utils
+import importlib.util
+import importlib.metadata
+from typing import List, Tuple
 
 extend_backends = []
 default_backends = ["nvidia", "amd"]
@@ -221,6 +224,70 @@ class FlagTreeCache:
     def get(self, file_name) -> Path:
         return self.cache_files[file_name]
 
+# -----flagtree-tle-raw-----llvm-wheel---
+
+class LLVMDetector:
+    ENV_VARS = [
+        "LLVM_INCLUDE_DIRS",
+        "LLVM_LIBRARY_DIR",
+        "LLVM_SYSPATH",
+    ]
+
+    @classmethod
+    def has_env_vars(cls) -> List[str]:
+        return [k for k in cls.ENV_VARS if k in os.environ]
+
+    @staticmethod
+    def is_wheel_installed(pkg_name: str) -> bool:
+        try:
+            importlib.metadata.version(pkg_name)
+            return True
+        except importlib.metadata.PackageNotFoundError:
+            return False
+
+    @staticmethod
+    def get_paths_from_wheel(pkg_name: str) -> Tuple[str, str, str]:
+        import_name = pkg_name.replace("-", "_")
+        spec = importlib.util.find_spec(import_name)
+        if spec is None:
+             raise RuntimeError(f"LLVM wheel '{pkg_name}' found via metadata but import failed.")
+
+        if spec.origin:
+            llvm_root = os.path.dirname(spec.origin)
+        elif spec.submodule_search_locations:
+            llvm_root = next(iter(spec.submodule_search_locations))
+        else:
+            raise RuntimeError(f"LLVM wheel '{pkg_name}' is found but has no filesystem location")
+
+        include_dir = os.path.join(llvm_root, "include")
+        lib_dir = os.path.join(llvm_root, "lib")
+        return include_dir, lib_dir, llvm_root
+
+def try_setup_llvm_wheel(pkg_name: str = "llvm-wheel") -> bool:
+    is_installed = LLVMDetector.is_wheel_installed(pkg_name)
+    has_envs = LLVMDetector.has_env_vars()
+    # rule1 : if both exist, fail
+    if is_installed and has_envs and not os.environ.get("USE_LLVM_WHEEL_BUILD"):
+        raise RuntimeError(
+            "ERROR: LLVM wheel is installed, but LLVM-related environment variables are set:\n"
+            f"  {has_envs}\n"
+            "Please unset them to avoid conflicts."
+        )
+
+    # rule2：wheel installed & no env → use wheel
+    if is_installed:
+        include_dir, lib_dir, llvm_root = LLVMDetector.get_paths_from_wheel(pkg_name)
+        # env variables will not appear out of python process
+        os.environ["USE_LLVM_WHEEL_BUILD"] = "1"
+        os.environ["LLVM_SYSPATH"] = llvm_root
+        os.environ["LLVM_INCLUDE_DIRS"] = include_dir
+        os.environ["LLVM_LIBRARY_DIR"] = lib_dir
+        return True
+
+    # Rule 3: fallback to legacy
+    return False
+
+# --------------------------
 
 class CommonUtils:
 
