@@ -29,9 +29,15 @@ FlagTree 设计的后端统一特化，目的是整合后端接入范式，对�
 
 在 GPGPU 上支持编译指导 shared memory + async copy 并在 triton_v3.5.x 分支上验证。HINTS更多信息[wiki](https://github.com/flagos-ai/FlagTree/wiki/HINTS)。
 
-* 低层次指令编写 Tle-Raw
+* Triton 语言扩展：TLE
 
-在 Nvidia GPU 上支持直接使用MLIR/LLVM进行部分的关键代码编写，绕开Triton语法限制，并在 triton_v3.5.x 分支上验证。更多内容可参考[wiki](https://github.com/flagos-ai/FlagTree/wiki/EDSL)。
+针对 Triton 发展的困境，我们提出了 TLE（Triton Language Extentions），它从三个层级扩展了 Triton，从而满足不同层次用户对算子编程语言的迫切需求。详见 [wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE)。
+
+**TLE-Lite** 是对 Triton 的轻量级扩展，所有特性兼容各类硬件后端，仅需对原有 Triton kernels 少量修改即可拿到大幅性能提升。主要面向算法工程师和快速性能优化场景。
+
+**TLE-Struct** 按硬件的架构聚类抽象，分类（如 GPGPU、DSA）提供扩展，满足进一步性能优化的需求。需要开发人员对目标硬件的特性和优化技巧有一定了解。
+
+**TLE-Raw** 提供对硬件最直接的控制，可以使用硬件厂商的原生编程语言获取最极致的性能。需要开发人员对目标硬件的深入了解，主要面向性能优化专家。更多内容可参考 [wiki](https://github.com/flagos-ai/FlagTree/wiki/EDSL)。
 
 * 与 FlagGems 算子库联合建设
 
