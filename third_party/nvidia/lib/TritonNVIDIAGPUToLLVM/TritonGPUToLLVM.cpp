@@ -77,6 +77,7 @@ public:
   }
 };
 
+// flagtree tle raw
 class TleLLVMConversionTarget : public ConversionTarget {
 public:
   explicit TleLLVMConversionTarget(MLIRContext &ctx,
@@ -138,6 +139,7 @@ struct ConvertTritonGPUToLLVM
 
     RewritePatternSet patterns(context);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
+    // flagtree tle raw
     {
       TleLLVMConversionTarget target(*context, typeConverter);
       RewritePatternSet patterns(context);

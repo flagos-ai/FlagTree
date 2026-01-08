@@ -11,7 +11,7 @@
 #include "proton/Dialect/include/Dialect/ProtonGPU/IR/Dialect.h"
 #include "proton/Dialect/include/Dialect/ProtonGPU/Transforms/Passes.h"
 #include "third_party/tle/dialect/include/Transforms/Passes.h"
-#include "tle/dialect/include/IR/Dialect.h" // flagtree tle
+#include "tle/dialect/include/IR/Dialect.h" // flagtree tle raw
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -133,6 +133,6 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::proton::ProtonDialect,
       mlir::triton::proton::gpu::ProtonGPUDialect, mlir::ROCDL::ROCDLDialect,
       mlir::triton::gluon::GluonDialect,
-      mlir::triton::tle::TleDialect // flagtree tle
+      mlir::triton::tle::TleDialect // flagtree tle raw
       >();
 }

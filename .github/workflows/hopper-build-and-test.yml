@@ -141,3 +141,7 @@ jobs:
           # python unit test
           python3 -m pytest -s python/test/tle/integration
           python3 -m pytest -s python/test/tle/unit
+          # flagtree tle raw
+          # python3 python/tutorials/tle/raw/01-vector-add.py
+          # python3 python/tutorials/tle/raw/02-fused-softmax.py
+          # python3 python/tutorials/tle/raw/03-matrix-multiplication.py

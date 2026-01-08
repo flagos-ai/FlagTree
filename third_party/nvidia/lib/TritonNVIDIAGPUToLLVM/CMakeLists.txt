@@ -32,5 +32,5 @@ add_triton_library(TritonNVIDIAGPUToLLVM
     MLIRReconcileUnrealizedCasts
     NVGPUIR
     MLIRUBToLLVM
-    TleToLLVM
+    TleToLLVM # flagtree tle raw
 )

@@ -7,7 +7,7 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
-#include "tle/dialect/include/IR/Dialect.h" // flagtree tle
+#include "tle/dialect/include/IR/Dialect.h" // flagtree tle raw
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -86,13 +86,15 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
   // Some ops from SCF are illegal
   addIllegalOp<scf::ExecuteRegionOp, scf::ParallelOp, scf::ReduceOp,
                scf::ReduceReturnOp>();
-  // flagtree tle
+  // flagtree tle raw
   addDynamicallyLegalOp<triton::gpu::LocalAllocOp, triton::gpu::LocalStoreOp,
                         triton::gpu::LocalLoadOp>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
-                             scf::SCFDialect, ub::UBDialect, LLVM::LLVMDialect>(
+                             scf::SCFDialect, ub::UBDialect,
+                             LLVM::LLVMDialect // flagtree tle raw
+                             >(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
 
   // We have requirements for the data layouts
@@ -116,7 +118,7 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     return true;
   });
 
-  addDynamicallyLegalDialect<triton::tle::TleDialect // flagtree tle
+  addDynamicallyLegalDialect<triton::tle::TleDialect // flagtree tle raw
                              >([&](Operation *op) {
     bool hasLegalRegions = true;
     for (auto &region : op->getRegions()) {

@@ -4,7 +4,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "tle/dialect/include/IR/Dialect.h" // flagtree tle
+#include "tle/dialect/include/IR/Dialect.h" // flagtree tle raw
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -789,7 +789,7 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
   patterns.add<CFCondBranchPattern, CFBranchPattern>(typeConverter, context);
 }
 
-// flagtree tle
+// flagtree tle raw
 class TleDSLRegionOpPattern : public OpConversionPattern<tle::DSLRegionOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -814,9 +814,9 @@ public:
   }
 };
 
-// flagtree tle
-void populateTlePatterns(TritonGPUTypeConverter &typeConverter,
-                         RewritePatternSet &patterns) {
+// flagtree tle raw
+void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
+                            RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns
       .add<TleDSLRegionOpPattern, GenericOpPattern<tle::YieldOp>,
@@ -859,7 +859,7 @@ public:
     //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
-    populateTlePatterns(typeConverter, patterns); // flagtree tle
+    populateTleRawPatterns(typeConverter, patterns); // flagtree tle raw
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
 
     Builder b(&getContext());
