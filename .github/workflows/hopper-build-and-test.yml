@@ -144,7 +144,7 @@ jobs:
           # flagtree hints
           # python tutorials
           python3 python/tutorials/hints/01/01-vector-add.py --only_unit_test
-          #python3 python/tutorials/hints/02/02-fused-softmax.py --only_unit_test
+          # python3 python/tutorials/hints/02/02-fused-softmax.py --only_unit_test
           python3 python/tutorials/hints/03/03-matrix-multiplication.py --only_unit_test
           python3 python/tutorials/hints/04/04-low-memory-dropout.py --only_unit_test
           python3 python/tutorials/hints/05/05-layer-norm.py --only_unit_test
@@ -152,3 +152,7 @@ jobs:
           python3 python/tutorials/hints/07/07-extern-functions.py --only_unit_test
           python3 python/tutorials/hints/08/08-grouped-gemm.py --only_unit_test
           python3 python/tutorials/hints/11/11-programmatic-dependent-launch.py --only_unit_test
+          # flagtree tle raw
+          # python3 python/tutorials/tle/raw/01-vector-add.py
+          # python3 python/tutorials/tle/raw/02-fused-softmax.py
+          # python3 python/tutorials/tle/raw/03-matrix-multiplication.py

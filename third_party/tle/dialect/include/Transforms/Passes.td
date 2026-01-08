@@ -45,7 +45,8 @@ def TritonTleLowerTmaCopy : Pass</*cli-arg*/"triton-tle-lower-tma-copy", /*Op*/"
                            "mlir::arith::ArithDialect"];
 }
 
+def TleConvertArgToMemDesc : Pass<"tle-convert-arg-to-memdesc", "mlir::ModuleOp"> {}
 
-
+def TleDSLRegionInline : Pass<"tle-dslregion-inline", "mlir::ModuleOp"> {}
 
 #endif // TRITON_TLE_PASSES
