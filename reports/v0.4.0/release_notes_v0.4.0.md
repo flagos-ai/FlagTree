@@ -4,7 +4,7 @@
 
 ### Highlights
 
-FlagTree inherits capabilities from the previous version, continuously integrates new backends, and strengthens the ecosystem. Building upon the foundation of creating a collaborative code-building platform and achieving single-repository multi-backend support, the project continues to develop unified backend specialization design, continues to build intermediate layer representation and transformation extensions (FLIR), enhances hardware awareness and compilation guidance support capabilities and scope (HINTS), and Extend the Triton language (TLE).
+FlagTree inherits capabilities from the previous version, continuously integrates new backends, and strengthens the ecosystem. Building upon the foundation of creating a collaborative code-building platform and achieving single-repository multi-backend support, the project continues to develop unified backend specialization design, continues to build intermediate layer representation and transformation extensions (FLIR), enhances hardware-aware and compilation guidance support capabilities and scope (HINTS), and Extend the Triton language (TLE).
 
 ### New features
 
