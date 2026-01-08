@@ -87,3 +87,14 @@ jobs:
           python3 04-low-memory-dropout.py
           python3 07-extern-functions.py
           python3 08-grouped-gemm.py
+      
+      - name: FlagTree Test with FlagGems
+        shell: bash
+        run: |
+          cd ../..
+          rm -rf FlagGems
+          git clone https://github.com/flagos-ai/FlagGems.git
+          cd FlagGems
+          git checkout addflagtreetest
+          python3 -m pytest -s --mode=quick --limit-cases=1 --skipped-spectest
+
