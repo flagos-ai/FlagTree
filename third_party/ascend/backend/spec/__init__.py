@@ -87,8 +87,8 @@ __all__  = [
     "scatter_ub_to_out",
     "dot_scaled",
     "range",
-    "core_ext_spec_func_list",
-    "core_tensor_ext_spec_func_list",
+    "core_ext_spec_api_list",
+    "core_tensor_ext_spec_api_list",
     # language.semantic
     "ret_if_not_create_int_cast",
     "check_arange_range_power_of_two",
@@ -153,7 +153,7 @@ __all__  = [
     "ext_semantic_index_put",
     "ext_semantic_gather_out_to_ub",
     "ext_semantic_scatter_ub_to_out",
-    "semantic_ext_spec_func_list",
+    "semantic_ext_spec_api_list",
     # language.standard
     "sigmoid",
     "softmax",
@@ -165,7 +165,7 @@ __all__  = [
     "argmin",
     "topk",
     "max",
-    "standard_ext_spec_func_list",
+    "standard_ext_spec_api_list",
     # language.math
     "umulhi",
     "exp",
@@ -203,12 +203,12 @@ __all__  = [
     "trunc",
     "round",
     "math_ext_base_func_list",
-    "math_ext_spec_func_list",
+    "math_ext_spec_api_list",
     # testing
     'is_do_bench_npu',
     'ext_do_bench_npu',
     'patch_triton_language',
     'do_bench_npu',
     'do_bench_multiple_kernel_npu',
-    'testing_ext_spec_func_list'
+    'testing_ext_spec_api_list'
 ]

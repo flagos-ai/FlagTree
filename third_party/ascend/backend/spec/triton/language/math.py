@@ -50,7 +50,7 @@ math_ext_base_func_list = [
     "tanh", "floor", "ceil", "fma", "_check_dtype", "softmax", "sigmoid",
     "cdiv", "argmax", "argmin"
 ]
-math_ext_spec_func_list = [
+math_ext_spec_api_list = [
     "isnan", "isinf", "reciprocal", "relu", "log1p", "tan",
     "atan", "ilogb", "ldexp", "pow", "flip", "atan2",
     "div_rz", "fmod", "trunc", "round", "rint", "finitef", "isfinited"

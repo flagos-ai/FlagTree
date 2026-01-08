@@ -225,7 +225,7 @@ def ext_do_bench_npu(fn, warmup, rep, quantiles, return_mode):
 def testing_spec_range(num):
     return builtins.range(num)
 
-testing_ext_spec_func_list = [
+testing_ext_spec_api_list = [
     "do_bench_npu",
     "do_bench_multiple_kernel_npu"
 ]

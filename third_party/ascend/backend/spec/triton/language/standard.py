@@ -325,5 +325,5 @@ def sort_impl(x, k: core.constexpr = None, dim: core.constexpr = None, descendin
 def topk(x, k: core.constexpr, dim: core.constexpr = None):
     return sort_impl(x, k=k, dim=dim, descending=True)
 
-standard_ext_spec_func_list = ["sigmoid", "softmax", "isfinited", "finitef", "rint", "atan2", "argmax", "argmin",
+standard_ext_spec_api_list = ["sigmoid", "softmax", "isfinited", "finitef", "rint", "atan2", "argmax", "argmin",
                                "topk", "max"]

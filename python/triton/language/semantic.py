@@ -15,11 +15,11 @@ T = TypeVar('T')
 def spec_semantic_func(spec):
     import sys
 
-    for spec_func_name in spec.semantic_ext_spec_func_list:
-        if hasattr(spec, spec_func_name):
-            spec_func = getattr(spec, "ext_semantic_" + spec_func_name)
+    for spec_api_name in spec.semantic_ext_spec_api_list:
+        if hasattr(spec, spec_api_name):
+            spec_api = getattr(spec, "ext_semantic_" + spec_api_name)
             # triton.language.semantic
-            setattr(sys.modules[__name__], spec_func_name, spec_func)
+            setattr(sys.modules[__name__], spec_api_name, spec_api)
 
 
 class IncompatibleTypeErrorImpl(Exception):

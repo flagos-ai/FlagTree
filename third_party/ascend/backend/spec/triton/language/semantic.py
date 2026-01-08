@@ -929,7 +929,7 @@ def ext_semantic_scatter_ub_to_out(
     )
 
 
-semantic_ext_spec_func_list = [
+semantic_ext_spec_api_list = [
     "gather", "insert_slice", "extract_slice", "get_element", "compile_hint",
     "custom_op", "sort", "scalar_constant", "make_scalar", "make_tensor_descriptor", "index_select_simd",
     "flip_simd", "flip", "static_range", "embedding_gather", "index_put", "gather_out_to_ub",
