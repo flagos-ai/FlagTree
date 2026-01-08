@@ -29,6 +29,10 @@ FlagTree 设计的后端统一特化，目的是整合后端接入范式，对�
 
 在 GPGPU 上支持编译指导 shared memory + async copy 并在 triton_v3.5.x 分支上验证。
 
+* 低层次指令编写 Tle-Raw
+
+在 Nvidia GPU 上支持直接使用MLIR/LLVM进行部分的关键代码编写，绕开Triton语法限制，并在 triton_v3.5.x 分支上验证。更多内容可参考[wiki](https://github.com/flagos-ai/FlagTree/wiki/EDSL)。
+
 * 与 FlagGems 算子库联合建设
 
 在版本适配、后端接口、注册机制、测试修改等方面，与 [FlagGems](https://github.com/FlagOpen/FlagGems) 算子库联合支持相关特性。FlagGems 算子库当前已适配至 Triton 3.5。
