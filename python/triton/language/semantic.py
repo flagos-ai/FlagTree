@@ -1712,10 +1712,10 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format, rhs: tl.tensor,
     rechecked_rhs_scale_is_none = spec('dot_scaled_recheck_rhs_scale_is_none', rhs_scale, rhs_scale_is_none)
     if rechecked_rhs_scale_is_none is not None:
         rhs_scale_is_none = rechecked_rhs_scale_is_none
-    lhs_scale_is_none = lhs_scale is None
-    checked_lhs_scale_is_none = spec('dot_scaled_check_lhs_scale_is_none', lhs_scale)
-    if checked_lhs_scale_is_none is not None:
-        lhs_scale_is_none = checked_lhs_scale_is_none
+    #lhs_scale_is_none = lhs_scale is None
+    #checked_lhs_scale_is_none = spec('dot_scaled_check_lhs_scale_is_none', lhs_scale)
+    #if checked_lhs_scale_is_none is not None:
+    #    lhs_scale_is_none = checked_lhs_scale_is_none
 
     assert rhs_scale_is_none or spec('is_dot_scaled_support_rhs_scale'), "NYI: rhs_scale not supported"
 
