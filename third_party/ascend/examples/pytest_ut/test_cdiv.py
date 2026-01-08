@@ -34,7 +34,7 @@ def torch_cdiv(x0, x1, dtype_x):
             x0 = x0.to(torch.float32)
             x1 = x1.to(torch.float32)
         return torch.ceil(x0 / x1).to(eval("torch." + dtype_x))
-    
+
 
 def torch_cdiv_special(x0, x1, dtype_x):
     if dtype_x in [torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64]:
@@ -73,10 +73,10 @@ def triton_cdiv_special(in_ptr0, div, out_ptr0, XBLOCK, XBLOCK_SUB: tl.constexpr
 param_lists = [
     # ['int8', (4096,), 1, 4096, 4096],
     # ['int16', (4096,), 1, 4096, 4096],
-    ['int32', (4096,), 1, 4096, 4096],
+    ['int32', (4096, ), 1, 4096, 4096],
     # ['int64', (4096,), 1, 4096, 4096],
     # ['float16', (4096,), 1, 4096, 4096],
-    ['float32', (4096,), 1, 4096, 4096],
+    ['float32', (4096, ), 1, 4096, 4096],
     # ['bfloat16', (4096,), 1, 4096, 4096],
 ]
 

@@ -27,11 +27,9 @@ import test_common
 import torch
 import torch_npu
 
-
 types_all = [
     (torch.float32, 'float32'),
 ]
-
 
 shapes_common = [
     (8, 2048, 4),
@@ -40,7 +38,7 @@ shapes_common = [
 
 def foo(a, b, shape):
     y = a.reshape(shape)
-    y = y.permute(0,2,1) + b
+    y = y.permute(0, 2, 1) + b
     return y
 
 
@@ -49,26 +47,22 @@ def ceil_div(a, b):
 
 
 @triton.jit
-def triton_gpu(
-    in_ptr0, in_ptr1, out_ptr,
-    ynumel, xnumel,
-    YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
-    SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr
-):
+def triton_gpu(in_ptr0, in_ptr1, out_ptr, ynumel, xnumel, YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
+               SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr):
     yoffset = tl.program_id(1) * (tl.program_id(2) + 1) * YBLOCK
-    yindex = yoffset + tl.arange(0, YBLOCK)[None, :] # (1, YBLOCK)
+    yindex = yoffset + tl.arange(0, YBLOCK)[None, :]  # (1, YBLOCK)
     ymask = yindex < ynumel
     xoffset = tl.program_id(0) * XBLOCK
-    xindex = xoffset + tl.arange(0, XBLOCK)[:, None] # (XBLOCK, 1)
+    xindex = xoffset + tl.arange(0, XBLOCK)[:, None]  # (XBLOCK, 1)
     xmask = xindex < xnumel
-    x2 = xindex # (XBLOCK, 1)
-    y3 = yindex # (1, YBLOCK)
+    x2 = xindex  # (XBLOCK, 1)
+    y3 = yindex  # (1, YBLOCK)
     y0 = yindex % SHAPE1  # (1, YBLOCK)
-    y1 = (yindex // SHAPE1) # (1, YBLOCK)
-    tmp0 = tl.load(in_ptr0 + (x2 + (SHAPE2*y3)), xmask) # (XBLOCK, YBLOCK)
-    tmp1 = tl.load(in_ptr1 + (y0 + (SHAPE1*x2) + (SHAPE1*SHAPE2*y1)), xmask) # (XBLOCK, YBLOCK)
+    y1 = (yindex // SHAPE1)  # (1, YBLOCK)
+    tmp0 = tl.load(in_ptr0 + (x2 + (SHAPE2 * y3)), xmask)  # (XBLOCK, YBLOCK)
+    tmp1 = tl.load(in_ptr1 + (y0 + (SHAPE1 * x2) + (SHAPE1 * SHAPE2 * y1)), xmask)  # (XBLOCK, YBLOCK)
     tmp2 = tmp0 + tmp1
-    tl.store(out_ptr + (x2 + (SHAPE2*y3)), tmp2, xmask)
+    tl.store(out_ptr + (x2 + (SHAPE2 * y3)), tmp2, xmask)
 
 
 @triton.jit
@@ -94,146 +88,126 @@ def k_store_perm_select(in_ptr, out_ptr, ynumel, xnumel, YBLOCK: tl.constexpr, X
 
 
 @triton.jit
-def k_load_moddiv_noperm(
-    in_ptr, out_ptr,
-    ynumel, xnumel,
-    YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
-    SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr
-):
+def k_load_moddiv_noperm(in_ptr, out_ptr, ynumel, xnumel, YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
+                         SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr):
     pid_y = tl.program_id(1)
     pid_x = tl.program_id(0)
 
-    yindex = pid_y * YBLOCK + tl.arange(0, YBLOCK)      # (YBLOCK,)
-    xindex = pid_x * XBLOCK + tl.arange(0, XBLOCK)      # (XBLOCK,)
+    yindex = pid_y * YBLOCK + tl.arange(0, YBLOCK)  # (YBLOCK,)
+    xindex = pid_x * XBLOCK + tl.arange(0, XBLOCK)  # (XBLOCK,)
 
     # 2D tile：[YBLOCK, XBLOCK]
-    y = yindex[:, None]                                  # (YBLOCK, 1)
-    x = xindex[None, :]                                  # (1, XBLOCK)
+    y = yindex[:, None]  # (YBLOCK, 1)
+    x = xindex[None, :]  # (1, XBLOCK)
 
     mask = y < ynumel
 
-    z = (yindex // SHAPE1)[:, None]                      # (YBLOCK, 1)
-    y_ = (yindex % SHAPE1)[:, None]                      # (YBLOCK, 1)
-    y_linear = z * SHAPE1 + y_                           # (YBLOCK, 1)
-    offset_load = x + SHAPE2 * y_linear                  # (YBLOCK, XBLOCK)
+    z = (yindex // SHAPE1)[:, None]  # (YBLOCK, 1)
+    y_ = (yindex % SHAPE1)[:, None]  # (YBLOCK, 1)
+    y_linear = z * SHAPE1 + y_  # (YBLOCK, 1)
+    offset_load = x + SHAPE2 * y_linear  # (YBLOCK, XBLOCK)
     val = tl.load(in_ptr + offset_load, mask=mask)
 
-    offset_store = x + SHAPE2 * y                        # (YBLOCK, XBLOCK)
+    offset_store = x + SHAPE2 * y  # (YBLOCK, XBLOCK)
     tl.store(out_ptr + offset_store, val, mask=mask)
 
 
 @triton.jit
-def k_store_moddiv_noperm(
-    in_ptr, out_ptr,
-    ynumel, xnumel,
-    YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
-    SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr
-):
+def k_store_moddiv_noperm(in_ptr, out_ptr, ynumel, xnumel, YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
+                          SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr):
     pid_y = tl.program_id(1)
     pid_x = tl.program_id(0)
 
-    yindex = pid_y * YBLOCK + tl.arange(0, YBLOCK)      # (YBLOCK,)
-    xindex = pid_x * XBLOCK + tl.arange(0, XBLOCK)      # (XBLOCK,)
+    yindex = pid_y * YBLOCK + tl.arange(0, YBLOCK)  # (YBLOCK,)
+    xindex = pid_x * XBLOCK + tl.arange(0, XBLOCK)  # (XBLOCK,)
 
-    y = yindex[:, None]                                  # (YBLOCK, 1)
-    x = xindex[None, :]                                  # (1, XBLOCK)
+    y = yindex[:, None]  # (YBLOCK, 1)
+    x = xindex[None, :]  # (1, XBLOCK)
 
     mask = (y < ynumel) & (x < xnumel)
 
-    offset_load = x + SHAPE2 * y                         # (YBLOCK, XBLOCK)
+    offset_load = x + SHAPE2 * y  # (YBLOCK, XBLOCK)
     val = tl.load(in_ptr + offset_load, mask=mask)
 
-    z = (yindex // SHAPE1)[:, None]                      # (YBLOCK, 1)
-    y_ = (yindex % SHAPE1)[:, None]                      # (YBLOCK, 1)
-    y_linear = z * SHAPE1 + y_                           # (YBLOCK, 1)
-    offset_store = x + SHAPE2 * y_linear                 # (YBLOCK, XBLOCK)
+    z = (yindex // SHAPE1)[:, None]  # (YBLOCK, 1)
+    y_ = (yindex % SHAPE1)[:, None]  # (YBLOCK, 1)
+    y_linear = z * SHAPE1 + y_  # (YBLOCK, 1)
+    offset_store = x + SHAPE2 * y_linear  # (YBLOCK, XBLOCK)
     tl.store(out_ptr + offset_store, val, mask=mask)
 
 
 @triton.jit
-def k_load_moddiv_perm(
-    in_ptr, out_ptr,
-    ynumel, xnumel,
-    YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
-    SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr
-):
+def k_load_moddiv_perm(in_ptr, out_ptr, ynumel, xnumel, YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
+                       SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr):
     pid_y = tl.program_id(1)
     pid_x = tl.program_id(0)
 
-    yindex = pid_y * YBLOCK + tl.arange(0, YBLOCK)      # (YBLOCK,)
-    xindex = pid_x * XBLOCK + tl.arange(0, XBLOCK)      # (XBLOCK,)
+    yindex = pid_y * YBLOCK + tl.arange(0, YBLOCK)  # (YBLOCK,)
+    xindex = pid_x * XBLOCK + tl.arange(0, XBLOCK)  # (XBLOCK,)
 
-    X = xindex[:, None]                                 # (XBLOCK, 1)
-    Y = yindex[None, :]                                 # (1, YBLOCK)
-    mask_load = (X < xnumel) & (Y < ynumel)             # (XBLOCK, YBLOCK)
+    X = xindex[:, None]  # (XBLOCK, 1)
+    Y = yindex[None, :]  # (1, YBLOCK)
+    mask_load = (X < xnumel) & (Y < ynumel)  # (XBLOCK, YBLOCK)
 
-    z = (yindex // SHAPE1)[None, :]                     # (1, YBLOCK)
-    y_ = (yindex % SHAPE1)[None, :]                     # (1, YBLOCK)
-    offset_load = X + SHAPE2 * y_ + SHAPE2 * SHAPE1 * z # (XBLOCK, YBLOCK)
-    val = tl.load(in_ptr + offset_load, mask=mask_load) # (XBLOCK, YBLOCK)
+    z = (yindex // SHAPE1)[None, :]  # (1, YBLOCK)
+    y_ = (yindex % SHAPE1)[None, :]  # (1, YBLOCK)
+    offset_load = X + SHAPE2 * y_ + SHAPE2 * SHAPE1 * z  # (XBLOCK, YBLOCK)
+    val = tl.load(in_ptr + offset_load, mask=mask_load)  # (XBLOCK, YBLOCK)
 
-    y2 = yindex[:, None]                                # (YBLOCK, 1)
-    x2 = xindex[None, :]                                # (1, XBLOCK)
-    mask_store = (y2 < ynumel) & (x2 < xnumel)          # (YBLOCK, XBLOCK)
-    offset_store = x2 + SHAPE2 * y2                     # (YBLOCK, XBLOCK)
+    y2 = yindex[:, None]  # (YBLOCK, 1)
+    x2 = xindex[None, :]  # (1, XBLOCK)
+    mask_store = (y2 < ynumel) & (x2 < xnumel)  # (YBLOCK, XBLOCK)
+    offset_store = x2 + SHAPE2 * y2  # (YBLOCK, XBLOCK)
 
     tl.store(out_ptr + offset_store, val.permute(1, 0), mask=mask_store)
 
 
 @triton.jit
-def k_store_moddiv_perm(
-    in_ptr, out_ptr,
-    ynumel, xnumel,
-    YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
-    SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr
-):
+def k_store_moddiv_perm(in_ptr, out_ptr, ynumel, xnumel, YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
+                        SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr):
     pid_y = tl.program_id(1)
     pid_x = tl.program_id(0)
 
-    yindex = pid_y * YBLOCK + tl.arange(0, YBLOCK)      # (YBLOCK,)
-    xindex = pid_x * XBLOCK + tl.arange(0, XBLOCK)      # (XBLOCK,)
+    yindex = pid_y * YBLOCK + tl.arange(0, YBLOCK)  # (YBLOCK,)
+    xindex = pid_x * XBLOCK + tl.arange(0, XBLOCK)  # (XBLOCK,)
 
-    y = yindex[:, None]                                  # (YBLOCK, 1)
-    x = xindex[None, :]                                  # (1, XBLOCK)
+    y = yindex[:, None]  # (YBLOCK, 1)
+    x = xindex[None, :]  # (1, XBLOCK)
     mask_load = (y < ynumel) & (x < xnumel)
 
-    offset_load = x + SHAPE2 * y                         # (YBLOCK, XBLOCK)
+    offset_load = x + SHAPE2 * y  # (YBLOCK, XBLOCK)
     val = tl.load(in_ptr + offset_load, mask=mask_load)  # (YBLOCK, XBLOCK)
 
-    X = xindex[:, None]                                  # (XBLOCK, 1)
-    Y = yindex[None, :]                                  # (1, YBLOCK)
-    mask_store = (X < xnumel) & (Y < ynumel)             # (XBLOCK, YBLOCK)
+    X = xindex[:, None]  # (XBLOCK, 1)
+    Y = yindex[None, :]  # (1, YBLOCK)
+    mask_store = (X < xnumel) & (Y < ynumel)  # (XBLOCK, YBLOCK)
 
-    z = Y // SHAPE1                                      # (1, YBLOCK)
-    y_ = Y % SHAPE1                                      # (1, YBLOCK)
-    offset_store = X + SHAPE2 * y_ + SHAPE2 * SHAPE1 * z # (XBLOCK, YBLOCK)
+    z = Y // SHAPE1  # (1, YBLOCK)
+    y_ = Y % SHAPE1  # (1, YBLOCK)
+    offset_store = X + SHAPE2 * y_ + SHAPE2 * SHAPE1 * z  # (XBLOCK, YBLOCK)
 
     tl.store(out_ptr + offset_store, val.permute(1, 0), mask=mask_store)
 
 
 @triton.jit
-def k_load_store_moddiv_noperm(
-    in_ptr, out_ptr,
-    ynumel, xnumel,
-    YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
-    SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr
-):
+def k_load_store_moddiv_noperm(in_ptr, out_ptr, ynumel, xnumel, YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
+                               SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr):
     pid_y = tl.program_id(1)
     pid_x = tl.program_id(0)
 
-    yindex = pid_y * YBLOCK + tl.arange(0, YBLOCK)      # (YBLOCK,)
-    xindex = pid_x * XBLOCK + tl.arange(0, XBLOCK)      # (XBLOCK,)
+    yindex = pid_y * YBLOCK + tl.arange(0, YBLOCK)  # (YBLOCK,)
+    xindex = pid_x * XBLOCK + tl.arange(0, XBLOCK)  # (XBLOCK,)
 
-    y = yindex[:, None]                                  # (YBLOCK, 1)
-    x = xindex[None, :]                                  # (1, XBLOCK)
+    y = yindex[:, None]  # (YBLOCK, 1)
+    x = xindex[None, :]  # (1, XBLOCK)
 
     mask = (y < ynumel) & (x < xnumel)
 
-    z = (yindex // SHAPE1)[:, None]                      # (YBLOCK, 1)
-    y_ = (yindex % SHAPE1)[:, None]                      # (YBLOCK, 1)
-    y_linear = z * SHAPE1 + y_                           # (YBLOCK, 1)
+    z = (yindex // SHAPE1)[:, None]  # (YBLOCK, 1)
+    y_ = (yindex % SHAPE1)[:, None]  # (YBLOCK, 1)
+    y_linear = z * SHAPE1 + y_  # (YBLOCK, 1)
 
-    offset = x + SHAPE2 * y_linear                       # (YBLOCK, XBLOCK)
+    offset = x + SHAPE2 * y_linear  # (YBLOCK, XBLOCK)
 
     val = tl.load(in_ptr + offset, mask=mask)
     val = val + 2
@@ -241,12 +215,8 @@ def k_load_store_moddiv_noperm(
 
 
 @triton.jit
-def k_load_store_moddiv_perm(
-    in_ptr, out_ptr, 
-    ynumel, xnumel, 
-    YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
-    SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr
-):
+def k_load_store_moddiv_perm(in_ptr, out_ptr, ynumel, xnumel, YBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
+                             SHAPE0: tl.constexpr, SHAPE1: tl.constexpr, SHAPE2: tl.constexpr):
     # Program ID
     pid_y = tl.program_id(1)
     pid_x = tl.program_id(0)
@@ -280,11 +250,8 @@ def k_load_store_moddiv_perm(
 
 
 @triton.jit
-def k_load_perm_scalar_ref(
-    in_ptr, out_ptr,
-    y1_numel, y0_numel, x2_numel,
-    Y1BLOCK: tl.constexpr, Y0BLOCK: tl.constexpr, Y0BLOCK_SUB: tl.constexpr, X2BLOCK_SUB: tl.constexpr
-):
+def k_load_perm_scalar_ref(in_ptr, out_ptr, y1_numel, y0_numel, x2_numel, Y1BLOCK: tl.constexpr, Y0BLOCK: tl.constexpr,
+                           Y0BLOCK_SUB: tl.constexpr, X2BLOCK_SUB: tl.constexpr):
     pid_y1 = tl.program_id(0)
     pid_y0 = tl.program_id(1)
 
@@ -297,10 +264,10 @@ def k_load_perm_scalar_ref(
     loops_y0 = (Y0BLOCK + Y0BLOCK_SUB - 1) // Y0BLOCK_SUB
 
     for loop_y0 in range(loops_y0):
-        y0_0 = y0_offset + loop_y0 * Y0BLOCK_SUB + base_y0[:, None]     # (Y0BLOCK_SUB, 1)
-        y0 = y0_offset + (loop_y0 * Y0BLOCK_SUB) + base_y0[None, :]      # (1, Y0BLOCK_SUB)
-        x2_1 = base_x2[None, :]                                         # (1, X2BLOCK_SUB)
-        x2 = base_x2[:, None]                                           # (X2BLOCK_SUB, 1)
+        y0_0 = y0_offset + loop_y0 * Y0BLOCK_SUB + base_y0[:, None]  # (Y0BLOCK_SUB, 1)
+        y0 = y0_offset + (loop_y0 * Y0BLOCK_SUB) + base_y0[None, :]  # (1, Y0BLOCK_SUB)
+        x2_1 = base_x2[None, :]  # (1, X2BLOCK_SUB)
+        x2 = base_x2[:, None]  # (X2BLOCK_SUB, 1)
         y0_0_mask = y0_0 < min(Y0BLOCK + y0_offset, y0_numel)
         y0_mask = y0 < min(Y0BLOCK + y0_offset, y0_numel)
         val0 = tl.load(in_ptr + (y0 + 8 * x2 + 8 * 16 * y1_scalar), mask=y0_mask)
@@ -308,11 +275,8 @@ def k_load_perm_scalar_ref(
 
 
 @triton.jit
-def k_load_perm_scalar(
-    in_ptr, out_ptr,
-    y1_numel, y0_numel, x2_numel,
-    Y1BLOCK: tl.constexpr, Y0BLOCK: tl.constexpr, Y0BLOCK_SUB: tl.constexpr, X2BLOCK_SUB: tl.constexpr
-):
+def k_load_perm_scalar(in_ptr, out_ptr, y1_numel, y0_numel, x2_numel, Y1BLOCK: tl.constexpr, Y0BLOCK: tl.constexpr,
+                       Y0BLOCK_SUB: tl.constexpr, X2BLOCK_SUB: tl.constexpr):
     pid_y1 = tl.program_id(0)
     pid_y0 = tl.program_id(1)
 
@@ -325,8 +289,8 @@ def k_load_perm_scalar(
     loops_y0 = (Y0BLOCK + Y0BLOCK_SUB - 1) // Y0BLOCK_SUB
 
     for loop_y0 in range(loops_y0):
-        y0_0 = y0_offset + loop_y0 * Y0BLOCK_SUB + base_y0[:, None]        # (Y0BLOCK_SUB, 1)
-        x2_1 = base_x2[None, :]                                            # (1, X2BLOCK_SUB)
+        y0_0 = y0_offset + loop_y0 * Y0BLOCK_SUB + base_y0[:, None]  # (Y0BLOCK_SUB, 1)
+        x2_1 = base_x2[None, :]  # (1, X2BLOCK_SUB)
         y0_0_mask = y0_0 < min(Y0BLOCK + y0_offset, y0_numel)
         val0 = tl.load(in_ptr + (y0_0 + 8 * x2_1 + 8 * 16 * y1_scalar), mask=y0_0_mask)
         tl.store(out_ptr + (x2_1 + 16 * y0_0 + 8 * 16 * y1_scalar), val0, mask=y0_0_mask)
@@ -336,12 +300,12 @@ def k_load_perm_scalar(
 @pytest.mark.parametrize('Z, Y, X', shapes_common)
 def test_triton_gpu_kernel(Z, Y, X, dtype, sigtype):
     shape = (Z, Y, X)
-    
+
     a = test_common.generate_tensor(shape=(Z, Y * X), dtype=sigtype).npu()
     b = test_common.generate_tensor(shape=(Z, X, Y), dtype=sigtype).npu()
 
     # must set device='npu' for empty_strided, do not use out.npu() later
-    out = torch.empty_strided((Z, X, Y), (X*Y, 1, X), device='npu', dtype=dtype)
+    out = torch.empty_strided((Z, X, Y), (X * Y, 1, X), device='npu', dtype=dtype)
 
     out_ref = foo(a, b, shape)
 
@@ -354,13 +318,8 @@ def test_triton_gpu_kernel(Z, Y, X, dtype, sigtype):
         pytest.skip(f"ynumel:{ynumel} not divisible by YBLOCK:{YBLOCK}")
 
     grid = (ceil_div(xnumel, XBLOCK), ceil_div(ynumel, YBLOCK), 1)
-    triton_gpu[grid](
-        a, b, out, 
-        ynumel, xnumel, 
-        YBLOCK=YBLOCK, XBLOCK=XBLOCK,
-        SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
-        enable_linearize=True
-    )
+    triton_gpu[grid](a, b, out, ynumel, xnumel, YBLOCK=YBLOCK, XBLOCK=XBLOCK, SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
+                     enable_linearize=True)
 
     test_common.validate_cmp(sigtype, out_ref, out)
 
@@ -369,21 +328,16 @@ def test_triton_gpu_kernel(Z, Y, X, dtype, sigtype):
 @pytest.mark.parametrize('xnumel, ynumel, XBLOCK, YBLOCK', [(3, 513, 4, 64)])
 def test_k_load_perm_select(xnumel, ynumel, XBLOCK, YBLOCK, dtype, sigtype):
 
-    in_ptr = test_common.generate_tensor(shape=(ynumel * 4,), dtype=sigtype).npu()
+    in_ptr = test_common.generate_tensor(shape=(ynumel * 4, ), dtype=sigtype).npu()
     out_ptr = torch.zeros_like(in_ptr)
 
-
     grid = (ceil_div(xnumel, XBLOCK), ceil_div(ynumel, YBLOCK), 1)
-    k_load_perm_select[grid](
-        in_ptr, out_ptr, ynumel, xnumel, 
-        YBLOCK=YBLOCK, XBLOCK=XBLOCK, 
-        enable_linearize=True
-    )
+    k_load_perm_select[grid](in_ptr, out_ptr, ynumel, xnumel, YBLOCK=YBLOCK, XBLOCK=XBLOCK, enable_linearize=True)
 
     out_ref = torch.zeros_like(out_ptr)
-    y_idx = torch.arange(ynumel).unsqueeze(1).npu()        # [ynumel, 1]
-    x_idx = torch.arange(xnumel).unsqueeze(0).npu()        # [1, xnumel]
-    idx = (x_idx + 4 * y_idx).reshape(-1)                  # [ynumel * xnumel]
+    y_idx = torch.arange(ynumel).unsqueeze(1).npu()  # [ynumel, 1]
+    x_idx = torch.arange(xnumel).unsqueeze(0).npu()  # [1, xnumel]
+    idx = (x_idx + 4 * y_idx).reshape(-1)  # [ynumel * xnumel]
     out_ref[idx] = in_ptr[idx]
     torch.testing.assert_close(out_ptr[idx], out_ref[idx])
 
@@ -391,15 +345,11 @@ def test_k_load_perm_select(xnumel, ynumel, XBLOCK, YBLOCK, dtype, sigtype):
 @pytest.mark.parametrize('dtype,sigtype', types_all)
 @pytest.mark.parametrize('xnumel, ynumel, XBLOCK, YBLOCK', [(3, 513, 4, 64)])
 def test_k_store_perm_select(xnumel, ynumel, XBLOCK, YBLOCK, dtype, sigtype):
-    in_ptr = test_common.generate_tensor(shape=(ynumel * 4,), dtype=sigtype).npu()
+    in_ptr = test_common.generate_tensor(shape=(ynumel * 4, ), dtype=sigtype).npu()
     out_ptr = torch.zeros_like(in_ptr)
 
     grid = (ceil_div(xnumel, XBLOCK), ceil_div(ynumel, YBLOCK), 1)
-    k_store_perm_select[grid](
-        in_ptr, out_ptr, ynumel, xnumel, 
-        YBLOCK=YBLOCK, XBLOCK=XBLOCK, 
-        enable_linearize=True
-    )
+    k_store_perm_select[grid](in_ptr, out_ptr, ynumel, xnumel, YBLOCK=YBLOCK, XBLOCK=XBLOCK, enable_linearize=True)
 
     out_ref = torch.zeros_like(out_ptr)
     y_idx = torch.arange(ynumel).unsqueeze(1).npu()
@@ -422,12 +372,8 @@ def test_k_load_moddiv_noperm(Z, Y, X, dtype, sigtype):
     YBLOCK = 64
     grid = (ceil_div(xnumel, XBLOCK), ceil_div(ynumel, YBLOCK), 1)
 
-    k_load_moddiv_noperm[grid](
-        in_flat, out, ynumel, xnumel,
-        YBLOCK=YBLOCK, XBLOCK=XBLOCK,
-        SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
-        enable_linearize=True
-    )
+    k_load_moddiv_noperm[grid](in_flat, out, ynumel, xnumel, YBLOCK=YBLOCK, XBLOCK=XBLOCK, SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
+                               enable_linearize=True)
 
     torch.testing.assert_close(out, in_flat)
 
@@ -445,12 +391,8 @@ def test_k_store_moddiv_noperm(Z, Y, X, dtype, sigtype):
     YBLOCK = 64
     grid = (ceil_div(xnumel, XBLOCK), ceil_div(ynumel, YBLOCK), 1)
 
-    k_store_moddiv_noperm[grid](
-        in_flat, out, ynumel, xnumel,
-        YBLOCK=YBLOCK, XBLOCK=XBLOCK,
-        SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
-        enable_linearize=True
-    )
+    k_store_moddiv_noperm[grid](in_flat, out, ynumel, xnumel, YBLOCK=YBLOCK, XBLOCK=XBLOCK, SHAPE0=Z, SHAPE1=Y,
+                                SHAPE2=X, enable_linearize=True)
 
     torch.testing.assert_close(out, in_flat)
 
@@ -469,12 +411,8 @@ def test_k_load_moddiv_perm(Z, Y, X, dtype, sigtype):
 
     grid = (ceil_div(xnumel, XBLOCK), ceil_div(ynumel, YBLOCK), 1)
 
-    k_load_moddiv_perm[grid](
-        in_flat, out, ynumel, xnumel,
-        YBLOCK=YBLOCK, XBLOCK=XBLOCK,
-        SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
-        enable_linearize=True
-    )
+    k_load_moddiv_perm[grid](in_flat, out, ynumel, xnumel, YBLOCK=YBLOCK, XBLOCK=XBLOCK, SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
+                             enable_linearize=True)
 
     torch.testing.assert_close(out, in_flat)
 
@@ -493,12 +431,8 @@ def test_k_store_moddiv_perm(Z, Y, X, dtype, sigtype):
 
     grid = (ceil_div(xnumel, XBLOCK), ceil_div(ynumel, YBLOCK), 1)
 
-    k_store_moddiv_perm[grid](
-        in_flat, out, ynumel, xnumel,
-        YBLOCK=YBLOCK, XBLOCK=XBLOCK,
-        SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
-        enable_linearize=True
-    )
+    k_store_moddiv_perm[grid](in_flat, out, ynumel, xnumel, YBLOCK=YBLOCK, XBLOCK=XBLOCK, SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
+                              enable_linearize=True)
 
     torch.testing.assert_close(out, in_flat)
 
@@ -516,12 +450,8 @@ def test_k_load_store_moddiv_noperm(Z, Y, X, dtype, sigtype):
     YBLOCK = 256
     grid = (ceil_div(xnumel, XBLOCK), ceil_div(ynumel, YBLOCK), 1)
 
-    k_load_store_moddiv_noperm[grid](
-        in_flat, out, ynumel, xnumel,
-        YBLOCK=YBLOCK, XBLOCK=XBLOCK,
-        SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
-        enable_linearize=True
-    )
+    k_load_store_moddiv_noperm[grid](in_flat, out, ynumel, xnumel, YBLOCK=YBLOCK, XBLOCK=XBLOCK, SHAPE0=Z, SHAPE1=Y,
+                                     SHAPE2=X, enable_linearize=True)
 
     ref = (a + 2).contiguous().view(-1)
     torch.testing.assert_close(out, ref)
@@ -544,12 +474,8 @@ def test_k_load_store_moddiv_perm(Z, Y, X, dtype, sigtype):
     YBLOCK = 256
     grid = (ceil_div(xnumel, XBLOCK), ceil_div(ynumel, YBLOCK), 1)
 
-    k_load_store_moddiv_perm[grid](
-        a_flat, out, ynumel, xnumel,
-        YBLOCK=YBLOCK, XBLOCK=XBLOCK,
-        SHAPE0=Z, SHAPE1=Y, SHAPE2=X,
-        enable_linearize=True
-    )
+    k_load_store_moddiv_perm[grid](a_flat, out, ynumel, xnumel, YBLOCK=YBLOCK, XBLOCK=XBLOCK, SHAPE0=Z, SHAPE1=Y,
+                                   SHAPE2=X, enable_linearize=True)
 
     a_reshaped = a + 1
     out_ref = a_reshaped.contiguous().view(-1)
@@ -569,29 +495,12 @@ def test_k_load_perm_scalar(y1_numel, y0_numel, x2_numel, Y1BLOCK, Y0BLOCK, Y0BL
 
     grid = (ceil_div(y1_numel, Y1BLOCK), ceil_div(y0_numel, Y0BLOCK))
 
-    k_load_perm_scalar_ref[grid](
-        in_ptr=in_ptr,
-        out_ptr=out_ptr_triton_ref,
-        y1_numel=y1_numel,
-        y0_numel=y0_numel,
-        x2_numel=x2_numel,
-        Y1BLOCK=Y1BLOCK,
-        Y0BLOCK=Y0BLOCK,
-        Y0BLOCK_SUB=Y0BLOCK_SUB,
-        X2BLOCK_SUB=X2BLOCK_SUB
-    )
+    k_load_perm_scalar_ref[grid](in_ptr=in_ptr, out_ptr=out_ptr_triton_ref, y1_numel=y1_numel, y0_numel=y0_numel,
+                                 x2_numel=x2_numel, Y1BLOCK=Y1BLOCK, Y0BLOCK=Y0BLOCK, Y0BLOCK_SUB=Y0BLOCK_SUB,
+                                 X2BLOCK_SUB=X2BLOCK_SUB)
 
-    k_load_perm_scalar[grid](
-        in_ptr=in_ptr,
-        out_ptr=out_ptr_triton,
-        y1_numel=y1_numel,
-        y0_numel=y0_numel,
-        x2_numel=x2_numel,
-        Y1BLOCK=Y1BLOCK,
-        Y0BLOCK=Y0BLOCK,
-        Y0BLOCK_SUB=Y0BLOCK_SUB,
-        X2BLOCK_SUB=X2BLOCK_SUB,
-        enable_linearize=True
-    )
+    k_load_perm_scalar[grid](in_ptr=in_ptr, out_ptr=out_ptr_triton, y1_numel=y1_numel, y0_numel=y0_numel,
+                             x2_numel=x2_numel, Y1BLOCK=Y1BLOCK, Y0BLOCK=Y0BLOCK, Y0BLOCK_SUB=Y0BLOCK_SUB,
+                             X2BLOCK_SUB=X2BLOCK_SUB, enable_linearize=True)
 
     torch.testing.assert_close(out_ptr_triton, out_ptr_triton_ref, rtol=1e-5, atol=1e-6)

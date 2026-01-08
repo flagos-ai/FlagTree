@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 from typing import Optional
 import pytest
 import torch
@@ -31,13 +30,13 @@ device = 'npu'
 
 @triton.jit
 def triton_multi_return_cross_entropy_case(
-        X_ptr,
-        Y_ptr,
-        X_stride,
-        Y_stride,
-        n_cols,
-        ignore_index,
-        BLOCK_SIZE: tl.constexpr,
+    X_ptr,
+    Y_ptr,
+    X_stride,
+    Y_stride,
+    n_cols,
+    ignore_index,
+    BLOCK_SIZE: tl.constexpr,
 ):
     program_id = tl.program_id(0).to(tl.int64)
 
@@ -56,11 +55,9 @@ def triton_multi_return_cross_entropy_case(
             tl.store(X_ptr + X_offsets, 0.0, mask=X_offsets < n_cols)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             [1024, 152064, 11480, 'bfloat16', 'int32', 'float32'],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    [1024, 152064, 11480, 'bfloat16', 'int32', 'float32'],
+])
 def test_case(param_list):
     N, M, V, dtype_1, dtype_2, dtype_3 = param_list
     logits_chunk = torch.rand([N, M], device=device, dtype=eval('torch.' + dtype_1))
@@ -71,40 +68,35 @@ def test_case(param_list):
     softcap = None
     return_z_loss = False
     BLOCK_SIZE = N
-    triton_multi_return_cross_entropy_case[(N,)](
-        X_ptr=logits_chunk,
-        X_stride=logits_chunk.stride(-2),
-        Y_ptr=target_chunk,
-        Y_stride=target_chunk.stride(-1),
-        n_cols=logits_chunk.stride(-2),
-        ignore_index=-100,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=32)
+    triton_multi_return_cross_entropy_case[(N, )](X_ptr=logits_chunk, X_stride=logits_chunk.stride(-2),
+                                                  Y_ptr=target_chunk, Y_stride=target_chunk.stride(-1),
+                                                  n_cols=logits_chunk.stride(-2), ignore_index=-100,
+                                                  BLOCK_SIZE=BLOCK_SIZE, num_warps=32)
 
 
 @triton.jit
 def liger_cross_entropy_kernel(
-        X_ptr,
-        X_stride,
-        Y_ptr,
-        Y_stride,
-        weight_ptr,
-        loss_ptr,
-        z_loss_ptr,
-        loss_stride,
-        n_cols,
-        n_non_ignore,
-        sum_non_ignore_weight,
-        weight_sum,
-        ignore_index,
-        lse_square_scale: tl.constexpr,
-        label_smoothing: tl.constexpr,
-        reduction: tl.constexpr,  # set it as constexpr since reduction is always known at compile time
-        softcap,
-        RETURN_Z_LOSS: tl.constexpr,
-        BLOCK_SIZE: tl.constexpr,
-        HAS_WEIGHT: tl.constexpr,
-        HAS_SOFTCAPPING: tl.constexpr,
+    X_ptr,
+    X_stride,
+    Y_ptr,
+    Y_stride,
+    weight_ptr,
+    loss_ptr,
+    z_loss_ptr,
+    loss_stride,
+    n_cols,
+    n_non_ignore,
+    sum_non_ignore_weight,
+    weight_sum,
+    ignore_index,
+    lse_square_scale: tl.constexpr,
+    label_smoothing: tl.constexpr,
+    reduction: tl.constexpr,  # set it as constexpr since reduction is always known at compile time
+    softcap,
+    RETURN_Z_LOSS: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    HAS_WEIGHT: tl.constexpr,
+    HAS_SOFTCAPPING: tl.constexpr,
 ):
     """
     This kernel computes both cross entropy loss and the gradient of the input.
@@ -292,11 +284,11 @@ def liger_cross_entropy_kernel(
 
 @triton.jit
 def element_mul_kernel(
-        X_ptr,
-        X_stride,
-        grad_output_ptr,
-        n_cols,
-        BLOCK_SIZE: tl.constexpr,
+    X_ptr,
+    X_stride,
+    grad_output_ptr,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
 ):
     """
     This function multiplies each element of the tensor pointed by X_ptr with the value pointed by grad_output_ptr.
@@ -330,15 +322,15 @@ MAX_FUSED_SIZE = 65536 // 2
 
 
 def cross_entropy_forward(
-        _input,
-        target,
-        weight,
-        ignore_index,
-        lse_square_scale,
-        label_smoothing,
-        reduction,
-        softcap,
-        return_z_loss,
+    _input,
+    target,
+    weight,
+    ignore_index,
+    lse_square_scale,
+    label_smoothing,
+    reduction,
+    softcap,
+    return_z_loss,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
 
@@ -353,16 +345,14 @@ def cross_entropy_forward(
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
     assert (target * target_mask).max() < _input.shape[-1], (
-        f"Target {target.max()} is out of bounds. Expected < {_input.shape[-1]}"
-    )
+        f"Target {target.max()} is out of bounds. Expected < {_input.shape[-1]}")
     assert (target * target_mask).min() >= 0, f"Target {target.min()} is out of bounds. Expected >= 0"
     sum_non_ignore_weight = n_non_ignore
     weight_sum = 0.0
     if weight is not None:
         assert weight.shape[0] == V, f"If given, weight has to be a Tensor of size V. Got: {weight.shape}"
         assert torch.is_floating_point(weight), (
-            f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
-        )
+            f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}")
         sum_non_ignore_weight = torch.gather(weight, dim=0, index=target.masked_select(target_mask)).sum().item()
         weight_sum = weight.sum().item()
         # ensure weight is contiguous
@@ -376,7 +366,7 @@ def cross_entropy_forward(
         target = target.contiguous()
 
     # Here we use a trick to store X_ptr gradient in X_ptr so we can save memory
-    liger_cross_entropy_kernel[(n_rows,)](
+    liger_cross_entropy_kernel[(n_rows, )](
         X_ptr=_input,
         X_stride=_input.stride(-2),
         Y_ptr=target,
@@ -425,7 +415,7 @@ def cross_entropy_backward(_input, grad_output):
         n_rows = BT
         BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
-        element_mul_kernel[(n_rows,)](
+        element_mul_kernel[(n_rows, )](
             _input,
             _input.stride(-2),
             grad_output,
@@ -444,16 +434,16 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(
-            ctx,
-            _input: torch.Tensor,
-            target: torch.Tensor,
-            weight: Optional[torch.FloatTensor],
-            ignore_index: int = -100,
-            lse_square_scale: float = 0.0,
-            label_smoothing: float = 0.0,
-            reduction: str = "mean",
-            softcap: Optional[float] = None,
-            return_z_loss: bool = False,
+        ctx,
+        _input: torch.Tensor,
+        target: torch.Tensor,
+        weight: Optional[torch.FloatTensor],
+        ignore_index: int = -100,
+        lse_square_scale: float = 0.0,
+        label_smoothing: float = 0.0,
+        reduction: str = "mean",
+        softcap: Optional[float] = None,
+        return_z_loss: bool = False,
     ):
         """
         The forward pass of the Liger Cross Entropy loss.
@@ -506,7 +496,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         if ctx.return_z_loss:
             del grad_ouput2  # z_loss is only for logging
 
-        (_input,) = ctx.saved_tensors
+        (_input, ) = ctx.saved_tensors
         _input = cross_entropy_backward(_input, grad_output)
         return (
             _input,
@@ -522,17 +512,17 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
 
 
 def liger_cross_entropy(
-        input,
-        target,
-        weight=None,
-        size_average=None,
-        ignore_index: int = -100,
-        reduce=None,
-        reduction: str = "mean",
-        label_smoothing: float = 0.0,
-        lse_square_scale: float = 0.0,
-        softcap: Optional[float] = None,
-        return_z_loss: bool = False,
+    input,
+    target,
+    weight=None,
+    size_average=None,
+    ignore_index: int = -100,
+    reduce=None,
+    reduction: str = "mean",
+    label_smoothing: float = 0.0,
+    lse_square_scale: float = 0.0,
+    softcap: Optional[float] = None,
+    return_z_loss: bool = False,
 ):
     loss, z_loss = LigerCrossEntropyFunction.apply(
         input,
@@ -551,20 +541,20 @@ def liger_cross_entropy(
 
 
 def _test_correctness_functional(
-        B,
-        T,
-        V,
-        scalar,
-        dtype,
-        atol,
-        rtol,
+    B,
+    T,
+    V,
+    scalar,
+    dtype,
+    atol,
+    rtol,
 ):
     _input = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
 
     x1 = _input.clone().requires_grad_(True)
     x2 = _input.clone().requires_grad_(True)
 
-    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    target = torch.randint(0, V, (B * T, ), device=device, dtype=torch.long)
 
     y1, y1_z = liger_cross_entropy(
         x1,

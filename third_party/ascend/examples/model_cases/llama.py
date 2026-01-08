@@ -45,6 +45,7 @@ def model(**model_inputs):
     with torch.no_grad():
         return model_(**model_inputs).logits
 
+
 y = model(**inputs)
 logging.info("result eager: " + str(torch.flatten(y)[:100]))
 

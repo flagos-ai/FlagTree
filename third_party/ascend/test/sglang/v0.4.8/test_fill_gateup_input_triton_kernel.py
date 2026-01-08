@@ -28,6 +28,7 @@ import triton.language as tl
 sys.path.append("..")
 import test_common
 
+
 #source python\sglang\srt\layers\moe\ep_moe\kernels.py
 @triton.jit
 def fill_gateup_input_triton_kernel(
@@ -72,7 +73,6 @@ def fill_gateup_input_triton_kernel(
                 mask = offset < scale_size
                 in_scale = tl.load(scale_src_ptr + offset, mask=mask)
                 tl.store(scale_dst_ptr + offset, in_scale, mask=mask)
-               
 
 
 def test_context_fwd_kernel(ptfile_path):
@@ -81,10 +81,9 @@ def test_context_fwd_kernel(ptfile_path):
     except Exception as e:
         pytest.fail(f"load file {ptfile_path} failed: {str(e)}")
 
-
     input_data = test_common.convert_tensor_with_device_type(data["input_data"], device_type='npu')
-    fill_gateup_input_triton_kernel[data['grid']](**input_data) 
-    
+    fill_gateup_input_triton_kernel[data['grid']](**input_data)
+
     try:
         test_common.compare_data_precision(data["gpu_output"], input_data, device_type='cpu')
     except ValueError as e:

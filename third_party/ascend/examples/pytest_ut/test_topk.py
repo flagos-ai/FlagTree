@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import logging
 import pytest
 
@@ -69,7 +68,7 @@ def test_topk_nd(shape, k, dtype):
         offs_z = offs_m[:, None] * stride_zm + offs_z_n[None, :]
         tl.store(Z + offs_z, z_val)
 
-    topk_kernel_nd[(1,)](x_2d, x_2d.stride(0), z, z.stride(0), M, N, k, num_warps=8)
+    topk_kernel_nd[(1, )](x_2d, x_2d.stride(0), z, z.stride(0), M, N, k, num_warps=8)
 
     z_view = z.view(*shape[:-1], k) if len(shape) > 1 else z.view(k)
     test_common.validate_cmp(dtype, z_view.cpu(), y)

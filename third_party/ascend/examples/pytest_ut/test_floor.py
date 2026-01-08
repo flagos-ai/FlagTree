@@ -42,10 +42,9 @@ def triton_floor(in_ptr0, in_ptr1, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOC
         tl.store(out_ptr0 + x_index, tmp2, xmask)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                         ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_floor(param_list):
     # 生成数据
     dtype, shape, ncore, xblock, xblock_sub = param_list

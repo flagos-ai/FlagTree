@@ -188,5 +188,3 @@ for test_dir in "${pythoncase_dir[@]}"; do
     echo "run pythoncase in ${test_dir}"
     run_pythoncases ${test_dir}
 done
-
-

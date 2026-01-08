@@ -10,17 +10,18 @@ class AutoParser(ast.NodeVisitor):
     of a triton dsl kernel function and identifying specific elements in the code.
 
     Subclassed should implement specific parsing logic by overriding the relevant
-    node visit methods. 
+    node visit methods.
     """
+
     def __init__(self, func_ast: ast.AST):
         self.func_ast = func_ast
 
     def parse(self):
         self.visit(self.func_ast)
-    
+
     def contains_target_var(self, node, var):
         """
-        Recursively checks if a given AST node or its children contain a reference 
+        Recursively checks if a given AST node or its children contain a reference
         to the specified variable.
 
         :param node: the AST node to check
@@ -44,21 +45,22 @@ class AutoParser(ast.NodeVisitor):
 
 class SplitAxesParser(AutoParser):
     """
-    Extracts the split axis parameters from triton kernel code. The parsing is based on the 
+    Extracts the split axis parameters from triton kernel code. The parsing is based on the
     `tl.program_id` statement. This class identifies potential split axes by analyzing the usage
     of the `tl.program_id` variable in the program and its multiplication operations with other
     variables(currently supporting scenarios where multiplication is either direct or indirect via
     intermediate variables). It then filters these candidates based on a list of candidate parameters
-    (parameters not provided by the user). After that, it confirms the split axis corresponding to 
+    (parameters not provided by the user). After that, it confirms the split axis corresponding to
     the current parameter using mask comparison and the `key` passed in `autotune`.
-    
+
     Note:
-    1. Split axis parameters must be multiplied with `tl.program_id`. 
+    1. Split axis parameters must be multiplied with `tl.program_id`.
     2. Without mask comparision, it is impossible to confirm the exact split axis, which would lead
        to parameter parsing failure. (eg. mask = offsets < n_elements)
     3. The identified split axes are limited to the list of candidated parameters, ensuring that
        only those parameters that can be dynamically adjusted through the autotune process are considered.
     """
+
     def __init__(self, func_ast: ast.AST, key, candidates_params: List[str]):
         """
         :param func_ast: Abstract syntax tree of the triton kernel function
@@ -81,7 +83,7 @@ class SplitAxesParser(AutoParser):
     def parse(self) -> Dict[str, str]:
         super().parse()
         return self.split_axes
-    
+
     def visit_Assign(self, node):
         if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute):
             if isinstance(node.value.func.value, ast.Name):
@@ -110,7 +112,7 @@ class SplitAxesParser(AutoParser):
                 if node.right.func.value.id == "tl" and node.right.func.attr == "program_id":
                     if isinstance(node.left, ast.Name):
                         split_axes_val = node.left.id
-            
+
             if split_axes_val in self.candidates_params and \
                split_axes_val not in self.split_axes.values():
                 split_axes_key = self.get_split_axes_key(split_axes_val)
@@ -151,22 +153,23 @@ class SplitAxesParser(AutoParser):
 
 class TilingAxesParser(AutoParser):
     """
-    Extracts the tiling axis parameters from triton kernel code. The parsing is based on the 
+    Extracts the tiling axis parameters from triton kernel code. The parsing is based on the
     `tl.arange` and `tl.range` statement. This class identifies potential tiling axes by analyzing
     the usage of the `tl.arange` and `tl.range` within `for` loop in the program. Common parameters
-    between `tl.range` and `tl.arange` are extracted. It then filters these candidates based on a 
+    between `tl.range` and `tl.arange` are extracted. It then filters these candidates based on a
     list of candidate parameters (parameters not provided by the user). After that, it confirms the
-    tiling axis corresponding to the current parameter using mask comparison and the `key` passed 
+    tiling axis corresponding to the current parameter using mask comparison and the `key` passed
     in `autotune`.
-    
+
     Note:
     1. Tiling axis parameters must be calculated within the `tl.arange` function and the `for` loop
-       using `tl.range`. 
+       using `tl.range`.
     2. Without mask comparision, it is impossible to confirm the exact tiling axis, which would lead
        to parameter parsing failure. (eg. mask = offsets < n_elements).
     3. The identified tiling axes are limited to the list of candidated parameters, ensuring that
        only those parameters that can be dynamically adjusted through the autotune process are considered.
     """
+
     def __init__(self, func_ast: ast.AST, key, candidates_params: List[str]):
         """
         :param func_ast: Abstract syntax tree of the triton kernel function
@@ -185,11 +188,11 @@ class TilingAxesParser(AutoParser):
         self.checked_vars = list()
         self.candidates_params = candidates_params
         self.candidates_params_for_loop = list()
-    
+
     def parse(self) -> Dict[str, str]:
         super().parse()
         return self.tiling_axes
-    
+
     def visit_For(self, node):
         if isinstance(node.iter, ast.Call) and \
            len(node.iter.args) == 3 and \
@@ -228,7 +231,7 @@ class TilingAxesParser(AutoParser):
                 if val:
                     return val
         return None
-    
+
     def get_tiling_axes_key(self, var):
         for node in ast.walk(self.func_ast):
             if isinstance(node, ast.Compare):
@@ -262,7 +265,7 @@ class TilingAxesParser(AutoParser):
 
 class LowDimsAxesParser(AutoParser):
     """
-    Extracts the low dimensions axis from triton kernel code. The parsing is based on the 
+    Extracts the low dimensions axis from triton kernel code. The parsing is based on the
     `tl.arange` statement. This class identifies low dimensions axis by analyzing the usage
     of the `tl.arange` in the program and extracts the variables computed by `tl.arange` and
     their associated operations. Then it checks if these variables are involved in slicing
@@ -271,11 +274,12 @@ class LowDimsAxesParser(AutoParser):
     `key` to map them to specific low-dimensional axis.
 
     Note:
-    1. low dimensions axis must be calculated within the `tl.arange` function and involved in 
+    1. low dimensions axis must be calculated within the `tl.arange` function and involved in
        slicing operations to be identified.
     2. Without mask comparision, it is impossible to confirm the exact low dimensions axis, which
        would lead to parameter parsing failure. (eg. mask = offsets < n_elements).
     """
+
     def __init__(self, func_ast: ast.AST, key: Dict[str, str]):
         """
         :param func_ast: Abstract syntax tree of the triton kernel function
@@ -330,8 +334,8 @@ class LowDimsAxesParser(AutoParser):
 
     def is_tl_arange_call(self, node):
         """
-        Checks if the given AST node is a call to `tl.arange` or a subscript of `tl.arange`. 
-        It supports direct calls to `tl.arange` and subscripts of `tl.arange`, such as 
+        Checks if the given AST node is a call to `tl.arange` or a subscript of `tl.arange`.
+        It supports direct calls to `tl.arange` and subscripts of `tl.arange`, such as
         `tl.arange()[None, :]`
         """
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
@@ -342,7 +346,7 @@ class LowDimsAxesParser(AutoParser):
         elif isinstance(node, ast.Subscript):
             return self.is_tl_arange_call(node.value)
         return False
-    
+
     def is_low_dim_slice(self, node: ast.Subscript, partin_other_slice):
         if not isinstance(node.slice, ast.Tuple) or not isinstance(node.slice.elts, list):
             return False
@@ -351,11 +355,11 @@ class LowDimsAxesParser(AutoParser):
             partin_other_slice[0] = True
             return False
         return True
-    
+
     def is_partin_low_dim_slice(self, var, partin_other_slice):
         for node in ast.walk(self.func_ast):
             if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
-                if var == node.value.id and self.is_low_dim_slice(node, partin_other_slice): 
+                if var == node.value.id and self.is_low_dim_slice(node, partin_other_slice):
                     return True
             elif isinstance(node, ast.Assign):
                 if len(node.targets) == 1 and \
@@ -416,12 +420,13 @@ class PtrNumsParser(AutoParser):
     parameter is considered a pointer-type parameter.
 
     Note:
-    1. Variables modified with `tl.constexpr` are not pointer-type variables and will not be 
+    1. Variables modified with `tl.constexpr` are not pointer-type variables and will not be
        further parsed.
     2. Only memory access statementes where the input parameter is directly involved or indirectly
        involved through one level of computation are counted. Intermediate variables computed from
        the input parameter through two or more levels of computation are not counted.
     """
+
     def __init__(self, func_ast: ast.AST, miss_params: List[str]):
         """
         :param func_ast: Abstract syntax tree of the triton kernel function
@@ -440,13 +445,13 @@ class PtrNumsParser(AutoParser):
     def parse(self):
         super().parse()
         return self.ptr_nums, self.ptr_params
-    
+
     def visit_FunctionDef(self, node):
         if isinstance(node.args, ast.arguments):
             for arg in node.args.args:
                 if not isinstance(arg, ast.arg):
                     continue
-                
+
                 if isinstance(arg.annotation, ast.Attribute):
                     # var modified by tl.constexpr are not pointer type var, passed
                     is_tl = isinstance(arg.annotation.value, ast.Name) and \
@@ -464,7 +469,7 @@ class PtrNumsParser(AutoParser):
             if miss_param not in self.constexpr_params:
                 print(f"[WARNING] The parameter '{miss_param}' needs to be declared as tl.constexpr!")
         self.generic_visit(node)
-    
+
     def is_in_addr_calc(self, var):
         for node in ast.walk(self.func_ast):
             if isinstance(node, ast.Call):
@@ -474,7 +479,7 @@ class PtrNumsParser(AutoParser):
                        (node.func.attr == "load" or node.func.attr == "store"):
                         if [arg for arg in node.args if self.contains_target_var(arg, var)]:
                             return True
-                        
+
             elif isinstance(node, ast.Assign):
                 if len(node.targets) == 1 and \
                    isinstance(node.targets[0], ast.Name) and \
@@ -494,4 +499,3 @@ class PtrNumsParser(AutoParser):
                                 return True
         self.checked_vars.append(var)
         return False
-    

@@ -74,24 +74,14 @@ def _fwd_kernel(
     mask_d = offs_d < Lq
     mask_dv = offs_dv < Lv
 
-    offs_q = (
-        (cur_seq_extend_start_contiguous + cur_block_m * BLOCK_M + offs_m[:, None])
-        * stride_qbs
-        + cur_head * stride_qh
-        + offs_d[None, :]
-    )
-    q = tl.load(
-        Q_Extend + offs_q, mask=(mask_m[:, None]) & (mask_d[None, :]), other=0.0
-    )
+    offs_q = ((cur_seq_extend_start_contiguous + cur_block_m * BLOCK_M + offs_m[:, None]) * stride_qbs +
+              cur_head * stride_qh + offs_d[None, :])
+    q = tl.load(Q_Extend + offs_q, mask=(mask_m[:, None]) & (mask_d[None, :]), other=0.0)
 
     if BLOCK_DPE > 0:
         offs_dpe = BLOCK_DMODEL + tl.arange(0, BLOCK_DPE)
-        offs_qpe = (
-            (cur_seq_extend_start_contiguous + cur_block_m * BLOCK_M + offs_m[:, None])
-            * stride_qbs
-            + cur_head * stride_qh
-            + offs_dpe[None, :]
-        )
+        offs_qpe = ((cur_seq_extend_start_contiguous + cur_block_m * BLOCK_M + offs_m[:, None]) * stride_qbs +
+                    cur_head * stride_qh + offs_dpe[None, :])
         qpe = tl.load(Q_Extend + offs_qpe, mask=mask_m[:, None], other=0.0)
 
     # stage 1: compute scores with prefix
@@ -104,28 +94,17 @@ def _fwd_kernel(
     for start_n in range(0, cur_seq_len_prefix, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
         mask_n = (start_n + offs_n) < cur_seq_len_prefix
-        offs_b_loc_prefix = cur_batch_req_idx * stride_req_to_tokens_b + (
-            cur_seq_prefix_start_in_loc + start_n + offs_n
-        )
+        offs_b_loc_prefix = cur_batch_req_idx * stride_req_to_tokens_b + (cur_seq_prefix_start_in_loc + start_n +
+                                                                          offs_n)
         offs_kv_loc = tl.load(Req_to_tokens + offs_b_loc_prefix, mask=mask_n, other=0)
 
         # load k in transposed way
-        offs_buf_k = (
-            offs_kv_loc[None, :] * stride_buf_kbs
-            + cur_kv_head * stride_buf_kh
-            + offs_d[:, None]
-        )
-        k = tl.load(
-            K_Buffer + offs_buf_k, mask=(mask_n[None, :]) & (mask_d[:, None]), other=0.0
-        )
+        offs_buf_k = (offs_kv_loc[None, :] * stride_buf_kbs + cur_kv_head * stride_buf_kh + offs_d[:, None])
+        k = tl.load(K_Buffer + offs_buf_k, mask=(mask_n[None, :]) & (mask_d[:, None]), other=0.0)
 
         qk = tl.dot(q.to(k.dtype), k)
         if BLOCK_DPE > 0:
-            offs_kpe = (
-                offs_kv_loc[None, :] * stride_buf_kbs
-                + cur_kv_head * stride_buf_kh
-                + offs_dpe[:, None]
-            )
+            offs_kpe = (offs_kv_loc[None, :] * stride_buf_kbs + cur_kv_head * stride_buf_kh + offs_dpe[:, None])
             kpe = tl.load(
                 K_Buffer + offs_kpe,
                 mask=mask_n[None, :],
@@ -144,14 +123,8 @@ def _fwd_kernel(
         p = tl.exp(qk - n_e_max[:, None])
         deno = deno * re_scale + tl.sum(p, 1)
 
-        offs_buf_v = (
-            offs_kv_loc[:, None] * stride_buf_vbs
-            + cur_kv_head * stride_buf_vh
-            + offs_dv[None, :]
-        )
-        v = tl.load(
-            V_Buffer + offs_buf_v, mask=mask_n[:, None] & mask_dv[None, :], other=0.0
-        )
+        offs_buf_v = (offs_kv_loc[:, None] * stride_buf_vbs + cur_kv_head * stride_buf_vh + offs_dv[None, :])
+        v = tl.load(V_Buffer + offs_buf_v, mask=mask_n[:, None] & mask_dv[None, :], other=0.0)
         p = p.to(v.dtype)
         acc = acc * re_scale[:, None] + tl.dot(p, v)
 
@@ -164,23 +137,14 @@ def _fwd_kernel(
         mask_n = (start_n + offs_n) < cur_block_m_end
 
         # load k in transposed way
-        offs_k = (
-            (cur_seq_extend_start_contiguous + start_n + offs_n[None, :]) * stride_kbs
-            + cur_kv_head * stride_kh
-            + offs_d[:, None]
-        )
-        k = tl.load(
-            K_Extend + offs_k, mask=(mask_n[None, :]) & (mask_d[:, None]), other=0.0
-        )
+        offs_k = ((cur_seq_extend_start_contiguous + start_n + offs_n[None, :]) * stride_kbs + cur_kv_head * stride_kh +
+                  offs_d[:, None])
+        k = tl.load(K_Extend + offs_k, mask=(mask_n[None, :]) & (mask_d[:, None]), other=0.0)
 
         qk = tl.dot(q, k, out_dtype=tl.float32)
         if BLOCK_DPE > 0:
-            offs_kpe = (
-                (cur_seq_extend_start_contiguous + start_n + offs_n[None, :])
-                * stride_kbs
-                + cur_kv_head * stride_kh
-                + offs_dpe[:, None]
-            )
+            offs_kpe = ((cur_seq_extend_start_contiguous + start_n + offs_n[None, :]) * stride_kbs +
+                        cur_kv_head * stride_kh + offs_dpe[:, None])
             kpe = tl.load(
                 K_Extend + offs_kpe,
                 mask=mask_n[None, :],
@@ -193,9 +157,7 @@ def _fwd_kernel(
         if logit_cap > 0:
             qk = logit_cap * tanh(qk / logit_cap)
 
-        mask_causual = (cur_block_m * BLOCK_M + offs_m[:, None]) >= (
-            start_n + offs_n[None, :]
-        )
+        mask_causual = (cur_block_m * BLOCK_M + offs_m[:, None]) >= (start_n + offs_n[None, :])
         mask_causual &= mask_m[:, None] & mask_n[None, :]
         qk = tl.where(mask_causual, qk, float("-inf"))
 
@@ -204,28 +166,17 @@ def _fwd_kernel(
         p = tl.exp(qk - n_e_max[:, None])
         deno = deno * re_scale + tl.sum(p, 1)
 
-        offs_v = (
-            (cur_seq_extend_start_contiguous + start_n + offs_n[:, None]) * stride_vbs
-            + cur_kv_head * stride_vh
-            + offs_dv[None, :]
-        )
-        v = tl.load(
-            V_Extend + offs_v, mask=mask_n[:, None] & mask_dv[None, :], other=0.0
-        )
+        offs_v = ((cur_seq_extend_start_contiguous + start_n + offs_n[:, None]) * stride_vbs + cur_kv_head * stride_vh +
+                  offs_dv[None, :])
+        v = tl.load(V_Extend + offs_v, mask=mask_n[:, None] & mask_dv[None, :], other=0.0)
         p = p.to(v.dtype)
         acc = acc * re_scale[:, None] + tl.dot(p, v)
 
         e_max = n_e_max
 
-    offs_o = (
-        (cur_seq_extend_start_contiguous + cur_block_m * BLOCK_M + offs_m[:, None])
-        * stride_obs
-        + cur_head * stride_oh
-        + offs_dv[None, :]
-    )
-    tl.store(
-        O_Extend + offs_o, acc / deno[:, None], mask=mask_m[:, None] & mask_dv[None, :]
-    )
+    offs_o = ((cur_seq_extend_start_contiguous + cur_block_m * BLOCK_M + offs_m[:, None]) * stride_obs +
+              cur_head * stride_oh + offs_dv[None, :])
+    tl.store(O_Extend + offs_o, acc / deno[:, None], mask=mask_m[:, None] & mask_dv[None, :])
 
 
 def test_context_fwd_kernel(ptfile_path):
@@ -234,10 +185,9 @@ def test_context_fwd_kernel(ptfile_path):
     except Exception as e:
         pytest.fail(f"load file {ptfile_path} failed: {str(e)}")
 
-
     input_data = test_common.convert_tensor_with_device_type(data["input_data"], device_type='npu')
-    _fwd_kernel[data['grid']](**input_data) 
-    
+    _fwd_kernel[data['grid']](**input_data)
+
     try:
         test_common.compare_data_precision(data["gpu_output"], input_data, device_type='cpu')
     except ValueError as e:

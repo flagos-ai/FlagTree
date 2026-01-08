@@ -57,9 +57,7 @@ def copy_all_layer_kv_cache(
     for i in range(num_loop):
         copy_offset = tl.arange(0, BLOCK_SIZE) + i * BLOCK_SIZE
         mask = (num_locs_offset < num_locs)[:, None] and (copy_offset < stride)[None, :]
-        value = tl.load(
-            data_ptr + src_locs[:, None] * stride + copy_offset[None, :], mask=mask
-        )
+        value = tl.load(data_ptr + src_locs[:, None] * stride + copy_offset[None, :], mask=mask)
         tl.store(
             data_ptr + tgt_locs[:, None] * stride + copy_offset[None, :],
             value,

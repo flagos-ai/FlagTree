@@ -45,14 +45,12 @@ def triton_add(in_ptr0, in_ptr1, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.
         tl.store(out_ptr0 + (x0), tmp2, None)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                             ['float16', (2, 4096, 8), 2, 32768, 1024],
-                             ['int8', (2, 4096, 8), 2, 32768, 1024],
-                             ['uint8', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+    ['int8', (2, 4096, 8), 2, 32768, 1024],
+    ['uint8', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_case(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()
@@ -63,11 +61,9 @@ def test_case(param_list):
     test_common.validate_cmp(dtype, y_cal, y_ref)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_all_blocks_parallel(param_list, monkeypatch):
     monkeypatch.setenv("TRITON_ALL_BLOCKS_PARALLEL", "1")
     dtype, shape, ncore, xblock, xblock_sub = param_list

@@ -17,7 +17,7 @@ module {
 }
 // CHECK-LABEL:   func.func @kernel(
 // CHECK-SAME:      %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>,
-// CHECK-SAME:      %[[VAL_0:.*]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, %[[VAL_1:.*]]: memref<?xbf16> {tt.tensor_kind = 1 : i32}, %[[ARG_4:.*]]: i32, %[[ARG_5:.*]]: i32, %[[ARG_6:.*]]: i32, %[[ARG_7:.*]]: i32, %[[ARG_8:.*]]: i32, %[[ARG_9:.*]]: i32) 
+// CHECK-SAME:      %[[VAL_0:.*]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, %[[VAL_1:.*]]: memref<?xbf16> {tt.tensor_kind = 1 : i32}, %[[ARG_4:.*]]: i32, %[[ARG_5:.*]]: i32, %[[ARG_6:.*]]: i32, %[[ARG_7:.*]]: i32, %[[ARG_8:.*]]: i32, %[[ARG_9:.*]]: i32)
 // CHECK-SAME:      attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 // CHECK:           %[[VAL_5:.*]] = arith.constant 0.000000e+00 : bf16
 // CHECK:           %[[VAL_6:.*]] = memref.reinterpret_cast %[[VAL_0]] to offset: [0], sizes: [128], strides: [1] : memref<?xbf16> to memref<128xbf16, strided<[1]>>
@@ -27,7 +27,7 @@ module {
 // CHECK:           %[[VAL_9:.*]] = bufferization.alloc_tensor() : tensor<bf16>
 // CHECK:           %[[VAL_10:.*]] = linalg.fill ins(%[[VAL_5]] : bf16) outs(%[[VAL_9]] : tensor<bf16>) -> tensor<bf16>
 // CHECK:           %[[VAL_11:.*]] = linalg.reduce ins(%[[VAL_8]] : tensor<128xbf16>) outs(%[[VAL_10]] : tensor<bf16>) dimensions = [0]
-// CHECK:             (%[[VAL_12:.*]]: bf16, %[[VAL_13:.*]]: bf16) {              
+// CHECK:             (%[[VAL_12:.*]]: bf16, %[[VAL_13:.*]]: bf16) {
 // CHECK:               %[[VAL_15:.*]] = arith.addf %[[VAL_12]], %[[VAL_13]] : bf16
 // CHECK:               linalg.yield %[[VAL_15]] : bf16
 // CHECK:             }

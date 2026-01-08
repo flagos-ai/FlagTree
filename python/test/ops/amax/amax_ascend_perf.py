@@ -22,7 +22,7 @@ def get_dtype_min(dtype):
         return value
     if dtype_.is_int_signed():
         width: tl.constexpr = dtype_.int_bitwidth
-        value: tl.constexpr = -1 * 2 ** (width - 1)
+        value: tl.constexpr = -1 * 2**(width - 1)
         return value
     if dtype_.is_int_unsigned():
         value: tl.constexpr = 0
@@ -84,7 +84,7 @@ def amax(inp, dim=None, keepdim=False):
 
         out = torch.empty(shape, dtype=dtype, device=inp.device)
 
-        grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]),)
+        grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]), )
         with torch_device_fn.device(inp.device):
             amax_kernel[grid](inp, out, M, N)
         if not keepdim:
@@ -112,10 +112,8 @@ def check(name, ref, res, equal_nan=False, reduce_dim=1, atol=1e-4):
         torch.complex64: 1.3e-6,
     }
     res = res.cpu()
-    print(
-        f"The maximum difference out {name} between torch and triton is "
-        f"{torch.max(torch.abs(ref - res))}"
-    )
+    print(f"The maximum difference out {name} between torch and triton is "
+          f"{torch.max(torch.abs(ref - res))}")
     rtol = RESOLUTION[ref.dtype]
     assert torch.allclose(res, ref, atol=atol * reduce_dim, rtol=rtol), (res, ref)
 

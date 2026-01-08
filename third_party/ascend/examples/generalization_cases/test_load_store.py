@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 import torch
@@ -35,8 +34,10 @@ def fn_npu_1d(output_ptr, x_ptr, YB: tl.constexpr):
     X = tl.load(x_ptr + idx)
     tl.store(output_ptr + idx, X)
 
+
 def torch_fn_npu_1d(x):
     return x
+
 
 @triton.jit
 def fn_npu_2d(output_ptr, x_ptr, YB: tl.constexpr, ZB: tl.constexpr):
@@ -48,6 +49,7 @@ def fn_npu_2d(output_ptr, x_ptr, YB: tl.constexpr, ZB: tl.constexpr):
     X = tl.load(x_ptr + idx)
 
     tl.store(output_ptr + idx, X)
+
 
 def torch_fn_npu_2d(x):
     return x
@@ -65,8 +67,10 @@ def fn_npu_3d(output_ptr, x_ptr, YB: tl.constexpr, ZB: tl.constexpr, KB: tl.cons
 
     tl.store(output_ptr + idx, X)
 
+
 def torch_fn_npu_3d(x):
     return x
+
 
 @pytest.mark.parametrize('shape', TestUtils.test_shape1_2_3d)
 @pytest.mark.parametrize('dtype', TestUtils.dtype_list)
@@ -104,12 +108,11 @@ def test_npu(shape, dtype):
 
 # require: all data (4d and 5d) can be placed into but without ub overflow
 @triton.jit
-def triton_load_store_multi_d(
-    in_ptr0, out_ptr0, 
-    BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr,
-    SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr,
-    STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr
-):
+def triton_load_store_multi_d(in_ptr0, out_ptr0, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                              BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr,
+                              SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
+                              SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr,
+                              STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr):
     offsets = tl.program_id(0)
 
     offsets = offsets + tl.arange(0, BLOCK_0) * STRIDE_0
@@ -133,22 +136,20 @@ def triton_load_store_multi_d(
 
 
 @pytest.mark.shape_4d_5d
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (8, 4, 16, 16)],
-                             ['float16', (8, 4, 16, 16)],
-                             ['int8', (8, 4, 16, 16)],
-                             ['float32', (8, 8, 4, 4)],
-                             ['float16', (8, 8, 4, 4)],
-                             ['int8', (8, 8, 4, 4)],
-                             ['float32', (3, 8, 2, 16, 16)],
-                             ['float16', (3, 8, 2, 16, 16)],
-                             ['int8', (9, 8, 8, 16, 16)],
-                             ['float32', (11, 8, 8, 4, 4)],
-                             ['float16', (11, 8, 8, 4, 4)],
-                             ['int8', (11, 8, 8, 4, 4)],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (8, 4, 16, 16)],
+    ['float16', (8, 4, 16, 16)],
+    ['int8', (8, 4, 16, 16)],
+    ['float32', (8, 8, 4, 4)],
+    ['float16', (8, 8, 4, 4)],
+    ['int8', (8, 8, 4, 4)],
+    ['float32', (3, 8, 2, 16, 16)],
+    ['float16', (3, 8, 2, 16, 16)],
+    ['int8', (9, 8, 8, 16, 16)],
+    ['float32', (11, 8, 8, 4, 4)],
+    ['float16', (11, 8, 8, 4, 4)],
+    ['int8', (11, 8, 8, 4, 4)],
+])
 def test_load_store_4d_5d(param_list):
     # 生成数据
     dtype, shape = param_list

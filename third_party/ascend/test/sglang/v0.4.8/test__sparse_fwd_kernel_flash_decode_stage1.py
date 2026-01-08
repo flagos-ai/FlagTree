@@ -26,6 +26,7 @@ import triton.language as tl
 
 sys.path.append("..")
 import test_common
+
 REDUCE_TRITON_TYPE = tl.float32
 
 
@@ -86,11 +87,7 @@ def _sparse_fwd_kernel_flash_decode_stage1(  # Double Sparsity's approximate att
             mask=offs_n_new < cur_batch_end_index,
             other=0,
         )
-        offs_buf_k = (
-            k_loc[:, None] * stride_buf_kbs
-            + cur_kv_head * stride_buf_kh
-            + offs_d[None, :]
-        )
+        offs_buf_k = (k_loc[:, None] * stride_buf_kbs + cur_kv_head * stride_buf_kh + offs_d[None, :])
         k = tl.load(
             K_Label_Buffer + offs_buf_k,
             mask=offs_n_new[:, None] < cur_batch_end_index,

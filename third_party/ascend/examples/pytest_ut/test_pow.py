@@ -44,6 +44,7 @@ shapes = [
     # 781,
 ]
 
+
 @pytest.mark.skip(reason="waiting for bishengir-compile to support")
 @pytest.mark.parametrize("sigtype", types)
 @pytest.mark.parametrize("N", shapes)
@@ -66,12 +67,13 @@ def test_pow_vv(sigtype, N):
         triton_kernel[1, 1, 1](out, x0, x1, N)
         return out
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    x1 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
+    x1 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
 
     triton_cal = triton_func(x0, x1, N)
     torch_ref = torch_func(x0, x1)
     test_common.validate_cmp(sigtype, triton_cal, torch_ref)
+
 
 @pytest.mark.skip(reason="waiting for bishengir-compile to support")
 @pytest.mark.parametrize("sigtype", types)
@@ -95,12 +97,13 @@ def test_pow_vs_dynamic(sigtype, N):
         triton_kernel[1, 1, 1](out, x0, x1, N)
         return out
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    x1 = test_common.generate_tensor(shape=(1,), dtype=sigtype).npu()
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
+    x1 = test_common.generate_tensor(shape=(1, ), dtype=sigtype).npu()
 
     triton_cal = triton_func(x0, x1, N)
     torch_ref = torch_func(x0, x1)
     test_common.validate_cmp(sigtype, triton_cal, torch_ref)
+
 
 @pytest.mark.skip(reason="waiting for bishengir-compile to support")
 @pytest.mark.parametrize("sigtype", types)
@@ -123,8 +126,8 @@ def test_pow_vs_const(sigtype, N):
         triton_kernel[1, 1, 1](out, x0, x1, N)
         return out
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    x1 = test_common.generate_tensor(shape=(1,), dtype=sigtype).item()
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
+    x1 = test_common.generate_tensor(shape=(1, ), dtype=sigtype).item()
 
     triton_cal = triton_func(x0, x1, N)
     torch_ref = torch_func(x0, x1)

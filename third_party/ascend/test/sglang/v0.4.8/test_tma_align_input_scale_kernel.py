@@ -47,16 +47,10 @@ def _tma_align_input_scale_kernel(
     k_offsets = tl.arange(0, BLOCK_SIZE_K)
 
     for m_base in range(pid_m, m, grid_m):
-        input_offset = (
-            input_scale_ptr
-            + m_base * input_scale_stride_m
-            + k_offsets * input_scale_stride_k
-        )
+        input_offset = (input_scale_ptr + m_base * input_scale_stride_m + k_offsets * input_scale_stride_k)
         input_data = tl.load(input_offset, mask=k_offsets < k_div_block_size)
 
-        output_offset = (
-            output_ptr + k_offsets * output_stride_k + m_base * output_stride_m
-        )
+        output_offset = (output_ptr + k_offsets * output_stride_k + m_base * output_stride_m)
         tl.store(output_offset, input_data, mask=k_offsets < k_div_block_size)
 
 

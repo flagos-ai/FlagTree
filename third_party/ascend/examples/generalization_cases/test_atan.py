@@ -26,9 +26,12 @@ import test_common
 from test_common import TestUtils
 import math
 import triton.language.extra.ascend.libdevice as libdevice
+
+
 def torch_pointwise(x0):
     res = torch.atan(x0)
     return res
+
 
 @triton.jit
 def triton_atan(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
@@ -41,6 +44,7 @@ def triton_atan(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexp
         tmp0 = tl.load(in_ptr0 + (x0), None)
         tmp2 = libdevice.atan(tmp0)
         tl.store(out_ptr0 + (x0), tmp2, None)
+
 
 @pytest.mark.parametrize('shape', TestUtils.test_shape1d)
 @pytest.mark.parametrize('dtype', ['float32', 'float16'])

@@ -58,13 +58,13 @@ triton::nvgpu::WGMMAEltType getMmaOperandType(Value a, bool allowTF32) {
     return triton::nvgpu::WGMMAEltType::s8;
 #if LLVM_VERSION_MAJOR < 21
   } else if (aTy.isFloat8E5M2()) {
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
   } else if (llvm::isa<Float8E5M2Type>(aTy)) {
 #endif
     return triton::nvgpu::WGMMAEltType::e5m2;
 #if LLVM_VERSION_MAJOR < 21
   } else if (aTy.isFloat8E4M3FN()) {
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
   } else if (llvm::isa<Float8E4M3FNType>(aTy)) {
 #endif
     return triton::nvgpu::WGMMAEltType::e4m3;

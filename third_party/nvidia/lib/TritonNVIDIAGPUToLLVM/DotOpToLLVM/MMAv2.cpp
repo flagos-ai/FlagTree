@@ -215,7 +215,7 @@ TensorCoreType getMmaType(triton::DotOp op) {
 #if LLVM_VERSION_MAJOR < 21
     if (aTy.getElementType().isFloat8E5M2() &&
         bTy.getElementType().isFloat8E5M2())
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
     if (llvm::isa<Float8E5M2Type>(aTy.getElementType()) &&
         llvm::isa<Float8E5M2Type>(bTy.getElementType()))
 #endif
@@ -223,7 +223,7 @@ TensorCoreType getMmaType(triton::DotOp op) {
 #if LLVM_VERSION_MAJOR < 21
     if (aTy.getElementType().isFloat8E5M2() &&
         bTy.getElementType().isFloat8E4M3FN())
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
     if (llvm::isa<Float8E5M2Type>(aTy.getElementType()) &&
         llvm::isa<Float8E4M3FNType>(bTy.getElementType()))
 #endif
@@ -231,7 +231,7 @@ TensorCoreType getMmaType(triton::DotOp op) {
 #if LLVM_VERSION_MAJOR < 21
     if (aTy.getElementType().isFloat8E4M3FN() &&
         bTy.getElementType().isFloat8E5M2())
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
     if (llvm::isa<Float8E4M3FNType>(aTy.getElementType()) &&
         llvm::isa<Float8E5M2Type>(bTy.getElementType()))
 #endif
@@ -239,7 +239,7 @@ TensorCoreType getMmaType(triton::DotOp op) {
 #if LLVM_VERSION_MAJOR < 21
     if (aTy.getElementType().isFloat8E4M3FN() &&
         bTy.getElementType().isFloat8E4M3FN())
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
     if (llvm::isa<Float8E4M3FNType>(aTy.getElementType()) &&
         llvm::isa<Float8E4M3FNType>(bTy.getElementType()))
 #endif

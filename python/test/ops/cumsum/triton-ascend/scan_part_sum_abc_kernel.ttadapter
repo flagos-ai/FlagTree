@@ -34,7 +34,7 @@ module {
     %17 = call @triton_cumsum_0(%16, %c0_i32, %false) : (tensor<4096xf32>, i32, i1) -> tensor<4096xf32>
     %18 = bufferization.alloc_tensor() : tensor<f32>
     %19 = linalg.fill ins(%cst : f32) outs(%18 : tensor<f32>) -> tensor<f32>
-    %reduced = linalg.reduce ins(%16 : tensor<4096xf32>) outs(%19 : tensor<f32>) dimensions = [0] 
+    %reduced = linalg.reduce ins(%16 : tensor<4096xf32>) outs(%19 : tensor<f32>) dimensions = [0]
       (%in: f32, %init: f32) {
         %23 = arith.addf %in, %init : f32
         linalg.yield %23 : f32
@@ -52,4 +52,3 @@ module {
     return
   }
 }
-

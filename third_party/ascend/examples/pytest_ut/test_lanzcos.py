@@ -51,11 +51,8 @@ def lanczos_resize_kernel(
     block_id_w = tl.program_id(2)
     dest_h_offs = block_id_h * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     dest_w_offs = block_id_w * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    dest_offs = (
-        block_id_c[None, None] * stride_out_c
-        + dest_h_offs[:, None] * stride_out_h
-        + dest_w_offs[None, :] * stride_out_w
-    )
+    dest_offs = (block_id_c[None, None] * stride_out_c + dest_h_offs[:, None] * stride_out_h +
+                 dest_w_offs[None, :] * stride_out_w)
 
     RR_H = 1.0 / R_H
     RR_W = 1.0 / R_W
@@ -72,13 +69,9 @@ def lanczos_resize_kernel(
 
     for ii in range(4):
         for jj in range(4):
-            src_offsets = (
-                block_id_c[None, None] * stride_in_c
-                + (tl.clamp((sy + ii - 1), 0, src_rows - 1)).to(tl.int32)[:, None]
-                * stride_in_h
-                + (tl.clamp((sx + jj - 1), 0, src_cols - 1)).to(tl.int32)[None, :]
-                * stride_in_w
-            )
+            src_offsets = (block_id_c[None, None] * stride_in_c + (tl.clamp(
+                (sy + ii - 1), 0, src_rows - 1)).to(tl.int32)[:, None] * stride_in_h + (tl.clamp(
+                    (sx + jj - 1), 0, src_cols - 1)).to(tl.int32)[None, :] * stride_in_w)
             src_val = tl.load(img_src_ptr + src_offsets)
             coeffs_offs = tableIndex[:, :] * 16 + (ii * 4 + jj)[None, None]
             coeffs = tl.load(img_coeffs_ptr + coeffs_offs)
@@ -151,7 +144,9 @@ def lanczos_resize_cpu(img_src, img_dst, img_coeffs, dst_rows, dst_cols):
             img_dst[0, :, i, j] = np.clip(res, 0.0, 1.0)
 
 
-@pytest.mark.parametrize("shapes", [[360, 640, 140, 280],])
+@pytest.mark.parametrize("shapes", [
+    [360, 640, 140, 280],
+])
 def test_lanzcos(shapes):
     c_lanczosCoeffs = torch.randn(10000, dtype=torch.float32, device="npu") / 4.0
     src_rows, src_cols, dst_rows, dst_cols = shapes
@@ -161,29 +156,17 @@ def test_lanzcos(shapes):
         dtype=img_src.dtype,
         device=img_src.device,
     )
-    resized_image = lanczos_resize_triton(
-        img_src, img_dst, c_lanczosCoeffs, dst_rows, dst_cols
-    )
+    resized_image = lanczos_resize_triton(img_src, img_dst, c_lanczosCoeffs, dst_rows, dst_cols)
     img_src_cpu = img_src.cpu().numpy()
-    img_dst_cpu = torch.zeros(
-        (1, img_src_cpu.shape[1], dst_rows, dst_cols), dtype=img_src.dtype, device="cpu"
-    ).numpy()
-    lanczos_resize_cpu(
-        img_src_cpu, img_dst_cpu, c_lanczosCoeffs.cpu().numpy(), dst_rows, dst_cols
-    )
-    torch.testing.assert_close(
-        resized_image.cpu(), torch.from_numpy(img_dst_cpu), atol=1.0 / 255, rtol=0
-    )
+    img_dst_cpu = torch.zeros((1, img_src_cpu.shape[1], dst_rows, dst_cols), dtype=img_src.dtype, device="cpu").numpy()
+    lanczos_resize_cpu(img_src_cpu, img_dst_cpu, c_lanczosCoeffs.cpu().numpy(), dst_rows, dst_cols)
+    torch.testing.assert_close(resized_image.cpu(), torch.from_numpy(img_dst_cpu), atol=1.0 / 255, rtol=0)
 
 
-def benchmark_test(
-    fn_ref, fn_triton, ref_args=(), triton_args=(), name="gen_fn", times=10, repeat=10
-):
+def benchmark_test(fn_ref, fn_triton, ref_args=(), triton_args=(), name="gen_fn", times=10, repeat=10):
     import time
 
-    print(
-        f"--------------------benchmark_{name} for {times * repeat} times--------------------"
-    )
+    print(f"--------------------benchmark_{name} for {times * repeat} times--------------------")
     stream = torch.npu.current_stream()
     # warm_up
     stream.synchronize()
@@ -215,9 +198,7 @@ def benchmark_test(
     time_eager *= 1000000
 
     accelerated = (time_eager - time_compiled) / time_compiled * 100
-    print(
-        f"Accelerated: {accelerated:.4f}% eager takes {time_eager:.3f} us, triton takes {time_compiled:.3f} us"
-    )
+    print(f"Accelerated: {accelerated:.4f}% eager takes {time_eager:.3f} us, triton takes {time_compiled:.3f} us")
 
     return accelerated, time_eager, time_compiled
 
@@ -235,27 +216,19 @@ if __name__ == "__main__":
         dtype=img_src.dtype,
         device=img_src.device,
     )
-    resized_image = lanczos_resize_triton(
-        img_src, img_dst, c_lanczosCoeffs, dst_rows, dst_cols
-    )
+    resized_image = lanczos_resize_triton(img_src, img_dst, c_lanczosCoeffs, dst_rows, dst_cols)
     resized_cpu = resized_image.cpu().numpy()
     print("==========run cpu===============")
     img_src_cpu = img_src.cpu().numpy()
-    img_dst_cpu = torch.zeros(
-        (1, img_src_cpu.shape[1], dst_rows, dst_cols), dtype=img_src.dtype, device="cpu"
-    ).numpy()
-    lanczos_resize_cpu(
-        img_src_cpu, img_dst_cpu, c_lanczosCoeffs.cpu().numpy(), dst_rows, dst_cols
-    )
+    img_dst_cpu = torch.zeros((1, img_src_cpu.shape[1], dst_rows, dst_cols), dtype=img_src.dtype, device="cpu").numpy()
+    lanczos_resize_cpu(img_src_cpu, img_dst_cpu, c_lanczosCoeffs.cpu().numpy(), dst_rows, dst_cols)
 
     print("==========compare result===============")
     diff = np.abs(resized_cpu - img_dst_cpu)
     max_diff_value = np.max(diff)
     print("max diff float = ", max_diff_value)
     print("max diff * 255 int = ", int(max_diff_value * 255))
-    torch.testing.assert_close(
-        resized_image.cpu(), torch.from_numpy(img_dst_cpu), atol=1.0 / 255, rtol=0
-    )
+    torch.testing.assert_close(resized_image.cpu(), torch.from_numpy(img_dst_cpu), atol=1.0 / 255, rtol=0)
 
     print("==========profiling===============")
     accelerate, eager_time, triton_time = benchmark_test(

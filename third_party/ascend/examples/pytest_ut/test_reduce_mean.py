@@ -26,41 +26,42 @@ import pytest
 import test_common
 import numpy as np
 
+
 def numpy_mean_pr(x0, x1):
     res = np.mean(x0, axis=-1) + x1
     return res
 
+
 @triton.jit
-def triton_mean_pr(out_ptr0, in_ptr0, in_ptr1, xnumel, rnumel, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.constexpr, RBLOCK: tl.constexpr):
+def triton_mean_pr(out_ptr0, in_ptr0, in_ptr1, xnumel, rnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr,
+                   RBLOCK: tl.constexpr):
     xoffset = tl.program_id(0) * XBLOCK
     rindex = tl.arange(0, RBLOCK)[None, :]
     rmask = rindex < rnumel
     for xoffset_sub in range(0, XBLOCK, XBLOCK_SUB):
         xindex = xoffset + xoffset_sub + tl.arange(0, XBLOCK_SUB)
-        xmask = xindex[:,None] < xnumel
+        xmask = xindex[:, None] < xnumel
         x0 = xindex
         r1 = rindex
-        tmp0 = tl.load(in_ptr0 + (r1 + (RBLOCK*x0[:, None])), xmask & rmask)
+        tmp0 = tl.load(in_ptr0 + (r1 + (RBLOCK * x0[:, None])), xmask & rmask)
         tmp4 = tl.load(in_ptr1 + (x0), xindex < xnumel)
         tmp1 = tl.reshape(tmp0, [XBLOCK_SUB, RBLOCK])
         tmp3 = tl.sum(tmp1, 1) / RBLOCK
         tmp5 = tmp3 + tmp4
         tl.store(out_ptr0 + (xindex), tmp5, None)
-        
-@pytest.mark.parametrize('param_list',
-                         [
-                           ['float32', (8, 8, 4), 8, 2],
-                           ['float32', (8, 8, 64), 8, 2],
-                           ['float32', (8, 8, 1024), 8, 2],
-                           ['float16', (8, 8, 4), 8, 2],
-                           ['float16', (8, 8, 64), 8, 2],
-                           ['float16', (8, 8, 1024), 8, 2],
-                           ['int8', (8, 8, 4), 8, 2],
-                           ['int8', (8, 8, 64), 8, 2],
-                           ['int8', (8, 8, 1024), 8, 2],
-                         ]
-                         )
 
+
+@pytest.mark.parametrize('param_list', [
+    ['float32', (8, 8, 4), 8, 2],
+    ['float32', (8, 8, 64), 8, 2],
+    ['float32', (8, 8, 1024), 8, 2],
+    ['float16', (8, 8, 4), 8, 2],
+    ['float16', (8, 8, 64), 8, 2],
+    ['float16', (8, 8, 1024), 8, 2],
+    ['int8', (8, 8, 4), 8, 2],
+    ['int8', (8, 8, 64), 8, 2],
+    ['int8', (8, 8, 1024), 8, 2],
+])
 def test_mean_pr(param_list):
     dtype, shape, ncore, xblock_sub = param_list
     import math

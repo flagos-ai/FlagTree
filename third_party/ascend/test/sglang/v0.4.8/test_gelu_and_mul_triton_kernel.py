@@ -73,20 +73,8 @@ def gelu_and_mul_triton_kernel(
 
             # gelu & mul & quantize
             kAlpha = 0.7978845608028654
-            gate_output = (
-                0.5
-                * gate_output
-                * (
-                    1
-                    + tanh(
-                        kAlpha
-                        * (
-                            gate_output
-                            + 0.044715 * gate_output * gate_output * gate_output
-                        )
-                    )
-                )
-            )
+            gate_output = (0.5 * gate_output *
+                           (1 + tanh(kAlpha * (gate_output + 0.044715 * gate_output * gate_output * gate_output))))
             gate_output = gate_output.to(InDtype)
 
             gelu_mul_output = gate_output * up_output * scale

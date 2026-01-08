@@ -15,11 +15,11 @@ T = TypeVar('T')
 def spec_semantic_func(spec):
     import sys
 
-    for spec_func_name in spec.semantic_ext_spec_func_list:
-        if hasattr(spec, spec_func_name):
-            spec_func = getattr(spec, "ext_semantic_" + spec_func_name)
+    for spec_api_name in spec.semantic_ext_spec_api_list:
+        if hasattr(spec, spec_api_name):
+            spec_api = getattr(spec, "ext_semantic_" + spec_api_name)
             # triton.language.semantic
-            setattr(sys.modules[__name__], spec_func_name, spec_func)
+            setattr(sys.modules[__name__], spec_api_name, spec_api)
 
 
 class IncompatibleTypeErrorImpl(Exception):
@@ -345,8 +345,8 @@ def mod(input: tl.tensor | numbers.Number, other: tl.tensor | numbers.Number, bu
     # float % float
     if scalar_ty.is_floating():
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        spec_mod_tensor = flagtree_backend_specialization("floating_mod_returning_tensor", builder, input, other)
+        from triton.runtime.driver import spec
+        spec_mod_tensor = spec("floating_mod_returning_tensor", builder, input, other)
         if spec_mod_tensor is not None:
             return spec_mod_tensor
 
@@ -376,8 +376,8 @@ def minimum(x: tl.tensor, y: tl.tensor, propagate_nan: tl.PropagateNan, builder:
     x, y = binary_op_type_checking_impl(x, y, builder)
     dtype = x.dtype
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_unexpected_dtype_bool', dtype)
+    from triton.runtime.driver import spec
+    spec('check_unexpected_dtype_bool', dtype)
     if dtype.is_floating():
         if propagate_nan == tl.PropagateNan.ALL:
             return tl.tensor(builder.create_minimumf(x.handle, y.handle), x.type)
@@ -397,8 +397,8 @@ def maximum(x: tl.tensor, y: tl.tensor, propagate_nan: tl.PropagateNan, builder:
     x, y = binary_op_type_checking_impl(x, y, builder)
     dtype = x.dtype
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_unexpected_dtype_bool', dtype)
+    from triton.runtime.driver import spec
+    spec('check_unexpected_dtype_bool', dtype)
     if dtype.is_floating():
         if propagate_nan == tl.PropagateNan.ALL:
             return tl.tensor(builder.create_maximumf(x.handle, y.handle), x.type)
@@ -448,8 +448,8 @@ def bitwise_op_type_checking_impl(input: tl.tensor, other: tl.tensor,
 
 def and_(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.tensor:
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_unexpected_dtype_float', input)
+    from triton.runtime.driver import spec
+    spec('check_unexpected_dtype_float', input)
 
     input, other = bitwise_op_type_checking_impl(input, other, builder)
     return tl.tensor(builder.create_and(input.handle, other.handle), input.type)
@@ -457,8 +457,8 @@ def and_(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.tensor:
 
 def or_(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.tensor:
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_unexpected_dtype_float', input)
+    from triton.runtime.driver import spec
+    spec('check_unexpected_dtype_float', input)
 
     input, other = bitwise_op_type_checking_impl(input, other, builder)
     return tl.tensor(builder.create_or(input.handle, other.handle), input.type)
@@ -466,8 +466,8 @@ def or_(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.tensor:
 
 def xor_(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.tensor:
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_unexpected_dtype_float', input)
+    from triton.runtime.driver import spec
+    spec('check_unexpected_dtype_float', input)
 
     input, other = bitwise_op_type_checking_impl(input, other, builder)
     return tl.tensor(builder.create_xor(input.handle, other.handle), input.type)
@@ -479,17 +479,17 @@ def logical_and(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.t
     dst_bits = dst_sca_ty.primitive_bitwidth
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    input = flagtree_backend_specialization('cast_bool_to_specified_dtype', input, builder) or input
+    from triton.runtime.driver import spec
+    input = spec('cast_bool_to_specified_dtype', input, builder) or input
     if not input.type.is_int1():
         # flagtree backend specialization
-        spec_input = flagtree_backend_specialization('logical_check_int1_bitcast', input, dst_sca_ty, dst_bits, builder)
+        spec_input = spec('logical_check_int1_bitcast', input, dst_sca_ty, dst_bits, builder)
         input = spec_input if spec_input is not None else input
         input = bitcast(input, tl.dtype("int1"), builder)
-    other = flagtree_backend_specialization('cast_bool_to_specified_dtype', other, builder) or other
+    other = spec('cast_bool_to_specified_dtype', other, builder) or other
     if not other.type.is_int1():
         # flagtree backend specialization
-        spec_other = flagtree_backend_specialization('logical_check_int1_bitcast', other, dst_sca_ty, dst_bits, builder)
+        spec_other = spec('logical_check_int1_bitcast', other, dst_sca_ty, dst_bits, builder)
         other = spec_other if spec_other is not None else other
         other = bitcast(other, tl.dtype("int1"), builder)
     return and_(input, other, builder)
@@ -501,17 +501,17 @@ def logical_or(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.te
     dst_bits = dst_sca_ty.primitive_bitwidth
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    input = flagtree_backend_specialization('cast_bool_to_specified_dtype', input, builder) or input
+    from triton.runtime.driver import spec
+    input = spec('cast_bool_to_specified_dtype', input, builder) or input
     if not input.type.is_int1():
         # flagtree backend specialization
-        spec_input = flagtree_backend_specialization('logical_check_int1_bitcast', input, dst_sca_ty, dst_bits, builder)
+        spec_input = spec('logical_check_int1_bitcast', input, dst_sca_ty, dst_bits, builder)
         input = spec_input if spec_input is not None else input
         input = bitcast(input, tl.dtype("int1"), builder)
-    other = flagtree_backend_specialization('cast_bool_to_specified_dtype', other, builder) or other
+    other = spec('cast_bool_to_specified_dtype', other, builder) or other
     if not other.type.is_int1():
         # flagtree backend specialization
-        spec_other = flagtree_backend_specialization('logical_check_int1_bitcast', other, dst_sca_ty, dst_bits, builder)
+        spec_other = spec('logical_check_int1_bitcast', other, dst_sca_ty, dst_bits, builder)
         other = spec_other if spec_other is not None else other
         other = bitcast(other, tl.dtype("int1"), builder)
     return or_(input, other, builder)
@@ -519,8 +519,8 @@ def logical_or(input: tl.tensor, other: tl.tensor, builder: ir.builder) -> tl.te
 
 def not_(input: tl.tensor, builder: ir.builder):
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    casted_input = flagtree_backend_specialization('cast_bool_to_specified_dtype', input, builder)
+    from triton.runtime.driver import spec
+    casted_input = spec('cast_bool_to_specified_dtype', input, builder)
     if casted_input is not None:
         input = casted_input
     elif not input.type.is_int1():
@@ -556,8 +556,8 @@ def minus(input: tl.tensor, builder: ir.builder) -> tl.tensor:
     input_sca_ty = input.type.scalar
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_was_bool_to_int8_dtype', input)
+    from triton.runtime.driver import spec
+    spec('check_was_bool_to_int8_dtype', input)
 
     if input_sca_ty.is_ptr():
         raise ValueError("wrong type argument to unary minus (" + input_sca_ty.__repr__() + ")")
@@ -567,15 +567,15 @@ def minus(input: tl.tensor, builder: ir.builder) -> tl.tensor:
 
 def invert(input: tl.tensor, builder: tl.tensor) -> tl.tensor:
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    casted_input = flagtree_backend_specialization('cast_bool_to_specified_dtype', input, builder)
+    from triton.runtime.driver import spec
+    casted_input = spec('cast_bool_to_specified_dtype', input, builder)
     if casted_input is not None:
         input = casted_input
 
     input_sca_ty = input.type.scalar
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_unexpected_dtype_float', input)
+    from triton.runtime.driver import spec
+    spec('check_unexpected_dtype_float', input)
     if input_sca_ty.is_ptr() or input_sca_ty.is_floating():
         raise ValueError("wrong type argument to unary invert (" + input_sca_ty.__repr__() + ")")
     _1 = tl.tensor(builder.get_all_ones_value(input_sca_ty.to_ir(builder)), input_sca_ty)
@@ -692,13 +692,13 @@ def arange(start: int, end: int, builder: ir.builder) -> tl.tensor:
         raise ValueError("arange's end argument must be greater than the start argument")
     range = end - start
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    if not flagtree_backend_specialization('arange_disable_check_power_of_two') and (range & (range - 1)) != 0:
+    from triton.runtime.driver import spec
+    if not spec('arange_disable_check_power_of_two') and (range & (range - 1)) != 0:
         raise ValueError("arange's range must be a power of 2")
-    flagtree_backend_specialization('check_arange_less_than_max_numel', range)
+    spec('check_arange_less_than_max_numel', range)
 
     # flagtree backend specialization
-    flagtree_backend_specialization("check_arange_range_power_of_two", range, builder)
+    spec("check_arange_range_power_of_two", range, builder)
 
     shape = [range]
     ret_ty = tl.block_type(tl.int32, shape)
@@ -932,8 +932,8 @@ def cast(input: tl.tensor, dst_ty: tl.dtype, builder: ir.builder,
     src_sca_ty = src_ty.scalar
     dst_sca_ty = dst_ty.scalar
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    if flagtree_backend_specialization('is_cast_src_dst_scalar_type_equal', src_sca_ty, dst_sca_ty):
+    from triton.runtime.driver import spec
+    if spec('is_cast_src_dst_scalar_type_equal', src_sca_ty, dst_sca_ty):
         return input
 
     # For fp downcasting default rounding mode should be RTNE, for all other conversions it should
@@ -950,8 +950,8 @@ def cast(input: tl.tensor, dst_ty: tl.dtype, builder: ir.builder,
                              "Source scalar type is " + str(src_sca_ty) + " and destination type is " + str(dst_sca_ty))
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('check_unsupported_fp8_fp64', src_sca_ty, dst_sca_ty)
+    from triton.runtime.driver import spec
+    spec('check_unsupported_fp8_fp64', src_sca_ty, dst_sca_ty)
 
     if (src_sca_ty.is_fp8e4b15() or dst_sca_ty.is_fp8e4b15()):
         assert builder.codegen_fns.get(
@@ -998,7 +998,7 @@ def cast(input: tl.tensor, dst_ty: tl.dtype, builder: ir.builder,
             return not_equal(input, _0, builder)
         else:
             # flagtree backend specialization
-            ret = flagtree_backend_specialization("ret_if_not_create_int_cast", src_sca_ty, dst_sca_ty, input, builder)
+            ret = spec("ret_if_not_create_int_cast", src_sca_ty, dst_sca_ty, input, builder)
             if ret:
                 return ret
         return tl.tensor(builder.create_int_cast(input.handle, dst_ty.to_ir(builder), sign_extend), dst_ty)
@@ -1179,8 +1179,8 @@ def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_
                          "use block pointers (defined by `make_block_ptr`) instead")
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    new_other = flagtree_backend_specialization('set_load_legacy_other_input', other, mask, care_padding, builder)
+    from triton.runtime.driver import spec
+    new_other = spec('set_load_legacy_other_input', other, mask, care_padding, builder)
     if new_other is not None:
         other = new_other
     # For a pointer of scalar, check the type of `mask` and `other`
@@ -1227,10 +1227,10 @@ def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_
         ret = tl.tensor(
             builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache, eviction,
                                        is_volatile), dst_ty)
-    if is_bool and not flagtree_backend_specialization('disable_cast_back_when_load_legacy_ptr_is_bool'):
+    if is_bool and not spec('disable_cast_back_when_load_legacy_ptr_is_bool'):
         ret = cast(ret, tl.int1, builder)
 
-    flagtree_backend_specialization('set_attr_was_bool_to_int8', ret, is_bool)
+    spec('set_attr_was_bool_to_int8', ret, is_bool)
     return ret
 
 
@@ -1248,7 +1248,8 @@ def load(ptr: tl.tensor, mask: Optional[tl.tensor], other: Optional[tl.tensor], 
         return _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, builder)
     else:
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
-        return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, care_padding, builder)
+        return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, care_padding,
+                            builder)
 
 
 def descriptor_load(desc_ptr: tl.tensor, offsets, cache_modifier: str, eviction_policy: str, type,
@@ -1400,11 +1401,11 @@ def atomic_cas(ptr: tl.tensor, cmp: tl.tensor, val: tl.tensor, sem: str, scope: 
     scope = _str_to_scope(scope)
     element_ty = ptr.type.scalar.element_ty
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    if not flagtree_backend_specialization('atomic_cas_disable_element_bitwidth_check') and element_ty.primitive_bitwidth not in [16, 32, 64]:
+    from triton.runtime.driver import spec
+    if not spec('atomic_cas_disable_element_bitwidth_check') and element_ty.primitive_bitwidth not in [16, 32, 64]:
         raise ValueError("atomic_cas only supports elements with width {16, 32, 64}")
 
-    flagtree_backend_specialization('ext_atomic_cas_element_typechecking', element_ty)
+    spec('ext_atomic_cas_element_typechecking', element_ty)
 
     return tl.tensor(builder.create_atomic_cas(ptr.handle, cmp.handle, val.handle, sem, scope), val.type)
 
@@ -1446,9 +1447,9 @@ def atomic_max(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, sem: str, scope:
                 builder.create_atomic_rmw(ir.ATOMIC_OP.UMAX, ptr.handle, val.handle, mask.handle, sem, scope), val.type)
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    if flagtree_backend_specialization('is_atomic_max_no_bitcast'):
-        return flagtree_backend_specialization('atomic_max_returning_tensor', ir, ptr, val, mask, sem, scope, builder)
+    from triton.runtime.driver import spec
+    if spec('is_atomic_max_no_bitcast'):
+        return spec('atomic_max_returning_tensor', ir, ptr, val, mask, sem, scope, builder)
 
     # for float
     # return atomic_smax(i_ptr, i_val) if val >= 0
@@ -1491,9 +1492,9 @@ def atomic_min(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, sem: str, scope:
                 builder.create_atomic_rmw(ir.ATOMIC_OP.UMIN, ptr.handle, val.handle, mask.handle, sem, scope), val.type)
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    if flagtree_backend_specialization('is_atomic_min_no_bitcast'):
-        return flagtree_backend_specialization('atomic_min_returning_tensor', ir, ptr, val, mask, sem, scope, builder)
+    from triton.runtime.driver import spec
+    if spec('is_atomic_min_no_bitcast'):
+        return spec('atomic_min_returning_tensor', ir, ptr, val, mask, sem, scope, builder)
 
     # for float
     # return atomic_smin(i_ptr, i_val) if val >= 0
@@ -1586,8 +1587,8 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
         pass
     else:
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        ext_dot_operand_types = flagtree_backend_specialization('ext_dot_operand_types')
+        from triton.runtime.driver import spec
+        ext_dot_operand_types = spec('ext_dot_operand_types')
         ext_dot_operand_types = () if ext_dot_operand_types is None else ext_dot_operand_types
         assert lhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16,
                              tl.float32) + ext_dot_operand_types, f"Unsupported lhs dtype {lhs.dtype}"
@@ -1640,8 +1641,8 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
         assert acc.type == ret_ty
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('dot_check_hf32_input_precision', input_precision, ir, lhs, rhs, ret_scalar_ty)
+    from triton.runtime.driver import spec
+    spec('dot_check_hf32_input_precision', input_precision, ir, lhs, rhs, ret_scalar_ty)
 
     # max_num_imprecise_acc only applies to fp8 -> fp32 dot on sm_90
     if max_num_imprecise_acc is None:
@@ -1651,11 +1652,12 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
             max_num_imprecise_acc = 0
     else:
         # flagtree backend specialization
-        if not flagtree_backend_specialization('dot_disable_check_max_num_imprecise_acc') and lhs.dtype.is_fp8() and rhs.dtype.is_fp8() and max_num_imprecise_acc > K:
+        if not spec('dot_disable_check_max_num_imprecise_acc') and lhs.dtype.is_fp8() and rhs.dtype.is_fp8(
+        ) and max_num_imprecise_acc > K:
             raise ValueError(f"max_num_imprecise_acc ({max_num_imprecise_acc}) must be <= K ({K})")
 
     # flagtree backend specialization
-    new_max_num_imprecise_acc = flagtree_backend_specialization('reset_dot_max_num_imprecise_acc')
+    new_max_num_imprecise_acc = spec('reset_dot_max_num_imprecise_acc')
     if new_max_num_imprecise_acc is not None:
         max_num_imprecise_acc = new_max_num_imprecise_acc
     return tl.tensor(builder.create_dot(lhs.handle, rhs.handle, acc_handle, input_precision, max_num_imprecise_acc),
@@ -1675,10 +1677,10 @@ def _str_to_fp_type(float_format: Optional[str]):
         return ir.F8F6F4TY.E2M1
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    if float_format == 'bf16' and flagtree_backend_specialization('is_float_format_support_bf16'):
+    from triton.runtime.driver import spec
+    if float_format == 'bf16' and spec('is_float_format_support_bf16'):
         return ir.F8F6F4TY.BF16
-    if float_format == 'fp16' and flagtree_backend_specialization('is_float_format_support_fp16'):
+    if float_format == 'fp16' and spec('is_float_format_support_fp16'):
         return ir.F8F6F4TY.FP16
 
     raise ValueError(f"Invalid float format: {float_format}.")
@@ -1686,57 +1688,58 @@ def _str_to_fp_type(float_format: Optional[str]):
 
 # flagtree backend specialization add new params: lhs_k_pack, rhs_k_pack
 def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format, rhs: tl.tensor, rhs_scale: Optional[tl.tensor],
-               rhs_format, acc: tl.tensor | None, out_dtype: tl.dtype, 
-               builder: ir.builder, lhs_k_pack=False, rhs_k_pack=False) -> tl.tensor:
+               rhs_format, acc: tl.tensor | None, out_dtype: tl.dtype, builder: ir.builder, lhs_k_pack=False,
+               rhs_k_pack=False) -> tl.tensor:
     assert lhs.type.is_block() and rhs.type.is_block()
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    flagtree_backend_specialization('ext_dot_scaled_validate_lhs_dtype', lhs)
-    flagtree_backend_specialization('ext_dot_scaled_validate_rhs_dtype', rhs)
-    flagtree_backend_specialization('ext_dot_scaled_check_same_dtype', lhs, rhs)
+    from triton.runtime.driver import spec
+    spec('ext_dot_scaled_validate_lhs_dtype', lhs)
+    spec('ext_dot_scaled_validate_rhs_dtype', rhs)
+    spec('ext_dot_scaled_check_same_dtype', lhs, rhs)
 
     lhs_rank = len(lhs.shape)
     rhs_rank = len(rhs.shape)
     assert lhs_rank == rhs_rank == 2 or lhs_rank == rhs_rank == 3, f"Both inputs must be either 2D or 3D; (lhs: {lhs.shape} vs rhs: {rhs.shape})"
     lhs_format_enum = _str_to_fp_type(lhs_format)
     rhs_format_enum = _str_to_fp_type(rhs_format)
-    assert flagtree_backend_specialization('dot_scaled_disable_original_check') or lhs_format in ("e2m1", "e4m3", "e5m2"), f"NYI: lhs_format {lhs_format}"
-    assert flagtree_backend_specialization('dot_scaled_disable_original_check') or rhs_format in ("e4m3", "e5m2"), f"NYI: rhs_format {rhs_format}"
-    flagtree_backend_specialization('ext_dot_scaled_check_lhs_rhs_format', lhs_format, rhs_format)
+    assert spec('dot_scaled_disable_original_check') or lhs_format in ("e2m1", "e4m3",
+                                                                       "e5m2"), f"NYI: lhs_format {lhs_format}"
+    assert spec('dot_scaled_disable_original_check') or rhs_format in ("e4m3", "e5m2"), f"NYI: rhs_format {rhs_format}"
+    spec('ext_dot_scaled_check_lhs_rhs_format', lhs_format, rhs_format)
 
     rhs_scale_is_none = isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None
-    rechecked_rhs_scale_is_none = flagtree_backend_specialization('dot_scaled_recheck_rhs_scale_is_none', rhs_scale, rhs_scale_is_none)
+    rechecked_rhs_scale_is_none = spec('dot_scaled_recheck_rhs_scale_is_none', rhs_scale, rhs_scale_is_none)
     if rechecked_rhs_scale_is_none is not None:
         rhs_scale_is_none = rechecked_rhs_scale_is_none
-    lhs_scale_is_none = lhs_scale is None
-    checked_lhs_scale_is_none = flagtree_backend_specialization('dot_scaled_check_lhs_scale_is_none', lhs_scale)
-    if checked_lhs_scale_is_none is not None:
-        lhs_scale_is_none = checked_lhs_scale_is_none
+    #lhs_scale_is_none = lhs_scale is None
+    #checked_lhs_scale_is_none = spec('dot_scaled_check_lhs_scale_is_none', lhs_scale)
+    #if checked_lhs_scale_is_none is not None:
+    #    lhs_scale_is_none = checked_lhs_scale_is_none
 
-    assert rhs_scale_is_none or flagtree_backend_specialization('is_dot_scaled_support_rhs_scale'), "NYI: rhs_scale not supported"
+    assert rhs_scale_is_none or spec('is_dot_scaled_support_rhs_scale'), "NYI: rhs_scale not supported"
 
-    flagtree_backend_specialization('check_dot_scaled_lhs_scale_dtype', lhs_scale)
-    flagtree_backend_specialization('check_dot_scaled_rhs_scale_dtype', rhs_scale, rhs_scale_is_none)
-    new_lhs = flagtree_backend_specialization('dot_scaled_lhs_bitcast_to_fp_type', lhs, lhs_format, builder)
+    spec('check_dot_scaled_lhs_scale_dtype', lhs_scale)
+    spec('check_dot_scaled_rhs_scale_dtype', rhs_scale, rhs_scale_is_none)
+    new_lhs = spec('dot_scaled_lhs_bitcast_to_fp_type', lhs, lhs_format, builder)
     if new_lhs is not None:
         lhs = new_lhs
-    new_rhs = flagtree_backend_specialization('dot_scaled_rhs_bitcast_to_fp_type', rhs, rhs_format, builder)
+    new_rhs = spec('dot_scaled_rhs_bitcast_to_fp_type', rhs, rhs_format, builder)
     if new_rhs is not None:
         rhs = new_rhs
 
     # flagtree backend specialization
-    flagtree_backend_specialization('dot_scaled_lrhs_k_pack', lhs_k_pack, rhs_k_pack, builder)
+    spec('dot_scaled_lrhs_k_pack', lhs_k_pack, rhs_k_pack, builder)
 
-    flagtree_backend_specialization('check_dot_scaled_dimension', lhs, rhs)
+    spec('check_dot_scaled_dimension', lhs, rhs)
     M = lhs.type.shape[-2]
     K, N = rhs.type.shape[-2:]
     PACKED = 2 if lhs_format == "e2m1" else 1
-    assert flagtree_backend_specialization('dot_scaled_disable_original_check') or K == PACKED * lhs.type.shape[
+    assert spec('dot_scaled_disable_original_check') or K == PACKED * lhs.type.shape[
         -1], \
         f"Reduction dimension should pack the same number of elements; (lhs: {lhs.shape} vs rhs: {rhs.shape})"
-    flagtree_backend_specialization('check_dot_scaled_pack_size', PACKED, K, lhs_format, lhs, rhs)
-    assert flagtree_backend_specialization('dot_scaled_disable_original_check') or K >= 64, f"scaled_dot NYI for K < 64. Got {K=}"
+    spec('check_dot_scaled_pack_size', PACKED, K, lhs_format, lhs, rhs)
+    assert spec('dot_scaled_disable_original_check') or K >= 64, f"scaled_dot NYI for K < 64. Got {K=}"
     B = lhs.type.shape[0] if lhs_rank == 3 else None
 
     ret_ty = tl.block_type(out_dtype, [B, M, N] if B else [M, N])
@@ -1748,7 +1751,7 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format, rhs: tl.tensor,
         assert acc.type == ret_ty
     rhs_scale_handle = None if rhs_scale_is_none else rhs_scale.handle
     # flagtree backend specialization
-    lhs_scale_handle = flagtree_backend_specialization('set_dot_scaled_lhs_scale_handle', lhs_scale, lhs_scale_is_none)
+    #lhs_scale_handle = spec('set_dot_scaled_lhs_scale_handle', lhs_scale, lhs_scale_is_none)
     return tl.tensor(
         builder.create_dot_scaled(lhs.handle, lhs_scale.handle, lhs_format_enum, rhs.handle, rhs_scale_handle,
                                   rhs_format_enum, acc_handle), ret_ty)

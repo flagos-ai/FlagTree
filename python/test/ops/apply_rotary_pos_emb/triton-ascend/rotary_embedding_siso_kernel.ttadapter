@@ -83,10 +83,10 @@ module {
       %39 = bufferization.to_tensor %alloc_10 restrict writable : memref<8x1x1xf32>
       %40 = tensor.empty() : tensor<8x4x1xf32>
       %collapsed = tensor.collapse_shape %37 [[0], [1, 2]] : tensor<8x1x1xf32> into tensor<8x1xf32>
-      %broadcasted = linalg.broadcast ins(%collapsed : tensor<8x1xf32>) outs(%40 : tensor<8x4x1xf32>) dimensions = [1] 
+      %broadcasted = linalg.broadcast ins(%collapsed : tensor<8x1xf32>) outs(%40 : tensor<8x4x1xf32>) dimensions = [1]
       %41 = arith.mulf %28, %broadcasted : tensor<8x4x1xf32>
       %collapsed_13 = tensor.collapse_shape %39 [[0], [1, 2]] : tensor<8x1x1xf32> into tensor<8x1xf32>
-      %broadcasted_14 = linalg.broadcast ins(%collapsed_13 : tensor<8x1xf32>) outs(%40 : tensor<8x4x1xf32>) dimensions = [1] 
+      %broadcasted_14 = linalg.broadcast ins(%collapsed_13 : tensor<8x1xf32>) outs(%40 : tensor<8x4x1xf32>) dimensions = [1]
       %42 = arith.mulf %32, %broadcasted_14 : tensor<8x4x1xf32>
       %43 = arith.subf %41, %42 : tensor<8x4x1xf32>
       %44 = arith.mulf %28, %broadcasted_14 : tensor<8x4x1xf32>
@@ -104,4 +104,3 @@ module {
     return
   }
 }
-

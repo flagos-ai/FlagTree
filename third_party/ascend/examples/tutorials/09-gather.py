@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Gather
 ===============
@@ -52,7 +51,9 @@ def torch_gather(embeddings, idxes, default_value=0.0):
 
 # triton-version gather's kernel
 @triton.jit
-def gather_kernel(embeddings_ptr, idxes_ptr, res_ptr, rows, cols, DEFAULT_VALUE: tl.constexpr, BIG_CORE_NUM: tl.constexpr, BIG_ROW_BLOCK_SIZE: tl.constexpr, COL_BLOCK_SIZE: tl.constexpr, COL_BLOCK_SIZE_SUB: tl.constexpr):
+def gather_kernel(embeddings_ptr, idxes_ptr, res_ptr, rows, cols, DEFAULT_VALUE: tl.constexpr,
+                  BIG_CORE_NUM: tl.constexpr, BIG_ROW_BLOCK_SIZE: tl.constexpr, COL_BLOCK_SIZE: tl.constexpr,
+                  COL_BLOCK_SIZE_SUB: tl.constexpr):
     SMALL_ROW_BLOCK_SIZE = BIG_ROW_BLOCK_SIZE - 1
 
     embedding_dtype = embeddings_ptr.type.element_ty
@@ -62,7 +63,8 @@ def gather_kernel(embeddings_ptr, idxes_ptr, res_ptr, rows, cols, DEFAULT_VALUE:
     core_idx = tl.program_id(0)
     # compute the the size and start index of block
     row_block_size = BIG_ROW_BLOCK_SIZE if (core_idx < BIG_CORE_NUM) else SMALL_ROW_BLOCK_SIZE
-    row_start_idx = (core_idx * BIG_ROW_BLOCK_SIZE) if (core_idx < BIG_CORE_NUM) else (BIG_CORE_NUM * BIG_ROW_BLOCK_SIZE + (core_idx - BIG_CORE_NUM) * SMALL_ROW_BLOCK_SIZE)
+    row_start_idx = (core_idx * BIG_ROW_BLOCK_SIZE) if (core_idx < BIG_CORE_NUM) else (
+        BIG_CORE_NUM * BIG_ROW_BLOCK_SIZE + (core_idx - BIG_CORE_NUM) * SMALL_ROW_BLOCK_SIZE)
 
     # process blocks witn shape (row_block_size, COL_BLOCK_SIZE_SUB) one by one
     for col_idx in tl.range(0, COL_BLOCK_SIZE, COL_BLOCK_SIZE_SUB):
@@ -100,7 +102,8 @@ def triton_gather(embeddings: torch.Tensor, indices: torch.Tensor, default_value
     # when writing an npu kernel using triton,
     # you should note that the difference between BLOCK_SIZE and BLOCK_SIZE_SUB
     # BLOCK_SIZE specifies the size of data that are processed in one program
-    col_size_aligned = triton.cdiv(embeddings.shape[-1] * embeddings.element_size(), 32) * 32 // embeddings.element_size()
+    col_size_aligned = triton.cdiv(embeddings.shape[-1] * embeddings.element_size(),
+                                   32) * 32 // embeddings.element_size()
     # the data are scattered to multiple programs, which can not be even
     # some process more data, some process less
     big_row_block_size = triton.cdiv(n_rows, CORE_NUM)
@@ -113,7 +116,9 @@ def triton_gather(embeddings: torch.Tensor, indices: torch.Tensor, default_value
 
     grid = (min(n_rows, CORE_NUM), triton.cdiv(n_cols, col_block_size))
     # launch the kernel
-    gather_kernel[grid](embeddings, indices, output, n_rows, n_cols, default_value, BIG_CORE_NUM=big_core_num, BIG_ROW_BLOCK_SIZE=big_row_block_size, COL_BLOCK_SIZE=col_block_size, COL_BLOCK_SIZE_SUB=col_block_size_sub)
+    gather_kernel[grid](embeddings, indices, output, n_rows, n_cols, default_value, BIG_CORE_NUM=big_core_num,
+                        BIG_ROW_BLOCK_SIZE=big_row_block_size, COL_BLOCK_SIZE=col_block_size,
+                        COL_BLOCK_SIZE_SUB=col_block_size_sub)
 
     return output
 

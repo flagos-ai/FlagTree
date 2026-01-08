@@ -26,6 +26,7 @@ import pytest
 import test_common
 import triton.language.extra.ascend.libdevice as libdevice
 
+
 @triton.jit
 def triton_lgamma(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     xoffset = tl.program_id(0) * XBLOCK
@@ -36,11 +37,10 @@ def triton_lgamma(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: t
         y = libdevice.lgamma(x0)
         tl.store(out_ptr0 + xindex, y, xmask)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
+
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_lgamma_case(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x = test_common.generate_tensor(shape, dtype).npu()
@@ -51,21 +51,20 @@ def test_lgamma_case(param_list):
     threshold = torch.zeros_like(x)
     if neg_mask.any():
         neg_ints = nearest_int[neg_mask]
-        threshold[neg_mask] = 5.75e-5 * (2.42 ** (-1 - neg_ints))
+        threshold[neg_mask] = 5.75e-5 * (2.42**(-1 - neg_ints))
     mask = (torch.abs(x - nearest_int) < threshold) & (nearest_int <= -1)
     if mask.any():
-        x = torch.where(mask, nearest_int, x) 
-    
+        x = torch.where(mask, nearest_int, x)
+
     y_ref = torch.lgamma(x).npu()
     y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     triton_lgamma[ncore, 1, 1](x, y_cal, x.numel(), xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
+
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_all_blocks_parallel(param_list, monkeypatch):
     monkeypatch.setenv("TRITON_ALL_BLOCKS_PARALLEL", "1")
     dtype, shape, ncore, xblock, xblock_sub = param_list
@@ -77,11 +76,11 @@ def test_all_blocks_parallel(param_list, monkeypatch):
     threshold = torch.zeros_like(x)
     if neg_mask.any():
         neg_ints = nearest_int[neg_mask]
-        threshold[neg_mask] = 5.75e-5 * (2.42 ** (-1 - neg_ints))
+        threshold[neg_mask] = 5.75e-5 * (2.42**(-1 - neg_ints))
     mask = (torch.abs(x - nearest_int) < threshold) & (nearest_int <= -1)
     if mask.any():
-        x = torch.where(mask, nearest_int, x) 
-    
+        x = torch.where(mask, nearest_int, x)
+
     y_ref = torch.lgamma(x).npu()
     y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     triton_lgamma[ncore, 1, 1](x, y_cal, x.numel(), xblock, xblock_sub)

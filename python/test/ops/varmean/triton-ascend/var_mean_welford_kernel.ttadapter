@@ -44,13 +44,13 @@ module {
     %19 = linalg.fill ins(%arg6 : i32) outs(%18 : tensor<1x64xi32>) -> tensor<1x64xi32>
     %20 = tensor.empty() : tensor<4x64xi1>
     %collapsed = tensor.collapse_shape %15 [[0, 1]] : tensor<4x1xi1> into tensor<4xi1>
-    %broadcasted = linalg.broadcast ins(%collapsed : tensor<4xi1>) outs(%20 : tensor<4x64xi1>) dimensions = [1] 
+    %broadcasted = linalg.broadcast ins(%collapsed : tensor<4xi1>) outs(%20 : tensor<4x64xi1>) dimensions = [1]
     %21:3 = scf.for %arg14 = %c0_i32 to %arg6 step %c64_i32 iter_args(%arg15 = %4, %arg16 = %4, %arg17 = %4) -> (tensor<4x64xf32>, tensor<4x64xf32>, tensor<4x64xf32>)  : i32 {
       %39 = linalg.fill ins(%arg14 : i32) outs(%18 : tensor<1x64xi32>) -> tensor<1x64xi32>
       %40 = arith.addi %39, %expanded_2 : tensor<1x64xi32>
       %41 = arith.cmpi slt, %40, %19 : tensor<1x64xi32>
       %collapsed_10 = tensor.collapse_shape %41 [[0, 1]] : tensor<1x64xi1> into tensor<64xi1>
-      %broadcasted_11 = linalg.broadcast ins(%collapsed_10 : tensor<64xi1>) outs(%20 : tensor<4x64xi1>) dimensions = [0] 
+      %broadcasted_11 = linalg.broadcast ins(%collapsed_10 : tensor<64xi1>) outs(%20 : tensor<4x64xi1>) dimensions = [0]
       %42 = arith.andi %broadcasted, %broadcasted_11 : tensor<4x64xi1>
       %43 = arith.index_cast %arg14 : i32 to index
       %44 = arith.addi %13, %43 : index
@@ -91,13 +91,13 @@ module {
       scf.yield %70, %65, %61 : tensor<4x64xf32>, tensor<4x64xf32>, tensor<4x64xf32>
     }
     %22 = linalg.fill ins(%cst : f32) outs(%0 : tensor<4xf32>) -> tensor<4xf32>
-    %reduced = linalg.reduce ins(%21#2 : tensor<4x64xf32>) outs(%22 : tensor<4xf32>) dimensions = [1] 
+    %reduced = linalg.reduce ins(%21#2 : tensor<4x64xf32>) outs(%22 : tensor<4xf32>) dimensions = [1]
       (%in: f32, %init: f32) {
         %39 = arith.addf %in, %init : f32
         linalg.yield %39 : f32
       }
     %23 = arith.mulf %21#1, %21#2 : tensor<4x64xf32>
-    %reduced_3 = linalg.reduce ins(%23 : tensor<4x64xf32>) outs(%22 : tensor<4xf32>) dimensions = [1] 
+    %reduced_3 = linalg.reduce ins(%23 : tensor<4x64xf32>) outs(%22 : tensor<4xf32>) dimensions = [1]
       (%in: f32, %init: f32) {
         %39 = arith.addf %in, %init : f32
         linalg.yield %39 : f32
@@ -105,12 +105,12 @@ module {
     %24 = arith.maxnumf %reduced, %1 : tensor<4xf32>
     %25 = arith.divf %reduced_3, %24 : tensor<4xf32>
     %expanded_4 = tensor.expand_shape %25 [[0, 1]] output_shape [4, 1] : tensor<4xf32> into tensor<4x1xf32>
-    %broadcasted_5 = linalg.broadcast ins(%25 : tensor<4xf32>) outs(%2 : tensor<4x64xf32>) dimensions = [1] 
+    %broadcasted_5 = linalg.broadcast ins(%25 : tensor<4xf32>) outs(%2 : tensor<4x64xf32>) dimensions = [1]
     %26 = arith.subf %21#1, %broadcasted_5 : tensor<4x64xf32>
     %27 = arith.mulf %21#2, %26 : tensor<4x64xf32>
     %28 = arith.mulf %27, %26 : tensor<4x64xf32>
     %29 = arith.addf %21#0, %28 : tensor<4x64xf32>
-    %reduced_6 = linalg.reduce ins(%29 : tensor<4x64xf32>) outs(%22 : tensor<4xf32>) dimensions = [1] 
+    %reduced_6 = linalg.reduce ins(%29 : tensor<4x64xf32>) outs(%22 : tensor<4xf32>) dimensions = [1]
       (%in: f32, %init: f32) {
         %39 = arith.addf %in, %init : f32
         linalg.yield %39 : f32
@@ -134,4 +134,3 @@ module {
     return
   }
 }
-

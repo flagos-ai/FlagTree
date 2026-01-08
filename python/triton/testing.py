@@ -7,19 +7,15 @@ from typing import Any, Dict, List
 from . import language as tl
 from . import runtime
 
+
 # flagtree backend testing func specialization
 def spec_testing_func(spec):
-    testing_spec_func_list = spec.testing_ext_spec_func_list
-
-    current_module_name = __name__
-    parent_module_name = '.'.join(current_module_name.split('.')[:-1])
-    math_module_name = f"{parent_module_name}.math"
-
-    for spec_func_name in testing_spec_func_list:
-        if hasattr(spec, spec_func_name):
-            spec_func = getattr(spec, spec_func_name)
+    for spec_api_name in spec.testing_ext_spec_api_list:
+        if hasattr(spec, spec_api_name):
+            spec_api = getattr(spec, spec_api_name)
             # triton.testing
-            setattr(sys.modules[__name__], spec_func.__name__, spec_func)
+            setattr(sys.modules[__name__], spec_api.__name__, spec_api)
+
 
 def nvsmi(attrs):
     attrs = ','.join(attrs)
@@ -76,8 +72,8 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
         end_event = torch.cuda.Event(enable_timing=True)
         start_event.record()
         # flagtree backend specialization
-        from triton.runtime.driver import flagtree_backend_specialization
-        for _ in flagtree_backend_specialization('testing_spec_range', 5) or range(5):
+        from triton.runtime.driver import spec
+        for _ in spec('testing_spec_range', 5) or range(5):
             fn()
         end_event.record()
         torch.cuda.synchronize()
@@ -88,7 +84,7 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
         g = torch.cuda.CUDAGraph()
         with torch.cuda.graph(g):
             # flagtree backend specialization
-            for _ in flagtree_backend_specialization('testing_spec_range', n_repeat) or range(n_repeat):
+            for _ in spec('testing_spec_range', n_repeat) or range(n_repeat):
                 if grad_to_none is not None:
                     for x in grad_to_none:
                         x.grad = None
@@ -98,7 +94,7 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
         ret = []
         n_retries = 10
         # flagtree backend specialization
-        for _ in flagtree_backend_specialization('testing_spec_range', n_retries) or range(n_retries):
+        for _ in spec('testing_spec_range', n_retries) or range(n_retries):
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
             start_event.record()
@@ -130,9 +126,9 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
     import torch
 
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    if flagtree_backend_specialization('is_do_bench_npu'):
-        return flagtree_backend_specialization('ext_do_bench_npu', fn, warmup, rep, quantiles, return_mode)
+    from triton.runtime.driver import spec
+    if spec('is_do_bench_npu'):
+        return spec('ext_do_bench_npu', fn, warmup, rep, quantiles, return_mode)
 
     di = runtime.driver.active.get_device_interface()
 
@@ -146,8 +142,8 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
     end_event = di.Event(enable_timing=True)
     start_event.record()
     # flagtree backend specialization
-    from triton.runtime.driver import flagtree_backend_specialization
-    for _ in flagtree_backend_specialization('testing_spec_range', 5) or range(5):
+    from triton.runtime.driver import spec
+    for _ in spec('testing_spec_range', 5) or range(5):
         cache.zero_()
         fn()
     end_event.record()
@@ -158,16 +154,16 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
     n_warmup = max(1, int(warmup / estimate_ms))
     n_repeat = max(1, int(rep / estimate_ms))
     # flagtree backend specialization
-    range_n_repeat = flagtree_backend_specialization('testing_spec_range', n_repeat) or range(n_repeat)
+    range_n_repeat = spec('testing_spec_range', n_repeat) or range(n_repeat)
     start_event = [di.Event(enable_timing=True) for i in range_n_repeat]
     end_event = [di.Event(enable_timing=True) for i in range_n_repeat]
     # Warm-up
     # flagtree backend specialization
-    for _ in flagtree_backend_specialization('testing_spec_range', n_warmup) or range(n_warmup):
+    for _ in spec('testing_spec_range', n_warmup) or range(n_warmup):
         fn()
     # Benchmark
     # flagtree backend specialization
-    for i in flagtree_backend_specialization('testing_spec_range', n_repeat) or range(n_repeat):
+    for i in spec('testing_spec_range', n_repeat) or range(n_repeat):
         # we don't want `fn` to accumulate gradient values
         # if it contains a backward pass. So we clear the
         # provided gradients

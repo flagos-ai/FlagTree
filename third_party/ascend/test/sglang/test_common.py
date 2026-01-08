@@ -51,8 +51,8 @@ def validate_cmp(dtype, y_cal, y_ref, overflow_mode: Optional[str] = None, devic
         y_cal = y_cal.to(target_device)
         y_ref = y_ref.to(target_device)
     else:
-        y_cal=y_cal.npu()
-        y_ref=y_ref.npu()
+        y_cal = y_cal.npu()
+        y_ref = y_ref.npu()
     if overflow_mode == "saturate":
         if dtype in ['float32', 'float16']:
             min_value = -torch.finfo(dtype).min
@@ -69,7 +69,8 @@ def validate_cmp(dtype, y_cal, y_ref, overflow_mode: Optional[str] = None, devic
     if dtype == 'float16':
         torch.testing.assert_close(y_ref, y_cal, rtol=5e-03, atol=5e-03, equal_nan=True)
     elif dtype == 'bfloat16':
-        torch.testing.assert_close(y_ref.to(torch.float32), y_cal.to(torch.float32), rtol=5e-03, atol=5e-03, equal_nan=True)
+        torch.testing.assert_close(y_ref.to(torch.float32), y_cal.to(torch.float32), rtol=5e-03, atol=5e-03,
+                                   equal_nan=True)
     elif dtype == 'float32':
         torch.testing.assert_close(y_ref, y_cal, rtol=1e-03, atol=1e-03, equal_nan=True)
     elif dtype == 'int32' or dtype == 'int64' or dtype == 'int16' or dtype == 'int8':
@@ -150,7 +151,7 @@ def verify_precision_by_gold_standard(gold: torch.Tensor, act: torch.Tensor, std
     std_small_error_ratio = std_small_error_count / std_total
 
     def calculate_rmse(tensor):
-        dlt2 = (tensor - gold) ** 2
+        dlt2 = (tensor - gold)**2
         dlt2_except_small_mean = torch.where(mask, 0, dlt2).sum() / small_count
         return torch.sqrt(dlt2_except_small_mean)
 
@@ -160,7 +161,8 @@ def verify_precision_by_gold_standard(gold: torch.Tensor, act: torch.Tensor, std
     print(f"act_re.max = {act_re.max()}, std_re.max = {std_re.max()}, limit ratio = 10")
     print(f"act_re.sum = {act_re.sum()}, std_re.sum = {std_re.sum()}, limit_ratio = 2")
     print(
-        f"act_small_error_ratio = {act_small_error_ratio}, std_small_error_ratio = {std_small_error_ratio}, limit_ratio = 2")
+        f"act_small_error_ratio = {act_small_error_ratio}, std_small_error_ratio = {std_small_error_ratio}, limit_ratio = 2"
+    )
     print(f"act_rmse = {act_rmse}, std_rmse = {std_rmse}, limit_ratio = 2")
 
     # 条件 1：actual 与 golden 相对误差最大值超过 10 倍 standard 与 golden 相对误差最大值

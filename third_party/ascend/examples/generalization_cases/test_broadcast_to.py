@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import pytest
 
 import triton
@@ -30,8 +29,9 @@ import torch_npu
 import test_common
 from test_common import TestUtils
 
+
 @triton.jit
-def fn_broadcast_1d(output_ptr, x_ptr,  XS: tl.constexpr, YS: tl.constexpr):
+def fn_broadcast_1d(output_ptr, x_ptr, XS: tl.constexpr, YS: tl.constexpr):
     xidx = tl.arange(0, XS)[None, :]
     base = tl.load(x_ptr + xidx)
     out = base.broadcast_to((YS, XS))
@@ -53,7 +53,7 @@ def test_npu_1d(shape, dtype):
 
 
 @triton.jit
-def fn_broadcast_2d(output_ptr, x_ptr, NUMEL:tl.constexpr, XS: tl.constexpr, YS: tl.constexpr, ZS: tl.constexpr):
+def fn_broadcast_2d(output_ptr, x_ptr, NUMEL: tl.constexpr, XS: tl.constexpr, YS: tl.constexpr, ZS: tl.constexpr):
     zoffset = tl.program_id(0) * ZS
     zidx = tl.arange(0, ZS)[None, :]
     base = tl.load(x_ptr + zoffset + zidx)
@@ -216,7 +216,9 @@ def test_broadcast_to_dim12(shape, dtype):
 
 
 @triton.jit
-def fn_broadcast_to_multi_d(to_ptr, from_ptr, F_L: tl.constexpr, F_M: tl.constexpr, F_N: tl.constexpr, F_X: tl.constexpr, F_Y: tl.constexpr, T_L: tl.constexpr, T_M: tl.constexpr, T_N: tl.constexpr, T_X: tl.constexpr, T_Y: tl.constexpr):
+def fn_broadcast_to_multi_d(to_ptr, from_ptr, F_L: tl.constexpr, F_M: tl.constexpr, F_N: tl.constexpr,
+                            F_X: tl.constexpr, F_Y: tl.constexpr, T_L: tl.constexpr, T_M: tl.constexpr,
+                            T_N: tl.constexpr, T_X: tl.constexpr, T_Y: tl.constexpr):
     from_offsets = tl.arange(0, F_L)
     if F_M is not None:
         from_offsets = from_offsets[:, None] * F_M + tl.arange(0, F_M)[None, :]
@@ -251,6 +253,7 @@ def fn_broadcast_to_multi_d(to_ptr, from_ptr, F_L: tl.constexpr, F_M: tl.constex
 
     tl.store(to_ptr + to_offsets, ret_data)
 
+
 @pytest.mark.shape_4d_5d
 @pytest.mark.parametrize('shapes', [
     [(1, 64, 16, 1), (2, 64, 16, 2)],
@@ -272,7 +275,7 @@ def test_broadcast_to_4d(shapes, dtype):
         triton_from_shape.append(None)
         triton_to_shape.append(None)
     fn_broadcast_to_multi_d[grid](y, x, *triton_from_shape, *triton_to_shape)
-    assert(torch.equal(y, expected))
+    assert (torch.equal(y, expected))
 
 
 @pytest.mark.shape_4d_5d
@@ -296,12 +299,14 @@ def test_broadcast_to_5d(shapes, dtype):
         triton_from_shape.append(None)
         triton_to_shape.append(None)
     fn_broadcast_to_multi_d[grid](y, x, *triton_from_shape, *triton_to_shape)
-    assert(torch.equal(y, expected))
+    assert (torch.equal(y, expected))
 
-XS : tl.constexpr = 2
-YS : tl.constexpr = 4
-ZS : tl.constexpr = 8
-NUMEL : tl.constexpr = XS * ZS
+
+XS: tl.constexpr = 2
+YS: tl.constexpr = 4
+ZS: tl.constexpr = 8
+NUMEL: tl.constexpr = XS * ZS
+
 
 @triton.jit
 def fn_broadcast_to(output_ptr, input_ptr, length):
@@ -311,10 +316,12 @@ def fn_broadcast_to(output_ptr, input_ptr, length):
     brc_col_offsets = tl.arange(0, NUMEL * YS)
     tl.store(output_ptr + brc_col_offsets, result)
 
-@pytest.mark.parametrize('dtype', ["uint8","int8","int16","int32", "int64", "float16", "float32", "bfloat16","bool"])
+
+@pytest.mark.parametrize('dtype',
+                         ["uint8", "int8", "int16", "int32", "int64", "float16", "float32", "bfloat16", "bool"])
 def test_broadcast_to_alltype(dtype):
     length = NUMEL
     input = test_common.generate_tensor((XS, 1, ZS), dtype).npu()
-    output = test_common.generate_tensor((XS,YS,ZS), dtype).npu()
-    fn_broadcast_to[1,1,1](output, input, length, debug=True)
-    assert(torch.equal(output, input.repeat(1, YS, 1)))
+    output = test_common.generate_tensor((XS, YS, ZS), dtype).npu()
+    fn_broadcast_to[1, 1, 1](output, input, length, debug=True)
+    assert (torch.equal(output, input.repeat(1, YS, 1)))

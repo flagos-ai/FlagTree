@@ -448,7 +448,7 @@ struct FpToFpOpConversion
 #if LLVM_VERSION_MAJOR < 21
     if (computeCapability < 89 &&
         (srcTy.isFloat8E4M3FN() || dstTy.isFloat8E4M3FN())) {
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
     if (computeCapability < 89 && (llvm::isa<Float8E4M3FNType>(srcTy) ||
                                    llvm::isa<Float8E4M3FNType>(dstTy))) {
 #endif
@@ -475,7 +475,7 @@ struct FpToFpOpConversion
 
 #if LLVM_VERSION_MAJOR < 21
     if (dstElementType.isFloat8E5M2() || dstElementType.isFloat8E4M3FN()) {
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
     if (llvm::isa<Float8E5M2Type, Float8E4M3FNType>(dstElementType)) {
 #endif
       assert(roundingMode.has_value() &&
@@ -517,7 +517,7 @@ struct FpToFpOpConversion
 #if LLVM_VERSION_MAJOR < 21
         (!(computeCapability >= 90 && (dstElementType.isFloat8E4M3FN() ||
                                        dstElementType.isFloat8E5M2())) ||
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
         (!(computeCapability >= 90 &&
            (llvm::isa<Float8E4M3FNType, Float8E5M2Type>(dstElementType))) ||
 #endif

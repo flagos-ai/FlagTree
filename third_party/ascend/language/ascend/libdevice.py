@@ -54,6 +54,7 @@ def umulhi(x, y, _builder=None):
     x, y = core.binary_op_type_legalization(x, y, _builder)
     return core.tensor(_builder.create_umulhi(x.handle, y.handle), x.type)
 
+
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
 @_add_math_1arg_docstr("exponential")
@@ -61,6 +62,7 @@ def umulhi(x, y, _builder=None):
 def exp(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_exp(x.handle), x.type)
+
 
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
@@ -70,6 +72,7 @@ def exp2(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_exp2(x.handle), x.type)
 
+
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
 @_add_math_1arg_docstr("natural logarithm")
@@ -77,6 +80,7 @@ def exp2(x, _builder=None):
 def log(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_log(x.handle), x.type)
+
 
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
@@ -86,6 +90,7 @@ def log2(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_log2(x.handle), x.type)
 
+
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
 @_add_math_1arg_docstr("cosine")
@@ -93,6 +98,7 @@ def log2(x, _builder=None):
 def cos(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_cos(x.handle), x.type)
+
 
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
@@ -102,6 +108,7 @@ def sin(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_sin(x.handle), x.type)
 
+
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
 @_add_math_1arg_docstr("fast square root")
@@ -109,6 +116,7 @@ def sin(x, _builder=None):
 def sqrt(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_sqrt(x.handle), x.type)
+
 
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
@@ -118,6 +126,7 @@ def sqrt_rn(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_precise_sqrt(x.handle), x.type)
 
+
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
 @_add_math_1arg_docstr("inverse square root")
@@ -125,6 +134,7 @@ def sqrt_rn(x, _builder=None):
 def rsqrt(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_rsqrt(x.handle), x.type)
+
 
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
@@ -135,6 +145,7 @@ def div_rn(x, y, _builder=None):
     x, y = core.binary_op_type_legalization(x, y, _builder)
     return core.tensor(_builder.create_precise_divf(x.handle, y.handle), x.type)
 
+
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
 @_add_math_1arg_docstr("error function")
@@ -143,6 +154,7 @@ def erf(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_erf(x.handle), x.type)
 
+
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @_add_math_1arg_docstr("error function")
@@ -150,6 +162,7 @@ def erf(x, _builder=None):
 def tanh(x, _builder=None):
     x = semantic.to_tensor(x, _builder)
     return core.tensor(_builder.create_tanh(x.handle), x.type)
+
 
 @core.extern
 @_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
@@ -190,16 +203,17 @@ def fma(x, y, z, _builder=None):
 def reciprocal(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"),): ("__hmf_recipf", core.dtype("fp32")),
-            (core.dtype("fp16"),): ("__hmf_recipDh", core.dtype("fp16")),
+            (core.dtype("fp32"), ): ("__hmf_recipf", core.dtype("fp32")),
+            (core.dtype("fp16"), ): ("__hmf_recipDh", core.dtype("fp16")),
         }, is_pure=True, _builder=_builder)
+
 
 @core.extern
 def log1p(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"),): ("__hmf_log1pf", core.dtype("fp32")),
-            (core.dtype("fp16"),): ("__hmf_log1pDh", core.dtype("fp16")),
+            (core.dtype("fp32"), ): ("__hmf_log1pf", core.dtype("fp32")),
+            (core.dtype("fp16"), ): ("__hmf_log1pDh", core.dtype("fp16")),
         }, is_pure=True, _builder=_builder)
 
 
@@ -207,8 +221,8 @@ def log1p(arg0, _builder=None):
 def relu(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"),): ("__hmf_reluf", core.dtype("fp32")),
-            (core.dtype("fp16"),): ("__hmf_reluDh", core.dtype("fp16")),
+            (core.dtype("fp32"), ): ("__hmf_reluf", core.dtype("fp32")),
+            (core.dtype("fp16"), ): ("__hmf_reluDh", core.dtype("fp16")),
         }, is_pure=True, _builder=_builder)
 
 
@@ -216,9 +230,9 @@ def relu(arg0, _builder=None):
 def isinf(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"),): ("__hmf_isinf", core.dtype("int1")),
-            (core.dtype("fp16"),): ("__hmf_isinf", core.dtype("int1")),
-            (core.dtype("bf16"),): ("__hmf_isinf", core.dtype("int1")),
+            (core.dtype("fp32"), ): ("__hmf_isinf", core.dtype("int1")),
+            (core.dtype("fp16"), ): ("__hmf_isinf", core.dtype("int1")),
+            (core.dtype("bf16"), ): ("__hmf_isinf", core.dtype("int1")),
         }, is_pure=True, _builder=_builder)
 
 
@@ -226,8 +240,8 @@ def isinf(arg0, _builder=None):
 def tan(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"),): ("__hmf_tanf", core.dtype("fp32")),
-            (core.dtype("fp16"),): ("__hmf_tanDh", core.dtype("fp16")),
+            (core.dtype("fp32"), ): ("__hmf_tanf", core.dtype("fp32")),
+            (core.dtype("fp16"), ): ("__hmf_tanDh", core.dtype("fp16")),
         }, is_pure=True, _builder=_builder)
 
 
@@ -235,9 +249,10 @@ def tan(arg0, _builder=None):
 def atan(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"),): ("__hmf_atanf", core.dtype("fp32")),
-            (core.dtype("fp16"),): ("__hmf_atanDh", core.dtype("fp16")),
+            (core.dtype("fp32"), ): ("__hmf_atanf", core.dtype("fp32")),
+            (core.dtype("fp16"), ): ("__hmf_atanDh", core.dtype("fp16")),
         }, is_pure=True, _builder=_builder)
+
 
 @core.extern
 def tanh(arg0, _builder=None):
@@ -247,12 +262,13 @@ def tanh(arg0, _builder=None):
             (core.dtype("fp16"), ): ("__hmf_tanhDh", core.dtype("fp16")),
         }, is_pure=True, _builder=_builder)
 
+
 @core.extern
 def ilogb(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"),): ("__hmf_ilogbf", core.dtype("fp32")),
-            (core.dtype("fp16"),): ("__hmf_ilogbDh", core.dtype("fp16")),
+            (core.dtype("fp32"), ): ("__hmf_ilogbf", core.dtype("fp32")),
+            (core.dtype("fp16"), ): ("__hmf_ilogbDh", core.dtype("fp16")),
         }, is_pure=True, _builder=_builder)
 
 
@@ -263,6 +279,7 @@ def ldexp(arg0, arg1, _builder=None):
             (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_ldexpf", core.dtype("fp32")),
             (core.dtype("fp16"), core.dtype("fp16")): ("__hmf_ldexpDh", core.dtype("fp16")),
         }, is_pure=True, _builder=_builder)
+
 
 @core.extern
 def pow(arg0, arg1, _builder=None):
@@ -277,14 +294,16 @@ def pow(arg0, arg1, _builder=None):
             (core.dtype("int8"), core.dtype("int8")): ("__hmf_powi", core.dtype("int8")),
         }, is_pure=True, _builder=_builder)
 
+
 @core.extern
 def isnan(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"),): ("__hmf_isnan", core.dtype("int1")),
-            (core.dtype("fp16"),): ("__hmf_isnan", core.dtype("int1")),
-            (core.dtype("bf16"),): ("__hmf_isnan", core.dtype("int1")),
+            (core.dtype("fp32"), ): ("__hmf_isnan", core.dtype("int1")),
+            (core.dtype("fp16"), ): ("__hmf_isnan", core.dtype("int1")),
+            (core.dtype("bf16"), ): ("__hmf_isnan", core.dtype("int1")),
         }, is_pure=True, _builder=_builder)
+
 
 @core.extern
 def flip(arg0, arg1=None, _builder=None):
@@ -294,27 +313,31 @@ def flip(arg0, arg1=None, _builder=None):
     from triton.language.core import flip as ascend_flip
     return ascend_flip(arg0, arg1, _builder=_builder)
 
+
 @core.extern
 def atan2(arg0, arg1, _builder=None):
     core.static_print("The func atan2 is supported in math.atan2 lowlevel. So use math.atan2 instead.")
     return math.atan2(arg1, arg0)
+
 
 @core.extern
 def div_rz(arg0, arg1, _builder=None):
     core.static_print("tl.div_rz is unsupported for now. Use libdevice.div_rz instead.")
     core.static_assert(False)
 
+
 @core.extern
 def fmod(arg0, arg1, _builder=None):
     core.static_print("tl.fmod is unsupported for now. Use libdevice.fmod instead.")
     core.static_assert(False)
 
+
 @core.extern
 def round(arg0, _builder=None):
-    return core.extern_elementwise(
-        "", "", [arg0], {
-            (core.dtype("fp32"), ): ("__hmf_roundf", core.dtype("fp32")),
-        }, is_pure=True, _builder=_builder)
+    return core.extern_elementwise("", "", [arg0], {
+        (core.dtype("fp32"), ): ("__hmf_roundf", core.dtype("fp32")),
+    }, is_pure=True, _builder=_builder)
+
 
 @core.extern
 @_add_math_2arg_docstr("cdiv")
@@ -329,7 +352,7 @@ def cdiv(x, div, _builder=None):
         if isinstance(x, bool) or isinstance(div, bool):
             raise TypeError("cdiv does not support boolean type")
         if isinstance(x, int) and isinstance(div, int):
-            res = x //div
+            res = x // div
             rem = x % div
             return res + (1 if rem != 0 else 0)
         else:
@@ -343,15 +366,12 @@ def cdiv(x, div, _builder=None):
         raise ValueError("cdiv does not support boolean type")
     elif x_scalar_type.is_int() and div_scalar_type.is_int():
         # integer cdiv: (x + div - 1) // div as before
-        return semantic.floordiv(
-            semantic.add(x, semantic.sub(div, 1, True, _builder), True, _builder),
-            div,
-            _builder
-        )
+        return semantic.floordiv(semantic.add(x, semantic.sub(div, 1, True, _builder), True, _builder), div, _builder)
     else:
         div_res = semantic.truediv(x, div, _builder)
         cdiv_res = core.tensor(_builder.create_ceil(div_res.handle), div_res.type)
         return semantic.cast(cdiv_res, x_scalar_type, _builder)
+
 
 @core.builtin
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
@@ -381,7 +401,7 @@ def acos(arg0: core.tensor, _builder: ir.builder):
     # 0.5<|x|<0.9, acos(x) = 2*arctan(t), t=sqrt((1-abs_x)/(1+abs_x))
     numerator_mid = semantic.sub(1.0, abs_x, True, _builder)
     denom_mid = semantic.add(1.0, abs_x, True, _builder)
-    div_mid = semantic.truediv(numerator_mid, denom_mid,  _builder)
+    div_mid = semantic.truediv(numerator_mid, denom_mid, _builder)
     t_mid = math.sqrt(div_mid, _builder=_builder)
     t2_mid = semantic.mul(t_mid, t_mid, True, _builder)
     t4_mid = semantic.mul(t2_mid, t2_mid, True, _builder)
@@ -400,9 +420,10 @@ def acos(arg0: core.tensor, _builder: ir.builder):
     is_neg_mid = semantic.less_than(arg0, 0.0, _builder)
     acos_mid_signed = semantic.where(is_neg_mid, semantic.sub(pi, acos_mid, True, _builder), acos_mid, _builder)
 
-    is_center = semantic.less_than(abs_x, 0.5,  _builder)
+    is_center = semantic.less_than(abs_x, 0.5, _builder)
     res_mid_boundary = semantic.where(is_center, acos_center, acos_mid_signed, _builder)
     return res_mid_boundary
+
 
 @core.builtin
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
@@ -415,6 +436,7 @@ def sinh(arg0: core.tensor, _builder: ir.builder):
     ret = semantic.truediv(tmp, 2.0, _builder)
     return ret
 
+
 @core.builtin
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("cosh")
@@ -426,6 +448,7 @@ def cosh(arg0: core.tensor, _builder: ir.builder):
     ret = semantic.truediv(tmp, 2.0, _builder)
     return ret
 
+
 @core.builtin
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("acosh")
@@ -436,6 +459,7 @@ def acosh(arg0: core.tensor, _builder: ir.builder):
     sum_res = semantic.add(arg0, sqrt_res, True, _builder)
     return core.tensor(_builder.create_log(sum_res.handle), sum_res.type)
 
+
 @core.builtin
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("asinh")
@@ -445,6 +469,7 @@ def asinh(arg0: core.tensor, _builder: ir.builder):
     sqrt_res = core.tensor(_builder.create_sqrt(tmp.handle), tmp.type)
     sum_res = semantic.add(arg0, sqrt_res, True, _builder)
     return core.tensor(_builder.create_log(sum_res.handle), sum_res.type)
+
 
 @core.builtin
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
@@ -458,6 +483,7 @@ def atanh(arg0: core.tensor, _builder: ir.builder):
     tmp = semantic.sub(lna, lnb, True, _builder)
     return semantic.mul(tmp, 0.5, True, _builder)
 
+
 @core.builtin
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("expm1")
@@ -466,27 +492,16 @@ def expm1(arg0: core.tensor, _builder: ir.builder):
     tmp = core.tensor(_builder.create_exp(arg0.handle), arg0.type)
     return semantic.sub(tmp, 1, True, _builder)
 
+
 @core.builtin
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_2arg_docstr("nextafter")
 def nextafter(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
     x = semantic.to_tensor(arg0, _builder)
     y = semantic.to_tensor(arg1, _builder)
-    dtype_map = {
-        "bf16": core.int16,
-        "fp16": core.int16,
-        "fp32": core.int32
-    }
-    min_pos_bit = {
-        "bf16": 0x0001,
-        "fp16": 0x0001,
-        "fp32": 0x00000001
-    }
-    max_neg_bit = {
-        "bf16": 0x8001,
-        "fp16": 0x8001,
-        "fp32": 0x80000001
-    }
+    dtype_map = {"bf16": core.int16, "fp16": core.int16, "fp32": core.int32}
+    min_pos_bit = {"bf16": 0x0001, "fp16": 0x0001, "fp32": 0x00000001}
+    max_neg_bit = {"bf16": 0x8001, "fp16": 0x8001, "fp32": 0x80000001}
     int_type = dtype_map[x.type.scalar.name]
     x_eq_y = semantic.equal(x, y, _builder)
     x_gt_0 = semantic.greater_than(x, 0, _builder)
@@ -514,6 +529,7 @@ def nextafter(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
     next_val = semantic.where(need_max_neg, max_neg, next_val, _builder)
     return semantic.where(x_eq_y, x, next_val, _builder)
 
+
 @core.builtin
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_2arg_docstr("hypot(Euclidean Distance)")
@@ -525,6 +541,7 @@ def hypot(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
     sum_res = semantic.add(x2, y2, True, _builder)
     return core.tensor(_builder.create_sqrt(sum_res.handle), sum_res.type)
 
+
 # This function is derived from the Cephes Math Library release 2.8: June, 2000
 # https://netlib.org/cephes/
 # Copyright (c) 1984, 1987, 2000 by Stephen L. Moshier
@@ -534,63 +551,63 @@ def hypot(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
 @math._add_math_2arg_docstr("besseli0 (Modified Bessel function of the first kind, order 0).")
 def cyl_bessel_i0(arg0: core.tensor, _builder: ir.builder):
     param1 = [
-            -4.41534164647933937950e-18,
-            +3.33079451882223809783e-17,
-            -2.43127984654795469359e-16,
-            +1.71539128555513303061e-15,
-            -1.16853328779934516808e-14,
-            +7.67618549860493561688e-14,
-            -4.85644678311192946090e-13,
-            +2.95505266312963983461e-12,
-            -1.72682629144155570723e-11,
-            +9.67580903537323691224e-11,
-            -5.18979560163526290666e-10,
-            +2.65982372468238665035e-09,
-            -1.30002500998624804212e-08,
-            +6.04699502254191894932e-08,
-            -2.67079385394061173391e-07,
-            +1.11738753912010371815e-06,
-            -4.41673835845875056359e-06,
-            +1.64484480707288970893e-05,
-            -5.75419501008210370398e-05,
-            +1.88502885095841655729e-04,
-            -5.76375574538582365885e-04,
-            +1.63947561694133579842e-03,
-            -4.32430999505057594430e-03,
-            +1.05464603945949983183e-02,
-            -2.37374148058994688156e-02,
-            +4.93052842396707084878e-02,
-            -9.49010970480476444210e-02,
-            +1.71620901522208775349e-01,
-            -3.04682672343198398683e-01,
-            +6.76795274409476084995e-01,
+        -4.41534164647933937950e-18,
+        +3.33079451882223809783e-17,
+        -2.43127984654795469359e-16,
+        +1.71539128555513303061e-15,
+        -1.16853328779934516808e-14,
+        +7.67618549860493561688e-14,
+        -4.85644678311192946090e-13,
+        +2.95505266312963983461e-12,
+        -1.72682629144155570723e-11,
+        +9.67580903537323691224e-11,
+        -5.18979560163526290666e-10,
+        +2.65982372468238665035e-09,
+        -1.30002500998624804212e-08,
+        +6.04699502254191894932e-08,
+        -2.67079385394061173391e-07,
+        +1.11738753912010371815e-06,
+        -4.41673835845875056359e-06,
+        +1.64484480707288970893e-05,
+        -5.75419501008210370398e-05,
+        +1.88502885095841655729e-04,
+        -5.76375574538582365885e-04,
+        +1.63947561694133579842e-03,
+        -4.32430999505057594430e-03,
+        +1.05464603945949983183e-02,
+        -2.37374148058994688156e-02,
+        +4.93052842396707084878e-02,
+        -9.49010970480476444210e-02,
+        +1.71620901522208775349e-01,
+        -3.04682672343198398683e-01,
+        +6.76795274409476084995e-01,
     ]
     param2 = [
-            -7.23318048787475395456e-18,
-            -4.83050448594418207126e-18,
-            +4.46562142029675999901e-17,
-            +3.46122286769746109310e-17,
-            -2.82762398051658348494e-16,
-            -3.42548561967721913462e-16,
-            +1.77256013305652638360e-15,
-            +3.81168066935262242075e-15,
-            -9.55484669882830764870e-15,
-            -4.15056934728722208663e-14,
-            +1.54008621752140982691e-14,
-            +3.85277838274214270114e-13,
-            +7.18012445138366623367e-13,
-            -1.79417853150680611778e-12,
-            -1.32158118404477131188e-11,
-            -3.14991652796324136454e-11,
-            +1.18891471078464383424e-11,
-            +4.94060238822496958910e-10,
-            +3.39623202570838634515e-09,
-            +2.26666899049817806459e-08,
-            +2.04891858946906374183e-07,
-            +2.89137052083475648297e-06,
-            +6.88975834691682398426e-05,
-            +3.36911647825569408990e-03,
-            +8.04490411014108831608e-01,
+        -7.23318048787475395456e-18,
+        -4.83050448594418207126e-18,
+        +4.46562142029675999901e-17,
+        +3.46122286769746109310e-17,
+        -2.82762398051658348494e-16,
+        -3.42548561967721913462e-16,
+        +1.77256013305652638360e-15,
+        +3.81168066935262242075e-15,
+        -9.55484669882830764870e-15,
+        -4.15056934728722208663e-14,
+        +1.54008621752140982691e-14,
+        +3.85277838274214270114e-13,
+        +7.18012445138366623367e-13,
+        -1.79417853150680611778e-12,
+        -1.32158118404477131188e-11,
+        -3.14991652796324136454e-11,
+        +1.18891471078464383424e-11,
+        +4.94060238822496958910e-10,
+        +3.39623202570838634515e-09,
+        +2.26666899049817806459e-08,
+        +2.04891858946906374183e-07,
+        +2.89137052083475648297e-06,
+        +6.88975834691682398426e-05,
+        +3.36911647825569408990e-03,
+        +8.04490411014108831608e-01,
     ]
     arg0 = semantic.to_tensor(arg0, _builder)
     abs_x = core.tensor(_builder.create_fabs(arg0.handle), arg0.type)
@@ -630,7 +647,7 @@ def signbit(arg0, _builder=None):
     arg0_scalar_ty = arg0.type.scalar
     if arg0_scalar_ty == core.float32:
         int_ty = core.int32
-    else: # arg0 type: float16 / bfloat16
+    else:  # arg0 type: float16 / bfloat16
         int_ty = core.int16
 
     arg0 = semantic.to_tensor(arg0, _builder)
@@ -642,8 +659,7 @@ def signbit(arg0, _builder=None):
 
     shift = semantic.full(arg0.shape, shift, int_ty, _builder)
     sign_bit_tensor = semantic.lshr(int_tensor, shift, _builder)
-    sign_bit_tensor = semantic.and_(
-        sign_bit_tensor, semantic.full(arg0.shape, 1, int_ty, _builder), _builder)
+    sign_bit_tensor = semantic.and_(sign_bit_tensor, semantic.full(arg0.shape, 1, int_ty, _builder), _builder)
     return semantic.equal(sign_bit_tensor, 1, _builder)
 
 
@@ -659,8 +675,7 @@ def erfinv(arg0, _builder=None):
     arg0_scalar_ty = arg0.type.scalar
     arg0 = semantic.to_tensor(arg0, _builder)
 
-    inv_sqrt_pi_times_2 = semantic.full(
-        arg0.shape, 1.128379167, arg0_scalar_ty, _builder).handle  # 2 / sqrt(pi)
+    inv_sqrt_pi_times_2 = semantic.full(arg0.shape, 1.128379167, arg0_scalar_ty, _builder).handle  # 2 / sqrt(pi)
     coeff_low_numerator = [-0.140543331, 0.914624893, -1.645349621, 0.886226899]
     coeff_low_denominator = [0.012229801, -0.329097515, 1.442710462, -2.118377725, 1.0]
     coeff_high_numerator = [1.641345311, 3.429567803, -1.624906493, -1.970840454]
@@ -668,18 +683,17 @@ def erfinv(arg0, _builder=None):
 
     # low cal
     arg0_squared = _builder.create_fmul(arg0.handle, arg0.handle)
-    numerator_low_range = semantic.full(
-        arg0.shape, coeff_low_numerator[0], arg0_scalar_ty, _builder).handle
+    numerator_low_range = semantic.full(arg0.shape, coeff_low_numerator[0], arg0_scalar_ty, _builder).handle
     for i in range(1, len(coeff_low_numerator)):
-        numerator_low_range = _builder.create_fma(numerator_low_range, arg0_squared,
+        numerator_low_range = _builder.create_fma(
+            numerator_low_range, arg0_squared,
             semantic.full(arg0.shape, coeff_low_numerator[i], arg0_scalar_ty, _builder).handle)
 
-    denominator_low_range = semantic.full(
-        arg0.shape, coeff_low_denominator[0], arg0_scalar_ty, _builder).handle
+    denominator_low_range = semantic.full(arg0.shape, coeff_low_denominator[0], arg0_scalar_ty, _builder).handle
     for i in range(1, len(coeff_low_denominator)):
         denominator_low_range = _builder.create_fma(
-            denominator_low_range, arg0_squared, semantic.full(
-                arg0.shape, coeff_low_denominator[i], arg0_scalar_ty, _builder).handle)
+            denominator_low_range, arg0_squared,
+            semantic.full(arg0.shape, coeff_low_denominator[i], arg0_scalar_ty, _builder).handle)
 
     low_res = _builder.create_fmul(arg0.handle, _builder.create_fdiv(numerator_low_range, denominator_low_range))
 
@@ -691,94 +705,67 @@ def erfinv(arg0, _builder=None):
                 _builder.create_fdiv(
                     _builder.create_fsub(
                         semantic.full(arg0.shape, 1, arg0_scalar_ty, _builder).handle,
-                        _builder.create_fabs(arg0.handle)
-                    ),
-                    semantic.full(arg0.shape, 2, arg0_scalar_ty, _builder).handle
-                )
-            )
-        )
-    )
+                        _builder.create_fabs(arg0.handle)),
+                    semantic.full(arg0.shape, 2, arg0_scalar_ty, _builder).handle))))
     numerator_high_range = semantic.full(arg0.shape, coeff_high_numerator[0], arg0_scalar_ty, _builder).handle
     for i in range(1, len(coeff_high_numerator)):
         numerator_high_range = _builder.create_fma(
-            numerator_high_range, arg0_erf_trans, semantic.full(
-                arg0.shape, coeff_high_numerator[i], arg0_scalar_ty, _builder).handle)
+            numerator_high_range, arg0_erf_trans,
+            semantic.full(arg0.shape, coeff_high_numerator[i], arg0_scalar_ty, _builder).handle)
 
     denominator_high_range = semantic.full(arg0.shape, coeff_high_denominator[0], arg0_scalar_ty, _builder).handle
     for i in range(1, len(coeff_high_denominator)):
         denominator_high_range = _builder.create_fma(
-            denominator_high_range, arg0_erf_trans, semantic.full(
-                arg0.shape, coeff_high_denominator[i], arg0_scalar_ty, _builder).handle)
+            denominator_high_range, arg0_erf_trans,
+            semantic.full(arg0.shape, coeff_high_denominator[i], arg0_scalar_ty, _builder).handle)
 
     high_res = _builder.create_fdiv(numerator_high_range, denominator_high_range)
     high_res = semantic.mul(
-        semantic.where(
-            signbit(arg0, _builder=_builder),
-            semantic.full(arg0.shape, -1, arg0_scalar_ty, _builder),
-            semantic.full(arg0.shape, 1, arg0_scalar_ty, _builder),
-            _builder),
-        core.tensor(high_res, arg0.type), True, _builder
-    ).handle
+        semantic.where(signbit(arg0, _builder=_builder), semantic.full(arg0.shape, -1, arg0_scalar_ty, _builder),
+                       semantic.full(arg0.shape, 1, arg0_scalar_ty, _builder), _builder),
+        core.tensor(high_res, arg0.type), True, _builder).handle
 
     for i in range(2):
         low_res = _builder.create_fsub(
-            low_res, _builder.create_fdiv(
-                _builder.create_fsub(
-                    _builder.create_erf(low_res), arg0.handle
-                ),
+            low_res,
+            _builder.create_fdiv(
+                _builder.create_fsub(_builder.create_erf(low_res), arg0.handle),
                 _builder.create_fmul(
-                    inv_sqrt_pi_times_2, _builder.create_exp(
+                    inv_sqrt_pi_times_2,
+                    _builder.create_exp(
                         _builder.create_fmul(
                             semantic.full(arg0.shape, -1, arg0_scalar_ty, _builder).handle,
-                            _builder.create_fmul(low_res, low_res)
-                        )
-                    )
-                )
-            )
-        )
+                            _builder.create_fmul(low_res, low_res))))))
 
         high_res = _builder.create_fsub(
-            high_res, _builder.create_fdiv(
-                _builder.create_fsub(
-                    _builder.create_erf(high_res), arg0.handle
-                ),
+            high_res,
+            _builder.create_fdiv(
+                _builder.create_fsub(_builder.create_erf(high_res), arg0.handle),
                 _builder.create_fmul(
-                    inv_sqrt_pi_times_2, _builder.create_exp(
+                    inv_sqrt_pi_times_2,
+                    _builder.create_exp(
                         _builder.create_fmul(
                             semantic.full(arg0.shape, -1, arg0_scalar_ty, _builder).handle,
-                            _builder.create_fmul(high_res, high_res)
-                        )
-                    )
-                )
-            )
-        )
+                            _builder.create_fmul(high_res, high_res))))))
 
     arg0_abs = core.tensor(_builder.create_fabs(arg0.handle), arg0.type)
     # Check if |arg0| > 1
-    arg0_over = semantic.greater_than(
-        arg0_abs, semantic.full(arg0.shape, 1, arg0_scalar_ty, _builder), _builder)
+    arg0_over = semantic.greater_than(arg0_abs, semantic.full(arg0.shape, 1, arg0_scalar_ty, _builder), _builder)
     nan_tensor = semantic.full(arg0.shape, float("nan"), arg0_scalar_ty, _builder)
     # Check if |arg0| = 1
-    arg0_equal1 = semantic.equal(
-        arg0_abs, semantic.full(arg0.shape, 1, arg0_scalar_ty, _builder),_builder
-    )
+    arg0_equal1 = semantic.equal(arg0_abs, semantic.full(arg0.shape, 1, arg0_scalar_ty, _builder), _builder)
     pos_inf_tensor = semantic.full(arg0.shape, float("inf"), arg0_scalar_ty, _builder)
     neg_inf_tensor = semantic.full(arg0.shape, float("-inf"), arg0_scalar_ty, _builder)
-    inf_res = semantic.where(
-        signbit(arg0, _builder=_builder), neg_inf_tensor, pos_inf_tensor, _builder
-    )
+    inf_res = semantic.where(signbit(arg0, _builder=_builder), neg_inf_tensor, pos_inf_tensor, _builder)
     # Check if |arg0| >= 0.7
-    arg0_high = semantic.greater_equal(
-        arg0_abs, semantic.full(arg0.shape, 0.7, arg0_scalar_ty, _builder), _builder
-    )
+    arg0_high = semantic.greater_equal(arg0_abs, semantic.full(arg0.shape, 0.7, arg0_scalar_ty, _builder), _builder)
 
     return semantic.where(
-        arg0_equal1, inf_res, semantic.where(
-            arg0_over, nan_tensor, semantic.where(
-                arg0_high, core.tensor(high_res, arg0.type), core.tensor(low_res, arg0.type), _builder
-            ), _builder
-        ), _builder
-    )
+        arg0_equal1, inf_res,
+        semantic.where(
+            arg0_over, nan_tensor,
+            semantic.where(arg0_high, core.tensor(high_res, arg0.type), core.tensor(low_res, arg0.type), _builder),
+            _builder), _builder)
 
 
 # Note:
@@ -796,65 +783,44 @@ def gamma(arg0, _builder=None):
     pi_tensor = semantic.full(arg0.shape, math_pi, arg0_scalar_ty, _builder).handle
     sqrt_2pi_tensor = semantic.full(arg0.shape, 2.506628275, arg0_scalar_ty, _builder).handle  # sqrt(2*pi)
     lanczos_coeff = [
-        676.5203681218851,
-        -1259.1392167224028,
-        771.32342877765313,
-        -176.61502916214059,
-        12.507343278686905,
-        -0.13857109526572012,
-        9.9843695780195716e-6,
-        1.5056327351493116e-7
+        676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059, 12.507343278686905,
+        -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7
     ]
     condition = semantic.less_than(arg0, 0.5, _builder)  # 1 - x = x -> x = 0.5
-    reflect_arg0 = semantic.where(
-        condition, semantic.sub(1, arg0, True, _builder), arg0, _builder
-    )
+    reflect_arg0 = semantic.where(condition, semantic.sub(1, arg0, True, _builder), arg0, _builder)
 
     x = semantic.full(arg0.shape, 0.99999999999980993, arg0_scalar_ty, _builder)
     for i in range(0, len(lanczos_coeff)):
         x = semantic.add(
-            x, semantic.fdiv(
-                semantic.full(arg0.shape, lanczos_coeff[i], arg0_scalar_ty, _builder),
-                semantic.add(reflect_arg0, i, True, _builder), True, _builder
-            ), True, _builder
-        )
+            x,
+            semantic.fdiv(semantic.full(arg0.shape, lanczos_coeff[i], arg0_scalar_ty, _builder),
+                          semantic.add(reflect_arg0, i, True, _builder), True, _builder), True, _builder)
     t = semantic.add(reflect_arg0, 6.5, True, _builder)
 
     gamma_res = _builder.create_fmul(
+        _builder.create_fmul(sqrt_2pi_tensor,
+                             pow(t, semantic.sub(reflect_arg0, 0.5, True, _builder), _builder=_builder).handle),
         _builder.create_fmul(
-            sqrt_2pi_tensor, pow(
-                t, semantic.sub(reflect_arg0, 0.5, True, _builder), _builder=_builder
-            ).handle
-        ),
-        _builder.create_fmul(
-            x.handle, _builder.create_exp(
-                _builder.create_fmul(
-                    t.handle, semantic.full(arg0.shape, -1, arg0_scalar_ty, _builder).handle
-                )
-            )
-        )
-    )
+            x.handle,
+            _builder.create_exp(
+                _builder.create_fmul(t.handle,
+                                     semantic.full(arg0.shape, -1, arg0_scalar_ty, _builder).handle))))
 
-    gamma_res_reflect = _builder.create_fdiv(
-        _builder.create_fdiv(pi_tensor, gamma_res),
-        _builder.create_sin(_builder.create_fmul(pi_tensor, arg0.handle))
-    )
+    gamma_res_reflect = _builder.create_fdiv(_builder.create_fdiv(pi_tensor, gamma_res),
+                                             _builder.create_sin(_builder.create_fmul(pi_tensor, arg0.handle)))
 
-    is_neg_int = semantic.logical_and(
-        semantic.equal(math.floor(arg0, _builder=_builder), arg0, _builder),
-        semantic.less_than(arg0, 0, _builder), _builder
-    )
+    is_neg_int = semantic.logical_and(semantic.equal(math.floor(arg0, _builder=_builder), arg0, _builder),
+                                      semantic.less_than(arg0, 0, _builder), _builder)
     pos_inf_tensor = semantic.full(arg0.shape, float('inf'), arg0_scalar_ty, _builder)
     neg_inf_tensor = semantic.full(arg0.shape, float('-inf'), arg0_scalar_ty, _builder)
-    gamma_res_reflect = semantic.where(
-        is_neg_int, pos_inf_tensor, core.tensor(gamma_res_reflect, arg0.type), _builder)
+    gamma_res_reflect = semantic.where(is_neg_int, pos_inf_tensor, core.tensor(gamma_res_reflect, arg0.type), _builder)
 
     res = semantic.where(condition, gamma_res_reflect, core.tensor(gamma_res, arg0.type), _builder)
     is_pos_inf_input = semantic.equal(arg0, pos_inf_tensor, _builder)
     is_neg_inf_input = semantic.equal(arg0, neg_inf_tensor, _builder)
 
-    return semantic.where(is_pos_inf_input, pos_inf_tensor, semantic.where(
-            is_neg_inf_input, neg_inf_tensor, res, _builder), _builder)
+    return semantic.where(is_pos_inf_input, pos_inf_tensor,
+                          semantic.where(is_neg_inf_input, neg_inf_tensor, res, _builder), _builder)
 
 
 # Note:
@@ -872,9 +838,7 @@ def lgamma(arg0, _builder=None):
     arg0 = semantic.to_tensor(arg0, _builder)
 
     inf_tensor = semantic.full(arg0.shape, float('inf'), arg0_scalar_ty, _builder)
-    is_inf = semantic.equal(
-        core.tensor(_builder.create_fabs(arg0.handle), arg0.type), inf_tensor, _builder
-    )
+    is_inf = semantic.equal(core.tensor(_builder.create_fabs(arg0.handle), arg0.type), inf_tensor, _builder)
     gamma_res = _builder.create_fabs(gamma(arg0, _builder=_builder).handle)
     lgamma_res = _builder.create_log(gamma_res)
 
@@ -882,7 +846,9 @@ def lgamma(arg0, _builder=None):
 
 
 @core.builtin
-@math._check_dtype(dtypes=["fp32",])
+@math._check_dtype(dtypes=[
+    "fp32",
+])
 @math._add_math_1arg_docstr("trunc")
 def trunc(arg0: core.tensor, _builder: ir.builder):
     """
@@ -908,7 +874,9 @@ def trunc(arg0: core.tensor, _builder: ir.builder):
 
 
 @core.builtin
-@math._check_dtype(dtypes=["fp32",])
+@math._check_dtype(dtypes=[
+    "fp32",
+])
 @math._add_math_1arg_docstr("nearbyint")
 def nearbyint(arg0: core.tensor, _builder: ir.builder):
     """
@@ -944,21 +912,20 @@ def nearbyint(arg0: core.tensor, _builder: ir.builder):
 
     is_even = semantic.equal(basic_round, double_half, _builder)
 
-    adjustment = semantic.where(is_positive,
-                               semantic.full(arg0.shape, -1.0, arg0.type.scalar, _builder),
-                               semantic.full(arg0.shape, 1.0, arg0.type.scalar, _builder),
-                               _builder)
+    adjustment = semantic.where(is_positive, semantic.full(arg0.shape, -1.0, arg0.type.scalar, _builder),
+                                semantic.full(arg0.shape, 1.0, arg0.type.scalar, _builder), _builder)
 
-    banker_result = semantic.where(is_even, basic_round,
-                                  semantic.add(basic_round, adjustment, True, _builder),
-                                  _builder)
+    banker_result = semantic.where(is_even, basic_round, semantic.add(basic_round, adjustment, True, _builder),
+                                   _builder)
 
     # Final result: Use banker's rounding for cases exactly at 0.5, otherwise use basic rounding.
     return semantic.where(is_half, banker_result, basic_round, _builder)
 
 
 @core.builtin
-@math._check_dtype(dtypes=["fp32",])
+@math._check_dtype(dtypes=[
+    "fp32",
+])
 @math._add_math_1arg_docstr("arcsine")
 def asin(arg0: core.tensor, _builder: ir.builder):
     """
@@ -976,7 +943,9 @@ def asin(arg0: core.tensor, _builder: ir.builder):
 
 
 @core.builtin
-@math._check_dtype(dtypes=["fp32",])
+@math._check_dtype(dtypes=[
+    "fp32",
+])
 @math._add_math_1arg_docstr("base-10 logarithm")
 def log10(arg0: core.tensor, _builder: ir.builder):
     """
@@ -992,8 +961,11 @@ def log10(arg0: core.tensor, _builder: ir.builder):
 
     return math.fdiv(log_val, log10_const, _builder=_builder)
 
+
 @core.builtin
-@math._check_dtype(dtypes=["fp32",])
+@math._check_dtype(dtypes=[
+    "fp32",
+])
 @math._add_math_2arg_docstr("copysign")
 def copysign(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
     """
@@ -1015,22 +987,15 @@ def copysign(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
     is_negative_nonzero = semantic.less_than(y, zero, _builder)
     is_negative = semantic.or_(is_negative_zero, is_negative_nonzero, _builder)
 
-    neg_magnitude = semantic.mul(magnitude, semantic.full(magnitude.shape, -1.0, magnitude.type.scalar, _builder), True, _builder)
+    neg_magnitude = semantic.mul(magnitude, semantic.full(magnitude.shape, -1.0, magnitude.type.scalar, _builder), True,
+                                 _builder)
 
     return semantic.where(is_negative, neg_magnitude, magnitude, _builder)
 
+
 @core.builtin
-def index_put(
-    ptr: tensor,
-    index: tensor,
-    value: tensor,
-    dim: int,
-    index_boundary: int,
-    end_offset: tuple,
-    start_offset: tuple,
-    dst_stride: tuple,
-    _builder=None
-):
+def index_put(ptr: tensor, index: tensor, value: tensor, dim: int, index_boundary: int, end_offset: tuple,
+              start_offset: tuple, dst_stride: tuple, _builder=None):
     """
     Index put values from a tensor into a destination tensor.
 
@@ -1103,21 +1068,12 @@ def index_put(
     """
     dim = _constexpr_to_value(dim)
     index_boundary = _constexpr_to_value(index_boundary)
-    return semantic.index_put(ptr, index, value, dim, index_boundary,
-                              end_offset, start_offset, dst_stride, _builder)
+    return semantic.index_put(ptr, index, value, dim, index_boundary, end_offset, start_offset, dst_stride, _builder)
+
 
 @core.builtin
-def gather_out_to_ub(
-    src: tensor,
-    index: tensor,
-    index_boundary: int,
-    dim: int,
-    src_stride: tuple,
-    end_offset: tuple,
-    start_offset: tuple,
-    other=None,
-    _builder=None
-):
+def gather_out_to_ub(src: tensor, index: tensor, index_boundary: int, dim: int, src_stride: tuple, end_offset: tuple,
+                     start_offset: tuple, other=None, _builder=None):
     """
     Gather from a source tensor in Global Memory (GM) to Unified Buffer (UB)
     along a specified dimension with out-of-bound handling.
@@ -1200,23 +1156,13 @@ def gather_out_to_ub(
     """
     dim = _constexpr_to_value(dim)
     index_boundary = _constexpr_to_value(index_boundary)
-    return semantic.gather_out_to_ub(
-        src, index, index_boundary, dim,
-        src_stride, end_offset, start_offset, other, _builder
-    )
+    return semantic.gather_out_to_ub(src, index, index_boundary, dim, src_stride, end_offset, start_offset, other,
+                                     _builder)
+
 
 @core.builtin
-def scatter_ub_to_out(
-    ptr: tensor,
-    value: tensor,
-    index: tensor,
-    index_boundary: int,
-    dim: int,
-    dst_stride: tuple,
-    end_offset: tuple,
-    start_offset: tuple,
-    _builder=None
-):
+def scatter_ub_to_out(ptr: tensor, value: tensor, index: tensor, index_boundary: int, dim: int, dst_stride: tuple,
+                      end_offset: tuple, start_offset: tuple, _builder=None):
     """
     Scatter a tile from Unified Buffer (UB) into a destination tensor in Global Memory (GM)
     along a specified dimension, with index-boundary checking.
@@ -1295,21 +1241,12 @@ def scatter_ub_to_out(
     """
     dim = _constexpr_to_value(dim)
     index_boundary = _constexpr_to_value(index_boundary)
-    return semantic.scatter_ub_to_out(
-        ptr, value, index, index_boundary, dim,
-        dst_stride, end_offset, start_offset, _builder
-    )
+    return semantic.scatter_ub_to_out(ptr, value, index, index_boundary, dim, dst_stride, end_offset, start_offset,
+                                      _builder)
+
 
 @core.builtin
-def index_select_simd(
-    src,
-    dim,
-    index,
-    src_shape,
-    src_offset,
-    read_shape,
-    _builder=None
-) -> tensor:
+def index_select_simd(src, dim, index, src_shape, src_offset, read_shape, _builder=None) -> tensor:
     """
     Parallel index_select operation from Global Memory to Unified Buffer (SIMD version).
 
@@ -1386,16 +1323,8 @@ def index_select_simd(
         else:
             return _constexpr_to_value(val)
 
-    newsrc_shape = [
-        semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
-        for o in src_shape
-    ]
-    newsrc_offset = [
-        semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
-        for o in src_offset
-    ]
+    newsrc_shape = [semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o for o in src_shape]
+    newsrc_offset = [semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o for o in src_offset]
     assert len(index.shape) == 1, "index must be a 1D tensor"
 
-    return semantic.index_select_simd(
-        src, dim, index, newsrc_shape, newsrc_offset, read_shape, _builder
-    )
+    return semantic.index_select_simd(src, dim, index, newsrc_shape, newsrc_offset, read_shape, _builder)

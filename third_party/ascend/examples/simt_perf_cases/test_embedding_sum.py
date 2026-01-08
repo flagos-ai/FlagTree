@@ -56,9 +56,7 @@ def torch_red_fused_embedding_sum_vec(arg0, arg1):
 )
 def test_embedding_sum(param_list):
     y0_numel, x1_numel, r2_numel = param_list
-    arg0_1 = torch.randint(
-        -1000, 9000, (y0_numel, r2_numel), dtype=torch.int64, device="npu"
-    )
+    arg0_1 = torch.randint(-1000, 9000, (y0_numel, r2_numel), dtype=torch.int64, device="npu")
     arg2_1 = torch.randn(9000, x1_numel, dtype=torch.float32, device="npu")
     buf44 = torch.empty((y0_numel, x1_numel), dtype=torch.float32, device="npu")
     grid_size = 128
@@ -76,52 +74,32 @@ def test_embedding_sum(param_list):
         data_simplification=False,
     )
     with torch_npu.profiler.profile(
-        activities=[
-            torch_npu.profiler.ProfilerActivity.CPU,
-            torch_npu.profiler.ProfilerActivity.NPU,
-        ],
-        schedule=torch_npu.profiler.schedule(
-            wait=wait,
-            warmup=warmup,
-            active=active,
-            repeat=repeat,
-            skip_first=skip_first,
-        ),
-        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(result_path),
-        record_shapes=True,
-        profile_memory=False,
-        with_stack=False,
-        with_flops=False,
-        with_modules=False,
-        experimental_config=experimental_config,
+            activities=[
+                torch_npu.profiler.ProfilerActivity.CPU,
+                torch_npu.profiler.ProfilerActivity.NPU,
+            ],
+            schedule=torch_npu.profiler.schedule(
+                wait=wait,
+                warmup=warmup,
+                active=active,
+                repeat=repeat,
+                skip_first=skip_first,
+            ),
+            on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(result_path),
+            record_shapes=True,
+            profile_memory=False,
+            with_stack=False,
+            with_flops=False,
+            with_modules=False,
+            experimental_config=experimental_config,
     ) as prof:
         stream.synchronize()
         for _ in range(skip_first + (wait + warmup + active) * repeat):
-            triton_unk_fused_embedding_sum_5[[grid_size, 1, 1]](
-                arg0_1,
-                arg2_1,
-                buf44,
-                y0_numel,
-                x1_numel,
-                r2_numel,
-                128,
-                32,
-                num_warps=32,
-                force_simt_only=True
-            )
+            triton_unk_fused_embedding_sum_5[[grid_size, 1, 1]](arg0_1, arg2_1, buf44, y0_numel, x1_numel, r2_numel,
+                                                                128, 32, num_warps=32, force_simt_only=True)
             prof.step()
         stream.synchronize()
-    triton_unk_fused_embedding_sum_5[[grid_size, 1, 1]](
-        arg0_1,
-        arg2_1,
-        buf44,
-        y0_numel,
-        x1_numel,
-        r2_numel,
-        128,
-        32,
-        num_warps=32,
-        force_simt_only=True
-    )
+    triton_unk_fused_embedding_sum_5[[grid_size, 1, 1]](arg0_1, arg2_1, buf44, y0_numel, x1_numel, r2_numel, 128, 32,
+                                                        num_warps=32, force_simt_only=True)
     torch_out = torch_red_fused_embedding_sum_vec(arg0_1, arg2_1)
     torch.testing.assert_close(buf44, torch_out, rtol=1e-04, atol=1e-04, equal_nan=True)

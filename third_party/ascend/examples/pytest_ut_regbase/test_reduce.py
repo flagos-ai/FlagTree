@@ -25,6 +25,7 @@ FUNCTIONS_TO_TEST = {
 # Global dictionary to keep track of temporary files
 _temp_kernel_files = {}
 
+
 def _cleanup_temp_files():
     import os
     for file_path in _temp_kernel_files.values():
@@ -34,7 +35,9 @@ def _cleanup_temp_files():
         except:
             pass
 
+
 atexit.register(_cleanup_temp_files)
+
 
 def create_triton_kernel(func_name, func_pattern):
     import tempfile
@@ -119,13 +122,13 @@ def test_reduce(dtype, xblock_sub, rblock, func_name):
 
     triton_kernel = create_triton_kernel(func_name, triton_func_op)
     triton_kernel = triton.autotune(
-            configs=get_autotune_config(),
-            key=['xnumel'],
-        )(triton_kernel)
+        configs=get_autotune_config(),
+        key=['xnumel'],
+    )(triton_kernel)
 
     def triton_func(x0, x1, out_dtype):
         xnumel, rnumel = x0.shape
-        y0 = torch.empty((xnumel,), dtype=x0.dtype).npu()
+        y0 = torch.empty((xnumel, ), dtype=x0.dtype).npu()
         grid = lambda meta: (triton.cdiv(xnumel, meta['XBLOCK']), )
         triton_kernel[grid](x0, x1, y0, xnumel, rnumel)
         return y0
@@ -137,9 +140,7 @@ def test_reduce(dtype, xblock_sub, rblock, func_name):
     #     x1 = fill_zero_with_one(x1)
 
     out_dtype = x0.dtype
-    if func_name in [
-        'argmax', 'argmin'
-        ]:
+    if func_name in ['argmax', 'argmin']:
         out_dtype = torch.int32
 
     triton_cal = triton_func(x0, x1, out_dtype)

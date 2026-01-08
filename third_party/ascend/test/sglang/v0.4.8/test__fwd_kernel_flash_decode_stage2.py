@@ -54,10 +54,7 @@ def _fwd_kernel_flash_decode_stage2(
     offs_d = tl.arange(0, BLOCK_DMODEL)
     cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
 
-    block_n_size = (
-        tl.where(cur_batch_seq_len <= 0, 0, cur_batch_seq_len + BLOCK_SEQ - 1)
-        // BLOCK_SEQ
-    )
+    block_n_size = (tl.where(cur_batch_seq_len <= 0, 0, cur_batch_seq_len + BLOCK_SEQ - 1) // BLOCK_SEQ)
 
     sum_exp = 0.0
     max_logic = -float("inf")

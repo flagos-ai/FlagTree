@@ -12,7 +12,7 @@ for ((i=0; i<$max_parallel; i++)); do
     echo >&9
 done
 
-> "$pid_log"  
+> "$pid_log"
 
 
 if [ -d logs ]; then
@@ -22,7 +22,7 @@ fi
 mkdir logs
 
 while IFS= read -r -d $'\0' file; do
-    read -u 9  
+    read -u 9
 
     test_log="./logs/${file%.py}_${current_date}.log"
 
@@ -35,7 +35,7 @@ while IFS= read -r -d $'\0' file; do
 
 done < <(find . -maxdepth 1 -type f -name "test_*.py" ! -name "test_common.py" -print0)
 
-wait 
+wait
 exec 9>&-
 
 echo "[INFO] All test processes completed, pids logged into ${pid_log}"

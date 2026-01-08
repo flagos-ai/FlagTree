@@ -28,12 +28,13 @@ import test_common
 import torch
 import torch_npu
 
+
 def torch_expm1(x0):
     return torch.expm1(x0)
 
 
 @triton.jit
-def triton_expm1(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.constexpr):
+def triton_expm1(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     offset = tl.program_id(0) * XBLOCK
     base1 = tl.arange(0, XBLOCK_SUB)
     loops1: tl.constexpr = XBLOCK // XBLOCK_SUB
@@ -44,10 +45,9 @@ def triton_expm1(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.const
         tl.store(out_ptr0 + (x0), tmp1, None)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (2, 4096, 8), 2, 32768, 1024],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_expm1(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x0_ref = test_common.generate_tensor(shape, dtype)
@@ -56,6 +56,6 @@ def test_expm1(param_list):
     y_ref = torch_expm1(x0_ref)
 
     x0 = x0_ref.npu()
-    y_cal = torch.zeros(shape, dtype = eval('torch.' + dtype)).npu()
+    y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     triton_expm1[ncore, 1, 1](x0, y_cal, xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)

@@ -4,26 +4,21 @@ import pytest
 import functools
 import re
 
-_float_dtypes = [
-    'float32', 'float16', 'bfloat16'
-]
-_int_dtypes = [
-    'int32', 'int64', 'int16', 'int8'
-]
+_float_dtypes = ['float32', 'float16', 'bfloat16']
+_int_dtypes = ['int32', 'int64', 'int16', 'int8']
 _all_dtypes_no_bool = _float_dtypes + _int_dtypes
 _all_dtypes = _all_dtypes_no_bool + ['bool']
 _32bit_dtypes = ['float32', 'int32']
 _16bit_dtypes = ['float16', 'bfloat16', 'int16']
-_float_dtypes_without_bf16 = [
-    'float32', 'float16'
-]
+_float_dtypes_without_bf16 = ['float32', 'float16']
 
 _shape_1d = [1, 3, 17, 32, 741]
 _shape_5d = [
     (2, 2, 2, 2, 8),
     (3, 1, 3, 5, 7),
     (3, 7, 5, 3, 1),
-    ]
+]
+
 
 def generate_tensor(shape, dtype):
     if dtype == 'float32' or dtype == 'float16' or dtype == 'bfloat16':
@@ -65,8 +60,10 @@ def get_triton_sig_typename(dtype):
         raise ValueError('Invalid parameter \"dtype\" is found : {}'.format(dtype))
     return tyname
 
+
 # Relative error: abs(x_ref - x_cal) / abs(x_ref)
 # Absolute error: abs(x_ref - x_cal)
+
 
 # calculation type operators require different error range
 # It is a stricter verification and not satisfied now, save it here
@@ -94,16 +91,18 @@ def validate_cal(dtype, y_cal, y_ref):
     else:
         raise ValueError('Invalid parameter \"dtype\" is found : {}'.format(dtype))
 
+
 # moving and comparison ops require no precision error
 def validate_cmp(dtype, y_cal, y_ref):
-    y_cal=y_cal.npu()
-    y_ref=y_ref.npu()
+    y_cal = y_cal.npu()
+    y_ref = y_ref.npu()
     if dtype == 'float16':
-        torch.testing.assert_close(y_ref, y_cal,  rtol=1e-03, atol=1e-03, equal_nan=True)
+        torch.testing.assert_close(y_ref, y_cal, rtol=1e-03, atol=1e-03, equal_nan=True)
     elif dtype == 'bfloat16':
-        torch.testing.assert_close(y_ref.to(torch.float32), y_cal.to(torch.float32),  rtol=1e-03, atol=1e-03, equal_nan=True)
+        torch.testing.assert_close(y_ref.to(torch.float32), y_cal.to(torch.float32), rtol=1e-03, atol=1e-03,
+                                   equal_nan=True)
     elif dtype == 'float32':
-        torch.testing.assert_close(y_ref, y_cal,  rtol=1e-04, atol=1e-04, equal_nan=True)
+        torch.testing.assert_close(y_ref, y_cal, rtol=1e-04, atol=1e-04, equal_nan=True)
     elif dtype == 'int32' or dtype == 'int64' or dtype == 'int16' or dtype == 'int8':
         assert torch.equal(y_cal, y_ref)
     elif dtype == 'bool':
@@ -111,10 +110,11 @@ def validate_cmp(dtype, y_cal, y_ref):
     else:
         raise ValueError('Invalid parameter \"dtype\" is found : {}'.format(dtype))
 
+
 def validate_cmp_with_expection(dtype, y_cal, y_ref, expect):
     if dtype == 'float32' or dtype == 'float16' or dtype == 'bfloat16':
         if expect:
-            assert torch.allclose(y_ref, y_cal,  rtol=1e-03, atol=1e-03, equal_nan=True)
+            assert torch.allclose(y_ref, y_cal, rtol=1e-03, atol=1e-03, equal_nan=True)
         else:
             assert not torch.allclose(y_ref, y_cal, rtol=1e-03, atol=1e-03, equal_nan=True)
     elif dtype == 'int32' or dtype == 'int64' or dtype == 'int16' or dtype == 'int8':
@@ -124,6 +124,7 @@ def validate_cmp_with_expection(dtype, y_cal, y_ref, expect):
             assert not torch.equal(y_cal, y_ref)
     else:
         raise ValueError('Invalid parameter \"dtype\" is found : {}'.format(dtype))
+
 
 # Use the following pytest fixture to run one test case by only single worker.
 # Refer to https://pytest-xdist.readthedocs.io/en/stable/how-to.html#making-session-scoped-fixtures-execute-only-once
@@ -139,17 +140,25 @@ def pytest_runonce(worker_id, request, cache):
     yield True
     cache.set(request.node.nodeid, "none")
 
+
 def raises_with_match(expected_exception, match_pattern):
+
     def decorator(test_func):
+
         @functools.wraps(test_func)
         def wrapper(*args, **kwargs):
             with pytest.raises(expected_exception, match=match_pattern):
                 return test_func(*args, **kwargs)
+
         return wrapper
+
     return decorator
 
+
 def capture_output(expected_output):
+
     def decorator(test_func):
+
         @functools.wraps(test_func)
         def wrapper(*args, **kwargs):
             capsys = kwargs.pop('capsys', None)
@@ -164,5 +173,7 @@ def capture_output(expected_output):
             # for now, no idea how to eliminate \x00 from C++ side.
             cleaned = re.sub(r"\x00", "", captured.out)
             assert expected_output in cleaned
+
         return wrapper
+
     return decorator

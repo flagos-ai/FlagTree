@@ -24,8 +24,10 @@ import triton
 import triton.language as tl
 
 torch.set_printoptions(precision=10)
+
+
 @triton.jit
-def sqrtrn_kernel(x_ptr,  y_ptr,  output_ptr,  n_elements, BLOCK_SIZE: tl.constexpr ):
+def sqrtrn_kernel(x_ptr, y_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     id = tl.program_id(axis=0)
     start = id * BLOCK_SIZE
     offsets = start + tl.arange(0, BLOCK_SIZE)
@@ -36,11 +38,13 @@ def sqrtrn_kernel(x_ptr,  y_ptr,  output_ptr,  n_elements, BLOCK_SIZE: tl.conste
     output = x + tl.sqrt_rn(y)
     tl.store(output_ptr + offsets, output, mask=mask)
 
+
 def sqrtrn(x: torch.Tensor, y: torch.Tensor):
     output = torch.empty_like(y)
-    grid = lambda meta: (triton.cdiv(output.numel(), meta['BLOCK_SIZE']),)
+    grid = lambda meta: (triton.cdiv(output.numel(), meta['BLOCK_SIZE']), )
     sqrtrn_kernel[grid](x, y, output, output.numel(), BLOCK_SIZE=512)
     return output
+
 
 def test_sqrtrn_fp32():
     size = 10240

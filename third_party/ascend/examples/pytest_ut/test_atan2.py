@@ -86,17 +86,18 @@ def test_atan2_common(dtype, sigtype, N, NUMEL):
 
     print(f"elementwise : ({N},) {dtype} {sigtype}")
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype)
-    y0 = test_common.generate_tensor(shape=(N,), dtype=sigtype)
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype)
+    y0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype)
 
     ans = standard_unary(x0, y0, dtype)
     x0 = x0.npu()
     y0 = y0.npu()
 
-    out = torch.zeros((N,), dtype=dtype).npu()
+    out = torch.zeros((N, ), dtype=dtype).npu()
     triton_elementwise_unary[1, 1, 1](x0, y0, out, N=N, NUMEL=NUMEL, debug=True)
 
     test_common.validate_cmp(sigtype, out, ans)
+
 
 input_vals = [
     (0.0, 1.0),
@@ -114,15 +115,15 @@ def test_atan2_special(dtype, sigtype, N, NUMEL, X, Y):
         N = map_for_64_t[N] if N in map_for_64_t else N
 
     print(f"elementwise : ({N},) {dtype} {sigtype}")
-    
-    x0 = torch.full((N,), X, dtype=eval(f'torch.{sigtype}'))
-    y0 = torch.full((N,), Y, dtype=eval(f'torch.{sigtype}'))
+
+    x0 = torch.full((N, ), X, dtype=eval(f'torch.{sigtype}'))
+    y0 = torch.full((N, ), Y, dtype=eval(f'torch.{sigtype}'))
 
     ans = standard_unary(x0, y0, dtype)
     x0 = x0.npu()
     y0 = y0.npu()
 
-    out = torch.zeros((N,), dtype=dtype).npu()
+    out = torch.zeros((N, ), dtype=dtype).npu()
     triton_elementwise_unary[1, 1, 1](x0, y0, out, N=N, NUMEL=NUMEL, debug=True)
 
     test_common.validate_cmp(sigtype, out, ans)

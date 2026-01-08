@@ -42,12 +42,10 @@ def triton_test_fp8(in_ptr0, in_ptr1, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB
         tl.store(out_ptr0 + (x0), tmp2, None)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                             ['float16', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+])
 @test_common.raises_with_match(triton.compiler.errors.CompilationError, "unexpected type fp8")
 def test_case(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list

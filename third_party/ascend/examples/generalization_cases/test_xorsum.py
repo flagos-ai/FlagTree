@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import math
 import triton
 import triton.language as tl
@@ -70,6 +69,7 @@ def test_xorsum_1d(dtype, shape):
 
 # >>>>>>> test_xorsum_1d
 
+
 # <<<<<<< test_xorsum_2d
 @triton.jit
 def triton_xorsum_2d(in_ptr0, out_ptr0, dim: tl.constexpr, M: tl.constexpr, N: tl.constexpr, MNUMEL: tl.constexpr,
@@ -101,13 +101,16 @@ def test_xorsum_2d(dtype, shape, dim):
             pytest.skip(f"dtype:{dtype} shape:{shape} mem overflow")
     shapex, shapey = shape
     x0 = test_common.generate_tensor(shape, dtype).npu()
-    triton_res = torch.empty([shape[1 - dim], ], dtype=eval("torch." + dtype)).npu()
+    triton_res = torch.empty([
+        shape[1 - dim],
+    ], dtype=eval("torch." + dtype)).npu()
     triton_xorsum_2d[1, 1, 1](x0, triton_res, dim, shapex, shapey, shapex, shapey)
     torch_res = torch_xorsum(x0, dim=dim, keepdim=False)
     test_common.validate_cmp(dtype, triton_res, torch_res)
 
 
 # >>>>>>> test_xorsum_2d
+
 
 # <<<<<<< test_xorsum_3d
 def torch_xorsum_3d(x0, no_reduce_dim):
@@ -123,8 +126,7 @@ def torch_xorsum_3d(x0, no_reduce_dim):
 
 
 @triton.jit
-def triton_xorsum_3d_0_1(in_ptr, out_ptr,
-                         xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr,
+def triton_xorsum_3d_0_1(in_ptr, out_ptr, xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr,
                          XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr):
     xidx = tl.arange(0, XB)
     yidx = tl.arange(0, YB)
@@ -138,8 +140,7 @@ def triton_xorsum_3d_0_1(in_ptr, out_ptr,
 
 
 @triton.jit
-def triton_xorsum_3d_0_2(in_ptr, out_ptr,
-                         xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr,
+def triton_xorsum_3d_0_2(in_ptr, out_ptr, xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr,
                          XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr):
     xidx = tl.arange(0, XB)
     yidx = tl.arange(0, YB)
@@ -153,8 +154,7 @@ def triton_xorsum_3d_0_2(in_ptr, out_ptr,
 
 
 @triton.jit
-def triton_xorsum_3d_1_2(in_ptr, out_ptr,
-                         xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr,
+def triton_xorsum_3d_1_2(in_ptr, out_ptr, xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr,
                          XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr):
     xidx = tl.arange(0, XB)
     yidx = tl.arange(0, YB)
@@ -181,7 +181,9 @@ def triton_xorsum_3d(in_ptr, out_ptr, xnumel, ynumel, znumel, XB, YB, ZB, no_red
 @pytest.mark.parametrize('no_reduce_dim', [0, 1, 2])
 def test_xorsum_3d(dtype, shape, no_reduce_dim):
     x0 = test_common.generate_tensor(shape, dtype).npu()
-    triton_res = torch.empty([shape[no_reduce_dim], ], dtype=eval("torch." + dtype)).npu()
+    triton_res = torch.empty([
+        shape[no_reduce_dim],
+    ], dtype=eval("torch." + dtype)).npu()
     triton_xorsum_3d(x0, triton_res, shape[0], shape[1], shape[2], shape[0], shape[1], shape[2], no_reduce_dim)
     torch_res = torch_xorsum_3d(x0, no_reduce_dim)
     test_common.validate_cmp(dtype, triton_res, torch_res)
@@ -192,7 +194,8 @@ def test_xorsum_3d(dtype, shape, no_reduce_dim):
 
 # <<<<<<< test_xorsum_4d
 @triton.jit
-def triton_xorsum_multi_d(in_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr, NB: tl.constexpr, DIMS: tl.constexpr, DIM: tl.constexpr, REDUCE_NUMEL: tl.constexpr):
+def triton_xorsum_multi_d(in_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr,
+                          NB: tl.constexpr, DIMS: tl.constexpr, DIM: tl.constexpr, REDUCE_NUMEL: tl.constexpr):
     offsets = tl.arange(0, XB) * (YB * ZB * MB * NB)
     if DIMS > 1:
         offsets = offsets[:, None] + tl.arange(0, YB)[None, :] * (ZB * MB * NB)
@@ -236,7 +239,7 @@ def test_xorsum_4d(dtype, shape, dim):
     while len(triton_shape) < 5:
         triton_shape.append(1)
     reduce_numel = math.prod(triton_shape) // triton_shape[dim] if dim is not None else None
-    grid = (1,)
+    grid = (1, )
     triton_xorsum_multi_d[grid](x0, triton_res, *triton_shape, len(shape), dim, reduce_numel)
     test_common.validate_cmp(dtype, triton_res, torch_res)
 
@@ -267,13 +270,12 @@ def test_xorsum_5d(dtype, shape, dim):
     while len(triton_shape) < 5:
         triton_shape.append(1)
     reduce_numel = math.prod(triton_shape) // triton_shape[dim] if dim is not None else None
-    grid = (1,)
+    grid = (1, )
     triton_xorsum_multi_d[grid](x0, triton_res, *triton_shape, len(shape), dim, reduce_numel)
     test_common.validate_cmp(dtype, triton_res, torch_res)
 
 
 # >>>>>>> test_xorsum_5d
-
 
 if __name__ == "__main__":
     test_xorsum_3d('int8', (3, 3, 3), 0)

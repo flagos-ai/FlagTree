@@ -50,7 +50,7 @@ module {
 // CHECK:           } -> tensor<256xi32>
 // CHECK:           %[[VAL_13:.*]] = linalg.fill ins(%[[VAL_6]] : i32) outs(%[[VAL_8]] : tensor<256xi32>) -> tensor<256xi32>
 // CHECK:           %[[VAL_14:.*]] = arith.addi %[[VAL_9]], %[[VAL_13]] : tensor<256xi32>
-// CHECK:           %[[VAL_15:.*]] = linalg.broadcast ins(%[[VAL_14]] : tensor<256xi32>) outs(%[[VAL_30]] : tensor<256x128xi32>) dimensions = [1] 
+// CHECK:           %[[VAL_15:.*]] = linalg.broadcast ins(%[[VAL_14]] : tensor<256xi32>) outs(%[[VAL_30]] : tensor<256x128xi32>) dimensions = [1]
 // CHECK:           %[[VAL_16:.*]] = tensor.empty() : tensor<128xi32>
 
 // CHECK:           %[[VAL_20:.*]] = linalg.generic {indexing_maps = [#map], iterator_types = ["parallel"]} outs(%[[VAL_16]] : tensor<128xi32>) {

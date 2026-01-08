@@ -25,7 +25,6 @@ import torch
 import triton
 import triton.language as tl
 
-
 sys.path.append("..")
 import test_common
 
@@ -58,10 +57,9 @@ def test_context_fwd_kernel(ptfile_path):
     except Exception as e:
         pytest.fail(f"load file {ptfile_path} failed: {str(e)}")
 
-
     input_data = test_common.convert_tensor_with_device_type(data["input_data"], device_type='npu')
-    deepgemm_compute_src2dst_triton_kernel[data['grid']](**input_data) 
-    
+    deepgemm_compute_src2dst_triton_kernel[data['grid']](**input_data)
+
     try:
         test_common.compare_data_precision(data["gpu_output"], input_data, device_type='cpu')
     except ValueError as e:

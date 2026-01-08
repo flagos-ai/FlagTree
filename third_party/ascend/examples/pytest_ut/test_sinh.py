@@ -28,8 +28,9 @@ import test_common
 import torch
 import torch_npu
 
+
 @triton.jit
-def triton_sinh(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.constexpr):
+def triton_sinh(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     offset = tl.program_id(0) * XBLOCK
     base1 = tl.arange(0, XBLOCK_SUB)
     loops1: tl.constexpr = XBLOCK // XBLOCK_SUB
@@ -40,23 +41,18 @@ def triton_sinh(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.conste
         tl.store(out_ptr0 + (x0), tmp1, None)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                'float32',
-                                'float16',
-                                'bfloat16'
-                            ])
+@pytest.mark.parametrize('param_list', ['float32', 'float16', 'bfloat16'])
 def test_sinh_special(param_list):
     dtype = param_list
-    x_near_zero = torch.linspace(-1.0, 1.0, 256, dtype=eval("torch."+dtype)).npu()
-    x_medium_neg = torch.linspace(-10.0, -1.0, 128, dtype=eval("torch."+dtype)).npu()
-    x_medium_pos = torch.linspace(1.0, 10.0, 128, dtype=eval("torch."+dtype)).npu()
+    x_near_zero = torch.linspace(-1.0, 1.0, 256, dtype=eval("torch." + dtype)).npu()
+    x_medium_neg = torch.linspace(-10.0, -1.0, 128, dtype=eval("torch." + dtype)).npu()
+    x_medium_pos = torch.linspace(1.0, 10.0, 128, dtype=eval("torch." + dtype)).npu()
 
-    x_large_neg = torch.linspace(-1e4, -10.0, 64, dtype=eval("torch."+dtype)).npu()
-    x_large_pos = torch.linspace(10.0, 1e4, 64, dtype=eval("torch."+dtype)).npu()
+    x_large_neg = torch.linspace(-1e4, -10.0, 64, dtype=eval("torch." + dtype)).npu()
+    x_large_pos = torch.linspace(10.0, 1e4, 64, dtype=eval("torch." + dtype)).npu()
 
     x0 = torch.cat([x_near_zero, x_medium_neg, x_medium_pos, x_large_neg, x_large_pos], dim=0)
-    
+
     y_ref = torch.sinh(x0)
     y_cal = torch.zeros_like(y_ref)
     triton_sinh[1, 1, 1](x0, y_cal, x0.shape[0], x0.shape[0])

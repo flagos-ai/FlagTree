@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import pytest
 
 import triton
@@ -29,15 +28,18 @@ import torch
 import torch_npu
 import test_common
 
+
 def torch_ceil(x0):
-    if x0.dtype in [torch.int8, torch.int16, torch.int32, torch.int64,
-                    torch.uint8, torch.uint16, torch.uint32, torch.uint64]:
+    if x0.dtype in [
+            torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8, torch.uint16, torch.uint32, torch.uint64
+    ]:
         return x0
     res = torch.ceil(x0)
     return res
 
+
 @triton.jit
-def triton_ceil(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.constexpr):
+def triton_ceil(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     offset = tl.program_id(0) * XBLOCK
     base1 = tl.arange(0, XBLOCK_SUB)
     loops1: tl.constexpr = XBLOCK // XBLOCK_SUB
@@ -48,26 +50,25 @@ def triton_ceil(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.conste
         tl.store(out_ptr0 + (x0), tmp1, None)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float16', (2, 4096, 8), 32, 2048, 64],
-                            #  ['bfloat16', (2, 4096, 8), 32, 2048, 64],
-                             ['float32', (2, 4096, 8), 32, 2048, 64],
-                            # ['int8', (2, 4096, 8), 32, 2048, 64],
-                            #  ['int16', (2, 4096, 8), 32, 2048, 64],
-                            #  ['int32', (2, 4096, 8), 32, 2048, 64],
-                            #  ['int64', (2, 4096, 8), 32, 2048, 64],
-                            # ['uint8', (2, 4096, 8), 32, 2048, 64],
-                            #  ['uint16', (2, 4096, 8), 32, 2048, 64],
-                            #  ['uint32', (2, 4096, 8), 32, 2048, 64],
-                            #  ['uint64', (2, 4096, 8), 32, 2048, 64],
-                         ])
+@pytest.mark.parametrize('param_list', [
+    ['float16', (2, 4096, 8), 32, 2048, 64],
+    #  ['bfloat16', (2, 4096, 8), 32, 2048, 64],
+    ['float32', (2, 4096, 8), 32, 2048, 64],
+    # ['int8', (2, 4096, 8), 32, 2048, 64],
+    #  ['int16', (2, 4096, 8), 32, 2048, 64],
+    #  ['int32', (2, 4096, 8), 32, 2048, 64],
+    #  ['int64', (2, 4096, 8), 32, 2048, 64],
+    # ['uint8', (2, 4096, 8), 32, 2048, 64],
+    #  ['uint16', (2, 4096, 8), 32, 2048, 64],
+    #  ['uint32', (2, 4096, 8), 32, 2048, 64],
+    #  ['uint64', (2, 4096, 8), 32, 2048, 64],
+])
 def test_ceil(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     np_x0 = test_common.generate_numpy(shape, dtype)
     x0 = torch.from_numpy(np_x0).to(eval('torch.' + dtype)).npu()
     y_ref = torch_ceil(x0)
-    
+
     y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     x0 = x0.npu()
     triton_ceil[ncore, 1, 1](x0, y_cal, xblock, xblock_sub, debug=True)

@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Relative Attention Bias Timestamps
 ===============
@@ -45,12 +44,10 @@ def create_pos_w(train_len: int, num_layers: int) -> torch.Tensor:
 
 
 def create_past_valid_lens(bs: int, past_len: int) -> torch.Tensor:
-    return torch.randint(0, past_len, (bs,))
+    return torch.randint(0, past_len, (bs, ))
 
 
-def create_timestamps(
-    train_len: int, candidate_len: int, past_valid_lens: torch.Tensor
-) -> torch.Tensor:
+def create_timestamps(train_len: int, candidate_len: int, past_valid_lens: torch.Tensor) -> torch.Tensor:
     bs = past_valid_lens.size(0)
     timestamps = torch.zeros(bs, train_len + candidate_len // 2)
     for i, valid_len in enumerate(past_valid_lens):
@@ -65,11 +62,7 @@ def create_timestamps(
 
 
 def create_timestamps_weights(num_layers: int):
-    return (
-        torch.arange(0, NUM_BUCKETS + 1)
-        .repeat(num_layers)
-        .reshape(NUM_BUCKETS + 1, num_layers)
-    )
+    return (torch.arange(0, NUM_BUCKETS + 1).repeat(num_layers).reshape(NUM_BUCKETS + 1, num_layers))
 
 
 def create_rab_time_grad(num_layers: int, batchsize: int, s: int):
@@ -100,9 +93,7 @@ def rab_time_forward_kernel(
     col_iter_num = tl.cdiv(BLOCK_SIZE, COL_BLOCK_SIZE)
 
     for col_idx in tl.range(0, col_iter_num):
-        cols_offsets = (
-            pid0 * BLOCK_SIZE + col_idx * COL_BLOCK_SIZE + tl.arange(0, COL_BLOCK_SIZE)
-        )
+        cols_offsets = (pid0 * BLOCK_SIZE + col_idx * COL_BLOCK_SIZE + tl.arange(0, COL_BLOCK_SIZE))
         cols_mask = cols_offsets < index_len
 
         out_mask = cols_offsets < index_len
@@ -138,9 +129,7 @@ def rab_time_forward_triton(ts_w, timestamps, bucketization_divisor):
     num_buckets = ts_w.shape[0] - 1
 
     timestamps_expanded = timestamps.unsqueeze(-1).repeat(1, 1, 2)
-    timestamps_expanded = timestamps_expanded.reshape(
-        bs, infer_len, 1
-    ) - timestamps_expanded.reshape(bs, 1, infer_len)
+    timestamps_expanded = timestamps_expanded.reshape(bs, infer_len, 1) - timestamps_expanded.reshape(bs, 1, infer_len)
 
     timestamps_expanded = timestamps_expanded.view(-1)
     timestamps_expanded = timestamps_expanded.contiguous()
@@ -149,9 +138,7 @@ def rab_time_forward_triton(ts_w, timestamps, bucketization_divisor):
     index_len = bs * infer_len * infer_len
 
     out = torch.empty((num_layers, index_len), dtype=ts_w.dtype, device=ts_w.device)
-    outer_loop_num, sub_num_layers, remain_layers = get_outer_loop_num(
-        num_layers, index_len
-    )
+    outer_loop_num, sub_num_layers, remain_layers = get_outer_loop_num(num_layers, index_len)
 
     CORE_NUM = get_npu_properties()["num_vectorcore"]
     BLOCK_SIZE = math.ceil(index_len / CORE_NUM)
@@ -181,15 +168,9 @@ def rab_time_forward_triton(ts_w, timestamps, bucketization_divisor):
 
 
 @triton.jit
-def rab_time_backward_kernel(
-    inp, src, index, index_len, BLOCK_SIZE: tl.constexpr, COL_BLOCK_SIZE: tl.constexpr
-):
+def rab_time_backward_kernel(inp, src, index, index_len, BLOCK_SIZE: tl.constexpr, COL_BLOCK_SIZE: tl.constexpr):
     pid0 = tl.program_id(axis=0)
-    total_col_num = (
-        BLOCK_SIZE
-        if pid0 * BLOCK_SIZE + BLOCK_SIZE < index_len
-        else index_len - pid0 * BLOCK_SIZE
-    )
+    total_col_num = (BLOCK_SIZE if pid0 * BLOCK_SIZE + BLOCK_SIZE < index_len else index_len - pid0 * BLOCK_SIZE)
     COL_BLOCK_SIZE = min(COL_BLOCK_SIZE, total_col_num)
     col_iter_num = (total_col_num + COL_BLOCK_SIZE - 1) // COL_BLOCK_SIZE
 
@@ -201,11 +182,8 @@ def rab_time_backward_kernel(
 
         acc_result = 0.0
         acc_result = acc_result.to(inp.dtype.element_ty)
-        cur_col_num = (
-            COL_BLOCK_SIZE
-            if col_start_offset + COL_BLOCK_SIZE < total_col_num
-            else total_col_num - col_start_offset
-        )
+        cur_col_num = (COL_BLOCK_SIZE if col_start_offset + COL_BLOCK_SIZE < total_col_num else total_col_num -
+                       col_start_offset)
 
         for cur_idx in range(0, cur_col_num):
             cur_offset = pid0 * BLOCK_SIZE + col_start_offset + cur_idx
@@ -226,31 +204,22 @@ def rab_time_backward_kernel(
         tl.atomic_add(inp + base_idx, acc_result)
 
 
-def rab_time_backward_triton(
-    rab_time_grad: torch.Tensor, bucket_timestamps: torch.Tensor
-):
+def rab_time_backward_triton(rab_time_grad: torch.Tensor, bucket_timestamps: torch.Tensor):
     num_layers, b, s, _ = rab_time_grad.shape
-    tsw_grad = torch.zeros(num_layers, NUM_BUCKETS, dtype=torch.float32).to(
-        rab_time_grad.device
-    )
+    tsw_grad = torch.zeros(num_layers, NUM_BUCKETS, dtype=torch.float32).to(rab_time_grad.device)
 
-    bucket_timestamps_expand = (
-        bucket_timestamps.reshape(b, s // 2, 1, s // 2, 1)
-        .repeat(1, 1, 2, 1, 2)
-        .reshape(b, s, s)
-        .to(torch.int64)
-    ).view(-1)
+    bucket_timestamps_expand = (bucket_timestamps.reshape(b, s // 2, 1, s // 2,
+                                                          1).repeat(1, 1, 2, 1, 2).reshape(b, s,
+                                                                                           s).to(torch.int64)).view(-1)
 
     index_len = bucket_timestamps_expand.numel()
 
     rab_time_grad_f32 = rab_time_grad.to(torch.float32)
-    sorted_bucket_timestamps_expand, sorted_idx = torch.sort(
-        bucket_timestamps_expand.view(-1)
-    )
+    sorted_bucket_timestamps_expand, sorted_idx = torch.sort(bucket_timestamps_expand.view(-1))
 
     torch.npu.synchronize()
 
-    grid = lambda meta: (triton.cdiv(index_len, meta["BLOCK_SIZE"]),)
+    grid = lambda meta: (triton.cdiv(index_len, meta["BLOCK_SIZE"]), )
 
     CORE_NUM = get_npu_properties()["num_vectorcore"]
     BLOCK_SIZE = math.ceil(index_len / CORE_NUM)
@@ -271,9 +240,7 @@ def rab_time_backward_triton(
     return tsw_grad
 
 
-def rab_time_forward_golden(
-    ts_w: torch.Tensor, timestamps: torch.Tensor, bucketization_divisor: float
-) -> torch.Tensor:
+def rab_time_forward_golden(ts_w: torch.Tensor, timestamps: torch.Tensor, bucketization_divisor: float) -> torch.Tensor:
     """
     torch realization of rab time forward for reference.
     """
@@ -282,15 +249,10 @@ def rab_time_forward_golden(
     num_layers = ts_w.shape[1]
 
     timestamps = timestamps.unsqueeze(-1).repeat(1, 1, 2)
-    diff_timestamps = timestamps.reshape(bs, infer_len, 1) - timestamps.reshape(
-        bs, 1, infer_len
-    )
+    diff_timestamps = timestamps.reshape(bs, infer_len, 1) - timestamps.reshape(bs, 1, infer_len)
 
     clamp_max = torch.exp(torch.tensor(NUM_BUCKETS * BUCKET_DIVISOR))
-    diff_timestamps = (
-        torch.log(torch.abs(diff_timestamps).clamp(1, clamp_max))
-        / bucketization_divisor
-    )
+    diff_timestamps = (torch.log(torch.abs(diff_timestamps).clamp(1, clamp_max)) / bucketization_divisor)
     bucket_timestamps = diff_timestamps.long()
     bucket_timestamps = bucket_timestamps.view(-1)
     result = torch.index_select(ts_w, dim=0, index=bucket_timestamps)
@@ -301,35 +263,23 @@ def rab_time_forward_golden(
     return result
 
 
-def rab_time_backward_golden(
-    rab_time_grad: torch.Tensor, bucket_timestamps: torch.Tensor
-):
+def rab_time_backward_golden(rab_time_grad: torch.Tensor, bucket_timestamps: torch.Tensor):
     """
     torch realization of rab time backward for reference.
     """
     num_layers, b, s, _ = rab_time_grad.shape
-    tsw_grad = torch.zeros(num_layers, NUM_BUCKETS, dtype=torch.float32).to(
-        rab_time_grad.device
-    )
+    tsw_grad = torch.zeros(num_layers, NUM_BUCKETS, dtype=torch.float32).to(rab_time_grad.device)
 
-    bucket_timestamps_expand = (
-        bucket_timestamps.reshape(b, s // 2, 1, s // 2, 1)
-        .repeat(1, 1, 2, 1, 2)
-        .reshape(b, s, s)
-        .to(torch.int64)
-    )
+    bucket_timestamps_expand = (bucket_timestamps.reshape(b, s // 2, 1, s // 2,
+                                                          1).repeat(1, 1, 2, 1, 2).reshape(b, s, s).to(torch.int64))
     for n, grad in enumerate(rab_time_grad.to(torch.float32)):
-        tsw_grad[n] = tsw_grad[n].scatter_add(
-            src=grad.view(-1), index=bucket_timestamps_expand.view(-1), dim=0
-        )
+        tsw_grad[n] = tsw_grad[n].scatter_add(src=grad.view(-1), index=bucket_timestamps_expand.view(-1), dim=0)
     return tsw_grad
 
 
 def rab_time_forward_test(num_layers, train_len, candidate_len, bs, dtype):
     past_valid_lens = create_past_valid_lens(bs, train_len).to(torch.int32)
-    timestamps = create_timestamps(train_len, candidate_len, past_valid_lens).to(
-        torch.int32
-    )
+    timestamps = create_timestamps(train_len, candidate_len, past_valid_lens).to(torch.int32)
     timestamps_weights = create_timestamps_weights(num_layers).to(dtype)
     timestamps = timestamps.npu()
     timestamps_weights = timestamps_weights.npu()
@@ -358,18 +308,12 @@ def rab_time_forward_test(num_layers, train_len, candidate_len, bs, dtype):
 
 def rab_time_backward_test(num_layers: int, batchsize: int, s: int, dtype: torch.dtype):
     grad = create_rab_time_grad(num_layers, batchsize, s).to(dtype).npu()
-    bucket_timestamps = (
-        create_bucket_timestamps(batchsize, s // 2).to(torch.int32).npu()
-    )
+    bucket_timestamps = (create_bucket_timestamps(batchsize, s // 2).to(torch.int32).npu())
 
     torch_npu.npu.synchronize()
 
-    golden_result = (
-        rab_time_backward_golden(grad, bucket_timestamps).to(torch.float32).cpu()
-    )
-    op_result = (
-        rab_time_backward_triton(grad, bucket_timestamps).to(torch.float32).cpu()
-    )
+    golden_result = (rab_time_backward_golden(grad, bucket_timestamps).to(torch.float32).cpu())
+    op_result = (rab_time_backward_triton(grad, bucket_timestamps).to(torch.float32).cpu())
 
     loss = 1e-4 if dtype == torch.float32 else 1e-3
     torch.testing.assert_close(op_result, golden_result, rtol=loss, atol=loss)
@@ -386,6 +330,4 @@ if __name__ == "__main__":
     rab_time_forward_test(num_layers, train_len, candidate_len, batch_size, data_type)
 
     print("running rab time backward test:")
-    rab_time_backward_test(
-        num_layers, batch_size, 2 * train_len + candidate_len, data_type
-    )
+    rab_time_backward_test(num_layers, batch_size, 2 * train_len + candidate_len, data_type)

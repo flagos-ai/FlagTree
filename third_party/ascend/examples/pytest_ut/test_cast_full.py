@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 
@@ -150,25 +149,14 @@ def cast_npu(para_type, data_type, to_para, to_dtype, XB, YB, ZB, overflow_mode)
 
     if para_type == "*i1":
         x = torch.randint(low=0, high=2, size=(XB, YB, ZB), dtype=data_type).npu()
-    elif (
-        para_type == "*i8"
-        or para_type == "*i16"
-        or para_type == "*i32"
-        or para_type == "*64"
-    ):
+    elif (para_type == "*i8" or para_type == "*i16" or para_type == "*i32" or para_type == "*64"):
         x = torch.randint(low=-128, high=128, size=(XB, YB, ZB), dtype=data_type).npu()
     elif para_type == "*i16":
-        x = torch.randint(
-            low=-32768, high=32768, size=(XB, YB, ZB), dtype=data_type
-        ).npu()
+        x = torch.randint(low=-32768, high=32768, size=(XB, YB, ZB), dtype=data_type).npu()
     elif para_type == "*i32":
-        x = torch.randint(
-            low=-65536, high=65536, size=(XB, YB, ZB), dtype=data_type
-        ).npu()
+        x = torch.randint(low=-65536, high=65536, size=(XB, YB, ZB), dtype=data_type).npu()
     elif para_type == "*i64":
-        x = torch.randint(
-            low=-65536, high=65536, size=(XB, YB, ZB), dtype=data_type
-        ).npu()
+        x = torch.randint(low=-65536, high=65536, size=(XB, YB, ZB), dtype=data_type).npu()
     else:  # float
         x = torch.randn((XB, YB, ZB), dtype=data_type).npu()
 

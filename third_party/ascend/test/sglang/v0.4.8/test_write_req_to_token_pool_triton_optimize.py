@@ -27,6 +27,7 @@ import triton.language as tl
 sys.path.append("..")
 import test_common
 
+
 # source: benchmark\kernels\scheduler_batch\benchmark_write_req_to_token_pool_triton.py
 @triton.jit
 def write_req_to_token_pool_triton_optimize(
@@ -60,15 +61,11 @@ def write_req_to_token_pool_triton_optimize(
     src_ptr = out_cache_loc + cumsum_start + actual_offset
     src_ptr = tl.max_contiguous(tl.multiple_of(src_ptr, BLOCK_SIZE), BLOCK_SIZE)
     value = tl.load(src_ptr, mask=mask)
-    dst_ptr = (
-        req_to_token_ptr
-        + req_pool_index * req_to_token_ptr_stride
-        + actual_offset
-        + pre_len
-    )
+    dst_ptr = (req_to_token_ptr + req_pool_index * req_to_token_ptr_stride + actual_offset + pre_len)
     dst_ptr = tl.max_contiguous(tl.multiple_of(dst_ptr, BLOCK_SIZE), BLOCK_SIZE)
 
     tl.store(dst_ptr, value, mask=mask)
+
 
 def test_write_req_to_token_pool_triton_optimize(ptfile_path):
     try:

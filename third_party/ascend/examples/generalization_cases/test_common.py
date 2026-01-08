@@ -29,58 +29,42 @@ import pytest
 import functools
 import numpy as np
 
-
-_float_dtypes = [
-    'float32', 'float16', 'bfloat16'
-]
-_int_dtypes = [
-    'int32', 'int64', 'int16', 'int8'
-]
-_uint_dtypes = [
-    'uint8', 'uint16', 'uint32', 'uint64'
-]
+_float_dtypes = ['float32', 'float16', 'bfloat16']
+_int_dtypes = ['int32', 'int64', 'int16', 'int8']
+_uint_dtypes = ['uint8', 'uint16', 'uint32', 'uint64']
 
 log_level = os.getenv("LOG_LEVEL", "WARN").upper()
 level_mapping = {
-    "DEBUG": logging.DEBUG,
-    "INFO": logging.INFO,
-    "WARN": logging.WARNING,
-    "ERROR": logging.ERROR,
-    "CRITICAL": logging.CRITICAL
+    "DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARN": logging.WARNING, "ERROR": logging.ERROR, "CRITICAL":
+    logging.CRITICAL
 }
 
-logging.basicConfig(
-    level=level_mapping.get(log_level, logging.WARNING),
-    format="[%(asctime)s][%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=level_mapping.get(log_level, logging.WARNING),
+                    format="[%(asctime)s][%(levelname)s] %(message)s")
 
 bisheng_not_support_dtypes = {
-    'abs': [],
-    'eq':  [],
-    'ne':  [],
-    'flip':['int64', 'bfloat16'],
-    'load_store': ['int64'],
-    'permute2d':  ['int64'],
-    'permute3d':  ['int64'],
-    'trans2d':    ['int64'],
-    'trans3d':    ['int64'],
-    'matmul':        ['int16', 'int32', 'uint32', 'int64', 'bool']
+    'abs': [], 'eq': [], 'ne': [], 'flip': ['int64',
+                                            'bfloat16'], 'load_store': ['int64'], 'permute2d': ['int64'], 'permute3d':
+    ['int64'], 'trans2d': ['int64'], 'trans3d': ['int64'], 'matmul': ['int16', 'int32', 'uint32', 'int64', 'bool']
 }
 
 tritonascend_not_support_dtypes = {
     'abs': ['bool'],
-    'eq':  ['bool'],
-    'ne':  ['bool'],
-    'flip':['bool'],
+    'eq': ['bool'],
+    'ne': ['bool'],
+    'flip': ['bool'],
     'load_store': ['bool'],
-    'permute2d':  ['bool'],
-    'permute3d':  ['bool'],
-    'trans2d':    ['bool'],
-    'trans3d':    ['bool'],
+    'permute2d': ['bool'],
+    'permute3d': ['bool'],
+    'trans2d': ['bool'],
+    'trans3d': ['bool'],
 }
 
+
 def avoid_not_support(op: AnyStr):
+
     def decorator(test_func):
+
         @functools.wraps(test_func)
         def wrapper(shape, dtype, *args, **kwargs):
             if dtype in bisheng_not_support_dtypes.get(op, []):
@@ -90,16 +74,19 @@ def avoid_not_support(op: AnyStr):
                 logging.warn(f'skiped triton ascend not support dtype:{dtype}')
                 return
             return test_func(shape, dtype, *args, **kwargs)
+
         return wrapper
+
     return decorator
 
 
 def get_shape1d(in_shape1d):
     result = []
     for i in in_shape1d:
-        v = tuple((i,))
+        v = tuple((i, ))
         result.append(v)
     return result
+
 
 def get_shape2d(in_shape1d, custom_shape):
     result = []
@@ -113,11 +100,16 @@ def get_shape2d(in_shape1d, custom_shape):
                 result.append(t2)
     return result
 
+
 def get_shape3d():
-    return [(1,22,39),(27,1,39),(27,22,1),(23,1,1),(1,23,1),(1,1,23),(37,5,3),(2,29,4),(7,31,7),(3,5,8),(7,17,15),(23,5,16),(23,5,31),(7,11,32),(7,11,33),(2,3,255),(3,3,256),(3,2,257)]
+    return [(1, 22, 39), (27, 1, 39), (27, 22, 1), (23, 1, 1), (1, 23, 1), (1, 1, 23), (37, 5, 3), (2, 29, 4),
+            (7, 31, 7), (3, 5, 8), (7, 17, 15), (23, 5, 16), (23, 5, 31), (7, 11, 32), (7, 11, 33), (2, 3, 255),
+            (3, 3, 256), (3, 2, 257)]
+
 
 def get_shape1_2_3d(in_shape1d, custom_shape):
     return get_shape1d(in_shape1d) + get_shape2d(in_shape1d, custom_shape) + get_shape3d()
+
 
 class TestUtils:
     in_shape1d = [1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 37, 741]
@@ -125,9 +117,26 @@ class TestUtils:
     batch = [1, 2, 3, 4, 5, 8]
     test_shape1d = get_shape1d(in_shape1d)
     test_shape2d = get_shape2d(in_shape1d, custom_shape)
-    test_shape3d = [(1,22,39), (27,1,39), (27,22,1), (1,1,23), (23,1,1), (1,23,1),
-                    (37,5,3), (2,29,4), (7,31,7), (3,5,8), (7,17,15), (25,5,16),
-                    (23,5,31), (7,11,32), (7,11,33), (2,3,255), (3,3,256), (3,2,257),]
+    test_shape3d = [
+        (1, 22, 39),
+        (27, 1, 39),
+        (27, 22, 1),
+        (1, 1, 23),
+        (23, 1, 1),
+        (1, 23, 1),
+        (37, 5, 3),
+        (2, 29, 4),
+        (7, 31, 7),
+        (3, 5, 8),
+        (7, 17, 15),
+        (25, 5, 16),
+        (23, 5, 31),
+        (7, 11, 32),
+        (7, 11, 33),
+        (2, 3, 255),
+        (3, 3, 256),
+        (3, 2, 257),
+    ]
     test_shape4d = [(8, 4, 8, 8), (1, 11, 16, 2)]
     test_shape5d = [(2, 3, 4, 5, 6), (1, 3, 4, 5, 6), (3, 6, 2, 4, 4)]
     test_shape6d = [(2, 3, 5, 6, 3, 2)]
@@ -142,6 +151,7 @@ class TestUtils:
     ub_size = 98304 * 2
     dtype_list = full_dtype
 
+
 def get_dtype_size(dtype):
     torch_dtype = eval('torch.' + dtype)
     bits = 0
@@ -151,7 +161,8 @@ def get_dtype_size(dtype):
         bits = torch.finfo(torch_dtype).bits
     else:
         bits = torch.iinfo(torch_dtype).bits
-    return bits//8
+    return bits // 8
+
 
 def check_ub_mem_overflow(dtype, shape):
     bytes = get_dtype_size(dtype)
@@ -223,8 +234,10 @@ def get_triton_sig_typename(dtype):
         raise ValueError('Invalid parameter \"dtype\" is found : {}'.format(dtype))
     return tyname
 
+
 # Relative error: abs(x_ref - x_cal) / abs(x_ref)
 # Absolute error: abs(x_ref - x_cal)
+
 
 # calculation type operators require different error range
 # It is a stricter verification and not satisfied now, save it here
@@ -291,17 +304,25 @@ def validate_cmp_with_expection(dtype, y_cal, y_ref, expect):
     else:
         raise ValueError('Invalid parameter \"dtype\" is found : {}'.format(dtype))
 
+
 def raises_with_match(expected_exception, match_pattern):
+
     def decorator(test_func):
+
         @functools.wraps(test_func)
         def wrapper(*args, **kwargs):
             with pytest.raises(expected_exception, match=match_pattern):
                 return test_func(*args, **kwargs)
+
         return wrapper
+
     return decorator
 
+
 def capture_output(expected_output):
+
     def decorator(test_func):
+
         @functools.wraps(test_func)
         def wrapper(*args, **kwargs):
             capsys = kwargs.pop('capsys', None)
@@ -316,5 +337,7 @@ def capture_output(expected_output):
             # for now, no idea how to eliminate \x00 from C++ side.
             cleaned = re.sub(r"\x00", "", captured.out)
             assert expected_output in cleaned
+
         return wrapper
+
     return decorator

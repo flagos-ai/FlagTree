@@ -16,8 +16,8 @@ module {
 
 // CHECK-DAG:   [[MAP_0_:#.+]] = affine_map<(d0) -> (d0)>
 // CHECK-LABEL:  func.func @rand(
-// CHECK-SAME:    %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, 
-// CHECK-SAME:   [[PARAM_0_:%.+]]: memref<?xi32> {tt.tensor_kind = 0 : i32}, [[PARAM_1_:%.+]]: memref<?xi32> {tt.tensor_kind = 1 : i32}, [[PARAM_2_:%.+]]: i32, [[PARAM_3_:%.+]]: i32, [[PARAM_4_:%.+]]: i32, [[PARAM_5_:%.+]]: i32, [[PARAM_6_:%.+]]: i32, [[PARAM_7_:%.+]]: i32) 
+// CHECK-SAME:    %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>,
+// CHECK-SAME:   [[PARAM_0_:%.+]]: memref<?xi32> {tt.tensor_kind = 0 : i32}, [[PARAM_1_:%.+]]: memref<?xi32> {tt.tensor_kind = 1 : i32}, [[PARAM_2_:%.+]]: i32, [[PARAM_3_:%.+]]: i32, [[PARAM_4_:%.+]]: i32, [[PARAM_5_:%.+]]: i32, [[PARAM_6_:%.+]]: i32, [[PARAM_7_:%.+]]: i32)
 // CHECK-SAME:   attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 // CHECK:           [[VAR_0_:%.+]] = tensor.empty() : tensor<8xi32>
 // CHECK:           [[VAR_1_:%.+]] = linalg.generic {indexing_maps = [#map], iterator_types = ["parallel"]} outs([[VAR_0_]] : tensor<8xi32>) {

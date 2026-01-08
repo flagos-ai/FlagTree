@@ -49,12 +49,8 @@ def gelu_and_mul_kernel(
     input3_offs = hidden_dim + tl.arange(0, BLOCK_SIZE)
     output_offs = tl.arange(0, BLOCK_SIZE)
 
-    x1 = tl.load(
-        hidden_states_ptr + input_start + input1_offs, mask=mask, other=0.0
-    ).to(tl.float32)
-    x3 = tl.load(
-        hidden_states_ptr + input_start + input3_offs, mask=mask, other=0.0
-    ).to(tl.float32)
+    x1 = tl.load(hidden_states_ptr + input_start + input1_offs, mask=mask, other=0.0).to(tl.float32)
+    x3 = tl.load(hidden_states_ptr + input_start + input3_offs, mask=mask, other=0.0).to(tl.float32)
 
     # gelu
     # cast down before mul to better match training?

@@ -39,6 +39,7 @@ from test_common import TestUtils, check_ub_mem_overflow, get_dtype_size
     ([128, 64], [128, 128], 1),
 ])
 def test_gather(src_shape, indices_shape, axis):
+
     @triton.jit
     def gather_kernel(src_ptr, idx_ptr, out_ptr, axis: tl.constexpr, src_dim0: tl.constexpr, src_dim1: tl.constexpr,
                       src_stride0: tl.constexpr, src_stride1: tl.constexpr, idx_dim0: tl.constexpr,
@@ -58,13 +59,9 @@ def test_gather(src_shape, indices_shape, axis):
 
     def triton_gather(src: torch.Tensor, axis: int, indices: torch.Tensor):
         output = torch.empty(indices.shape, dtype=src.dtype, device=src.device)
-        gather_kernel[(1, )](src, indices, output, axis,
-                             src.shape[0], src.shape[1],
-                             src.stride(0), src.stride(1),
-                             indices.shape[0], indices.shape[1],
-                             indices.stride(0), indices.stride(1),
-                             output.shape[0], output.shape[1],
-                             output.stride(0), output.stride(1))
+        gather_kernel[(1, )](src, indices, output, axis, src.shape[0], src.shape[1],
+                             src.stride(0), src.stride(1), indices.shape[0], indices.shape[1], indices.stride(0),
+                             indices.stride(1), output.shape[0], output.shape[1], output.stride(0), output.stride(1))
         return output
 
     DEV = "npu"
@@ -82,7 +79,10 @@ def test_gather(src_shape, indices_shape, axis):
 
 
 @triton.jit
-def gather_kernel_multi_d(src_ptr, idx_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr, NB: tl.constexpr, I_XB: tl.constexpr, I_YB: tl.constexpr, I_ZB: tl.constexpr, I_MB: tl.constexpr, I_NB: tl.constexpr, DIMS: tl.constexpr, AXIS: tl.constexpr):
+def gather_kernel_multi_d(src_ptr, idx_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr,
+                          MB: tl.constexpr, NB: tl.constexpr, I_XB: tl.constexpr, I_YB: tl.constexpr,
+                          I_ZB: tl.constexpr, I_MB: tl.constexpr, I_NB: tl.constexpr, DIMS: tl.constexpr,
+                          AXIS: tl.constexpr):
     in_offsets = tl.arange(0, XB) * (YB * ZB * MB * NB)
     if DIMS > 1:
         in_offsets = in_offsets[:, None] + tl.arange(0, YB)[None, :] * (ZB * MB * NB)

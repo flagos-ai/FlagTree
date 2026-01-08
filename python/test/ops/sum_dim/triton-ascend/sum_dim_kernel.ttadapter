@@ -44,7 +44,7 @@ module {
     }
     %7 = tensor.empty() : tensor<8xf32>
     %8 = linalg.fill ins(%cst : f32) outs(%7 : tensor<8xf32>) -> tensor<8xf32>
-    %reduced = linalg.reduce ins(%6 : tensor<8x256xf32>) outs(%8 : tensor<8xf32>) dimensions = [1] 
+    %reduced = linalg.reduce ins(%6 : tensor<8x256xf32>) outs(%8 : tensor<8xf32>) dimensions = [1]
       (%in: f32, %init: f32) {
         %13 = arith.addf %in, %init : f32
         linalg.yield %13 : f32
@@ -60,4 +60,3 @@ module {
     return
   }
 }
-

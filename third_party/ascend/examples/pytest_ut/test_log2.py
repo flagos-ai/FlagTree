@@ -42,11 +42,9 @@ def triton_log2(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexp
         tl.store(out_ptr0 + x_inedx, tmp2, None)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_log2(param_list):
     # 生成数据
     dtype, shape, ncore, xblock, xblock_sub = param_list

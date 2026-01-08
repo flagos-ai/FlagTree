@@ -43,14 +43,13 @@ def triton_invert(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: t
         tl.store(out_ptr0 + (xindex), tmp2, xmask)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['int8', (2, 4096, 8), 2, 32768, 1024],
-                             ['int16', (2, 4096, 8), 2, 32768, 1024],
-                             ['int32', (2, 4096, 8), 2, 32768, 1024],
-                             ['int64', (2, 4096, 8), 2, 32768, 1024],
-                             ['bool', (2, 4096, 8), 2, 32768, 1024],
-                         ])
+@pytest.mark.parametrize('param_list', [
+    ['int8', (2, 4096, 8), 2, 32768, 1024],
+    ['int16', (2, 4096, 8), 2, 32768, 1024],
+    ['int32', (2, 4096, 8), 2, 32768, 1024],
+    ['int64', (2, 4096, 8), 2, 32768, 1024],
+    ['bool', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_invert(param_list):
     # 生成数据
     dtype, shape, ncore, xblock, xblock_sub = param_list

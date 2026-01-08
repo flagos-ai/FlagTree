@@ -29,7 +29,7 @@ import test_common
 @triton.jit
 def promote_to_tensor(x):
     # Addition promotes to tensor for us
-    return x + tl.zeros((1,), tl.int1)
+    return x + tl.zeros((1, ), tl.int1)
 
 
 @triton.jit
@@ -85,7 +85,7 @@ def triton_4(in_ptr2, in_ptr4, out_ptr10, x0_numel, r1_numel, XBLOCK: tl.constex
 def test_max_with_index_dim0():
     mask = torch.randint(low=0, high=2, size=(512, 2, 4), dtype=torch.int32).npu()
     weights = torch.randn((512, 4), device='npu', dtype=torch.float32)
-    buf32 = torch.randint(low=0, high=8, size=(512,), dtype=torch.int32).npu()
+    buf32 = torch.randint(low=0, high=8, size=(512, ), dtype=torch.int32).npu()
     XBLOCK = 32
     XBLOCK_SUB = 32
     triton_4[16, 1, 1](mask, weights, buf32, 512, 4, XBLOCK, XBLOCK_SUB)

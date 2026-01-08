@@ -10,7 +10,6 @@ import torch_npu
 import triton
 import triton.language as tl
 
-
 expected_prints = [
     "Offsets:",
     "Mask:",
@@ -31,7 +30,8 @@ def test_comprehensive_print():
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
         temp_script = f.name
 
-        f.write(textwrap.dedent(f"""
+        f.write(
+            textwrap.dedent(f"""
 import os
 import sys
 import subprocess
@@ -98,7 +98,7 @@ def test_comprehensive_print():
     BLOCK_SIZE = 32
 
     h = comprehensive_print_kernel[1,](x, y, mask, size, BLOCK_SIZE=BLOCK_SIZE)
-    
+
     expected = x * 2.0 + 1.0
     torch.testing.assert_close(y, expected, rtol=1e-5, atol=1e-5)
 
@@ -113,13 +113,8 @@ if __name__ == "__main__":
     test_comprehensive_print()
         """))
 
-    result = subprocess.run(
-        [sys.executable, temp_script],
-        capture_output=True,
-        text=True,
-        env=os.environ.copy()
-    )
-    
+    result = subprocess.run([sys.executable, temp_script], capture_output=True, text=True, env=os.environ.copy())
+
     captured_output = result.stdout + "\n=== STDERR ===\n" + result.stderr
 
     assert "passed!" in captured_output

@@ -50,7 +50,7 @@ module {
 }
 
 // CHECK-LABEL:  func.func @kernel
-// CHECK-SAME:   (%[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, [[PARAM_0_:%.+]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, [[PARAM_1_:%.+]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, [[PARAM_2_:%.+]]: memref<?xbf16> {tt.tensor_kind = 2 : i32}, 
+// CHECK-SAME:   (%[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, [[PARAM_0_:%.+]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, [[PARAM_1_:%.+]]: memref<?xbf16> {tt.tensor_kind = 0 : i32}, [[PARAM_2_:%.+]]: memref<?xbf16> {tt.tensor_kind = 2 : i32},
 // CHECK-SAME:   %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32, %arg9: i32, %arg10: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "mix"} {
 // CHECK-DAG:       [[VAR_reinterpret_cast_:%.+]] = memref.reinterpret_cast [[PARAM_0_]] to offset: [0], sizes: [128, 64], strides: [128, 1] : memref<?xbf16> to memref<128x64xbf16, strided<[128, 1]>>
 // CHECK-DAG:       [[RES_:%.+]] = memref.alloc() : memref<128x64xbf16>

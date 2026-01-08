@@ -28,7 +28,7 @@ sys.path.append("..")
 import test_common
 
 
-# source: 
+# source:
 #   sgl-kernel/tests/test_moe_align.py
 #   sgl-kernel/benchmark/bench_moe_align_block_size.py
 #   python/sglang/srt/layers/moe/fused_moe_triton/fused_moe.py

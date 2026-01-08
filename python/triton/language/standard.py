@@ -3,7 +3,6 @@ from __future__ import annotations
 from ..runtime.jit import jit
 from . import core
 from . import math
-from functools import wraps
 import sys
 
 # constexpr utilities
@@ -11,21 +10,21 @@ import sys
 
 # flagtree backend language.standard func specialization
 def spec_standard_func(spec):
-    standard_spec_func_list = spec.standard_ext_spec_func_list
+    standard_spec_api_list = spec.standard_ext_spec_api_list
 
     current_module_name = __name__
     parent_module_name = '.'.join(current_module_name.split('.')[:-1])
     math_module_name = f"{parent_module_name}.math"
 
-    for spec_func_name in standard_spec_func_list:
-        if hasattr(spec, spec_func_name):
-            spec_func = getattr(spec, spec_func_name)
+    for spec_api_name in standard_spec_api_list:
+        if hasattr(spec, spec_api_name):
+            spec_api = getattr(spec, spec_api_name)
             # triton.language.standard
-            setattr(sys.modules[__name__], spec_func.__name__, spec_func)
+            setattr(sys.modules[__name__], spec_api.__name__, spec_api)
             # triton.language
-            setattr(sys.modules[parent_module_name], spec_func.__name__, spec_func)
+            setattr(sys.modules[parent_module_name], spec_api.__name__, spec_api)
             # triton.language.math
-            setattr(sys.modules[math_module_name], spec_func.__name__, spec_func)
+            setattr(sys.modules[math_module_name], spec_api.__name__, spec_api)
 
 
 def _log2(i: core.constexpr):

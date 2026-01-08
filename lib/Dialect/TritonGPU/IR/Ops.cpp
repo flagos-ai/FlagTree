@@ -19,7 +19,7 @@ LogicalResult UpcastMXFPOp::verify() {
 
 #if LLVM_VERSION_MAJOR < 21
   if (xTy.getElementType() != FloatType::getBF16(getContext()) &&
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
   if (xTy.getElementType() != BFloat16Type::get(getContext()) &&
 #endif
       xTy.getElementType() != IntegerType::get(getContext(), 8)) {

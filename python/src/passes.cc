@@ -83,7 +83,7 @@ void init_triton_passes_convert(py::module &&m) {
   using namespace mlir;
 #if LLVM_VERSION_MAJOR < 21
   ADD_PASS_WRAPPER_0("add_scf_to_cf", createConvertSCFToCFPass);
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
   ADD_PASS_WRAPPER_0("add_scf_to_cf", createSCFToControlFlowPass);
 #endif
   ADD_PASS_WRAPPER_0("add_cf_to_llvmir", createConvertControlFlowToLLVMPass);

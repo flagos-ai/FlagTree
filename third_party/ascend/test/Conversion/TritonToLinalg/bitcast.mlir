@@ -41,5 +41,3 @@ module {
 // CHECK:   bufferization.materialize_in_destination [[VAR_2_]] in writable [[RC_0_]]
 // CHECK:     return
 // CHECK:   }
-
-

@@ -129,7 +129,7 @@ module {
 // CHECK:           [[VAR_10_:%.+]] = arith.muli [[VAR_9_]], [[CST_8_]] : i32
 // CHECK:           [[VAR_11_:%.+]] = arith.subi [[VAR_3_]], [[VAR_10_]] : i32
 // CHECK:           [[VAR_12_:%.+]] = arith.cmpi slt, [[VAR_11_]], [[CST_8_]] : i32
-// CHECK:           [[VAR_12_1:%.+]] = arith.select [[VAR_12_]], [[VAR_11_]], [[CST_8_]] : i32 
+// CHECK:           [[VAR_12_1:%.+]] = arith.select [[VAR_12_]], [[VAR_11_]], [[CST_8_]] : i32
 // CHECK:           [[VAR_13_:%.+]] = arith.remsi [[PARAM_15_]], [[VAR_12_1]] : i32
 // CHECK-DAG:       [[VAR_14_:%.+]] = arith.addi [[VAR_10_]], [[VAR_13_]] : i32
 // CHECK-DAG:       [[VAR_15_:%.+]] = arith.remsi [[PARAM_15_]], [[VAR_8_]] : i32

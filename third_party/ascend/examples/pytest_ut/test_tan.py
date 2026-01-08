@@ -29,6 +29,7 @@ import torch_npu
 
 import triton.language.extra.ascend.libdevice as libdevice
 
+
 def standard_unary(x0, dtype):
     res = torch.tan(x0)
     return res
@@ -76,6 +77,7 @@ shapes = [
 
 map_for_64_t = {37: 31}
 
+
 @pytest.mark.skip(reason="randomly failed accuracy test")
 @pytest.mark.parametrize('dtype,sigtype', types)
 @pytest.mark.parametrize('N,NUMEL', shapes)
@@ -87,13 +89,13 @@ def test_elementwsie_common(dtype, sigtype, N, NUMEL):
 
     print(f"elementwise : ({N},) {dtype} {sigtype}")
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype)
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype)
 
     ans = standard_unary(x0, dtype)
     x0 = x0.npu()
     print(ans)
 
-    out = torch.zeros((N,), dtype=dtype).npu()
+    out = torch.zeros((N, ), dtype=dtype).npu()
     triton_elementwise_unary[1, 1, 1](x0, out, N=N, NUMEL=NUMEL, debug=True)
     print(out)
 

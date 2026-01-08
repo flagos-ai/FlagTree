@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 import torch
@@ -28,8 +27,7 @@ import test_common
 
 
 @triton.jit
-def fn_npu_(in_ptr0, out_ptr0, xnumel, ynumel,
-            XBLOCK: tl.constexpr, RBLOCK: tl.constexpr):
+def fn_npu_(in_ptr0, out_ptr0, xnumel, ynumel, XBLOCK: tl.constexpr, RBLOCK: tl.constexpr):
     X = xnumel
     Y = ynumel
     xoffset = tl.program_id(0) * XBLOCK
@@ -60,10 +58,9 @@ def bar(tensor):
     return result
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['int8', (64, 32), 64, 32],
-                         ])
+@pytest.mark.parametrize('param_list', [
+    ['int8', (64, 32), 64, 32],
+])
 def test_case(param_list):
     dtype, shape, xblock, rblock = param_list
     a = test_common.generate_tensor(shape, dtype).npu()
@@ -71,7 +68,7 @@ def test_case(param_list):
     std_ret = bar(a)
     print(f"std_ret={std_ret}")
 
-    value = torch.empty_strided((a.shape[0],), (1,), dtype=eval('torch.' + dtype)).npu()
+    value = torch.empty_strided((a.shape[0], ), (1, ), dtype=eval('torch.' + dtype)).npu()
     XBLOCK = xblock
     RBLOCK = rblock
     NBLOCK = a.shape[0] // XBLOCK

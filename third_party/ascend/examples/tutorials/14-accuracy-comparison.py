@@ -40,12 +40,11 @@ def test_add(x0, x1):
 
     # 2. 定义 Triton kernel（在 NPU/GPU 上执行）
     @triton.jit
-    def triton_kernel_add(
-            out_ptr0,  # 输出指针：结果存储位置
-            in_ptr0,  # 输入指针0：x0 的起始地址
-            in_ptr1,  # 输入指针1：x1 的起始地址
-            XS: tl.constexpr  # constexpr 参数：向量长度，在编译时确定
-    ):
+    def triton_kernel_add(out_ptr0,  # 输出指针：结果存储位置
+                          in_ptr0,  # 输入指针0：x0 的起始地址
+                          in_ptr1,  # 输入指针1：x1 的起始地址
+                          XS: tl.constexpr  # constexpr 参数：向量长度，在编译时确定
+                          ):
         # 生成 [0, 1, 2, ..., XS-1] 的索引数组
         idx = tl.arange(0, XS)
         # 从 in_ptr0 + idx 处加载 x0 的值
@@ -74,7 +73,8 @@ def test_add(x0, x1):
 
     # 6. 打印成功信息
     print(
-        f"== dtype:{triton_cal.dtype} == The accuracy comparison between triton_result and torch_result was successful.")
+        f"== dtype:{triton_cal.dtype} == The accuracy comparison between triton_result and torch_result was successful."
+    )
 
 
 def accuracy_comparison(y_cal, y_ref):
@@ -100,13 +100,8 @@ def accuracy_comparison(y_cal, y_ref):
         torch.testing.assert_close(y_ref, y_cal, rtol=1e-3, atol=1e-3, equal_nan=True)
     elif tensor_dtype == torch.bfloat16:
         # bfloat16 精度更低，建议转为 float32 再比较
-        torch.testing.assert_close(
-            y_ref.to(torch.float32),
-            y_cal.to(torch.float32),
-            rtol=1e-3,
-            atol=1e-3,
-            equal_nan=True
-        )
+        torch.testing.assert_close(y_ref.to(torch.float32), y_cal.to(torch.float32), rtol=1e-3, atol=1e-3,
+                                   equal_nan=True)
     elif tensor_dtype == torch.float32:
         # float32 精度较高，使用更严格的容差
         torch.testing.assert_close(y_ref, y_cal, rtol=1e-4, atol=1e-4, equal_nan=True)
@@ -131,29 +126,29 @@ if __name__ == "__main__":
     high = 100
 
     # 创建各种数据类型的测试张量（已移至 NPU）
-    x0_fp32 = torch.rand((N,), dtype=torch.float32).npu()
-    x1_fp32 = torch.rand((N,), dtype=torch.float32).npu()
+    x0_fp32 = torch.rand((N, ), dtype=torch.float32).npu()
+    x1_fp32 = torch.rand((N, ), dtype=torch.float32).npu()
 
-    x0_fp16 = torch.rand((N,), dtype=torch.float16).npu()
-    x1_fp16 = torch.rand((N,), dtype=torch.float16).npu()
+    x0_fp16 = torch.rand((N, ), dtype=torch.float16).npu()
+    x1_fp16 = torch.rand((N, ), dtype=torch.float16).npu()
 
-    x0_bf16 = torch.rand((N,), dtype=torch.bfloat16).npu()
-    x1_bf16 = torch.rand((N,), dtype=torch.bfloat16).npu()
+    x0_bf16 = torch.rand((N, ), dtype=torch.bfloat16).npu()
+    x1_bf16 = torch.rand((N, ), dtype=torch.bfloat16).npu()
 
-    x0_i64 = torch.randint(low=low, high=high, size=(N,), dtype=torch.int64).npu()
-    x1_i64 = torch.randint(low=low, high=high, size=(N,), dtype=torch.int64).npu()
+    x0_i64 = torch.randint(low=low, high=high, size=(N, ), dtype=torch.int64).npu()
+    x1_i64 = torch.randint(low=low, high=high, size=(N, ), dtype=torch.int64).npu()
 
-    x0_i32 = torch.randint(low=low, high=high, size=(N,), dtype=torch.int32).npu()
-    x1_i32 = torch.randint(low=low, high=high, size=(N,), dtype=torch.int32).npu()
+    x0_i32 = torch.randint(low=low, high=high, size=(N, ), dtype=torch.int32).npu()
+    x1_i32 = torch.randint(low=low, high=high, size=(N, ), dtype=torch.int32).npu()
 
-    x0_i16 = torch.randint(low=low, high=high, size=(N,), dtype=torch.int16).npu()
-    x1_i16 = torch.randint(low=low, high=high, size=(N,), dtype=torch.int16).npu()
+    x0_i16 = torch.randint(low=low, high=high, size=(N, ), dtype=torch.int16).npu()
+    x1_i16 = torch.randint(low=low, high=high, size=(N, ), dtype=torch.int16).npu()
 
-    x0_i8 = torch.randint(low=low, high=high, size=(N,), dtype=torch.int8).npu()
-    x1_i8 = torch.randint(low=low, high=high, size=(N,), dtype=torch.int8).npu()
+    x0_i8 = torch.randint(low=low, high=high, size=(N, ), dtype=torch.int8).npu()
+    x1_i8 = torch.randint(low=low, high=high, size=(N, ), dtype=torch.int8).npu()
 
-    x0_i1 = torch.randint(low=0, high=2, size=(N,)).bool().npu()
-    x1_i1 = torch.randint(low=0, high=2, size=(N,)).bool().npu()
+    x0_i1 = torch.randint(low=0, high=2, size=(N, )).bool().npu()
+    x1_i1 = torch.randint(low=0, high=2, size=(N, )).bool().npu()
 
     # 测试用例列表：(名称, x0, x1)
     test_cases = [

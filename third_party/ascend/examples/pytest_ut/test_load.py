@@ -28,6 +28,7 @@ import test_common
 # eg: pytest -v test.py::test_add
 #############################
 
+
 @triton.jit
 def triton_load_store(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     xoffset = tl.program_id(0) * XBLOCK
@@ -42,12 +43,11 @@ def triton_load_store(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SU
 
 # require: all data (4d and 5d) can be placed into but without ub overflow
 @triton.jit
-def triton_load_store_multi_d(
-    in_ptr0, out_ptr0, 
-    BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr,
-    SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr,
-    STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr
-):
+def triton_load_store_multi_d(in_ptr0, out_ptr0, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                              BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr,
+                              SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
+                              SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr,
+                              STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr):
     offsets = tl.program_id(0)
 
     offsets = offsets + tl.arange(0, BLOCK_0) * STRIDE_0
@@ -70,18 +70,15 @@ def triton_load_store_multi_d(
     tl.store(out_ptr0 + offsets, tmp_out, masks)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                             ['float16', (2, 4096, 8), 2, 32768, 1024],
-                             ['int8', (2, 4096, 8), 2, 32768, 1024],
-                             ['float32', (8, 8, 4), 2, 128, 64],
-                             ['float16', (8, 8, 4), 2, 128, 64],
-                             ['int8', (8, 8, 4), 2, 128, 64],
-                             ['int8', (8, 7, 4), 2, 128, 64],
-
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+    ['int8', (2, 4096, 8), 2, 32768, 1024],
+    ['float32', (8, 8, 4), 2, 128, 64],
+    ['float16', (8, 8, 4), 2, 128, 64],
+    ['int8', (8, 8, 4), 2, 128, 64],
+    ['int8', (8, 7, 4), 2, 128, 64],
+])
 def test_load_store(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()
@@ -91,22 +88,20 @@ def test_load_store(param_list):
     test_common.validate_cmp(dtype, y_cal, y_ref)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (8, 4, 16, 16)],
-                             ['float16', (8, 4, 16, 16)],
-                             ['int8', (8, 4, 16, 16)],
-                             ['float32', (8, 8, 4, 4)],
-                             ['float16', (8, 8, 4, 4)],
-                             ['int8', (8, 8, 4, 4)],
-                             ['float32', (3, 8, 2, 16, 16)],
-                             ['float16', (3, 8, 2, 16, 16)],
-                             ['int8', (9, 8, 8, 16, 16)],
-                             ['float32', (11, 8, 8, 4, 4)],
-                             ['float16', (11, 8, 8, 4, 4)],
-                             ['int8', (11, 8, 8, 4, 4)],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (8, 4, 16, 16)],
+    ['float16', (8, 4, 16, 16)],
+    ['int8', (8, 4, 16, 16)],
+    ['float32', (8, 8, 4, 4)],
+    ['float16', (8, 8, 4, 4)],
+    ['int8', (8, 8, 4, 4)],
+    ['float32', (3, 8, 2, 16, 16)],
+    ['float16', (3, 8, 2, 16, 16)],
+    ['int8', (9, 8, 8, 16, 16)],
+    ['float32', (11, 8, 8, 4, 4)],
+    ['float16', (11, 8, 8, 4, 4)],
+    ['int8', (11, 8, 8, 4, 4)],
+])
 def test_load_store_multi_d(param_list):
     dtype, shape = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()

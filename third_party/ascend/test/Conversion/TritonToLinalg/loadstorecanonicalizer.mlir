@@ -21,4 +21,3 @@ tt.func public @loadstorecanonicalizer_simple(%arg0: !tt.ptr<f32>, %arg1: !tt.pt
   tt.store %11, %9 : tensor<1x!tt.ptr<f32>>
   tt.return
 }
-

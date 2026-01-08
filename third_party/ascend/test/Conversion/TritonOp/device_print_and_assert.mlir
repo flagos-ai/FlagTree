@@ -159,7 +159,7 @@ module {
     %1 = tt.splat %arg0 : !tt.ptr<f8E4M3FN> -> tensor<16x!tt.ptr<f8E4M3FN>>
     %2 = tt.addptr %1, %0 : tensor<16x!tt.ptr<f8E4M3FN>>, tensor<16xi32>
     %3 = tt.load %2 : tensor<16x!tt.ptr<f8E4M3FN>>
-    // CHECK: call @triton_print_0 
+    // CHECK: call @triton_print_0
     tt.print " val: " {hex = false, isSigned = array<i32: 0>} : %3 : tensor<16xf8E4M3FN>
     tt.return
   }

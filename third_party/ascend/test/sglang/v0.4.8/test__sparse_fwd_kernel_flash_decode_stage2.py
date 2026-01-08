@@ -70,14 +70,11 @@ def _sparse_fwd_kernel_flash_decode_stage2(
 
     off_q = cur_batch * stride_qbs + cur_head * stride_qh + offs_d
 
-    block_n_size = (
-        tl.where(
-            cur_batch_end_index - cur_batch_start_index <= 0,
-            0,
-            cur_batch_end_index - cur_batch_start_index + BLOCK_N - 1,
-        )
-        // BLOCK_N
-    )
+    block_n_size = (tl.where(
+        cur_batch_end_index - cur_batch_start_index <= 0,
+        0,
+        cur_batch_end_index - cur_batch_start_index + BLOCK_N - 1,
+    ) // BLOCK_N)
 
     offs_n = tl.arange(0, BLOCK_N)
 
@@ -90,10 +87,8 @@ def _sparse_fwd_kernel_flash_decode_stage2(
     for start_n in range(cur_batch_start_index, cur_batch_end_index, BLOCK_N):
         offs_n_new = start_n + offs_n
         topk_token_indices = tl.load(
-            Topk_token_indices
-            + stride_topk_token_indices_h * cur_head
-            + stride_topk_token_indices_b * cur_batch
-            + offs_n_new,
+            Topk_token_indices + stride_topk_token_indices_h * cur_head + stride_topk_token_indices_b * cur_batch +
+            offs_n_new,
             mask=offs_n_new < cur_batch_end_index,
             other=0,
         )
@@ -103,15 +98,11 @@ def _sparse_fwd_kernel_flash_decode_stage2(
             other=0,
         )
         off_k = k_loc[:, None] * stride_kbs + cur_kv_head * stride_kh + offs_d[None, :]
-        k = tl.load(
-            K + off_k, mask=offs_n_new[:, None] < cur_batch_end_index, other=0.0
-        )
+        k = tl.load(K + off_k, mask=offs_n_new[:, None] < cur_batch_end_index, other=0.0)
         att_value = tl.sum(q[None, :] * k, 1)
         att_value *= sm_scale
         att_value = tl.where(offs_n_new < cur_batch_end_index, att_value, float("-inf"))
-        v = tl.load(
-            V + off_k, mask=offs_n_new[:, None] < cur_batch_end_index, other=0.0
-        )
+        v = tl.load(V + off_k, mask=offs_n_new[:, None] < cur_batch_end_index, other=0.0)
 
         cur_max_logic = tl.max(att_value, axis=0)
         new_max_logic = tl.maximum(cur_max_logic, max_logic)
@@ -126,15 +117,8 @@ def _sparse_fwd_kernel_flash_decode_stage2(
 
     need_store = 1
     for _ in range(0, need_store, 1):
-        off_mid_o = (
-            cur_batch * stride_mid_ob
-            + cur_head * stride_mid_oh
-            + seq_start_block * stride_mid_os
-            + offs_d
-        )
-        off_mid_o_logexpsum = (
-            cur_batch * stride_mid_o_eb + cur_head * stride_mid_o_eh + seq_start_block
-        )
+        off_mid_o = (cur_batch * stride_mid_ob + cur_head * stride_mid_oh + seq_start_block * stride_mid_os + offs_d)
+        off_mid_o_logexpsum = (cur_batch * stride_mid_o_eb + cur_head * stride_mid_o_eh + seq_start_block)
         tl.store(Mid_O + off_mid_o, acc / sum_exp)
         tl.store(Mid_O_LogExpSum + off_mid_o_logexpsum, max_logic + tl.log(sum_exp))
     return

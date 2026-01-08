@@ -28,9 +28,7 @@ import numpy as np
 
 
 @triton.jit
-def triton_test_fn_atomic_min_dma(
-    in_ptr0, out_ptr0, out_ptr1, n_elements, BLOCK_SIZE: tl.constexpr
-):
+def triton_test_fn_atomic_min_dma(in_ptr0, out_ptr0, out_ptr1, n_elements, BLOCK_SIZE: tl.constexpr):
     xoffset = tl.program_id(0) * BLOCK_SIZE
     xindex = xoffset + tl.arange(0, BLOCK_SIZE)[:]
     yindex = tl.arange(0, BLOCK_SIZE)[:]
@@ -42,9 +40,7 @@ def triton_test_fn_atomic_min_dma(
 
 
 @triton.jit
-def triton_test_fn_atomic_min_dma_supply(
-    in_ptr0, out_ptr0, n_elements: tl.constexpr, BLOCK_SIZE: tl.constexpr
-):
+def triton_test_fn_atomic_min_dma_supply(in_ptr0, out_ptr0, n_elements: tl.constexpr, BLOCK_SIZE: tl.constexpr):
     xoffset = tl.program_id(0) * BLOCK_SIZE
     xindex = xoffset + tl.arange(0, BLOCK_SIZE)[:]
     yindex = xoffset + tl.arange(0, BLOCK_SIZE)[:]
@@ -54,15 +50,14 @@ def triton_test_fn_atomic_min_dma_supply(
     tmp0 = tl.load(in_ptr0 + (x0), xmask)
     tmp1 = tl.atomic_min(out_ptr0 + (x1), tmp0, xmask)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['int8', (32, 32), 2],
-                             ['int16', (32, 32), 2],
-                             ['int32', (32, 32), 2],
-                             ['float16', (64, 64), 4],
-                             ['float32', (32, 32), 2],
-                         ]
-                         )
+
+@pytest.mark.parametrize('param_list', [
+    ['int8', (32, 32), 2],
+    ['int16', (32, 32), 2],
+    ['int32', (32, 32), 2],
+    ['float16', (64, 64), 4],
+    ['float32', (32, 32), 2],
+])
 def test_atomic_min(param_list):
     dtype, shape, ncore = param_list
     block_size = shape[0] * shape[1] / ncore
@@ -72,7 +67,7 @@ def test_atomic_min(param_list):
     y = test_common.generate_tensor((split_size, shape[1]), dtype)
 
     merged_tensor = torch.cat((x0, x1), dim=0)
-    chunks = torch.stack(torch.chunk(merged_tensor, ncore+1, dim=0))
+    chunks = torch.stack(torch.chunk(merged_tensor, ncore + 1, dim=0))
     x1_ref = torch.min(chunks, dim=0)[0]
     x0 = x0.npu()
     x1 = x1.npu()
@@ -81,6 +76,7 @@ def test_atomic_min(param_list):
     n_elements = shape[0] * shape[1]
     triton_test_fn_atomic_min_dma[ncore, 1, 1](x0, x1, y, n_elements, BLOCK_SIZE=split_size * shape[1])
     test_common.validate_cmp(dtype, x1, x1_ref)
+
 
 @pytest.mark.parametrize('shape', [(3, 1), (13, 1), (32, 1), (256, 1)])
 @pytest.mark.parametrize('dtype', ['float32'])

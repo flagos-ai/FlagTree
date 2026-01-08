@@ -10,6 +10,7 @@ from test_common import (
     _shape_1d,
 )
 
+
 # @pytest.mark.parametrize('dtype', ['float32'])
 @pytest.mark.parametrize('xblock_sub', [32])
 @pytest.mark.parametrize('dtype', _float_dtypes)
@@ -17,7 +18,7 @@ from test_common import (
 def test_fma(dtype, xblock_sub):
 
     xblock = triton.next_power_of_2(xblock_sub)
-    shape = (xblock,)
+    shape = (xblock, )
 
     def torch_func(x0, x1, x2):
         return x0 * x1 + x2
@@ -28,9 +29,9 @@ def test_fma(dtype, xblock_sub):
         ]
 
     @triton.autotune(
-            configs=get_autotune_config(),
-            key=['numel'],
-        )
+        configs=get_autotune_config(),
+        key=['numel'],
+    )
     @triton.jit
     def triton_kernel(in_ptr0, in_ptr1, in_ptr2, out_ptr0, numel, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
         offset = tl.program_id(0) * XBLOCK
@@ -59,5 +60,6 @@ def test_fma(dtype, xblock_sub):
     torch_ref = torch_func(x0, x1, x2)
     triton_cal = triton_func(x0, x1, x2)
     validate_cmp(dtype, triton_cal, torch_ref)
+
 
 # test_fma('float32', 32)

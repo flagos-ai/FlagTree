@@ -21,6 +21,7 @@ FUNCTIONS_TO_TEST = {
 # Global dictionary to keep track of temporary files
 _temp_kernel_files = {}
 
+
 def _cleanup_temp_files():
     import os
     for file_path in _temp_kernel_files.values():
@@ -30,7 +31,9 @@ def _cleanup_temp_files():
         except:
             pass
 
+
 atexit.register(_cleanup_temp_files)
+
 
 def create_triton_kernel(func_name, func_pattern):
     import tempfile
@@ -98,11 +101,11 @@ def test_cast(src_dtype, dst_dtype, xblock_sub, func_name):
     #         pytest.skip(f"{func_name} only tested with int dtypes")
 
     xblock = triton.next_power_of_2(xblock_sub)
-    shape = (xblock,)
+    shape = (xblock, )
     triton_func_op, torch_func_op = FUNCTIONS_TO_TEST[func_name]
 
     def torch_func(x0, dst_dtype):
-        x1 = torch.ones((x0.numel(),), dtype=dst_dtype, device=x0.device)
+        x1 = torch.ones((x0.numel(), ), dtype=dst_dtype, device=x0.device)
         return eval(torch_func_op)
 
     def get_autotune_config():
@@ -112,14 +115,14 @@ def test_cast(src_dtype, dst_dtype, xblock_sub, func_name):
 
     triton_kernel = create_triton_kernel(func_name, triton_func_op)
     triton_kernel = triton.autotune(
-            configs=get_autotune_config(),
-            key=['numel'],
-        )(triton_kernel)
+        configs=get_autotune_config(),
+        key=['numel'],
+    )(triton_kernel)
 
     def triton_func(x0, dst_dtype):
         numel = x0.numel()
-        y0 = torch.empty((numel,), dtype=dst_dtype, device=x0.device)
-        y1 = torch.ones((numel,), dtype=dst_dtype, device=x0.device)
+        y0 = torch.empty((numel, ), dtype=dst_dtype, device=x0.device)
+        y1 = torch.ones((numel, ), dtype=dst_dtype, device=x0.device)
         grid = lambda meta: (triton.cdiv(numel, meta['XBLOCK']), )
         triton_kernel[grid](x0, y1, y0, numel)
         return y0

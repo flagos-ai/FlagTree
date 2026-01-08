@@ -106,7 +106,7 @@ def apply_rotary_pos_emb(
     k,
     cos,
     sin,
-    position_ids = None,
+    position_ids=None,
     rotary_interleaved: bool = False,
     inplace: bool = False,
 ):
@@ -125,33 +125,23 @@ def apply_rotary_pos_emb(
         q_embed: (*, q_heads, head_dim)
         k_embed: (*, k_heads, head_dim)
     """
-    assert (
-        k.shape[-1] == q.shape[-1]
-    ), f"q and k must have the same last dimension, got {q.shape} and {k.shape}"
-    assert (
-        cos.shape[-1] == sin.shape[-1]
-    ), f"cos and sin must have the same last dimension, got {cos.shape} and {sin.shape}"
-    assert (
-        cos.shape[-1] * 2 == q.shape[-1]
-    ), f"cos/sin dim must be half of q/k dim, got {cos.shape} and {q.shape}"
+    assert (k.shape[-1] == q.shape[-1]), f"q and k must have the same last dimension, got {q.shape} and {k.shape}"
+    assert (cos.shape[-1] == sin.shape[-1]
+            ), f"cos and sin must have the same last dimension, got {cos.shape} and {sin.shape}"
+    assert (cos.shape[-1] * 2 == q.shape[-1]), f"cos/sin dim must be half of q/k dim, got {cos.shape} and {q.shape}"
     assert cos.stride(-1) == 1, "cos must be contiguous at the last dimension"
     assert sin.stride(-1) == 1, "sin must be contiguous at the last dimension"
 
     q_shape = q.shape
     k_shape = k.shape
 
-    assert (
-        q.shape[:-2] == k.shape[:-2]
-    ), f"q and k must have the same length, got {q.shape[:-2]} and {k.shape[:-2]}"
+    assert (q.shape[:-2] == k.shape[:-2]), f"q and k must have the same length, got {q.shape[:-2]} and {k.shape[:-2]}"
     if position_ids is None:
-        assert (
-            len(q.shape) == 4
-        ), f"q must have 4 dimensions if position_ids is not provided, got {q.shape}"
+        assert (len(q.shape) == 4), f"q must have 4 dimensions if position_ids is not provided, got {q.shape}"
         seq_len = q.shape[-3]
     else:
-        assert (
-            position_ids.shape == q.shape[:-2]
-        ), f"position_ids must have the same length as q, got {position_ids.shape} and {q.shape[:-2]}"
+        assert (position_ids.shape == q.shape[:-2]
+                ), f"position_ids must have the same length as q, got {position_ids.shape} and {q.shape[:-2]}"
 
         position_ids = position_ids.view(-1)
         seq_len = None
@@ -168,7 +158,7 @@ def apply_rotary_pos_emb(
         q_embed = torch.empty_like(q)
         k_embed = torch.empty_like(k)
 
-        grid = (n_tokens,)
+        grid = (n_tokens, )
         with torch_device_fn.device(q_embed.device):
             apply_rotary_pos_emb_kernel[grid](
                 q_embed,
@@ -226,10 +216,8 @@ def check(name, ref, res, equal_nan=False, reduce_dim=1, atol=1e-4):
         torch.complex64: 1.3e-6,
     }
     res = res.cpu()
-    print(
-        f"The maximum difference out {name} between torch and triton is "
-        f"{torch.max(torch.abs(ref - res))}"
-    )
+    print(f"The maximum difference out {name} between torch and triton is "
+          f"{torch.max(torch.abs(ref - res))}")
     rtol = RESOLUTION[ref.dtype]
     assert torch.allclose(res, ref, atol=atol * reduce_dim, rtol=rtol), (res, ref)
 
@@ -247,14 +235,14 @@ def torch_apply_rotary_pos_emb(
     k,
     cos,
     sin,
-    position_ids = None,
+    position_ids=None,
     rotary_interleaved: bool = False,
 ):
     q = q.float()
     k = k.float()
     if position_ids is None:
-        cos = cos[None, : q.size(-3), None, :]
-        sin = sin[None, : q.size(-3), None, :]
+        cos = cos[None, :q.size(-3), None, :]
+        sin = sin[None, :q.size(-3), None, :]
     else:
         cos = cos[position_ids].unsqueeze(-2)  # [bs, seq_len, 1, dim/2]
         sin = sin[position_ids].unsqueeze(-2)  # [bs, seq_len, 1, dim/2]
@@ -274,7 +262,7 @@ def torch_apply_rotary_pos_emb(
 
 
 def get_rope_cos_sin(max_seq_len, dim, dtype, base=10000, device=device):
-    inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float().to(device) / dim))
+    inv_freq = 1.0 / (base**(torch.arange(0, dim, 2).float().to(device) / dim))
     t = torch.arange(max_seq_len, device=device, dtype=inv_freq.dtype)
     freqs = torch.outer(t, inv_freq)
     cos = freqs.cos().to(dtype)
@@ -295,15 +283,9 @@ if __name__ == "__main__":
     seq_len = 12
 
     # inp
-    q = torch.randn(
-        (batch_size, seq_len, q_heads, head_dim), dtype=dtype, device=device
-    )
-    k = torch.randn(
-        (batch_size, seq_len, k_heads, head_dim), dtype=dtype, device=device
-    )
-    position_ids = torch.randint(
-        0, max_seq_len, (batch_size, seq_len), device=device
-    )
+    q = torch.randn((batch_size, seq_len, q_heads, head_dim), dtype=dtype, device=device)
+    k = torch.randn((batch_size, seq_len, k_heads, head_dim), dtype=dtype, device=device)
+    position_ids = torch.randint(0, max_seq_len, (batch_size, seq_len), device=device)
     cos, sin = get_rope_cos_sin(max_seq_len, head_dim, dtype, device=device)
     ref_q = q.cpu()
     ref_k = k.cpu()

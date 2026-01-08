@@ -131,7 +131,7 @@ module {
 // CHECK:    }
 // CHECK:    %[[VAL_7:.*]] = bufferization.alloc_tensor() : tensor<f32>
 // CHECK:    %[[VAL_8:.*]] = linalg.fill ins([[cst]] : f32) outs(%[[VAL_7]] : tensor<f32>) -> tensor<f32>
-// CHECK:    %reduced = linalg.reduce ins(%[[VAL_6]] : tensor<256xf32>) outs(%[[VAL_8]] : tensor<f32>) dimensions = [0] 
+// CHECK:    %reduced = linalg.reduce ins(%[[VAL_6]] : tensor<256xf32>) outs(%[[VAL_8]] : tensor<f32>) dimensions = [0]
 // CHECK:      (%in: f32, %init: f32) {
 // CHECK:        %[[VAL_33:.*]] = arith.addf %in, %init : f32
 // CHECK:        linalg.yield %[[VAL_33]] : f32
@@ -209,7 +209,7 @@ module {
 // CHECK:    }
 // CHECK:    %[[VAL_18:.*]] = bufferization.alloc_tensor() : tensor<f32>
 // CHECK:    %[[VAL_19:.*]] = linalg.fill ins([[cst]] : f32) outs(%[[VAL_18]] : tensor<f32>) -> tensor<f32>
-// CHECK:    %reduced_2 = linalg.reduce ins(%[[VAL_17]] : tensor<256xf32>) outs(%[[VAL_19]] : tensor<f32>) dimensions = [0] 
+// CHECK:    %reduced_2 = linalg.reduce ins(%[[VAL_17]] : tensor<256xf32>) outs(%[[VAL_19]] : tensor<f32>) dimensions = [0]
 // CHECK:      (%in: f32, %init: f32) {
 // CHECK:        %[[VAL_33:.*]] = arith.addf %in, %init : f32
 // CHECK:        linalg.yield %[[VAL_33]] : f32

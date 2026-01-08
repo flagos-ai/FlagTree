@@ -27,9 +27,11 @@ import test_common
 import torch
 import torch_npu
 
+
 def standard_binary(x0, y0):
     res = x0 == y0
     return res
+
 
 @triton.jit
 def triton_elementwise_binary(in_ptr0, in_ptr1, out_ptr0, N: tl.constexpr, NUMEL: tl.constexpr):
@@ -38,6 +40,7 @@ def triton_elementwise_binary(in_ptr0, in_ptr1, out_ptr0, N: tl.constexpr, NUMEL
     y = tl.load(in_ptr1 + idx_block, mask=idx_block < N)
     ret = x == y
     tl.store(out_ptr0 + idx_block, ret, mask=idx_block < N)
+
 
 types = [
     (torch.float32, 'float32'),
@@ -59,6 +62,7 @@ shapes = [
 
 map_for_64_t = {37: 31}
 
+
 @pytest.mark.parametrize('dtype,sigtype', types)
 @pytest.mark.parametrize('N,NUMEL', shapes)
 def test_elementwsie_common(dtype, sigtype, N, NUMEL):
@@ -67,9 +71,9 @@ def test_elementwsie_common(dtype, sigtype, N, NUMEL):
     if sigtype == "int64":
         N = map_for_64_t[N] if N in map_for_64_t else N
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    y0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
+    y0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
     ans = standard_binary(x0, y0)
-    out = torch.zeros((N,), dtype=torch.bool).npu()
+    out = torch.zeros((N, ), dtype=torch.bool).npu()
     triton_elementwise_binary[1, 1, 1](x0, y0, out, N, NUMEL)
     test_common.validate_cmp(sigtype, out, ans)

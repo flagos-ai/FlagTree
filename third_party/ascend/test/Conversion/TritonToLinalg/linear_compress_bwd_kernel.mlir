@@ -149,7 +149,7 @@ module {
     // CHECK:           [[VAR0:%[a-zA-Z0-9_]+]] = tensor.reshape {{%[a-zA-Z0-9_]+}}({{%[a-zA-Z0-9_]+}}) : (tensor<16x128xf32>, tensor<3xi64>) -> tensor<16x32x4xf32>
     // CHECK-NEXT:      [[VAR1:%[a-zA-Z0-9_]+]] = arith.select {{%[a-zA-Z0-9_]+}}, [[VAR0]], {{%[a-zA-Z0-9_]+}} : tensor<16x32x4xi1>, tensor<16x32x4xf32>
     // CHECK-NEXT:      [[VAR2:%[a-zA-Z0-9_]+]] = bufferization.to_memref [[VAR1]] : memref<16x32x4xf32>
-    // CHECK-NEXT:      linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel", "parallel", "parallel"]} ins({{%[a-zA-Z0-9_]+}}, [[VAR2]] : 
+    // CHECK-NEXT:      linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel", "parallel", "parallel"]} ins({{%[a-zA-Z0-9_]+}}, [[VAR2]] :
     %121 = tt.load %47, %56, %cst : tensor<16x32x4x!tt.ptr<f16>>
     %122 = tt.reshape %121 : tensor<16x32x4xf16> -> tensor<16x128xf16>
     tt.annotation %122 {maybeUnCollapsibleReshape} : tensor<16x128xf16>

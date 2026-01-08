@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import pytest
 
 import triton
@@ -31,8 +30,8 @@ import numpy as np
 
 
 @triton.jit
-def triton_sub(output_ptr, x_ptr, y_ptr, z_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, XNUMEL: tl.constexpr,
-            YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def triton_sub(output_ptr, x_ptr, y_ptr, z_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr,
+               XNUMEL: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     xoffs = tl.program_id(0) * XB
     yoffs = tl.program_id(1) * YB
     zoffs = tl.program_id(2) * ZB
@@ -52,15 +51,10 @@ def triton_sub(output_ptr, x_ptr, y_ptr, z_ptr, XB: tl.constexpr, YB: tl.constex
 
 
 @triton.jit
-def triton_sub_4d_5d(
-        output_ptr, x_ptr, y_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr,
-        BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-        SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
-        STRIDE_4: tl.constexpr
-):
+def triton_sub_4d_5d(output_ptr, x_ptr, y_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                     BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                     SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                     STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr):
     offsets = tl.program_id(0)
 
     offsets = offsets + tl.arange(0, BLOCK_0) * STRIDE_0
@@ -134,7 +128,7 @@ def test_sub_4d_5d(shape, dtype):
         blocks.append(1)
         strides.append(1)
 
-    grid = (1,)
+    grid = (1, )
     triton_sub_4d_5d[grid](output, x, y, *blocks, *blocks, *strides)
 
     test_common.validate_cmp(dtype, ans, output)
@@ -146,16 +140,16 @@ def test_sub_uint(shape, dtype):
     torch_dtype = eval('torch.' + dtype)
     np_x0 = test_common.generate_numpy(shape, dtype)
     np_x1 = test_common.generate_numpy(shape, dtype)
-    np_x2 = test_common.generate_numpy(shape, dtype)  
+    np_x2 = test_common.generate_numpy(shape, dtype)
 
     x0 = torch.from_numpy(np_x0).to(torch_dtype).npu()
     x1 = torch.from_numpy(np_x1).to(torch_dtype).npu()
-    x2 = torch.from_numpy(np_x2).to(torch_dtype).npu()   
+    x2 = torch.from_numpy(np_x2).to(torch_dtype).npu()
 
     #numpy result
     ans_numpy = np_x0 - np_x1
     z_ref1 = torch.from_numpy(ans_numpy).npu()
 
     triton_res = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
-    triton_sub[1, 1, shape[0]](triton_res, x0, x1, x2, 1, 1, 1, 1, 1, shape[0]) 
+    triton_sub[1, 1, shape[0]](triton_res, x0, x1, x2, 1, 1, 1, 1, 1, shape[0])
     test_common.validate_cmp(dtype, z_ref1, triton_res)

@@ -23,7 +23,9 @@ from triton.backends.ascend.utils import (
     force_disable_ffts,
 )
 
+
 class NPUUtils(object):
+
     def __new__(cls):
         if not hasattr(cls, 'instance'):
             cls.instance = super(NPUUtils, cls).__new__(cls)
@@ -94,9 +96,11 @@ class NPUUtils(object):
 
 
 class NPULauncher(object):
+
     def __init__(self, src, metadata):
         self.compile_only = os.getenv("TRITON_COMPILE_ONLY", 'false').lower() in ('true', '1')
-        self.enable_msprof_register_tensor = os.getenv("TRITON_REGISTER_TENSOR_MSPROF", 'false').lower() in ('true', '1')
+        self.enable_msprof_register_tensor = os.getenv("TRITON_REGISTER_TENSOR_MSPROF",
+                                                       'false').lower() in ('true', '1')
         debug_mode = metadata.debug
         header_src = generate_npu_header_src()
         constants = src.constants if hasattr(src, "constants") else dict()
@@ -137,32 +141,36 @@ class NPULauncher(object):
             import triton
             triton.backends.ascend.utils.TRITON_PROFILER_REGISTERED = True if profiler_registered == 1 else False
 
+
 class NPUDriver(DriverBase):
+
     def __init__(self):
         self.utils = NPUUtils()
         self.launcher_cls = NPULauncher
         # flagtree backend specialization
-        from triton.backends.ascend import flagtree_backend_specialization
-        self.flagtree_backend_specialization = flagtree_backend_specialization
+        from triton.backends.ascend import spec
+        self.spec = spec
         from triton.language.core import spec_core_func
-        spec_core_func(flagtree_backend_specialization)
+        spec_core_func(spec)
         from triton.language.semantic import spec_semantic_func
-        spec_semantic_func(flagtree_backend_specialization)
+        spec_semantic_func(spec)
         from triton.language.standard import spec_standard_func
-        spec_standard_func(flagtree_backend_specialization)
+        spec_standard_func(spec)
         from triton.language.math import spec_math_func
-        spec_math_func(flagtree_backend_specialization)
+        spec_math_func(spec)
         from triton.testing import spec_testing_func
-        spec_testing_func(flagtree_backend_specialization)
+        spec_testing_func(spec)
         super().__init__()
 
     @classmethod
     def is_active(cls):
+
         def test_npucompiler():
             from triton.backends.ascend.utils import _get_bisheng_path
             npucompiler = _get_bisheng_path()
             targets = subprocess.check_output([npucompiler, "-print-targets"]).decode().strip().split()
             return "hiipu64" in targets
+
         try:
             return test_npucompiler()
         except Exception as e_npucompiler:
@@ -254,7 +262,7 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
             print(f"Dumping precompiled.h to {dump_manager.cache_dir}")
             dump_manager.put(header_src, "precompiled.h", binary=False)
         print(f"Dumping {name}.cxx to {dump_manager.cache_dir}")
-        dump_manager.put(wrapper_src, f"{name}.cxx", binary = False)
+        dump_manager.put(wrapper_src, f"{name}.cxx", binary=False)
 
     cache_path = so_cache_manager.get_file(so_name)
     if cache_path is not None:
@@ -345,9 +353,9 @@ def extract_device_print_code_from_cann():
         read_header('internal/debug_tunnel/tunnel_impl.h')
     ])
 
+
 def generate_npu_header_src():
-    enable_taskqueue = os.getenv(
-        "TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
+    enable_taskqueue = os.getenv("TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
     return f"""
 /*
  * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
@@ -389,6 +397,7 @@ def generate_npu_header_src():
 
 #endif
 """
+
 
 # the template is from triton-adapter HEAD. Wrapping the generated kernel binary into a python module
 def generate_npu_wrapper_src(constants, signature, metadata):
@@ -467,16 +476,12 @@ def generate_npu_wrapper_src(constants, signature, metadata):
 
     arch = get_ascend_arch_from_env()
     target_support_ffts = is_ffts_supported(arch) and (not force_disable_ffts())
-    enable_device_print = os.getenv(
-        "TRITON_DEVICE_PRINT", 'false').lower() in ('true', '1')
-    enable_taskqueue = os.getenv(
-        "TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
-    enable_grid_warn_print = os.getenv(
-        "TRITON_GRID_WARN_PRINT", 'false').lower() in ('true', '1')
+    enable_device_print = os.getenv("TRITON_DEVICE_PRINT", 'false').lower() in ('true', '1')
+    enable_taskqueue = os.getenv("TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
+    enable_grid_warn_print = os.getenv("TRITON_GRID_WARN_PRINT", 'false').lower() in ('true', '1')
     enable_auto_map_parallel_blocks = _is_auto_map_parallel_blocks_enabled()
     npu_utils = NPUUtils()
-    num_physical_blocks = npu_utils.get_aivector_core_num(
-    ) if mix_mode == "aiv" else npu_utils.get_aicore_num()
+    num_physical_blocks = npu_utils.get_aivector_core_num() if mix_mode == "aiv" else npu_utils.get_aicore_num()
     task_type = "MSPROF_GE_TASK_TYPE_AIV" if mix_mode == "aiv" else "MSPROF_GE_TASK_TYPE_AI_CORE"
     LINE_CHANGE_CHAR = chr(10)  # it is \n
     alloc_success_code = 'return 1;'

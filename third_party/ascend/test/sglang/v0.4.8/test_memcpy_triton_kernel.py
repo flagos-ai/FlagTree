@@ -27,6 +27,7 @@ import triton.language as tl
 sys.path.append("..")
 import test_common
 
+
 # source: python\sglang\srt\layers\dp_attention.py
 @triton.jit
 def memcpy_triton_kernel(
@@ -52,6 +53,7 @@ def memcpy_triton_kernel(
     else:
         data = tl.load(src_ptr + start_index + offs, mask=mask)
         tl.store(dst_ptr + offset + start_index + offs, data, mask=mask)
+
 
 def test_memcpy_triton_kernel(ptfile_path):
     try:

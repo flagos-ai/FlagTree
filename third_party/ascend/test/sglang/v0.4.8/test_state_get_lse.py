@@ -23,10 +23,10 @@ def _test_state_get_lse_kernel(
 ):
     pid = tl.program_id(0)
     mask = pid < n_elements
-    m = tl.load(m_ptr + pid, mask = mask)
-    d = tl.load(d_ptr + pid, mask = mask)
+    m = tl.load(m_ptr + pid, mask=mask)
+    d = tl.load(d_ptr + pid, mask=mask)
     lse = state_get_lse(None, m, d)
-    tl.store(out_ptr + pid, lse, mask = mask)
+    tl.store(out_ptr + pid, lse, mask=mask)
 
 
 def test_context_fwd_kernel(ptfile_path):

@@ -399,4 +399,3 @@ module {
 
 // CHECK-LABEL:     func.func @fn_npu_
 // CHECK:           %[[SELECT_OUT:.*]] = arith.select %[[COND:.*]], %[[THEN:.*]], %[[ELSE:.*]] : tensor<1x1x16xi1>, tensor<1x1x16xi64>
-

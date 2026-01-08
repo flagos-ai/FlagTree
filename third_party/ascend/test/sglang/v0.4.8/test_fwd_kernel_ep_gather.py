@@ -67,31 +67,17 @@ def _fwd_kernel_ep_gather(
         for topk_index_int32 in range(0, topk_num):
             topk_index = topk_index_int32.to(tl.int64)
 
-            expert_id = tl.load(
-                recv_topk_ids + cur_token * recv_topk_ids_stride0 + topk_index
-            )
+            expert_id = tl.load(recv_topk_ids + cur_token * recv_topk_ids_stride0 + topk_index)
             if expert_id >= 0:
-                source_token_index_int32 = tl.load(
-                    input_index + cur_token * input_index_stride0 + topk_index
-                )
+                source_token_index_int32 = tl.load(input_index + cur_token * input_index_stride0 + topk_index)
                 source_token_index = source_token_index_int32.to(tl.int64)
 
-                acc_weight = tl.load(
-                    recv_topk_weight + cur_token * recv_topk_weight_stride0 + topk_index
-                )
-                tmp = tl.load(
-                    input_tensor
-                    + source_token_index * input_tensor_stride0
-                    + cur_block * BLOCK_D
-                    + off_d
-                )
+                acc_weight = tl.load(recv_topk_weight + cur_token * recv_topk_weight_stride0 + topk_index)
+                tmp = tl.load(input_tensor + source_token_index * input_tensor_stride0 + cur_block * BLOCK_D + off_d)
                 accumulator += tmp.to(tl.float32) * acc_weight
 
         tl.store(
-            output_tensor
-            + cur_token * output_tensor_stride0
-            + cur_block * BLOCK_D
-            + off_d,
+            output_tensor + cur_token * output_tensor_stride0 + cur_block * BLOCK_D + off_d,
             accumulator.to(output_tensor.dtype.element_ty),
         )
 

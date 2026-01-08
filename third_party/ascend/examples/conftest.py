@@ -31,4 +31,3 @@ def assign_npu(worker_id):
         idx = int(worker_id.replace("gw", ""))
         npu_id = idx % npu_count
     torch.npu.set_device(npu_id)
-

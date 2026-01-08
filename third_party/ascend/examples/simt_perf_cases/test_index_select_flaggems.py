@@ -7,9 +7,7 @@ import pytest
 
 
 @triton.jit
-def index_select_kernel_dim_0(
-    inp, out, N, index, index_len, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr
-):
+def index_select_kernel_dim_0(inp, out, N, index, index_len, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
     """flaggems originl index_select implementation on dim 0"""
     pid_x = tl.program_id(axis=0)
     pid_y = tl.program_id(axis=1)
@@ -24,9 +22,7 @@ def index_select_kernel_dim_0(
 
 
 @triton.jit
-def index_select_kernel_dim_1(
-    inp, out, M, N, index, index_len, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr
-):
+def index_select_kernel_dim_1(inp, out, M, N, index, index_len, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
     """flaggems originl index_select implementation on dim 1"""
     pid_x = tl.program_id(axis=0)
     pid_y = tl.program_id(axis=1)
@@ -52,13 +48,13 @@ def get_grid(dim, index_len, BLOCK_M, BLOCK_N, M, N):
     return grid_M_size, grid_N_size
 
 
-def kernel_select(
-    dim, grid_M_size, grid_N_size, inp, out, M, N,
-    index, index_len, BLOCK_M, BLOCK_N
-):
+def kernel_select(dim, grid_M_size, grid_N_size, inp, out, M, N, index, index_len, BLOCK_M, BLOCK_N):
     """kernel select"""
     if dim == 0:
-        index_select_kernel_dim_0[[grid_M_size, grid_N_size, ]](
+        index_select_kernel_dim_0[[
+            grid_M_size,
+            grid_N_size,
+        ]](
             inp,
             out,
             N,
@@ -70,7 +66,10 @@ def kernel_select(
             force_simt_only=True,
         )
     else:
-        index_select_kernel_dim_1[[grid_M_size, grid_N_size, ]](
+        index_select_kernel_dim_1[[
+            grid_M_size,
+            grid_N_size,
+        ]](
             inp,
             out,
             M,
@@ -132,33 +131,30 @@ def test_index_select_flaggems(param_list):
         data_simplification=False,
     )
     with torch_npu.profiler.profile(
-        activities=[
-            torch_npu.profiler.ProfilerActivity.CPU,
-            torch_npu.profiler.ProfilerActivity.NPU,
-        ],
-        schedule=torch_npu.profiler.schedule(
-            wait=wait,
-            warmup=warmup,
-            active=active,
-            repeat=repeat,
-            skip_first=skip_first,
-        ),
-        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(result_path),
-        record_shapes=True,
-        profile_memory=False,
-        with_stack=False,
-        with_flops=False,
-        with_modules=False,
-        experimental_config=experimental_config,
+            activities=[
+                torch_npu.profiler.ProfilerActivity.CPU,
+                torch_npu.profiler.ProfilerActivity.NPU,
+            ],
+            schedule=torch_npu.profiler.schedule(
+                wait=wait,
+                warmup=warmup,
+                active=active,
+                repeat=repeat,
+                skip_first=skip_first,
+            ),
+            on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(result_path),
+            record_shapes=True,
+            profile_memory=False,
+            with_stack=False,
+            with_flops=False,
+            with_modules=False,
+            experimental_config=experimental_config,
     ) as prof:
         stream.synchronize()
         for _ in range(skip_first + (wait + warmup + active) * repeat):
-            kernel_select(dim, grid_M_size, grid_N_size, inp, out, M, N,
-                index, index_len, BLOCK_M, BLOCK_N)
+            kernel_select(dim, grid_M_size, grid_N_size, inp, out, M, N, index, index_len, BLOCK_M, BLOCK_N)
             prof.step()
         stream.synchronize()
     # Correctness testing
-    kernel_select(dim, grid_M_size, grid_N_size, inp, out, M, N,
-        index, index_len, BLOCK_M, BLOCK_N)
+    kernel_select(dim, grid_M_size, grid_N_size, inp, out, M, N, index, index_len, BLOCK_M, BLOCK_N)
     torch.testing.assert_close(golden, out, rtol=1e-04, atol=1e-04, equal_nan=True)
-

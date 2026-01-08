@@ -29,6 +29,7 @@ import test_common
 @pytest.mark.parametrize("dtype", ['float32', 'float16', 'bfloat16', 'int32', 'int64', 'int16', 'int8'])
 @pytest.mark.parametrize("M_BLOCK,N_BLOCK", [(2, 16), (8, 16)])
 def test_tensor_descriptor_load_store(dtype, M_BLOCK, N_BLOCK):
+
     @triton.jit
     def kernel(out_ptr, a_ptr, M, N, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr):
         in_desc = tl.make_tensor_descriptor(
@@ -175,9 +176,7 @@ def test_reduce_max(dtype_str, shape, axis, device):
         output = tl.max(val, axis=axis)
         out_desc.store([0], output.reshape(out_desc.block_shape))
 
-    inp = torch.arange(math.prod(shape), 
-                         dtype=getattr(torch, dtype_str),
-                         device=device).reshape(shape)
+    inp = torch.arange(math.prod(shape), dtype=getattr(torch, dtype_str), device=device).reshape(shape)
     expected, indices = torch.max(inp.to(torch.int64), dim=axis)
     expected = expected.to(torch.int32)
     actual = torch.zeros(expected.shape, dtype=getattr(torch, dtype_str), device=device)

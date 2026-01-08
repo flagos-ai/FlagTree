@@ -12,13 +12,14 @@ from test_common import (
     _shape_1d,
 )
 
+
 @pytest.mark.parametrize('dtype', _float_dtypes + _int_dtypes)
 @pytest.mark.parametrize('xblock_sub', _shape_1d)
 @pytest.mark.parametrize('min', [1])
 def test_clamp(dtype, xblock_sub):
 
     xblock = triton.next_power_of_2(xblock_sub)
-    shape = (xblock,)
+    shape = (xblock, )
 
     def torch_func(x0, x1, x2):
         return torch.where(x0, x1, x2)
@@ -29,9 +30,9 @@ def test_clamp(dtype, xblock_sub):
         ]
 
     @triton.autotune(
-            configs=get_autotune_config(),
-            key=['numel'],
-        )
+        configs=get_autotune_config(),
+        key=['numel'],
+    )
     @triton.jit
     def triton_kernel(in_ptr0, in_ptr1, in_ptr2, out_ptr0, numel, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
         offset = tl.program_id(0) * XBLOCK

@@ -48,9 +48,7 @@ def get_target_cache_loc(
     accept_len_all = tl.load(accept_length + bs_offset, mask=bs_offset < bid)
     tgt_cache_loc_start = tl.sum(accept_len_all) + bid
     copy_len = tl.load(accept_length + bid) + 1
-    out_cache_loc_row = tl.load(
-        out_cache_loc + bid * num_verify_tokens + offset, mask=offset < copy_len
-    )
+    out_cache_loc_row = tl.load(out_cache_loc + bid * num_verify_tokens + offset, mask=offset < copy_len)
     tl.store(
         tgt_cache_loc + tgt_cache_loc_start + offset,
         out_cache_loc_row,

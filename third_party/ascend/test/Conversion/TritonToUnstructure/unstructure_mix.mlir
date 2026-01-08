@@ -1,4 +1,4 @@
-// RUN: triton-adapter-opt --triton-to-unstructure %s | FileCheck %s 
+// RUN: triton-adapter-opt --triton-to-unstructure %s | FileCheck %s
 
 tt.func public @indirect_mix_kernel(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<i64> {tt.divisibility = 16 : i32}, %arg2: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg3: i32 {tt.divisibility = 16 : i32}) attributes {noinline = false} {
     %cst = arith.constant dense<16> : tensor<1x8xi32>

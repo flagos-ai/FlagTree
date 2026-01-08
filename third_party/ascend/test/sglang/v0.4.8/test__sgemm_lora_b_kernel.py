@@ -103,12 +103,8 @@ def _sgemm_lora_b_kernel(
     s_offset = tl.arange(0, BLOCK_S) + pid_s * BLOCK_S
     n_offset = tl.arange(0, BLOCK_N) + pid_n * BLOCK_N
     k_offset = tl.arange(0, BLOCK_K)
-    x_ptrs = (x + seg_start * x_stride_0) + (
-        s_offset[:, None] * x_stride_0 + k_offset[None, :] * x_stride_1
-    )
-    w_ptrs = (weights + w_index * w_stride_0) + (
-        k_offset[:, None] * w_stride_2 + n_offset[None, :] * w_stride_1
-    )
+    x_ptrs = (x + seg_start * x_stride_0) + (s_offset[:, None] * x_stride_0 + k_offset[None, :] * x_stride_1)
+    w_ptrs = (weights + w_index * w_stride_0) + (k_offset[:, None] * w_stride_2 + n_offset[None, :] * w_stride_1)
 
     # Iterate to compute the block in output matrix
     partial_sum = tl.zeros((BLOCK_S, BLOCK_N), dtype=tl.float32)
@@ -131,9 +127,8 @@ def _sgemm_lora_b_kernel(
     # Store result to output matrix
     partial_sum *= scaling
     partial_sum = partial_sum.to(x.dtype.element_ty)
-    output_ptr = (output + seg_start * output_stride_0) + (
-        s_offset[:, None] * output_stride_0 + n_offset[None, :] * output_stride_1
-    )
+    output_ptr = (output + seg_start * output_stride_0) + (s_offset[:, None] * output_stride_0 +
+                                                           n_offset[None, :] * output_stride_1)
     output_mask = s_offset[:, None] < seg_len
     partial_sum += tl.load(output_ptr, mask=output_mask)
     tl.store(output_ptr, partial_sum, mask=output_mask)

@@ -26,7 +26,7 @@ inline Type f16Ty(MLIRContext *ctx) { return FloatType::getF16(ctx); }
 inline Type f32Ty(MLIRContext *ctx) { return FloatType::getF32(ctx); }
 inline Type f64Ty(MLIRContext *ctx) { return FloatType::getF64(ctx); }
 inline Type bf16Ty(MLIRContext *ctx) { return FloatType::getBF16(ctx); }
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
 inline Type f16Ty(MLIRContext *ctx) { return Float16Type::get(ctx); }
 inline Type f32Ty(MLIRContext *ctx) { return Float32Type::get(ctx); }
 inline Type f64Ty(MLIRContext *ctx) { return Float64Type::get(ctx); }
@@ -48,7 +48,7 @@ inline bool isFloat8(Type type) {
          type.isFloat8E5M2FNUZ();
 }
 
-#else  // triton_v3.3.x
+#else // triton_v3.3.x
 
 inline bool isFloat8(Type type) {
   return isa<Float8E4M3B11FNUZType, Float8E4M3FNType, Float8E4M3FNUZType,

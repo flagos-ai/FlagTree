@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Fused Attention
 ===============
@@ -39,7 +38,6 @@ import torch_npu
 import triton
 import triton.language as tl
 
-
 DEVICE = "npu"
 
 
@@ -48,8 +46,10 @@ def _attn_fwd_inner(acc_ptr, l_i, m_i, q,  # Accumulator, local l, local m, quer
                     K_block_ptr, V_block_ptr,  # Key and value block pointers for current stage
                     start_m, qk_scale,  # Starting position of current query block, qk scale factor
                     BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  # Block size constants
-                    STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  # Current stage flag, m and n offset indices
-                    N_CTX: tl.constexpr, fp8_v: tl.constexpr):  # Total context length, whether to enable FP8 for value precision
+                    STAGE: tl.constexpr, offs_m: tl.constexpr,
+                    offs_n: tl.constexpr,  # Current stage flag, m and n offset indices
+                    N_CTX: tl.constexpr,
+                    fp8_v: tl.constexpr):  # Total context length, whether to enable FP8 for value precision
     # Set the processing range [lo, hi) for the current stage (in column block units)
     # causal = true
     # stage = 1
@@ -146,18 +146,12 @@ def _attn_fwd_inner(acc_ptr, l_i, m_i, q,  # Accumulator, local l, local m, quer
 
 
 @triton.jit
-def _attn_fwd(Q, K, V, M, Out, acc, sm_scale,
-              stride_qz: tl.constexpr, stride_qh: tl.constexpr, stride_qm: tl.constexpr, stride_qk: tl.constexpr,
-              stride_kz: tl.constexpr, stride_kh: tl.constexpr, stride_kn: tl.constexpr, stride_kk: tl.constexpr,
-              stride_vz: tl.constexpr, stride_vh: tl.constexpr, stride_vn: tl.constexpr, stride_vk: tl.constexpr,
-              stride_oz: tl.constexpr, stride_oh: tl.constexpr, stride_om: tl.constexpr, stride_on: tl.constexpr,
-              Z: tl.constexpr, H: tl.constexpr,
-              N_CTX: tl.constexpr,
-              HEAD_DIM: tl.constexpr,
-              BLOCK_M: tl.constexpr,
-              BLOCK_N: tl.constexpr,
-              STAGE: tl.constexpr
-              ):
+def _attn_fwd(Q, K, V, M, Out, acc, sm_scale, stride_qz: tl.constexpr, stride_qh: tl.constexpr, stride_qm: tl.constexpr,
+              stride_qk: tl.constexpr, stride_kz: tl.constexpr, stride_kh: tl.constexpr, stride_kn: tl.constexpr,
+              stride_kk: tl.constexpr, stride_vz: tl.constexpr, stride_vh: tl.constexpr, stride_vn: tl.constexpr,
+              stride_vk: tl.constexpr, stride_oz: tl.constexpr, stride_oh: tl.constexpr, stride_om: tl.constexpr,
+              stride_on: tl.constexpr, Z: tl.constexpr, H: tl.constexpr, N_CTX: tl.constexpr, HEAD_DIM: tl.constexpr,
+              BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, STAGE: tl.constexpr):
     # Total number of blocks in sequence dimension (M)
     NUM_BLOCKS_M = N_CTX // BLOCK_M
     # Total tasks = number of sequence blocks × batch size (Z) × number of attention heads (H)
@@ -216,11 +210,8 @@ def _attn_fwd(Q, K, V, M, Out, acc, sm_scale,
         if HEAD_DIM < 256:
             acc_ptr = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
         else:
-            acc_offset = (
-                off_z.to(tl.int64) * stride_qz // stride_qm * HEAD_DIM +
-                off_h.to(tl.int64) * stride_qh // stride_qm * HEAD_DIM +
-                task_m_idx * BLOCK_M * HEAD_DIM
-            )
+            acc_offset = (off_z.to(tl.int64) * stride_qz // stride_qm * HEAD_DIM +
+                          off_h.to(tl.int64) * stride_qh // stride_qm * HEAD_DIM + task_m_idx * BLOCK_M * HEAD_DIM)
             acc_ptr = acc + acc_offset
 
         # load q: it will stay in SRAM throughout
@@ -289,31 +280,24 @@ class _attention(torch.autograd.Function):
         o = torch.empty_like(q)
         stage = 3 if causal else 1
         extra_kern_args = {}
-        
 
         # Number of NPU cores (adjust based on hardware)
         num_cores = 20
         acc = torch.zeros((q.shape[0], q.shape[1], q.shape[2], HEAD_DIM_K), dtype=torch.float32, device=q.device)
         M = torch.empty((q.shape[0], q.shape[1], q.shape[2]), device=q.device, dtype=torch.float32)
 
-        _attn_fwd[(num_cores,)](
-            q, k, v, M, o, acc, sm_scale,
-            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-            v.stride(0), v.stride(1), v.stride(2), v.stride(3),
-            o.stride(0), o.stride(1), o.stride(2), o.stride(3),
-            q.shape[0], q.shape[1], N_CTX=q.shape[2],
-            HEAD_DIM=HEAD_DIM_K,
-            BLOCK_M=BM,
-            BLOCK_N=BN,
-            STAGE=stage,
-            **extra_kern_args)
+        _attn_fwd[(num_cores, )](q, k, v, M, o, acc, sm_scale, q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+                                 k.stride(0), k.stride(1), k.stride(2), k.stride(3), v.stride(0), v.stride(1),
+                                 v.stride(2), v.stride(3), o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+                                 q.shape[0], q.shape[1], N_CTX=q.shape[2], HEAD_DIM=HEAD_DIM_K, BLOCK_M=BM, BLOCK_N=BN,
+                                 STAGE=stage, **extra_kern_args)
 
         ctx.save_for_backward(q, k, v, o, M)
         ctx.sm_scale = sm_scale
         ctx.HEAD_DIM = HEAD_DIM_K
         ctx.causal = causal
         return o
+
 
 attention = _attention.apply
 
@@ -341,16 +325,19 @@ def test_op(Z, H, N_CTX, HEAD_DIM, causal, dtype, BM, BN):
 
     tri_out = attention(q, k, v, causal, sm_scale, BM, BN)
     ref_out = torch_npu.npu_fusion_attention(
-            q, k, v, H,
-            padding_mask=None,
-            atten_mask=None,
-            scale=sm_scale,
-            keep_prob=1.0,
-            input_layout="BNSD",
-            pre_tockens=65535,
-            next_tockens=65535,
-            sparse_mode=0,
-            )[0]
+        q,
+        k,
+        v,
+        H,
+        padding_mask=None,
+        atten_mask=None,
+        scale=sm_scale,
+        keep_prob=1.0,
+        input_layout="BNSD",
+        pre_tockens=65535,
+        next_tockens=65535,
+        sparse_mode=0,
+    )[0]
 
     torch.testing.assert_close(ref_out, tri_out, atol=1e-2, rtol=1e-2, equal_nan=True)
     print(f"[PASSED] Attention shape:({Z}, {H}, {N_CTX}, {HEAD_DIM}), BM: {BM}, BN: {BN}, dtype: {dtype}")

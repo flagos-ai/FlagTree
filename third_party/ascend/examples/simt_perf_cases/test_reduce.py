@@ -51,24 +51,24 @@ def test_reduce(param_list):
         data_simplification=False,
     )
     with torch_npu.profiler.profile(
-        activities=[
-            torch_npu.profiler.ProfilerActivity.CPU,
-            torch_npu.profiler.ProfilerActivity.NPU,
-        ],
-        schedule=torch_npu.profiler.schedule(
-            wait=wait,
-            warmup=warmup,
-            active=active,
-            repeat=repeat,
-            skip_first=skip_first,
-        ),
-        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(result_path),
-        record_shapes=True,
-        profile_memory=False,
-        with_stack=False,
-        with_flops=False,
-        with_modules=False,
-        experimental_config=experimental_config,
+            activities=[
+                torch_npu.profiler.ProfilerActivity.CPU,
+                torch_npu.profiler.ProfilerActivity.NPU,
+            ],
+            schedule=torch_npu.profiler.schedule(
+                wait=wait,
+                warmup=warmup,
+                active=active,
+                repeat=repeat,
+                skip_first=skip_first,
+            ),
+            on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(result_path),
+            record_shapes=True,
+            profile_memory=False,
+            with_stack=False,
+            with_flops=False,
+            with_modules=False,
+            experimental_config=experimental_config,
     ) as prof:
         stream.synchronize()
         for _ in range(skip_first + (wait + warmup + active) * repeat):
@@ -83,8 +83,6 @@ def test_reduce(param_list):
             )
             prof.step()
         stream.synchronize()
-    triton_unk_reduce[[grid_size, 1, 1]](
-        arg0_1, buf44, y0_numel, x1_numel, 4096, num_warps=32, force_simt_only=True
-    )
+    triton_unk_reduce[[grid_size, 1, 1]](arg0_1, buf44, y0_numel, x1_numel, 4096, num_warps=32, force_simt_only=True)
     torch_out = torch_reduce(arg0_1)
     torch.testing.assert_close(buf44, torch_out, rtol=1e-04, atol=1e-04, equal_nan=True)

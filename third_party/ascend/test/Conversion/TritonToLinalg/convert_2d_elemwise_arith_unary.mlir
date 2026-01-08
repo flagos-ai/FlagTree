@@ -45,7 +45,7 @@ module {
   }
 }
 // CHECK-LABEL:   func.func @kernel(
-// CHECK-SAME:      %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, %[[VAL_0:.*]]: memref<?xf32> {tt.tensor_kind = 0 : i32}, %[[VAL_1:.*]]: memref<?xi32> {tt.tensor_kind = 0 : i32}, %[[VAL_2:.*]]: memref<?xf16> {tt.tensor_kind = 0 : i32}, %[[VAL_3:.*]]: memref<128x128xbf16>, 
+// CHECK-SAME:      %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>, %[[VAL_0:.*]]: memref<?xf32> {tt.tensor_kind = 0 : i32}, %[[VAL_1:.*]]: memref<?xi32> {tt.tensor_kind = 0 : i32}, %[[VAL_2:.*]]: memref<?xf16> {tt.tensor_kind = 0 : i32}, %[[VAL_3:.*]]: memref<128x128xbf16>,
 // CHECK-SAME:      %[[VAL_4:.*]]: memref<128x128xf32>, %[[VAL_5:.*]]: memref<128x128xf32>, %[[VAL_6:.*]]: memref<128x128xf32>, %[[VAL_7:.*]]: memref<128x128xf32>, %arg10: i32, %arg11: i32, %arg12: i32, %arg13: i32, %arg14: i32, %arg15: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 // CHECK:           %[[VAL_11:.*]] = memref.reinterpret_cast %[[VAL_0]] to offset: [0], sizes: [128, 128], strides: [1, 1] : memref<?xf32> to memref<128x128xf32, strided<[1, 1]>>
 // CHECK:           %[[VAL_12:.*]] = memref.reinterpret_cast %[[VAL_1]] to offset: [0], sizes: [128, 128], strides: [1, 1] : memref<?xi32> to memref<128x128xi32, strided<[1, 1]>>

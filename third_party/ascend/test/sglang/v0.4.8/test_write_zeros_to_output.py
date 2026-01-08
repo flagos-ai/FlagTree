@@ -98,6 +98,7 @@ def data_kernel(
         )
         return
 
+
 def test_write_zeros_to_output(ptfile_path):
     try:
         data = torch.load(ptfile_path, map_location=torch.device('cpu'), weights_only=False)

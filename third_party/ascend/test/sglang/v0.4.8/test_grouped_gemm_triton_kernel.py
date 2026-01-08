@@ -24,6 +24,7 @@ import triton
 import torch
 import triton.language as tl
 import test_common
+
 sys.path.append("..")
 
 
@@ -88,9 +89,8 @@ def grouped_gemm_triton_kernel(
     if pid_m >= total_m_block:
         return
 
-    m_range_start, m_range_end, expert_id = compute_m_range(
-        pid_m, batch_size, seg_indptr, weight_indices, m_num_tiles_indptr, BLOCK_SIZE_M
-    )
+    m_range_start, m_range_end, expert_id = compute_m_range(pid_m, batch_size, seg_indptr, weight_indices,
+                                                            m_num_tiles_indptr, BLOCK_SIZE_M)
     if m_range_end - m_range_start == 0:
         return
 
@@ -107,11 +107,7 @@ def grouped_gemm_triton_kernel(
     offs_k = tl.arange(0, BLOCK_SIZE_K)
 
     a_ptr = a + (m_range_start + offs_am[:, None]) * a_stride_0 + offs_k[None, :]
-    b_ptr = b + (
-        (expert_id * b_stride_0)
-        + (n_range_start + offs_bn[:, None]) * b_stride_1
-        + offs_k[None, :]
-    )
+    b_ptr = b + ((expert_id * b_stride_0) + (n_range_start + offs_bn[:, None]) * b_stride_1 + offs_k[None, :])
 
     if group_k > 0 and group_n > 0:
         a_scale_ptrs = scale_a + (m_range_start + offs_am[:, None]) * as_stride_0
@@ -120,12 +116,8 @@ def grouped_gemm_triton_kernel(
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
-        a_tile = tl.load(
-            a_ptr, mask=offs_k[None, :] < (K - k * BLOCK_SIZE_K), other=0.0
-        )
-        b_tile = tl.load(
-            b_ptr, mask=offs_k[None, :] < (K - k * BLOCK_SIZE_K), other=0.0
-        )
+        a_tile = tl.load(a_ptr, mask=offs_k[None, :] < (K - k * BLOCK_SIZE_K), other=0.0)
+        b_tile = tl.load(b_ptr, mask=offs_k[None, :] < (K - k * BLOCK_SIZE_K), other=0.0)
 
         if group_k > 0 and group_n > 0:
             k_start = k * BLOCK_SIZE_K
@@ -155,7 +147,8 @@ def grouped_gemm_triton_kernel(
     tl.store(c_ptr, c_tile, mask=c_mask)
 
 
-def test_fwd_kernel_stage2(ptfile_path="/home/z00946769/triton-sglang/full_data/test_grouped_gemm_triton_kernel_full.pt"):
+def test_fwd_kernel_stage2(
+        ptfile_path="/home/z00946769/triton-sglang/full_data/test_grouped_gemm_triton_kernel_full.pt"):
     try:
         data = torch.load(ptfile_path, map_location=torch.device('cpu'), weights_only=False)
     except Exception as e:

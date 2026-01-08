@@ -13,19 +13,19 @@ def spec_math_func(spec):
     current_module_name = __name__
     parent_module_name = '.'.join(current_module_name.split('.')[:-1])
 
-    for spec_func_name in spec.math_ext_base_func_list:
-        if hasattr(spec, spec_func_name):
-            spec_func = getattr(spec, spec_func_name)
+    for spec_api_name in spec.math_ext_base_api_list:
+        if hasattr(spec, spec_api_name):
+            spec_api = getattr(spec, spec_api_name)
             # triton.language
-            setattr(sys.modules[parent_module_name], spec_func.__name__, spec_func)
+            setattr(sys.modules[parent_module_name], spec_api.__name__, spec_api)
             # triton.language.math
-            setattr(sys.modules[__name__], spec_func.__name__, spec_func)
+            setattr(sys.modules[__name__], spec_api.__name__, spec_api)
 
-    for spec_func_name in spec.math_ext_spec_func_list:
-        if hasattr(spec, spec_func_name):
-            spec_func = getattr(spec, spec_func_name)
+    for spec_api_name in spec.math_ext_spec_api_list:
+        if hasattr(spec, spec_api_name):
+            spec_api = getattr(spec, spec_api_name)
             # triton.language.math
-            setattr(sys.modules[__name__], spec_func.__name__, spec_func)
+            setattr(sys.modules[__name__], spec_api.__name__, spec_api)
 
 
 def _check_dtype(dtypes: List[str]) -> T:

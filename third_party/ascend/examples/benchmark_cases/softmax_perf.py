@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Fused Softmax
 =============
@@ -47,6 +46,7 @@ import triton
 import triton.language as tl
 from triton.runtime import driver
 import time
+
 
 def naive_softmax(x):
     """Compute row-wise softmax of X using native pytorch
@@ -89,30 +89,31 @@ def naive_softmax(x):
 # power-of-two number of elements, so we need to internally "pad" each row and guard the
 # memory operations properly if we want to handle any possible input shapes:
 
+
 @triton.jit
 def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols, BLOCK_SIZE: tl.constexpr,
-                   XBLOCK:tl.constexpr, num_stages: tl.constexpr):
+                   XBLOCK: tl.constexpr, num_stages: tl.constexpr):
     # starting row of the program
     row_start = tl.program_id(0) * XBLOCK
-    XBLOCK_SUB : tl.constexpr = 8
+    XBLOCK_SUB: tl.constexpr = 8
     #for row_idx in tl.range(row_start, n_rows, row_step, num_stages=num_stages):
-    for row_idx in tl.range(0, XBLOCK, XBLOCK_SUB) :
+    for row_idx in tl.range(0, XBLOCK, XBLOCK_SUB):
         # The stride represents how much we need to increase the pointer to advance 1 row
-        row_offsets = row_start + row_idx + tl.arange(0, XBLOCK_SUB)[:,None]
-        col_offsets = tl.arange(0, BLOCK_SIZE)[None,:]
+        row_offsets = row_start + row_idx + tl.arange(0, XBLOCK_SUB)[:, None]
+        col_offsets = tl.arange(0, BLOCK_SIZE)[None, :]
         xmask = (row_offsets < n_rows)
         ymask = (col_offsets < n_cols)
         mask = xmask & ymask
-        input_ptrs = input_ptr + (row_offsets * input_row_stride + col_offsets )
+        input_ptrs = input_ptr + (row_offsets * input_row_stride + col_offsets)
         # Load the row into SRAM, using a mask since BLOCK_SIZE may be > than n_cols
         row = tl.load(input_ptrs, mask=mask, other=-float('inf'))
         # Subtract maximum for numerical stability
-        row_minus_max = row - tl.max(row, axis=1).reshape(XBLOCK_SUB,1).broadcast_to(XBLOCK_SUB,BLOCK_SIZE)
+        row_minus_max = row - tl.max(row, axis=1).reshape(XBLOCK_SUB, 1).broadcast_to(XBLOCK_SUB, BLOCK_SIZE)
         numerator = tl.exp(row_minus_max)
-        denominator = tl.sum(numerator, axis=1).reshape(XBLOCK_SUB,1).broadcast_to(XBLOCK_SUB,BLOCK_SIZE)
+        denominator = tl.sum(numerator, axis=1).reshape(XBLOCK_SUB, 1).broadcast_to(XBLOCK_SUB, BLOCK_SIZE)
         softmax_output = numerator / denominator
         # Write back output to DRAM
-        output_ptrs = output_ptr + (row_offsets * output_row_stride + col_offsets )
+        output_ptrs = output_ptr + (row_offsets * output_row_stride + col_offsets)
         tl.store(output_ptrs, softmax_output, mask=mask)
 
 
@@ -128,13 +129,14 @@ kernels = {}
 device = torch.npu.current_device()
 stream = torch.npu.current_stream(device).npu_stream
 
+
 def softmax(x):
     n_rows, n_cols = x.shape
 
     # The block size of each loop iteration is the smallest power of two greater than the number of columns in `x`
     num_programs = 32
-    
-    XBLOCK = (n_rows + num_programs -1) // num_programs
+
+    XBLOCK = (n_rows + num_programs - 1) // num_programs
     BLOCK_SIZE = n_cols
     # Another trick we can use is to ask the compiler to use more threads per row by
     # increasing the number of warps (`num_warps`) over which each row is distributed.
@@ -144,11 +146,10 @@ def softmax(x):
 
     # Number of software piepling stages.
     #num_stages = 4 if SIZE_SMEM > 200000 else 2
-    num_stages =4
+    num_stages = 4
 
     # Allocate output
     y = torch.empty_like(x)
-
 
     # pre-compile kernel to get register usage and compute thread occupancy.
     kernel, num_programs = kernels.get(BLOCK_SIZE, (None, num_programs))
@@ -166,15 +167,7 @@ def softmax(x):
     num_programs = min(num_programs, n_rows)
 
     # Create a number of persistent programs.
-    kernel[(32, 1, 1)](
-        y,
-        x,
-        x.stride(0),
-        y.stride(0),
-        n_rows,
-        n_cols,
-        stream=stream
-    )
+    kernel[(32, 1, 1)](y, x, x.stride(0), y.stride(0), n_rows, n_cols, stream=stream)
     return y
 
 
@@ -186,8 +179,10 @@ def softmax(x):
 # We make sure that we test our kernel on a matrix with an irregular number of rows and columns.
 # This will allow us to verify that our padding mechanism works.
 
+
 def torch_softmax(x):
     return torch.softmax(x, axis=-1)
+
 
 torch.manual_seed(0)
 # x = torch.randn(1823, 781, device='npu')
@@ -195,20 +190,22 @@ x = torch.randn(4096, 1024, device='npu')
 y_triton = softmax(x)
 y_torch = torch_softmax(x)
 assert torch.allclose(y_triton, y_torch), (y_triton, y_torch)
+
+
 #torch.testing.assert_close(y_triton, y_torch, rtol=1e-3, atol=1e-3)
 # %%
 # As expected, the results are identical.
-def benchmark_test(fn, fn_triton, args =(), name="gen_fn", times=100, repeat=10):
+def benchmark_test(fn, fn_triton, args=(), name="gen_fn", times=100, repeat=10):
     print(f"--------------------benchmark_{name} for {times * repeat} times--------------------")
     stream = torch.npu.current_stream()
     # warm_up
     stream.synchronize()
-    for _ in range(10) :
+    for _ in range(10):
         fn_triton(args)
     stream.synchronize()
 
     start = time.perf_counter()
-    for _ in range(times * repeat) :
+    for _ in range(times * repeat):
         fn_triton(args)
     stream.synchronize()
     end = time.perf_counter()
@@ -217,17 +214,16 @@ def benchmark_test(fn, fn_triton, args =(), name="gen_fn", times=100, repeat=10)
     time_compiled *= 1000000
     print(f"time_triton:{time_compiled:.6f}")
 
-
     print(f"Runing eager {name} for {times * repeat} times")
-    
+
     # warm_up
     stream.synchronize()
-    for _ in range(10) :
+    for _ in range(10):
         std = fn(args)
     stream.synchronize()
 
     start = time.perf_counter()
-    for _ in range(times * repeat) :
+    for _ in range(times * repeat):
         std = fn(args)
     stream.synchronize()
     end = time.perf_counter()
@@ -235,20 +231,20 @@ def benchmark_test(fn, fn_triton, args =(), name="gen_fn", times=100, repeat=10)
     time_eager *= 1000000
     print(f"time_eager:{time_eager:.6f}")
 
-    accelerated = (time_eager - time_compiled)/time_compiled*100
+    accelerated = (time_eager - time_compiled) / time_compiled * 100
     print(f"Accelerated: {accelerated:.4f}% eager takes {time_eager:.3f} us, triton takes {time_compiled:.3f} us")
 
     return accelerated, time_eager, time_compiled
 
+
 # x = torch.randn(4096, 1024, device='npu')
-benchmark_test(torch_softmax,softmax,args=x)
+benchmark_test(torch_softmax, softmax, args=x)
 # %%
 # Benchmark
 # ---------
 #
 # Here we will benchmark our operation as a function of the number of columns in the input matrix -- assuming 4096 rows.
 # We will then compare its performance against (1) :code:`torch.softmax` and (2) the :code:`naive_softmax` defined above.
-
 
 # @triton.testing.perf_report(
 #     triton.testing.Benchmark(
@@ -277,7 +273,6 @@ benchmark_test(torch_softmax,softmax,args=x)
 #     # gbps = lambda ms: 2 * x.nelement() * x.element_size() * 1e-9 / (ms * 1e-3)
 #     gbps = lambda ms: ms*1000
 #     return gbps(ms)
-
 
 # benchmark.run(show_plots=True, print_data=True)
 
