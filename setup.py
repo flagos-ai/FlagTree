@@ -194,8 +194,16 @@ def is_linux_os(id):
     return False
 
 
-# llvm
+# -----flagtree-tle-raw-----
+
+
 def get_llvm_package_info():
+    LLVM_WHEEL_PKG = "llvm-wheel"
+    if helper.try_setup_llvm_wheel(LLVM_WHEEL_PKG):
+        return Package("llvm", "llvm-C.lib", "", "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH")
+
+    # rule3: no wheel & env → use env
+    print("[DECISION] LLVM wheel not found, fallback to legacy logic")
     system = platform.system()
     try:
         arch = {"x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}[platform.machine()]
@@ -246,6 +254,9 @@ def get_llvm_package_info():
     sym_name = f"llvm-{system_suffix}"
     url = f"https://oaitriton.blob.core.windows.net/public/llvm-builds/{name}.tar.gz"
     return Package("llvm", name, url, "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH", sym_name=sym_name)
+
+
+# --------------------------
 
 
 def open_url(url):
