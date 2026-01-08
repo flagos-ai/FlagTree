@@ -48,4 +48,4 @@ FlagTree 设计的后端统一特化，目的是整合后端接入范式，对�
 FLIR 计划集成更多后端，2026 Q1 完成 tsingmicro 后端接入。 <br>
 保护分支 triton_v3.4.x 计划接入新后端。 <br>
 HINTS 计划GPU后端优化shared memory hints以更好地和Triton已有pass协作，同时进行功能升级。<br>
-Tle-Raw 计划在算子中验证性能提升机会，优化与Triton的衔接，同时寻找其他可用的接入语言。<br>
+TLE-Raw 计划在算子中验证性能提升机会，优化与Triton的衔接，同时寻找其他可用的接入语言。<br>
