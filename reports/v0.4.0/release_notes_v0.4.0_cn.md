@@ -27,7 +27,7 @@ FlagTree 设计的后端统一特化，目的是整合后端接入范式，对�
 
 * 编译指导 flagtree_hints
 
-在 GPGPU 上支持编译指导 shared memory + async copy 并在 triton_v3.5.x 分支上验证。
+在 GPGPU 上支持编译指导 shared memory + async copy 并在 triton_v3.5.x 分支上验证。HINTS更多信息[wiki](https://github.com/flagos-ai/FlagTree/wiki/HINTS)。
 
 * 低层次指令编写 Tle-Raw
 
