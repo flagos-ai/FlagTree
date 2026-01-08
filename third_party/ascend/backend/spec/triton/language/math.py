@@ -44,7 +44,7 @@ fmod = language.extra.ascend.libdevice.fmod
 trunc = language.extra.ascend.libdevice.trunc
 round = language.extra.ascend.libdevice.round
 
-math_ext_base_func_list = [
+math_ext_base_api_list = [
     "umulhi", "exp", "exp2", "log", "log2", "cos",
     "sin", "sqrt", "sqrt_rn", "rsqrt", "div_rn", "erf",
     "tanh", "floor", "ceil", "fma", "_check_dtype", "softmax", "sigmoid",

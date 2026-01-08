@@ -13,7 +13,7 @@ def spec_math_func(spec):
     current_module_name = __name__
     parent_module_name = '.'.join(current_module_name.split('.')[:-1])
 
-    for spec_api_name in spec.math_ext_base_func_list:
+    for spec_api_name in spec.math_ext_base_api_list:
         if hasattr(spec, spec_api_name):
             spec_api = getattr(spec, spec_api_name)
             # triton.language

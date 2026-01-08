@@ -202,7 +202,7 @@ __all__  = [
     "fmod",
     "trunc",
     "round",
-    "math_ext_base_func_list",
+    "math_ext_base_api_list",
     "math_ext_spec_api_list",
     # testing
     'is_do_bench_npu',
