@@ -6,13 +6,13 @@
 #include "npu/Conversion/TritonToHFusion/TritonToHFusion.h"
 #include "npu/Conversion/TritonToHIVM/TritonToHIVM.h"
 #include "npu/Conversion/TritonToLLVM/TritonToLLVM.h"
-#include "triton-shared/DiscreteMaskAccessConversion/DiscreteMaskAccessConversionPass.h"
+#include "incubated/Conversion/DiscreteMaskAccessConversion/DiscreteMaskAccessConversionPass.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h"
-#include "triton-shared/TritonLinearize/TritonLinearize.h"
-#include "triton-shared/TritonToLinalgIncubated/TritonToLinalgIncubatedPass.h"
-#include "triton-shared/TritonToUnstructureIncubated/UnstructureConversionPass.h"
-#include "triton-shared/BubbleUpOperation/BubbleUpOperation.h"
-#include "triton-shared/TritonToAnnotation/TritonToAnnotation.h"
+#include "incubated/Conversion/TritonLinearize/TritonLinearize.h"
+#include "incubated/Conversion/TritonToLinalgIncubated/TritonToLinalgIncubatedPass.h"
+#include "incubated/Conversion/TritonToUnstructureIncubated/UnstructureConversionPass.h"
+#include "incubated/Conversion/BubbleUpOperation/BubbleUpOperation.h"
+#include "incubated/Conversion/TritonToAnnotation/TritonToAnnotation.h"
 
 #define PY_SSIZE_T_CLEAN
 #include <pybind11/pybind11.h>
