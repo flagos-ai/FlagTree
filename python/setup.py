@@ -638,7 +638,7 @@ with open(readme_path, "r", encoding="utf-8") as fh:
 
 setup(
     name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
-    version="0.3.0" + os.environ.get("FLAGTREE_WHEEL_VERSION_SUFFIX", ""),
+    version="0.4.0" + os.environ.get("FLAGTREE_WHEEL_VERSION_SUFFIX", ""),
     author="FlagOS",
     author_email="contact@flagos.io",
     description=
