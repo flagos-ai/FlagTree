@@ -472,6 +472,9 @@ using ::mlir::triton::gpu::CTALayoutAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
+#ifdef FLAGTREE_SPEC_BackendMmaEncodingAttr
+using FLAGTREE_SPEC_BackendMmaEncodingAttr;
+#endif
 
 Value dot(RewriterBase &rewriter, Location loc, ArrayRef<Value> offsets,
           ArrayRef<Value> strides);
