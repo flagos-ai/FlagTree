@@ -55,7 +55,7 @@ class BackendDriver(GPUDriver):
 
 ## 4. 使用实例
 
-### 4.1 情形一：特化函数实现（spec）
+### 4.1 情形一：特化实现函数的一部分（spec）
 
 #### 4.1.1 第一步：调用统一特化
 
@@ -92,7 +92,7 @@ def atomic_add_int64(sca_ty, builder, val, ptr, mask, sem, scope):
 
 需要注意的是，如果需要特化一个判断条件（即特化函数返回布尔类型），那么应设计为后端特化时返回 True（缺省返回 False）。这是为了与 spec 方法当后端未做相应函数的特化时缺省返回 None 保持判断结果一致，保证缺省实现不变。
 
-### 4.2 情形二：特化函数定义（spec_func）
+### 4.2 情形二：定义特化函数（spec_func）
 
 #### 4.2.1 第一步：调用统一特化
 
@@ -133,7 +133,7 @@ def matmul_kernel(grid, a, b, c, M, N, K, ...):
     return _kernel[grid](a, b, c, M, N, K, ...)
 ```
 
-### 4.3 情形三：添加新的方法（例如 spec_semantic_func）
+### 4.3 情形三：添加新的原语接口（例如 spec_semantic_func）
 
 在 python/triton/language/ 目录下常有后端需要添加新的 tl 原语。上文介绍过，spec_func 在例如 semantic.py 的全局 scope 下是不能调用的，因此添加方法需要使用本节介绍的方案。
 
@@ -201,7 +201,7 @@ core_ext_spec_api_list = [
 ]
 ```
 
-### 4.4 情形四：修改或新增 tl.math 方法
+### 4.4 情形四：修改或新增 tl.math 原语
 
 第一、第二步与 4.3 大体一致，第三步的区别在于应按 Triton 规范实现于 libdevice.py。
 
