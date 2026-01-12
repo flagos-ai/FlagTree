@@ -85,16 +85,16 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 
 |后端     |安装命令<br>（版本号对应 git tag）|Triton 版本|Python 版本|
 |:-------|:------------------------------|:---------|:---------|
-|nvidia  |python3 -m pip install flagtree==0.3.0rc1 $RES            |3.1|3.10<br>3.11<br>3.12|
-|nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.2 $RES        |3.2|3.10<br>3.11<br>3.12|
-|nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.3 $RES        |3.3|3.10<br>3.11<br>3.12|
-|nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.4 $RES        |3.4|3.12|
-|nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.5 $RES        |3.5|3.12|
-|iluvatar|python3 -m pip install flagtree==0.3.0rc2+iluvatar3.1 $RES|3.1|3.10|
-|mthreads|python3 -m pip install flagtree==0.3.0rc3+mthreads3.1 $RES|3.1|3.10|
-|ascend  |python3 -m pip install flagtree==0.3.0rc1+ascend3.2 $RES  |3.2|3.11|
-|hcu     |python3 -m pip install flagtree==0.3.0rc2+hcu3.0 $RES     |3.0|3.10|
-|enflame |python3 -m pip install flagtree==0.3.0rc1+enflame3.3 $RES |3.3|3.10|
+|nvidia  |python3 -m pip install flagtree==0.4.0 $RES            |3.1|3.10<br>3.11<br>3.12|
+|nvidia  |python3 -m pip install flagtree==0.4.0+3.2 $RES        |3.2|3.10<br>3.11<br>3.12|
+|nvidia  |python3 -m pip install flagtree==0.4.0+3.3 $RES        |3.3|3.10<br>3.11<br>3.12|
+|nvidia  |python3 -m pip install flagtree==0.4.0+3.4 $RES        |3.4|3.12|
+|nvidia  |python3 -m pip install flagtree==0.4.0+3.5 $RES        |3.5|3.12|
+|iluvatar|python3 -m pip install flagtree==0.4.0+iluvatar3.1 $RES|3.1|3.10|
+|mthreads|python3 -m pip install flagtree==0.4.0+mthreads3.1 $RES|3.1|3.10|
+|ascend  |python3 -m pip install flagtree==0.4.0+ascend3.2 $RES  |3.2|3.11|
+|hcu     |python3 -m pip install flagtree==0.4.0+hcu3.0 $RES     |3.0|3.10|
+|enflame |python3 -m pip install flagtree==0.4.0+enflame3.3 $RES |3.3|3.10|
 
 ## 运行测试
 
