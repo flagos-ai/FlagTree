@@ -207,16 +207,20 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 sh README_offline_build.sh x86_64  # View readme
 # For Triton 3.1 (x64)
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.1.x-linux-x64.zip
-sh scripts/offline_build_unpack.sh ./offline-build-pack-triton-3.1.x-linux-x64.zip ~/.triton
+sh scripts/offline_build_unpack.sh \
+    ./offline-build-pack-triton-3.1.x-linux-x64.zip ~/.triton
 # For Triton 3.2 (x64)
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.2.x-linux-x64.zip
-sh scripts/offline_build_unpack.sh ./offline-build-pack-triton-3.2.x-linux-x64.zip ~/.triton
+sh scripts/offline_build_unpack.sh \
+    ./offline-build-pack-triton-3.2.x-linux-x64.zip ~/.triton
 # For Triton 3.2 (aarch64)
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.2.x-linux-aarch64.zip
-sh scripts/offline_build_unpack.sh ./offline-build-pack-triton-3.2.x-linux-aarch64.zip ~/.triton
+sh scripts/offline_build_unpack.sh \
+    ./offline-build-pack-triton-3.2.x-linux-aarch64.zip ~/.triton
 # For Triton 3.3 (x64)
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.3.x-linux-x64.zip
-sh scripts/offline_build_unpack.sh ./offline-build-pack-triton-3.3.x-linux-x64.zip ~/.triton
+sh scripts/offline_build_unpack.sh \
+    ./offline-build-pack-triton-3.3.x-linux-x64.zip ~/.triton
 ```
 
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
@@ -238,5 +242,5 @@ If the required GLIBC / GLIBCXX version is supported, you can also try:
 export LD_PRELOAD="/lib/x86_64-linux-gnu/libc.so.6"  # If GLIBC cannot be found
 export LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30"  # If GLIBCXX cannot be found
 export LD_PRELOAD="/lib/x86_64-linux-gnu/libc.so.6 \
-  /usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30"  # If neither GLIBC nor GLIBCXX can be found
+    /usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30"  # If neither GLIBC nor GLIBCXX can be found
 ```

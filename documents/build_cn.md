@@ -207,16 +207,20 @@ cd ${YOUR_CODE_DIR}/flagtree/python
 sh README_offline_build.sh x86_64  # View readme
 # For Triton 3.1 (x64)
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.1.x-linux-x64.zip
-sh scripts/offline_build_unpack.sh ./offline-build-pack-triton-3.1.x-linux-x64.zip ~/.triton
+sh scripts/offline_build_unpack.sh \
+    ./offline-build-pack-triton-3.1.x-linux-x64.zip ~/.triton
 # For Triton 3.2 (x64)
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.2.x-linux-x64.zip
-sh scripts/offline_build_unpack.sh ./offline-build-pack-triton-3.2.x-linux-x64.zip ~/.triton
+sh scripts/offline_build_unpack.sh \
+    ./offline-build-pack-triton-3.2.x-linux-x64.zip ~/.triton
 # For Triton 3.2 (aarch64)
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.2.x-linux-aarch64.zip
-sh scripts/offline_build_unpack.sh ./offline-build-pack-triton-3.2.x-linux-aarch64.zip ~/.triton
+sh scripts/offline_build_unpack.sh \
+    ./offline-build-pack-triton-3.2.x-linux-aarch64.zip ~/.triton
 # For Triton 3.3 (x64)
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.3.x-linux-x64.zip
-sh scripts/offline_build_unpack.sh ./offline-build-pack-triton-3.3.x-linux-x64.zip ~/.triton
+sh scripts/offline_build_unpack.sh \
+    ./offline-build-pack-triton-3.3.x-linux-x64.zip ~/.triton
 ```
 
 执行完上述脚本后，原有的 ~/.triton 目录将被重命名，新的 ~/.triton 目录会被创建并存放预下载包。
@@ -238,5 +242,5 @@ strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30 | grep GLIBCXX
 export LD_PRELOAD="/lib/x86_64-linux-gnu/libc.so.6"  # If GLIBC cannot be found
 export LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30"  # If GLIBCXX cannot be found
 export LD_PRELOAD="/lib/x86_64-linux-gnu/libc.so.6 \
-  /usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30"  # If neither GLIBC nor GLIBCXX can be found
+    /usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30"  # If neither GLIBC nor GLIBCXX can be found
 ```

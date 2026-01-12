@@ -80,7 +80,8 @@ cd ${ANY_OTHER_PATH}; python3 -c 'import triton; print(triton.__path__)'
 ```shell
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # TODO: automatically uninstall triton
-RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
+RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple \
+     --trusted-host=https://resource.flagos.net"
 ```
 
 |后端     |安装命令（版本号对应 git tag）|Triton 版本|Python 版本|

@@ -80,7 +80,8 @@ If you do not wish to build from source, you can directly pull and install whl (
 ```shell
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # TODO: automatically uninstall triton
-RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
+RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple \
+     --trusted-host=https://resource.flagos.net"
 ```
 
 |Backend |Install cmd<br>(The version corresponds to the git tag)|Triton<br>version|Python<br>version|
