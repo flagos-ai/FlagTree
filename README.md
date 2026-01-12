@@ -7,7 +7,7 @@ By "develop once, migrate across various chips", FlagOS aims to unlock the full 
 FlagTree is an open source, unified compiler for multiple AI chips project dedicated to developing a diverse ecosystem of AI chip compilers and related tooling platforms, thereby fostering and strengthening the upstream and downstream Triton ecosystem.
 Currently in its initial phase, the project aims to maintain compatibility with existing adaptation solutions while unifying the codebase to rapidly implement single-repository multi-backend support.
 For upstream model users, it provides unified compilation capabilities across multiple backends; for downstream chip manufacturers, it offers examples of Triton ecosystem integration. <br>
-Each backend is based on different versions of triton, and therefore resides in different protected branches. All these protected branches have equal status.
+Each backend is based on different versions of Triton, and therefore resides in different protected branches. All these protected branches have equal status.
 
 |Branch|Vendor|Backend|Triton version|
 |:-----|:-----|:------|:-------------|
@@ -83,12 +83,11 @@ python3 -m pip uninstall -y triton  # TODO: automatically uninstall triton
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
 ```
 
-|Backend |Install cmd<br>(Each version has a corresponding git tag)|Triton<br>version|Python<br>version|
+|Backend |Install cmd<br>(The version corresponds to the git tag)|Triton<br>version|Python<br>version|
 |:-------|:-------|:-------|:-------|
 |nvidia  |python3 -m pip install flagtree==0.4.0 $RES            |3.1|3.10<br>3.11<br>3.12|
 |nvidia  |python3 -m pip install flagtree==0.4.0+3.2 $RES        |3.2|3.10<br>3.11<br>3.12|
 |nvidia  |python3 -m pip install flagtree==0.4.0+3.3 $RES        |3.3|3.10<br>3.11<br>3.12|
-|nvidia  |python3 -m pip install flagtree==0.4.0+3.4 $RES        |3.4|3.12|
 |nvidia  |python3 -m pip install flagtree==0.4.0+3.5 $RES        |3.5|3.12|
 |iluvatar|python3 -m pip install flagtree==0.4.0+iluvatar3.1 $RES|3.1|3.10|
 |mthreads|python3 -m pip install flagtree==0.4.0+mthreads3.1 $RES|3.1|3.10|

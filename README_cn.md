@@ -7,7 +7,7 @@ FlagTree 是 [FlagOS](https://flagos.io/) 的一部分，而 FlagOS 是一个统
 FlagTree 是面向多种 AI 芯片的开源、统一编译器，致力于打造多元 AI 芯片编译器及相关工具平台，发展和壮大 Triton 上下游生态。
 项目当前处于初期，目标是兼容现有适配方案，统一代码仓库，快速实现单仓库多后端支持。
 对于上游模型用户，提供多后端的统一编译能力；对于下游芯片厂商，提供 Triton 生态接入范例。<br>
-各后端基于不同版本的 triton 适配，因此位于不同的主干分支，各主干分支均为保护分支且地位相等：<br>
+各后端基于不同版本的 Triton 适配，因此位于不同的主干分支，各主干分支均为保护分支且地位相等：<br>
 
 |主干分支|厂商|后端|Triton 版本|
 |:------|:--|:--|:----------|
@@ -83,12 +83,11 @@ python3 -m pip uninstall -y triton  # TODO: automatically uninstall triton
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
 ```
 
-|后端     |安装命令<br>（版本号对应 git tag）|Triton 版本|Python 版本|
-|:-------|:------------------------------|:---------|:---------|
+|后端     |安装命令（版本号对应 git tag）|Triton 版本|Python 版本|
+|:-------|:--------------------------|:---------|:---------|
 |nvidia  |python3 -m pip install flagtree==0.4.0 $RES            |3.1|3.10<br>3.11<br>3.12|
 |nvidia  |python3 -m pip install flagtree==0.4.0+3.2 $RES        |3.2|3.10<br>3.11<br>3.12|
 |nvidia  |python3 -m pip install flagtree==0.4.0+3.3 $RES        |3.3|3.10<br>3.11<br>3.12|
-|nvidia  |python3 -m pip install flagtree==0.4.0+3.4 $RES        |3.4|3.12|
 |nvidia  |python3 -m pip install flagtree==0.4.0+3.5 $RES        |3.5|3.12|
 |iluvatar|python3 -m pip install flagtree==0.4.0+iluvatar3.1 $RES|3.1|3.10|
 |mthreads|python3 -m pip install flagtree==0.4.0+mthreads3.1 $RES|3.1|3.10|
