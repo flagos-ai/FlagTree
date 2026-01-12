@@ -565,6 +565,8 @@ class JITFunction(KernelInterface[T]):
 
         # parse options
         from ..compiler import make_backend
+        # tip_for_runtime_device_get
+        # torch.device = 
         device = driver.active.get_current_device()
 
         # flagtree backend specialization
@@ -792,21 +794,58 @@ class JITFunction(KernelInterface[T]):
         self.cache[device][key] = kernel
         return kernel
 
+    # need to remove and place right
+    def get_flagtree_backend():
+        from triton.runtime.driver import driver
+
+        # non-driver : proton f2reduce
+        # GPUdriver : self.get_current_device = torch.cuda.current_device
+        # NPUDriver(DriverBase) : get_current_device(self) return torch.npu.current_device()
+        # AIPUDriver(DriverBase) : get_active_torch_device(self): torch.device("aipu", 0) 但是3.3的jit.run是nv的get_device方式
+        # _GCUDriver(DriverBase) : get_active_torch_device(self): torch.device("gcu", self.get_current_device())
+        # BangDriver(DriverBase) : get_device_interface(self): return torch.mlu
+        # CudaDriver(GPUDriver) : get_active_torch_device(self): return "iluvatar" !to implemet;
+        # MusaDriver(GPUDriver) : get_active_torch_device(self): return "musa" !to implemet
+        # TXDADriver(GPUDriver) : get_active_torch_device(self): return torch.device("txda", self.get_current_device())
+        # HIPDriver(GPUDriver): get_active_torch_device(self): return torch.device("cuda", self.get_current_device())
+        # CudaDriver(GPUDriver): get_active_torch_device(self): return torch.device("cuda", self.get_current_device())
+        # XPUDriver(GPUDriver): get_active_torch_device(self): return "xpu"
+        # return torch.npu.current_device() 本质貌似还是torch
+        device = driver.active.get_current_device()
+
+        # 稳定得到str
+        name = getattr(device, "name", "").lower()
+
+        # 可能不叫ascend，有可能是device编号
+        if "ascend" in name:
+            return "ascend"
+        return "default"
+
+
     # we do not parse `src` in the constructor because
     # the user might want to monkey-patch self.src dynamically.
     # Our unit tests do this, for example.
     def parse(self):
-        # flagtree backend specialization
-        from triton.runtime.driver import spec
-        line_flagtree_hints = spec('maps_line_numbers_to_comment_hints', self)
+        # remove flagtree backend specialization, because the implementation of 2 method is totally same
+        line_flagtree_hints = {}
+        code_str = self.src
+        g = tokenize.generate_tokens(StringIO(code_str).readline)
+        for tok_type, tok_text, start, end, _ in g:
+            if tok_type == tokenize.COMMENT:
+                comment = tok_text.replace(" ", "").strip()
+                if comment.startswith('#@hint:'):
+                    flagtree_hints = comment[len('#@hint:'):].strip()
+                    # Record the line number of the comment
+                    line_num = start[0]
+                    line_flagtree_hints[line_num] = flagtree_hints
 
         tree = ast.parse(self.src)
         assert isinstance(tree, ast.Module)
         assert len(tree.body) == 1
         assert isinstance(tree.body[0], ast.FunctionDef)
 
-        # flagtree backend specialization
-        spec('attach_line_number_to_comment_mapping', tree, line_flagtree_hints)
+        # Attach the line number to comment mapping to the function definition node
+        tree.body[0].line_flagtree_hints = line_flagtree_hints
 
         return tree
 
