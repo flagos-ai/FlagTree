@@ -65,7 +65,7 @@ export FLAGTREE_BACKEND=mthreads
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### ARM China [aipu](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/)
+#### ARM China（安谋科技）[aipu](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/)
 
 - 对应的 Triton 版本为 3.3，基于 x64/arm64 平台
 - 推荐使用 Ubuntu 22.04
@@ -81,7 +81,7 @@ export FLAGTREE_BACKEND=aipu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### [tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/)
+#### Tsingmicro（清微智能）[tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/)
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 - 推荐使用 Ubuntu 20.04
@@ -182,6 +182,9 @@ export LLVM_SYSPATH=${YOUR_LLVM_DOWNLOAD_DIR}/llvm-7d5de303-ubuntu-x64
 #
 export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
 export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
+```
+
+```shell
 cd ${YOUR_CODE_DIR}/flagtree
 cd python  # For Triton 3.1, 3.2, 3.3, you need to enter the python directory to build
 git checkout main                                   # For Triton 3.1

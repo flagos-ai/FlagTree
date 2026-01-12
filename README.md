@@ -13,7 +13,7 @@ Each backend is based on different versions of triton, and therefore resides in 
 |:-----|:-----|:------|:-------------|
 |[main](https://github.com/flagos-ai/flagtree/tree/main)|NVIDIA<br>AMD<br>x86_64 cpu<br>ILUVATAR（天数智芯）<br>Moore Threads（摩尔线程）<br>KLX<br>MetaX（沐曦股份）<br>HYGON（海光信息）|[nvidia](/third_party/nvidia/)<br>[amd](/third_party/amd/)<br>[triton-shared](https://github.com/microsoft/triton-shared)<br>[iluvatar](/third_party/iluvatar/)<br>[mthreads](/third_party/mthreads/)<br>[xpu](/third_party/xpu/)<br>[metax](/third_party/metax/)<br>[hcu](third_party/hcu/)|3.1<br>3.1<br>3.1<br>3.1<br>3.1<br>3.0<br>3.1<br>3.0|
 |[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)|NVIDIA<br>AMD<br>Huawei Ascend（华为昇腾）<br>Cambricon（寒武纪）|[nvidia](https://github.com/FlagTree/flagtree/tree/triton_v3.2.x/third_party/nvidia/)<br>[amd](https://github.com/FlagTree/flagtree/tree/triton_v3.2.x/third_party/amd/)<br>[ascend](https://github.com/FlagTree/flagtree/blob/triton_v3.2.x/third_party/ascend)<br>[cambricon](https://github.com/FlagTree/flagtree/tree/triton_v3.2.x/third_party/cambricon/)|3.2|
-|[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|NVIDIA<br>AMD<br>x86_64 cpu<br>ARM China<br>Tsingmicro（清微智能）<br>Enflame（燧原）|[nvidia](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/nvidia/)<br>[amd](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/amd/)<br>[triton-shared](https://github.com/microsoft/triton-shared)<br>[aipu](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/)<br>[tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/)<br>[enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/)|3.3|
+|[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|NVIDIA<br>AMD<br>x86_64 cpu<br>ARM China（安谋科技）<br>Tsingmicro（清微智能）<br>Enflame（燧原）|[nvidia](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/nvidia/)<br>[amd](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/amd/)<br>[triton-shared](https://github.com/microsoft/triton-shared)<br>[aipu](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/aipu/)<br>[tsingmicro](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/tsingmicro/)<br>[enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/)|3.3|
 |[triton_v3.4.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.4.x)|NVIDIA<br>AMD|[nvidia](https://github.com/FlagTree/flagtree/tree/triton_v3.4.x/third_party/nvidia/)<br>[amd](https://github.com/FlagTree/flagtree/tree/triton_v3.4.x/third_party/amd/)|3.4|
 |[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|NVIDIA<br>AMD|[nvidia](https://github.com/FlagTree/flagtree/tree/triton_v3.5.x/third_party/nvidia/)<br>[amd](https://github.com/FlagTree/flagtree/tree/triton_v3.5.x/third_party/amd/)|3.5|
 
@@ -83,11 +83,11 @@ python3 -m pip uninstall -y triton  # TODO: automatically uninstall triton
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
 ```
 
-|Backend |Install cmd (versions have corresponding git tags)|Triton version|Python version|
-|--------|--------------------------------------------------|--------------|--------------|
-|nvidia  |python3 -m pip install flagtree==0.3.0rc1 $RES            |3.1|3.10, 3.11, 3.12|
-|nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.2 $RES        |3.2|3.10, 3.11, 3.12|
-|nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.3 $RES        |3.3|3.10, 3.11, 3.12|
+|Backend |Install cmd<br>(Each version has a corresponding git tag)|Triton<br>version|Python<br>version|
+|:-------|:-------|:-------|:-------|
+|nvidia  |python3 -m pip install flagtree==0.3.0rc1 $RES            |3.1|3.10<br>3.11<br>3.12|
+|nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.2 $RES        |3.2|3.10<br>3.11<br>3.12|
+|nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.3 $RES        |3.3|3.10<br>3.11<br>3.12|
 |nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.4 $RES        |3.4|3.12|
 |nvidia  |python3 -m pip install flagtree==0.3.0rc1+3.5 $RES        |3.5|3.12|
 |iluvatar|python3 -m pip install flagtree==0.3.0rc2+iluvatar3.1 $RES|3.1|3.10|
