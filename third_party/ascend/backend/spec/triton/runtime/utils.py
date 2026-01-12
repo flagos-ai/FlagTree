@@ -1,6 +1,6 @@
 import torch
 
-from .driver import driver
+from triton.runtime.driver import driver
 
 # npu hardware params
 target = driver.active.get_current_target()
