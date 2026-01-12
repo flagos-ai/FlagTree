@@ -184,7 +184,7 @@ def ext_Config_to_str(res, config):
 def new_AutoTilingTuner(hints, fn, configs, key, reset_to_zero, restore_value, pre_hook, post_hook, prune_configs_by,
                         warmup, rep, use_cuda_graph, do_bench, auto_profile_dir):
     if hints is not None and hints.get("enable_ascend_autotune"):
-        from triton.runtime.autotiling_tuner import AutoTilingTuner
+        from .autotiling_tuner import AutoTilingTuner
         return AutoTilingTuner(fn, fn.arg_names, configs, key, reset_to_zero, restore_value, pre_hook=pre_hook,
                                post_hook=post_hook, prune_configs_by=prune_configs_by, warmup=warmup, rep=rep,
                                use_cuda_graph=use_cuda_graph, do_bench=do_bench, auto_profile_dir=auto_profile_dir)
