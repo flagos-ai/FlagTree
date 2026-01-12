@@ -17,30 +17,21 @@ from triton.runtime.cache import get_cache_manager
 from triton.backends.driver import GPUDriver
 from triton.backends.compiler import GPUTarget
 
-
-def _get_tx8_deps_path(sub_name: str) -> str:
-    path = os.getenv("TX8_DEPS_ROOT", "")
-    if path == "":
-        raise Exception("TX8_DEPS_ROOT is not set.")
-    return os.path.join(path, sub_name)
-
-
-def _is_use_profile():
-    return os.getenv("USE_PROFILE", "").strip() == "1"
-
+from triton.backends.tsingmicro import txda_tools
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 if (os.getenv("USE_SIM_MODE", "0").lower() in ("1", "true", "yes")):
     scheme = sysconfig.get_default_scheme()
     py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
 
-    include_dirs = [_get_tx8_deps_path("include"), py_include_dir]
-    library_dirs = [_get_tx8_deps_path("lib")]
+    include_dirs = [txda_tools.get_kuiper_path("include"), txda_tools.get_tx8_deps_path("include"), py_include_dir]
+    library_dirs = [txda_tools.get_kuiper_path("lib"), txda_tools.get_tx8_deps_path("lib")]
     libraries = ["triton_cmodel", "tx8be_op_cmodel", "neuralcore_qemu"]
 else:
     include_dirs = [
         os.path.join(dirname, "include"),
-        _get_tx8_deps_path("include"),
+        txda_tools.get_kuiper_path("include"),
+        txda_tools.get_tx8_deps_path("include"),
         os.path.join(sysconfig.get_path('platlib'), "pybind11", "include"),
         os.path.join(sysconfig.get_path('platlib'), "torch", "include"),
         os.path.join(sysconfig.get_path('platlib'), "torch", "include", "torch", "csrc", "api", "include"),
@@ -48,42 +39,11 @@ else:
     ]
     library_dirs = [
         os.path.join(dirname, "lib"),
-        _get_tx8_deps_path("lib"),
+        txda_tools.get_kuiper_path("lib"),
+        txda_tools.get_tx8_deps_path("lib"),
         os.path.join(sysconfig.get_path('platlib'), "torch", "lib")
     ]
-    libraries = ['tx8_runtime', 'torch', 'torch_cpu', 'torch_python', 'c10']
-
-
-def extend_torch():
-    import torch
-    from torch.utils import cpp_extension, rename_privateuse1_backend, generate_methods_for_privateuse1_backend
-    cflags = []
-    ldflags = ["-L" + os.path.realpath(_get_tx8_deps_path("lib")), "-ltx8_runtime"]
-    if _is_use_profile():
-        cflags.append("-DUSE_PROFILE")
-        ldflags.append("-lprofiler_x86")
-
-    module = cpp_extension.load(
-        name="txda",
-        sources=[os.path.dirname(__file__) + "/txda_device.cpp"],
-        extra_include_paths=[os.path.realpath(_get_tx8_deps_path("include"))],
-        extra_ldflags=ldflags,
-        extra_cflags=cflags,
-        verbose=True,
-    )
-    torch.utils.rename_privateuse1_backend("txda")
-    torch._register_device_module("txda", module)
-    generate_methods_for_privateuse1_backend(for_storage=True)
-
-
-def _dump_ir_if_needed(files):
-    path = os.getenv("TRITON_DUMP_PATH", "")
-    if not path:
-        return
-
-    os.makedirs(path, exist_ok=True)
-    for f in files:
-        shutil.copy(f, os.path.join(path, os.path.basename(f)))
+    libraries = ['hpgr', 'torch', 'torch_cpu', 'torch_python', 'c10']
 
 
 def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
@@ -111,14 +71,17 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
     include_dirs = include_dirs + [srcdir, py_include_dir, *custom_backend_dirs]
     # for -Wno-psabi, see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=111047
     cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-std=c++17", "-Wno-psabi", "-o", so]
-    if _is_use_profile():
+    if txda_tools.is_use_host_profile():
         cc_cmd += ["-DUSE_PROFILE"]
+    if txda_tools.is_debug():
+        cc_cmd += ["-DCMAKE_BUILD_TYPE=Debug"]
     cc_cmd += [f'-l{lib}' for lib in libraries]
-    if _is_use_profile():
+    if txda_tools.is_use_host_profile():
         cc_cmd += ["-lprofiler_x86"]
     cc_cmd += [f"-L{dir}" for dir in library_dirs]
     cc_cmd += [f"-I{dir}" for dir in include_dirs if dir is not None]
-    subprocess.check_call(cc_cmd, stdout=subprocess.DEVNULL)
+    txda_tools.runLoweringCmd(so, cc_cmd)
+    txda_tools.dump_ir_if_needed([so])
     return so
 
 
@@ -134,11 +97,11 @@ def compile_native(src, name):
             with open(src_path, "w") as f:
                 f.write(src)
                 f.flush()
-                _dump_ir_if_needed([src_path])
+                txda_tools.dump_ir_if_needed([src_path])
             so = _build(name, src_path, tmpdir, library_dirs, include_dirs, libraries)
             with open(so, "rb") as f:
                 cache_path = cache.put(f.read(), f"{fname}.so", binary=True)
-                _dump_ir_if_needed([cache_path])
+                txda_tools.dump_ir_if_needed([cache_path])
     else:
         print("cache_path: ", cache_path, flush=True)
 
@@ -209,7 +172,7 @@ def make_launcher(constants, signature, kernel_name, kernel_path):
     # Basic declarations. Arguments in triton kernel.
     arg_decls = ', '.join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items() if ty != "constexpr")
     args_format = ''.join([_format_of(ty) for ty in signature.values()])
-    format = "iiiOKOOOO" + args_format
+    format = "issis" + "iiiOKOOOO" + args_format
     args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
 
     # Parameters to pass to the kernel function. Arguments in triton kernel except constants.
@@ -248,6 +211,11 @@ def make_launcher(constants, signature, kernel_name, kernel_path):
 
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <Python.h>
+
+extern "C" {{
+    int vdk_printf(const char *fmt, ...) {{ return 0; }}
+    int tsprintf_core(const char *fmt, ...) {{ return 0; }}
+}}
 
 using kernel_ptr_t = void(*)({kernel_arg_decls}int, int, int, int, int, int);
 
@@ -302,13 +270,13 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
         Py_DECREF(empty_tuple);
         Py_DECREF(ptr);
         if (!PyLong_Check(ret)) {{
-        PyErr_SetString(PyExc_TypeError, "data_ptr method of Pointer object must return 64-bit int");
-        ptr_info.valid = false;
-        return ptr_info;
+            PyErr_SetString(PyExc_TypeError, "data_ptr method of Pointer object must return 64-bit int");
+            ptr_info.valid = false;
+            return ptr_info;
         }}
         ptr_info.dev_ptr = (void*) PyLong_AsLongLong(ret);
         if(!ptr_info.dev_ptr) {{
-        return ptr_info;
+            return ptr_info;
         }}
         Py_DECREF(ret);  // Thanks ChatGPT!
         return ptr_info;
@@ -337,14 +305,16 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
     TileSimHandle *sim_handle = q_tilesim_create(log_level);
     set_sim_handle(sim_handle, NULL);
-    FILE *fp = fopen("aa.log", "w");
-    if (fp == NULL) {{
-        perror("fopen failed\\n");
+
+    // Create a temporary file. Remember to add XXXXXX in uppercase; when the temporary file is created successfully, the system will automatically fill in the characters
+    char name[] = "/tmp/dirXXXXXX";
+    int fd = mkstemp(name);
+    if(fd == -1) {{
+        perror("mkstemp failed\\n");
         exit(-1);
     }}
-    fclose(fp);
 
-    q_tilesim_set_logFile(sim_handle, "aa.log");
+    q_tilesim_set_logFile(sim_handle, "/dev/null");
 
     int gridX, gridY, gridZ;
     PyObject *launch_enter_hook = NULL;
@@ -396,6 +366,11 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
     // return None
     Py_INCREF(Py_None);
+
+    // Delete tmp file
+    close(fd);
+    unlink(name);
+
     return Py_None;
 }}
 
@@ -438,8 +413,11 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
 #include <memory>
 #include <string>
 #include <filesystem>
-#include "hrt_interface.h"
-#include "hrt_common.h"
+#include <unistd.h>
+#include <thread>
+#include <fstream>
+
+#include "tx_runtime.h"
 #include "profiler.h"
 
 enum DATA_TYPE {{
@@ -479,26 +457,143 @@ auto g_guard = std::shared_ptr<void>(
 );
 
 
-// FIXME: Hardcoded path
-std::string chip_out = "/tmp/chip_out/node0/";
-std::string kernel_file = "{kernel_path}";
-std::string kernel_fun_name = "{kernel_name}";
-uint32_t sharedMemBytes = 0;
-TsmDevice* device;
+static int read_bin_file(const char *file_name, char **content, size_t *length) {{
+    FILE *file;
+    int64_t file_size;
+    size_t bytes_read;
 
-typedef void* Stream_t;
+    file = fopen(file_name, "r");
 
-static void _launch(int gridX, int gridY, int gridZ, std::vector<KernelArg> kargs) {{
+    if (file == NULL) {{
+        printf("don't open file %s\\n", file_name);
+        return -1;
+    }}
+
+    if (fseek(file, 0L, SEEK_END) != 0) {{
+        printf("fseek to end failed \\n");
+        fclose(file);
+        return -1;
+    }}
+    file_size = ftell(file);
+    if (file_size == -1) {{
+        printf("ftell file failed\\n");
+        fclose(file);
+        return -1;
+    }}
+    rewind(file);
+    *length = file_size;
+    *content = reinterpret_cast<char *>(malloc(sizeof(char) * (file_size + 1)));
+    printf("filename:%s length:%ld\\n", file_name, file_size);
+    if (*content == NULL) {{
+        fclose(file);
+        printf("file content malloc error %s file_size:%ld\\n", file_name, file_size);
+        return -1;
+    }}
+
+    bytes_read = fread(*content, sizeof(char), file_size, file);
+    (*content)[bytes_read] = '\\0';
+
+    fclose(file);
+    return 0;
+}}
+
+void dump_kernel_args(int gridX, int gridY, int gridZ,
+    const std::string &kernel_file, const std::string &kernel_fun_name,
+    const std::vector<KernelArg> &kargs, const std::string &dump_path) {{
+
+    std::string dumpfile = dump_path + "/kernel_args.txt";
+    std::ofstream outfile(dumpfile, std::ios::app);
+
+    if (!outfile) {{
+        printf("error can't open file:%s\\n", dumpfile.c_str());
+        return;
+    }}
+
+    outfile << "==============================" << std::endl;
+    outfile << "kernel_file:";
+    outfile << kernel_file << ", ";
+    outfile << "kernel_func:";
+    outfile << kernel_fun_name << ", ";
+
+    outfile << "gridX:";
+    outfile << gridX << ", ";
+    outfile << "gridY:";
+    outfile << gridY << ", ";
+    outfile << "gridZ:";
+    outfile << gridZ << ", ";
+
+    outfile << "blockX:";
+    outfile << 1 << ", ";
+    outfile << "blockY:";
+    outfile << 1 << ", ";
+    outfile << "blockZ:";
+    outfile << 1 << ", ";
+    outfile << std::endl;
+
+    std::vector<uint64_t> rtKargs;
+    const char* str_args = "args";
+    int count = 0;
+    for (const KernelArg& karg : kargs) {{
+        outfile << str_args << count++ << "_";
+        if (karg.data_type == POINT) {{
+            outfile << "v:" << 1 << ", ";
+            outfile << str_args << count++ << "_"
+                    << "p:" << karg.data.ptr << ", ";
+        }} else {{
+            outfile << "v:" << std::hex << "0x" << karg.data.scalar << ", ";
+        }}
+    }}
+    outfile << str_args << count++ << "_v:" << std::hex << "0x" << gridX << ", ";
+    outfile << str_args << count++ << "_v:" << std::hex << "0x" << gridY << ", ";
+    outfile << str_args << count++ << "_v:" << std::hex << "0x" << gridZ << ", ";
+    outfile << str_args << count++ << "_v:" << std::hex << "0x" << 0 << ", ";
+    outfile << str_args << count++ << "_v:" << std::hex << "0x" << 0 << ", ";
+    outfile << str_args << count++ << "_v:" << std::hex << "0x" << 0 << ", ";
+    outfile << std::endl;
+
+    outfile << "point size: ";
+    for (const KernelArg& karg : kargs) {{
+        if (karg.data_type == POINT) {{
+            outfile << karg.data.ptr << ":" << std::hex << "0x" << karg.size << ", ";
+        }}
+    }}
+    outfile << std::endl;
+
+    outfile.close();
+}}
+
+static bool set_device_id(int device_id) {{
+    if (txSetDevice(device_id) != TX_SUCCESS) {{
+        PyErr_SetString(PyExc_RuntimeError, "Failed to set device");
+        return false;
+    }}
+    return true;
+}}
+
+static void _launch(int gridX, int gridY, int gridZ,
+    int device_id, std::string kernel_file, std::string kernel_fun_name,
+    int is_dump_args, std::string dump_path, txStream_t stream,
+    std::vector<KernelArg> kargs) {{
     if (gridX*gridY*gridZ <= 0) {{
         return;  // No work to do
     }}
 
+    if (!set_device_id(device_id)) {{
+        return;
+    }}
+
+
+    if (is_dump_args != 0) {{
+        dump_kernel_args(gridX, gridY, gridZ,
+            kernel_file, kernel_fun_name, kargs, dump_path);
+    }}
+
     // TODO::mv
     uint64_t kernel_len = 0;
-    uint8_t* kernel_ptr = read_file_data(kernel_file, kernel_len);
-    if (kernel_ptr == nullptr) {{
+    char* kernel_ptr = nullptr;
+    int ret = read_bin_file(kernel_file.c_str(), &kernel_ptr, &kernel_len);
+    if (ret != 0 || kernel_ptr == nullptr) {{
         PyErr_SetString(PyExc_RuntimeError, "Failed to read kernel so");
-        TsmDeInitRuntime();
         return;
     }}
 
@@ -509,7 +604,7 @@ static void _launch(int gridX, int gridY, int gridZ, std::vector<KernelArg> karg
             rtKargs.push_back(1);
             rtKargs.push_back((uint64_t)(karg.data.ptr));
         }} else {{
-            rtKargs.push_back((uint64_t)(karg.data.ptr));
+            rtKargs.push_back((uint64_t)(karg.data.scalar));
         }}
     }}
     rtKargs.push_back(gridX);
@@ -519,17 +614,18 @@ static void _launch(int gridX, int gridY, int gridZ, std::vector<KernelArg> karg
     rtKargs.push_back(0);
     rtKargs.push_back(0);
 
-    // TSM_RETCODE TsmKernelLaunch(TsmDevice *dev, const char *func_name, uint64_t kernel_host, uint64_t kernel_len,
-    // Dim3 grid_dim, Dim3 block_dim, void *args, uint32_t args_len);
+    // txError_t txLaunchKernelGGL(const char *funcName, uint64_t elfAddr, uint64_t elfLen, dim3 gridDim, dim3 blockDim,
+    //         void *kernelArg, uint32_t kernelArgLen, uint32_t sharedMemBytes,
+    //         txStream_t tStream = nullptr);
     uint32_t eventId = EVENT_INIT;
-    PROFILE_CALL(addOrderPorfile, TIME_RUNTIME, TIME_LAUNCH_START, &eventId);
-    if (TsmKernelLaunch(device, kernel_fun_name.c_str(), (uint64_t)kernel_ptr, kernel_len,
-        Dim3({{(uint32_t)gridX, (uint32_t)gridY, (uint32_t)gridZ}}), Dim3({{1u, 1u, 1u}}),
-        (void*)(&rtKargs[0]), rtKargs.size()*sizeof(uint64_t)) != RET_SUCCESS){{
-        PyErr_SetString(PyExc_RuntimeError, "Failed to TsmKernelLaunch");
-        TsmDeInitRuntime();
+    PROFILE_CALL(addOrderProfile, TIME_RUNTIME, TIME_LAUNCH_START, &eventId);
+    if (txLaunchKernelGGL(kernel_fun_name.c_str(), (uint64_t)kernel_ptr, kernel_len,
+        dim3({{(uint32_t)gridX, (uint32_t)gridY, (uint32_t)gridZ}}), dim3({{1u, 1u, 1u}}),
+        (void*)(&rtKargs[0]), rtKargs.size()*sizeof(uint64_t), 0, stream) != TX_SUCCESS){{
+        PyErr_SetString(PyExc_RuntimeError, "Failed to txLaunchKernelGGL");
     }}
-    PROFILE_CALL(addOrderPorfile, TIME_RUNTIME, TIME_LAUNCH_END, &eventId);
+    txStreamSynchronize(stream);
+    PROFILE_CALL(addOrderProfile, TIME_RUNTIME, TIME_LAUNCH_END, &eventId);
 }}
 
 // Structure to represent a device pointer
@@ -606,7 +702,6 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
         return ptr_info;
     }}
 
-
     PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
     if(ptr){{
         printf("PyObject_GetAttrString\\n");
@@ -658,18 +753,9 @@ static void* extractTensor(PyObject* tensor_obj) {{
     return contiguous_tensor.data_ptr();
 }}
 
-static PyObject* get_device_ptr(PyObject* self, PyObject* args) {{
-    uint64_t dev_ptr;
-    if (!PyArg_ParseTuple(args, "K", &dev_ptr)) {{
-        return NULL;
-    }}
-    device = (TsmDevice *)dev_ptr;
-    return Py_None;
-}}
-
 static PyObject* release(PyObject* self, PyObject* args) {{
     PROFILE_CALL(printProfileAll);
-    return Py_None;
+    Py_RETURN_NONE;
 }}
 
 // Python module launch function
@@ -682,11 +768,22 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
     PyObject * py_obj_stream = NULL;
     void * pKrnl = NULL;
 
+    const char* kernel_file = "base_kernel_path";
+    const char* kernel_fun_name = "base_kernel_func_name";
+    const char* dump_path = "";
+    int is_dump_args = 0;
+    uint32_t sharedMemBytes = 0;
+    int device_id = 0;
+    txStream_t stream = nullptr;
+
     // Define the actual kernel arguments
     {' '.join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
 
     // Init kernel arguments from python side
-    if(!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &py_obj_stream, &pKrnl,
+
+    if(!PyArg_ParseTuple(args, \"{format}\", &device_id, &kernel_file,
+                                        &kernel_fun_name, &is_dump_args, &dump_path,
+                                        &gridX, &gridY, &gridZ, &py_obj_stream, &pKrnl,
                                         &kernel_metadata, &launch_metadata,
                                         &launch_enter_hook, &launch_exit_hook
                                         {args_list})) {{
@@ -707,7 +804,8 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
                   for i, ty in signature.items() if ty != "constexpr"])}
 
     // Launch the kernel
-    _launch(gridX, gridY, gridZ, kargs);
+    _launch(gridX, gridY, gridZ, device_id, std::string(kernel_file),
+        std::string(kernel_fun_name), is_dump_args, std::string(dump_path), stream, kargs);
     if (PyErr_Occurred()) {{
         return NULL;
     }}
@@ -730,7 +828,6 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 static PyMethodDef ModuleMethods[] = {{
     {{"launch", launch, METH_VARARGS, "Entry point for all kernels with this signature"}},
     {{"release", release, METH_VARARGS, "Call release function"}},
-    {{"get_device_ptr", get_device_ptr, METH_VARARGS, "Get txda current device"}},
     {{NULL, NULL, 0, NULL}} // sentinel
 }};
 
@@ -794,7 +891,7 @@ class SimulatorUtils(object):
             return (lib, fn_ptr_as_void_p, 0, 0)
 
     def get_device_properties(self, *args):
-        return {"max_shared_mem": 1024 * 1024 * 3}
+        return {"max_shared_mem": 1024 * 1024 * 3 - 0x10000 - 0x10000}
 
 
 # Launch cross compiled runtime program on controller
@@ -811,8 +908,9 @@ class TXDALauncher(object):
         print("==== kernel_path: ", kernel_path)
         launcher_src = make_launcher(constants, signature, src.fn.__name__, kernel_path)
         mod = compile_native(launcher_src, "__triton_launcher")
-        self.get_device_ptr = mod.get_device_ptr
         self.launch = mod.launch
+        self.kernel_path = kernel_path
+        self.func_name = src.fn.__name__
 
     def __call__(self, *args, **kwargs):
         # args: 0: gridX, 1: gridY, 2: gridZ,
@@ -821,9 +919,9 @@ class TXDALauncher(object):
         #       6: None, 7: None, 8: None,
         #       9~N: Actual triton kernel args.
         import torch
-        device = torch.txda.get_device()
-        self.get_device_ptr(device)
-        self.launch(*args, **kwargs)
+        device_id = torch.txda.current_device()
+        self.launch(device_id, self.kernel_path, self.func_name, txda_tools.is_dump_args_profile(),
+                    txda_tools.get_dump_dir(), *args, **kwargs)
 
 
 class TXDADriver(GPUDriver):
@@ -831,6 +929,7 @@ class TXDADriver(GPUDriver):
     def __init__(self):
         import torch
         super().__init__()
+        print("============= call TXDADriver test")
         if (os.getenv("USE_SIM_MODE", "0").lower() in ("1", "true", "yes")):
             self.utils = SimulatorUtils()
         else:
@@ -840,13 +939,12 @@ class TXDADriver(GPUDriver):
         self.get_current_stream = self.get_txda_stream
         self.get_current_device = torch.txda.current_device
         self.set_current_device = torch.txda.set_device
-        atexit.register(torch.txda.cleanup_device)
 
     @staticmethod
     def is_active():
         try:
             import torch
-            extend_torch()
+            import torch_txda
             return torch.txda.is_available()
         except ImportError:
             return False
@@ -861,9 +959,6 @@ class TXDADriver(GPUDriver):
 
     def get_active_torch_device(self):
         import torch
-        chip_out = _get_tx8_deps_path("chip_out")
-        chip_out = chip_out + os.sep
-        torch.txda.init_device(chip_out)
         return torch.device("txda", self.get_current_device())
 
     def get_benchmarker(self):
@@ -881,4 +976,10 @@ class TXDADriver(GPUDriver):
         # before each kernel call to make sure that the L2 cache
         # doesn't contain any input data before the run
         cache_size = 256 * 1024 * 1024
-        return torch.empty(int(cache_size // 4), dtype=torch.int).to("txda")
+        # return torch.empty(int(cache_size // 4), dtype=torch.int).to("txda")
+        return True
+
+    def clear_cache(self, cache):
+        return True
+        # print("clear_cache")
+        # cache.zero_()

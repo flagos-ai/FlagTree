@@ -1,5 +1,7 @@
 //===--------------------- Tx81ToLLVM.cpp ---------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -9,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "tsingmicro-tx81/Conversion/Tx81ToLLVM/Tx81ToLLVM.h"
+#include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -34,11 +37,15 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
 #include "utils/utils.h"
 #include "llvm/ADT/TypeSwitch.h"
 
+#ifdef DEBUG_TYPE
+#undef DEBUG_TYPE
+#endif
 #define DEBUG_TYPE "tx81-to-llvm"
 
 using namespace mlir;
@@ -51,6 +58,10 @@ namespace {
 // Helper Functions
 //===----------------------------------------------------------------------===//
 // Crt func name
+const char rdma4dFuncName[] = "__Rdma4d";
+const char wdma4dFuncName[] = "__Wdma4d";
+const char rdma1dFuncName[] = "__Rdma1d";
+const char wdma1dFuncName[] = "__Wdma1d";
 const char rdmaFuncName[] = "__Rdma";
 const char wdmaFuncName[] = "__Wdma";
 const char memcpyFuncName[] = "__Memcpy";
@@ -62,6 +73,7 @@ const char absVVFuncName[] = "__AbsVV";
 const char rsqrtVVFuncName[] = "__RsqrtVV";
 const char sqrtVVFuncName[] = "__SqrtVV";
 const char recipVVFuncName[] = "__RecipVV";
+const char negVVFuncName[] = "__NegVV";
 const char lnFuncName[] = "__Ln";
 const char log2FuncName[] = "__Log2";
 const char expFuncName[] = "__Exp";
@@ -77,6 +89,7 @@ const char argMaxFuncName[] = "__ArgMax";
 const char reduceSumFuncName[] = "__ReduceSum";
 const char reduceMaxFuncName[] = "__ReduceMax";
 const char reduceMinFuncName[] = "__ReduceMin";
+const char reduceMulFuncName[] = "__ReduceMul";
 // Int8
 const char int8ToBf16FuncName[] = "__INT8_BF16";
 const char int8ToFp16FuncName[] = "__INT8_FP16";
@@ -122,8 +135,13 @@ const char tf32ToBf16FuncName[] = "__TF32_BF16";
 const char tf32ToFp32FuncName[] = "__TF32_FP32";
 // MXFP
 const char fp8E4M3ToBF16FuncName[] = "__FP8E4M3_BF16";
+const char fp8E4M3FNToBF16FuncName[] = "__FP8E4M3FN_BF16";
 const char fp8E5M2ToBF16FuncName[] = "__FP8E5M2_BF16";
 const char fp4E2M1ToBF16FuncName[] = "__FP4E2M1_BF16";
+const char fp8E4M3ToFP16FuncName[] = "__FP8E4M3_FP16";
+const char fp8E4M3FNToFP16FuncName[] = "__FP8E4M3FN_FP16";
+const char fp8E5M2ToFP16FuncName[] = "__FP8E5M2_FP16";
+const char fp4E2M1ToFP16FuncName[] = "__FP4E2M1_FP16";
 
 const char boolEqualVVFuncName[] = "__BoolEqualVV";
 const char boolUnEqualVVFuncName[] = "__BoolUnEqualVV";
@@ -162,6 +180,10 @@ const char transposeFuncName[] = "__Transpose";
 const char nchw2nhwcFuncName[] = "__Nchw2nhwc";
 const char nhwc2nchwFuncName[] = "__Nhwc2nchw";
 const char tanhFuncName[] = "__Tanh";
+const char atomicBarrierInFuncName[] = "__AtomicBarrierIn";
+const char atomicBarrierOutFuncName[] = "__AtomicBarrierOut";
+const char MXFPScaleBF16FuncName[] = "__mxfpScaleBF16";
+const char MXFPScaleFP16FuncName[] = "__mxfpScaleFP16";
 
 static Value adjustElemCountType(ConversionPatternRewriter &rewriter,
                                  Location loc, Value elemCount) {
@@ -434,8 +456,8 @@ struct BarrierConversion : public OpConversionPattern<tx::BarrierOp> {
     auto i8PtrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
 
     // Declare the function
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), "__Barrier", i8PtrTy, {});
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                "__Barrier", i8PtrTy, {});
 
     // Create the call to __Barrier
     auto call = rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{i8PtrTy},
@@ -444,6 +466,131 @@ struct BarrierConversion : public OpConversionPattern<tx::BarrierOp> {
 
     // Replace the op with the call
     rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
+template <typename Tx81Op, const char *funcPrefix>
+struct AtomicBarrierOpConversion : public OpConversionPattern<Tx81Op> {
+  using OpConversionPattern<Tx81Op>::OpConversionPattern;
+  using OpAdaptor = typename Tx81Op::Adaptor;
+
+  LogicalResult
+  matchAndRewrite(Tx81Op op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto module = op->template getParentOfType<ModuleOp>();
+    auto i8PtrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
+
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, {});
+
+    auto call = rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{i8PtrTy},
+                                              funcPrefix, // funcPtr,
+                                              ValueRange{});
+
+    // erase the op
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+template <typename Tx81Op, const char *funcPrefix>
+struct Rdma4dOpConversion : public OpConversionPattern<Tx81Op> {
+  using OpConversionPattern<Tx81Op>::OpConversionPattern;
+  using OpAdaptor = typename Tx81Op::Adaptor;
+
+  LogicalResult
+  matchAndRewrite(Tx81Op op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    // Get the module for function declarations
+    auto module = op->template getParentOfType<ModuleOp>();
+    auto voidType = rewriter.getType<LLVM::LLVMVoidType>();
+    auto LLVMPtrType = rewriter.getType<LLVM::LLVMPointerType>();
+    auto i32Type = rewriter.getI32Type();
+
+    // Types for function declaration
+    SmallVector<Type> argTypes = {
+        LLVMPtrType, // dest
+        LLVMPtrType, // src
+        i32Type,     // elem_count
+        i32Type,     // stride0
+        i32Type,     // iteration0
+        i32Type,     // stride1
+        i32Type,     // iteration1
+        i32Type,     // stride2
+        i32Type,     // iteration2
+        i32Type      // fmt
+    };
+
+    // Declare the function
+    Value funcPtr = triton::declareTx81Function(module, rewriter, loc,
+                                                funcPrefix, voidType, argTypes);
+
+    Value dstPtr = rewriter.create<LLVM::IntToPtrOp>(loc, LLVMPtrType,
+                                                     adaptor.getTarget());
+    Value srcPtr = rewriter.create<LLVM::IntToPtrOp>(loc, LLVMPtrType,
+                                                     adaptor.getSource());
+    Value elemCount = adaptor.getElemCount();
+    Value strides[3] = {adaptor.getStride0(), adaptor.getStride1(),
+                        adaptor.getStride2()};
+    Value iterations[3] = {adaptor.getIteration0(), adaptor.getIteration1(),
+                           adaptor.getIteration2()};
+    Value fmt =
+        rewriter.create<LLVM::ConstantOp>(loc, i32Type, op.getFmtAttr());
+
+    // Create the call to __Rdma4d/__Wdma4d
+    auto call = rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+        op, TypeRange{}, funcPrefix,
+        ValueRange{dstPtr, srcPtr, elemCount, strides[0], iterations[0],
+                   strides[1], iterations[1], strides[2], iterations[2], fmt});
+
+    return success();
+  }
+};
+
+template <typename Tx81Op, const char *funcPrefix>
+struct Rdma1dOpConversion : public OpConversionPattern<Tx81Op> {
+  using OpConversionPattern<Tx81Op>::OpConversionPattern;
+  using OpAdaptor = typename Tx81Op::Adaptor;
+
+  LogicalResult
+  matchAndRewrite(Tx81Op op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    // Get the module for function declarations
+    auto module = op->template getParentOfType<ModuleOp>();
+    auto voidType = rewriter.getType<LLVM::LLVMVoidType>();
+    auto LLVMPtrType = rewriter.getType<LLVM::LLVMPointerType>();
+    auto i32Type = rewriter.getI32Type();
+
+    // Types for function declaration
+    SmallVector<Type> argTypes = {
+        LLVMPtrType, // dest
+        LLVMPtrType, // src
+        i32Type,     // elem_count
+        i32Type      // fmt
+    };
+
+    // Declare the function
+    Value funcPtr = triton::declareTx81Function(module, rewriter, loc,
+                                                funcPrefix, voidType, argTypes);
+
+    Value dstPtr = rewriter.create<LLVM::IntToPtrOp>(loc, LLVMPtrType,
+                                                     adaptor.getTarget());
+    Value srcPtr = rewriter.create<LLVM::IntToPtrOp>(loc, LLVMPtrType,
+                                                     adaptor.getSource());
+    Value elemCount = adaptor.getElemCount();
+    Value fmt =
+        rewriter.create<LLVM::ConstantOp>(loc, i32Type, op.getFmtAttr());
+
+    // Create the call to __Rdma1d/__Wdma1d
+    auto call = rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+        op, TypeRange{}, funcPrefix,
+        ValueRange{dstPtr, srcPtr, elemCount, fmt});
 
     return success();
   }
@@ -481,8 +628,8 @@ struct RdmaWdmaOpConversion : public OpConversionPattern<Tx81Op> {
     };
 
     // Declare the function
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, loc, funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, loc,
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Get the operands
     Value src = adaptor.getSource();
@@ -555,7 +702,7 @@ struct MaskMoveOpConversion : public OpConversionPattern<tx::MaskMoveOp> {
     };
 
     // Declare the function
-    Value funcPtr = triton::utils::declareTx81Function(
+    Value funcPtr = triton::declareTx81Function(
         module, rewriter, op.getLoc(), "__MaskMove", i8PtrTy, argTypes);
 
     // Get the operands
@@ -618,8 +765,8 @@ struct TransformOpConversion : public OpConversionPattern<Tx81Op> {
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i32PtrTy, i32PtrTy,
                                       i16Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value src = adaptor.getSource();
@@ -700,7 +847,7 @@ struct GatherScatterOpConversion
     };
 
     // Declare the function
-    Value funcPtr = triton::utils::declareTx81Function(
+    Value funcPtr = triton::declareTx81Function(
         module, rewriter, loc, "__GatherScatter", i8PtrTy, argTypes);
 
     // Get the operands
@@ -780,8 +927,8 @@ struct ArgMinMaxOpConversion : public OpConversionPattern<Tx81Op> {
     // Types for function declaration
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i8PtrTy, i32Ty, i16Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value src = adaptor.getSrc();
@@ -839,8 +986,8 @@ struct ReduceOpConversion : public OpConversionPattern<Tx81Op> {
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i32Ty, i16Ty,
                                       i16Ty,   i16Ty,   i16Ty, i16Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value src = adaptor.getSrc();
@@ -906,8 +1053,8 @@ struct ElementWiseOpConversion : public OpConversionPattern<Tx81Op> {
 
                                       i32Ty,   i32Ty,   i32Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value srcA = adaptor.getInput0();
@@ -965,8 +1112,8 @@ struct UnaryOpConversion : public OpConversionPattern<Tx81Op> {
     // Types for function declaration
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i32Ty, i16Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value input = adaptor.getInput();
@@ -1019,8 +1166,8 @@ struct BinaryVSOpConversion : public OpConversionPattern<Tx81Op> {
     SmallVector<Type, 17> argTypes = {i8PtrTy, i32Ty, i8PtrTy,
                                       i32Ty,   i32Ty, i32Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value srcA = adaptor.getInput0();
@@ -1083,8 +1230,8 @@ struct BinaryLogicVVOpConversion : public OpConversionPattern<Tx81Op> {
         i32Ty    // fmt
     };
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value srcA = adaptor.getInput0();
@@ -1140,8 +1287,8 @@ struct UnaryBoolLogicVOpConversion : public OpConversionPattern<Tx81Op> {
         i32Ty    // elem_count
     };
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value src = adaptor.getInput();
@@ -1193,8 +1340,8 @@ struct BinaryBoolLogicVOpConversion : public OpConversionPattern<Tx81Op> {
         i32Ty    // elem_count
     };
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value srcA = adaptor.getInput0();
@@ -1245,8 +1392,8 @@ struct RelationVVOpConversion : public OpConversionPattern<RelationVVOp> {
     // Types for function declaration
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i8PtrTy, i32Ty, i16Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value srcA = adaptor.getInput0();
@@ -1301,8 +1448,8 @@ struct RelationVSOpConversion : public OpConversionPattern<Tx81Op> {
     // Types for function declaration
     SmallVector<Type, 17> argTypes = {i8PtrTy, i32Ty, i8PtrTy, i32Ty, i32Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value srcA = adaptor.getInput0();
@@ -1357,8 +1504,8 @@ struct ZeroPointConvertOpConversion
     // Types for function declaration
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i32Ty, i32Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value input = adaptor.getSrc();
@@ -1403,8 +1550,8 @@ struct NormalConvertOpConversion : public OpConversionPattern<NormalConvertOp> {
     // Types for function declaration
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i32Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value input = adaptor.getInput();
@@ -1450,8 +1597,8 @@ struct RoundConvertOpConversion : public OpConversionPattern<RoundConvertOp> {
     // Types for function declaration
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i32Ty, i16Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), funcPrefix, i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value input = adaptor.getInput();
@@ -1477,15 +1624,16 @@ struct RoundConvertOpConversion : public OpConversionPattern<RoundConvertOp> {
   }
 };
 
-struct MXFPScaleBF16OpConversion
-    : public OpConversionPattern<tx::MXFPScaleBF16Op> {
-  using OpConversionPattern<tx::MXFPScaleBF16Op>::OpConversionPattern;
+template <typename MXFPScaleOp, const char *funcPrefix>
+struct MXFPScaleOpConversion : public OpConversionPattern<MXFPScaleOp> {
+  using OpConversionPattern<MXFPScaleOp>::OpConversionPattern;
+  using OpAdaptor = typename MXFPScaleOp::Adaptor;
 
   LogicalResult
-  matchAndRewrite(tx::MXFPScaleBF16Op op, OpAdaptor adaptor,
+  matchAndRewrite(MXFPScaleOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // Get the module for function declarations
-    auto module = op->getParentOfType<ModuleOp>();
+    auto module = op->template getParentOfType<ModuleOp>();
 
     auto i8PtrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
     auto i32Ty = rewriter.getI32Type();
@@ -1499,8 +1647,8 @@ struct MXFPScaleBF16OpConversion
     };
 
     // Declare the function
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), "__mxfpScaleBf16", i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                funcPrefix, i8PtrTy, argTypes);
 
     // Get the operands
     Value src = adaptor.getSrc();
@@ -1517,7 +1665,7 @@ struct MXFPScaleBF16OpConversion
 
     // Create the call
     auto call = rewriter.create<LLVM::CallOp>(
-        op.getLoc(), i8PtrTy, "__mxfpScaleBf16", // funcPtr,
+        op.getLoc(), i8PtrTy, funcPrefix, // funcPtr,
         ArrayRef<Value>{src, scale, dst, elemCount});
 
     op->erase();
@@ -1545,8 +1693,8 @@ struct BitToFPOpConversion : public OpConversionPattern<tx::Bit2FpOp> {
     // Types for function declaration
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i32Ty, i16Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), "__Bit2Fp", i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                "__Bit2Fp", i8PtrTy, argTypes);
 
     // Convert operands
     Value input = adaptor.getSrc();
@@ -1597,7 +1745,7 @@ struct ChannelNormOpConversion : public OpConversionPattern<tx::ChannelNormOp> {
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i16Ty, i16Ty,
                                       i16Ty,   i16Ty,   i16Ty, i16Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
+    Value funcPtr = triton::declareTx81Function(
         module, rewriter, op.getLoc(), "__ChannelNorm", i8PtrTy, argTypes);
 
     // Convert operands
@@ -1663,7 +1811,7 @@ struct DechannelNormOpConversion
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i16Ty, i16Ty,
                                       i16Ty,   i16Ty,   i16Ty, i16Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
+    Value funcPtr = triton::declareTx81Function(
         module, rewriter, op.getLoc(), "__DechannelNorm", i8PtrTy, argTypes);
 
     // Convert operands
@@ -1752,8 +1900,8 @@ struct GemmOpConversion : public OpConversionPattern<tx::GemmOp> {
     };
 
     // Declare the function
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), "__Gemm", i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                "__Gemm", i8PtrTy, argTypes);
 
     // Convert operands
     Value srcA = adaptor.getSrcA();
@@ -1870,8 +2018,8 @@ struct SigmoidOpConversion : public OpConversionPattern<tx::Sigmoid> {
     // Types for function declaration
     SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i32Ty, i16Ty};
 
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), "__Sigmoid", i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                "__Sigmoid", i8PtrTy, argTypes);
 
     // Convert operands
     Value input = adaptor.getInput();
@@ -1891,6 +2039,104 @@ struct SigmoidOpConversion : public OpConversionPattern<tx::Sigmoid> {
     auto call = rewriter.create<LLVM::CallOp>(
         op.getLoc(), i8PtrTy, "__Sigmoid", // funcPtr,
         ArrayRef<Value>{input, output, elemCount, fmt});
+
+    // Replace the op with the result of the call
+    rewriter.replaceOp(op, call.getResult());
+
+    return success();
+  }
+};
+
+struct GeluNoneOpConversion : public OpConversionPattern<tx::GeluNone> {
+  using OpConversionPattern<tx::GeluNone>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tx::GeluNone op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Get the module for function declarations
+    auto module = op->getParentOfType<ModuleOp>();
+
+    // Declare the __GeluNone runtime function if not already declared
+    // Signature: void __GeluNone(int64_t* src, int64_t *dst,
+    // uint32_t elem_count, uint16_t fmt);
+    auto i8PtrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto i32Ty = rewriter.getI32Type();
+    auto i16Ty = rewriter.getI16Type();
+
+    // Types for function declaration
+    SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i32Ty, i16Ty};
+
+    Value funcPtr = triton::declareTx81Function(
+        module, rewriter, op.getLoc(), "__GeluNone", i8PtrTy, argTypes);
+
+    // Convert operands
+    Value input = adaptor.getInput();
+    Value output = adaptor.getOut();
+    Value elemCount = adaptor.getElemCount();
+
+    // Bitcast all pointers to i8*
+    input = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), i8PtrTy, input);
+    output = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), i8PtrTy, output);
+    elemCount = castIndexToInt32(rewriter, op.getLoc(), elemCount);
+
+    // Handle format attribute
+    Value fmt = rewriter.create<LLVM::ConstantOp>(
+        op.getLoc(), i16Ty, rewriter.getI16IntegerAttr(op.getFmt()));
+
+    // Create the call
+    auto call = rewriter.create<LLVM::CallOp>(
+        op.getLoc(), i8PtrTy, "__GeluNone", // funcPtr,
+        ArrayRef<Value>{input, output, elemCount, fmt});
+
+    // Replace the op with the result of the call
+    rewriter.replaceOp(op, call.getResult());
+
+    return success();
+  }
+};
+
+struct GeluTanhOpConversion : public OpConversionPattern<tx::GeluTanh> {
+  using OpConversionPattern<tx::GeluTanh>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tx::GeluTanh op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Get the module for function declarations
+    auto module = op->getParentOfType<ModuleOp>();
+
+    // Declare the __GeluTanh runtime function if not already declared
+    // Signature: void __GeluTanh(int64_t* src, int64_t *imm, int64_t *dst,
+    // uint32_t elem_count, uint16_t fmt);
+    auto i8PtrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto i32Ty = rewriter.getI32Type();
+    auto i16Ty = rewriter.getI16Type();
+
+    // Types for function declaration
+    SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i8PtrTy, i32Ty, i16Ty};
+
+    Value funcPtr = triton::declareTx81Function(
+        module, rewriter, op.getLoc(), "__GeluTanh", i8PtrTy, argTypes);
+
+    // Convert operands
+    Value input = adaptor.getInput();
+    Value imm = adaptor.getBuffer();
+    Value output = adaptor.getOut();
+    Value elemCount = adaptor.getElemCount();
+
+    // Bitcast all pointers to i8*
+    input = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), i8PtrTy, input);
+    imm = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), i8PtrTy, imm);
+    output = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), i8PtrTy, output);
+    elemCount = castIndexToInt32(rewriter, op.getLoc(), elemCount);
+
+    // Handle format attribute
+    Value fmt = rewriter.create<LLVM::ConstantOp>(
+        op.getLoc(), i16Ty, rewriter.getI16IntegerAttr(op.getFmt()));
+
+    // Create the call
+    auto call = rewriter.create<LLVM::CallOp>(
+        op.getLoc(), i8PtrTy, "__GeluTanh", // funcPtr,
+        ArrayRef<Value>{input, imm, output, elemCount, fmt});
 
     // Replace the op with the result of the call
     rewriter.replaceOp(op, call.getResult());
@@ -1929,8 +2175,8 @@ struct MemsetOpConversion : public OpConversionPattern<tx::MemsetOp> {
     };
 
     // Declare the function
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), "__Memset", i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                "__Memset", i8PtrTy, argTypes);
 
     // Get operands
     Value dst = adaptor.getTarget();
@@ -1989,8 +2235,8 @@ struct GetProgramIDConversion
     };
 
     // Declare the function
-    Value funcPtr = triton::utils::declareTx81Function(
-        module, rewriter, op.getLoc(), "__get_pid", i32Ty, argTypes);
+    Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
+                                                "__get_pid", i32Ty, argTypes);
 
     // Get operands
     auto axis = (uint32_t)op.getAxis();
@@ -2012,6 +2258,95 @@ struct GetProgramIDConversion
     rewriter.replaceOp(op, call.getResult());
 
     return success();
+  }
+};
+
+struct AssertConversion : public OpConversionPattern<mk::AssertOp> {
+  using OpConversionPattern<mk::AssertOp>::OpConversionPattern;
+
+public:
+  LogicalResult
+  matchAndRewrite(mk::AssertOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+
+    auto i32Ty = rewriter.getI32Type();
+    auto context = rewriter.getContext();
+    ModuleOp parentModule = op->getParentOfType<ModuleOp>();
+    auto assertRef = getOrInsertAssert(rewriter, parentModule);
+    auto message = op.getMessage();
+
+    StringRef file = "unknown";
+    int line = 0;
+    int col = 0;
+    if (auto fileLineColLoc = dyn_cast<FileLineColLoc>(loc)) {
+      file = fileLineColLoc.getFilename();
+      line = fileLineColLoc.getLine();
+      col = fileLineColLoc.getColumn();
+    }
+
+    SmallVector<Type, 6> argTypes = {
+        i32Ty, // x: 0/y: 1/z: 2,
+    };
+    Value funcPtr = triton::declareTx81Function(parentModule, rewriter, loc,
+                                                "__get_pid", i32Ty, argTypes);
+    auto xDim = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
+    auto yDim = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 1);
+    auto zDim = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 2);
+    auto pidX = rewriter
+                    .create<LLVM::CallOp>(loc, i32Ty,
+                                          "__get_pid", // funcPtr,
+                                          ArrayRef<Value>{xDim})
+                    ->getResult(0);
+    auto pidY = rewriter
+                    .create<LLVM::CallOp>(loc, i32Ty,
+                                          "__get_pid", // funcPtr,
+                                          ArrayRef<Value>{yDim})
+                    ->getResult(0);
+    auto pidZ = rewriter
+                    .create<LLVM::CallOp>(loc, i32Ty,
+                                          "__get_pid", // funcPtr,
+                                          ArrayRef<Value>{zDim})
+                    ->getResult(0);
+
+    llvm::SmallString<64> messageString(message), fileString(file);
+    messageString.push_back('\0');
+    fileString.push_back('\0');
+    Value messageStringVal =
+        LLVM::addStringToModule(loc, rewriter, "assertMessage_", messageString);
+    Value fileStringVal =
+        LLVM::addStringToModule(loc, rewriter, "assertFile_", fileString);
+
+    auto lineValue = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, line);
+    auto colValue = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, col);
+
+    rewriter.create<LLVM::CallOp>(loc, getAssertType(context), assertRef,
+                                  ValueRange{messageStringVal, fileStringVal,
+                                             lineValue, colValue, pidX, pidY,
+                                             pidZ});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  static LLVM::LLVMFunctionType getAssertType(MLIRContext *context) {
+    auto llvmI32Ty = IntegerType::get(context, 32);
+    auto llvmPtr = LLVM::LLVMPointerType::get(context);
+    return LLVM::LLVMFunctionType::get(llvmI32Ty, llvmPtr, true);
+  }
+
+  static FlatSymbolRefAttr getOrInsertAssert(PatternRewriter &rewriter,
+                                             ModuleOp module,
+                                             StringRef funcName = "__Assert") {
+    auto *context = module.getContext();
+    if (module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
+      return SymbolRefAttr::get(context, funcName);
+
+    PatternRewriter::InsertionGuard insertGuard(rewriter);
+    rewriter.setInsertionPointToStart(module.getBody());
+    rewriter.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName,
+                                      getAssertType(context));
+    return SymbolRefAttr::get(context, funcName);
   }
 };
 
@@ -2087,7 +2422,7 @@ public:
                  RoundConvertOpConversion<tx::FP32ToINT32Op, fp32ToInt32FuncName>,
                  RoundConvertOpConversion<tx::FP32ToFP16Op, fp32ToFp16FuncName>,
                  RoundConvertOpConversion<tx::FP32ToBF16Op,fp32ToBf16FuncName>,
-                 RoundConvertOpConversion<tx::FP32ToTF32Op, fp32ToTf32FuncName>,
+                 RoundConvertOpConversion<tx::FP32ToTF32Op, fp32ToTf32FuncName>, // NOTE: No op used
                  /* TF32 */
                  RoundConvertOpConversion<tx::TF32ToINT8Op, tf32ToInt8FuncName>,
                  RoundConvertOpConversion<tx::TF32ToINT16Op, tf32ToInt16FuncName>,
@@ -2097,14 +2432,21 @@ public:
                  NormalConvertOpConversion<tx::TF32ToFP32Op, tf32ToFp32FuncName>,
                  /* MXFP */
                  NormalConvertOpConversion<tx::FP8E4M3ToBF16Op, fp8E4M3ToBF16FuncName>,
+                 NormalConvertOpConversion<tx::FP8E4M3FNToBF16Op, fp8E4M3FNToBF16FuncName>,
                  NormalConvertOpConversion<tx::FP8E5M2ToBF16Op, fp8E5M2ToBF16FuncName>,
                  NormalConvertOpConversion<tx::FP4E2M1ToBF16Op, fp4E2M1ToBF16FuncName>,
-                 MXFPScaleBF16OpConversion,
+                 NormalConvertOpConversion<tx::FP8E4M3ToFP16Op, fp8E4M3ToFP16FuncName>,
+                 NormalConvertOpConversion<tx::FP8E4M3FNToFP16Op, fp8E4M3FNToFP16FuncName>,
+                 NormalConvertOpConversion<tx::FP8E5M2ToFP16Op, fp8E5M2ToFP16FuncName>,
+                 NormalConvertOpConversion<tx::FP4E2M1ToFP16Op, fp4E2M1ToFP16FuncName>,
+                 MXFPScaleOpConversion<tx::MXFPScaleBF16Op, MXFPScaleBF16FuncName>,
+                 MXFPScaleOpConversion<tx::MXFPScaleFP16Op, MXFPScaleFP16FuncName>,
                  ArgMinMaxOpConversion<tx::ArgMaxOp, argMaxFuncName>,
                  ArgMinMaxOpConversion<tx::ArgMinOp, argMinFuncName>,
                  ReduceOpConversion<tx::ReduceSumOp,reduceSumFuncName>,
                  ReduceOpConversion<tx::ReduceMaxOp,reduceMaxFuncName>,
                  ReduceOpConversion<tx::ReduceMinOp,reduceMinFuncName>,
+                 ReduceOpConversion<tx::ReduceMulOp,reduceMulFuncName>,
                  ElementWiseOpConversion<tx::AddVVOp, addVVFuncName>,
                  ElementWiseOpConversion<tx::SubVVOp, subVVFuncName>,
                  ElementWiseOpConversion<tx::MulVVOp, mulVVFuncName>,
@@ -2115,6 +2457,7 @@ public:
                  UnaryOpConversion<tx::RsqrtVVOp, rsqrtVVFuncName>,
                  UnaryOpConversion<tx::SqrtVVOp, sqrtVVFuncName>,
                  UnaryOpConversion<tx::RecipVVOp, recipVVFuncName>,
+                 UnaryOpConversion<tx::NegVVOp, negVVFuncName>,
                  UnaryOpConversion<tx::LnOp, lnFuncName>,
                  UnaryOpConversion<tx::Log2Op, log2FuncName>,
                  UnaryOpConversion<tx::ExpOp, expFuncName>,
@@ -2157,22 +2500,31 @@ public:
                  BinaryBoolLogicVOpConversion<tx::BoolAndV, boolAndVFuncName>,
                  BinaryBoolLogicVOpConversion<tx::BoolXorV, boolXorVFuncName>,
                  BinaryBoolLogicVOpConversion<tx::BoolOrV, boolOrVFuncName>,
+                 Rdma4dOpConversion<tx::Rdma4dOp, rdma4dFuncName>,
+                 Rdma4dOpConversion<tx::Wdma4dOp, wdma4dFuncName>,
+                 Rdma1dOpConversion<tx::Rdma1dOp, rdma1dFuncName>,
+                 Rdma1dOpConversion<tx::Wdma1dOp, wdma1dFuncName>,
                  RdmaWdmaOpConversion<tx::RdmaOp,rdmaFuncName>,
                  RdmaWdmaOpConversion<tx::WdmaOp,wdmaFuncName>,
                  UnaryOpConversion<tx::MemCopyOp, memcpyFuncName>,
                  TransformOpConversion<tx::Transpose,transposeFuncName>,
                  TransformOpConversion<tx::Nchw2nhwc,nchw2nhwcFuncName>,
                  TransformOpConversion<tx::Nhwc2nchw,nhwc2nchwFuncName>,
+                 AtomicBarrierOpConversion<tx::AtomicBarrierInOp, atomicBarrierInFuncName>,
+                 AtomicBarrierOpConversion<tx::AtomicBarrierOutOp, atomicBarrierOutFuncName>,
                  MaskMoveOpConversion,
                  GatherScatterOpConversion,
                  BitToFPOpConversion,
-                 ChannelNormOpConversion,
-                 DechannelNormOpConversion,
+                 ChannelNormOpConversion,   // NOTE: No op used
+                 DechannelNormOpConversion, // NOTE: No op used
                  GemmOpConversion,
                  SigmoidOpConversion,
+                 GeluNoneOpConversion,
+                 GeluTanhOpConversion,
                  MemsetOpConversion,
                  GetProgramIDConversion,
-                 BarrierConversion>(
+                 BarrierConversion,
+                 AssertConversion>(
         context);
     // clang-format on
 

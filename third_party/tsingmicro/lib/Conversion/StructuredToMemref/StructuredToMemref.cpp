@@ -281,6 +281,29 @@ private:
     //          clampedOff - targetOffset
     //    d1 = --------------------
     //              strideRows
+    //
+    ////////////////////////////////////////////////////////////////////////////
+    //                       cols
+    //
+    //               wrappedAroundOff
+    //      --------------*------------*--------
+    //      |                                  |
+    //      |           targetOffset           |
+    //      |             *------------|       |
+    //      |             |            |       |
+    //      |             |            |       |
+    //  rows|    rowSize  |            |       |
+    //      |             |            |       |
+    //      |             |            |       |
+    //      |             *------------|       |
+    //      |          nextOff                 |
+    //      |                                  |
+    //      |          clampedOff              |
+    //      --------------*---------------------
+    //
+    //    d1 = rowSize
+    //
+    //    d2 = 0
 
     auto resultType = getResultMemrefType(
         op, /* offset */ ShapedType::kDynamic,
@@ -315,6 +338,7 @@ private:
         rewriter.create<arith::AddIOp>(loc, modRow, wrappedAroundOff);
     Value d1 = rewriter.create<arith::SubIOp>(loc, clampedOff, targetOffset);
     d1 = rewriter.create<arith::DivSIOp>(loc, d1, strideRow);
+    d1 = rewriter.create<arith::MinSIOp>(loc, d1, rowSize);
 
     SmallVector<Value> sizes1{d1, colSize};
     memref::ReinterpretCastOp cast1 =
@@ -575,13 +599,14 @@ private:
     auto tensorType = cast<RankedTensorType>(op.getType());
     auto elemType = tensorType.getElementType();
 
-    auto alloc = rewriter.create<memref::AllocOp>(
-        loc, MemRefType::get(tensorType.getShape(), elemType));
+    Value alloc;
+    MemRefType memrefType = MemRefType::get(tensorType.getShape(), elemType);
 
     // No mask
     assert(!other && "other value used in non-masked load");
 
     if (auto unrealizedCast = ptr.getDefiningOp<UnrealizedConversionCastOp>()) {
+      alloc = rewriter.create<memref::AllocOp>(loc, memrefType);
       auto memrefs = unrealizedCast.getOperands();
       auto block1 = memrefs[0];
       auto block2 = memrefs[1];
@@ -594,7 +619,7 @@ private:
         llvm_unreachable("unexpected wraparound type");
       }
     } else {
-      rewriter.create<memref::CopyOp>(loc, ptr, alloc);
+      alloc = rewriter.create<bufferization::CloneOp>(loc, memrefType, ptr);
     }
 
     Value tensor = rewriter.create<bufferization::ToTensorOp>(
@@ -753,10 +778,93 @@ public:
   }
 };
 
+struct AtomicRMWOpConverter : public OpConversionPattern<tts::AtomicRMWOp> {
+private:
+  using OpConversionPattern<tts::AtomicRMWOp>::OpConversionPattern;
+
+  static tensor::ExtractSliceOp
+  getExtractSlice(int rank, ArrayRef<OpFoldResult> dims, Value source,
+                  const Location loc, OpBuilder &b) {
+    auto sourceType = cast<RankedTensorType>(source.getType());
+    SmallVector<OpFoldResult> offsets(rank, b.getIndexAttr(0));
+    SmallVector<OpFoldResult> strides(rank, b.getIndexAttr(1));
+
+    auto dstType = tensor::ExtractSliceOp::inferResultType(sourceType, offsets,
+                                                           dims, strides);
+
+    return b.create<tensor::ExtractSliceOp>(loc, dstType, source, offsets, dims,
+                                            strides);
+  }
+
+public:
+  LogicalResult
+  matchAndRewrite(tts::AtomicRMWOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ptr = adaptor.getPtr();
+    auto value = adaptor.getValue();
+
+    auto type = cast<RankedTensorType>(value.getType());
+    auto rank = type.getRank();
+
+    Value init = rewriter.create<tensor::EmptyOp>(loc, type.getShape(),
+                                                  type.getElementType());
+
+    if (op.hasMask()) {
+      auto mixedDims = op.getMixedMaskDims();
+
+      auto valueSlice = getExtractSlice(rank, mixedDims, value, loc, rewriter);
+      auto ptrSubview = getSubview(rank, mixedDims, ptr, loc, rewriter);
+
+      auto atomicRMWOp = rewriter.create<mk::AtomicRMWOp>(
+          loc, op.getType(), ptrSubview, valueSlice, init,
+          op.getAtomicRmwOpAttr(), op.getSemAttr(), op.getScopeAttr());
+      rewriter.replaceOp(op, atomicRMWOp);
+    } else {
+      auto atomicRMWOp = rewriter.create<mk::AtomicRMWOp>(
+          loc, op.getType(), ptr, value, init, op.getAtomicRmwOpAttr(),
+          op.getSemAttr(), op.getScopeAttr());
+      rewriter.replaceOp(op, atomicRMWOp);
+    }
+    return success();
+  }
+};
+
+struct AtomicCASOpConverter : public OpConversionPattern<tts::AtomicCASOp> {
+private:
+  using OpConversionPattern<tts::AtomicCASOp>::OpConversionPattern;
+
+public:
+  LogicalResult
+  matchAndRewrite(tts::AtomicCASOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op.getOffset())
+      return failure();
+
+    auto loc = op.getLoc();
+    auto ptr = adaptor.getPtr();
+    auto cmp = adaptor.getCmp();
+    auto value = adaptor.getValue();
+
+    auto type = cast<RankedTensorType>(value.getType());
+
+    Value init = rewriter.create<tensor::EmptyOp>(loc, type.getShape(),
+                                                  type.getElementType());
+
+    auto atomicCASOp = rewriter.create<mk::AtomicCASOp>(
+        loc, op.getType(), ptr, cmp, value, init, op.getSemAttr(),
+        op.getScopeAttr());
+    rewriter.replaceOp(op, atomicCASOp);
+
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::populateStructuredToMemrefConversionPatterns(
     RewritePatternSet &patterns, TypeConverter &typeConverter) {
   patterns.add<MakeTensorPtrConverter>(typeConverter, patterns.getContext());
-  patterns.add<LoadConverter, StoreConverter>(patterns.getContext());
+  patterns.add<LoadConverter, StoreConverter, AtomicRMWOpConverter,
+               AtomicCASOpConverter>(patterns.getContext());
 }

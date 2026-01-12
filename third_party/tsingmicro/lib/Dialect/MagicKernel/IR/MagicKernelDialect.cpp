@@ -25,9 +25,13 @@ void MagicKernelDialect::initialize() {
 #include "magic-kernel/Dialect/IR/MagicKernelOps.cpp.inc"
       >();
   // TODO: Add BufferizableOpInterface to all ops that can be bufferized
-  declarePromisedInterfaces<bufferization::BufferizableOpInterface, mk::DotOp,
-                            mk::DotScaledOp, mk::SigmoidOp, mk::GatherOp,
-                            mk::PrintOp>();
+  declarePromisedInterfaces<
+      bufferization::BufferizableOpInterface, mk::DotOp, mk::DotScaledOp,
+      mk::SigmoidOp, mk::GeluOp, mk::GatherOp, mk::PrintOp, mk::AtomicRMWOp,
+      mk::AtomicCASOp, mk::ArgMaxOp, mk::ArgMinOp, mk::Bit2FpOp, mk::MaskMoveOp,
+      mk::UnEqualVV, mk::EqualVV, mk::EqualVS, mk::LessThenVS, mk::BoolEqualVS,
+      mk::ReduceMaxOp, mk::ReduceMinOp, mk::ReduceSumOp, mk::DequantOp,
+      mk::BitcastOp, mk::AddVS, mk::SubVS, mk::MulVS>();
 }
 
 //===----------------------------------------------------------------------===//

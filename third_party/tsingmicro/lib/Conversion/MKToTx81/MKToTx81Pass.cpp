@@ -1,5 +1,7 @@
 //===--------------------- MKToTx81Pass.cpp -------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,9 +48,13 @@ public:
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
+    auto *ctx = &getContext();
 
-    RewritePatternSet canonicalizePatterns(&getContext());
+    // If disable precision priority mode, we need to legalize integer
+    // operations to float operations.
+    RewritePatternSet canonicalizePatterns(ctx);
     triton::populateMKToTx81CanonicalizationPatterns(canonicalizePatterns);
+
     if (failed(
             applyPatternsGreedily(moduleOp, std::move(canonicalizePatterns)))) {
       signalPassFailure();
@@ -59,15 +65,11 @@ public:
       if (isa<memref::CopyOp>(op)) {
         auto copyOp = cast<memref::CopyOp>(op);
         op->setAttr("srcSpm",
-                    IntegerAttr::get(
-                        IntegerType::get(op->getContext(), 32),
-                        llvm::APInt(32, triton::utils::isOperandMemorySpaceSPM(
-                                            copyOp.getSource()))));
+                    BoolAttr::get(ctx, triton::isOperandMemorySpaceSPM(
+                                           copyOp.getSource())));
         op->setAttr("dstSpm",
-                    IntegerAttr::get(
-                        IntegerType::get(op->getContext(), 32),
-                        llvm::APInt(32, triton::utils::isOperandMemorySpaceSPM(
-                                            copyOp.getTarget()))));
+                    BoolAttr::get(ctx, triton::isOperandMemorySpaceSPM(
+                                           copyOp.getTarget())));
       }
     });
 
@@ -86,7 +88,9 @@ public:
 
     target.addIllegalOp<memref::CopyOp>();
 
-    target.addLegalOp<ModuleOp, linalg::YieldOp>();
+    target.addLegalOp<ModuleOp, linalg::YieldOp, mk::BitcastOp>();
+
+    target.addLegalOp<mk::AssertOp>();
 
     triton::populateMKToTx81ConversionPatterns(patterns);
 
@@ -100,10 +104,9 @@ public:
     // memref::LoadOp/memref::StoreOp lowering
     moduleOp->walk([&](Operation *op) {
       if (isa<memref::LoadOp, memref::StoreOp>(op)) {
-        bool isSpm =
-            isa<memref::LoadOp>(op)
-                ? triton::utils::isOperandMemorySpaceSPM(op->getOperand(0))
-                : triton::utils::isOperandMemorySpaceSPM(op->getOperand(1));
+        bool isSpm = isa<memref::LoadOp>(op)
+                         ? triton::isOperandMemorySpaceSPM(op->getOperand(0))
+                         : triton::isOperandMemorySpaceSPM(op->getOperand(1));
 
         op->setAttr("isSpm",
                     IntegerAttr::get(IntegerType::get(op->getContext(), 32),

@@ -1,5 +1,7 @@
 //===------------------------ bit2fp.c ------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,6 +13,7 @@
 
 void __Bit2Fp(uint64_t *src, uint64_t *target, uint32_t elem_count,
               uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmPeripheral *cmd = g_intrinsic()->peripheral_pointer;
   TsmPeripheralInstr inst = {I_CGRA,

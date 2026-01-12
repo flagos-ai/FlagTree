@@ -3,9 +3,10 @@ add_triton_library(ZTCAnalysis
   OpFoldResultUtils.cpp
   PtrAnalysis.cpp
   UseAnalysis.cpp
+  Allocation.cpp
+  Alias.cpp
 
   DEPENDS
-  TritonAnalysis
   TritonTableGen
   TritonGPUAttrDefsIncGen
 

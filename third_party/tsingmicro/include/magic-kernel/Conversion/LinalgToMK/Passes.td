@@ -13,7 +13,10 @@ include "mlir/Pass/PassBase.td"
 def LinalgToMK : Pass<"linalg-to-mk", "mlir::ModuleOp"> {
   let summary = "Convert linalg operations into magic kernel operations";
 
-  let options = [];
+  let options = [
+     Option<"precisionPriority", "precision-priority", "bool", /*default*/"false",
+       "Enable precision priority mode, translating integer-related operations to CPU instructions">
+  ];
 }
 
 #endif
