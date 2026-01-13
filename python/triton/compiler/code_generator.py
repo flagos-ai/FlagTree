@@ -955,7 +955,7 @@ class CodeGenerator(ast.NodeVisitor):
         else:
             raise RuntimeError('Only `range` and `static_range` iterators are currently supported')
 
-        new_bind_sub_block = self.hint_manager.handler.trigger("check_override_bind_sub_block", self, node, current_bind_val)
+        new_bind_sub_block = self.hint_manager.handler.trigger("check_override_bind_sub_block", self, node, bind_sub_block)
         if new_bind_sub_block is not None:
             bind_sub_block = new_bind_sub_block
 
