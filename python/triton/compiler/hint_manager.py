@@ -4,35 +4,34 @@ import triton
 from typing import Optional
 
 class BaseHintHandler:
-    # 这里是不是该变成动态的，所有都注册，或者不注册的就不解析
-    # --- Assign 相关 ---
-    def ext_CodeGenerator_visit_Assign_hint_anno(self, code_generator, node, names, values):
-        """默认为空，不做任何标注"""
-        pass
+    # dynamicly find method
+    def trigger(self, hook_name, *args, **kwargs):
+        if hasattr(self, hook_name):
+            method = getattr(self, hook_name)
+            if callable(method):
+                try:
+                    return method(*args, **kwargs)
 
-    # --- For Loop 相关 (完全沿用原名) ---
-    
-    def visit_For_ext_support(self):
-        """默认只支持 range，不增加额外 Iterator 支持"""
-        return []
+                except TypeError as e:
+                    import inspect
 
-    def set_bind_sub_block_when_parallel(self, IteratorClass, iterator, bind_sub_block):
-        """默认不修改，直接把传进来的 bind_sub_block 返回回去"""
-        return bind_sub_block
+                    try:
+                        sig = inspect.signature(method)
+                        expected = str(sig)
+                    except:
+                        expected = "(unknown)"
 
-    def check_override_bind_sub_block(self, code_generator, node, bind_sub_block):
-        """默认不覆盖，直接返回原值"""
-        return bind_sub_block
+                    actual_args = f"{len(args)} positional"
+                    actual_kwargs = f"keys={list(kwargs.keys())}" if kwargs else "no keywords"
 
-    def forop_setattr_for_bind_sub_block(self, code_generator, for_op, bind_sub_block):
-        """默认不设置属性"""
-        pass
+                    print(f"\n[Hint Trigger Mismatch] {self.__class__.__name__}.{hook_name}")
+                    print(f"  > Expect : {expected}")
+                    print(f"  > Actual : {actual_args}, {actual_kwargs}")
+                    print(f"  > Reason : {e}\n")
 
-    def need_repr_in_CodeGenerator_CompilationError(self):
-        """默认不需要额外报错信息"""
-        return False
-    
-
+                    raise e
+    print(f"no capable method in backend handler")
+    return None
 
 class HintManager:
     def __init__(self, backend_name):
