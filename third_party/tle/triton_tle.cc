@@ -54,6 +54,12 @@ namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 
+extern tle::DSLRegionOp createEdslRegionByLLVMFunc(
+    TritonOpBuilder &self, std::string_view text, std::string_view fnname,
+    const std::vector<Value> &outputs, const std::vector<Value> &inputs,
+    const std::vector<std::string> &arg_type_hints,
+    const std::vector<std::string> &arg_names);
+
 void init_triton_tle_ir(py::module &&m) {
   using ret = py::return_value_policy;
 
@@ -183,112 +189,8 @@ void init_tle_raw_ir(py::module &&m) {
       .def("dump", &tle::YieldOp::dump);
 
   auto *builder_cls = ir::getBuilderClass();
-  builder_cls->def(
-      "create_edsl_region_by_llvm_func",
-      [](TritonOpBuilder &self, std::string_view text, std::string_view fnname,
-         const std::vector<Value> &outputs, const std::vector<Value> &inputs) {
-        ParserConfig config(self.getContext());
-        OwningOpRef<ModuleOp> module =
-            parseSourceString<ModuleOp>(text, config);
-        LLVM::LLVMFuncOp func = module->lookupSymbol<LLVM::LLVMFuncOp>(fnname);
-        OpBuilder &builder = self.getBuilder();
-        SmallVector<Type> outputTys = llvm::map_to_vector(
-            outputs, [](Value value) -> Type { return value.getType(); });
-        SmallVector<Value> operands = llvm::to_vector(llvm::concat<Value>(
-            SmallVector<Value>(outputs.begin(), outputs.end()),
-            SmallVector<Value>(inputs.begin(), inputs.end())));
-        tle::DSLRegionOp dslRegionOp =
-            self.create<tle::DSLRegionOp>(outputTys, operands);
-        OpBuilder::InsertionGuard guard(builder);
-        Region &body = dslRegionOp.getBody();
-        SmallVector<Type> operandTys = llvm::map_to_vector(
-            operands, [](Value value) -> Type { return value.getType(); });
-        IRMapping mapper;
-        auto ptrTy =
-            dyn_cast<LLVM::LLVMPointerType>(func.getArgument(0).getType());
-        uint32_t as = ptrTy.getAddressSpace();
-        for (auto [idx, oldBlock] : llvm::enumerate(func.getBlocks())) {
-          if (idx == 0) {
-            Block *newBlock = builder.createBlock(
-                &body, {}, operandTys,
-                SmallVector<Location>(operandTys.size(), self.getLastLoc()));
-            SmallVector<Value> extractOps;
-            for (const auto &input : body.getArguments()) {
-              if (RankedTensorType tensorTy =
-                      dyn_cast<RankedTensorType>(input.getType())) {
-                Type ty = LLVM::LLVMPointerType::get(self.getContext(), as);
-                extractOps.push_back(
-                    self.create<tle::ExtractAllocatedPtrOp>(ty, input));
-                extractOps.push_back(
-                    self.create<tle::ExtractAlignedPtrOp>(ty, input));
-                extractOps.push_back(self.create<tle::ExtractOffsetOp>(input));
-                const size_t rank = tensorTy.getRank();
-                auto sizesOp = self.create<tle::ExtractSizesOp>(rank, input);
-                auto stridesOp =
-                    self.create<tle::ExtractStridesOp>(rank, input);
-                for (const auto &result : sizesOp.getResults()) {
-                  extractOps.push_back(result);
-                }
-                for (const auto &result : stridesOp.getResults()) {
-                  extractOps.push_back(result);
-                }
-              } else if (auto ptrTy =
-                             dyn_cast<triton::PointerType>(input.getType())) {
-                extractOps.push_back(self.create<tle::ExtractPtrOp>(
-                    LLVM::LLVMPointerType::get(self.getContext(), as), input));
-              } else {
-                extractOps.push_back(input);
-              }
-              for (auto [funcArg, extractOp] :
-                   llvm::zip(func.getArguments(), extractOps)) {
-                mapper.map(funcArg, extractOp);
-              }
-            }
-            mapper.map(&oldBlock, newBlock);
-          } else {
-            Block *newBlock = builder.createBlock(
-                &body, {}, oldBlock.getArgumentTypes(),
-                SmallVector<Location>(oldBlock.getNumArguments(),
-                                      self.getLastLoc()));
-            for (auto [oldArg, newArg] :
-                 llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
-              mapper.map(oldArg, newArg);
-            }
-            mapper.map(&oldBlock, newBlock);
-          }
-        }
-        for (auto [oldBlock, newBlock] :
-             llvm::zip(func.getBlocks(), body.getBlocks())) {
-          OpBuilder::InsertionGuard guard(builder);
-          builder.setInsertionPointToEnd(&newBlock);
-          for (Operation &operation : oldBlock.getOperations()) {
-            if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
-              SmallVector<Value> yields;
-              if (dslRegionOp.getNumResults() == 1) {
-                tle::PackOp packOp = builder.create<tle::PackOp>(
-                    operation.getLoc(), dslRegionOp.getResult(0).getType(),
-                    mapper.lookup(returnOp.getArg()));
-                yields.push_back(packOp.getOutput());
-              } else {
-                for (auto [idx, result] :
-                     llvm::enumerate(dslRegionOp.getResults())) {
-                  LLVM::ExtractValueOp operand =
-                      builder.create<LLVM::ExtractValueOp>(
-                          operation.getLoc(), mapper.lookup(returnOp.getArg()),
-                          SmallVector<int64_t>{static_cast<int64_t>(idx)});
-                  tle::PackOp packOp = builder.create<tle::PackOp>(
-                      operation.getLoc(), result.getType(), operand);
-                  yields.push_back(packOp.getOutput());
-                }
-              }
-              builder.create<tle::YieldOp>(operation.getLoc(), yields);
-            } else {
-              builder.clone(operation, mapper);
-            }
-          }
-        }
-        return dslRegionOp;
-      });
+  builder_cls->def("create_edsl_region_by_llvm_func",
+                   &createEdslRegionByLLVMFunc);
 }
 
 void init_tle_raw_passes(py::module &&m) {
