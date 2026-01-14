@@ -1,5 +1,7 @@
 //===------------------- Tx81MemrefToLLVM.cpp------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,9 +21,6 @@ using namespace mlir;
 #define GEN_PASS_CLASSES
 #include "tsingmicro-tx81/Conversion/Tx81MemrefToLLVM/Passes.h.inc"
 
-// Used for allocate spm memory
-uint64_t spmPointer = 0x10000;
-
 namespace {
 
 //===----------------------------------------------------------------------===//
@@ -39,13 +38,20 @@ struct TsmMemRefAllocOpLowering : public AllocLikeOpLLVMLowering {
     auto allocOp = dyn_cast<memref::AllocOp>(op);
     MemRefType memRefType = getMemRefResultType(op);
 
+    assert(allocOp->hasAttr("allocation.offset") &&
+           "Expected allocation.offset attribute");
+    auto offsetAttr = cast<IntegerAttr>(allocOp->getAttr("allocation.offset"));
+    // spm memory should start from 0x10000
+    auto offset = offsetAttr.getInt() + 0x10000;
+
     // Align spm address.
     if (allocOp.getAlignment().has_value()) {
-      auto alignment = allocOp.getAlignment().value();
-      spmPointer = (spmPointer + alignment - 1) & ~(alignment - 1);
+      assert(offset % allocOp.getAlignment().value() == 0 &&
+             "allocation.offset should be aligned to alignment");
     }
-    Value spmOffsetOp = rewriter.create<LLVM::ConstantOp>(
-        loc, getIndexType(), rewriter.getI32IntegerAttr(spmPointer));
+
+    Value spmOffsetOp =
+        rewriter.create<LLVM::ConstantOp>(loc, getIndexType(), offset);
     Type elementType = typeConverter->convertType(memRefType.getElementType());
     auto elementPtrType = LLVM::LLVMPointerType::get(rewriter.getContext());
     Value spmAddr = rewriter.create<LLVM::ZeroOp>(loc, elementPtrType);
@@ -61,13 +67,6 @@ struct TsmMemRefAllocOpLowering : public AllocLikeOpLLVMLowering {
     if (!allocatedPtr)
       return std::make_tuple(Value(), Value());
     Value alignedPtr = allocatedPtr;
-
-    // update spm pointer
-    auto elemCount = memRefType.getNumElements();
-    auto bitWidth = memRefType.getElementTypeBitWidth();
-
-    uint64_t totalByte = (elemCount * bitWidth + 7) / 8;
-    spmPointer += totalByte;
 
     return std::make_tuple(allocatedPtr, alignedPtr);
   }
@@ -88,6 +87,20 @@ struct MemrefLoadOrStoreOpLowering : public ConvertOpToLLVMPattern<MemrefOp> {
   LogicalResult
   matchAndRewrite(MemrefOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+
+    // Workaround: Should add memory space analysis pass.
+    Operation *opBase = op;
+    if (!opBase->hasAttr("isSpm")) {
+      return rewriter.notifyMatchFailure(
+          op, "Load/Store should have isSpm attribute.");
+    }
+    int isSpm =
+        cast<IntegerAttr>(opBase->getAttr("isSpm")).getValue().getSExtValue();
+
+    assert(isSpm &&
+           "Load/Store to global memory has been rewrite to memref::Copy "
+           "in linalg-to-mk pass.");
+
     Location loc = op->getLoc();
     auto type = op.getMemRefType();
     bool isMaskEle = type.getElementType().isInteger(1);
@@ -126,43 +139,32 @@ struct MemrefLoadOrStoreOpLowering : public ConvertOpToLLVMPattern<MemrefOp> {
     Value ptrValue =
         rewriter.create<LLVM::PtrToIntOp>(op.getLoc(), intPtrType, dataPtr);
 
-    // Workaround: Should add memory space analysis pass.
-    Operation *opBase = op;
-    if (!opBase->hasAttr("isSpm")) {
-      return rewriter.notifyMatchFailure(
-          op, "Load/Store should have isSpm attribute.");
-    }
-    int isSpm =
-        cast<IntegerAttr>(opBase->getAttr("isSpm")).getValue().getSExtValue();
-
     Value adjustedPtr = dataPtr;
-    if (isSpm) {
-      // Get the module for function declarations
-      auto module = op->template getParentOfType<ModuleOp>();
-      // Types for function declaration
-      SmallVector<Type, 5> argTypes = {
-          rewriter.getI64Type() // offset
-      };
 
-      auto i8PtrTy = LLVM::LLVMPointerType::get(
-          rewriter.getContext(),
-          *ConvertToLLVMPattern::getTypeConverter()->getMemRefAddressSpace(
-              type));
-      // Declare the function
-      Value funcPtr = triton::utils::declareTx81Function(
-          module, rewriter, op.getLoc(), "get_spm_memory_mapping_wrapper",
-          i8PtrTy, argTypes);
+    // Get the module for function declarations
+    auto module = op->template getParentOfType<ModuleOp>();
+    // Types for function declaration
+    SmallVector<Type, 5> argTypes = {
+        rewriter.getI64Type() // offset
+    };
 
-      // Create the call to __Rdma
-      auto spmMemoryAddrPtr = rewriter.create<LLVM::CallOp>(
-          op.getLoc(), TypeRange{i8PtrTy},
-          "get_spm_memory_mapping_wrapper", // funcPtr,
-          ValueRange{ptrValue});
+    auto i8PtrTy = LLVM::LLVMPointerType::get(
+        rewriter.getContext(),
+        *ConvertToLLVMPattern::getTypeConverter()->getMemRefAddressSpace(type));
+    // Declare the function
+    Value funcPtr = triton::declareTx81Function(
+        module, rewriter, op.getLoc(), "get_spm_memory_mapping_wrapper",
+        i8PtrTy, argTypes);
 
-      adjustedPtr = spmMemoryAddrPtr.getResult();
-    }
+    // Create the call to __Rdma
+    auto spmMemoryAddrPtr = rewriter.create<LLVM::CallOp>(
+        op.getLoc(), TypeRange{i8PtrTy},
+        "get_spm_memory_mapping_wrapper", // funcPtr,
+        ValueRange{ptrValue});
 
-    // Wether need memoryspace cast
+    adjustedPtr = spmMemoryAddrPtr.getResult();
+
+    // Whether need memoryspace cast
     if constexpr (std::is_same<MemrefOp, memref::LoadOp>()) {
       if (isMaskEle) {
         Value newVal = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(),
@@ -182,6 +184,7 @@ struct MemrefLoadOrStoreOpLowering : public ConvertOpToLLVMPattern<MemrefOp> {
             op, op.getType(), adjustedPtr, 0, false, op.getNontemporal());
       }
     } else {
+
       Value StoreVal = adaptor.getValue();
       if (isMaskEle) {
         Value srcVal = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(),

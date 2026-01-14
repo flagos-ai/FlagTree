@@ -1,5 +1,7 @@
 //===- KernelArgBufferPass.cpp - Convert kernel args to single buffer -----===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -56,8 +58,15 @@ private:
 };
 
 bool KernelArgBufferPass::isKernelFunction(LLVM::LLVMFuncOp func) {
-  return !(func.getSymName().contains("__Print") ||
-           func.getSymName().contains("get_spm_memory_mapping_wrapper"));
+  // NOTE: Need consider math-to-libm and the declared llvm functions (eg.
+  // __Print, get_spm_memory_mapping_wrapper)
+  //
+  // WORKAROUND: For some reason, func.isDeclaration() always returns false and
+  // func.getLinkage() always returns External, even for kernel functions with
+  // body. So we use func.getCallableRegion() to check if the function is a
+  // kernel function. This is a workaround and should be replaced with a more
+  // robust solution in the future.
+  return func.getCallableRegion() != nullptr;
 }
 
 Value KernelArgBufferPass::insertKernelArgLoad(OpBuilder &builder, Location loc,

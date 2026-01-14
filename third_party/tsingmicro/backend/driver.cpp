@@ -9,8 +9,6 @@
 //
 //===----------------------------------------------------------------------===//
 #include <dlfcn.h>
-#include <hrt_common.h>
-#include <hrt_interface.h>
 #include <stdbool.h>
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
@@ -21,7 +19,8 @@
 static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   // Extract device properties
   // Note: We're mapping Tx81 properties to fields expected by Triton
-  int max_shared_mem = 1024 * 1024 * 3; // Default 3MB
+  int max_shared_mem =
+      1024 * 1024 * 3 - 0x10000 - 0x10000; // Default 3MB - 64k,
   // int multiprocessor_count = device->tile_num;
   int multiprocessor_count = 1;
   int sm_clock_rate = 1000;  // Placeholder

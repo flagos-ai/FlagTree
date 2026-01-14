@@ -161,9 +161,7 @@ public:
       });
     }
 
-    if (!assertToCf) {
-      target.addLegalOp<triton::AssertOp>();
-    }
+    target.addLegalOp<triton::AssertOp>();
 
     triton::populateTritonArithToLinalgConversionPatterns(
         pidsToFuncArgs, addptrToLinalg, assertToCf, patterns);

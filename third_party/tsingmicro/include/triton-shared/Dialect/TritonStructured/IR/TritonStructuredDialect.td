@@ -3,6 +3,7 @@
 
 include "mlir/IR/OpBase.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
+include "triton/Dialect/Triton/IR/TritonAttrDefs.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def Triton_Structured_Dialect : Dialect {
@@ -252,6 +253,81 @@ def TTS_StoreOp : TTS_Op<"store", [
       return !getMixedMaskDims().empty();
     }
   }];
+
+  // TODO
+  //let hasCustomAssemblyFormat = 1;
+  //let hasVerifier = 1;
+}
+
+def TTS_AtomicRMWOp : TTS_Op<"atomic_rmw", [
+  MemoryEffects<[MemRead, MemWrite]>
+]> {
+  let summary = "perform atomic read-modify-write operation on a pointer";
+
+  let arguments = (ins TT_PtrLike:$ptr,
+                       TT_Tensor:$value,
+                       Variadic<Index>:$mask_dims,
+                       DenseI64ArrayAttr:$static_mask_dims,
+                       TT_AtomicRMWAttr:$atomic_rmw_op,
+                       TT_MemSemanticAttr:$sem,
+                       TT_MemSyncScopeAttr:$scope);
+
+  let results = (outs TT_Tensor:$result);
+
+  let builders = [
+    OpBuilder<(ins "mlir::Type":$result, "Value":$ptr, "Value":$value,
+                "ArrayRef<OpFoldResult>":$dims,
+                "triton::RMWOpAttr":$atomic_rmw_op,
+                "triton::MemSemanticAttr":$sem, "triton::MemSyncScopeAttr":$scope)>,
+  ];
+
+  let extraClassDeclaration = [{
+    /// Return a vector of all the static or dynamic fields
+    SmallVector<OpFoldResult> getMixedMaskDims() {
+      Builder b(getContext());
+      return ::mlir::getMixedValues(getStaticMaskDims(), getMaskDims(), b);
+    }
+
+    bool hasMask() {
+      return !getStaticMaskDims().empty();
+    }
+  }];
+
+  // TODO
+  //let hasCustomAssemblyFormat = 1;
+  //let hasVerifier = 1;
+}
+
+def TTS_IndexedAtomicRMWOp : TTS_Op<"indexed_atomic_rmw", [
+  MemoryEffects<[MemRead, MemWrite]>
+]> {
+  let summary = "perform atomic read-modify-write operation on a pointer with index/offset";
+
+  let arguments = (ins TT_PtrLike:$ptr,
+                       TT_Type:$value,
+                       Optional<TT_BoolLike>:$mask,
+                       TT_IntLike:$offset,
+                       TT_AtomicRMWAttr:$atomic_rmw_op,
+                       TT_MemSemanticAttr:$sem,
+                       TT_MemSyncScopeAttr:$scope);
+
+  let results = (outs TT_Type:$result);
+}
+
+
+def TTS_AtomicCASOp : TTS_Op<"atomic_cas", [
+  MemoryEffects<[MemRead, MemWrite]>
+]> {
+  let summary = "perform atomic compare-and-swap operation on a pointer";
+
+  let arguments = (ins TT_PtrLike:$ptr,
+                       TT_Type:$cmp,
+                       TT_Type:$value,
+                       Optional<TT_IntLike>:$offset, // For unstructured pointers
+                       TT_MemSemanticAttr:$sem,
+                       TT_MemSyncScopeAttr:$scope);
+
+  let results = (outs TT_Type:$result);
 
   // TODO
   //let hasCustomAssemblyFormat = 1;

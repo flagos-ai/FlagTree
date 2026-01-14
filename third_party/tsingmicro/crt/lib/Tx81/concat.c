@@ -1,5 +1,7 @@
 //===------------------------ concat.c ------------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -14,6 +16,7 @@ void __Concat(uint64_t *src1, uint16_t src1_n, uint16_t src1_h, uint16_t src1_w,
               uint16_t src2_w, uint16_t src2_c, uint64_t *dst, uint16_t dst_n,
               uint16_t dst_h, uint16_t dst_w, uint16_t dst_c, uint32_t dim,
               uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmDataMove *cmd = g_intrinsic()->datamove_pointer;
   TsmMoveInstr inst = {I_CGRA,

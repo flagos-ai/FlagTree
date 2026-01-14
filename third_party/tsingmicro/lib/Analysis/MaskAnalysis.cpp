@@ -455,7 +455,11 @@ LogicalResult MaskState::parseLoopIterArg(Value v, const Location loc,
     if (failed(lhsState.parse(tritonValue, loc, builder))) {
       return failure();
     }
+
+    // FIXME: Maybe need fixed parseConstant function to add start, end, and
+    // dims
     if (llvm::isa_and_nonnull<arith::ConstantOp>(tritonValue.getDefiningOp())) {
+      // It's accurately a size 1 tl.arange op
       auto constOp = tritonValue.getDefiningOp<arith::ConstantOp>();
       if (llvm::succeeded(this->parseConstant(constOp, loc, builder))) {
         this->dims.push_back(builder.getIndexAttr(1));

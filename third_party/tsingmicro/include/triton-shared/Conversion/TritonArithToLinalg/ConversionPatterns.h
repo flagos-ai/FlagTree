@@ -14,6 +14,7 @@
 #include "triton-shared/Analysis/PtrAnalysis.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "utils/FusionHelper.h"
+#include "utils/ReduceScanCommon.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -24,6 +25,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
+#include "utils/utils.h"
 
 #include "llvm/ADT/SmallVectorExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -834,39 +836,6 @@ struct MakeRangeConverter : public OpConversionPattern<triton::MakeRangeOp> {
   }
 };
 
-struct AssertConverter : public OpConversionPattern<triton::AssertOp> {
-  using OpConversionPattern<triton::AssertOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::AssertOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Value condVal = op.getCondition();
-
-    if (isa<mlir::TensorType>(condVal.getType())) {
-      auto scalarVal = getScalarValue(op.getCondition(), op.getLoc(), rewriter);
-      condVal = scalarVal ? scalarVal : condVal;
-    }
-    assert(condVal && isa<mlir::IntegerType>(condVal.getType()) &&
-           "Only asserts on scalars are currently supported");
-
-    if (!condVal.getType().isInteger(1)) {
-      auto zero =
-          rewriter.create<mlir::arith::ConstantIntOp>(op.getLoc(), 0, 32);
-      auto newCond = rewriter.create<mlir::arith::CmpIOp>(
-          op.getLoc(), arith::CmpIPredicate::ne, condVal, zero);
-      condVal = newCond.getResult();
-    }
-
-    auto assertMessage =
-        llvm::formatv("Assertion `{0}` failed", op.getMessage());
-    rewriter.create<mlir::cf::AssertOp>(op.getLoc(), condVal,
-                                        assertMessage.str());
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 // FIXME: There is no triton::BarrierOp currently.
 struct BarrierConverter : public OpConversionPattern<mlir::gpu::BarrierOp> {
   using OpConversionPattern<mlir::gpu::BarrierOp>::OpConversionPattern;
@@ -905,8 +874,13 @@ struct PrintOpConverter : public OpConversionPattern<triton::PrintOp> {
       // If the operand is not a ranked tensor, we should create a new tensor.
       // See mlir/lib/Interfaces/DestinationStyleOpInterface.cpp#L39
       if (!isa<RankedTensorType>(operand.getType())) {
-        auto operandTensor = rewriter.create<tensor::FromElementsOp>(
-            loc, RankedTensorType::get({}, operand.getType()), operand);
+        // NOTE: Use tensor.from_elements, the arith.constant will not translate
+        // to linalg.fill
+        auto emptyTensor = rewriter.create<tensor::EmptyOp>(
+            loc, SmallVector<int64_t>{}, operand.getType());
+
+        auto operandTensor = rewriter.create<tensor::InsertOp>(
+            loc, operand, emptyTensor, ValueRange{});
         rewriter.create<mk::PrintOp>(loc, operandTensor.getType(),
                                      op.getPrefix(), op.getHex(),
                                      operandTensor.getResult(), isSigned);
@@ -919,13 +893,16 @@ struct PrintOpConverter : public OpConversionPattern<triton::PrintOp> {
         SmallVector<int64_t> flatten_shape = {operandType.getNumElements()};
         auto targetType =
             RankedTensorType::get(flatten_shape, operandType.getElementType());
-        auto shapeAttr = rewriter.getI64TensorAttr(flatten_shape);
-        auto shapeConst = rewriter.create<arith::ConstantOp>(loc, shapeAttr);
-        flattenTensor = rewriter.create<tensor::ReshapeOp>(
-            loc, targetType, flattenTensor, shapeConst);
+        // NOTE: Avoid to create global constant tensors
+        SmallVector<ReassociationIndices> reassociation(1);
+        for (unsigned i = 0; i < operandType.getRank(); ++i) {
+          reassociation.front().push_back(i);
+        }
+        flattenTensor = rewriter.create<tensor::CollapseShapeOp>(
+            loc, targetType, operand, reassociation);
       }
 
-      rewriter.create<mk::PrintOp>(loc, operandType, op.getPrefix(),
+      rewriter.create<mk::PrintOp>(loc, flattenTensor.getType(), op.getPrefix(),
                                    op.getHex(), flattenTensor, isSigned);
     }
 
@@ -1246,43 +1223,9 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
   LogicalResult
   matchAndRewrite(triton::DotOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto opa = op.getA();
-    auto opb = op.getB();
-    auto opc = op.getC();
-
-    auto dstType = cast<RankedTensorType>(op.getType());
-    auto elementType = dstType.getElementType();
-    bool integers = elementType.isInteger();
-    bool skipC = isZeroTensor(opc, integers);
-    auto init =
-        rewriter.create<tensor::EmptyOp>(loc, dstType.getShape(), elementType);
-    TypedAttr constantAttr =
-        integers
-            ? static_cast<TypedAttr>(rewriter.getIntegerAttr(elementType, 0))
-            : static_cast<TypedAttr>(rewriter.getFloatAttr(elementType, 0));
-
-    auto zero = rewriter.create<mlir::arith::ConstantOp>(
-        op.getLoc(), elementType, constantAttr);
-
-    auto zeroes =
-        rewriter.create<linalg::FillOp>(loc, ValueRange{zero}, ValueRange{init})
-            .result();
-
-    auto res = rewriter
-                   .create<linalg::MatmulOp>(loc, ValueRange{opa, opb},
-                                             ValueRange{zeroes})
-                   .getResult(0);
-
-    if (!skipC) {
-      if (integers) {
-        res = rewriter.create<arith::AddIOp>(loc, opc, res);
-      } else {
-        res = rewriter.create<arith::AddFOp>(loc, opc, res);
-      }
-    }
-
-    rewriter.replaceOp(op, res);
+    rewriter.replaceOpWithNewOp<linalg::MatmulOp>(
+        op, ValueRange{adaptor.getA(), adaptor.getB()},
+        ValueRange{adaptor.getC()});
     return success();
   }
 };
@@ -1349,93 +1292,10 @@ private:
                                [](Operation &op) { return &op; });
   }
 
-  bool isReductionOpSupported(Operation *redOp) const {
-    return isa<arith::AddFOp, arith::AddIOp, arith::MulIOp, arith::MulFOp,
-               arith::MaximumFOp, arith::MaxNumFOp, arith::MinimumFOp,
-               arith::MinNumFOp, arith::MinSIOp, arith::MinUIOp, arith::MaxSIOp,
-               arith::MaxUIOp, arith::XOrIOp, arith::AndIOp, arith::OrIOp>(
-        redOp);
-  }
-
-  arith::ConstantOp getRedBaseConstOp(ConversionPatternRewriter &rewriter,
-                                      Operation *redOp,
-                                      Type constantType) const {
-    const int64_t bitWidth = constantType.getIntOrFloatBitWidth();
-
-    auto attr =
-        llvm::TypeSwitch<Operation *, TypedAttr>(redOp)
-            .Case([&](arith::AddFOp) {
-              return rewriter.getFloatAttr(constantType, 0.f);
-            })
-            .Case([&](arith::AddIOp) {
-              return rewriter.getIntegerAttr(constantType, 0);
-            })
-            .Case([&](arith::MulFOp) {
-              return rewriter.getFloatAttr(constantType, 1.f);
-            })
-            .Case([&](arith::MulIOp) {
-              return rewriter.getIntegerAttr(constantType, 1);
-            })
-            .Case<arith::MaximumFOp, arith::MaxNumFOp>([&](auto) {
-              return rewriter.getFloatAttr(
-                  constantType, -std::numeric_limits<float>::infinity());
-            })
-            .Case<arith::MinimumFOp, arith::MinNumFOp>([&](auto) {
-              return rewriter.getFloatAttr(
-                  constantType, std::numeric_limits<float>::infinity());
-            })
-            .Case([&](arith::MinSIOp) {
-              return rewriter.getIntegerAttr(constantType,
-                                             llvm::maxIntN(bitWidth));
-            })
-            .Case([&](arith::MinUIOp) {
-              return rewriter.getIntegerAttr(constantType,
-                                             llvm::maxUIntN(bitWidth));
-            })
-            .Case([&](arith::MaxSIOp) {
-              return rewriter.getIntegerAttr(constantType,
-                                             llvm::minIntN(bitWidth));
-            })
-            .Case([&](arith::MaxUIOp) {
-              return rewriter.getIntegerAttr(constantType, 0);
-            })
-            .Case([&](arith::OrIOp) {
-              return rewriter.getIntegerAttr(constantType, 0);
-            })
-            .Case([&](arith::XOrIOp) {
-              return rewriter.getIntegerAttr(constantType, 0);
-            })
-            .Case([&](arith::AndIOp) {
-              return rewriter.getIntegerAttr(constantType,
-                                             llvm::maxUIntN(bitWidth));
-            })
-            .Default([](Operation *op) {
-              op->dump();
-              llvm_unreachable("Reduction op not yet supported");
-              return nullptr;
-            });
-
-    return rewriter.create<arith::ConstantOp>(redOp->getLoc(), constantType,
-                                              attr);
-  }
-
-  bool requiresF32Conversion(const Type elemType, Operation *redOp) const {
-    return isa<FloatType>(elemType) &&
-           elemType.getIntOrFloatBitWidth() <
-               cast<FloatType>(Float32Type::get(elemType.getContext()))
-                   .getWidth() &&
-           (isa<arith::AddFOp>(redOp) || isa<arith::MulFOp>(redOp));
-  }
-
   Value getRedElement(Value lhs, Value rhs, const Location loc,
-                      Operation *redOp, OpBuilder &b,
-                      const bool convertLhsToF32Precision) const {
+                      Operation *redOp, OpBuilder &b) const {
     return llvm::TypeSwitch<Operation *, Value>(redOp)
         .Case<arith::AddFOp, arith::MulFOp>([&](auto redOp) {
-          if (convertLhsToF32Precision) {
-            lhs = b.create<arith::ExtFOp>(loc, Float32Type::get(b.getContext()),
-                                          lhs);
-          }
           return b.create<decltype(redOp)>(loc, lhs, rhs);
         })
         .Case<arith::AddIOp, arith::MulIOp, arith::MaximumFOp, arith::MaxNumFOp,
@@ -1466,7 +1326,7 @@ private:
     // element across the reduction dimension requires us to iterate over a
     // subview that skips over each first element.
     if (reductionOps.size() != 1 ||
-        !isReductionOpSupported(reductionOps.front())) {
+        !isTritonAllowedReductionOp(reductionOps.front())) {
       return rewriter.notifyMatchFailure(
           op, "Only support lowering reduction with body "
               "containing 1 max(i/f) or addf.");
@@ -1476,18 +1336,7 @@ private:
     auto axis = op.getAxis();
     auto isVectorReduce = sourceType.getRank() == 1;
 
-    if (axis == sourceType.getRank() - 1 && !isVectorReduce) {
-      source = getTransposedValue(source, op.getLoc(), rewriter);
-      axis = sourceType.getRank() - 2;
-    }
-
-    bool convertToF32Precision = requiresF32Conversion(resType, rop);
-
-    auto constantType = convertToF32Precision
-                            ? Float32Type::get(rewriter.getContext())
-                            : elemType;
-
-    auto accBaseConstOp = getRedBaseConstOp(rewriter, rop, constantType);
+    auto accBaseConstOp = getRedBaseConstOp(rewriter, rop, elemType);
     Value initTensor;
 
     if (isVectorReduce) {
@@ -1498,12 +1347,12 @@ private:
       // the patterns (EmptyOp is susceptible to being CSE'd away, making it
       // harder to match the patterns correctly).
       initTensor = rewriter.create<bufferization::AllocTensorOp>(
-          loc, RankedTensorType::get({}, constantType), ValueRange{});
+          loc, RankedTensorType::get({}, elemType), ValueRange{});
       initTensor = rewriter.create<tensor::InsertOp>(loc, accBaseConstOp,
                                                      initTensor, ValueRange{});
     } else {
       Value init = rewriter.create<tensor::EmptyOp>(
-          loc, cast<RankedTensorType>(resType).getShape(), constantType);
+          loc, cast<RankedTensorType>(resType).getShape(), elemType);
       initTensor = rewriter
                        .create<linalg::FillOp>(loc, ValueRange{accBaseConstOp},
                                                ValueRange{init})
@@ -1518,19 +1367,14 @@ private:
                 [&](OpBuilder &opBuilder, Location loc, ValueRange inputs) {
                   assert(inputs.size() == 2);
                   Value result =
-                      getRedElement(inputs[0], inputs[1], loc, rop, opBuilder,
-                                    convertToF32Precision);
+                      getRedElement(inputs[0], inputs[1], loc, rop, opBuilder);
                   opBuilder.create<linalg::YieldOp>(loc, result);
                 })
             .getResult(0);
 
     if (sourceType.getRank() == 1) {
       finalResult =
-          rewriter.create<tensor::ExtractOp>(loc, constantType, finalResult);
-    }
-
-    if (convertToF32Precision) {
-      finalResult = rewriter.create<arith::TruncFOp>(loc, resType, finalResult);
+          rewriter.create<tensor::ExtractOp>(loc, elemType, finalResult);
     }
 
     rewriter.replaceOp(op, finalResult);
@@ -2106,7 +1950,6 @@ public:
   LogicalResult
   matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
     if (op.getSrcs().size() != 2 ||
         (op.getSymbol() != "__nv_fmodf" && op.getSymbol() != "__nv_fmod")) {
       return failure();
@@ -2120,12 +1963,7 @@ public:
     if (!elemType.isF32()) {
       return failure();
     }
-    auto divResult = rewriter.create<arith::DivFOp>(loc, input1, input2);
-    auto truncResult = rewriter.create<math::TruncOp>(loc, divResult);
-    auto mulResult = rewriter.create<arith::MulFOp>(loc, truncResult, input2);
-    auto subResult = rewriter.create<arith::SubFOp>(loc, input1, mulResult);
-
-    rewriter.replaceOp(op, subResult);
+    rewriter.replaceOpWithNewOp<arith::RemFOp>(op, input1, input2);
     return success();
   }
 };
@@ -2348,279 +2186,15 @@ struct HistogramOpConversion : public OpConversionPattern<triton::HistogramOp> {
   }
 };
 
-// It provides accumulation function that clones operations from the
-// original combine region and applies them on provided tensor.
-// Also, it handles multi-dimensional cases reducing them to two
-// possible options: lowering for a 1-D tensor inputs and lowering
-// the operation over the leading dimension.
-//
-// Specialized pattern should implement lower1DInput to handle
-// trailing dimension case and lowerLeadingDimension to handle the leading
-// dimension case through accumulation of sub-tensors.
-struct ScanOpConverter : public OpConversionPattern<triton::ScanOp> {
+struct ScanOpConverter
+    : public triton::ReduceScanOpConversionBase<triton::ScanOp,
+                                                triton::ScanReturnOp> {
 private:
-  mutable IRMapping invariantsMap;
-  using OpConversionPattern<triton::ScanOp>::OpConversionPattern;
-  using OpConversionPattern<triton::ScanOp>::getTypeConverter;
-  using OpAdaptor = typename triton::ScanOp::Adaptor;
+  using ReduceScanOpConversionBase::ReduceScanOpConversionBase;
 
-  using LoweringFuncType = SmallVector<Value> (ScanOpConverter::*)(
-      ValueRange inputs, triton::ScanOp op,
-      ConversionPatternRewriter &rewriter) const;
-
-  // Though function ptr to call lower1DInput/lowerLeadingDimension to handle
-  // the tensor.
-  SmallVector<Value> lowering(ValueRange inputs, triton::ScanOp op,
-                              ConversionPatternRewriter &rewriter,
-                              uint32_t axis, LoweringFuncType handle) const {
-    auto loc = op.getLoc();
-    auto inputType = cast<RankedTensorType>(inputs[0].getType());
-    auto shape = inputType.getShape();
-
-    SmallVector<Value> res(inputs.size());
-    std::transform(inputs.begin(), inputs.end(), res.begin(), [&](auto val) {
-      return rewriter.create<tensor::EmptyOp>(loc, shape,
-                                              inputType.getElementType());
-    });
-
-    SmallVector<scf::ForOp> loops;
-    SmallVector<Value, 8> loopIndices;
-
-    std::function<void(unsigned)> buildLoops = [&](unsigned d) {
-      // Setup loop bounds and step.
-      Value lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      Value upperBound = rewriter.create<arith::ConstantIndexOp>(loc, shape[d]);
-      Value step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-
-      SmallVector<Value> curRes =
-          d == 0 ? res : loops[d - 1].getInitArgs().take_front(res.size());
-      auto loop = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step,
-                                              ValueRange{curRes});
-      auto loopIdx = loop.getInductionVar();
-      loopIndices.push_back(loopIdx);
-      loops.push_back(loop);
-
-      rewriter.setInsertionPointToStart(loop.getBody());
-      if (d == axis - 1) {
-        SmallVector<Value, 8> dynamicIndices = loopIndices;
-        dynamicIndices.insert(dynamicIndices.end(), shape.size() - axis,
-                              rewriter.create<arith::ConstantIndexOp>(loc, 0));
-
-        SmallVector<int64_t> static_size(axis, 1);
-        static_size.insert(static_size.end(), shape.begin() + axis,
-                           shape.end());
-        SmallVector<int64_t> static_stride(shape.size(), 1);
-
-        // {1,1,..shape[axis],shape[axis+1],..shape[rank]}
-        SmallVector<int64_t> extract_shape = static_size;
-
-        // {shape[axis],shape[axis+1],..shape[rank]}
-        SmallVector<int64_t> reshape_shape(shape.begin() + axis, shape.end());
-
-        SmallVector<Value> subInputs(inputs.size());
-        std::transform(
-            inputs.begin(), inputs.end(), subInputs.begin(), [&](auto val) {
-              auto extract_tensor = rewriter.create<tensor::ExtractSliceOp>(
-                  loc,
-                  RankedTensorType::get(extract_shape,
-                                        inputType.getElementType()),
-                  val, dynamicIndices, /*sizes*/ ValueRange(),
-                  /*strides*/ ValueRange(),
-                  SmallVector<int64_t>(shape.size(), ShapedType::kDynamic),
-                  static_size, static_stride);
-
-              auto shapeAttr = rewriter.getI64TensorAttr(reshape_shape);
-              auto shapeConst =
-                  rewriter.create<arith::ConstantOp>(loc, shapeAttr);
-
-              // {1,1,..shape[axis],shape[axis+1],..shape[rank]} ->
-              // {shape[axis],shape[axis+1],..shape[rank]}
-              return rewriter.create<tensor::ReshapeOp>(
-                  loc,
-                  RankedTensorType::get(reshape_shape,
-                                        inputType.getElementType()),
-                  extract_tensor, shapeConst);
-            });
-
-        auto resElems = (this->*handle)(subInputs, op, rewriter);
-        for (size_t i = 0; i < res.size(); ++i) {
-
-          auto targetType =
-              RankedTensorType::get(extract_shape, inputType.getElementType());
-
-          auto shapeAttr = rewriter.getI64TensorAttr(extract_shape);
-          auto shapeConst = rewriter.create<arith::ConstantOp>(loc, shapeAttr);
-
-          // {shape[axis],shape[axis+1],..shape[rank]} ->
-          // {1,1,..shape[axis],shape[axis+1],..shape[rank]}
-          auto reshaped = rewriter.create<tensor::ReshapeOp>(
-              loc, targetType, resElems[i], shapeConst);
-
-          curRes[i] = rewriter.create<tensor::InsertSliceOp>(
-              loc, reshaped, curRes[i], dynamicIndices,
-              /*sizes*/ ValueRange(),
-              /*strides*/ ValueRange(),
-              SmallVector<int64_t>(shape.size(), ShapedType::kDynamic),
-              static_size, static_stride);
-
-          rewriter.create<scf::YieldOp>(loc, curRes);
-        }
-        return;
-      }
-      buildLoops(d + 1);
-      // Terminate the loop body.
-      rewriter.setInsertionPointToEnd(loop.getBody());
-      SmallVector<Value> yieldValues =
-          loops[d + 1].getResults().take_front(res.size());
-      rewriter.create<scf::YieldOp>(loc, yieldValues);
-      rewriter.setInsertionPointAfter(loop);
-    };
-
-    buildLoops(0);
-
-    // Extract result tensors from forOp;
-    SmallVector<Value> results;
-    for (size_t i = 0; i < inputs.size(); ++i) {
-      results.push_back(loops.front().getResult(i));
-    }
-    return results;
-  }
-
-  // To handle the trailing dimension case, we extract all input vectors
-  // and process them through lower1DInput, then build the resulting
-  // vector using inserts.
-  LogicalResult
-  lowerTrailingDimension(triton::ScanOp op,
-                         ConversionPatternRewriter &rewriter) const {
-    auto loc = op.getLoc();
-    SmallVector<Value> inputs;
-    if (failed(rewriter.getRemappedValues(op.getOperands(), inputs)))
-      return failure();
-
-    auto inputType = cast<RankedTensorType>(inputs[0].getType());
-
-    // 1-D input case.
-    if (inputType.getRank() == 1) {
-      auto res = lower1DInput(inputs, op, rewriter);
-      rewriter.replaceOp(op, res);
-      return success();
-    }
-
-    // TODO: Optimization: The last two dimensions' data can be read with column
-    // stride and computed in parallel.
-    uint32_t axis = op.getAxis();
-    assert(axis == (inputType.getRank() - 1) &&
-           "Expected reduction axis is the last one");
-    SmallVector<Value> res =
-        lowering(inputs, op, rewriter, axis, &ScanOpConverter::lower1DInput);
-
-    rewriter.replaceOp(op, res);
-    return success();
-  }
-
-  // In this case we either call lowerLeadingDimension to process the input
-  // or extract sub-vectors, call lowerLeadingDimension, and then reconstruct
-  // the result.
-  LogicalResult
-  lowerNonTrailingDimension(triton::ScanOp op,
-                            ConversionPatternRewriter &rewriter) const {
-
-    SmallVector<Value> inputs;
-    if (failed(rewriter.getRemappedValues(op.getOperands(), inputs)))
-      return failure();
-
-    uint32_t axis = op.getAxis();
-    if (axis == 0) {
-      rewriter.replaceOp(op, lowerLeadingDimension(inputs, op, rewriter));
-      return success();
-    }
-
-    SmallVector<Value> res = lowering(inputs, op, rewriter, axis,
-                                      &ScanOpConverter::lowerLeadingDimension);
-
-    rewriter.replaceOp(op, res);
-    return success();
-  }
-
-  // Accumulate inputs and existing accumulators into a new accumulators
-  // applying operations from the combine region.
-  SmallVector<Value> accumulate(ValueRange inputs, ValueRange acc,
-                                Region &combineOp, OpBuilder &rewriter) const {
-    if (acc.empty())
-      return inputs;
-
-    auto type = inputs[0].getType();
-    SmallVector<int64_t> shape;
-    if (isa<RankedTensorType>(type)) {
-      auto temp = cast<RankedTensorType>(type).getShape();
-      shape.insert(shape.end(), temp.begin(), temp.end());
-    } else {
-      shape.push_back(1);
-    }
-    auto &block = combineOp.getBlocks().front();
-    IRMapping map;
-    // Map block arguments to the current inputs and accumulators.
-    for (unsigned i = 0; i < acc.size(); ++i) {
-      map.map(block.getArgument(i), acc[i]);
-      map.map(block.getArgument(acc.size() + i), inputs[i]);
-    }
-    for (auto &op : block.getOperations()) {
-      // Returned values are a new accumulator.
-      if (isa<triton::ScanReturnOp>(op)) {
-        SmallVector<Value> res;
-        for (auto operand : op.getOperands()) {
-          res.push_back(map.lookup(operand));
-        }
-        return res;
-      }
-
-      // Clone operation mapping its inputs and building vector
-      // result types using the input shape.
-      OperationState newState(op.getLoc(), op.getName());
-      for (auto operand : op.getOperands()) {
-        newState.operands.push_back(
-            lookupMappedValue(map, operand, shape, rewriter));
-      }
-      for (auto ty : op.getResultTypes()) {
-        isa<RankedTensorType>(type)
-            ? newState.types.push_back(RankedTensorType::get(shape, ty))
-            : newState.types.push_back(ty);
-      }
-      newState.attributes = op.getAttrs();
-      auto newOp = rewriter.create(newState);
-
-      // Add new values to the map.
-      for (auto [oldVal, newVal] :
-           llvm::zip(op.getResults(), newOp->getResults())) {
-        map.map(oldVal, newVal);
-      }
-    }
-    llvm_unreachable("No return op found in scan/reduce region");
-  }
-
-  Value lookupMappedValue(IRMapping &localMap, Value val,
-                          ArrayRef<int64_t> shape, OpBuilder &rewriter) const {
-
-    Value res = localMap.lookupOrNull(val);
-    if (!res) {
-      // If value is not found then it's an invariant defined in the outer
-      // region. We check if it has been already translated and add a splat
-      // operation if it hasn't.
-      res = invariantsMap.lookupOrNull(val);
-      if (!res) {
-        auto ip = rewriter.saveInsertionPoint();
-        rewriter.setInsertionPointAfterValue(val);
-        res = rewriter.create<tensor::SplatOp>(
-            val.getLoc(), RankedTensorType::get(shape, val.getType()), val);
-        invariantsMap.map(val, res);
-        rewriter.restoreInsertionPoint(ip);
-      }
-    }
-    return res;
-  }
-
-  SmallVector<Value> lower1DInput(ValueRange inputs, ScanOp op,
-                                  ConversionPatternRewriter &rewriter) const {
+  SmallVector<Value>
+  lower1DInput(ValueRange inputs, ScanOp op,
+               ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Region &combineOp = op.getRegion();
     bool reverse = op.getReverse();
@@ -2678,6 +2252,8 @@ private:
           // Check if this is the first iteration
           Value isFirstValue = b.create<arith::CmpIOp>(
               loc, arith::CmpIPredicate::eq, iv, lowerBound);
+          // FIXME: Bufferize will generate dynamic stride memref type, which
+          // cause memref::copy conversion failure
           scf::IfOp ifOp = b.create<scf::IfOp>(
               loc, isFirstValue,
               [&](OpBuilder &b, Location loc) {
@@ -2715,7 +2291,7 @@ private:
 
   SmallVector<Value>
   lowerLeadingDimension(ValueRange inputs, ScanOp op,
-                        ConversionPatternRewriter &rewriter) const {
+                        ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Region &combineOp = op.getRegion();
     bool reverse = op.getReverse();
@@ -2804,6 +2380,8 @@ private:
           // Check if this is the first iteration
           Value isFirstValue = b.create<arith::CmpIOp>(
               loc, arith::CmpIPredicate::eq, iv, lowerBound);
+          // FIXME: Bufferize will generate dynamic stride memref type, which
+          // cause memref::copy conversion failure
           scf::IfOp ifOp = b.create<scf::IfOp>(
               loc, isFirstValue,
               [&](OpBuilder &b, Location loc) {
@@ -2842,17 +2420,9 @@ private:
     return results;
   }
 
-public:
-  LogicalResult
-  matchAndRewrite(triton::ScanOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto rank = cast<RankedTensorType>(op.getOperand(0).getType()).getRank();
-    auto axis = op.getAxis();
-    assert(axis < rank && "Expected axis is within the input rank");
-    if (axis == (rank - 1))
-      return lowerTrailingDimension(op, rewriter);
-
-    return lowerNonTrailingDimension(op, rewriter);
+  uint32_t getAxis(triton::ScanOp op) const override { return op.getAxis(); }
+  SmallVector<Value> getInputs(triton::ScanOp op) const override {
+    return op->getOperands();
   }
 };
 

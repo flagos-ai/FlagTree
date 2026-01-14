@@ -1316,6 +1316,12 @@ def cyl_bessel_i1(arg0, _builder=None):
 
 
 @core.extern
+def erf(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_erf(x.handle), x.type)
+
+
+@core.extern
 def erfinv(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {

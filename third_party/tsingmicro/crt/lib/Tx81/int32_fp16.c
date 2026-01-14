@@ -1,5 +1,7 @@
 //===------------------------ int32_fp16.cpp
 //-------------------------------===//
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,6 +13,7 @@
 
 void __INT32_FP16(uint64_t *src, uint64_t *dst, uint32_t elem_count,
                   RND_MODE round) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmConvert *cmd = g_intrinsic()->convert_pointer;
   TsmConvertInstr inst = {I_CGRA,

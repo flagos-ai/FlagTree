@@ -1,5 +1,7 @@
 //===------------------------ relation.c-----------------------------------===//
 //
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,6 +13,7 @@
 
 void __BoolEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                    uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -32,6 +35,7 @@ void __BoolEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __BoolUnEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                      uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -53,6 +57,7 @@ void __BoolUnEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __BoolGreaterEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                           uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -74,6 +79,7 @@ void __BoolGreaterEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __BoolGreaterVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                      uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -95,6 +101,7 @@ void __BoolGreaterVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __BoolLessEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                        uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -116,6 +123,7 @@ void __BoolLessEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __BoolLessThenVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                       uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -137,6 +145,7 @@ void __BoolLessThenVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __EqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -158,6 +167,7 @@ void __EqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __UnEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                  uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -179,6 +189,7 @@ void __UnEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __GreaterEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                       uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -200,6 +211,7 @@ void __GreaterEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __GreaterVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                  uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -221,6 +233,7 @@ void __GreaterVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __LessEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                    uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -242,6 +255,7 @@ void __LessEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __LessThenVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
                   uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -263,6 +277,7 @@ void __LessThenVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
 void __BoolEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                    uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -284,6 +299,7 @@ void __BoolEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __BoolUnEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                      uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -305,6 +321,7 @@ void __BoolUnEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __BoolGreaterEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                           uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -326,6 +343,7 @@ void __BoolGreaterEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __BoolGreaterVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                      uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -347,6 +365,7 @@ void __BoolGreaterVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __BoolLessEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                        uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -368,6 +387,7 @@ void __BoolLessEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __BoolLessThenVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                       uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -389,6 +409,7 @@ void __BoolLessThenVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __EqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -410,6 +431,7 @@ void __EqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __UnEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                  uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -431,6 +453,7 @@ void __UnEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __GreaterEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                       uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -452,6 +475,7 @@ void __GreaterEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __GreaterVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                  uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -473,6 +497,7 @@ void __GreaterVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __LessEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                    uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
@@ -494,6 +519,7 @@ void __LessEqualVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
 
 void __LessThenVS(uint64_t *src0, uint32_t src1, uint64_t *dst,
                   uint32_t elem_count, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
   // Create command buffer.
   TsmRelation *cmd = g_intrinsic()->relation_pointer;
   TsmRelationInstr inst = {I_CGRA,
