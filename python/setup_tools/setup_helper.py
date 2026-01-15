@@ -225,7 +225,7 @@ class FlagTreeCache:
         return self.cache_files[file_name]
 
 
-# -----flagtree-tle-raw-----llvm-wheel---
+# -----flagtree-tle-raw-----flagtree-mlir---
 
 
 class LLVMDetector:
@@ -266,11 +266,11 @@ class LLVMDetector:
         return include_dir, lib_dir, llvm_root
 
 
-def try_setup_llvm_wheel(pkg_name: str = "llvm-wheel") -> bool:
+def try_setup_flagtree_mlir(pkg_name: str = "flagtree-mlir") -> bool:
     is_installed = LLVMDetector.is_wheel_installed(pkg_name)
     has_envs = LLVMDetector.has_env_vars()
     # rule1 : if both exist, fail
-    if is_installed and has_envs and not os.environ.get("USE_LLVM_WHEEL_BUILD"):
+    if is_installed and has_envs and not os.environ.get("USE_FLAGTREE_MLIR_BUILD"):
         raise RuntimeError("ERROR: LLVM wheel is installed, but LLVM-related environment variables are set:\n"
                            f"  {has_envs}\n"
                            "Please unset them to avoid conflicts.")
@@ -279,7 +279,7 @@ def try_setup_llvm_wheel(pkg_name: str = "llvm-wheel") -> bool:
     if is_installed:
         include_dir, lib_dir, llvm_root = LLVMDetector.get_paths_from_wheel(pkg_name)
         # env variables will not appear out of python process
-        os.environ["USE_LLVM_WHEEL_BUILD"] = "1"
+        os.environ["USE_FLAGTREE_MLIR_BUILD"] = "1"
         os.environ["LLVM_SYSPATH"] = llvm_root
         os.environ["LLVM_INCLUDE_DIRS"] = include_dir
         os.environ["LLVM_LIBRARY_DIR"] = lib_dir
