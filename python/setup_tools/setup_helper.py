@@ -249,8 +249,7 @@ class LLVMDetector:
 
     @staticmethod
     def get_paths_from_wheel(pkg_name: str) -> Tuple[str, str, str]:
-        import_name = pkg_name.replace("-", "_")
-        spec = importlib.util.find_spec(import_name)
+        spec = importlib.util.find_spec(pkg_name)
         if spec is None:
             raise RuntimeError(f"LLVM wheel '{pkg_name}' found via metadata but import failed.")
 
@@ -266,7 +265,7 @@ class LLVMDetector:
         return include_dir, lib_dir, llvm_root
 
 
-def try_setup_flagtree_mlir(pkg_name: str = "flagtree-mlir") -> bool:
+def try_setup_flagtree_mlir(pkg_name: str = "flagtree_mlir") -> bool:
     is_installed = LLVMDetector.is_wheel_installed(pkg_name)
     has_envs = LLVMDetector.has_env_vars()
     # rule1 : if both exist, fail

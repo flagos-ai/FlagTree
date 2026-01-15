@@ -198,7 +198,7 @@ def is_linux_os(id):
 
 
 def get_llvm_package_info():
-    FLAGTREE_MLIR_PKG = "flagtree-mlir"
+    FLAGTREE_MLIR_PKG = "flagtree_mlir"
     if helper.try_setup_flagtree_mlir(FLAGTREE_MLIR_PKG):
         return Package("llvm", "llvm-C.lib", "", "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH")
 
