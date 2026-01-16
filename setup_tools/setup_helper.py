@@ -260,7 +260,7 @@ class CommonUtils:
         package_dict = {}
         if flagtree_backend and flagtree_backend not in plugin_backends:
             connection = []
-            backend_triton_path = f"../third_party/{flagtree_backend}/python/"
+            backend_triton_path = f"./third_party/{flagtree_backend}/python/"
             for package in packages:
                 if CommonUtils.skip_package_dir(package):
                     continue
@@ -280,7 +280,7 @@ def handle_flagtree_backend():
         print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
         extend_backends.append(flagtree_backend)
         if "editable_wheel" in sys.argv and flagtree_backend not in plugin_backends:
-            ext_sourcedir = os.path.abspath(f"../third_party/{flagtree_backend}/python/{ext_sourcedir}") + "/"
+            ext_sourcedir = os.path.abspath(f"./third_party/{flagtree_backend}/python/{ext_sourcedir}") + "/"
 
 
 def set_env(env_dict: dict):
