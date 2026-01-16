@@ -123,6 +123,21 @@ class Autotuner(KernelInterface):
             return driver.active.get_benchmarker()
         return self._do_bench
 
+    def adjust_block_size(self, current, config,
+                          tensor_size_name, block_size_name):
+        if tensor_size_name in self.nargs and block_size_name in current:
+            tensor_size = self.nargs[tensor_size_name]
+            block_size = current[block_size_name]
+            if block_size > tensor_size:
+                block_size = tensor_size
+            if block_size_name == "BLOCK_K" and block_size < 16:
+                block_size = 16
+            if block_size < 8:
+                block_size = 8
+            current[block_size_name] = block_size
+            config.kwargs[block_size_name] = block_size
+            # print(f'#### flagtree tune: {tensor_size_name}={tensor_size}, {block_size_name}={block_size}')
+
     def _bench(self, *args, config, **meta):
         from ..compiler.errors import CompileTimeAssertionFailure
 
@@ -138,6 +153,10 @@ class Autotuner(KernelInterface):
                              " Make sure that you don't re-define auto-tuned symbols.")
         # augment meta-parameters with tunable ones
         current = dict(meta, **config.all_kwargs())
+        # flagtree tune
+        self.adjust_block_size(current, config, "M", "BLOCK_M")
+        self.adjust_block_size(current, config, "N", "BLOCK_N")
+        self.adjust_block_size(current, config, "K", "BLOCK_K")
         full_nargs = {**self.nargs, **current}
 
         def kernel_call():
@@ -244,6 +263,15 @@ class Autotuner(KernelInterface):
         if knobs.autotuning.print and not used_cached_result:
             print(f"Triton autotuning for function {self.base_fn.__name__},\nwith key as {key},\n"
                   f"finished after {self.bench_time:.2f}s,\nbest config selected: {self.best_config};")
+
+        # flagtree run: TODO
+        config_kwargs = config.all_kwargs()
+        nargs_with_kwargs = {**self.nargs, **kwargs}
+        if "N" in nargs_with_kwargs and "BLOCK_N" in config_kwargs:
+            N = nargs_with_kwargs["N"]
+            BLOCK_N = config_kwargs["BLOCK_N"]
+            print(f"#### flagtree run: N={N}, BLOCK_N={BLOCK_N}")
+
         if config.pre_hook is not None:
             full_nargs = {**self.nargs, **kwargs, **config.all_kwargs()}
             config.pre_hook(full_nargs)
