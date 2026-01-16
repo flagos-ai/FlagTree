@@ -5,6 +5,8 @@ from typing_extensions import override
 from mlir import ir
 from mlir.dialects import func
 
+from .utils import ExternalCall
+
 
 class UnknownSymbolError(Exception):
 
@@ -14,14 +16,16 @@ class UnknownSymbolError(Exception):
 
 class EdslMLIRCodeGenerator(ast.NodeVisitor):
 
-    def __init__(self, absfilename: str, lscope: Optional[Dict[str, Any]] = None, gscope: Optional[Dict[str,
-                                                                                                        Any]] = None,
+    def __init__(self, absfilename: str, lscope: Dict[str, Any] = None, gscope: Dict[str, Any] = {},
                  context: Optional[ir.Context] = None, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.absfilename: Final[str] = absfilename
-        self.lscope: Final[Dict[str, Any]] = {} if lscope is None else lscope
-        self.gscope: Final[Dict[str, Any]] = {} if gscope is None else gscope
+        self.lscope: Final[Dict[str, Any]] = {**lscope}
+        self.gscope: Final[Dict[str, Any]] = {**gscope}
+        self.decls: Final[Dict[str, func.FuncOp]] = {}
+        self.constants: Final[Dict[str, Any]] = {}
         self.context: Final[ir.Context] = ir.Context() if context is None else context
+        self.module: Optional[ir.Module] = None
 
     def call_function(self, fn, args: Sequence[Any]) -> Any:
         return fn(*args)
@@ -55,7 +59,10 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
         with ir.Location.file(self.absfilename, node.lineno, node.col_offset):
             fn = self.visit(node.func)
             args: List[ir.Value] = [self.visit(arg) for arg in node.args]
-            return self.call_function(fn, args)
+            ret = self.call_function(fn, args)
+            if isinstance(ret, ExternalCall):
+                ret = ret.call(self)
+            return ret
 
     @override
     def visit_Constant(self, node: ast.Constant) -> Any:
@@ -114,12 +121,12 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
 
     @override
     def visit_Module(self, node: ast.Module) -> ir.Module:
-        [func] = node.body
+        [fn] = node.body
         with self.context, ir.Location.file(self.absfilename, 0, 0):
-            module: ir.Module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                self.visit(func)
-            return module
+            self.module = ir.Module.create()
+            with ir.InsertionPoint(self.module.body):
+                self.visit(fn)
+            return self.module
 
     @override
     def visit_Name(self, node: ast.Name) -> Any:

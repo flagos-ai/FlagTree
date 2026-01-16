@@ -1,4 +1,5 @@
 #include "ir.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Parser/Parser.h"
@@ -97,6 +98,20 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   LLVM::LLVMFuncOp func = module->lookupSymbol<LLVM::LLVMFuncOp>(fnname);
   OpBuilder &builder = self.getBuilder();
+  Operation *curOp = builder.getInsertionBlock()->getParentOp();
+  while (curOp && curOp->getParentOp() && !isa<ModuleOp>(curOp)) {
+    curOp = curOp->getParentOp();
+  }
+  ModuleOp curModule = cast<ModuleOp>(curOp);
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(curModule.getBody());
+    for (Operation &op : module->getOps()) {
+      if (&op != func.getOperation()) {
+        builder.clone(op);
+      }
+    }
+  }
 
   SmallVector<Type> outputTys = llvm::map_to_vector(
       outputs, [](Value value) -> Type { return value.getType(); });
@@ -105,12 +120,12 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
                           SmallVector<Value>(inputs.begin(), inputs.end())));
 
   // Stage 2: Create DSLRegionOp, create new body
-  // The edsl_param_types contain the EDSL function parameter type declarations
-  // (e.g., "memref<?xi32, 3>", "i32") These are stored as an ArrayAttr of
-  // StringAttrs in the DSLRegionOp's "edsl_param_types" attribute The
-  // edsl_param_names contain the EDSL function parameter names (e.g.,
-  // "sum_buf", "indices") These are stored as an ArrayAttr of StringAttrs in
-  // the DSLRegionOp's "edsl_param_names" attribute
+  // The edsl_param_types contain the EDSL function parameter type
+  // declarations (e.g., "memref<?xi32, 3>", "i32") These are stored as an
+  // ArrayAttr of StringAttrs in the DSLRegionOp's "edsl_param_types"
+  // attribute The edsl_param_names contain the EDSL function parameter names
+  // (e.g., "sum_buf", "indices") These are stored as an ArrayAttr of
+  // StringAttrs in the DSLRegionOp's "edsl_param_names" attribute
   ArrayAttr edslParamTypesAttr = nullptr;
   if (!arg_type_hints.empty()) {
     SmallVector<Attribute> typeAttrs;
@@ -158,7 +173,8 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
   //   3. Verify the LLVM function has the expected number and types of
   //   arguments
   //   4. Create extract operations to convert TT IR values to LLVM values
-  //   5. Map LLVM function arguments to extract operation results in IRMapping
+  //   5. Map LLVM function arguments to extract operation results in
+  //   IRMapping
   //
   // Type conversion examples:
   //   - TT tensor<128xi32> + EDSL "memref<?xi32, 3>" -> LLVM 5 args (ptr<3>,
@@ -180,8 +196,8 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
       builder.setInsertionPointToStart(newBlock);
 
       // Iterate through DSLRegionOp operands and create extract operations
-      // Note: operands = [outputs..., inputs...], edsl_param_types corresponds
-      // to all operands Extract edsl_param_names from attribute
+      // Note: operands = [outputs..., inputs...], edsl_param_types
+      // corresponds to all operands Extract edsl_param_names from attribute
       SmallVector<std::string> edsl_param_names_from_attr;
       if (auto edslParamNamesAttr =
               dslRegionOp->getAttrOfType<ArrayAttr>("edsl_param_names")) {
@@ -206,10 +222,11 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
         // Case 1: TT Tensor type conversion
         // TT IR: RankedTensorType (e.g., tensor<128xi32>)
         // EDSL param type: "memref<?xi32, 3>" (stored in edsl_param_types
-        // attribute) LLVM func: 3 + 2*rank args = allocated_ptr<address_space>,
-        // aligned_ptr<address_space>, offset, sizes[rank], strides[rank]
-        // Conversion: Create ExtractAllocatedPtrOp, ExtractAlignedPtrOp,
-        // ExtractOffsetOp, ExtractSizesOp, ExtractStridesOp
+        // attribute) LLVM func: 3 + 2*rank args =
+        // allocated_ptr<address_space>, aligned_ptr<address_space>, offset,
+        // sizes[rank], strides[rank] Conversion: Create
+        // ExtractAllocatedPtrOp, ExtractAlignedPtrOp, ExtractOffsetOp,
+        // ExtractSizesOp, ExtractStridesOp
         if (RankedTensorType tensorTy =
                 dyn_cast<RankedTensorType>(blockArg.getType())) {
           // Type consistency check: verify EDSL parameter type matches actual
@@ -303,8 +320,8 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
           // Case 2: TT Pointer type conversion
           // TT IR: triton::PointerType (e.g., ptr<f32>)
           // EDSL param type: "llvm.ptr<1>" (stored in edsl_param_types
-          // attribute) LLVM func: 1 arg = ptr<address_space> Conversion: Create
-          // ExtractPtrOp to convert TT pointer to LLVM pointer
+          // attribute) LLVM func: 1 arg = ptr<address_space> Conversion:
+          // Create ExtractPtrOp to convert TT pointer to LLVM pointer
         } else if (auto ptrTy =
                        dyn_cast<triton::PointerType>(blockArg.getType())) {
           // Type consistency check: verify EDSL parameter type matches actual
@@ -385,7 +402,8 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
         } else if (isa<IntegerType>(blockArg.getType()) ||
                    isa<FloatType>(blockArg.getType())) {
           // Type consistency check: verify EDSL parameter type matches actual
-          // Triton type Scalars should not have memref or llvm.ptr param types
+          // Triton type Scalars should not have memref or llvm.ptr param
+          // types
           if (!arg_type.empty()) {
             std::regex memref_regex(R"(!?memref<[^>]*,\s*\d+\s*>)");
             std::regex ptr_regex(R"(!?llvm\.ptr<\d+>)");
