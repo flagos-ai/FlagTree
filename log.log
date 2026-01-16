@@ -1,0 +1,64 @@
+Using pip 25.3 from /usr/local/lib/python3.10/dist-packages/pip (python 3.10)
+Obtaining file:///root/WorkSpace/flagtree_close/flagtree
+  Checking if build backend supports build_editable: started
+  Running command Checking if build backend supports build_editable
+  Checking if build backend supports build_editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Running command Preparing editable metadata (pyproject.toml)
+  fatal: detected dubious ownership in repository at '/root/WorkSpace/flagtree_close/flagtree'
+  To add an exception for this directory, call:
+
+        git config --global --add safe.directory /root/WorkSpace/flagtree_close/flagtree
+  fatal: detected dubious ownership in repository at '/root/WorkSpace/flagtree_close/flagtree'
+  To add an exception for this directory, call:
+
+        git config --global --add safe.directory /root/WorkSpace/flagtree_close/flagtree
+  fatal: detected dubious ownership in repository at '/root/WorkSpace/flagtree_close/flagtree'
+  To add an exception for this directory, call:
+
+        git config --global --add safe.directory /root/WorkSpace/flagtree_close/flagtree
+  /usr/local/lib/python3.10/dist-packages/setuptools/_distutils/dist.py:289: UserWarning: Unknown distribution option: 'test_suite'
+    warnings.warn(msg)
+  /usr/local/lib/python3.10/dist-packages/setuptools/dist.py:759: SetuptoolsDeprecationWarning: License classifiers are deprecated.
+  !!
+
+          ********************************************************************************
+          Please consider removing the following classifiers in favor of a SPDX license expression:
+
+          License :: OSI Approved :: MIT License
+
+          See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+          ********************************************************************************
+
+  !!
+    self._finalize_license_expression()
+  [INFO] FlagTree Offline Build: No offline build for triton origin toolkits
+  [1;32m[INFO] FlagtreeBackend is sunrise[0m
+  !!!================
+  {'': 'python', 'triton': './third_party/sunrise/python/triton', 'triton.backends.sunrise': 'third_party/sunrise/backend'}
+  running dist_info
+  creating /tmp/pip-modern-metadata-7yt5bbbz/triton.egg-info
+  writing /tmp/pip-modern-metadata-7yt5bbbz/triton.egg-info/PKG-INFO
+  writing dependency_links to /tmp/pip-modern-metadata-7yt5bbbz/triton.egg-info/dependency_links.txt
+  writing entry points to /tmp/pip-modern-metadata-7yt5bbbz/triton.egg-info/entry_points.txt
+  writing requirements to /tmp/pip-modern-metadata-7yt5bbbz/triton.egg-info/requires.txt
+  writing top-level names to /tmp/pip-modern-metadata-7yt5bbbz/triton.egg-info/top_level.txt
+  writing manifest file '/tmp/pip-modern-metadata-7yt5bbbz/triton.egg-info/SOURCES.txt'
+  error: package directory 'third_party/sunrise/python/triton/language/extra/cuda' does not exist
+  error: subprocess-exited-with-error
+  
+  × Preparing editable metadata (pyproject.toml) did not run successfully.
+  │ exit code: 1
+  ╰─> No available output.
+  
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+  full command: /usr/bin/python3 /usr/local/lib/python3.10/dist-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py prepare_metadata_for_build_editable /tmp/tmpf93nemq1
+  cwd: /root/WorkSpace/flagtree_close/flagtree
+  Preparing editable metadata (pyproject.toml): finished with status 'error'
+error: metadata-generation-failed
+
+× Encountered error while generating package metadata.
+╰─> from file:///root/WorkSpace/flagtree_close/flagtree
+
+note: This is an issue with the package mentioned above, not pip.
+hint: See above for details.

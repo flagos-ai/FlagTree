@@ -4,8 +4,7 @@ import platform
 import subprocess
 import re
 from pathlib import Path
-#from triton import knobs
-from ..python.triton import knobs
+from triton import knobs
 from triton.runtime.build import compile_module_from_src
 from triton.runtime import _allocation
 from triton.backends.compiler import GPUTarget
@@ -482,8 +481,6 @@ class SunriseDriver(GPUDriver):
     def __init__(self):
         self.utils = SunriseUtils()  # TODO: make static
         self.launcher_cls = SunriseLauncher
-        from triton.backends.iluvatar import spec
-        self.spec = spec
         super().__init__()
 
     def get_current_target(self):
