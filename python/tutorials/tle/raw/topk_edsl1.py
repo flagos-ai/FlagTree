@@ -267,6 +267,8 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
         inval_int16 = convert_to_uint16(input)
         s_histogram += inval_int16.to(tl.int32).histogram(HISTOGRAM_SIZE)
 
+
+######################
     s_histogram = s_histogram.cumsum(0, reverse=True)  # Suffix sum
     mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
 
@@ -276,6 +278,7 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
     l_new_topk -= tl.where(tl.arange(0, HISTOGRAM_SIZE) == l_threshold_bin_id + 1, s_histogram, 0).max(0)
 
     sum = K - l_new_topk
+    ######################
 
     thre_bin_sum_buf = tl.zeros([1], dtype=tl.int32)
     s = S

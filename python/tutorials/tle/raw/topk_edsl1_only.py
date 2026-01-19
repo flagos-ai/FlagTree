@@ -2,6 +2,7 @@
 from mlir.dialects import arith, memref, nvvm, scf, llvm
 from mlir import ir
 import torch
+from triton.experimental.tle.raw.mlir.utils import vprintf
 import triton
 from triton.experimental.tle.raw import dialect, InOut, Input
 import triton.experimental.tle.language.raw as tle_raw
@@ -86,6 +87,7 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
     with ir.InsertionPoint(then_block):
         # for i in T.serial(8):
         eight = arith.constant(ir.IndexType.get(), 8)
+        cst3 = arith.constant(i32_ty, 3)
         for i in scf.for_(zero, eight, one):
             # offset = 1 << i
             i_i32 = arith.index_cast(i32_ty, i)
@@ -93,12 +95,12 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
             # Pre-compute tidx_idx for use in both if blocks
             tidx_idx = arith.index_cast(ir.IndexType.get(), tidx)
             # T.sync_threads(3, RADIX)
-            nvvm.barrier0()
+            nvvm.barrier(barrier_id=cst3, number_of_threads=RADIX)
             # if tx < RADIX - offset:
             radix_minus_offset = arith.subi(RADIX, offset)
             tx_lt_radix_minus_offset = arith.cmpi(arith.CmpIPredicate.slt, tidx, radix_minus_offset)
-            if_tx_lt_radix_minus_offset = scf.if_([], tx_lt_radix_minus_offset)
-            then_block1 = if_tx_lt_radix_minus_offset.opview.thenRegion.blocks.append()
+            if_tx_lt_radix_minus_offset = scf.if_([i32_ty], tx_lt_radix_minus_offset)
+            then_block1 = if_tx_lt_radix_minus_offset.owner.opview.thenRegion.blocks.append()
             with ir.InsertionPoint(then_block1):
                 # l_val = s_histogram[tx] + s_histogram[tx + offset]
                 tidx_plus_offset = arith.addi(tidx, offset)
@@ -110,26 +112,33 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
                 # Store l_val temporarily (will be used after sync)
                 # Note: In MLIR SSA, we can't directly pass values across sync points,
                 # so we'll recompute it in the second if block
-                scf.yield_([])
+                # scf.yield_([])
+                scf.yield_([l_val])
+            else_block1 = if_tx_lt_radix_minus_offset.owner.opview.elseRegion.blocks.append()
+            with ir.InsertionPoint(else_block1):
+                scf.yield_([arith.constant(i32_ty, 0)])
+            l_val = if_tx_lt_radix_minus_offset
             # T.sync_threads(3, RADIX) - second sync before writing back
-            nvvm.barrier0()
+            nvvm.barrier(barrier_id=cst3, number_of_threads=RADIX)
             # if tx < RADIX - offset:
             if_tx_lt_radix_minus_offset2 = scf.if_([], tx_lt_radix_minus_offset)
             then_block2 = if_tx_lt_radix_minus_offset2.opview.thenRegion.blocks.append()
             with ir.InsertionPoint(then_block2):
                 # s_histogram[tx] = l_val
                 # Recompute l_val since we can't pass it across sync in SSA form
-                tidx_plus_offset2 = arith.addi(tidx, offset)
-                tidx_plus_offset_idx2 = arith.index_cast(ir.IndexType.get(), tidx_plus_offset2)
+                # tidx_plus_offset2 = arith.addi(tidx, offset)
+                # tidx_plus_offset_idx2 = arith.index_cast(ir.IndexType.get(), tidx_plus_offset2)
 
-                hist_tx2 = memref.load(s_histogram, [tidx_idx])
-                hist_tx_plus_offset2 = memref.load(s_histogram, [tidx_plus_offset_idx2])
-                l_val2 = arith.addi(hist_tx2, hist_tx_plus_offset2)
-                memref.store(l_val2, s_histogram, [tidx_idx])
+                # hist_tx2 = memref.load(s_histogram, [tidx_idx])
+                # hist_tx_plus_offset2 = memref.load(s_histogram, [tidx_plus_offset_idx2])
+                # l_val2 = arith.addi(hist_tx2, hist_tx_plus_offset2)
+                memref.store(l_val, s_histogram, [tidx_idx])
+                tidx_idx_i32 = arith.index_cast(i32_ty, tidx_idx)
+                vprintf("l_val: %d tidx_idx_i32=%d\n", l_val,tidx_idx_i32)
                 scf.yield_([])
             scf.yield_([])
         # T.sync_threads(3, RADIX) - after cumsum loop, before finding threshold bin id
-        nvvm.barrier0()
+        nvvm.barrier(barrier_id=cst3, number_of_threads=RADIX)
         # find threshold bin id
         # if s_histogram[tx] > l_new_topk and s_histogram[tx + 1] <= l_new_topk:
         tidx_idx_for_thre = arith.index_cast(ir.IndexType.get(), tidx)
@@ -162,6 +171,9 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
     hist_threshold_plus_one = memref.load(s_histogram, [l_threshold_bin_id_plus_one_idx])
     l_new_topk_new = arith.subi(l_new_topk, hist_threshold_plus_one)
     nvvm.barrier0()
+
+    vprintf("l_threshold_bin_id_new: %d\n", l_threshold_bin_id_new)
+    vprintf("l_new_topk_new: %d\n", l_new_topk_new)
 
     # TileLang: for s in T.serial(T.ceildiv(seq_len, BLOCK_SIZE)):
     for s in scf.for_(zero, num_iters_idx, one):
@@ -213,6 +225,8 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
                 l_bin_id32 = bin_id_i32
 
                 over_thre = arith.cmpi(arith.CmpIPredicate.sgt, l_bin_id32, l_threshold_bin_id_new)
+                over_thre_ext = arith.extsi(i32_ty, over_thre)
+                vprintf("over_thre=%d, l_bin_id32: %d, l_threshold_bin_id_new: %d\n", over_thre_ext, l_bin_id32, l_threshold_bin_id_new)
                 over_thre_if = scf.if_([], over_thre)
                 over_thre_then = over_thre_if.opview.thenRegion.blocks.append()
                 with ir.InsertionPoint(over_thre_then):
@@ -222,6 +236,7 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
                     pos = memref.atomic_rmw(arith.AtomicRMWKind.addi, one_i32, s_histogram, [bin_id_plus_one_idx])
                     indices_ptr = llvm.getelementptr(ptr_ty, indices_base, [pos], [-2147483648], i32_ty, 0)
                     llvm.store(input_idx_back_i32, indices_ptr)
+                    vprintf("input_idx_back_i32: %d, pos: %d\n", input_idx_back_i32, pos)
                     scf.yield_([])
 
                 over_thre_else = over_thre_if.opview.elseRegion.blocks.append()
@@ -247,7 +262,7 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
 
 @triton.autotune(
     configs=[
-        triton.Config({"BS": 8192}, num_stages=3, num_warps=8),
+        triton.Config({"BS": 8192}, num_stages=3, num_warps=1),
     ],
     key=["S", "K"],
 )
@@ -284,16 +299,22 @@ def kernel1_compute_histogram_and_threshold(  # grid(B,)
         inval_int16 = convert_to_uint16(input)
         s_histogram += inval_int16.to(tl.int32).histogram(HISTOGRAM_SIZE)
 
-    s_histogram = s_histogram.cumsum(0, reverse=True)  # Suffix sum
+    tl.store(s_histogram_out + i_b * HISTOGRAM_SIZE + tl.arange(0, HISTOGRAM_SIZE), s_histogram)
+    # s_histogram = s_histogram.cumsum(0, reverse=True)  # Suffix sum
     mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
 
+    # if s_histogram[tx] > l_new_topk and s_histogram[tx + 1] <= l_new_topk:
+    #                s_threshold_bin_id[0] = tx
+    # T.sync_threads()
+    #l_threshold_bin_id = s_threshold_bin_id[0]
     cond = (s_histogram > l_new_topk) & ((s_histogram.gather(mv_idx, 0) <= l_new_topk) | (mv_idx == 0))
     l_threshold_bin_id = cond.argmax(0)
 
+    # l_new_topk = l_new_topk - s_histogram[l_threshold_bin_id + 1]
     l_new_topk -= tl.where(tl.arange(0, HISTOGRAM_SIZE) == l_threshold_bin_id + 1, s_histogram, 0).max(0)
 
     # Store outputs
-    tl.store(s_histogram_out + i_b * HISTOGRAM_SIZE + tl.arange(0, HISTOGRAM_SIZE), s_histogram)
+    # tl.store(s_histogram_out + i_b * HISTOGRAM_SIZE + tl.arange(0, HISTOGRAM_SIZE), s_histogram)
     tl.store(l_threshold_bin_id_out + i_b, l_threshold_bin_id)
     tl.store(l_new_topk_out + i_b, l_new_topk)
 
@@ -524,10 +545,13 @@ def bucket_sort_topk(inputs, starts, ends, topk):
     """Complete topk function using all three kernels"""
     # Kernel 1: Compute histogram and threshold
     s_histogram_out, l_threshold_bin_id_out, l_new_topk_out = run_kernel1(inputs, starts, ends, topk)
+    print("s_histogram_out", s_histogram_out)
+    torch.cuda.synchronize()
 
     # Kernel 2: TopK selection using edsl1 (core performance test)
     indices, s_input_idx, thre_bin_sum_out = run_kernel2(inputs, starts, ends, topk, s_histogram_out,
                                                          l_threshold_bin_id_out, l_new_topk_out)
+    torch.cuda.synchronize()
 
     # Kernel 3: Continue with while loop
     indices = run_kernel3(inputs, starts, ends, topk, indices, s_input_idx, thre_bin_sum_out, l_new_topk_out)
@@ -537,9 +561,9 @@ def bucket_sort_topk(inputs, starts, ends, topk):
 
 def test_topk_selector(batch=64, seq_len=32 * 1024, topk=2048):
 
-    batch = 64
-    seq_len = 4096 * 8
-    topk = 2048
+    batch = 2
+    seq_len = 1024
+    topk = 32
     torch.manual_seed(1)
     input = torch.randn(batch, seq_len, dtype=torch.float32).cuda()
     starts = torch.zeros(batch, dtype=torch.int32).cuda()
