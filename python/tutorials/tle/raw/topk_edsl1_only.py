@@ -30,10 +30,10 @@ def convert_to_uint32(x):
 
 #【注意】这个版本的线程数要求==1024，之后还得加上线程资源约束
 @dialect(name="mlir")
-def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llvm.ptr<1>"],
+def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llvm.ptr<1>"],
           s_input_ids_base: Input["!llvm.ptr<1>"], inputs: Input["!llvm.ptr<1>"],
           s_histogram: Input["memref<?xi32, 3>"], l_start_idx: Input["i32"], l_end_idx: Input["i32"], S: Input["i32"],
-          l_threshold_bin_id: Input["i32"], BS: Input["i32"], K_tensor: Input["memref<?xi32, 3>"]):
+          BS: Input["i32"], K_tensor: Input["memref<?xi32, 3>"]):
     """
     TileLang equivalent:
     l_end_idx = ~
@@ -134,7 +134,7 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
                 # l_val2 = arith.addi(hist_tx2, hist_tx_plus_offset2)
                 memref.store(l_val, s_histogram, [tidx_idx])
                 tidx_idx_i32 = arith.index_cast(i32_ty, tidx_idx)
-                vprintf("l_val: %d tidx_idx_i32=%d\n", l_val,tidx_idx_i32)
+                # vprintf("l_val: %d tidx_idx_i32=%d\n", l_val,tidx_idx_i32)
                 scf.yield_([])
             scf.yield_([])
         # T.sync_threads(3, RADIX) - after cumsum loop, before finding threshold bin id
@@ -171,9 +171,12 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
     hist_threshold_plus_one = memref.load(s_histogram, [l_threshold_bin_id_plus_one_idx])
     l_new_topk_new = arith.subi(l_new_topk, hist_threshold_plus_one)
     nvvm.barrier0()
+    # Store l_new_topk_new to output buffer
+    memref.store(l_new_topk_new, l_new_topk_buf, [zero_idx])
+    nvvm.barrier0()
 
-    vprintf("l_threshold_bin_id_new: %d\n", l_threshold_bin_id_new)
-    vprintf("l_new_topk_new: %d\n", l_new_topk_new)
+    # vprintf("l_threshold_bin_id_new: %d\n", l_threshold_bin_id_new)
+    # vprintf("l_new_topk_new: %d\n", l_new_topk_new)
 
     # TileLang: for s in T.serial(T.ceildiv(seq_len, BLOCK_SIZE)):
     for s in scf.for_(zero, num_iters_idx, one):
@@ -226,7 +229,7 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
 
                 over_thre = arith.cmpi(arith.CmpIPredicate.sgt, l_bin_id32, l_threshold_bin_id_new)
                 over_thre_ext = arith.extsi(i32_ty, over_thre)
-                vprintf("over_thre=%d, l_bin_id32: %d, l_threshold_bin_id_new: %d\n", over_thre_ext, l_bin_id32, l_threshold_bin_id_new)
+                # vprintf("over_thre=%d, l_bin_id32: %d, l_threshold_bin_id_new: %d\n", over_thre_ext, l_bin_id32, l_threshold_bin_id_new)
                 over_thre_if = scf.if_([], over_thre)
                 over_thre_then = over_thre_if.opview.thenRegion.blocks.append()
                 with ir.InsertionPoint(over_thre_then):
@@ -236,7 +239,7 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
                     pos = memref.atomic_rmw(arith.AtomicRMWKind.addi, one_i32, s_histogram, [bin_id_plus_one_idx])
                     indices_ptr = llvm.getelementptr(ptr_ty, indices_base, [pos], [-2147483648], i32_ty, 0)
                     llvm.store(input_idx_back_i32, indices_ptr)
-                    vprintf("input_idx_back_i32: %d, pos: %d\n", input_idx_back_i32, pos)
+                    # vprintf("input_idx_back_i32: %d, pos: %d\n", input_idx_back_i32, pos)
                     scf.yield_([])
 
                 over_thre_else = over_thre_if.opview.elseRegion.blocks.append()
@@ -270,15 +273,13 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llv
 def kernel1_compute_histogram_and_threshold(  # grid(B,)
         inputs,  # (B, S)
         s_histogram_out,  # (B, HISTOGRAM_SIZE) output histogram
-        l_threshold_bin_id_out,  # (B,) output threshold bin id
-        l_new_topk_out,  # (B,) output remaining topk
         starts,  # (B,) for variable length
         ends,  # (B,) for variable length
         S: tl.constexpr,  # sequence length
         K: tl.constexpr,  # k of topk
         HISTOGRAM_SIZE: tl.constexpr, BS: tl.constexpr,  # block size of S
 ):
-    """Kernel 1: Compute histogram and threshold (topk_edsl1.py 265-279)"""
+    """Kernel 1: Compute histogram only (threshold calculation moved to kernel2/edsl1)"""
     i_b = tl.program_id(0)
 
     s_base = inputs + i_b * S
@@ -287,9 +288,6 @@ def kernel1_compute_histogram_and_threshold(  # grid(B,)
 
     # Histogram initialization
     s_histogram = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
-
-    # Record how many positions remain to fill the topk array
-    l_new_topk = K
 
     TS = tl.cdiv(S, BS)
     for s in range(TS):
@@ -300,23 +298,6 @@ def kernel1_compute_histogram_and_threshold(  # grid(B,)
         s_histogram += inval_int16.to(tl.int32).histogram(HISTOGRAM_SIZE)
 
     tl.store(s_histogram_out + i_b * HISTOGRAM_SIZE + tl.arange(0, HISTOGRAM_SIZE), s_histogram)
-    # s_histogram = s_histogram.cumsum(0, reverse=True)  # Suffix sum
-    mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
-
-    # if s_histogram[tx] > l_new_topk and s_histogram[tx + 1] <= l_new_topk:
-    #                s_threshold_bin_id[0] = tx
-    # T.sync_threads()
-    #l_threshold_bin_id = s_threshold_bin_id[0]
-    cond = (s_histogram > l_new_topk) & ((s_histogram.gather(mv_idx, 0) <= l_new_topk) | (mv_idx == 0))
-    l_threshold_bin_id = cond.argmax(0)
-
-    # l_new_topk = l_new_topk - s_histogram[l_threshold_bin_id + 1]
-    l_new_topk -= tl.where(tl.arange(0, HISTOGRAM_SIZE) == l_threshold_bin_id + 1, s_histogram, 0).max(0)
-
-    # Store outputs
-    # tl.store(s_histogram_out + i_b * HISTOGRAM_SIZE + tl.arange(0, HISTOGRAM_SIZE), s_histogram)
-    tl.store(l_threshold_bin_id_out + i_b, l_threshold_bin_id)
-    tl.store(l_new_topk_out + i_b, l_new_topk)
 
 
 @triton.autotune(
@@ -331,18 +312,17 @@ def kernel2_topk_edsl1_select(  # grid(B,)
         indices,  # (B, K) topk index array
         s_input_ids,  # (B, SMEM_INPUT_SIZE) Data indices to be filtered in the next round
         thre_bin_sum_out,  # (B,) output for thre_bin_sum
+        l_new_topk_out,  # (B,) output for l_new_topk
         starts,  # (B,) for variable length
         ends,  # (B,) for variable length
         s_histogram_in,  # (B, HISTOGRAM_SIZE) pre-computed histogram
-        l_threshold_bin_id_in,  # (B,) threshold bin id for each batch
-        l_new_topk_in,  # (B,) remaining topk for each batch
         S: tl.constexpr,  # sequence length
         K: tl.constexpr,  # k of topk
         HISTOGRAM_SIZE: tl.constexpr, SMEM_INPUT_SIZE: tl.constexpr,  # to save candidates of next loop
         BS: tl.constexpr,  # block size of S
 ):
     """
-    Kernel 2: TopK selection using edsl1 - core performance test (topk_edsl1.py 287-290)
+    Kernel 2: TopK selection using edsl1 - core performance test (threshold calculation in edsl1)
     """
     i_b = tl.program_id(0)
 
@@ -352,21 +332,22 @@ def kernel2_topk_edsl1_select(  # grid(B,)
 
     l_start_idx = tl.load(starts + i_b).to(tl.int32)
     l_end_idx = tl.load(ends + i_b).to(tl.int32)
-    l_threshold_bin_id = tl.load(l_threshold_bin_id_in + i_b).to(tl.int32)
-    l_new_topk = tl.load(l_new_topk_in + i_b).to(tl.int32)
 
     s_histogram = tl.load(s_histogram_in + i_b * HISTOGRAM_SIZE + tl.arange(0, HISTOGRAM_SIZE))
 
     thre_bin_sum_buf = tl.zeros([1], dtype=tl.int32)
+    l_new_topk_buf = tl.zeros([1], dtype=tl.int32)
     s = S
     bs = BS
     k_tensor = tl.full([1], K, dtype=tl.int32)  # Convert constexpr to tensor
-    thre_bin_sum_buf = tle_raw.call(edsl1, [thre_bin_sum_buf], [
-        indices_base, s_input_ids_base, inputs, s_histogram, l_start_idx, l_end_idx, s, l_threshold_bin_id, bs, k_tensor
+    thre_bin_sum_buf, l_new_topk_buf = tle_raw.call(edsl1, [thre_bin_sum_buf, l_new_topk_buf], [
+        indices_base, s_input_ids_base, inputs, s_histogram, l_start_idx, l_end_idx, s, bs, k_tensor
     ])
     thre_bin_sum = thre_bin_sum_buf.max(0)
+    l_new_topk = l_new_topk_buf.max(0)
 
     tl.store(thre_bin_sum_out + i_b, thre_bin_sum)
+    tl.store(l_new_topk_out + i_b, l_new_topk)
 
 
 @triton.autotune(
@@ -468,30 +449,26 @@ def kernel3_continue_topk(  # grid(B,)
 
 
 def run_kernel1(inputs, starts, ends, topk):
-    """Run kernel 1: Compute histogram and threshold"""
+    """Run kernel 1: Compute histogram only"""
     B, S = inputs.shape
     K = topk
     HISTOGRAM_SIZE = 256
     s_histogram_out = torch.zeros(B, HISTOGRAM_SIZE, dtype=torch.int32, device=inputs.device)
-    l_threshold_bin_id_out = torch.zeros(B, dtype=torch.int32, device=inputs.device)
-    l_new_topk_out = torch.zeros(B, dtype=torch.int32, device=inputs.device)
     grid = (B, )
     kernel1_compute_histogram_and_threshold[grid](
         inputs,
         s_histogram_out,
-        l_threshold_bin_id_out,
-        l_new_topk_out,
         starts,
         ends,
         S,
         K,
         HISTOGRAM_SIZE,
     )
-    return s_histogram_out, l_threshold_bin_id_out, l_new_topk_out
+    return s_histogram_out
 
 
-def run_kernel2(inputs, starts, ends, topk, s_histogram_in, l_threshold_bin_id_in, l_new_topk_in):
-    """Run kernel 2: TopK selection using edsl1 (core performance test)"""
+def run_kernel2(inputs, starts, ends, topk, s_histogram_in):
+    """Run kernel 2: TopK selection using edsl1 (core performance test, threshold calculated in edsl1)"""
     B, S = inputs.shape
     K = topk
     HISTOGRAM_SIZE = 256
@@ -499,23 +476,23 @@ def run_kernel2(inputs, starts, ends, topk, s_histogram_in, l_threshold_bin_id_i
     indices = torch.full((B, topk), -1, dtype=torch.int32, device=inputs.device)
     s_input_idx = torch.zeros(B, SMEM_INPUT_SIZE, dtype=torch.int32, device=inputs.device)
     thre_bin_sum_out = torch.zeros(B, dtype=torch.int32, device=inputs.device)
+    l_new_topk_out = torch.zeros(B, dtype=torch.int32, device=inputs.device)
     grid = (B, )
     kernel2_topk_edsl1_select[grid](
         inputs,
         indices,
         s_input_idx,
         thre_bin_sum_out,
+        l_new_topk_out,
         starts,
         ends,
         s_histogram_in,
-        l_threshold_bin_id_in,
-        l_new_topk_in,
         S,
         K,
         HISTOGRAM_SIZE,
         SMEM_INPUT_SIZE,
     )
-    return indices, s_input_idx, thre_bin_sum_out
+    return indices, s_input_idx, thre_bin_sum_out, l_new_topk_out
 
 
 def run_kernel3(inputs, starts, ends, topk, indices, s_input_idx, thre_bin_sum_in, l_new_topk_in):
@@ -543,15 +520,13 @@ def run_kernel3(inputs, starts, ends, topk, indices, s_input_idx, thre_bin_sum_i
 
 def bucket_sort_topk(inputs, starts, ends, topk):
     """Complete topk function using all three kernels"""
-    # Kernel 1: Compute histogram and threshold
-    s_histogram_out, l_threshold_bin_id_out, l_new_topk_out = run_kernel1(inputs, starts, ends, topk)
-    print("s_histogram_out", s_histogram_out)
-    torch.cuda.synchronize()
+    # Kernel 1: Compute histogram only
+    s_histogram_out = run_kernel1(inputs, starts, ends, topk)
+    # print("s_histogram_out", s_histogram_out)
 
-    # Kernel 2: TopK selection using edsl1 (core performance test)
-    indices, s_input_idx, thre_bin_sum_out = run_kernel2(inputs, starts, ends, topk, s_histogram_out,
-                                                         l_threshold_bin_id_out, l_new_topk_out)
-    torch.cuda.synchronize()
+    # Kernel 2: TopK selection using edsl1 (core performance test, threshold calculated in edsl1)
+    indices, s_input_idx, thre_bin_sum_out, l_new_topk_out = run_kernel2(inputs, starts, ends, topk, s_histogram_out)
+
 
     # Kernel 3: Continue with while loop
     indices = run_kernel3(inputs, starts, ends, topk, indices, s_input_idx, thre_bin_sum_out, l_new_topk_out)
@@ -561,9 +536,9 @@ def bucket_sort_topk(inputs, starts, ends, topk):
 
 def test_topk_selector(batch=64, seq_len=32 * 1024, topk=2048):
 
-    batch = 2
-    seq_len = 1024
-    topk = 32
+    batch = 64
+    seq_len = 1024 * 32
+    topk = 2048
     torch.manual_seed(1)
     input = torch.randn(batch, seq_len, dtype=torch.float32).cuda()
     starts = torch.zeros(batch, dtype=torch.int32).cuda()
@@ -597,15 +572,14 @@ def test_topk_selector(batch=64, seq_len=32 * 1024, topk=2048):
 
     # Warmup all kernels
     for _ in range(10):
-        s_histogram_out, l_threshold_bin_id_out, l_new_topk_out = run_kernel1(input, starts, ends, topk)
-        indices, s_input_idx, thre_bin_sum_out = run_kernel2(input, starts, ends, topk, s_histogram_out,
-                                                             l_threshold_bin_id_out, l_new_topk_out)
+        s_histogram_out = run_kernel1(input, starts, ends, topk)
+        indices, s_input_idx, thre_bin_sum_out, l_new_topk_out = run_kernel2(input, starts, ends, topk, s_histogram_out)
         _ = run_kernel3(input, starts, ends, topk, indices, s_input_idx, thre_bin_sum_out, l_new_topk_out)
     torch.cuda.synchronize()
 
     # Test kernel1 - single run
     start_event.record()
-    s_histogram_out, l_threshold_bin_id_out, l_new_topk_out = run_kernel1(input, starts, ends, topk)
+    s_histogram_out = run_kernel1(input, starts, ends, topk)
     end_event.record()
     torch.cuda.synchronize()
     elapsed_time_ms = start_event.elapsed_time(end_event)
@@ -613,8 +587,7 @@ def test_topk_selector(batch=64, seq_len=32 * 1024, topk=2048):
 
     # Test kernel2 - single run (core performance test)
     start_event.record()
-    indices, s_input_idx, thre_bin_sum_out = run_kernel2(input, starts, ends, topk, s_histogram_out,
-                                                         l_threshold_bin_id_out, l_new_topk_out)
+    indices, s_input_idx, thre_bin_sum_out, l_new_topk_out = run_kernel2(input, starts, ends, topk, s_histogram_out)
     end_event.record()
     torch.cuda.synchronize()
     elapsed_time_ms = start_event.elapsed_time(end_event)
