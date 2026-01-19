@@ -68,7 +68,6 @@ ptxas
 third_party/nvidia/backend/include
 third_party/nvidia/backend/lib/cupti
 third_party/sunrise/backend/lib
-third_party/sunrise/python/triton/backends/*
 
 # Docs
 docs/_build/
