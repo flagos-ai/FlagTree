@@ -302,7 +302,7 @@ def kernel1_compute_histogram_and_threshold(  # grid(B,)
 
 @triton.autotune(
     configs=[
-        triton.Config({"BS": 1024}, num_stages=3, num_warps=8),
+        triton.Config({"BS": 1024}, num_stages=3, num_warps=32),
     ],
     key=["S", "K"],
 )
