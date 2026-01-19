@@ -15,4 +15,6 @@ add_triton_library(TritonToTritonGPU
     TritonIR
     ProtonIR
     TritonGPUIR
+
+    ${_EXTRA_LINK_LIBS}
 )

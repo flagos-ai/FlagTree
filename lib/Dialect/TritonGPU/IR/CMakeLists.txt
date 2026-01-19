@@ -16,5 +16,6 @@ add_triton_library(TritonGPUIR
   MLIRGPUDialect
   TritonIR
   TritonTools
+  
   ${_EXTRA_LINK_LIBS}
 )
