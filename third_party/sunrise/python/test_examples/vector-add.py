@@ -23,8 +23,6 @@ import torch_ptpu
 import triton
 import triton.language as tl
 
-DEVICE = triton.runtime.driver.active.get_active_torch_device()
-
 
 @triton.jit
 def add_kernel(x_ptr,  # *Pointer* to first input vector.
@@ -62,7 +60,6 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
 def add(x: torch.Tensor, y: torch.Tensor):
     # We need to preallocate the output.
     output = torch.empty_like(x)
-    assert x.device == DEVICE and y.device == DEVICE and output.device == DEVICE
     n_elements = output.numel()
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int].
@@ -81,16 +78,22 @@ def add(x: torch.Tensor, y: torch.Tensor):
 # %%
 # We can now use the above function to compute the element-wise sum of two `torch.tensor` objects and test its correctness:
 
-torch.manual_seed(0)
 size = 98432
-x = torch.rand(size, device=DEVICE)
-y = torch.rand(size, device=DEVICE)
+x = torch.rand(size)
+y = torch.rand(size)
 output_torch = x + y
-output_triton = add(x, y)
+x_dev = x.to(device='ptpu')
+y_dev = y.to(device='ptpu')
+output_triton_dev = add(x_dev, y_dev)
+output_triton_cpu = output_triton_dev.to(device='cpu')
+print('output_torch:')
 print(output_torch)
-print(output_triton)
+print('output_triton:')
+print(output_triton_cpu)
 print(f'The maximum difference between torch and triton is '
-      f'{torch.max(torch.abs(output_torch - output_triton))}')
+      f'{torch.max(torch.abs(output_torch - output_triton_cpu))}')
+
+exit(0)
 
 # %%
 # Seems like we're good to go!
