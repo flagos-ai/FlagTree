@@ -22,7 +22,9 @@ add_triton_library(TritonLLVMIR
         MLIRSupport
         MLIRTargetLLVMIRExport
         TritonGPUToLLVM
-        )
+        
+        ${_EXTRA_LINK_LIBS}
+)
 
 set_source_files_properties(
         LLVMIRTranslation.cpp

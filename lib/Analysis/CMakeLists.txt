@@ -25,4 +25,5 @@ add_triton_library(TritonAnalysis
   TritonIR
   TritonGPUIR
   TritonNvidiaGPUIR
+  ${_EXTRA_LINK_LIBS}
 )
