@@ -487,7 +487,7 @@ class SunriseDriver(GPUDriver):
         capability = "S2"
         warp_size = 32
         return GPUTarget("tang", capability, warp_size)
-
+    
     def get_active_torch_device(self):
         import torch
         return torch.device("cuda", self.get_current_device())
