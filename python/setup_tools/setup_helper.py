@@ -414,10 +414,10 @@ cache.store(
 
 # tsingmicro
 cache.store(
-    file="tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-x64",
+    file="tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.10-x64",
     condition=("tsingmicro" == flagtree_backend),
     url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-x64_v0.4.0.tar.gz",
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.10-x64_v0.4.0.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
