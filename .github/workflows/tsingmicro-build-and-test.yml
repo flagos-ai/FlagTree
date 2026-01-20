@@ -83,6 +83,8 @@ jobs:
           export LLVM_BINARY_DIR=${LLVM_SYSPATH}/bin
           export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH
           export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
+
+          cd third_party/tsingmicro/examples
           python3 bare_matmul_autotune.py >result-bare_matmul_autotune.txt
           python3 embedding.py >result-embedding.txt
           python3 mult_ir.py >result-mult_ir.txt
