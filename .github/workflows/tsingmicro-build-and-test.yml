@@ -70,7 +70,7 @@ jobs:
           source ~/env.sh
           export FLAGTREE_BACKEND=tsingmicro
           cd python
-          python3 -m pip install . --no-build-isolation --no-cache-dir
+          python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on Tsingmicro
         if: steps.check_files.outputs.only_docs_changed != 'true'
