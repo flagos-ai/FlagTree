@@ -530,7 +530,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // This change is a temporary adaptation for CUDA 8.0
   // Need to do
   m.def("get_device_capability", &aipu::get_device_capability,
-        py::arg("device") = 0, "Return the capability pf the AIPU backend");
+        py::arg("device") = 0, "Return the capability of the AIPU backend");
 
   m.def("_is_in_bad_fork", []() { return py::bool_(false); });
   m.def("manual_seed_all", [](int seed) { std::srand(seed); });
