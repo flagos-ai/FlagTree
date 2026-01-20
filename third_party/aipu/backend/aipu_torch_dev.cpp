@@ -493,6 +493,14 @@ bool is_available() { return context() != nullptr; }
 int device_count() { return is_available() ? 1 : 0; }
 
 int current_device() { return 0; }
+
+std::string get_device_name() { return "aipu"; }
+
+// This change is a temporary adaptation for CUDA 8.0
+// Need to do
+py::tuple get_device_capability(int device_index = 0) {
+  return py::make_tuple(8, 0);
+}
 } // namespace aipu
 
 struct _DeviceGuard {
@@ -517,6 +525,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("device_count", &aipu::device_count, "aipu device count");
   m.def("is_available", &aipu::is_available, "aipu is available");
   m.def("current_device", &aipu::current_device, "aipu current device");
+  m.def("get_device_name", &aipu::get_device_name,
+        "Return the name of the AIPU backend");
+  // This change is a temporary adaptation for CUDA 8.0
+  // Need to do
+  m.def("get_device_capability", &aipu::get_device_capability,
+        py::arg("device") = 0, "Return the capability pf the AIPU backend");
+
   m.def("_is_in_bad_fork", []() { return py::bool_(false); });
   m.def("manual_seed_all", [](int seed) { std::srand(seed); });
   m.attr("default_generators") = &default_generators;
