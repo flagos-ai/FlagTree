@@ -275,6 +275,7 @@ def kernel_bucket_sort_topk(  # grid(B,)
         inval_int16 = convert_to_uint16(input)
         s_histogram += inval_int16.to(tl.int32).histogram(HISTOGRAM_SIZE)
 
+
     # Kernel2: Call edsl1 for topk selection (threshold calculated in edsl1)
     thre_bin_sum_buf = tl.zeros([1], dtype=tl.int32)
     l_new_topk_buf = tl.zeros([1], dtype=tl.int32)
@@ -284,9 +285,12 @@ def kernel_bucket_sort_topk(  # grid(B,)
     thre_bin_sum_buf, l_new_topk_buf = tle_raw.call(edsl1, [thre_bin_sum_buf, l_new_topk_buf], [
         indices_base, s_input_ids_base, inputs, s_histogram, l_start_idx, l_end_idx, s, bs, k_tensor
     ])
+    
     thre_bin_sum = thre_bin_sum_buf.max(0)
     l_new_topk = l_new_topk_buf.max(0)
     sum = K - l_new_topk
+
+    return
 
     # Kernel3: Continue with while loop
     round = 0

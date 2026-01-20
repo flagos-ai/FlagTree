@@ -177,6 +177,8 @@ def kernel_bucket_sort_topk(  # grid(B, BS)
     tl.store(thre_bin_sum_out + i_b, thre_bin_sum)
     tl.store(sum_out + i_b, sum)
 
+    return
+
     round = 0
     # print("l_new_topk:", l_new_topk)
     while round < 4 and l_new_topk > 0:
