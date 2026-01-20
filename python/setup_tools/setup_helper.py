@@ -4,6 +4,7 @@ import sys
 import functools
 from pathlib import Path
 import hashlib
+import sysconfig
 from distutils.sysconfig import get_python_lib
 from . import utils
 
@@ -31,13 +32,20 @@ def install_extension(*args, **kargs):
     except Exception:
         pass
 
-
 def get_backend_cmake_args(*args, **kargs):
+    if "editable_wheel" in sys.argv:
+        editable = True
+    else:
+        editable = False
+    handle_plugin_backend(editable)
     try:
-        return activated_module.get_backend_cmake_args(*args, **kargs)
+        # cmake_args = configs.activated_module.get_backend_cmake_args(*args, **kargs)
+        cmake_args = activated_module.get_backend_cmake_args(*args, **kargs)
     except Exception:
-        return []
-
+        cmake_args = []
+    if editable:
+        cmake_args += ["-DEDITABLE_MODE=ON"]
+    return cmake_args
 
 def get_device_name():
     return device_mapping[flagtree_backend]
@@ -282,6 +290,26 @@ def handle_flagtree_backend():
         if "editable_wheel" in sys.argv and flagtree_backend not in plugin_backends:
             ext_sourcedir = os.path.abspath(f"./third_party/{flagtree_backend}/python/{ext_sourcedir}") + "/"
 
+def handle_plugin_backend(editable):
+    if flagtree_backend in ["iluvatar", "mthreads", "sunrise"]:
+        if editable is False:
+            src_build_plugin_path = str(
+                os.getenv("HOME")) + "/.flagtree/" + flagtree_backend + "/" + flagtree_backend + "TritonPlugin.so"
+            dst_build_plugin_dir = sysconfig.get_paths()['purelib'] + "/triton/_C"
+            if not os.path.exists(dst_build_plugin_dir):
+                os.makedirs(dst_build_plugin_dir)
+            dst_build_plugin_path = dst_build_plugin_dir + "/" + flagtree_backend + "TritonPlugin.so"
+            shutil.copy(src_build_plugin_path, dst_build_plugin_path)
+        src_install_plugin_path = str(
+            os.getenv("HOME")) + "/.flagtree/" + flagtree_backend + "/" + flagtree_backend + "TritonPlugin.so"
+        if flagtree_backend in ("mthreads", "sunrise"):
+            dst_install_plugin_dir = os.path.dirname(
+                os.path.abspath(__file__)) + "/../../third_party/" + flagtree_backend + "/python/triton/_C"
+        else:
+            dst_install_plugin_dir = os.path.dirname(os.path.abspath(__file__)) + "/../triton/_C"
+        if not os.path.exists(dst_install_plugin_dir):
+            os.makedirs(dst_install_plugin_dir)
+        shutil.copy(src_install_plugin_path, dst_install_plugin_dir)
 
 def set_env(env_dict: dict):
     for env_k, env_v in env_dict.items():
@@ -305,6 +333,8 @@ download_flagtree_third_party("triton_shared", hock=utils.default.precompile_hoc
 
 download_flagtree_third_party("flir", condition=(flagtree_backend == "aipu"), hock=utils.aipu.precompile_hock,
                               required=True)
+
+handle_plugin_backend(False)
 
 handle_flagtree_backend()
 
