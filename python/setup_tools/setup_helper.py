@@ -410,3 +410,18 @@ cache.store(
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
+
+# sunrise
+cache.store(
+    file="sunrise-llvm21-x86_64",
+    condition=("sunrise" == flagtree_backend),
+    url = "https://abc.efg",
+    pre_hock=lambda: check_env('LLVM_SYSPATH'),
+    post_hock=set_llvm_env,
+)
+
+cache.store(
+    file="sunriseTritonPlugin.so", condition=("sunrise" == flagtree_backend) and (not flagtree_plugin), url=
+    "https://abc.efg",
+    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="1f0b7e67"
+)
