@@ -33,6 +33,7 @@ class ExternalCall(object):
 
     def global_string(self, val: str, codegen: EdslMLIRCodeGenerator) -> llvm.GlobalOp:
         key: str = f"TleRaw_PrintFormat{len(codegen.constants)}"
+        print(f"key: {key}, codegen.constants: {codegen.constants}, self.module: {codegen.module}")
         with ir.InsertionPoint.at_block_begin(codegen.module.body):
             op: ir.Operation = codegen.constants.get(val) or llvm.mlir_global(
                 ir.Type.parse(f"!llvm.array<{len(val.encode())} x i8>"), key,
