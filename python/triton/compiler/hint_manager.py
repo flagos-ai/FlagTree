@@ -152,8 +152,16 @@ def hint_get_flagtree_backend() -> str:
         return canonical_backend
     else:
         # version and backend mismatch
-        logging.warning(
+        msg = (
             f"[Flagtree] Hint ignored: Detected backend '{canonical_backend}' but current Triton version "
             f"'{current_triton_version}' matches no supported versions {supported_versions}."
         )
+        print(msg, file=sys.stderr)
     return ""
+# lazy load after first call hint trigger
+_global_hint_manager = None
+
+def hint_trigger(hook_name, *args, **kwargs):
+    if _global_hint_manager is None:
+        _global_hint_manager = HintManager(hint_get_flagtree_backend())
+    return _global_hint_manager.handler.trigger(hook_name, *args, **kwargs)

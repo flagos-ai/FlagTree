@@ -11,6 +11,7 @@ from functools import cached_property
 from typing import Callable, Generic, Iterable, Optional, TypeVar, Union, overload, Dict, Any, Tuple
 from ..runtime.driver import driver
 from types import ModuleType
+from ..compiler.hintmanager import hint_trigger
 
 TRITON_MODULE = __name__[:-len(".runtime.jit")]
 
@@ -826,18 +827,8 @@ class JITFunction(KernelInterface[T]):
     # the user might want to monkey-patch self.src dynamically.
     # Our unit tests do this, for example.
     def parse(self):
-        # remove flagtree backend specialization, because the implementation of 2 method is totally same
-        line_flagtree_hints = {}
-        code_str = self.src
-        g = tokenize.generate_tokens(StringIO(code_str).readline)
-        for tok_type, tok_text, start, end, _ in g:
-            if tok_type == tokenize.COMMENT:
-                comment = tok_text.replace(" ", "").strip()
-                if comment.startswith('#@hint:'):
-                    flagtree_hints = comment[len('#@hint:'):].strip()
-                    # Record the line number of the comment
-                    line_num = start[0]
-                    line_flagtree_hints[line_num] = flagtree_hints
+        # after removing flagtree backend specialization, hiding the implementation into hintmanager
+        line_flagtree_hints = hint_trigger("maps_line_numbers_to_comment_hints", self)
 
         tree = ast.parse(self.src)
         assert isinstance(tree, ast.Module)
@@ -845,7 +836,7 @@ class JITFunction(KernelInterface[T]):
         assert isinstance(tree.body[0], ast.FunctionDef)
 
         # Attach the line number to comment mapping to the function definition node
-        tree.body[0].line_flagtree_hints = line_flagtree_hints
+        hint_trigger('attach_line_number_to_comment_mapping', tree, line_flagtree_hints)
 
         return tree
 
