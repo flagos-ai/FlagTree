@@ -1,6 +1,5 @@
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
-# set(LLVM_TARGET_DEFINITIONS TritonGPUOps.td)
 set_flagtree_backend_td(LLVM_TARGET_DEFINITIONS TritonGPUOps.td)
 mlir_tablegen(Dialect.h.inc -gen-dialect-decls -dialect=ttg)
 mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs -dialect=ttg)
@@ -22,7 +21,6 @@ mlir_tablegen(OpsEnums.cpp.inc -gen-enum-defs)
 add_public_tablegen_target(TritonGPUAttrDefsIncGen)
 
 set(LLVM_TARGET_DEFINITIONS TritonGPUTypeInterfaces.td)
-#set_flagtree_backend_td(LLVM_TARGET_DEFINITIONS TritonGPUTypeInterfaces.td)
 mlir_tablegen(TypeInterfaces.h.inc -gen-type-interface-decls)
 mlir_tablegen(TypeInterfaces.cpp.inc -gen-type-interface-defs)
 add_public_tablegen_target(TritonGPUTypeInterfacesIncGen)

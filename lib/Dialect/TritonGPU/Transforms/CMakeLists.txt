@@ -28,7 +28,7 @@ add_triton_library(TritonGPUTransforms
   Pipeliner/PipelineExpander.cpp
   Pipeliner/TestPipelineLowerLoop.cpp
   Pipeliner/SoftwarePipeliner.cpp
-  Pipeliner/TMAStoresPipeline.cpp
+  ${_TMA_LINK_CPP}
   Pipeliner/MMAv5PipelineUtility.cpp
   Pipeliner/PipeliningUtility.cpp
   Pipeliner/Schedule.cpp
@@ -56,7 +56,8 @@ add_triton_library(TritonGPUTransforms
   TritonIR
   TritonTransforms
   TritonGPUIR
-  TritonNvidiaGPUIR
+  ${_NVIDIA_LINK_LIBS}
+  ${_EXTRA_LINK_LIBS}
   TritonToTritonGPU
   MLIRTransformUtils
 
