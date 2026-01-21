@@ -31,6 +31,7 @@ ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
   llvm::iota_range<uint32_t> rOrderRange =
       llvm::iota_range<uint32_t>(0, ty.getRank(), false);
   llvm::SmallVector<uint32_t> order(rOrderRange.rbegin(), rOrderRange.rend());
+  order=ttg::getOrder(ty);
   return ttg::MemDescType::get(ty.getShape(), ty.getElementType(),
                                ttg::SwizzledSharedEncodingAttr::get(
                                    ty.getContext(), 1, 1, 1, order, ctaLayout),
