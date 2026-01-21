@@ -15,6 +15,12 @@ jobs:
     runs-on: tsingmicro
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
       - name: Checkout code (attempt 1)
         id: checkout1
         uses: actions/checkout@v6
@@ -61,11 +67,10 @@ jobs:
         shell: bash
         run: |
           set -x
-          pip uninstall -y triton
           source ~/env.sh
           export FLAGTREE_BACKEND=tsingmicro
           cd python
-          python3.11 -m pip install . --no-build-isolation -v
+          python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on Tsingmicro
         if: steps.check_files.outputs.only_docs_changed != 'true'
@@ -73,5 +78,24 @@ jobs:
         run: |
           set -x
           source ~/env.sh
-          python3.11 -c 'import triton; print(triton.__path__)'
-          /usr/local/lib/python3.11/dist-packages/triton/backends/tsingmicro/bin/tsingmicro-opt --version
+          export TX8_DEPS_ROOT=~/.flagtree/tsingmicro/tx8_deps
+          export LLVM_SYSPATH=~/.flagtree/tsingmicro/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.10-x64
+          export LLVM_BINARY_DIR=${LLVM_SYSPATH}/bin
+          export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH
+          export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
+
+          cd third_party/tsingmicro/examples
+          python3 bare_matmul_autotune.py >result-bare_matmul_autotune.txt
+          python3 embedding.py >result-embedding.txt
+          python3 mult_ir.py >result-mult_ir.txt
+          python3 profile_matmul.py >result-profile_matmul.txt
+          python3 quant_gptq.py >result-quant_gptq.txt
+          python3 test_cos.py >result-test_cos.txt
+          python3 test_embedding.py >result-test_embedding.txt
+          python3 test_flip.py >result-test_flip.txt
+          python3 test_layernorm.py >result-test_layernorm.txt
+          python3 test_matmul.py >result-test_matmul.txt
+          python3 test_print.py >result-test_print.txt
+          python3 test_softmax.py >result-test_softmax.txt
+          python3 test_vec_add.py >result-test_vec_add.txt
+          python3 time1.py >result-time1.txt
