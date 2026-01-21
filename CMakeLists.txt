@@ -12,6 +12,23 @@ set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
+project(triton CXX C)
+include(CTest)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+# Options
+option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
+if(FLAGTREE_BACKEND)
+  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" OFF)
+  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" OFF)
+else()
+  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
+  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
+endif()
+option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
+set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
+
 # FLAGTREE Options
 set(FLAGTREE_BACKEND "$ENV{FLAGTREE_BACKEND}")
 if(FLAGTREE_BACKEND)
@@ -39,8 +56,7 @@ elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
   set(CMAKE_C_COMPILER clang)
   set(CMAKE_CXX_COMPILER clang++)
 elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
-  # remove_definitions(-D_GLIBCXX_USE_CXX11_ABI=1)
-  # add_definitions(-D_GLIBCXX_USE_CXX11_ABI=0)
+  list(REMOVE_ITEM TRITON_CODEGEN_BACKENDS "amd")
   find_package(Python3 3.10 REQUIRED COMPONENTS Development.Module Interpreter)
   if(EDITABLE_MODE)
     set (DEFAULT_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sunrise")
@@ -74,23 +90,6 @@ function(set_flagtree_backend_td output_td td_filename)
   endif()
   set(${output_td} ${ret} PARENT_SCOPE)
 endfunction()
-
-project(triton CXX C)
-include(CTest)
-
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-
-# Options
-option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
-if(FLAGTREE_BACKEND)
-  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" OFF)
-  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" OFF)
-else()
-  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
-  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
-endif()
-option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
-set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
 
 if(TRITON_BUILD_WITH_CCACHE)
   find_program(CCACHE_PROGRAM ccache)
@@ -510,7 +509,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endif()
 
   # Link triton with its dependencies
-  #target_link_libraries(triton PRIVATE ${TRITON_LIBRARIES})
   target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})
   if(WIN32)
     target_link_libraries(triton PRIVATE ${CMAKE_DL_LIBS})
@@ -537,8 +535,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
 endif()
 
 if (UNIX AND NOT APPLE)
-  #set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
-  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--export-dynamic")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
+  #set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--export-dynamic")
 endif()
 
 if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
