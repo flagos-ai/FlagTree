@@ -620,9 +620,7 @@ else:
 
 def get_package_dirs():
     yield ("", "python")
-    if helper.flagtree_backend:
-        yield ('triton', './third_party/sunrise/python/triton')
-
+    helper.yield_backend_dirs()
 
     for backend in backends:
         # we use symlinks for external plugins
