@@ -198,8 +198,8 @@ def is_linux_os(id):
 
 
 def get_llvm_package_info():
-    LLVM_WHEEL_PKG = "llvm-wheel"
-    if helper.try_setup_llvm_wheel(LLVM_WHEEL_PKG):
+    FLAGTREE_MLIR_PKG = "flagtree_mlir"
+    if helper.try_setup_flagtree_mlir(FLAGTREE_MLIR_PKG):
         return Package("llvm", "llvm-C.lib", "", "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH")
 
     # rule3: no wheel & env → use env
