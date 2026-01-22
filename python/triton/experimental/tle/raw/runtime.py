@@ -1,14 +1,16 @@
 from .mlir import EdslMLIRJITFunction
-from typing import List, Optional
+from typing import List
 
 registry = {"mlir": EdslMLIRJITFunction}
 
 
-def dialect(*, name: str, pipeline: Optional[List[str]] | None = None):
+def dialect(*, name: str, pipeline: List[str] = [
+    "convert-scf-to-cf", "finalize-memref-to-llvm", "convert-arith-to-llvm", "convert-cf-to-llvm",
+    "convert-func-to-llvm", "convert-index-to-llvm", "convert-nvvm-to-llvm", "cse"
+]):
 
     def decorator(fn):
         edsl = registry[name](fn, pipeline=pipeline)
-        setattr(edsl, "__triton_builtin__", True)
         return edsl
 
     return decorator
