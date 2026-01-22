@@ -304,7 +304,7 @@ def handle_plugin_backend(editable):
     if flagtree_backend in ["iluvatar", "mthreads", "sunrise"]:
         if editable is False:
             src_build_plugin_path = flagtree_backend_dir / flagtree_plugin_so
-            dst_build_plugin_dir = Path(sysconfig.get_paths("purelib")) / "triton" / "_C"
+            dst_build_plugin_dir = Path(sysconfig.get_path("purelib")) / "triton" / "_C"
             if not os.path.exists(dst_build_plugin_dir):
                 os.makedirs(dst_build_plugin_dir)
             dst_build_plugin_path = dst_build_plugin_dir / flagtree_plugin_so
