@@ -30,51 +30,73 @@ def convert_to_uint32(x):
 
 #【注意】这个版本的线程数要求==1024，之后还得加上线程资源约束
 @dialect(name="mlir")
-def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["memref<?xi32, 3>"], indices_base: Input["!llvm.ptr<1>"],
-          s_input_ids_base: Input["!llvm.ptr<1>"], inputs: Input["!llvm.ptr<1>"],
+def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["memref<?xi32, 3>"],
+          indices_base: Input["!llvm.ptr<1>"], s_input_ids_base: Input["!llvm.ptr<1>"], inputs: Input["!llvm.ptr<1>"],
           s_histogram: Input["memref<?xi32, 3>"], l_start_idx: Input["i32"], l_end_idx: Input["i32"], S: Input["i32"],
           BS: Input["i32"], K_tensor: Input["memref<?xi32, 3>"]):
-    """
-    TileLang equivalent:
-    l_end_idx = ~
-    l_start_idx = ~
-    seq_len = S
-    bx = i_b
-    l_threshold_bin_id = ~
-    s_num_input = thre_bin_sum (thre_bin_sum_buf[0])
-    BLOCK_SIZE = BS
-    index = indices
-
-    l_bin_id32 = inval_int16
-    bin_id = inval_int16
-
-    for s in T.serial(T.ceildiv(seq_len, BLOCK_SIZE)):
-        T.sync_threads() #我们不用，因为在global mem里
-        input_idx = s * BLOCK_SIZE + tx
-        if input_idx < l_end_idx and input_idx >= l_start_idx and input_idx < seq_len:
-            bin_id = convert_to_uint16(s_base[input_idx])
-            l_bin_id32 = T.Cast(T.int32, bin_id)
-            if l_bin_id32 > l_threshold_bin_id:
-                pos = T.atomic_add(s_histogram[l_bin_id32 + 1], 1, return_prev=True)
-                indices_base[pos] = input_idx
-            elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
-                pos = T.atomic_add(s_num_input[0], 1, return_prev=True)
-                s_input_ids_base[pos] = input_idx
-    """
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))  # blockDim.x
-    zero = arith.constant(ir.IndexType.get(), 0)
-    one = arith.constant(ir.IndexType.get(), 1)
-    num_iters = arith.ceildivsi(S, BS)
-    num_iters_idx = arith.index_cast(ir.IndexType.get(), num_iters)
-
     i32_ty = ir.IntegerType.get_signless(32)
+    i16_ty = ir.IntegerType.get_signless(16)
+    index_ty = ir.IndexType.get()
     f32_ty = ir.F32Type.get()
+    f16_ty = ir.F16Type.get()
     ptr_ty = ir.Type.parse("!llvm.ptr<1>")
     zero_i32 = arith.constant(i32_ty, 0)
     one_i32 = arith.constant(i32_ty, 1)
-    zero_idx = arith.constant(ir.IndexType.get(), 0)
+    eight_i32 = arith.constant(i32_ty, 8)
+    zero_f32 = arith.constant(f32_ty, 0.0)
+    zero = arith.constant(index_ty, 0)
+    one = arith.constant(index_ty, 1)
+    mask_0xFFFF = arith.constant(i32_ty, 0xFFFF)
+    mask_0x8000 = arith.constant(i32_ty, 0x8000)
+    mask_0xFF = arith.constant(i32_ty, 0xFF)
+    num_iters = arith.ceildivsi(S, BS)
+    num_iters_idx = arith.index_cast(index_ty, num_iters)
+    zero_idx = arith.constant(index_ty, 0)
+
+    s_input_ids_base_0 = llvm.getelementptr(ptr_ty, s_input_ids_base, [], [0], i32_ty, 0)
+    llvm.store(one_i32, s_input_ids_base_0)
+
+    nvvm.barrier0()
+    for s in scf.for_(0, arith.index_cast(index_ty, arith.ceildivsi(S, BS))):
+        s_i32 = arith.index_cast(i32_ty, s)
+        input_idx_i32 = arith.addi(arith.muli(s_i32, BS), tidx)
+        cond = arith.andi(
+            arith.andi(arith.cmpi(arith.CmpIPredicate.slt, input_idx_i32, l_end_idx),
+                       arith.cmpi(arith.CmpIPredicate.sge, input_idx_i32, l_start_idx)),
+            arith.cmpi(arith.CmpIPredicate.slt, input_idx_i32, S))
+        if_stmt = scf.if_([], cond)
+        cond_i32 = arith.extsi(i32_ty, cond)
+        # vprintf("input_idx_i32=%d\n", input_idx_i32)
+        thenblock = if_stmt.opview.thenRegion.blocks.append()
+        with ir.InsertionPoint(thenblock):
+
+            base_offset = arith.muli(bidx, S)
+            full_offset = arith.addi(base_offset, input_idx_i32)
+
+            input_ptr = llvm.getelementptr(ptr_ty, inputs, [full_offset], [-2147483648], f32_ty, 0)
+            input_val = llvm.load(f32_ty, input_ptr)
+
+            input_f16 = arith.truncf(f16_ty, input_val)
+            input_i16 = arith.bitcast(i16_ty, input_f16)
+            input_ui16_i32 = arith.extui(i32_ty, input_i16)
+
+            is_neg = arith.cmpf(arith.CmpFPredicate.OLT, input_val, zero_f32)
+
+            neg_bits = arith.andi(arith.xori(input_ui16_i32, mask_0xFFFF), mask_0xFFFF)
+            pos_bits = arith.ori(input_ui16_i32, mask_0x8000)
+            processed_bits = arith.select(is_neg, neg_bits, pos_bits)
+            bin_id_i16 = arith.shrui(processed_bits, eight_i32)
+            val = memref.atomic_rmw(arith.AtomicRMWKind.addi, one_i32, s_histogram,
+                                    [arith.index_cast(index_ty, bin_id_i16)])
+            # vprintf("tidx: %d, bidx: %d, val: %d\n", tidx, bidx, val)
+
+            scf.yield_([])
+        scf.yield_([])
+    nvvm.barrier0()
+
     # Extract K from tensor and use it as initial l_new_topk
     K = memref.load(K_tensor, [zero_idx])
     l_new_topk = K
@@ -184,21 +206,16 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["me
                 input_ptr = llvm.getelementptr(ptr_ty, inputs, [full_offset], [-2147483648], f32_ty, 0)
                 input_val = llvm.load(f32_ty, input_ptr)
 
-                f16_ty = ir.F16Type.get()
-                i16_ty = ir.IntegerType.get_signless(16)
                 input_f16 = arith.truncf(f16_ty, input_val)
                 input_i16 = arith.bitcast(i16_ty, input_f16)
                 input_ui16_i32 = arith.extui(i32_ty, input_i16)
 
-                is_neg = arith.cmpf(arith.CmpFPredicate.OLT, input_val, arith.constant(f32_ty, 0.0))
-                mask_0xFFFF = arith.constant(i32_ty, 0xFFFF)
-                mask_0x8000 = arith.constant(i32_ty, 0x8000)
-                mask_0xFF = arith.constant(i32_ty, 0xFF)
+                is_neg = arith.cmpf(arith.CmpFPredicate.OLT, input_val, zero_f32)
 
                 neg_bits = arith.andi(arith.xori(input_ui16_i32, mask_0xFFFF), mask_0xFFFF)
                 pos_bits = arith.ori(input_ui16_i32, mask_0x8000)
                 processed_bits = arith.select(is_neg, neg_bits, pos_bits)
-                bin_id_i32 = arith.shrui(processed_bits, arith.constant(i32_ty, 8))
+                bin_id_i32 = arith.shrui(processed_bits, eight_i32)
                 bin_id_i32 = arith.andi(bin_id_i32, mask_0xFF)
 
                 l_bin_id32 = bin_id_i32
@@ -208,7 +225,7 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["me
                 over_thre_then = over_thre_if.opview.thenRegion.blocks.append()
                 with ir.InsertionPoint(over_thre_then):
                     bin_id_plus_one = arith.addi(l_bin_id32, one_i32)
-                    bin_id_plus_one_idx = arith.index_cast(ir.IndexType.get(), bin_id_plus_one)
+                    bin_id_plus_one_idx = arith.index_cast(index_ty, bin_id_plus_one)
 
                     pos = memref.atomic_rmw(arith.AtomicRMWKind.addi, one_i32, s_histogram, [bin_id_plus_one_idx])
                     indices_ptr = llvm.getelementptr(ptr_ty, indices_base, [pos], [-2147483648], i32_ty, 0)
@@ -238,7 +255,8 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["me
 
 @triton.autotune(
     configs=[
-        triton.Config({"BS": 8192, "BSS": 512}, num_stages=3, num_warps=8),
+        triton.Config({"BS": 1024, "BSS": 512}, num_stages=3,
+                      num_warps=32),  # "BS" should be 1024 and "num_warps" should be 32
     ],
     key=["S", "K"],
 )
@@ -251,8 +269,7 @@ def kernel_bucket_sort_topk(  # grid(B,)
         ends,  # (B,) for variable length
         S: tl.constexpr,  # sequence length
         K: tl.constexpr,  # k of topk
-        HISTOGRAM_SIZE: tl.constexpr, SMEM_INPUT_SIZE: tl.constexpr,
-        BS: tl.constexpr,  # block size of S
+        HISTOGRAM_SIZE: tl.constexpr, SMEM_INPUT_SIZE: tl.constexpr, BS: tl.constexpr,  # block size of S
         BSS: tl.constexpr,  # block size of SMEM_INPUT
 ):
     """Kernel: Merged version of kernel1, kernel2, and kernel3 with threshold calculation in edsl1"""
@@ -267,14 +284,15 @@ def kernel_bucket_sort_topk(  # grid(B,)
 
     # Kernel1: Compute histogram
     s_histogram = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
-    TS = tl.cdiv(S, BS)
-    for s in range(TS):
-        input_idx = s * BS + tl.arange(0, BS)
-        input_mask = ((input_idx < l_end_idx) & (input_idx >= l_start_idx) & (input_idx < S))
-        input = tl.load(s_base + input_idx, input_mask, other=float("-inf")).to(tl.float32)
-        inval_int16 = convert_to_uint16(input)
-        s_histogram += inval_int16.to(tl.int32).histogram(HISTOGRAM_SIZE)
+    # TS = tl.cdiv(S, BS)
+    # for s in range(TS):
+    #     input_idx = s * BS + tl.arange(0, BS)
+    #     input_mask = ((input_idx < l_end_idx) & (input_idx >= l_start_idx) & (input_idx < S))
+    #     input = tl.load(s_base + input_idx, input_mask, other=float("-inf")).to(tl.float32)
+    #     inval_int16 = convert_to_uint16(input)
+    #     s_histogram += inval_int16.to(tl.int32).histogram(HISTOGRAM_SIZE)
 
+    # tl.device_print("s_histogram: ", s_histogram)
 
     # Kernel2: Call edsl1 for topk selection (threshold calculated in edsl1)
     thre_bin_sum_buf = tl.zeros([1], dtype=tl.int32)
@@ -282,10 +300,10 @@ def kernel_bucket_sort_topk(  # grid(B,)
     s = S
     bs = BS
     k_tensor = tl.full([1], K, dtype=tl.int32)  # Convert constexpr to tensor
-    thre_bin_sum_buf, l_new_topk_buf = tle_raw.call(edsl1, [thre_bin_sum_buf, l_new_topk_buf], [
-        indices_base, s_input_ids_base, inputs, s_histogram, l_start_idx, l_end_idx, s, bs, k_tensor
-    ])
-    
+    thre_bin_sum_buf, l_new_topk_buf = tle_raw.call(
+        edsl1, [thre_bin_sum_buf, l_new_topk_buf],
+        [indices_base, s_input_ids_base, inputs, s_histogram, l_start_idx, l_end_idx, s, bs, k_tensor])
+
     thre_bin_sum = thre_bin_sum_buf.max(0)
     l_new_topk = l_new_topk_buf.max(0)
     sum = K - l_new_topk
@@ -439,4 +457,3 @@ def test_topk_selector(batch=64, seq_len=32 * 1024, topk=2048):
 
 if __name__ == "__main__":
     test_topk_selector()
-
