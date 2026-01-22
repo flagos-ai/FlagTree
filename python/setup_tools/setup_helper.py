@@ -296,8 +296,8 @@ def handle_flagtree_backend():
             ext_sourcedir = os.path.abspath(f"./third_party/{flagtree_backend}/python/{ext_sourcedir}") + "/"
 
 def handle_plugin_backend(editable):
-    plugin_mode = os.getenv("FLAGTREE_PLUGIN").upper()
-    if plugin_mode and plugin_mode not in ["0", "OFF"]:
+    plugin_mode = os.getenv("FLAGTREE_PLUGIN")
+    if plugin_mode and plugin_mode.upper() not in ["0", "OFF"]:
         return
     flagtree_backend_dir = Path.home() / ".flagtree" / flagtree_backend
     flagtree_plugin_so = flagtree_backend + "TritonPlugin.so"
