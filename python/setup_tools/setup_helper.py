@@ -304,7 +304,8 @@ def handle_flagtree_backend():
         display_name = "mlu" if flagtree_backend == "cambricon" else flagtree_backend
         configs.extend_backends.append(display_name)
         if "editable_wheel" in sys.argv and flagtree_backend != "ascend":
-            configs.ext_sourcedir = os.path.abspath(f"../third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
+            configs.ext_sourcedir = os.path.abspath(
+                f"../third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
 
 
 def set_env(env_dict: dict):

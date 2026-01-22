@@ -86,7 +86,8 @@ def dir_rollback(deep, base_path):
 
 
 def is_skip_cuda_toolkits():
-    return flagtree_configs.flagtree_backend and (flagtree_configs.flagtree_backend not in flagtree_configs.use_cuda_toolkit_backends)
+    return flagtree_configs.flagtree_backend and (flagtree_configs.flagtree_backend
+                                                  not in flagtree_configs.use_cuda_toolkit_backends)
 
 
 def remove_triton_in_modules(model):
