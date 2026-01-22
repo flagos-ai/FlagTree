@@ -27,7 +27,7 @@ def install_extension(*args, **kargs):
 
 def get_backend_cmake_args(*args, **kargs):
     try:
-        cmake_args = configs.activated_module.get_backend_cmake_args(*args, **kargs)
+        return configs.activated_module.get_backend_cmake_args(*args, **kargs)
     except Exception:
         return []
 
