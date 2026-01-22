@@ -327,24 +327,25 @@ def handle_flagtree_backend():
 
 
 def handle_plugin_backend(editable):
-    if flagtree_backend in ["iluvatar", "mthreads"]:
+    plugin_mode = os.getenv("FLAGTREE_PLUGIN")
+    if plugin_mode and plugin_mode.upper() not in ["0", "OFF"]:
+        return
+    if flagtree_backend in ["iluvatar", "mthreads", "sunrise"]:
+        flagtree_backend_dir = Path.home() / ".flagtree" / flagtree_backend
+        flagtree_plugin_so = flagtree_backend + "TritonPlugin.so"
         if editable is False:
-            src_build_plugin_path = str(
-                os.getenv("HOME")) + "/.flagtree/" + flagtree_backend + "/" + flagtree_backend + "TritonPlugin.so"
-            dst_build_plugin_dir = sysconfig.get_paths()['purelib'] + "/triton/_C"
+            src_build_plugin_path = flagtree_backend_dir / flagtree_plugin_so
+            dst_build_plugin_dir = Path(sysconfig.get_path("purelib")) / "triton" / "_C"
             if not os.path.exists(dst_build_plugin_dir):
                 os.makedirs(dst_build_plugin_dir)
-            dst_build_plugin_path = dst_build_plugin_dir + "/" + flagtree_backend + "TritonPlugin.so"
+            dst_build_plugin_path = dst_build_plugin_dir / flagtree_plugin_so
             shutil.copy(src_build_plugin_path, dst_build_plugin_path)
-        src_install_plugin_path = str(
-            os.getenv("HOME")) + "/.flagtree/" + flagtree_backend + "/" + flagtree_backend + "TritonPlugin.so"
-        if flagtree_backend == "iluvatar":
-            dst_install_plugin_dir = os.path.dirname(os.path.abspath(__file__)) + "/../triton/_C"
-        elif flagtree_backend == "mthreads":
-            dst_install_plugin_dir = os.path.dirname(
-                os.path.abspath(__file__)) + "/../../third_party/mthreads/python/triton/_C"
+        src_install_plugin_path = flagtree_backend_dir / flagtree_plugin_so
+        if flagtree_backend in ("mthreads", "sunrise"):
+            dst_install_plugin_dir = Path(
+                __file__).resolve().parent.parent.parent / "third_party" / flagtree_backend / "python" / "triton" / "_C"
         else:
-            dst_install_plugin_dir = os.path.dirname(os.path.abspath(__file__)) + "/../triton/_C"
+            dst_install_plugin_dir = Path(__file__).resolve().parent.parent / "triton" / "_C"
         if not os.path.exists(dst_install_plugin_dir):
             os.makedirs(dst_install_plugin_dir)
         shutil.copy(src_install_plugin_path, dst_install_plugin_dir)
