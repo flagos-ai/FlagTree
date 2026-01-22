@@ -68,7 +68,7 @@ jobs:
         run: |
           set -x
           pip uninstall -y triton
-          source third_party/sunrise/script/docker_sunrise_env.sh
+          source third_party/sunrise/script/docker_sunrise_env.sh ~/.flagtree/sunrise/sunrise_llvm21_dev_release
           export FLAGTREE_BACKEND=sunrise
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
