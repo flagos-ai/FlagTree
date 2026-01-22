@@ -17,7 +17,7 @@ class VariableCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node):
-        # 对于函数调用，只分析参数，不分析函数名
+        self.visit(node.func)
         for arg in node.args:
             self.visit(arg)
         for kw in node.keywords:
@@ -30,7 +30,8 @@ class VariableCollector(ast.NodeVisitor):
             # 跳过模块前缀如 tl, np 等
             if node.value.id not in ('tl', 'triton', 'np', 'torch'):
                 self.variables.add(node.value.id)
-    
+        self.generic_visit(node)
+
     @staticmethod
     def collect(node) -> Set[str]:
         """收集 AST 节点中的所有变量"""
@@ -139,7 +140,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             return input_deps, constexpr_deps
 
         # 递归分析变量定义
-        if var_name in self.var_definitions:
+        if var_name in self.var_definitions and not var_name.startswith('pid'):
             definition_node = self.var_definitions[var_name]
             used_vars = VariableCollector.collect(definition_node)
             for used_var in used_vars:
@@ -163,21 +164,14 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             used_vars = VariableCollector.collect(addr_expr)
 
             # 分析每个变量的依赖
-            all_input_deps = set()
-            all_constexpr_deps = set()
-            
             for var_name in used_vars:
                 input_deps, constexpr_deps = self.get_dependencies(var_name)
-                all_input_deps.update(input_deps)
-                all_constexpr_deps.update(constexpr_deps)
-            
-            # 如果同时依赖输入参数和 constexpr，记录关系
-            if all_input_deps and all_constexpr_deps:
-                for inp in all_input_deps:
-                    if inp not in relationships:
-                        relationships[inp] = set()
-                    relationships[inp].update(all_constexpr_deps)
-        
+                # 如果同时依赖输入参数和 constexpr，且都分别只依赖一个，则记录关系
+                if len(input_deps) == 1 and len(constexpr_deps) == 1:
+                    input_dep = list(input_deps)[0]
+                    constexpr_dep = list(constexpr_deps)[0]
+                    relationships[input_dep] = constexpr_dep
+
         return relationships
 
 

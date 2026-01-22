@@ -161,10 +161,9 @@ class Autotuner(KernelInterface):
 
         if relationships:
             # 使用分析结果自动调整
-            for param, constexprs in relationships.items():
-                for constexpr in constexprs:
-                    # 只处理以 BLOCK_ 开头的 constexpr（块大小参数）
-                    if constexpr.startswith('BLOCK_'):
+            for param, constexpr in relationships.items():
+                # 只处理以 BLOCK_ 开头的 constexpr（块大小参数）
+                if constexpr.startswith('BLOCK_'):
                         self.adjust_block_size(current, config, param, constexpr)
         else:
             # 如果没有分析结果，回退到手动配置（兼容旧代码）
