@@ -21,11 +21,14 @@ device_mapping = {"xpu": "xpu", "mthreads": "musa", "ascend": "ascend"}
 activated_module = utils.activate(flagtree_backend)
 downloader = utils.tools.DownloadManager()
 
-set_llvm_env = lambda path: set_env({
-    'LLVM_INCLUDE_DIRS': Path(path) / "include",
-    'LLVM_LIBRARY_DIR': Path(path) / "lib",
-    'LLVM_SYSPATH': path,
-})
+set_llvm_env = lambda path: set_env(
+    {
+        'LLVM_INCLUDE_DIRS': Path(path) / "include",
+        'LLVM_LIBRARY_DIR': Path(path) / "lib",
+        'LLVM_SYSPATH': path,
+        'PYTHONPATH': os.pathsep.join([str(Path(path) / "python_packages" / "mlir_core"),
+                                       os.getenv("PYTHONPATH", "")]),
+    })
 
 
 def install_extension(*args, **kargs):
