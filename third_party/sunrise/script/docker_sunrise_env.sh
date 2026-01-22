@@ -39,6 +39,7 @@ export FLAGTREE_BACKEND=sunrise
 
 # 拷贝install_dir中缺失的bitcode和Filecheck
 
+mkdir -p third_party/sunrise/backend/lib
 cp $1/stpu/bitcode/*.bc third_party/sunrise/backend/lib
 if [ $? -ne 0 ] ; then
     echo "copy stpu bitcode failed."
