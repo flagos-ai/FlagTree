@@ -67,6 +67,7 @@ ptxas
 # Third-party include
 third_party/nvidia/backend/include
 third_party/nvidia/backend/lib/cupti
+third_party/sunrise/backend/lib
 
 # Docs
 docs/_build/

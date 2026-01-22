@@ -1,3 +1,12 @@
+if(IS_COMPILE_TritonNvidiaGPU)
+  set(_TMA_LINK_CPP "Pipeliner/TMAStoresPipeline.cpp")
+  set(_NVIDIA_LINK_LIBS "TritonNvidiaGPUIR")
+else()
+  set(_TMA_LINK_CPP "")
+  set(_NVIDIA_LINK_LIBS "")
+endif()
+get_flagtree_backend_lib("TritonGPUTransforms" _EXTRA_LINK_LIBS)
+
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
   Canonicalize.cpp
@@ -19,7 +28,7 @@ add_triton_library(TritonGPUTransforms
   Pipeliner/PipelineExpander.cpp
   Pipeliner/TestPipelineLowerLoop.cpp
   Pipeliner/SoftwarePipeliner.cpp
-  Pipeliner/TMAStoresPipeline.cpp
+  ${_TMA_LINK_CPP}
   Pipeliner/MMAv5PipelineUtility.cpp
   Pipeliner/PipeliningUtility.cpp
   Pipeliner/Schedule.cpp
@@ -47,7 +56,10 @@ add_triton_library(TritonGPUTransforms
   TritonIR
   TritonTransforms
   TritonGPUIR
-  TritonNvidiaGPUIR
+  ${_NVIDIA_LINK_LIBS}
+  ${_EXTRA_LINK_LIBS}
   TritonToTritonGPU
   MLIRTransformUtils
+
+  ${_EXTRA_LINK_LIBS}
 )

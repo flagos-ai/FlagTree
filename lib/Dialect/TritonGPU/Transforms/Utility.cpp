@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_Utility
+
 #include "triton/Analysis/Utility.h"
 
 #include <fstream>
@@ -1584,3 +1590,5 @@ bool comesFromLoadOrBlockArg(Value v) {
 }
 
 } // namespace mlir::triton
+
+#endif // FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_Utility

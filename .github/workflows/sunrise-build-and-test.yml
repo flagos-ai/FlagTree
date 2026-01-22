@@ -1,0 +1,80 @@
+name: Sunrise-Build-And-Test
+
+on:
+  push:
+    branches: [ "triton_v3.4.x" ]
+  pull_request:
+    branches: [ "triton_v3.4.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sunrise-build-and-test:
+    runs-on: sunrise
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          # source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Checkout code (attempt 1)
+        id: checkout1
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+        continue-on-error: true
+
+      - name: Sleep before checkout2
+        if: steps.checkout1.outcome == 'failure'
+        run: |
+          echo "First checkout attempt failed. Sleeping for 120 seconds before retry..."
+          sleep 120
+
+      - name: Checkout code (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+        continue-on-error: true
+
+      - name: Sleep before final checkout
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        run: |
+          echo "Second checkout attempt failed. Sleeping for 180 seconds before final retry..."
+          sleep 180
+
+      - name: Checkout code (final attempt)
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify checkout success
+        if: success()
+        run: echo "Checkout completed successfully"
+
+      - name: Check if only docs files changed
+        id: check_files
+        uses: ./.github/actions/check-docs-only
+
+      - name: FlagTree Build on Sunrise
+        if: steps.check_files.outputs.only_docs_changed != 'true'
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          source third_party/sunrise/script/docker_sunrise_env.sh ~/.flagtree/sunrise/sunrise_llvm21_dev_release
+          export FLAGTREE_BACKEND=sunrise
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on Sunrise
+        if: steps.check_files.outputs.only_docs_changed != 'true'
+        shell: bash
+        run: |
+          set -x
+          python3 third_party/sunrise/python/test_examples/vector-add.py

@@ -25,6 +25,11 @@
 //   scf.yield %next_a, ..., %a_prefetch_next
 // }
 //===----------------------------------------------------------------------===//
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_Prefetch
 
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
@@ -459,3 +464,5 @@ struct PrefetchPass : public impl::TritonGPUPrefetchBase<PrefetchPass> {
 } // namespace gpu
 } // namespace triton
 } // namespace mlir
+
+#endif // FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_Prefetch

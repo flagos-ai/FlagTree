@@ -620,6 +620,9 @@ else:
 
 def get_package_dirs():
     yield ("", "python")
+    ret = helper.yield_backend_dirs()
+    if ret:
+        yield ret
 
     for backend in backends:
         # we use symlinks for external plugins
