@@ -5,13 +5,55 @@ import tarfile
 import zipfile
 from io import BytesIO
 import urllib.request
-from dataclasses import dataclass
+from typing import Mapping
+from types import MappingProxyType
+import importlib.util
+from dataclasses import dataclass, field
 
-flagtree_root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-flagtree_submodule_dir = os.path.join(flagtree_root_dir, "third_party")
-flagtree_backend = os.environ.get("FLAGTREE_BACKEND")
-use_cuda_toolkit = ["aipu"]
+def _get_flagtree_root() -> str:
+    return str(Path(__file__).resolve().parents[3])
 
+@dataclass
+class FlagtreeConfigs:
+    default_backends: tuple = ("nvidia", "amd")
+    plugin_backends: tuple = ("ascend", "aipu", "tsingmicro")
+    use_cuda_toolkit_backends: tuple = ('aipu', )
+    language_extra_backends: tuple = ('xpu', 'mthreads', "cambricon")
+    ext_sourcedir: str = "triton/_C/"
+    flagtree_root_dir: str = field(default_factory=_get_flagtree_root)
+    flagtree_backend: str = field(default_factory=lambda: os.environ.get("FLAGTREE_BACKEND"))
+    flagtree_plugin: str = field(default_factory=lambda: os.environ.get("FLAGTREE_PLUGIN"))
+    extend_backends: list = field(default_factory=list)
+    activated_module: any = None
+    flagtree_submodule_dir: str = ''
+    device_alias_map: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({
+        "xpu": "xpu",
+        "mthreads": "musa",
+        "ascend": "ascend",
+        "cambricon": "mlu",
+    }))
+
+    def __post_init__(self):
+        object.__setattr__(
+            self,
+            "flagtree_submodule_dir",
+            os.path.join(self.flagtree_root_dir, "third_party"),
+        )
+        object.__setattr__(self, "activated_module", self._activate_device_module(self.flagtree_backend))
+
+    def _activate_device_module(self, backend, suffix=".py"):
+        backend = "default" if not backend else backend
+        module_path = Path(os.path.dirname(__file__)) / backend
+        module_path = str(module_path) + suffix
+        spec = importlib.util.spec_from_file_location("module", module_path)
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            pass
+        return module
+
+flagtree_configs = FlagtreeConfigs()
 
 @dataclass
 class NetConfig:
