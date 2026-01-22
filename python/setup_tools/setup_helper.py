@@ -6,24 +6,16 @@ from pathlib import Path
 import hashlib
 from distutils.sysconfig import get_python_lib
 from . import utils
+from .utils.tools import flagtree_configs as configs
 
-extend_backends = []
-default_backends = ["nvidia", "amd"]
-plugin_backends = ["ascend", "aipu", "tsingmicro"]
-ext_sourcedir = "triton/_C/"
-flagtree_backend = os.getenv("FLAGTREE_BACKEND", "").lower()
-flagtree_plugin = os.getenv("FLAGTREE_PLUGIN", "").lower()
-offline_build = os.getenv("FLAGTREE_PLUGIN", "OFF")
-device_mapping = {"xpu": "xpu", "mthreads": "musa", "ascend": "ascend", "cambricon": "mlu"}
-activated_module = utils.activate(flagtree_backend)
+configs = configs
+flagtree_backend = configs.flagtree_backend
 downloader = utils.tools.DownloadManager()
-
 set_llvm_env = lambda path: set_env({
-    'LLVM_INCLUDE_DIRS': Path(path) / "include",
-    'LLVM_LIBRARY_DIR': Path(path) / "lib",
+    'LLVM_INCLUDE_DIRS': os.path.join(path, "include"),
+    'LLVM_LIBRARY_DIR': os.path.join(path, "lib"),
     'LLVM_SYSPATH': path,
 })
-
 
 def install_extension(*args, **kargs):
     try:
