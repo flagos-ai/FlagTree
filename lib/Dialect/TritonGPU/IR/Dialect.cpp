@@ -3222,4 +3222,4 @@ LinearLayout triton::gpu::inferReshapeLinearLayout(ArrayRef<int64_t> srcShape,
   return dst;
 }
 
-#endif// FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_cpp
+#endif // FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect_cpp

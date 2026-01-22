@@ -305,7 +305,7 @@ When vec=2, elements are swizzled in pairs of 2.  In other words, the element at
             return get(context, 1, 1, 1, order, CTALayout);
           }
         }
-        
+
         // ---- begin SunriseMMA ----
         auto sunriseMmaEnc = mlir::dyn_cast<SunriseMmaEncodingAttr>(dotOpEnc.getParent());
         if(sunriseMmaEnc) {
@@ -1202,7 +1202,7 @@ def SunriseMmaEncodingAttr : DistributedEncoding<"SunriseMmaEncoding", "sunrise_
   );
 
   let hasCustomAssemblyFormat = 1;
-  
+
   let extraClassDeclaration = extraDistributedDeclaration # [{
     enum class TMMAOutLayout : unsigned { // 只用于mma中c, d的布局
       NotAvailable,

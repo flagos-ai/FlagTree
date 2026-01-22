@@ -4,5 +4,4 @@
 
 #include "tang_rt/fmt.hpp"
 
-#endif  //!< _TANGRT_DEVICE_FUNCTIONS_H_
-
+#endif //!< _TANGRT_DEVICE_FUNCTIONS_H_

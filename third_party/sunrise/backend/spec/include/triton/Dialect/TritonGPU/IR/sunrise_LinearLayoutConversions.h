@@ -7,4 +7,4 @@
 #define FLAGTREE_SPEC_LinearLayoutConversions_sunrisemmaDotOperandToLinearLayout
 #define FLAGTREE_SPEC_LinearLayoutConversions_SunriseMmaEncodingAttr_toLinearLayout
 
-#endif//SUNRISE_TRITON_DIALECT_TRITONGPU_IR_LINEARLAYOUTCONVERSIONS_H
+#endif // SUNRISE_TRITON_DIALECT_TRITONGPU_IR_LINEARLAYOUTCONVERSIONS_H

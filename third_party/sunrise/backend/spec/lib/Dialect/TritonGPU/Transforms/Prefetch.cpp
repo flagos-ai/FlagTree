@@ -146,8 +146,8 @@ Value Prefetcher::generatePrefetch(Value v, unsigned opIdx, bool isPrologue,
           shape, elementType, type.getEncoding(), type.getMemorySpace(),
           type.getMutableMemory(), type.getAllocShape()),
       v, offsetsVal);
-  
- LDBG("prolog newSmem: "<<newSmem);
+
+  LDBG("prolog newSmem: " << newSmem);
   auto dotOperandEnc = triton::gpu::DotOperandEncodingAttr::get(
       builder.getContext(), opIdx, dotEncoding, prefetchWidth / 8);
   Value prefetchSlice = builder.create<triton::gpu::LocalLoadOp>(
@@ -174,7 +174,8 @@ LogicalResult Prefetcher::initialize() {
           dyn_cast<AMDMfmaEncodingAttr>(getEncoding(dotOp.getResult()));
       auto dstTmmaEnc =
           dyn_cast<SunriseMmaEncodingAttr>(getEncoding(dotOp.getResult()));
-      if (!dstTmmaEnc && !dstMfmaEnc && (!dstMmaEnc || dstMmaEnc.getVersionMajor() != 2))
+      if (!dstTmmaEnc && !dstMfmaEnc &&
+          (!dstMmaEnc || dstMmaEnc.getVersionMajor() != 2))
         // Don't rewrite if any other type is found.
         return failure();
       dotsInFor.push_back(dotOp);
@@ -259,12 +260,14 @@ LogicalResult Prefetcher::initialize() {
       continue;
     auto aVals = getPrefetchSrc(dot.getA());
     auto bVals = getPrefetchSrc(dot.getB());
-    LDBG("aVals.size:"<<aVals.size()<<" bVals.size:"<<bVals.size());
+    LDBG("aVals.size:" << aVals.size() << " bVals.size:" << bVals.size());
 
     if (aVals.size() && bVals.size()) {
-      Value aSmem = aVals.front();LDBG("aSmem: " << aSmem);
+      Value aSmem = aVals.front();
+      LDBG("aSmem: " << aSmem);
       Value bSmem = bVals.front();
-      Value aHeaderDef = getIncomingOp(aSmem);LDBG("aHeaderDef: " << aHeaderDef);
+      Value aHeaderDef = getIncomingOp(aSmem);
+      LDBG("aHeaderDef: " << aHeaderDef);
       Value bHeaderDef = getIncomingOp(bSmem);
       // Only prefetch loop arg
       if (aHeaderDef && bHeaderDef) {
@@ -292,7 +295,7 @@ void Prefetcher::emitPrologue() {
     Attribute dotEncoding = dot.getType().getEncoding();
     Value aPrefetched =
         generatePrefetch(dot2aHeaderDef[dot], 0, true, dotEncoding, builder);
-    LDBG("aPrefetched "<<aPrefetched);
+    LDBG("aPrefetched " << aPrefetched);
     cloneElementwiseOps(aPrefetched, dot2aVals[dot], builder);
     Value bPrefetched =
         generatePrefetch(dot2bHeaderDef[dot], 1, true, dotEncoding, builder);

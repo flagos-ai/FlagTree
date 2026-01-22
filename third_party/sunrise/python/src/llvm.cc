@@ -73,29 +73,30 @@ std::string translateLLVMIRToASM(llvm::Module &module,
                                  const std::vector<std::string> &flags,
                                  bool enable_fp_fusion, bool isObject) {
   using namespace mlir;
-  auto isInteger=[&](const std::string& str) {
+  auto isInteger = [&](const std::string &str) {
     return !str.empty() && std::all_of(str.begin(), str.end(), ::isdigit);
   };
   // options
   auto options = llvm::cl::getRegisteredOptions();
   for (std::string flag : flags) {
     auto pos = flag.find("=");
-    if(pos == std::string::npos){
+    if (pos == std::string::npos) {
       auto *shortPtr = static_cast<llvm::cl::opt<bool> *>(options[flag]);
       assert(shortPtr);
       shortPtr->setValue(true);
-    }else{
-      auto optIt = options.find(flag.substr(0,pos));
+    } else {
+      auto optIt = options.find(flag.substr(0, pos));
       assert(optIt != options.end() && "Option not found in cl::opt!");
 
-      if (isInteger(flag.substr(pos+1))) {
-        if(auto *unsignedOpt = static_cast<llvm::cl::opt<unsigned>*>(options[flag.substr(0,pos)])) {
-          unsignedOpt->setValue(std::stoi(flag.substr(pos+1)));
+      if (isInteger(flag.substr(pos + 1))) {
+        if (auto *unsignedOpt = static_cast<llvm::cl::opt<unsigned> *>(
+                options[flag.substr(0, pos)])) {
+          unsignedOpt->setValue(std::stoi(flag.substr(pos + 1)));
         }
-      }
-      else {
-        if (auto *stringOpt = static_cast<llvm::cl::opt<std::string>*>(options[flag.substr(0,pos)])) {
-          stringOpt->setValue(flag.substr(pos+1));
+      } else {
+        if (auto *stringOpt = static_cast<llvm::cl::opt<std::string> *>(
+                options[flag.substr(0, pos)])) {
+          stringOpt->setValue(flag.substr(pos + 1));
         }
       }
     }

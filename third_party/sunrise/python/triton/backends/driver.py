@@ -79,7 +79,6 @@ class GPUDriver(DriverBase):
             self.set_current_device = torch.cuda.set_device
             return
 
-
     # TODO: remove once TMA is cleaned up
     def assemble_tensormap_to_arg(self, tensormaps_info, args):
         return args

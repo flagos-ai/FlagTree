@@ -15,16 +15,18 @@ ext_sourcedir = "triton/_C/"
 flagtree_backend = os.getenv("FLAGTREE_BACKEND", "").lower()
 flagtree_plugin = os.getenv("FLAGTREE_PLUGIN", "").lower()
 offline_build = os.getenv("FLAGTREE_PLUGIN", "OFF")
-device_mapping = {"xpu": "xpu", "mthreads": "musa", "ascend": "ascend", "sunrise":"sunrise"}
+device_mapping = {"xpu": "xpu", "mthreads": "musa", "ascend": "ascend", "sunrise": "sunrise"}
 activated_module = utils.activate(flagtree_backend)
 downloader = utils.tools.DownloadManager()
 
-set_llvm_env = lambda path: set_env({
-    'LLVM_INCLUDE_DIRS': Path(path) / "include",
-    'LLVM_LIBRARY_DIR': Path(path) / "lib",
-    'LLVM_SYSPATH': path,
-    'PYTHONPATH': os.pathsep.join([str(Path(path) / "python_packages" / "mlir_core"), os.getenv("PYTHONPATH", "")]),
-})
+set_llvm_env = lambda path: set_env(
+    {
+        'LLVM_INCLUDE_DIRS': Path(path) / "include",
+        'LLVM_LIBRARY_DIR': Path(path) / "lib",
+        'LLVM_SYSPATH': path,
+        'PYTHONPATH': os.pathsep.join([str(Path(path) / "python_packages" / "mlir_core"),
+                                       os.getenv("PYTHONPATH", "")]),
+    })
 
 
 def yield_backend_dirs():
@@ -38,6 +40,7 @@ def install_extension(*args, **kargs):
         activated_module.install_extension(*args, **kargs)
     except Exception:
         pass
+
 
 def get_backend_cmake_args(*args, **kargs):
     if "editable_wheel" in sys.argv:
@@ -53,6 +56,7 @@ def get_backend_cmake_args(*args, **kargs):
     if editable:
         cmake_args += ["-DEDITABLE_MODE=ON"]
     return cmake_args
+
 
 def get_device_name():
     return device_mapping[flagtree_backend]
@@ -297,6 +301,7 @@ def handle_flagtree_backend():
         if "editable_wheel" in sys.argv and flagtree_backend not in plugin_backends:
             ext_sourcedir = os.path.abspath(f"./third_party/{flagtree_backend}/python/{ext_sourcedir}") + "/"
 
+
 def handle_plugin_backend(editable):
     plugin_mode = os.getenv("FLAGTREE_PLUGIN")
     if plugin_mode and plugin_mode.upper() not in ["0", "OFF"]:
@@ -313,12 +318,14 @@ def handle_plugin_backend(editable):
             shutil.copy(src_build_plugin_path, dst_build_plugin_path)
         src_install_plugin_path = flagtree_backend_dir / flagtree_plugin_so
         if flagtree_backend in ("mthreads", "sunrise"):
-            dst_install_plugin_dir = Path(__file__).resolve().parent.parent.parent / "third_party" / flagtree_backend / "python" / "triton" / "_C"
+            dst_install_plugin_dir = Path(
+                __file__).resolve().parent.parent.parent / "third_party" / flagtree_backend / "python" / "triton" / "_C"
         else:
             dst_install_plugin_dir = Path(__file__).resolve().parent.parent / "triton" / "_C"
         if not os.path.exists(dst_install_plugin_dir):
             os.makedirs(dst_install_plugin_dir)
         shutil.copy(src_install_plugin_path, dst_install_plugin_dir)
+
 
 def set_env(env_dict: dict):
     for env_k, env_v in env_dict.items():
@@ -454,13 +461,13 @@ cache.store(
 cache.store(
     file="sunrise-llvm21-x86_64",
     condition=("sunrise" == flagtree_backend),
-    url = "https://abc.efg",
+    url=
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunrise-llvm21-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
 
 cache.store(
     file="sunriseTritonPlugin.so", condition=("sunrise" == flagtree_backend) and (not flagtree_plugin), url=
-    "https://abc.efg",
-    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="1f0b7e67"
-)
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz",
+    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="1f0b7e67")

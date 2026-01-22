@@ -75,5 +75,3 @@ Operation *TritonDialect::materializeConstant(OpBuilder &builder,
                                               Location loc) {
   return arith::ConstantOp::materialize(builder, value, type, loc);
 }
-
-

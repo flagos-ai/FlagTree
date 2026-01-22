@@ -200,4 +200,4 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
 } // namespace triton
 } // namespace mlir
 
-#endif//FLAGTREE_SPEC_Triton_Dialect_TritonGPU_Transforms_Sunrise_Coalesce
+#endif // FLAGTREE_SPEC_Triton_Dialect_TritonGPU_Transforms_Sunrise_Coalesce

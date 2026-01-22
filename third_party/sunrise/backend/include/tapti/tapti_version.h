@@ -1,14 +1,14 @@
 #ifndef _TAPTI_VERSION_
 #define _TAPTI_VERSION_
 
-#include <stdint.h>
 #include "tapti_result.h"
+#include <stdint.h>
 
 #define TAPTI_API_VERSION 1
 
 #ifdef __cplusplus
 extern "C" {
-#endif  //! __cplusplus
+#endif //! __cplusplus
 
 #if defined(_MSC_VER)
 #define TAPTI_DEPRECATED __declspec(deprecated)
@@ -22,18 +22,18 @@ extern "C" {
 #define TAPTI_DEPRECATED
 #define TAPTI_API_EXPORT
 #define TAPTI_API_IMPORT
-#endif  //! UNKNOWN COMPILER
+#endif //! UNKNOWN COMPILER
 
 #if defined(tapti_shared_EXPORTS)
 #define TAPTI_API TAPTI_API_EXPORT
 #else
 #define TAPTI_API TAPTI_API_IMPORT
-#endif  //! For user
+#endif //! For user
 
 TAptiResult TAPTI_API taptiGetVersion(uint32_t *version);
 
 #ifdef __cplusplus
 }
-#endif  //! __cplusplus
+#endif //! __cplusplus
 
 #endif // _TAPTI_VERSION_

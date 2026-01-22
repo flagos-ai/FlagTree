@@ -12,26 +12,26 @@ Copyright declaration.
  * @brief Flags that can be used with tangStreamCreateWithFlags
  * @{
  */
-#define tangStreamDefault 0x00  ///< Default stream creation flags
-#define tangStreamNonBlocking \
-  0x01  ///< Stream does not implicitly synchronize with null stream
+#define tangStreamDefault 0x00 ///< Default stream creation flags
+#define tangStreamNonBlocking                                                  \
+  0x01 ///< Stream does not implicitly synchronize with null stream
 
 //! Flags that can be used with tangEventCreateWithFlags:
-#define tangEventDefault 0x0  ///< Default flags
-#define tangEventBlockingSync \
-  0x1  ///< Waiting will yield CPU.  Power-friendly and usage-friendly but may
-       ///< increase latency.
-#define tangEventDisableTiming \
-  0x2  ///< Disable event's capability to record timing information.  May
-       ///< improve performance.
-#define tangEventInterprocess \
-  0x4  ///< Event can support IPC.  @warning - not supported right now.
+#define tangEventDefault 0x0 ///< Default flags
+#define tangEventBlockingSync                                                  \
+  0x1 ///< Waiting will yield CPU.  Power-friendly and usage-friendly but may
+      ///< increase latency.
+#define tangEventDisableTiming                                                 \
+  0x2 ///< Disable event's capability to record timing information.  May
+      ///< improve performance.
+#define tangEventInterprocess                                                  \
+  0x4 ///< Event can support IPC.  @warning - not supported right now.
 
 //! Flags that can be used with tangStreamWaitEvent:
-#define tangEventWaitDefault 0x00  ///< Default stream creation flags
-#define tangEventWaitExternal \
-  0x01  ///< Event is captured in the graph as an external event node when
-        ///< performing stream capture. @warning - not supported right now.
+#define tangEventWaitDefault 0x00 ///< Default stream creation flags
+#define tangEventWaitExternal                                                  \
+  0x01 ///< Event is captured in the graph as an external event node when
+       ///< performing stream capture. @warning - not supported right now.
 
 /**
  * @brief enum values that can be used with tangStreamCreateWithPriority and
@@ -39,15 +39,15 @@ Copyright declaration.
  * @{
  */
 enum stream_priority {
-  priority_high   = -2,
+  priority_high = -2,
   priority_middle = -1,
   priority_normal = 0,
-  priority_low    = 1
+  priority_low = 1
 };
 
 #ifdef __cplusplus
 extern "C" {
-#endif  //! __cplusplus
+#endif //! __cplusplus
 
 /**
  *-------------------------------------------------------------------------------------------------
@@ -68,7 +68,7 @@ extern "C" {
  *
  * @see tangDriverGetVersion
  */
-tangError_t TANGRT_API_PUBLIC tangRuntimeGetVersion(int* runtimeVersion);
+tangError_t TANGRT_API_PUBLIC tangRuntimeGetVersion(int *runtimeVersion);
 
 /**
  * @brief Returns the TANG SDK Driver version.
@@ -82,7 +82,7 @@ tangError_t TANGRT_API_PUBLIC tangRuntimeGetVersion(int* runtimeVersion);
  *
  * @see tangRuntimeGetVersion
  */
-tangError_t TANGRT_API_PUBLIC tangDriverGetVersion(int* driverVersion);
+tangError_t TANGRT_API_PUBLIC tangDriverGetVersion(int *driverVersion);
 
 // end doxygen Error
 /**
@@ -130,7 +130,7 @@ tangError_t TANGRT_API_PUBLIC tangPeekAtLastError(void);
  *
  * @see tangGetErrorString, tangGetLastError, tangPeakAtLastError, tangError_t
  */
-TANGRT_API_PUBLIC const char* tangGetErrorName(tangError_t tang_error);
+TANGRT_API_PUBLIC const char *tangGetErrorName(tangError_t tang_error);
 
 /**
  * @brief Return handy text string message to explain the error which occurred
@@ -143,7 +143,7 @@ TANGRT_API_PUBLIC const char* tangGetErrorName(tangError_t tang_error);
  *
  * @see tangGetErrorName, tangGetLastError, tangPeakAtLastError, tangError_t
  */
-TANGRT_API_PUBLIC const char* tangGetErrorString(tangError_t tangError);
+TANGRT_API_PUBLIC const char *tangGetErrorString(tangError_t tangError);
 
 // end doxygen Error
 /**
@@ -170,7 +170,7 @@ TANGRT_API_PUBLIC const char* tangGetErrorString(tangError_t tangError);
  * return #tangErrorNoDevice. If 1 or more devices can be found, then
  * tangGetDeviceCount returns #tangSuccess.
  */
-tangError_t TANGRT_API_PUBLIC tangGetDeviceCount(int* count);
+tangError_t TANGRT_API_PUBLIC tangGetDeviceCount(int *count);
 
 /**
  * @brief Set default device to be used for subsequent tang API calls from this
@@ -222,7 +222,7 @@ tangError_t TANGRT_API_PUBLIC tangSetDevice(int deviceId);
  *
  * @see tangSetDevice, tangGetDevicesizeBytes
  */
-tangError_t TANGRT_API_PUBLIC tangGetDevice(int* deviceId);
+tangError_t TANGRT_API_PUBLIC tangGetDevice(int *deviceId);
 
 /**
  * @brief Waits on all active streams on current device
@@ -250,8 +250,8 @@ tangError_t TANGRT_API_PUBLIC tangDeviceSynchronize(void);
  *
  * Populates tangGetDeviceProperties with information for the specified device.
  */
-TANGRT_API_PUBLIC tangError_t tangGetDeviceProperties(tangDeviceProp* props,
-                                                      int             deviceId);
+TANGRT_API_PUBLIC tangError_t tangGetDeviceProperties(tangDeviceProp *props,
+                                                      int deviceId);
 
 /**
  * @brief Query for a specific device attribute.
@@ -262,9 +262,9 @@ TANGRT_API_PUBLIC tangError_t tangGetDeviceProperties(tangDeviceProp* props,
  *
  * @returns #tangSuccess, #tangErrorInvalidDevice, #tangErrorInvalidValue
  */
-TANGRT_API_PUBLIC tangError_t tangDeviceGetAttribute(int*           value,
+TANGRT_API_PUBLIC tangError_t tangDeviceGetAttribute(int *value,
                                                      tangDeviceAttr attr,
-                                                     int            deviceId);
+                                                     int deviceId);
 
 /**
  * @brief tangDeviceGetPeerPointer.
@@ -276,10 +276,9 @@ TANGRT_API_PUBLIC tangError_t tangDeviceGetAttribute(int*           value,
  * @param[out ] the pointer conver peerAddr to accessAddr;
  * @return #tangSuccess, #tangErrorInvalidValue
  */
-TANGRT_API_PUBLIC tangError_t tangDeviceGetPeerPointer(int    srcDevice,
-                                                       int    port,
-                                                       void*  peerAddr,
-                                                       void** accessAddr);
+TANGRT_API_PUBLIC tangError_t tangDeviceGetPeerPointer(int srcDevice, int port,
+                                                       void *peerAddr,
+                                                       void **accessAddr);
 
 /**
  * @brief tangDeviceGetP2PAttribute.
@@ -292,7 +291,7 @@ TANGRT_API_PUBLIC tangError_t tangDeviceGetPeerPointer(int    srcDevice,
  * @return #tangSuccess, #tangErrorInvalidValue, #tangErrorInvalidDevice
  *
  */
-TANGRT_API_PUBLIC tangError_t tangDeviceGetP2PAttribute(int*              value,
+TANGRT_API_PUBLIC tangError_t tangDeviceGetP2PAttribute(int *value,
                                                         tangDeviceP2PAttr attr,
                                                         int srcDevice,
                                                         int dstDevice);
@@ -307,9 +306,9 @@ TANGRT_API_PUBLIC tangError_t tangDeviceGetP2PAttribute(int*              value,
  * @return #tangSuccess, #tangErrorInvalidDevice
  *
  */
-TANGRT_API_PUBLIC tangError_t tangDeviceCanAccessPeer(int* canAccessPeer,
-                                                      int  device,
-                                                      int  peerDevice);
+TANGRT_API_PUBLIC tangError_t tangDeviceCanAccessPeer(int *canAccessPeer,
+                                                      int device,
+                                                      int peerDevice);
 
 /**
  * @brief tangDeviceEnablePeerAccess.
@@ -336,11 +335,9 @@ TANGRT_API_PUBLIC tangError_t tangDeviceEnablePeerAccess(int peerDevice,
  * @return #tangSuccess
  *
  */
-TANGRT_API_PUBLIC tangError_t tangMemcpyPeer(void*       dst,
-                                             int         dstDevice,
-                                             const void* src,
-                                             int         srcDevice,
-                                             size_t      count);
+TANGRT_API_PUBLIC tangError_t tangMemcpyPeer(void *dst, int dstDevice,
+                                             const void *src, int srcDevice,
+                                             size_t count);
 
 /**
  * @brief tangMemcpyPeerAsync.
@@ -355,38 +352,29 @@ TANGRT_API_PUBLIC tangError_t tangMemcpyPeer(void*       dst,
  * @return #tangSuccess
  *
  */
-TANGRT_API_PUBLIC tangError_t tangMemcpyPeerAsync(void*        dst,
-                                                  int          dstDevice,
-                                                  const void*  src,
-                                                  int          srcDevice,
-                                                  size_t       count,
+TANGRT_API_PUBLIC tangError_t tangMemcpyPeerAsync(void *dst, int dstDevice,
+                                                  const void *src,
+                                                  int srcDevice, size_t count,
                                                   tangStream_t stream);
 
-TANGRT_API_PUBLIC tangError_t tangMemcpyPeer_v2(void*       dst,
-                                                int         dstDevice,
-                                                const void* src,
-                                                int         srcDevice,
-                                                size_t      count);
+TANGRT_API_PUBLIC tangError_t tangMemcpyPeer_v2(void *dst, int dstDevice,
+                                                const void *src, int srcDevice,
+                                                size_t count);
 
-TANGRT_API_PUBLIC tangError_t tangMemcpyPeer_v2_ptds(void*       dst,
-                                                     int         dstDevice,
-                                                     const void* src,
-                                                     int         srcDevice,
-                                                     size_t      count);
+TANGRT_API_PUBLIC tangError_t tangMemcpyPeer_v2_ptds(void *dst, int dstDevice,
+                                                     const void *src,
+                                                     int srcDevice,
+                                                     size_t count);
 
-TANGRT_API_PUBLIC tangError_t tangMemcpyPeerAsync_v2(void*        dst,
-                                                     int          dstDevice,
-                                                     const void*  src,
-                                                     int          srcDevice,
-                                                     size_t       count,
+TANGRT_API_PUBLIC tangError_t tangMemcpyPeerAsync_v2(void *dst, int dstDevice,
+                                                     const void *src,
+                                                     int srcDevice,
+                                                     size_t count,
                                                      tangStream_t stream);
 
-TANGRT_API_PUBLIC tangError_t tangMemcpyPeerAsync_v2_ptsz(void*       dst,
-                                                          int         dstDevice,
-                                                          const void* src,
-                                                          int         srcDevice,
-                                                          size_t      count,
-                                                          tangStream_t stream);
+TANGRT_API_PUBLIC tangError_t
+tangMemcpyPeerAsync_v2_ptsz(void *dst, int dstDevice, const void *src,
+                            int srcDevice, size_t count, tangStream_t stream);
 
 /**
  * @brief tangDeviceDisablePeerAccess.
@@ -408,11 +396,11 @@ TANGRT_API_PUBLIC tangError_t tangDeviceDisablePeerAccess(int peerDevice);
  * Note: Currently, only tangLimitMallocHeapSize is available
  *
  */
-TANGRT_API_PUBLIC tangError_t tangDeviceGetLimit(size_t*        pValue,
+TANGRT_API_PUBLIC tangError_t tangDeviceGetLimit(size_t *pValue,
                                                  enum tangLimit limit);
 
 TANGRT_API_PUBLIC tangError_t tangDeviceSetLimit(enum tangLimit limit,
-                                                 size_t         value);
+                                                 size_t value);
 
 TANGRT_API_PUBLIC tangError_t tangDeviceReset(void);
 
@@ -423,8 +411,8 @@ TANGRT_API_PUBLIC tangError_t tangDeviceReset(void);
  *
  * @returns #tangSuccess, #tangErrorInavlidDevice, #tangErrorInvalidValue
  */
-TANGRT_API_PUBLIC tangError_t tangDeviceGetByPCIBusId(int*        device,
-                                                      const char* pciBusId);
+TANGRT_API_PUBLIC tangError_t tangDeviceGetByPCIBusId(int *device,
+                                                      const char *pciBusId);
 
 /**
  * @brief Returns a PCI Bus Id string for the device.
@@ -434,9 +422,8 @@ TANGRT_API_PUBLIC tangError_t tangDeviceGetByPCIBusId(int*        device,
  * @param [in] deviceId - device handle
  * @returns #tangSuccess, #tangErrorInavlidDevice, #tangErrorInvalidValue
  */
-TANGRT_API_PUBLIC tangError_t tangDeviceGetPCIBusId(char* pciBusId,
-                                                    int   len,
-                                                    int   deviceId);
+TANGRT_API_PUBLIC tangError_t tangDeviceGetPCIBusId(char *pciBusId, int len,
+                                                    int deviceId);
 
 /**
  * @brief Set L1/Shared cache partition.
@@ -460,7 +447,7 @@ TANGRT_API_PUBLIC tangError_t tangDeviceSetCacheConfig(tangFuncCache config);
  * Thus these hints and controls are ignored on those architectures.
  *
  */
-TANGRT_API_PUBLIC tangError_t tangDeviceGetCacheConfig(tangFuncCache* config);
+TANGRT_API_PUBLIC tangError_t tangDeviceGetCacheConfig(tangFuncCache *config);
 
 /**
  * @brief The bank width of shared memory on current device is set
@@ -488,7 +475,7 @@ tangDeviceSetSharedMemConfig(tangSharedMemConfig config);
  *
  */
 TANGRT_API_PUBLIC tangError_t
-tangDeviceGetSharedMemConfig(tangSharedMemConfig* config);
+tangDeviceGetSharedMemConfig(tangSharedMemConfig *config);
 
 /**
  * @brief Returns numerical values that correspond to the least and greatest
@@ -508,7 +495,7 @@ tangDeviceGetSharedMemConfig(tangSharedMemConfig* config);
  * priority is automatically clamped to within the valid range.
  */
 TANGRT_API_PUBLIC tangError_t
-tangDeviceGetStreamPriorityRange(int* leastPriority, int* greatestPriority);
+tangDeviceGetStreamPriorityRange(int *leastPriority, int *greatestPriority);
 
 /**
  * @brief Set a list of devices that can be used for TANG.
@@ -530,7 +517,7 @@ tangDeviceGetStreamPriorityRange(int* leastPriority, int* greatestPriority);
  * @return #tangSuccess, #tangErrorInvalidValue, #tangErrorInvalidDevice
  *
  */
-TANGRT_API_PUBLIC tangError_t tangSetValidDevices(int* device_arr, int len);
+TANGRT_API_PUBLIC tangError_t tangSetValidDevices(int *device_arr, int len);
 
 /**
  * @brief Select compute-device which best matches criteria.
@@ -542,7 +529,7 @@ TANGRT_API_PUBLIC tangError_t tangSetValidDevices(int* device_arr, int len);
  *
  */
 TANGRT_API_PUBLIC tangError_t
-tangChooseDevice(int* device, const tangDeviceProp* properties);
+tangChooseDevice(int *device, const tangDeviceProp *properties);
 
 // end doxygen Device
 /**
@@ -572,7 +559,7 @@ tangChooseDevice(int* device, const tangDeviceProp* properties);
  *  @see tangMallocPitch, tangFree, tangMallocArray, tangFreeArray,
  * tangMalloc3D, tangMalloc3DArray, tangHostFree, tangHostMalloc
  */
-tangError_t TANGRT_API_PUBLIC tangMalloc(void** pptr, size_t sizeBytes);
+tangError_t TANGRT_API_PUBLIC tangMalloc(void **pptr, size_t sizeBytes);
 
 /**
  * @brief Allocate memory.
@@ -582,12 +569,11 @@ tangError_t TANGRT_API_PUBLIC tangMalloc(void** pptr, size_t sizeBytes);
  * @param hStream
  * @return tangError_t
  */
-tangError_t TANGRT_API_PUBLIC tangMallocAsync(void**       pptr,
-                                              size_t       sizeBytes,
+tangError_t TANGRT_API_PUBLIC tangMallocAsync(void **pptr, size_t sizeBytes,
                                               tangStream_t hStream);
 
-tangError_t TANGRT_API_PUBLIC tangMallocAsync_ptsz(void**       pptr,
-                                                   size_t       sizeBytes,
+tangError_t TANGRT_API_PUBLIC tangMallocAsync_ptsz(void **pptr,
+                                                   size_t sizeBytes,
                                                    tangStream_t hStream);
 
 /**
@@ -604,7 +590,7 @@ tangError_t TANGRT_API_PUBLIC tangMallocAsync_ptsz(void**       pptr,
  *  @see tangMalloc, tangMallocPitch, tangMallocArray, tangFreeArray,
  * tangHostFree, tangMalloc3D, tangMalloc3DArray, tangHostMalloc
  */
-tangError_t TANGRT_API_PUBLIC tangFree(void* ptr);
+tangError_t TANGRT_API_PUBLIC tangFree(void *ptr);
 
 /**
  * @brief Free memory block async.
@@ -613,8 +599,8 @@ tangError_t TANGRT_API_PUBLIC tangFree(void* ptr);
  * @param hStream
  * @return tangError_t
  */
-tangError_t TANGRT_API_PUBLIC tangFreeAsync(void* ptr, tangStream_t hStream);
-tangError_t TANGRT_API_PUBLIC tangFreeAsync_ptsz(void*        ptr,
+tangError_t TANGRT_API_PUBLIC tangFreeAsync(void *ptr, tangStream_t hStream);
+tangError_t TANGRT_API_PUBLIC tangFreeAsync_ptsz(void *ptr,
                                                  tangStream_t hStream);
 
 /**
@@ -629,7 +615,7 @@ tangError_t TANGRT_API_PUBLIC tangFreeAsync_ptsz(void*        ptr,
  *  @return #tangSuccess, #tangErrorOutOfMemory
  *
  */
-tangError_t TANGRT_API_PUBLIC tangMallocHost(void** pptr, size_t sizeBytes);
+tangError_t TANGRT_API_PUBLIC tangMallocHost(void **pptr, size_t sizeBytes);
 
 /**
  *  @brief Allocate page locked host memory
@@ -653,8 +639,7 @@ tangError_t TANGRT_API_PUBLIC tangMallocHost(void** pptr, size_t sizeBytes);
  *
  *  @return #tangSuccess, #tangErrorOutOfMemory
  */
-tangError_t TANGRT_API_PUBLIC tangHostAlloc(void**       pptr,
-                                            size_t       sizeBytes,
+tangError_t TANGRT_API_PUBLIC tangHostAlloc(void **pptr, size_t sizeBytes,
                                             unsigned int flags);
 
 /**
@@ -672,8 +657,8 @@ tangError_t TANGRT_API_PUBLIC tangHostAlloc(void**       pptr,
  *
  *  @return #tangSuccess, #tangErrorInvalidValue, #tangErrorMemoryAllocation
  */
-tangError_t TANGRT_API_PUBLIC tangHostGetDevicePointer(void**       pDevice,
-                                                       void*        pHost,
+tangError_t TANGRT_API_PUBLIC tangHostGetDevicePointer(void **pDevice,
+                                                       void *pHost,
                                                        unsigned int flags);
 
 /**
@@ -695,8 +680,8 @@ tangError_t TANGRT_API_PUBLIC tangHostGetDevicePointer(void**       pDevice,
  *
  *  @return #tangSuccess, #tangErrorOutOfMemory
  */
-TANGRT_API_PUBLIC tangError_t tangHostGetFlags(unsigned int* pFlags,
-                                               void*         pHost);
+TANGRT_API_PUBLIC tangError_t tangHostGetFlags(unsigned int *pFlags,
+                                               void *pHost);
 
 /**
  *  @brief Free the page locked host memory allocated by the tang host memory
@@ -708,7 +693,7 @@ TANGRT_API_PUBLIC tangError_t tangHostGetFlags(unsigned int* pFlags,
  *          #tangErrorInvalidValue (if pointer is invalid, including device
  pointers allocated with tangMalloc)
  */
-tangError_t TANGRT_API_PUBLIC tangFreeHost(void* ptr);
+tangError_t TANGRT_API_PUBLIC tangFreeHost(void *ptr);
 
 /**
  *  @brief Register host memory as page locked memory.
@@ -734,8 +719,7 @@ tangError_t TANGRT_API_PUBLIC tangFreeHost(void* ptr);
  *
  *  @see tangHostUnregister, tangHostGetFlags, tangHostGetDevicePointer
  */
-tangError_t TANGRT_API_PUBLIC tangHostRegister(void*        ptr,
-                                               size_t       sizeBytes,
+tangError_t TANGRT_API_PUBLIC tangHostRegister(void *ptr, size_t sizeBytes,
                                                unsigned int flags);
 
 /**
@@ -746,7 +730,7 @@ tangError_t TANGRT_API_PUBLIC tangHostRegister(void*        ptr,
  *
  *  @see tangHostRegister
  */
-tangError_t TANGRT_API_PUBLIC tangHostUnregister(void* ptr);
+tangError_t TANGRT_API_PUBLIC tangHostUnregister(void *ptr);
 
 /**
  *  @brief Copy data from src to dst.
@@ -790,14 +774,11 @@ tangMemcpyHtoAAsync,
 tangMemGetInfo,
  * tangMemHostAlloc, tangMemHostGetDevicePointer
  */
-tangError_t TANGRT_API_PUBLIC tangMemcpy(void*          dst,
-                                         const void*    src,
-                                         size_t         sizeBytes,
-                                         tangMemcpyKind kind);
+tangError_t TANGRT_API_PUBLIC tangMemcpy(void *dst, const void *src,
+                                         size_t sizeBytes, tangMemcpyKind kind);
 
-tangError_t TANGRT_API_PUBLIC tangMemcpy_ptds(void*          dst,
-                                              const void*    src,
-                                              size_t         sizeBytes,
+tangError_t TANGRT_API_PUBLIC tangMemcpy_ptds(void *dst, const void *src,
+                                              size_t sizeBytes,
                                               tangMemcpyKind kind);
 
 /**
@@ -836,18 +817,12 @@ tangError_t TANGRT_API_PUBLIC tangMemcpy_ptds(void*          dst,
  * tangMemHostGetDevicePointer
  */
 tangError_t TANGRT_API_PUBLIC
-tangMemcpyAsync(void*              dst,
-                const void*        src,
-                size_t             sizeBytes,
-                tangMemcpyKind     kind,
-                tangStream_t strem __dparm(nullptr));
+tangMemcpyAsync(void *dst, const void *src, size_t sizeBytes,
+                tangMemcpyKind kind, tangStream_t strem __dparm(nullptr));
 
 tangError_t TANGRT_API_PUBLIC
-tangMemcpyAsync_ptsz(void*              dst,
-                     const void*        src,
-                     size_t             sizeBytes,
-                     tangMemcpyKind     kind,
-                     tangStream_t strem __dparm(nullptr));
+tangMemcpyAsync_ptsz(void *dst, const void *src, size_t sizeBytes,
+                     tangMemcpyKind kind, tangStream_t strem __dparm(nullptr));
 
 /**
  *  @brief Fills the first sizeBytes bytes of the memory area pointed to by dest
@@ -858,12 +833,10 @@ tangMemcpyAsync_ptsz(void*              dst,
  *  @param[in]  sizeBytes Data size in bytes
  *  @return #tangSuccess, #tangErrorInvalidValue, #tangErrorNotInitialized
  */
-tangError_t TANGRT_API_PUBLIC tangMemset(void*  dst,
-                                         int    value,
+tangError_t TANGRT_API_PUBLIC tangMemset(void *dst, int value,
                                          size_t sizeBytes);
 
-tangError_t TANGRT_API_PUBLIC tangMemset_ptds(void*  dst,
-                                              int    value,
+tangError_t TANGRT_API_PUBLIC tangMemset_ptds(void *dst, int value,
                                               size_t sizeBytes);
 
 /**
@@ -882,76 +855,44 @@ tangError_t TANGRT_API_PUBLIC tangMemset_ptds(void*  dst,
  *  @return #tangSuccess, #tangErrorInvalidValue, #tangErrorMemoryFree
  */
 tangError_t TANGRT_API_PUBLIC
-tangMemsetAsync(void*               dst,
-                int                 value,
-                size_t              sizeBytes,
+tangMemsetAsync(void *dst, int value, size_t sizeBytes,
                 tangStream_t stream __dparm(nullptr));
 
 tangError_t TANGRT_API_PUBLIC
-tangMemsetAsync_ptsz(void*              dst,
-                     int                value,
-                     size_t             sizeBytes,
+tangMemsetAsync_ptsz(void *dst, int value, size_t sizeBytes,
                      tangStream_t strem __dparm(nullptr));
 
-tangError_t TANGRT_API_PUBLIC
-tangMemcpyFromSymbol(void*               dst,
-                     const void*         symbol,
-                     size_t              count,
-                     size_t offset       __dparm(0),
-                     tangMemcpyKind kind __dparm(tangMemcpyDeviceToHost));
+tangError_t TANGRT_API_PUBLIC tangMemcpyFromSymbol(
+    void *dst, const void *symbol, size_t count, size_t offset __dparm(0),
+    tangMemcpyKind kind __dparm(tangMemcpyDeviceToHost));
 
-tangError_t TANGRT_API_PUBLIC
-tangMemcpyFromSymbol_ptds(void*               dst,
-                          const void*         symbol,
-                          size_t              count,
-                          size_t offset       __dparm(0),
-                          tangMemcpyKind kind __dparm(tangMemcpyDeviceToHost));
+tangError_t TANGRT_API_PUBLIC tangMemcpyFromSymbol_ptds(
+    void *dst, const void *symbol, size_t count, size_t offset __dparm(0),
+    tangMemcpyKind kind __dparm(tangMemcpyDeviceToHost));
 
-tangError_t TANGRT_API_PUBLIC
-tangMemcpyToSymbol(const void*         symbol,
-                   const void*         src,
-                   size_t              count,
-                   size_t offset       __dparm(0),
-                   tangMemcpyKind kind __dparm(tangMemcpyHostToDevice));
+tangError_t TANGRT_API_PUBLIC tangMemcpyToSymbol(
+    const void *symbol, const void *src, size_t count, size_t offset __dparm(0),
+    tangMemcpyKind kind __dparm(tangMemcpyHostToDevice));
 
-tangError_t TANGRT_API_PUBLIC
-tangMemcpyToSymbol_ptds(const void*         symbol,
-                        const void*         src,
-                        size_t              count,
-                        size_t offset       __dparm(0),
-                        tangMemcpyKind kind __dparm(tangMemcpyHostToDevice));
+tangError_t TANGRT_API_PUBLIC tangMemcpyToSymbol_ptds(
+    const void *symbol, const void *src, size_t count, size_t offset __dparm(0),
+    tangMemcpyKind kind __dparm(tangMemcpyHostToDevice));
 
-tangError_t TANGRT_API_PUBLIC
-tangMemcpyToSymbolAsync(const void*         symbol,
-                        const void*         src,
-                        size_t              count,
-                        size_t              offset,
-                        tangMemcpyKind      kind,
-                        tangStream_t stream __dparm(nullptr));
+tangError_t TANGRT_API_PUBLIC tangMemcpyToSymbolAsync(
+    const void *symbol, const void *src, size_t count, size_t offset,
+    tangMemcpyKind kind, tangStream_t stream __dparm(nullptr));
 
-tangError_t TANGRT_API_PUBLIC
-tangMemcpyToSymbolAsync_ptsz(const void*         symbol,
-                             const void*         src,
-                             size_t              count,
-                             size_t              offset,
-                             tangMemcpyKind      kind,
-                             tangStream_t stream __dparm(nullptr));
+tangError_t TANGRT_API_PUBLIC tangMemcpyToSymbolAsync_ptsz(
+    const void *symbol, const void *src, size_t count, size_t offset,
+    tangMemcpyKind kind, tangStream_t stream __dparm(nullptr));
 
-tangError_t TANGRT_API_PUBLIC
-tangMemcpyFromSymbolAsync(void*               dst,
-                          const void*         symbol,
-                          size_t              count,
-                          size_t              offset,
-                          tangMemcpyKind      kind,
-                          tangStream_t stream __dparm(nullptr));
+tangError_t TANGRT_API_PUBLIC tangMemcpyFromSymbolAsync(
+    void *dst, const void *symbol, size_t count, size_t offset,
+    tangMemcpyKind kind, tangStream_t stream __dparm(nullptr));
 
-tangError_t TANGRT_API_PUBLIC
-tangMemcpyFromSymbolAsync_ptsz(void*               dst,
-                               const void*         symbol,
-                               size_t              count,
-                               size_t              offset,
-                               tangMemcpyKind      kind,
-                               tangStream_t stream __dparm(nullptr));
+tangError_t TANGRT_API_PUBLIC tangMemcpyFromSymbolAsync_ptsz(
+    void *dst, const void *symbol, size_t count, size_t offset,
+    tangMemcpyKind kind, tangStream_t stream __dparm(nullptr));
 
 /**
  * @brief Query memory info.
@@ -962,7 +903,7 @@ tangMemcpyFromSymbolAsync_ptsz(void*               dst,
  * @warning On HCC, the free memory only accounts for memory allocated by this
  *process and may be optimistic.
  **/
-tangError_t TANGRT_API_PUBLIC tangMemGetInfo(size_t* free, size_t* total);
+tangError_t TANGRT_API_PUBLIC tangMemGetInfo(size_t *free, size_t *total);
 
 /**
  * @brief Finds the address associated with a TANG symbol.
@@ -971,8 +912,8 @@ tangError_t TANGRT_API_PUBLIC tangMemGetInfo(size_t* free, size_t* total);
  * @param[in]  symbol Device symbol address
  * @return #tangSuccess, #tangErrorInvalidValue
  **/
-tangError_t TANGRT_API_PUBLIC tangGetSymbolAddress(void**      devPtr,
-                                                   const void* symbol);
+tangError_t TANGRT_API_PUBLIC tangGetSymbolAddress(void **devPtr,
+                                                   const void *symbol);
 
 /**
  * @brief Finds the size of the object associated with a TANG symbol.
@@ -981,8 +922,8 @@ tangError_t TANGRT_API_PUBLIC tangGetSymbolAddress(void**      devPtr,
  * @param[in]  symbol Device symbol address
  * @return #tangSuccess, #tangErrorInvalidValue
  **/
-tangError_t TANGRT_API_PUBLIC tangGetSymbolSize(size_t*     size,
-                                                const void* symbol);
+tangError_t TANGRT_API_PUBLIC tangGetSymbolSize(size_t *size,
+                                                const void *symbol);
 
 // doxygen end Memory
 /**
@@ -1014,7 +955,7 @@ tangError_t TANGRT_API_PUBLIC tangGetSymbolSize(size_t*     size,
  * @see tangStreamCreateWithFlags, tangStreamCreateWithPriority,
  * tangStreamSynchronize, tangStreamWaitEvent, tangStreamDestroy
  */
-tangError_t TANGRT_API_PUBLIC tangStreamCreate(tangStream_t* stream);
+tangError_t TANGRT_API_PUBLIC tangStreamCreate(tangStream_t *stream);
 
 /**
  * @brief communicate to c2c.
@@ -1029,10 +970,10 @@ tangError_t TANGRT_API_PUBLIC tangStreamCreate(tangStream_t* stream);
  *
  */
 tangError_t TANGRT_API_PUBLIC tangStreamC2Ctransfers(tangStream_t stream,
-                                                     uint32_t*    cmd,
-                                                     uint32_t     cmd_count,
-                                                     uint64_t     device_addr,
-                                                     uint32_t     mem_size);
+                                                     uint32_t *cmd,
+                                                     uint32_t cmd_count,
+                                                     uint64_t device_addr,
+                                                     uint32_t mem_size);
 
 /**
  * @brief Create an asynchronous stream.
@@ -1051,8 +992,8 @@ tangError_t TANGRT_API_PUBLIC tangStreamC2Ctransfers(tangStream_t stream,
  * @see tangStreamCreate, tangStreamCreateWithPriority, tangStreamSynchronize,
  * tangStreamWaitEvent, tangStreamDestroy
  */
-tangError_t TANGRT_API_PUBLIC tangStreamCreateWithFlags(tangStream_t* stream,
-                                                        unsigned int  flags __dparm(tangStreamDefault));
+tangError_t TANGRT_API_PUBLIC tangStreamCreateWithFlags(
+    tangStream_t *stream, unsigned int flags __dparm(tangStreamDefault));
 
 /**
  * @brief Create an asynchronous stream with the specified priority.
@@ -1074,9 +1015,9 @@ tangError_t TANGRT_API_PUBLIC tangStreamCreateWithFlags(tangStream_t* stream,
  * @see tangStreamCreate, tangStreamSynchronize, tangStreamWaitEvent,
  * tangStreamDestroy
  */
-tangError_t TANGRT_API_PUBLIC tangStreamCreateWithPriority(tangStream_t* stream,
-                                                           unsigned int  flags __dparm(tangStreamDefault),
-                                                           int priority __dparm(priority_normal));
+tangError_t TANGRT_API_PUBLIC tangStreamCreateWithPriority(
+    tangStream_t *stream, unsigned int flags __dparm(tangStreamDefault),
+    int priority __dparm(priority_normal));
 
 /**
  * @brief Returns numerical values that correspond to the least and greatest
@@ -1095,8 +1036,8 @@ tangError_t TANGRT_API_PUBLIC tangStreamCreateWithPriority(tangStream_t* stream,
  * with a priority value that is outside the the meaningful range as specified
  * by this API, the priority is automatically clamped to within the valid range.
  */
-tangError_t tangDeviceGetStreamPriorityRange(int* leastPriority,
-                                             int* greatestPriority);
+tangError_t tangDeviceGetStreamPriorityRange(int *leastPriority,
+                                             int *greatestPriority);
 
 /**
  * @brief Query the priority of a stream.
@@ -1111,10 +1052,10 @@ tangError_t tangDeviceGetStreamPriorityRange(int* leastPriority,
  * @see tangStreamCreateWithFlags
  */
 tangError_t TANGRT_API_PUBLIC tangStreamGetPriority(tangStream_t hStream,
-                                                    int*         priority);
+                                                    int *priority);
 
 tangError_t TANGRT_API_PUBLIC tangStreamGetPriority_ptsz(tangStream_t stream,
-                                                         int*         priority);
+                                                         int *priority);
 
 /**
  * @brief Destroys the specified stream.
@@ -1177,80 +1118,63 @@ tangError_t TANGRT_API_PUBLIC
 tangStreamBeginCapture(tangStream_t stream, tangStreamCaptureMode mode);
 
 tangError_t TANGRT_API_PUBLIC
-tangStreamBeginCapture_ptsz(tangStream_t               stream,
-                            tangStreamCaptureMode mode);
+tangStreamBeginCapture_ptsz(tangStream_t stream, tangStreamCaptureMode mode);
 
 tangError_t TANGRT_API_PUBLIC tangStreamEndCapture(tangStream_t stream,
-                                                   tangGraph_t* pGraph);
+                                                   tangGraph_t *pGraph);
 
 tangError_t TANGRT_API_PUBLIC tangStreamEndCapture_ptsz(tangStream_t stream,
-                                                        tangGraph_t* pGraph);
+                                                        tangGraph_t *pGraph);
 
 tangError_t TANGRT_API_PUBLIC
-tangStreamIsCapturing(tangStream_t                  stream,
-                      tangStreamCaptureStatus* pStatus);
+tangStreamIsCapturing(tangStream_t stream, tangStreamCaptureStatus *pStatus);
+
+tangError_t TANGRT_API_PUBLIC tangStreamIsCapturing_ptsz(
+    tangStream_t stream, tangStreamCaptureStatus *pStatus);
+
+tangError_t TANGRT_API_PUBLIC tangStreamGetCaptureInfo(
+    tangStream_t hStream, tangStreamCaptureStatus *pStatus,
+    unsigned long long *pId __dparm(0), tangGraph_t *pGraph __dparm(0),
+    const tangGraphNode_t **deps __dparm(0), size_t *numDeps __dparm(0));
+
+tangError_t TANGRT_API_PUBLIC tangStreamGetCaptureInfo_ptsz(
+    tangStream_t hStream, tangStreamCaptureStatus *pStatus,
+    unsigned long long *pId __dparm(0), tangGraph_t *pGraph __dparm(0),
+    const tangGraphNode_t **deps __dparm(0), size_t *numDeps __dparm(0));
 
 tangError_t TANGRT_API_PUBLIC
-tangStreamIsCapturing_ptsz(tangStream_t                  stream,
-                           tangStreamCaptureStatus* pStatus);
+tangThreadExchangeStreamCaptureMode(tangStreamCaptureMode *mode);
 
-tangError_t TANGRT_API_PUBLIC
-tangStreamGetCaptureInfo(tangStream_t                  hStream,
-                         tangStreamCaptureStatus* pStatus,
-                         unsigned long long* pId       __dparm(0),
-                         tangGraph_t* pGraph           __dparm(0),
-                         const tangGraphNode_t** deps  __dparm(0),
-                         size_t* numDeps               __dparm(0));
-
-tangError_t TANGRT_API_PUBLIC
-tangStreamGetCaptureInfo_ptsz(tangStream_t                  hStream,
-                              tangStreamCaptureStatus* pStatus,
-                              unsigned long long* pId       __dparm(0),
-                              tangGraph_t* pGraph           __dparm(0),
-                              const tangGraphNode_t** deps  __dparm(0),
-                              size_t* numDeps               __dparm(0));
-
-tangError_t TANGRT_API_PUBLIC
-tangThreadExchangeStreamCaptureMode(tangStreamCaptureMode* mode);
-
-tangError_t TANGRT_API_PUBLIC tangGraphInstantiate(tangGraphExec_t* pGraphExec,
-                                                   tangGraph_t      graph,
-                                                   void*,
-                                                   void*,
-                                                   unsigned long long);
+tangError_t TANGRT_API_PUBLIC tangGraphInstantiate(tangGraphExec_t *pGraphExec,
+                                                   tangGraph_t graph, void *,
+                                                   void *, unsigned long long);
 
 tangError_t TANGRT_API_PUBLIC tangGraphLaunch(tangGraphExec_t graphExec,
-                                              tangStream_t    stream);
+                                              tangStream_t stream);
 
 tangError_t TANGRT_API_PUBLIC tangGraphLaunch_ptsz(tangGraphExec_t graphExec,
-                                                   tangStream_t    stream);
-tangError_t TANGRT_API_PUBLIC
-tangGraphInstantiateWithFlags(tangGraphExec_t*   pGraphExec,
-                              tangGraph_t        graph,
-                              unsigned long long flags);
+                                                   tangStream_t stream);
+tangError_t TANGRT_API_PUBLIC tangGraphInstantiateWithFlags(
+    tangGraphExec_t *pGraphExec, tangGraph_t graph, unsigned long long flags);
 
 tangError_t TANGRT_API_PUBLIC tangGraphDestroy(tangGraph_t graph);
 tangError_t TANGRT_API_PUBLIC tangGraphExecDestroy(tangGraphExec_t graphExec);
 
-tangError_t TANGRT_API_PUBLIC tangGraphGetInfo(tangGraph_t    graph,
-                                               tangGraphInfo* pInfo);
+tangError_t TANGRT_API_PUBLIC tangGraphGetInfo(tangGraph_t graph,
+                                               tangGraphInfo *pInfo);
 
-tangError_t TANGRT_API_PUBLIC tangGraphCreate(tangGraph_t* pGraph,
+tangError_t TANGRT_API_PUBLIC tangGraphCreate(tangGraph_t *pGraph,
                                               unsigned int flags);
 
-tangError_t TANGRT_API_PUBLIC
-tangGraphAddHostNode(tangGraphNode_t*          pGraphNode,
-                     tangGraph_t               graph,
-                     const tangGraphNode_t*    dependencies,
-                     size_t                    numDependencies,
-                     const tangHostNodeParams* nodeParams);
+tangError_t TANGRT_API_PUBLIC tangGraphAddHostNode(
+    tangGraphNode_t *pGraphNode, tangGraph_t graph,
+    const tangGraphNode_t *dependencies, size_t numDependencies,
+    const tangHostNodeParams *nodeParams);
 
-tangError_t TANGRT_API_PUBLIC
-tangGraphAddKernelNode(tangGraphNode_t*            pGraphNode,
-                       tangGraph_t                 graph,
-                       const tangGraphNode_t*      dependencies,
-                       size_t                      numDependencies,
-                       const tangKernelNodeParams* nodeParams);
+tangError_t TANGRT_API_PUBLIC tangGraphAddKernelNode(
+    tangGraphNode_t *pGraphNode, tangGraph_t graph,
+    const tangGraphNode_t *dependencies, size_t numDependencies,
+    const tangKernelNodeParams *nodeParams);
 
 /**
  * @brief Make the specified compute stream wait for an event
@@ -1273,14 +1197,12 @@ tangGraphAddKernelNode(tangGraphNode_t*            pGraphNode,
  * @see tangStreamCreate, tangStreamCreateWithFlags,
  * tangStreamCreateWithPriority, tangStreamSynchronize, tangStreamDestroy
  */
-tangError_t TANGRT_API_PUBLIC tangStreamWaitEvent(tangStream_t      stream,
-                                                  tangEvent_t       event,
+tangError_t TANGRT_API_PUBLIC tangStreamWaitEvent(tangStream_t stream,
+                                                  tangEvent_t event,
                                                   unsigned int flag __dparm(0));
 
-tangError_t TANGRT_API_PUBLIC
-tangStreamWaitEvent_ptsz(tangStream_t      stream,
-                         tangEvent_t       event,
-                         unsigned int flag __dparm(0));
+tangError_t TANGRT_API_PUBLIC tangStreamWaitEvent_ptsz(
+    tangStream_t stream, tangEvent_t event, unsigned int flag __dparm(0));
 /**
  * @brief Return flags associated with this stream.
  *
@@ -1295,41 +1217,35 @@ tangStreamWaitEvent_ptsz(tangStream_t      stream,
  *
  * @see tangStreamCreateWithFlags
  */
-tangError_t TANGRT_API_PUBLIC tangStreamGetFlags(tangStream_t  stream,
-                                                 unsigned int* flags);
+tangError_t TANGRT_API_PUBLIC tangStreamGetFlags(tangStream_t stream,
+                                                 unsigned int *flags);
 
-tangError_t TANGRT_API_PUBLIC tangStreamGetFlags_ptsz(tangStream_t  stream,
-                                                      unsigned int* flags);
+tangError_t TANGRT_API_PUBLIC tangStreamGetFlags_ptsz(tangStream_t stream,
+                                                      unsigned int *flags);
 
-tangError_t TANGRT_API_PUBLIC tangStreamGetId(tangStream_t stream,
-                                              int*         pId);
+tangError_t TANGRT_API_PUBLIC tangStreamGetId(tangStream_t stream, int *pId);
 
 tangError_t TANGRT_API_PUBLIC tangStreamGetId_ptsz(tangStream_t stream,
-                                                   int*         pId);
+                                                   int *pId);
 
-typedef void (*tangStreamCallback_t)(tangStream_t stream,
-                                     tangError_t  status,
-                                     void*        userData);
-
-tangError_t TANGRT_API_PUBLIC
-tangStreamAddCallback(tangStream_t         stream,
-                      tangStreamCallback_t callback,
-                      void*                userData,
-                      unsigned int         flags);
+typedef void (*tangStreamCallback_t)(tangStream_t stream, tangError_t status,
+                                     void *userData);
 
 tangError_t TANGRT_API_PUBLIC
-tangStreamAddCallback_ptsz(tangStream_t         stream,
-                           tangStreamCallback_t callback,
-                           void*                userData,
-                           unsigned int         flags);
+tangStreamAddCallback(tangStream_t stream, tangStreamCallback_t callback,
+                      void *userData, unsigned int flags);
+
+tangError_t TANGRT_API_PUBLIC
+tangStreamAddCallback_ptsz(tangStream_t stream, tangStreamCallback_t callback,
+                           void *userData, unsigned int flags);
 
 tangError_t TANGRT_API_PUBLIC tangLaunchHostFunc(tangStream_t stream,
                                                  tangHostFn_t fn,
-                                                 void*        userData);
+                                                 void *userData);
 
 tangError_t TANGRT_API_PUBLIC tangLaunchHostFunc_ptsz(tangStream_t stream,
                                                       tangHostFn_t fn,
-                                                      void*        userData);
+                                                      void *userData);
 
 tangError_t TANGRT_API_PUBLIC tangProfilerStart();
 tangError_t TANGRT_API_PUBLIC tangProfilerStop();
@@ -1338,12 +1254,9 @@ tangError_t TANGRT_API_PUBLIC tangProfilerStop();
  * @}
  */
 
-tangError_t TANGRT_API_PUBLIC tangEngineCollAssign(int devId,
-                                                   int collType,
-                                                   uint64_t devAddr,
-                                                   int length,
+tangError_t TANGRT_API_PUBLIC tangEngineCollAssign(int devId, int collType,
+                                                   uint64_t devAddr, int length,
                                                    tangStream_t stream);
-
 
 /**
  *-------------------------------------------------------------------------------------------------
@@ -1380,8 +1293,8 @@ tangError_t TANGRT_API_PUBLIC tangEngineCollAssign(int devId,
  * @see tangEventCreate, tangEventSynchronize, tangEventDestroy,
  tangEventElapsedTime
  */
-tangError_t TANGRT_API_PUBLIC tangEventCreateWithFlags(tangEvent_t* event,
-                                                       unsigned     flag);
+tangError_t TANGRT_API_PUBLIC tangEventCreateWithFlags(tangEvent_t *event,
+                                                       unsigned flag);
 
 /**
  *  Create an event
@@ -1394,7 +1307,7 @@ tangError_t TANGRT_API_PUBLIC tangEventCreateWithFlags(tangEvent_t* event,
  * @see tangEventCreateWithFlags, tangEventRecord, tangEventQuery,
  * tangEventSynchronize, tangEventDestroy, tangEventElapsedTime
  */
-tangError_t TANGRT_API_PUBLIC tangEventCreate(tangEvent_t* event);
+tangError_t TANGRT_API_PUBLIC tangEventCreate(tangEvent_t *event);
 
 /**
  * @brief Record an event in the specified stream.
@@ -1431,15 +1344,13 @@ tangEventRecord(tangEvent_t event, tangStream_t stream __dparm(nullptr));
 tangError_t TANGRT_API_PUBLIC
 tangEventRecord_ptsz(tangEvent_t event, tangStream_t stream __dparm(nullptr));
 
-tangError_t TANGRT_API_PUBLIC
-tangEventRecordWithFlags(tangEvent_t         event,
-                         tangStream_t stream __dparm(nullptr),
-                         unsigned int flags  __dparm(0));
+tangError_t TANGRT_API_PUBLIC tangEventRecordWithFlags(
+    tangEvent_t event, tangStream_t stream __dparm(nullptr),
+    unsigned int flags __dparm(0));
 
-tangError_t TANGRT_API_PUBLIC
-tangEventRecordWithFlags_ptsz(tangEvent_t         event,
-                              tangStream_t stream __dparm(nullptr),
-                              unsigned int flags  __dparm(0));
+tangError_t TANGRT_API_PUBLIC tangEventRecordWithFlags_ptsz(
+    tangEvent_t event, tangStream_t stream __dparm(nullptr),
+    unsigned int flags __dparm(0));
 /**
  *  @brief Destroy the specified event.
  *
@@ -1478,7 +1389,7 @@ tangError_t TANGRT_API_PUBLIC tangEventDestroy(tangEvent_t event);
  * tangEventDestroy, tangEventRecord, tangEventElapsedTime
  */
 tangError_t TANGRT_API_PUBLIC tangEventSynchronize(tangEvent_t event);
-tangError_t TANGRT_API_PUBLIC tangEventSynchronizeWithFlags(tangEvent_t  event,
+tangError_t TANGRT_API_PUBLIC tangEventSynchronizeWithFlags(tangEvent_t event,
                                                             unsigned int flags);
 
 /**
@@ -1511,8 +1422,7 @@ tangError_t TANGRT_API_PUBLIC tangEventSynchronizeWithFlags(tangEvent_t  event,
  * @see tangEventCreate, tangEventCreateWithFlags, tangEventQuery,
  * tangEventDestroy, tangEventRecord, tangEventSynchronize
  */
-tangError_t TANGRT_API_PUBLIC tangEventElapsedTime(float*      ms,
-                                                   tangEvent_t start,
+tangError_t TANGRT_API_PUBLIC tangEventElapsedTime(float *ms, tangEvent_t start,
                                                    tangEvent_t stop);
 
 /**
@@ -1532,8 +1442,8 @@ tangError_t TANGRT_API_PUBLIC tangEventElapsedTime(float*      ms,
  */
 tangError_t TANGRT_API_PUBLIC tangEventQuery(tangEvent_t event);
 
-tangError_t TANGRT_API_PUBLIC tangEventQueryTimestamp(tangEvent_t         event,
-                                                      tangEventTimestamp* ts);
+tangError_t TANGRT_API_PUBLIC tangEventQueryTimestamp(tangEvent_t event,
+                                                      tangEventTimestamp *ts);
 // end doxygen Event
 /**
  * @}
@@ -1559,15 +1469,14 @@ tangError_t TANGRT_API_PUBLIC tangEventQueryTimestamp(tangEvent_t         event,
  * taFuncGetAttributes API.
  */
 
-tangError_t TANGRT_API_PUBLIC tangFuncGetAttributes(tangFuncAttributes* attr,
-                                                    const void*         func);
+tangError_t TANGRT_API_PUBLIC tangFuncGetAttributes(tangFuncAttributes *attr,
+                                                    const void *func);
 
 tangError_t TANGRT_API_PUBLIC tangGetFuncBySymbol(tangFunction_t *hFunc,
                                                   const void *symbol);
 
-tangError_t TANGRT_API_PUBLIC
-tangPointerGetAttributes(struct tangPointerAttributes* attributes,
-                         const void*                   ptr);
+tangError_t TANGRT_API_PUBLIC tangPointerGetAttributes(
+    struct tangPointerAttributes *attributes, const void *ptr);
 
 /**
  * @brief Set attribute for a specific function
@@ -1587,9 +1496,9 @@ tangPointerGetAttributes(struct tangPointerAttributes* attributes,
  * more types of TAfunction_attribute.
  *
  */
-tangError_t TANGRT_API_PUBLIC tangFuncSetAttribute(const void*       func,
+tangError_t TANGRT_API_PUBLIC tangFuncSetAttribute(const void *func,
                                                    tangFuncAttribute attr,
-                                                   int               value);
+                                                   int value);
 
 /**
  * @brief Set Cache configuration for a specific function
@@ -1601,7 +1510,7 @@ tangError_t TANGRT_API_PUBLIC tangFuncSetAttribute(const void*       func,
  * Note: PT devices do not support reconfigurable cache. This hint is ignored.
  *
  */
-tangError_t TANGRT_API_PUBLIC tangFuncSetCacheConfig(const void*   func,
+tangError_t TANGRT_API_PUBLIC tangFuncSetCacheConfig(const void *func,
                                                      tangFuncCache config);
 
 /**
@@ -1618,7 +1527,7 @@ tangError_t TANGRT_API_PUBLIC tangFuncSetCacheConfig(const void*   func,
  *
  */
 tangError_t TANGRT_API_PUBLIC
-tangFuncSetSharedMemConfig(const void* func, tangSharedMemConfig config);
+tangFuncSetSharedMemConfig(const void *func, tangSharedMemConfig config);
 
 /**
  * @brief Converts a double argument to be executed on a device.
@@ -1630,7 +1539,7 @@ tangFuncSetSharedMemConfig(const void* func, tangSharedMemConfig config);
  * simulation.
  *
  */
-TANGRT_API_PUBLIC tangError_t tangSetDoubleForDevice(double* d);
+TANGRT_API_PUBLIC tangError_t tangSetDoubleForDevice(double *d);
 
 /**
  * @brief Converts a double argument after execution on a device.
@@ -1642,7 +1551,7 @@ TANGRT_API_PUBLIC tangError_t tangSetDoubleForDevice(double* d);
  * simulation.
  *
  */
-TANGRT_API_PUBLIC tangError_t tangSetDoubleForHost(double* d);
+TANGRT_API_PUBLIC tangError_t tangSetDoubleForHost(double *d);
 
 // doxygen end Execution Control
 /**
@@ -1668,11 +1577,8 @@ TANGRT_API_PUBLIC tangError_t tangSetDoubleForHost(double* d);
  * @returns #tangSuccess, #tangErrorInvalidValue
  *
  */
-TANGRT_API_PUBLIC tangError_t
-tangOccupancyMaxActiveBlocksPerMultiprocessor(int*        numBlocks,
-                                              const void* func,
-                                              int         blockSize,
-                                              size_t      dynamicSMemSize);
+TANGRT_API_PUBLIC tangError_t tangOccupancyMaxActiveBlocksPerMultiprocessor(
+    int *numBlocks, const void *func, int blockSize, size_t dynamicSMemSize);
 
 /**
  * @brief Returns occupancy for a device function with the specified flags.
@@ -1687,30 +1593,30 @@ tangOccupancyMaxActiveBlocksPerMultiprocessor(int*        numBlocks,
  *
  */
 TANGRT_API_PUBLIC tangError_t
-tangOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(int*        numBlocks,
-                                                       const void* func,
-                                                       int         blockSize,
+tangOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(int *numBlocks,
+                                                       const void *func,
+                                                       int blockSize,
                                                        size_t dynamicSMemSize,
                                                        unsigned int flags);
 
-TANGRT_API_PUBLIC tangError_t tangIpcGetMemHandle(tangIpcMemHandle_t* pHandle,
-                                                  void*               devPtr);
+TANGRT_API_PUBLIC tangError_t tangIpcGetMemHandle(tangIpcMemHandle_t *pHandle,
+                                                  void *devPtr);
 
-TANGRT_API_PUBLIC tangError_t tangIpcOpenMemHandle(void**             devPtr,
+TANGRT_API_PUBLIC tangError_t tangIpcOpenMemHandle(void **devPtr,
                                                    tangIpcMemHandle_t handle,
-                                                   unsigned int       flags);
+                                                   unsigned int flags);
 
-TANGRT_API_PUBLIC tangError_t tangIpcCloseMemHandle(void* devPtr);
-
-TANGRT_API_PUBLIC tangError_t
-tangIpcGetEventHandle(tangIpcEventHandle_t* pHandle, tangEvent_t event);
+TANGRT_API_PUBLIC tangError_t tangIpcCloseMemHandle(void *devPtr);
 
 TANGRT_API_PUBLIC tangError_t
-tangIpcOpenEventHandle(tangEvent_t* phEvent, tangIpcEventHandle_t handle);
+tangIpcGetEventHandle(tangIpcEventHandle_t *pHandle, tangEvent_t event);
+
+TANGRT_API_PUBLIC tangError_t
+tangIpcOpenEventHandle(tangEvent_t *phEvent, tangIpcEventHandle_t handle);
 
 // private api
-TANGRT_API_PUBLIC tangError_t tangGetExportTable(void** pExportedTable,
-                                                 void*  args);
+TANGRT_API_PUBLIC tangError_t tangGetExportTable(void **pExportedTable,
+                                                 void *args);
 
 // end doxygen Occupancy
 /**
@@ -1719,77 +1625,76 @@ TANGRT_API_PUBLIC tangError_t tangGetExportTable(void** pExportedTable,
 
 #ifdef __cplusplus
 }
-#endif  //! __cplusplus
+#endif //! __cplusplus
 
 #ifdef __cplusplus
 template <typename T>
-inline tangError_t tangMalloc(T** pptr, size_t sizeBytes) {
-  return ::tangMalloc((void**)pptr, sizeBytes);
+inline tangError_t tangMalloc(T **pptr, size_t sizeBytes) {
+  return ::tangMalloc((void **)pptr, sizeBytes);
 }
 template <typename T>
-inline tangError_t tangMallocHost(T** pptr, size_t sizeBytes) {
-  return ::tangMallocHost((void**)pptr, sizeBytes);
+inline tangError_t tangMallocHost(T **pptr, size_t sizeBytes) {
+  return ::tangMallocHost((void **)pptr, sizeBytes);
 }
 template <typename T>
-inline tangError_t tangMallocAsync(T** pptr, size_t sizeBytes, tangStream_t stream) {
-  return ::tangMallocAsync((void**)pptr, sizeBytes, stream);
+inline tangError_t tangMallocAsync(T **pptr, size_t sizeBytes,
+                                   tangStream_t stream) {
+  return ::tangMallocAsync((void **)pptr, sizeBytes, stream);
 }
 template <typename T>
-inline tangError_t tangMallocAsync_ptsz(T** pptr, size_t sizeBytes, tangStream_t stream) {
-  return ::tangMallocAsync_ptsz((void**)pptr, sizeBytes, stream);
+inline tangError_t tangMallocAsync_ptsz(T **pptr, size_t sizeBytes,
+                                        tangStream_t stream) {
+  return ::tangMallocAsync_ptsz((void **)pptr, sizeBytes, stream);
 }
 template <typename T>
-inline tangError_t tangHostAlloc(T**          pptr,
-                                 size_t       sizeBytes,
+inline tangError_t tangHostAlloc(T **pptr, size_t sizeBytes,
                                  unsigned int flags) {
-  return ::tangHostAlloc((void**)pptr, sizeBytes, flags);
+  return ::tangHostAlloc((void **)pptr, sizeBytes, flags);
 }
 template <typename T>
-inline tangError_t tangHostGetDevicePointer(T**          pDevice,
-                                            void*        pHost,
+inline tangError_t tangHostGetDevicePointer(T **pDevice, void *pHost,
                                             unsigned int flags) {
-  return ::tangHostGetDevicePointer((void**)pDevice, pHost, flags);
+  return ::tangHostGetDevicePointer((void **)pDevice, pHost, flags);
 }
 template <typename T>
-inline tangError_t tangIpcOpenMemHandle(T**                pDevPtr,
-                                        tangIpcMemHandle_t handle,
-                                        unsigned int       flags) {
-  return ::tangIpcOpenMemHandle((void**)pDevPtr, handle, flags);
+inline tangError_t tangIpcOpenMemHandle(T **pDevPtr, tangIpcMemHandle_t handle,
+                                        unsigned int flags) {
+  return ::tangIpcOpenMemHandle((void **)pDevPtr, handle, flags);
 }
-#endif  // __cplusplus
+#endif // __cplusplus
 
 #if defined(__TANGRT_API_PER_THREAD_DEFAULT_STREAM)
-#define tangMemset                __TANGRT_API_PTDS(tangMemset)
-#define tangMemsetAsync           __TANGRT_API_PTSZ(tangMemsetAsync)
-#define tangMemcpy                __TANGRT_API_PTDS(tangMemcpy)
-#define tangMemcpyAsync           __TANGRT_API_PTSZ(tangMemcpyAsync)
-#define tangMallocAsync           __TANGRT_API_PTSZ(tangMallocAsync)
-#define tangFreeAsync             __TANGRT_API_PTSZ(tangFreeAsync)
-#define tangStreamSynchronize     __TANGRT_API_PTSZ(tangStreamSynchronize)
-#define tangStreamQuery           __TANGRT_API_PTSZ(tangStreamQuery)
-#define tangStreamWaitEvent       __TANGRT_API_PTSZ(tangStreamWaitEvent)
-#define tangStreamC2Ctransfers    __TANGRT_API_PTSZ(tangStreamC2Ctransfers)
-#define tangStreamGetFlags        __TANGRT_API_PTSZ(tangStreamGetFlags)
-#define tangStreamGetId           __TANGRT_API_PTSZ(tangStreamGetId)
-#define tangStreamGetPriority     __TANGRT_API_PTSZ(tangStreamGetPriority)
-#define tangStreamAddCallback     __TANGRT_API_PTSZ(tangStreamAddCallback)
-#define tangStreamBeginCapture    __TANGRT_API_PTSZ(tangStreamBeginCapture)
-#define tangStreamEndCapture      __TANGRT_API_PTSZ(tangStreamEndCapture)
-#define tangStreamIsCapturing     __TANGRT_API_PTSZ(tangStreamIsCapturing)
-#define tangStreamGetCaptureInfo  __TANGRT_API_PTSZ(tangStreamGetCaptureInfo)
-#define tangGraphLaunch           __TANGRT_API_PTSZ(tangGraphLaunch)
-#define tangLaunchHostFunc        __TANGRT_API_PTSZ(tangLaunchHostFunc)
-#define tangEventRecord           __TANGRT_API_PTSZ(tangEventRecord)
-#define tangEventRecordWithFlags  __TANGRT_API_PTSZ(tangEventRecordWithFlags)
-#define tangMemcpyFromSymbol      __TANGRT_API_PTDS(tangMemcpyFromSymbol)
+#define tangMemset __TANGRT_API_PTDS(tangMemset)
+#define tangMemsetAsync __TANGRT_API_PTSZ(tangMemsetAsync)
+#define tangMemcpy __TANGRT_API_PTDS(tangMemcpy)
+#define tangMemcpyAsync __TANGRT_API_PTSZ(tangMemcpyAsync)
+#define tangMallocAsync __TANGRT_API_PTSZ(tangMallocAsync)
+#define tangFreeAsync __TANGRT_API_PTSZ(tangFreeAsync)
+#define tangStreamSynchronize __TANGRT_API_PTSZ(tangStreamSynchronize)
+#define tangStreamQuery __TANGRT_API_PTSZ(tangStreamQuery)
+#define tangStreamWaitEvent __TANGRT_API_PTSZ(tangStreamWaitEvent)
+#define tangStreamC2Ctransfers __TANGRT_API_PTSZ(tangStreamC2Ctransfers)
+#define tangStreamGetFlags __TANGRT_API_PTSZ(tangStreamGetFlags)
+#define tangStreamGetId __TANGRT_API_PTSZ(tangStreamGetId)
+#define tangStreamGetPriority __TANGRT_API_PTSZ(tangStreamGetPriority)
+#define tangStreamAddCallback __TANGRT_API_PTSZ(tangStreamAddCallback)
+#define tangStreamBeginCapture __TANGRT_API_PTSZ(tangStreamBeginCapture)
+#define tangStreamEndCapture __TANGRT_API_PTSZ(tangStreamEndCapture)
+#define tangStreamIsCapturing __TANGRT_API_PTSZ(tangStreamIsCapturing)
+#define tangStreamGetCaptureInfo __TANGRT_API_PTSZ(tangStreamGetCaptureInfo)
+#define tangGraphLaunch __TANGRT_API_PTSZ(tangGraphLaunch)
+#define tangLaunchHostFunc __TANGRT_API_PTSZ(tangLaunchHostFunc)
+#define tangEventRecord __TANGRT_API_PTSZ(tangEventRecord)
+#define tangEventRecordWithFlags __TANGRT_API_PTSZ(tangEventRecordWithFlags)
+#define tangMemcpyFromSymbol __TANGRT_API_PTDS(tangMemcpyFromSymbol)
 #define tangMemcpyFromSymbolAsync __TANGRT_API_PTSZ(tangMemcpyFromSymbolAsync)
-#define tangMemcpyToSymbol        __TANGRT_API_PTDS(tangMemcpyToSymbol)
-#define tangMemcpyToSymbolAsync   __TANGRT_API_PTSZ(tangMemcpyToSymbolAsync)
-//#define tangDeviceCanAccessPeer   __TANGRT_API_PTSZ(tangDeviceCanAccessPeer)
-//#define tangDeviceEnablePeerAccess
+#define tangMemcpyToSymbol __TANGRT_API_PTDS(tangMemcpyToSymbol)
+#define tangMemcpyToSymbolAsync __TANGRT_API_PTSZ(tangMemcpyToSymbolAsync)
+// #define tangDeviceCanAccessPeer   __TANGRT_API_PTSZ(tangDeviceCanAccessPeer)
+// #define tangDeviceEnablePeerAccess
 //__TANGRT_API_PTSZ(tangDeviceEnablePeerAccess) #define
-//tangDeviceDisablePeerAccess __TANGRT_API_PTSZ(tangDeviceDisablePeerAccess)
-#endif  //! __TANGRT_API_PER_THREAD_DEFAULT_STREAM
+// tangDeviceDisablePeerAccess __TANGRT_API_PTSZ(tangDeviceDisablePeerAccess)
+#endif //! __TANGRT_API_PER_THREAD_DEFAULT_STREAM
 // end doxygen Events
 /**
  * @}
@@ -1799,73 +1704,59 @@ inline tangError_t tangIpcOpenMemHandle(T**                pDevPtr,
 
 // template is only available in cxx.
 // And these template APIs may cause ambiguous.
-// If you don't want to use these api, please define TANGRT_DISABLE_SYMBOL_TEMPLATE_API
-// before #include <tang_runtime.h> or #include <tang_runtime_api.h>
+// If you don't want to use these api, please define
+// TANGRT_DISABLE_SYMBOL_TEMPLATE_API before #include <tang_runtime.h> or
+// #include <tang_runtime_api.h>
 #if defined(__cplusplus) && !defined(TANGRT_DISABLE_SYMBOL_TEMPLATE_API)
 
 template <typename T>
-inline tangError_t tangGetSymbolAddress(void** devPtr, const T& symbol) {
-  return ::tangGetSymbolAddress((void**)devPtr, (const void*)&symbol);
+inline tangError_t tangGetSymbolAddress(void **devPtr, const T &symbol) {
+  return ::tangGetSymbolAddress((void **)devPtr, (const void *)&symbol);
 }
 
 template <typename T>
-inline tangError_t tangGetSymbolSize(size_t* size, const T& symbol) {
-  return ::tangGetSymbolSize(size, (const void*)&symbol);
+inline tangError_t tangGetSymbolSize(size_t *size, const T &symbol) {
+  return ::tangGetSymbolSize(size, (const void *)&symbol);
 }
 
 template <typename T>
-inline tangError_t tangMemcpyToSymbol(
-  const T&            symbol,
-  const void*         src,
-  size_t              count,
-  size_t              offset = 0,
-  enum tangMemcpyKind kind   = tangMemcpyHostToDevice) {
-  return ::tangMemcpyToSymbol((const void*)&symbol, src, count, offset, kind);
+inline tangError_t
+tangMemcpyToSymbol(const T &symbol, const void *src, size_t count,
+                   size_t offset = 0,
+                   enum tangMemcpyKind kind = tangMemcpyHostToDevice) {
+  return ::tangMemcpyToSymbol((const void *)&symbol, src, count, offset, kind);
 }
 
 template <typename T>
-inline tangError_t tangMemcpyToSymbolAsync(
-  const T&            symbol,
-  const void*         src,
-  size_t              count,
-  size_t              offset = 0,
-  enum tangMemcpyKind kind   = tangMemcpyHostToDevice,
-  tangStream_t        stream = 0) {
-  return ::tangMemcpyToSymbolAsync((const void*)&symbol,
-                                   src,
-                                   count,
-                                   offset,
-                                   kind,
-                                   stream);
+inline tangError_t
+tangMemcpyToSymbolAsync(const T &symbol, const void *src, size_t count,
+                        size_t offset = 0,
+                        enum tangMemcpyKind kind = tangMemcpyHostToDevice,
+                        tangStream_t stream = 0) {
+  return ::tangMemcpyToSymbolAsync((const void *)&symbol, src, count, offset,
+                                   kind, stream);
 }
 
 template <typename T>
-inline tangError_t tangMemcpyFromSymbol(
-  void*               dst,
-  const T&            symbol,
-  size_t              count,
-  size_t              offset = 0,
-  enum tangMemcpyKind kind   = tangMemcpyDeviceToHost) {
-  return ::tangMemcpyFromSymbol(dst, (const void*)&symbol, count, offset, kind);
+inline tangError_t
+tangMemcpyFromSymbol(void *dst, const T &symbol, size_t count,
+                     size_t offset = 0,
+                     enum tangMemcpyKind kind = tangMemcpyDeviceToHost) {
+  return ::tangMemcpyFromSymbol(dst, (const void *)&symbol, count, offset,
+                                kind);
 }
 
 template <typename T>
-inline tangError_t tangMemcpyFromSymbolAsync(
-  void*               dst,
-  const T&            symbol,
-  size_t              count,
-  size_t              offset = 0,
-  enum tangMemcpyKind kind   = tangMemcpyDeviceToHost,
-  tangStream_t        stream = 0) {
-  return ::tangMemcpyFromSymbolAsync(dst,
-                                     (const void*)&symbol,
-                                     count,
-                                     offset,
-                                     kind,
-                                     stream);
+inline tangError_t
+tangMemcpyFromSymbolAsync(void *dst, const T &symbol, size_t count,
+                          size_t offset = 0,
+                          enum tangMemcpyKind kind = tangMemcpyDeviceToHost,
+                          tangStream_t stream = 0) {
+  return ::tangMemcpyFromSymbolAsync(dst, (const void *)&symbol, count, offset,
+                                     kind, stream);
 }
-#endif  //!< TANGRT_SYMBOL_FORCE_CXX_API
+#endif //!< TANGRT_SYMBOL_FORCE_CXX_API
 
-#endif  // __cplusplus
+#endif // __cplusplus
 
-#endif  //! _TANG_RUNTIME_API_H_
+#endif //! _TANG_RUNTIME_API_H_

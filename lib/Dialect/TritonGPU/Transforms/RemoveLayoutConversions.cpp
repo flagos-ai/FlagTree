@@ -1682,4 +1682,5 @@ public:
 
 } // namespace mlir::triton::gpu
 
-#endif// #ifndef FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_RemoveLayoutConversion
+#endif // #ifndef
+       // FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_RemoveLayoutConversion

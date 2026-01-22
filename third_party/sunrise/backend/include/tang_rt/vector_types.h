@@ -17,19 +17,19 @@ Copyright declaration.
 typedef dim3 __DIM3_TYPE__;
 #else
 typedef struct dim3 {
-  unsigned x;  ///< x
-  unsigned y;  ///< y
-  unsigned z;  ///< z
+  unsigned x; ///< x
+  unsigned y; ///< y
+  unsigned z; ///< z
 #ifdef __cplusplus
 #if __cplusplus >= 201103L
   constexpr dim3(unsigned _x = 1, unsigned _y = 1, unsigned _z = 1)
-    : x(_x), y(_y), z(_z) {}
+      : x(_x), y(_y), z(_z) {}
 #else
   dim3(unsigned _x = 1, unsigned _y = 1, unsigned _z = 1)
-    : x(_x), y(_y), z(_z) {}
-#endif  //! __cplusplus >= 201103
-#endif  //! __cplusplus
+      : x(_x), y(_y), z(_z) {}
+#endif //! __cplusplus >= 201103
+#endif //! __cplusplus
 } dim3;
-#endif  //! no __DIM3_TYPE__
+#endif //! no __DIM3_TYPE__
 
-#endif  //! _TANG_RT_INCLUDE_VECTOR_TYPES_H_
+#endif //! _TANG_RT_INCLUDE_VECTOR_TYPES_H_

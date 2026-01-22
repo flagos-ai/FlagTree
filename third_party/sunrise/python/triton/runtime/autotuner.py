@@ -434,8 +434,10 @@ def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_va
     "type cache_results: bool
     """
     if os.getenv('TRITON_OFF_AUTOTUNER', '0') == '1':
+
         def empty_decorator(fn):
             return fn
+
         return empty_decorator
 
     def decorator(fn):

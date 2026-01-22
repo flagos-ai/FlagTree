@@ -6,18 +6,18 @@ Copyright declaration.
 #include "tang_rt/vector_types.h"
 
 #define tangHostAllocDefault 0x00 /**< Default page-locked allocation flag */
-#define tangHostAllocPortable \
+#define tangHostAllocPortable                                                  \
   0x01 /**< Pinned memory accessible by all TANG contexts */
-#define tangHostAllocMapped        0x02 /**< Map allocation into device space */
+#define tangHostAllocMapped 0x02        /**< Map allocation into device space */
 #define tangHostAllocWriteCombined 0x04 /**< Write-combined memory */
-#define tangHostAllocMapDeviceMemory \
+#define tangHostAllocMapDeviceMemory                                           \
   0x100 /**< Allocate device memory and map it to userspace */
 
-#define tangHostRegisterDefault \
+#define tangHostRegisterDefault                                                \
   0x00 /**< Default host memory registration flag */
-#define tangHostRegisterPortable \
+#define tangHostRegisterPortable                                               \
   0x01 /**< Pinned memory accessible by all TANG contexts */
-#define tangHostRegisterMapped \
+#define tangHostRegisterMapped                                                 \
   0x02 /**< Map registered memory into device space */
 #define tangHostRegisterIoMemory 0x04 /**< Memory-mapped I/O space */
 #define tangHostRegisterReadOnly 0x08 /**< Memory-mapped read-only */
@@ -341,7 +341,7 @@ enum tangError {
   tangErrorLaunchTimeOut = 702,
 
   tangErrorPeerAccessAlreadyEnabled = 704,
-  tangErrorPeerAccessNotEnabled     = 705,
+  tangErrorPeerAccessNotEnabled = 705,
 
   /**
    * This error indicates that the memory range passed to ::tangHostRegister()
@@ -707,9 +707,9 @@ enum tangError {
  * TANG memory copy types
  */
 typedef enum tangMemcpyKind {
-  tangMemcpyHostToHost     = 0, /**< Host   -> Host */
-  tangMemcpyHostToDevice   = 1, /**< Host   -> Device */
-  tangMemcpyDeviceToHost   = 2, /**< Device -> Host */
+  tangMemcpyHostToHost = 0,     /**< Host   -> Host */
+  tangMemcpyHostToDevice = 1,   /**< Host   -> Device */
+  tangMemcpyDeviceToHost = 2,   /**< Device -> Host */
   tangMemcpyDeviceToDevice = 3, /**< Device -> Device */
                                 /**
                                  * Direction of the transfer is inferred from the pointer values.
@@ -720,9 +720,9 @@ typedef enum tangMemcpyKind {
 
 enum tangMemoryType {
   tangMemoryTypeUnregistered = 0, /**< Unregistered memory */
-  tangMemoryTypeHost         = 1, /**< Host memory */
-  tangMemoryTypeDevice       = 2, /**< Device memory */
-  tangMemoryTypeManaged      = 3, /**< Managed memory */
+  tangMemoryTypeHost = 1,         /**< Host memory */
+  tangMemoryTypeDevice = 2,       /**< Device memory */
+  tangMemoryTypeManaged = 3,      /**< Managed memory */
 };
 
 struct tangPointerAttributes {
@@ -730,9 +730,9 @@ struct tangPointerAttributes {
 
   int device;
 
-  void* devicePointer;
+  void *devicePointer;
 
-  void* hostPointer;
+  void *hostPointer;
 };
 
 /**
@@ -816,9 +816,9 @@ typedef struct tangFuncAttributes {
  */
 typedef enum tangFuncAttribute {
   tangFuncAttributeMaxDynamicSharedMemorySize =
-    8, /**< Maximum dynamic shared memory size */
+      8, /**< Maximum dynamic shared memory size */
   tangFuncAttributePreferredSharedMemoryCarveout =
-    9, /**< Preferred shared memory-L1 cache split */
+      9, /**< Preferred shared memory-L1 cache split */
   tangFuncAttributeMax
 } tangFuncAttribute;
 
@@ -828,11 +828,11 @@ typedef enum tangFuncAttribute {
  * thus these hints and controls are ignored.
  */
 typedef enum tangFuncCache {
-  tangFuncCachePreferNone,  ///< no preference for shared memory or L1 (default)
-  tangFuncCachePreferShared,  ///< prefer larger shared memory and smaller L1
-                              ///< cache
-  tangFuncCachePreferL1,  ///< prefer larger L1 cache and smaller shared memory
-  tangFuncCachePreferEqual,  ///< prefer equal size L1 cache and shared memory
+  tangFuncCachePreferNone, ///< no preference for shared memory or L1 (default)
+  tangFuncCachePreferShared, ///< prefer larger shared memory and smaller L1
+                             ///< cache
+  tangFuncCachePreferL1, ///< prefer larger L1 cache and smaller shared memory
+  tangFuncCachePreferEqual, ///< prefer equal size L1 cache and shared memory
 } tangFuncCache;
 
 /**
@@ -841,36 +841,36 @@ typedef enum tangFuncCache {
  * thus these hints and controls are ignored.
  */
 typedef enum tangSharedMemConfig {
-  tangSharedMemBankSizeDefault,   ///< The compiler selects a device-specific
-                                  ///< value for the banking.
-  tangSharedMemBankSizeFourByte,  ///< Shared mem is banked at 4-bytes intervals
-                                  ///< and performs best when adjacent threads
-                                  ///< access data 4 bytes apart.
-  tangSharedMemBankSizeEightByte  ///< Shared mem is banked at 8-byte intervals
-                                  ///< and performs best when adjacent threads
-                                  ///< access data 4 bytes apart.
+  tangSharedMemBankSizeDefault,  ///< The compiler selects a device-specific
+                                 ///< value for the banking.
+  tangSharedMemBankSizeFourByte, ///< Shared mem is banked at 4-bytes intervals
+                                 ///< and performs best when adjacent threads
+                                 ///< access data 4 bytes apart.
+  tangSharedMemBankSizeEightByte ///< Shared mem is banked at 8-byte intervals
+                                 ///< and performs best when adjacent threads
+                                 ///< access data 4 bytes apart.
 } tangSharedMemConfig;
 
 /**
  * TANG Limits
  */
 enum tangLimit {
-  tangLimitStackSize      = 0x00, /**< GPU thread stack size */
+  tangLimitStackSize = 0x00,      /**< GPU thread stack size */
   tangLimitPrintfFifoSize = 0x01, /**< GPU printf FIFO size */
   tangLimitMallocHeapSize = 0x02, /**< GPU malloc heap size */
   tangLimitDevRuntimeSyncDepth =
-    0x03, /**< GPU device runtime synchronize depth */
+      0x03, /**< GPU device runtime synchronize depth */
   tangLimitDevRuntimePendingLaunchCount =
-    0x04, /**< GPU device runtime pending launch count */
+      0x04, /**< GPU device runtime pending launch count */
   tangLimitMaxL2FetchGranularity =
-    0x05 /**< A value between 0 and 128 that indicates the
-// maximum fetch granularity of L2 (in Bytes). This is a hint */
+      0x05 /**< A value between 0 and 128 that indicates the
+  // maximum fetch granularity of L2 (in Bytes). This is a hint */
 };
 
 enum tangEventFlags_e {
-  tangEventDefault       = 0x00,
+  tangEventDefault = 0x00,
   tangEventDisableTiming = 0x02,
-  tangEventInterprocess  = 0x04,
+  tangEventInterprocess = 0x04,
 };
 
 enum tangEventSyncFlags_e {
@@ -905,14 +905,14 @@ enum tangEventRecordFlags_e {
 // enum tangMemRangeAttribute {};
 
 typedef enum tangStreamCaptureMode_e {
-  tangStreamCaptureModeGlobal      = 0,
+  tangStreamCaptureModeGlobal = 0,
   tangStreamCaptureModeThreadLocal = 1,
-  tangStreamCaptureModeRelaxed     = 2,
+  tangStreamCaptureModeRelaxed = 2,
 } tangStreamCaptureMode;
 
 typedef enum tangStreamCaptureStatus_e {
-  tangStreamCaptureStatusNone        = 0,
-  tangStreamCaptureStatusActive      = 1,
+  tangStreamCaptureStatusNone = 0,
+  tangStreamCaptureStatusActive = 1,
   tangStreamCaptureStatusInvalidated = 2,
 } tangStreamCaptureStatus;
 
@@ -920,53 +920,53 @@ typedef enum tangStreamCaptureStatus_e {
  * TANG device attribute enum
  */
 typedef enum tangDeviceAttr {
-  tangDevAttrMaxSharedMemPerBlock = 0,        //!< sharedMemPerBlock
-  tangDevAttrMaxRegsPerBlock,                 //!< regsPerBlock
-  tangDevAttrWarpSize,                        //!< warpSize
-  tangDevAttrMemPitch,                        //!< memPitch
-  tangDevAttrMaxThreadsPerBlock,              //!< maxThreadsPerBlock
-  tangDevAttrMaxBlockDimX,                    //!< maxThreadsDimX
-  tangDevAttrMaxBlockDimY,                    //!< maxThreadsDimY
-  tangDevAttrMaxBlockDimZ,                    //!< maxThreadsDimZ
-  tangDevAttrMaxGridDimX,                     //!< maxGridSizeX
-  tangDevAttrMaxGridDimY,                     //!< maxGridSizeY
-  tangDevAttrMaxGridDimZ,                     //!< maxGridSizeZ
-  tangDevAttrClockRate,                       //!< clockRate
-  tangDevAttrTotalConstantMemory,             //!< totalConstMem
-  tangDevAttrMultiProcessorCount,             //!< multiProcessorCount
-  tangDevAttrMaxBlocksPerMultiProcessor,      //!< maxBlocksPerMultiProcessor
-  tangDevAttrAsyncEngineCount,                //!< asyncEngineCount
-  tangDevAttrMemoryClockRate,                 //!< memoryClockRate
-  tangDevAttrGlobalMemoryBusWidth,            //!< memoryBusWidth
-  tangDevAttrL2CacheSize,                     //!< l2CacheSize
-  tangDevAttrMaxThreadsPerMultiProcessor,     //!< maxThreadsPerMultiProcessor
-  tangDevAttrGlobalL1CacheSupported,          //!< globalL1CacheSupported
-  tangDevAttrLocalL1CacheSupported,           //!< localL1CacheSupported
-  tangDevAttrMaxSharedMemoryPerMultiprocessor,//!< sharedMemPerMultiprocessor
-  tangDevAttrMaxRegistersPerMultiprocessor,   //!< regsPerMultiprocessor
-  tangDevAttrStreamPrioritiesSupported,       //!< streamPrioritiesSupported
-  tangDevAttrConcurrentKernels,               //!< concurrentKernels
-  tangDevAttrComputePreemptionSupported,      //!< computePreemptionSupported
-  tangDevAttrKernelExecTimeout,               //!< kernelExecTimeoutEnabled
-  tangDevAttrEccEnabled,                      //!< ECCEnabled
-  tangDevAttrMaxAccessPolicyWindowSize,       //!< accessPolicyMaxWindowSize
-  tangDevAttrTccDriver,                       //!< tccDriver
-  tangDevAttrSingleToDoublePrecisionPerfRatio,//!< singleToDoublePrecisionPerfRatio
-  tangDevAttrCooperativeLaunch,               //!< cooperativeLaunch
-  tangDevAttrCooperativeMultiDeviceLaunch,    //!< cooperativeMultiDeviceLaunch
-  tangDevAttrMaxPersistingL2CacheSize,        //!< persistingL2CacheMaxSize
-  tangDevAttrCanMapHostMemory,                //!< canMapHostMemory
-  tangDevAttrUnifiedAddressing,               //!< unifiedAddressing
-  tangDevAttrManagedMemory,                   //!< managedMemory
-  tangDevAttrConcurrentManagedAccess,         //!< concurrentManagedAccess
-  tangDevAttrDirectManagedMemAccessFromHost,  //!< directManagedMemAccessFromHost
-  tangDevAttrPageableMemoryAccess,            //!< pageableMemoryAccess
-  tangDevAttrPageableMemoryAccessUsesHostPageTables,  //!< pageableMemoryAccessUsesHostPageTables
-  tangDevAttrCanUseHostPointerForRegisteredMem,       //!< canUseHostPointerForRegisteredMem
-  tangDevAttrHostNativeAtomicSupported,       //!< hostNativeAtomicSupported
-  tangDevAttrCanFlushRemoteWrites,            //!< canFlushRemoteWrites
-  tangDevAttrGpuOverlap,                      //!< gpuOverlap
-  tangDevAttrIntegrated,                      //!< integrated
+  tangDevAttrMaxSharedMemPerBlock = 0,         //!< sharedMemPerBlock
+  tangDevAttrMaxRegsPerBlock,                  //!< regsPerBlock
+  tangDevAttrWarpSize,                         //!< warpSize
+  tangDevAttrMemPitch,                         //!< memPitch
+  tangDevAttrMaxThreadsPerBlock,               //!< maxThreadsPerBlock
+  tangDevAttrMaxBlockDimX,                     //!< maxThreadsDimX
+  tangDevAttrMaxBlockDimY,                     //!< maxThreadsDimY
+  tangDevAttrMaxBlockDimZ,                     //!< maxThreadsDimZ
+  tangDevAttrMaxGridDimX,                      //!< maxGridSizeX
+  tangDevAttrMaxGridDimY,                      //!< maxGridSizeY
+  tangDevAttrMaxGridDimZ,                      //!< maxGridSizeZ
+  tangDevAttrClockRate,                        //!< clockRate
+  tangDevAttrTotalConstantMemory,              //!< totalConstMem
+  tangDevAttrMultiProcessorCount,              //!< multiProcessorCount
+  tangDevAttrMaxBlocksPerMultiProcessor,       //!< maxBlocksPerMultiProcessor
+  tangDevAttrAsyncEngineCount,                 //!< asyncEngineCount
+  tangDevAttrMemoryClockRate,                  //!< memoryClockRate
+  tangDevAttrGlobalMemoryBusWidth,             //!< memoryBusWidth
+  tangDevAttrL2CacheSize,                      //!< l2CacheSize
+  tangDevAttrMaxThreadsPerMultiProcessor,      //!< maxThreadsPerMultiProcessor
+  tangDevAttrGlobalL1CacheSupported,           //!< globalL1CacheSupported
+  tangDevAttrLocalL1CacheSupported,            //!< localL1CacheSupported
+  tangDevAttrMaxSharedMemoryPerMultiprocessor, //!< sharedMemPerMultiprocessor
+  tangDevAttrMaxRegistersPerMultiprocessor,    //!< regsPerMultiprocessor
+  tangDevAttrStreamPrioritiesSupported,        //!< streamPrioritiesSupported
+  tangDevAttrConcurrentKernels,                //!< concurrentKernels
+  tangDevAttrComputePreemptionSupported,       //!< computePreemptionSupported
+  tangDevAttrKernelExecTimeout,                //!< kernelExecTimeoutEnabled
+  tangDevAttrEccEnabled,                       //!< ECCEnabled
+  tangDevAttrMaxAccessPolicyWindowSize,        //!< accessPolicyMaxWindowSize
+  tangDevAttrTccDriver,                        //!< tccDriver
+  tangDevAttrSingleToDoublePrecisionPerfRatio, //!< singleToDoublePrecisionPerfRatio
+  tangDevAttrCooperativeLaunch,                //!< cooperativeLaunch
+  tangDevAttrCooperativeMultiDeviceLaunch,     //!< cooperativeMultiDeviceLaunch
+  tangDevAttrMaxPersistingL2CacheSize,         //!< persistingL2CacheMaxSize
+  tangDevAttrCanMapHostMemory,                 //!< canMapHostMemory
+  tangDevAttrUnifiedAddressing,                //!< unifiedAddressing
+  tangDevAttrManagedMemory,                    //!< managedMemory
+  tangDevAttrConcurrentManagedAccess,          //!< concurrentManagedAccess
+  tangDevAttrDirectManagedMemAccessFromHost, //!< directManagedMemAccessFromHost
+  tangDevAttrPageableMemoryAccess,           //!< pageableMemoryAccess
+  tangDevAttrPageableMemoryAccessUsesHostPageTables, //!< pageableMemoryAccessUsesHostPageTables
+  tangDevAttrCanUseHostPointerForRegisteredMem, //!< canUseHostPointerForRegisteredMem
+  tangDevAttrHostNativeAtomicSupported,         //!< hostNativeAtomicSupported
+  tangDevAttrCanFlushRemoteWrites,              //!< canFlushRemoteWrites
+  tangDevAttrGpuOverlap,                        //!< gpuOverlap
+  tangDevAttrIntegrated,                        //!< integrated
   tangDevAttrMaxSharedMemoryPerBlockOptin,    //!< maxSharedMemoryPerBlockOptin
   tangDevAttrGPUDirectRDMASupported,          //!< gpuDirectRDMASupported
   tangDevAttrGPUDirectRDMAFlushWritesOptions, //!< gpuDirectRDMAFlushWritesOptions
@@ -984,7 +984,7 @@ typedef enum tangDeviceAttr {
   tangDevAttrHostRegisterSupported,           //!< hostRegisterSupported
   tangDevAttrHostRegisterReadOnlySupported,   //!< hostRegisterReadOnlySupported
   tangDevAttrMemoryPoolsSupported,            //!< memoryPoolsSupported
-  tangDevAttrMemoryPoolSupportedHandleTypes,  //!< memoryPoolSupportedHandleTypes
+  tangDevAttrMemoryPoolSupportedHandleTypes, //!< memoryPoolSupportedHandleTypes
   tangDevAttrMax
 } tangDeviceAttr;
 
@@ -994,12 +994,12 @@ typedef enum tangDeviceAttr {
  * TANG Device P2P attributes
  */
 enum tangDeviceP2PAttr {
-  tangDevP2PAttrPerformanceRank          = 1,
-  tangDevP2PAttrAccessSupported          = 2,
-  tangDevP2PAttrNativeAtomicSupported    = 3,
+  tangDevP2PAttrPerformanceRank = 1,
+  tangDevP2PAttrAccessSupported = 2,
+  tangDevP2PAttrNativeAtomicSupported = 3,
   tangDevP2PAttrTangArrayAccessSupported = 4,
 };
-#endif  // TANGRT_DEVICE_P2P_ATTR_ENUM
+#endif // TANGRT_DEVICE_P2P_ATTR_ENUM
 
 /**
  *
@@ -1009,130 +1009,130 @@ enum tangDeviceP2PAttr {
  * Need check.
  */
 typedef struct tangDeviceProp {
-  char name[256]; ///< Device name.
-  char uuid[16];  ///< a 16-byte unique identifier
-  uint64_t totalGlobalMem;  ///< size of global memory region (in bytes).
-  int sharedMemPerBlock;  ///< the maximum amount of shared memory
-                               ///< available to a thread block in bytes.
-  int regsPerBlock;   ///< the maximum number of 32-bit registers available to a
-                      ///< thread block.
-  int      warpSize;  ///< the warp size in threads.
-  int memPitch;  ///< the maximum pitch in bytes allowed by the memory copy
-                      ///< functions
-  int maxThreadsPerBlock;  ///< the maximum number of threads per block.
-  int maxThreadsDim[3];  ///< Max number of threads in each dimension (XYZ) of a
-                         ///< block.
-  int      maxGridSize[3];  ///< Max grid dimensions (XYZ).
-  int      clockRate;  ///< Max clock frequency of the multiProcessors in khz.
-  int totalConstMem;  ///< the total amount of constant memory available on
-                           ///< the device in bytes.
-  int multiProcessorCount;  ///< Number of multi-processors (compute units).
-  int maxBlocksPerMultiProcessor;  ///< the number of multiprocessors on the
-                                   ///< device
-  int asyncEngineCount;            ///<
-  int memoryClockRate;  ///< Max global memory clock frequency in khz.
-  int memoryBusWidth;   ///< Global memory bus width in bits.
-  int l2CacheSize;      ///< L2 cache size.
-  int maxThreadsPerMultiProcessor;  ///< Maximum resident threads per
-                                    ///< multi-processor.
-  int globalL1CacheSupported;       ///< whether the device supports caching of
-                                    ///< globals in L1 cache
-  int localL1CacheSupported;  ///< whether the device supports caching of locals
-                              ///< in L1 cache
-  int sharedMemPerMultiprocessor;  ///< Maximum Shared Memory Per Multiprocessor.
-  int regsPerMultiprocessor;  ///< the maximum amount of shared memory available
-                              ///< to a multiprocessor in bytes
-  int streamPrioritiesSupported;  ///< whether the device supports stream
-                                  ///< priorities
-  int concurrentKernels;  ///< Device can possibly execute multiple kernels
-                          ///< concurrently.
-  int computePreemptionSupported;  ///< whether the device supports Compute
-                                   ///< Preemption
+  char name[256];          ///< Device name.
+  char uuid[16];           ///< a 16-byte unique identifier
+  uint64_t totalGlobalMem; ///< size of global memory region (in bytes).
+  int sharedMemPerBlock;   ///< the maximum amount of shared memory
+                           ///< available to a thread block in bytes.
+  int regsPerBlock; ///< the maximum number of 32-bit registers available to a
+                    ///< thread block.
+  int warpSize;     ///< the warp size in threads.
+  int memPitch;     ///< the maximum pitch in bytes allowed by the memory copy
+                    ///< functions
+  int maxThreadsPerBlock; ///< the maximum number of threads per block.
+  int maxThreadsDim[3]; ///< Max number of threads in each dimension (XYZ) of a
+                        ///< block.
+  int maxGridSize[3];   ///< Max grid dimensions (XYZ).
+  int clockRate;        ///< Max clock frequency of the multiProcessors in khz.
+  int totalConstMem;    ///< the total amount of constant memory available on
+                        ///< the device in bytes.
+  int multiProcessorCount; ///< Number of multi-processors (compute units).
+  int maxBlocksPerMultiProcessor; ///< the number of multiprocessors on the
+                                  ///< device
+  int asyncEngineCount;           ///<
+  int memoryClockRate;            ///< Max global memory clock frequency in khz.
+  int memoryBusWidth;             ///< Global memory bus width in bits.
+  int l2CacheSize;                ///< L2 cache size.
+  int maxThreadsPerMultiProcessor; ///< Maximum resident threads per
+                                   ///< multi-processor.
+  int globalL1CacheSupported;      ///< whether the device supports caching of
+                                   ///< globals in L1 cache
+  int localL1CacheSupported; ///< whether the device supports caching of locals
+                             ///< in L1 cache
+  int sharedMemPerMultiprocessor; ///< Maximum Shared Memory Per Multiprocessor.
+  int regsPerMultiprocessor; ///< the maximum amount of shared memory available
+                             ///< to a multiprocessor in bytes
+  int streamPrioritiesSupported; ///< whether the device supports stream
+                                 ///< priorities
+  int concurrentKernels; ///< Device can possibly execute multiple kernels
+                         ///< concurrently.
+  int computePreemptionSupported; ///< whether the device supports Compute
+                                  ///< Preemption
   int kernelExecTimeoutEnabled;  ///< Run time limit for kernels executed on the
                                  ///< device
   int ECCEnabled;                ///< Device has ECC support enabled
-  int accessPolicyMaxWindowSize;  ///< the maximum value of
-                                  ///< tangAccessPolicyWindow::num_bytes
-  int tccDriver;  ///< whether device is a Tesla device using TCC driver
-  int singleToDoublePrecisionPerfRatio;  ///< the ratio of single precision
-                                         ///< performance (in floating-point
-                                         ///< operations per second) to double
-                                         ///< precision performance
-  int cooperativeLaunch;  ///< whether the device supports launching cooperative
-                          ///< kernels via tangLaunchCooperativeKernel
-  int cooperativeMultiDeviceLaunch;  ///< whether the device supports launching
-                                     ///< cooperative kernels via
-                                     ///< tangLaunchCooperativeKernelMultiDevice
-  int persistingL2CacheMaxSize;  ///< L2 cache's maximum persisting lines size
-                                 ///< in bytes
-  int canMapHostMemory;          ///< Check whether TANG can map host memory
-  int unifiedAddressing;  ///< whether the device shares a unified address space
-                          ///< with the host and 0 otherwise
-  int managedMemory;  ///< whether the device supports allocating managed memory
-                      ///< on this system, or 0 if it is not supported
-  int concurrentManagedAccess;  ///< whether the device can coherently access
-                                ///< managed memory concurrently with the CPU
-  int directManagedMemAccessFromHost;  ///< whether the host can directly access
-                                       ///< managed memory on the device without
-                                       ///< migration
-  int pageableMemoryAccess;  ///< whether the device supports coherently
-                             ///< accessing pageable memory without calling
-                             ///< tangHostRegister on it
-  int pageableMemoryAccessUsesHostPageTables;  ///< whether the device accesses
-                                               ///< pageable memory via the
-                                               ///< host's page tables
-  int canUseHostPointerForRegisteredMem;  ///< whether the device can access
-                                          ///< host registered memory at the
-                                          ///< same virtual address as the CPU
+  int accessPolicyMaxWindowSize; ///< the maximum value of
+                                 ///< tangAccessPolicyWindow::num_bytes
+  int tccDriver; ///< whether device is a Tesla device using TCC driver
+  int singleToDoublePrecisionPerfRatio; ///< the ratio of single precision
+                                        ///< performance (in floating-point
+                                        ///< operations per second) to double
+                                        ///< precision performance
+  int cooperativeLaunch; ///< whether the device supports launching cooperative
+                         ///< kernels via tangLaunchCooperativeKernel
+  int cooperativeMultiDeviceLaunch; ///< whether the device supports launching
+                                    ///< cooperative kernels via
+                                    ///< tangLaunchCooperativeKernelMultiDevice
+  int persistingL2CacheMaxSize; ///< L2 cache's maximum persisting lines size
+                                ///< in bytes
+  int canMapHostMemory;         ///< Check whether TANG can map host memory
+  int unifiedAddressing; ///< whether the device shares a unified address space
+                         ///< with the host and 0 otherwise
+  int managedMemory; ///< whether the device supports allocating managed memory
+                     ///< on this system, or 0 if it is not supported
+  int concurrentManagedAccess; ///< whether the device can coherently access
+                               ///< managed memory concurrently with the CPU
+  int directManagedMemAccessFromHost; ///< whether the host can directly access
+                                      ///< managed memory on the device without
+                                      ///< migration
+  int pageableMemoryAccess; ///< whether the device supports coherently
+                            ///< accessing pageable memory without calling
+                            ///< tangHostRegister on it
+  int pageableMemoryAccessUsesHostPageTables; ///< whether the device accesses
+                                              ///< pageable memory via the
+                                              ///< host's page tables
+  int canUseHostPointerForRegisteredMem;      ///< whether the device can access
+                                              ///< host registered memory at the
+  ///< same virtual address as the CPU
 
-  int hostNativeAtomicSupported;  ///< Link between the device and the host
-                                  ///< supports native atomic operations
-  int canFlushRemoteWrites;  ///< Device supports flushing of outstanding remote
-                             ///< writes
-  int gpuOverlap;  ///< Device can possibly copy memory and execute a kernel
-                   ///< concurrently
-  int integrated;  ///< Device is integrated with host memory
-  int maxSharedMemoryPerBlockOptin;     ///< The maximum optin shared memory per
-                                        ///< block. This value may vary by chip.
-                                        ///< See ::tangFuncSetAttribute
-  int gpuDirectRDMASupported;           ///< Device supports GPUDirect RDMA APIs
-  int gpuDirectRDMAFlushWritesOptions;  ///< The returned attribute shall be
-                                        ///< interpreted as a bitmask, where the
-                                        ///< individual bits are listed in the
-                                        ///< ::tangFlushGPUDirectRDMAWritesOptions
-                                        ///< enum
-  int gpuDirectRDMAWritesOrdering;  ///< GPUDirect RDMA writes to the device do
-                                    ///< not need to be flushed for consumers
-                                    ///< within the scope indicated by the
-                                    ///< returned attribute. See
-                                    ///< ::tangGPUDirectRDMAWritesOrdering for
-                                    ///< the numerical values returned here.
-  int  major;     ///< the major revision numbers defining the device's compute
-                  ///< capability
-  int minor;      ///< the minor revision numbers defining the device's compute
-                  ///< capability
-  int  pciBusID;  ///< PCI Bus ID.
-  int  pciDeviceID;           ///< PCI Device ID.
-  int  pciDomainID;           ///< PCI Domain ID
-  int  isMultiGpuBoard;       ///< whether device is on a multi-GPU board.
-  int  multiGpuBoardGroupID;  ///< a unique identifier for a group of devices
-                              ///< associated with the same board
-  int computeMode;  ///< the compute mode that the device is currently in
-  int reservedSharedMemoryPerBlock;  ///< Shared memory reserved by TANG driver
-                                     ///< per block in bytes
-  int sparseTangArraySupported;  ///< Device supports sparse arrays and sparse
-                                 ///< mipmapped arrays
-  int hostRegisterSupported;  ///< Device supports host memory registration via
-                              ///< ::tangHostRegister
-  int hostRegisterReadOnlySupported;  ///< Device supports using the
-                                      ///< ::tangHostRegister flag
-                                      ///< tangHostRegisterReadOnly to register
-                                      ///< memory that must be mapped as
-                                      ///< read-only to the GPU
-  int memoryPoolsSupported;  ///< Device supports using the ::tangMallocAsync
-                             ///< and ::tangMemPool family of APIs
-  int memoryPoolSupportedHandleTypes;  ///< Handle types supported with mempool
-                                       ///< based IPC
+  int hostNativeAtomicSupported; ///< Link between the device and the host
+                                 ///< supports native atomic operations
+  int canFlushRemoteWrites; ///< Device supports flushing of outstanding remote
+                            ///< writes
+  int gpuOverlap; ///< Device can possibly copy memory and execute a kernel
+                  ///< concurrently
+  int integrated; ///< Device is integrated with host memory
+  int maxSharedMemoryPerBlockOptin;    ///< The maximum optin shared memory per
+                                       ///< block. This value may vary by chip.
+                                       ///< See ::tangFuncSetAttribute
+  int gpuDirectRDMASupported;          ///< Device supports GPUDirect RDMA APIs
+  int gpuDirectRDMAFlushWritesOptions; ///< The returned attribute shall be
+                                       ///< interpreted as a bitmask, where the
+                                       ///< individual bits are listed in the
+                                       ///< ::tangFlushGPUDirectRDMAWritesOptions
+                                       ///< enum
+  int gpuDirectRDMAWritesOrdering; ///< GPUDirect RDMA writes to the device do
+                                   ///< not need to be flushed for consumers
+                                   ///< within the scope indicated by the
+                                   ///< returned attribute. See
+                                   ///< ::tangGPUDirectRDMAWritesOrdering for
+                                   ///< the numerical values returned here.
+  int major;       ///< the major revision numbers defining the device's compute
+                   ///< capability
+  int minor;       ///< the minor revision numbers defining the device's compute
+                   ///< capability
+  int pciBusID;    ///< PCI Bus ID.
+  int pciDeviceID; ///< PCI Device ID.
+  int pciDomainID; ///< PCI Domain ID
+  int isMultiGpuBoard;      ///< whether device is on a multi-GPU board.
+  int multiGpuBoardGroupID; ///< a unique identifier for a group of devices
+                            ///< associated with the same board
+  int computeMode; ///< the compute mode that the device is currently in
+  int reservedSharedMemoryPerBlock; ///< Shared memory reserved by TANG driver
+                                    ///< per block in bytes
+  int sparseTangArraySupported; ///< Device supports sparse arrays and sparse
+                                ///< mipmapped arrays
+  int hostRegisterSupported; ///< Device supports host memory registration via
+                             ///< ::tangHostRegister
+  int hostRegisterReadOnlySupported; ///< Device supports using the
+                                     ///< ::tangHostRegister flag
+                                     ///< tangHostRegisterReadOnly to register
+                                     ///< memory that must be mapped as
+                                     ///< read-only to the GPU
+  int memoryPoolsSupported; ///< Device supports using the ::tangMallocAsync
+                            ///< and ::tangMemPool family of APIs
+  int memoryPoolSupportedHandleTypes; ///< Handle types supported with mempool
+                                      ///< based IPC
 } __attribute__((packed)) tangDeviceProp;
 
 /**
@@ -1163,31 +1163,31 @@ typedef enum tangError tangError_t;
  * @brief TANG Device
  * @sa TAdevice
  */
-typedef struct TAdevice_s* tangDevice_t;
+typedef struct TAdevice_s *tangDevice_t;
 
 /**
  * @brief TANG context
  * @sa TAcontext
  */
-typedef struct TActx_s* tangContext_t;
+typedef struct TActx_s *tangContext_t;
 
 /**
  * @brief TANG stream
  * @sa TAstream
  */
-typedef struct TAstream_s* tangStream_t;
+typedef struct TAstream_s *tangStream_t;
 
 /**
  * @brief TANG event
  * @sa TAevent
  */
-typedef struct TAevent_s* tangEvent_t;
+typedef struct TAevent_s *tangEvent_t;
 
 /**
  * @brief TANG function
  * @sa TAfunction
  */
-typedef struct TAfunc_s* tangFunction_t;
+typedef struct TAfunc_s *tangFunction_t;
 
 /**
  * @brief TANG graph & executable graph handle
@@ -1196,28 +1196,28 @@ typedef struct TAfunc_s* tangFunction_t;
  * @sa tangGraphLaunch
  * @sa tangGraphInstantiate
  */
-typedef struct TAgraph_s*     tangGraph_t;
-typedef struct TAgraphExec_s* tangGraphExec_t;
-typedef struct TAgraphNode_s* tangGraphNode_t;
+typedef struct TAgraph_s *tangGraph_t;
+typedef struct TAgraphExec_s *tangGraphExec_t;
+typedef struct TAgraphNode_s *tangGraphNode_t;
 
-typedef void (*tangHostFn_t)(void* userData);
+typedef void (*tangHostFn_t)(void *userData);
 
 typedef struct tangHostNodeParams_s {
   tangHostFn_t fn;
-  void*        userData;
+  void *userData;
 } tangHostNodeParams;
 
 typedef struct tangKernelNodeParams_s {
-  void* func;     /**< Kernel to launch */
-  dim3  gridDim;  /**< Grid dimensions */
-  dim3  blockDim; /**< Block dimensions */
+  void *func;    /**< Kernel to launch */
+  dim3 gridDim;  /**< Grid dimensions */
+  dim3 blockDim; /**< Block dimensions */
 
   /**< Dynamic shared memory size per thread block in bytes */
   unsigned int sharedMemBytes;
 
   /**< Kernel parameters */
-  void** kernelParams;
-  void** extra;
+  void **kernelParams;
+  void **extra;
 } tangKernelNodeParams;
 
 typedef struct tangGraphInfo_s {
@@ -1234,11 +1234,11 @@ typedef struct tangEventTimestamp_s {
 } tangEventTimestamp;
 
 struct tangLanuchParams {
-  void*        func;
-  dim3         gridDim;
-  dim3         blockDim;
-  void**       args;
-  size_t       sharedMemBytes;
+  void *func;
+  dim3 gridDim;
+  dim3 blockDim;
+  void **args;
+  size_t sharedMemBytes;
   tangStream_t stream;
 };
 
@@ -1256,7 +1256,7 @@ struct tangLanuchParams {
  */
 struct __tangFatbinaryWrapper {
   int version;
-  const void* fatbin;
+  const void *fatbin;
   // The TANGCC does not reserve space for size.
   // The size will be parsed from fatbin
   // unsigned long size;
@@ -1265,7 +1265,7 @@ struct __tangFatbinaryWrapper {
   } dso;
 };
 
-#define TANG_IPC_HANDLE_SIZE     64U
+#define TANG_IPC_HANDLE_SIZE 64U
 #define TANG_IPC_MEM_HANDLE_SIZE 64U
 
 #define tangIpcMemLazyEnablePeerAccess 0x01
@@ -1278,4 +1278,4 @@ typedef struct tangIpcEventHandle_s {
   unsigned long reserved[TANG_IPC_HANDLE_SIZE / sizeof(unsigned long)];
 } tangIpcEventHandle_t;
 
-#endif  //! _TANG_RT_DRIVER_TYPES_H_
+#endif //! _TANG_RT_DRIVER_TYPES_H_

@@ -16,27 +16,27 @@ Copyright declaration.
 #ifdef __TANGC_MAJOR__
 
 #ifndef __device__
-#define __device__  __Tdevice__
+#define __device__ __Tdevice__
 #define __Tdevice__ __attribute__((Tdevice))
 #endif
 
 #ifndef __global__
-#define __global__  __Tglobal__
+#define __global__ __Tglobal__
 #define __Tglobal__ __attribute__((Tglobal))
 #endif
 
 #ifndef __constant__
-#define __constant__  __Tconstant__
+#define __constant__ __Tconstant__
 #define __Tconstant__ __attribute__((Tconstant))
 #endif
 
 #ifndef __host__
-#define __host__  __Thost__
+#define __host__ __Thost__
 #define __Thost__ __attribute__((Thost))
 #endif
 
 #ifndef __shared__
-#define __shared__  __Tshared__
+#define __shared__ __Tshared__
 #define __Tshared__ __attribute__((Tshared))
 #endif
 
@@ -58,7 +58,7 @@ Copyright declaration.
 #define TANG_DEPRECATED
 #define TANG_API_EXPORT
 #define TANG_API_IMPORT
-#endif  // unknown compiler, may needs extra care.
+#endif // unknown compiler, may needs extra care.
 
 #if defined(tangrt_shared_EXPORTS)
 #define TANGRT_API_PUBLIC TANG_API_EXPORT
@@ -89,13 +89,13 @@ Copyright declaration.
 #else
 #define __TANGRT_API_PTDS(api) api
 #define __TANGRT_API_PTSZ(api) api
-#endif  //! __TANGRT_API_PER_THREAD_DEFAULT_STREAM
+#endif //! __TANGRT_API_PER_THREAD_DEFAULT_STREAM
 
 #if defined(__TANGRT_API_VERSION_INTERNAL)
 #undef __TANGRT_API_PTDS
 #undef __TANGRT_API_PTSZ
 #define __TANGRT_API_PTDS(api) api
 #define __TANGRT_API_PTSZ(api) api
-#endif  // __TANGRT_API_VERSION_INTERNAL
+#endif // __TANGRT_API_VERSION_INTERNAL
 
-#endif  //! _TANG_RT_INCLUDE_HOST_DEFINES_H_
+#endif //! _TANG_RT_INCLUDE_HOST_DEFINES_H_

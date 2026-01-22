@@ -55,16 +55,15 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   int mem_clock_rate;
   int mem_bus_width;
   TANG_CHECK_AND_RETURN_NULL(taDeviceGetAttribute(
-      &max_shared_mem, TA_DEV_ATTR_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN,
-      device));
-  TANG_CHECK_AND_RETURN_NULL(taDeviceGetAttribute(
-      &max_num_regs, TA_DEV_ATTR_REGS_PER_BLOCK, device));
+      &max_shared_mem, TA_DEV_ATTR_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN, device));
+  TANG_CHECK_AND_RETURN_NULL(
+      taDeviceGetAttribute(&max_num_regs, TA_DEV_ATTR_REGS_PER_BLOCK, device));
   TANG_CHECK_AND_RETURN_NULL(taDeviceGetAttribute(
       &multiprocessor_count, TA_DEV_ATTR_MULTIPROCESSOR_COUNT, device));
-  TANG_CHECK_AND_RETURN_NULL(taDeviceGetAttribute(
-      &warp_size, TA_DEV_ATTR_WARP_SIZE, device));
-  TANG_CHECK_AND_RETURN_NULL(taDeviceGetAttribute(
-      &sm_clock_rate, TA_DEV_ATTR_CLOCK_RATE, device));
+  TANG_CHECK_AND_RETURN_NULL(
+      taDeviceGetAttribute(&warp_size, TA_DEV_ATTR_WARP_SIZE, device));
+  TANG_CHECK_AND_RETURN_NULL(
+      taDeviceGetAttribute(&sm_clock_rate, TA_DEV_ATTR_CLOCK_RATE, device));
   TANG_CHECK_AND_RETURN_NULL(taDeviceGetAttribute(
       &mem_clock_rate, TA_DEV_ATTR_MEMORY_CLOCK_RATE, device));
   TANG_CHECK_AND_RETURN_NULL(taDeviceGetAttribute(
@@ -106,7 +105,8 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
     TANG_CHECK_AND_RETURN_NULL_ALLOW_THREADS(taCtxSetCurrent(pctx));
   }
 
-  TANG_CHECK_AND_RETURN_NULL_ALLOW_THREADS(taModuleLoadData(&mod, data, (size_t)data_size));
+  TANG_CHECK_AND_RETURN_NULL_ALLOW_THREADS(
+      taModuleLoadData(&mod, data, (size_t)data_size));
   TANG_CHECK_AND_RETURN_NULL_ALLOW_THREADS(
       taModuleGetFunction(&fun, mod, name));
   // get allocated registers and spilled registers from the function
@@ -114,7 +114,8 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
   // TANG_CHECK_AND_RETURN_NULL_ALLOW_THREADS(
   //     taFuncGetAttribute(&n_regs, TA_FUNC_ATTRIBUTE_NUM_REGS, fun));
   // TANG_CHECK_AND_RETURN_NULL_ALLOW_THREADS(
-  //     taFuncGetAttribute(&n_spills, CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, fun));
+  //     taFuncGetAttribute(&n_spills, CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES,
+  //     fun));
   // n_spills /= 4;
   TANG_CHECK_AND_RETURN_NULL_ALLOW_THREADS(taFuncGetAttribute(
       &n_max_threads, TA_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK, fun));
@@ -128,12 +129,13 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
   //       cuFuncSetCacheConfig(fun, CU_FUNC_CACHE_PREFER_SHARED));
   //   int shared_total, shared_static;
   //   TANG_CHECK_AND_RETURN_NULL_ALLOW_THREADS(cuDeviceGetAttribute(
-  //       &shared_total, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR,
-  //       device));
+  //       &shared_total,
+  //       CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR, device));
   //   TANG_CHECK_AND_RETURN_NULL_ALLOW_THREADS(cuFuncGetAttribute(
   //       &shared_static, CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, fun));
   //   TANG_CHECK_AND_RETURN_NULL_ALLOW_THREADS(
-  //       cuFuncSetAttribute(fun, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+  //       cuFuncSetAttribute(fun,
+  //       CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
   //                          shared_optin - shared_static));
   // }
   Py_END_ALLOW_THREADS;

@@ -184,17 +184,18 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     ifOp.getConditionMutable().assign(cnd);
     return op;
   }
-  
+
   if (auto asyncCopyOp = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
     rewriter.setInsertionPoint(asyncCopyOp);
     bool hasOriMask = false;
     if (op->hasAttr("sunrise.hasOriMask") == false ||
-        mlir::cast<IntegerAttr>(op->getAttr("sunrise.hasOriMask")).getInt() == 1) {
+        mlir::cast<IntegerAttr>(op->getAttr("sunrise.hasOriMask")).getInt() ==
+            1) {
       hasOriMask = true;
     }
     if (!hasOriMask) {
       Value mask = getPredMask(rewriter, asyncCopyOp.getSrc().getType(),
-                              asyncCopyOp.getMask(), pred);
+                               asyncCopyOp.getMask(), pred);
       asyncCopyOp.getMaskMutable().assign(mask);
     }
     return op;
@@ -203,12 +204,13 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     rewriter.setInsertionPoint(loadOp);
     bool hasOriMask = false;
     if (op->hasAttr("sunrise.hasOriMask") == false ||
-        mlir::cast<IntegerAttr>(op->getAttr("sunrise.hasOriMask")).getInt() == 1) {
+        mlir::cast<IntegerAttr>(op->getAttr("sunrise.hasOriMask")).getInt() ==
+            1) {
       hasOriMask = true;
     }
     if (!hasOriMask) {
       Value mask = getPredMask(rewriter, loadOp.getPtr().getType(),
-                              loadOp.getMask(), pred);
+                               loadOp.getMask(), pred);
       loadOp.getMaskMutable().assign(mask);
     }
     return op;

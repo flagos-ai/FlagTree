@@ -465,4 +465,4 @@ struct PrefetchPass : public impl::TritonGPUPrefetchBase<PrefetchPass> {
 } // namespace triton
 } // namespace mlir
 
-#endif// FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_Prefetch
+#endif // FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_Prefetch

@@ -883,75 +883,76 @@ LinearLayout wmmaDotOperandToLinearLayout(DotOperandEncodingAttr dotWmmaLayout,
   return combineCtaCgaWithShape(ctaLayout, wmmaLayout.getCTALayout(), shape);
 }
 
-LinearLayout sunrisemmaDotOperandToLinearLayout(DotOperandEncodingAttr dotEncAttr, ArrayRef<int64_t> shape) {
+LinearLayout
+sunrisemmaDotOperandToLinearLayout(DotOperandEncodingAttr dotEncAttr,
+                                   ArrayRef<int64_t> shape) {
   MLIRContext *ctx = dotEncAttr.getContext();
   auto rank = shape.size();
   SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, rank);
   unsigned dotOpIdx = dotEncAttr.getOpIdx();
-  SunriseMmaEncodingAttr sunriseMmaAttr = cast<SunriseMmaEncodingAttr>(dotEncAttr.getParent());
-  // auto order = getOrderForDotOperand(dotOpIdx, rank, /*kContig*/ true); //？？？是否应该写死[1,0]
-  SmallVector<unsigned> order({1,0});
+  SunriseMmaEncodingAttr sunriseMmaAttr =
+      cast<SunriseMmaEncodingAttr>(dotEncAttr.getParent());
+  // auto order = getOrderForDotOperand(dotOpIdx, rank, /*kContig*/ true);
+  // //？？？是否应该写死[1,0]
+  SmallVector<unsigned> order({1, 0});
   unsigned elemBitWidth = sunriseMmaAttr.getInputElemBitWidth();
   auto tileLayout = LinearLayout::empty();
-  switch(elemBitWidth) {
+  switch (elemBitWidth) {
   case 32:
-    if(dotOpIdx == 0) {
-      tileLayout = LinearLayout(
-        {{S("register"), {}},
-        {S("lane"), {{1,0}, {2,0}, {0,1}, {0,2}, {0,4}}}
-        }, {outDimNames[order[0]], outDimNames[order[1]]}
-      );
+    if (dotOpIdx == 0) {
+      tileLayout =
+          LinearLayout({{S("register"), {}},
+                        {S("lane"), {{1, 0}, {2, 0}, {0, 1}, {0, 2}, {0, 4}}}},
+                       {outDimNames[order[0]], outDimNames[order[1]]});
     } else {
-      tileLayout = LinearLayout(
-        {{S("register"), {}},
-        {S("lane"), {{1,0}, {2,0}, {4,0}, {0,1}, {0,2}}}
-        }, {outDimNames[order[0]], outDimNames[order[1]]}
-      );
+      tileLayout =
+          LinearLayout({{S("register"), {}},
+                        {S("lane"), {{1, 0}, {2, 0}, {4, 0}, {0, 1}, {0, 2}}}},
+                       {outDimNames[order[0]], outDimNames[order[1]]});
     }
     break;
   case 16:
-    if(dotOpIdx == 0) {
+    if (dotOpIdx == 0) {
       tileLayout = LinearLayout(
-        //{{S("register"), {{1,0}, {8,0}}},   // 有么有8,0好像都行？
-        {{S("register"), {{1,0}}},
-        {S("lane"), {{2,0}, {4,0}, {0,1}, {0,2}, {0,4}}}
-        }, {outDimNames[order[0]], outDimNames[order[1]]}
-      );
+          //{{S("register"), {{1,0}, {8,0}}},   // 有么有8,0好像都行？
+          {{S("register"), {{1, 0}}},
+           {S("lane"), {{2, 0}, {4, 0}, {0, 1}, {0, 2}, {0, 4}}}},
+          {outDimNames[order[0]], outDimNames[order[1]]});
     } else {
-      tileLayout = LinearLayout(
-        {{S("register"), {{1,0}}},
-        {S("lane"), {{2,0}, {4,0}, {0,1}, {0,2}, {0,4}}}
-        }, {outDimNames[order[0]], outDimNames[order[1]]}
-      );
+      tileLayout =
+          LinearLayout({{S("register"), {{1, 0}}},
+                        {S("lane"), {{2, 0}, {4, 0}, {0, 1}, {0, 2}, {0, 4}}}},
+                       {outDimNames[order[0]], outDimNames[order[1]]});
     }
     break;
   case 8:
-    if(dotOpIdx == 0) {
-      tileLayout = LinearLayout(
-        {{S("register"), {{1,0}, {2,0}}},
-        {S("lane"), {{4,0}, {8,0}, {0,1}, {0,2}, {0,4}}}
-        }, {outDimNames[order[0]], outDimNames[order[1]]}
-      );
+    if (dotOpIdx == 0) {
+      tileLayout =
+          LinearLayout({{S("register"), {{1, 0}, {2, 0}}},
+                        {S("lane"), {{4, 0}, {8, 0}, {0, 1}, {0, 2}, {0, 4}}}},
+                       {outDimNames[order[0]], outDimNames[order[1]]});
     } else {
-      tileLayout = LinearLayout(
-        {{S("register"), {{1,0}, {2,0}}},
-        {S("lane"), {{4,0}, {0,1}, {0,2}, {0,4}, {0,8}}}
-        }, {outDimNames[order[0]], outDimNames[order[1]]}
-      );
+      tileLayout =
+          LinearLayout({{S("register"), {{1, 0}, {2, 0}}},
+                        {S("lane"), {{4, 0}, {0, 1}, {0, 2}, {0, 4}, {0, 8}}}},
+                       {outDimNames[order[0]], outDimNames[order[1]]});
     }
     break;
   case 4:
-  default: 
+  default:
     llvm::report_fatal_error("linearlayout not implemented!");
     break;
   }
 
   auto kDim = dotOpIdx == 0 ? rank - 1 : rank - 2;
   auto warpOrder = getDefaultMmaOrder(sunriseMmaAttr);
-  // SmallVector<unsigned> warpOrder = dotOpIdx == 0 ? SmallVector<unsigned>({1,0}) : SmallVector<unsigned>({0,1});
+  // SmallVector<unsigned> warpOrder = dotOpIdx == 0 ?
+  // SmallVector<unsigned>({1,0}) : SmallVector<unsigned>({0,1});
 
-  // LinearLayout warpLayout = identityStandardND(S("warp"), sunriseMmaAttr.getWarpsPerCTA(), warpOrder);
-  LinearLayout warpLayout = broadcastedDotOperandLayout(ctx, sunriseMmaAttr.getWarpsPerCTA(), warpOrder, kDim, S("warp"));
+  // LinearLayout warpLayout = identityStandardND(S("warp"),
+  // sunriseMmaAttr.getWarpsPerCTA(), warpOrder);
+  LinearLayout warpLayout = broadcastedDotOperandLayout(
+      ctx, sunriseMmaAttr.getWarpsPerCTA(), warpOrder, kDim, S("warp"));
 
   // reorder dim names in rep order, so combineCtaCgaWithShape generate proper
   // extension of layout
@@ -963,45 +964,46 @@ LinearLayout sunrisemmaDotOperandToLinearLayout(DotOperandEncodingAttr dotEncAtt
   // join instruction layout and warps using repetition order of dimensions
   LinearLayout ctaLayout = tileLayout.transposeOuts(repDimNames) *
                            warpLayout.transposeOuts(repDimNames);
-  return combineCtaCgaWithShape(ctaLayout, sunriseMmaAttr.getCTALayout(), shape);
+  return combineCtaCgaWithShape(ctaLayout, sunriseMmaAttr.getCTALayout(),
+                                shape);
 }
 
-LinearLayout SunriseMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
+LinearLayout
+SunriseMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   int rank = shape.size();
   assert(rank == 2);
 
   MLIRContext *ctx = getContext();
   SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, rank);
   // SmallVector<unsigned> order = getDefaultMmaOrder(*this);
-  // SmallVector<unsigned> order = getOrderForDotOperand(dotWmmaLayout.getOpIdx(), rank, /*kContig*/ true);
-  SmallVector<unsigned> order = SmallVector<unsigned>({1,0});
+  // SmallVector<unsigned> order =
+  // getOrderForDotOperand(dotWmmaLayout.getOpIdx(), rank, /*kContig*/ true);
+  SmallVector<unsigned> order = SmallVector<unsigned>({1, 0});
 
   SunriseMmaEncodingAttr::TMMAOutLayout outLayout = getOutLayout();
-  if ((outLayout != SunriseMmaEncodingAttr::TMMAOutLayout::Row_2B) && (outLayout != SunriseMmaEncodingAttr::TMMAOutLayout::ARow_4B_8x4)) {
+  if ((outLayout != SunriseMmaEncodingAttr::TMMAOutLayout::Row_2B) &&
+      (outLayout != SunriseMmaEncodingAttr::TMMAOutLayout::ARow_4B_8x4)) {
     assert(0 && "Unsupport SunriseMmaEncodingAttr::TMMAOutLayout yet");
   }
   auto tileLayout = LinearLayout::empty();
-  if(outLayout == SunriseMmaEncodingAttr::TMMAOutLayout::Row_2B) {
+  if (outLayout == SunriseMmaEncodingAttr::TMMAOutLayout::Row_2B) {
     // fp16 row
-    tileLayout = LinearLayout(
-      {{S("register"), {{1, 0}}},
-      //{{S("register"), {}},
-      {S("lane"), {{2,0}, {4,0}, {0,1}, {0,2}, {0,4}}} 
-      },
-      {outDimNames[order[0]], outDimNames[order[1]]}
-    );
-  } else if(outLayout == SunriseMmaEncodingAttr::TMMAOutLayout::ARow_4B_8x4) {
+    tileLayout =
+        LinearLayout({{S("register"), {{1, 0}}},
+                      //{{S("register"), {}},
+                      {S("lane"), {{2, 0}, {4, 0}, {0, 1}, {0, 2}, {0, 4}}}},
+                     {outDimNames[order[0]], outDimNames[order[1]]});
+  } else if (outLayout == SunriseMmaEncodingAttr::TMMAOutLayout::ARow_4B_8x4) {
     // fp32 8x4
-    tileLayout = LinearLayout(
-      {{S("register"), {{4, 0}}},
-      {S("lane"), {{1,0}, {2,0}, {0,1}, {0,2}, {0,4}}}
-      },
-      {outDimNames[order[0]], outDimNames[order[1]]}
-    );
+    tileLayout =
+        LinearLayout({{S("register"), {{4, 0}}},
+                      {S("lane"), {{1, 0}, {2, 0}, {0, 1}, {0, 2}, {0, 4}}}},
+                     {outDimNames[order[0]], outDimNames[order[1]]});
   } else {
     llvm::report_fatal_error("Unsupport sunrisemma outLayout");
   }
-  LinearLayout warpLayout = identityStandardND(S("warp"), getWarpsPerCTA(), order);
+  LinearLayout warpLayout =
+      identityStandardND(S("warp"), getWarpsPerCTA(), order);
   // reorder dim names in rep order, so combineCtaCgaWithShape generate proper
   // extension of layout
   auto repOrder = getRepOrder();
@@ -1174,7 +1176,8 @@ DotOperandEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
     return mfmaDotToLinearLayout(*this, shape);
   } else if (auto wmmaLayout = mlir::dyn_cast<AMDWmmaEncodingAttr>(parent)) {
     return wmmaDotOperandToLinearLayout(*this, shape);
-  } else if (auto sunrisemmaLayout = mlir::dyn_cast<SunriseMmaEncodingAttr>(parent)){
+  } else if (auto sunrisemmaLayout =
+                 mlir::dyn_cast<SunriseMmaEncodingAttr>(parent)) {
     return sunrisemmaDotOperandToLinearLayout(*this, shape);
   } else {
     auto mma = mlir::cast<NvidiaMmaEncodingAttr>(parent);

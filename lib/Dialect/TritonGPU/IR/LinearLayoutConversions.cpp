@@ -1827,4 +1827,4 @@ LinearLayout getTmemLoadLayoutSplitLongM(int M, int N, RankedTensorType oldType,
 
 } // namespace mlir::triton::gpu
 
-#endif//FLAGTREE_SPEC_Triton_Dialect_TritonGPU_IR_sunrise_LinearLayoutConversion
+#endif // FLAGTREE_SPEC_Triton_Dialect_TritonGPU_IR_sunrise_LinearLayoutConversion

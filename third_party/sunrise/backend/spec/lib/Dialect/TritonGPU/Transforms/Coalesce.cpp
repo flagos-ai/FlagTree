@@ -39,7 +39,7 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
 
     auto contiguity = axisInfoAnalysis.getAxisInfo(ptr)->getContiguity();
     SmallVector<unsigned> order = argSort(contiguity);
-    if(order.size() == 2 && order[1] == 1) {
+    if (order.size() == 2 && order[1] == 1) {
       order = {1, 0};
     }
     LDBG("order=[" << triton::join(order, ", ") << "]");

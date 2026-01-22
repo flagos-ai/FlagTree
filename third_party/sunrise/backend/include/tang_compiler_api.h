@@ -21,14 +21,14 @@ extern "C" {
  * @returns tang fatbin handle registered in runtime
  *
  */
-TANGRT_API_PUBLIC void** __tangRegisterFatBinary(void* fatTangbin);
+TANGRT_API_PUBLIC void **__tangRegisterFatBinary(void *fatTangbin);
 
 /**
  * @brief
  *
  * @param fatbinHandle
  */
-TANGRT_API_PUBLIC void __tangRegisterFatBinaryEnd(void** fatbinHandle);
+TANGRT_API_PUBLIC void __tangRegisterFatBinaryEnd(void **fatbinHandle);
 
 /**
  * @brief C compliant unregister fatbinary API
@@ -38,7 +38,7 @@ TANGRT_API_PUBLIC void __tangRegisterFatBinaryEnd(void** fatbinHandle);
  * @returns void
  *
  */
-TANGRT_API_PUBLIC void __tangUnregisterFatBinary(void** fatTangbinHandle);
+TANGRT_API_PUBLIC void __tangUnregisterFatBinary(void **fatTangbinHandle);
 
 /**
  * @brief Register fatbinary
@@ -70,7 +70,7 @@ TANGRT_API_PUBLIC void __tangUnregisterFatBinary(void** fatTangbinHandle);
  * }
  * @endcode
  */
-TANGRT_API_PUBLIC void** __tangRegisterFatBinary_v2(void* fatbinWrapper);
+TANGRT_API_PUBLIC void **__tangRegisterFatBinary_v2(void *fatbinWrapper);
 
 /**
  * @brief Unregister fatbinary
@@ -78,9 +78,9 @@ TANGRT_API_PUBLIC void** __tangRegisterFatBinary_v2(void* fatbinWrapper);
  * @param fatTangbinHandle
  * @return TANGRT_API_PUBLIC
  */
-TANGRT_API_PUBLIC void __tangUnregisterFatBinary_v2(void** fatTangbinHandle);
+TANGRT_API_PUBLIC void __tangUnregisterFatBinary_v2(void **fatTangbinHandle);
 
-TANGRT_API_PUBLIC int __tangInitModule(void** fatTangbinHandle);
+TANGRT_API_PUBLIC int __tangInitModule(void **fatTangbinHandle);
 
 /**
  * @brief C compliant set fatbinary info API
@@ -91,8 +91,8 @@ TANGRT_API_PUBLIC int __tangInitModule(void** fatTangbinHandle);
  * @returns void
  *
  */
-TANGRT_API_PUBLIC void __tangSetFatBinaryInfo(void**      fatbinHandle,
-                                              const char* info);
+TANGRT_API_PUBLIC void __tangSetFatBinaryInfo(void **fatbinHandle,
+                                              const char *info);
 
 /**
  * @brief C compliant register function API
@@ -104,9 +104,9 @@ TANGRT_API_PUBLIC void __tangSetFatBinaryInfo(void**      fatbinHandle,
  * @returns void
  *
  */
-TANGRT_API_PUBLIC void __tangRegisterFunction(const void* hostFunc,
-                                              const char* deviceFuncName,
-                                              void**      fatbinHandle);
+TANGRT_API_PUBLIC void __tangRegisterFunction(const void *hostFunc,
+                                              const char *deviceFuncName,
+                                              void **fatbinHandle);
 
 /**
  * @brief Register device variable.
@@ -130,14 +130,10 @@ TANGRT_API_PUBLIC void __tangRegisterFunction(const void* hostFunc,
  *                        0, sizeof(int), 0, 0);
  * @endcode
  */
-TANGRT_API_PUBLIC void __tangRegisterVariable(void**      fatbinHandle,
-                                              const void* hostVar,
-                                              char*       deviceVarAddress,
-                                              const char* deviceVarName,
-                                              int         ext,
-                                              size_t      size,
-                                              int         constant,
-                                              int         global);
+TANGRT_API_PUBLIC void
+__tangRegisterVariable(void **fatbinHandle, const void *hostVar,
+                       char *deviceVarAddress, const char *deviceVarName,
+                       int ext, size_t size, int constant, int global);
 
 /**
  * @brief C compliant push call configuration API
@@ -153,11 +149,9 @@ TANGRT_API_PUBLIC void __tangRegisterVariable(void**      fatbinHandle,
  * @returns #tangSuccess
  *
  */
-TANGRT_API_PUBLIC tangError_t
-__tangPushCallConfiguration(dim3                  gridDim,
-                            dim3                  blockDim,
-                            size_t sharedMemBytes __dparm(0),
-                            tangStream_t stream   __dparm(0));
+TANGRT_API_PUBLIC tangError_t __tangPushCallConfiguration(
+    dim3 gridDim, dim3 blockDim, size_t sharedMemBytes __dparm(0),
+    tangStream_t stream __dparm(0));
 
 /**
  * @brief C compliant pop call configuration API
@@ -173,10 +167,10 @@ __tangPushCallConfiguration(dim3                  gridDim,
  * @returns #tangSuccess
  *
  */
-TANGRT_API_PUBLIC tangError_t __tangPopCallConfiguration(dim3*   gridDim,
-                                                         dim3*   blockDim,
-                                                         size_t* sharedMemBytes,
-                                                         tangStream_t* stream);
+TANGRT_API_PUBLIC tangError_t __tangPopCallConfiguration(dim3 *gridDim,
+                                                         dim3 *blockDim,
+                                                         size_t *sharedMemBytes,
+                                                         tangStream_t *stream);
 
 /**
  * @brief C compliant kernel launch API
@@ -195,22 +189,16 @@ TANGRT_API_PUBLIC tangError_t __tangPopCallConfiguration(dim3*   gridDim,
  * @returns #tangSuccess, #tangErrorInvalidValue, tangInvalidDevice
  *
  */
-TANGRT_API_PUBLIC tangError_t tangLaunchKernel(const void*           hostFunc,
-                                               dim3                  gridDim,
-                                               dim3                  blockDim,
-                                               void**                args,
-                                               size_t                numArgs,
+TANGRT_API_PUBLIC tangError_t tangLaunchKernel(const void *hostFunc,
+                                               dim3 gridDim, dim3 blockDim,
+                                               void **args, size_t numArgs,
                                                size_t sharedMemBytes __dparm(0),
                                                tangStream_t stream __dparm(0));
 
-TANGRT_API_PUBLIC tangError_t
-tangLaunchKernel_ptsz(const void*           hostFunc,
-                      dim3                  gridDim,
-                      dim3                  blockDim,
-                      void**                args,
-                      size_t                numArgs,
-                      size_t sharedMemBytes __dparm(0),
-                      tangStream_t stream   __dparm(0));
+TANGRT_API_PUBLIC tangError_t tangLaunchKernel_ptsz(
+    const void *hostFunc, dim3 gridDim, dim3 blockDim, void **args,
+    size_t numArgs, size_t sharedMemBytes __dparm(0),
+    tangStream_t stream __dparm(0));
 
 #ifdef __cplusplus
 }
@@ -218,6 +206,6 @@ tangLaunchKernel_ptsz(const void*           hostFunc,
 
 #if defined(__TANGRT_API_PER_THREAD_DEFAULT_STREAM)
 #define tangLaunchKernel __TANGRT_API_PTSZ(tangLaunchKernel)
-#endif  //! __TANGRT_API_PER_THREAD_DEFAULT_STREAM
+#endif //! __TANGRT_API_PER_THREAD_DEFAULT_STREAM
 
-#endif  //! _TANG_RT_TANG_COMPILER_API_H
+#endif //! _TANG_RT_TANG_COMPILER_API_H

@@ -304,14 +304,16 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
         user->hasTrait<OpTrait::Elementwise>() ||
         isa<ReduceOp, ExpandDimsOp, ReshapeOp, TransOp, JoinOp, SplitOp,
             ConvertLayoutOp>(user)) {
-      if(isa<arith::TruncFOp, arith::TruncIOp>(user)) {
-        auto srcType = dyn_cast<RankedTensorType>(user->getOperand(0).getType());
+      if (isa<arith::TruncFOp, arith::TruncIOp>(user)) {
+        auto srcType =
+            dyn_cast<RankedTensorType>(user->getOperand(0).getType());
         auto dstType = dyn_cast<RankedTensorType>(user->getResult(0).getType());
-        if(srcType != nullptr && dstType != nullptr) {
+        if (srcType != nullptr && dstType != nullptr) {
           auto srcElemType = srcType.getElementType();
           auto dstElemType = dstType.getElementType();
-          if((srcElemType.getIntOrFloatBitWidth() == 32 && dstElemType.getIntOrFloatBitWidth() == 16)
-          || (dstElemType.getIntOrFloatBitWidth() == 8)){
+          if ((srcElemType.getIntOrFloatBitWidth() == 32 &&
+               dstElemType.getIntOrFloatBitWidth() == 16) ||
+              (dstElemType.getIntOrFloatBitWidth() == 8)) {
             continue;
           }
         }

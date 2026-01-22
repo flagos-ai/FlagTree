@@ -1,8 +1,8 @@
 #ifndef __TAPTI_CALLBACKS_HPP__
 #define __TAPTI_CALLBACKS_HPP__
 
-#include <stdint.h>
 #include "tapti_result.h"
+#include <stdint.h>
 
 /**
  * \brief Callback domains.
@@ -14,20 +14,20 @@ typedef enum {
   /**
    * Invalid domain.
    */
-  TAPTI_CB_DOMAIN_INVALID           = 0,
+  TAPTI_CB_DOMAIN_INVALID = 0,
   /**
    * Domain containing callback points for all driver API functions.
    */
-  TAPTI_CB_DOMAIN_DRIVER_API        = 1,
+  TAPTI_CB_DOMAIN_DRIVER_API = 1,
   /**
    * Domain containing callback points for all runtime API
    * functions.
    */
-  TAPTI_CB_DOMAIN_RUNTIME_API       = 2,
+  TAPTI_CB_DOMAIN_RUNTIME_API = 2,
   TAPTI_CB_DOMAIN_SIZE,
 
-  TAPTI_CB_DOMAIN_FORCE_INT         = 0x7fffffff
-}TApti_CallbackDomain;
+  TAPTI_CB_DOMAIN_FORCE_INT = 0x7fffffff
+} TApti_CallbackDomain;
 
 /**
  * \brief An ID for a driver API, runtime API, resource or
@@ -47,7 +47,7 @@ typedef uint32_t TApti_CallbackId;
 
 #ifdef __cplusplus
 extern "C" {
-#endif  //! __cplusplus
+#endif //! __cplusplus
 
 #if defined(_MSC_VER)
 #define TAPTI_DEPRECATED __declspec(deprecated)
@@ -61,13 +61,13 @@ extern "C" {
 #define TAPTI_DEPRECATED
 #define TAPTI_API_EXPORT
 #define TAPTI_API_IMPORT
-#endif  //! UNKNOWN COMPILER
+#endif //! UNKNOWN COMPILER
 
 #if defined(tapti_shared_EXPORTS)
 #define TAPTI_API TAPTI_API_EXPORT
 #else
 #define TAPTI_API TAPTI_API_IMPORT
-#endif  //! For user
+#endif //! For user
 
 /**
  * \brief Get the name of a callback for a specific domain and callback ID.
@@ -85,8 +85,7 @@ extern "C" {
  * \p domain or \p cbid is invalid.
  */
 TAptiResult TAPTI_API taptiGetCallbackName(TApti_CallbackDomain domain,
-                                          uint32_t cbid,
-                                          const char **name);
+                                           uint32_t cbid, const char **name);
 /**
  * \brief Get the TAPTI timestamp.
  *
@@ -103,7 +102,6 @@ TAptiResult TAPTI_API taptiGetTimestamp(uint64_t *timestamp);
 
 #ifdef __cplusplus
 }
-#endif  //! __cplusplus
+#endif //! __cplusplus
 
-#endif  // __TAPTI_CALLBACKS_HPP__
-
+#endif // __TAPTI_CALLBACKS_HPP__

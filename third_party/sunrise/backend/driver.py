@@ -16,6 +16,7 @@ libdevice_dir = os.path.join(dirname, "lib")
 libraries = ['tang', 'tangrt_shared']
 arch = platform.machine()
 
+
 @functools.lru_cache()
 def libtang_dirs():
     if env_libtang_path := knobs.sunrise.libtang_path:
@@ -97,6 +98,7 @@ def ty_to_cpp(ty):
         "fp64": "double",
     }[ty]
 
+
 FLOAT_STORAGE_TYPE = {
     "fp16": "uint16_t",
     "bf16": "uint16_t",
@@ -114,7 +116,9 @@ FLOAT_PACK_FUNCTION = {
 
 _BASE_ARGS_FORMAT = "iiiKKOOOO"
 
+
 def make_launcher(constants, signature, warp_size):
+
     def _expand_signature(signature):
         output = []
         # Expand tensor descriptor arguments into base pointer, shape, and
@@ -433,8 +437,10 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
 """
     return src
 
+
 def wrap_handle_tensor_descriptor(launcher):
     from triton.tools.tensor_descriptor import TensorDescriptor
+
     def inner(*args):
         meta_args = args[:len(_BASE_ARGS_FORMAT)]
         raw_kernel_args = args[len(_BASE_ARGS_FORMAT):]
@@ -453,6 +459,7 @@ def wrap_handle_tensor_descriptor(launcher):
         return launcher(*meta_args, *final_args)
 
     return inner
+
 
 class SunriseLauncher(object):
 
@@ -487,7 +494,7 @@ class SunriseDriver(GPUDriver):
         capability = "S2"
         warp_size = 32
         return GPUTarget("tang", capability, warp_size)
-    
+
     def get_active_torch_device(self):
         import torch
         return torch.device("cuda", self.get_current_device())
@@ -501,7 +508,7 @@ class SunriseDriver(GPUDriver):
         if os.getenv('FLAGTREE_BACKEND', '') == 'sunrise':
             return True
         return False
-    
+
     def get_benchmarker(self):
         from triton.testing import do_bench
         return do_bench

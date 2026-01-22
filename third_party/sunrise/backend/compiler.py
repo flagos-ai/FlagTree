@@ -13,13 +13,16 @@ import os
 import subprocess
 from pathlib import Path
 
+
 def min_dot_size(target: GPUTarget):
     return lambda lhsType, rhsType: (8, 8, 16) if lhsType.is_int8() else (8, 8, 4)
+
 
 @functools.lru_cache(None)
 def file_hash(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
+
 
 @dataclass(frozen=True)
 class SunriseOptions:
@@ -44,7 +47,7 @@ class SunriseOptions:
         warp_size = 32
         object.__setattr__(self, 'warp_size', warp_size)
         default_libdir = Path(__file__).parent / 'lib'
-        extern_libs ={} if self.extern_libs is None else dict(self.extern_libs)
+        extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         for lib in ["ocml", "ockl"]:
             extern_libs[lib] = str(default_libdir / f'{lib}.bc')
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
@@ -75,7 +78,7 @@ class SunriseBackend(BaseBackend):
         args = {'arch': knobs.runtime.override_arch or self.target.arch}
         if "enable_fp_fusion" not in opts:
             args["enable_fp_fusion"] = knobs.language.default_fp_fusion
-        args["max_num_imprecise_acc_default"] = 0   # TODO
+        args["max_num_imprecise_acc_default"] = 0  # TODO
         args.update({k: opts[k] for k in SunriseOptions.__dataclass_fields__.keys() \
                      if k in opts and opts[k] is not None})
         return SunriseOptions(**args)
@@ -91,9 +94,7 @@ class SunriseBackend(BaseBackend):
         )
 
     def get_codegen_implementation(self, options):
-        codegen_fns = {
-            "min_dot_size": min_dot_size(self.target)
-        }
+        codegen_fns = {"min_dot_size": min_dot_size(self.target)}
         return codegen_fns
 
     def get_module_map(self) -> Dict[str, ModuleType]:
@@ -133,7 +134,7 @@ class SunriseBackend(BaseBackend):
             flag.append('thread-regfile-size=64')
         for name, path in opt.extern_libs:
             if name == "ockl":
-                flag.append('ocklPath='+path)
+                flag.append('ocklPath=' + path)
         return flag
 
     @staticmethod
@@ -181,7 +182,7 @@ class SunriseBackend(BaseBackend):
         if os.getenv('OFF_MMA', '0') == '1':
             print('not run accelerate_matmul pass')
         else:
-            sunrise.passes.ttgpuir.add_accelerate_matmul(pm, 1, 0) # 版本：1.0
+            sunrise.passes.ttgpuir.add_accelerate_matmul(pm, 1, 0)  # 版本：1.0
             sunrise.passes.ttgpuir.add_mma_direct_store(pm)
             passes.ttgpuir.add_remove_layout_conversions(pm)
         # passes.ttgpuir.add_optimize_dot_operands(pm, True)
@@ -190,7 +191,7 @@ class SunriseBackend(BaseBackend):
             if os.getenv('OFF_ASYNC', '0') == '0':
                 passes.ttgpuir.add_assign_latencies(pm, num_stages)
                 passes.ttgpuir.add_schedule_loops(pm)
-                passes.ttgpuir.add_pipeline(pm, num_stages, False )
+                passes.ttgpuir.add_pipeline(pm, num_stages, False)
             if os.getenv('OFF_PREF', '0') == '0':
                 passes.ttir.add_loop_aware_cse(pm)
                 passes.common.add_canonicalizer(pm)
@@ -200,7 +201,7 @@ class SunriseBackend(BaseBackend):
             if os.getenv('OFF_ASYNC', '0') == '0':
                 passes.ttgpuir.add_assign_latencies(pm, num_stages)
                 passes.ttgpuir.add_schedule_loops(pm)
-                sunrise.passes.ttgpuir.add_pipeline(pm, num_stages, 1, 0) # 版本：1.0
+                sunrise.passes.ttgpuir.add_pipeline(pm, num_stages, 1, 0)  # 版本：1.0
             if os.getenv('OFF_PREF', '0') == '0':
                 passes.ttir.add_loop_aware_cse(pm)
                 passes.common.add_canonicalizer(pm)
@@ -297,8 +298,7 @@ class SunriseBackend(BaseBackend):
         triple = SunriseBackend.get_triple()
         flag = SunriseBackend.get_flag(metadata, opt)
         if knobs.sunrise.dump_stcu:
-            asm_debug = llvm.translate_to_asm(src, triple, proc, '', flag, opt.enable_fp_fusion,
-                                              False)
+            asm_debug = llvm.translate_to_asm(src, triple, proc, '', flag, opt.enable_fp_fusion, False)
             with open('sunrise.asm', 'w') as f:
                 f.write(asm_debug)
 
@@ -338,7 +338,7 @@ class SunriseBackend(BaseBackend):
         return ret
 
     def add_stages(self, stages, options, language):
-        capability = 80 # options.arch
+        capability = 80  # options.arch
         if language == Language.TRITON:
             stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
             stages["ttgir"] = lambda src, metadata: self.make_ttgir(src, metadata, options, capability)
@@ -349,5 +349,6 @@ class SunriseBackend(BaseBackend):
 
     @functools.lru_cache()
     def hash(self):
-        version = subprocess.check_output([SunriseBackend.path_to_clang_offload_bundler(), "--version"], encoding='utf-8')
+        version = subprocess.check_output([SunriseBackend.path_to_clang_offload_bundler(), "--version"],
+                                          encoding='utf-8')
         return f'{version}-{self.target.arch}'

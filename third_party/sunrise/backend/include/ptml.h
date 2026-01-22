@@ -12,13 +12,13 @@
 
 #ifdef __cplusplus
 extern "C" {
-#endif  //! __cplusplus
+#endif //! __cplusplus
 
 #include <string.h>
 
 #ifndef TA_PT_NUM_MAX
 #define TA_PT_NUM_MAX 128
-#endif  //! TA_PT_NUM_MAX
+#endif //! TA_PT_NUM_MAX
 
 #if defined(_MSC_VER)
 #define PTML_DEPRECATED __declspec(deprecated)
@@ -32,75 +32,74 @@ extern "C" {
 #define PTML_DEPRECATED
 #define PTML_API_EXPORT
 #define PTML_API_IMPORT
-#endif  //! UNKNOWN COMPILER
+#endif //! UNKNOWN COMPILER
 
 #if defined(ptml_EXPORTS)
 #define PTML_API PTML_API_EXPORT
 #else
 #define PTML_API PTML_API_IMPORT
-#endif  //! For user
+#endif //! For user
 
-#define PAGE_SIZE                    4096
+#define PAGE_SIZE 4096
 #ifndef ALIGN
 #define __ALIGN_KERNEL_MASK(x, mask) (((x) + (mask)) & ~(mask))
-#define __ALIGN_KERNEL(x, a)         __ALIGN_KERNEL_MASK(x, (__typeof__(x))(a)-1)
-#define ALIGN(x, a)                  __ALIGN_KERNEL((x), (a))
+#define __ALIGN_KERNEL(x, a) __ALIGN_KERNEL_MASK(x, (__typeof__(x))(a) - 1)
+#define ALIGN(x, a) __ALIGN_KERNEL((x), (a))
 #endif //  ALIGN
-#define PAGE_ALIGN(addr)             ALIGN(addr, PAGE_SIZE)
-#define CLK_NAME_MAX                 16
-#define NUMBER_OF_CYCLES_IN_1_SEC    0x38400000       // 900M
-#define am_interval_1s               (1800000000)  // 1800M stands for 1 second
+#define PAGE_ALIGN(addr) ALIGN(addr, PAGE_SIZE)
+#define CLK_NAME_MAX 16
+#define NUMBER_OF_CYCLES_IN_1_SEC 0x38400000 // 900M
+#define am_interval_1s (1800000000)          // 1800M stands for 1 second
 
 /*ioctl parm cmd*/
-#define CM3   0x10
-#define MLP   0x11
+#define CM3 0x10
+#define MLP 0x11
 #define LINUX 0x12
 
-#define CMD_PMIC          (0xa8)
+#define CMD_PMIC (0xa8)
 #define MOD_TEMP_TYPE_NUM (1)
-#define TEMP_IPID_CNT     (8)
-#define C2C_INFO_CNT      (10)
+#define TEMP_IPID_CNT (8)
+#define C2C_INFO_CNT (10)
 
 #define CMD_TEMPERATURE 0xab
 #define CMD_HBM_TEMPERATURE 0xb2
 #define CMD_GET_GPIO_STATUS 0xb7
-#define CMD_DUMP_MEM        0xb5
+#define CMD_DUMP_MEM 0xb5
 #define CMD_GET_CPLD_VERSION 0xbc
-#define CMD_GET_MAX_POWER    0xbd
-#define CMD_GET_EXCEPTION    0xb6
+#define CMD_GET_MAX_POWER 0xbd
+#define CMD_GET_EXCEPTION 0xb6
 
 /*linux cmd*/
-#define LINUX_CMD_PTUTILI     (0x11)
-#define LINUX_CMD_PCIERELINK  (0x13)
-#define LINUX_CMD_HBMBWUTILI  (0x1A)
-#define LINUX_CMD_HBMUTILI    (0x1B)
-#define LINUX_CMD_C2CREVDB    (0x14)
-#define LINUX_CMD_C2CTRANSDB  (0x15)
-#define LINUX_CMD_PCIEREVDB   (0x16)
+#define LINUX_CMD_PTUTILI (0x11)
+#define LINUX_CMD_PCIERELINK (0x13)
+#define LINUX_CMD_HBMBWUTILI (0x1A)
+#define LINUX_CMD_HBMUTILI (0x1B)
+#define LINUX_CMD_C2CREVDB (0x14)
+#define LINUX_CMD_C2CTRANSDB (0x15)
+#define LINUX_CMD_PCIEREVDB (0x16)
 #define LINUX_CMD_PCIETRANSDB (0x17)
-#define LINUX_CMD_TUUTILI     (0x18)
+#define LINUX_CMD_TUUTILI (0x18)
 #define LINUX_CMD_THREADUTILI (0x19)
 
 /**
  * @brief Return val for ptml API
  */
 typedef enum ptmlReturn_enum {
-  PTML_SUCCESS = 0,                //!< APT returns ok
-  PTML_ERROR_UNINITIALIZED,        //!< ptmlInit is not called now
-  PTML_ERROR_INVALID_ARGUMENT,     //!< invalid argument
-  PTML_ERROR_ALREADY_INITIALIZED,  //!< ptmlInit is already called
-  PTML_ERROR_INSUFFICIENT_SIZE,    //!< An input argument is not large enough
-  PTML_ERROR_IN_USE,               //!< PT is in use
-  PTML_ERROR_DRIVER_NOT_LOADED,    //!< driver is not loaded
-  PTML_ERROR_DEVICE_NOT_FOUND,     //!< device is not found
-  PTML_ERROR_EVENT_TIMEOUT,        //!< device is not found
-  PTML_ERROR_UNKNOWN,              //!< An internal driver error occurred
+  PTML_SUCCESS = 0,               //!< APT returns ok
+  PTML_ERROR_UNINITIALIZED,       //!< ptmlInit is not called now
+  PTML_ERROR_INVALID_ARGUMENT,    //!< invalid argument
+  PTML_ERROR_ALREADY_INITIALIZED, //!< ptmlInit is already called
+  PTML_ERROR_INSUFFICIENT_SIZE,   //!< An input argument is not large enough
+  PTML_ERROR_IN_USE,              //!< PT is in use
+  PTML_ERROR_DRIVER_NOT_LOADED,   //!< driver is not loaded
+  PTML_ERROR_DEVICE_NOT_FOUND,    //!< device is not found
+  PTML_ERROR_EVENT_TIMEOUT,       //!< device is not found
+  PTML_ERROR_UNKNOWN,             //!< An internal driver error occurred
 } ptmlReturn_t;
-  
 
 typedef struct {
   enum ptmlReturn_enum errorCode;
-  const char          *errorMessage;
+  const char *errorMessage;
 } ErrorDescriptor;
 
 typedef enum ptmlClockType {
@@ -118,38 +117,38 @@ typedef enum ptmlClockType {
 typedef int ptmlDevice_t;
 
 typedef struct ptMemory {
-  size_t total;  //!< total memory
-  size_t used;   //!< used memory
-  size_t free;   //!< free memory
+  size_t total; //!< total memory
+  size_t used;  //!< used memory
+  size_t free;  //!< free memory
 } ptMemory_t;
 
 #define PTML_DEVICE_PCI_BUS_ID_BUFFER_SIZE 32
 
 typedef struct ptPciInfo {
-  int  domain;                                     //!< domain number
-  int  bus;                                        //!< bus number
-  int  device;                                     //!< dev && func number
-  int  vendor;                                     //!< vendor number
-  int  pciSubSystemId;                             //!< subsystem Id
-  char busId[PTML_DEVICE_PCI_BUS_ID_BUFFER_SIZE];  //!< "domain:bus:device:0"
-  unsigned int max_link_speed;                     //!< max link speed(MT/s)
-  unsigned int max_link_width;                     //!< max link width
-  unsigned int max_bandwidth;                      //!< max bandwidth(MB/s)
-  unsigned int curr_link_speed;                    //!< current link speed(MT/s)
-  unsigned int curr_link_width;                    //!< current link width
-  unsigned int curr_bandwidth;                     //!< current bandwidth(MB/s)
+  int domain;                                     //!< domain number
+  int bus;                                        //!< bus number
+  int device;                                     //!< dev && func number
+  int vendor;                                     //!< vendor number
+  int pciSubSystemId;                             //!< subsystem Id
+  char busId[PTML_DEVICE_PCI_BUS_ID_BUFFER_SIZE]; //!< "domain:bus:device:0"
+  unsigned int max_link_speed;                    //!< max link speed(MT/s)
+  unsigned int max_link_width;                    //!< max link width
+  unsigned int max_bandwidth;                     //!< max bandwidth(MB/s)
+  unsigned int curr_link_speed;                   //!< current link speed(MT/s)
+  unsigned int curr_link_width;                   //!< current link width
+  unsigned int curr_bandwidth;                    //!< current bandwidth(MB/s)
 } ptPciInfo_t;
 
 typedef struct ptProcessInfo {
   char name[256];
   char pidStr[16];
-}ptProcessInfo_t;
+} ptProcessInfo_t;
 
 struct barInfo {
-  int      barIdx;  //!< 0-5
-  void*    addr;    //!< The mapped vritual address.
+  int barIdx; //!< 0-5
+  void *addr; //!< The mapped vritual address.
   uint64_t paddr;
-  size_t   size;  //!< The size of the mapped vritaul address space.
+  size_t size; //!< The size of the mapped vritaul address space.
 };
 
 struct fw_param {
@@ -160,7 +159,7 @@ struct fw_param {
 #define _S2_IOC_SMI_INFO _IOWR(_S2_IOC_MAGIC, 160, struct fw_param)
 
 struct st_rpmsg_cmd {
-  unsigned int  cmd;
+  unsigned int cmd;
   unsigned char data[];
 } __attribute__((packed));
 
@@ -169,7 +168,7 @@ struct st_rpmsg_i2c_cmd {
   unsigned char tx_data_len;
   unsigned char slave_len;
   unsigned char trx_flag;
-  unsigned char pyload[];  // slave addr + tx data
+  unsigned char pyload[]; // slave addr + tx data
 } __attribute__((packed));
 
 struct st_rpmsg_i2c_response {
@@ -177,12 +176,12 @@ struct st_rpmsg_i2c_response {
   unsigned char rx_data_len;
   unsigned char slave_len;
   unsigned char trx_flag;
-  unsigned char pyload[];  // slave addr + rx data
+  unsigned char pyload[]; // slave addr + rx data
 } __attribute__((packed));
 
 struct st_rpmsg_pmic_cmd {
   unsigned char pmic_cmd;
-  unsigned int  pmic_param;
+  unsigned int pmic_param;
 } __attribute__((packed));
 
 struct st_rpmsg_pmic_response {
@@ -303,10 +302,10 @@ enum c2c_port_index {
  * @name:   Clock name
  */
 struct c2h_clk_msg {
-  int      status;
+  int status;
   uint32_t state;
   uint32_t rate[2];
-  char     name[16];
+  char name[16];
 };
 
 struct c2h_temp_msg {
@@ -336,7 +335,7 @@ typedef struct ptPhyTopo {
  ********************************************/
 ptmlReturn_t PTML_API ptmlInit(void);
 ptmlReturn_t PTML_API __ptmlUinit(void);
-void PTML_API         ptmlUninit(void);
+void PTML_API ptmlUninit(void);
 
 /**
  * @brief Get system driver version 0.1.0
@@ -347,7 +346,7 @@ void PTML_API         ptmlUninit(void);
  *  "/sys/module/pt/version"
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlSystemGetDriverVersion(char *       version,
+ptmlReturn_t PTML_API ptmlSystemGetDriverVersion(char *version,
                                                  unsigned int length);
 
 /**
@@ -357,7 +356,7 @@ ptmlReturn_t PTML_API ptmlSystemGetDriverVersion(char *       version,
  * @return ptmlReturn_t
  ********************************************/
 ptmlReturn_t PTML_API ptmlSystemGetTangVersion(int *version);
-ptmlReturn_t PTML_API ptmlSystemGetTangVersionForSmi(char *       version,
+ptmlReturn_t PTML_API ptmlSystemGetTangVersionForSmi(char *version,
                                                      unsigned int length);
 
 /**
@@ -369,8 +368,8 @@ ptmlReturn_t PTML_API ptmlSystemGetTangVersionForSmi(char *       version,
  * @note  ptTypeOut is pt200, device info is total mem size
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetBaseInfo(ptmlDevice_t  device,
-                                            char *        ptTypeOut,
+ptmlReturn_t PTML_API ptmlDeviceGetBaseInfo(ptmlDevice_t device,
+                                            char *ptTypeOut,
                                             unsigned int *memInfo);
 
 /**
@@ -416,10 +415,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetCount(int *devCount);
  * @param revdb pointer is c2c revdb
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetC2CRevDB(ptmlDevice_t  device,
-                                            int           c2cIndex,
-                                            int           interval,
-                                            unsigned int *revdb);
+ptmlReturn_t PTML_API ptmlDeviceGetC2CRevDB(ptmlDevice_t device, int c2cIndex,
+                                            int interval, unsigned int *revdb);
 
 /**
  * @brief Get device c2c trans DB
@@ -430,9 +427,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetC2CRevDB(ptmlDevice_t  device,
  * @param transdb pointer is c2c transdb
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetC2CTransDB(ptmlDevice_t  device,
-                                              int           c2cIndex,
-                                              int           interval,
+ptmlReturn_t PTML_API ptmlDeviceGetC2CTransDB(ptmlDevice_t device, int c2cIndex,
+                                              int interval,
                                               unsigned int *transdb);
 
 /**
@@ -446,7 +442,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetC2CTransDB(ptmlDevice_t  device,
  * @return ptmlReturn_t
  ********************************************/
 ptmlReturn_t PTML_API ptmlDeviceGetFirmwareVersion(ptmlDevice_t device,
-                                                   char *       version,
+                                                   char *version,
                                                    unsigned int length);
 
 /**
@@ -456,7 +452,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetFirmwareVersion(ptmlDevice_t device,
  * @param device pointer to the handle of target PT
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetHanldeByIdx(unsigned int  idx,
+ptmlReturn_t PTML_API ptmlDeviceGetHanldeByIdx(unsigned int idx,
                                                ptmlDevice_t *device);
 
 /**
@@ -466,7 +462,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetHanldeByIdx(unsigned int  idx,
  * @param device pointer to the handle of target PT
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetHanldeByPciBusId(const char *  busId,
+ptmlReturn_t PTML_API ptmlDeviceGetHanldeByPciBusId(const char *busId,
                                                     ptmlDevice_t *device);
 
 /**
@@ -478,7 +474,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetHanldeByPciBusId(const char *  busId,
  * @return ptmlReturn_t
  ********************************************/
 ptmlReturn_t PTML_API ptmlDeviceGetMemBWUtilizationRates(ptmlDevice_t device,
-                                                         int          interval,
+                                                         int interval,
                                                          float *utilization);
 
 /**
@@ -488,7 +484,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetMemBWUtilizationRates(ptmlDevice_t device,
  * @param clock pointer to memClockFreq
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetMemClockFrequency(ptmlDevice_t  device,
+ptmlReturn_t PTML_API ptmlDeviceGetMemClockFrequency(ptmlDevice_t device,
                                                      unsigned int *clock);
 
 /**
@@ -499,10 +495,10 @@ ptmlReturn_t PTML_API ptmlDeviceGetMemClockFrequency(ptmlDevice_t  device,
  * @return ptmlReturn_t
  ********************************************/
 ptmlReturn_t PTML_API ptmlDeviceGetMemoryInfo(ptmlDevice_t device,
-                                              ptMemory_t * memInfo);
-ptmlReturn_t PTML_API ptmlDeviceGetMemoryUsedInfo(ptmlDevice_t  device,
+                                              ptMemory_t *memInfo);
+ptmlReturn_t PTML_API ptmlDeviceGetMemoryUsedInfo(ptmlDevice_t device,
                                                   unsigned int *usedInfo);
-ptmlReturn_t PTML_API ptmlDeviceGetMemoryFreeInfo(ptmlDevice_t  device,
+ptmlReturn_t PTML_API ptmlDeviceGetMemoryFreeInfo(ptmlDevice_t device,
                                                   unsigned int *usedInfo);
 
 /**
@@ -512,7 +508,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetMemoryFreeInfo(ptmlDevice_t  device,
  * @param temp pointer to ptTemperature
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetMemTemperature(ptmlDevice_t  device,
+ptmlReturn_t PTML_API ptmlDeviceGetMemTemperature(ptmlDevice_t device,
                                                   unsigned int *temp);
 
 /**
@@ -523,9 +519,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetMemTemperature(ptmlDevice_t  device,
  * @param utilization pointer is memUtilization 0-100%
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t ptmlDeviceGetMemUtilizationRates(ptmlDevice_t device,
-                                                       int          interval,
-                                                       float *utilization);
+ptmlReturn_t ptmlDeviceGetMemUtilizationRates(ptmlDevice_t device, int interval,
+                                              float *utilization);
 
 /**
  * @brief Get PT node path /dev/ptpux
@@ -544,7 +539,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetNodePath(ptmlDevice_t device, char *path);
  * @return ptmlReturn_t
  ********************************************/
 ptmlReturn_t PTML_API ptmlDeviceGetPcieRelinkTime(ptmlDevice_t device,
-                                                  int *        count);
+                                                  int *count);
 
 /**
  * @brief Get device pcie rev DB
@@ -554,8 +549,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetPcieRelinkTime(ptmlDevice_t device,
  * @param revdb pointer is pcie revdb
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetPcieRevDB(ptmlDevice_t  device,
-                                             int           interval,
+ptmlReturn_t PTML_API ptmlDeviceGetPcieRevDB(ptmlDevice_t device, int interval,
                                              unsigned int *revdb);
 
 /**
@@ -566,8 +560,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetPcieRevDB(ptmlDevice_t  device,
  * @param transdb pointer is pcie transdb
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetPcieTransDB(ptmlDevice_t  device,
-                                               int           interval,
+ptmlReturn_t PTML_API ptmlDeviceGetPcieTransDB(ptmlDevice_t device,
+                                               int interval,
                                                unsigned int *transdb);
 
 /**
@@ -604,8 +598,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetStatus(ptmlDevice_t device, int *status);
  * @param clock pointer to ptClockFreq
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetPtClockFrequency(ptmlDevice_t  device,
-                                                      unsigned int *clock);
+ptmlReturn_t PTML_API ptmlDeviceGetPtClockFrequency(ptmlDevice_t device,
+                                                    unsigned int *clock);
 
 /**
  * @brief Get PTCTRL major and minor
@@ -615,8 +609,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetPtClockFrequency(ptmlDevice_t  device,
  * @param minor pointer to ptpuctrl minor
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetPtCtrlMajorAndMinor(int *major,
-                                                         int *minor);
+ptmlReturn_t PTML_API ptmlDeviceGetPtCtrlMajorAndMinor(int *major, int *minor);
 
 /**
  * @brief Get PT major and minor  /dev/ptpux
@@ -627,8 +620,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetPtCtrlMajorAndMinor(int *major,
  * @return ptmlReturn_t
  ********************************************/
 ptmlReturn_t PTML_API ptmlDeviceGetPtMajorAndMinor(ptmlDevice_t device,
-                                                     int *        major,
-                                                     int *        minor);
+                                                   int *major, int *minor);
 
 /**
  * @brief Get device pt Temperature
@@ -637,8 +629,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetPtMajorAndMinor(ptmlDevice_t device,
  * @param temp pointer to ptTemperature
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetPtTemperature(ptmlDevice_t  device,
-                                                   unsigned int *temp);
+ptmlReturn_t PTML_API ptmlDeviceGetPtTemperature(ptmlDevice_t device,
+                                                 unsigned int *temp);
 
 /**
  * @brief Get device pt Utilization
@@ -649,8 +641,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetPtTemperature(ptmlDevice_t  device,
  * @return ptmlReturn_t
  ********************************************/
 ptmlReturn_t PTML_API ptmlDeviceGetPtUtilizationRates(ptmlDevice_t device,
-                                                        int          interval,
-                                                        float *utilization);
+                                                      int interval,
+                                                      float *utilization);
 
 /**
  * @brief Get compute capability
@@ -661,8 +653,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetPtUtilizationRates(ptmlDevice_t device,
  * @return ptmlReturn_t
  ********************************************/
 ptmlReturn_t PTML_API ptmlDeviceGetTangComputeCapability(ptmlDevice_t device,
-                                                         int *        major,
-                                                         int *        minor);
+                                                         int *major,
+                                                         int *minor);
 
 /**
  * @brief Get device thread Utilization
@@ -673,7 +665,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetTangComputeCapability(ptmlDevice_t device,
  * @return ptmlReturn_t
  ********************************************/
 ptmlReturn_t PTML_API ptmlDeviceGetThreadUtilizationRates(ptmlDevice_t device,
-                                                          int          interval,
+                                                          int interval,
                                                           float *utilization);
 
 /**
@@ -685,8 +677,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetThreadUtilizationRates(ptmlDevice_t device,
  * @return ptmlReturn_t
  ********************************************/
 ptmlReturn_t PTML_API ptmlDeviceGetTUUtilizationRates(ptmlDevice_t device,
-                                                      int          interval,
-                                                      float *      utilization);
+                                                      int interval,
+                                                      float *utilization);
 
 /**
  * @brief Get device uuid
@@ -696,8 +688,7 @@ ptmlReturn_t PTML_API ptmlDeviceGetTUUtilizationRates(ptmlDevice_t device,
  * @param length device uuid length
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetUUID(ptmlDevice_t device,
-                                        char *       uuid,
+ptmlReturn_t PTML_API ptmlDeviceGetUUID(ptmlDevice_t device, char *uuid,
                                         unsigned int length);
 
 /**
@@ -707,8 +698,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetUUID(ptmlDevice_t device,
  * @param CU freq
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceSetCUFrequency(ptmlDevice_t        device,
-                                             unsigned int freq) ;
+ptmlReturn_t PTML_API ptmlDeviceSetCUFrequency(ptmlDevice_t device,
+                                               unsigned int freq);
 
 /**
  * @brief Get device Mem Temperature
@@ -717,8 +708,8 @@ ptmlReturn_t PTML_API ptmlDeviceSetCUFrequency(ptmlDevice_t        device,
  * @param temp pointer to ptTemperature
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetMemTemperature(ptmlDevice_t  device,
-                                                   unsigned int *temp);
+ptmlReturn_t PTML_API ptmlDeviceGetMemTemperature(ptmlDevice_t device,
+                                                  unsigned int *temp);
 
 /**
  * @brief ptmlDeviceGetGPIOStatus
@@ -727,8 +718,8 @@ ptmlReturn_t PTML_API ptmlDeviceGetMemTemperature(ptmlDevice_t  device,
  * @param GPIO status
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetGPIOStatus(ptmlDevice_t        device,
-                                             unsigned int *status);
+ptmlReturn_t PTML_API ptmlDeviceGetGPIOStatus(ptmlDevice_t device,
+                                              unsigned int *status);
 /**
  * @brief ptmlDeviceDumpCM3Regs
  *
@@ -737,10 +728,9 @@ ptmlReturn_t PTML_API ptmlDeviceGetGPIOStatus(ptmlDevice_t        device,
  * @param len is dump regs' length
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceDumpCM3Regs(ptmlDevice_t        device,
-                                                   unsigned int addr,
-                                                   unsigned int len,
-                                                   unsigned int *value);
+ptmlReturn_t PTML_API ptmlDeviceDumpCM3Regs(ptmlDevice_t device,
+                                            unsigned int addr, unsigned int len,
+                                            unsigned int *value);
 /**
  * @brief ptmlDeviceSetDumpTempSwitch
  *
@@ -748,11 +738,10 @@ ptmlReturn_t PTML_API ptmlDeviceDumpCM3Regs(ptmlDevice_t        device,
  * @param switch
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceSetDumpTempSwitch(ptmlDevice_t  device,
-                                             unsigned int switchFlag);
+ptmlReturn_t PTML_API ptmlDeviceSetDumpTempSwitch(ptmlDevice_t device,
+                                                  unsigned int switchFlag);
 
-int PTML_API ptmlDeviceGetBarInfo(ptmlDevice_t        device,
-                                             unsigned int *size);
+int PTML_API ptmlDeviceGetBarInfo(ptmlDevice_t device, unsigned int *size);
 
 /**
  * @brief ptmlDeviceGetCPLDVersion
@@ -762,15 +751,15 @@ int PTML_API ptmlDeviceGetBarInfo(ptmlDevice_t        device,
  * @param small version
  * @return ptmlReturn_t
  ********************************************/
-ptmlReturn_t PTML_API ptmlDeviceGetCPLDVersion(ptmlDevice_t        device,
-                                              int *lver, int *sver);
+ptmlReturn_t PTML_API ptmlDeviceGetCPLDVersion(ptmlDevice_t device, int *lver,
+                                               int *sver);
 
-ptmlReturn_t PTML_API ptmlDeviceGetProcessInfo(ptmlDevice_t        device,
-                                              int processNum, struct ptProcessInfo *procInfo);
-ptmlReturn_t PTML_API ptmlDeviceGetMaxPower(ptmlDevice_t  device,
-                                           int *maxPower);
-ptmlReturn_t PTML_API ptmlDeviceGetException(ptmlDevice_t  device,
-                                           unsigned int *num);
+ptmlReturn_t PTML_API ptmlDeviceGetProcessInfo(ptmlDevice_t device,
+                                               int processNum,
+                                               struct ptProcessInfo *procInfo);
+ptmlReturn_t PTML_API ptmlDeviceGetMaxPower(ptmlDevice_t device, int *maxPower);
+ptmlReturn_t PTML_API ptmlDeviceGetException(ptmlDevice_t device,
+                                             unsigned int *num);
 /**
  * @brief ptmlPtlinkEnableAll
  *
@@ -793,9 +782,8 @@ ptmlReturn_t PTML_API ptmlPtlinkDisableAll(void);
  * @ ops operation: en, disable ...
  * @return ptmlReturn_t
  */
-ptmlReturn_t PTML_API ptmlPtlinkPortControl(ptmlDevice_t device,
-                                            uint32_t     port,
-                                            uint32_t     ops);
+ptmlReturn_t PTML_API ptmlPtlinkPortControl(ptmlDevice_t device, uint32_t port,
+                                            uint32_t ops);
 
 /**
  * @brief ptmlPtlinkPhytopoDetect
@@ -806,8 +794,7 @@ ptmlReturn_t PTML_API ptmlPtlinkPortControl(ptmlDevice_t device,
  * @return ptmlReturn_t
  */
 ptmlReturn_t PTML_API ptmlPtlinkPhytopoDetect(ptmlDevice_t device,
-                                              uint32_t     size,
-                                              void *       buffer);
+                                              uint32_t size, void *buffer);
 
 /**
  * @brief ptmlEngineCollAssign
@@ -819,9 +806,8 @@ ptmlReturn_t PTML_API ptmlPtlinkPhytopoDetect(ptmlDevice_t device,
  * @return ptmlReturn_t
  */
 ptmlReturn_t PTML_API ptmlEngineCollAssign(ptmlDevice_t device,
-                                           uint32_t     coll_type,
-                                           void *       buffer,
-                                           uint32_t     size);
+                                           uint32_t coll_type, void *buffer,
+                                           uint32_t size);
 /**
  * @brief ptmlPtlinkGetConnectRelation
  *
@@ -832,8 +818,8 @@ ptmlReturn_t PTML_API ptmlEngineCollAssign(ptmlDevice_t device,
  * @note  before use this api please use ptmlPtlinkEnableAll
  */
 ptmlReturn_t PTML_API ptmlPtlinkGetConnectRelation(ptmlDevice_t device1,
-                                     ptmlDevice_t device2,
-                                     int *status) ;
+                                                   ptmlDevice_t device2,
+                                                   int *status);
 
 /**
  * @brief ptmlGetPtlinkStatus
@@ -844,9 +830,8 @@ ptmlReturn_t PTML_API ptmlPtlinkGetConnectRelation(ptmlDevice_t device1,
  * @return ptmlReturn_t
  * @note  before use this api please use ptmlPtlinkEnableAll
  */
-ptmlReturn_t PTML_API ptmlGetPtlinkStatus(ptmlDevice_t device,
-                                     int port,
-                                     int *status);
+ptmlReturn_t PTML_API ptmlGetPtlinkStatus(ptmlDevice_t device, int port,
+                                          int *status);
 
 /**
  * @brief ptmlGetPtlinkRemoteDevicePciInfo
@@ -858,8 +843,8 @@ ptmlReturn_t PTML_API ptmlGetPtlinkStatus(ptmlDevice_t device,
  * @note  before use this api please use ptmlPtlinkEnableAll
  */
 ptmlReturn_t PTML_API ptmlGetPtlinkRemoteDevicePciInfo(ptmlDevice_t device,
-                                     int port,
-                                     ptPciInfo_t *pciInfo);
+                                                       int port,
+                                                       ptPciInfo_t *pciInfo);
 
 /**
  * @brief ptmlGetErrorCodeToDescription
@@ -890,14 +875,14 @@ typedef enum ptmlEventStrategy {
 } ptmlEventStrategy_t;
 
 typedef struct ptmlEventData {
-  ptmlDevice_t  device;
+  ptmlDevice_t device;
   unsigned long eventType;
   unsigned long eventData;
 } ptmlEventData_t;
 
 typedef struct ptmlEvent {
   ptmlEventStrategy_t strategy;
-  ptmlDeviceState_t   state;
+  ptmlDeviceState_t state;
 } ptmlEvent_t;
 
 typedef struct ptmlEventSet {
@@ -906,20 +891,20 @@ typedef struct ptmlEventSet {
 
 ptmlReturn_t PTML_API ptmlEventSetCreate(ptmlEventSet_t **set);
 ptmlReturn_t PTML_API ptmlEventSetFree(ptmlEventSet_t *set);
-ptmlReturn_t PTML_API ptmlDeviceRegisterEvents(ptmlDevice_t    device,
-                                      unsigned long   eventTypes,
-                                      ptmlEventSet_t *set);
+ptmlReturn_t PTML_API ptmlDeviceRegisterEvents(ptmlDevice_t device,
+                                               unsigned long eventTypes,
+                                               ptmlEventSet_t *set);
 
-ptmlReturn_t PTML_API ptmlEventSetWait_v2(ptmlEventSet_t * set,
-                                 ptmlEventData_t *data,
-                                 unsigned int     timeoutms);
+ptmlReturn_t PTML_API ptmlEventSetWait_v2(ptmlEventSet_t *set,
+                                          ptmlEventData_t *data,
+                                          unsigned int timeoutms);
 
-typedef int*  ptmlDeviceErrorCode;
+typedef int *ptmlDeviceErrorCode;
 PTML_API int ptmlGetDeviceLastError(ptmlDevice_t device,
-      ptmlDeviceErrorCode DeviceErrorCode);
+                                    ptmlDeviceErrorCode DeviceErrorCode);
 
 #ifdef __cplusplus
 }
-#endif  //! __cplusplus
+#endif //! __cplusplus
 
-#endif  //! _S2_ML_H_
+#endif //! _S2_ML_H_

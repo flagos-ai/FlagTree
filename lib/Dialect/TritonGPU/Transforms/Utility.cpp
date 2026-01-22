@@ -1591,4 +1591,4 @@ bool comesFromLoadOrBlockArg(Value v) {
 
 } // namespace mlir::triton
 
-#endif//FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_Utility
+#endif // FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_Utility

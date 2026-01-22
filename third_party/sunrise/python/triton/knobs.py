@@ -448,6 +448,7 @@ class amd_knobs(base_knobs):
     use_async_copy: env_bool = env_bool("TRITON_HIP_USE_ASYNC_COPY")
     scalarize_packed_fops: env_bool = env_bool("AMDGCN_SCALARIZE_PACKED_FOPS")
 
+
 class sunrise_knobs(base_knobs):
     lld_path: env_opt_str = env_opt_str("TRITON_SUNRISE_LLD_PATH")
     triple: env_opt_str = env_opt_str("TRITON_SUNRISE_TRANSLATE_TRIPLE")
@@ -455,6 +456,7 @@ class sunrise_knobs(base_knobs):
     libtang_path: env_opt_str = env_opt_str("TRITON_LIBTANG_PATH")
     opt_level: env_int = env_int("TRITON_SUNRISE_OPTIMIZATION_LEVEL", 3)
     dump_stcu: env_bool = env_bool("TRITON_SUNRISE_ENABLE_DUMP")
+
 
 class proton_knobs(base_knobs):
     cupti_dir: env_opt_str = env_opt_str("TRITON_CUPTI_LIB_PATH")

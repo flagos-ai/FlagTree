@@ -1,8 +1,8 @@
 #ifndef _TAPTI_ACTIVITY_HPP_
 #define _TAPTI_ACTIVITY_HPP_
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "tapti_callbacks.h"
 
@@ -22,44 +22,46 @@ typedef enum {
   /**
    * A host to device memory copy.
    */
-  TAPTI_ACTIVITY_MEMCPY_KIND_HTOD    = 1,
+  TAPTI_ACTIVITY_MEMCPY_KIND_HTOD = 1,
 
   /**
    * A device to host memory copy.
    */
-  TAPTI_ACTIVITY_MEMCPY_KIND_DTOH    = 2,
+  TAPTI_ACTIVITY_MEMCPY_KIND_DTOH = 2,
 
   /**
    * A device to device memory copy on the same device.
    */
-  TAPTI_ACTIVITY_MEMCPY_KIND_DTOD    = 3,
+  TAPTI_ACTIVITY_MEMCPY_KIND_DTOD = 3,
 
   /**
    * A host to host memory copy.
    */
-  TAPTI_ACTIVITY_MEMCPY_KIND_HTOH    = 4,
+  TAPTI_ACTIVITY_MEMCPY_KIND_HTOH = 4,
 
   /**
    * A peer to peer memory copy across different devices.
    */
-  TAPTI_ACTIVITY_MEMCPY_KIND_PTOP    = 5,
+  TAPTI_ACTIVITY_MEMCPY_KIND_PTOP = 5,
 
   TAPTI_ACTIVITY_MEMCPY_KIND_FORCE_INT = 0x7fffffff
 } TApti_ActivityMemcpyKind;
 
 typedef enum {
-  TAPTI_EXTERNAL_CORRELATION_KIND_INVALID     = 0,
-  TAPTI_EXTERNAL_CORRELATION_KIND_UNKNOWN     = 1,
-  TAPTI_EXTERNAL_CORRELATION_KIND_OPENACC     = 2,
-  TAPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0     = 3,
-  TAPTI_EXTERNAL_CORRELATION_KIND_CUSTOM1     = 4,
-  TAPTI_EXTERNAL_CORRELATION_KIND_CUSTOM2     = 5,
+  TAPTI_EXTERNAL_CORRELATION_KIND_INVALID = 0,
+  TAPTI_EXTERNAL_CORRELATION_KIND_UNKNOWN = 1,
+  TAPTI_EXTERNAL_CORRELATION_KIND_OPENACC = 2,
+  TAPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0 = 3,
+  TAPTI_EXTERNAL_CORRELATION_KIND_CUSTOM1 = 4,
+  TAPTI_EXTERNAL_CORRELATION_KIND_CUSTOM2 = 5,
   TAPTI_EXTERNAL_CORRELATION_KIND_SIZE,
-  TAPTI_EXTERNAL_CORRELATION_KIND_FORCE_INT   = 0x7fffffff
+  TAPTI_EXTERNAL_CORRELATION_KIND_FORCE_INT = 0x7fffffff
 } TApti_ExternalCorrelationKind;
 
 #define ACTIVITY_RECORD_ALIGNMENT 8
-#define PACKED_ALIGNMENT __attribute__ ((__packed__)) __attribute__ ((aligned (ACTIVITY_RECORD_ALIGNMENT)))
+#define PACKED_ALIGNMENT                                                       \
+  __attribute__((__packed__))                                                  \
+  __attribute__((aligned(ACTIVITY_RECORD_ALIGNMENT)))
 
 /**
  * \brief The kinds of activity records.
@@ -76,23 +78,23 @@ typedef enum {
  * \see TApti_ActivityMemcpyPtoP
  * \see TApti_ActivityMemset
  */
- typedef enum {
+typedef enum {
   /**
    * The activity record is invalid.
    */
-  TAPTI_ACTIVITY_KIND_INVALID                  = 0,
+  TAPTI_ACTIVITY_KIND_INVALID = 0,
 
   /**
    * A host<->host, host<->device, or device<->device memory copy. The
    * corresponding activity record structure is \ref
    */
-  TAPTI_ACTIVITY_KIND_MEMCPY                   = 1,
+  TAPTI_ACTIVITY_KIND_MEMCPY = 1,
 
   /**
    * A memory set executing on the GPU. The corresponding activity
    * record structure is \ref TApti_ActivityMemset.
    */
-  TAPTI_ACTIVITY_KIND_MEMSET                   = 2,
+  TAPTI_ACTIVITY_KIND_MEMSET = 2,
 
   /**
    * A kernel executing on the GPU. This activity kind may significantly change
@@ -101,30 +103,30 @@ typedef enum {
    * TAPTI_ACTIVITY_KIND_CONCURRENT_KERNEL doesn't break kernel concurrency.
    * The corresponding activity record structure is \ref TApti_ActivityKernel.
    */
-  TAPTI_ACTIVITY_KIND_KERNEL                   = 3,
+  TAPTI_ACTIVITY_KIND_KERNEL = 3,
 
   /**
    * A TANG driver API function execution. The corresponding activity
    * record structure is \ref TApti_ActivityAPI.
    */
-  TAPTI_ACTIVITY_KIND_DRIVER                   = 4,
+  TAPTI_ACTIVITY_KIND_DRIVER = 4,
 
   /**
    * A TANG runtime API function execution. The corresponding activity
    * record structure is \ref TApti_ActivityAPI.
    */
-  TAPTI_ACTIVITY_KIND_RUNTIME                  = 5,
+  TAPTI_ACTIVITY_KIND_RUNTIME = 5,
 
   /**
    * Records for correlation of different programming APIs. The
    * corresponding activity record structure is \ref
    * TApti_ActivityExternalCorrelation.
    */
-  TAPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION     = 6,
+  TAPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION = 6,
 
   TAPTI_ACTIVITY_KIND_COUNT,
 
-  TAPTI_ACTIVITY_KIND_FORCE_INT                = 0x7fffffff
+  TAPTI_ACTIVITY_KIND_FORCE_INT = 0x7fffffff
 } TApti_ActivityKind;
 
 /**
@@ -137,46 +139,45 @@ typedef enum {
   /**
    * The memory kind is unknown.
    */
-  TAPTI_ACTIVITY_MEMORY_KIND_UNKNOWN            = 0,
+  TAPTI_ACTIVITY_MEMORY_KIND_UNKNOWN = 0,
 
   /**
    * The memory is pageable.
    */
-  TAPTI_ACTIVITY_MEMORY_KIND_PAGEABLE           = 1,
+  TAPTI_ACTIVITY_MEMORY_KIND_PAGEABLE = 1,
 
   /**
    * The memory is pinned.
    */
-  TAPTI_ACTIVITY_MEMORY_KIND_PINNED             = 2,
+  TAPTI_ACTIVITY_MEMORY_KIND_PINNED = 2,
 
   /**
    * The memory is on the device.
    */
-  TAPTI_ACTIVITY_MEMORY_KIND_DEVICE             = 3,
+  TAPTI_ACTIVITY_MEMORY_KIND_DEVICE = 3,
 
   /**
    * The memory is an array.
    */
-  TAPTI_ACTIVITY_MEMORY_KIND_ARRAY              = 4,
+  TAPTI_ACTIVITY_MEMORY_KIND_ARRAY = 4,
 
   /**
    * The memory is managed
    */
-  TAPTI_ACTIVITY_MEMORY_KIND_MANAGED            = 5,
+  TAPTI_ACTIVITY_MEMORY_KIND_MANAGED = 5,
 
   /**
    * The memory is device static
    */
-  TAPTI_ACTIVITY_MEMORY_KIND_DEVICE_STATIC      = 6,
+  TAPTI_ACTIVITY_MEMORY_KIND_DEVICE_STATIC = 6,
 
   /**
    * The memory is managed static
    */
-  TAPTI_ACTIVITY_MEMORY_KIND_MANAGED_STATIC     = 7,
+  TAPTI_ACTIVITY_MEMORY_KIND_MANAGED_STATIC = 7,
 
-  TAPTI_ACTIVITY_MEMORY_KIND_FORCE_INT          = 0x7fffffff
+  TAPTI_ACTIVITY_MEMORY_KIND_FORCE_INT = 0x7fffffff
 } TApti_ActivityMemoryKind;
-
 
 /**
  * \brief The base activity record.
@@ -239,7 +240,7 @@ typedef struct PACKED_ALIGNMENT {
  * runtime API (TAPTI_ACTIVITY_KIND_DRIVER and
  * TAPTI_ACTIVITY_KIND_RUNTIME).
  */
- typedef struct PACKED_ALIGNMENT {
+typedef struct PACKED_ALIGNMENT {
   TApti_ActivityKind kind;
   /**
    * The ID of the driver or runtime function.
@@ -296,8 +297,8 @@ typedef struct PACKED_ALIGNMENT {
  * by TAPTI. Kernel activities are now reported using the
  * TApti_ActivityKernel9 activity record.
  */
- typedef struct PACKED_ALIGNMENT {
- /**
+typedef struct PACKED_ALIGNMENT {
+  /**
    * The activity record kind, must be TAPTI_ACTIVITY_KIND_KERNEL
    * or TAPTI_ACTIVITY_KIND_CONCURRENT_KERNEL.
    */
@@ -441,7 +442,7 @@ typedef struct PACKED_ALIGNMENT {
  * This activity record represents a memory copy
  * (TAPTI_ACTIVITY_KIND_MEMCPY).
  */
- typedef struct PACKED_ALIGNMENT {
+typedef struct PACKED_ALIGNMENT {
   /**
    * The activity record kind, must be TAPTI_ACTIVITY_KIND_MEMCPY.
    */
@@ -541,7 +542,7 @@ typedef struct PACKED_ALIGNMENT {
  * by TAPTI. Peer-to-peer memory copy activities are now reported using the
  * TApti_ActivityMemcpyPtoP2 activity record..
  */
- typedef struct PACKED_ALIGNMENT {
+typedef struct PACKED_ALIGNMENT {
   /**
    * The activity record kind, must be TAPTI_ACTIVITY_KIND_MEMCPY2.
    */
@@ -591,8 +592,8 @@ typedef struct PACKED_ALIGNMENT {
   uint64_t end;
 
   /**
-  * The ID of the device where the memory copy is occurring.
-  */
+   * The ID of the device where the memory copy is occurring.
+   */
   uint32_t deviceId;
 
   /**
@@ -652,7 +653,7 @@ typedef struct PACKED_ALIGNMENT {
  * This activity record represents a memory set operation
  * (TAPTI_ACTIVITY_KIND_MEMSET).
  */
- typedef struct PACKED_ALIGNMENT {
+typedef struct PACKED_ALIGNMENT {
   /**
    * The activity record kind, must be TAPTI_ACTIVITY_KIND_MEMSET.
    */
@@ -714,12 +715,11 @@ typedef struct PACKED_ALIGNMENT {
    */
   uint16_t memoryKind;
 
-
 } TApti_ActivityMemset;
 
 #ifdef __cplusplus
 extern "C" {
-#endif  //! __cplusplus
+#endif //! __cplusplus
 
 #if defined(_MSC_VER)
 #define TAPTI_DEPRECATED __declspec(deprecated)
@@ -733,14 +733,14 @@ extern "C" {
 #define TAPTI_DEPRECATED
 #define TAPTI_API_EXPORT
 #define TAPTI_API_IMPORT
-#endif  //! UNKNOWN COMPILER
+#endif //! UNKNOWN COMPILER
 
 #if defined(tapti_shared_EXPORTS)
 #define TAPTI_API TAPTI_API_EXPORT
 #else
 #define TAPTI_API TAPTI_API_IMPORT
-#endif  //! For user
-	
+#endif //! For user
+
 /**
  * \brief Enable collection of a specific kind of activity record.
  *
@@ -801,8 +801,8 @@ TAptiResult TAPTI_API taptiActivityDisable(TApti_ActivityKind kind);
  * taptiActivityGetNextRecord and returns the next activity record
  * from the buffer. If input value is NULL, returns the first activity
  * record in the buffer. Records of kind TAPTI_ACTIVITY_KIND_CONCURRENT_KERNEL
- * may contain invalid (0) timestamps, indicating that no timing information could
- * be collected for lack of device memory.
+ * may contain invalid (0) timestamps, indicating that no timing information
+ * could be collected for lack of device memory.
  * \param validBufferSizeBytes The number of valid bytes in the buffer.
  *
  * \retval TAPTI_SUCCESS
@@ -810,15 +810,19 @@ TAptiResult TAPTI_API taptiActivityDisable(TApti_ActivityKind kind);
  * \retval TAPTI_ERROR_MAX_LIMIT_REACHED if no more records in the buffer
  * \retval TAPTI_ERROR_INVALID_PARAMETER if \p buffer is NULL.
  */
-TAptiResult TAPTI_API taptiActivityGetNextRecord(uint8_t* buffer, size_t validBufferSizeBytes, TApti_Activity **record);
+TAptiResult TAPTI_API taptiActivityGetNextRecord(uint8_t *buffer,
+                                                 size_t validBufferSizeBytes,
+                                                 TApti_Activity **record);
 
 /**
  * \brief Push an external correlation id for the calling thread
  *
- * This function notifies TAPTI that the calling thread is entering an external API region.
- * When a TAPTI activity API record is created while within an external API region and
- * TAPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION is enabled, the activity API record will
- * be preceeded by a TApti_ActivityExternalCorrelation record for each \ref TApti_ExternalCorrelationKind.
+ * This function notifies TAPTI that the calling thread is entering an external
+ * API region. When a TAPTI activity API record is created while within an
+ * external API region and TAPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION is enabled,
+ * the activity API record will be preceeded by a
+ * TApti_ActivityExternalCorrelation record for each \ref
+ * TApti_ExternalCorrelationKind.
  *
  * \param kind The kind of external API activities should be correlated with.
  * \param id External correlation id.
@@ -826,28 +830,35 @@ TAptiResult TAPTI_API taptiActivityGetNextRecord(uint8_t* buffer, size_t validBu
  * \retval TAPTI_SUCCESS
  * \retval TAPTI_ERROR_INVALID_PARAMETER The external API kind is invalid
  */
-TAptiResult TAPTI_API taptiActivityPushExternalCorrelationId(TApti_ExternalCorrelationKind kind, uint64_t id);
+TAptiResult TAPTI_API taptiActivityPushExternalCorrelationId(
+    TApti_ExternalCorrelationKind kind, uint64_t id);
 
 /**
  * \brief Pop an external correlation id for the calling thread
  *
- * This function notifies TAPTI that the calling thread is leaving an external API region.
+ * This function notifies TAPTI that the calling thread is leaving an external
+ * API region.
  *
  * \param kind The kind of external API activities should be correlated with.
- * \param lastId If the function returns successful, contains the last external correlation id for this \p kind, can be NULL.
+ * \param lastId If the function returns successful, contains the last external
+ * correlation id for this \p kind, can be NULL.
  *
  * \retval TAPTI_SUCCESS
  * \retval TAPTI_ERROR_INVALID_PARAMETER The external API kind is invalid.
- * \retval TAPTI_ERROR_QUEUE_EMPTY No external id is currently associated with \p kind.
+ * \retval TAPTI_ERROR_QUEUE_EMPTY No external id is currently associated with
+ * \p kind.
  */
-TAptiResult TAPTI_API taptiActivityPopExternalCorrelationId(TApti_ExternalCorrelationKind kind, uint64_t *lastId);
+TAptiResult TAPTI_API taptiActivityPopExternalCorrelationId(
+    TApti_ExternalCorrelationKind kind, uint64_t *lastId);
 
 /**
- * \brief Request to deliver activity records via the buffer completion callback.
+ * \brief Request to deliver activity records via the buffer completion
+ * callback.
  *
- * This function returns the activity records associated with all contexts/streams
- * (and the global buffers not associated with any stream) to the TAPTI client
- * using the callback registered in taptiActivityRegisterCallbacks.
+ * This function returns the activity records associated with all
+ * contexts/streams (and the global buffers not associated with any stream) to
+ * the TAPTI client using the callback registered in
+ * taptiActivityRegisterCallbacks.
  *
  * This is a blocking call but it doesn't issue any TANG synchronization calls
  * implicitly thus it's not guaranteed that all activities are completed on the
@@ -859,19 +870,22 @@ TAptiResult TAPTI_API taptiActivityPopExternalCorrelationId(TApti_ExternalCorrel
  *
  * Behavior of the function based on the input flag:
  * - ::For default flush i.e. when flag is set as 0, it returns all the
- * activity buffers which have all the activity records completed, buffers need not
- * to be full though. It doesn't return buffers which have one or more incomplete
- * records. Default flush can be done at a regular interval in a separate thread.
- * - ::For forced flush i.e. when flag TAPTI_ACTIVITY_FLAG_FLUSH_FORCED is passed
- * to the function, it returns all the activity buffers including the ones which have
- * one or more incomplete activity records. It's suggested for clients to do the
- * force flush before the termination of the profiling session to allow remaining
- * buffers to be delivered. In general, it can be done in the at-exit handler.
+ * activity buffers which have all the activity records completed, buffers need
+ * not to be full though. It doesn't return buffers which have one or more
+ * incomplete records. Default flush can be done at a regular interval in a
+ * separate thread.
+ * - ::For forced flush i.e. when flag TAPTI_ACTIVITY_FLAG_FLUSH_FORCED is
+ * passed to the function, it returns all the activity buffers including the
+ * ones which have one or more incomplete activity records. It's suggested for
+ * clients to do the force flush before the termination of the profiling session
+ * to allow remaining buffers to be delivered. In general, it can be done in the
+ * at-exit handler.
  *
- * Before calling this function, the buffer handling callback api must be activated
- * by calling taptiActivityRegisterCallbacks.
+ * Before calling this function, the buffer handling callback api must be
+ * activated by calling taptiActivityRegisterCallbacks.
  *
- * \param flag The flag can be set to indicate a forced flush. See TApti_ActivityFlag
+ * \param flag The flag can be set to indicate a forced flush. See
+ * TApti_ActivityFlag
  *
  * \retval TAPTI_SUCCESS
  * \retval TAPTI_ERROR_NOT_INITIALIZED
@@ -901,7 +915,8 @@ TAptiResult TAPTI_API taptiActivityFlushAll(void);
  * as many records as possible. If > 0 the buffer is filled with at
  * most that many records before it is returned.
  */
-typedef void (*TApti_BuffersCallbackRequestFunc)(uint8_t **buffer, size_t *size, size_t *maxNumRecords);
+typedef void (*TApti_BuffersCallbackRequestFunc)(uint8_t **buffer, size_t *size,
+                                                 size_t *maxNumRecords);
 
 /**
  * \brief Function type for callback used by TAPTI to return a buffer
@@ -921,7 +936,8 @@ typedef void (*TApti_BuffersCallbackRequestFunc)(uint8_t **buffer, size_t *size,
  * TApti_BuffersCallbackRequestFunc.
  * \param validSize The number of valid bytes in the buffer.
  */
-typedef void (*TApti_BuffersCallbackCompleteFunc)(uint8_t* buffer, size_t size, size_t validSize);
+typedef void (*TApti_BuffersCallbackCompleteFunc)(uint8_t *buffer, size_t size,
+                                                  size_t validSize);
 
 /**
  * \brief Registers callback functions with TAPTI for activity buffer
@@ -943,14 +959,14 @@ typedef void (*TApti_BuffersCallbackCompleteFunc)(uint8_t* buffer, size_t size, 
  * \retval TAPTI_ERROR_INVALID_PARAMETER if either \p
  * funcBufferRequested or \p funcBufferCompleted is NULL
  */
-TAptiResult TAPTI_API taptiActivityRegisterCallbacks(TApti_BuffersCallbackRequestFunc funcBufferRequested,
-        TApti_BuffersCallbackCompleteFunc funcBufferCompleted);
+TAptiResult TAPTI_API taptiActivityRegisterCallbacks(
+    TApti_BuffersCallbackRequestFunc funcBufferRequested,
+    TApti_BuffersCallbackCompleteFunc funcBufferCompleted);
 
 TAptiResult TAPTI_API taptiActivityPostProcess(void);
 
 #ifdef __cplusplus
 }
-#endif  //! __cplusplus
+#endif //! __cplusplus
 
-#endif  // _TAPTI_ACTIVITY_HPP_
-
+#endif // _TAPTI_ACTIVITY_HPP_

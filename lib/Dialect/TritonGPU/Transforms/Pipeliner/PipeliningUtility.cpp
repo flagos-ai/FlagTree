@@ -4,7 +4,6 @@
 
 #ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_PipeliningUtility
 
-#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -16,6 +15,7 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -750,4 +750,4 @@ scf::ForOp triton::lowerTMADescriptors(scf::ForOp forOp,
   return forOp;
 }
 
-#endif//FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_PipeliningUtility
+#endif // FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_PipeliningUtility
