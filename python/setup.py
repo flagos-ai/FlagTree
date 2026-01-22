@@ -57,11 +57,11 @@ class BackendInstaller:
                 root_dir), f"{actual_dir_name} is requested for install but not present in {root_dir}"
 
             try:
-                # Check if the submodule is defined in .gitmodules
+                # flagtree: check if the submodule is defined in .gitmodules
                 check_result = subprocess.run(
                     ["git", "config", "-f", ".gitmodules", "--get-regexp", f"submodule.*{actual_dir_name}.path"],
                     check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=os.pardir)
-                # Only execute git submodule update for actual git submodules
+                # flagtree: only execute git submodule update for actual git submodules
                 if check_result.returncode == 0:
                     subprocess.run(["git", "submodule", "update", "--init", f"{actual_dir_name}"], check=True,
                                    stdout=subprocess.DEVNULL, cwd=root_dir)
