@@ -1,7 +1,6 @@
 import os
 import shutil
 import sys
-import sysconfig
 import functools
 from pathlib import Path
 import hashlib
@@ -17,6 +16,7 @@ set_llvm_env = lambda path: set_env({
     'LLVM_LIBRARY_DIR': os.path.join(path, "lib"),
     'LLVM_SYSPATH': path,
 })
+
 
 def install_extension(*args, **kargs):
     try:

@@ -10,8 +10,10 @@ from types import MappingProxyType
 import importlib.util
 from dataclasses import dataclass, field
 
+
 def _get_flagtree_root() -> str:
     return str(Path(__file__).resolve().parents[3])
+
 
 @dataclass
 class FlagtreeConfigs:
@@ -53,7 +55,9 @@ class FlagtreeConfigs:
             pass
         return module
 
+
 flagtree_configs = FlagtreeConfigs()
+
 
 @dataclass
 class NetConfig:

@@ -574,7 +574,6 @@ else:
     backends = [*BackendInstaller.copy(helper.configs.default_backends), *BackendInstaller.copy_externals()]
 
 
-
 def add_link_to_backends():
     helper.CommonUtils.unlink()
     for backend in backends:
