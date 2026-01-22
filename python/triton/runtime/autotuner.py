@@ -138,19 +138,19 @@ class Autotuner(KernelInterface):
             current[block_size_name] = block_size
             config.kwargs[block_size_name] = block_size
             # print(f'#### flagtree tune: {tensor_size_name}={tensor_size}, {block_size_name}={block_size}')
-    
+
     def _auto_adjust_block_sizes(self, current, config):
         """
         自动根据依赖分析结果调整 block size。
-        
+
         不再需要手动写死 ("M", "BLOCK_M"), ("N", "BLOCK_N"), ("K", "BLOCK_K") 等配对，
         而是从 AST 分析结果中自动获取这些配对关系。
-        
+
         例如，mm.py 中分析出：
             - M 依赖于 BLOCK_M (因为 ram = rm % M, 而 rm 依赖于 tl.arange(0, BLOCK_M))
             - N 依赖于 BLOCK_N
             - K 依赖于 BLOCK_K
-        
+
         则自动调用:
             self.adjust_block_size(current, config, "M", "BLOCK_M")
             self.adjust_block_size(current, config, "N", "BLOCK_N")
@@ -158,7 +158,7 @@ class Autotuner(KernelInterface):
         """
         # 使用独立的分析器获取依赖关系（在编译前就可以分析）
         relationships = analyze_kernel_dependencies(self.fn)
-        
+
         if relationships:
             # 使用分析结果自动调整
             for param, constexprs in relationships.items():
