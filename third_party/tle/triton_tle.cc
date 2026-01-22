@@ -68,6 +68,17 @@ void init_triton_tle_ir(py::module &&m) {
 
   // Add TLE extensions to the existing TritonOpBuilder class
   builder_cls
+      // TLE-Lite
+      ->def("create_extract_tile",
+            [](TritonOpBuilder &self, Value &input, Value &index,
+               std::vector<int64_t> &tileShape) {
+              return self.create<tle::ExtractTileOp>(input, index, tileShape);
+            })
+      ->def("create_insert_tile",
+            [](TritonOpBuilder &self, Value &input, Value &tile, Value &index) {
+              return self.create<tle::InsertTileOp>(input, tile, index);
+            })
+      // TLE-Struct
       ->def("make_swizzled_shared_encoding_attr",
             [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
                unsigned maxPhase, std::vector<unsigned> order,

@@ -4,6 +4,15 @@
 
 namespace mlir::triton::tle {
 
+void ExtractTileOp::build(::mlir::OpBuilder &odsBuilder,
+                          ::mlir::OperationState &odsState, Value input,
+                          Value index, ArrayRef<int64_t> tileShape) {
+  auto inputType = cast<RankedTensorType>(input.getType());
+  SmallVector<Type> tys = {
+      RankedTensorType::get(tileShape, inputType.getElementType())};
+  build(odsBuilder, odsState, tys, input, index);
+}
+
 LogicalResult DSLRegionOp::verify() {
   Region &body = getBody();
   const uint32_t numArguments = body.getNumArguments(),

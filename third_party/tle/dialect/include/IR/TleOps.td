@@ -14,8 +14,34 @@ include "triton/Dialect/TritonGPU/IR/TritonGPUTypes.td"
 
 class Tle_Op<string mnemonic, list<Trait> traits = []> :
     Op<Tle_Dialect, mnemonic,
-       !listconcat(traits, [VerifyTensorLayoutsTrait])> {
+       !listconcat(traits, [TensorSizeTrait, VerifyTensorLayoutsTrait])> {
 }
+
+// Begin TLE-Lite
+
+def Tle_ExtractTileOp : Tle_Op<"extract_tile", [Pure,
+                                               SameOperandsAndResultElementType]> {
+  let arguments = (ins TT_Tensor:$src, TT_IntLike:$index);
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = [{
+    $src `[` $index `]` attr-dict `:` qualified(type($src)) `,` qualified(type($index)) `->` qualified(type($result))
+  }];
+  let builders = [OpBuilder<(ins "Value":$src, "Value":$index, "ArrayRef<int64_t>":$tile_shape)>];
+}
+
+def Tle_InsertTileOp : Tle_Op<"insert_tile", [Pure,
+                                              DeclareOpInterfaceMethods<InferTypeOpInterface>,
+                                              SameOperandsAndResultType]> {
+  let arguments = (ins TT_Tensor:$src, TT_Tensor:$tile ,TT_IntLike:$index);
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = [{
+    $src `[` $index `]` `=` $tile attr-dict `:` qualified(type($index)) `,` qualified(type($tile)) `->` qualified(type($result))
+  }];
+}
+
+// End TLE-Lite
+
+// Begin TLE-Raw
 
 def Tle_TensorType : AnyTypeOf<[TT_Type, TTG_MemDescType]>;
 def Tle_ArgType : AnyTypeOf<[Tle_TensorType, LLVMPointerType, LLVMStructType]>;
@@ -78,5 +104,7 @@ def Tle_PackOp : Tle_Op<"pack", [MemDescViewTrait, Pure, HasParent<"DSLRegionOp"
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($output)";
   let hasVerifier = 1;
 }
+
+// End TLE-Raw
 
 #endif
