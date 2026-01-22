@@ -77,5 +77,4 @@ jobs:
         shell: bash
         run: |
           set -x
-          source third_party/sunrise/script/docker_sunrise_env.sh ~/.flagtree/sunrise/sunrise_llvm21_dev_release
           python3 third_party/sunrise/python/test_examples/vector-add.py
