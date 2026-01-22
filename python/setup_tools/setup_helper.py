@@ -33,13 +33,13 @@ def get_backend_cmake_args(*args, **kargs):
 
 
 def get_device_name():
-    return device_mapping[flagtree_backend]
+    return configs.device_alias_map[flagtree_backend]
 
 
 def get_extra_packages():
     packages = []
     try:
-        packages = activated_module.get_extra_install_packages()
+        packages = configs.activated_module.get_extra_install_packages()
     except Exception:
         packages = []
     return packages
@@ -113,7 +113,7 @@ def configure_cambricon_packages_and_data(packages, package_dir, package_data):
 
 def post_install():
     try:
-        activated_module.post_install()
+        configs.activated_module.post_install()
     except Exception:
         pass
 
@@ -302,9 +302,9 @@ def handle_flagtree_backend():
     if flagtree_backend:
         print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
         display_name = "mlu" if flagtree_backend == "cambricon" else flagtree_backend
-        extend_backends.append(display_name)
+        configs.extend_backends.append(display_name)
         if "editable_wheel" in sys.argv and flagtree_backend != "ascend":
-            ext_sourcedir = os.path.abspath(f"../third_party/{flagtree_backend}/python/{ext_sourcedir}") + "/"
+            configs.ext_sourcedir = os.path.abspath(f"../third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
 
 
 def set_env(env_dict: dict):
@@ -399,7 +399,7 @@ cache.store(
 )
 
 cache.store(
-    file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (flagtree_plugin == ''), url=
+    file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (configs.flagtree_plugin == ''), url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.3.0.tar.gz",
     copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="2a9ca0b8")
 
