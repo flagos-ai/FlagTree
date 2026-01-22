@@ -23,6 +23,7 @@ set_llvm_env = lambda path: set_env({
     'LLVM_INCLUDE_DIRS': Path(path) / "include",
     'LLVM_LIBRARY_DIR': Path(path) / "lib",
     'LLVM_SYSPATH': path,
+    'PYTHONPATH': os.pathsep.join([str(Path(path) / "python_packages" / "mlir_core"), os.getenv("PYTHONPATH", "")]),
 })
 
 
