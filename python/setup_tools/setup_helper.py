@@ -29,7 +29,8 @@ set_llvm_env = lambda path: set_env({
 
 def yield_backend_dirs():
     if flagtree_backend and flagtree_backend == "sunrise":
-        yield ('triton', f'./third_party/{flagtree_backend}/python/triton')
+        return ('triton', f'./third_party/{flagtree_backend}/python/triton')
+    return None
 
 
 def install_extension(*args, **kargs):
