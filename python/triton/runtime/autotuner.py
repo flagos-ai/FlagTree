@@ -133,11 +133,21 @@ class Autotuner(KernelInterface):
                 block_size = tensor_size
             if block_size_name == "BLOCK_K" and block_size < 16:
                 block_size = 16
-            if block_size < 8:
-                block_size = 8
             current[block_size_name] = block_size
             config.kwargs[block_size_name] = block_size
             # print(f'#### flagtree tune: {tensor_size_name}={tensor_size}, {block_size_name}={block_size}')
+
+    def adjust_block_size_tma(self, current, config, block_size_name, tensor_names: List[str]):
+        for tensor_name in tensor_names:
+            tensor = self.nargs[tensor_name]
+            block_size = current[block_size_name]
+
+            elem_type_size = tensor.element_size()
+            if int(elem_type_size * block_size) < 16:
+                block_size = int(16 / elem_type_size)
+
+        current[block_size_name] = block_size
+        config.kwargs[block_size_name] = block_size
 
     def _auto_adjust_block_sizes(self, current, config):
         """
@@ -157,7 +167,7 @@ class Autotuner(KernelInterface):
             self.adjust_block_size(current, config, "K", "BLOCK_K")
         """
         # 使用独立的分析器获取依赖关系（在编译前就可以分析）
-        relationships = analyze_kernel_dependencies(self.fn)
+        relationships, tma_relationships = analyze_kernel_dependencies(self.fn)
 
         if relationships:
             # 使用分析结果自动调整
@@ -165,6 +175,10 @@ class Autotuner(KernelInterface):
                 # 只处理以 BLOCK_ 开头的 constexpr（块大小参数）
                 if constexpr.startswith('BLOCK_'):
                         self.adjust_block_size(current, config, param, constexpr)
+            for constexpr, params in tma_relationships.items():
+                # 只处理以 BLOCK_ 开头的 constexpr（块大小参数）
+                if constexpr.startswith('BLOCK_'):
+                    self.adjust_block_size_tma(current, config, constexpr, params)
         else:
             # 如果没有分析结果，回退到手动配置（兼容旧代码）
             self.adjust_block_size(current, config, "M", "BLOCK_M")

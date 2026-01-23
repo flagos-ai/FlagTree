@@ -1,5 +1,5 @@
 import ast
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, Tuple
 from functools import lru_cache
 
 
@@ -47,6 +47,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         self.constexpr_params: Set[str] = set()  # constexpr 参数名集合
         self.var_definitions: Dict[str, ast.AST] = {}  # 变量名 -> AST 定义节点
         self.load_addresses: list = []  # 存储 tl.load 的地址表达式
+        self.tma_args = {} # 存储 tl.make_tensor_descriptor 的 base 及其对应的 stride 和 block shape
 
     def visit_FunctionDef(self, node):
         """分析函数定义，收集参数信息"""
@@ -102,12 +103,34 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         # 检查是否是 tl.load 调用
         if self._is_tl_load(node) and node.args:
             self.load_addresses.append(node.args[0])
+        elif self._is_tl_make_tensor_descriptor(node):
+            base = None
+            # 收集 make_tensor_descriptor 中的 base 的节点
+            for kw in node.keywords:
+                if hasattr(kw, 'arg') and kw.arg == 'base':
+                    if kw.value not in self.tma_args:
+                        base = kw.value
+                        self.tma_args[base] = {'strides': [], 'block_shape': []}
+            # 收集 make_tensor_descriptor 中的 stride 和 block_shape 元素的节点
+            for kw in node.keywords:
+                if hasattr(kw, 'arg') and (kw.arg in ['strides', 'block_shape']):
+                    if hasattr(kw, 'value') and isinstance(kw.value, ast.List):
+                        for elt in kw.value.elts:
+                            self.tma_args[base][kw.arg].append(elt)
         self.generic_visit(node)
 
     def _is_tl_load(self, node) -> bool:
         """检查是否是 tl.load 调用"""
         if isinstance(node.func, ast.Attribute):
             if node.func.attr == 'load':
+                if isinstance(node.func.value, ast.Name):
+                    return node.func.value.id in ('tl', 'triton')
+        return False
+
+    def _is_tl_make_tensor_descriptor(self, node) -> bool:
+        """检查是否是 tl.make_tensor_descriptor 调用"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'make_tensor_descriptor':
                 if isinstance(node.func.value, ast.Name):
                     return node.func.value.id in ('tl', 'triton')
         return False
@@ -172,11 +195,45 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     constexpr_dep = list(constexpr_deps)[0]
                     relationships[input_dep] = constexpr_dep
 
-        return relationships
+        tma_relationships = {}
+
+        for arg_base in self.tma_args.keys():
+            base_name = None
+            blck_shape_name = None
+
+            # 收集 base 中使用的变量
+            base_used_vars = VariableCollector.collect(arg_base)
+
+            # 分析每个变量的依赖
+            for base_used_var_name in base_used_vars:
+                input_deps, _ = self.get_dependencies(base_used_var_name)
+                if len(input_deps) == 1:
+                    base_name = list(input_deps)[0]
+
+            # 找到最后一维 stride 对应的 block shape
+            last_stride = self.tma_args[arg_base]['strides'][-1]
+            last_blck_shape = self.tma_args[arg_base]['block_shape'][-1]
+
+            if isinstance(last_stride, ast.Constant) and last_stride.value == 1:
+                # 收集最后一维 block shape 中使用的变量
+                blck_shape_used_vars = VariableCollector.collect(last_blck_shape)
+
+                # 分析每个变量的依赖
+                for blck_shape_used_var_name in blck_shape_used_vars:
+                    _, constexpr_deps = self.get_dependencies(blck_shape_used_var_name)
+                    if len(constexpr_deps) == 1:
+                        blck_shape_name = list(constexpr_deps)[0]
+
+            if blck_shape_name not in tma_relationships:
+                tma_relationships[blck_shape_name] = [base_name]
+            else:
+                tma_relationships[blck_shape_name].append(base_name)
+
+        return relationships, tma_relationships
 
 
 # 缓存分析结果，避免重复分析
-_analysis_cache: Dict[int, Dict[str, Set[str]]] = {}
+_analysis_cache: Dict[int, Tuple[Dict[str, Set[str]]]] = {}
 
 
 def analyze_kernel_dependencies(jit_fn) -> Dict[str, Set[str]]:
@@ -192,10 +249,10 @@ def analyze_kernel_dependencies(jit_fn) -> Dict[str, Set[str]]:
         # 创建分析器并分析
         analyzer = KernelDependencyAnalyzer()
         analyzer.visit(fn_ast)
-        relationships = analyzer.analyze()
+        relationships, tma_relationships = analyzer.analyze()
 
         # 缓存结果
-        _analysis_cache[fn_id] = relationships
+        _analysis_cache[fn_id] = (relationships, tma_relationships)
 
         # 可选：打印分析结果
         import os
@@ -204,8 +261,12 @@ def analyze_kernel_dependencies(jit_fn) -> Dict[str, Set[str]]:
                 print(f"\n=== Kernel 依赖分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
                 for param, constexprs in relationships.items():
                     print(f"  输入参数 '{param}' 与常量 {constexprs} 相关")
+            if tma_relationships:
+                print(f"\n=== TMA 块形状依赖分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
+                for blck_shape, bases in tma_relationships.items():
+                    print(f"  最低维度块形状 '{blck_shape}' 与基 {bases} 相关")
 
-        return relationships
+        return (relationships, tma_relationships)
 
     except Exception as e:
         # 分析失败时返回空字典
