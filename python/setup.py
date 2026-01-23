@@ -52,6 +52,7 @@ class BackendInstaller:
     def prepare(backend_name: str, backend_src_dir: str = None, is_external: bool = False):
         dir_mapping = {"mlu": "cambricon"}
         actual_dir_name = dir_mapping.get(backend_name, backend_name)
+
         # Initialize submodule if there is one for in-tree backends.
         if not is_external:
             root_dir = os.path.join(os.pardir, "third_party")
