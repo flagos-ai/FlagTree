@@ -363,7 +363,7 @@ cache.store(
 cache.store(
     file="iluvatarTritonPlugin.so", condition=("iluvatar" == flagtree_backend) and (not configs.flagtree_plugin), url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.4.0.tar.gz",
-    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="d1c5f54c")
+    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="015b9af8")
 
 # klx xpu
 cache.store(
