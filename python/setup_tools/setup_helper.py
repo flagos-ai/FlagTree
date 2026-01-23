@@ -336,6 +336,24 @@ def check_env(env_val):
     return os.environ.get(env_val, '') != ''
 
 
+def uninstall_triton():
+    is_bdist_wheel = any(cmd in sys.argv for cmd in ['bdist_wheel', 'egg_info', 'sdist'])
+    if is_bdist_wheel:
+        return
+    try:
+        import pkg_resources
+        import subprocess
+        try:
+            pkg_resources.get_distribution('triton')
+            print("Detected existing 'triton' package. Uninstalling to avoid conflicts...")
+            subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", "triton"])
+            print("Successfully uninstalled 'triton'.")
+        except pkg_resources.DistributionNotFound:
+            print("'triton' package not found, no need to uninstall.")
+    except Exception as e:
+        print(f"Warning: Failed to check/uninstall triton: {e}")
+
+
 offline_handler = utils.OfflineBuildManager()
 if offline_handler.is_offline:
     print("[INFO] FlagTree Offline Build: Use offline build for triton origin toolkits")
@@ -366,7 +384,7 @@ cache.store(
 )
 
 cache.store(
-    file="iluvatarTritonPlugin.so", condition=("iluvatar" == flagtree_backend) and (flagtree_plugin == ''), url=
+    file="iluvatarTritonPlugin.so", condition=("iluvatar" == flagtree_backend) and (not flagtree_plugin), url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.30-glibcxx3.4.28-cxxabi1.3.12-ubuntu-x86_64_v0.3.0.tar.gz",
     copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="015b9af8")
 
@@ -405,7 +423,7 @@ cache.store(
 )
 
 cache.store(
-    file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (flagtree_plugin == ''), url=
+    file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (not flagtree_plugin), url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.3.0.tar.gz",
     copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="2a9ca0b8")
 
@@ -469,5 +487,5 @@ cache.store(
 
 cache.store(
     file="sunriseTritonPlugin.so", condition=("sunrise" == flagtree_backend) and (not flagtree_plugin), url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz",
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz",
     copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="1f0b7e67")
