@@ -15,6 +15,7 @@ def precompile_hook_flir(*args, **kargs):
         default_backends_list.remove('amd')
     default_backends_list.append('flir')
     default_backends = tuple(default_backends_list)
+    kargs["default_backends"] = default_backends
     get_submodule()
 
 
