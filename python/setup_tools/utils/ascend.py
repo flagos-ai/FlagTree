@@ -10,11 +10,9 @@ submodules = (Module(name="ascendnpu-ir", url="https://gitcode.com/Ascend/Ascend
 
 def precompile_hook_flir(*args, **kargs):
     default_backends = kargs["default_backends"]
-    default_backends_list = list(default_backends)
     if 'amd' in default_backends:
-        default_backends_list.remove('amd')
-    default_backends_list.append('flir')
-    default_backends = tuple(default_backends_list)
+            default_backends.remove('amd')
+    default_backends.append('flir')
     get_submodule()
 
 
