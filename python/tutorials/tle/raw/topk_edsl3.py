@@ -31,7 +31,7 @@ def convert_to_uint32(x):
 #【注意】这个版本的线程数要求==1024，之后还得加上线程资源约束
 @dialect(name="mlir")
 def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["memref<?xi32, 3>"],
-          indices_base: Input["!llvm.ptr<1>"], s_input_ids_base: Input["!llvm.ptr<1>"], inputs: Input["!llvm.ptr<1>"],
+          s_threshold_bin_id: Input["memref<?xi32, 3>"], indices_base: Input["!llvm.ptr<1>"], s_input_ids_base: Input["!llvm.ptr<1>"], inputs: Input["!llvm.ptr<1>"],
           s_histogram: Input["memref<?xi32, 3>"], l_start_idx: Input["i32"], l_end_idx: Input["i32"], S: Input["i32"],
           BS: Input["i32"], K_tensor: Input["memref<?xi32, 3>"]):
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
@@ -162,11 +162,11 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["me
         if_find_thre = scf.if_([], cond_thre)
         then_block_thre = if_find_thre.opview.thenRegion.blocks.append()
         with ir.InsertionPoint(then_block_thre):
-            memref.store(tidx, thre_bin_sum_buf, [zero_idx])
+            memref.store(tidx, s_threshold_bin_id, [zero_idx])
             scf.yield_([])
         scf.yield_([])
     nvvm.barrier0()
-    l_threshold_bin_id_new = memref.load(thre_bin_sum_buf, [zero_idx])
+    l_threshold_bin_id_new = memref.load(s_threshold_bin_id, [zero_idx])
     l_threshold_bin_id_plus_one = arith.addi(l_threshold_bin_id_new, one_i32)
     l_threshold_bin_id_plus_one_idx = arith.index_cast(ir.IndexType.get(), l_threshold_bin_id_plus_one)
     hist_threshold_plus_one = memref.load(s_histogram, [l_threshold_bin_id_plus_one_idx])
@@ -183,9 +183,9 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["me
         BS_idx = arith.index_cast(ir.IndexType.get(), BS)
         bdimx_idx = arith.index_cast(ir.IndexType.get(), bdimx)
         num_strides = arith.ceildivsi(BS, bdimx)
-        num_strides_idx = arith.index_cast(ir.IndexType.get(), num_strides)
+        # num_strides_idx = arith.index_cast(ir.IndexType.get(), num_strides)
 
-        for stride in scf.for_(zero, num_strides_idx, one):
+        for stride in scf.for_(zero, arith.constant(index_ty, 1), one):
             s_i32 = arith.index_cast(i32_ty, s)
             stride_i32 = arith.index_cast(i32_ty, stride)
             stride_offset = arith.muli(stride_i32, bdimx)
@@ -297,18 +297,22 @@ def kernel_bucket_sort_topk(  # grid(B,)
     # Kernel2: Call edsl1 for topk selection (threshold calculated in edsl1)
     thre_bin_sum_buf = tl.zeros([1], dtype=tl.int32)
     l_new_topk_buf = tl.zeros([1], dtype=tl.int32)
+    s_threshold_bin_id = tl.zeros([1], dtype=tl.int32)
     s = S
     bs = BS
     k_tensor = tl.full([1], K, dtype=tl.int32)  # Convert constexpr to tensor
     thre_bin_sum_buf, l_new_topk_buf = tle_raw.call(
         edsl1, [thre_bin_sum_buf, l_new_topk_buf],
-        [indices_base, s_input_ids_base, inputs, s_histogram, l_start_idx, l_end_idx, s, bs, k_tensor])
+        [s_threshold_bin_id, indices_base, s_input_ids_base, inputs, s_histogram, l_start_idx, l_end_idx, s, bs, k_tensor])
 
     thre_bin_sum = thre_bin_sum_buf.max(0)
     l_new_topk = l_new_topk_buf.max(0)
     sum = K - l_new_topk
 
-    return
+    # return
+    # if i_b == 0:
+    #     print("thre_bin_sum", thre_bin_sum)
+    #     print("l_new_topk", l_new_topk)
 
     # Kernel3: Continue with while loop
     round = 0
@@ -418,12 +422,12 @@ def test_topk_selector(batch=64, seq_len=32 * 1024, topk=2048):
         set_ref = set(ref_np)
         set_trt = set(trt_np)
         intersection = set_ref & set_trt
-        print("selected/all:", len(intersection), "/", len(set_ref), "=", len(intersection) / len(set_ref))
-        if len(intersection) != len(set_ref):
-            ref_ordered = input[i][ref_np].sort()
-            trt_ordered = input[i][trt_np].sort()
-            print(indexes_ref[i][ref_ordered[1]])
-            print(indexes[i][trt_ordered[1]])
+        print(i, " selected/all:", len(intersection), "/", len(set_ref), "=", len(intersection) / len(set_ref))
+        # if len(intersection) != len(set_ref):
+        #     ref_ordered = input[i][ref_np].sort()
+        #     trt_ordered = input[i][trt_np].sort()
+        #     print(indexes_ref[i][ref_ordered[1]])
+        #     print(indexes[i][trt_ordered[1]])
 
     # Performance test with CUDA events
 
