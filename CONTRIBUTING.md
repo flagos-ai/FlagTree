@@ -1,1 +1,1 @@
-[README](https://github.com/flagos-ai/flagtree/blob/main/CONTRIBUTING.md)
+[CONTRIBUTING](https://github.com/flagos-ai/flagtree/blob/main/CONTRIBUTING.md)
