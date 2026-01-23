@@ -39,7 +39,7 @@ runs:
               ONLY_DOCS_CHANGED=false
               break
             fi
-            if [[ ! "$file" =~ (\.(md|yml|txt)$|CODEOWNERS$) ]]; then
+            if [[ "$file" =~ CMakeLists\.txt$ ]] || [[ ! "$file" =~ (\.(md|yml|txt)$|CODEOWNERS$) ]]; then
               echo "'$file' -> Not a docs file, need to run build/test"
               ONLY_DOCS_CHANGED=false
               break
