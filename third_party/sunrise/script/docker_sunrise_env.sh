@@ -1,7 +1,7 @@
 #!/bin/bash
 
 function print_usage() {
-    echo "Usage: source build_ttenv.sh <llvm_install_dir>"
+    echo "Usage: source docker_sunrise_env.sh <llvm_install_dir>"
 }
 
 # 确保这个脚本由 source 命令执行
