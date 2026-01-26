@@ -2,6 +2,7 @@ import os
 import sys
 import importlib
 
+
 class BaseHintHandler:
     # dynamicly find method
     def trigger(self, hook_name, *args, **kwargs):
@@ -32,7 +33,9 @@ class BaseHintHandler:
         print("no capable method in backend handler")
         return None
 
+
 class HintManager:
+
     def __init__(self, backend_name):
         self.backend_name = backend_name
         # load Handler with backend name
@@ -56,7 +59,7 @@ class HintManager:
 # supported backend with matched version
 SUPPORTED_CONFIG = {
     "cuda": {"3.5"},
-    "npu": {"3.2"}, 
+    "npu": {"3.2"},
     "aipu": {"3.3"},
 }
 
@@ -74,12 +77,13 @@ def normalize_backend_name(name: str) -> str:
     name = name.lower()
     return BACKEND_ALIASES.get(name, name)
 
+
 def hint_get_flagtree_backend() -> str:
     detected_backend = ""
 
     import torch
     import triton
-    
+
     # Priority 1: Triton Driver
     try:
         from triton.runtime import driver
