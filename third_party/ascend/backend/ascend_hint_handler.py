@@ -57,24 +57,24 @@ class AscendHintHandler(BaseHintHandler):
 
     @staticmethod
     def maps_line_numbers_to_comment_hints(jit_fn):
-    import tokenize
-    from io import StringIO
-    # Maps line numbers to comment hints
-    line_flagtree_hints = {}
-    code_str = jit_fn.src
-    g = tokenize.generate_tokens(StringIO(code_str).readline)
-    for tok_type, tok_text, start, end, _ in g:
-        if tok_type == tokenize.COMMENT:
-            comment = tok_text.replace(" ", "").strip()
-            if comment.startswith('#@hint:'):
-                flagtree_hints = comment[len('#@hint:'):].strip()
-                # Record the line number of the comment
-                line_num = start[0]
-                line_flagtree_hints[line_num] = flagtree_hints
+        import tokenize
+        from io import StringIO
+        # Maps line numbers to comment hints
+        line_flagtree_hints = {}
+        code_str = jit_fn.src
+        g = tokenize.generate_tokens(StringIO(code_str).readline)
+        for tok_type, tok_text, start, end, _ in g:
+            if tok_type == tokenize.COMMENT:
+                comment = tok_text.replace(" ", "").strip()
+                if comment.startswith('#@hint:'):
+                    flagtree_hints = comment[len('#@hint:'):].strip()
+                    # Record the line number of the comment
+                    line_num = start[0]
+                    line_flagtree_hints[line_num] = flagtree_hints
 
-                # print(f"[FLAGTREE] Parsed hint at line {line_num}: {flagtree_hints}")
+                    # print(f"[FLAGTREE] Parsed hint at line {line_num}: {flagtree_hints}")
 
-    return line_flagtree_hints
+        return line_flagtree_hints
 
     @staticmethod
     def attach_line_number_to_comment_mapping(tree, line_flagtree_hints):

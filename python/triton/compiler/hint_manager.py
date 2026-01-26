@@ -2,8 +2,6 @@ import os
 import sys
 import logging
 import importlib
-import torch
-import triton
 from typing import Optional
 
 class BaseHintHandler:
@@ -33,8 +31,8 @@ class BaseHintHandler:
                     print(f"  > Reason : {e}\n")
 
                     raise e
-    print(f"no capable method in backend handler")
-    return None
+        print(f"no capable method in backend handler")
+        return None
 
 class HintManager:
     def __init__(self, backend_name):
@@ -80,6 +78,9 @@ def normalize_backend_name(name: str) -> str:
 
 def hint_get_flagtree_backend() -> str:
     detected_backend = ""
+
+    import torch
+    import triton
     
     # Priority 1: Triton Driver 
     try:
