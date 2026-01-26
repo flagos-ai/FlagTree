@@ -120,6 +120,7 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
       mapper.map(&oldBlock, newBlock);
     }
   }
+  // Stage 4: Clone the LLVM function body to the DSLRegionOp body
   for (auto [oldBlock, newBlock] :
        zip_equal(func.getBlocks(), body.getBlocks())) {
     OpBuilder::InsertionGuard guard(builder);

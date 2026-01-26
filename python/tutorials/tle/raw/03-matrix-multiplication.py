@@ -53,26 +53,25 @@ def edsl(c: InOut["memref<?x?xf32, strided<[?, ?], offset: ?>, 3>"], a: Input["m
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
     bdimx = arith.index_cast(ir.IndexType.get(), bdimx)
-    # m = memref.dim(c, arith.constant(ir.IndexType.get(), 0))
-    # n = memref.dim(c, arith.constant(ir.IndexType.get(), 1))
-    # k = memref.dim(a, arith.constant(ir.IndexType.get(), 1))
-    # numel = arith.muli(m, n)
-    vprintf("Computing \n")
-    # for i in scf.for_(tidx, numel, bdimx):
-    #     row = arith.divsi(i, n)
-    #     col = arith.remsi(i, n)
-    #     rowdebug = arith.index_cast(ir.IntegerType.get_signless(64), row)
-    #     coldebug = arith.index_cast(ir.IntegerType.get_signless(64), col)
-    #     # vprintf("Computing C[%d, %d]\n", rowdebug,coldebug)
-    #     for j, arg, result in scf.for_(arith.constant(ir.IndexType.get(), 0), k, arith.constant(ir.IndexType.get(), 1),
-    #                                    [arith.constant(ir.F32Type.get(), 0.0)]):
-    #         a_val = memref.load(a, [row, j])
-    #         b_val = memref.load(b, [j, col])
-    #         c_val = arith.addf(arg, arith.extf(ir.F32Type.get(), arith.mulf(a_val, b_val)))
-    #         scf.yield_([c_val])
-    #     init = memref.load(c, [row, col])
-    #     memref.store(arith.addf(result, init), c, [row, col])
-    #     scf.yield_([])
+    m = memref.dim(c, arith.constant(ir.IndexType.get(), 0))
+    n = memref.dim(c, arith.constant(ir.IndexType.get(), 1))
+    k = memref.dim(a, arith.constant(ir.IndexType.get(), 1))
+    numel = arith.muli(m, n)
+    for i in scf.for_(tidx, numel, bdimx):
+        row = arith.divsi(i, n)
+        col = arith.remsi(i, n)
+        rowdebug = arith.index_cast(ir.IntegerType.get_signless(64), row)
+        coldebug = arith.index_cast(ir.IntegerType.get_signless(64), col)
+        # vprintf("Computing C[%d, %d]\n", rowdebug,coldebug)
+        for j, arg, result in scf.for_(arith.constant(ir.IndexType.get(), 0), k, arith.constant(ir.IndexType.get(), 1),
+                                       [arith.constant(ir.F32Type.get(), 0.0)]):
+            a_val = memref.load(a, [row, j])
+            b_val = memref.load(b, [j, col])
+            c_val = arith.addf(arg, arith.extf(ir.F32Type.get(), arith.mulf(a_val, b_val)))
+            scf.yield_([c_val])
+        init = memref.load(c, [row, col])
+        memref.store(arith.addf(result, init), c, [row, col])
+        scf.yield_([])
 
 
 @triton.autotune(
