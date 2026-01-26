@@ -477,7 +477,7 @@ cache.store(
 
 # sunrise
 cache.store(
-    file="sunrise-llvm21-x86_64",
+    file="sunrise_llvm21_dev_release",
     condition=("sunrise" == flagtree_backend),
     url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunrise-llvm21-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz",
