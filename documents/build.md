@@ -258,8 +258,9 @@ tar zxvf sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.t
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
-mkdir -p third_party/sunrise/backend/lib
-cp ~/.flagtree/sunrise/sunrise_llvm21_dev_release/stpu/bitcode/*.bc third_party/sunrise/backend/lib
+export TRITON_BUILD_WITH_CLANG_LLD=1
+export TRITON_OFFLINE_BUILD=1
+export TRITON_BUILD_PROTON=OFF
 export FLAGTREE_BACKEND=sunrise
 python3 -m pip install . --no-build-isolation -v
 ```
