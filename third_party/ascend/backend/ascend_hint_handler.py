@@ -78,5 +78,5 @@ class AscendHintHandler(BaseHintHandler):
 
     @staticmethod
     def attach_line_number_to_comment_mapping(tree, line_flagtree_hints):
-    # Attach the line number to comment mapping to the function definition node
-    tree.body[0].line_flagtree_hints = line_flagtree_hints
+        # Attach the line number to comment mapping to the function definition node
+        tree.body[0].line_flagtree_hints = line_flagtree_hints

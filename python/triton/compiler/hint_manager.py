@@ -19,7 +19,7 @@ class BaseHintHandler:
                     try:
                         sig = inspect.signature(method)
                         expected = str(sig)
-                    except:
+                    except Exception:
                         expected = "(unknown)"
 
                     actual_args = f"{len(args)} positional"
