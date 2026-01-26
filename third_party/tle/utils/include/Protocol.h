@@ -1,79 +1,142 @@
 #ifndef TLE_UTILS_PROTOCOL_H_
 #define TLE_UTILS_PROTOCOL_H_
 
-#include "IR/Dialect.h"
 #include "ir.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
-#include "mlir/IR/ValueRange.h"
 #include "triton/Dialect/Triton/IR/Types.h"
-#include <cstddef>
-#include <stdexcept>
+#include <type_traits>
 
 /* --------------- Definitions --------------- */
 
-namespace mlir::triton::tle {
+namespace mlir::triton::tle::protocol {
 
 /* --------------- Protocol  --------------- */
 
-template <typename T> struct Protocol {
-  static SmallVector<Value> consume(TritonOpBuilder &builder, ValueRange &tgts,
-                                    TypedValue<T> src);
+struct Protocol {};
+
+template <typename T> struct ProtocolT : public Protocol {
+  using E = T;
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  TypedValue<E> src);
 };
 
-template <> struct Protocol<RankedTensorType> {
-  static SmallVector<Value> consume(TritonOpBuilder &builder, ValueRange &tgts,
-                                    TypedValue<RankedTensorType> src);
+namespace signature {
+struct RankedTensorPattern final : public ProtocolT<RankedTensorType> {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  TypedValue<E> src);
 };
 
-template <> struct Protocol<PointerType> {
-  static SmallVector<Value> consume(TritonOpBuilder &builder, ValueRange &tgts,
-                                    TypedValue<PointerType> src);
+struct PointerPattern : public ProtocolT<PointerType> {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  TypedValue<E> src);
 };
 
-template <> struct Protocol<IntegerType> {
-  static SmallVector<Value> consume(TritonOpBuilder &builder, ValueRange &tgts,
-                                    TypedValue<IntegerType> src);
+} // namespace signature
+
+namespace ret {
+
+struct LLVMStructurePattern final : public ProtocolT<LLVM::LLVMStructType> {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  TypedValue<E> src);
 };
 
-template <> struct Protocol<FloatType> {
-  static SmallVector<Value> consume(TritonOpBuilder &builder, ValueRange &tgts,
-                                    TypedValue<FloatType> src);
+} // namespace ret
+
+struct IntegerPattern final : public ProtocolT<IntegerType> {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  TypedValue<E> src);
+};
+
+struct FloatPattern final : public ProtocolT<FloatType> {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  TypedValue<E> src);
 };
 
 /* --------------- ProtocolPattern --------------- */
 
-template <typename... Ts> struct ProtocolPattern {
-  static SmallVector<Value> consume(TritonOpBuilder &builder, ValueRange &tgts,
-                                    Value src);
+struct ProtocolPattern {};
+
+template <typename... Ps> struct ProtocolPatternT : public ProtocolPattern {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  Value src);
 };
 
-template <> struct ProtocolPattern<> {
-  static SmallVector<Value> consume(TritonOpBuilder &builder, ValueRange &tgts,
-                                    Value src);
+template <> struct ProtocolPatternT<> {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  Value src);
 };
 
-template <typename T, typename... Ts> struct ProtocolPattern<T, Ts...> {
-  static SmallVector<Value> consume(TritonOpBuilder &builder, ValueRange &tgts,
-                                    Value src);
+template <typename P, typename... Ps> struct ProtocolPatternT<P, Ps...> {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  Value src);
+};
+
+using SignaturePattern =
+    ProtocolPatternT<signature::RankedTensorPattern, signature::PointerPattern,
+                     IntegerPattern, FloatPattern>;
+using ReturnPattern =
+    ProtocolPatternT<ret::LLVMStructurePattern, IntegerPattern, FloatPattern>;
+
+/* --------------- PatternUtils --------------- */
+
+template <typename P, typename = void> struct ProtocolPatternImpl {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  Value src);
+};
+
+template <typename P>
+struct ProtocolPatternImpl<P,
+                           std::enable_if_t<std::is_base_of_v<Protocol, P>>> {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  Value src);
+};
+
+template <typename P>
+struct ProtocolPatternImpl<
+    P, std::enable_if_t<std::is_base_of_v<ProtocolPattern, P>>> {
+  static SmallVector<Value> apply(TritonOpBuilder &builder, TypeRange &tgts,
+                                  Value src);
 };
 
 /* --------------- Implementatoins --------------- */
 
 /* --------------- ProtocolPattern --------------- */
 
-template <typename T, typename... Ts>
-SmallVector<Value> ProtocolPattern<T, Ts...>::consume(TritonOpBuilder &builder,
-                                                      ValueRange &tgts,
-                                                      Value src) {
-  if (isa<T>(src.getType())) {
-    return Protocol<T>::consume(builder, tgts, cast<TypedValue<T>>(src));
+template <typename P, typename... Ps>
+SmallVector<Value> ProtocolPatternT<P, Ps...>::apply(TritonOpBuilder &builder,
+                                                     TypeRange &tgts,
+                                                     Value src) {
+  using E = typename P::E;
+  SmallVector<Value> rets = ProtocolPatternImpl<P>::apply(builder, tgts, src);
+  rets.append(ProtocolPatternT<Ps...>::apply(builder, tgts, src));
+  return rets;
+}
+
+/* --------------- PatternUtils --------------- */
+
+template <typename P>
+SmallVector<Value>
+ProtocolPatternImpl<P, std::enable_if_t<std::is_base_of_v<Protocol, P>>>::apply(
+    TritonOpBuilder &builder, TypeRange &tgts, Value src) {
+  using E = typename P::E;
+  if (TypedValue<E> v = dyn_cast<TypedValue<E>>(src)) {
+    return P::apply(builder, tgts, v);
   } else {
-    return ProtocolPattern<Ts...>::consume(builder, tgts, src);
+    return {};
   }
 }
 
-} // namespace mlir::triton::tle
+template <typename P>
+SmallVector<Value>
+ProtocolPatternImpl<P,
+                    std::enable_if_t<std::is_base_of_v<ProtocolPattern, P>>>::
+    apply(TritonOpBuilder &builder, TypeRange &tgts, Value src) {
+  return P::apply(builder, tgts, src);
+}
+
+} // namespace mlir::triton::tle::protocol
 
 #endif

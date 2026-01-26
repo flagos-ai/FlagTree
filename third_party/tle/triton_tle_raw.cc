@@ -7,14 +7,23 @@
 #include "mlir/Parser/Parser.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/utils/include/Protocol.h"
-#include "triton/Dialect/Triton/IR/Types.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVectorExtras.h"
-#include <optional>
-#include <regex>
-#include <string>
 
 using namespace mlir;
 namespace tle = triton::tle;
+
+namespace {
+SmallVector<Value> flatten(TritonOpBuilder &builder,
+                           const TypedValue<LLVM::LLVMStructType> &val) {
+  LLVM::LLVMStructType llvmStructTy = val.getType();
+  const size_t rank = llvmStructTy.getBody().size();
+  return llvm::map_to_vector(
+      llvm::seq(rank), [&builder, &val](int64_t idx) -> Value {
+        return builder.create<LLVM::ExtractValueOp>(val, SmallVector{idx});
+      });
+}
+} // namespace
 
 // Create a DSLRegionOp that wraps an LLVM function, performing type conversion
 // from Triton IR types to LLVM types based on EDSL function declarations.
@@ -82,63 +91,57 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
   SmallVector<Type> operandTys = llvm::map_to_vector(
       operands, [](Value value) -> Type { return value.getType(); });
   IRMapping mapper;
-
-  uint32_t llvm_arg_idx = 0;
-  SmallVector<Value> extractOps;
-
-  for (auto [idx, oldBlock] : llvm::enumerate(func.getBlocks())) {
+  for (auto [idx, oldBlock] : enumerate(func.getBlocks())) {
     if (idx == 0) {
       Block *newBlock = builder.createBlock(
           &body, {}, operandTys,
           SmallVector<Location>(operandTys.size(), self.getLastLoc()));
       builder.setInsertionPointToStart(newBlock);
-
-      using Pattern =
-          tle::ProtocolPattern<RankedTensorType, triton::PointerType,
-                               IntegerType, FloatType>;
-
-      ValueRange tgts = func.getArguments();
+      ValueRange args = func.getArguments();
+      TypeRange tgts = args.getTypes();
       SmallVector<Value> ops = {};
       for (Value src : newBlock->getArguments()) {
-        ops.append(Pattern::consume(self, tgts, src));
+        SmallVector<Value> rets =
+            tle::protocol::SignaturePattern::apply(self, tgts, src);
+        ops.append(std::move(rets));
       }
       for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
         mapper.map(arg, op);
       }
-
       mapper.map(&oldBlock, newBlock);
     } else {
       Block *newBlock = builder.createBlock(
           &body, {}, oldBlock.getArgumentTypes(),
           SmallVector<Location>(oldBlock.getNumArguments(), self.getLastLoc()));
       for (auto [oldArg, newArg] :
-           llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
+           zip_equal(oldBlock.getArguments(), newBlock->getArguments())) {
         mapper.map(oldArg, newArg);
       }
       mapper.map(&oldBlock, newBlock);
     }
   }
   for (auto [oldBlock, newBlock] :
-       llvm::zip(func.getBlocks(), body.getBlocks())) {
+       zip_equal(func.getBlocks(), body.getBlocks())) {
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToEnd(&newBlock);
     for (Operation &operation : oldBlock.getOperations()) {
       if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
-        SmallVector<Value> yields;
-        if (dslRegionOp.getNumResults() == 1) {
-          tle::PackOp packOp = builder.create<tle::PackOp>(
-              operation.getLoc(), dslRegionOp.getResult(0).getType(),
-              mapper.lookup(returnOp.getArg()));
-          yields.push_back(packOp.getOutput());
+        SmallVector<Value> operands, yields;
+        if (dslRegionOp.getNumResults() == 0) {
+          operands = {};
+        } else if (dslRegionOp.getNumResults() == 1) {
+          operands = {mapper.lookup(returnOp.getArg())};
         } else {
-          for (auto [idx, result] : llvm::enumerate(dslRegionOp.getResults())) {
-            LLVM::ExtractValueOp operand = builder.create<LLVM::ExtractValueOp>(
-                operation.getLoc(), mapper.lookup(returnOp.getArg()),
-                SmallVector<int64_t>{static_cast<int64_t>(idx)});
-            tle::PackOp packOp = builder.create<tle::PackOp>(
-                operation.getLoc(), result.getType(), operand);
-            yields.push_back(packOp.getOutput());
-          }
+          operands = llvm::map_to_vector(
+              flatten(self, cast<TypedValue<LLVM::LLVMStructType>>(
+                                returnOp.getArg())),
+              [&mapper](const Value &value) { return mapper.lookup(value); });
+        }
+        TypeRange tgts = dslRegionOp.getOutputs().getTypes();
+        for (Value operand : operands) {
+          SmallVector<Value> rets =
+              tle::protocol::ReturnPattern::apply(self, tgts, operand);
+          yields.append(std::move(rets));
         }
         builder.create<tle::YieldOp>(operation.getLoc(), yields);
       } else {
