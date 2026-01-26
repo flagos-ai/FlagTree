@@ -571,7 +571,7 @@ download_and_copy(
 if helper.flagtree_backend:
     if helper.flagtree_backend in ("ascend"):
         backends = [
-            *BackendInstaller.copy(helper.configs.default_backends + helper.configs.extend_backends),
+            *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
             *BackendInstaller.copy_externals(),
         ]
     else:
