@@ -2,6 +2,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Final, List
 from typing_extensions import override
+from hashlib import md5
 
 from mlir import ir
 from mlir.dialects import arith, func, llvm
@@ -32,7 +33,7 @@ class ExternalCall(object):
         return funcop
 
     def global_string(self, val: str, codegen: EdslMLIRCodeGenerator) -> llvm.GlobalOp:
-        key: str = f"TleRaw_PrintFormat{len(codegen.constants)}"
+        key: str = f"globalstr{md5(val.encode("utf-8")).hexdigest()[:6]}"
         with ir.InsertionPoint.at_block_begin(codegen.module.body):
             op: ir.Operation = codegen.constants.get(val) or llvm.mlir_global(
                 ir.Type.parse(f"!llvm.array<{len(val.encode())} x i8>"), key,
