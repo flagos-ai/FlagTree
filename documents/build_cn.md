@@ -235,6 +235,34 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
+#### sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
+
+- 对应的 Triton 版本为 3.4，基于 x64 平台
+
+##### 1. 构建及运行环境
+
+- 推荐使用 Ubuntu 22.04
+
+##### 2. 手动下载 FlagTree 依赖库
+
+```shell
+mkdir -p ~/.flagtree/sunrise; cd ~/.flagtree/sunrise
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunrise-llvm21-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz
+tar zxvf sunrise-llvm21-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz
+tar zxvf sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz
+```
+
+##### 3. 源码构建命令
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+mkdir -p third_party/sunrise/backend/lib
+cp ~/.flagtree/sunrise/sunrise_llvm21_dev_release/stpu/bitcode/*.bc third_party/sunrise/backend/lib
+export FLAGTREE_BACKEND=sunrise
+python3 -m pip install . --no-build-isolation -v
+```
+
 #### NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
 
 - 对应的 Triton 版本为 3.1/3.2/3.3/3.4/3.5，基于 x64/arm64 平台
