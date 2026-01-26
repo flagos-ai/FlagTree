@@ -1,8 +1,6 @@
 import os
 import sys
-import logging
 import importlib
-from typing import Optional
 
 class BaseHintHandler:
     # dynamicly find method
@@ -31,7 +29,7 @@ class BaseHintHandler:
                     print(f"  > Reason : {e}\n")
 
                     raise e
-        print(f"no capable method in backend handler")
+        print("no capable method in backend handler")
         return None
 
 class HintManager:
@@ -58,7 +56,7 @@ class HintManager:
 # supported backend with matched version
 SUPPORTED_CONFIG = {
     "cuda": {"3.5"},
-    "npu":  {"3.2"}, 
+    "npu": {"3.2"}, 
     "aipu": {"3.3"},
 }
 
@@ -82,7 +80,7 @@ def hint_get_flagtree_backend() -> str:
     import torch
     import triton
     
-    # Priority 1: Triton Driver 
+    # Priority 1: Triton Driver
     try:
         from triton.runtime import driver
         if hasattr(driver, 'active') and hasattr(driver.active, 'get_active_torch_device'):
@@ -103,19 +101,19 @@ def hint_get_flagtree_backend() -> str:
 
         # 3. parse according to benefit
         for candidate in candidates:
-            module_name = candidate 
+            module_name = candidate
             module = getattr(torch, module_name, None)
             if module and hasattr(module, "is_available") and module.is_available():
                 detected_backend = candidate
                 break
-    
+
     # Priority 3: Environment Variable (need to remove!!!)
     if not detected_backend:
         detected_backend = os.environ.get("FLAGTREE_BACKEND", "")
 
     # (Normalization and Validation)
     canonical_backend = normalize_backend_name(detected_backend)
-    
+
     if not canonical_backend or canonical_backend not in SUPPORTED_CONFIG:
         return ""
 
@@ -124,10 +122,8 @@ def hint_get_flagtree_backend() -> str:
         current_triton_version = ".".join(triton.__version__.split(".")[:2])
         supported_versions = SUPPORTED_CONFIG[canonical_backend]
         if current_triton_version not in supported_versions:
-            msg = (
-                f"[Flagtree] Hint ignored: Detected backend '{canonical_backend}' but current Triton version "
-                f"'{current_triton_version}' matches no supported versions {supported_versions}."
-            )
+            msg = (f"[Flagtree] Hint ignored: Detected backend '{canonical_backend}' but current Triton version "
+                   f"'{current_triton_version}' matches no supported versions {supported_versions}.")
             print(msg, file=sys.stderr)
             return ""
     except Exception:
@@ -135,8 +131,10 @@ def hint_get_flagtree_backend() -> str:
 
     return canonical_backend
 
+
 # lazy load after first call hint trigger
 _global_hint_manager = None
+
 
 def hint_trigger(hook_name, *args, **kwargs):
     global _global_hint_manager

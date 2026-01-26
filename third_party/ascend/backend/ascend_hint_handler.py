@@ -1,8 +1,9 @@
 # should store at thrid_party/???/backend/
 from triton.compiler.hint_manager import BaseHintHandler
-import triton.language as language 
+import triton.language as language
 import ast
 from triton.compiler.code_generator import _is_triton_value
+
 
 class AscendHintHandler(BaseHintHandler):
 
@@ -19,12 +20,9 @@ class AscendHintHandler(BaseHintHandler):
             flagtree_hints = line_flagtree_hints.get(line_num)
 
             # Check if this is a tl.load call with dot_pad_only_k hint
-            if (flagtree_hints and 'dot_pad_only_k' in flagtree_hints and
-                isinstance(node.value, ast.Call) and
-                isinstance(node.value.func, ast.Attribute) and
-                isinstance(node.value.func.value, ast.Name) and
-                node.value.func.value.id == 'tl' and
-                node.value.func.attr == 'load'):
+            if (flagtree_hints and 'dot_pad_only_k' in flagtree_hints and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Attribute) and isinstance(node.value.func.value, ast.Name)
+                    and node.value.func.value.id == 'tl' and node.value.func.attr == 'load'):
 
                 # Add hint annotation to the loaded tensor(s)
                 for name, value in zip(names, values):
@@ -53,7 +51,6 @@ class AscendHintHandler(BaseHintHandler):
     @staticmethod
     def forop_setattr_for_bind_sub_block(code_generator, for_op, bind_sub_block):
         for_op.set_attr("bind_sub_block", code_generator.builder.get_bool_attr(bind_sub_block))
-
 
     @staticmethod
     def maps_line_numbers_to_comment_hints(jit_fn):
