@@ -2,7 +2,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Final, List
 from typing_extensions import override
-
+from hashlib import md5
 from mlir import ir
 from mlir.dialects import arith, func, llvm
 
@@ -27,18 +27,23 @@ class ExternalCall(object):
 
     def decl(self, codegen: EdslMLIRCodeGenerator) -> func.FuncOp:
         with ir.InsertionPoint.at_block_begin(codegen.module.body):
-            funcop: func.FuncOp = codegen.decls.get(self.keyword) or self.build()
+           if codegen.decls.get(self.keyword):
+               pass
+           else:
+               print(f"Declaring function: {self.keyword}")
+           funcop: func.FuncOp = codegen.decls.get(self.keyword) or (self.build())
         codegen.decls[self.keyword] = funcop
         return funcop
 
     def global_string(self, val: str, codegen: EdslMLIRCodeGenerator) -> llvm.GlobalOp:
-        key: str = f"TleRaw_PrintFormat{len(codegen.constants)}"
+        key: str = f"globalstr{md5(val.encode("utf-8")).hexdigest()[:6]}"
         print(f"key: {key}, codegen.constants: {codegen.constants}, self.module: {codegen.module}")
         with ir.InsertionPoint.at_block_begin(codegen.module.body):
             op: ir.Operation = codegen.constants.get(val) or llvm.mlir_global(
                 ir.Type.parse(f"!llvm.array<{len(val.encode())} x i8>"), key,
                 ir.Attribute.parse("#llvm.linkage<internal>"), value=ir.StringAttr.get(val))
         codegen.constants[val] = op
+        print(f"len(codegen.constants): {len(codegen.constants)}")
         return op
 
 
@@ -56,6 +61,7 @@ class VPrintf(ExternalCall):
 
     @override
     def call(self, codegen: EdslMLIRCodeGenerator) -> func.CallOp:
+        print("vprintf called")
         [format, *args] = self.args
         funcop: func.FuncOp = self.decl(codegen)
         format: llvm.GlobalOp = self.global_string(format, codegen)

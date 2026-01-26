@@ -20,6 +20,7 @@ def edsl():
 @triton.jit
 def hello_kernel():
     tle_raw.call(edsl, [], [])
+    tle_raw.call(edsl, [], [])
 
 
 def hello():

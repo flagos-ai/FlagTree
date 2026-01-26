@@ -12,7 +12,7 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 def get_autotune_config():
     return [
-        triton.Config({'BLOCK_SIZE_M': 2, 'BLOCK_SIZE_N': 2, 'BLOCK_SIZE_K': 2, 'GROUP_SIZE_M': 8}, num_stages=3,
+        triton.Config({'BLOCK_SIZE_M': 8, 'BLOCK_SIZE_N': 8, 'BLOCK_SIZE_K': 8, 'GROUP_SIZE_M': 8}, num_stages=3,
                       num_warps=8)
         # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
         #               num_warps=4),
@@ -53,25 +53,26 @@ def edsl(c: InOut["memref<?x?xf32, strided<[?, ?], offset: ?>, 3>"], a: Input["m
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
     bdimx = arith.index_cast(ir.IndexType.get(), bdimx)
-    m = memref.dim(c, arith.constant(ir.IndexType.get(), 0))
-    n = memref.dim(c, arith.constant(ir.IndexType.get(), 1))
-    k = memref.dim(a, arith.constant(ir.IndexType.get(), 1))
-    numel = arith.muli(m, n)
-    for i in scf.for_(tidx, numel, bdimx):
-        row = arith.divsi(i, n)
-        col = arith.remsi(i, n)
-        rowdebug = arith.index_cast(ir.IntegerType.get_signless(64), row)
-        coldebug = arith.index_cast(ir.IntegerType.get_signless(64), col)
-        vprintf("Computing C[%d, %d]\n", rowdebug,coldebug)
-        for j, arg, result in scf.for_(arith.constant(ir.IndexType.get(), 0), k, arith.constant(ir.IndexType.get(), 1),
-                                       [arith.constant(ir.F32Type.get(), 0.0)]):
-            a_val = memref.load(a, [row, j])
-            b_val = memref.load(b, [j, col])
-            c_val = arith.addf(arg, arith.extf(ir.F32Type.get(), arith.mulf(a_val, b_val)))
-            scf.yield_([c_val])
-        init = memref.load(c, [row, col])
-        memref.store(arith.addf(result, init), c, [row, col])
-        scf.yield_([])
+    # m = memref.dim(c, arith.constant(ir.IndexType.get(), 0))
+    # n = memref.dim(c, arith.constant(ir.IndexType.get(), 1))
+    # k = memref.dim(a, arith.constant(ir.IndexType.get(), 1))
+    # numel = arith.muli(m, n)
+    vprintf("Computing \n")
+    # for i in scf.for_(tidx, numel, bdimx):
+    #     row = arith.divsi(i, n)
+    #     col = arith.remsi(i, n)
+    #     rowdebug = arith.index_cast(ir.IntegerType.get_signless(64), row)
+    #     coldebug = arith.index_cast(ir.IntegerType.get_signless(64), col)
+    #     # vprintf("Computing C[%d, %d]\n", rowdebug,coldebug)
+    #     for j, arg, result in scf.for_(arith.constant(ir.IndexType.get(), 0), k, arith.constant(ir.IndexType.get(), 1),
+    #                                    [arith.constant(ir.F32Type.get(), 0.0)]):
+    #         a_val = memref.load(a, [row, j])
+    #         b_val = memref.load(b, [j, col])
+    #         c_val = arith.addf(arg, arith.extf(ir.F32Type.get(), arith.mulf(a_val, b_val)))
+    #         scf.yield_([c_val])
+    #     init = memref.load(c, [row, col])
+    #     memref.store(arith.addf(result, init), c, [row, col])
+    #     scf.yield_([])
 
 
 @triton.autotune(
@@ -105,7 +106,7 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk,
     a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-    for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+    for k in range(0):
         a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
         b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
         accumulator = tle_raw.call(edsl, [accumulator], [a, b])

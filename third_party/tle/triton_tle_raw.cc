@@ -72,7 +72,7 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(curModule.getBody());
     for (Operation &op : module->getOps()) {
-      if (&op != func.getOperation()) {
+      if (&op != func.getOperation() && (!isa<SymbolOpInterface>(op) || (isa<SymbolOpInterface>(op) && !curModule.lookupSymbol(cast<SymbolOpInterface>(op).getName())))) {
         builder.clone(op);
       }
     }
