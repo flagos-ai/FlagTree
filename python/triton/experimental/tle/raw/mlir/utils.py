@@ -27,23 +27,17 @@ class ExternalCall(object):
 
     def decl(self, codegen: EdslMLIRCodeGenerator) -> func.FuncOp:
         with ir.InsertionPoint.at_block_begin(codegen.module.body):
-           if codegen.decls.get(self.keyword):
-               pass
-           else:
-               print(f"Declaring function: {self.keyword}")
            funcop: func.FuncOp = codegen.decls.get(self.keyword) or (self.build())
         codegen.decls[self.keyword] = funcop
         return funcop
 
     def global_string(self, val: str, codegen: EdslMLIRCodeGenerator) -> llvm.GlobalOp:
         key: str = f"globalstr{md5(val.encode("utf-8")).hexdigest()[:6]}"
-        print(f"key: {key}, codegen.constants: {codegen.constants}, self.module: {codegen.module}")
         with ir.InsertionPoint.at_block_begin(codegen.module.body):
             op: ir.Operation = codegen.constants.get(val) or llvm.mlir_global(
                 ir.Type.parse(f"!llvm.array<{len(val.encode())} x i8>"), key,
                 ir.Attribute.parse("#llvm.linkage<internal>"), value=ir.StringAttr.get(val))
         codegen.constants[val] = op
-        print(f"len(codegen.constants): {len(codegen.constants)}")
         return op
 
 

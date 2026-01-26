@@ -61,7 +61,6 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
             args: List[ir.Value] = [self.visit(arg) for arg in node.args]
             ret = self.call_function(fn, args)
             if isinstance(ret, ExternalCall):
-                print("isExternalCall")
                 ret = ret.call(self)
             return ret
 

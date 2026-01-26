@@ -476,8 +476,6 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
       mapper.map(&oldBlock, newBlock);
     }
   }
-  llvm::errs()
-      << "stage 3 complete: created extract operations and established mapping\n";
   // Stage 4: Clone the LLVM function body to the DSLRegionOp body
   for (auto [oldBlock, newBlock] :
        llvm::zip(func.getBlocks(), body.getBlocks())) {
