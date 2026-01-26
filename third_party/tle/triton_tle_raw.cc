@@ -107,7 +107,7 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(curModule.getBody());
     for (Operation &op : module->getOps()) {
-      if (&op != func.getOperation()) {
+      if (&op != func.getOperation() && (!isa<SymbolOpInterface>(op) || (isa<SymbolOpInterface>(op) && !curModule.lookupSymbol(cast<SymbolOpInterface>(op).getName())))) {
         builder.clone(op);
       }
     }
@@ -476,7 +476,8 @@ tle::DSLRegionOp createEdslRegionByLLVMFunc(
       mapper.map(&oldBlock, newBlock);
     }
   }
-
+  llvm::errs()
+      << "stage 3 complete: created extract operations and established mapping\n";
   // Stage 4: Clone the LLVM function body to the DSLRegionOp body
   for (auto [oldBlock, newBlock] :
        llvm::zip(func.getBlocks(), body.getBlocks())) {
