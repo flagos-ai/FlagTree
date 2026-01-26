@@ -142,7 +142,7 @@ LogicalResult ExtractStridesOpConversion::matchAndRewrite(
   if (ttg::MemDescType memdesc =
           dyn_cast<ttg::MemDescType>(op.getInput().getType())) {
     unsigned rank = memdesc.getShape().size();
-    SmallVector<int64_t> strides(rank,0);
+    SmallVector<int64_t> strides(rank, 0);
     llvm::SmallVector<uint32_t> order = ttg::getOrder(memdesc);
     ArrayRef<int64_t> shape = memdesc.getShape();
     int64_t running = 1;
