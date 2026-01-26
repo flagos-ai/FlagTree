@@ -938,7 +938,6 @@ class CodeGenerator(ast.NodeVisitor):
             step = iterator.step
             num_stages = iterator.num_stages
             loop_unroll_factor = iterator.loop_unroll_factor
-
             # flagtree backend specialization
             for_op_ext_attrs = spec("for_op_ext_attrs", iterator)
             # flagtree backend specialization
@@ -954,7 +953,7 @@ class CodeGenerator(ast.NodeVisitor):
             step = iter_args[2] if len(iter_args) > 2 else self.visit(ast.Num(1))
         else:
             raise RuntimeError('Only `range` and `static_range` iterators are currently supported')
-
+        # hint manager
         new_bind_sub_block = hint_trigger("check_override_bind_sub_block", self, node, bind_sub_block)
         if new_bind_sub_block is not None:
             bind_sub_block = new_bind_sub_block
@@ -1025,7 +1024,7 @@ class CodeGenerator(ast.NodeVisitor):
             # flagtree backend specialization
             from triton.runtime.driver import spec
             spec("for_op_set_ext_attrs", for_op, self.builder, for_op_ext_attrs)
-            # flagtree backend specialization
+            # hint manager
             if bind_sub_block:
                 hint_trigger("forop_setattr_for_bind_sub_block", self, for_op, bind_sub_block)
 
