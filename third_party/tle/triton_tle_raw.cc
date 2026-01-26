@@ -132,10 +132,8 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
         } else if (dslRegionOp.getNumResults() == 1) {
           operands = {mapper.lookup(returnOp.getArg())};
         } else {
-          operands = llvm::map_to_vector(
-              flatten(self, cast<TypedValue<LLVM::LLVMStructType>>(
-                                returnOp.getArg())),
-              [&mapper](const Value &value) { return mapper.lookup(value); });
+          operands = flatten(self, cast<TypedValue<LLVM::LLVMStructType>>(
+                                       mapper.lookup(returnOp.getArg())));
         }
         TypeRange tgts = dslRegionOp.getOutputs().getTypes();
         for (Value operand : operands) {
