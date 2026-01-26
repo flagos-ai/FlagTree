@@ -69,6 +69,7 @@ jobs:
           set -x
           pip uninstall -y triton
           ln -sf /usr/local/tangrt/lib/linux-x86_64/stub/libtang.so /usr/local/tangrt/lib/linux-x86_64/stub/libtang.so.0.19.2
+          export TRITON_BUILD_WITH_CLANG_LLD=1
           export TRITON_OFFLINE_BUILD=1
           export FLAGTREE_BACKEND=sunrise
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
