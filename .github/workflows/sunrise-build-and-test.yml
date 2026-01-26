@@ -71,6 +71,7 @@ jobs:
           ln -sf /usr/local/tangrt/lib/linux-x86_64/stub/libtang.so /usr/local/tangrt/lib/linux-x86_64/stub/libtang.so.0.19.2
           mkdir -p third_party/sunrise/backend/lib
           cp ~/.flagtree/sunrise/sunrise_llvm21_dev_release/stpu/bitcode/*.bc third_party/sunrise/backend/lib
+          export TRITON_OFFLINE_BUILD=1
           export FLAGTREE_BACKEND=sunrise
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
