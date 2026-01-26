@@ -13,16 +13,12 @@ from .codegen import EdslMLIRCodeGenerator
 
 class EdslMLIRJITFunction(object):
 
-    def __init__(self, fn: Any, pipeline: Optional[List[str]] = None, context: Optional[ir.Context] = None, *args,
-                 **kwargs) -> None:
+    def __init__(self, fn: Any, pipeline: List[str], context: Optional[ir.Context] = None, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.fn: Final[Any] = fn
-        # TODO(EDSL): expose pipeline option for customization in `dialect`
-        self.pipeline: Final[List[str]] = [
-            "convert-scf-to-cf", "finalize-memref-to-llvm", "convert-arith-to-llvm", "convert-cf-to-llvm",
-            "convert-func-to-llvm", "convert-index-to-llvm", "convert-nvvm-to-llvm", "cse"
-        ] if pipeline is None else pipeline
+        self.pipeline: Final[List[str]] = [*pipeline]
         self.context: Final[ir.Context] = ir.Context() if context is None else context
+        self.__triton_builtin__: Final[bool] = True
 
     def __deepcopy__(self, memo: Dict[int, Any]) -> EdslMLIRJITFunction:
         return self.__class__(copy.deepcopy(self.fn, memo), copy.deepcopy(self.pipeline, memo), self.context)
