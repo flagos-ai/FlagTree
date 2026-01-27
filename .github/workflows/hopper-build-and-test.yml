@@ -1,0 +1,159 @@
+name: Hopper-Build-And-Test
+
+on:
+  schedule:
+    - cron: '0 21 * * *'
+  push:
+    branches: [ "triton_v3.4.x", "triton_v3.5.x" ]
+  pull_request:
+    branches: [ "triton_v3.4.x", "triton_v3.5.x" ]
+  workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hopper-build-and-test:
+    runs-on: hopper
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Checkout code (attempt 1)
+        id: checkout1
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+        continue-on-error: true
+
+      - name: Sleep before checkout2
+        if: steps.checkout1.outcome == 'failure'
+        run: |
+          echo "First checkout attempt failed. Sleeping for 120 seconds before retry..."
+          sleep 120
+
+      - name: Checkout code (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+        continue-on-error: true
+
+      - name: Sleep before final checkout
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        run: |
+          echo "Second checkout attempt failed. Sleeping for 180 seconds before final retry..."
+          sleep 180
+
+      - name: Checkout code (final attempt)
+        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify checkout success
+        if: success()
+        run: echo "Checkout completed successfully"
+
+      - name: Check if only docs files changed
+        id: check_files
+        uses: ./.github/actions/check-docs-only
+
+      - name: Detect Target Branch
+        shell: bash
+        run: |
+          set -x
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET_BRANCH="${{ github.base_ref }}"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+          fi
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$TARGET_BRANCH"
+
+      - name: FlagTree Build on NVidia (triton_v3.4.x branch)
+        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.4.x' }}
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          source ~/env-3.4.sh
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Build on NVidia (triton_v3.5.x branch)
+        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          source ~/env-3.5.sh
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on NVidia (triton_v3.4.x branch)
+        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.4.x' }}
+        shell: bash
+        run: |
+          set -x
+          # python unit test
+          python3 -m pytest -s python/test/unit/cuda
+          python3 -m pytest -s python/test/unit/instrumentation
+          python3 -m pytest -s python/test/unit/language \
+              --ignore=python/test/unit/language/test_line_info.py
+          python3 -m pytest -s python/test/unit/runtime
+          if [ -d "python/test/operators" ]; then
+            python3 -m pytest -s python/test/operators
+          fi
+
+      - name: FlagTree Test on NVidia (triton_v3.5.x branch)
+        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
+        shell: bash
+        run: |
+          set -x
+          source ~/env.sh
+          # python tutorials
+          python3 python/tutorials/01-vector-add.py --only_unit_test
+          python3 python/tutorials/02-fused-softmax.py --only_unit_test
+          python3 python/tutorials/03-matrix-multiplication.py --only_unit_test
+          python3 python/tutorials/04-low-memory-dropout.py --only_unit_test
+          python3 python/tutorials/05-layer-norm.py --only_unit_test
+          python3 python/tutorials/06-fused-attention.py --only_unit_test
+          python3 python/tutorials/07-extern-functions.py --only_unit_test
+          python3 python/tutorials/08-grouped-gemm.py --only_unit_test
+          python3 python/tutorials/09-persistent-matmul.py --only_unit_test
+          python3 python/tutorials/11-programmatic-dependent-launch.py --only_unit_test
+          # python unit test
+          python3 -m pytest -s python/test/unit/cuda
+          python3 -m pytest -s python/test/unit/instrumentation
+          python3 -m pytest -s python/test/unit/language \
+              --ignore=python/test/unit/language/test_line_info.py
+          python3 -m pytest -s python/test/unit/runtime
+          if [ -d "python/test/operators" ]; then
+            python3 -m pytest -s python/test/operators
+          fi
+          # flagtree tle
+          # python tutorials
+          python3 python/tutorials/tle/01-sparse-mla.py
+          # python unit test
+          python3 -m pytest -s python/test/tle/integration
+          python3 -m pytest -s python/test/tle/unit
+          # flagtree hints
+          # python tutorials
+          python3 python/tutorials/hints/01/01-vector-add.py --only_unit_test
+          # python3 python/tutorials/hints/02/02-fused-softmax.py --only_unit_test
+          python3 python/tutorials/hints/03/03-matrix-multiplication.py --only_unit_test
+          python3 python/tutorials/hints/04/04-low-memory-dropout.py --only_unit_test
+          python3 python/tutorials/hints/05/05-layer-norm.py --only_unit_test
+          python3 python/tutorials/hints/06/06-fused-attention.py --only_unit_test
+          python3 python/tutorials/hints/07/07-extern-functions.py --only_unit_test
+          python3 python/tutorials/hints/08/08-grouped-gemm.py --only_unit_test
+          python3 python/tutorials/hints/11/11-programmatic-dependent-launch.py --only_unit_test
+          # flagtree tle raw
+          # python3 python/tutorials/tle/raw/01-vector-add.py
+          # python3 python/tutorials/tle/raw/02-fused-softmax.py
+          # python3 python/tutorials/tle/raw/03-matrix-multiplication.py
