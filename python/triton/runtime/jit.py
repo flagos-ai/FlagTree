@@ -798,7 +798,7 @@ class JITFunction(KernelInterface[T]):
     def parse(self):
         # hint manager
         # after removing flagtree backend specialization, hiding the implementation into hintmanager
-        from ..compiler.hintmanager import hint_trigger
+        from ..compiler.hint_manager import hint_trigger
         line_flagtree_hints = hint_trigger("maps_line_numbers_to_comment_hints", self)
 
         tree = ast.parse(self.src)
