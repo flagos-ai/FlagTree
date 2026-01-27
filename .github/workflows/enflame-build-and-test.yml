@@ -1,10 +1,10 @@
-name: Metax-Build-And-Test
+name: Enflame-Build-And-Test
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "triton_v3.3.x" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "triton_v3.3.x" ]
   workflow_call:
 
 concurrency:
@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  metax-build-and-test:
-    runs-on: metax
+  enflame-build-and-test:
+    runs-on: enflame
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
@@ -63,21 +63,20 @@ jobs:
         id: check_files
         uses: ./.github/actions/check-docs-only
 
-      - name: FlagTree Build on Metax
+      - name: FlagTree Build on Enflame
         if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x
           pip uninstall -y triton
-          source ~/env_setup.sh
-          export FLAGTREE_BACKEND=metax
+          pip uninstall -y triton_gcu
+          export FLAGTREE_BACKEND=enflame
           cd python
-          MAX_JOBS=32 python3.10 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Metax
+      - name: FlagTree Test on Enflame
         if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x
-          source ~/env.sh
-          python3.10 -m pytest -s third_party/metax/python/test/unit
+          python3 -m pytest -s third_party/enflame/python/test/unit

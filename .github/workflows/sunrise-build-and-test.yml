@@ -1,10 +1,10 @@
-name: Metax-Build-And-Test
+name: Sunrise-Build-And-Test
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "triton_v3.4.x" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "triton_v3.4.x" ]
   workflow_call:
 
 concurrency:
@@ -12,14 +12,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  metax-build-and-test:
-    runs-on: metax
+  sunrise-build-and-test:
+    runs-on: sunrise
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
         shell: bash
         run: |
-          source ~/env.sh
+          # source ~/env.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
 
       - name: Checkout code (attempt 1)
@@ -63,21 +63,19 @@ jobs:
         id: check_files
         uses: ./.github/actions/check-docs-only
 
-      - name: FlagTree Build on Metax
+      - name: FlagTree Build on Sunrise
         if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x
           pip uninstall -y triton
-          source ~/env_setup.sh
-          export FLAGTREE_BACKEND=metax
-          cd python
-          MAX_JOBS=32 python3.10 -m pip install . --no-build-isolation
+          source third_party/sunrise/script/docker_sunrise_env.sh ~/.flagtree/sunrise/sunrise_llvm21_dev_release
+          export FLAGTREE_BACKEND=sunrise
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Metax
+      - name: FlagTree Test on Sunrise
         if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x
-          source ~/env.sh
-          python3.10 -m pytest -s third_party/metax/python/test/unit
+          python3 third_party/sunrise/python/test_examples/vector-add.py

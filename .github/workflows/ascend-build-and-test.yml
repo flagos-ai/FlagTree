@@ -5,6 +5,7 @@ on:
     branches: [ "triton_v3.2.x" ]
   pull_request:
     branches: [ "triton_v3.2.x" ]
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -17,6 +18,8 @@ jobs:
       - name: Checkout code (attempt 1)
         id: checkout1
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
         continue-on-error: true
 
       - name: Sleep before checkout2
@@ -29,6 +32,8 @@ jobs:
         id: checkout2
         if: steps.checkout1.outcome == 'failure'
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
         continue-on-error: true
 
       - name: Sleep before final checkout
@@ -40,6 +45,8 @@ jobs:
       - name: Checkout code (final attempt)
         if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Verify checkout success
         if: success()
@@ -82,3 +89,24 @@ jobs:
           python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized-flagtree.py
           python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized.py
           python3 third_party/ascend/examples/tutorials/14-accuracy-comparison.py
+          python3 python/test/ops/01_vector_add/01_vector_add.py
+          python3 python/test/ops/abs/abs.py
+          python3 python/test/ops/addmm/addmm.py
+          python3 python/test/ops/addmm/addmm_ascend.py
+          python3 python/test/ops/amax/amax.py
+          python3 python/test/ops/amax/amax_ascend_perf.py
+          python3 python/test/ops/apply_rotary_pos_emb/apply_rotary_pos_emb.py
+          python3 python/test/ops/apply_rotary_pos_emb/apply_rotary_pos_emb_ascend.py
+          python3 python/test/ops/argmin/argmin.py
+          python3 python/test/ops/argmin/argmin_ascend_perf.py
+          python3 python/test/ops/bmm/bmm_ascend.py
+          python3 python/test/ops/cumsum/cumsum.py
+          python3 python/test/ops/min_dim/min_dim.py
+          python3 python/test/ops/min_dim/min_dim_ascend_perf.py
+          python3 python/test/ops/sum_dim/sum_dim.py
+          python3 python/test/ops/varmean/var_mean_ascend.py
+          python3 -m pytest third_party/ascend/examples/pytest_ut --ignore=third_party/ascend/examples/pytest_ut/test_index_select.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_linearize_permute.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_logical_and.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_logical_or.py \
+                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_triton_unified_attention.py
