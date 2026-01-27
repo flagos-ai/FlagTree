@@ -161,14 +161,14 @@ python3 -m pip install . --no-build-isolation -v
 
 ```shell
 # cann-toolkit
-chmod +x Ascend-cann-toolkit_8.3.RC1.alpha001_linux-aarch64.run
-./Ascend-cann-toolkit_8.3.RC1.alpha001_linux-aarch64.run --install
+chmod +x Ascend-cann-toolkit_8.5.0.alpha002_linux-aarch64.run
+./Ascend-cann-toolkit_8.5.0.alpha002_linux-aarch64.run --install
 # cann-kernels for 910B (A2)
-chmod +x Ascend-cann-kernels-910b_8.3.RC1.alpha001_linux-aarch64.run
-./Ascend-cann-kernels-910b_8.3.RC1.alpha001_linux-aarch64.run --install
+chmod +x Ascend-cann-kernels-910b_8.5.0.alpha002_linux-aarch64.run
+./Ascend-cann-kernels-910b_8.5.0.alpha002_linux-aarch64.run --install
 # cann-kernels for 910C (A3)
-chmod +x Atlas-A3-cann-kernels_8.3.RC1.alpha001_linux-aarch64.run
-./Atlas-A3-cann-kernels_8.3.RC1.alpha001_linux-aarch64.run --install
+chmod +x Atlas-A3-cann-kernels_8.5.0.alpha002_linux-aarch64.run
+./Atlas-A3-cann-kernels_8.5.0.alpha002_linux-aarch64.run --install
 ```
 
 ##### 2. Manually download the FlagTree dependencies
