@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [ "triton_v3.4.x" ]
   workflow_call:
-    
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
