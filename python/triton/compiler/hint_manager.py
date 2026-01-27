@@ -30,7 +30,6 @@ class BaseHintHandler:
                     print(f"  > Reason : {e}\n")
 
                     raise e
-        print("no capable method in backend handler")
         return None
 
 
