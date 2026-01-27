@@ -6,18 +6,11 @@ from pathlib import Path
 import hashlib
 from distutils.sysconfig import get_python_lib
 from . import utils
+from .utils.tools import flagtree_configs as configs
 
-extend_backends = []
-default_backends = ["nvidia", "amd"]
-plugin_backends = ["ascend", "aipu", "tsingmicro"]
-ext_sourcedir = "triton/_C/"
-flagtree_backend = os.getenv("FLAGTREE_BACKEND", "").lower()
-flagtree_plugin = os.getenv("FLAGTREE_PLUGIN", "").lower()
-offline_build = os.getenv("FLAGTREE_PLUGIN", "OFF")
-device_mapping = {"xpu": "xpu", "mthreads": "musa", "ascend": "ascend", "cambricon": "mlu"}
-activated_module = utils.activate(flagtree_backend)
+configs = configs
+flagtree_backend = configs.flagtree_backend
 downloader = utils.tools.DownloadManager()
-
 set_llvm_env = lambda path: set_env({
     'LLVM_INCLUDE_DIRS': Path(path) / "include",
     'LLVM_LIBRARY_DIR': Path(path) / "lib",
@@ -27,26 +20,26 @@ set_llvm_env = lambda path: set_env({
 
 def install_extension(*args, **kargs):
     try:
-        activated_module.install_extension(*args, **kargs)
+        configs.activated_module.install_extension(*args, **kargs)
     except Exception:
         pass
 
 
 def get_backend_cmake_args(*args, **kargs):
     try:
-        return activated_module.get_backend_cmake_args(*args, **kargs)
+        return configs.activated_module.get_backend_cmake_args(*args, **kargs)
     except Exception:
         return []
 
 
 def get_device_name():
-    return device_mapping[flagtree_backend]
+    return configs.device_alias_map[flagtree_backend]
 
 
 def get_extra_packages():
     packages = []
     try:
-        packages = activated_module.get_extra_install_packages()
+        packages = configs.activated_module.get_extra_install_packages()
     except Exception:
         packages = []
     return packages
@@ -55,7 +48,7 @@ def get_extra_packages():
 def get_package_data_tools():
     package_data = ["compile.h", "compile.c"]
     try:
-        package_data += activated_module.get_package_data_tools()
+        package_data += configs.activated_module.get_package_data_tools()
     except Exception:
         package_data
     return package_data
@@ -102,8 +95,8 @@ def download_flagtree_third_party(name, condition, required=False, hock=None):
             submodule = utils.flagtree_submodules[name]
             downloader.download(module=submodule, required=required)
             if callable(hock):
-                hock(third_party_base_dir=utils.flagtree_submodule_dir, backend=submodule,
-                     default_backends=default_backends)
+                configs.default_backends = hock(third_party_base_dir=configs.flagtree_submodule_dir, backend=submodule,
+                                                default_backends=configs.default_backends)
         else:
             print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
 
@@ -113,14 +106,14 @@ def configure_cambricon_packages_and_data(packages, package_dir, package_data):
         current_file = os.path.abspath(__file__)
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
         deps_dir = os.path.join(project_root, "deps")
-        return activated_module.configure_packages_and_data(packages, package_dir, package_data, deps_dir)
+        return configs.activated_module.configure_packages_and_data(packages, package_dir, package_data, deps_dir)
     except Exception:
         return packages, package_dir, package_data
 
 
 def post_install():
     try:
-        activated_module.post_install()
+        configs.activated_module.post_install()
     except Exception:
         pass
 
@@ -281,14 +274,14 @@ class CommonUtils:
         if 'backends' in package or 'profiler' in package:
             return True
         try:
-            return activated_module.skip_package_dir(package)
+            return configs.activated_module.skip_package_dir(package)
         except Exception:
             return False
 
     @staticmethod
     def get_package_dir(packages):
         package_dict = {}
-        if flagtree_backend and flagtree_backend not in plugin_backends:
+        if flagtree_backend and flagtree_backend not in configs.plugin_backends:
             connection = []
             backend_triton_path = f"../third_party/{flagtree_backend}/python/"
             for package in packages:
@@ -298,7 +291,7 @@ class CommonUtils:
                 connection.append(pair)
             package_dict.update(connection)
         try:
-            package_dict.update(activated_module.get_package_dir())
+            package_dict.update(configs.activated_module.get_package_dir())
         except Exception:
             pass
         return package_dict
@@ -309,9 +302,10 @@ def handle_flagtree_backend():
     if flagtree_backend:
         print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
         display_name = "mlu" if flagtree_backend == "cambricon" else flagtree_backend
-        extend_backends.append(display_name)
+        configs.extend_backends.append(display_name)
         if "editable_wheel" in sys.argv and flagtree_backend != "ascend":
-            ext_sourcedir = os.path.abspath(f"../third_party/{flagtree_backend}/python/{ext_sourcedir}") + "/"
+            configs.ext_sourcedir = os.path.abspath(
+                f"../third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
 
 
 def set_env(env_dict: dict):
@@ -367,7 +361,7 @@ cache.store(
 )
 
 cache.store(
-    file="iluvatarTritonPlugin.so", condition=("iluvatar" == flagtree_backend) and (not flagtree_plugin), url=
+    file="iluvatarTritonPlugin.so", condition=("iluvatar" == flagtree_backend) and (not configs.flagtree_plugin), url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.30-glibcxx3.4.28-cxxabi1.3.12-ubuntu-x86_64_v0.3.0.tar.gz",
     copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="015b9af8")
 
@@ -406,7 +400,7 @@ cache.store(
 )
 
 cache.store(
-    file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (not flagtree_plugin), url=
+    file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (configs.flagtree_plugin == ''), url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.3.0.tar.gz",
     copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="2a9ca0b8")
 
