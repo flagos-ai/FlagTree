@@ -160,14 +160,14 @@ python3 -m pip install . --no-build-isolation -v
 
 ```shell
 # cann-toolkit
-chmod +x Ascend-cann-toolkit_8.3.RC1.alpha001_linux-aarch64.run
-./Ascend-cann-toolkit_8.3.RC1.alpha001_linux-aarch64.run --install
+chmod +x Ascend-cann-toolkit_8.5.0.alpha002_linux-aarch64.run
+./Ascend-cann-toolkit_8.5.0.alpha002_linux-aarch64.run --install
 # cann-kernels for 910B (A2)
-chmod +x Ascend-cann-kernels-910b_8.3.RC1.alpha001_linux-aarch64.run
-./Ascend-cann-kernels-910b_8.3.RC1.alpha001_linux-aarch64.run --install
+chmod +x Ascend-cann-kernels-910b_8.5.0.alpha002_linux-aarch64.run
+./Ascend-cann-kernels-910b_8.5.0.alpha002_linux-aarch64.run --install
 # cann-kernels for 910C (A3)
-chmod +x Atlas-A3-cann-kernels_8.3.RC1.alpha001_linux-aarch64.run
-./Atlas-A3-cann-kernels_8.3.RC1.alpha001_linux-aarch64.run --install
+chmod +x Atlas-A3-cann-kernels_8.5.0.alpha002_linux-aarch64.run
+./Atlas-A3-cann-kernels_8.5.0.alpha002_linux-aarch64.run --install
 ```
 
 ##### 2. 手动下载 FlagTree 依赖库
@@ -235,7 +235,7 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
+#### Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
 
 - 对应的 Triton 版本为 3.4，基于 x64 平台
 
