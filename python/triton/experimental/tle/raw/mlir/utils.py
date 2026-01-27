@@ -32,8 +32,8 @@ class ExternalCall(object):
         return funcop
 
     def global_string(self, val: str, codegen: EdslMLIRCodeGenerator) -> llvm.GlobalOp:
-        hdigest = blake2s(val.encode("utf-8"), digest_size=16)
-        key: str = f"globalstr{base64.urlsafe_b64encode(hdigest.digest()).decode("ascii").rstrip('=')}"
+        hdigest = blake2s(val.encode('utf-8'), digest_size=16)
+        key: str = f"globalstr{base64.urlsafe_b64encode(hdigest.digest()).decode('ascii').rstrip('=')}"
         with ir.InsertionPoint.at_block_begin(codegen.module.body):
             op: ir.Operation = codegen.constants.get(val) or llvm.mlir_global(
                 ir.Type.parse(f"!llvm.array<{len(val.encode())} x i8>"), key,
