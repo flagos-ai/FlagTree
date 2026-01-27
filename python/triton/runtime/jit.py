@@ -11,7 +11,6 @@ from functools import cached_property
 from typing import Callable, Generic, Iterable, Optional, TypeVar, Union, overload, Dict, Any, Tuple
 from ..runtime.driver import driver
 from types import ModuleType
-from ..compiler.hintmanager import hint_trigger
 
 TRITON_MODULE = __name__[:-len(".runtime.jit")]
 
@@ -799,6 +798,7 @@ class JITFunction(KernelInterface[T]):
     def parse(self):
         # hint manager
         # after removing flagtree backend specialization, hiding the implementation into hintmanager
+        from ..compiler.hintmanager import hint_trigger
         line_flagtree_hints = hint_trigger("maps_line_numbers_to_comment_hints", self)
 
         tree = ast.parse(self.src)
