@@ -475,14 +475,26 @@ cache.store(
     post_hock=set_llvm_env,
 )
 
+
 # sunrise
+def sunrise_set_llvm_env(path):
+    set_llvm_env(path)
+    # mkdir -p third_party/sunrise/backend/lib
+    lib_dir = Path("third_party/sunrise/backend/lib")
+    os.makedirs(lib_dir, exist_ok=True)
+    # cp ${LLVM_SYSPATH}/stpu/bitcode/*.bc third_party/sunrise/backend/lib
+    bc_dir = Path(path) / "stpu" / "bitcode"
+    for bc_file in bc_dir.glob("*.bc"):
+        shutil.copy(bc_file, lib_dir)
+
+
 cache.store(
-    file="sunrise-llvm21-x86_64",
+    file="sunrise_llvm21_dev_release",
     condition=("sunrise" == flagtree_backend),
     url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunrise-llvm21-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
-    post_hock=set_llvm_env,
+    post_hock=sunrise_set_llvm_env,
 )
 
 cache.store(

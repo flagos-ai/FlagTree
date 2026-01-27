@@ -505,9 +505,7 @@ class SunriseDriver(GPUDriver):
 
     @staticmethod
     def is_active():
-        if os.getenv('FLAGTREE_BACKEND', '') == 'sunrise':
-            return True
-        return False
+        return True
 
     def get_benchmarker(self):
         from triton.testing import do_bench

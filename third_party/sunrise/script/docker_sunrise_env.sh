@@ -1,7 +1,7 @@
 #!/bin/bash
 
 function print_usage() {
-    echo "Usage: source build_ttenv.sh <llvm_install_dir>"
+    echo "Usage: source docker_sunrise_env.sh <llvm_install_dir>"
 }
 
 # 确保这个脚本由 source 命令执行
@@ -22,8 +22,6 @@ if [ ! -d 'python/triton' ] || [ ! -d 'third_party/sunrise' ] ; then
 fi
 
 LLVM_INSTALL_DIR=$1
-export PYBIND11_SYSPATH=$CONDA_ENV_DIR/lib/python3.10/site-packages/pybind11/ # you can see by pip show pybind11
-export PYBIND11_INCLUDE_DIR=$PYBIND11_SYSPATH/include
 export LLVM_INCLUDE_DIRS=$LLVM_INSTALL_DIR/include
 export LLVM_LIBRARY_DIR=$LLVM_INSTALL_DIR/lib
 export LLVM_SYSPATH=$LLVM_INSTALL_DIR
