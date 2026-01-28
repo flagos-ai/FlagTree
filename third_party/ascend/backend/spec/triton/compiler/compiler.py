@@ -20,7 +20,7 @@ def set_CompiledKernel_metadata_stream(compiled_kernel, stream):
     return compiled_kernel.metadata.stream
 
 
-def handle_compile_error(e, ext):
+def handle_compile_error(e, ext, fn_cache_manager):
     from .errors import MLIRCompilationError
     if (ext == "ttadapter"):
         stage_name = "ConvertTritonIRToLinalgIR"
