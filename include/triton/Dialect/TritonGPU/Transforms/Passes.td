@@ -145,4 +145,44 @@ def TritonGPUCombineTensorSelectAndIf: Pass<"tritongpu-combine-tensor-select-and
                            "mlir::triton::TritonDialect"];
 }
 
+def TritonGPUAdvancedPipeliner : Pass<"tritongpu-advanced-pipeliner", "mlir::ModuleOp"> {
+  let summary = "Advanced multi-level, multi-stage memory-compute pipelining";
+
+  let description = [{
+    Applies advanced multi-level pipelining optimization with automatic buffer analysis,
+    opportunity detection, circular buffer transformation, and synchronization insertion.
+    Supports multi-level pipelines (Global→Shared→Register) with configurable stages,
+    async copy operations, and swizzled buffers for bank conflict reduction.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::func::FuncDialect"];
+
+  let options = [
+    Option<"globalToSharedStages", "global-to-shared-stages",
+           "int32_t", /*default*/"3",
+           "number of pipeline stages for Global→Shared transfers">,
+    Option<"sharedToRegisterStages", "shared-to-register-stages",
+           "int32_t", /*default*/"2",
+           "number of pipeline stages for Shared→Register transfers">,
+    Option<"enableAsyncCopy", "enable-async-copy",
+           "bool", /*default*/"true",
+           "enable hardware async copy operations (cp.async, TMA)">,
+    Option<"enableSwizzle", "enable-swizzle",
+           "bool", /*default*/"false",
+           "enable swizzled addressing to reduce bank conflicts">,
+    Option<"minSpeedup", "min-speedup",
+           "double", /*default*/"1.05",
+           "minimum expected speedup threshold (default 5%)">,
+    Option<"enableWarpSpecialization", "enable-warp-specialization",
+           "bool", /*default*/"false",
+           "enable warp specialization for producer/consumer separation">,
+    Option<"enableMultiBufferFusion", "enable-multi-buffer-fusion",
+           "bool", /*default*/"false",
+           "enable multi-buffer fusion for shared synchronization">
+  ];
+}
+
 #endif

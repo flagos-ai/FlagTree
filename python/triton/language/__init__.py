@@ -3,6 +3,8 @@
 
 from . import math
 from . import extra
+# Import TLX features (async_task, async_tasks) for warp specialization
+from .extra.tlx import async_task, async_tasks
 from .standard import (
     argmax,
     argmin,
@@ -118,9 +120,52 @@ from .random import (
     uint_to_uniform_float,
 )
 
+# FlagTree AutoTuning and Pipeline Optimization with TLX Integration
+from .pipeline import (
+    # Core classes
+    PipelineConfig,
+    WarpSpecConfig,
+    WarpRole,
+    TLXBufferConfig,
+    # Decorators
+    auto_pipeline,
+    warp_specialized_pipeline,
+    autotune_pipeline,
+    # Buffer operations
+    pipeline_buffer,
+    swizzle_buffer,
+    # TLX helpers
+    get_warp_role,
+    create_producer_consumer_barriers,
+    # Convenience configs (standard)
+    pipeline_config_gemm,
+    pipeline_config_conv,
+    pipeline_config_softmax,
+    pipeline_config_attention,
+    # Convenience configs (Hopper-optimized)
+    pipeline_config_gemm_hopper,
+    pipeline_config_attention_hopper,
+    # Autotune utilities
+    create_pipeline_configs,
+    create_tlx_autotune_configs,
+)
+
+from .autotune_config import (
+    smart_autotune,
+    get_best_gemm_config,
+    get_best_attention_config,
+    generate_gemm_configs,
+    generate_attention_configs,
+    get_config_cache,
+    ConfigCache,
+)
+
 __all__ = [
     "PropagateNan",
     "TRITON_MAX_TENSOR_NUMEL",
+    # TLX warp specialization
+    "async_task",
+    "async_tasks",
     "_experimental_descriptor_load",
     "_experimental_descriptor_store",
     "abs",
@@ -247,6 +292,41 @@ __all__ = [
     "xor_sum",
     "zeros",
     "zeros_like",
+    # FlagTree Pipeline Optimization with TLX Integration
+    # Core classes
+    "PipelineConfig",
+    "WarpSpecConfig",
+    "WarpRole",
+    "TLXBufferConfig",
+    # Decorators
+    "auto_pipeline",
+    "warp_specialized_pipeline",
+    "autotune_pipeline",
+    # Buffer operations
+    "pipeline_buffer",
+    "swizzle_buffer",
+    # TLX helpers
+    "get_warp_role",
+    "create_producer_consumer_barriers",
+    # Convenience configs (standard)
+    "pipeline_config_gemm",
+    "pipeline_config_conv",
+    "pipeline_config_softmax",
+    "pipeline_config_attention",
+    # Convenience configs (Hopper-optimized)
+    "pipeline_config_gemm_hopper",
+    "pipeline_config_attention_hopper",
+    # Autotune utilities
+    "create_pipeline_configs",
+    "create_tlx_autotune_configs",
+    # FlagTree AutoTuning
+    "smart_autotune",
+    "get_best_gemm_config",
+    "get_best_attention_config",
+    "generate_gemm_configs",
+    "generate_attention_configs",
+    "get_config_cache",
+    "ConfigCache",
 ]
 
 # flagtree backend specialization

@@ -6,6 +6,7 @@ FlagTree is an open source, unified compiler for multiple AI chips project dedic
 Each backend is based on different versions of triton, and therefore resides in different protected branches ([main](https://github.com/flagos-ai/flagtree/tree/main) for triton 3.1, [triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x), [triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x), [triton_v3.4.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.4.x), [triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)). All these protected branches have equal status. <br>
 
 ## Latest News
+* 2026/01/28 **NEW** Added `@auto_pipeline` decorator for automatic multi-level pipelining optimization with up to 1.93x speedup on GEMM.
 * 2025/12/24 Support pull and install [whl](/README.md#non-source-installation).
 * 2025/12/08 Added [enflame](https://github.com/FlagTree/flagtree/tree/triton_v3.3.x/third_party/enflame/) backend integration (based on Triton 3.3), and added CI/CD.
 * 2025/11/26 Add FlagTree_Backend_Specialization Unified Design Document [FlagTree_Backend_Specialization](reports/decoupling/).
@@ -36,6 +37,55 @@ Each backend is based on different versions of triton, and therefore resides in 
 * 2025/03/19 Added klx [xpu](https://github.com/FlagTree/flagtree/tree/main/third_party/xpu/) backend integration (based on Triton 3.0), and added CI/CD.
 * 2025/03/19 Added [mthreads](https://github.com/FlagTree/flagtree/tree/main/third_party/mthreads/) backend integration (based on Triton 3.1), and added CI/CD.
 * 2025/03/12 Added [iluvatar](https://github.com/FlagTree/flagtree/tree/main/third_party/iluvatar/) backend integration (based on Triton 3.1), and added CI/CD.
+
+## AutoPipeline: Advanced Multi-Level Pipelining
+
+FlagTree introduces `@auto_pipeline`, a decorator that enables automatic multi-level pipelining optimization for Triton kernels. This feature provides significant performance improvements without requiring manual kernel modifications.
+
+### Features
+
+- **Global-to-Shared (G2S) Pipelining**: Multi-stage async data prefetching from global to shared memory
+- **Shared-to-Register (S2R) Pipelining**: Double-buffering optimization for shared memory to register transfers
+- **Warp Specialization**: Producer-consumer pattern with dedicated prefetch and compute warps
+
+### Quick Start
+
+```python
+import triton
+import triton.language as tl
+from triton.language import auto_pipeline, PipelineConfig, WarpSpecConfig
+
+@triton.jit
+@auto_pipeline(PipelineConfig(
+    global_to_shared_stages=4,
+    shared_to_register_stages=2,
+    enable_async_copy=True,
+    enable_swizzle=True,
+    enable_warp_specialization=True,
+    warp_spec_config=WarpSpecConfig(
+        num_producer_warps=1,
+        num_consumer_warps=3,
+    )
+))
+def matmul_kernel(A, B, C, M, N, K, ...):
+    # Standard GEMM implementation - no changes needed!
+    ...
+```
+
+### Performance Results (2048x2048x2048 GEMM on A100)
+
+| Kernel | TFLOPS | Speedup |
+|--------|--------|---------|
+| No Pipeline | 107.30 | 1.00x |
+| Default Pipeline | 167.41 | 1.56x |
+| **AutoPipeline** | **206.79** | **1.93x** |
+
+### Run Benchmark
+
+```shell
+cd python/test
+python benchmark_autopipeline.py
+```
 
 ## Install from source
 Installation dependencies (ensure you use the correct python3.x version):

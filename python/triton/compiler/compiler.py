@@ -286,6 +286,18 @@ def compile(src, target=None, options=None):
     # run compilation pipeline  and populate metadata
     stages = dict()
     backend.add_stages(stages, options)
+
+    # Inject pipeline optimization passes if configured
+    # Check if source has pipeline configuration (on JITFunction or wrapped function)
+    _debug_pipeline = os.environ.get('FLAGTREE_DEBUG_PIPELINE', '0') == '1'
+    if isinstance(src, ASTSource):
+        from .pipeline_config import PipelineCompilerHook
+        # extract_config_from_kernel checks both src.fn and src.fn.fn for _pipeline_config
+        config_dict = PipelineCompilerHook.extract_config_from_kernel(src.fn)
+        if config_dict:
+            if _debug_pipeline:
+                print(f"[FlagTree] Injecting pipeline passes with config: {config_dict}")
+            PipelineCompilerHook.inject_pipeline_passes(stages, options, config_dict)
     first_stage = list(stages.keys()).index(src.ext)
     # when the source is an IR file, don't apply the passes related to this stage. This makes it easier to write IR level tests.
     if ir_source:

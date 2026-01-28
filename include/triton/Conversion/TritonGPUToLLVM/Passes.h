@@ -22,6 +22,9 @@ std::unique_ptr<OperationPass<ModuleOp>> createAllocateSharedMemoryPass();
 
 } // namespace gpu
 
+// Forward declaration for pipeline intrinsics pass
+std::unique_ptr<OperationPass<ModuleOp>> createPipelineIntrinsicsToLLVMPass();
+
 #define GEN_PASS_REGISTRATION
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h.inc"
 

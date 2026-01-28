@@ -25,6 +25,14 @@ add_triton_library(TritonGPUTransforms
   RemoveLayoutConversions.cpp
   ReorderInstructions.cpp
   Utility.cpp
+  BufferAccessAnalysis.cpp
+  PipelineOpportunityDetector.cpp
+  CircularBufferTransform.cpp
+  SynchronizationInsertion.cpp
+  AdvancedPipeliner.cpp
+  WarpSpecialization.cpp
+  TMASupport.cpp
+  MultiBufferFusion.cpp
 
   DEPENDS
   TritonGPUTransformsIncGen

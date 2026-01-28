@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from warnings import warn
 from contextlib import contextmanager
 from enum import Enum
 from functools import partial, wraps
 import typing
-from typing import Union, Callable, List, Sequence, TypeVar, Optional
+from typing import Union, Callable, List, Sequence, TypeVar, Optional, Tuple
 import builtins
 from ..runtime.jit import jit
 import inspect
@@ -15,6 +16,51 @@ from .._C.libtriton import ir
 from . import semantic
 
 T = TypeVar('T')
+
+
+# ----------------------
+# Base Types for TLX
+# ----------------------
+
+
+class base_value:
+    """Base class of values that exist in the triton IR (i.e. not constexprs).
+
+    Used by TLX (Triton Low-level Language Extensions) for warp specialization.
+    """
+    type: "base_type"
+
+    def _flatten_ir(self, handles: List[ir.value]) -> None:
+        """Flatten frontend value into a sequence of mlir handles, which are appended
+        to the output list
+        """
+        raise NotImplementedError
+
+
+class base_type:
+    """Base class for Triton types.
+
+    Used by TLX (Triton Low-level Language Extensions) for warp specialization.
+    """
+
+    def __eq__(self, other) -> bool:
+        raise NotImplementedError("Types must implement __eq__")
+
+    def __ne__(self, other) -> bool:
+        return not (self == other)
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple["base_value", int]:
+        """Build a frontend value with the current dtype, wrapping a list of existing handles.
+        cursor is the index of the first handle relevant to this value, and the function
+        should return the updated cursor position after any handles consumed by the created value.
+        """
+        raise NotImplementedError
+
+    def mangle(self) -> str:
+        raise NotImplementedError(f"NYI: Type mangling for type {self.__class__}")
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        raise NotImplementedError
 
 TRITON_MAX_TENSOR_NUMEL = 1048576
 
@@ -1127,6 +1173,176 @@ class tensor:
 def get_bool_env_var(var_name):
     v = os.getenv(var_name, "0")
     return v == "1" or v == "true" or v == "on"
+
+
+# -----------------------
+# TLX Types
+# -----------------------
+
+
+class tensor_descriptor_base_type(base_type):
+    """Type for tensor descriptors used by TLX."""
+
+    def __init__(self, block_type: "block_type"):
+        self.block_type = block_type
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple["tensor_descriptor_base", int]:
+        value = tensor_descriptor_base(handles[cursor], self.block_type)
+        return value, cursor + 1
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        is_signed = self.block_type.element_ty.is_int_signed()
+        out.append(builder.create_tensor_descriptor_type(self.block_type.to_ir(builder), is_signed))
+
+    def __str__(self) -> str:
+        return f"tensor_descriptor<{self.block_type}>"
+
+    def __eq__(self, other) -> bool:
+        if type(other) is not type(self):
+            return False
+        return self.block_type == other.block_type
+
+    def __neq__(self, other) -> bool:
+        return not (self == other)
+
+    def mangle(self) -> str:
+        return f"TD{self.block_type.mangle()}"
+
+
+class tensor_descriptor_base(base_value):
+    """A tensor descriptor with unknown shape and strides used by TLX."""
+
+    def __init__(self, handle, block_type: "block_type"):
+        """Not called by user code."""
+        super().__init__()
+        self.handle = handle
+        self.type = tensor_descriptor_base_type(block_type)
+
+    def _flatten_ir(self, handles: List[ir.value]) -> None:
+        handles.append(self.handle)
+
+    @property
+    def block_type(self):
+        return self.type.block_type
+
+    @property
+    def block_shape(self):
+        return self.type.block_type.shape
+
+    @property
+    def dtype(self):
+        return self.type.block_type.element_ty
+
+    def __str__(self) -> str:
+        return str(self.type)
+
+
+# -----------------------
+# Aggregate Types for TLX
+# -----------------------
+
+
+@dataclass(frozen=True)
+class _aggregate_type(base_type):
+    """A generic base type for all Triton aggregate types.
+
+    This class contains a reference to the original user-defined Python class
+    and a list of class fields with their Triton types.
+
+    Used by TLX (Triton Low-level Language Extensions) for warp specialization.
+    """
+
+    base_cls: type
+    fields: List[Tuple[str, base_type]]
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[ir.value, int]:
+        instance = self.base_cls._get_instance()
+        for name, ty in self.fields:
+            value, cursor = ty._unflatten_ir(handles, cursor)
+            setattr(instance, name, value)
+        return instance, cursor
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        for name, ty in self.fields:
+            ty._flatten_ir_types(builder, out)
+
+    def mangle(self) -> str:
+        name = f"{self.base_cls.__module__}.{self.base_cls.__qualname__}"
+        fields = [ty.mangle() for (name, ty) in self.fields]
+        return f"{name}<{', '.join(fields)}>"
+
+
+def _aggregate(cls):
+    """Decorator to create aggregate types for TLX warp specialization.
+
+    Used by TLX (Triton Low-level Language Extensions) for warp specialization.
+    Example:
+        @_aggregate
+        class CLCPipelineContext:
+            _clc_mbars_empty: mbarrier
+            _clc_mbars_full: mbarrier
+            _clc_responses: clc_response
+
+            def __init__(self, ...): ...
+    """
+    from ..runtime.jit import JITFunction as JITCallable
+
+    # Define the wrapped Triton value type.
+    class aggregate_value(base_value):
+        __triton_builtin__ = True
+        __triton_aggregate__ = True
+
+        @classmethod
+        def _get_instance(this_cls):
+            return super().__new__(this_cls)
+
+        def __new__(this_cls, *args, _semantic=None, _generator=None, **kwargs):
+            # Call into the user-defined constructor.
+            instance = this_cls._get_instance()
+            if isinstance(cls.__init__, JITCallable):
+                raise ValueError(f"{cls.__name__}.__init__ cannot be a @triton.jit function")
+            extra_kwargs = {}
+            if "_semantic" in inspect.signature(cls.__init__).parameters:
+                extra_kwargs["_semantic"] = _semantic
+            if "_generator" in inspect.signature(cls.__init__).parameters:
+                extra_kwargs["_generator"] = _generator
+            cls.__init__(instance, *args, **extra_kwargs, **kwargs)
+
+            # Require that the user-defined constructor initialized all fields.
+            for name in cls.__annotations__.keys():
+                if not hasattr(instance, name):
+                    raise AttributeError(f"constructor for {cls.__name__} did not initialize attribute '{name}'")
+
+            return instance
+
+        # Only allow setting attributes defined in the class annotations.
+        def __setattr__(self, name, value):
+            if name not in cls.__annotations__:
+                raise AttributeError(f"{cls.__name__} has no attribute '{name}'")
+            if not isinstance(value, cls.__annotations__[name]):
+                raise TypeError(f"Expected {cls.__annotations__[name]} for attribute '{name}', got {type(value)}")
+            super().__setattr__(name, value)
+
+        def _flatten_ir(self, handles: List[ir.value]) -> None:
+            for name in cls.__annotations__.keys():
+                getattr(self, name)._flatten_ir(handles)
+
+        @property
+        def type(self):
+            return _aggregate_type(aggregate_value,
+                                   [(name, getattr(self, name).type) for name in cls.__annotations__.keys()])
+
+    for (name, member) in inspect.getmembers(cls):
+        if inspect.isfunction(member) or inspect.ismethod(member) or isinstance(member, JITCallable):
+            if name != "__init__":
+                setattr(aggregate_value, name, member)
+
+    aggregate_value.__name__ = cls.__name__
+    aggregate_value.__module__ = cls.__module__
+    aggregate_value.__qualname__ = cls.__qualname__
+    aggregate_value.__doc__ = cls.__doc__
+
+    return aggregate_value
 
 
 # -----------------------

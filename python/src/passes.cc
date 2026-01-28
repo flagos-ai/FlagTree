@@ -67,6 +67,11 @@ void init_triton_passes_ttgpuir(py::module &&m) {
                      createAllocateSharedMemoryPass);
   ADD_PASS_WRAPPER_0("add_combine_tensor_select_and_if",
                      createTritonGPUCombineTensorSelectAndIf);
+  // Advanced pipeliner with configurable options
+  // Options: globalToSharedStages, sharedToRegisterStages, enableAsyncCopy,
+  //          enableSwizzle, minSpeedup, enableWarpSpecialization, enableMultiBufferFusion
+  ADD_PASS_OPTION_WRAPPER_7("add_advanced_pipeliner", createTritonGPUAdvancedPipeliner,
+                            int, int, bool, bool, double, bool, bool);
 }
 
 void init_triton_passes_convert(py::module &&m) {

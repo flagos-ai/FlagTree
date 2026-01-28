@@ -15,6 +15,11 @@ from ..runtime import JITFunction
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
 from types import ModuleType
 
+# TLX (Triton Low-level Language Extensions) dispatch for warp specialization
+from triton.language.extra.tlx.compiler.dispatch import TLX_WITH_DISPATCH
+WITH_DISPATCH = {}  # central registry for all 'with' handlers
+WITH_DISPATCH.update(TLX_WITH_DISPATCH)
+
 
 def mangle_ty(ty):
     if ty.is_ptr():
@@ -1045,6 +1050,21 @@ class CodeGenerator(ast.NodeVisitor):
         msg = self.visit(node.msg) if node.msg is not None else ""
         # Convert assert to triton's device_assert which happens on the device
         return language.core.device_assert(test, msg, _builder=self.builder)
+
+    def visit_withitem(self, node):
+        return self.visit(node.context_expr)
+
+    def visit_With(self, node):
+        """Handle 'with' statements for TLX warp specialization (async_task, async_tasks)"""
+        assert len(node.items) == 1
+        context = node.items[0].context_expr
+        # TLX dispatch for async_task/async_tasks
+        if isinstance(context, ast.Call):
+            withitemClass = self.visit(context.func)
+            handler = WITH_DISPATCH.get(withitemClass)
+            if handler:
+                return handler(self, node)
+        return self.visit_compound_statement(node.body)
 
     def call_JitFunction(self, fn: JITFunction, args, kwargs):
         args = inspect.getcallargs(fn.fn, *args, **kwargs)

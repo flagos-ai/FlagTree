@@ -289,6 +289,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
     add_subdirectory(third_party/proton)
   endif()
 
+  # TLX (Triton Low-level Language Extensions) for warp specialization
+  # NOTE: TLX C++ dialect is disabled pending MLIR integration
+  # The Python TLX API still works without the C++ dialect for config-based features
+  # add_subdirectory(third_party/tlx/dialect)
+
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
   set(TRITON_LIBRARIES
