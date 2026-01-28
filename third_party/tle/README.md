@@ -1,4 +1,4 @@
-# TLE (Tensor Language Extension)
+# TLE (Triton Language Extensions)
 
 <!-- flagtree tle -->
 
