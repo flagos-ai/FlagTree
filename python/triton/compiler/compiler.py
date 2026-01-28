@@ -289,7 +289,7 @@ def compile(src, target=None, options=None):
         except Exception as e:
             # flagtree backend specialization
             from triton.runtime.driver import spec
-            spec("handle_compile_error", e, ext)
+            spec("handle_compile_error", e, ext, fn_cache_manager)
 
         ir_filename = f"{file_name}.{ext}"
         if (fn_override_manager is not None and (full_name := fn_override_manager.get_file(ir_filename)) is not None):
