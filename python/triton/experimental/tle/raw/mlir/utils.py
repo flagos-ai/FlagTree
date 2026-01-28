@@ -77,61 +77,43 @@ def vprintf(*args) -> VPrintf:
 
 class Assert(ExternalCall):
     def __init__(self, cond, msg, file_name, func_name, line_no, *args, **kwargs) -> None:
-        # keyword 对应底层的符号名
-        super().__init__("__assert_fail", *args, **kwargs)
+        dependencies = [cond] + list(args)
+        super().__init__("__assertfail", dependencies, **kwargs)
         self.cond = cond
-        # 保存元数据
         self.msg = msg
         self.file_name = file_name
         self.func_name = func_name
         self.line_no = line_no
-        # args 依然保留，用于 vprintf 的动态参数打印
         self.print_args = args
 
     @override
     def build(self) -> func.FuncOp:
-        """
-        定义 __assert_fail 的函数签名，严格对齐 CUDA 标准。
-        void __assert_fail(const char *message, const char *file, 
-                           unsigned int line, const char *function, 
-                           size_t charSize);
-        """
-        ptr_type = ir.Type.parse("!llvm.ptr") # i8*
+        ptr_type = ir.Type.parse("!llvm.ptr")
         i32_type = ir.IntegerType.get_signless(32)
         i64_type = ir.IntegerType.get_signless(64)
-        
+
         return func.FuncOp(
-            self.keyword, 
+            self.keyword,
             ir.FunctionType.get(
-                [ptr_type, ptr_type, i32_type, ptr_type, i64_type], 
-                []
-            ),
-            visibility="private"
-        )
+                [ptr_type, ptr_type, i32_type, ptr_type, i64_type],
+                []),visibility="private")
 
     @override
     def call(self, codegen: EdslMLIRCodeGenerator) -> Any:
-        # 1. 获取函数声明
         func_op = self.decl(codegen)
 
-        # 2. 条件取反 (Assert 是 "真则过"，底层是 "假则挂")
         true_const = arith.constant(ir.IntegerType.get_signless(1), 1)
         is_false = arith.xori(self.cond, true_const)
 
-        # 3. 构建 If 结构 (对应 C++ 中的 splitBlock)
         if_op = scf.IfOp(is_false)
         with ir.InsertionPoint(if_op.then_block):
-            
-            # --- 步骤 A: 打印用户友好的动态信息 ---
-            # 因为 __assert_fail 只能打印固定字符串，
-            # 所以我们先调 vprintf 把变量值(args)打印出来给用户看
-            if self.print_args:
-                # 构造 vprintf 调用，传入格式化字符串和参数
-                # 注意：这里我们重新把 self.msg 和 self.print_args 组合传给 VPrintf
-                # 假设 VPrintf 接受 ([fmt, args...]) 形式
-                VPrintf([self.msg, *self.print_args]).call(codegen)
 
-            # --- 步骤 B: 准备 __assert_fail 的静态参数 ---
+
+            debug_args = [self.msg]
+            if self.print_args:
+                debug_args.extend(self.print_args)
+            VPrintf(debug_args).call(codegen)
+
             
             # 1. Message String
             msg_global = self.global_string(self.msg, codegen)
@@ -148,32 +130,29 @@ class Assert(ExternalCall):
             func_global = self.global_string(self.func_name, codegen)
             func_ptr = llvm.AddressOfOp(ir.Type.parse("!llvm.ptr"), func_global.sym_name.value)
             
-            # 5. Char Size (通常设为 1 或 sizeof(char))
+            # 5. Char Size
             char_size_val = arith.constant(ir.IntegerType.get_signless(64), 1)
 
-            # --- 步骤 C: 调用 __assert_fail ---
+            #__assertfail
             func.call(
                 [], 
                 ir.FlatSymbolRefAttr.get(func_op.name.value), 
                 [msg_ptr, file_ptr, line_val, func_ptr, char_size_val]
             )
-            
-            # 理论上 __assert_fail 不会返回，但在 MLIR 中加上 trap 更保险
-            llvm.intr.trap()
+
             
             scf.yield_([])
 
         return if_op
 
-# 对外接口 vassert
+
 def vassert(cond, fmt, *args):
-    # 自动获取调用者的位置信息
     frame = inspect.currentframe().f_back
     try:
         filename = os.path.basename(frame.f_code.co_filename) # 只取文件名，不要绝对路径
         funcname = frame.f_code.co_name
         lineno = frame.f_lineno
     finally:
-        del frame # 避免循环引用内存泄漏
+        del frame
 
-    return Assert(cond, fmt, filename, funcname, lineno, *args).call(EdslMLIRCodeGenerator.current)
+    return Assert(cond, fmt, filename, funcname, lineno, *args)
