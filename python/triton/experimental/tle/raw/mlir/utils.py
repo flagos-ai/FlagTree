@@ -140,7 +140,7 @@ class Assert(ExternalCall):
 def vassert(cond, fmt, *args):
     frame = inspect.currentframe().f_back
     try:
-        filename = os.path.basename(frame.f_code.co_filename)  # 只取文件名，不要绝对路径
+        filename = os.path.basename(frame.f_code.co_filename)
         funcname = frame.f_code.co_name
         lineno = frame.f_lineno
     finally:
