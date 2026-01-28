@@ -10,6 +10,7 @@ from mlir import ir
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
+
 @dialect(name="mlir")
 def edsl_assert_test():
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
@@ -31,11 +32,11 @@ def assert_kernel():
 
 def run_test():
     print(">>> Starting Assert Test (Expect Crash)...")
-    
+
     try:
         assert_kernel[(1, )]()
         torch.cuda.synchronize()
-        
+
     except RuntimeError as e:
         msg = str(e)
         if "device-side assert triggered" in msg or "unspecified launch failure" in msg:
@@ -45,12 +46,12 @@ def run_test():
         else:
             print(f"\n❌ [FAIL] Caught unexpected RuntimeError: {msg}")
             return False
-            
+
     except Exception as e:
         print(f"\n❌ [FAIL] Caught unexpected exception: {type(e)}")
         print(e)
         return False
-        
+
     else:
         print("\n❌ [FAIL] Kernel finished without error (Assert did NOT trigger)")
         return False

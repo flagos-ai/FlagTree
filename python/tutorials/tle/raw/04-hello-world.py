@@ -1,10 +1,10 @@
 import triton
 from triton.experimental.tle.raw import dialect
-from triton.experimental.tle.raw.mlir import vprintf, vassert
+from triton.experimental.tle.raw.mlir import vprintf
 import triton.experimental.tle.language.raw as tle_raw
 import torch
 
-from mlir.dialects import nvvm, arith
+from mlir.dialects import nvvm
 from mlir import ir
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()

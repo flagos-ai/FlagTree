@@ -74,8 +74,8 @@ def vprintf(*args) -> VPrintf:
     return VPrintf(args)
 
 
-
 class Assert(ExternalCall):
+
     def __init__(self, cond, msg, file_name, func_name, line_no, *args, **kwargs) -> None:
         dependencies = [cond] + list(args)
         super().__init__("__assertfail", dependencies, **kwargs)
@@ -92,11 +92,8 @@ class Assert(ExternalCall):
         i32_type = ir.IntegerType.get_signless(32)
         i64_type = ir.IntegerType.get_signless(64)
 
-        return func.FuncOp(
-            self.keyword,
-            ir.FunctionType.get(
-                [ptr_type, ptr_type, i32_type, ptr_type, i64_type],
-                []),visibility="private")
+        return func.FuncOp(self.keyword, ir.FunctionType.get([ptr_type, ptr_type, i32_type, ptr_type, i64_type], []),
+                           visibility="private")
 
     @override
     def call(self, codegen: EdslMLIRCodeGenerator) -> Any:
@@ -108,39 +105,33 @@ class Assert(ExternalCall):
         if_op = scf.IfOp(is_false)
         with ir.InsertionPoint(if_op.then_block):
 
-
             debug_args = [self.msg]
             if self.print_args:
                 debug_args.extend(self.print_args)
             VPrintf(debug_args).call(codegen)
 
-            
             # 1. Message String
             msg_global = self.global_string(self.msg, codegen)
             msg_ptr = llvm.AddressOfOp(ir.Type.parse("!llvm.ptr"), msg_global.sym_name.value)
-            
+
             # 2. File Name String
             file_global = self.global_string(self.file_name, codegen)
             file_ptr = llvm.AddressOfOp(ir.Type.parse("!llvm.ptr"), file_global.sym_name.value)
-            
+
             # 3. Line Number (Integer)
             line_val = arith.constant(ir.IntegerType.get_signless(32), self.line_no)
-            
+
             # 4. Function Name String
             func_global = self.global_string(self.func_name, codegen)
             func_ptr = llvm.AddressOfOp(ir.Type.parse("!llvm.ptr"), func_global.sym_name.value)
-            
+
             # 5. Char Size
             char_size_val = arith.constant(ir.IntegerType.get_signless(64), 1)
 
             #__assertfail
-            func.call(
-                [], 
-                ir.FlatSymbolRefAttr.get(func_op.name.value), 
-                [msg_ptr, file_ptr, line_val, func_ptr, char_size_val]
-            )
+            func.call([], ir.FlatSymbolRefAttr.get(func_op.name.value),
+                      [msg_ptr, file_ptr, line_val, func_ptr, char_size_val])
 
-            
             scf.yield_([])
 
         return if_op
@@ -149,7 +140,7 @@ class Assert(ExternalCall):
 def vassert(cond, fmt, *args):
     frame = inspect.currentframe().f_back
     try:
-        filename = os.path.basename(frame.f_code.co_filename) # 只取文件名，不要绝对路径
+        filename = os.path.basename(frame.f_code.co_filename)  # 只取文件名，不要绝对路径
         funcname = frame.f_code.co_name
         lineno = frame.f_lineno
     finally:
