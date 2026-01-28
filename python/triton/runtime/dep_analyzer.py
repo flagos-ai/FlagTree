@@ -46,9 +46,13 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         self.input_params: Set[str] = set()      # 输入参数名集合
         self.constexpr_params: Set[str] = set()  # constexpr 参数名集合
         self.var_definitions: Dict[str, ast.AST] = {}  # 变量名 -> AST 定义节点
+        # for input-constexpr dependencies analyze
         self.load_addresses: list = []  # 存储 tl.load 的地址表达式
-        self.tma_load_addresses = [] # 存储 tma_desc.load 的 TMA描述符 和对应的地址表达式
+        # for make_tensor_descriptor dependencies analyze
         self.tma_args = {} # 存储 tl.make_tensor_descriptor 的 base 及其对应的 stride 和 block shape
+        # for TMA descriptor load dependencies analyze
+        self.tma_load_assignments = []  # 存储 tma_desc.load 赋值的目标变量和相关信息
+        self.transpose_args_nodes = []  # 存储 tl.trans 参数
 
     def visit_FunctionDef(self, node):
         """分析函数定义，收集参数信息"""
@@ -77,6 +81,21 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         targets = node.targets
         if len(targets) == 1 and isinstance(targets[0], ast.Name):
             var_name = targets[0].id
+
+            # 检查右侧是否是TMA load调用
+            if (isinstance(node.value, ast.Call) and
+                self._is_tma_load(node.value) and
+                node.value.args and
+                isinstance(node.value.args[0], ast.List)):
+                # 记录TMA load的赋值目标和相关信息
+                tma_desc_name = node.value.func.value.id
+                addr_exprs = node.value.args[0].elts
+                self.tma_load_assignments.append({
+                    'var_name': var_name,
+                    'tma_desc_name': tma_desc_name,
+                    'addr_exprs': addr_exprs
+                })
+
             self.var_definitions[var_name] = node.value
         self.generic_visit(node)
 
@@ -104,10 +123,9 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         # 检查是否是 tl.load 调用
         if self._is_tl_load(node) and node.args:
             self.load_addresses.append(node.args[0])
-        elif self._is_tma_load(node) and node.args:
-            # 收集 load 中的 offset 的节点
-            if isinstance(node.args[0], ast.List):
-                self.tma_load_addresses.append((node.func.value.id, node.args[0].elts))
+        elif self._is_tl_transpose(node) and node.args:
+            # 获取 transpose 的参数
+            self.transpose_args_nodes.append(node.args[0])
         elif self._is_tl_make_tensor_descriptor(node):
             base = None
             # 收集 make_tensor_descriptor 中的 base 的节点
@@ -144,6 +162,14 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         """检查是否是 tl.make_tensor_descriptor 调用"""
         if isinstance(node.func, ast.Attribute):
             if node.func.attr == 'make_tensor_descriptor':
+                if isinstance(node.func.value, ast.Name):
+                    return node.func.value.id in ('tl', 'triton')
+        return False
+
+    def _is_tl_transpose(self, node) -> bool:
+        """检查是否是 tl.trans 或 triton.trans 调用"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'trans':
                 if isinstance(node.func.value, ast.Name):
                     return node.func.value.id in ('tl', 'triton')
         return False
@@ -186,6 +212,33 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         return input_deps, constexpr_deps
 
+    def _get_dependencies_vars(self, var_name: str, visited: Optional[Set[str]] = None) -> bool:
+        """
+        返回变量 var_name 依赖的所有变量
+        """
+        if visited is None:
+            visited = set()
+
+        if var_name in visited:
+            return set()
+        visited.add(var_name)
+
+        var_deps = set()
+
+        # 检查是否是 输入 或 constexpr 参数
+        if (var_name in self.input_params) or (var_name in self.constexpr_params):
+            return var_deps
+
+        # 递归分析变量定义
+        if var_name in self.var_definitions and not var_name.startswith('pid'):
+            definition_node = self.var_definitions[var_name]
+            used_vars = VariableCollector.collect(definition_node)
+            for used_var in used_vars:
+                used_var_deps = self._get_dependencies_vars(used_var, visited.copy())
+                var_deps.update(used_var_deps)
+
+        return var_deps
+
     def analyze_tma_make_tensor_descriptor(self) -> Dict[str, List[str]]:
         tma_relationships = {}
 
@@ -223,24 +276,50 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         return tma_relationships
 
-    def analyze_tma_desc_load(self) -> List[Tuple[str, List[str]]]:
-        tma_desc_relationships = []
+    def analyze_tma_desc_load_with_trans_check(self):
+        """
+        分析TMA描述符load操作及其后续是否有trans操作
+        返回: [(tma_desc, block_names, has_trans), ...]
+        """
+        tma_desc_relationships = {}
 
-        for tma_desc, addr_exprs in self.tma_load_addresses:
-            # 分析每个块对应的 BLOCK
+        # 收集 transpose 参数直接使用的变量名
+        transpose_used_vars = set()
+        for arg_node in self.transpose_args_nodes:
+            used_vars = VariableCollector.collect(arg_node)
+            # 收集地址表达式中使用的变量
+            for var_name in used_vars:
+                transpose_used_vars.add(var_name)
+                transpose_used_vars.update(self._get_dependencies_vars(var_name))
+
+        # 检查每个TMA load后面是否紧跟trans调用
+        for tma_info in self.tma_load_assignments:
+            target_var = tma_info['var_name']
+            tma_desc_name = tma_info['tma_desc_name']
+            addr_exprs = tma_info['addr_exprs']
+
+            # 分析TMA load地址表达式中的block names
             block_names = []
             for addr_expr in addr_exprs:
                 used_vars = VariableCollector.collect(addr_expr)
-
                 for var_name in used_vars:
                     _, constexpr_deps = self.get_dependencies(var_name)
                     if len(constexpr_deps) == 1:
                         block_names.append(list(constexpr_deps)[0])
                         break
 
-            if len(block_names) > 0:
-                # ("a_desc": [BLOCK_M, BLOCK_K]), ("a_desc": [BLOCK_K, BLOCK_M])
-                tma_desc_relationships.append((tma_desc, block_names))
+            if target_var in transpose_used_vars:
+                block_names[-1], block_names[-2] = block_names[-2], block_names[-1]
+
+            # 添加每个 TMA Descriptor 对应的 block names（可能有多对）
+            if tma_desc_name in tma_desc_relationships.keys():
+                tma_desc_relationships[tma_desc_name].add(tuple(block_names))
+            else:
+                tma_desc_relationships[tma_desc_name] = set()
+                tma_desc_relationships[tma_desc_name].add(tuple(block_names))
+
+        print(f'=============== result:\n {tma_desc_relationships}')
+
 
         return tma_desc_relationships
 
@@ -288,7 +367,7 @@ def analyze_kernel_dependencies(jit_fn) -> Dict[str, Set[str]]:
         analyzer.visit(fn_ast)
         relationships = analyzer.analyze()
         tma_make_desc_relationships = analyzer.analyze_tma_make_tensor_descriptor()
-        tma_desc_load_relationships = analyzer.analyze_tma_desc_load()
+        tma_desc_load_relationships = analyzer.analyze_tma_desc_load_with_trans_check()
 
         # 缓存结果
         _analysis_cache[fn_id] = (relationships, tma_make_desc_relationships, tma_desc_load_relationships)
@@ -306,7 +385,7 @@ def analyze_kernel_dependencies(jit_fn) -> Dict[str, Set[str]]:
                     print(f"  最低维度块形状 '{blck_shape}' 与基 {bases} 相关")
             if tma_desc_load_relationships:
                 print(f"\n=== TMA 输入描述符块形状依赖分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
-                for tma_desc, block_names in tma_desc_load_relationships:
+                for tma_desc, block_names in tma_desc_load_relationships.items():
                     print(f"  TMA 输入描述符 '{tma_desc}' 与块形状 {block_names} 相关")
 
         return (relationships, tma_make_desc_relationships, tma_desc_load_relationships)

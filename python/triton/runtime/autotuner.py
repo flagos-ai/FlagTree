@@ -131,8 +131,10 @@ class Autotuner(KernelInterface):
             block_size = current[block_size_name]
             if block_size > tensor_size:
                 block_size = tensor_size
+                self.adjusted_block_names.add(block_size_name)
             if block_size_name == "BLOCK_K" and block_size < 16:
                 block_size = 16
+                self.adjusted_block_names.add(block_size_name)
             current[block_size_name] = block_size
             config.kwargs[block_size_name] = block_size
             # print(f'#### flagtree tune: {tensor_size_name}={tensor_size}, {block_size_name}={block_size}')
@@ -143,13 +145,14 @@ class Autotuner(KernelInterface):
             block_size = current[block_size_name]
 
             elem_type_size = tensor.element_size()
-            if int(elem_type_size * block_size) < 16:
+            if int(elem_type_size * block_size) < 16 and \
+               block_size_name in self.adjusted_block_names:
                 block_size = int(16 / elem_type_size)
 
         current[block_size_name] = block_size
         config.kwargs[block_size_name] = block_size
 
-    def adjust_block_size_tma_load(self, current, config, desc_name, block_size_names):
+    def adjust_block_size_tma_load(self, current, config, desc_name, block_size_name):
         from triton.tools.tensor_descriptor import TensorDescriptor
         import torch
         # 对每个 TensorDescriptor 输入参数，检查与之 block shape 相关的 BLOCK_XXX 参数大小
@@ -157,13 +160,14 @@ class Autotuner(KernelInterface):
             isinstance(self.nargs[desc_name], TensorDescriptor) and \
             isinstance(self.nargs[desc_name].base, torch.Tensor):
             elem_type_size =  self.nargs[desc_name].base.element_size()
-            for block_size_name in block_size_names:
-                if block_size_name in current:
-                    block_size = current[block_size_name]
-                    if int(elem_type_size * block_size) < 16:
-                        block_size = int(16 / elem_type_size)
-                    current[block_size_name] = block_size
-                    config.kwargs[block_size_name] = block_size
+
+            if block_size_name in current:
+                block_size = current[block_size_name]
+                if int(elem_type_size * block_size) < 16 and \
+                    block_size_name in self.adjusted_block_names:
+                    block_size = int(16 / elem_type_size)
+                current[block_size_name] = block_size
+                config.kwargs[block_size_name] = block_size
 
     def _auto_adjust_block_sizes(self, current, config):
         """
@@ -182,6 +186,8 @@ class Autotuner(KernelInterface):
             self.adjust_block_size(current, config, "N", "BLOCK_N")
             self.adjust_block_size(current, config, "K", "BLOCK_K")
         """
+        self.adjusted_block_names = set()
+
         # 使用独立的分析器获取依赖关系（在编译前就可以分析）
         relationships, tma_make_desc_relationships, tma_desc_load_relationships = analyze_kernel_dependencies(self.fn)
 
@@ -204,12 +210,15 @@ class Autotuner(KernelInterface):
                     self.adjust_block_size_tma(current, config, constexpr, params)
 
         if tma_desc_load_relationships:
-            for param, constexprs in tma_desc_load_relationships:
-                valid = True
-                for constexpr in constexprs:
-                    if not constexpr.startswith('BLOCK_'):
-                        valid =  False
-                self.adjust_block_size_tma_load(current, config, param, constexprs)
+            for param, block_names_set in tma_desc_load_relationships.items():
+                for block_names in list(block_names_set):
+                    block_names = list(block_names)
+                    valid = True
+                    for constexpr in block_names:
+                        if not constexpr.startswith('BLOCK_'):
+                            valid =  False
+                    if valid:
+                        self.adjust_block_size_tma_load(current, config, param, block_names[-1])
 
     def _bench(self, *args, config, **meta):
         from ..compiler.errors import CompileTimeAssertionFailure
