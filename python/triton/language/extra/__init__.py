@@ -11,7 +11,7 @@ for module_finder, module_name, is_pkg in pkgutil.iter_modules(
     if not is_pkg:
         continue
 
-    # import backends (like cuda, hip, tlx) that are included during setup.py
+    # import backends (like cuda, hip) that are included during setup.py
     spec = module_finder.find_spec(module_name)
     if spec is None or spec.loader is None:
         continue

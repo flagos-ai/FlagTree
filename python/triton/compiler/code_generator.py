@@ -15,10 +15,9 @@ from ..runtime import JITFunction
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
 from types import ModuleType
 
-# TLX (Triton Low-level Language Extensions) dispatch for warp specialization
-from triton.language.extra.tlx.compiler.dispatch import TLX_WITH_DISPATCH
-WITH_DISPATCH = {}  # central registry for all 'with' handlers
-WITH_DISPATCH.update(TLX_WITH_DISPATCH)
+# Central registry for all 'with' statement handlers
+# Can be extended by language extensions for warp specialization
+WITH_DISPATCH = {}
 
 
 def mangle_ty(ty):

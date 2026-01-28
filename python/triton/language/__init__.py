@@ -3,8 +3,6 @@
 
 from . import math
 from . import extra
-# Import TLX features (async_task, async_tasks) for warp specialization
-from .extra.tlx import async_task, async_tasks
 from .standard import (
     argmax,
     argmin,
@@ -147,7 +145,6 @@ from .pipeline import (
     pipeline_config_attention_hopper,
     # Autotune utilities
     create_pipeline_configs,
-    create_tlx_autotune_configs,
 )
 
 from .autotune_config import (
@@ -163,9 +160,6 @@ from .autotune_config import (
 __all__ = [
     "PropagateNan",
     "TRITON_MAX_TENSOR_NUMEL",
-    # TLX warp specialization
-    "async_task",
-    "async_tasks",
     "_experimental_descriptor_load",
     "_experimental_descriptor_store",
     "abs",
@@ -318,7 +312,6 @@ __all__ = [
     "pipeline_config_attention_hopper",
     # Autotune utilities
     "create_pipeline_configs",
-    "create_tlx_autotune_configs",
     # FlagTree AutoTuning
     "smart_autotune",
     "get_best_gemm_config",
