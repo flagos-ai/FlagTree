@@ -15,6 +15,7 @@ from ..runtime.jit import _normalize_ty, get_jit_fn_file_line
 from ..runtime import JITFunction
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
 from types import ModuleType
+from .hint_manager import hint_trigger
 
 
 def mangle_ty(ty):
@@ -516,9 +517,8 @@ class CodeGenerator(ast.NodeVisitor):
                 value = language.semantic.to_tensor(value, self.builder)
             self.set_value(name, value)
 
-        #flagtree backend specialization
-        from triton.runtime.driver import spec
-        spec("ext_CodeGenerator_visit_Assign_hint_anno", self, node, names, values)
+        # switch into hintmanager
+        hint_trigger("ext_CodeGenerator_visit_Assign_hint_anno", self, node, names, values)
 
     def visit_AugAssign(self, node):
         name = node.target.id
@@ -953,10 +953,8 @@ class CodeGenerator(ast.NodeVisitor):
             step = iter_args[2] if len(iter_args) > 2 else self.visit(ast.Num(1))
         else:
             raise RuntimeError('Only `range` and `static_range` iterators are currently supported')
-
-        # flagtree backend specialization
-        from triton.runtime.driver import spec
-        new_bind_sub_block = spec("check_override_bind_sub_block", self, node, bind_sub_block)
+        # hint manager
+        new_bind_sub_block = hint_trigger("check_override_bind_sub_block", self, node, bind_sub_block)
         if new_bind_sub_block is not None:
             bind_sub_block = new_bind_sub_block
 
@@ -1026,10 +1024,9 @@ class CodeGenerator(ast.NodeVisitor):
             # flagtree backend specialization
             from triton.runtime.driver import spec
             spec("for_op_set_ext_attrs", for_op, self.builder, for_op_ext_attrs)
-            # flagtree backend specialization
+            # hint manager
             if bind_sub_block:
-                from triton.runtime.driver import spec
-                spec("forop_setattr_for_bind_sub_block", self, for_op, bind_sub_block)
+                hint_trigger("forop_setattr_for_bind_sub_block", self, for_op, bind_sub_block)
 
             self.scf_stack.append(node)
             self.builder.set_insertion_point_to_start(for_op.get_body(0))
