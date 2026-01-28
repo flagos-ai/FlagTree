@@ -318,9 +318,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 tma_desc_relationships[tma_desc_name] = set()
                 tma_desc_relationships[tma_desc_name].add(tuple(block_names))
 
-        print(f'=============== result:\n {tma_desc_relationships}')
-
-
         return tma_desc_relationships
 
     def analyze(self) -> Dict[str, Set[str]]:

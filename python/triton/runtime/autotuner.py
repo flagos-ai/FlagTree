@@ -152,7 +152,7 @@ class Autotuner(KernelInterface):
         current[block_size_name] = block_size
         config.kwargs[block_size_name] = block_size
 
-    def adjust_block_size_tma_load(self, current, config, desc_name, block_size_name):
+    def adjust_block_size_tma_load(self, current, config, desc_name, block_size_names):
         from triton.tools.tensor_descriptor import TensorDescriptor
         import torch
         # 对每个 TensorDescriptor 输入参数，检查与之 block shape 相关的 BLOCK_XXX 参数大小
@@ -161,13 +161,31 @@ class Autotuner(KernelInterface):
             isinstance(self.nargs[desc_name].base, torch.Tensor):
             elem_type_size =  self.nargs[desc_name].base.element_size()
 
-            if block_size_name in current:
-                block_size = current[block_size_name]
+            base: torch.Tensor = self.nargs[desc_name].base
+
+            if len(base.shape) == len(block_size_names):
+                # 检查 TMA Descriptor 中 tensor 的形状，根据形状调整 BLOCK
+                for tensor_size, block_size_name in zip(base.shape, block_size_names):
+                    block_size = current[block_size_name]
+                    if block_size > tensor_size:
+                        block_size = tensor_size
+                        self.adjusted_block_names.add(block_size_name)
+                    if block_size_name == "BLOCK_K" and block_size < 16:
+                        block_size = 16
+                        self.adjusted_block_names.add(block_size_name)
+                    current[block_size_name] = block_size
+                    config.kwargs[block_size_name] = block_size
+
+
+            last_block_dim_name = block_size_names[-1]
+            if last_block_dim_name in current:
+                # 检查 TMA Descriptor 中最后一维对应的 BLOCK Size，根据形状调整 BLOCK Size
+                block_size = current[last_block_dim_name]
                 if int(elem_type_size * block_size) < 16 and \
-                    block_size_name in self.adjusted_block_names:
+                    last_block_dim_name in self.adjusted_block_names:
                     block_size = int(16 / elem_type_size)
-                current[block_size_name] = block_size
-                config.kwargs[block_size_name] = block_size
+                current[last_block_dim_name] = block_size
+                config.kwargs[last_block_dim_name] = block_size
 
     def _auto_adjust_block_sizes(self, current, config):
         """
@@ -218,7 +236,7 @@ class Autotuner(KernelInterface):
                         if not constexpr.startswith('BLOCK_'):
                             valid =  False
                     if valid:
-                        self.adjust_block_size_tma_load(current, config, param, block_names[-1])
+                        self.adjust_block_size_tma_load(current, config, param, block_names)
 
     def _bench(self, *args, config, **meta):
         from ..compiler.errors import CompileTimeAssertionFailure
