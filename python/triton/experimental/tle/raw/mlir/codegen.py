@@ -93,7 +93,7 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
             for idx, arg in enumerate(node.args.args):
                 # issue#328 [bug]edsl InOut&Input anno F722 error
                 # https://github.com/flagos-ai/FlagTree/issues/328
-                # use while find method to fix the bug, 
+                # use while find method to fix the bug,
                 # remember replace below arg.annotation.slice.value with type_str
                 '''
                 slice_node = arg.annotation.slice
