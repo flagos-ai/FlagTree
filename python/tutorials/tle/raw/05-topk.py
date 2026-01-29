@@ -7,7 +7,7 @@ from mlir import ir
 import torch
 import triton
 from triton.experimental.tle.raw import dialect, InOut, Input
-from triton.experimental.tle.raw.mlir import vassert, vprintf
+from triton.experimental.tle.raw.mlir import vassert
 import triton.experimental.tle.language.raw as tle_raw
 import triton.language as tl
 
