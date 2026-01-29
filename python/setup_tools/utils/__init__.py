@@ -2,16 +2,16 @@ from pathlib import Path
 import importlib.util
 import os
 from . import tools, default, aipu
-from .tools import flagtree_submodule_dir, OfflineBuildManager
+from .tools import OfflineBuildManager, flagtree_configs
 
 flagtree_submodules = {
     "triton_shared":
     tools.Module(name="triton_shared", url="https://github.com/microsoft/triton-shared.git",
                  commit_id="5842469a16b261e45a2c67fbfc308057622b03ee",
-                 dst_path=os.path.join(flagtree_submodule_dir, "triton_shared")),
+                 dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "triton_shared")),
     "flir":
     tools.Module(name="flir", url="https://github.com/FlagTree/flir.git",
-                 dst_path=os.path.join(flagtree_submodule_dir, "flir")),
+                 dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "flir")),
 }
 
 
