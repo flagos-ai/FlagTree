@@ -7,7 +7,7 @@ import hashlib
 from distutils.sysconfig import get_python_lib
 from . import utils
 from .utils.tools import flagtree_configs as configs
-
+downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
 
@@ -72,7 +72,7 @@ def download_flagtree_third_party(name, condition, required=False, hock=None):
     if condition:
         if enable_flagtree_third_party(name):
             submodule = utils.flagtree_submodules[name]
-            configs.downloader.download(module=submodule, required=required)
+            downloader.download(module=submodule, required=required)
             if callable(hock):
                 hock(third_party_base_dir=configs.flagtree_submodule_dir, backend=submodule,
                      default_backends=configs.default_backends)
@@ -190,7 +190,7 @@ class FlagTreeCache:
                     return
 
         if is_url and not self.check_file(file_name=file, url=url, md5_digest=md5_digest):
-            configs.downloader.download(url=url, path=path, file_name=file)
+            downloader.download(url=url, path=path, file_name=file)
 
         if copy_dst_path is not None:
             file_lists = [file] if files is None else list(files)
