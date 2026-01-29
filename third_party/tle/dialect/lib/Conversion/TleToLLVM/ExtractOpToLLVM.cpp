@@ -141,17 +141,23 @@ LogicalResult ExtractStridesOpConversion::matchAndRewrite(
     ConversionPatternRewriter &rewriter) const {
   if (ttg::MemDescType memdesc =
           dyn_cast<ttg::MemDescType>(op.getInput().getType())) {
-    SmallVector<Value> strides;
+    // SmallVector<Value> strides;
     ArrayRef<int64_t> shape = memdesc.getShape();
-    int64_t numel = std::accumulate(shape.begin(), shape.end(), 1,
-                                    std::multiplies<int64_t>());
-    for (int64_t size : memdesc.getShape()) {
-      numel /= size;
-      auto newOp = rewriter.create<arith::ConstantOp>(
-          op.getLoc(), rewriter.getI64IntegerAttr(numel));
-      strides.push_back(newOp);
+    unsigned rank = memdesc.getShape().size();
+    SmallVector<int64_t> strides(rank, 0);
+    llvm::SmallVector<uint32_t> order = ttg::getOrder(memdesc);
+    int64_t running = 1;
+    for (auto it = order.begin(); it != order.end(); ++it) {
+      unsigned axis = *it;
+      strides[axis] = running;
+      running *= shape[axis];
     }
-    rewriter.replaceOpWithMultiple(op, strides);
+    llvm::SmallVector<Value> strideValues;
+    for (unsigned i = 0; i < shape.size(); ++i) {
+      strideValues.push_back(rewriter.create<arith::ConstantOp>(
+          op.getLoc(), rewriter.getI64IntegerAttr(strides[i])));
+    }
+    rewriter.replaceOpWithMultiple(op, strideValues);
     return success();
   } else {
     return failure();
