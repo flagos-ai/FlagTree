@@ -140,6 +140,7 @@ class Autotuner(KernelInterface):
             # print(f'#### flagtree tune: {tensor_size_name}={tensor_size}, {block_size_name}={block_size}')
 
     def adjust_block_size_tma(self, current, config, block_size_name, tensor_names: List[str]):
+        block_size = None
         for tensor_name in tensor_names:
             tensor = self.nargs[tensor_name]
             block_size = current[block_size_name]
@@ -149,8 +150,9 @@ class Autotuner(KernelInterface):
                block_size_name in self.adjusted_block_names:
                 block_size = int(16 / elem_type_size)
 
-        current[block_size_name] = block_size
-        config.kwargs[block_size_name] = block_size
+        if block_size:
+            current[block_size_name] = block_size
+            config.kwargs[block_size_name] = block_size
 
     def adjust_block_size_tma_load(self, current, config, desc_name, block_size_names):
         from triton.tools.tensor_descriptor import TensorDescriptor
@@ -176,16 +178,15 @@ class Autotuner(KernelInterface):
                     current[block_size_name] = block_size
                     config.kwargs[block_size_name] = block_size
 
-
-            last_block_dim_name = block_size_names[-1]
-            if last_block_dim_name in current:
-                # 检查 TMA Descriptor 中最后一维对应的 BLOCK Size，根据形状调整 BLOCK Size
-                block_size = current[last_block_dim_name]
-                if int(elem_type_size * block_size) < 16 and \
-                    last_block_dim_name in self.adjusted_block_names:
-                    block_size = int(16 / elem_type_size)
-                current[last_block_dim_name] = block_size
-                config.kwargs[last_block_dim_name] = block_size
+                last_block_dim_name = block_size_names[-1]
+                if last_block_dim_name in current:
+                    # 检查 TMA Descriptor 中最后一维对应的 BLOCK Size，根据形状调整 BLOCK Size
+                    block_size = current[last_block_dim_name]
+                    if int(elem_type_size * block_size) < 16 and \
+                        last_block_dim_name in self.adjusted_block_names:
+                        block_size = int(16 / elem_type_size)
+                    current[last_block_dim_name] = block_size
+                    config.kwargs[last_block_dim_name] = block_size
 
     def _auto_adjust_block_sizes(self, current, config):
         """
@@ -382,7 +383,9 @@ class Autotuner(KernelInterface):
         return ret
 
     def prune_configs(self, kwargs: Dict) -> List[Config]:
-        pruned_configs = self.configs
+        # FIXME: use deepcopy to prevent modification of the original configs
+        import copy
+        pruned_configs = copy.deepcopy(self.configs)
         if self.early_config_prune:
             pruned_configs = self.early_config_prune(self.configs, self.nargs, **kwargs)
         if self.perf_model:

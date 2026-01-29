@@ -279,7 +279,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
     def analyze_tma_desc_load_with_trans_check(self):
         """
         分析TMA描述符load操作及其后续是否有trans操作
-        返回: [(tma_desc, block_names, has_trans), ...]
         """
         tma_desc_relationships = {}
 
@@ -297,6 +296,9 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             target_var = tma_info['var_name']
             tma_desc_name = tma_info['tma_desc_name']
             addr_exprs = tma_info['addr_exprs']
+
+            if target_var not in self.input_params:
+                continue
 
             # 分析TMA load地址表达式中的block names
             block_names = []
