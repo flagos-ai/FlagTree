@@ -153,6 +153,7 @@ jobs:
           python3 python/tutorials/hints/08/08-grouped-gemm.py --only_unit_test
           python3 python/tutorials/hints/11/11-programmatic-dependent-launch.py --only_unit_test
           # flagtree tle raw
-          # python3 python/tutorials/tle/raw/01-vector-add.py
-          # python3 python/tutorials/tle/raw/02-fused-softmax.py
-          # python3 python/tutorials/tle/raw/03-matrix-multiplication.py
+          python3 python/tutorials/tle/raw/01-vector-add.py
+          python3 python/tutorials/tle/raw/02-fused-softmax.py
+          python3 python/tutorials/tle/raw/03-matrix-multiplication.py
+          python3 python/tutorials/tle/raw/06-test-vassert.py
