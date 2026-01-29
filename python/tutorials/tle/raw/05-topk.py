@@ -7,6 +7,7 @@ from mlir import ir
 import torch
 import triton
 from triton.experimental.tle.raw import dialect, InOut, Input
+from triton.experimental.tle.raw.mlir import vassert, vprintf
 import triton.experimental.tle.language.raw as tle_raw
 import triton.language as tl
 
@@ -40,6 +41,17 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["me
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))  # blockDim.x
+
+    # --- Start: Runtime Assertion for BlockDim.x == 1024 ---
+    i32_ty = ir.IntegerType.get_signless(32)
+    c1024 = arith.constant(i32_ty, 1024)
+    is_valid_dim = arith.cmpi(arith.CmpIPredicate.eq, bdimx, c1024)
+    c0 = arith.constant(i32_ty, 0)
+    is_not_thread_0 = arith.cmpi(arith.CmpIPredicate.ne, tidx, c0)
+    should_pass = arith.ori(is_valid_dim, is_not_thread_0)
+    vassert(should_pass, "Runtime Error: BlockDim.x is incorrect, expected 1024.\n")
+    # --- End: Runtime Assertion ---
+
     i32_ty = ir.IntegerType.get_signless(32)
     i16_ty = ir.IntegerType.get_signless(16)
     index_ty = ir.IndexType.get()
