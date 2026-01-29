@@ -91,6 +91,17 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
             output_tys: List[ir.Type] = []
             output_indices: List[int] = []
             for idx, arg in enumerate(node.args.args):
+                # issue#328 [bug]edsl InOut&Input anno F722 error
+                # https://github.com/flagos-ai/FlagTree/issues/328
+                # use while find method to fix the bug,
+                # remember replace below arg.annotation.slice.value with type_str
+                '''
+                slice_node = arg.annotation.slice
+                if isinstance(slice_node, ast.Subscript):
+                    type_str = slice_node.slice.value
+                else:
+                    type_str = slice_node.value
+                '''
                 if arg.annotation.value.id == "InOut":
                     ty: ir.Type = ir.Type.parse(arg.annotation.slice.value)
                     operand_tys += [ty]
