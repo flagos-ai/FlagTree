@@ -5,16 +5,60 @@ import tarfile
 import zipfile
 from io import BytesIO
 import urllib.request
-from dataclasses import dataclass
 import json
 from build_helpers import get_base_dir
 import platform
+from typing import Mapping
+from types import MappingProxyType
+import importlib.util
+from dataclasses import dataclass, field
 
-flagtree_root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-flagtree_submodule_dir = os.path.join(flagtree_root_dir, "third_party")
-flagtree_backend = os.environ.get("FLAGTREE_BACKEND")
-use_cuda_toolkit = ["aipu"]
 
+def _get_flagtree_root() -> str:
+    return str(Path(__file__).resolve().parents[3])
+
+
+@dataclass
+class FlagtreeConfigs:
+    default_backends: tuple = ("nvidia", "amd")
+    plugin_backends: tuple = ("ascend", "aipu", "tsingmicro")
+    use_cuda_toolkit_backends: tuple = ('aipu', )
+    language_extra_backends: tuple = ('xpu', 'mthreads', "cambricon")
+    ext_sourcedir: str = "triton/_C/"
+    flagtree_root_dir: str = field(default_factory=_get_flagtree_root)
+    flagtree_backend: str = field(default_factory=lambda: os.environ.get("FLAGTREE_BACKEND"))
+    flagtree_plugin: str = field(default_factory=lambda: os.environ.get("FLAGTREE_PLUGIN"))
+    extend_backends: list = field(default_factory=list)
+    activated_module: any = None
+    flagtree_submodule_dir: str = ''
+    device_alias_map: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({
+        "xpu": "xpu",
+        "mthreads": "musa",
+        "ascend": "ascend",
+        "cambricon": "mlu",
+    }))
+
+    def __post_init__(self):
+        object.__setattr__(
+            self,
+            "flagtree_submodule_dir",
+            os.path.join(self.flagtree_root_dir, "third_party"),
+        )
+        object.__setattr__(self, "activated_module", self._activate_device_module(self.flagtree_backend))
+
+    def _activate_device_module(self, backend, suffix=".py"):
+        backend = "default" if not backend else backend
+        module_path = Path(os.path.dirname(__file__)) / backend
+        module_path = str(module_path) + suffix
+        spec = importlib.util.spec_from_file_location("module", module_path)
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            pass
+        return module
+
+flagtree_configs = FlagtreeConfigs()
 
 @dataclass
 class NetConfig:
@@ -40,7 +84,7 @@ def dir_rollback(deep, base_path):
 
 
 def is_skip_cuda_toolkits():
-    return flagtree_backend and (flagtree_backend not in use_cuda_toolkit)
+    return flagtree_configs.flagtree_backend and (flagtree_configs.flagtree_backend not in flagtree_configs.use_cuda_toolkit_backends)
 
 
 def remove_triton_in_modules(model):
@@ -264,7 +308,7 @@ class OfflineBuildManager:
                 shutil.copytree(src_path, toolkit_cache_path, dirs_exist_ok=True)
             else:
                 raise RuntimeError(
-                    f"\n\n \033[31m[ERROR]:\033[0m The {flagtree_backend} offline build dependency \033[93m{src_path}\033[0m does not exist.\n"
+                    f"\n\n \033[31m[ERROR]:\033[0m The {flagtree_configs.flagtree_backend} offline build dependency \033[93m{src_path}\033[0m does not exist.\n"
                 )
 
     def validate_offline_build_dir(self, path, required=False):
@@ -279,7 +323,7 @@ class OfflineBuildManager:
         url = kargs.get('url', None)
         if (not path or not os.path.exists(path)) and required:
             raise RuntimeError(
-                f"\n\n \033[31m[ERROR]:\033[0m The {flagtree_backend} offline build dependency \033[93m{path}\033[0m does not exist.\n"
+                f"\n\n \033[31m[ERROR]:\033[0m The {flagtree_configs.flagtree_backend} offline build dependency \033[93m{path}\033[0m does not exist.\n"
                 f" And you can download the dependency package from the  \n \033[93m{url}\033[0m \n"
                 f" then extract it to the \033[93m{self.offline_build_dir}\033[0m directory you specified !\033[0m\n\n")
 
@@ -300,7 +344,7 @@ class OfflineBuildManager:
         self.copy_to_flagtree_project(kargs)
         self.handle_flagtree_hock(kargs)
         if is_skip_cuda_toolkits():
-            print(f"[INFO] Skipping CUDA toolkits for {flagtree_backend} backend in offline build.")
+            print(f"[INFO] Skipping CUDA toolkits for {flagtree_configs.flagtree_backend} backend in offline build.")
         else:
             self.handle_triton_origin_toolkits()
         return True
