@@ -141,14 +141,13 @@ LogicalResult ExtractStridesOpConversion::matchAndRewrite(
     ConversionPatternRewriter &rewriter) const {
   if (ttg::MemDescType memdesc =
           dyn_cast<ttg::MemDescType>(op.getInput().getType())) {
-    // SmallVector<Value> strides;
     ArrayRef<int64_t> shape = memdesc.getShape();
     unsigned rank = memdesc.getShape().size();
     SmallVector<int64_t> strides(rank, 0);
     llvm::SmallVector<uint32_t> order = ttg::getOrder(memdesc);
     int64_t running = 1;
-    for (auto it = order.begin(); it != order.end(); ++it) {
-      unsigned axis = *it;
+    for (auto &elem: order) {
+      unsigned axis = elem;
       strides[axis] = running;
       running *= shape[axis];
     }
