@@ -4,7 +4,6 @@ import torch
 import triton
 import triton.language as tl
 from triton.experimental.tle.raw import dialect, InOut, Input
-import triton.experimental.tle.language.raw as tle_raw
 from triton.experimental.tle.raw.mlir import vprintf
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
@@ -67,8 +66,8 @@ def edsl(c: InOut["memref<?x?xf32, 3>"], a: Input["memref<?x?xf16, 3>"], b: Inpu
             a_val = memref.load(a, [row, j])
             b_val = memref.load(b, [j, col])
             c_val = arith.addf(arg, arith.extf(ir.F32Type.get(), arith.mulf(a_val, b_val)))
-            a2=arith.index_cast(ir.IntegerType.get_signless(64), a_val)
-            vprintf("Computing C[%f]\n",a_val)
+            a2 = arith.index_cast(ir.IntegerType.get_signless(64), a_val)
+            vprintf("Computing C[%f]\n", a_val)
             scf.yield_([c_val])
         init = memref.load(c, [row, col])
         memref.store(arith.addf(result, init), c, [row, col])
@@ -111,7 +110,7 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk,
         b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
         tl.device_print("a shape:", a)
         tl.device_print("b shape:", b)
-        accumulator = tl.dot(a,b, accumulator)
+        accumulator = tl.dot(a, b, accumulator)
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
     if ACTIVATION == "leaky_relu":
@@ -144,8 +143,10 @@ def matmul(a, b, activation=""):
 
 if __name__ == "__main__":
     torch.manual_seed(0)
-    a= torch.tensor([[1,2,3,4],[1,2,3,4],[1,2,3,4],[1,2,3,4]], device=DEVICE, dtype=torch.float16)  # noqa: F722
-    b = torch.tensor([[1,2,3,4],[1,2,3,4],[1,2,3,4],[1,2,3,4]], device=DEVICE, dtype=torch.float16)  # noqa: F722
+    a = torch.tensor([[1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4]], device=DEVICE,
+                     dtype=torch.float16)  # noqa: F722
+    b = torch.tensor([[1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4]], device=DEVICE,
+                     dtype=torch.float16)  # noqa: F722
     triton_output = matmul(a, b)
     torch_output = torch.matmul(a, b)
     print(f"triton_output_with_fp16_inputs={triton_output}")
