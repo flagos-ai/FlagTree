@@ -27,8 +27,8 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
         self.context: Final[ir.Context] = ir.Context() if context is None else context
         self.module: Optional[ir.Module] = None
 
-    def call_function(self, fn, args: Sequence[Any]) -> Any:
-        return fn(*args)
+    def call_function(self, fn, args: Sequence[Any], kwargs: Dict[str, Any]) -> Any:
+        return fn(*args, **kwargs)
 
     def lookup(self, name: str) -> Optional[Any]:
         for scope in self.lscope, self.gscope:
@@ -59,7 +59,8 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
         with ir.Location.file(self.absfilename, node.lineno, node.col_offset):
             fn = self.visit(node.func)
             args: List[ir.Value] = [self.visit(arg) for arg in node.args]
-            ret = self.call_function(fn, args)
+            kwargs: Dict[str, ir.Value] = {keyword.arg: self.visit(keyword.value) for keyword in node.keywords}
+            ret = self.call_function(fn, args, kwargs)
             if isinstance(ret, ExternalCall):
                 ret = ret.call(self)
             return ret
