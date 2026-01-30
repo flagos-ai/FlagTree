@@ -1,6 +1,6 @@
-<div align="right"><a href="/README.md">English</a></div>
+[<img width="2182" height="602" alt="github+banner-20260130" src=".github/assets/banner-20260130.png" />](https://flagos.io/)
 
-## <img width="30" height="30" alt="FlagTree-GitHub" src="https://github.com/user-attachments/assets/d8d24c81-6f46-4adc-94e2-b89b03afcb43" /> FlagTree
+[中文版|[English](./README.md)]
 
 FlagTree 是 [FlagOS](https://flagos.io/) 的一部分，而 FlagOS 是一个统一的开源 AI 系统软件堆栈，通过无缝集成各种模型、系统和芯片技术，打造一个开放的技术生态系统。
 通过实现 “一次开发、跨多种芯片迁移”，FlagOS 力图充分释放硬件的计算潜能，破除不同芯片软件堆栈之间的壁垒，进而有效降低解决方案的迁移开销。<br>
