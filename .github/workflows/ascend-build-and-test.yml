@@ -59,6 +59,7 @@ jobs:
         if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
+          set -e
           sudo su
           set -x
           pip uninstall -y triton
