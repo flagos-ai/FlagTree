@@ -62,7 +62,7 @@ jobs:
           set -x
           pip uninstall -y triton
           export FLAGTREE_BACKEND=ascend
-          source ~/env.sh
+          source /root/env.sh
           cd python
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
