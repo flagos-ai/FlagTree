@@ -825,8 +825,11 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
            GenericOpPattern<tle::ExtractOffsetOp>,
            GenericOpPattern<tle::ExtractSizesOp>,
            GenericOpPattern<tle::ExtractStridesOp>,
-           GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
-          typeConverter, context);
+           GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>,
+           // begin flagtree tle
+           GenericOpPattern<tle::LocalPointersOp>
+           // end flagtree tle
+           >(typeConverter, context);
 }
 
 class ConvertTritonToTritonGPU

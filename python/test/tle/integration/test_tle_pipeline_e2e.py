@@ -5,8 +5,8 @@ TLE End-to-End Integration Tests
 
 Tests complete workflow of TLE pipeline functionality in real GPU environment:
 - Memory allocation (tle.alloc)
-- copy date from GM to ShareMem (tle.copy)
-- Local load (tle.local_load)
+- Copying between GM and shared memory (tle.copy)
+- Shared-memory pointer materialization (tle.local_ptr + tl.load/store)
 - Pipeline iterator (tle.pipeline)
 - Integration with Triton JIT
 """
@@ -57,6 +57,8 @@ def elementwise_add_kernel(
     # Allocate shared memory buffers
     a_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
     b_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
+    a_smem_ptrs = tle.local_ptr(a_smem)
+    b_smem_ptrs = tle.local_ptr(b_smem)
 
     # Use TLE pipeline for block-wise processing
     #for yoff in range(0, ynumel, YBLOCK):
@@ -70,8 +72,8 @@ def elementwise_add_kernel(
         tle.copy(b_ptrs + ystride_b * yoffs[None, :], b_smem, [XBLOCK, YBLOCK])
 
         # Load data from shared memory
-        aval = tle.local_load(a_smem)
-        bval = tle.local_load(b_smem)
+        aval = tl.load(a_smem_ptrs)
+        bval = tl.load(b_smem_ptrs)
 
         # Perform computation
         c_val = aval + bval
@@ -196,7 +198,7 @@ class TestTLEPipelineEndToEnd:
         # Verify all necessary functions and types can be imported
         assert hasattr(tle, 'alloc')
         assert hasattr(tle, 'copy')
-        assert hasattr(tle, 'local_load')
+        assert hasattr(tle, 'local_ptr')
         assert hasattr(tle, 'pipeline')
         assert hasattr(tle, 'scope')
         assert hasattr(tle, 'buffered_tensor')
@@ -204,7 +206,7 @@ class TestTLEPipelineEndToEnd:
         # Verify functions have docstrings
         assert tle.alloc.__doc__ is not None
         assert tle.copy.__doc__ is not None
-        assert tle.local_load.__doc__ is not None
+        assert tle.local_ptr.__doc__ is not None
         assert tle.pipeline.__doc__ is not None
 
 

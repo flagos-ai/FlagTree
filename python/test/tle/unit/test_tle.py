@@ -6,7 +6,7 @@ TLE (Triton Language Extensions) Unit Tests
 Tests core functionality of TLE module, including:
 - Memory allocation (alloc)
 - Async copy (copy)
-- Local load (local_load)
+- Local pointer materialization (local_ptr)
 - Pipeline iterator (pipeline)
 - Type system
 """
@@ -157,7 +157,7 @@ class TestIntegration:
         # Check if main functions are importable
         assert hasattr(tle, 'alloc')
         assert hasattr(tle, 'copy')
-        assert hasattr(tle, 'local_load')
+        assert hasattr(tle, 'local_ptr')
         assert hasattr(tle, 'pipeline')
         assert hasattr(tle, 'scope')
         assert hasattr(tle, 'buffered_tensor')
@@ -169,7 +169,7 @@ class TestIntegration:
         # Check if main functions have documentation
         assert tle.alloc.__doc__ is not None
         assert tle.copy.__doc__ is not None
-        assert tle.local_load.__doc__ is not None
+        assert tle.local_ptr.__doc__ is not None
         assert tle.pipeline.__doc__ is not None
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
@@ -203,8 +203,8 @@ class TestErrorHandling:
             if not isinstance("invalid", (tuple, list)):
                 raise ValueError("Shape parameter must be tuple or list")
 
-    def test_local_load_parameter_validation(self):
-        """Test local_load function parameter validation"""
+    def test_local_ptr_parameter_validation(self):
+        """Test local_ptr function parameter validation"""
         # Simulate parameter validation logic
         with pytest.raises(ValueError):
             # Simulate type checking

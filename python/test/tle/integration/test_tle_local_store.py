@@ -1,10 +1,10 @@
 # Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
 # flagtree tle
 """
-TLE Local Store Integration Tests
+TLE Local Pointer Integration Tests
 
-Tests TLE local store functionality and bidirectional copy operations:
-- Local store operations (tle.local_store)
+Tests TLE local pointer workflow and bidirectional copy operations:
+- Shared-memory pointer materialization (tle.local_ptr + tl.load/store)
 - Copy function bidirectional support (tle.copy)
 - Integration with Triton JIT
 - Memory allocation and data transfer validation
@@ -57,6 +57,9 @@ def elementwise_add_kernel(
     a_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
     b_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
     c_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
+    a_smem_ptrs = tle.local_ptr(a_smem)
+    b_smem_ptrs = tle.local_ptr(b_smem)
+    c_smem_ptrs = tle.local_ptr(c_smem)
 
     # Use TLE pipeline for block-wise processing
     for yoff in tle.pipeline(0, ynumel, YBLOCK, num_stages=2):
@@ -68,11 +71,11 @@ def elementwise_add_kernel(
         tle.copy(b_ptrs + ystride_b * yoffs[None, :], b_smem, [XBLOCK, YBLOCK])
 
         # Load data from shared memory
-        aval = tle.local_load(a_smem)
-        bval = tle.local_load(b_smem)
+        aval = tl.load(a_smem_ptrs)
+        bval = tl.load(b_smem_ptrs)
 
         c_val = aval + bval
-        tle.local_store(c_smem, c_val)
+        tl.store(c_smem_ptrs, c_val)
         tle.copy(c_smem, c_ptrs + ystride_c * yoffs[None, :], [XBLOCK, YBLOCK])
         #tle.copy(c_smem, c_ptr, shape, c_stride[x,y], [XBLOCK, YBLOCK])
 

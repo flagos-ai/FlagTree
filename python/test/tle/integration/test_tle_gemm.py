@@ -47,6 +47,8 @@ def gemm_kernel(
     accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     a_smem = tle.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
     b_smem = tle.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    a_smem_ptrs = tle.local_ptr(a_smem)
+    b_smem_ptrs = tle.local_ptr(b_smem)
 
     for k_start in range(0, K, BLOCK_K):
         k_offs = k_start + tl.arange(0, BLOCK_K)
@@ -56,8 +58,8 @@ def gemm_kernel(
 
         tle.copy(a_ptrs, a_smem, [BLOCK_M, BLOCK_N])
         tle.copy(b_ptrs, b_smem, [BLOCK_M, BLOCK_N])
-        a_tile = tle.local_load(a_smem)
-        b_tile = tle.local_load(b_smem)
+        a_tile = tl.load(a_smem_ptrs)
+        b_tile = tl.load(b_smem_ptrs)
         accumulator += tl.dot(a_tile, b_tile, input_precision="ieee")
 
     c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
