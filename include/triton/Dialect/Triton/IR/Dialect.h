@@ -13,9 +13,6 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h.inc"
-#include "triton/Dialect/Triton/IR/OpsEnums.h.inc"
-#include "triton/Dialect/Triton/IR/Traits.h"
-#include "triton/Dialect/Triton/IR/Types.h"
 
 #if __has_include("flagtree_spec.h")
 #include "flagtree_spec.h"
@@ -23,6 +20,10 @@
 #if __has_include("triton/Dialect/Triton/IR/OpInterfaces.h")
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #endif
+
+#include "triton/Dialect/Triton/IR/OpsEnums.h.inc"
+#include "triton/Dialect/Triton/IR/Traits.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 
 #define GET_OP_CLASSES
 #include "triton/Dialect/Triton/IR/Ops.h.inc"

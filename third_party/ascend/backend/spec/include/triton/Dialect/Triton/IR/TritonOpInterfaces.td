@@ -1,4 +1,4 @@
-// TODO: When upgrading to Triton 3.4.0, remove this file and use the upstream Triton file.
+// FIXME TODO: When upgrading to Triton 3.4.0, remove this file and use the upstream Triton file.
 #ifndef TRITON_OP_INTERFACES
 #define TRITON_OP_INTERFACES
 
