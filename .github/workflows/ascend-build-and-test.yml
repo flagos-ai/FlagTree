@@ -61,7 +61,9 @@ jobs:
         run: |
           set -x
           export FLAGTREE_BACKEND=ascend
-          source ~/env.sh
+          # source ~/env.sh
+          export ASCEND_VISIBLE_DEVICES=7
+          export TORCH_DEVICE_BACKEND_AUTOLOAD=0 
           cd python
           MAX_JOBS=32 sudo python3 -m pip install . --no-build-isolation
 
