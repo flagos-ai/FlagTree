@@ -83,6 +83,7 @@ jobs:
           set -x
           pip uninstall -y triton
           source ~/env-3.4.sh
+          env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Build on NVidia (triton_v3.5.x branch)
@@ -92,6 +93,7 @@ jobs:
           set -x
           pip uninstall -y triton
           source ~/env-3.5.sh
+          env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on NVidia (triton_v3.4.x branch)
@@ -153,6 +155,9 @@ jobs:
           python3 python/tutorials/hints/08/08-grouped-gemm.py --only_unit_test
           python3 python/tutorials/hints/11/11-programmatic-dependent-launch.py --only_unit_test
           # flagtree tle raw
-          # python3 python/tutorials/tle/raw/01-vector-add.py
-          # python3 python/tutorials/tle/raw/02-fused-softmax.py
-          # python3 python/tutorials/tle/raw/03-matrix-multiplication.py
+          python3 python/tutorials/tle/raw/01-vector-add.py
+          python3 python/tutorials/tle/raw/02-fused-softmax.py
+          python3 python/tutorials/tle/raw/03-matrix-multiplication.py
+          python3 python/tutorials/tle/raw/04-hello-world.py
+          python3 python/tutorials/tle/raw/05-topk.py
+          python3 python/tutorials/tle/raw/06-test-vassert.py
