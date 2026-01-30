@@ -13,6 +13,38 @@ def TritonTleEarlyAssignMemorySpace : Pass<"triton-tle-early-assign-memory-space
   }];
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+
+def TritonTleAssignLocalPointersEncoding
+    : Pass<"triton-tle-assign-local-pointers-encoding", "mlir::ModuleOp"> {
+  let summary = "assign shared encodings to local_pointers results";
+
+  let description = [{
+    This pass ensures `tle.local_pointers` ops produced by the TLE frontend
+    carry shared-memory pointer element types and a distributed encoding so
+    downstream conversions do not infer layouts during the LLVM lowering.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
+def TritonTleInsertLocalPointerBarriers
+    : Pass<"triton-tle-insert-local-pointer-barriers", "mlir::ModuleOp"> {
+  let summary = "insert CTA barriers between tle.local_pointers stores and loads";
+
+  let description = [{
+    This pass ensures data staged through ``tle.local_pointers`` backed shared
+    memory buffers is globally visible before the program re-reads the same
+    buffer. It looks for sequences of ``tl.store`` operations targeting
+    ``tle.local_pointers`` tensors followed by ``tl.load`` reads and inserts a
+    ``gpu.barrier`` between the two when needed.
+  }];
+
+  let dependentDialects = ["mlir::gpu::GPUDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
 }
 

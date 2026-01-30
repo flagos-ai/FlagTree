@@ -8,7 +8,7 @@ TLE is a language extension for Triton that exposes shared memory and pipeline c
 
 - **Shared Memory Management**: `tle.alloc()` - Allocate shared/tensor memory with custom layouts
 - **Data Movement**: `tle.copy()` - Efficient bidirectional copying between memory spaces
-- **Local Operations**: `tle.local_load()`, `tle.local_store()` - Load/store from local memory
+- **Local Operations**: `tle.local_ptr()` + `tl.load/tl.store` - Access shared/tensor memory through pointer tensors
 - **Pipeline Optimization**: `tle.pipeline()` - Hardware-aware pipeline iteration
 
 ## Memory Scopes & Layouts
@@ -28,6 +28,8 @@ def kernel(a_ptr, b_ptr, c_ptr, n, BLOCK_SIZE: tl.constexpr):
     # Allocate shared memory
     a_smem = tle.alloc([BLOCK_SIZE], dtype=tl.float32, scope=tle.smem)
     b_smem = tle.alloc([BLOCK_SIZE], dtype=tl.float32, scope=tle.smem)
+    a_ptrs = tle.local_ptr(a_smem)
+    b_ptrs = tle.local_ptr(b_smem)
 
     # Pipeline iteration for memory hiding
     for offset in tle.pipeline(0, n, BLOCK_SIZE, num_stages=2):
@@ -36,8 +38,8 @@ def kernel(a_ptr, b_ptr, c_ptr, n, BLOCK_SIZE: tl.constexpr):
         tle.copy(b_ptr + offset, b_smem, [BLOCK_SIZE])
 
         # Load and compute
-        a_tile = tle.local_load(a_smem)
-        b_tile = tle.local_load(b_smem)
+        a_tile = tl.load(a_ptrs)
+        b_tile = tl.load(b_ptrs)
         result = a_tile + b_tile
 
         tl.store(c_ptr + offset, result)

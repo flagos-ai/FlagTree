@@ -10,6 +10,9 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
+// begin flagtree tle
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+// end flagtree tle
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
@@ -18,6 +21,9 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
+// begin flagtree tle
+#include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
+// end flagtree tle
 #include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Analysis/Allocation.h"
@@ -83,9 +89,14 @@ public:
   explicit TleLLVMConversionTarget(MLIRContext &ctx,
                                    LLVMTypeConverter &typeConverter)
       : ConversionTarget(ctx) {
+    // begin flagtree tle
     addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect, math::MathDialect,
-                    NVVM::NVVMDialect>();
+                    NVVM::NVVMDialect, mlir::gpu::GPUDialect>();
+    // end flagtree tle
     addIllegalDialect<tle::TleDialect>();
+    // begin flagtree tle
+    addLegalOp<mlir::UnrealizedConversionCastOp>();
+    // end flagtree tle
     addDynamicallyLegalOp<tle::DSLRegionOp, tle::YieldOp>(
         [&](Operation *op) -> bool {
           bool hasLegalRegions = true;
@@ -149,9 +160,12 @@ struct ConvertTritonGPUToLLVM
                                                          patterns, benefit);
       mlir::triton::tle::populatePackOpToLLVMPatterns(typeConverter, patterns,
                                                       benefit);
-      if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
+      // begin flagtree tle
+      mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
+          typeConverter, targetInfo, patterns, benefit);
+      // end flagtree tle
+      if (failed(applyPartialConversion(mod, target, std::move(patterns))))
         return signalPassFailure();
-      }
     }
     mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit);

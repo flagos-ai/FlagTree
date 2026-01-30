@@ -269,6 +269,10 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         tle.passes.add_early_assign_memory_space(pm)
+        # // begin flagtree tle
+        tle.passes.add_assign_local_pointers_encoding(pm)
+        tle.passes.add_insert_local_pointer_barriers(pm)
+        # // end flagtree tle
         passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)

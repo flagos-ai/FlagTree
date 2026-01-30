@@ -10,6 +10,9 @@ from triton.language.core import (
     range,
 )
 
+# Address space 3 matches the shared-memory space used in TritonGPU lowering.
+SHARED_MEMORY_ADDRESS_SPACE = 3
+
 
 class pipeline(range):
     """
@@ -243,16 +246,15 @@ def copy(
         volatile = False
 
         try:
-            if (direction == CopyDirection.GM_TO_LOCAL):
-                # src is global tensor
+            if direction == CopyDirection.GM_TO_LOCAL:
                 tt_load = _semantic.load(src, mask, other, boundary_check, padding_option, cache_modifier,
                                          eviction_policy, volatile, None)
-                _semantic.builder.create_local_store(dst.handle, tt_load.handle)
+                local_ptrs = local_ptr(dst, _semantic=_semantic)
+                _semantic.store(local_ptrs, tt_load, mask, boundary_check, cache_modifier,
+                                eviction_policy)
             else:
-                # src is local buffer - copy from shared memory to global memory
-                block_type = tl.block_type(src.type.element_ty, src.type.shape)
-                tt_local_load = _semantic.builder.create_local_load(block_type.to_ir(_semantic.builder), src.handle)
-                load = tl.tensor(tt_local_load, block_type)
+                local_ptrs = local_ptr(src, _semantic=_semantic)
+                load = tl.load(local_ptrs, _semantic=_semantic)
                 _semantic.store(dst, load, mask, boundary_check, cache_modifier, eviction_policy)
         except Exception as e:
             raise RuntimeError(f"copy operation failed: {str(e)}") from e
@@ -353,68 +355,85 @@ def copy(
         return tmacopy(src, dst, direction, shape, offsets, _semantic)
 
 
+def _normalize_shape_dims(raw_shape: Sequence) -> tuple[int, ...]:
+    normalized = []
+    for dim in raw_shape:
+        value = tl._unwrap_if_constexpr(dim)
+        if not isinstance(value, int):
+            raise ValueError("local_ptr index shapes must be statically sized")
+        normalized.append(int(value))
+    return tuple(normalized)
+
+
 @tl.builtin
-def local_load(
+def local_ptr(
     buffer: tle.buffered_tensor,
+    offsets: Optional[tensor] = None,
     _semantic=None,
 ) -> tl.tensor:
     """
-    Load data from local memory buffer
+    Materialize shared-memory pointers that cover the given buffered tensor.
 
     Args:
-        buffer: Local memory buffer tensor
+        buffer: Local memory buffer tensor returned by ``tle.alloc``
+        offsets: Optional tensor of logical element indices. The tensor shape
+            defines the pointer view shape and must use ``tl.int32``. Each entry
+            is a flattened (row-major, last dimension fastest) element index
+            into the logical buffer, and the corresponding pointer is
+            materialized to that element (like a gather that returns pointers).
         _semantic: Semantic analyzer (internal use)
 
     Returns:
-        Loaded data tensor
-
-    Raises:
-        ValueError: When buffer is not initialized or type mismatch
-        RuntimeError: When load operation fails
+        Tensor of pointers suitable for ``tl.load``/``tl.store``
     """
-    # Parameter validation
     if not isinstance(buffer, tle.buffered_tensor):
         raise ValueError(f"Buffer parameter must be tle.buffered_tensor, but got {type(buffer)}")
 
-    # Semantic analysis
+    buffer_shape = tuple(
+        int(tl._unwrap_if_constexpr(dim)) if not isinstance(dim, int) else dim
+        for dim in buffer.type.shape
+    )
+    offsets_tensor: Optional[tensor] = None
+    offsets_view_shape: Optional[tuple[int, ...]] = None
+    if offsets is not None:
+        if not isinstance(offsets, tensor):
+            raise ValueError("local_ptr indices must be provided as a single tl.tensor")
+        offsets_tensor = offsets
+        if not offsets_tensor.dtype.is_int():
+            raise ValueError("local_ptr index tensors must use integer dtypes")
+        if offsets_tensor.dtype != tl.int32:
+            raise ValueError(
+                "local_ptr index tensors must use tl.int32; cast explicitly via .to(tl.int32)"
+            )
+        offsets_view_shape = _normalize_shape_dims(offsets_tensor.shape)
+        if not offsets_view_shape:
+            raise ValueError("local_ptr index tensor must describe at least one element")
+
     try:
         from .semantic import TLESemantic
         if isinstance(_semantic, TLESemantic):
-            _semantic.analyze_local_load_operation(buffer)
+            _semantic.analyze_local_pointer_operation(buffer, offsets_tensor)
     except ImportError:
-        # If semantic analysis module is not available, continue with warning
         import warnings
         warnings.warn("TLE semantic analysis module not available, skipping validation", UserWarning)
 
-    try:
-        block_type = tl.block_type(buffer.type.element_ty, buffer.type.shape)
-        output = _semantic.builder.create_local_load(block_type.to_ir(_semantic.builder), buffer.handle)
-        return tl.tensor(output, block_type)
-    except Exception as e:
-        raise RuntimeError(f"Local load operation failed: {str(e)}") from e
+    view_shape = offsets_view_shape if offsets_view_shape is not None else buffer_shape
 
+    if len(view_shape) != len(buffer_shape):
+        raise ValueError(
+            f"local_ptr shape rank ({len(view_shape)}) must match buffer rank ({len(buffer_shape)})"
+        )
 
-@tl.builtin
-def local_store(
-    dst: tle.buffered_tensor,
-    src: tl.tensor,
-    _semantic=None,
-) -> None:
-    """
-    Store a tensor into a local memory buffer.
+    ptr_dtype = tl.pointer_type(buffer.type.element_ty, SHARED_MEMORY_ADDRESS_SPACE)
+    block_type = tl.block_type(ptr_dtype, list(view_shape))
+    insert_block = _semantic.builder.get_insertion_block()
+    if insert_block is None:
+        raise RuntimeError("TLE local_ptr called without an insertion block")
+    block_ir = block_type.to_ir(_semantic.builder)
+    if offsets_tensor is None:
+        handle = _semantic.builder.create_local_pointers(block_ir, buffer.handle)
+    else:
+        handle = _semantic.builder.create_local_pointers(block_ir, buffer.handle, offsets_tensor.handle)
+    result_tensor = tl.tensor(handle, block_type)
 
-    Args:
-        dst: Destination buffer in local memory (shared memory or tensor memory)
-        src: Source tensor to store
-        _semantic: Semantic analyzer for validation (internal use)
-
-    Raises:
-        RuntimeError: When tensor memory storage is not yet supported
-        ValueError: When parameter types are incompatible
-    """
-    storage = dst.type.storage
-    if storage == tle.tmem:
-        raise RuntimeError("Tensor memory local_store not yet supported")
-
-    # Perform the store operation
-    _semantic.builder.create_local_store(dst.handle, src.handle)
+    return result_tensor

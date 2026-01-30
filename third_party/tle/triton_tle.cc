@@ -142,6 +142,18 @@ void init_triton_tle_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &dst, Value &regValues) -> void {
              self.create<ttg::LocalStoreOp>(regValues, dst);
            })
+      .def("create_local_pointers",
+        [](TritonOpBuilder &self, Type resultTy,
+           Value memDesc) -> Value {
+          return self.create<tle::LocalPointersOp>(resultTy, memDesc,
+                           Value());
+        })
+      .def("create_local_pointers",
+        [](TritonOpBuilder &self, Type resultTy, Value memDesc,
+           Value offsets) -> Value {
+          return self.create<tle::LocalPointersOp>(resultTy, memDesc,
+                           offsets);
+        })
       .def("get_memdesc_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
               Type &elementType, Attribute &encoding,
@@ -163,6 +175,10 @@ void init_triton_tle_ir(py::module &&m) {
 void init_triton_tle_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_early_assign_memory_space",
                      tle::createTritonTleEarlyAssignMemorySpace);
+  ADD_PASS_WRAPPER_0("add_assign_local_pointers_encoding",
+                     tle::createTritonTleAssignLocalPointersEncoding);
+  ADD_PASS_WRAPPER_0("add_insert_local_pointer_barriers",
+                     tle::createTritonTleInsertLocalPointerBarriers);
   ADD_PASS_WRAPPER_0("add_lower_async_load",
                      tle::createTritonTleLowerAsyncLoad);
   ADD_PASS_WRAPPER_0("add_lower_tma_copy", tle::createTritonTleLowerTmaCopy);

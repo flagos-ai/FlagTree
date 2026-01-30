@@ -22,6 +22,9 @@
 #include "triton/Tools/LayoutUtils.h"
 
 #include <cassert>
+// begin flagtree tle
+#include <optional>
+// end flagtree tle
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -225,6 +228,16 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     // Get the LLVM values for pointers
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     assert(ptrElems.size() == numElems);
+    // begin flagtree tle
+    auto inferPtrAddrSpace = [&]() -> std::optional<unsigned> {
+      for (Value elem : ptrElems) {
+        if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
+          return ptrTy.getAddressSpace();
+      }
+      return std::nullopt;
+    };
+    const bool isSharedPtr = inferPtrAddrSpace().value_or(1) == 3;
+    // end flagtree tle
 
     // Get the LLVM values for mask
     SmallVector<Value> maskElems;
@@ -339,32 +352,40 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       auto *addrOpr =
           ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
 
-      // Create L2 cache policy register if needed
-      Value l2PolicyReg =
+      // begin flagtree tle
+      // Create L2 cache policy register if needed. Shared-memory accesses
+      // ignore cache modifiers so we skip materializing policy registers.
+      Value l2PolicyReg;
+      if (!isSharedPtr)
+        l2PolicyReg =
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
       // Define the instruction opcode
-      auto &ld = ptxBuilder.create<>("ld")
-                     ->o("volatile", op.getIsVolatile())
-                     .global()
-                     .o("ca", op.getCache() == triton::CacheModifier::CA)
-                     .o("cg", op.getCache() == triton::CacheModifier::CG)
-                     .o("L1::evict_first",
-                        op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-                     .o("L1::evict_last",
-                        op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-                     .o("L2::cache_hint", l2PolicyReg != Value())
-                     .v(nWords)
-                     .b(width);
+      auto *ld = ptxBuilder.create<>("ld");
+      ld->o("volatile", op.getIsVolatile());
+      if (isSharedPtr) {
+        ld->shared();
+      } else {
+        ld->global()
+          .o("ca", op.getCache() == triton::CacheModifier::CA)
+          .o("cg", op.getCache() == triton::CacheModifier::CG)
+          .o("L1::evict_first",
+            op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+          .o("L1::evict_last",
+            op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+          .o("L2::cache_hint", l2PolicyReg != Value());
+      }
+      ld->v(nWords).b(width);
 
       PTXBuilder::Operand *evictOpr = nullptr;
       if (l2PolicyReg)
         evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
 
       if (!evictOpr)
-        ld(dstsOpr, addrOpr).maybePredicate(pred, "b");
+        (*ld)(dstsOpr, addrOpr).maybePredicate(pred, "b");
       else
-        ld(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
+        (*ld)(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
+      // end flagtree tle
 
       // Create inline ASM signature
       SmallVector<Type> retTys(nWords, IntegerType::get(getContext(), width));
@@ -440,6 +461,16 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     auto valueElems = unpackLLElements(loc, llValue, rewriter);
     assert(ptrElems.size() == valueElems.size());
+    // begin flagtree tle
+    auto inferPtrAddrSpace = [&]() -> std::optional<unsigned> {
+      for (Value elem : ptrElems) {
+        if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
+          return ptrTy.getAddressSpace();
+      }
+      return std::nullopt;
+    };
+    const bool isSharedPtr = inferPtrAddrSpace().value_or(1) == 3;
+    // end flagtree tle
 
     // Determine the vectorization size
     unsigned vecOrig = vec;
@@ -526,33 +557,40 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       auto *asmAddr =
           ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
 
+      // begin flagtree tle
       // Create L2 cache policy register if needed
-      Value l2PolicyReg =
+      Value l2PolicyReg;
+      if (!isSharedPtr)
+        l2PolicyReg =
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
-      auto &ptxStoreInstr =
-          ptxBuilder.create<>("st")
-              ->global()
-              .o("wb", op.getCache() == triton::CacheModifier::WB)
-              .o("cg", op.getCache() == triton::CacheModifier::CG)
-              .o("cs", op.getCache() == triton::CacheModifier::CS)
-              .o("wt", op.getCache() == triton::CacheModifier::WT)
-              .o("L1::evict_first",
-                 op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-              .o("L1::evict_last",
-                 op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-              .o("L2::cache_hint", l2PolicyReg != Value())
-              .v(nWords)
-              .b(width);
+      auto *ptxStoreInstr = ptxBuilder.create<>("st");
+      if (isSharedPtr) {
+        ptxStoreInstr->shared();
+      } else {
+        ptxStoreInstr->global()
+          .o("wb", op.getCache() == triton::CacheModifier::WB)
+          .o("cg", op.getCache() == triton::CacheModifier::CG)
+          .o("cs", op.getCache() == triton::CacheModifier::CS)
+          .o("wt", op.getCache() == triton::CacheModifier::WT)
+          .o("L1::evict_first",
+            op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+          .o("L1::evict_last",
+            op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+          .o("L2::cache_hint", l2PolicyReg != Value());
+      }
+      ptxStoreInstr->v(nWords).b(width);
 
       PTXBuilder::Operand *evictOpr = nullptr;
       if (l2PolicyReg)
         evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
 
       if (!evictOpr)
-        ptxStoreInstr(asmAddr, asmArgList).maybePredicate(pred, "b");
+        (*ptxStoreInstr)(asmAddr, asmArgList).maybePredicate(pred, "b");
       else
-        ptxStoreInstr(asmAddr, asmArgList, evictOpr).maybePredicate(pred, "b");
+        (*ptxStoreInstr)(asmAddr, asmArgList, evictOpr).maybePredicate(pred,
+                                                                       "b");
+      // end flagtree tle
 
       auto asmReturnTy = void_ty(ctx);
       ptxBuilder.launch(rewriter, loc, asmReturnTy);
