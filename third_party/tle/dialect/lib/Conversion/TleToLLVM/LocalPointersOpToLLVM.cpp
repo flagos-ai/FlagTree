@@ -20,14 +20,11 @@ using namespace mlir;
 namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
 
-static SmallVector<Value> lowerLocalPointers(Location loc, MLIRContext *ctx,
-                                             LinearLayout cvt,
-                                             Type llvmElemTy,
-                                             LLVM::LLVMPointerType llvmPtrTy,
-                                             ttg::MemDescType srcTy,
-                                             SharedMemoryObject smemObj,
-                                             RewriterBase &rewriter,
-                                             const TargetInfoBase &targetInfo) {
+static SmallVector<Value>
+lowerLocalPointers(Location loc, MLIRContext *ctx, LinearLayout cvt,
+                   Type llvmElemTy, LLVM::LLVMPointerType llvmPtrTy,
+                   ttg::MemDescType srcTy, SharedMemoryObject smemObj,
+                   RewriterBase &rewriter, const TargetInfoBase &targetInfo) {
   assert(cvt.getNumOutDims() == 1);
   assert(*cvt.getOutDimNames().begin() == str_attr("offset"));
 
@@ -60,8 +57,8 @@ static SmallVector<Value> lowerLocalPointers(Location loc, MLIRContext *ctx,
   auto bitwidth = llvmElemTy.getIntOrFloatBitWidth();
   assert(bitwidth % 8 == 0 && "local pointers expect byte-addressable src");
 
-  auto emitPointers = [&](RewriterBase &rewriter, Location loc,
-                          ArrayRef<Value>, Value shmemAddr, int,
+  auto emitPointers = [&](RewriterBase &rewriter, Location loc, ArrayRef<Value>,
+                          Value shmemAddr, int,
                           VectorType vecTy) -> SmallVector<Value> {
     TritonLLVMOpBuilder b(loc, rewriter);
     SmallVector<Value> ptrVals;
@@ -77,9 +74,8 @@ static SmallVector<Value> lowerLocalPointers(Location loc, MLIRContext *ctx,
   };
 
   return lowerLdSt(loc, ctx, cvt, {}, llvmElemTy, smemObj.getBase(),
-                   calcPaddedOffset, affineOffset, maskSpanAffineOffset,
-                   laneId, warpId, rewriter, targetInfo, std::nullopt,
-                   emitPointers);
+                   calcPaddedOffset, affineOffset, maskSpanAffineOffset, laneId,
+                   warpId, rewriter, targetInfo, std::nullopt, emitPointers);
 }
 
 struct LocalPointersOpConversion
@@ -87,8 +83,8 @@ struct LocalPointersOpConversion
   LocalPointersOpConversion(LLVMTypeConverter &typeConverter,
                             const TargetInfoBase &targetInfo,
                             PatternBenefit benefit)
-      : ConvertOpToLLVMPattern(typeConverter, benefit),
-        targetInfo(targetInfo) {}
+      : ConvertOpToLLVMPattern(typeConverter, benefit), targetInfo(targetInfo) {
+  }
 
   LogicalResult
   matchAndRewrite(tle::LocalPointersOp op, OpAdaptor adaptor,
@@ -134,8 +130,7 @@ struct LocalPointersOpConversion
       }
     }
 
-    auto sharedEnc =
-        cast<ttg::SharedEncodingTrait>(memDescTy.getEncoding());
+    auto sharedEnc = cast<ttg::SharedEncodingTrait>(memDescTy.getEncoding());
     auto kReg = str_attr("register");
     auto kLane = str_attr("lane");
     auto kWarp = str_attr("warp");
@@ -196,7 +191,8 @@ struct LocalPointersOpConversion
         inIndices.reserve(regLayout.getNumInDims());
         for (auto dimName : regLayout.getInDimNames()) {
           if (dimName == kReg) {
-            inIndices.push_back({dimName, b.i32_val(static_cast<int32_t>(idx))});
+            inIndices.push_back(
+                {dimName, b.i32_val(static_cast<int32_t>(idx))});
           } else if (dimName == kLane) {
             inIndices.push_back({dimName, laneId});
           } else if (dimName == kWarp) {
@@ -208,7 +204,8 @@ struct LocalPointersOpConversion
           }
         }
 
-        auto logicalCoords = applyLinearLayout(loc, rewriter, regLayout, inIndices);
+        auto logicalCoords =
+            applyLinearLayout(loc, rewriter, regLayout, inIndices);
         SmallVector<Value> coordVals;
         coordVals.reserve(logicalCoords.size());
         for (auto &pair : logicalCoords)

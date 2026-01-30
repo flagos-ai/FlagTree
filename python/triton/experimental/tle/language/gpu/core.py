@@ -250,8 +250,7 @@ def copy(
                 tt_load = _semantic.load(src, mask, other, boundary_check, padding_option, cache_modifier,
                                          eviction_policy, volatile, None)
                 local_ptrs = local_ptr(dst, _semantic=_semantic)
-                _semantic.store(local_ptrs, tt_load, mask, boundary_check, cache_modifier,
-                                eviction_policy)
+                _semantic.store(local_ptrs, tt_load, mask, boundary_check, cache_modifier, eviction_policy)
             else:
                 local_ptrs = local_ptr(src, _semantic=_semantic)
                 load = tl.load(local_ptrs, _semantic=_semantic)
@@ -390,9 +389,7 @@ def local_ptr(
         raise ValueError(f"Buffer parameter must be tle.buffered_tensor, but got {type(buffer)}")
 
     buffer_shape = tuple(
-        int(tl._unwrap_if_constexpr(dim)) if not isinstance(dim, int) else dim
-        for dim in buffer.type.shape
-    )
+        int(tl._unwrap_if_constexpr(dim)) if not isinstance(dim, int) else dim for dim in buffer.type.shape)
     offsets_tensor: Optional[tensor] = None
     offsets_view_shape: Optional[tuple[int, ...]] = None
     if offsets is not None:
@@ -402,9 +399,7 @@ def local_ptr(
         if not offsets_tensor.dtype.is_int():
             raise ValueError("local_ptr index tensors must use integer dtypes")
         if offsets_tensor.dtype != tl.int32:
-            raise ValueError(
-                "local_ptr index tensors must use tl.int32; cast explicitly via .to(tl.int32)"
-            )
+            raise ValueError("local_ptr index tensors must use tl.int32; cast explicitly via .to(tl.int32)")
         offsets_view_shape = _normalize_shape_dims(offsets_tensor.shape)
         if not offsets_view_shape:
             raise ValueError("local_ptr index tensor must describe at least one element")
@@ -420,9 +415,7 @@ def local_ptr(
     view_shape = offsets_view_shape if offsets_view_shape is not None else buffer_shape
 
     if len(view_shape) != len(buffer_shape):
-        raise ValueError(
-            f"local_ptr shape rank ({len(view_shape)}) must match buffer rank ({len(buffer_shape)})"
-        )
+        raise ValueError(f"local_ptr shape rank ({len(view_shape)}) must match buffer rank ({len(buffer_shape)})")
 
     ptr_dtype = tl.pointer_type(buffer.type.element_ty, SHARED_MEMORY_ADDRESS_SPACE)
     block_type = tl.block_type(ptr_dtype, list(view_shape))

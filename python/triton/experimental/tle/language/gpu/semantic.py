@@ -93,8 +93,7 @@ class TLESemantic:
     def validate_local_pointer_buffer(self, buffer: tle.buffered_tensor) -> None:
         """Validate buffer usage for local pointer materialization"""
         if not isinstance(buffer, tle.buffered_tensor):
-            raise TLESemanticError(f"Buffer must be tle.buffered_tensor, but got {type(buffer)}",
-                                   "local_ptr")
+            raise TLESemanticError(f"Buffer must be tle.buffered_tensor, but got {type(buffer)}", "local_ptr")
 
     def analyze_alloc_operation(self, shape: Sequence[Union[int, any]], dtype: tl.dtype,
                                 layout: Optional[tle.shared_layout], storage: tle.scope) -> Tuple[List[int], tl.dtype]:
@@ -108,8 +107,7 @@ class TLESemantic:
         """Analyze copy operation semantics"""
         self.validate_copy_compatibility(src, dst, copy_shape)
 
-    def analyze_local_pointer_operation(self, buffer: tle.buffered_tensor,
-                                        offsets: Optional[tl.tensor] = None) -> None:
+    def analyze_local_pointer_operation(self, buffer: tle.buffered_tensor, offsets: Optional[tl.tensor] = None) -> None:
         """Analyze local_ptr operation semantics"""
         self.validate_local_pointer_buffer(buffer)
         if offsets is None:
@@ -117,9 +115,8 @@ class TLESemantic:
         offsets_rank = len(offsets.shape)
         buffer_rank = len(buffer.shape)
         if offsets_rank != buffer_rank:
-            raise TLESemanticError(
-                f"Index tensor rank ({offsets_rank}) must match buffer rank ({buffer_rank})",
-                "local_ptr")
+            raise TLESemanticError(f"Index tensor rank ({offsets_rank}) must match buffer rank ({buffer_rank})",
+                                   "local_ptr")
         elem_ty = offsets.type.element_ty
         if not elem_ty.is_int_signed():
             raise TLESemanticError("Index tensor dtype must be signed integer", "local_ptr")

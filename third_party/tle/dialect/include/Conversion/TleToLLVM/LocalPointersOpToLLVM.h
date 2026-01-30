@@ -5,10 +5,9 @@
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 
 namespace mlir::triton::tle {
-void populateLocalPointersOpToLLVMPatterns(mlir::LLVMTypeConverter &typeConverter,
-                                           const TargetInfoBase &targetInfo,
-                                           RewritePatternSet &patterns,
-                                           PatternBenefit benefit);
+void populateLocalPointersOpToLLVMPatterns(
+    mlir::LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
+    RewritePatternSet &patterns, PatternBenefit benefit);
 }
 
 #endif

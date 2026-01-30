@@ -1,8 +1,8 @@
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "tle/dialect/include/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
 
 namespace mlir::triton::tle {
@@ -77,10 +77,10 @@ LogicalResult LocalPointersOp::verify() {
     return emitOpError() << "expects result element type to be tt.ptr";
 
   if (ptrTy.getPointeeType() != memDescTy.getElementType())
-    return emitOpError()
-           << "expects pointer pointee type " << ptrTy.getPointeeType()
-           << " to match memdesc element type "
-           << memDescTy.getElementType();
+    return emitOpError() << "expects pointer pointee type "
+                         << ptrTy.getPointeeType()
+                         << " to match memdesc element type "
+                         << memDescTy.getElementType();
 
   if (ptrTy.getAddressSpace() != kSharedMemoryAddressSpace)
     return emitOpError() << "expects pointers to live in shared memory";
@@ -96,7 +96,8 @@ LogicalResult LocalPointersOp::verify() {
       return emitOpError() << "expects offsets tensor to have i32 element type";
     auto tensorShape = tensorTy.getShape();
     if (tensorShape.size() != memDescTy.getShape().size())
-      return emitOpError() << "expects offsets tensor rank to match buffer rank";
+      return emitOpError()
+             << "expects offsets tensor rank to match buffer rank";
     if (tensorShape != resultShape)
       return emitOpError()
              << "expects offsets tensor shape to match result shape";

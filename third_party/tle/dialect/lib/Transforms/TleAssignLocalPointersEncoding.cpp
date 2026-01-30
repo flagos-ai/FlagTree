@@ -59,8 +59,8 @@ class AssignLocalPointersEncodingPass
       RankedTensorType updatedTensorTy = tensorTy;
       const auto desiredAddrSpace = kSharedMemoryAddressSpace;
       if (ptrTy.getAddressSpace() != desiredAddrSpace) {
-        ptrTy = triton::PointerType::get(ptrTy.getPointeeType(),
-                                         desiredAddrSpace);
+        ptrTy =
+            triton::PointerType::get(ptrTy.getPointeeType(), desiredAddrSpace);
         updated = true;
       }
 
@@ -72,14 +72,14 @@ class AssignLocalPointersEncodingPass
         int threadsPerWarp = triton::gpu::lookupThreadsPerWarp(builder);
         int numCTAs = triton::gpu::lookupNumCTAs(builder);
         encoding = triton::gpu::getDefaultBlockedEncoding(
-            module.getContext(), tensorTy.getShape(), numWarps,
-            threadsPerWarp, numCTAs);
+            module.getContext(), tensorTy.getShape(), numWarps, threadsPerWarp,
+            numCTAs);
         updated = true;
       }
 
       if (updated)
-        updatedTensorTy = RankedTensorType::get(tensorTy.getShape(), ptrTy,
-                                                encoding);
+        updatedTensorTy =
+            RankedTensorType::get(tensorTy.getShape(), ptrTy, encoding);
 
       if (updated)
         op.getResult().setType(updatedTensorTy);
@@ -89,12 +89,10 @@ class AssignLocalPointersEncodingPass
         if (offsetsTy && encoding && offsetsTy.getEncoding() != encoding) {
           OpBuilder::InsertionGuard guard(builder);
           builder.setInsertionPoint(op);
-          auto castedTy = RankedTensorType::get(offsetsTy.getShape(),
-                                                offsetsTy.getElementType(),
-                                                encoding);
-          Value casted =
-              builder.create<triton::gpu::ConvertLayoutOp>(op.getLoc(),
-                                                          castedTy, offsets);
+          auto castedTy = RankedTensorType::get(
+              offsetsTy.getShape(), offsetsTy.getElementType(), encoding);
+          Value casted = builder.create<triton::gpu::ConvertLayoutOp>(
+              op.getLoc(), castedTy, offsets);
           op.setOperand(1, casted);
         }
       }
@@ -104,12 +102,10 @@ class AssignLocalPointersEncodingPass
   }
 
   void tagDependencyGroup(triton::tle::LocalPointersOp op, OpBuilder &builder) {
-    auto alloc =
-        op.getSrc().getDefiningOp<triton::gpu::LocalAllocOp>();
+    auto alloc = op.getSrc().getDefiningOp<triton::gpu::LocalAllocOp>();
     if (!alloc)
       return;
-    auto groupAttr =
-        alloc->getAttrOfType<IntegerAttr>(kBarrierGroupAttr);
+    auto groupAttr = alloc->getAttrOfType<IntegerAttr>(kBarrierGroupAttr);
     if (!groupAttr) {
       groupAttr = builder.getI64IntegerAttr(nextBarrierGroupId++);
       alloc->setAttr(kBarrierGroupAttr, groupAttr);

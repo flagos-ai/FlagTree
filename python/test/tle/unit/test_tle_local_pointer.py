@@ -11,7 +11,6 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language.gpu as tle
 
-
 BLOCK_SIZE = 64
 
 
@@ -59,7 +58,7 @@ def _local_pointer_store_kernel(out_ptr, numel, value, BLOCK: tl.constexpr):
     smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
     smem_ptrs = tle.local_ptr(smem_tile)
 
-    init = tl.full((BLOCK,), value, tl.float32)
+    init = tl.full((BLOCK, ), value, tl.float32)
     tl.store(smem_ptrs, init, mask=mask)
     out_tile = out_ptr + offsets
     tle.copy(smem_tile, out_tile, [BLOCK])
@@ -182,7 +181,7 @@ class TestTLELocalPointerKernel:
         y = torch.randn_like(x)
         out = torch.empty_like(x)
 
-        grid = (triton.cdiv(numel, BLOCK_SIZE),)
+        grid = (triton.cdiv(numel, BLOCK_SIZE), )
         _local_pointer_axpy_kernel[grid](x, y, out, numel, alpha, BLOCK_SIZE)
 
         expected = alpha * x + y
@@ -193,7 +192,7 @@ class TestTLELocalPointerKernel:
         value = 2.25
         out = torch.empty(numel, device="cuda", dtype=torch.float32)
 
-        grid = (triton.cdiv(numel, BLOCK_SIZE),)
+        grid = (triton.cdiv(numel, BLOCK_SIZE), )
         _local_pointer_store_kernel[grid](out, numel, value, BLOCK_SIZE)
 
         expected = torch.full_like(out, value)
@@ -210,10 +209,8 @@ class TestTLELocalPointerKernel:
 
         slices = 4
         slice_size = BLOCK_SIZE // slices
-        grid = (triton.cdiv(numel, BLOCK_SIZE * chunks),)
-        _local_pointer_looped_elementwise_kernel[grid](
-            x, y, out, numel, alpha, BLOCK_SIZE, chunks, slices, slice_size
-        )
+        grid = (triton.cdiv(numel, BLOCK_SIZE * chunks), )
+        _local_pointer_looped_elementwise_kernel[grid](x, y, out, numel, alpha, BLOCK_SIZE, chunks, slices, slice_size)
 
         expected = alpha * x + y
         torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)

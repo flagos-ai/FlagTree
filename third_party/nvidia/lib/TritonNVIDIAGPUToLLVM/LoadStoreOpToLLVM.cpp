@@ -358,7 +358,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       Value l2PolicyReg;
       if (!isSharedPtr)
         l2PolicyReg =
-          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+            createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
       // Define the instruction opcode
       auto *ld = ptxBuilder.create<>("ld");
@@ -367,13 +367,13 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         ld->shared();
       } else {
         ld->global()
-          .o("ca", op.getCache() == triton::CacheModifier::CA)
-          .o("cg", op.getCache() == triton::CacheModifier::CG)
-          .o("L1::evict_first",
-            op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-          .o("L1::evict_last",
-            op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-          .o("L2::cache_hint", l2PolicyReg != Value());
+            .o("ca", op.getCache() == triton::CacheModifier::CA)
+            .o("cg", op.getCache() == triton::CacheModifier::CG)
+            .o("L1::evict_first",
+               op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+            .o("L1::evict_last",
+               op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+            .o("L2::cache_hint", l2PolicyReg != Value());
       }
       ld->v(nWords).b(width);
 
@@ -562,22 +562,22 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       Value l2PolicyReg;
       if (!isSharedPtr)
         l2PolicyReg =
-          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+            createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
       auto *ptxStoreInstr = ptxBuilder.create<>("st");
       if (isSharedPtr) {
         ptxStoreInstr->shared();
       } else {
         ptxStoreInstr->global()
-          .o("wb", op.getCache() == triton::CacheModifier::WB)
-          .o("cg", op.getCache() == triton::CacheModifier::CG)
-          .o("cs", op.getCache() == triton::CacheModifier::CS)
-          .o("wt", op.getCache() == triton::CacheModifier::WT)
-          .o("L1::evict_first",
-            op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-          .o("L1::evict_last",
-            op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-          .o("L2::cache_hint", l2PolicyReg != Value());
+            .o("wb", op.getCache() == triton::CacheModifier::WB)
+            .o("cg", op.getCache() == triton::CacheModifier::CG)
+            .o("cs", op.getCache() == triton::CacheModifier::CS)
+            .o("wt", op.getCache() == triton::CacheModifier::WT)
+            .o("L1::evict_first",
+               op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+            .o("L1::evict_last",
+               op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+            .o("L2::cache_hint", l2PolicyReg != Value());
       }
       ptxStoreInstr->v(nWords).b(width);
 
@@ -588,8 +588,8 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       if (!evictOpr)
         (*ptxStoreInstr)(asmAddr, asmArgList).maybePredicate(pred, "b");
       else
-        (*ptxStoreInstr)(asmAddr, asmArgList, evictOpr).maybePredicate(pred,
-                                                                       "b");
+        (*ptxStoreInstr)(asmAddr, asmArgList, evictOpr)
+            .maybePredicate(pred, "b");
       // end flagtree tle
 
       auto asmReturnTy = void_ty(ctx);
