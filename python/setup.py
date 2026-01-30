@@ -607,13 +607,13 @@ download_and_copy(
 if helper.flagtree_backend:
     if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame"):
         backends = [
-            *BackendInstaller.copy(helper.default_backends + helper.extend_backends),
+            *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
             *BackendInstaller.copy_externals(),
         ]
     else:
-        backends = [*BackendInstaller.copy(helper.extend_backends), *BackendInstaller.copy_externals()]
+        backends = [*BackendInstaller.copy(helper.configs.extend_backends), *BackendInstaller.copy_externals()]
 else:
-    backends = [*BackendInstaller.copy(helper.default_backends), *BackendInstaller.copy_externals()]
+    backends = [*BackendInstaller.copy(helper.configs.default_backends), *BackendInstaller.copy_externals()]
 
 
 def add_link_to_backends():
@@ -799,7 +799,7 @@ setup(
     entry_points=get_entry_points(),
     package_data=package_data,
     include_package_data=True,
-    ext_modules=[CMakeExtension("triton", helper.ext_sourcedir)],
+    ext_modules=[CMakeExtension("triton", helper.configs.ext_sourcedir)],
     cmdclass={
         "build_ext": CMakeBuild,
         "build_py": CMakeBuildPy,
