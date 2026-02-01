@@ -12,8 +12,15 @@ concurrency:
 
 jobs:
   ascend-build-and-test:
-    runs-on: ascend
+    runs-on: flagtree-ascend
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
       - name: Checkout code (attempt 1)
         id: checkout1
         uses: actions/checkout@v6
@@ -60,7 +67,6 @@ jobs:
         shell: bash
         run: |
           set -x
-          pip uninstall -y triton
           export FLAGTREE_BACKEND=ascend
           source ~/env.sh
           cd python

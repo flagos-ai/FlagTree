@@ -1,7 +1,0 @@
-#ifndef ASCEND_TRITON_DIALECT_TRITON_IR_OPS_H_
-#define ASCEND_TRITON_DIALECT_TRITON_IR_OPS_H_
-
-#define FLAGTREE_SPEC_Dialect_Triton_IR_Ops_build
-#define FLAGTREE_SPEC_Dialect_Triton_IR_Ops_inferReturnTypes
-
-#endif // ASCEND_TRITON_DIALECT_TRITON_IR_OPS_H_

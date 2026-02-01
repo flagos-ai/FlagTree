@@ -1,4 +1,3 @@
-// TODO: When upgrading to Triton 3.4.0, remove this file and use the upstream Triton file.
 #ifndef TRITON_TYPES
 #define TRITON_TYPES
 
@@ -140,7 +139,7 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc", [ShapedTypeInterface]> 
     ];
   let hasCustomAssemblyFormat = 1;
 }
-
+//FIXME TODO: When upgrading to Triton 3.4.0, remove the commented line below
 // Result type of MakeTensorDescriptor
 def TT_TensorDescType : TritonTypeDef<"TensorDesc", "tensordesc", []> {
   let summary = "Tensor descriptor type (`::mlir::triton::TensorDescType`) in Triton IR type system";
