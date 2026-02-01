@@ -9,7 +9,7 @@
 #include "incubated/Conversion/TritonToUnstructureIncubated/UnstructureConversionPass.h"
 #include "mlir/Pass/PassManager.h"
 #include "npu/Conversion/TritonToHFusion/TritonToHFusion.h"
-#include "npu/Conversion/TritonToHIVM/TritonToHIVM.h"
+#include "npu/Conversion/TritonToHIVM/Passes.h"
 #include "npu/Conversion/TritonToLLVM/TritonToLLVM.h"
 #include "passes.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h"
