@@ -641,6 +641,16 @@ struct AtomicCASOpConversion
     auto ptrElements = unpackLLElements(loc, llPtr, rewriter);
     auto cmpElements = unpackLLElements(loc, llCmp, rewriter);
     auto valElements = unpackLLElements(loc, llVal, rewriter);
+    // begin flagtree tle
+    auto inferPtrAddrSpace = [&]() -> std::optional<unsigned> {
+      for (Value elem : ptrElements) {
+        if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
+          return ptrTy.getAddressSpace();
+      }
+      return std::nullopt;
+    };
+    const bool isSharedPtr = inferPtrAddrSpace().value_or(1) == 3;
+    // end flagtree tle
 
     auto valueTy = op.getType();
     auto tensorTy = dyn_cast<RankedTensorType>(valueTy);
@@ -680,7 +690,12 @@ struct AtomicCASOpConversion
       llvm::raw_string_ostream os(semStr);
       os << op.getSem();
       auto scope = stringifyMemSyncScope(op.getScope()).str();
-      atom.global().o(semStr).o(scope).o("cas").o(sTy);
+      // begin flagtree tle
+      if (isSharedPtr)
+        atom.shared().o(semStr).o(scope).o("cas").o(sTy);
+      else
+        atom.global().o(semStr).o(scope).o("cas").o(sTy);
+      // end flagtree tle
       atom(dstOpr, ptrOpr, cmpOpr, valOpr).maybePredicate(threadPred);
 
       if (tensorTy) {
@@ -808,6 +823,16 @@ public:
     SmallVector<Value> maskElements;
     if (llMask)
       maskElements = unpackLLElements(loc, llMask, rewriter);
+    // begin flagtree tle
+    auto inferPtrAddrSpace = [&]() -> std::optional<unsigned> {
+      for (Value elem : ptrElements) {
+        if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
+          return ptrTy.getAddressSpace();
+      }
+      return std::nullopt;
+    };
+    const bool isSharedPtr = inferPtrAddrSpace().value_or(1) == 3;
+    // end flagtree tle
 
     auto valueTy = op.getType();
     auto tensorTy = dyn_cast<RankedTensorType>(valueTy);
@@ -1040,7 +1065,13 @@ public:
       }
 
       auto scope = stringifyMemSyncScope(op.getScope()).str();
-      auto &atom = ptxBuilderAtomicRMW.create<>("atom")->global().o(scope);
+      // begin flagtree tle
+      auto &atom = *ptxBuilderAtomicRMW.create<>("atom");
+      if (isSharedPtr)
+        atom.shared().o(scope);
+      else
+        atom.global().o(scope);
+      // end flagtree tle
       auto rmwOp = stringifyRMWOp(atomicRmwAttr).str();
       auto sBits = std::to_string(valueElemNBits);
       switch (atomicRmwAttr) {

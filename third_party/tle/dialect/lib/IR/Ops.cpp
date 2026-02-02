@@ -45,12 +45,6 @@ void ExtractStridesOp::build(::mlir::OpBuilder &odsBuilder,
   build(odsBuilder, odsState, tys, tensor);
 }
 
-void LocalPointersOp::build(::mlir::OpBuilder &odsBuilder,
-                            ::mlir::OperationState &odsState, Type resultTy,
-                            Value src) {
-  build(odsBuilder, odsState, resultTy, src, Value());
-}
-
 LogicalResult PackOp::verify() {
   TypedValue<LLVM::LLVMStructType> input = getInput();
   ArrayRef<Type> body = input.getType().getBody();
@@ -88,19 +82,36 @@ LogicalResult LocalPointersOp::verify() {
   auto resultShape = resultTy.getShape();
   Attribute resultEncoding = resultTy.getEncoding();
 
-  if (Value offsets = getOffsets()) {
-    auto tensorTy = dyn_cast<RankedTensorType>(offsets.getType());
-    if (!tensorTy)
-      return emitOpError() << "expects offsets to be a ranked tensor";
-    if (!tensorTy.getElementType().isInteger(32))
-      return emitOpError() << "expects offsets tensor to have i32 element type";
-    auto tensorShape = tensorTy.getShape();
-    if (tensorShape.size() != memDescTy.getShape().size())
+  auto &region = getIndices();
+  if (region.empty())
+    return emitOpError() << "expects a non-empty indices region";
+
+  if (!region.hasOneBlock())
+    return emitOpError() << "expects indices region to have a single block";
+
+  auto &block = region.front();
+  if (block.getNumArguments() != resultShape.size())
+    return emitOpError() << "expects indices region args to match result rank";
+
+  for (BlockArgument arg : block.getArguments()) {
+    if (!arg.getType().isInteger())
+      return emitOpError() << "expects indices region args to be integer";
+  }
+
+  auto *terminator = block.getTerminator();
+  auto yield = dyn_cast<LocalPointersReturnOp>(terminator);
+  if (!yield)
+    return emitOpError() << "expects indices region to terminate with "
+                            "tle.local_pointers.return";
+
+  if (yield.getNumOperands() != memDescTy.getShape().size())
+    return emitOpError()
+           << "expects indices return to match buffer rank";
+
+  for (Value val : yield.getOperands()) {
+    if (!val.getType().isInteger())
       return emitOpError()
-             << "expects offsets tensor rank to match buffer rank";
-    if (tensorShape != resultShape)
-      return emitOpError()
-             << "expects offsets tensor shape to match result shape";
+             << "expects indices return values to be integer";
   }
 
   return success();

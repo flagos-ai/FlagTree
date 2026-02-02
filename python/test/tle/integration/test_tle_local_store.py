@@ -1,4 +1,3 @@
-# Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
 # flagtree tle
 """
 TLE Local Pointer Integration Tests
@@ -54,15 +53,18 @@ def elementwise_add_kernel(
     c_ptrs = c_ptr + xstride_c * xoffs[:, None]
 
     # Allocate shared memory buffers
-    a_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
-    b_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
-    c_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
+    a_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem,
+                       nv_mma_shared_layout=False)
+    b_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem,
+                       nv_mma_shared_layout=False)
+    c_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem,
+                       nv_mma_shared_layout=False)
     a_smem_ptrs = tle.local_ptr(a_smem)
     b_smem_ptrs = tle.local_ptr(b_smem)
     c_smem_ptrs = tle.local_ptr(c_smem)
 
-    # Use TLE pipeline for block-wise processing
-    for yoff in tle.pipeline(0, ynumel, YBLOCK, num_stages=2):
+    # Use standard range for block-wise processing
+    for yoff in range(0, ynumel, YBLOCK):
         # Calculate column offset for current block
         yoffs = tl.arange(0, YBLOCK) + yoff
 

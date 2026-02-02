@@ -1,4 +1,3 @@
-# Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
 # flagtree tle
 """
 Unit test covering a minimal Triton kernel that stages data through
@@ -11,6 +10,7 @@ import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language.gpu as tle
+
 
 BLOCK_SIZE = 64
 
@@ -60,14 +60,16 @@ def _local_pointer_axpy_kernel(x_ptr, y_ptr, out_ptr, numel, alpha, BLOCK: tl.co
     y_tile = y_ptr + offsets
     out_tile = out_ptr + offsets
 
-    tle.copy(x_tile, smem_tile, [BLOCK])
+    x_vals = tl.load(x_tile, mask=mask, other=0.0)
+    tl.store(smem_ptrs, x_vals, mask=mask)
 
     shared_values = tl.load(smem_ptrs, mask=mask, other=0.0)
     y_values = tl.load(y_tile, mask=mask, other=0.0)
     updated = shared_values * alpha + y_values
 
     tl.store(smem_ptrs, updated, mask=mask)
-    tle.copy(smem_tile, out_tile, [BLOCK])
+    out_vals = tl.load(smem_ptrs, mask=mask, other=0.0)
+    tl.store(out_tile, out_vals, mask=mask)
 
 
 @triton.jit
@@ -79,10 +81,11 @@ def _local_pointer_store_kernel(out_ptr, numel, value, BLOCK: tl.constexpr):
     smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
     smem_ptrs = tle.local_ptr(smem_tile)
 
-    init = tl.full((BLOCK, ), value, tl.float32)
+    init = tl.full((BLOCK,), value, tl.float32)
     tl.store(smem_ptrs, init, mask=mask)
     out_tile = out_ptr + offsets
-    tle.copy(smem_tile, out_tile, [BLOCK])
+    out_vals = tl.load(smem_ptrs, mask=mask, other=0.0)
+    tl.store(out_tile, out_vals, mask=mask)
 
 
 @triton.jit
@@ -101,13 +104,15 @@ def _local_pointer_looped_elementwise_kernel(
     base = pid * BLOCK * CHUNKS
 
     smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    smem_ptrs = tle.local_ptr(smem_tile)
     assert BLOCK % SLICE_SIZE == 0, "BLOCK must be divisible by SLICE_SIZE"
     slice_indices = tl.arange(0, SLICE_SIZE)
 
     for chunk in range(CHUNKS):
         offsets = base + chunk * BLOCK + tl.arange(0, BLOCK)
         mask = offsets < numel
-        tle.copy(x_ptr + offsets, smem_tile, [BLOCK])
+        x_vals = tl.load(x_ptr + offsets, mask=mask, other=0.0)
+        tl.store(smem_ptrs, x_vals, mask=mask)
 
         for slice_idx in range(SLICES):
             block_offset = slice_idx * SLICE_SIZE
@@ -123,7 +128,8 @@ def _local_pointer_looped_elementwise_kernel(
             updated = shared_vals * alpha + y_vals
             tl.store(slice_ptr, updated, mask=slice_mask)
 
-        tle.copy(smem_tile, out_ptr + offsets, [BLOCK])
+        out_vals = tl.load(smem_ptrs, mask=mask, other=0.0)
+        tl.store(out_ptr + offsets, out_vals, mask=mask)
 
 
 @triton.jit
@@ -172,6 +178,7 @@ def _local_pointer_tiled_matmul_kernel(
                 functools.partial(_index_a_slice, k_start=k_start),
                 (BLOCK_M, SLICE_WIDTH),
             )
+
             b_slice = tle.local_ptr(
                 smem_b,
                 functools.partial(_index_b_slice, k_start=k_start),
@@ -197,20 +204,16 @@ def _local_pointer_axis_gather_kernel(
     COLS: tl.constexpr,
     SLICE: tl.constexpr,
 ):
-    offs_m = tl.arange(0, ROWS)
-    offs_n = tl.arange(0, COLS)
-    x_tile = x_ptr + offs_m[:, None] * stride_xm + offs_n[None, :] * stride_xn
-
     smem = tle.alloc([ROWS, COLS], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    offs_m = tl.arange(0, ROWS)[:, None]
+    offs_n = tl.arange(0, COLS)[None, :]
+    x_tile = x_ptr + offs_m * stride_xm + offs_n * stride_xn
     tle.copy(x_tile, smem, [ROWS, COLS])
 
-    slice_ptrs = tle.local_ptr(
-        smem,
-        _index_axis_gather,
-        (ROWS, SLICE),
-    )
-    out_tile = out_ptr + offs_m[:, None] * stride_om + tl.arange(0, SLICE)[None, :] * stride_on
-    vals = tl.load(slice_ptrs)
+    smem_slice = tle.local_ptr(smem, _index_axis_gather, (ROWS, SLICE))
+    vals = tl.load(smem_slice)
+
+    out_tile = out_ptr + offs_m * stride_om + tl.arange(0, SLICE)[None, :] * stride_on
     tl.store(out_tile, vals)
 
 
@@ -226,7 +229,7 @@ class TestTLELocalPointerKernel:
         y = torch.randn_like(x)
         out = torch.empty_like(x)
 
-        grid = (triton.cdiv(numel, BLOCK_SIZE), )
+        grid = (triton.cdiv(numel, BLOCK_SIZE),)
         _local_pointer_axpy_kernel[grid](x, y, out, numel, alpha, BLOCK_SIZE)
 
         expected = alpha * x + y
@@ -237,7 +240,7 @@ class TestTLELocalPointerKernel:
         value = 2.25
         out = torch.empty(numel, device="cuda", dtype=torch.float32)
 
-        grid = (triton.cdiv(numel, BLOCK_SIZE), )
+        grid = (triton.cdiv(numel, BLOCK_SIZE),)
         _local_pointer_store_kernel[grid](out, numel, value, BLOCK_SIZE)
 
         expected = torch.full_like(out, value)
@@ -254,8 +257,10 @@ class TestTLELocalPointerKernel:
 
         slices = 4
         slice_size = BLOCK_SIZE // slices
-        grid = (triton.cdiv(numel, BLOCK_SIZE * chunks), )
-        _local_pointer_looped_elementwise_kernel[grid](x, y, out, numel, alpha, BLOCK_SIZE, chunks, slices, slice_size)
+        grid = (triton.cdiv(numel, BLOCK_SIZE * chunks),)
+        _local_pointer_looped_elementwise_kernel[grid](
+            x, y, out, numel, alpha, BLOCK_SIZE, chunks, slices, slice_size
+        )
 
         expected = alpha * x + y
         torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
@@ -299,10 +304,9 @@ class TestTLELocalPointerKernel:
 
     def test_local_pointer_axis_gather_matches_torch(self):
         rows = 8
-        cols = 16
+        cols = 8
         slice_width = 4
-
-        x = torch.randn((rows, cols), device="cuda", dtype=torch.float32)
+        x = torch.arange(rows * cols, device="cuda", dtype=torch.float32).reshape(rows, cols)
         out = torch.empty((rows, slice_width), device="cuda", dtype=torch.float32)
 
         grid = (1,)
@@ -313,9 +317,9 @@ class TestTLELocalPointerKernel:
             x.stride(1),
             out.stride(0),
             out.stride(1),
-            rows,
-            cols,
-            slice_width,
+            ROWS=rows,
+            COLS=cols,
+            SLICE=slice_width,
         )
 
         expected = x[:, 1:1 + slice_width]

@@ -6,6 +6,7 @@
 
 - **Frontend DSL Layer (Python)**
   - `tle.language.core` overrides key `tl` builtins such as `load`, `alloc`, `copy`, `local_ptr`, and loop helpers to attach extra attributes (e.g., `"tt.load.async"`) and create `buffered_tensor` handles representing shared/tensor memory allocations (core.py). Pointer tensors are then consumed by standard `tl.load`/`tl.store` ops.
+  - `tle.local_ptr(buffer, indices_fn, shape)` can materialize arbitrary shared-memory pointer views by calling `indices_fn` over the loop space defined by `shape`. The callable returns a tuple of integer indices (length == buffer rank), which are flattened row-major to address shared memory.
   - GPU-specific helpers in gpu define layouts (`swizzled_shared_layout`, `nv_mma_shared_layout`, etc.), scopes (`smem`, `tmem`), and `buffered_tensor` semantics that wrap IR memdesc types while keeping Triton-style type checking.
   - Users import these symbols (e.g., `tle.alloc`, `tle.copy`, `tle.pipeline`) inside `@triton.jit` kernels to allocate SMEM tiles, launch async copies, or orchestrate staged loops.
 

@@ -20,17 +20,19 @@ class Tle_Op<string mnemonic, list<Trait> traits = []> :
 def Tle_TensorType : AnyTypeOf<[TT_Type, TTG_MemDescType]>;
 def Tle_ArgType : AnyTypeOf<[Tle_TensorType, LLVMPointerType, LLVMStructType]>;
 
-def Tle_LocalPointersOp : Tle_Op<"local_pointers", [Pure]> {
-  let arguments = (ins TTG_MemDescType:$src, Optional<TT_Tensor>:$offsets);
+def Tle_LocalPointersOp : Tle_Op<"local_pointers",
+                                 [Pure, SingleBlock]> {
+  let arguments = (ins TTG_MemDescType:$src);
   let results = (outs TT_Tensor:$result);
-  let assemblyFormat = [{
-    $src (`[` $offsets^ `:` type($offsets) `]`)? attr-dict `:`
-    qualified(type($src)) `->` qualified(type($result))
-  }];
-  let builders = [
-    OpBuilder<(ins "Type":$resultTy, "Value":$src)>
-  ];
+  let regions = (region SizedRegion<1>:$indices);
   let hasVerifier = 1;
+}
+
+def Tle_LocalPointersReturnOp : Tle_Op<"local_pointers.return",
+                             [HasParent<"LocalPointersOp">, Pure, Terminator, ReturnLike]> {
+  let summary = "terminator for local_pointers operator";
+  let arguments = (ins Variadic<AnyType>:$result);
+  let assemblyFormat = "$result attr-dict `:` type($result)";
 }
 
 def Tle_DSLRegionOp : Tle_Op<"dsl_region", [IsolatedFromAbove, MemDescViewTrait, RecursiveMemoryEffects]> {

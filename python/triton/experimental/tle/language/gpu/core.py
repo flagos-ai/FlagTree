@@ -1,6 +1,6 @@
 # flagtree tle
 import triton.language.core as tl
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 from enum import Enum
 from . import types as tle
 
@@ -367,55 +367,67 @@ def _normalize_shape_dims(raw_shape: Sequence) -> tuple[int, ...]:
 @tl.builtin
 def local_ptr(
     buffer: tle.buffered_tensor,
-    offsets: Optional[tensor] = None,
+    indices: Optional[Callable] = None,
+    shape: Optional[Sequence[int]] = None,
     _semantic=None,
+    _generator=None,
 ) -> tl.tensor:
     """
     Materialize shared-memory pointers that cover the given buffered tensor.
 
     Args:
-        buffer: Local memory buffer tensor returned by ``tle.alloc``
-        offsets: Optional tensor of logical element indices. The tensor shape
-            defines the pointer view shape and must use ``tl.int32``. Each entry
-            is a flattened (row-major, last dimension fastest) element index
-            into the logical buffer, and the corresponding pointer is
-            materialized to that element (like a gather that returns pointers).
-        _semantic: Semantic analyzer (internal use)
+        buffer: Local memory buffer tensor returned by ``tle.alloc``.
+        indices: Optional callable that maps loop indices to a tuple of integer
+            indices (length == buffer rank). The callable is invoked with one
+            loop variable per dimension in ``shape`` and must return integer
+            tensors/scalars that index into ``buffer``. When used inside
+            ``@triton.jit`` kernels, ``indices`` should be a Triton JIT
+            function (or ``functools.partial`` wrapping one) so it can be
+            inlined during code generation.
+        shape: Output pointer tensor shape. When ``indices`` is provided, this
+            defines the loop bounds used to build the pointer view.
+        _semantic: Semantic analyzer (internal use).
+        _generator: Triton code generator (internal use).
 
     Returns:
-        Tensor of pointers suitable for ``tl.load``/``tl.store``
+        Tensor of pointers suitable for ``tl.load``/``tl.store``.
     """
     if not isinstance(buffer, tle.buffered_tensor):
         raise ValueError(f"Buffer parameter must be tle.buffered_tensor, but got {type(buffer)}")
 
+    indices = tl._unwrap_if_constexpr(indices)
+
     buffer_shape = tuple(
-        int(tl._unwrap_if_constexpr(dim)) if not isinstance(dim, int) else dim for dim in buffer.type.shape)
-    offsets_tensor: Optional[tensor] = None
-    offsets_view_shape: Optional[tuple[int, ...]] = None
-    if offsets is not None:
-        if not isinstance(offsets, tensor):
-            raise ValueError("local_ptr indices must be provided as a single tl.tensor")
-        offsets_tensor = offsets
-        if not offsets_tensor.dtype.is_int():
-            raise ValueError("local_ptr index tensors must use integer dtypes")
-        if offsets_tensor.dtype != tl.int32:
-            raise ValueError("local_ptr index tensors must use tl.int32; cast explicitly via .to(tl.int32)")
-        offsets_view_shape = _normalize_shape_dims(offsets_tensor.shape)
-        if not offsets_view_shape:
-            raise ValueError("local_ptr index tensor must describe at least one element")
+        int(tl._unwrap_if_constexpr(dim)) if not isinstance(dim, int) else dim
+        for dim in buffer.type.shape
+    )
+
+    view_shape: tuple[int, ...]
+
+    if indices is None:
+        if shape is not None:
+            raise ValueError("local_ptr shape must be omitted when indices is None")
+        view_shape = buffer_shape
+        indices_fn = None
+    else:
+        if not callable(indices):
+            raise ValueError("local_ptr indices must be a callable")
+        if shape is None:
+            raise ValueError("local_ptr shape must be provided when indices is callable")
+        if isinstance(shape, tl.tuple):
+            shape = tuple(shape.values)
+        if not isinstance(shape, (tuple, list)):
+            raise ValueError("local_ptr shape must be a tuple or list")
+        view_shape = _normalize_shape_dims(shape)
+        indices_fn = indices
 
     try:
         from .semantic import TLESemantic
         if isinstance(_semantic, TLESemantic):
-            _semantic.analyze_local_pointer_operation(buffer, offsets_tensor)
+            _semantic.analyze_local_pointer_operation(buffer, None)
     except ImportError:
         import warnings
         warnings.warn("TLE semantic analysis module not available, skipping validation", UserWarning)
-
-    view_shape = offsets_view_shape if offsets_view_shape is not None else buffer_shape
-
-    if len(view_shape) != len(buffer_shape):
-        raise ValueError(f"local_ptr shape rank ({len(view_shape)}) must match buffer rank ({len(buffer_shape)})")
 
     ptr_dtype = tl.pointer_type(buffer.type.element_ty, SHARED_MEMORY_ADDRESS_SPACE)
     block_type = tl.block_type(ptr_dtype, list(view_shape))
@@ -423,10 +435,63 @@ def local_ptr(
     if insert_block is None:
         raise RuntimeError("TLE local_ptr called without an insertion block")
     block_ir = block_type.to_ir(_semantic.builder)
-    if offsets_tensor is None:
-        handle = _semantic.builder.create_local_pointers(block_ir, buffer.handle)
-    else:
-        handle = _semantic.builder.create_local_pointers(block_ir, buffer.handle, offsets_tensor.handle)
-    result_tensor = tl.tensor(handle, block_type)
+    local_ptr_op = _semantic.builder.create_local_pointers(block_ir, buffer.handle)
+
+    region = local_ptr_op.get_region(0)
+    builder = _semantic.builder
+
+    try:
+        from triton.runtime.jit import JITFunction
+    except Exception:
+        JITFunction = None
+
+    partial_args = []
+    partial_kwargs = {}
+    fn = indices_fn
+    try:
+        import functools
+        if isinstance(indices_fn, functools.partial):
+            fn = indices_fn.func
+            partial_args = list(indices_fn.args)
+            partial_kwargs = dict(indices_fn.keywords or {})
+    except Exception:
+        pass
+
+    with tl._insertion_guard(builder):
+        arg_types = [tl.int32] * len(view_shape)
+        to_ir = lambda T: T.to_ir(builder)
+        block = builder.create_block_with_parent(region, list(map(to_ir, arg_types)))
+        args = [tensor(block.arg(i), ty) for i, ty in enumerate(arg_types)]
+        if indices_fn is None:
+            indices_out = tuple(args)
+        else:
+            if JITFunction is not None and isinstance(fn, JITFunction):
+                if _generator is None:
+                    raise RuntimeError("local_ptr callable indices require a code generator context")
+                call_args = partial_args + list(args)
+                indices_out = _generator.call_JitFunction(fn, call_args, kwargs=partial_kwargs)
+            else:
+                indices_out = fn(*args)
+        if isinstance(indices_out, tensor):
+            indices_tuple = (indices_out,)
+        elif isinstance(indices_out, tl.tuple):
+            indices_tuple = tuple(indices_out.values)
+        elif isinstance(indices_out, (tuple, list)):
+            indices_tuple = tuple(indices_out)
+        else:
+            raise ValueError("local_ptr indices must return a tl.tensor or tuple of tl.tensor values")
+        if len(indices_tuple) != len(buffer_shape):
+            raise ValueError(
+                f"local_ptr indices must return {len(buffer_shape)} values, got {len(indices_tuple)}"
+            )
+        handles = []
+        for idx in indices_tuple:
+            idx_tensor = idx if isinstance(idx, tensor) else _semantic.to_tensor(idx)
+            if not idx_tensor.dtype.is_int():
+                raise ValueError("local_ptr indices must use integer dtypes")
+            handles.append(idx_tensor.handle)
+        builder.create_local_pointers_ret(*handles)
+
+    result_tensor = tl.tensor(local_ptr_op.get_result(0), block_type)
 
     return result_tensor

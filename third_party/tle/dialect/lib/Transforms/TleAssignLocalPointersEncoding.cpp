@@ -42,6 +42,51 @@ namespace {
 constexpr int kSharedMemoryAddressSpace = 3;
 constexpr StringLiteral kBarrierGroupAttr = "tle.barrier_group";
 
+static void collectStoreEncodings(Value root,
+                                  llvm::SmallVectorImpl<Attribute> &encodings) {
+  llvm::SmallVector<Value> worklist;
+  llvm::DenseSet<Value> visited;
+  auto enqueue = [&](Value v) {
+    if (!v)
+      return;
+    if (!visited.insert(v).second)
+      return;
+    worklist.push_back(v);
+  };
+
+  enqueue(root);
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    for (OpOperand &use : current.getUses()) {
+      Operation *owner = use.getOwner();
+      if (auto store = dyn_cast<triton::StoreOp>(owner)) {
+        auto valueTy =
+            dyn_cast<RankedTensorType>(store.getValue().getType());
+        if (valueTy && valueTy.getEncoding())
+          encodings.push_back(valueTy.getEncoding());
+        continue;
+      }
+      if (auto convert =
+              dyn_cast<triton::gpu::ConvertLayoutOp>(owner)) {
+        enqueue(convert.getResult());
+        continue;
+      }
+      if (auto bcast = dyn_cast<triton::BroadcastOp>(owner)) {
+        enqueue(bcast.getResult());
+        continue;
+      }
+      if (auto expand = dyn_cast<triton::ExpandDimsOp>(owner)) {
+        enqueue(expand.getResult());
+        continue;
+      }
+      if (auto reshape = dyn_cast<triton::ReshapeOp>(owner)) {
+        enqueue(reshape.getResult());
+        continue;
+      }
+    }
+  }
+}
+
 class AssignLocalPointersEncodingPass
     : public impl::TritonTleAssignLocalPointersEncodingBase<
           AssignLocalPointersEncodingPass> {
@@ -65,6 +110,21 @@ class AssignLocalPointersEncodingPass
       }
 
       auto encoding = tensorTy.getEncoding();
+      Attribute userEncoding;
+      SmallVector<Attribute> storeEncodings;
+      collectStoreEncodings(op.getResult(), storeEncodings);
+      for (Attribute enc : storeEncodings) {
+        if (!userEncoding)
+          userEncoding = enc;
+        else if (userEncoding != enc) {
+          userEncoding = Attribute();
+          break;
+        }
+      }
+      if (userEncoding && userEncoding != encoding) {
+        encoding = userEncoding;
+        updated = true;
+      }
       if (!encoding) {
         OpBuilder::InsertionGuard guard(builder);
         builder.setInsertionPoint(op);
@@ -83,19 +143,6 @@ class AssignLocalPointersEncodingPass
 
       if (updated)
         op.getResult().setType(updatedTensorTy);
-
-      if (Value offsets = op.getOffsets()) {
-        auto offsetsTy = dyn_cast<RankedTensorType>(offsets.getType());
-        if (offsetsTy && encoding && offsetsTy.getEncoding() != encoding) {
-          OpBuilder::InsertionGuard guard(builder);
-          builder.setInsertionPoint(op);
-          auto castedTy = RankedTensorType::get(
-              offsetsTy.getShape(), offsetsTy.getElementType(), encoding);
-          Value casted = builder.create<triton::gpu::ConvertLayoutOp>(
-              op.getLoc(), castedTy, offsets);
-          op.setOperand(1, casted);
-        }
-      }
 
       tagDependencyGroup(op, builder);
     });

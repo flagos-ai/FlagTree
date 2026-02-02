@@ -30,8 +30,9 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
-#include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "tle/dialect/include/IR/Dialect.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -51,16 +52,43 @@ class InsertLocalPointerBarriersPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
     trackedPointers.clear();
-    module.walk([&](tle::LocalPointersOp op) {
-      if (op->hasAttr(kBarrierGroupAttr))
-        trackedPointers.insert(op.getResult());
-    });
+    collectTrackedPointers(module);
 
     if (trackedPointers.empty())
       return;
 
     for (Operation &op : module.getBody()->getOperations())
       processOperation(op);
+  }
+
+  void collectTrackedPointers(ModuleOp module) {
+    llvm::SmallVector<Value> worklist;
+    module.walk([&](tle::LocalPointersOp op) {
+      if (!op->hasAttr(kBarrierGroupAttr))
+        return;
+      Value ptr = op.getResult();
+      if (trackedPointers.insert(ptr).second)
+        worklist.push_back(ptr);
+    });
+
+    auto tryTrackDerived = [&](Operation *op, Value src, Value derived) {
+      if (!trackedPointers.contains(src))
+        return;
+      if (trackedPointers.insert(derived).second)
+        worklist.push_back(derived);
+    };
+
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+      for (OpOperand &use : current.getUses()) {
+        Operation *owner = use.getOwner();
+        if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(owner)) {
+          tryTrackDerived(owner, convert.getSrc(), convert.getResult());
+        } else if (auto bcast = dyn_cast<triton::BroadcastOp>(owner)) {
+          tryTrackDerived(owner, bcast.getSrc(), bcast.getResult());
+        }
+      }
+    }
   }
 
   void processOperation(Operation &op) {

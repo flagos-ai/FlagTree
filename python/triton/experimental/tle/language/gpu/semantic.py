@@ -112,11 +112,6 @@ class TLESemantic:
         self.validate_local_pointer_buffer(buffer)
         if offsets is None:
             return
-        offsets_rank = len(offsets.shape)
-        buffer_rank = len(buffer.shape)
-        if offsets_rank != buffer_rank:
-            raise TLESemanticError(f"Index tensor rank ({offsets_rank}) must match buffer rank ({buffer_rank})",
-                                   "local_ptr")
         elem_ty = offsets.type.element_ty
-        if not elem_ty.is_int_signed():
-            raise TLESemanticError("Index tensor dtype must be signed integer", "local_ptr")
+        if not elem_ty.is_int():
+            raise TLESemanticError("Index tensor dtype must be integer", "local_ptr")

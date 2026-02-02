@@ -1,4 +1,3 @@
-# Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
 # flagtree tle
 """
 TLE End-to-End Integration Tests
