@@ -150,16 +150,6 @@ class NPUDriver(DriverBase):
         # flagtree backend specialization
         from triton.backends.ascend import spec
         self.spec = spec
-        from triton.language.core import spec_core_func
-        spec_core_func(spec)
-        from triton.language.semantic import spec_semantic_func
-        spec_semantic_func(spec)
-        from triton.language.standard import spec_standard_func
-        spec_standard_func(spec)
-        from triton.language.math import spec_math_func
-        spec_math_func(spec)
-        from triton.testing import spec_testing_func
-        spec_testing_func(spec)
         super().__init__()
 
     @classmethod
