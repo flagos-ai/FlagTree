@@ -106,8 +106,7 @@ public:
           return hasLegalRegions && typeConverter.isLegal(op);
         });
     // Allow non-TLE ops to remain during this partial conversion.
-    markUnknownOpDynamicallyLegal(
-        [](Operation *) -> bool { return true; });
+    markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
 };
 

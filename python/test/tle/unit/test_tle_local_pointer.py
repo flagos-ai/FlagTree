@@ -17,7 +17,7 @@ BLOCK_SIZE = 64
 
 @triton.jit
 def _index_1d_with_offset(i, offset):
-    return (offset + i,)
+    return (offset + i, )
 
 
 @triton.jit
@@ -114,7 +114,7 @@ def _local_pointer_looped_elementwise_kernel(
             slice_ptr = tle.local_ptr(
                 smem_tile,
                 functools.partial(_index_1d_with_offset, offset=block_offset),
-                (SLICE_SIZE,),
+                (SLICE_SIZE, ),
             )
             slice_offsets = base + chunk * BLOCK + block_offset + slice_indices
             slice_mask = slice_offsets < numel
@@ -305,7 +305,7 @@ class TestTLELocalPointerKernel:
         x = torch.randn((rows, cols), device="cuda", dtype=torch.float32)
         out = torch.empty((rows, slice_width), device="cuda", dtype=torch.float32)
 
-        grid = (1,)
+        grid = (1, )
         _local_pointer_axis_gather_kernel[grid](
             x,
             out,

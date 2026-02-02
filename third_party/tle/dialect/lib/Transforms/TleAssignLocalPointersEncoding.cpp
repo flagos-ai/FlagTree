@@ -60,14 +60,12 @@ static void collectStoreEncodings(Value root,
     for (OpOperand &use : current.getUses()) {
       Operation *owner = use.getOwner();
       if (auto store = dyn_cast<triton::StoreOp>(owner)) {
-        auto valueTy =
-            dyn_cast<RankedTensorType>(store.getValue().getType());
+        auto valueTy = dyn_cast<RankedTensorType>(store.getValue().getType());
         if (valueTy && valueTy.getEncoding())
           encodings.push_back(valueTy.getEncoding());
         continue;
       }
-      if (auto convert =
-              dyn_cast<triton::gpu::ConvertLayoutOp>(owner)) {
+      if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(owner)) {
         enqueue(convert.getResult());
         continue;
       }

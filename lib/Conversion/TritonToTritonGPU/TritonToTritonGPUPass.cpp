@@ -823,7 +823,8 @@ public:
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(tle::LocalPointersOp op, tle::LocalPointersOp::Adaptor adaptor,
+  matchAndRewrite(tle::LocalPointersOp op,
+                  tle::LocalPointersOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto newOp = rewriter.cloneWithoutRegions<tle::LocalPointersOp>(op);
     Region &indices = op.getIndices(), &newIndices = newOp.getIndices();
@@ -852,7 +853,7 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
            GenericOpPattern<tle::ExtractAllocatedPtrOp>,
            GenericOpPattern<tle::ExtractAlignedPtrOp>,
            GenericOpPattern<tle::ExtractOffsetOp>,
-          GenericOpPattern<tle::ExtractSizesOp>,
+           GenericOpPattern<tle::ExtractSizesOp>,
            GenericOpPattern<tle::ExtractStridesOp>,
            GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
           typeConverter, context);

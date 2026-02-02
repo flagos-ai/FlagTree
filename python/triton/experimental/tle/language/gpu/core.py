@@ -398,9 +398,7 @@ def local_ptr(
     indices = tl._unwrap_if_constexpr(indices)
 
     buffer_shape = tuple(
-        int(tl._unwrap_if_constexpr(dim)) if not isinstance(dim, int) else dim
-        for dim in buffer.type.shape
-    )
+        int(tl._unwrap_if_constexpr(dim)) if not isinstance(dim, int) else dim for dim in buffer.type.shape)
 
     view_shape: tuple[int, ...]
 
@@ -473,7 +471,7 @@ def local_ptr(
             else:
                 indices_out = fn(*args)
         if isinstance(indices_out, tensor):
-            indices_tuple = (indices_out,)
+            indices_tuple = (indices_out, )
         elif isinstance(indices_out, tl.tuple):
             indices_tuple = tuple(indices_out.values)
         elif isinstance(indices_out, (tuple, list)):
@@ -481,9 +479,7 @@ def local_ptr(
         else:
             raise ValueError("local_ptr indices must return a tl.tensor or tuple of tl.tensor values")
         if len(indices_tuple) != len(buffer_shape):
-            raise ValueError(
-                f"local_ptr indices must return {len(buffer_shape)} values, got {len(indices_tuple)}"
-            )
+            raise ValueError(f"local_ptr indices must return {len(buffer_shape)} values, got {len(indices_tuple)}")
         handles = []
         for idx in indices_tuple:
             idx_tensor = idx if isinstance(idx, tensor) else _semantic.to_tensor(idx)

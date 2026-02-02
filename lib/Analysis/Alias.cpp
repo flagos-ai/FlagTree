@@ -39,14 +39,14 @@ LogicalResult SharedMemoryAliasAnalysis::visitOperation(
   } else if (op->hasTrait<OpTrait::MemDescViewTrait>()) {
     aliasInfo = AliasInfo(operands[0]->getValue());
     pessimistic = false;
-  // begin flagtree tle
+    // begin flagtree tle
   } else if (op->getName().getStringRef() == "tle.local_pointers") {
     // Treat local pointer views as aliases of their source memdesc.
     if (!operands.empty()) {
       aliasInfo = AliasInfo(operands[0]->getValue());
       pessimistic = false;
     }
-  // end flagtree tle
+    // end flagtree tle
   } else if (isa<ub::PoisonOp>(op)) {
     aliasInfo = AliasInfo();
     pessimistic = false;

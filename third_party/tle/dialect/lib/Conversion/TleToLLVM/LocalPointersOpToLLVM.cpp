@@ -39,11 +39,11 @@ static bool isIdentityIndicesRegion(Region &region) {
   return true;
 }
 
-static SmallVector<Value> lowerLocalPointers(
-    Location loc, MLIRContext *ctx, LinearLayout cvt, Type llvmElemTy,
-    LLVM::LLVMPointerType llvmPtrTy, ttg::MemDescType srcTy,
-    SharedMemoryObject smemObj, RewriterBase &rewriter,
-    const TargetInfoBase &targetInfo) {
+static SmallVector<Value>
+lowerLocalPointers(Location loc, MLIRContext *ctx, LinearLayout cvt,
+                   Type llvmElemTy, LLVM::LLVMPointerType llvmPtrTy,
+                   ttg::MemDescType srcTy, SharedMemoryObject smemObj,
+                   RewriterBase &rewriter, const TargetInfoBase &targetInfo) {
   assert(cvt.getNumOutDims() == 1);
   assert(*cvt.getOutDimNames().begin() == str_attr("offset"));
 
@@ -138,8 +138,7 @@ struct LocalPointersOpConversion
       return Value();
     };
 
-    auto sharedEnc =
-        cast<ttg::SharedEncodingTrait>(memDescTy.getEncoding());
+    auto sharedEnc = cast<ttg::SharedEncodingTrait>(memDescTy.getEncoding());
     auto kReg = str_attr("register");
     auto kLane = str_attr("lane");
     auto kWarp = str_attr("warp");
@@ -151,8 +150,7 @@ struct LocalPointersOpConversion
     auto &indicesRegion = op.getIndices();
     if (isIdentityIndicesRegion(indicesRegion)) {
       LinearLayout cvt = LinearLayout::empty();
-      if (auto paddedEnc =
-              dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
+      if (auto paddedEnc = dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
         cvt = ttg::getPaddedRegToSharedLayout(regLayout, paddedEnc);
       } else {
         auto sharedLayout = ttg::toLinearLayout(memDescTy);
@@ -181,8 +179,7 @@ struct LocalPointersOpConversion
     Value elemBytesVal =
         elemBytes > 1 ? b.i32_val(static_cast<int32_t>(elemBytes)) : Value();
     auto i8Ty = IntegerType::get(ctx, 8);
-    auto i8PtrTy =
-        LLVM::LLVMPointerType::get(ctx, llvmPtrTy.getAddressSpace());
+    auto i8PtrTy = LLVM::LLVMPointerType::get(ctx, llvmPtrTy.getAddressSpace());
 
     SmallVector<unsigned> bufferShape;
     for (int64_t dim : memDescTy.getShape())
@@ -215,23 +212,20 @@ struct LocalPointersOpConversion
       auto logicalCoords =
           applyLinearLayout(loc, rewriter, regLayout, inIndices);
       SmallVector<Value> coordVals;
-      auto coordDimNames =
-          standardOutDimNames(ctx, resultTy.getRank());
+      auto coordDimNames = standardOutDimNames(ctx, resultTy.getRank());
       coordVals.reserve(coordDimNames.size());
       for (auto dimName : coordDimNames) {
-        auto it = llvm::find_if(
-            logicalCoords,
-            [&](const std::pair<StringAttr, Value> &pair) {
-              return pair.first == dimName;
-            });
+        auto it = llvm::find_if(logicalCoords,
+                                [&](const std::pair<StringAttr, Value> &pair) {
+                                  return pair.first == dimName;
+                                });
         if (it == logicalCoords.end())
           return reportFailure("missing logical coordinate for local_pointers");
         coordVals.push_back(it->second);
       }
 
-      auto indexVals =
-          inlineRegion<tle::LocalPointersReturnOp>(rewriter, indicesRegion,
-                                                  coordVals, loc);
+      auto indexVals = inlineRegion<tle::LocalPointersReturnOp>(
+          rewriter, indicesRegion, coordVals, loc);
       if (indexVals.size() != bufferRank)
         return reportFailure("indices region must return buffer-rank values");
 
@@ -248,8 +242,7 @@ struct LocalPointersOpConversion
       }
 
       Value elemOffset;
-      if (auto paddedEnc =
-              dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
+      if (auto paddedEnc = dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
         auto order = ttg::getOrder(sharedEnc, memDescTy.getShape());
         elemOffset =
             LLVM::linearize(rewriter, loc, idxCoords, bufferShape, order);
@@ -261,17 +254,15 @@ struct LocalPointersOpConversion
           logicalOffsets.push_back({dim, offset});
         LinearLayout sharedLayout = ttg::toLinearLayout(memDescTy);
         sharedLayout = sharedLayout.sublayout({kOffset}, dimNames);
-        elemOffset =
-            applyLinearLayout(loc, rewriter, sharedLayout.invert(),
-                              logicalOffsets)[0]
-                .second;
+        elemOffset = applyLinearLayout(loc, rewriter, sharedLayout.invert(),
+                                       logicalOffsets)[0]
+                         .second;
       }
 
       Value byteOffset = elemOffset;
       if (elemBytes > 1)
         byteOffset = b.mul(byteOffset, elemBytesVal);
-      if (auto paddedEnc =
-              dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
+      if (auto paddedEnc = dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
         Value padOffset = emitPadding(loc, rewriter, paddedEnc, elemBits,
                                       byteOffset, /*offsetInBytes=*/true);
         byteOffset = b.add(byteOffset, padOffset);

@@ -105,13 +105,11 @@ LogicalResult LocalPointersOp::verify() {
                             "tle.local_pointers.return";
 
   if (yield.getNumOperands() != memDescTy.getShape().size())
-    return emitOpError()
-           << "expects indices return to match buffer rank";
+    return emitOpError() << "expects indices return to match buffer rank";
 
   for (Value val : yield.getOperands()) {
     if (!val.getType().isInteger())
-      return emitOpError()
-             << "expects indices return values to be integer";
+      return emitOpError() << "expects indices return values to be integer";
   }
 
   return success();
