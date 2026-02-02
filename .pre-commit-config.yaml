@@ -21,7 +21,7 @@ repos:
     hooks:
       - id: ruff
         files: '^python/.*'
-        args: ["--fix", "--line-length", "120"]
+        args: ["--fix", "--line-length", "120", "--per-file-ignores", "*/__init__.py:E402"]
         stages: [pre-commit, pre-push, manual]
         exclude: |
           (?x)(
