@@ -1,3 +1,7 @@
+# flagtree backend path specialization
+from triton.runtime.driver import spec_path
+
+spec_path(__path__)
 """isort:skip_file"""
 # Import order is significant here.
 
@@ -254,6 +258,11 @@ __all__ = [
     "zeros",
     "zeros_like",
 ]
+
+# flagtree backend specialization
+from triton.runtime.driver import spec
+
+__all__ = spec("language_modify_all", __all__) or __all__
 
 
 def str_to_ty(name):

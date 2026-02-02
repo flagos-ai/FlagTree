@@ -10,6 +10,13 @@ from .triton.language.semantic import *
 from .triton.language.math import *
 from .triton.testing import *
 
+from .triton.language import *
+
+__all__ = [
+    # triton.language
+    "language_modify_all",
+]
+
 __all__ = [
     # compiler.compiler
     'ext_ASTSource_attrs', 'opt_ascend_compile_speed', 'set_CompiledKernel_metadata_stream', 'handle_compile_error',

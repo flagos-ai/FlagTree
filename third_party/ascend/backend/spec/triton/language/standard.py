@@ -1,107 +1,140 @@
-from math import pi as math_pi
-from triton.language import core, math
-from triton.language.core import float32, int1, int32
-from triton.language.standard import max as real_max, sum
-from triton.language.standard import _log2
-from triton.runtime.jit import jit
+from __future__ import annotations
+
+from ..runtime.jit import jit
+from . import core
+from . import math
+
+cdiv = math.cdiv
+
+# constexpr utilities
+
+
+def _log2(i: core.constexpr):
+    log2 = 0
+    n = i.value
+    while n > 1:
+        n >>= 1
+        log2 += 1
+    return core.constexpr(log2)
+
+
+def _is_power_of_two(i: core.constexpr):
+    n = i.value
+    return core.constexpr((n & (n - 1)) == 0 and n != 0)
+
+
+# -----------------------
+# Standard library
+# -----------------------
+
+# @core._tensor_member_fn
+# @jit
+# def cdiv(x, div):
+#     """
+#     Computes the ceiling division of :code:`x` by :code:`div`
+
+#     :param x: the input number
+#     :type x: Block
+#     :param div: the divisor
+#     :type div: Block
+#     """
+#     return (x + div - 1) // div
 
 
 @core._tensor_member_fn
 @jit
 @math._add_math_1arg_docstr("sigmoid")
 def sigmoid(x):
-    _is_int8_type: core.constexpr = x.dtype.is_int8()
-    core.static_assert(not _is_int8_type, f"Expected dtype fp16/fp32/bf16, but got int8 or int1")
-    _is_floating_type: core.constexpr = x.dtype.is_floating()
-    core.static_assert(_is_floating_type == True, f"Expected dtype fp16/fp32/bf16, but got {core.constexpr(x.dtype)}")
-    return (1 / (1 + math.exp(-x.to(core.float32)))).to(x.dtype)
+    return 1 / (1 + math.exp(-x))
 
 
 @core._tensor_member_fn
 @jit
 @math._add_math_1arg_docstr("softmax")
 def softmax(x, ieee_rounding=False):
-    _is_int8_type: core.constexpr = x.dtype.is_int8()
-    core.static_assert(not _is_int8_type, f"Expected dtype fp16/fp32/bf16, but got int8 or int1")
-    _is_floating_type: core.constexpr = x.dtype.is_floating()
-    core.static_assert(_is_floating_type == True, f"Expected dtype fp16/fp32/bf16, but got {core.constexpr(x.dtype)}")
-    z = x.to(core.float32) - max(x, 0)
+    z = x - max(x, 0)
     num = math.exp(z)
     den = sum(num, 0)
-    return math.fdiv(num, den, ieee_rounding).to(x.dtype)
+    return math.fdiv(num, den, ieee_rounding)
 
 
 @core._tensor_member_fn
 @jit
-@math._add_math_1arg_docstr("isfinited")
-def isfinited(x):
-    _is_int8_type: core.constexpr = x.dtype.is_int8()
-    core.static_assert(not _is_int8_type, f"Expected dtype fp16/fp32/bf16, but got int8 or int1")
-    _is_floating_type: core.constexpr = x.dtype.is_floating()
-    core.static_assert(_is_floating_type == True, f"Expected dtype fp16/fp32/bf16, but got {core.constexpr(x.dtype)}")
-    nan_mask = math.isnan(x)
-    inf_mask = math.isinf(x)
-    return (~nan_mask & ~inf_mask).to(int1)
+def ravel(x):
+    """
+    Returns a contiguous flattened view of :code:`x`.
+
+    :param x: the input tensor
+    :type x: Block
+    """
+    return core.reshape(x, [x.numel], can_reorder=False)
 
 
-@core._tensor_member_fn
 @jit
-@math._add_math_1arg_docstr("finitef")
-def finitef(x):
-    _is_int8_type: core.constexpr = x.dtype.is_int8()
-    core.static_assert(not _is_int8_type, f"finitef only supports float32, but got int8 or int1")
-    core.static_assert(x.dtype == float32, f"finitef only supports float32, but got {core.constexpr(x.dtype)}")
-    nan_mask = math.isnan(x)
-    inf_mask = math.isinf(x)
-    return (~nan_mask & ~inf_mask).to(int1)
+def swizzle2d(i, j, size_i, size_j, size_g):
+    """
+    Transforms the indices of a row-major `size_i * size_j` matrix into
+    the indices of a column-major matrix for each group of `size_g` rows.
+
+    For example, for :code:`size_i = size_j = 4` and :code:`size_g = 2`, it will
+    transform ::
+
+        [[0 , 1 , 2 , 3 ],
+         [4 , 5 , 6 , 7 ],
+         [8 , 9 , 10, 11],
+         [12, 13, 14, 15]]
+
+    into ::
+
+        [[0, 2,  4 , 6 ],
+         [1, 3,  5 , 7 ],
+         [8, 10, 12, 14],
+         [9, 11, 13, 15]]
+    """
+    # "unrolled index in array"
+    ij = i * size_j + j
+    # number of elements in `size_g` groups
+    # of `size_j` columns
+    size_gj = size_g * size_j
+    # index of the group in which (i,j) is
+    group_id = ij // size_gj
+    # row-index of the first element of this group
+    off_i = group_id * size_g
+    # last group may have fewer rows
+    size_g = core.minimum(size_i - off_i, size_g)
+    # linear index with respect to the first element in this group
+    ij = ij % size_gj
+    # new row and column indices
+    new_i = off_i + ij % size_g
+    new_j = ij // size_g
+    return new_i, new_j
 
 
-@core._tensor_member_fn
 @jit
-@math._add_math_1arg_docstr("rint")
-def rint(x):
-    _is_int8_type: core.constexpr = x.dtype.is_int8()
-    core.static_assert(not _is_int8_type, f"Expected dtype fp16/fp32/bf16, but got int8 or int1")
-    _is_floating_type: core.constexpr = x.dtype.is_floating()
-    core.static_assert(_is_floating_type == True, f"Expected dtype fp16/fp32/bf16, but got {core.constexpr(x.dtype)}")
-    # Calculate integer part and fractional part
-    floor_x = math.floor(x)
-    fractional = x - floor_x
-    # Check if fractional part is close to 0.5
-    is_half = math.abs(fractional - 0.5) < 1e-8
-    # Check if integer part is even
-    floor_int = floor_x.to(int32)
-    is_even = (floor_int % 2) == 0
-    # Apply bankers rounding rules:
-    # - If fractional part is 0.5: keep integer part if even, add 1 if odd
-    # - Otherwise: round to the nearest integer directly
-    return core.where(is_half, core.where(is_even, floor_x, floor_x + 1.0),
-                      core.where(x >= 0, math.floor(x + 0.5), math.ceil(x - 0.5)))
+def zeros(shape, dtype):
+    """
+    Returns a tensor filled with the scalar value 0 for the given :code:`shape` and :code:`dtype`.
+
+    :param shape: Shape of the new array, e.g., (8, 16) or (8, )
+    :type shape: tuple of ints
+    :param dtype: Data-type of the new array, e.g., :code:`tl.float16`
+    :type dtype: DType
+    """
+    return core.full(shape, 0, dtype)
 
 
-pi: core.constexpr = math_pi
-
-
-@core._tensor_member_fn
 @jit
-@math._add_math_2arg_docstr("atan2")
-def atan2(y, x):
-    _is_int8_type_x: core.constexpr = x.dtype.is_int8()
-    core.static_assert(not _is_int8_type_x, f"Expected dtype fp16/fp32/bf16, but got int8 or int1")
-    _is_int8_type_y: core.constexpr = y.dtype.is_int8()
-    core.static_assert(not _is_int8_type_y, f"Expected dtype fp16/fp32/bf16, but got int8 or int1")
-    _is_floating_type_x: core.constexpr = x.dtype.is_floating()
-    core.static_assert(_is_floating_type_x == True, f"Expected dtype fp16/fp32/bf16, but got {core.constexpr(x.dtype)}")
-    _is_floating_type_y: core.constexpr = y.dtype.is_floating()
-    core.static_assert(_is_floating_type_y == True, f"Expected dtype fp16/fp32/bf16, but got {core.constexpr(y.dtype)}")
-    half_pi: core.constexpr = 0.5 * pi
-    base = core.where(x == 0, 0.0, math.atan(y.to(float32) / x.to(float32)))
-    base = core.where((x == 0) & (y > 0), half_pi, base)
-    base = core.where((x == 0) & (y < 0), -half_pi, base)
+def zeros_like(input):
+    """
+    Returns a tensor of zeros with the same shape and type as a given tensor.
 
-    add_pi = core.where((x < 0) & (y >= 0), pi, 0.0)
-    sub_pi = core.where((x < 0) & (y < 0), -pi, 0.0)
-    return (base + add_pi + sub_pi).to(x.dtype)
+    :param input: input tensor
+    :type input: Tensor
+    """
+    return zeros(input.shape, input.dtype)
+
+
+# max and argmax
 
 
 @jit
@@ -109,7 +142,7 @@ def _argmax_combine(value1, index1, value2, index2, tie_break_left):
     if tie_break_left:
         tie = value1 == value2 and index1 < index2
     else:
-        tie = value1 == value2 and index1 > index2
+        tie = False
     gt = value1 > value2 or tie
     v_ret = core.where(gt, value1, value2)
     i_ret = core.where(gt, index1, index2)
@@ -154,6 +187,11 @@ def max(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
                 input = input.to(core.float32)
             else:
                 assert input.dtype.is_int(), "Expecting input to be integer type"
+                # FIXME: Skip int8/int16 -> int32 promotion on Ascend.
+                # Converting small integer types (e.g., int8) to int32 consumes excessive UB (Unified Buffer) memory,
+                # which can lead to "UB overflow" errors during kernel execution.
+                # Therefore, we keep the original narrow integer type and rely on backend support.
+                pass  # Do not promote to int32
         if not propagate_nan:
             return core.reduce(input, axis, _elementwise_max_default, keep_dims=keep_dims)
         else:
@@ -168,12 +206,15 @@ def argmax(input, axis, tie_break_left=True, keep_dims=False):
     return ret
 
 
+# min and argmin
+
+
 @jit
 def _argmin_combine(value1, index1, value2, index2, tie_break_left):
     if tie_break_left:
         tie = value1 == value2 and index1 < index2
     else:
-        tie = value1 == value2 and index1 > index2
+        tie = False
     lt = value1 < value2 or tie
     value_ret = core.where(lt, value1, value2)
     index_ret = core.where(lt, index1, index2)
@@ -212,6 +253,11 @@ def min(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
                 input = input.to(core.float32)
             else:
                 assert input.dtype.is_int(), "Expecting input to be integer type"
+                # FIXME: Skip int8/int16 -> int32 promotion on Ascend.
+                # Converting small integer types (e.g., int8) to int32 consumes excessive UB (Unified Buffer) memory,
+                # which can lead to "UB overflow" errors during kernel execution.
+                # Therefore, we keep the original narrow integer type and rely on backend support.
+                pass  # Do not promote to int32
         return core.reduce(input, axis, _elementwise_min, keep_dims=keep_dims)
 
 
@@ -224,6 +270,22 @@ def argmin(input, axis, tie_break_left=True, keep_dims=False):
 
 
 @jit
+def _sum_combine(a, b):
+    return a + b
+
+
+# sum
+
+
+@core._tensor_member_fn
+@jit
+@core._add_reduction_docstr("sum")
+def sum(input, axis=None, keep_dims=False):
+    input = core._promote_bfloat16_to_float32(input)
+    return core.reduce(input, axis, _sum_combine, keep_dims=keep_dims)
+
+
+@jit
 def _xor_combine(a, b):
     return a ^ b
 
@@ -232,11 +294,44 @@ def _xor_combine(a, b):
 
 
 @core._tensor_member_fn
-@jit
+@core.builtin
 @core._add_reduction_docstr("xor sum")
-def xor_sum(x, axis=None, keep_dims=False):
-    core.static_assert(x.type.scalar.is_int(), "xor_sum only supported for integers")
-    return core.reduce(x, axis, _xor_combine, keep_dims=keep_dims)
+def xor_sum(input, axis=None, keep_dims=False, _builder=None, _generator=None):
+    scalar_ty = input.type.scalar
+    if not scalar_ty.is_int():
+        raise ValueError("xor_sum only supported for integers")
+
+    input = core._promote_bfloat16_to_float32(input, _builder=_builder)
+    return core.reduce(input, axis, _xor_combine, keep_dims=keep_dims, _builder=_builder, _generator=_generator)
+
+
+# cumsum
+
+
+@core._tensor_member_fn
+@jit
+@core._add_scan_docstr("cumsum")
+def cumsum(input, axis=0, reverse=False):
+    # todo rename this to a generic function name
+    input = core._promote_bfloat16_to_float32(input)
+    return core.associative_scan(input, axis, _sum_combine, reverse)
+
+
+# cumprod
+
+
+@jit
+def _prod_combine(a, b):
+    return a * b
+
+
+@core._tensor_member_fn
+@jit
+@core._add_scan_docstr("cumprod")
+def cumprod(input, axis=0, reverse=False):
+    # todo rename this to a generic function name
+    input = core._promote_bfloat16_to_float32(input)
+    return core.associative_scan(input, axis, _prod_combine, reverse)
 
 
 # sort
@@ -250,7 +345,27 @@ def _indicator(n_dims: core.constexpr, j: core.constexpr):
 
 
 @jit
-def _compare_and_swap(x, flip_dim, i: core.constexpr):
+def _compare_and_swap(x, flip, i: core.constexpr, n_dims: core.constexpr):
+    n_outer: core.constexpr = x.numel >> n_dims
+    shape: core.constexpr = [n_outer * 2**i, 2, 2**(n_dims - i - 1)]
+    y = core.reshape(x, shape)
+    # slice left/right with 'stride' 2**(n_dims - i - 1)
+    mask = core.arange(0, 2)[None, :, None]
+    left = core.broadcast_to(sum(y * (1 - mask), 1)[:, None, :], shape).to(y.dtype)
+    right = core.broadcast_to(sum(y * mask, 1)[:, None, :], shape).to(y.dtype)
+    left = core.reshape(left, x.shape)
+    right = core.reshape(right, x.shape)
+    # actual compare-and-swap
+    idtype = core.get_int_dtype(bitwidth=x.dtype.primitive_bitwidth, signed=True)
+    ileft = left.to(idtype, bitcast=True)
+    iright = right.to(idtype, bitcast=True)
+    ix = x.to(idtype, bitcast=True)
+    ret = ix ^ core.where((left > right) != flip, ileft ^ iright, zeros_like(ix))
+    return ret.to(x.dtype, bitcast=True)
+
+
+@jit
+def _compare_and_swap_3_4(x, flip, i: core.constexpr):
     # compare-and-swap on the ith *innermost* dimension
     n_dims: core.constexpr = _log2(x.numel)
 
@@ -264,7 +379,7 @@ def _compare_and_swap(x, flip_dim, i: core.constexpr):
     is_right = _indicator(n_dims, i)
 
     # conditional swap:
-    ret = core.where((x > y) != (flip_dim ^ is_right), y, x)
+    ret = core.where((x > y) != (flip ^ is_right), y, x)
     return ret
 
 
@@ -281,12 +396,60 @@ def _bitonic_merge_hypercube(x, stage: core.constexpr, order: core.constexpr):
     # if flip = 00110011... then all the elements will be re-arranged alternatingly (with
     # a stride of 2) at this stage
     if order == 2:
-        flip_dim = _indicator(_log2(x.numel), stage)
+        flip = _indicator(_log2(x.numel), stage)
     else:
-        flip_dim = order
+        flip = order
     # perform `stage` rounds of `compare-and-swap`
     for i in core.static_range(stage):
-        x = _compare_and_swap(x, flip_dim, stage - 1 - i)
+        x = _compare_and_swap_3_4(x, flip, stage - 1 - i)
+    return x
+
+
+@jit
+def _bitonic_merge(x, stage: core.constexpr, order: core.constexpr, n_dims: core.constexpr):
+    '''
+    order_type 0 == ascending
+    order_type 1 == descending
+    order_type 2 == alternating
+    '''
+    n_outer: core.constexpr = x.numel >> n_dims
+    core.static_assert(stage <= n_dims)
+    # flip denotes whether to re-arrange sub-sequences of elements in ascending or
+    # descending order.
+    # if flip = 00000000... then all elements will be re-arranged ascendingly at this stage
+    # if flip = 00110011... then all the elements will be re-arranged alternatingly (with
+    # a stride of 2) at this stage
+    if order == 2:
+        shape: core.constexpr = [n_outer * 2**(n_dims - 1 - stage), 2, 2**stage]
+        flip = core.reshape(core.broadcast_to(core.arange(0, 2)[None, :, None], shape), x.shape)
+    else:
+        flip = order
+    # perform `stage` rounds of `compare-and-swap`
+    for i in core.static_range(stage):
+        x = _compare_and_swap(x, flip, i + (n_dims - stage), n_dims)
+    return x
+
+
+@core._tensor_member_fn
+@jit
+def sort(x, dim: core.constexpr = None, descending: core.constexpr = core.CONSTEXPR_0):
+    """
+    Sorts a tensor along a specified dimension.
+
+    :param x: The input tensor to be sorted.
+    :type x: Tensor
+    :param dim: The dimension along which to sort the tensor. If None, the tensor is sorted along the last dimension. Currently, only sorting along the last dimension is supported.
+    :type dim: int, optional
+    :param descending: If set to True, the tensor is sorted in descending order. If set to False, the tensor is sorted in ascending order.
+    :type descending: bool, optional
+    """
+    # handle default dimension or check that it is the most minor dim
+    _dim: core.constexpr = len(x.shape) - 1 if dim is None else dim
+    core.static_assert(_dim == len(x.shape) - 1, "only minor dimension is currently supported")
+    # iteratively run bitonic merge-sort steps
+    n_dims: core.constexpr = _log2(x.shape[_dim])
+    for i in core.static_range(1, n_dims + 1):
+        x = _bitonic_merge(x, i, 2 if i < n_dims else descending, n_dims)
     return x
 
 
@@ -323,7 +486,7 @@ def sort_impl(x, k: core.constexpr = None, dim: core.constexpr = None, descendin
     # select top k elements using bitonic top-k
     # https://www.doc.ic.ac.uk/~hlgr/pdfs/MassivelyParallelTopK.pdf
     for i in core.static_range(log_k + 1, log_n + 1):
-        h = real_max(h, axis=(_log2(h.numel) - 1 - log_k)) if descending else min(h, axis=(_log2(h.numel) - 1 - log_k))
+        h = max(h, axis=(_log2(h.numel) - 1 - log_k)) if descending else min(h, axis=(_log2(h.numel) - 1 - log_k))
         h = _bitonic_merge_hypercube(h, log_k, 2 if i < log_n else descending)
 
     # reshape back:
@@ -336,6 +499,66 @@ def topk(x, k: core.constexpr, dim: core.constexpr = None):
     return sort_impl(x, k=k, dim=dim, descending=True)
 
 
-standard_ext_spec_api_list = [
-    "sigmoid", "softmax", "isfinited", "finitef", "rint", "atan2", "argmax", "argmin", "topk", "max"
-]
+# flip
+
+
+def _get_flip_dim(dim, shape):
+    dim = core._unwrap_if_constexpr(dim)
+    shape = core._unwrap_if_constexpr(shape)
+    if dim is None:
+        dim = len(shape) - 1
+    assert dim == len(shape) - 1, "Currently only support flipping the last dimension"
+    return core.constexpr(dim)
+
+
+@core._tensor_member_fn
+@jit
+def flip(x, dim=None):
+    """
+    Flips a tensor `x` along the dimension `dim`.
+
+    :param x: the first input tensor
+    :type x: Block
+    :param dim: the dimension to flip along (currently only final dimension supported)
+    :type dim: int
+    """
+    core.static_assert(_is_power_of_two(x.shape[_get_flip_dim(dim, x.shape)]))
+    core.static_assert(_is_power_of_two(x.numel))
+    # # reshape the tensor to have all dimensions be 2.
+    # # TODO: We shouldn't have to change the dimensions not sorted.
+    steps: core.constexpr = _log2(x.numel)
+    start: core.constexpr = _log2(x.numel) - _log2(x.shape[_get_flip_dim(dim, x.shape)])
+    y = core.reshape(x, [2] * steps)
+    y = core.expand_dims(y, start)
+    flip = (core.arange(0, 2)[:, None] == 1 - core.arange(0, 2))
+    for i in core.static_range(start, steps):
+        flip2 = flip
+        for j in core.static_range(0, steps + 1):
+            if j != i and j != i + 1:
+                flip2 = core.expand_dims(flip2, j)
+        y = sum(y * flip2, i + 1, keep_dims=True)
+    x = core.reshape(y, x.shape)
+    return x
+
+
+@jit
+def interleave(a, b):
+    """
+    Interleaves the values of two tensors along their last dimension. The two tensors must have the same shape.
+    Equivalent to `tl.join(a, b).reshape(a.shape[:-1] + [2 * a.shape[-1]])`
+
+    :param a: The first input tensor.
+    :type a: Tensor
+    :param b: The second input tensor.
+    :type b: Tensor
+    """
+    c = core.join(a, b)
+
+    if len(c.shape) == 1:
+        # We must have interleaved two scalars.
+        return c
+    else:
+        # This `else` is necessary because Triton's AST parser doesn't
+        # understand that if we take the `if` above we definitely don't run this
+        # `else`.
+        return core.reshape(c, c.shape[:-2] + [2 * c.shape[-2]])

@@ -1,16 +1,25 @@
-# Copyright © 2024 BAAI
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright 2018-2020 Philippe Tillet
+# Copyright 2020-2022 OpenAI
+# Copyright © 2024 BAAI. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
 
 # Modifications:
 # - 2025-06-03:
@@ -26,7 +35,7 @@ from typing import Dict
 import ast
 
 import triton
-from triton._C import libentry_ascend
+from triton._C import libentryC
 import torch
 import torch_npu
 
@@ -212,7 +221,7 @@ class LibEntry(triton.KernelInterface):
         dns_args = []  # do not specialize arguments
         const_args = []  # constexpr arguments
         k_args = []  # kernel arguments
-        arg_processor = libentry_ascend.ArgProcessor(self.divisibility)
+        arg_processor = libentryC.ArgProcessor(self.divisibility)
         arg_processor.classify_arguments(list(args), kwargs, self.jit_function.params, set(self.specialize_indices),
                                          set(self.do_not_specialize_indices))
 

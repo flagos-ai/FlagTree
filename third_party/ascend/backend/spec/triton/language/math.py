@@ -1,55 +1,301 @@
-import triton.language as language
-from . import standard
 from . import core
+from . import semantic
+from functools import wraps
+from typing import List
+import numbers
 
-softmax = standard.softmax
-sigmoid = standard.sigmoid
-argmax = standard.argmax
-argmin = standard.argmin
-umulhi = language.extra.ascend.libdevice.umulhi
-exp = language.extra.ascend.libdevice.exp
-exp2 = language.extra.ascend.libdevice.exp2
-log = language.extra.ascend.libdevice.log
-log2 = language.extra.ascend.libdevice.log2
-cos = language.extra.ascend.libdevice.cos
-sin = language.extra.ascend.libdevice.sin
-sqrt = language.extra.ascend.libdevice.sqrt
-sqrt_rn = language.extra.ascend.libdevice.sqrt_rn
-rsqrt = language.extra.ascend.libdevice.rsqrt
-div_rn = language.extra.ascend.libdevice.div_rn
-erf = language.extra.ascend.libdevice.erf
-tanh = language.extra.ascend.libdevice.tanh
-floor = language.extra.ascend.libdevice.floor
-ceil = language.extra.ascend.libdevice.ceil
-fma = language.extra.ascend.libdevice.fma
-_check_dtype = language.extra.ascend.libdevice._check_dtype
-cdiv = language.extra.ascend.libdevice.cdiv
+T = core.TypeVar('T')
 
-isnan = language.extra.ascend.libdevice.isnan
-isinf = language.extra.ascend.libdevice.isinf
-reciprocal = language.extra.ascend.libdevice.reciprocal
-relu = language.extra.ascend.libdevice.relu
-log1p = language.extra.ascend.libdevice.log1p
-tan = language.extra.ascend.libdevice.tan
-atan = language.extra.ascend.libdevice.atan
-ilogb = language.extra.ascend.libdevice.ilogb
-ldexp = language.extra.ascend.libdevice.ldexp
-pow = language.extra.ascend.libdevice.pow
-flip = core.flip
-atan2 = standard.atan2
-rint = standard.rint
-finitef = standard.finitef
-isfinited = standard.isfinited
-div_rz = language.extra.ascend.libdevice.div_rz
-fmod = language.extra.ascend.libdevice.fmod
-trunc = language.extra.ascend.libdevice.trunc
-round = language.extra.ascend.libdevice.round
 
-math_ext_base_api_list = [
-    "umulhi", "exp", "exp2", "log", "log2", "cos", "sin", "sqrt", "sqrt_rn", "rsqrt", "div_rn", "erf", "tanh", "floor",
-    "ceil", "fma", "_check_dtype", "softmax", "sigmoid", "cdiv", "argmax", "argmin"
-]
-math_ext_spec_api_list = [
-    "isnan", "isinf", "reciprocal", "relu", "log1p", "tan", "atan", "ilogb", "ldexp", "pow", "flip", "atan2", "div_rz",
-    "fmod", "trunc", "round", "rint", "finitef", "isfinited"
-]
+def _check_dtype(dtypes: List[str]) -> T:
+    """
+    We're following libdevice's convention to check accepted data types for math functions.
+    It is not a good practice to support all data types as accelerators/GPUs don't support
+    many float16 and bfloat16 math operations.
+    We should let the users know that they are using and invoke explicit cast to convert
+    the data type to the supported one.
+    """
+
+    def wrapper(fn):
+
+        @wraps(fn)
+        def check(*args, **kwargs):
+            # concatenate args and kwargs
+            all_args = list(args) + list(kwargs.values())
+            for arg in [a for a in all_args if isinstance(a, core.tensor)]:
+                arg_type = arg.type.scalar.name
+                if hasattr(arg, 'was_bool_to_int8') and arg.was_bool_to_int8:
+                    # In Triton, int1 maps to the boolean type
+                    arg_type = 'int1'
+                if arg_type not in dtypes:
+                    raise ValueError(f"Expected dtype {dtypes} but got {arg_type}")
+            return fn(*args, **kwargs)
+
+        return check
+
+    return wrapper
+
+
+def _add_math_1arg_docstr(name: str) -> core.Callable[[T], T]:
+
+    def _decorator(func: T) -> T:
+        docstr = """
+    Computes the element-wise {name} of :code:`x`.
+
+    :param x: the input values
+    :type x: Block
+    """
+        func.__doc__ = docstr.format(name=name)
+        return func
+
+    return _decorator
+
+
+def _add_math_2arg_docstr(name: str) -> core.Callable[[T], T]:
+
+    def _decorator(func: T) -> T:
+        docstr = """
+    Computes the element-wise {name} of :code:`x` and :code:`y`.
+
+    :param x: the input values
+    :type x: Block
+    :param y: the input values
+    :type y: Block
+    """
+        func.__doc__ = docstr.format(name=name)
+        return func
+
+    return _decorator
+
+
+def _add_math_3arg_docstr(name: str) -> core.Callable[[T], T]:
+
+    def _decorator(func: T) -> T:
+        docstr = """
+    Computes the element-wise {name} of :code:`x`, :code:`y`, and :code:`z`.
+
+    :param x: the input values
+    :type x: Block
+    :param y: the input values
+    :type y: Block
+    :param z: the input values
+    :type z: Block
+    """
+        func.__doc__ = docstr.format(name=name)
+        return func
+
+    return _decorator
+
+
+@core.builtin
+@_check_dtype(dtypes=["int32", "int64", "uint32", "uint64"])
+@_add_math_2arg_docstr("most significant N bits of the 2N-bit product")
+def umulhi(x, y, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    y = semantic.to_tensor(y, _builder)
+    x, y = core.binary_op_type_legalization(x, y, _builder)
+    return core.tensor(_builder.create_umulhi(x.handle, y.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("exponential")
+@core._tensor_member_fn
+def exp(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_exp(x.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("exponential (base 2)")
+@core._tensor_member_fn
+def exp2(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_exp2(x.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("natural logarithm")
+@core._tensor_member_fn
+def log(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_log(x.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("logarithm (base 2)")
+@core._tensor_member_fn
+def log2(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_log2(x.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("cosine")
+@core._tensor_member_fn
+def cos(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_cos(x.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("sine")
+@core._tensor_member_fn
+def sin(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_sin(x.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("fast square root")
+@core._tensor_member_fn
+def sqrt(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_sqrt(x.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("precise square root (rounding to nearest wrt the IEEE standard)")
+@core._tensor_member_fn
+def sqrt_rn(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_precise_sqrt(x.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("inverse square root")
+@core._tensor_member_fn
+def rsqrt(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_rsqrt(x.handle), x.type)
+
+
+@core.builtin
+@_add_math_1arg_docstr("absolute value")
+@core._tensor_member_fn
+def abs(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    dtype = x.dtype
+    if dtype.is_fp8e4b15():
+        mask = core.full(x.shape, 0x7F, core.int8, _builder=_builder)
+        return core.tensor(_builder.create_and(x.handle, mask.handle), x.type)
+    elif dtype.is_floating():
+        return core.tensor(_builder.create_fabs(x.handle), x.type)
+    elif dtype.is_int_signed():
+        return core.tensor(_builder.create_iabs(x.handle), x.type)
+    elif dtype.is_int_unsigned():
+        return x  # no-op
+    else:
+        assert False, f"Unexpected dtype {dtype}"
+
+
+@core.builtin
+@_add_math_2arg_docstr("fast division")
+def fdiv(x, y, ieee_rounding=False, _builder=None):
+    ieee_rounding = core._constexpr_to_value(ieee_rounding)
+    x = semantic.to_tensor(x, _builder)
+    y = semantic.to_tensor(y, _builder)
+    return semantic.fdiv(x, y, ieee_rounding, _builder)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_2arg_docstr("precise division (rounding to nearest wrt the IEEE standard)")
+def div_rn(x, y, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    y = semantic.to_tensor(y, _builder)
+    x, y = core.binary_op_type_legalization(x, y, _builder)
+    return core.tensor(_builder.create_precise_divf(x.handle, y.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("error function")
+@core._tensor_member_fn
+def erf(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_erf(x.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5", "fp64"])
+@_add_math_1arg_docstr("floor")
+@core._tensor_member_fn
+def floor(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_floor(x.handle), x.type)
+
+
+@core.builtin
+@_add_math_1arg_docstr("ceil")
+@core._tensor_member_fn
+def ceil(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    if x.type.scalar.is_int():
+        return x
+    elif x.type.scalar.is_floating():
+        return core.tensor(_builder.create_ceil(x.handle), x.type)
+    raise ValueError("ceil does not support boolean type")
+
+
+@core.builtin
+@_add_math_3arg_docstr("fused multiply-add")
+def fma(x, y, z, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    y = semantic.to_tensor(y, _builder)
+    z = semantic.to_tensor(z, _builder)
+    x, y = core.binary_op_type_legalization(x, y, _builder)
+    z, x = core.binary_op_type_legalization(z, x, _builder)
+    z, y = core.binary_op_type_legalization(z, y, _builder)
+    return core.tensor(_builder.create_fma(x.handle, y.handle, z.handle), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["bf16", "fp16", "fp32"])
+@_add_math_1arg_docstr("error function")
+@core._tensor_member_fn
+def tanh(x, _builder=None):
+    x = semantic.to_tensor(x, _builder)
+    return core.tensor(_builder.create_tanh(x.handle), x.type)
+
+
+@core.builtin
+@_add_math_2arg_docstr("cdiv")
+@core._tensor_member_fn
+def cdiv(x, div, _builder=None):
+    if isinstance(x, core.constexpr):
+        x = x.value
+    if isinstance(div, core.constexpr):
+        div = div.value
+    from math import ceil as py_ceil
+    if isinstance(x, numbers.Number) and isinstance(div, numbers.Number):
+        if isinstance(x, bool) or isinstance(div, bool):
+            raise ValueError("cdiv does not support boolean type")
+        elif isinstance(x, int) and isinstance(div, int):
+            res = x // div
+            rem = x % div
+            return res + (1 if rem != 0 else 0)
+        else:
+            return py_ceil(x / div)
+
+    x = semantic.to_tensor(x, _builder)
+    div = semantic.to_tensor(div, _builder)
+    x_scalar_type = x.type.scalar
+    div_scalar_type = div.type.scalar
+    if x_scalar_type.is_bool() or div_scalar_type.is_bool():
+        raise ValueError("cdiv does not support boolean type")
+    elif x_scalar_type.is_int() and div_scalar_type.is_int():
+        # integer cdiv: (x + div - 1) // div as before
+        return semantic.floordiv(semantic.add(x, semantic.sub(div, 1, True, _builder), True, _builder), div, _builder)
+    else:
+        div_res = semantic.truediv(x, div, _builder)
+        cdiv_res = core.tensor(_builder.create_ceil(div_res.handle), div_res.type)
+        return semantic.cast(cdiv_res, x_scalar_type, _builder)

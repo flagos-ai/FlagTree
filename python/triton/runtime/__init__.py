@@ -1,3 +1,8 @@
+# flagtree backend path specialization
+from triton.runtime.driver import spec_path
+
+spec_path(__path__)
+
 from .autotuner import (Autotuner, Config, Heuristics, autotune, heuristics)
 from .cache import RedisRemoteCacheBackend, RemoteCacheBackend
 from .driver import driver
