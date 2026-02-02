@@ -58,7 +58,9 @@ class FlagtreeConfigs:
             pass
         return module
 
+
 flagtree_configs = FlagtreeConfigs()
+
 
 @dataclass
 class NetConfig:
@@ -84,7 +86,8 @@ def dir_rollback(deep, base_path):
 
 
 def is_skip_cuda_toolkits():
-    return flagtree_configs.flagtree_backend and (flagtree_configs.flagtree_backend not in flagtree_configs.use_cuda_toolkit_backends)
+    return flagtree_configs.flagtree_backend and (flagtree_configs.flagtree_backend
+                                                  not in flagtree_configs.use_cuda_toolkit_backends)
 
 
 def remove_triton_in_modules(model):
@@ -259,7 +262,7 @@ class OfflineBuildManager:
         return os.getenv("TRITON_OFFLINE_BUILD", "OFF") == "ON" or os.getenv("FLAGTREE_OFFLINE_BUILD_DIR")
 
     def copy_to_flagtree_project(self, kargs):
-        dst_path = os.path.join(flagtree_root_dir,
+        dst_path = os.path.join(_get_flagtree_root(),
                                 kargs['dst_path']) if 'dst_path' in kargs and kargs['dst_path'] else None
         src_path = self.src
         if not dst_path:

@@ -7,6 +7,7 @@ import hashlib
 from distutils.sysconfig import get_python_lib
 from . import utils
 from .utils.tools import flagtree_configs as configs
+
 downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
@@ -74,8 +75,8 @@ def download_flagtree_third_party(name, condition, required=False, hock=None):
             submodule = utils.flagtree_submodules[name]
             downloader.download(module=submodule, required=required)
             if callable(hock):
-                configs.default_backends=hock(third_party_base_dir=configs.flagtree_submodule_dir, backend=submodule,
-                     default_backends=configs.default_backends)
+                configs.default_backends = hock(third_party_base_dir=configs.flagtree_submodule_dir, backend=submodule,
+                                                default_backends=configs.default_backends)
         else:
             print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
 
