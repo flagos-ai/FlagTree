@@ -180,6 +180,7 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
   }
 
   // 在 dsl_region 外部对返回的 struct 调用 ReturnPattern 创建 tle.pack
+  builder.setInsertionPointAfter(dslRegionOp);
   SmallVector<Value> finalResults;
   if (dslRegionOp.getNumResults() > 0) {
     TypeRange tgts = outputTys;  // 原始的 tensor 输出类型
