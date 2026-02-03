@@ -78,37 +78,29 @@ jobs:
         run: |
           set -x
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
-          python3 third_party/tests/ascend/vector-add.py
-          python3 third_party/ascend/examples/tutorials/01-vector-add.py
-          python3 third_party/ascend/examples/tutorials/02-fused-softmax.py
-          python3 third_party/ascend/examples/tutorials/03-layer-norm.py
-          python3 third_party/ascend/examples/tutorials/04-fused-attention.py
-          python3 third_party/ascend/examples/tutorials/06-demo-autotune.py
-          python3 third_party/ascend/examples/tutorials/07-profiler.py
-          python3 third_party/ascend/examples/tutorials/09-gather.py
-          python3 third_party/ascend/examples/tutorials/10-gather_sorted.py
-          python3 third_party/ascend/examples/tutorials/11-rab_time.py
-          python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized.py
-          python3 third_party/ascend/examples/tutorials/13-matrix-multiplication-optimized-flagtree.py
-          python3 third_party/ascend/examples/tutorials/14-accuracy-comparison.py
-          python3 python/test/ops/01_vector_add/01_vector_add.py
-          python3 python/test/ops/abs/abs.py
-          python3 python/test/ops/addmm/addmm.py
-          python3 python/test/ops/addmm/addmm_ascend.py
-          python3 python/test/ops/amax/amax.py
-          python3 python/test/ops/amax/amax_ascend_perf.py
-          python3 python/test/ops/apply_rotary_pos_emb/apply_rotary_pos_emb.py
-          python3 python/test/ops/apply_rotary_pos_emb/apply_rotary_pos_emb_ascend.py
-          python3 python/test/ops/argmin/argmin.py
-          python3 python/test/ops/argmin/argmin_ascend_perf.py
-          python3 python/test/ops/bmm/bmm_ascend.py
-          python3 python/test/ops/cumsum/cumsum.py
-          python3 python/test/ops/min_dim/min_dim.py
-          python3 python/test/ops/min_dim/min_dim_ascend_perf.py
-          python3 python/test/ops/sum_dim/sum_dim.py
-          python3 python/test/ops/varmean/var_mean_ascend.py
-          python3 -m pytest third_party/ascend/examples/pytest_ut --ignore=third_party/ascend/examples/pytest_ut/test_index_select.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_linearize_permute.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_logical_and.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_logical_or.py \
-                                                                  --ignore=third_party/ascend/examples/pytest_ut/test_triton_unified_attention.py
+          # tutorials
+          pushd third_party/ascend/tutorials
+          python3 01-vector-add.py
+          python3 02-fused-softmax.py
+          python3 03-layer-norm.py
+          python3 04-fused-attention.py
+          python3 06-demo-autotune.py
+          python3 07-profiler.py
+          python3 08-demo-libentry.py
+          python3 09-gather.py
+          python3 10-gather_sorted.py
+          python3 11-rab_time.py
+          python3 12-hstu_attention.py
+          python3 13-matrix-multiplication-optimized.py
+          python3 14-accuracy-comparison.py
+          python3 15-embedding_gather_demo.py
+          popd
+          # pytest_ut
+          pushd third_party/ascend/unittest/pytest_ut
+          python3 -m pytest . \
+              --ignore=test_index_select.py \
+              --ignore=test_linearize_permute.py \
+              --ignore=test_logical_and.py \
+              --ignore=test_logical_or.py \
+              --ignore=test_triton_unified_attention.py
+          popd
