@@ -6,9 +6,50 @@
 
 - **Frontend DSL Layer (Python)**
   - `tle.language.core` overrides key `tl` builtins such as `load`, `alloc`, `copy`, `local_ptr`, and loop helpers to attach extra attributes (e.g., `"tt.load.async"`) and create `buffered_tensor` handles representing shared/tensor memory allocations (core.py). Pointer tensors are then consumed by standard `tl.load`/`tl.store` ops.
-  - `tle.local_ptr(buffer, indices_fn, shape)` can materialize arbitrary shared-memory pointer views by calling `indices_fn` over the loop space defined by `shape`. The callable returns a tuple of integer indices (length == buffer rank), which are flattened row-major to address shared memory.
+  - `tle.local_ptr(buffer, indices)` materializes arbitrary shared-memory pointer views from explicit index tensors. `indices` is a tuple of integer tensors (length == buffer rank) and all tensors must have identical shapes; that shape is the output pointer tensor shape.
   - GPU-specific helpers in gpu define layouts (`swizzled_shared_layout`, `nv_mma_shared_layout`, etc.), scopes (`smem`, `tmem`), and `buffered_tensor` semantics that wrap IR memdesc types while keeping Triton-style type checking.
   - Users import these symbols (e.g., `tle.alloc`, `tle.copy`, `tle.pipeline`) inside `@triton.jit` kernels to allocate SMEM tiles, launch async copies, or orchestrate staged loops.
+
+- **tle.local_ptr details**
+  - **Signature**: `tle.local_ptr(buffer, indices)` -> `tl.tensor` (pointer tensor)
+  - **Purpose**: Build arbitrary-shaped pointer views over shared memory `buffer` for `tl.load`/`tl.store`.
+  - **Parameters**:
+    - `buffer`: `buffered_tensor` returned by `tle.alloc` (SMEM / TMEM).
+    - `indices`: Tuple of integer tensors. Tuple length must equal `rank(buffer)`, and every tensor must have identical shapes.
+  - **Semantics**:
+    - Output pointer tensor shape equals the common shape of the `indices` tensors.
+    - For each logical index `(i0, i1, ...)` in the output shape, the pointer value corresponds to `buffer[indices0(i0, i1, ...), indices1(i0, i1, ...), ...]`.
+    - Returned pointers live in shared memory address space (LLVM addrspace=3). Indices must be integer (i32/i64, etc., reduced to i32 during lowering).
+    - Linearization is row-major (last dimension fastest); shared memory layout/encoding follows the `buffer` memdesc.
+
+  - **Example 1: 1D slice**
+    ```python
+    smem = tle.alloc([BLOCK], dtype=tl.float32, scope=tle.smem)
+    # Slice [offset, offset + SLICE)
+    idx = offset + tl.arange(0, SLICE)
+    slice_ptr = tle.local_ptr(smem, (idx,))
+    vals = tl.load(slice_ptr)
+    ```
+
+  - **Example 2: K-dimension tiling (matrix slice)**
+    ```python
+    smem_a = tle.alloc([BM, BK], dtype=tl.float16, scope=tle.smem)
+    # Slice (BM, KW), where KW is the K-dimension slice
+    rows = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, KW))
+    cols = tl.broadcast_to(tl.arange(0, KW)[None, :] + k_start, (BM, KW))
+    a_slice = tle.local_ptr(smem_a, (rows, cols))
+    a_vals = tl.load(a_slice)
+    ```
+
+  - **Example 3: arbitrary gather view**
+    ```python
+    smem = tle.alloc([H, W], dtype=tl.float32, scope=tle.smem)
+    # Take an offset column per row
+    rows = tl.broadcast_to(tl.arange(0, H)[:, None], (H, SLICE))
+    cols = tl.broadcast_to(1 + tl.arange(0, SLICE)[None, :], (H, SLICE))
+    gather_ptr = tle.local_ptr(smem, (rows, cols))
+    out = tl.load(gather_ptr)
+    ```
 
 - **Semantic Validation**
   - `TLESemantic` in semantic.py runs alongside Triton’s semantic layer. It validates shapes, dtypes, and copy compatibility before lowering, providing early error messages and adapting constexpr inputs.

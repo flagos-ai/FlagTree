@@ -143,17 +143,15 @@ void init_triton_tle_ir(py::module &&m) {
              self.create<ttg::LocalStoreOp>(regValues, dst);
            })
       .def("create_local_pointers",
-           [](TritonOpBuilder &self, Type resultTy, Value memDesc) -> OpState {
-             return self.create<tle::LocalPointersOp>(resultTy, memDesc);
-           })
-      .def("create_local_pointers_ret",
-           [](TritonOpBuilder &self, py::args args) -> OpState {
-             llvm::SmallVector<Value> return_values;
-             for (const auto &arg : args) {
-               return_values.push_back(py::cast<Value>(arg));
-             }
-             return self.create<tle::LocalPointersReturnOp>(return_values);
-           })
+        [](TritonOpBuilder &self, Type resultTy, Value memDesc,
+           py::args args) -> OpState {
+          llvm::SmallVector<Value> indices;
+          indices.reserve(args.size());
+          for (const auto &arg : args) {
+            indices.push_back(py::cast<Value>(arg));
+          }
+          return self.create<tle::LocalPointersOp>(resultTy, memDesc, indices);
+        })
       .def("get_memdesc_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
               Type &elementType, Attribute &encoding,

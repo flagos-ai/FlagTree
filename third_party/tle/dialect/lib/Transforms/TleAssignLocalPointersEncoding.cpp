@@ -28,6 +28,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
@@ -141,6 +142,63 @@ class AssignLocalPointersEncodingPass
 
       if (updated)
         op.getResult().setType(updatedTensorTy);
+
+      if (updated) {
+        auto updateUserResultTypes = [&](Value ptrVal) {
+          auto ptrTensorTy = cast<RankedTensorType>(ptrVal.getType());
+          auto ptrElemTy =
+              cast<triton::PointerType>(ptrTensorTy.getElementType())
+                  .getPointeeType();
+          auto loadTy = RankedTensorType::get(
+              ptrTensorTy.getShape(), ptrElemTy, ptrTensorTy.getEncoding());
+          for (OpOperand &use : ptrVal.getUses()) {
+            Operation *owner = use.getOwner();
+            if (auto load = dyn_cast<triton::LoadOp>(owner)) {
+              load.getResult().setType(loadTy);
+              continue;
+            }
+            if (auto atomic = dyn_cast<triton::AtomicRMWOp>(owner)) {
+              atomic.getResult().setType(loadTy);
+              continue;
+            }
+            if (auto cas = dyn_cast<triton::AtomicCASOp>(owner)) {
+              cas.getResult().setType(loadTy);
+              continue;
+            }
+          }
+        };
+        updateUserResultTypes(op.getResult());
+      }
+
+      auto desiredEncoding = updatedTensorTy.getEncoding();
+      if (desiredEncoding) {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPoint(op);
+        SmallVector<Value> newOperands;
+        newOperands.reserve(op->getNumOperands());
+        newOperands.push_back(op.getSrc());
+        bool updatedOperands = false;
+        for (Value operand : op.getIndices()) {
+          auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
+          if (!operandTy) {
+            newOperands.push_back(operand);
+            continue;
+          }
+          if (operandTy.getEncoding() == desiredEncoding) {
+            newOperands.push_back(operand);
+            continue;
+          }
+          auto convertedTy = RankedTensorType::get(
+              operandTy.getShape(), operandTy.getElementType(), desiredEncoding);
+          auto converted =
+              builder.create<triton::gpu::ConvertLayoutOp>(
+                  op.getLoc(), convertedTy, operand);
+          newOperands.push_back(converted);
+          updatedOperands = true;
+        }
+        if (updatedOperands)
+          op->setOperands(newOperands);
+      }
 
       tagDependencyGroup(op, builder);
     });

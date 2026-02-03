@@ -20,83 +20,6 @@ using namespace mlir;
 namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
 
-static bool isIdentityIndicesRegion(Region &region) {
-  if (!region.hasOneBlock())
-    return false;
-  Block &block = region.front();
-  auto *terminator = block.getTerminator();
-  auto yield = dyn_cast<tle::LocalPointersReturnOp>(terminator);
-  if (!yield)
-    return false;
-  if (block.getOperations().size() != 1)
-    return false;
-  if (yield.getNumOperands() != block.getNumArguments())
-    return false;
-  for (auto [idx, operand] : llvm::enumerate(yield.getOperands())) {
-    if (operand != block.getArgument(idx))
-      return false;
-  }
-  return true;
-}
-
-static SmallVector<Value>
-lowerLocalPointers(Location loc, MLIRContext *ctx, LinearLayout cvt,
-                   Type llvmElemTy, LLVM::LLVMPointerType llvmPtrTy,
-                   ttg::MemDescType srcTy, SharedMemoryObject smemObj,
-                   RewriterBase &rewriter, const TargetInfoBase &targetInfo) {
-  assert(cvt.getNumOutDims() == 1);
-  assert(*cvt.getOutDimNames().begin() == str_attr("offset"));
-
-  auto calcPaddedOffset = [&](Value smemOffset) {
-    TritonLLVMOpBuilder b(loc, rewriter);
-    auto bitwidth = llvmElemTy.getIntOrFloatBitWidth();
-    if (auto paddedEnc =
-            dyn_cast<ttg::PaddedSharedEncodingAttr>(srcTy.getEncoding())) {
-      Value padOffset =
-          emitPadding(loc, rewriter, paddedEnc, bitwidth, smemOffset,
-                      /*offsetInBytes=*/true);
-      smemOffset = b.add(smemOffset, padOffset);
-    }
-    return smemOffset;
-  };
-
-  auto removeBroadcastSrc = actionRemoveBroadcastedRegs(cvt);
-  if (!removeBroadcastSrc.isIdentity()) {
-    auto prmtCvt = removeBroadcastSrc.apply(cvt);
-    auto outVals = lowerLocalPointers(loc, ctx, prmtCvt, llvmElemTy, llvmPtrTy,
-                                      srcTy, smemObj, rewriter, targetInfo);
-    outVals = broadcastAs(outVals, cvt);
-    return outVals;
-  }
-
-  auto affineOffset = smemObj.getShmemOffset(loc, rewriter, srcTy);
-  auto maskSpanAffineOffset = smemObj.getMaskSpanOffsets(srcTy);
-  auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
-
-  auto bitwidth = llvmElemTy.getIntOrFloatBitWidth();
-  assert(bitwidth % 8 == 0 && "local pointers expect byte-addressable src");
-
-  auto emitPointers = [&](RewriterBase &rewriter, Location loc, ArrayRef<Value>,
-                          Value shmemAddr, int,
-                          VectorType vecTy) -> SmallVector<Value> {
-    TritonLLVMOpBuilder b(loc, rewriter);
-    SmallVector<Value> ptrVals;
-    ptrVals.reserve(vecTy.getNumElements());
-    int stride = bitwidth / 8;
-    for (int idx = 0; idx < vecTy.getNumElements(); ++idx) {
-      Value offset = b.i32_val(idx * stride);
-      Value elemAddr = b.gep(shmemAddr.getType(), i8_ty, shmemAddr, offset,
-                             LLVM::GEPNoWrapFlags::inbounds);
-      ptrVals.push_back(b.bitcast(elemAddr, llvmPtrTy));
-    }
-    return ptrVals;
-  };
-
-  return lowerLdSt(loc, ctx, cvt, {}, llvmElemTy, smemObj.getBase(),
-                   calcPaddedOffset, affineOffset, maskSpanAffineOffset, laneId,
-                   warpId, rewriter, targetInfo, std::nullopt, emitPointers);
-}
-
 struct LocalPointersOpConversion
     : public ConvertOpToLLVMPattern<tle::LocalPointersOp> {
   LocalPointersOpConversion(LLVMTypeConverter &typeConverter,
@@ -140,34 +63,18 @@ struct LocalPointersOpConversion
 
     auto sharedEnc = cast<ttg::SharedEncodingTrait>(memDescTy.getEncoding());
     auto kReg = str_attr("register");
-    auto kLane = str_attr("lane");
-    auto kWarp = str_attr("warp");
     auto kOffset = str_attr("offset");
     if (!resultTy.getEncoding())
       return reportFailure("local_pointers result must carry an encoding");
 
     LinearLayout regLayout = ttg::toLinearLayout(resultTy);
-    auto &indicesRegion = op.getIndices();
-    if (isIdentityIndicesRegion(indicesRegion)) {
-      LinearLayout cvt = LinearLayout::empty();
-      if (auto paddedEnc = dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
-        cvt = ttg::getPaddedRegToSharedLayout(regLayout, paddedEnc);
-      } else {
-        auto sharedLayout = ttg::toLinearLayout(memDescTy);
-        cvt = regLayout.invertAndCompose(sharedLayout);
-        auto kBlock = str_attr("block");
-        if (!cvt.isTrivialOver({kBlock})) {
-          return reportFailure("shared layout must be block-invariant");
-        }
-      }
-      cvt = cvt.sublayout({kReg, kLane, kWarp}, {kOffset});
-      auto outVals =
-          lowerLocalPointers(loc, ctx, cvt, llvmElemTy, llvmPtrTy, memDescTy,
-                             smemObj, rewriter, targetInfo);
-      Value result =
-          packLLElements(loc, typeConverter, outVals, rewriter, resultTy);
-      rewriter.replaceOp(op, result);
-      return success();
+    for (Value operand : op.getIndices()) {
+      auto idxTy = dyn_cast<RankedTensorType>(operand.getType());
+      if (!idxTy)
+        return reportFailure("indices must be ranked tensors");
+      if (resultTy.getEncoding() && idxTy.getEncoding() &&
+          resultTy.getEncoding() != idxTy.getEncoding())
+        return reportFailure("indices tensor encoding must match result encoding");
     }
 
     SmallVector<Value> outVals(regLayout.getInDimSize(kReg), Value());
@@ -189,52 +96,28 @@ struct LocalPointersOpConversion
     if (smemOffsets.size() != bufferRank)
       return reportFailure("shared memory offsets rank mismatch");
 
-    auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
-    auto kBlock = str_attr("block");
+    auto indexVals = adaptor.getIndices();
+    if (indexVals.size() != bufferRank)
+      return reportFailure("indices must provide buffer-rank values");
+
+    SmallVector<SmallVector<Value>> indexElems;
+    indexElems.reserve(indexVals.size());
+    for (Value indexVal : indexVals) {
+      auto elems = unpackLLElements(loc, indexVal, rewriter);
+      if (elems.size() != outVals.size())
+        return reportFailure(
+            "indices tensors must match local_pointers result shape");
+      indexElems.push_back(std::move(elems));
+    }
 
     for (size_t idx = 0; idx < outVals.size(); ++idx) {
-      SmallVector<std::pair<StringAttr, Value>> inIndices;
-      inIndices.reserve(regLayout.getNumInDims());
-      for (auto dimName : regLayout.getInDimNames()) {
-        if (dimName == kReg) {
-          inIndices.push_back({dimName, b.i32_val(static_cast<int32_t>(idx))});
-        } else if (dimName == kLane) {
-          inIndices.push_back({dimName, laneId});
-        } else if (dimName == kWarp) {
-          inIndices.push_back({dimName, warpId});
-        } else if (dimName == kBlock) {
-          inIndices.push_back({dimName, b.i32_val(0)});
-        } else {
-          inIndices.push_back({dimName, b.i32_val(0)});
-        }
-      }
-
-      auto logicalCoords =
-          applyLinearLayout(loc, rewriter, regLayout, inIndices);
-      SmallVector<Value> coordVals;
-      auto coordDimNames = standardOutDimNames(ctx, resultTy.getRank());
-      coordVals.reserve(coordDimNames.size());
-      for (auto dimName : coordDimNames) {
-        auto it = llvm::find_if(logicalCoords,
-                                [&](const std::pair<StringAttr, Value> &pair) {
-                                  return pair.first == dimName;
-                                });
-        if (it == logicalCoords.end())
-          return reportFailure("missing logical coordinate for local_pointers");
-        coordVals.push_back(it->second);
-      }
-
-      auto indexVals = inlineRegion<tle::LocalPointersReturnOp>(
-          rewriter, indicesRegion, coordVals, loc);
-      if (indexVals.size() != bufferRank)
-        return reportFailure("indices region must return buffer-rank values");
-
       SmallVector<Value> idxCoords;
       idxCoords.reserve(indexVals.size());
-      for (auto [val, offset] : llvm::zip_equal(indexVals, smemOffsets)) {
-        val = ensureI32(val);
+      for (size_t dim = 0; dim < indexElems.size(); ++dim) {
+        Value val = ensureI32(indexElems[dim][idx]);
         if (!val)
           return reportFailure("indices must lower to i32 scalars");
+        Value offset = smemOffsets[dim];
         Value offVal = ensureI32(offset);
         if (!offVal)
           return reportFailure("shared memory offsets must be i32");

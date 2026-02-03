@@ -4,7 +4,6 @@ Unit test covering a minimal Triton kernel that stages data through
 TLE local pointers before writing results back to global memory.
 """
 
-import functools
 import pytest
 import torch
 import triton
@@ -12,26 +11,6 @@ import triton.language as tl
 import triton.experimental.tle.language.gpu as tle
 
 BLOCK_SIZE = 64
-
-
-@triton.jit
-def _index_1d_with_offset(i, offset):
-    return (offset + i, )
-
-
-@triton.jit
-def _index_a_slice(i, j, k_start):
-    return (i, k_start + j)
-
-
-@triton.jit
-def _index_b_slice(i, j, k_start):
-    return (k_start + i, j)
-
-
-@triton.jit
-def _index_axis_gather(i, j):
-    return (i.to(tl.int64), (1 + j).to(tl.int64))
 
 
 def _require_cuda():
@@ -53,7 +32,7 @@ def _local_pointer_axpy_kernel(x_ptr, y_ptr, out_ptr, numel, alpha, BLOCK: tl.co
     mask = offsets < numel
 
     smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    smem_ptrs = tle.local_ptr(smem_tile)
+    smem_ptrs = tle.local_ptr(smem_tile, (tl.arange(0, BLOCK),))
 
     x_tile = x_ptr + offsets
     y_tile = y_ptr + offsets
@@ -78,7 +57,7 @@ def _local_pointer_store_kernel(out_ptr, numel, value, BLOCK: tl.constexpr):
     mask = offsets < numel
 
     smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    smem_ptrs = tle.local_ptr(smem_tile)
+    smem_ptrs = tle.local_ptr(smem_tile, (tl.arange(0, BLOCK),))
 
     init = tl.full((BLOCK, ), value, tl.float32)
     tl.store(smem_ptrs, init, mask=mask)
@@ -103,7 +82,7 @@ def _local_pointer_looped_elementwise_kernel(
     base = pid * BLOCK * CHUNKS
 
     smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    smem_ptrs = tle.local_ptr(smem_tile)
+    smem_ptrs = tle.local_ptr(smem_tile, (tl.arange(0, BLOCK),))
     assert BLOCK % SLICE_SIZE == 0, "BLOCK must be divisible by SLICE_SIZE"
     slice_indices = tl.arange(0, SLICE_SIZE)
 
@@ -117,8 +96,7 @@ def _local_pointer_looped_elementwise_kernel(
             block_offset = slice_idx * SLICE_SIZE
             slice_ptr = tle.local_ptr(
                 smem_tile,
-                functools.partial(_index_1d_with_offset, offset=block_offset),
-                (SLICE_SIZE, ),
+                (block_offset + slice_indices,),
             )
             slice_offsets = base + chunk * BLOCK + block_offset + slice_indices
             slice_mask = slice_offsets < numel
@@ -172,17 +150,17 @@ def _local_pointer_tiled_matmul_kernel(
 
         for slice_idx in range(slice_parts):
             k_start = slice_idx * slice_width
-            a_slice = tle.local_ptr(
-                smem_a,
-                functools.partial(_index_a_slice, k_start=k_start),
-                (BLOCK_M, SLICE_WIDTH),
-            )
+            a_rows = tl.arange(0, BLOCK_M)[:, None]
+            a_cols = tl.arange(0, SLICE_WIDTH)[None, :] + k_start
+            a_rows = tl.broadcast_to(a_rows, (BLOCK_M, SLICE_WIDTH))
+            a_cols = tl.broadcast_to(a_cols, (BLOCK_M, SLICE_WIDTH))
+            a_slice = tle.local_ptr(smem_a, (a_rows, a_cols))
 
-            b_slice = tle.local_ptr(
-                smem_b,
-                functools.partial(_index_b_slice, k_start=k_start),
-                (SLICE_WIDTH, BLOCK_N),
-            )
+            b_rows = tl.arange(0, SLICE_WIDTH)[:, None] + k_start
+            b_cols = tl.arange(0, BLOCK_N)[None, :]
+            b_rows = tl.broadcast_to(b_rows, (SLICE_WIDTH, BLOCK_N))
+            b_cols = tl.broadcast_to(b_cols, (SLICE_WIDTH, BLOCK_N))
+            b_slice = tle.local_ptr(smem_b, (b_rows, b_cols))
             a_vals = tl.load(a_slice)
             b_vals = tl.load(b_slice)
             acc += tl.dot(a_vals, b_vals, out_dtype=tl.float32)
@@ -209,7 +187,9 @@ def _local_pointer_axis_gather_kernel(
     x_tile = x_ptr + offs_m * stride_xm + offs_n * stride_xn
     tle.copy(x_tile, smem, [ROWS, COLS])
 
-    smem_slice = tle.local_ptr(smem, _index_axis_gather, (ROWS, SLICE))
+    row_ids = tl.broadcast_to(offs_m, (ROWS, SLICE))
+    col_ids = tl.broadcast_to(1 + tl.arange(0, SLICE)[None, :], (ROWS, SLICE))
+    smem_slice = tle.local_ptr(smem, (row_ids, col_ids))
     vals = tl.load(smem_slice)
 
     out_tile = out_ptr + offs_m * stride_om + tl.arange(0, SLICE)[None, :] * stride_on

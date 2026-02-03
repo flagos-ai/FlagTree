@@ -107,11 +107,18 @@ class TLESemantic:
         """Analyze copy operation semantics"""
         self.validate_copy_compatibility(src, dst, copy_shape)
 
-    def analyze_local_pointer_operation(self, buffer: tle.buffered_tensor, offsets: Optional[tl.tensor] = None) -> None:
+    def analyze_local_pointer_operation(self, buffer: tle.buffered_tensor,
+                                        indices: Optional[Sequence[tl.tensor]] = None) -> None:
         """Analyze local_ptr operation semantics"""
         self.validate_local_pointer_buffer(buffer)
-        if offsets is None:
+        if not indices:
             return
-        elem_ty = offsets.type.element_ty
-        if not elem_ty.is_int():
-            raise TLESemanticError("Index tensor dtype must be integer", "local_ptr")
+        first_shape = None
+        for idx in indices:
+            elem_ty = idx.type.element_ty
+            if not elem_ty.is_int():
+                raise TLESemanticError("Index tensor dtype must be integer", "local_ptr")
+            if first_shape is None:
+                first_shape = tuple(idx.shape)
+            elif tuple(idx.shape) != first_shape:
+                raise TLESemanticError("Index tensors must have identical shapes", "local_ptr")

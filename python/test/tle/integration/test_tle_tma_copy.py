@@ -37,9 +37,13 @@ def elementwise_tma_add_kernel(
     a_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
     b_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
     c_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
-    a_smem_ptrs = tle.local_ptr(a_smem)
-    b_smem_ptrs = tle.local_ptr(b_smem)
-    c_smem_ptrs = tle.local_ptr(c_smem)
+    row_ids = tl.arange(0, XBLOCK)[:, None]
+    col_ids = tl.arange(0, YBLOCK)[None, :]
+    row_ids = tl.broadcast_to(row_ids, (XBLOCK, YBLOCK))
+    col_ids = tl.broadcast_to(col_ids, (XBLOCK, YBLOCK))
+    a_smem_ptrs = tle.local_ptr(a_smem, (row_ids, col_ids))
+    b_smem_ptrs = tle.local_ptr(b_smem, (row_ids, col_ids))
+    c_smem_ptrs = tle.local_ptr(c_smem, (row_ids, col_ids))
 
     # Use TLE pipeline for block-wise processing
     for yoff in range(0, ynumel, YBLOCK):

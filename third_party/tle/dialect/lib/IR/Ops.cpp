@@ -82,35 +82,33 @@ LogicalResult LocalPointersOp::verify() {
   auto resultShape = resultTy.getShape();
   Attribute resultEncoding = resultTy.getEncoding();
 
-  auto &region = getIndices();
-  if (region.empty())
-    return emitOpError() << "expects a non-empty indices region";
+  auto indices = getIndices();
+  if (indices.size() != memDescTy.getShape().size())
+    return emitOpError() << "expects indices count to match buffer rank";
 
-  if (!region.hasOneBlock())
-    return emitOpError() << "expects indices region to have a single block";
-
-  auto &block = region.front();
-  if (block.getNumArguments() != resultShape.size())
-    return emitOpError() << "expects indices region args to match result rank";
-
-  for (BlockArgument arg : block.getArguments()) {
-    if (!arg.getType().isInteger())
-      return emitOpError() << "expects indices region args to be integer";
+  ArrayRef<int64_t> indexShape;
+  for (Value val : indices) {
+    auto indexTy = dyn_cast<RankedTensorType>(val.getType());
+    if (!indexTy)
+      return emitOpError()
+             << "expects indices return values to be ranked tensors";
+    if (!indexTy.getElementType().isInteger())
+      return emitOpError()
+             << "expects indices return tensors to have integer element types";
+    if (indexShape.empty())
+      indexShape = indexTy.getShape();
+    else if (indexTy.getShape() != indexShape)
+      return emitOpError()
+             << "expects indices return tensors to have identical shapes";
+    if (resultEncoding && indexTy.getEncoding() &&
+        resultEncoding != indexTy.getEncoding())
+      return emitOpError()
+             << "expects indices return tensors to match result encoding";
   }
 
-  auto *terminator = block.getTerminator();
-  auto yield = dyn_cast<LocalPointersReturnOp>(terminator);
-  if (!yield)
-    return emitOpError() << "expects indices region to terminate with "
-                            "tle.local_pointers.return";
-
-  if (yield.getNumOperands() != memDescTy.getShape().size())
-    return emitOpError() << "expects indices return to match buffer rank";
-
-  for (Value val : yield.getOperands()) {
-    if (!val.getType().isInteger())
-      return emitOpError() << "expects indices return values to be integer";
-  }
+  if (indexShape != resultShape)
+    return emitOpError()
+           << "expects indices return tensor shape to match result shape";
 
   return success();
 }

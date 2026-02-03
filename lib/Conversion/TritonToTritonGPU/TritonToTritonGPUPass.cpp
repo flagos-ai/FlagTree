@@ -817,38 +817,11 @@ public:
   }
 };
 
-class TleLocalPointersOpPattern
-    : public OpConversionPattern<tle::LocalPointersOp> {
-public:
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(tle::LocalPointersOp op,
-                  tle::LocalPointersOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto newOp = rewriter.cloneWithoutRegions<tle::LocalPointersOp>(op);
-    Region &indices = op.getIndices(), &newIndices = newOp.getIndices();
-    rewriter.inlineRegionBefore(indices, newIndices, newIndices.end());
-
-    if (failed(rewriter.convertRegionTypes(&newIndices, *getTypeConverter()))) {
-      return rewriter.notifyMatchFailure(op, "could not convert indices types");
-    }
-
-    newOp->setOperands(adaptor.getOperands());
-    for (OpResult result : newOp->getResults()) {
-      result.setType(getTypeConverter()->convertType(result.getType()));
-    }
-
-    rewriter.replaceOp(op, newOp->getResults());
-    return success();
-  }
-};
-
 void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns
-      .add<TleDSLRegionOpPattern, TleLocalPointersOpPattern,
+      .add<TleDSLRegionOpPattern, GenericOpPattern<tle::LocalPointersOp>,
            GenericOpPattern<tle::YieldOp>,
            GenericOpPattern<tle::ExtractAllocatedPtrOp>,
            GenericOpPattern<tle::ExtractAlignedPtrOp>,
