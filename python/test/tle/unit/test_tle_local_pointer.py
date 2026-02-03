@@ -33,7 +33,7 @@ def _local_pointer_axpy_kernel(x_ptr, y_ptr, out_ptr, numel, alpha, BLOCK: tl.co
     mask = offsets < numel
 
     smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    smem_ptrs = tle.local_ptr(smem_tile, (tl.arange(0, BLOCK),))
+    smem_ptrs = tle.local_ptr(smem_tile, (tl.arange(0, BLOCK), ))
 
     x_tile = x_ptr + offsets
     y_tile = y_ptr + offsets
@@ -56,7 +56,7 @@ def _local_pointer_store_kernel(out_ptr, numel, value, BLOCK: tl.constexpr):
     mask = offsets < numel
 
     smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    smem_ptrs = tle.local_ptr(smem_tile, (tl.arange(0, BLOCK),))
+    smem_ptrs = tle.local_ptr(smem_tile, (tl.arange(0, BLOCK), ))
 
     init = tl.full((BLOCK, ), value, tl.float32)
     tl.store(smem_ptrs, init, mask=mask)
@@ -92,7 +92,7 @@ def _local_pointer_looped_elementwise_kernel(
             block_offset = slice_idx * SLICE_SIZE
             slice_ptr = tle.local_ptr(
                 smem_tile,
-                (block_offset + slice_indices,),
+                (block_offset + slice_indices, ),
             )
             slice_offsets = base + chunk * BLOCK + block_offset + slice_indices
             slice_mask = slice_offsets < numel

@@ -53,12 +53,9 @@ def elementwise_add_kernel(
     c_ptrs = c_ptr + xstride_c * xoffs[:, None]
 
     # Allocate shared memory buffers
-    a_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem,
-                       nv_mma_shared_layout=False)
-    b_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem,
-                       nv_mma_shared_layout=False)
-    c_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem,
-                       nv_mma_shared_layout=False)
+    a_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    b_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    c_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
     row_ids = tl.arange(0, XBLOCK)[:, None]
     col_ids = tl.arange(0, YBLOCK)[None, :]
     row_ids = tl.broadcast_to(row_ids, (XBLOCK, YBLOCK))

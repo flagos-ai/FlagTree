@@ -149,8 +149,8 @@ class AssignLocalPointersEncodingPass
           auto ptrElemTy =
               cast<triton::PointerType>(ptrTensorTy.getElementType())
                   .getPointeeType();
-          auto loadTy = RankedTensorType::get(
-              ptrTensorTy.getShape(), ptrElemTy, ptrTensorTy.getEncoding());
+          auto loadTy = RankedTensorType::get(ptrTensorTy.getShape(), ptrElemTy,
+                                              ptrTensorTy.getEncoding());
           for (OpOperand &use : ptrVal.getUses()) {
             Operation *owner = use.getOwner();
             if (auto load = dyn_cast<triton::LoadOp>(owner)) {
@@ -188,11 +188,11 @@ class AssignLocalPointersEncodingPass
             newOperands.push_back(operand);
             continue;
           }
-          auto convertedTy = RankedTensorType::get(
-              operandTy.getShape(), operandTy.getElementType(), desiredEncoding);
-          auto converted =
-              builder.create<triton::gpu::ConvertLayoutOp>(
-                  op.getLoc(), convertedTy, operand);
+          auto convertedTy = RankedTensorType::get(operandTy.getShape(),
+                                                   operandTy.getElementType(),
+                                                   desiredEncoding);
+          auto converted = builder.create<triton::gpu::ConvertLayoutOp>(
+              op.getLoc(), convertedTy, operand);
           newOperands.push_back(converted);
           updatedOperands = true;
         }

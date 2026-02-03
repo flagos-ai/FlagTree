@@ -316,6 +316,8 @@ class LambdaFunction:
         finally:
             self._generator.lscope = previous_scope
             self._generator.local_defs = previous_defs
+
+
 # end flagtree tle
 
 
@@ -758,27 +760,17 @@ class CodeGenerator(ast.NodeVisitor):
         params: List[inspect.Parameter] = []
         for i, arg in enumerate(posonly):
             default = defaults[i]
-            params.append(
-                inspect.Parameter(arg.arg, inspect.Parameter.POSITIONAL_ONLY, default=default)
-            )
+            params.append(inspect.Parameter(arg.arg, inspect.Parameter.POSITIONAL_ONLY, default=default))
         for i, arg in enumerate(pos_or_kw):
             default = defaults[len(posonly) + i]
-            params.append(
-                inspect.Parameter(arg.arg, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=default)
-            )
+            params.append(inspect.Parameter(arg.arg, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=default))
         if args.vararg is not None:
-            params.append(
-                inspect.Parameter(args.vararg.arg, inspect.Parameter.VAR_POSITIONAL)
-            )
+            params.append(inspect.Parameter(args.vararg.arg, inspect.Parameter.VAR_POSITIONAL))
         for i, arg in enumerate(args.kwonlyargs):
             default = self._evaluate_lambda_default(args.kw_defaults[i])
-            params.append(
-                inspect.Parameter(arg.arg, inspect.Parameter.KEYWORD_ONLY, default=default)
-            )
+            params.append(inspect.Parameter(arg.arg, inspect.Parameter.KEYWORD_ONLY, default=default))
         if args.kwarg is not None:
-            params.append(
-                inspect.Parameter(args.kwarg.arg, inspect.Parameter.VAR_KEYWORD)
-            )
+            params.append(inspect.Parameter(args.kwarg.arg, inspect.Parameter.VAR_KEYWORD))
 
         return inspect.Signature(params)
 
@@ -786,6 +778,7 @@ class CodeGenerator(ast.NodeVisitor):
         signature = self._build_lambda_signature(node)
         captured_scope = dict(self.lscope)
         return LambdaFunction(self, node, signature, captured_scope)
+
     # end flagtree tle
 
     def visit_Name(self, node):

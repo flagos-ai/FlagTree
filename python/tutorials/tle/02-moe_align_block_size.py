@@ -15,7 +15,7 @@ real data.
 # -----
 
 import argparse
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Tuple
 
 import torch
 import triton
@@ -36,6 +36,7 @@ def round_up(x: int, y: int) -> int:
 # %%
 # Kernels (opt path)
 # ------------------
+
 
 @triton.jit(do_not_specialize=["numel"])
 def moe_align_block_size_stage1_opt(
@@ -143,9 +144,7 @@ def moe_align_block_size_stage4(
     offset = tl.arange(0, tokens_per_thread) + start_idx
     mask = offset < numel
     expert_id = tl.load(topk_ids_ptr + offset, mask=mask)
-    token_idx_in_expert = tl.atomic_add(
-        tokens_cnts_ptr + off_t + expert_id, 1, mask=mask
-    )
+    token_idx_in_expert = tl.atomic_add(tokens_cnts_ptr + off_t + expert_id, 1, mask=mask)
     rank_post_pad = token_idx_in_expert + tl.load(cumsum_ptr + expert_id, mask=mask)
     tl.store(sorted_token_ids_ptr + rank_post_pad, offset, mask=mask)
 
@@ -153,6 +152,7 @@ def moe_align_block_size_stage4(
 # %%
 # Kernels (vllm-like path)
 # ------------------------
+
 
 @triton.jit(do_not_specialize=["numel"])
 def moe_align_block_size_sort_kernel(
@@ -267,10 +267,10 @@ def moe_align_block_size_vllm_stage1_kernel(
         scope=tle.smem,
         nv_mma_shared_layout=False,
     )
-    smem_ptrs = tle.local_ptr(smem_counts, (expert_offsets,))
+    smem_ptrs = tle.local_ptr(smem_counts, (expert_offsets, ))
     tl.store(smem_ptrs, 0)
 
-    ones = tl.full((BLOCK,), 1, tl.int32)
+    ones = tl.full((BLOCK, ), 1, tl.int32)
     if NUM_BLOCKS > 0:
         if NUM_BLOCKS > 1:
             for i in range(NUM_BLOCKS - 1):
@@ -279,7 +279,7 @@ def moe_align_block_size_vllm_stage1_kernel(
                 expert_id = tl.load(topk_ids_ptr + offsets).to(tl.int32)
                 valid = expert_id < num_experts
                 expert_id = tl.where(valid, expert_id, 0)
-                count_ptrs = tle.local_ptr(smem_counts, (expert_id,))
+                count_ptrs = tle.local_ptr(smem_counts, (expert_id, ))
                 tl.atomic_add(count_ptrs, ones, mask=valid)
 
         base = (NUM_BLOCKS - 1) * BLOCK
@@ -288,7 +288,7 @@ def moe_align_block_size_vllm_stage1_kernel(
         expert_id = tl.load(topk_ids_ptr + offsets, mask=tail_mask, other=0).to(tl.int32)
         valid = tail_mask & (expert_id < num_experts)
         expert_id = tl.where(valid, expert_id, 0)
-        count_ptrs = tle.local_ptr(smem_counts, (expert_id,))
+        count_ptrs = tle.local_ptr(smem_counts, (expert_id, ))
         tl.atomic_add(count_ptrs, ones, mask=valid)
 
     tl.debug_barrier()
@@ -313,12 +313,10 @@ def moe_align_block_size_vllm_stage1_kernel(
             valid_block = block_ids < NUM_BLOCKS_OUT
             block_ids_2d = block_ids[None, :] + tl.zeros((BLOCK_EXPERT_GROUP, 1), tl.int32)
             expert_vals = group_offsets[:, None] + tl.zeros((1, BLOCK_OUT), tl.int32)
-            expert_mask_2d = (
-                valid_block[None, :]
-                & group_mask[:, None]
-                & (block_ids_2d >= start_block[:, None])
-                & (block_ids_2d < end_block[:, None])
-            )
+            expert_mask_2d = (valid_block[None, :]
+                              & group_mask[:, None]
+                              & (block_ids_2d >= start_block[:, None])
+                              & (block_ids_2d < end_block[:, None]))
             tl.store(expert_ids_ptr + block_ids_2d, expert_vals, mask=expert_mask_2d)
 
 
@@ -336,12 +334,10 @@ def _allocate_outputs(
     max_num_tokens_padded = topk_ids.numel() + num_experts * (block_size - 1)
     if pad_sorted_ids:
         max_num_tokens_padded = round_up(max_num_tokens_padded, block_size)
-    sorted_ids = torch.empty(
-        (max_num_tokens_padded,), dtype=torch.int32, device=topk_ids.device
-    )
+    sorted_ids = torch.empty((max_num_tokens_padded, ), dtype=torch.int32, device=topk_ids.device)
     max_num_m_blocks = triton.cdiv(max_num_tokens_padded, block_size)
-    expert_ids = torch.empty((max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device)
-    num_tokens_post_pad = torch.empty((1,), dtype=torch.int32, device=topk_ids.device)
+    expert_ids = torch.empty((max_num_m_blocks, ), dtype=torch.int32, device=topk_ids.device)
+    num_tokens_post_pad = torch.empty((1, ), dtype=torch.int32, device=topk_ids.device)
     return sorted_ids, expert_ids, num_tokens_post_pad
 
 
@@ -357,15 +353,11 @@ def _launch_common_opt(
     numel_sorted_token_ids = sorted_token_ids.numel()
     numel_expert_ids = expert_ids.numel()
 
-    grid = (num_experts,)
-    tokens_cnts = torch.zeros(
-        (num_experts + 1, num_experts), dtype=torch.int32, device=topk_ids.device
-    )
-    cumsum = torch.zeros((num_experts + 1,), dtype=torch.int32, device=topk_ids.device)
+    grid = (num_experts, )
+    tokens_cnts = torch.zeros((num_experts + 1, num_experts), dtype=torch.int32, device=topk_ids.device)
+    cumsum = torch.zeros((num_experts + 1, ), dtype=torch.int32, device=topk_ids.device)
     tokens_per_thread = triton.next_power_of_2(ceil_div(numel, num_experts))
-    block_size_sorted = triton.next_power_of_2(
-        ceil_div(numel_sorted_token_ids, num_experts)
-    )
+    block_size_sorted = triton.next_power_of_2(ceil_div(numel_sorted_token_ids, num_experts))
     block_size_expert = triton.next_power_of_2(ceil_div(numel_expert_ids, num_experts))
 
     moe_align_block_size_stage1_opt[grid](
@@ -391,7 +383,7 @@ def _launch_common_opt(
             tokens_cnts,
             num_experts,
         )
-    moe_align_block_size_stage3[(1,)](
+    moe_align_block_size_stage3[(1, )](
         num_tokens_post_pad,
         tokens_cnts,
         cumsum,
@@ -418,7 +410,7 @@ def moe_align_block_size_triton_impl(
     sorted_token_ids: torch.Tensor,
     expert_ids: torch.Tensor,
     num_tokens_post_pad: torch.Tensor,
-    ) -> None:
+) -> None:
     _launch_common_opt(
         topk_ids,
         num_experts,
@@ -446,7 +438,7 @@ def moe_align_block_size_tle_impl(
         block_init = 256
         block_tokens = triton.next_power_of_2(numel if numel > 0 else 1)
         num_sort_blocks = triton.cdiv(total_elems, block_init)
-        moe_align_block_size_vllm_small_batch_kernel[(1,)](
+        moe_align_block_size_vllm_small_batch_kernel[(1, )](
             topk_ids,
             sorted_token_ids,
             expert_ids,
@@ -473,7 +465,7 @@ def moe_align_block_size_tle_impl(
             num_tokens_post_pad,
         )
         return
-    cumsum = torch.zeros((num_experts + 1,), dtype=torch.int32, device=topk_ids.device)
+    cumsum = torch.zeros((num_experts + 1, ), dtype=torch.int32, device=topk_ids.device)
 
     expert_ids.fill_(0)
 
@@ -484,7 +476,7 @@ def moe_align_block_size_tle_impl(
     num_sort_blocks = triton.cdiv(total_elems, BLOCK_TOKENS)
     num_blocks_out = triton.cdiv(total_elems, block_size)
 
-    moe_align_block_size_vllm_stage1_kernel[(2,)](
+    moe_align_block_size_vllm_stage1_kernel[(2, )](
         topk_ids,
         sorted_token_ids,
         cumsum,
@@ -506,7 +498,7 @@ def moe_align_block_size_tle_impl(
     )
 
     block_sort = 256
-    grid = (triton.cdiv(numel, block_sort),)
+    grid = (triton.cdiv(numel, block_sort), )
     moe_align_block_size_sort_kernel[grid](
         topk_ids,
         sorted_token_ids,
@@ -525,12 +517,8 @@ def moe_align_block_size_triton(
     num_experts: int,
     pad_sorted_ids: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(
-        topk_ids, num_experts, block_size, pad_sorted_ids
-    )
-    moe_align_block_size_triton_impl(
-        topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad
-    )
+    sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(topk_ids, num_experts, block_size, pad_sorted_ids)
+    moe_align_block_size_triton_impl(topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad)
     return sorted_ids, expert_ids, num_tokens_post_pad
 
 
@@ -540,12 +528,8 @@ def moe_align_block_size_tle(
     num_experts: int,
     pad_sorted_ids: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(
-        topk_ids, num_experts, block_size, pad_sorted_ids
-    )
-    moe_align_block_size_tle_impl(
-        topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad
-    )
+    sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(topk_ids, num_experts, block_size, pad_sorted_ids)
+    moe_align_block_size_tle_impl(topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad)
     return sorted_ids, expert_ids, num_tokens_post_pad
 
 
@@ -555,9 +539,7 @@ def moe_align_block_size_tle(
 
 
 def _rand_topk_ids(num_tokens: int, num_experts: int) -> torch.Tensor:
-    return torch.randint(
-        0, num_experts, (num_tokens,), device=DEVICE, dtype=torch.int32
-    )
+    return torch.randint(0, num_experts, (num_tokens, ), device=DEVICE, dtype=torch.int32)
 
 
 def run_correctness(
@@ -568,12 +550,8 @@ def run_correctness(
     torch.manual_seed(0)
     topk_ids = _rand_topk_ids(num_tokens, num_experts)
 
-    triton_sorted, triton_expert, triton_num_post = moe_align_block_size_triton(
-        topk_ids, block_size, num_experts
-    )
-    tle_sorted, tle_expert, tle_num_post = moe_align_block_size_tle(
-        topk_ids, block_size, num_experts
-    )
+    triton_sorted, triton_expert, triton_num_post = moe_align_block_size_triton(topk_ids, block_size, num_experts)
+    tle_sorted, tle_expert, tle_num_post = moe_align_block_size_tle(topk_ids, block_size, num_experts)
 
     torch.testing.assert_close(triton_num_post, tle_num_post)
     num_post = int(triton_num_post.item())
@@ -641,17 +619,13 @@ def _bench_one(
     num_experts: int,
     provider: str,
 ) -> Tuple[float, float, float]:
-    sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(
-        topk_ids, num_experts, block_size, False
-    )
+    sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(topk_ids, num_experts, block_size, False)
     if provider == "triton":
-        fn = lambda: moe_align_block_size_triton_impl(
-            topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad
-        )
+        fn = lambda: moe_align_block_size_triton_impl(topk_ids, num_experts, block_size, sorted_ids, expert_ids,
+                                                      num_tokens_post_pad)
     elif provider == "tle":
-        fn = lambda: moe_align_block_size_tle_impl(
-            topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad
-        )
+        fn = lambda: moe_align_block_size_tle_impl(topk_ids, num_experts, block_size, sorted_ids, expert_ids,
+                                                   num_tokens_post_pad)
     else:
         raise ValueError(f"unknown provider: {provider}")
 
@@ -665,15 +639,9 @@ def run_benchmark(shapes: Iterable[Tuple[int, int]], block_size: int) -> None:
     print(header)
     for num_tokens, num_experts in shapes:
         topk_ids = _rand_topk_ids(num_tokens, num_experts)
-        sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(
-            topk_ids, num_experts, block_size, False
-        )
-        moe_align_block_size_triton_impl(
-            topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad
-        )
-        moe_align_block_size_tle_impl(
-            topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad
-        )
+        sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(topk_ids, num_experts, block_size, False)
+        moe_align_block_size_triton_impl(topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad)
+        moe_align_block_size_tle_impl(topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad)
 
         times_ms = []
         for p in providers:
@@ -685,7 +653,7 @@ def run_benchmark(shapes: Iterable[Tuple[int, int]], block_size: int) -> None:
 
 def _zipf_probs(num_experts: int, alpha: float) -> torch.Tensor:
     ranks = torch.arange(1, num_experts + 1, device=DEVICE, dtype=torch.float32)
-    probs = 1.0 / (ranks ** alpha)
+    probs = 1.0 / (ranks**alpha)
     return probs / probs.sum()
 
 
@@ -718,15 +686,14 @@ def run_realistic_benchmark(block_size: int) -> None:
         for p in providers:
             ms, _, _ = _bench_one(topk_ids, block_size, num_experts, p)
             times_ms.append(ms)
-        row = f"{num_tokens},{num_experts},zipf," + ",".join(
-            [f"{t:.4f}" for t in times_ms]
-        )
+        row = f"{num_tokens},{num_experts},zipf," + ",".join([f"{t:.4f}" for t in times_ms])
         print(row)
 
 
 # %%
 # Main
 # ----
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser()

@@ -410,9 +410,7 @@ def local_ptr(
 
     buffer_shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in buffer.type.shape)
     if len(indices_tuple) != len(buffer_shape):
-        raise ValueError(
-            f"local_ptr indices must provide {len(buffer_shape)} tensors, got {len(indices_tuple)}"
-        )
+        raise ValueError(f"local_ptr indices must provide {len(buffer_shape)} tensors, got {len(indices_tuple)}")
 
     idx_tensors: list[tensor] = []
     view_shape: Optional[tuple[int, ...]] = None
@@ -444,9 +442,7 @@ def local_ptr(
         raise RuntimeError("TLE local_ptr called without an insertion block")
     block_ir = block_type.to_ir(_semantic.builder)
     handles = [idx.handle for idx in idx_tensors]
-    local_ptr_op = _semantic.builder.create_local_pointers(
-        block_ir, buffer.handle, *handles
-    )
+    local_ptr_op = _semantic.builder.create_local_pointers(block_ir, buffer.handle, *handles)
 
     result_tensor = tl.tensor(local_ptr_op.get_result(0), block_type)
 

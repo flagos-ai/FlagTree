@@ -74,7 +74,8 @@ struct LocalPointersOpConversion
         return reportFailure("indices must be ranked tensors");
       if (resultTy.getEncoding() && idxTy.getEncoding() &&
           resultTy.getEncoding() != idxTy.getEncoding())
-        return reportFailure("indices tensor encoding must match result encoding");
+        return reportFailure(
+            "indices tensor encoding must match result encoding");
     }
 
     SmallVector<Value> outVals(regLayout.getInDimSize(kReg), Value());
