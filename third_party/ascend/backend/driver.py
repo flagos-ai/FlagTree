@@ -11,17 +11,10 @@ import hashlib
 from triton.runtime.cache import get_cache_manager, get_dump_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
-from triton.backends.ascend.utils import (
-    _precompile_npu_hash,
-    _precompile_npu_ext,
-    _build_npu_ext,
-    _check_cxx11_abi,
-    convert_sigtype_to_int,
-    _is_auto_map_parallel_blocks_enabled,
-    get_ascend_arch_from_env,
-    is_ffts_supported,
-    force_disable_ffts,
-)
+from triton.backends.ascend.utils import (_precompile_npu_hash, _precompile_npu_ext, _build_npu_ext, _check_cxx11_abi,
+                                          convert_sigtype_to_int, _is_auto_map_parallel_blocks_enabled,
+                                          get_ascend_arch_from_env, is_ffts_supported, force_disable_ffts,
+                                          get_backend_func)
 
 
 class NPUUtils(object):
@@ -126,11 +119,7 @@ class NPULauncher(object):
             print("[INFO]: skip running kernel")
             print(f"[INFO]: The compiled kernel cache is in {cache_manager.cache_dir}")
         if self.enable_msprof_register_tensor:
-            import torch
-            tensor_params = [arg for arg in args if isinstance(arg, torch.Tensor)]
-            tensor_params_shape = []
-            for t in tensor_params:
-                tensor_params_shape.append([s for s in t.shape])
+            tensor_params_shape = get_backend_func("get_tensor_params_shape", *args)
             # args[5] must be the packed metadata.
             # Check the launch wrapper in which PyArg_ParseTuple specifies the ordering of args
             args[5]['tensor_params_shape'] = tensor_params_shape
@@ -184,17 +173,13 @@ class NPUDriver(DriverBase):
         """
         Get current device
         """
-        import torch
-        import torch_npu
-        return torch.npu.current_device()
+        return get_backend_func("get_current_device")
 
     def set_current_device(self, device):
         """
         Set current device as the given device
         """
-        import torch
-        import torch_npu
-        return torch.npu.set_device(device)
+        return get_backend_func("set_current_device", device)
 
     def get_current_stream(self, device: Optional[int] = None) -> int:
         """
@@ -202,25 +187,31 @@ class NPUDriver(DriverBase):
         """
         # According to torch_npu, the content of a torch.npu.Stream is essentilly an rtStream_t
         # TODO: use CANN API instead of torchnpu
-        import torch
-        import torch_npu
-        from torch_npu._C import _npu_getCurrentRawStream
-        if device is None:
-            device = self.get_current_device()
-        return _npu_getCurrentRawStream(device)
+        return get_backend_func("get_current_stream", device)
 
     def get_benchmarker(self):
         from triton.testing import do_bench
         return do_bench
 
     def get_device_interface(self):
-        import torch
-        return torch.npu
+        return get_backend_func("get_device_interface")
 
     def get_empty_cache_for_benchmark(self):
-        import torch
         cache_size = 192 * 1024 * 1024
-        return torch.empty(cache_size // 4, dtype=torch.int, device='npu')
+        return get_backend_func("get_empty_tensor", cache_size // 4)
+
+
+# fixed the issue of corrupted gch header files in multi-threaded scenarios.
+def _precompile_npu_ext_with_lock(header_path):
+    import fcntl
+    src_path = os.path.dirname(header_path)
+    lock_path = os.path.join(src_path, "precompiled.lock")
+    with open(lock_path, "a+") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            _precompile_npu_ext(header_path)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
@@ -234,7 +225,7 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     # if precompile header file and its gch file not exist, do precompile
     if header_path is None and gch_path is None:
         header_path = cache.put(header_src, "precompiled.h", binary=False)
-        _precompile_npu_ext(header_path)
+        _precompile_npu_ext_with_lock(header_path)
 
     # try to get cached file
     so_cache_key = hashlib.sha256(wrapper_src.encode("utf-8")).hexdigest()
@@ -379,11 +370,9 @@ def generate_npu_header_src():
 #include <sys/syscall.h>
 #include <vector>
 #include <Python.h>
-#include "experiment/runtime/runtime/rt.h"
-#include <ATen/ATen.h>
+#include "runtime/runtime/rt.h"
 #include <acl/acl.h>
-#include <torch_npu/csrc/core/npu/NPUWorkspaceAllocator.h>
-{'#include <torch_npu/csrc/framework/OpCommand.h>' if enable_taskqueue else ''}
+{get_backend_func("header_file", enable_taskqueue)}
 
 #endif
 """
@@ -398,6 +387,7 @@ def generate_npu_wrapper_src(constants, signature, metadata):
                           if hasattr(metadata, 'lock_init_value') else 0
     lock_num = int(metadata.lock_num) \
                           if hasattr(metadata, 'lock_num') else -1
+    bs_task_type = metadata.bs_task_type if hasattr(metadata, 'bs_task_type') else 0
     mix_mode = metadata.mix_mode
     compile_on_910_95 = metadata.compile_on_910_95
     parallel_mode = metadata.parallel_mode
@@ -412,6 +402,9 @@ def generate_npu_wrapper_src(constants, signature, metadata):
             "i16": "int16_t",
             "i32": "int32_t",
             "i64": "int64_t",
+            "u1": "uint32_t",
+            "u8": "uint8_t",
+            "u16": "uint16_t",
             "u32": "uint32_t",
             "u64": "uint64_t",
             "fp16": "float",
@@ -426,8 +419,13 @@ def generate_npu_wrapper_src(constants, signature, metadata):
             return "PyObject*"
         return {
             'i1': 'int32_t',
+            'i8': 'int8_t',
+            'i16': 'int16_t',
             'i32': 'int32_t',
             'i64': 'int64_t',
+            'u1': 'uint32_t',
+            'u8': 'uint8_t',
+            'u16': 'uint16_t',
             'u32': 'uint32_t',
             'u64': 'uint64_t',
             'fp16': 'float',
@@ -443,11 +441,33 @@ def generate_npu_wrapper_src(constants, signature, metadata):
             "float": "f",
             "double": "d",
             "long": "l",
-            "uint32_t": "I",
+            "int8_t": "b",
+            "int16_t": "h",
             "int32_t": "i",
+            "int64_t": "l",
+            "uint8_t": "B",
+            "uint16_t": "H",
+            "uint32_t": "I",
             "uint64_t": "K",
-            "int64_t": "L",
         }[ty]
+
+    def _format_of_msprof_task_type_ratio(bs_task_type, mix_mode):
+        # Default fallback based on mix_mode
+        default_task_type = "MSPROF_GE_TASK_TYPE_AIV" if mix_mode == "aiv" else "MSPROF_GE_TASK_TYPE_AI_CORE"
+
+        if not bs_task_type:
+            return default_task_type, 0
+
+        task_type_num, mix_block_dim_ratio = divmod(int(bs_task_type), 10)
+        task_type_map = {
+            1: "MSPROF_GE_TASK_TYPE_AIV",
+            2: "MSPROF_GE_TASK_TYPE_AI_CORE",
+            3: "MSPROF_GE_TASK_TYPE_MIX_AIC",
+            4: "MSPROF_GE_TASK_TYPE_MIX_AIV",
+        }
+
+        task_type = task_type_map.get(task_type_num, default_task_type)
+        return task_type, mix_block_dim_ratio
 
     arg_decls = ', '.join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
     """
@@ -472,7 +492,8 @@ def generate_npu_wrapper_src(constants, signature, metadata):
     enable_auto_map_parallel_blocks = _is_auto_map_parallel_blocks_enabled()
     npu_utils = NPUUtils()
     num_physical_blocks = npu_utils.get_aivector_core_num() if mix_mode == "aiv" else npu_utils.get_aicore_num()
-    task_type = "MSPROF_GE_TASK_TYPE_AIV" if mix_mode == "aiv" else "MSPROF_GE_TASK_TYPE_AI_CORE"
+    task_type, mix_block_dim_ratio = _format_of_msprof_task_type_ratio(bs_task_type, mix_mode)
+    is_mix_task_type = "true" if ("MIX" in task_type) else "false"
     LINE_CHANGE_CHAR = chr(10)  # it is \n
     alloc_success_code = 'return 1;'
     sync_lock_fail_code = 'fprintf(stderr, "Error: syncBlockLock allocation failed\\n"); return;'
@@ -591,8 +612,29 @@ extern "C" {
       nodeBasicInfo.data.nodeBasicInfo.opName = opNameHashID;
       nodeBasicInfo.data.nodeBasicInfo.opType = opNameHashID;
       nodeBasicInfo.data.nodeBasicInfo.taskType = {task_type};
-      nodeBasicInfo.data.nodeBasicInfo.blockDim = blockNum;
+      nodeBasicInfo.data.nodeBasicInfo.blockDim = nodeBasicBlockDim;
       MsprofReportCompactInfo(0, static_cast<void *>(&nodeBasicInfo), sizeof(MsprofCompactInfo));
+
+      // 'mix' kernel need to report the ctxID
+      if ({is_mix_task_type} > 0) {{
+        MsprofAdditionalInfo info;
+        info.level = MSPROF_REPORT_NODE_LEVEL;
+        info.type = MSPROF_REPORT_NODE_CONTEXT_ID_INFO_TYPE;
+        info.threadId = threadId;
+        info.timeStamp = endTime;
+        MsprofContextIdInfo ctxId;
+        ctxId.opName = opNameHashID;
+        ctxId.ctxIdNum = 1;
+        for (uint32_t i = 0; i < ctxId.ctxIdNum; i++) {{
+          ctxId.ctxIds[i] = i;
+        }}
+        size_t copyLen = sizeof(MsprofContextIdInfo);
+        if (copyLen > MSPROF_ADDTIONAL_INFO_DATA_LENGTH) {{
+          copyLen = MSPROF_ADDTIONAL_INFO_DATA_LENGTH;
+        }}
+        memcpy(info.data, &ctxId, copyLen);
+        MsprofReportAdditionalInfo(false, static_cast<void *>(&info), sizeof(MsprofAdditionalInfo));
+      }}
 
       // Report tensor info
       int max_tensors_num = tensorShapes.size() < MSPROF_GE_TENSOR_DATA_NUM ? tensorShapes.size() : MSPROF_GE_TENSOR_DATA_NUM;
@@ -645,12 +687,12 @@ extern "C" {
     ret = rtKernelLaunch(func, blockNum, static_cast<void*>(&args), sizeof(args), NULL, stream);
 """
     if compile_on_910_95 and enable_simt:
-        cpp_kernel_launch = """
-    rtArgsEx_t argsInfo = {};
+        cpp_kernel_launch = f"""
+    rtArgsEx_t argsInfo = {{}};
     argsInfo.args = static_cast<void*>(&args);
     argsInfo.argsSize = sizeof(args);
-    rtTaskCfgInfo_t cfgInfo = {};
-    cfgInfo.localMemorySize = 216 * 1024;
+    rtTaskCfgInfo_t cfgInfo = {{}};
+    cfgInfo.localMemorySize = {metadata.shared_mem_dynamic_size};
     ret = rtKernelLaunchWithFlagV2(func, blockNum, &argsInfo, NULL, stream, 0, &cfgInfo);
 """
 
@@ -678,6 +720,13 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
   // base_ptr offset shape and stride are not used, arbitrarily set for now
   std::string name = "";
   name.append(kernelName);
+  void *workspace_addr_ptr = NULL;
+  uint32_t blockNum4Workspace = gridX * gridY * gridZ;
+  {f'''
+  uint64_t totalWorkSpaceSize = {workspace_size} * blockNum4Workspace;
+  auto optionsWorkspace = at::TensorOptions().device(at::kPrivateUse1).dtype(at::kByte);
+  workspace_addr_ptr = {get_backend_func("allocate_memory", "totalWorkSpaceSize", "optionsWorkspace")}
+  ''' if workspace_size > 0 else ''}
   {'auto launch_call = [=]() -> rtError_t' if enable_taskqueue else ''} {{
     uint32_t blockNum = gridX * gridY * gridZ;
 
@@ -688,20 +737,22 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
         warned = true;
     }}
     #endif
-
+    {get_backend_func("pre_launch")}
     {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if enable_auto_map_parallel_blocks else ''}
+    // set mixBlockNumRation for nodeBasicBlockDim for msprof report
+    uint32_t mixBlockNumRation = {mix_block_dim_ratio};
+    uint32_t nodeBasicBlockDim = (mixBlockNumRation << 16) + blockNum;
+
     {'cce::internal::DebugTunnelData *DTData = cce::internal::DebugTunnel::Open(blockNum);' if enable_device_print else ''}
     rtError_t ret;
     {'void *ffts_addr = NULL; uint32_t ffts_len; ret = rtGetC2cCtrlAddr((uint64_t*)&ffts_addr, &ffts_len);' if target_support_ffts else ''}
     {'if (ret != RT_ERROR_NONE) return ret;' if (target_support_ffts and enable_taskqueue) else 'if (ret != RT_ERROR_NONE) return;' if (target_support_ffts and (not enable_taskqueue)) else ''}
     // stub argument for workspace
     void *syncBlockLock_ptr = NULL;
-    void *workspace_addr_ptr = NULL;
     uint16_t ModuleId = 0;
     {f'''
     uint64_t syncBlockLockSize = {lock_num} * sizeof(int64_t);
-    at::Tensor syncBlockLock_tensor = at_npu::native::allocate_workspace(syncBlockLockSize, stream);
-    syncBlockLock_ptr = const_cast<void *>(syncBlockLock_tensor.storage().data());
+    syncBlockLock_ptr = {get_backend_func("allocate_sync_block_lock", "syncBlockLockSize", "stream")}
     if (!syncBlockLock_ptr) {{
       {alloc_success_code if enable_taskqueue else sync_lock_fail_code}
     }}
@@ -715,14 +766,6 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
       return {'ret' if enable_taskqueue else ''};
     }}
     ''' if lock_num > 0 else ''}
-    {f'''
-    uint64_t totalWorkSpaceSize = {workspace_size} * blockNum;
-    at::Tensor workspace_tensor = at_npu::native::allocate_workspace(totalWorkSpaceSize, stream);
-    workspace_addr_ptr = const_cast<void *>(workspace_tensor.storage().data());
-    if (!workspace_addr_ptr) {{
-      {alloc_success_code if enable_taskqueue else workspace_fail_code}
-    }}
-    ''' if workspace_size > 0 else ''}
     {'if (ret != RT_ERROR_NONE) return ret;' if (workspace_size > 0 and enable_taskqueue) else 'if (ret != RT_ERROR_NONE) return;' if (workspace_size > 0 and not enable_taskqueue) else ''}
     struct __attribute__((packed)) {{
       {'void* ffts_addr __attribute__((aligned(8)));' if target_support_ffts else ''}
@@ -735,7 +778,9 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
       {'static_cast<void*>(ffts_addr),' if target_support_ffts else ''}
       {('static_cast<void*>(syncBlockLock_ptr),' if lock_num > 0 else 'nullptr,') if not metadata.force_simt_only else ''}
       {('static_cast<void*>(workspace_addr_ptr),' if workspace_size > 0 else 'nullptr,') if not metadata.force_simt_only else ''}
-      {(', '.join(f'static_cast<{_ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if i not in constants) + ',') if len(signature) > 0 else ''}
+      {(lambda _rt: (', '.join(_rt) + ',') if _rt else '')(
+        [f'static_cast<{_ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if i not in constants]
+      )}
       {', '.join(f'static_cast<{_ty_to_cpp(ty)}>(grid{mark})' for mark, ty in grid_info.items())}
       {', static_cast<void*>(DTData)' if enable_device_print else ''}
     }};
@@ -746,7 +791,7 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
     {cpp_msprof_call_after_launch}
     {'return ret;' if enable_taskqueue else 'ret = rtStreamSynchronize(stream);'}
    }};
-   {'at_npu::native::OpCommand cmd; cmd.Name(name.c_str()).SetCustomHandler(launch_call).Run();' if enable_taskqueue else ''}
+   {f'''{get_backend_func("async_launch", "launch_call") if enable_taskqueue else ''}'''}
   return;
 }}
 
