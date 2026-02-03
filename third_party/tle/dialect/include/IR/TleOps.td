@@ -70,7 +70,7 @@ def Tle_ExtractPtrOp : Tle_Op<"extract_ptr", [Pure]> {
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
 }
 
-def Tle_PackOp : Tle_Op<"pack", [MemDescViewTrait, Pure, HasParent<"DSLRegionOp">]> {
+def Tle_PackOp : Tle_Op<"pack", [MemDescViewTrait, Pure]> {
   let arguments = (ins LLVMStructType:$input);
   let results = (outs Tle_TensorType:$output);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($output)";
