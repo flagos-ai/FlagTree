@@ -121,9 +121,6 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
     llvm::outs() << "=== outputTy: " << dsloutput << "\n";
   }
   auto outStructTy = LLVM::LLVMStructType::getLiteral(self.getContext(), dslOutputTys, /*packed=*/false);
-  // if (func.getNumResults() > 0) {
-  //   dslOutputTys.push_back(func.getResultTypes()[0]);
-  // }
 
   tle::DSLRegionOp dslRegionOp =
       self.create<tle::DSLRegionOp>(outStructTy, operands);
