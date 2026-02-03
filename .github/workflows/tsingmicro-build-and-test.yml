@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   tsingmicro-build-and-test:
-    runs-on: tsingmicro
+    runs-on: flagtree-tsingmicro
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
