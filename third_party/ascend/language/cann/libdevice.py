@@ -1,202 +1,28 @@
-from functools import wraps
-from typing import List
-import numbers
-from triton.language import core
-from triton.language.core import (
-    _constexpr_to_value,
-    constexpr,
-    tensor,
-)
-from triton.language.math import _add_math_1arg_docstr, _add_math_2arg_docstr, _add_math_3arg_docstr
-from triton.language import semantic
-from triton._C.libtriton import ir
-from triton.language import math, semantic
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 from math import pi as math_pi
-
-T = core.TypeVar('T')
-
-
-def _check_dtype(dtypes: List[str]) -> T:
-    """
-    We're following libdevice's convention to check accepted data types for math functions.
-    It is not a good practice to support all data types as accelerators/GPUs don't support
-    many float16 and bfloat16 math operations.
-    We should let the users know that they are using and invoke explicit cast to convert
-    the data type to the supported one.
-    """
-
-    def wrapper(fn):
-
-        @wraps(fn)
-        def check(*args, **kwargs):
-            # concatenate args and kwargs
-            all_args = list(args) + list(kwargs.values())
-            for arg in [a for a in all_args if isinstance(a, core.tensor)]:
-                arg_type = arg.type.scalar.name
-                if hasattr(arg, 'was_bool_to_int8') and arg.was_bool_to_int8:
-                    # In Triton, int1 maps to the boolean type
-                    arg_type = 'int1'
-                if arg_type not in dtypes:
-                    raise ValueError(f"Expected dtype {dtypes} but got {arg_type}")
-            return fn(*args, **kwargs)
-
-        return check
-
-    return wrapper
-
-
-@core.extern
-@_check_dtype(dtypes=["int32", "uint32"])
-@_add_math_2arg_docstr("most significant N bits of the 2N-bit product")
-def umulhi(x, y, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    y = semantic.to_tensor(y, _builder)
-    x, y = core.binary_op_type_legalization(x, y, _builder)
-    return core.tensor(_builder.create_umulhi(x.handle, y.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("exponential")
-@core._tensor_member_fn
-def exp(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_exp(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("exponential (base 2)")
-@core._tensor_member_fn
-def exp2(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_exp2(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("natural logarithm")
-@core._tensor_member_fn
-def log(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_log(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("logarithm (base 2)")
-@core._tensor_member_fn
-def log2(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_log2(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("cosine")
-@core._tensor_member_fn
-def cos(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_cos(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("sine")
-@core._tensor_member_fn
-def sin(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_sin(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("fast square root")
-@core._tensor_member_fn
-def sqrt(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_sqrt(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("precise square root (rounding to nearest wrt the IEEE standard)")
-@core._tensor_member_fn
-def sqrt_rn(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_precise_sqrt(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("inverse square root")
-@core._tensor_member_fn
-def rsqrt(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_rsqrt(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_2arg_docstr("precise division (rounding to nearest wrt the IEEE standard)")
-def div_rn(x, y, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    y = semantic.to_tensor(y, _builder)
-    x, y = core.binary_op_type_legalization(x, y, _builder)
-    return core.tensor(_builder.create_precise_divf(x.handle, y.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("error function")
-@core._tensor_member_fn
-def erf(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_erf(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32"])
-@_add_math_1arg_docstr("error function")
-@core._tensor_member_fn
-def tanh(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_tanh(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_1arg_docstr("floor")
-@core._tensor_member_fn
-def floor(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    return core.tensor(_builder.create_floor(x.handle), x.type)
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32"])
-@_add_math_1arg_docstr("ceil")
-@core._tensor_member_fn
-def ceil(x, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    if x.type.scalar.is_int():
-        return x
-    elif x.type.scalar.is_floating():
-        return core.tensor(_builder.create_ceil(x.handle), x.type)
-    raise ValueError("ceil does not support boolean type")
-
-
-@core.extern
-@_check_dtype(dtypes=["bf16", "fp16", "fp32", "fp8e4nv", "fp8e5"])
-@_add_math_3arg_docstr("fused multiply-add")
-def fma(x, y, z, _builder=None):
-    x = semantic.to_tensor(x, _builder)
-    y = semantic.to_tensor(y, _builder)
-    z = semantic.to_tensor(z, _builder)
-    x, y = core.binary_op_type_legalization(x, y, _builder)
-    z, x = core.binary_op_type_legalization(z, x, _builder)
-    z, y = core.binary_op_type_legalization(z, y, _builder)
-    return core.tensor(_builder.create_fma(x.handle, y.handle, z.handle), x.type)
+from triton.language import core, math, semantic
+from triton._C.libtriton import ir
+from triton.runtime.jit import jit
+from triton.backends.ascend.utils import get_ascend_arch_from_env
 
 
 @core.extern
@@ -276,8 +102,8 @@ def ilogb(arg0, _builder=None):
 def ldexp(arg0, arg1, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0, arg1], {
-            (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_ldexpf", core.dtype("fp32")),
-            (core.dtype("fp16"), core.dtype("fp16")): ("__hmf_ldexpDh", core.dtype("fp16")),
+            (core.dtype("fp32"), core.dtype("int32")): ("__hmf_ldexpf", core.dtype("fp32")),
+            (core.dtype("fp16"), core.dtype("int32")): ("__hmf_ldexpDh", core.dtype("fp16")),
         }, is_pure=True, _builder=_builder)
 
 
@@ -306,21 +132,6 @@ def isnan(arg0, _builder=None):
 
 
 @core.extern
-def flip(arg0, arg1=None, _builder=None):
-    if _builder is None:
-        from triton.language import core as tl
-        _builder = tl.get_builder()
-    from triton.language.core import flip as ascend_flip
-    return ascend_flip(arg0, arg1, _builder=_builder)
-
-
-@core.extern
-def atan2(arg0, arg1, _builder=None):
-    core.static_print("The func atan2 is supported in math.atan2 lowlevel. So use math.atan2 instead.")
-    return math.atan2(arg1, arg0)
-
-
-@core.extern
 def div_rz(arg0, arg1, _builder=None):
     core.static_print("tl.div_rz is unsupported for now. Use libdevice.div_rz instead.")
     core.static_assert(False)
@@ -333,44 +144,16 @@ def fmod(arg0, arg1, _builder=None):
 
 
 @core.extern
+def trunc(arg0, _builder=None):
+    core.static_print("tl.trunc is unsupported for now. Use libdevice.trunc instead.")
+    core.static_assert(False)
+
+
+@core.extern
 def round(arg0, _builder=None):
     return core.extern_elementwise("", "", [arg0], {
         (core.dtype("fp32"), ): ("__hmf_roundf", core.dtype("fp32")),
     }, is_pure=True, _builder=_builder)
-
-
-@core.extern
-@_add_math_2arg_docstr("cdiv")
-@core._tensor_member_fn
-def cdiv(x, div, _builder=None):
-    if isinstance(x, core.constexpr):
-        x = x.value
-    if isinstance(div, core.constexpr):
-        div = div.value
-    from math import ceil as py_ceil
-    if isinstance(x, numbers.Number) and isinstance(div, numbers.Number):
-        if isinstance(x, bool) or isinstance(div, bool):
-            raise TypeError("cdiv does not support boolean type")
-        if isinstance(x, int) and isinstance(div, int):
-            res = x // div
-            rem = x % div
-            return res + (1 if rem != 0 else 0)
-        else:
-            return py_ceil(x / div)
-
-    x = semantic.to_tensor(x, _builder)
-    div = semantic.to_tensor(div, _builder)
-    x_scalar_type = x.type.scalar
-    div_scalar_type = div.type.scalar
-    if x_scalar_type.is_bool() or div_scalar_type.is_bool():
-        raise ValueError("cdiv does not support boolean type")
-    elif x_scalar_type.is_int() and div_scalar_type.is_int():
-        # integer cdiv: (x + div - 1) // div as before
-        return semantic.floordiv(semantic.add(x, semantic.sub(div, 1, True, _builder), True, _builder), div, _builder)
-    else:
-        div_res = semantic.truediv(x, div, _builder)
-        cdiv_res = core.tensor(_builder.create_ceil(div_res.handle), div_res.type)
-        return semantic.cast(cdiv_res, x_scalar_type, _builder)
 
 
 @core.builtin
@@ -993,338 +776,45 @@ def copysign(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
     return semantic.where(is_negative, neg_magnitude, magnitude, _builder)
 
 
-@core.builtin
-def index_put(ptr: tensor, index: tensor, value: tensor, dim: int, index_boundary: int, end_offset: tuple,
-              start_offset: tuple, dst_stride: tuple, _builder=None):
-    """
-    Index put values from a tensor into a destination tensor.
+if get_ascend_arch_from_env() == "Ascend910_9589":
+    # if we have hardware support
+    @core.extern
+    def rint(arg0, _builder=None):
+        return core.extern_elementwise(
+            "", "", [arg0], {
+                (core.dtype("fp32"), ): ("__hmf_rint", core.dtype("fp32")),
+                (core.dtype("fp16"), ): ("__hmf_rint", core.dtype("fp16")),
+                (core.dtype("bf16"), ): ("__hmf_rint", core.dtype("bf16")),
+            }, is_pure=True, _builder=_builder)
+else:
 
-    Index put operation for different tensor ranks:
-    1. 2D index scatter (0 <= dim < 1):
-        1.1 dim = 0
-        out[index[i]][start_offset[1]:end_offset[1]] = value[i][0:end_offset[1]-start_offset[1]]
-    2. 3D index scatter (0 <= dim < 2):
-        2.1 dim = 0
-            out[index[i]][start_offset[1]:end_offset[1]][start_offset[2]:end_offset[2]]
-                = value[i][0:end_offset[1]-start_offset[1]][0:end_offset[2]-start_offset[2]]
-        2.2 dim = 1
-            out[start_offset[0]:end_offset[0]][index[j]][start_offset[2]:end_offset[2]]
-                = value[0:end_offset[0]-start_offset[0]][j][0:end_offset[2]-start_offset[2]]
+    @core.builtin
+    @math._check_dtype(dtypes=["fp16", "fp32", "bf16"])
+    @math._add_math_1arg_docstr("rint")
+    def rint(arg0: core.tensor, _builder: ir.builder):
+        arg0 = semantic.to_tensor(arg0, _builder)
 
+        floor_x = math.floor(arg0, _builder=_builder)
+        fractional = semantic.sub(arg0, floor_x, True, _builder)
 
-    :param ptr: pointer type, the destination tensor pointer (in GM)
-    :param index: tensor, a index to scatter (in UB)
-    :param value: tensor, a value to store (in UB)
-    :param dim: int32, the dimension to scatter along
-    :param index_boundary: int64, the upper boundary for index values
-    :param end_offset: tuple of int, the offsets of each dimension for the end of the scatter region
-    :param start_offset: tuple of int, the offsets of each dimension for the start of the scatter region
-    :param dst_stride: tuple of int, the stride of each dimension of destination tensor
-
-    Constraints
-    ***********
-    - `ptr` and `value` must have the same rank.
-    - `ptr.dtype` only supports `float16`, `bfloat16`, `float32` currently.
-    - `index` must be an integer tensor. If `index.rank` != 1, it will be reshaped to 1D.
-    - `index.numel` must equal `value.shape[dim]`.
-    - `value` support 2~5D tensors.
-    - `dim` must be valid (0 <= dim < rank(value) - 1).
-
-    Example
-    *******
-    .. code-block:: python
-
-        import torch
-        import triton
-        import triton.language as tl
-        from triton.language.extra.ascend.libdevice import index_put
-
-        @triton.jit
-        def simple_index_put_kernel(value_ptr, index_ptr, dst_ptr):
-            # index tile shape: [2]
-            index_local = tl.arange(0, 2)
-            x1_local = tl.arange(0, 2)[None, :]  # shape=(1,2)
-
-            index_tile = tl.load(index_ptr + index_local)
-            value_tile = tl.load(value_ptr + index_local[:, None]*2 + x1_local)
-
-            index_put(
-                ptr=dst_ptr,
-                index=index_tile,
-                value=value_tile,
-                dim=0,
-                index_boundary=4,
-                end_offset=(2, 2),
-                start_offset=(0, 0),
-                dst_stride=(2, 1)
-            )
-
-        dst = torch.zeros((4,2), device='npu', dtype=torch.float32)
-        value = torch.tensor([[1.,2.], [3.,4.]], device='npu')
-        index = torch.tensor([2, 0], device='npu')
-
-        simple_index_put_kernel[(1,)](value, index, dst)
-        print("IndexPut result:", dst) # ref:[[3.,4.], [0.,0.], [1.,2.], [0.,0.]]
-    """
-    dim = _constexpr_to_value(dim)
-    index_boundary = _constexpr_to_value(index_boundary)
-    return semantic.index_put(ptr, index, value, dim, index_boundary, end_offset, start_offset, dst_stride, _builder)
-
-
-@core.builtin
-def gather_out_to_ub(src: tensor, index: tensor, index_boundary: int, dim: int, src_stride: tuple, end_offset: tuple,
-                     start_offset: tuple, other=None, _builder=None):
-    """
-    Gather from a source tensor in Global Memory (GM) to Unified Buffer (UB)
-    along a specified dimension with out-of-bound handling.
-
-    Gather operation for different tensor ranks:
-    1. 1D index gather:
-        out[i] = src[start_offset[0] + index[i]]
-    2. 2D index gather (0 <= dim < 2):
-        2.1 dim = 0
-            out[i][j] = src[start_offset[0] + index[i][j]][start_offset[1] + j]
-        2.2 dim = 1
-            out[i][j] = src[start_offset[0] + i][start_offset[1] + index[i][j]]
-    3. 3D index gather (0 <= dim < 3):
-        3.1 dim = 0
-            out[i][j][k] = src[start_offset[0] + index[i][j][k]][start_offset[1] + j][start_offset[2] + k]
-        3.2 dim = 1
-            out[i][j][k] = src[start_offset[0] + i][start_offset[1] + index[i][j][k]][start_offset[2] + k]
-        3.3 dim = 2
-            out[i][j][k] = src[start_offset[0] + i][start_offset[1] + j][start_offset[2] + index[i][j][k]]
-
-    :param src: pointer type, the source tensor pointer (in GM)
-    :param index: tensor, a tensor to gather (in UB)
-    :param index_boundary: int64, the upper boundary for index values
-    :param dim: int32, the dimension to gather along
-    :param src_stride: tuple of int64, the stride of each dimension of src tensor
-    :param end_offset: tuple of int32, the end offsets of each dimension for index tensor
-    :param start_offset: tuple of int32, the start offsets of each dimension for index tensor
-    :param other(Optional): scalar value, the default value when index is out of boundary (in UB)
-    :return: tensor, with the same shape as `index.shape` (in UB)
-
-    Constraints
-    ***********
-    - `src` and `index` must have the same rank.
-    - `src.dtype` only supports `float16`, `bfloat16`, `float32` currently.
-    - `index` must be an integer tensor, with rank between 1 and 5.
-    - `dim` must be valid (0 <= dim < rank(index)).
-    - `other` must be a scalar value.
-    - For every dimension `i` not equal to `dim`, `index.size[i]` <= `src.size[i]`.
-    - The output shape is the same as `index.shape`. If `index` is None, \
-        the output tensor will be an empty tensor with the same shape as `index`.
-
-    Example
-    *******
-    .. code-block:: python
-
-        import torch
-        import triton
-        import triton.language as tl
-        from triton.language.extra.ascend.libdevice import gather_out_to_ub
-
-        @triton.jit
-        def simple_gather_kernel(src_ptr, index_ptr, out_ptr):
-            # index tile shape: [2,2]
-            y0_local = tl.arange(0, 2)[:, None]  # [0,1] rows
-            x1_local = tl.arange(0, 2)[None, :]  # [0,1] cols
-            mask = (y0_local < 2) & (x1_local < 2)
-
-            # Load index tile to UB
-            index = tl.load(index_ptr + y0_local*2 + x1_local, mask)
-
-            # Call gather_out_to_ub: gather values from src along dim=0
-            gathered = gather_out_to_ub(
-                src=src_ptr,
-                index=index,
-                index_boundary=4,
-                dim=0,
-                src_stride=(2, 1),
-                end_offset=(2, 2),
-                start_offset=(0, 0)
-            )
-
-            tl.store(out_ptr + y0_local*2 + x1_local, gathered, mask)
-
-        src = torch.tensor([[1.,2.], [3.,4.], [5.,6.], [7.,8.]], device='npu')
-        index = torch.tensor([[0,1], [2,3]], device='npu')
-        out = torch.empty((2,2), device='npu', dtype=torch.float32)
-
-        simple_gather_kernel[(1,)](src, index, out)
-        print("Gather result:", out)  # ref: [[1.,4.], [5.,8.]]
-    """
-    dim = _constexpr_to_value(dim)
-    index_boundary = _constexpr_to_value(index_boundary)
-    return semantic.gather_out_to_ub(src, index, index_boundary, dim, src_stride, end_offset, start_offset, other,
+        half = semantic.full(arg0.shape, 0.5, arg0.type.scalar, _builder)
+        eps = semantic.full(arg0.shape, 1e-8, arg0.type.scalar, _builder)
+        is_half = semantic.less_than(math.abs(semantic.sub(fractional, half, True, _builder), _builder=_builder), eps,
                                      _builder)
 
+        floor_int = floor_x.to(core.int32, _builder=_builder) if hasattr(floor_x, "to") else semantic.cast(
+            floor_x, core.int32, _builder)
+        two_i32 = semantic.full(arg0.shape, 2, core.int32, _builder)
+        is_even = semantic.equal(semantic.mod(floor_int, two_i32, _builder),
+                                 semantic.full(arg0.shape, 0, core.int32, _builder), _builder)
 
-@core.builtin
-def scatter_ub_to_out(ptr: tensor, value: tensor, index: tensor, index_boundary: int, dim: int, dst_stride: tuple,
-                      end_offset: tuple, start_offset: tuple, _builder=None):
-    """
-    Scatter a tile from Unified Buffer (UB) into a destination tensor in Global Memory (GM)
-    along a specified dimension, with index-boundary checking.
+        zero = semantic.full(arg0.shape, 0.0, arg0.type.scalar, _builder)
+        is_pos = semantic.greater_equal(arg0, zero, _builder)
 
-    Scatter operation for different tensor ranks:
-    1. 1D index scatter:
-        out[start_offset[0] + index[i]] = value[i]
-    2. 2D index scatter (0 <= dim < 2):
-        2.1 dim = 0
-            out[start_offset[0] + index[i][j]][start_offset[1] + j] = value[i][j]
-        2.2 dim = 1
-            out[start_offset[0] + i][start_offset[1] + index[i][j]] = value[i][j]
-    3. 3D index scatter (0 <= dim < 3):
-        3.1 dim = 0
-            out[start_offset[0] + index[i][j][k]][start_offset[1] + j][start_offset[2] + k] = value[i][j][k]
-        3.2 dim = 1
-            out[start_offset[0] + i][start_offset[1] + index[i][j][k]][start_offset[2] + k] = value[i][j][k]
-        3.3 dim = 2
-            out[start_offset[0] + i][start_offset[1] + j][start_offset[2] + index[i][j][k]] = value[i][j][k]
+        round_pos = math.floor(semantic.add(arg0, half, True, _builder), _builder=_builder)
+        round_neg = math.ceil(semantic.sub(arg0, half, True, _builder), _builder=_builder)
+        normal_round = semantic.where(is_pos, round_pos, round_neg, _builder)
 
-    :param ptr: pointer type, the destination tensor pointer (in GM)
-    :param value: tensor, a tile value to store (in UB)
-    :param index: tensor, a index to scatter (in UB)
-    :param index_boundary: int64, the upper boundary for index values
-    :param dim: int32, the dimension to scatter along
-    :param dst_stride: tuple of int64, the stride of each dimension of destination tensor
-    :param end_offset: tuple of int32, the end offsets of each dimension for index tensor
-    :param start_offset: tuple of int32, the start offsets of each dimension for index tensor
+        half_round = semantic.where(is_even, floor_x, semantic.add(floor_x, 1.0, True, _builder), _builder)
 
-    Constraints
-    ***********
-    - `ptr`, `index` and `value` must have the same rank.
-    - `ptr.dtype` only supports `float16`, `bfloat16`, `float32` currently.
-    - `index` must be an integer tensor, with rank between 1 and 5.
-    - `dim` must be valid (0 <= dim < rank(index)).
-    - For every dimension `i` not equal to `dim`, `index.size[i]` <= `ptr.size[i]`.
-    - The output shape is the same as `index.shape`. If `index` is None, \
-        the output tensor will be an empty tensor with the same shape as `index`.
-
-    Example
-    *******
-    .. code-block:: python
-
-        import torch
-        import triton
-        import triton.language as tl
-        from triton.language.extra.ascend.libdevice import scatter_ub_to_out
-
-        @triton.jit
-        def simple_scatter_kernel(value_ptr, index_ptr, dst_ptr):
-            # index tile shape: [2,2]
-            y0_local = tl.arange(0, 2)[:, None]  # [0,1] rows
-            x1_local = tl.arange(0, 2)[None, :]  # [0,1] cols
-            mask = (y0_local < 2) & (x1_local < 2)
-
-            value = tl.load(value_ptr + y0_local*2 + x1_local, mask)
-            index = tl.load(index_ptr + y0_local*2 + x1_local, mask)
-
-            scatter_ub_to_out(
-                ptr=dst_ptr,
-                value=value,
-                index=index,
-                index_boundary=4,
-                dim=0,
-                dst_stride=(2, 1),
-                end_offset=(2, 2),
-                start_offset=(0, 0)
-            )
-
-        dst = torch.zeros((4,2), device='npu', dtype=torch.float32)
-        value = torch.tensor([[1.,2.], [3.,4.]], device='npu')
-        index = torch.tensor([[1,2], [3,0]], device='npu')
-
-        simple_scatter_kernel[(1,)](value, index, dst)
-        print("Scatter result:", dst)  # ref:[[0.,4.], [1.,0.], [0.,2.], [3.,0.]]
-    """
-    dim = _constexpr_to_value(dim)
-    index_boundary = _constexpr_to_value(index_boundary)
-    return semantic.scatter_ub_to_out(ptr, value, index, index_boundary, dim, dst_stride, end_offset, start_offset,
-                                      _builder)
-
-
-@core.builtin
-def index_select_simd(src, dim, index, src_shape, src_offset, read_shape, _builder=None) -> tensor:
-    """
-    Parallel index_select operation from Global Memory to Unified Buffer (SIMD version).
-
-    Selects data from multiple indices along a specified dimension and loads
-    them as tiles from GM directly to UB with zero-copy semantics.
-
-    :param src: Source tensor pointer (in GM)
-    :type src: tensor (pointer type)
-    :param dim: The dimension along which to select indices
-    :type dim: int or constexpr
-    :param index: 1D tensor of indices to select (in UB)
-    :type index: tensor
-    :param src_shape: Complete shape of the source tensor (can be int or tensor)
-    :type src_shape: List[Union[int, tensor]]
-    :param src_offset: Starting offset for reading (can be int or tensor)
-    :type src_offset: List[Union[int, tensor]]
-    :param read_shape: Size to read (tile shape, can be int or tensor)
-    :type read_shape: List[Union[int, tensor]]
-
-    **Constraints:**
-
-    - ``read_shape[dim]`` must be ``-1``
-    - ``src_offset[dim]`` can be ``-1`` (will be ignored)
-    - Boundary handling: ``src_offset + read_shape > src_shape`` automatically
-      truncates to ``src_shape`` boundary
-    - Does not check if ``index`` contains out-of-bounds values
-
-    **Example:**
-
-    .. code-block:: python
-
-        @triton.jit
-        def kernel(src_ptr, output_ptr, indices_ptr, M, N, D, ...):
-            # Load indices (e.g., [5, 10, 15, 20])
-            indices = tl.load(indices_ptr + tl.arange(0, 4))
-
-            # Example 1: Static shapes (constants)
-            # Index select from dimension 1
-            # src: [8, 100, 256], index_select at dim=1
-            # Read: [4, ?, 128] starting from [4, ?, 128]
-            result = libdevice.index_select_simd(
-                src_ptr,
-                dim=1,
-                index=indices,
-                src_shape=[8, 100, 256],
-                src_offset=[4, -1, 128],
-                read_shape=[4, -1, 128]
-            )
-            # result shape: [4, 4, 128]
-
-            # Example 2: Dynamic shapes (variables)
-            result2 = libdevice.index_select_simd(
-                src_ptr,
-                dim=1,
-                index=indices,
-                src_shape=[M, N, D],
-                src_offset=[4, -1, 128],
-                read_shape=[4, -1, 128]
-            )
-
-            tl.store(output_ptr + ..., result)
-
-    :return: Result tensor in UB with shape where ``dim`` is replaced
-        by the length of ``index``
-    :rtype: tensor
-    """
-    dim = _constexpr_to_value(dim)
-
-    # Process shape parameters: convert constexpr to values, keep tensors as-is
-    def process_param(val):
-        """Convert constexpr to value, keep tensor or int as-is"""
-        if isinstance(val, tensor):
-            return val
-        else:
-            return _constexpr_to_value(val)
-
-    newsrc_shape = [semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o for o in src_shape]
-    newsrc_offset = [semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o for o in src_offset]
-    assert len(index.shape) == 1, "index must be a 1D tensor"
-
-    return semantic.index_select_simd(src, dim, index, newsrc_shape, newsrc_offset, read_shape, _builder)
+        return semantic.where(is_half, half_round, normal_round, _builder)
