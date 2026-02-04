@@ -146,7 +146,7 @@ LogicalResult ExtractStridesOpConversion::matchAndRewrite(
     SmallVector<int64_t> strides(rank, 0);
     llvm::SmallVector<uint32_t> order = ttg::getOrder(memdesc);
     int64_t running = 1;
-    for (auto &elem: order) {
+    for (auto &elem : order) {
       unsigned axis = elem;
       strides[axis] = running;
       running *= shape[axis];
