@@ -78,26 +78,29 @@ TleArgConversion::matchAndRewrite(tle::ExtractAlignedPtrOp op,
                                   PatternRewriter &rewriter) const {
   Value input = op.getInput();
   auto tensorTy = dyn_cast<RankedTensorType>(input.getType());
-  if (!tensorTy) return failure();
+  if (!tensorTy)
+    return failure();
 
   PatternRewriter::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(op);
-  auto allocOp = rewriter.create<ttg::LocalAllocOp>(
-      op.getLoc(), getPlainMemDesc(tensorTy));
+  auto allocOp = rewriter.create<ttg::LocalAllocOp>(op.getLoc(),
+                                                    getPlainMemDesc(tensorTy));
   rewriter.create<ttg::LocalStoreOp>(op.getLoc(), input, allocOp);
   Block *block = op->getBlock();
-  SmallVector<Operation*> targets;
+  SmallVector<Operation *> targets;
 
   for (Operation &it : block->getOperations()) {
     Operation *other = &it;
-    if (other == op.getOperation()) continue;
+    if (other == op.getOperation())
+      continue;
 
-    bool usesInput = llvm::any_of(other->getOperands(),
-                                  [&](Value v) { return v == input; });
-    if (!usesInput) continue;
+    bool usesInput =
+        llvm::any_of(other->getOperands(), [&](Value v) { return v == input; });
+    if (!usesInput)
+      continue;
 
-    if (isa<tle::ExtractSizesOp, tle::ExtractStridesOp,
-            tle::ExtractOffsetOp, tle::ExtractAllocatedPtrOp>(other)) {
+    if (isa<tle::ExtractSizesOp, tle::ExtractStridesOp, tle::ExtractOffsetOp,
+            tle::ExtractAllocatedPtrOp>(other)) {
       targets.push_back(other);
     }
   }
@@ -123,34 +126,28 @@ TleArgConversion::matchAndRewrite(tle::ExtractAlignedPtrOp op,
     IRMapping mapper;
     if (auto ex = dyn_cast<tle::ExtractSizesOp>(other)) {
       auto newEx = rewriter.create<tle::ExtractSizesOp>(
-          ex.getLoc(),
-          ex->getResultTypes(),
-          allocOp /*...*/);
+          ex.getLoc(), ex->getResultTypes(), allocOp /*...*/);
       rewriter.replaceOp(ex, newEx->getResults());
       continue;
     }
     if (auto ex = dyn_cast<tle::ExtractStridesOp>(other)) {
       auto newEx = rewriter.create<tle::ExtractStridesOp>(
-          ex.getLoc(),
-          ex->getResultTypes(),
-          allocOp /*...*/);
+          ex.getLoc(), ex->getResultTypes(), allocOp /*...*/);
       rewriter.replaceOp(ex, newEx->getResults());
       continue;
     }
     if (auto ex = dyn_cast<tle::ExtractAllocatedPtrOp>(other)) {
       auto newEx = rewriter.create<tle::ExtractAllocatedPtrOp>(
-          ex.getLoc(),
-          ex->getResultTypes(),
-          allocOp /*...*/);
+          ex.getLoc(), ex->getResultTypes(), allocOp /*...*/);
       rewriter.replaceOp(ex, newEx->getResults());
       continue;
     }
   }
-  
+
   rewriter.replaceOp(op, newAligned.getResult());
 
   rewriter.setInsertionPointAfter(dsl);
-  
+
   rewriter.create<ttg::LocalDeallocOp>(op.getLoc(), allocOp);
 
   return success();
@@ -176,17 +173,16 @@ TlePackConversion::matchAndRewrite(tle::PackOp op,
   rewriter.setInsertionPoint(op);
   auto newPackOp = rewriter.create<tle::PackOp>(
       op.getLoc(), getPlainMemDesc(tensorTy), op.getInput());
-  
+
   // 在 DSL 之后插入 local_load
   rewriter.setInsertionPointAfter(op);
-  auto loadOp = rewriter.create<ttg::LocalLoadOp>(
-      newPackOp.getLoc(), tensorTy, newPackOp.getOutput());
-  
+  auto loadOp = rewriter.create<ttg::LocalLoadOp>(newPackOp.getLoc(), tensorTy,
+                                                  newPackOp.getOutput());
+
   // 用 local_load 的结果替换旧的 PackOp
   rewriter.replaceOp(op, loadOp.getResult());
   return success();
 }
-
 
 void mlir::triton::tle::populateConvertArgToMemDescPatterns(
     RewritePatternSet &patterns) {

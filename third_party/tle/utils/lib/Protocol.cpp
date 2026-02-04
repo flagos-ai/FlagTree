@@ -77,31 +77,32 @@ SmallVector<Value> LLVMStructurePattern::apply(TritonOpBuilder &builder,
   LLVM::LLVMStructType structTy = src.getType();
   ArrayRef<Type> types = structTy.getBody();
   const size_t size = types.size();
-  
+
   // 支持两种格式：
   // 1. 标准格式 (5 字段): (ptr, ptr, i64, array<Nxi64>, array<Nxi64>)
   // 2. 展平格式 (2*rank+3 字段): (ptr, ptr, i64, i64..., i64...)
-  bool is_standard = (size == 5 &&
-                      llvm::all_of(types.take_front(2),
-                                   [](const Type &ty) -> bool {
-                                     return isa<LLVM::LLVMPointerType>(ty);
-                                   }) &&
-                      types[2].isInteger(64) &&
-                      llvm::all_of(types.take_back(2), [rank](const Type &ty) -> bool {
-                        LLVM::LLVMArrayType arrayTy = dyn_cast<LLVM::LLVMArrayType>(ty);
-                        return arrayTy && arrayTy.getElementType().isInteger(64) &&
-                               arrayTy.getNumElements() == rank;
-                      }));
-  
-  bool is_flattened = (size == 2 * rank + 3 &&
-                       llvm::all_of(types.take_front(2),
-                                    [](const Type &ty) -> bool {
-                                      return isa<LLVM::LLVMPointerType>(ty);
-                                    }) &&
-                       llvm::all_of(types.drop_front(2), [](const Type &ty) -> bool {
-                         return ty.isInteger(64);
-                       }));
-  
+  bool is_standard =
+      (size == 5 &&
+       llvm::all_of(types.take_front(2),
+                    [](const Type &ty) -> bool {
+                      return isa<LLVM::LLVMPointerType>(ty);
+                    }) &&
+       types[2].isInteger(64) &&
+       llvm::all_of(types.take_back(2), [rank](const Type &ty) -> bool {
+         LLVM::LLVMArrayType arrayTy = dyn_cast<LLVM::LLVMArrayType>(ty);
+         return arrayTy && arrayTy.getElementType().isInteger(64) &&
+                arrayTy.getNumElements() == rank;
+       }));
+
+  bool is_flattened =
+      (size == 2 * rank + 3 &&
+       llvm::all_of(types.take_front(2),
+                    [](const Type &ty) -> bool {
+                      return isa<LLVM::LLVMPointerType>(ty);
+                    }) &&
+       llvm::all_of(types.drop_front(2),
+                    [](const Type &ty) -> bool { return ty.isInteger(64); }));
+
   COND_CHECK(is_standard || is_flattened);
   tgts = tgts.drop_front();
   return {builder.create<tle::PackOp>(tgt, src)};
