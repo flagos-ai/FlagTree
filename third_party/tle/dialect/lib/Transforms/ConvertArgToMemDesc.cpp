@@ -115,25 +115,19 @@ TleArgConversion::matchAndRewrite(tle::ExtractAlignedPtrOp op,
     IRMapping mapper;
     if (auto ex = dyn_cast<tle::ExtractSizesOp>(other)) {
       auto newEx = rewriter.create<tle::ExtractSizesOp>(
-          ex.getLoc(),
-          ex->getResultTypes(),
-          allocOp);
+          ex.getLoc(), ex->getResultTypes(), allocOp);
       rewriter.replaceOp(ex, newEx->getResults());
       continue;
     }
     if (auto ex = dyn_cast<tle::ExtractStridesOp>(other)) {
       auto newEx = rewriter.create<tle::ExtractStridesOp>(
-          ex.getLoc(),
-          ex->getResultTypes(),
-          allocOp );
+          ex.getLoc(), ex->getResultTypes(), allocOp);
       rewriter.replaceOp(ex, newEx->getResults());
       continue;
     }
     if (auto ex = dyn_cast<tle::ExtractAllocatedPtrOp>(other)) {
       auto newEx = rewriter.create<tle::ExtractAllocatedPtrOp>(
-          ex.getLoc(),
-          ex->getResultTypes(),
-          allocOp );
+          ex.getLoc(), ex->getResultTypes(), allocOp);
       rewriter.replaceOp(ex, newEx->getResults());
       continue;
     }
@@ -162,9 +156,9 @@ TlePackConversion::matchAndRewrite(tle::PackOp op,
       op.getLoc(), getPlainMemDesc(tensorTy), op.getInput());
 
   rewriter.setInsertionPointAfter(op);
-  auto loadOp = rewriter.create<ttg::LocalLoadOp>(
-      newPackOp.getLoc(), tensorTy, newPackOp.getOutput());
-  
+  auto loadOp = rewriter.create<ttg::LocalLoadOp>(newPackOp.getLoc(), tensorTy,
+                                                  newPackOp.getOutput());
+
   rewriter.replaceOp(op, loadOp.getResult());
   return success();
 }

@@ -119,8 +119,9 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
       llvm::to_vector(llvm::concat<Value>(converted_outputs, converted_inputs));
 
   SmallVector<Type> dslOutputTys = llvm::map_to_vector(
-        converted_outputs, [](Value value) -> Type { return value.getType(); });
-  auto outStructTy = LLVM::LLVMStructType::getLiteral(self.getContext(), dslOutputTys, /*packed=*/false);
+      converted_outputs, [](Value value) -> Type { return value.getType(); });
+  auto outStructTy = LLVM::LLVMStructType::getLiteral(
+      self.getContext(), dslOutputTys, /*packed=*/false);
 
   tle::DSLRegionOp dslRegionOp =
       self.create<tle::DSLRegionOp>(outStructTy, operands);
@@ -136,8 +137,9 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
           SmallVector<Location>(operandTys.size(), self.getLastLoc()));
       builder.setInsertionPointToStart(newBlock);
 
-      SmallVector<Value> ops = llvm::map_to_vector(
-          newBlock->getArguments(), [](BlockArgument arg) -> Value { return arg; });
+      SmallVector<Value> ops =
+          llvm::map_to_vector(newBlock->getArguments(),
+                              [](BlockArgument arg) -> Value { return arg; });
       for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
         mapper.map(arg, op);
       }
@@ -162,12 +164,12 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
         // 直接 yield 整个 LLVM struct（或其他返回值）
         SmallVector<Value> operands, yields;
         if (dslRegionOp.getNumResults() == 0) {
-          operands={};
+          operands = {};
         } else if (dslRegionOp.getNumResults() == 1) {
           operands = {mapper.lookup(returnOp.getArg())};
-        }else
-        if (dslRegionOp.getNumResults() > 1) {
-          yields.push_back(cast<TypedValue<LLVM::LLVMStructType>>(mapper.lookup(returnOp.getArg())));
+        } else if (dslRegionOp.getNumResults() > 1) {
+          yields.push_back(cast<TypedValue<LLVM::LLVMStructType>>(
+              mapper.lookup(returnOp.getArg())));
         }
         builder.create<tle::YieldOp>(operation.getLoc(), yields);
       } else {
@@ -176,11 +178,10 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
     }
   }
 
-
   builder.setInsertionPointAfter(dslRegionOp);
   SmallVector<Value> finalResults;
   if (dslRegionOp.getNumResults() > 0) {
-    TypeRange tgts = outputTys;  // 原始的 tensor 输出类型
+    TypeRange tgts = outputTys; // 原始的 tensor 输出类型
     for (Value result : dslRegionOp.getResults()) {
       SmallVector<Value> rets =
           tle::protocol::ReturnPattern::apply(self, tgts, result);
