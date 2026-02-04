@@ -733,12 +733,15 @@ void init_triton_ir(py::module &&m) {
       .def("get_fp8e4nv",
            [](TritonOpBuilder &self, double v) -> Value {
              return self.create<arith::ConstantOp>(
-                 FloatAttr::get(self.getBuilder().getFloat8E4M3FNType(), v));
+                 // FLAGTREE
+                 // FloatAttr::get(self.getBuilder().getFloat8E4M3FNType(), v));
+                 FloatAttr::get(self.getBuilder().getType<Float8E4M3FNType>(), v));
            })
       .def("get_fp8e5",
            [](TritonOpBuilder &self, double v) -> Value {
              return self.create<arith::ConstantOp>(
-                 FloatAttr::get(self.getBuilder().getFloat8E5M2Type(), v));
+                 // FloatAttr::get(self.getBuilder().getFloat8E5M2Type(), v));
+                 FloatAttr::get(self.getBuilder().getType<Float8E5M2Type>(), v));
            })
       .def("get_null_value",
            [](TritonOpBuilder &self, Type type) -> Value {

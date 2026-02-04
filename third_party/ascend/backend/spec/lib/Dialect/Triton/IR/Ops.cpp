@@ -34,6 +34,7 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/LogicalResult.h"
+#include "flir/include/npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 
 namespace mlir {
 namespace triton {
@@ -197,7 +198,7 @@ LogicalResult GatherOp::inferReturnTypes(
 }
 
 //-- IndexSelectSimdOp --
-LogicalResult IndexSelectSimdOp::inferReturnTypes(
+LogicalResult ascend::IndexSelectSimdOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
