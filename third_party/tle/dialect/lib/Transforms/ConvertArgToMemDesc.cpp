@@ -25,6 +25,15 @@ namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
 
 namespace {
+static tle::DSLRegionOp findNearestNextDSLRegionOp(Operation *op) {
+  Block *b = op->getBlock();
+  auto it = std::next(op->getIterator());
+  for (; it != b->end(); ++it) {
+    if (auto dsl = dyn_cast<tle::DSLRegionOp>(&*it))
+      return dsl;
+  }
+  return nullptr;
+}
 
 ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
   ttg::CTALayoutAttr ctaLayout = ttg::getCTALayout(ty.getEncoding());
@@ -46,6 +55,14 @@ struct TleArgConversion : public OpRewritePattern<tle::ExtractAlignedPtrOp> {
                                 PatternRewriter &rewriter) const override;
 };
 
+struct TlePackConversion : public OpRewritePattern<tle::PackOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  TlePackConversion(MLIRContext *context);
+  LogicalResult matchAndRewrite(tle::PackOp op,
+                                PatternRewriter &rewriter) const override;
+};
+
 struct TleConvertArgToMemDesc
     : public tle::impl::TleConvertArgToMemDescBase<TleConvertArgToMemDesc> {
   void runOnOperation() override;
@@ -59,39 +76,121 @@ TleArgConversion::TleArgConversion(MLIRContext *context)
 LogicalResult
 TleArgConversion::matchAndRewrite(tle::ExtractAlignedPtrOp op,
                                   PatternRewriter &rewriter) const {
-  // 获取输入
   Value input = op.getInput();
-  
-  // 检查输入是否是 RankedTensorType
-  RankedTensorType tensorTy = dyn_cast<RankedTensorType>(input.getType());
-  if (!tensorTy) {
-    return failure();
-  }
-  
-  // 在 ExtractAlignedPtrOp 之前创建 LocalAllocOp 和 LocalStoreOp
+  auto tensorTy = dyn_cast<RankedTensorType>(input.getType());
+  if (!tensorTy) return failure();
+
   PatternRewriter::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(op);
-  
-  ttg::LocalAllocOp allocOp = rewriter.create<ttg::LocalAllocOp>(
+  auto allocOp = rewriter.create<ttg::LocalAllocOp>(
       op.getLoc(), getPlainMemDesc(tensorTy));
   rewriter.create<ttg::LocalStoreOp>(op.getLoc(), input, allocOp);
-  
-  // 创建新的 ExtractAlignedPtrOp，输入改为 MemDesc
-  tle::ExtractAlignedPtrOp newOp = rewriter.create<tle::ExtractAlignedPtrOp>(
+  Block *block = op->getBlock();
+  SmallVector<Operation*> targets;
+
+  for (Operation &it : block->getOperations()) {
+    Operation *other = &it;
+    if (other == op.getOperation()) continue;
+
+    bool usesInput = llvm::any_of(other->getOperands(),
+                                  [&](Value v) { return v == input; });
+    if (!usesInput) continue;
+
+    if (isa<tle::ExtractSizesOp, tle::ExtractStridesOp,
+            tle::ExtractOffsetOp, tle::ExtractAllocatedPtrOp>(other)) {
+      targets.push_back(other);
+    }
+  }
+
+  // 查找所有输出是 tensor 的 PackOp（不要求使用 input）
+  SmallVector<tle::PackOp> packOps;
+  for (Operation &it : block->getOperations()) {
+    if (auto packOp = dyn_cast<tle::PackOp>(&it)) {
+      if (isa<RankedTensorType>(packOp.getOutput().getType())) {
+        packOps.push_back(packOp);
+      }
+    }
+  }
+
+  // 3) 为 ExtractAlignedPtrOp 自己创建新 op（输入改为 memdesc）
+  rewriter.setInsertionPoint(op);
+  auto newAligned = rewriter.create<tle::ExtractAlignedPtrOp>(
       op.getLoc(), op.getResult().getType(), allocOp);
+  Operation *lastNew = newAligned.getOperation();
+  tle::DSLRegionOp dsl = findNearestNextDSLRegionOp(op.getOperation());
+  for (Operation *other : targets) {
+    rewriter.setInsertionPointAfter(lastNew);
+    IRMapping mapper;
+    if (auto ex = dyn_cast<tle::ExtractSizesOp>(other)) {
+      auto newEx = rewriter.create<tle::ExtractSizesOp>(
+          ex.getLoc(),
+          ex->getResultTypes(),
+          allocOp /*...*/);
+      rewriter.replaceOp(ex, newEx->getResults());
+      continue;
+    }
+    if (auto ex = dyn_cast<tle::ExtractStridesOp>(other)) {
+      auto newEx = rewriter.create<tle::ExtractStridesOp>(
+          ex.getLoc(),
+          ex->getResultTypes(),
+          allocOp /*...*/);
+      rewriter.replaceOp(ex, newEx->getResults());
+      continue;
+    }
+    if (auto ex = dyn_cast<tle::ExtractAllocatedPtrOp>(other)) {
+      auto newEx = rewriter.create<tle::ExtractAllocatedPtrOp>(
+          ex.getLoc(),
+          ex->getResultTypes(),
+          allocOp /*...*/);
+      rewriter.replaceOp(ex, newEx->getResults());
+      continue;
+    }
+  }
   
-  // 在 ExtractAlignedPtrOp 之后释放内存
-  rewriter.setInsertionPointAfter(newOp);
+  rewriter.replaceOp(op, newAligned.getResult());
+
+  rewriter.setInsertionPointAfter(dsl);
+  
   rewriter.create<ttg::LocalDeallocOp>(op.getLoc(), allocOp);
-  
-  // 替换原操作
-  rewriter.replaceOp(op, newOp.getResult());
+
   return success();
 }
 
+TlePackConversion::TlePackConversion(MLIRContext *context)
+    : OpRewritePattern(context) {}
+
+LogicalResult
+TlePackConversion::matchAndRewrite(tle::PackOp op,
+                                   PatternRewriter &rewriter) const {
+  // 只转换输出是 tensor 的 PackOp
+  auto tensorTy = dyn_cast<RankedTensorType>(op.getOutput().getType());
+  if (!tensorTy)
+    return failure();
+
+  // // 找到包含此 PackOp 的 DSLRegionOp
+  // tle::DSLRegionOp dsl = op->getParentOfType<tle::DSLRegionOp>();
+  // if (!dsl)
+  //   return failure();
+
+  // 在原位置创建新的 PackOp（输出 memdesc）
+  rewriter.setInsertionPoint(op);
+  auto newPackOp = rewriter.create<tle::PackOp>(
+      op.getLoc(), getPlainMemDesc(tensorTy), op.getInput());
+  
+  // 在 DSL 之后插入 local_load
+  rewriter.setInsertionPointAfter(op);
+  auto loadOp = rewriter.create<ttg::LocalLoadOp>(
+      newPackOp.getLoc(), tensorTy, newPackOp.getOutput());
+  
+  // 用 local_load 的结果替换旧的 PackOp
+  rewriter.replaceOp(op, loadOp.getResult());
+  return success();
+}
+
+
 void mlir::triton::tle::populateConvertArgToMemDescPatterns(
     RewritePatternSet &patterns) {
-  patterns.add<TleArgConversion>(patterns.getContext());
+  patterns.add<TleArgConversion, TlePackConversion>(patterns.getContext());
 }
 
 void TleConvertArgToMemDesc::runOnOperation() {
