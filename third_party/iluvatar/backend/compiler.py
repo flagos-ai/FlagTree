@@ -30,6 +30,7 @@ class CUDAOptions:
     maxnreg: Optional[int] = None
     cluster_dims: tuple = (1, 1, 1)
     enable_fp_fusion: bool = True
+    allow_flush_denorm: bool = False
     allow_fp8e4nv: bool = False
     allow_fp8e4b15: bool = False
     default_dot_input_precision: str = "tf32"
@@ -157,7 +158,7 @@ class CUDABackend(BaseBackend):
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
         passes.ttgpuir.add_allocate_shared_memory(pm)
-        iluvatar.passes.ttgpuir.add_to_llvmir(pm, capability)
+        iluvatar.passes.ttgpuir.add_to_llvmir(pm, capability, options.allow_flush_denorm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
 
@@ -174,7 +175,7 @@ class CUDABackend(BaseBackend):
         llvm.init_targets()
         context = llvm.context()
         llvm_mod = llvm.to_module(mod, context)
-        iluvatar.set_nvvm_reflect_ftz(llvm_mod)
+        iluvatar.set_nvvm_reflect_ftz(llvm_mod, options.allow_flush_denorm)
 
         # Set maxnreg on all kernels, if it was provided.
         if options.maxnreg is not None:
