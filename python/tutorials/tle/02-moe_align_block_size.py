@@ -202,7 +202,6 @@ def moe_align_block_size_vllm_small_batch_kernel(
     expert_id = tl.where(valid, expert_id, 0)
 
     expert_offsets = tl.arange(0, BLOCK_EXPERT)
-    expert_mask = expert_offsets < num_experts
 
     matches = expert_offsets[:, None] == expert_id[None, :]
     token_mask = valid[None, :]
