@@ -128,6 +128,7 @@ class CUDABackend(BaseBackend):
         iluvatar.passes.ttgpuir.add_matmul_load(pm, capability)  # only MR(71) support sme
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, True)
+        iluvatar.passes.ttgpuir.add_hoist_layout_conversions(pm, capability)
         passes.common.add_cse(pm)
         passes.ttgpuir.add_pipeline(pm, opt.num_stages)
         passes.ttgpuir.add_prefetch(pm)
@@ -139,7 +140,7 @@ class CUDABackend(BaseBackend):
         iluvatar.passes.ttgpuir.add_mmareduce(pm, capability)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
-        passes.ttgpuir.add_reorder_instructions(pm)
+        iluvatar.passes.ttgpuir.add_reorder_instructions(pm, capability)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
