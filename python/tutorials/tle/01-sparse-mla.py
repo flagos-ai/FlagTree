@@ -198,7 +198,6 @@ def triton_sparse_mla_fwd_tle(q, kv, indices, sm_scale: tl.constexpr, output, ls
     max_col = i_sq if is_causal else SQ - 1
 
     NK = tl.cdiv(K, BK)
-    # Enable software pipelining to overlap async loads with compute.
     for ck in tl.range(NK):
         if ck * BK <= max_col:
             t_ptr = (BK * ck + offs_t) * stride_tt
