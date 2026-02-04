@@ -14,7 +14,7 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 def edsl():
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
-    vprintf("Hello from bidx %d, tidx %d\n", bidx, tidx)
+    # vprintf("Hello from bidx %d, tidx %d\n", bidx, tidx)
 
 
 @triton.jit

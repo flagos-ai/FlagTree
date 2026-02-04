@@ -105,17 +105,6 @@ TleArgConversion::matchAndRewrite(tle::ExtractAlignedPtrOp op,
     }
   }
 
-  // 查找所有输出是 tensor 的 PackOp（不要求使用 input）
-  SmallVector<tle::PackOp> packOps;
-  for (Operation &it : block->getOperations()) {
-    if (auto packOp = dyn_cast<tle::PackOp>(&it)) {
-      if (isa<RankedTensorType>(packOp.getOutput().getType())) {
-        packOps.push_back(packOp);
-      }
-    }
-  }
-
-  // 3) 为 ExtractAlignedPtrOp 自己创建新 op（输入改为 memdesc）
   rewriter.setInsertionPoint(op);
   auto newAligned = rewriter.create<tle::ExtractAlignedPtrOp>(
       op.getLoc(), op.getResult().getType(), allocOp);
@@ -126,19 +115,25 @@ TleArgConversion::matchAndRewrite(tle::ExtractAlignedPtrOp op,
     IRMapping mapper;
     if (auto ex = dyn_cast<tle::ExtractSizesOp>(other)) {
       auto newEx = rewriter.create<tle::ExtractSizesOp>(
-          ex.getLoc(), ex->getResultTypes(), allocOp /*...*/);
+          ex.getLoc(),
+          ex->getResultTypes(),
+          allocOp);
       rewriter.replaceOp(ex, newEx->getResults());
       continue;
     }
     if (auto ex = dyn_cast<tle::ExtractStridesOp>(other)) {
       auto newEx = rewriter.create<tle::ExtractStridesOp>(
-          ex.getLoc(), ex->getResultTypes(), allocOp /*...*/);
+          ex.getLoc(),
+          ex->getResultTypes(),
+          allocOp );
       rewriter.replaceOp(ex, newEx->getResults());
       continue;
     }
     if (auto ex = dyn_cast<tle::ExtractAllocatedPtrOp>(other)) {
       auto newEx = rewriter.create<tle::ExtractAllocatedPtrOp>(
-          ex.getLoc(), ex->getResultTypes(), allocOp /*...*/);
+          ex.getLoc(),
+          ex->getResultTypes(),
+          allocOp );
       rewriter.replaceOp(ex, newEx->getResults());
       continue;
     }
@@ -159,27 +154,17 @@ TlePackConversion::TlePackConversion(MLIRContext *context)
 LogicalResult
 TlePackConversion::matchAndRewrite(tle::PackOp op,
                                    PatternRewriter &rewriter) const {
-  // 只转换输出是 tensor 的 PackOp
   auto tensorTy = dyn_cast<RankedTensorType>(op.getOutput().getType());
   if (!tensorTy)
     return failure();
-
-  // // 找到包含此 PackOp 的 DSLRegionOp
-  // tle::DSLRegionOp dsl = op->getParentOfType<tle::DSLRegionOp>();
-  // if (!dsl)
-  //   return failure();
-
-  // 在原位置创建新的 PackOp（输出 memdesc）
   rewriter.setInsertionPoint(op);
   auto newPackOp = rewriter.create<tle::PackOp>(
       op.getLoc(), getPlainMemDesc(tensorTy), op.getInput());
 
-  // 在 DSL 之后插入 local_load
   rewriter.setInsertionPointAfter(op);
-  auto loadOp = rewriter.create<ttg::LocalLoadOp>(newPackOp.getLoc(), tensorTy,
-                                                  newPackOp.getOutput());
-
-  // 用 local_load 的结果替换旧的 PackOp
+  auto loadOp = rewriter.create<ttg::LocalLoadOp>(
+      newPackOp.getLoc(), tensorTy, newPackOp.getOutput());
+  
   rewriter.replaceOp(op, loadOp.getResult());
   return success();
 }

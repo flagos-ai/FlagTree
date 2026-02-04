@@ -118,14 +118,9 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
   SmallVector<Value> operands =
       llvm::to_vector(llvm::concat<Value>(converted_outputs, converted_inputs));
 
-  // DSLRegionOp 返回完整的 LLVM struct（不拆解）
   SmallVector<Type> dslOutputTys = llvm::map_to_vector(
-      converted_outputs, [](Value value) -> Type { return value.getType(); });
-  for (Type dsloutput : dslOutputTys) {
-    llvm::outs() << "=== outputTy: " << dsloutput << "\n";
-  }
-  auto outStructTy = LLVM::LLVMStructType::getLiteral(
-      self.getContext(), dslOutputTys, /*packed=*/false);
+        converted_outputs, [](Value value) -> Type { return value.getType(); });
+  auto outStructTy = LLVM::LLVMStructType::getLiteral(self.getContext(), dslOutputTys, /*packed=*/false);
 
   tle::DSLRegionOp dslRegionOp =
       self.create<tle::DSLRegionOp>(outStructTy, operands);
@@ -140,17 +135,9 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
           &body, {}, operandTys,
           SmallVector<Location>(operandTys.size(), self.getLastLoc()));
       builder.setInsertionPointToStart(newBlock);
-      // ValueRange args = func.getArguments();
-      // TypeRange tgts = args.getTypes();
-      SmallVector<Value> ops =
-          llvm::map_to_vector(newBlock->getArguments(),
-                              [](BlockArgument arg) -> Value { return arg; });
-      // SmallVector<Value> ops = {};
-      // for (Value src : newBlock->getArguments()) {
-      //   SmallVector<Value> rets =
-      //       tle::protocol::SignaturePattern::apply(self, tgts, src);
-      //   ops.append(std::move(rets));
-      // }
+
+      SmallVector<Value> ops = llvm::map_to_vector(
+          newBlock->getArguments(), [](BlockArgument arg) -> Value { return arg; });
       for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
         mapper.map(arg, op);
       }
@@ -173,13 +160,15 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
     for (Operation &operation : oldBlock.getOperations()) {
       if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
         // 直接 yield 整个 LLVM struct（或其他返回值）
-        SmallVector<Value> yields;
-        if (dslRegionOp.getNumResults() > 0) {
-          yields.push_back(cast<TypedValue<LLVM::LLVMStructType>>(
-              mapper.lookup(returnOp.getArg())));
+        SmallVector<Value> operands, yields;
+        if (dslRegionOp.getNumResults() == 0) {
+          operands={};
+        } else if (dslRegionOp.getNumResults() == 1) {
+          operands = {mapper.lookup(returnOp.getArg())};
+        }else
+        if (dslRegionOp.getNumResults() > 1) {
+          yields.push_back(cast<TypedValue<LLVM::LLVMStructType>>(mapper.lookup(returnOp.getArg())));
         }
-        llvm::outs() << "Creating tle.yield with " << yields.size()
-                     << " values\n";
         builder.create<tle::YieldOp>(operation.getLoc(), yields);
       } else {
         builder.clone(operation, mapper);
@@ -187,24 +176,16 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
     }
   }
 
-  // 在 dsl_region 外部对返回的 struct 调用 ReturnPattern 创建 tle.pack
+
   builder.setInsertionPointAfter(dslRegionOp);
   SmallVector<Value> finalResults;
   if (dslRegionOp.getNumResults() > 0) {
-    TypeRange tgts = outputTys; // 原始的 tensor 输出类型
-    llvm::outs() << "=== dslRegionOp.getNumResults() = "
-                 << dslRegionOp.getNumResults() << "\n";
-    llvm::outs() << "=== outputTys.size() = " << outputTys.size() << "\n";
+    TypeRange tgts = outputTys;  // 原始的 tensor 输出类型
     for (Value result : dslRegionOp.getResults()) {
-      llvm::outs() << "=== Processing result type: " << result.getType()
-                   << "\n";
       SmallVector<Value> rets =
           tle::protocol::ReturnPattern::apply(self, tgts, result);
-      llvm::outs() << "=== rets.size() = " << rets.size() << "\n";
       finalResults.append(std::move(rets));
     }
   }
-  llvm::outs() << "=== finalResults.size() = " << finalResults.size() << "\n";
-
   return finalResults;
 }
