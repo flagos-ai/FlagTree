@@ -245,7 +245,7 @@ public:
     return AxisInfo(/*contiguity=*/{end - start},
                     /*divisibility=*/{highestPowOf2Divisor(start)},
                     /*constancy=*/{1},
-                    /*corexFlag=*/{start});
+                    /*corexFlag=*/{64 + start});
   }
 };
 
