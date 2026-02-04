@@ -161,13 +161,12 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
     builder.setInsertionPointToEnd(&newBlock);
     for (Operation &operation : oldBlock.getOperations()) {
       if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
-        // 直接 yield 整个 LLVM struct（或其他返回值）
         SmallVector<Value> operands, yields;
         if (dslRegionOp.getNumResults() == 0) {
           operands = {};
         } else if (dslRegionOp.getNumResults() == 1) {
           operands = {mapper.lookup(returnOp.getArg())};
-        } else if (dslRegionOp.getNumResults() > 1) {
+        } else {
           yields.push_back(cast<TypedValue<LLVM::LLVMStructType>>(
               mapper.lookup(returnOp.getArg())));
         }
