@@ -53,7 +53,7 @@ class FlagtreeConfigs:
         try:
             spec.loader.exec_module(module)
         except (AttributeError,FileNotFoundError, ImportError, ModuleNotFoundError) as e:
-            raise ImportError(f"Failed to activate backend module: {module_path}") from e
+            pass
         return module
 
 
