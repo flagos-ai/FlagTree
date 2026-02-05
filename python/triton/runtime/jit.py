@@ -706,17 +706,7 @@ class JITFunction(KernelInterface[T]):
     # Our unit tests do this, for example.
     def parse(self):
         # Maps line numbers to comment hints
-        line_flagtree_hints = {}
-        code_str = self.src
-        g = tokenize.generate_tokens(StringIO(code_str).readline)
-        for tok_type, tok_text, start, end, _ in g:
-            if tok_type == tokenize.COMMENT:
-                comment = tok_text.replace(" ", "").strip()
-                if comment.startswith('#@hint:'):
-                    flagtree_hints = comment[len('#@hint:'):].strip()
-                    # Record the line number of the comment
-                    line_num = start[0]
-                    line_flagtree_hints[line_num] = flagtree_hints
+        hint_trigger("maps_line_numbers_to_comment_hints", self)
 
         tree = ast.parse(self.src)
         assert isinstance(tree, ast.Module)
@@ -724,7 +714,7 @@ class JITFunction(KernelInterface[T]):
         assert isinstance(tree.body[0], ast.FunctionDef)
 
         # Attach the line number to comment mapping to the function definition node
-        tree.body[0].line_flagtree_hints = line_flagtree_hints
+        hint_trigger("attach_line_number_to_comment_mapping", tree, line_flagtree_hints)
         return tree
 
     def __call__(self, *args, **kwargs):
