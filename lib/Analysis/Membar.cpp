@@ -6,8 +6,8 @@
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
-#include <deque>
 #include <cstdlib>
+#include <deque>
 
 namespace mlir {
 
@@ -33,8 +33,7 @@ void printIntersectDetails(const char *reason, Operation *op,
                            MembarFilterFn filter) {
   if (!shouldPrintMembar())
     return;
-  auto printPairs = [&](const char *kind,
-                        const BlockInfo::IntervalMapT &lhs,
+  auto printPairs = [&](const char *kind, const BlockInfo::IntervalMapT &lhs,
                         const BlockInfo::IntervalMapT &rhs) {
     for (const auto &lhsIt : lhs) {
       for (const auto &rhsIt : rhs) {
@@ -44,16 +43,16 @@ void printIntersectDetails(const char *reason, Operation *op,
           for (Operation *rhsOp : rhsIt.second) {
             if (filter && filter(lhsOp, rhsOp))
               continue;
-            llvm::errs()
-                << "[membar] intersect kind=" << kind
-                << " reason=" << reason
-                << " prev_interval=[" << lhsIt.first.start() << ", "
-                << lhsIt.first.end() << "] cur_interval=["
-                << rhsIt.first.start() << ", " << rhsIt.first.end()
-                << "] prev_op=" << lhsOp->getName() << " @ " << lhsOp->getLoc()
-                << " cur_op=" << rhsOp->getName() << " @ " << rhsOp->getLoc()
-                << " barrier_before=" << op->getName() << " @ " << op->getLoc()
-                << "\n";
+            llvm::errs() << "[membar] intersect kind=" << kind
+                         << " reason=" << reason << " prev_interval=["
+                         << lhsIt.first.start() << ", " << lhsIt.first.end()
+                         << "] cur_interval=[" << rhsIt.first.start() << ", "
+                         << rhsIt.first.end()
+                         << "] prev_op=" << lhsOp->getName() << " @ "
+                         << lhsOp->getLoc() << " cur_op=" << rhsOp->getName()
+                         << " @ " << rhsOp->getLoc()
+                         << " barrier_before=" << op->getName() << " @ "
+                         << op->getLoc() << "\n";
           }
         }
       }
