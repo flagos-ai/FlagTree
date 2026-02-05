@@ -41,12 +41,8 @@ class FlagtreeConfigs:
     }))
 
     def __post_init__(self):
-        object.__setattr__(
-            self,
-            "flagtree_submodule_dir",
-            os.path.join(self.flagtree_root_dir, "third_party"),
-        )
-        object.__setattr__(self, "activated_module", self._activate_device_module(self.flagtree_backend))
+        self.flagtree_submodule_dir = os.path.join(self.flagtree_root_dir, "third_party")
+        self.activated_module = self._activate_device_module(self.flagtree_backend)
 
     def _activate_device_module(self, backend, suffix=".py"):
         backend = "default" if not backend else backend
@@ -56,8 +52,8 @@ class FlagtreeConfigs:
         module = importlib.util.module_from_spec(spec)
         try:
             spec.loader.exec_module(module)
-        except Exception:
-            pass
+        except (AttributeError,FileNotFoundError, ImportError, ModuleNotFoundError) as e:
+            raise ImportError(f"Failed to activate backend module: {module_path}") from e
         return module
 
 
