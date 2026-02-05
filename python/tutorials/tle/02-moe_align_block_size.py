@@ -182,18 +182,21 @@ def moe_align_block_size_vllm_small_batch_kernel(
     numel,
     total_elems,
     BLOCK_INIT: tl.constexpr,
-    NUM_SORT_BLOCKS: tl.constexpr,
     BLOCK_TOKENS: tl.constexpr,
-    NUM_BLOCKS_OUT: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     BLOCK_OUT: tl.constexpr,
     BLOCK_EXPERT: tl.constexpr,
 ):
-    for i in range(NUM_SORT_BLOCKS):
+    num_sort_blocks = tl.cdiv(total_elems, BLOCK_INIT)
+    num_blocks_out = tl.cdiv(total_elems, BLOCK_SIZE)
+
+    i = 0
+    while i < num_sort_blocks:
         base = i * BLOCK_INIT
         offsets = base + tl.arange(0, BLOCK_INIT)
         mask = offsets < total_elems
         tl.store(sorted_token_ids_ptr + offsets, numel, mask=mask)
+        i += 1
 
     offsets = tl.arange(0, BLOCK_TOKENS)
     mask = offsets < numel
@@ -212,14 +215,16 @@ def moe_align_block_size_vllm_small_batch_kernel(
     total = tl.sum(aligned, axis=0)
     tl.store(num_tokens_post_pad_ptr, total)
 
-    for base_block in range(0, NUM_BLOCKS_OUT, BLOCK_OUT):
+    base_block = 0
+    while base_block < num_blocks_out:
         block_ids = base_block + tl.arange(0, BLOCK_OUT)
-        block_valid = block_ids < NUM_BLOCKS_OUT
+        block_valid = block_ids < num_blocks_out
         block_start = block_ids * BLOCK_SIZE
         block_valid_block = block_valid & (block_start < total)
         block_expert_id = tl.sum(block_start[:, None] >= cumsum[None, :], axis=1)
         block_expert_id = tl.where(block_valid_block, block_expert_id, 0)
         tl.store(expert_ids_ptr + block_ids, block_expert_id, mask=block_valid)
+        base_block += BLOCK_OUT
 
     prefix = tl.cumsum(tl.where(matches & token_mask, 1, 0), axis=1).to(tl.int32)
     token_rank = tl.sum(tl.where(matches, prefix, 0), axis=0)
@@ -239,21 +244,23 @@ def moe_align_block_size_vllm_stage1_kernel(
     numel,
     total_elems,
     BLOCK: tl.constexpr,
-    NUM_BLOCKS: tl.constexpr,
-    NUM_SORT_BLOCKS: tl.constexpr,
-    NUM_BLOCKS_OUT: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     BLOCK_OUT: tl.constexpr,
     BLOCK_EXPERT: tl.constexpr,
     BLOCK_EXPERT_GROUP: tl.constexpr,
 ):
     pid = tl.program_id(0)
+    num_blocks = tl.cdiv(numel, BLOCK)
+    num_sort_blocks = tl.cdiv(total_elems, BLOCK)
+    num_blocks_out = tl.cdiv(total_elems, BLOCK_SIZE)
     if pid == 1:
-        for i in range(NUM_SORT_BLOCKS):
+        i = 0
+        while i < num_sort_blocks:
             base = i * BLOCK
             offsets = base + tl.arange(0, BLOCK)
             init_mask = offsets < total_elems
             tl.store(sorted_token_ids_ptr + offsets, numel, mask=init_mask)
+            i += 1
         return
 
     expert_offsets = tl.arange(0, BLOCK_EXPERT)
@@ -268,20 +275,22 @@ def moe_align_block_size_vllm_stage1_kernel(
     )
     smem_ptrs = tle.local_ptr(smem_counts, (expert_offsets, ))
     tl.store(smem_ptrs, 0)
+    tl.debug_barrier()
 
     ones = tl.full((BLOCK, ), 1, tl.int32)
-    if NUM_BLOCKS > 0:
-        if NUM_BLOCKS > 1:
-            for i in range(NUM_BLOCKS - 1):
-                base = i * BLOCK
-                offsets = base + tl.arange(0, BLOCK)
-                expert_id = tl.load(topk_ids_ptr + offsets).to(tl.int32)
-                valid = expert_id < num_experts
-                expert_id = tl.where(valid, expert_id, 0)
-                count_ptrs = tle.local_ptr(smem_counts, (expert_id, ))
-                tl.atomic_add(count_ptrs, ones, mask=valid)
+    if num_blocks > 0:
+        i = 0
+        while i + 1 < num_blocks:
+            base = i * BLOCK
+            offsets = base + tl.arange(0, BLOCK)
+            expert_id = tl.load(topk_ids_ptr + offsets).to(tl.int32)
+            valid = expert_id < num_experts
+            expert_id = tl.where(valid, expert_id, 0)
+            count_ptrs = tle.local_ptr(smem_counts, (expert_id, ))
+            tl.atomic_add(count_ptrs, ones, mask=valid, sem="relaxed", scope="cta")
+            i += 1
 
-        base = (NUM_BLOCKS - 1) * BLOCK
+        base = (num_blocks - 1) * BLOCK
         offsets = base + tl.arange(0, BLOCK)
         tail_mask = offsets < numel
         expert_id = tl.load(topk_ids_ptr + offsets, mask=tail_mask, other=0).to(tl.int32)
@@ -290,7 +299,6 @@ def moe_align_block_size_vllm_stage1_kernel(
         count_ptrs = tle.local_ptr(smem_counts, (expert_id, ))
         tl.atomic_add(count_ptrs, ones, mask=valid)
 
-    tl.debug_barrier()
     counts = tl.load(smem_ptrs)
     counts = tl.where(expert_mask, counts, 0)
     aligned = tl.cdiv(counts, BLOCK_SIZE) * BLOCK_SIZE
@@ -307,9 +315,10 @@ def moe_align_block_size_vllm_stage1_kernel(
         end = tl.load(cumsum_ptr + group_offsets + 1, mask=group_mask, other=0)
         start_block = start // BLOCK_SIZE
         end_block = end // BLOCK_SIZE
-        for base_block in range(0, NUM_BLOCKS_OUT, BLOCK_OUT):
+        base_block = 0
+        while base_block < num_blocks_out:
             block_ids = base_block + tl.arange(0, BLOCK_OUT)
-            valid_block = block_ids < NUM_BLOCKS_OUT
+            valid_block = block_ids < num_blocks_out
             block_ids_2d = block_ids[None, :] + tl.zeros((BLOCK_EXPERT_GROUP, 1), tl.int32)
             expert_vals = group_offsets[:, None] + tl.zeros((1, BLOCK_OUT), tl.int32)
             expert_mask_2d = (valid_block[None, :]
@@ -317,6 +326,7 @@ def moe_align_block_size_vllm_stage1_kernel(
                               & (block_ids_2d >= start_block[:, None])
                               & (block_ids_2d < end_block[:, None]))
             tl.store(expert_ids_ptr + block_ids_2d, expert_vals, mask=expert_mask_2d)
+            base_block += BLOCK_OUT
 
 
 # %%
@@ -433,10 +443,8 @@ def moe_align_block_size_tle_impl(
     if small_batch_expert_mode:
         total_elems = sorted_token_ids.numel()
         block_expert = triton.cdiv(num_experts, 32) * 32
-        num_blocks_out = triton.cdiv(total_elems, block_size)
         block_init = 256
         block_tokens = triton.next_power_of_2(numel if numel > 0 else 1)
-        num_sort_blocks = triton.cdiv(total_elems, block_init)
         moe_align_block_size_vllm_small_batch_kernel[(1, )](
             topk_ids,
             sorted_token_ids,
@@ -446,9 +454,7 @@ def moe_align_block_size_tle_impl(
             numel,
             total_elems,
             BLOCK_INIT=block_init,
-            NUM_SORT_BLOCKS=num_sort_blocks,
             BLOCK_TOKENS=block_tokens,
-            NUM_BLOCKS_OUT=num_blocks_out,
             BLOCK_SIZE=block_size,
             BLOCK_OUT=128,
             BLOCK_EXPERT=block_expert,
@@ -471,9 +477,6 @@ def moe_align_block_size_tle_impl(
     block_expert = triton.cdiv(num_experts, 32) * 32
     BLOCK_TOKENS = 1024
     total_elems = sorted_token_ids.numel()
-    num_blocks = triton.cdiv(numel, BLOCK_TOKENS)
-    num_sort_blocks = triton.cdiv(total_elems, BLOCK_TOKENS)
-    num_blocks_out = triton.cdiv(total_elems, block_size)
 
     moe_align_block_size_vllm_stage1_kernel[(2, )](
         topk_ids,
@@ -485,9 +488,6 @@ def moe_align_block_size_tle_impl(
         numel,
         total_elems,
         BLOCK=BLOCK_TOKENS,
-        NUM_BLOCKS=num_blocks,
-        NUM_SORT_BLOCKS=num_sort_blocks,
-        NUM_BLOCKS_OUT=num_blocks_out,
         BLOCK_SIZE=block_size,
         BLOCK_OUT=128,
         BLOCK_EXPERT=block_expert,
@@ -696,7 +696,7 @@ def run_realistic_benchmark(block_size: int) -> None:
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--block_size", type=int, default=128, help="MoE block size")
+    parser.add_argument("--block_size", type=int, default=64, help="MoE block size")
     parser.add_argument("--num_tokens", type=int, default=8192, help="num tokens")
     parser.add_argument("--num_experts", type=int, default=64, help="num experts")
     parser.add_argument("--skip_correctness", action="store_true", help="skip correctness checks")
