@@ -80,8 +80,8 @@ def _twiddle_tables(n: int, device: torch.device) -> Tuple[torch.Tensor, torch.T
     if cached is not None:
         return cached
     log_n = _log2(n)
-    tw_real = torch.empty((n - 1,), device=device, dtype=torch.float32)
-    tw_imag = torch.empty((n - 1,), device=device, dtype=torch.float32)
+    tw_real = torch.empty((n - 1, ), device=device, dtype=torch.float32)
+    tw_imag = torch.empty((n - 1, ), device=device, dtype=torch.float32)
     offset = 0
     for stage in range(log_n):
         m = 1 << (stage + 1)
@@ -114,6 +114,7 @@ def _prepare_input(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
 # %%
 # cuTile helpers (optional)
 # -------------------------
+
 
 def _choose_factors(n: int) -> Tuple[int, int, int]:
     log_n = _log2(n)
@@ -308,9 +309,11 @@ def cutile_fft(x: torch.Tensor) -> torch.Tensor:
 
     return torch.complex(y_torch[..., 0], y_torch[..., 1])
 
+
 # %%
 # Kernels (Triton)
 # ---------------
+
 
 @triton.jit
 def fft_kernel_triton(
@@ -574,6 +577,7 @@ def fft_kernel_triton(
 # Kernels (TLE)
 # -------------
 
+
 @triton.jit
 def fft_kernel_tle(
     in_real,
@@ -630,8 +634,8 @@ def fft_kernel_tle(
     vals_real = tl.load(in_real_ptrs, mask=mask, other=0.0)
     vals_imag = tl.load(in_imag_ptrs, mask=mask, other=0.0)
 
-    smem_a_real_ptrs = tle.local_ptr(smem_a_real, (offs,))
-    smem_a_imag_ptrs = tle.local_ptr(smem_a_imag, (offs,))
+    smem_a_real_ptrs = tle.local_ptr(smem_a_real, (offs, ))
+    smem_a_imag_ptrs = tle.local_ptr(smem_a_imag, (offs, ))
     tl.store(smem_a_real_ptrs, vals_real, mask=mask)
     tl.store(smem_a_imag_ptrs, vals_imag, mask=mask)
     tl.debug_barrier()
@@ -651,10 +655,10 @@ def fft_kernel_tle(
         even_idx = base + j
         odd_idx = even_idx + half
 
-        even_ptrs_real = tle.local_ptr(smem_in_real, (even_idx,))
-        even_ptrs_imag = tle.local_ptr(smem_in_imag, (even_idx,))
-        odd_ptrs_real = tle.local_ptr(smem_in_real, (odd_idx,))
-        odd_ptrs_imag = tle.local_ptr(smem_in_imag, (odd_idx,))
+        even_ptrs_real = tle.local_ptr(smem_in_real, (even_idx, ))
+        even_ptrs_imag = tle.local_ptr(smem_in_imag, (even_idx, ))
+        odd_ptrs_real = tle.local_ptr(smem_in_real, (odd_idx, ))
+        odd_ptrs_imag = tle.local_ptr(smem_in_imag, (odd_idx, ))
 
         u_real = tl.load(even_ptrs_real, mask=mask, other=0.0)
         u_imag = tl.load(even_ptrs_imag, mask=mask, other=0.0)
@@ -673,8 +677,8 @@ def fft_kernel_tle(
         out_real_val = tl.where(add_mask, u_real + v_tw_real, u_real - v_tw_real)
         out_imag_val = tl.where(add_mask, u_imag + v_tw_imag, u_imag - v_tw_imag)
 
-        out_ptrs_real = tle.local_ptr(smem_out_real, (idx,))
-        out_ptrs_imag = tle.local_ptr(smem_out_imag, (idx,))
+        out_ptrs_real = tle.local_ptr(smem_out_real, (idx, ))
+        out_ptrs_imag = tle.local_ptr(smem_out_imag, (idx, ))
         tl.store(out_ptrs_real, out_real_val, mask=mask)
         tl.store(out_ptrs_imag, out_imag_val, mask=mask)
         tl.debug_barrier()
@@ -699,14 +703,14 @@ def fft_kernel_tle(
             i2 = i1 + quarter
             i3 = i2 + quarter
 
-            ptr0_real = tle.local_ptr(smem_in_real, (i0,))
-            ptr0_imag = tle.local_ptr(smem_in_imag, (i0,))
-            ptr1_real = tle.local_ptr(smem_in_real, (i1,))
-            ptr1_imag = tle.local_ptr(smem_in_imag, (i1,))
-            ptr2_real = tle.local_ptr(smem_in_real, (i2,))
-            ptr2_imag = tle.local_ptr(smem_in_imag, (i2,))
-            ptr3_real = tle.local_ptr(smem_in_real, (i3,))
-            ptr3_imag = tle.local_ptr(smem_in_imag, (i3,))
+            ptr0_real = tle.local_ptr(smem_in_real, (i0, ))
+            ptr0_imag = tle.local_ptr(smem_in_imag, (i0, ))
+            ptr1_real = tle.local_ptr(smem_in_real, (i1, ))
+            ptr1_imag = tle.local_ptr(smem_in_imag, (i1, ))
+            ptr2_real = tle.local_ptr(smem_in_real, (i2, ))
+            ptr2_imag = tle.local_ptr(smem_in_imag, (i2, ))
+            ptr3_real = tle.local_ptr(smem_in_real, (i3, ))
+            ptr3_imag = tle.local_ptr(smem_in_imag, (i3, ))
 
             x0_real = tl.load(ptr0_real, mask=mask, other=0.0)
             x0_imag = tl.load(ptr0_imag, mask=mask, other=0.0)
@@ -762,8 +766,8 @@ def fft_kernel_tle(
             out_real_val = tl.where(m0, o0_real, tl.where(m1, o1_real, tl.where(m2, o2_real, o3_real)))
             out_imag_val = tl.where(m0, o0_imag, tl.where(m1, o1_imag, tl.where(m2, o2_imag, o3_imag)))
 
-            out_ptrs_real = tle.local_ptr(smem_out_real, (idx,))
-            out_ptrs_imag = tle.local_ptr(smem_out_imag, (idx,))
+            out_ptrs_real = tle.local_ptr(smem_out_real, (idx, ))
+            out_ptrs_imag = tle.local_ptr(smem_out_imag, (idx, ))
             tl.store(out_ptrs_real, out_real_val, mask=mask)
             tl.store(out_ptrs_imag, out_imag_val, mask=mask)
             tl.debug_barrier()
@@ -787,14 +791,14 @@ def fft_kernel_tle(
             i2 = i1 + quarter
             i3 = i2 + quarter
 
-            ptr0_real = tle.local_ptr(smem_in_real, (i0,))
-            ptr0_imag = tle.local_ptr(smem_in_imag, (i0,))
-            ptr1_real = tle.local_ptr(smem_in_real, (i1,))
-            ptr1_imag = tle.local_ptr(smem_in_imag, (i1,))
-            ptr2_real = tle.local_ptr(smem_in_real, (i2,))
-            ptr2_imag = tle.local_ptr(smem_in_imag, (i2,))
-            ptr3_real = tle.local_ptr(smem_in_real, (i3,))
-            ptr3_imag = tle.local_ptr(smem_in_imag, (i3,))
+            ptr0_real = tle.local_ptr(smem_in_real, (i0, ))
+            ptr0_imag = tle.local_ptr(smem_in_imag, (i0, ))
+            ptr1_real = tle.local_ptr(smem_in_real, (i1, ))
+            ptr1_imag = tle.local_ptr(smem_in_imag, (i1, ))
+            ptr2_real = tle.local_ptr(smem_in_real, (i2, ))
+            ptr2_imag = tle.local_ptr(smem_in_imag, (i2, ))
+            ptr3_real = tle.local_ptr(smem_in_real, (i3, ))
+            ptr3_imag = tle.local_ptr(smem_in_imag, (i3, ))
 
             x0_real = tl.load(ptr0_real, mask=mask, other=0.0)
             x0_imag = tl.load(ptr0_imag, mask=mask, other=0.0)
@@ -850,8 +854,8 @@ def fft_kernel_tle(
             out_real_val = tl.where(m0, o0_real, tl.where(m1, o1_real, tl.where(m2, o2_real, o3_real)))
             out_imag_val = tl.where(m0, o0_imag, tl.where(m1, o1_imag, tl.where(m2, o2_imag, o3_imag)))
 
-            out_ptrs_real = tle.local_ptr(smem_out_real, (idx,))
-            out_ptrs_imag = tle.local_ptr(smem_out_imag, (idx,))
+            out_ptrs_real = tle.local_ptr(smem_out_real, (idx, ))
+            out_ptrs_imag = tle.local_ptr(smem_out_imag, (idx, ))
             tl.store(out_ptrs_real, out_real_val, mask=mask)
             tl.store(out_ptrs_imag, out_imag_val, mask=mask)
             tl.debug_barrier()
@@ -861,8 +865,8 @@ def fft_kernel_tle(
 
     out_real_ptrs = out_real + row * stride_out + offs
     out_imag_ptrs = out_imag + row * stride_out + offs
-    smem_final_real_ptrs = tle.local_ptr(smem_in_real, (offs,))
-    smem_final_imag_ptrs = tle.local_ptr(smem_in_imag, (offs,))
+    smem_final_real_ptrs = tle.local_ptr(smem_in_real, (offs, ))
+    smem_final_imag_ptrs = tle.local_ptr(smem_in_imag, (offs, ))
     out_vals_real = tl.load(smem_final_real_ptrs, mask=mask, other=0.0)
     out_vals_imag = tl.load(smem_final_imag_ptrs, mask=mask, other=0.0)
     tl.store(out_real_ptrs, out_vals_real, mask=mask)
@@ -1073,6 +1077,7 @@ def fft_kernel_tle_reg(
     tl.store(out_real_ptrs, x_real, mask=mask)
     tl.store(out_imag_ptrs, x_imag, mask=mask)
 
+
 # %%
 # Python wrappers
 # ---------------
@@ -1097,7 +1102,7 @@ def triton_fft(x: torch.Tensor) -> torch.Tensor:
     buf1_real = torch.empty((m, n), device=x.device, dtype=torch.float32)
     buf1_imag = torch.empty((m, n), device=x.device, dtype=torch.float32)
 
-    grid = (m,)
+    grid = (m, )
     fft_kernel_triton[grid](
         in_real,
         in_imag,
@@ -1144,7 +1149,7 @@ def tle_fft(x: torch.Tensor) -> torch.Tensor:
     out_real = torch.empty((m, n), device=x.device, dtype=torch.float32)
     out_imag = torch.empty((m, n), device=x.device, dtype=torch.float32)
 
-    grid = (m,)
+    grid = (m, )
     if n == _FFT_REG_THRESHOLD:
         fft_kernel_tle_reg[grid](
             in_real,
@@ -1232,7 +1237,6 @@ if "--only_unit_test" in sys.argv:
     run_correctness(_args.M, _args.N, _dtype, _args.complex_input)
     sys.exit(0)
 
-
 # %%
 # Benchmark
 # ---------
@@ -1244,6 +1248,7 @@ if _HAVE_CUTILE:
     _BENCH_PROVIDERS.insert(2, "cutile")
     _BENCH_NAMES.insert(2, "cuTile")
     _BENCH_STYLES.insert(2, ("black", "-"))
+
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -1257,8 +1262,7 @@ if _HAVE_CUTILE:
         ylabel="ms",
         plot_name="tle-fft-performance",
         args={"M": 4096},
-    )
-)
+    ))
 def benchmark(M, N, provider, dtype, complex_input):
     x = _make_input(M, N, dtype, complex_input)
     quantiles = [0.5, 0.2, 0.8]

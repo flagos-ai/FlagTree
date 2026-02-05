@@ -67,12 +67,8 @@ def key_to_indx(indx, N_PAD: tl.constexpr):
 def _topk_kernel_radix_select_impl(X, Yv, Yi,  # inputs / outputs
                                    stride_xm, stride_ym,  # strides
                                    n_rows, n_cols,  # shape
-                                   K: tl.constexpr,
-                                   K_PAD: tl.constexpr,
-                                   N_PAD: tl.constexpr,
-                                   N_TILES: tl.constexpr,
-                                   BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-                                   RADIX_BITS: tl.constexpr):
+                                   K: tl.constexpr, K_PAD: tl.constexpr, N_PAD: tl.constexpr, N_TILES: tl.constexpr,
+                                   BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, RADIX_BITS: tl.constexpr):
     pid = tl.program_id(0)
     row_ids = tl.arange(0, BLOCK_M)
     offs_m = pid * BLOCK_M + row_ids
@@ -206,12 +202,8 @@ def _topk_kernel_radix_select_impl(X, Yv, Yi,  # inputs / outputs
 def topk_kernel_radix_select_hist(X, Yv, Yi,  # inputs / outputs
                                   stride_xm, stride_ym,  # strides
                                   n_rows, n_cols,  # shape
-                                  K: tl.constexpr,
-                                  K_PAD: tl.constexpr,
-                                  N_PAD: tl.constexpr,
-                                  N_TILES: tl.constexpr,
-                                  BLOCK_N: tl.constexpr,
-                                  RADIX_BITS: tl.constexpr):
+                                  K: tl.constexpr, K_PAD: tl.constexpr, N_PAD: tl.constexpr, N_TILES: tl.constexpr,
+                                  BLOCK_N: tl.constexpr, RADIX_BITS: tl.constexpr):
     pid = tl.program_id(0)
 
     x_dtype = X.dtype.element_ty
@@ -269,7 +261,7 @@ def topk_kernel_radix_select_hist(X, Yv, Yi,  # inputs / outputs
     min_bits = min_val.to(x_utype, bitcast=True)
     min_key = fpval_to_key_with_nan(min_val, min_bits)
     min_packed = (min_key.to(x_ultype) << 16)
-    global_packed = tl.broadcast_to(min_packed, (K_PAD,))
+    global_packed = tl.broadcast_to(min_packed, (K_PAD, ))
 
     for t in tl.static_range(N_TILES):
         offs_n = t * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -281,7 +273,7 @@ def topk_kernel_radix_select_hist(X, Yv, Yi,  # inputs / outputs
         idx_key = indx_to_key(offs_n, N_PAD).to(x_ultype)
         packed = (x_key.to(x_ultype) << 16) | idx_key
         keep = (x_key >= thr_key) & mask_n
-        packed = tl.where(keep, packed, tl.broadcast_to(min_packed, (BLOCK_N,)))
+        packed = tl.where(keep, packed, tl.broadcast_to(min_packed, (BLOCK_N, )))
         tile_topk = tl.topk(packed, K_PAD, dim=0)
         merged = tl.join(global_packed, tile_topk)
         merged = tl.reshape(merged, 2 * K_PAD, can_reorder=False)
@@ -306,10 +298,7 @@ def topk_kernel_radix_select_hist(X, Yv, Yi,  # inputs / outputs
 def topk_kernel_radix_select(X, Yv, Yi,  # inputs / outputs
                              stride_xm, stride_ym,  # strides
                              n_rows, n_cols,  # shape
-                             K: tl.constexpr,
-                             K_PAD: tl.constexpr,
-                             N_PAD: tl.constexpr,
-                             N_TILES: tl.constexpr,
+                             K: tl.constexpr, K_PAD: tl.constexpr, N_PAD: tl.constexpr, N_TILES: tl.constexpr,
                              BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
     _ = BLOCK_M
     topk_kernel_radix_select_hist(
@@ -333,9 +322,7 @@ def topk_kernel_radix_select(X, Yv, Yi,  # inputs / outputs
 def topk_kernel(X, Yv, Yi,  # inputs / outputs
                 stride_xm, stride_ym,  # strides
                 n_rows, n_cols,  # shape
-                K: tl.constexpr,
-                K_PAD: tl.constexpr,
-                BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
+                K: tl.constexpr, K_PAD: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
     pid = tl.program_id(0)
     row_ids = tl.arange(0, BLOCK_M)
     offs_m = pid * BLOCK_M + row_ids
@@ -384,8 +371,7 @@ def topk_kernel(X, Yv, Yi,  # inputs / outputs
 def topk_kernel_iterative(X, Yv, Yi,  # inputs / outputs
                           stride_xm, stride_ym,  # strides
                           n_rows, n_cols,  # shape
-                          K: tl.constexpr,
-                          BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
+                          K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
     pid = tl.program_id(0)
     offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
     mask_m = offs_m < n_rows
@@ -414,15 +400,9 @@ def topk_kernel_iterative(X, Yv, Yi,  # inputs / outputs
 def _topk_kernel_shared_radix_impl(X, Yv, Yi,  # inputs / outputs
                                    stride_xm, stride_ym,  # strides
                                    n_rows, n_cols,  # shape
-                                   K: tl.constexpr,
-                                   K_PAD: tl.constexpr,
-                                   N_PAD: tl.constexpr,
-                                   N_TILES: tl.constexpr,
-                                   BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-                                   RADIX_BITS: tl.constexpr,
-                                   NUM_WARPS: tl.constexpr,
-                                   USE_SMEM: tl.constexpr,
-                                   HIST_BINS: tl.constexpr):
+                                   K: tl.constexpr, K_PAD: tl.constexpr, N_PAD: tl.constexpr, N_TILES: tl.constexpr,
+                                   BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, RADIX_BITS: tl.constexpr,
+                                   NUM_WARPS: tl.constexpr, USE_SMEM: tl.constexpr, HIST_BINS: tl.constexpr):
     pid = tl.program_id(0)
     row_ids = tl.arange(0, BLOCK_M)
     offs_m = pid * BLOCK_M + row_ids
@@ -485,7 +465,8 @@ def _topk_kernel_shared_radix_impl(X, Yv, Yi,  # inputs / outputs
         one = tl.full([BLOCK_M, BLOCK_N], 1, tl.int32)
 
         if USE_SMEM and N_TILES == 1:
-            smem_tile = tle.alloc([BLOCK_M, BLOCK_N], dtype=x_dtype, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+            smem_tile = tle.alloc([BLOCK_M, BLOCK_N], dtype=x_dtype, layout=None, scope=tle.smem,
+                                  nv_mma_shared_layout=False)
             tile_rows = tl.arange(0, BLOCK_M)[:, None]
             tile_cols = tl.arange(0, BLOCK_N)[None, :]
             tile_rows = tl.broadcast_to(tile_rows, (BLOCK_M, BLOCK_N))
@@ -603,12 +584,8 @@ def _topk_kernel_shared_radix_impl(X, Yv, Yi,  # inputs / outputs
 def topk_kernel_shared_radix4(X, Yv, Yi,  # inputs / outputs
                               stride_xm, stride_ym,  # strides
                               n_rows, n_cols,  # shape
-                              K: tl.constexpr,
-                              K_PAD: tl.constexpr,
-                              N_PAD: tl.constexpr,
-                              N_TILES: tl.constexpr,
-                              BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-                              NUM_WARPS: tl.constexpr,
+                              K: tl.constexpr, K_PAD: tl.constexpr, N_PAD: tl.constexpr, N_TILES: tl.constexpr,
+                              BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, NUM_WARPS: tl.constexpr,
                               USE_SMEM: tl.constexpr):
     _topk_kernel_shared_radix_impl(
         X,
@@ -635,12 +612,8 @@ def topk_kernel_shared_radix4(X, Yv, Yi,  # inputs / outputs
 def topk_kernel_shared_radix5(X, Yv, Yi,  # inputs / outputs
                               stride_xm, stride_ym,  # strides
                               n_rows, n_cols,  # shape
-                              K: tl.constexpr,
-                              K_PAD: tl.constexpr,
-                              N_PAD: tl.constexpr,
-                              N_TILES: tl.constexpr,
-                              BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-                              NUM_WARPS: tl.constexpr,
+                              K: tl.constexpr, K_PAD: tl.constexpr, N_PAD: tl.constexpr, N_TILES: tl.constexpr,
+                              BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, NUM_WARPS: tl.constexpr,
                               USE_SMEM: tl.constexpr):
     _topk_kernel_shared_radix_impl(
         X,
@@ -667,12 +640,8 @@ def topk_kernel_shared_radix5(X, Yv, Yi,  # inputs / outputs
 def topk_kernel_shared_radix6(X, Yv, Yi,  # inputs / outputs
                               stride_xm, stride_ym,  # strides
                               n_rows, n_cols,  # shape
-                              K: tl.constexpr,
-                              K_PAD: tl.constexpr,
-                              N_PAD: tl.constexpr,
-                              N_TILES: tl.constexpr,
-                              BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-                              NUM_WARPS: tl.constexpr,
+                              K: tl.constexpr, K_PAD: tl.constexpr, N_PAD: tl.constexpr, N_TILES: tl.constexpr,
+                              BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, NUM_WARPS: tl.constexpr,
                               USE_SMEM: tl.constexpr):
     _topk_kernel_shared_radix_impl(
         X,
@@ -697,13 +666,9 @@ def topk_kernel_shared_radix6(X, Yv, Yi,  # inputs / outputs
 
 # Python wrapper
 
-def triton_topk(x: torch.Tensor,
-                k: int,
-                block_m: int = 128,
-                algo: str = "topk",
-                use_smem: bool = False,
-                sweep_radix_bits: bool = False,
-                out_vals: torch.Tensor | None = None,
+
+def triton_topk(x: torch.Tensor, k: int, block_m: int = 128, algo: str = "topk", use_smem: bool = False,
+                sweep_radix_bits: bool = False, out_vals: torch.Tensor | None = None,
                 out_idx: torch.Tensor | None = None):
     assert x.is_cuda, "input must be on CUDA"
     assert x.ndim == 2, "input must be 2D (M, N)"
@@ -831,6 +796,7 @@ def triton_topk(x: torch.Tensor,
 
 # Correctness
 
+
 def _get_dtype(name: str):
     name = name.lower()
     if name == "float16":
@@ -918,6 +884,7 @@ def benchmark(M, N, K, provider, dtype):
         n_tiles = triton.cdiv(N, block_n_shared)
         n_pad = triton.next_power_of_2(N)
         grid_radix = (triton.cdiv(M, block_m_radix), )
+
         def run_kernel():
             topk_kernel_radix_select[grid_radix](
                 x,
@@ -936,6 +903,7 @@ def benchmark(M, N, K, provider, dtype):
                 num_warps=4,
                 num_stages=1,
             )
+
         if DEBUG_TIMING:
             torch.cuda.synchronize()
             t0 = time.perf_counter()
@@ -950,6 +918,7 @@ def benchmark(M, N, K, provider, dtype):
             rep=bench_rep,
         )
     elif provider == "triton_iterative":
+
         def run_kernel():
             topk_kernel_iterative[grid](
                 x,
@@ -965,6 +934,7 @@ def benchmark(M, N, K, provider, dtype):
                 num_warps=4,
                 num_stages=2,
             )
+
         if DEBUG_TIMING:
             torch.cuda.synchronize()
             t0 = time.perf_counter()
@@ -979,6 +949,7 @@ def benchmark(M, N, K, provider, dtype):
             rep=bench_rep,
         )
     else:
+
         def run_kernel():
             topk_kernel[grid](
                 x,
@@ -995,6 +966,7 @@ def benchmark(M, N, K, provider, dtype):
                 num_warps=4,
                 num_stages=2,
             )
+
         if DEBUG_TIMING:
             torch.cuda.synchronize()
             t0 = time.perf_counter()
@@ -1012,6 +984,7 @@ def benchmark(M, N, K, provider, dtype):
 
 
 # Main
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
