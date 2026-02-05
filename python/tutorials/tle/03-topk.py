@@ -817,7 +817,7 @@ def run_correctness(m: int, n: int, k: int, dtype: torch.dtype, algo: str):
     t_vals, _ = torch.topk(x, k, dim=1)
     y_vals, y_idx = triton_topk(x, k, algo=algo, sweep_radix_bits=False)
     torch.testing.assert_close(y_vals, t_vals, rtol=1e-3, atol=1e-3)
-    gathered = x.gather(1, y_idx)
+    gathered = x.gather(1, y_idx.to(torch.int64))
     torch.testing.assert_close(gathered, y_vals, rtol=1e-3, atol=1e-3)
     if DEBUG_TIMING:
         torch.cuda.synchronize()
@@ -998,7 +998,6 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     dtype = _get_dtype(args.dtype)
-    moe_m = args.M if args.M > 0 else args.batch * args.seq
     moe_n = args.N if args.N > 0 else args.experts
     check_n = min(moe_n, 256)
     check_k = min(args.K, check_n)
