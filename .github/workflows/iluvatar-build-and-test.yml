@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   iluvatar-build-and-test:
-    runs-on: iluvatar
+    runs-on: flagtree-iluvatar
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
