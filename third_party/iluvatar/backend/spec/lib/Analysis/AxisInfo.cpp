@@ -744,7 +744,7 @@ public:
               (maskInfo.has_value() && (d < maskInfo->getRank()))
                   ? maskInfo->getConstancy(d)
                   : 0));
-      if (hasStride) {
+      if (hasStride && isUseSme) {
         corexFlag.push_back(64);
         stride = 64;
       } else {

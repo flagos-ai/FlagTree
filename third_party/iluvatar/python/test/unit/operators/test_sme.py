@@ -14,7 +14,7 @@ import math
 import pytest
 
 triton_cache_dir = os.environ.get('TRITON_CACHE_DIR', '/root/.triton/cache')
-
+capability = torch.cuda.get_device_capability()
 
 def print_result_decorator(func):
 
@@ -160,7 +160,6 @@ def test_corex_sme():
 @pytest.mark.skip(reason="iluvatar: ir.parse_mlir_module failed in CI")
 @print_result_decorator
 def test_16x32_i8_dot():
-    capability = torch.cuda.get_device_capability()
     if capability[0] == 8:
         pytest.skip("tl.dot do not support int8 on QS now")
     A = torch.randint(-127, 127, (64, 64), dtype=torch.int8, device="cuda")
@@ -773,6 +772,8 @@ def mask_sme_kernel(q_ptr, k_ptr, o_ptr, M: tl.constexpr, N: tl.constexpr, K: tl
 @pytest.mark.skip(reason="iluvatar: ir.parse_mlir_module failed in CI")
 @print_result_decorator
 def test_mask_sme():
+    if capability[0] == 8:
+        pytest.skip("tl.dot mask do not support on QS now")
     M, K, N = 64, 256, 64
     mask = K // 2
     other = 3.0
