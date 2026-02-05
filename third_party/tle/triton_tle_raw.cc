@@ -28,9 +28,7 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 static SmallVector<Type> aggregationTypes(TritonOpBuilder &builder,const SmallVector<Type> &unconvertTypes,const SmallVector<Type> &convertTypes) {
   SmallVector<Type> resultTypes;
   TypeRange tgts= convertTypes;
-  llvm::outs()<<" begin aggregationTypes \n"<<unconvertTypes.size()<<"\n";
   for (Type singletype:unconvertTypes){
-    llvm::outs()<<" unconvert type "<<singletype<<"\n";
     if (auto ptrType = dyn_cast<RankedTensorType>(singletype)){
       size_t rank=ptrType.getRank();
       SmallVector<Type> fieldTys=tgts.take_front(3+rank*2);
@@ -38,7 +36,6 @@ static SmallVector<Type> aggregationTypes(TritonOpBuilder &builder,const SmallVe
       tgts = tgts.drop_front(3 + rank * 2);
     } else {
       // struct type
-      llvm::outs()<<" here \n";
       resultTypes.push_back(tgts.front());
       tgts = tgts.drop_front();
     }
@@ -87,7 +84,6 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
   while (curOp && curOp->getParentOp() && !isa<ModuleOp>(curOp)) {
     curOp = curOp->getParentOp();
   }
-  llvm::outs()<<"outputs.size() "<<outputs.size()<<"\n";
   ModuleOp curModule = cast<ModuleOp>(curOp);
   {
     OpBuilder::InsertionGuard guard(builder);
@@ -136,16 +132,12 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
     }
   }
 
-  // Combine converted outputs and inputs
   SmallVector<Value> operands =
       llvm::to_vector(llvm::concat<Value>(converted_outputs, converted_inputs));
 
   SmallVector<Type> dslOutputTys = llvm::map_to_vector(
       converted_outputs, [](Value value) -> Type { return value.getType(); });
   auto outStructTy = aggregationTypes(self, outputTys, dslOutputTys);
-  for(auto outs: outStructTy){
-    llvm::outs()<<" out struct type "<<outs<<"\n";
-  }
   tle::DSLRegionOp dslRegionOp =
       self.create<tle::DSLRegionOp>(outStructTy, operands);
   OpBuilder::InsertionGuard guard(builder);
@@ -182,7 +174,6 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
        zip_equal(func.getBlocks(), body.getBlocks())) {
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToEnd(&newBlock);
-    llvm::outs()<<" dslRegionOp.getNumResults() "<<dslRegionOp.getNumResults()<<"\n";
     for (Operation &operation : oldBlock.getOperations()) {
       if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
         SmallVector<Value> operands, yields;
@@ -195,11 +186,6 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
                                        mapper.lookup(returnOp.getArg())));
         }
         TypeRange tgts = dslRegionOp.getOutputs().getTypes();
-        // for (Value operand : operands) {
-        //   SmallVector<Value> rets =
-        //       tle::protocol::ReturnPattern::apply(self, tgts, operand);
-        //   yields.append(std::move(rets));
-        // }
         builder.create<tle::YieldOp>(operation.getLoc(), operands);
       } else {
         builder.clone(operation, mapper);
