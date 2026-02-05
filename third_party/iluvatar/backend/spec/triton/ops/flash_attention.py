@@ -14,7 +14,9 @@ def attention_forward_config():
 
 
 def attention_backward_config(BLOCK_DMODEL):
+    import torch
     # otherwise shared memory out of resource
     BLOCK = 64  # FIXME: currently BLOCK=128 has issues, BLOCK=64 works for common cases.
-    num_warps = 16 if BLOCK_DMODEL > 64 else 8
+    capability = torch.cuda.get_device_capability()
+    num_warps = 16 if BLOCK_DMODEL > 64 and capability[0] < 8 else 8
     return (BLOCK, num_warps)
