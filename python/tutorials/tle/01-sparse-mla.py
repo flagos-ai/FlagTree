@@ -3,23 +3,18 @@
 Sparse MLA Forward
 ==================
 
-This module implements Triton and TLE kernels for the forward pass of a sparse
-MLA (Multi-Headed Attention) mechanism. It compares correctness and performance.
+This module implements a Triton kernel for the forward pass of a sparse MLA (Multi-Headed Attention) mechanism.
+It demonstrates the use of Triton's TLE (Triton Language Extensions) for efficient memory access and computation.
 """
 
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle.language.gpu as tle
+import triton.experimental.tle.language as tle
 
 spar_mla_fwd_configs = [
-    triton.Config({'num_stages': 2, 'num_warps': 4}),
     triton.Config({'num_stages': 4, 'num_warps': 8}),
-]
-
-spar_mla_fwd_tle_configs = [
-    triton.Config({'num_stages': 1, 'num_warps': 4}),
-    triton.Config({'num_stages': 2, 'num_warps': 8}),
+    # triton.Config({'num_stages': 2, 'num_warps': 4}),
 ]
 
 
@@ -28,19 +23,18 @@ spar_mla_fwd_tle_configs = [
     key=['K', 'is_causal'],
 )
 @triton.jit
-def triton_sparse_mla_fwd_triton(q, kv, indices, sm_scale: tl.constexpr, output, lse, stride_qb, stride_qh, stride_qm,
-                                 stride_qd, stride_kvb, stride_kvg, stride_kvn, stride_kvd, stride_tb, stride_tg,
-                                 stride_tm, stride_tt,  # topk，for indices
-                                 stride_ob, stride_oh, stride_om, stride_od, stride_lb, stride_lh, stride_lm,
-                                 B: tl.constexpr, SQ: tl.constexpr,  # seqlen
-                                 SKV: tl.constexpr, K: tl.constexpr,  # topk
-                                 D: tl.constexpr,  # QKV dim
-                                 TD: tl.constexpr,  # tail dim
-                                 DP: tl.constexpr, TDP: tl.constexpr, H: tl.constexpr,  # q_head_dim
-                                 G: tl.constexpr,  # group_size
-                                 VG: tl.constexpr,  # H/G KV groups
-                                 BK: tl.constexpr, BH: tl.constexpr, DK: tl.constexpr, TDK: tl.constexpr,
-                                 is_causal: tl.constexpr):
+def triton_sparse_mla_fwd(q, kv, indices, sm_scale: tl.constexpr, output, lse, stride_qb, stride_qh, stride_qm,
+                          stride_qd, stride_kvb, stride_kvg, stride_kvn, stride_kvd, stride_tb, stride_tg, stride_tm,
+                          stride_tt,  # topk，for indices
+                          stride_ob, stride_oh, stride_om, stride_od, stride_lb, stride_lh, stride_lm, B: tl.constexpr,
+                          SQ: tl.constexpr,  # seqlen
+                          SKV: tl.constexpr, K: tl.constexpr,  # topk
+                          D: tl.constexpr,  # QKV dim
+                          TD: tl.constexpr,  # tail dim
+                          DP: tl.constexpr, TDP: tl.constexpr, H: tl.constexpr,  # q_head_dim
+                          G: tl.constexpr,  # group_size
+                          VG: tl.constexpr,  # H/G KV groups
+                          BK: tl.constexpr, BH: tl.constexpr, is_causal: tl.constexpr):
     i_b, i_sq, i_gbh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_g, i_bh = i_gbh // G, i_gbh % G
     q_base = q + i_b * stride_qb + i_sq * stride_qm + i_gbh * (BH * stride_qh)
@@ -88,11 +82,11 @@ def triton_sparse_mla_fwd_triton(q, kv, indices, sm_scale: tl.constexpr, output,
 
             kv_ptr = kv_base + offs_d[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
             kv_msk = mask_d[:, None] & mask_ids[None, :]
-            kv_blk = tl.load(kv_ptr, kv_msk, other=0.0)  # [DP, BK]
+            kv_blk = tle.load(kv_ptr, kv_msk, other=0.0, is_async=True)  # [DP, BK]
 
             tkv_ptr = tkv_base + offs_td[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
             tkv_msk = mask_td[:, None] & mask_ids[None, :]
-            tkv_blk = tl.load(tkv_ptr, tkv_msk, other=0.0)  # [TDP, BK]
+            tkv_blk = tle.load(tkv_ptr, tkv_msk, other=0.0, is_async=False)  # [TDP, BK]
 
             qk = tl.dot(tq_blk, tkv_blk, out_dtype=tl.float32)
             qk = tl.dot(q_blk, kv_blk, qk, out_dtype=tl.float32)
@@ -121,153 +115,7 @@ def triton_sparse_mla_fwd_triton(q, kv, indices, sm_scale: tl.constexpr, output,
     tl.store(l_ptr, fin_log.to(q_blk.dtype), l_msk)
 
 
-@triton.autotune(
-    configs=spar_mla_fwd_tle_configs,
-    key=['K', 'is_causal'],
-)
-@triton.jit
-def triton_sparse_mla_fwd_tle(q, kv, indices, sm_scale: tl.constexpr, output, lse, stride_qb, stride_qh, stride_qm,
-                              stride_qd, stride_kvb, stride_kvg, stride_kvn, stride_kvd, stride_tb, stride_tg,
-                              stride_tm, stride_tt,  # topk，for indices
-                              stride_ob, stride_oh, stride_om, stride_od, stride_lb, stride_lh, stride_lm,
-                              B: tl.constexpr, SQ: tl.constexpr,  # seqlen
-                              SKV: tl.constexpr, K: tl.constexpr,  # topk
-                              D: tl.constexpr,  # QKV dim
-                              TD: tl.constexpr,  # tail dim
-                              DP: tl.constexpr, TDP: tl.constexpr, H: tl.constexpr,  # q_head_dim
-                              G: tl.constexpr,  # group_size
-                              VG: tl.constexpr,  # H/G KV groups
-                              BK: tl.constexpr, BH: tl.constexpr, DK: tl.constexpr, TDK: tl.constexpr,
-                              is_causal: tl.constexpr):
-    i_b, i_sq, i_gbh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    i_g, i_bh = i_gbh // G, i_gbh % G
-    q_base = q + i_b * stride_qb + i_sq * stride_qm + i_gbh * (BH * stride_qh)
-    tq_base = q_base + D * stride_qd
-    kv_base = kv + i_b * stride_kvb + i_g * stride_kvg
-    tkv_base = kv_base + D * stride_kvd
-    t_base = indices + i_b * stride_tb + i_sq * stride_tm + i_g * stride_tg
-    o_base = output + i_b * stride_ob + i_sq * stride_om + i_gbh * (BH * stride_oh)
-    l_base = lse + i_b * stride_lb + i_sq * stride_lm + i_gbh * (BH * stride_lh)
-
-    offs_h = tl.arange(0, BH)
-    offs_d = tl.arange(0, DP)
-    offs_td = tl.arange(0, TDP)
-    offs_od = tl.arange(0, DP)
-    offs_t = tl.arange(0, BK)
-    mask_h = i_bh * BH + offs_h < G
-    mask_d = offs_d < D
-    mask_td = offs_td < TD
-    mask_od = mask_d
-
-    q_ptr = q_base + offs_h[:, None] * stride_qh + offs_d[None, :] * stride_qd
-    q_msk = mask_h[:, None] & mask_d[None, :]
-    q_blk = tl.load(q_ptr, q_msk, other=0.0)
-
-    tq_ptr = tq_base + offs_h[:, None] * stride_qh + offs_td[None, :] * stride_qd
-    tq_msk = mask_h[:, None] & mask_td[None, :]
-    tq_blk = tl.load(tq_ptr, tq_msk, other=0.0)
-
-    kv_dtype = kv.dtype.element_ty
-    smem_kv = tle.alloc(
-        [DP, BK],
-        dtype=kv_dtype,
-        layout=None,
-        scope=tle.smem,
-        nv_mma_shared_layout=False,
-    )
-    smem_tkv = tle.alloc(
-        [TDP, BK],
-        dtype=kv_dtype,
-        layout=None,
-        scope=tle.smem,
-        nv_mma_shared_layout=False,
-    )
-    kv_d_idx = offs_d[:, None] + tl.zeros((DP, BK), tl.int32)
-    kv_t_idx = offs_t[None, :] + tl.zeros((DP, BK), tl.int32)
-    tkv_d_idx = offs_td[:, None] + tl.zeros((TDP, BK), tl.int32)
-    tkv_t_idx = offs_t[None, :] + tl.zeros((TDP, BK), tl.int32)
-    smem_kv_ptrs = tle.local_ptr(smem_kv, (kv_d_idx, kv_t_idx))
-    smem_tkv_ptrs = tle.local_ptr(smem_tkv, (tkv_d_idx, tkv_t_idx))
-
-    max_prev = tl.full([BH], float('-inf'), dtype=tl.float32)
-    sum_exp = tl.full([BH], 1.0, dtype=tl.float32)
-    acc = tl.zeros([BH, DP], dtype=tl.float32)
-
-    log_scale: tl.constexpr = sm_scale * 1.44269504
-
-    max_col = i_sq if is_causal else SQ - 1
-
-    NK = tl.cdiv(K, BK)
-    for ck in tl.range(NK):
-        if ck * BK <= max_col:
-            t_ptr = (BK * ck + offs_t) * stride_tt
-            t_msk = t_ptr < K
-            t_ptr += t_base
-            kv_ids = tl.load(t_ptr, t_msk, other=-1)
-            mask_ids = (kv_ids <= max_col) & (kv_ids >= 0)
-
-            for d0 in range(0, DP, DK):
-                d_offsets = d0 + tl.arange(0, DK)
-                d_mask = d_offsets < D
-                kv_ptr = kv_base + d_offsets[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
-                kv_msk = d_mask[:, None] & mask_ids[None, :]
-                kv_g = tl.load(kv_ptr, kv_msk, other=0.0)  # [DK, BK]
-                d_idx = d_offsets[:, None] + tl.zeros((DK, BK), tl.int32)
-                t_idx = offs_t[None, :] + tl.zeros((DK, BK), tl.int32)
-                smem_kv_ptrs_tile = tle.local_ptr(
-                    smem_kv,
-                    (d_idx, t_idx),
-                )
-                tl.store(smem_kv_ptrs_tile, kv_g, mask=kv_msk)
-
-            for td0 in range(0, TDP, TDK):
-                td_offsets = td0 + tl.arange(0, TDK)
-                td_mask = td_offsets < TD
-                tkv_ptr = tkv_base + td_offsets[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
-                tkv_msk = td_mask[:, None] & mask_ids[None, :]
-                tkv_g = tl.load(tkv_ptr, tkv_msk, other=0.0)  # [TDK, BK]
-                td_idx = td_offsets[:, None] + tl.zeros((TDK, BK), tl.int32)
-                tt_idx = offs_t[None, :] + tl.zeros((TDK, BK), tl.int32)
-                smem_tkv_ptrs_tile = tle.local_ptr(
-                    smem_tkv,
-                    (td_idx, tt_idx),
-                )
-                tl.store(smem_tkv_ptrs_tile, tkv_g, mask=tkv_msk)
-
-            tl.debug_barrier()
-            kv_blk = tl.load(smem_kv_ptrs)
-            kv_blk = tl.where(mask_d[:, None] & mask_ids[None, :], kv_blk, 0.0)
-            tkv_blk = tl.load(smem_tkv_ptrs)
-            tkv_blk = tl.where(mask_td[:, None] & mask_ids[None, :], tkv_blk, 0.0)
-
-            qk = tl.dot(tq_blk, tkv_blk, out_dtype=tl.float32)
-            qk = tl.dot(q_blk, kv_blk, qk, out_dtype=tl.float32)
-
-            qk = tl.where(mask_ids[None, :], qk, float('-inf'))  # [BH, BK]
-
-            new_max = tl.maximum(max_prev, tl.max(qk, axis=1))
-            alpha = tl.math.exp2((max_prev - new_max) * log_scale)
-            exp_qk = tl.math.exp2(qk * log_scale - new_max[:, None] * log_scale)
-            sum_qk = tl.sum(exp_qk, axis=1)
-            sum_exp = sum_exp * alpha + sum_qk
-            acc = acc * alpha[:, None]
-            exp_qk = exp_qk.to(tl.bfloat16)
-            acc = tl.dot(exp_qk, tl.trans(kv_blk), acc, out_dtype=tl.float32)  # [BH, BK] @ [BK, DP] = [BH, DP]
-
-            max_prev = new_max
-
-    out_vals = acc / sum_exp[:, None]
-    o_ptr = o_base + offs_h[:, None] * stride_oh + offs_od[None, :] * stride_od
-    o_msk = mask_h[:, None] & mask_od[None, :]
-    tl.store(o_ptr, out_vals.to(q_blk.dtype), o_msk)
-
-    fin_log = max_prev * log_scale + tl.math.log2(sum_exp.to(tl.float32))  # lse / ln2
-    l_ptr = l_base + offs_h * stride_lh
-    l_msk = mask_h
-    tl.store(l_ptr, fin_log.to(q_blk.dtype), l_msk)
-
-
-def _sparse_mla_fwd_interface(kernel, q, kv, indices, sm_scale=None, return_p_sum: bool = False, d_v=512, bk=32):
+def triton_sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, return_p_sum: bool = False, d_v=512):
     is_causal = True
     assert not return_p_sum, "This kernel file is for fwd only"
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
@@ -281,8 +129,6 @@ def _sparse_mla_fwd_interface(kernel, q, kv, indices, sm_scale=None, return_p_su
     TD = DT - D
     DP = triton.next_power_of_2(D)
     TDP = triton.next_power_of_2(TD)
-    DK = max(1, min(DP, 128))
-    TDK = max(1, min(TDP, 64))
     assert kv.shape[0] == B
     _, _, _, K = indices.shape
     assert indices.shape == (B, SQ, VG, K)
@@ -291,31 +137,21 @@ def _sparse_mla_fwd_interface(kernel, q, kv, indices, sm_scale=None, return_p_su
         sm_scale = DT**-0.5
     BH = 32
     NH = triton.cdiv(G, BH)
-    BK = bk
+    BK = 32
     output = torch.zeros((B, SQ, H, D), device=q.device, dtype=q.dtype)
     lse = torch.full((B, SQ, H), float('-inf'), device=q.device, dtype=q.dtype)
     grid = (B, SQ, VG * NH)  # (SQ//BQ, B*H)
-    kernel[grid](
+    triton_sparse_mla_fwd[grid](
         q, kv, indices, sm_scale, output, lse, q.stride(0), q.stride(2), q.stride(1), q.stride(3),  # [B, H, SQ, DT]
         kv.stride(0), kv.stride(2), kv.stride(1), kv.stride(3),  # [B, VG, SKV, DT]
         indices.stride(0), indices.stride(2), indices.stride(1), indices.stride(3),  # [B, VG, SQ, K]
         output.stride(0), output.stride(2), output.stride(1), output.stride(3),  # [B, H, SQ, D]
         lse.stride(0), lse.stride(2), lse.stride(1),  # [B, H, SQ]
-        B, SQ, S, K, D, TD, DP, TDP, H, G, VG, BK, BH, DK, TDK,
+        B, SQ, S, K, D, TD, DP, TDP, H, G, VG, BK, BH,
         # BD,
         is_causal)
     # sparse_mla_fwd[grid](q, kv, indices, output)
     return output, lse
-
-
-def triton_sparse_mla_fwd_triton_interface(q, kv, indices, sm_scale=None, return_p_sum: bool = False, d_v=512):
-    return _sparse_mla_fwd_interface(triton_sparse_mla_fwd_triton, q, kv, indices, sm_scale=sm_scale,
-                                     return_p_sum=return_p_sum, d_v=d_v, bk=32)
-
-
-def triton_sparse_mla_fwd_tle_interface(q, kv, indices, sm_scale=None, return_p_sum: bool = False, d_v=512):
-    return _sparse_mla_fwd_interface(triton_sparse_mla_fwd_tle, q, kv, indices, sm_scale=sm_scale,
-                                     return_p_sum=return_p_sum, d_v=d_v, bk=16)
 
 
 def ref_sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, is_casual=True, d_v=512):
@@ -369,37 +205,20 @@ def test_sparse_mla_fwd(B=1, S=4096, SKV=4096, H=128, HKV=1, DQK=576, DV=512, to
                 i_i = torch.randperm(max(1, t))[:topk]
                 indices[b, t, h, :len(i_i)] = i_i
 
-    triton_bf16_out, triton_bf16_lse = triton_sparse_mla_fwd_triton_interface(q, kv, indices, d_v=DV)
-    tle_bf16_out, tle_bf16_lse = triton_sparse_mla_fwd_tle_interface(q, kv, indices, d_v=DV)
+    ref_bf16_out = ref_sparse_mla_fwd_interface(q, kv, indices, d_v=DV)
+
+    triton_bf16_out, triton_bf16_lse = triton_sparse_mla_fwd_interface(q, kv, indices, d_v=DV)
+    print("triton bf16 done \n triton lse tensor: \n", triton_bf16_lse)
+    print()
 
     assert torch.allclose(
         triton_bf16_out.float(),
-        tle_bf16_out.float(),
+        ref_bf16_out.float(),
         atol=1e-1,
         rtol=1e-1,
-    ), "Triton sparse MLA fwd bf16 does not match TLE"
-    assert torch.allclose(
-        triton_bf16_out.float(),
-        tle_bf16_out.float(),
-        atol=1e-1,
-        rtol=1e-1,
-    ), "TLE sparse MLA fwd bf16 does not match Triton"
-    print("Triton and TLE sparse MLA fwd bf16 match each other!")
-
-    triton_ms, _, _ = triton.testing.do_bench(
-        lambda: triton_sparse_mla_fwd_triton_interface(q, kv, indices, d_v=DV),
-        quantiles=[0.5, 0.2, 0.8],
-    )
-    tle_ms, _, _ = triton.testing.do_bench(
-        lambda: triton_sparse_mla_fwd_tle_interface(q, kv, indices, d_v=DV),
-        quantiles=[0.5, 0.2, 0.8],
-    )
-    flops = 2.0 * B * S * H * topk * (DQK + DV)
-    triton_tflops = flops / (triton_ms * 1e-3) / 1e12
-    tle_tflops = flops / (tle_ms * 1e-3) / 1e12
-    print(f"triton_ms={triton_ms:.4f}, tflops={triton_tflops:.2f}")
-    print(f"tle_ms={tle_ms:.4f}, tflops={tle_tflops:.2f}")
+    ), "Triton sparse MLA fwd bf16 does not match reference"
+    print("Triton sparse MLA fwd bf16 matches reference!")
 
 
 if __name__ == "__main__":
-    test_sparse_mla_fwd(B=1, S=4096, SKV=32768, H=128, HKV=1, DQK=512 + 16, DV=512, topk=2048, dtype=torch.bfloat16)
+    test_sparse_mla_fwd(B=1, S=128, SKV=1024, H=32, HKV=1, DQK=256 + 32, DV=256, topk=64, dtype=torch.bfloat16)
