@@ -77,10 +77,6 @@ SmallVector<Value> LLVMStructurePattern::apply(TritonOpBuilder &builder,
   LLVM::LLVMStructType structTy = src.getType();
   ArrayRef<Type> types = structTy.getBody();
   const size_t size = types.size();
-  
-  // 支持两种格式：
-  // 1. 标准格式 (5 字段): (ptr, ptr, i64, array<Nxi64>, array<Nxi64>)
-  // 2. 展平格式 (2*rank+3 字段): (ptr, ptr, i64, i64..., i64...)
   bool is_standard = (size == 5 &&
                       llvm::all_of(types.take_front(2),
                                    [](const Type &ty) -> bool {
