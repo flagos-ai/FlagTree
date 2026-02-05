@@ -700,7 +700,6 @@ def triton_topk(x: torch.Tensor, k: int, block_m: int = 128, algo: str = "topk",
     grid = (triton.cdiv(n_rows, block_m), )
     if algo == "iter_shared_radix_smem":
         algo = "iter_shared_radix"
-        use_smem = True
 
     if algo == "topk":
         topk_kernel[grid](
@@ -1001,7 +1000,6 @@ def main(argv=None):
     dtype = _get_dtype(args.dtype)
     moe_m = args.M if args.M > 0 else args.batch * args.seq
     moe_n = args.N if args.N > 0 else args.experts
-    check_m = min(moe_m, 256)
     check_n = min(moe_n, 256)
     check_k = min(args.K, check_n)
     run_moe_correctness(args.batch, args.seq, args.experts, check_k, dtype, "topk")
