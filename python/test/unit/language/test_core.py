@@ -1506,7 +1506,7 @@ def test_atomic_cas(sem, num_ctas, device):
 
     capability = torch.cuda.get_device_capability()
     if capability[0] == 8:
-        os.environ["TRITON_DISABLE_STORE_STP"] = "1"
+        os.environ["TRITON_STORE_STP"] = "off"
     # 2. only one block enters the critical section
     @triton.jit
     def serialized_add(data, Lock, SEM: tl.constexpr):

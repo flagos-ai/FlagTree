@@ -117,7 +117,7 @@ def test_op(BLOCK_M, BLOCK_N, BLOCK_K, SPLIT_K, NWARP, NSTAGE, M, N, K, AT, BT, 
             F8_FASTACCUM, ACC_DTYPE, OUTPUT_DTYPE):
     capability = torch.cuda.get_device_capability()
     if capability[0] == 8:
-        os.environ["TRITON_DISABLE_STORE_STP"] = "1"
+            os.environ["TRITON_STORE_STP"] = "off"
     if capability[0] < 7:
         pytest.skip("Only test tl.dot() on devices with sm >= 70")
     if capability[0] < 8 and (ADTYPE == "bfloat16" or BDTYPE == "bfloat16"):

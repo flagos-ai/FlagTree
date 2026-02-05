@@ -35,8 +35,8 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
 #ifdef FLAGTREE_SPEC_Tools_Sys_GetEnv_BACKEND_IR_ENABLE_DUMP
     FLAGTREE_SPEC_Tools_Sys_GetEnv_BACKEND_IR_ENABLE_DUMP,
 #endif
-#ifdef FLAGTREE_SPEC_Tools_Sys_GetEnv_TRITON_DISABLE_STORE_STP
-    FLAGTREE_SPEC_Tools_Sys_GetEnv_TRITON_DISABLE_STORE_STP,
+#ifdef FLAGTREE_SPEC_Tools_Sys_GetEnv_TRITON_STORE_STP
+    FLAGTREE_SPEC_Tools_Sys_GetEnv_TRITON_STORE_STP,
 #endif
     // clang-format on
 };
