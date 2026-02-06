@@ -15,6 +15,7 @@ real data.
 # -----
 
 import argparse
+from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import torch
@@ -159,15 +160,15 @@ def moe_align_block_size_sort_kernel(
     topk_ids_ptr,
     sorted_token_ids_ptr,
     cumsum_ptr,
-    num_experts: tl.constexpr,
     numel,
     BLOCK: tl.constexpr,
 ):
     pid = tl.program_id(0)
+        
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
-    expert_id = tl.load(topk_ids_ptr + offsets, mask=mask, other=0)
-    rank = tl.atomic_add(cumsum_ptr + expert_id, 1, mask=mask)
+    expert_id = tl.load(topk_ids_ptr + offsets, mask=mask, other=0, cache_modifier=".cv")
+    rank = tl.atomic_add(cumsum_ptr + expert_id, 1, mask=mask, sem="relaxed")
     tl.store(sorted_token_ids_ptr + rank, offsets, mask=mask)
 
 
@@ -237,7 +238,6 @@ def moe_align_block_size_vllm_stage1_kernel(
     topk_ids_ptr,
     sorted_token_ids_ptr,
     cumsum_ptr,
-    expert_ids_ptr,
     num_tokens_post_pad_ptr,
     num_experts: tl.constexpr,
     numel,
@@ -274,24 +274,23 @@ def moe_align_block_size_vllm_stage1_kernel(
     tl.debug_barrier()
 
     ones = tl.full((THREADS, ), 1, tl.int32)
-    if num_blocks > 0:
-        i = 0
-        while i + 1 < num_blocks:
-            base = i * THREADS
-            offsets = base + tl.arange(0, THREADS)
-            expert_id = tl.load(topk_ids_ptr + offsets).to(tl.int32)
-            count_ptrs = tle.local_ptr(smem_counts, (expert_id, ))
-            tl.atomic_add(count_ptrs, ones, sem="relaxed", scope="cta")
-            i += 1
-
-        base = (num_blocks - 1) * THREADS
+    i = 0
+    while i + 1 < num_blocks:
+        base = i * THREADS
         offsets = base + tl.arange(0, THREADS)
-        tail_mask = offsets < numel
-        expert_id = tl.load(topk_ids_ptr + offsets, mask=tail_mask, other=0).to(tl.int32)
-        valid = tail_mask & (expert_id < num_experts)
-        expert_id = tl.where(valid, expert_id, 0)
+        expert_id = tl.load(topk_ids_ptr + offsets).to(tl.int32)
         count_ptrs = tle.local_ptr(smem_counts, (expert_id, ))
-        tl.atomic_add(count_ptrs, ones, mask=valid, sem="relaxed", scope="cta")
+        tl.atomic_add(count_ptrs, ones, sem="relaxed", scope="cta")
+        i += 1
+
+    base = (num_blocks - 1) * THREADS
+    offsets = base + tl.arange(0, THREADS)
+    tail_mask = offsets < numel
+    expert_id = tl.load(topk_ids_ptr + offsets, mask=tail_mask, other=0).to(tl.int32)
+    valid = tail_mask & (expert_id < num_experts)
+    expert_id = tl.where(valid, expert_id, 0)
+    count_ptrs = tle.local_ptr(smem_counts, (expert_id, ))
+    tl.atomic_add(count_ptrs, ones, mask=valid, sem="relaxed", scope="cta")
 
     counts = tl.load(smem_ptrs)
     counts = tl.where(expert_mask, counts, 0)
@@ -301,18 +300,19 @@ def moe_align_block_size_vllm_stage1_kernel(
     tl.store(cumsum_ptr + 1 + expert_offsets, cumsum, mask=expert_mask)
     total = tl.sum(aligned, axis=0)
     tl.store(num_tokens_post_pad_ptr, total)
+    
+@triton.jit(do_not_specialize=["numel", "total_elems"])
+def moe_align_block_size_vllm_stage2_kernel(
+    cumsum_ptr,
+    expert_ids_ptr,
+    BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    
+    start_idx = tl.load(cumsum_ptr + pid)
+    end_idx = tl.load(cumsum_ptr + pid + 1)
 
-    cumsum_ids = tl.arange(0, THREADS)
-    valid_cumsum_ids = cumsum_ids < num_experts
-    cumsum_start = tl.load(cumsum_ptr + cumsum_ids, mask=valid_cumsum_ids) // BLOCK_SIZE
-    cumsum_end = tl.load(cumsum_ptr + cumsum_ids + 1, mask=valid_cumsum_ids) // BLOCK_SIZE
-    max_rounds = tl.max(cumsum_end - cumsum_start)
-    i = 0
-    while i < max_rounds:
-        mask = cumsum_start < cumsum_end
-        tl.store(expert_ids_ptr + cumsum_start, cumsum_ids, mask=mask & valid_cumsum_ids)
-        cumsum_start += 1
-        i += 1
+    for i in range(start_idx, end_idx, BLOCK_SIZE):
+        tl.store(expert_ids_ptr + i // BLOCK_SIZE, pid)
 
 
 # %%
@@ -468,7 +468,6 @@ def moe_align_block_size_tle_impl(
         topk_ids,
         sorted_token_ids,
         cumsum,
-        expert_ids,
         num_tokens_post_pad,
         num_experts,
         numel,
@@ -479,6 +478,15 @@ def moe_align_block_size_tle_impl(
         num_warps=32,
         num_stages=1,
     )
+    
+    grid = (num_experts, )
+    moe_align_block_size_vllm_stage2_kernel[grid](
+        cumsum,
+        expert_ids,
+        BLOCK_SIZE=block_size,
+        num_warps=1,
+        num_stages=1,
+    )
 
     block_sort = 256
     grid = (triton.cdiv(numel, block_sort), )
@@ -486,10 +494,9 @@ def moe_align_block_size_tle_impl(
         topk_ids,
         sorted_token_ids,
         cumsum,
-        num_experts,
         numel,
         BLOCK=block_sort,
-        num_warps=8,
+        num_warps=block_sort // 32,
         num_stages=1,
     )
 
@@ -647,15 +654,15 @@ def _sample_topk_ids(num_tokens: int, num_experts: int, probs: torch.Tensor) -> 
 
 def _moe_realistic_shapes() -> List[Tuple[int, int]]:
     return [
-        (256, 512),
-        (512, 512),
-        (1024, 512),
-        (2048, 512),
-        (4096, 512),
-        (8192, 512),
-        (16384, 512),
-        (32768, 512),
-        (65536, 512),
+        # (256, 512),
+        # (512, 512),
+        # (1024, 512),
+        # (2048, 512),
+        # (4096, 512),
+        # (8192, 512),
+        (163840, 512),
+        # (32768, 512),
+        # (65536, 512),
     ]
 
 
@@ -673,6 +680,33 @@ def run_realistic_benchmark(block_size: int) -> None:
         print(row)
 
 
+def _load_real_topk_ids(path: str) -> torch.Tensor:
+    path_obj = Path(path)
+    if path_obj.is_dir():
+        path_obj = path_obj / "topk_ids.pt"
+    topk_ids = torch.load(path_obj, map_location=DEVICE)
+    if topk_ids.device != DEVICE:
+        topk_ids = topk_ids.to(DEVICE)
+    if topk_ids.dtype != torch.int32:
+        topk_ids = topk_ids.to(torch.int32)
+    return topk_ids.contiguous()
+
+
+def run_real_data_benchmark(topk_ids_path: str, num_experts: int, block_size: int) -> None:
+    providers = ["triton", "tle"]
+    topk_ids = _load_real_topk_ids(topk_ids_path)
+    num_tokens = topk_ids.numel()
+    max_id = int(topk_ids.max().item()) if num_tokens > 0 else -1
+    if max_id >= num_experts:
+        print(f"warning: max topk_id {max_id} >= num_experts {num_experts}")
+    print(f"num_tokens={num_tokens}, num_experts={num_experts}, block_size={block_size}, source=real")
+    header = "provider,ms"
+    print(header)
+    for p in providers:
+        ms, _, _ = _bench_one(topk_ids, block_size, num_experts, p)
+        print(f"{p},{ms:.4f}")
+
+
 # %%
 # Main
 # ----
@@ -680,16 +714,23 @@ def run_realistic_benchmark(block_size: int) -> None:
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--block_size", type=int, default=64, help="MoE block size")
+    parser.add_argument("--block_size", type=int, default=16, help="MoE block size")
     parser.add_argument("--num_tokens", type=int, default=8192, help="num tokens")
     parser.add_argument("--num_experts", type=int, default=64, help="num experts")
     parser.add_argument("--skip_correctness", action="store_true", help="skip correctness checks")
+    parser.add_argument("--real_data",
+                        type=str,
+                        default="",
+                        help="path to topk_ids.pt (or directory containing it) for real-data benchmark")
     args = parser.parse_args(argv)
 
     if not args.skip_correctness:
         run_correctness(args.num_tokens, args.num_experts, args.block_size)
 
-    run_realistic_benchmark(args.block_size)
+    if args.real_data:
+        run_real_data_benchmark(args.real_data, args.num_experts, args.block_size)
+    else:
+        run_realistic_benchmark(args.block_size)
 
 
 if __name__ == "__main__":
