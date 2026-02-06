@@ -52,6 +52,21 @@ Value maybeAnd(RewriterBase &rewriter, Location loc, Value a, Value b) {
   return a ? a : b;
 }
 
+// begin flagtree tle
+std::optional<unsigned> inferPtrAddrSpace(llvm::ArrayRef<Value> ptrElems) {
+  for (Value elem : ptrElems) {
+    if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
+      return ptrTy.getAddressSpace();
+  }
+  return std::nullopt;
+}
+
+bool isSharedPointerValue(llvm::ArrayRef<Value> ptrElems,
+                          unsigned defaultAddrSpace = 1) {
+  return inferPtrAddrSpace(ptrElems).value_or(defaultAddrSpace) == 3;
+}
+// end flagtree tle
+
 // Return a predicate that is true only if the current thread holds unique data,
 // according to freeVarsMask. The predicate may be null to indicate no
 // predication is required.
@@ -229,14 +244,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     assert(ptrElems.size() == numElems);
     // begin flagtree tle
-    auto inferPtrAddrSpace = [&]() -> std::optional<unsigned> {
-      for (Value elem : ptrElems) {
-        if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
-          return ptrTy.getAddressSpace();
-      }
-      return std::nullopt;
-    };
-    const bool isSharedPtr = inferPtrAddrSpace().value_or(1) == 3;
+    const bool isSharedPtr = isSharedPointerValue(ptrElems);
     // end flagtree tle
 
     // Get the LLVM values for mask
@@ -462,14 +470,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     auto valueElems = unpackLLElements(loc, llValue, rewriter);
     assert(ptrElems.size() == valueElems.size());
     // begin flagtree tle
-    auto inferPtrAddrSpace = [&]() -> std::optional<unsigned> {
-      for (Value elem : ptrElems) {
-        if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
-          return ptrTy.getAddressSpace();
-      }
-      return std::nullopt;
-    };
-    const bool isSharedPtr = inferPtrAddrSpace().value_or(1) == 3;
+    const bool isSharedPtr = isSharedPointerValue(ptrElems);
     // end flagtree tle
 
     // Determine the vectorization size
@@ -642,14 +643,7 @@ struct AtomicCASOpConversion
     auto cmpElements = unpackLLElements(loc, llCmp, rewriter);
     auto valElements = unpackLLElements(loc, llVal, rewriter);
     // begin flagtree tle
-    auto inferPtrAddrSpace = [&]() -> std::optional<unsigned> {
-      for (Value elem : ptrElements) {
-        if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
-          return ptrTy.getAddressSpace();
-      }
-      return std::nullopt;
-    };
-    const bool isSharedPtr = inferPtrAddrSpace().value_or(1) == 3;
+    const bool isSharedPtr = isSharedPointerValue(ptrElements);
     // end flagtree tle
 
     auto valueTy = op.getType();
@@ -824,14 +818,7 @@ public:
     if (llMask)
       maskElements = unpackLLElements(loc, llMask, rewriter);
     // begin flagtree tle
-    auto inferPtrAddrSpace = [&]() -> std::optional<unsigned> {
-      for (Value elem : ptrElements) {
-        if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
-          return ptrTy.getAddressSpace();
-      }
-      return std::nullopt;
-    };
-    const bool isSharedPtr = inferPtrAddrSpace().value_or(1) == 3;
+    const bool isSharedPtr = isSharedPointerValue(ptrElements);
     // end flagtree tle
 
     auto valueTy = op.getType();

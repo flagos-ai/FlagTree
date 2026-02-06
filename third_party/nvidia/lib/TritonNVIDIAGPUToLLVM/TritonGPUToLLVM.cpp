@@ -166,8 +166,9 @@ struct ConvertTritonGPUToLLVM
       mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
           typeConverter, targetInfo, patterns, benefit);
       // end flagtree tle
-      if (failed(applyPartialConversion(mod, target, std::move(patterns))))
+      if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
         return signalPassFailure();
+      }
     }
     mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit);

@@ -473,8 +473,6 @@ def moe_align_block_size_tle_impl(
         return
     cumsum = torch.zeros((num_experts + 1, ), dtype=torch.int32, device=topk_ids.device)
 
-    expert_ids.fill_(0)
-
     block_expert = triton.cdiv(num_experts, 32) * 32
     THREADS = 1024
     max_num_tokens_padded = sorted_token_ids.numel()
@@ -499,8 +497,8 @@ def moe_align_block_size_tle_impl(
         cumsum,
         expert_ids,
         BLOCK_SIZE=block_size,
-        BLOCK_VEC=128,
-        num_warps=4,
+        BLOCK_VEC=32,
+        num_warps=1,
         num_stages=1,
     )
 
@@ -626,16 +624,189 @@ def _bench_one(
     provider: str,
 ) -> Tuple[float, float, float]:
     sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(topk_ids, num_experts, block_size, False)
-    if provider == "triton":
-        fn = lambda: moe_align_block_size_triton_impl(topk_ids, num_experts, block_size, sorted_ids, expert_ids,
-                                                      num_tokens_post_pad)
-    elif provider == "tle":
-        fn = lambda: moe_align_block_size_tle_impl(topk_ids, num_experts, block_size, sorted_ids, expert_ids,
-                                                   num_tokens_post_pad)
-    else:
-        raise ValueError(f"unknown provider: {provider}")
+    init_fn, kernel_fn = _make_bench_runner(
+        topk_ids, block_size, num_experts, provider, sorted_ids, expert_ids, num_tokens_post_pad
+    )
+    return _bench_kernel_only(init_fn, kernel_fn)
 
-    return triton.testing.do_bench(fn, quantiles=[0.5, 0.2, 0.8])
+
+def _make_bench_runner(
+    topk_ids: torch.Tensor,
+    block_size: int,
+    num_experts: int,
+    provider: str,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_post_pad: torch.Tensor,
+):
+    numel = topk_ids.numel()
+    if provider == "triton":
+        numel_sorted_token_ids = sorted_ids.numel()
+        numel_expert_ids = expert_ids.numel()
+        grid = (num_experts, )
+        tokens_cnts = torch.empty((num_experts + 1, num_experts), dtype=torch.int32, device=topk_ids.device)
+        cumsum = torch.empty((num_experts + 1, ), dtype=torch.int32, device=topk_ids.device)
+        tokens_per_thread = triton.next_power_of_2(ceil_div(numel, num_experts))
+        block_size_sorted = triton.next_power_of_2(ceil_div(numel_sorted_token_ids, num_experts))
+        block_size_expert = triton.next_power_of_2(ceil_div(numel_expert_ids, num_experts))
+
+        def init_fn():
+            tokens_cnts.zero_()
+            cumsum.zero_()
+
+        def kernel_fn():
+            moe_align_block_size_stage1_opt[grid](
+                topk_ids,
+                tokens_cnts,
+                num_experts,
+                numel,
+                sorted_ids,
+                expert_ids,
+                numel_sorted_token_ids,
+                numel_expert_ids,
+                block_size_sorted,
+                block_size_expert,
+                BLOCK=tokens_per_thread,
+            )
+            if num_experts == triton.next_power_of_2(num_experts):
+                moe_align_block_size_stage2_vec[grid](
+                    tokens_cnts,
+                    num_experts,
+                )
+            else:
+                moe_align_block_size_stage2[grid](
+                    tokens_cnts,
+                    num_experts,
+                )
+            moe_align_block_size_stage3[(1, )](
+                num_tokens_post_pad,
+                tokens_cnts,
+                cumsum,
+                num_experts,
+                block_size,
+            )
+            moe_align_block_size_stage4[grid](
+                topk_ids,
+                sorted_ids,
+                expert_ids,
+                tokens_cnts,
+                cumsum,
+                num_experts,
+                block_size,
+                numel,
+                tokens_per_thread,
+            )
+
+        return init_fn, kernel_fn
+
+    if provider == "tle":
+        small_batch_expert_mode = (numel < 1024) and (num_experts <= 64)
+        if small_batch_expert_mode:
+            max_num_tokens_padded = sorted_ids.numel()
+            block_expert = triton.cdiv(num_experts, 32) * 32
+            block_init = 256
+            block_tokens = triton.next_power_of_2(numel if numel > 0 else 1)
+
+            def init_fn():
+                return
+
+            def kernel_fn():
+                moe_align_block_size_vllm_small_batch_kernel[(1, )](
+                    topk_ids,
+                    sorted_ids,
+                    expert_ids,
+                    num_tokens_post_pad,
+                    num_experts,
+                    numel,
+                    max_num_tokens_padded,
+                    BLOCK_INIT=block_init,
+                    BLOCK_TOKENS=block_tokens,
+                    BLOCK_SIZE=block_size,
+                    BLOCK_OUT=128,
+                    BLOCK_EXPERT=block_expert,
+                )
+
+            return init_fn, kernel_fn
+
+        if num_experts > 1024:
+            return _make_bench_runner(
+                topk_ids, block_size, num_experts, "triton", sorted_ids, expert_ids, num_tokens_post_pad
+            )
+
+        cumsum = torch.empty((num_experts + 1, ), dtype=torch.int32, device=topk_ids.device)
+        block_expert = triton.cdiv(num_experts, 32) * 32
+        threads = 1024
+        max_num_tokens_padded = sorted_ids.numel()
+        stage2_grid = (num_experts, )
+        block_sort = 256
+        sort_grid = (triton.cdiv(numel, block_sort), )
+
+        def init_fn():
+            return
+
+        def kernel_fn():
+            moe_align_block_size_vllm_stage1_kernel[(2, )](
+                topk_ids,
+                sorted_ids,
+                cumsum,
+                num_tokens_post_pad,
+                num_experts,
+                numel,
+                max_num_tokens_padded,
+                THREADS=threads,
+                BLOCK_SIZE=block_size,
+                BLOCK_EXPERT=block_expert,
+                num_warps=32,
+                num_stages=1,
+            )
+            moe_align_block_size_vllm_stage2_kernel[stage2_grid](
+                cumsum,
+                expert_ids,
+                BLOCK_SIZE=block_size,
+                BLOCK_VEC=32,
+                num_warps=1,
+                num_stages=1,
+            )
+            moe_align_block_size_sort_kernel[sort_grid](
+                topk_ids,
+                sorted_ids,
+                cumsum,
+                numel,
+                BLOCK=block_sort,
+                num_warps=block_sort // 32,
+                num_stages=1,
+            )
+
+        return init_fn, kernel_fn
+
+    raise ValueError(f"unknown provider: {provider}")
+
+
+def _bench_kernel_only(init_fn, kernel_fn, warmup: int = 20, iters: int = 100) -> Tuple[float, float, float]:
+    for _ in range(warmup):
+        init_fn()
+        kernel_fn()
+    torch.cuda.synchronize()
+
+    starts = []
+    ends = []
+    for _ in range(iters):
+        init_fn()
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        kernel_fn()
+        end.record()
+        starts.append(start)
+        ends.append(end)
+    torch.cuda.synchronize()
+
+    times = torch.tensor([s.elapsed_time(e) for s, e in zip(starts, ends)], dtype=torch.float32)
+    return (
+        float(torch.quantile(times, 0.5).item()),
+        float(torch.quantile(times, 0.2).item()),
+        float(torch.quantile(times, 0.8).item()),
+    )
 
 
 def run_benchmark(shapes: Iterable[Tuple[int, int]], block_size: int) -> None:
