@@ -118,7 +118,6 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
       rewriter.setInsertionPoint(packop);
       auto newPackOp = rewriter.create<tle::PackOp>(
         packop.getLoc(), getPlainMemDesc(tensorTy), packop.getInput());
-      // rewriter.replaceOp(packop, newPackOp.getResult());
       auto loadOp = rewriter.create<ttg::LocalLoadOp>(newPackOp.getLoc(), tensorTy,
                                                 newPackOp.getOutput());
       rewriter.replaceOp(packop, loadOp.getResult());
