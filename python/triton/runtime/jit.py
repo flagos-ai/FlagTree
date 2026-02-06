@@ -12,8 +12,6 @@ from typing import Callable, Generic, Iterable, Optional, TypeVar, Union, overlo
 from ..runtime.driver import driver
 from types import ModuleType
 from .._utils import find_paths_if, get_iterable_path
-import tokenize
-from io import StringIO
 
 TRITON_MODULE = __name__[:-len(".runtime.jit")]
 
@@ -705,6 +703,7 @@ class JITFunction(KernelInterface[T]):
     # the user might want to monkey-patch self.src dynamically.
     # Our unit tests do this, for example.
     def parse(self):
+        from ..compiler.hint_manager import hint_trigger
         # Maps line numbers to comment hints
         line_flagtree_hints = hint_trigger("maps_line_numbers_to_comment_hints", self)
         if line_flagtree_hints is None:
