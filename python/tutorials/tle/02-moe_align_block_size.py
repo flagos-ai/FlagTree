@@ -167,9 +167,8 @@ def moe_align_block_size_sort_kernel(
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
     expert_id = tl.load(topk_ids_ptr + offsets, mask=mask, other=0)
-    valid = mask & (expert_id < num_experts)
-    rank = tl.atomic_add(cumsum_ptr + expert_id, 1, mask=valid)
-    tl.store(sorted_token_ids_ptr + rank, offsets, mask=valid)
+    rank = tl.atomic_add(cumsum_ptr + expert_id, 1, mask=mask)
+    tl.store(sorted_token_ids_ptr + rank, offsets, mask=mask)
 
 
 @triton.jit(do_not_specialize=["numel", "total_elems"])
@@ -242,23 +241,20 @@ def moe_align_block_size_vllm_stage1_kernel(
     num_tokens_post_pad_ptr,
     num_experts: tl.constexpr,
     numel,
-    total_elems,
-    BLOCK: tl.constexpr,
+    max_num_tokens_padded,
+    THREADS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
-    BLOCK_OUT: tl.constexpr,
     BLOCK_EXPERT: tl.constexpr,
-    BLOCK_EXPERT_GROUP: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    num_blocks = tl.cdiv(numel, BLOCK)
-    num_sort_blocks = tl.cdiv(total_elems, BLOCK)
-    num_blocks_out = tl.cdiv(total_elems, BLOCK_SIZE)
+    num_blocks = tl.cdiv(numel, THREADS)
     if pid == 1:
+        num_sort_blocks = tl.cdiv(max_num_tokens_padded, THREADS)
         i = 0
         while i < num_sort_blocks:
-            base = i * BLOCK
-            offsets = base + tl.arange(0, BLOCK)
-            init_mask = offsets < total_elems
+            base = i * THREADS
+            offsets = base + tl.arange(0, THREADS)
+            init_mask = offsets < max_num_tokens_padded
             tl.store(sorted_token_ids_ptr + offsets, numel, mask=init_mask)
             i += 1
         return
@@ -277,27 +273,25 @@ def moe_align_block_size_vllm_stage1_kernel(
     tl.store(smem_ptrs, 0)
     tl.debug_barrier()
 
-    ones = tl.full((BLOCK, ), 1, tl.int32)
+    ones = tl.full((THREADS, ), 1, tl.int32)
     if num_blocks > 0:
         i = 0
         while i + 1 < num_blocks:
-            base = i * BLOCK
-            offsets = base + tl.arange(0, BLOCK)
+            base = i * THREADS
+            offsets = base + tl.arange(0, THREADS)
             expert_id = tl.load(topk_ids_ptr + offsets).to(tl.int32)
-            valid = expert_id < num_experts
-            expert_id = tl.where(valid, expert_id, 0)
             count_ptrs = tle.local_ptr(smem_counts, (expert_id, ))
-            tl.atomic_add(count_ptrs, ones, mask=valid, sem="relaxed", scope="cta")
+            tl.atomic_add(count_ptrs, ones, sem="relaxed", scope="cta")
             i += 1
 
-        base = (num_blocks - 1) * BLOCK
-        offsets = base + tl.arange(0, BLOCK)
+        base = (num_blocks - 1) * THREADS
+        offsets = base + tl.arange(0, THREADS)
         tail_mask = offsets < numel
         expert_id = tl.load(topk_ids_ptr + offsets, mask=tail_mask, other=0).to(tl.int32)
         valid = tail_mask & (expert_id < num_experts)
         expert_id = tl.where(valid, expert_id, 0)
         count_ptrs = tle.local_ptr(smem_counts, (expert_id, ))
-        tl.atomic_add(count_ptrs, ones, mask=valid)
+        tl.atomic_add(count_ptrs, ones, mask=valid, sem="relaxed", scope="cta")
 
     counts = tl.load(smem_ptrs)
     counts = tl.where(expert_mask, counts, 0)
@@ -308,25 +302,17 @@ def moe_align_block_size_vllm_stage1_kernel(
     total = tl.sum(aligned, axis=0)
     tl.store(num_tokens_post_pad_ptr, total)
 
-    for expert_base in range(0, BLOCK_EXPERT, BLOCK_EXPERT_GROUP):
-        group_offsets = expert_base + tl.arange(0, BLOCK_EXPERT_GROUP)
-        group_mask = group_offsets < num_experts
-        start = tl.load(cumsum_ptr + group_offsets, mask=group_mask, other=0)
-        end = tl.load(cumsum_ptr + group_offsets + 1, mask=group_mask, other=0)
-        start_block = start // BLOCK_SIZE
-        end_block = end // BLOCK_SIZE
-        base_block = 0
-        while base_block < num_blocks_out:
-            block_ids = base_block + tl.arange(0, BLOCK_OUT)
-            valid_block = block_ids < num_blocks_out
-            block_ids_2d = block_ids[None, :] + tl.zeros((BLOCK_EXPERT_GROUP, 1), tl.int32)
-            expert_vals = group_offsets[:, None] + tl.zeros((1, BLOCK_OUT), tl.int32)
-            expert_mask_2d = (valid_block[None, :]
-                              & group_mask[:, None]
-                              & (block_ids_2d >= start_block[:, None])
-                              & (block_ids_2d < end_block[:, None]))
-            tl.store(expert_ids_ptr + block_ids_2d, expert_vals, mask=expert_mask_2d)
-            base_block += BLOCK_OUT
+    cumsum_ids = tl.arange(0, THREADS)
+    valid_cumsum_ids = cumsum_ids < num_experts
+    cumsum_start = tl.load(cumsum_ptr + cumsum_ids, mask=valid_cumsum_ids) // BLOCK_SIZE
+    cumsum_end = tl.load(cumsum_ptr + cumsum_ids + 1, mask=valid_cumsum_ids) // BLOCK_SIZE
+    max_rounds = tl.max(cumsum_end - cumsum_start)
+    i = 0
+    while i < max_rounds:
+        mask = cumsum_start < cumsum_end
+        tl.store(expert_ids_ptr + cumsum_start, cumsum_ids, mask=mask & valid_cumsum_ids)
+        cumsum_start += 1
+        i += 1
 
 
 # %%
@@ -441,7 +427,7 @@ def moe_align_block_size_tle_impl(
     numel = topk_ids.numel()
     small_batch_expert_mode = (numel < 1024) and (num_experts <= 64)
     if small_batch_expert_mode:
-        total_elems = sorted_token_ids.numel()
+        max_num_tokens_padded = sorted_token_ids.numel()
         block_expert = triton.cdiv(num_experts, 32) * 32
         block_init = 256
         block_tokens = triton.next_power_of_2(numel if numel > 0 else 1)
@@ -452,7 +438,7 @@ def moe_align_block_size_tle_impl(
             num_tokens_post_pad,
             num_experts,
             numel,
-            total_elems,
+            max_num_tokens_padded,
             BLOCK_INIT=block_init,
             BLOCK_TOKENS=block_tokens,
             BLOCK_SIZE=block_size,
@@ -475,8 +461,8 @@ def moe_align_block_size_tle_impl(
     expert_ids.fill_(0)
 
     block_expert = triton.cdiv(num_experts, 32) * 32
-    BLOCK_TOKENS = 1024
-    total_elems = sorted_token_ids.numel()
+    THREADS = 1024
+    max_num_tokens_padded = sorted_token_ids.numel()
 
     moe_align_block_size_vllm_stage1_kernel[(2, )](
         topk_ids,
@@ -486,12 +472,10 @@ def moe_align_block_size_tle_impl(
         num_tokens_post_pad,
         num_experts,
         numel,
-        total_elems,
-        BLOCK=BLOCK_TOKENS,
+        max_num_tokens_padded,
+        THREADS=THREADS,
         BLOCK_SIZE=block_size,
-        BLOCK_OUT=128,
         BLOCK_EXPERT=block_expert,
-        BLOCK_EXPERT_GROUP=128,
         num_warps=32,
         num_stages=1,
     )
