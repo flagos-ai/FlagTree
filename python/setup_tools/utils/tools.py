@@ -13,7 +13,7 @@ import platform
 from typing import Mapping
 from types import MappingProxyType
 import importlib.util
-from dataclasses import dataclass, field
+from dataclasses import field
 
 
 def _get_flagtree_root() -> str:
@@ -52,12 +52,13 @@ class FlagtreeConfigs:
         module = importlib.util.module_from_spec(spec)
         try:
             spec.loader.exec_module(module)
-        except (AttributeError,FileNotFoundError, ImportError, ModuleNotFoundError) as e:
+        except (AttributeError, FileNotFoundError, ImportError, ModuleNotFoundError):
             pass
         return module
 
 
 flagtree_configs = FlagtreeConfigs()
+
 
 @dataclass
 class NetConfig:
@@ -83,7 +84,8 @@ def dir_rollback(deep, base_path):
 
 
 def is_skip_cuda_toolkits():
-    return flagtree_configs.flagtree_backend and (flagtree_configs.flagtree_backend not in flagtree_configs.use_cuda_toolkit_backends)
+    return flagtree_configs.flagtree_backend and (flagtree_configs.flagtree_backend
+                                                  not in flagtree_configs.use_cuda_toolkit_backends)
 
 
 def remove_triton_in_modules(model):

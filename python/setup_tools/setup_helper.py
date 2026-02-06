@@ -94,8 +94,8 @@ def download_flagtree_third_party(name, condition, required=False, hock=None):
             submodule = utils.flagtree_submodules[name]
             downloader.download(module=submodule, required=required)
             if callable(hock):
-                configs.default_backends=hock(third_party_base_dir=utils.flagtree_configs.flagtree_submodule_dir, backend=submodule,
-                     default_backends=configs.default_backends)
+                configs.default_backends = hock(third_party_base_dir=utils.flagtree_configs.flagtree_submodule_dir,
+                                                backend=submodule, default_backends=configs.default_backends)
 
         else:
             print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
@@ -378,7 +378,8 @@ cache.store(
 )
 
 cache.store(
-    file="iluvatarTritonPlugin.so", condition=("iluvatar" == configs.flagtree_backend) and (not configs.flagtree_plugin), url=
+    file="iluvatarTritonPlugin.so", condition=("iluvatar" == configs.flagtree_backend)
+    and (not configs.flagtree_plugin), url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.30-glibcxx3.4.28-cxxabi1.3.12-ubuntu-x86_64_v0.3.0.tar.gz",
     copy_dst_path=f"third_party/{configs.flagtree_backend}", md5_digest="015b9af8")
 
