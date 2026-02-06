@@ -128,8 +128,6 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   for(ttg::LocalAllocOp toDeallocOp : toDeallocOps) {
     rewriter.create<ttg::LocalDeallocOp>(toDeallocOp.getLoc(), toDeallocOp);
   }
-  ModuleOp module = op->getParentOfType<ModuleOp>();
-  module.dump();
   if(!hasConversion) {
       return failure();
   }
