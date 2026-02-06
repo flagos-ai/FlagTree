@@ -45,7 +45,7 @@ class FlagtreeConfigs:
         self.activated_module = self._activate_device_module(self.flagtree_backend)
 
     def _activate_device_module(self, backend, suffix=".py"):
-        backend = "default" if not backend else backend
+        backend = backend or "default"
         module_path = Path(os.path.dirname(__file__)) / backend
         module_path = str(module_path) + suffix
         spec = importlib.util.spec_from_file_location("module", module_path)
