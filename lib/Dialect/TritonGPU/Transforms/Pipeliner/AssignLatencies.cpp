@@ -106,12 +106,9 @@ public:
       auto ptrTy = loadOp.getPtr().getType();
       if (auto tensorTy = dyn_cast<RankedTensorType>(ptrTy))
         ptrTy = tensorTy.getElementType();
-      if (auto ttPtrTy = dyn_cast<tt::PointerType>(ptrTy)) {
-        // begin flagtree tle
+      if (auto ttPtrTy = dyn_cast<tt::PointerType>(ptrTy); ttPtrTy.getAddressSpace() == 3) {
         // Shared-memory loads should not be pipelined into async global copies.
-        if (ttPtrTy.getAddressSpace() == 3)
-          return false;
-        // end flagtree tle
+        return false;
       }
       if (filterSmall && !canBeConvertedToAsyncLoad(loadOp, axisInfoAnalysis)) {
         LDBG("Load " << *loadOp << " is too small for pipelining");
