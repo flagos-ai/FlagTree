@@ -624,9 +624,8 @@ def _bench_one(
     provider: str,
 ) -> Tuple[float, float, float]:
     sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(topk_ids, num_experts, block_size, False)
-    init_fn, kernel_fn = _make_bench_runner(
-        topk_ids, block_size, num_experts, provider, sorted_ids, expert_ids, num_tokens_post_pad
-    )
+    init_fn, kernel_fn = _make_bench_runner(topk_ids, block_size, num_experts, provider, sorted_ids, expert_ids,
+                                            num_tokens_post_pad)
     return _bench_kernel_only(init_fn, kernel_fn)
 
 
@@ -729,9 +728,8 @@ def _make_bench_runner(
             return init_fn, kernel_fn
 
         if num_experts > 1024:
-            return _make_bench_runner(
-                topk_ids, block_size, num_experts, "triton", sorted_ids, expert_ids, num_tokens_post_pad
-            )
+            return _make_bench_runner(topk_ids, block_size, num_experts, "triton", sorted_ids, expert_ids,
+                                      num_tokens_post_pad)
 
         cumsum = torch.empty((num_experts + 1, ), dtype=torch.int32, device=topk_ids.device)
         block_expert = triton.cdiv(num_experts, 32) * 32
