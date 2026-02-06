@@ -302,15 +302,25 @@ def moe_align_block_size_vllm_stage1_kernel(
     tl.store(num_tokens_post_pad_ptr, total)
 
 
-@triton.jit(do_not_specialize=["numel", "total_elems"])
-def moe_align_block_size_vllm_stage2_kernel(cumsum_ptr, expert_ids_ptr, BLOCK_SIZE: tl.constexpr):
+@triton.jit
+def moe_align_block_size_vllm_stage2_kernel(
+    cumsum_ptr,
+    expert_ids_ptr,
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_VEC: tl.constexpr,
+):
     pid = tl.program_id(0)
 
-    start_idx = tl.load(cumsum_ptr + pid)
-    end_idx = tl.load(cumsum_ptr + pid + 1)
+    start_idx = tl.load(cumsum_ptr + pid) // BLOCK_SIZE
+    end_idx = tl.load(cumsum_ptr + pid + 1) // BLOCK_SIZE
+    num_blocks = end_idx - start_idx
 
-    for i in range(start_idx, end_idx, BLOCK_SIZE):
-        tl.store(expert_ids_ptr + i // BLOCK_SIZE, pid)
+    i = 0
+    while i < num_blocks:
+        offs = i + tl.arange(0, BLOCK_VEC)
+        mask = offs < num_blocks
+        tl.store(expert_ids_ptr + start_idx + offs, tl.full((BLOCK_VEC, ), pid, tl.int32), mask=mask)
+        i += BLOCK_VEC
 
 
 # %%
@@ -482,6 +492,7 @@ def moe_align_block_size_tle_impl(
         cumsum,
         expert_ids,
         BLOCK_SIZE=block_size,
+        BLOCK_VEC=128,
         num_warps=1,
         num_stages=1,
     )
