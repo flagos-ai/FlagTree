@@ -706,7 +706,9 @@ class JITFunction(KernelInterface[T]):
     # Our unit tests do this, for example.
     def parse(self):
         # Maps line numbers to comment hints
-        hint_trigger("maps_line_numbers_to_comment_hints", self)
+        line_flagtree_hints = hint_trigger("maps_line_numbers_to_comment_hints", self)
+        if line_flagtree_hints is None:
+            line_flagtree_hints = {}
 
         tree = ast.parse(self.src)
         assert isinstance(tree, ast.Module)

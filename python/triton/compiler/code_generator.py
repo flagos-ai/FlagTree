@@ -1243,7 +1243,7 @@ class CodeGenerator(ast.NodeVisitor):
         args = list(itertools.chain.from_iterable(x if isinstance(x, list) else [x] for x in args))
 
         # 4. Get current line number and hints
-        hint_trigger("func1", self, node, names, values)
+        flagtree_hints = hint_trigger("get_node_hints", self, node)
 
         # 5. Handle JIT function calls
         if isinstance(fn, JITFunction):
@@ -1258,7 +1258,7 @@ class CodeGenerator(ast.NodeVisitor):
                 extra_kwargs['_generator'] = self
             try:
                 # Special handling for tl.load with hints
-                hint_trigger("func2", self, node, names, values)
+                hint_trigger("inject_kwargs_with_hints", fn, flagtree_hints, node.lineno, kws)
 
                 ret = fn(*args, **extra_kwargs, **kws)
                 # builtin functions return plain tuples for readability
