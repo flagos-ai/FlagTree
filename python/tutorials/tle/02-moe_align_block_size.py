@@ -164,7 +164,7 @@ def moe_align_block_size_sort_kernel(
     BLOCK: tl.constexpr,
 ):
     pid = tl.program_id(0)
-        
+
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
     expert_id = tl.load(topk_ids_ptr + offsets, mask=mask, other=0, cache_modifier=".cv")
@@ -300,14 +300,12 @@ def moe_align_block_size_vllm_stage1_kernel(
     tl.store(cumsum_ptr + 1 + expert_offsets, cumsum, mask=expert_mask)
     total = tl.sum(aligned, axis=0)
     tl.store(num_tokens_post_pad_ptr, total)
-    
+
+
 @triton.jit(do_not_specialize=["numel", "total_elems"])
-def moe_align_block_size_vllm_stage2_kernel(
-    cumsum_ptr,
-    expert_ids_ptr,
-    BLOCK_SIZE: tl.constexpr):
+def moe_align_block_size_vllm_stage2_kernel(cumsum_ptr, expert_ids_ptr, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(0)
-    
+
     start_idx = tl.load(cumsum_ptr + pid)
     end_idx = tl.load(cumsum_ptr + pid + 1)
 
@@ -478,7 +476,7 @@ def moe_align_block_size_tle_impl(
         num_warps=32,
         num_stages=1,
     )
-    
+
     grid = (num_experts, )
     moe_align_block_size_vllm_stage2_kernel[grid](
         cumsum,
@@ -718,9 +716,7 @@ def main(argv=None):
     parser.add_argument("--num_tokens", type=int, default=8192, help="num tokens")
     parser.add_argument("--num_experts", type=int, default=64, help="num experts")
     parser.add_argument("--skip_correctness", action="store_true", help="skip correctness checks")
-    parser.add_argument("--real_data",
-                        type=str,
-                        default="",
+    parser.add_argument("--real_data", type=str, default="",
                         help="path to topk_ids.pt (or directory containing it) for real-data benchmark")
     args = parser.parse_args(argv)
 
