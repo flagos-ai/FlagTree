@@ -110,9 +110,7 @@ class InsertLocalPointerBarriersPass
           dirty[ptr] = true;
       } else if (auto load = dyn_cast<triton::LoadOp>(&op)) {
         Value ptr = load.getPtr();
-        if (!trackedPointers.contains(ptr))
-          continue;
-        if (!dirty.lookup(ptr))
+        if (!trackedPointers.contains(ptr) || !dirty.lookup(ptr))
           continue;
         OpBuilder builder(load);
         builder.create<mlir::gpu::BarrierOp>(load.getLoc());
