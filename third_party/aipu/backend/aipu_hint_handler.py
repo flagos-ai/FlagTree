@@ -4,6 +4,7 @@ import triton.language as language
 import ast
 from triton.compiler.code_generator import _is_triton_value
 
+
 class AipuHintHandler(BaseHintHandler):
     # because aipu is diff from ascend in 2 aspects
     # 1. not backend_spec, modify triton src violently
