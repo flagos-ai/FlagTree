@@ -315,12 +315,19 @@ def moe_align_block_size_vllm_stage2_kernel(
     end_idx = tl.load(cumsum_ptr + pid + 1) // BLOCK_SIZE
     num_blocks = end_idx - start_idx
 
+    pid_vec = tl.full((BLOCK_VEC, ), pid, tl.int32)
+    num_full_blocks = (num_blocks // BLOCK_VEC) * BLOCK_VEC
+
     i = 0
-    while i < num_blocks:
+    while i < num_full_blocks:
+        offs = i + tl.arange(0, BLOCK_VEC)
+        tl.store(expert_ids_ptr + start_idx + offs, pid_vec)
+        i += BLOCK_VEC
+
+    if i < num_blocks:
         offs = i + tl.arange(0, BLOCK_VEC)
         mask = offs < num_blocks
-        tl.store(expert_ids_ptr + start_idx + offs, tl.full((BLOCK_VEC, ), pid, tl.int32), mask=mask)
-        i += BLOCK_VEC
+        tl.store(expert_ids_ptr + start_idx + offs, pid_vec, mask=mask)
 
 
 # %%
@@ -493,7 +500,7 @@ def moe_align_block_size_tle_impl(
         expert_ids,
         BLOCK_SIZE=block_size,
         BLOCK_VEC=128,
-        num_warps=1,
+        num_warps=4,
         num_stages=1,
     )
 
