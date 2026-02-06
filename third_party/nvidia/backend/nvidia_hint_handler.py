@@ -1,8 +1,5 @@
 # should store at third_party/nvidia/backend/
 from triton.compiler.hint_manager import BaseHintHandler
-import triton.language as language
-import ast
-from triton.compiler.code_generator import _is_triton_value
 
 
 class NvidiaHintHandler(BaseHintHandler):
