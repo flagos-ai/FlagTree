@@ -106,7 +106,8 @@ public:
       auto ptrTy = loadOp.getPtr().getType();
       if (auto tensorTy = dyn_cast<RankedTensorType>(ptrTy))
         ptrTy = tensorTy.getElementType();
-      if (auto ttPtrTy = dyn_cast<tt::PointerType>(ptrTy); ttPtrTy.getAddressSpace() == 3) {
+      if (auto ttPtrTy = dyn_cast<tt::PointerType>(ptrTy);
+          ttPtrTy.getAddressSpace() == 3) {
         // Shared-memory loads should not be pipelined into async global copies.
         return false;
       }

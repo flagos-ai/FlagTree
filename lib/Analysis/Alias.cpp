@@ -40,7 +40,8 @@ LogicalResult SharedMemoryAliasAnalysis::visitOperation(
     aliasInfo = AliasInfo(operands[0]->getValue());
     pessimistic = false;
     // begin flagtree tle
-  } else if (op->getName().getStringRef() == "tle.local_pointers" && !operands.empty()) {
+  } else if (op->getName().getStringRef() == "tle.local_pointers" &&
+             !operands.empty()) {
     // Treat local pointer views as aliases of their source memdesc.
     aliasInfo = AliasInfo(operands[0]->getValue());
     pessimistic = false;
