@@ -77,28 +77,17 @@ SmallVector<Value> LLVMStructurePattern::apply(TritonOpBuilder &builder,
   LLVM::LLVMStructType structTy = src.getType();
   ArrayRef<Type> types = structTy.getBody();
   const size_t size = types.size();
-  bool is_standard = (size == 5 &&
-                      llvm::all_of(types.take_front(2),
-                                   [](const Type &ty) -> bool {
-                                     return isa<LLVM::LLVMPointerType>(ty);
-                                   }) &&
-                      types[2].isInteger(64) &&
-                      llvm::all_of(types.take_back(2), [rank](const Type &ty) -> bool {
-                        LLVM::LLVMArrayType arrayTy = dyn_cast<LLVM::LLVMArrayType>(ty);
-                        return arrayTy && arrayTy.getElementType().isInteger(64) &&
-                               arrayTy.getNumElements() == rank;
-                      }));
-  
-  bool is_flattened = (size == 2 * rank + 3 &&
-                       llvm::all_of(types.take_front(2),
-                                    [](const Type &ty) -> bool {
-                                      return isa<LLVM::LLVMPointerType>(ty);
-                                    }) &&
-                       llvm::all_of(types.drop_front(2), [](const Type &ty) -> bool {
-                         return ty.isInteger(64);
-                       }));
-  
-  COND_CHECK(is_standard || is_flattened);
+  COND_CHECK(size == 5 &&
+             llvm::all_of(types.take_front(2),
+                          [](const Type &ty) -> bool {
+                            return isa<LLVM::LLVMPointerType>(ty);
+                          }) &&
+             types[2].isInteger(64) &&
+             llvm::all_of(types.take_back(2), [rank](const Type &ty) -> bool {
+               LLVM::LLVMArrayType arrayTy = dyn_cast<LLVM::LLVMArrayType>(ty);
+               return arrayTy && arrayTy.getElementType().isInteger(64) &&
+                      arrayTy.getNumElements() == rank;
+             }));
   tgts = tgts.drop_front();
   return {builder.create<tle::PackOp>(tgt, src)};
 }

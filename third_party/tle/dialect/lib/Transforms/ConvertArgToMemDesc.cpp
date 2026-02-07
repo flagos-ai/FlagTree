@@ -109,21 +109,18 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   SmallVector<tle::PackOp> packs;
   for (Value res : op->getResults()) {
     for (OpOperand &use : res.getUses()) {
-      if (auto pack = dyn_cast<tle::PackOp>(use.getOwner()))
-        packs.push_back(pack);
-    }
-  }
-  for(tle::PackOp packop: packs) {
-    if(auto tensorTy = dyn_cast<RankedTensorType>(packop.getOutput().getType())){
-      rewriter.setInsertionPoint(packop);
-      auto newPackOp = rewriter.create<tle::PackOp>(
-        packop.getLoc(), getPlainMemDesc(tensorTy), packop.getInput());
-      auto loadOp = rewriter.create<ttg::LocalLoadOp>(newPackOp.getLoc(), tensorTy,
-                                                newPackOp.getOutput());
-      rewriter.replaceOp(packop, loadOp.getResult());
-      rewriter.setInsertionPointAfter(loadOp);
-      hasConversion = true;
+      if (auto packop = dyn_cast<tle::PackOp>(use.getOwner()))
+        if(auto tensorTy = dyn_cast<RankedTensorType>(packop.getOutput().getType())){
+          rewriter.setInsertionPoint(packop);
+          auto newPackOp = rewriter.create<tle::PackOp>(
+            packop.getLoc(), getPlainMemDesc(tensorTy), packop.getInput());
+          auto loadOp = rewriter.create<ttg::LocalLoadOp>(newPackOp.getLoc(), tensorTy,
+                                                    newPackOp.getOutput());
+          rewriter.replaceOp(packop, loadOp.getResult());
+          rewriter.setInsertionPointAfter(loadOp);
+          hasConversion = true;
       }
+    }
   }
   for(ttg::LocalAllocOp toDeallocOp : toDeallocOps) {
     rewriter.create<ttg::LocalDeallocOp>(toDeallocOp.getLoc(), toDeallocOp);
