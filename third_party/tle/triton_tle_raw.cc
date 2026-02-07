@@ -47,7 +47,7 @@ static SmallVector<Type> aggregationTypes(TritonOpBuilder &builder,const SmallVe
       };
       resultTypes.push_back(LLVM::LLVMStructType::getLiteral(builder.getContext(), fieldTys, /*packed=*/false));
     } else {
-      resultTypes.push_back(tgts.front());
+      resultTypes.push_back(std::move(tgts.front()));
       tgts = tgts.drop_front();
     }
   }
