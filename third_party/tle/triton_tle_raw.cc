@@ -98,36 +98,35 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
     }
   }
   // Convert outputs to LLVM types
+  SmallVector<Type> outputTyps =
+        llvm::map_to_vector(outputs, [](Value out) -> Type {
+          return out.getType();
+        });
   SmallVector<Value> converted_outputs;
   {
     OpBuilder::InsertionGuard guard(builder);
-    SmallVector<Type> funcArgTypes =
-        llvm::map_to_vector(func.getArguments(), [](BlockArgument arg) -> Type {
-          return arg.getType();
-        });
-    TypeRange tgts = funcArgTypes;
+    TypeRange tgts = outputTyps;
     for (Value src : outputs) {
-      SmallVector<Value> rets =
-          tle::protocol::SignaturePattern::apply(self, tgts, src);
+      SmallVector<Value> rets = 
+          tle::protocol::SignaturePattern::apply(self, outputTyps, src);
       converted_outputs.append(std::move(rets));
     }
   }
-  SmallVector<Type> outputTys = llvm::map_to_vector(
-      outputs, [](Value value) -> Type { return value.getType(); });
-  
-  // SmallVector<Value> operands = llvm::to_vector
-  // Convert inputs to LLVM types
+    // SmallVector<Value> operands = llvm::to_vector
+    // Convert inputs to LLVM types
+  SmallVector<Type> inputTyps =
+        llvm::map_to_vector(inputs, [](Value arg) -> Type {
+          return arg.getType();
+        });
   SmallVector<Value> converted_inputs;
   {
     OpBuilder::InsertionGuard guard(builder);
-    SmallVector<Type> funcArgTypes =
-        llvm::map_to_vector(func.getArguments(), [](BlockArgument arg) -> Type {
-          return arg.getType();
-        });
-    TypeRange tgts = funcArgTypes;
+    TypeRange tgts = inputTyps;
     for (Value src : inputs) {
       SmallVector<Value> rets =
-          tle::protocol::SignaturePattern::apply(self, tgts, src);
+          llvm::map_to_vector(src, [](Value val) -> Value { 
+            return tle::protocol::SignaturePattern::apply(self, tgts, src); 
+          });
       converted_inputs.append(std::move(rets));
     }
   }
