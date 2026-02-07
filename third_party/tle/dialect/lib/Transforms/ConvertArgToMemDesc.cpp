@@ -26,7 +26,7 @@ namespace tle = mlir::triton::tle;
 
 namespace {
 template <typename ExtractOpT>
-void rewriteExtractWithMappedInput(
+void rewriteOne(
     Operation *toReplace,
     mlir::IRMapping &mapper,
     mlir::PatternRewriter &rewriter) {
@@ -39,6 +39,11 @@ void rewriteExtractWithMappedInput(
   }
 }
 
+template <typename... OpTys>
+static void rewriteExtractWithMappedInput(Operation *toReplace, IRMapping &mapper,
+                                          PatternRewriter &rewriter) {
+  (rewriteOne<OpTys>(toReplace, mapper, rewriter), ...);
+}
 ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
   ttg::CTALayoutAttr ctaLayout = ttg::getCTALayout(ty.getEncoding());
   llvm::iota_range<uint32_t> rOrderRange =
@@ -129,10 +134,8 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
       return failure();
   }
   for(Operation *toReplace : targets) {
-      rewriteExtractWithMappedInput<tle::ExtractSizesOp>(toReplace, mapper, rewriter);
-      rewriteExtractWithMappedInput<tle::ExtractStridesOp>(toReplace, mapper, rewriter);
-      rewriteExtractWithMappedInput<tle::ExtractOffsetOp>(toReplace, mapper, rewriter);
-      rewriteExtractWithMappedInput<tle::ExtractAlignedPtrOp>(toReplace, mapper, rewriter);
+      rewriteExtractWithMappedInput<tle::ExtractSizesOp, tle::ExtractStridesOp, tle::ExtractOffsetOp,tle::ExtractAlignedPtrOp>(toReplace, mapper, rewriter);  
+
   }
   return success();
 }
