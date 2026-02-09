@@ -54,7 +54,7 @@ namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 
-extern tle::DSLRegionOp createTLERawRegionByLLVMFunc(
+extern SmallVector<Value> createTLERawRegionByLLVMFunc(
     TritonOpBuilder &self, std::string_view text, std::string_view fnname,
     const std::vector<Value> &outputs, const std::vector<Value> &inputs);
 
@@ -202,8 +202,14 @@ void init_tle_raw_ir(py::module &&m) {
       .def("dump", &tle::YieldOp::dump);
 
   auto *builder_cls = ir::getBuilderClass();
-  builder_cls->def("create_tle_raw_region_by_llvm_func",
-                   &createTLERawRegionByLLVMFunc);
+  builder_cls->def(
+      "create_tle_raw_region_by_llvm_func",
+      [](TritonOpBuilder &self, std::string_view text, std::string_view fnname,
+         const std::vector<Value> &outputs, const std::vector<Value> &inputs) {
+        SmallVector<Value> results =
+            createTLERawRegionByLLVMFunc(self, text, fnname, outputs, inputs);
+        return std::vector<Value>(results.begin(), results.end());
+      });
 }
 
 void init_tle_raw_passes(py::module &&m) {
