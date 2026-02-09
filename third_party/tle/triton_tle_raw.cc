@@ -22,30 +22,30 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
       llvm::seq(rank), [&builder, &val](int64_t idx) -> Value {
         return builder.create<LLVM::ExtractValueOp>(val, SmallVector{idx});
       });
-    }
+}
 } // namespace
 
-static SmallVector<Type> aggregationTypes(TritonOpBuilder &builder,const SmallVector<Type> &unconvertTypes,const SmallVector<Type> &convertTypes) {
+static SmallVector<Type>
+aggregationTypes(TritonOpBuilder &builder,
+                 const SmallVector<Type> &unconvertTypes,
+                 const SmallVector<Type> &convertTypes) {
   SmallVector<Type> resultTypes;
-  TypeRange tgts= convertTypes;
-  for (Type singletype:unconvertTypes){
-    if (auto ptrType = dyn_cast<RankedTensorType>(singletype)){
+  TypeRange tgts = convertTypes;
+  for (Type singletype : unconvertTypes) {
+    if (auto ptrType = dyn_cast<RankedTensorType>(singletype)) {
       size_t rank = ptrType.getRank();
       Type allocatedPtrTy = tgts[0];
-      Type alignedPtrTy   = tgts[1];
-      Type offsetTy       = tgts[2];
-      Type sizeElemTy     = tgts[3];
-      Type strideElemTy   = tgts[3 + rank];
-      auto sizesArrayTy   = LLVM::LLVMArrayType::get(sizeElemTy, rank);
+      Type alignedPtrTy = tgts[1];
+      Type offsetTy = tgts[2];
+      Type sizeElemTy = tgts[3];
+      Type strideElemTy = tgts[3 + rank];
+      auto sizesArrayTy = LLVM::LLVMArrayType::get(sizeElemTy, rank);
       auto stridesArrayTy = LLVM::LLVMArrayType::get(strideElemTy, rank);
       SmallVector<Type> fieldTys = {
-        allocatedPtrTy,
-        alignedPtrTy,
-        offsetTy,
-        sizesArrayTy,
-        stridesArrayTy,
+          allocatedPtrTy, alignedPtrTy, offsetTy, sizesArrayTy, stridesArrayTy,
       };
-      resultTypes.push_back(LLVM::LLVMStructType::getLiteral(builder.getContext(), fieldTys, /*packed=*/false));
+      resultTypes.push_back(LLVM::LLVMStructType::getLiteral(
+          builder.getContext(), fieldTys, /*packed=*/false));
     } else {
       resultTypes.push_back(std::move(tgts.front()));
       tgts = tgts.drop_front();
@@ -110,9 +110,9 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
   }
   // Convert outputs to LLVM types
   SmallVector<Type> funcArgTypes =
-        llvm::map_to_vector(func.getArguments(), [](BlockArgument arg) -> Type {
-          return arg.getType();
-        });
+      llvm::map_to_vector(func.getArguments(), [](BlockArgument arg) -> Type {
+        return arg.getType();
+      });
 
   SmallVector<Value> converted_inputs;
   {
@@ -201,7 +201,7 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
 
   builder.setInsertionPointAfter(dslRegionOp);
   SmallVector<Value> finalResults;
-  TypeRange tgts = outputTys; 
+  TypeRange tgts = outputTys;
   for (Value result : dslRegionOp.getResults()) {
     SmallVector<Value> rets =
         tle::protocol::ReturnPattern::apply(self, tgts, result);
