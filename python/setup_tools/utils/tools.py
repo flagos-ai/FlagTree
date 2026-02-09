@@ -42,7 +42,7 @@ class FlagtreeConfigs:
 
     def __post_init__(self):
         self.flagtree_submodule_dir = os.path.join(self.flagtree_root_dir, "third_party")
-        self.activated_module = self._activate_device_module(self.flagtree_backend)
+        self.activated_module = self._activate_device_module()
 
     def _activate_device_module(self, suffix=".py"):
         self.flagtree_backend = self.flagtree_backend or "default"
