@@ -15,6 +15,7 @@ from types import MappingProxyType
 import importlib.util
 from dataclasses import field
 
+
 def _get_flagtree_root() -> str:
     return str(Path(__file__).resolve().parents[3])
 
@@ -45,7 +46,7 @@ class FlagtreeConfigs:
 
     def _activate_device_module(self, suffix=".py"):
         backend = self.flagtree_backend or "default"
-        module_path = Path(os.path.dirname(__file__)) /  backend
+        module_path = Path(os.path.dirname(__file__)) / backend
         module_path = str(module_path) + suffix
         spec = importlib.util.spec_from_file_location("module", module_path)
         module = importlib.util.module_from_spec(spec)
@@ -83,7 +84,8 @@ def dir_rollback(deep, base_path):
 
 
 def is_skip_cuda_toolkits():
-    return flagtree_configs.flagtree_backend and (flagtree_configs.flagtree_backend not in flagtree_configs.use_cuda_toolkit_backends)
+    return flagtree_configs.flagtree_backend and (flagtree_configs.flagtree_backend
+                                                  not in flagtree_configs.use_cuda_toolkit_backends)
 
 
 def remove_triton_in_modules(model):
