@@ -114,27 +114,27 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
           return arg.getType();
         });
 
+  SmallVector<Value> converted_inputs;
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    TypeRange tgts = funcArgTypes;
+    SmallVector<Value> rets;
+    for (Value src : inputs) {
+      SmallVector<Value> rets =
+          tle::protocol::SignaturePattern::apply(self, tgts, src);
+      converted_inputs.append(std::move(rets));
+    }
+  }
   SmallVector<Value> converted_outputs;
   {
     OpBuilder::InsertionGuard guard(builder);
     TypeRange tgts = funcArgTypes;
     SmallVector<Value> rets;
-    llvm::for_each(outputs, [&](mlir::Value v) {
-      auto xs = tle::protocol::SignaturePattern::apply(self, tgts, v);
-      rets.append(xs);
-    });
-    converted_outputs.append(std::move(rets));
-  }
-  SmallVector<Value> converted_inputs;
-  {
-    OpBuilder::InsertionGuard guard(builder);
-    TypeRange tgts = funcArgTypes;
-      SmallVector<Value> rets;
-      llvm::for_each(inputs, [&](mlir::Value v) {
-      auto xs = tle::protocol::SignaturePattern::apply(self, tgts, v);
-      rets.append(xs);
-    });
-      converted_inputs.append(std::move(rets));
+    for (Value src : inputs) {
+    SmallVector<Value> rets =
+        tle::protocol::SignaturePattern::apply(self, tgts, src);
+    converted_inputs.append(std::move(rets));
+    }
   }
   SmallVector<Type> outputTys = llvm::map_to_vector(
       outputs, [](Value value) -> Type { return value.getType(); });
