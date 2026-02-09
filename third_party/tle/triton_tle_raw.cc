@@ -25,6 +25,34 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 }
 } // namespace
 
+static SmallVector<Type>
+aggregationTypes(TritonOpBuilder &builder,
+                 const SmallVector<Type> &unconvertTypes,
+                 const SmallVector<Type> &convertTypes) {
+  SmallVector<Type> resultTypes;
+  TypeRange tgts = convertTypes;
+  for (Type singletype : unconvertTypes) {
+    if (auto ptrType = dyn_cast<RankedTensorType>(singletype)) {
+      size_t rank = ptrType.getRank();
+      Type allocatedPtrTy = tgts[0];
+      Type alignedPtrTy = tgts[1];
+      Type offsetTy = tgts[2];
+      Type sizeElemTy = tgts[3];
+      Type strideElemTy = tgts[3 + rank];
+      auto sizesArrayTy = LLVM::LLVMArrayType::get(sizeElemTy, rank);
+      auto stridesArrayTy = LLVM::LLVMArrayType::get(strideElemTy, rank);
+      SmallVector<Type> fieldTys = {
+          allocatedPtrTy, alignedPtrTy, offsetTy, sizesArrayTy, stridesArrayTy,
+      };
+      resultTypes.push_back(LLVM::LLVMStructType::getLiteral(
+          builder.getContext(), fieldTys, /*packed=*/false));
+    } else {
+      resultTypes.push_back(std::move(tgts.front()));
+      tgts = tgts.drop_front();
+    }
+  }
+  return resultTypes;
+}
 // Create a DSLRegionOp that wraps an LLVM function, performing type conversion
 // from Triton IR types to LLVM types based on EDSL function declarations.
 //
@@ -56,7 +84,7 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 //   - EDSL param type: "i32"
 //   - LLVM func: 1 arg = i32
 //   - Conversion: Use block argument directly
-tle::DSLRegionOp createTLERawRegionByLLVMFunc(
+SmallVector<Value> createTLERawRegionByLLVMFunc(
     TritonOpBuilder &self, std::string_view text, std::string_view fnname,
     const std::vector<Value> &outputs, const std::vector<Value> &inputs) {
   ParserConfig config(self.getContext());
@@ -80,15 +108,44 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
       }
     }
   }
+  // Convert outputs to LLVM types
+  SmallVector<Type> funcArgTypes =
+      llvm::map_to_vector(func.getArguments(), [](BlockArgument arg) -> Type {
+        return arg.getType();
+      });
 
+  SmallVector<Value> converted_inputs;
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    TypeRange tgts = funcArgTypes;
+    SmallVector<Value> rets;
+    for (Value src : inputs) {
+      SmallVector<Value> rets =
+          tle::protocol::SignaturePattern::apply(self, tgts, src);
+      converted_inputs.append(std::move(rets));
+    }
+  }
+  SmallVector<Value> converted_outputs;
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    TypeRange tgts = funcArgTypes;
+    SmallVector<Value> rets;
+    for (Value src : outputs) {
+      SmallVector<Value> rets =
+          tle::protocol::SignaturePattern::apply(self, tgts, src);
+      converted_outputs.append(std::move(rets));
+    }
+  }
   SmallVector<Type> outputTys = llvm::map_to_vector(
       outputs, [](Value value) -> Type { return value.getType(); });
-  SmallVector<Value> operands = llvm::to_vector(
-      llvm::concat<Value>(SmallVector<Value>(outputs.begin(), outputs.end()),
-                          SmallVector<Value>(inputs.begin(), inputs.end())));
+  SmallVector<Value> operands =
+      llvm::to_vector(llvm::concat<Value>(converted_outputs, converted_inputs));
 
+  SmallVector<Type> dslOutputTys = llvm::map_to_vector(
+      converted_outputs, [](Value value) -> Type { return value.getType(); });
+  auto outStructTy = aggregationTypes(self, outputTys, dslOutputTys);
   tle::DSLRegionOp dslRegionOp =
-      self.create<tle::DSLRegionOp>(outputTys, operands);
+      self.create<tle::DSLRegionOp>(outStructTy, operands);
   OpBuilder::InsertionGuard guard(builder);
   Region &body = dslRegionOp.getBody();
   SmallVector<Type> operandTys = llvm::map_to_vector(
@@ -100,14 +157,10 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
           &body, {}, operandTys,
           SmallVector<Location>(operandTys.size(), self.getLastLoc()));
       builder.setInsertionPointToStart(newBlock);
-      ValueRange args = func.getArguments();
-      TypeRange tgts = args.getTypes();
-      SmallVector<Value> ops = {};
-      for (Value src : newBlock->getArguments()) {
-        SmallVector<Value> rets =
-            tle::protocol::SignaturePattern::apply(self, tgts, src);
-        ops.append(std::move(rets));
-      }
+
+      SmallVector<Value> ops =
+          llvm::map_to_vector(newBlock->getArguments(),
+                              [](BlockArgument arg) -> Value { return arg; });
       for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
         mapper.map(arg, op);
       }
@@ -139,16 +192,20 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
                                        mapper.lookup(returnOp.getArg())));
         }
         TypeRange tgts = dslRegionOp.getOutputs().getTypes();
-        for (Value operand : operands) {
-          SmallVector<Value> rets =
-              tle::protocol::ReturnPattern::apply(self, tgts, operand);
-          yields.append(std::move(rets));
-        }
-        builder.create<tle::YieldOp>(operation.getLoc(), yields);
+        builder.create<tle::YieldOp>(operation.getLoc(), operands);
       } else {
         builder.clone(operation, mapper);
       }
     }
   }
-  return dslRegionOp;
+
+  builder.setInsertionPointAfter(dslRegionOp);
+  SmallVector<Value> finalResults;
+  TypeRange tgts = outputTys;
+  for (Value result : dslRegionOp.getResults()) {
+    SmallVector<Value> rets =
+        tle::protocol::ReturnPattern::apply(self, tgts, result);
+    finalResults.append(std::move(rets));
+  }
+  return finalResults;
 }

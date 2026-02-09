@@ -40,45 +40,45 @@ def Tle_YieldOp : Tle_Op<"yield", [Pure, Terminator, ReturnLike, HasParent<"DSLR
   let assemblyFormat = "attr-dict ($inputs^ `:` type($inputs))?";
 }
 
-def Tle_ExtractAllocatedPtrOp : Tle_Op<"extract_allocated_ptr", [Pure, HasParent<"DSLRegionOp">]> {
+def Tle_ExtractAllocatedPtrOp : Tle_Op<"extract_allocated_ptr", [Pure]> {
   let arguments = (ins Tle_ArgType:$input);
   let results = (outs LLVMPointerType:$ptr);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
 }
 
-def Tle_ExtractAlignedPtrOp : Tle_Op<"extract_aligned_ptr", [Pure, HasParent<"DSLRegionOp">]> {
+def Tle_ExtractAlignedPtrOp : Tle_Op<"extract_aligned_ptr", [Pure]> {
   let arguments = (ins Tle_ArgType:$input);
   let results = (outs LLVMPointerType:$ptr);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
 }
 
-def Tle_ExtractOffsetOp : Tle_Op<"extract_offset", [Pure, HasParent<"DSLRegionOp">]> {
+def Tle_ExtractOffsetOp : Tle_Op<"extract_offset", [Pure]> {
   let arguments = (ins Tle_TensorType:$input);
   let results = (outs I64:$ptr);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
 }
 
-def Tle_ExtractSizesOp : Tle_Op<"extract_sizes", [Pure, HasParent<"DSLRegionOp">]> {
+def Tle_ExtractSizesOp : Tle_Op<"extract_sizes", [Pure]> {
   let arguments = (ins Tle_TensorType:$input);
   let results = (outs Variadic<I64>:$sizes);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($sizes)";
   let builders = [OpBuilder<(ins "size_t":$num, "Value":$input)>];
 }
 
-def Tle_ExtractStridesOp : Tle_Op<"extract_strides", [Pure, HasParent<"DSLRegionOp">]> {
+def Tle_ExtractStridesOp : Tle_Op<"extract_strides", [Pure]> {
   let arguments = (ins Tle_TensorType:$input);
   let results = (outs Variadic<I64>:$strides);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($strides)";
   let builders = [OpBuilder<(ins "size_t":$num, "Value":$input)>];
 }
 
-def Tle_ExtractPtrOp : Tle_Op<"extract_ptr", [Pure, HasParent<"DSLRegionOp">]> {
+def Tle_ExtractPtrOp : Tle_Op<"extract_ptr", [Pure]> {
   let arguments = (ins TT_Ptr:$input);
   let results = (outs LLVMPointerType:$ptr);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
 }
 
-def Tle_PackOp : Tle_Op<"pack", [MemDescViewTrait, Pure, HasParent<"DSLRegionOp">]> {
+def Tle_PackOp : Tle_Op<"pack", [MemDescViewTrait, Pure]> {
   let arguments = (ins LLVMStructType:$input);
   let results = (outs Tle_TensorType:$output);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($output)";
