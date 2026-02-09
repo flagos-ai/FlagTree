@@ -20,6 +20,14 @@ class Tle_Op<string mnemonic, list<Trait> traits = []> :
 def Tle_TensorType : AnyTypeOf<[TT_Type, TTG_MemDescType]>;
 def Tle_ArgType : AnyTypeOf<[Tle_TensorType, LLVMPointerType, LLVMStructType]>;
 
+def Tle_LocalPointersOp : Tle_Op<"local_pointers",
+                                 [Pure]> {
+  let arguments = (ins TTG_MemDescType:$src,
+                   Variadic<TT_Tensor>:$indices);
+  let results = (outs TT_Tensor:$result);
+  let hasVerifier = 1;
+}
+
 def Tle_DSLRegionOp : Tle_Op<"dsl_region", [IsolatedFromAbove, MemDescViewTrait, RecursiveMemoryEffects]> {
   let arguments = (ins Variadic<Tle_ArgType>:$inputs);
   let results = (outs Variadic<Tle_ArgType>:$outputs);

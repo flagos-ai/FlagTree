@@ -90,10 +90,10 @@ class TLESemantic:
                 raise TLESemanticError(
                     f"Copy dimension {i} ({copy_dim}) exceeds destination buffer range ({dst_shape[i]})", "copy")
 
-    def validate_local_load_buffer(self, buffer: tle.buffered_tensor) -> None:
-        """Validate local load buffer"""
+    def validate_local_pointer_buffer(self, buffer: tle.buffered_tensor) -> None:
+        """Validate buffer usage for local pointer materialization"""
         if not isinstance(buffer, tle.buffered_tensor):
-            raise TLESemanticError(f"Buffer must be tle.buffered_tensor, but got {type(buffer)}", "local_load")
+            raise TLESemanticError(f"Buffer must be tle.buffered_tensor, but got {type(buffer)}", "local_ptr")
 
     def analyze_alloc_operation(self, shape: Sequence[Union[int, any]], dtype: tl.dtype,
                                 layout: Optional[tle.shared_layout], storage: tle.scope) -> Tuple[List[int], tl.dtype]:
@@ -107,6 +107,18 @@ class TLESemantic:
         """Analyze copy operation semantics"""
         self.validate_copy_compatibility(src, dst, copy_shape)
 
-    def analyze_local_load_operation(self, buffer: tle.buffered_tensor) -> None:
-        """Analyze local_load operation semantics"""
-        self.validate_local_load_buffer(buffer)
+    def analyze_local_pointer_operation(self, buffer: tle.buffered_tensor,
+                                        indices: Optional[Sequence[tl.tensor]] = None) -> None:
+        """Analyze local_ptr operation semantics"""
+        self.validate_local_pointer_buffer(buffer)
+        if not indices:
+            return
+        first_shape = None
+        for idx in indices:
+            elem_ty = idx.type.element_ty
+            if not elem_ty.is_int():
+                raise TLESemanticError("Index tensor dtype must be integer", "local_ptr")
+            if first_shape is None:
+                first_shape = tuple(idx.shape)
+            elif tuple(idx.shape) != first_shape:
+                raise TLESemanticError("Index tensors must have identical shapes", "local_ptr")
