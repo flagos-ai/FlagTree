@@ -14,9 +14,9 @@
 #include "incubated/Conversion/TritonToLinalgIncubated/Passes.h"
 #include "incubated/Conversion/TritonToStructuredIncubated/Passes.h"
 #include "incubated/Conversion/TritonToUnstructureIncubated/Passes.h"
-#include "npu/Conversion/TritonToHFusion/Passes.h"
-#include "npu/Conversion/TritonToHIVM/Passes.h"
-#include "npu/Conversion/TritonToLLVM/Passes.h"
+#include "ascend/include/TritonToHFusion/Passes.h"
+#include "ascend/include/TritonToHIVM/Passes.h"
+#include "ascend/include/TritonToLLVM/Passes.h"
 #include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 
 #include "ir.h" // TritonOpBuilder

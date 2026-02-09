@@ -34,7 +34,7 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/LogicalResult.h"
-#include "flir/include/npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
+#include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 
 namespace mlir {
 namespace triton {

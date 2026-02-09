@@ -229,6 +229,8 @@ endif()
 # AscendNPU-IR
 if(FLAGTREE_BACKEND STREQUAL "ascend")
   add_subdirectory(${ASCENDNPU_IR_SRC_DIR} ${ASCENDNPU_IR_BINARY_DIR})
+  # Flir provides TritonAscend dialect (npu/Dialect/TritonAscend); required for ascend plugin
+  add_subdirectory(third_party/flir)
 endif()
 
 # -----

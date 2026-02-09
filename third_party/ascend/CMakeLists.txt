@@ -1,10 +1,8 @@
-add_subdirectory(backend/spec/lib)
-add_subdirectory(${PROJECT_SOURCE_DIR}/include
-                 ${PROJECT_BINARY_DIR}/include)
-add_subdirectory(${PROJECT_SOURCE_DIR}/lib
-                 ${PROJECT_BINARY_DIR}/lib)
-
-add_triton_library(Registrar Registrar.cc)
+# Ascend npu include/lib (TritonToLLVM, TritonToHIVM, TritonToHFusion, TritonAscend IR)
+include_directories(
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_BINARY_DIR}/include
+)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -19,8 +17,16 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 #include_directories(${ASCENDNPU_IR_SRC_DIR}/bishengir/include)
 #include_directories(${ASCENDNPU_IR_BINARY_DIR}/bishengir/include) # Tablegen'd files
 
-#add_subdirectory(include)
-#add_subdirectory(lib)
+add_subdirectory(include)
+add_subdirectory(lib)
+add_subdirectory(backend/spec/lib)
+
+add_subdirectory(${PROJECT_SOURCE_DIR}/include
+                 ${PROJECT_BINARY_DIR}/include)
+add_subdirectory(${PROJECT_SOURCE_DIR}/lib
+                 ${PROJECT_BINARY_DIR}/lib)
+
+add_triton_library(Registrar Registrar.cc)
 
 add_triton_plugin(TritonAscend
   ${CMAKE_CURRENT_SOURCE_DIR}/triton_ascend.cc
@@ -28,6 +34,10 @@ add_triton_plugin(TritonAscend
 
   LINK_LIBS
   TritonToLinalgIncubated
+  TritonToLLVM
+  TritonToHIVM
+  TritonToHFusion
+  TritonAscendIR
   BiShengIRScopeDialect
   BiShengIRHIVMDialect
   MLIRMeshDialect
