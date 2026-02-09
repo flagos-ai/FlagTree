@@ -131,9 +131,9 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
     TypeRange tgts = funcArgTypes;
     SmallVector<Value> rets;
     for (Value src : outputs) {
-    SmallVector<Value> rets =
-        tle::protocol::SignaturePattern::apply(self, tgts, src);
-    converted_outputs.append(std::move(rets));
+      SmallVector<Value> rets =
+          tle::protocol::SignaturePattern::apply(self, tgts, src);
+      converted_outputs.append(std::move(rets));
     }
   }
   SmallVector<Type> outputTys = llvm::map_to_vector(
