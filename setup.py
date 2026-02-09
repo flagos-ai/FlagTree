@@ -620,13 +620,13 @@ def download_and_copy_dependencies():
 if helper.flagtree_backend:
     if helper.flagtree_backend in ("aipu", "tsingmicro"):
         backends = [
-            *BackendInstaller.copy(helper.default_backends + helper.extend_backends),
+            *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
             *BackendInstaller.copy_externals(),
         ]
     else:
-        backends = [*BackendInstaller.copy(helper.extend_backends), *BackendInstaller.copy_externals()]
+        backends = [*BackendInstaller.copy(helper.configs.extend_backends), *BackendInstaller.copy_externals()]
 else:
-    print(helper.default_backends)
+    print(helper.configs.default_backends)
     backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
 
 #backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
