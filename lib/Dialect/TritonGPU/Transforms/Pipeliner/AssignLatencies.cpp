@@ -1,4 +1,5 @@
 #include "triton/Analysis/AxisInfo.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/MMAv5PipelineUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
@@ -102,6 +103,14 @@ public:
                          tt::ModuleAxisInfoAnalysis &axisInfoAnalysis,
                          bool filterSmall) {
     if (auto loadOp = dyn_cast<tt::LoadOp>(op)) {
+      auto ptrTy = loadOp.getPtr().getType();
+      if (auto tensorTy = dyn_cast<RankedTensorType>(ptrTy))
+        ptrTy = tensorTy.getElementType();
+      if (auto ttPtrTy = dyn_cast<tt::PointerType>(ptrTy);
+          ttPtrTy.getAddressSpace() == 3) {
+        // Shared-memory loads should not be pipelined into async global copies.
+        return false;
+      }
       if (filterSmall && !canBeConvertedToAsyncLoad(loadOp, axisInfoAnalysis)) {
         LDBG("Load " << *loadOp << " is too small for pipelining");
         return false;
