@@ -129,6 +129,9 @@ endif()
 set(BACKEND_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/include)
 if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
   include_directories(${BACKEND_INCLUDE_DIR})
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+  endif()
 else()
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
@@ -202,6 +205,10 @@ include_directories(${LLVM_INCLUDE_DIRS})
 if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_INCLUDE_DIR})
   include_directories(${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/include)
   include_directories(${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND}/include) # Tablegen'd files
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    include_directories(${PROJECT_SOURCE_DIR}/include)
+    include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+  endif()
 else()
   include_directories(${PROJECT_SOURCE_DIR}/include)
   include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
@@ -229,8 +236,6 @@ endif()
 # AscendNPU-IR
 if(FLAGTREE_BACKEND STREQUAL "ascend")
   add_subdirectory(${ASCENDNPU_IR_SRC_DIR} ${ASCENDNPU_IR_BINARY_DIR})
-  # Flir provides TritonAscend dialect (npu/Dialect/TritonAscend); required for ascend plugin
-  add_subdirectory(third_party/flir)
 endif()
 
 # -----
