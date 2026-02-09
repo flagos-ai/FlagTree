@@ -292,6 +292,35 @@ class BoundJITMethod:
     __func__: JITFunction
 
 
+# begin flagtree tle
+class LambdaFunction:
+
+    def __init__(self, generator, node: ast.Lambda, signature: inspect.Signature, captured_scope: Dict[str, Any]):
+        self._generator = generator
+        self._node = node
+        self._signature = signature
+        self._captured_scope = captured_scope
+        self.__name__ = "<lambda>"
+
+    def __call__(self, *args, **kwargs):
+        bound = self._signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        previous_scope = self._generator.lscope
+        previous_defs = self._generator.local_defs
+        try:
+            lscope = dict(self._captured_scope)
+            lscope.update(bound.arguments)
+            self._generator.lscope = lscope
+            self._generator.local_defs = previous_defs
+            return self._generator.visit(self._node.body)
+        finally:
+            self._generator.lscope = previous_scope
+            self._generator.local_defs = previous_defs
+
+
+# end flagtree tle
+
+
 class CodeGenerator(ast.NodeVisitor):
 
     def __init__(self, context, prototype, gscope, function_name, jit_fn: JITFunction, *, options, codegen_fns,
@@ -705,6 +734,52 @@ class CodeGenerator(ast.NodeVisitor):
         assign = ast.Assign(targets=[node.target], value=rhs)
         self.visit(assign)
         return self.visit(lhs)
+
+    # begin flagtree tle
+    def _evaluate_lambda_default(self, node):
+        if node is None:
+            return inspect._empty
+        try:
+            assert not self.visiting_arg_default_value
+            self.visiting_arg_default_value = True
+            return self.visit(node)
+        finally:
+            self.visiting_arg_default_value = False
+
+    def _build_lambda_signature(self, node: ast.Lambda) -> inspect.Signature:
+        args = node.args
+        posonly = list(args.posonlyargs)
+        pos_or_kw = list(args.args)
+        total_pos = len(posonly) + len(pos_or_kw)
+        defaults = [inspect._empty] * total_pos
+        if args.defaults:
+            start = total_pos - len(args.defaults)
+            for i, default_node in enumerate(args.defaults):
+                defaults[start + i] = self._evaluate_lambda_default(default_node)
+
+        params: List[inspect.Parameter] = []
+        for i, arg in enumerate(posonly):
+            default = defaults[i]
+            params.append(inspect.Parameter(arg.arg, inspect.Parameter.POSITIONAL_ONLY, default=default))
+        for i, arg in enumerate(pos_or_kw):
+            default = defaults[len(posonly) + i]
+            params.append(inspect.Parameter(arg.arg, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=default))
+        if args.vararg is not None:
+            params.append(inspect.Parameter(args.vararg.arg, inspect.Parameter.VAR_POSITIONAL))
+        for i, arg in enumerate(args.kwonlyargs):
+            default = self._evaluate_lambda_default(args.kw_defaults[i])
+            params.append(inspect.Parameter(arg.arg, inspect.Parameter.KEYWORD_ONLY, default=default))
+        if args.kwarg is not None:
+            params.append(inspect.Parameter(args.kwarg.arg, inspect.Parameter.VAR_KEYWORD))
+
+        return inspect.Signature(params)
+
+    def visit_Lambda(self, node: ast.Lambda):
+        signature = self._build_lambda_signature(node)
+        captured_scope = dict(self.lscope)
+        return LambdaFunction(self, node, signature, captured_scope)
+
+    # end flagtree tle
 
     def visit_Name(self, node):
         if type(node.ctx) is ast.Store:
