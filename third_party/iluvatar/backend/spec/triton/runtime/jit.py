@@ -53,7 +53,7 @@ class CallVisitor(ast.NodeVisitor):
 
 
 def ext_JITFunction_spec_of(arg):
-    return (arg % 16 == 0, arg % JITFunction.divisibility_8 == 0, arg == 1)
+    return (arg % 4 == 0, arg % JITFunction.divisibility_8 == 0, arg == 1)
 
 
 def is_corex_param(x, enable_sme):
