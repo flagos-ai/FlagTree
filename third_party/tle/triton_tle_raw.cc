@@ -25,34 +25,6 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 }
 } // namespace
 
-static SmallVector<Type>
-aggregationTypes(TritonOpBuilder &builder,
-                 const SmallVector<Type> &unconvertTypes,
-                 const SmallVector<Type> &convertTypes) {
-  SmallVector<Type> resultTypes;
-  TypeRange tgts = convertTypes;
-  for (Type singletype : unconvertTypes) {
-    if (auto ptrType = dyn_cast<RankedTensorType>(singletype)) {
-      size_t rank = ptrType.getRank();
-      Type allocatedPtrTy = tgts[0];
-      Type alignedPtrTy = tgts[1];
-      Type offsetTy = tgts[2];
-      Type sizeElemTy = tgts[3];
-      Type strideElemTy = tgts[3 + rank];
-      auto sizesArrayTy = LLVM::LLVMArrayType::get(sizeElemTy, rank);
-      auto stridesArrayTy = LLVM::LLVMArrayType::get(strideElemTy, rank);
-      SmallVector<Type> fieldTys = {
-          allocatedPtrTy, alignedPtrTy, offsetTy, sizesArrayTy, stridesArrayTy,
-      };
-      resultTypes.push_back(LLVM::LLVMStructType::getLiteral(
-          builder.getContext(), fieldTys, /*packed=*/false));
-    } else {
-      resultTypes.push_back(std::move(tgts.front()));
-      tgts = tgts.drop_front();
-    }
-  }
-  return resultTypes;
-}
 // Create a DSLRegionOp that wraps an LLVM function, performing type conversion
 // from Triton IR types to LLVM types based on EDSL function declarations.
 //
@@ -141,11 +113,11 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
   SmallVector<Value> operands =
       llvm::to_vector(llvm::concat<Value>(converted_outputs, converted_inputs));
 
-  SmallVector<Type> dslOutputTys = llvm::map_to_vector(
-      converted_outputs, [](Value value) -> Type { return value.getType(); });
-  auto outStructTy = aggregationTypes(self, outputTys, dslOutputTys);
+  SmallVector<Type> returnTys = llvm::filter_to_vector(
+      func.getFunctionType().getReturnTypes(),
+      [](Type ty) -> bool { return !isa<LLVM::LLVMVoidType>(ty); });
   tle::DSLRegionOp dslRegionOp =
-      self.create<tle::DSLRegionOp>(outStructTy, operands);
+      self.create<tle::DSLRegionOp>(returnTys, operands);
   OpBuilder::InsertionGuard guard(builder);
   Region &body = dslRegionOp.getBody();
   SmallVector<Type> operandTys = llvm::map_to_vector(
