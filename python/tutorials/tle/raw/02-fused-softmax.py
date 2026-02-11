@@ -1,3 +1,5 @@
+from typing_extensions import Literal as L
+
 from mlir import ir
 from mlir.dialects import arith, math, memref, nvvm, scf
 import torch
@@ -19,7 +21,7 @@ def naive_softmax(x):
 
 
 @dialect(name="mlir")
-def edsl(y: InOut["memref<?xf32, 3>"], x: Input["memref<?xf32, 3>"]):  # noqa: F722
+def edsl(y: InOut[L["memref<?xf32, 3>"]], x: Input[L["memref<?xf32, 3>"]]):
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
@@ -112,7 +114,7 @@ def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n
         col_offsets = tl.arange(0, BLOCK_SIZE)
         input_ptrs = row_start_ptr + col_offsets
         mask = col_offsets < n_cols
-        row = tl.load(input_ptrs, mask=mask, other=-float('inf'))
+        row = tl.load(input_ptrs, mask=mask, other=-float("inf"))
         softmax_output = tl.zeros_like(row)
         output_row_start_ptr = output_ptr + row_idx * output_row_stride
         output_ptrs = output_row_start_ptr + col_offsets

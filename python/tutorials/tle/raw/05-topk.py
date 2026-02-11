@@ -1,6 +1,5 @@
-# flake8: noqa: F821, F722
 import argparse
-from typing_extensions import Literal
+from typing_extensions import Literal as L
 
 from mlir.dialects import arith, memref, nvvm, scf, llvm
 from mlir import ir
@@ -33,11 +32,20 @@ def convert_to_uint32(x):
 
 # NOTE: current implementation requires a thread number of 1024
 @dialect(name="mlir")
-def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["memref<?xi32, 3>"],
-          s_threshold_bin_id: Input["memref<?xi32, 3>"], indices_base: Input["!llvm.ptr<1>"],
-          s_input_ids_base: Input["!llvm.ptr<1>"], inputs: Input["!llvm.ptr<1>"],
-          s_histogram: Input["memref<?xi32, 3>"], l_start_idx: Input["i32"], l_end_idx: Input["i32"], S: Input["i32"],
-          BS: Input["i32"], K_tensor: Input["memref<?xi32, 3>"]):
+def edsl1(
+    thre_bin_sum_buf: InOut[L["memref<?xi32, 3>"]],
+    l_new_topk_buf: InOut[L["memref<?xi32, 3>"]],
+    s_threshold_bin_id: Input[L["memref<?xi32, 3>"]],
+    indices_base: Input[L["!llvm.ptr<1>"]],
+    s_input_ids_base: Input[L["!llvm.ptr<1>"]],
+    inputs: Input[L["!llvm.ptr<1>"]],
+    s_histogram: Input[L["memref<?xi32, 3>"]],
+    l_start_idx: Input[L["i32"]],
+    l_end_idx: Input[L["i32"]],
+    S: Input[L["i32"]],
+    BS: Input[L["i32"]],
+    K_tensor: Input[L["memref<?xi32, 3>"]],
+):
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))  # blockDim.x
@@ -79,13 +87,15 @@ def edsl1(thre_bin_sum_buf: InOut["memref<?xi32, 3>"], l_new_topk_buf: InOut["me
         s_i32 = arith.index_cast(i32_ty, s)
         input_idx_i32 = arith.addi(arith.muli(s_i32, BS), tidx)
         cond = arith.andi(
-            arith.andi(arith.cmpi(arith.CmpIPredicate.slt, input_idx_i32, l_end_idx),
-                       arith.cmpi(arith.CmpIPredicate.sge, input_idx_i32, l_start_idx)),
-            arith.cmpi(arith.CmpIPredicate.slt, input_idx_i32, S))
+            arith.andi(
+                arith.cmpi(arith.CmpIPredicate.slt, input_idx_i32, l_end_idx),
+                arith.cmpi(arith.CmpIPredicate.sge, input_idx_i32, l_start_idx),
+            ),
+            arith.cmpi(arith.CmpIPredicate.slt, input_idx_i32, S),
+        )
         if_stmt = scf.if_([], cond)
         thenblock = if_stmt.opview.thenRegion.blocks.append()
         with ir.InsertionPoint(thenblock):
-
             base_offset = arith.muli(bidx, S)
             full_offset = arith.addi(base_offset, input_idx_i32)
 
@@ -309,14 +319,14 @@ def kernel_bucket_sort_topk_triton(  # grid(B, BS)
     TS = tl.cdiv(S, BS)
     for s in range(TS):
         input_idx = s * BS + tl.arange(0, BS)
-        input_mask = ((input_idx < l_end_idx) & (input_idx >= l_start_idx) & (input_idx < S))
+        input_mask = (input_idx < l_end_idx) & (input_idx >= l_start_idx) & (input_idx < S)
         input = tl.load(s_base + input_idx, input_mask, other=float("-inf")).to(tl.float32)
         inval_int16 = convert_to_uint16(input)
         s_histogram += inval_int16.to(tl.int32).histogram(HISTOGRAM_SIZE)
 
     s_histogram = s_histogram.cumsum(0, reverse=True)  # Suffix sum
 
-    mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
+    mv_idx = tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE  # Construct offset index matrix
 
     cond = (s_histogram > l_new_topk) & ((s_histogram.gather(mv_idx, 0) <= l_new_topk) | (mv_idx == 0))
     l_threshold_bin_id = cond.argmax(0)
@@ -326,7 +336,7 @@ def kernel_bucket_sort_topk_triton(  # grid(B, BS)
     thre_bin_sum = 0
     for s in range(TS):
         input_idx = s * BS + tl.arange(0, BS)
-        input_mask = ((input_idx < l_end_idx) & (input_idx >= l_start_idx) & (input_idx < S))
+        input_mask = (input_idx < l_end_idx) & (input_idx >= l_start_idx) & (input_idx < S)
         input = tl.load(s_base + input_idx, input_mask, other=float("-inf")).to(tl.float32)
         inval_int16 = convert_to_uint16(input)
         # This method would slow down the speed, so using other=float("-inf") saves time.
@@ -388,7 +398,7 @@ def kernel_bucket_sort_topk_triton(  # grid(B, BS)
                            (24 - round * 8)) & 0xFF  # Ensure all bits except the last eight are zero
             s_histogram += inval_int32.to(tl.int32).histogram(HISTOGRAM_SIZE)
         s_histogram = s_histogram.cumsum(0, reverse=True)  # Suffix sum
-        mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
+        mv_idx = tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE  # Construct offset index matrix
         cond = (s_histogram > l_new_topk) & ((s_histogram.gather(mv_idx, 0) <= l_new_topk) | (mv_idx == 0))
         l_threshold_bin_id = cond.argmax(0)
         l_new_topk -= tl.where(tl.arange(0, HISTOGRAM_SIZE) == l_threshold_bin_id + 1, s_histogram, 0).max(0)
@@ -474,9 +484,22 @@ def kernel_bucket_sort_topk_edsl(  # grid(B,)
     s = S
     bs = BS
     k_tensor = tl.full([1], K, dtype=tl.int32)  # Convert constexpr to tensor
-    thre_bin_sum_buf, l_new_topk_buf = tle_raw.call(edsl1, [thre_bin_sum_buf, l_new_topk_buf], [
-        s_threshold_bin_id, indices_base, s_input_ids_base, inputs, s_histogram, l_start_idx, l_end_idx, s, bs, k_tensor
-    ])
+    thre_bin_sum_buf, l_new_topk_buf = tle_raw.call(
+        edsl1,
+        [thre_bin_sum_buf, l_new_topk_buf],
+        [
+            s_threshold_bin_id,
+            indices_base,
+            s_input_ids_base,
+            inputs,
+            s_histogram,
+            l_start_idx,
+            l_end_idx,
+            s,
+            bs,
+            k_tensor,
+        ],
+    )
 
     thre_bin_sum = thre_bin_sum_buf.max(0)
     l_new_topk = l_new_topk_buf.max(0)
@@ -497,7 +520,7 @@ def kernel_bucket_sort_topk_edsl(  # grid(B,)
             inval_int32 = (convert_to_uint32(s_input) >> (24 - round * 8)) & 0xFF
             s_histogram += inval_int32.to(tl.int32).histogram(HISTOGRAM_SIZE)
         s_histogram = s_histogram.cumsum(0, reverse=True)  # Suffix sum
-        mv_idx = (tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE)  # Construct offset index matrix
+        mv_idx = tl.arange(1, HISTOGRAM_SIZE + 1) % HISTOGRAM_SIZE  # Construct offset index matrix
         cond = (s_histogram > l_new_topk) & ((s_histogram.gather(mv_idx, 0) <= l_new_topk) | (mv_idx == 0))
         l_threshold_bin_id = cond.argmax(0)
         l_new_topk -= tl.where(tl.arange(0, HISTOGRAM_SIZE) == l_threshold_bin_id + 1, s_histogram, 0).max(0)
@@ -545,7 +568,7 @@ def kernel_bucket_sort_topk_edsl(  # grid(B,)
             sum += BSS
 
 
-def bucket_sort_topk(inputs, starts, ends, topk, kernel: Literal["triton", "tle"]):
+def bucket_sort_topk(inputs, starts, ends, topk, kernel: L["triton", "tle"]):
     B, S = inputs.shape
     K = topk
     HISTOGRAM_SIZE = 256
@@ -584,8 +607,7 @@ def bucket_sort_topk(inputs, starts, ends, topk, kernel: Literal["triton", "tle"
     return indices
 
 
-def test_topk_selector(batch=64, seq_len=32 * 1024, topk=2048, kernel: Literal["triton", "tle"] = "triton"):
-
+def test_topk_selector(batch=64, seq_len=32 * 1024, topk=2048, kernel: L["triton", "tle"] = "triton"):
     batch = 64
     seq_len = 32 * 1024
     topk = 2048

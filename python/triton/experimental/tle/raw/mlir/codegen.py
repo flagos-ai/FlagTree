@@ -16,8 +16,15 @@ class UnknownSymbolError(Exception):
 
 class EdslMLIRCodeGenerator(ast.NodeVisitor):
 
-    def __init__(self, absfilename: str, lscope: Dict[str, Any] = None, gscope: Dict[str, Any] = {},
-                 context: Optional[ir.Context] = None, *args, **kwargs) -> None:
+    def __init__(
+        self,
+        absfilename: str,
+        lscope: Dict[str, Any] = None,
+        gscope: Dict[str, Any] = {},
+        context: Optional[ir.Context] = None,
+        *args,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.absfilename: Final[str] = absfilename
         self.lscope: Final[Dict[str, Any]] = {**lscope}
@@ -91,27 +98,13 @@ class EdslMLIRCodeGenerator(ast.NodeVisitor):
             output_tys: List[ir.Type] = []
             output_indices: List[int] = []
             for idx, arg in enumerate(node.args.args):
-                # issue#328 [bug]edsl InOut&Input anno F722 error
-                # https://github.com/flagos-ai/FlagTree/issues/328
-                # use while find method to fix the bug,
-                # remember replace below arg.annotation.slice.value with type_str
-                '''
-                slice_node = arg.annotation.slice
-                if isinstance(slice_node, ast.Subscript):
-                    type_str = slice_node.slice.value
-                else:
-                    type_str = slice_node.value
-                '''
                 if arg.annotation.value.id == "InOut":
-                    ty: ir.Type = ir.Type.parse(arg.annotation.slice.value)
+                    ty: ir.Type = ir.Type.parse(arg.annotation.slice.slice.value)
                     operand_tys += [ty]
                     output_tys += [ty]
                     output_indices += [idx]
                 elif arg.annotation.value.id == "Input":
-                    ty: ir.Type = ir.Type.parse(arg.annotation.slice.value)
-                    operand_tys += [ty]
-                elif arg.annotation.value.id == "Num":
-                    ty: ir.Type = ir.Type.parse(arg.annotation.slice.value)
+                    ty: ir.Type = ir.Type.parse(arg.annotation.slice.slice.value)
                     operand_tys += [ty]
                 else:
                     raise NotImplementedError(f"unsupported argument annotation: {ast.dump(arg.annotation)}")
