@@ -9,7 +9,7 @@ import textwrap
 from collections import defaultdict
 from functools import cached_property
 from typing import Callable, Generic, Iterable, Optional, TypeVar, Union, overload, Dict, Any, Tuple
-from triton.runtime.driver import driver
+from ..runtime.driver import driver
 from types import ModuleType
 
 TRITON_MODULE = __name__[:-len(".runtime.jit")]

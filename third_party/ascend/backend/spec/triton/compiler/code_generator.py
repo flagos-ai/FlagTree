@@ -12,14 +12,14 @@ import triton.language.extra.cann.extension as extension
 from triton.extension.buffer.language import core as bl
 from triton.extension.buffer.language.builder import setup_unified_builder_with_buffer_builder
 
-from triton import language
-from triton._C.libtriton import ir, buffer_ir
-from triton._C.libtriton.ascend import ir as ascend_ir
-from triton.language import constexpr, tensor, str_to_ty
+from .. import language
+from .._C.libtriton import ir, buffer_ir
+from .._C.libtriton.ascend import ir as ascend_ir
+from ..language import constexpr, tensor, str_to_ty
 from ..language.core import _unwrap_if_constexpr, nv_tma_desc_type, _value
 from ..runtime.jit import _normalize_ty, get_jit_fn_file_line
 # ideally we wouldn't need any runtime component
-from triton.runtime import JITFunction
+from ..runtime import JITFunction
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
 from types import ModuleType
 # Central registry for all 'with' statement handlers

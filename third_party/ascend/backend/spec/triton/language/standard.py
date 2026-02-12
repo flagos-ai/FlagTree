@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import triton.language as tl
 from ..runtime.jit import jit
 from . import core
 from . import math
-
-cdiv = math.cdiv
 
 # constexpr utilities
 
@@ -27,6 +24,8 @@ def _is_power_of_two(i: core.constexpr):
 # -----------------------
 # Standard library
 # -----------------------
+
+cdiv = math.cdiv
 
 # @core._tensor_member_fn
 # @jit

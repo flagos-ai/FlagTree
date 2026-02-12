@@ -1,6 +1,6 @@
 import ast
 from typing import Optional
-from triton.errors import TritonError
+from ..errors import TritonError
 
 
 class CompilationError(TritonError):

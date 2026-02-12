@@ -7,8 +7,8 @@ import inspect
 from typing import Dict
 
 from .jit import KernelInterface
-from triton.runtime.errors import OutOfResources
-from triton.runtime.driver import driver
+from .errors import OutOfResources
+from .driver import driver
 
 
 class Autotuner(KernelInterface):

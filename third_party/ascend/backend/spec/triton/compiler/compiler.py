@@ -1,15 +1,15 @@
 from __future__ import annotations
 import hashlib
 import json
-from triton._C.libtriton import get_cache_invalidating_env_vars, ir, buffer_ir
-from triton._C.libtriton.ascend import ir as ascend_ir
-from triton.backends import backends
-from triton.backends.compiler import GPUTarget, AttrsDescriptor
-from triton import __version__
+from .._C.libtriton import get_cache_invalidating_env_vars, ir, buffer_ir
+from .._C.libtriton.ascend import ir as ascend_ir
+from ..backends import backends
+from ..backends.compiler import GPUTarget, AttrsDescriptor
+from .. import __version__
 from ..runtime.autotuner import OutOfResources
-from triton.runtime.cache import get_cache_manager, get_dump_manager, get_override_manager
-from triton.runtime.driver import driver
-from triton.tools.disasm import get_sass
+from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager
+from ..runtime.driver import driver
+from ..tools.disasm import get_sass
 # TODO: this shouldn't be here
 from .code_generator import ast_to_ttir
 from .errors import MLIRCompilationError
