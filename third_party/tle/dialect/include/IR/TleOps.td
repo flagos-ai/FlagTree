@@ -28,18 +28,6 @@ def Tle_LocalPointersOp : Tle_Op<"local_pointers",
   let hasVerifier = 1;
 }
 
-def Tle_DSLRegionOp : Tle_Op<"dsl_region", [IsolatedFromAbove, MemDescViewTrait, RecursiveMemoryEffects]> {
-  let arguments = (ins Variadic<Tle_ArgType>:$inputs);
-  let results = (outs Variadic<Tle_ArgType>:$outputs);
-  let regions = (region AnyRegion:$body);
-  let hasVerifier = 1;
-}
-
-def Tle_YieldOp : Tle_Op<"yield", [Pure, Terminator, ReturnLike, HasParent<"DSLRegionOp">]> {
-  let arguments = (ins Variadic<Tle_ArgType>:$inputs);
-  let assemblyFormat = "attr-dict ($inputs^ `:` type($inputs))?";
-}
-
 def Tle_ExtractAllocatedPtrOp : Tle_Op<"extract_allocated_ptr", [Pure]> {
   let arguments = (ins Tle_ArgType:$input);
   let results = (outs LLVMPointerType:$ptr);

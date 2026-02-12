@@ -19,7 +19,6 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
 // begin flagtree tle
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
@@ -97,14 +96,6 @@ public:
     // begin flagtree tle
     addLegalOp<mlir::UnrealizedConversionCastOp>();
     // end flagtree tle
-    addDynamicallyLegalOp<tle::DSLRegionOp, tle::YieldOp>(
-        [&](Operation *op) -> bool {
-          bool hasLegalRegions = true;
-          for (auto &region : op->getRegions()) {
-            hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
-          }
-          return hasLegalRegions && typeConverter.isLegal(op);
-        });
     // Allow non-TLE ops to remain during this partial conversion.
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
@@ -156,8 +147,6 @@ struct ConvertTritonGPUToLLVM
     {
       TleLLVMConversionTarget target(*context, typeConverter);
       RewritePatternSet patterns(context);
-      mlir::triton::tle::populateDSLRegionOpToLLVMPatterns(typeConverter,
-                                                           patterns, benefit);
       mlir::triton::tle::populateExtractOpToLLVMPatterns(typeConverter,
                                                          patterns, benefit);
       mlir::triton::tle::populatePackOpToLLVMPatterns(typeConverter, patterns,
