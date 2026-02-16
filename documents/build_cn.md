@@ -156,18 +156,19 @@ python3 -m pip install . --no-build-isolation -v
 ##### 1. 构建及运行环境
 
 - 推荐使用镜像 [Dockerfile-ubuntu22.04-python3.11-ascend](/dockerfiles/Dockerfile-ubuntu22.04-python3.11-ascend)
+- 或者使用镜像（5.4GB）https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_cann-8.2.rc1.alpha003-a3-ubuntu22.04-py3.11-flagtree.tar.gz
 - 在 https://www.hiascend.com/developer/download/community/result?module=cann 注册账号后下载对应平台的 cann-toolkit、cann-kernels
 
 ```shell
 # cann-toolkit
-chmod +x Ascend-cann-toolkit_8.5.0.alpha002_linux-aarch64.run
-./Ascend-cann-toolkit_8.5.0.alpha002_linux-aarch64.run --install
+chmod +x Ascend-cann-toolkit_8.5.0_linux-aarch64.run
+./Ascend-cann-toolkit_8.5.0_linux-aarch64.run --install
 # cann-kernels for 910B (A2)
-chmod +x Ascend-cann-kernels-910b_8.5.0.alpha002_linux-aarch64.run
-./Ascend-cann-kernels-910b_8.5.0.alpha002_linux-aarch64.run --install
+chmod +x Ascend-cann-910b-ops_8.5.0_linux-aarch64.run
+./Ascend-cann-910b-ops_8.5.0_linux-aarch64.run --install
 # cann-kernels for 910C (A3)
-chmod +x Atlas-A3-cann-kernels_8.5.0.alpha002_linux-aarch64.run
-./Atlas-A3-cann-kernels_8.5.0.alpha002_linux-aarch64.run --install
+chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
+./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
 ```
 
 ##### 2. 手动下载 FlagTree 依赖库
@@ -270,7 +271,7 @@ python3 -m pip install . --no-build-isolation -v
 
 ##### 1. 构建及运行环境
 
-- 推荐使用 Ubuntu 22.04
+- 推荐使用镜像（12GB）https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_nvidia_pytorch_25.05-py3.tar.gz
 
 ##### 2. 手动下载 LLVM 依赖包
 

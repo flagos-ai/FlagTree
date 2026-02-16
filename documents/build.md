@@ -129,7 +129,6 @@ python3 -m pip install . --no-build-isolation -v
 
 - Recommended: Use Ubuntu 20.04
 
-
 ##### 2. Manually download the FlagTree dependencies
 
 ```shell
@@ -157,18 +156,19 @@ python3 -m pip install . --no-build-isolation -v
 ##### 1. Build and run environment
 
 - Recommended: Use [Dockerfile-ubuntu22.04-python3.11-ascend](/dockerfiles/Dockerfile-ubuntu22.04-python3.11-ascend)
+- Or: Use the Docker image (5.4GB) https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_cann-8.2.rc1.alpha003-a3-ubuntu22.04-py3.11-flagtree.tar.gz
 - After registering an account at https://www.hiascend.com/developer/download/community/result?module=cann, download the cann-toolkit and cann-kernels for the corresponding platform.
 
 ```shell
 # cann-toolkit
-chmod +x Ascend-cann-toolkit_8.5.0.alpha002_linux-aarch64.run
-./Ascend-cann-toolkit_8.5.0.alpha002_linux-aarch64.run --install
+chmod +x Ascend-cann-toolkit_8.5.0_linux-aarch64.run
+./Ascend-cann-toolkit_8.5.0_linux-aarch64.run --install
 # cann-kernels for 910B (A2)
-chmod +x Ascend-cann-kernels-910b_8.5.0.alpha002_linux-aarch64.run
-./Ascend-cann-kernels-910b_8.5.0.alpha002_linux-aarch64.run --install
+chmod +x Ascend-cann-910b-ops_8.5.0_linux-aarch64.run
+./Ascend-cann-910b-ops_8.5.0_linux-aarch64.run --install
 # cann-kernels for 910C (A3)
-chmod +x Atlas-A3-cann-kernels_8.5.0.alpha002_linux-aarch64.run
-./Atlas-A3-cann-kernels_8.5.0.alpha002_linux-aarch64.run --install
+chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
+./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
 ```
 
 ##### 2. Manually download the FlagTree dependencies
@@ -272,6 +272,7 @@ python3 -m pip install . --no-build-isolation -v
 ##### 1. Build and run environment
 
 - Recommended: Use Ubuntu 22.04
+- Recommended: Use the Docker image (12GB) https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_nvidia_pytorch_25.05-py3.tar.gz
 
 ##### 2. Manually download the LLVM
 

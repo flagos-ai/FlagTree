@@ -2,18 +2,14 @@
 
 ## <img width="30" height="30" alt="FlagTree-GitHub" src="https://github.com/user-attachments/assets/d8d24c81-6f46-4adc-94e2-b89b03afcb43" /> FlagTree
 
-FlagTree is part of [FlagOS](https://flagos.io/), a fully open-source system software stack
-designed to unify the model–system–chip layers and foster an open and collaborative ecosystem.
+FlagTree is part of [FlagOS](https://flagos.io/), a fully open-source system software stack designed to unify the model–system–chip layers and foster an open and collaborative ecosystem.
 It enables a "develop once, run anywhere" workflow across diverse AI accelerators,
 unlocking hardware performance, eliminating fragmentation among AI chipset-specific software stacks,
 and substantially lowering the cost of porting and maintaining AI workloads.
 
-FlagTree is an open source, unified compiler for multiple AI chips project dedicated to
-developing a diverse ecosystem of AI chip compilers and related tooling platforms,
+FlagTree is an open source, unified compiler for multiple AI chips project dedicated to developing a diverse ecosystem of AI chip compilers and related tooling platforms,
 thereby fostering and strengthening the upstream and downstream Triton ecosystem.
-Currently in its initial phase, the project aims to maintain compatibility
-with existing adaptation solutions while unifying the codebase
-to rapidly implement single-repository multi-backend support.
+Currently in its initial phase, the project aims to maintain compatibility with existing adaptation solutions while unifying the codebase to rapidly implement single-repository multi-backend support.
 For upstream model users, it provides unified compilation capabilities across multiple backends;
 for downstream chip manufacturers, it offers examples of Triton ecosystem integration.
 
@@ -88,6 +84,7 @@ cd ${ANY_OTHER_PATH}; python3 -c 'import triton; print(triton.__path__)'
 ## Source-free Installation
 
 If you do not wish to build from source, you can directly pull and install whl (partial backend support).
+The best practice to avoid environment compatibility issues is to use the image recommended in [Tips for building](/documents/build.md#tips-for-building).
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -101,10 +98,10 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |nvidia  |python3 -m pip install flagtree==0.4.0 $RES            |3.1|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |nvidia  |python3 -m pip install flagtree==0.4.0+3.2 $RES        |3.2|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |nvidia  |python3 -m pip install flagtree==0.4.0+3.3 $RES        |3.3|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
-|nvidia  |python3 -m pip install flagtree==0.4.0+3.5 $RES        |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|nvidia  |python3 -m pip install flagtree==0.4.1+3.5 $RES        |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |iluvatar|python3 -m pip install flagtree==0.4.0+iluvatar3.1 $RES|3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |mthreads|python3 -m pip install flagtree==0.4.0+mthreads3.1 $RES|3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|ascend  |python3 -m pip install flagtree==0.4.0+ascend3.2 $RES  |3.2|3.11|GLIBC_2.34<br>GLIBCXX_3.4.24<br>CXXABI_1.3.11|
+|ascend  |python3 -m pip install flagtree==0.4.1+ascend3.2 $RES  |3.2|3.11|GLIBC_2.34<br>GLIBCXX_3.4.24<br>CXXABI_1.3.11|
 |hcu     |python3 -m pip install flagtree==0.4.0+hcu3.0 $RES     |3.0|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |enflame |python3 -m pip install flagtree==0.4.0+enflame3.3 $RES |3.3|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |sunrise |python3 -m pip install flagtree==0.4.0+sunrise3.4 $RES |3.4|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
