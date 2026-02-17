@@ -32,7 +32,9 @@ struct AllocateSharedMemory
     assert(op && "Value has no defining op");
     if (isa<memref::AllocOp>(op))
       return op;
-    assert(isa<memref::ExpandShapeOp>(op) || isa<memref::ReshapeOp>(op));
+    // Memref op which has result: ViewLikeOpInterface. Eg:
+    // memref::ExpandShapeOp
+    assert(isa<ViewLikeOpInterface>(op));
     return findAlignmentRestrictOpOperandBuffer(op->getOperand(0));
   }
 

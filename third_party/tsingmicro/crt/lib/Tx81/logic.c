@@ -29,7 +29,7 @@ void __AndVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
-
+  SYNCHRONOUS_INTRINSIC_SWITCH;
   // Destroy the command buffer.
 }
 
@@ -51,6 +51,7 @@ void __OrVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }
@@ -73,6 +74,7 @@ void __XorVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }

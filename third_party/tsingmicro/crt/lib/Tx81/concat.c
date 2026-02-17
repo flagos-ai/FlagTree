@@ -35,6 +35,7 @@ void __Concat(uint64_t *src1, uint16_t src1_n, uint16_t src1_h, uint16_t src1_w,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }

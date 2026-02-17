@@ -62,6 +62,7 @@ export TXDA_FALLBACK_CPU_OPS=$txda_fallback_cpu_ops
 # 非必须的 调试相关
 export TRITON_DUMP_PATH=$TRITON/dump
 export TRITON_ALWAYS_COMPILE=1
+export TRITON_PRINT_AUTOTUNING=1
 # dump launch调用的所有参数，包括kernel func调用的参数
 export DUMP_KERNEL_ARGS=1
 
@@ -71,11 +72,13 @@ export PRECISION_PRIORITY=1
 export TRITON_ALLOW_NON_CONSTEXPR_GLOBALS=1
 
 # export DEBUG=ON
-# export USE_PROFILE=1
+# export ENABLE_PROFILING=1
 # export USE_HOST_PROFILE=1
+# export TX_LOG_LEVEL=debug
 # export CUSTOMIZED_IR=test_0.mlir,test_1.mlir
 # export TRACE_POINTS="__Rdma,__Wdma"
 
+echo "export TX_LOG_LEVEL=$TX_LOG_LEVEL"
 echo "export TX8_DEPS_ROOT=$TX8_DEPS_ROOT"
 echo "export LLVM_SYSPATH=$LLVM_SYSPATH"
 echo "export LLVM_BINARY_DIR=$LLVM_BINARY_DIR"
@@ -89,7 +92,7 @@ echo "export TRITON_ALWAYS_COMPILE=$TRITON_ALWAYS_COMPILE"
 echo "export TXDA_SKIP_OPS=$TXDA_SKIP_OPS"
 echo "export TXDA_FALLBACK_CPU_OPS=$TXDA_FALLBACK_CPU_OPS"
 
-echo "export USE_PROFILE=$USE_PROFILE"
+echo "export ENABLE_PROFILING=$ENABLE_PROFILING"
 echo "export USE_HOST_PROFILE=$USE_HOST_PROFILE"
 echo "export CUSTOMIZED_IR=$CUSTOMIZED_IR"
 echo "export TRACE_POINTS=$TRACE_POINTS"

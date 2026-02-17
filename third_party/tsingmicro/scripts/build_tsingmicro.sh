@@ -9,7 +9,7 @@ project_dir=$(realpath "$script_dir/../../..")
 if [ -z "${WORKSPACE+x}" ]; then
     WORKSPACE=$(realpath "$project_dir/..")
 fi
-echo "${realpath}"
+
 TX8_DEPS_ROOT=$WORKSPACE/tx8_deps
 LLVM=$WORKSPACE/llvm-a66376b0-ubuntu-x64
 TRITON=$project_dir
@@ -97,9 +97,8 @@ build_triton() {
 
     export TRITON_BUILD_WITH_CLANG_LLD=true
     export TRITON_BUILD_WITH_CCACHE=true
-    export TRITON_OFFLINE_BUILD=OFF
+    export TRITON_OFFLINE_BUILD=ON
     export TRITON_BUILD_PROTON=OFF
-    export CXXFLAGS="-Wno-dangling-assignment-gsl"
 
     echo "export TRITON_OFFLINE_BUILD=$TRITON_OFFLINE_BUILD"
     echo "export TRITON_BUILD_WITH_CLANG_LLD=$TRITON_BUILD_WITH_CLANG_LLD"
@@ -122,7 +121,6 @@ fi
 
 export LLVM_SYSPATH=$LLVM
 export TX8_DEPS_ROOT=$TX8_DEPS_ROOT
-export FLAGTREE_BACKEND=tsingmicro
 
 # debug
 # export USE_HOST_PROFILE=1
@@ -130,5 +128,9 @@ export FLAGTREE_BACKEND=tsingmicro
 
 echo "export TX8_DEPS_ROOT=$TX8_DEPS_ROOT"
 echo "export LLVM_SYSPATH=$LLVM_SYSPATH"
+
+# synchronous temporary solution: add waitfinish after every cintrinsic exec
+export ENABLE_SYNCHRONOUS_INTRINSIC=1
+echo "export ENABLE_SYNCHRONOUS_INTRINSIC=$ENABLE_SYNCHRONOUS_INTRINSIC"
 
 build_triton

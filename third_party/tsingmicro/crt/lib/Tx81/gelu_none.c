@@ -16,4 +16,5 @@ void __GeluNone(uint64_t *src, uint64_t *dst, uint32_t elem_count,
                 uint16_t fmt) {
   INTRNISIC_RUN_SWITCH;
   op_gelu_none(src, dst, elem_count, (Data_Format)fmt);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 }

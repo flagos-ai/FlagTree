@@ -110,9 +110,9 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
   auto loc = op->getLoc();
 
   if (lhsState.source && rhsState.source) {
-    op->emitRemark(
+    LLVM_DEBUG(op->emitRemark(
         "PtrAnalysis: do not support adding two pointer states that both "
-        "have base pointers");
+        "have base pointers"));
     return failure();
   }
 
@@ -140,8 +140,9 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
 
   // AddPtr where both lhs and rhs containing modulo operators not supported
   if (lhsState.hasModulo() && rhsState.hasModulo()) {
-    op->emitRemark("PtrAnalysis: do not support adding two pointer states "
-                   "that both have modulo");
+    LLVM_DEBUG(
+        op->emitRemark("PtrAnalysis: do not support adding two pointer states "
+                       "that both have modulo"));
     return failure();
   }
 
@@ -188,17 +189,17 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
     } else if (i == 0 && lhs->getRank() == 2 && rhs->scalar) {
       shape.push_back(lhs->shape[1]);
       shape.push_back(lhs->shape[0]);
-      op->emitWarning(
+      LLVM_DEBUG(op->emitWarning(
           "PtrAnalysis: allowing adding pointer state with modulo in dim 0 to "
           "another pointer state with offset in dim 0.\nPlease verify the "
           "operand that contains a scalar is meant to increment pointers in "
           "dim1. If that is not the case it WILL LEAD TO WRONG COMPILATION "
           "RESULTS.\n\nTo avoid this warning, use expand_dims (instead of "
-          "splat) to explicitly specify which dimension contains the scalar.");
+          "splat) to explicitly specify which dimension contains the scalar."));
       break;
     } else {
-      op->emitRemark(
-          "PtrAnalysis: do not support adding to operand with modulo");
+      LLVM_DEBUG(op->emitRemark(
+          "PtrAnalysis: do not support adding to operand with modulo"));
       return failure();
     }
   }
@@ -215,15 +216,15 @@ void PtrState::dump() const {
     llvm::dbgs() << "scalar: " << scalar << "\n";
   }
 
-  llvm::dbgs() << "offsets: ";
+  llvm::dbgs() << "offsets:\n";
   llvm::interleave(offsets, llvm::dbgs(), "\n");
-  llvm::dbgs() << "\nstrides: ";
+  llvm::dbgs() << "\nstrides:\n";
   llvm::interleave(strides, llvm::dbgs(), "\n");
-  llvm::dbgs() << "\nsizes: ";
+  llvm::dbgs() << "\nsizes:\n";
   llvm::interleave(sizes, llvm::dbgs(), "\n");
-  llvm::dbgs() << "\nshape: ";
+  llvm::dbgs() << "\nshape:\n";
   llvm::interleave(shape, llvm::dbgs(), "\n");
-  llvm::dbgs() << "\norder: ";
+  llvm::dbgs() << "\norder:\n";
   llvm::interleave(order, llvm::dbgs(), "\n");
   llvm::dbgs() << "\n";
 }
@@ -238,15 +239,16 @@ LogicalResult PtrState::mulState(const PtrState &lhsState,
   // neither lhs nor rhs should have source, since multiplying base pointer
   // does not make sense
   if (lhsState.source && rhsState.source) {
-    op->emitRemark("PtrAnalysis: do not support multiplying base pointers");
+    LLVM_DEBUG(op->emitRemark(
+        "PtrAnalysis: do not support multiplying base pointers"));
     return failure();
   }
 
   // currently do not support both tensors are effectively non-scalar
   if (!lhsState.scalar && !rhsState.scalar) {
-    op->emitRemark(
+    LLVM_DEBUG(op->emitRemark(
         "PtrAnalysis: only support multiplying pointer states when one of "
-        "them represent a scalar");
+        "them represent a scalar"));
     return failure();
   }
 
@@ -276,10 +278,74 @@ LogicalResult PtrState::mulState(const PtrState &lhsState,
   }
 
   if (rhs->hasModulo()) {
-    op->emitRemark(
+    LLVM_DEBUG(op->emitRemark(
         "PtrAnalysis: do not support multiplying pointer states that has "
-        "modulos");
+        "modulos"));
     return failure();
+  }
+
+  return success();
+}
+
+LogicalResult PtrState::subState(const PtrState &lhsState,
+                                 const PtrState &rhsState, Operation *op,
+                                 OpBuilder &builder) {
+  assert(isEmpty() && lhsState.getRank() == rhsState.getRank());
+  auto loc = op->getLoc();
+
+  if (lhsState.source && rhsState.source) {
+    if (lhsState.source != rhsState.source) {
+      op->emitRemark("PtrAnalysis: subtracting pointers from different bases "
+                     "is not supported");
+      return failure();
+    }
+
+    if (lhsState.scalar && rhsState.scalar) {
+      auto subOp =
+          builder.create<arith::SubIOp>(loc, lhsState.scalar, rhsState.scalar);
+      scalar = subOp.getResult();
+    } else if (lhsState.scalar) {
+      scalar = lhsState.scalar;
+    } else if (rhsState.scalar) {
+      auto zero = builder.create<arith::ConstantIntOp>(
+          loc, 0, rhsState.scalar.getType());
+      auto negOp = builder.create<arith::SubIOp>(loc, zero, rhsState.scalar);
+      scalar = negOp.getResult();
+    }
+
+    source = nullptr;
+    return success();
+  }
+
+  if (!lhsState.source && rhsState.source) {
+    op->emitRemark("PtrAnalysis: scalar minus pointer is not meaningful");
+    return failure();
+  }
+
+  source = lhsState.source ? lhsState.source : rhsState.source;
+
+  if (lhsState.scalar && rhsState.scalar) {
+    auto subOp =
+        builder.create<arith::SubIOp>(loc, lhsState.scalar, rhsState.scalar);
+    scalar = subOp.getResult();
+  } else if (lhsState.getRank() == 0) { // both lhs and rhs are scalars
+    scalar = lhsState.scalar ? lhsState.scalar : rhsState.scalar;
+  }
+
+  for (uint64_t i = 0; i < lhsState.getRank(); i++) {
+    auto newOffset =
+        subOFRs(lhsState.offsets[i], rhsState.offsets[i], loc, builder);
+    offsets.push_back(newOffset);
+
+    auto newStride =
+        subOFRs(lhsState.strides[i], rhsState.strides[i], loc, builder);
+    strides.push_back(newStride);
+
+    sizes.push_back(lhsState.sizes[i]);
+  }
+
+  for (uint64_t i = 0; i < lhsState.getRank(); i++) {
+    shape.push_back(lhsState.shape[i]);
   }
 
   return success();
@@ -319,12 +385,42 @@ LogicalResult PtrAnalysis::visitOperandAdd(arith::AddIOp addOp, PtrState &state,
   // Checking for higher dimension is done in addState below
   if ((lhsState.getRank() == 1 && lhsState.hasModulo()) ||
       (rhsState.getRank() == 1 && rhsState.hasModulo())) {
-    addOp->emitRemark(
-        "PtrAnalysis: do not support this pattern: a + arange(0, K) % M");
+    LLVM_DEBUG(addOp->emitRemark(
+        "PtrAnalysis: do not support this pattern: a + arange(0, K) % M"));
     return failure();
   }
 
   return state.addState(lhsState, rhsState, addOp, builder);
+}
+
+LogicalResult PtrAnalysis::visitOperandSub(arith::SubIOp subOp, PtrState &state,
+                                           const Location loc,
+                                           OpBuilder &builder) {
+  PtrState lhsState;
+  if (visitOperand(subOp.getLhs(), lhsState, loc, builder).failed()) {
+    return failure();
+  }
+
+  PtrState rhsState;
+  if (visitOperand(subOp.getRhs(), rhsState, loc, builder).failed()) {
+    return failure();
+  }
+
+  if (lhsState.hasModulo() || rhsState.hasModulo()) {
+    LLVM_DEBUG(
+        subOp->emitRemark("PtrAnalysis: do not support modulo for subi op\n"));
+    return failure();
+  }
+
+  // Checking for higher dimension is done in subState below
+  if ((lhsState.getRank() == 1 && lhsState.hasModulo()) ||
+      (rhsState.getRank() == 1 && rhsState.hasModulo())) {
+    subOp->emitRemark(
+        "PtrAnalysis: do not support this pattern: a - arange(0, K) % M");
+    return failure();
+  }
+
+  return state.subState(lhsState, rhsState, subOp, builder);
 }
 
 LogicalResult PtrAnalysis::visitOperandMul(arith::MulIOp mulOp, PtrState &state,
@@ -354,8 +450,9 @@ LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
   }
 
   if (!rhsState.scalar) {
-    remOp->emitRemark("PtrAnalysis: only support cases when rhs of remainder "
-                      "contains scalar");
+    LLVM_DEBUG(remOp->emitRemark(
+        "PtrAnalysis: only support cases when rhs of remainder "
+        "contains scalar"));
     return failure();
   }
 
@@ -367,8 +464,8 @@ LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
   // would have already populated the modulo states after visiting the lhs.
   // Assert that all the modulo states are empty.
   if (state.hasModulo()) {
-    remOp->emitRemark(
-        "PtrAnalysis: do not support multiple modulo within an expression");
+    LLVM_DEBUG(remOp->emitRemark(
+        "PtrAnalysis: do not support multiple modulo within an expression"));
     return failure();
   }
 
@@ -392,13 +489,13 @@ LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
     } else if (shape[1] == 1) {
       state.shape[0] = rhsState.scalar;
     } else {
-      remOp->emitRemark(
+      LLVM_DEBUG(remOp->emitRemark(
           "PtrAnalysis: taking modulo on a 2D tensor with no singleton "
-          "dimension not supported");
+          "dimension not supported"));
       return failure();
     }
   } else {
-    remOp->emitRemark("PtrAnalysis: unsupported modulo pattern");
+    LLVM_DEBUG(remOp->emitRemark("PtrAnalysis: unsupported modulo pattern"));
     return failure();
   }
   return success();
@@ -456,9 +553,9 @@ PtrAnalysis::visitOperandExpandDims(triton::ExpandDimsOp expandDimsOp,
   state.shape.insert(state.shape.begin() + axis, builder.getIndexAttr(0));
 
   if (state.hasModulo() && state.getRank() > 2) {
-    expandDimsOp->emitRemark(
+    LLVM_DEBUG(expandDimsOp->emitRemark(
         "PtrAnalysis: unsupported scenario where expand_dims result "
-        "has modulo and rank > 2");
+        "has modulo and rank > 2"));
     return failure();
   }
 
@@ -475,7 +572,8 @@ PtrAnalysis::visitOperandBroadcast(triton::BroadcastOp broadcastOp,
   auto dst = broadcastOp.getResult();
 
   if (!isa<ShapedType>(src.getType())) {
-    broadcastOp->emitRemark("PtrAnalysis: Unsupported broadcast source type");
+    LLVM_DEBUG(broadcastOp->emitRemark(
+        "PtrAnalysis: Unsupported broadcast source type"));
     return failure();
   }
 
@@ -523,7 +621,7 @@ LogicalResult PtrAnalysis::visitOperandSplat(triton::SplatOp splatOp,
       state.shape.push_back(builder.getIndexAttr(0));
     }
   } else {
-    splatOp->emitRemark("PtrAnalysis: unsupported splat pattern");
+    LLVM_DEBUG(splatOp->emitRemark("PtrAnalysis: unsupported splat pattern"));
     return failure();
   }
 
@@ -533,8 +631,9 @@ LogicalResult PtrAnalysis::visitOperandSplat(triton::SplatOp splatOp,
     state.offsets[0] = state.scalar;
 
   if (state.hasModulo() && state.getRank() > 2) {
-    splatOp->emitRemark("PtrAnalysis: unsupported scenario where splat result "
-                        "has modulo and rank > 2");
+    LLVM_DEBUG(splatOp->emitRemark(
+        "PtrAnalysis: unsupported scenario where splat result "
+        "has modulo and rank > 2"));
     return failure();
   }
 
@@ -627,8 +726,8 @@ PtrAnalysis::visitOperandMakeTensorPtr(triton::MakeTensorPtrOp makeTPtrOp,
   state.source = makeTPtrOp.getBase();
 
   if (makeTPtrOp.getOrder().empty()) {
-    makeTPtrOp->emitRemark(
-        "PtrAnalysis: expect tt.make_tensor_ptr to have order field set");
+    LLVM_DEBUG(makeTPtrOp->emitRemark(
+        "PtrAnalysis: expect tt.make_tensor_ptr to have order field set"));
     return failure();
   }
 
@@ -671,9 +770,9 @@ LogicalResult PtrAnalysis::visitOperandForOp(scf::ForOp forOp, Value operand,
 
   auto newState = getLoopResultPtrState(forOp, index);
   if (failed(newState)) {
-    forOp.emitError(
+    LLVM_DEBUG(forOp.emitError(
         "Rewrite for-op failed. Could not find PtrState returned by "
-        "the loop.");
+        "the loop."));
     return failure();
   }
 
@@ -731,7 +830,7 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
         state.source = selectOp.getResult();
         return success();
       } else {
-        op->emitRemark("Unexpected operand defining operation");
+        LLVM_DEBUG(op->emitRemark("Unexpected operand defining operation"));
         return failure();
       }
     } else {
@@ -744,6 +843,8 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
     return visitOperandAdd(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<arith::MulIOp>()) {
     return visitOperandMul(op, state, loc, builder);
+  } else if (auto op = operand.getDefiningOp<arith::SubIOp>()) {
+    return visitOperandSub(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<triton::MakeRangeOp>()) {
     return visitOperandMakeRange(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<triton::BroadcastOp>()) {
@@ -773,9 +874,10 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
     state = knownPtrs[operand];
     return success();
   } else {
-    llvm::dbgs() << "PtrAnalysis: encountered addptr operand produced by an "
-                    "unsupported operation\n";
-    operand.dump();
+    LLVM_DEBUG(llvm::dbgs()
+                   << "PtrAnalysis: encountered addptr operand produced by an "
+                      "unsupported operation\n";
+               operand.dump());
     return failure();
   }
 }
@@ -851,7 +953,8 @@ LogicalResult PtrAnalysis::rewriteAdvanceOp(triton::AdvanceOp op) {
 
   PtrState state;
   if (visitOperand(op->getOperand(0), state, loc, builder).failed()) {
-    op->emitRemark("PtrAnalysis: Failed to analyze ptr of tt.advance");
+    LLVM_DEBUG(
+        op->emitRemark("PtrAnalysis: Failed to analyze ptr of tt.advance"));
     return failure();
   }
   assert(state.isBlockPtr() &&
@@ -1010,9 +1113,9 @@ LogicalResult PtrAnalysis::rewriteForOp(scf::ForOp op) {
       // considered structured by PtrAnalysis, failing to retrieve the PtrState
       // should not fail the rewrite process.
       // We emit an error for diagnostics and debugging purposes.
-      op->emitWarning(
+      LLVM_DEBUG(op->emitWarning(
           "Rewrite for-op failed. Could not find PtrState for iter-arg index " +
-          std::to_string(i));
+          std::to_string(i)));
       continue;
     }
 
@@ -1055,8 +1158,8 @@ LogicalResult PtrAnalysis::rewriteForOp(scf::ForOp op) {
 
   // Recursively rewrite the inner ops
   if (rewriteOp(op).failed()) {
-    op->emitRemark(
-        "PtrAnalysis: update loop body failed when rewriting for op");
+    LLVM_DEBUG(op->emitRemark(
+        "PtrAnalysis: update loop body failed when rewriting for op"));
     return failure();
   }
 
@@ -1067,13 +1170,20 @@ LogicalResult
 PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
   auto tritonValue = op->getOperand(0);
 
+  OpBuilder builder(op);
+
   // If this triton value isn't known, it means PtrAnalysis has failed to
   // analyze this pointer. In such cases, simply remap all uses of the
   // structured value back to its original triton value.
   if (!knownPtrs.contains(tritonValue)) {
-    op.emitRemark(
-        "Rewrite GetStructuredStateOp failed. Could not find PtrState.");
-    op.getResult(0).replaceAllUsesWith(tritonValue);
+    LLVM_DEBUG(op.emitRemark(
+        "Rewrite GetStructuredStateOp failed. Could not find PtrState."));
+    auto numResults = op.getNumResults();
+    SmallVector<Value> replacements(
+        numResults, builder.create<arith::ConstantOp>(op.getLoc(),
+                                                      builder.getIndexAttr(0)));
+    replacements.front() = tritonValue;
+    op.getResults().replaceAllUsesWith(replacements);
     return failure();
   }
 
@@ -1082,7 +1192,6 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
       ptrMap.contains(tritonValue) ? ptrMap.lookup(tritonValue) : tritonValue;
 
   SmallVector<Value> replacements{remappedValue};
-  OpBuilder builder(op);
 
   if (state.getRank() == 0) {
     // For scalar pointers, the scalar contains the offset and is the only
@@ -1133,14 +1242,16 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   auto loc = op.getLoc();
 
   if (!ptr) {
-    op->emitRemark("PtrAnalysis: pointer is not replace with tts.make_tptr so "
-                   "loadOp cannot be rewritten");
+    LLVM_DEBUG(op->emitRemark(
+        "PtrAnalysis: pointer is not replace with tts.make_tptr so "
+        "loadOp cannot be rewritten"));
     return failure();
   }
 
   auto ptrType = dyn_cast<triton::PointerType>(ptr.getType());
   if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
-    op->emitRemark("PtrAnalysis: scalar loadOp will not be rewritten");
+    LLVM_DEBUG(
+        op->emitRemark("PtrAnalysis: scalar loadOp will not be rewritten"));
     return failure();
   }
 
@@ -1153,7 +1264,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   // are moving.
   if (mask) {
     if (mstate.parse(mask, loc, builder).failed()) {
-      op->emitRemark("MaskAnalysis failed");
+      LLVM_DEBUG(op->emitRemark("MaskAnalysis failed"));
       return failure();
     }
     dims = mstate.dims;
@@ -1171,8 +1282,8 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
 
     scalarOther = triton::getScalarValue(other, loc, builder);
     if (!scalarOther) {
-      op->emitRemark("other value used in masked load produced by "
-                     "unsupported instruction");
+      LLVM_DEBUG(op->emitRemark("other value used in masked load produced by "
+                                "unsupported instruction"));
       return failure();
     }
   }
@@ -1277,14 +1388,16 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   auto loc = op.getLoc();
 
   if (!ptr) {
-    op->emitRemark("PtrAnalysis: pointer is not replace with tts.make_tptr so "
-                   "storeOp cannot be rewritten");
+    LLVM_DEBUG(op->emitRemark(
+        "PtrAnalysis: pointer is not replace with tts.make_tptr so "
+        "storeOp cannot be rewritten"));
     return failure();
   }
 
   auto ptrType = dyn_cast<triton::PointerType>(ptr.getType());
   if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
-    op->emitRemark("PtrAnalysis: scalar storeOp will not be rewritten");
+    LLVM_DEBUG(
+        op->emitRemark("PtrAnalysis: scalar storeOp will not be rewritten"));
     return failure();
   }
 
@@ -1297,7 +1410,7 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   // are moving.
   if (mask) {
     if (mstate.parse(mask, loc, builder).failed()) {
-      op->emitRemark("MaskAnalysis failed");
+      LLVM_DEBUG(op->emitRemark("MaskAnalysis failed"));
       return failure();
     }
     dims = mstate.dims;
@@ -1329,14 +1442,16 @@ LogicalResult PtrAnalysis::rewriteAtomicRMWOp(triton::AtomicRMWOp op,
   auto loc = op.getLoc();
 
   if (!ptr) {
-    op->emitRemark("PtrAnalysis: pointer is not replace with tts.make_tptr so "
-                   "AtomicCASOp cannot be rewritten");
+    LLVM_DEBUG(op->emitRemark(
+        "PtrAnalysis: pointer is not replace with tts.make_tptr so "
+        "AtomicCASOp cannot be rewritten"));
     return failure();
   }
 
   auto ptrType = dyn_cast<triton::PointerType>(ptr.getType());
   if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
-    op->emitRemark("PtrAnalysis: scalar AtomicCASOp will not be rewritten");
+    LLVM_DEBUG(op->emitRemark(
+        "PtrAnalysis: scalar AtomicCASOp will not be rewritten"));
     return failure();
   }
 
@@ -1349,7 +1464,7 @@ LogicalResult PtrAnalysis::rewriteAtomicRMWOp(triton::AtomicRMWOp op,
   // are moving.
   if (mask) {
     if (mstate.parse(mask, loc, builder).failed()) {
-      op->emitRemark("MaskAnalysis failed");
+      LLVM_DEBUG(op->emitRemark("MaskAnalysis failed"));
       return failure();
     }
     dims = mstate.dims;
@@ -1377,14 +1492,16 @@ LogicalResult PtrAnalysis::rewriteAtomicCASOp(triton::AtomicCASOp op) {
   auto loc = op.getLoc();
 
   if (!ptr) {
-    op->emitRemark("PtrAnalysis: pointer is not replace with tts.make_tptr so "
-                   "AtomicCASOp cannot be rewritten");
+    LLVM_DEBUG(op->emitRemark(
+        "PtrAnalysis: pointer is not replace with tts.make_tptr so "
+        "AtomicCASOp cannot be rewritten"));
     return failure();
   }
 
   auto ptrType = dyn_cast<triton::PointerType>(ptr.getType());
   if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
-    op->emitRemark("PtrAnalysis: scalar AtomicCASOp will not be rewritten");
+    LLVM_DEBUG(op->emitRemark(
+        "PtrAnalysis: scalar AtomicCASOp will not be rewritten"));
     return failure();
   }
 
@@ -1417,53 +1534,60 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
     return TypeSwitch<Operation *, WalkResult>(op)
         .Case<triton::AddPtrOp>([&](auto addptr) {
           if (rewriteAddptrOp(addptr).failed()) {
-            addptr->emitRemark("PtrAnalysis: Failed to rewrite AddPtrOp");
+            LLVM_DEBUG(
+                addptr->emitRemark("PtrAnalysis: Failed to rewrite AddPtrOp"));
           }
           return WalkResult::advance();
         })
         .Case<triton::BitcastOp>([&](auto bitcast) {
           if (rewriteBitcastOp(bitcast).failed()) {
-            bitcast->emitRemark("PtrAnalysis: Failed to rewrite BitcastOp");
+            LLVM_DEBUG(bitcast->emitRemark(
+                "PtrAnalysis: Failed to rewrite BitcastOp"));
           }
           return WalkResult::advance();
         })
         .Case<triton::MakeTensorPtrOp>([&](auto maketptr) {
           if (rewriteMakeTensorPtrOp(maketptr).failed()) {
-            maketptr->emitRemark(
-                "PtrAnalysis: Failed to rewrite MakeTensorPtrOp");
+            LLVM_DEBUG(maketptr->emitRemark(
+                "PtrAnalysis: Failed to rewrite MakeTensorPtrOp"));
           }
           return WalkResult::advance();
         })
         .Case<triton::AdvanceOp>([&](auto advance) {
           if (rewriteAdvanceOp(advance).failed()) {
-            advance->emitRemark("PtrAnalysis: Failed to rewrite AdvanceOp");
+            LLVM_DEBUG(advance->emitRemark(
+                "PtrAnalysis: Failed to rewrite AdvanceOp"));
           }
           return WalkResult::advance();
         })
         .Case<triton::LoadOp>([&](auto load) {
           if (rewriteLoadOp(load, useUnsafeMask).failed()) {
-            load->emitRemark("PtrAnalysis: Failed to rewrite LoadOp");
+            LLVM_DEBUG(
+                load->emitRemark("PtrAnalysis: Failed to rewrite LoadOp"));
             return WalkResult::advance();
           }
           return WalkResult::skip();
         })
         .Case<triton::StoreOp>([&](auto store) {
           if (rewriteStoreOp(store, useUnsafeMask).failed()) {
-            store->emitRemark("PtrAnalysis: Failed to rewrite StoreOp");
+            LLVM_DEBUG(
+                store->emitRemark("PtrAnalysis: Failed to rewrite StoreOp"));
             return WalkResult::advance();
           }
           return WalkResult::skip();
         })
         .Case<triton::AtomicRMWOp>([&](auto atomicRMW) {
           if (rewriteAtomicRMWOp(atomicRMW, useUnsafeMask).failed()) {
-            atomicRMW->emitRemark("PtrAnalysis: Failed to rewrite AtomicRMWOp");
+            LLVM_DEBUG(atomicRMW->emitRemark(
+                "PtrAnalysis: Failed to rewrite AtomicRMWOp"));
             return WalkResult::advance();
           }
           return WalkResult::skip();
         })
         .Case<triton::AtomicCASOp>([&](auto atomicCAS) {
           if (rewriteAtomicCASOp(atomicCAS).failed()) {
-            atomicCAS->emitRemark("PtrAnalysis: Failed to rewrite AtomicCASOp");
+            LLVM_DEBUG(atomicCAS->emitRemark(
+                "PtrAnalysis: Failed to rewrite AtomicCASOp"));
             return WalkResult::advance();
           }
           return WalkResult::skip();
@@ -1474,7 +1598,8 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
           // that the the walk does not visit the for-op's child operations
           // the second time.
           if (rewriteForOp(forOp).failed()) {
-            forOp->emitRemark("PtrAnalysis: Failed to rewrite ForOp");
+            LLVM_DEBUG(
+                forOp->emitRemark("PtrAnalysis: Failed to rewrite ForOp"));
           }
           return WalkResult::skip();
         })
@@ -1498,8 +1623,9 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
                                            getStateOp->getLoc(), b))) {
                   knownPtrs[tritonValue] = state;
                 } else {
-                  getStateOp->emitRemark("PtrAnalysis: Failed to populate ptr "
-                                         "state for tensor of indices");
+                  LLVM_DEBUG(getStateOp->emitRemark(
+                      "PtrAnalysis: Failed to populate ptr "
+                      "state for tensor of indices"));
                 }
               }
 

@@ -27,4 +27,5 @@ void __MaskMove(uint64_t *src, uint64_t *target, uint32_t elem_count,
                  elem_count, (Data_Format)fmt);
 
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 }

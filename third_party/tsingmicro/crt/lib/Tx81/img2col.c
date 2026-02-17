@@ -37,6 +37,7 @@ void __Img2col(uint64_t *src, uint16_t src_n, uint16_t src_h, uint16_t src_w,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }

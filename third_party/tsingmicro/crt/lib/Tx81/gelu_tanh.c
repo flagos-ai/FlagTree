@@ -16,4 +16,5 @@ void __GeluTanh(uint64_t *src, uint64_t *imm, uint64_t *dst,
                 uint32_t elem_count, uint16_t fmt) {
   INTRNISIC_RUN_SWITCH;
   op_gelu_tanh(src, imm, dst, elem_count, fmt);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 }

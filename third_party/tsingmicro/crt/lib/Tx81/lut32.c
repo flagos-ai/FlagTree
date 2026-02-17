@@ -30,6 +30,6 @@ void __Lut32(uint64_t *src, uint64_t *dst, uint64_t *lut32,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
-
+  SYNCHRONOUS_INTRINSIC_SWITCH;
   // Destroy the command buffer.
 }

@@ -54,4 +54,5 @@ void __Gemm(int64_t *srcA, int64_t *srcB, int64_t *srcBias, int64_t *dst,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 }

@@ -4,7 +4,7 @@ set -e
 ##########################################################################################################################
 ##                                                                                                                      ##
 ##  Triton版本包制作脚本                                                                                                ##
-##      在docker容器外triton代码目录上一级目录下执行, 制作triton完整版本包.                                             ##
+##      在docker容器内triton代码目录上一级目录下执行, 制作triton完整版本包.                                             ##
 ##      执行该脚本前先执行build_wheel.sh生成triton、flaggems wheel包.                                                   ##
 ##                                                                                                                      ##
 ##########################################################################################################################
@@ -88,6 +88,7 @@ fi
 cp $script_dir/README.md $publish_dir
 cp $script_dir/install.sh $publish_dir/scripts
 cp $script_dir/run_tsingmicro.sh $publish_dir/scripts
+cp $script_dir/run_flaggems_on_multicards.sh $publish_dir/scripts
 cp $script_dir/../base/base_run.sh $publish_dir/scripts
 cp $script_dir/../requirements_ts.txt $publish_dir/scripts
 cp $script_dir/../tools/offline_python_deps.sh $publish_dir/scripts

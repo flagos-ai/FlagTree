@@ -1,3 +1,4 @@
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -114,9 +115,7 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
     if (isa<RankedTensorType>(type)) {
       auto temp = cast<RankedTensorType>(type).getShape();
       shape.insert(shape.end(), temp.begin(), temp.end());
-    } else {
-      shape.push_back(1);
-    }
+    } // else shape is empty for scalar types
     auto &block = combineOp.getBlocks().front();
     IRMapping map;
     // Map block arguments to the current inputs and accumulators.
@@ -161,21 +160,41 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
   Value lookupMappedValue(IRMapping &localMap, Value val,
                           ArrayRef<int64_t> shape, OpBuilder &rewriter) const {
 
-    Value res = localMap.lookupOrNull(val);
-    if (!res) {
-      // If value is not found then it's an invariant defined in the outer
-      // region. We check if it has been already translated and add a splat
-      // operation if it hasn't.
-      res = invariantsMap.lookupOrNull(val);
-      if (!res) {
-        auto ip = rewriter.saveInsertionPoint();
-        rewriter.setInsertionPointAfterValue(val);
-        res = rewriter.create<tensor::SplatOp>(
-            val.getLoc(), RankedTensorType::get(shape, val.getType()), val);
-        invariantsMap.map(val, res);
-        rewriter.restoreInsertionPoint(ip);
-      }
+    // First check in the local mapping
+    if (Value localMapped = localMap.lookupOrNull(val)) {
+      return localMapped;
     }
+
+    // Delete invariantsMap lookup: val needs to transform differents shape
+    // tensor. For example, 64->32 needs tensor<32Xf32> , 32->16 needs
+    // tensor<16xf32>.
+    // TODO: Profile it to improve performance. Beacause aboved cases(64->32,
+    // 32->16) maybe create different buffers.
+
+    // Then, if the value is of the expected shape, return it directly
+    Type valueType = val.getType();
+    if ((!isa<RankedTensorType>(valueType) && shape.empty()) ||
+        (isa<RankedTensorType>(valueType) &&
+         cast<RankedTensorType>(valueType).getShape() == shape)) {
+      // TODO: Check rank tensor when shape is empty. If shape is empty, should
+      // add extract op.
+      return val;
+    }
+
+    // Finally, if value is not found then it's an invariant defined in the
+    // outer region. We check if it has been already translated and add a
+    // linalg.fill operation if value shape is different.
+    auto ip = rewriter.saveInsertionPoint();
+    rewriter.setInsertionPointAfterValue(val);
+    auto ty = isa<RankedTensorType>(valueType)
+                  ? cast<RankedTensorType>(valueType).getElementType()
+                  : valueType;
+    auto empty = rewriter.create<tensor::EmptyOp>(val.getLoc(), shape, ty);
+    Value res = rewriter
+                    .create<linalg::FillOp>(val.getLoc(), ValueRange{val},
+                                            ValueRange{empty})
+                    .getResult(0);
+    rewriter.restoreInsertionPoint(ip);
     return res;
   }
 
@@ -233,8 +252,9 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
     auto outputShape = outputType.getShape();
     SmallVector<Value> res(inputs.size());
     std::transform(inputs.begin(), inputs.end(), res.begin(), [&](auto val) {
+      auto valType = cast<RankedTensorType>(val.getType());
       return rewriter.create<tensor::EmptyOp>(loc, outputShape,
-                                              inputType.getElementType());
+                                              valType.getElementType());
     });
 
     SmallVector<scf::ForOp> loops;
@@ -263,10 +283,11 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
               inputReassociation] =
             tensorTransform(rewriter, loc, loopIndices, inputType, axis);
         for (size_t i = 0; i < inputs.size(); ++i) {
+          auto valueType = cast<RankedTensorType>(inputs[i].getType());
           auto extractTensor = rewriter.create<tensor::ExtractSliceOp>(
               loc,
               RankedTensorType::get(inputStaticSize,
-                                    inputType.getElementType()),
+                                    valueType.getElementType()),
               inputs[i], inputDynamicIndices, /*sizes*/ ValueRange(),
               /*strides*/ ValueRange(),
               SmallVector<int64_t>(inputShape.size(), ShapedType::kDynamic),
@@ -283,8 +304,9 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
             tensorTransform(rewriter, loc, loopIndices, outputType, axis);
 
         for (size_t i = 0; i < res.size(); ++i) {
-          auto targetType = RankedTensorType::get(outputStaticSize,
-                                                  inputType.getElementType());
+          auto resType = cast<RankedTensorType>(res[i].getType());
+          auto targetType =
+              RankedTensorType::get(outputStaticSize, resType.getElementType());
           // {shape[axis],shape[axis+1],..shape[rank]} ->
           // {1,1,..shape[axis],shape[axis+1],..shape[rank]}
           Value reshaped = rewriter.create<tensor::ExpandShapeOp>(

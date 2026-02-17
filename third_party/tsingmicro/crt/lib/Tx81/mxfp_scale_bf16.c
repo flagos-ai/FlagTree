@@ -63,5 +63,6 @@ void __mxfpScaleBF16(uint16_t *value, uint8_t *scale, uint16_t *dst,
                (uint64_t)block_dst, scaling_block_size, RND_NEAREST_EVEN,
                Fmt_BF16);
     TsmExecute(&inst);
+    SYNCHRONOUS_INTRINSIC_SWITCH;
   }
 }

@@ -92,6 +92,7 @@ PROXY=http://192.168.100.225:8889
 export https_proxy=$PROXY http_proxy=$PROXY all_proxy=$PROXY
 apt install -y lld
 apt install ccache
+apt install git
 pip3 install scikit_build_core #flaggems需要,也需要torch
 #unset https_proxy
 unset http_proxy
@@ -115,6 +116,8 @@ export TRITON_OFFLINE_BUILD=ON
 export TRITON_BUILD_PROTON=OFF
 export LLVM_SYSPATH=$LLVM
 export TX8_DEPS_ROOT=$TX8_DEPS_ROOT
+# synchronous temporary solution: add waitfinish after every cintrinsic exec
+export ENABLE_SYNCHRONOUS_INTRINSIC=1
 
 cd python
 python3 -m pip wheel . --no-build-isolation -v --verbos

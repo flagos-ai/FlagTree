@@ -17,8 +17,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "profiler.h"
-
 typedef enum {
   UNKNOWN = 0,
   SPM = 1,
@@ -89,6 +87,12 @@ void RT_ASSERT(bool value);
 #define INTRNISIC_RUN_SWITCH return
 #else
 #define INTRNISIC_RUN_SWITCH
+#endif
+
+#ifdef ENABLE_SYNCHRONOUS_INTRINSIC
+#define SYNCHRONOUS_INTRINSIC_SWITCH TsmWaitfinish()
+#else
+#define SYNCHRONOUS_INTRINSIC_SWITCH
 #endif
 
 #endif // CRT_TARGET_TX81_H

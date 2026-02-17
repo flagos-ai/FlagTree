@@ -31,6 +31,7 @@ void __Nchw2nhwc(uint64_t *src, uint64_t *dst, int32_t *src_shape,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }

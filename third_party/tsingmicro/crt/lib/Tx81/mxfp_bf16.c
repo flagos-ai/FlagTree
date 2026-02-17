@@ -70,6 +70,7 @@ void __FP8E5M2_BF16(uint8_t *src, uint16_t *dst, uint32_t elem_count) {
              bf16_exponent |  // Exponent at bits 14-7
              (mantissa << 5); // Mantissa at bits 6-5 (bits 4-0 zero)
   }
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 }
 
 /**
@@ -130,6 +131,7 @@ void __FP8E4M3_BF16(uint8_t *src, uint16_t *dst, uint32_t elem_count) {
              (bf16_exponent << 7) | // Exponent at bits 14-7
              (mantissa << 4);       // Mantissa at bits 6-4 (bits 3-0 zero)
   }
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 }
 
 /**
@@ -285,4 +287,5 @@ void __FP4E2M1_BF16(uint8_t *src, uint16_t *dst, uint32_t elem_count) {
       dst[2 * i] = result;
     }
   }
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 }

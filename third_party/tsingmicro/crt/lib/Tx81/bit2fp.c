@@ -31,6 +31,7 @@ void __Bit2Fp(uint64_t *src, uint64_t *target, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }

@@ -27,6 +27,7 @@ void __FP16_INT16(uint64_t *src, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }

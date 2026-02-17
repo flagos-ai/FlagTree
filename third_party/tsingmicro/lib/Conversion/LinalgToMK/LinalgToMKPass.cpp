@@ -93,7 +93,7 @@ public:
         auto reduceOps = llvm::map_to_vector(regionBlock->without_terminator(),
                                              [](Operation &op) { return &op; });
         if (reduceOps.size() != 1)
-          return true;
+          return false;
         // TODO: Config according backend
         // TODO: Optimize for i1 reduction. i1 reduction is not supported
         // because memref.subviews may cause the offset to be inside the byte.

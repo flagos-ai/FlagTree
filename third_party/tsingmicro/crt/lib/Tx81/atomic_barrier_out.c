@@ -15,5 +15,6 @@ void __AtomicBarrierOut() {
 #ifdef USE_SIM_MODE
 #else
   atomic_barrier_out();
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 #endif
 }

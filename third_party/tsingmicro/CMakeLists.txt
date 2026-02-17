@@ -5,6 +5,7 @@ if(NOT DEFINED TX8_DEPS_ROOT)
     message(FATAL_ERROR "TX8_DEPS_ROOT environment variable is not defined")
   endif()
 endif()
+
 # Enable ccache if available
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
@@ -18,9 +19,9 @@ if(NOT DEFINED USE_HOST_PROFILE)
   endif()
 endif()
 
-if(NOT DEFINED USE_PROFILE)
-  if(DEFINED ENV{USE_PROFILE})
-    set(USE_PROFILE $ENV{USE_PROFILE})
+if(NOT DEFINED ENABLE_PROFILING)
+  if(DEFINED ENV{ENABLE_PROFILING})
+    set(ENABLE_PROFILING $ENV{ENABLE_PROFILING})
   endif()
 endif()
 
@@ -30,10 +31,13 @@ if(NOT DEFINED NO_INTRNISIC_RUN)
   endif()
 endif()
 
+if(NOT DEFINED ENABLE_SYNCHRONOUS_INTRINSIC)
+  if(DEFINED ENV{ENABLE_SYNCHRONOUS_INTRINSIC})
+    set(ENABLE_SYNCHRONOUS_INTRINSIC $ENV{ENABLE_SYNCHRONOUS_INTRINSIC})
+  endif()
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-execute_process(COMMAND llvm-config --libs OUTPUT_VARIABLE LIBS)
-execute_process(COMMAND llvm-config --system-libs OUTPUT_VARIABLE SYS_LIBS)
-execute_process(COMMAND llvm-config --ldflags OUTPUT_VARIABLE LDF)
 
 set(XUANTIE_NAME Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2)
 set(INSTALL_TSINGMICRO_DIR ${CMAKE_INSTALL_PREFIX}/triton/backends/tsingmicro/)

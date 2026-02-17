@@ -25,7 +25,8 @@
 	- torch_txda 20251212: [制品库下载链接](http://172.50.1.66:8082/artifactory/tx8-generic-dev/torch_txda/torch_txda%2Btxops-20251212-eb33daf9%2B8d7d6e7.tar.gz)
 - docker 5.6.0daily: hub.tsingmicro.com/tx8/ubuntu/daily:tsingmicro_release_patch.251219130722
 	- tx8_deps 20251218: [制品库下载链接](http://172.50.1.66:8082/artifactory/tx8-generic-dev/triton/tx8_depends/tx8_depends_dev_20251218_164108.tar.gz)
-	- torch_txda 20251219: [制品库下载链接](http://172.50.1.66:8082/artifactory/tx8-generic-dev/torch_txda/torch_txda%2Btxops-20251219-c028d111%2Be0de74c.tar.gz)
+	- torch_txda 20251230: [制品库下载链接](http://172.50.1.66:8082/artifactory/tx8-generic-dev/torch_txda/torch_txda%2Btxops-20251230-03541ed8%2B71a1e5a.tar.gz)
+注意: tx8_deps、torch_txda迭代较快, 每个版本最终配套的以Triton项目发布为准.
 
 ## 版本运行说明
 

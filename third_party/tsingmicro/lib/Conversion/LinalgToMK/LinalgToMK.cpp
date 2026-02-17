@@ -690,7 +690,7 @@ struct LinalgReduceToMKReduceConversion
             ? SmallVector<int64_t>{1, 1, inputShape4D[2], 1}
             : SmallVector<int64_t>{1, 1, inputShape4D[1], inputShape4D.back()};
 
-    if (4 <= lastDim && lastDim <= 128 && !lastDimReduce)
+    if (4 <= lastDim && lastDim <= alignBase && !lastDimReduce)
       return src;
 
     if (!lastDimReduce && lastDim > alignBase) {
@@ -847,7 +847,13 @@ struct ScalarGlobalStoreRewrite : public OpRewritePattern<ScalarGlobalStoreOp> {
 
     auto val = op.getValue();
     if (!isa<RankedTensorType>(val.getType())) {
-      val = rewriter.create<tensor::FromElementsOp>(op.getLoc(), val);
+      // NOTE: tensor::FromElementsOp will optimize to arith::ConstantOp which
+      // has dense constant attribute.
+      auto empty = rewriter.create<tensor::EmptyOp>(
+          op.getLoc(), SmallVector<int64_t>{1}, val.getType());
+
+      val = rewriter.create<tensor::InsertOp>(op.getLoc(), val, empty,
+                                              ValueRange{zero});
     }
     auto storeOp =
         rewriter.replaceOpWithNewOp<bufferization::MaterializeInDestinationOp>(
@@ -1749,10 +1755,10 @@ struct PowFOpRewrite : public OpRewritePattern<linalg::GenericOp> {
             ->getResult(0);
 
     // Convert boolean masks to integer for bitwise operations
-    auto isBaseNegativeInt = buildLinalgElementwise<arith::BitcastOp>(
-        rewriter, loc, intResultType, ValueRange{isBaseNegative});
-    auto isIntegerLikeExponentInt = buildLinalgElementwise<arith::BitcastOp>(
-        rewriter, loc, intResultType, ValueRange{isIntegerLikeExponent});
+    auto isBaseNegativeInt = rewriter.create<mk::BitcastOp>(
+        loc, intResultType, ValueRange{isBaseNegative});
+    auto isIntegerLikeExponentInt = rewriter.create<mk::BitcastOp>(
+        loc, intResultType, ValueRange{isIntegerLikeExponent});
     auto canTakeAbsolute = buildLinalgElementwise<arith::AndIOp>(
         rewriter, loc, intResultType,
         ValueRange{isBaseNegativeInt, isIntegerLikeExponentInt});
@@ -1760,16 +1766,16 @@ struct PowFOpRewrite : public OpRewritePattern<linalg::GenericOp> {
     // Check if integer-like exponent is odd : b % 2 != 0
     auto isOddIndicator =
         computeOddFloatIndicator(rewriter, truncatedExponent, loc);
-    auto isOddIndicatorInt = buildLinalgElementwise<arith::BitcastOp>(
-        rewriter, loc, intResultType, ValueRange{isOddIndicator});
+    auto isOddIndicatorInt = rewriter.create<mk::BitcastOp>(
+        loc, intResultType, ValueRange{isOddIndicator});
 
     // Final condition: a < 0 & b is IntergerLike & b % 2 != 0
     auto isResultNegative = buildLinalgElementwise<arith::AndIOp>(
         rewriter, loc, intResultType,
         ValueRange{canTakeAbsolute, isOddIndicatorInt});
 
-    return buildLinalgElementwise<arith::BitcastOp>(
-        rewriter, loc, resultType, ValueRange{isResultNegative});
+    return rewriter.create<mk::BitcastOp>(loc, resultType,
+                                          ValueRange{isResultNegative});
   }
 
   LogicalResult matchAndRewrite(linalg::GenericOp op,
@@ -3172,18 +3178,24 @@ private:
     return finalResult;
   }
 
+  bool isInputsIncludeI1Type(ValueRange inputs) const {
+    return llvm::any_of(inputs, [](Value input) {
+      auto inputType = dyn_cast<RankedTensorType>(input.getType());
+      return inputType && inputType.getElementType().isInteger(1);
+    });
+  }
+
   SmallVector<Value>
   lower1DInput(ValueRange inputs, linalg::ReduceOp op,
                ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    auto inputType = cast<RankedTensorType>(inputs[0].getType());
-    auto shape = inputType.getShape();
+    auto leadingInputType = cast<RankedTensorType>(inputs[0].getType());
+    auto shape = leadingInputType.getShape();
 
     int32_t tileSize = shape[0] > 64 ? 64 : shape[0];
 
     SmallVector<Value> lastRes(inputs.size());
-    assert(inputs.size() == 1 && "Expected only one input for 1D reduction");
 
     // NOTE: Use scf.while may exist dynamic shape problem.
     // shape > 64: tiling n * 64, reduction n dim
@@ -3192,25 +3204,37 @@ private:
       // Reshape to 2D tensor with shape [tile, N / tile]
       // Call lowering leading dimension reduction
       SmallVector<int64_t> tiledShape = {shape[0] >> 6, 64};
-      Value reshape = rewriter.create<tensor::ExpandShapeOp>(
-          loc, RankedTensorType::get(tiledShape, inputType.getElementType()),
-          inputs[0], ArrayRef<ReassociationIndices>{{0, 1}});
-      lastRes = lowerLeadingDimension({reshape}, op, rewriter);
+      SmallVector<Value> reshapedInputs;
+      for (auto input : inputs) {
+        auto inputType = cast<RankedTensorType>(input.getType());
+        Value reshape = rewriter.create<tensor::ExpandShapeOp>(
+            loc, RankedTensorType::get(tiledShape, inputType.getElementType()),
+            input, ArrayRef<ReassociationIndices>{{0, 1}});
+        reshapedInputs.push_back(reshape);
+      }
+      lastRes = lowerLeadingDimension(reshapedInputs, op, rewriter);
     } else {
       lastRes = inputs;
     }
 
-    if (inputType.getElementType().isInteger(1)) {
+    if (inputs.size() == 1 && leadingInputType.getElementType().isInteger(1)) {
       // TODO: Can optimized to only 8 elements
-      return lowerBool1DInput(rewriter, loc, inputType.getElementType(),
+      return lowerBool1DInput(rewriter, loc, leadingInputType.getElementType(),
                               lastRes, op);
     }
+
+    assert(!isInputsIncludeI1Type(inputs) &&
+           "I1 type inputs not supported for multi-op reductions: "
+           "byte-unaligned element access requires special handling");
+    // TODO: Implement i1 type support for reduction operations by handling
+    // byte-unaligned element access in address calculation(lowerBool1DInput).
 
     Region &combineOp = op.getRegion();
     auto createExtractSliceOp = [&](Value val,
                                     SmallVector<int64_t> static_offsets,
                                     SmallVector<int64_t> static_size,
                                     SmallVector<int64_t> static_stride) {
+      auto inputType = cast<RankedTensorType>(val.getType());
       return rewriter.create<tensor::ExtractSliceOp>(
           loc, RankedTensorType::get(static_size, inputType.getElementType()),
           val, ValueRange(), /*sizes*/ ValueRange(),
@@ -3220,17 +3244,23 @@ private:
     for (int32_t i = tileSize >> 1; i >= 1; i >>= 1) {
       auto idx = rewriter.create<arith::ConstantIndexOp>(loc, i);
 
-      auto curRes = createExtractSliceOp(
-          lastRes.front(), SmallVector<int64_t>{0}, SmallVector<int64_t>{i},
-          SmallVector<int64_t>{1});
-      auto RHS = createExtractSliceOp(lastRes.front(), SmallVector<int64_t>{i},
-                                      SmallVector<int64_t>{i},
-                                      SmallVector<int64_t>{1});
-      lastRes = accumulate({RHS}, {curRes}, combineOp, rewriter);
+      SmallVector<Value> binaryInputs, binaryAcc;
+      for (auto &val : lastRes) {
+        auto curRes = createExtractSliceOp(val, SmallVector<int64_t>{0},
+                                           SmallVector<int64_t>{i},
+                                           SmallVector<int64_t>{1});
+        auto RHS = createExtractSliceOp(val, SmallVector<int64_t>{i},
+                                        SmallVector<int64_t>{i},
+                                        SmallVector<int64_t>{1});
+        binaryInputs.push_back(RHS);
+        binaryAcc.push_back(curRes);
+      }
+      lastRes = accumulate(binaryInputs, binaryAcc, combineOp, rewriter);
     }
     // Collapse the shape of the last result to a scalar tensor
     std::transform(
         lastRes.begin(), lastRes.end(), lastRes.begin(), [&](auto val) {
+          auto inputType = cast<RankedTensorType>(val.getType());
           return rewriter.create<tensor::CollapseShapeOp>(
               loc, RankedTensorType::get({}, inputType.getElementType()), val,
               ArrayRef<ReassociationIndices>{});
@@ -3245,8 +3275,8 @@ private:
     auto loc = op.getLoc();
     Region &combineOp = op.getRegion();
 
-    auto inputType = cast<RankedTensorType>(inputs[0].getType());
-    auto shape = inputType.getShape();
+    auto leadingInputType = cast<RankedTensorType>(inputs[0].getType());
+    auto shape = leadingInputType.getShape();
 
     // Initialize accumulators as empty tensors of shape [shape[1], ..]
     SmallVector<int64_t> accShape(shape.begin() + 1, shape.end());
@@ -3273,6 +3303,7 @@ private:
     }
 
     std::transform(inputs.begin(), inputs.end(), acc.begin(), [&](auto val) {
+      auto inputType = cast<RankedTensorType>(val.getType());
       auto extract_tensor = rewriter.create<tensor::ExtractSliceOp>(
           loc, RankedTensorType::get(sizeVal, inputType.getElementType()), val,
           /*offset*/ ValueRange(), /*sizes*/ ValueRange(),
@@ -3307,6 +3338,7 @@ private:
 
           std::transform(
               inputs.begin(), inputs.end(), subInputs.begin(), [&](auto val) {
+                auto inputType = cast<RankedTensorType>(val.getType());
                 auto extract_tensor = b.create<tensor::ExtractSliceOp>(
                     loc,
                     RankedTensorType::get(sizeVal, inputType.getElementType()),
@@ -3503,6 +3535,99 @@ struct I1ExtSIOpRewrite : public OpRewritePattern<linalg::GenericOp> {
   }
 };
 
+struct I1ToF32Rewrite : public OpRewritePattern<linalg::GenericOp> {
+  using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::GenericOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto regionOps = triton::getRegionOps<linalg::GenericOp>(op);
+
+    if (regionOps.size() != 1 || !isa<arith::SIToFPOp>(regionOps.front()))
+      return rewriter.notifyMatchFailure(op, "only rewrite i1 to f32 op\n");
+
+    auto siToFP = cast<arith::SIToFPOp>(regionOps.front());
+
+    if (!siToFP->getOperandTypes()[0].isInteger(1) ||
+        !siToFP->getResultTypes()[0].isF32())
+      return rewriter.notifyMatchFailure(op, "only rewrite i1 to f32 op\n");
+
+    Location loc = op.getLoc();
+
+    auto input = op.getInputs()[0];
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto resultType = cast<RankedTensorType>(op->getResultTypes()[0]);
+
+    auto f32Type =
+        RankedTensorType::get(inputType.getShape(), rewriter.getF32Type());
+    auto empty = rewriter.create<tensor::EmptyOp>(loc, resultType.getShape(),
+                                                  rewriter.getF32Type());
+
+    auto f32Result =
+        rewriter.create<mk::Bit2FpOp>(loc, f32Type, input, empty)->getResult(0);
+
+    rewriter.replaceOp(op, f32Result);
+    return success();
+  }
+};
+
+struct FP32ToI1Rewrite : public OpRewritePattern<linalg::GenericOp> {
+  using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::GenericOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto regionOps = triton::getRegionOps<linalg::GenericOp>(op);
+
+    if (regionOps.size() != 1 || !isa<arith::FPToSIOp>(regionOps.front()))
+      return rewriter.notifyMatchFailure(op, "only rewrite f32 to i1 op\n");
+
+    auto fpToSI = cast<arith::FPToSIOp>(regionOps.front());
+
+    if (!fpToSI->getOperandTypes()[0].isF32() ||
+        !fpToSI->getResultTypes()[0].isInteger(1))
+      return rewriter.notifyMatchFailure(op, "only rewrite f32 to i1 op\n");
+
+    Location loc = op.getLoc();
+
+    auto input = op.getInputs()[0];
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto resultType = cast<RankedTensorType>(op->getResultTypes()[0]);
+
+    auto rank = inputType.getRank();
+    SmallVector<AffineMap, 3> identityMaps(
+        3, rewriter.getMultiDimIdentityMap(rank));
+    SmallVector<mlir::utils::IteratorType> iterators(
+        rank, mlir::utils::IteratorType::parallel);
+
+    auto I1Empty = rewriter.create<tensor::EmptyOp>(loc, resultType.getShape(),
+                                                    rewriter.getIntegerType(1));
+
+    Value zeroF32Const = rewriter.create<arith::ConstantFloatOp>(
+        loc, APFloat(0.0f), rewriter.getF32Type());
+
+    auto zeroTensor =
+        rewriter
+            .create<linalg::FillOp>(
+                loc, ValueRange{zeroF32Const},
+                ValueRange{rewriter.create<tensor::EmptyOp>(
+                    loc, inputType.getShape(), rewriter.getF32Type())})
+            .getResult(0);
+
+    auto result = rewriter.create<linalg::GenericOp>(
+        loc, TypeRange{resultType}, ValueRange{input, zeroTensor},
+        ValueRange{I1Empty}, identityMaps, iterators,
+        [&](OpBuilder &builder, Location loc, ValueRange args) {
+          Value cmp = builder.create<arith::CmpFOp>(
+              loc, arith::CmpFPredicate::ONE, args[0], args[1]);
+          builder.create<linalg::YieldOp>(loc, cmp);
+        });
+
+    rewriter.replaceOp(op, result->getResult(0));
+    return success();
+  }
+};
+
 struct AssertOpConverter : public OpConversionPattern<triton::AssertOp> {
   using OpConversionPattern<triton::AssertOp>::OpConversionPattern;
 
@@ -3626,7 +3751,9 @@ void mlir::triton::populateLinalgToMKTypeConversionPatterns(
   patterns.add<CastElementwiseOpIOToFloatPattern, CastReduceOpIOToFloatPattern>(
       patterns.getContext(), precisionPriority /* precisionPriority */);
   patterns.add<CannonicalizeRedudantTypeConversion>(patterns.getContext());
-  patterns.add<I1ExtSIOpRewrite, I1ExtUIOpRewrite>(patterns.getContext());
+  patterns
+      .add<I1ExtSIOpRewrite, I1ExtUIOpRewrite, I1ToF32Rewrite, FP32ToI1Rewrite>(
+          patterns.getContext());
   // TODO: if need precision mode
   patterns.add<CastArgMinMaxOpIOToFloatPattern<mk::ArgMaxOp>,
                CastArgMinMaxOpIOToFloatPattern<mk::ArgMinOp>>(

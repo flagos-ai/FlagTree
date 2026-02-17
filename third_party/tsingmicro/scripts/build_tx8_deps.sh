@@ -162,11 +162,16 @@ show_help() {
     echo "  default: http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81fw/tx81fw_202512041135_b731cf.tar.gz"
     echo "  ..."
     echo ""
+    echo "tx_profiler url:"
+    echo "  eg: http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81-profiling/master/profiling_tool_v5.5.0_release_2025-1124_.tar.gz"
+    echo "  default: http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81-profiling/master/profiling_tool_v5.5.0_release_2025-1124_.tar.gz"
+    echo "  ..."
+    echo ""
     echo "example: $0 build_tx8_deps"
 }
 
 # 检查参数数量
-if [ $# -le 1 ]; then
+if [ $# -lt 1 ]; then
     show_help
     exit 1
 fi
@@ -253,6 +258,12 @@ if [ $# -ge 2 ]; then
 	tx81fw=$2
 fi
 echo "tx81fw: "$tx81fw
+
+profile_url=http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81-profiling/master/profiling_tool_v5.5.0_release_2025-1124_.tar.gz
+if [ $# -ge 3 ]; then
+	profile_url=$3
+fi
+echo "profile_url: "$profile_url
 if [ "x$MODE" == "xbuild_flagtree_tx8_deps" ] || [ "x$MODE" == "xbuild_tx8_deps" ] || [ "x$MODE" == "xbuild_dev" ]; then
     download_dir=$WORKSPACE/download
     ########################################################################################
@@ -283,16 +294,10 @@ if [ "x$MODE" == "xbuild_flagtree_tx8_deps" ] || [ "x$MODE" == "xbuild_tx8_deps"
     fi
 
     ########################################################################################
-    triton_profiler_dir=$WORKSPACE/triton_profiler
-    # 因为要编译，不能放到download 里面，否则找到一些一些tx8_deps的路径
-    clone_and_checkout "git@gitlab.tsingmicro.com:triton-based-projects/triton_profiler.git" \
-            "$WORKSPACE" "branch" "master" "triton_profiler"
 
-    profiler_head=$triton_profiler_dir/profiler/include/profiler.h
-    if [ ! -f $profiler_head ]; then
-        echo "error can't find:$profiler_head"
-        exit
-    fi
+    tx_profiler_dir=$download_dir/tx_profiler
+    download_and_extract $profile_url \
+        "$tx_profiler_dir" "$download_dir" "tx_profiler"
 
     ########################################################################################
     tx8_depends_dir=$WORKSPACE/tx8_deps
@@ -304,13 +309,6 @@ if [ "x$MODE" == "xbuild_flagtree_tx8_deps" ] || [ "x$MODE" == "xbuild_tx8_deps"
     load_copy_cfg
     echo -e $PROJECT_INFO > $tx8_depends_dir/version.txt
 
-    if [ "x$MODE" == "xbuild_dev" ]; then
-        copy_files profile_need $tx8_depends_dir
-        triton_profiler_pkg=$triton_profiler_dir/profile
-        if [ ! -f $triton_profiler_dir/profile/profiler_commit_id.txt ]; then
-            bash $triton_profiler_dir/build.sh rebuild
-        fi
-    fi
     copy_files $MODE $tx8_depends_dir
 
     pushd $WORKSPACE

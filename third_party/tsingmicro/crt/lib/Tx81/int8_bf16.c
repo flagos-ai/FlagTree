@@ -27,6 +27,7 @@ void __INT8_BF16(uint64_t *src, uint64_t *dst, uint32_t zp,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }

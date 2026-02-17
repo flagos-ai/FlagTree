@@ -57,7 +57,7 @@ apt install openmpi-bin openmpi-doc libopenmpi-dev
 # 仅开启host侧profile，准确的获取launch的时间，需要重新编译
 export USE_HOST_PROFILE=1
 # 开启全部profile，包括device的，立即生效，注意因为插桩和打印的影响，此时host侧的launch时间已经不准了
-export USE_PROFILE=1
+export ENABLE_PROFILING=1
 #自己定义需要对什么指令做profile，必填
 export TRACE_POINTS="__Rdma,__Wdma"
 

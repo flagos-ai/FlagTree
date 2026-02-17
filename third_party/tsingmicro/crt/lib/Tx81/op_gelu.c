@@ -509,6 +509,7 @@ void op_gelu_none(uint64_t *src, uint64_t *dst, uint32_t elem_count,
   uint8_t *out_ddr = (uint8_t *)get_spm_memory_mapping((uint64_t)(dst));
 
   get_erf_value(in_ddr, out_ddr, elem_count, fmt);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
 #ifdef USING_RISCV
   csi_dcache_clean_range((uint64_t *)out_ddr, elem_count * fmt);
@@ -519,4 +520,5 @@ void op_gelu_tanh(uint64_t *src, uint64_t *imm, uint64_t *dst,
                   uint32_t elem_count, uint16_t fmt) {
   TsmWaitfinish();
   get_tanh_value(src, imm, dst, elem_count, fmt);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 }

@@ -4,9 +4,12 @@ import subprocess
 import hashlib
 from posixpath import dirname
 
+from triton.backends.tsingmicro.logger_config import setup_logger
+
+logger = setup_logger("tsingmicro_launch")
+
 _dump_dir_cache = None
 dump_cmd_count = 0
-kernel_run_file = "kernel_run.log"
 
 
 def _get_dump_env_path():
@@ -32,17 +35,10 @@ def get_dump_dir():
         if not os.path.exists(full_path):
             os.makedirs(full_path)
             _dump_dir_cache = full_path  # 缓存结果
-            print(f"mkdir: {full_path}")
+            logger.debug(f"make dump dir:{full_path}")
             break
         index += 1
     return _dump_dir_cache
-
-
-def record_log(string: str):
-    record_file = os.path.join(get_dump_dir(), kernel_run_file)
-    with open(record_file, 'a', encoding='utf-8') as record_file:
-        record_file.write(string)
-    print(string)
 
 
 def runLoweringCmd(destFile: str, args: list):
@@ -53,18 +49,11 @@ def runLoweringCmd(destFile: str, args: list):
         else:
             subprocess.check_call(args, stdout=subprocess.DEVNULL)
     else:
-        print(f"Skip lowering {destFile}")
+        logger.debug(f"Skip lowering {destFile}")
 
 
 def is_use_profile():
-    return os.getenv("USE_PROFILE", "0").lower() in ("1", "true", "yes")
-
-
-def is_use_host_profile():
-    if is_use_profile():
-        return True
-    else:
-        return os.getenv("USE_HOST_PROFILE", "0").lower() in ("1", "true", "yes")
+    return os.getenv("ENABLE_PROFILING", "0").lower() in ("1", "true", "yes")
 
 
 def dump_ir_if_needed(files):
@@ -137,10 +126,6 @@ def is_debug():
     return debug_value in ["ON", "TRUE", "1", "YES"]
 
 
-def record_key_v(key: str, v: str):
-    record_log(f"{key}:{v}\n")
-
-
 def calculate_str_md5(string: str):
     str_hash = hashlib.md5(string).hexdigest()
     return str_hash
@@ -150,7 +135,3 @@ def calculate_file_md5(file_path):
     with open(file_path, 'rb') as f:
         file_bytes = f.read()
     return calculate_str_md5(file_bytes)
-
-
-def record_file_hash(file: str):
-    record_log(f"{file}:{calculate_file_md5(file)}\n")

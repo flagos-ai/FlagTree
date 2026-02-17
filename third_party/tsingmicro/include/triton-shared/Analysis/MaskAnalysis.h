@@ -90,6 +90,13 @@ private:
   LogicalResult addStates(const MaskState &lhsState, const MaskState &rhsState,
                           Location loc, OpBuilder &builder);
 
+  LogicalResult subStateScalar(const MaskState &state,
+                               const OpFoldResult scalar, Location loc,
+                               OpBuilder &builder);
+
+  LogicalResult subStates(const MaskState &lhsState, const MaskState &rhsState,
+                          Location loc, OpBuilder &builder);
+
   LogicalResult minStateScalar(const MaskState &lhsState,
                                const MaskState &rhsState, Location loc,
                                OpBuilder &builder);
@@ -116,6 +123,11 @@ private:
   // One and only one of the operands should be a scalar. Increment both start
   // and end, dims remains unchanged, and scalar is empty.
   LogicalResult parseAdd(arith::AddIOp addOp, const Location loc,
+                         OpBuilder &builder);
+  // Operand is the result of subi
+  // One and only one of the operands should be a scalar. Decrement both start
+  // and end, dims remains unchanged, and scalar is empty.
+  LogicalResult parseSub(arith::SubIOp subOp, const Location loc,
                          OpBuilder &builder);
   // Operand is the result of andi
   // Each of the result state dims is smaller of the two operands' dims.

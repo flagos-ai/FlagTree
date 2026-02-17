@@ -825,9 +825,12 @@ struct MakeRangeConverter : public OpConversionPattern<triton::MakeRangeOp> {
         ValueRange{init}, indexingMaps, getNParallelLoopsAttrs(1),
         [&](OpBuilder &nestedBuilder, Location nestedLoc,
             ValueRange blockArgs) {
+          Value start = rewriter.create<arith::ConstantIndexOp>(
+              loc, op.getStart()); // start
           Value index = nestedBuilder.create<linalg::IndexOp>(loc, 0);
           Value res = nestedBuilder.create<arith::IndexCastOp>(
-              loc, type.getElementType(), index);
+              loc, type.getElementType(),
+              rewriter.create<arith::AddIOp>(loc, index, start));
           nestedBuilder.create<linalg::YieldOp>(loc, res);
         });
 
@@ -1312,6 +1315,58 @@ private:
   }
 
   LogicalResult
+  convertMultiOpsReduction(triton::ReduceOp op,
+                           typename triton::ReduceOp::Adaptor adaptor,
+                           ConversionPatternRewriter &rewriter) const {
+
+    auto loc = op->getLoc();
+    int64_t axis = op.getAxis();
+
+    SmallVector<Value> initTensors;
+    for (auto result : op->getResultTypes()) {
+      SmallVector<int64_t> shape =
+          isa<RankedTensorType>(result)
+              ? SmallVector<int64_t>(
+                    cast<RankedTensorType>(result).getShape().begin(),
+                    cast<RankedTensorType>(result).getShape().end())
+              : SmallVector<int64_t>{};
+      Type type = isa<RankedTensorType>(result)
+                      ? cast<RankedTensorType>(result).getElementType()
+                      : result;
+      initTensors.push_back(rewriter.create<tensor::EmptyOp>(loc, shape, type));
+    }
+    auto reduceOp = rewriter.create<linalg::ReduceOp>(
+        loc, op.getSrcs(), initTensors, SmallVector<int64_t>{axis},
+        [&](OpBuilder &opBuilder, Location loc, ValueRange inputs) {
+          auto reduceBlock = op.getBody();
+          IRMapping mapping;
+          mapping.map(reduceBlock->getArguments(), inputs);
+          for (auto &innerOp : reduceBlock->without_terminator()) {
+            opBuilder.clone(innerOp, mapping);
+          }
+          auto yield = reduceBlock->getTerminator();
+          auto results =
+              llvm::map_to_vector(yield->getOperands(), [&](Value val) {
+                return mapping.lookup(val);
+              });
+          opBuilder.create<linalg::YieldOp>(loc, results);
+        });
+    SmallVector<Value> results;
+    for (int i = 0; i < reduceOp->getNumResults(); i++) {
+      Value finalResult =
+          (isa<RankedTensorType>(op->getResultTypes()[i]))
+              ? reduceOp->getResults()[i]
+              : rewriter
+                    .create<tensor::ExtractOp>(loc, op->getResultTypes()[i],
+                                               reduceOp->getResults()[i])
+                    ->getResults()[0];
+      results.push_back(finalResult);
+    }
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+
+  LogicalResult
   convertToLinalgReduce(triton::ReduceOp op,
                         typename triton::ReduceOp::Adaptor adaptor,
                         ConversionPatternRewriter &rewriter) const {
@@ -1322,11 +1377,13 @@ private:
     auto loc = op.getLoc();
     auto reductionOps = getRedOps(op);
 
+    if (reductionOps.size() != 1)
+      return convertMultiOpsReduction(op, adaptor, rewriter);
+
     // Reduction of arbitrary operations isn't supported because using the first
     // element across the reduction dimension requires us to iterate over a
     // subview that skips over each first element.
-    if (reductionOps.size() != 1 ||
-        !isTritonAllowedReductionOp(reductionOps.front())) {
+    if (!isTritonAllowedReductionOp(reductionOps.front())) {
       return rewriter.notifyMatchFailure(
           op, "Only support lowering reduction with body "
               "containing 1 max(i/f) or addf.");
@@ -2199,17 +2256,19 @@ private:
     Region &combineOp = op.getRegion();
     bool reverse = op.getReverse();
 
-    auto inputType = cast<RankedTensorType>(inputs[0].getType());
-    auto shape = inputType.getShape();
-
+    auto shape = cast<RankedTensorType>(inputs[0].getType()).getShape();
     SmallVector<Value> res(inputs.size());
     std::transform(inputs.begin(), inputs.end(), res.begin(), [&](auto val) {
+      auto inputType = cast<RankedTensorType>(val.getType());
+      assert(inputType.getShape() == shape &&
+             "All 1D input tensors must have the same shape");
       return rewriter.create<tensor::EmptyOp>(loc, shape,
                                               inputType.getElementType());
     });
 
     SmallVector<Value> acc(inputs.size());
     std::transform(inputs.begin(), inputs.end(), acc.begin(), [&](auto val) {
+      auto inputType = cast<RankedTensorType>(val.getType());
       return rewriter.create<arith::ConstantOp>(
           loc, rewriter.getZeroAttr(inputType.getElementType()));
     });
@@ -2296,8 +2355,7 @@ private:
     Region &combineOp = op.getRegion();
     bool reverse = op.getReverse();
 
-    auto inputType = cast<RankedTensorType>(inputs[0].getType());
-    auto shape = inputType.getShape();
+    auto shape = cast<RankedTensorType>(inputs[0].getType()).getShape();
 
     SmallVector<Type> resTypes;
     for (const auto &resTy : op.getResultTypes()) {
@@ -2308,16 +2366,21 @@ private:
     // Initialize result tensors
     SmallVector<Value> res(inputs.size());
     std::transform(inputs.begin(), inputs.end(), res.begin(), [&](auto val) {
-      return rewriter.create<tensor::EmptyOp>(loc, shape,
+      auto inputType = cast<RankedTensorType>(val.getType());
+      auto valShape = inputType.getShape();
+      assert(shape[0] == valShape[0] &&
+             "All input tensors must have the same leading dimension");
+      return rewriter.create<tensor::EmptyOp>(loc, valShape,
                                               inputType.getElementType());
     });
 
     // Initialize accumulators as empty tensors of shape [1, ...]
-    SmallVector<int64_t> accShape({1});
-    accShape.insert(accShape.end(), shape.begin() + 1, shape.end());
-
     SmallVector<Value> acc(inputs.size());
     std::transform(inputs.begin(), inputs.end(), acc.begin(), [&](auto val) {
+      auto inputType = cast<RankedTensorType>(val.getType());
+      auto valShape = inputType.getShape();
+      SmallVector<int64_t> accShape({1});
+      accShape.insert(accShape.end(), shape.begin() + 1, shape.end());
       return rewriter.create<tensor::EmptyOp>(loc, accShape,
                                               inputType.getElementType());
     });
@@ -2369,7 +2432,7 @@ private:
                     loc,
                     RankedTensorType::get(
                         sizeVal,
-                        cast<RankedTensorType>(resTypes[0]).getElementType()),
+                        cast<RankedTensorType>(val.getType()).getElementType()),
                     val, dynOffsets, /*sizes*/ ValueRange(),
                     /*strides*/ ValueRange(),
                     /*static_offsets*/

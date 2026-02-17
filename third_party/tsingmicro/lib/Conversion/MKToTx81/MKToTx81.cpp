@@ -1082,8 +1082,9 @@ struct MKRelationVSOpConversionPattern : public OpConversionPattern<MKOpT> {
     auto outputType = cast<MemRefType>(output.getType());
     if (outputType.getElementType().isInteger(1)) {
       elemCount = ((elemCount + 7) / 8) * 8;
-      op->emitRemark() << "element count was expanded to a multiple of 8, may "
-                          "access memory out of bounds!";
+      LLVM_DEBUG(op->emitRemark()
+                 << "element count was expanded to a multiple of 8, may "
+                    "access memory out of bounds!");
     }
 
     auto inputPtr = createAddressFromMemref(rewriter, loc, input);
@@ -1425,6 +1426,37 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
     return success();
   }
 
+  LogicalResult convertUIToFPOp(linalg::GenericOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    auto inputType =
+        dyn_cast<MemRefType>(op.getInputs()[0].getType()).getElementType();
+    auto outputType =
+        dyn_cast<MemRefType>(op.getOutputs()[0].getType()).getElementType();
+    if (inputType.isInteger(1) && (outputType.isF32() || outputType.isF16())) {
+      Location loc = op.getLoc();
+      auto [inputPtr, sizes, strides] =
+          createMetadata(rewriter, loc, adaptor.getInputs()[0]);
+      auto outputPtr =
+          createAddressFromMemref(rewriter, loc, adaptor.getOutputs()[0]);
+
+      auto elemCount = calculateElemCount(rewriter, op->getLoc(), sizes);
+
+      auto outputType = dyn_cast<MemRefType>(op.getOutputs()[0].getType());
+      Data_Format srcFmt = getFormatCode(outputType);
+
+      rewriter.create<tx::Bit2FpOp>(loc, rewriter.getI64Type(), inputPtr,
+                                    outputPtr, elemCount,
+                                    rewriter.getI16IntegerAttr(srcFmt));
+      rewriter.eraseOp(op);
+
+      return success();
+    } else {
+      return rewriter.notifyMatchFailure(
+          op, "Unsupported input/output type combination for integer to "
+              "FP conversion");
+    }
+  }
+
   LogicalResult
   matchAndRewrite(linalg::GenericOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -1591,6 +1623,9 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
                 op, "Unsupported input/output type combination for integer to "
                     "FP conversion");
           }
+        })
+        .Case<arith::UIToFPOp>([&](auto elemWiseOp) {
+          return convertUIToFPOp(op, adaptor, rewriter);
         })
         .Case<arith::FPToSIOp>([&](auto elemWiseOp) {
           // TODO: Need add more int to fp convert.

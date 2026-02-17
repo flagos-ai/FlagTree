@@ -13,6 +13,9 @@ import subprocess
 import functools
 from pathlib import Path
 from triton.backends.tsingmicro import txda_tools
+from triton.backends.tsingmicro.logger_config import setup_logger
+
+logger = setup_logger("tsingmicro_launch")
 
 ir_index = -1
 
@@ -80,21 +83,20 @@ def compile_accelerator(src, metadata, o_path):
                     dst_path
                 ]
 
-                if txda_tools.is_use_profile():
-                    gcc_args.append("-lprofiler_riscv")
+                # if txda_tools.is_use_profile():
+                #     gcc_args.append("-lprofiler_riscv")
 
                 txda_tools.runLoweringCmd(dst_path, gcc_args)
 
             with open(dst_path, 'rb') as f:
                 cache_path = cache.put(f.read(), f"{name}.so", binary=True)
                 txda_tools.dump_file_if_needed(cache_path, f"kernel_{ir_index}.so")
-    else:
-        print("cache_path: ", cache_path, flush=True)
 
     with open(cache_path, 'rb') as fd_out:
         so = fd_out.read()
         metadata["kernel_path"] = cache_path
-        txda_tools.record_key_v(last_ir, cache_path)
+        metadata["so_key"] = os.path.basename(os.path.dirname(cache_path))
+        logger.debug(f"{last_ir}:{cache_path}")
         return so
 
 
@@ -103,7 +105,7 @@ def _ttir_to_coreir(mod):
     ir_index = ir_index + 1
     # Get Triton-MLIR as string
     ttir_code = str(mod)
-    txda_tools.record_log(f"get ttir:{txda_tools.calculate_str_md5(ttir_code.encode())}\n")
+    logger.debug(f"get ttir:{txda_tools.calculate_str_md5(ttir_code.encode())}")
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, f"tt_{ir_index}.mlir")
         dst_path = os.path.join(tmpdir, f"core_{ir_index}.mlir")
@@ -247,19 +249,19 @@ def _txir_to_llir(mod, metadata):
                         dest_name = ir_file
                         break
                 else:
-                    print(f"error name {ir_file}: use customized ir like this : test_0.mlir, test_1.mlir")
+                    logger.error(f"error name {ir_file}: use customized ir like this : test_0.mlir, test_1.mlir")
             if dest_name:
-                print(f"get CUSTOMIZED_IR path:{dest_name}")
+                logger.info(f"get CUSTOMIZED_IR path:{dest_name}")
                 dump_path = os.getenv("TRITON_DUMP_PATH", "")
 
                 if not dump_path:
-                    print("TRITON_DUMP_PATH not find!")
+                    logger.error("TRITON_DUMP_PATH not find!")
                     return
 
                 cust_ir = os.path.join(dump_path, dest_name)
                 if os.path.exists(cust_ir):
                     llvmir_path = cust_ir
-                    print(f"!!!!!!!!!!!!!!!!!!using customized ir:{llvmir_path}")
+                    logger.info(f"!!!!!!!!!!!!!!!!!!using customized ir:{llvmir_path}")
 
         # Get spm memory use metadata
         from mlir.ir import Context, Module
@@ -276,22 +278,24 @@ def _txir_to_llir(mod, metadata):
         txda_tools.dump_ir_if_needed([llir_path])
         dest_ir = llir_path
 
-        if txda_tools.is_use_profile():
-            profile_ir_path = os.path.join(tmpdir, f"profile_ll_{ir_index}.ir")
-            trace_points = os.getenv("TRACE_POINTS", "")
-            profiler_path = txda_tools.get_tx8_profiler_path()
-            compile_args = [
-                profiler_path, llir_path, f"--trace-points={trace_points}", "-index", f"{ir_index}", "-o",
-                profile_ir_path
-            ]
-            txda_tools.dump_cmd_if_needed(compile_args, "trace-points")
-            txda_tools.runLoweringCmd(profile_ir_path, compile_args)
-            txda_tools.dump_ir_if_needed([profile_ir_path])
-            dest_ir = profile_ir_path
+        # if txda_tools.is_use_profile():
+        #     profile_ir_path = os.path.join(tmpdir, f"profile_ll_{ir_index}.ir")
+        #     trace_points = os.getenv("TRACE_POINTS", "")
+        #     profiler_path = txda_tools.get_tx8_profiler_path()
+        #     compile_args = [
+        #         profiler_path, llir_path,
+        #         f"--trace-points={trace_points}",
+        #         "-index", f"{ir_index}",
+        #         "-o", profile_ir_path
+        #     ]
+        #     txda_tools.dump_cmd_if_needed(compile_args, "trace-points")
+        #     txda_tools.runLoweringCmd(profile_ir_path, compile_args)
+        #     txda_tools.dump_ir_if_needed([profile_ir_path])
+        #     dest_ir = profile_ir_path
 
         global last_ir
         last_ir = os.path.basename(dest_ir)
-        txda_tools.record_log(f"last ir:{dest_ir}, {txda_tools.calculate_file_md5(dest_ir)}\n")
+        logger.debug(f"last ir:{dest_ir}, {txda_tools.calculate_file_md5(dest_ir)}")
         return Path(dest_ir).read_text()
 
 
@@ -365,8 +369,8 @@ def _llir_to_bin(llir: str, metadata):
         if not sim_mode:
             compile_args.extend(["--target=riscv64-unknown-elf", "-march=rv64imfdc"])
 
-        if txda_tools.is_use_profile():
-            compile_args.append("-DUSE_PROFILE")
+        # if txda_tools.is_use_profile():
+        #     compile_args.append("-DENABLE_PROFILING")
 
         txda_tools.runLoweringCmd(dst_path, compile_args)
 

@@ -61,6 +61,7 @@ void __Conv(int64_t opType, int64_t *srcAct, int64_t *srcActDims,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }

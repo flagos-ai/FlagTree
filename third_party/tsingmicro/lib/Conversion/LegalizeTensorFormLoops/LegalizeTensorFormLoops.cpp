@@ -35,11 +35,20 @@ struct ForOpRewrite : public OpRewritePattern<scf::ForOp> {
       auto itArg = forOp.getRegionIterArgs()[op.index()];
       if (!isa<TensorType>(val.getType()) || val == itArg)
         continue;
-      auto copyOp = dyn_cast<linalg::CopyOp>(val.getDefiningOp());
 
-      // TODO: Use BufferizableOpInterface to analyze whether the operand is
-      // equivalent to the corresponding iter bbArg.
-      if (!copyOp || copyOp.getOutputs()[0] != itArg) {
+      bool insertCopy = false;
+      auto defOp = val.getDefiningOp();
+      if (defOp) {
+        // TODO: Use BufferizableOpInterface to analyze whether the operand is
+        // equivalent to the corresponding iter bbArg.
+        auto copyOp = dyn_cast<linalg::CopyOp>(defOp);
+        insertCopy = !copyOp || copyOp.getOutputs()[0] != itArg;
+      } else {
+        // BlockArgument && val != itArg
+        insertCopy = true;
+      }
+
+      if (insertCopy) {
         auto reduceVal =
             rewriter.create<linalg::CopyOp>(forOp.getLoc(), val, itArg);
         yieldOp->setOperand(op.index(), reduceVal->getResult(0));

@@ -322,14 +322,14 @@ public:
     ptrAnalysis.initializeMaybeStructuredArgs(moduleOp);
 
     if (failed(ptrAnalysis.rewriteOp(moduleOp, useUnsafeMask))) {
-      moduleOp->emitWarning("PtrAnalysis failed");
+      LLVM_DEBUG(moduleOp->emitWarning("PtrAnalysis failed"));
     }
 
     // Now that all the PtrStates have been populated, we can wire up the states
     // with the tts.get_structured_state ops inserted in the prepass.
     moduleOp.walk([&ptrAnalysis](tts::GetStructuredStateOp op) {
       if (failed(ptrAnalysis.rewriteGetStructuredStateOp(op))) {
-        op.emitWarning("Rewriting GetStructuredStateOp failed.");
+        LLVM_DEBUG(op.emitWarning("Rewriting GetStructuredStateOp failed."));
       }
     });
   }

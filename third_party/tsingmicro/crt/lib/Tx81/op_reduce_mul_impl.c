@@ -52,6 +52,7 @@ void op_reduce_mul_impl(void *in, void *out, Data_Shape shape,
 
       // Dispatch the command to accelerator
       TsmExecute(&data_move_inst);
+      SYNCHRONOUS_INTRINSIC_SWITCH;
 
       // Destroy the command buffer.
       TsmDeleteDataMove(data_move);
@@ -83,6 +84,7 @@ void op_reduce_mul_impl(void *in, void *out, Data_Shape shape,
           arith->MulVV(&arithIns, arith_src0_addr, arith_src1_addr,
                        arith_dst_addr, align_val, RND_NEAREST_EVEN, fmt);
           TsmExecute(&arithIns);
+          SYNCHRONOUS_INTRINSIC_SWITCH;
         }
       }
 
@@ -98,6 +100,7 @@ void op_reduce_mul_impl(void *in, void *out, Data_Shape shape,
         arith->MulVV(&arithIns, arith_src0_addr, arith_src1_addr,
                      arith_dst_addr, stride, RND_NEAREST_EVEN, fmt);
         TsmExecute(&arithIns);
+        SYNCHRONOUS_INTRINSIC_SWITCH;
       }
     }
   } else if (reduce_dim == 1) {
@@ -132,6 +135,7 @@ void op_reduce_mul_impl(void *in, void *out, Data_Shape shape,
 
       // Dispatch the command to accelerator
       TsmExecute(&data_move_inst);
+      SYNCHRONOUS_INTRINSIC_SWITCH;
 
       for (int32_t w_index = 1; w_index < w; w_index++) {
         uint64_t arith_src0_addr = dst_out_addr;
@@ -144,6 +148,7 @@ void op_reduce_mul_impl(void *in, void *out, Data_Shape shape,
         arith->MulVV(&arithIns, arith_src0_addr, arith_src1_addr,
                      arith_dst_addr, cx_align, RND_NEAREST_EVEN, fmt);
         TsmExecute(&arithIns);
+        SYNCHRONOUS_INTRINSIC_SWITCH;
       }
     }
     // Destroy the command buffer.

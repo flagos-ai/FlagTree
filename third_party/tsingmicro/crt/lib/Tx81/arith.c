@@ -51,6 +51,7 @@ void __SubVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }
@@ -95,6 +96,7 @@ void __DivVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }
@@ -117,6 +119,7 @@ void __AddVS(uint64_t *src0, uint32_t src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }
@@ -139,6 +142,7 @@ void __SubVS(uint64_t *src0, uint32_t src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }
@@ -161,6 +165,7 @@ void __MulVS(uint64_t *src0, uint32_t src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }
@@ -183,6 +188,7 @@ void __DivVS(uint64_t *src0, uint32_t src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }
@@ -205,6 +211,7 @@ void __MaxVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }
@@ -227,6 +234,7 @@ void __MinVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
 
   // Dispatch the command to accelerator
   TsmExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
 
   // Destroy the command buffer.
 }
