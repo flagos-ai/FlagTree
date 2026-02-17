@@ -46,14 +46,13 @@ from python.setup_tools import setup_helper as helper
 
 from python.build_helpers import get_base_dir, get_cmake_dir
 
-
 # flagtree setup print config
 if platform.system() == "Windows":
     YELLOW = ""
     RESET = ""
 else:
-    YELLOW="\033[1;33m"
-    NC="\033[0m"
+    YELLOW = "\033[1;33m"
+    NC = "\033[0m"
 
 
 def is_git_repo():
@@ -324,7 +323,8 @@ def get_thirdparty_packages(packages: list):
             with contextlib.suppress(Exception):
                 shutil.rmtree(package_root_dir)
             os.makedirs(package_root_dir, exist_ok=True)
-            print(f'{YELLOW}downloading and extracting {p.url} to {package_root_dir} ... {NC}', file=sys.stderr, flush=True)
+            print(f'{YELLOW}downloading and extracting {p.url} to {package_root_dir} ... {NC}', file=sys.stderr,
+                  flush=True)
             with open_url(p.url) as response:
                 if p.url.endswith(".zip"):
                     file_bytes = BytesIO(response.read())
