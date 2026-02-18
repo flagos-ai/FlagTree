@@ -70,7 +70,7 @@ jobs:
           export FLAGTREE_BACKEND=ascend
           source ~/env.sh
           cd python
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -vvv
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on Ascend
         if: steps.check_files.outputs.only_docs_changed != 'true'
