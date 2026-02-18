@@ -46,7 +46,6 @@ from python.setup_tools import setup_helper as helper
 
 from python.build_helpers import get_base_dir, get_cmake_dir
 
-
 # flagtree setup print config
 if platform.system() == "Windows":
     YELLOW = ""
