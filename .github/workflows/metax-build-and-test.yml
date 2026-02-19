@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   metax-build-and-test:
-    runs-on: metax
+    runs-on: flagtree-metax
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
