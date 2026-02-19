@@ -330,7 +330,7 @@ def handle_plugin_backend(editable):
     plugin_mode = os.getenv("FLAGTREE_PLUGIN")
     if plugin_mode and plugin_mode.upper() not in ["0", "OFF"]:
         return
-    if flagtree_backend in ["iluvatar", "mthreads", "sunrise"]:
+    if flagtree_backend in ["iluvatar", "mthreads", "metax", "sunrise"]:
         flagtree_backend_dir = Path.home() / ".flagtree" / flagtree_backend
         flagtree_plugin_so = flagtree_backend + "TritonPlugin.so"
         if editable is False:
