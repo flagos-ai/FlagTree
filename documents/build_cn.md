@@ -25,7 +25,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-c
 tar zxvf iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.4.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.1 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -54,7 +63,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xpu-liblaunch_shared_s
 tar zxvf xpu-liblaunch_shared_so-ubuntu-x64_v0.3.1.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.1 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -86,7 +104,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-c
 tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-aarch64_v0.4.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.1 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -112,7 +139,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x
 tar zxvf llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.3 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -139,7 +175,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_release_20
 tar zxvf tx8_depends_release_20250814_195126_v0.2.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.3 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -179,7 +224,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-a
 tar zxvf llvm-a66376b0-ubuntu-aarch64-python311-compat_v0.3.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.2 (aarch64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.2.x-linux-aarch64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.2.x-linux-aarch64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -204,7 +258,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm20-df0864e-gli
 tar zxvf hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.1 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -228,7 +291,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b
 tar zxvf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.3 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -254,7 +326,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin-cp
 tar zxvf sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.4 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.4.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.4.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -302,7 +383,11 @@ export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
 export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+详见 [离线构建支持：预下载依赖包](/documents/build_cn.md#离线构建支持)。
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -320,7 +405,7 @@ unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR
 
 ### 离线构建支持
 
-上文介绍了构建时 FlagTree 各后端可手动下载依赖包以避免受限于网络环境。但 Triton 构建时原本就带有一些依赖包，因此我们提供预下载包，可以手动安装至环境中，避免在构建时卡在自动下载阶段。
+上文介绍了构建时 FlagTree 各后端可手动下载依赖包以避免受限于网络环境。Triton 构建时原本就带有一些依赖包，因此我们提供预下载包，可以手动安装至环境中，避免在构建时卡在自动下载阶段。
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
