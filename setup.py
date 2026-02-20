@@ -46,6 +46,14 @@ from python.setup_tools import setup_helper as helper
 
 from python.build_helpers import get_base_dir, get_cmake_dir
 
+# flagtree setup print config
+if platform.system() == "Windows":
+    YELLOW = ""
+    RESET = ""
+else:
+    YELLOW = "\033[1;33m"
+    NC = "\033[0m"
+
 
 def is_git_repo():
     """Return True if this file resides in a git repository"""
@@ -315,7 +323,8 @@ def get_thirdparty_packages(packages: list):
             with contextlib.suppress(Exception):
                 shutil.rmtree(package_root_dir)
             os.makedirs(package_root_dir, exist_ok=True)
-            print(f'downloading and extracting {p.url} ...')
+            print(f'{YELLOW}downloading and extracting {p.url} to {package_root_dir} ... {NC}', file=sys.stderr,
+                  flush=True)
             with open_url(p.url) as response:
                 if p.url.endswith(".zip"):
                     file_bytes = BytesIO(response.read())
@@ -364,11 +373,11 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
         assert curr_version is not None, f"No version information for {dst_path}"
         download = download or curr_version.group(1) != version
     if download:
-        print(f'downloading and extracting {url} ...')
+        print(f'{YELLOW}downloading and extracting {url} ... {NC}', file=sys.stderr, flush=True)
         file = tarfile.open(fileobj=open_url(url), mode="r|*")
         file.extractall(path=tmp_path)
     os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
-    print(f'copy {src_path} to {dst_path} ...')
+    print(f'copy {src_path} to {dst_path} ...', file=sys.stderr, flush=True)
     if os.path.isdir(src_path):
         shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
     else:
