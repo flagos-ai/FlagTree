@@ -12,25 +12,6 @@ namespace {
 constexpr int kSharedMemoryAddressSpace = 3;
 } // namespace
 
-LogicalResult DSLRegionOp::verify() {
-  Region &body = getBody();
-  const uint32_t numArguments = body.getNumArguments(),
-                 numOperands = getNumOperands();
-  if (numArguments != numOperands) {
-    return emitOpError() << "expects number of operands (" << numArguments
-                         << ") to match number of region arguments ("
-                         << numOperands << ")";
-  }
-  for (auto [arg, operand] : llvm::zip(body.getArguments(), getOperands())) {
-    if (arg.getType() != operand.getType()) {
-      return emitOpError() << "expects region argument type (" << arg.getType()
-                           << ") to match operand type (" << operand.getType()
-                           << ")";
-    }
-  }
-  return success();
-}
-
 void ExtractSizesOp::build(::mlir::OpBuilder &odsBuilder,
                            ::mlir::OperationState &odsState, size_t num,
                            Value tensor) {
