@@ -202,7 +202,7 @@ python3 -m pip install . --no-build-isolation -v
 
 - Recommended: Use [Dockerfile-ubuntu22.04-python3.11-ascend](/dockerfiles/Dockerfile-ubuntu22.04-python3.11-ascend)
 - Or: Use the Docker image (5.4GB) https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_cann-8.2.rc1.alpha003-a3-ubuntu22.04-py3.11-flagtree.tar.gz
-- After completing the above steps, it is necessary to reinstall the Cann-related toolkit（Required）: after registering an account at https://www.hiascend.com/developer/download/community/result?module=cann, download the cann-toolkit and cann-kernels for the corresponding platform.
+- After completing the above steps, it is necessary to reinstall the Cann-related toolkit（Required）: after registering an account at https://www.hiascend.com/developer/download/community/result?module=cann, download the cann-toolkit and cann-ops for the corresponding platform.
 
 ```shell
 # cann-toolkit
@@ -211,7 +211,7 @@ chmod +x Ascend-cann-toolkit_8.5.0_linux-aarch64.run
 # cann-kernels for 910B (A2)
 chmod +x Ascend-cann-910b-ops_8.5.0_linux-aarch64.run
 ./Ascend-cann-910b-ops_8.5.0_linux-aarch64.run --install
-# cann-kernels for 910C (A3)
+# cann-ops for 910C (A3)
 chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
 ./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
 ```
