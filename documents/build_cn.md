@@ -202,7 +202,7 @@ python3 -m pip install . --no-build-isolation -v
 
 - 推荐使用镜像 [Dockerfile-ubuntu22.04-python3.11-ascend](/dockerfiles/Dockerfile-ubuntu22.04-python3.11-ascend)
 - 或者使用镜像（5.4GB）https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_cann-8.2.rc1.alpha003-a3-ubuntu22.04-py3.11-flagtree.tar.gz
-- 在 https://www.hiascend.com/developer/download/community/result?module=cann 注册账号后下载对应平台的 cann-toolkit、cann-kernels
+- 上述步骤完成后，需要重新安装 Cann 相关的工具包：在 https://www.hiascend.com/developer/download/community/result?module=cann 注册账号后下载对应平台的 cann-toolkit、cann-kernels
 
 ```shell
 # cann-toolkit
