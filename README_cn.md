@@ -93,19 +93,20 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
      --trusted-host=https://resource.flagos.net"
 ```
 
-|后端     |安装命令（版本号对应 git tag）|Triton 版本|Python 版本|libc.so & libstdc++.so 版本|
-|:-------|:--------------------------|:---------|:---------|:----------------------|
-|nvidia  |python3 -m pip install flagtree==0.4.0 $RES            |3.1|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
-|nvidia  |python3 -m pip install flagtree==0.4.0+3.2 $RES        |3.2|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
-|nvidia  |python3 -m pip install flagtree==0.4.0+3.3 $RES        |3.3|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
-|nvidia  |python3 -m pip install flagtree==0.4.1+3.5 $RES        |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|iluvatar|python3 -m pip install flagtree==0.4.0+iluvatar3.1 $RES|3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|mthreads|python3 -m pip install flagtree==0.4.0+mthreads3.1 $RES|3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|metax   |python3 -m pip install flagtree==0.4.0rc1+metax3.1 $RES|3.1|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|ascend  |python3 -m pip install flagtree==0.4.1+ascend3.2 $RES  |3.2|3.11|GLIBC_2.34<br>GLIBCXX_3.4.24<br>CXXABI_1.3.11|
-|hcu     |python3 -m pip install flagtree==0.4.0+hcu3.0 $RES     |3.0|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|enflame |python3 -m pip install flagtree==0.4.0+enflame3.3 $RES |3.3|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|sunrise |python3 -m pip install flagtree==0.4.0+sunrise3.4 $RES |3.4|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|后端       |安装命令（版本号对应 git tag）|Triton 版本|Python 版本|libc.so & libstdc++.so 版本|
+|:---------|:---------|:---------|:---------|:---------|
+|nvidia    |python3 -m pip install flagtree==0.4.0 $RES              |3.1|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
+|nvidia    |python3 -m pip install flagtree==0.4.0+3.2 $RES          |3.2|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
+|nvidia    |python3 -m pip install flagtree==0.4.0+3.3 $RES          |3.3|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
+|nvidia    |python3 -m pip install flagtree==0.4.1+3.5 $RES          |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|iluvatar  |python3 -m pip install flagtree==0.4.0+iluvatar3.1 $RES  |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|mthreads  |python3 -m pip install flagtree==0.4.0+mthreads3.1 $RES  |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|metax     |python3 -m pip install flagtree==0.4.0rc1+metax3.1 $RES  |3.1|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|ascend    |python3 -m pip install flagtree==0.4.1+ascend3.2 $RES    |3.2|3.11|GLIBC_2.34<br>GLIBCXX_3.4.24<br>CXXABI_1.3.11|
+|tsingmicro|python3 -m pip install flagtree==0.4.0+tsingmicro3.3 $RES|3.3|3.10|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
+|hcu       |python3 -m pip install flagtree==0.4.0+hcu3.0 $RES       |3.0|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|enflame   |python3 -m pip install flagtree==0.4.0+enflame3.3 $RES   |3.3|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|sunrise   |python3 -m pip install flagtree==0.4.0+sunrise3.4 $RES   |3.4|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 
 ## 运行测试
 
