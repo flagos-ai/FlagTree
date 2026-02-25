@@ -208,7 +208,7 @@ python3 -m pip install . --no-build-isolation -v
 # cann-toolkit
 chmod +x Ascend-cann-toolkit_8.5.0_linux-aarch64.run
 ./Ascend-cann-toolkit_8.5.0_linux-aarch64.run --install
-# cann-kernels for 910B (A2)
+# cann-ops for 910B (A2)
 chmod +x Ascend-cann-910b-ops_8.5.0_linux-aarch64.run
 ./Ascend-cann-910b-ops_8.5.0_linux-aarch64.run --install
 # cann-ops for 910C (A3)
