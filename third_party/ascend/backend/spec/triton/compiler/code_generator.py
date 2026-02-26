@@ -11,12 +11,14 @@ from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
 import triton.language.extra.cann.extension as extension
 from triton.extension.buffer.language import core as bl
 from triton.extension.buffer.language.builder import setup_unified_builder_with_buffer_builder
+from triton.experimental.tle.language.builder import setup_unified_builder_with_tle_builder
 
 from .. import language
-from .._C.libtriton import ir, buffer_ir
+from .._C.libtriton import ir, buffer_ir, tle_ir
 from .._C.libtriton.ascend import ir as ascend_ir
 from ..language import constexpr, tensor, str_to_ty
 from ..language.core import _unwrap_if_constexpr, nv_tma_desc_type, _value
+from ..experimental.tle import dsa
 from ..runtime.jit import _normalize_ty, get_jit_fn_file_line
 # ideally we wouldn't need any runtime component
 from ..runtime import JITFunction
@@ -230,7 +232,10 @@ class CodeGenerator(ast.NodeVisitor):
         setup_unified_builder(self.builder, self.ascend_builder)
         self.buffer_builder = buffer_ir.buffer_builder(context)
         self.buffer_builder.set_loc(file_name, begin_line, 0)
+        self.tle_builder = tle_ir.tle_builder(context)
+        self.tle_builder.set_loc(file_name, begin_line, 0)
         setup_unified_builder_with_buffer_builder(self.builder, self.buffer_builder)
+        setup_unified_builder_with_tle_builder(self.builder, self.tle_builder)
 
         # dict of functions provided by the backend. Below are the list of possible functions:
         # Convert custom types not natively supported on HW.
@@ -967,7 +972,7 @@ class CodeGenerator(ast.NodeVisitor):
         warp_specialize = False
         disable_licm = False
         bind_sub_block = None
-        if IteratorClass in [language.range, extension.parallel]:
+        if IteratorClass in [language.range, extension.parallel, dsa.pipeline]:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -976,6 +981,9 @@ class CodeGenerator(ast.NodeVisitor):
             ub = iterator.end
             step = iterator.step
             num_stages = iterator.num_stages
+            if num_stages is not None and num_stages > 2:
+                raise AssertionError('Only `range` iterator supports num_stages <= 2')
+
             loop_unroll_factor = iterator.loop_unroll_factor
             disallow_acc_multi_buffer = iterator.disallow_acc_multi_buffer
             flatten = iterator.flatten

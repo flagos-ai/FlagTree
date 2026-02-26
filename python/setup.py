@@ -701,6 +701,12 @@ def get_packages():
         "triton/runtime",
         "triton/backends",
         "triton/tools",
+
+        # for tle
+        "triton/experimental",
+        "triton/experimental/tle",
+        "triton/experimental/tle/language",
+        "triton/experimental/tle/language/dsa",
     ]
     if helper.flagtree_backend and helper.flagtree_backend in helper.configs.language_extra_backends:
         packages.append(f"triton/language/extra/{helper.get_device_name()}")

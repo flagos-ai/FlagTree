@@ -422,10 +422,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
   elseif(FLAGTREE_BACKEND STREQUAL "ascend")
     set(PYTHON_ROOT_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
     set(BUFFER_IR_SRC_PATH ${FLAGTREE_BACKEND_DIR}/python/triton/extension/buffer/src)
+    set(TLE_IR_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/triton/experimental/tle/src)
     include_directories(${PYTHON_ROOT_SRC_PATH})
     add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                 ${PYTHON_SRC_PATH}/ir.cc
 		${BUFFER_IR_SRC_PATH}/buffer_ir.cc
+                ${TLE_IR_SRC_PATH}/tle_ir.cc
                 ${PYTHON_ROOT_SRC_PATH}/passes.cc
                 ${PYTHON_ROOT_SRC_PATH}/interpreter.cc
                 ${PYTHON_ROOT_SRC_PATH}/llvm.cc)
