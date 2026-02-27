@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 def _get_flagtree_root() -> str:
     return str(Path(__file__).resolve().parents[3])
 
+
 flagtree_root_dir = _get_flagtree_root()
+
 
 @dataclass
 class FlagtreeConfigs:
@@ -43,7 +45,6 @@ class FlagtreeConfigs:
             os.path.join(self.flagtree_root_dir, "third_party"),
         )
         object.__setattr__(self, "activated_module", self._activate_device_module(self.flagtree_backend))
-        
 
     def _activate_device_module(self, backend, suffix=".py"):
         backend = "default" if not backend else backend
