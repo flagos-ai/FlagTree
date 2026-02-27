@@ -88,14 +88,20 @@ def enable_flagtree_third_party(name):
     else:
         return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
+def get_hook_instance(hook_name):
+    if not configs.activated_module:
+        return None
+    hook_instance = getattr(configs.activated_module, hook_name, None)
+    return hook_instance if callable(hook_instance) else None
 
-def download_flagtree_third_party(name, condition, required=False, hock=None):
+def download_flagtree_third_party(name, condition, required=False, hook=None):
     if condition:
         if enable_flagtree_third_party(name):
             submodule = utils.flagtree_submodules[name]
             downloader.download(module=submodule, required=required)
-            if callable(hock):
-                configs.default_backends = hock(third_party_base_dir=configs.flagtree_submodule_dir, backend=submodule,
+            hook_func = get_hook_instance(hook)
+            if hook_func:
+                configs.default_backends = hook_func(third_party_base_dir=configs.flagtree_submodule_dir, backend=submodule,
                                                 default_backends=configs.default_backends)
         else:
             print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
@@ -291,11 +297,6 @@ class CommonUtils:
                     pair = (package, f"{backend_triton_path}{package}")
                     connection.append(pair)
                 package_dict.update(connection)
-            if flagtree_backend == "ascend":
-                ascend_ext_base = "../third_party/ascend/python/triton/extension"
-                package_dict["triton/extension"] = ascend_ext_base
-                package_dict["triton/extension/buffer"] = f"{ascend_ext_base}/buffer"
-                package_dict["triton/extension/buffer/language"] = f"{ascend_ext_base}/buffer/language"
         try:
             package_dict.update(configs.activated_module.get_package_dir())
         except Exception:
@@ -304,14 +305,20 @@ class CommonUtils:
 
 
 def handle_flagtree_backend():
-    global ext_sourcedir
-    if flagtree_backend:
-        print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
-        display_name = "mlu" if flagtree_backend == "cambricon" else flagtree_backend
-        configs.extend_backends.append(display_name)
-        if "editable_wheel" in sys.argv and flagtree_backend != "ascend":
-            configs.ext_sourcedir = os.path.abspath(
-                f"../third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
+    if not flagtree_backend:
+        return
+    print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
+    display_name = "mlu" if flagtree_backend == "cambricon" else flagtree_backend
+    configs.extend_backends.append(display_name)
+    
+    handle_editable_func = get_hook_instance("handle_editable_install_mode")
+    is_editable = "editable_wheel" in sys.argv
+    if is_editable in sys.argv and handle_editable_func:
+        handle_editable_func(is_editable=is_editable)
+        
+    if is_editable and flagtree_backend != "ascend":
+        configs.ext_sourcedir = os.path.abspath(
+            f"../third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
 
 
 def set_env(env_dict: dict):
@@ -350,7 +357,7 @@ else:
 
 #download_flagtree_third_party("triton_shared", condition=(not flagtree_backend))
 
-download_flagtree_third_party("flir", condition=(flagtree_backend == "ascend"), hock=utils.ascend.precompile_hook_flir,
+download_flagtree_third_party("flir", condition=(flagtree_backend == "ascend"), hook="precompile_hook_flir",
                               required=True)
 
 handle_flagtree_backend()

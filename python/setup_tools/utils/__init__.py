@@ -1,7 +1,7 @@
 from pathlib import Path
 import importlib.util
 import os
-from . import tools, ascend, cambricon, xpu
+from . import tools, cambricon, xpu
 from .tools import OfflineBuildManager, flagtree_configs
 
 flagtree_submodules = {
@@ -26,4 +26,4 @@ def activate(backend, suffix=".py"):
     return module
 
 
-__all__ = ["OfflineBuildManager", "tools", "ascend", "cambricon", "xpu"]
+__all__ = ["OfflineBuildManager", "tools", "cambricon", "xpu"]
