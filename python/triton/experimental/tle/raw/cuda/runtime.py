@@ -9,6 +9,7 @@ from triton._C.libtriton import ir, llvm  # pyright: ignore[reportMissingImports
 from triton._C.libtriton.tle.llvm import parse  # pyright: ignore[reportMissingImports]
 
 # TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
+# TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 CLANG = os.getenv("CLANG", "clang")
 
 
@@ -27,15 +28,8 @@ class CUDAJITFunction(object):
     def llvm(self) -> str:
         build = subprocess.run(
             [
-                CLANG,
-                "-x",
-                "cuda",
-                "--cuda-device-only",
-                "-emit-llvm",
-                "-S",
-                "-",
-                "-o",
-                "-",
+                CLANG, "-x", "cuda", "--cuda-device-only", "-mllvm", "--nvvm-reflect-add=__CUDA_FTZ=1", "-emit-llvm",
+                "-S", "-", "-o", "-"
             ],
             input=self.code.encode(),
             capture_output=True,
