@@ -49,6 +49,22 @@ void init_tle_ir(py::module &&m)
     ///            layoutAttr, scopeAttr);
     ///      })
     // Add copy op
+    .def("dsa_get_null_attr", [](DSAOpBuilder &self) { return Attribute(); })
+    .def("dsa_get_buffer_type",
+           [](DSAOpBuilder &self, std::vector<int64_t> &shape,
+              Type &elementType, const Attribute &memorySpace) -> Type {
+             return MemRefType::get(shape, elementType,
+                                    MemRefLayoutAttrInterface{}, memorySpace);
+           })
+    .def("dsa_get_buffer_type_with_strides",
+           [](TritonOpBuilder &self, std::vector<int64_t> &shape,
+              Type &elementType, const std::vector<int64_t> &strides,
+              const Attribute &memorySpace) -> Type {
+             // create a layout with strides, using dynamic offset
+             auto layout = StridedLayoutAttr::get(
+                 self.getBuilder().getContext(), ShapedType::kDynamic, strides);
+             return MemRefType::get(shape, elementType, layout, memorySpace);
+           })
     .def("create_dsa_alloc",
           [](DSAOpBuilder &self, Type memrefType) -> Value {
             return self.create<memref::AllocOp>(mlir::cast<MemRefType>(memrefType));

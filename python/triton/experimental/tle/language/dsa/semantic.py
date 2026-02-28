@@ -86,8 +86,8 @@ def alloc(etype: tl.dtype, shape: List[tl.constexpr], address_space: address_spa
     etype = tl._constexpr_to_value(etype)
     address_space = tl._constexpr_to_value(address_space)
     element_ty_ir = etype.to_ir(builder)
-    addr_space_attr = (address_space.to_ir(builder) if address_space else builder.get_null_attr())
-    memref_ty = builder.get_buffer_ty(shape, element_ty_ir, addr_space_attr)
+    addr_space_attr = (address_space.to_ir(builder) if address_space else builder.dsa_get_null_attr())
+    memref_ty = builder.dsa_get_buffer_type(shape, element_ty_ir, addr_space_attr)
     handle = builder.create_dsa_alloc(memref_ty)
     buffer_ty = buffer_type(element_ty=etype, shape=shape, space=address_space)
     return buffer(handle, buffer_ty)
@@ -101,13 +101,13 @@ def to_buffer(
 ) -> buffer:
     if not isinstance(tensor.shape, (tuple, list)) or not tensor.shape:
         raise TypeError("scalar type cannot be converted to buffer")
-    if isinstance(bind_buffer, buffer):
-        builder.create_bind_buffer(tensor.handle, bind_buffer.handle)
-        return bind_buffer
+    # if isinstance(bind_buffer, buffer):
+    #     builder.create_bind_buffer(tensor.handle, bind_buffer.handle)
+    #     return bind_buffer
     if not (bind_buffer is None):
         raise ValueError("bind_buffer must be a buffer or None")
     address_space = tl._constexpr_to_value(address_space)
-    addr_space_attr = (address_space.to_ir(builder) if address_space else builder.get_null_attr())
+    addr_space_attr = (address_space.to_ir(builder) if address_space else builder.dsa_get_null_attr())
     handle = builder.dsa_to_buffer(tensor.handle, addr_space_attr)
     buffer_ty = buffer_type(element_ty=tensor.dtype, shape=tensor.shape, space=address_space)
     return buffer(handle, buffer_ty)

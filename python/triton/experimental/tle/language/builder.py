@@ -45,5 +45,8 @@ def setup_unified_builder_with_tle_builder(main_builder, buffer_builder):
         # 'create_dsa_dot',
         'dsa_to_buffer',
         'dsa_to_tensor',
+        'dsa_get_null_attr',
+        'dsa_get_buffer_type',
+        'dsa_get_buffer_type_with_strides',
     ]
     attach_builder_methods_with_tle_builder(main_builder, buffer_builder, buffer_methods)

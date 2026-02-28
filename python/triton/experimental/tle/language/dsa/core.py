@@ -2,20 +2,45 @@
 
 import triton.language.core as tl
 from triton.language.core import (
-    _shape_check_impl,
     _constexpr_to_value,
-    _unwrap_if_constexpr,
-    builtin,
     constexpr
 )
-from triton.language import semantic as real_semantic
 from triton._C.libtriton import ir
 
-import importlib
-from typing import List
+from typing import List, TypeVar
+from functools import wraps
 
 from . import semantic as tle_semantic
 from .types import address_space, buffer
+
+T = TypeVar("T")
+
+TRITON_BUILTIN = "__triton_builtin__"
+TLE_BUILTIN = "__tle_builtin__"
+
+def builtin(fn: T) -> T:
+    """
+    Decorator for builtin functions to mark a function as a tle language builtin function.
+    """
+    assert callable
+    
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if "_builder" not in kwargs or kwargs["_builder"] is None:
+            raise ValueError("Did you forget to add @triton.jit ? "
+                             "(`_builder` argument must be provided outside of JIT functions.)")
+        return fn(*args, **kwargs)
+
+    setattr(wrapper, TRITON_BUILTIN, True)
+    setattr(wrapper, TLE_BUILTIN, True)
+
+    return wrapper
+
+def is_builtin(fn) -> bool:
+    """
+    Returns whether a function is a builtin function.
+    """
+    return getattr(fn, TLE_BUILTIN, False)
 
 
 class range():
@@ -97,22 +122,14 @@ class pipeline(range):
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
 
-### @builtin
-### def alloc(shape, dtype, layout=None, scope=None, _builder=None):
-###     """
-###     Returns a pointer for the given :code:`shape` and :code:`dtype`.
-### 
-###     :param shape: Shape of the new array, e.g., (8, 16) or (8, )
-###     :type shape: tuple of ints
-###     :param dtype: Data type of the new array, e.g., :code:`tl.float16`
-###     :type dtype: tl.dtype
-###     """
-###     shape = _shape_check_impl(shape)
-###     dtype = _constexpr_to_value(dtype)
-###     layout = _constexpr_to_value(layout)
-###     scope = _constexpr_to_value(scope)
-###     return tle_semantic.alloc(shape, dtype, layout, scope, _builder)
 
+@builtin
+def from_buffer_to_tensor_pointer(src: buffer, _builder=None) -> tl.tensor:
+    buffer_ty = src.type
+    ele_type = buffer_ty.element_ty
+    shape = buffer_ty.shape
+    block_type = tl.block_type(ele_type, shape)
+    return tl.tensor(src.handle, block_type)
 
 @builtin
 def copy(src, dst, shape, _builder=None):
@@ -122,49 +139,48 @@ def copy(src, dst, shape, _builder=None):
     tle_semantic.copy(src, dst, shape, _builder)
 
 
-### @builtin
-### def to_tensor(buffer, _builder=None):
-###     """
-###     Create a tensor-like type from a buffer-like type.
-### 
-###     :param buffer: the input buffer-like object.
-###     """
-###     return tle_semantic.to_tensor(buffer, _builder)
-### 
-### @builtin
-### def to_buffer(src, _builder=None):
-###     """
-###     Create a buffer-like type from a tensor-like type.
-### 
-###     :param src: the input tensor-like object.
-###     """
-###     return tle_semantic.to_buffer(src, _builder)
-
-
 @builtin
 def add(input, other, result, _builder=None):
+    input = from_buffer_to_tensor_pointer(input, _builder=_builder)
+    other = from_buffer_to_tensor_pointer(other, _builder=_builder)
+    result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.add(input, other, result, _builder)
 
 @builtin
 def sub(input, other, result, _builder=None):
+    input = from_buffer_to_tensor_pointer(input, _builder=_builder)
+    other = from_buffer_to_tensor_pointer(other, _builder=_builder)
+    result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.sub(input, other, result, _builder)
 
 @builtin
 def mul(input, other, result, _builder=None):
+    input = from_buffer_to_tensor_pointer(input, _builder=_builder)
+    other = from_buffer_to_tensor_pointer(other, _builder=_builder)
+    result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.mul(input, other, result, _builder)
 
 @builtin
 def div(input, other, result, _builder=None):
+    input = from_buffer_to_tensor_pointer(input, _builder=_builder)
+    other = from_buffer_to_tensor_pointer(other, _builder=_builder)
+    result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.div(input, other, result, _builder)
 
 @builtin
 def max(input, other, result, _builder=None):
     # elementwise binary vector maximum op
+    input = from_buffer_to_tensor_pointer(input, _builder=_builder)
+    other = from_buffer_to_tensor_pointer(other, _builder=_builder)
+    result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.max(input, other, result, _builder)
 
 @builtin
 def min(input, other, result, _builder=None):
     # elementwise binary vector minimum op
+    input = from_buffer_to_tensor_pointer(input, _builder=_builder)
+    other = from_buffer_to_tensor_pointer(other, _builder=_builder)
+    result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.min(input, other, result, _builder)
 
 ### @builtin

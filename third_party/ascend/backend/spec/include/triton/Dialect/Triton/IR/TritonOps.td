@@ -1436,7 +1436,7 @@ def TT_DSAAddOp : TT_Op<"dsa_add", [Pure, MemoryEffects<[MemWrite]>,
   let description = [{
     `tt.dsa_add` triton dsa_add op is designed to performs element-wise addition.
   }];
-  let arguments = (ins TT_PtrLike:$lhs, TT_PtrLike:$rhs, TT_PtrLike:$res);
+  let arguments = (ins AnyMemRef:$lhs, AnyMemRef:$rhs, AnyMemRef:$res);
 
   let assemblyFormat = "$lhs `,` $rhs `,` $res attr-dict `:` type($lhs) `,` type($rhs) `,` type($res)";
 }
@@ -1450,7 +1450,7 @@ def TT_DSASubOp : TT_Op<"dsa_sub", [Pure, MemoryEffects<[MemWrite]>,
   let description = [{
     `tt.dsa_sub` triton dsa_sub op is designed to performs element-wise addition.
   }];
-  let arguments = (ins TT_PtrLike:$lhs, TT_PtrLike:$rhs, TT_PtrLike:$res);
+  let arguments = (ins AnyMemRef:$lhs, AnyMemRef:$rhs, AnyMemRef:$res);
 
   let assemblyFormat = "$lhs `,` $rhs `,` $res attr-dict `:` type($lhs) `,` type($rhs) `,` type($res)";
 }
@@ -1464,7 +1464,7 @@ def TT_DSAMulOp : TT_Op<"dsa_mul", [Pure, MemoryEffects<[MemWrite]>,
   let description = [{
     `tt.dsa_mul` triton dsa_mul op is designed to performs element-wise addition.
   }];
-  let arguments = (ins TT_PtrLike:$lhs, TT_PtrLike:$rhs, TT_PtrLike:$res);
+  let arguments = (ins AnyMemRef:$lhs, AnyMemRef:$rhs, AnyMemRef:$res);
 
   let assemblyFormat = "$lhs `,` $rhs `,` $res attr-dict `:` type($lhs) `,` type($rhs) `,` type($res)";
 }
@@ -1478,7 +1478,7 @@ def TT_DSADivOp : TT_Op<"dsa_div", [Pure, MemoryEffects<[MemWrite]>,
   let description = [{
     `tt.dsa_div` triton dsa_div op is designed to performs element-wise addition.
   }];
-  let arguments = (ins TT_PtrLike:$lhs, TT_PtrLike:$rhs, TT_PtrLike:$res);
+  let arguments = (ins AnyMemRef:$lhs, AnyMemRef:$rhs, AnyMemRef:$res);
 
   let assemblyFormat = "$lhs `,` $rhs `,` $res attr-dict `:` type($lhs) `,` type($rhs) `,` type($res)";
 }
@@ -1492,7 +1492,7 @@ def TT_DSAMaxOp : TT_Op<"dsa_max", [Pure, MemoryEffects<[MemWrite]>,
   let description = [{
     `tt.dsa_max` triton dsa_max op is designed to performs element-wise addition.
   }];
-  let arguments = (ins TT_PtrLike:$lhs, TT_PtrLike:$rhs, TT_PtrLike:$res);
+  let arguments = (ins AnyMemRef:$lhs, AnyMemRef:$rhs, AnyMemRef:$res);
 
   let assemblyFormat = "$lhs `,` $rhs `,` $res attr-dict `:` type($lhs) `,` type($rhs) `,` type($res)";
 }
@@ -1506,7 +1506,7 @@ def TT_DSAMinOp : TT_Op<"dsa_min", [Pure, MemoryEffects<[MemWrite]>,
   let description = [{
     `tt.dsa_min` triton dsa_min op is designed to performs element-wise addition.
   }];
-  let arguments = (ins TT_PtrLike:$lhs, TT_PtrLike:$rhs, TT_PtrLike:$res);
+  let arguments = (ins AnyMemRef:$lhs, AnyMemRef:$rhs, AnyMemRef:$res);
 
   let assemblyFormat = "$lhs `,` $rhs `,` $res attr-dict `:` type($lhs) `,` type($rhs) `,` type($res)";
 }
@@ -1537,37 +1537,7 @@ def TT_DSAMinOp : TT_Op<"dsa_min", [Pure, MemoryEffects<[MemWrite]>,
 /// 
 ///   let assemblyFormat = "$inA `,` $inB `,` $res attr-dict `:` type($inA) `,` type($inB) `,` type($res)";
 /// }
-/// 
-/// //
-/// // ToTensor op
-/// //
-/// def TT_ToTensorOp : TT_Op<"to_tensor", [Pure, MemoryEffects<[MemWrite]>,
-///   TypesMatchWith<"result matches ptr type", "src", "result", "getPointeeType($_self)">]> {
-///   let summary = "self-defined to_tensor operation";
-///   let description = [{
-///     `tt.to_tensor` triton to_tensor op is designed to performs the conversion from buffer to tensor.
-///   }];
-///   let arguments = (ins TT_PtrLike:$src);
-/// 
-///   let results = (outs TT_Tensor:$result);
-/// 
-///   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
-/// }
-/// 
-/// //
-/// // ToBuffer op
-/// //
-/// def TT_ToBufferOp : TT_Op<"to_buffer", [Pure, MemoryEffects<[MemWrite]>]> {
-///   let summary = "self-defined to_buffer operation";
-///   let description = [{
-///     `tt.to_buffer` triton to_buffer op is designed to performs the conversion from tensor to buffer.
-///   }];
-///   let arguments = (ins TT_Tensor:$src);
-/// 
-///   let results = (outs TT_PtrLike:$result);
-/// 
-///   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
-/// }
+
 ///////////// Definition for DSA ends
 
 
