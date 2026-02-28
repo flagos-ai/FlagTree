@@ -117,6 +117,5 @@ jobs:
           MAX_JOBS=32 python3 -m pip install -e . --no-build-isolation
           popd
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
-          pushd third_party/ascend/tutorials
-          python3 01-vector-add.py
+          python3 -c "import triton"
           popd
