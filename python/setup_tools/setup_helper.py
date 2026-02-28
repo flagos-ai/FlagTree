@@ -101,8 +101,6 @@ def post_install():
     backend_spec_post_install_fn = get_hook_instance("post_install")
     if backend_spec_post_install_fn:
         backend_spec_post_install_fn()
-    else:
-        configs.activated_module.post_install()
 
 
 class FlagTreeCache:
