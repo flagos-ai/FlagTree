@@ -52,6 +52,7 @@ def get_package_data_tools():
         package_data
     return package_data
 
+
 def dir_rollback(deep, base_path):
     while (deep):
         base_path = os.path.dirname(base_path)
@@ -102,6 +103,7 @@ def post_install():
         backend_spec_post_install_fn()
     else:
         configs.activated_module.post_install()
+
 
 class FlagTreeCache:
 
@@ -260,10 +262,9 @@ class CommonUtils:
             return True
         is_backend_skip_package_dir = get_hook_instance("skip_package_dir")
         if is_backend_skip_package_dir:
-             return is_backend_skip_package_dir(package)
+            return is_backend_skip_package_dir(package)
         else:
             return False
-
 
     @staticmethod
     def get_package_dir(packages):
@@ -287,6 +288,7 @@ class CommonUtils:
 def print_info(message):
     print(f"\033[1;32m[INFO] {message}\033[0m")
 
+
 def handle_flagtree_backend():
     if not flagtree_backend:
         return
@@ -296,7 +298,7 @@ def handle_flagtree_backend():
 
     handle_editable_func = get_hook_instance("handle_editable_install_mode")
     is_editable = ("editable_wheel" in sys.argv)
-    
+
     if handle_editable_func:
         handle_editable_func(is_editable=is_editable)
 
