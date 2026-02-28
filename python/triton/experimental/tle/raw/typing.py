@@ -1,15 +1,15 @@
-from typing import Annotated
-
-from mlir import ir
+from __future__ import annotations
 
 
-class InOut:
+class InOut(object):
 
-    def __class_getitem__(cls, desc: str) -> Annotated[ir.MemRefType, str]:
-        return Annotated[ir.MemRefType, desc]
+    @classmethod
+    def __class_getitem__(cls, desc: str) -> str:
+        return desc
 
 
-class Input:
+class Input(object):
 
-    def __class_getitem__(cls, desc: str) -> Annotated[ir.MemRefType, str]:
-        return Annotated[ir.MemRefType, desc]
+    @classmethod
+    def __class_getitem__(cls, desc: str) -> str:
+        return desc

@@ -140,6 +140,9 @@ jobs:
           # flagtree tle
           # python tutorials
           python3 python/tutorials/tle/01-sparse-mla.py
+          python3 python/tutorials/tle/02-moe_align_block_size.py
+          python3 python/tutorials/tle/03-topk.py
+          python3 python/tutorials/tle/04-fft.py
           # python unit test
           python3 -m pytest -s python/test/tle/integration
           python3 -m pytest -s python/test/tle/unit

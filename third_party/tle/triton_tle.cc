@@ -54,7 +54,7 @@ namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 
-extern tle::DSLRegionOp createTLERawRegionByLLVMFunc(
+extern SmallVector<Value> createTLERawRegionByLLVMFunc(
     TritonOpBuilder &self, std::string_view text, std::string_view fnname,
     const std::vector<Value> &outputs, const std::vector<Value> &inputs);
 
@@ -142,6 +142,17 @@ void init_triton_tle_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &dst, Value &regValues) -> void {
              self.create<ttg::LocalStoreOp>(regValues, dst);
            })
+      .def("create_local_pointers",
+           [](TritonOpBuilder &self, Type resultTy, Value memDesc,
+              py::args args) -> OpState {
+             llvm::SmallVector<Value> indices;
+             indices.reserve(args.size());
+             for (const auto &arg : args) {
+               indices.push_back(py::cast<Value>(arg));
+             }
+             return self.create<tle::LocalPointersOp>(resultTy, memDesc,
+                                                      indices);
+           })
       .def("get_memdesc_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
               Type &elementType, Attribute &encoding,
@@ -163,6 +174,10 @@ void init_triton_tle_ir(py::module &&m) {
 void init_triton_tle_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_early_assign_memory_space",
                      tle::createTritonTleEarlyAssignMemorySpace);
+  ADD_PASS_WRAPPER_0("add_assign_local_pointers_encoding",
+                     tle::createTritonTleAssignLocalPointersEncoding);
+  ADD_PASS_WRAPPER_0("add_insert_local_pointer_barriers",
+                     tle::createTritonTleInsertLocalPointerBarriers);
   ADD_PASS_WRAPPER_0("add_lower_async_load",
                      tle::createTritonTleLowerAsyncLoad);
   ADD_PASS_WRAPPER_0("add_lower_tma_copy", tle::createTritonTleLowerTmaCopy);
@@ -171,31 +186,20 @@ void init_triton_tle_passes(py::module &&m) {
 void init_tle_raw_ir(py::module &&m) {
   using ret = py::return_value_policy;
 
-  py::class_<tle::DSLRegionOp>(m, "DSLRegionOp", py::module_local(),
-                               py::dynamic_attr())
-      .def(
-          "get_results",
-          [](tle::DSLRegionOp &op) -> std::vector<OpResult> {
-            auto results_range = op->getResults();
-            return std::vector<OpResult>(results_range.begin(),
-                                         results_range.end());
-          },
-          ret::reference)
-      .def("dump", &tle::DSLRegionOp::dump);
-
-  py::class_<tle::YieldOp>(m, "YieldOp", py::module_local(), py::dynamic_attr())
-      .def("dump", &tle::YieldOp::dump);
-
   auto *builder_cls = ir::getBuilderClass();
-  builder_cls->def("create_tle_raw_region_by_llvm_func",
-                   &createTLERawRegionByLLVMFunc);
+  builder_cls->def(
+      "create_tle_raw_region_by_llvm_func",
+      [](TritonOpBuilder &self, std::string_view text, std::string_view fnname,
+         const std::vector<Value> &outputs, const std::vector<Value> &inputs) {
+        SmallVector<Value> results =
+            createTLERawRegionByLLVMFunc(self, text, fnname, outputs, inputs);
+        return std::vector<Value>(results.begin(), results.end());
+      });
 }
 
 void init_tle_raw_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_tle_convert_arg_to_memdesc",
                      mlir::triton::tle::createTleConvertArgToMemDesc);
-  ADD_PASS_WRAPPER_0("add_tle_dsl_region_inline",
-                     mlir::triton::tle::createTleDSLRegionInline);
 }
 
 void init_triton_tle(py::module &&m) {

@@ -1,11 +1,10 @@
-# Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
 # flagtree tle
 """
 TLE TMA Copy Integration Tests
 
 Tests TLE TMA copy functionality and bidirectional copy operations:
 - TMA copy operations (tle.copy with TMA descriptors)
-- Local memory operations (tle.alloc, tle.local_load, tle.local_store)
+- Shared-memory pointers (tle.alloc, tle.local_ptr + tl.load/store)
 - Integration with Triton JIT and TMA descriptors
 - Memory allocation and data transfer validation
 """
@@ -38,6 +37,13 @@ def elementwise_tma_add_kernel(
     a_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
     b_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
     c_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
+    row_ids = tl.arange(0, XBLOCK)[:, None]
+    col_ids = tl.arange(0, YBLOCK)[None, :]
+    row_ids = tl.broadcast_to(row_ids, (XBLOCK, YBLOCK))
+    col_ids = tl.broadcast_to(col_ids, (XBLOCK, YBLOCK))
+    a_smem_ptrs = tle.local_ptr(a_smem, (row_ids, col_ids))
+    b_smem_ptrs = tle.local_ptr(b_smem, (row_ids, col_ids))
+    c_smem_ptrs = tle.local_ptr(c_smem, (row_ids, col_ids))
 
     # Use TLE pipeline for block-wise processing
     for yoff in range(0, ynumel, YBLOCK):
@@ -46,11 +52,11 @@ def elementwise_tma_add_kernel(
         tle.copy(a_desc, a_smem, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff])
         tle.copy(b_desc, b_smem, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff])
         # Load data from shared memory
-        aval = tle.local_load(a_smem)
-        bval = tle.local_load(b_smem)
+        aval = tl.load(a_smem_ptrs)
+        bval = tl.load(b_smem_ptrs)
 
         c_val = aval + bval
-        tle.local_store(c_smem, c_val)
+        tl.store(c_smem_ptrs, c_val)
         tle.copy(c_smem, c_desc, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff])
 
 

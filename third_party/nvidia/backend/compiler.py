@@ -269,6 +269,10 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         tle.passes.add_early_assign_memory_space(pm)
+        # // begin flagtree tle
+        tle.passes.add_assign_local_pointers_encoding(pm)
+        tle.passes.add_insert_local_pointer_barriers(pm)
+        # // end flagtree tle
         passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
@@ -381,8 +385,6 @@ class CUDABackend(BaseBackend):
             passes.llvmir.add_di_scope(pm)
         if CUDABackend.instrumentation:
             CUDABackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
-        # flagtree tle raw
-        tle.raw_passes.add_tle_dsl_region_inline(pm)
 
         pm.run(mod)
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
