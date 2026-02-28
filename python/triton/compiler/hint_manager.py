@@ -67,17 +67,13 @@ class HintManager:
 
 
 # supported backend with matched version
-SUPPORTED_CONFIG = {
-    "cuda": {"3.5"},
-    "npu": {"3.2"},
-    "aipu": {"3.3"},
-}
+SUPPORTED_BACKENDS = ["aipu", "npu", "cuda"]
 
 # mapping name
 BACKEND_ALIASES = {
     "ascend": "npu",
     "huawei": "npu",
-    "nv": "cuda",
+    "nvidia": "cuda",
 }
 
 
@@ -109,14 +105,11 @@ def hint_get_flagtree_backend() -> str:
 
     # Priority 2: Torch Global State
     if not detected_backend:
-        candidates = list(SUPPORTED_CONFIG.keys())
-        # cuda priority least
-        candidates.sort(key=lambda x: 1 if x == "cuda" else 0)
+        check_priority = ["aipu", "npu", "cuda"]
 
         # 3. parse according to benefit
-        for candidate in candidates:
-            module_name = candidate
-            module = getattr(torch, module_name, None)
+        for candidate in check_priority:
+            module = getattr(torch, candidate, None)
             if module and hasattr(module, "is_available") and module.is_available():
                 detected_backend = candidate
                 break
@@ -128,20 +121,8 @@ def hint_get_flagtree_backend() -> str:
     # (Normalization and Validation)
     canonical_backend = normalize_backend_name(detected_backend)
 
-    if not canonical_backend or canonical_backend not in SUPPORTED_CONFIG:
+    if not canonical_backend or canonical_backend not in SUPPORTED_BACKENDS:
         return ""
-
-    # verify name and version match
-    try:
-        current_triton_version = ".".join(triton.__version__.split(".")[:2])
-        supported_versions = SUPPORTED_CONFIG[canonical_backend]
-        if current_triton_version not in supported_versions:
-            msg = (f"[Flagtree] Hint ignored: Detected backend '{canonical_backend}' but current Triton version "
-                   f"'{current_triton_version}' matches no supported versions {supported_versions}.")
-            print(msg, file=sys.stderr)
-            return ""
-    except Exception:
-        pass
 
     return canonical_backend
 

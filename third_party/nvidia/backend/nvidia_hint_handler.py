@@ -3,10 +3,6 @@ from triton.compiler.hint_manager import BaseHintHandler
 
 
 class NvidiaHintHandler(BaseHintHandler):
-    # because nvidia is diff from ascend in 2 aspects
-    # 1. not backend_spec, modify triton src violently
-    # 2. modify builder, semantic, core, and so on. pollute the src, which cant be involved in hint manager
-    # for this, we just move changes in codegen & jit into hintmanager.
 
     @staticmethod
     def get_node_hints(code_generator, node):
