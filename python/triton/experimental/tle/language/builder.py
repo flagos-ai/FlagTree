@@ -42,7 +42,7 @@ def setup_unified_builder_with_tle_builder(main_builder, buffer_builder):
         'create_dsa_div',
         'create_dsa_max',
         'create_dsa_min',
-        'create_dsa_dot',
+        # 'create_dsa_dot',
         'dsa_to_buffer',
         'dsa_to_tensor',
     ]

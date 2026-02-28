@@ -47,50 +47,6 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
 }
 
 void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
-                   CacheModifier cache, EvictionPolicy evict, bool isVolatile, bool optMask) {
-  LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{},
-                /*boundaryCheck=*/ArrayRef<int32_t>{}, /*padding=*/std::nullopt,
-                cache, evict, isVolatile, optMask);
-}
-
-void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
-                   ArrayRef<int32_t> boundaryCheck,
-                   std::optional<PaddingOption> padding, CacheModifier cache,
-                   EvictionPolicy evict, bool isVolatile, bool optMask) {
-  LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{}, boundaryCheck,
-                padding, cache, evict, isVolatile, optMask);
-}
-
-void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
-                   Value mask, CacheModifier cache, EvictionPolicy evict,
-                   bool isVolatile, bool optMask) {
-  LoadOp::build(builder, state, ptr, mask, /*other=*/{},
-                /*boundaryCheck=*/ArrayRef<int32_t>{},
-                /*padding=*/std::nullopt, cache, evict, isVolatile, optMask);
-}
-
-void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
-                   Value mask, Value other, CacheModifier cache,
-                   EvictionPolicy evict, bool isVolatile, bool optMask) {
-  LoadOp::build(builder, state, ptr, mask, other,
-                /*boundaryCheck=*/ArrayRef<int32_t>{},
-                /*padding=*/std::nullopt, cache, evict, isVolatile, optMask);
-}
-
-void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
-                   Value mask, Value other, ArrayRef<int32_t> boundaryCheck,
-                   std::optional<PaddingOption> padding, CacheModifier cache,
-                   EvictionPolicy evict, bool isVolatile, bool optMask) {
-  auto paddingAttr =
-      padding.has_value()
-          ? PaddingOptionAttr::get(builder.getContext(), padding.value())
-          : PaddingOptionAttr();
-  LoadOp::build(builder, state, ptr, mask, other,
-                builder.getDenseI32ArrayAttr(boundaryCheck), paddingAttr, cache,
-                evict, isVolatile, optMask);
-}
-
-void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    ArrayRef<int32_t> boundaryCheck,
                    std::optional<PaddingOption> padding, CacheModifier cache,
                    EvictionPolicy evict, bool isVolatile) {

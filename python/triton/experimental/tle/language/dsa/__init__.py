@@ -12,8 +12,9 @@ from .core import (
     div,
     max,
     min,
-    dot,
 )
+
+from . import ascend
 
 __all__ = [
     "alloc",
@@ -27,5 +28,4 @@ __all__ = [
     "div",
     "max",
     "min",
-    "dot",
 ]

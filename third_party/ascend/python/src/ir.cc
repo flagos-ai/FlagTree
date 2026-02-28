@@ -1309,10 +1309,10 @@ void init_triton_ir(py::module &&m) {
       .def("create_masked_load",
            [](TritonOpBuilder &self, Value &ptrs, Value &mask,
               std::optional<Value> &other, CacheModifier cacheModifier,
-              EvictionPolicy evictionPolicy, bool isVolatile, bool optMask) -> Value {
+              EvictionPolicy evictionPolicy, bool isVolatile) -> Value {
              return self.create<LoadOp>(ptrs, mask, other.value_or(Value()),
                                         cacheModifier, evictionPolicy,
-                                        isVolatile, optMask);
+                                        isVolatile);
            })
       .def("create_masked_store",
            [](TritonOpBuilder &self, Value &ptrs, Value &val, Value &mask,

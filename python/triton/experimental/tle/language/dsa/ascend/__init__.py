@@ -1,8 +1,6 @@
 # Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
 
 from .core import (
-    ND,
-    NZ,
     UB,
     L1,
     L0A,
@@ -11,8 +9,6 @@ from .core import (
 )
 
 __all__ = [
-    "ND",
-    "NZ",
     "UB",
     "L1",
     "L0A",
