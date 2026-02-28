@@ -1,4 +1,3 @@
-import os
 import sys
 import importlib
 
@@ -114,7 +113,6 @@ def hint_get_flagtree_backend() -> str:
             if module and hasattr(module, "is_available") and module.is_available():
                 detected_backend = candidate
                 break
-
 
     # (Normalization and Validation)
     canonical_backend = normalize_backend_name(detected_backend)
