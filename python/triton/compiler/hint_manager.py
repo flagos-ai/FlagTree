@@ -69,6 +69,7 @@ class HintManager:
 # supported backend with matched version
 SUPPORTED_BACKENDS = ["aipu", "npu", "cuda"]
 
+# TODO : npu will have conflicts if more backend involved
 # mapping name
 BACKEND_ALIASES = {
     "ascend": "npu",
@@ -102,6 +103,7 @@ def hint_get_flagtree_backend() -> str:
     except ImportError:
         pass
 
+    # TODO : some backend may not support priority 1, so keep priority 2 is necessary
     # Priority 2: Torch Global State
     if not detected_backend:
         check_priority = ["aipu", "npu", "cuda"]
@@ -113,9 +115,6 @@ def hint_get_flagtree_backend() -> str:
                 detected_backend = candidate
                 break
 
-    # Priority 3: Environment Variable (need to remove!!!)
-    if not detected_backend:
-        detected_backend = os.environ.get("FLAGTREE_BACKEND", "")
 
     # (Normalization and Validation)
     canonical_backend = normalize_backend_name(detected_backend)

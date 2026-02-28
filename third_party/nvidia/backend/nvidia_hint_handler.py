@@ -4,6 +4,7 @@ from triton.compiler.hint_manager import BaseHintHandler
 
 class NvidiaHintHandler(BaseHintHandler):
 
+    # TODO : below can be reused by other backend which need to implement "hint";
     @staticmethod
     def get_node_hints(code_generator, node):
         line_num = node.lineno
