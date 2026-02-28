@@ -88,7 +88,6 @@ def hint_get_flagtree_backend() -> str:
     detected_backend = ""
 
     import torch
-    import triton
 
     # Priority 1: Triton Driver
     try:
