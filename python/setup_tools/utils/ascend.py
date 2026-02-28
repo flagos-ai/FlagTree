@@ -31,7 +31,6 @@ def handle_editable_install_mode(is_editable=True):
     prefix_dir = os.path.join(flagtree_root_dir, "third_party")
     project_dir = flagtree_root_dir
     required_path_mapping = {f"{project_dir}/python/triton/extension": f"{prefix_dir}/ascend/python/triton/extension"}
-
     for dst, src in required_path_mapping.items():
         if not os.path.exists(src):
             continue
@@ -39,6 +38,7 @@ def handle_editable_install_mode(is_editable=True):
             os.unlink(dst)
 
         if is_editable and not os.path.exists(dst):
+            print(f"[INFO] For editable install: creating symlink from {src} to {dst}")
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             os.symlink(src, dst)
 

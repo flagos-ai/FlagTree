@@ -314,8 +314,10 @@ def handle_flagtree_backend():
     configs.extend_backends.append(display_name)
 
     handle_editable_func = get_hook_instance("handle_editable_install_mode")
-    is_editable = "editable_wheel" in sys.argv
-    if is_editable in sys.argv and handle_editable_func:
+    is_editable = ("editable_wheel" in sys.argv)
+    
+    if handle_editable_func:
+        # raise RuntimeError(f"editable install: {handle_editable_func}, {is_editable}") 
         handle_editable_func(is_editable=is_editable)
 
     if is_editable and flagtree_backend != "ascend":

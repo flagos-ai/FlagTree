@@ -104,3 +104,19 @@ jobs:
               --ignore=test_assume.py \
               --ignore=test_index_select.py
           popd
+
+      - name: FlagTree Editable Build And Teston Ascend
+        if: steps.check_files.outputs.only_docs_changed != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=ascend
+          source ~/env.sh
+          python3 -m pip uninstall flagtree -y 
+          cd python
+          MAX_JOBS=32 python3 -m pip install -e . --no-build-isolation
+          cd ..
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          pushd third_party/ascend/tutorials
+          python3 01-vector-add.py
+          popd
