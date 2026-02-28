@@ -279,7 +279,7 @@ class CommonUtils:
                 package_dict.update(connection)
         get_spec_extra_package_dir = get_hook_instance("get_package_dir")
         if get_spec_extra_package_dir:
-            package_dict.update(get_spec_extra_package_dir(packages))
+            package_dict.update(get_spec_extra_package_dir())
         return package_dict
 
 
