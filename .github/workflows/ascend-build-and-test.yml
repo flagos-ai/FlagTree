@@ -113,9 +113,9 @@ jobs:
           export FLAGTREE_BACKEND=ascend
           source ~/env.sh
           python3 -m pip uninstall flagtree -y 
-          cd python
+          pushd python
           MAX_JOBS=32 python3 -m pip install -e . --no-build-isolation
-          cd ..
+          popd
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
           pushd third_party/ascend/tutorials
           python3 01-vector-add.py
