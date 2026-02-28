@@ -153,6 +153,7 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
   tgts = ValueRange(outputs).getTypes();
   SmallVector<Value> finalResults;
   for (Value result : callOp.getResults()) {
+    llvm::outs() << "LLVM call result: " << result.getType() << "\n";
     SmallVector<Value> rets =
         tle::protocol::ReturnPattern::apply(self, tgts, result);
     finalResults.append(std::move(rets));

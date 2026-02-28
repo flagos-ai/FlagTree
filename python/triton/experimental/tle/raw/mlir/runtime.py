@@ -8,19 +8,29 @@ from typing import Any, Dict, Final, List, Optional
 from mlir import ir
 from mlir.passmanager import PassManager
 
-from .codegen import EdslMLIRCodeGenerator
+from .codegen import MLIRCodeGenerator
 
 
-class EdslMLIRJITFunction(object):
+class MLIRJITFunction(object):
 
-    def __init__(self, fn: Any, pipeline: List[str], context: Optional[ir.Context] = None, *args, **kwargs) -> None:
+    def __init__(self, fn: Any, pipeline: Optional[List[str]] = None, context: Optional[ir.Context] = None, *args,
+                 **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.fn: Final[Any] = fn
-        self.pipeline: Final[List[str]] = [*pipeline]
+        self.pipeline: Final[List[str]] = ([*pipeline] if pipeline is not None else [
+            "convert-scf-to-cf",
+            "finalize-memref-to-llvm",
+            "convert-arith-to-llvm",
+            "convert-cf-to-llvm",
+            "convert-func-to-llvm",
+            "convert-index-to-llvm",
+            "convert-nvvm-to-llvm",
+            "cse",
+        ])
         self.context: Final[ir.Context] = ir.Context() if context is None else context
         self.__triton_builtin__: Final[bool] = True
 
-    def __deepcopy__(self, memo: Dict[int, Any]) -> EdslMLIRJITFunction:
+    def __deepcopy__(self, memo: Dict[int, Any]) -> MLIRJITFunction:
         return self.__class__(copy.deepcopy(self.fn, memo), copy.deepcopy(self.pipeline, memo), self.context)
 
     @cached_property
@@ -40,16 +50,16 @@ class EdslMLIRJITFunction(object):
         return {k: v for k, v in self.fn.__globals__.items() if not k.startswith("__")}
 
     @cached_property
-    def codegen(self) -> EdslMLIRCodeGenerator:
-        return EdslMLIRCodeGenerator(self.absfilename, {}, self.globals, self.context)
+    def codegen(self) -> MLIRCodeGenerator:
+        return MLIRCodeGenerator(self.absfilename, {}, self.globals, self.context)
 
     @property
     def ir(self) -> ir.Module:
         mod: ir.Module = self.codegen.visit(self.ast)
         return mod
 
-    @cached_property
-    def llvm(self) -> ir.Module:
+    @property
+    def ll(self) -> ir.Module:
         mod: ir.Module = self.ir
         with self.context:
             pm: PassManager = PassManager()
@@ -58,6 +68,10 @@ class EdslMLIRJITFunction(object):
                 pm.add(p)
             pm.run(mod.operation)
             return mod
+
+    @cached_property
+    def llvm(self) -> str:
+        return f"{self.ll}"
 
     @cached_property
     def src(self) -> str:

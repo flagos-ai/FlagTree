@@ -6,15 +6,10 @@ from mlir import ir
 from mlir.dialects import func
 
 from .utils import ExternalCall
+from ..utils import UnknownSymbolError
 
 
-class UnknownSymbolError(Exception):
-
-    def __init__(self, name: str, *args, **kwargs) -> None:
-        super().__init__(f"unknown symbol {name}", *args, **kwargs)
-
-
-class EdslMLIRCodeGenerator(ast.NodeVisitor):
+class MLIRCodeGenerator(ast.NodeVisitor):
 
     def __init__(
         self,

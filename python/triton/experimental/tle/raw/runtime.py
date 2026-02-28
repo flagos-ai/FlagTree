@@ -1,16 +1,17 @@
-from .mlir import EdslMLIRJITFunction
-from typing import List
+from .cuda import CUDAJITFunction
+from .mlir import MLIRJITFunction
 
-registry = {"mlir": EdslMLIRJITFunction}
+registry = {"cuda": CUDAJITFunction, "mlir": MLIRJITFunction}
 
 
-def dialect(*, name: str, pipeline: List[str] = [
-    "convert-scf-to-cf", "finalize-memref-to-llvm", "convert-arith-to-llvm", "convert-cf-to-llvm",
-    "convert-func-to-llvm", "convert-index-to-llvm", "convert-nvvm-to-llvm", "cse"
-]):
+def dialect(
+    *,
+    name: str,
+    **kwargs,
+):
 
     def decorator(fn):
-        edsl = registry[name](fn, pipeline=pipeline)
+        edsl = registry[name](fn, **kwargs)
         return edsl
 
     return decorator

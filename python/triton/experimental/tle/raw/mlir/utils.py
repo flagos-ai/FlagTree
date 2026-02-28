@@ -11,7 +11,7 @@ from mlir import ir
 from mlir.dialects import arith, func, llvm, scf
 
 if TYPE_CHECKING:
-    from .codegen import EdslMLIRCodeGenerator
+    from .codegen import MLIRCodeGenerator
 
 
 class ExternalCall(object):
@@ -26,16 +26,16 @@ class ExternalCall(object):
         ...
 
     @abstractmethod
-    def call(self, codegen: EdslMLIRCodeGenerator) -> func.CallOp:
+    def call(self, codegen: MLIRCodeGenerator) -> func.CallOp:
         ...
 
-    def decl(self, codegen: EdslMLIRCodeGenerator) -> func.FuncOp:
+    def decl(self, codegen: MLIRCodeGenerator) -> func.FuncOp:
         with ir.InsertionPoint.at_block_begin(codegen.module.body):
             funcop: func.FuncOp = codegen.decls.get(self.keyword) or self.build()
         codegen.decls[self.keyword] = funcop
         return funcop
 
-    def global_string(self, val: str, codegen: EdslMLIRCodeGenerator) -> llvm.GlobalOp:
+    def global_string(self, val: str, codegen: MLIRCodeGenerator) -> llvm.GlobalOp:
         hdigest = blake2s(val.encode('utf-8'), digest_size=16)
         key: str = f"globalstr{base64.urlsafe_b64encode(hdigest.digest()).decode('ascii').rstrip('=')}"
         with ir.InsertionPoint.at_block_begin(codegen.module.body):
@@ -59,7 +59,7 @@ class VPrintf(ExternalCall):
                                 [ir.IntegerType.get_signless(32)]), visibility="private")
 
     @override
-    def call(self, codegen: EdslMLIRCodeGenerator) -> func.CallOp:
+    def call(self, codegen: MLIRCodeGenerator) -> func.CallOp:
         [format, *args] = self.args
         funcop: func.FuncOp = self.decl(codegen)
         format: llvm.GlobalOp = self.global_string(format, codegen)
@@ -99,7 +99,7 @@ class Assert(ExternalCall):
                            visibility="private")
 
     @override
-    def call(self, codegen: EdslMLIRCodeGenerator) -> Any:
+    def call(self, codegen: MLIRCodeGenerator) -> Any:
         func_op = self.decl(codegen)
 
         true_const = arith.constant(ir.IntegerType.get_signless(1), 1)

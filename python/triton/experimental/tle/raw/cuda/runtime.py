@@ -1,0 +1,35 @@
+from __future__ import annotations
+import copy
+import os
+from pathlib import Path
+import subprocess
+from typing import Any, Dict, Final
+
+CLANG = os.getenv("CLANG", "clang")
+MLIR_TRANSLATE = os.getenv("MLIR_TRANSLATE", "mlir-translate")
+
+
+class CUDAJITFunction(object):
+
+    def __init__(self, fn: Any, file: Path, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.fn: Final[Any] = fn
+        self.code: Final[str] = file.read_text()
+        self.__triton_builtin__: Final[bool] = True
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> CUDAJITFunction:
+        return self.__class__(copy.deepcopy(self.fn, memo), copy.deepcopy(self.pipeline, memo), self.context)
+
+    @property
+    def llvm(self) -> str:
+        build = subprocess.run(
+            [
+                CLANG, "-x", "cuda", "--cuda-device-only", "-mllvm", "--nvvm-reflect-add=__CUDA_FTZ=1", "-emit-llvm",
+                "-S", "-", "-o", "-"
+            ],
+            input=self.code.encode(),
+            capture_output=True,
+        )
+        translate = subprocess.run([MLIR_TRANSLATE, "--import-llvm", "-", "-o", "-"], input=build.stdout,
+                                   capture_output=True)
+        return translate.stdout.decode()
