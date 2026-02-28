@@ -19,10 +19,9 @@ set_llvm_env = lambda path: set_env({
 
 
 def install_extension(*args, **kargs):
-    try:
-        configs.activated_module.install_extension(*args, **kargs)
-    except Exception:
-        pass
+    backend_spec_install_extension_fn = get_hook_instance("install_extension")
+    if backend_spec_install_extension_fn:
+        backend_spec_install_extension_fn(*args, **kargs)
 
 
 def get_backend_cmake_args(*args, **kargs):
@@ -52,28 +51,6 @@ def get_package_data_tools():
     except Exception:
         package_data
     return package_data
-
-
-def git_clone(lib, lib_path):
-    import git
-    MAX_RETRY = 4
-    print(f"Clone {lib.name} into {lib_path} ...")
-    retry_count = MAX_RETRY
-    while (retry_count):
-        try:
-            repo = git.Repo.clone_from(lib.url, lib_path)
-            if lib.tag is not None:
-                repo.git.checkout(lib.tag)
-            sub_triton_path = Path(lib_path) / "triton"
-            if os.path.exists(sub_triton_path):
-                shutil.rmtree(sub_triton_path)
-            print(f"successfully clone {lib.name} into {lib_path} ...")
-            return True
-        except Exception:
-            retry_count -= 1
-            print(f"\n[{MAX_RETRY - retry_count}] retry to clone {lib.name} to  {lib_path}")
-    return False
-
 
 def dir_rollback(deep, base_path):
     while (deep):
@@ -106,7 +83,7 @@ def download_flagtree_third_party(name, condition, required=False, hook=None):
                 configs.default_backends = hook_func(third_party_base_dir=configs.flagtree_submodule_dir,
                                                      backend=submodule, default_backends=configs.default_backends)
         else:
-            print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
+            print_info(f"Skip downloading {name} since USE_{name.upper()} is set to OFF")
 
 
 def configure_cambricon_packages_and_data(packages, package_dir, package_data):
@@ -120,11 +97,11 @@ def configure_cambricon_packages_and_data(packages, package_dir, package_data):
 
 
 def post_install():
-    try:
+    backend_spec_post_install_fn = get_hook_instance("post_install")
+    if backend_spec_post_install_fn:
+        backend_spec_post_install_fn()
+    else:
         configs.activated_module.post_install()
-    except Exception:
-        pass
-
 
 class FlagTreeCache:
 
@@ -263,7 +240,7 @@ class CommonUtils:
         else:
             installation_dir = get_python_lib()
         backends_dir_path = Path(installation_dir) / "triton" / "backends"
-        # raise RuntimeError(backends_dir_path)
+
         if not os.path.exists(backends_dir_path):
             return
         for name in os.listdir(backends_dir_path):
@@ -281,10 +258,12 @@ class CommonUtils:
     def skip_package_dir(package):
         if 'backends' in package or 'profiler' in package:
             return True
-        try:
-            return configs.activated_module.skip_package_dir(package)
-        except Exception:
+        is_backend_skip_package_dir = get_hook_instance("skip_package_dir")
+        if is_backend_skip_package_dir:
+             return is_backend_skip_package_dir(package)
+        else:
             return False
+
 
     @staticmethod
     def get_package_dir(packages):
@@ -299,17 +278,19 @@ class CommonUtils:
                     pair = (package, f"{backend_triton_path}{package}")
                     connection.append(pair)
                 package_dict.update(connection)
-        try:
-            package_dict.update(configs.activated_module.get_package_dir())
-        except Exception:
-            pass
+        get_spec_extra_package_dir = get_hook_instance("get_package_dir")
+        if get_spec_extra_package_dir:
+            package_dict.update(get_spec_extra_package_dir(packages))
         return package_dict
 
+
+def print_info(message):
+    print(f"\033[1;32m[INFO] {message}\033[0m")
 
 def handle_flagtree_backend():
     if not flagtree_backend:
         return
-    print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
+    print_info(f"flagtree backend is {flagtree_backend}")
     display_name = "mlu" if flagtree_backend == "cambricon" else flagtree_backend
     configs.extend_backends.append(display_name)
 
@@ -317,7 +298,6 @@ def handle_flagtree_backend():
     is_editable = ("editable_wheel" in sys.argv)
     
     if handle_editable_func:
-        # raise RuntimeError(f"editable install: {handle_editable_func}, {is_editable}") 
         handle_editable_func(is_editable=is_editable)
 
     if is_editable and flagtree_backend != "ascend":
@@ -358,8 +338,6 @@ if offline_handler.is_offline:
     offline_handler.handle_triton_origin_toolkits()
 else:
     print('[INFO] Offline Build: No offline build for triton origin toolkits')
-
-#download_flagtree_third_party("triton_shared", condition=(not flagtree_backend))
 
 download_flagtree_third_party("flir", condition=(flagtree_backend == "ascend"), hook="precompile_hook_flir",
                               required=True)
