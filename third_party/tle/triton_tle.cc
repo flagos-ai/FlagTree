@@ -30,10 +30,12 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Target/LLVMIR/Import.h"
 #include "passes.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
@@ -46,7 +48,11 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/SmallVectorExtras.h"
+#include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/SourceMgr.h"
 
 namespace py = pybind11;
 using namespace mlir;
@@ -213,6 +219,27 @@ void init_tle_raw_passes(py::module &&m) {
                      mlir::triton::tle::createTleDSLRegionInline);
 }
 
+void init_llvm(py::module &&m) {
+  using ret = py::return_value_policy;
+  m.def("parse",
+        [](std::string_view text, llvm::LLVMContext &llvmContext,
+           mlir::MLIRContext &mlirContext) -> mlir::ModuleOp {
+          std::unique_ptr<llvm::MemoryBuffer> buffer =
+              llvm::MemoryBuffer::getMemBuffer(text);
+          llvm::SMDiagnostic error;
+          std::unique_ptr<llvm::Module> llvmModule =
+              llvm::parseIR(buffer->getMemBufferRef(), error, llvmContext);
+          if (!llvmModule) {
+            llvm::report_fatal_error(
+                "failed to parse IR: " + error.getMessage() +
+                "lineno: " + std::to_string(error.getLineNo()));
+          }
+          return mlir::translateLLVMIRToModule(std::move(llvmModule),
+                                               &mlirContext)
+              ->clone();
+        });
+}
+
 void init_triton_tle(py::module &&m) {
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
@@ -227,4 +254,5 @@ void init_triton_tle(py::module &&m) {
   init_triton_tle_passes(m.def_submodule("passes"));
   init_tle_raw_ir(m.def_submodule("raw_ir"));
   init_tle_raw_passes(m.def_submodule("raw_passes"));
+  init_llvm(m.def_submodule("llvm"));
 }
