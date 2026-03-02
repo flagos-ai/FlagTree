@@ -5,12 +5,9 @@ from pathlib import Path
 import subprocess
 from typing import Any, Dict, Final
 
-from triton._C.libtriton import ir, llvm  # pyright: ignore[reportMissingImports]
-from triton._C.libtriton.tle.llvm import parse  # pyright: ignore[reportMissingImports]
-
-# TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 # TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 CLANG = os.getenv("CLANG", "clang")
+MLIR_TRANSLATE = os.getenv("MLIR_TRANSLATE", "mlir-translate")
 
 
 class CUDAJITFunction(object):
@@ -28,14 +25,21 @@ class CUDAJITFunction(object):
     def llvm(self) -> str:
         build = subprocess.run(
             [
-                CLANG, "-x", "cuda", "--cuda-device-only", "-mllvm", "--nvvm-reflect-add=__CUDA_FTZ=1", "-emit-llvm",
-                "-S", "-", "-o", "-"
+                CLANG,
+                "-x",
+                "cuda",
+                "--cuda-device-only",
+                "-mllvm",
+                "--nvvm-reflect-add=__CUDA_FTZ=1",
+                "-emit-llvm",
+                "-S",
+                "-",
+                "-o",
+                "-",
             ],
             input=self.code.encode(),
             capture_output=True,
         )
-        llvm_context = llvm.context()
-        mlir_context = ir.context()
-        ir.load_dialects(mlir_context)
-        module = parse(build.stdout.decode(), llvm_context, mlir_context)
-        return f"{module}"
+        translate = subprocess.run([MLIR_TRANSLATE, "--import-llvm", "-", "-o", "-"], input=build.stdout,
+                                   capture_output=True)
+        return translate.stdout.decode()

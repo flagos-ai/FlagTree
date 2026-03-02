@@ -240,6 +240,27 @@ void init_llvm(py::module &&m) {
         });
 }
 
+void init_llvm(py::module &&m) {
+  using ret = py::return_value_policy;
+  m.def("parse",
+        [](std::string_view text, llvm::LLVMContext &llvmContext,
+           mlir::MLIRContext &mlirContext) -> mlir::ModuleOp {
+          std::unique_ptr<llvm::MemoryBuffer> buffer =
+              llvm::MemoryBuffer::getMemBuffer(text);
+          llvm::SMDiagnostic error;
+          std::unique_ptr<llvm::Module> llvmModule =
+              llvm::parseIR(buffer->getMemBufferRef(), error, llvmContext);
+          if (!llvmModule) {
+            llvm::report_fatal_error(
+                "failed to parse IR: " + error.getMessage() +
+                "lineno: " + std::to_string(error.getLineNo()));
+          }
+          return mlir::translateLLVMIRToModule(std::move(llvmModule),
+                                               &mlirContext)
+              ->clone();
+        });
+}
+
 void init_triton_tle(py::module &&m) {
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
