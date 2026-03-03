@@ -30,12 +30,10 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
-#include "mlir/Target/LLVMIR/Import.h"
 #include "passes.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
@@ -48,11 +46,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/SmallVectorExtras.h"
-#include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/SourceMgr.h"
 
 namespace py = pybind11;
 using namespace mlir;
@@ -275,5 +269,4 @@ void init_triton_tle(py::module &&m) {
   init_triton_tle_passes(m.def_submodule("passes"));
   init_tle_raw_ir(m.def_submodule("raw_ir"));
   init_tle_raw_passes(m.def_submodule("raw_passes"));
-  init_llvm(m.def_submodule("llvm"));
 }

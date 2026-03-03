@@ -43,3 +43,6 @@ class CUDAJITFunction(object):
         translate = subprocess.run([MLIR_TRANSLATE, "--import-llvm", "-", "-o", "-"], input=build.stdout,
                                    capture_output=True)
         return translate.stdout.decode()
+        translate = subprocess.run([MLIR_TRANSLATE, "--import-llvm", "-", "-o", "-"], input=build.stdout,
+                                   capture_output=True)
+        return translate.stdout.decode()
