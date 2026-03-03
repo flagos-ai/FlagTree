@@ -2,7 +2,6 @@
 import torch
 import triton
 import triton.language as tl
-# import triton.language.extra.tle.ascend as tle
 import triton.experimental.tle as tle
 
 @triton.jit
@@ -17,7 +16,6 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
 
-    # mem_addr_space is language.extra.cann.core.ascend_address_space
     a_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     b_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     c_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
@@ -29,7 +27,17 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
     tle.dsa.copy(y_ptr + offsets, b_ub, [tail_size])
 
     tle.dsa.add(a_ub, b_ub, c_ub)
-    tle.dsa.copy(c_ub, output_ptr + offsets, [tail_size])
+
+    c_val = tle.dsa.to_tensor(c_ub)
+    b_val = tle.dsa.to_tensor(b_ub)
+
+    result = c_val - b_val
+
+    #tl.store(output_ptr + offsets, result)
+
+    d_ub = tle.dsa.to_buffer(result, tle.dsa.ascend.UB)
+    tle.dsa.copy(d_ub, output_ptr + offsets, [tail_size])
+
 
 def custom_func(x: torch.Tensor, y: torch.Tensor):
     output = torch.empty_like(x)
@@ -43,17 +51,10 @@ def test_add():
     size = 1024
     x = torch.rand(size, device='npu', dtype=torch.float)
     y = torch.rand(size, device='npu', dtype=torch.float)
-    output_torch = x + y
+    output_torch = x
     output_triton = custom_func(x, y)
     print(f'The maximum difference between torch and triton is '
     f'{torch.max(torch.abs(output_torch - output_triton))}')
-
-    from triton.backends.ascend.testing import do_bench_npu
-    bench_torch = do_bench_npu(lambda: x + y, clear_l2_cache=True, keep_res=True, collect_prof=False)
-    bench_triton = do_bench_npu(lambda: custom_func(x, y), clear_l2_cache=True, keep_res=True, collect_prof=False)
-    # 保留两位小数输出
-    print(f"torch time : {bench_torch:.2f}")
-    print(f"triton time: {bench_triton:.2f}")
 
 if __name__ == "__main__":
     test_add()

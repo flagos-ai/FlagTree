@@ -154,12 +154,7 @@ void init_tle_ir(py::module &&m)
            auto hasAddressSpace = memrefType.getMemorySpace();
            if (hasAddressSpace) {
              return self.create<bufferization::ToTensorOp>(
-                 self.create<memref::MemorySpaceCastOp>(
-                     MemRefType::get(memrefType.getShape(),
-                                     memrefType.getElementType(),
-                                     memrefType.getLayout()),
-                     src),
-                 true, writable);
+                 src, true, writable);
            }
            return self.create<bufferization::ToTensorOp>(src, true, writable);
          })
