@@ -21,8 +21,15 @@ Complete build commands for each backend: <br>
 mkdir -p ~/.flagtree/iluvatar; cd ~/.flagtree/iluvatar
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.4.0.tar.gz
 tar zxvf iluvatar-llvm18-x86_64_v0.4.0.tar.gz
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.4.0.tar.gz
-tar zxvf iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.4.0.tar.gz
+ABI=$(echo | g++ -dM -E -x c++ - | awk '/__GXX_ABI_VERSION/{print $3}')
+case "$ABI" in
+  1013) PLUGIN_TGZ=iluvatarTritonPlugin-cpython3.10-glibc2.17-glibcxx3.4.19-cxxabi1.3.13-linux-x86_64_v0.5.0.tar.gz ;;
+  1016) PLUGIN_TGZ=iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.16-ubuntu-x86_64_v0.5.0.tar.gz ;;
+  1018) PLUGIN_TGZ=iluvatarTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.18-ubuntu-x86_64_v0.5.0.tar.gz ;;
+  *) echo "Unsupported __GXX_ABI_VERSION=$ABI, please update the plugin package mapping"; exit 1 ;;
+esac
+wget "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${PLUGIN_TGZ}"
+tar zxvf "${PLUGIN_TGZ}"
 ```
 
 ##### 3. Manually download the Triton dependencies
