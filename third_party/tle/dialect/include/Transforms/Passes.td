@@ -77,6 +77,19 @@ def TritonTleLowerTmaCopy : Pass</*cli-arg*/"triton-tle-lower-tma-copy", /*Op*/"
                            "mlir::arith::ArithDialect"];
 }
 
+def TritonTleLowerExtractTile : Pass<"triton-tle-lower-extract-tile", "mlir::ModuleOp"> {
+  let summary = "Lower TLE extract_tile operations";
+
+  let description = [{
+    This pass lowers tle.extract_tile operations to target-specific GPU
+    operations or equivalent Triton/TritonGPU IR patterns.
+  }];
+
+  let dependentDialects = ["mlir::triton::tle::TleDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect"];
+}
+
 def TleConvertArgToMemDesc : Pass<"tle-convert-arg-to-memdesc", "mlir::ModuleOp"> {}
 
 def TleDSLRegionInline : Pass<"tle-dslregion-inline", "mlir::ModuleOp"> {}

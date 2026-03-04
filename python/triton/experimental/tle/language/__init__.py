@@ -20,7 +20,9 @@ from .distributed import (
     shard_id,
     sharding,
 )
+
 from . import distributed, gpu, raw
+from .gpu import extract_tile
 
 __all__ = [
     "load",
@@ -40,4 +42,5 @@ __all__ = [
     "distributed",
     "gpu",
     "raw",
+    "extract_tile",
 ]

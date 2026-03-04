@@ -17,6 +17,49 @@ class Tle_Op<string mnemonic, list<Trait> traits = []> :
        !listconcat(traits, [VerifyTensorLayoutsTrait])> {
 }
 
+// Begin TLE-Lite
+def Tle_ExtractTileOp : Tle_Op<"extract_tile", [Pure]> {
+  let summary = "Extract a tile from a tensor with static offsets";
+
+  let description = [{
+    Extract a contiguous tile from a tensor based on static offsets.
+    This is a zero-cost operation at runtime - it only reorganizes
+    register values within each thread, with no inter-thread communication.
+
+    Requirements:
+      1. Offsets must be multiples of CTA tile sizes
+      2. Tile shape must be multiples of CTA tile sizes
+      3. Source and destination layouts must match at CTA tile level
+  }];
+
+  let arguments = (ins 
+    TT_Tensor:$src,
+    TT_IntLike:$index
+  );
+
+  let results = (outs TT_Tensor:$result);
+  let builders = [OpBuilder<(ins "Value":$src,"Value":$index,"ArrayRef<int64_t>":$tileShape)>];
+  let assemblyFormat = [{
+    $src `[` $index `]` attr-dict `:` qualified(type($src)) `,` qualified(type($index)) `->` qualified(type($result))
+  }];
+
+  let hasVerifier = 1;
+}
+
+def Tle_InsertTileOp : Tle_Op<"insert_tile", [Pure,
+                                              DeclareOpInterfaceMethods<InferTypeOpInterface>,
+                                              SameOperandsAndResultType]> {
+  let arguments = (ins TT_Tensor:$src, TT_Tensor:$tile ,TT_IntLike:$index);
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = [{
+    $src `[` $index `]` `=` $tile attr-dict `:` qualified(type($index)) `,` qualified(type($tile)) `->` qualified(type($result))
+  }];
+}
+
+// End TLE-Lite
+
+// Begin TLE-Raw
+
 def Tle_TensorType : AnyTypeOf<[TT_Type, TTG_MemDescType]>;
 def Tle_ArgType : AnyTypeOf<[Tle_TensorType, LLVMPointerType, LLVMStructType]>;
 def Tle_LocalPointerResultType : AnyTypeOf<[TT_Tensor, TT_Ptr]>;

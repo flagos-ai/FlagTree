@@ -2,6 +2,7 @@ if(FLAGTREE_TLE)
     set(_TLE_LIBS
         TritonTLEAnalysis
         TleToLLVM # flagtree tle raw
+        TritonTLETransforms
     )
 else()
     set(_TLE_LIBS "")

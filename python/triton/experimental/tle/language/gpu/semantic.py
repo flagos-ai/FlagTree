@@ -95,6 +95,101 @@ class TLESemantic:
         if not isinstance(buffer, tle.buffered_tensor):
             raise TLESemanticError(f"Buffer must be tle.buffered_tensor, but got {type(buffer)}", "local_ptr")
 
+    def validate_extract_tile_params(
+        self,
+        src: tl.tensor,
+        index,
+        tile_shape: Sequence[Union[int, any]]
+    ) -> None:
+        """
+
+        """
+        #  检查1: src类型
+        if not isinstance(src, tl.tensor):
+            raise TLESemanticError(
+                f"Source must be tl.tensor, but got {type(src)}", 
+                "extract_tile"
+            )
+        #  检查2: 非空
+        if not index or not tile_shape:
+            raise TLESemanticError(
+                "Index and tile_shape cannot be empty", 
+                "extract_tile"
+            )   
+        
+         #  检查3: 解包并验证类型
+        tile_shape_unwrapped = [
+            s.value if hasattr(s, 'value') else s 
+            for s in tile_shape
+        ]
+
+        # 检查 tile_shape 中的每个维度是否为int 或 constexpr 对象
+        if any(not isinstance(s, int) for s in tile_shape_unwrapped):
+            raise TLESemanticError(
+                "All tile_shape dims must be int or constexpr", 
+                "extract_tile"
+            )
+
+        #  检查4: 正数
+        if any(s <= 0 for s in tile_shape_unwrapped):
+            raise TLESemanticError(
+                "All tile_shape dims must be positive", 
+                "extract_tile"
+            )
+
+        #  检查6: 维度匹配
+        src_shape = list(src.type.shape)
+        
+        if len(tile_shape_unwrapped) != len(src_shape):
+            raise TLESemanticError(
+                f"Tile_shape rank ({len(tile_shape_unwrapped)}) must match "
+                f"source rank ({len(src_shape)})", 
+                "extract_tile"
+            )
+        
+        
+        # index 检查
+        if isinstance(index, (tuple, list)):
+            idx = [i.value if hasattr(i, 'value') else i for i in index]
+            #检查维度数是否和源张量 rank 一致
+            if len(idx) != len(src_shape):
+                raise TLESemanticError(f"Index rank ({len(idx)}) must match source rank ({len(src_shape)})", "extract_tile")
+            #检查每个分量是否都是整数
+            if any(not isinstance(v, int) for v in idx):
+                raise TLESemanticError("All index values must be int or constexpr", "extract_tile")
+            # 检查 tile grid 越界
+            if all(isinstance(dim, int) for dim in src_shape):
+                grid = [src_shape[i] // tile_shape_unwrapped[i] for i in range(len(src_shape))]
+                for i, v in enumerate(idx):
+                    if v < 0 or v >= grid[i]:
+                        raise TLESemanticError(f"Index[{i}]={v} out of bounds for tile grid (0~{grid[i]-1})", "extract_tile")
+        else:
+            # 如果是线性索引（单个值）
+            val = index.value if hasattr(index, 'value') else index
+            # 检查必须是整数，且必须非负
+            if not isinstance(val, int):
+                raise TLESemanticError("Index must be int or constexpr", "extract_tile")
+            if val < 0:
+                raise TLESemanticError("Index must be non-negative", "extract_tile")
+            # 检查线性 index 越界
+            if all(isinstance(dim, int) for dim in src_shape):
+                grid = [src_shape[i] // tile_shape_unwrapped[i] for i in range(len(src_shape))]
+                total_tiles = 1
+                for g in grid:
+                    total_tiles *= g
+                if val >= total_tiles:
+                    raise TLESemanticError(f"Linear index {val} out of bounds for total tiles {total_tiles}", "extract_tile")
+
+
+    def analyze_extract_tile_operation(
+        self,
+        src: tl.tensor,
+        index,
+        tile_shape: Sequence[Union[int, any]]
+    ) -> None:
+        """Analyze extract_tile operation semantics (index 支持多维或线性)"""
+        self.validate_extract_tile_params(src, index, tile_shape)
+        
     def analyze_alloc_operation(self, shape: Sequence[Union[int, any]], dtype: tl.dtype,
                                 layout: Optional[tle.shared_layout], storage: tle.scope) -> Tuple[List[int], tl.dtype]:
         """Analyze alloc operation semantics"""

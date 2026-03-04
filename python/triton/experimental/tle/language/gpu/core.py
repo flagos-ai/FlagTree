@@ -1,6 +1,7 @@
 # flagtree tle
 import builtins
 import triton.language.core as tl
+import builtins
 from typing import Optional, Sequence
 from enum import Enum
 from . import types as tle
@@ -354,6 +355,155 @@ def copy(
         return normcopy(src, dst, shape, direction, _semantic)
     else:
         return tmacopy(src, dst, direction, shape, offsets, _semantic)
+
+@tl.builtin
+def extract_tile(
+    x: tl.tensor,
+    index,
+    tile_shape: tuple,
+    _semantic=None,
+) -> tl.tensor:
+    """
+    Extract a tile from a tensor with static offsets.
+    
+    Args:
+        x: Source tensor
+        offsets: Static offsets for each dimension (compile-time constants)
+        tile_shape: Tile shape (static)
+    
+    Returns:
+        Extracted tile tensor
+    """
+    # ========================================================================
+    #  参数类型检查
+    # ========================================================================
+    if not isinstance(x, tl.tensor):
+        raise ValueError(f"Source must be tl.tensor, but got {type(x)}")
+
+    # 索引处理：支持 tuple/list 多维索引或标量线性索引
+    index_unwrapped = index
+    try:
+        index_unwrapped = tl._unwrap_if_constexpr(index)
+    except Exception:
+        pass
+
+    try:
+        if hasattr(index, 'value'):
+            index_unwrapped = index.value
+    except Exception:
+        pass
+
+    # 如果是 tuple/list 或 tl.tuple，则当作多维索引
+    index_list = None
+    if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
+        index_list = list(index_unwrapped)
+
+    if index_list is not None:
+        # 多维索引路径：检查索引维度与 shape 一致，并线性化
+        if len(index_list) != len(tile_shape):
+            raise ValueError(f"Index rank {len(index_list)} must match tile_shape rank {len(tile_shape)}")
+
+        # 需要静态源 shape 才能计算网格大小
+        src_shape = [tl._unwrap_if_constexpr(dim) for dim in x.type.shape]
+        if any(not isinstance(dim, int) for dim in src_shape):
+            raise ValueError("Source shape must be static to use tuple index")
+
+        # 计算每维 tile 网格数量
+        grid = []
+        for i, dim in enumerate(src_shape):
+            if dim % tile_shape[i].value != 0:
+                raise ValueError(f"Source dimension {i}: {dim} must be divisible by tile dimension {tile_shape[i]}")
+            grid.append(dim // tile_shape[i])
+
+        # 只允许静态多维索引线性化
+        idx = []
+        for i in index_list:
+            unwrapped = tl._unwrap_if_constexpr(i)
+            if not isinstance(unwrapped, int):
+                raise ValueError(f"Tuple index must contain int or tl.constexpr values, got {type(unwrapped)}")
+            idx.append(unwrapped)
+        # 线性化
+        linear_index = 0
+        stride = 1
+        for i in reversed(list(__builtins__['range'](len(grid)))):
+            linear_index += idx[i] * stride
+            stride *= grid[i]
+        index_value = linear_index
+    else:
+        # 标量索引路径
+        try:
+            index_value = tl._unwrap_if_constexpr(index_unwrapped)
+            if not isinstance(index_value, int):
+                raise ValueError(
+                    f"Scalar index must be int or tl.constexpr, got {type(index_value)} with value {index_value}"
+                )
+        except Exception as e:
+            raise ValueError(f"Failed to process index: {e}")
+
+
+    # ========================================================================
+    #  规范化和验证 tile_shape
+    # ========================================================================
+    #  同样处理 tile_shape
+    if hasattr(tile_shape, '__iter__') and not isinstance(tile_shape, str):
+        tile_shape_list = list(tile_shape)
+    else:
+        tile_shape_list = [tile_shape]
+
+    # 解包 constexpr 值
+    tile_shape_unwrapped = []
+    for s in tile_shape_list:
+        val = s
+        while hasattr(val, 'value'):
+            val = val.value
+
+        try:
+            val = tl._unwrap_if_constexpr(val)
+        except:
+            pass
+
+        if not isinstance(val, int):
+            raise ValueError(
+                f"All tile_shape dims must be int or tl.constexpr, got {type(val)} (original: {type(s)})"
+            )
+        tile_shape_unwrapped.append(val)
+
+    tile_shape = tile_shape_unwrapped
+
+    # ========================================================================
+    #  基本维度检查
+    # ========================================================================
+    if len(tile_shape) != len(src_shape):
+        raise ValueError(
+            f"tile_shape rank ({len(tile_shape)}) must match source rank ({len(src_shape)})"
+        )
+
+    # ========================================================================
+    # 语义验证
+    # ========================================================================
+    try:
+        from .semantic import TLESemantic
+        if isinstance(_semantic, TLESemantic):
+            _semantic.analyze_extract_tile_operation(x, index_value, tile_shape)
+    except ImportError:
+        pass
+
+    # ========================================================================
+    # 生成 MLIR IR
+    # ========================================================================
+    try:
+        index_ir = _semantic._convert_to_ir_values([index_value], require_i64=False)[0]
+        output = _semantic.builder.create_extract_tile(
+            x.handle,
+            index_ir,
+            tile_shape
+        )
+        block_type = tl.block_type(x.type.element_ty, tile_shape)
+        return tl.tensor(output, block_type)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to create extract_tile operation: {str(e)}"
+        ) from e
 
 
 def _expand_index_to_shape(index: tl.tensor, shape: Sequence[int], axis: int, _semantic) -> tl.tensor:
