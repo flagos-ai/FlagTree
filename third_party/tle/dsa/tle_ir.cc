@@ -57,7 +57,7 @@ void init_tle_ir(py::module &&m)
                                     MemRefLayoutAttrInterface{}, memorySpace);
            })
     .def("dsa_get_buffer_type_with_strides",
-           [](TritonOpBuilder &self, std::vector<int64_t> &shape,
+           [](DSAOpBuilder &self, std::vector<int64_t> &shape,
               Type &elementType, const std::vector<int64_t> &strides,
               const Attribute &memorySpace) -> Type {
              // create a layout with strides, using dynamic offset
@@ -70,8 +70,11 @@ void init_tle_ir(py::module &&m)
             return self.create<memref::AllocOp>(mlir::cast<MemRefType>(memrefType));
           })
     .def("create_dsa_copy",
-         [](DSAOpBuilder &self, Value &src, Value &dst, std::vector<Value> &shape)-> void {
-           self.create<DSACopyOp>(src, dst, shape);
+         [](DSAOpBuilder &self, Value &src, Value &dst, std::vector<Value> &shape, bool inter_no_alias)-> void {
+           auto copyOp = self.create<DSACopyOp>(src, dst, shape);
+           if (inter_no_alias) {
+             copyOp->setAttr("inter_no_alias", self.getBuilder().getBoolAttr(true));
+           }
          })
     // Add op
     .def("create_dsa_add",
@@ -120,22 +123,6 @@ void init_tle_ir(py::module &&m)
     ///        self.create<DSADotOp>(inA, inB, res, sizeAttr, initC_attr,
     ///                              traA_attr, traB_attr, enable_hf32_attr);
     ///      })
-    ///   // ToTensor op
-    /// .def("dsa_to_tensor",
-    ///    [](DSAOpBuilder &self, Value &src) -> Value {
-    ///      return self.create<ToTensorOp>(src);
-    ///    })
-    /// // ToBuffer op
-    /// .def("dsa_to_buffer",
-    ///    [](DSAOpBuilder &self, Value &src) -> Value {
-    ///      auto srcType = src.getType();
-    ///      auto tensorTy = cast<RankedTensorType>(srcType);
-    ///      Type elementType = tensorTy.getElementType();
-    ///      auto ptrType = triton::PointerType::get(elementType, 1);
-    ///      auto shape = tensorTy.getShape();
-    ///      auto tensorPtrType = RankedTensorType::get(shape, ptrType);
-    ///      return self.create<ToBufferOp>(tensorPtrType, src);
-    ///    })
     .def("dsa_to_buffer",
          [](DSAOpBuilder &self, Value &src,
             const Attribute &addressSpace) -> Value {
@@ -158,6 +145,158 @@ void init_tle_ir(py::module &&m)
            }
            return self.create<bufferization::ToTensorOp>(src, true, writable);
          })
+    .def("create_extract_scalar",
+           [](DSAOpBuilder &self, Value &src, std::vector<Value> &indices) -> Value {
+            llvm::SmallVector<Value> arg_indices;
+            for (const auto &i : indices) {
+                auto iTy = i.getType();
+                if (!iTy.isIndex()) {
+                    auto v = self.create<arith::IndexCastOp>(
+                        self.getBuilder().getIndexType(), i);
+                    arg_indices.push_back(v);
+                } else {
+                    arg_indices.push_back(i);
+                }
+            }
+            auto ret = self.create<tensor::ExtractOp>(src, arg_indices);
+            return ret;
+        })
+      .def("create_extract_slice",
+        [](DSAOpBuilder &self, Value &ful, std::vector<Value> &offs_vec,
+            std::vector<int> &sizs_vec, std::vector<int> &strd_vec) -> Value {
+            llvm::SmallVector<Value> offsets;
+            for (const auto &o : offs_vec) {
+                auto oTy = o.getType();
+                if (!oTy.isIndex()) {
+                    auto v = self.create<arith::IndexCastOp>(
+                        self.getBuilder().getIndexType(), o);
+                    offsets.push_back(v);
+                } else {
+                    offsets.push_back(o);
+                }
+            }
+            llvm::SmallVector<Value> sizes;
+            llvm::SmallVector<int64_t> retSizes;
+            for (const auto &s : sizs_vec) {
+                auto v = self.create<arith::ConstantIndexOp>(s);
+                sizes.push_back(v);
+                retSizes.push_back(s);
+            }
+            llvm::SmallVector<Value> strides;
+            for (const auto &s : strd_vec) {
+                auto v = self.create<arith::ConstantIndexOp>(s);
+                strides.push_back(v);
+            }
+            auto retTy = RankedTensorType::get(retSizes,
+                cast<RankedTensorType>(ful.getType()).getElementType());
+
+            return self.create<tensor::ExtractSliceOp>(retTy, ful, offsets, sizes, strides);
+        })
+      .def("create_insert_slice",
+           [](DSAOpBuilder &self, Value &ful, Value &sub,
+              std::vector<Value> &offs_vec, std::vector<int> &sizs_vec,
+              std::vector<int> &strd_vec) -> Value {
+             llvm::SmallVector<Value> offsets;
+             for (const auto &o : offs_vec) {
+               auto oTy = o.getType();
+               if (!oTy.isIndex()) {
+                 auto v = self.create<arith::IndexCastOp>(
+                     self.getBuilder().getIndexType(), o);
+                 offsets.push_back(v);
+               } else {
+                 offsets.push_back(o);
+               }
+             }
+             llvm::SmallVector<Value> sizes;
+             llvm::SmallVector<int64_t> retSizes;
+             for (const auto &s : sizs_vec) {
+               auto v = self.create<arith::ConstantIndexOp>(s);
+               sizes.push_back(v);
+               retSizes.push_back(s);
+             }
+             llvm::SmallVector<Value> strides;
+             for (const auto &s : strd_vec) {
+               auto v = self.create<arith::ConstantIndexOp>(s);
+               strides.push_back(v);
+             }
+             auto retTy = RankedTensorType::get(
+                 retSizes,
+                 cast<RankedTensorType>(ful.getType()).getElementType());
+             auto ret = self.create<tensor::InsertSliceOp>(sub, ful, offsets,
+                                                           sizes, strides);
+             return ret;
+           })
+      .def("create_dsa_subview",
+           [](DSAOpBuilder &self, Value source, std::vector<Value> &offsets,
+              const std::vector<int64_t> &sizes,
+              const std::vector<int64_t> &strides) -> Value {
+             SmallVector<mlir::OpFoldResult> mixedOffsets;
+             auto *context = self.getBuilder().getContext();
+             auto &builder = self.getBuilder();
+
+             // Get source memref type for validation
+             auto sourceType = mlir::cast<MemRefType>(source.getType());
+             int64_t rank = sourceType.getRank();
+             // Verify the number of parameters
+             if (offsets.size() != rank || sizes.size() != rank ||
+                 strides.size() != rank) {
+               throw std::runtime_error("Number of offsets, sizes, and strides "
+                                        "must match memref rank");
+             }
+
+             for (const auto &offset : offsets) {
+               auto indexType = builder.getIndexType();
+               if (offset.getType() != indexType) {
+                 Value offset_val =
+                     self.create<arith::IndexCastOp>(indexType, offset);
+                 mixedOffsets.push_back(offset_val);
+               } else {
+                 mixedOffsets.push_back(offset);
+               }
+             }
+
+             SmallVector<mlir::OpFoldResult> mixedSizes;
+             SmallVector<mlir::OpFoldResult> mixedStrides;
+             for (int64_t i = 0; i < rank; ++i) {
+               int64_t size = sizes[i];
+               int64_t stride = strides[i];
+               int64_t srcDim = sourceType.getDimSize(i);
+
+               // verify sizes cannot be negative or zero
+               if (size <= 0) {
+                 throw std::runtime_error("Expected sizes to be positive");
+               }
+
+               // verify strides cannot be negative or zero
+               if (stride <= 0) {
+                 throw std::runtime_error("Expected strides to be positive");
+               }
+
+               // getDimSize() returns -1 (ShapedType::kDynamic) for dynamic
+               // dimensions
+               if (!ShapedType::isDynamic(srcDim)) {
+                 // verify the subview size does not exceed the source dimension
+                 if (size > srcDim) {
+                   throw std::runtime_error(
+                       "Subview size cannot exceed source dimension size");
+                 }
+
+                 // verify strides cannot exceed the source dimension size
+                 if (stride > srcDim) {
+                   throw std::runtime_error(
+                       "Stride cannot exceed source dimension size");
+                 }
+               }
+
+               mixedSizes.push_back(IntegerAttr::get(
+                   IntegerType::get(context, kIntegerAttrBitWidth), size));
+               mixedStrides.push_back(IntegerAttr::get(
+                   IntegerType::get(context, kIntegerAttrBitWidth), stride));
+             }
+
+             return self.create<memref::SubViewOp>(source, mixedOffsets,
+                                                   mixedSizes, mixedStrides);
+           })
     ;
 
 }

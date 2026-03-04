@@ -8,6 +8,14 @@ from triton.language.semantic import (
 from triton._C.libtriton import ir
 from .types import buffer, buffer_type, address_space
 
+def wrap_tensor(x, scalar_ty, ret_shape):
+    if ret_shape:
+        res_ty = tl.block_type(scalar_ty, ret_shape)
+    else:
+        # 0d-tensor -> scalar
+        res_ty = scalar_ty
+    return tl.tensor(x, res_ty)
+
 def scalar_constant(value, dtype: tl.dtype, builder: ir.builder) -> tl.tensor:
     # assert value.numel.value == 1, "only accepts size-1 tensor"
     if isinstance(value, tl.constexpr):
@@ -17,19 +25,14 @@ def scalar_constant(value, dtype: tl.dtype, builder: ir.builder) -> tl.tensor:
     if value.dtype.is_int():
         return tl.tensor(value.handle, dtype)
 
-### def alloc(shape: List[tl.tensor], dtype: tl.dtype, layout, scope, builder: ir.builder) -> tl.tensor:
-###     ret_ty = tl.block_type(dtype, shape)
-###     return tl.tensor(builder.create_dsa_alloc(shape, str(layout), str(scope),
-###                                           dtype.to_ir(builder)), ret_ty)
 
-
-def copy(src, dst, shape: List[Union[tl.constexpr, int]], builder: ir.builder):
+def copy(src, dst, shape: List[Union[tl.constexpr, int]], inter_no_alias: bool, builder: ir.builder):
     """
     Generate tt.copy(src, dst, shape) and return dst-like tensor.
     Lowering to hivm.load/hivm.store is done in MLIR pass.
     """
     shape = [scalar_constant(x, tl.int32, builder) for x in shape]
-    builder.create_dsa_copy(src.handle, dst.handle, [s.handle for s in shape])
+    builder.create_dsa_copy(src.handle, dst.handle, [s.handle for s in shape], inter_no_alias)
 
 
 ### def to_tensor(buffer: tl.tensor, builder: ir.builder) -> tl.tensor:
@@ -137,3 +140,66 @@ def to_tensor(memref: buffer, writable: bool, builder: ir.builder, target_shape=
         memref_value = builder.create_convert_layout(memref_value, buffer_ty.to_ir(builder))
 
     return tl.tensor(builder.dsa_to_tensor(memref_value, writable), tensor_type)
+
+
+def insert_slice(ful: tl.tensor, sub: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int], builder: ir.builder) -> tl.tensor:
+    assert(len(ful.shape) == len(offsets))
+    assert(len(ful.shape) == len(sizes))
+    assert(len(ful.shape) == len(strides))
+    assert(all([s>=1 for s in sizes]))
+    assert(all([s>=0 for s in strides]))
+    new_offsets = [o.handle for o in offsets]
+    ret_type = tl.block_type(ful.type.scalar, ful.shape)
+    out = builder.create_dsa_insert_slice(ful.handle, sub.handle, new_offsets, sizes, strides)
+    return tl.tensor(out, ret_type)
+
+def extract_slice(ful: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int], builder: ir.builder) -> tl.tensor:
+    assert(len(ful.shape) == len(offsets))
+    assert(len(ful.shape) == len(sizes))
+    assert(len(ful.shape) == len(strides))
+    assert(all([s>=1 for s in sizes]))
+    assert(all([s>=0 for s in strides]))
+    new_offsets = [o.handle for o in offsets]
+    ret_type = tl.block_type(ful.type.scalar, sizes)
+    out = builder.create_dsa_extract_slice(ful.handle, new_offsets, sizes, strides)
+    return tl.tensor(out, ret_type)
+
+def extract_element(src: tl.tensor, indice: List[tl.tensor], builder: ir.builder):
+    if len(src.shape) != len(indice):
+        raise ValueError("Indice's rank must be equal to src tensor's rank")
+
+    new_indice = [i.handle for i in indice]
+    result = builder.create_dsa_extract_scalar(src.handle, new_indice)
+    return wrap_tensor(result, src.type.scalar, None)
+
+
+def subview(src: buffer, offsets: List[tl.tensor], sizes: List[tl.constexpr], strides: List[tl.constexpr],
+            builder: ir.builder) -> buffer:
+
+    new_offsets = [offset.handle for offset in offsets]
+    sizes_int = tl._unwrap_shape(sizes)
+    strides_int = tl._unwrap_shape(strides)
+
+    result_handle = builder.create_dsa_subview(src.handle, new_offsets, sizes_int, strides_int)
+
+    # calculate the memory layout strides of the source buffer
+    if src.strides:
+        # use the strides of the source buffer
+        src_memory_strides = src.strides
+    else:
+        # calculate the default row-major strides
+        src_memory_strides = []
+        stride = 1
+        for dim_size in reversed(src.shape):
+            if dim_size < 0:
+                raise ValueError("Cannot compute strides for buffer with dynamic dimensions")
+            src_memory_strides.insert(0, stride)
+            stride *= dim_size
+
+    result_memory_strides = []
+    for src_stride, subview_stride in zip(src_memory_strides, strides_int):
+        result_memory_strides.append(src_stride * subview_stride)
+
+    # create buffer_type with strides
+    buffer_ty = buffer_type(element_ty=src.dtype, shape=sizes_int, space=src.space, strides=result_memory_strides)
+    return buffer(result_handle, buffer_ty)
