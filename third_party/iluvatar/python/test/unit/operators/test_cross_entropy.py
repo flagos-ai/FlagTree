@@ -1,3 +1,4 @@
+import os
 import pytest
 import torch
 
@@ -27,6 +28,8 @@ def test_op(M, N, dtype, mode, device):
         torch.testing.assert_close(th_y, tt_y)
     # backward pass
     elif mode == 'backward':
+        if capability[0] == 8:
+            os.environ["TRITON_STORE_STP"] = "off"
         dy = torch.randn_like(tt_y)
         # triton backward
         tt_y.backward(dy)
