@@ -7,18 +7,17 @@ import os
 import textwrap
 
 from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
+import importlib
 
 import triton.language.extra.cann.extension as extension
 from triton.extension.buffer.language import core as bl
 from triton.extension.buffer.language.builder import setup_unified_builder_with_buffer_builder
-from triton.experimental.tle.language.builder import setup_unified_builder_with_tle_builder
 
 from .. import language
-from .._C.libtriton import ir, buffer_ir, tle as tle_ir
+from .._C.libtriton import ir, buffer_ir
 from .._C.libtriton.ascend import ir as ascend_ir
 from ..language import constexpr, tensor, str_to_ty
 from ..language.core import _unwrap_if_constexpr, nv_tma_desc_type, _value
-from ..experimental.tle import dsa
 from ..runtime.jit import _normalize_ty, get_jit_fn_file_line
 # ideally we wouldn't need any runtime component
 from ..runtime import JITFunction
@@ -232,10 +231,7 @@ class CodeGenerator(ast.NodeVisitor):
         setup_unified_builder(self.builder, self.ascend_builder)
         self.buffer_builder = buffer_ir.buffer_builder(context)
         self.buffer_builder.set_loc(file_name, begin_line, 0)
-        self.tle_builder = tle_ir.tle_builder(context)
-        self.tle_builder.set_loc(file_name, begin_line, 0)
         setup_unified_builder_with_buffer_builder(self.builder, self.buffer_builder)
-        setup_unified_builder_with_tle_builder(self.builder, self.tle_builder)
 
         # dict of functions provided by the backend. Below are the list of possible functions:
         # Convert custom types not natively supported on HW.
@@ -989,6 +985,7 @@ class CodeGenerator(ast.NodeVisitor):
         warp_specialize = False
         disable_licm = False
         bind_sub_block = None
+        dsa = importlib.import_module("..experimental.tle.dsa", package=__package__)
         if IteratorClass in [language.range, extension.parallel, dsa.pipeline, dsa.parallel]:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
@@ -1088,6 +1085,8 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("tt.disable_licm", self.builder.get_unit_attr())
+
+            dsa = importlib.import_module("..experimental.tle.dsa", package=__package__)
             if (IteratorClass is extension.parallel or IteratorClass is dsa.parallel):
                 for_op.set_attr("hivm.parallel_loop", self.builder.get_unit_attr())
 
