@@ -1,4 +1,22 @@
-<div align="right"><a href="/README_cn.md">中文版</a></div>
+<div><a href="/README_cn.md">中文版</a></div>
+
+<div align="right">
+  <a href="https://www.linkedin.com/company/flagos-community" target="_blank">
+    <img src="./docs/assets/Linkedin.png" alt="LinkIn" width="32" height="32" />
+  </a>
+
+  <a href="https://www.youtube.com/@FlagOS_Official" target="_blank">
+    <img src="./docs/assets/youtube.png" alt="YouTube" width="32" height="32" />
+  </a>
+
+  <a href="https://x.com/FlagOS_Official" target="_blank">
+    <img src="./docs/assets/x.png" alt="X" width="32" height="32" />
+  </a>
+
+  <a href="https://www.facebook.com/FlagOSCommunity" target="_blank">
+    <img src="./docs/assets/Facebook.png" alt="X" width="32" height="32" />
+  </a>
+</div>
 
 ## <img width="30" height="30" alt="FlagTree-GitHub" src="https://github.com/user-attachments/assets/d8d24c81-6f46-4adc-94e2-b89b03afcb43" /> FlagTree
 
