@@ -7,6 +7,8 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 
+#include "tle/dsa/dialect/include/IR/Dialect.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -22,33 +24,19 @@ constexpr unsigned kIntegerAttrBitWidth = 64;
 
 struct DSAOpBuilder : public TritonOpBuilder {};
 
-void init_tle_ir(py::module &&m)
-{
+void init_triton_tle(py::module &&m)
+{ 
   m.def("load_dialects", [](MLIRContext &context) {
     DialectRegistry registry;
     registry.insert<memref::MemRefDialect>();
     registry.insert<bufferization::BufferizationDialect>();
-    registry.insert<triton::TritonDialect>();
+    registry.insert<triton::tle::TleDialect>();
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
 
   py::class_<DSAOpBuilder, TritonOpBuilder>(m, "tle_builder", py::module_local(), py::dynamic_attr())
     .def(py::init<mlir::MLIRContext *>())
-    // Add alloc op
-    /// .def("create_dsa_alloc",
-    ///      [](DSAOpBuilder &self, std::vector<int64_t> &shape,
-    ///         std::string &layout, std::string &scope, Type type)-> Value {
-    ///        auto shapeAttr = self.getBuilder().getI64ArrayAttr(shape);
-    ///        auto layoutAttr = self.getBuilder().getStringAttr(layout);
-    ///        auto scopeAttr = self.getBuilder().getStringAttr(scope);
-
-    ///        auto ptrType = triton::PointerType::get(type, 1);
-    ///        auto tensorPtrType = RankedTensorType::get(shape, ptrType);
-    ///        return self.create<triton::DSAAllocOp>(tensorPtrType, shapeAttr,
-    ///            layoutAttr, scopeAttr);
-    ///      })
-    // Add copy op
     .def("dsa_get_null_attr", [](DSAOpBuilder &self) { return Attribute(); })
     .def("dsa_get_buffer_type",
            [](DSAOpBuilder &self, std::vector<int64_t> &shape,
@@ -69,9 +57,10 @@ void init_tle_ir(py::module &&m)
           [](DSAOpBuilder &self, Type memrefType) -> Value {
             return self.create<memref::AllocOp>(mlir::cast<MemRefType>(memrefType));
           })
+    // Add copy op
     .def("create_dsa_copy",
          [](DSAOpBuilder &self, Value &src, Value &dst, std::vector<Value> &shape, bool inter_no_alias)-> void {
-           auto copyOp = self.create<DSACopyOp>(src, dst, shape);
+           auto copyOp = self.create<triton::tle::DSACopyOp>(src, dst, shape);
            if (inter_no_alias) {
              copyOp->setAttr("inter_no_alias", self.getBuilder().getBoolAttr(true));
            }
@@ -79,32 +68,32 @@ void init_tle_ir(py::module &&m)
     // Add op
     .def("create_dsa_add",
          [](DSAOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
-           self.create<DSAAddOp>(lhs, rhs, res);
+           self.create<triton::tle::DSAAddOp>(lhs, rhs, res);
          })
     // Sub op
     .def("create_dsa_sub",
          [](DSAOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
-           self.create<DSASubOp>(lhs, rhs, res);
+           self.create<triton::tle::DSASubOp>(lhs, rhs, res);
          })
     // Mul op
     .def("create_dsa_mul",
          [](DSAOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
-           self.create<DSAMulOp>(lhs, rhs, res);
+           self.create<triton::tle::DSAMulOp>(lhs, rhs, res);
          })
     // Div op
     .def("create_dsa_div",
          [](DSAOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
-           self.create<DSADivOp>(lhs, rhs, res);
+           self.create<triton::tle::DSADivOp>(lhs, rhs, res);
          })
     // Max op
     .def("create_dsa_max",
          [](DSAOpBuilder &self,  Value &lhs, Value &rhs, Value &res) -> void {
-           self.create<DSAMaxOp>(lhs, rhs, res);
+           self.create<triton::tle::DSAMaxOp>(lhs, rhs, res);
          })
     // Min op
     .def("create_dsa_min",
          [](DSAOpBuilder &self,  Value &lhs, Value &rhs, Value &res) -> void {
-           self.create<DSAMinOp>(lhs, rhs, res);
+           self.create<triton::tle::DSAMinOp>(lhs, rhs, res);
          })
     // Dot op
     /// .def("create_dsa_dot",
@@ -120,7 +109,7 @@ void init_tle_ir(py::module &&m)
     ///        auto traB_attr = builder.getBoolAttr(traB);
     ///        auto enable_hf32_attr = builder.getBoolAttr(enable_hf32);
 
-    ///        self.create<DSADotOp>(inA, inB, res, sizeAttr, initC_attr,
+    ///        self.create<triton::tle::DSADotOp>(inA, inB, res, sizeAttr, initC_attr,
     ///                              traA_attr, traB_attr, enable_hf32_attr);
     ///      })
     .def("dsa_to_buffer",
@@ -145,7 +134,7 @@ void init_tle_ir(py::module &&m)
            }
            return self.create<bufferization::ToTensorOp>(src, true, writable);
          })
-    .def("create_extract_scalar",
+    .def("create_dsa_extract_scalar",
            [](DSAOpBuilder &self, Value &src, std::vector<Value> &indices) -> Value {
             llvm::SmallVector<Value> arg_indices;
             for (const auto &i : indices) {
@@ -161,7 +150,7 @@ void init_tle_ir(py::module &&m)
             auto ret = self.create<tensor::ExtractOp>(src, arg_indices);
             return ret;
         })
-      .def("create_extract_slice",
+      .def("create_dsa_extract_slice",
         [](DSAOpBuilder &self, Value &ful, std::vector<Value> &offs_vec,
             std::vector<int> &sizs_vec, std::vector<int> &strd_vec) -> Value {
             llvm::SmallVector<Value> offsets;
@@ -192,7 +181,7 @@ void init_tle_ir(py::module &&m)
 
             return self.create<tensor::ExtractSliceOp>(retTy, ful, offsets, sizes, strides);
         })
-      .def("create_insert_slice",
+      .def("create_dsa_insert_slice",
            [](DSAOpBuilder &self, Value &ful, Value &sub,
               std::vector<Value> &offs_vec, std::vector<int> &sizs_vec,
               std::vector<int> &strd_vec) -> Value {

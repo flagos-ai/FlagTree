@@ -1,7 +1,7 @@
 from __future__ import annotations
 import hashlib
 import json
-from .._C.libtriton import get_cache_invalidating_env_vars, ir, buffer_ir, tle_ir
+from .._C.libtriton import get_cache_invalidating_env_vars, ir, buffer_ir, tle as tle_ir
 from .._C.libtriton.ascend import ir as ascend_ir
 from ..backends import backends
 from ..backends.compiler import GPUTarget, AttrsDescriptor

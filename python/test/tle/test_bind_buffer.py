@@ -4,7 +4,7 @@ import triton.language as tl
 
 from triton.compiler.compiler import ASTSource
 from triton.compiler.code_generator import ast_to_ttir
-from triton._C.libtriton import ir, tle_ir
+from triton._C.libtriton import ir, tle as tle_ir
 from triton._C.libtriton.ascend import ir as ascend_ir
 
 class Options:

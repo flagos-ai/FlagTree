@@ -291,6 +291,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
     add_subdirectory(third_party/proton)
   endif()
 
+  # add TLE plugin
+  list(APPEND TRITON_PLUGIN_NAMES "tle")
+  add_subdirectory(third_party/tle/dsa)
+
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
   set(TRITON_LIBRARIES
@@ -422,12 +426,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
   elseif(FLAGTREE_BACKEND STREQUAL "ascend")
     set(PYTHON_ROOT_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
     set(BUFFER_IR_SRC_PATH ${FLAGTREE_BACKEND_DIR}/python/triton/extension/buffer/src)
-    set(TLE_IR_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tle/dsa)
     include_directories(${PYTHON_ROOT_SRC_PATH})
     add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                 ${PYTHON_SRC_PATH}/ir.cc
 		${BUFFER_IR_SRC_PATH}/buffer_ir.cc
-                ${TLE_IR_SRC_PATH}/tle_ir.cc
                 ${PYTHON_ROOT_SRC_PATH}/passes.cc
                 ${PYTHON_ROOT_SRC_PATH}/interpreter.cc
                 ${PYTHON_ROOT_SRC_PATH}/llvm.cc)

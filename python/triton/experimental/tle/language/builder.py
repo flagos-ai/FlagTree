@@ -48,5 +48,9 @@ def setup_unified_builder_with_tle_builder(main_builder, buffer_builder):
         'dsa_get_null_attr',
         'dsa_get_buffer_type',
         'dsa_get_buffer_type_with_strides',
+        "create_dsa_extract_scalar",
+        "create_dsa_extract_slice",
+        "create_dsa_insert_slice",
+        "create_dsa_subview",
     ]
     attach_builder_methods_with_tle_builder(main_builder, buffer_builder, buffer_methods)

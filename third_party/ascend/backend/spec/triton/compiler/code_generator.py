@@ -14,7 +14,7 @@ from triton.extension.buffer.language.builder import setup_unified_builder_with_
 from triton.experimental.tle.language.builder import setup_unified_builder_with_tle_builder
 
 from .. import language
-from .._C.libtriton import ir, buffer_ir, tle_ir
+from .._C.libtriton import ir, buffer_ir, tle as tle_ir
 from .._C.libtriton.ascend import ir as ascend_ir
 from ..language import constexpr, tensor, str_to_ty
 from ..language.core import _unwrap_if_constexpr, nv_tma_desc_type, _value
