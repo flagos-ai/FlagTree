@@ -7,7 +7,7 @@
 自动下载依赖库的速度可能受限于网络环境，编译前可自行下载至缓存目录 ~/.flagtree（可通过环境变量 FLAGTREE_CACHE_DIR 修改），无需自行设置 LLVM_BUILD_DIR 等环境变量。 <br>
 各后端完整构建命令如下： <br>
 
-#### ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
+#### 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
 
 - 对应的 Triton 版本为 3.1，基于 x64 平台
 
@@ -42,7 +42,7 @@ export FLAGTREE_BACKEND=iluvatar
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/)
+#### 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/)
 
 - 对应的 Triton 版本为 3.0，基于 x64 平台
 
@@ -80,7 +80,7 @@ export FLAGTREE_BACKEND=xpu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/)
+#### 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/)
 
 - 对应的 Triton 版本为 3.1，基于 x64/aarch64 平台
 
@@ -121,7 +121,7 @@ export FLAGTREE_BACKEND=mthreads
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### ARM China（安谋科技）[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)
+#### 💫 ARM China（安谋科技）[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)
 
 - 对应的 Triton 版本为 3.3，基于 x64/arm64 平台
 
@@ -157,7 +157,7 @@ export FLAGTREE_BACKEND=aipu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
+#### 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 
@@ -194,7 +194,7 @@ export FLAGTREE_BACKEND=tsingmicro
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)
+#### 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)
 
 - 对应的 Triton 版本为 3.2，基于 aarch64 平台
 
@@ -242,7 +242,9 @@ export FLAGTREE_BACKEND=ascend
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/)
+#### 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/)
+
+- Based on Triton 3.0, x64
 
 - 对应的 Triton 版本为 3.0，基于 x64 平台
 
@@ -275,7 +277,7 @@ export FLAGTREE_BACKEND=hcu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)
+#### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 
@@ -308,7 +310,7 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
+#### 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
 
 - 对应的 Triton 版本为 3.4，基于 x64 平台
 
@@ -346,7 +348,7 @@ export FLAGTREE_BACKEND=sunrise
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
+#### 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
 
 - 对应的 Triton 版本为 3.1/3.2/3.3/3.4/3.5，基于 x64/arm64 平台
 
