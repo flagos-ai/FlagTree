@@ -56,8 +56,7 @@ def generate_data_for_nslices(
     op_type,
     device,
 ) -> PunicaTensors:
-    seq_len_tensor = torch.randint(seq_length, seq_length + 1,
-                                   (batches, )).to(device)
+    seq_len_tensor = torch.randint(seq_length, seq_length + 1, (batches, )).to(device)
     b_seq_start_loc = torch.cumsum(
         torch.tensor([0] + seq_len_tensor[:-1].tolist(), dtype=torch.long),
         dim=0,
@@ -66,15 +65,13 @@ def generate_data_for_nslices(
 
     lora_weights_lst = []
     if op_type == "shrink":
-        inputs_tensor = torch.rand((total_tokens, hidden_size),
-                                   dtype=dtype).to(device)
+        inputs_tensor = torch.rand((total_tokens, hidden_size), dtype=dtype).to(device)
 
         for _ in range(nslices):
-            lora_weights_lst.append(
-                torch.rand(
-                    (lora_nums, max_rank, hidden_size),
-                    dtype=dtype,
-                ).to(device))
+            lora_weights_lst.append(torch.rand(
+                (lora_nums, max_rank, hidden_size),
+                dtype=dtype,
+            ).to(device))
         our_out_tensor = torch.zeros(
             (nslices, total_tokens, max_rank),
             dtype=torch.float32,
@@ -85,24 +82,19 @@ def generate_data_for_nslices(
             dtype=dtype,
         ).to(device)
         for _ in range(nslices):
-            lora_weights_lst.append(
-                torch.rand(
-                    (lora_nums, hidden_size, max_rank),
-                    dtype=dtype,
-                ).to(device))
-        our_out_tensor = torch.rand((total_tokens, hidden_size * nslices),
-                                    dtype=dtype).to(device)
+            lora_weights_lst.append(torch.rand(
+                (lora_nums, hidden_size, max_rank),
+                dtype=dtype,
+            ).to(device))
+        our_out_tensor = torch.rand((total_tokens, hidden_size * nslices), dtype=dtype).to(device)
 
     ref_out_tensor = our_out_tensor.clone()
-    lora_indices_tensor = torch.randint(0,
-                                        lora_nums - 1 if lora_nums > 1 else 1,
-                                        (batches, ))
+    lora_indices_tensor = torch.randint(0, lora_nums - 1 if lora_nums > 1 else 1, (batches, ))
     indices = torch.zeros((total_tokens), dtype=torch.long).to(device)
     current_offset = 0
     for b_id in range(batches):
         lora_index = lora_indices_tensor[b_id]
-        indices[current_offset:current_offset +
-                seq_len_tensor[b_id]] = (lora_index.item())
+        indices[current_offset:current_offset + seq_len_tensor[b_id]] = (lora_index.item())
         current_offset += seq_len_tensor[b_id].item()
 
     lora_indices_tensor = lora_indices_tensor.to(device)
@@ -140,16 +132,15 @@ def parse_case_env() -> Optional[dict[str, object]]:
         key, value = part.split("=", 1)
         key = key.strip()
         value = value.strip()
-        if key in ("batches", "num_loras", "rank", "hidden_size", "nslices",
-                   "seq_length", "seed"):
+        if key in ("batches", "num_loras", "rank", "hidden_size", "nslices", "seq_length", "seed"):
             case[key] = int(value)
-        elif key in ("dtype",):
+        elif key in ("dtype", ):
             case[key] = _dtype_from_str(value)
         elif key in ("device", "op"):
             case[key] = value
-        elif key in ("add_inputs",):
+        elif key in ("add_inputs", ):
             case[key] = value.lower() in ("1", "true", "yes")
-        elif key in ("scaling",):
+        elif key in ("scaling", ):
             case[key] = float(value)
         else:
             raise ValueError(f"Unknown PUNICA_CASE key: {key}")

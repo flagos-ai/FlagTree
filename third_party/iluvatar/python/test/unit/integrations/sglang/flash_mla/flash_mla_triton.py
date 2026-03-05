@@ -17,6 +17,7 @@ elif version >= (3, 0):
 else:
     raise ValueError(f"不支持的 Triton 版本: {triton.__version__}")
 
+
 def sdpa(q, k, v, kv_group_num, sm_scale, logit_cap=0.0):
     q = q.float()
     k = k.float()
@@ -31,23 +32,14 @@ def sdpa(q, k, v, kv_group_num, sm_scale, logit_cap=0.0):
     attn_out = attn_weight @ v
     return attn_out
 
-def torch_mla(
-    q,
-    k_buffer,
-    v_buffer,
-    o,
-    req_to_token,
-    b_seq_len,
-    attn_logits,
-    num_kv_splits,
-    sm_scale,
-    page_size,
-    logit_cap=0.0):
+
+def torch_mla(q, k_buffer, v_buffer, o, req_to_token, b_seq_len, attn_logits, num_kv_splits, sm_scale, page_size,
+              logit_cap=0.0):
     # Naive implementation of mla
     batch, head_num, Lq = q.shape
     kv_group_num = q.shape[1] // k_buffer.shape[-2]
-    Lk = k_buffer.shape[-1] # 576
-    Lv = v_buffer.shape[-1] # 512
+    Lk = k_buffer.shape[-1]  # 576
+    Lv = v_buffer.shape[-1]  # 512
     for i in range(batch):
         seq_len = int(b_seq_len[i].item())
         num_pages = (seq_len + page_size - 1) // page_size
@@ -56,10 +48,8 @@ def torch_mla(
         v_pages = v_buffer[page_ids].reshape(-1, v_buffer.shape[-2], Lv)
         k_tokens = k_pages[:seq_len]
         v_tokens = v_pages[:seq_len]
-        O = sdpa(q[i].view(head_num, 1, Lq), 
-                 k_tokens.transpose(0, 1), 
-                 v_tokens.transpose(0, 1), 
-                 kv_group_num, sm_scale, logit_cap)
+        O = sdpa(q[i].view(head_num, 1, Lq), k_tokens.transpose(0, 1), v_tokens.transpose(0, 1), kv_group_num, sm_scale,
+                 logit_cap)
         o[i] = O.transpose(0, 1)
     return o
 
@@ -68,6 +58,7 @@ def torch_mla(
 def tanh(x):
     # Tanh is just a scaled sigmoid
     return 2 * tl.sigmoid(2 * x) - 1
+
 
 @triton.jit
 def _fwd_grouped_kernel_stage1(
@@ -121,26 +112,19 @@ def _fwd_grouped_kernel_stage1(
     cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
     cur_batch_req_idx = cur_batch
 
-    offs_q = cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_d[
-        None, :]
-    q = tl.load(Q + offs_q,
-                mask=(mask_h[:, None]) & (mask_d[None, :]),
-                other=0.0)
+    offs_q = cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_d[None, :]
+    q = tl.load(Q + offs_q, mask=(mask_h[:, None]) & (mask_d[None, :]), other=0.0)
 
     if BLOCK_DPE > 0:
         offs_dpe = BLOCK_DMODEL + tl.arange(0, BLOCK_DPE)
         mask_dpe = offs_dpe < Lk
-        off_qpe = (cur_batch * stride_qbs + cur_head[:, None] * stride_qh +
-                   offs_dpe[None, :])
-        qpe = tl.load(Q + off_qpe,
-                      mask=(mask_h[:, None]) & (mask_dpe[None, :]),
-                      other=0.0)
+        off_qpe = (cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_dpe[None, :])
+        qpe = tl.load(Q + off_qpe, mask=(mask_h[:, None]) & (mask_dpe[None, :]), other=0.0)
 
     kv_len_per_split = tl.cdiv(cur_batch_seq_len, NUM_KV_SPLITS)
     split_kv_start = kv_len_per_split * split_kv_id
-    split_kv_end = tl.minimum(split_kv_start + kv_len_per_split,
-                              cur_batch_seq_len)
-    
+    split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
+
     e_max = tl.zeros([BLOCK_H], dtype=tl.float32) - float("inf")
     e_sum = tl.zeros([BLOCK_H], dtype=tl.float32)
     acc = tl.zeros([BLOCK_H, BLOCK_DV], dtype=tl.float32)
@@ -149,29 +133,24 @@ def _fwd_grouped_kernel_stage1(
         for start_n in range(split_kv_start, split_kv_end, BLOCK_N):
             offs_n = start_n + tl.arange(0, BLOCK_N)
             kv_page_number = tl.load(
-                Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx +
-                offs_n // PAGE_SIZE,
+                Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx + offs_n // PAGE_SIZE,
                 mask=offs_n < split_kv_end,
                 other=0,
             )
             kv_loc = kv_page_number * PAGE_SIZE + offs_n % PAGE_SIZE
-            offs_buf_k = (kv_loc[None, :] * stride_buf_kbs +
-                          cur_kv_head * stride_buf_kh + offs_d[:, None])
+            offs_buf_k = (kv_loc[None, :] * stride_buf_kbs + cur_kv_head * stride_buf_kh + offs_d[:, None])
             k = tl.load(
                 K_Buffer + offs_buf_k,
                 mask=(offs_n[None, :] < split_kv_end) & (mask_d[:, None]),
                 other=0.0,
             )
             qk = tl.dot(q, k.to(q.dtype))
-            
+
             if BLOCK_DPE > 0:
-                offs_buf_kpe = (kv_loc[None, :] * stride_buf_kbs +
-                                cur_kv_head * stride_buf_kh +
-                                offs_dpe[:, None])
+                offs_buf_kpe = (kv_loc[None, :] * stride_buf_kbs + cur_kv_head * stride_buf_kh + offs_dpe[:, None])
                 kpe = tl.load(
                     K_Buffer + offs_buf_kpe,
-                    mask=(offs_n[None, :] < split_kv_end) &
-                    (mask_dpe[:, None]),
+                    mask=(offs_n[None, :] < split_kv_end) & (mask_dpe[:, None]),
                     other=0.0,
                 )
                 qk += tl.dot(qpe, kpe.to(qpe.dtype))
@@ -180,11 +159,9 @@ def _fwd_grouped_kernel_stage1(
             if logit_cap > 0:
                 qk = logit_cap * tanh(qk / logit_cap)
 
-            qk = tl.where(mask_h[:, None] & (offs_n[None, :] < split_kv_end),
-                          qk, float("-inf"))
+            qk = tl.where(mask_h[:, None] & (offs_n[None, :] < split_kv_end), qk, float("-inf"))
 
-            offs_buf_v = (kv_loc[:, None] * stride_buf_vbs +
-                          cur_kv_head * stride_buf_vh + offs_dv[None, :])
+            offs_buf_v = (kv_loc[:, None] * stride_buf_vbs + cur_kv_head * stride_buf_vh + offs_dv[None, :])
             v = tl.load(
                 V_Buffer + offs_buf_v,
                 mask=(offs_n[:, None] < split_kv_end) & (mask_dv[None, :]),
@@ -200,9 +177,8 @@ def _fwd_grouped_kernel_stage1(
             e_sum = e_sum * re_scale + tl.sum(p, 1)
             e_max = n_e_max
 
-        offs_mid_o = (cur_batch * stride_mid_ob +
-                      cur_head[:, None] * stride_mid_oh +
-                      split_kv_id * stride_mid_os + offs_dv[None, :])
+        offs_mid_o = (cur_batch * stride_mid_ob + cur_head[:, None] * stride_mid_oh + split_kv_id * stride_mid_os +
+                      offs_dv[None, :])
 
         tl.store(
             Att_Out + offs_mid_o,
@@ -210,14 +186,14 @@ def _fwd_grouped_kernel_stage1(
             mask=(mask_h[:, None]) & (mask_dv[None, :]),
         )
 
-        offs_mid_o_1 = (cur_batch * stride_mid_ob + cur_head * stride_mid_oh +
-                        split_kv_id * stride_mid_os + Lv)
+        offs_mid_o_1 = (cur_batch * stride_mid_ob + cur_head * stride_mid_oh + split_kv_id * stride_mid_os + Lv)
 
         tl.store(
             Att_Out + offs_mid_o_1,
             e_max + tl.log(e_sum),
             mask=mask_h,
         )
+
 
 def _decode_grouped_att_m_fwd(
     q,
@@ -232,11 +208,11 @@ def _decode_grouped_att_m_fwd(
     logit_cap,
 ):
     BLOCK = 32
-    Lk = k_buffer.shape[-1] # 576
-    Lv = v_buffer.shape[-1] # 512
+    Lk = k_buffer.shape[-1]  # 576
+    Lv = v_buffer.shape[-1]  # 512
 
     # [TODO] work around shmem limit on MI3xx
-    
+
     # TODO: support hip
     #if is_hip_ and Lk >= 576:
     #    BLOCK = 16
@@ -252,16 +228,16 @@ def _decode_grouped_att_m_fwd(
         BLOCK_DPE = 0
     BLOCK_DV = triton.next_power_of_2(Lv)
 
-    batch, head_num = q.shape[0], q.shape[1] # 1, 128
-    kv_group_num = q.shape[1] // k_buffer.shape[-2] # 128 // 1 = 128
+    batch, head_num = q.shape[0], q.shape[1]  # 1, 128
+    kv_group_num = q.shape[1] // k_buffer.shape[-2]  # 128 // 1 = 128
 
     BLOCK_H = 16
-    NUM_KV_SPLITS = num_kv_splits # 4
+    NUM_KV_SPLITS = num_kv_splits  # 4
     grid = (
         batch,
         triton.cdiv(head_num, min(BLOCK_H, kv_group_num)),
         NUM_KV_SPLITS,
-    ) # (1, 8, 4)
+    )  # (1, 8, 4)
 
     extra_kargs = {}
     # TODO: support hip
@@ -275,7 +251,7 @@ def _decode_grouped_att_m_fwd(
             "kpack": 2
         }
     """
-    
+
     _fwd_grouped_kernel_stage1[grid](
         q,
         k_buffer,
@@ -296,20 +272,21 @@ def _decode_grouped_att_m_fwd(
         att_out.stride(2),
         kv_group_num=kv_group_num,
         q_head_num=head_num,
-        BLOCK_DMODEL=BLOCK_DMODEL, # 512
-        BLOCK_DPE=BLOCK_DPE, # 64
-        BLOCK_DV=BLOCK_DV, # 512
-        BLOCK_N=BLOCK, # 32
-        BLOCK_H=BLOCK_H, # 16
-        NUM_KV_SPLITS=NUM_KV_SPLITS, # 4
-        PAGE_SIZE=page_size, # 64
-        logit_cap=logit_cap, # 0.0
+        BLOCK_DMODEL=BLOCK_DMODEL,  # 512
+        BLOCK_DPE=BLOCK_DPE,  # 64
+        BLOCK_DV=BLOCK_DV,  # 512
+        BLOCK_N=BLOCK,  # 32
+        BLOCK_H=BLOCK_H,  # 16
+        NUM_KV_SPLITS=NUM_KV_SPLITS,  # 4
+        PAGE_SIZE=page_size,  # 64
+        logit_cap=logit_cap,  # 0.0
         num_warps=1,
         num_stages=1,
-        Lk=Lk, # 576
-        Lv=Lv, # 512
+        Lk=Lk,  # 576
+        Lv=Lv,  # 512
         **extra_kargs,
     )
+
 
 @triton.jit
 def _fwd_kernel_stage2(
@@ -343,13 +320,10 @@ def _fwd_kernel_stage2(
     for split_kv_id in range(0, NUM_KV_SPLITS):
         kv_len_per_split = tl.cdiv(cur_batch_seq_len, NUM_KV_SPLITS)
         split_kv_start = kv_len_per_split * split_kv_id
-        split_kv_end = tl.minimum(split_kv_start + kv_len_per_split,
-                                  cur_batch_seq_len)
+        split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
 
         if split_kv_end > split_kv_start:
-            tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os,
-                         mask=mask_d,
-                         other=0.0)
+            tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d, other=0.0)
             tlogic = tl.load(Mid_O + offs_logic + split_kv_id * stride_mid_os)
             n_e_max = tl.maximum(tlogic, e_max)
 
@@ -366,6 +340,7 @@ def _fwd_kernel_stage2(
         acc / e_sum,
         mask=mask_d,
     )
+
 
 def _decode_softmax_reducev_fwd(
     logits,
@@ -393,7 +368,7 @@ def _decode_softmax_reducev_fwd(
             "kpack": 2
         }
     """
-    
+
     grid = (batch, head_num)
     _fwd_kernel_stage2[grid](
         logits,
@@ -411,6 +386,7 @@ def _decode_softmax_reducev_fwd(
         num_stages=2,
         **extra_kargs,
     )
+
 
 def decode_attention_fwd_grouped(
     q,
@@ -438,10 +414,8 @@ def decode_attention_fwd_grouped(
         logit_cap,
     )
 
-    _decode_softmax_reducev_fwd(attn_logits, q, o, v_buffer, b_seq_len,
-                                num_kv_splits)
+    _decode_softmax_reducev_fwd(attn_logits, q, o, v_buffer, b_seq_len, num_kv_splits)
     return o
-
 
 
 @triton.jit
@@ -495,18 +469,15 @@ def _fwd_grouped_kernel_v1(
     cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
     cur_batch_req_idx = cur_batch
 
-    offs_q = cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_d[
-        None, :]
+    offs_q = cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_d[None, :]
     q = tl.load(Q + offs_q)
 
     if BLOCK_DPE > 0:
         offs_dpe = BLOCK_DMODEL + tl.arange(0, BLOCK_DPE)
         mask_dpe = offs_dpe < Lk
-        off_qpe = (cur_batch * stride_qbs + cur_head[:, None] * stride_qh +
-                   offs_dpe[None, :])
+        off_qpe = (cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_dpe[None, :])
         qpe = tl.load(Q + off_qpe)
 
-    
     e_max = tl.zeros([BLOCK_H], dtype=tl.float32) - float("inf")
     e_sum = tl.zeros([BLOCK_H], dtype=tl.float32)
     acc = tl.zeros([BLOCK_H, BLOCK_DV], dtype=tl.float32)
@@ -514,29 +485,24 @@ def _fwd_grouped_kernel_v1(
     for start_n in range(0, cur_batch_seq_len, BLOCK_N):
         offs_n = start_n + tl.arange(0, BLOCK_N)
         kv_page_number = tl.load(
-            Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx +
-            offs_n // PAGE_SIZE,
+            Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx + offs_n // PAGE_SIZE,
             mask=offs_n < cur_batch_seq_len,
             other=0,
         )
         kv_loc = kv_page_number * PAGE_SIZE + offs_n % PAGE_SIZE
-        offs_buf_k = (kv_loc[None, :] * stride_buf_kbs +
-                        cur_kv_head * stride_buf_kh + offs_d[:, None])
+        offs_buf_k = (kv_loc[None, :] * stride_buf_kbs + cur_kv_head * stride_buf_kh + offs_d[:, None])
         k = tl.load(
             K_Buffer + offs_buf_k,
             mask=(offs_n[None, :] < cur_batch_seq_len) & (mask_d[:, None]),
             other=0.0,
         )
         qk = tl.dot(q, k.to(q.dtype))
-        
+
         if BLOCK_DPE > 0:
-            offs_buf_kpe = (kv_loc[None, :] * stride_buf_kbs +
-                            cur_kv_head * stride_buf_kh +
-                            offs_dpe[:, None])
+            offs_buf_kpe = (kv_loc[None, :] * stride_buf_kbs + cur_kv_head * stride_buf_kh + offs_dpe[:, None])
             kpe = tl.load(
                 K_Buffer + offs_buf_kpe,
-                mask=(offs_n[None, :] < cur_batch_seq_len) &
-                (mask_dpe[:, None]),
+                mask=(offs_n[None, :] < cur_batch_seq_len) & (mask_dpe[:, None]),
                 other=0.0,
             )
             qk += tl.dot(qpe, kpe.to(qpe.dtype))
@@ -545,11 +511,9 @@ def _fwd_grouped_kernel_v1(
         if logit_cap > 0:
             qk = logit_cap * tanh(qk / logit_cap)
 
-        qk = tl.where(mask_h[:, None] & (offs_n[None, :] < cur_batch_seq_len),
-                        qk, float("-inf"))
+        qk = tl.where(mask_h[:, None] & (offs_n[None, :] < cur_batch_seq_len), qk, float("-inf"))
 
-        offs_buf_v = (kv_loc[:, None] * stride_buf_vbs +
-                        cur_kv_head * stride_buf_vh + offs_dv[None, :])
+        offs_buf_v = (kv_loc[:, None] * stride_buf_vbs + cur_kv_head * stride_buf_vh + offs_dv[None, :])
         v = tl.load(
             V_Buffer + offs_buf_v,
             mask=(offs_n[:, None] < cur_batch_seq_len) & (mask_dv[None, :]),
@@ -565,9 +529,7 @@ def _fwd_grouped_kernel_v1(
         e_sum = e_sum * re_scale + tl.sum(p, 1)
         e_max = n_e_max
 
-    offs_o = (cur_batch * stride_o_ob +
-                  cur_head[:, None] * stride_o_os +
-                  offs_dv[None, :])
+    offs_o = (cur_batch * stride_o_ob + cur_head[:, None] * stride_o_os + offs_dv[None, :])
 
     tl.store(
         Att_Out + offs_o,
@@ -585,8 +547,6 @@ def _fwd_grouped_kernel_v1(
     # )
 
 
-
-
 def decode_attention_fwd_grouped_v1(
     q,
     k_buffer,
@@ -601,9 +561,9 @@ def decode_attention_fwd_grouped_v1(
     logit_cap=0.0,
 ):
     BLOCK = 64
-    Lk = k_buffer.shape[-1] # 576
-    Lv = v_buffer.shape[-1] # 512
-    
+    Lk = k_buffer.shape[-1]  # 576
+    Lv = v_buffer.shape[-1]  # 512
+
     if Lk == 576:
         BLOCK_DMODEL = 512
         BLOCK_DPE = 64
@@ -615,19 +575,19 @@ def decode_attention_fwd_grouped_v1(
         BLOCK_DPE = 0
     BLOCK_DV = triton.next_power_of_2(Lv)
 
-    batch, head_num = q.shape[0], q.shape[1] # 1, 128
-    kv_group_num = q.shape[1] // k_buffer.shape[-2] # 128 // 1 = 128
+    batch, head_num = q.shape[0], q.shape[1]  # 1, 128
+    kv_group_num = q.shape[1] // k_buffer.shape[-2]  # 128 // 1 = 128
 
     BLOCK_H = 32
-    NUM_KV_SPLITS = num_kv_splits # 4
+    NUM_KV_SPLITS = num_kv_splits  # 4
     grid = (
         batch,
         triton.cdiv(head_num, min(BLOCK_H, kv_group_num)),
         1,
-    ) # (1, 8, 4)
+    )  # (1, 8, 4)
 
     extra_kargs = {}
-    
+
     _fwd_grouped_kernel_v1[grid](
         q,
         k_buffer,
@@ -648,23 +608,22 @@ def decode_attention_fwd_grouped_v1(
         o.stride(2),
         kv_group_num=kv_group_num,
         q_head_num=head_num,
-        BLOCK_DMODEL=BLOCK_DMODEL, # 512
-        BLOCK_DPE=BLOCK_DPE, # 64
-        BLOCK_DV=BLOCK_DV, # 512
-        BLOCK_N=BLOCK, # 32
-        BLOCK_H=BLOCK_H, # 16
-        NUM_KV_SPLITS=NUM_KV_SPLITS, # 4
-        PAGE_SIZE=page_size, # 64
-        logit_cap=logit_cap, # 0.0
+        BLOCK_DMODEL=BLOCK_DMODEL,  # 512
+        BLOCK_DPE=BLOCK_DPE,  # 64
+        BLOCK_DV=BLOCK_DV,  # 512
+        BLOCK_N=BLOCK,  # 32
+        BLOCK_H=BLOCK_H,  # 16
+        NUM_KV_SPLITS=NUM_KV_SPLITS,  # 4
+        PAGE_SIZE=page_size,  # 64
+        logit_cap=logit_cap,  # 0.0
         num_warps=2,
         num_stages=1,
-        Lk=Lk, # 576
-        Lv=Lv, # 512
+        Lk=Lk,  # 576
+        Lv=Lv,  # 512
         **extra_kargs,
     )
 
     return o
-
 
 
 @triton.jit
@@ -716,15 +675,13 @@ def _fwd_grouped_kernel_v2(
     cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
     cur_batch_req_idx = cur_batch
 
-    offs_q = cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_d[
-        None, :]
+    offs_q = cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_d[None, :]
     q = tl.load(Q + offs_q)
 
     if BLOCK_DPE > 0:
         offs_dpe = BLOCK_DMODEL + tl.arange(0, BLOCK_DPE)
         mask_dpe = offs_dpe < Lk
-        off_qpe = (cur_batch * stride_qbs + cur_head[:, None] * stride_qh +
-                   offs_dpe[None, :])
+        off_qpe = (cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_dpe[None, :])
         qpe = tl.load(Q + off_qpe)
 
     # Init kv cache
@@ -735,20 +692,17 @@ def _fwd_grouped_kernel_v2(
         offs_k_pe_init = K_Buffer + offs_page[None, :] * stride_buf_k1 + offs_dpe[:, None]
     num_pages = (cur_batch_seq_len + PAGE_SIZE - 1) // PAGE_SIZE
     page_valid = cur_batch_seq_len % PAGE_SIZE
-        
+
     e_max = tl.zeros([BLOCK_H], dtype=tl.float32) - float("inf")
     e_sum = tl.zeros([BLOCK_H], dtype=tl.float32)
     acc = tl.zeros([BLOCK_H, BLOCK_DV], dtype=tl.float32)
 
     for page_idx in range(num_pages):
-        kv_page_loc = tl.load(
-            Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx +
-            page_idx
-        )
+        kv_page_loc = tl.load(Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx + page_idx)
         offs_k = offs_k_c_init + kv_page_loc * stride_buf_k0
         k = tl.load(offs_k)
         qk = tl.dot(q, k.to(q.dtype))
-        
+
         if BLOCK_DPE > 0:
             offs_kpe = offs_k_pe_init + kv_page_loc * stride_buf_k0
             kpe = tl.load(offs_kpe)
@@ -776,9 +730,7 @@ def _fwd_grouped_kernel_v2(
         e_sum = e_sum * re_scale + tl.sum(p, 1)
         e_max = n_e_max
 
-    offs_o = (cur_batch * stride_o_ob +
-                  cur_head[:, None] * stride_o_os +
-                  offs_dv[None, :])
+    offs_o = (cur_batch * stride_o_ob + cur_head[:, None] * stride_o_os + offs_dv[None, :])
 
     tl.store(Att_Out + offs_o, acc / e_sum[:, None])
 
@@ -797,9 +749,9 @@ def decode_attention_fwd_grouped_v2(
     logit_cap=0.0,
 ):
     # BLOCK = 64
-    Lk = k_buffer.shape[-1] # 576
-    Lv = v_buffer.shape[-1] # 512
-    
+    Lk = k_buffer.shape[-1]  # 576
+    Lv = v_buffer.shape[-1]  # 512
+
     if Lk == 576:
         BLOCK_DMODEL = 512
         BLOCK_DPE = 64
@@ -811,19 +763,19 @@ def decode_attention_fwd_grouped_v2(
         BLOCK_DPE = 0
     BLOCK_DV = triton.next_power_of_2(Lv)
 
-    batch, head_num = q.shape[0], q.shape[1] # 1, 128
-    kv_group_num = q.shape[1] // k_buffer.shape[-2] # 128 // 1 = 128
+    batch, head_num = q.shape[0], q.shape[1]  # 1, 128
+    kv_group_num = q.shape[1] // k_buffer.shape[-2]  # 128 // 1 = 128
 
     BLOCK_H = 16
-    NUM_KV_SPLITS = num_kv_splits # 4
+    NUM_KV_SPLITS = num_kv_splits  # 4
     grid = (
         batch,
         triton.cdiv(head_num, min(BLOCK_H, kv_group_num)),
         1,
-    ) # (1, 8, 4)
+    )  # (1, 8, 4)
 
     extra_kargs = {}
-    
+
     _fwd_grouped_kernel_v2[grid](
         q,
         k_buffer,
@@ -846,16 +798,16 @@ def decode_attention_fwd_grouped_v2(
         o.stride(2),
         kv_group_num=kv_group_num,
         q_head_num=head_num,
-        BLOCK_DMODEL=BLOCK_DMODEL, # 512
-        BLOCK_DPE=BLOCK_DPE, # 64
-        BLOCK_DV=BLOCK_DV, # 512
-        BLOCK_H=BLOCK_H, # 16
-        PAGE_SIZE=page_size, # 64
-        logit_cap=logit_cap, # 0.0
+        BLOCK_DMODEL=BLOCK_DMODEL,  # 512
+        BLOCK_DPE=BLOCK_DPE,  # 64
+        BLOCK_DV=BLOCK_DV,  # 512
+        BLOCK_H=BLOCK_H,  # 16
+        PAGE_SIZE=page_size,  # 64
+        logit_cap=logit_cap,  # 0.0
         num_warps=2,
         num_stages=1,
-        Lk=Lk, # 576
-        Lv=Lv, # 512
+        Lk=Lk,  # 576
+        Lv=Lv,  # 512
         **extra_kargs,
     )
 
@@ -929,25 +881,22 @@ def _fwd_grouped_kernel_v3(
         offs_k_pe_init = K_Buffer + offs_page[None, :] * stride_buf_k1 + offs_dpe[:, None]
     num_pages = (cur_batch_seq_len + PAGE_SIZE - 1) // PAGE_SIZE
     page_valid = cur_batch_seq_len % PAGE_SIZE
-        
+
     e_max = tl.zeros([BLOCK_H], dtype=tl.float32) - float("inf")
     e_sum = tl.zeros([BLOCK_H], dtype=tl.float32)
     acc = tl.zeros([BLOCK_H, BLOCK_DV], dtype=tl.float32)
 
     for page_idx in range(num_pages):
-        kv_page_loc = tl.load(
-            Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx +
-            page_idx
-        )
+        kv_page_loc = tl.load(Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx + page_idx)
         k_c_ptrs = offs_k_c_init + kv_page_loc * stride_buf_k0
         # k = tl.load(k_c_ptrs)
         # qk = tl.dot(q, k.to(q.dtype))
-        
+
         if BLOCK_DPE > 0:
             k_pe_ptrs = offs_k_pe_init + kv_page_loc * stride_buf_k0
             k_pe = tl.load(k_pe_ptrs)
             qk = tl.dot(q_pe, k_pe.to(q_pe.dtype))
-        
+
         q_nope_ptrs_loop = q_nope_ptrs
         k_c_ptrs_loop = k_c_ptrs
         for start_k in range(0, BLOCK_DMODEL, BLOCK_K):
@@ -956,7 +905,7 @@ def _fwd_grouped_kernel_v3(
             qk += tl.dot(q_nope, k_c.to(q_nope.dtype))
             q_nope_ptrs_loop += BLOCK_K
             k_c_ptrs_loop += BLOCK_K
-        
+
         qk *= sm_scale
 
         if logit_cap > 0:
@@ -980,9 +929,7 @@ def _fwd_grouped_kernel_v3(
         e_sum = e_sum * re_scale + tl.sum(p, 1)
         e_max = n_e_max
 
-    offs_o = (cur_batch * stride_o_ob +
-                  cur_head[:, None] * stride_o_os +
-                  offs_dv[None, :])
+    offs_o = (cur_batch * stride_o_ob + cur_head[:, None] * stride_o_os + offs_dv[None, :])
 
     tl.store(Att_Out + offs_o, acc / e_sum[:, None])
 
@@ -1001,9 +948,9 @@ def decode_attention_fwd_grouped_v3(
     logit_cap=0.0,
 ):
     # BLOCK = 64
-    Lk = k_buffer.shape[-1] # 576
-    Lv = v_buffer.shape[-1] # 512
-    
+    Lk = k_buffer.shape[-1]  # 576
+    Lv = v_buffer.shape[-1]  # 512
+
     if Lk == 576:
         BLOCK_DMODEL = 512
         BLOCK_DPE = 64
@@ -1015,20 +962,20 @@ def decode_attention_fwd_grouped_v3(
         BLOCK_DPE = 0
     BLOCK_DV = triton.next_power_of_2(Lv)
 
-    batch, head_num = q.shape[0], q.shape[1] # 1, 128
-    kv_group_num = q.shape[1] // k_buffer.shape[-2] # 128 // 1 = 128
+    batch, head_num = q.shape[0], q.shape[1]  # 1, 128
+    kv_group_num = q.shape[1] // k_buffer.shape[-2]  # 128 // 1 = 128
 
     BLOCK_H = 128
     BLOCK_K = 32
-    NUM_KV_SPLITS = num_kv_splits # 4
+    NUM_KV_SPLITS = num_kv_splits  # 4
     grid = (
         batch,
         triton.cdiv(head_num, min(BLOCK_H, kv_group_num)),
         1,
-    ) # (1, 8, 4)
+    )  # (1, 8, 4)
 
     extra_kargs = {}
-    
+
     _fwd_grouped_kernel_v3[grid](
         q,
         k_buffer,
@@ -1051,17 +998,17 @@ def decode_attention_fwd_grouped_v3(
         o.stride(2),
         kv_group_num=kv_group_num,
         q_head_num=head_num,
-        BLOCK_DMODEL=BLOCK_DMODEL, # 512
-        BLOCK_DPE=BLOCK_DPE, # 64
-        BLOCK_DV=BLOCK_DV, # 512
-        BLOCK_H=BLOCK_H, # 128
-        BLOCK_K=BLOCK_K, # 32
-        PAGE_SIZE=page_size, # 64
-        logit_cap=logit_cap, # 0.0
+        BLOCK_DMODEL=BLOCK_DMODEL,  # 512
+        BLOCK_DPE=BLOCK_DPE,  # 64
+        BLOCK_DV=BLOCK_DV,  # 512
+        BLOCK_H=BLOCK_H,  # 128
+        BLOCK_K=BLOCK_K,  # 32
+        PAGE_SIZE=page_size,  # 64
+        logit_cap=logit_cap,  # 0.0
         num_warps=8,
         num_stages=1,
-        Lk=Lk, # 576
-        Lv=Lv, # 512
+        Lk=Lk,  # 576
+        Lv=Lv,  # 512
         **extra_kargs,
     )
 
@@ -1117,9 +1064,9 @@ def _fwd_grouped_kernel_v5(
     offs_d = tl.arange(0, BLOCK_DMODEL)
     offs_dv = tl.arange(0, BLOCK_DV)
     offs_vd0 = tl.arange(0, BLOCK_V)
-    offs_vd1 = tl.arange(BLOCK_V, 2*BLOCK_V)
-    offs_vd2 = tl.arange(2*BLOCK_V, 3*BLOCK_V)
-    offs_vd3 = tl.arange(3*BLOCK_V, 4*BLOCK_V)
+    offs_vd1 = tl.arange(BLOCK_V, 2 * BLOCK_V)
+    offs_vd2 = tl.arange(2 * BLOCK_V, 3 * BLOCK_V)
+    offs_vd3 = tl.arange(3 * BLOCK_V, 4 * BLOCK_V)
     offs_k = tl.arange(0, BLOCK_K)
     cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
     cur_batch_req_idx = cur_batch
@@ -1144,7 +1091,7 @@ def _fwd_grouped_kernel_v5(
         offs_k_pe_init = K_Buffer + offs_page[None, :] * stride_buf_k1 + offs_dpe[:, None]
     num_pages = (cur_batch_seq_len + PAGE_SIZE - 1) // PAGE_SIZE
     page_valid = cur_batch_seq_len % PAGE_SIZE
-        
+
     e_max = tl.zeros([BLOCK_H], dtype=tl.float32) - float("inf")
     e_sum = tl.zeros([BLOCK_H], dtype=tl.float32)
     acc0 = tl.zeros([BLOCK_H, BLOCK_V], dtype=tl.float32)
@@ -1153,10 +1100,7 @@ def _fwd_grouped_kernel_v5(
     acc3 = tl.zeros([BLOCK_H, BLOCK_V], dtype=tl.float32)
 
     for page_idx in range(num_pages):
-        kv_page_loc = tl.load(
-            Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx +
-            page_idx
-        )
+        kv_page_loc = tl.load(Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx + page_idx)
         k_c_ptrs = offs_k_c_init + kv_page_loc * stride_buf_k0
         v_c_ptrs0 = v_c_init_ptrs0 + kv_page_loc * stride_buf_v0
         v_c_ptrs1 = v_c_init_ptrs1 + kv_page_loc * stride_buf_v0
@@ -1164,12 +1108,12 @@ def _fwd_grouped_kernel_v5(
         v_c_ptrs3 = v_c_init_ptrs3 + kv_page_loc * stride_buf_v0
         # k = tl.load(k_c_ptrs)
         # qk = tl.dot(q, k.to(q.dtype))
-        
+
         if BLOCK_DPE > 0:
             k_pe_ptrs = offs_k_pe_init + kv_page_loc * stride_buf_k0
             k_pe = tl.load(k_pe_ptrs)
             qk = tl.dot(q_pe, k_pe.to(q_pe.dtype))
-        
+
         q_nope_ptrs_loop = q_nope_ptrs
         k_c_ptrs_loop = k_c_ptrs
         for start_k in range(0, BLOCK_DMODEL, BLOCK_K):
@@ -1178,7 +1122,7 @@ def _fwd_grouped_kernel_v5(
             qk += tl.dot(q_nope, k_c.to(q_nope.dtype))
             q_nope_ptrs_loop += BLOCK_K
             k_c_ptrs_loop += BLOCK_K
-        
+
         qk *= sm_scale
 
         if logit_cap > 0:
@@ -1195,7 +1139,7 @@ def _fwd_grouped_kernel_v5(
         p = tl.exp(qk - n_e_max[:, None])
         e_sum = e_sum * re_scale + tl.sum(p, 1)
         e_max = n_e_max
-        
+
         # Ugly mannual unrolling, because triton doesn't support
         # array indexing
         acc0 *= re_scale[:, None]
@@ -1235,9 +1179,9 @@ def decode_attention_fwd_grouped_v5(
     logit_cap=0.0,
 ):
     # BLOCK = 64
-    Lk = k_buffer.shape[-1] # 576
-    Lv = v_buffer.shape[-1] # 512
-    
+    Lk = k_buffer.shape[-1]  # 576
+    Lv = v_buffer.shape[-1]  # 512
+
     if Lk == 576:
         BLOCK_DMODEL = 512
         BLOCK_DPE = 64
@@ -1249,8 +1193,8 @@ def decode_attention_fwd_grouped_v5(
         BLOCK_DPE = 0
     BLOCK_DV = triton.next_power_of_2(Lv)
 
-    batch, head_num = q.shape[0], q.shape[1] # 1, 128
-    kv_group_num = q.shape[1] // k_buffer.shape[-2] # 128 // 1 = 128
+    batch, head_num = q.shape[0], q.shape[1]  # 1, 128
+    kv_group_num = q.shape[1] // k_buffer.shape[-2]  # 128 // 1 = 128
 
     BLOCK_H = 128
     BLOCK_K = 32
@@ -1259,10 +1203,10 @@ def decode_attention_fwd_grouped_v5(
         batch,
         triton.cdiv(head_num, min(BLOCK_H, kv_group_num)),
         1,
-    ) # (1, 8, 4)
+    )  # (1, 8, 4)
 
     extra_kargs = {}
-    
+
     _fwd_grouped_kernel_v5[grid](
         q,
         k_buffer,
@@ -1285,24 +1229,22 @@ def decode_attention_fwd_grouped_v5(
         o.stride(2),
         kv_group_num=kv_group_num,
         q_head_num=head_num,
-        BLOCK_DMODEL=BLOCK_DMODEL, # 512
-        BLOCK_DPE=BLOCK_DPE, # 64
-        BLOCK_DV=BLOCK_DV, # 512
-        BLOCK_H=BLOCK_H, # 128
-        BLOCK_K=BLOCK_K, # 32
+        BLOCK_DMODEL=BLOCK_DMODEL,  # 512
+        BLOCK_DPE=BLOCK_DPE,  # 64
+        BLOCK_DV=BLOCK_DV,  # 512
+        BLOCK_H=BLOCK_H,  # 128
+        BLOCK_K=BLOCK_K,  # 32
         BLOCK_V=BLOCK_V,
-        PAGE_SIZE=page_size, # 64
-        logit_cap=logit_cap, # 0.0
+        PAGE_SIZE=page_size,  # 64
+        logit_cap=logit_cap,  # 0.0
         num_warps=8,
         num_stages=1,
-        Lk=Lk, # 576
-        Lv=Lv, # 512
+        Lk=Lk,  # 576
+        Lv=Lv,  # 512
         **extra_kargs,
     )
 
     return o
-
-
 
 
 @triton.jit
@@ -1375,7 +1317,7 @@ def _fwd_grouped_kernel_v3_2k_stage1(
     v_c_init_ptrs = V_Buffer + offs_page[:, None] * stride_buf_v1 + offs_dv[None, :]
     if BLOCK_DPE > 0:
         offs_k_pe_init = K_Buffer + offs_page[None, :] * stride_buf_k1 + offs_dpe[:, None]
-    
+
     # Get page range
     num_pages = tl.cdiv(cur_batch_seq_len, PAGE_SIZE)
     page_valid = cur_batch_seq_len % PAGE_SIZE
@@ -1387,7 +1329,7 @@ def _fwd_grouped_kernel_v3_2k_stage1(
     else:
         start_page = cur_kv_split * num_pages_per_split + ramainer_pages
         end_page = start_page + num_pages_per_split
-        
+
     e_max = tl.zeros([BLOCK_H], dtype=tl.float32) - float("inf")
     e_sum = tl.zeros([BLOCK_H], dtype=tl.float32)
     acc = tl.zeros([BLOCK_H, BLOCK_DV], dtype=tl.float32)
@@ -1395,16 +1337,14 @@ def _fwd_grouped_kernel_v3_2k_stage1(
     if start_page == end_page:
         return
     for page_idx in range(start_page, end_page):
-        kv_page_loc = tl.load(
-            Req_to_tokens + cur_batch_req_idx * stride_req_to_tokens_b + page_idx
-        )
+        kv_page_loc = tl.load(Req_to_tokens + cur_batch_req_idx * stride_req_to_tokens_b + page_idx)
         k_c_ptrs = k_c_int_ptrs + kv_page_loc * stride_buf_k0
 
         if BLOCK_DPE > 0:
             k_pe_ptrs = offs_k_pe_init + kv_page_loc * stride_buf_k0
             k_pe = tl.load(k_pe_ptrs)
             qk = tl.dot(q_pe, k_pe.to(q_pe.dtype))
-        
+
         q_nope_ptrs_loop = q_nope_ptrs
         k_c_ptrs_loop = k_c_ptrs
         for start_k in range(0, BLOCK_DMODEL, BLOCK_K):
@@ -1413,7 +1353,7 @@ def _fwd_grouped_kernel_v3_2k_stage1(
             qk += tl.dot(q_nope, k_c.to(q_nope.dtype))
             q_nope_ptrs_loop += BLOCK_K
             k_c_ptrs_loop += BLOCK_K
-        
+
         qk *= sm_scale
 
         if logit_cap > 0:
@@ -1488,9 +1428,7 @@ def _fwd_grouped_kernel_v3_2k_stage2(
     offs_logic = cur_batch * stride_l_1 + cur_head
 
     for split_kv_id in range(0, hi):
-        tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os,
-                        mask=mask_d,
-                        other=0.0)
+        tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d, other=0.0)
         tlogic = tl.load(Lse + offs_logic + split_kv_id * stride_l_0)
         n_e_max = tl.maximum(tlogic, e_max)
 
@@ -1523,9 +1461,9 @@ def decode_attention_fwd_grouped_v3_2k(
     logit_cap=0.0,
 ):
     # BLOCK = 64
-    Lk = k_buffer.shape[-1] # 576
-    Lv = v_buffer.shape[-1] # 512
-    
+    Lk = k_buffer.shape[-1]  # 576
+    Lv = v_buffer.shape[-1]  # 512
+
     if Lk == 576:
         BLOCK_DMODEL = 512
         BLOCK_DPE = 64
@@ -1537,8 +1475,8 @@ def decode_attention_fwd_grouped_v3_2k(
         BLOCK_DPE = 0
     BLOCK_DV = triton.next_power_of_2(Lv)
 
-    batch, head_num = q.shape[0], q.shape[1] # 1, 128
-    kv_group_num = q.shape[1] // k_buffer.shape[-2] # 128 // 1 = 128
+    batch, head_num = q.shape[0], q.shape[1]  # 1, 128
+    kv_group_num = q.shape[1] // k_buffer.shape[-2]  # 128 // 1 = 128
 
     BLOCK_H = 128
     BLOCK_K = 32
@@ -1549,10 +1487,10 @@ def decode_attention_fwd_grouped_v3_2k(
         batch,
         triton.cdiv(head_num, min(BLOCK_H, kv_group_num)),
         N_KV_SPLITS,
-    ) # (1, 1, 16)
+    )  # (1, 1, 16)
 
     extra_kargs = {}
-    
+
     _fwd_grouped_kernel_v3_2k_stage1[grid](
         q,
         k_buffer,
@@ -1578,21 +1516,21 @@ def decode_attention_fwd_grouped_v3_2k(
         lse.stride(1),
         kv_group_num=kv_group_num,
         q_head_num=head_num,
-        BLOCK_DMODEL=BLOCK_DMODEL, # 512
-        BLOCK_DPE=BLOCK_DPE, # 64
-        BLOCK_DV=BLOCK_DV, # 512
-        BLOCK_H=BLOCK_H, # 128
-        BLOCK_K=BLOCK_K, # 32
+        BLOCK_DMODEL=BLOCK_DMODEL,  # 512
+        BLOCK_DPE=BLOCK_DPE,  # 64
+        BLOCK_DV=BLOCK_DV,  # 512
+        BLOCK_H=BLOCK_H,  # 128
+        BLOCK_K=BLOCK_K,  # 32
         N_KV_SPLITS=N_KV_SPLITS,
-        PAGE_SIZE=page_size, # 64
-        logit_cap=logit_cap, # 0.0
+        PAGE_SIZE=page_size,  # 64
+        logit_cap=logit_cap,  # 0.0
         num_warps=8,
         num_stages=1,
-        Lk=Lk, # 576
-        Lv=Lv, # 512
+        Lk=Lk,  # 576
+        Lv=Lv,  # 512
         **extra_kargs,
     )
-    
+
     grid2 = (batch, head_num, 1)
     _fwd_grouped_kernel_v3_2k_stage2[grid2](
         attn_logits,
@@ -1616,7 +1554,6 @@ def decode_attention_fwd_grouped_v3_2k(
     )
 
     return o
-
 
 
 @triton.jit
@@ -1674,9 +1611,9 @@ def _fwd_grouped_kernel_v5_2k_stage1(
     offs_dv = tl.arange(0, BLOCK_DV)
     offs_k = tl.arange(0, BLOCK_K)
     offs_vd0 = tl.arange(0, BLOCK_V)
-    offs_vd1 = tl.arange(BLOCK_V, 2*BLOCK_V)
-    offs_vd2 = tl.arange(2*BLOCK_V, 3*BLOCK_V)
-    offs_vd3 = tl.arange(3*BLOCK_V, 4*BLOCK_V)
+    offs_vd1 = tl.arange(BLOCK_V, 2 * BLOCK_V)
+    offs_vd2 = tl.arange(2 * BLOCK_V, 3 * BLOCK_V)
+    offs_vd3 = tl.arange(3 * BLOCK_V, 4 * BLOCK_V)
     cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
     cur_batch_req_idx = cur_batch
 
@@ -1698,7 +1635,7 @@ def _fwd_grouped_kernel_v5_2k_stage1(
     v_c_init_ptrs3 = V_Buffer + offs_page[:, None] * stride_buf_v1 + offs_vd3[None, :]
     if BLOCK_DPE > 0:
         offs_k_pe_init = K_Buffer + offs_page[None, :] * stride_buf_k1 + offs_dpe[:, None]
-    
+
     # Get page range
     num_pages = tl.cdiv(cur_batch_seq_len, PAGE_SIZE)
     page_valid = cur_batch_seq_len % PAGE_SIZE
@@ -1710,7 +1647,7 @@ def _fwd_grouped_kernel_v5_2k_stage1(
     else:
         start_page = cur_kv_split * num_pages_per_split + ramainer_pages
         end_page = start_page + num_pages_per_split
-        
+
     e_max = tl.zeros([BLOCK_H], dtype=tl.float32) - float("inf")
     e_sum = tl.zeros([BLOCK_H], dtype=tl.float32)
     # acc = tl.zeros([BLOCK_H, BLOCK_DV], dtype=tl.float32)
@@ -1718,20 +1655,18 @@ def _fwd_grouped_kernel_v5_2k_stage1(
     acc1 = tl.zeros([BLOCK_H, BLOCK_V], dtype=tl.float32)
     acc2 = tl.zeros([BLOCK_H, BLOCK_V], dtype=tl.float32)
     acc3 = tl.zeros([BLOCK_H, BLOCK_V], dtype=tl.float32)
-    
+
     if start_page == end_page:
         return
     for page_idx in range(start_page, end_page):
-        kv_page_loc = tl.load(
-            Req_to_tokens + cur_batch_req_idx * stride_req_to_tokens_b + page_idx
-        )
+        kv_page_loc = tl.load(Req_to_tokens + cur_batch_req_idx * stride_req_to_tokens_b + page_idx)
         k_c_ptrs = k_c_int_ptrs + kv_page_loc * stride_buf_k0
 
         if BLOCK_DPE > 0:
             k_pe_ptrs = offs_k_pe_init + kv_page_loc * stride_buf_k0
             k_pe = tl.load(k_pe_ptrs)
             qk = tl.dot(q_pe, k_pe.to(q_pe.dtype))
-        
+
         q_nope_ptrs_loop = q_nope_ptrs
         k_c_ptrs_loop = k_c_ptrs
         for start_k in range(0, BLOCK_DMODEL, BLOCK_K):
@@ -1740,7 +1675,7 @@ def _fwd_grouped_kernel_v5_2k_stage1(
             qk += tl.dot(q_nope, k_c.to(q_nope.dtype))
             q_nope_ptrs_loop += BLOCK_K
             k_c_ptrs_loop += BLOCK_K
-        
+
         qk *= sm_scale
 
         if logit_cap > 0:
@@ -1763,7 +1698,7 @@ def _fwd_grouped_kernel_v5_2k_stage1(
         p = tl.exp(qk - n_e_max[:, None])
         e_sum = e_sum * re_scale + tl.sum(p, 1)
         e_max = n_e_max
-        
+
         acc0 *= re_scale[:, None]
         v_c0 = tl.load(v_c_ptrs0)
         acc0 += tl.dot(p.to(v_c0.dtype), v_c0)
@@ -1834,9 +1769,7 @@ def _fwd_grouped_kernel_v5_2k_stage2(
     offs_logic = cur_batch * stride_l_1 + cur_head
 
     for split_kv_id in range(0, hi):
-        tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os,
-                        mask=mask_d,
-                        other=0.0)
+        tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d, other=0.0)
         tlogic = tl.load(Lse + offs_logic + split_kv_id * stride_l_0)
         n_e_max = tl.maximum(tlogic, e_max)
 
@@ -1869,9 +1802,9 @@ def decode_attention_fwd_grouped_v5_2k(
     logit_cap=0.0,
 ):
     # BLOCK = 64
-    Lk = k_buffer.shape[-1] # 576
-    Lv = v_buffer.shape[-1] # 512
-    
+    Lk = k_buffer.shape[-1]  # 576
+    Lv = v_buffer.shape[-1]  # 512
+
     if Lk == 576:
         BLOCK_DMODEL = 512
         BLOCK_DPE = 64
@@ -1883,8 +1816,8 @@ def decode_attention_fwd_grouped_v5_2k(
         BLOCK_DPE = 0
     BLOCK_DV = triton.next_power_of_2(Lv)
 
-    batch, head_num = q.shape[0], q.shape[1] # 1, 128
-    kv_group_num = q.shape[1] // k_buffer.shape[-2] # 128 // 1 = 128
+    batch, head_num = q.shape[0], q.shape[1]  # 1, 128
+    kv_group_num = q.shape[1] // k_buffer.shape[-2]  # 128 // 1 = 128
 
     BLOCK_H = 128
     BLOCK_K = 32
@@ -1896,10 +1829,10 @@ def decode_attention_fwd_grouped_v5_2k(
         batch,
         triton.cdiv(head_num, min(BLOCK_H, kv_group_num)),
         N_KV_SPLITS,
-    ) # (1, 1, 16)
+    )  # (1, 1, 16)
 
     extra_kargs = {}
-    
+
     _fwd_grouped_kernel_v5_2k_stage1[grid](
         q,
         k_buffer,
@@ -1925,22 +1858,22 @@ def decode_attention_fwd_grouped_v5_2k(
         lse.stride(1),
         kv_group_num=kv_group_num,
         q_head_num=head_num,
-        BLOCK_DMODEL=BLOCK_DMODEL, # 512
-        BLOCK_DPE=BLOCK_DPE, # 64
-        BLOCK_DV=BLOCK_DV, # 512
-        BLOCK_H=BLOCK_H, # 128
-        BLOCK_K=BLOCK_K, # 32
+        BLOCK_DMODEL=BLOCK_DMODEL,  # 512
+        BLOCK_DPE=BLOCK_DPE,  # 64
+        BLOCK_DV=BLOCK_DV,  # 512
+        BLOCK_H=BLOCK_H,  # 128
+        BLOCK_K=BLOCK_K,  # 32
         N_KV_SPLITS=N_KV_SPLITS,
         BLOCK_V=BLOCK_V,
-        PAGE_SIZE=page_size, # 64
-        logit_cap=logit_cap, # 0.0
+        PAGE_SIZE=page_size,  # 64
+        logit_cap=logit_cap,  # 0.0
         num_warps=8,
         num_stages=1,
-        Lk=Lk, # 576
-        Lv=Lv, # 512
+        Lk=Lk,  # 576
+        Lv=Lv,  # 512
         **extra_kargs,
     )
-    
+
     grid2 = (batch, head_num, 1)
     _fwd_grouped_kernel_v5_2k_stage2[grid2](
         attn_logits,

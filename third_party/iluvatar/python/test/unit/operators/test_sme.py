@@ -16,6 +16,7 @@ import pytest
 triton_cache_dir = os.environ.get('TRITON_CACHE_DIR', '/root/.triton/cache')
 capability = torch.cuda.get_device_capability()
 
+
 def print_result_decorator(func):
 
     def wrapper(*args, **kwargs):

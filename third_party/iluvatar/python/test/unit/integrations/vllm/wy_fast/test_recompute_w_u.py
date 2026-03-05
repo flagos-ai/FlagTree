@@ -31,10 +31,7 @@ def prepare_chunk_indices(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Te
     return torch.tensor(pairs, device=cu_seqlens.device, dtype=torch.int32)
 
 
-
-def chunk_local_cumsum_ref(
-    g: torch.Tensor, chunk_size: int, cu_seqlens: torch.Tensor | None
-) -> torch.Tensor:
+def chunk_local_cumsum_ref(g: torch.Tensor, chunk_size: int, cu_seqlens: torch.Tensor | None) -> torch.Tensor:
     B, T, H = g.shape
     out = torch.zeros_like(g, dtype=torch.float32)
     for b, start, end in _iter_sequences(B, T, cu_seqlens):
@@ -43,7 +40,6 @@ def chunk_local_cumsum_ref(
                 t1 = min(t0 + chunk_size, end)
                 out[b, t0:t1, h] = torch.cumsum(g[b, t0:t1, h].float(), dim=0)
     return out
-
 
 
 def build_A_inv_ref(
@@ -76,7 +72,6 @@ def build_A_inv_ref(
     return A_inv
 
 
-
 def recompute_w_u_ref(
     k: torch.Tensor,
     v: torch.Tensor,
@@ -97,16 +92,14 @@ def recompute_w_u_ref(
             hg = h // group
             for t0 in range(start, end, chunk_size):
                 t1 = min(t0 + chunk_size, end)
-                Ai = A_inv[b, t0:t1, h, : t1 - t0].float()
+                Ai = A_inv[b, t0:t1, h, :t1 - t0].float()
                 beta_chunk = beta[b, t0:t1, h].float()
                 g_chunk = g_cumsum[b, t0:t1, h].float()
                 v_chunk = v[b, t0:t1, h, :].float()
                 u_chunk = Ai @ (v_chunk * beta_chunk[:, None])
                 u[b, t0:t1, h, :] = u_chunk
                 k_chunk = k[b, t0:t1, hg, :].float()
-                w_chunk = Ai @ (
-                    k_chunk * beta_chunk[:, None] * torch.exp(g_chunk)[:, None]
-                )
+                w_chunk = Ai @ (k_chunk * beta_chunk[:, None] * torch.exp(g_chunk)[:, None])
                 w[b, t0:t1, h, :] = w_chunk
     return w, u
 
@@ -143,16 +136,12 @@ def recompute_w_u_fwd_kernel(
         T = eos - bos
     else:
         bos, eos = i_b * T, i_b * T + T
-    p_beta = tl.make_block_ptr(
-        beta + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,)
-    )
-    p_g = tl.make_block_ptr(g + (bos * H + i_h), (T,), (H,), (i_t * BT,), (BT,), (0,))
-    p_A = tl.make_block_ptr(
-        A + (bos * H + i_h) * BT, (T, BT), (H * BT, 1), (i_t * BT, 0), (BT, BT), (1, 0)
-    )
-    b_beta = tl.load(p_beta, boundary_check=(0,))
+    p_beta = tl.make_block_ptr(beta + bos * H + i_h, (T, ), (H, ), (i_t * BT, ), (BT, ), (0, ))
+    p_g = tl.make_block_ptr(g + (bos * H + i_h), (T, ), (H, ), (i_t * BT, ), (BT, ), (0, ))
+    p_A = tl.make_block_ptr(A + (bos * H + i_h) * BT, (T, BT), (H * BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
+    b_beta = tl.load(p_beta, boundary_check=(0, ))
     b_A = tl.load(p_A, boundary_check=(0, 1))
-    b_g = tl.exp(tl.load(p_g, boundary_check=(0,)))
+    b_g = tl.exp(tl.load(p_g, boundary_check=(0, )))
 
     for i_v in range(tl.cdiv(V, BV)):
         p_v = tl.make_block_ptr(
@@ -208,25 +197,21 @@ def _make_cu_seqlens(lengths: Iterable[int], device: torch.device) -> torch.Tens
     return torch.tensor(cu, device=device, dtype=torch.int32)
 
 
-CASES = [
-    (B, T, H, Hg, K, V, is_varlen, num_warps, num_stages, dtype)
-    for B in [1]
-    for T in [17, 64, 128]
-    for H in [4, 8]
-    for Hg in [2, 4]
-    for K in [128]
-    for V in [128]
-    for is_varlen in [False, True]
-    for num_warps in [4, 8]
-    for num_stages in [2, 3]
-    for dtype in [torch.float16, torch.bfloat16]
-]
+CASES = [(B, T, H, Hg, K, V, is_varlen, num_warps, num_stages, dtype)
+         for B in [1]
+         for T in [17, 64, 128]
+         for H in [4, 8]
+         for Hg in [2, 4]
+         for K in [128]
+         for V in [128]
+         for is_varlen in [False, True]
+         for num_warps in [4, 8]
+         for num_stages in [2, 3]
+         for dtype in [torch.float16, torch.bfloat16]]
 
 
 @pytest.mark.parametrize("B,T,H,Hg,K,V,is_varlen,num_warps,num_stages,dtype", CASES)
-def test_recompute_w_u_fwd_kernel(
-    B, T, H, Hg, K, V, is_varlen, num_warps, num_stages, dtype
-):
+def test_recompute_w_u_fwd_kernel(B, T, H, Hg, K, V, is_varlen, num_warps, num_stages, dtype):
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
 
@@ -298,9 +283,5 @@ def test_recompute_w_u_fwd_kernel(
     assert not torch.isnan(w).any().item()
     assert not torch.isnan(u).any().item()
 
-    torch.testing.assert_close(
-        w.float(), w_ref, rtol=5e-2, atol=5e-2, check_dtype=False
-    )
-    torch.testing.assert_close(
-        u.float(), u_ref, rtol=5e-2, atol=5e-2, check_dtype=False
-    )
+    torch.testing.assert_close(w.float(), w_ref, rtol=5e-2, atol=5e-2, check_dtype=False)
+    torch.testing.assert_close(u.float(), u_ref, rtol=5e-2, atol=5e-2, check_dtype=False)

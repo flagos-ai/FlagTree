@@ -17,8 +17,7 @@ def ext_AttrsDescriptor_to_dict_divisible_by_4(divisible_by_4):
 def ext_AttrsDescriptor_from_dict(data):
     from triton.compiler.compiler import AttrsDescriptor
     return AttrsDescriptor(divisible_by_16=set(data.get('divisible_by_16', [])),
-                           equal_to_1=set(data.get('equal_to_1', [])),
-                           corexLoad=dict(data.get('corexLoad', [])),
+                           equal_to_1=set(data.get('equal_to_1', [])), corexLoad=dict(data.get('corexLoad', [])),
                            divisible_by_4=set(data.get('divisible_by_4', [])))
 
 

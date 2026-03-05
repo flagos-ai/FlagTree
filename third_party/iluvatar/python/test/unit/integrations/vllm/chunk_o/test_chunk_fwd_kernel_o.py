@@ -20,12 +20,10 @@ def _dtype_from_str(name: str) -> torch.dtype:
     raise ValueError(f"Unsupported dtype={name}")
 
 
-def _prepare_chunk_indices(cu_seqlens: torch.Tensor,
-                           chunk_size: int) -> torch.Tensor:
+def _prepare_chunk_indices(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Tensor:
     lens = cu_seqlens[1:] - cu_seqlens[:-1]
     counts = (lens + chunk_size - 1) // chunk_size
-    indices = torch.cat([torch.arange(int(n), device=cu_seqlens.device)
-                         for n in counts.tolist()])
+    indices = torch.cat([torch.arange(int(n), device=cu_seqlens.device) for n in counts.tolist()])
     return torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(cu_seqlens)
 
 
@@ -33,17 +31,13 @@ BKV_LIST = [32, 64]
 NUM_WARPS = [2, 4, 8]
 
 
-@triton.heuristics(
-    {
-        "USE_G": lambda args: args["g"] is not None,
-        "IS_VARLEN": lambda args: args["cu_seqlens"] is not None,
-    }
-)
+@triton.heuristics({
+    "USE_G": lambda args: args["g"] is not None,
+    "IS_VARLEN": lambda args: args["cu_seqlens"] is not None,
+})
 @triton.autotune(
     configs=[
-        triton.Config({"BK": BK, "BV": BV},
-                      num_warps=num_warps,
-                      num_stages=num_stages)
+        triton.Config({"BK": BK, "BV": BV}, num_warps=num_warps, num_stages=num_stages)
         for BK in BKV_LIST
         for BV in BKV_LIST
         for num_warps in NUM_WARPS
@@ -99,12 +93,9 @@ def chunk_fwd_kernel_o(
     b_A = tl.zeros([BT, BT], dtype=tl.float32)
 
     for i_k in range(tl.cdiv(K, BK)):
-        p_q = tl.make_block_ptr(q, (T, K), (Hg * K, 1),
-                                (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_k = tl.make_block_ptr(k, (K, T), (1, Hg * K),
-                                (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_h = tl.make_block_ptr(h, (K, V), (V, 1),
-                                (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_q = tl.make_block_ptr(q, (T, K), (Hg * K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(k, (K, T), (1, Hg * K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+        p_h = tl.make_block_ptr(h, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_h = tl.load(p_h, boundary_check=(0, 1))
@@ -113,8 +104,8 @@ def chunk_fwd_kernel_o(
 
     if USE_G:
         g += bos * H + i_h
-        p_g = tl.make_block_ptr(g, (T,), (H,), (i_t * BT,), (BT,), (0,))
-        b_g = tl.load(p_g, boundary_check=(0,))
+        p_g = tl.make_block_ptr(g, (T, ), (H, ), (i_t * BT, ), (BT, ), (0, ))
+        b_g = tl.load(p_g, boundary_check=(0, ))
         b_o = b_o * tl.exp(b_g)[:, None]
         b_A = b_A * tl.exp(b_g[:, None] - b_g[None, :])
 
@@ -123,10 +114,8 @@ def chunk_fwd_kernel_o(
     m_A = (o_t[:, None] >= o_t[None, :]) & (m_t[:, None] & m_t)
     b_A = tl.where(m_A, b_A, 0)
 
-    p_v = tl.make_block_ptr(v, (T, V), (H * V, 1),
-                            (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o, (T, V), (H * V, 1),
-                            (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_v = tl.make_block_ptr(v, (T, V), (H * V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o, (T, V), (H * V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     b_v = tl.load(p_v, boundary_check=(0, 1))
 
     b_o = b_o * scale + tl.dot(b_A.to(b_v.dtype), b_v) * scale
@@ -177,10 +166,7 @@ def _chunk_fwd_o_reference(
                 exp_g = torch.exp(g_h)
                 b_o = b_o * exp_g[:, None]
                 b_A = b_A * (exp_g[:, None] / exp_g[None, :])
-            mask = torch.tril(
-                torch.ones((t_end - t_start, t_end - t_start),
-                           device=q.device,
-                           dtype=torch.bool))
+            mask = torch.tril(torch.ones((t_end - t_start, t_end - t_start), device=q.device, dtype=torch.bool))
             b_A = torch.where(mask, b_A, torch.zeros_like(b_A))
             b_o = b_o * scale + (b_A.to(v_h.dtype) @ v_h).float() * scale
             out[0, t_start:t_end, i_h, :] = b_o.to(out.dtype)
@@ -240,14 +226,8 @@ def test_chunk_fwd_kernel_o_correctness(
     q = torch.randn((bsz, t_len, hg, k_dim), device=device, dtype=dtype)
     k = torch.randn_like(q)
     v = torch.randn((bsz, t_len, h_dim, v_dim), device=device, dtype=dtype)
-    g = (
-        torch.randn((bsz, t_len, h_dim), device=device, dtype=torch.float32)
-        if use_g
-        else None
-    )
-    h_state = torch.randn((nt, h_dim, k_dim, v_dim),
-                          device=device,
-                          dtype=dtype)
+    g = (torch.randn((bsz, t_len, h_dim), device=device, dtype=torch.float32) if use_g else None)
+    h_state = torch.randn((nt, h_dim, k_dim, v_dim), device=device, dtype=dtype)
     cu_seqlens = torch.tensor([0, t_len], device=device, dtype=torch.int64)
 
     bt = min(chunk_size, max(16, triton.next_power_of_2(t_len)))

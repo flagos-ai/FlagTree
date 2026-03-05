@@ -5,20 +5,15 @@ import os
 import pytest
 import torch
 
-from .punica_test_utils import (PunicaTensors, assert_close,
-                                generate_data_for_nslices, parse_case_env,
-                                seed_everything)
+from .punica_test_utils import (PunicaTensors, assert_close, generate_data_for_nslices, parse_case_env, seed_everything)
 from .punica_torch_ops import (sgmv_expand, sgmv_expand_slice, sgmv_shrink)
-from .punica_triton_ops import (LoRAKernelMeta, _LORA_A_PTR_DICT,
-                                _LORA_B_PTR_DICT, lora_expand, lora_shrink)
+from .punica_triton_ops import (LoRAKernelMeta, _LORA_A_PTR_DICT, _LORA_B_PTR_DICT, lora_expand, lora_shrink)
 
 
-def sgmv_shrink_for_nslices(
-        nslices: int, inputs_tensor: torch.Tensor,
-        lora_weights_lst: list[torch.Tensor], out_tensor: torch.Tensor,
-        b_seq_start_loc: torch.Tensor, seq_len_tensor: torch.Tensor,
-        prompt_lora_mapping: torch.Tensor, batches: int, max_seq_length: int,
-        num_tokens: int, scaling: float):
+def sgmv_shrink_for_nslices(nslices: int, inputs_tensor: torch.Tensor, lora_weights_lst: list[torch.Tensor],
+                            out_tensor: torch.Tensor, b_seq_start_loc: torch.Tensor, seq_len_tensor: torch.Tensor,
+                            prompt_lora_mapping: torch.Tensor, batches: int, max_seq_length: int, num_tokens: int,
+                            scaling: float):
     for index in range(nslices):
         sgmv_shrink(
             inputs_tensor,
@@ -34,14 +29,10 @@ def sgmv_shrink_for_nslices(
         )
 
 
-def sgmv_expand_for_nslices(nslices: int, hidden_size: int,
-                            inputs_tensor: torch.Tensor,
-                            lora_weights_lst: list[torch.Tensor],
-                            out_tensor: torch.Tensor,
-                            b_seq_start_loc: torch.Tensor,
-                            seq_len_tensor: torch.Tensor,
-                            prompt_lora_mapping: torch.Tensor, batches: int,
-                            max_seq_length: int, num_tokens: int,
+def sgmv_expand_for_nslices(nslices: int, hidden_size: int, inputs_tensor: torch.Tensor,
+                            lora_weights_lst: list[torch.Tensor], out_tensor: torch.Tensor,
+                            b_seq_start_loc: torch.Tensor, seq_len_tensor: torch.Tensor,
+                            prompt_lora_mapping: torch.Tensor, batches: int, max_seq_length: int, num_tokens: int,
                             add_inputs: bool) -> None:
     if nslices == 1:
         sgmv_expand(
@@ -79,14 +70,80 @@ def sgmv_expand_for_nslices(nslices: int, hidden_size: int,
 
 def _full_hidden_sizes() -> list[int]:
     base = [
-        128, 256, 512, 896, 1024, 1152, 1216, 1280, 1536, 1664, 2048, 2240,
-        2304, 2368, 2432, 2560, 2752, 3072, 3328, 3456, 3584, 3712, 4096,
-        4480, 4608, 4736, 4864, 5120, 5504, 5632, 5888, 6144, 6400, 6848,
-        6912, 7168, 7424, 8192, 8960, 9216, 9472, 10240, 11008, 11264,
-        13824, 14336, 14784, 14848, 15360, 18944, 22016, 22528, 24576,
-        27392, 27648, 29568, 29696, 32000, 32256, 32512, 32768, 33024,
-        36864, 43264, 49152, 49408, 60544, 60672, 64000, 64256, 102400,
-        102656, 128000, 128256,
+        128,
+        256,
+        512,
+        896,
+        1024,
+        1152,
+        1216,
+        1280,
+        1536,
+        1664,
+        2048,
+        2240,
+        2304,
+        2368,
+        2432,
+        2560,
+        2752,
+        3072,
+        3328,
+        3456,
+        3584,
+        3712,
+        4096,
+        4480,
+        4608,
+        4736,
+        4864,
+        5120,
+        5504,
+        5632,
+        5888,
+        6144,
+        6400,
+        6848,
+        6912,
+        7168,
+        7424,
+        8192,
+        8960,
+        9216,
+        9472,
+        10240,
+        11008,
+        11264,
+        13824,
+        14336,
+        14784,
+        14848,
+        15360,
+        18944,
+        22016,
+        22528,
+        24576,
+        27392,
+        27648,
+        29568,
+        29696,
+        32000,
+        32256,
+        32512,
+        32768,
+        33024,
+        36864,
+        43264,
+        49152,
+        49408,
+        60544,
+        60672,
+        64000,
+        64256,
+        102400,
+        102656,
+        128000,
+        128256,
     ]
     divisibility = [1, 2, 8, 16, 64]
     sizes = set()
@@ -173,10 +230,8 @@ def _get_device(case) -> str:
     return os.getenv("PUNICA_DEVICE", "cuda:0")
 
 
-def check_lora_shrink_kernel(batches: int, num_loras: int, rank: int,
-                             hidden_size: int, nslices: int,
-                             dtype: torch.dtype, device: str, seq_length: int,
-                             scaling: float):
+def check_lora_shrink_kernel(batches: int, num_loras: int, rank: int, hidden_size: int, nslices: int,
+                             dtype: torch.dtype, device: str, seq_length: int, scaling: float):
     data: PunicaTensors = generate_data_for_nslices(
         batches,
         hidden_size,
@@ -190,13 +245,10 @@ def check_lora_shrink_kernel(batches: int, num_loras: int, rank: int,
     )
     max_seq_length, token_nums = data.meta()
 
-    sgmv_meta_args = (data.b_seq_start_loc, data.seq_len_tensor,
-                      data.prompt_lora_mapping, batches, max_seq_length,
+    sgmv_meta_args = (data.b_seq_start_loc, data.seq_len_tensor, data.prompt_lora_mapping, batches, max_seq_length,
                       token_nums)
 
-    lora_meta = LoRAKernelMeta.make(max_loras=num_loras,
-                                    max_num_tokens=token_nums,
-                                    device=device)
+    lora_meta = LoRAKernelMeta.make(max_loras=num_loras, max_num_tokens=token_nums, device=device)
     lora_meta.prepare_tensors(data.token_lora_mapping)
 
     ref_out_tensor = data.ref_out_tensor
@@ -223,10 +275,8 @@ def check_lora_shrink_kernel(batches: int, num_loras: int, rank: int,
     assert_close(out_tensor, ref_out_tensor)
 
 
-def check_lora_expand_kernel(batches: int, num_loras: int, rank: int,
-                             hidden_size: int, nslices: int,
-                             dtype: torch.dtype, device: str, seq_length: int,
-                             add_inputs: bool):
+def check_lora_expand_kernel(batches: int, num_loras: int, rank: int, hidden_size: int, nslices: int,
+                             dtype: torch.dtype, device: str, seq_length: int, add_inputs: bool):
     data: PunicaTensors = generate_data_for_nslices(
         batches,
         hidden_size,
@@ -241,33 +291,21 @@ def check_lora_expand_kernel(batches: int, num_loras: int, rank: int,
 
     max_seq_length, token_nums = data.meta()
 
-    sgmv_meta_args = (data.b_seq_start_loc, data.seq_len_tensor,
-                      data.prompt_lora_mapping, batches, max_seq_length,
+    sgmv_meta_args = (data.b_seq_start_loc, data.seq_len_tensor, data.prompt_lora_mapping, batches, max_seq_length,
                       token_nums)
 
-    lora_meta = LoRAKernelMeta.make(max_loras=num_loras,
-                                    max_num_tokens=token_nums,
-                                    device=device)
+    lora_meta = LoRAKernelMeta.make(max_loras=num_loras, max_num_tokens=token_nums, device=device)
     lora_meta.prepare_tensors(data.token_lora_mapping)
 
     ref_out_tensor = data.ref_out_tensor
     out_tensor = data.our_out_tensor.clone()
 
     _LORA_B_PTR_DICT.clear()
-    lora_expand(data.inputs_tensor,
-                data.lora_weights,
-                out_tensor,
-                *lora_meta.meta_args(token_nums=token_nums),
-                offset_start=0,
-                add_inputs=add_inputs)
+    lora_expand(data.inputs_tensor, data.lora_weights, out_tensor, *lora_meta.meta_args(token_nums=token_nums),
+                offset_start=0, add_inputs=add_inputs)
 
-    sgmv_expand_for_nslices(nslices,
-                            hidden_size,
-                            data.inputs_tensor,
-                            data.lora_weights,
-                            ref_out_tensor,
-                            *sgmv_meta_args,
-                            add_inputs=add_inputs)
+    sgmv_expand_for_nslices(nslices, hidden_size, data.inputs_tensor, data.lora_weights, ref_out_tensor,
+                            *sgmv_meta_args, add_inputs=add_inputs)
 
     assert_close(out_tensor, ref_out_tensor)
 
@@ -284,10 +322,7 @@ def _is_nonconsecutive(mapping: list[int]) -> bool:
     return False
 
 
-def _generate_nonconsecutive_mappings(num_tokens: int,
-                                      num_loras: int,
-                                      num_cases: int,
-                                      seed: int) -> list[list[int]]:
+def _generate_nonconsecutive_mappings(num_tokens: int, num_loras: int, num_cases: int, seed: int) -> list[list[int]]:
     import random
 
     rng = random.Random(seed)
@@ -345,8 +380,7 @@ NONCONSEC_PARAMS = _build_nonconsec_cases(num_cases=24)
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("params", NONCONSEC_PARAMS)
-def test_nonconsecutive_mapping_expand(dtype: torch.dtype,
-                                       params: dict[str, int]):
+def test_nonconsecutive_mapping_expand(dtype: torch.dtype, params: dict[str, int]):
     seed_everything(0)
     device = _get_device(None)
     num_tokens = params["num_tokens"]
@@ -363,39 +397,27 @@ def test_nonconsecutive_mapping_expand(dtype: torch.dtype,
     token_lora_mapping = torch.tensor(mapping, dtype=torch.int32, device=device)
 
     inputs = torch.rand((nslices, num_tokens, rank), dtype=dtype, device=device)
-    lora_weights = [
-        torch.rand((num_loras, hidden_size, rank),
-                   dtype=dtype,
-                   device=device)
-    ]
+    lora_weights = [torch.rand((num_loras, hidden_size, rank), dtype=dtype, device=device)]
     ref_out = torch.zeros((num_tokens, hidden_size), dtype=dtype, device=device)
     out = ref_out.clone()
 
-    lora_meta = LoRAKernelMeta.make(max_loras=num_loras,
-                                    max_num_tokens=num_tokens,
-                                    device=device)
+    lora_meta = LoRAKernelMeta.make(max_loras=num_loras, max_num_tokens=num_tokens, device=device)
     lora_meta.prepare_tensors(token_lora_mapping)
 
     _LORA_B_PTR_DICT.clear()
-    lora_expand(inputs,
-                lora_weights,
-                out,
-                *lora_meta.meta_args(token_nums=num_tokens),
-                offset_start=0,
+    lora_expand(inputs, lora_weights, out, *lora_meta.meta_args(token_nums=num_tokens), offset_start=0,
                 add_inputs=False)
 
     # Reference: directly use per-token mapping.
     from .punica_torch_ops import bgmv_expand
-    bgmv_expand(inputs[0], lora_weights[0], ref_out, token_lora_mapping,
-                add_inputs=False)
+    bgmv_expand(inputs[0], lora_weights[0], ref_out, token_lora_mapping, add_inputs=False)
 
     assert_close(out, ref_out)
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("params", NONCONSEC_PARAMS)
-def test_nonconsecutive_mapping_shrink(dtype: torch.dtype,
-                                       params: dict[str, int]):
+def test_nonconsecutive_mapping_shrink(dtype: torch.dtype, params: dict[str, int]):
     seed_everything(0)
     device = _get_device(None)
     num_tokens = params["num_tokens"]
@@ -413,27 +435,15 @@ def test_nonconsecutive_mapping_shrink(dtype: torch.dtype,
     token_lora_mapping = torch.tensor(mapping, dtype=torch.int32, device=device)
 
     inputs = torch.rand((num_tokens, hidden_size), dtype=dtype, device=device)
-    lora_weights = [
-        torch.rand((num_loras, rank, hidden_size),
-                   dtype=dtype,
-                   device=device)
-    ]
+    lora_weights = [torch.rand((num_loras, rank, hidden_size), dtype=dtype, device=device)]
     ref_out = torch.zeros((num_tokens, rank), dtype=torch.float32, device=device)
-    out = torch.zeros((nslices, num_tokens, rank),
-                      dtype=torch.float32,
-                      device=device)
+    out = torch.zeros((nslices, num_tokens, rank), dtype=torch.float32, device=device)
 
-    lora_meta = LoRAKernelMeta.make(max_loras=num_loras,
-                                    max_num_tokens=num_tokens,
-                                    device=device)
+    lora_meta = LoRAKernelMeta.make(max_loras=num_loras, max_num_tokens=num_tokens, device=device)
     lora_meta.prepare_tensors(token_lora_mapping)
 
     _LORA_A_PTR_DICT.clear()
-    lora_shrink(inputs,
-                lora_weights,
-                out,
-                *lora_meta.meta_args(token_nums=num_tokens),
-                scaling)
+    lora_shrink(inputs, lora_weights, out, *lora_meta.meta_args(token_nums=num_tokens), scaling)
 
     from .punica_torch_ops import bgmv_shrink
     bgmv_shrink(inputs, lora_weights[0], ref_out, token_lora_mapping, scaling)
@@ -472,24 +482,11 @@ def test_kernels(
         pytest.skip("shrink only supports fp16/bf16")
 
     if op_type == "shrink":
-        check_lora_shrink_kernel(batches=batches,
-                                 num_loras=num_loras,
-                                 rank=rank,
-                                 hidden_size=hidden_size,
-                                 nslices=nslices,
-                                 dtype=dtype,
-                                 device=device,
-                                 seq_length=seq_length,
-                                 scaling=scaling)
+        check_lora_shrink_kernel(batches=batches, num_loras=num_loras, rank=rank, hidden_size=hidden_size,
+                                 nslices=nslices, dtype=dtype, device=device, seq_length=seq_length, scaling=scaling)
     else:
-        check_lora_expand_kernel(batches=batches,
-                                 num_loras=num_loras,
-                                 rank=rank,
-                                 hidden_size=hidden_size,
-                                 nslices=nslices,
-                                 dtype=dtype,
-                                 device=device,
-                                 seq_length=seq_length,
+        check_lora_expand_kernel(batches=batches, num_loras=num_loras, rank=rank, hidden_size=hidden_size,
+                                 nslices=nslices, dtype=dtype, device=device, seq_length=seq_length,
                                  add_inputs=add_inputs)
 
 
@@ -514,22 +511,9 @@ def test_kernels_hidden_size(
         pytest.skip("shrink only supports fp16/bf16")
 
     if op_type == "shrink":
-        check_lora_shrink_kernel(batches=batches,
-                                 num_loras=num_loras,
-                                 rank=rank,
-                                 hidden_size=hidden_size,
-                                 nslices=nslices,
-                                 dtype=dtype,
-                                 device=device,
-                                 seq_length=seq_length,
-                                 scaling=scaling)
+        check_lora_shrink_kernel(batches=batches, num_loras=num_loras, rank=rank, hidden_size=hidden_size,
+                                 nslices=nslices, dtype=dtype, device=device, seq_length=seq_length, scaling=scaling)
     else:
-        check_lora_expand_kernel(batches=batches,
-                                 num_loras=num_loras,
-                                 rank=rank,
-                                 hidden_size=hidden_size,
-                                 nslices=nslices,
-                                 dtype=dtype,
-                                 device=device,
-                                 seq_length=seq_length,
+        check_lora_expand_kernel(batches=batches, num_loras=num_loras, rank=rank, hidden_size=hidden_size,
+                                 nslices=nslices, dtype=dtype, device=device, seq_length=seq_length,
                                  add_inputs=add_inputs)

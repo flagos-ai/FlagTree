@@ -7,8 +7,8 @@ namespace {
 struct Exp2OpConversion
     : mlir::triton::gpu::ElementwiseOpConversionBase<math::Exp2Op,
                                                      Exp2OpConversion> {
-  using mlir::triton::gpu::ElementwiseOpConversionBase<math::Exp2Op,
-                                                       Exp2OpConversion>::ElementwiseOpConversionBase;
+  using mlir::triton::gpu::ElementwiseOpConversionBase<
+      math::Exp2Op, Exp2OpConversion>::ElementwiseOpConversionBase;
 
   explicit Exp2OpConversion(LLVMTypeConverter &typeConverter,
                             ModuleAxisInfoAnalysis &axisAnalysisPass,
@@ -17,11 +17,11 @@ struct Exp2OpConversion
                                                        Exp2OpConversion>(
             typeConverter, axisAnalysisPass, benefit) {}
 
-  llvm::SmallVector<mlir::Value> createDestOps(
-      math::Exp2Op op, OpAdaptor adaptor,
-      mlir::ConversionPatternRewriter &rewriter, mlir::Type elemTy,
-      mlir::triton::gpu::MultipleOperandsRange operands,
-      mlir::Location loc) const {
+  llvm::SmallVector<mlir::Value>
+  createDestOps(math::Exp2Op op, OpAdaptor adaptor,
+                mlir::ConversionPatternRewriter &rewriter, mlir::Type elemTy,
+                mlir::triton::gpu::MultipleOperandsRange operands,
+                mlir::Location loc) const {
     if (elemTy.getIntOrFloatBitWidth() != 32)
       return {};
 
@@ -30,8 +30,8 @@ struct Exp2OpConversion
         mlir::triton::gpu::getFunctionType(elemTy, operands[0]);
     LLVM::LLVMFuncOp funcOp = mlir::triton::gpu::appendOrGetExternFuncOp(
         rewriter, op, funcName, funcType);
-    return {rewriter.create<LLVM::CallOp>(loc, funcOp, operands[0])
-                .getResult()};
+    return {
+        rewriter.create<LLVM::CallOp>(loc, funcOp, operands[0]).getResult()};
   }
 };
 

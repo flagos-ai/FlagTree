@@ -23,8 +23,8 @@ void populateExp2OpToLLVMPatterns(LLVMTypeConverter &typeConverter,
 #define FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVMBase_reorderValues
 #define FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVMBase_unpackI32
 #define FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVMBase_packI32
-#define FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVM_exp2       \
-  ::mlir::triton::ILUVATAR::populateExp2OpToLLVMPatterns(                        \
+#define FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVM_exp2      \
+  ::mlir::triton::ILUVATAR::populateExp2OpToLLVMPatterns(                      \
       typeConverter, patterns, axisInfoAnalysis, targetInfo, benefit)
 
 #endif // ILUVATAR_TRITON_CONVERSION_TRITONGPU_TO_ELEMENTWISE_OP_H
