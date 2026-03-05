@@ -17,16 +17,6 @@ using namespace mlir::triton;
 
 namespace mlir::triton {
 
-#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVM_exp2
-namespace ILUVATAR {
-void populateExp2OpToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                  RewritePatternSet &patterns,
-                                  ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                                  const TargetInfoBase &targetInfo,
-                                  PatternBenefit benefit);
-} // namespace ILUVATAR
-#endif
-
 namespace gpu {
 
 SmallVector<Value> reorderValues(const SmallVector<Value> &values, Type inType,
