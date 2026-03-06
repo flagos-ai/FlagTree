@@ -20,8 +20,6 @@ from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, canonicalize_dtype
 from .cache import get_cache_key
 from triton._C.libtriton import get_cache_invalidating_env_vars
-import tokenize
-from io import StringIO
 
 TRITON_MODULE = "triton.language"
 GLUON_MODULE = "triton.experimental.gluon.language"
@@ -562,18 +560,11 @@ class JITCallable:
     # the user might want to monkey-patch self.src dynamically.
     # Our unit tests do this, for example.
     def parse(self):
+        from ..compiler.hint_manager import hint_trigger
         # Maps line numbers to comment hints
-        line_flagtree_hints = {}
-        code_str = self.src
-        g = tokenize.generate_tokens(StringIO(code_str).readline)
-        for tok_type, tok_text, start, end, _ in g:
-            if tok_type == tokenize.COMMENT:
-                comment = tok_text.replace(" ", "").strip()
-                if comment.startswith('#@hint:'):
-                    flagtree_hints = comment[len('#@hint:'):].strip()
-                    # Record the line number of the comment
-                    line_num = start[0]
-                    line_flagtree_hints[line_num] = flagtree_hints
+        line_flagtree_hints = hint_trigger("maps_line_numbers_to_comment_hints", self)
+        if line_flagtree_hints is None:
+            line_flagtree_hints = {}
 
         tree = ast.parse(self._src)
         assert isinstance(tree, ast.Module)
@@ -581,7 +572,7 @@ class JITCallable:
         assert isinstance(tree.body[0], ast.FunctionDef)
 
         # Attach the line number to comment mapping to the function definition node
-        tree.body[0].line_flagtree_hints = line_flagtree_hints
+        hint_trigger("attach_line_number_to_comment_mapping", tree, line_flagtree_hints)
         return tree
 
     @property
