@@ -272,9 +272,6 @@ class CodeGenerator(ast.NodeVisitor):
         # Are we currently visiting an ast.arg's default value?  These have some
         # special handling.
         self.visiting_arg_default_value = False
-        # Stack to keep track of active `with`-hints (e.g., tle.hint(...))
-        # Each entry is a dict mapping hint names to literal values.
-        self._with_hints = []
 
     builtin_namespace: Dict[str, Any] = {_.__name__: _ for _ in (len, list, range, float, int, isinstance, getattr)}
     builtin_namespace.update((
@@ -811,27 +808,13 @@ class CodeGenerator(ast.NodeVisitor):
 
         # Check if context is a Call and dispatch to registered handler
         if isinstance(context, ast.Call):
-            # TODO[FIXME]: This is a hack to support `with hint(...)`, maybe should be handled in a better way like scope handler
-            if isinstance(context.func, ast.Attribute) and context.func.attr == "hint":
-                hints = {}
-                for kw in context.keywords:
-                    if not isinstance(kw.value, ast.Constant):
-                        raise self._unsupported(node, "keyword arguments to hint() are only supported for constant values")
-                    hints[kw.arg] = kw.value.value
-                self._with_hints.append(hints)
-
             withitemClass = self.visit(context.func)
             handler = WITH_DISPATCH.get(withitemClass)
             if handler:
                 return handler(self, node)
 
         # Fall back to visiting body for unhandled cases
-        try:
-            self.visit_compound_statement(node.body)
-        finally:
-            self._with_hints.pop()
-
-        return
+        return self.visit_compound_statement(node.body)
 
     def visit_Compare(self, node):
         if not (len(node.comparators) == 1 and len(node.ops) == 1):
@@ -1213,16 +1196,14 @@ class CodeGenerator(ast.NodeVisitor):
             if '_generator' in sig.parameters:
                 extra_kwargs['_generator'] = self
             try:
-                # Honor hints coming from an enclosing `with ... hint(...)` block.
-                # For example, `with tle.hint(inter_no_alias=True): tle.copy(...)`
-                # should behave like `tle.copy(..., inter_no_alias=True)` when the
-                # keyword isn't explicitly provided on the call site.
-                if self._with_hints:
+                if fn.__name__ == 'copy':
+                    # extract tle hints from the generator to identify if node in the tle hints scope
+                    tle = importlib.import_module("..experimental.tle", package=__package__)
+                    top_hints = tle.extract_tle_hints_scope(self)
+
                     # Only apply to some builtins; currently, 'copy' is relevant.
-                    if fn.__name__ == 'copy':
-                        top_hints = self._with_hints[-1]
-                        if 'inter_no_alias' in top_hints and 'inter_no_alias' not in kws:
-                            kws['inter_no_alias'] = top_hints['inter_no_alias']
+                    if 'inter_no_alias' in top_hints and 'inter_no_alias' not in kws:
+                        kws['inter_no_alias'] = top_hints['inter_no_alias']
                 ret = fn(*args, **extra_kwargs, **kws)
                 # Sync the builder's location before return.
                 ip, last_loc = self._get_insertion_point_and_loc(_builder)
