@@ -1,4 +1,4 @@
-# Copyright (c) 2025 XCoreSigma Inc. All rights reserved.
+# Copyright 2026- Xcoresigma Technology Co., Ltd
 
 from triton._C.libtriton import ir
 from typing import Optional, Dict

@@ -1,3 +1,3 @@
-# Copyright (c) 2025 XCoreSigma Inc. All rights reserved.
+# Copyright 2026- Xcoresigma Technology Co., Ltd
 
 from . import dsa

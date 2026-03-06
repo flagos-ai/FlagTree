@@ -1,4 +1,4 @@
-// Copyright (c) 2025 XCoreSigma Inc. All rights reserved.
+// Copyright 2026- Xcoresigma Technology Co., Ltd
 
 #ifndef TRITON_TLE_IR_DIALECT_H_
 #define TRITON_TLE_IR_DIALECT_H_ 

@@ -1,4 +1,4 @@
-# Copyright (c) 2025 XCoreSigma Inc. All rights reserved.
+# Copyright 2026- Xcoresigma Technology Co., Ltd
 
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 

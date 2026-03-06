@@ -1,4 +1,4 @@
-// Copyright (c) 2025 XCoreSigma Inc. All rights reserved.
+// Copyright 2026- Xcoresigma Technology Co., Ltd
 
 #ifndef TRITON_TLE_OPS
 #define TRITON_TLE_OPS 

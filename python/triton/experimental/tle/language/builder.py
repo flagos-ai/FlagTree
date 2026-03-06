@@ -1,4 +1,4 @@
-# Copyright (c) 2025 XCoreSigma Inc. All rights reserved.
+# Copyright 2026- Xcoresigma Technology Co., Ltd
 
 def create_dsa_method_wrapper_with_tle_builder(main_builder, delegate_builder, method_name):
     delegate_method = getattr(delegate_builder, method_name)

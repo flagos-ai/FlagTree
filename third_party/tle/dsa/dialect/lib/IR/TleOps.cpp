@@ -1,4 +1,4 @@
-// Copyright (c) 2025 XCoreSigma Inc. All rights reserved.
+// Copyright 2026- Xcoresigma Technology Co., Ltd
 
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
