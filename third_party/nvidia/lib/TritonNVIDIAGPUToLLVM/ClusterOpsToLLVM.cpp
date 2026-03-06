@@ -60,7 +60,6 @@ struct ClusterWaitOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto ctx = rewriter.getContext();
     rewriter.replaceOpWithNewOp<NVVM::ClusterWaitOp>(op, UnitAttr::get(ctx));
-    rewriter.create<NVVM::FenceScClusterOp>(op.getLoc());
     return success();
   }
 };
