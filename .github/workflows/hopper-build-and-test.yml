@@ -162,5 +162,6 @@ jobs:
           python3 python/tutorials/tle/raw/02-fused-softmax.py
           python3 python/tutorials/tle/raw/03-matrix-multiplication.py
           python3 python/tutorials/tle/raw/04-hello-world.py
-          python3 python/tutorials/tle/raw/05-topk.py
+          python3 python/tutorials/tle/raw/05-topk.py --kernel triton
+          python3 python/tutorials/tle/raw/05-topk.py --kernel tle
           python3 python/tutorials/tle/raw/06-test-vassert.py

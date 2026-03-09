@@ -54,7 +54,7 @@ namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 
-extern SmallVector<Value> createTLERawRegionByLLVMFunc(
+extern tle::DSLRegionOp createTLERawRegionByLLVMFunc(
     TritonOpBuilder &self, std::string_view text, std::string_view fnname,
     const std::vector<Value> &outputs, const std::vector<Value> &inputs);
 
@@ -186,20 +186,31 @@ void init_triton_tle_passes(py::module &&m) {
 void init_tle_raw_ir(py::module &&m) {
   using ret = py::return_value_policy;
 
+  py::class_<tle::DSLRegionOp>(m, "DSLRegionOp", py::module_local(),
+                               py::dynamic_attr())
+      .def(
+          "get_results",
+          [](tle::DSLRegionOp &op) -> std::vector<OpResult> {
+            auto results_range = op->getResults();
+            return std::vector<OpResult>(results_range.begin(),
+                                         results_range.end());
+          },
+          ret::reference)
+      .def("dump", &tle::DSLRegionOp::dump);
+
+  py::class_<tle::YieldOp>(m, "YieldOp", py::module_local(), py::dynamic_attr())
+      .def("dump", &tle::YieldOp::dump);
+
   auto *builder_cls = ir::getBuilderClass();
-  builder_cls->def(
-      "create_tle_raw_region_by_llvm_func",
-      [](TritonOpBuilder &self, std::string_view text, std::string_view fnname,
-         const std::vector<Value> &outputs, const std::vector<Value> &inputs) {
-        SmallVector<Value> results =
-            createTLERawRegionByLLVMFunc(self, text, fnname, outputs, inputs);
-        return std::vector<Value>(results.begin(), results.end());
-      });
+  builder_cls->def("create_tle_raw_region_by_llvm_func",
+                   &createTLERawRegionByLLVMFunc);
 }
 
 void init_tle_raw_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_tle_convert_arg_to_memdesc",
                      mlir::triton::tle::createTleConvertArgToMemDesc);
+  ADD_PASS_WRAPPER_0("add_tle_dsl_region_inline",
+                     mlir::triton::tle::createTleDSLRegionInline);
 }
 
 void init_triton_tle(py::module &&m) {

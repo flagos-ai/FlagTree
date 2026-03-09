@@ -57,7 +57,7 @@
 
 - **Raw/EDSL Layer**
   - raw exposes a lightweight MLIR-based eDSL for writing dialect-specific intrinsics directly. Decorators like `@dialect(name="mlir")` build LLVM IR from Python ASTs via `EdslMLIRJITFunction`, enabling backend authors to prototype kernels or helper ops outside the high-level Triton syntax.
-  - The raw runtime (`call()` helper) materializes `LLVM::CallOp` nodes whose bodies are later inlined by passes.
+  - The raw runtime (`call()` helper) materializes `tle::DSLRegionOp` nodes whose bodies are later inlined by passes.
 
 - **C++ Bridge & Dialect**
   - triton_tle.cc registers additional builder methods (creating encoding attributes, memdesc types, TMACopy ops, DSL regions) onto Triton’s `TritonOpBuilder`, and wires new passes plus raw IR helpers into Python via pybind11.
@@ -70,6 +70,7 @@
     - **Lower Async Load** looks for loads marked with `"tt.load.async"` (set by `tle.load`) and converts them into Hopper-style async copy + commit/wait chains feeding `LocalLoadOp`s, deduplicating redundant allocs (TleLowerAsyncLoad.cpp).
     - **Lower TMA Copy** lowers high-level `TMACopyOp` (emitted by `tle.copy` with tensor descriptors) into NVIDIA TMA intrinsics, handling both GM→SMEM and SMEM→GM directions with barrier management (TleLowerTmaCopy.cpp).
     - **Convert Arg To MemDesc** materializes memdesc-compatible operands/results inside DSL regions, inserting temporary local alloc/load sequences so generic Triton passes can reason about them (ConvertArgToMemDesc.cpp).
+    - **DSL Region Inline** splices `tle::DSLRegionOp` bodies back into surrounding CFG blocks, replacing yields with branches once raw kernels are lowered (DSLRegionInline.cpp).
 
 - **Backend Distribution**
   - Backend-specific logic currently targets NVIDIA (see nvidia and the use of `triton::nvidia_gpu` intrinsics inside passes). Other hardware backends can plug in by reusing the raw DSL + pass hooks and implementing their own lowering passes/encodings under `third_party/<backend>/backend/compiler.py`, similar to how HINTS are dispatched.

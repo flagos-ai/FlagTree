@@ -28,6 +28,7 @@ PackOpConversion::PackOpConversion(LLVMTypeConverter &typeConverter,
 LogicalResult
 PackOpConversion::matchAndRewrite(tle::PackOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const {
+  auto regionOp = op->getParentOfType<tle::DSLRegionOp>();
   if (ttg::MemDescType memdesc =
           dyn_cast<ttg::MemDescType>(op.getOutput().getType())) {
     LLVM::LLVMStructType llvmStructType =
