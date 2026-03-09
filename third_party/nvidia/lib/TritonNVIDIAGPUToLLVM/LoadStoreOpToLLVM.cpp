@@ -2,7 +2,9 @@
 #include "TargetInfo.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+// begin flagtree tle
 #include "mlir/IR/BuiltinAttributes.h"
+// end flagtree tle
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -111,6 +113,7 @@ unsigned getCanonicalIndex(unsigned index, unsigned freeVarMask) {
 bool canReuseCanonicalPointer(llvm::ArrayRef<Value> ptrElems,
                               size_t currentStart, size_t canonicalStart,
                               size_t width) {
+  // begin flagtree tle
   if (currentStart + width > ptrElems.size() ||
       canonicalStart + width > ptrElems.size())
     return false;
@@ -118,6 +121,7 @@ bool canReuseCanonicalPointer(llvm::ArrayRef<Value> ptrElems,
     if (ptrElems[currentStart + i] != ptrElems[canonicalStart + i])
       return false;
   }
+  // end flagtree tle
   return true;
 }
 
@@ -1100,9 +1104,11 @@ public:
             {triton::MemSyncScope::GPU, triton::nvgpu::MemSyncScope::GPU},
             {triton::MemSyncScope::SYSTEM,
              triton::nvgpu::MemSyncScope::SYSTEM}};
+    // begin flagtree tle
     const bool doPTXLDPromotion =
         isPromotableToNVPTXLD(op) && vec == 1 && packed == 1 &&
         ScopeMap.count(op.getScope()) && !remoteCTAInfo.hasRemoteCTAId();
+    // end flagtree tle
 
     for (size_t i = 0; i < elemsPerThread; i += vec * packed) {
       if (auto canonicalStart = getCanonicalIndex(i, regMask);
@@ -1278,6 +1284,7 @@ public:
         dstOpr = ptxBuilderAtomicRMW.newOperand("=" + tyId, /*init=*/true);
       }
 
+      // begin flagtree tle
       Value addrOperand = rmwPtr;
       const char *addrConstraint = "l";
       if (useClusterSharedAtomic &&
@@ -1288,6 +1295,7 @@ public:
       }
       auto *ptrOpr =
           ptxBuilderAtomicRMW.newAddrOperand(addrOperand, addrConstraint);
+      // end flagtree tle
 
       PTXBuilder::Operand *valOpr;
       if (vec > 1) {

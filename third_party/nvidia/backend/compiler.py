@@ -175,7 +175,7 @@ class CUDABackend(BaseBackend):
         args.update({k: opts[k] for k in CUDAOptions.__dataclass_fields__.keys() if k in opts if opts[k] is not None})
         capability = int(self._parse_arch(args["arch"]))
 
-        # // begin flagtree tle
+        # begin flagtree tle
         cluster_dims = args.get("cluster_dims", (1, 1, 1))
         if not isinstance(cluster_dims, (tuple, list)) or len(cluster_dims) != 3:
             raise ValueError(f"cluster_dims must be a tuple/list of 3 ints, got {cluster_dims!r}")
@@ -183,18 +183,18 @@ class CUDABackend(BaseBackend):
             raise ValueError(f"cluster_dims values must be positive ints, got {cluster_dims!r}")
         cluster_dims = tuple(cluster_dims)
         args["cluster_dims"] = cluster_dims
-        # // end flagtree tle
+        # end flagtree tle
 
         if args.get("num_ctas", 1) > 1 and capability < 90:
             raise ValueError((f"num_ctas > 1 requires NVIDIA SM90+ (Hopper). "
                               f"Current target is sm_{capability}. This configuration will fail. "
                               f"Please set num_ctas=1 or target an SM90+ GPU."))
-        # // begin flagtree tle
+        # begin flagtree tle
         if functools.reduce(lambda a, b: a * b, cluster_dims, 1) > 1 and capability < 90:
             raise ValueError((f"cluster_dims={cluster_dims} requires NVIDIA SM90+ (Hopper). "
                               f"Current target is sm_{capability}. This configuration will fail. "
                               f"Please use cluster_dims=(1, 1, 1) or target an SM90+ GPU."))
-        # // end flagtree tle
+        # end flagtree tle
 
         if "supported_fp8_dtypes" not in args:
             supported_fp8_dtypes = set(CUDAOptions.supported_fp8_dtypes)
@@ -285,10 +285,10 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         tle.passes.add_early_assign_memory_space(pm)
-        # // begin flagtree tle
+        # begin flagtree tle
         tle.passes.add_assign_local_pointers_encoding(pm)
         tle.passes.add_insert_local_pointer_barriers(pm)
-        # // end flagtree tle
+        # end flagtree tle
         passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
@@ -474,13 +474,11 @@ class CUDABackend(BaseBackend):
             fsrc.flush()
             fbin = fsrc.name + '.o'
 
-            disable_ptxas_opt = knobs.nvidia.disable_ptxas_opt
-
             debug_info = []
             if knobs.compilation.disable_line_info:
                 # This option is ignored if used without -lineinfo
                 debug_info += ["-lineinfo", "-suppress-debug-info"]
-            elif disable_ptxas_opt:
+            elif knobs.nvidia.disable_ptxas_opt:
                 # Synthesize complete debug info
                 debug_info += ["-g"]
             else:
@@ -490,8 +488,8 @@ class CUDABackend(BaseBackend):
             fmad = [] if opt.enable_fp_fusion else ["--fmad=false"]
             arch = sm_arch_from_capability(capability)
 
-            # Disable ptxas optimizations if requested.
-            disable_opt = ['--opt-level', '0'] if disable_ptxas_opt else []
+            # Disable ptxas optimizations if requested
+            disable_opt = ['--opt-level', '0'] if knobs.nvidia.disable_ptxas_opt else []
 
             # Accept more ptxas options if provided
             ptx_extra_options = opt.ptx_options.split(" ") if opt.ptx_options else []

@@ -454,25 +454,40 @@ def _pick_tle_fused_launch_params(numel: int, num_experts: int) -> Tuple[int, in
 
 
 def _pick_triton_atomic_fused_launch_params(numel: int, num_experts: int) -> Tuple[int, int]:
-    # Triton cooperative-grid fused path benefits from smaller token tiles
-    # at large numel to improve distributed_barrier amortization and occupancy.
+    # Empirical tuning (RTX 50-class + SM90+) for cooperative-grid fused path:
+    # - Small/medium numel: smaller token tiles avoid under-populated grids.
+    # - Large numel: use bigger token tiles to reduce loop overhead.
     if num_experts >= 256:
-        if numel >= 1024:
-            return 1024, 4
-        return 256, 8
+        if numel <= 16384:
+            return 256, 8
+        if numel <= 32768:
+            return 512, 4
+        return 1024, 4
     return _pick_tle_fused_launch_params(numel, num_experts)
 
 
-def _pick_triton_atomic_fused_num_blocks(numel: int, num_experts: int, block_tokens: int) -> int:
+def _pick_triton_atomic_fused_block_cap_mult(numel: int, num_experts: int,
+                                             block_tokens: int) -> int:
+    if num_experts < 256:
+        return 4
+    if block_tokens <= 256 or numel <= 16384:
+        return 1
+    if numel <= 65536:
+        return 2
+    return 3
+
+
+def _pick_triton_atomic_fused_num_blocks(numel: int, num_experts: int,
+                                         block_tokens: int) -> int:
     if not torch.cuda.is_available():
         return 1
     props = torch.cuda.get_device_properties(DEVICE)
     sm_count = int(getattr(props, "multi_processor_count", 1))
     token_programs = triton.cdiv(numel, block_tokens)
-    # Cooperative grid too deep can increase barrier overhead/launch pressure for
-    # large-expert fused kernels; cap more tightly in that regime.
-    block_cap = sm_count * (3 if num_experts >= 256 else 4)
-    # Start from an aggressive cooperative-grid guess, then fallback on launch failure.
+    cap_mult = _pick_triton_atomic_fused_block_cap_mult(numel, num_experts,
+                                                        block_tokens)
+    block_cap = sm_count * cap_mult
+    # Start from heuristic and fallback on cooperative-launch failure.
     return max(1, min(token_programs, num_experts, block_cap))
 
 
