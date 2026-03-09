@@ -1,9 +1,10 @@
 # Copyright 2026- Xcoresigma Technology Co., Ltd
 import torch
 import triton
+import torch_npu  # noqa
 import triton.language as tl
-# import triton.language.extra.tle.ascend as tle
 import triton.experimental.tle as tle
+
 
 @triton.jit
 def add_kernel(x_ptr,  # *Pointer* to first input vector.
@@ -34,6 +35,7 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
     tle.dsa.add(a_ub, b_ub, c_ub)
     tle.dsa.copy(c_ub, output_ptr + offsets, [tail_size])
 
+
 def custom_func(x: torch.Tensor, y: torch.Tensor):
     output = torch.empty_like(x)
     n_elements = output.numel()
@@ -41,22 +43,23 @@ def custom_func(x: torch.Tensor, y: torch.Tensor):
     add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=128)
     return output
 
+
 def test_add():
     torch.manual_seed(0)
     size = 1024
-    x = torch.rand(size, device='npu', dtype=torch.float)
-    y = torch.rand(size, device='npu', dtype=torch.float)
+    x = torch.rand(size, dtype=torch.float).npu()
+    y = torch.rand(size, dtype=torch.float).npu()
     output_torch = x + y
     output_triton = custom_func(x, y)
     print(f'The maximum difference between torch and triton is '
-    f'{torch.max(torch.abs(output_torch - output_triton))}')
+          f'{torch.max(torch.abs(output_torch - output_triton))}')
 
     from triton.backends.ascend.testing import do_bench_npu
     bench_torch = do_bench_npu(lambda: x + y, clear_l2_cache=True, keep_res=True, collect_prof=False)
     bench_triton = do_bench_npu(lambda: custom_func(x, y), clear_l2_cache=True, keep_res=True, collect_prof=False)
-    # 保留两位小数输出
     print(f"torch time : {bench_torch:.2f}")
     print(f"triton time: {bench_triton:.2f}")
+
 
 if __name__ == "__main__":
     test_add()

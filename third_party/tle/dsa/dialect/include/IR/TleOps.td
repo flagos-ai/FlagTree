@@ -1,7 +1,7 @@
 // Copyright 2026- Xcoresigma Technology Co., Ltd
 
 #ifndef TRITON_TLE_OPS
-#define TRITON_TLE_OPS 
+#define TRITON_TLE_OPS
 
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
@@ -135,7 +135,7 @@ def TLE_DSAMinOp : TLE_Op<"dsa_min", [Pure, MemoryEffects<[MemWrite]>,
 ///   let description = [{
 ///       $d = matrix_multiply($a, $b) + $c.
 ///   }];
-/// 
+///
 ///   let arguments = (
 ///     ins
 ///     AnyMemRef:$inA,
@@ -147,7 +147,7 @@ def TLE_DSAMinOp : TLE_Op<"dsa_min", [Pure, MemoryEffects<[MemWrite]>,
 ///     DefaultValuedAttr<BoolAttr, "false">:$traB,
 ///     DefaultValuedAttr<BoolAttr, "true">:$enableHf32
 ///   );
-/// 
+///
 ///   let assemblyFormat = "$inA `,` $inB `,` $res attr-dict `:` type($inA) `,` type($inB) `,` type($res)";
 /// }
 

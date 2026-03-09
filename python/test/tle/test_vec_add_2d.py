@@ -1,16 +1,17 @@
 # Copyright 2026- Xcoresigma Technology Co., Ltd
 import torch
+import torch_npu  # noqa
 import triton
 import triton.language as tl
 import triton.experimental.tle as tle
+
 
 @triton.jit
 def add_kernel(x_ptr,  # *Pointer* to first input vector.
                y_ptr,  # *Pointer* to second input vector.
                output_ptr,  # *Pointer* to output vector.
                n_elements,  # Size of the vector.
-               n_cols, n_rows,
-               BLOCK_SIZE: tl.constexpr,  # Number of elements each program should process.
+               n_cols, n_rows, BLOCK_SIZE: tl.constexpr,  # Number of elements each program should process.
                # NOTE: `constexpr` so it can be used as a shape value.
                ):
     pid_m = tl.program_id(0)
@@ -22,7 +23,7 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
     offs_m = block_start_m + tl.arange(0, BLOCK_SIZE)
     offs_n = block_start_n + tl.arange(0, BLOCK_SIZE)
 
-    # 计算线性地址（row-major）
+    # get address（row-major）
     x_ptrs = x_ptr + offs_m[:, None] * n_cols + offs_n[None, :]
     y_ptrs = y_ptr + offs_m[:, None] * n_cols + offs_n[None, :]
     out_ptrs = output_ptr + offs_m[:, None] * n_cols + offs_n[None, :]
@@ -43,32 +44,35 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
 
     tle.dsa.copy(c_ub, out_ptrs, [tail_size_m, tail_size_n])
 
+
 def custom_func(x: torch.Tensor, y: torch.Tensor, size: int):
     output = torch.empty_like(x)
     n_elements = output.numel()
     BLOCK_SIZE = 16
     # grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
     grid = (triton.cdiv(size, BLOCK_SIZE), triton.cdiv(size, BLOCK_SIZE))
-    add_kernel[grid](x, y, output, n_elements, size, size-1, BLOCK_SIZE)
+    add_kernel[grid](x, y, output, n_elements, size, size - 1, BLOCK_SIZE)
     return output
+
 
 def test_add():
     torch.manual_seed(0)
     size = 128
-    x = torch.rand((size,size-1), device='npu', dtype=torch.float)
-    y = torch.rand((size,size-1), device='npu', dtype=torch.float)
+    x = torch.rand((size, size - 1), dtype=torch.float).npu()
+    y = torch.rand((size, size - 1), dtype=torch.float).npu()
     output_torch = x + y
     output_triton = custom_func(x, y, size)
-    print(f"============X===========")
+    print("============X===========")
     print(x)
-    print(f"============Y===========")
+    print("============Y===========")
     print(y)
-    print(f"============outTorch===========")
+    print("============outTorch===========")
     print(output_torch)
-    print(f"============outTriton===========")
+    print("============outTriton===========")
     print(output_triton)
     print(f'The maximum difference between torch and triton is '
-    f'{torch.max(torch.abs(output_torch - output_triton))}')
+          f'{torch.max(torch.abs(output_torch - output_triton))}')
+
 
 if __name__ == "__main__":
     test_add()

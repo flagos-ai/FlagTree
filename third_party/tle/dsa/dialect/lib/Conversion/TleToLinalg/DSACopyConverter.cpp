@@ -1,4 +1,4 @@
-// Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
+// Copyright 2026- Xcoresigma Technology Co., Ltd
 
 #include "tle/dsa/dialect/include/Conversion/TleToLinalg/DSACopyConverter.h"
 #if __has_include("bishengir/Dialect/HIVM/IR/HIVM.h")
@@ -32,7 +32,7 @@ CopyConverter::CopyConverter(MLIRContext *context)
 
 LogicalResult
 CopyConverter::matchAndRewrite(triton::tle::DSACopyOp op, OpAdaptor adaptor,
-                              ConversionPatternRewriter &rewriter) const {
+                               ConversionPatternRewriter &rewriter) const {
   auto src = adaptor.getSrc();
   auto dst = adaptor.getDst();
   auto loc = op.getLoc();
@@ -44,8 +44,9 @@ CopyConverter::matchAndRewrite(triton::tle::DSACopyOp op, OpAdaptor adaptor,
   }
 
   llvm::SmallVector<mlir::OpFoldResult> shapeValues;
-  for (auto shape: adaptor.getShape()) {
-    Value indexShape = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), shape);
+  for (auto shape : adaptor.getShape()) {
+    Value indexShape = rewriter.create<arith::IndexCastOp>(
+        loc, rewriter.getIndexType(), shape);
     shapeValues.push_back(indexShape);
   }
 
@@ -75,26 +76,29 @@ CopyConverter::matchAndRewrite(triton::tle::DSACopyOp op, OpAdaptor adaptor,
 
   Operation *copyOp = nullptr;
   if (srcAddrSpace == hivm::AddressSpace::GM &&
-      dstAddrSpace == hivm::AddressSpace::UB ||
+          dstAddrSpace == hivm::AddressSpace::UB ||
       srcAddrSpace == hivm::AddressSpace::UB &&
-      dstAddrSpace == hivm::AddressSpace::GM) {
+          dstAddrSpace == hivm::AddressSpace::GM) {
     copyOp = rewriter.create<memref::CopyOp>(loc, srcSubView, dstSubView);
   } else if (srcAddrSpace == hivm::AddressSpace::GM &&
              dstAddrSpace == hivm::AddressSpace::L1) {
-    copyOp = rewriter.create<hivm::ND2NZOp>(loc, /*result_tensor=*/TypeRange{},
-                  /*src=*/srcSubView, /*dst=*/dstSubView,
-                  /*dst_continuous=*/UnitAttr::get(rewriter.getContext()));
+    copyOp = rewriter.create<hivm::ND2NZOp>(
+        loc, /*result_tensor=*/TypeRange{},
+        /*src=*/srcSubView, /*dst=*/dstSubView,
+        /*dst_continuous=*/UnitAttr::get(rewriter.getContext()));
   }
   /// else if (srcAddrSpace == hivm::AddressSpace::L0C &&
   ///            dstAddrSpace == hivm::AddressSpace::GM) {
   ///   copyOp = rewriter.create<hivm::FixpipeOp>(loc,
-  ///       /*result_tensor=*/TypeRange{}, /*src=*/srcSubView, /*dst=*/dstSubView,
+  ///       /*result_tensor=*/TypeRange{}, /*src=*/srcSubView,
+  ///       /*dst=*/dstSubView,
   ///       /*enable_nz2nd=*/UnitAttr::get(rewriter.getContext())
 
   ///       // #ifdef BISHENGIR_ENABLE_A5_UNPUBLISHED_FEATURES
   ///       /*nullptr,
-  ///       hivm::FixpipeDMAModeAttr::get(rewriter.getContext(), hivm::FixpipeDMAMode::NZ2ND),
-  ///       nullptr, nullptr, nullptr, nullptr, nullptr*/
+  ///       hivm::FixpipeDMAModeAttr::get(rewriter.getContext(),
+  ///       hivm::FixpipeDMAMode::NZ2ND), nullptr, nullptr, nullptr, nullptr,
+  ///       nullptr*/
   ///     );
   /// }
   else {
@@ -111,7 +115,7 @@ CopyConverter::matchAndRewrite(triton::tle::DSACopyOp op, OpAdaptor adaptor,
 
 namespace mlir::triton::tle {
 void populateTleCopyOpConversionPatterns(mlir::TypeConverter &typeConverter,
-    mlir::RewritePatternSet &patterns) {
-    patterns.add<TleCopyConverter::CopyConverter>(patterns.getContext());
+                                         mlir::RewritePatternSet &patterns) {
+  patterns.add<TleCopyConverter::CopyConverter>(patterns.getContext());
 }
-}
+} // namespace mlir::triton::tle

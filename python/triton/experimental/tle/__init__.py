@@ -14,16 +14,21 @@ except ImportError:
     raise RuntimeError("tle is not available")
 
 triton_compiler = importlib.import_module("triton.compiler", package=__package__)
+
+
 def tle_patch_for_triton_compile():
     original_compile_fn = triton_compiler.compile
+
     def tle_compile(src, target=None, options=None):
         # ir.context() will return a new MLIRContext each time, here should keep the same context
         cur_context = ir.context()
         tle_ir.load_dialects(cur_context)
 
         original_context_fn = ir.context
+
         def patched_context():
             return cur_context
+
         ir.context = patched_context
 
         try:
@@ -32,16 +37,20 @@ def tle_patch_for_triton_compile():
             ir.context = original_context_fn
 
         return compiled_kernel
+
     return tle_compile
+
 
 code_generator = importlib.import_module("triton.compiler.code_generator", package=__package__)
 
+
 class TleCodeGenerator(code_generator.CodeGenerator):
+
     def __init__(self, context, prototype, gscope, attributes, constants, function_name, jit_fn: JITFunction, options,
                  codegen_fns, module_map, module=None, is_kernel=False, function_types: Optional[Dict] = None,
                  noinline=False, file_name: Optional[str] = None, begin_line=0):
-        super().__init__(context, prototype, gscope, attributes, constants, function_name, jit_fn, options,
-                         codegen_fns, module_map, module, is_kernel, function_types, noinline, file_name, begin_line)
+        super().__init__(context, prototype, gscope, attributes, constants, function_name, jit_fn, options, codegen_fns,
+                         module_map, module, is_kernel, function_types, noinline, file_name, begin_line)
         self.tle_builder = tle_ir.tle_builder(context)
         self.tle_builder.set_loc(file_name, begin_line, 0)
 
@@ -62,7 +71,8 @@ class TleCodeGenerator(code_generator.CodeGenerator):
             if isinstance(context.func, ast.Attribute) and context.func.attr == "hint":
                 for kw in context.keywords:
                     if not isinstance(kw.value, ast.Constant):
-                        raise self._unsupported(node, "keyword arguments to hint() are only supported for constant values")
+                        raise self._unsupported(node,
+                                                "keyword arguments to hint() are only supported for constant values")
                     hints[kw.arg] = kw.value.value
 
         # append hints to with_hints anyway, to indicate that we're in the with scope
@@ -72,6 +82,7 @@ class TleCodeGenerator(code_generator.CodeGenerator):
 
         # pop hints to indicate that we're out of the with scope
         self.with_hints.pop()
+
 
 def extract_tle_hints_scope(generator: TleCodeGenerator):
     """
@@ -86,7 +97,7 @@ def extract_tle_hints_scope(generator: TleCodeGenerator):
     when visit_Call for call_fn1, we can get the hints scope as follows:
         [{'inter_no_alias': True}, {xxx}, {'inter_no_alias': False}, {xxx}]
     should get the parent scope hints 'inter_no_alias': False for call_fn1, after visit call_fn1, pop the scope
-    
+
     when visit_Call for call_fn, we can get the hints scope as follows:
         [{'inter_no_alias': True}, {xxx}, {'inter_no_alias': False}]
     and now the hint scope is 'inter_no_alias': False' for call_fn, after visit call_fn, pop the scope
@@ -99,7 +110,7 @@ def extract_tle_hints_scope(generator: TleCodeGenerator):
         hints = generator.with_hints[i]
         if "inter_no_alias" in hints:
             return hints
-    
+
     return {}
 
 

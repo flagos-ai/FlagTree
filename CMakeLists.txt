@@ -292,8 +292,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endif()
 
   # add TLE plugin
-  list(APPEND TRITON_PLUGIN_NAMES "tle")
-  add_subdirectory(third_party/tle/dsa)
+  # just support ascend backend so far
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    list(APPEND TRITON_PLUGIN_NAMES "tle")
+    add_subdirectory(third_party/tle/dsa)
+  endif()
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)

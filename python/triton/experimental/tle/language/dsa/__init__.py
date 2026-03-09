@@ -40,4 +40,5 @@ __all__ = [
     "insert_slice",
     "extract_element",
     "subview",
+    "ascend",
 ]

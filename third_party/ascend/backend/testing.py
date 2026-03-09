@@ -87,6 +87,7 @@ def do_bench_npu(funcs, warmup=5, active=30, clear_l2_cache=False, prof_dir=None
     _rm_dic(keep_res, torch_path)
     return time_cost
 
+
 # keep the original behavior to get the statistics for the specified kernel func
 def _collect_single(base_dir: str, key: str = None) -> float:
     if not os.path.exists(base_dir):
@@ -125,6 +126,7 @@ def _collect_single(base_dir: str, key: str = None) -> float:
                 return all_ops_total_time
 
     return float("inf")
+
 
 def _rm_dic(keep_res, torch_path):
     if keep_res:

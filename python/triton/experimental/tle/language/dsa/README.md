@@ -51,7 +51,7 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
 ## Testing
 
 ```bash
-cd python/test/tle 
+cd python/test/tle
 python3 test_vec_add.py
 ```
 

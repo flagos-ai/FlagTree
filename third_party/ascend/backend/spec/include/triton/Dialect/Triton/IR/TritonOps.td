@@ -1380,4 +1380,5 @@ def TT_DescriptorStoreOp : TT_Op<"descriptor_store", [TT_DescriptorStoreLikeOpIn
   let hasVerifier = 1;
 }
 
+
 #endif // Triton_OPS

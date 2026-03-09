@@ -12,7 +12,7 @@ if (TRITON_BUILD_PYTHON_MODULE)
     TleIR
     TritonIR
   )
-  
+
   find_package(Python3 REQUIRED COMPONENTS Development Interpreter)
   find_package(pybind11 CONFIG REQUIRED HINTS "${Python3_SITELIB}")
   include_directories(${Python3_INCLUDE_DIRS})

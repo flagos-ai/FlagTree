@@ -1,7 +1,7 @@
 // Copyright 2026- Xcoresigma Technology Co., Ltd
 
 #ifndef TRITON_TLE_IR_DIALECT_H_
-#define TRITON_TLE_IR_DIALECT_H_ 
+#define TRITON_TLE_IR_DIALECT_H_
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"

@@ -702,7 +702,7 @@ def get_packages():
         "triton/backends",
         "triton/tools",
 
-        # for tle
+        # for flagtree tle
         "triton/experimental",
         "triton/experimental/tle",
         "triton/experimental/tle/language",

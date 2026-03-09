@@ -1,10 +1,8 @@
-# Copyright 2026- Xcoresigma Technology Co., Ltd
-
 from triton._C.libtriton import ir
 
 from typing import List
 import triton.language.core as tl
-from triton.language.core import builtin
+
 
 class address_space:
     """Represents a buffer's address space.

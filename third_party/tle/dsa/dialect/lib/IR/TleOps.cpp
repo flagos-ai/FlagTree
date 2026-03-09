@@ -4,5 +4,4 @@
 #include "mlir/IR/Builders.h"
 #include "tle/dsa/dialect/include/IR/Dialect.h"
 
-namespace mlir::triton::tle {
-}
+namespace mlir::triton::tle {}

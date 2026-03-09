@@ -104,6 +104,14 @@ jobs:
               --ignore=test_assume.py \
               --ignore=test_index_select.py
           popd
+          # flagtree tle test
+          pushd python/test/tle
+          python3 test_vec_add.py
+          python3 test_vec_add_2d.py
+          python3 test_vec_add_mix.py
+          python3 test_vec_mathOps.py
+          python3 test_tle_with_hints.py
+          popd
 
       - name: FlagTree Editable Build And Teston Ascend
         if: steps.check_files.outputs.only_docs_changed != 'true'

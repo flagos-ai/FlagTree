@@ -2,12 +2,7 @@
 
 import triton.language.core as tl
 from triton.language import semantic as tl_semantic
-from triton.language.core import (
-    _constexpr_to_value,
-    tensor,
-    constexpr
-)
-from triton._C.libtriton import ir
+from triton.language.core import (_constexpr_to_value, tensor, constexpr)
 
 from typing import List, TypeVar
 from functools import wraps
@@ -20,12 +15,13 @@ T = TypeVar("T")
 TRITON_BUILTIN = "__triton_builtin__"
 TLE_BUILTIN = "__tle_builtin__"
 
+
 def builtin(fn: T) -> T:
     """
     Decorator for builtin functions to mark a function as a tle language builtin function.
     """
     assert callable
-    
+
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if "_builder" not in kwargs or kwargs["_builder"] is None:
@@ -37,6 +33,7 @@ def builtin(fn: T) -> T:
     setattr(wrapper, TLE_BUILTIN, True)
 
     return wrapper
+
 
 def is_builtin(fn) -> bool:
     """
@@ -114,6 +111,7 @@ class range():
     def __next__(self):
         raise RuntimeError("tl.range can only be used in @triton.jit'd functions")
 
+
 class pipeline(range):
     """
     Iterator that counts upward forever, with software pipeline semantics.
@@ -121,6 +119,7 @@ class pipeline(range):
     This is a special iterator used to implement similar semantics to Python's :code:`range` in the context of
     :code:`triton.jit` functions. In addition, it allows user to pass extra attributes to the compiler.
     """
+
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
 
@@ -133,6 +132,7 @@ class parallel(range):
     :code:`triton.jit` functions. In addition, it indicates that there are no dependencies between loop iterations,
      allowing them to be executed in parallel.
     """
+
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
 
@@ -145,13 +145,14 @@ def from_buffer_to_tensor_pointer(src: buffer, _builder=None) -> tl.tensor:
     block_type = tl.block_type(ele_type, shape)
     return tl.tensor(src.handle, block_type)
 
+
 @builtin
 def copy(src, dst, shape, inter_no_alias=False, _builder=None):
     """Copy data from `src` to `dst` shaped by `shape`.
 
     :param inter_no_alias: If True, the copy is annotated as no aliasing between different iterations.
     """
-    assert len(shape) != 0, f"Can't deduce copy extents from args"
+    assert len(shape) != 0, "Can't deduce copy extents from args"
 
     shape = _constexpr_to_value(shape)
     inter_no_alias = _constexpr_to_value(inter_no_alias)
@@ -165,12 +166,14 @@ def add(input, other, result, _builder=None):
     result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.add(input, other, result, _builder)
 
+
 @builtin
 def sub(input, other, result, _builder=None):
     input = from_buffer_to_tensor_pointer(input, _builder=_builder)
     other = from_buffer_to_tensor_pointer(other, _builder=_builder)
     result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.sub(input, other, result, _builder)
+
 
 @builtin
 def mul(input, other, result, _builder=None):
@@ -179,12 +182,14 @@ def mul(input, other, result, _builder=None):
     result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.mul(input, other, result, _builder)
 
+
 @builtin
 def div(input, other, result, _builder=None):
     input = from_buffer_to_tensor_pointer(input, _builder=_builder)
     other = from_buffer_to_tensor_pointer(other, _builder=_builder)
     result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.div(input, other, result, _builder)
+
 
 @builtin
 def max(input, other, result, _builder=None):
@@ -194,6 +199,7 @@ def max(input, other, result, _builder=None):
     result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.max(input, other, result, _builder)
 
+
 @builtin
 def min(input, other, result, _builder=None):
     # elementwise binary vector minimum op
@@ -201,15 +207,6 @@ def min(input, other, result, _builder=None):
     other = from_buffer_to_tensor_pointer(other, _builder=_builder)
     result = from_buffer_to_tensor_pointer(result, _builder=_builder)
     tle_semantic.min(input, other, result, _builder)
-
-### @builtin
-### def dot(inputA, inputB, result, size, initC, a_transpose=False, b_transpose=False, enable_hf32=False, _builder=None):
-###     initC = _constexpr_to_value(initC)
-###     a_transpose = _constexpr_to_value(a_transpose)
-###     b_transpose = _constexpr_to_value(b_transpose)
-###     enable_hf32 = _constexpr_to_value(enable_hf32)
-###     tle_semantic.dot(inputA, inputB, result, size, initC, a_transpose, b_transpose, enable_hf32, _builder)
-
 
 
 @builtin
@@ -252,6 +249,7 @@ def to_tensor(memref: buffer, writable: bool = True, target_shape=None, _builder
     :type writable: bool
     """
     return tle_semantic.to_tensor(memref, writable, _builder, target_shape=target_shape)
+
 
 @builtin
 def subview(src: buffer, offsets: List[tl.constexpr], sizes: List[tl.constexpr], strides: List[tl.constexpr],
@@ -309,13 +307,15 @@ def subview(src: buffer, offsets: List[tl.constexpr], sizes: List[tl.constexpr],
 
     return tle_semantic.subview(src, new_offsets, new_sizes, new_strides, _builder)
 
+
 def hint(**kwargs):
     """Dummy function for AST parsing. Not executed during JIT compilation."""
     raise RuntimeError("tle.hint() cannot be called directly.")
 
 
 @builtin
-def insert_slice(ful: tensor, sub: tensor, offsets: List[tensor], sizes: List[int], strides: List[int], _builder=None) -> tensor:
+def insert_slice(ful: tensor, sub: tensor, offsets: List[tensor], sizes: List[int], strides: List[int],
+                 _builder=None) -> tensor:
     """
     Insert a tensor to another tensor as specified by the operation’s offsets, sizes and strides arguments.
 
@@ -334,10 +334,7 @@ def insert_slice(ful: tensor, sub: tensor, offsets: List[tensor], sizes: List[in
     assert len(ful.shape) == len(sub.shape)
     assert (len(ful.shape) == len(sizes))
     assert (len(ful.shape) == len(strides))
-    new_offsets = [
-        tl_semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
-        for o in offsets
-    ]
+    new_offsets = [tl_semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o for o in offsets]
     out = tle_semantic.insert_slice(ful, sub, new_offsets, sizes, strides, _builder)
     return out
 
@@ -357,10 +354,7 @@ def extract_slice(ful, offsets, sizes, strides, _builder=None, _generator=None) 
     :type strides: tuple of ints
     """
     assert len(ful.shape) > 0
-    new_offsets = [
-        tl_semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
-        for o in offsets
-    ]
+    new_offsets = [tl_semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o for o in offsets]
     sub = tle_semantic.extract_slice(ful, new_offsets, sizes, strides, _builder)
     return sub
 
@@ -378,8 +372,5 @@ def extract_element(src, indice, _builder=None, _generator=None):
     :type indice: tuple of ints
     """
     assert len(src.shape) > 0
-    new_indice = [
-        tl_semantic.to_tensor(i, _builder) if isinstance(i, constexpr) else i
-        for i in indice
-    ]
+    new_indice = [tl_semantic.to_tensor(i, _builder) if isinstance(i, constexpr) else i for i in indice]
     return tle_semantic.extract_element(src, new_indice, _builder)

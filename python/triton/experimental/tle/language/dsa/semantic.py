@@ -1,12 +1,12 @@
 # Copyright 2026- Xcoresigma Technology Co., Ltd
 
-from typing import List, Optional, Union, Tuple
+from typing import List, Union
 from triton.language import core as tl
 from triton.language.semantic import (
-    binary_op_type_checking_impl,
-)
+    binary_op_type_checking_impl, )
 from triton._C.libtriton import ir
 from .types import buffer, buffer_type, address_space
+
 
 def wrap_tensor(x, scalar_ty, ret_shape):
     if ret_shape:
@@ -15,6 +15,7 @@ def wrap_tensor(x, scalar_ty, ret_shape):
         # 0d-tensor -> scalar
         res_ty = scalar_ty
     return tl.tensor(x, res_ty)
+
 
 def scalar_constant(value, dtype: tl.dtype, builder: ir.builder) -> tl.tensor:
     # assert value.numel.value == 1, "only accepts size-1 tensor"
@@ -35,54 +36,37 @@ def copy(src, dst, shape: List[Union[tl.constexpr, int]], inter_no_alias: bool, 
     builder.create_dsa_copy(src.handle, dst.handle, [s.handle for s in shape], inter_no_alias)
 
 
-### def to_tensor(buffer: tl.tensor, builder: ir.builder) -> tl.tensor:
-###     if not isinstance(buffer, tl.tensor):
-###         raise TypeError("buffer must be tensor of pointers")
-### 
-###     tensor_ty = buffer.type
-###     element_ty = tensor_ty.element_ty
-###     if not element_ty.is_ptr:
-###         raise TypeError("The basic elements of a buffer must be pointers")
-### 
-###     return tl.tensor(builder.dsa_to_tensor(buffer.handle), tensor_ty)
-### 
-### def to_buffer(src: tl.tensor, builder: ir.builder) -> tl.tensor:
-###     if not isinstance(src, tl.tensor):
-###         raise TypeError("src of to_buffer must be tensor")
-### 
-###     return tl.tensor(builder.dsa_to_buffer(src.handle), src.type)
-
 def add(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
     input, other = binary_op_type_checking_impl(input, other, builder, True, True)
     builder.create_dsa_add(input.handle, other.handle, result.handle)
+
 
 def sub(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
     input, other = binary_op_type_checking_impl(input, other, builder, True, True)
     builder.create_dsa_sub(input.handle, other.handle, result.handle)
 
+
 def mul(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
     input, other = binary_op_type_checking_impl(input, other, builder, True, True)
     builder.create_dsa_mul(input.handle, other.handle, result.handle)
+
 
 def div(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
     input, other = binary_op_type_checking_impl(input, other, builder, True, True)
     builder.create_dsa_div(input.handle, other.handle, result.handle)
 
+
 def max(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
     input, other = binary_op_type_checking_impl(input, other, builder, True, True)
     builder.create_dsa_max(input.handle, result.handle)
+
 
 def min(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
     input, other = binary_op_type_checking_impl(input, other, builder, True, True)
     builder.create_dsa_min(input.handle, other.handle, result.handle)
 
-### def dot(inputA: tl.tensor, inputB: tl.tensor, result: tl.tensor, size: List[int], initC: bool, a_transpose: bool, b_transpose: bool, enable_hf32: bool, builder: ir.builder):
-###     assert len(size) == 3, f"Please set the M、N、K value."
-### 
-###     builder.create_dsa_dot(inputA.handle, inputB.handle, result.handle, size, initC, a_transpose, b_transpose, enable_hf32)
 
-def alloc(etype: tl.dtype, shape: List[tl.constexpr], address_space: address_space,
-          builder: ir.builder) -> buffer:
+def alloc(etype: tl.dtype, shape: List[tl.constexpr], address_space: address_space, builder: ir.builder) -> buffer:
     shape = tl._unwrap_shape(shape)
     if not isinstance(shape, (tuple, list)):
         raise TypeError("shape must be list/tuple")
@@ -107,7 +91,7 @@ def to_buffer(
     # if isinstance(bind_buffer, buffer):
     #     builder.create_bind_buffer(tensor.handle, bind_buffer.handle)
     #     return bind_buffer
-    if not (bind_buffer is None):
+    if bind_buffer is not None:
         raise ValueError("bind_buffer must be a buffer or None")
     address_space = tl._constexpr_to_value(address_space)
     addr_space_attr = (address_space.to_ir(builder) if address_space else builder.dsa_get_null_attr())
@@ -142,27 +126,31 @@ def to_tensor(memref: buffer, writable: bool, builder: ir.builder, target_shape=
     return tl.tensor(builder.dsa_to_tensor(memref_value, writable), tensor_type)
 
 
-def insert_slice(ful: tl.tensor, sub: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int], builder: ir.builder) -> tl.tensor:
-    assert(len(ful.shape) == len(offsets))
-    assert(len(ful.shape) == len(sizes))
-    assert(len(ful.shape) == len(strides))
-    assert(all([s>=1 for s in sizes]))
-    assert(all([s>=0 for s in strides]))
+def insert_slice(ful: tl.tensor, sub: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int],
+                 builder: ir.builder) -> tl.tensor:
+    assert (len(ful.shape) == len(offsets))
+    assert (len(ful.shape) == len(sizes))
+    assert (len(ful.shape) == len(strides))
+    assert (all([s >= 1 for s in sizes]))
+    assert (all([s >= 0 for s in strides]))
     new_offsets = [o.handle for o in offsets]
     ret_type = tl.block_type(ful.type.scalar, ful.shape)
     out = builder.create_dsa_insert_slice(ful.handle, sub.handle, new_offsets, sizes, strides)
     return tl.tensor(out, ret_type)
 
-def extract_slice(ful: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int], builder: ir.builder) -> tl.tensor:
-    assert(len(ful.shape) == len(offsets))
-    assert(len(ful.shape) == len(sizes))
-    assert(len(ful.shape) == len(strides))
-    assert(all([s>=1 for s in sizes]))
-    assert(all([s>=0 for s in strides]))
+
+def extract_slice(ful: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int],
+                  builder: ir.builder) -> tl.tensor:
+    assert (len(ful.shape) == len(offsets))
+    assert (len(ful.shape) == len(sizes))
+    assert (len(ful.shape) == len(strides))
+    assert (all([s >= 1 for s in sizes]))
+    assert (all([s >= 0 for s in strides]))
     new_offsets = [o.handle for o in offsets]
     ret_type = tl.block_type(ful.type.scalar, sizes)
     out = builder.create_dsa_extract_slice(ful.handle, new_offsets, sizes, strides)
     return tl.tensor(out, ret_type)
+
 
 def extract_element(src: tl.tensor, indice: List[tl.tensor], builder: ir.builder):
     if len(src.shape) != len(indice):
