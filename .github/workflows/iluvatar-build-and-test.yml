@@ -60,7 +60,7 @@ jobs:
 
       - name: Check if only docs files changed
         id: check_files
-        uses: ./.github/actions/check-docs-only
+        uses: flagos-ai/FlagTree/.github/actions/check-docs-only@main
 
       - name: FlagTree Build on Iluvatar
         if: steps.check_files.outputs.only_docs_changed != 'true'
