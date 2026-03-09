@@ -466,8 +466,7 @@ def _pick_triton_atomic_fused_launch_params(numel: int, num_experts: int) -> Tup
     return _pick_tle_fused_launch_params(numel, num_experts)
 
 
-def _pick_triton_atomic_fused_block_cap_mult(numel: int, num_experts: int,
-                                             block_tokens: int) -> int:
+def _pick_triton_atomic_fused_block_cap_mult(numel: int, num_experts: int, block_tokens: int) -> int:
     if num_experts < 256:
         return 4
     if block_tokens <= 256 or numel <= 16384:
@@ -477,15 +476,13 @@ def _pick_triton_atomic_fused_block_cap_mult(numel: int, num_experts: int,
     return 3
 
 
-def _pick_triton_atomic_fused_num_blocks(numel: int, num_experts: int,
-                                         block_tokens: int) -> int:
+def _pick_triton_atomic_fused_num_blocks(numel: int, num_experts: int, block_tokens: int) -> int:
     if not torch.cuda.is_available():
         return 1
     props = torch.cuda.get_device_properties(DEVICE)
     sm_count = int(getattr(props, "multi_processor_count", 1))
     token_programs = triton.cdiv(numel, block_tokens)
-    cap_mult = _pick_triton_atomic_fused_block_cap_mult(numel, num_experts,
-                                                        block_tokens)
+    cap_mult = _pick_triton_atomic_fused_block_cap_mult(numel, num_experts, block_tokens)
     block_cap = sm_count * cap_mult
     # Start from heuristic and fallback on cooperative-launch failure.
     return max(1, min(token_programs, num_experts, block_cap))
