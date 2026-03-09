@@ -287,16 +287,15 @@ LogicalResult tt::CoarseSchedule::deSerialize(scf::ForOp &forOp) {
 // TODO: Should this be moved somewhere else?
 // Add dependencies of anchor ops to the coarse schedule. Schedule them to
 // the same stage and ordering cluster as the anchor op.
+// begin flagtree tle
 static bool isBarrierLikeOp(Operation *op) {
   if (!op)
     return false;
   StringRef opName = op->getName().getStringRef();
   if (opName == "gpu.barrier")
     return true;
-  // begin flagtree tle
   if (opName == "tle.distributed_barrier")
     return true;
-  // end flagtree tle
   return false;
 }
 
@@ -315,8 +314,10 @@ static Operation *getPrevMemoryEffectOpInBlock(Operation *op) {
   }
   return nullptr;
 }
+// end flagtree tle
 
 void tt::scheduleDependencies(scf::ForOp forOp, tt::CoarseSchedule &schedule) {
+  // begin flagtree tle
   auto insertOrderDependency = [&](auto &&self, Operation *op, int stage,
                                    tt::CoarseSchedule::Cluster cluster) {
     if (!op)
@@ -357,6 +358,7 @@ void tt::scheduleDependencies(scf::ForOp forOp, tt::CoarseSchedule &schedule) {
         insertOrderDependency(insertOrderDependency, prevBarrier, stage,
                               cluster);
       }
+      // end flagtree tle
     }
   }
 }
