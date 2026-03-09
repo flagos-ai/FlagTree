@@ -968,8 +968,8 @@ class CodeGenerator(ast.NodeVisitor):
         warp_specialize = False
         disable_licm = False
         bind_sub_block = None
-        dsa = importlib.import_module("..experimental.tle.dsa", package=__package__)
-        if IteratorClass in [language.range, extension.parallel, dsa.pipeline, dsa.parallel]:
+        tle = importlib.import_module("triton.experimental.tle", package=__package__)
+        if IteratorClass in [language.range, extension.parallel, tle.dsa.pipeline, tle.dsa.parallel]:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1069,8 +1069,8 @@ class CodeGenerator(ast.NodeVisitor):
             if disable_licm:
                 for_op.set_attr("tt.disable_licm", self.builder.get_unit_attr())
 
-            dsa = importlib.import_module("..experimental.tle.dsa", package=__package__)
-            if (IteratorClass is extension.parallel or IteratorClass is dsa.parallel):
+            tle = importlib.import_module("triton.experimental.tle", package=__package__)
+            if (IteratorClass is extension.parallel or IteratorClass is tle.dsa.parallel):
                 for_op.set_attr("hivm.parallel_loop", self.builder.get_unit_attr())
 
             self.scf_stack.append(node)
@@ -1198,7 +1198,7 @@ class CodeGenerator(ast.NodeVisitor):
             try:
                 if fn.__name__ == 'copy':
                     # extract tle hints from the generator to identify if node in the tle hints scope
-                    tle = importlib.import_module("..experimental.tle", package=__package__)
+                    tle = importlib.import_module("triton.experimental.tle", package=__package__)
                     top_hints = tle.extract_tle_hints_scope(self)
 
                     # Only apply to some builtins; currently, 'copy' is relevant.
