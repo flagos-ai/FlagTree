@@ -902,7 +902,12 @@ class TestTLEDistributed:
 
         # local/remote pointer tensors should keep the load-friendly encoding.
         assert "tensor<256x!tt.ptr<f16, 3>, #blocked>" in ttgir
-        assert "\"tle.remote_pointers\"(%local_ptr, %c0_i32) : (tensor<256x!tt.ptr<f16, 3>, #blocked>, i32) -> tensor<256x!tt.ptr<f16, 3>, #blocked>" in ttgir
+        assert re.search(
+            r"\"tle\.remote_pointers\"\(%[^,]+,\s*%[^)]+\)\s*:\s*"
+            r"\(tensor<256x!tt\.ptr<f16,\s*3>,\s*#blocked>,\s*i32\)\s*->\s*"
+            r"tensor<256x!tt\.ptr<f16,\s*3>,\s*#blocked>",
+            ttgir,
+        ) is not None
         # Avoid re-introducing a degraded blocked1 -> blocked convert path.
         assert "ttg.convert_layout %remote_ptr : tensor<256x!tt.ptr<f16, 3>, #blocked1> -> tensor<256x!tt.ptr<f16, 3>, #blocked>" not in ttgir
         assert "ld.shared::cluster.b16" in ptx

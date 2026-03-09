@@ -70,7 +70,6 @@ def _triton_gemm_kernel(
 
     offs_m = pid_m * BM + tl.arange(0, BM)
     offs_n = pid_n * BN + tl.arange(0, BN)
-    offs_k = tl.arange(0, BK)
 
     acc = tl.zeros((BM, BN), dtype=tl.float32)
     for k0 in range(0, K, BK):

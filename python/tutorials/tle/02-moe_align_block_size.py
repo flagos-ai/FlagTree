@@ -8,6 +8,7 @@ This tutorial benchmarks multiple MoE align implementations:
 - triton atomic fused (stage1+2 + stage3+4 fused)
 - tle cluster fused
 - sglang cuda
+- yiakwy-xpu cuda (cooperative multi-block)
 """
 
 import argparse
@@ -29,6 +30,10 @@ BLOCK_CLUSTER_MESH_8 = tled.device_mesh({"block_cluster": [("cluster_x", 8)]})
 TLE_CLUSTER_SIZE = 8
 SGLANG_MOE_ALIGN_KERNEL_URL = (
     "https://raw.githubusercontent.com/sgl-project/sglang/refs/heads/main/sgl-kernel/csrc/moe/moe_align_kernel.cu")
+YIAKWY_MOE_ALIGN_KERNEL_URL = (
+    "https://raw.githubusercontent.com/yiakwy-xpu-ml-framework-team/AMD-sglang-benchmark-fork/"
+    "d9831e330bd312fc00557187834d0f5b12ea5c70/sgl-kernel/src/sgl-kernel/csrc/moe_align_kernel.cu"
+)
 
 
 @lru_cache(maxsize=64)
@@ -72,7 +77,48 @@ void moe_align_block_size_embedded(
     torch::Tensor experts_ids,
     torch::Tensor num_tokens_post_pad) {
   auto opts = torch::TensorOptions().dtype(torch::kInt32).device(topk_ids.device());
-  auto cumsum_buffer = torch::zeros({num_experts + 1}, opts);
+  // SGLang kernel uses expert_id = topk_id + 1 and reserves slot 0 as a dummy.
+  // Pass (num_experts + 1) to cover all valid experts [0, num_experts).
+  const int64_t num_experts_with_dummy = num_experts + 1;
+  auto cumsum_buffer = torch::zeros({num_experts_with_dummy + 1}, opts);
+  moe_align_block_size(
+      topk_ids,
+      num_experts_with_dummy,
+      block_size,
+      sorted_token_ids,
+      experts_ids,
+      num_tokens_post_pad,
+      cumsum_buffer,
+      true);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("moe_align_block_size", &moe_align_block_size_embedded, "Embedded sglang moe_align_block_size");
+}
+"""
+
+YIAKWY_MOE_ALIGN_BINDING_CPP = r"""
+#include <torch/extension.h>
+
+void moe_align_block_size(
+    torch::Tensor topk_ids,
+    int64_t num_experts,
+    int64_t block_size,
+    torch::Tensor sorted_token_ids,
+    torch::Tensor experts_ids,
+    torch::Tensor num_tokens_post_pad,
+    torch::Tensor token_cnts_buffer,
+    torch::Tensor cumsum_buffer);
+
+void moe_align_block_size_embedded(
+    torch::Tensor topk_ids,
+    int64_t num_experts,
+    int64_t block_size,
+    torch::Tensor sorted_token_ids,
+    torch::Tensor experts_ids,
+    torch::Tensor num_tokens_post_pad,
+    torch::Tensor token_cnts_buffer,
+    torch::Tensor cumsum_buffer) {
   moe_align_block_size(
       topk_ids,
       num_experts,
@@ -80,12 +126,12 @@ void moe_align_block_size_embedded(
       sorted_token_ids,
       experts_ids,
       num_tokens_post_pad,
-      cumsum_buffer,
-      false);
+      token_cnts_buffer,
+      cumsum_buffer);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("moe_align_block_size", &moe_align_block_size_embedded, "Embedded sglang moe_align_block_size");
+  m.def("moe_align_block_size", &moe_align_block_size_embedded, "Embedded yiakwy-xpu moe_align_block_size");
 }
 """
 
@@ -470,10 +516,10 @@ def _pick_triton_atomic_fused_block_cap_mult(numel: int, num_experts: int, block
     if num_experts < 256:
         return 4
     if block_tokens <= 256 or numel <= 16384:
-        return 1
+        return 16
     if numel <= 65536:
-        return 2
-    return 3
+        return 16
+    return 16
 
 
 def _pick_triton_atomic_fused_num_blocks(numel: int, num_experts: int, block_tokens: int) -> int:
@@ -484,8 +530,9 @@ def _pick_triton_atomic_fused_num_blocks(numel: int, num_experts: int, block_tok
     token_programs = triton.cdiv(numel, block_tokens)
     cap_mult = _pick_triton_atomic_fused_block_cap_mult(numel, num_experts, block_tokens)
     block_cap = sm_count * cap_mult
-    # Start from heuristic and fallback on cooperative-launch failure.
-    return max(1, min(token_programs, num_experts, block_cap))
+    # Allow trying num_blocks > num_experts for large-token cooperative runs.
+    # Cooperative-launch failures still fallback by halving in caller.
+    return max(1, min(token_programs, block_cap))
 
 
 @triton.jit(do_not_specialize=["numel"])
@@ -951,6 +998,120 @@ inline uint32_t next_pow2(uint32_t x) noexcept {
     return fn
 
 
+@lru_cache(maxsize=1)
+def _load_embedded_yiakwy_cuda_moe_align() -> Optional[Callable]:
+    try:
+        from torch.utils.cpp_extension import load_inline
+    except Exception as ex:
+        print(f"warning: cannot import torch cpp_extension: {ex}")
+        return None
+
+    try:
+        with urllib.request.urlopen(YIAKWY_MOE_ALIGN_KERNEL_URL, timeout=20) as resp:
+            kernel_src = resp.read().decode("utf-8")
+    except Exception as ex:
+        print(f"warning: failed to download yiakwy moe_align kernel source: {ex}")
+        return None
+
+    kernel_src = kernel_src.replace("#include <THC/THCAtomics.cuh>\n", "")
+    kernel_src = kernel_src.replace(
+        '#include "utils.h"\n',
+        """
+#include <algorithm>
+#include <c10/cuda/CUDAException.h>
+#define CEILDIV(x, y) (((x) + (y) - 1) / (y))
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define WARP_SIZE 32
+#define DISPATCH_CASE_INTEGRAL_TYPES(...)              \\
+  AT_DISPATCH_CASE(at::ScalarType::Byte, __VA_ARGS__)  \\
+  AT_DISPATCH_CASE(at::ScalarType::Char, __VA_ARGS__)  \\
+  AT_DISPATCH_CASE(at::ScalarType::Short, __VA_ARGS__) \\
+  AT_DISPATCH_CASE(at::ScalarType::Int, __VA_ARGS__)   \\
+  AT_DISPATCH_CASE(at::ScalarType::Long, __VA_ARGS__)
+#define DISPATCH_INTEGRAL_TYPES(TYPE, NAME, ...) \\
+  AT_DISPATCH_SWITCH(TYPE, NAME, DISPATCH_CASE_INTEGRAL_TYPES(__VA_ARGS__))
+""",
+    )
+    if '#include "utils.h"' in kernel_src:
+        print("warning: failed to patch yiakwy kernel source include utils.h")
+        return None
+    # Ensure the cooperative kernel launches on PyTorch's current CUDA stream.
+    kernel_src = kernel_src.replace(
+        "cudaLaunchCooperativeKernel((void*)kernel, num_blocks, block_threads, kernelArgs);",
+        "C10_CUDA_CHECK(cudaLaunchCooperativeKernel((void*)kernel, dim3(num_blocks), dim3(block_threads), kernelArgs, 0, stream));",
+    )
+
+    source_digest = hashlib.sha1((YIAKWY_MOE_ALIGN_BINDING_CPP + kernel_src).encode("utf-8")).hexdigest()[:12]
+    extension_name = f"flagtree_yiakwy_moe_align_{source_digest}"
+
+    try:
+        module = load_inline(
+            name=extension_name,
+            cpp_sources=[YIAKWY_MOE_ALIGN_BINDING_CPP],
+            cuda_sources=[kernel_src],
+            functions=None,
+            extra_cuda_cflags=["-O3"],
+            with_cuda=True,
+            verbose=False,
+        )
+    except Exception as ex:
+        print(f"warning: failed to compile embedded yiakwy moe_align kernel: {ex}")
+        return None
+
+    fn = getattr(module, "moe_align_block_size", None)
+    if fn is None:
+        print("warning: embedded yiakwy module has no moe_align_block_size symbol")
+    return fn
+
+
+def _make_yiakwy_cuda_runner(
+    topk_ids: torch.Tensor,
+    num_experts: int,
+    block_size: int,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_post_pad: torch.Tensor,
+):
+    # The published kernel hard-codes MAX_NUM_EXPERTS=256 and assumes num_experts <= block_threads (256).
+    if num_experts > 256:
+        return None
+    if not topk_ids.is_cuda:
+        return None
+
+    moe_align_fn = _load_embedded_yiakwy_cuda_moe_align()
+    if moe_align_fn is None:
+        return None
+
+    # Kernel expects 2D topk_ids: [num_tokens, K]. Use K=1 view.
+    topk_ids_2d = topk_ids.view(-1, 1)
+
+    tokens_cnts = torch.empty((num_experts + 1, num_experts), dtype=torch.int32, device=topk_ids.device)
+    cumsum = torch.empty((num_experts + 1, ), dtype=torch.int32, device=topk_ids.device)
+
+    def init_fn():
+        # Make padding deterministic for correctness checks.
+        sorted_ids.fill_(topk_ids.numel())
+        expert_ids.zero_()
+        num_tokens_post_pad.zero_()
+        tokens_cnts.zero_()
+        cumsum.zero_()
+
+    def kernel_fn():
+        moe_align_fn(
+            topk_ids_2d,
+            num_experts,
+            block_size,
+            sorted_ids,
+            expert_ids,
+            num_tokens_post_pad,
+            tokens_cnts,
+            cumsum,
+        )
+
+    return init_fn, kernel_fn
+
+
 def _make_sglang_cuda_runner(
     topk_ids: torch.Tensor,
     num_experts: int,
@@ -1064,6 +1225,43 @@ def run_correctness(
     else:
         print("Correctness: skip tle_cluster_fused (requires CUDA SM90+ and BLOCK_EXPERT<=1024).")
 
+    sorted_ids_s, expert_ids_s, num_tokens_post_pad_s = _allocate_outputs(topk_ids, num_experts, block_size, False)
+    sglang_runner = _make_sglang_cuda_runner(
+        topk_ids,
+        num_experts,
+        block_size,
+        sorted_ids_s,
+        expert_ids_s,
+        num_tokens_post_pad_s,
+    )
+    if sglang_runner is None:
+        print("Correctness: skip sglang_cuda (not available).")
+    else:
+        init_fn_s, kernel_fn_s = sglang_runner
+        init_fn_s()
+        kernel_fn_s()
+        outputs["sglang_cuda"] = (sorted_ids_s, expert_ids_s, num_tokens_post_pad_s)
+
+    try:
+        sorted_ids_y, expert_ids_y, num_tokens_post_pad_y = _allocate_outputs(topk_ids, num_experts, block_size, False)
+        yiakwy_runner = _make_yiakwy_cuda_runner(
+            topk_ids,
+            num_experts,
+            block_size,
+            sorted_ids_y,
+            expert_ids_y,
+            num_tokens_post_pad_y,
+        )
+        if yiakwy_runner is None:
+            print("Correctness: skip yiakwy_cuda (unsupported or unavailable).")
+        else:
+            init_fn_y, kernel_fn_y = yiakwy_runner
+            init_fn_y()
+            kernel_fn_y()
+            outputs["yiakwy_cuda"] = (sorted_ids_y, expert_ids_y, num_tokens_post_pad_y)
+    except Exception as ex:
+        print(f"Correctness: skip yiakwy_cuda ({ex})")
+
     counts = torch.bincount(topk_ids, minlength=num_experts)
     aligned = torch.div(counts + (block_size - 1), block_size, rounding_mode="floor") * block_size
     cumsum = torch.cumsum(aligned, dim=0).to(torch.int32)
@@ -1127,10 +1325,14 @@ def _sample_topk_ids(num_tokens: int, num_experts: int, probs: torch.Tensor) -> 
 
 def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
     print("num_tokens,num_experts,source,triton_ms,triton_atomic_ms,triton_atomic_fused_ms,"
-          "tle_cluster_fused_ms,sglang_cuda_ms")
+          "tle_cluster_fused_ms,sglang_cuda_ms,yiakwy_cuda_ms")
     sglang_available = _resolve_sglang_cuda_moe_align() is not None
     if not sglang_available:
         print("warning: sglang cuda moe_align_block_size not found, sglang_cuda_ms will be na")
+    yiakwy_available = num_experts <= 256 and _load_embedded_yiakwy_cuda_moe_align() is not None
+    if not yiakwy_available:
+        print("warning: yiakwy cuda moe_align_block_size not available for this config, yiakwy_cuda_ms will be na")
+    yiakwy_warned = False
     triton_atomic_fused_warned = False
     tle_cluster_fused_warned = False
     probs = _zipf_probs(num_experts, alpha=1.2)
@@ -1240,11 +1442,37 @@ def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
                 rep=100,
                 quantiles=[0.5, 0.2, 0.8],
             )
+        ms_y = None
+        if yiakwy_available:
+            sorted_ids_y, expert_ids_y, num_tokens_post_pad_y = _allocate_outputs(topk_ids, num_experts, block_size,
+                                                                                  False)
+            yiakwy_runner = _make_yiakwy_cuda_runner(
+                topk_ids,
+                num_experts,
+                block_size,
+                sorted_ids_y,
+                expert_ids_y,
+                num_tokens_post_pad_y,
+            )
+            if yiakwy_runner is not None:
+                init_fn_y, kernel_fn_y = yiakwy_runner
+                try:
+                    ms_y, _, _ = triton.testing.do_bench(
+                        lambda: (init_fn_y(), kernel_fn_y()),
+                        warmup=20,
+                        rep=100,
+                        quantiles=[0.5, 0.2, 0.8],
+                    )
+                except Exception as ex:
+                    if not yiakwy_warned:
+                        print(f"warning: yiakwy_cuda launch failed, yiakwy_cuda_ms will be na ({ex})")
+                        yiakwy_warned = True
         ms_cf_str = "na" if ms_cf is None else f"{float(ms_cf):.4f}"
         ms_taf_str = "na" if ms_taf is None else f"{float(ms_taf):.4f}"
         ms_s_str = "na" if ms_s is None else f"{float(ms_s):.4f}"
+        ms_y_str = "na" if ms_y is None else f"{float(ms_y):.4f}"
         print(
-            f"{num_tokens},{num_experts},zipf,{float(ms_t):.4f},{float(ms_ta):.4f},{ms_taf_str},{ms_cf_str},{ms_s_str}")
+            f"{num_tokens},{num_experts},zipf,{float(ms_t):.4f},{float(ms_ta):.4f},{ms_taf_str},{ms_cf_str},{ms_s_str},{ms_y_str}")
 
 
 def _load_real_topk_ids(path: str) -> torch.Tensor:
@@ -1369,6 +1597,30 @@ def run_real_data_benchmark(
     else:
         print("warning: sglang cuda moe_align_block_size not found, sglang_cuda=na")
 
+    ms_y = None
+    sorted_ids_y, expert_ids_y, num_tokens_post_pad_y = _allocate_outputs(topk_ids, num_experts, block_size, False)
+    yiakwy_runner = _make_yiakwy_cuda_runner(
+        topk_ids,
+        num_experts,
+        block_size,
+        sorted_ids_y,
+        expert_ids_y,
+        num_tokens_post_pad_y,
+    )
+    if yiakwy_runner is not None:
+        init_fn_y, kernel_fn_y = yiakwy_runner
+        try:
+            ms_y, _, _ = triton.testing.do_bench(
+                lambda: (init_fn_y(), kernel_fn_y()),
+                warmup=20,
+                rep=100,
+                quantiles=[0.5, 0.2, 0.8],
+            )
+        except Exception as ex:
+            print(f"warning: yiakwy cuda moe_align_block_size failed, yiakwy_cuda=na ({ex})")
+    else:
+        print("warning: yiakwy cuda moe_align_block_size not available, yiakwy_cuda=na")
+
     print(f"num_tokens={num_tokens}, num_experts={num_experts}, block_size={block_size}, source=real")
     print("provider,ms")
     print(f"triton,{float(ms_t):.4f}")
@@ -1385,6 +1637,10 @@ def run_real_data_benchmark(
         print("sglang_cuda,na")
     else:
         print(f"sglang_cuda,{float(ms_s):.4f}")
+    if ms_y is None:
+        print("yiakwy_cuda,na")
+    else:
+        print(f"yiakwy_cuda,{float(ms_y):.4f}")
 
 
 def main(argv=None):
