@@ -63,6 +63,7 @@ def edsl(
     a: Input[L["memref<?x?xf16,strided<[?, ?], offset: ?>, 3>"]],
     b: Input[L["memref<?x?xf16,strided<[?, ?], offset: ?>, 3>"]],
 ):
+    nvvm.barrier0()
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
@@ -87,6 +88,7 @@ def edsl(
         init = memref.load(c, [row, col])
         memref.store(arith.addf(result, init), c, [row, col])
         scf.yield_([])
+    nvvm.barrier0()
 
 
 @triton.autotune(
@@ -192,7 +194,4 @@ if __name__ == "__main__":
     print(f"triton_output_with_fp16_inputs={triton_output}")
     print(f"torch_output_with_fp16_inputs={torch_output}")
 
-    if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
-        print("✅ Triton and Torch match")
-    else:
-        print("❌ Triton and Torch differ")
+    torch.testing.assert_close(triton_output, torch_output, atol=1e-2, rtol=0)
