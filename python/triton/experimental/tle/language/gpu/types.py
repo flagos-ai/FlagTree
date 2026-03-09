@@ -340,4 +340,3 @@ class buffered_tensor_type(tl.block_type):
 
     def _flatten_ir(self, handles) -> None:
         handles.append(self.handle)
-

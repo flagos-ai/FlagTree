@@ -134,8 +134,8 @@ class InsertLocalPointerBarriersPass
     }
   }
 
-  bool opHasLoadNeedingBarrier(Operation &op,
-                               const llvm::DenseMap<int64_t, bool> &dirtyGroups) const {
+  bool opHasLoadNeedingBarrier(
+      Operation &op, const llvm::DenseMap<int64_t, bool> &dirtyGroups) const {
     bool needsBarrier = false;
     for (Region &region : op.getRegions()) {
       for (Block &block : region) {

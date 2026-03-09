@@ -23,7 +23,6 @@
 // flagtree tle
 
 #include "Python.h"
-#include <cstdint>
 #include "Transforms/Passes.h"
 #include "ir.h" // TritonOpBuilder
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -49,6 +48,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/SmallVectorExtras.h"
 #include "llvm/Support/Casting.h"
+#include <cstdint>
 
 namespace py = pybind11;
 using namespace mlir;
@@ -157,11 +157,9 @@ void init_triton_tle_ir(py::module &&m) {
            })
       .def("create_distributed_barrier",
            [](TritonOpBuilder &self) -> void {
-             self.create<tle::DistributedBarrierOp>(StringAttr(),
-                                                    IntegerAttr(),
-                                                    DenseI32ArrayAttr(),
-                                                    DenseI32ArrayAttr(),
-                                                    DenseI32ArrayAttr());
+             self.create<tle::DistributedBarrierOp>(
+                 StringAttr(), IntegerAttr(), DenseI32ArrayAttr(),
+                 DenseI32ArrayAttr(), DenseI32ArrayAttr());
            })
       .def(
           "create_distributed_barrier",
@@ -182,7 +180,8 @@ void init_triton_tle_ir(py::module &&m) {
             }
             // Only materialize subgroup metadata when provided.
             // This allows kind-only barriers (e.g. group_kind="grid").
-            if (!groupShape.empty() || !groupAxes.empty() || !groupMask.empty()) {
+            if (!groupShape.empty() || !groupAxes.empty() ||
+                !groupMask.empty()) {
               rankAttr = builder.getI32IntegerAttr(
                   static_cast<int32_t>(groupShape.size()));
               if (!groupShape.empty()) {
@@ -196,15 +195,14 @@ void init_triton_tle_ir(py::module &&m) {
               }
             }
 
-            self.create<tle::DistributedBarrierOp>(kindAttr, rankAttr,
-                                                   shapeAttr, axesAttr,
-                                                   maskAttr);
+            self.create<tle::DistributedBarrierOp>(
+                kindAttr, rankAttr, shapeAttr, axesAttr, maskAttr);
           },
-          py::arg("group_kind"), py::arg("group_shape"),
-          py::arg("group_axes"), py::arg("group_mask"))
+          py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
+          py::arg("group_mask"))
       .def("create_remote_pointers",
-           [](TritonOpBuilder &self, Type resultTy, Value src, Value shardId)
-               -> OpState {
+           [](TritonOpBuilder &self, Type resultTy, Value src,
+              Value shardId) -> OpState {
              return self.create<tle::RemotePointersOp>(resultTy, src, shardId);
            })
       .def("get_memdesc_type",

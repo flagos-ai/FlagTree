@@ -485,4 +485,3 @@ def local_ptr(
         )
 
     return result_tensor
-

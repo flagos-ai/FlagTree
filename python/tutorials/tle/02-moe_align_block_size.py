@@ -28,8 +28,7 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 BLOCK_CLUSTER_MESH_8 = tled.device_mesh({"block_cluster": [("cluster_x", 8)]})
 TLE_CLUSTER_SIZE = 8
 SGLANG_MOE_ALIGN_KERNEL_URL = (
-    "https://raw.githubusercontent.com/sgl-project/sglang/refs/heads/main/sgl-kernel/csrc/moe/moe_align_kernel.cu"
-)
+    "https://raw.githubusercontent.com/sgl-project/sglang/refs/heads/main/sgl-kernel/csrc/moe/moe_align_kernel.cu")
 
 
 @lru_cache(maxsize=64)
@@ -50,6 +49,7 @@ def _install_triton_default_allocator() -> None:
 
     triton.set_allocator(_alloc)
     _TRITON_ALLOCATOR_INSTALLED = True
+
 
 SGLANG_MOE_ALIGN_BINDING_CPP = r"""
 #include <torch/extension.h>
@@ -373,7 +373,8 @@ def moe_align_block_size_triton_atomic_fused_coop(
         tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
 
     local_counts_vals = tl.load(local_counts_ptrs, mask=expert_mask, other=0)
-    prefix_before = tl.atomic_add(cumsum_ptr + expert_offsets, local_counts_vals, mask=expert_mask, sem="acq_rel", scope="gpu")
+    prefix_before = tl.atomic_add(cumsum_ptr + expert_offsets, local_counts_vals, mask=expert_mask, sem="acq_rel",
+                                  scope="gpu")
     tl.store(local_counts_ptrs, prefix_before, mask=expert_mask)
     tled.distributed_barrier(mesh)
 
@@ -545,9 +546,8 @@ def moe_align_block_size_tle_cluster_fused(
     local_counts_vals = tl.load(local_counts_ptrs, mask=expert_mask, other=0)
     rank0_cumsum_remote = tled.remote(cumsum_local, 0, scope=mesh)
     rank0_cumsum_remote_ptrs = tle.local_ptr(rank0_cumsum_remote, (expert_offsets, ))
-    prefix_before = tl.atomic_add(
-        rank0_cumsum_remote_ptrs, local_counts_vals, mask=expert_mask, sem="relaxed", scope="cta"
-    )
+    prefix_before = tl.atomic_add(rank0_cumsum_remote_ptrs, local_counts_vals, mask=expert_mask, sem="relaxed",
+                                  scope="cta")
     # Reuse local_counts to hold per-shard prefix_before for Stage 4 scatter.
     tl.store(local_counts_ptrs, prefix_before, mask=expert_mask)
 
@@ -652,17 +652,9 @@ def _make_bench_runner(
     block_tokens_taf, num_warps_taf = _pick_triton_atomic_fused_launch_params(numel, num_experts)
     triton_atomic_fused_num_blocks = _pick_triton_atomic_fused_num_blocks(numel, num_experts, block_tokens_taf)
     triton_atomic_fused_experts_per_prog = ceil_div(num_experts, triton_atomic_fused_num_blocks)
-    use_cluster_tle_fused = (
-        provider == "tle_cluster_fused"
-        and topk_ids.is_cuda
-        and _supports_tle_cluster_remote()
-        and block_expert_cluster <= 1024
-    )
-    use_triton_atomic_fused = (
-        provider == "triton_atomic_fused"
-        and topk_ids.is_cuda
-        and block_expert_cluster <= 1024
-    )
+    use_cluster_tle_fused = (provider == "tle_cluster_fused" and topk_ids.is_cuda and _supports_tle_cluster_remote()
+                             and block_expert_cluster <= 1024)
+    use_triton_atomic_fused = (provider == "triton_atomic_fused" and topk_ids.is_cuda and block_expert_cluster <= 1024)
     tokens_cnts = None
     cumsum = None
     if provider in ("triton", ):
@@ -1020,8 +1012,7 @@ def run_correctness(
     }
     try:
         triton_atomic_fused_sorted, triton_atomic_fused_expert, triton_atomic_fused_num_post = _allocate_outputs(
-            topk_ids, num_experts, block_size, False
-        )
+            topk_ids, num_experts, block_size, False)
         init_fn_taf, kernel_fn_taf = _make_bench_runner(
             topk_ids,
             block_size,
@@ -1043,7 +1034,8 @@ def run_correctness(
         print(f"Correctness: skip triton_atomic_fused ({ex})")
 
     if topk_ids.is_cuda and _supports_tle_cluster_remote() and triton.next_power_of_2(num_experts) <= 1024:
-        sorted_ids_cf, expert_ids_cf, num_tokens_post_pad_cf = _allocate_outputs(topk_ids, num_experts, block_size, False)
+        sorted_ids_cf, expert_ids_cf, num_tokens_post_pad_cf = _allocate_outputs(topk_ids, num_experts, block_size,
+                                                                                 False)
         init_fn_cf, kernel_fn_cf = _make_bench_runner(
             topk_ids,
             block_size,
@@ -1122,10 +1114,8 @@ def _sample_topk_ids(num_tokens: int, num_experts: int, probs: torch.Tensor) -> 
 
 
 def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
-    print(
-        "num_tokens,num_experts,source,triton_ms,triton_atomic_ms,triton_atomic_fused_ms,"
-        "tle_cluster_fused_ms,sglang_cuda_ms"
-    )
+    print("num_tokens,num_experts,source,triton_ms,triton_atomic_ms,triton_atomic_fused_ms,"
+          "tle_cluster_fused_ms,sglang_cuda_ms")
     sglang_available = _resolve_sglang_cuda_moe_align() is not None
     if not sglang_available:
         print("warning: sglang cuda moe_align_block_size not found, sglang_cuda_ms will be na")
@@ -1145,7 +1135,8 @@ def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
             provider="triton",
             triton_stage12_atomic=False,
         )
-        sorted_ids_ta, expert_ids_ta, num_tokens_post_pad_ta = _allocate_outputs(topk_ids, num_experts, block_size, False)
+        sorted_ids_ta, expert_ids_ta, num_tokens_post_pad_ta = _allocate_outputs(topk_ids, num_experts, block_size,
+                                                                                 False)
         init_fn_ta, kernel_fn_ta = _make_bench_runner(
             topk_ids,
             block_size,
@@ -1170,7 +1161,8 @@ def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
         )
         ms_taf = None
         try:
-            sorted_ids_taf, expert_ids_taf, num_tokens_post_pad_taf = _allocate_outputs(topk_ids, num_experts, block_size, False)
+            sorted_ids_taf, expert_ids_taf, num_tokens_post_pad_taf = _allocate_outputs(
+                topk_ids, num_experts, block_size, False)
             init_fn_taf, kernel_fn_taf = _make_bench_runner(
                 topk_ids,
                 block_size,
@@ -1193,7 +1185,8 @@ def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
                 triton_atomic_fused_warned = True
         ms_cf = None
         try:
-            sorted_ids_cf, expert_ids_cf, num_tokens_post_pad_cf = _allocate_outputs(topk_ids, num_experts, block_size, False)
+            sorted_ids_cf, expert_ids_cf, num_tokens_post_pad_cf = _allocate_outputs(
+                topk_ids, num_experts, block_size, False)
             init_fn_cf, kernel_fn_cf = _make_bench_runner(
                 topk_ids,
                 block_size,
@@ -1217,7 +1210,8 @@ def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
         ms_s = None
         sglang_runner = None
         if sglang_available:
-            sorted_ids_s, expert_ids_s, num_tokens_post_pad_s = _allocate_outputs(topk_ids, num_experts, block_size, False)
+            sorted_ids_s, expert_ids_s, num_tokens_post_pad_s = _allocate_outputs(topk_ids, num_experts, block_size,
+                                                                                  False)
             sglang_runner = _make_sglang_cuda_runner(
                 topk_ids,
                 num_experts,
@@ -1238,8 +1232,7 @@ def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
         ms_taf_str = "na" if ms_taf is None else f"{float(ms_taf):.4f}"
         ms_s_str = "na" if ms_s is None else f"{float(ms_s):.4f}"
         print(
-            f"{num_tokens},{num_experts},zipf,{float(ms_t):.4f},{float(ms_ta):.4f},{ms_taf_str},{ms_cf_str},{ms_s_str}"
-        )
+            f"{num_tokens},{num_experts},zipf,{float(ms_t):.4f},{float(ms_ta):.4f},{ms_taf_str},{ms_cf_str},{ms_s_str}")
 
 
 def _load_real_topk_ids(path: str) -> torch.Tensor:
@@ -1301,7 +1294,8 @@ def run_real_data_benchmark(
     )
     ms_taf = None
     try:
-        sorted_ids_taf, expert_ids_taf, num_tokens_post_pad_taf = _allocate_outputs(topk_ids, num_experts, block_size, False)
+        sorted_ids_taf, expert_ids_taf, num_tokens_post_pad_taf = _allocate_outputs(topk_ids, num_experts, block_size,
+                                                                                    False)
         init_fn_taf, kernel_fn_taf = _make_bench_runner(
             topk_ids,
             block_size,
@@ -1322,7 +1316,8 @@ def run_real_data_benchmark(
         print(f"warning: triton_atomic_fused unavailable, triton_atomic_fused=na ({ex})")
     ms_cf = None
     try:
-        sorted_ids_cf, expert_ids_cf, num_tokens_post_pad_cf = _allocate_outputs(topk_ids, num_experts, block_size, False)
+        sorted_ids_cf, expert_ids_cf, num_tokens_post_pad_cf = _allocate_outputs(topk_ids, num_experts, block_size,
+                                                                                 False)
         init_fn_cf, kernel_fn_cf = _make_bench_runner(
             topk_ids,
             block_size,
@@ -1407,4 +1402,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-

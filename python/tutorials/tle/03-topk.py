@@ -31,7 +31,6 @@ except Exception:  # pragma: no cover - optional dependency
     tilelang = None
     T = None
 
-
 if _HAVE_TILELANG:
 
     def _tilelang_get_configs():
@@ -41,7 +40,6 @@ if _HAVE_TILELANG:
         )
         return [dict(zip(iter_params, values)) for values in itertools.product(*iter_params.values())]
 
-
     @tilelang.autotune(configs=_tilelang_get_configs())
     @tilelang.jit(out_idx=[1, 2])
     def _tilelang_topk_kernel(M, N, topk, blk_m, threads=128):
@@ -49,9 +47,9 @@ if _HAVE_TILELANG:
 
         @T.prim_func
         def topk_kernel(
-            logits: T.Tensor([M, N], dtype),
-            topk_gates: T.Tensor([M, topk], dtype),
-            topk_indices: T.Tensor([M, topk], T.int32),
+                logits: T.Tensor([M, N], dtype),
+                topk_gates: T.Tensor([M, topk], dtype),
+                topk_indices: T.Tensor([M, topk], T.int32),
         ):
             with T.Kernel(T.ceildiv(M, blk_m), threads=threads) as bx:
                 logits_frag = T.alloc_fragment([blk_m, N], dtype=dtype)
@@ -78,7 +76,6 @@ if _HAVE_TILELANG:
                         topk_indices[bx * blk_m + i, k] = max_idx[i]
 
         return topk_kernel
-
 
     _TILELANG_KERNEL_CACHE = {}
 
@@ -912,7 +909,6 @@ if "--only_unit_test" in sys.argv:
     run_moe_correctness(_args.batch, _args.seq, _args.experts, _args.K, _dtype, "iter_shared_radix")
     sys.exit(0)
 
-
 _BENCH_PROVIDERS = ["triton", "triton_iterative", "triton_iter_shared_radix"]
 _BENCH_NAMES = ["Triton-TopK", "Triton-Iterative", "Triton-RadixSelect"]
 _BENCH_STYLES = [("blue", "-"), ("green", "-"), ("red", "-")]
@@ -1114,4 +1110,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-

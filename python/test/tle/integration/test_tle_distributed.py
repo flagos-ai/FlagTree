@@ -120,9 +120,7 @@ def _remote_peer_smem_2d_kernel(
     cols = tl.broadcast_to(tl.arange(0, BLOCK_K)[None, :], (BLOCK_M, BLOCK_K))
     vals = tl.cast(rows * BLOCK_K + cols + pid * BLOCK_M * BLOCK_K, tl.float32)
 
-    smem = tleg.alloc(
-        [BLOCK_M, BLOCK_K], dtype=tl.float32, layout=None, scope=tleg.smem, nv_mma_shared_layout=False
-    )
+    smem = tleg.alloc([BLOCK_M, BLOCK_K], dtype=tl.float32, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
     local_ptr = tleg.local_ptr(smem, (rows, cols))
     tl.store(local_ptr, vals)
     tled.distributed_barrier(mesh)
@@ -168,9 +166,7 @@ def _remote_const_shard_vectorized_load_kernel(
     cols = tl.broadcast_to(tl.arange(0, BLOCK_K)[None, :], (BLOCK_M, BLOCK_K))
     vals = tl.cast(rows * BLOCK_K + cols + pid * BLOCK_M * BLOCK_K, tl.float16)
 
-    smem = tleg.alloc(
-        [BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False
-    )
+    smem = tleg.alloc([BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
     local_ptr = tleg.local_ptr(smem, (rows, cols))
     tl.store(local_ptr, vals)
     tled.distributed_barrier(mesh)
@@ -206,9 +202,7 @@ def _remote_buffer_const_shard_vectorized_load_kernel(
     cols = tl.broadcast_to(tl.arange(0, BLOCK_K)[None, :], (BLOCK_M, BLOCK_K))
     vals = tl.cast(rows * BLOCK_K + cols + pid * BLOCK_M * BLOCK_K, tl.float16)
 
-    smem = tleg.alloc(
-        [BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False
-    )
+    smem = tleg.alloc([BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
     local_ptr = tleg.local_ptr(smem, (rows, cols))
     tl.store(local_ptr, vals)
     tled.distributed_barrier(mesh)
@@ -236,9 +230,7 @@ def _remote_buffer_const_shard_vectorized_load_rank3_kernel(
     vals = tl.cast(rows * BLOCK_K + cols + pid * BLOCK_M * BLOCK_K, tl.float16)
     slots = tl.zeros((BLOCK_M, BLOCK_K), dtype=tl.int32) + SLOT
 
-    smem = tleg.alloc(
-        [2, BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False
-    )
+    smem = tleg.alloc([2, BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
     local_ptr = tleg.local_ptr(smem, (slots, rows, cols))
     tl.store(local_ptr, vals)
     tled.distributed_barrier(mesh)
@@ -756,21 +748,18 @@ class TestTLEDistributed:
             num_warps=4,
         )
         assert compiled.metadata.cluster_dims == (2, 1, 1)
-        assert ("tle.remote_pointers" in compiled.asm["ttgir"]) or (
-            "tle.remote_shard_id_carrier" in compiled.asm["ttgir"]
-        )
+        assert ("tle.remote_pointers" in compiled.asm["ttgir"]) or ("tle.remote_shard_id_carrier"
+                                                                    in compiled.asm["ttgir"])
         assert "\"ttg.num-ctas\" = 1" in compiled.asm["ttgir"]
         assert "mapa.shared::cluster" in compiled.asm["ptx"]
 
-        _remote_peer_smem_kernel[(grid, )](
-            out, shard_id_ptr=shard_id, mesh=BLOCK_CLUSTER_MESH, BLOCK=block, num_ctas=1, num_warps=4
-        )
+        _remote_peer_smem_kernel[(grid, )](out, shard_id_ptr=shard_id, mesh=BLOCK_CLUSTER_MESH, BLOCK=block, num_ctas=1,
+                                           num_warps=4)
         expected_chunks = []
         for pid in range(num_programs):
             peer_pid = pid ^ 1
             expected_chunks.append(
-                torch.arange(peer_pid * block, (peer_pid + 1) * block, device="cuda", dtype=torch.float32)
-            )
+                torch.arange(peer_pid * block, (peer_pid + 1) * block, device="cuda", dtype=torch.float32))
         expected = torch.cat(expected_chunks, dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
@@ -798,22 +787,18 @@ class TestTLEDistributed:
         assert "\"tle.remote_pointers\"" in ttgir
         assert "mapa.shared::cluster" in ptx
 
-        _remote_mixed_local_remote_same_buffer_kernel[(grid, )](
-            out, shard_id_ptr=shard_id, mesh=BLOCK_CLUSTER_MESH, BLOCK=block, num_ctas=1, num_warps=4
-        )
+        _remote_mixed_local_remote_same_buffer_kernel[(grid, )](out, shard_id_ptr=shard_id, mesh=BLOCK_CLUSTER_MESH,
+                                                                BLOCK=block, num_ctas=1, num_warps=4)
         torch.cuda.synchronize()
 
         expected_chunks = []
         for pid in range(num_programs):
             if pid % cluster_size == 0:
-                expected_chunks.append(
-                    torch.arange(pid * block, (pid + 1) * block, device="cuda", dtype=torch.float32)
-                )
+                expected_chunks.append(torch.arange(pid * block, (pid + 1) * block, device="cuda", dtype=torch.float32))
             else:
                 peer_pid = pid ^ 1
                 expected_chunks.append(
-                    torch.arange(peer_pid * block, (peer_pid + 1) * block, device="cuda", dtype=torch.float32)
-                )
+                    torch.arange(peer_pid * block, (peer_pid + 1) * block, device="cuda", dtype=torch.float32))
         expected = torch.cat(expected_chunks, dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
@@ -857,8 +842,7 @@ class TestTLEDistributed:
         for pid in range(num_programs):
             peer_pid = pid ^ 1
             expected_chunks.append(
-                torch.arange(peer_pid * tile_elems, (peer_pid + 1) * tile_elems, device="cuda", dtype=torch.float32)
-            )
+                torch.arange(peer_pid * tile_elems, (peer_pid + 1) * tile_elems, device="cuda", dtype=torch.float32))
         expected = torch.cat(expected_chunks, dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
@@ -897,8 +881,7 @@ class TestTLEDistributed:
         for pid in range(num_programs):
             peer_pid = (pid // cluster_size) * cluster_size
             expected_chunks.append(
-                torch.arange(peer_pid * block, (peer_pid + 1) * block, device="cuda", dtype=torch.float16)
-            )
+                torch.arange(peer_pid * block, (peer_pid + 1) * block, device="cuda", dtype=torch.float16))
         expected = torch.cat(expected_chunks, dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
@@ -1067,9 +1050,7 @@ class TestTLEDistributed:
         ptx = compiled.asm["ptx"]
         assert "atom.shared::cluster.add.u32" in ptx
 
-        _submesh_barrier_lowering_kernel[(1, )](
-            out, mesh=submesh, BLOCK=block, num_ctas=1, num_warps=4
-        )
+        _submesh_barrier_lowering_kernel[(1, )](out, mesh=submesh, BLOCK=block, num_ctas=1, num_warps=4)
         torch.cuda.synchronize()
 
     def test_remote_rank0_dsmem_atomic_add_lowering_cluster8(self):
@@ -1290,12 +1271,10 @@ class TestTLEDistributed:
         row1_count = int(counter_row1.cpu().item())
         assert row0_count > 0
         assert row1_count == 3 * row0_count
-        torch.testing.assert_close(
-            out_row0, torch.tensor([row0_count, row0_count, -1, -1], device="cuda", dtype=torch.int32)
-        )
-        torch.testing.assert_close(
-            out_row1, torch.tensor([-1, -1, row1_count, row1_count], device="cuda", dtype=torch.int32)
-        )
+        torch.testing.assert_close(out_row0,
+                                   torch.tensor([row0_count, row0_count, -1, -1], device="cuda", dtype=torch.int32))
+        torch.testing.assert_close(out_row1,
+                                   torch.tensor([-1, -1, row1_count, row1_count], device="cuda", dtype=torch.int32))
 
     def test_distributed_barrier_col_group_independence(self):
         grid = 2
@@ -1334,12 +1313,10 @@ class TestTLEDistributed:
         col1_count = int(counter_col1.cpu().item())
         assert col0_count > 0
         assert col1_count == 5 * col0_count
-        torch.testing.assert_close(
-            out_col0, torch.tensor([col0_count, -1, col0_count, -1], device="cuda", dtype=torch.int32)
-        )
-        torch.testing.assert_close(
-            out_col1, torch.tensor([-1, col1_count, -1, col1_count], device="cuda", dtype=torch.int32)
-        )
+        torch.testing.assert_close(out_col0,
+                                   torch.tensor([col0_count, -1, col0_count, -1], device="cuda", dtype=torch.int32))
+        torch.testing.assert_close(out_col1,
+                                   torch.tensor([-1, col1_count, -1, col1_count], device="cuda", dtype=torch.int32))
 
     def test_remote_cluster_gemm_reuse_a_tile(self):
         clusters = 2
@@ -1801,4 +1778,3 @@ class TestTLEDistributed:
 
         ref = torch.matmul(a, b)
         torch.testing.assert_close(c, ref, atol=1e-1, rtol=1e-1)
-

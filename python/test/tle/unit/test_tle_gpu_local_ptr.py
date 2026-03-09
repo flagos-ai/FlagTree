@@ -73,7 +73,7 @@ def _local_pointer_conditional_mask_store_kernel(out_ptr, numel, BLOCK: tl.const
     mask = idx < numel
 
     smem = tle.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    ptrs = tle.local_ptr(smem, (idx,))
+    ptrs = tle.local_ptr(smem, (idx, ))
 
     # Keep the masked store inside an scf.if region. This used to trigger a
     # verifier failure in `triton-tle-assign-local-pointers-encoding` because the
@@ -265,18 +265,18 @@ class TestTLELocalPointerKernel:
     def test_local_pointer_conditional_mask_store_compiles(self):
         block = 512
         numel = block - 7
-        out = torch.full((block,), -1, device="cuda", dtype=torch.int32)
+        out = torch.full((block, ), -1, device="cuda", dtype=torch.int32)
 
         compiled = _local_pointer_conditional_mask_store_kernel.warmup(
             out,
             numel,
             BLOCK=block,
-            grid=(1,),
+            grid=(1, ),
             num_warps=8,
         )
         assert compiled is not None
 
-        _local_pointer_conditional_mask_store_kernel[(1,)](
+        _local_pointer_conditional_mask_store_kernel[(1, )](
             out,
             numel,
             BLOCK=block,
@@ -391,4 +391,3 @@ class TestTLELocalPointerKernel:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
-

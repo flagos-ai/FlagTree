@@ -152,7 +152,8 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
   }
 }
 
-static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid) {
+static Value mapa(RewriterBase &rewriter, Location loc, Value ptr,
+                  Value ctaid) {
   // begin flagtree tle
   auto clusterPtrTy = LLVM::LLVMPointerType::get(
       rewriter.getContext(), NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
@@ -160,8 +161,9 @@ static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid) 
   return rewriter.create<NVVM::MapaOp>(loc, clusterPtrTy, ptr, ctaid);
 }
 
-Value TargetInfo::mapSharedToClusterPointer(RewriterBase &rewriter, Location loc,
-                                            Value ptr, Value ctaId) const {
+Value TargetInfo::mapSharedToClusterPointer(RewriterBase &rewriter,
+                                            Location loc, Value ptr,
+                                            Value ctaId) const {
   // begin flagtree tle
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
   if (ptrTy.getAddressSpace() ==
@@ -209,8 +211,7 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   const bool isClusterShared =
       ptrTy.getAddressSpace() ==
       static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
-  assert((isShared || isClusterShared) &&
-         "Invalid addr space for store_dsmem");
+  assert((isShared || isClusterShared) && "Invalid addr space for store_dsmem");
   const bool useCluster = ctaId.has_value() || isClusterShared;
   // end flagtree tle
 
@@ -345,8 +346,7 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   const bool isClusterShared =
       ptrTy.getAddressSpace() ==
       static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
-  assert((isShared || isClusterShared) &&
-         "Invalid addr space for load_dsmem");
+  assert((isShared || isClusterShared) && "Invalid addr space for load_dsmem");
   const bool useCluster = ctaId.has_value() || isClusterShared;
   // end flagtree tle
 
@@ -477,7 +477,8 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
       addrOperand = rewriter.create<LLVM::PtrToIntOp>(loc, i32_ty, addrOperand);
       addrConstraint = "r";
     }
-    auto &ldExec = ld(outOpr, builder.newAddrOperand(addrOperand, addrConstraint));
+    auto &ldExec =
+        ld(outOpr, builder.newAddrOperand(addrOperand, addrConstraint));
     if (!predIsConstTrue)
       ldExec.predicate(pred, "b");
     // end flagtree tle

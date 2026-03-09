@@ -25,7 +25,8 @@ namespace gpu {
 
 // begin flagtree tle
 static bool isLikelyRemotePtr(Value ptr) {
-  constexpr StringLiteral kRemoteShardCarrierAttr = "tle.remote_shard_id_carrier";
+  constexpr StringLiteral kRemoteShardCarrierAttr =
+      "tle.remote_shard_id_carrier";
   SmallVector<Value> worklist{ptr};
   DenseSet<Value> visited;
   while (!worklist.empty()) {

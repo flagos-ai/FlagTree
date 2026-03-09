@@ -14,32 +14,28 @@ import triton.language.core as tlcore
 class TestDeviceMesh:
 
     def test_device_mesh_shape_and_flatten(self):
-        mesh = tle.device_mesh(
-            {
-                "node": [("node_x", 2), ("node_y", 2)],
-                "device": 4,
-                "block_cluster": [("cluster_x", 2), ("cluster_y", 2)],
-                "block": 4,
-            }
-        )
+        mesh = tle.device_mesh({
+            "node": [("node_x", 2), ("node_y", 2)],
+            "device": 4,
+            "block_cluster": [("cluster_x", 2), ("cluster_y", 2)],
+            "block": 4,
+        })
         assert mesh.shape == (2, 2, 4, 2, 2, 4)
         assert mesh.ndim == 6
         assert mesh.size == 256
 
         flat = mesh.flatten()
-        assert flat.shape == (256,)
-        assert flat.dim_names == ("flat",)
+        assert flat.shape == (256, )
+        assert flat.dim_names == ("flat", )
 
     def test_device_mesh_slice_submesh(self):
-        mesh = tle.device_mesh(
-            {
-                "node": [("node_x", 2), ("node_y", 2)],
-                "device": 4,
-            }
-        )
+        mesh = tle.device_mesh({
+            "node": [("node_x", 2), ("node_y", 2)],
+            "device": 4,
+        })
         sub = mesh[1, :, 2]
-        assert sub.shape == (2,)
-        assert sub.dim_names == ("node_y",)
+        assert sub.shape == (2, )
+        assert sub.dim_names == ("node_y", )
         assert sub.size == 2
 
     def test_device_mesh_invalid_topology(self):
@@ -54,13 +50,11 @@ class TestDeviceMesh:
 class TestShardingSpec:
 
     def test_sharding_spec_states(self):
-        mesh = tle.device_mesh(
-            {
-                "device": 4,
-                "cluster": [("cluster_x", 2), ("cluster_y", 2)],
-                "block": 4,
-            }
-        )
+        mesh = tle.device_mesh({
+            "device": 4,
+            "cluster": [("cluster_x", 2), ("cluster_y", 2)],
+            "block": 4,
+        })
         spec = tle.sharding(mesh, split=[["cluster_x", "cluster_y"], "device"], partial=["block"])
         assert spec.axis_state("cluster_x") == "S"
         assert spec.axis_state("cluster_y") == "S"
@@ -110,6 +104,7 @@ class TestRemoteShardId:
         assert tlcore.is_builtin(tle.shard_id)
 
     def test_remote_buffered_tensor_attach_metadata(self):
+
         class buffered_tensor:
 
             def __init__(self):
@@ -129,6 +124,7 @@ class TestRemoteShardId:
         assert not hasattr(buf.type, "_tle_remote_scope")
 
     def test_remote_buffered_tensor_rejects_duplicate_annotation(self):
+
         class buffered_tensor:
 
             def __init__(self):
@@ -140,6 +136,7 @@ class TestRemoteShardId:
             tle.remote(remote_buf, 1, _semantic=_FakeSemantic())
 
     def test_remote_buffered_tensor_validates_shard_id_early(self):
+
         class buffered_tensor:
 
             def __init__(self):
@@ -156,14 +153,12 @@ class TestRemoteShardId:
 class TestClusterDims:
 
     def test_mesh_to_cluster_dims_prefers_cluster_axes(self):
-        mesh = tle.device_mesh(
-            {
-                "node": [("node_x", 2), ("node_y", 2)],
-                "device": 4,
-                "block_cluster": [("cluster_x", 2), ("cluster_y", 1)],
-                "block": 8,
-            }
-        )
+        mesh = tle.device_mesh({
+            "node": [("node_x", 2), ("node_y", 2)],
+            "device": 4,
+            "block_cluster": [("cluster_x", 2), ("cluster_y", 1)],
+            "block": 8,
+        })
         assert _mesh_to_cluster_dims(mesh) == (2, 1, 1)
 
     def test_mesh_to_cluster_dims_fallback_to_block_axes(self):
@@ -173,7 +168,7 @@ class TestClusterDims:
     def test_mesh_to_cluster_dims_submesh_keeps_launch_view(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
         sub = mesh[0, :]
-        assert sub.shape == (2,)
+        assert sub.shape == (2, )
         assert _mesh_to_cluster_dims(sub) == (2, 2, 1)
 
     def test_resolve_launch_axis(self):
@@ -277,12 +272,10 @@ class TestDistributedBarrierScope:
             tle.distributed_barrier(mesh=mesh, _semantic=semantic)
 
     def test_distributed_barrier_auto_can_pick_cluster_or_grid(self):
-        mesh = tle.device_mesh(
-            {
-                "block_cluster": [("cluster_x", 2)],
-                "block": [("block_x", 4)],
-            }
-        )
+        mesh = tle.device_mesh({
+            "block_cluster": [("cluster_x", 2)],
+            "block": [("block_x", 4)],
+        })
 
         semantic_cluster = _FakeSemantic()
         tle.distributed_barrier(mesh=mesh[:, 0], _semantic=semantic_cluster)
@@ -299,11 +292,10 @@ class TestDistributedBarrierScope:
         assert group is not None
         assert group.kind == "submesh"
         assert group.rank == 1
-        assert group.shape == (2,)
-        assert group.axes == (1,)
+        assert group.shape == (2, )
+        assert group.axes == (1, )
         assert group.mask == (0, 1)
 
     def test_infer_submesh_barrier_group_full_mesh_returns_none(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
         assert _infer_submesh_barrier_group(mesh, (2, 2, 1)) is None
-

@@ -1,8 +1,8 @@
 #include "tle/dialect/include/Analysis/AxisInfoExt.h"
 
 #include "tle/dialect/include/IR/Dialect.h"
-#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include <cstdlib>
@@ -38,7 +38,8 @@ public:
     if (!resultTy)
       return AxisInfo();
 
-    auto memDescTy = dyn_cast<triton::gpu::MemDescType>(local.getSrc().getType());
+    auto memDescTy =
+        dyn_cast<triton::gpu::MemDescType>(local.getSrc().getType());
     if (!memDescTy)
       return AxisInfo();
 
@@ -82,12 +83,15 @@ public:
         contiguity.push_back(
             std::max(gcd(lhs.getConstancy(d), rhs.getContiguity(d)),
                      gcd(lhs.getContiguity(d), rhs.getConstancy(d))));
-        divisibility.push_back(gcd(lhs.getDivisibility(d), rhs.getDivisibility(d)));
+        divisibility.push_back(
+            gcd(lhs.getDivisibility(d), rhs.getDivisibility(d)));
         constancy.push_back(gcd(lhs.getConstancy(d), rhs.getConstancy(d)));
       }
       std::optional<int64_t> constantValue = std::nullopt;
-      if (lhs.getConstantValue().has_value() && rhs.getConstantValue().has_value())
-        constantValue = lhs.getConstantValue().value() + rhs.getConstantValue().value();
+      if (lhs.getConstantValue().has_value() &&
+          rhs.getConstantValue().has_value())
+        constantValue =
+            lhs.getConstantValue().value() + rhs.getConstantValue().value();
       return AxisInfo(contiguity, divisibility, constancy, constantValue);
     };
 
@@ -191,8 +195,8 @@ public:
     std::optional<int64_t> constantValue = std::nullopt;
     if (baseInfo.getConstantValue().has_value() &&
         shardInfo.getConstantValue().has_value()) {
-      constantValue =
-          baseInfo.getConstantValue().value() + shardInfo.getConstantValue().value();
+      constantValue = baseInfo.getConstantValue().value() +
+                      shardInfo.getConstantValue().value();
     }
     return AxisInfo(contiguity, divisibility, constancy, constantValue);
   }

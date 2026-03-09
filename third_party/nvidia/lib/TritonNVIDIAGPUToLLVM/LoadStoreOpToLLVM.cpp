@@ -249,11 +249,11 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     // remote metadata carriers can pessimize AxisInfo on the load pointer.
     // Reuse the underlying pointer as a hint to recover vector width.
     if (remoteCTAInfo.hasRemoteCTAId() && !llMask) {
-      vec = std::max(vec, tte::inferTlePointerVectorSize(ptr, axisAnalysisPass));
+      vec =
+          std::max(vec, tte::inferTlePointerVectorSize(ptr, axisAnalysisPass));
       if (remoteCTAInfo.vectorHintPtr && remoteCTAInfo.vectorHintPtr != ptr) {
-        vec = std::max(
-            vec, tte::inferTlePointerVectorSize(remoteCTAInfo.vectorHintPtr,
-                                                axisAnalysisPass));
+        vec = std::max(vec, tte::inferTlePointerVectorSize(
+                                remoteCTAInfo.vectorHintPtr, axisAnalysisPass));
         vec = std::max(vec, getVectorSize(remoteCTAInfo.vectorHintPtr));
       }
     }
@@ -313,7 +313,8 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         return Value();
       return ensureI32(elems.front());
     };
-    Value remoteDynamicCTAId = materializeRemoteCTAId(remoteCTAInfo.dynamicCTAId);
+    Value remoteDynamicCTAId =
+        materializeRemoteCTAId(remoteCTAInfo.dynamicCTAId);
     if (remoteCTAInfo.dynamicCTAId && !remoteDynamicCTAId)
       return op.emitError("runtime shard_id must lower to scalar integer");
     // end flagtree tle
@@ -359,9 +360,9 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     SmallVector<Value> loadedVals;
     // begin flagtree tle
     if (remoteCTAInfo.hasRemoteCTAId()) {
-      Value ctaId =
-          remoteCTAInfo.constCTAId ? b.i32_val(*remoteCTAInfo.constCTAId)
-                                   : remoteDynamicCTAId;
+      Value ctaId = remoteCTAInfo.constCTAId
+                        ? b.i32_val(*remoteCTAInfo.constCTAId)
+                        : remoteDynamicCTAId;
       auto maybeStripShardOffset = [&](Value ptrVal) -> Value {
         if (!remoteCTAInfo.stripShardOffsetFromPtr)
           return ptrVal;
@@ -372,15 +373,17 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
         if (auto canonicalVecStart = getCanonicalIndex(vecStart, regMask);
             vecStart != canonicalVecStart &&
-            canReuseCanonicalPointer(ptrElems, vecStart, canonicalVecStart, vec)) {
+            canReuseCanonicalPointer(ptrElems, vecStart, canonicalVecStart,
+                                     vec)) {
           for (size_t iVec = 0; iVec < vec; ++iVec)
             loadedVals.push_back(loadedVals[canonicalVecStart + iVec]);
           continue;
         }
         Value pred = llMask ? maskElems[vecStart] : b.true_val();
         Value sharedPtr = maybeStripShardOffset(ptrElems[vecStart]);
-        Type remoteLoadTy =
-            vec == 1 ? valueElemTy : Type(LLVM::getVectorType(valueElemTy, vec));
+        Type remoteLoadTy = vec == 1
+                                ? valueElemTy
+                                : Type(LLVM::getVectorType(valueElemTy, vec));
         Value loadedVec = targetInfo.loadDShared(rewriter, loc, sharedPtr,
                                                  ctaId, remoteLoadTy, pred, op);
         auto loadedElems = unpackLLVector(loc, loadedVec, rewriter);
@@ -621,7 +624,8 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
         return Value();
       return ensureI32(elems.front());
     };
-    Value remoteDynamicCTAId = materializeRemoteCTAId(remoteCTAInfo.dynamicCTAId);
+    Value remoteDynamicCTAId =
+        materializeRemoteCTAId(remoteCTAInfo.dynamicCTAId);
     if (remoteCTAInfo.dynamicCTAId && !remoteDynamicCTAId)
       return op.emitError("runtime shard_id must lower to scalar integer");
     // end flagtree tle
@@ -657,9 +661,9 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
 
     // begin flagtree tle
     if (remoteCTAInfo.hasRemoteCTAId()) {
-      Value ctaId =
-          remoteCTAInfo.constCTAId ? b.i32_val(*remoteCTAInfo.constCTAId)
-                                   : remoteDynamicCTAId;
+      Value ctaId = remoteCTAInfo.constCTAId
+                        ? b.i32_val(*remoteCTAInfo.constCTAId)
+                        : remoteDynamicCTAId;
       auto maybeStripShardOffset = [&](Value ptrVal) -> Value {
         if (!remoteCTAInfo.stripShardOffsetFromPtr)
           return ptrVal;
@@ -1096,9 +1100,9 @@ public:
             {triton::MemSyncScope::GPU, triton::nvgpu::MemSyncScope::GPU},
             {triton::MemSyncScope::SYSTEM,
              triton::nvgpu::MemSyncScope::SYSTEM}};
-    const bool doPTXLDPromotion = isPromotableToNVPTXLD(op) && vec == 1 &&
-                                  packed == 1 && ScopeMap.count(op.getScope()) &&
-                                  !remoteCTAInfo.hasRemoteCTAId();
+    const bool doPTXLDPromotion =
+        isPromotableToNVPTXLD(op) && vec == 1 && packed == 1 &&
+        ScopeMap.count(op.getScope()) && !remoteCTAInfo.hasRemoteCTAId();
 
     for (size_t i = 0; i < elemsPerThread; i += vec * packed) {
       if (auto canonicalStart = getCanonicalIndex(i, regMask);
@@ -1121,13 +1125,14 @@ public:
               loc, rewriter.getI32Type(), b.i32_val(0), ctaId);
           rmwPtr = b.gep(rmwPtr.getType(), valueElemTy, rmwPtr, negCtaId);
         }
-        rmwPtr = targetInfo.mapSharedToClusterPointer(rewriter, loc, rmwPtr,
-                                                      ctaId);
+        rmwPtr =
+            targetInfo.mapSharedToClusterPointer(rewriter, loc, rmwPtr, ctaId);
       }
       auto rmwPtrTy = cast<LLVM::LLVMPointerType>(rmwPtr.getType());
       const bool isClusterSharedPtr =
           rmwPtrTy.getAddressSpace() ==
-          static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
+          static_cast<unsigned>(
+              NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
       const bool useClusterSharedAtomic =
           remoteCTAInfo.hasRemoteCTAId() || isClusterSharedPtr;
       // end flagtree tle

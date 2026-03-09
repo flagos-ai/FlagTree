@@ -3,8 +3,8 @@
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
 
 namespace mlir::triton::tle {
 
@@ -47,11 +47,13 @@ LogicalResult LocalPointersOp::verify() {
   auto resultTensorTy = dyn_cast<RankedTensorType>(getResult().getType());
   auto resultPtrTy = dyn_cast<triton::PointerType>(getResult().getType());
   if (!resultTensorTy && !resultPtrTy)
-    return emitOpError() << "expects result to be either tensor<tt.ptr<...>> or tt.ptr";
+    return emitOpError()
+           << "expects result to be either tensor<tt.ptr<...>> or tt.ptr";
 
-  auto ptrTy = resultTensorTy
-                   ? dyn_cast<triton::PointerType>(resultTensorTy.getElementType())
-                   : resultPtrTy;
+  auto ptrTy =
+      resultTensorTy
+          ? dyn_cast<triton::PointerType>(resultTensorTy.getElementType())
+          : resultPtrTy;
   if (!ptrTy)
     return emitOpError() << "expects result element type to be tt.ptr";
 
@@ -79,8 +81,8 @@ LogicalResult LocalPointersOp::verify() {
         return emitOpError()
                << "tensor result expects indices to be ranked tensors";
       if (!indexTy.getElementType().isInteger())
-        return emitOpError()
-               << "expects indices return tensors to have integer element types";
+        return emitOpError() << "expects indices return tensors to have "
+                                "integer element types";
       if (indexShape.empty())
         indexShape = indexTy.getShape();
       else if (indexTy.getShape() != indexShape)
@@ -101,7 +103,8 @@ LogicalResult LocalPointersOp::verify() {
   for (Value val : indices) {
     if (auto indexTy = dyn_cast<IntegerType>(val.getType())) {
       if (!indexTy.isSignlessInteger())
-        return emitOpError() << "expects scalar indices to be signless integers";
+        return emitOpError()
+               << "expects scalar indices to be signless integers";
       continue;
     }
     return emitOpError() << "scalar result expects scalar integer indices";
@@ -132,15 +135,16 @@ LogicalResult DistributedBarrierOp::verify() {
   StringRef kind = kindAttr.getValue();
   if (kind != "cluster" && kind != "submesh" && kind != "grid") {
     return emitOpError()
-           << "group_kind must be 'cluster', 'submesh', or 'grid', got '" << kind
-           << "'";
+           << "group_kind must be 'cluster', 'submesh', or 'grid', got '"
+           << kind << "'";
   }
 
   if (kind == "cluster" || kind == "grid") {
     if (rankAttr || shapeAttr || axesAttr || maskAttr) {
       return emitOpError()
              << kind
-             << " group_kind does not accept group_rank/group_shape/group_axes/group_mask attrs";
+             << " group_kind does not accept "
+                "group_rank/group_shape/group_axes/group_mask attrs";
     }
     return success();
   }

@@ -23,7 +23,6 @@ import triton.language as tl
 import triton.experimental.tle as tled
 import triton.experimental.tle.language.gpu as tleg
 
-
 BLOCK_CLUSTER_MESH = tled.device_mesh({"block_cluster": [("cluster_x", 2)]})
 
 
@@ -221,6 +220,8 @@ def _cluster_remote_gemm_kernel(
         tl.store(c_ptrs, acc.to(c_ptr.dtype.element_ty), mask=c_mask)
     else:
         tl.store(c_ptrs, acc.to(c_ptr.dtype.element_ty))
+
+
 def _require_cluster_remote_support() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA device is required")
@@ -370,12 +371,8 @@ def _verify_remote_lowering(
         raise RuntimeError(f"unexpected cluster_dims={compiled.metadata.cluster_dims}, expect (2, 1, 1)")
     ptx = compiled.asm.get("ptx", "")
     ttgir = compiled.asm.get("ttgir", "")
-    has_remote = (
-        ("mapa.shared::cluster" in ptx)
-        or ("tle.remote_pointers" in ttgir)
-        or ("tle.remote_cta_id" in ttgir)
-        or ("tle.remote_shard_id_carrier" in ttgir)
-    )
+    has_remote = (("mapa.shared::cluster" in ptx) or ("tle.remote_pointers" in ttgir) or ("tle.remote_cta_id" in ttgir)
+                  or ("tle.remote_shard_id_carrier" in ttgir))
     if not has_remote:
         raise RuntimeError("remote lowering evidence not found in PTX/TTGIR")
 
@@ -656,7 +653,8 @@ def main() -> None:
         print("remote lowering check: PASS")
 
     if args.check:
-        _run_triton(a, b, c_triton, triton_cfg.bm, triton_cfg.bn, triton_cfg.bk, triton_cfg.num_warps, triton_cfg.num_stages)
+        _run_triton(a, b, c_triton, triton_cfg.bm, triton_cfg.bn, triton_cfg.bk, triton_cfg.num_warps,
+                    triton_cfg.num_stages)
         _run_cluster_remote(
             a,
             b,
@@ -672,9 +670,8 @@ def main() -> None:
         torch.testing.assert_close(c_remote, ref, atol=1e-1, rtol=1e-1)
         print("correctness check: PASS")
 
-    run_triton = lambda: _run_triton(
-        a, b, c_triton, triton_cfg.bm, triton_cfg.bn, triton_cfg.bk, triton_cfg.num_warps, triton_cfg.num_stages
-    )
+    run_triton = lambda: _run_triton(a, b, c_triton, triton_cfg.bm, triton_cfg.bn, triton_cfg.bk, triton_cfg.num_warps,
+                                     triton_cfg.num_stages)
     run_remote = lambda: _run_cluster_remote(
         a,
         b,
@@ -695,4 +692,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

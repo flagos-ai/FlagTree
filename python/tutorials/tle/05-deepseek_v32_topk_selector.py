@@ -48,10 +48,10 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 RADIX_BITS = 8
 RADIX = 1 << RADIX_BITS
 
-
 # %%
 # Key conversions
 # ---------------
+
 
 @triton.jit
 def _convert_to_uint16(x):
@@ -73,6 +73,7 @@ def _convert_to_uint32(x):
 # %%
 # Triton kernel (global scratch)
 # ------------------------------
+
 
 @triton.jit
 def triton_topk_selector_kernel(
@@ -271,6 +272,7 @@ def triton_topk_selector_kernel(
 # TLE kernel (shared memory)
 # --------------------------
 
+
 @triton.jit
 def tle_topk_selector_kernel(
     x_ptr,
@@ -333,11 +335,11 @@ def tle_topk_selector_kernel(
     hist_idx = tl.arange(0, RADIX)
     hist_last = tl.full([1], RADIX, tl.int32)
 
-    hist_ptrs = tle.local_ptr(s_histogram, (hist_idx,))
-    hist_last_ptrs = tle.local_ptr(s_histogram, (hist_last,))
+    hist_ptrs = tle.local_ptr(s_histogram, (hist_idx, ))
+    hist_last_ptrs = tle.local_ptr(s_histogram, (hist_last, ))
     tl.store(hist_ptrs, 0)
     tl.store(hist_last_ptrs, 0)
-    tl.store(tle.local_ptr(s_num_input, (tl.arange(0, 2),)), 0)
+    tl.store(tle.local_ptr(s_num_input, (tl.arange(0, 2), )), 0)
     tl.debug_barrier()
 
     l_new_topk = tl.full((), TOPK, tl.int32)
@@ -349,24 +351,24 @@ def tle_topk_selector_kernel(
         x = tl.load(row_ptr + offs * stride_xn, mask=in_range, other=0.0)
         bin_u16 = _convert_to_uint16(x)
         bin_i32 = bin_u16.to(tl.int32)
-        hist_bin_ptrs = tle.local_ptr(s_histogram, (bin_i32,))
+        hist_bin_ptrs = tle.local_ptr(s_histogram, (bin_i32, ))
         tl.atomic_add(hist_bin_ptrs, ones, mask=in_range)
 
     rev_idx = (RADIX - 1) - hist_idx
-    hist_rev = tl.load(tle.local_ptr(s_histogram, (rev_idx,)))
+    hist_rev = tl.load(tle.local_ptr(s_histogram, (rev_idx, )))
     hist_cum_rev = tl.cumsum(hist_rev, axis=0)
-    tl.store(tle.local_ptr(s_histogram, (rev_idx,)), hist_cum_rev)
+    tl.store(tle.local_ptr(s_histogram, (rev_idx, )), hist_cum_rev)
     tl.debug_barrier()
 
     hist_cum = tl.load(hist_ptrs)
-    hist_cum_next = tl.load(tle.local_ptr(s_histogram, (hist_idx + 1,)), mask=hist_idx + 1 < RADIX, other=0)
+    hist_cum_next = tl.load(tle.local_ptr(s_histogram, (hist_idx + 1, )), mask=hist_idx + 1 < RADIX, other=0)
     cond = (hist_cum > l_new_topk) & (hist_cum_next <= l_new_topk)
     cand = tl.where(cond, hist_idx.to(tl.int32), -1)
     threshold = tl.max(cand, axis=0)
     hist_next = tl.max(tl.where(hist_idx == threshold + 1, hist_cum, 0), axis=0)
     l_new_topk = tl.maximum(l_new_topk - hist_next, 0)
 
-    num_ptrs = tle.local_ptr(s_num_input, (tl.zeros([BLOCK_SIZE], tl.int32),))
+    num_ptrs = tle.local_ptr(s_num_input, (tl.zeros([BLOCK_SIZE], tl.int32), ))
     for t in tl.static_range(N_TILES):
         offs = t * BLOCK_SIZE + lane
         in_range = (offs < seq_len) & (offs >= row_start) & (offs < row_end)
@@ -376,7 +378,7 @@ def tle_topk_selector_kernel(
         gt_thr = bin_i32 > threshold
         eq_thr = bin_i32 == threshold
 
-        pos = tl.atomic_add(tle.local_ptr(s_histogram, (bin_i32 + 1,)), ones, mask=in_range & gt_thr)
+        pos = tl.atomic_add(tle.local_ptr(s_histogram, (bin_i32 + 1, )), ones, mask=in_range & gt_thr)
         pos = tl.where(in_range & gt_thr, pos, 0)
         tl.store(out_row + pos * stride_outn, offs.to(tl.int32), mask=in_range & gt_thr & (pos < TOPK))
 
@@ -396,11 +398,11 @@ def tle_topk_selector_kernel(
 
         tl.store(hist_ptrs, 0)
         tl.store(hist_last_ptrs, 0)
-        num_ptrs_next = tle.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], next_idx, tl.int32),))
+        num_ptrs_next = tle.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], next_idx, tl.int32), ))
         tl.store(num_ptrs_next, 0, mask=lane == 0)
         tl.debug_barrier()
 
-        num_ptrs_r = tle.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], r_idx, tl.int32),))
+        num_ptrs_r = tle.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], r_idx, tl.int32), ))
         l_num_input = tl.max(tl.load(num_ptrs_r), axis=0).to(tl.int32)
         max_input = tl.full((), SMEM_INPUT, tl.int32)
         l_num_input = tl.minimum(l_num_input, max_input)
@@ -418,16 +420,16 @@ def tle_topk_selector_kernel(
             x = tl.load(row_ptr + cand_idx * stride_xn, mask=valid, other=0.0)
             bin_u32 = _convert_to_uint32(x)
             bin_i32 = ((bin_u32 >> shift) & 0xFF).to(tl.int32)
-            tl.atomic_add(tle.local_ptr(s_histogram, (bin_i32,)), ones, mask=valid & active)
+            tl.atomic_add(tle.local_ptr(s_histogram, (bin_i32, )), ones, mask=valid & active)
 
         rev_idx = (RADIX - 1) - hist_idx
-        hist_rev = tl.load(tle.local_ptr(s_histogram, (rev_idx,)))
+        hist_rev = tl.load(tle.local_ptr(s_histogram, (rev_idx, )))
         hist_cum_rev = tl.cumsum(hist_rev, axis=0)
-        tl.store(tle.local_ptr(s_histogram, (rev_idx,)), hist_cum_rev)
+        tl.store(tle.local_ptr(s_histogram, (rev_idx, )), hist_cum_rev)
         tl.debug_barrier()
 
         hist_cum = tl.load(hist_ptrs)
-        hist_cum_next = tl.load(tle.local_ptr(s_histogram, (hist_idx + 1,)), mask=hist_idx + 1 < RADIX, other=0)
+        hist_cum_next = tl.load(tle.local_ptr(s_histogram, (hist_idx + 1, )), mask=hist_idx + 1 < RADIX, other=0)
         cond = (hist_cum > l_new_topk) & (hist_cum_next <= l_new_topk)
         cand = tl.where(cond, hist_idx.to(tl.int32), -1)
         threshold = tl.max(cand, axis=0)
@@ -448,7 +450,7 @@ def tle_topk_selector_kernel(
 
             gt_thr = bin_i32 > threshold
             eq_thr = bin_i32 == threshold
-            pos = tl.atomic_add(tle.local_ptr(s_histogram, (bin_i32 + 1,)), ones, mask=valid & gt_thr & active)
+            pos = tl.atomic_add(tle.local_ptr(s_histogram, (bin_i32 + 1, )), ones, mask=valid & gt_thr & active)
             pos = tl.where(valid & gt_thr & active, pos, 0)
             out_pos = pos + start_pos
             tl.store(
@@ -459,7 +461,7 @@ def tle_topk_selector_kernel(
 
             if round_id == 3:
                 pos_eq = tl.atomic_add(
-                    tle.local_ptr(s_histogram, (bin_i32 + 1,)),
+                    tle.local_ptr(s_histogram, (bin_i32 + 1, )),
                     ones,
                     mask=valid & eq_thr & active & (l_new_topk > 0),
                 )
@@ -471,7 +473,7 @@ def tle_topk_selector_kernel(
                     mask=valid & eq_thr & active & (out_pos < TOPK) & (l_new_topk > 0),
                 )
             else:
-                num_ptrs = tle.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], next_idx, tl.int32),))
+                num_ptrs = tle.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], next_idx, tl.int32), ))
                 pos_eq = tl.atomic_add(num_ptrs, ones, mask=valid & eq_thr & active & (l_new_topk > 0))
                 pos_eq = tl.where(valid & eq_thr & active, pos_eq, 0)
                 tl.store(
@@ -602,7 +604,8 @@ if _HAVE_TILELANG:
                         if s * BLOCK_SIZE + tx < l_num_input:
                             l_bin_id32 = T.Cast(
                                 T.int32,
-                                ((convert_to_uint32(input[bx, s_input_idx[r_idx, s * BLOCK_SIZE + tx]]) >> (24 - round * 8)) & 0xFF),
+                                ((convert_to_uint32(input[bx, s_input_idx[r_idx, s * BLOCK_SIZE + tx]]) >>
+                                  (24 - round * 8)) & 0xFF),
                             )
                             T.atomic_add(s_histogram[l_bin_id32], 1)
                     T.sync_threads()
@@ -631,14 +634,16 @@ if _HAVE_TILELANG:
                         if s * BLOCK_SIZE + tx < l_num_input:
                             l_bin_id32 = T.Cast(
                                 T.int32,
-                                ((convert_to_uint32(input[bx, s_input_idx[r_idx, s * BLOCK_SIZE + tx]]) >> (24 - round * 8)) & 0xFF),
+                                ((convert_to_uint32(input[bx, s_input_idx[r_idx, s * BLOCK_SIZE + tx]]) >>
+                                  (24 - round * 8)) & 0xFF),
                             )
                             if l_bin_id32 > l_threshold_bin_id:
                                 pos = T.atomic_add(s_histogram[l_bin_id32 + 1], 1, return_prev=True) + l_start_pos
                                 index[bx, pos] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
                             elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
                                 if round == 3:
-                                    l_out_pos = T.atomic_add(s_histogram[l_bin_id32 + 1], 1, return_prev=True) + l_start_pos
+                                    l_out_pos = T.atomic_add(s_histogram[l_bin_id32 + 1], 1,
+                                                             return_prev=True) + l_start_pos
                                     if l_out_pos < topk:
                                         index[bx, l_out_pos] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
                                 else:
@@ -662,6 +667,7 @@ if _HAVE_TILELANG:
 # %%
 # Python wrappers
 # ---------------
+
 
 def _allocate_triton_scratch(batch, smem_input, device):
     hist = torch.empty((batch, RADIX + 1), dtype=torch.int32, device=device)
@@ -694,15 +700,10 @@ def triton_topk_selector(
     n_tiles = triton.cdiv(seq_len, block_size)
     num_input_tiles = triton.cdiv(smem_input, block_size)
     if assume_aligned is None:
-        assume_aligned = (
-            x.is_contiguous()
-            and out.is_contiguous()
-            and (seq_len % block_size == 0)
-            and torch.all(starts == 0).item()
-            and torch.all(ends == seq_len).item()
-        )
+        assume_aligned = (x.is_contiguous() and out.is_contiguous() and (seq_len % block_size == 0)
+                          and torch.all(starts == 0).item() and torch.all(ends == seq_len).item())
 
-    grid = (batch,)
+    grid = (batch, )
     triton_topk_selector_kernel[grid](
         x,
         out,
@@ -754,15 +755,10 @@ def tle_topk_selector(
     num_input_tiles = triton.cdiv(smem_input, block_size)
     hist_size = RADIX * 2
     if assume_aligned is None:
-        assume_aligned = (
-            x.is_contiguous()
-            and out.is_contiguous()
-            and (seq_len % block_size == 0)
-            and torch.all(starts == 0).item()
-            and torch.all(ends == seq_len).item()
-        )
+        assume_aligned = (x.is_contiguous() and out.is_contiguous() and (seq_len % block_size == 0)
+                          and torch.all(starts == 0).item() and torch.all(ends == seq_len).item())
 
-    grid = (batch,)
+    grid = (batch, )
     tle_topk_selector_kernel[grid](
         x,
         out,
@@ -789,6 +785,7 @@ def tle_topk_selector(
 # %%
 # Correctness & benchmarking
 # --------------------------
+
 
 def _torch_topk_indices(x, starts, ends, topk):
     batch, _ = x.shape
@@ -832,7 +829,7 @@ def run_correctness(batch, seq_len, topk, block_size, smem_input, num_warps):
     torch.manual_seed(1)
     x = torch.randn(batch, seq_len, device=DEVICE, dtype=torch.float32)
     starts = torch.zeros(batch, dtype=torch.int32, device=DEVICE)
-    ends = torch.full((batch,), seq_len, dtype=torch.int32, device=DEVICE)
+    ends = torch.full((batch, ), seq_len, dtype=torch.int32, device=DEVICE)
     assume_aligned = (seq_len % block_size == 0)
 
     ref = _torch_topk_indices(x, starts, ends, topk)
@@ -874,7 +871,7 @@ def run_bench(batch, seq_len, topk, block_size, smem_input, num_warps, warmup, r
     torch.manual_seed(1)
     x = torch.randn(batch, seq_len, device=DEVICE, dtype=torch.float32)
     starts = torch.zeros(batch, dtype=torch.int32, device=DEVICE)
-    ends = torch.full((batch,), seq_len, dtype=torch.int32, device=DEVICE)
+    ends = torch.full((batch, ), seq_len, dtype=torch.int32, device=DEVICE)
     assume_aligned = (seq_len % block_size == 0)
 
     triton_scratch = _allocate_triton_scratch(batch, smem_input, x.device)
@@ -974,4 +971,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-

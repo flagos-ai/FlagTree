@@ -6,9 +6,9 @@
 
 namespace mlir::triton::tle {
 
-void populateDistributedBarrierOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                                RewritePatternSet &patterns,
-                                                PatternBenefit benefit);
+void populateDistributedBarrierOpToLLVMPatterns(
+    LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
+    PatternBenefit benefit);
 
 } // namespace mlir::triton::tle
 

@@ -63,9 +63,10 @@ struct LocalPointersOpConversion
     auto resultPtrTy = dyn_cast<triton::PointerType>(op.getResult().getType());
     if (!resultTensorTy && !resultPtrTy)
       return reportFailure("local_pointers result must be tensor<ptr> or ptr");
-    auto ptrTy = resultTensorTy
-                     ? cast<triton::PointerType>(resultTensorTy.getElementType())
-                     : resultPtrTy;
+    auto ptrTy =
+        resultTensorTy
+            ? cast<triton::PointerType>(resultTensorTy.getElementType())
+            : resultPtrTy;
     auto llvmElemTy = typeConverter->convertType(memDescTy.getElementType());
     auto llvmPtrTy =
         cast<LLVM::LLVMPointerType>(typeConverter->convertType(ptrTy));
@@ -91,7 +92,8 @@ struct LocalPointersOpConversion
     LinearLayout regLayout;
     if (resultTensorTy) {
       if (!resultTensorTy.getEncoding())
-        return reportFailure("tensor local_pointers result must carry an encoding");
+        return reportFailure(
+            "tensor local_pointers result must carry an encoding");
       regLayout = ttg::toLinearLayout(resultTensorTy);
     }
     for (Value operand : op.getIndices()) {
@@ -197,8 +199,8 @@ struct LocalPointersOpConversion
     }
 
     if (resultTensorTy) {
-      Value result = packLLElements(loc, typeConverter, outVals, rewriter,
-                                    resultTensorTy);
+      Value result =
+          packLLElements(loc, typeConverter, outVals, rewriter, resultTensorTy);
       rewriter.replaceOp(op, result);
     } else {
       rewriter.replaceOp(op, outVals.front());
@@ -222,9 +224,10 @@ struct RemotePointersOpConversion
       auto shardTy = dyn_cast<RankedTensorType>(offset.getType());
       if (!shardTy || shardTy.getShape() != srcTy.getShape() ||
           shardTy.getEncoding() != srcTy.getEncoding()) {
-        auto offsetTy = RankedTensorType::get(srcTy.getShape(), offset.getType(),
-                                              srcTy.getEncoding());
-        offset = rewriter.create<triton::SplatOp>(op.getLoc(), offsetTy, offset);
+        auto offsetTy = RankedTensorType::get(
+            srcTy.getShape(), offset.getType(), srcTy.getEncoding());
+        offset =
+            rewriter.create<triton::SplatOp>(op.getLoc(), offsetTy, offset);
       }
     }
     auto addPtr = rewriter.create<triton::AddPtrOp>(op.getLoc(), op.getType(),

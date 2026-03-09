@@ -1,13 +1,13 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 
-#include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "tle/dialect/include/IR/Dialect.h"
+#include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "third_party/nvidia/include/TritonNVIDIAGPUToLLVM/PTXAsmFormat.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
@@ -55,7 +55,8 @@ FailureOr<int32_t> getOrCreateSubmeshScratchOffset(ModuleOp mod) {
   if (currentShared < 0)
     return failure();
 
-  int64_t offset = llvm::alignTo(currentShared, int64_t{kSubmeshScratchAlignment});
+  int64_t offset =
+      llvm::alignTo(currentShared, int64_t{kSubmeshScratchAlignment});
   int64_t newShared = offset + kSubmeshScratchBytes;
   if (newShared > std::numeric_limits<int32_t>::max())
     return failure();
@@ -78,7 +79,8 @@ FailureOr<int32_t> getOrCreateGridScratchOffset(ModuleOp mod) {
   auto i32Ty = IntegerType::get(ctx, 32);
 
   int64_t currentSize = 0;
-  if (auto sizeAttr = mod->getAttrOfType<IntegerAttr>(kTTGGlobalScratchSizeAttr)) {
+  if (auto sizeAttr =
+          mod->getAttrOfType<IntegerAttr>(kTTGGlobalScratchSizeAttr)) {
     currentSize = sizeAttr.getInt();
     if (currentSize < 0)
       return failure();
@@ -110,7 +112,8 @@ FailureOr<int32_t> getOrCreateGridScratchOffset(ModuleOp mod) {
 
 struct DistributedBarrierOpConversion
     : public ConvertOpToLLVMPattern<tle::DistributedBarrierOp> {
-  using ConvertOpToLLVMPattern<tle::DistributedBarrierOp>::ConvertOpToLLVMPattern;
+  using ConvertOpToLLVMPattern<
+      tle::DistributedBarrierOp>::ConvertOpToLLVMPattern;
 
   LogicalResult lowerClusterBarrier(tle::DistributedBarrierOp op,
                                     ConversionPatternRewriter &rewriter) const {
@@ -148,20 +151,19 @@ struct DistributedBarrierOpConversion
 
     auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
     if (!func) {
-      return op.emitOpError(
-          "grid lowering requires LLVM function context");
+      return op.emitOpError("grid lowering requires LLVM function context");
     }
-    int32_t argIdx =
-        static_cast<int32_t>(func.getNumArguments()) + kGlobalScratchBufferOffset;
+    int32_t argIdx = static_cast<int32_t>(func.getNumArguments()) +
+                     kGlobalScratchBufferOffset;
     if (argIdx < 0 || argIdx >= static_cast<int32_t>(func.getNumArguments())) {
       return op.emitOpError(
           "cannot locate global scratch argument for grid barrier lowering");
     }
     Value globalScratchBase = func.getArgument(static_cast<unsigned>(argIdx));
-    auto globalPtrTy = dyn_cast<LLVM::LLVMPointerType>(globalScratchBase.getType());
+    auto globalPtrTy =
+        dyn_cast<LLVM::LLVMPointerType>(globalScratchBase.getType());
     if (!globalPtrTy) {
-      return op.emitOpError(
-          "global scratch argument must be an LLVM pointer");
+      return op.emitOpError("global scratch argument must be an LLVM pointer");
     }
 
     auto globalI32PtrTy =
@@ -262,17 +264,19 @@ struct DistributedBarrierOpConversion
       return op.emitOpError("submesh lowering requires non-empty group_mask");
     }
     if (llvm::any_of(subgroupMask, [](int32_t v) { return v < 0; })) {
-      return op.emitOpError("submesh lowering requires non-negative group_mask entries");
+      return op.emitOpError(
+          "submesh lowering requires non-negative group_mask entries");
     }
 
-    if (auto shapeAttr = op->getAttrOfType<DenseI32ArrayAttr>(kGroupShapeAttr)) {
+    if (auto shapeAttr =
+            op->getAttrOfType<DenseI32ArrayAttr>(kGroupShapeAttr)) {
       int64_t subgroupFromShape = 1;
       for (int32_t dim : shapeAttr.asArrayRef())
         subgroupFromShape *= dim;
       if (subgroupFromShape != static_cast<int64_t>(subgroupMask.size())) {
-        return op.emitOpError()
-               << "group_shape product (" << subgroupFromShape
-               << ") must match group_mask size (" << subgroupMask.size() << ")";
+        return op.emitOpError() << "group_shape product (" << subgroupFromShape
+                                << ") must match group_mask size ("
+                                << subgroupMask.size() << ")";
       }
     }
 
@@ -288,38 +292,39 @@ struct DistributedBarrierOpConversion
 
     auto scratchOffsetOr = getOrCreateSubmeshScratchOffset(mod);
     if (failed(scratchOffsetOr)) {
-      return op.emitOpError("failed to reserve shared memory scratch for submesh barrier");
+      return op.emitOpError(
+          "failed to reserve shared memory scratch for submesh barrier");
     }
     int32_t scratchOffset = *scratchOffsetOr;
 
     auto globalSmem = mod.lookupSymbol<LLVM::GlobalOp>("global_smem");
     if (!globalSmem) {
-      return op.emitOpError(
-          "global_smem symbol is missing; submesh barrier lowering requires shared memory base");
+      return op.emitOpError("global_smem symbol is missing; submesh barrier "
+                            "lowering requires shared memory base");
     }
 
     auto sharedPtrTy = LLVM::LLVMPointerType::get(
         ctx, static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace));
     auto clusterPtrTy = LLVM::LLVMPointerType::get(
-        ctx,
-        static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace));
+        ctx, static_cast<unsigned>(
+                 NVVM::NVVMMemorySpace::kSharedClusterMemorySpace));
 
     Value sharedBase = rewriter.create<LLVM::AddressOfOp>(loc, globalSmem);
     sharedBase = b.bitcast(sharedBase, sharedPtrTy);
 
-    Value counterLocalPtr = b.gep(
-        sharedPtrTy, i8Ty, sharedBase,
-        b.i32_val(scratchOffset + kSubmeshCounterOffsetBytes));
+    Value counterLocalPtr =
+        b.gep(sharedPtrTy, i8Ty, sharedBase,
+              b.i32_val(scratchOffset + kSubmeshCounterOffsetBytes));
     Value phaseLocalPtr =
         b.gep(sharedPtrTy, i8Ty, sharedBase,
               b.i32_val(scratchOffset + kSubmeshPhaseOffsetBytes));
 
     int32_t leaderCTAId = subgroupMask.front();
     Value leaderCTA = b.i32_val(leaderCTAId);
-    Value counterPtr =
-        rewriter.create<NVVM::MapaOp>(loc, clusterPtrTy, counterLocalPtr, leaderCTA);
-    Value phasePtr =
-        rewriter.create<NVVM::MapaOp>(loc, clusterPtrTy, phaseLocalPtr, leaderCTA);
+    Value counterPtr = rewriter.create<NVVM::MapaOp>(
+        loc, clusterPtrTy, counterLocalPtr, leaderCTA);
+    Value phasePtr = rewriter.create<NVVM::MapaOp>(loc, clusterPtrTy,
+                                                   phaseLocalPtr, leaderCTA);
 
     Value clusterCTAId = rewriter.create<triton::nvgpu::ClusterCTAIdOp>(loc);
     Value isParticipant = b.false_val();
@@ -369,16 +374,17 @@ struct DistributedBarrierOpConversion
                                     doneBlock, ValueRange{});
 
     rewriter.setInsertionPointToEnd(workBlock);
-    Value oldPhase = rewriter
-                         .create<LLVM::AtomicRMWOp>(
-                             loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(0),
-                             LLVM::AtomicOrdering::acquire, StringRef("device"))
-                         .getResult();
+    Value oldPhase =
+        rewriter
+            .create<LLVM::AtomicRMWOp>(
+                loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(0),
+                LLVM::AtomicOrdering::acquire, StringRef("device"))
+            .getResult();
     Value prevCount =
         rewriter
-            .create<LLVM::AtomicRMWOp>(loc, LLVM::AtomicBinOp::add, counterPtr,
-                                       b.i32_val(1), LLVM::AtomicOrdering::acq_rel,
-                                       StringRef("device"))
+            .create<LLVM::AtomicRMWOp>(
+                loc, LLVM::AtomicBinOp::add, counterPtr, b.i32_val(1),
+                LLVM::AtomicOrdering::acq_rel, StringRef("device"))
             .getResult();
     Value arrived = b.add(prevCount, b.i32_val(1));
     Value isLast = b.icmp_eq(arrived, b.i32_val(subgroupMask.size()));
@@ -387,11 +393,12 @@ struct DistributedBarrierOpConversion
 
     rewriter.setInsertionPointToEnd(waitBlock);
     Value expectedPhase = waitBlock->getArgument(0);
-    Value currentPhase = rewriter
-                             .create<LLVM::AtomicRMWOp>(
-                                 loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(0),
-                                 LLVM::AtomicOrdering::acquire, StringRef("device"))
-                             .getResult();
+    Value currentPhase =
+        rewriter
+            .create<LLVM::AtomicRMWOp>(
+                loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(0),
+                LLVM::AtomicOrdering::acquire, StringRef("device"))
+            .getResult();
     Value keepWaiting = b.icmp_eq(currentPhase, expectedPhase);
     rewriter.create<LLVM::CondBrOp>(loc, keepWaiting, waitBlock,
                                     ValueRange{expectedPhase}, doneBlock,
@@ -402,9 +409,9 @@ struct DistributedBarrierOpConversion
         loc, LLVM::AtomicBinOp::add, counterPtr,
         b.i32_val(-static_cast<int64_t>(subgroupMask.size())),
         LLVM::AtomicOrdering::release, StringRef("device"));
-    rewriter.create<LLVM::AtomicRMWOp>(loc, LLVM::AtomicBinOp::add, phasePtr,
-                                       b.i32_val(1), LLVM::AtomicOrdering::release,
-                                       StringRef("device"));
+    rewriter.create<LLVM::AtomicRMWOp>(
+        loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(1),
+        LLVM::AtomicOrdering::release, StringRef("device"));
     rewriter.create<LLVM::BrOp>(loc, ValueRange{}, doneBlock);
 
     rewriter.setInsertionPointToEnd(doneBlock);

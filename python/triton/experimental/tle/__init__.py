@@ -41,4 +41,3 @@ __all__ = [
 
 if raw is not None:
     __all__.append("raw")
-
