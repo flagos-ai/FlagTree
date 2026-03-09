@@ -35,16 +35,16 @@ bool rewriteOne(Operation *toReplace, mlir::IRMapping &mapper,
                                              mapper.lookup(ex.getInput()));
     rewriter.replaceOp(ex, newEx->getResults());
     return true;
+  } else {
+    return false;
   }
-  return false;
 }
 template <typename ExtractOpT>
 bool mapInputTensorOnce(Operation *toReplace,
                         llvm::SmallDenseSet<Value> &mappedValues) {
   if (auto ex = llvm::dyn_cast<ExtractOpT>(toReplace)) {
-    if (auto tensorTy =
-            llvm::dyn_cast<RankedTensorType>(ex.getInput().getType())) {
-      mappedValues.insert(ex.getInput());
+    if (auto input = ex.getInput(); isa<RankedTensorType>(input.getType())) {
+      mappedValues.insert(input);
       return true;
     }
   }
@@ -76,11 +76,11 @@ ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
                                true);
 }
 
-struct TleArgConversion : public OpRewritePattern<tle::DSLRegionOp> {
+struct TleArgConversion : public OpRewritePattern<LLVM::CallOp> {
   using OpRewritePattern::OpRewritePattern;
 
   TleArgConversion(MLIRContext *context);
-  LogicalResult matchAndRewrite(tle::DSLRegionOp op,
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
                                 PatternRewriter &rewriter) const override;
 };
 
@@ -95,27 +95,24 @@ TleArgConversion::TleArgConversion(MLIRContext *context)
     : OpRewritePattern(context) {}
 
 LogicalResult
-TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
+TleArgConversion::matchAndRewrite(LLVM::CallOp op,
                                   PatternRewriter &rewriter) const {
-  SmallVector<Value> inputs(op.getInputs().begin(), op.getInputs().end());
-  SmallVector<Value> outputs(op.getOutputs().begin(), op.getOutputs().end());
+  SmallVector<Value> operands = op.getOperands();
   PatternRewriter::InsertionGuard guard(rewriter);
-  SmallVector<Value> operands =
-      llvm::to_vector(llvm::concat<Value>(outputs, inputs));
   bool hasConversion = false;
   IRMapping mapper;
   SmallVector<Operation *> targets;
   SmallVector<ttg::LocalAllocOp> toDeallocOps;
   llvm::SmallDenseSet<Value> mappedValues;
-  for (Value dslValue : operands) {
-    Operation *defOp = dslValue.getDefiningOp();
-    if (!defOp)
+  for (Value operand : operands) {
+    Operation *defOp = operand.getDefiningOp();
+    if (!defOp) {
       continue;
-    hasConversion =
+    }
+    hasConversion |=
         mapInputTensors<tle::ExtractAllocatedPtrOp, tle::ExtractSizesOp,
                         tle::ExtractStridesOp, tle::ExtractOffsetOp,
-                        tle::ExtractAlignedPtrOp>(defOp, mappedValues) ||
-        hasConversion;
+                        tle::ExtractAlignedPtrOp>(defOp, mappedValues);
     if (isa<tle::ExtractAllocatedPtrOp, tle::ExtractSizesOp,
             tle::ExtractStridesOp, tle::ExtractOffsetOp,
             tle::ExtractAlignedPtrOp>(defOp)) {

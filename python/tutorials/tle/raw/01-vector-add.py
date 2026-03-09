@@ -1,3 +1,5 @@
+from typing_extensions import Literal as L
+
 from mlir import ir
 from mlir.dialects import arith, llvm, nvvm, scf
 import torch
@@ -10,8 +12,12 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 @dialect(name="mlir")
-def edsl(output: Input["!llvm.ptr<1>"], x: Input["!llvm.ptr<1>"], y: Input["!llvm.ptr<1>"],  # noqa: F722,
-         n_elements: Input["i32"]):  # noqa: F821
+def edsl(
+    output: Input[L["!llvm.ptr<1>"]],
+    x: Input[L["!llvm.ptr<1>"]],
+    y: Input[L["!llvm.ptr<1>"]],
+    n_elements: Input[L["i32"]],
+):
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
@@ -49,7 +55,7 @@ def add(x: torch.Tensor, y: torch.Tensor):
     output = torch.empty_like(x)
     assert x.device == DEVICE and y.device == DEVICE and output.device == DEVICE
     n_elements = output.numel()
-    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
+    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]), )
     add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024)
     return output
 

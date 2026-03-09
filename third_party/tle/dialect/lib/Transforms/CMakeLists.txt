@@ -6,7 +6,6 @@ add_triton_library(TritonTLETransforms
   TleLowerAsyncLoad.cpp
   TleLowerTmaCopy.cpp
   ConvertArgToMemDesc.cpp
-  DSLRegionInline.cpp
 
   DEPENDS
   TritonTLETransformsIncGen
