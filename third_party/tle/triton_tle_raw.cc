@@ -25,35 +25,38 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 }
 } // namespace
 
-// Create an LLVM::CallOp that wraps an LLVM function, performing type
-// conversion from Triton IR types to LLVM types and back using SignaturePattern
-// and ReturnPattern.
+// Create a DSLRegionOp that wraps an LLVM function, performing type conversion
+// from Triton IR types to LLVM types based on EDSL function declarations.
 //
 // Overview:
 // 1. Parse the LLVM IR text and extract the target function using Triton's MLIR
 // context
-// 2. Perform argument type conversion: TT IR types -> LLVM types via
-// SignaturePattern::apply
-//    - Inputs are TT IR types (tensor, pointer, scalar)
-//    - SignaturePattern::apply converts each TT type to corresponding LLVM
-//    types
-//    - Collected operands are passed to LLVM::CallOp
-// 3. Create an LLVM::CallOp with converted operands
-// 4. Perform return type conversion: LLVM types -> TT IR types via
-// ReturnPattern::apply
-//    - LLVM::CallOp returns LLVM types
-//    - ReturnPattern::apply converts each LLVM return to TT IR type
+// 2. Create a DSLRegionOp with EDSL function parameter types stored in
+// attributes
+// 3. Perform argument type conversion: TT IR types -> LLVM types (via extract
+// operations)
+//    - DSLRegionOp's operands are TT IR types (tensor, pointer, scalar)
+//    - EDSL function declarations (stored in edsl_param_types attribute)
+//    specify expected types
+//    - LLVM function arguments are already in LLVM types
+//    - We need to verify consistency: TT type -> EDSL param type -> LLVM func
+//    arg type
 //
 // Example type conversion for tensor:
 //   - TT IR: tensor<128xi32> (RankedTensorType)
-//   - LLVM func args: allocated_ptr, aligned_ptr, offset, size[0], stride[0]
-//   - Conversion: SignaturePattern::apply extracts tensor into LLVM values
+//   - EDSL param type: "memref<?xi32, 3>" (stored in edsl_param_types
+//   attribute)
+//   - LLVM func: 5 args = allocated_ptr<3>, aligned_ptr<3>, offset, size[0],
+//   stride[0]
+//   - Conversion: Extract tensor into 5 LLVM values using
+//   ExtractAllocatedPtrOp, etc.
 //
 // Example type conversion for scalar:
 //   - TT IR: i32 (IntegerType)
+//   - EDSL param type: "i32"
 //   - LLVM func: 1 arg = i32
-//   - Conversion: SignaturePattern::apply directly passes the scalar value
-SmallVector<Value> createTLERawRegionByLLVMFunc(
+//   - Conversion: Use block argument directly
+tle::DSLRegionOp createTLERawRegionByLLVMFunc(
     TritonOpBuilder &self, std::string_view text, std::string_view fnname,
     const std::vector<Value> &outputs, const std::vector<Value> &inputs) {
   ParserConfig config(self.getContext());
@@ -69,30 +72,83 @@ SmallVector<Value> createTLERawRegionByLLVMFunc(
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(curModule.getBody());
     for (Operation &op : module->getOps()) {
-      if ((!isa<SymbolOpInterface>(op) ||
+      if (&op != func.getOperation() &&
+          (!isa<SymbolOpInterface>(op) ||
            (isa<SymbolOpInterface>(op) &&
             !curModule.lookupSymbol(cast<SymbolOpInterface>(op).getName())))) {
         builder.clone(op);
       }
     }
-  };
-  LLVM::LLVMFuncOp funcOp = curModule.lookupSymbol<LLVM::LLVMFuncOp>(fnname);
-  SmallVector<Value> operands = {};
-  TypeRange tgts = func.getArgumentTypes();
-  SmallVector<Value> outs = SmallVector<Value>(outputs.begin(), outputs.end()),
-                     ins = SmallVector<Value>(inputs.begin(), inputs.end());
-  for (Value src : llvm::concat<Value>(outs, ins)) {
-    operands.append(tle::protocol::SignaturePattern::apply(self, tgts, src));
   }
 
-  LLVM::CallOp callOp = self.create<LLVM::CallOp>(funcOp, operands);
-  callOp.setAlwaysInline(true);
-  SmallVector<Value> finalResults;
-  tgts = ValueRange(outs).getTypes();
-  for (Value result : callOp.getResults()) {
-    SmallVector<Value> rets =
-        tle::protocol::ReturnPattern::apply(self, tgts, result);
-    finalResults.append(std::move(rets));
+  SmallVector<Type> outputTys = llvm::map_to_vector(
+      outputs, [](Value value) -> Type { return value.getType(); });
+  SmallVector<Value> operands = llvm::to_vector(
+      llvm::concat<Value>(SmallVector<Value>(outputs.begin(), outputs.end()),
+                          SmallVector<Value>(inputs.begin(), inputs.end())));
+
+  tle::DSLRegionOp dslRegionOp =
+      self.create<tle::DSLRegionOp>(outputTys, operands);
+  OpBuilder::InsertionGuard guard(builder);
+  Region &body = dslRegionOp.getBody();
+  SmallVector<Type> operandTys = llvm::map_to_vector(
+      operands, [](Value value) -> Type { return value.getType(); });
+  IRMapping mapper;
+  for (auto [idx, oldBlock] : enumerate(func.getBlocks())) {
+    if (idx == 0) {
+      Block *newBlock = builder.createBlock(
+          &body, {}, operandTys,
+          SmallVector<Location>(operandTys.size(), self.getLastLoc()));
+      builder.setInsertionPointToStart(newBlock);
+      ValueRange args = func.getArguments();
+      TypeRange tgts = args.getTypes();
+      SmallVector<Value> ops = {};
+      for (Value src : newBlock->getArguments()) {
+        SmallVector<Value> rets =
+            tle::protocol::SignaturePattern::apply(self, tgts, src);
+        ops.append(std::move(rets));
+      }
+      for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
+        mapper.map(arg, op);
+      }
+      mapper.map(&oldBlock, newBlock);
+    } else {
+      Block *newBlock = builder.createBlock(
+          &body, {}, oldBlock.getArgumentTypes(),
+          SmallVector<Location>(oldBlock.getNumArguments(), self.getLastLoc()));
+      for (auto [oldArg, newArg] :
+           zip_equal(oldBlock.getArguments(), newBlock->getArguments())) {
+        mapper.map(oldArg, newArg);
+      }
+      mapper.map(&oldBlock, newBlock);
+    }
   }
-  return finalResults;
+  for (auto [oldBlock, newBlock] :
+       zip_equal(func.getBlocks(), body.getBlocks())) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToEnd(&newBlock);
+    for (Operation &operation : oldBlock.getOperations()) {
+      if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
+        SmallVector<Value> operands, yields;
+        if (dslRegionOp.getNumResults() == 0) {
+          operands = {};
+        } else if (dslRegionOp.getNumResults() == 1) {
+          operands = {mapper.lookup(returnOp.getArg())};
+        } else {
+          operands = flatten(self, cast<TypedValue<LLVM::LLVMStructType>>(
+                                       mapper.lookup(returnOp.getArg())));
+        }
+        TypeRange tgts = dslRegionOp.getOutputs().getTypes();
+        for (Value operand : operands) {
+          SmallVector<Value> rets =
+              tle::protocol::ReturnPattern::apply(self, tgts, operand);
+          yields.append(std::move(rets));
+        }
+        builder.create<tle::YieldOp>(operation.getLoc(), yields);
+      } else {
+        builder.clone(operation, mapper);
+      }
+    }
+  }
+  return dslRegionOp;
 }
