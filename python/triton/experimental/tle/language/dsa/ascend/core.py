@@ -1,4 +1,4 @@
-# Copyright (c) 2025  XCoreSigma Inc. All rights reserved.
+# Copyright 2026- Xcoresigma Technology Co., Ltd
 
 from triton.language.extra.cann.extension.core import ascend_address_space
 
