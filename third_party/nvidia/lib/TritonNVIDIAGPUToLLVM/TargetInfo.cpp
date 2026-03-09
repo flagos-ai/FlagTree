@@ -153,13 +153,16 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
 }
 
 static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid) {
+  // begin flagtree tle
   auto clusterPtrTy = LLVM::LLVMPointerType::get(
       rewriter.getContext(), NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
+  // end flagtree tle
   return rewriter.create<NVVM::MapaOp>(loc, clusterPtrTy, ptr, ctaid);
 }
 
 Value TargetInfo::mapSharedToClusterPointer(RewriterBase &rewriter, Location loc,
                                             Value ptr, Value ctaId) const {
+  // begin flagtree tle
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
   if (ptrTy.getAddressSpace() ==
       static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace))
@@ -168,6 +171,7 @@ Value TargetInfo::mapSharedToClusterPointer(RewriterBase &rewriter, Location loc
       ptrTy.getAddressSpace() ==
           static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace) &&
       "mapSharedToClusterPointer requires shared or cluster shared pointers");
+  // end flagtree tle
   return mapa(rewriter, loc, ptr, ctaId);
 }
 
@@ -198,6 +202,7 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   MLIRContext *ctx = rewriter.getContext();
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
+  // begin flagtree tle
   const bool isShared =
       ptrTy.getAddressSpace() ==
       static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace);
@@ -207,6 +212,7 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   assert((isShared || isClusterShared) &&
          "Invalid addr space for store_dsmem");
   const bool useCluster = ctaId.has_value() || isClusterShared;
+  // end flagtree tle
 
   if (!isa<VectorType>(val.getType())) {
     storeDShared(rewriter, loc, ptr, ctaId, packLLVector(loc, {val}, rewriter),
@@ -288,6 +294,7 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   assert(vec * elemBitwidth <= 128);
 
   // Get pointer to remote shared memory if needed.
+  // begin flagtree tle
   if (ctaId.has_value() && isShared)
     ptr = mapSharedToClusterPointer(rewriter, loc, ptr, *ctaId);
 
@@ -322,6 +329,7 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
     st(ptrOpr, valOpr).predicate(pred, "b");
     builder.launch(rewriter, loc, void_ty(ctx));
   }
+  // end flagtree tle
 }
 
 Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
@@ -330,6 +338,7 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   MLIRContext *ctx = rewriter.getContext();
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
+  // begin flagtree tle
   const bool isShared =
       ptrTy.getAddressSpace() ==
       static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace);
@@ -339,6 +348,7 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   assert((isShared || isClusterShared) &&
          "Invalid addr space for load_dsmem");
   const bool useCluster = ctaId.has_value() || isClusterShared;
+  // end flagtree tle
 
   if (!isa<VectorType>(loadTy)) {
     SmallVector<Value> values = unpackLLVector(
@@ -419,6 +429,7 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   assert(vec * elemBitwidth <= 128);
 
   // Get pointer to remote shared memory if needed.
+  // begin flagtree tle
   if (ctaId.has_value() && isShared)
     ptr = mapSharedToClusterPointer(rewriter, loc, ptr, *ctaId);
 
@@ -428,6 +439,7 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
                 .o("shared", !useCluster)
                 .v(vec, /*predicate=*/vec > 1)
                 .b(elemBitwidth);
+  // end flagtree tle
 
   Value load;
   if (isConstantTruePred(pred)) {
@@ -444,6 +456,7 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
       load = structValue;
     }
   } else {
+    // begin flagtree tle
     std::string elemConstraint = "=" + getConstraintForBitwidth(elemBitwidth);
     const bool predIsConstTrue = isConstantTruePred(pred);
     PTXBuilder::Operand *outOpr = nullptr;
@@ -467,6 +480,7 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
     auto &ldExec = ld(outOpr, builder.newAddrOperand(addrOperand, addrConstraint));
     if (!predIsConstTrue)
       ldExec.predicate(pred, "b");
+    // end flagtree tle
 
     Type resultTy =
         vec == 1

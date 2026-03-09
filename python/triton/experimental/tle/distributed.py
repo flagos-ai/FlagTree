@@ -875,3 +875,4 @@ def remote(
 
 def distributed_dot(a: ShardedTensor, b: ShardedTensor, c: ShardedTensor | None = None):
     raise NotImplementedError("distributed_dot is deferred to M5")
+

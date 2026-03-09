@@ -931,3 +931,4 @@ tt.func @test_warp_specialize_propagation(%arg0: !tt.ptr<f16> {tt.divisibility =
   } : (!tt.ptr<f16>, i32) -> ()
   tt.return
 }
+

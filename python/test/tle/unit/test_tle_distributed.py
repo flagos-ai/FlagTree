@@ -306,3 +306,4 @@ class TestDistributedBarrierScope:
     def test_infer_submesh_barrier_group_full_mesh_returns_none(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
         assert _infer_submesh_barrier_group(mesh, (2, 2, 1)) is None
+

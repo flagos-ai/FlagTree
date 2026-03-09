@@ -133,3 +133,4 @@ class TLESemantic:
                     raise TLESemanticError("Scalar indices must be integers", "local_ptr")
         if saw_scalar and saw_block:
             raise TLESemanticError("Indices must be all scalar or all tensor", "local_ptr")
+
