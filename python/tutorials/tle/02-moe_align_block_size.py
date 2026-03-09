@@ -32,8 +32,7 @@ SGLANG_MOE_ALIGN_KERNEL_URL = (
     "https://raw.githubusercontent.com/sgl-project/sglang/refs/heads/main/sgl-kernel/csrc/moe/moe_align_kernel.cu")
 YIAKWY_MOE_ALIGN_KERNEL_URL = (
     "https://raw.githubusercontent.com/yiakwy-xpu-ml-framework-team/AMD-sglang-benchmark-fork/"
-    "d9831e330bd312fc00557187834d0f5b12ea5c70/sgl-kernel/src/sgl-kernel/csrc/moe_align_kernel.cu"
-)
+    "d9831e330bd312fc00557187834d0f5b12ea5c70/sgl-kernel/src/sgl-kernel/csrc/moe_align_kernel.cu")
 
 
 @lru_cache(maxsize=64)
@@ -1472,7 +1471,8 @@ def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
         ms_s_str = "na" if ms_s is None else f"{float(ms_s):.4f}"
         ms_y_str = "na" if ms_y is None else f"{float(ms_y):.4f}"
         print(
-            f"{num_tokens},{num_experts},zipf,{float(ms_t):.4f},{float(ms_ta):.4f},{ms_taf_str},{ms_cf_str},{ms_s_str},{ms_y_str}")
+            f"{num_tokens},{num_experts},zipf,{float(ms_t):.4f},{float(ms_ta):.4f},{ms_taf_str},{ms_cf_str},{ms_s_str},{ms_y_str}"
+        )
 
 
 def _load_real_topk_ids(path: str) -> torch.Tensor:
