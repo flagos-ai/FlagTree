@@ -817,17 +817,17 @@ public:
   }
 };
 
-  void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
-                              RewritePatternSet &patterns) {
-    MLIRContext *context = patterns.getContext();
-    patterns
-        .add<TleDSLRegionOpPattern, GenericOpPattern<tle::LocalPointersOp>,
-             GenericOpPattern<tle::RemotePointersOp>,
-             GenericOpPattern<tle::DistributedBarrierOp>,
-             GenericOpPattern<tle::YieldOp>,
-             GenericOpPattern<tle::ExtractAllocatedPtrOp>,
-             GenericOpPattern<tle::ExtractAlignedPtrOp>,
-             GenericOpPattern<tle::ExtractOffsetOp>,
+void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
+                            RewritePatternSet &patterns) {
+  MLIRContext *context = patterns.getContext();
+  patterns
+      .add<TleDSLRegionOpPattern, GenericOpPattern<tle::LocalPointersOp>,
+           GenericOpPattern<tle::RemotePointersOp>,
+           GenericOpPattern<tle::DistributedBarrierOp>,
+           GenericOpPattern<tle::YieldOp>,
+           GenericOpPattern<tle::ExtractAllocatedPtrOp>,
+           GenericOpPattern<tle::ExtractAlignedPtrOp>,
+           GenericOpPattern<tle::ExtractOffsetOp>,
            GenericOpPattern<tle::ExtractSizesOp>,
            GenericOpPattern<tle::ExtractStridesOp>,
            GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
