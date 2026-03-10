@@ -361,62 +361,6 @@ def check_env(env_val):
     return os.environ.get(env_val, '') != ''
 
 
-_ILUVATAR_PLUGIN_URLS = {
-    # CentOS7/Ubuntu20
-    "1013":
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.17-glibcxx3.4.19-cxxabi1.3.13-linux-x86_64_v0.5.0.tar.gz",
-    # Ubuntu22
-    "1016":
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.16-ubuntu-x86_64_v0.5.0.tar.gz",
-    # Ubuntu24
-    "1018":
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.18-ubuntu-x86_64_v0.5.0.tar.gz",
-}
-
-_ILUVATAR_PLUGIN_MD5 = {
-    # CentOS7/Ubuntu20
-    "1013": "31fa623b",
-    # Ubuntu22
-    "1016": "52142296",
-    # Ubuntu24
-    "1018": "fff7cb48",
-}
-
-
-def _detect_gxx_abi_version():
-    try:
-        macros = subprocess.check_output(["bash", "-lc", "echo | g++ -dM -E -x c++ -"], stderr=subprocess.DEVNULL,
-                                         text=True)
-    except Exception:
-        return ""
-    for line in macros.splitlines():
-        if "__GXX_ABI_VERSION" in line:
-            parts = line.strip().split()
-            if parts:
-                return parts[-1]
-    return ""
-
-
-def _resolve_iluvatar_plugin_url():
-    abi = _detect_gxx_abi_version()
-    url = _ILUVATAR_PLUGIN_URLS.get(abi)
-    if url:
-        print(f"[INFO] Selected iluvatar plugin package for __GXX_ABI_VERSION={abi}")
-        return url
-
-    raise RuntimeError(f"Unsupported iluvatar plugin ABI: __GXX_ABI_VERSION={abi}. "
-                       "Please update _ILUVATAR_PLUGIN_URLS with a matching package.")
-
-
-def _resolve_iluvatar_plugin_md5():
-    abi = _detect_gxx_abi_version()
-    md5 = _ILUVATAR_PLUGIN_MD5.get(abi)
-    if md5:
-        return md5
-    raise RuntimeError(f"Unsupported iluvatar plugin ABI: __GXX_ABI_VERSION={abi}. "
-                       "Please update _ILUVATAR_PLUGIN_MD5 with a matching package.")
-
-
 def uninstall_triton():
     is_bdist_wheel = any(cmd in sys.argv for cmd in ['bdist_wheel', 'egg_info', 'sdist'])
     if is_bdist_wheel:
@@ -451,14 +395,15 @@ cache = FlagTreeCache()
 cache.store(
     file="iluvatar-llvm18-x86_64",
     condition=("iluvatar" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.5.0.tar.gz",
+    url=configs.activated_module.get_resources_url('llvm'),
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
 
 cache.store(file="iluvatarTritonPlugin.so", condition=("iluvatar" == flagtree_backend)
-            and (not configs.flagtree_plugin), url=_resolve_iluvatar_plugin_url(),
-            copy_dst_path=f"third_party/{flagtree_backend}", md5_digest=_resolve_iluvatar_plugin_md5())
+            and (not configs.flagtree_plugin), url=configs.activated_module.get_resources_url('plugin'),
+            copy_dst_path=f"third_party/{flagtree_backend}",
+            md5_digest=configs.activated_module.get_resources_hash('plugin'))
 
 # klx xpu
 cache.store(
