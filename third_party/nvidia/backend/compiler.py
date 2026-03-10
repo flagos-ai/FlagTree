@@ -385,6 +385,8 @@ class CUDABackend(BaseBackend):
             passes.llvmir.add_di_scope(pm)
         if CUDABackend.instrumentation:
             CUDABackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
+        # flagtree tle raw
+        tle.raw_passes.add_tle_dsl_region_inline(pm)
 
         pm.run(mod)
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)

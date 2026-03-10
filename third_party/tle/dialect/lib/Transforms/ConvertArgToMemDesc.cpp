@@ -25,44 +25,6 @@ namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
 
 namespace {
-template <typename ExtractOpT>
-bool rewriteOne(Operation *toReplace, mlir::IRMapping &mapper,
-                mlir::PatternRewriter &rewriter) {
-  PatternRewriter::InsertionGuard guard(rewriter);
-  if (auto ex = llvm::dyn_cast<ExtractOpT>(toReplace)) {
-    rewriter.setInsertionPoint(ex);
-    auto newEx = rewriter.create<ExtractOpT>(ex.getLoc(), ex->getResultTypes(),
-                                             mapper.lookup(ex.getInput()));
-    rewriter.replaceOp(ex, newEx->getResults());
-    return true;
-  } else {
-    return false;
-  }
-}
-template <typename ExtractOpT>
-bool mapInputTensorOnce(Operation *toReplace,
-                        llvm::SmallDenseSet<Value> &mappedValues) {
-  if (auto ex = llvm::dyn_cast<ExtractOpT>(toReplace)) {
-    if (auto input = ex.getInput(); isa<RankedTensorType>(input.getType())) {
-      mappedValues.insert(input);
-      return true;
-    }
-  }
-  return false;
-}
-
-template <typename... OpTys>
-static bool rewriteExtractWithMappedInput(Operation *toReplace,
-                                          IRMapping &mapper,
-                                          PatternRewriter &rewriter) {
-  return (rewriteOne<OpTys>(toReplace, mapper, rewriter) || ...);
-}
-
-template <typename... OpTys>
-static bool mapInputTensors(Operation *toReplace,
-                            llvm::SmallDenseSet<Value> &mappedValues) {
-  return (mapInputTensorOnce<OpTys>(toReplace, mappedValues) || ...);
-}
 
 ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
   ttg::CTALayoutAttr ctaLayout = ttg::getCTALayout(ty.getEncoding());
@@ -76,11 +38,11 @@ ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
                                true);
 }
 
-struct TleArgConversion : public OpRewritePattern<LLVM::CallOp> {
+struct TleArgConversion : public OpRewritePattern<tle::DSLRegionOp> {
   using OpRewritePattern::OpRewritePattern;
 
   TleArgConversion(MLIRContext *context);
-  LogicalResult matchAndRewrite(LLVM::CallOp op,
+  LogicalResult matchAndRewrite(tle::DSLRegionOp op,
                                 PatternRewriter &rewriter) const override;
 };
 
@@ -95,72 +57,97 @@ TleArgConversion::TleArgConversion(MLIRContext *context)
     : OpRewritePattern(context) {}
 
 LogicalResult
-TleArgConversion::matchAndRewrite(LLVM::CallOp op,
+TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
                                   PatternRewriter &rewriter) const {
-  SmallVector<Value> operands = op.getOperands();
-  PatternRewriter::InsertionGuard guard(rewriter);
-  bool hasConversion = false;
+  SmallVector<Value> newOperands;
   IRMapping mapper;
-  SmallVector<Operation *> targets;
-  SmallVector<ttg::LocalAllocOp> toDeallocOps;
-  llvm::SmallDenseSet<Value> mappedValues;
-  for (Value operand : operands) {
-    Operation *defOp = operand.getDefiningOp();
-    if (!defOp) {
-      continue;
-    }
-    hasConversion |=
-        mapInputTensors<tle::ExtractAllocatedPtrOp, tle::ExtractSizesOp,
-                        tle::ExtractStridesOp, tle::ExtractOffsetOp,
-                        tle::ExtractAlignedPtrOp>(defOp, mappedValues);
-    if (isa<tle::ExtractAllocatedPtrOp, tle::ExtractSizesOp,
-            tle::ExtractStridesOp, tle::ExtractOffsetOp,
-            tle::ExtractAlignedPtrOp>(defOp)) {
-      targets.push_back(defOp);
-    }
-  }
-  for (Value tensorVal : mappedValues) {
-    PatternRewriter::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointAfterValue(tensorVal);
-    auto memDesc = getPlainMemDesc(cast<RankedTensorType>(tensorVal.getType()));
-    auto localAllocOp =
-        rewriter.create<ttg::LocalAllocOp>(tensorVal.getLoc(), memDesc);
-    auto localStoreOp = rewriter.create<ttg::LocalStoreOp>(
-        localAllocOp.getLoc(), tensorVal, localAllocOp);
-    mapper.map(tensorVal, localAllocOp.getResult());
-    toDeallocOps.push_back(localAllocOp);
-    hasConversion = true;
-  }
-  SmallVector<tle::PackOp> packs;
-  for (Value res : op->getResults()) {
-    for (OpOperand &use : res.getUses()) {
-      if (auto packop = dyn_cast<tle::PackOp>(use.getOwner()))
-        if (auto tensorTy =
-                dyn_cast<RankedTensorType>(packop.getOutput().getType())) {
-          rewriter.setInsertionPoint(packop);
-          auto newPackOp = rewriter.create<tle::PackOp>(
-              packop.getLoc(), getPlainMemDesc(tensorTy), packop.getInput());
-          auto loadOp = rewriter.create<ttg::LocalLoadOp>(
-              newPackOp.getLoc(), tensorTy, newPackOp.getOutput());
-          rewriter.replaceOp(packop, loadOp.getResult());
-          rewriter.setInsertionPointAfter(loadOp);
-          hasConversion = true;
-        }
+  bool hasConversion = false;
+  for (const auto &operand : op->getOperands()) {
+    if (RankedTensorType tensorTy =
+            dyn_cast<RankedTensorType>(operand.getType())) {
+      Operation *defOp = operand.getDefiningOp();
+      PatternRewriter::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(op);
+      ttg::LocalAllocOp allocOp = rewriter.create<ttg::LocalAllocOp>(
+          op->getLoc(), getPlainMemDesc(tensorTy));
+      rewriter.create<ttg::LocalStoreOp>(op->getLoc(), operand, allocOp);
+      rewriter.setInsertionPointAfter(op);
+      rewriter.create<ttg::LocalDeallocOp>(op->getLoc(), allocOp);
+      newOperands.push_back(allocOp);
+      mapper.map(operand, allocOp);
+      hasConversion = true;
+    } else {
+      newOperands.push_back(operand);
     }
   }
-  for (ttg::LocalAllocOp toDeallocOp : toDeallocOps) {
-    rewriter.create<ttg::LocalDeallocOp>(toDeallocOp.getLoc(), toDeallocOp);
-    hasConversion = true;
+  SmallVector<Type> newRetTys;
+  for (auto result : op.getResults()) {
+    if (RankedTensorType tensorTy =
+            dyn_cast<RankedTensorType>(result.getType())) {
+      newRetTys.push_back(getPlainMemDesc(tensorTy));
+      hasConversion = true;
+    } else {
+      newRetTys.push_back(result.getType());
+    }
   }
   if (!hasConversion) {
     return failure();
   }
-  for (Operation *toReplace : targets) {
-    rewriteExtractWithMappedInput<
-        tle::ExtractAllocatedPtrOp, tle::ExtractSizesOp, tle::ExtractStridesOp,
-        tle::ExtractOffsetOp, tle::ExtractAlignedPtrOp>(toReplace, mapper,
-                                                        rewriter);
+  tle::DSLRegionOp newOp =
+      rewriter.create<tle::DSLRegionOp>(op.getLoc(), newRetTys, newOperands);
+  PatternRewriter::InsertionGuard guard(rewriter);
+  for (auto [idx, oldBlock] : llvm::enumerate(op.getBody().getBlocks())) {
+    Block *newBlock;
+    if (idx == 0) {
+      newBlock = rewriter.createBlock(
+          &newOp.getBody(), {}, newOp->getOperandTypes(),
+          SmallVector<Location>(newOp->getNumOperands(), op.getLoc()));
+    } else {
+      newBlock = rewriter.createBlock(
+          &newOp.getBody(), {}, oldBlock.getArgumentTypes(),
+          SmallVector<Location>(oldBlock.getNumArguments(), op.getLoc()));
+    }
+    for (auto [oldArg, newArg] :
+         llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
+      mapper.map(oldArg, newArg);
+    }
+    mapper.map(&oldBlock, newBlock);
   }
+  for (auto [oldBlock, newBlock] :
+       llvm::zip(op.getBody().getBlocks(), newOp.getBody().getBlocks())) {
+    rewriter.setInsertionPointToEnd(&newBlock);
+    for (Operation &operation : oldBlock.getOperations()) {
+      bool hasReplaced = false;
+      if (tle::PackOp packOp = dyn_cast<tle::PackOp>(operation)) {
+        if (auto tensorTy =
+                dyn_cast<RankedTensorType>(packOp.getOutput().getType())) {
+          tle::PackOp newPackOp = rewriter.create<tle::PackOp>(
+              packOp.getLoc(), getPlainMemDesc(tensorTy),
+              mapper.lookup(packOp.getInput()));
+          mapper.map(packOp.getOutput(), newPackOp.getOutput());
+          hasReplaced = true;
+        } else {
+          rewriter.clone(operation, mapper);
+        }
+      } else {
+        rewriter.clone(operation, mapper);
+      }
+    }
+  }
+  rewriter.setInsertionPointAfter(newOp);
+  SmallVector<Value> results;
+  for (auto [oldResult, newResult] :
+       llvm::zip(op.getResults(), newOp.getResults())) {
+    if (RankedTensorType tensorTy =
+            dyn_cast<RankedTensorType>(oldResult.getType())) {
+      ttg::LocalLoadOp loadOp =
+          rewriter.create<ttg::LocalLoadOp>(op.getLoc(), tensorTy, newResult);
+      results.push_back(loadOp);
+    } else {
+      results.push_back(newResult);
+    }
+  }
+  rewriter.replaceOp(op, results);
   return success();
 }
 

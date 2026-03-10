@@ -792,11 +792,37 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
   patterns.add<CFCondBranchPattern, CFBranchPattern>(typeConverter, context);
 }
 
+// begin flagtree tle
+class TleDSLRegionOpPattern : public OpConversionPattern<tle::DSLRegionOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tle::DSLRegionOp op, tle::DSLRegionOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newOp = rewriter.cloneWithoutRegions<tle::DSLRegionOp>(op);
+    Region &body = op.getBody(), &newBody = newOp.getBody();
+    rewriter.inlineRegionBefore(body, newBody, newBody.end());
+
+    if (failed(rewriter.convertRegionTypes(&newBody, *getTypeConverter()))) {
+      return rewriter.notifyMatchFailure(op, "could not convert body types");
+    }
+    newOp->setOperands(adaptor.getOperands());
+    for (OpResult result : newOp->getResults()) {
+      result.setType(getTypeConverter()->convertType(result.getType()));
+    }
+
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+
 void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns
-      .add<GenericOpPattern<tle::LocalPointersOp>,
+      .add<TleDSLRegionOpPattern, GenericOpPattern<tle::LocalPointersOp>,
+           GenericOpPattern<tle::YieldOp>,
            GenericOpPattern<tle::ExtractAllocatedPtrOp>,
            GenericOpPattern<tle::ExtractAlignedPtrOp>,
            GenericOpPattern<tle::ExtractOffsetOp>,
