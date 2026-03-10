@@ -465,6 +465,20 @@ cache.store(
     post_hock=set_llvm_env,
 )
 
+# enflame
+cache.store(
+    file="llvm-189e06b-gcc9-x64",
+    condition=("enflame" == flagtree_backend),
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm22-189e06b-gcc9-x64_v0.4.0.tar.gz",
+    pre_hock=lambda: check_env('KURAMA_LLVM_DIR'),
+    post_hock=lambda path: set_env({
+        'KURAMA_LLVM_DIR': path,
+        'LLVM_INCLUDE_DIRS': Path(path) / "include",
+        'LLVM_LIBRARY_DIR': Path(path) / "lib",
+        'LLVM_SYSPATH': path,
+    }),
+)
+
 # tsingmicro
 cache.store(
     file="tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64",
