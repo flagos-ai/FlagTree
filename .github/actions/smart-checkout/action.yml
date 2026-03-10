@@ -9,9 +9,16 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Checkout code (attempt 1)
+    - name: Checkout code (attempt 1) - v5
       id: checkout1
-      uses: actions/checkout@${{ inputs.checkout_version }}
+      if: inputs.checkout_version == 'v5'
+      uses: actions/checkout@v5
+      continue-on-error: true
+
+    - name: Checkout code (attempt 1) - v6
+      id: checkout1
+      if: inputs.checkout_version == 'v6'
+      uses: actions/checkout@v6
       continue-on-error: true
 
     - name: Sleep before checkout2
@@ -21,10 +28,16 @@ runs:
         echo "First checkout attempt failed. Sleeping for 120 seconds before retry..."
         sleep 120
 
-    - name: Checkout code (attempt 2)
+    - name: Checkout code (attempt 2) - v5
       id: checkout2
-      if: steps.checkout1.outcome == 'failure'
-      uses: actions/checkout@${{ inputs.checkout_version }}
+      if: steps.checkout1.outcome == 'failure' && inputs.checkout_version == 'v5'
+      uses: actions/checkout@v5
+      continue-on-error: true
+
+    - name: Checkout code (attempt 2) - v6
+      id: checkout2
+      if: steps.checkout1.outcome == 'failure' && inputs.checkout_version == 'v6'
+      uses: actions/checkout@v6
       continue-on-error: true
 
     - name: Sleep before final checkout
@@ -34,9 +47,13 @@ runs:
         echo "Second checkout attempt failed. Sleeping for 180 seconds before retry..."
         sleep 180
 
-    - name: Checkout code (final attempt)
-      if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
-      uses: actions/checkout@${{ inputs.checkout_version }}
+    - name: Checkout code (final attempt) - v5
+      if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure' && inputs.checkout_version == 'v5'
+      uses: actions/checkout@v5
+
+    - name: Checkout code (final attempt) - v6
+      if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure' && inputs.checkout_version == 'v6'
+      uses: actions/checkout@v6
 
     - name: Verify checkout success
       shell: bash
