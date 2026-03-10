@@ -2,7 +2,7 @@ name: 'Smart Checkout with Retry'
 description: 'Attempts to checkout code with multiple retries and sleep intervals'
 inputs:
   checkout_version:
-    description: 'The version of actions/checkout to use'
+    description: 'The version of actions/smart-checkout to use'
     required: false
     default: 'v6' 
 
