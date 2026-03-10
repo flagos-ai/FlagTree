@@ -1,4 +1,5 @@
 #include "tle/dialect/include/Transforms/ConvertArgToMemDesc.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dominance.h"
@@ -79,6 +80,11 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
     } else {
       newOperands.push_back(operand);
     }
+  }
+  if (hasConversion) {
+    PatternRewriter::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(op);
+    rewriter.create<NVVM::Barrier0Op>(op.getLoc());
   }
   SmallVector<Type> newRetTys;
   for (auto result : op.getResults()) {

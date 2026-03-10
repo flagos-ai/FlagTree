@@ -1,7 +1,6 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.h"
 #include "tle/dialect/include/IR/Dialect.h"
@@ -50,8 +49,6 @@ LogicalResult DSLRegionOpConversion::matchAndRewrite(
     result.setType(getTypeConverter()->convertType(result.getType()));
   }
   rewriter.replaceOp(op, newOp->getResults());
-  rewriter.setInsertionPoint(newOp);
-  rewriter.create<NVVM::Barrier0Op>(newOp.getLoc());
 
   return success();
 }
