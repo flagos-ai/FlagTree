@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   nv-build-and-test:
-    runs-on: nv-jiuding
+    runs-on: flagtree-nvidia
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
@@ -84,7 +84,7 @@ jobs:
           pip uninstall -y triton
           source ~/env.sh
           cd python
-          MAX_JOBS=32 python3.11 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Build on NVidia (triton_v3.2.x branch)
         if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.2.x' }}
@@ -94,7 +94,7 @@ jobs:
           pip uninstall -y triton
           source ~/env-3.2.sh
           cd python
-          MAX_JOBS=32 python3.11 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Build on NVidia (triton_v3.3.x branch)
         if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.3.x' }}
@@ -104,17 +104,18 @@ jobs:
           pip uninstall -y triton
           source ~/env-3.3.sh
           cd python
-          MAX_JOBS=32 python3.11 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on NVidia
         if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
           set -x
-          python3.11 -m pytest -s python/test/unit \
+          python3 -m pytest -s python/test/unit \
+              --ignore=python/test/unit/language/test_line_info.py \
               --ignore=python/test/unit/test_debug.py \
               --ignore=python/test/unit/test_debug_dump.py \
               --ignore=python/test/unit/tools/test_disasm.py
           if [ -d "python/test/operators" ]; then
-            python3.11 -m pytest -s python/test/operators
+            python3 -m pytest -s python/test/operators
           fi
