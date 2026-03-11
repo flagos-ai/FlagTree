@@ -36,6 +36,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include <optional>
 
 namespace mlir::triton::tle {
 
@@ -51,10 +52,10 @@ class InsertLocalPointerBarriersPass
           InsertLocalPointerBarriersPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    trackedPointers.clear();
+    pointerGroups.clear();
     collectTrackedPointers(module);
 
-    if (trackedPointers.empty())
+    if (pointerGroups.empty())
       return;
 
     for (Operation &op : module.getBody()->getOperations())
@@ -64,17 +65,20 @@ class InsertLocalPointerBarriersPass
   void collectTrackedPointers(ModuleOp module) {
     llvm::SmallVector<Value> worklist;
     module.walk([&](tle::LocalPointersOp op) {
-      if (!op->hasAttr(kBarrierGroupAttr))
+      auto groupAttr = op->getAttrOfType<IntegerAttr>(kBarrierGroupAttr);
+      if (!groupAttr)
         return;
       Value ptr = op.getResult();
-      if (trackedPointers.insert(ptr).second)
+      int64_t group = groupAttr.getInt();
+      if (pointerGroups.try_emplace(ptr, group).second)
         worklist.push_back(ptr);
     });
 
     auto tryTrackDerived = [&](Operation *op, Value src, Value derived) {
-      if (!trackedPointers.contains(src))
+      auto it = pointerGroups.find(src);
+      if (it == pointerGroups.end())
         return;
-      if (trackedPointers.insert(derived).second)
+      if (pointerGroups.try_emplace(derived, it->second).second)
         worklist.push_back(derived);
     };
 
@@ -102,21 +106,27 @@ class InsertLocalPointerBarriersPass
   }
 
   void processBlock(Block &block) {
-    llvm::DenseMap<Value, bool> dirty;
+    llvm::DenseMap<int64_t, bool> dirtyGroups;
     for (Operation &op : block) {
+      if (!dirtyGroups.empty() && op.getNumRegions() > 0 &&
+          opHasLoadNeedingBarrier(op, dirtyGroups)) {
+        OpBuilder builder(&op);
+        builder.create<mlir::gpu::BarrierOp>(op.getLoc());
+        dirtyGroups.clear();
+      }
+
       if (auto store = dyn_cast<triton::StoreOp>(&op)) {
-        Value ptr = store.getPtr();
-        if (trackedPointers.contains(ptr))
-          dirty[ptr] = true;
+        if (auto group = lookupPointerGroup(store.getPtr()))
+          dirtyGroups[*group] = true;
       } else if (auto load = dyn_cast<triton::LoadOp>(&op)) {
-        Value ptr = load.getPtr();
-        if (!trackedPointers.contains(ptr) || !dirty.lookup(ptr))
+        auto group = lookupPointerGroup(load.getPtr());
+        if (!group || !dirtyGroups.lookup(*group))
           continue;
         OpBuilder builder(load);
         builder.create<mlir::gpu::BarrierOp>(load.getLoc());
-        dirty[ptr] = false;
+        dirtyGroups[*group] = false;
       } else if (isa<mlir::gpu::BarrierOp>(&op)) {
-        dirty.clear();
+        dirtyGroups.clear();
       }
 
       for (Region &nested : op.getRegions())
@@ -124,7 +134,42 @@ class InsertLocalPointerBarriersPass
     }
   }
 
-  llvm::DenseSet<Value> trackedPointers;
+  bool opHasLoadNeedingBarrier(
+      Operation &op, const llvm::DenseMap<int64_t, bool> &dirtyGroups) const {
+    bool needsBarrier = false;
+    for (Region &region : op.getRegions()) {
+      for (Block &block : region) {
+        for (Operation &nestedOp : block) {
+          if (auto load = dyn_cast<triton::LoadOp>(&nestedOp)) {
+            if (auto group = lookupPointerGroup(load.getPtr());
+                group && dirtyGroups.lookup(*group)) {
+              needsBarrier = true;
+              break;
+            }
+          }
+          if (nestedOp.getNumRegions() > 0 &&
+              opHasLoadNeedingBarrier(nestedOp, dirtyGroups)) {
+            needsBarrier = true;
+            break;
+          }
+        }
+        if (needsBarrier)
+          break;
+      }
+      if (needsBarrier)
+        break;
+    }
+    return needsBarrier;
+  }
+
+  std::optional<int64_t> lookupPointerGroup(Value ptr) const {
+    auto it = pointerGroups.find(ptr);
+    if (it == pointerGroups.end())
+      return std::nullopt;
+    return it->second;
+  }
+
+  llvm::DenseMap<Value, int64_t> pointerGroups;
 };
 
 } // namespace

@@ -287,7 +287,60 @@ LogicalResult tt::CoarseSchedule::deSerialize(scf::ForOp &forOp) {
 // TODO: Should this be moved somewhere else?
 // Add dependencies of anchor ops to the coarse schedule. Schedule them to
 // the same stage and ordering cluster as the anchor op.
+#ifdef __TLE__
+static bool isBarrierLikeOp(Operation *op) {
+  if (!op)
+    return false;
+  StringRef opName = op->getName().getStringRef();
+  if (opName == "gpu.barrier")
+    return true;
+  if (opName == "tle.distributed_barrier")
+    return true;
+  return false;
+}
+
+static Operation *getPrevBarrierLikeOpInBlock(Operation *op) {
+  for (Operation *prev = op->getPrevNode(); prev; prev = prev->getPrevNode()) {
+    if (isBarrierLikeOp(prev))
+      return prev;
+  }
+  return nullptr;
+}
+
+static Operation *getPrevMemoryEffectOpInBlock(Operation *op) {
+  for (Operation *prev = op->getPrevNode(); prev; prev = prev->getPrevNode()) {
+    if (!mlir::isMemoryEffectFree(prev))
+      return prev;
+  }
+  return nullptr;
+}
+#endif
+
 void tt::scheduleDependencies(scf::ForOp forOp, tt::CoarseSchedule &schedule) {
+#ifdef __TLE__
+  auto insertOrderDependency = [&](auto &&self, Operation *op, int stage,
+                                   tt::CoarseSchedule::Cluster cluster) {
+    if (!op)
+      return;
+    if (!schedule.insertMinimum(op, stage, cluster))
+      return;
+
+    schedule.insertDepsOfOp(op, stage, cluster, /*includeArg=*/false,
+                            /*insertIfEarlier=*/true);
+
+    if (!isBarrierLikeOp(op))
+      return;
+
+    // A barrier must stay after prior memory-effecting ops in the same basic
+    // block. Build a conservative chain up to the previous barrier.
+    for (Operation *prev = getPrevMemoryEffectOpInBlock(op); prev;
+         prev = getPrevMemoryEffectOpInBlock(prev)) {
+      self(self, prev, stage, cluster);
+      if (isBarrierLikeOp(prev))
+        break;
+    }
+  };
+
   int numStages = schedule.getNumStages();
   SmallVector<std::tuple<Operation *, int, tt::CoarseSchedule::Cluster>>
       opsInOrder = schedule.getOpsInOrder(forOp);
@@ -298,6 +351,14 @@ void tt::scheduleDependencies(scf::ForOp forOp, tt::CoarseSchedule &schedule) {
         continue;
       schedule.insertDepsOfOp(op, stage, cluster, /*includeArg=*/false,
                               /*insertIfEarlier=*/true);
+
+      // Keep software-pipelined ops after the nearest preceding barrier,
+      // instead of disabling software pipelining for the whole loop.
+      if (Operation *prevBarrier = getPrevBarrierLikeOpInBlock(op)) {
+        insertOrderDependency(insertOrderDependency, prevBarrier, stage,
+                              cluster);
+      }
+#endif
     }
   }
 }

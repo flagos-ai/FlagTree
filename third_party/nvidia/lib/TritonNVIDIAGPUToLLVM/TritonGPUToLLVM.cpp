@@ -10,22 +10,24 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
-// begin flagtree tle
+#ifdef __TLE__
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
-// end flagtree tle
+#endif
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Analysis/AxisInfoExt.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
-// begin flagtree tle
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
-// end flagtree tle
 #include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#endif
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Membar.h"
@@ -83,20 +85,16 @@ public:
   }
 };
 
-// flagtree tle raw
+#ifdef __TLE__
 class TleLLVMConversionTarget : public ConversionTarget {
 public:
   explicit TleLLVMConversionTarget(MLIRContext &ctx,
                                    LLVMTypeConverter &typeConverter)
       : ConversionTarget(ctx) {
-    // begin flagtree tle
     addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect, math::MathDialect,
                     NVVM::NVVMDialect, mlir::gpu::GPUDialect>();
-    // end flagtree tle
     addIllegalDialect<tle::TleDialect>();
-    // begin flagtree tle
     addLegalOp<mlir::UnrealizedConversionCastOp>();
-    // end flagtree tle
     addDynamicallyLegalOp<tle::DSLRegionOp, tle::YieldOp>(
         [&](Operation *op) -> bool {
           bool hasLegalRegions = true;
@@ -109,6 +107,7 @@ public:
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
 };
+#endif
 
 struct ConvertTritonGPUToLLVM
     : public triton::impl::ConvertTritonGPUToLLVMBase<ConvertTritonGPUToLLVM> {
@@ -148,11 +147,15 @@ struct ConvertTritonGPUToLLVM
     // because the call op has to know the shared memory base address of each
     // function
     initSharedMemory(typeConverter);
+#ifdef __TLE__
+    mlir::triton::tle::ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+#else
     ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+#endif
 
     RewritePatternSet patterns(context);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
-    // flagtree tle raw
+#ifdef __TLE__
     {
       TleLLVMConversionTarget target(*context, typeConverter);
       RewritePatternSet patterns(context);
@@ -162,14 +165,20 @@ struct ConvertTritonGPUToLLVM
                                                          patterns, benefit);
       mlir::triton::tle::populatePackOpToLLVMPatterns(typeConverter, patterns,
                                                       benefit);
-      // begin flagtree tle
+#ifdef __TLE__
+      mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
       mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
           typeConverter, targetInfo, patterns, benefit);
-      // end flagtree tle
+#else
+      mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
+          typeConverter, targetInfo, patterns, benefit);
+#endif
       if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
         return signalPassFailure();
       }
     }
+#endif
     mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit);
     mlir::triton::NVIDIA::populateTensorMemorySubviewOpToLLVMPattern(

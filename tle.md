@@ -21,6 +21,8 @@
     - For each logical index `(i0, i1, ...)` in the output shape, the pointer value corresponds to `buffer[indices0(i0, i1, ...), indices1(i0, i1, ...), ...]`.
     - Returned pointers live in shared memory address space (LLVM addrspace=3). Indices must be integer (i32/i64, etc., reduced to i32 during lowering).
     - Linearization is row-major (last dimension fastest); shared memory layout/encoding follows the `buffer` memdesc.
+    - `indices` also supports scalar values (not only tensors). With scalar indices, `tle.local_ptr` can be consumed by scalar `tl.load`/`tl.store` directly.
+    - For scalar shared-memory reads/writes, no extra wrappers like `tl.full([1], ...)` + `tl.max(..., axis=0)` are required.
 
   - **Example 1: 1D slice**
     ```python
@@ -49,6 +51,25 @@
     cols = tl.broadcast_to(1 + tl.arange(0, SLICE)[None, :], (H, SLICE))
     gather_ptr = tle.local_ptr(smem, (rows, cols))
     out = tl.load(gather_ptr)
+    ```
+
+  - **Example 4: scalar shared-memory lookup**
+    ```python
+    RADIX = 16
+    bins = tl.arange(0, RADIX)
+    smem_counts = tle.alloc([RADIX], dtype=tl.int32, scope=tle.smem)
+    smem_count_ptrs = tle.local_ptr(smem_counts, (bins,))
+
+    # Build descending cumulative histogram.
+    counts = tl.load(smem_count_ptrs)
+    cumsum_desc = tl.cumsum(counts, axis=0, reverse=True)
+    tl.store(smem_count_ptrs, cumsum_desc)
+    tl.debug_barrier()
+
+    # Scalar load through local_ptr.
+    d = 7
+    cum_d = tl.load(tle.local_ptr(smem_counts, (d,)))
+    cum_next = tl.load(tle.local_ptr(smem_counts, (d + 1,)))
     ```
 
 - **Semantic Validation**

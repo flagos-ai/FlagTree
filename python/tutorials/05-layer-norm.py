@@ -173,8 +173,8 @@ def _layer_norm_bwd_dx_fused(DX,  # pointer to the input gradient
     # Write dx
     tl.store(DX + cols, dx, mask=mask)
     # Accumulate partial sums for dw/db
-    partial_dw = (dy * xhat).to(w.dtype)
-    partial_db = (dy).to(w.dtype)
+    partial_dw = (dy * xhat).to(tl.float32)
+    partial_db = dy.to(tl.float32)
     while tl.atomic_cas(Lock, 0, 1) == 1:
         pass
     count = tl.load(Count)
@@ -271,8 +271,8 @@ class LayerNorm(torch.autograd.Function):
         if N <= 1024: GROUP_SIZE_M = 256
         # allocate output
         locks = torch.zeros(2 * GROUP_SIZE_M, dtype=torch.int32, device=w.device)
-        _dw = torch.zeros((GROUP_SIZE_M, N), dtype=x.dtype, device=w.device)
-        _db = torch.zeros((GROUP_SIZE_M, N), dtype=x.dtype, device=w.device)
+        _dw = torch.zeros((GROUP_SIZE_M, N), dtype=torch.float32, device=w.device)
+        _db = torch.zeros((GROUP_SIZE_M, N), dtype=torch.float32, device=w.device)
         dw = torch.empty((N, ), dtype=w.dtype, device=w.device)
         db = torch.empty((N, ), dtype=w.dtype, device=w.device)
         dx = torch.empty_like(dy)
