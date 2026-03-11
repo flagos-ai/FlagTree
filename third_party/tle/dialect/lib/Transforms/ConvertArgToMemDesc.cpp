@@ -1,4 +1,5 @@
 #include "tle/dialect/include/Transforms/ConvertArgToMemDesc.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dominance.h"
@@ -80,6 +81,11 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
       newOperands.push_back(operand);
     }
   }
+  if (hasConversion) {
+    PatternRewriter::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(op);
+    rewriter.create<NVVM::Barrier0Op>(op.getLoc());
+  }
   SmallVector<Type> newRetTys;
   for (auto result : op.getResults()) {
     if (RankedTensorType tensorTy =
@@ -97,7 +103,7 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
       rewriter.create<tle::DSLRegionOp>(op.getLoc(), newRetTys, newOperands);
   PatternRewriter::InsertionGuard guard(rewriter);
   for (auto [idx, oldBlock] : llvm::enumerate(op.getBody().getBlocks())) {
-    Block *newBlock;
+    Block *newBlock = nullptr;
     if (idx == 0) {
       newBlock = rewriter.createBlock(
           &newOp.getBody(), {}, newOp->getOperandTypes(),
@@ -117,7 +123,6 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
        llvm::zip(op.getBody().getBlocks(), newOp.getBody().getBlocks())) {
     rewriter.setInsertionPointToEnd(&newBlock);
     for (Operation &operation : oldBlock.getOperations()) {
-      bool hasReplaced = false;
       if (tle::PackOp packOp = dyn_cast<tle::PackOp>(operation)) {
         if (auto tensorTy =
                 dyn_cast<RankedTensorType>(packOp.getOutput().getType())) {
@@ -125,13 +130,10 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
               packOp.getLoc(), getPlainMemDesc(tensorTy),
               mapper.lookup(packOp.getInput()));
           mapper.map(packOp.getOutput(), newPackOp.getOutput());
-          hasReplaced = true;
-        } else {
-          rewriter.clone(operation, mapper);
+          continue;
         }
-      } else {
-        rewriter.clone(operation, mapper);
       }
+      rewriter.clone(operation, mapper);
     }
   }
   rewriter.setInsertionPointAfter(newOp);
