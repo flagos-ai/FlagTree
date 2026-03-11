@@ -53,7 +53,7 @@ class CallVisitor(ast.NodeVisitor):
 
 
 def ext_JITFunction_spec_of(arg):
-    return (arg % 16 == 0, arg % JITFunction.divisibility_8 == 0, arg == 1)
+    return (arg % 4 == 0, arg % JITFunction.divisibility_8 == 0, arg == 1)
 
 
 def is_corex_param(x, enable_sme):
@@ -86,14 +86,36 @@ def get_corex_param(arg):
 
 def ext_JITFunction_get_config(jitFunction, divisible_by_16, equal_to_1, *args):
     from triton.compiler import AttrsDescriptor
+    import torch
     enable_sme = get_corex_sme(jitFunction.visitor.use_sme)
     corex_param = {
         param.num: get_corex_param(arg)
         for param, arg in zip(jitFunction.params, args)
         if is_corex_param(arg, enable_sme) and not param.do_not_specialize and not param.is_constexpr
     }
+    use_corex = hasattr(torch, "corex") and torch.corex
+
+    def is_divisible_by_4(x):
+        if hasattr(x, "data_ptr"):
+            return x.data_ptr() % 4 == 0
+        elif isinstance(x, int):
+            return x % 4 == 0
+        if x is None:
+            return True
+        return False
+
     # folded equal_to_1 and None
     # TODO: method to collect all folded args
+    if use_corex:
+        divisible_by_4 = {
+            param.num
+            for param, arg in zip(jitFunction.params, args)
+            if is_divisible_by_4(arg) and not param.do_not_specialize
+        }
+        attrs = AttrsDescriptor(tuple(), tuple(equal_to_1), corex_param)
+        if divisible_by_4:
+            attrs.divisible_by_4 = set(divisible_by_4)
+        return attrs
     return AttrsDescriptor(tuple(divisible_by_16), tuple(equal_to_1), corex_param)
 
 

@@ -23,6 +23,7 @@ class AttrsDescriptor:
     equal_to_1: set = None
     # flagtree backend specialization
     corexLoad: dict = None
+    divisible_by_4: set = None
 
     def __post_init__(self):
         if self.divisible_by_16 is None:
@@ -32,12 +33,14 @@ class AttrsDescriptor:
         # flagtree backend specialization
         from triton.runtime.driver import spec
         self.corexLoad = spec("init_AttrsDescriptor_corexLoad", self.corexLoad)
+        self.divisible_by_4 = spec("init_AttrsDescriptor_divisible_by_4", self.divisible_by_4)
 
     def to_dict(self):
         dict = {'divisible_by_16': list(self.divisible_by_16), 'equal_to_1': list(self.equal_to_1)}
         # flagtree backend specialization
         from triton.runtime.driver import spec
         dict.update(spec("ext_AttrsDescriptor_to_dict", self.corexLoad) or {})
+        dict.update(spec("ext_AttrsDescriptor_to_dict_divisible_by_4", getattr(self, "divisible_by_4", None)) or {})
         return dict
 
     @staticmethod

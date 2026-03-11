@@ -14,6 +14,7 @@ import math
 import pytest
 
 triton_cache_dir = os.environ.get('TRITON_CACHE_DIR', '/root/.triton/cache')
+capability = torch.cuda.get_device_capability()
 
 
 def print_result_decorator(func):
@@ -160,7 +161,6 @@ def test_corex_sme():
 @pytest.mark.skip(reason="iluvatar: ir.parse_mlir_module failed in CI")
 @print_result_decorator
 def test_16x32_i8_dot():
-    capability = torch.cuda.get_device_capability()
     if capability[0] == 8:
         pytest.skip("tl.dot do not support int8 on QS now")
     A = torch.randint(-127, 127, (64, 64), dtype=torch.int8, device="cuda")
@@ -660,50 +660,29 @@ def test_batch_mla():
         device="cuda",
     ).to(dtype) * 0.1
     sm_scale = 0.1352337788608801
-    q_indptr = torch.cumsum(torch.tensor([
-        0,
-    ] + qo_len, dtype=torch.int32, device="cuda"), dim=0).to(torch.int32)
-    kv_indptr = torch.cumsum(torch.tensor([
-        0,
-    ] + page_nums, dtype=torch.int32, device="cuda"), dim=0).to(torch.int32)
-    kv_indices = torch.randint(0, 1, (kv_indptr[-1].item(), ), dtype=torch.int32, device="cuda")
+    total_q = sum(qo_len)
+    q_indptr = torch.arange(0, total_q, dtype=torch.int32, device="cuda")
+    kv_indptr_base = torch.cumsum(
+        torch.tensor([
+            0,
+        ] + page_nums, dtype=torch.int32, device="cuda"),
+        dim=0,
+    ).to(torch.int32)
+    kv_indices = torch.randint(0, 1, (kv_indptr_base[-1].item(), ), dtype=torch.int32, device="cuda")
+    batch_ids = torch.repeat_interleave(
+        torch.arange(batch_size, device="cuda"),
+        torch.tensor(qo_len, dtype=torch.int32, device="cuda"),
+    ).to(torch.int32)
+    kv_indptr = kv_indptr_base[batch_ids]
     # kv_lens = torch.tensor(kv_len, dtype=torch.int32, device="cuda")
     # bsz_tensor = torch.tensor([batch_size, ], dtype=torch.int32, device="cuda")
     out = torch.empty_like(q_nope)
-    partial_indptr = torch.full((16384, ), -1, dtype=torch.int32, device="cuda")
-    q_start_ptr = torch.zeros((16384, ), dtype=torch.int32, device="cuda")
-    q_start_ptr[:128] = torch.tensor([
-        15872, 13952, 13440, 12288, 11776, 9856, 9344, 8192, 7680, 5760, 5248, 4096, 3584, 1664, 1152, 0, 15232, 14592,
-        13056, 12672, 11136, 10496, 8960, 8576, 7040, 6400, 4864, 4480, 2944, 2304, 768, 384, 15744, 14080, 13568,
-        12160, 11648, 9984, 9472, 8064, 7552, 5888, 5376, 3968, 3456, 1792, 1280, 0, 14976, 14848, 12928, 12800, 10880,
-        10752, 8832, 8704, 6784, 6656, 4736, 4608, 2688, 2560, 640, 512, 15104, 14720, 13184, 12544, 11008, 10624, 9088,
-        8448, 6912, 6528, 4992, 4352, 2816, 2432, 896, 256, 15360, 14464, 13312, 12416, 11264, 10368, 9216, 8320, 7168,
-        6272, 5120, 4224, 3072, 2176, 1024, 128, 15616, 14208, 13696, 12032, 11520, 10112, 9600, 7936, 7424, 6016, 5504,
-        3840, 3328, 1920, 1408, 0, 15488, 14336, 13824, 11904, 11392, 10240, 9728, 7808, 7296, 6144, 5632, 3712, 3200,
-        2048, 1536, 0
-    ], dtype=torch.int32, device="cuda")
+    partial_indptr = torch.full((total_q, ), -1, dtype=torch.int32, device="cuda")
+    q_start_ptr = torch.zeros((total_q, ), dtype=torch.int32, device="cuda")
     kv_start_ptr = torch.zeros((16384, ), dtype=torch.int32, device="cuda")
-    kv_end_ptr = torch.zeros((16384, ), dtype=torch.int32, device="cuda")
-    kv_end_ptr[:128] = torch.tensor([
-        252, 237, 233, 224, 220, 205, 201, 192, 188, 173, 169, 160, 156, 141, 137, 128, 247, 242, 230, 227, 215, 210,
-        198, 195, 183, 178, 166, 163, 151, 146, 134, 131, 251, 238, 234, 223, 219, 206, 202, 191, 187, 174, 170, 159,
-        155, 142, 138, 1275, 245, 244, 229, 228, 213, 212, 197, 196, 181, 180, 165, 164, 149, 148, 133, 132, 246, 243,
-        231, 226, 214, 211, 199, 194, 182, 179, 167, 162, 150, 147, 135, 130, 248, 241, 232, 225, 216, 209, 200, 193,
-        184, 177, 168, 161, 152, 145, 136, 129, 250, 239, 235, 222, 218, 207, 203, 190, 186, 175, 171, 158, 154, 143,
-        139, 1275, 249, 240, 236, 221, 217, 208, 204, 189, 185, 176, 172, 157, 153, 144, 140, 1273
-    ], dtype=torch.int32, device="cuda")
-    work_indptr = torch.zeros((16384, ), dtype=torch.int32, device="cuda")
-    work_indptr[:9] = torch.tensor([
-        0,
-        16,
-        32,
-        48,
-        64,
-        80,
-        96,
-        112,
-        128,
-    ], dtype=torch.int32, device="cuda")
+    kv_len_tensor = torch.tensor(kv_len, dtype=torch.int32, device="cuda")
+    kv_end_ptr = kv_len_tensor[batch_ids]
+    work_indptr = torch.tensor([0, 16, 32, 48, 64, 80, 96, 112, 128], dtype=torch.int32, device="cuda")
     partial_o_ptr = torch.zeros((7077888, ), dtype=torch.float32, device="cuda")
     partial_lse_ptr = torch.zeros((27000832, ), dtype=torch.float32, device="cuda")
 
@@ -773,6 +752,8 @@ def mask_sme_kernel(q_ptr, k_ptr, o_ptr, M: tl.constexpr, N: tl.constexpr, K: tl
 @pytest.mark.skip(reason="iluvatar: ir.parse_mlir_module failed in CI")
 @print_result_decorator
 def test_mask_sme():
+    if capability[0] == 8:
+        pytest.skip("tl.dot mask do not support on QS now")
     M, K, N = 64, 256, 64
     mask = K // 2
     other = 3.0

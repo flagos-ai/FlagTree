@@ -1,5 +1,55 @@
 #include "triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h"
 
+namespace {
+
+// Prefer the simple LLVM exp2 intrinsic for f32 to avoid libdevice branching.
+// For non-f32 inputs, fall back to the generic lowering.
+struct Exp2OpConversion
+    : mlir::triton::gpu::ElementwiseOpConversionBase<math::Exp2Op,
+                                                     Exp2OpConversion> {
+  using mlir::triton::gpu::ElementwiseOpConversionBase<
+      math::Exp2Op, Exp2OpConversion>::ElementwiseOpConversionBase;
+
+  explicit Exp2OpConversion(LLVMTypeConverter &typeConverter,
+                            ModuleAxisInfoAnalysis &axisAnalysisPass,
+                            PatternBenefit benefit = patternBenefitDefault)
+      : mlir::triton::gpu::ElementwiseOpConversionBase<math::Exp2Op,
+                                                       Exp2OpConversion>(
+            typeConverter, axisAnalysisPass, benefit) {}
+
+  llvm::SmallVector<mlir::Value>
+  createDestOps(math::Exp2Op op, OpAdaptor adaptor,
+                mlir::ConversionPatternRewriter &rewriter, mlir::Type elemTy,
+                mlir::triton::gpu::MultipleOperandsRange operands,
+                mlir::Location loc) const {
+    if (elemTy.getIntOrFloatBitWidth() != 32)
+      return {};
+
+    llvm::StringRef funcName = "llvm.exp2.f32";
+    mlir::Type funcType =
+        mlir::triton::gpu::getFunctionType(elemTy, operands[0]);
+    LLVM::LLVMFuncOp funcOp = mlir::triton::gpu::appendOrGetExternFuncOp(
+        rewriter, op, funcName, funcType);
+    return {
+        rewriter.create<LLVM::CallOp>(loc, funcOp, operands[0]).getResult()};
+  }
+};
+
+} // namespace
+
+namespace mlir::triton::ILUVATAR {
+
+void populateExp2OpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                  RewritePatternSet &patterns,
+                                  ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                                  const TargetInfoBase &targetInfo,
+                                  PatternBenefit benefit) {
+  patterns.add<Exp2OpConversion>(typeConverter, axisInfoAnalysis,
+                                 PatternBenefit(benefit.getBenefit() + 1));
+}
+
+} // namespace mlir::triton::ILUVATAR
+
 namespace mlir::triton::gpu {
 
 SmallVector<Value> reorderValues(const SmallVector<Value> &values, Type inType,

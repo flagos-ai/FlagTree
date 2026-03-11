@@ -3,6 +3,7 @@
 
 #define FLAGTREE_SPEC_Tools_Sys_GetEnv_BACKEND_IR_ENABLE_DUMP                  \
   "ILUIR_ENABLE_DUMP"
+#define FLAGTREE_SPEC_Tools_Sys_GetEnv_TRITON_STORE_STP "TRITON_STORE_STP"
 #define FLAGTREE_SPEC_Tools_Sys_GetEnv_funtions
 
 #include <dlfcn.h>

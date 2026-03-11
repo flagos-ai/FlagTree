@@ -796,7 +796,11 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
   POPULATE_UNARY_OP(math::SqrtOp, math::SqrtOp)
   POPULATE_UNARY_OP(math::RsqrtOp, math::RsqrtOp)
   POPULATE_UNARY_OP(math::ExpOp, math::ExpOp)
+#ifdef FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVM_exp2
+  FLAGTREE_SPEC_Conversion_TritonGPUToLLVM_ElementwiseOpToLLVM_exp2;
+#else
   POPULATE_UNARY_OP(math::Exp2Op, math::Exp2Op)
+#endif
   POPULATE_UNARY_OP(math::ErfOp, math::ErfOp)
   POPULATE_UNARY_OP(triton::BitcastOp, LLVM::BitcastOp)
   POPULATE_UNARY_OP(triton::IntToPtrOp, LLVM::IntToPtrOp)

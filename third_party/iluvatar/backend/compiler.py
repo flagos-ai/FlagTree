@@ -30,6 +30,7 @@ class CUDAOptions:
     maxnreg: Optional[int] = None
     cluster_dims: tuple = (1, 1, 1)
     enable_fp_fusion: bool = True
+    allow_flush_denorm: bool = False
     allow_fp8e4nv: bool = False
     allow_fp8e4b15: bool = False
     default_dot_input_precision: str = "tf32"
@@ -128,6 +129,7 @@ class CUDABackend(BaseBackend):
         iluvatar.passes.ttgpuir.add_matmul_load(pm, capability)  # only MR(71) support sme
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, True)
+        iluvatar.passes.ttgpuir.add_hoist_layout_conversions(pm, capability)
         passes.common.add_cse(pm)
         passes.ttgpuir.add_pipeline(pm, opt.num_stages)
         passes.ttgpuir.add_prefetch(pm)
@@ -139,7 +141,7 @@ class CUDABackend(BaseBackend):
         iluvatar.passes.ttgpuir.add_mmareduce(pm, capability)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
-        passes.ttgpuir.add_reorder_instructions(pm)
+        iluvatar.passes.ttgpuir.add_reorder_instructions(pm, capability)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
@@ -156,7 +158,7 @@ class CUDABackend(BaseBackend):
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
         passes.ttgpuir.add_allocate_shared_memory(pm)
-        iluvatar.passes.ttgpuir.add_to_llvmir(pm, capability)
+        iluvatar.passes.ttgpuir.add_to_llvmir(pm, capability, options.allow_flush_denorm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
 
@@ -173,7 +175,7 @@ class CUDABackend(BaseBackend):
         llvm.init_targets()
         context = llvm.context()
         llvm_mod = llvm.to_module(mod, context)
-        iluvatar.set_nvvm_reflect_ftz(llvm_mod)
+        iluvatar.set_nvvm_reflect_ftz(llvm_mod, options.allow_flush_denorm)
 
         # Set maxnreg on all kernels, if it was provided.
         if options.maxnreg is not None:

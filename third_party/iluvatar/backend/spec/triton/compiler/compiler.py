@@ -2,14 +2,23 @@ def init_AttrsDescriptor_corexLoad(corexLoad):
     return dict() if corexLoad is None else corexLoad
 
 
+def init_AttrsDescriptor_divisible_by_4(divisible_by_4):
+    return set() if divisible_by_4 is None else set(divisible_by_4)
+
+
 def ext_AttrsDescriptor_to_dict(corexLoad):
     return {'corexLoad': list(corexLoad.items())}
+
+
+def ext_AttrsDescriptor_to_dict_divisible_by_4(divisible_by_4):
+    return {'divisible_by_4': list(divisible_by_4)}
 
 
 def ext_AttrsDescriptor_from_dict(data):
     from triton.compiler.compiler import AttrsDescriptor
     return AttrsDescriptor(divisible_by_16=set(data.get('divisible_by_16', [])),
-                           equal_to_1=set(data.get('equal_to_1', [])), corexLoad=dict(data.get('corexLoad', [])))
+                           equal_to_1=set(data.get('equal_to_1', [])), corexLoad=dict(data.get('corexLoad', [])),
+                           divisible_by_4=set(data.get('divisible_by_4', [])))
 
 
 def ext_AttrsDescriptor_hash_key(attrsDescriptor):

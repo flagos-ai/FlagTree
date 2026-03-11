@@ -1331,6 +1331,9 @@ def noinline_multi_values_fn(x, y, Z):
 @pytest.mark.interpreter
 @pytest.mark.parametrize("mode", ["simple", "call_graph", "shared", "dynamic", "multi_values"])
 def test_noinline(mode, device):
+    capability = torch.cuda.get_device_capability()
+    if capability[0] == 8:
+        pytest.skip("noinlne do not support on QS now.")
 
     @triton.jit
     def kernel(X, Y, Z):
@@ -1518,6 +1521,9 @@ def test_atomic_cas(sem, num_ctas, device):
 
     assert (Lock[0] == 1)
 
+    capability = torch.cuda.get_device_capability()
+    if capability[0] == 8:
+        os.environ["TRITON_STORE_STP"] = "off"
     # 2. only one block enters the critical section
     @triton.jit
     def serialized_add(data, Lock, SEM: tl.constexpr):
@@ -1728,7 +1734,7 @@ def test_load_store_same_ptr(device):
 
     for _ in range(1000):
         x = torch.ones((65536, ), device=device, dtype=torch.float32)
-        if is_hip():
+        if is_hip() or is_corex():
             kernel[(65536, )](x, num_warps=16)  # threads per Warp for ROCM is 64
         else:
             kernel[(65536, )](x, num_warps=32)
@@ -5425,6 +5431,9 @@ def test_maxnreg(device):
     assert not is_interpreter(), "this test won't work with the interpreter"
     if is_hip():
         pytest.skip('maxnreg only works on CUDA')
+    capability = torch.cuda.get_device_capability()
+    if capability[0] == 8:
+        pytest.skip("noinlne do not support on QS now.")
 
     # triton kernel
     @triton.jit

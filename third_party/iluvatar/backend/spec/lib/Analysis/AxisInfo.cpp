@@ -245,7 +245,7 @@ public:
     return AxisInfo(/*contiguity=*/{end - start},
                     /*divisibility=*/{highestPowOf2Divisor(start)},
                     /*constancy=*/{1},
-                    /*corexFlag=*/{start});
+                    /*corexFlag=*/{64 + start});
   }
 };
 
@@ -744,7 +744,7 @@ public:
               (maskInfo.has_value() && (d < maskInfo->getRank()))
                   ? maskInfo->getConstancy(d)
                   : 0));
-      if (hasStride) {
+      if (hasStride && isUseSme) {
         corexFlag.push_back(64);
         stride = 64;
       } else {

@@ -1,3 +1,4 @@
+import os
 import itertools
 
 import pytest
@@ -117,6 +118,8 @@ def is_hip():
 def test_op(BLOCK_M, BLOCK_N, BLOCK_K, SPLIT_K, NWARP, NSTAGE, M, N, K, AT, BT, ADTYPE, BDTYPE, INPUT_PRECISION,
             F8_FASTACCUM, ACC_DTYPE, OUTPUT_DTYPE):
     capability = torch.cuda.get_device_capability()
+    if capability[0] == 8:
+        os.environ["TRITON_STORE_STP"] = "off"
     if is_corex():
         if (ADTYPE == "int8" and BDTYPE == "bfloat16") or (ADTYPE == "float16" and BDTYPE == "int8"):
             pytest.skip("Iluvatar devices do not support this for now")

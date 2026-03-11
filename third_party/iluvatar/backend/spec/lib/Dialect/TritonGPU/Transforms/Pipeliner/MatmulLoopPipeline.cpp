@@ -442,7 +442,7 @@ getBlockedEncoding(tt::LoadOp loadOp, tt::ModuleAxisInfoAnalysis &axisInfo) {
 }
 
 static std::optional<ttg::SharedEncodingAttr>
-getSharedEncoding(Operation *loadOp, bool isMMAV3) {
+getSharedEncoding(Operation *loadOp, bool isMMAV3, bool disableTcu = false) {
   auto ty = cast<RankedTensorType>(loadOp->getResultTypes()[0]);
   auto ctaLayout = ttg::getCTALayout(ty.getEncoding());
   auto blockedOrder = ttg::getOrder(ty.getEncoding());
@@ -485,8 +485,13 @@ getSharedEncoding(Operation *loadOp, bool isMMAV3) {
 
   // Use non-swizzled layout for loads that do not feed into dot ops.
   // TODO: This won't be optimal for 2D tensors.
+  if (!disableTcu) {
+    return ttg::SharedEncodingAttr::get(ty.getContext(), 1, 1, 1, order,
+                                        ctaLayout);
+  }
   return ttg::SharedEncodingAttr::get(ty.getContext(), 1, 1, 1, order,
-                                      ctaLayout);
+                                      ctaLayout, /*hasLeadingOffset=*/false,
+                                      /*useTcu=*/false);
 }
 
 // Create a map from load ops to their indirection level and the
@@ -664,8 +669,13 @@ assignMemoryLayouts(llvm::SmallVector<std::tuple<Operation *, int, Operation *>>
     // If we still don't have a shared encoding, try a "generic" shared
     // encoding.
     if (!loadInfo.sharedEncoding && !isMMAv3Dot(use)) {
+      bool disableTcu = false;
+#ifdef __ILUVATAR__
+      disableTcu = loadInfo.usedByDot;
+#endif
       loadInfo.sharedEncoding =
-          getSharedEncoding(op, /*isMMAV3=*/loadInfo.loadIsMMAV3)
+          getSharedEncoding(op, /*isMMAV3=*/loadInfo.loadIsMMAV3,
+                            /*disableTcu=*/disableTcu)
               .value_or(nullptr);
       if (auto loadOp = dyn_cast<tt::LoadOp>(op)) {
         loadInfo.blockedEncoding = getBlockedEncoding(loadOp, axisInfoAnalysis);
