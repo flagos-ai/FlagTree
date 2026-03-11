@@ -120,7 +120,7 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
     ops.append(std::move(rets));
   }
   for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
-      mapper.map(arg, op);
+    mapper.map(arg, op);
   }
   builder.setInsertionPointToEnd(newBlock);
   LLVM::CallOp callOp = self.create<LLVM::CallOp>(funcOp, ops);
@@ -128,7 +128,7 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   SmallVector<Value> finalResults;
 
   tgts = dslRegionOp.getOutputs().getTypes();
-  for(auto &oldBlock:func.getBlocks()){
+  for (auto &oldBlock : func.getBlocks()) {
     for (Operation &operation : oldBlock.getOperations()) {
       if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
         SmallVector<Value> operands, yields;
@@ -137,8 +137,8 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
         } else if (dslRegionOp.getNumResults() == 1) {
           operands = callOp.getResults();
         } else {
-          operands = flatten(self, cast<TypedValue<LLVM::LLVMStructType>>(
-                                        callOp.getResult()));
+          operands = flatten(
+              self, cast<TypedValue<LLVM::LLVMStructType>>(callOp.getResult()));
         }
         TypeRange tgts = dslRegionOp.getOutputs().getTypes();
         for (Value operand : operands) {

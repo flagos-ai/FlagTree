@@ -7,6 +7,7 @@ from mlir.dialects import func
 
 from .utils import ExternalCall
 
+
 class UnknownSymbolError(Exception):
 
     def __init__(self, name: str, *args, **kwargs) -> None:
