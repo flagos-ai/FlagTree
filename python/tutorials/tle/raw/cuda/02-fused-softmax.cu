@@ -52,7 +52,6 @@ SoftmaxKernel(__attribute__((address_space(3))) float *output_allocated,
     int64_t offsets;
     int64_t sizes1[1];
     int64_t stride1[1];
-
   } r{
       output_allocated, output_aligned, output_offsets,
       output_size,      output_stride,

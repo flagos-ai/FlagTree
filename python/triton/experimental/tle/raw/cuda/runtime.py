@@ -5,9 +5,11 @@ from pathlib import Path
 import subprocess
 from typing import Any, Dict, Final
 
+from triton._C.libtriton import ir, llvm  # pyright: ignore[reportMissingImports]
+from triton._C.libtriton.tle.llvm import parse  # pyright: ignore[reportMissingImports]
+
 # TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 CLANG = os.getenv("CLANG", "clang")
-MLIR_TRANSLATE = os.getenv("MLIR_TRANSLATE", "mlir-translate")
 
 
 class CUDAJITFunction(object):
