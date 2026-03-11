@@ -57,7 +57,7 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 //   - LLVM func: 1 arg = i32
 //   - Conversion: Use block argument directly
 tle::DSLRegionOp createTLERawRegionByLLVMFunc(
-    TritonOpBuilder &self, std::string_view text, std::string_view fnname,
+    TritonOpBuilder &self, std::string_view text,
     const std::vector<Value> &outputs, const std::vector<Value> &inputs) {
   ParserConfig config(self.getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);

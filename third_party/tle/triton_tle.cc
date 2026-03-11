@@ -61,7 +61,7 @@ namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 
 extern tle::DSLRegionOp createTLERawRegionByLLVMFunc(
-    TritonOpBuilder &self, std::string_view text, std::string_view fnname,
+    TritonOpBuilder &self, std::string_view text,
     const std::vector<Value> &outputs, const std::vector<Value> &inputs);
 
 void init_triton_tle_ir(py::module &&m) {
