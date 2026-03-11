@@ -17,9 +17,6 @@ class CUDAJITFunction(object):
         self.code: Final[str] = file.read_text()
         self.__triton_builtin__: Final[bool] = True
 
-    def __deepcopy__(self, memo: Dict[int, Any]) -> CUDAJITFunction:
-        return self.__class__(copy.deepcopy(self.fn, memo), copy.deepcopy(self.pipeline, memo), self.context)
-
     @property
     def llvm(self) -> str:
         build = subprocess.run(
