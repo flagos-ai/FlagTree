@@ -112,23 +112,43 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
       SmallVector<Location>(operandTys.size(), self.getLastLoc()));
   builder.setInsertionPointToStart(newBlock);
   ValueRange args = func.getArguments();
-  TypeRange tgts = args.getTypes();
+  TypeRange tgts = args.getType();
   SmallVector<Value> ops = {};
   for (Value src : newBlock->getArguments()) {
     SmallVector<Value> rets =
         tle::protocol::SignaturePattern::apply(self, tgts, src);
     ops.append(std::move(rets));
   }
+  for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
+      mapper.map(arg, op);
+  }
   builder.setInsertionPointToEnd(newBlock);
   LLVM::CallOp callOp = self.create<LLVM::CallOp>(funcOp, ops);
   callOp.setAlwaysInline(true);
-  tgts = ValueRange(outputs).getTypes();
   SmallVector<Value> finalResults;
-  for (Value result : callOp.getResults()) {
-    SmallVector<Value> rets =
-        tle::protocol::ReturnPattern::apply(self, tgts, result);
-    finalResults.append(std::move(rets));
+
+  tgts = dslRegionOp.getOutputs().getTypes();
+  for(auto &oldBlock:func.getBlocks()){
+    for (Operation &operation : oldBlock.getOperations()) {
+      if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
+        SmallVector<Value> operands, yields;
+        if (dslRegionOp.getNumResults() == 0) {
+          operands = {};
+        } else if (dslRegionOp.getNumResults() == 1) {
+          operands = callOp.getResults();
+        } else {
+          operands = flatten(self, cast<TypedValue<LLVM::LLVMStructType>>(
+                                        callOp.getResult()));
+        }
+        TypeRange tgts = dslRegionOp.getOutputs().getTypes();
+        for (Value operand : operands) {
+          SmallVector<Value> rets =
+              tle::protocol::ReturnPattern::apply(self, tgts, operand);
+          yields.append(std::move(rets));
+        }
+        builder.create<tle::YieldOp>(operation.getLoc(), yields);
+      }
+    }
   }
-  builder.create<tle::YieldOp>(funcOp.getLoc(), finalResults);
   return dslRegionOp;
 }
