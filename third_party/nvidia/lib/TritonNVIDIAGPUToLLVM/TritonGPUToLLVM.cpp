@@ -21,8 +21,8 @@
 #include "mlir/Transforms/DialectConversion.h"
 #ifdef __TLE__
 #include "tle/dialect/include/Analysis/AxisInfoExt.h"
-#include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"

@@ -724,8 +724,7 @@ _BENCH_STYLES = [("red", "-"), ("orange", "-"), ("green", "-")] + ([("blue", "-"
         ylabel="ms",
         plot_name="tle-deepseek-v32-topk-selector",
         args={},
-    )
-)
+    ))
 def benchmark(batch, seq_len, topk, provider, block_size, smem_input, num_warps, warmup, rep):
     if topk > smem_input:
         return float("nan"), float("nan"), float("nan")
