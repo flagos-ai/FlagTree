@@ -42,21 +42,21 @@ class HintManager:
     def _load_handler(self, backend):
         if backend == 'npu':
             try:
-                module = importlib.import_module("third_party.ascend.backend.ascend_hint_handler")
+                module = importlib.import_module("triton.backends.ascend.ascend_hint_handler")
                 return module.AscendHintHandler()
             except ImportError as e:
                 print(f"[FlagTree] Warning: Failed to load Ascend Hint Handler: {e}", file=sys.stderr)
                 return BaseHintHandler()
         elif backend == 'aipu':
             try:
-                module = importlib.import_module("third_party.aipu.backend.aipu_hint_handler")
+                module = importlib.import_module("triton.backends.aipu.aipu_hint_handler")
                 return module.AipuHintHandler()
             except ImportError as e:
                 print(f"[FlagTree] Warning: Failed to load aipu Hint Handler: {e}", file=sys.stderr)
                 return BaseHintHandler()
         elif backend == 'cuda':
             try:
-                module = importlib.import_module("third_party.nvidia.backend.nvidia_hint_handler")
+                module = importlib.import_module("triton.backends.nvidia.nvidia_hint_handler")
                 return module.NvidiaHintHandler()
             except ImportError as e:
                 print(f"[FlagTree] Warning: Failed to load Nvidia Hint Handler: {e}", file=sys.stderr)
