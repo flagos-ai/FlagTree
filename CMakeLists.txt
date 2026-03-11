@@ -18,6 +18,7 @@ if(FLAGTREE_BACKEND)
     add_definitions(-DFLAGTREE_BACKEND=\"${FLAGTREE_BACKEND}\")
 endif()
 
+add_definitions(-D__TLE__)
 if(NOT FLAGTREE_BACKEND)
   add_definitions(-D__NVIDIA__)
   add_definitions(-D__AMD__)

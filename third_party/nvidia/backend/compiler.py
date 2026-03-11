@@ -175,10 +175,26 @@ class CUDABackend(BaseBackend):
         args.update({k: opts[k] for k in CUDAOptions.__dataclass_fields__.keys() if k in opts if opts[k] is not None})
         capability = int(self._parse_arch(args["arch"]))
 
+        # begin flagtree tle
+        cluster_dims = args.get("cluster_dims", (1, 1, 1))
+        if not isinstance(cluster_dims, (tuple, list)) or len(cluster_dims) != 3:
+            raise ValueError(f"cluster_dims must be a tuple/list of 3 ints, got {cluster_dims!r}")
+        if not all(isinstance(v, int) and v > 0 for v in cluster_dims):
+            raise ValueError(f"cluster_dims values must be positive ints, got {cluster_dims!r}")
+        cluster_dims = tuple(cluster_dims)
+        args["cluster_dims"] = cluster_dims
+        # end flagtree tle
+
         if args.get("num_ctas", 1) > 1 and capability < 90:
             raise ValueError((f"num_ctas > 1 requires NVIDIA SM90+ (Hopper). "
                               f"Current target is sm_{capability}. This configuration will fail. "
                               f"Please set num_ctas=1 or target an SM90+ GPU."))
+        # begin flagtree tle
+        if functools.reduce(lambda a, b: a * b, cluster_dims, 1) > 1 and capability < 90:
+            raise ValueError((f"cluster_dims={cluster_dims} requires NVIDIA SM90+ (Hopper). "
+                              f"Current target is sm_{capability}. This configuration will fail. "
+                              f"Please use cluster_dims=(1, 1, 1) or target an SM90+ GPU."))
+        # end flagtree tle
 
         if "supported_fp8_dtypes" not in args:
             supported_fp8_dtypes = set(CUDAOptions.supported_fp8_dtypes)
@@ -269,10 +285,10 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         tle.passes.add_early_assign_memory_space(pm)
-        # // begin flagtree tle
+        # begin flagtree tle
         tle.passes.add_assign_local_pointers_encoding(pm)
         tle.passes.add_insert_local_pointer_barriers(pm)
-        # // end flagtree tle
+        # end flagtree tle
         passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
@@ -331,6 +347,11 @@ class CUDABackend(BaseBackend):
 
         pm.run(mod)
         metadata["cluster_dims"] = (cluster_info.clusterDimX, cluster_info.clusterDimY, cluster_info.clusterDimZ)
+        # begin flagtree tle
+        # launch_cooperative_grid may be toggled during frontend semantic lowering
+        # (e.g. device_mesh + distributed_barrier grid mode), so refresh it here.
+        metadata["launch_cooperative_grid"] = opt.launch_cooperative_grid
+        # end flagtree tle
         tensordesc_meta = mod.get_tensordesc_metadata()
         metadata["tensordesc_meta"] = tensordesc_meta
         return mod

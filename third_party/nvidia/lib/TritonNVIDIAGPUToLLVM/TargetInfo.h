@@ -20,6 +20,11 @@ public:
   void barrier(Location loc, RewriterBase &rewriter,
                bool isWarpSync = false) const override;
 
+#ifdef __TLE__
+  Value mapSharedToClusterPointer(RewriterBase &rewriter, Location loc,
+                                  Value ptr, Value ctaId) const;
+#endif
+
   void storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
                     std::optional<Value> ctaId, Value val,
                     Value pred) const override;
