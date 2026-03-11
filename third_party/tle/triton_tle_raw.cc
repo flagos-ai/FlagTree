@@ -118,74 +118,16 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
     ops.append(std::move(rets));
   }
   builder.setInsertionPointToEnd(newBlock);
-  // for (auto [idx, oldBlock] : enumerate(func.getBlocks())) {
-  //   if (idx == 0) {
-  //     Block *newBlock = builder.createBlock(
-  //         &body, {}, operandTys,
-  //         SmallVector<Location>(operandTys.size(), self.getLastLoc()));
-  //     builder.setInsertionPointToStart(newBlock);
-  //     ValueRange args = func.getArguments();
-  //     TypeRange tgts = args.getTypes();
-  //     SmallVector<Value> ops = {};
-  //     for (Value src : newBlock->getArguments()) {
-  //       SmallVector<Value> rets =
-  //           tle::protocol::SignaturePattern::apply(self, tgts, src);
-  //       ops.append(std::move(rets));
-  //     }
-  //     for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
-  //       mapper.map(arg, op);
-  //     }
-  //     mapper.map(&oldBlock, newBlock);
-  //   } else {
-  //     Block *newBlock = builder.createBlock(
-  //         &body, {}, oldBlock.getArgumentTypes(),
-  //         SmallVector<Location>(oldBlock.getNumArguments(), self.getLastLoc()));
-  //     for (auto [oldArg, newArg] :
-  //          zip_equal(oldBlock.getArguments(), newBlock->getArguments())) {
-  //       mapper.map(oldArg, newArg);
-  //     }
-  //     mapper.map(&oldBlock, newBlock);
-  //   }
-  // }
   builder.setInsertionPointToEnd(newBlock);
   LLVM::CallOp callOp = self.create<LLVM::CallOp>(funcOp, ops);
   callOp.setAlwaysInline(true);
   tgts = ValueRange(outputs).getTypes();
   SmallVector<Value> finalResults;
   for (Value result : callOp.getResults()) {
-    llvm::outs() << "LLVM call result: " << result.getType() << "\n";
     SmallVector<Value> rets =
         tle::protocol::ReturnPattern::apply(self, tgts, result);
     finalResults.append(std::move(rets));
   }
   builder.create<tle::YieldOp>(funcOp.getLoc(), finalResults);
-  // return finalResults;
-  // for (auto [oldBlock, newBlock] :
-  //      zip_equal(func.getBlocks(), body.getBlocks())) {
-  //   OpBuilder::InsertionGuard guard(builder);
-  //   builder.setInsertionPointToEnd(&newBlock);
-  //   for (Operation &operation : oldBlock.getOperations()) {
-  //     if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
-  //       SmallVector<Value> operands, yields;
-  //       if (dslRegionOp.getNumResults() == 0) {
-  //         operands = {};
-  //       } else if (dslRegionOp.getNumResults() == 1) {
-  //         operands = {mapper.lookup(returnOp.getArg())};
-  //       } else {
-  //         operands = flatten(self, cast<TypedValue<LLVM::LLVMStructType>>(
-  //                                      mapper.lookup(returnOp.getArg())));
-  //       }
-  //       TypeRange tgts = dslRegionOp.getOutputs().getTypes();
-  //       for (Value operand : operands) {
-  //         SmallVector<Value> rets =
-  //             tle::protocol::ReturnPattern::apply(self, tgts, operand);
-  //         yields.append(std::move(rets));
-  //       }
-  //       builder.create<tle::YieldOp>(operation.getLoc(), yields);
-  //     } else {
-  //       builder.clone(operation, mapper);
-  //     }
-  //   }
-  // }
   return dslRegionOp;
 }
