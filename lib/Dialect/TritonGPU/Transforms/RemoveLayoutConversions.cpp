@@ -15,7 +15,9 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "triton/Analysis/Utility.h"
+#ifdef __TLE__
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
@@ -32,6 +34,35 @@ namespace mlir::triton::gpu {
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace {
+
+#ifdef __TLE__
+static bool touchesTleDistributedPointerPath(Value value,
+                                             DenseSet<Value> &visited) {
+  if (!visited.insert(value).second)
+    return false;
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return false;
+  StringRef opName = def->getName().getStringRef();
+  if (opName == "tle.local_pointers" || opName == "tle.remote_pointers")
+    return true;
+  if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+    auto result = dyn_cast<OpResult>(value);
+    if (!result)
+      return false;
+    unsigned idx = result.getResultNumber();
+    return touchesTleDistributedPointerPath(ifOp.thenYield().getOperand(idx),
+                                            visited) ||
+           touchesTleDistributedPointerPath(ifOp.elseYield().getOperand(idx),
+                                            visited);
+  }
+  for (Value operand : def->getOperands()) {
+    if (touchesTleDistributedPointerPath(operand, visited))
+      return true;
+  }
+  return false;
+}
+#endif
 
 // -----------------------------------------------------------------------------
 //
@@ -1270,6 +1301,14 @@ void LayoutRematerialization::hoistConvertDotOperand(
     ConvertLayoutOp convertOp) {
   auto targetType = convertOp.getType();
   // The pass is targeted to MMA dot operands
+
+#ifdef __TLE__
+  {
+    DenseSet<Value> visited;
+    if (touchesTleDistributedPointerPath(convertOp.getSrc(), visited))
+      return;
+  }
+#endif
 
   auto canBePipelined = [&](ConvertLayoutOp convertOp) {
     // FIXME: Check that the parent is a for loop
