@@ -146,7 +146,7 @@ def topk_kernel_radix_triton(
         scope=tle.smem,
         nv_mma_shared_layout=False,
     )
-    smem_selected_ptrs = tle.local_ptr(smem_selected, (offs_k,))
+    smem_selected_ptrs = tle.local_ptr(smem_selected, (offs_k, ))
     tl.store(smem_selected_ptrs, tl.full([K_PAD], min_packed, dtype=x_ultype))
 
     smem_write_count = tle.alloc(
@@ -156,8 +156,8 @@ def topk_kernel_radix_triton(
         scope=tle.smem,
         nv_mma_shared_layout=False,
     )
-    tl.store(tle.local_ptr(smem_write_count, (0,)), 0)
-    write_count_ptrs = tle.local_ptr(smem_write_count, (tl.zeros([BLOCK_N], dtype=tl.int32),))
+    tl.store(tle.local_ptr(smem_write_count, (0, )), 0)
+    write_count_ptrs = tle.local_ptr(smem_write_count, (tl.zeros([BLOCK_N], dtype=tl.int32), ))
 
     # Pass 1: write all values strictly greater than threshold.
     for t in tl.range(0, n_tiles):
@@ -172,7 +172,7 @@ def topk_kernel_radix_triton(
         take_gt = mask_n & (x_key > thr_key)
         pos = tl.atomic_add(write_count_ptrs, one, mask=take_gt, sem="relaxed", scope="cta")
         write_mask = take_gt & (pos < K_PAD)
-        dst_ptrs = tle.local_ptr(smem_selected, (pos.to(tl.int32),))
+        dst_ptrs = tle.local_ptr(smem_selected, (pos.to(tl.int32), ))
         tl.store(dst_ptrs, packed, mask=write_mask)
 
     # Pass 2: fill remaining slots with values equal to threshold (first-come-first-serve).
@@ -188,7 +188,7 @@ def topk_kernel_radix_triton(
         take_eq = mask_n & (x_key == thr_key)
         pos = tl.atomic_add(write_count_ptrs, one, mask=take_eq, sem="relaxed", scope="cta")
         write_mask = take_eq & (pos < K_PAD)
-        dst_ptrs = tle.local_ptr(smem_selected, (pos.to(tl.int32),))
+        dst_ptrs = tle.local_ptr(smem_selected, (pos.to(tl.int32), ))
         tl.store(dst_ptrs, packed, mask=write_mask)
 
     selected_packed = tl.load(smem_selected_ptrs)
@@ -290,7 +290,6 @@ if "--only_unit_test" in sys.argv:
     run_correctness(_args.batch, _args.seq_len, _args.K, _dtype)
     sys.exit(0)
 
-
 _BENCH_PROVIDERS = ["radix", "torch"]
 _BENCH_NAMES = ["Triton-RadixSelect", "Torch-TopK"]
 _BENCH_STYLES = [("red", "-"), ("orange", "-")]
@@ -313,8 +312,7 @@ _BENCH_STYLES = [("red", "-"), ("orange", "-")]
         ylabel="ms",
         plot_name="tle-topk-radix-vs-torch",
         args={},
-    )
-)
+    ))
 def benchmark(M, N, K, provider, dtype):
     bench_warmup = 1
     bench_rep = 3
