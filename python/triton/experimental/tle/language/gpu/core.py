@@ -356,6 +356,98 @@ def copy(
     else:
         return tmacopy(src, dst, direction, shape, offsets, _semantic)
 
+
+# ============================================================================
+# extract_tile 辅助函数（模块级，不依赖 @tl.builtin 上下文）
+# ============================================================================
+
+def _try_unwrap_int(val):
+    """
+    尝试将 val 解包为 Python int。
+    支持：int、tl.constexpr(int)、具有 .value 属性的对象。
+    对于运行时 tl.tensor，返回 None。
+    """
+    if isinstance(val, int):
+        return val
+    try:
+        v = tl._unwrap_if_constexpr(val)
+        if isinstance(v, int):
+            return v
+    except Exception:
+        pass
+    try:
+        if hasattr(val, 'value') and isinstance(val.value, int):
+            return val.value
+    except Exception:
+        pass
+    return None
+
+
+def _unwrap_tile_shape(tile_shape):
+    """将 tile_shape（任意形式）解包为 List[int]，所有元素必须是编译期常量。"""
+    if hasattr(tile_shape, '__iter__') and not isinstance(tile_shape, str):
+        result = []
+        for s in tile_shape:
+            val = s
+            while hasattr(val, 'value'):
+                val = val.value
+            try:
+                val = tl._unwrap_if_constexpr(val)
+            except Exception:
+                pass
+            if not isinstance(val, int):
+                raise ValueError(
+                    f"All tile_shape dims must be int or tl.constexpr, got {type(val)} (original: {type(s)})"
+                )
+            result.append(val)
+        return result
+    else:
+        val = tile_shape
+        while hasattr(val, 'value'):
+            val = val.value
+        try:
+            val = tl._unwrap_if_constexpr(val)
+        except Exception:
+            pass
+        if not isinstance(val, int):
+            raise ValueError(f"tile_shape must be int/constexpr, got {type(val)}")
+        return [val]
+
+
+def _linearize_static_multidim_index(index_list, src_shape, tile_shape_ints):
+    """
+    多维静态索引线性化（行主序）。
+    index_list:      List[int]  每维 tile 坐标
+    src_shape:       List[int]  src tensor 每维大小
+    tile_shape_ints: List[int]  每维 tile 大小
+    返回线性化标量 int
+    """
+    rank = len(src_shape)
+    if len(index_list) != rank:
+        raise ValueError(
+            f"Index rank {len(index_list)} must match source rank {rank}")
+
+    grid = []
+    for i in builtins.range(rank):
+        if src_shape[i] % tile_shape_ints[i] != 0:
+            raise ValueError(
+                f"Source dim {i} ({src_shape[i]}) not divisible by tile dim ({tile_shape_ints[i]})")
+        grid.append(src_shape[i] // tile_shape_ints[i])
+
+    for i, v in builtins.enumerate(index_list):
+        if v < 0 or v >= grid[i]:
+            raise ValueError(
+                f"Index[{i}]={v} out of bounds for grid size {grid[i]}")
+
+    # 行主序线性化
+    linear = 0
+    stride = 1
+    for i in builtins.reversed(builtins.range(rank)):
+        linear += index_list[i] * stride
+        stride *= grid[i]
+    return linear
+
+
 @tl.builtin
 def extract_tile(
     x: tl.tensor,
@@ -364,142 +456,131 @@ def extract_tile(
     _semantic=None,
 ) -> tl.tensor:
     """
-    Extract a tile from a tensor with static offsets.
-    
+    从 tensor 中提取一个 tile。
+
+    index 支持三种形式：
+      1. 多维静态：list/tuple of int/constexpr，如 [1, 2]
+         → 编译期线性化为标量，若对齐走寄存器重排路径，否则走 SMEM 路径
+      2. 标量静态：int / tl.constexpr
+         → 同上
+      3. 标量动态：tl.tensor（i32/i64 标量），运行时确定
+         → 始终走 SMEM 中转路径（lowering 阶段决定）
+
     Args:
-        x: Source tensor
-        offsets: Static offsets for each dimension (compile-time constants)
-        tile_shape: Tile shape (static)
-    
+        x:          源 tensor（tl.tensor）
+        index:      tile 索引（见上）
+        tile_shape: tile 每维大小，必须是编译期常量
+
     Returns:
-        Extracted tile tensor
+        提取出的 tile tensor，shape = tile_shape
     """
-    # ========================================================================
-    #  参数类型检查
-    # ========================================================================
+    # ── 参数检查 ──────────────────────────────────────────────────────────
     if not isinstance(x, tl.tensor):
         raise ValueError(f"Source must be tl.tensor, but got {type(x)}")
 
-    # 索引处理：支持 tuple/list 多维索引或标量线性索引
-    index_unwrapped = index
-    try:
-        index_unwrapped = tl._unwrap_if_constexpr(index)
-    except Exception:
-        pass
+    # ── 解包 tile_shape（必须全部是编译期常量）────────────────────────────
+    tile_shape_ints = _unwrap_tile_shape(tile_shape)
 
-    try:
-        if hasattr(index, 'value'):
-            index_unwrapped = index.value
-    except Exception:
-        pass
+    src_shape = [tl._unwrap_if_constexpr(dim) for dim in x.type.shape]
 
-    # 如果是 tuple/list 或 tl.tuple，则当作多维索引
-    index_list = None
-    if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
-        index_list = list(index_unwrapped)
+    # ── 解析 index，分三种情况 ────────────────────────────────────────────
+    #
+    #   情况A：tl.tensor → 动态 index，直接透传 IR Value handle
+    #   情况B：tuple/list of int/constexpr → 多维静态，线性化后走情况C
+    #   情况C：标量 int/constexpr → 静态标量
+    #
+    is_dynamic = False
+    index_value = None       # 静态路径使用：Python int
+    index_ir_handle = None   # 动态路径使用：MLIR Value handle
 
-    if index_list is not None:
-        # 多维索引路径：检查索引维度与 shape 一致，并线性化
-        if len(index_list) != len(tile_shape):
-            raise ValueError(f"Index rank {len(index_list)} must match tile_shape rank {len(tile_shape)}")
-
-        # 需要静态源 shape 才能计算网格大小
-        src_shape = [tl._unwrap_if_constexpr(dim) for dim in x.type.shape]
-        if any(not isinstance(dim, int) for dim in src_shape):
-            raise ValueError("Source shape must be static to use tuple index")
-
-        # 计算每维 tile 网格数量
-        grid = []
-        for i, dim in enumerate(src_shape):
-            if dim % tile_shape[i].value != 0:
-                raise ValueError(f"Source dimension {i}: {dim} must be divisible by tile dimension {tile_shape[i]}")
-            grid.append(dim // tile_shape[i])
-
-        # 只允许静态多维索引线性化
-        idx = []
-        for i in index_list:
-            unwrapped = tl._unwrap_if_constexpr(i)
-            if not isinstance(unwrapped, int):
-                raise ValueError(f"Tuple index must contain int or tl.constexpr values, got {type(unwrapped)}")
-            idx.append(unwrapped)
-        # 线性化
-        linear_index = 0
-        stride = 1
-        for i in reversed(list(__builtins__['range'](len(grid)))):
-            linear_index += idx[i] * stride
-            stride *= grid[i]
-        index_value = linear_index
+    if isinstance(index, tl.tensor):
+        # 情况A：动态 index，运行时才知道值
+        is_dynamic = True
+        index_ir_handle = index.handle
     else:
-        # 标量索引路径
+        # 尝试解包，判断是多维还是标量
+        index_unwrapped = index
         try:
-            index_value = tl._unwrap_if_constexpr(index_unwrapped)
-            if not isinstance(index_value, int):
+            index_unwrapped = tl._unwrap_if_constexpr(index)
+        except Exception:
+            pass
+        if hasattr(index_unwrapped, 'value'):
+            index_unwrapped = index_unwrapped.value
+
+        if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
+            # 情况B：多维静态 index → 逐元素解包后线性化为标量
+            idx_ints = []
+            for v in index_unwrapped:
+                iv = _try_unwrap_int(v)
+                if iv is None:
+                    raise ValueError(
+                        f"Multi-dim index must contain int/constexpr values. "
+                        f"For a dynamic multi-dim index, please linearize it "
+                        f"first and pass a scalar tl.tensor.")
+                idx_ints.append(iv)
+            if any(not isinstance(s, int) for s in src_shape):
                 raise ValueError(
-                    f"Scalar index must be int or tl.constexpr, got {type(index_value)} with value {index_value}"
+                    "Source shape must be static when using a multi-dim index")
+            index_value = _linearize_static_multidim_index(
+                idx_ints, src_shape, tile_shape_ints)
+        else:
+            # 情况C：标量静态 index
+            scalar_int = _try_unwrap_int(index_unwrapped)
+            if scalar_int is not None:
+                index_value = scalar_int
+            else:
+                raise ValueError(
+                    f"index must be int, constexpr, tuple/list of int/constexpr, "
+                    f"or a scalar tl.tensor; got {type(index)}"
                 )
-        except Exception as e:
-            raise ValueError(f"Failed to process index: {e}")
 
+    # ── 基本维度检查 ──────────────────────────────────────────────────────
+    if len(tile_shape_ints) != len(src_shape):
+        raise ValueError(
+            f"tile_shape rank ({len(tile_shape_ints)}) must match "
+            f"source rank ({len(src_shape)})")
 
-    # ========================================================================
-    #  规范化和验证 tile_shape
-    # ========================================================================
-    #  同样处理 tile_shape
-    if hasattr(tile_shape, '__iter__') and not isinstance(tile_shape, str):
-        tile_shape_list = list(tile_shape)
-    else:
-        tile_shape_list = [tile_shape]
+    # ── 静态 index 的编译期校验 ───────────────────────────────────────────
+    if not is_dynamic:
+        for i, (s, t) in builtins.enumerate(builtins.zip(src_shape, tile_shape_ints)):
+            if isinstance(s, int) and s % t != 0:
+                raise ValueError(
+                    f"Source dim {i} ({s}) not divisible by tile dim ({t})")
+        if all(isinstance(s, int) for s in src_shape):
+            total_tiles = 1
+            for s, t in builtins.zip(src_shape, tile_shape_ints):
+                total_tiles *= s // t
+            if index_value < 0 or index_value >= total_tiles:
+                raise ValueError(
+                    f"index {index_value} out of range [0, {total_tiles})")
 
-    # 解包 constexpr 值
-    tile_shape_unwrapped = []
-    for s in tile_shape_list:
-        val = s
-        while hasattr(val, 'value'):
-            val = val.value
-
+        # 语义验证（静态路径）
         try:
-            val = tl._unwrap_if_constexpr(val)
-        except:
+            from .semantic import TLESemantic
+            if isinstance(_semantic, TLESemantic):
+                _semantic.analyze_extract_tile_operation(
+                    x, index_value, tile_shape_ints)
+        except ImportError:
             pass
 
-        if not isinstance(val, int):
-            raise ValueError(
-                f"All tile_shape dims must be int or tl.constexpr, got {type(val)} (original: {type(s)})"
-            )
-        tile_shape_unwrapped.append(val)
-
-    tile_shape = tile_shape_unwrapped
-
-    # ========================================================================
-    #  基本维度检查
-    # ========================================================================
-    if len(tile_shape) != len(src_shape):
-        raise ValueError(
-            f"tile_shape rank ({len(tile_shape)}) must match source rank ({len(src_shape)})"
-        )
-
-    # ========================================================================
-    # 语义验证
-    # ========================================================================
+    # ── 生成 MLIR IR ──────────────────────────────────────────────────────
     try:
-        from .semantic import TLESemantic
-        if isinstance(_semantic, TLESemantic):
-            _semantic.analyze_extract_tile_operation(x, index_value, tile_shape)
-    except ImportError:
-        pass
+        if is_dynamic:
+            # 动态 index：直接使用传入的 tl.tensor 的 IR handle
+            index_ir = index_ir_handle
+        else:
+            # 静态 index：将编译期常量编码为 IR 常量
+            index_ir = _semantic._convert_to_ir_values(
+                [index_value], require_i64=False)[0]
 
-    # ========================================================================
-    # 生成 MLIR IR
-    # ========================================================================
-    try:
-        index_ir = _semantic._convert_to_ir_values([index_value], require_i64=False)[0]
         output = _semantic.builder.create_extract_tile(
             x.handle,
             index_ir,
-            tile_shape
+            tile_shape_ints
         )
-        block_type = tl.block_type(x.type.element_ty, tile_shape)
+        block_type = tl.block_type(x.type.element_ty, tile_shape_ints)
         return tl.tensor(output, block_type)
+
     except Exception as e:
         raise RuntimeError(
             f"Failed to create extract_tile operation: {str(e)}"

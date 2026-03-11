@@ -860,12 +860,19 @@ public:
     Type retType = op.getType().cloneWithEncoding(srcEnc);
 
     // 替换op，保持编码一致性
-    addNamedAttrs(
+   /* addNamedAttrs(
         rewriter.replaceOpWithNewOp<tle::ExtractTileOp>(
             op, retType, adaptor.getSrc(), adaptor.getIndex()
         ),
         adaptor.getAttributes()
-    );
+    );*/
+    auto newOp = rewriter.replaceOpWithNewOp<tle::ExtractTileOp>(
+        op, retType, adaptor.getSrc(), adaptor.getIndex());
+
+    if (auto tileShapeAttr = op->getAttr("tile_shape"))
+        newOp->setAttr("tile_shape", tileShapeAttr);
+
+     addNamedAttrs(newOp, adaptor.getAttributes());
 
     return success();
   }

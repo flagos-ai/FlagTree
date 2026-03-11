@@ -90,51 +90,78 @@ void ExtractTileOp::build(
 
 // ============================================================================
 // ExtractTileOp Verification
+//
+// 动态 index（index 操作数不是 arith.constant）时：
+//   - 只做编译期可知的约束：tile_shape 正数、整除性、元素类型、rank 匹配
+//   - 跳过越界检查和 CTA tile 对齐检查（运行时才知道值）
+//
+// 静态 index 时：执行完整检查（与原实现等价）
 // ============================================================================
 LogicalResult ExtractTileOp::verify() {
   auto srcTy = cast<RankedTensorType>(getSrc().getType());
   auto dstTy = cast<RankedTensorType>(getResult().getType());
   auto srcShape = srcTy.getShape();
   auto dstShape = dstTy.getShape();
-  // 获取 index 和 tile_shape 属性
-  //从第 2 个操作数里取常量 index
-  int64_t index = mlir::cast<mlir::IntegerAttr>(getOperation()->getOperand(1).getDefiningOp<arith::ConstantOp>().getValue()).getInt();
-  // auto tileShapeAttr = mlir::cast<mlir::DenseIntElementsAttr>(getOperation()->getAttr("tile_shape"));
-  // SmallVector<int64_t> tileShape;
-  // for (auto v : tileShapeAttr.getValues<int64_t>()) tileShape.push_back(v);
 
-  //获取tile_shape
+  // ── 获取 tile_shape 属性 ────────────────────────────────────────────────
   auto tileShapeRawAttr = getOperation()->getAttr("tile_shape");
   SmallVector<int64_t> tileShape;
   if (auto denseArray64 = mlir::dyn_cast<mlir::DenseI64ArrayAttr>(tileShapeRawAttr)) {
-      for (auto v : denseArray64.asArrayRef()) tileShape.push_back(v);
+    for (auto v : denseArray64.asArrayRef())
+      tileShape.push_back(v);
   }
 
+  // ── 无论静态/动态都必须通过的基本检查 ─────────────────────────────────
 
-  // 先按逻辑 tile 网格反线性化，再转换为坐标级 offsets
-  if (tileShape.size() != srcShape.size()) {
+  // 检查1：元素类型必须匹配
+  if (srcTy.getElementType() != dstTy.getElementType())
+    return emitError("result element type must match source element type");
+
+  // 检查2：rank 必须匹配
+  if (srcTy.getRank() != dstTy.getRank())
+    return emitError("result rank must equal source rank");
+
+  // 检查3：tile_shape rank 与 source rank 匹配
+  if (tileShape.size() != srcShape.size())
     return emitOpError("tile_shape rank must match source rank");
+
+  // 检查4：tile_shape 每维正数 + 整除性 + dst shape 与 tile_shape 一致
+  for (size_t i = 0; i < srcShape.size(); ++i) {
+    if (tileShape[i] <= 0)
+      return emitOpError("tile_shape must be positive at dimension ") << i;
+    if (srcShape[i] % tileShape[i] != 0)
+      return emitOpError("source shape must be divisible by tile_shape at dimension ")
+             << i << " (source=" << srcShape[i] << ", tile=" << tileShape[i] << ")";
+    if (dstShape[i] != tileShape[i])
+      return emitOpError("result shape must equal tile_shape at dimension ") << i;
   }
 
-  //得到逻辑grid形状
+  // ── 判断 index 是否为静态常量 ────────────────────────────────────────────
+  // getDefiningOp<arith::ConstantOp>() 对动态 Value 返回 nullptr
+  auto indexConstOp =
+      getOperation()->getOperand(1).getDefiningOp<arith::ConstantOp>();
+
+  if (!indexConstOp) {
+    // 动态 index：跳过越界和偏移对齐检查，lowering 阶段再处理
+    return success();
+  }
+
+  // ── 静态 index 的完整检查 ────────────────────────────────────────────────
+  int64_t index =
+      mlir::cast<mlir::IntegerAttr>(indexConstOp.getValue()).getInt();
+
+  // 计算逻辑网格形状
   SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
   int64_t totalTiles = 1;
   for (size_t i = 0; i < srcShape.size(); ++i) {
-    if (tileShape[i] <= 0) {
-      return emitOpError("tile_shape must be positive at dimension ") << i;
-    }
-    if (srcShape[i] % tileShape[i] != 0) {
-      return emitOpError("source shape must be divisible by tile_shape at dimension ")
-             << i << " (source=" << srcShape[i] << ", tile=" << tileShape[i] << ")";
-    }
     logicalGridShape[i] = srcShape[i] / tileShape[i];
     totalTiles *= logicalGridShape[i];
   }
 
-  if (index < 0 || index >= totalTiles) {
+  // 越界检查
+  if (index < 0 || index >= totalTiles)
     return emitOpError("index out of bounds for tile grid: index=")
            << index << ", total_tiles=" << totalTiles;
-  }
 
   // 反线性化为每一维 tile 索引（行主序）
   SmallVector<int64_t> tileIndices(srcShape.size(), 0);
@@ -146,50 +173,37 @@ LogicalResult ExtractTileOp::verify() {
 
   // tile 索引 -> 坐标级 offsets
   SmallVector<int64_t> offsets(srcShape.size(), 0);
-  for (size_t i = 0; i < srcShape.size(); ++i) {
+  for (size_t i = 0; i < srcShape.size(); ++i)
     offsets[i] = tileIndices[i] * tileShape[i];
-  }
 
-
-
-
-
-  // ✅ 检查1: 元素类型必须匹配
-  if (srcTy.getElementType() != dstTy.getElementType()) {
-    return emitError("result element type must match source element type");
-  }
-  // ✅ 检查2: 维度必须匹配
-  if (srcTy.getRank() != dstTy.getRank()) {
-    return emitError("result rank must equal source rank");
-  }
-  if (offsets.size() != static_cast<size_t>(srcTy.getRank())) {
+  // 边界检查
+  if (offsets.size() != static_cast<size_t>(srcTy.getRank()))
     return emitError("offsets size must match tensor rank");
-  }
-  // ✅ 检查3: 边界检查
+
   for (size_t i = 0; i < srcShape.size(); ++i) {
-    if (dstShape[i] > srcShape[i]) {
+    if (dstShape[i] > srcShape[i])
       return emitOpError("result shape cannot exceed source shape at dimension ") << i;
-    }
-    if (offsets[i] + dstShape[i] > srcShape[i]) {
+    if (offsets[i] + dstShape[i] > srcShape[i])
       return emitOpError("invalid offset at dimension ") << i
              << ": offset(" << offsets[i] << ") + shape(" << dstShape[i]
              << ") > source(" << srcShape[i] << ")";
-    }
-    if (offsets[i] < 0) {
+    if (offsets[i] < 0)
       return emitOpError("offset must be non-negative at dimension ") << i;
-    }
   }
-  // ✅ 检查4: CTA tile 对齐（如果编码支持）
+
+  // ── CTA tile 对齐检查（仅有 encoding 时执行）────────────────────────────
+  //
+  // 在 Triton IR 阶段，tensor 还没有 encoding，这是正常的；
+  // 只在 TritonGPU IR 阶段才有 encoding。
+  // 注意：不对齐时此处不报错，lowering 阶段会自动选择 SMEM 中转路径。
   auto encoding = srcTy.getEncoding();
-  if (!encoding) {
-    // 在 Triton IR 阶段，tensor 还没有 encoding，这是正常的
-    // 只在 TritonGPU IR 阶段才有 encoding
+  if (!encoding)
     return success();
-  }
+
   if (auto blocked = dyn_cast_or_null<gpu::BlockedEncodingAttr>(encoding)) {
     auto sizePerThread = blocked.getSizePerThread();
     auto threadsPerWarp = blocked.getThreadsPerWarp();
-    auto warpsPerCTA = blocked.getWarpsPerCTA();  
+    auto warpsPerCTA = blocked.getWarpsPerCTA();
     SmallVector<int64_t> ctaTileShape;
     for (size_t i = 0; i < srcShape.size(); ++i) {
       ctaTileShape.push_back(
@@ -198,22 +212,15 @@ LogicalResult ExtractTileOp::verify() {
           static_cast<int64_t>(warpsPerCTA[i])
       );
     }
+    // CTA tile 对齐检查框架（注释保留，不对齐时由 lowering 选择 SMEM 路径）：
     // for (size_t i = 0; i < srcShape.size(); ++i) {
-    //   Offset 必须是 CTA tile size 的倍数
-    //   if (offsets[i] % ctaTileShape[i] != 0) {
-    //     return emitOpError("offset must be multiple of CTA tile size at dimension ")
-    //            << i << " (got " << offsets[i] << ", expected multiple of "
-    //            << ctaTileShape[i] << ")";
-    //   }
-
-    //   Tile shape 必须是 CTA tile size 的倍数
-    //   if (dstShape[i] % ctaTileShape[i] != 0) {
-    //     return emitOpError("result shape must be multiple of CTA tile size at dimension ")
-    //            << i << " (got " << dstShape[i] << ", expected multiple of "
-    //            << ctaTileShape[i] << ")";
-    //   }
+    //   if (offsets[i] % ctaTileShape[i] != 0)
+    //     return emitOpError("offset must be multiple of CTA tile size at dimension ") << i;
+    //   if (dstShape[i] % ctaTileShape[i] != 0)
+    //     return emitOpError("result shape must be multiple of CTA tile size at dimension ") << i;
     // }
   }
+
   return success();
 }
 
