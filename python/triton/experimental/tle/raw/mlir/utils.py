@@ -6,6 +6,7 @@ import inspect
 import os
 from typing import TYPE_CHECKING, Any, Final, List
 from typing_extensions import override
+from hashlib import md5
 
 from mlir import ir
 from mlir.dialects import arith, func, llvm, scf
