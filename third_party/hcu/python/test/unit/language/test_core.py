@@ -5646,3 +5646,31 @@ def test_unroll_attr(device):
     for unroll_factor in [1, 2, 4, 5, 8]:
         h = _kernel[(1, )](torch.empty(1, device=device), unroll_factor)
         check_loop_unroll_count(h.asm["ttir"], 'tt.atomic_rmw', unroll_factor)
+
+
+@pytest.mark.parametrize("dtype_str", ["float32", "float64"])
+def test_libdevice_rint(dtype_str, device):
+    iinfo32 = np.iinfo(np.int32)
+    iinfo64 = np.iinfo(np.int64)
+    size = 1000
+    x0_np = np.random.uniform(iinfo32.min, iinfo32.max + 1, size)
+    x1_np = np.random.uniform(iinfo64.min, iinfo64.max + 1, size)
+    x2_np = np.array([-2.5, -1.5, -0.5, -0., 0., 0.5, 1.5, 2.5, float("inf"), -float("inf"), float("nan")])
+    x_np = np.concatenate((x0_np, x1_np, x2_np))
+    x_tri = to_triton(x_np, device=device, dst_type=dtype_str)
+
+    @triton.jit
+    def rint_kernel(outp, inp, n, BLOCK_SIZE: tl.constexpr):
+        pid = tl.program_id(0)
+        offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offset < n
+        inp_tile = tl.load(inp + offset, mask=mask)
+        outp_tile = libdevice.rint(inp_tile)
+        tl.store(outp + offset, outp_tile, mask=mask)
+
+    res_out = torch.empty_like(x_tri)
+    numel = x_tri.numel()
+    BLOCK_SIZE = 512
+    rint_kernel[(triton.cdiv(numel, BLOCK_SIZE), )](res_out, x_tri, numel, BLOCK_SIZE)
+    ref_out = np.rint(x_np)
+    np.testing.assert_allclose(to_numpy(res_out), ref_out, rtol=0, atol=0, equal_nan=True)

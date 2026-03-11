@@ -159,12 +159,25 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   XPU_CHECK(xpu_device_get_attr(&num_cluster, XPUATTR_NUM_CLUSTER, device_id));
   multiprocessor_count = num_cluster;
 
-  return Py_BuildValue("{s:i, s:i, s:i, s:i, s:i, s:i, s:i}", "max_shared_mem",
-                       max_shared_mem, "max_num_regs", max_num_regs,
-                       "multiprocessor_count", multiprocessor_count, "warpSize",
-                       warp_size, "sm_clock_rate", sm_clock_rate,
-                       "mem_clock_rate", mem_clock_rate, "mem_bus_width",
-                       mem_bus_width);
+  uint64_t model = static_cast<uint64_t>(KL3);
+  int device_model_int = -1;
+  XPU_CHECK(xpu_device_get_attr(reinterpret_cast<uint64_t *>(&model),
+                                XPUATTR_MODEL, device_id));
+
+  assert(model <= KL4_END && "model version must be less than KL5");
+  assert(model >= KL3_BEGIN && "model version must be more than KL3");
+  if (model >= KL4_BEGIN) {
+    device_model_int = 4;
+  } else if (model >= KL3_BEGIN) {
+    device_model_int = 3;
+  }
+
+  return Py_BuildValue(
+      "{s:i, s:i, s:i, s:i, s:i, s:i, s:i, s:i}", "max_shared_mem",
+      max_shared_mem, "max_num_regs", max_num_regs, "multiprocessor_count",
+      multiprocessor_count, "warpSize", warp_size, "sm_clock_rate",
+      sm_clock_rate, "mem_clock_rate", mem_clock_rate, "mem_bus_width",
+      mem_bus_width, "device_model", device_model_int);
 }
 
 static PyMethodDef ModuleMethods[] = {

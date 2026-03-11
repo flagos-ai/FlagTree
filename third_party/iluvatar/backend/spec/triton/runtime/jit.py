@@ -72,13 +72,10 @@ def get_corex_param(arg):
             torch.float16, torch.float32, torch.bfloat16, torch.int8
     ]:
         if arg.dim() >= 2:
-            # Remove dimension of 1
-            squeezed_arg = arg.squeeze()
-            if squeezed_arg.dim() >= 2:
-                try:
-                    res_stride = squeezed_arg.shape[squeezed_arg.stride().index(1)]
-                except ValueError as e:
-                    pass
+            try:
+                res_stride = arg.shape[len(arg.stride()) - 1 - arg.stride()[::-1].index(1)]
+            except ValueError as e:
+                pass
         else:
             return 1
     elif isinstance(arg, int):

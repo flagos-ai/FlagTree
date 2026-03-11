@@ -7,7 +7,10 @@
 // TODO[dyq]: Pass Description
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Support/LLVM.h"
+#include "triton/Analysis/NewAnalysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
@@ -15,6 +18,8 @@
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/IRMapping.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "tritonxpu-legalize"
 
@@ -280,12 +285,20 @@ struct TritonXPULegalizePass
       for (auto op : allOpTree) {
 
         if (auto rangeOp = dyn_cast<triton::MakeRangeOp>(op)) {
-          for (auto user : rangeOp.getResult().getUsers()) {
-            if (auto userOp = findUserOp<triton::ExpandDimsOp>(user)) {
-              auto expandDimOp = cast<triton::ExpandDimsOp>(userOp);
-              if (expandDimOp.getAxis() == 1) {
-                outerChain.insert(rangeOp);
-              }
+          // for (auto user : rangeOp.getResult().getUsers()) {
+          //   if (auto userOp = findUserOp<triton::ExpandDimsOp>(user)) {
+          //     auto expandDimOp = cast<triton::ExpandDimsOp>(userOp);
+          //     if (expandDimOp.getAxis() == 1) {
+          //       outerChain.insert(rangeOp);
+          //     }
+          //   }
+          // }
+          auto expandDimsOps =
+              mlir::findAllTypeUserOps<triton::ExpandDimsOp>(rangeOp);
+          for (auto e : expandDimsOps) {
+            auto expandDimOp = cast<triton::ExpandDimsOp>(e);
+            if (expandDimOp.getAxis() == 1) {
+              outerChain.insert(rangeOp);
             }
           }
         }
@@ -579,6 +592,8 @@ struct TritonXPULegalizePass
             SetVector<Operation *> outerRangeUsers(rangeOp->getUsers().begin(),
                                                    rangeOp->getUsers().end());
             for (auto user : outerRangeUsers) {
+              // for (auto op : findAllTypeUserOps<triton::ExpandDimsOp>(user))
+              // {
               if (auto op = findUserOp<triton::ExpandDimsOp>(user)) {
                 auto expandDimsOp = cast<triton::ExpandDimsOp>(op);
                 if (expandDimsOp.getAxis() == 0) {
@@ -597,22 +612,50 @@ struct TritonXPULegalizePass
                     newInnerRangeOp = newInnerMRAlreadyCreateOp;
                   }
 
-                  // Link To InnerChain
-                  auto operands = user->getOperands();
-                  for (auto _it = operands.begin(); _it != operands.end();
-                       ++_it) {
-                    auto operand = *_it;
-                    if (operand == rangeOp) {
-                      user->setOperand(std::distance(operands.begin(), _it),
-                                       newInnerRangeOp);
-                    }
-                  }
+                  if (auto extsiOp = dyn_cast<arith::ExtSIOp>(user)) {
+                    builder.setInsertionPointAfter(newInnerRangeOp);
+                    auto newExtsiOp = builder.create<arith::ExtSIOp>(
+                        loc, extsiOp.getType(), newInnerRangeOp);
 
-                  // Now the old common mrOp is only used by outerChain
-                  innerChains[i].insert(newInnerRangeOp);
-                  innerChains[i].remove(rangeOp);
-                  sortedOpTrees[i].insert(newInnerRangeOp);
-                  sortedOpTrees[i] = sortOpTreeBwd(sortedOpTrees[i]);
+                    for (auto u : extsiOp->getUsers()) {
+                      if (inOpChain(innerChain, u)) {
+                        auto operands = u->getOperands();
+                        for (auto _it = operands.begin(); _it != operands.end();
+                             ++_it) {
+                          auto operand = *_it;
+                          if (operand == extsiOp) {
+                            u->setOperand(std::distance(operands.begin(), _it),
+                                          newExtsiOp);
+                          }
+                        }
+                      }
+                    }
+
+                    innerChains[i].insert(newExtsiOp);
+                    innerChains[i].insert(newInnerRangeOp);
+                    innerChains[i].remove(rangeOp);
+                    innerChains[i].remove(extsiOp);
+                    sortedOpTrees[i].insert(newInnerRangeOp);
+                    sortedOpTrees[i].insert(newExtsiOp);
+                    sortedOpTrees[i] = sortOpTreeBwd(sortedOpTrees[i]);
+                  } else {
+                    // Link To InnerChain
+                    auto operands = user->getOperands();
+                    for (auto _it = operands.begin(); _it != operands.end();
+                         ++_it) {
+                      auto operand = *_it;
+                      if (operand == rangeOp) {
+                        user->setOperand(std::distance(operands.begin(), _it),
+                                         newInnerRangeOp);
+                      }
+                    }
+
+                    // Now the old common mrOp is only used by outerChain
+                    innerChains[i].insert(newInnerRangeOp);
+                    innerChains[i].remove(rangeOp);
+                    sortedOpTrees[i].insert(newInnerRangeOp);
+                    sortedOpTrees[i] = sortOpTreeBwd(sortedOpTrees[i]);
+                  }
                 }
               }
             }
@@ -706,6 +749,7 @@ struct TritonXPULegalizePass
       bool isReduceMultiGroup = reduceNGroup > 1 ? true : false;
       llvm::SetVector<Operation *> innerChain = innerChains[i];
       llvm::SetVector<Operation *> outerChain = outerChains[i];
+
       auto endOp = sortedOpTree[0];
       OpBuilder builder(endOp);
       auto loc = builder.getUnknownLoc();

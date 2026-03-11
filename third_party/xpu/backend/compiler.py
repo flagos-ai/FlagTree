@@ -82,7 +82,7 @@ def file_hash(path):
 # [raise FrozenInstanceError]
 @dataclass(frozen=True)
 class XPUOptions:
-    arch: int = int(os.environ.get("TRITON_XPU_ARCH", "3"))
+    arch: int = 3
     assert arch in [2, 3, 4, 5], "Invalid XPU ARCH"
     grid: tuple = (1, 1, 1)  # grid launch params
     debug: bool = False
@@ -374,6 +374,10 @@ class XPUBackend(BaseBackend):
                     table[i] = val_vec[2 * i]
                     table[i + size] = val_vec[2 * i + 1]
 
+            # for i in range(len(table)):
+            #     print(f"cpu_table[{i}] = {table[i]}")
+
+            # print(f'table = {table}')
             return np.array(table, dtype=dtype).tobytes()
 
         metadata["ewtable"] = ""
@@ -429,6 +433,7 @@ class XPUBackend(BaseBackend):
         passes.common.add_symbol_dce(pm)
         if os.environ.get("TRITON_DISABLE_LINE_INFO", "0") == "0":
             passes.llvmir.add_di_scope(pm)
+
         xpu.passes.llvmxpuir.insert_mfence_check(pm)
 
         pm.run(mod)
@@ -455,6 +460,7 @@ class XPUBackend(BaseBackend):
         # We get the name at the last possible step to accomodate `triton.compile`
         # on user-provided LLVM
         metadata["name"] = xpu.llvm.get_kernel_name(mod)
+        # print(f'metadata[name] = {metadata["name"]}')
 
         # llvm -> elf/asm
         triple = f"xpu{opt.arch}-baidu-none-gnu"

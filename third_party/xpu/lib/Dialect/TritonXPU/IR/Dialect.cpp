@@ -396,7 +396,10 @@ public:
             mlir::dyn_cast<triton::xpu::ClusterLayoutAttr>(attr)) {
       os << "cluster";
       return AliasResult::FinalAlias;
-    }
+    } /* else if (auto sdnnAttr = mlir::dyn_cast<SDNNEncodingAttr>(attr)) {
+      os << "sdnn";
+      return AliasResult::FinalAlias;
+    } */
     return OpAsmDialectInterface::getAlias(attr, os);
   }
 };

@@ -10,8 +10,10 @@
 // clang-format off
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
+#include "triton/Analysis/NewAnalysis/MaskAnalysis.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/Support/raw_ostream.h"
 // clang-format on
 
 #define DEBUG_TYPE "tritonxpu-vectorize"
@@ -1160,8 +1162,8 @@ struct TritonXPUVectorizePass
     if (numElems < vectorWidth || numElems % vectorWidth > 0 ||
         !vectorizedTyValid(elemTy))
       return;
-    // Fuse ExtElemwiseOp(i8) + TruncIOp(i8) + StoreOp = newExtElemwiseOp(i32)
-    // + StoreOp
+    // Fuse ExtElemwiseOp(i8) + TruncIOp(i8) + StoreOp = newExtElemwiseOp(i32) +
+    // StoreOp
     if (auto extElemwiseOp =
             truncIOp.getIn().getDefiningOp<triton::ExternElementwiseOp>()) {
       if (extElemwiseOp.getSymbol() == "_ZN3xpu5isnanEf" &&

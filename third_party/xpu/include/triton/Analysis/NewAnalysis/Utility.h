@@ -5,6 +5,7 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
+#include <unordered_set>
 
 namespace mlir {
 
@@ -165,6 +166,39 @@ Operation *findUserOpImpl(Operation *op,
 template <typename opType> Operation *findUserOp(Operation *op) {
   llvm::SetVector<Operation *> visitedOps;
   return findUserOpImpl<opType>(op, visitedOps);
+}
+
+template <typename opType>
+std::vector<Operation *> findAllTypeUserOps(Operation *startOp) {
+  std::vector<Operation *> found;
+  if (!startOp)
+    return found;
+
+  std::unordered_set<Operation *> visited;
+  std::deque<Operation *> q;
+
+  visited.insert(startOp);
+  q.push_back(startOp);
+
+  while (!q.empty()) {
+    Operation *cur = q.front();
+    q.pop_front();
+
+    for (Value res : cur->getResults()) {
+      for (Operation *userOp : res.getUsers()) {
+        if (!userOp)
+          continue;
+        if (visited.insert(userOp).second) {
+          if (llvm::dyn_cast<opType>(userOp)) {
+            found.emplace_back(userOp);
+          }
+          q.push_back(userOp);
+        }
+      }
+    }
+  }
+
+  return found;
 }
 
 template <typename opType> Operation *findDefOpBwd(const Value &val) {

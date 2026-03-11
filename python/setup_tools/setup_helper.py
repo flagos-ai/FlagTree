@@ -330,7 +330,7 @@ def handle_plugin_backend(editable):
     plugin_mode = os.getenv("FLAGTREE_PLUGIN")
     if plugin_mode and plugin_mode.upper() not in ["0", "OFF"]:
         return
-    if flagtree_backend in ["iluvatar", "mthreads", "sunrise"]:
+    if flagtree_backend in ["iluvatar", "mthreads", "metax", "sunrise"]:
         flagtree_backend_dir = Path.home() / ".flagtree" / flagtree_backend
         flagtree_plugin_so = flagtree_backend + "TritonPlugin.so"
         if editable is False:
@@ -341,7 +341,7 @@ def handle_plugin_backend(editable):
             dst_build_plugin_path = dst_build_plugin_dir / flagtree_plugin_so
             shutil.copy(src_build_plugin_path, dst_build_plugin_path)
         src_install_plugin_path = flagtree_backend_dir / flagtree_plugin_so
-        if flagtree_backend in ("mthreads", "sunrise"):
+        if flagtree_backend in ("mthreads", "metax", "sunrise"):
             dst_install_plugin_dir = Path(
                 __file__).resolve().parent.parent.parent / "third_party" / flagtree_backend / "python" / "triton" / "_C"
         else:
@@ -409,7 +409,8 @@ cache.store(
 cache.store(
     file="XTDK-llvm19-ubuntu2004_x86_64",
     condition=("xpu" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/XTDK-llvm19-ubuntu2004_x86_64_v0.3.0.tar.gz",
+    url=
+    "https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )

@@ -6,24 +6,34 @@ import functools
 from typing import List
 from pathlib import Path
 
+#from third_party.xcn.backend.driver import library_dirs
 from triton.runtime.build import _build
 from triton.runtime.cache import get_cache_manager
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver
 
 dirname = os.path.dirname(os.path.realpath(__file__))
-arch = int(os.environ.get('TRITON_XPU_ARCH', '3'))
-# 因为这里是还没有进入到compile阶段的一个判定，然后xpu4及以上不走这个target，所以就暂时仍使用xpu3的头文件和链接库，之后会在compile阶段再次判定
-if arch >= 4:
-    arch = 3
-include_dir = [os.path.join(dirname, f"xpu{arch}", "include")]
-libdevice_dir = os.path.join(dirname, f"xpu{arch}", "lib")
-library_dir = os.path.join(dirname, f"xpu{arch}", "so")
-if (os.path.exists(os.path.join(library_dir, "libLaunch_shared.a"))
-        or os.path.exists(os.path.join(library_dir, "liblaunch_shared.so"))):
-    libraries = ['launch', 'xpurt', 'launch_shared']
-else:
-    libraries = ['launch', 'xpurt']
+
+
+@functools.lru_cache(maxsize=None)
+def get_xpu_library_dirs(arch: int = -1):
+    # 因为这里是还没有进入到compile阶段的一个判定，然后xpu4及以上不走这个target，所以就暂时仍使用xpu3的头文件和链接库，之后会在compile阶段再次判定
+    if arch == -1:
+        include_dir = [os.path.join(dirname, "xpu3", "include")]
+        libdevice_dir = os.path.join(dirname, "xpu3", "lib")
+        library_dir = os.path.join(dirname, f"xpu3", "so")
+        libraries = ['xpurt']
+        return include_dir, [libdevice_dir, library_dir], libraries
+
+    include_dir = [os.path.join(dirname, f"xpu{arch}", "include")]
+    libdevice_dir = os.path.join(dirname, f"xpu{arch}", "lib")
+    library_dir = os.path.join(dirname, f"xpu{arch}", "so")
+    if (os.path.exists(os.path.join(library_dir, "libLaunch_shared.a"))
+            or os.path.exists(os.path.join(library_dir, "liblaunch_shared.so"))):
+        libraries = ['launch', 'xpurt', 'launch_shared']
+    else:
+        libraries = ['launch', 'xpurt']
+    return include_dir, [libdevice_dir, library_dir], libraries
 
 
 def get_xpu_spec(xpu_arch, is_sdnn=False):
@@ -42,21 +52,18 @@ def get_xpu_spec(xpu_arch, is_sdnn=False):
         raise RuntimeError(f"Unknown XPU architecture: {xpu_arch}")
 
 
-@functools.lru_cache()
-def library_dirs():
-    return [libdevice_dir, library_dir]
-
-
-def compile_module_from_src(src, name):
+def compile_module_from_src(src, name, arch: int = -1):
     key = hashlib.sha256(src.encode("utf-8")).hexdigest()
     cache = get_cache_manager(key)
     cache_path = cache.get_file(f"{name}.so")
+
     if cache_path is None:
+        include_dir, library_dirs, libraries = get_xpu_library_dirs(arch)
         with tempfile.TemporaryDirectory() as tmpdir:
             src_path = os.path.join(tmpdir, "main.c")
             with open(src_path, "w") as f:
                 f.write(src)
-            so = _build(name, src_path, tmpdir, library_dirs(), include_dir, libraries)
+            so = _build(name, src_path, tmpdir, library_dirs, include_dir, libraries)
             with open(so, "rb") as f:
                 cache_path = cache.put(f.read(), f"{name}.so", binary=True)
 
@@ -408,6 +415,7 @@ static struct PyModuleDef ModuleDef = {{
   ModuleMethods
 }};
 
+
 PyMODINIT_FUNC PyInit___triton_launcher(void) {{
   PyObject *m = PyModule_Create(&ModuleDef);
   if(m == NULL) {{
@@ -416,6 +424,7 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
   PyModule_AddFunctions(m, ModuleMethods);
   return m;
 }}
+
 """
     return src
 
@@ -438,7 +447,7 @@ class XPULauncher(object):
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
         src = make_launcher(constants, signature, ids, metadata)
-        mod = compile_module_from_src(src, "__triton_launcher")
+        mod = compile_module_from_src(src, "__triton_launcher", metadata.target.arch)
         self.launch = mod.launch
 
     def __call__(self, *args):
@@ -457,6 +466,7 @@ class XPUDriver(GPUDriver):
         return True
 
     def get_current_target(self):
-        arch = int(os.environ.get('TRITON_XPU_ARCH', '3'))
+        device = self.get_current_device()
+        arch = self.utils.get_device_properties(device)['device_model']
         warp_size = 1  # we don't have warp
         return GPUTarget("xpu", arch, warp_size)

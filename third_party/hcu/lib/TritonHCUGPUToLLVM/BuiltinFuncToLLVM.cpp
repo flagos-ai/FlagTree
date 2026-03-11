@@ -185,6 +185,10 @@ private:
                                                     operands[0]);
       replacementOp =
           rewriter.create<LLVM::FPToSIOp>(loc, returnType, op->getResult(0));
+    } else if (calleeName == "__triton_hip_rint") {
+      assert(operands.size() == 1);
+      replacementOp =
+          rewriter.create<LLVM::RintOp>(loc, returnType, operands[0]);
     } else if (calleeName == "__triton_hip_fast_fdividef") {
       assert(operands.size() == 2);
       auto name = StringAttr::get(callOp.getContext(), "llvm.amdgcn.rcp.f32");

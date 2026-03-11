@@ -10,6 +10,7 @@ add_xpu_sdnn_object(TritonSDNNTransforms
   ${CMAKE_CURRENT_SOURCE_DIR}/LoopGrid.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/Pipeline.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/MultipleBuffer.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/KLoopAccModification.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/Utility.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/SchedulePrintOp.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/RemoveDsOp.cpp.o

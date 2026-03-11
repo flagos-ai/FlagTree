@@ -42,4 +42,4 @@ def handle_n_threads_in_CompiledKernel_init(compiledKernel, *n_threads):
     from triton.runtime.autotuner import OutOfResources
     if compiledKernel.metadata.num_warps * 64 > n_threads[0]:
         compiledKernel.module = None
-        raise OutOfResources(compiledKernel.metadata.num_warps * 64, compiledKernel.n_threads, "threads")
+        raise OutOfResources(compiledKernel.metadata.num_warps * 64, n_threads[0], "threads")

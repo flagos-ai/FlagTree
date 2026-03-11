@@ -7,7 +7,7 @@
 自动下载依赖库的速度可能受限于网络环境，编译前可自行下载至缓存目录 ~/.flagtree（可通过环境变量 FLAGTREE_CACHE_DIR 修改），无需自行设置 LLVM_BUILD_DIR 等环境变量。 <br>
 各后端完整构建命令如下： <br>
 
-#### ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
+#### 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
 
 - 对应的 Triton 版本为 3.1，基于 x64 平台
 
@@ -25,7 +25,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-c
 tar zxvf iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.4.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.1 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -33,7 +42,7 @@ export FLAGTREE_BACKEND=iluvatar
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/)
+#### 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/)
 
 - 对应的 Triton 版本为 3.0，基于 x64 平台
 
@@ -54,7 +63,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xpu-liblaunch_shared_s
 tar zxvf xpu-liblaunch_shared_so-ubuntu-x64_v0.3.1.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.1 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -62,7 +80,7 @@ export FLAGTREE_BACKEND=xpu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/)
+#### 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/)
 
 - 对应的 Triton 版本为 3.1，基于 x64/aarch64 平台
 
@@ -86,7 +104,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-c
 tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-aarch64_v0.4.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.1 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -94,7 +121,7 @@ export FLAGTREE_BACKEND=mthreads
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### ARM China（安谋科技）[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)
+#### 💫 ARM China（安谋科技）[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)
 
 - 对应的 Triton 版本为 3.3，基于 x64/arm64 平台
 
@@ -112,7 +139,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x
 tar zxvf llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.3 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -121,7 +157,7 @@ export FLAGTREE_BACKEND=aipu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
+#### 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 
@@ -139,7 +175,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_release_20
 tar zxvf tx8_depends_release_20250814_195126_v0.2.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.3 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -149,25 +194,26 @@ export FLAGTREE_BACKEND=tsingmicro
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)
+#### 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)
 
 - 对应的 Triton 版本为 3.2，基于 aarch64 平台
 
 ##### 1. 构建及运行环境
 
 - 推荐使用镜像 [Dockerfile-ubuntu22.04-python3.11-ascend](/dockerfiles/Dockerfile-ubuntu22.04-python3.11-ascend)
-- 在 https://www.hiascend.com/developer/download/community/result?module=cann 注册账号后下载对应平台的 cann-toolkit、cann-kernels
+- 或者使用镜像（5.4GB）https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_cann-8.2.rc1.alpha003-a3-ubuntu22.04-py3.11-flagtree.tar.gz
+- 上述步骤完成后，需要重新安装 Cann 相关的工具包：在 https://www.hiascend.com/developer/download/community/result?module=cann 注册账号后下载对应平台的 cann-toolkit、cann-ops
 
 ```shell
 # cann-toolkit
-chmod +x Ascend-cann-toolkit_8.5.0.alpha002_linux-aarch64.run
-./Ascend-cann-toolkit_8.5.0.alpha002_linux-aarch64.run --install
-# cann-kernels for 910B (A2)
-chmod +x Ascend-cann-kernels-910b_8.5.0.alpha002_linux-aarch64.run
-./Ascend-cann-kernels-910b_8.5.0.alpha002_linux-aarch64.run --install
-# cann-kernels for 910C (A3)
-chmod +x Atlas-A3-cann-kernels_8.5.0.alpha002_linux-aarch64.run
-./Atlas-A3-cann-kernels_8.5.0.alpha002_linux-aarch64.run --install
+chmod +x Ascend-cann-toolkit_8.5.0_linux-aarch64.run
+./Ascend-cann-toolkit_8.5.0_linux-aarch64.run --install
+# cann-ops for 910B (A2)
+chmod +x Ascend-cann-910b-ops_8.5.0_linux-aarch64.run
+./Ascend-cann-910b-ops_8.5.0_linux-aarch64.run --install
+# cann-ops for 910C (A3)
+chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
+./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
 ```
 
 ##### 2. 手动下载 FlagTree 依赖库
@@ -178,7 +224,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-a
 tar zxvf llvm-a66376b0-ubuntu-aarch64-python311-compat_v0.3.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.2 (aarch64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.2.x-linux-aarch64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.2.x-linux-aarch64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -187,7 +242,9 @@ export FLAGTREE_BACKEND=ascend
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/)
+#### 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/)
+
+- Based on Triton 3.0, x64
 
 - 对应的 Triton 版本为 3.0，基于 x64 平台
 
@@ -203,7 +260,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm20-df0864e-gli
 tar zxvf hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.1 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -211,7 +277,7 @@ export FLAGTREE_BACKEND=hcu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)
+#### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 
@@ -227,7 +293,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b
 tar zxvf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.3 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -235,7 +310,7 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
+#### 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
 
 - 对应的 Triton 版本为 3.4，基于 x64 平台
 
@@ -253,7 +328,16 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin-cp
 tar zxvf sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.4 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.4.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.4.x-linux-x64.tar.gz
+```
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -264,13 +348,13 @@ export FLAGTREE_BACKEND=sunrise
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
+#### 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
 
 - 对应的 Triton 版本为 3.1/3.2/3.3/3.4/3.5，基于 x64/arm64 平台
 
 ##### 1. 构建及运行环境
 
-- 推荐使用 Ubuntu 22.04
+- 推荐使用镜像（12GB）https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_nvidia_pytorch_25.05-py3.tar.gz
 
 ##### 2. 手动下载 LLVM 依赖包
 
@@ -301,7 +385,11 @@ export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
 export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 ```
 
-##### 3. 源码构建命令
+##### 3. 手动下载 Triton 依赖库
+
+详见 [离线构建支持：预下载依赖包](/documents/build_cn.md#离线构建支持)。
+
+##### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -319,27 +407,28 @@ unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR
 
 ### 离线构建支持
 
-上文介绍了构建时 FlagTree 各后端可手动下载依赖包以避免受限于网络环境。但 Triton 构建时原本就带有一些依赖包，因此我们提供预下载包，可以手动安装至环境中，避免在构建时卡在自动下载阶段。
+上文介绍了构建时 FlagTree 各后端可手动下载依赖包以避免受限于网络环境。Triton 构建时原本就带有一些依赖包，因此我们提供预下载包，可以手动安装至环境中，避免在构建时卡在自动下载阶段。
 
 ```shell
-cd ${YOUR_CODE_DIR}/FlagTree/python
-sh README_offline_build.sh x86_64  # View readme
+cd ${YOUR_CODE_DIR}/FlagTree
 # For Triton 3.1 (x64)
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.1.x-linux-x64.zip
-sh scripts/offline_build_unpack.sh \
-    ./offline-build-pack-triton-3.1.x-linux-x64.zip ~/.triton
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
 # For Triton 3.2 (x64)
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.2.x-linux-x64.zip
-sh scripts/offline_build_unpack.sh \
-    ./offline-build-pack-triton-3.2.x-linux-x64.zip ~/.triton
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.2.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.2.x-linux-x64.tar.gz
 # For Triton 3.2 (aarch64)
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.2.x-linux-aarch64.zip
-sh scripts/offline_build_unpack.sh \
-    ./offline-build-pack-triton-3.2.x-linux-aarch64.zip ~/.triton
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.2.x-linux-aarch64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.2.x-linux-aarch64.tar.gz
 # For Triton 3.3 (x64)
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/offline-build-pack-triton-3.3.x-linux-x64.zip
-sh scripts/offline_build_unpack.sh \
-    ./offline-build-pack-triton-3.3.x-linux-x64.zip ~/.triton
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
+# For Triton 3.4 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.4.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.4.x-linux-x64.tar.gz
+# For Triton 3.5 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.5.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.5.x-linux-x64.tar.gz
 ```
 
 执行完上述脚本后，原有的 ~/.triton 目录将被重命名，新的 ~/.triton 目录会被创建并存放预下载包。
