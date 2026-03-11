@@ -16,7 +16,7 @@ jobs:
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Smart Checkout
-        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main_add_smart_checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
         with:
           checkout_version: 'v6'
 
