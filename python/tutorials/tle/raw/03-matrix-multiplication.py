@@ -63,7 +63,6 @@ def edsl(
     a: Input[L["memref<?x?xf16,strided<[?, ?], offset: ?>, 3>"]],
     b: Input[L["memref<?x?xf16,strided<[?, ?], offset: ?>, 3>"]],
 ):
-    nvvm.barrier0()
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
@@ -88,7 +87,6 @@ def edsl(
         init = memref.load(c, [row, col])
         memref.store(arith.addf(result, init), c, [row, col])
         scf.yield_([])
-    nvvm.barrier0()
 
 
 @triton.autotune(
