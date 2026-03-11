@@ -18,7 +18,7 @@ jobs:
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main_add_smart_checkout
         with:
-          checkout_version: 'v5'
+          checkout_version: 'v6'
 
       - name: FlagTree Build on Metax
         shell: bash
