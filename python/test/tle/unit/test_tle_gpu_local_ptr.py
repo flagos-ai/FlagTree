@@ -67,6 +67,25 @@ def _local_pointer_store_kernel(out_ptr, numel, value, BLOCK: tl.constexpr):
 
 
 @triton.jit
+def _local_pointer_conditional_mask_store_kernel(out_ptr, numel, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    idx = tl.arange(0, BLOCK)
+    mask = idx < numel
+
+    smem = tle.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    ptrs = tle.local_ptr(smem, (idx, ))
+
+    # Keep the masked store inside an scf.if region. This used to trigger a
+    # verifier failure in `triton-tle-assign-local-pointers-encoding` because the
+    # store mask did not match the pointer layout.
+    if pid == 0:
+        tl.store(ptrs, idx, mask=mask)
+
+    vals = tl.load(ptrs, mask=mask, other=-1)
+    tl.store(out_ptr + idx, vals, mask=mask)
+
+
+@triton.jit
 def _local_pointer_looped_elementwise_kernel(
     x_ptr,
     y_ptr,
@@ -196,6 +215,24 @@ def _local_pointer_axis_gather_kernel(
     tl.store(out_tile, vals)
 
 
+@triton.jit
+def _local_pointer_dynamic_scalar_load_after_vector_store_kernel(
+    out_ptr,
+    BLOCK: tl.constexpr,
+):
+    smem = tle.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    vec_idx = tl.arange(0, BLOCK)
+    vec_ptr = tle.local_ptr(smem, (vec_idx, ))
+    tl.store(vec_ptr, vec_idx + 1)
+    zero = tl.program_id(0) * 0
+
+    for i in range(BLOCK):
+        scalar_idx = zero + i
+        scalar_ptr = tle.local_ptr(smem, (scalar_idx, ))
+        scalar_val = tl.load(scalar_ptr)
+        tl.store(out_ptr + i, scalar_val)
+
+
 class TestTLELocalPointerKernel:
     """Ensure kernels can perform load/compute/store entirely via local pointers."""
 
@@ -224,6 +261,30 @@ class TestTLELocalPointerKernel:
 
         expected = torch.full_like(out, value)
         torch.testing.assert_close(out, expected, atol=1e-7, rtol=0)
+
+    def test_local_pointer_conditional_mask_store_compiles(self):
+        block = 512
+        numel = block - 7
+        out = torch.full((block, ), -1, device="cuda", dtype=torch.int32)
+
+        compiled = _local_pointer_conditional_mask_store_kernel.warmup(
+            out,
+            numel,
+            BLOCK=block,
+            grid=(1, ),
+            num_warps=8,
+        )
+        assert compiled is not None
+
+        _local_pointer_conditional_mask_store_kernel[(1, )](
+            out,
+            numel,
+            BLOCK=block,
+            num_warps=8,
+        )
+        expected = torch.arange(block, device="cuda", dtype=torch.int32)
+        expected[numel:] = -1
+        torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
     def test_local_pointer_looped_elementwise_matches_torch(self):
         chunks = 4
@@ -301,6 +362,31 @@ class TestTLELocalPointerKernel:
 
         expected = x[:, 1:1 + slice_width]
         torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
+
+    def test_local_pointer_scalar_dynamic_index_inserts_barrier(self):
+        block = 64
+        out = torch.empty((block, ), device="cuda", dtype=torch.int32)
+        compiled = _local_pointer_dynamic_scalar_load_after_vector_store_kernel.warmup(
+            out,
+            BLOCK=block,
+            grid=(1, ),
+            num_warps=4,
+        )
+        ttgir = compiled.asm["ttgir"]
+        assert "gpu.barrier" in ttgir
+        assert "\"tt.reduce\"" not in ttgir
+
+        _local_pointer_dynamic_scalar_load_after_vector_store_kernel[(1, )](
+            out,
+            BLOCK=block,
+            num_warps=4,
+        )
+        torch.testing.assert_close(
+            out,
+            torch.arange(1, block + 1, device="cuda", dtype=torch.int32),
+            atol=0,
+            rtol=0,
+        )
 
 
 if __name__ == "__main__":

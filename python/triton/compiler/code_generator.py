@@ -114,6 +114,24 @@ def _clone_triton_value(val):
     handles = []
     val._flatten_ir(handles)
     clone, _ = val.type._unflatten_ir(handles, 0)
+    # begin flagtree tle
+    # Preserve TLE compile-time metadata across scope cloning (if/loop
+    # live-ins). Value-level metadata can otherwise be dropped by unflatten.
+    if hasattr(val, "__dict__"):
+        for key, attr in val.__dict__.items():
+            if key.startswith("_tle_"):
+                try:
+                    setattr(clone, key, attr)
+                except Exception:
+                    pass
+    if hasattr(val.type, "__dict__"):
+        for key, attr in val.type.__dict__.items():
+            if key.startswith("_tle_"):
+                try:
+                    setattr(clone.type, key, attr)
+                except Exception:
+                    pass
+    # end flagtree tle
     return clone
 
 

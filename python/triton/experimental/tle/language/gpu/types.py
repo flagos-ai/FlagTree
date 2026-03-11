@@ -274,18 +274,56 @@ class buffered_tensor_type(tl.block_type):
 
     def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[buffered_tensor, int]:
         value = buffered_tensor(handles[cursor], self.scalar, self.shape, self.storage, self.layout, self.semantic)
+        if hasattr(self, "_tle_remote_shard_id"):
+            shard_id = getattr(self, "_tle_remote_shard_id")
+            scope = getattr(self, "_tle_remote_scope", None)
+            setattr(value, "_tle_remote_shard_id", shard_id)
+            setattr(value, "_tle_remote_scope", scope)
+            setattr(value.type, "_tle_remote_shard_id", shard_id)
+            setattr(value.type, "_tle_remote_scope", scope)
         return value, cursor + 1
 
     def mangle(self) -> str:
         elt = self.scalar.mangle()
         shape = '_'.join(map(str, self.shape))
-        return f'buffered_{elt}S{shape}'
+        remote_suffix = ""
+        shard_id = getattr(self, "_tle_remote_shard_id", None)
+        if shard_id is not None:
+            if isinstance(shard_id, int):
+                remote_suffix = f"_R{shard_id}"
+            else:
+                remote_suffix = "_Rdyn"
+        return f'buffered_{elt}S{shape}{remote_suffix}'
 
     def __str__(self) -> str:
         return f"buffered_tensor_<{self.element_ty}, {self.shape}, {self.layout}, >"
 
     def __eq__(self, other) -> bool:
-        return (type(self) is type(other) and self.shape == other.shape and self.layout == other.layout)
+        if not (type(self) is type(other) and self.shape == other.shape and self.layout == other.layout):
+            return False
+        self_shard = getattr(self, "_tle_remote_shard_id", None)
+        other_shard = getattr(other, "_tle_remote_shard_id", None)
+        self_scope = getattr(self, "_tle_remote_scope", None)
+        other_scope = getattr(other, "_tle_remote_scope", None)
+        if self_shard is None and other_shard is None and self_scope is None and other_scope is None:
+            return True
+        # If either side carries remote metadata, require equivalent remote marker.
+        if (self_shard is None) != (other_shard is None):
+            return False
+        if isinstance(self_shard, int) and isinstance(other_shard, int):
+            if self_shard != other_shard:
+                return False
+        elif self_shard is not other_shard:
+            return False
+        self_scope_key = None if self_scope is None else (
+            tuple(getattr(self_scope, "shape", tuple())),
+            tuple(getattr(self_scope, "dim_names", tuple())),
+        )
+        other_scope_key = None if other_scope is None else (
+            tuple(getattr(other_scope, "shape", tuple())),
+            tuple(getattr(other_scope, "dim_names", tuple())),
+        )
+        return self_scope_key == other_scope_key
 
     def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
         out.append(self.to_ir(builder))

@@ -89,3 +89,6 @@ docs/sg_execution_times.rst
 
 # macOS
 .DS_Store
+
+# Agent
+AGENTS.md

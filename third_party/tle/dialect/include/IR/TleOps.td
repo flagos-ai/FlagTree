@@ -19,11 +19,32 @@ class Tle_Op<string mnemonic, list<Trait> traits = []> :
 
 def Tle_TensorType : AnyTypeOf<[TT_Type, TTG_MemDescType]>;
 def Tle_ArgType : AnyTypeOf<[Tle_TensorType, LLVMPointerType, LLVMStructType]>;
+def Tle_LocalPointerResultType : AnyTypeOf<[TT_Tensor, TT_Ptr]>;
+def Tle_LocalPointerIndexType : AnyTypeOf<[TT_Tensor, TT_Int]>;
 
 def Tle_LocalPointersOp : Tle_Op<"local_pointers",
                                  [Pure]> {
   let arguments = (ins TTG_MemDescType:$src,
-                   Variadic<TT_Tensor>:$indices);
+                   Variadic<Tle_LocalPointerIndexType>:$indices);
+  let results = (outs Tle_LocalPointerResultType:$result);
+  let hasVerifier = 1;
+}
+
+def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
+                                      [MemoryEffects<[MemRead, MemWrite]>]> {
+  let arguments = (ins
+    OptionalAttr<StrAttr>:$group_kind,
+    OptionalAttr<I32Attr>:$group_rank,
+    OptionalAttr<DenseI32ArrayAttr>:$group_shape,
+    OptionalAttr<DenseI32ArrayAttr>:$group_axes,
+    OptionalAttr<DenseI32ArrayAttr>:$group_mask
+  );
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure]> {
+  let arguments = (ins TT_Tensor:$src, TT_Int:$shard_id);
   let results = (outs TT_Tensor:$result);
   let hasVerifier = 1;
 }

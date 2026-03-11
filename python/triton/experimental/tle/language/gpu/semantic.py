@@ -114,11 +114,22 @@ class TLESemantic:
         if not indices:
             return
         first_shape = None
+        saw_scalar = False
+        saw_block = False
         for idx in indices:
-            elem_ty = idx.type.element_ty
-            if not elem_ty.is_int():
-                raise TLESemanticError("Index tensor dtype must be integer", "local_ptr")
-            if first_shape is None:
-                first_shape = tuple(idx.shape)
-            elif tuple(idx.shape) != first_shape:
-                raise TLESemanticError("Index tensors must have identical shapes", "local_ptr")
+            idx_ty = idx.type
+            if idx_ty.is_block():
+                saw_block = True
+                elem_ty = idx_ty.element_ty
+                if not elem_ty.is_int():
+                    raise TLESemanticError("Index tensor dtype must be integer", "local_ptr")
+                if first_shape is None:
+                    first_shape = tuple(idx.shape)
+                elif tuple(idx.shape) != first_shape:
+                    raise TLESemanticError("Index tensors must have identical shapes", "local_ptr")
+            else:
+                saw_scalar = True
+                if not idx_ty.is_int():
+                    raise TLESemanticError("Scalar indices must be integers", "local_ptr")
+        if saw_scalar and saw_block:
+            raise TLESemanticError("Indices must be all scalar or all tensor", "local_ptr")
