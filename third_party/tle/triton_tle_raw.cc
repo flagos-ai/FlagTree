@@ -56,9 +56,10 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 //   - EDSL param type: "i32"
 //   - LLVM func: 1 arg = i32
 //   - Conversion: Use block argument directly
-tle::DSLRegionOp createTLERawRegionByLLVMFunc(
-    TritonOpBuilder &self, std::string_view text,
-    const std::vector<Value> &outputs, const std::vector<Value> &inputs) {
+tle::DSLRegionOp
+createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             const std::vector<Value> &outputs,
+                             const std::vector<Value> &inputs) {
   ParserConfig config(self.getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   LLVM::LLVMFuncOp func = nullptr;
@@ -85,13 +86,13 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
       if ((!isa<SymbolOpInterface>(op) ||
            (isa<SymbolOpInterface>(op) &&
             !curModule.lookupSymbol(cast<SymbolOpInterface>(op).getName()))) &&
-            !isa<LLVM::ModuleFlagsOp>(op)
-          ) {
+          !isa<LLVM::ModuleFlagsOp>(op)) {
         builder.clone(op);
       }
     }
   }
-  LLVM::LLVMFuncOp funcOp = curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName());
+  LLVM::LLVMFuncOp funcOp =
+      curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName());
   assert(funcOp && "callee function not found in current module");
   SmallVector<Type> outputTys = llvm::map_to_vector(
       outputs, [](Value value) -> Type { return value.getType(); });
@@ -106,8 +107,8 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
       operands, [](Value value) -> Type { return value.getType(); });
   IRMapping mapper;
   Block *newBlock = builder.createBlock(
-          &body, {}, operandTys,
-          SmallVector<Location>(operandTys.size(), self.getLastLoc()));
+      &body, {}, operandTys,
+      SmallVector<Location>(operandTys.size(), self.getLastLoc()));
   builder.setInsertionPointToStart(newBlock);
   ValueRange args = func.getArguments();
   TypeRange tgts = args.getTypes();

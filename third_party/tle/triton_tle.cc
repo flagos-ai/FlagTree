@@ -57,9 +57,10 @@ namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 
-extern tle::DSLRegionOp createTLERawRegionByLLVMFunc(
-    TritonOpBuilder &self, std::string_view text,
-    const std::vector<Value> &outputs, const std::vector<Value> &inputs);
+extern tle::DSLRegionOp
+createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             const std::vector<Value> &outputs,
+                             const std::vector<Value> &inputs);
 
 void init_triton_tle_ir(py::module &&m) {
   using ret = py::return_value_policy;
@@ -215,7 +216,6 @@ void init_tle_raw_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_tle_dsl_region_inline",
                      mlir::triton::tle::createTleDSLRegionInline);
 }
-
 
 void init_llvm(py::module &&m) {
   using ret = py::return_value_policy;
