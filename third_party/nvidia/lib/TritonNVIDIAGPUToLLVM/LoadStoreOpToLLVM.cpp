@@ -1030,6 +1030,9 @@ public:
     Value llPtr = adaptor.getPtr();
     Value llVal = adaptor.getVal();
     Value llMask = adaptor.getMask();
+
+    auto valElements = unpackLLElements(loc, llVal, rewriter);
+    auto ptrElements = unpackLLElements(loc, llPtr, rewriter);
     // begin flagtree tle
 #ifdef __TLE__
     auto remoteCTAInfo = tte::getRemotePointerInfoFromValue(ptr, rewriter);
@@ -1038,9 +1041,11 @@ public:
       llBasePtr = rewriter.getRemappedValue(remoteCTAInfo.basePtr);
       if (!llBasePtr)
         return op.emitError("failed to remap remote base pointer");
+      ptrElements = unpackLLElements(loc, llBasePtr, rewriter);
     }
-    auto ptrElements = unpackLLElements(loc, llBasePtr, rewriter);
+#endif
     const bool isSharedPtr = isSharedPointerValue(ptrElements);
+#ifdef __TLE__
     if (remoteCTAInfo.hasRemoteCTAId() && !isSharedPtr)
       return op.emitError("remote shard_id requires shared-memory pointers");
     auto ensureI32 = [&](Value v) -> Value {
@@ -1071,13 +1076,8 @@ public:
         materializeRemoteCTAId(remoteCTAInfo.dynamicCTAId);
     if (remoteCTAInfo.dynamicCTAId && !remoteDynamicCTAId)
       return op.emitError("runtime shard_id must lower to scalar integer");
-#else
-    auto ptrElements = unpackLLElements(loc, llPtr, rewriter);
-    const bool isSharedPtr = isSharedPointerValue(ptrElements);
 #endif
     // end flagtree tle
-
-    auto valElements = unpackLLElements(loc, llVal, rewriter);
     SmallVector<Value> maskElements;
     if (llMask)
       maskElements = unpackLLElements(loc, llMask, rewriter);

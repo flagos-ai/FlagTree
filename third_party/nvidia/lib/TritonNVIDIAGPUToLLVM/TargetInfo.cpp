@@ -152,20 +152,19 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
   }
 }
 
-static Value mapa(RewriterBase &rewriter, Location loc, Value ptr,
-#ifdef __TLE__
-                  Value ctaid) {
+static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid,
+                  Value pred) {
   // begin flagtree tle
+#ifdef __TLE__
+  (void)pred;
   auto clusterPtrTy = LLVM::LLVMPointerType::get(
       rewriter.getContext(), NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
-  // end flagtree tle
   return rewriter.create<NVVM::MapaOp>(loc, clusterPtrTy, ptr, ctaid);
-}
 #else
-                  Value ctaid, Value pred) {
   return rewriter.create<NVVM::MapaOp>(loc, ptr.getType(), ptr, ctaid);
-}
 #endif
+  // end flagtree tle
+}
 
 #ifdef __TLE__
 Value TargetInfo::mapSharedToClusterPointer(RewriterBase &rewriter,
@@ -181,7 +180,7 @@ Value TargetInfo::mapSharedToClusterPointer(RewriterBase &rewriter,
           static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace) &&
       "mapSharedToClusterPointer requires shared or cluster shared pointers");
   // end flagtree tle
-  return mapa(rewriter, loc, ptr, ctaId);
+  return mapa(rewriter, loc, ptr, ctaId, Value());
 }
 #endif
 
