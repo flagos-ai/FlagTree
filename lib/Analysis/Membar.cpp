@@ -318,6 +318,7 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     }
 
     // begin flagtree tle
+#ifdef __TLE__
     // Some ops that allocate scratch buffers (e.g. scan/reduce paths lowered
     // from TLE kernels) may also carry explicit shared-memory side effects.
     // Treat these effects conservatively instead of aborting compilation.
@@ -327,6 +328,14 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       llvm::errs() << "[membar] scratch op has explicit shared deps: "
                    << op->getName() << " @ " << op->getLoc() << "\n";
     }
+#else
+    if (!curBlockInfo.syncReadIntervals.empty() ||
+        !curBlockInfo.syncWriteIntervals.empty()) {
+      llvm::report_fatal_error(
+          "scratch buffer operations should not have any shared memory "
+          "dependencies");
+    }
+#endif
     // end flagtree tle
     auto interval = allocation->getAllocatedInterval(scratchBufferId);
     curBlockInfo.syncWriteIntervals[interval].insert(op);

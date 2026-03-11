@@ -20,10 +20,14 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 // begin flagtree tle
+#ifdef __TLE__
 #include "tle/dialect/include/Analysis/AxisInfoExt.h"
+#endif
 // end flagtree tle
 // begin flagtree tle
+#ifdef __TLE__
 #include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
+#endif
 // end flagtree tle
 #include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
@@ -155,7 +159,11 @@ struct ConvertTritonGPUToLLVM
     // function
     initSharedMemory(typeConverter);
     // begin flagtree tle
+#ifdef __TLE__
     mlir::triton::tle::ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+#else
+    ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+#endif
     // end flagtree tle
 
     RewritePatternSet patterns(context);
@@ -171,10 +179,15 @@ struct ConvertTritonGPUToLLVM
       mlir::triton::tle::populatePackOpToLLVMPatterns(typeConverter, patterns,
                                                       benefit);
       // begin flagtree tle
+#ifdef __TLE__
       mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
           typeConverter, targetInfo, patterns, benefit);
+#else
+      mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
+          typeConverter, targetInfo, patterns, benefit);
+#endif
       // end flagtree tle
       if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
         return signalPassFailure();
