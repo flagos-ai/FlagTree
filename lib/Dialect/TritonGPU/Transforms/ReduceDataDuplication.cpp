@@ -14,11 +14,9 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "triton/Analysis/Utility.h"
-// begin flagtree tle
 #ifdef __TLE__
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
-// end flagtree tle
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
@@ -27,7 +25,6 @@ namespace mlir {
 namespace triton {
 namespace gpu {
 
-// begin flagtree tle
 #ifdef __TLE__
 static bool isLikelyRemotePtr(Value ptr) {
   constexpr StringLiteral kRemoteShardCarrierAttr =
@@ -96,7 +93,6 @@ static bool comesFromRemoteLoad(Value value, DenseSet<Value> &visited) {
   return false;
 }
 #endif
-// end flagtree tle
 
 #define GEN_PASS_DEF_TRITONGPUREDUCEDATADUPLICATION
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
@@ -118,13 +114,11 @@ public:
           dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstType.getEncoding());
       if (!dstDotOp)
         return;
-      // begin flagtree tle
 #ifdef __TLE__
       DenseSet<Value> visited;
       if (comesFromRemoteLoad(cvtOp.getSrc(), visited))
         return;
 #endif
-      // end flagtree tle
       if (!cvtNeedsSharedMemory(srcType, dstType))
         return;
       auto order = getOrderForMemory(srcType);

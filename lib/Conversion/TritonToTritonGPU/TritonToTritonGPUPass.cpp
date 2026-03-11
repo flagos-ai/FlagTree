@@ -4,9 +4,9 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-// begin flagtree tle
+#ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
-// end flagtree tle
+#endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -574,11 +574,11 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       TritonScanPattern,
       GenericOpPattern<triton::ScanReturnOp>,
       GenericOpPattern<triton::MakeRangeOp>,
-      // begin flagtree tle
+#ifdef __TLE__
       GenericOpPattern<triton::gpu::LocalAllocOp>,
       GenericOpPattern<triton::gpu::LocalStoreOp>,
       GenericOpPattern<triton::gpu::LocalLoadOp>,
-      // end flagtree tle
+#endif
       TritonExpandDimsPattern,
       TritonTransPattern,
       TritonDotPattern,
@@ -792,7 +792,7 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
   patterns.add<CFCondBranchPattern, CFBranchPattern>(typeConverter, context);
 }
 
-// begin flagtree tle
+#ifdef __TLE__
 class TleDSLRegionOpPattern : public OpConversionPattern<tle::DSLRegionOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -820,7 +820,6 @@ public:
 void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
-#ifdef __TLE__
   patterns
       .add<TleDSLRegionOpPattern, GenericOpPattern<tle::LocalPointersOp>,
            GenericOpPattern<tle::RemotePointersOp>,
@@ -833,20 +832,8 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
            GenericOpPattern<tle::ExtractStridesOp>,
            GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
           typeConverter, context);
-#else
-  patterns
-      .add<TleDSLRegionOpPattern, GenericOpPattern<tle::LocalPointersOp>,
-           GenericOpPattern<tle::YieldOp>,
-           GenericOpPattern<tle::ExtractAllocatedPtrOp>,
-           GenericOpPattern<tle::ExtractAlignedPtrOp>,
-           GenericOpPattern<tle::ExtractOffsetOp>,
-           GenericOpPattern<tle::ExtractSizesOp>,
-           GenericOpPattern<tle::ExtractStridesOp>,
-           GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
-          typeConverter, context);
-#endif
 }
-// end flagtree tle
+#endif
 
 class ConvertTritonToTritonGPU
     : public triton::impl::ConvertTritonToTritonGPUBase<
@@ -878,9 +865,9 @@ public:
     //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
-    // begin flagtree tle
+#ifdef __TLE__
     populateTleRawPatterns(typeConverter, patterns);
-    // end flagtree tle
+#endif
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
 
     Builder b(&getContext());

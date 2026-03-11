@@ -317,7 +317,6 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       isWarpSync = mlir::isCvtWarpSync(srcLayout, dstLayout);
     }
 
-    // begin flagtree tle
 #ifdef __TLE__
     // Some ops that allocate scratch buffers (e.g. scan/reduce paths lowered
     // from TLE kernels) may also carry explicit shared-memory side effects.
@@ -336,7 +335,6 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
           "dependencies");
     }
 #endif
-    // end flagtree tle
     auto interval = allocation->getAllocatedInterval(scratchBufferId);
     curBlockInfo.syncWriteIntervals[interval].insert(op);
     auto insertCTABarrier =

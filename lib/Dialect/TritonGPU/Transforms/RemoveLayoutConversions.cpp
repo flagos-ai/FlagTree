@@ -15,11 +15,9 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "triton/Analysis/Utility.h"
-// begin flagtree tle
 #ifdef __TLE__
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
-// end flagtree tle
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
@@ -37,7 +35,6 @@ namespace mlir::triton::gpu {
 
 namespace {
 
-// begin flagtree tle
 #ifdef __TLE__
 static bool touchesTleDistributedPointerPath(Value value,
                                              DenseSet<Value> &visited) {
@@ -66,7 +63,6 @@ static bool touchesTleDistributedPointerPath(Value value,
   return false;
 }
 #endif
-// end flagtree tle
 
 // -----------------------------------------------------------------------------
 //
@@ -1306,7 +1302,6 @@ void LayoutRematerialization::hoistConvertDotOperand(
   auto targetType = convertOp.getType();
   // The pass is targeted to MMA dot operands
 
-  // begin flagtree tle
 #ifdef __TLE__
   {
     DenseSet<Value> visited;
@@ -1314,7 +1309,6 @@ void LayoutRematerialization::hoistConvertDotOperand(
       return;
   }
 #endif
-  // end flagtree tle
 
   auto canBePipelined = [&](ConvertLayoutOp convertOp) {
     // FIXME: Check that the parent is a for loop

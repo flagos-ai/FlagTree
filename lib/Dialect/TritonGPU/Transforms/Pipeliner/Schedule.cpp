@@ -287,7 +287,6 @@ LogicalResult tt::CoarseSchedule::deSerialize(scf::ForOp &forOp) {
 // TODO: Should this be moved somewhere else?
 // Add dependencies of anchor ops to the coarse schedule. Schedule them to
 // the same stage and ordering cluster as the anchor op.
-// begin flagtree tle
 #ifdef __TLE__
 static bool isBarrierLikeOp(Operation *op) {
   if (!op)
@@ -316,10 +315,8 @@ static Operation *getPrevMemoryEffectOpInBlock(Operation *op) {
   return nullptr;
 }
 #endif
-// end flagtree tle
 
 void tt::scheduleDependencies(scf::ForOp forOp, tt::CoarseSchedule &schedule) {
-  // begin flagtree tle
 #ifdef __TLE__
   auto insertOrderDependency = [&](auto &&self, Operation *op, int stage,
                                    tt::CoarseSchedule::Cluster cluster) {
@@ -362,7 +359,6 @@ void tt::scheduleDependencies(scf::ForOp forOp, tt::CoarseSchedule &schedule) {
                               cluster);
       }
 #endif
-      // end flagtree tle
     }
   }
 }

@@ -4,13 +4,9 @@ DeepSeek V3-2 Top-K Selector with Triton and TLE (TLE Tutorial)
 
 This tutorial adapts the TileLang DeepSeek V3-2 top-k selector example and
 implements two kernels:
-- A Triton version that uses global scratch buffers for histograms and
-  candidate queues.
-- A TLE version that uses shared memory (`tle.alloc` + `tle.local_ptr`).
-
-Both kernels implement the same radix-selection flow as the TileLang reference:
-1) Stage-1: bucket by the top 8 bits of FP16 keys to find a coarse threshold.
-2) Stage-2: refine ties using 4 rounds of 8-bit radix passes on FP32 keys.
+- A Triton version rewritten with the radix-select flow used in `03-topk.py`.
+- A TLE version that keeps the shared-memory DeepSeek-style selector
+  (`tle.alloc` + `tle.local_ptr`).
 
 If TileLang is installed, the script will also run the original TileLang kernel
 and compare correctness and performance.
@@ -71,7 +67,7 @@ def _convert_to_uint32(x):
 
 
 # %%
-# Triton kernel (global scratch)
+# Triton kernel (radix-select, based on 03-topk)
 # ------------------------------
 
 
@@ -83,24 +79,17 @@ def triton_topk_selector_kernel(
     ends_ptr,
     hist_ptr,
     num_ptr,
-    input_idx_ptr,
     stride_xm,
     stride_xn,
     stride_outm,
     stride_outn,
     stride_hist,
     stride_num,
-    stride_input_m,
-    stride_input_r,
-    stride_input_c,
     seq_len,
-    RADIX: tl.constexpr,
+    RADIX_BITS: tl.constexpr,
     ASSUME_ALIGNED: tl.constexpr,
     TOPK: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
-    N_TILES: tl.constexpr,
-    SMEM_INPUT: tl.constexpr,
-    NUM_INPUT_TILES: tl.constexpr,
 ):
     pid = tl.program_id(0)
     row_start = tl.load(starts_ptr + pid).to(tl.int32)
@@ -110,7 +99,6 @@ def triton_topk_selector_kernel(
     out_row = out_ptr + pid * stride_outm
     hist_row = hist_ptr + pid * stride_hist
     num_row = num_ptr + pid * stride_num
-    input_row = input_idx_ptr + pid * stride_input_m
 
     if ASSUME_ALIGNED:
         tl.assume(row_start == 0)
@@ -121,151 +109,63 @@ def triton_topk_selector_kernel(
 
     lane = tl.arange(0, BLOCK_SIZE)
     ones = tl.full([BLOCK_SIZE], 1, tl.int32)
+    RADIX_SIZE: tl.constexpr = 1 << RADIX_BITS
+    RADIX_MASK: tl.constexpr = RADIX_SIZE - 1
+    hist_idx = tl.arange(0, RADIX_SIZE)
 
-    hist_idx = tl.arange(0, RADIX)
-    hist_last = tl.full([1], RADIX, tl.int32)
+    desired = tl.full((), 0, dtype=tl.uint32)
+    desired_mask = tl.full((), 0, dtype=tl.uint32)
+    k_to_find = tl.full((), TOPK, dtype=tl.int32)
+    n_tiles = tl.cdiv(seq_len, BLOCK_SIZE)
 
-    # init histogram + counters
-    tl.store(hist_row + hist_idx, 0)
-    tl.store(hist_row + hist_last, 0)
-    tl.store(num_row + tl.arange(0, 2), 0)
-    tl.debug_barrier()
-
-    l_new_topk = tl.full((), TOPK, tl.int32)
-
-    # stage 1: 8-bit FP16 bucket
-    for t in tl.static_range(N_TILES):
-        offs = t * BLOCK_SIZE + lane
-        in_range = (offs < seq_len) & (offs >= row_start) & (offs < row_end)
-        x = tl.load(row_ptr + offs * stride_xn, mask=in_range, other=0.0)
-        bin_u16 = _convert_to_uint16(x)
-        bin_i32 = bin_u16.to(tl.int32)
-        tl.atomic_add(hist_row + bin_i32, ones, mask=in_range)
-
-    # reverse cumsum on histogram[0:RADIX)
-    rev_idx = (RADIX - 1) - hist_idx
-    hist_rev = tl.load(hist_row + rev_idx)
-    hist_cum_rev = tl.cumsum(hist_rev, axis=0)
-    tl.store(hist_row + rev_idx, hist_cum_rev)
-    tl.debug_barrier()
-
-    hist_cum = tl.load(hist_row + hist_idx)
-    hist_cum_next = tl.load(hist_row + hist_idx + 1, mask=hist_idx + 1 < RADIX, other=0)
-    cond = (hist_cum > l_new_topk) & (hist_cum_next <= l_new_topk)
-    cand = tl.where(cond, hist_idx.to(tl.int32), -1)
-    threshold = tl.max(cand, axis=0)
-    hist_next = tl.max(tl.where(hist_idx == threshold + 1, hist_cum, 0), axis=0)
-    l_new_topk = tl.maximum(l_new_topk - hist_next, 0)
-
-    # collect bins > threshold into output, == threshold into candidate buffer
-    num_ptrs = num_row + tl.zeros([BLOCK_SIZE], tl.int32)
-    for t in tl.static_range(N_TILES):
-        offs = t * BLOCK_SIZE + lane
-        in_range = (offs < seq_len) & (offs >= row_start) & (offs < row_end)
-        x = tl.load(row_ptr + offs * stride_xn, mask=in_range, other=0.0)
-        bin_u16 = _convert_to_uint16(x)
-        bin_i32 = bin_u16.to(tl.int32)
-        gt_thr = bin_i32 > threshold
-        eq_thr = bin_i32 == threshold
-
-        pos = tl.atomic_add(hist_row + bin_i32 + 1, ones, mask=in_range & gt_thr)
-        pos = tl.where(in_range & gt_thr, pos, 0)
-        tl.store(out_row + pos * stride_outn, offs.to(tl.int32), mask=in_range & gt_thr & (pos < TOPK))
-
-        pos_eq = tl.atomic_add(num_ptrs, ones, mask=in_range & eq_thr & (l_new_topk > 0))
-        pos_eq = tl.where(in_range & eq_thr, pos_eq, 0)
-        tl.store(
-            input_row + pos_eq * stride_input_c,
-            offs.to(tl.int32),
-            mask=in_range & eq_thr & (pos_eq < SMEM_INPUT) & (l_new_topk > 0),
-        )
-
-    # stage 2: 4 rounds of 8-bit radix on FP32 keys
-    for round_id in tl.static_range(4):
-        r_idx = round_id & 1
-        next_idx = r_idx ^ 1
-        start_pos = TOPK - l_new_topk
-
-        # reset histogram and next round counter
+    # MSD radix-select on 32-bit float keys.
+    for digit_pos in tl.static_range(32 - RADIX_BITS, -1, -RADIX_BITS):
         tl.store(hist_row + hist_idx, 0)
-        tl.store(hist_row + hist_last, 0)
-        tl.store(num_row + next_idx, 0)
-        tl.debug_barrier()
-
-        l_num_input = tl.load(num_row + r_idx).to(tl.int32)
-        max_input = tl.full((), SMEM_INPUT, tl.int32)
-        l_num_input = tl.minimum(l_num_input, max_input)
-        active = l_new_topk > 0
-
-        shift = 24 - round_id * 8
-        for t in tl.static_range(NUM_INPUT_TILES):
+        for t in tl.range(0, n_tiles):
             offs = t * BLOCK_SIZE + lane
-            valid = offs < l_num_input
-            cand_idx = tl.load(
-                input_row + r_idx * stride_input_r + offs * stride_input_c,
-                mask=valid,
-                other=0,
-            )
-            x = tl.load(row_ptr + cand_idx * stride_xn, mask=valid, other=0.0)
-            bin_u32 = _convert_to_uint32(x)
-            bin_i32 = ((bin_u32 >> shift) & 0xFF).to(tl.int32)
-            tl.atomic_add(hist_row + bin_i32, ones, mask=valid & active)
+            in_range = (offs < seq_len) & (offs >= row_start) & (offs < row_end)
+            x = tl.load(row_ptr + offs * stride_xn, mask=in_range, other=float("-inf"))
+            x_key = _convert_to_uint32(x)
+            matches = (x_key & desired_mask) == desired
+            digit = ((x_key >> digit_pos) & RADIX_MASK).to(tl.int32)
+            tl.atomic_add(hist_row + digit, ones, mask=in_range & matches)
 
-        rev_idx = (RADIX - 1) - hist_idx
-        hist_rev = tl.load(hist_row + rev_idx)
-        hist_cum_rev = tl.cumsum(hist_rev, axis=0)
-        tl.store(hist_row + rev_idx, hist_cum_rev)
-        tl.debug_barrier()
+        counts = tl.load(hist_row + hist_idx)
+        cumsum_desc = tl.cumsum(counts, axis=0, reverse=True)
+        tl.store(hist_row + hist_idx, cumsum_desc)
 
-        hist_cum = tl.load(hist_row + hist_idx)
-        hist_cum_next = tl.load(hist_row + hist_idx + 1, mask=hist_idx + 1 < RADIX, other=0)
-        cond = (hist_cum > l_new_topk) & (hist_cum_next <= l_new_topk)
-        cand = tl.where(cond, hist_idx.to(tl.int32), -1)
-        threshold = tl.max(cand, axis=0)
-        hist_next = tl.max(tl.where(hist_idx == threshold + 1, hist_cum, 0), axis=0)
-        l_new_topk = tl.maximum(l_new_topk - hist_next, 0)
+        cond = cumsum_desc >= k_to_find
+        selected = tl.max(tl.where(cond, hist_idx, 0), axis=0).to(tl.int32)
+        counts_gt = tl.max(tl.where(hist_idx == (selected + 1), cumsum_desc, 0), axis=0)
 
-        for t in tl.static_range(NUM_INPUT_TILES):
-            offs = t * BLOCK_SIZE + lane
-            valid = offs < l_num_input
-            cand_idx = tl.load(
-                input_row + r_idx * stride_input_r + offs * stride_input_c,
-                mask=valid,
-                other=0,
-            )
-            x = tl.load(row_ptr + cand_idx * stride_xn, mask=valid, other=0.0)
-            bin_u32 = _convert_to_uint32(x)
-            bin_i32 = ((bin_u32 >> shift) & 0xFF).to(tl.int32)
+        selected_u = selected.to(tl.uint32)
+        desired = desired | (selected_u << digit_pos)
+        desired_mask = desired_mask | (tl.full((), RADIX_MASK, dtype=tl.uint32) << digit_pos)
+        k_to_find = k_to_find - counts_gt
 
-            gt_thr = bin_i32 > threshold
-            eq_thr = bin_i32 == threshold
-            pos = tl.atomic_add(hist_row + bin_i32 + 1, ones, mask=valid & gt_thr & active)
-            pos = tl.where(valid & gt_thr & active, pos, 0)
-            out_pos = pos + start_pos
-            tl.store(
-                out_row + out_pos * stride_outn,
-                cand_idx,
-                mask=valid & gt_thr & active & (out_pos < TOPK),
-            )
+    thr_key = desired
 
-            if round_id == 3:
-                pos_eq = tl.atomic_add(hist_row + bin_i32 + 1, ones, mask=valid & eq_thr & active & (l_new_topk > 0))
-                pos_eq = tl.where(valid & eq_thr & active, pos_eq, 0)
-                out_pos = pos_eq + start_pos
-                tl.store(
-                    out_row + out_pos * stride_outn,
-                    cand_idx,
-                    mask=valid & eq_thr & active & (out_pos < TOPK) & (l_new_topk > 0),
-                )
-            else:
-                num_ptrs = num_row + next_idx + tl.zeros([BLOCK_SIZE], tl.int32)
-                pos_eq = tl.atomic_add(num_ptrs, ones, mask=valid & eq_thr & active & (l_new_topk > 0))
-                pos_eq = tl.where(valid & eq_thr & active, pos_eq, 0)
-                tl.store(
-                    input_row + next_idx * stride_input_r + pos_eq * stride_input_c,
-                    cand_idx,
-                    mask=valid & eq_thr & active & (pos_eq < SMEM_INPUT) & (l_new_topk > 0),
-                )
+    # Compact candidates: first all keys > threshold, then keys == threshold.
+    tl.store(num_row + tl.arange(0, 2), 0)
+    num_ptrs = num_row + tl.zeros([BLOCK_SIZE], tl.int32)
+
+    for t in tl.range(0, n_tiles):
+        offs = t * BLOCK_SIZE + lane
+        in_range = (offs < seq_len) & (offs >= row_start) & (offs < row_end)
+        x = tl.load(row_ptr + offs * stride_xn, mask=in_range, other=float("-inf"))
+        x_key = _convert_to_uint32(x)
+        take_gt = in_range & (x_key > thr_key)
+        pos = tl.atomic_add(num_ptrs, ones, mask=take_gt)
+        tl.store(out_row + pos * stride_outn, offs.to(tl.int32), mask=take_gt & (pos < TOPK))
+
+    for t in tl.range(0, n_tiles):
+        offs = t * BLOCK_SIZE + lane
+        in_range = (offs < seq_len) & (offs >= row_start) & (offs < row_end)
+        x = tl.load(row_ptr + offs * stride_xn, mask=in_range, other=float("-inf"))
+        x_key = _convert_to_uint32(x)
+        take_eq = in_range & (x_key == thr_key)
+        pos = tl.atomic_add(num_ptrs, ones, mask=take_eq)
+        tl.store(out_row + pos * stride_outn, offs.to(tl.int32), mask=take_eq & (pos < TOPK))
 
 
 # %%
@@ -672,8 +572,7 @@ if _HAVE_TILELANG:
 def _allocate_triton_scratch(batch, smem_input, device):
     hist = torch.empty((batch, RADIX + 1), dtype=torch.int32, device=device)
     num = torch.empty((batch, 2), dtype=torch.int32, device=device)
-    input_idx = torch.empty((batch, 2, smem_input), dtype=torch.int32, device=device)
-    return hist, num, input_idx
+    return hist, num
 
 
 def triton_topk_selector(
@@ -695,10 +594,11 @@ def triton_topk_selector(
         out = torch.full((batch, topk), -1, dtype=torch.int32, device=x.device)
     if scratch is None:
         scratch = _allocate_triton_scratch(batch, smem_input, x.device)
-    hist, num, input_idx = scratch
+    if len(scratch) == 3:
+        hist, num, _ = scratch
+    else:
+        hist, num = scratch
 
-    n_tiles = triton.cdiv(seq_len, block_size)
-    num_input_tiles = triton.cdiv(smem_input, block_size)
     if assume_aligned is None:
         assume_aligned = (x.is_contiguous() and out.is_contiguous() and (seq_len % block_size == 0)
                           and torch.all(starts == 0).item() and torch.all(ends == seq_len).item())
@@ -711,24 +611,17 @@ def triton_topk_selector(
         ends,
         hist,
         num,
-        input_idx,
         x.stride(0),
         x.stride(1),
         out.stride(0),
         out.stride(1),
         hist.stride(0),
         num.stride(0),
-        input_idx.stride(0),
-        input_idx.stride(1),
-        input_idx.stride(2),
         seq_len,
-        RADIX=RADIX,
+        RADIX_BITS=8,
         ASSUME_ALIGNED=assume_aligned,
         TOPK=topk,
         BLOCK_SIZE=block_size,
-        N_TILES=n_tiles,
-        SMEM_INPUT=smem_input,
-        NUM_INPUT_TILES=num_input_tiles,
         num_warps=num_warps,
     )
     return out
@@ -809,20 +702,95 @@ def _recall(pred, ref):
     return hits / (batch * k)
 
 
-def _bench(label, fn, warmup=5, rep=20):
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(rep):
-        fn()
-    end.record()
-    torch.cuda.synchronize()
-    ms = start.elapsed_time(end) / rep
-    print(f"{label}: {ms:.3f} ms")
-    return ms
+_BENCH_PROVIDERS = ["triton", "tle", "torch"] + (["tilelang"] if _HAVE_TILELANG else [])
+_BENCH_NAMES = ["Triton-Radix", "TLE-DeepSeek", "Torch-TopK"] + (["TileLang"] if _HAVE_TILELANG else [])
+_BENCH_STYLES = [("red", "-"), ("orange", "-"), ("green", "-")] + ([("blue", "-")] if _HAVE_TILELANG else [])
+
+
+@triton.testing.perf_report(
+    triton.testing.Benchmark(
+        x_names=["batch", "seq_len", "topk"],
+        x_vals=[
+            (64, 4096, 128),
+            (64, 8192, 256),
+            (64, 32768, 1024),
+            (64, 32768, 2048),
+        ],
+        x_log=True,
+        line_arg="provider",
+        line_vals=_BENCH_PROVIDERS,
+        line_names=_BENCH_NAMES,
+        styles=_BENCH_STYLES,
+        ylabel="ms",
+        plot_name="tle-deepseek-v32-topk-selector",
+        args={},
+    )
+)
+def benchmark(batch, seq_len, topk, provider, block_size, smem_input, num_warps, warmup, rep):
+    if topk > smem_input:
+        return float("nan"), float("nan"), float("nan")
+
+    torch.manual_seed(1)
+    x = torch.randn(batch, seq_len, device=DEVICE, dtype=torch.float32)
+    starts = torch.zeros(batch, dtype=torch.int32, device=DEVICE)
+    ends = torch.full((batch, ), seq_len, dtype=torch.int32, device=DEVICE)
+    assume_aligned = (seq_len % block_size == 0)
+    quantiles = [0.5, 0.2, 0.8]
+
+    if provider == "triton":
+        triton_scratch = _allocate_triton_scratch(batch, smem_input, x.device)
+        triton_out = torch.full((batch, topk), -1, dtype=torch.int32, device=x.device)
+
+        def run():
+            triton_topk_selector(
+                x,
+                starts,
+                ends,
+                topk,
+                block_size=block_size,
+                num_warps=num_warps,
+                smem_input=smem_input,
+                out=triton_out,
+                scratch=triton_scratch,
+                assume_aligned=assume_aligned,
+            )
+
+    elif provider == "tle":
+        tle_out = torch.full((batch, topk), -1, dtype=torch.int32, device=x.device)
+
+        def run():
+            tle_topk_selector(
+                x,
+                starts,
+                ends,
+                topk,
+                block_size=block_size,
+                num_warps=num_warps,
+                smem_input=smem_input,
+                out=tle_out,
+                assume_aligned=assume_aligned,
+            )
+
+    elif provider == "torch":
+
+        def run():
+            torch.topk(x, topk, dim=-1)[1]
+
+    else:
+        if not _HAVE_TILELANG:
+            return float("nan"), float("nan"), float("nan")
+        tilelang_out = torch.zeros((batch, topk), dtype=torch.int32, device=x.device)
+
+        def run():
+            tilelang_topk_selector(x, starts, ends, topk, out=tilelang_out)
+
+    ms, min_ms, max_ms = triton.testing.do_bench(
+        run,
+        quantiles=quantiles,
+        warmup=warmup,
+        rep=rep,
+    )
+    return ms, max_ms, min_ms
 
 
 def run_correctness(batch, seq_len, topk, block_size, smem_input, num_warps):
@@ -867,61 +835,16 @@ def run_correctness(batch, seq_len, topk, block_size, smem_input, num_warps):
         print("TileLang not available; skipping TileLang correctness.")
 
 
-def run_bench(batch, seq_len, topk, block_size, smem_input, num_warps, warmup, rep):
-    torch.manual_seed(1)
-    x = torch.randn(batch, seq_len, device=DEVICE, dtype=torch.float32)
-    starts = torch.zeros(batch, dtype=torch.int32, device=DEVICE)
-    ends = torch.full((batch, ), seq_len, dtype=torch.int32, device=DEVICE)
-    assume_aligned = (seq_len % block_size == 0)
-
-    triton_scratch = _allocate_triton_scratch(batch, smem_input, x.device)
-    triton_out = torch.full((batch, topk), -1, dtype=torch.int32, device=x.device)
-    tle_out = torch.full((batch, topk), -1, dtype=torch.int32, device=x.device)
-
-    def run_triton():
-        triton_topk_selector(
-            x,
-            starts,
-            ends,
-            topk,
-            block_size=block_size,
-            num_warps=num_warps,
-            smem_input=smem_input,
-            out=triton_out,
-            scratch=triton_scratch,
-            assume_aligned=assume_aligned,
-        )
-
-    def run_tle():
-        tle_topk_selector(
-            x,
-            starts,
-            ends,
-            topk,
-            block_size=block_size,
-            num_warps=num_warps,
-            smem_input=smem_input,
-            out=tle_out,
-            assume_aligned=assume_aligned,
-        )
-
-    def run_torch():
-        torch.topk(x, topk, dim=-1)[1]
-
-    print("Benchmark (ms):")
-    _bench("Triton", run_triton, warmup=warmup, rep=rep)
-    _bench("TLE", run_tle, warmup=warmup, rep=rep)
-    _bench("torch.topk", run_torch, warmup=warmup, rep=rep)
-
-    if _HAVE_TILELANG:
-        tilelang_out = torch.zeros((batch, topk), dtype=torch.int32, device=x.device)
-
-        def run_tilelang():
-            tilelang_topk_selector(x, starts, ends, topk, out=tilelang_out)
-
-        _bench("TileLang", run_tilelang, warmup=warmup, rep=rep)
-    else:
-        print("TileLang not available; skipping TileLang benchmark.")
+def run_bench(block_size, smem_input, num_warps, warmup, rep, show_plots):
+    benchmark.run(
+        print_data=True,
+        show_plots=show_plots,
+        block_size=block_size,
+        smem_input=smem_input,
+        num_warps=num_warps,
+        warmup=warmup,
+        rep=rep,
+    )
 
 
 # %%
@@ -939,6 +862,7 @@ def main(argv=None):
     parser.add_argument("--num_warps", type=int, default=32, help="num warps")
     parser.add_argument("--warmup", type=int, default=5, help="warmup iters")
     parser.add_argument("--rep", type=int, default=20, help="benchmark iters")
+    parser.add_argument("--show_plots", action="store_true", help="show plots in benchmark")
     parser.add_argument("--skip_correctness", action="store_true", help="skip correctness check")
     parser.add_argument("--skip_bench", action="store_true", help="skip benchmark")
     args = parser.parse_args(argv)
@@ -958,14 +882,12 @@ def main(argv=None):
 
     if not args.skip_bench:
         run_bench(
-            batch=args.batch,
-            seq_len=args.seq_len,
-            topk=args.topk,
             block_size=args.block_size,
             smem_input=args.smem_input,
             num_warps=args.num_warps,
             warmup=args.warmup,
             rep=args.rep,
+            show_plots=args.show_plots,
         )
 
 
