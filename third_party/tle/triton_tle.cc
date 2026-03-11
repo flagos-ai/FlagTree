@@ -85,11 +85,20 @@ void init_triton_tle_ir(py::module &&m) {
            py::arg("input"),
            py::arg("index"),
            py::arg("tileShape"),
-           "Create extract_tile operation with static offsets")
+           "Create extract_tile operation")
       .def("create_insert_tile",
-            [](TritonOpBuilder &self, Value &input, Value &tile, Value &index) {
-              return self.create<tle::InsertTileOp>(input, tile, index);
-            })
+           [](TritonOpBuilder &self, Value &input,
+              Value &tile,
+              Value &index) -> Value {
+             auto op = self.create<tle::InsertTileOp>(
+                 input, tile, index
+             );
+             return op.getResult();
+           },
+           py::arg("input"),
+           py::arg("tile"),
+           py::arg("index"),
+           "Create insert_tile operation")
       // TLE-Struct
       .def("make_swizzled_shared_encoding_attr",
             [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
@@ -260,6 +269,8 @@ void init_triton_tle_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_lower_tma_copy", tle::createTritonTleLowerTmaCopy);
 
   ADD_PASS_WRAPPER_0("add_lower_extract_tile", tle::createTritonTleLowerExtractTile);
+  
+  ADD_PASS_WRAPPER_0("add_lower_insert_tile", tle::createTritonTleLowerInsertTile);
 }
 
 void init_tle_raw_ir(py::module &&m) {

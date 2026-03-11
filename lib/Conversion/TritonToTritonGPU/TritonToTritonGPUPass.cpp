@@ -878,13 +878,71 @@ public:
   }
 };
 
+// insert_tile op pattern
+class TleInsertTileOpPattern : public OpConversionPattern<tle::InsertTileOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tle::InsertTileOp op, 
+                  tle::InsertTileOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Debug trace for pattern activation and input IR before rewrite.
+    llvm::errs() << "\n========== TleInsertTileOpPattern ==========\n";
+    llvm::errs() << "Before conversion:\n";
+    op->dump();
+
+    // Source must be a ranked tensor so we can read and propagate encoding.
+    auto srcType = dyn_cast<RankedTensorType>(adaptor.getSrc().getType());
+    if (!srcType) {
+      llvm::errs() << "ERROR: source is not ranked tensor\n";
+      return op.emitError("source must be a ranked tensor");
+    }
+    llvm::errs() << "Source type: " << srcType << "\n";
+
+    // Keep source encoding as the canonical encoding for the rewritten result.
+    auto srcEnc = srcType.getEncoding();
+    if (srcEnc) {
+      llvm::errs() << srcEnc << "\n";
+    } else {
+      llvm::errs() << "nullptr\n";
+      return op.emitError("source tensor must have encoding attribute");
+    }
+
+    // Tile must also be ranked and carry encoding for layout-consistent insert.
+    auto tileType = dyn_cast<RankedTensorType>(adaptor.getTile().getType());
+    if (!tileType) {
+      llvm::errs() << "ERROR: tile is not ranked tensor\n";
+      return op.emitError("tile must be a ranked tensor");
+    }
+    llvm::errs() << "Tile type: " << tileType << "\n";
+
+    auto tileEnc = tileType.getEncoding();
+    if (!tileEnc) {
+      llvm::errs() << "tile encoding: nullptr\n";
+      return op.emitError("tile tensor must have encoding attribute");
+    }
+
+    // Rewrite result type by cloning op result shape/element type with src encoding.
+    Type retType = op.getType().cloneWithEncoding(srcEnc);
+
+    // Replace op while preserving existing named attributes.
+    addNamedAttrs(
+        rewriter.replaceOpWithNewOp<tle::InsertTileOp>(
+            op, retType, adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex()),
+        adaptor.getAttributes());
+
+    return success();
+  }
+};
+
 
 // flagtree tle raw
 void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns
-      .add<TleDSLRegionOpPattern,TleExtractTileOpPattern, 
+      .add<TleDSLRegionOpPattern,TleExtractTileOpPattern, TleInsertTileOpPattern,
            GenericOpPattern<tle::LocalPointersOp>,
            GenericOpPattern<tle::RemotePointersOp>,
            GenericOpPattern<tle::DistributedBarrierOp>,

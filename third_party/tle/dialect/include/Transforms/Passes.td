@@ -90,6 +90,18 @@ def TritonTleLowerExtractTile : Pass<"triton-tle-lower-extract-tile", "mlir::Mod
                            "mlir::triton::gpu::TritonGPUDialect"];
 }
 
+def TritonTleLowerInsertTile : Pass<"triton-tle-lower-insert-tile", "mlir::ModuleOp"> {
+  let summary = "Lower TLE insert_tile operations";
+
+  let description = [{
+    This pass lowers tle.insert_tile operations to target-specific GPU
+    operations or equivalent Triton/TritonGPU IR patterns.
+  }];
+
+  let dependentDialects = ["mlir::triton::tle::TleDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect"];
+}
 def TleConvertArgToMemDesc : Pass<"tle-convert-arg-to-memdesc", "mlir::ModuleOp"> {}
 
 def TleDSLRegionInline : Pass<"tle-dslregion-inline", "mlir::ModuleOp"> {}

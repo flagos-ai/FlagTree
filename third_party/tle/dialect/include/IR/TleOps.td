@@ -48,12 +48,13 @@ def Tle_ExtractTileOp : Tle_Op<"extract_tile", [Pure]> {
 
 def Tle_InsertTileOp : Tle_Op<"insert_tile", [Pure,
                                               DeclareOpInterfaceMethods<InferTypeOpInterface>,
-                                              SameOperandsAndResultType]> {
+                                              ]> {
   let arguments = (ins TT_Tensor:$src, TT_Tensor:$tile ,TT_IntLike:$index);
   let results = (outs TT_Tensor:$result);
   let assemblyFormat = [{
-    $src `[` $index `]` `=` $tile attr-dict `:` qualified(type($index)) `,` qualified(type($tile)) `->` qualified(type($result))
+    $src `[` $index `]` `=` $tile attr-dict `:` qualified(type($src)) `,` qualified(type($index)) `,` qualified(type($tile)) `->` qualified(type($result))
   }];
+  let hasVerifier = 1;
 }
 
 // End TLE-Lite

@@ -224,6 +224,130 @@ LogicalResult ExtractTileOp::verify() {
   return success();
 }
 
+// ============================================================================
+// InsertTileOp Type Inference + Verification
+// ============================================================================
+LogicalResult InsertTileOp::inferReturnTypes(
+    MLIRContext *context,
+    std::optional<Location> location,
+    ValueRange operands,
+    DictionaryAttr attributes,
+    OpaqueProperties properties,
+    RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  (void)context;
+  (void)location;
+  (void)attributes;
+  (void)properties;
+  (void)regions;
+
+  // insert_tile(src, tile, index) -> result has the same type as src.
+  if (operands.size() < 3)
+    return failure();
+
+  auto srcTy = dyn_cast<RankedTensorType>(operands[0].getType());
+  auto tileTy = dyn_cast<RankedTensorType>(operands[1].getType());
+  if (!srcTy || !tileTy)
+    return failure();
+
+  // Keep conservative checks here; full diagnostics are handled in verify().
+  if (srcTy.getElementType() != tileTy.getElementType() ||
+      srcTy.getRank() != tileTy.getRank())
+    return failure();
+
+  inferredReturnTypes.clear();
+  inferredReturnTypes.push_back(srcTy);
+  return success();
+}
+
+LogicalResult InsertTileOp::verify() {
+  auto srcTy = cast<RankedTensorType>(getSrc().getType());
+  auto tileTy = cast<RankedTensorType>(getTile().getType());
+  auto dstTy = cast<RankedTensorType>(getResult().getType());
+
+  auto srcShape = srcTy.getShape();
+  auto tileShape = tileTy.getShape();
+  auto dstShape = dstTy.getShape();
+
+  // insert_tile index is the 3rd operand: (src, tile, index).
+  auto idxDef = getOperation()->getOperand(2).getDefiningOp<arith::ConstantOp>();
+  if (!idxDef)
+    return emitOpError("index must be a compile-time constant arith.constant");
+  int64_t index = mlir::cast<mlir::IntegerAttr>(idxDef.getValue()).getInt();
+
+  // 1) Basic type and shape consistency checks.
+  if (srcTy.getElementType() != tileTy.getElementType()) {
+    return emitOpError("tile element type must match source element type");
+  }
+  if (srcTy.getElementType() != dstTy.getElementType()) {
+    return emitOpError("result element type must match source element type");
+  }
+  if (srcTy.getRank() != tileTy.getRank()) {
+    return emitOpError("tile rank must equal source rank");
+  }
+  if (srcTy.getRank() != dstTy.getRank()) {
+    return emitOpError("result rank must equal source rank");
+  }
+  if (dstShape != srcShape) {
+    return emitOpError("result shape must equal source shape");
+  }
+
+  // 2) Compute logical tile-grid shape from src/tile shapes.
+  SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
+  int64_t totalTiles = 1;
+  for (size_t i = 0; i < srcShape.size(); ++i) {
+    if (tileShape[i] <= 0) {
+      return emitOpError("tile shape must be positive at dimension ") << i;
+    }
+    if (srcShape[i] % tileShape[i] != 0) {
+      return emitOpError("source shape must be divisible by tile shape at dimension ")
+             << i << " (source=" << srcShape[i] << ", tile=" << tileShape[i] << ")";
+    }
+    logicalGridShape[i] = srcShape[i] / tileShape[i];
+    totalTiles *= logicalGridShape[i];
+  }
+
+  if (index < 0 || index >= totalTiles) {
+    return emitOpError("index out of bounds for tile grid: index=")
+           << index << ", total_tiles=" << totalTiles;
+  }
+
+  // 3) Delinearize linear index to tile coordinates, then map to element offsets.
+  SmallVector<int64_t> tileIndices(srcShape.size(), 0);
+  int64_t remain = index;
+  for (int i = static_cast<int>(srcShape.size()) - 1; i >= 0; --i) {
+    tileIndices[i] = remain % logicalGridShape[i];
+    remain /= logicalGridShape[i];
+  }
+
+  SmallVector<int64_t> offsets(srcShape.size(), 0);
+  for (size_t i = 0; i < srcShape.size(); ++i) {
+    offsets[i] = tileIndices[i] * tileShape[i];
+  }
+
+  // 4) Bounds check: the full insertion tile must stay inside src.
+  for (size_t i = 0; i < srcShape.size(); ++i) {
+    if (offsets[i] < 0) {
+      return emitOpError("offset must be non-negative at dimension ") << i;
+    }
+    if (offsets[i] + tileShape[i] > srcShape[i]) {
+      return emitOpError("invalid insertion region at dimension ") << i
+             << ": offset(" << offsets[i] << ") + tile(" << tileShape[i]
+             << ") > source(" << srcShape[i] << ")";
+    }
+  }
+
+  // 5) If encodings are present, src and result encodings must match.
+  // insert_tile updates values but does not change the global layout.
+  auto srcEnc = srcTy.getEncoding();
+  auto dstEnc = dstTy.getEncoding();
+  if (srcEnc && dstEnc && srcEnc != dstEnc) {
+    return emitOpError("result encoding must match source encoding");
+  }
+
+  return success();
+}
+
 LogicalResult DSLRegionOp::verify() {
   Region &body = getBody();
   const uint32_t numArguments = body.getNumArguments(),

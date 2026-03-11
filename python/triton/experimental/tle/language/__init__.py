@@ -22,7 +22,7 @@ from .distributed import (
 )
 
 from . import distributed, gpu, raw
-from .gpu import extract_tile
+from .gpu import extract_tile, insert_tile
 
 __all__ = [
     "load",
@@ -43,4 +43,5 @@ __all__ = [
     "gpu",
     "raw",
     "extract_tile",
+    "insert_tile",
 ]

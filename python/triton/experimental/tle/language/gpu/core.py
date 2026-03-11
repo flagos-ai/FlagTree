@@ -586,6 +586,132 @@ def extract_tile(
             f"Failed to create extract_tile operation: {str(e)}"
         ) from e
 
+@tl.builtin
+def insert_tile(
+    x: tl.tensor,
+    tile: tl.tensor,
+    index,
+    _semantic=None,
+) -> tl.tensor:
+    """
+    Insert a tile into source tensor at a static tile index.
+
+    Supports either multi-dimensional index (e.g. [i, j]) or
+    scalar linear index.
+    """
+    # Basic type checks for source and tile tensors.
+    if not isinstance(x, tl.tensor):
+        raise ValueError(f"Source must be tl.tensor, but got {type(x)}")
+    if not isinstance(tile, tl.tensor):
+        raise ValueError(f"Tile must be tl.tensor, but got {type(tile)}")
+
+    # Shapes must be compile-time integers so tile-grid math stays static.
+    src_shape = [tl._unwrap_if_constexpr(dim) for dim in x.type.shape]
+    tile_shape = [tl._unwrap_if_constexpr(dim) for dim in tile.type.shape]
+    if any(not isinstance(dim, int) for dim in src_shape):
+        raise ValueError("Source shape must be static for insert_tile")
+    if any(not isinstance(dim, int) for dim in tile_shape):
+        raise ValueError("Tile shape must be static for insert_tile")
+    if len(src_shape) != len(tile_shape):
+        raise ValueError(
+            f"Source rank ({len(src_shape)}) must match tile rank ({len(tile_shape)})"
+        )
+    if x.type.element_ty != tile.type.element_ty:
+        raise ValueError(
+            f"Element type mismatch: source={x.type.element_ty}, tile={tile.type.element_ty}"
+        )
+
+    # Build per-dimension tile grid: how many tiles exist in each axis.
+    grid = []
+    for i, (src_dim, tile_dim) in enumerate(zip(src_shape, tile_shape)):
+        if tile_dim <= 0:
+            raise ValueError(f"Tile dimension {i} must be positive, got {tile_dim}")
+        if src_dim % tile_dim != 0:
+            raise ValueError(
+                f"Source dimension {i}: {src_dim} must be divisible by tile dimension {tile_dim}"
+            )
+        grid.append(src_dim // tile_dim)
+
+    # Normalize index by unwrapping constexpr / wrapper values first.
+    index_unwrapped = index
+    try:
+        index_unwrapped = tl._unwrap_if_constexpr(index_unwrapped)
+    except Exception:
+        pass
+    try:
+        if hasattr(index_unwrapped, "value"):
+            index_unwrapped = index_unwrapped.value
+    except Exception:
+        pass
+
+    index_list = None
+    if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
+        index_list = list(index_unwrapped)
+
+    # Path A: multi-dimensional index -> validate each axis -> linearize.
+    if index_list is not None:
+        if len(index_list) != len(src_shape):
+            raise ValueError(
+                f"Index rank {len(index_list)} must match source rank {len(src_shape)}"
+            )
+
+        idx = []
+        for i, v in enumerate(index_list):
+            unwrapped = tl._unwrap_if_constexpr(v)
+            if not isinstance(unwrapped, int):
+                raise ValueError(
+                    f"Tuple index must contain int or tl.constexpr values, got {type(unwrapped)}"
+                )
+            if unwrapped < 0 or unwrapped >= grid[i]:
+                raise ValueError(
+                    f"Index[{i}]={unwrapped} out of bounds for tile grid (0~{grid[i]-1})"
+                )
+            idx.append(unwrapped)
+
+        linear_index = 0
+        stride = 1
+        for i in reversed(list(builtins.range(len(grid)))):
+            linear_index += idx[i] * stride
+            stride *= grid[i]
+        index_value = linear_index
+    else:
+        # Path B: scalar index -> treat as already-linearized tile id.
+        index_value = tl._unwrap_if_constexpr(index_unwrapped)
+        if not isinstance(index_value, int):
+            raise ValueError(
+                f"Scalar index must be int or tl.constexpr, got {type(index_value)}"
+            )
+        if index_value < 0:
+            raise ValueError("Scalar index must be non-negative")
+
+        total_tiles = 1
+        for g in grid:
+            total_tiles *= g
+        if index_value >= total_tiles:
+            raise ValueError(
+                f"Scalar index {index_value} out of bounds for total tiles {total_tiles}"
+            )
+
+    # Optional semantic pass for additional consistency checks.
+    try:
+        from .semantic import TLESemantic
+        if isinstance(_semantic, TLESemantic):
+            _semantic.analyze_insert_tile_operation(x, tile, index_value)
+    except ImportError:
+        pass
+
+    # Lower to IR and construct output tensor with the source tensor type.
+    try:
+        index_ir = _semantic._convert_to_ir_values([index_value], require_i64=False)[0]
+        output = _semantic.builder.create_insert_tile(
+            x.handle,
+            tile.handle,
+            index_ir,
+        )
+        return tl.tensor(output, x.type)
+    except Exception as e:
+        raise RuntimeError(f"Failed to create insert_tile operation: {str(e)}") from e
+
 
 def _expand_index_to_shape(index: tl.tensor, shape: Sequence[int], axis: int, _semantic) -> tl.tensor:
     idx = index

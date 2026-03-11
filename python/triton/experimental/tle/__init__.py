@@ -8,6 +8,7 @@ except ModuleNotFoundError:
 
 from .language.gpu import (
     extract_tile,
+    insert_tile,
     alloc,
     copy,
     local_load,
@@ -17,6 +18,7 @@ from .language.gpu import (
 __all__ = [
     "language",
     "extract_tile",
+    "insert_tile",
     "alloc",
     "copy",
     "local_load",

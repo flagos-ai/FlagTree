@@ -14,4 +14,10 @@ void populateExtractTileOpToLLVMPatterns(
     unsigned benefit = 1
 );
 
+void populateInsertTileOpToLLVMPatterns(
+    mlir::LLVMTypeConverter &typeConverter,
+    mlir::RewritePatternSet &patterns,
+    unsigned benefit = 1
+);
+
 } // namespace mlir::triton::tle

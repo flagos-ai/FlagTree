@@ -4,8 +4,11 @@ add_triton_library(TritonTLETransforms
   TleAssignLocalPointersEncoding.cpp
   TleInsertLocalPointerBarriers.cpp
   TleLowerAsyncLoad.cpp
+  TleTileToLLVMUtils.cpp
   ExtractTileToLLVM.cpp
+  InsertTileToLLVM.cpp
   TleLowerExtractTile.cpp
+  TleLowerInsertTile.cpp
   TleLowerTmaCopy.cpp
   ConvertArgToMemDesc.cpp
   DSLRegionInline.cpp
