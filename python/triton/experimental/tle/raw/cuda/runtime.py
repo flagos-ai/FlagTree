@@ -1,9 +1,8 @@
 from __future__ import annotations
-import copy
 import os
 from pathlib import Path
 import subprocess
-from typing import Any, Dict, Final
+from typing import Any, Final
 
 # TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 CLANG = os.getenv("CLANG", "clang")
