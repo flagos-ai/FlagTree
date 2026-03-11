@@ -1,6 +1,23 @@
 [<img width="2182" height="602" alt="github+banner-20260130" src=".github/assets/banner-20260130.png" />](https://flagos.io/)
-
 [[中文版](./README_cn.md)|English]
+
+<div align="right">
+  <a href="https://www.linkedin.com/company/flagos-community" target="_blank">
+    <img src="./docs/assets/Linkedin.png" alt="LinkIn" width="32" height="32" />
+  </a>
+
+  <a href="https://www.youtube.com/@FlagOS_Official" target="_blank">
+    <img src="./docs/assets/youtube.png" alt="YouTube" width="32" height="32" />
+  </a>
+
+  <a href="https://x.com/FlagOS_Official" target="_blank">
+    <img src="./docs/assets/x.png" alt="X" width="32" height="32" />
+  </a>
+
+  <a href="https://www.facebook.com/FlagOSCommunity" target="_blank">
+    <img src="./docs/assets/Facebook.png" alt="X" width="32" height="32" />
+  </a>
+</div>
 
 FlagTree is part of [FlagOS](https://flagos.io/), a fully open-source system software stack designed to unify the model–system–chip layers and foster an open and collaborative ecosystem.
 It enables a "develop once, run anywhere" workflow across diverse AI accelerators,
