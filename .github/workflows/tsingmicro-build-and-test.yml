@@ -15,36 +15,10 @@ jobs:
     runs-on: tsingmicro
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
-      - name: Checkout code (attempt 1)
-        id: checkout1
-        uses: actions/checkout@v6
-        continue-on-error: true
-
-      - name: Sleep before checkout2
-        if: steps.checkout1.outcome == 'failure'
-        run: |
-          echo "First checkout attempt failed. Sleeping for 120 seconds before retry..."
-          sleep 120
-
-      - name: Checkout code (attempt 2)
-        id: checkout2
-        if: steps.checkout1.outcome == 'failure'
-        uses: actions/checkout@v6
-        continue-on-error: true
-
-      - name: Sleep before final checkout
-        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
-        run: |
-          echo "Second checkout attempt failed. Sleeping for 180 seconds before final retry..."
-          sleep 180
-
-      - name: Checkout code (final attempt)
-        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
-        uses: actions/checkout@v6
-
-      - name: Verify checkout success
-        if: success()
-        run: echo "Checkout completed successfully"
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
 
       - name: Check if only docs files changed
         id: check_files
