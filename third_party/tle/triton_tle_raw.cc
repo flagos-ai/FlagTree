@@ -119,7 +119,6 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
     ops.append(std::move(rets));
   }
   builder.setInsertionPointToEnd(newBlock);
-  builder.setInsertionPointToEnd(newBlock);
   LLVM::CallOp callOp = self.create<LLVM::CallOp>(funcOp, ops);
   callOp.setAlwaysInline(true);
   tgts = ValueRange(outputs).getTypes();
