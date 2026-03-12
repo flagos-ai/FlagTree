@@ -4,7 +4,7 @@ inputs:
   checkout_version:
     description: 'The version of actions/checkout to use'
     required: false
-    default: 'v6' 
+    default: 'v6'
 
 runs:
   using: 'composite'
@@ -42,4 +42,3 @@ runs:
       shell: bash
       if: success()
       run: echo "Checkout completed successfully"
-      
