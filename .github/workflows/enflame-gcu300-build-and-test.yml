@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame-build-and-test:
+  enflame-gcu300-build-and-test:
     runs-on: enflame-gcu300
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
