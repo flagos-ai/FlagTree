@@ -36,7 +36,5 @@ class CUDAJITFunction(object):
             capture_output=True,
         )
         llvm_context = llvm.context()
-        mlir_context = ir.context()
-        ir.load_dialects(mlir_context)
-        module = parse(build.stdout.decode(), llvm_context, mlir_context)
+        module = parse_llvm_ir(build.stdout.decode(), llvm_context, mlir_context)
         return f"{module}"
