@@ -62,7 +62,7 @@ jobs:
 
       - name: Check if only docs files changed
         id: check_files
-        uses: flagos-ai/FlagTree/.github/actions/check-docs-only@main
+        uses: flagos-ai/FlagTree/.github/actions/check-docs-only@fix_check-docs-only_20260312
 
       - name: Detect Target Branch
         shell: bash
