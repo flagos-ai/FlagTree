@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   enflame-build-and-test:
-    runs-on: enflame
+    runs-on: enflame-gcu300
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
