@@ -1,12 +1,12 @@
-from __future__ import annotations
+rom __future__ import annotations
+import copy
 import os
 from pathlib import Path
 import subprocess
-from typing import Any, Final
+from typing import Any, Dict, Final
 
 from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
-
 
 # TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 CLANG = os.getenv("CLANG", "clang")
@@ -20,8 +20,10 @@ class CUDAJITFunction(object):
         self.code: Final[str] = file.read_text()
         self.__triton_builtin__: Final[bool] = True
 
-    @property
-    def llvm(self) -> str:
+    def __deepcopy__(self, memo: Dict[int, Any]) -> CUDAJITFunction:
+        return self.__class__(copy.deepcopy(self.fn, memo), copy.deepcopy(self.pipeline, memo), self.context)
+
+    def make_llvm(self, mlir_context) -> str:
         build = subprocess.run(
             [
                 CLANG,
