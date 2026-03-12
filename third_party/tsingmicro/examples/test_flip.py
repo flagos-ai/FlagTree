@@ -4,7 +4,7 @@ import triton
 import triton.language as tl
 import benchmark
 
-benchmark.select_cpu_backend()
+# benchmark.select_cpu_backend()
 from triton._internal_testing import numpy_random
 
 
