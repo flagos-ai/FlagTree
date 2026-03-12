@@ -5,6 +5,8 @@ import subprocess
 from typing import Any, Final
 
 from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
+from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
+
 
 # TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 CLANG = os.getenv("CLANG", "clang")
