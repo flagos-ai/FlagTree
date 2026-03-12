@@ -270,7 +270,6 @@ void init_tle_raw_passes(py::module &&m) {
 }
 
 void init_llvm(py::module &&m) {
-  using ret = py::return_value_policy;
   m.def("parse",
         [](std::string_view text, llvm::LLVMContext &llvmContext,
            mlir::MLIRContext &mlirContext) -> mlir::ModuleOp {

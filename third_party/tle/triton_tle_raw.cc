@@ -125,7 +125,6 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   builder.setInsertionPointToEnd(newBlock);
   LLVM::CallOp callOp = self.create<LLVM::CallOp>(funcOp, ops);
   callOp.setAlwaysInline(true);
-  SmallVector<Value> finalResults;
 
   tgts = dslRegionOp.getOutputs().getTypes();
   for (auto &oldBlock : func.getBlocks()) {
