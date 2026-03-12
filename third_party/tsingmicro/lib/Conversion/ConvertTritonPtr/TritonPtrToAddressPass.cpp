@@ -25,8 +25,8 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton-shared/Conversion/ConvertTritonPtr/TritonPtrToAddress.h"
+#include "triton-shared/Utils/Utils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "utils/utils.h"
 
 #define DEBUG_TYPE "triton-to-ptr"
 

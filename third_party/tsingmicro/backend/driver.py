@@ -80,6 +80,10 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
         cc_cmd += ["-DENABLE_PROFILING"]
     if txda_tools.is_debug():
         cc_cmd += ["-DCMAKE_BUILD_TYPE=Debug"]
+    if txda_tools.is_enable_kernel_file_cache():
+        cc_cmd += ["-DENABLE_KERNEL_FILE_CACHE"]
+        kernel_size = txda_tools.get_kernel_cache_size()
+        cc_cmd += ["-DKERNEL_CACHE_SIZE=" + kernel_size]
     cc_cmd += [f'-l{lib}' for lib in libraries]
     if txda_tools.is_use_profile():
         profiling_flag = "tx8_profiling"
@@ -425,6 +429,7 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
 
 #include "tx_runtime.h"
 
+
 #ifdef ENABLE_PROFILING
     #include "tsm_profiler.h"
     #define PROFILE_CALL(func, ...) func(__VA_ARGS__)
@@ -537,7 +542,138 @@ struct Launch_args {{
     int log_level = simple_logger::ERROR;
 }};
 
-static int read_bin_file(const char *file_name, char **content, size_t *length) {{
+#ifdef ENABLE_KERNEL_FILE_CACHE
+typedef struct cache_entry {{
+    char *path;
+    void *data;
+    size_t size;
+    struct cache_entry *next;
+}} cache_entry_t;
+
+static cache_entry_t *cache_table[KERNEL_CACHE_SIZE];
+
+static uint32_t hash_string(const char *str) {{
+    uint32_t c = 0;
+    uint64_t hash = 5381;
+    while ((c = *str++)) {{
+        hash = ((hash << 5) + hash) + c;
+    }}
+    return hash % KERNEL_CACHE_SIZE;
+}}
+
+static cache_entry_t *find_entry(const char *path) {{
+    unsigned int idx = hash_string(path);
+    cache_entry_t *entry = cache_table[idx];
+    while (entry) {{
+        if (strcmp(entry->path, path) == 0)
+            return entry;
+        entry = entry->next;
+    }}
+    return NULL;
+}}
+
+static void insert_entry(cache_entry_t *entry) {{
+    unsigned int idx = hash_string(entry->path);
+    entry->next = cache_table[idx];
+    cache_table[idx] = entry;
+}}
+
+static cache_entry_t *create_entry_from_file(const char *path) {{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {{
+        perror("fopen");
+        return NULL;
+    }}
+
+    if (fseek(fp, 0, SEEK_END) != 0) {{
+        perror("fseek");
+        fclose(fp);
+        return NULL;
+    }}
+    long size = ftell(fp);
+    if (size == -1) {{
+        perror("ftell");
+        fclose(fp);
+        return NULL;
+    }}
+    rewind(fp);
+
+    void *data = NULL;
+    if (size > 0) {{
+        data = malloc(size);
+        if (!data) {{
+            perror("malloc");
+            fclose(fp);
+            return NULL;
+        }}
+
+        size_t read_len = fread(data, 1, size, fp);
+        if (read_len != (size_t)size) {{
+            if (feof(fp))
+                fprintf(stderr, "======== Unexpected EOF =======");
+            else if (ferror(fp))
+                perror("fread");
+            free(data);
+            fclose(fp);
+            return NULL;
+        }}
+    }}
+    fclose(fp);
+
+    cache_entry_t *entry = reinterpret_cast<cache_entry_t *>(malloc(sizeof(cache_entry_t)));
+    if (!entry) {{
+        perror("malloc entry");
+        free(data);
+        return NULL;
+    }}
+
+    entry->path = reinterpret_cast<char *>(malloc(strlen(path) + 1));
+    if (!entry->path) {{
+        perror("malloc path");
+        free(data);
+        free(entry);
+        return NULL;
+    }}
+
+    strcpy(entry->path, path);
+    entry->data = data;
+    entry->size = size;
+    entry->next = NULL;
+    return entry;
+}}
+
+static void cache_cleanup(void) {{
+    for (int i = 0; i < KERNEL_CACHE_SIZE; i++) {{
+        cache_entry_t *entry = cache_table[i];
+        while (entry) {{
+            cache_entry_t *next = entry->next;
+            free(entry->path);
+            free(entry->data);
+            free(entry);
+            entry = next;
+        }}
+        cache_table[i] = NULL;
+    }}
+}}
+static int read_bin_file(const char *file_name, void **data, size_t *size) {{
+    cache_entry_t *entry = find_entry(file_name);
+    if (entry) {{
+        *data = entry->data;
+        *size = entry->size;
+        return 0;
+    }}
+
+    entry = create_entry_from_file(file_name);
+    if (!entry)
+        return -1;
+
+    insert_entry(entry);
+    *data = entry->data;
+    *size = entry->size;
+    return 0;
+}}
+#else
+static int read_bin_file(const char *file_name, void **data, size_t *size) {{
     FILE *file;
     int64_t file_size;
     size_t bytes_read;
@@ -561,21 +697,21 @@ static int read_bin_file(const char *file_name, char **content, size_t *length) 
         return -1;
     }}
     rewind(file);
-    *length = file_size;
-    *content = reinterpret_cast<char *>(malloc(sizeof(char) * (file_size + 1)));
-    if (*content == NULL) {{
+    *size = file_size;
+    *data = (malloc(file_size + 1));
+    if (*data == NULL) {{
         fclose(file);
         logger.log(simple_logger::ERROR,
-            "file content malloc error %s file_size:%ld\\n", file_name, file_size);
+            "file data malloc error %s file_size:%ld\\n", file_name, file_size);
         return -1;
     }}
 
-    bytes_read = fread(*content, sizeof(char), file_size, file);
-    (*content)[bytes_read] = '\\0';
+    bytes_read = fread(*data, 1, file_size, file);
 
     fclose(file);
     return 0;
 }}
+#endif
 
 void dump_kernel_args(Launch_args &l_args) {{
 
@@ -656,7 +792,7 @@ static void _launch(Launch_args &l_args) {{
 
     // TODO::mv
     uint64_t kernel_len = 0;
-    char* kernel_ptr = nullptr;
+    void* kernel_ptr = nullptr;
     int ret = read_bin_file(l_args.kernel_file, &kernel_ptr, &kernel_len);
     if (ret != 0 || kernel_ptr == nullptr) {{
         PyErr_SetString(PyExc_RuntimeError, "Failed to read kernel so");
@@ -818,6 +954,9 @@ static void* extractTensor(PyObject* tensor_obj) {{
 }}
 
 static PyObject* release(PyObject* self, PyObject* args) {{
+#ifdef ENABLE_KERNEL_FILE_CACHE
+    cache_cleanup();
+#endif
     Py_RETURN_NONE;
 }}
 

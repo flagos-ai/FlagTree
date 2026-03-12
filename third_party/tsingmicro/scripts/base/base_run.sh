@@ -21,7 +21,7 @@ run_model=$args1
 shift
 shift
 
-TRITON=$WORKSPACE/triton
+TRITON=$WORKSPACE/FlagTree
 TX8_DEPS_ROOT=$WORKSPACE/tx8_deps
 LLVM=$WORKSPACE/llvm-a66376b0-ubuntu-x64
 

@@ -37,10 +37,10 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "triton-shared/Utils/Utils.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
-#include "utils/utils.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #ifdef DEBUG_TYPE
@@ -1927,7 +1927,7 @@ struct GemmOpConversion : public OpConversionPattern<tx::GemmOp> {
 
     // Handle dims array - need to convert from attribute to runtime array
     auto dimsAttr = op.getDims();
-    SmallVector<int32_t, 3> dimsValues;
+    SmallVector<int32_t> dimsValues;
     for (auto dimAttr : dimsAttr)
       dimsValues.push_back(cast<IntegerAttr>(dimAttr).getInt());
 
@@ -1935,28 +1935,8 @@ struct GemmOpConversion : public OpConversionPattern<tx::GemmOp> {
     Value rank = rewriter.create<LLVM::ConstantOp>(
         op.getLoc(), i64Ty, rewriter.getI64IntegerAttr(dimsValues.size()));
 
-    // Use alloc to allocate memory for dims array
-    auto dimsArrayI32Ptr = rewriter.create<LLVM::AllocaOp>(
-        op.getLoc(), i32PtrTy, rewriter.getI32Type(), rank,
-        /*alignment=*/0);
-
-    // Store each dimension in the array
-    for (size_t i = 0; i < dimsValues.size(); i++) {
-      // Create the index
-      Value idx = rewriter.create<LLVM::ConstantOp>(
-          op.getLoc(), i64Ty, rewriter.getI32IntegerAttr(i));
-
-      // Create GEP to get pointer to array element
-      Value elemPtr = rewriter.create<LLVM::GEPOp>(
-          op.getLoc(), i64PtrTy, i32Ty, dimsArrayI32Ptr, ArrayRef<Value>{idx});
-
-      // Create the dimension value
-      Value dimValue = rewriter.create<LLVM::ConstantOp>(
-          op.getLoc(), i32Ty, rewriter.getI32IntegerAttr(dimsValues[i]));
-
-      // Store the value
-      rewriter.create<LLVM::StoreOp>(op.getLoc(), dimValue, elemPtr);
-    }
+    auto dimsArrayI32Ptr =
+        int32ArrayToInt32ValueArray(rewriter, op->getLoc(), dimsValues, op);
 
     // Convert boolean attributes
     Value transA = rewriter.create<LLVM::ConstantOp>(

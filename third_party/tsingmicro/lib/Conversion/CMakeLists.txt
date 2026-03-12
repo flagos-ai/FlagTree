@@ -1,9 +1,5 @@
-add_subdirectory(TritonToLinalg)
-add_subdirectory(TritonToStructured)
-add_subdirectory(TritonToUnstructured)
 add_subdirectory(TritonArithToLinalg)
 add_subdirectory(StructuredToMemref)
-add_subdirectory(UnstructuredToMemref)
 add_subdirectory(ConvertTritonPtr)
 add_subdirectory(Tx81MemrefToLLVM)
 add_subdirectory(LinalgToMK)
@@ -16,3 +12,13 @@ add_subdirectory(LinalgTiling)
 add_subdirectory(LinalgFusion)
 add_subdirectory(AllocateSharedMemory)
 add_subdirectory(ExportKernelSymbols)
+add_subdirectory(UnstructuredToMK)
+add_subdirectory(ReconcilePtrCasts)
+
+# in flir
+# add_subdirectory(TritonToLinalg)
+# add_subdirectory(TritonToStructured)
+# add_subdirectory(TritonToUnstructured)
+# add_subdirectory(UnstructuredToMemref)
+
+# add_subdirectory(TritonPtrToMemref)

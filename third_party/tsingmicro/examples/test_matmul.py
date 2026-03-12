@@ -140,7 +140,15 @@ def matmul(a, b, activation=""):
     return c
 
 
-def test_matmul(device):
+@pytest.mark.parametrize("M, K, N, dtype", [  #
+    (M, K, N, dtype)
+    for M in [48, 64, 128]
+    for K in [128, 156, 512]
+    for N in [48, 64, 128]
+    for dtype in [torch.float32, torch.float16, torch.bfloat16]
+])
+def test_matmul(M, K, N, dtype, device='cpu'):
+    # Generate random input tensors
     torch.manual_seed(0)
     rows1 = 179
     cols1 = 167
