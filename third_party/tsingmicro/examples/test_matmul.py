@@ -179,9 +179,8 @@ def bench_matmul(M, N, K, provider):
 
 
 if __name__ == "__main__":
-    # benchmark.select_cpu_backend()
     # test_matmul(179,167,321,torch.float32)
-    test_matmul("txda")
-    # for X in [128 * i for i in range(2, 7)]:
-    #     for provider in ['torch', 'triton']:
-    #         bench_matmul(X, X, X, provider)
+    # test_matmul("txda")
+    for X in [128 * i for i in range(2, 7)]:
+        for provider in ['torch', 'triton']:
+            bench_matmul(X, X, X, provider)

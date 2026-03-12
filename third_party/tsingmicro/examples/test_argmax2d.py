@@ -4,8 +4,6 @@ import triton.language as tl
 import pytest
 import benchmark
 
-benchmark.select_cpu_backend()
-
 
 @triton.jit
 def argmax_kernel_2d(

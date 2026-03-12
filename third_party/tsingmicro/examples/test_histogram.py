@@ -32,8 +32,6 @@ def test_histogram(M, N, device):
 
 
 if __name__ == "__main__":
-    import benchmark
-    benchmark.select_cpu_backend()
     test_histogram(1024, 8, 'cpu')
     # test_histogram_2d(32, 16, 8, 'cpu')
     # test_histogram(2048, 2, 'cpu')

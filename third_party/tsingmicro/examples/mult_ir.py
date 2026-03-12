@@ -182,7 +182,6 @@ def bench_matmul(a, b):
 
 
 if __name__ == "__main__":
-    # benchmark.select_cpu_backend()
     M = 1024
     K = 1024
     N = 1024

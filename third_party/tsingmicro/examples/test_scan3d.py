@@ -152,7 +152,6 @@ def test_scan3d(op, dtype_str, shape, axis, reverse, device):
 
 
 if __name__ == "__main__":
-    benchmark.select_cpu_backend()
     test_scan3d('cumsum', 'float32', (2, 2, 32), 2, False, 'cpu')
     test_scan3d('cumsum', 'float32', (2, 2, 32), 0, False, 'cpu')
     test_scan3d('cumsum', 'float32', (2, 2, 32), 1, False, 'cpu')

@@ -97,6 +97,5 @@ def benchmark_div_rn_triton(size, dtype, provider):
 
 
 if __name__ == "__main__":
-    benchmark.select_cpu_backend()
     for i in [2**i for i in range(22, 25, 1)]:
         benchmark_div_rn_triton(i, torch.float32, provider="triton")

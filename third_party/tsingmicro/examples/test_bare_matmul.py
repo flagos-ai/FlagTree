@@ -58,7 +58,6 @@ def test_bare_matmul(N, dtype, device='cpu'):
 
 
 if __name__ == "__main__":
-    benchmark.select_cpu_backend()
     test_bare_matmul(128, torch.float32)
     # for X in [2**i for i in range(7, 10, 1)]:
     #     for provider in ['test', 'torch', 'triton']:
