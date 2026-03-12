@@ -260,6 +260,7 @@ void init_tle_raw_ir(py::module &&m) {
   auto *builder_cls = ir::getBuilderClass();
   builder_cls->def("create_tle_raw_region_by_llvm_func",
                    &createTLERawRegionByLLVMFunc);
+  builder_cls->def("get_context", &TritonOpBuilder::getContext);
 }
 
 void init_tle_raw_passes(py::module &&m) {
@@ -270,7 +271,7 @@ void init_tle_raw_passes(py::module &&m) {
 }
 
 void init_llvm(py::module &&m) {
-  m.def("parse",
+  m.def("parse_llvm_ir",
         [](std::string_view text, llvm::LLVMContext &llvmContext,
            mlir::MLIRContext &mlirContext) -> mlir::ModuleOp {
           std::unique_ptr<llvm::MemoryBuffer> buffer =
