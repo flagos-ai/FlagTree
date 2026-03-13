@@ -225,6 +225,67 @@ struct BitCastOpInterface
   }
 };
 
+struct SendOpInterface
+    : public BufferizableOpInterface::ExternalModel<SendOpInterface,
+                                                    mk::RemoteStoreOp> {
+  bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
+                              const AnalysisState &state) const {
+    auto sendOp = cast<mk::RemoteStoreOp>(op);
+    // mk.send reads the local src buffer. The dst_addr is "addr-like" and
+    // should not be considered a memory read.
+    return &opOperand == &sendOp.getSrcMutable();
+  }
+
+  bool bufferizesToMemoryWrite(Operation *op, OpOperand &opOperand,
+                               const AnalysisState &state) const {
+    return false;
+  }
+
+  AliasingValueList getAliasingValues(Operation *op, OpOperand &opOperand,
+                                      const AnalysisState &state) const {
+    return {};
+  }
+
+  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
+                          const BufferizationOptions &options) const {
+    auto sendOp = cast<mk::RemoteStoreOp>(op);
+
+    // Nothing to do. This op is already bufferized.
+    if (!isa<TensorType>(sendOp.getDstAddr().getType()) &&
+        !isa<TensorType>(sendOp.getSrc().getType()))
+      return success();
+
+    OpBuilder::InsertionGuard g(rewriter);
+    rewriter.setInsertionPoint(sendOp);
+
+    SmallVector<Value> newOperands(sendOp->getOperands().begin(),
+                                   sendOp->getOperands().end());
+
+    if (isa<TensorType>(sendOp.getDstAddr().getType())) {
+      FailureOr<Value> dstBuffer =
+          getBuffer(rewriter, sendOp.getDstAddr(), options);
+      if (failed(dstBuffer))
+        return failure();
+      newOperands[sendOp.getDstAddrMutable().getOperandNumber()] = *dstBuffer;
+    }
+
+    if (isa<TensorType>(sendOp.getSrc().getType())) {
+      FailureOr<Value> srcBuffer =
+          getBuffer(rewriter, sendOp.getSrc(), options);
+      if (failed(srcBuffer))
+        return failure();
+      newOperands[sendOp.getSrcMutable().getOperandNumber()] = *srcBuffer;
+    }
+
+    OperationState state(sendOp->getLoc(), sendOp->getName(), newOperands,
+                         TypeRange{}, sendOp->getAttrs());
+    Operation *newOp = Operation::create(state);
+    rewriter.insert(newOp);
+    rewriter.eraseOp(sendOp);
+    return success();
+  }
+};
+
 /// Helper structure that iterates over all mkOps in `OpTys` and registers
 /// the `BufferizableOpInterface` with each of them.
 template <typename... Ops> struct MKOpInterfaceHelper {
@@ -263,5 +324,6 @@ void mlir::mk::registerBufferizableOpInterfaceExternalModels(
         MKOpInterfaceHelper<mk::SubVS>::registerOpInterface(ctx);
         MKOpInterfaceHelper<mk::MulVS>::registerOpInterface(ctx);
         mk::BitcastOp::attachInterface<BitCastOpInterface>(*ctx);
+        mk::RemoteStoreOp::attachInterface<SendOpInterface>(*ctx);
       });
 }

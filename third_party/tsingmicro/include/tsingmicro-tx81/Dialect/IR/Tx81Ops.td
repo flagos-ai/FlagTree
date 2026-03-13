@@ -1192,4 +1192,87 @@ def AtomicBarrierOutOp : Tx81Op<"atomic_barrier_out", [MemoryEffects<[MemAlloc, 
   let assemblyFormat = "attr-dict";
 }
 
+// =============================================================================
+// 4.22. TsmTile Communication (Recv/Send)
+// =============================================================================
+
+def RemoteBufferOp : Tx81Op<"remote_buffer", [Pure]> {
+  let summary = "Build a remote buffer descriptor";
+
+  let description = [{
+    Build a lightweight remote buffer descriptor from remote coordinates and a
+    destination base address. This op is used to carry `remote(buffer)` semantics
+    through Tx81 lowering before it is consumed by remote_store.
+  }];
+
+  let arguments = (
+    ins
+    I64:$remote_chip_id_x,
+    I64:$remote_chip_id_y,
+    I64:$remote_die_id,
+    I64:$remote_tile_id,
+    MemRefOrInt:$dst
+  );
+
+  let results = (outs I64:$remote_dst);
+
+  let assemblyFormat = [{
+    $remote_chip_id_x `,` $remote_chip_id_y `,` $remote_die_id `,` $remote_tile_id `,` $dst attr-dict `:` type($remote_chip_id_x) `,` type($remote_chip_id_y) `,` type($remote_die_id) `,` type($remote_tile_id) `,` type($dst)
+  }];
+}
+
+def RemoteLoadOp : Tx81Op<"remote_load", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
+  let summary = "Load data from a source tile into a destination buffer";
+
+  let description = [{
+    Receive data from a source tile and write it into the given destination
+    buffer.
+  }];
+
+  let arguments = (
+    ins
+    I64:$remote_chip_id_x,      // X-coordinate of the remote chip ID
+    I64:$remote_chip_id_y,      // Y-coordinate of the remote chip ID
+    I64:$remote_die_id,         // ID of the remote die
+    I64:$remote_tile_id,        // ID of the remote tile
+    MemRefOrInt:$dst,           // Destination buffer address (receive into here)
+    I32:$elem_bytes,            // Element size in bytes
+    I64:$data_size              // Total data size in bytes
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $remote_chip_id_x `,` $remote_chip_id_y `,` $remote_die_id `,` $remote_tile_id `,` $dst `,` $elem_bytes `,` $data_size attr-dict `:` type($remote_chip_id_x) `,` type($remote_chip_id_y) `,` type($remote_die_id) `,` type($remote_tile_id) `,` type($dst) `,` type($elem_bytes) `,` type($data_size)
+  }];
+}
+
+def RemoteStoreOp : Tx81Op<"remote_store", [MemoryEffects<[MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>]> {
+  let summary = "Store data to a destination tile";
+
+  let description = [{
+    Store data from the current tile to a destination tile. The operation reads
+    from the given source buffer and stores it into the remote destination
+    address.
+  }];
+
+  let arguments = (
+    ins
+    I64:$remote_chip_id_x,      // X-coordinate of the remote chip ID
+    I64:$remote_chip_id_y,      // Y-coordinate of the remote chip ID
+    I64:$remote_die_id,         // ID of the remote die
+    I64:$remote_tile_id,        // ID of the remote tile
+    MemRefOrInt:$dst,           // Remote destination base address
+    MemRefOrInt:$src,           // Source buffer address (read from here)
+    I32:$elem_bytes,            // Element size in bytes
+    I64:$data_size              // Total data size in bytes
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $remote_chip_id_x `,` $remote_chip_id_y `,` $remote_die_id `,` $remote_tile_id `,` $dst `,` $src `,` $elem_bytes `,` $data_size attr-dict `:` type($remote_chip_id_x) `,` type($remote_chip_id_y) `,` type($remote_die_id) `,` type($remote_tile_id) `,` type($dst) `,` type($src) `,` type($elem_bytes) `,` type($data_size)
+  }];
+}
+
 #endif // TSINGMICRO_TX81_OPS

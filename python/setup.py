@@ -741,6 +741,10 @@ def get_packages():
         "triton/backends",
         "triton/tools",
         "triton/tools/extra",
+        "triton/experimental",
+        "triton/experimental/tle",
+        "triton/experimental/tle/language",
+        "triton/experimental/tle/language/dsa",
     ]
     if helper.flagtree_backend == "xpu":
         packages.append("triton/language/extra/xpu")

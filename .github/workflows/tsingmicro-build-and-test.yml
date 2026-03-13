@@ -99,3 +99,4 @@ jobs:
           python3 test_softmax.py >result-test_softmax.txt
           python3 test_vec_add.py >result-test_vec_add.txt
           python3 time1.py >result-time1.txt
+          python3 test_tle_dsa_noc_gemm_4096.py >result-noc_gemm.txt

@@ -1784,6 +1784,169 @@ struct BarrierConversion : public OpConversionPattern<MKOpT> {
   }
 };
 
+struct RemoteLoadConversion : public OpConversionPattern<mk::RemoteLoadOp> {
+  using OpConversionPattern<mk::RemoteLoadOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(mk::RemoteLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // mk.remote_load has 5 operands:
+    //   4 I64 coords (indices 0-3) + 1 dst (index 4).
+    Value dstVal = adaptor.getOperands()[4];
+
+    // Compute elem_bytes and data_size (in bytes) from the dst shaped type.
+    // Prefer compile-time constants for static shapes; fall back to runtime
+    // computation using extracted sizes if needed.
+    Type dstOrigTy = op.getDst().getType();
+    ShapedType shapedTy = dyn_cast<ShapedType>(dstOrigTy);
+    if (!shapedTy)
+      return rewriter.notifyMatchFailure(
+          op, "mk.remote_load dst must be shaped type");
+
+    int64_t elemBytesConst =
+        static_cast<int64_t>(getElemByte(shapedTy.getElementType()));
+    Value elemBytesI32 = rewriter.create<arith::ConstantIntOp>(
+        loc, elemBytesConst, rewriter.getI32Type());
+
+    Value dataSizeI64;
+    if (shapedTy.hasStaticShape()) {
+      int64_t numElems = shapedTy.getNumElements();
+      int64_t totalBytes = numElems * elemBytesConst;
+      dataSizeI64 = rewriter.create<arith::ConstantIntOp>(
+          loc, totalBytes, rewriter.getI64Type());
+    } else {
+      // Dynamic shape: compute element count from runtime sizes.
+      // Requires memref operand to extract metadata.
+      if (!isa<MemRefType>(dstVal.getType()))
+        return rewriter.notifyMatchFailure(
+            op, "dynamic-shaped remote_load requires memref dst");
+      auto [basePtr, sizes, strides] = createMetadata(rewriter, loc, dstVal);
+      (void)basePtr;
+      (void)strides;
+      Value elemCount = calculateElemCount(rewriter, loc, sizes);
+      Value elemCountI64 = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getI64Type(), elemCount);
+      Value elemBytesI64 = rewriter.create<arith::ExtUIOp>(
+          loc, rewriter.getI64Type(), elemBytesI32);
+      dataSizeI64 = rewriter.create<arith::MulIOp>(loc, elemCountI64.getType(),
+                                                   elemCountI64, elemBytesI64);
+    }
+
+    // Convert dst memref to address (I64)
+    Value dstAddr = createAddressFromMemref(rewriter, loc, dstVal);
+
+    // Create tx.remote_load operation.
+    rewriter.create<tx::RemoteLoadOp>(
+        loc,
+        adaptor.getOperands()[0], // remote_chip_id_x
+        adaptor.getOperands()[1], // remote_chip_id_y
+        adaptor.getOperands()[2], // remote_die_id
+        adaptor.getOperands()[3], // remote_tile_id
+        dstAddr,                  // dst (I64 address)
+        elemBytesI32,             // elem_bytes (I32)
+        dataSizeI64               // data_size (I64)
+    );
+
+    // mk.remote_load has results; tx.remote_load is void. Replace results with
+    // dst. (converted) dst operand value, which represents the destination
+    // buffer.
+    if (op->getNumResults() > 0) {
+      SmallVector<Value, 1> repl;
+      repl.reserve(op->getNumResults());
+      for (unsigned i = 0; i < op->getNumResults(); ++i)
+        repl.push_back(dstVal);
+      rewriter.replaceOp(op, repl);
+    } else {
+      rewriter.eraseOp(op);
+    }
+
+    return success();
+  }
+};
+
+struct RemoteStoreConversion : public OpConversionPattern<mk::RemoteStoreOp> {
+  using OpConversionPattern<mk::RemoteStoreOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(mk::RemoteStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // mk.remote_store has 6 operands:
+    //   4 I64 coords (indices 0-3) + 1 dst_addr (index 4) + 1 src (index 5)
+    Value dstAddrVal = adaptor.getOperands()[4];
+    Value srcVal = adaptor.getOperands()[5];
+
+    // Compute elem_bytes and data_size (in bytes) from the src shaped type.
+    Type srcOrigTy = op.getSrc().getType();
+    ShapedType shapedTy = dyn_cast<ShapedType>(srcOrigTy);
+    if (!shapedTy)
+      return rewriter.notifyMatchFailure(
+          op, "mk.remote_store src must be shaped type");
+
+    int64_t elemBytesConst =
+        static_cast<int64_t>(getElemByte(shapedTy.getElementType()));
+    Value elemBytesI32 = rewriter.create<arith::ConstantIntOp>(
+        loc, elemBytesConst, rewriter.getI32Type());
+
+    Value dataSizeI64;
+    if (shapedTy.hasStaticShape()) {
+      int64_t numElems = shapedTy.getNumElements();
+      int64_t totalBytes = numElems * elemBytesConst;
+      dataSizeI64 = rewriter.create<arith::ConstantIntOp>(
+          loc, totalBytes, rewriter.getI64Type());
+    } else {
+      if (!isa<MemRefType>(srcVal.getType()))
+        return rewriter.notifyMatchFailure(
+            op, "dynamic-shaped remote_store requires memref src");
+      auto [basePtr, sizes, strides] = createMetadata(rewriter, loc, srcVal);
+      (void)basePtr;
+      (void)strides;
+      Value elemCount = calculateElemCount(rewriter, loc, sizes);
+      Value elemCountI64 = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getI64Type(), elemCount);
+      Value elemBytesI64 = rewriter.create<arith::ExtUIOp>(
+          loc, rewriter.getI64Type(), elemBytesI32);
+      dataSizeI64 = rewriter.create<arith::MulIOp>(loc, elemCountI64.getType(),
+                                                   elemCountI64, elemBytesI64);
+    }
+
+    // Convert src memref to address (I64)
+    Value srcAddr = createAddressFromMemref(rewriter, loc, srcVal);
+
+    // Convert dst "addr-like" to I64 address.
+    Value dstAddr;
+    if (dstAddrVal.getType().isInteger(64)) {
+      dstAddr = dstAddrVal;
+    } else if (isa<MemRefType>(dstAddrVal.getType())) {
+      dstAddr = createAddressFromMemref(rewriter, loc, dstAddrVal);
+    } else {
+      return rewriter.notifyMatchFailure(
+          op, "mk.remote_store dst_addr must be i64 or memref at MKToTx81");
+    }
+
+    // Create tx.remote_store operation directly with the destination address.
+    rewriter.create<tx::RemoteStoreOp>(
+        loc,
+        adaptor.getOperands()[0], // remote_chip_id_x
+        adaptor.getOperands()[1], // remote_chip_id_y
+        adaptor.getOperands()[2], // remote_die_id
+        adaptor.getOperands()[3], // remote_tile_id
+        dstAddr,                  // dst (I64 address)
+        srcAddr,                  // src (I64 address)
+        elemBytesI32,             // elem_bytes (I32)
+        dataSizeI64               // data_size (I64)
+    );
+
+    // mk.remote_store has no results, just erase it
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 struct PrintConversion : public OpConversionPattern<mk::PrintOp> {
   using OpConversionPattern<mk::PrintOp>::OpConversionPattern;
 
@@ -2203,6 +2366,8 @@ void mlir::triton::populateMKToTx81ConversionPatterns(
                BarrierConversion<mk::AtomicBarrierInOp,tx::AtomicBarrierInOp>,
                BarrierConversion<mk::AtomicBarrierOutOp,tx::AtomicBarrierOutOp>,
                PrintConversion,
+               RemoteStoreConversion,
+               RemoteLoadConversion,
                AtomicRMWOpConversion,
                AtomicCASOpConversion>(
       patterns.getContext());

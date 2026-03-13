@@ -65,6 +65,8 @@ const char wdma1dFuncName[] = "__Wdma1d";
 const char rdmaFuncName[] = "__Rdma";
 const char wdmaFuncName[] = "__Wdma";
 const char memcpyFuncName[] = "__Memcpy";
+const char recvFuncName[] = "__Recv";
+const char sendFuncName[] = "__Send";
 const char addVVFuncName[] = "__AddVV";
 const char subVVFuncName[] = "__SubVV";
 const char mulVVFuncName[] = "__MulVV";
@@ -591,6 +593,144 @@ struct Rdma1dOpConversion : public OpConversionPattern<Tx81Op> {
     auto call = rewriter.replaceOpWithNewOp<LLVM::CallOp>(
         op, TypeRange{}, funcPrefix,
         ValueRange{dstPtr, srcPtr, elemCount, fmt});
+
+    return success();
+  }
+};
+
+// Resolve tx.remote_buffer to its destination address.
+struct RemoteBufferOpConversion
+    : public OpConversionPattern<tx::RemoteBufferOp> {
+  using OpConversionPattern<tx::RemoteBufferOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tx::RemoteBufferOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, adaptor.getOperands()[4]);
+    return success();
+  }
+};
+
+// Convert tx.remote_load to LLVM call to __Recv function
+struct RemoteLoadOpConversion : public OpConversionPattern<tx::RemoteLoadOp> {
+  using OpConversionPattern<tx::RemoteLoadOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tx::RemoteLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    // Get the module for function declarations
+    auto module = op->getParentOfType<ModuleOp>();
+
+    // Declare the __Recv runtime function if not already declared
+    // Signature:
+    //   void __Recv(int64_t chip_x, int64_t chip_y, int64_t die_id,
+    //              int64_t tile_id, void* dst,
+    //              uint32_t elem_bytes, uint64_t data_size)
+    auto i8PtrTy = LLVM::LLVMPointerType::get(ctx);
+    auto i64Ty = rewriter.getI64Type();
+    auto i32Ty = rewriter.getI32Type();
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+
+    // Types for function declaration
+    SmallVector<Type, 7> argTypes = {
+        i64Ty,   // remote_chip_id_x
+        i64Ty,   // remote_chip_id_y
+        i64Ty,   // remote_die_id
+        i64Ty,   // remote_tile_id
+        i8PtrTy, // dst
+        i32Ty,   // elem_bytes
+        i64Ty    // data_size
+    };
+
+    // Declare the function with void return type
+    Value funcPtr = triton::declareTx81Function(module, rewriter, loc,
+                                                recvFuncName, voidTy, argTypes);
+
+    // Get the operands and convert dst to i8*
+    Value chipX = adaptor.getOperands()[0];
+    Value chipY = adaptor.getOperands()[1];
+    Value dieId = adaptor.getOperands()[2];
+    Value tileId = adaptor.getOperands()[3];
+    Value dstAddr = adaptor.getOperands()[4];
+    Value elemBytes = adaptor.getOperands()[5];
+    Value dataSize = adaptor.getOperands()[6];
+
+    // Convert destination address (i64) directly to pointer.
+    Value dst = rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, dstAddr);
+
+    // Create the call to __Recv (void function, so empty TypeRange)
+    rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{}, recvFuncName,
+        ValueRange{chipX, chipY, dieId, tileId, dst, elemBytes, dataSize});
+
+    // tx.remote_load has no results, just erase it
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
+// Convert tx.remote_store to LLVM call to __Send function
+struct RemoteStoreOpConversion : public OpConversionPattern<tx::RemoteStoreOp> {
+  using OpConversionPattern<tx::RemoteStoreOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tx::RemoteStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    // Get the module for function declarations
+    auto module = op->getParentOfType<ModuleOp>();
+
+    // Declare the __Send runtime function if not already declared
+    // Signature:
+    //   void __Send(int64_t chip_x, int64_t chip_y, int64_t die_id,
+    //              int64_t tile_id, void* dst, void* src,
+    //              uint32_t elem_bytes, uint64_t data_size)
+    auto i8PtrTy = LLVM::LLVMPointerType::get(ctx);
+    auto i64Ty = rewriter.getI64Type();
+    auto i32Ty = rewriter.getI32Type();
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+
+    // Types for function declaration
+    SmallVector<Type, 8> argTypes = {
+        i64Ty,   // remote_chip_id_x
+        i64Ty,   // remote_chip_id_y
+        i64Ty,   // remote_die_id
+        i64Ty,   // remote_tile_id
+        i8PtrTy, // dst
+        i8PtrTy, // src
+        i32Ty,   // elem_bytes
+        i64Ty    // data_size
+    };
+
+    // Declare the function with void return type
+    Value funcPtr = triton::declareTx81Function(module, rewriter, loc,
+                                                sendFuncName, voidTy, argTypes);
+
+    // Get the operands and convert dst/src to i8*
+    Value chipX = adaptor.getOperands()[0];
+    Value chipY = adaptor.getOperands()[1];
+    Value dieId = adaptor.getOperands()[2];
+    Value tileId = adaptor.getOperands()[3];
+    Value dstAddr = adaptor.getOperands()[4];
+    Value src = adaptor.getOperands()[5];
+    Value elemBytes = adaptor.getOperands()[6];
+    Value dataSize = adaptor.getOperands()[7];
+
+    // Convert destination and source addresses (i64) directly to pointers.
+    Value dst = rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, dstAddr);
+    src = rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, src);
+
+    // Create the call to __Send (void function, so empty TypeRange)
+    rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{}, sendFuncName,
+        ValueRange{chipX, chipY, dieId, tileId, dst, src, elemBytes, dataSize});
+
+    // tx.remote_store has no results, just erase it
+    rewriter.eraseOp(op);
 
     return success();
   }
@@ -2504,6 +2644,8 @@ public:
                  MemsetOpConversion,
                  GetProgramIDConversion,
                  BarrierConversion,
+                 RemoteStoreOpConversion,
+                 RemoteLoadOpConversion,
                  AssertConversion>(
         context);
     // clang-format on

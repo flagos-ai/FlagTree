@@ -10,6 +10,14 @@ if(NOT DEFINED TARGET)
   endif()
 endif()
 
+if(NOT DEFINED TX8_YOC_RT_THREAD_SMP)
+  if(DEFINED ENV{TX8_YOC_RT_THREAD_SMP})
+    set(TX8_YOC_RT_THREAD_SMP $ENV{TX8_YOC_RT_THREAD_SMP})
+  else()
+    message(FATAL_ERROR "TX8_YOC_RT_THREAD_SMP environment variable is not defined")
+  endif()
+endif()
+
 if(NOT DEFINED XUANTIE_NAME)
   if(DEFINED ENV{XUANTIE_NAME})
     set(XUANTIE_NAME $ENV{XUANTIE_NAME})
@@ -53,6 +61,7 @@ include_directories(${TX8_DEPS_ROOT}/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include/${TARGET})
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
+include_directories(${TX8_YOC_RT_THREAD_SMP}/interface/op_fw_sim_if/peripheral/include/)
 
 # Set build type default
 if(NOT CMAKE_BUILD_TYPE)

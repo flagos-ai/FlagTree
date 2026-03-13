@@ -48,7 +48,7 @@ quick_mode=0
 skip_device=
 
 precision_priority=1
-tx8_depends_name=tx8_depends_dev_20260112_201902
+tx8_depends_name=tx8_depends_dev_20260309_173649
 torch_txda_name=torch_txda+txops-20251230-03541ed8+71a1e5a
 txda_skip_ops="repeat_interleave.self_int,pad,to.dtype,uniform_,sort.values_stable,contiguous,resolve_conj"
 txda_fallback_cpu_ops="random_,quantile,_local_scalar_dense,arange,unfold,index,le,all,ge,pad,to,gather_backward,zero_,view_as_real,resolve_neg,embedding_backward,sort,repeat_interleave,rsub,hstack,vstack,min,uniform_,abs,ne,eq,mul,bitwise_and,masked_select,max,ceil,div,gt,lt,sum,scatter,where,resolve_conj,isclose,isfinite,tile,equal,gather,contiguous"

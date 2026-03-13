@@ -49,6 +49,9 @@ def IntTensorOrMemref :
 def FPTensorOrMemref :
   AnyTypeOf<[MemRefOf<[AnyFloat]>, RankedTensorOf<[AnyFloat]>], "", "::mlir::ShapedType">;
 
+def MKCommAddrLike :
+  AnyTypeOf<[I64, TensorOrMemref], "comm-addr-like">;
+
 //
 // Interfaces
 //
@@ -503,6 +506,59 @@ def BarrierOp : MKOp<"barrier"> {
     The "barrier" op synchronizes all work items.
   }];
   let assemblyFormat = "attr-dict";
+}
+
+// =============================================================================
+// Communication Ops (TLE)
+// =============================================================================
+
+def RemoteStoreOp : MKOp<"remote_store", [MemoryEffects<[MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>]> {
+  let summary = "Store local tensor/memref to a remote tile address";
+
+  let description = [{
+    Asynchronously store data from the current tile to a remote destination
+    address. The operation reads from the given source buffer (tensor/memref)
+    and writes it to the remote tile.
+  }];
+
+  let arguments = (
+    ins
+    I64:$remote_chip_id_x,      // X-coordinate of the remote chip ID
+    I64:$remote_chip_id_y,      // Y-coordinate of the remote chip ID
+    I64:$remote_die_id,         // ID of the remote die
+    I64:$remote_tile_id,        // ID of the remote tile
+    MKCommAddrLike:$dst_addr,   // Remote destination base address (or placeholder)
+    Arg<TensorOrMemref, "the source memref", [MemRead]>:$src  // Source buffer (read from here)
+  );
+
+  let results = (outs);
+}
+
+def RemoteLoadOp : MKOp<"remote_load", [DestinationStyleOpInterface, MemoryEffects<[MemWrite<GlobalMemory>]>]> {
+  let summary = "Load data from remote tile into a destination buffer";
+
+  let description = [{
+    Destination-style remote load: receive data from a source tile and write it
+    into the given destination buffer. Returns a tensor view of the received
+    data (same shape and element type as the destination).
+  }];
+
+  let arguments = (
+    ins
+    I64:$remote_chip_id_x,      // X-coordinate of the remote chip ID
+    I64:$remote_chip_id_y,      // Y-coordinate of the remote chip ID
+    I64:$remote_die_id,         // ID of the remote die
+    I64:$remote_tile_id,        // ID of the remote tile
+    Arg<TensorOrMemref, "the target memref", [MemWrite]>:$dst  // Destination buffer (receive into here)
+  );
+
+  let results = (outs Variadic<TensorOrMemref>:$result);
+
+  let extraClassDeclaration = [{
+    MutableOperandRange getDpsInitsMutable() {
+      return getDstMutable();
+    }
+  }];
 }
 
 def PrintOp : MKOp<"print", [MemoryEffects<[MemWrite]>, DestinationStyleOpInterface]> {

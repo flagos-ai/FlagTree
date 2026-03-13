@@ -19,6 +19,8 @@
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 
+#include "magic-kernel/Conversion/TLEToMK/TLEToMK.h"
+
 #include "triton-shared/Conversion/UnstructuredToMK/UnstructuredToMK.h"
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"

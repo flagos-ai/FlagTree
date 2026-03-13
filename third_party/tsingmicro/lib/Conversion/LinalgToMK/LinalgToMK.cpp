@@ -3730,6 +3730,41 @@ private:
 
   bool assertToCf = false;
 };
+
+/// Convert a dense tensor arith.constant to linalg.fill(scalar, tensor.empty).
+/// This is the missing pattern referenced by the comment in LinalgToMKPass:
+///   "Lower dense constant to linalg.fill"
+struct DenseConstantToFillPattern
+    : public OpConversionPattern<arith::ConstantOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(arith::ConstantOp op, OpAdaptor /*adaptor*/,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto resultType = dyn_cast<RankedTensorType>(op.getResult().getType());
+    if (!resultType)
+      return failure();
+    auto denseAttr = dyn_cast<DenseElementsAttr>(op.getValue());
+    if (!denseAttr)
+      return failure();
+    if (!isa<FloatType, IntegerType>(denseAttr.getElementType()))
+      return failure();
+    if (!denseAttr.isSplat())
+      return failure();
+
+    auto loc = op.getLoc();
+    auto elemType = resultType.getElementType();
+    auto splatValue = denseAttr.getSplatValue<Attribute>();
+    Value scalar = rewriter.create<arith::ConstantOp>(
+        loc, elemType, cast<TypedAttr>(splatValue));
+    Value empty =
+        rewriter.create<tensor::EmptyOp>(loc, resultType.getShape(), elemType);
+    Value fill =
+        rewriter.create<linalg::FillOp>(loc, scalar, empty).getResult(0);
+    rewriter.replaceOp(op, fill);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::populateLinalgToMKPreProcessPatterns(
@@ -3795,4 +3830,5 @@ void mlir::triton::populateLinalgToMKConversionPatterns(
   patterns.add<AssertOpConverter>(patterns.getContext());
   // After NormalizeReduceInitToIdentityPattern and si-to-fp
   patterns.add<ReduceOpToElementwiseOpConverter>(patterns.getContext());
+  patterns.add<DenseConstantToFillPattern>(patterns.getContext());
 }

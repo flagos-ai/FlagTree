@@ -33,7 +33,10 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 
+#include "magic-kernel/Conversion/TLEToMK/Passes.h"
 #include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
+#include "third_party/tle/include/tle-dsa/Conversion/DsaToCore/DsaToCore.h"
+#include "third_party/tle/include/tle-dsa/Dialect/IR/DsaDialect.h"
 #include "triton-shared/Conversion/ConvertTritonPtr/Passes.h"
 #include "triton-shared/Conversion/ReconcilePtrCasts/Passes.h"
 #include "triton-shared/Conversion/StructuredToMemref/Passes.h"
@@ -83,6 +86,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerTritonPasses();
   mlir::triton::gpu::registerTritonGPUPasses();
   mlir::registerLinalgPasses();
+  mlir::dsa::registerDsaMemoryToCorePass();
+  mlir::triton::registerTLEToMKPass();
   mlir::registerTritonNvidiaGPUPasses();
   mlir::test::registerTestAliasPass();
   mlir::test::registerTestAlignmentPass();
@@ -208,5 +213,5 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::tensor::TensorDialect, mlir::memref::MemRefDialect,
       mlir::affine::AffineDialect, mlir::bufferization::BufferizationDialect,
       mlir::mk::MagicKernelDialect, mlir::tx::Tx81Dialect,
-      mlir::addr::AddressDialect>();
+      mlir::addr::AddressDialect, mlir::dsa::DsaDialect>();
 }

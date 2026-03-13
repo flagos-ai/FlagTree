@@ -118,9 +118,9 @@ def _ttir_to_coreir(mod):
             coreir_to_mk_mode = "--core-dialects-to-mk=precision-priority"
 
         args = [
-            triton_opt_path, src_path, "--triton-to-core-dialects", "--linalg-tiling", f"{coreir_to_mk_mode}",
-            "--linalg-fusion", "--legalize-tensor-form-loops", "--one-shot-bufferize",
-            "--convert-bufferization-to-memref", "--cse", "--canonicalize"
+            triton_opt_path, src_path, "--triton-to-core-dialects", "--tle-to-mk", "--dsa-memory-to-core",
+            "--linalg-tiling", f"{coreir_to_mk_mode}", "--linalg-fusion", "--legalize-tensor-form-loops",
+            "--one-shot-bufferize", "--convert-bufferization-to-memref", "--cse", "--canonicalize"
         ]
         if os.getenv("TRITON_DEBUG", "0") == "1":
             args.append("--mlir-print-debuginfo")
