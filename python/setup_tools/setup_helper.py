@@ -20,10 +20,9 @@ set_llvm_env = lambda path: set_env({
 
 
 def install_extension(*args, **kargs):
-    try:
-        configs.activated_module.install_extension(*args, **kargs)
-    except Exception:
-        pass
+    backend_spec_install_extension_fn = get_hook_instance("install_extension")
+    if backend_spec_install_extension_fn:
+        backend_spec_install_extension_fn(*args, **kargs)
 
 
 def get_backend_cmake_args(*args, **kargs):
@@ -62,6 +61,17 @@ def dir_rollback(deep, base_path):
     return Path(base_path)
 
 
+def get_hook_instance(hook_name):
+    if not hook_name or not configs.activated_module:
+        return None
+    hook_instance = getattr(configs.activated_module, hook_name, None)
+    return hook_instance if callable(hook_instance) else None
+
+
+def print_info(message):
+    print(f"\033[1;32m[INFO] {message}\033[0m")
+
+
 def enable_flagtree_third_party(name):
     if name in ["triton_shared"]:
         return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
@@ -69,23 +79,23 @@ def enable_flagtree_third_party(name):
         return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
 
-def download_flagtree_third_party(name, condition, required=False, hock=None):
+def download_flagtree_third_party(name, condition, required=False, hook=None):
     if condition:
         if enable_flagtree_third_party(name):
             submodule = utils.flagtree_submodules[name]
             downloader.download(module=submodule, required=required)
-            if callable(hock):
-                configs.default_backends = hock(third_party_base_dir=configs.flagtree_submodule_dir, backend=submodule,
-                                                default_backends=configs.default_backends)
+            hook_func = get_hook_instance(hook)
+            if hook_func:
+                configs.default_backends = hook_func(third_party_base_dir=configs.flagtree_submodule_dir,
+                                                     backend=submodule, default_backends=configs.default_backends)
         else:
-            print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
+            print_info(f"Skip downloading {name} since USE_{name.upper()} is set to OFF")
 
 
 def post_install():
-    try:
-        configs.activated_module.post_install()
-    except Exception:
-        pass
+    backend_spec_post_install_fn = get_hook_instance("post_install")
+    if backend_spec_post_install_fn:
+        backend_spec_post_install_fn()
 
 
 class FlagTreeCache:
@@ -169,9 +179,9 @@ class FlagTreeCache:
         return False
 
     def store(self, file=None, condition=None, url=None, copy_src_path=None, copy_dst_path=None, files=None,
-              md5_digest=None, pre_hock=None, post_hock=None):
+              md5_digest=None, pre_hook=None, post_hook=None):
 
-        if not condition or (pre_hock and pre_hock()):
+        if not condition or (pre_hook and pre_hook()):
             return
         is_url = False if url is None else True
         path = self.sub_dirs[flagtree_backend] if flagtree_backend else self.dir_path
@@ -209,7 +219,7 @@ class FlagTreeCache:
                         shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
                     else:
                         shutil.copy(src_path, dst_path)
-        post_hock(self.cache_files[file]) if post_hock else False
+        post_hook(self.cache_files[file]) if post_hook else False
 
     def get(self, file_name) -> Path:
         return self.cache_files[file_name]
@@ -312,13 +322,9 @@ else:
     print('[INFO] FlagTree Offline Build: No offline build for triton origin toolkits')
     offline_build = False
 
-download_flagtree_third_party("triton_shared", hock=utils.default.precompile_hock, condition=(not flagtree_backend))
+download_flagtree_third_party("triton_shared", hook="precompile_hook", condition=(not flagtree_backend))
 
-download_flagtree_third_party("flir", condition=(flagtree_backend == "aipu"), hock=utils.aipu.precompile_hock,
-                              required=True)
-
-download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro"),
-                              hock=utils.tsingmicro.precompile_hock, required=True)
+download_flagtree_third_party("flir", condition=(flagtree_backend in configs.use_filr), required=True)
 
 handle_flagtree_backend()
 
@@ -329,8 +335,8 @@ cache.store(
     file="iluvatar-llvm18-x86_64",
     condition=("iluvatar" == flagtree_backend),
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.3.0.tar.gz",
-    pre_hock=lambda: check_env('LLVM_SYSPATH'),
-    post_hock=set_llvm_env,
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
 )
 
 cache.store(
@@ -343,8 +349,8 @@ cache.store(
     file="XTDK-llvm18-ubuntu2004_x86_64",
     condition=("xpu" == flagtree_backend),
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/XTDK-llvm19-ubuntu2004_x86_64_v0.3.0.tar.gz",
-    pre_hock=lambda: check_env('LLVM_SYSPATH'),
-    post_hock=set_llvm_env,
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
 )
 
 cache.store(file="xre-Linux-x86_64", condition=("xpu" == flagtree_backend),
@@ -368,8 +374,8 @@ cache.store(
     file="mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64",
     condition=("mthreads" == flagtree_backend),
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64_v0.1.0.tar.gz",
-    pre_hock=lambda: check_env('LLVM_SYSPATH'),
-    post_hock=set_llvm_env,
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
 )
 
 cache.store(
@@ -382,8 +388,8 @@ cache.store(
     file="llvm-b5cc222d-ubuntu-arm64",
     condition=("ascend" == flagtree_backend),
     url="https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-b5cc222d-ubuntu-arm64.tar.gz",
-    pre_hock=lambda: check_env('LLVM_SYSPATH'),
-    post_hock=set_llvm_env,
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
 )
 
 # aipu
@@ -391,8 +397,8 @@ cache.store(
     file="llvm-a66376b0-ubuntu-x64-clang16-lld16",
     condition=("aipu" == flagtree_backend),
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz",
-    pre_hock=lambda: check_env('LLVM_SYSPATH'),
-    post_hock=set_llvm_env,
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
 )
 
 # enflame
@@ -400,8 +406,8 @@ cache.store(
     file="llvm-d752c5b-gcc9-x64",
     condition=("enflame" == flagtree_backend),
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz",
-    pre_hock=lambda: check_env('KURAMA_LLVM_DIR_GCU300'),
-    post_hock=lambda path: set_env({
+    pre_hook=lambda: check_env('KURAMA_LLVM_DIR_GCU300'),
+    post_hook=lambda path: set_env({
         'KURAMA_LLVM_DIR_GCU300': path,
         'LLVM_INCLUDE_DIRS': Path(path) / "include",
         'LLVM_LIBRARY_DIR': Path(path) / "lib",
@@ -415,16 +421,16 @@ cache.store(
     condition=("tsingmicro" == flagtree_backend),
     url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.10-x64_v0.4.0.tar.gz",
-    pre_hock=lambda: check_env('LLVM_SYSPATH'),
-    post_hock=set_llvm_env,
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
 )
 
 cache.store(
     file="tx8_deps",
     condition=("tsingmicro" == flagtree_backend),
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_dev_20251218_164108_v0.4.0.tar.gz",
-    pre_hock=lambda: check_env('TX8_DEPS_ROOT'),
-    post_hock=lambda path: set_env({
+    pre_hook=lambda: check_env('TX8_DEPS_ROOT'),
+    post_hook=lambda path: set_env({
         'TX8_DEPS_ROOT': path,
     }),
 )
@@ -435,6 +441,6 @@ cache.store(
     condition=("hcu" == flagtree_backend),
     url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz",
-    pre_hock=lambda: check_env('LLVM_SYSPATH'),
-    post_hock=set_llvm_env,
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
 )
