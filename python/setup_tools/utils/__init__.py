@@ -12,6 +12,10 @@ flagtree_submodules = {
     "flir":
     tools.Module(name="flir", url="https://github.com/FlagTree/flir.git",
                  dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "flir")),
+    "tsingmicro_flir":
+    tools.Module(name="flir", url="https://github.com/FlagTree/flir.git",
+                 commit_id="4c8808ad3608d28c5ac782675e554a2de3ca779b",
+                 dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "flir")),
 }
 
 
