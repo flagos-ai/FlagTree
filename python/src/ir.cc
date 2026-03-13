@@ -364,7 +364,8 @@ void init_triton_ir(py::module &&m) {
                     math::MathDialect, arith::ArithDialect, scf::SCFDialect,
                     ::mlir::gpu::GPUDialect, cf::ControlFlowDialect,
                     LLVM::LLVMDialect, mlir::ub::UBDialect,
-                    mlir::triton::gluon::GluonDialect, DLTIDialect,
+                    mlir::triton::gluon::GluonDialect,
+                    DLTIDialect, // flagtree tle raw
                     mlir::triton::tle::TleDialect // flagtree tle raw
                     >();
     mlir::LLVM::registerInlinerInterface(registry);
