@@ -20,6 +20,7 @@ add_triton_library(TritonToCoreDialects
   MLIRTensorDialect
   MLIRTransforms
   MLIRSupport
+  MLIRMathExtDialect
   TritonIR
   TritonTransforms
   ZTCAnalysis
@@ -30,4 +31,6 @@ add_triton_library(TritonToCoreDialects
   TritonToStructured
   TritonToUnstructured
   ConvertTritonPtr
+  ReconcilePtrCasts
+  TritonPtrToMemref
 )

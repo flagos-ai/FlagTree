@@ -5,8 +5,6 @@ import triton.language as tl
 import itertools
 import benchmark
 
-benchmark.select_cpu_backend()
-
 from triton._internal_testing import (
     integral_dtypes,
     int_dtypes,

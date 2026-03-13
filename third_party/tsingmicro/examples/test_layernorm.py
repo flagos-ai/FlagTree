@@ -175,7 +175,6 @@ def bench_layernorm(size, provider):
 
 
 if __name__ == "__main__":
-    # benchmark.select_cpu_backend()
     for X in [2**i for i in range(10, 13, 1)]:
         for provider in ['triton']:
             bench_layernorm(X, provider)

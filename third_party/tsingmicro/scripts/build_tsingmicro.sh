@@ -121,6 +121,7 @@ fi
 
 export LLVM_SYSPATH=$LLVM
 export TX8_DEPS_ROOT=$TX8_DEPS_ROOT
+export FLAGTREE_BACKEND=tsingmicro
 
 # debug
 # export USE_HOST_PROFILE=1

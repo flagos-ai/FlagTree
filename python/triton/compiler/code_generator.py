@@ -16,6 +16,7 @@ from ..runtime.jit import get_jit_fn_file_line
 # ideally we wouldn't need any runtime component
 from ..runtime import JITFunction
 from .._utils import find_paths_if, get_iterable_path, set_iterable_path
+from .hint_manager import hint_trigger
 
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
 
@@ -1243,10 +1244,7 @@ class CodeGenerator(ast.NodeVisitor):
         args = list(itertools.chain.from_iterable(x if isinstance(x, list) else [x] for x in args))
 
         # 4. Get current line number and hints
-        line_num = node.lineno
-        function_def = self.jit_fn.parse()
-        line_flagtree_hints = getattr(function_def.body[0], 'line_flagtree_hints', {})
-        flagtree_hints = line_flagtree_hints.get(line_num)
+        flagtree_hints = hint_trigger("get_node_hints", self, node)
 
         # 5. Handle JIT function calls
         if isinstance(fn, JITFunction):
@@ -1261,12 +1259,7 @@ class CodeGenerator(ast.NodeVisitor):
                 extra_kwargs['_generator'] = self
             try:
                 # Special handling for tl.load with hints
-                if fn.__name__ == "load" and flagtree_hints is not None:
-                    print(f"[FLAGTREE] tl.load at line {line_num} has annotation {flagtree_hints}")
-                    if 'flagtree_hints' not in kws:
-                        kws['flagtree_hints'] = ""
-                    if flagtree_hints not in kws['flagtree_hints']:
-                        kws['flagtree_hints'] = flagtree_hints
+                hint_trigger("inject_kwargs_with_hints", fn, flagtree_hints, node.lineno, kws)
 
                 ret = fn(*args, **extra_kwargs, **kws)
                 # builtin functions return plain tuples for readability

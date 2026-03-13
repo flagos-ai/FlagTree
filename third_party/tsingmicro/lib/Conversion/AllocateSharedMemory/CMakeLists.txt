@@ -3,16 +3,18 @@ add_triton_library(AllocateSharedMemory
 
   DEPENDS
   AllocateSharedMemoryPassIncGen
-  TritonUtils
+  TritonSharedUtils
+  TritonSharedAnalysis
   ZTCAnalysis
 
   LINK_LIBS PUBLIC
-  TritonUtils
+  TritonSharedUtils
   MLIRDialectUtils
   MLIRIR
   MLIRPass
   MLIRTensorDialect
   MLIRTransforms
   MLIRSupport
+  TritonSharedAnalysis
   ZTCAnalysis
 )

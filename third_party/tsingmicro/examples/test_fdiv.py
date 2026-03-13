@@ -94,6 +94,5 @@ def benchmark_fdiv_triton(size, dtype, provider):
 
 
 if __name__ == "__main__":
-    benchmark.select_cpu_backend()
     for size in [i**2 for i in range(22, 25, 1)]:
         benchmark_fdiv_triton(size, torch.float32, "triton")

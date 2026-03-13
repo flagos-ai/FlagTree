@@ -317,6 +317,9 @@ download_flagtree_third_party("triton_shared", hock=utils.default.precompile_hoc
 download_flagtree_third_party("flir", condition=(flagtree_backend == "aipu"), hock=utils.aipu.precompile_hock,
                               required=True)
 
+download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro"),
+                              hock=utils.tsingmicro.precompile_hock, required=True)
+
 handle_flagtree_backend()
 
 cache = FlagTreeCache()

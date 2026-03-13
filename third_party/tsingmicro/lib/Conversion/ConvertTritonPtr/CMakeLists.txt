@@ -5,8 +5,6 @@
 #===------------------------------------------------------------------------===#
 
 add_triton_library(ConvertTritonPtr
-  TritonPtrToMemrefPass.cpp
-  ReconcilePtrCastsPass.cpp
   TritonPtrToAddressPass.cpp
 
   DEPENDS

@@ -15,9 +15,9 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "triton-shared/Utils/Utils.h"
 #include "tsingmicro-tx81/Conversion/MKToTx81/MKToTx81.h"
 #include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
-#include "utils/utils.h"
 #include "llvm/Support/Debug.h"
 #include <memory>
 #include <mlir/IR/DialectRegistry.h>

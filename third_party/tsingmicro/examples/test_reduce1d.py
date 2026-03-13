@@ -5,8 +5,6 @@ from triton.backends.compiler import GPUTarget
 import triton.language as tl
 import benchmark
 
-benchmark.select_cpu_backend()
-
 
 @triton.jit
 def reduce_kernel_1d(

@@ -56,6 +56,22 @@ def is_use_profile():
     return os.getenv("ENABLE_PROFILING", "0").lower() in ("1", "true", "yes")
 
 
+def is_enable_kernel_file_cache():
+    return os.getenv("ENABLE_KERNEL_FILE_CACHE", "1").lower() in ("1", "true", "yes")
+
+
+def get_kernel_cache_size():
+    if is_enable_kernel_file_cache():
+        kernel_size_str = os.getenv("KERNEL_FILE_SIZE", "1024")
+        try:
+            kernel_size = int(kernel_size_str)
+            return str(kernel_size)
+        except ValueError:
+            raise ValueError(f"Illegal input KERNEL_FILE_SIZE '{kernel_size}', need Integer number.")
+    else:
+        raise ValueError("Must set ENABLE_KERNEL_FILE_CACHE=1 first")
+
+
 def dump_ir_if_needed(files):
     path = get_dump_dir()
     for f in files:

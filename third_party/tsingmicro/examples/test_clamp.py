@@ -97,6 +97,5 @@ def benchmark_clamp_triton(size, dtype, provider):
 
 
 if __name__ == "__main__":
-    benchmark.select_cpu_backend()
     for size in [2**i for i in range(22, 25, 1)]:
         benchmark_clamp_triton(size, torch.float32, "triton")

@@ -1,7 +1,7 @@
 from pathlib import Path
 import importlib.util
 import os
-from . import tools, default, aipu
+from . import tools, default, aipu, tsingmicro
 from .tools import OfflineBuildManager, flagtree_configs
 
 flagtree_submodules = {
@@ -29,4 +29,4 @@ def activate(backend, suffix=".py"):
     return module
 
 
-__all__ = ["aipu", "default", "activate", "flagtree_submodules", "OfflineBuildManager", "tools"]
+__all__ = ["aipu", "tsingmicro", "default", "activate", "flagtree_submodules", "OfflineBuildManager", "tools"]

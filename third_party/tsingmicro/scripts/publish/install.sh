@@ -101,7 +101,7 @@ python3 -c "import torch; print(torch.__version__)"
 
 PROXY=http://192.168.100.225:8889
 export https_proxy=$PROXY http_proxy=$PROXY all_proxy=$PROXY
-apt install ccache
+apt install -y ccache
 pip install loguru
 pip install scipy
 unset https_proxy

@@ -19,7 +19,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "utils/utils.h"
+#include "triton-shared/Utils/Utils.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "linalg-tiling"

@@ -4,8 +4,6 @@ import triton.language as tl
 import pytest
 import benchmark
 
-benchmark.select_cpu_backend()
-
 
 @triton.jit
 def six_dim_load(T_ptr, output_ptr, B, C, D1, D2, D3, D4, stride_b, stride_c, stride_d1, stride_d2, stride_d3,

@@ -66,5 +66,4 @@ def bench_matmul(M, N, K):
 
 
 if __name__ == "__main__":
-    # benchmark.select_cpu_backend()
     bench_matmul(16, 16, 16)
