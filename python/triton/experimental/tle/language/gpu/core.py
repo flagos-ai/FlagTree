@@ -504,8 +504,11 @@ def extract_tile(
             index_unwrapped = tl._unwrap_if_constexpr(index)
         except Exception:
             pass
-        if hasattr(index_unwrapped, 'value'):
-            index_unwrapped = index_unwrapped.value
+        try:
+            if hasattr(index_unwrapped, 'value'):
+                index_unwrapped = index_unwrapped.value
+        except Exception:
+            pass
 
         if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
             # 情况B：多维静态 index → 逐元素解包后线性化为标量
@@ -594,10 +597,12 @@ def insert_tile(
     _semantic=None,
 ) -> tl.tensor:
     """
-    Insert a tile into source tensor at a static tile index.
+    Insert a tile into source tensor.
 
-    Supports either multi-dimensional index (e.g. [i, j]) or
-    scalar linear index.
+    index supports:
+      1. Multi-dim static index: list/tuple of int/constexpr (e.g. [i, j])
+      2. Scalar static index: int / tl.constexpr
+      3. Scalar dynamic index: tl.tensor (runtime value)
     """
     # Basic type checks for source and tile tensors.
     if not isinstance(x, tl.tensor):
@@ -632,55 +637,70 @@ def insert_tile(
             )
         grid.append(src_dim // tile_dim)
 
-    # Normalize index by unwrapping constexpr / wrapper values first.
-    index_unwrapped = index
-    try:
-        index_unwrapped = tl._unwrap_if_constexpr(index_unwrapped)
-    except Exception:
-        pass
-    try:
-        if hasattr(index_unwrapped, "value"):
-            index_unwrapped = index_unwrapped.value
-    except Exception:
-        pass
+    # Parse index: dynamic scalar tensor or static scalar/multi-dim.
+    is_dynamic = False
+    index_value = None
+    index_ir_handle = None
 
-    index_list = None
-    if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
-        index_list = list(index_unwrapped)
-
-    # Path A: multi-dimensional index -> validate each axis -> linearize.
-    if index_list is not None:
-        if len(index_list) != len(src_shape):
-            raise ValueError(
-                f"Index rank {len(index_list)} must match source rank {len(src_shape)}"
-            )
-
-        idx = []
-        for i, v in enumerate(index_list):
-            unwrapped = tl._unwrap_if_constexpr(v)
-            if not isinstance(unwrapped, int):
-                raise ValueError(
-                    f"Tuple index must contain int or tl.constexpr values, got {type(unwrapped)}"
-                )
-            if unwrapped < 0 or unwrapped >= grid[i]:
-                raise ValueError(
-                    f"Index[{i}]={unwrapped} out of bounds for tile grid (0~{grid[i]-1})"
-                )
-            idx.append(unwrapped)
-
-        linear_index = 0
-        stride = 1
-        for i in reversed(list(builtins.range(len(grid)))):
-            linear_index += idx[i] * stride
-            stride *= grid[i]
-        index_value = linear_index
+    if isinstance(index, tl.tensor):
+        is_dynamic = True
+        index_ir_handle = index.handle
     else:
-        # Path B: scalar index -> treat as already-linearized tile id.
-        index_value = tl._unwrap_if_constexpr(index_unwrapped)
-        if not isinstance(index_value, int):
-            raise ValueError(
-                f"Scalar index must be int or tl.constexpr, got {type(index_value)}"
-            )
+        index_unwrapped = index
+        try:
+            index_unwrapped = tl._unwrap_if_constexpr(index_unwrapped)
+        except Exception:
+            pass
+        try:
+            if hasattr(index_unwrapped, "value"):
+                index_unwrapped = index_unwrapped.value
+        except Exception:
+            pass
+
+        index_list = None
+        if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
+            index_list = list(index_unwrapped)
+
+        # Path A: multi-dimensional static index -> validate each axis -> linearize.
+        if index_list is not None:
+            if len(index_list) != len(src_shape):
+                raise ValueError(
+                    f"Index rank {len(index_list)} must match source rank {len(src_shape)}"
+                )
+
+            idx = []
+            for i, v in enumerate(index_list):
+                iv = _try_unwrap_int(v)
+                if iv is None:
+                    raise ValueError(
+                        f"Tuple index must contain int/constexpr values. "
+                        f"For dynamic multi-dim index, please linearize first "
+                        f"and pass a scalar tl.tensor."
+                    )
+                if iv < 0 or iv >= grid[i]:
+                    raise ValueError(
+                        f"Index[{i}]={iv} out of bounds for tile grid (0~{grid[i]-1})"
+                    )
+                idx.append(iv)
+
+            linear_index = 0
+            stride = 1
+            for i in reversed(list(builtins.range(len(grid)))):
+                linear_index += idx[i] * stride
+                stride *= grid[i]
+            index_value = linear_index
+        else:
+            # Path B: scalar static index -> treat as already-linearized tile id.
+            scalar_int = _try_unwrap_int(index_unwrapped)
+            if scalar_int is None:
+                raise ValueError(
+                    f"index must be int, constexpr, tuple/list of int/constexpr, "
+                    f"or a scalar tl.tensor; got {type(index)}"
+                )
+            index_value = scalar_int
+
+    # Static index checks + optional semantic pass.
+    if not is_dynamic:
         if index_value < 0:
             raise ValueError("Scalar index must be non-negative")
 
@@ -692,17 +712,19 @@ def insert_tile(
                 f"Scalar index {index_value} out of bounds for total tiles {total_tiles}"
             )
 
-    # Optional semantic pass for additional consistency checks.
-    try:
-        from .semantic import TLESemantic
-        if isinstance(_semantic, TLESemantic):
-            _semantic.analyze_insert_tile_operation(x, tile, index_value)
-    except ImportError:
-        pass
+        try:
+            from .semantic import TLESemantic
+            if isinstance(_semantic, TLESemantic):
+                _semantic.analyze_insert_tile_operation(x, tile, index_value)
+        except ImportError:
+            pass
 
     # Lower to IR and construct output tensor with the source tensor type.
     try:
-        index_ir = _semantic._convert_to_ir_values([index_value], require_i64=False)[0]
+        if is_dynamic:
+            index_ir = index_ir_handle
+        else:
+            index_ir = _semantic._convert_to_ir_values([index_value], require_i64=False)[0]
         output = _semantic.builder.create_insert_tile(
             x.handle,
             tile.handle,

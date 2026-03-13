@@ -3,6 +3,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "TleTileToLLVMUtils.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -17,65 +18,6 @@ using namespace mlir::triton;
 namespace {
 namespace ttg = mlir::triton::gpu;
 using namespace mlir::triton::tle;
-
-// ============================================================================
-// Utility functions
-// ============================================================================
-
-template <typename T1, typename T2, typename BinaryOp>
-static SmallVector<T2> multiDimElementwise(ArrayRef<T1> lhs, ArrayRef<T2> rhs,
-                                           BinaryOp op) {
-  assert(lhs.size() == rhs.size());
-  SmallVector<T2> result;
-  result.reserve(lhs.size());
-  for (size_t i = 0; i < lhs.size(); ++i)
-    result.push_back(static_cast<T2>(op(lhs[i], rhs[i])));
-  return result;
-}
-
-static SmallVector<unsigned> getCTATileOrder(RankedTensorType type) {
-  if (auto bl = dyn_cast<ttg::BlockedEncodingAttr>(type.getEncoding()))
-    return SmallVector<unsigned>(bl.getOrder().begin(), bl.getOrder().end());
-  unsigned rank = type.getRank();
-  SmallVector<unsigned> order(rank);
-  for (unsigned i = 0; i < rank; ++i) order[i] = rank - 1 - i;
-  return order;
-}
-
-static SmallVector<unsigned> delinearize(unsigned idx,
-                                         ArrayRef<unsigned> shape,
-                                         ArrayRef<unsigned> order) {
-  SmallVector<unsigned> result(shape.size(), 0);
-  for (size_t i = 0; i < order.size(); ++i) {
-    result[order[i]] = idx % shape[order[i]];
-    idx /= shape[order[i]];
-  }
-  return result;
-}
-
-static unsigned linearize(ArrayRef<unsigned> coords, ArrayRef<unsigned> shape,
-                           ArrayRef<unsigned> order) {
-  unsigned result = 0, stride = 1;
-  for (size_t i = 0; i < order.size(); ++i) {
-    result += coords[order[i]] * stride;
-    stride *= shape[order[i]];
-  }
-  return result;
-}
-
-// shapePerCTATile = sizePerThread * threadsPerWarp * warpsPerCTA (elementwise)
-static SmallVector<unsigned> getShapePerCTATile(RankedTensorType type) {
-  auto enc = type.getEncoding();
-  if (!enc) llvm_unreachable("extract_tile requires tensor with encoding");
-  if (auto bl = dyn_cast<ttg::BlockedEncodingAttr>(enc)) {
-    auto s = bl.getSizePerThread(), t = bl.getThreadsPerWarp(), w = bl.getWarpsPerCTA();
-    SmallVector<unsigned> r;
-    for (size_t i = 0; i < type.getShape().size(); ++i)
-      r.push_back((unsigned)s[i] * (unsigned)t[i] * (unsigned)w[i]);
-    return r;
-  }
-  llvm_unreachable("extract_tile only supports BlockedEncoding");
-}
 
 static SmallVector<int64_t> getTileShape(ExtractTileOp op) {
   SmallVector<int64_t> ts;
@@ -109,92 +51,6 @@ static bool isCTATileAligned(ExtractTileOp op, int64_t linearIndex) {
     if (off % (int64_t)ctaTile[i] != 0) return false;
   }
   return true;
-}
-
-// ============================================================================
-// Compute runtime threadOffset[d] as LLVM IR Values
-//
-// For BlockedEncoding, threadIdx.x encodes thread coordinates in the CTA
-// ordered by `order` (fastest to slowest):
-//   - threadsPerWarp dimensions (in order)
-//   - warpsPerCTA dimensions (in order)
-//
-// threadOffset[d] = (warpInDim[d] * threadsPerWarp[d] + laneInDim[d])
-//                   * sizePerThread[d]
-//
-// This is the per-dimension global coordinate contribution from the thread
-// identity, which must be added to the compile-time srcOffsets[i][d] to get
-// the true global coordinate of element i for the current thread.
-// ============================================================================
-static SmallVector<Value> computeThreadOffsets(
-    Location loc,
-    ConversionPatternRewriter &rewriter,
-    RankedTensorType tensorType) {
-
-  auto bl = cast<ttg::BlockedEncodingAttr>(tensorType.getEncoding());
-  auto sizePerThread  = bl.getSizePerThread();   // e.g. [1, 1]
-  auto threadsPerWarp = bl.getThreadsPerWarp();  // e.g. [1, 32]
-  auto warpsPerCTA    = bl.getWarpsPerCTA();     // e.g. [1, 4]
-  auto order          = bl.getOrder();           // e.g. [1, 0]
-  int rank = tensorType.getRank();
-
-  auto i32Ty = rewriter.getIntegerType(32);
-
-  // threadIdx.x (flat thread index within CTA)
-  Value threadId = rewriter.create<NVVM::ThreadIdXOp>(loc, i32Ty);
-
-  // warpSize = product of threadsPerWarp
-  unsigned warpSizeVal = 1;
-  for (auto t : threadsPerWarp) warpSizeVal *= t;
-  Value warpSizeV = rewriter.create<LLVM::ConstantOp>(
-      loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)warpSizeVal));
-
-  Value laneId = rewriter.create<LLVM::URemOp>(loc, i32Ty, threadId, warpSizeV);
-  Value warpId = rewriter.create<LLVM::UDivOp>(loc, i32Ty, threadId, warpSizeV);
-
-  // Decompose laneId into per-dimension lane coordinates, following `order`
-  // (order[0] is the fastest-changing dimension)
-  SmallVector<Value> laneInDim(rank);
-  {
-    Value rem = laneId;
-    for (int i = 0; i < rank; ++i) {
-      unsigned dim   = order[i];
-      unsigned count = threadsPerWarp[dim];
-      Value cv = rewriter.create<LLVM::ConstantOp>(
-          loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)count));
-      laneInDim[dim] = rewriter.create<LLVM::URemOp>(loc, i32Ty, rem, cv);
-      rem = rewriter.create<LLVM::UDivOp>(loc, i32Ty, rem, cv);
-    }
-  }
-
-  // Decompose warpId into per-dimension warp coordinates, following `order`
-  SmallVector<Value> warpInDim(rank);
-  {
-    Value rem = warpId;
-    for (int i = 0; i < rank; ++i) {
-      unsigned dim   = order[i];
-      unsigned count = warpsPerCTA[dim];
-      Value cv = rewriter.create<LLVM::ConstantOp>(
-          loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)count));
-      warpInDim[dim] = rewriter.create<LLVM::URemOp>(loc, i32Ty, rem, cv);
-      rem = rewriter.create<LLVM::UDivOp>(loc, i32Ty, rem, cv);
-    }
-  }
-
-  // threadOffset[d] = (warpInDim[d] * threadsPerWarp[d] + laneInDim[d])
-  //                   * sizePerThread[d]
-  SmallVector<Value> threadOffsets(rank);
-  for (int d = 0; d < rank; ++d) {
-    Value tpw = rewriter.create<LLVM::ConstantOp>(
-        loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)threadsPerWarp[d]));
-    Value spt = rewriter.create<LLVM::ConstantOp>(
-        loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)sizePerThread[d]));
-    Value warpContrib = rewriter.create<LLVM::MulOp>(loc, i32Ty, warpInDim[d], tpw);
-    Value threadCoord = rewriter.create<LLVM::AddOp>(loc, i32Ty, warpContrib, laneInDim[d]);
-    threadOffsets[d] = rewriter.create<LLVM::MulOp>(loc, i32Ty, threadCoord, spt);
-  }
-
-  return threadOffsets;
 }
 
 // ============================================================================
@@ -235,10 +91,10 @@ static LogicalResult lowerExtractTileStatic(
   SmallVector<Value> resultVals;
   resultVals.reserve(ttg::getTotalElemsPerThread(dstTy));
   for (unsigned i = 0; i < numDstCTAs; ++i) {
-    auto coordInDst = delinearize(i, dstCTAShape, dstCTAOrder);
+    auto coordInDst = tle::delinearize(i, dstCTAShape, dstCTAOrder);
     auto coordInSrc = multiDimElementwise<unsigned, unsigned>(
         coordInDst, firstTileCoord, std::plus<unsigned>());
-    unsigned linearInSrc = linearize(coordInSrc, srcCTAShape, srcCTAOrder);
+    unsigned linearInSrc = tle::linearize(coordInSrc, srcCTAShape, srcCTAOrder);
     size_t startIdx = linearInSrc * elemsPerCTA;
     if (startIdx + elemsPerCTA > vals.size())
       return op.emitError("Static path: register index out of bounds");

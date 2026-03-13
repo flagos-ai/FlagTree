@@ -8,6 +8,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 
 #include <algorithm>
 
@@ -19,10 +20,331 @@ namespace {
 namespace ttg = mlir::triton::gpu;
 using namespace mlir::triton::tle;
 
+static std::optional<int64_t> getStaticIndex(InsertTileOp op) {
+  if (auto c = op->getOperand(2).getDefiningOp<mlir::arith::ConstantOp>())
+    return mlir::cast<mlir::IntegerAttr>(c.getValue()).getInt();
+  return std::nullopt;
+}
+
+static bool isCTATileAligned(InsertTileOp op, int64_t linearIndex) {
+  auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
+  auto tileTy = cast<RankedTensorType>(op.getTile().getType());
+  auto srcShape = srcTy.getShape();
+  auto tileShape = tileTy.getShape();
+  auto ctaTile = getShapePerCTATile(srcTy);
+  int rank = srcShape.size();
+
+  SmallVector<int64_t> logicalGrid(rank), tileCoords(rank);
+  for (int i = 0; i < rank; ++i)
+    logicalGrid[i] = srcShape[i] / tileShape[i];
+
+  int64_t remain = linearIndex;
+  for (int i = rank - 1; i >= 0; --i) {
+    tileCoords[i] = remain % logicalGrid[i];
+    remain /= logicalGrid[i];
+  }
+
+  for (int i = 0; i < rank; ++i) {
+    int64_t off = tileCoords[i] * tileShape[i];
+    if (tileShape[i] % static_cast<int64_t>(ctaTile[i]) != 0)
+      return false;
+    if (off % static_cast<int64_t>(ctaTile[i]) != 0)
+      return false;
+  }
+
+  return true;
+}
+
+static LogicalResult lowerInsertTileStatic(
+    InsertTileOp op,
+    InsertTileOp::Adaptor adaptor,
+    ConversionPatternRewriter &rewriter,
+    const LLVMTypeConverter *typeConverter,
+    int64_t index) {
+  Location loc = op->getLoc();
+  auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
+  auto tileTy = cast<RankedTensorType>(op.getTile().getType());
+  auto dstTy = cast<RankedTensorType>(op.getType());
+
+  auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+  auto tileVals = unpackLLElements(loc, adaptor.getTile(), rewriter);
+
+  auto srcShape = srcTy.getShape();
+  auto tileShape = tileTy.getShape();
+
+  auto shapePerCTATile = getShapePerCTATile(srcTy);
+  auto srcCTAShape = multiDimElementwise<int64_t, unsigned>(
+      srcShape, shapePerCTATile, std::divides<unsigned>());
+  auto tileCTAShape = multiDimElementwise<int64_t, unsigned>(
+      tileShape, shapePerCTATile, std::divides<unsigned>());
+
+  SmallVector<int64_t> logicalTileShape(tileShape.begin(), tileShape.end());
+  SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
+  for (size_t i = 0; i < srcShape.size(); ++i) {
+    if (logicalTileShape[i] == 0 || srcShape[i] % logicalTileShape[i] != 0)
+      return op.emitError("source shape must be divisible by tile shape");
+    logicalGridShape[i] = srcShape[i] / logicalTileShape[i];
+  }
+
+  SmallVector<int64_t> logicalCoords(srcShape.size(), 0);
+  int64_t remain = index;
+  for (int i = srcShape.size() - 1; i >= 0; --i) {
+    logicalCoords[i] = remain % logicalGridShape[i];
+    remain /= logicalGridShape[i];
+  }
+
+  SmallVector<int64_t> elementCoords(srcShape.size(), 0);
+  for (size_t i = 0; i < srcShape.size(); ++i)
+    elementCoords[i] = logicalCoords[i] * logicalTileShape[i];
+
+  auto firstTileCoordinate = multiDimElementwise<int64_t, unsigned>(
+      elementCoords, shapePerCTATile, std::divides<unsigned>());
+
+  auto numCTATiles = std::accumulate(tileCTAShape.begin(), tileCTAShape.end(),
+                                     1, std::multiplies<>());
+
+  auto srcCTAOrder = getCTATileOrder(srcTy);
+  auto tileCTAOrder = getCTATileOrder(tileTy);
+
+  for (size_t d = 0; d < srcCTAShape.size(); ++d) {
+    if (firstTileCoordinate[d] + tileCTAShape[d] > srcCTAShape[d])
+      return op.emitError("tile write region out of source bounds");
+  }
+
+  unsigned totalSrcCTAs =
+      std::accumulate(srcCTAShape.begin(), srcCTAShape.end(), 1u,
+                      std::multiplies<>());
+  unsigned totalTileCTAs =
+      std::accumulate(tileCTAShape.begin(), tileCTAShape.end(), 1u,
+                      std::multiplies<>());
+
+  unsigned srcElemsPerThreadPerCTA =
+      ttg::getTotalElemsPerThread(srcTy) / totalSrcCTAs;
+  unsigned tileElemsPerThreadPerCTA =
+      ttg::getTotalElemsPerThread(tileTy) / totalTileCTAs;
+
+  if (srcElemsPerThreadPerCTA != tileElemsPerThreadPerCTA)
+    return op.emitError("source/tile per-CTA elements per thread mismatch");
+
+  SmallVector<Value> resultVals(srcVals.begin(), srcVals.end());
+
+  for (size_t i = 0; i < numCTATiles; i++) {
+    auto coordInTileTensor = tle::delinearize(i, tileCTAShape, tileCTAOrder);
+    auto coordInSrcTensor = multiDimElementwise<unsigned, unsigned>(
+        coordInTileTensor, firstTileCoordinate, std::plus<unsigned>());
+
+    auto linearIdxInSrcTensor =
+      tle::linearize(coordInSrcTensor, srcCTAShape, srcCTAOrder);
+    auto linearIdxInTileTensor =
+      tle::linearize(coordInTileTensor, tileCTAShape, tileCTAOrder);
+
+    size_t srcStartIdx = linearIdxInSrcTensor * srcElemsPerThreadPerCTA;
+    size_t tileStartIdx = linearIdxInTileTensor * tileElemsPerThreadPerCTA;
+
+    if (srcStartIdx + srcElemsPerThreadPerCTA > resultVals.size() ||
+        tileStartIdx + tileElemsPerThreadPerCTA > tileVals.size()) {
+      return op.emitError("Internal error: register index out of bounds")
+             << " srcStartIdx=" << srcStartIdx
+             << " tileStartIdx=" << tileStartIdx
+             << " srcVals.size()=" << resultVals.size()
+             << " tileVals.size()=" << tileVals.size();
+    }
+
+    llvm::copy(ArrayRef<Value>(tileVals).slice(tileStartIdx,
+                                               srcElemsPerThreadPerCTA),
+               resultVals.begin() + srcStartIdx);
+  }
+
+  Value ret =
+      packLLElements(loc, typeConverter, resultVals, rewriter, dstTy);
+  rewriter.replaceOp(op, ret);
+  return success();
+}
+
+static LogicalResult lowerInsertTileViaSMEMDynamic(
+    InsertTileOp op,
+    InsertTileOp::Adaptor adaptor,
+    ConversionPatternRewriter &rewriter,
+    const LLVMTypeConverter *typeConverter) {
+  Location loc = op->getLoc();
+  auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
+  auto tileTy = cast<RankedTensorType>(op.getTile().getType());
+  auto dstTy = cast<RankedTensorType>(op.getType());
+  auto srcShape = srcTy.getShape();
+  auto tileShape = tileTy.getShape();
+  int rank = srcShape.size();
+
+  MLIRContext *ctx = rewriter.getContext();
+  auto i1Ty = rewriter.getIntegerType(1);
+  auto i8Ty = rewriter.getIntegerType(8);
+  auto i32Ty = rewriter.getIntegerType(32);
+  auto elemTy = srcTy.getElementType();
+  Type llvmElemTy = typeConverter->convertType(elemTy);
+  if (!llvmElemTy)
+    return op.emitError("SMEM path: failed to convert element type");
+  int64_t elemBytes = llvmElemTy.getIntOrFloatBitWidth() / 8;
+
+  int64_t totalTileElems = 1;
+  for (auto dim : tileShape)
+    totalTileElems *= dim;
+
+  auto srcOffsets = mlir::emitOffsetForLayout(srcTy.getEncoding(), srcTy);
+  auto tileOffsets = mlir::emitOffsetForLayout(tileTy.getEncoding(), tileTy);
+  unsigned srcElemsPerThread = ttg::getTotalElemsPerThread(srcTy);
+  unsigned tileElemsPerThread = ttg::getTotalElemsPerThread(tileTy);
+
+  if (srcOffsets.size() != srcElemsPerThread)
+    return op.emitError("SMEM path: src offsets size mismatch");
+  if (tileOffsets.size() != tileElemsPerThread)
+    return op.emitError("SMEM path: tile offsets size mismatch");
+
+  auto tileOrder = getCTATileOrder(tileTy);
+  SmallVector<int64_t> smemStrides(rank, 0);
+  {
+    int64_t s = 1;
+    for (int i = 0; i < rank; ++i) {
+      unsigned dim = tileOrder[i];
+      smemStrides[dim] = s;
+      s *= tileShape[dim];
+    }
+  }
+
+  auto srcThreadOffsets = computeThreadOffsets(loc, rewriter, srcTy);
+  auto tileThreadOffsets = computeThreadOffsets(loc, rewriter, tileTy);
+
+  auto smemPtrTy = LLVM::LLVMPointerType::get(ctx, 3);
+  auto smemArrTy = LLVM::LLVMArrayType::get(
+      i8Ty, static_cast<uint64_t>(totalTileElems * elemBytes));
+  std::string smemName =
+      "__smem_insert_tile_" +
+      std::to_string(reinterpret_cast<uintptr_t>(op.getOperation()));
+  auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(moduleOp.getBody());
+    rewriter.create<LLVM::GlobalOp>(loc, smemArrTy, false,
+                                    LLVM::Linkage::Internal, smemName,
+                                    Attribute{}, 16, 3);
+  }
+  Value smemBufArr =
+      rewriter.create<LLVM::AddressOfOp>(loc, smemPtrTy, smemName);
+  Value zero32 = rewriter.create<LLVM::ConstantOp>(
+      loc, i32Ty, rewriter.getI32IntegerAttr(0));
+  Value smemBase = rewriter.create<LLVM::GEPOp>(
+      loc, smemPtrTy, smemArrTy, smemBufArr, ValueRange{zero32, zero32},
+      LLVM::GEPNoWrapFlags::inbounds);
+
+  SmallVector<int64_t> logicalGrid(rank), suffix(rank, 1);
+  for (int d = 0; d < rank; ++d)
+    logicalGrid[d] = srcShape[d] / tileShape[d];
+  for (int d = rank - 2; d >= 0; --d)
+    suffix[d] = suffix[d + 1] * logicalGrid[d + 1];
+
+  Value dynIndex = adaptor.getIndex();
+  SmallVector<Value> tileStartVals(rank), tileEndVals(rank);
+  for (int d = 0; d < rank; ++d) {
+    Value sv = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)suffix[d]));
+    Value gv = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)logicalGrid[d]));
+    Value tv = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
+    Value coord = rewriter.create<LLVM::UDivOp>(loc, i32Ty, dynIndex, sv);
+    coord = rewriter.create<LLVM::URemOp>(loc, i32Ty, coord, gv);
+    tileStartVals[d] = rewriter.create<LLVM::MulOp>(loc, i32Ty, coord, tv);
+    tileEndVals[d] =
+        rewriter.create<LLVM::AddOp>(loc, i32Ty, tileStartVals[d], tv);
+  }
+
+  auto tileVals = unpackLLElements(loc, adaptor.getTile(), rewriter);
+  for (unsigned i = 0; i < tileElemsPerThread; ++i) {
+    Value smemByteOffsetV = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(0));
+
+    for (int d = 0; d < rank; ++d) {
+      Value baseOff = rewriter.create<LLVM::ConstantOp>(
+          loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileOffsets[i][d]));
+      Value globalCoordV = rewriter.create<LLVM::AddOp>(
+          loc, i32Ty, baseOff, tileThreadOffsets[d]);
+
+      Value tileShapeV = rewriter.create<LLVM::ConstantOp>(
+          loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
+      Value tileLocalCoordV =
+          rewriter.create<LLVM::URemOp>(loc, i32Ty, globalCoordV, tileShapeV);
+
+      Value sb = rewriter.create<LLVM::ConstantOp>(
+          loc, i32Ty,
+          rewriter.getI32IntegerAttr((int32_t)(smemStrides[d] * elemBytes)));
+      smemByteOffsetV = rewriter.create<LLVM::AddOp>(
+          loc, i32Ty, smemByteOffsetV,
+          rewriter.create<LLVM::MulOp>(loc, i32Ty, tileLocalCoordV, sb));
+    }
+
+    Value sp = rewriter.create<LLVM::GEPOp>(
+        loc, smemPtrTy, i8Ty, smemBase, ValueRange{smemByteOffsetV},
+        LLVM::GEPNoWrapFlags::inbounds);
+    rewriter.create<LLVM::StoreOp>(loc, tileVals[i], sp, elemBytes);
+  }
+
+  rewriter.create<NVVM::Barrier0Op>(loc);
+
+  auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+  SmallVector<Value> resultVals;
+  resultVals.reserve(srcElemsPerThread);
+
+  for (unsigned i = 0; i < srcElemsPerThread; ++i) {
+    Value inRange = rewriter.create<LLVM::ConstantOp>(
+        loc, i1Ty, rewriter.getIntegerAttr(i1Ty, 1));
+    Value smemByteOffsetV = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(0));
+
+    for (int d = 0; d < rank; ++d) {
+      Value baseOff = rewriter.create<LLVM::ConstantOp>(
+          loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)srcOffsets[i][d]));
+      Value globalCoordV = rewriter.create<LLVM::AddOp>(
+          loc, i32Ty, baseOff, srcThreadOffsets[d]);
+
+      Value ge = rewriter.create<LLVM::ICmpOp>(
+          loc, LLVM::ICmpPredicate::uge, globalCoordV, tileStartVals[d]);
+      Value lt = rewriter.create<LLVM::ICmpOp>(
+          loc, LLVM::ICmpPredicate::ult, globalCoordV, tileEndVals[d]);
+      inRange = rewriter.create<LLVM::AndOp>(
+          loc, rewriter.create<LLVM::AndOp>(loc, ge, lt), inRange);
+
+      Value tileShapeV = rewriter.create<LLVM::ConstantOp>(
+          loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
+      Value tileLocalSafeV =
+          rewriter.create<LLVM::URemOp>(loc, i32Ty, globalCoordV, tileShapeV);
+
+      Value sb = rewriter.create<LLVM::ConstantOp>(
+          loc, i32Ty,
+          rewriter.getI32IntegerAttr((int32_t)(smemStrides[d] * elemBytes)));
+      smemByteOffsetV = rewriter.create<LLVM::AddOp>(
+          loc, i32Ty, smemByteOffsetV,
+          rewriter.create<LLVM::MulOp>(loc, i32Ty, tileLocalSafeV, sb));
+    }
+
+    Value lp = rewriter.create<LLVM::GEPOp>(
+        loc, smemPtrTy, i8Ty, smemBase, ValueRange{smemByteOffsetV},
+        LLVM::GEPNoWrapFlags::inbounds);
+    Value tileLoaded =
+        rewriter.create<LLVM::LoadOp>(loc, llvmElemTy, lp, elemBytes);
+    Value merged =
+        rewriter.create<LLVM::SelectOp>(loc, inRange, tileLoaded, srcVals[i]);
+    resultVals.push_back(merged);
+  }
+
+  rewriter.create<NVVM::Barrier0Op>(loc);
+
+  Value ret = packLLElements(loc, typeConverter, resultVals, rewriter, dstTy);
+  rewriter.replaceOp(op, ret);
+  return success();
+}
+
 // ============================================================================
 // InsertTileOp -> LLVM conversion (AMD-style)
 // ============================================================================
-struct InsertTileOpConversion 
+struct InsertTileOpConversion
     : public ConvertOpToLLVMPattern<InsertTileOp> {
 
   using ConvertOpToLLVMPattern<InsertTileOp>::ConvertOpToLLVMPattern;
@@ -33,9 +355,7 @@ struct InsertTileOpConversion
 
     Location loc = op->getLoc();
 
-    // ======================================================================
-    // Step 1: type checks
-    // ======================================================================
+    // Basic type checks.
     auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
     auto tileTy = dyn_cast<RankedTensorType>(op.getTile().getType());
     auto dstTy = dyn_cast<RankedTensorType>(op.getType());
@@ -58,147 +378,15 @@ struct InsertTileOpConversion
       return op.emitError("insert_tile only supports BlockedEncodingAttr");
     }
 
-    // ======================================================================
-    // Step 2: unpack input register values
-    // ======================================================================
-    auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
-    auto tileVals = unpackLLElements(loc, adaptor.getTile(), rewriter);
-
-    // ======================================================================
-    // Step 3 & 4: map logical tile grid to physical CTA grid
-    // ======================================================================
-    auto srcShape = srcTy.getShape();
-    auto tileShape = tileTy.getShape();
-
-    // 1) Get physical CTA tile shape in element space (e.g. [8, 16]).
-    auto shapePerCTATile = getShapePerCTATile(srcTy);
-
-    // 2) Compute physical CTA-grid shapes for src and tile tensors.
-    auto srcCTAShape = multiDimElementwise<int64_t, unsigned>(
-      srcShape, shapePerCTATile, std::divides<unsigned>());
-    auto tileCTAShape = multiDimElementwise<int64_t, unsigned>(
-      tileShape, shapePerCTATile, std::divides<unsigned>());
-
-    // 3) Read scalar index passed by the frontend.
-    int64_t index = 0;
-    if (auto constOp = op->getOperand(2).getDefiningOp<mlir::arith::ConstantOp>()) {
-        index = mlir::cast<mlir::IntegerAttr>(constOp.getValue()).getInt();
+    auto staticIndex = getStaticIndex(op);
+    if (staticIndex.has_value() && isCTATileAligned(op, staticIndex.value())) {
+      int64_t index = staticIndex.value();
+      return lowerInsertTileStatic(op, adaptor, rewriter,
+                                   this->getTypeConverter(), index);
     }
 
-    // 4) Logical tile shape is defined by the tile tensor shape.
-    SmallVector<int64_t> logicalTileShape(tileShape.begin(), tileShape.end());
-
-    // 5) Compute logical tile-grid shape.
-    SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
-    for (size_t i = 0; i < srcShape.size(); ++i) {
-        if (logicalTileShape[i] == 0 || srcShape[i] % logicalTileShape[i] != 0)
-          return op.emitError("source shape must be divisible by tile shape");
-        logicalGridShape[i] = srcShape[i] / logicalTileShape[i];
-    }
-
-    // 6) Delinearize index into logical tile coordinates (e.g. 1 -> [1, 0]).
-    SmallVector<int64_t> logicalCoords(srcShape.size(), 0);
-    int64_t remain = index;
-    for (int i = srcShape.size() - 1; i >= 0; --i) {
-        logicalCoords[i] = remain % logicalGridShape[i];
-        remain /= logicalGridShape[i];
-    }
-
-    // 7) Convert logical tile coords to absolute element coordinates.
-    SmallVector<int64_t> elementCoords(srcShape.size(), 0);
-    for (size_t i = 0; i < srcShape.size(); ++i) {
-        elementCoords[i] = logicalCoords[i] * logicalTileShape[i];
-    }
-
-    // 8) Convert insertion start to physical CTA coordinates.
-    auto firstTileCoordinate = multiDimElementwise<int64_t, unsigned>(
-      elementCoords, shapePerCTATile, std::divides<unsigned>());
-
-
-    // Total number of CTA tiles to overwrite (determined by tile tensor).
-    auto numCTATiles = std::accumulate(tileCTAShape.begin(), tileCTAShape.end(),
-                                       1, std::multiplies<>());
-                                      
-    auto srcCTAOrder = getCTATileOrder(srcTy);
-    auto tileCTAOrder = getCTATileOrder(tileTy);
-
-    // Bounds check in CTA space.
-    for (size_t d = 0; d < srcCTAShape.size(); ++d) {
-      if (firstTileCoordinate[d] + tileCTAShape[d] > srcCTAShape[d]) {
-        return op.emitError("tile write region out of source bounds");
-      }
-    }
-
-    // ======================================================================
-    // Step 6: compute per-CTA elements-per-thread
-    // ======================================================================
-    unsigned totalSrcCTAs = std::accumulate(srcCTAShape.begin(), 
-                                           srcCTAShape.end(),
-                                           1u, std::multiplies<>());
-
-    unsigned totalTileCTAs = std::accumulate(tileCTAShape.begin(),
-                                             tileCTAShape.end(),
-                                             1u, std::multiplies<>());
-
-    unsigned srcElemsPerThreadPerCTA = 
-        ttg::getTotalElemsPerThread(srcTy) / totalSrcCTAs;
-
-    unsigned tileElemsPerThreadPerCTA =
-        ttg::getTotalElemsPerThread(tileTy) / totalTileCTAs;
-
-    if (srcElemsPerThreadPerCTA != tileElemsPerThreadPerCTA) {
-      return op.emitError("source/tile per-CTA elements per thread mismatch");
-    }
-
-    // ======================================================================
-    // Step 7: copy src and overwrite target region with tile (core loop)
-    // ======================================================================
-    SmallVector<Value> resultVals(srcVals.begin(), srcVals.end());
-
-    for (size_t i = 0; i < numCTATiles; i++) {
-      // 7.1 CTA coordinate of current sub-tile inside tile tensor.
-      auto coordInTileTensor = tle::delinearize(i, tileCTAShape, tileCTAOrder);
-
-      // 7.2 Map to CTA coordinate in source tensor.
-          auto coordInSrcTensor = multiDimElementwise<unsigned, unsigned>(
-            coordInTileTensor, firstTileCoordinate, std::plus<unsigned>());
-
-      // 7.3 Linearize CTA coordinates to linear indices.
-      auto linearIdxInSrcTensor = linearize(
-          coordInSrcTensor, srcCTAShape, srcCTAOrder);
-
-      auto linearIdxInTileTensor = linearize(
-          coordInTileTensor, tileCTAShape, tileCTAOrder);
-
-      // 7.4 Compute register slice start offsets for src and tile.
-      size_t srcStartIdx = linearIdxInSrcTensor * srcElemsPerThreadPerCTA;
-      size_t tileStartIdx = linearIdxInTileTensor * tileElemsPerThreadPerCTA;
-
-      // 7.5 Safety bounds check for computed register slices.
-      if (srcStartIdx + srcElemsPerThreadPerCTA > resultVals.size() ||
-          tileStartIdx + tileElemsPerThreadPerCTA > tileVals.size()) {
-        return op.emitError("Internal error: register index out of bounds")
-               << " srcStartIdx=" << srcStartIdx
-               << " tileStartIdx=" << tileStartIdx
-               << " srcVals.size()=" << resultVals.size()
-               << " tileVals.size()=" << tileVals.size();
-      }
-
-      // 7.6 Overwrite src slice with corresponding tile slice.
-      llvm::copy(ArrayRef<Value>(tileVals).slice(tileStartIdx,
-                     srcElemsPerThreadPerCTA),
-             resultVals.begin() + srcStartIdx);
-    }
-
-    // ======================================================================
-    // Step 8: pack final result
-    // ======================================================================
-    Value ret = packLLElements(
-        loc, this->getTypeConverter(), resultVals, rewriter, dstTy
-    );
-
-    rewriter.replaceOp(op, ret);
-    return success();
+    return lowerInsertTileViaSMEMDynamic(op, adaptor, rewriter,
+                                         this->getTypeConverter());
   }
 };
 

@@ -1,7 +1,9 @@
 #ifndef TLE_TILE_TO_LLVM_UTILS_H
 #define TLE_TILE_TO_LLVM_UTILS_H
 
+#include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Value.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include <cassert>
@@ -31,6 +33,11 @@ unsigned linearize(llvm::ArrayRef<unsigned> coords,
                    llvm::ArrayRef<unsigned> order);
 
 llvm::SmallVector<unsigned> getShapePerCTATile(::mlir::RankedTensorType type);
+
+llvm::SmallVector<::mlir::Value> computeThreadOffsets(
+    ::mlir::Location loc,
+    ::mlir::ConversionPatternRewriter &rewriter,
+    ::mlir::RankedTensorType tensorType);
 
 } // namespace mlir::triton::tle
 

@@ -1,5 +1,7 @@
 #include "TleTileToLLVMUtils.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 using namespace mlir;
@@ -70,6 +72,72 @@ SmallVector<unsigned> getShapePerCTATile(RankedTensorType type) {
   }
 
   llvm_unreachable("tile op only supports BlockedEncoding");
+}
+
+SmallVector<Value> computeThreadOffsets(
+    Location loc,
+    ConversionPatternRewriter &rewriter,
+    RankedTensorType tensorType) {
+  auto bl = cast<ttg::BlockedEncodingAttr>(tensorType.getEncoding());
+  auto sizePerThread = bl.getSizePerThread();
+  auto threadsPerWarp = bl.getThreadsPerWarp();
+  auto warpsPerCTA = bl.getWarpsPerCTA();
+  auto order = bl.getOrder();
+  int rank = tensorType.getRank();
+
+  auto i32Ty = rewriter.getIntegerType(32);
+  Value threadId = rewriter.create<NVVM::ThreadIdXOp>(loc, i32Ty);
+
+  unsigned warpSizeVal = 1;
+  for (auto t : threadsPerWarp)
+    warpSizeVal *= t;
+  Value warpSizeV = rewriter.create<LLVM::ConstantOp>(
+      loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)warpSizeVal));
+
+  Value laneId = rewriter.create<LLVM::URemOp>(loc, i32Ty, threadId, warpSizeV);
+  Value warpId = rewriter.create<LLVM::UDivOp>(loc, i32Ty, threadId, warpSizeV);
+
+  SmallVector<Value> laneInDim(rank);
+  {
+    Value rem = laneId;
+    for (int i = 0; i < rank; ++i) {
+      unsigned dim = order[i];
+      unsigned count = threadsPerWarp[dim];
+      Value cv = rewriter.create<LLVM::ConstantOp>(
+          loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)count));
+      laneInDim[dim] = rewriter.create<LLVM::URemOp>(loc, i32Ty, rem, cv);
+      rem = rewriter.create<LLVM::UDivOp>(loc, i32Ty, rem, cv);
+    }
+  }
+
+  SmallVector<Value> warpInDim(rank);
+  {
+    Value rem = warpId;
+    for (int i = 0; i < rank; ++i) {
+      unsigned dim = order[i];
+      unsigned count = warpsPerCTA[dim];
+      Value cv = rewriter.create<LLVM::ConstantOp>(
+          loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)count));
+      warpInDim[dim] = rewriter.create<LLVM::URemOp>(loc, i32Ty, rem, cv);
+      rem = rewriter.create<LLVM::UDivOp>(loc, i32Ty, rem, cv);
+    }
+  }
+
+  SmallVector<Value> threadOffsets(rank);
+  for (int d = 0; d < rank; ++d) {
+    Value tpw = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)threadsPerWarp[d]));
+    Value spt = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)sizePerThread[d]));
+    Value warpContrib =
+        rewriter.create<LLVM::MulOp>(loc, i32Ty, warpInDim[d], tpw);
+    Value threadCoord =
+        rewriter.create<LLVM::AddOp>(loc, i32Ty, warpContrib, laneInDim[d]);
+    threadOffsets[d] =
+        rewriter.create<LLVM::MulOp>(loc, i32Ty, threadCoord, spt);
+  }
+
+  return threadOffsets;
 }
 
 } // namespace mlir::triton::tle

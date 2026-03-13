@@ -260,6 +260,15 @@ LogicalResult InsertTileOp::inferReturnTypes(
   return success();
 }
 
+// ============================================================================
+// InsertTileOp Verification
+//
+// 动态 index（index 操作数不是 arith.constant）时：
+//   - 只做编译期可知的约束：tile_shape 正数、整除性、元素类型、rank/结果形状匹配
+//   - 跳过越界检查和插入区域边界检查（运行时才知道值）
+//
+// 静态 index 时：执行完整检查（与原实现等价）
+// ============================================================================
 LogicalResult InsertTileOp::verify() {
   auto srcTy = cast<RankedTensorType>(getSrc().getType());
   auto tileTy = cast<RankedTensorType>(getTile().getType());
@@ -269,50 +278,58 @@ LogicalResult InsertTileOp::verify() {
   auto tileShape = tileTy.getShape();
   auto dstShape = dstTy.getShape();
 
-  // insert_tile index is the 3rd operand: (src, tile, index).
-  auto idxDef = getOperation()->getOperand(2).getDefiningOp<arith::ConstantOp>();
-  if (!idxDef)
-    return emitOpError("index must be a compile-time constant arith.constant");
-  int64_t index = mlir::cast<mlir::IntegerAttr>(idxDef.getValue()).getInt();
+  // ── 无论静态/动态都必须通过的基本检查 ─────────────────────────────────
 
-  // 1) Basic type and shape consistency checks.
-  if (srcTy.getElementType() != tileTy.getElementType()) {
+  // 检查1：元素类型必须匹配
+  if (srcTy.getElementType() != tileTy.getElementType())
     return emitOpError("tile element type must match source element type");
-  }
-  if (srcTy.getElementType() != dstTy.getElementType()) {
+  if (srcTy.getElementType() != dstTy.getElementType())
     return emitOpError("result element type must match source element type");
-  }
-  if (srcTy.getRank() != tileTy.getRank()) {
-    return emitOpError("tile rank must equal source rank");
-  }
-  if (srcTy.getRank() != dstTy.getRank()) {
-    return emitOpError("result rank must equal source rank");
-  }
-  if (dstShape != srcShape) {
-    return emitOpError("result shape must equal source shape");
-  }
 
-  // 2) Compute logical tile-grid shape from src/tile shapes.
+  // 检查2：rank 必须匹配
+  if (srcTy.getRank() != tileTy.getRank())
+    return emitOpError("tile rank must equal source rank");
+  if (srcTy.getRank() != dstTy.getRank())
+    return emitOpError("result rank must equal source rank");
+
+  // 检查3：result shape 必须与 source 一致
+  if (dstShape != srcShape)
+    return emitOpError("result shape must equal source shape");
+
+  // 检查4：tile_shape 每维正数 + 整除性
   SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
   int64_t totalTiles = 1;
   for (size_t i = 0; i < srcShape.size(); ++i) {
-    if (tileShape[i] <= 0) {
+    if (tileShape[i] <= 0)
       return emitOpError("tile shape must be positive at dimension ") << i;
-    }
-    if (srcShape[i] % tileShape[i] != 0) {
+    if (srcShape[i] % tileShape[i] != 0)
       return emitOpError("source shape must be divisible by tile shape at dimension ")
              << i << " (source=" << srcShape[i] << ", tile=" << tileShape[i] << ")";
-    }
     logicalGridShape[i] = srcShape[i] / tileShape[i];
     totalTiles *= logicalGridShape[i];
   }
 
-  if (index < 0 || index >= totalTiles) {
-    return emitOpError("index out of bounds for tile grid: index=")
-           << index << ", total_tiles=" << totalTiles;
+  // 检查5：insert_tile 更新值但不改变全局 layout，result encoding 必须与 source 一致
+  auto srcEnc = srcTy.getEncoding();
+  auto dstEnc = dstTy.getEncoding();
+  if (srcEnc && dstEnc && srcEnc != dstEnc)
+    return emitOpError("result encoding must match source encoding");
+
+  // ── 判断 index 是否为静态常量 ────────────────────────────────────────────
+  // insert_tile index is the 3rd operand: (src, tile, index).
+  auto idxDef = getOperation()->getOperand(2).getDefiningOp<arith::ConstantOp>();
+  if (!idxDef) {
+    // 动态 index：跳过越界和插入区域边界检查，lowering 阶段再处理
+    return success();
   }
 
-  // 3) Delinearize linear index to tile coordinates, then map to element offsets.
+  // ── 静态 index 的完整检查 ────────────────────────────────────────────────
+  int64_t index = mlir::cast<mlir::IntegerAttr>(idxDef.getValue()).getInt();
+  if (index < 0 || index >= totalTiles)
+    return emitOpError("index out of bounds for tile grid: index=")
+           << index << ", total_tiles=" << totalTiles;
+
+  // 反线性化为每一维 tile 索引（行主序）
   SmallVector<int64_t> tileIndices(srcShape.size(), 0);
   int64_t remain = index;
   for (int i = static_cast<int>(srcShape.size()) - 1; i >= 0; --i) {
@@ -320,29 +337,19 @@ LogicalResult InsertTileOp::verify() {
     remain /= logicalGridShape[i];
   }
 
+  // tile 索引 -> 坐标级 offsets
   SmallVector<int64_t> offsets(srcShape.size(), 0);
-  for (size_t i = 0; i < srcShape.size(); ++i) {
+  for (size_t i = 0; i < srcShape.size(); ++i)
     offsets[i] = tileIndices[i] * tileShape[i];
-  }
 
-  // 4) Bounds check: the full insertion tile must stay inside src.
+  // 边界检查：完整插入区域必须落在 source 内
   for (size_t i = 0; i < srcShape.size(); ++i) {
-    if (offsets[i] < 0) {
+    if (offsets[i] < 0)
       return emitOpError("offset must be non-negative at dimension ") << i;
-    }
-    if (offsets[i] + tileShape[i] > srcShape[i]) {
+    if (offsets[i] + tileShape[i] > srcShape[i])
       return emitOpError("invalid insertion region at dimension ") << i
              << ": offset(" << offsets[i] << ") + tile(" << tileShape[i]
              << ") > source(" << srcShape[i] << ")";
-    }
-  }
-
-  // 5) If encodings are present, src and result encodings must match.
-  // insert_tile updates values but does not change the global layout.
-  auto srcEnc = srcTy.getEncoding();
-  auto dstEnc = dstTy.getEncoding();
-  if (srcEnc && dstEnc && srcEnc != dstEnc) {
-    return emitOpError("result encoding must match source encoding");
   }
 
   return success();
