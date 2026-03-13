@@ -1,4 +1,4 @@
-name: Enflame-Build-And-Test
+name: Enflame-GCU300-Build-And-Test
 
 on:
   push:
