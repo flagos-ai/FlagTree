@@ -56,12 +56,24 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 //   - EDSL param type: "i32"
 //   - LLVM func: 1 arg = i32
 //   - Conversion: Use block argument directly
-tle::DSLRegionOp createTLERawRegionByLLVMFunc(
-    TritonOpBuilder &self, std::string_view text, std::string_view fnname,
-    const std::vector<Value> &outputs, const std::vector<Value> &inputs) {
+tle::DSLRegionOp
+createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             const std::vector<Value> &outputs,
+                             const std::vector<Value> &inputs) {
   ParserConfig config(self.getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
-  LLVM::LLVMFuncOp func = module->lookupSymbol<LLVM::LLVMFuncOp>(fnname);
+  assert(module && "Failed to parse LLVM IR text");
+  LLVM::LLVMFuncOp func = nullptr;
+  for (auto op : module->getOps<LLVM::LLVMFuncOp>()) {
+    if (!op.empty()) {
+      if (func) {
+        llvm_unreachable("Multiple functions found in LLVM IR text");
+      } else {
+        func = op;
+      }
+    }
+  }
+  assert(func && "No function found in LLVM IR text");
   OpBuilder &builder = self.getBuilder();
   Operation *curOp = builder.getInsertionBlock()->getParentOp();
   while (curOp && curOp->getParentOp() && !isa<ModuleOp>(curOp)) {
@@ -72,21 +84,22 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(curModule.getBody());
     for (Operation &op : module->getOps()) {
-      if (&op != func.getOperation() &&
-          (!isa<SymbolOpInterface>(op) ||
+      if ((!isa<SymbolOpInterface>(op) ||
            (isa<SymbolOpInterface>(op) &&
-            !curModule.lookupSymbol(cast<SymbolOpInterface>(op).getName())))) {
+            !curModule.lookupSymbol(cast<SymbolOpInterface>(op).getName()))) &&
+          !isa<LLVM::ModuleFlagsOp>(op)) {
         builder.clone(op);
       }
     }
   }
-
+  LLVM::LLVMFuncOp funcOp =
+      curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName());
+  assert(funcOp && "callee function not found in current module");
   SmallVector<Type> outputTys = llvm::map_to_vector(
       outputs, [](Value value) -> Type { return value.getType(); });
   SmallVector<Value> operands = llvm::to_vector(
       llvm::concat<Value>(SmallVector<Value>(outputs.begin(), outputs.end()),
                           SmallVector<Value>(inputs.begin(), inputs.end())));
-
   tle::DSLRegionOp dslRegionOp =
       self.create<tle::DSLRegionOp>(outputTys, operands);
   OpBuilder::InsertionGuard guard(builder);
@@ -94,49 +107,37 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
   SmallVector<Type> operandTys = llvm::map_to_vector(
       operands, [](Value value) -> Type { return value.getType(); });
   IRMapping mapper;
-  for (auto [idx, oldBlock] : enumerate(func.getBlocks())) {
-    if (idx == 0) {
-      Block *newBlock = builder.createBlock(
-          &body, {}, operandTys,
-          SmallVector<Location>(operandTys.size(), self.getLastLoc()));
-      builder.setInsertionPointToStart(newBlock);
-      ValueRange args = func.getArguments();
-      TypeRange tgts = args.getTypes();
-      SmallVector<Value> ops = {};
-      for (Value src : newBlock->getArguments()) {
-        SmallVector<Value> rets =
-            tle::protocol::SignaturePattern::apply(self, tgts, src);
-        ops.append(std::move(rets));
-      }
-      for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
-        mapper.map(arg, op);
-      }
-      mapper.map(&oldBlock, newBlock);
-    } else {
-      Block *newBlock = builder.createBlock(
-          &body, {}, oldBlock.getArgumentTypes(),
-          SmallVector<Location>(oldBlock.getNumArguments(), self.getLastLoc()));
-      for (auto [oldArg, newArg] :
-           zip_equal(oldBlock.getArguments(), newBlock->getArguments())) {
-        mapper.map(oldArg, newArg);
-      }
-      mapper.map(&oldBlock, newBlock);
-    }
+  Block *newBlock = builder.createBlock(
+      &body, {}, operandTys,
+      SmallVector<Location>(operandTys.size(), self.getLastLoc()));
+  builder.setInsertionPointToStart(newBlock);
+  ValueRange args = func.getArguments();
+  TypeRange tgts = args.getType();
+  SmallVector<Value> ops = {};
+  for (Value src : newBlock->getArguments()) {
+    SmallVector<Value> rets =
+        tle::protocol::SignaturePattern::apply(self, tgts, src);
+    ops.append(std::move(rets));
   }
-  for (auto [oldBlock, newBlock] :
-       zip_equal(func.getBlocks(), body.getBlocks())) {
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToEnd(&newBlock);
+  for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
+    mapper.map(arg, op);
+  }
+  builder.setInsertionPointToEnd(newBlock);
+  LLVM::CallOp callOp = self.create<LLVM::CallOp>(funcOp, ops);
+  callOp.setAlwaysInline(true);
+
+  tgts = dslRegionOp.getOutputs().getTypes();
+  for (auto &oldBlock : func.getBlocks()) {
     for (Operation &operation : oldBlock.getOperations()) {
       if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
         SmallVector<Value> operands, yields;
         if (dslRegionOp.getNumResults() == 0) {
           operands = {};
         } else if (dslRegionOp.getNumResults() == 1) {
-          operands = {mapper.lookup(returnOp.getArg())};
+          operands = callOp.getResults();
         } else {
-          operands = flatten(self, cast<TypedValue<LLVM::LLVMStructType>>(
-                                       mapper.lookup(returnOp.getArg())));
+          operands = flatten(
+              self, cast<TypedValue<LLVM::LLVMStructType>>(callOp.getResult()));
         }
         TypeRange tgts = dslRegionOp.getOutputs().getTypes();
         for (Value operand : operands) {
@@ -145,8 +146,6 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
           yields.append(std::move(rets));
         }
         builder.create<tle::YieldOp>(operation.getLoc(), yields);
-      } else {
-        builder.clone(operation, mapper);
       }
     }
   }

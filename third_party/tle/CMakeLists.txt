@@ -9,9 +9,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle_raw.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/lib/Protocol.cpp
     LINK_LIBS
+    MLIRTargetLLVMIRImport
     TritonTLETransforms
     TritonIR)
-  target_link_libraries(TritonTLE PRIVATE Python3::Module pybind11::headers)
+  target_link_libraries(TritonTLE PRIVATE Python3::Module pybind11::headers MLIRTargetLLVMIRImport)
 endif()
 
 add_subdirectory(test)
