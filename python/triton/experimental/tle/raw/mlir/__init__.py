@@ -1,4 +1,4 @@
-from .runtime import EdslMLIRJITFunction
+from .runtime import MLIRJITFunction
 from .utils import vprintf, vassert
 
-__all__ = ["EdslMLIRJITFunction", "vprintf", "vassert"]
+__all__ = ["MLIRJITFunction", "vprintf", "vassert"]

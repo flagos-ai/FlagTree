@@ -160,10 +160,14 @@ jobs:
           python3 python/tutorials/hints/08/08-grouped-gemm.py --only_unit_test
           python3 python/tutorials/hints/11/11-programmatic-dependent-launch.py --only_unit_test
           # flagtree tle raw
-          python3 python/tutorials/tle/raw/01-vector-add.py
-          python3 python/tutorials/tle/raw/02-fused-softmax.py
-          python3 python/tutorials/tle/raw/03-matrix-multiplication.py
-          python3 python/tutorials/tle/raw/04-hello-world.py
-          python3 python/tutorials/tle/raw/05-topk.py --kernel triton
-          python3 python/tutorials/tle/raw/05-topk.py --kernel tle
-          python3 python/tutorials/tle/raw/06-test-vassert.py
+          python3 python/tutorials/tle/raw/mlir/01-vector-add.py
+          python3 python/tutorials/tle/raw/mlir/02-fused-softmax.py
+          python3 python/tutorials/tle/raw/mlir/03-matrix-multiplication.py
+          python3 python/tutorials/tle/raw/mlir/04-hello-world.py
+          python3 python/tutorials/tle/raw/mlir/05-topk.py --kernel triton
+          python3 python/tutorials/tle/raw/mlir/05-topk.py --kernel tle
+          python3 python/tutorials/tle/raw/mlir/06-test-vassert.py
+          # flagtree tle cuda
+          # TODO: These tests are currently skipped for CLANG environment variable can not be setted.
+          # python3 python/tutorials/tle/raw/cuda/01-vector-add.py
+          # python3 python/tutorials/tle/raw/cuda/02-fused-softmax.py
