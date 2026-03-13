@@ -16,7 +16,7 @@ target_link_libraries(tsingmicro-opt PRIVATE
   ${conversion_libs}
   ${extension_libs}
   ${triton_libs}
-  ZTCAnalysis
+  TritonSharedAnalysis
   # tests
   TritonTestAnalysis
   TritonTestDialectTritonGPU

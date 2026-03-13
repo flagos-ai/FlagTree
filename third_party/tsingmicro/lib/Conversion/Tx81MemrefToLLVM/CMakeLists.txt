@@ -4,10 +4,10 @@ add_triton_library(Tx81MemrefToLLVM
 
   DEPENDS
   Tx81MemrefToLLVMConversionPassIncGen
-  TritonUtils
+  TritonSharedUtils
 
   LINK_LIBS PUBLIC
-  TritonUtils
+  TritonSharedUtils
   MLIRDialectUtils
   MLIRIR
   MLIRPass

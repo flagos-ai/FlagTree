@@ -90,5 +90,4 @@ def test_embedding(M, N, dtype, device='cpu'):
 
 
 if __name__ == "__main__":
-    # benchmark.select_cpu_backend()
     test_embedding(1151, 8192, torch.float32)

@@ -3,6 +3,7 @@ import torch
 import triton
 import triton.language as tl
 import benchmark
+import pytest
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -140,7 +141,15 @@ def matmul(a, b, activation=""):
     return c
 
 
-def test_matmul(device):
+@pytest.mark.parametrize("M, K, N, dtype", [  #
+    (M, K, N, dtype)
+    for M in [48, 64, 128]
+    for K in [128, 156, 512]
+    for N in [48, 64, 128]
+    for dtype in [torch.float32, torch.float16, torch.bfloat16]
+])
+def test_matmul(M, K, N, dtype, device='cpu'):
+    # Generate random input tensors
     torch.manual_seed(0)
     rows1 = 179
     cols1 = 167
@@ -170,9 +179,8 @@ def bench_matmul(M, N, K, provider):
 
 
 if __name__ == "__main__":
-    # benchmark.select_cpu_backend()
     # test_matmul(179,167,321,torch.float32)
-    test_matmul("txda")
-    # for X in [128 * i for i in range(2, 7)]:
-    #     for provider in ['torch', 'triton']:
-    #         bench_matmul(X, X, X, provider)
+    # test_matmul("txda")
+    for X in [128 * i for i in range(2, 7)]:
+        for provider in ['torch', 'triton']:
+            bench_matmul(X, X, X, provider)

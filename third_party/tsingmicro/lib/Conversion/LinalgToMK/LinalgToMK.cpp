@@ -9,10 +9,10 @@
 #include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
-#include "utils/FusionHelper.h"
+#include "triton-shared/Utils/FusionHelper.h"
+#include "triton-shared/Utils/ReduceScanCommon.h"
+#include "triton-shared/Utils/Utils.h"
 #include "utils/LinalgOpBuilderHelper.h"
-#include "utils/ReduceScanCommon.h"
-#include "utils/utils.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
 

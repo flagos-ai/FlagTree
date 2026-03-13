@@ -35,6 +35,7 @@
 
 #include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
 #include "triton-shared/Conversion/ConvertTritonPtr/Passes.h"
+#include "triton-shared/Conversion/ReconcilePtrCasts/Passes.h"
 #include "triton-shared/Conversion/StructuredToMemref/Passes.h"
 #include "triton-shared/Conversion/TritonArithToLinalg/Passes.h"
 #include "triton-shared/Conversion/TritonPtrToMemref/Passes.h"
@@ -96,7 +97,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerStructuredToMemrefPasses();
   mlir::triton::registerUnstructuredToMemref();
   mlir::triton::registerTritonPtrToMemref();
-  mlir::triton::registerTritonPtrToAddress();
+  mlir::triton::registerTritonToCoreDialectsPass();
   mlir::triton::registerReconcilePtrCasts();
   mlir::triton::registerTritonToCoreDialectsPass();
   mlir::triton::registerConvertTritonToTritonGPUPass();

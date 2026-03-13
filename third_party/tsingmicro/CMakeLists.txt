@@ -5,7 +5,6 @@ if(NOT DEFINED TX8_DEPS_ROOT)
     message(FATAL_ERROR "TX8_DEPS_ROOT environment variable is not defined")
   endif()
 endif()
-
 # Enable ccache if available
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
@@ -47,6 +46,11 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/crt/include)
 include_directories(${TX8_DEPS_ROOT}/include)
+
+include_directories(${CMAKE_SOURCE_DIR}/third_party/flir/include)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/flir/tools)
+include_directories(${CMAKE_BINARY_DIR}/third_party/flir/include)
+
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(bin)
@@ -56,11 +60,12 @@ add_subdirectory(profiler)
 if(TRITON_BUILD_PYTHON_MODULE)
   # FIXME: Unify the libraries for TsingMicro into fewer ones
   add_triton_plugin(TritonTsingMicro ${CMAKE_CURRENT_SOURCE_DIR}/python/triton_tsingmicro.cc
-                    LINK_LIBS ZTCAnalysis ZTCAnalysisStructured MagicKernelIR
+                    LINK_LIBS TritonSharedAnalysis TritonSharedAnalysisStructured MagicKernelIR
                     Tx81IR TritonTilingExtIR TritonStructuredIR TritonToCoreDialects
                     TritonToLinalg TritonToStructured StructuredToMemref LinalgToMagicKernel
                     TritonArithToLinalg CoreDialectsToMK Tx81ToLLVM AllocateSharedMemory ExportKernelSymbols
-                    Tx81MemrefToLLVM MKToTx81 LLVMRISCVCodeGen LLVMRISCVAsmParser)
+                    Tx81MemrefToLLVM MKToTx81 LLVMRISCVCodeGen LLVMRISCVAsmParser
+                    MLIRFuncAllExtensions)
   target_link_libraries(TritonTsingMicro PRIVATE Python3::Module pybind11::headers)
 endif()
 #if(TRITON_BUILD_UT)

@@ -63,6 +63,5 @@ def test_scan_1d(M, N, reversed, device):
 
 
 if __name__ == "__main__":
-    benchmark.select_cpu_backend()
     test_scan_1d(32, 2, False, "cpu")
     test_scan_1d(32, 2, True, "cpu")

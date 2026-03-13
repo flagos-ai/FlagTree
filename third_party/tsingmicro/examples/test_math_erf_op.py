@@ -10,7 +10,6 @@ import triton.language as tl
 import inspect
 import benchmark
 
-benchmark.select_cpu_backend()
 from numpy.random import RandomState
 
 from triton._internal_testing import (

@@ -9,8 +9,8 @@
 #include "mlir/Conversion/MemRefToLLVM/AllocLikeConversion.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "triton-shared/Utils/Utils.h"
 #include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
-#include "utils/utils.h"
 #include <cstdint>
 #include <vector>
 

@@ -17,8 +17,8 @@
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
+#include "triton-shared/Utils/Utils.h"
 #include "utils/LinalgOpBuilderHelper.h"
-#include "utils/utils.h"
 
 #define DEBUG_TYPE "linalg-fusion"
 

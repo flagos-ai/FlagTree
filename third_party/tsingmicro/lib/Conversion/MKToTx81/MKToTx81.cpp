@@ -27,10 +27,10 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "triton-shared/Utils/FusionHelper.h"
+#include "triton-shared/Utils/Utils.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
-#include "utils/FusionHelper.h"
-#include "utils/utils.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 // FIXME: triton/Conversion/TritonGPUToLLVM/Utility.h which defined
@@ -1082,9 +1082,8 @@ struct MKRelationVSOpConversionPattern : public OpConversionPattern<MKOpT> {
     auto outputType = cast<MemRefType>(output.getType());
     if (outputType.getElementType().isInteger(1)) {
       elemCount = ((elemCount + 7) / 8) * 8;
-      LLVM_DEBUG(op->emitRemark()
-                 << "element count was expanded to a multiple of 8, may "
-                    "access memory out of bounds!");
+      op->emitRemark() << "element count was expanded to a multiple of 8, may "
+                          "access memory out of bounds!";
     }
 
     auto inputPtr = createAddressFromMemref(rewriter, loc, input);

@@ -101,6 +101,5 @@ def benchmark_cdiv_triton(size, dtype, provider):
 
 
 if __name__ == "__main__":
-    # benchmark.select_cpu_backend()
     for X in [2**i for i in range(22, 25, 1)]:
         benchmark_cdiv_triton(X, torch.int32, "triton")

@@ -30,5 +30,4 @@ def test_trans_2d(dtype_str, shape, perm, device):
 
 
 if __name__ == "__main__":
-    benchmark.select_cpu_backend()
     test_trans_2d('float32', (32, 16), (1, 0), 'cpu')
