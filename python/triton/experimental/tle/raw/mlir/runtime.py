@@ -69,7 +69,7 @@ class MLIRJITFunction(object):
             pm.run(mod.operation)
             return mod
 
-    def make_llvm(self,context=None) -> str:
+    def make_llvm(self, context=None) -> str:
         return f"{self.ll}"
 
     @cached_property
