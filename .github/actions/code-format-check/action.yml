@@ -3,7 +3,7 @@ description: 'Run set up python, pre-commit, and auto-commit changes'
 
 runs:
   using: "composite"
-  steps:    
+  steps:
     - name: Setup Python
       uses: actions/setup-python@v5
       with:
