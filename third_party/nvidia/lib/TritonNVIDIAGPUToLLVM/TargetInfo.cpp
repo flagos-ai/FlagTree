@@ -157,7 +157,7 @@ static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid,
 #ifdef __TLE__
   (void)pred;
   auto clusterPtrTy = LLVM::LLVMPointerType::get(
-      rewriter.getContext(), NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
+      rewriter.getContext(), NVVM::kSharedClusterMemorySpace);
   return NVVM::MapaOp::create(rewriter, loc, clusterPtrTy, ptr, ctaid);
 #else
   return NVVM::MapaOp::create(rewriter, loc, ptr.getType(), ptr, ctaid);
@@ -170,11 +170,11 @@ Value TargetInfo::mapSharedToClusterPointer(RewriterBase &rewriter,
                                             Value ctaId) const {
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
   if (ptrTy.getAddressSpace() ==
-      static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace))
+      static_cast<unsigned>(NVVM::kSharedClusterMemorySpace))
     return ptr;
   assert(
       ptrTy.getAddressSpace() ==
-          static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace) &&
+          static_cast<unsigned>(NVVM::kSharedMemorySpace) &&
       "mapSharedToClusterPointer requires shared or cluster shared pointers");
   return mapa(rewriter, loc, ptr, ctaId, Value());
 }
@@ -210,10 +210,10 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
 #ifdef __TLE__
   const bool isShared =
       ptrTy.getAddressSpace() ==
-      static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace);
+      static_cast<unsigned>(NVVM::kSharedMemorySpace);
   const bool isClusterShared =
       ptrTy.getAddressSpace() ==
-      static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
+      static_cast<unsigned>(NVVM::kSharedClusterMemorySpace);
   assert((isShared || isClusterShared) && "Invalid addr space for store_dsmem");
   const bool useCluster = ctaId.has_value() || isClusterShared;
 #else
@@ -365,10 +365,10 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
 #ifdef __TLE__
   const bool isShared =
       ptrTy.getAddressSpace() ==
-      static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace);
+      static_cast<unsigned>(NVVM::kSharedMemorySpace);
   const bool isClusterShared =
       ptrTy.getAddressSpace() ==
-      static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
+      static_cast<unsigned>(NVVM::kSharedClusterMemorySpace);
   assert((isShared || isClusterShared) && "Invalid addr space for load_dsmem");
   const bool useCluster = ctaId.has_value() || isClusterShared;
 #else

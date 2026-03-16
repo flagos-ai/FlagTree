@@ -519,9 +519,9 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
 
       if (!evictOpr)
-        (*ld)(dstsOpr, addrOpr).maybePredicate(pred, "b");
+        ld(dstsOpr, addrOpr).maybePredicate(pred, "b");
       else
-        (*ld)(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
+        ld(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
 #else
       // Create L2 cache policy register if needed. Shared-memory accesses
       // ignore cache modifiers so we skip materializing policy registers.
@@ -821,9 +821,9 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
         evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
 
       if (!evictOpr)
-        (*ptxStoreInstr)(asmAddr, asmArgList).maybePredicate(pred, "b");
+        ptxStoreInstr(asmAddr, asmArgList).maybePredicate(pred, "b");
       else
-        (*ptxStoreInstr)(asmAddr, asmArgList, evictOpr)
+        ptxStoreInstr(asmAddr, asmArgList, evictOpr)
             .maybePredicate(pred, "b");
 #else
       // Create L2 cache policy register if needed
@@ -1226,7 +1226,7 @@ public:
       const bool isClusterSharedPtr =
           rmwPtrTy.getAddressSpace() ==
           static_cast<unsigned>(
-              NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
+              NVVM::kSharedClusterMemorySpace);
       const bool useClusterSharedAtomic =
           remoteCTAInfo.hasRemoteCTAId() || isClusterSharedPtr;
 #else
@@ -1407,11 +1407,11 @@ public:
       }
 
       auto scope = stringifyMemSyncScope(op.getScope()).str();
-      auto &atom = ptxBuilderAtomicRMW.create("atom");
+      auto *atom = ptxBuilderAtomicRMW.create("atom");
 #ifdef __TLE__
       // begin flagtree tle
       if (isSharedPtr || isClusterSharedPtr)
-        atom.o("shared::cluster", useClusterSharedAtomic)
+        atom->o("shared::cluster", useClusterSharedAtomic)
             .o("shared", !useClusterSharedAtomic)
             .o(scope);
       else
@@ -1467,9 +1467,9 @@ public:
       std::string semStr;
       llvm::raw_string_ostream os(semStr);
       os << op.getSem();
-      atom.o(semStr).o(rmwOp).v(vec).o(sTy);
+      atom->o(semStr).o(rmwOp).v(vec).o(sTy);
       if (tensorTy) {
-        atom(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
+        (*atom)(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
         Type retType;
         if (vec > 1) {
           SmallVector<Type> retTys(vec, valueElemTy);
@@ -1496,7 +1496,7 @@ public:
         }
       } else {
         auto ASMReturnTy = void_ty(ctx);
-        atom(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
+        (*atom)(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
         auto old = ptxBuilderAtomicRMW.launch(rewriter, loc, valueElemTy);
         if (op.getResult().use_empty()) {
           rewriter.eraseOp(op);
