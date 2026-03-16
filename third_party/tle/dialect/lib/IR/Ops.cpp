@@ -25,8 +25,8 @@ constexpr int kSharedMemoryAddressSpace = 3;
 }*/
 
 //============================================================================
-// 辅助函数：获取 CTA tile shape
-// ============================================================================
+// Helper function: Get CTA tile shape
+//============================================================================
 static SmallVector<int64_t> getShapePerCTATile(RankedTensorType type) {
   auto encoding = type.getEncoding();
   auto shape = type.getShape();
@@ -47,7 +47,7 @@ static SmallVector<int64_t> getShapePerCTATile(RankedTensorType type) {
     return ctaTileShape;
   }
 
-  // 其他编码类型的支持
+  // Support for other encoding types
   if (auto linear = dyn_cast<gpu::LinearEncodingAttr>(encoding)) {
     auto sizePerThread = linear.getSizePerThread();
     auto threadsPerWarp = linear.getThreadsPerWarp();
@@ -91,11 +91,11 @@ void ExtractTileOp::build(
 // ============================================================================
 // ExtractTileOp Verification
 //
-// 动态 index（index 操作数不是 arith.constant）时：
-//   - 只做编译期可知的约束：tile_shape 正数、整除性、元素类型、rank 匹配
-//   - 跳过越界检查和 CTA tile 对齐检查（运行时才知道值）
+// For dynamic index (index operand is not arith.constant):
+//   - Only check constraints that are known at compile time: tile_shape positivity, divisibility, element type, rank match
+//   - Skip out-of-bounds and CTA tile alignment checks (only known at runtime)
 //
-// 静态 index 时：执行完整检查（与原实现等价）
+// For static index: perform full checks (same as original implementation)
 // ============================================================================
 LogicalResult ExtractTileOp::verify() {
   auto srcTy = cast<RankedTensorType>(getSrc().getType());
@@ -103,7 +103,7 @@ LogicalResult ExtractTileOp::verify() {
   auto srcShape = srcTy.getShape();
   auto dstShape = dstTy.getShape();
 
-  // ── 获取 tile_shape 属性 ────────────────────────────────────────────────
+  // ---- Get tile_shape attribute ----
   auto tileShapeRawAttr = getOperation()->getAttr("tile_shape");
   SmallVector<int64_t> tileShape;
   if (auto denseArray64 = mlir::dyn_cast<mlir::DenseI64ArrayAttr>(tileShapeRawAttr)) {
@@ -111,21 +111,21 @@ LogicalResult ExtractTileOp::verify() {
       tileShape.push_back(v);
   }
 
-  // ── 无论静态/动态都必须通过的基本检查 ─────────────────────────────────
+  // ---- Basic checks required for both static and dynamic index ----
 
-  // 检查1：元素类型必须匹配
+  // Check 1: element types must match
   if (srcTy.getElementType() != dstTy.getElementType())
     return emitError("result element type must match source element type");
 
-  // 检查2：rank 必须匹配
+  // Check 2: rank must match
   if (srcTy.getRank() != dstTy.getRank())
     return emitError("result rank must equal source rank");
 
-  // 检查3：tile_shape rank 与 source rank 匹配
+  // Check 3: tile_shape rank must match source rank
   if (tileShape.size() != srcShape.size())
     return emitOpError("tile_shape rank must match source rank");
 
-  // 检查4：tile_shape 每维正数 + 整除性 + dst shape 与 tile_shape 一致
+  // Check 4: tile_shape must be positive in each dimension, divisible, and dst shape must equal tile_shape
   for (size_t i = 0; i < srcShape.size(); ++i) {
     if (tileShape[i] <= 0)
       return emitOpError("tile_shape must be positive at dimension ") << i;
@@ -136,21 +136,21 @@ LogicalResult ExtractTileOp::verify() {
       return emitOpError("result shape must equal tile_shape at dimension ") << i;
   }
 
-  // ── 判断 index 是否为静态常量 ────────────────────────────────────────────
-  // getDefiningOp<arith::ConstantOp>() 对动态 Value 返回 nullptr
+  // ---- Determine if index is a static constant ----
+  // getDefiningOp<arith::ConstantOp>() returns nullptr for dynamic Value
   auto indexConstOp =
       getOperation()->getOperand(1).getDefiningOp<arith::ConstantOp>();
 
   if (!indexConstOp) {
-    // 动态 index：跳过越界和偏移对齐检查，lowering 阶段再处理
+    // Dynamic index: skip out-of-bounds and offset alignment checks, handled at lowering stage
     return success();
   }
 
-  // ── 静态 index 的完整检查 ────────────────────────────────────────────────
+  // ---- Full checks for static index ----
   int64_t index =
       mlir::cast<mlir::IntegerAttr>(indexConstOp.getValue()).getInt();
 
-  // 计算逻辑网格形状
+  // Compute logical grid shape
   SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
   int64_t totalTiles = 1;
   for (size_t i = 0; i < srcShape.size(); ++i) {
@@ -158,12 +158,12 @@ LogicalResult ExtractTileOp::verify() {
     totalTiles *= logicalGridShape[i];
   }
 
-  // 越界检查
+  // Out-of-bounds check
   if (index < 0 || index >= totalTiles)
     return emitOpError("index out of bounds for tile grid: index=")
            << index << ", total_tiles=" << totalTiles;
 
-  // 反线性化为每一维 tile 索引（行主序）
+  // Delinearize to per-dimension tile indices (row-major order)
   SmallVector<int64_t> tileIndices(srcShape.size(), 0);
   int64_t remain = index;
   for (int i = static_cast<int>(srcShape.size()) - 1; i >= 0; --i) {
@@ -171,12 +171,12 @@ LogicalResult ExtractTileOp::verify() {
     remain /= logicalGridShape[i];
   }
 
-  // tile 索引 -> 坐标级 offsets
+  // tile indices -> coordinate-level offsets
   SmallVector<int64_t> offsets(srcShape.size(), 0);
   for (size_t i = 0; i < srcShape.size(); ++i)
     offsets[i] = tileIndices[i] * tileShape[i];
 
-  // 边界检查
+  // Boundary check
   if (offsets.size() != static_cast<size_t>(srcTy.getRank()))
     return emitError("offsets size must match tensor rank");
 
@@ -191,11 +191,11 @@ LogicalResult ExtractTileOp::verify() {
       return emitOpError("offset must be non-negative at dimension ") << i;
   }
 
-  // ── CTA tile 对齐检查（仅有 encoding 时执行）────────────────────────────
+  // ---- CTA tile alignment check (only performed when encoding exists) ----
   //
-  // 在 Triton IR 阶段，tensor 还没有 encoding，这是正常的；
-  // 只在 TritonGPU IR 阶段才有 encoding。
-  // 注意：不对齐时此处不报错，lowering 阶段会自动选择 SMEM 中转路径。
+  // In Triton IR stage, tensor does not have encoding, which is normal;
+  // Only in TritonGPU IR stage does encoding exist.
+  // Note: No error is reported here if not aligned, lowering stage will automatically choose SMEM path.
   auto encoding = srcTy.getEncoding();
   if (!encoding)
     return success();
@@ -212,13 +212,6 @@ LogicalResult ExtractTileOp::verify() {
           static_cast<int64_t>(warpsPerCTA[i])
       );
     }
-    // CTA tile 对齐检查框架（注释保留，不对齐时由 lowering 选择 SMEM 路径）：
-    // for (size_t i = 0; i < srcShape.size(); ++i) {
-    //   if (offsets[i] % ctaTileShape[i] != 0)
-    //     return emitOpError("offset must be multiple of CTA tile size at dimension ") << i;
-    //   if (dstShape[i] % ctaTileShape[i] != 0)
-    //     return emitOpError("result shape must be multiple of CTA tile size at dimension ") << i;
-    // }
   }
 
   return success();
@@ -263,11 +256,11 @@ LogicalResult InsertTileOp::inferReturnTypes(
 // ============================================================================
 // InsertTileOp Verification
 //
-// 动态 index（index 操作数不是 arith.constant）时：
-//   - 只做编译期可知的约束：tile_shape 正数、整除性、元素类型、rank/结果形状匹配
-//   - 跳过越界检查和插入区域边界检查（运行时才知道值）
+// For dynamic index (index operand is not arith.constant):
+//   - Only check constraints that are known at compile time: tile_shape positivity, divisibility, element type, rank/result shape match
+//   - Skip out-of-bounds and insertion region boundary checks (only known at runtime)
 //
-// 静态 index 时：执行完整检查（与原实现等价）
+// For static index: perform full checks (same as original implementation)
 // ============================================================================
 LogicalResult InsertTileOp::verify() {
   auto srcTy = cast<RankedTensorType>(getSrc().getType());
@@ -278,25 +271,25 @@ LogicalResult InsertTileOp::verify() {
   auto tileShape = tileTy.getShape();
   auto dstShape = dstTy.getShape();
 
-  // ── 无论静态/动态都必须通过的基本检查 ─────────────────────────────────
+  // --- Basic checks required for both static and dynamic index ---
 
-  // 检查1：元素类型必须匹配
+  // Check 1: element types must match
   if (srcTy.getElementType() != tileTy.getElementType())
     return emitOpError("tile element type must match source element type");
   if (srcTy.getElementType() != dstTy.getElementType())
     return emitOpError("result element type must match source element type");
 
-  // 检查2：rank 必须匹配
+  // Check 2: rank must match
   if (srcTy.getRank() != tileTy.getRank())
     return emitOpError("tile rank must equal source rank");
   if (srcTy.getRank() != dstTy.getRank())
     return emitOpError("result rank must equal source rank");
 
-  // 检查3：result shape 必须与 source 一致
+  // Check 3: result shape must equal source shape
   if (dstShape != srcShape)
     return emitOpError("result shape must equal source shape");
 
-  // 检查4：tile_shape 每维正数 + 整除性
+  // Check 4: tile_shape must be positive in each dimension and divide source shape
   SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
   int64_t totalTiles = 1;
   for (size_t i = 0; i < srcShape.size(); ++i) {
@@ -309,27 +302,27 @@ LogicalResult InsertTileOp::verify() {
     totalTiles *= logicalGridShape[i];
   }
 
-  // 检查5：insert_tile 更新值但不改变全局 layout，result encoding 必须与 source 一致
+  // Check 5: insert_tile updates values but does not change global layout, result encoding must match source encoding
   auto srcEnc = srcTy.getEncoding();
   auto dstEnc = dstTy.getEncoding();
   if (srcEnc && dstEnc && srcEnc != dstEnc)
     return emitOpError("result encoding must match source encoding");
 
-  // ── 判断 index 是否为静态常量 ────────────────────────────────────────────
+  // --- Determine if index is a static constant ---
   // insert_tile index is the 3rd operand: (src, tile, index).
   auto idxDef = getOperation()->getOperand(2).getDefiningOp<arith::ConstantOp>();
   if (!idxDef) {
-    // 动态 index：跳过越界和插入区域边界检查，lowering 阶段再处理
+    // Dynamic index: skip out-of-bounds and insertion region boundary checks, handled at lowering stage
     return success();
   }
 
-  // ── 静态 index 的完整检查 ────────────────────────────────────────────────
+  // --- Full checks for static index ---
   int64_t index = mlir::cast<mlir::IntegerAttr>(idxDef.getValue()).getInt();
   if (index < 0 || index >= totalTiles)
     return emitOpError("index out of bounds for tile grid: index=")
            << index << ", total_tiles=" << totalTiles;
 
-  // 反线性化为每一维 tile 索引（行主序）
+  // Delinearize to per-dimension tile indices (row-major order)
   SmallVector<int64_t> tileIndices(srcShape.size(), 0);
   int64_t remain = index;
   for (int i = static_cast<int>(srcShape.size()) - 1; i >= 0; --i) {
@@ -337,12 +330,12 @@ LogicalResult InsertTileOp::verify() {
     remain /= logicalGridShape[i];
   }
 
-  // tile 索引 -> 坐标级 offsets
+  // tile indices -> coordinate-level offsets
   SmallVector<int64_t> offsets(srcShape.size(), 0);
   for (size_t i = 0; i < srcShape.size(); ++i)
     offsets[i] = tileIndices[i] * tileShape[i];
 
-  // 边界检查：完整插入区域必须落在 source 内
+  // Boundary check: the full insertion region must be within the source
   for (size_t i = 0; i < srcShape.size(); ++i) {
     if (offsets[i] < 0)
       return emitOpError("offset must be non-negative at dimension ") << i;

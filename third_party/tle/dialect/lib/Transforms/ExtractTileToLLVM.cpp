@@ -311,7 +311,7 @@ static LogicalResult lowerExtractTileViaSMEM(
       Value globalCoordV = rewriter.create<LLVM::AddOp>(
           loc, i32Ty, baseOff, dstThreadOffsets[d]);
 
-      // ★ FIX: convert absolute coord to tile-local coord via modulo.
+      //   convert absolute coord to tile-local coord via modulo.
       //   Needed when shapePerCTATile[d] > tileShape[d]=dstShape[d]:
       //   multiple threads share the same tile-local slot and must all
       //   read from the same SMEM address.

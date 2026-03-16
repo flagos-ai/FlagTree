@@ -1,5 +1,4 @@
 #include "TleTileToLLVMUtils.h"
-
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -9,7 +8,7 @@ using namespace mlir;
 namespace mlir::triton::tle {
 
 namespace ttg = mlir::triton::gpu;
-
+// Get the order of dimensions for CTA tile, from encoding if available, otherwise reverse order.
 SmallVector<unsigned> getCTATileOrder(RankedTensorType type) {
   if (auto blockedLayout = dyn_cast<ttg::BlockedEncodingAttr>(type.getEncoding())) {
     auto order = blockedLayout.getOrder();
@@ -23,7 +22,7 @@ SmallVector<unsigned> getCTATileOrder(RankedTensorType type) {
     order.push_back(rank - 1 - i);
   return order;
 }
-
+// Convert a linear index to multi-dimensional coordinates according to the given order.
 SmallVector<unsigned> delinearize(unsigned linearIndex,
                                   ArrayRef<unsigned> shape,
                                   ArrayRef<unsigned> order) {
@@ -36,10 +35,8 @@ SmallVector<unsigned> delinearize(unsigned linearIndex,
   }
   return result;
 }
-
-unsigned linearize(ArrayRef<unsigned> coords,
-                   ArrayRef<unsigned> shape,
-                   ArrayRef<unsigned> order) {
+// Convert multi-dimensional coordinates to a linear index according to the given order.
+unsigned linearize(ArrayRef<unsigned> coords, ArrayRef<unsigned> shape, ArrayRef<unsigned> order) {
   unsigned result = 0;
   unsigned stride = 1;
   for (size_t i = 0; i < order.size(); ++i) {
@@ -49,7 +46,7 @@ unsigned linearize(ArrayRef<unsigned> coords,
   }
   return result;
 }
-
+// Get the shape (number of elements) per CTA tile for each dimension.
 SmallVector<unsigned> getShapePerCTATile(RankedTensorType type) {
   auto encoding = type.getEncoding();
   if (!encoding)
@@ -74,10 +71,10 @@ SmallVector<unsigned> getShapePerCTATile(RankedTensorType type) {
   llvm_unreachable("tile op only supports BlockedEncoding");
 }
 
-SmallVector<Value> computeThreadOffsets(
-    Location loc,
-    ConversionPatternRewriter &rewriter,
-    RankedTensorType tensorType) {
+// Map the linear thread index (according to BlockedEncoding rules) to the multi-dimensional 
+// "global data start index" in the tensor.
+SmallVector<Value> computeThreadOffsets(Location loc, ConversionPatternRewriter &rewriter,
+                                        RankedTensorType tensorType) {
   auto bl = cast<ttg::BlockedEncodingAttr>(tensorType.getEncoding());
   auto sizePerThread = bl.getSizePerThread();
   auto threadsPerWarp = bl.getThreadsPerWarp();
@@ -91,12 +88,13 @@ SmallVector<Value> computeThreadOffsets(
   unsigned warpSizeVal = 1;
   for (auto t : threadsPerWarp)
     warpSizeVal *= t;
+  // Compute the total number of threads in a warp (product of threadsPerWarp).
   Value warpSizeV = rewriter.create<LLVM::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)warpSizeVal));
 
   Value laneId = rewriter.create<LLVM::URemOp>(loc, i32Ty, threadId, warpSizeV);
   Value warpId = rewriter.create<LLVM::UDivOp>(loc, i32Ty, threadId, warpSizeV);
-
+  // Compute the thread's lane index in each dimension within the warp.
   SmallVector<Value> laneInDim(rank);
   {
     Value rem = laneId;
@@ -109,7 +107,7 @@ SmallVector<Value> computeThreadOffsets(
       rem = rewriter.create<LLVM::UDivOp>(loc, i32Ty, rem, cv);
     }
   }
-
+  // Compute the warp's index in each dimension within the CTA.
   SmallVector<Value> warpInDim(rank);
   {
     Value rem = warpId;
@@ -129,12 +127,12 @@ SmallVector<Value> computeThreadOffsets(
         loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)threadsPerWarp[d]));
     Value spt = rewriter.create<LLVM::ConstantOp>(
         loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)sizePerThread[d]));
-    Value warpContrib =
-        rewriter.create<LLVM::MulOp>(loc, i32Ty, warpInDim[d], tpw);
-    Value threadCoord =
-        rewriter.create<LLVM::AddOp>(loc, i32Ty, warpContrib, laneInDim[d]);
-    threadOffsets[d] =
-        rewriter.create<LLVM::MulOp>(loc, i32Ty, threadCoord, spt);
+    // warpID * threadsPerWarp gives the starting thread index of this warp in the dimension.
+    Value warpContrib = rewriter.create<LLVM::MulOp>(loc, i32Ty, warpInDim[d], tpw);
+    // Add the lane index within the warp to get the global thread index in the dimension.
+    Value threadCoord = rewriter.create<LLVM::AddOp>(loc, i32Ty, warpContrib, laneInDim[d]);
+    // Multiply the global thread index by the number of elements per thread to get the starting element index for this thread.
+    threadOffsets[d] = rewriter.create<LLVM::MulOp>(loc, i32Ty, threadCoord, spt);
   }
 
   return threadOffsets;

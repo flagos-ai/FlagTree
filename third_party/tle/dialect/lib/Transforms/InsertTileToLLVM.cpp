@@ -19,13 +19,13 @@ namespace {
 
 namespace ttg = mlir::triton::gpu;
 using namespace mlir::triton::tle;
-
+// Extract compile-time constant index if available, otherwise return nullopt.
 static std::optional<int64_t> getStaticIndex(InsertTileOp op) {
   if (auto c = op->getOperand(2).getDefiningOp<mlir::arith::ConstantOp>())
     return mlir::cast<mlir::IntegerAttr>(c.getValue()).getInt();
   return std::nullopt;
 }
-
+// Check if the tile to be inserted is CTA-aligned (for register shuffle path).
 static bool isCTATileAligned(InsertTileOp op, int64_t linearIndex) {
   auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
   auto tileTy = cast<RankedTensorType>(op.getTile().getType());
@@ -54,7 +54,7 @@ static bool isCTATileAligned(InsertTileOp op, int64_t linearIndex) {
 
   return true;
 }
-
+// Lowering for static, CTA-aligned insert_tile (register shuffle path).
 static LogicalResult lowerInsertTileStatic(
     InsertTileOp op,
     InsertTileOp::Adaptor adaptor,
@@ -66,12 +66,14 @@ static LogicalResult lowerInsertTileStatic(
   auto tileTy = cast<RankedTensorType>(op.getTile().getType());
   auto dstTy = cast<RankedTensorType>(op.getType());
 
+  // Unpack source and tile values.
   auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
   auto tileVals = unpackLLElements(loc, adaptor.getTile(), rewriter);
 
   auto srcShape = srcTy.getShape();
   auto tileShape = tileTy.getShape();
 
+  // Compute CTA tile shapes and grid info.
   auto shapePerCTATile = getShapePerCTATile(srcTy);
   auto srcCTAShape = multiDimElementwise<int64_t, unsigned>(
       srcShape, shapePerCTATile, std::divides<unsigned>());
@@ -80,12 +82,13 @@ static LogicalResult lowerInsertTileStatic(
 
   SmallVector<int64_t> logicalTileShape(tileShape.begin(), tileShape.end());
   SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
+  // Check divisibility and compute logical grid shape.
   for (size_t i = 0; i < srcShape.size(); ++i) {
     if (logicalTileShape[i] == 0 || srcShape[i] % logicalTileShape[i] != 0)
       return op.emitError("source shape must be divisible by tile shape");
     logicalGridShape[i] = srcShape[i] / logicalTileShape[i];
   }
-
+  // Compute logical coordinates from linear index.
   SmallVector<int64_t> logicalCoords(srcShape.size(), 0);
   int64_t remain = index;
   for (int i = srcShape.size() - 1; i >= 0; --i) {
@@ -97,15 +100,17 @@ static LogicalResult lowerInsertTileStatic(
   for (size_t i = 0; i < srcShape.size(); ++i)
     elementCoords[i] = logicalCoords[i] * logicalTileShape[i];
 
+  // Compute first tile coordinate in CTA space.
   auto firstTileCoordinate = multiDimElementwise<int64_t, unsigned>(
       elementCoords, shapePerCTATile, std::divides<unsigned>());
 
   auto numCTATiles = std::accumulate(tileCTAShape.begin(), tileCTAShape.end(),
                                      1, std::multiplies<>());
 
+  // Get CTA order for source and tile.
   auto srcCTAOrder = getCTATileOrder(srcTy);
   auto tileCTAOrder = getCTATileOrder(tileTy);
-
+  // Check tile write region is within bounds.
   for (size_t d = 0; d < srcCTAShape.size(); ++d) {
     if (firstTileCoordinate[d] + tileCTAShape[d] > srcCTAShape[d])
       return op.emitError("tile write region out of source bounds");
@@ -118,6 +123,7 @@ static LogicalResult lowerInsertTileStatic(
       std::accumulate(tileCTAShape.begin(), tileCTAShape.end(), 1u,
                       std::multiplies<>());
 
+  // Compute per-CTA elements per thread for source and tile.
   unsigned srcElemsPerThreadPerCTA =
       ttg::getTotalElemsPerThread(srcTy) / totalSrcCTAs;
   unsigned tileElemsPerThreadPerCTA =
@@ -126,6 +132,7 @@ static LogicalResult lowerInsertTileStatic(
   if (srcElemsPerThreadPerCTA != tileElemsPerThreadPerCTA)
     return op.emitError("source/tile per-CTA elements per thread mismatch");
 
+  // Copy tile values into the correct region of the result.
   SmallVector<Value> resultVals(srcVals.begin(), srcVals.end());
 
   for (size_t i = 0; i < numCTATiles; i++) {
@@ -161,6 +168,7 @@ static LogicalResult lowerInsertTileStatic(
   return success();
 }
 
+// Dynamic or non-CTA-aligned lowering: use SMEM relay path.
 static LogicalResult lowerInsertTileViaSMEMDynamic(
     InsertTileOp op,
     InsertTileOp::Adaptor adaptor,
@@ -184,6 +192,7 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
     return op.emitError("SMEM path: failed to convert element type");
   int64_t elemBytes = llvmElemTy.getIntOrFloatBitWidth() / 8;
 
+  // Compute total number of elements in the tile.
   int64_t totalTileElems = 1;
   for (auto dim : tileShape)
     totalTileElems *= dim;
@@ -193,6 +202,7 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
   unsigned srcElemsPerThread = ttg::getTotalElemsPerThread(srcTy);
   unsigned tileElemsPerThread = ttg::getTotalElemsPerThread(tileTy);
 
+  // Check offset sizes match per-thread element counts.
   if (srcOffsets.size() != srcElemsPerThread)
     return op.emitError("SMEM path: src offsets size mismatch");
   if (tileOffsets.size() != tileElemsPerThread)
@@ -209,6 +219,7 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
     }
   }
 
+  // Compute per-thread offsets for source and tile.
   auto srcThreadOffsets = computeThreadOffsets(loc, rewriter, srcTy);
   auto tileThreadOffsets = computeThreadOffsets(loc, rewriter, tileTy);
 
@@ -226,6 +237,7 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
                                     LLVM::Linkage::Internal, smemName,
                                     Attribute{}, 16, 3);
   }
+  // Allocate global shared memory buffer for tile relay.
   Value smemBufArr =
       rewriter.create<LLVM::AddressOfOp>(loc, smemPtrTy, smemName);
   Value zero32 = rewriter.create<LLVM::ConstantOp>(
@@ -240,6 +252,7 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
   for (int d = rank - 2; d >= 0; --d)
     suffix[d] = suffix[d + 1] * logicalGrid[d + 1];
 
+  // Compute tile start/end coordinates for dynamic index.
   Value dynIndex = adaptor.getIndex();
   SmallVector<Value> tileStartVals(rank), tileEndVals(rank);
   for (int d = 0; d < rank; ++d) {
@@ -283,15 +296,17 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
     Value sp = rewriter.create<LLVM::GEPOp>(
         loc, smemPtrTy, i8Ty, smemBase, ValueRange{smemByteOffsetV},
         LLVM::GEPNoWrapFlags::inbounds);
+    // Store tile value to shared memory buffer.
     rewriter.create<LLVM::StoreOp>(loc, tileVals[i], sp, elemBytes);
   }
-
+  // Synchronize threads after tile store.
   rewriter.create<NVVM::Barrier0Op>(loc);
 
   auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
   SmallVector<Value> resultVals;
   resultVals.reserve(srcElemsPerThread);
 
+  // For each source element, check if it should be overwritten by tile.
   for (unsigned i = 0; i < srcElemsPerThread; ++i) {
     Value inRange = rewriter.create<LLVM::ConstantOp>(
         loc, i1Ty, rewriter.getIntegerAttr(i1Ty, 1));
@@ -329,20 +344,21 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
         LLVM::GEPNoWrapFlags::inbounds);
     Value tileLoaded =
         rewriter.create<LLVM::LoadOp>(loc, llvmElemTy, lp, elemBytes);
+    // Overwrite source value with tile value if in range.
     Value merged =
         rewriter.create<LLVM::SelectOp>(loc, inRange, tileLoaded, srcVals[i]);
     resultVals.push_back(merged);
   }
 
   rewriter.create<NVVM::Barrier0Op>(loc);
-
+  // Synchronize threads after tile load.
   Value ret = packLLElements(loc, typeConverter, resultVals, rewriter, dstTy);
   rewriter.replaceOp(op, ret);
   return success();
 }
 
 // ============================================================================
-// InsertTileOp -> LLVM conversion (AMD-style)
+// InsertTileOp -> LLVM conversion
 // ============================================================================
 struct InsertTileOpConversion
     : public ConvertOpToLLVMPattern<InsertTileOp> {
@@ -356,6 +372,7 @@ struct InsertTileOpConversion
     Location loc = op->getLoc();
 
     // Basic type checks.
+    // Check operand and result types and encodings.
     auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
     auto tileTy = dyn_cast<RankedTensorType>(op.getTile().getType());
     auto dstTy = dyn_cast<RankedTensorType>(op.getType());

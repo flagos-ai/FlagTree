@@ -11,9 +11,7 @@
 namespace mlir::triton::tle {
 
 template <typename T1, typename T2, typename BinaryOp>
-llvm::SmallVector<T2> multiDimElementwise(llvm::ArrayRef<T1> lhs,
-                                                                                    llvm::ArrayRef<T2> rhs,
-                                                                                    BinaryOp op) {
+llvm::SmallVector<T2> multiDimElementwise(llvm::ArrayRef<T1> lhs, llvm::ArrayRef<T2> rhs, BinaryOp op) {
     assert(lhs.size() == rhs.size() && "Dimensions must match");
     llvm::SmallVector<T2> result;
     result.reserve(lhs.size());

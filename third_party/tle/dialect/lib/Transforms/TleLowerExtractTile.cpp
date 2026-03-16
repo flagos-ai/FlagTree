@@ -9,9 +9,6 @@ namespace mlir::triton::tle {
 #define GEN_PASS_DEF_TRITONTLELOWEREXTRACTTILE
 #include "tle/dialect/include/Transforms/Passes.h.inc"
 
-// ============================================================================
-// Pass 实现
-// ============================================================================
 class TleLowerExtractTile 
     : public impl::TritonTleLowerExtractTileBase<TleLowerExtractTile> {
   
@@ -20,11 +17,5 @@ class TleLowerExtractTile
   }
 };
 
-// ============================================================================
-// 工厂函数
-// ============================================================================
-//std::unique_ptr<Pass> createTritonTleLowerExtractTile() {
-//  return std::make_unique<TleLowerExtractTile>();
-//}
 
 } // namespace mlir::triton::tle

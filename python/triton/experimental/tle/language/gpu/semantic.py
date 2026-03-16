@@ -104,40 +104,40 @@ class TLESemantic:
         """
 
         """
-        #  检查1: src类型
+        # Check 1: src type
         if not isinstance(src, tl.tensor):
             raise TLESemanticError(
                 f"Source must be tl.tensor, but got {type(src)}", 
                 "extract_tile"
             )
-        #  检查2: 非空
+        # Check 2: non-empty
         if not index or not tile_shape:
             raise TLESemanticError(
                 "Index and tile_shape cannot be empty", 
                 "extract_tile"
             )   
         
-         #  检查3: 解包并验证类型
+        # Check 3: unpack and validate type
         tile_shape_unwrapped = [
             s.value if hasattr(s, 'value') else s 
             for s in tile_shape
         ]
 
-        # 检查 tile_shape 中的每个维度是否为int 或 constexpr 对象
+        # Check if every dim in tile_shape is int or constexpr-like
         if any(not isinstance(s, int) for s in tile_shape_unwrapped):
             raise TLESemanticError(
                 "All tile_shape dims must be int or constexpr", 
                 "extract_tile"
             )
 
-        #  检查4: 正数
+        # Check 4: positive values
         if any(s <= 0 for s in tile_shape_unwrapped):
             raise TLESemanticError(
                 "All tile_shape dims must be positive", 
                 "extract_tile"
             )
 
-        #  检查6: 维度匹配
+        # Check 5: dimension match
         src_shape = list(src.type.shape)
         
         if len(tile_shape_unwrapped) != len(src_shape):
@@ -148,30 +148,30 @@ class TLESemantic:
             )
         
         
-        # index 检查
+        # Index check
         if isinstance(index, (tuple, list)):
             idx = [i.value if hasattr(i, 'value') else i for i in index]
-            #检查维度数是否和源张量 rank 一致
+            # Check if index rank matches source tensor rank
             if len(idx) != len(src_shape):
                 raise TLESemanticError(f"Index rank ({len(idx)}) must match source rank ({len(src_shape)})", "extract_tile")
-            #检查每个分量是否都是整数
+            # Check if every index component is int
             if any(not isinstance(v, int) for v in idx):
                 raise TLESemanticError("All index values must be int or constexpr", "extract_tile")
-            # 检查 tile grid 越界
+            # Check tile grid out-of-bounds
             if all(isinstance(dim, int) for dim in src_shape):
                 grid = [src_shape[i] // tile_shape_unwrapped[i] for i in range(len(src_shape))]
                 for i, v in enumerate(idx):
                     if v < 0 or v >= grid[i]:
                         raise TLESemanticError(f"Index[{i}]={v} out of bounds for tile grid (0~{grid[i]-1})", "extract_tile")
         else:
-            # 如果是线性索引（单个值）
+            # If linear index (single value)
             val = index.value if hasattr(index, 'value') else index
-            # 检查必须是整数，且必须非负
+            # Check must be int and non-negative
             if not isinstance(val, int):
                 raise TLESemanticError("Index must be int or constexpr", "extract_tile")
             if val < 0:
                 raise TLESemanticError("Index must be non-negative", "extract_tile")
-            # 检查线性 index 越界
+            # Check linear index out-of-bounds
             if all(isinstance(dim, int) for dim in src_shape):
                 grid = [src_shape[i] // tile_shape_unwrapped[i] for i in range(len(src_shape))]
                 total_tiles = 1

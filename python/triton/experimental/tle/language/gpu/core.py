@@ -358,14 +358,14 @@ def copy(
 
 
 # ============================================================================
-# extract_tile 辅助函数（模块级，不依赖 @tl.builtin 上下文）
+# extract_tile helper functions (module-level, do not depend on @tl.builtin context)
 # ============================================================================
 
 def _try_unwrap_int(val):
     """
-    尝试将 val 解包为 Python int。
-    支持：int、tl.constexpr(int)、具有 .value 属性的对象。
-    对于运行时 tl.tensor，返回 None。
+    Try to unwrap val as a Python int.
+    Supports: int, tl.constexpr(int), objects with .value attribute.
+    For runtime tl.tensor, returns None.
     """
     if isinstance(val, int):
         return val
@@ -384,7 +384,7 @@ def _try_unwrap_int(val):
 
 
 def _unwrap_tile_shape(tile_shape):
-    """将 tile_shape（任意形式）解包为 List[int]，所有元素必须是编译期常量。"""
+    """Unwrap tile_shape (any form) as List[int], all elements must be compile-time constants."""
     if hasattr(tile_shape, '__iter__') and not isinstance(tile_shape, str):
         result = []
         for s in tile_shape:
@@ -416,11 +416,11 @@ def _unwrap_tile_shape(tile_shape):
 
 def _linearize_static_multidim_index(index_list, src_shape, tile_shape_ints):
     """
-    多维静态索引线性化（行主序）。
-    index_list:      List[int]  每维 tile 坐标
-    src_shape:       List[int]  src tensor 每维大小
-    tile_shape_ints: List[int]  每维 tile 大小
-    返回线性化标量 int
+    Linearize multi-dimensional static index (row-major order).
+    index_list:      List[int]  tile coordinate in each dimension
+    src_shape:       List[int]  source tensor shape in each dimension
+    tile_shape_ints: List[int]  tile size in each dimension
+    Returns a linearized scalar int
     """
     rank = len(src_shape)
     if len(index_list) != rank:
@@ -439,13 +439,69 @@ def _linearize_static_multidim_index(index_list, src_shape, tile_shape_ints):
             raise ValueError(
                 f"Index[{i}]={v} out of bounds for grid size {grid[i]}")
 
-    # 行主序线性化
+    # row major linearization
     linear = 0
     stride = 1
     for i in builtins.reversed(builtins.range(rank)):
         linear += index_list[i] * stride
         stride *= grid[i]
     return linear
+# ============================================================
+# dynamic multidim index linearization
+# ============================================================
+
+def _linearize_dynamic_multidim_index(
+    index_tuple,
+    src_shape,
+    tile_shape_ints,
+    _semantic
+):
+    """
+    Convert dynamic multi-dimensional tile index to linear index IR.
+    Example:
+        src_shape = [16,16]
+        tile_shape = [4,4]
+        tile grid = [4,4]
+        index = [i,j]
+        linear = i*4 + j
+    """
+
+    if any(not isinstance(s, int) for s in src_shape):
+        raise ValueError(
+            "Source shape must be static for dynamic multi-dim index")
+    # compute tile grid
+    grid = []
+    for s, t in builtins.zip(src_shape, tile_shape_ints):
+        if s % t != 0:
+            raise ValueError(f"Source dim {s} not divisible by tile dim {t}")
+        grid.append(s // t)
+    # compute strides
+    strides = [1] * len(grid)
+    acc = 1
+    for i in builtins.reversed(builtins.range(len(grid))):
+        strides[i] = acc
+        acc *= grid[i]
+    linear_ir = None
+    for i, v in builtins.enumerate(index_tuple):
+        stride = strides[i]
+        if isinstance(v, tl.tensor):
+            term = v.handle
+        else:
+            iv = _try_unwrap_int(v)
+            if iv is None:
+                raise ValueError(
+                    "Dynamic multidim index must contain tl.tensor or int")
+            term = _semantic._convert_to_ir_values(
+                [iv], require_i64=False)[0]
+        if stride != 1:
+            stride_ir = _semantic._convert_to_ir_values(
+                [stride], require_i64=False)[0]
+            term = _semantic.builder.create_mul(term, stride_ir)
+        if linear_ir is None:
+            linear_ir = term
+        else:
+            linear_ir = _semantic.builder.create_add(linear_ir, term)
+    return linear_ir
 
 
 @tl.builtin
@@ -456,49 +512,57 @@ def extract_tile(
     _semantic=None,
 ) -> tl.tensor:
     """
-    从 tensor 中提取一个 tile。
+    Extract a tile from a tensor at a given tile index.
 
-    index 支持三种形式：
-      1. 多维静态：list/tuple of int/constexpr，如 [1, 2]
-         → 编译期线性化为标量，若对齐走寄存器重排路径，否则走 SMEM 路径
-      2. 标量静态：int / tl.constexpr
-         → 同上
-      3. 标量动态：tl.tensor（i32/i64 标量），运行时确定
-         → 始终走 SMEM 中转路径（lowering 阶段决定）
+    Supported index forms:
+        1. Multi-dimensional static: tuple/list of int/constexpr (e.g. [1, 2])
+           → Linearized at compile time; uses register shuffle or SMEM path depending on alignment.
+        2. Scalar static: int or tl.constexpr
+           → Treated as already-linearized tile index (compile time constant).
+        3. Scalar dynamic: tl.tensor (scalar, i32/i64)
+           → Treated as a runtime linear tile index; always uses SMEM relay path.
+        4. Multi-dimensional dynamic: tuple/list containing tl.tensor (e.g. [i, j], i/j are tl.tensor)
+           → Automatically linearized at runtime in the frontend; supports mixed int/tl.tensor per axis.
+
+    For multi-dimensional dynamic index, the function will automatically compute the row-major linearized tile index as a dynamic IR expression, so users can pass [i, j, ...] directly.
 
     Args:
-        x:          源 tensor（tl.tensor）
-        index:      tile 索引（见上）
-        tile_shape: tile 每维大小，必须是编译期常量
+        x:          Source tensor (tl.tensor)
+        index:      Tile index (see above)
+        tile_shape: Tile shape in each dimension (must be compile-time constants)
+        _semantic:  Internal semantic analyzer (for lowering)
 
     Returns:
-        提取出的 tile tensor，shape = tile_shape
+        Extracted tile tensor with shape = tile_shape
+    Raises:
+        ValueError: If index or shape is invalid
+        RuntimeError: If IR generation fails
     """
-    # ── 参数检查 ──────────────────────────────────────────────────────────
+    # --- Parameter check ---
     if not isinstance(x, tl.tensor):
         raise ValueError(f"Source must be tl.tensor, but got {type(x)}")
 
-    # ── 解包 tile_shape（必须全部是编译期常量）────────────────────────────
+    # --- Unwrap tile_shape (must all be compile-time constants) ---
     tile_shape_ints = _unwrap_tile_shape(tile_shape)
 
     src_shape = [tl._unwrap_if_constexpr(dim) for dim in x.type.shape]
 
-    # ── 解析 index，分三种情况 ────────────────────────────────────────────
+    # --- Parse index, three cases ---
     #
-    #   情况A：tl.tensor → 动态 index，直接透传 IR Value handle
-    #   情况B：tuple/list of int/constexpr → 多维静态，线性化后走情况C
-    #   情况C：标量 int/constexpr → 静态标量
+    #   Case A: tl.tensor → dynamic index, directly pass IR Value handle
+    #   Case B: tuple/list of int/constexpr → multi-dim static, linearize then go to Case C
+    #   Case C: scalar int/constexpr → static scalar
     #
     is_dynamic = False
-    index_value = None       # 静态路径使用：Python int
-    index_ir_handle = None   # 动态路径使用：MLIR Value handle
+    index_value = None       # For static path: Python int
+    index_ir_handle = None   # For dynamic path: MLIR Value handle
 
     if isinstance(index, tl.tensor):
-        # 情况A：动态 index，运行时才知道值
+        # Case A: dynamic index, value known only at runtime
         is_dynamic = True
         index_ir_handle = index.handle
     else:
-        # 尝试解包，判断是多维还是标量
+        # Try to unwrap, determine if multi-dim or scalar
         index_unwrapped = index
         try:
             index_unwrapped = tl._unwrap_if_constexpr(index)
@@ -509,25 +573,39 @@ def extract_tile(
                 index_unwrapped = index_unwrapped.value
         except Exception:
             pass
-
         if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
-            # 情况B：多维静态 index → 逐元素解包后线性化为标量
-            idx_ints = []
-            for v in index_unwrapped:
-                iv = _try_unwrap_int(v)
-                if iv is None:
+            # Case B: multi-dim index → unwrap each element, then linearize to scalar
+            has_tensor = any(isinstance(v, tl.tensor) for v in index_unwrapped)
+            if has_tensor:
+                # ====================================
+                # dynamic multidim index
+                # ====================================
+                index_ir_handle = _linearize_dynamic_multidim_index(
+                    index_unwrapped,
+                    src_shape,
+                    tile_shape_ints,
+                    _semantic
+                )
+                is_dynamic = True
+            else:
+                # ====================================
+                # static multidim index
+                # ====================================
+                idx_ints = []
+                for v in index_unwrapped:
+                    iv = _try_unwrap_int(v)
+                    if iv is None:
+                        raise ValueError(
+                            f"Multi-dim index must contain int/constexpr values.")
+                    idx_ints.append(iv)
+
+                if any(not isinstance(s, int) for s in src_shape):
                     raise ValueError(
-                        f"Multi-dim index must contain int/constexpr values. "
-                        f"For a dynamic multi-dim index, please linearize it "
-                        f"first and pass a scalar tl.tensor.")
-                idx_ints.append(iv)
-            if any(not isinstance(s, int) for s in src_shape):
-                raise ValueError(
-                    "Source shape must be static when using a multi-dim index")
-            index_value = _linearize_static_multidim_index(
-                idx_ints, src_shape, tile_shape_ints)
+                        "Source shape must be static when using a multi-dim index")
+                index_value = _linearize_static_multidim_index(
+                    idx_ints, src_shape, tile_shape_ints)
         else:
-            # 情况C：标量静态 index
+            # Case C: scalar static index
             scalar_int = _try_unwrap_int(index_unwrapped)
             if scalar_int is not None:
                 index_value = scalar_int
@@ -536,14 +614,13 @@ def extract_tile(
                     f"index must be int, constexpr, tuple/list of int/constexpr, "
                     f"or a scalar tl.tensor; got {type(index)}"
                 )
-
-    # ── 基本维度检查 ──────────────────────────────────────────────────────
+    # --- Basic dimension check ---
     if len(tile_shape_ints) != len(src_shape):
         raise ValueError(
             f"tile_shape rank ({len(tile_shape_ints)}) must match "
             f"source rank ({len(src_shape)})")
 
-    # ── 静态 index 的编译期校验 ───────────────────────────────────────────
+    # --- Compile-time check for static index ---
     if not is_dynamic:
         for i, (s, t) in builtins.enumerate(builtins.zip(src_shape, tile_shape_ints)):
             if isinstance(s, int) and s % t != 0:
@@ -557,7 +634,7 @@ def extract_tile(
                 raise ValueError(
                     f"index {index_value} out of range [0, {total_tiles})")
 
-        # 语义验证（静态路径）
+        # Semantic validation (static path)
         try:
             from .semantic import TLESemantic
             if isinstance(_semantic, TLESemantic):
@@ -566,13 +643,13 @@ def extract_tile(
         except ImportError:
             pass
 
-    # ── 生成 MLIR IR ──────────────────────────────────────────────────────
+    # --- Generate MLIR IR ---
     try:
         if is_dynamic:
-            # 动态 index：直接使用传入的 tl.tensor 的 IR handle
+            # Dynamic index: directly use the IR handle from the input tl.tensor
             index_ir = index_ir_handle
         else:
-            # 静态 index：将编译期常量编码为 IR 常量
+            # Static index: encode compile-time constant as IR constant
             index_ir = _semantic._convert_to_ir_values(
                 [index_value], require_i64=False)[0]
 
@@ -583,7 +660,6 @@ def extract_tile(
         )
         block_type = tl.block_type(x.type.element_ty, tile_shape_ints)
         return tl.tensor(output, block_type)
-
     except Exception as e:
         raise RuntimeError(
             f"Failed to create extract_tile operation: {str(e)}"
@@ -660,35 +736,34 @@ def insert_tile(
         index_list = None
         if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
             index_list = list(index_unwrapped)
-
-        # Path A: multi-dimensional static index -> validate each axis -> linearize.
-        if index_list is not None:
             if len(index_list) != len(src_shape):
                 raise ValueError(
                     f"Index rank {len(index_list)} must match source rank {len(src_shape)}"
                 )
-
-            idx = []
-            for i, v in enumerate(index_list):
-                iv = _try_unwrap_int(v)
-                if iv is None:
-                    raise ValueError(
-                        f"Tuple index must contain int/constexpr values. "
-                        f"For dynamic multi-dim index, please linearize first "
-                        f"and pass a scalar tl.tensor."
-                    )
-                if iv < 0 or iv >= grid[i]:
-                    raise ValueError(
-                        f"Index[{i}]={iv} out of bounds for tile grid (0~{grid[i]-1})"
-                    )
-                idx.append(iv)
-
-            linear_index = 0
-            stride = 1
-            for i in reversed(list(builtins.range(len(grid)))):
-                linear_index += idx[i] * stride
-                stride *= grid[i]
-            index_value = linear_index
+            has_tensor = any(isinstance(v, tl.tensor) for v in index_list)
+            # ------------------------------------------------
+            # dynamic multi-dim index
+            # ------------------------------------------------
+            if has_tensor:
+                index_ir_handle = _linearize_dynamic_multidim_index(index_list, src_shape,tile_shape,_semantic)
+                is_dynamic = True
+            # ------------------------------------------------
+            # static multi-dim index
+            # ------------------------------------------------
+            else:
+                idx = []
+                for i, v in enumerate(index_list):
+                    iv = _try_unwrap_int(v)
+                    if iv is None:
+                        raise ValueError(
+                            "Multi-dim index must contain int/constexpr values"
+                        )
+                    if iv < 0 or iv >= grid[i]:
+                        raise ValueError(
+                            f"Index[{i}]={iv} out of bounds for tile grid (0~{grid[i]-1})"
+                        )
+                    idx.append(iv)
+                index_value = _linearize_static_multidim_index(idx, src_shape, tile_shape)
         else:
             # Path B: scalar static index -> treat as already-linearized tile id.
             scalar_int = _try_unwrap_int(index_unwrapped)
