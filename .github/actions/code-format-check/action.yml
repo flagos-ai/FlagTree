@@ -8,10 +8,10 @@ runs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-    
+
     - name: Run pre-commit
       uses: pre-commit/action@v3.0.1
-    
+
     - name: Auto-commit changes
       uses: stefanzweifel/git-auto-commit-action@v4
       if: always()
