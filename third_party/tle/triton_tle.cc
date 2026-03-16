@@ -78,8 +78,8 @@ void init_triton_tle_ir(py::module &&m) {
               assert(order.size() == CTASplitNum.size() && "shape mismatch");
               assert(order.size() == CTAOrder.size() && "shape mismatch");
               auto context = self.getBuilder().getContext();
-              auto CTALayout = ttg::CTALayoutAttr::get(context, CTAsPerCGA,
-                                                       CTASplitNum, CTAOrder);
+              auto CTALayout = ttg::CTAEncodingAttr::fromSplitParams(
+                  context, CTAsPerCGA, CTASplitNum, CTAOrder);
               return mlir::cast<Attribute>(ttg::SwizzledSharedEncodingAttr::get(
                   context, vectorSize, perPhase, maxPhase, order, CTALayout));
             })
@@ -97,8 +97,8 @@ void init_triton_tle_ir(py::module &&m) {
              /* Validation logic for user defined layout encoding end */
 
              auto context = self.getBuilder().getContext();
-             auto CTALayout = ttg::CTALayoutAttr::get(context, CTAsPerCGA,
-                                                      CTASplitNum, CTAOrder);
+             auto CTALayout = ttg::CTAEncodingAttr::fromSplitParams(
+                 context, CTAsPerCGA, CTASplitNum, CTAOrder);
              if (swizzled) {
                return mlir::cast<Attribute>(ttg::NVMMASharedEncodingAttr::get(
                    context, shape, order, CTALayout, elemType, fp4Padded));
@@ -111,10 +111,12 @@ void init_triton_tle_ir(py::module &&m) {
            })
       .def("make_tensor_memory_encoding_attr",
            [](TritonOpBuilder &self, unsigned blockM, unsigned blockN,
-              bool unpacked, unsigned CTASplitM, unsigned CTASplitN) {
+              unsigned colStride, unsigned CTASplitM, unsigned CTASplitN,
+              bool twoCTAs) {
              auto context = self.getBuilder().getContext();
              return mlir::cast<Attribute>(ttng::TensorMemoryEncodingAttr::get(
-                 context, blockM, blockN, unpacked, CTASplitM, CTASplitN));
+                 context, blockM, blockN, colStride, CTASplitM, CTASplitN,
+                 twoCTAs));
            })
       .def("create_local_alloc",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,

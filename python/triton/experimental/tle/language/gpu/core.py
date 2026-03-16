@@ -144,9 +144,10 @@ def alloc(
                 layout_handle = _semantic.builder.make_tensor_memory_encoding_attr(
                     layout.blockM,
                     layout.blockN,
-                    layout.unpacked,
+                    layout.colStride,
                     layout.CTASplitM,
                     layout.CTASplitN,
+                    layout.twoCTAs,
                 )
         else:
             # Use provided layout

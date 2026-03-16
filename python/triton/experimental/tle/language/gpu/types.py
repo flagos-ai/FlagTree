@@ -109,13 +109,14 @@ class swizzled_shared_layout(shared_layout):
 
 class tensor_memory_layout(shared_layout):
 
-    def __init__(self, blockM, blockN, unpacked, CTASplitM, CTASplitN):
+    def __init__(self, blockM, blockN, colStride, CTASplitM, CTASplitN, twoCTAs=False):
         super().__init__()
         self.blockM = blockM
         self.blockN = blockN
-        self.unpacked = unpacked
+        self.colStride = colStride
         self.CTASplitM = CTASplitM
         self.CTASplitN = CTASplitN
+        self.twoCTAs = twoCTAs
 
     """
     Make a default tensor memory layout encoding.
@@ -126,18 +127,20 @@ class tensor_memory_layout(shared_layout):
         return cls(
             blockM=shape[0],
             blockN=shape[1],
-            unpacked=True,
+            colStride=2,
             CTASplitM=1,
             CTASplitN=1,
+            twoCTAs=False,
         )
 
     def to_ir(self, builder: ir.builder) -> None:
         return builder.make_tensor_memory_encoding_attr(
             self.blockM,
             self.blockN,
-            self.unpacked,
+            self.colStride,
             self.CTASplitM,
             self.CTASplitN,
+            self.twoCTAs,
         )
 
 

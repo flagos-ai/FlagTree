@@ -86,7 +86,7 @@ public:
       // Create minimal mbarrier allocation with #shared2 encoding (similar to
       // our current implementation)
       auto mbarrierCTALayout =
-          gpu::CTALayoutAttr::get(tensorType.getContext(), {1}, {1}, {0});
+          gpu::CTAEncodingAttr::fromSplitParams(tensorType.getContext(), {1}, {1}, {0});
       auto mbarrierEncoding = gpu::SwizzledSharedEncodingAttr::get(
           tensorType.getContext(), 1, 1, 1, {0}, mbarrierCTALayout);
       Attribute sharedMemorySpace =
