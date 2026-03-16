@@ -132,3 +132,11 @@ jobs:
           python3 -m pytest -s test_device_print_comprehensive.py
           python3 -m pytest -s test_device_print_script.py
           popd
+          # flagtree tle test
+          pushd python/test/tle
+          python3 test_vec_add.py
+          python3 test_vec_add_2d.py
+          python3 test_vec_add_mix.py
+          python3 test_vec_mathOps.py
+          python3 test_tle_with_hints.py
+          popd

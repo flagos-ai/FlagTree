@@ -10,6 +10,7 @@ import itertools
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, List
+import importlib
 
 from .. import knobs, language
 from .._C.libtriton import ir, gluon_ir
@@ -1459,6 +1460,15 @@ class CodeGenerator(ast.NodeVisitor):
             try:
                 # Special handling for tl.load with hints
                 hint_trigger("inject_kwargs_with_hints", fn, flagtree_hints, node.lineno, kws)
+
+                if fn.__name__ == 'copy':
+                    # extract tle hints from the generator to identify if node in the tle hints scope
+                    tle = importlib.import_module("..experimental.tle", package=__package__)
+                    top_hints = tle.extract_tle_hints_scope(self)
+
+                    # Only apply to some builtins; currently, 'copy' is relevant.
+                    if 'inter_no_alias' in top_hints and 'inter_no_alias' not in kws:
+                        kws['inter_no_alias'] = top_hints['inter_no_alias']
 
                 ret = fn(*args, **extra_kwargs, **kws)
                 # builtin functions return plain tuples for readability
