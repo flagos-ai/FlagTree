@@ -20,7 +20,7 @@ def _get_flagtree_root() -> str:
 
 @dataclass
 class FlagtreeConfigs:
-    use_filr: tuple = ("aipu", "tsingmicro")
+    use_flir: tuple = ("aipu", "tsingmicro")
     default_backends: tuple = ("nvidia", "amd")
     plugin_backends: tuple = ("cambricon", "ascend", "aipu", "tsingmicro", "enflame")
     use_cuda_toolkit_backends: tuple = ('aipu', )
@@ -46,7 +46,7 @@ class FlagtreeConfigs:
             os.path.join(self.flagtree_root_dir, "third_party"),
         )
         object.__setattr__(self, "activated_module", self._activate_device_module(self.flagtree_backend))
-        if self.flagtree_backend in self.use_filr:
+        if self.flagtree_backend in self.use_flir:
             self.default_backends = self.default_backends + ("flir", )
 
     def _activate_device_module(self, backend, suffix=".py"):
