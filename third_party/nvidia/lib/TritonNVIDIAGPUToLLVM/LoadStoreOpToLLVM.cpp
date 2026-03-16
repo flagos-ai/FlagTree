@@ -1226,7 +1226,7 @@ public:
       const bool isClusterSharedPtr =
           rmwPtrTy.getAddressSpace() ==
           static_cast<unsigned>(
-              NVVM::kSharedClusterMemorySpace);
+              NVVM::NVVMMemorySpace::SharedCluster);
       const bool useClusterSharedAtomic =
           remoteCTAInfo.hasRemoteCTAId() || isClusterSharedPtr;
 #else
