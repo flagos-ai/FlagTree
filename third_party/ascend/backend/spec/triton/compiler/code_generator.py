@@ -7,6 +7,7 @@ import os
 import textwrap
 
 from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
+import importlib
 
 import triton.language.extra.cann.extension as extension
 from triton.extension.buffer.language import core as bl
@@ -967,7 +968,8 @@ class CodeGenerator(ast.NodeVisitor):
         warp_specialize = False
         disable_licm = False
         bind_sub_block = None
-        if IteratorClass in [language.range, extension.parallel]:
+        tle = importlib.import_module("triton.experimental.tle", package=__package__)
+        if IteratorClass in [language.range, extension.parallel, tle.dsa.pipeline, tle.dsa.parallel]:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -976,6 +978,9 @@ class CodeGenerator(ast.NodeVisitor):
             ub = iterator.end
             step = iterator.step
             num_stages = iterator.num_stages
+            if num_stages is not None and num_stages > 2:
+                raise AssertionError('Only `range` iterator supports num_stages <= 2')
+
             loop_unroll_factor = iterator.loop_unroll_factor
             disallow_acc_multi_buffer = iterator.disallow_acc_multi_buffer
             flatten = iterator.flatten
@@ -1063,7 +1068,9 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("tt.disable_licm", self.builder.get_unit_attr())
-            if (IteratorClass is extension.parallel):
+
+            tle = importlib.import_module("triton.experimental.tle", package=__package__)
+            if (IteratorClass is extension.parallel or IteratorClass is tle.dsa.parallel):
                 for_op.set_attr("hivm.parallel_loop", self.builder.get_unit_attr())
 
             self.scf_stack.append(node)
@@ -1189,6 +1196,14 @@ class CodeGenerator(ast.NodeVisitor):
             if '_generator' in sig.parameters:
                 extra_kwargs['_generator'] = self
             try:
+                if fn.__name__ == 'copy':
+                    # extract tle hints from the generator to identify if node in the tle hints scope
+                    tle = importlib.import_module("triton.experimental.tle", package=__package__)
+                    top_hints = tle.extract_tle_hints_scope(self)
+
+                    # Only apply to some builtins; currently, 'copy' is relevant.
+                    if 'inter_no_alias' in top_hints and 'inter_no_alias' not in kws:
+                        kws['inter_no_alias'] = top_hints['inter_no_alias']
                 ret = fn(*args, **extra_kwargs, **kws)
                 # Sync the builder's location before return.
                 ip, last_loc = self._get_insertion_point_and_loc(_builder)

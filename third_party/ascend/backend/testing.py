@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 import triton.runtime as runtime
 
 
-def do_bench_npu(funcs, warmup=5, active=30, clear_l2_cache=False, prof_dir=None, keep_res=False):
+def do_bench_npu(funcs, warmup=5, active=30, clear_l2_cache=False, prof_dir=None, keep_res=False, collect_prof=True):
     import torch
     import torch_npu
 
@@ -80,9 +80,52 @@ def do_bench_npu(funcs, warmup=5, active=30, clear_l2_cache=False, prof_dir=None
     if clear_l2_cache:
         del buffer
 
-    time_cost = _collect_prof_result(torch_path, funcs, warmup, active)
+    if collect_prof:
+        time_cost = _collect_prof_result(torch_path, funcs, warmup, active)
+    else:
+        time_cost = _collect_single(torch_path)
     _rm_dic(keep_res, torch_path)
     return time_cost
+
+
+# keep the original behavior to get the statistics for the specified kernel func
+def _collect_single(base_dir: str, key: str = None) -> float:
+    if not os.path.exists(base_dir):
+        return float("inf")
+
+    import pandas as pd
+
+    for root, _, files in os.walk(base_dir):
+        for file in files:
+            if file != "op_statistic.csv":
+                continue
+            target_file = os.path.join(root, file)
+            df = pd.read_csv(target_file)
+            print(df)
+            if key is not None:
+                key_rows = df[df["OP Type"].str.startswith(key, na=False)]
+                if not key_rows.empty:
+                    return key_rows["Avg Time(us)"].values[0]
+                return float("inf")
+            else:
+                # default: read the first row except header
+                # return df.loc[0, "Avg Time(us)"]
+                # default: extract ZerosLike time (L2 cache clear operation)
+                filter_cond = df["OP Type"].str.contains(r"^ZerosLike$", case=False, na=False)
+                filter_df = df[filter_cond]
+                if not filter_df.empty:
+                    zeroslike_time = filter_df.iloc[0]['Avg Time(us)']
+                    print("Clear L2 cache time:", zeroslike_time)
+
+                # Calculate total time of all operators excluding ZerosLike
+                non_zeroslike_df = df[~df["OP Type"].str.contains(r"^ZerosLike$", case=False, na=False)]
+                all_ops_total_time = non_zeroslike_df['Avg Time(us)'].sum()
+                all_ops_total_time = round(all_ops_total_time, 3)
+                print("All ops total time:", all_ops_total_time)
+
+                return all_ops_total_time
+
+    return float("inf")
 
 
 def _rm_dic(keep_res, torch_path):

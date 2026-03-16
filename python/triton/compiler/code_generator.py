@@ -15,6 +15,7 @@ from ..runtime.jit import _normalize_ty, get_jit_fn_file_line
 from ..runtime import JITFunction
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
 from types import ModuleType
+import importlib
 
 
 def mangle_ty(ty):
@@ -1111,6 +1112,15 @@ class CodeGenerator(ast.NodeVisitor):
             if '_generator' in sig.parameters:
                 extra_kwargs['_generator'] = self
             try:
+                if fn.__name__ == 'copy':
+                    # extract tle hints from the generator to identify if node in the tle hints scope
+                    tle = importlib.import_module("..experimental.tle", package=__package__)
+                    top_hints = tle.extract_tle_hints_scope(self)
+
+                    # Only apply to some builtins; currently, 'copy' is relevant.
+                    if 'inter_no_alias' in top_hints and 'inter_no_alias' not in kws:
+                        kws['inter_no_alias'] = top_hints['inter_no_alias']
+
                 return fn(*args, **extra_kwargs, **kws)
             except Exception as e:
                 # Normally when we raise a CompilationError, we raise it as
