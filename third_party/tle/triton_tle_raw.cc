@@ -64,8 +64,8 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   assert(module && "Failed to parse LLVM IR text");
   LLVM::LLVMFuncOp func = nullptr;
-  for (auto op : module->getOps<LLVM::LLVMFuncOp>() && op.getLinkage() != LLVM::Linkage::Internal) {
-    if (!op.empty()) {
+  for (auto op : module->getOps<LLVM::LLVMFuncOp>()) {
+    if (!op.empty() && op.getLinkage() != LLVM::Linkage::Internal) {
       if (func) {
         llvm_unreachable("Multiple functions found in LLVM IR text");
       } else {
