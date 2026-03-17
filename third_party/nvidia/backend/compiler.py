@@ -107,6 +107,7 @@ def sm_arch_from_capability(capability: int):
 class CUDAOptions:
     num_warps: int = 4
     num_ctas: int = 1
+    cluster_dims: Tuple[int, int, int] = (1, 1, 1)
     num_stages: int = 3
     warp_size: int = 32
     # maxnreg corresponds to the ptx parameter .maxnreg, which controls the
@@ -218,10 +219,16 @@ class CUDABackend(BaseBackend):
         return CUDAOptions(**args)
 
     def pack_metadata(self, metadata):
+        cluster_dims = getattr(metadata, "cluster_dims", (1, 1, 1))
+        if not isinstance(cluster_dims, (tuple, list)) or len(cluster_dims) != 3:
+            cluster_dims = (1, 1, 1)
         return (
             metadata.num_warps,
             metadata.num_ctas,
             metadata.shared,
+            int(cluster_dims[0]),
+            int(cluster_dims[1]),
+            int(cluster_dims[2]),
         )
 
     def get_codegen_implementation(self, options):
@@ -347,6 +354,8 @@ class CUDABackend(BaseBackend):
         # launch_cooperative_grid may be toggled during frontend semantic lowering
         # (e.g. device_mesh + distributed_barrier grid mode), so refresh it here.
         metadata["launch_cooperative_grid"] = opt.launch_cooperative_grid
+        # cluster_dims may also be inferred/updated by frontend mesh semantics.
+        metadata["cluster_dims"] = tuple(opt.cluster_dims)
         # end flagtree tle
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
         return mod

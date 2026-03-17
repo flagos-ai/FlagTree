@@ -111,12 +111,12 @@ void init_triton_tle_ir(py::module &&m) {
            })
       .def("make_tensor_memory_encoding_attr",
            [](TritonOpBuilder &self, unsigned blockM, unsigned blockN,
-              unsigned colStride, unsigned CTASplitM, unsigned CTASplitN,
-              bool twoCTAs) {
+              bool unpacked, unsigned CTASplitM, unsigned CTASplitN) {
              auto context = self.getBuilder().getContext();
+             const unsigned colStride = unpacked ? 2 : 1;
              return mlir::cast<Attribute>(ttng::TensorMemoryEncodingAttr::get(
                  context, blockM, blockN, colStride, CTASplitM, CTASplitN,
-                 twoCTAs));
+                 /*twoCTAs=*/false));
            })
       .def("create_local_alloc",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,

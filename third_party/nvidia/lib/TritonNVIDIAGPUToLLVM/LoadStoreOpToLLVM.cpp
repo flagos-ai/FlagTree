@@ -331,7 +331,6 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
 #else
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     assert(ptrElems.size() == numElems);
-    const bool isSharedPtr = isSharedPointerValue(ptrElems);
 #endif
 
     // Get the LLVM values for mask
@@ -493,44 +492,12 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
           ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
 
 #ifdef __TLE__
-      // Create L2 cache policy register if needed. Shared-memory accesses
-      // ignore cache modifiers so we skip materializing policy registers.
+      // Create L2 cache policy register only for global-memory accesses.
       Value l2PolicyReg;
       if (!isSharedPtr)
         l2PolicyReg =
             createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
-      // Define the instruction opcode
-      auto &ld = ptxBuilder.create("ld")
-                     ->o("volatile", op.getIsVolatile())
-                     .global()
-                     .o("ca", op.getCache() == triton::CacheModifier::CA)
-                     .o("cg", op.getCache() == triton::CacheModifier::CG)
-                     .o("L1::evict_first",
-                        op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-                     .o("L1::evict_last",
-                        op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-                     .o("L2::cache_hint", l2PolicyReg != Value())
-                     .v(nWords)
-                     .b(width);
-
-      PTXBuilder::Operand *evictOpr = nullptr;
-      if (l2PolicyReg)
-        evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
-
-      if (!evictOpr)
-        ld(dstsOpr, addrOpr).maybePredicate(pred, "b");
-      else
-        ld(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
-#else
-      // Create L2 cache policy register if needed. Shared-memory accesses
-      // ignore cache modifiers so we skip materializing policy registers.
-      Value l2PolicyReg;
-      if (!isSharedPtr)
-        l2PolicyReg =
-            createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
-
-      // Define the instruction opcode
       auto *ld = ptxBuilder.create<>("ld");
       ld->o("volatile", op.getIsVolatile());
       if (isSharedPtr) {
@@ -555,6 +522,33 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         (*ld)(dstsOpr, addrOpr).maybePredicate(pred, "b");
       else
         (*ld)(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
+#else
+      // Create L2 cache policy register if needed
+      Value l2PolicyReg =
+          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+
+      // Define the instruction opcode
+      auto &ld = ptxBuilder.create("ld")
+                     ->o("volatile", op.getIsVolatile())
+                     .global()
+                     .o("ca", op.getCache() == triton::CacheModifier::CA)
+                     .o("cg", op.getCache() == triton::CacheModifier::CG)
+                     .o("L1::evict_first",
+                        op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+                     .o("L1::evict_last",
+                        op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+                     .o("L2::cache_hint", l2PolicyReg != Value())
+                     .v(nWords)
+                     .b(width);
+
+      PTXBuilder::Operand *evictOpr = nullptr;
+      if (l2PolicyReg)
+        evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
+
+      if (!evictOpr)
+        ld(dstsOpr, addrOpr).maybePredicate(pred, "b");
+      else
+        ld(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
 #endif
 
       // Create inline ASM signature
@@ -675,7 +669,6 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     auto valueElems = unpackLLElements(loc, llValue, rewriter);
     assert(ptrElems.size() == valueElems.size());
-    const bool isSharedPtr = isSharedPointerValue(ptrElems);
 #endif
 
     // Determine the vectorization size
@@ -795,38 +788,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
           ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
 
 #ifdef __TLE__
-      // Create L2 cache policy register if needed
-      Value l2PolicyReg;
-      if (!isSharedPtr)
-        l2PolicyReg =
-            createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
-
-      auto &ptxStoreInstr =
-          ptxBuilder.create("st")
-              ->global()
-              .o("wb", op.getCache() == triton::CacheModifier::WB)
-              .o("cg", op.getCache() == triton::CacheModifier::CG)
-              .o("cs", op.getCache() == triton::CacheModifier::CS)
-              .o("wt", op.getCache() == triton::CacheModifier::WT)
-              .o("L1::evict_first",
-                 op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-              .o("L1::evict_last",
-                 op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-              .o("L2::cache_hint", l2PolicyReg != Value())
-              .v(nWords)
-              .b(width);
-
-      PTXBuilder::Operand *evictOpr = nullptr;
-      if (l2PolicyReg)
-        evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
-
-      if (!evictOpr)
-        ptxStoreInstr(asmAddr, asmArgList).maybePredicate(pred, "b");
-      else
-        ptxStoreInstr(asmAddr, asmArgList, evictOpr)
-            .maybePredicate(pred, "b");
-#else
-      // Create L2 cache policy register if needed
+      // Create L2 cache policy register only for global-memory accesses.
       Value l2PolicyReg;
       if (!isSharedPtr)
         l2PolicyReg =
@@ -858,6 +820,34 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       else
         (*ptxStoreInstr)(asmAddr, asmArgList, evictOpr)
             .maybePredicate(pred, "b");
+#else
+      // Create L2 cache policy register if needed
+      Value l2PolicyReg =
+          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+
+      auto &ptxStoreInstr =
+          ptxBuilder.create("st")
+              ->global()
+              .o("wb", op.getCache() == triton::CacheModifier::WB)
+              .o("cg", op.getCache() == triton::CacheModifier::CG)
+              .o("cs", op.getCache() == triton::CacheModifier::CS)
+              .o("wt", op.getCache() == triton::CacheModifier::WT)
+              .o("L1::evict_first",
+                 op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+              .o("L1::evict_last",
+                 op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+              .o("L2::cache_hint", l2PolicyReg != Value())
+              .v(nWords)
+              .b(width);
+
+      PTXBuilder::Operand *evictOpr = nullptr;
+      if (l2PolicyReg)
+        evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
+
+      if (!evictOpr)
+        ptxStoreInstr(asmAddr, asmArgList).maybePredicate(pred, "b");
+      else
+        ptxStoreInstr(asmAddr, asmArgList, evictOpr).maybePredicate(pred, "b");
 #endif
 
       auto asmReturnTy = void_ty(ctx);
@@ -1407,21 +1397,18 @@ public:
       }
 
       auto scope = stringifyMemSyncScope(op.getScope()).str();
-      auto *atom = ptxBuilderAtomicRMW.create("atom");
 #ifdef __TLE__
+      auto &atom = *ptxBuilderAtomicRMW.create("atom");
       // begin flagtree tle
       if (isSharedPtr || isClusterSharedPtr)
         atom->o("shared::cluster", useClusterSharedAtomic)
             .o("shared", !useClusterSharedAtomic)
             .o(scope);
       else
-        atom->global().o(scope);
+        atom.global().o(scope);
       // end flagtree tle
 #else
-      if (isSharedPtr)
-        atom->shared().o(scope);
-      else
-        atom->global().o(scope);
+      auto &atom = ptxBuilderAtomicRMW.create("atom")->global().o(scope);
 #endif
       auto rmwOp = stringifyRMWOp(atomicRmwAttr).str();
       auto sBits = std::to_string(valueElemNBits);
