@@ -209,9 +209,8 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   MLIRContext *ctx = rewriter.getContext();
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
 #ifdef __TLE__
-  const bool isShared =
-      ptrTy.getAddressSpace() ==
-      static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared);
+  const bool isShared = ptrTy.getAddressSpace() ==
+                        static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared);
   const bool isClusterShared =
       ptrTy.getAddressSpace() ==
       static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster);
@@ -364,9 +363,8 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   MLIRContext *ctx = rewriter.getContext();
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
 #ifdef __TLE__
-  const bool isShared =
-      ptrTy.getAddressSpace() ==
-      static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared);
+  const bool isShared = ptrTy.getAddressSpace() ==
+                        static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared);
   const bool isClusterShared =
       ptrTy.getAddressSpace() ==
       static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster);
