@@ -410,6 +410,10 @@ class CompiledKernel:
         # JSON serialization dumps the target as a dict. Restore it to a GPUTarget.
         target = metadata['target']
         metadata['target'] = GPUTarget(target['backend'], target['arch'], target['warp_size'])
+        # Restore tuple-typed metadata fields serialized as JSON arrays.
+        cluster_dims = metadata.get("cluster_dims")
+        if isinstance(cluster_dims, list):
+            metadata["cluster_dims"] = tuple(cluster_dims)
         KernelMetadata = namedtuple('KernelMetadata', sorted(list(metadata.keys())))
         self.metadata = KernelMetadata(**metadata)
         backend = make_backend(self.metadata.target)

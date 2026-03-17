@@ -157,7 +157,8 @@ static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid,
 #ifdef __TLE__
   (void)pred;
   auto clusterPtrTy = LLVM::LLVMPointerType::get(
-      rewriter.getContext(), static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster));
+      rewriter.getContext(),
+      static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster));
   return NVVM::MapaOp::create(rewriter, loc, clusterPtrTy, ptr, ctaid);
 #else
   return NVVM::MapaOp::create(rewriter, loc, ptr.getType(), ptr, ctaid);

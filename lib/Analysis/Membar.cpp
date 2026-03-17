@@ -1,82 +1,16 @@
 #include "triton/Analysis/Membar.h"
+#ifdef __TLE__
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
-#include <cstdlib>
 #include <deque>
 
 namespace mlir {
-
-namespace {
-
-bool shouldPrintMembar() {
-  static bool enabled = []() {
-    const char *env = std::getenv("TRITON_MEMBAR_DEBUG");
-    return env && env[0] != '0';
-  }();
-  return enabled;
-}
-
-void printMembarInsert(Operation *op, const char *reason) {
-  if (!shouldPrintMembar())
-    return;
-  llvm::errs() << "[membar] insert barrier before op: " << op->getName()
-               << " @ " << op->getLoc() << " reason=" << reason << "\n";
-}
-
-void printIntersectDetails(const char *reason, Operation *op,
-                           const BlockInfo &prev, const BlockInfo &cur,
-                           MembarFilterFn filter) {
-  if (!shouldPrintMembar())
-    return;
-  auto printPairs = [&](const char *kind, const BlockInfo::IntervalMapT &lhs,
-                        const BlockInfo::IntervalMapT &rhs) {
-    for (const auto &lhsIt : lhs) {
-      for (const auto &rhsIt : rhs) {
-        if (!lhsIt.first.intersects(rhsIt.first))
-          continue;
-        for (Operation *lhsOp : lhsIt.second) {
-          for (Operation *rhsOp : rhsIt.second) {
-            if (filter && filter(lhsOp, rhsOp))
-              continue;
-            llvm::errs() << "[membar] intersect kind=" << kind
-                         << " reason=" << reason << " prev_interval=["
-                         << lhsIt.first.start() << ", " << lhsIt.first.end()
-                         << "] cur_interval=[" << rhsIt.first.start() << ", "
-                         << rhsIt.first.end()
-                         << "] prev_op=" << lhsOp->getName() << " @ "
-                         << lhsOp->getLoc() << " cur_op=" << rhsOp->getName()
-                         << " @ " << rhsOp->getLoc()
-                         << " barrier_before=" << op->getName() << " @ "
-                         << op->getLoc() << "\n";
-          }
-        }
-      }
-    }
-  };
-
-  // RAW: prev write vs cur read
-  printPairs("RAW", prev.syncWriteIntervals, cur.syncReadIntervals);
-  // WAR: prev read vs cur write
-  printPairs("WAR", prev.syncReadIntervals, cur.syncWriteIntervals);
-  // WAW: prev write vs cur write (should be rare, but keep for completeness)
-  printPairs("WAW", prev.syncWriteIntervals, cur.syncWriteIntervals);
-}
-
-bool shouldSkipMembarBetweenOps(Operation *lhs, Operation *rhs,
-                                MembarFilterFn filter) {
-  if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
-      isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs)) {
-    return true;
-  }
-  return filter ? filter(lhs, rhs) : false;
-}
-
-} // namespace
 
 void MembarOrFenceAnalysis::run(FuncBlockInfoMapT &funcBlockInfoMap) {
   FunctionOpInterface funcOp =
@@ -245,7 +179,6 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     // If the current op is an async wait and the next op is not a barrier we
     // insert a barrier op and sync
     builder->setInsertionPointAfter(op);
-    printMembarInsert(op, "async_wait");
     insertBarrier(op, builder);
     blockInfo->sync();
     return;
@@ -295,9 +228,17 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     scratchBufferId = allocation->getBufferId(op);
   }
 
+#ifdef __TLE__
+  // Preserve the 3.5 behavior for atomic chains in TLE mode: consecutive
+  // atomics on overlapping shared intervals do not require an extra CTA
+  // barrier here.
   auto effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
-    return shouldSkipMembarBetweenOps(lhs, rhs, filter);
+    if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
+        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs))
+      return true;
+    return filter ? filter(lhs, rhs) : false;
   };
+#endif
 
   // Scratch buffer operations consist of a series of shared memory operations
   // starting from a shared memory write, followed by a series of shared memory
@@ -318,15 +259,8 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     }
 
 #ifdef __TLE__
-    // Some ops that allocate scratch buffers (e.g. scan/reduce paths lowered
-    // from TLE kernels) may also carry explicit shared-memory side effects.
-    // Treat these effects conservatively instead of aborting compilation.
-    if ((!curBlockInfo.syncReadIntervals.empty() ||
-         !curBlockInfo.syncWriteIntervals.empty()) &&
-        shouldPrintMembar()) {
-      llvm::errs() << "[membar] scratch op has explicit shared deps: "
-                   << op->getName() << " @ " << op->getLoc() << "\n";
-    }
+    // Some scratch-buffer ops can also carry explicit shared-memory effects.
+    // Keep conservative dependency tracking instead of hard-failing here.
 #else
     if (!curBlockInfo.syncReadIntervals.empty() ||
         !curBlockInfo.syncWriteIntervals.empty()) {
@@ -337,13 +271,14 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
 #endif
     auto interval = allocation->getAllocatedInterval(scratchBufferId);
     curBlockInfo.syncWriteIntervals[interval].insert(op);
+#ifdef __TLE__
     auto insertCTABarrier =
         blockInfo->isIntersected(curBlockInfo, effectiveFilter);
+#else
+    auto insertCTABarrier = blockInfo->isIntersected(curBlockInfo, filter);
+#endif
     if (insertCTABarrier) {
       builder->setInsertionPoint(op);
-      printMembarInsert(op, "scratch_intersect");
-      printIntersectDetails("scratch_intersect", op, *blockInfo, curBlockInfo,
-                            effectiveFilter);
       insertBarrier(op, builder);
     }
     // Ops with a scratch buffer that don't use warp.sync internally sync
@@ -351,11 +286,12 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     if (insertCTABarrier || !isWarpSync)
       blockInfo->sync();
     curBlockInfo.syncReadIntervals[interval].insert(op);
+#ifdef __TLE__
   } else if (blockInfo->isIntersected(curBlockInfo, effectiveFilter)) {
+#else
+  } else if (blockInfo->isIntersected(curBlockInfo, filter)) {
+#endif
     builder->setInsertionPoint(op);
-    printMembarInsert(op, "shared_intersect");
-    printIntersectDetails("shared_intersect", op, *blockInfo, curBlockInfo,
-                          effectiveFilter);
     insertBarrier(op, builder);
     blockInfo->sync();
   }

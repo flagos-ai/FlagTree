@@ -83,7 +83,7 @@ class swizzled_shared_layout(shared_layout):
             numCTAs=[1] * rank,
             numCTAsPerCGA=[1] * rank,
             numCTASplit=[1] * rank,
-            numCTAOrder=[1] * rank,
+            numCTAOrder=list(reversed(range(rank))),
         )
 
     """
@@ -170,7 +170,7 @@ class nv_mma_shared_layout(shared_layout):
             elemType=elemType,
             numCTAsPerCGA=[1] * rank,
             numCTASplit=[1] * rank,
-            numCTAOrder=[1] * rank,
+            numCTAOrder=list(reversed(range(rank))),
             fp4Padded=False,
             swizzled=True,
         )
