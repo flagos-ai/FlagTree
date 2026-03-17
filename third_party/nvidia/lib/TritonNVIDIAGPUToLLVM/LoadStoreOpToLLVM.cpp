@@ -1454,7 +1454,7 @@ public:
       std::string semStr;
       llvm::raw_string_ostream os(semStr);
       os << op.getSem();
-      atom->o(semStr).o(rmwOp).v(vec).o(sTy);
+      atom.o(semStr).o(rmwOp).v(vec).o(sTy);
       if (tensorTy) {
         atom(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
         Type retType;
