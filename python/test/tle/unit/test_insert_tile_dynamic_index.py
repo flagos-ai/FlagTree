@@ -4,79 +4,70 @@ import triton.language as tl
 import triton.experimental.tle as tle
 
 @triton.jit
-def insert_tile_dynamic_kernel(
-    x_ptr, y_ptr, out_ptr,
-    M: tl.constexpr, N: tl.constexpr,
-    TM: tl.constexpr, TN: tl.constexpr
+def simple_insert_kernel(
+    x_ptr, y_ptr,
+    stride_xb, stride_xm, stride_xn,
+    stride_ym, stride_yn,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+    TILE_M: tl.constexpr, TILE_N: tl.constexpr
 ):
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+    # 1. Get 3D coordinates: z (layer/batch), m (row block), n (col block)
+    pid_z = tl.program_id(0)
+    pid_m = tl.program_id(1)
+    pid_n = tl.program_id(2)
 
-    offs_m = tl.arange(0, TM) + pid_m * TM
-    offs_n = tl.arange(0, TN) + pid_n * TN
+    # 2. Read the background slice of x for the current z layer
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    x_ptrs = x_ptr + pid_z * stride_xb + offs_m[:, None] * stride_xm + offs_n[None, :] * stride_xn
+    bg_tile = tl.load(x_ptrs)
 
-    # load tiles
-    x_tile = tl.load(x_ptr + offs_m[:, None] * N + offs_n[None, :])
-    y_tile = tl.load(y_ptr + tl.arange(0, TM)[:, None] * TN + tl.arange(0, TN)[None, :])
+    # 3. Read the small y tile (2D, shared across all z layers)
+    offs_tm = tl.arange(0, TILE_M)
+    offs_tn = tl.arange(0, TILE_N)
+    y_ptrs = y_ptr + offs_tm[:, None] * stride_ym + offs_tn[None, :] * stride_yn
+    small_tile = tl.load(y_ptrs)
 
-    z_tile = tle.insert_tile(x_tile, y_tile, index=[pid_m, pid_n])
-    tl.store(out_ptr + offs_m[:, None] * N + offs_n[None, :], z_tile)
+    # 4. Determine insertion position: 
+    # Let layer 0 insert at top-left (0,0), and layer 1 at bottom-right (1,1)
+    tile_idx_m = pid_z % (BLOCK_M // TILE_M)
+    tile_idx_n = pid_z % (BLOCK_N // TILE_N)
+
+    # 5. Insert the small tile and store it back to memory
+    res_tile = tle.insert_tile(bg_tile, small_tile, index=[tile_idx_m, tile_idx_n])
+    tl.store(x_ptrs, res_tile)
 
 # ------------------------------------------------------------
-# CPU reference
+# Minimal Test
 # ------------------------------------------------------------
-def reference_insert(x, y, TM, TN):
-    M, N = x.shape
-    grid_m = M // TM
-    grid_n = N // TN
-    ref = x.clone()
-    for i in range(grid_m):
-        for j in range(grid_n):
-            ref[i*TM:(i+1)*TM, j*TN:(j+1)*TN] = y
-    return ref
-
-def run_single_test(M, N, TM, TN, dtype):
-    grid_m = M // TM
-    grid_n = N // TN
-
-    x = torch.arange(M*N, device="cuda", dtype=torch.float32).reshape(M, N).to(dtype)
-    y = 10000 + torch.arange(TM*TN, device="cuda", dtype=torch.float32).reshape(TM, TN).to(dtype)
-
-    out_dynamic = torch.empty_like(x)
-    insert_tile_dynamic_kernel[(grid_m, grid_n)](x, y, out_dynamic, M, N, TM, TN)
-    expected_dynamic = reference_insert(x, y, TM, TN)
-    atol = 1e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-5
-    dynamic_pass = torch.allclose(out_dynamic.float(), expected_dynamic.float(), atol=atol)
-
-    dtype_name = str(dtype).split(".")[-1]
-    print(f"M={M:<4} N={N:<4} TM={TM:<3} TN={TN:<3} dtype={dtype_name:<8} "
-          f"dynamic={'PASS' if dynamic_pass else 'FAIL'}")
-    return dynamic_pass
-
-
 def main():
-    base_shapes = [(256,256),(128,128),(64,64),(32,32),]
-    # Tile shapes
-    tile_shapes = [(64,64),(32,32),(16,16),(32,16),(16,32),(8,64),(64,8),]
-    # Dtypes
-    dtypes = [torch.float32,torch.float16,torch.bfloat16,torch.int32]
+    B = 2             # 2 layers (Z dimension)
+    M, N = 32, 32     # 32x32 size per layer
+    TM, TN = 16, 16   # The inserted small tile is 16x16
+    
+    # x is an all-zero 3D background tensor
+    x = torch.zeros((B, M, N), device="cuda", dtype=torch.float32)
+    # y is an all-99 2D small tile
+    y = torch.ones((TM, TN), device="cuda", dtype=torch.float32) * 99.0
+    
+    # Launch Kernel: B layers, each needs exactly 1x1 block (since M=32 and BLOCK_M=32)
+    grid = (B, 1, 1)
+    
+    simple_insert_kernel[grid](
+        x, y,
+        x.stride(0), x.stride(1), x.stride(2),
+        y.stride(0), y.stride(1),
+        BLOCK_M=32, BLOCK_N=32, TILE_M=16, TILE_N=16
+    )
 
-    total = 0
-    passed = 0
-    print("Triton insert_tile Full Test: Dynamic Index only")
+    # --- Visualizing the results ---
+    print("=== Layer 0 (Z=0) ===")
+    print("Top-left (0~16, 0~16) mean:", x[0, 0:16, 0:16].mean().item())
+    print("Bottom-right (16~32, 16~32) mean:", x[0, 16:32, 16:32].mean().item(), "\n")
 
-    for M, N in base_shapes:
-        for TM, TN in tile_shapes:
-            if TM > M or TN > N:
-                continue
-            if M % TM != 0 or N % TN != 0:
-                continue
-            for dtype in dtypes:
-                dynamic_pass = run_single_test(M, N, TM, TN, dtype)
-                total += 1
-                if dynamic_pass:
-                    passed += 1
-    print("="*100)
-    print(f"FINAL RESULT: {passed}/{total} PASSED")
+    print("=== Layer 1 (Z=1) ===")
+    print("Top-left (0~16, 0~16) mean:", x[1, 0:16, 0:16].mean().item())
+    print("Bottom-right (16~32, 16~32) mean:", x[1, 16:32, 16:32].mean().item())
+
 if __name__ == "__main__":
     main()
