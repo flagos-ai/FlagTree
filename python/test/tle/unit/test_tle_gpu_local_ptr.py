@@ -151,8 +151,10 @@ def _local_pointer_tiled_matmul_kernel(
     offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
 
-    smem_a = tle.gpu.alloc([BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    smem_b = tle.gpu.alloc([BLOCK_K, BLOCK_N], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem_a = tle.gpu.alloc([BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tle.gpu.smem,
+                           nv_mma_shared_layout=False)
+    smem_b = tle.gpu.alloc([BLOCK_K, BLOCK_N], dtype=tl.float16, layout=None, scope=tle.gpu.smem,
+                           nv_mma_shared_layout=False)
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 

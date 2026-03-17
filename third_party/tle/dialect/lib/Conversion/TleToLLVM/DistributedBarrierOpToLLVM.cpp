@@ -306,8 +306,7 @@ struct DistributedBarrierOpConversion
     auto sharedPtrTy = LLVM::LLVMPointerType::get(
         ctx, static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared));
     auto clusterPtrTy = LLVM::LLVMPointerType::get(
-        ctx, static_cast<unsigned>(
-                 NVVM::NVVMMemorySpace::SharedCluster));
+        ctx, static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster));
 
     Value sharedBase = rewriter.create<LLVM::AddressOfOp>(loc, globalSmem);
     sharedBase = b.bitcast(sharedBase, sharedPtrTy);

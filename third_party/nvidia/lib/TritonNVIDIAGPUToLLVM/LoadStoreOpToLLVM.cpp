@@ -1215,8 +1215,7 @@ public:
       auto rmwPtrTy = cast<LLVM::LLVMPointerType>(rmwPtr.getType());
       const bool isClusterSharedPtr =
           rmwPtrTy.getAddressSpace() ==
-          static_cast<unsigned>(
-              NVVM::NVVMMemorySpace::SharedCluster);
+          static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster);
       const bool useClusterSharedAtomic =
           remoteCTAInfo.hasRemoteCTAId() || isClusterSharedPtr;
 #else

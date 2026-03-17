@@ -44,8 +44,10 @@ def gemm_kernel(
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
 
     accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    a_smem = tle.gpu.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    b_smem = tle.gpu.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    a_smem = tle.gpu.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                           nv_mma_shared_layout=False)
+    b_smem = tle.gpu.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                           nv_mma_shared_layout=False)
     row_ids = tl.arange(0, BLOCK_M)[:, None]
     col_ids = tl.arange(0, BLOCK_N)[None, :]
     row_ids = tl.broadcast_to(row_ids, (BLOCK_M, BLOCK_N))
