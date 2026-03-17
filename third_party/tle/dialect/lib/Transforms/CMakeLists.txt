@@ -23,5 +23,5 @@ add_triton_library(TritonTLETransforms
 
 target_include_directories(TritonTLETransforms PUBLIC
   ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/include
-  ${CMAKE_SOURCE_DIR}/include  # 确保能找到 LinearLayoutConversions.h
+  ${CMAKE_SOURCE_DIR}/include 
 )
