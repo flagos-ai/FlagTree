@@ -65,7 +65,6 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
                              const std::vector<Value> &inputs);
 
 void init_triton_tle_ir(py::module &&m) {
-  using ret = py::return_value_policy;
 
   // Get the existing builder class from the main ir module (TLX style)
   auto *builder_cls = ir::getBuilderClass();
