@@ -16,13 +16,12 @@ import re
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle as tled
-import triton.experimental.tle.language.gpu as tleg
+import triton.experimental.tle.language as tle
 
-BLOCK_CLUSTER_MESH = tled.device_mesh({"block_cluster": [("cluster_x", 2)]})
-BLOCK_CLUSTER_MESH_8 = tled.device_mesh({"block_cluster": [("cluster_x", 8)]})
-BLOCK_CLUSTER_MESH_2X2 = tled.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
-BLOCK_GRID_MESH_8 = tled.device_mesh({"block": [("block_x", 8)]})
+BLOCK_CLUSTER_MESH = tle.device_mesh({"block_cluster": [("cluster_x", 2)]})
+BLOCK_CLUSTER_MESH_8 = tle.device_mesh({"block_cluster": [("cluster_x", 8)]})
+BLOCK_CLUSTER_MESH_2X2 = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+BLOCK_GRID_MESH_8 = tle.device_mesh({"block": [("block_x", 8)]})
 BLOCK_CLUSTER_SUBMESH_ROW0 = BLOCK_CLUSTER_MESH_2X2[0, :]
 BLOCK_CLUSTER_SUBMESH_ROW1 = BLOCK_CLUSTER_MESH_2X2[1, :]
 BLOCK_CLUSTER_SUBMESH_COL0 = BLOCK_CLUSTER_MESH_2X2[:, 0]
@@ -47,7 +46,7 @@ def _distributed_barrier_copy_kernel(x_ptr, out_ptr, numel, BLOCK: tl.constexpr)
     offs = tl.arange(0, BLOCK)
     mask = offs < numel
     vals = tl.load(x_ptr + offs, mask=mask, other=0.0)
-    tled.distributed_barrier()
+    tle.distributed_barrier()
     tl.store(out_ptr + offs, vals, mask=mask)
 
 
@@ -57,9 +56,9 @@ def _remote_roundtrip_kernel(x_ptr, out_ptr, numel, BLOCK: tl.constexpr):
     mask = offs < numel
     vals = tl.load(x_ptr + offs, mask=mask, other=0.0)
 
-    smem = tleg.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    remote_smem = tled.remote(smem, 0)
-    local_ptr = tleg.local_ptr(remote_smem, (tl.arange(0, BLOCK), ))
+    smem = tle.gpu.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    remote_smem = tle.remote(smem, 0)
+    local_ptr = tle.gpu.local_ptr(remote_smem, (tl.arange(0, BLOCK), ))
     tl.store(local_ptr, vals, mask=mask)
 
     out_vals = tl.load(local_ptr, mask=mask, other=0.0)
@@ -72,14 +71,14 @@ def _remote_peer_smem_kernel(out_ptr, shard_id_ptr, mesh: tl.constexpr, BLOCK: t
     pid = tl.program_id(0)
     vals = tl.cast(offs + pid * BLOCK, tl.float32)
 
-    smem = tleg.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    local_ptr = tleg.local_ptr(smem, (offs, ))
+    smem = tle.gpu.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    local_ptr = tle.gpu.local_ptr(smem, (offs, ))
     tl.store(local_ptr, vals)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     shard_id = tl.load(shard_id_ptr + pid)
-    remote_smem = tled.remote(smem, shard_id, scope=mesh)
-    peer_ptr = tleg.local_ptr(remote_smem, (offs, ))
+    remote_smem = tle.remote(smem, shard_id, scope=mesh)
+    peer_ptr = tle.gpu.local_ptr(remote_smem, (offs, ))
     peer_vals = tl.load(peer_ptr)
     tl.store(out_ptr + pid * BLOCK + offs, peer_vals)
 
@@ -89,20 +88,20 @@ def _remote_mixed_local_remote_same_buffer_kernel(out_ptr, shard_id_ptr, mesh: t
     offs = tl.arange(0, BLOCK)
     pid = tl.program_id(0)
     vals = tl.cast(offs + pid * BLOCK, tl.float32)
-    rank = tled.shard_id(mesh, "cluster_x")
+    rank = tle.shard_id(mesh, "cluster_x")
 
-    smem = tleg.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
+    smem = tle.gpu.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     shard_id = tl.load(shard_id_ptr + pid)
-    remote_smem = tled.remote(smem, shard_id, scope=mesh)
+    remote_smem = tle.remote(smem, shard_id, scope=mesh)
 
-    local_ptr = tleg.local_ptr(smem, (offs, ))
+    local_ptr = tle.gpu.local_ptr(smem, (offs, ))
     tl.store(local_ptr, vals)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     if rank == 0:
         mixed = tl.load(local_ptr)
     else:
-        remote_ptr = tleg.local_ptr(remote_smem, (offs, ))
+        remote_ptr = tle.gpu.local_ptr(remote_smem, (offs, ))
         mixed = tl.load(remote_ptr)
     tl.store(out_ptr + pid * BLOCK + offs, mixed)
 
@@ -120,17 +119,17 @@ def _remote_peer_smem_2d_kernel(
     cols = tl.broadcast_to(tl.arange(0, BLOCK_K)[None, :], (BLOCK_M, BLOCK_K))
     vals = tl.cast(rows * BLOCK_K + cols + pid * BLOCK_M * BLOCK_K, tl.float32)
 
-    smem = tleg.alloc([BLOCK_M, BLOCK_K], dtype=tl.float32, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    local_ptr = tleg.local_ptr(smem, (rows, cols))
+    smem = tle.gpu.alloc([BLOCK_M, BLOCK_K], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    local_ptr = tle.gpu.local_ptr(smem, (rows, cols))
     tl.store(local_ptr, vals)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     shard_id = tl.load(shard_id_ptr + pid)
-    remote_buffer = tled.remote(smem, shard_id, scope=mesh)
-    remote_ptr = tleg.local_ptr(remote_buffer, (rows, cols))
+    remote_buffer = tle.remote(smem, shard_id, scope=mesh)
+    remote_ptr = tle.gpu.local_ptr(remote_buffer, (rows, cols))
     peer_vals = tl.load(remote_ptr)
     # Ensure peer CTA finishes remote reads before either side reuses smem.
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     out_ptrs = out_ptr + pid * BLOCK_M * BLOCK_K + rows * BLOCK_K + cols
     tl.store(out_ptrs, peer_vals)
@@ -142,14 +141,14 @@ def _remote_const_shard_load_kernel(out_ptr, mesh: tl.constexpr, BLOCK: tl.const
     pid = tl.program_id(0)
     vals = tl.cast(offs + pid * BLOCK, tl.float16)
 
-    smem = tleg.alloc([BLOCK], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    local_ptr = tleg.local_ptr(smem, (offs, ))
+    smem = tle.gpu.alloc([BLOCK], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    local_ptr = tle.gpu.local_ptr(smem, (offs, ))
     tl.store(local_ptr, vals)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     # Compile-time shard id path should lower to remote cluster load.
-    remote_buffer = tled.remote(smem, 0, scope=mesh)
-    remote_ptr = tleg.local_ptr(remote_buffer, (offs, ))
+    remote_buffer = tle.remote(smem, 0, scope=mesh)
+    remote_ptr = tle.gpu.local_ptr(remote_buffer, (offs, ))
     peer_vals = tl.load(remote_ptr)
     tl.store(out_ptr + pid * BLOCK + offs, peer_vals)
 
@@ -166,15 +165,15 @@ def _remote_const_shard_vectorized_load_kernel(
     cols = tl.broadcast_to(tl.arange(0, BLOCK_K)[None, :], (BLOCK_M, BLOCK_K))
     vals = tl.cast(rows * BLOCK_K + cols + pid * BLOCK_M * BLOCK_K, tl.float16)
 
-    smem = tleg.alloc([BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    local_ptr = tleg.local_ptr(smem, (rows, cols))
+    smem = tle.gpu.alloc([BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    local_ptr = tle.gpu.local_ptr(smem, (rows, cols))
     tl.store(local_ptr, vals)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
-    remote_buffer = tled.remote(smem, 0, scope=mesh)
-    remote_ptr = tleg.local_ptr(remote_buffer, (rows, cols))
+    remote_buffer = tle.remote(smem, 0, scope=mesh)
+    remote_ptr = tle.gpu.local_ptr(remote_buffer, (rows, cols))
     peer_vals = tl.load(remote_ptr)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     out_ptrs = out_ptr + pid * BLOCK_M * BLOCK_K + rows * BLOCK_K + cols
     tl.store(out_ptrs, peer_vals)
@@ -183,9 +182,9 @@ def _remote_const_shard_vectorized_load_kernel(
 @triton.jit
 def _remote_pointer_input_disallowed_kernel(out_ptr, mesh: tl.constexpr, BLOCK: tl.constexpr):
     offs = tl.arange(0, BLOCK)
-    smem = tleg.alloc([BLOCK], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    local_ptr = tleg.local_ptr(smem, (offs, ))
-    remote_ptr = tled.remote(local_ptr, 0, scope=mesh)
+    smem = tle.gpu.alloc([BLOCK], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    local_ptr = tle.gpu.local_ptr(smem, (offs, ))
+    remote_ptr = tle.remote(local_ptr, 0, scope=mesh)
     vals = tl.load(remote_ptr)
     tl.store(out_ptr + offs, vals)
 
@@ -202,15 +201,15 @@ def _remote_buffer_const_shard_vectorized_load_kernel(
     cols = tl.broadcast_to(tl.arange(0, BLOCK_K)[None, :], (BLOCK_M, BLOCK_K))
     vals = tl.cast(rows * BLOCK_K + cols + pid * BLOCK_M * BLOCK_K, tl.float16)
 
-    smem = tleg.alloc([BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    local_ptr = tleg.local_ptr(smem, (rows, cols))
+    smem = tle.gpu.alloc([BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    local_ptr = tle.gpu.local_ptr(smem, (rows, cols))
     tl.store(local_ptr, vals)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
-    remote_buffer = tled.remote(smem, 0, scope=mesh)
-    remote_ptr = tleg.local_ptr(remote_buffer, (rows, cols))
+    remote_buffer = tle.remote(smem, 0, scope=mesh)
+    remote_ptr = tle.gpu.local_ptr(remote_buffer, (rows, cols))
     peer_vals = tl.load(remote_ptr)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     out_ptrs = out_ptr + pid * BLOCK_M * BLOCK_K + rows * BLOCK_K + cols
     tl.store(out_ptrs, peer_vals)
@@ -230,15 +229,15 @@ def _remote_buffer_const_shard_vectorized_load_rank3_kernel(
     vals = tl.cast(rows * BLOCK_K + cols + pid * BLOCK_M * BLOCK_K, tl.float16)
     slots = tl.zeros((BLOCK_M, BLOCK_K), dtype=tl.int32) + SLOT
 
-    smem = tleg.alloc([2, BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    local_ptr = tleg.local_ptr(smem, (slots, rows, cols))
+    smem = tle.gpu.alloc([2, BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    local_ptr = tle.gpu.local_ptr(smem, (slots, rows, cols))
     tl.store(local_ptr, vals)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
-    remote_buffer = tled.remote(smem, 0, scope=mesh)
-    remote_ptr = tleg.local_ptr(remote_buffer, (slots, rows, cols))
+    remote_buffer = tle.remote(smem, 0, scope=mesh)
+    remote_ptr = tle.gpu.local_ptr(remote_buffer, (slots, rows, cols))
     peer_vals = tl.load(remote_ptr)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     out_ptrs = out_ptr + pid * BLOCK_M * BLOCK_K + rows * BLOCK_K + cols
     tl.store(out_ptrs, peer_vals)
@@ -249,25 +248,25 @@ def _submesh_barrier_lowering_kernel(out_ptr, mesh: tl.constexpr, BLOCK: tl.cons
     offs = tl.arange(0, BLOCK)
     pid = tl.program_id(0)
     vals = tl.full((BLOCK, ), pid, tl.int32)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
     tl.store(out_ptr + pid * BLOCK + offs, vals)
 
 
 @triton.jit
 def _remote_rank0_dsmem_atomic_add_kernel(out_ptr, mesh: tl.constexpr):
-    rank = tled.shard_id(mesh, "cluster_x")
+    rank = tle.shard_id(mesh, "cluster_x")
     idx = tl.arange(0, 1)
-    smem = tleg.alloc([1], dtype=tl.int32, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    counter_ptr = tleg.local_ptr(smem, (idx, ))
+    smem = tle.gpu.alloc([1], dtype=tl.int32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    counter_ptr = tle.gpu.local_ptr(smem, (idx, ))
 
     if rank == 0:
         tl.store(counter_ptr, 0)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
-    remote_rank0 = tled.remote(smem, 0, scope=mesh)
-    remote_ptr = tleg.local_ptr(remote_rank0, (idx, ))
+    remote_rank0 = tle.remote(smem, 0, scope=mesh)
+    remote_ptr = tle.gpu.local_ptr(remote_rank0, (idx, ))
     tl.atomic_add(remote_ptr, 1, sem="relaxed", scope="cta")
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     if rank == 0:
         counter = tl.load(counter_ptr)
@@ -276,23 +275,23 @@ def _remote_rank0_dsmem_atomic_add_kernel(out_ptr, mesh: tl.constexpr):
 
 @triton.jit
 def _remote_scan_shared_scratch_kernel(out_ptr, mesh: tl.constexpr, BLOCK: tl.constexpr):
-    rank = tled.shard_id(mesh, "cluster_x")
+    rank = tle.shard_id(mesh, "cluster_x")
     offs = tl.arange(0, BLOCK)
 
-    smem = tleg.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    local_ptr = tleg.local_ptr(smem, (offs, ))
+    smem = tle.gpu.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    local_ptr = tle.gpu.local_ptr(smem, (offs, ))
     if rank == 0:
         tl.store(local_ptr, offs)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     if rank == 0:
         vals = tl.load(local_ptr)
         prefix = tl.cumsum(vals, axis=0)
         tl.store(local_ptr, prefix)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
-    remote_rank0 = tled.remote(smem, 0, scope=mesh)
-    remote_ptr = tleg.local_ptr(remote_rank0, (offs, ))
+    remote_rank0 = tle.remote(smem, 0, scope=mesh)
+    remote_ptr = tle.gpu.local_ptr(remote_rank0, (offs, ))
     remote_vals = tl.load(remote_ptr)
     tl.store(out_ptr + rank * BLOCK + offs, remote_vals)
 
@@ -304,7 +303,7 @@ def _distributed_barrier_multiblock_counter_kernel(counter_ptr, out_ptr, mesh: t
     counter_lane_ptr = counter_ptr + cluster_id
 
     tl.atomic_add(counter_lane_ptr, 1)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     seen = tl.load(counter_lane_ptr)
     tl.store(out_ptr + pid, seen)
@@ -314,7 +313,7 @@ def _distributed_barrier_multiblock_counter_kernel(counter_ptr, out_ptr, mesh: t
 def _distributed_barrier_grid_counter_kernel(counter_ptr, out_ptr, mesh: tl.constexpr):
     pid = tl.program_id(0)
     tl.atomic_add(counter_ptr, 1)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
     seen = tl.load(counter_ptr)
     tl.store(out_ptr + pid, seen)
 
@@ -332,7 +331,7 @@ def _submesh_row_group_barrier_kernel(
 
     if pid < 2:
         tl.atomic_add(counter_row0_ptr, 1)
-        tled.distributed_barrier(row0_mesh)
+        tle.distributed_barrier(row0_mesh)
         seen_row0 = tl.load(counter_row0_ptr)
         tl.store(out_row0_ptr + pid, seen_row0)
     else:
@@ -340,7 +339,7 @@ def _submesh_row_group_barrier_kernel(
 
     if pid >= 2:
         tl.atomic_add(counter_row1_ptr, 3)
-        tled.distributed_barrier(row1_mesh)
+        tle.distributed_barrier(row1_mesh)
         seen_row1 = tl.load(counter_row1_ptr)
         tl.store(out_row1_ptr + pid, seen_row1)
     else:
@@ -361,7 +360,7 @@ def _submesh_col_group_barrier_kernel(
 
     if is_col0:
         tl.atomic_add(counter_col0_ptr, 1)
-        tled.distributed_barrier(col0_mesh)
+        tle.distributed_barrier(col0_mesh)
         seen_col0 = tl.load(counter_col0_ptr)
         tl.store(out_col0_ptr + pid, seen_col0)
     else:
@@ -369,7 +368,7 @@ def _submesh_col_group_barrier_kernel(
 
     if not is_col0:
         tl.atomic_add(counter_col1_ptr, 5)
-        tled.distributed_barrier(col1_mesh)
+        tle.distributed_barrier(col1_mesh)
         seen_col1 = tl.load(counter_col1_ptr)
         tl.store(out_col1_ptr + pid, seen_col1)
     else:
@@ -397,7 +396,7 @@ def _remote_cluster_gemm_kernel(
     CLUSTER_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    cluster_rank = tled.shard_id(mesh, "cluster_x")
+    cluster_rank = tle.shard_id(mesh, "cluster_x")
     cluster_id = pid // CLUSTER_SIZE
     offs_m = tl.arange(0, BM)
     offs_n = tl.arange(0, BN)
@@ -405,12 +404,12 @@ def _remote_cluster_gemm_kernel(
     a_idx_m = tl.broadcast_to(offs_m[:, None], (BM, BK))
     a_idx_k = tl.broadcast_to(offs_k[None, :], (BM, BK))
     a_flat_idx = a_idx_m * BK + a_idx_k
-    a_buf = tleg.alloc([BM * BK], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
-    a_local_ptr = tleg.local_ptr(a_buf, (a_flat_idx, ))
+    a_buf = tle.gpu.alloc([BM * BK], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    a_local_ptr = tle.gpu.local_ptr(a_buf, (a_flat_idx, ))
     acc = tl.zeros((BM, BN), dtype=tl.float32)
     b_col = cluster_rank * BN + offs_n
     remote_shard_id = tl.load(shard_id_ptr + pid)
-    a_buf_remote = tled.remote(a_buf, remote_shard_id, scope=mesh)
+    a_buf_remote = tle.remote(a_buf, remote_shard_id, scope=mesh)
 
     for k0 in range(0, K, BK):
         if cluster_rank == 0:
@@ -418,24 +417,24 @@ def _remote_cluster_gemm_kernel(
             a_tile = tl.load(a_tile_gptr)
             tl.store(a_local_ptr, a_tile)
 
-        tled.distributed_barrier(mesh)
+        tle.distributed_barrier(mesh)
 
         if cluster_rank == 0:
             for kk in range(0, BK):
                 a_col_idx = offs_m * BK + kk
-                a_col_ptr = tleg.local_ptr(a_buf, (a_col_idx, ))
+                a_col_ptr = tle.gpu.local_ptr(a_buf, (a_col_idx, ))
                 a_vals = tl.cast(tl.load(a_col_ptr), tl.float32)
                 b_vals = tl.cast(tl.load(b_ptr + (k0 + kk) * stride_bk + b_col * stride_bn), tl.float32)
                 acc += tl.expand_dims(a_vals, 1) * tl.expand_dims(b_vals, 0)
         else:
             for kk in range(0, BK):
                 a_col_idx = offs_m * BK + kk
-                a_col_ptr = tleg.local_ptr(a_buf_remote, (a_col_idx, ))
+                a_col_ptr = tle.gpu.local_ptr(a_buf_remote, (a_col_idx, ))
                 a_vals = tl.cast(tl.load(a_col_ptr), tl.float32)
                 b_vals = tl.cast(tl.load(b_ptr + (k0 + kk) * stride_bk + b_col * stride_bn), tl.float32)
                 acc += tl.expand_dims(a_vals, 1) * tl.expand_dims(b_vals, 0)
 
-        tled.distributed_barrier(mesh)
+        tle.distributed_barrier(mesh)
 
     c_col = cluster_rank * BN + offs_n
     c_cluster_base = c_ptr + cluster_id * stride_cc
@@ -446,7 +445,7 @@ def _remote_cluster_gemm_kernel(
 @triton.jit
 def _shard_id_axis_kernel(out_ptr, mesh: tl.constexpr):
     pid = tl.program_id(0)
-    sid = tled.shard_id(mesh, "cluster_x")
+    sid = tle.shard_id(mesh, "cluster_x")
     tl.store(out_ptr + pid, sid)
 
 
@@ -474,7 +473,7 @@ def _remote_dot_dotk32_kernel(
     A_SLOTS: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    cluster_rank = tled.shard_id(mesh, "cluster_x")
+    cluster_rank = tle.shard_id(mesh, "cluster_x")
     cluster_id = pid // CLUSTER_SIZE
     num_pid_n = tl.cdiv(N, BN)
     num_pid_n_group = tl.cdiv(num_pid_n, CLUSTER_SIZE)
@@ -488,11 +487,11 @@ def _remote_dot_dotk32_kernel(
     a_rows_full = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, BK))
     a_cols_full = tl.broadcast_to(tl.arange(0, BK)[None, :], (BM, BK))
     a_rows = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, DOT_K))
-    a_buf = tleg.alloc([A_SLOTS, BM, BK], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
+    a_buf = tle.gpu.alloc([A_SLOTS, BM, BK], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
 
     acc = tl.zeros((BM, BN), dtype=tl.float32)
     shard_id = tl.load(shard_id_ptr + pid)
-    a_buf_remote = tled.remote(a_buf, shard_id, scope=mesh)
+    a_buf_remote = tle.remote(a_buf, shard_id, scope=mesh)
     for k0 in range(0, K, BK):
         iter_idx = k0 // BK
         slot = iter_idx % A_SLOTS
@@ -500,27 +499,27 @@ def _remote_dot_dotk32_kernel(
         if cluster_rank == 0:
             a_ptrs = a_ptr + offs_m[:, None] * stride_am + (k0 + offs_k)[None, :] * stride_ak
             a_tile = tl.load(a_ptrs)
-            a_local_ptr_tile = tleg.local_ptr(a_buf, (slot_full, a_rows_full, a_cols_full))
+            a_local_ptr_tile = tle.gpu.local_ptr(a_buf, (slot_full, a_rows_full, a_cols_full))
             tl.store(a_local_ptr_tile, a_tile)
 
-        tled.distributed_barrier(mesh)
+        tle.distributed_barrier(mesh)
 
         for ks in range(0, BK, DOT_K):
             k_local = ks + tl.arange(0, DOT_K)
             a_cols = tl.broadcast_to(k_local[None, :], (BM, DOT_K))
             slot_dot = tl.zeros((BM, DOT_K), dtype=tl.int32) + slot
-            a_ptr_local = tleg.local_ptr(a_buf, (slot_dot, a_rows, a_cols))
+            a_ptr_local = tle.gpu.local_ptr(a_buf, (slot_dot, a_rows, a_cols))
             if cluster_rank == 0:
                 a = tl.load(a_ptr_local)
             else:
-                a_ptr_remote = tleg.local_ptr(a_buf_remote, (slot_dot, a_rows, a_cols))
+                a_ptr_remote = tle.gpu.local_ptr(a_buf_remote, (slot_dot, a_rows, a_cols))
                 a = tl.load(a_ptr_remote)
 
             b_ptrs = b_ptr + (k0 + k_local)[:, None] * stride_bk + offs_n[None, :] * stride_bn
             b = tl.load(b_ptrs)
             acc = tl.dot(a, b, acc)
 
-        tled.distributed_barrier(mesh)
+        tle.distributed_barrier(mesh)
 
     c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
     tl.store(c_ptrs, acc.to(c_ptr.dtype.element_ty))
@@ -551,7 +550,7 @@ def _remote_dot_masked_kernel(
     A_SLOTS: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    cluster_rank = tled.shard_id(mesh, "cluster_x")
+    cluster_rank = tle.shard_id(mesh, "cluster_x")
     cluster_id = pid // CLUSTER_SIZE
     num_pid_n = tl.cdiv(N, BN)
     num_pid_n_group = tl.cdiv(num_pid_n, CLUSTER_SIZE)
@@ -565,11 +564,11 @@ def _remote_dot_masked_kernel(
     a_rows_full = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, BK))
     a_cols_full = tl.broadcast_to(tl.arange(0, BK)[None, :], (BM, BK))
     a_rows = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, DOT_K))
-    a_buf = tleg.alloc([A_SLOTS, BM, BK], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
+    a_buf = tle.gpu.alloc([A_SLOTS, BM, BK], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
 
     acc = tl.zeros((BM, BN), dtype=tl.float32)
     shard_id = tl.load(shard_id_ptr + pid)
-    a_buf_remote = tled.remote(a_buf, shard_id, scope=mesh)
+    a_buf_remote = tle.remote(a_buf, shard_id, scope=mesh)
     for k0 in range(0, K, BK):
         iter_idx = k0 // BK
         slot = iter_idx % A_SLOTS
@@ -581,25 +580,25 @@ def _remote_dot_masked_kernel(
                 a_tile = tl.load(a_ptrs, mask=a_mask_tile, other=0.0)
             else:
                 a_tile = tl.load(a_ptrs)
-            a_local_ptr_tile = tleg.local_ptr(a_buf, (slot_full, a_rows_full, a_cols_full))
+            a_local_ptr_tile = tle.gpu.local_ptr(a_buf, (slot_full, a_rows_full, a_cols_full))
             if USE_MASK:
                 tl.store(a_local_ptr_tile, a_tile, mask=a_mask_tile)
             else:
                 tl.store(a_local_ptr_tile, a_tile)
 
-        tled.distributed_barrier(mesh)
+        tle.distributed_barrier(mesh)
 
         for ks in range(0, BK, DOT_K):
             k_local = ks + tl.arange(0, DOT_K)
             a_cols = tl.broadcast_to(k_local[None, :], (BM, DOT_K))
             slot_dot = tl.zeros((BM, DOT_K), dtype=tl.int32) + slot
-            a_ptr_local = tleg.local_ptr(a_buf, (slot_dot, a_rows, a_cols))
+            a_ptr_local = tle.gpu.local_ptr(a_buf, (slot_dot, a_rows, a_cols))
             if USE_MASK:
                 a_mask = (offs_m[:, None] < M) & ((k0 + k_local)[None, :] < K)
                 if cluster_rank == 0:
                     a = tl.load(a_ptr_local, mask=a_mask, other=0.0)
                 else:
-                    a_ptr_remote = tleg.local_ptr(a_buf_remote, (slot_dot, a_rows, a_cols))
+                    a_ptr_remote = tle.gpu.local_ptr(a_buf_remote, (slot_dot, a_rows, a_cols))
                     a = tl.load(a_ptr_remote, mask=a_mask, other=0.0)
                 b_ptrs = b_ptr + (k0 + k_local)[:, None] * stride_bk + offs_n[None, :] * stride_bn
                 b_mask = ((k0 + k_local)[:, None] < K) & (offs_n[None, :] < N)
@@ -608,13 +607,13 @@ def _remote_dot_masked_kernel(
                 if cluster_rank == 0:
                     a = tl.load(a_ptr_local)
                 else:
-                    a_ptr_remote = tleg.local_ptr(a_buf_remote, (slot_dot, a_rows, a_cols))
+                    a_ptr_remote = tle.gpu.local_ptr(a_buf_remote, (slot_dot, a_rows, a_cols))
                     a = tl.load(a_ptr_remote)
                 b_ptrs = b_ptr + (k0 + k_local)[:, None] * stride_bk + offs_n[None, :] * stride_bn
                 b = tl.load(b_ptrs)
             acc = tl.dot(a, b, acc)
 
-        tled.distributed_barrier(mesh)
+        tle.distributed_barrier(mesh)
 
     c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
     if USE_MASK:
@@ -648,7 +647,7 @@ def _remote_dot_prefetch_kernel(
     A_SLOTS: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    cluster_rank = tled.shard_id(mesh, "cluster_x")
+    cluster_rank = tle.shard_id(mesh, "cluster_x")
     cluster_id = pid // CLUSTER_SIZE
     num_pid_n = tl.cdiv(N, BN)
     num_pid_n_group = tl.cdiv(num_pid_n, CLUSTER_SIZE)
@@ -662,20 +661,20 @@ def _remote_dot_prefetch_kernel(
     a_rows_full = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, BK))
     a_cols_full = tl.broadcast_to(tl.arange(0, BK)[None, :], (BM, BK))
     a_rows = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, DOT_K))
-    a_buf = tleg.alloc([A_SLOTS, BM, BK], dtype=tl.float16, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
+    a_buf = tle.gpu.alloc([A_SLOTS, BM, BK], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
 
     acc = tl.zeros((BM, BN), dtype=tl.float32)
     shard_id = tl.load(shard_id_ptr + pid)
-    a_buf_remote = tled.remote(a_buf, shard_id, scope=mesh)
+    a_buf_remote = tle.remote(a_buf, shard_id, scope=mesh)
 
     slot0 = 0
     slot0_full = tl.zeros((BM, BK), dtype=tl.int32) + slot0
     if cluster_rank == 0:
         a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
         a_tile = tl.load(a_ptrs)
-        a_local_ptr_tile = tleg.local_ptr(a_buf, (slot0_full, a_rows_full, a_cols_full))
+        a_local_ptr_tile = tle.gpu.local_ptr(a_buf, (slot0_full, a_rows_full, a_cols_full))
         tl.store(a_local_ptr_tile, a_tile)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     for k0 in range(0, K, BK):
         iter_idx = k0 // BK
@@ -684,7 +683,7 @@ def _remote_dot_prefetch_kernel(
             k_local = ks + tl.arange(0, DOT_K)
             a_cols = tl.broadcast_to(k_local[None, :], (BM, DOT_K))
             slot_dot = tl.zeros((BM, DOT_K), dtype=tl.int32) + slot
-            a_ptr_remote = tleg.local_ptr(a_buf_remote, (slot_dot, a_rows, a_cols))
+            a_ptr_remote = tle.gpu.local_ptr(a_buf_remote, (slot_dot, a_rows, a_cols))
             a = tl.load(a_ptr_remote)
             b_ptrs = b_ptr + (k0 + k_local)[:, None] * stride_bk + offs_n[None, :] * stride_bn
             b = tl.load(b_ptrs)
@@ -692,7 +691,7 @@ def _remote_dot_prefetch_kernel(
 
         # Prevent same-slot overwrite/read race when A_SLOTS == 1.
         if A_SLOTS == 1:
-            tled.distributed_barrier(mesh)
+            tle.distributed_barrier(mesh)
 
         next_k0 = k0 + BK
         has_next = next_k0 < K
@@ -701,10 +700,10 @@ def _remote_dot_prefetch_kernel(
         if has_next and cluster_rank == 0:
             a_ptrs = a_ptr + offs_m[:, None] * stride_am + (next_k0 + offs_k)[None, :] * stride_ak
             a_tile = tl.load(a_ptrs)
-            a_local_ptr_tile = tleg.local_ptr(a_buf, (next_slot_full, a_rows_full, a_cols_full))
+            a_local_ptr_tile = tle.gpu.local_ptr(a_buf, (next_slot_full, a_rows_full, a_cols_full))
             tl.store(a_local_ptr_tile, a_tile)
 
-        tled.distributed_barrier(mesh)
+        tle.distributed_barrier(mesh)
 
     c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
     tl.store(c_ptrs, acc.to(c_ptr.dtype.element_ty))
@@ -1170,7 +1169,7 @@ class TestTLEDistributed:
         # Minimal repro for previous occasional hangs:
         # pure grid barrier kernel, repeated cooperative launches.
         grid = 3
-        mesh = tled.device_mesh({"block": [("block_x", grid)]})
+        mesh = tle.device_mesh({"block": [("block_x", grid)]})
         counter = torch.zeros((1, ), device="cuda", dtype=torch.int32)
         out = torch.empty((grid, ), device="cuda", dtype=torch.int32)
 
@@ -1204,7 +1203,7 @@ class TestTLEDistributed:
 
     def test_distributed_barrier_grid_counter_runtime_zero_init_scratch(self, with_allocator):
         grid = 3
-        mesh = tled.device_mesh({"block": [("block_x", grid)]})
+        mesh = tle.device_mesh({"block": [("block_x", grid)]})
         counter = torch.zeros((1, ), device="cuda", dtype=torch.int32)
         out = torch.empty((grid, ), device="cuda", dtype=torch.int32)
 

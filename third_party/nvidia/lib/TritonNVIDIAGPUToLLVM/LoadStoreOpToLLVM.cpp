@@ -1401,7 +1401,7 @@ public:
       auto &atom = *ptxBuilderAtomicRMW.create("atom");
       // begin flagtree tle
       if (isSharedPtr || isClusterSharedPtr)
-        atom->o("shared::cluster", useClusterSharedAtomic)
+        atom.o("shared::cluster", useClusterSharedAtomic)
             .o("shared", !useClusterSharedAtomic)
             .o(scope);
       else
@@ -1456,7 +1456,7 @@ public:
       os << op.getSem();
       atom->o(semStr).o(rmwOp).v(vec).o(sTy);
       if (tensorTy) {
-        (*atom)(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
+        atom(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
         Type retType;
         if (vec > 1) {
           SmallVector<Type> retTys(vec, valueElemTy);
@@ -1483,7 +1483,7 @@ public:
         }
       } else {
         auto ASMReturnTy = void_ty(ctx);
-        (*atom)(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
+        atom(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
         auto old = ptxBuilderAtomicRMW.launch(rewriter, loc, valueElemTy);
         if (op.getResult().use_empty()) {
           rewriter.eraseOp(op);

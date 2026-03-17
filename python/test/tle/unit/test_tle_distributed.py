@@ -1,8 +1,8 @@
 # flagtree tle
 import pytest
 
-import triton.experimental.tle as tle
-from triton.experimental.tle.distributed import (
+import triton.experimental.tle.language as tle
+from triton.experimental.tle.language import (
     _infer_submesh_barrier_group,
     _mesh_to_cluster_dims,
     _normalize_remote_shard_id,

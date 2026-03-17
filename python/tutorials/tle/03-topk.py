@@ -14,7 +14,7 @@ import sys
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle.language.gpu as tle
+import triton.experimental.tle.language as tle
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -79,14 +79,14 @@ def topk_kernel_radix_triton(
     n_tiles = tl.cdiv(n_cols, BLOCK_N)
 
     # Stage 1: shared-memory histogram storage for each radix digit.
-    smem_counts = tle.alloc(
+    smem_counts = tle.gpu.alloc(
         [RADIX_SIZE],
         dtype=tl.int32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    smem_count_ptrs = tle.local_ptr(smem_counts, (bins, ))
+    smem_count_ptrs = tle.gpu.local_ptr(smem_counts, (bins, ))
 
     # Stage 2: MSD radix-select; pick one digit bucket per pass.
     for digit_pos in tl.static_range(x_nbits - RADIX_BITS, -1, -RADIX_BITS):
@@ -101,7 +101,7 @@ def topk_kernel_radix_triton(
             matches = (x_key & desired_mask) == desired
             digit = ((x_key >> digit_pos) & RADIX_MASK).to(tl.int32)
             valid = mask_n & matches
-            count_addrs = tle.local_ptr(smem_counts, (digit, ))
+            count_addrs = tle.gpu.local_ptr(smem_counts, (digit, ))
             tl.atomic_add(count_addrs, one, mask=valid, sem="relaxed", scope="cta")
 
         counts = tl.load(smem_count_ptrs)
@@ -115,9 +115,9 @@ def topk_kernel_radix_triton(
         found = 0
         for rev in tl.static_range(RADIX_SIZE):
             d = RADIX_SIZE - 1 - rev
-            cum_d = tl.load(tle.local_ptr(smem_counts, (d, )))
+            cum_d = tl.load(tle.gpu.local_ptr(smem_counts, (d, )))
             if d + 1 < RADIX_SIZE:
-                cum_next = tl.load(tle.local_ptr(smem_counts, (d + 1, )))
+                cum_next = tl.load(tle.gpu.local_ptr(smem_counts, (d + 1, )))
             else:
                 cum_next = 0
             take = (found == 0) & (cum_d >= k_to_find) & (cum_next < k_to_find)
@@ -139,25 +139,25 @@ def topk_kernel_radix_triton(
     min_packed = min_key.to(x_ultype) << 16
     offs_k = tl.arange(0, K_PAD)
 
-    smem_selected = tle.alloc(
+    smem_selected = tle.gpu.alloc(
         [K_PAD],
         dtype=x_ultype,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    smem_selected_ptrs = tle.local_ptr(smem_selected, (offs_k, ))
+    smem_selected_ptrs = tle.gpu.local_ptr(smem_selected, (offs_k, ))
     tl.store(smem_selected_ptrs, tl.full([K_PAD], min_packed, dtype=x_ultype))
 
-    smem_write_count = tle.alloc(
+    smem_write_count = tle.gpu.alloc(
         [1],
         dtype=tl.int32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    tl.store(tle.local_ptr(smem_write_count, (0, )), 0)
-    write_count_ptrs = tle.local_ptr(smem_write_count, (tl.zeros([BLOCK_N], dtype=tl.int32), ))
+    tl.store(tle.gpu.local_ptr(smem_write_count, (0, )), 0)
+    write_count_ptrs = tle.gpu.local_ptr(smem_write_count, (tl.zeros([BLOCK_N], dtype=tl.int32), ))
 
     # Pass 1: write all values strictly greater than threshold.
     for t in tl.range(0, n_tiles):
@@ -172,7 +172,7 @@ def topk_kernel_radix_triton(
         take_gt = mask_n & (x_key > thr_key)
         pos = tl.atomic_add(write_count_ptrs, one, mask=take_gt, sem="relaxed", scope="cta")
         write_mask = take_gt & (pos < K_PAD)
-        dst_ptrs = tle.local_ptr(smem_selected, (pos.to(tl.int32), ))
+        dst_ptrs = tle.gpu.local_ptr(smem_selected, (pos.to(tl.int32), ))
         tl.store(dst_ptrs, packed, mask=write_mask)
 
     # Pass 2: fill remaining slots with values equal to threshold (first-come-first-serve).
@@ -188,7 +188,7 @@ def topk_kernel_radix_triton(
         take_eq = mask_n & (x_key == thr_key)
         pos = tl.atomic_add(write_count_ptrs, one, mask=take_eq, sem="relaxed", scope="cta")
         write_mask = take_eq & (pos < K_PAD)
-        dst_ptrs = tle.local_ptr(smem_selected, (pos.to(tl.int32), ))
+        dst_ptrs = tle.gpu.local_ptr(smem_selected, (pos.to(tl.int32), ))
         tl.store(dst_ptrs, packed, mask=write_mask)
 
     selected_packed = tl.load(smem_selected_ptrs)

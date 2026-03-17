@@ -3,10 +3,10 @@
 TLE End-to-End Integration Tests
 
 Tests complete workflow of TLE pipeline functionality in real GPU environment:
-- Memory allocation (tle.alloc)
-- Copying between GM and shared memory (tle.copy)
-- Shared-memory pointer materialization (tle.local_ptr + tl.load/store)
-- Pipeline iterator (tle.pipeline)
+- Memory allocation (tle.gpu.alloc)
+- Copying between GM and shared memory (tle.gpu.copy)
+- Shared-memory pointer materialization (tle.gpu.local_ptr + tl.load/store)
+- Pipeline iterator (tle.gpu.pipeline)
 - Integration with Triton JIT
 """
 
@@ -14,7 +14,7 @@ import pytest
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle.language.gpu as tle
+import triton.experimental.tle.language as tle
 
 
 @triton.jit
@@ -54,25 +54,25 @@ def elementwise_add_kernel(
     c_ptrs = c_ptr + xstride_c * xoffs[:, None]
 
     # Allocate shared memory buffers
-    a_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
-    b_smem = tle.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.smem)
+    a_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+    b_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
     row_ids = tl.arange(0, XBLOCK)[:, None]
     col_ids = tl.arange(0, YBLOCK)[None, :]
     row_ids = tl.broadcast_to(row_ids, (XBLOCK, YBLOCK))
     col_ids = tl.broadcast_to(col_ids, (XBLOCK, YBLOCK))
-    a_smem_ptrs = tle.local_ptr(a_smem, (row_ids, col_ids))
-    b_smem_ptrs = tle.local_ptr(b_smem, (row_ids, col_ids))
+    a_smem_ptrs = tle.gpu.local_ptr(a_smem, (row_ids, col_ids))
+    b_smem_ptrs = tle.gpu.local_ptr(b_smem, (row_ids, col_ids))
 
     # Use TLE pipeline for block-wise processing
     #for yoff in range(0, ynumel, YBLOCK):
-    for yoff in tle.pipeline(0, ynumel, YBLOCK, num_stages=2):
+    for yoff in tle.gpu.pipeline(0, ynumel, YBLOCK, num_stages=2):
         # Calculate column offset for current block
         yoffs = tl.arange(0, YBLOCK) + yoff
         mask = (xoffs < xnumel)[:, None] & (yoffs < ynumel)[None, :]
 
         # copy data to shared memory
-        tle.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
-        tle.copy(b_ptrs + ystride_b * yoffs[None, :], b_smem, [XBLOCK, YBLOCK])
+        tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
+        tle.gpu.copy(b_ptrs + ystride_b * yoffs[None, :], b_smem, [XBLOCK, YBLOCK])
 
         # Load data from shared memory
         aval = tl.load(a_smem_ptrs)
@@ -199,18 +199,19 @@ class TestTLEPipelineEndToEnd:
     def test_tle_module_import(self):
         """Test TLE module import (no GPU required)"""
         # Verify all necessary functions and types can be imported
-        assert hasattr(tle, 'alloc')
-        assert hasattr(tle, 'copy')
-        assert hasattr(tle, 'local_ptr')
-        assert hasattr(tle, 'pipeline')
-        assert hasattr(tle, 'scope')
-        assert hasattr(tle, 'buffered_tensor')
+        assert hasattr(tle, 'gpu')
+        assert hasattr(tle.gpu, 'alloc')
+        assert hasattr(tle.gpu, 'copy')
+        assert hasattr(tle.gpu, 'local_ptr')
+        assert hasattr(tle.gpu, 'pipeline')
+        assert hasattr(tle.gpu, 'scope')
+        assert hasattr(tle.gpu, 'buffered_tensor')
 
         # Verify functions have docstrings
-        assert tle.alloc.__doc__ is not None
-        assert tle.copy.__doc__ is not None
-        assert tle.local_ptr.__doc__ is not None
-        assert tle.pipeline.__doc__ is not None
+        assert tle.gpu.alloc.__doc__ is not None
+        assert tle.gpu.copy.__doc__ is not None
+        assert tle.gpu.local_ptr.__doc__ is not None
+        assert tle.gpu.pipeline.__doc__ is not None
 
 
 if __name__ == "__main__":

@@ -82,11 +82,11 @@ def main():
     print(f"{'='*60}")
 
     try:
-        import triton.experimental.tle as tle
+        import triton.experimental.tle.language as tle
         print("✅ TLE module import successful")
 
         # Test basic functionality
-        if hasattr(tle, 'scope') and hasattr(tle, 'pipeline'):
+        if hasattr(tle, 'gpu') and hasattr(tle.gpu, 'scope') and hasattr(tle.gpu, 'pipeline'):
             print("✅ Core functionality available")
         else:
             print("❌ Core functionality not available")
