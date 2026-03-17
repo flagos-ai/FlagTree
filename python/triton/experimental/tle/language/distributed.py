@@ -754,7 +754,7 @@ def remote(
 
     Supported input:
     - tle buffered_tensor: returns a remote-marked buffered tensor; caller
-      should then use `tleg.local_ptr(...)` to materialize remote pointers.
+      should then use `tle.gpu.local_ptr(...)` to materialize remote pointers.
 
     `shard_id` is the target block id inside the current thread block cluster.
     When `scope` is provided, launch cluster dimensions are inferred from that
@@ -773,7 +773,7 @@ def remote(
         if (hasattr(tensor, "_tle_remote_shard_id") or hasattr(tensor, "_tle_remote_scope")
                 or hasattr(tensor.type, "_tle_remote_shard_id") or hasattr(tensor.type, "_tle_remote_scope")):
             raise ValueError("remote(buffered_tensor, ...) cannot be applied twice; "
-                             "materialize pointer views with tleg.local_ptr(remote_buffer, indices)")
+                             "materialize pointer views with tle.gpu.local_ptr(remote_buffer, indices)")
         if isinstance(shard_id, (int, tuple, list)):
             shard_id = _normalize_compile_time_remote_shard_id(shard_id, scope)
         else:

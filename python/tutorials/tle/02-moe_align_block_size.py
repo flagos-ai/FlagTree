@@ -22,11 +22,10 @@ import urllib.request
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle as tled
-import triton.experimental.tle.language.gpu as tle
+import triton.experimental.tle.language as tle
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
-BLOCK_CLUSTER_MESH_8 = tled.device_mesh({"block_cluster": [("cluster_x", 8)]})
+BLOCK_CLUSTER_MESH_8 = tle.device_mesh({"block_cluster": [("cluster_x", 8)]})
 TLE_CLUSTER_SIZE = 8
 SGLANG_MOE_ALIGN_KERNEL_URL = (
     "https://raw.githubusercontent.com/sgl-project/sglang/refs/heads/main/sgl-kernel/csrc/moe/moe_align_kernel.cu")
@@ -37,7 +36,7 @@ YIAKWY_MOE_ALIGN_KERNEL_URL = (
 
 @lru_cache(maxsize=64)
 def _block_mesh(num_blocks: int):
-    return tled.device_mesh({"block": [("block_x", int(num_blocks))]})
+    return tle.device_mesh({"block": [("block_x", int(num_blocks))]})
 
 
 _TRITON_ALLOCATOR_INSTALLED = False
@@ -346,20 +345,20 @@ def moe_align_block_size_stage4_triton_atomic_smem(
     off_t = pid * num_experts
     expert_offsets = tl.arange(0, BLOCK_EXPERT)
 
-    local_counts = tle.alloc(
+    local_counts = tle.gpu.alloc(
         [BLOCK_EXPERT],
         dtype=tl.int32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
     row_ptrs = tokens_cnts_ptr + off_t + expert_offsets
-    tle.copy(row_ptrs, local_counts, [num_experts])
+    tle.gpu.copy(row_ptrs, local_counts, [num_experts])
 
     offset = tl.arange(0, tokens_per_thread) + start_idx
     mask = offset < numel
     expert_id = tl.load(topk_ids_ptr + offset, mask=mask, other=0).to(tl.int32)
-    count_ptrs = tle.local_ptr(local_counts, (expert_id, ))
+    count_ptrs = tle.gpu.local_ptr(local_counts, (expert_id, ))
     token_idx_in_expert = tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
     rank_post_pad = token_idx_in_expert + tl.load(cumsum_ptr + expert_id, mask=mask, other=0)
     tl.store(sorted_token_ids_ptr + rank_post_pad, offset, mask=mask)
@@ -397,31 +396,31 @@ def moe_align_block_size_triton_atomic_fused_coop(
         tl.store(expert_ids_ptr + offs, 0, mask=offs < numel_expert_ids)
     if pid == 0:
         tl.store(cumsum_ptr + expert_offsets, 0, mask=expert_mask)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     # Stage 1: per-program local histogram + global atomic prefix.
-    local_counts = tle.alloc(
+    local_counts = tle.gpu.alloc(
         [BLOCK_EXPERT],
         dtype=tl.int32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    local_counts_ptrs = tle.local_ptr(local_counts, (expert_offsets, ))
+    local_counts_ptrs = tle.gpu.local_ptr(local_counts, (expert_offsets, ))
     tl.store(local_counts_ptrs, 0, mask=expert_mask)
 
     for base in range(pid * BLOCK_TOKENS, numel, NUM_BLOCKS * BLOCK_TOKENS):
         offs = base + token_offsets
         mask = offs < numel
         expert_id = tl.load(topk_ids_ptr + offs, mask=mask, other=0).to(tl.int32)
-        count_ptrs = tle.local_ptr(local_counts, (expert_id, ))
+        count_ptrs = tle.gpu.local_ptr(local_counts, (expert_id, ))
         tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
 
     local_counts_vals = tl.load(local_counts_ptrs, mask=expert_mask, other=0)
     prefix_before = tl.atomic_add(cumsum_ptr + expert_offsets, local_counts_vals, mask=expert_mask, sem="acq_rel",
                                   scope="gpu")
     tl.store(local_counts_ptrs, prefix_before, mask=expert_mask)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     # Stage 2: rank0 aligns expert totals and builds starts in global cumsum.
     if pid == 0:
@@ -431,17 +430,17 @@ def moe_align_block_size_triton_atomic_fused_coop(
         tl.store(cumsum_ptr + expert_offsets, expert_starts, mask=expert_mask)
         total_tokens = tl.sum(aligned_counts, axis=0)
         tl.store(num_tokens_post_pad_ptr, total_tokens)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     # Cache expert starts in shared once; Stage 4 reuses it for every token.
-    expert_starts_local = tle.alloc(
+    expert_starts_local = tle.gpu.alloc(
         [BLOCK_EXPERT],
         dtype=tl.int32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    expert_starts_ptrs = tle.local_ptr(expert_starts_local, (expert_offsets, ))
+    expert_starts_ptrs = tle.gpu.local_ptr(expert_starts_local, (expert_offsets, ))
     expert_starts_vals = tl.load(cumsum_ptr + expert_offsets, mask=expert_mask, other=0)
     tl.store(expert_starts_ptrs, expert_starts_vals, mask=expert_mask)
 
@@ -450,10 +449,10 @@ def moe_align_block_size_triton_atomic_fused_coop(
     for local_expert_idx in range(EXPERTS_PER_PROG):
         expert_id = pid + local_expert_idx * NUM_BLOCKS
         valid_expert = expert_id < num_experts
-        start_idx = tl.load(tle.local_ptr(expert_starts_local, (expert_id, )), mask=valid_expert, other=0)
+        start_idx = tl.load(tle.gpu.local_ptr(expert_starts_local, (expert_id, )), mask=valid_expert, other=0)
         next_expert = expert_id + 1
         has_next = valid_expert & (next_expert < num_experts)
-        end_idx = tl.load(tle.local_ptr(expert_starts_local, (next_expert, )), mask=has_next, other=total_tokens)
+        end_idx = tl.load(tle.gpu.local_ptr(expert_starts_local, (next_expert, )), mask=has_next, other=total_tokens)
         end_idx = tl.where(has_next, end_idx, total_tokens)
         start_idx = tl.where(valid_expert, start_idx, 0)
         end_idx = tl.where(valid_expert, end_idx, 0)
@@ -465,9 +464,9 @@ def moe_align_block_size_triton_atomic_fused_coop(
         offs = base + token_offsets
         mask = offs < numel
         expert_id = tl.load(topk_ids_ptr + offs, mask=mask, other=0).to(tl.int32)
-        count_ptrs = tle.local_ptr(local_counts, (expert_id, ))
+        count_ptrs = tle.gpu.local_ptr(local_counts, (expert_id, ))
         rank_with_prefix = tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
-        rank_base = tl.load(tle.local_ptr(expert_starts_local, (expert_id, )), mask=mask, other=0)
+        rank_base = tl.load(tle.gpu.local_ptr(expert_starts_local, (expert_id, )), mask=mask, other=0)
         rank_post_pad = rank_with_prefix + rank_base
         tl.store(sorted_token_ids_ptr + rank_post_pad, offs, mask=mask)
 
@@ -551,7 +550,7 @@ def moe_align_block_size_tle_cluster_fused(
     BLOCK_EXPERT: tl.constexpr,
     EXPERTS_PER_SHARD: tl.constexpr,
 ):
-    cluster_rank = tled.shard_id(mesh, "cluster_x")
+    cluster_rank = tle.shard_id(mesh, "cluster_x")
     is_rank0 = cluster_rank == 0
     expert_offsets = tl.arange(0, BLOCK_EXPERT)
     expert_mask = expert_offsets < num_experts
@@ -567,49 +566,49 @@ def moe_align_block_size_tle_cluster_fused(
         mask = offs < numel_expert_ids
         tl.store(expert_ids_ptr + offs, 0, mask=mask)
 
-    local_counts = tle.alloc(
+    local_counts = tle.gpu.alloc(
         [BLOCK_EXPERT],
         dtype=tl.int32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    cumsum_local = tle.alloc(
+    cumsum_local = tle.gpu.alloc(
         [BLOCK_EXPERT],
         dtype=tl.int32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
 
     # Stage 1a: initialize rank0 DSMEM cumsum before counting.
-    rank0_cumsum_ptrs = tle.local_ptr(cumsum_local, (expert_offsets, ))
+    rank0_cumsum_ptrs = tle.gpu.local_ptr(cumsum_local, (expert_offsets, ))
     if is_rank0:
         tl.store(rank0_cumsum_ptrs, 0, mask=expert_mask)
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     # Stage 1b: per-shard local histogram in shared memory.
-    local_counts_ptrs = tle.local_ptr(local_counts, (expert_offsets, ))
+    local_counts_ptrs = tle.gpu.local_ptr(local_counts, (expert_offsets, ))
     tl.store(local_counts_ptrs, 0, mask=expert_mask)
 
     for base in range(cluster_rank * BLOCK_TOKENS, numel, CLUSTER_SIZE * BLOCK_TOKENS):
         offs = base + init_offsets
         mask = offs < numel
         expert_id = tl.load(topk_ids_ptr + offs, mask=mask, other=0).to(tl.int32)
-        count_ptrs = tle.local_ptr(local_counts, (expert_id, ))
+        count_ptrs = tle.gpu.local_ptr(local_counts, (expert_id, ))
         tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
 
     # Stage 1c: directly atomic-add shard histogram into rank0 cumsum DSMEM.
     # The atomic return value is this shard's prefix_before for scatter.
     local_counts_vals = tl.load(local_counts_ptrs, mask=expert_mask, other=0)
-    rank0_cumsum_remote = tled.remote(cumsum_local, 0, scope=mesh)
-    rank0_cumsum_remote_ptrs = tle.local_ptr(rank0_cumsum_remote, (expert_offsets, ))
+    rank0_cumsum_remote = tle.remote(cumsum_local, 0, scope=mesh)
+    rank0_cumsum_remote_ptrs = tle.gpu.local_ptr(rank0_cumsum_remote, (expert_offsets, ))
     prefix_before = tl.atomic_add(rank0_cumsum_remote_ptrs, local_counts_vals, mask=expert_mask, sem="relaxed",
                                   scope="cta")
     # Reuse local_counts to hold per-shard prefix_before for Stage 4 scatter.
     tl.store(local_counts_ptrs, prefix_before, mask=expert_mask)
 
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     # Stage 2: rank0 aligns expert totals and materializes start offsets
     # (leading-zero semantics) in rank0 DSMEM.
@@ -625,25 +624,25 @@ def moe_align_block_size_tle_cluster_fused(
         total_tokens = tl.sum(aligned_counts, axis=0)
         tl.store(num_tokens_post_pad_ptr, total_tokens)
 
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     # Stage 4a: fill expert_ids (moved from Stage 3).
     # Each shard handles one contiguous expert segment.
-    rank0_cumsum_remote = tled.remote(cumsum_local, 0, scope=mesh)
-    rank0_cumsum_remote_ptrs = tle.local_ptr(rank0_cumsum_remote, (expert_offsets, ))
+    rank0_cumsum_remote = tle.remote(cumsum_local, 0, scope=mesh)
+    rank0_cumsum_remote_ptrs = tle.gpu.local_ptr(rank0_cumsum_remote, (expert_offsets, ))
     cumsum_vals = tl.load(rank0_cumsum_remote_ptrs, mask=expert_mask, other=0)
-    tl.store(tle.local_ptr(cumsum_local, (expert_offsets, )), cumsum_vals, mask=expert_mask)
+    tl.store(tle.gpu.local_ptr(cumsum_local, (expert_offsets, )), cumsum_vals, mask=expert_mask)
     total_tokens = tl.load(num_tokens_post_pad_ptr)
 
     for local_expert_idx in range(EXPERTS_PER_SHARD):
         expert_idx = cluster_rank * EXPERTS_PER_SHARD + local_expert_idx
         expert_id = expert_idx
         valid_expert = expert_id < num_experts
-        start_ptr = tle.local_ptr(cumsum_local, (expert_id, ))
+        start_ptr = tle.gpu.local_ptr(cumsum_local, (expert_id, ))
         start_idx = tl.load(start_ptr, mask=valid_expert, other=0)
         next_expert_id = expert_id + 1
         has_next = valid_expert & (next_expert_id < num_experts)
-        next_ptr = tle.local_ptr(cumsum_local, (next_expert_id, ))
+        next_ptr = tle.gpu.local_ptr(cumsum_local, (next_expert_id, ))
         end_from_next = tl.load(next_ptr, mask=has_next, other=0)
         end_idx = tl.where(has_next, end_from_next, total_tokens)
         start_idx = tl.where(valid_expert, start_idx, 0)
@@ -651,7 +650,7 @@ def moe_align_block_size_tle_cluster_fused(
         for i in range(start_idx, end_idx, block_size):
             tl.store(expert_ids_ptr + i // block_size, expert_idx)
 
-    tled.distributed_barrier(mesh)
+    tle.distributed_barrier(mesh)
 
     # Stage 4b: second token pass, scatter with (prefix_before + rank_in_shard) + expert_base.
     # local_counts currently holds prefix_before from Stage 1c.
@@ -660,9 +659,9 @@ def moe_align_block_size_tle_cluster_fused(
         mask = offs < numel
         expert_id = tl.load(topk_ids_ptr + offs, mask=mask, other=0).to(tl.int32)
 
-        count_ptrs = tle.local_ptr(local_counts, (expert_id, ))
+        count_ptrs = tle.gpu.local_ptr(local_counts, (expert_id, ))
         rank_with_prefix = tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
-        base_ptrs = tle.local_ptr(cumsum_local, (expert_id, ))
+        base_ptrs = tle.gpu.local_ptr(cumsum_local, (expert_id, ))
         rank_base = tl.load(base_ptrs, mask=mask, other=0)
         rank_post_pad = rank_with_prefix + rank_base
         tl.store(sorted_token_ids_ptr + rank_post_pad, offs, mask=mask)

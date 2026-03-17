@@ -6,7 +6,7 @@ This tutorial adapts the TileLang DeepSeek V3-2 top-k selector example and
 implements two kernels:
 - A Triton version rewritten with the radix-select flow used in `03-topk.py`.
 - A TLE version that keeps the shared-memory DeepSeek-style selector
-  (`tle.alloc` + `tle.local_ptr`).
+  (`tle.gpu.alloc` + `tle.gpu.local_ptr`).
 
 If TileLang is installed, the script will also run the original TileLang kernel
 and compare correctness and performance.
@@ -28,7 +28,7 @@ from typing import Optional
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle.language.gpu as tle
+import triton.experimental.tle.language as tle
 
 try:
     import tilelang
@@ -210,36 +210,36 @@ def tle_topk_selector_kernel(
     lane = tl.arange(0, BLOCK_SIZE)
     ones = tl.full([BLOCK_SIZE], 1, tl.int32)
 
-    s_histogram = tle.alloc(
+    s_histogram = tle.gpu.alloc(
         [HIST_SIZE],
         dtype=tl.int32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    s_num_input = tle.alloc(
+    s_num_input = tle.gpu.alloc(
         [2],
         dtype=tl.int32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    s_input_idx = tle.alloc(
+    s_input_idx = tle.gpu.alloc(
         [2, SMEM_INPUT],
         dtype=tl.int32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
 
     hist_idx = tl.arange(0, RADIX)
     hist_last = tl.full([1], RADIX, tl.int32)
 
-    hist_ptrs = tle.local_ptr(s_histogram, (hist_idx, ))
-    hist_last_ptrs = tle.local_ptr(s_histogram, (hist_last, ))
+    hist_ptrs = tle.gpu.local_ptr(s_histogram, (hist_idx, ))
+    hist_last_ptrs = tle.gpu.local_ptr(s_histogram, (hist_last, ))
     tl.store(hist_ptrs, 0)
     tl.store(hist_last_ptrs, 0)
-    tl.store(tle.local_ptr(s_num_input, (tl.arange(0, 2), )), 0)
+    tl.store(tle.gpu.local_ptr(s_num_input, (tl.arange(0, 2), )), 0)
     tl.debug_barrier()
 
     l_new_topk = tl.full((), TOPK, tl.int32)
@@ -251,24 +251,24 @@ def tle_topk_selector_kernel(
         x = tl.load(row_ptr + offs * stride_xn, mask=in_range, other=0.0)
         bin_u16 = _convert_to_uint16(x)
         bin_i32 = bin_u16.to(tl.int32)
-        hist_bin_ptrs = tle.local_ptr(s_histogram, (bin_i32, ))
+        hist_bin_ptrs = tle.gpu.local_ptr(s_histogram, (bin_i32, ))
         tl.atomic_add(hist_bin_ptrs, ones, mask=in_range)
 
     rev_idx = (RADIX - 1) - hist_idx
-    hist_rev = tl.load(tle.local_ptr(s_histogram, (rev_idx, )))
+    hist_rev = tl.load(tle.gpu.local_ptr(s_histogram, (rev_idx, )))
     hist_cum_rev = tl.cumsum(hist_rev, axis=0)
-    tl.store(tle.local_ptr(s_histogram, (rev_idx, )), hist_cum_rev)
+    tl.store(tle.gpu.local_ptr(s_histogram, (rev_idx, )), hist_cum_rev)
     tl.debug_barrier()
 
     hist_cum = tl.load(hist_ptrs)
-    hist_cum_next = tl.load(tle.local_ptr(s_histogram, (hist_idx + 1, )), mask=hist_idx + 1 < RADIX, other=0)
+    hist_cum_next = tl.load(tle.gpu.local_ptr(s_histogram, (hist_idx + 1, )), mask=hist_idx + 1 < RADIX, other=0)
     cond = (hist_cum > l_new_topk) & (hist_cum_next <= l_new_topk)
     cand = tl.where(cond, hist_idx.to(tl.int32), -1)
     threshold = tl.max(cand, axis=0)
     hist_next = tl.max(tl.where(hist_idx == threshold + 1, hist_cum, 0), axis=0)
     l_new_topk = tl.maximum(l_new_topk - hist_next, 0)
 
-    num_ptrs = tle.local_ptr(s_num_input, (tl.zeros([BLOCK_SIZE], tl.int32), ))
+    num_ptrs = tle.gpu.local_ptr(s_num_input, (tl.zeros([BLOCK_SIZE], tl.int32), ))
     for t in tl.static_range(N_TILES):
         offs = t * BLOCK_SIZE + lane
         in_range = (offs < seq_len) & (offs >= row_start) & (offs < row_end)
@@ -278,14 +278,14 @@ def tle_topk_selector_kernel(
         gt_thr = bin_i32 > threshold
         eq_thr = bin_i32 == threshold
 
-        pos = tl.atomic_add(tle.local_ptr(s_histogram, (bin_i32 + 1, )), ones, mask=in_range & gt_thr)
+        pos = tl.atomic_add(tle.gpu.local_ptr(s_histogram, (bin_i32 + 1, )), ones, mask=in_range & gt_thr)
         pos = tl.where(in_range & gt_thr, pos, 0)
         tl.store(out_row + pos * stride_outn, offs.to(tl.int32), mask=in_range & gt_thr & (pos < TOPK))
 
         pos_eq = tl.atomic_add(num_ptrs, ones, mask=in_range & eq_thr & (l_new_topk > 0))
         pos_eq = tl.where(in_range & eq_thr, pos_eq, 0)
         tl.store(
-            tle.local_ptr(s_input_idx, (tl.zeros([BLOCK_SIZE], tl.int32), pos_eq)),
+            tle.gpu.local_ptr(s_input_idx, (tl.zeros([BLOCK_SIZE], tl.int32), pos_eq)),
             offs.to(tl.int32),
             mask=in_range & eq_thr & (pos_eq < SMEM_INPUT) & (l_new_topk > 0),
         )
@@ -298,11 +298,11 @@ def tle_topk_selector_kernel(
 
         tl.store(hist_ptrs, 0)
         tl.store(hist_last_ptrs, 0)
-        num_ptrs_next = tle.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], next_idx, tl.int32), ))
+        num_ptrs_next = tle.gpu.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], next_idx, tl.int32), ))
         tl.store(num_ptrs_next, 0, mask=lane == 0)
         tl.debug_barrier()
 
-        num_ptrs_r = tle.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], r_idx, tl.int32), ))
+        num_ptrs_r = tle.gpu.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], r_idx, tl.int32), ))
         l_num_input = tl.max(tl.load(num_ptrs_r), axis=0).to(tl.int32)
         max_input = tl.full((), SMEM_INPUT, tl.int32)
         l_num_input = tl.minimum(l_num_input, max_input)
@@ -313,23 +313,23 @@ def tle_topk_selector_kernel(
             offs = t * BLOCK_SIZE + lane
             valid = offs < l_num_input
             cand_idx = tl.load(
-                tle.local_ptr(s_input_idx, (tl.full([BLOCK_SIZE], r_idx, tl.int32), offs)),
+                tle.gpu.local_ptr(s_input_idx, (tl.full([BLOCK_SIZE], r_idx, tl.int32), offs)),
                 mask=valid,
                 other=0,
             )
             x = tl.load(row_ptr + cand_idx * stride_xn, mask=valid, other=0.0)
             bin_u32 = _convert_to_uint32(x)
             bin_i32 = ((bin_u32 >> shift) & 0xFF).to(tl.int32)
-            tl.atomic_add(tle.local_ptr(s_histogram, (bin_i32, )), ones, mask=valid & active)
+            tl.atomic_add(tle.gpu.local_ptr(s_histogram, (bin_i32, )), ones, mask=valid & active)
 
         rev_idx = (RADIX - 1) - hist_idx
-        hist_rev = tl.load(tle.local_ptr(s_histogram, (rev_idx, )))
+        hist_rev = tl.load(tle.gpu.local_ptr(s_histogram, (rev_idx, )))
         hist_cum_rev = tl.cumsum(hist_rev, axis=0)
-        tl.store(tle.local_ptr(s_histogram, (rev_idx, )), hist_cum_rev)
+        tl.store(tle.gpu.local_ptr(s_histogram, (rev_idx, )), hist_cum_rev)
         tl.debug_barrier()
 
         hist_cum = tl.load(hist_ptrs)
-        hist_cum_next = tl.load(tle.local_ptr(s_histogram, (hist_idx + 1, )), mask=hist_idx + 1 < RADIX, other=0)
+        hist_cum_next = tl.load(tle.gpu.local_ptr(s_histogram, (hist_idx + 1, )), mask=hist_idx + 1 < RADIX, other=0)
         cond = (hist_cum > l_new_topk) & (hist_cum_next <= l_new_topk)
         cand = tl.where(cond, hist_idx.to(tl.int32), -1)
         threshold = tl.max(cand, axis=0)
@@ -340,7 +340,7 @@ def tle_topk_selector_kernel(
             offs = t * BLOCK_SIZE + lane
             valid = offs < l_num_input
             cand_idx = tl.load(
-                tle.local_ptr(s_input_idx, (tl.full([BLOCK_SIZE], r_idx, tl.int32), offs)),
+                tle.gpu.local_ptr(s_input_idx, (tl.full([BLOCK_SIZE], r_idx, tl.int32), offs)),
                 mask=valid,
                 other=0,
             )
@@ -350,7 +350,7 @@ def tle_topk_selector_kernel(
 
             gt_thr = bin_i32 > threshold
             eq_thr = bin_i32 == threshold
-            pos = tl.atomic_add(tle.local_ptr(s_histogram, (bin_i32 + 1, )), ones, mask=valid & gt_thr & active)
+            pos = tl.atomic_add(tle.gpu.local_ptr(s_histogram, (bin_i32 + 1, )), ones, mask=valid & gt_thr & active)
             pos = tl.where(valid & gt_thr & active, pos, 0)
             out_pos = pos + start_pos
             tl.store(
@@ -361,7 +361,7 @@ def tle_topk_selector_kernel(
 
             if round_id == 3:
                 pos_eq = tl.atomic_add(
-                    tle.local_ptr(s_histogram, (bin_i32 + 1, )),
+                    tle.gpu.local_ptr(s_histogram, (bin_i32 + 1, )),
                     ones,
                     mask=valid & eq_thr & active & (l_new_topk > 0),
                 )
@@ -373,11 +373,11 @@ def tle_topk_selector_kernel(
                     mask=valid & eq_thr & active & (out_pos < TOPK) & (l_new_topk > 0),
                 )
             else:
-                num_ptrs = tle.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], next_idx, tl.int32), ))
+                num_ptrs = tle.gpu.local_ptr(s_num_input, (tl.full([BLOCK_SIZE], next_idx, tl.int32), ))
                 pos_eq = tl.atomic_add(num_ptrs, ones, mask=valid & eq_thr & active & (l_new_topk > 0))
                 pos_eq = tl.where(valid & eq_thr & active, pos_eq, 0)
                 tl.store(
-                    tle.local_ptr(s_input_idx, (tl.full([BLOCK_SIZE], next_idx, tl.int32), pos_eq)),
+                    tle.gpu.local_ptr(s_input_idx, (tl.full([BLOCK_SIZE], next_idx, tl.int32), pos_eq)),
                     cand_idx,
                     mask=valid & eq_thr & active & (pos_eq < SMEM_INPUT) & (l_new_topk > 0),
                 )

@@ -30,7 +30,7 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle.language.gpu as tle
+import triton.experimental.tle.language as tle
 
 try:
     import cuda.tile as ct  # type: ignore
@@ -599,32 +599,32 @@ def fft_kernel_tle(
     row_valid = row < n_rows
     mask = row_valid & (offs < N)
 
-    smem_a_real = tle.alloc(
+    smem_a_real = tle.gpu.alloc(
         [N],
         dtype=tl.float32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    smem_a_imag = tle.alloc(
+    smem_a_imag = tle.gpu.alloc(
         [N],
         dtype=tl.float32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    smem_b_real = tle.alloc(
+    smem_b_real = tle.gpu.alloc(
         [N],
         dtype=tl.float32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
-    smem_b_imag = tle.alloc(
+    smem_b_imag = tle.gpu.alloc(
         [N],
         dtype=tl.float32,
         layout=None,
-        scope=tle.smem,
+        scope=tle.gpu.smem,
         nv_mma_shared_layout=False,
     )
 
@@ -634,8 +634,8 @@ def fft_kernel_tle(
     vals_real = tl.load(in_real_ptrs, mask=mask, other=0.0)
     vals_imag = tl.load(in_imag_ptrs, mask=mask, other=0.0)
 
-    smem_a_real_ptrs = tle.local_ptr(smem_a_real, (offs, ))
-    smem_a_imag_ptrs = tle.local_ptr(smem_a_imag, (offs, ))
+    smem_a_real_ptrs = tle.gpu.local_ptr(smem_a_real, (offs, ))
+    smem_a_imag_ptrs = tle.gpu.local_ptr(smem_a_imag, (offs, ))
     tl.store(smem_a_real_ptrs, vals_real, mask=mask)
     tl.store(smem_a_imag_ptrs, vals_imag, mask=mask)
     tl.debug_barrier()
@@ -655,10 +655,10 @@ def fft_kernel_tle(
         even_idx = base + j
         odd_idx = even_idx + half
 
-        even_ptrs_real = tle.local_ptr(smem_in_real, (even_idx, ))
-        even_ptrs_imag = tle.local_ptr(smem_in_imag, (even_idx, ))
-        odd_ptrs_real = tle.local_ptr(smem_in_real, (odd_idx, ))
-        odd_ptrs_imag = tle.local_ptr(smem_in_imag, (odd_idx, ))
+        even_ptrs_real = tle.gpu.local_ptr(smem_in_real, (even_idx, ))
+        even_ptrs_imag = tle.gpu.local_ptr(smem_in_imag, (even_idx, ))
+        odd_ptrs_real = tle.gpu.local_ptr(smem_in_real, (odd_idx, ))
+        odd_ptrs_imag = tle.gpu.local_ptr(smem_in_imag, (odd_idx, ))
 
         u_real = tl.load(even_ptrs_real, mask=mask, other=0.0)
         u_imag = tl.load(even_ptrs_imag, mask=mask, other=0.0)
@@ -677,8 +677,8 @@ def fft_kernel_tle(
         out_real_val = tl.where(add_mask, u_real + v_tw_real, u_real - v_tw_real)
         out_imag_val = tl.where(add_mask, u_imag + v_tw_imag, u_imag - v_tw_imag)
 
-        out_ptrs_real = tle.local_ptr(smem_out_real, (idx, ))
-        out_ptrs_imag = tle.local_ptr(smem_out_imag, (idx, ))
+        out_ptrs_real = tle.gpu.local_ptr(smem_out_real, (idx, ))
+        out_ptrs_imag = tle.gpu.local_ptr(smem_out_imag, (idx, ))
         tl.store(out_ptrs_real, out_real_val, mask=mask)
         tl.store(out_ptrs_imag, out_imag_val, mask=mask)
         tl.debug_barrier()
@@ -703,14 +703,14 @@ def fft_kernel_tle(
             i2 = i1 + quarter
             i3 = i2 + quarter
 
-            ptr0_real = tle.local_ptr(smem_in_real, (i0, ))
-            ptr0_imag = tle.local_ptr(smem_in_imag, (i0, ))
-            ptr1_real = tle.local_ptr(smem_in_real, (i1, ))
-            ptr1_imag = tle.local_ptr(smem_in_imag, (i1, ))
-            ptr2_real = tle.local_ptr(smem_in_real, (i2, ))
-            ptr2_imag = tle.local_ptr(smem_in_imag, (i2, ))
-            ptr3_real = tle.local_ptr(smem_in_real, (i3, ))
-            ptr3_imag = tle.local_ptr(smem_in_imag, (i3, ))
+            ptr0_real = tle.gpu.local_ptr(smem_in_real, (i0, ))
+            ptr0_imag = tle.gpu.local_ptr(smem_in_imag, (i0, ))
+            ptr1_real = tle.gpu.local_ptr(smem_in_real, (i1, ))
+            ptr1_imag = tle.gpu.local_ptr(smem_in_imag, (i1, ))
+            ptr2_real = tle.gpu.local_ptr(smem_in_real, (i2, ))
+            ptr2_imag = tle.gpu.local_ptr(smem_in_imag, (i2, ))
+            ptr3_real = tle.gpu.local_ptr(smem_in_real, (i3, ))
+            ptr3_imag = tle.gpu.local_ptr(smem_in_imag, (i3, ))
 
             x0_real = tl.load(ptr0_real, mask=mask, other=0.0)
             x0_imag = tl.load(ptr0_imag, mask=mask, other=0.0)
@@ -766,8 +766,8 @@ def fft_kernel_tle(
             out_real_val = tl.where(m0, o0_real, tl.where(m1, o1_real, tl.where(m2, o2_real, o3_real)))
             out_imag_val = tl.where(m0, o0_imag, tl.where(m1, o1_imag, tl.where(m2, o2_imag, o3_imag)))
 
-            out_ptrs_real = tle.local_ptr(smem_out_real, (idx, ))
-            out_ptrs_imag = tle.local_ptr(smem_out_imag, (idx, ))
+            out_ptrs_real = tle.gpu.local_ptr(smem_out_real, (idx, ))
+            out_ptrs_imag = tle.gpu.local_ptr(smem_out_imag, (idx, ))
             tl.store(out_ptrs_real, out_real_val, mask=mask)
             tl.store(out_ptrs_imag, out_imag_val, mask=mask)
             tl.debug_barrier()
@@ -791,14 +791,14 @@ def fft_kernel_tle(
             i2 = i1 + quarter
             i3 = i2 + quarter
 
-            ptr0_real = tle.local_ptr(smem_in_real, (i0, ))
-            ptr0_imag = tle.local_ptr(smem_in_imag, (i0, ))
-            ptr1_real = tle.local_ptr(smem_in_real, (i1, ))
-            ptr1_imag = tle.local_ptr(smem_in_imag, (i1, ))
-            ptr2_real = tle.local_ptr(smem_in_real, (i2, ))
-            ptr2_imag = tle.local_ptr(smem_in_imag, (i2, ))
-            ptr3_real = tle.local_ptr(smem_in_real, (i3, ))
-            ptr3_imag = tle.local_ptr(smem_in_imag, (i3, ))
+            ptr0_real = tle.gpu.local_ptr(smem_in_real, (i0, ))
+            ptr0_imag = tle.gpu.local_ptr(smem_in_imag, (i0, ))
+            ptr1_real = tle.gpu.local_ptr(smem_in_real, (i1, ))
+            ptr1_imag = tle.gpu.local_ptr(smem_in_imag, (i1, ))
+            ptr2_real = tle.gpu.local_ptr(smem_in_real, (i2, ))
+            ptr2_imag = tle.gpu.local_ptr(smem_in_imag, (i2, ))
+            ptr3_real = tle.gpu.local_ptr(smem_in_real, (i3, ))
+            ptr3_imag = tle.gpu.local_ptr(smem_in_imag, (i3, ))
 
             x0_real = tl.load(ptr0_real, mask=mask, other=0.0)
             x0_imag = tl.load(ptr0_imag, mask=mask, other=0.0)
@@ -854,8 +854,8 @@ def fft_kernel_tle(
             out_real_val = tl.where(m0, o0_real, tl.where(m1, o1_real, tl.where(m2, o2_real, o3_real)))
             out_imag_val = tl.where(m0, o0_imag, tl.where(m1, o1_imag, tl.where(m2, o2_imag, o3_imag)))
 
-            out_ptrs_real = tle.local_ptr(smem_out_real, (idx, ))
-            out_ptrs_imag = tle.local_ptr(smem_out_imag, (idx, ))
+            out_ptrs_real = tle.gpu.local_ptr(smem_out_real, (idx, ))
+            out_ptrs_imag = tle.gpu.local_ptr(smem_out_imag, (idx, ))
             tl.store(out_ptrs_real, out_real_val, mask=mask)
             tl.store(out_ptrs_imag, out_imag_val, mask=mask)
             tl.debug_barrier()
@@ -865,8 +865,8 @@ def fft_kernel_tle(
 
     out_real_ptrs = out_real + row * stride_out + offs
     out_imag_ptrs = out_imag + row * stride_out + offs
-    smem_final_real_ptrs = tle.local_ptr(smem_in_real, (offs, ))
-    smem_final_imag_ptrs = tle.local_ptr(smem_in_imag, (offs, ))
+    smem_final_real_ptrs = tle.gpu.local_ptr(smem_in_real, (offs, ))
+    smem_final_imag_ptrs = tle.gpu.local_ptr(smem_in_imag, (offs, ))
     out_vals_real = tl.load(smem_final_real_ptrs, mask=mask, other=0.0)
     out_vals_imag = tl.load(smem_final_imag_ptrs, mask=mask, other=0.0)
     tl.store(out_real_ptrs, out_vals_real, mask=mask)

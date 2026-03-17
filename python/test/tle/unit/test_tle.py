@@ -13,7 +13,7 @@ Tests core functionality of TLE module, including:
 import pytest
 import torch
 import triton.language as tl
-from triton.experimental.tle.language.gpu import (pipeline, buffered_tensor, swizzled_shared_layout)
+import triton.experimental.tle.language as tle
 from triton.experimental.tle.language.gpu.semantic import TLESemanticError, TLESemantic
 
 
@@ -22,7 +22,7 @@ class TestLayoutEncoding:
 
     def test_swizzled_shared_layout_default(self):
         """Test default swizzled shared layout creation"""
-        layout = swizzled_shared_layout.make_default(2)
+        layout = tle.gpu.swizzled_shared_layout.make_default(2)
         assert layout.vectorSize == 1
         assert layout.perPhase == 1
         assert layout.maxPhase == 1
@@ -30,7 +30,7 @@ class TestLayoutEncoding:
 
     def test_swizzled_shared_layout_permute(self):
         """Test layout permutation transformation"""
-        layout = swizzled_shared_layout.make_default(3)
+        layout = tle.gpu.swizzled_shared_layout.make_default(3)
         permuted = layout.make_permute([1, 0, 2])
         # Original order for 3D rank is [2, 1, 0]
         # Permuting with [1, 0, 2] gives: order[1], order[0], order[2] = [1, 2, 0]
@@ -42,28 +42,28 @@ class TestPipeline:
 
     def test_pipeline_single_arg(self):
         """Test single argument pipeline creation"""
-        pipe = pipeline(10)
+        pipe = tle.gpu.pipeline(10)
         assert pipe.start == 0
         assert pipe.end == 10
         assert pipe.step == 1
 
     def test_pipeline_range_args(self):
         """Test range argument pipeline creation"""
-        pipe = pipeline(2, 8)
+        pipe = tle.gpu.pipeline(2, 8)
         assert pipe.start == 2
         assert pipe.end == 8
         assert pipe.step == 1
 
     def test_pipeline_with_step(self):
         """Test pipeline creation with step"""
-        pipe = pipeline(0, 10, 2)
+        pipe = tle.gpu.pipeline(0, 10, 2)
         assert pipe.start == 0
         assert pipe.end == 10
         assert pipe.step == 2
 
     def test_pipeline_with_options(self):
         """Test pipeline creation with options"""
-        pipe = pipeline(0, 10, 1, num_stages=2, loop_unroll_factor=4)
+        pipe = tle.gpu.pipeline(0, 10, 1, num_stages=2, loop_unroll_factor=4)
         assert pipe.num_stages == 2
         assert pipe.loop_unroll_factor == 4
 
@@ -136,14 +136,14 @@ class TestBufferedTensor:
         """Test buffered tensor creation"""
         # This is a basic type checking test
         # Actual buffered_tensor creation needs IR builder, difficult to mock in unit tests
-        assert hasattr(buffered_tensor, '__annotations__')
+        assert hasattr(tle.gpu.buffered_tensor, '__annotations__')
 
     def test_buffered_tensor_type_attributes(self):
         """Test buffered tensor type attributes"""
         # Check if type has necessary attributes
-        assert hasattr(buffered_tensor, '__init__')
-        assert hasattr(buffered_tensor, '_flatten_ir')
-        assert hasattr(buffered_tensor, 'make_permute')
+        assert hasattr(tle.gpu.buffered_tensor, '__init__')
+        assert hasattr(tle.gpu.buffered_tensor, '_flatten_ir')
+        assert hasattr(tle.gpu.buffered_tensor, 'make_permute')
 
 
 class TestIntegration:
@@ -151,35 +151,30 @@ class TestIntegration:
 
     def test_tle_module_import(self):
         """Test TLE module import"""
-        import triton.experimental.tle.language.gpu as tle
-
         # Check if main functions are importable
-        assert hasattr(tle, 'alloc')
-        assert hasattr(tle, 'copy')
-        assert hasattr(tle, 'local_ptr')
-        assert hasattr(tle, 'pipeline')
-        assert hasattr(tle, 'scope')
-        assert hasattr(tle, 'buffered_tensor')
+        assert hasattr(tle, 'gpu')
+        assert hasattr(tle.gpu, 'alloc')
+        assert hasattr(tle.gpu, 'copy')
+        assert hasattr(tle.gpu, 'local_ptr')
+        assert hasattr(tle.gpu, 'pipeline')
+        assert hasattr(tle.gpu, 'storage_kind')
+        assert hasattr(tle.gpu, 'buffered_tensor')
 
     def test_tle_functions_have_docstrings(self):
         """Test TLE functions have docstrings"""
-        import triton.experimental.tle.language.gpu as tle
-
         # Check if main functions have documentation
-        assert tle.alloc.__doc__ is not None
-        assert tle.copy.__doc__ is not None
-        assert tle.local_ptr.__doc__ is not None
-        assert tle.pipeline.__doc__ is not None
+        assert tle.gpu.alloc.__doc__ is not None
+        assert tle.gpu.copy.__doc__ is not None
+        assert tle.gpu.local_ptr.__doc__ is not None
+        assert tle.gpu.pipeline.__doc__ is not None
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
     def test_tle_with_cuda(self):
         """Test TLE compatibility with CUDA (if GPU available)"""
         # This test should run in environments with GPU
         # Since TLE operations need specific hardware support, only basic import testing here
-        import triton.experimental.tle.language as tle
-
         # Ensure TLE module can be imported normally in GPU environment
-        assert tle is not None
+        assert tle.gpu is not None
 
 
 class TestErrorHandling:
@@ -208,7 +203,7 @@ class TestErrorHandling:
         with pytest.raises(ValueError):
             # Simulate type checking
             if not isinstance("invalid", str):  # This will be False, so the ValueError won't be raised
-                raise ValueError("Buffer parameter must be tle.buffered_tensor")
+                raise ValueError("Buffer parameter must be tle.gpu.buffered_tensor")
             # Since the condition is False, we need to actually raise the error for the test
             raise ValueError("Simulated validation error")
 

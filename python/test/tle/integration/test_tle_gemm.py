@@ -13,7 +13,7 @@ import pytest
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle.language.gpu as tle
+import triton.experimental.tle.language as tle
 # Disable TF32, force pure FP32 accumulation
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
@@ -44,14 +44,14 @@ def gemm_kernel(
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
 
     accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    a_smem = tle.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    b_smem = tle.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    a_smem = tle.gpu.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    b_smem = tle.gpu.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     row_ids = tl.arange(0, BLOCK_M)[:, None]
     col_ids = tl.arange(0, BLOCK_N)[None, :]
     row_ids = tl.broadcast_to(row_ids, (BLOCK_M, BLOCK_N))
     col_ids = tl.broadcast_to(col_ids, (BLOCK_M, BLOCK_N))
-    a_smem_ptrs = tle.local_ptr(a_smem, (row_ids, col_ids))
-    b_smem_ptrs = tle.local_ptr(b_smem, (row_ids, col_ids))
+    a_smem_ptrs = tle.gpu.local_ptr(a_smem, (row_ids, col_ids))
+    b_smem_ptrs = tle.gpu.local_ptr(b_smem, (row_ids, col_ids))
 
     for k_start in range(0, K, BLOCK_K):
         k_offs = k_start + tl.arange(0, BLOCK_K)
@@ -59,8 +59,8 @@ def gemm_kernel(
         a_ptrs = a_ptr + offs_m[:, None] * stride_am + k_offs[None, :] * stride_ak
         b_ptrs = b_ptr + k_offs[:, None] * stride_bk + offs_n[None, :] * stride_bn
 
-        tle.copy(a_ptrs, a_smem, [BLOCK_M, BLOCK_N])
-        tle.copy(b_ptrs, b_smem, [BLOCK_M, BLOCK_N])
+        tle.gpu.copy(a_ptrs, a_smem, [BLOCK_M, BLOCK_N])
+        tle.gpu.copy(b_ptrs, b_smem, [BLOCK_M, BLOCK_N])
         a_tile = tl.load(a_smem_ptrs)
         b_tile = tl.load(b_smem_ptrs)
         accumulator += tl.dot(a_tile, b_tile, input_precision="ieee")

@@ -8,7 +8,7 @@ import pytest
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle.language.gpu as tle
+import triton.experimental.tle.language as tle
 
 BLOCK_SIZE = 64
 
@@ -31,8 +31,8 @@ def _local_pointer_axpy_kernel(x_ptr, y_ptr, out_ptr, numel, alpha, BLOCK: tl.co
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
 
-    smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    smem_ptrs = tle.local_ptr(smem_tile, (tl.arange(0, BLOCK), ))
+    smem_tile = tle.gpu.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem_ptrs = tle.gpu.local_ptr(smem_tile, (tl.arange(0, BLOCK), ))
 
     x_tile = x_ptr + offsets
     y_tile = y_ptr + offsets
@@ -56,8 +56,8 @@ def _local_pointer_store_kernel(out_ptr, numel, value, BLOCK: tl.constexpr):
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
 
-    smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    smem_ptrs = tle.local_ptr(smem_tile, (tl.arange(0, BLOCK), ))
+    smem_tile = tle.gpu.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem_ptrs = tle.gpu.local_ptr(smem_tile, (tl.arange(0, BLOCK), ))
 
     init = tl.full((BLOCK, ), value, tl.float32)
     tl.store(smem_ptrs, init, mask=mask)
@@ -72,8 +72,8 @@ def _local_pointer_conditional_mask_store_kernel(out_ptr, numel, BLOCK: tl.const
     idx = tl.arange(0, BLOCK)
     mask = idx < numel
 
-    smem = tle.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    ptrs = tle.local_ptr(smem, (idx, ))
+    smem = tle.gpu.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    ptrs = tle.gpu.local_ptr(smem, (idx, ))
 
     # Keep the masked store inside an scf.if region. This used to trigger a
     # verifier failure in `triton-tle-assign-local-pointers-encoding` because the
@@ -100,8 +100,8 @@ def _local_pointer_looped_elementwise_kernel(
     pid = tl.program_id(0)
     base = pid * BLOCK * CHUNKS
 
-    smem_tile = tle.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    smem_ptrs = tle.local_ptr(smem_tile, (tl.arange(0, BLOCK), ))
+    smem_tile = tle.gpu.alloc([BLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem_ptrs = tle.gpu.local_ptr(smem_tile, (tl.arange(0, BLOCK), ))
     assert BLOCK % SLICE_SIZE == 0, "BLOCK must be divisible by SLICE_SIZE"
     slice_indices = tl.arange(0, SLICE_SIZE)
 
@@ -113,7 +113,7 @@ def _local_pointer_looped_elementwise_kernel(
 
         for slice_idx in range(SLICES):
             block_offset = slice_idx * SLICE_SIZE
-            slice_ptr = tle.local_ptr(
+            slice_ptr = tle.gpu.local_ptr(
                 smem_tile,
                 (block_offset + slice_indices, ),
             )
@@ -151,8 +151,8 @@ def _local_pointer_tiled_matmul_kernel(
     offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
 
-    smem_a = tle.alloc([BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
-    smem_b = tle.alloc([BLOCK_K, BLOCK_N], dtype=tl.float16, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    smem_a = tle.gpu.alloc([BLOCK_M, BLOCK_K], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem_b = tle.gpu.alloc([BLOCK_K, BLOCK_N], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
@@ -164,8 +164,8 @@ def _local_pointer_tiled_matmul_kernel(
         k_offsets = k_tile * BLOCK_K + tl.arange(0, BLOCK_K)
         a_tile = a_ptr + offs_m[:, None] * stride_am + k_offsets[None, :] * stride_ak
         b_tile = b_ptr + k_offsets[:, None] * stride_bk + offs_n[None, :] * stride_bn
-        tle.copy(a_tile, smem_a, [BLOCK_M, BLOCK_K])
-        tle.copy(b_tile, smem_b, [BLOCK_K, BLOCK_N])
+        tle.gpu.copy(a_tile, smem_a, [BLOCK_M, BLOCK_K])
+        tle.gpu.copy(b_tile, smem_b, [BLOCK_K, BLOCK_N])
 
         for slice_idx in range(slice_parts):
             k_start = slice_idx * slice_width
@@ -173,13 +173,13 @@ def _local_pointer_tiled_matmul_kernel(
             a_cols = tl.arange(0, SLICE_WIDTH)[None, :] + k_start
             a_rows = tl.broadcast_to(a_rows, (BLOCK_M, SLICE_WIDTH))
             a_cols = tl.broadcast_to(a_cols, (BLOCK_M, SLICE_WIDTH))
-            a_slice = tle.local_ptr(smem_a, (a_rows, a_cols))
+            a_slice = tle.gpu.local_ptr(smem_a, (a_rows, a_cols))
 
             b_rows = tl.arange(0, SLICE_WIDTH)[:, None] + k_start
             b_cols = tl.arange(0, BLOCK_N)[None, :]
             b_rows = tl.broadcast_to(b_rows, (SLICE_WIDTH, BLOCK_N))
             b_cols = tl.broadcast_to(b_cols, (SLICE_WIDTH, BLOCK_N))
-            b_slice = tle.local_ptr(smem_b, (b_rows, b_cols))
+            b_slice = tle.gpu.local_ptr(smem_b, (b_rows, b_cols))
             a_vals = tl.load(a_slice)
             b_vals = tl.load(b_slice)
             acc += tl.dot(a_vals, b_vals, out_dtype=tl.float32)
@@ -200,15 +200,15 @@ def _local_pointer_axis_gather_kernel(
     COLS: tl.constexpr,
     SLICE: tl.constexpr,
 ):
-    smem = tle.alloc([ROWS, COLS], dtype=tl.float32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    smem = tle.gpu.alloc([ROWS, COLS], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     offs_m = tl.arange(0, ROWS)[:, None]
     offs_n = tl.arange(0, COLS)[None, :]
     x_tile = x_ptr + offs_m * stride_xm + offs_n * stride_xn
-    tle.copy(x_tile, smem, [ROWS, COLS])
+    tle.gpu.copy(x_tile, smem, [ROWS, COLS])
 
     row_ids = tl.broadcast_to(offs_m, (ROWS, SLICE))
     col_ids = tl.broadcast_to(1 + tl.arange(0, SLICE)[None, :], (ROWS, SLICE))
-    smem_slice = tle.local_ptr(smem, (row_ids, col_ids))
+    smem_slice = tle.gpu.local_ptr(smem, (row_ids, col_ids))
     vals = tl.load(smem_slice)
 
     out_tile = out_ptr + offs_m * stride_om + tl.arange(0, SLICE)[None, :] * stride_on
@@ -220,15 +220,15 @@ def _local_pointer_dynamic_scalar_load_after_vector_store_kernel(
     out_ptr,
     BLOCK: tl.constexpr,
 ):
-    smem = tle.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.smem, nv_mma_shared_layout=False)
+    smem = tle.gpu.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     vec_idx = tl.arange(0, BLOCK)
-    vec_ptr = tle.local_ptr(smem, (vec_idx, ))
+    vec_ptr = tle.gpu.local_ptr(smem, (vec_idx, ))
     tl.store(vec_ptr, vec_idx + 1)
     zero = tl.program_id(0) * 0
 
     for i in range(BLOCK):
         scalar_idx = zero + i
-        scalar_ptr = tle.local_ptr(smem, (scalar_idx, ))
+        scalar_ptr = tle.gpu.local_ptr(smem, (scalar_idx, ))
         scalar_val = tl.load(scalar_ptr)
         tl.store(out_ptr + i, scalar_val)
 
