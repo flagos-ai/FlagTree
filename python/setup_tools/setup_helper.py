@@ -324,7 +324,7 @@ else:
 
 download_flagtree_third_party("triton_shared", hook="precompile_hook", condition=(not flagtree_backend))
 
-download_flagtree_third_party("flir", condition=(flagtree_backend in configs.use_filr), required=True)
+download_flagtree_third_party("flir", condition=(flagtree_backend in configs.use_flir), required=True)
 
 handle_flagtree_backend()
 
