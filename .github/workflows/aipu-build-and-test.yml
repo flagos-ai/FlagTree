@@ -101,4 +101,3 @@ jobs:
           python3.10 third_party/aipu/python/test/var_mean.py
           python3.10 third_party/aipu/python/test/var_mean_shared_memory.py
           #python3.10 third_party/aipu/python/test/var_mean_dma.py
-
