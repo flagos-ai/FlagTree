@@ -62,8 +62,20 @@ jobs:
         id: check_files
         uses: flagos-ai/FlagTree/.github/actions/check-docs-only@main
 
-      - name: FlagTree Build on Enflame
-        if: steps.check_files.outputs.only_docs_changed != 'true'
+      - name: Detect Target Branch
+        shell: bash
+        run: |
+          set -x
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET_BRANCH="${{ github.base_ref }}"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+          fi
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$TARGET_BRANCH"
+
+      - name: FlagTree Build on Enflame (triton_v3.5.x branch)
+        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
         shell: bash
         run: |
           set -x
