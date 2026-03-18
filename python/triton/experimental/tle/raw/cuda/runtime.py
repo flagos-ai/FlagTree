@@ -36,9 +36,9 @@ class CUDAJITFunction(object):
             input=self.code.encode(),
             capture_output=True,
         )
-        if build.returncode != 0:
-            raise RuntimeError("clang failed\n"
-                               f"stderr:  {build.stderr.decode()}")
+        assert build.returncode == 0, (
+            f"clang failed\nstderr:\n{build.stderr.decode()}"
+        )
         llvm_context = llvm.context()
         module = parse_llvm_ir(build.stdout.decode(), llvm_context, mlir_context)
         return f"{module}"
