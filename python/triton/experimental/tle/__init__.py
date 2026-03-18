@@ -11,8 +11,6 @@ from .language.gpu import (
     insert_tile,
     alloc,
     copy,
-    local_load,
-    local_store,
 )
 
 __all__ = [
@@ -21,8 +19,6 @@ __all__ = [
     "insert_tile",
     "alloc",
     "copy",
-    "local_load",
-    "local_store",
 ]
 
 if raw is not None:

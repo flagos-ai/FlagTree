@@ -5,8 +5,6 @@ from .core import (
     copy,
     memory_space,
     local_ptr,
-    local_load,
-    local_store,
     extract_tile,
     insert_tile,
 )
@@ -22,8 +20,6 @@ __all__ = [
     "copy",
     "local_ptr",
     "storage_kind",
-    "local_load",
-    "local_store",
     "extract_tile",
     "insert_tile",
     "layout",
