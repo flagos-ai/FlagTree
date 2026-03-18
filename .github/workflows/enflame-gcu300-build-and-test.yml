@@ -83,7 +83,7 @@ jobs:
           python3 -m pip uninstall -y triton_gcu --break-system-packages
           export FLAGTREE_BACKEND=enflame
           cd python
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation --break-system-packages
+          MAX_JOBS=8 python3 -m pip install . --no-build-isolation --break-system-packages
 
       - name: FlagTree Build on Enflame (triton_v3.5.x branch)
         if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
@@ -93,7 +93,7 @@ jobs:
           python3 -m pip uninstall -y triton --break-system-packages
           python3 -m pip uninstall -y triton_gcu --break-system-packages
           export FLAGTREE_BACKEND=enflame
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation --break-system-packages
+          MAX_JOBS=8 python3 -m pip install . --no-build-isolation --break-system-packages
 
       - name: FlagTree Test on Enflame
         if: steps.check_files.outputs.only_docs_changed != 'true'
