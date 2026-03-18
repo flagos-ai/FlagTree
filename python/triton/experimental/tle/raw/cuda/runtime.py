@@ -1,9 +1,8 @@
 from __future__ import annotations
-import copy
 import os
 from pathlib import Path
 import subprocess
-from typing import Any, Dict, Final
+from typing import Any, Final
 
 from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
