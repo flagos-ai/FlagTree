@@ -103,9 +103,12 @@ class TLESemantic:
         # Check 1: src type
         if not isinstance(src, tl.tensor):
             raise TLESemanticError(f"Source must be tl.tensor, but got {type(src)}", "extract_tile")
-        # Check 2: non-empty
-        if not index or not tile_shape:
-            raise TLESemanticError("Index and tile_shape cannot be empty", "extract_tile")
+       
+        # Check 2: non-empty / provided parameters
+        if index is None:
+            raise TLESemanticError("Index cannot be None", "extract_tile")
+        if not tile_shape:
+            raise TLESemanticError("tile_shape cannot be empty", "extract_tile")           
 
         # Check 3: unpack and validate type
         tile_shape_unwrapped = [s.value if hasattr(s, 'value') else s for s in tile_shape]
