@@ -3,7 +3,7 @@ from . import language
 
 try:
     from . import raw
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     raw = None
 
 __all__ = [
