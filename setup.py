@@ -866,7 +866,7 @@ with open(readme_path, "r", encoding="utf-8") as fh:
 
 setup(
     name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
-    version=os.environ.get("FLAGTREE_WHEEL_VERSION", "") or get_git_commit_hash(),
+    version=os.environ.get("FLAGTREE_WHEEL_VERSION", "") or "dev" + get_git_commit_hash(),
     author="FlagOS",
     author_email="contact@flagos.io",
     description=
