@@ -31,23 +31,26 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Target/LLVMIR/Import.h"
 #include "passes.h"
 #include "pybind11/pybind11.h"
+#include "pybind11/pytypes.h"
 #include "pybind11/stl.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/Passes.h"
-#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
-#include "triton/Dialect/Triton/IR/Types.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/SmallVectorExtras.h"
+#include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/SourceMgr.h"
 #include <cstdint>
 
 namespace py = pybind11;
@@ -56,12 +59,12 @@ namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 
-extern tle::DSLRegionOp createTLERawRegionByLLVMFunc(
-    TritonOpBuilder &self, std::string_view text, std::string_view fnname,
-    const std::vector<Value> &outputs, const std::vector<Value> &inputs);
+extern tle::DSLRegionOp
+createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             const std::vector<Value> &outputs,
+                             const std::vector<Value> &inputs);
 
 void init_triton_tle_ir(py::module &&m) {
-  using ret = py::return_value_policy;
 
   // Get the existing builder class from the main ir module (TLX style)
   auto *builder_cls = ir::getBuilderClass();
@@ -258,6 +261,7 @@ void init_tle_raw_ir(py::module &&m) {
   auto *builder_cls = ir::getBuilderClass();
   builder_cls->def("create_tle_raw_region_by_llvm_func",
                    &createTLERawRegionByLLVMFunc);
+  builder_cls->def("get_context", &TritonOpBuilder::getContext);
 }
 
 void init_tle_raw_passes(py::module &&m) {
@@ -265,6 +269,26 @@ void init_tle_raw_passes(py::module &&m) {
                      mlir::triton::tle::createTleConvertArgToMemDesc);
   ADD_PASS_WRAPPER_0("add_tle_dsl_region_inline",
                      mlir::triton::tle::createTleDSLRegionInline);
+}
+
+void init_llvm(py::module &&m) {
+  m.def("parse_llvm_ir",
+        [](std::string_view text, llvm::LLVMContext &llvmContext,
+           mlir::MLIRContext &mlirContext) -> mlir::ModuleOp {
+          std::unique_ptr<llvm::MemoryBuffer> buffer =
+              llvm::MemoryBuffer::getMemBuffer(text);
+          llvm::SMDiagnostic error;
+          std::unique_ptr<llvm::Module> llvmModule =
+              llvm::parseIR(buffer->getMemBufferRef(), error, llvmContext);
+          if (!llvmModule) {
+            llvm::report_fatal_error(
+                "failed to parse IR: " + error.getMessage() +
+                "lineno: " + std::to_string(error.getLineNo()));
+          }
+          return mlir::translateLLVMIRToModule(std::move(llvmModule),
+                                               &mlirContext)
+              ->clone();
+        });
 }
 
 void init_triton_tle(py::module &&m) {
@@ -281,4 +305,5 @@ void init_triton_tle(py::module &&m) {
   init_triton_tle_passes(m.def_submodule("passes"));
   init_tle_raw_ir(m.def_submodule("raw_ir"));
   init_tle_raw_passes(m.def_submodule("raw_passes"));
+  init_llvm(m.def_submodule("llvm"));
 }
