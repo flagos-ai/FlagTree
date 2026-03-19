@@ -95,65 +95,43 @@ class TLESemantic:
         if not isinstance(buffer, tle.buffered_tensor):
             raise TLESemanticError(f"Buffer must be tle.buffered_tensor, but got {type(buffer)}", "local_ptr")
 
-    def validate_extract_tile_params(
-        self,
-        src: tl.tensor,
-        index,
-        tile_shape: Sequence[Union[int, any]]
-    ) -> None:
+    def validate_extract_tile_params(self, src: tl.tensor, index, tile_shape: Sequence[Union[int, any]]) -> None:
         """
 
         """
         # Check 1: src type
         if not isinstance(src, tl.tensor):
-            raise TLESemanticError(
-                f"Source must be tl.tensor, but got {type(src)}", 
-                "extract_tile"
-            )
+            raise TLESemanticError(f"Source must be tl.tensor, but got {type(src)}", "extract_tile")
         # Check 2: non-empty
         if not index or not tile_shape:
-            raise TLESemanticError(
-                "Index and tile_shape cannot be empty", 
-                "extract_tile"
-            )   
-        
+            raise TLESemanticError("Index and tile_shape cannot be empty", "extract_tile")
+
         # Check 3: unpack and validate type
-        tile_shape_unwrapped = [
-            s.value if hasattr(s, 'value') else s 
-            for s in tile_shape
-        ]
+        tile_shape_unwrapped = [s.value if hasattr(s, 'value') else s for s in tile_shape]
 
         # Check if every dim in tile_shape is int or constexpr-like
         if any(not isinstance(s, int) for s in tile_shape_unwrapped):
-            raise TLESemanticError(
-                "All tile_shape dims must be int or constexpr", 
-                "extract_tile"
-            )
+            raise TLESemanticError("All tile_shape dims must be int or constexpr", "extract_tile")
 
         # Check 4: positive values
         if any(s <= 0 for s in tile_shape_unwrapped):
-            raise TLESemanticError(
-                "All tile_shape dims must be positive", 
-                "extract_tile"
-            )
+            raise TLESemanticError("All tile_shape dims must be positive", "extract_tile")
 
         # Check 5: dimension match
         src_shape = list(src.type.shape)
-        
+
         if len(tile_shape_unwrapped) != len(src_shape):
             raise TLESemanticError(
                 f"Tile_shape rank ({len(tile_shape_unwrapped)}) must match "
-                f"source rank ({len(src_shape)})", 
-                "extract_tile"
-            )
-        
-        
+                f"source rank ({len(src_shape)})", "extract_tile")
+
         # Index check
         if isinstance(index, (tuple, list)):
             idx = [i.value if hasattr(i, 'value') else i for i in index]
             # Check if index rank matches source tensor rank
             if len(idx) != len(src_shape):
-                raise TLESemanticError(f"Index rank ({len(idx)}) must match source rank ({len(src_shape)})", "extract_tile")
+                raise TLESemanticError(f"Index rank ({len(idx)}) must match source rank ({len(src_shape)})",
+                                       "extract_tile")
             # Check if every index component is int
             if any(not isinstance(v, int) for v in idx):
                 raise TLESemanticError("All index values must be int or constexpr", "extract_tile")
@@ -162,7 +140,8 @@ class TLESemantic:
                 grid = [src_shape[i] // tile_shape_unwrapped[i] for i in range(len(src_shape))]
                 for i, v in enumerate(idx):
                     if v < 0 or v >= grid[i]:
-                        raise TLESemanticError(f"Index[{i}]={v} out of bounds for tile grid (0~{grid[i]-1})", "extract_tile")
+                        raise TLESemanticError(f"Index[{i}]={v} out of bounds for tile grid (0~{grid[i]-1})",
+                                               "extract_tile")
         else:
             # If linear index (single value)
             val = index.value if hasattr(index, 'value') else index
@@ -178,92 +157,60 @@ class TLESemantic:
                 for g in grid:
                     total_tiles *= g
                 if val >= total_tiles:
-                    raise TLESemanticError(f"Linear index {val} out of bounds for total tiles {total_tiles}", "extract_tile")
-    def validate_insert_tile_params(
-        self,
-        src: tl.tensor,
-        tile: tl.tensor,
-        index
-    ) -> None:
+                    raise TLESemanticError(f"Linear index {val} out of bounds for total tiles {total_tiles}",
+                                           "extract_tile")
+
+    def validate_insert_tile_params(self, src: tl.tensor, tile: tl.tensor, index) -> None:
         """
 
         """
         # src / tile type checks
         if not isinstance(src, tl.tensor):
-            raise TLESemanticError(
-                f"Source must be tl.tensor, but got {type(src)}",
-                "insert_tile"
-            )
+            raise TLESemanticError(f"Source must be tl.tensor, but got {type(src)}", "insert_tile")
         if not isinstance(tile, tl.tensor):
-            raise TLESemanticError(
-                f"Tile must be tl.tensor, but got {type(tile)}",
-                "insert_tile"
-            )
+            raise TLESemanticError(f"Tile must be tl.tensor, but got {type(tile)}", "insert_tile")
 
         src_shape = list(src.type.shape)
         tile_shape = list(tile.type.shape)
 
         # rank / element type checks
         if len(src_shape) != len(tile_shape):
-            raise TLESemanticError(
-                f"Source rank ({len(src_shape)}) must match tile rank ({len(tile_shape)})",
-                "insert_tile"
-            )
+            raise TLESemanticError(f"Source rank ({len(src_shape)}) must match tile rank ({len(tile_shape)})",
+                                   "insert_tile")
         if src.type.element_ty != tile.type.element_ty:
-            raise TLESemanticError(
-                f"Element type mismatch: source={src.type.element_ty}, tile={tile.type.element_ty}",
-                "insert_tile"
-            )
+            raise TLESemanticError(f"Element type mismatch: source={src.type.element_ty}, tile={tile.type.element_ty}",
+                                   "insert_tile")
 
         # tile shape checks (int/constexpr-like, positive)
         tile_shape_unwrapped = [d.value if hasattr(d, 'value') else d for d in tile_shape]
         if any(not isinstance(d, int) for d in tile_shape_unwrapped):
-            raise TLESemanticError(
-                "All tile dimensions must be int or constexpr",
-                "insert_tile"
-            )
+            raise TLESemanticError("All tile dimensions must be int or constexpr", "insert_tile")
         if any(d <= 0 for d in tile_shape_unwrapped):
-            raise TLESemanticError(
-                "All tile dimensions must be positive",
-                "insert_tile"
-            )
+            raise TLESemanticError("All tile dimensions must be positive", "insert_tile")
 
         # source shape checks and tile grid construction
         src_shape_unwrapped = [d.value if hasattr(d, 'value') else d for d in src_shape]
         if any(not isinstance(d, int) for d in src_shape_unwrapped):
-            raise TLESemanticError(
-                "Source shape must be static integers for insert_tile",
-                "insert_tile"
-            )
+            raise TLESemanticError("Source shape must be static integers for insert_tile", "insert_tile")
 
         grid = []
         for i, (src_dim, tile_dim) in enumerate(zip(src_shape_unwrapped, tile_shape_unwrapped)):
             if src_dim % tile_dim != 0:
                 raise TLESemanticError(
-                    f"Source dimension {i}: {src_dim} must be divisible by tile dimension {tile_dim}",
-                    "insert_tile"
-                )
+                    f"Source dimension {i}: {src_dim} must be divisible by tile dimension {tile_dim}", "insert_tile")
             grid.append(src_dim // tile_dim)
 
         # index checks
         if isinstance(index, (tuple, list)):
             idx = [i.value if hasattr(i, 'value') else i for i in index]
             if len(idx) != len(src_shape_unwrapped):
-                raise TLESemanticError(
-                    f"Index rank ({len(idx)}) must match source rank ({len(src_shape_unwrapped)})",
-                    "insert_tile"
-                )
+                raise TLESemanticError(f"Index rank ({len(idx)}) must match source rank ({len(src_shape_unwrapped)})",
+                                       "insert_tile")
             if any(not isinstance(v, int) for v in idx):
-                raise TLESemanticError(
-                    "All index values must be int or constexpr",
-                    "insert_tile"
-                )
+                raise TLESemanticError("All index values must be int or constexpr", "insert_tile")
             for i, v in enumerate(idx):
                 if v < 0 or v >= grid[i]:
-                    raise TLESemanticError(
-                        f"Index[{i}]={v} out of bounds for tile grid (0~{grid[i]-1})",
-                        "insert_tile"
-                    )
+                    raise TLESemanticError(f"Index[{i}]={v} out of bounds for tile grid (0~{grid[i]-1})", "insert_tile")
         else:
             val = index.value if hasattr(index, 'value') else index
             if not isinstance(val, int):
@@ -275,17 +222,9 @@ class TLESemantic:
             for g in grid:
                 total_tiles *= g
             if val >= total_tiles:
-                raise TLESemanticError(
-                    f"Linear index {val} out of bounds for total tiles {total_tiles}",
-                    "insert_tile")
+                raise TLESemanticError(f"Linear index {val} out of bounds for total tiles {total_tiles}", "insert_tile")
 
-
-    def analyze_extract_tile_operation(
-        self,
-        src: tl.tensor,
-        index,
-        tile_shape: Sequence[Union[int, any]]
-    ) -> None:
+    def analyze_extract_tile_operation(self, src: tl.tensor, index, tile_shape: Sequence[Union[int, any]]) -> None:
         """Analyze extract_tile operation semantics (index 支持多维或线性)"""
         self.validate_extract_tile_params(src, index, tile_shape)
 
@@ -297,7 +236,7 @@ class TLESemantic:
     ) -> None:
         """Analyze insert_tile operation semantics """
         self.validate_insert_tile_params(src, tile, index)
-        
+
     def analyze_alloc_operation(self, shape: Sequence[Union[int, any]], dtype: tl.dtype,
                                 layout: Optional[tle.shared_layout], storage: tle.scope) -> Tuple[List[int], tl.dtype]:
         """Analyze alloc operation semantics"""

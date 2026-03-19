@@ -3,9 +3,10 @@ import triton
 import triton.language as tl
 import triton.experimental.tle as tle
 
+
 @triton.jit
 def extract_tile_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr):
-    # 这里的 M, N 设为 
+    # 这里的 M, N 设为
     offs_m = tl.arange(0, M)
     offs_n = tl.arange(0, N)
     x = tl.load(x_ptr + offs_m[:, None] * N + offs_n[None, :])
@@ -16,14 +17,15 @@ def extract_tile_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr):
     out_offs_n = tl.arange(0, 128)
     tl.store(out_ptr + out_offs_m[:, None] * 128 + out_offs_n[None, :], tile)
 
+
 # 调整尺寸
-M, N = 512,512
+M, N = 512, 512
 x = torch.arange(M * N, device='cuda', dtype=torch.float32).reshape(M, N)
 # 接收 128x128 的结果
 out = torch.zeros(128, 128, device='cuda', dtype=torch.float32)
 
 print(f"Running kernel with size {M}x{N} (Target tile: 128x128)...")
-extract_tile_kernel[(1,)](x, out, M, N)
+extract_tile_kernel[(1, )](x, out, M, N)
 
 print("☑ Kernel executed!\n")
 

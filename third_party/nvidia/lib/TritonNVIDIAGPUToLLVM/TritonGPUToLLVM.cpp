@@ -171,8 +171,10 @@ struct ConvertTritonGPUToLLVM
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
           typeConverter, targetInfo, patterns, benefit);
-      mlir::triton::tle::populateExtractTileOpToLLVMPatterns(typeConverter, patterns, benefit);
-      mlir::triton::tle::populateInsertTileOpToLLVMPatterns(typeConverter, patterns, benefit);
+      mlir::triton::tle::populateExtractTileOpToLLVMPatterns(typeConverter,
+                                                             patterns, benefit);
+      mlir::triton::tle::populateInsertTileOpToLLVMPatterns(typeConverter,
+                                                            patterns, benefit);
       if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
         return signalPassFailure();
       }

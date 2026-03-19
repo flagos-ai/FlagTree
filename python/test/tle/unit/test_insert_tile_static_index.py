@@ -35,7 +35,7 @@ y = (100000 + torch.arange(TM * TN, device="cuda", dtype=torch.float32)).reshape
 out = torch.empty_like(x)
 
 print(f"Running insert_tile kernel with x={M}x{N}, tile={TM}x{TN}, index=[1, 1]...")
-insert_tile_kernel[(1,)](x, y, out, M, N, TM, TN)
+insert_tile_kernel[(1, )](x, y, out, M, N, TM, TN)
 print("Kernel executed.\n")
 
 expected = x.clone()

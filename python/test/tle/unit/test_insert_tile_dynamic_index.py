@@ -3,14 +3,10 @@ import triton
 import triton.language as tl
 import triton.experimental.tle as tle
 
+
 @triton.jit
-def simple_insert_kernel(
-    x_ptr, y_ptr,
-    stride_xb, stride_xm, stride_xn,
-    stride_ym, stride_yn,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-    TILE_M: tl.constexpr, TILE_N: tl.constexpr
-):
+def simple_insert_kernel(x_ptr, y_ptr, stride_xb, stride_xm, stride_xn, stride_ym, stride_yn, BLOCK_M: tl.constexpr,
+                         BLOCK_N: tl.constexpr, TILE_M: tl.constexpr, TILE_N: tl.constexpr):
     # 1. Get 3D coordinates: z (layer/batch), m (row block), n (col block)
     pid_z = tl.program_id(0)
     pid_m = tl.program_id(1)
@@ -28,7 +24,7 @@ def simple_insert_kernel(
     y_ptrs = y_ptr + offs_tm[:, None] * stride_ym + offs_tn[None, :] * stride_yn
     small_tile = tl.load(y_ptrs)
 
-    # 4. Determine insertion position: 
+    # 4. Determine insertion position:
     # Let layer 0 insert at top-left (0,0), and layer 1 at bottom-right (1,1)
     tile_idx_m = pid_z % (BLOCK_M // TILE_M)
     tile_idx_n = pid_z % (BLOCK_N // TILE_N)
@@ -37,28 +33,25 @@ def simple_insert_kernel(
     res_tile = tle.insert_tile(bg_tile, small_tile, index=[tile_idx_m, tile_idx_n])
     tl.store(x_ptrs, res_tile)
 
+
 # ------------------------------------------------------------
 # Minimal Test
 # ------------------------------------------------------------
 def main():
-    B = 2             # 2 layers (Z dimension)
-    M, N = 32, 32     # 32x32 size per layer
-    TM, TN = 16, 16   # The inserted small tile is 16x16
-    
+    B = 2  # 2 layers (Z dimension)
+    M, N = 32, 32  # 32x32 size per layer
+    TM, TN = 16, 16  # The inserted small tile is 16x16
+
     # x is an all-zero 3D background tensor
     x = torch.zeros((B, M, N), device="cuda", dtype=torch.float32)
     # y is an all-99 2D small tile
     y = torch.ones((TM, TN), device="cuda", dtype=torch.float32) * 99.0
-    
+
     # Launch Kernel: B layers, each needs exactly 1x1 block (since M=32 and BLOCK_M=32)
     grid = (B, 1, 1)
-    
-    simple_insert_kernel[grid](
-        x, y,
-        x.stride(0), x.stride(1), x.stride(2),
-        y.stride(0), y.stride(1),
-        BLOCK_M=32, BLOCK_N=32, TILE_M=16, TILE_N=16
-    )
+
+    simple_insert_kernel[grid](x, y, x.stride(0), x.stride(1), x.stride(2), y.stride(0), y.stride(1), BLOCK_M=32,
+                               BLOCK_N=32, TILE_M=16, TILE_N=16)
 
     # --- Visualizing the results ---
     print("=== Layer 0 (Z=0) ===")
@@ -68,6 +61,7 @@ def main():
     print("=== Layer 1 (Z=1) ===")
     print("Top-left (0~16, 0~16) mean:", x[1, 0:16, 0:16].mean().item())
     print("Bottom-right (16~32, 16~32) mean:", x[1, 16:32, 16:32].mean().item())
+
 
 if __name__ == "__main__":
     main()
