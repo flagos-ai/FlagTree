@@ -113,7 +113,7 @@ jobs:
           python3 test_tle_with_hints.py
           popd
 
-      - name: FlagTree Editable Build And Teston Ascend
+      - name: FlagTree Editable Build And Test on Ascend
         if: steps.check_files.outputs.only_docs_changed != 'true'
         shell: bash
         run: |
@@ -126,3 +126,4 @@ jobs:
           popd
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
           python3 -c "import triton"
+          python3 -m pip uninstall flagtree -y
