@@ -2,7 +2,7 @@ import imp
 import torch
 import triton
 import triton.language as tl
-from triton.experimental import tle
+import triton.experimental.tle.language as tle
 
 TILE_NUM = 16
 M = 4096
@@ -52,17 +52,17 @@ def dsa_shift_n_gemm_kernel(
     b_ptrs = B_ptr + offs_k[:, None] * N + offs_sub_n[None, :]
     b_init = tl.load(b_ptrs)
 
-    send_buf = tle.language.dsa.alloc((BLOCK_K, SUB_N), tl.float16)
-    recv_buf = tle.language.dsa.alloc((BLOCK_K, SUB_N), tl.float16)
+    send_buf = tle.dsa.alloc((BLOCK_K, SUB_N), tl.float16)
+    recv_buf = tle.dsa.alloc((BLOCK_K, SUB_N), tl.float16)
 
     offs_buf_k = tl.arange(0, BLOCK_K)[:, None] + tl.zeros((1, SUB_N), dtype=tl.int32)
     offs_buf_n = tl.arange(0, SUB_N)[None, :] + tl.zeros((BLOCK_K, 1), dtype=tl.int32)
 
-    send_ptr = tle.language.dsa.local_ptr(send_buf, [offs_buf_k, offs_buf_n])
-    recv_ptr = tle.language.dsa.local_ptr(recv_buf, [offs_buf_k, offs_buf_n])
+    send_ptr = tle.dsa.local_ptr(send_buf, [offs_buf_k, offs_buf_n])
+    recv_ptr = tle.dsa.local_ptr(recv_buf, [offs_buf_k, offs_buf_n])
 
     remote_recv_buf = tle.remote(recv_buf, send_next_tile)
-    remote_recv_ptr = tle.language.dsa.local_ptr(remote_recv_buf, [offs_buf_k, offs_buf_n])
+    remote_recv_ptr = tle.dsa.local_ptr(remote_recv_buf, [offs_buf_k, offs_buf_n])
 
     tl.store(send_ptr, b_init)
 
