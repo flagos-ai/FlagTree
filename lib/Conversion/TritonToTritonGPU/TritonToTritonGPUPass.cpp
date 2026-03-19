@@ -837,12 +837,11 @@ public:
     op->dump();
 
     auto srcType = dyn_cast<RankedTensorType>(adaptor.getSrc().getType());
-    if (!srcType){
+    if (!srcType) {
       return op.emitError("source must be a ranked tensor");
     }
     auto srcEnc = srcType.getEncoding();
-    if (!srcEnc)
-    {
+    if (!srcEnc) {
       return op.emitError("source tensor must have encoding attribute");
     }
 

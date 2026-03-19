@@ -5,7 +5,6 @@ import triton.experimental.tle as tle
 
 
 @triton.jit
-
 def extract_tile_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr):
     # Set M, N as input matrix dimensions
     offs_m = tl.arange(0, M)
@@ -18,6 +17,7 @@ def extract_tile_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr):
     out_offs_m = tl.arange(0, 128)
     out_offs_n = tl.arange(0, 128)
     tl.store(out_ptr + out_offs_m[:, None] * 128 + out_offs_n[None, :], tile)
+
 
 # Set matrix size
 M, N = 512, 512
