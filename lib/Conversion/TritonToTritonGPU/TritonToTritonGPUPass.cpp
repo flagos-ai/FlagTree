@@ -834,7 +834,6 @@ public:
   LogicalResult
   matchAndRewrite(tle::ExtractTileOp op, tle::ExtractTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    op->dump();
 
     auto srcType = dyn_cast<RankedTensorType>(adaptor.getSrc().getType());
     if (!srcType) {
@@ -867,7 +866,6 @@ public:
   LogicalResult
   matchAndRewrite(tle::InsertTileOp op, tle::InsertTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    op->dump();
 
     auto srcType = dyn_cast<RankedTensorType>(adaptor.getSrc().getType());
     if (!srcType) {
