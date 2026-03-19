@@ -253,7 +253,7 @@ class LLVMDetector:
         if spec.origin:
             pkg_root = os.path.dirname(spec.origin)
         elif spec.submodule_search_locations:
-            pkg_root = next(iter(spec.submodule_search_locations))
+            pkg_root = spec.submodule_search_locations[0]
         else:
             raise RuntimeError(f"LLVM wheel '{pkg_name}' is found but has no filesystem location")
 
