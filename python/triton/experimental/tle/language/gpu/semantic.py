@@ -14,6 +14,7 @@ from triton import language as tl
 from . import types as tle
 from math import prod
 
+
 class TLESemanticError(Exception):
     """TLE operation semantic error exception class"""
 
@@ -220,13 +221,7 @@ class TLESemantic:
             if val >= total_tiles:
                 raise TLESemanticError(f"Linear index {val} out of bounds for total tiles {total_tiles}", "insert_tile")
 
-
-    def analyze_extract_tile_operation(
-        self,
-        src: tl.tensor,
-        index,
-        tile_shape: Sequence[Union[int, any]]
-    ) -> None:
+    def analyze_extract_tile_operation(self, src: tl.tensor, index, tile_shape: Sequence[Union[int, any]]) -> None:
         """Analyze extract_tile operation semantics"""
         self.validate_extract_tile_params(src, index, tile_shape)
 

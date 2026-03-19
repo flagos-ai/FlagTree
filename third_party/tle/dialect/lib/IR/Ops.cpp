@@ -171,12 +171,11 @@ LogicalResult ExtractTileOp::verify() {
 // InsertTileOp Type Inference + Verification
 // ============================================================================
 LogicalResult InsertTileOp::inferReturnTypes(
-     [[maybe_unused]]MLIRContext *context,  
-     [[maybe_unused]]std::optional<Location> location, 
-     ValueRange operands,
-     [[maybe_unused]]DictionaryAttr attributes,  
-     [[maybe_unused]]OpaqueProperties properties,  
-     [[maybe_unused]]RegionRange regions,
+    [[maybe_unused]] MLIRContext *context,
+    [[maybe_unused]] std::optional<Location> location, ValueRange operands,
+    [[maybe_unused]] DictionaryAttr attributes,
+    [[maybe_unused]] OpaqueProperties properties,
+    [[maybe_unused]] RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
 
   // insert_tile(src, tile, index) -> result has the same type as src.
