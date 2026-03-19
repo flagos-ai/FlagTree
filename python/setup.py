@@ -763,7 +763,6 @@ if helper.flagtree_backend == "cambricon":
     packages, package_dir, package_data = helper.configure_cambricon_packages_and_data(
         packages, package_dir, package_data)
 
-
 readme_path = os.path.join(get_base_dir(), "README.md")
 with open(readme_path, "r", encoding="utf-8") as fh:
     long_description = fh.read()
