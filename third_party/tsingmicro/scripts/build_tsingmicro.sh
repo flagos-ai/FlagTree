@@ -121,6 +121,7 @@ fi
 
 export LLVM_SYSPATH=$LLVM
 export TX8_DEPS_ROOT=$TX8_DEPS_ROOT
+export TX8_YOC_RT_THREAD_SMP=$TX8_DEPS_ROOT/tx8-yoc-rt-thread-smp
 export FLAGTREE_BACKEND=tsingmicro
 
 # debug

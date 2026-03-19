@@ -12,6 +12,7 @@ add_subdirectory(LinalgTiling)
 add_subdirectory(LinalgFusion)
 add_subdirectory(AllocateSharedMemory)
 add_subdirectory(ExportKernelSymbols)
+add_subdirectory(TLEToMK)
 add_subdirectory(UnstructuredToMK)
 add_subdirectory(ReconcilePtrCasts)
 

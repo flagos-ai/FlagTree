@@ -16,6 +16,7 @@ set_llvm_env = lambda path: set_env({
     'LLVM_INCLUDE_DIRS': Path(path) / "include",
     'LLVM_LIBRARY_DIR': Path(path) / "lib",
     'LLVM_SYSPATH': path,
+    'PATH': os.pathsep.join([str(Path(path) / "bin"), os.getenv("PATH", "")]),
 })
 
 
@@ -432,6 +433,7 @@ cache.store(
     pre_hook=lambda: check_env('TX8_DEPS_ROOT'),
     post_hook=lambda path: set_env({
         'TX8_DEPS_ROOT': path,
+        'TX8_YOC_RT_THREAD_SMP': Path(path) / "tx8-yoc-rt-thread-smp",
     }),
 )
 

@@ -151,7 +151,7 @@ CONFIG_FILE="$script_dir/copy_config.conf"
 
 # 显示帮助信息
 show_help() {
-    echo "usage: $0 mode [tx81fw url]"
+    echo "usage: $0 mode [tx81fw url] [tx_profiler url] [tx8-yoc-rt-thread-smp url]"
     echo "support mode:"
     echo "  build_flagtree_tx8_deps"
     echo "  build_tx8_deps"
@@ -167,7 +167,12 @@ show_help() {
     echo "  default: http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81-profiling/master/profiling_tool_v5.5.0_release_2025-1124_.tar.gz"
     echo "  ..."
     echo ""
-    echo "example: $0 build_tx8_deps"
+    echo "tx8-yoc-rt-thread-smp url:"
+    echo "  eg: http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81fw/tx8-yoc-rt-thread-smp-202603031631-88bfb9.tar.gz"
+    echo "  default: http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81fw/tx8-yoc-rt-thread-smp-202603031631-88bfb9.tar.gz"
+    echo "  ..."
+    echo ""
+    echo "example: bash triton/third_party/tsingmicro/scripts/build_tx8_deps.sh build_dev http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81fw/tx81fw_202602261758_b72af3.tar.gz http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81-profiling/master/profiling_tool_v5.6.0_release_2026-0228_.tar.gz http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81fw/tx8-yoc-rt-thread-smp-202603031631-88bfb9.tar.gz"
 }
 
 # 检查参数数量
