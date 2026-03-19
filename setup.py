@@ -206,7 +206,7 @@ def is_linux_os(id):
 
 
 def get_llvm_package_info():
-    FLAGTREE_MLIR_PKG = "flagtree_mlir"
+    FLAGTREE_MLIR_PKG = "mlir"
     if helper.try_setup_flagtree_mlir(FLAGTREE_MLIR_PKG):
         return Package("llvm", "llvm-C.lib", "", "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH")
 
@@ -866,7 +866,7 @@ with open(readme_path, "r", encoding="utf-8") as fh:
 
 setup(
     name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
-    version="0.4.1" + os.environ.get("FLAGTREE_WHEEL_VERSION_SUFFIX", ""),
+    version=os.environ.get("FLAGTREE_WHEEL_VERSION", "") or "0.5.0" + get_git_commit_hash(),
     author="FlagOS",
     author_email="contact@flagos.io",
     description=

@@ -251,18 +251,26 @@ class LLVMDetector:
             raise RuntimeError(f"LLVM wheel '{pkg_name}' found via metadata but import failed.")
 
         if spec.origin:
-            llvm_root = os.path.dirname(spec.origin)
+            pkg_root = os.path.dirname(spec.origin)
         elif spec.submodule_search_locations:
-            llvm_root = next(iter(spec.submodule_search_locations))
+            pkg_root = spec.submodule_search_locations[0]
         else:
             raise RuntimeError(f"LLVM wheel '{pkg_name}' is found but has no filesystem location")
+
+        # New wheel structure: LLVM artifacts are under mlir/llvm_artifact/
+        llvm_artifact_dir = os.path.join(pkg_root, "llvm_artifact")
+        if os.path.isdir(llvm_artifact_dir):
+            llvm_root = llvm_artifact_dir
+        else:
+            # Fallback: legacy structure where artifacts are directly under the package root
+            llvm_root = pkg_root
 
         include_dir = os.path.join(llvm_root, "include")
         lib_dir = os.path.join(llvm_root, "lib")
         return include_dir, lib_dir, llvm_root
 
 
-def try_setup_flagtree_mlir(pkg_name: str = "flagtree_mlir") -> bool:
+def try_setup_flagtree_mlir(pkg_name: str = "mlir") -> bool:
     is_installed = LLVMDetector.is_wheel_installed(pkg_name)
     has_envs = LLVMDetector.has_env_vars()
     # rule1 : if both exist, fail
