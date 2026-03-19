@@ -6,8 +6,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 
-#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
 namespace mlir::triton::tle {
 
@@ -38,11 +38,9 @@ static SmallVector<int64_t> getShapePerCTATile(RankedTensorType type) {
 
     SmallVector<int64_t> ctaTileShape;
     for (size_t i = 0; i < shape.size(); ++i) {
-      ctaTileShape.push_back(
-          static_cast<int64_t>(sizePerThread[i]) *
-          static_cast<int64_t>(threadsPerWarp[i]) *
-          static_cast<int64_t>(warpsPerCTA[i])
-      );
+      ctaTileShape.push_back(static_cast<int64_t>(sizePerThread[i]) *
+                             static_cast<int64_t>(threadsPerWarp[i]) *
+                             static_cast<int64_t>(warpsPerCTA[i]));
     }
     return ctaTileShape;
   }
@@ -55,11 +53,9 @@ static SmallVector<int64_t> getShapePerCTATile(RankedTensorType type) {
 
     SmallVector<int64_t> ctaTileShape;
     for (size_t i = 0; i < shape.size(); ++i) {
-      ctaTileShape.push_back(
-          static_cast<int64_t>(sizePerThread[i]) *
-          static_cast<int64_t>(threadsPerWarp[i]) *
-          static_cast<int64_t>(warpsPerCTA[i])
-      );
+      ctaTileShape.push_back(static_cast<int64_t>(sizePerThread[i]) *
+                             static_cast<int64_t>(threadsPerWarp[i]) *
+                             static_cast<int64_t>(warpsPerCTA[i]));
     }
     return ctaTileShape;
   }
@@ -70,18 +66,11 @@ static SmallVector<int64_t> getShapePerCTATile(RankedTensorType type) {
 // ============================================================================
 // ExtractTileOp Builder
 // ============================================================================
-void ExtractTileOp::build(
-    OpBuilder &builder,
-    OperationState &state,
-    Value src,
-    Value index,
-    ArrayRef<int64_t> tileShape) {
+void ExtractTileOp::build(OpBuilder &builder, OperationState &state, Value src,
+                          Value index, ArrayRef<int64_t> tileShape) {
   auto srcType = cast<RankedTensorType>(src.getType());
-  auto resultType = RankedTensorType::get(
-      tileShape,
-      srcType.getElementType(),
-      srcType.getEncoding()
-  );
+  auto resultType = RankedTensorType::get(tileShape, srcType.getElementType(),
+                                          srcType.getEncoding());
   state.addOperands(src);
   state.addOperands(index);
   state.addAttribute("tile_shape", builder.getDenseI64ArrayAttr(tileShape));
@@ -92,7 +81,8 @@ void ExtractTileOp::build(
 // ExtractTileOp Verification
 //
 // For dynamic index (index operand is not arith.constant):
-//   - Only check constraints that are known at compile time: tile_shape positivity, divisibility, element type, rank match
+//   - Only check constraints that are known at compile time: tile_shape
+//   positivity, divisibility, element type, rank match
 //   - Skip out-of-bounds and CTA tile alignment checks (only known at runtime)
 //
 // For static index: perform full checks (same as original implementation)
@@ -106,7 +96,8 @@ LogicalResult ExtractTileOp::verify() {
   // ---- Get tile_shape attribute ----
   auto tileShapeRawAttr = getOperation()->getAttr("tile_shape");
   SmallVector<int64_t> tileShape;
-  if (auto denseArray64 = mlir::dyn_cast<mlir::DenseI64ArrayAttr>(tileShapeRawAttr)) {
+  if (auto denseArray64 =
+          mlir::dyn_cast<mlir::DenseI64ArrayAttr>(tileShapeRawAttr)) {
     for (auto v : denseArray64.asArrayRef())
       tileShape.push_back(v);
   }
@@ -125,15 +116,19 @@ LogicalResult ExtractTileOp::verify() {
   if (tileShape.size() != srcShape.size())
     return emitOpError("tile_shape rank must match source rank");
 
-  // Check 4: tile_shape must be positive in each dimension, divisible, and dst shape must equal tile_shape
+  // Check 4: tile_shape must be positive in each dimension, divisible, and dst
+  // shape must equal tile_shape
   for (size_t i = 0; i < srcShape.size(); ++i) {
     if (tileShape[i] <= 0)
       return emitOpError("tile_shape must be positive at dimension ") << i;
     if (srcShape[i] % tileShape[i] != 0)
-      return emitOpError("source shape must be divisible by tile_shape at dimension ")
-             << i << " (source=" << srcShape[i] << ", tile=" << tileShape[i] << ")";
+      return emitOpError(
+                 "source shape must be divisible by tile_shape at dimension ")
+             << i << " (source=" << srcShape[i] << ", tile=" << tileShape[i]
+             << ")";
     if (dstShape[i] != tileShape[i])
-      return emitOpError("result shape must equal tile_shape at dimension ") << i;
+      return emitOpError("result shape must equal tile_shape at dimension ")
+             << i;
   }
 
   // ---- Determine if index is a static constant ----
@@ -142,7 +137,8 @@ LogicalResult ExtractTileOp::verify() {
       getOperation()->getOperand(1).getDefiningOp<arith::ConstantOp>();
 
   if (!indexConstOp) {
-    // Dynamic index: skip out-of-bounds and offset alignment checks, handled at lowering stage
+    // Dynamic index: skip out-of-bounds and offset alignment checks, handled at
+    // lowering stage
     return success();
   }
 
@@ -182,10 +178,12 @@ LogicalResult ExtractTileOp::verify() {
 
   for (size_t i = 0; i < srcShape.size(); ++i) {
     if (dstShape[i] > srcShape[i])
-      return emitOpError("result shape cannot exceed source shape at dimension ") << i;
+      return emitOpError(
+                 "result shape cannot exceed source shape at dimension ")
+             << i;
     if (offsets[i] + dstShape[i] > srcShape[i])
-      return emitOpError("invalid offset at dimension ") << i
-             << ": offset(" << offsets[i] << ") + shape(" << dstShape[i]
+      return emitOpError("invalid offset at dimension ")
+             << i << ": offset(" << offsets[i] << ") + shape(" << dstShape[i]
              << ") > source(" << srcShape[i] << ")";
     if (offsets[i] < 0)
       return emitOpError("offset must be non-negative at dimension ") << i;
@@ -195,7 +193,8 @@ LogicalResult ExtractTileOp::verify() {
   //
   // In Triton IR stage, tensor does not have encoding, which is normal;
   // Only in TritonGPU IR stage does encoding exist.
-  // Note: No error is reported here if not aligned, lowering stage will automatically choose SMEM path.
+  // Note: No error is reported here if not aligned, lowering stage will
+  // automatically choose SMEM path.
   auto encoding = srcTy.getEncoding();
   if (!encoding)
     return success();
@@ -206,11 +205,9 @@ LogicalResult ExtractTileOp::verify() {
     auto warpsPerCTA = blocked.getWarpsPerCTA();
     SmallVector<int64_t> ctaTileShape;
     for (size_t i = 0; i < srcShape.size(); ++i) {
-      ctaTileShape.push_back(
-          static_cast<int64_t>(sizePerThread[i]) *
-          static_cast<int64_t>(threadsPerWarp[i]) *
-          static_cast<int64_t>(warpsPerCTA[i])
-      );
+      ctaTileShape.push_back(static_cast<int64_t>(sizePerThread[i]) *
+                             static_cast<int64_t>(threadsPerWarp[i]) *
+                             static_cast<int64_t>(warpsPerCTA[i]));
     }
   }
 
@@ -221,12 +218,8 @@ LogicalResult ExtractTileOp::verify() {
 // InsertTileOp Type Inference + Verification
 // ============================================================================
 LogicalResult InsertTileOp::inferReturnTypes(
-    MLIRContext *context,
-    std::optional<Location> location,
-    ValueRange operands,
-    DictionaryAttr attributes,
-    OpaqueProperties properties,
-    RegionRange regions,
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   (void)context;
   (void)location;
@@ -257,8 +250,10 @@ LogicalResult InsertTileOp::inferReturnTypes(
 // InsertTileOp Verification
 //
 // For dynamic index (index operand is not arith.constant):
-//   - Only check constraints that are known at compile time: tile_shape positivity, divisibility, element type, rank/result shape match
-//   - Skip out-of-bounds and insertion region boundary checks (only known at runtime)
+//   - Only check constraints that are known at compile time: tile_shape
+//   positivity, divisibility, element type, rank/result shape match
+//   - Skip out-of-bounds and insertion region boundary checks (only known at
+//   runtime)
 //
 // For static index: perform full checks (same as original implementation)
 // ============================================================================
@@ -289,20 +284,24 @@ LogicalResult InsertTileOp::verify() {
   if (dstShape != srcShape)
     return emitOpError("result shape must equal source shape");
 
-  // Check 4: tile_shape must be positive in each dimension and divide source shape
+  // Check 4: tile_shape must be positive in each dimension and divide source
+  // shape
   SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
   int64_t totalTiles = 1;
   for (size_t i = 0; i < srcShape.size(); ++i) {
     if (tileShape[i] <= 0)
       return emitOpError("tile shape must be positive at dimension ") << i;
     if (srcShape[i] % tileShape[i] != 0)
-      return emitOpError("source shape must be divisible by tile shape at dimension ")
-             << i << " (source=" << srcShape[i] << ", tile=" << tileShape[i] << ")";
+      return emitOpError(
+                 "source shape must be divisible by tile shape at dimension ")
+             << i << " (source=" << srcShape[i] << ", tile=" << tileShape[i]
+             << ")";
     logicalGridShape[i] = srcShape[i] / tileShape[i];
     totalTiles *= logicalGridShape[i];
   }
 
-  // Check 5: insert_tile updates values but does not change global layout, result encoding must match source encoding
+  // Check 5: insert_tile updates values but does not change global layout,
+  // result encoding must match source encoding
   auto srcEnc = srcTy.getEncoding();
   auto dstEnc = dstTy.getEncoding();
   if (srcEnc && dstEnc && srcEnc != dstEnc)
@@ -310,9 +309,11 @@ LogicalResult InsertTileOp::verify() {
 
   // --- Determine if index is a static constant ---
   // insert_tile index is the 3rd operand: (src, tile, index).
-  auto idxDef = getOperation()->getOperand(2).getDefiningOp<arith::ConstantOp>();
+  auto idxDef =
+      getOperation()->getOperand(2).getDefiningOp<arith::ConstantOp>();
   if (!idxDef) {
-    // Dynamic index: skip out-of-bounds and insertion region boundary checks, handled at lowering stage
+    // Dynamic index: skip out-of-bounds and insertion region boundary checks,
+    // handled at lowering stage
     return success();
   }
 
@@ -340,8 +341,8 @@ LogicalResult InsertTileOp::verify() {
     if (offsets[i] < 0)
       return emitOpError("offset must be non-negative at dimension ") << i;
     if (offsets[i] + tileShape[i] > srcShape[i])
-      return emitOpError("invalid insertion region at dimension ") << i
-             << ": offset(" << offsets[i] << ") + tile(" << tileShape[i]
+      return emitOpError("invalid insertion region at dimension ")
+             << i << ": offset(" << offsets[i] << ") + tile(" << tileShape[i]
              << ") > source(" << srcShape[i] << ")";
   }
 

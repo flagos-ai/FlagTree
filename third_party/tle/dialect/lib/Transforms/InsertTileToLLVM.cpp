@@ -1,14 +1,14 @@
+#include "TleTileToLLVMUtils.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/Builders.h"
-#include "llvm/ADT/STLExtras.h"
-#include "TleTileToLLVMUtils.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
-#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
 
@@ -55,12 +55,10 @@ static bool isCTATileAligned(InsertTileOp op, int64_t linearIndex) {
   return true;
 }
 // Lowering for static, CTA-aligned insert_tile (register shuffle path).
-static LogicalResult lowerInsertTileStatic(
-    InsertTileOp op,
-    InsertTileOp::Adaptor adaptor,
-    ConversionPatternRewriter &rewriter,
-    const LLVMTypeConverter *typeConverter,
-    int64_t index) {
+static LogicalResult
+lowerInsertTileStatic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
+                      ConversionPatternRewriter &rewriter,
+                      const LLVMTypeConverter *typeConverter, int64_t index) {
   Location loc = op->getLoc();
   auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
   auto tileTy = cast<RankedTensorType>(op.getTile().getType());
@@ -116,12 +114,10 @@ static LogicalResult lowerInsertTileStatic(
       return op.emitError("tile write region out of source bounds");
   }
 
-  unsigned totalSrcCTAs =
-      std::accumulate(srcCTAShape.begin(), srcCTAShape.end(), 1u,
-                      std::multiplies<>());
-  unsigned totalTileCTAs =
-      std::accumulate(tileCTAShape.begin(), tileCTAShape.end(), 1u,
-                      std::multiplies<>());
+  unsigned totalSrcCTAs = std::accumulate(
+      srcCTAShape.begin(), srcCTAShape.end(), 1u, std::multiplies<>());
+  unsigned totalTileCTAs = std::accumulate(
+      tileCTAShape.begin(), tileCTAShape.end(), 1u, std::multiplies<>());
 
   // Compute per-CTA elements per thread for source and tile.
   unsigned srcElemsPerThreadPerCTA =
@@ -141,9 +137,9 @@ static LogicalResult lowerInsertTileStatic(
         coordInTileTensor, firstTileCoordinate, std::plus<unsigned>());
 
     auto linearIdxInSrcTensor =
-      tle::linearize(coordInSrcTensor, srcCTAShape, srcCTAOrder);
+        tle::linearize(coordInSrcTensor, srcCTAShape, srcCTAOrder);
     auto linearIdxInTileTensor =
-      tle::linearize(coordInTileTensor, tileCTAShape, tileCTAOrder);
+        tle::linearize(coordInTileTensor, tileCTAShape, tileCTAOrder);
 
     size_t srcStartIdx = linearIdxInSrcTensor * srcElemsPerThreadPerCTA;
     size_t tileStartIdx = linearIdxInTileTensor * tileElemsPerThreadPerCTA;
@@ -157,23 +153,21 @@ static LogicalResult lowerInsertTileStatic(
              << " tileVals.size()=" << tileVals.size();
     }
 
-    llvm::copy(ArrayRef<Value>(tileVals).slice(tileStartIdx,
-                                               srcElemsPerThreadPerCTA),
-               resultVals.begin() + srcStartIdx);
+    llvm::copy(
+        ArrayRef<Value>(tileVals).slice(tileStartIdx, srcElemsPerThreadPerCTA),
+        resultVals.begin() + srcStartIdx);
   }
 
-  Value ret =
-      packLLElements(loc, typeConverter, resultVals, rewriter, dstTy);
+  Value ret = packLLElements(loc, typeConverter, resultVals, rewriter, dstTy);
   rewriter.replaceOp(op, ret);
   return success();
 }
 
 // Dynamic or non-CTA-aligned lowering: use SMEM relay path.
-static LogicalResult lowerInsertTileViaSMEMDynamic(
-    InsertTileOp op,
-    InsertTileOp::Adaptor adaptor,
-    ConversionPatternRewriter &rewriter,
-    const LLVMTypeConverter *typeConverter) {
+static LogicalResult
+lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
+                              ConversionPatternRewriter &rewriter,
+                              const LLVMTypeConverter *typeConverter) {
   Location loc = op->getLoc();
   auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
   auto tileTy = cast<RankedTensorType>(op.getTile().getType());
@@ -277,8 +271,8 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
     for (int d = 0; d < rank; ++d) {
       Value baseOff = rewriter.create<LLVM::ConstantOp>(
           loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileOffsets[i][d]));
-      Value globalCoordV = rewriter.create<LLVM::AddOp>(
-          loc, i32Ty, baseOff, tileThreadOffsets[d]);
+      Value globalCoordV = rewriter.create<LLVM::AddOp>(loc, i32Ty, baseOff,
+                                                        tileThreadOffsets[d]);
 
       Value tileShapeV = rewriter.create<LLVM::ConstantOp>(
           loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
@@ -293,9 +287,9 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
           rewriter.create<LLVM::MulOp>(loc, i32Ty, tileLocalCoordV, sb));
     }
 
-    Value sp = rewriter.create<LLVM::GEPOp>(
-        loc, smemPtrTy, i8Ty, smemBase, ValueRange{smemByteOffsetV},
-        LLVM::GEPNoWrapFlags::inbounds);
+    Value sp = rewriter.create<LLVM::GEPOp>(loc, smemPtrTy, i8Ty, smemBase,
+                                            ValueRange{smemByteOffsetV},
+                                            LLVM::GEPNoWrapFlags::inbounds);
     // Store tile value to shared memory buffer.
     rewriter.create<LLVM::StoreOp>(loc, tileVals[i], sp, elemBytes);
   }
@@ -316,13 +310,13 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
     for (int d = 0; d < rank; ++d) {
       Value baseOff = rewriter.create<LLVM::ConstantOp>(
           loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)srcOffsets[i][d]));
-      Value globalCoordV = rewriter.create<LLVM::AddOp>(
-          loc, i32Ty, baseOff, srcThreadOffsets[d]);
+      Value globalCoordV = rewriter.create<LLVM::AddOp>(loc, i32Ty, baseOff,
+                                                        srcThreadOffsets[d]);
 
-      Value ge = rewriter.create<LLVM::ICmpOp>(
-          loc, LLVM::ICmpPredicate::uge, globalCoordV, tileStartVals[d]);
-      Value lt = rewriter.create<LLVM::ICmpOp>(
-          loc, LLVM::ICmpPredicate::ult, globalCoordV, tileEndVals[d]);
+      Value ge = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::uge,
+                                               globalCoordV, tileStartVals[d]);
+      Value lt = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ult,
+                                               globalCoordV, tileEndVals[d]);
       inRange = rewriter.create<LLVM::AndOp>(
           loc, rewriter.create<LLVM::AndOp>(loc, ge, lt), inRange);
 
@@ -339,9 +333,9 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
           rewriter.create<LLVM::MulOp>(loc, i32Ty, tileLocalSafeV, sb));
     }
 
-    Value lp = rewriter.create<LLVM::GEPOp>(
-        loc, smemPtrTy, i8Ty, smemBase, ValueRange{smemByteOffsetV},
-        LLVM::GEPNoWrapFlags::inbounds);
+    Value lp = rewriter.create<LLVM::GEPOp>(loc, smemPtrTy, i8Ty, smemBase,
+                                            ValueRange{smemByteOffsetV},
+                                            LLVM::GEPNoWrapFlags::inbounds);
     Value tileLoaded =
         rewriter.create<LLVM::LoadOp>(loc, llvmElemTy, lp, elemBytes);
     // Overwrite source value with tile value if in range.
@@ -360,14 +354,13 @@ static LogicalResult lowerInsertTileViaSMEMDynamic(
 // ============================================================================
 // InsertTileOp -> LLVM conversion
 // ============================================================================
-struct InsertTileOpConversion
-    : public ConvertOpToLLVMPattern<InsertTileOp> {
+struct InsertTileOpConversion : public ConvertOpToLLVMPattern<InsertTileOp> {
 
   using ConvertOpToLLVMPattern<InsertTileOp>::ConvertOpToLLVMPattern;
 
-  LogicalResult matchAndRewrite(
-      InsertTileOp op, OpAdaptor adaptor,
-      ConversionPatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(InsertTileOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     Location loc = op->getLoc();
 
@@ -414,10 +407,9 @@ struct InsertTileOpConversion
 // ============================================================================
 namespace mlir::triton::tle {
 
-void populateInsertTileOpToLLVMPatterns(
-    LLVMTypeConverter &typeConverter,
-    RewritePatternSet &patterns,
-    unsigned benefit) {
+void populateInsertTileOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                        RewritePatternSet &patterns,
+                                        unsigned benefit) {
   patterns.add<InsertTileOpConversion>(typeConverter, benefit);
 }
 

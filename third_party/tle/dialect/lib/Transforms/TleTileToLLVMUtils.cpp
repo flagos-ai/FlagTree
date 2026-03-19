@@ -8,9 +8,11 @@ using namespace mlir;
 namespace mlir::triton::tle {
 
 namespace ttg = mlir::triton::gpu;
-// Get the order of dimensions for CTA tile, from encoding if available, otherwise reverse order.
+// Get the order of dimensions for CTA tile, from encoding if available,
+// otherwise reverse order.
 SmallVector<unsigned> getCTATileOrder(RankedTensorType type) {
-  if (auto blockedLayout = dyn_cast<ttg::BlockedEncodingAttr>(type.getEncoding())) {
+  if (auto blockedLayout =
+          dyn_cast<ttg::BlockedEncodingAttr>(type.getEncoding())) {
     auto order = blockedLayout.getOrder();
     return SmallVector<unsigned>(order.begin(), order.end());
   }
@@ -22,7 +24,8 @@ SmallVector<unsigned> getCTATileOrder(RankedTensorType type) {
     order.push_back(rank - 1 - i);
   return order;
 }
-// Convert a linear index to multi-dimensional coordinates according to the given order.
+// Convert a linear index to multi-dimensional coordinates according to the
+// given order.
 SmallVector<unsigned> delinearize(unsigned linearIndex,
                                   ArrayRef<unsigned> shape,
                                   ArrayRef<unsigned> order) {
@@ -35,8 +38,10 @@ SmallVector<unsigned> delinearize(unsigned linearIndex,
   }
   return result;
 }
-// Convert multi-dimensional coordinates to a linear index according to the given order.
-unsigned linearize(ArrayRef<unsigned> coords, ArrayRef<unsigned> shape, ArrayRef<unsigned> order) {
+// Convert multi-dimensional coordinates to a linear index according to the
+// given order.
+unsigned linearize(ArrayRef<unsigned> coords, ArrayRef<unsigned> shape,
+                   ArrayRef<unsigned> order) {
   unsigned result = 0;
   unsigned stride = 1;
   for (size_t i = 0; i < order.size(); ++i) {
@@ -71,9 +76,10 @@ SmallVector<unsigned> getShapePerCTATile(RankedTensorType type) {
   llvm_unreachable("tile op only supports BlockedEncoding");
 }
 
-// Map the linear thread index (according to BlockedEncoding rules) to the multi-dimensional 
-// "global data start index" in the tensor.
-SmallVector<Value> computeThreadOffsets(Location loc, ConversionPatternRewriter &rewriter,
+// Map the linear thread index (according to BlockedEncoding rules) to the
+// multi-dimensional "global data start index" in the tensor.
+SmallVector<Value> computeThreadOffsets(Location loc,
+                                        ConversionPatternRewriter &rewriter,
                                         RankedTensorType tensorType) {
   auto bl = cast<ttg::BlockedEncodingAttr>(tensorType.getEncoding());
   auto sizePerThread = bl.getSizePerThread();
@@ -127,12 +133,18 @@ SmallVector<Value> computeThreadOffsets(Location loc, ConversionPatternRewriter 
         loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)threadsPerWarp[d]));
     Value spt = rewriter.create<LLVM::ConstantOp>(
         loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)sizePerThread[d]));
-    // warpID * threadsPerWarp gives the starting thread index of this warp in the dimension.
-    Value warpContrib = rewriter.create<LLVM::MulOp>(loc, i32Ty, warpInDim[d], tpw);
-    // Add the lane index within the warp to get the global thread index in the dimension.
-    Value threadCoord = rewriter.create<LLVM::AddOp>(loc, i32Ty, warpContrib, laneInDim[d]);
-    // Multiply the global thread index by the number of elements per thread to get the starting element index for this thread.
-    threadOffsets[d] = rewriter.create<LLVM::MulOp>(loc, i32Ty, threadCoord, spt);
+    // warpID * threadsPerWarp gives the starting thread index of this warp in
+    // the dimension.
+    Value warpContrib =
+        rewriter.create<LLVM::MulOp>(loc, i32Ty, warpInDim[d], tpw);
+    // Add the lane index within the warp to get the global thread index in the
+    // dimension.
+    Value threadCoord =
+        rewriter.create<LLVM::AddOp>(loc, i32Ty, warpContrib, laneInDim[d]);
+    // Multiply the global thread index by the number of elements per thread to
+    // get the starting element index for this thread.
+    threadOffsets[d] =
+        rewriter.create<LLVM::MulOp>(loc, i32Ty, threadCoord, spt);
   }
 
   return threadOffsets;

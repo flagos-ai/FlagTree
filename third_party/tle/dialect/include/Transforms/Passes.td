@@ -4,7 +4,8 @@
 
 include "mlir/Pass/PassBase.td"
 
-def TritonTleEarlyAssignMemorySpace : Pass<"triton-tle-early-assign-memory-space", "mlir::ModuleOp"> {
+def TritonTleEarlyAssignMemorySpace
+    : Pass<"triton-tle-early-assign-memory-space", "mlir::ModuleOp"> {
   let summary = "early assign memory space";
 
   let description = [{
@@ -33,7 +34,8 @@ def TritonTleAssignLocalPointersEncoding
 
 def TritonTleInsertLocalPointerBarriers
     : Pass<"triton-tle-insert-local-pointer-barriers", "mlir::ModuleOp"> {
-  let summary = "insert CTA barriers between tle.local_pointers stores and loads";
+  let summary =
+      "insert CTA barriers between tle.local_pointers stores and loads";
 
   let description = [{
     This pass ensures data staged through ``tle.local_pointers`` backed shared
@@ -48,7 +50,8 @@ def TritonTleInsertLocalPointerBarriers
                            "mlir::triton::TritonDialect"];
 }
 
-def TritonTleLowerAsyncLoad : Pass<"triton-tle-lower-async-load", "mlir::ModuleOp"> {
+def TritonTleLowerAsyncLoad
+    : Pass<"triton-tle-lower-async-load", "mlir::ModuleOp"> {
   let summary = "Lower TLE async load operations";
 
   let description = [{
@@ -60,7 +63,8 @@ def TritonTleLowerAsyncLoad : Pass<"triton-tle-lower-async-load", "mlir::ModuleO
                            "mlir::triton::TritonDialect"];
 }
 
-def TritonTleLowerTmaCopy : Pass</*cli-arg*/"triton-tle-lower-tma-copy", /*Op*/"mlir::ModuleOp"> {
+def TritonTleLowerTmaCopy
+    : Pass</*cli-arg*/ "triton-tle-lower-tma-copy", /*Op*/ "mlir::ModuleOp"> {
 
   let summary = "Lower TLE TMA copy operations";
 
@@ -77,7 +81,8 @@ def TritonTleLowerTmaCopy : Pass</*cli-arg*/"triton-tle-lower-tma-copy", /*Op*/"
                            "mlir::arith::ArithDialect"];
 }
 
-def TritonTleLowerExtractTile : Pass<"triton-tle-lower-extract-tile", "mlir::ModuleOp"> {
+def TritonTleLowerExtractTile
+    : Pass<"triton-tle-lower-extract-tile", "mlir::ModuleOp"> {
   let summary = "Lower TLE extract_tile operations";
 
   let description = [{
@@ -90,7 +95,8 @@ def TritonTleLowerExtractTile : Pass<"triton-tle-lower-extract-tile", "mlir::Mod
                            "mlir::triton::gpu::TritonGPUDialect"];
 }
 
-def TritonTleLowerInsertTile : Pass<"triton-tle-lower-insert-tile", "mlir::ModuleOp"> {
+def TritonTleLowerInsertTile
+    : Pass<"triton-tle-lower-insert-tile", "mlir::ModuleOp"> {
   let summary = "Lower TLE insert_tile operations";
 
   let description = [{
@@ -102,7 +108,8 @@ def TritonTleLowerInsertTile : Pass<"triton-tle-lower-insert-tile", "mlir::Modul
                            "mlir::triton::TritonDialect",
                            "mlir::triton::gpu::TritonGPUDialect"];
 }
-def TleConvertArgToMemDesc : Pass<"tle-convert-arg-to-memdesc", "mlir::ModuleOp"> {}
+def TleConvertArgToMemDesc
+    : Pass<"tle-convert-arg-to-memdesc", "mlir::ModuleOp"> {}
 
 def TleDSLRegionInline : Pass<"tle-dslregion-inline", "mlir::ModuleOp"> {}
 

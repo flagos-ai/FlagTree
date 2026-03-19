@@ -9,13 +9,10 @@ namespace mlir::triton::tle {
 #define GEN_PASS_DEF_TRITONTLELOWEREXTRACTTILE
 #include "tle/dialect/include/Transforms/Passes.h.inc"
 
-class TleLowerExtractTile 
+class TleLowerExtractTile
     : public impl::TritonTleLowerExtractTileBase<TleLowerExtractTile> {
-  
-  void runOnOperation() override {
-    return;
-  }
-};
 
+  void runOnOperation() override { return; }
+};
 
 } // namespace mlir::triton::tle

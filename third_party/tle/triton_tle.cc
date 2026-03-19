@@ -72,49 +72,41 @@ void init_triton_tle_ir(py::module &&m) {
   // Add TLE extensions to the existing TritonOpBuilder class
   builder_cls
       // TLE-Lite
-      .def("create_extract_tile",
-           [](TritonOpBuilder &self, Value &input,
-              //std::vector<int64_t> &offsets,
-              Value &index,
-              std::vector<int64_t> &tileShape) -> Value {
-             auto op = self.create<tle::ExtractTileOp>(
-                 input, index, tileShape
-             );
-             return op.getResult();
-           },
-           py::arg("input"),
-           py::arg("index"),
-           py::arg("tileShape"),
-           "Create extract_tile operation")
-      .def("create_insert_tile",
-           [](TritonOpBuilder &self, Value &input,
-              Value &tile,
-              Value &index) -> Value {
-             auto op = self.create<tle::InsertTileOp>(
-                 input, tile, index
-             );
-             return op.getResult();
-           },
-           py::arg("input"),
-           py::arg("tile"),
-           py::arg("index"),
-           "Create insert_tile operation")
+      .def(
+          "create_extract_tile",
+          [](TritonOpBuilder &self, Value &input,
+             // std::vector<int64_t> &offsets,
+             Value &index, std::vector<int64_t> &tileShape) -> Value {
+            auto op = self.create<tle::ExtractTileOp>(input, index, tileShape);
+            return op.getResult();
+          },
+          py::arg("input"), py::arg("index"), py::arg("tileShape"),
+          "Create extract_tile operation")
+      .def(
+          "create_insert_tile",
+          [](TritonOpBuilder &self, Value &input, Value &tile,
+             Value &index) -> Value {
+            auto op = self.create<tle::InsertTileOp>(input, tile, index);
+            return op.getResult();
+          },
+          py::arg("input"), py::arg("tile"), py::arg("index"),
+          "Create insert_tile operation")
       // TLE-Struct
       .def("make_swizzled_shared_encoding_attr",
-            [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
-               unsigned maxPhase, std::vector<unsigned> order,
-               std::vector<unsigned> CTAsPerCGA,
-               std::vector<unsigned> CTASplitNum,
-               std::vector<unsigned> CTAOrder) {
-              assert(order.size() == CTAsPerCGA.size() && "shape mismatch");
-              assert(order.size() == CTASplitNum.size() && "shape mismatch");
-              assert(order.size() == CTAOrder.size() && "shape mismatch");
-              auto context = self.getBuilder().getContext();
-              auto CTALayout = ttg::CTAEncodingAttr::fromSplitParams(
-                  context, CTAsPerCGA, CTASplitNum, CTAOrder);
-              return mlir::cast<Attribute>(ttg::SwizzledSharedEncodingAttr::get(
-                  context, vectorSize, perPhase, maxPhase, order, CTALayout));
-            })
+           [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
+              unsigned maxPhase, std::vector<unsigned> order,
+              std::vector<unsigned> CTAsPerCGA,
+              std::vector<unsigned> CTASplitNum,
+              std::vector<unsigned> CTAOrder) {
+             assert(order.size() == CTAsPerCGA.size() && "shape mismatch");
+             assert(order.size() == CTASplitNum.size() && "shape mismatch");
+             assert(order.size() == CTAOrder.size() && "shape mismatch");
+             auto context = self.getBuilder().getContext();
+             auto CTALayout = ttg::CTAEncodingAttr::fromSplitParams(
+                 context, CTAsPerCGA, CTASplitNum, CTAOrder);
+             return mlir::cast<Attribute>(ttg::SwizzledSharedEncodingAttr::get(
+                 context, vectorSize, perPhase, maxPhase, order, CTALayout));
+           })
       .def("make_nv_mma_shared_encoding_attr",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
               std::vector<unsigned> order, Type &elemType,
@@ -268,9 +260,11 @@ void init_triton_tle_passes(py::module &&m) {
                      tle::createTritonTleLowerAsyncLoad);
   ADD_PASS_WRAPPER_0("add_lower_tma_copy", tle::createTritonTleLowerTmaCopy);
 
-  ADD_PASS_WRAPPER_0("add_lower_extract_tile", tle::createTritonTleLowerExtractTile);
-  
-  ADD_PASS_WRAPPER_0("add_lower_insert_tile", tle::createTritonTleLowerInsertTile);
+  ADD_PASS_WRAPPER_0("add_lower_extract_tile",
+                     tle::createTritonTleLowerExtractTile);
+
+  ADD_PASS_WRAPPER_0("add_lower_insert_tile",
+                     tle::createTritonTleLowerInsertTile);
 }
 
 void init_tle_raw_ir(py::module &&m) {
