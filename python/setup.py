@@ -799,7 +799,7 @@ with open(readme_path, "r", encoding="utf-8") as fh:
 
 setup(
     name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
-    version="0.4.0" + os.environ.get("FLAGTREE_WHEEL_VERSION_SUFFIX", ""),
+    version=os.environ.get("FLAGTREE_WHEEL_VERSION", "") or "0.5.0" + get_git_commit_hash(),
     author="FlagOS",
     author_email="contact@flagos.io",
     description=
