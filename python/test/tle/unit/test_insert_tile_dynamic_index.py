@@ -4,14 +4,10 @@ import triton.language as tl
 import triton.experimental.tle as tle
 import pytest
 
+
 @triton.jit
-def simple_insert_kernel(
-    x_ptr, y_ptr, 
-    stride_xb, stride_xm, stride_xn, 
-    stride_ym, stride_yn, 
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, 
-    TILE_M: tl.constexpr, TILE_N: tl.constexpr
-):
+def simple_insert_kernel(x_ptr, y_ptr, stride_xb, stride_xm, stride_xn, stride_ym, stride_yn, BLOCK_M: tl.constexpr,
+                         BLOCK_N: tl.constexpr, TILE_M: tl.constexpr, TILE_N: tl.constexpr):
     # 1. Get 3D coordinates: z (layer/batch), m (row block), n (col block)
     pid_z = tl.program_id(0)
     pid_m = tl.program_id(1)
@@ -45,11 +41,12 @@ def simple_insert_kernel(
 # Minimal Test
 # ------------------------------------------------------------
 
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_simple_insert_kernel_inserts_tiles_correctly():
-    B = 2          # 2 layers (Z dimension)
+    B = 2  # 2 layers (Z dimension)
     M, N = 32, 32  # 32x32 size per layer
-    TM, TN = 16, 16 # The inserted small tile is 16x16
+    TM, TN = 16, 16  # The inserted small tile is 16x16
 
     # x is an all-zero 3D background tensor
     x = torch.zeros((B, M, N), device="cuda", dtype=torch.float32)

@@ -4,6 +4,7 @@ import triton.language as tl
 import triton.experimental.tle as tle
 import pytest
 
+
 @triton.jit
 def insert_tile_kernel(
     x_ptr,
@@ -35,9 +36,9 @@ def test_insert_tile_static_index():
     x = torch.arange(M * N, device="cuda", dtype=torch.float32).reshape(M, N)
     y = (100000 + torch.arange(TM * TN, device="cuda", dtype=torch.float32)).reshape(TM, TN)
     out = torch.empty_like(x)
-    
+
     print(f"Running insert_tile kernel with x={M}x{N}, tile={TM}x{TN}, index=[1, 1]...")
-    insert_tile_kernel[(1,)](x, y, out, M, N, TM, TN)
+    insert_tile_kernel[(1, )](x, y, out, M, N, TM, TN)
     print("Kernel executed.\n")
 
     expected = x.clone()
@@ -58,5 +59,5 @@ def test_insert_tile_static_index():
     print(y[0:4, 0:4].cpu().int())
     print("output out[128:132, 128:132]:")
     print(out[128:132, 128:132].cpu().int())
-    
+
     assert torch.allclose(out, expected)

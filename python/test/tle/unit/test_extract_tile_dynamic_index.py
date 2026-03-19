@@ -4,14 +4,10 @@ import triton.language as tl
 import triton.experimental.tle as tle
 import pytest
 
+
 @triton.jit
-def simple_extract_kernel(
-    x_ptr, out_ptr, 
-    stride_xb, stride_xm, stride_xn, 
-    stride_ob, stride_om, stride_on,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, 
-    TILE_M: tl.constexpr, TILE_N: tl.constexpr
-):
+def simple_extract_kernel(x_ptr, out_ptr, stride_xb, stride_xm, stride_xn, stride_ob, stride_om, stride_on,
+                          BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, TILE_M: tl.constexpr, TILE_N: tl.constexpr):
     # 1. Get 3D coordinates: z (layer/batch)
     pid_z = tl.program_id(0)
 
@@ -40,13 +36,14 @@ def simple_extract_kernel(
 # Minimal Test
 # ------------------------------------------------------------
 
+
 def test_simple_extract_kernel_cuda():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is not available; skipping Triton CUDA test.")
 
-    B = 2          # 2 layers (Z dimension)
+    B = 2  # 2 layers (Z dimension)
     M, N = 32, 32  # 32x32 size per layer
-    TM, TN = 16, 16 # Extracted tile size 16x16
+    TM, TN = 16, 16  # Extracted tile size 16x16
 
     # Initialize x background tensor
     x = torch.zeros((B, M, N), device="cuda", dtype=torch.float32)

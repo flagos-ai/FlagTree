@@ -4,6 +4,7 @@ import triton.language as tl
 import triton.experimental.tle as tle
 import pytest
 
+
 @triton.jit
 def extract_tile_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr):
     # Set M, N as input matrix dimensions
@@ -12,7 +13,7 @@ def extract_tile_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr):
     x = tl.load(x_ptr + offs_m[:, None] * N + offs_n[None, :])
 
     # Extract a 128x128 tile starting from index [1, 1]
-    # Note: index refers to the tile position (e.g., index [1, 1] for 128x128 tiles 
+    # Note: index refers to the tile position (e.g., index [1, 1] for 128x128 tiles
     # starts at row 128 and column 128)
     tile = tle.extract_tile(x, index=[1, 1], tile_shape=[128, 128])
 
@@ -32,11 +33,11 @@ def test_extract_tile_kernel():
     out = torch.zeros((128, 128), device='cuda', dtype=torch.float32)
 
     # Launch kernel with a single program (grid size 1)
-    extract_tile_kernel[(1,)](x, out, M, N)
+    extract_tile_kernel[(1, )](x, out, M, N)
 
     # Verification:
-    # Since index=[1, 1] and tile_shape=[128, 128], the extraction starts at 
+    # Since index=[1, 1] and tile_shape=[128, 128], the extraction starts at
     # row 1 * 128 and column 1 * 128.
     expected = x[128:256, 128:256]
-    
+
     assert torch.allclose(out, expected), "The extracted tile does not match the expected slice!"
