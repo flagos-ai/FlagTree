@@ -474,6 +474,11 @@ def _linearize_dynamic_multidim_index(index_tuple, src_shape, tile_shape_ints, _
     for i in builtins.reversed(builtins.range(len(grid))):
         strides[i] = acc
         acc *= grid[i]
+
+    # Validation: index_tuple rank must match grid rank
+    if len(index_tuple) != len(grid):
+        raise ValueError(f"Dynamic multi-dim index rank {len(index_tuple)} does not match grid rank {len(grid)}")
+
     linear_ir = None
     for i, v in builtins.enumerate(index_tuple):
         stride = strides[i]

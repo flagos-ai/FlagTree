@@ -15,14 +15,6 @@ namespace {
 // Triton shared-memory pointers map to LLVM address space 3 (NVVM shared).
 constexpr int kSharedMemoryAddressSpace = 3;
 } // namespace
-/*void ExtractTileOp::build(::mlir::OpBuilder &odsBuilder,
-                          ::mlir::OperationState &odsState, Value input,
-                          Value index, ArrayRef<int64_t> tileShape) {
-  auto inputType = cast<RankedTensorType>(input.getType());
-  SmallVector<Type> tys = {
-      RankedTensorType::get(tileShape, inputType.getElementType())};
-  build(odsBuilder, odsState, tys, input, index);
-}*/
 
 //============================================================================
 // Helper function: Get CTA tile shape
@@ -340,7 +332,7 @@ LogicalResult InsertTileOp::verify() {
   for (size_t i = 0; i < srcShape.size(); ++i) {
     if (offsets[i] < 0)
       return emitOpError("offset must be non-negative at dimension ") << i;
-    if (offsets[i] + tileShape[i] > srcShape[i])
+    else if (offsets[i] + tileShape[i] > srcShape[i])
       return emitOpError("invalid insertion region at dimension ")
              << i << ": offset(" << offsets[i] << ") + tile(" << tileShape[i]
              << ") > source(" << srcShape[i] << ")";

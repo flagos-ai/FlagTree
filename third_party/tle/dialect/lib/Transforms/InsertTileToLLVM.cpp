@@ -248,6 +248,12 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 
   // Compute tile start/end coordinates for dynamic index.
   Value dynIndex = adaptor.getIndex();
+  unsigned dynIndexWidth = dynIndex.getType().getIntOrFloatBitWidth();
+  if (dynIndexWidth > 32) {
+    dynIndex = rewriter.create<LLVM::TruncOp>(loc, i32Ty, dynIndex);
+  } else if (dynIndexWidth < 32) {
+    dynIndex = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, dynIndex);
+  }
   SmallVector<Value> tileStartVals(rank), tileEndVals(rank);
   for (int d = 0; d < rank; ++d) {
     Value sv = rewriter.create<LLVM::ConstantOp>(

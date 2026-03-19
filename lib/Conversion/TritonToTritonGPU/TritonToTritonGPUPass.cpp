@@ -834,21 +834,15 @@ public:
   LogicalResult
   matchAndRewrite(tle::ExtractTileOp op, tle::ExtractTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "\n========== TleExtractTileOpPattern ==========\n";
-    llvm::errs() << "Before conversion:\n";
     op->dump();
 
     auto srcType = dyn_cast<RankedTensorType>(adaptor.getSrc().getType());
-    if (!srcType) {
-      llvm::errs() << "ERROR: source is not ranked tensor\n";
+    if (!srcType){
       return op.emitError("source must be a ranked tensor");
     }
-    llvm::errs() << "Source type: " << srcType << "\n";
     auto srcEnc = srcType.getEncoding();
-    if (srcEnc) {
-      llvm::errs() << srcEnc << "\n";
-    } else {
-      llvm::errs() << "nullptr \n";
+    if (!srcEnc)
+    {
       return op.emitError("source tensor must have encoding attribute");
     }
 
@@ -874,35 +868,25 @@ public:
   LogicalResult
   matchAndRewrite(tle::InsertTileOp op, tle::InsertTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "\n========== TleInsertTileOpPattern ==========\n";
-    llvm::errs() << "Before conversion:\n";
     op->dump();
 
     auto srcType = dyn_cast<RankedTensorType>(adaptor.getSrc().getType());
     if (!srcType) {
-      llvm::errs() << "ERROR: source is not ranked tensor\n";
       return op.emitError("source must be a ranked tensor");
     }
-    llvm::errs() << "Source type: " << srcType << "\n";
 
     auto srcEnc = srcType.getEncoding();
-    if (srcEnc) {
-      llvm::errs() << srcEnc << "\n";
-    } else {
-      llvm::errs() << "nullptr\n";
+    if (!srcEnc) {
       return op.emitError("source tensor must have encoding attribute");
     }
 
     auto tileType = dyn_cast<RankedTensorType>(adaptor.getTile().getType());
     if (!tileType) {
-      llvm::errs() << "ERROR: tile is not ranked tensor\n";
       return op.emitError("tile must be a ranked tensor");
     }
-    llvm::errs() << "Tile type: " << tileType << "\n";
 
     auto tileEnc = tileType.getEncoding();
     if (!tileEnc) {
-      llvm::errs() << "tile encoding: nullptr\n";
       return op.emitError("tile tensor must have encoding attribute");
     }
 
@@ -926,7 +910,11 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
            TleInsertTileOpPattern, GenericOpPattern<tle::LocalPointersOp>,
            GenericOpPattern<tle::RemotePointersOp>,
            GenericOpPattern<tle::DistributedBarrierOp>,
+<<<<<<< HEAD
            GenericOpPattern<tle::YieldOp>, GenericOpPattern<tle::InsertTileOp>,
+=======
+           GenericOpPattern<tle::YieldOp>,
+>>>>>>> 548eef110 ([TLE]Fix LLVM lowering index type mismatch and other issues)
            GenericOpPattern<tle::ExtractAllocatedPtrOp>,
            GenericOpPattern<tle::ExtractAlignedPtrOp>,
            GenericOpPattern<tle::ExtractOffsetOp>,
