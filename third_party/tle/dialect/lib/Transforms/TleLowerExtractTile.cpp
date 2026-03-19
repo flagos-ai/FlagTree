@@ -12,7 +12,7 @@ namespace mlir::triton::tle {
 class TleLowerExtractTile
     : public impl::TritonTleLowerExtractTileBase<TleLowerExtractTile> {
 
-  void runOnOperation() override { return; }
+  void runOnOperation() override {}
 };
 
 } // namespace mlir::triton::tle

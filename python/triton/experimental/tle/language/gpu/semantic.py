@@ -12,7 +12,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 from triton._C.libtriton import ir
 from triton import language as tl
 from . import types as tle
-
+from math import prod
 
 class TLESemanticError(Exception):
     """TLE operation semantic error exception class"""
@@ -137,7 +137,7 @@ class TLESemantic:
                 raise TLESemanticError("All index values must be int or constexpr", "extract_tile")
             # Check tile grid out-of-bounds
             if all(isinstance(dim, int) for dim in src_shape):
-                grid = [src_shape[i] // tile_shape_unwrapped[i] for i in range(len(src_shape))]
+                grid = [src_dim // tile_shape_dim for src_dim, tile_shape_dim in zip(src_shape, tile_shape_unwrapped)]
                 for i, v in enumerate(idx):
                     if v < 0 or v >= grid[i]:
                         raise TLESemanticError(f"Index[{i}]={v} out of bounds for tile grid (0~{grid[i]-1})",
@@ -152,10 +152,8 @@ class TLESemantic:
                 raise TLESemanticError("Index must be non-negative", "extract_tile")
             # Check linear index out-of-bounds
             if all(isinstance(dim, int) for dim in src_shape):
-                grid = [src_shape[i] // tile_shape_unwrapped[i] for i in range(len(src_shape))]
-                total_tiles = 1
-                for g in grid:
-                    total_tiles *= g
+                grid = [src_dim // tile_shape_dim for src_dim, tile_shape_dim in zip(src_shape, tile_shape_unwrapped)]
+                total_tiles = prod(grid)
                 if val >= total_tiles:
                     raise TLESemanticError(f"Linear index {val} out of bounds for total tiles {total_tiles}",
                                            "extract_tile")
@@ -218,13 +216,17 @@ class TLESemantic:
             if val < 0:
                 raise TLESemanticError("Index must be non-negative", "insert_tile")
 
-            total_tiles = 1
-            for g in grid:
-                total_tiles *= g
+            total_tiles = prod(grid)
             if val >= total_tiles:
                 raise TLESemanticError(f"Linear index {val} out of bounds for total tiles {total_tiles}", "insert_tile")
 
-    def analyze_extract_tile_operation(self, src: tl.tensor, index, tile_shape: Sequence[Union[int, any]]) -> None:
+
+    def analyze_extract_tile_operation(
+        self,
+        src: tl.tensor,
+        index,
+        tile_shape: Sequence[Union[int, any]]
+    ) -> None:
         """Analyze extract_tile operation semantics"""
         self.validate_extract_tile_params(src, index, tile_shape)
 

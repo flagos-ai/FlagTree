@@ -12,7 +12,7 @@ namespace mlir::triton::tle {
 class TleLowerInsertTile
     : public impl::TritonTleLowerInsertTileBase<TleLowerInsertTile> {
 
-  void runOnOperation() override { return; }
+  void runOnOperation() override {}
 };
 
 } // namespace mlir::triton::tle

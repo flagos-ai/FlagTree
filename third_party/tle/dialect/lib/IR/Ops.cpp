@@ -16,45 +16,6 @@ namespace {
 constexpr int kSharedMemoryAddressSpace = 3;
 } // namespace
 
-//============================================================================
-// Helper function: Get CTA tile shape
-//============================================================================
-static SmallVector<int64_t> getShapePerCTATile(RankedTensorType type) {
-  auto encoding = type.getEncoding();
-  auto shape = type.getShape();
-
-  if (auto blocked = dyn_cast<gpu::BlockedEncodingAttr>(encoding)) {
-    auto sizePerThread = blocked.getSizePerThread();
-    auto threadsPerWarp = blocked.getThreadsPerWarp();
-    auto warpsPerCTA = blocked.getWarpsPerCTA();
-
-    SmallVector<int64_t> ctaTileShape;
-    for (size_t i = 0; i < shape.size(); ++i) {
-      ctaTileShape.push_back(static_cast<int64_t>(sizePerThread[i]) *
-                             static_cast<int64_t>(threadsPerWarp[i]) *
-                             static_cast<int64_t>(warpsPerCTA[i]));
-    }
-    return ctaTileShape;
-  }
-
-  // Support for other encoding types
-  if (auto linear = dyn_cast<gpu::LinearEncodingAttr>(encoding)) {
-    auto sizePerThread = linear.getSizePerThread();
-    auto threadsPerWarp = linear.getThreadsPerWarp();
-    auto warpsPerCTA = linear.getWarpsPerCTA();
-
-    SmallVector<int64_t> ctaTileShape;
-    for (size_t i = 0; i < shape.size(); ++i) {
-      ctaTileShape.push_back(static_cast<int64_t>(sizePerThread[i]) *
-                             static_cast<int64_t>(threadsPerWarp[i]) *
-                             static_cast<int64_t>(warpsPerCTA[i]));
-    }
-    return ctaTileShape;
-  }
-
-  llvm_unreachable("Unsupported encoding for extract_tile");
-}
-
 // ============================================================================
 // ExtractTileOp Builder
 // ============================================================================
@@ -210,14 +171,13 @@ LogicalResult ExtractTileOp::verify() {
 // InsertTileOp Type Inference + Verification
 // ============================================================================
 LogicalResult InsertTileOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+     [[maybe_unused]]MLIRContext *context,  
+     [[maybe_unused]]std::optional<Location> location, 
+     ValueRange operands,
+     [[maybe_unused]]DictionaryAttr attributes,  
+     [[maybe_unused]]OpaqueProperties properties,  
+     [[maybe_unused]]RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
-  (void)context;
-  (void)location;
-  (void)attributes;
-  (void)properties;
-  (void)regions;
 
   // insert_tile(src, tile, index) -> result has the same type as src.
   if (operands.size() < 3)
