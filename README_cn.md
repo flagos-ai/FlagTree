@@ -119,7 +119,7 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |后端       |安装命令（版本号对应 git tag）|Triton 版本|Python 版本|libc.so & libstdc++.so 版本|
 |:---------|:---------|:---------|:---------|:---------|
 |nvidia    |python3 -m pip install flagtree==0.5.0rc1 $RES              |3.6|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|nvidia    |python3 -m pip install flagtree==0.4.1+3.5 $RES             |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|nvidia    |python3 -m pip install flagtree==0.5.0rc1+3.5 $RES          |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |nvidia    |python3 -m pip install flagtree==0.4.0+3.3 $RES             |3.3|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |iluvatar  |python3 -m pip install flagtree==0.4.0+iluvatar3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |mthreads  |python3 -m pip install flagtree==0.4.0+mthreads3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
@@ -134,7 +134,7 @@ flagtree 历史版本可以在 https://resource.flagos.net/#browse/search/pypi/=
 
 ## 运行测试
 
-安装完成后一般可以在设备支持的环境下运行测试，具体后端支持的测试可前往对应分支的 .github/workflow/${backend_name}-build-and-test.yml 查看。
+安装完成后一般可以在设备支持的环境下运行测试，具体后端支持的测试可前往对应分支的 `.github/workflow/${backend_name}-build-and-test.yml` 查看。
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
 # nvidia/amd

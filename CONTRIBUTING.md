@@ -14,7 +14,10 @@ Please use GitHub Issues to report bugs. When reporting a bug, include:
 
 ## Code Contributions
 
-When submitting a pull request, contributors should describe the changes made and the rationale behind them. If possible, provide corresponding tests. Pull requests require approval from __ONE__ team member before merging and must pass all continuous integration checks.
+When submitting a pull request, contributors should describe the changes made and the rationale behind them.
+If possible, provide corresponding tests and add them to `.github/workflow/`.
+Pull requests require approval from at least __ONE__ team member before merging and must pass all continuous integration checks.
+The best Pull Request has 1,000 review comments, discussions, and revisions; the next one has 100.
 
 ### Code Formatting
 
@@ -22,7 +25,7 @@ We use pre-commit for code formatting checks:
 
 ```shell
 python3 -m pip install pre-commit
-cd ${YOUR_CODE_DIR}/flagtree
+cd ${YOUR_CODE_DIR}/FlagTree
 pre-commit install
 pre-commit
 ```
