@@ -909,11 +909,7 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
            TleInsertTileOpPattern, GenericOpPattern<tle::LocalPointersOp>,
            GenericOpPattern<tle::RemotePointersOp>,
            GenericOpPattern<tle::DistributedBarrierOp>,
-<<<<<<< HEAD
-           GenericOpPattern<tle::YieldOp>, GenericOpPattern<tle::InsertTileOp>,
-=======
            GenericOpPattern<tle::YieldOp>,
->>>>>>> 548eef110 ([TLE]Fix LLVM lowering index type mismatch and other issues)
            GenericOpPattern<tle::ExtractAllocatedPtrOp>,
            GenericOpPattern<tle::ExtractAlignedPtrOp>,
            GenericOpPattern<tle::ExtractOffsetOp>,
