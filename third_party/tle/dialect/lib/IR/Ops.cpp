@@ -142,28 +142,9 @@ LogicalResult ExtractTileOp::verify() {
       return emitOpError("offset must be non-negative at dimension ") << i;
   }
 
-  // ---- CTA tile alignment check (only performed when encoding exists) ----
-  //
-  // In Triton IR stage, tensor does not have encoding, which is normal;
-  // Only in TritonGPU IR stage does encoding exist.
-  // Note: No error is reported here if not aligned, lowering stage will
-  // automatically choose SMEM path.
   auto encoding = srcTy.getEncoding();
   if (!encoding)
     return success();
-
-  if (auto blocked = dyn_cast_or_null<gpu::BlockedEncodingAttr>(encoding)) {
-    auto sizePerThread = blocked.getSizePerThread();
-    auto threadsPerWarp = blocked.getThreadsPerWarp();
-    auto warpsPerCTA = blocked.getWarpsPerCTA();
-    SmallVector<int64_t> ctaTileShape;
-    for (size_t i = 0; i < srcShape.size(); ++i) {
-      ctaTileShape.push_back(static_cast<int64_t>(sizePerThread[i]) *
-                             static_cast<int64_t>(threadsPerWarp[i]) *
-                             static_cast<int64_t>(warpsPerCTA[i]));
-    }
-  }
-
   return success();
 }
 
