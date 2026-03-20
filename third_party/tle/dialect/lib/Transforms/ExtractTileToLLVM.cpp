@@ -11,6 +11,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "llvm/Support/raw_ostream.h"
+#include <atomic>
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -18,6 +19,8 @@ using namespace mlir::triton;
 namespace {
 namespace ttg = mlir::triton::gpu;
 using namespace mlir::triton::tle;
+
+static std::atomic<uint64_t> smemExtractTileGlobalId{0};
 
 static SmallVector<int64_t> getTileShape(ExtractTileOp op) {
   SmallVector<int64_t> ts;
@@ -179,9 +182,10 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   auto smemPtrTy = LLVM::LLVMPointerType::get(ctx, 3);
   auto smemArrTy = LLVM::LLVMArrayType::get(
       i8Ty, static_cast<uint64_t>(totalDstElems * elemBytes));
+  uint64_t smemId =
+      smemExtractTileGlobalId.fetch_add(1, std::memory_order_relaxed);
   std::string smemName =
-      "__smem_extract_tile_" +
-      std::to_string(reinterpret_cast<uintptr_t>(op.getOperation()));
+      "__smem_extract_tile_" + std::to_string(smemId);
   auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
   {
     OpBuilder::InsertionGuard guard(rewriter);
