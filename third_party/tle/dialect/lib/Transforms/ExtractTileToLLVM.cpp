@@ -184,8 +184,7 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
       i8Ty, static_cast<uint64_t>(totalDstElems * elemBytes));
   uint64_t smemId =
       smemExtractTileGlobalId.fetch_add(1, std::memory_order_relaxed);
-  std::string smemName =
-      "__smem_extract_tile_" + std::to_string(smemId);
+  std::string smemName = "__smem_extract_tile_" + std::to_string(smemId);
   auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
   {
     OpBuilder::InsertionGuard guard(rewriter);
