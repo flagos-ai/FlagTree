@@ -20,13 +20,16 @@ def edsl(
 ):
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
+    gdimx = nvvm.read_ptx_sreg_nctaid_x(ir.IntegerType.get_signless(32))
     bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
     bdimx = arith.index_cast(ir.IndexType.get(), bdimx)
+    gdimx = arith.index_cast(ir.IndexType.get(), gdimx)
     bidx = arith.index_cast(ir.IndexType.get(), bidx)
     idx = arith.addi(arith.muli(bidx, bdimx), tidx)
+    step = arith.muli(bdimx, gdimx)
     n_elements = arith.index_cast(ir.IndexType.get(), n_elements)
-    for i in scf.for_(idx, n_elements, bdimx):
+    for i in scf.for_(idx, n_elements, step):
         i = arith.index_cast(ir.IntegerType.get_signless(32), i)
         ptrty = ir.Type.parse("!llvm.ptr<1>")
         f32ty = ir.Type.parse("f32")
