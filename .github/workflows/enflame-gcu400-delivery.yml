@@ -64,7 +64,7 @@ jobs:
           fi
 
           rm -rf ./build ./*.egg-info
-          ## MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
+          MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
           env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true
 
       - name: FlagTree upload whl on Enflame
