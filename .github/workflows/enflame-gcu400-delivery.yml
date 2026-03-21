@@ -1,4 +1,4 @@
-name: Enflame-GCU400-Delivery
+name: CD-Enflame-GCU400-triton_v3.5.x
 
 on:
   workflow_dispatch:
