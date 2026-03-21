@@ -76,8 +76,11 @@ jobs:
 
       - name: FlagTree push tag on Enflame
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -x
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
           git config user.name "flagtree-bot"
           git config user.email "flagtree_ai@163.com"
           git tag -a "${FLAGTREE_WHEEL_VERSION}" -m "pypi ${FLAGTREE_WHEEL_VERSION}"
