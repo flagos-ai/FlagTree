@@ -45,6 +45,8 @@ jobs:
         run: |
           set -x
           TRITON_VER="3.5"
+          export FLAGTREE_BACKEND=enflame
+          WHL_VER=${{ github.event.inputs.WHL_VER }}
           PYTHON_VER=${{ github.event.inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${TRITON_VER}"
 
@@ -55,7 +57,6 @@ jobs:
           fi
 
           rm -rf ./build ./*.egg-info
-          export FLAGTREE_BACKEND=enflame
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
           env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true
 
