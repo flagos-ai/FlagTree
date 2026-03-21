@@ -11,7 +11,7 @@ on:
         default: '0.5.0'
       PYTHON_VER:
         required: false
-        default: '3.10'
+        default: '3.12'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.inputs.WHL_VER }}
@@ -51,9 +51,11 @@ jobs:
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${TRITON_VER}"
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
-          if python3 -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES; then
+          if python3 -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
             echo "⚠️ flagtree==${FLAGTREE_WHEEL_VERSION} already exists, exit 1"
             exit 1
+          else
+            echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
           rm -rf ./build ./*.egg-info
@@ -84,12 +86,12 @@ jobs:
           git config user.name "flagtree-bot"
           git config user.email "flagtree_ai@163.com"
           git tag -a "${FLAGTREE_WHEEL_VERSION}" -m "pypi ${FLAGTREE_WHEEL_VERSION}"
-          MAX_RETRY=10
+          MAX_RETRY=100
           RETRY_INTERVAL=10
           success=false
           for i in $(seq 1 $MAX_RETRY); do
-            echo "Attempt ${i} / ${MAX_RETRY}: git push origin ${GIT_TAG}"
-            if git push origin "${FLAGTREE_WHEEL_VERSION}"; then
+            { echo "Attempt ${i}/${MAX_RETRY}:" } 2>/dev/null
+            if git push --force origin "${FLAGTREE_WHEEL_VERSION}"; then
               success=true
               break
             fi
