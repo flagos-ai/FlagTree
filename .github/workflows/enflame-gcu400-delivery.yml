@@ -9,10 +9,11 @@ on:
       - 'triton_v3.5.x'
     inputs:
       WHL_VER:
+        description: '0.5.0.dev1 < 0.5.0a1 < 0.5.0b1 < 0.5.0rc1 < 0.5.0 < 0.5.0.post1'
         required: true
         default: '0.5.0'
       PYTHON_VER:
-        required: false
+        required: true
         default: '3.12'
 
 concurrency:
