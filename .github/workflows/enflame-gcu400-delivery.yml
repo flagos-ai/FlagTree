@@ -5,6 +5,8 @@ permissions:
 
 on:
   workflow_dispatch:
+    branches:
+      - 'triton_v3.5.x'
     inputs:
       WHL_VER:
         required: true
@@ -22,6 +24,16 @@ jobs:
     runs-on: enflame-gcu400-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
+      - name: Check branch
+        shell: bash
+        run: |
+          CURRENT_BRANCH="${{ github.ref_name }}"
+          if [[ "$CURRENT_BRANCH" != "add_enflame_gcu400_cd_20260321" ]]; then
+            echo "❌ This workflow must be run from branch 'triton_v3.5.x', but got '${CURRENT_BRANCH}'"
+            exit 1
+          fi
+          echo "✅ Branch check passed: ${CURRENT_BRANCH}"
+
       - name: Setup environment
         shell: bash
         run: |
@@ -52,7 +64,7 @@ jobs:
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
           if python3 -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
-            echo "⚠️ flagtree==${FLAGTREE_WHEEL_VERSION} already exists, exit 1"
+            echo "❌ flagtree==${FLAGTREE_WHEEL_VERSION} already exists!"
             exit 1
           else
             echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
@@ -83,15 +95,21 @@ jobs:
         run: |
           set -x
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
+          TAG="${FLAGTREE_WHEEL_VERSION}"
           git config user.name "flagtree-bot"
           git config user.email "flagtree_ai@163.com"
-          git tag -a "${FLAGTREE_WHEEL_VERSION}" -m "pypi ${FLAGTREE_WHEEL_VERSION}"
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            echo "⚠️ Tag '${TAG}' already exists, force moving to current commit"
+            git tag -f -a "${TAG}" -m "pypi ${TAG}"
+          else
+            git tag -a "${TAG}" -m "pypi ${TAG}"
+          fi
           MAX_RETRY=100
           RETRY_INTERVAL=10
           success=false
           for i in $(seq 1 $MAX_RETRY); do
             { echo "Attempt ${i}/${MAX_RETRY}:" } 2>/dev/null
-            if git push --force origin "${FLAGTREE_WHEEL_VERSION}"; then
+            if git push --force origin "${TAG}"; then
               success=true
               break
             fi
