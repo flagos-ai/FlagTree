@@ -40,17 +40,17 @@ jobs:
           source ~/env.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
 
-      #- name: Smart Checkout
-      #  uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
-      #  with:
-      #    checkout_version: 'v6'
-
-      - name: Checkout code (attempt 1)
-        id: checkout1
-        uses: actions/checkout@v6
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
         with:
-          fetch-depth: 0
-          persist-credentials: true
+          checkout_version: 'v6'
+
+      #- name: Checkout code (attempt 1)
+      #  id: checkout1
+      #  uses: actions/checkout@v6
+      #  with:
+      #    fetch-depth: 0
+      #    persist-credentials: true
 
       - name: FlagTree bdist_wheel on Enflame
         shell: bash
@@ -108,7 +108,7 @@ jobs:
           RETRY_INTERVAL=10
           success=false
           for i in $(seq 1 $MAX_RETRY); do
-            { echo "Attempt ${i}/${MAX_RETRY}:" } 2>/dev/null
+            echo "Attempt ${i}/${MAX_RETRY}:"
             if git push --force origin "${TAG}"; then
               success=true
               break
