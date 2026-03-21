@@ -13,7 +13,7 @@ on:
 
 jobs:
   call-delivery:
-    uses: FlagTree/flagtree/.github/workflows/enflame-gcu400-delivery.yml@main
+    uses: flagos-ai/flagtree/.github/workflows/enflame-gcu400-delivery.yml@main
     with:
       WHL_VER: ${{ inputs.WHL_VER }}
       PYTHON_VER: ${{ inputs.PYTHON_VER }}
