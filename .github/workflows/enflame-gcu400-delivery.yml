@@ -1,12 +1,10 @@
-name: Enflame-GCU400-Delivery
+name: CD-Enflame-GCU400-triton_v3.5.x
 
 permissions:
   contents: write
 
 on:
   workflow_dispatch:
-    branches:
-      - 'triton_v3.5.x'
     inputs:
       WHL_VER:
         description: '0.5.0.dev1 < 0.5.0a1 < 0.5.0b1 < 0.5.0rc1 < 0.5.0 < 0.5.0.post1'
