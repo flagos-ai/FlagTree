@@ -1,0 +1,83 @@
+name: Enflame-GCU400-Delivery
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      WHL_VER:
+        required: true
+        default: '0.5.0'
+      PYTHON_VER:
+        required: false
+        default: '3.10'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.WHL_VER }}
+  cancel-in-progress: true
+
+jobs:
+  enflame-gcu400-cd:
+    runs-on: enflame-gcu400-cd
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      #- name: Smart Checkout
+      #  uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+      #  with:
+      #    checkout_version: 'v6'
+
+      - name: Checkout code (attempt 1)
+        id: checkout1
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: FlagTree bdist_wheel on Enflame
+        shell: bash
+        run: |
+          set -x
+          TRITON_VER="3.5"
+          PYTHON_VER=${{ github.event.inputs.PYTHON_VER }}
+          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${TRITON_VER}"
+
+          RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
+          if python3 -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES; then
+            echo "⚠️ flagtree==${FLAGTREE_WHEEL_VERSION} already exists, exit 1"
+            exit 1
+          fi
+
+          rm -rf ./build ./*.egg-info
+          export FLAGTREE_BACKEND=enflame
+          MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
+          env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true
+
+      - name: FlagTree upload whl on Enflame
+        shell: bash
+        run: |
+          set -x
+          PYTHON_VER=${{ github.event.inputs.PYTHON_VER }}
+          CP_VER=$(printf '%s' "$PYTHON_VER" | tr -d '.')
+          PLATFORM="x86_64"
+          FLAGTREE_WHL="flagtree-${FLAGTREE_WHEEL_VERSION}-cp${CP_VER}-cp${CP_VER}-linux_${PLATFORM}.whl"
+          pushd ~/dist-flagtree
+          twine check ${FLAGTREE_WHL}
+          echo "Upload ${FLAGTREE_WHL}"
+          bash upload_flagtree_whl.sh "${FLAGTREE_WHL}"
+          popd
+
+      - name: FlagTree push tag on Enflame
+        shell: bash
+        run: |
+          set -x
+          git config user.name "flagtree-bot"
+          git config user.email "flagtree_ai@163.com"
+          git tag -a "${FLAGTREE_WHEEL_VERSION}" -m "pypi ${FLAGTREE_WHEEL_VERSION}"
+          git push origin ${FLAGTREE_WHEEL_VERSION}
