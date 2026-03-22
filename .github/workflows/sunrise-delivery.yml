@@ -1,4 +1,4 @@
-name: CD-Enflame-GCU400-triton_v3.5.x
+name: CD-Sunrise-triton_v3.4.x
 
 permissions:
   contents: write
@@ -12,7 +12,7 @@ on:
         default: '0.5.0'
       PYTHON_VER:
         required: true
-        default: '3.12'
+        default: '3.10'
       PLATFORM:
         required: true
         default: 'x86_64'
@@ -25,7 +25,7 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.12'
+        default: '3.10'
       PLATFORM:
         type: string
         required: true
@@ -36,16 +36,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame-gcu400-cd:
-    runs-on: enflame-gcu400-cd
+  sunrise-cd:
+    runs-on: sunrise-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
         shell: bash
         run: |
           TARGET_BRANCH="${{ github.ref_name }}"
-          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3\.5\.x)$ ]]; then
-            echo "❌ This workflow must be run from branch 'triton_v3.5.x', but got '${TARGET_BRANCH}'"
+          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3\.4\.x)$ ]]; then
+            echo "❌ This workflow must be run from branch 'triton_v3.4.x', but got '${TARGET_BRANCH}'"
             exit 1
           fi
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
@@ -62,14 +62,14 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Enflame GCU400 (triton_v3.5.x branch)
-        if: ${{ env.TARGET_BRANCH == 'triton_v3.5.x' }}
+      - name: FlagTree bdist_wheel on Sunrise (triton_v3.4.x branch)
+        if: ${{ env.TARGET_BRANCH == 'triton_v3.4.x' }}
         shell: bash
         run: |
           set -x
-          TRITON_VER="3.5"
-          CHIP="gcu400-"
-          export FLAGTREE_BACKEND=enflame
+          TRITON_VER="3.4"
+          CHIP=""
+          export FLAGTREE_BACKEND=sunrise
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${CHIP}${FLAGTREE_BACKEND}${TRITON_VER}"

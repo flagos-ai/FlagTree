@@ -1,4 +1,4 @@
-name: CD-Enflame-GCU400-triton_v3.5.x
+name: CD-Enflame-GCU300-triton_v3.5.x
 
 permissions:
   contents: write
@@ -36,8 +36,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame-gcu400-cd:
-    runs-on: enflame-gcu400-cd
+  enflame-gcu300-cd:
+    runs-on: enflame-gcu300-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
@@ -62,13 +62,13 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Enflame GCU400 (triton_v3.5.x branch)
+      - name: FlagTree bdist_wheel on Enflame GCU300 (triton_v3.5.x branch)
         if: ${{ env.TARGET_BRANCH == 'triton_v3.5.x' }}
         shell: bash
         run: |
           set -x
           TRITON_VER="3.5"
-          CHIP="gcu400-"
+          CHIP="gcu300-"
           export FLAGTREE_BACKEND=enflame
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}

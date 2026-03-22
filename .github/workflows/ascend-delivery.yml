@@ -1,4 +1,4 @@
-name: CD-Enflame-GCU400-triton_v3.5.x
+name: CD-Ascend-triton_v3.2.x
 
 permissions:
   contents: write
@@ -12,10 +12,10 @@ on:
         default: '0.5.0'
       PYTHON_VER:
         required: true
-        default: '3.12'
+        default: '3.11'
       PLATFORM:
         required: true
-        default: 'x86_64'
+        default: 'aarch64'
   workflow_call:
     inputs:
       WHL_VER:
@@ -25,27 +25,27 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.12'
+        default: '3.11'
       PLATFORM:
         type: string
         required: true
-        default: 'x86_64'
+        default: 'aarch64'
 
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.WHL_VER }}-${{ inputs.PYTHON_VER }}-${{ inputs.PLATFORM }}
   cancel-in-progress: true
 
 jobs:
-  enflame-gcu400-cd:
-    runs-on: enflame-gcu400-cd
+  ascend-cd:
+    runs-on: ascend-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
         shell: bash
         run: |
           TARGET_BRANCH="${{ github.ref_name }}"
-          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3\.5\.x)$ ]]; then
-            echo "❌ This workflow must be run from branch 'triton_v3.5.x', but got '${TARGET_BRANCH}'"
+          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3\.2\.x)$ ]]; then
+            echo "❌ This workflow must be run from branch 'triton_v3.2.x', but got '${TARGET_BRANCH}'"
             exit 1
           fi
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
@@ -62,14 +62,14 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Enflame GCU400 (triton_v3.5.x branch)
-        if: ${{ env.TARGET_BRANCH == 'triton_v3.5.x' }}
+      - name: FlagTree bdist_wheel on Ascend (triton_v3.2.x branch)
+        if: ${{ env.TARGET_BRANCH == 'triton_v3.2.x' }}
         shell: bash
         run: |
           set -x
-          TRITON_VER="3.5"
-          CHIP="gcu400-"
-          export FLAGTREE_BACKEND=enflame
+          TRITON_VER="3.2"
+          CHIP=""
+          export FLAGTREE_BACKEND=ascend
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${CHIP}${FLAGTREE_BACKEND}${TRITON_VER}"
@@ -82,6 +82,7 @@ jobs:
             echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
+          cd python
           rm -rf ./build ./*.egg-info
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
           env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true

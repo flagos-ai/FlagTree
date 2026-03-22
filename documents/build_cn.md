@@ -10,6 +10,7 @@
 #### 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
 
 - 对应的 Triton 版本为 3.1，基于 x64 平台
+- 可用于 MR-V100/BI-V150
 
 ##### 1. 构建及运行环境
 
@@ -53,6 +54,7 @@ python3 -m pip install . --no-build-isolation -v
 #### 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/)
 
 - 对应的 Triton 版本为 3.0，基于 x64 平台
+- 可用于 P800
 
 ##### 1. 构建及运行环境
 
@@ -92,6 +94,7 @@ python3 -m pip install . --no-build-isolation -v
 #### 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/)
 
 - 对应的 Triton 版本为 3.1，基于 x64/aarch64 平台
+- 可用于 S4000/S5000
 
 ##### 1. 构建及运行环境
 
@@ -171,6 +174,7 @@ python3 -m pip install . --no-build-isolation -v
 #### 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
+- 可用于 TX81
 
 ##### 1. 构建及运行环境
 
@@ -220,6 +224,7 @@ export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
 #### 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)
 
 - 对应的 Triton 版本为 3.2，基于 aarch64 平台
+- 可用于 910B/910C
 
 ##### 1. 构建及运行环境
 
@@ -269,6 +274,7 @@ python3 -m pip install . --no-build-isolation -v
 #### 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/)
 
 - 对应的 Triton 版本为 3.0，基于 x64 平台
+- 可用于 K100/BW1000
 
 ##### 1. 构建及运行环境
 
@@ -300,9 +306,10 @@ export FLAGTREE_BACKEND=hcu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Enflame（燧原）GCU400 [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)
+#### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)（triton 3.5）
 
 - 对应的 Triton 版本为 3.5，基于 x64 平台
+- 可用于 GCU300/GCU400
 
 ##### 1. 构建及运行环境
 
@@ -334,9 +341,10 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Enflame（燧原）GCU300 [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)
+#### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3）
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
+- 可用于 GCU300/GCU400
 
 ##### 1. 构建及运行环境
 
@@ -371,6 +379,7 @@ python3 -m pip install . --no-build-isolation -v
 #### 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
 
 - 对应的 Triton 版本为 3.4，基于 x64 平台
+- 可用于 S2
 
 ##### 1. 构建及运行环境
 

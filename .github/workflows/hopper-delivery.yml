@@ -1,4 +1,4 @@
-name: CD-Enflame-GCU400-triton_v3.5.x
+name: CD-Hopper
 
 permissions:
   contents: write
@@ -36,16 +36,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame-gcu400-cd:
-    runs-on: enflame-gcu400-cd
+  hopper-cd:
+    runs-on: hopper-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
         shell: bash
         run: |
           TARGET_BRANCH="${{ github.ref_name }}"
-          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3\.5\.x)$ ]]; then
-            echo "❌ This workflow must be run from branch 'triton_v3.5.x', but got '${TARGET_BRANCH}'"
+          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3\.(4|5|6)\.x)$ ]]; then
+            echo "❌ This workflow must be run from branch 'triton_v3.4.x'|'triton_v3.5.x'|'triton_v3.6.x', but got '${TARGET_BRANCH}'"
             exit 1
           fi
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
@@ -62,17 +62,68 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Enflame GCU400 (triton_v3.5.x branch)
+      - name: FlagTree bdist_wheel on NVidia (triton_v3.4.x branch)
+        if: ${{ env.TARGET_BRANCH == 'triton_v3.4.x' }}
+        shell: bash
+        run: |
+          set -x
+          TRITON_VER="3.4"
+          source ~/env-${TRITON_VER}.sh
+          CHIP=""
+          unset FLAGTREE_BACKEND
+          WHL_VER=${{ inputs.WHL_VER }}
+          PYTHON_VER=${{ inputs.PYTHON_VER }}
+          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${CHIP}${FLAGTREE_BACKEND}${TRITON_VER}"
+
+          RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
+          if python${PYTHON_VER} -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
+            echo "❌ flagtree==${FLAGTREE_WHEEL_VERSION} already exists!"
+            exit 1
+          else
+            echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
+          fi
+
+          rm -rf ./build ./*.egg-info
+          MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
+          env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true
+
+      - name: FlagTree bdist_wheel on NVidia (triton_v3.5.x branch)
         if: ${{ env.TARGET_BRANCH == 'triton_v3.5.x' }}
         shell: bash
         run: |
           set -x
           TRITON_VER="3.5"
-          CHIP="gcu400-"
-          export FLAGTREE_BACKEND=enflame
+          source ~/env-${TRITON_VER}.sh
+          CHIP=""
+          unset FLAGTREE_BACKEND
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${CHIP}${FLAGTREE_BACKEND}${TRITON_VER}"
+
+          RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
+          if python${PYTHON_VER} -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
+            echo "❌ flagtree==${FLAGTREE_WHEEL_VERSION} already exists!"
+            exit 1
+          else
+            echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
+          fi
+
+          rm -rf ./build ./*.egg-info
+          MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
+          env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true
+
+      - name: FlagTree bdist_wheel on NVidia (triton_v3.6.x branch)
+        if: ${{ env.TARGET_BRANCH == 'triton_v3.6.x' }}
+        shell: bash
+        run: |
+          set -x
+          TRITON_VER="3.6"
+          source ~/env-${TRITON_VER}.sh
+          CHIP=""
+          unset FLAGTREE_BACKEND
+          WHL_VER=${{ inputs.WHL_VER }}
+          PYTHON_VER=${{ inputs.PYTHON_VER }}
+          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${CHIP}${FLAGTREE_BACKEND}"  # Without ${TRITON_VER} because it's the main branch
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
           if python${PYTHON_VER} -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
