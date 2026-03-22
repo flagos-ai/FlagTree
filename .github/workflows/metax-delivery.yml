@@ -36,8 +36,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  iluvatar-cd:
-    runs-on: iluvatar-cd
+  metax-cd:
+    runs-on: metax-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
@@ -62,14 +62,14 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Iluvatar (main branch)
+      - name: FlagTree bdist_wheel on Metax (main branch)
         if: ${{ env.TARGET_BRANCH == 'main' }}
         shell: bash
         run: |
           set -x
           TRITON_VER="3.1"
           CHIP=""
-          export FLAGTREE_BACKEND=iluvatar
+          export FLAGTREE_BACKEND=metax
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${CHIP}${FLAGTREE_BACKEND}${TRITON_VER}"
