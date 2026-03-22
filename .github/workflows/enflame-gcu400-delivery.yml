@@ -13,9 +13,19 @@ on:
       PYTHON_VER:
         required: true
         default: '3.12'
+  workflow_call:
+    inputs:
+      WHL_VER:
+        type: string
+        required: true
+        default: '0.5.0'
+      PYTHON_VER:
+        type: string
+        required: true
+        default: '3.12'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.inputs.WHL_VER }}
+  group: ${{ github.workflow }}-${{ inputs.WHL_VER }}
   cancel-in-progress: true
 
 jobs:
@@ -50,8 +60,8 @@ jobs:
           set -x
           TRITON_VER="3.5"
           export FLAGTREE_BACKEND=enflame
-          WHL_VER=${{ github.event.inputs.WHL_VER }}
-          PYTHON_VER=${{ github.event.inputs.PYTHON_VER }}
+          WHL_VER=${{ inputs.WHL_VER }}
+          PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${TRITON_VER}"
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
@@ -70,7 +80,7 @@ jobs:
         shell: bash
         run: |
           set -x
-          PYTHON_VER=${{ github.event.inputs.PYTHON_VER }}
+          PYTHON_VER=${{ inputs.PYTHON_VER }}
           CP_VER=$(printf '%s' "$PYTHON_VER" | tr -d '.')
           PLATFORM="x86_64"
           FLAGTREE_WHL="flagtree-${FLAGTREE_WHEEL_VERSION}-cp${CP_VER}-cp${CP_VER}-linux_${PLATFORM}.whl"
