@@ -429,7 +429,7 @@ cache.store(
 cache.store(
     file="tx8_deps",
     condition=("tsingmicro" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_dev_20251218_164108_v0.4.0.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_dev_20260309_173649_v0.5.0.tar.gz",
     pre_hook=lambda: check_env('TX8_DEPS_ROOT'),
     post_hook=lambda path: set_env({
         'TX8_DEPS_ROOT': path,
