@@ -121,14 +121,16 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |nvidia    |python3 -m pip install flagtree==0.5.0rc1 $RES              |3.6|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |nvidia    |python3 -m pip install flagtree==0.5.0rc1+3.5 $RES          |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |nvidia    |python3 -m pip install flagtree==0.4.0+3.3 $RES             |3.3|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
-|iluvatar  |python3 -m pip install flagtree==0.4.0+iluvatar3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|mthreads  |python3 -m pip install flagtree==0.4.0+mthreads3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|nvidia    |python3 -m pip install flagtree==0.5.0+3.1 $RES             |3.1|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|iluvatar  |python3 -m pip install flagtree==0.5.0+iluvatar3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|mthreads  |python3 -m pip install flagtree==0.5.0+mthreads3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |metax     |python3 -m pip install flagtree==0.4.0rc1+metax3.1 $RES     |3.1|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|ascend    |python3 -m pip install flagtree==0.5.0+ascend3.2 $RES       |3.2|3.11|GLIBC_2.34<br>GLIBCXX_3.4.24<br>CXXABI_1.3.11|
+|ascend    |python3 -m pip install flagtree==0.5.0+ascend3.2 $RES       |3.2|3.11|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |tsingmicro|python3 -m pip install flagtree==0.5.0rc1+tsingmicro3.3 $RES|3.3|3.10|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
-|hcu       |python3 -m pip install flagtree==0.4.0+hcu3.0 $RES          |3.0|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|enflame   |python3 -m pip install flagtree==0.4.0+enflame3.3 $RES      |3.3|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|hcu       |python3 -m pip install flagtree==0.5.0+hcu3.0 $RES          |3.0|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |sunrise   |python3 -m pip install flagtree==0.4.0+sunrise3.4 $RES      |3.4|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|enflame<br>(GCU400)|python3 -m pip install flagtree==0.5.0+enflame3.5 $RES|3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|enflame<br>(GCU300)|python3 -m pip install flagtree==0.4.0+enflame3.3 $RES|3.3|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 
 Historical versions of flagtree can be found at https://resource.flagos.net/#browse/search/pypi/=assets.attributes.pypi.description%3Dflagtree
 
