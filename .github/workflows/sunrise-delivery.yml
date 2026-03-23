@@ -82,6 +82,9 @@ jobs:
             echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
+          export TRITON_BUILD_WITH_CLANG_LLD=1  # sunrise
+          export TRITON_OFFLINE_BUILD=1  # sunrise
+          export TRITON_BUILD_PROTON=OFF  # sunrise
           rm -rf ./build ./*.egg-info
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
           env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true

@@ -82,6 +82,7 @@ jobs:
             echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
+          source ~/env_setup.sh  # aipu
           cd python
           rm -rf ./build ./*.egg-info
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
