@@ -1,4 +1,5 @@
 #include <math_constants.h>
+
 __device__ auto
 SoftmaxKernel(__attribute__((address_space(3))) float *output_allocated,
               __attribute__((address_space(3))) float *output_aligned,
@@ -50,11 +51,11 @@ SoftmaxKernel(__attribute__((address_space(3))) float *output_allocated,
     __attribute__((address_space(3))) float *allocated;
     __attribute__((address_space(3))) float *aligned;
     int64_t offsets;
-    int64_t sizes1[1];
-    int64_t stride1[1];
+    int64_t sizes[1];
+    int64_t strides[1];
   } r{
-      output_allocated, output_aligned, output_offsets,
-      output_size,      output_stride,
+      output_allocated, output_aligned,  output_offsets,
+      {output_size},    {output_stride},
   };
   return r;
 }
