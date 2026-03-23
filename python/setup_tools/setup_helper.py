@@ -419,9 +419,12 @@ cache.store(file="xre-Linux-x86_64", condition=("xpu" == flagtree_backend),
             url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xre-Linux-x86_64_v0.3.0.tar.gz",
             copy_dst_path='python/_deps/xre3')
 
-cache.store(file="liblaunch_shared.so", condition=("xpu" == flagtree_backend),
-            url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xpu-liblaunch_shared_so-ubuntu-x64_v0.3.1.tar.gz",
-            copy_dst_path=f"third_party/{flagtree_backend}/device", md5_digest="8a231f0c")
+cache.store(file="xpu-device-libs", condition=("xpu" == flagtree_backend),
+            url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz")
+
+cache.store(files=("liblaunch_shared.so", "libLLVM-15.so", "libclang-cpp.so.15", "libxpujitc.so"),
+            condition=("xpu" == flagtree_backend), copy_src_path=f"{cache.dir_path}/{flagtree_backend}/xpu-device-libs",
+            copy_dst_path=f"third_party/{flagtree_backend}/device")
 
 cache.store(
     files=("clang", "xpu-xxd", "xpu3-crt.xpu", "xpu-kernel.t", "ld.lld", "llvm-readelf", "llvm-objdump",

@@ -14,7 +14,10 @@
 
 ## 代码贡献
 
-在提交拉取请求时，贡献者应描述所做的更改以及更改的原因。如果可以设计测试用例，请提供相应测试。拉取请求在合并前需要 __一位__ 成员的批准，而且需要通过代码的持续集成检查。
+在提交 Pull Request 时，贡献者应描述所做的更改以及更改的原因。
+如果可以设计测试用例，请提供相应测试，添加到 `.github/workflow/` 。
+拉取请求在合并前需要至少 __一位__ 成员的批准，而且需要通过代码的持续集成检查。
+最优秀的 Pull Request 上面有一千条评审意见、讨论和修改，其次是一百条。
 
 ### 代码格式检查
 
@@ -22,7 +25,7 @@
 
 ```shell
 python3 -m pip install pre-commit
-cd ${YOUR_CODE_DIR}/flagtree
+cd ${YOUR_CODE_DIR}/FlagTree
 pre-commit install
 pre-commit
 ```
