@@ -35,7 +35,7 @@ For upstream model users, it provides unified compilation capabilities across mu
 for downstream chip manufacturers, it offers examples of Triton ecosystem integration.
 
 Each backend is based on different versions of Triton, and therefore resides in different protected branches.
-All these protected branches have equal status.
+All these protected branches have equal status. CI/CD runners are provisioned for every backend listed in the table.
 
 |Branch|Vendor|Backend|Triton<br>version|Build<br>from source|Source-free<br>Installation|
 |:-----|:-----|:------|:----------------|:-------------------|:--------------------------|
@@ -46,11 +46,20 @@ All these protected branches have equal status.
 |[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|NVIDIA<br>AMD<br>Enflame（燧原）|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/amd/)<br>[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)|3.5|[nvidia](/documents/build.md#-nvidia--amd-nvidia--amd)<br>[amd](/documents/build.md#-nvidia--amd-nvidia--amd)<br>[enflame](/documents/build.md#-enflame燧原enflametriton-35)|[Installation](/README.md#source-free-installation)|
 |[triton_v3.6.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.6.x)|NVIDIA<br>AMD|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/amd/)|3.6|[nvidia](/documents/build.md#-nvidia--amd-nvidia--amd)<br>[amd](/documents/build.md#-nvidia--amd-nvidia--amd)|[Installation](/README.md#source-free-installation)|
 
+FlagTree’s extension components are currently available on some backends:
+
+|Branch|Backend|Triton version|Extension components|
+|:-----|:------|:-------------|:-------------------|
+|[triton_v3.6.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.6.x)|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/nvidia/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct GPU](https://github.com/flagos-ai/FlagTree/wiki/TLE#331-gpu)<br>[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLERaw)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
+|[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)|[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend/)|3.2|[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
+|[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[tsingmicro](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/tsingmicro/)|3.3|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)|
+|[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[aipu](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/aipu/)|3.3|[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
+
 ## Latest News
 
 * 2026/03/13 Added [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) GCU400 backend integration (based on Triton 3.5), and added CI/CD.
 * 2026/01/23 Added [sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/) backend integration (based on Triton 3.4), and added CI/CD.
-* 2026/01/08 Add wiki pages for new features [HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS), [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE), [TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/EDSL).
+* 2026/01/08 Add wiki pages for new features [HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS), [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE), [TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLERaw).
 * 2025/12/24 Support pull and install [Wheel](/README.md#source-free-installation).
 * 2025/12/08 Added [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) GCU300 backend integration (based on Triton 3.3), and added CI/CD.
 * 2025/11/26 Add FlagTree_Backend_Specialization Unified Design Document [FlagTree_Backend_Specialization](/documents/decoupling/).
@@ -112,8 +121,7 @@ The best practice to avoid environment compatibility issues is to use the image 
 ```shell
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
-RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple \
-     --trusted-host=https://resource.flagos.net"
+RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
 ```
 
 |Backend   |Install command<br>(The version corresponds to the git tag)|Triton<br>ver.|Python<br>ver.|libc.so &<br>libstdc++.so<br>ver.|
