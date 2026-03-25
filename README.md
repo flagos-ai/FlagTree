@@ -50,7 +50,7 @@ FlagTree’s extension components are currently available on some backends:
 
 |Branch|Backend|Triton version|Extension components|
 |:-----|:------|:-------------|:-------------------|
-|[triton_v3.6.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.6.x)|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/nvidia/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct GPU](https://github.com/flagos-ai/FlagTree/wiki/TLE#331-gpu)<br>[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLERaw)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
+|[triton_v3.6.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.6.x)|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/nvidia/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct GPU](https://github.com/flagos-ai/FlagTree/wiki/TLE#331-gpu)<br>[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
 |[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)|[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend/)|3.2|[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[tsingmicro](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/tsingmicro/)|3.3|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)|
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[aipu](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/aipu/)|3.3|[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
@@ -59,7 +59,7 @@ FlagTree’s extension components are currently available on some backends:
 
 * 2026/03/13 Added [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) GCU400 backend integration (based on Triton 3.5), and added CI/CD.
 * 2026/01/23 Added [sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/) backend integration (based on Triton 3.4), and added CI/CD.
-* 2026/01/08 Add wiki pages for new features [HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS), [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE), [TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLERaw).
+* 2026/01/08 Add wiki pages for new features [HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS), [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE), [TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw).
 * 2025/12/24 Support pull and install [Wheel](/README.md#source-free-installation).
 * 2025/12/08 Added [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) GCU300 backend integration (based on Triton 3.3), and added CI/CD.
 * 2025/11/26 Add FlagTree_Backend_Specialization Unified Design Document [FlagTree_Backend_Specialization](/documents/decoupling/).
@@ -133,9 +133,10 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |iluvatar  |python3 -m pip install flagtree==0.5.0+iluvatar3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |mthreads  |python3 -m pip install flagtree==0.5.0+mthreads3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |metax     |python3 -m pip install flagtree==0.5.0+metax3.1 $RES        |3.1|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|ascend    |python3 -m pip install flagtree==0.5.0+ascend3.2 $RES       |3.2|3.11|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|tsingmicro|python3 -m pip install flagtree==0.5.0rc1+tsingmicro3.3 $RES|3.3|3.10|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |hcu       |python3 -m pip install flagtree==0.5.0+hcu3.0 $RES          |3.0|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|ascend    |python3 -m pip install flagtree==0.5.0+ascend3.2 $RES       |3.2|3.11|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|tsingmicro|python3 -m pip install flagtree==0.5.0+tsingmicro3.3 $RES   |3.3|3.10|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
+|aipu      |python3 -m pip install flagtree==0.5.0+aipu3.3 $RES         |3.3|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |sunrise   |python3 -m pip install flagtree==0.4.0+sunrise3.4 $RES      |3.4|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |enflame<br>(GCU400)|python3 -m pip install flagtree==0.5.0+enflame3.5 $RES|3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |enflame<br>(GCU300)|python3 -m pip install flagtree==0.4.0+enflame3.3 $RES|3.3|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
