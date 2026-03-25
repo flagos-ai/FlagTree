@@ -72,7 +72,7 @@ jobs:
           export FLAGTREE_BACKEND=ascend
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
-          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${CHIP}${FLAGTREE_BACKEND}${TRITON_VER}"
+          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
           if python${PYTHON_VER} -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
