@@ -23,13 +23,13 @@ FlagTree 继承前一版本的能力，持续集成新的后端，壮大生态�
 
 * Triton 语言扩展：TLE
 
-针对 Triton 发展的困境，我们提出了 TLE（Triton Language Extentions），它从三个层级扩展了 Triton，从而满足不同层次用户对算子编程语言的迫切需求。详见 [wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE)。
+本版本持续演进 TLE（Triton Language Extentions），重点补充了三个层级的新增能力。详见 [wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE)。
 
-**TLE-Lite** 是对 Triton 的轻量级扩展，所有特性兼容各类硬件后端，仅需对原有 Triton kernels 少量修改即可拿到大幅性能提升。主要面向算法工程师和快速性能优化场景。
+**TLE-Lite** 在本版本引入了分布式原语，并新增 `extract_slice` 与 `insert_slice`，进一步提升了在多设备/多卡场景和 Tensor 切片相关场景下的表达能力与可用性，继续保持对各类硬件后端的兼容。
 
-**TLE-Struct** 按硬件的架构聚类抽象，分类（如 GPGPU、DSA）提供扩展，满足进一步性能优化的需求。需要开发人员对目标硬件的特性和优化技巧有一定了解。
+**TLE-Struct** 在本版本新增了 `local_ptr`，增强了结构化层级下对本地存储与数据访问路径的表达能力，便于进一步性能优化。
 
-**TLE-Raw** 提供对硬件最直接的控制，可以使用硬件厂商的原生编程语言获取最极致的性能。需要开发人员对目标硬件的深入了解，主要面向性能优化专家。更多内容可参考 [wiki](https://github.com/flagos-ai/FlagTree/wiki/EDSL)。
+**TLE-Raw** 在本版本支持了 inline CUDA，可直接嵌入 CUDA 代码以获得更细粒度的硬件控制与性能调优空间。更多内容可参考 [wiki](https://github.com/flagos-ai/FlagTree/wiki/EDSL)。
 
 * 与 FlagGems 算子库联合建设
 
@@ -38,6 +38,6 @@ FlagTree 继承前一版本的能力，持续集成新的后端，壮大生态�
 ### Looking ahead
 
 计划将 triton_v3.6.x 变更为 main 分支。<br>
-TLE-Lite 计划扩展 Tensor 切片和分布式原语。<br>
+TLE-Lite 计划扩展分布式原语在多卡多机场景下的支持，并推进编译器后端在 layout 上的优化。<br>
 TLE-Struct 计划开放更多硬件相关原语，并提升性能接近硬件原生语言。<br>
 TLE-Raw 计划在算子中验证性能提升机会，优化与 Triton 的衔接，同时寻找其他可用的接入语言。<br>

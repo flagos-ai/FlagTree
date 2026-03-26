@@ -23,13 +23,13 @@ Ongoing expansion of Linalg intermediate layer representation and transformation
 
 * Triton Language Extensions: TLE
 
-In response to the challenges facing Triton development, we propose TLE (Triton Language Extensions), which extends Triton at three levels to meet the urgent needs of users at different levels for operator programming languages. For details, see [wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE).
+In this release, TLE (Triton Language Extensions) continues to evolve with key feature additions across its three levels. For details, see [wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE).
 
-**TLE-Lite** is a lightweight extension to Triton. All features are compatible with various hardware backends, requiring only minor modifications to existing Triton kernels to achieve significant performance improvements. Primarily targeted at algorithm engineers and rapid performance optimization scenarios.
+**TLE-Lite** introduces distributed primitives and adds `extract_slice` and `insert_slice` in this release, improving expressiveness and usability for multi-device/multi-card and Tensor-slicing-related scenarios while maintaining compatibility across hardware backends.
 
-**TLE-Struct** provides classified extensions (such as GPGPU, DSA) through hardware architecture clustering abstraction to meet further performance optimization needs. Requires developers to have some understanding of target hardware characteristics and optimization techniques.
+**TLE-Struct** adds `local_ptr` in this release, strengthening structured-level expression for local storage and data access paths to support further performance optimization.
 
-**TLE-Raw** provides the most direct control over hardware, allowing the use of hardware vendors' native programming languages to achieve ultimate performance. Requires developers to have in-depth knowledge of target hardware, primarily targeted at performance optimization experts. For more information, refer to [wiki](https://github.com/flagos-ai/FlagTree/wiki/EDSL).
+**TLE-Raw** adds inline CUDA support in this release, enabling direct embedding of CUDA code for finer-grained hardware control and performance tuning. For more information, refer to [wiki](https://github.com/flagos-ai/FlagTree/wiki/EDSL).
 
 * Joint construction with FlagGems operator library
 
@@ -38,6 +38,6 @@ Collaborating with [FlagGems](https://github.com/FlagOpen/FlagGems) operator lib
 ### Looking ahead
 
 Planned to transition triton_v3.6.x to main branch.<br>
-TLE-Lite plans to extend Tensor slicing and distributed primitives.<br>
+TLE-Lite plans to extend distributed primitive support for multi-card and multi-node scenarios, and optimize compiler backend layout handling.<br>
 TLE-Struct plans to expose more hardware-related primitives and improve performance to approach hardware native languages.<br>
 TLE-Raw plans to verify performance improvement opportunities in operators, optimize integration with Triton, while exploring other viable integration languages.<br>

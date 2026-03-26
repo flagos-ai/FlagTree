@@ -55,6 +55,18 @@ FlagTree’s extension components are currently available on some backends:
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[tsingmicro](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/tsingmicro/)|3.3|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)|
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[aipu](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/aipu/)|3.3|[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
 
+## TLE (Triton Language Extensions)
+
+Triton provides strong productivity for kernel development, but heterogeneous AI chips and deeper performance tuning scenarios need more explicit control over distributed execution, memory access patterns, and hardware-specific primitives. TLE extends Triton in a layered way to bridge this gap while keeping compatibility with existing Triton workflows.
+
+Key advantages of TLE:
+
+* Progressive abstraction from portable usage to hardware-oriented tuning (`Lite` / `Struct` / `Raw`).
+* Better coverage for multi-device, architecture-specific, and backend lowering scenarios.
+* Lower migration cost from existing Triton kernels while preserving optimization headroom.
+
+For detailed design, APIs, and examples, please refer to the [TLE Wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE) and [TLE-Raw Wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw).
+
 ## Latest News
 
 * 2026/03/13 Added [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) GCU400 backend integration (based on Triton 3.5), and added CI/CD.

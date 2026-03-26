@@ -55,6 +55,18 @@ FlagTree 的扩展组件当前在部分后端可用：
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[tsingmicro](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/tsingmicro/)|3.3|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)|
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[aipu](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/aipu/)|3.3|[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
 
+## TLE（Triton Language Extensions）简介
+
+Triton 在算子开发效率方面表现突出，但在多元 AI 芯片适配和更深层性能调优场景下，往往需要对分布式执行、内存访问模式和硬件相关原语提供更显式的控制。TLE 以分层方式扩展 Triton，在保持现有 Triton 工作流兼容性的同时补齐这部分能力。
+
+TLE 的主要优势包括：
+
+* 从可移植到硬件导向调优的渐进式抽象（`Lite` / `Struct` / `Raw`）。
+* 更好覆盖多设备、架构特化与后端 lowering 场景。
+* 在保留优化空间的同时，降低现有 Triton kernel 的迁移改造成本。
+
+详细设计、API 与示例请参考 [TLE Wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE) 和 [TLE-Raw Wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)。
+
 ## 新特性
 
 * 2026/03/13 新增接入 [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) GCU400 后端（对应 Triton 3.5），加入 CI/CD。
