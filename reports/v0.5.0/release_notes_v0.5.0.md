@@ -10,7 +10,7 @@ FlagTree inherits capabilities from the previous version, continuously integrate
 
 * Added multi-backend Support
 
-Currently supported backends include nvidia, amd, triton_shared cpu, iluvatar, xpu, mthreads, metax, aipu, ascend, tsingmicro, cambricon, hcu, enflame-gcu300, __enflame-gcu400__, with __bold__ indicating newly added ones. <br>
+Currently supported backends include nvidia, amd, triton_shared cpu, iluvatar, xpu, mthreads, metax, aipu, ascend, tsingmicro, cambricon, hcu, enflame-gcu300, __enflame-gcu400__, __sunrise__, with __bold__ indicating newly added ones. <br>
 Each new backend maintains the capabilities of the previous version: cross-platform compilation and rapid verification, plugin-based high-differentiation modules, CI/CD, and quality management capabilities. <br>
 
 * Added Triton version support

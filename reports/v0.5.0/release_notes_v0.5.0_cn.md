@@ -10,7 +10,7 @@ FlagTree 继承前一版本的能力，持续集成新的后端，壮大生态�
 
 * 新增多后端支持
 
-目前支持的后端包括 nvidia、amd、triton_shared cpu、iluvatar、xpu、mthreads、metax、aipu、ascend、tsingmicro、cambricon、hcu、enflame-gcu300、__enflame-gcu400__，其中 __加粗__ 为本次新增。 <br>
+目前支持的后端包括 nvidia、amd、triton_shared cpu、iluvatar、xpu、mthreads、metax、aipu、ascend、tsingmicro、cambricon、hcu、enflame-gcu300、__enflame-gcu400__、__sunrise__，其中 __加粗__ 为本次新增。 <br>
 各新增后端保持前一版本的能力：跨平台编译与快速验证、高差异度模块插件化、CI/CD、质量管理能力。 <br>
 
 * 新增 Triton 版本支持
