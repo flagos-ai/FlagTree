@@ -641,13 +641,22 @@ if helper.flagtree_backend == "cambricon":
     packages, package_dir, package_data = helper.configure_cambricon_packages_and_data(
         packages, package_dir, package_data)
 
+
+def get_git_commit_hash(length=8):
+    try:
+        cmd = ['git', 'rev-parse', f'--short={length}', 'HEAD']
+        return "+git{}".format(subprocess.check_output(cmd).strip().decode('utf-8'))
+    except Exception:
+        return ""
+
+
 readme_path = os.path.join(get_base_dir(), "README.md")
 with open(readme_path, "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
     name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
-    version="0.4.1" + os.environ.get("FLAGTREE_WHEEL_VERSION_SUFFIX", ""),
+    version=os.environ.get("FLAGTREE_WHEEL_VERSION", "") or "0.5.0" + get_git_commit_hash(),
     author="FlagOS",
     author_email="contact@flagos.io",
     description=
