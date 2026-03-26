@@ -68,7 +68,7 @@ jobs:
         run: |
           set -x
           TRITON_VER="3.5"
-          CHIP=".gcu400"
+          CHIP=".gcu400."
           export FLAGTREE_BACKEND=enflame
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
