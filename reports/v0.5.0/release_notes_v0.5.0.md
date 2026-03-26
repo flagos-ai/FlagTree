@@ -29,7 +29,7 @@ In this release, TLE (Triton Language Extensions) continues to evolve with key f
 
 **TLE-Struct** adds `local_ptr` in this release, strengthening structured-level expression for local storage and data access paths to support further performance optimization.
 
-**TLE-Raw** adds inline CUDA support in this release, enabling direct embedding of CUDA code for finer-grained hardware control and performance tuning. For more information, refer to [wiki](https://github.com/flagos-ai/FlagTree/wiki/EDSL).
+**TLE-Raw** adds inline CUDA support in this release, enabling direct embedding of CUDA code for finer-grained hardware control and performance tuning. For more information, refer to [wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw).
 
 * Joint construction with FlagGems operator library
 

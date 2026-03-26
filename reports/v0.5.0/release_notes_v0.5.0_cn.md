@@ -29,7 +29,7 @@ FlagTree 继承前一版本的能力，持续集成新的后端，壮大生态�
 
 **TLE-Struct** 在本版本新增了 `local_ptr`，增强了结构化层级下对本地存储与数据访问路径的表达能力，便于进一步性能优化。
 
-**TLE-Raw** 在本版本支持了 inline CUDA，可直接嵌入 CUDA 代码以获得更细粒度的硬件控制与性能调优空间。更多内容可参考 [wiki](https://github.com/flagos-ai/FlagTree/wiki/EDSL)。
+**TLE-Raw** 在本版本支持了 inline CUDA，可直接嵌入 CUDA 代码以获得更细粒度的硬件控制与性能调优空间。更多内容可参考 [wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)。
 
 * 与 FlagGems 算子库联合建设
 
