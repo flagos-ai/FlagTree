@@ -442,7 +442,8 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 cache.store(
     file="maca-llvm-metax20250708.521-x86_64",
     condition=("metax" == flagtree_backend),
-    url="https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz",
+    url=
+    "https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
@@ -450,25 +451,26 @@ cache.store(
 cache.store(
     file="metaxlib_251210",
     condition=("metax" == flagtree_backend),
-    url="https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz",
+    url=
+    "https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz",
 )
 
 cache.store(
-    files=("metaxTritonPlugin.so",),
+    files=("metaxTritonPlugin.so", ),
     condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
     copy_src_path=f"{cache.dir_path}/{flagtree_backend}/metaxlib_251210",
     copy_dst_path=f"third_party/{flagtree_backend}",
 )
 
 cache.store(
-    files=("ext_maca_mathlib.bc",),
+    files=("ext_maca_mathlib.bc", ),
     condition=("metax" == flagtree_backend),
     copy_src_path=f"{cache.dir_path}/{flagtree_backend}/metaxlib_251210",
     copy_dst_path=f"third_party/{flagtree_backend}/backend/lib",
 )
 
 cache.store(
-    files=("mlir-opt",),
+    files=("mlir-opt", ),
     condition=("metax" == flagtree_backend),
     copy_src_path=f"{os.environ.get('LLVM_SYSPATH','')}/bin",
     copy_dst_path="third_party/metax/backend/bin",
