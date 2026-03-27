@@ -55,6 +55,18 @@ FlagTree’s extension components are currently available on some backends:
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[tsingmicro](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/tsingmicro/)|3.3|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)|
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[aipu](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/aipu/)|3.3|[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
 
+## TLE (Triton Language Extensions)
+
+Triton provides strong productivity for kernel development, but heterogeneous AI chips and deeper performance tuning scenarios need more explicit control over distributed execution, memory access patterns, and hardware-specific primitives. TLE extends Triton in a layered way to bridge this gap while keeping compatibility with existing Triton workflows.
+
+Key advantages of TLE:
+
+* Progressive abstraction from portable usage to hardware-oriented tuning (`Lite` / `Struct` / `Raw`).
+* Better coverage for multi-device, architecture-specific, and backend lowering scenarios.
+* Lower migration cost from existing Triton kernels while preserving optimization headroom.
+
+For detailed design, APIs, and examples, please refer to the [TLE Wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE) and [TLE-Raw Wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw).
+
 ## Latest News
 
 * 2026/03/13 Added [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) GCU400 backend integration (based on Triton 3.5), and added CI/CD.
@@ -124,10 +136,10 @@ python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
 ```
 
-|Backend   |Install command<br>(The version corresponds to the git tag)|Triton<br>ver.|Python<br>ver.|libc.so &<br>libstdc++.so<br>ver.|
+|Backend   |Install command<br>(The version corresponds to the git tag)|Triton<br>ver.|Python<br>ver.|libc.so &<br>libstdc++.so|
 |:---------|:---------|:---------|:---------|:---------|
-|nvidia    |python3 -m pip install flagtree==0.5.0rc1 $RES              |3.6|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|nvidia    |python3 -m pip install flagtree==0.5.0rc1+3.5 $RES          |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|nvidia    |python3 -m pip install flagtree==0.5.0 $RES                 |3.6|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|nvidia    |python3 -m pip install flagtree==0.5.0+3.5 $RES             |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |nvidia    |python3 -m pip install flagtree==0.4.0+3.3 $RES             |3.3|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |nvidia    |python3 -m pip install flagtree==0.5.0+3.1 $RES             |3.1|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |iluvatar  |python3 -m pip install flagtree==0.5.0+iluvatar3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
@@ -138,8 +150,8 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |tsingmicro|python3 -m pip install flagtree==0.5.0+tsingmicro3.3 $RES   |3.3|3.10|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |aipu      |python3 -m pip install flagtree==0.5.0+aipu3.3 $RES         |3.3|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |sunrise   |python3 -m pip install flagtree==0.4.0+sunrise3.4 $RES      |3.4|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|enflame<br>GCU300(S60) |python3 -m pip install flagtree==0.5.0+gcu300-enflame3.5 $RES|3.3|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|enflame<br>GCU400(L600)|python3 -m pip install flagtree==0.5.0+gcu400-enflame3.5 $RES|3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|enflame<br>GCU300(S60) |python3 -m pip install flagtree==0.5.0+enflame.gcu300.3.5 $RES|3.3|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|enflame<br>GCU400(L600)|python3 -m pip install flagtree==0.5.0+enflame.gcu400.3.5 $RES|3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 
 Historical versions of flagtree can be found at https://resource.flagos.net/#browse/search/pypi/=assets.attributes.pypi.description%3Dflagtree
 

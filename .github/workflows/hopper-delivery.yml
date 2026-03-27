@@ -123,7 +123,7 @@ jobs:
           unset FLAGTREE_BACKEND
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
-          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}"  # Without ${TRITON_VER} because it's the main branch
+          export FLAGTREE_WHEEL_VERSION="${WHL_VER}"  # main
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
           if python${PYTHON_VER} -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
