@@ -443,37 +443,47 @@ cache.store(
     file="maca-llvm-metax20250708.521-x86_64",
     condition=("metax" == flagtree_backend),
     url=
-    "https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz",
-    pre_hock=lambda: check_env('LLVM_SYSPATH'),
+   "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/maca-llvm-metax20250708.521-x86_64.tar.xz",
+    # pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
-)
-
-cache.store(
-    file="metaxlib_251210",
-    condition=("metax" == flagtree_backend),
-    url=
-    "https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz",
-)
-
-cache.store(
-    files=("metaxTritonPlugin.so", ),
-    condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
-    copy_src_path=f"{cache.dir_path}/{flagtree_backend}/metaxlib_251210",
-    copy_dst_path=f"third_party/{flagtree_backend}",
-)
-
-cache.store(
-    files=("ext_maca_mathlib.bc", ),
-    condition=("metax" == flagtree_backend),
-    copy_src_path=f"{cache.dir_path}/{flagtree_backend}/metaxlib_251210",
-    copy_dst_path=f"third_party/{flagtree_backend}/backend/lib",
 )
 
 cache.store(
     files=("mlir-opt", ),
     condition=("metax" == flagtree_backend),
-    copy_src_path=f"{os.environ.get('LLVM_SYSPATH','')}/bin",
+    # copy_src_path=f"{os.environ.get('LLVM_SYSPATH','')}/bin",
+    copy_src_path=f"{cache.dir_path}/{flagtree_backend}/maca-llvm-metax20250708.521-x86_64/bin",
     copy_dst_path="third_party/metax/backend/bin",
+)
+
+cache.store(
+    file="metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0",
+    condition=("metax" == flagtree_backend),
+    url=
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0.tar.gz",
+    md5="4abfd940b2ea214b88f6f11680f66a6d",
+)
+
+cache.store(
+    files=("metaxTritonPlugin.so", ),
+    condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
+    copy_src_path=f"{cache.dir_path}/{flagtree_backend}/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0",
+    copy_dst_path=f"third_party/{flagtree_backend}",
+)
+
+cache.store(
+    file="ext_maca_mathlib_bc_v0.4.0",
+    condition=("metax" == flagtree_backend),
+    url=
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/ext_maca_mathlib_bc_v0.4.0.tar.gz",
+    md5="9534989079ec70caaa5010b3a55c49ac",
+)
+
+cache.store(
+    files=("ext_maca_mathlib.bc", ),
+    condition=("metax" == flagtree_backend),
+    copy_src_path=f"{cache.dir_path}/{flagtree_backend}/ext_maca_mathlib_bc_v0.4.0",
+    copy_dst_path=f"third_party/{flagtree_backend}/backend/lib",
 )
 
 # mthreads
