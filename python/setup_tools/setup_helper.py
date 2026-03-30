@@ -443,15 +443,13 @@ cache.store(
     file="maca-llvm-metax20250708.521-x86_64",
     condition=("metax" == flagtree_backend),
     url=
-   "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/maca-llvm-metax20250708.521-x86_64.tar.xz",
-    # pre_hock=lambda: check_env('LLVM_SYSPATH'),
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/maca-llvm-metax20250708.521-x86_64.tar.xz",
     post_hock=set_llvm_env,
 )
 
 cache.store(
     files=("mlir-opt", ),
     condition=("metax" == flagtree_backend),
-    # copy_src_path=f"{os.environ.get('LLVM_SYSPATH','')}/bin",
     copy_src_path=f"{cache.dir_path}/{flagtree_backend}/maca-llvm-metax20250708.521-x86_64/bin",
     copy_dst_path="third_party/metax/backend/bin",
 )
@@ -467,7 +465,8 @@ cache.store(
 cache.store(
     files=("metaxTritonPlugin.so", ),
     condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
-    copy_src_path=f"{cache.dir_path}/{flagtree_backend}/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0",
+    copy_src_path=
+    f"{cache.dir_path}/{flagtree_backend}/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0",
     copy_dst_path=f"third_party/{flagtree_backend}",
 )
 
