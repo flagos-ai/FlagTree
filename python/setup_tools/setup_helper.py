@@ -442,8 +442,8 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 cache.store(
     file="maca-llvm-metax20250708.521-x86_64",
     condition=("metax" == flagtree_backend),
-    url=
-    "https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz",
+    # url=
+    # "https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/maca-llvm-metax20250708.521-x86_64.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
@@ -451,8 +451,8 @@ cache.store(
 cache.store(
     file="metaxlib_251210",
     condition=("metax" == flagtree_backend),
-    url=
-    "https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz",
+    # url=
+    # "https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz",
 )
 
 cache.store(
