@@ -442,8 +442,7 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 cache.store(
     file="maca-llvm-metax20250708.521-x86_64",
     condition=("metax" == flagtree_backend),
-    url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/maca-llvm-metax20250708.521-x86_64.tar.xz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/maca-llvm-metax20250708.521-x86_64.tar.xz",
     post_hock=set_llvm_env,
 )
 
