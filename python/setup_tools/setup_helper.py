@@ -459,7 +459,7 @@ cache.store(
     condition=("metax" == flagtree_backend),
     url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0.tar.gz",
-    md5="4abfd940b2ea214b88f6f11680f66a6d",
+    md5_digest="4abfd940b2ea214b88f6f11680f66a6d",
 )
 
 cache.store(
@@ -475,7 +475,7 @@ cache.store(
     condition=("metax" == flagtree_backend),
     url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/ext_maca_mathlib_bc_v0.4.0.tar.gz",
-    md5="9534989079ec70caaa5010b3a55c49ac",
+    md5_digest="9534989079ec70caaa5010b3a55c49ac",
 )
 
 cache.store(
