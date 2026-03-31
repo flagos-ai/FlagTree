@@ -440,7 +440,7 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 
 # metax
 cache.store(
-    file="maca-llvm-metax20250708.521-x86_64",
+    file="llvm_release",
     condition=("metax" == flagtree_backend),
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/maca-llvm-metax20250708.521-x86_64.tar.xz",
     post_hock=set_llvm_env,
@@ -449,28 +449,26 @@ cache.store(
 cache.store(
     files=("mlir-opt", ),
     condition=("metax" == flagtree_backend),
-    copy_src_path=f"{cache.dir_path}/{flagtree_backend}/maca-llvm-metax20250708.521-x86_64/bin",
+    copy_src_path=f"{os.environ.get('LLVM_SYSPATH','')}/bin",
     copy_dst_path="third_party/metax/backend/bin",
+    md5_digest="f14eafc2290f3be482e42216660697ea",
 )
 
-cache.store(file="metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0",
-            files=("metaxTritonPlugin.so", ), condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
-            url=configs.activated_module.get_resources_url('plugin'),
-            copy_src_path=f"{cache.dir_path}/{flagtree_backend}", copy_dst_path=f"third_party/{flagtree_backend}",
-            md5_digest=configs.activated_module.get_resources_hash('plugin'))
+cache.store(
+    file="metaxTritonPlugin.so",
+    condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
+    url=
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0.tar.gz",
+    copy_dst_path=f"third_party/{flagtree_backend}",
+    md5_digest="4abfd940b2ea214b88f6f11680f66a6d",
+)
 
 cache.store(
-    file="ext_maca_mathlib_bc_v0.4.0",
+    file="ext_maca_mathlib.bc",
     condition=("metax" == flagtree_backend),
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/ext_maca_mathlib_bc_v0.4.0.tar.gz",
-    md5_digest="9534989079ec70caaa5010b3a55c49ac",
-)
-
-cache.store(
-    files=("ext_maca_mathlib.bc", ),
-    condition=("metax" == flagtree_backend),
-    copy_src_path=f"{cache.dir_path}/{flagtree_backend}",
     copy_dst_path=f"third_party/{flagtree_backend}/backend/lib",
+    md5_digest="9534989079ec70caaa5010b3a55c49ac",
 )
 
 # mthreads
