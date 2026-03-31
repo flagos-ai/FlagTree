@@ -453,15 +453,11 @@ cache.store(
     copy_dst_path="third_party/metax/backend/bin",
 )
 
-cache.store(
-    file="metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0",
-    files=("metaxTritonPlugin.so", ),
-    condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
-    url=configs.activated_module.get_resources_url('plugin'),
-    copy_src_path=f"{cache.dir_path}/{flagtree_backend}",
-    copy_dst_path=f"third_party/{flagtree_backend}",
-    md5_digest=configs.activated_module.get_resources_hash('plugin')
-)
+cache.store(file="metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0",
+            files=("metaxTritonPlugin.so", ), condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
+            url=configs.activated_module.get_resources_url('plugin'),
+            copy_src_path=f"{cache.dir_path}/{flagtree_backend}", copy_dst_path=f"third_party/{flagtree_backend}",
+            md5_digest=configs.activated_module.get_resources_hash('plugin'))
 
 cache.store(
     file="ext_maca_mathlib_bc_v0.4.0",
