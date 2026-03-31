@@ -138,7 +138,7 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 
 |后端       |安装命令（版本号对应 git tag）|Triton<br>版本|Python<br>版本|libc.so & libstdc++.so|
 |:---------|:---------|:---------|:---------|:---------|
-|nvidia    |python3 -m pip install flagtree==0.5.0 $RES                 |3.6|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|nvidia    |python3 -m pip install flagtree===0.5.0 $RES                |3.6|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |nvidia    |python3 -m pip install flagtree==0.5.0+3.5 $RES             |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |nvidia    |python3 -m pip install flagtree==0.4.0+3.3 $RES             |3.3|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |nvidia    |python3 -m pip install flagtree==0.5.0+3.1 $RES             |3.1|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
