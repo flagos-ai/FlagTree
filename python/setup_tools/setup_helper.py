@@ -455,17 +455,12 @@ cache.store(
 
 cache.store(
     file="metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0",
-    condition=("metax" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0.tar.gz",
-    md5_digest="4abfd940b2ea214b88f6f11680f66a6d",
-)
-
-cache.store(
     files=("metaxTritonPlugin.so", ),
     condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
-    copy_src_path=
-    f"{cache.dir_path}/{flagtree_backend}/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0",
+    url=configs.activated_module.get_resources_url('plugin'),
+    copy_src_path=f"{cache.dir_path}/{flagtree_backend}/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0",
     copy_dst_path=f"third_party/{flagtree_backend}",
+    md5_digest=configs.activated_module.get_resources_hash('plugin')
 )
 
 cache.store(
