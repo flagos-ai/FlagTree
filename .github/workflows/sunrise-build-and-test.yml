@@ -47,4 +47,5 @@ jobs:
         shell: bash
         run: |
           set -x
+          export LD_LIBRARY_PATH=/usr/local/tangrt/lib/linux-x86_64/stub:${LD_LIBRARY_PATH}
           python3 third_party/sunrise/python/test_examples/vector-add.py
