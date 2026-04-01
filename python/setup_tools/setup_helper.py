@@ -451,7 +451,7 @@ cache.store(
     condition=("metax" == flagtree_backend),
     copy_src_path=f"{os.environ.get('LLVM_SYSPATH','')}/bin",
     copy_dst_path="third_party/metax/backend/bin",
-    md5_digest="f14eafc2290f3be482e42216660697ea",
+    md5_digest="f14eafc2",
 )
 
 cache.store(
@@ -460,7 +460,7 @@ cache.store(
     url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0.tar.gz",
     copy_dst_path=f"third_party/{flagtree_backend}",
-    md5_digest="4abfd940b2ea214b88f6f11680f66a6d",
+    md5_digest="4abfd940",
 )
 
 cache.store(
@@ -468,7 +468,7 @@ cache.store(
     condition=("metax" == flagtree_backend),
     url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/ext_maca_mathlib_bc_v0.4.0.tar.gz",
     copy_dst_path=f"third_party/{flagtree_backend}/backend/lib",
-    md5_digest="9534989079ec70caaa5010b3a55c49ac",
+    md5_digest="95349890",
 )
 
 # mthreads
