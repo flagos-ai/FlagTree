@@ -20,8 +20,8 @@
 
 ```shell
 mkdir -p ~/.flagtree/iluvatar; cd ~/.flagtree/iluvatar
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.4.0.tar.gz
-tar zxvf iluvatar-llvm18-x86_64_v0.4.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.5.0.tar.gz
+tar zxvf iluvatar-llvm18-x86_64_v0.5.0.tar.gz
 ABI=$(echo | g++ -dM -E -x c++ - | awk '/__GXX_ABI_VERSION/{print $3}')
 case "$ABI" in
   1013) PLUGIN_TGZ=iluvatarTritonPlugin-cpython3.10-glibc2.17-glibcxx3.4.19-cxxabi1.3.13-linux-x86_64_v0.5.0.tar.gz ;;

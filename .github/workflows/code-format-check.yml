@@ -4,9 +4,9 @@ on:
   schedule:
     - cron: '0 21 * * *'
   push:
-    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x" ]
+    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x", "triton_v3.4.x", "triton_v3.5.x"]
   pull_request:
-    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x" ]
+    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x", "triton_v3.4.x", "triton_v3.5.x"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -16,8 +16,10 @@ jobs:
   pre-commit:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-    - uses: actions/setup-python@v5
+    - name: Checkout code
+      id: checkout
+      uses: actions/checkout@v6
       with:
-        python-version: '3.11'
-    - uses: pre-commit/action@v3.0.1
+        token: ${{ secrets.BOT_PAT_TOKEN || github.token }}
+    - name: Code format check
+      uses: flagos-ai/FlagTree/.github/actions/code-format-check@main
