@@ -657,7 +657,7 @@ def get_package_dirs():
 
 
 def get_packages():
-    yield from find_packages(where="python")
+    yield from find_packages(where="python", include=["triton", "triton.*"])
 
     for backend in backends:
         yield f"triton.backends.{backend.name}"
