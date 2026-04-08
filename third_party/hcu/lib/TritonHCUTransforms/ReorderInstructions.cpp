@@ -328,7 +328,10 @@ static void sinkSecondLoad(triton::FuncOp funcOp) {
     triton::DotOp dotOp;
     for (Operation &op : forOp) {
       if (auto loadOp = dyn_cast<triton::LoadOp>(&op))
-        loadOps.insert(loadOp);
+        if (isa<RankedTensorType>(loadOp.getType())) {
+          loadOps.insert(loadOp);
+        }
+
       if (auto curOp = dyn_cast<triton::DotOp>(&op))
         dotOp = curOp;
     }
