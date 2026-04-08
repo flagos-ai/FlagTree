@@ -156,12 +156,7 @@ def alloc(
 
         if storage == tle.smem:
             if init_value is not None:
-                mutable_ty = _semantic.builder.get_memdesc_type(
-                    full_shape,
-                    elem_type,
-                    layout_handle,
-                    "smem"
-                )
+                mutable_ty = _semantic.builder.get_memdesc_type(full_shape, elem_type, layout_handle, "smem")
                 tensor_handle = _semantic.builder.create_local_alloc(mutable_ty, init_value.handle)
             else:
                 tensor_handle = _semantic.builder.create_local_alloc(full_shape, elem_type, layout_handle)
