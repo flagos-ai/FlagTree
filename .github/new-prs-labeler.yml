@@ -56,6 +56,37 @@ proton:
       - any-glob-to-any-file:
           - 'third_party/proton/**'
 
+ascend:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/ascend/**'
+
+tle:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tle/**'
+
+aipu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/aipu/**'
+
+enflame:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/enflame/**'
+
+tsingmicro:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tsingmicro/**'
+
+sunrise:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/sunrise/**'
+
+
 
 # ---- DOC label ----
 # This label is applied ONLY when the PR consists exclusively of documentation.
