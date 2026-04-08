@@ -134,6 +134,8 @@ using namespace mlir::triton;
 #define i64_val(...) LLVM::createConstantI64(loc, rewriter, __VA_ARGS__)
 #define int_val(width, val)                                                    \
   LLVM::createLLVMIntegerConstant(rewriter, loc, width, val)
+#define i8_val(val) int_val(8, val)
+#define i16_val(val) int_val(16, val)
 #define tid_val() getThreadId(rewriter, loc)
 
 // Attributes
