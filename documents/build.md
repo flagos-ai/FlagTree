@@ -1,22 +1,22 @@
 <div align="right"><a href="/documents/build_cn.md">中文版</a></div>
 
-## Install from source
+# Install from source
 
-### Tips for building
+## Tips for building
 
 Automatic dependency library downloads may be limited by network conditions. You can manually download to the cache directory ~/.flagtree (modifiable via the FLAGTREE_CACHE_DIR environment variable). No need to manually set LLVM environment variables such as LLVM_BUILD_DIR. <br>
 Complete build commands for each backend: <br>
 
-#### 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
+### 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
 
 - Based on Triton 3.1, x64
 - Available for MR-V100/BI-V150
 
-##### 1. Build and run environment
+#### 1. Build and run environment
 
 - Recommended: Use Ubuntu 20.04
 
-##### 2. Manually download the FlagTree dependencies
+#### 2. Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/iluvatar; cd ~/.flagtree/iluvatar
@@ -33,7 +33,7 @@ wget "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${PLUGIN_TGZ}"
 tar zxvf "${PLUGIN_TGZ}"
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -42,7 +42,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
 ```
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -51,17 +51,17 @@ export FLAGTREE_BACKEND=iluvatar
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/)
+### 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/)
 
 - Based on Triton 3.0, x64
 - Available for P800
 
-##### 1. Build and run environment
+#### 1. Build and run environment
 
 - Recommended: Use the Docker image (22GB) [ubuntu_2004_x86_64_v30.tar](https://su.bcebos.com/klx-sdk-release-public/xpytorch/docker/ubuntu2004_v030/ubuntu_2004_x86_64_v30.tar)
 - Contact kunlunxin-support@baidu.com for support
 
-##### 2. Manually download the FlagTree dependencies
+#### 2. Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/xpu; cd ~/.flagtree/xpu
@@ -73,7 +73,7 @@ wget https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-device-libs-ubuntu
 tar zxvf xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -82,7 +82,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
 ```
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -91,16 +91,16 @@ export FLAGTREE_BACKEND=xpu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/)
+### 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/)
 
 - Based on Triton 3.1, x64/aarch64
 - Available for S4000/S5000
 
-##### 1. Build and run environment
+#### 1. Build and run environment
 
 - Recommended: Use [Dockerfile-ubuntu22.04-python3.10-mthreads](/dockerfiles/Dockerfile-ubuntu22.04-python3.10-mthreads)
 
-##### 2. Manually download the FlagTree dependencies
+#### 2. Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
@@ -116,7 +116,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-c
 tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-aarch64_v0.4.0.tar.gz
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -125,7 +125,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
 ```
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -134,15 +134,15 @@ export FLAGTREE_BACKEND=mthreads
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 ARM China（安谋科技）[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)
+### 💫 ARM China（安谋科技）[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)
 
 - Based on Triton 3.3, x64/arm64
 
-##### 1. Build and run environment
+#### 1. Build and run environment
 
 - Recommended: Use Ubuntu 22.04
 
-##### 2. Manually download the FlagTree dependencies
+#### 2. Manually download the FlagTree dependencies
 
 - llvm x64 in the simulated environment, llvm arm64 on the ARM development board
 
@@ -152,7 +152,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x
 tar zxvf llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -161,7 +161,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
 ```
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -171,16 +171,16 @@ export FLAGTREE_BACKEND=aipu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
+### 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
 
 - Based on Triton 3.3, x64
 - Available for TX81
 
-##### 1. Build and run environment
+#### 1. Build and run environment
 
 - Recommended: Use Ubuntu 20.04
 
-##### 2. Manually download the FlagTree dependencies
+#### 2. Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/tsingmicro; cd ~/.flagtree/tsingmicro
@@ -190,7 +190,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_dev_202603
 tar zxvf tx8_depends_dev_20260309_173649_v0.5.0.tar.gz
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -199,7 +199,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
 ```
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -210,7 +210,7 @@ export FLAGTREE_BACKEND=tsingmicro
 python3 -m pip install . --no-build-isolation -v
 ```
 
-##### 5. Set environment variables before running
+#### 5. Set environment variables before running
 
 ```shell
 # Get FlagTree dependencies by step 2 if flagtree is source-free installed
@@ -221,12 +221,12 @@ export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH
 export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
 ```
 
-#### 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)
+### 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)
 
 - Based on Triton 3.2, aarch64
 - Available for 910B/910C
 
-##### 1. Build and run environment
+#### 1. Build and run environment
 
 - Recommended: Use [Dockerfile-ubuntu22.04-python3.11-ascend](/dockerfiles/Dockerfile-ubuntu22.04-python3.11-ascend)
 - Or: Use the Docker image (5.4GB) https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_cann-8.2.rc1.alpha003-a3-ubuntu22.04-py3.11-flagtree.tar.gz
@@ -244,7 +244,7 @@ chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
 ./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
 ```
 
-##### 2. Manually download the FlagTree dependencies
+#### 2. Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/ascend; cd ~/.flagtree/ascend
@@ -252,7 +252,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-a
 tar zxvf llvm-a66376b0-ubuntu-aarch64-python311-compat_v0.3.0.tar.gz
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -261,7 +261,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.2.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.2.x-linux-aarch64.tar.gz
 ```
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -271,16 +271,16 @@ export FLAGTREE_BACKEND=ascend
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/)
+### 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/)
 
 - Based on Triton 3.0, x64
 - Available for K100/BW1000
 
-##### 1. Build and run environment
+#### 1. Build and run environment
 
 - Recommended: Use [Dockerfile-ubuntu22.04-python3.10-hcu](/dockerfiles/Dockerfile-ubuntu22.04-python3.10-hcu)
 
-##### 2. Manually download the FlagTree dependencies
+#### 2. Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/hcu; cd ~/.flagtree/hcu
@@ -288,7 +288,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm20-df0864e-gli
 tar zxvf hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -297,7 +297,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
 ```
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -306,16 +306,16 @@ export FLAGTREE_BACKEND=hcu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)（triton 3.5）
+### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)（triton 3.5）
 
 - Based on Triton 3.5, x64
 - Available for GCU300/GCU400
 
-##### 1. Build and run environment
+#### 1. Build and run environment
 
 - Recommended: Use the Docker image (2.6GB) https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.4.0.tar.gz
 
-##### 2. Manually download the FlagTree dependencies
+#### 2. Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -323,7 +323,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm22-189e06b
 tar zxvf enflame-llvm22-189e06b-gcc9-x64_v0.4.0.tar.gz
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -332,7 +332,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.5.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.5.x-linux-x64.tar.gz
 ```
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -341,16 +341,16 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3）
+### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3）
 
 - Based on Triton 3.3, x64
 - Available for GCU300
 
-##### 1. Build and run environment
+#### 1. Build and run environment
 
 - Recommended: Use the Docker image (2.4GB) https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.3.1.tar.gz
 
-##### 2. Manually download the FlagTree dependencies
+#### 2. Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -358,7 +358,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b
 tar zxvf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -367,7 +367,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
 ```
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -376,16 +376,16 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
+### 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
 
 - Based on Triton 3.4, x64
 - Available for S2
 
-##### 1. Build and run environment
+#### 1. Build and run environment
 
 - Recommended: Use Ubuntu 22.04
 
-##### 2. Manually download the FlagTree dependencies
+#### 2. Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/sunrise; cd ~/.flagtree/sunrise
@@ -395,7 +395,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin-cp
 tar zxvf sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -404,7 +404,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.4.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.4.x-linux-x64.tar.gz
 ```
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -416,15 +416,15 @@ export FLAGTREE_BACKEND=sunrise
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
+### 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
 
 - Based on Triton 3.1/3.2/3.3/3.4/3.5/3.6, x64
 
-##### 1. Build and run environment
+#### 1. Environment for build and run
 
 - Recommended: Use the Docker image (12GB) https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_nvidia_pytorch_25.05-py3.tar.gz
 
-##### 2. Manually download the LLVM
+#### 2. Manually download the LLVM
 
 ```shell
 cd ${YOUR_LLVM_DOWNLOAD_DIR}
@@ -453,8 +453,7 @@ wget https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-f6ded0be-ub
 tar zxvf llvm-f6ded0be-ubuntu-x64.tar.gz
 export LLVM_SYSPATH=${YOUR_LLVM_DOWNLOAD_DIR}/llvm-f6ded0be-ubuntu-x64
 # For Triton 3.6 (Plan B for TLE-Raw)
-RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple \
-     --trusted-host=https://resource.flagos.net"
+RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
 python3.12 -m pip install mlir $RES
 python3.12 -m pip show mlir
 export LLVM_SYSPATH=${MLIR_INSTALL_DIR}/llvm_artifact
@@ -463,13 +462,14 @@ export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
 export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 ```
 
-##### 3. Manually download the Triton dependencies
+#### 3. Manually download the Triton dependencies
 
 Refer to [Offline build support: pre-downloading dependency packages](/documents/build.md#offline-build-support).
 
-##### 4. Command to build from source
+#### 4. Command to build from source
 
 ```shell
+apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree
 python3 -m pip install -r python/requirements.txt
 cd python  # For Triton 3.1, 3.2, 3.3, you need to enter the python directory to build
@@ -485,7 +485,7 @@ python3 -m pip install . --no-build-isolation -v
 unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR
 ```
 
-### Offline build support
+## Offline build support
 
 The above introduced how dependencies can be manually downloaded for various FlagTree backends during build time to avoid network environment limitations. Since Triton builds originally come with some dependency packages, we provide pre-downloaded packages that can be manually installed in your environment to prevent getting stuck at the automatic download stage during the build process.
 
@@ -513,9 +513,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.5.x-linux-x6
 
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 
-### Q&A
+## Q&A
 
-#### Q: After installation, running the program reports: version GLIBC or GLIBCXX not found
+### Q: After installation, running the program reports: version GLIBC or GLIBCXX not found
 
 A: Check which GLIBC / GLIBCXX versions are supported by libc.so.6 and libstdc++.so.6.0.30 in your environment:
 

@@ -1,22 +1,22 @@
 <div align="right"><a href="/documents/build.md">English</a></div>
 
-## 从源代码安装
+# 从源代码安装
 
-### 从源码构建技巧
+## 从源码构建技巧
 
 自动下载依赖库的速度可能受限于网络环境，编译前可自行下载至缓存目录 ~/.flagtree（可通过环境变量 FLAGTREE_CACHE_DIR 修改），无需自行设置 LLVM_BUILD_DIR 等环境变量。 <br>
 各后端完整构建命令如下： <br>
 
-#### 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
+### 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
 
 - 对应的 Triton 版本为 3.1，基于 x64 平台
 - 可用于 MR-V100/BI-V150
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
 - 推荐使用 Ubuntu 20.04
 
-##### 2. 手动下载 FlagTree 依赖库
+#### 2. 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/iluvatar; cd ~/.flagtree/iluvatar
@@ -33,7 +33,7 @@ wget "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${PLUGIN_TGZ}"
 tar zxvf "${PLUGIN_TGZ}"
 ```
 
-##### 3. 手动下载 Triton 依赖库
+#### 3. 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -42,7 +42,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
 ```
 
-##### 4. 源码构建命令
+#### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -51,17 +51,17 @@ export FLAGTREE_BACKEND=iluvatar
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/)
+### 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/)
 
 - 对应的 Triton 版本为 3.0，基于 x64 平台
 - 可用于 P800
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
 - 推荐使用镜像（22GB）[ubuntu_2004_x86_64_v30.tar](https://su.bcebos.com/klx-sdk-release-public/xpytorch/docker/ubuntu2004_v030/ubuntu_2004_x86_64_v30.tar)
 - 联系 kunlunxin-support@baidu.com 可获取进一步支持
 
-##### 2. 手动下载 FlagTree 依赖库
+#### 2. 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/xpu; cd ~/.flagtree/xpu
@@ -73,7 +73,7 @@ wget https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-device-libs-ubuntu
 tar zxvf xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
 ```
 
-##### 3. 手动下载 Triton 依赖库
+#### 3. 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -82,7 +82,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
 ```
 
-##### 4. 源码构建命令
+#### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -91,16 +91,16 @@ export FLAGTREE_BACKEND=xpu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/)
+### 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/)
 
 - 对应的 Triton 版本为 3.1，基于 x64/aarch64 平台
 - 可用于 S4000/S5000
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
 - 推荐使用镜像 [Dockerfile-ubuntu22.04-python3.10-mthreads](/dockerfiles/Dockerfile-ubuntu22.04-python3.10-mthreads)
 
-##### 2. 手动下载 FlagTree 依赖库
+#### 2. 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
@@ -116,7 +116,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-c
 tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-aarch64_v0.4.0.tar.gz
 ```
 
-##### 3. 手动下载 Triton 依赖库
+#### 3. 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -125,7 +125,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
 ```
 
-##### 4. 源码构建命令
+#### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -134,15 +134,15 @@ export FLAGTREE_BACKEND=mthreads
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 ARM China（安谋科技）[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)
+### 💫 ARM China（安谋科技）[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)
 
 - 对应的 Triton 版本为 3.3，基于 x64/arm64 平台
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
 - 推荐使用 Ubuntu 22.04
 
-##### 2. 手动下载 FlagTree 依赖库
+#### 2. 手动下载 FlagTree 依赖库
 
 - 模拟环境中使用 x64 版本的 llvm，在 ARM 开发板上使用 arm64 版本的 llvm
 
@@ -152,7 +152,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-x
 tar zxvf llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz
 ```
 
-##### 3. 手动下载 Triton 依赖库
+#### 3. 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -161,7 +161,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
 ```
 
-##### 4. 源码构建命令
+#### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -171,16 +171,16 @@ export FLAGTREE_BACKEND=aipu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
+### 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 - 可用于 TX81
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
 - 推荐使用 Ubuntu 20.04
 
-##### 2. 手动下载 FlagTree 依赖库
+#### 2. 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/tsingmicro; cd ~/.flagtree/tsingmicro
@@ -190,7 +190,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_dev_202603
 tar zxvf tx8_depends_dev_20260309_173649_v0.5.0.tar.gz
 ```
 
-##### 3. 手动下载 Triton 依赖库
+#### 3. 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -199,7 +199,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
 ```
 
-##### 4. 源码构建命令
+#### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -210,7 +210,7 @@ export FLAGTREE_BACKEND=tsingmicro
 python3 -m pip install . --no-build-isolation -v
 ```
 
-##### 5. 运行前设置环境变量
+#### 5. 运行前设置环境变量
 
 ```shell
 # Get FlagTree dependencies by step 2 if flagtree is source-free installed
@@ -221,12 +221,12 @@ export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH
 export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
 ```
 
-#### 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)
+### 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)
 
 - 对应的 Triton 版本为 3.2，基于 aarch64 平台
 - 可用于 910B/910C
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
 - 推荐使用镜像 [Dockerfile-ubuntu22.04-python3.11-ascend](/dockerfiles/Dockerfile-ubuntu22.04-python3.11-ascend)
 - 或者使用镜像（5.4GB）https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_cann-8.2.rc1.alpha003-a3-ubuntu22.04-py3.11-flagtree.tar.gz
@@ -244,7 +244,7 @@ chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
 ./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
 ```
 
-##### 2. 手动下载 FlagTree 依赖库
+#### 2. 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/ascend; cd ~/.flagtree/ascend
@@ -252,7 +252,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-a
 tar zxvf llvm-a66376b0-ubuntu-aarch64-python311-compat_v0.3.0.tar.gz
 ```
 
-##### 3. 手动下载 Triton 依赖库
+#### 3. 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -261,7 +261,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.2.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.2.x-linux-aarch64.tar.gz
 ```
 
-##### 4. 源码构建命令
+#### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -271,16 +271,16 @@ export FLAGTREE_BACKEND=ascend
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/)
+### 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/)
 
 - 对应的 Triton 版本为 3.0，基于 x64 平台
 - 可用于 K100/BW1000
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
 - 推荐使用镜像 [Dockerfile-ubuntu22.04-python3.10-hcu](/dockerfiles/Dockerfile-ubuntu22.04-python3.10-hcu)
 
-##### 2. 手动下载 FlagTree 依赖库
+#### 2. 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/hcu; cd ~/.flagtree/hcu
@@ -288,7 +288,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm20-df0864e-gli
 tar zxvf hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
 ```
 
-##### 3. 手动下载 Triton 依赖库
+#### 3. 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -297,7 +297,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
 ```
 
-##### 4. 源码构建命令
+#### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -306,16 +306,16 @@ export FLAGTREE_BACKEND=hcu
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)（triton 3.5）
+### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)（triton 3.5）
 
 - 对应的 Triton 版本为 3.5，基于 x64 平台
 - 可用于 GCU300/GCU400
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
 - 推荐使用镜像（2.6GB）Use the Docker image (2.6GB) https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.4.0.tar.gz
 
-##### 2. 手动下载 FlagTree 依赖库
+#### 2. 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -323,7 +323,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm22-189e06b
 tar zxvf enflame-llvm22-189e06b-gcc9-x64_v0.4.0.tar.gz
 ```
 
-##### 3. 手动下载 Triton 依赖库
+#### 3. 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -332,7 +332,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.5.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.5.x-linux-x64.tar.gz
 ```
 
-##### 4. 源码构建命令
+#### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -341,16 +341,16 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3）
+### 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3）
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 - 可用于 GCU300/GCU400
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
 - 推荐使用镜像（2.4GB）https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.3.1.tar.gz
 
-##### 2. 手动下载 FlagTree 依赖库
+#### 2. 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -358,7 +358,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b
 tar zxvf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 ```
 
-##### 3. 手动下载 Triton 依赖库
+#### 3. 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -367,7 +367,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.3.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x64.tar.gz
 ```
 
-##### 4. 源码构建命令
+#### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -376,16 +376,16 @@ export FLAGTREE_BACKEND=enflame
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
+### 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
 
 - 对应的 Triton 版本为 3.4，基于 x64 平台
 - 可用于 S2
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
 - 推荐使用 Ubuntu 22.04
 
-##### 2. 手动下载 FlagTree 依赖库
+#### 2. 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/sunrise; cd ~/.flagtree/sunrise
@@ -395,7 +395,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin-cp
 tar zxvf sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz
 ```
 
-##### 3. 手动下载 Triton 依赖库
+#### 3. 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -404,7 +404,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.4.
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.4.x-linux-x64.tar.gz
 ```
 
-##### 4. 源码构建命令
+#### 4. 源码构建命令
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -416,15 +416,41 @@ export FLAGTREE_BACKEND=sunrise
 python3 -m pip install . --no-build-isolation -v
 ```
 
-#### 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
+### 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
 
 - 对应的 Triton 版本为 3.1/3.2/3.3/3.4/3.5/3.6，基于 x64 平台
 
-##### 1. 构建及运行环境
+#### 1. 构建及运行环境
 
-- 推荐使用镜像（12GB）https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/docker_image_nvidia_pytorch_25.05-py3.tar.gz
+##### 1.1 直接使用预装镜像（对应 Triton 3.6）
 
-##### 2. 手动下载 LLVM 依赖包
+使用该预装镜像，则不必执行后续步骤 1.x，除非需要安装 FlagTree 的非 Triton 3.6 对应版本。
+如果网络环境畅通，也不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
+
+```shell
+# Plan A: docker pull (37GB)
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
+docker pull ${IMAGE}
+# Plan B: docker load (17GB)
+IMAGE=flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202603.tar.gz
+docker load -i flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202603.tar.gz
+```
+
+```shell
+CONTAINER=flagtree-nvidia-dev-xxx
+docker run -dit \
+    --net=host --uts=host --ipc=host --privileged \
+    --ulimit stack=67108864 --ulimit memlock=-1 \
+    --security-opt seccomp=unconfined \
+    --gpus=all \
+    -v /etc/localtime:/etc/localtime:ro \
+    -v /data:/data -v /home:/home -v /tmp:/tmp \
+    -w /root --name ${CONTAINER} ${IMAGE} bash
+docker exec -it ${CONTAINER} /bin/bash
+```
+
+##### 1.2 手动下载 LLVM 依赖包
 
 ```shell
 cd ${YOUR_LLVM_DOWNLOAD_DIR}
@@ -453,8 +479,7 @@ wget https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-f6ded0be-ub
 tar zxvf llvm-f6ded0be-ubuntu-x64.tar.gz
 export LLVM_SYSPATH=${YOUR_LLVM_DOWNLOAD_DIR}/llvm-f6ded0be-ubuntu-x64
 # For Triton 3.6 (Plan B for TLE-Raw)
-RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple \
-     --trusted-host=https://resource.flagos.net"
+RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
 python3.12 -m pip install mlir $RES
 python3.12 -m pip show mlir
 export LLVM_SYSPATH=${MLIR_INSTALL_DIR}/llvm_artifact
@@ -463,13 +488,31 @@ export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
 export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 ```
 
-##### 3. 手动下载 Triton 依赖库
+##### 1.3 手动下载 Triton 依赖库
 
 详见 [离线构建支持：预下载依赖包](/documents/build_cn.md#离线构建支持)。
 
-##### 4. 源码构建命令
+#### 2. 安装命令
+
+##### 2.1 免源码安装
 
 ```shell
+# Note: First install PyTorch, then execute the following commands
+python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
+RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
+python3 -m pip install flagtree===0.5.0 $RES
+```
+
+预装镜像中已安装 flagtree，可通过下列命令查看：
+
+```shell
+python3 -m pip show flagtree
+```
+
+##### 2.2 从源码构建
+
+```shell
+apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree
 python3 -m pip install -r python/requirements.txt
 cd python  # For Triton 3.1, 3.2, 3.3, you need to enter the python directory to build
@@ -485,7 +528,7 @@ python3 -m pip install . --no-build-isolation -v
 unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR
 ```
 
-### 离线构建支持
+## 离线构建支持
 
 上文介绍了构建时 FlagTree 各后端可手动下载依赖包以避免受限于网络环境。Triton 构建时原本就带有一些依赖包，因此我们提供预下载包，可以手动安装至环境中，避免在构建时卡在自动下载阶段。
 
@@ -509,13 +552,16 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.4.x-linux-x6
 # For Triton 3.5 (x64)
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.5.x-linux-x64.tar.gz
 sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.5.x-linux-x64.tar.gz
+# For Triton 3.6 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.6.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.6.x-linux-x64.tar.gz
 ```
 
 执行完上述脚本后，原有的 ~/.triton 目录将被重命名，新的 ~/.triton 目录会被创建并存放预下载包。
 
-### Q&A
+## Q&A
 
-#### Q: 安装完成后，运行时报错：version GLIBC or GLIBCXX not found
+### Q: 安装完成后，运行时报错：version GLIBC or GLIBCXX not found
 
 A: 查询环境中的 libc.so.6、libstdc++.so.6.0.30 支持的 GLIBC / GLIBCXX 版本：
 

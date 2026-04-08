@@ -103,12 +103,12 @@ TLE 的主要优势包括：
 * 2025/03/19 新增接入 [mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/) 后端（对应 Triton 3.1），加入 CI/CD。
 * 2025/03/12 新增接入 [iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/) 后端（对应 Triton 3.1），加入 CI/CD。
 
-## 从源代码安装
+## 从源码安装
 
 安装依赖（注意使用正确的 python3.x 执行）：
 
 ```shell
-apt install zlib1g zlib1g-dev libxml2 libxml2-dev  # ubuntu
+apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 python3 -m pip install -r python/requirements.txt
 ```
 

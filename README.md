@@ -108,7 +108,7 @@ For detailed design, APIs, and examples, please refer to the [TLE Wiki](https://
 Installation dependencies (Confirm the correct python3.x version is being used):
 
 ```shell
-apt install zlib1g zlib1g-dev libxml2 libxml2-dev  # ubuntu
+apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 python3 -m pip install -r python/requirements.txt
 ```
 
