@@ -5,7 +5,7 @@ import triton
 import triton.language as tl
 from triton.experimental.tle.raw import dialect
 import triton.experimental.tle.language.raw as tle_raw
-import triton.experimental.tle.language.gpu as tle
+import triton.experimental.tle.language.gpu as tle_gpu
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -108,19 +108,19 @@ def matmul_kernel(
     a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-    acc_smem = tle.alloc(shape=[BLOCK_SIZE_M, BLOCK_SIZE_N], dtype=tl.float32, layout=None, scope=tle.smem,
-                         nv_mma_shared_layout=False)
+    acc_smem = tle_gpu.alloc(shape=[BLOCK_SIZE_M, BLOCK_SIZE_N], dtype=tl.float32, layout=None, scope=tle_gpu.smem,
+                             nv_mma_shared_layout=False)
     rows = tl.broadcast_to(tl.arange(0, BLOCK_SIZE_M)[:, None], (BLOCK_SIZE_M, BLOCK_SIZE_N))
     cols = tl.broadcast_to(tl.arange(0, BLOCK_SIZE_N)[None, :], (BLOCK_SIZE_M, BLOCK_SIZE_N))
-    acc_ptrs = tle.local_ptr(acc_smem, (rows, cols))
+    acc_ptrs = tle_gpu.local_ptr(acc_smem, (rows, cols))
     tl.store(acc_ptrs, acc)
     for _ in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
-        a_smem = tle.alloc(shape=[BLOCK_SIZE_M, BLOCK_SIZE_K], dtype=tl.float16, layout=None, scope=tle.smem,
-                           nv_mma_shared_layout=False)
-        tle.copy(a_ptrs, a_smem, shape=[BLOCK_SIZE_M, BLOCK_SIZE_K])
-        b_smem = tle.alloc(shape=[BLOCK_SIZE_K, BLOCK_SIZE_N], dtype=tl.float16, layout=None, scope=tle.smem,
-                           nv_mma_shared_layout=False)
-        tle.copy(b_ptrs, b_smem, shape=[BLOCK_SIZE_K, BLOCK_SIZE_N])
+        a_smem = tle_gpu.alloc(shape=[BLOCK_SIZE_M, BLOCK_SIZE_K], dtype=tl.float16, layout=None, scope=tle_gpu.smem,
+                               nv_mma_shared_layout=False)
+        tle_gpu.copy(a_ptrs, a_smem, shape=[BLOCK_SIZE_M, BLOCK_SIZE_K])
+        b_smem = tle_gpu.alloc(shape=[BLOCK_SIZE_K, BLOCK_SIZE_N], dtype=tl.float16, layout=None, scope=tle_gpu.smem,
+                               nv_mma_shared_layout=False)
+        tle_gpu.copy(b_ptrs, b_smem, shape=[BLOCK_SIZE_K, BLOCK_SIZE_N])
         acc_smem = tle_raw.call_smem(edsl, [acc_smem], [a_smem, b_smem])
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
