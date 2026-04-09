@@ -142,9 +142,9 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |nvidia    |python3 -m pip install flagtree==0.5.0+3.5 $RES             |3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |nvidia    |python3 -m pip install flagtree==0.4.0+3.3 $RES             |3.3|3.10<br>3.11<br>3.12|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |nvidia    |python3 -m pip install flagtree==0.5.0+3.1 $RES             |3.1|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|iluvatar  |python3 -m pip install flagtree==0.5.0+iluvatar3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|mthreads  |python3 -m pip install flagtree==0.5.0+mthreads3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|metax     |python3 -m pip install flagtree==0.5.0+metax3.1 $RES        |3.1|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|iluvatar  |python3 -m pip install flagtree==0.5.1+iluvatar3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|mthreads  |python3 -m pip install flagtree==0.5.1+mthreads3.1 $RES     |3.1|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|metax     |python3 -m pip install flagtree==0.5.1+metax3.1 $RES        |3.1|3.10|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |hcu       |python3 -m pip install flagtree==0.5.0+hcu3.0 $RES          |3.0|3.10|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |ascend    |python3 -m pip install flagtree==0.5.0+ascend3.2 $RES       |3.2|3.11|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |tsingmicro|python3 -m pip install flagtree==0.5.0+tsingmicro3.3 $RES   |3.3|3.10|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
@@ -154,19 +154,6 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |enflame<br>GCU400(L600)|python3 -m pip install flagtree==0.5.0+enflame.gcu400.3.5 $RES|3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 
 flagtree 历史版本可以在 https://resource.flagos.net/#browse/search/pypi/=assets.attributes.pypi.description%3Dflagtree 查询。
-
-## 运行测试
-
-安装完成后一般可以在设备支持的环境下运行测试，具体后端支持的测试可前往对应分支的 `.github/workflow/${backend_name}-build-and-test.yml` 查看。
-```shell
-cd ${YOUR_CODE_DIR}/FlagTree
-# nvidia/amd
-cd python/test/unit
-python3 -m pytest -s
-# other backends
-cd third_party/${backend_name}/python/test/unit
-python3 -m pytest -s
-```
 
 ## 关于贡献
 
