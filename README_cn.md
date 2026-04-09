@@ -153,7 +153,7 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |enflame<br>GCU300(S60) |python3 -m pip install flagtree==0.5.0+enflame.gcu300.3.5 $RES|3.3|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |enflame<br>GCU400(L600)|python3 -m pip install flagtree==0.5.0+enflame.gcu400.3.5 $RES|3.5|3.12|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 
-flagtree 历史版本可以在 https://resource.flagos.net/#browse/search/pypi/=assets.attributes.pypi.description%3Dflagtree 查询。
+flagtree 历史版本可以在 https://resource.flagos.net/#browse/search/pypi/=assets.attributes.pypi.description%3Dflagtree 查询
 
 ## 关于贡献
 

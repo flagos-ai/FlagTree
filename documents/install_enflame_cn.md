@@ -7,17 +7,17 @@
 
 ## 1. 构建及运行环境
 
-### 1.1 使用镜像
+### 1.1 使用镜像（triton 3.5）
 
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-IMAGE=flagtree-hcu-py310-torch2.9.0-ubuntu22.04:202603 # TODO
-# Plan A: docker pull (GB)
+IMAGE=flagtree-enflame3.5-py312-torch2.9.1-ubuntu24.04:202603
+# Plan A: docker pull (13.3GB)
 docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
-# Plan B: docker load (GB)
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu-py310-torch2.9.0-ubuntu22.04.202603.tar.gz
-docker load -i flagtree-hcu-py310-torch2.9.0-ubuntu22.04.202603.tar.gz
+# Plan B: docker load (2.8GB)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-enflame3.5-py312-torch2.9.1-ubuntu24.04.202603.tar.gz
+docker load -i flagtree-enflame3.5-py312-torch2.9.1-ubuntu24.04.202603.tar.gz
 ```
 
 ```shell
@@ -30,7 +30,8 @@ docker run -dit \
 docker cp ${CONTAINER}:/enflame enflame    # Will create ./enflame dir
 bash enflame/driver/enflame-x86_64-gcc-1.7.2.14-20260302150833.run
 efsmi
-docker restart ${CONTAINER}
+docker stop ${CONTAINER}
+docker start ${CONTAINER}
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
@@ -88,22 +89,22 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 
 ---
 
-# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3）
+# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3 旧版本）
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 - 可用于 GCU300
 
 ## 1. 构建及运行环境
 
-### 1.1 使用镜像
+### 1.1 使用镜像（triton 3.3）
 
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-IMAGE=flagtree-hcu-py310-torch2.9.0-ubuntu22.04:202603 # TODO
-# Plan A: docker pull (GB)
+IMAGE=flagtree-enflame3.3-py310-torch2.7.0-ubuntu22.04:202603
+# Plan A: docker pull (12.5GB)
 docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
-# Plan B: docker load (GB)
+# Plan B: docker load (5.7GB)
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu-py310-torch2.9.0-ubuntu22.04.202603.tar.gz
 docker load -i flagtree-hcu-py310-torch2.9.0-ubuntu22.04.202603.tar.gz
 ```
@@ -118,7 +119,8 @@ docker run -dit \
 docker cp ${CONTAINER}:/enflame enflame    # Will create ./enflame dir
 bash enflame/driver/enflame-x86_64-gcc-1.6.3.12-20251115104629.run
 efsmi
-docker restart ${CONTAINER}
+docker stop ${CONTAINER}
+docker start ${CONTAINER}
 docker exec -it ${CONTAINER} /bin/bash
 ```
 

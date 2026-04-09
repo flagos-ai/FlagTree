@@ -98,3 +98,5 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ## 3. 测试验证
 
 参考 [Tests of mthreads backend](/.github/workflows/mthreads-build-and-test.yml)
+
+对于使用 `tl.dot` 的 triton kernel，设置环境变量 `export MUSA_ENABLE_SQMMA=1` 可提升性能。
