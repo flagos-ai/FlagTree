@@ -8,7 +8,7 @@ TLE is a language extension for Triton that exposes shared memory and pipeline c
 
 - **Shared Memory Management**: `tle.alloc()` - Allocate shared/tensor memory with custom layouts
 - **Data Movement**: `tle.copy()` - Efficient bidirectional copying between memory spaces
-- **Local Operations**: `tle.local_ptr(buffer, indices)` + `tl.load/tl.store` - Access shared/tensor memory through pointer tensors
+- **Local Operations**: `tle.local_ptr(buffer, indices=None)` + `tl.load/tl.store` - Access shared/tensor memory through pointer tensors (`indices=None` means full buffer view)
 - **Pipeline Optimization**: `tle.pipeline()` - Hardware-aware pipeline iteration
 
 ## Memory Scopes & Layouts
@@ -28,9 +28,9 @@ def kernel(a_ptr, b_ptr, c_ptr, n, BLOCK_SIZE: tl.constexpr):
     # Allocate shared memory
     a_smem = tle.alloc([BLOCK_SIZE], dtype=tl.float32, scope=tle.smem)
     b_smem = tle.alloc([BLOCK_SIZE], dtype=tl.float32, scope=tle.smem)
-    idx = tl.arange(0, BLOCK_SIZE)
-    a_ptrs = tle.local_ptr(a_smem, (idx,))
-    b_ptrs = tle.local_ptr(b_smem, (idx,))
+    # Full-view pointers (equivalent to passing explicit full indices)
+    a_ptrs = tle.local_ptr(a_smem)
+    b_ptrs = tle.local_ptr(b_smem)
 
     # Pipeline iteration for memory hiding
     for offset in tle.pipeline(0, n, BLOCK_SIZE, num_stages=2):

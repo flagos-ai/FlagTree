@@ -493,29 +493,16 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   } else {
 #ifdef __TLE__
     std::string elemConstraint = "=" + getConstraintForBitwidth(elemBitwidth);
-    const bool predIsConstTrue = isConstantTruePred(pred);
-    PTXBuilder::Operand *outOpr = nullptr;
-    if (vec == 1) {
-      outOpr = builder.newOperand(elemConstraint, !predIsConstTrue);
-    } else if (predIsConstTrue) {
-      outOpr = builder.newListOperand(vec, elemConstraint);
-    } else {
-      // Initialize predicated outputs to avoid ptxas mis-optimizing undefined
-      // destination registers.
-      outOpr = builder.newListOperand();
-      for (unsigned i = 0; i < vec; ++i)
-        outOpr->listAppend(builder.newOperand(elemConstraint, /*init=*/true));
-    }
+    auto *outOpr = vec == 1 ? builder.newOperand(elemConstraint)
+                            : builder.newListOperand(vec, elemConstraint);
     Value addrOperand = ptr;
     const char *addrConstraint = "l";
     if (useCluster && isa<LLVM::LLVMPointerType>(addrOperand.getType())) {
       addrOperand = rewriter.create<LLVM::PtrToIntOp>(loc, i32_ty, addrOperand);
       addrConstraint = "r";
     }
-    auto &ldExec =
-        ld(outOpr, builder.newAddrOperand(addrOperand, addrConstraint));
-    if (!predIsConstTrue)
-      ldExec.predicate(pred, "b");
+    ld(outOpr, builder.newAddrOperand(addrOperand, addrConstraint))
+        .predicate(pred, "b");
 #else
     std::string elemConstraint = "=" + getConstraintForBitwidth(elemBitwidth);
     auto *outOpr = vec == 1 ? builder.newOperand(elemConstraint)
@@ -608,6 +595,34 @@ bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
   }
   return false;
 }
+
+#ifdef __TLE__
+std::optional<Value> TargetInfo::ctaReduceOrPredicate(RewriterBase &rewriter,
+                                                      Location loc,
+                                                      Value pred) const {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  if (!pred.getType().isInteger(1)) {
+    Type predTy = pred.getType();
+    pred = b.icmp_ne(pred, b.int_val(predTy.getIntOrFloatBitWidth(), 0));
+  }
+
+  PTXBuilder ptxBuilder;
+  auto *out = ptxBuilder.newOperand("=r", /*init=*/false);
+  auto *inPred = ptxBuilder.newOperand(pred, "b");
+  const char *ptx = R"(
+{
+  .reg .pred p_out;
+  bar.red.or.pred p_out, 0, $1;
+  selp.u32 $0, 1, 0, p_out;
+}
+)";
+  auto &barRedOr = *ptxBuilder.create(ptx);
+  barRedOr({out, inPred}, /*onlyAttachMLIRArgs=*/true);
+  Value outI32 = ptxBuilder.launch(rewriter, loc, i32_ty,
+                                   /*hasSideEffect=*/true);
+  return b.icmp_ne(outI32, b.i32_val(0));
+}
+#endif
 
 std::string TargetInfo::getMulhiFuncName(Type resultElementTy) const {
   std::string funcName =

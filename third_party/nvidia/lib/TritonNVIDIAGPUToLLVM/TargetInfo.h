@@ -55,6 +55,12 @@ public:
                   triton::ReduceOp op, unsigned numLaneToReduce,
                   unsigned interleave) const override;
 
+#ifdef __TLE__
+  std::optional<Value> ctaReduceOrPredicate(RewriterBase &rewriter,
+                                            Location loc,
+                                            Value pred) const override;
+#endif
+
   std::string getMulhiFuncName(Type resultElementTy) const override;
 
   void printf(RewriterBase &rewriter, Value formatStrStart,

@@ -10,6 +10,6 @@ tt.func @tle_remote_pointers_axis_info(%arg0: !tt.ptr<f16, 3> {tt.divisibility =
   %2 = tt.addptr %1, %0 : tensor<128x!tt.ptr<f16, 3>>, tensor<128xi32>
   // expected-remark @below {{contiguity = [1], divisibility = [4611686018427387904], constancy = [1], constant_value = 0}}
   %c0_i32 = arith.constant 0 : i32
-  %3 = "tle.remote_pointers"(%2, %c0_i32) : (tensor<128x!tt.ptr<f16, 3>>, i32) -> tensor<128x!tt.ptr<f16, 3>>
+  %3 = "tle.remote_pointers"(%2, %c0_i32) : (tensor<128x!tt.ptr<f16, 3>>, i32) -> tensor<128x!tt.ptr<f16, 7>>
   tt.return
 }

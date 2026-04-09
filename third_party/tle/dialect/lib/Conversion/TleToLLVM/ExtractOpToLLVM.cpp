@@ -81,7 +81,7 @@ LogicalResult ExtractAllocatedPtrOpConversion::matchAndRewrite(
     ConversionPatternRewriter &rewriter) const {
   LLVM::ExtractValueOp newOp = rewriter.create<LLVM::ExtractValueOp>(
       op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
-  rewriter.replaceAllUsesWith(op, newOp);
+  rewriter.replaceOp(op, newOp.getResult());
   return success();
 }
 
@@ -94,7 +94,7 @@ LogicalResult ExtractAlignedPtrOpConversion::matchAndRewrite(
     ConversionPatternRewriter &rewriter) const {
   LLVM::ExtractValueOp newOp = rewriter.create<LLVM::ExtractValueOp>(
       op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
-  rewriter.replaceAllUsesWith(op, newOp);
+  rewriter.replaceOp(op, newOp.getResult());
   return success();
 }
 
