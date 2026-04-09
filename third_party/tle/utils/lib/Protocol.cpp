@@ -106,6 +106,8 @@ SmallVector<Value> LLVMStructurePattern::apply(TritonOpBuilder &builder,
   } else if (auto memdescTy = dyn_cast<ttg::MemDescType>(tgts.front())) {
     tgt = memdescTy;
     rank = memdescTy.getShape().size();
+  } else {
+    llvm_unreachable("Unsupported LLVM return type");
   }
   COND_CHECK(tgt);
   LLVM::LLVMStructType structTy = src.getType();
