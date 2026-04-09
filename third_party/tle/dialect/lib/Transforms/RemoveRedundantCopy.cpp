@@ -146,17 +146,20 @@ ForOpArgConversion::matchAndRewrite(scf::ForOp forOp,
 
   // replace forOp results
   rewriter.setInsertionPointAfter(newForOp);
+  SmallVector<Value> results;
   for (auto [idx, newResult] : llvm::enumerate(newForOp.getResults())) {
     if (yieldIndexToDslRegionResult.find(idx) !=
         yieldIndexToDslRegionResult.end()) {
       auto oldResult = forOp.getResult(idx);
       auto localLoadOp = rewriter.create<ttg::LocalLoadOp>(
           forOp.getLoc(), oldResult.getType(), newResult);
-      rewriter.replaceAllUsesWith(oldResult, localLoadOp);
+      results.push_back(localLoadOp);
+    } else {
+      results.push_back(newResult);
     }
   }
 
-  rewriter.eraseOp(forOp);
+  rewriter.replaceOp(forOp, results);
   return success();
 }
 
