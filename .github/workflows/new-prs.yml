@@ -1,0 +1,26 @@
+name: "Labelling new pull requests"
+
+# pull_request_target is used so that the workflow runs with write permissions
+# even on PRs from forks, allowing labels to be applied.
+# This is safe here because no code from the PR is checked out or executed;
+# the labeler only reads the list of changed file paths.
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - synchronize
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - id: labeler
+        uses: actions/labeler@v6
+        with:
+          repo-token: "${{ secrets.GITHUB_TOKEN }}"
+          sync-labels: true
+          configuration-path: .github/new-prs-labeler.yml

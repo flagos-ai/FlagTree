@@ -438,6 +438,39 @@ cache.store(files=("libclang_rt.builtins-xpu3.a", "libclang_rt.builtins-xpu3s.a"
 cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
             copy_src_path=f"{cache.dir_path}/xpu/xre-Linux-x86_64", copy_dst_path="third_party/xpu/backend/xpu3")
 
+# metax
+cache.store(
+    file="llvm_release",
+    condition=("metax" == flagtree_backend),
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/maca-llvm-metax20250708.521-x86_64.tar.xz",
+    post_hock=set_llvm_env,
+)
+
+cache.store(
+    files=("mlir-opt", ),
+    condition=("metax" == flagtree_backend),
+    copy_src_path=f"{os.environ.get('LLVM_SYSPATH','')}/bin",
+    copy_dst_path="third_party/metax/backend/bin",
+    md5_digest="f14eafc2",
+)
+
+cache.store(
+    file="metaxTritonPlugin.so",
+    condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
+    url=
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0.tar.gz",
+    copy_dst_path=f"third_party/{flagtree_backend}",
+    md5_digest="4abfd940",
+)
+
+cache.store(
+    file="ext_maca_mathlib.bc",
+    condition=("metax" == flagtree_backend),
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/ext_maca_mathlib_bc_v0.4.0.tar.gz",
+    copy_dst_path=f"third_party/{flagtree_backend}/backend/lib",
+    md5_digest="95349890",
+)
+
 # mthreads
 cache.store(
     file="mthreads-llvm19-glibc2.35-glibcxx3.4.30",

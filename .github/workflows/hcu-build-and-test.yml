@@ -26,12 +26,14 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: Check if only docs files changed
-        id: check_files
-        uses: flagos-ai/FlagTree/.github/actions/check-docs-only@main
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: hcu
 
       - name: FlagTree Build on Hcu
-        if: steps.check_files.outputs.only_docs_changed != 'true'
+        if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
@@ -41,7 +43,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on Hcu
-        if: steps.check_files.outputs.only_docs_changed != 'true'
+        if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
