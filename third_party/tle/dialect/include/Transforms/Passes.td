@@ -18,14 +18,14 @@ def TritonTleEarlyAssignMemorySpace
                            "mlir::triton::tle::TleDialect"];
 }
 
-def TritonTleAssignLocalPointersEncoding
-    : Pass<"triton-tle-assign-local-pointers-encoding", "mlir::ModuleOp"> {
-  let summary = "assign shared encodings to local_pointers results";
+def TritonTleSelectEncodings
+    : Pass<"triton-tle-select-encodings", "mlir::ModuleOp"> {
+  let summary = "select shared encodings for local pointer and related users";
 
   let description = [{
-    This pass ensures `tle.local_pointers` ops produced by the TLE frontend
-    carry shared-memory pointer element types and a distributed encoding so
-    downstream conversions do not infer layouts during the LLVM lowering.
+    This pass performs shared-memory pointer canonicalization and encoding
+    selection for `tle.local_pointers` and dependent users so downstream
+    conversion sees stable, cost-aware layouts.
   }];
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
@@ -48,6 +48,70 @@ def TritonTleInsertLocalPointerBarriers
   let dependentDialects = ["mlir::gpu::GPUDialect",
                            "mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
+}
+
+def TritonTleOptimizeLocalPointerLoads
+    : Pass<"triton-tle-optimize-local-pointer-loads", "mlir::ModuleOp"> {
+  let summary = "rewrite full-view tle.local_pointers loads into ttg.local_load";
+
+  let description = [{
+    This pass matches ``tl.load`` operations whose pointer operand is produced
+    by ``tle.local_pointers`` with full-view indexing (including zero-indices
+    form) and rewrites them into ``ttg.local_load`` directly from the backing
+    memdesc. The transform is conservative and only fires when the load has no
+    mask/other operands.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+
+def TritonTleOptimizeLocalPointerStores
+    : Pass<"triton-tle-optimize-local-pointer-stores", "mlir::ModuleOp"> {
+  let summary = "rewrite tle.local_pointers stores into ttg.local_store";
+
+  let description = [{
+    This pass rewrites ``tl.store`` operations that target pointers produced by
+    ``tle.local_pointers`` into ``ttg.local_store`` to avoid pointer-based
+    shared-memory stores in the backend.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+
+def TritonTleOptimizeExclusiveCumsumLayouts
+    : Pass<"triton-tle-optimize-exclusive-cumsum-layouts", "mlir::ModuleOp"> {
+  let summary = "fold convert_layout around tle.exclusive_cumsum";
+
+  let description = [{
+    This pass folds patterns of the form:
+      ttg.convert_layout -> tle.exclusive_cumsum -> ttg.convert_layout
+    when the source and sink layouts can be made identical, so the cumsum
+    runs directly on the canonical layout and redundant converts are removed.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+
+def TritonTleLowerExclusiveCumsum
+    : Pass<"triton-tle-lower-exclusive-cumsum", "mlir::ModuleOp"> {
+  let summary = "lower tle.exclusive_cumsum with a specialized Triton IR pattern";
+
+  let description = [{
+    This pass lowers ``tle.exclusive_cumsum`` into Triton IR with a
+    cumsum-specialized pattern: one ``tt.scan`` for prefix accumulation and an
+    index-select ``tt.reduce`` to extract the tail value used as total sum.
+    This avoids a second add-reduction over the original input.
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
 }
 
 def TritonTleLowerAsyncLoad

@@ -1,7 +1,7 @@
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle as tle
+import triton.experimental.tle.language as tle
 import pytest
 
 

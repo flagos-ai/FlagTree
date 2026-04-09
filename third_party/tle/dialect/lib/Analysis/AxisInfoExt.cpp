@@ -25,6 +25,15 @@ int64_t multiplyDivisor(int64_t lhs, int64_t rhs) {
   return std::abs(lhs * rhs);
 }
 
+int64_t saturatingMultiplyDivisor(int64_t lhs, int64_t rhs) {
+  constexpr int64_t kMax = (int64_t(1) << (sizeof(int64_t) * 8 - 2));
+  if (lhs == 0 || rhs == 0)
+    return 0;
+  if (lhs > kMax / rhs)
+    return kMax;
+  return multiplyDivisor(lhs, rhs);
+}
+
 class TleLocalPointersOpAxisInfoVisitor final : public AxisInfoVisitor {
 public:
   AxisInfo
@@ -34,16 +43,66 @@ public:
     if (!local || operands.size() < 2)
       return AxisInfo();
 
-    auto resultTy = dyn_cast<RankedTensorType>(local.getResult().getType());
-    if (!resultTy)
-      return AxisInfo();
-
     auto memDescTy =
         dyn_cast<triton::gpu::MemDescType>(local.getSrc().getType());
     if (!memDescTy)
       return AxisInfo();
 
-    const int rank = resultTy.getRank();
+    auto resultTensorTy =
+        dyn_cast<RankedTensorType>(local.getResult().getType());
+    auto resultPtrTy = dyn_cast<PointerType>(local.getResult().getType());
+
+    // Scalar pointer result: preserve base shared-memory alignment so later
+    // `tt.splat + tt.addptr` can still infer vectorization width.
+    if (!resultTensorTy && resultPtrTy) {
+      const int rank = 1;
+      int64_t elemBytes =
+          std::max<int64_t>(1, getPointeeBitWidth(resultPtrTy) / 8);
+      int64_t baseAlignBytes = elemBytes;
+      if (auto sharedEnc = dyn_cast<triton::gpu::SharedEncodingTrait>(
+              memDescTy.getEncoding()))
+        baseAlignBytes =
+            std::max<int64_t>(baseAlignBytes, sharedEnc.getAlignment());
+
+      int64_t offsetDivElems = highestPowOf2Divisor<int64_t>(0);
+      bool hasConstOffset = true;
+      int64_t constOffsetElems = 0;
+      const auto memShape = memDescTy.getShape();
+      const size_t maxTerms = std::min(memShape.size(), operands.size() - 1);
+      for (size_t i = 0; i < maxTerms; ++i) {
+        const AxisInfo &idxInfo = operands[i + 1]->getValue();
+        if (idxInfo.getRank() == 0)
+          continue;
+        int64_t stride = 1;
+        for (size_t j = i + 1; j < memShape.size(); ++j)
+          stride *= memShape[j];
+        int64_t strideDiv = highestPowOf2Divisor<int64_t>(stride);
+        int64_t idxDiv = idxInfo.getDivisibility(0);
+        if (idxInfo.getContiguity(0) > 1 && strideDiv != 1)
+          idxDiv = 1;
+        int64_t termDiv = multiplyDivisor(idxDiv, strideDiv);
+        offsetDivElems = std::gcd(offsetDivElems, termDiv);
+
+        if (hasConstOffset && idxInfo.getConstantValue().has_value())
+          constOffsetElems += idxInfo.getConstantValue().value() * stride;
+        else
+          hasConstOffset = false;
+      }
+
+      int64_t offsetDivBytes =
+          saturatingMultiplyDivisor(offsetDivElems, elemBytes);
+      int64_t ptrDivBytes = std::gcd(baseAlignBytes, offsetDivBytes);
+      std::optional<int64_t> constantValue = std::nullopt;
+      if (hasConstOffset)
+        constantValue = constOffsetElems * elemBytes;
+      return AxisInfo(/*contiguity=*/{1},
+                      /*divisibility=*/{ptrDivBytes},
+                      /*constancy=*/{1}, constantValue);
+    }
+
+    if (!resultTensorTy)
+      return AxisInfo();
+    const int rank = resultTensorTy.getRank();
     if (rank == 0)
       return AxisInfo();
 
@@ -123,13 +182,14 @@ public:
       return AxisInfo();
 
     // Pointer divisibility is tracked in bytes for alignment queries.
-    auto ptrTy = dyn_cast<PointerType>(resultTy.getElementType());
+    auto ptrTy = dyn_cast<PointerType>(resultTensorTy.getElementType());
     int64_t elemBytes = 1;
     if (ptrTy)
       elemBytes = std::max<int64_t>(1, getPointeeBitWidth(ptrTy) / 8);
     AxisInfo::DimVectorT byteDivisibility = offsetInfo.getDivisibility();
     for (int d = 0; d < rank; ++d)
-      byteDivisibility[d] = multiplyDivisor(byteDivisibility[d], elemBytes);
+      byteDivisibility[d] =
+          saturatingMultiplyDivisor(byteDivisibility[d], elemBytes);
 
     std::optional<int64_t> constantValue = std::nullopt;
     if (offsetInfo.getConstantValue().has_value())

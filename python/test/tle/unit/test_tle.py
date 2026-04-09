@@ -153,6 +153,7 @@ class TestIntegration:
         """Test TLE module import"""
         # Check if main functions are importable
         assert hasattr(tle, 'gpu')
+        assert hasattr(tle, 'cumsum')
         assert hasattr(tle.gpu, 'alloc')
         assert hasattr(tle.gpu, 'copy')
         assert hasattr(tle.gpu, 'local_ptr')

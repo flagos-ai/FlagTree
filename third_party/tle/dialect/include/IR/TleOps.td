@@ -71,20 +71,29 @@ def Tle_LocalPointersOp : Tle_Op<"local_pointers", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Tle_DistributedBarrierOp
-    : Tle_Op<"distributed_barrier", [MemoryEffects<[MemRead, MemWrite]>]> {
-  let arguments = (ins OptionalAttr<StrAttr>:$group_kind,
-      OptionalAttr<I32Attr>:$group_rank,
-      OptionalAttr<DenseI32ArrayAttr>:$group_shape,
-      OptionalAttr<DenseI32ArrayAttr>:$group_axes,
-      OptionalAttr<DenseI32ArrayAttr>:$group_mask);
+def Tle_ExclusiveCumsumOp : Tle_Op<"exclusive_cumsum", [Pure, SameOperandsAndResultEncoding]> {
+  let arguments = (ins TT_Tensor:$src, I32Attr:$axis, BoolAttr:$reverse);
+  let results = (outs TT_Tensor:$exclusive, TT_Type:$total);
+  let assemblyFormat = "$src attr-dict `:` type($src) `->` type($exclusive) `,` type($total)";
+  let hasVerifier = 1;
+}
+
+def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
+                                      [MemoryEffects<[MemRead, MemWrite]>]> {
+  let arguments = (ins
+    OptionalAttr<StrAttr>:$group_kind,
+    OptionalAttr<I32Attr>:$group_rank,
+    OptionalAttr<DenseI32ArrayAttr>:$group_shape,
+    OptionalAttr<DenseI32ArrayAttr>:$group_axes,
+    OptionalAttr<DenseI32ArrayAttr>:$group_mask
+  );
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
 
 def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure]> {
-  let arguments = (ins TT_Tensor:$src, TT_Int:$shard_id);
-  let results = (outs TT_Tensor:$result);
+  let arguments = (ins Tle_LocalPointerResultType:$src, TT_Int:$shard_id);
+  let results = (outs Tle_LocalPointerResultType:$result);
   let hasVerifier = 1;
 }
 
@@ -103,28 +112,28 @@ def Tle_YieldOp : Tle_Op<"yield", [Pure, Terminator, ReturnLike,
 }
 
 def Tle_ExtractAllocatedPtrOp
-    : Tle_Op<"extract_allocated_ptr", [Pure, HasParent<"DSLRegionOp">]> {
+    : Tle_Op<"extract_allocated_ptr", [Pure]> {
   let arguments = (ins Tle_ArgType:$input);
   let results = (outs LLVMPointerType:$ptr);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
 }
 
 def Tle_ExtractAlignedPtrOp
-    : Tle_Op<"extract_aligned_ptr", [Pure, HasParent<"DSLRegionOp">]> {
+    : Tle_Op<"extract_aligned_ptr", [Pure]> {
   let arguments = (ins Tle_ArgType:$input);
   let results = (outs LLVMPointerType:$ptr);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
 }
 
 def Tle_ExtractOffsetOp
-    : Tle_Op<"extract_offset", [Pure, HasParent<"DSLRegionOp">]> {
+    : Tle_Op<"extract_offset", [Pure]> {
   let arguments = (ins Tle_TensorType:$input);
   let results = (outs I64:$ptr);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
 }
 
 def Tle_ExtractSizesOp
-    : Tle_Op<"extract_sizes", [Pure, HasParent<"DSLRegionOp">]> {
+    : Tle_Op<"extract_sizes", [Pure]> {
   let arguments = (ins Tle_TensorType:$input);
   let results = (outs Variadic<I64>:$sizes);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($sizes)";
@@ -132,21 +141,21 @@ def Tle_ExtractSizesOp
 }
 
 def Tle_ExtractStridesOp
-    : Tle_Op<"extract_strides", [Pure, HasParent<"DSLRegionOp">]> {
+    : Tle_Op<"extract_strides", [Pure]> {
   let arguments = (ins Tle_TensorType:$input);
   let results = (outs Variadic<I64>:$strides);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($strides)";
   let builders = [OpBuilder<(ins "size_t":$num, "Value":$input)>];
 }
 
-def Tle_ExtractPtrOp : Tle_Op<"extract_ptr", [Pure, HasParent<"DSLRegionOp">]> {
+def Tle_ExtractPtrOp : Tle_Op<"extract_ptr", [Pure]> {
   let arguments = (ins TT_Ptr:$input);
   let results = (outs LLVMPointerType:$ptr);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($ptr)";
 }
 
 def Tle_PackOp
-    : Tle_Op<"pack", [MemDescViewTrait, Pure, HasParent<"DSLRegionOp">]> {
+    : Tle_Op<"pack", [MemDescViewTrait, Pure]> {
   let arguments = (ins LLVMStructType:$input);
   let results = (outs Tle_TensorType:$output);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($output)";

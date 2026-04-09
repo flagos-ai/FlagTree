@@ -500,10 +500,10 @@ a_smem_ptrs = tle.gpu.local_ptr(
 )
 ```
 
-- Signature: `tle.local_ptr(buffer, indices=None) -> tl.tensor | tl.ptr`
-- Purpose: Build arbitrary-shaped pointer views over shared memory buffer for `tl.load/tl.store`.
+- Signature: `tle.gpu.local_ptr(buffer, indices=None) -> tl.tensor | tl.ptr`
+- Purpose: Build arbitrary-shaped pointer views over shared memory buffers for `tl.load/tl.store/tl.atomic*`.
 - Parameters:
-  - `buffer`: buffered tensor returned by `tle.alloc` (SMEM/TMEM).
+  - `buffer`: buffered tensor returned by `tle.gpu.alloc` (SMEM/TMEM).
   - `indices`: optional tuple of integer tensors. Tuple length must equal `rank(buffer)`, and all tensors must have identical shapes. If omitted/`None`, backend treats it as full indices.
 - Semantics:
   - If `indices` is provided: output pointer tensor shape equals common shape of index tensors.
@@ -515,36 +515,83 @@ a_smem_ptrs = tle.gpu.local_ptr(
 Example 1: 1D slice
 
 ```python
-smem = tle.alloc([BLOCK], dtype=tl.float32, scope=tle.smem)
+smem = tle.gpu.alloc([BLOCK], dtype=tl.float32, scope=tle.gpu.smem)
 # Slice [offset, offset + SLICE)
 idx = offset + tl.arange(0, SLICE)
-slice_ptr = tle.local_ptr(smem, (idx,))
+slice_ptr = tle.gpu.local_ptr(smem, (idx,))
 vals = tl.load(slice_ptr)
 ```
 
 Example 2: K-dimension tiling (matrix slice)
 
 ```python
-smem_a = tle.alloc([BM, BK], dtype=tl.float16, scope=tle.smem)
+smem_a = tle.gpu.alloc([BM, BK], dtype=tl.float16, scope=tle.gpu.smem)
 # Slice (BM, KW), where KW is K-dimension slice
 rows = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, KW))
 cols = tl.broadcast_to(tl.arange(0, KW)[None, :] + k_start, (BM, KW))
-a_slice = tle.local_ptr(smem_a, (rows, cols))
+a_slice = tle.gpu.local_ptr(smem_a, (rows, cols))
 a_vals = tl.load(a_slice)
 ```
 
 Example 3: arbitrary gather view
 
 ```python
-smem = tle.alloc([H, W], dtype=tl.float32, scope=tle.smem)
+smem = tle.gpu.alloc([H, W], dtype=tl.float32, scope=tle.gpu.smem)
 # Take an offset column per row
 rows = tl.broadcast_to(tl.arange(0, H)[:, None], (H, SLICE))
 cols = tl.broadcast_to(1 + tl.arange(0, SLICE)[None, :], (H, SLICE))
-gather_ptr = tle.local_ptr(smem, (rows, cols))
+gather_ptr = tle.gpu.local_ptr(smem, (rows, cols))
 out = tl.load(gather_ptr)
 ```
 
-###### 3.3.1.1.4 `tle.gpu.copy`
+Supported downstream ops:
+
+- `tl.load`
+- `tl.store`
+- `tl.atomic_add/and/cas/max/min/or/xchg/xor`
+
+Practical notes:
+
+- Atomic ops require element dtype/backend support; use integer/float types supported by target hardware.
+- For local-pointer load-after-store hazards, TLE backend pass `TleInsertLocalPointerBarriers` inserts barriers automatically; add manual barriers only for custom synchronization patterns outside pass coverage.
+
+Example 4: load/store/atomic on the same `local_ptr`
+
+```python
+smem_i32 = tle.gpu.alloc([BLOCK], dtype=tl.int32, scope=tle.gpu.smem)
+ptr = tle.gpu.local_ptr(smem_i32, (tl.arange(0, BLOCK),))
+
+tl.store(ptr, tl.zeros([BLOCK], dtype=tl.int32))
+tl.atomic_add(ptr, 1)
+vals = tl.load(ptr)
+```
+
+###### 3.3.1.1.4 `tle.gpu.local_ptr` (for remote)
+
+- Signature: `tle.gpu.local_ptr(remote_buffer, indices=None) -> tl.tensor | tl.ptr`
+- Purpose: materialize pointer views for remote shared/local buffers returned by `tle.remote(...)`.
+- Inputs:
+  - `remote_buffer`: result of `tle.remote(buffer, shard_id, scope)`, where `buffer` is typically allocated by `tle.gpu.alloc`.
+  - `indices`: same rules as local mode (`None` for full view, or tuple of integer tensors with identical shapes).
+- Semantics:
+  - Pointer shape/linearization rules are identical to local `tle.gpu.local_ptr`.
+  - Address resolution targets the remote shard selected by `shard_id`.
+  - Use `tle.distributed_barrier(...)` when cross-shard producer/consumer ordering is required.
+
+Example: read remote SMEM tile from neighbor shard
+
+```python
+smem = tle.gpu.alloc([BM, BK], dtype=tl.float16, scope=tle.gpu.storage_kind.smem)
+remote_smem = tle.remote(smem, shard_id=(node_rank, next_device), scope=mesh)
+
+rows = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, BK))
+cols = tl.broadcast_to(tl.arange(0, BK)[None, :], (BM, BK))
+remote_ptr = tle.gpu.local_ptr(remote_smem, (rows, cols))
+
+vals = tl.load(remote_ptr)
+```
+
+###### 3.3.1.1.5 `tle.gpu.copy`
 
 Memory copy:
 
@@ -552,45 +599,203 @@ Memory copy:
 tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
 ```
 
-###### 3.3.1.1.5 `tl.load/tl.store/tl.atomic*` for `tle.local_ptr`
-
-Shared-memory pointers from `tle.local_ptr` can be directly used by:
-
-- `tl.load`
-- `tl.store`
-- `tl.atomic_add/and/cas/max/min/or/xchg/xor`
-
 #### 3.3.2 DSA
 
-##### 3.3.2.1 Memory Management
+This section is rewritten from `triton_v3.2.x` (`python/triton/experimental/tle/language/dsa` and its README).
+DSA APIs are split into:
+
+- Generic DSA APIs under `tle.dsa.*`
+- Backend-specific address spaces under `tle.dsa.ascend.*`
+
+##### 3.3.2.1 Memory and Data Movement
 
 ###### 3.3.2.1.1 `tle.dsa.alloc`
 
-Allocate memory (Ascend):
+- Signature: `tle.dsa.alloc(shape, dtype, mem_addr_space)`
+- Purpose: allocate DSA local buffers in a target memory space.
+
+Ascend memory spaces exposed in source:
+
+- `tle.dsa.ascend.UB`
+- `tle.dsa.ascend.L1`
+- `tle.dsa.ascend.L0A`
+- `tle.dsa.ascend.L0B`
+- `tle.dsa.ascend.L0C`
 
 ```python
-a_ub = tle.dsa.alloc(
-    [XBLOCK, YBLOCK],
-    dtype=tl.float32,
-    layout=tle.dsa.ascend.NZ,
-    scope=tle.dsa.ascend.UB,
-)
+a_ub = tle.dsa.alloc([XBLOCK, YBLOCK], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+b_l1 = tle.dsa.alloc([XBLOCK, YBLOCK], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.L1)
 ```
 
 ###### 3.3.2.1.2 `tle.dsa.copy`
 
-Memory copy:
+- Signature: `tle.dsa.copy(src, dst, shape, inter_no_alias=False)`
+- Purpose: explicit movement between GMEM pointers and DSA local buffers (both directions).
 
 ```python
-tle.dsa.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
+tle.dsa.copy(x_ptrs, a_ub, [tail_m, tail_n])          # GMEM -> local buffer
+tle.dsa.copy(a_ub, out_ptrs, [tail_m, tail_n])        # local buffer -> GMEM
 ```
 
-###### 3.3.2.1.3 `tle.dsa.local_load`
+###### 3.3.2.1.3 `tle.dsa.local_ptr`
 
-Load from local memory:
+- Signature: `tle.dsa.local_ptr(buffer, indices=None) -> tl.tensor | tl.ptr`
+- Purpose: build pointer views over DSA local buffers (for example UB/L1) for explicit local-memory access patterns.
+- Parameters:
+  - `buffer`: DSA buffered tensor, typically from `tle.dsa.alloc`.
+  - `indices`: optional tuple of integer tensors. If omitted/`None`, backend treats it as full indices.
+- Semantics:
+  - Shape and indexing behavior follow `tle.gpu.local_ptr` (same pointer-view model).
+  - Intended for DSA-local data access paths that require explicit pointer materialization.
+
+Example:
 
 ```python
-aval = tle.dsa.local_load(a_smem)
+a_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+rows = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, BK))
+cols = tl.broadcast_to(tl.arange(0, BK)[None, :], (BM, BK))
+a_ptr = tle.dsa.local_ptr(a_ub, (rows, cols))
+a_val = tl.load(a_ptr)
+```
+
+###### 3.3.2.1.4 `tle.dsa.local_ptr` (for remote)
+
+- Signature: `tle.dsa.local_ptr(remote_buffer, indices=None) -> tl.tensor | tl.ptr`
+- Purpose: materialize pointer views over remote DSA local buffers obtained from `tle.remote(...)`.
+- Inputs:
+  - `remote_buffer`: result of `tle.remote(dsa_buffer, shard_id, scope)`.
+  - `indices`: same rules as local DSA mode.
+- Semantics:
+  - Same pointer-view semantics as local DSA mode.
+  - Pointer dereference is routed to the remote shard selected by `shard_id`.
+  - Pair with `tle.distributed_barrier` when cross-shard ordering is required.
+
+Example:
+
+```python
+a_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+remote_a_ub = tle.remote(a_ub, shard_id=peer_rank, scope=mesh)
+
+rows = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, BK))
+cols = tl.broadcast_to(tl.arange(0, BK)[None, :], (BM, BK))
+remote_ptr = tle.dsa.local_ptr(remote_a_ub, (rows, cols))
+remote_val = tl.load(remote_ptr)
+```
+
+###### 3.3.2.1.5 `tle.dsa.to_tensor` / `tle.dsa.to_buffer`
+
+- `tle.dsa.to_tensor(buffer, writable=True)`: convert a DSA buffer to a tensor view for tensor expressions.
+- `tle.dsa.to_buffer(tensor, space)`: convert a tensor value back to a buffer in a target DSA address space.
+
+```python
+c_val = tle.dsa.to_tensor(c_ub, writable=True)
+result = c_val * 0.5
+d_ub = tle.dsa.to_buffer(result, tle.dsa.ascend.UB)
+tle.dsa.copy(d_ub, out_ptrs, [tail_m, tail_n])
+```
+
+##### 3.3.2.2 Elementwise Compute Ops (buffer-based)
+
+Builtins provided by source:
+
+- `tle.dsa.add`
+- `tle.dsa.sub`
+- `tle.dsa.mul`
+- `tle.dsa.div`
+- `tle.dsa.max`
+- `tle.dsa.min`
+
+- Common signature: `tle.dsa.<op>(lhs, rhs, out)`
+- Compute model: elementwise binary op over DSA local buffers.
+- Shape rules:
+  - `lhs`, `rhs`, `out` must have the same rank and shape.
+  - No implicit broadcast is assumed in this API layer.
+- Dtype rules:
+  - Three operands should use the same dtype in practice.
+  - Integer dtypes are typical for index/count paths; float dtypes are typical for activation/math paths.
+- Memory-space rules:
+  - Buffers should be allocated in compatible DSA local spaces (for example UB/L1 combinations allowed by backend).
+  - Keep hot operands/results in local space to avoid extra GMEM traffic.
+
+Per-op semantics:
+
+- `tle.dsa.add(lhs, rhs, out)`: `out = lhs + rhs`
+- `tle.dsa.sub(lhs, rhs, out)`: `out = lhs - rhs`
+- `tle.dsa.mul(lhs, rhs, out)`: `out = lhs * rhs`
+- `tle.dsa.div(lhs, rhs, out)`: `out = lhs / rhs` (backend-dependent precision/rounding)
+- `tle.dsa.max(lhs, rhs, out)`: `out = max(lhs, rhs)`
+- `tle.dsa.min(lhs, rhs, out)`: `out = min(lhs, rhs)`
+
+In-place usage:
+
+- You can reuse the same output buffer across steps, for example `tle.dsa.mul(tmp, b, tmp)`.
+- Avoid aliasing inputs/outputs unless backend semantics explicitly allow it.
+
+Example 1: arithmetic chain `((a - b) * b) / scale`
+
+```python
+a_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+b_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+scale_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+tmp_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+out_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+
+tle.dsa.copy(a_ptrs, a_ub, [BM, BK])
+tle.dsa.copy(b_ptrs, b_ub, [BM, BK])
+tle.dsa.copy(scale_ptrs, scale_ub, [BM, BK])
+
+tle.dsa.sub(a_ub, b_ub, tmp_ub)      # tmp = a - b
+tle.dsa.mul(tmp_ub, b_ub, tmp_ub)    # tmp = tmp * b
+tle.dsa.div(tmp_ub, scale_ub, out_ub)  # out = tmp / scale
+
+tle.dsa.copy(out_ub, out_ptrs, [BM, BK])
+```
+
+Example 2: clamp by `max` + `min`
+
+```python
+x_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+floor_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+ceil_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+tmp_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+y_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+
+tle.dsa.copy(x_ptrs, x_ub, [BM, BK])
+tle.dsa.copy(floor_ptrs, floor_ub, [BM, BK])
+tle.dsa.copy(ceil_ptrs, ceil_ub, [BM, BK])
+
+tle.dsa.max(x_ub, floor_ub, tmp_ub)  # tmp = max(x, floor)
+tle.dsa.min(tmp_ub, ceil_ub, y_ub)   # y = min(tmp, ceil)
+
+tle.dsa.copy(y_ub, y_ptrs, [BM, BK])
+```
+
+##### 3.3.2.3 Loop and Hint APIs
+
+Source includes:
+
+- `tle.dsa.pipeline(...)`
+- `tle.dsa.parallel(...)`
+- `tle.dsa.hint(...)` (used as `with tle.dsa.hint(...)` compile-time hints)
+
+```python
+with tle.dsa.hint(inter_no_alias=True):
+    tle.dsa.copy(x_ptr + offs, a_ub, [tail_size], inter_no_alias=True)
+```
+
+##### 3.3.2.4 Slice/View Utilities
+
+Source includes:
+
+- `tle.dsa.extract_slice`
+- `tle.dsa.insert_slice`
+- `tle.dsa.extract_element`
+- `tle.dsa.subview`
+
+```python
+sub = tle.dsa.extract_slice(full, offsets=(0, k0), sizes=(BM, BK), strides=(1, 1))
+full = tle.dsa.insert_slice(full, sub, offsets=(0, k0), sizes=(BM, BK), strides=(1, 1))
+elem = tle.dsa.extract_element(sub, indice=(i, j))
 ```
 
 #### 3.3.3 Struct API Cookbook
@@ -625,14 +830,22 @@ count_ptr = tle.gpu.local_ptr(counts, (idx,))
 tl.atomic_add(count_ptr, 1)
 ```
 
-##### 3.3.3.3 DSA local-buffer flow (`dsa.alloc` + `dsa.copy` + `dsa.local_load`)
+##### 3.3.3.3 DSA local-buffer flow (`dsa.alloc` + `dsa.copy` + `dsa.to_tensor/to_buffer`)
 
 Use this for DSA backends that expose dedicated local buffer spaces.
 
 ```python
-a_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, layout=tle.dsa.ascend.NZ, scope=tle.dsa.ascend.UB)
+a_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+b_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+c_ub = tle.dsa.alloc([BM, BK], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.UB)
+
 tle.dsa.copy(a_ptrs, a_ub, [BM, BK])
-a_val = tle.dsa.local_load(a_ub)
+tle.dsa.copy(b_ptrs, b_ub, [BM, BK])
+tle.dsa.add(a_ub, b_ub, c_ub)
+
+c_val = tle.dsa.to_tensor(c_ub, writable=True)
+out_ub = tle.dsa.to_buffer(c_val, tle.dsa.ascend.UB)
+tle.dsa.copy(out_ub, out_ptrs, [BM, BK])
 ```
 
 ### 3.4 TLE-Raw
