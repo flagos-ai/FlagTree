@@ -1,0 +1,76 @@
+name: 'Check if backend-relevant files changed'
+description: 'Determine whether the CI for a given backend should run or be skipped'
+inputs:
+  backend:
+    description: 'Backend name matching its third_party/ subdirectory (e.g. xpu, nvidia, hcu)'
+    required: true
+outputs:
+  should_skip:
+    description: 'true if no backend-relevant files changed and CI can be safely skipped'
+    value: ${{ steps.check.outputs.should_skip }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check if backend-relevant files changed
+      id: check
+      shell: bash
+      run: |
+        BACKEND="${{ inputs.backend }}"
+        # Extract current workflow file path from github.workflow_ref
+        # Format: owner/repo/.github/workflows/file.yml@ref
+        WORKFLOW_REF="${{ github.workflow_ref }}"
+        CURRENT_WORKFLOW=$(echo "$WORKFLOW_REF" | sed 's/.*\/\(\.github\/workflows\/[^@]*\)@.*/\1/')
+        echo "Current workflow file: $CURRENT_WORKFLOW"
+        echo "Backend: $BACKEND"
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }})
+        else
+          FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+        fi
+        SHOULD_SKIP=true
+        # If no changes were made, we need to run the CI process to avoid any misjudgments.
+        if [ -z "$FILES" ]; then
+          echo "No files changed, running CI by default"
+          SHOULD_SKIP=false
+        else
+          while IFS= read -r file; do
+            # Skip empty lines
+            if [ -z "$file" ]; then
+              continue
+            fi
+            # Current workflow file changed → always run
+            if [[ "$file" == "$CURRENT_WORKFLOW" ]]; then
+              echo "'$file' -> This workflow file changed, need to run"
+              SHOULD_SKIP=false
+              break
+            fi
+            # Check if the file is a documentation file (same logic as check-docs-only)
+            if [[ ! "$file" =~ CMakeLists\.txt$ ]] && [[ "$file" =~ (\.(md|yml|txt)$|CODEOWNERS$) ]]; then
+              echo "'$file' -> Doc file, not relevant to CI decision"
+              continue
+            fi
+            # It is a code file. Check whether it lives inside third_party/
+            if [[ "$file" == third_party/* ]]; then
+              if [[ "$file" == third_party/${BACKEND}/* ]]; then
+                echo "'$file' -> Backend '$BACKEND' file changed, need to run"
+                SHOULD_SKIP=false
+                break
+              else
+                echo "'$file' -> Other backend file, not relevant to '$BACKEND'"
+                continue
+              fi
+            else
+              # Core code file (outside third_party/) — affects all backends
+              echo "'$file' -> Core code file changed, need to run"
+              SHOULD_SKIP=false
+              break
+            fi
+          done <<< "$FILES"
+        fi
+        echo "should_skip=$SHOULD_SKIP" >> $GITHUB_OUTPUT
+        if [ "$SHOULD_SKIP" == "true" ]; then
+          echo "✅ No relevant files changed for backend '$BACKEND'. Will skip CI."
+        else
+          echo "🚀 Relevant files changed for backend '$BACKEND'. Will run CI."
+        fi
