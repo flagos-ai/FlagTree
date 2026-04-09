@@ -2,9 +2,22 @@
 
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Support/LLVM.h"
+#ifdef __TLE__
+#include "triton/Dialect/Triton/IR/Types.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 namespace mlir {
+
+#ifdef __TLE__
+static bool isTritonPtrLikeType(Type type) {
+  if (isa<triton::PointerType>(type))
+    return true;
+  if (auto tensorTy = dyn_cast<RankedTensorType>(type))
+    return isa<triton::PointerType>(tensorTy.getElementType());
+  return false;
+}
+#endif
 
 AliasInfo AliasInfo::join(const AliasInfo &lhs, const AliasInfo &rhs) {
   if (lhs == rhs)
@@ -44,6 +57,14 @@ LogicalResult SharedMemoryAliasAnalysis::visitOperation(
              !operands.empty()) {
     // Treat local pointer views as aliases of their source memdesc.
     aliasInfo = AliasInfo(operands[0]->getValue());
+    pessimistic = false;
+  } else if (isTritonPtrLikeType(result.getType())) {
+    // Propagate aliases through pointer-producing/view-like ops such as
+    // tt.splat/tt.broadcast/tt.addptr chains so shared buffers stay live
+    // across pointer arithmetic users.
+    aliasInfo = AliasInfo();
+    for (auto *operand : operands)
+      aliasInfo = AliasInfo::join(aliasInfo, operand->getValue());
     pessimistic = false;
 #endif
   } else if (isa<ub::PoisonOp>(op)) {

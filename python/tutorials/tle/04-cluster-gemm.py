@@ -370,8 +370,7 @@ def _verify_remote_lowering(
         raise RuntimeError(f"unexpected cluster_dims={cluster_dims}, expect (2, 1, 1)")
     ptx = compiled.asm.get("ptx", "")
     ttgir = compiled.asm.get("ttgir", "")
-    has_remote = (("mapa.shared::cluster" in ptx) or ("tle.remote_pointers" in ttgir) or ("tle.remote_cta_id" in ttgir)
-                  or ("tle.remote_shard_id_carrier" in ttgir))
+    has_remote = ("mapa.shared::cluster" in ptx) or ("tle.remote_pointers" in ttgir)
     if not has_remote:
         raise RuntimeError("remote lowering evidence not found in PTX/TTGIR")
 

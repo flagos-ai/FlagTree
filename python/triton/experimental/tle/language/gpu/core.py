@@ -356,420 +356,6 @@ def copy(
         return tmacopy(src, dst, direction, shape, offsets, _semantic)
 
 
-# ============================================================================
-# extract_tile helper functions (module-level, do not depend on @tl.builtin context)
-# ============================================================================
-
-
-def _try_unwrap_int(val):
-    """
-    Try to unwrap val as a Python int.
-    Supports: int, tl.constexpr(int), objects with .value attribute.
-    For runtime tl.tensor, returns None.
-    """
-    if isinstance(val, int):
-        return val
-    try:
-        v = tl._unwrap_if_constexpr(val)
-        if isinstance(v, int):
-            return v
-    except Exception:
-        pass
-    try:
-        if hasattr(val, 'value') and isinstance(val.value, int):
-            return val.value
-    except Exception:
-        pass
-    return None
-
-
-def _unwrap_tile_shape(tile_shape):
-    """Unwrap tile_shape (any form) as List[int], all elements must be compile-time constants."""
-    if hasattr(tile_shape, '__iter__') and not isinstance(tile_shape, str):
-        result = []
-        for s in tile_shape:
-            val = s
-            while hasattr(val, 'value'):
-                val = val.value
-            try:
-                val = tl._unwrap_if_constexpr(val)
-            except Exception:
-                pass
-            if not isinstance(val, int):
-                raise ValueError(
-                    f"All tile_shape dims must be int or tl.constexpr, got {type(val)} (original: {type(s)})")
-            result.append(val)
-        return result
-    else:
-        val = tile_shape
-        while hasattr(val, 'value'):
-            val = val.value
-        try:
-            val = tl._unwrap_if_constexpr(val)
-        except Exception:
-            pass
-        if not isinstance(val, int):
-            raise ValueError(f"tile_shape must be int/constexpr, got {type(val)}")
-        return [val]
-
-
-def _linearize_static_multidim_index(index_list, src_shape, tile_shape_ints):
-    """
-    Linearize multi-dimensional static index (row-major order).
-    index_list:      List[int]  tile coordinate in each dimension
-    src_shape:       List[int]  source tensor shape in each dimension
-    tile_shape_ints: List[int]  tile size in each dimension
-    Returns a linearized scalar int
-    """
-    rank = len(src_shape)
-    if len(index_list) != rank:
-        raise ValueError(f"Index rank {len(index_list)} must match source rank {rank}")
-
-    grid = []
-    for i in builtins.range(rank):
-        if src_shape[i] % tile_shape_ints[i] != 0:
-            raise ValueError(f"Source dim {i} ({src_shape[i]}) not divisible by tile dim ({tile_shape_ints[i]})")
-        grid.append(src_shape[i] // tile_shape_ints[i])
-
-    for i, v in builtins.enumerate(index_list):
-        if v < 0 or v >= grid[i]:
-            raise ValueError(f"Index[{i}]={v} out of bounds for grid size {grid[i]}")
-
-    # row major linearization
-    linear = 0
-    stride = 1
-    for i in builtins.reversed(builtins.range(rank)):
-        linear += index_list[i] * stride
-        stride *= grid[i]
-    return linear
-
-
-# ============================================================
-# dynamic multidim index linearization
-# ============================================================
-
-
-def _linearize_dynamic_multidim_index(index_tuple, src_shape, tile_shape_ints, _semantic):
-    """
-    Convert dynamic multi-dimensional tile index to linear index IR.
-    Example:
-        src_shape = [16,16]
-        tile_shape = [4,4]
-        tile grid = [4,4]
-        index = [i,j]
-        linear = i*4 + j
-    """
-
-    if any(not isinstance(s, int) for s in src_shape):
-        raise ValueError("Source shape must be static for dynamic multi-dim index")
-    # compute tile grid
-    grid = []
-    for s, t in builtins.zip(src_shape, tile_shape_ints):
-        if s % t != 0:
-            raise ValueError(f"Source dim {s} not divisible by tile dim {t}")
-        grid.append(s // t)
-    # compute strides
-    strides = [1] * len(grid)
-    acc = 1
-    for i in builtins.reversed(builtins.range(len(grid))):
-        strides[i] = acc
-        acc *= grid[i]
-
-    # Validation: index_tuple rank must match grid rank
-    if len(index_tuple) != len(grid):
-        raise ValueError(f"Dynamic multi-dim index rank {len(index_tuple)} does not match grid rank {len(grid)}")
-
-    linear_ir = None
-    for i, v in builtins.enumerate(index_tuple):
-        stride = strides[i]
-        if isinstance(v, tl.tensor):
-            term = v.handle
-        else:
-            iv = _try_unwrap_int(v)
-            if iv is None:
-                raise ValueError("Dynamic multidim index must contain tl.tensor or int")
-            term = _semantic._convert_to_ir_values([iv], require_i64=False)[0]
-        if stride != 1:
-            stride_ir = _semantic._convert_to_ir_values([stride], require_i64=False)[0]
-            term = _semantic.builder.create_mul(term, stride_ir)
-        if linear_ir is None:
-            linear_ir = term
-        else:
-            linear_ir = _semantic.builder.create_add(linear_ir, term)
-    return linear_ir
-
-
-@tl.builtin
-def extract_tile(
-    x: tl.tensor,
-    index,
-    tile_shape: tuple,
-    _semantic=None,
-) -> tl.tensor:
-    """
-    Extract a tile from a tensor at a given tile index.
-
-    Supported index forms:
-        1. Multi-dimensional static: tuple/list of int/constexpr (e.g. [1, 2])
-           → Linearized at compile time; uses register shuffle or SMEM path depending on alignment.
-        2. Scalar static: int or tl.constexpr
-           → Treated as already-linearized tile index (compile time constant).
-        3. Scalar dynamic: tl.tensor (scalar, i32/i64)
-           → Treated as a runtime linear tile index; always uses SMEM relay path.
-        4. Multi-dimensional dynamic: tuple/list containing tl.tensor (e.g. [i, j], i/j are tl.tensor)
-           → Automatically linearized at runtime in the frontend; supports mixed int/tl.tensor per axis.
-
-    For multi-dimensional dynamic index, the function will automatically compute the row-major linearized tile index as a dynamic IR expression, so users can pass [i, j, ...] directly.
-
-    Args:
-        x:          Source tensor (tl.tensor)
-        index:      Tile index (see above)
-        tile_shape: Tile shape in each dimension (must be compile-time constants)
-        _semantic:  Internal semantic analyzer (for lowering)
-
-    Returns:
-        Extracted tile tensor with shape = tile_shape
-    Raises:
-        ValueError: If index or shape is invalid
-        RuntimeError: If IR generation fails
-    """
-    # --- Parameter check ---
-    if not isinstance(x, tl.tensor):
-        raise ValueError(f"Source must be tl.tensor, but got {type(x)}")
-
-    # --- Unwrap tile_shape (must all be compile-time constants) ---
-    tile_shape_ints = _unwrap_tile_shape(tile_shape)
-
-    src_shape = [tl._unwrap_if_constexpr(dim) for dim in x.type.shape]
-
-    # --- Parse index, three cases ---
-    #
-    #   Case A: tl.tensor → dynamic index, directly pass IR Value handle
-    #   Case B: tuple/list of int/constexpr → multi-dim static, linearize then go to Case C
-    #   Case C: scalar int/constexpr → static scalar
-    #
-    is_dynamic = False
-    index_value = None  # For static path: Python int
-    index_ir_handle = None  # For dynamic path: MLIR Value handle
-
-    if isinstance(index, tl.tensor):
-        # Case A: dynamic index, value known only at runtime
-        is_dynamic = True
-        index_ir_handle = index.handle
-    else:
-        # Try to unwrap, determine if multi-dim or scalar
-        index_unwrapped = index
-        try:
-            index_unwrapped = tl._unwrap_if_constexpr(index)
-        except Exception:
-            pass
-        try:
-            if hasattr(index_unwrapped, 'value'):
-                index_unwrapped = index_unwrapped.value
-        except Exception:
-            pass
-        if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
-            # Case B: multi-dim index → unwrap each element, then linearize to scalar
-            has_tensor = any(isinstance(v, tl.tensor) for v in index_unwrapped)
-            if has_tensor:
-                # ====================================
-                # dynamic multidim index
-                # ====================================
-                index_ir_handle = _linearize_dynamic_multidim_index(index_unwrapped, src_shape, tile_shape_ints,
-                                                                    _semantic)
-                is_dynamic = True
-            else:
-                # ====================================
-                # static multidim index
-                # ====================================
-                idx_ints = []
-                for v in index_unwrapped:
-                    iv = _try_unwrap_int(v)
-                    if iv is None:
-                        raise ValueError("Multi-dim index must contain int/constexpr values.")
-                    idx_ints.append(iv)
-
-                if any(not isinstance(s, int) for s in src_shape):
-                    raise ValueError("Source shape must be static when using a multi-dim index")
-                index_value = _linearize_static_multidim_index(idx_ints, src_shape, tile_shape_ints)
-        else:
-            # Case C: scalar static index
-            scalar_int = _try_unwrap_int(index_unwrapped)
-            if scalar_int is not None:
-                index_value = scalar_int
-            else:
-                raise ValueError(f"index must be int, constexpr, tuple/list of int/constexpr, "
-                                 f"or a scalar tl.tensor; got {type(index)}")
-    # --- Basic dimension check ---
-    if len(tile_shape_ints) != len(src_shape):
-        raise ValueError(f"tile_shape rank ({len(tile_shape_ints)}) must match "
-                         f"source rank ({len(src_shape)})")
-
-    # --- Compile-time check for static index ---
-    if not is_dynamic:
-        for i, (s, t) in builtins.enumerate(builtins.zip(src_shape, tile_shape_ints)):
-            if isinstance(s, int) and s % t != 0:
-                raise ValueError(f"Source dim {i} ({s}) not divisible by tile dim ({t})")
-        if all(isinstance(s, int) for s in src_shape):
-            total_tiles = 1
-            for s, t in builtins.zip(src_shape, tile_shape_ints):
-                total_tiles *= s // t
-            if index_value < 0 or index_value >= total_tiles:
-                raise ValueError(f"index {index_value} out of range [0, {total_tiles})")
-
-        # Semantic validation (static path)
-        try:
-            from .semantic import TLESemantic
-            if isinstance(_semantic, TLESemantic):
-                _semantic.analyze_extract_tile_operation(x, index_value, tile_shape_ints)
-        except ImportError:
-            pass
-
-    # --- Generate MLIR IR ---
-    try:
-        if is_dynamic:
-            # Dynamic index: directly use the IR handle from the input tl.tensor
-            index_ir = index_ir_handle
-        else:
-            # Static index: encode compile-time constant as IR constant
-            index_ir = _semantic._convert_to_ir_values([index_value], require_i64=False)[0]
-
-        output = _semantic.builder.create_extract_tile(x.handle, index_ir, tile_shape_ints)
-        block_type = tl.block_type(x.type.element_ty, tile_shape_ints)
-        return tl.tensor(output, block_type)
-    except Exception as e:
-        raise RuntimeError(f"Failed to create extract_tile operation: {str(e)}") from e
-
-
-@tl.builtin
-def insert_tile(
-    x: tl.tensor,
-    tile: tl.tensor,
-    index,
-    _semantic=None,
-) -> tl.tensor:
-    """
-    Insert a tile into source tensor.
-
-    index supports:
-      1. Multi-dim static index: list/tuple of int/constexpr (e.g. [i, j])
-      2. Scalar static index: int / tl.constexpr
-      3. Scalar dynamic index: tl.tensor (runtime value)
-    """
-    # Basic type checks for source and tile tensors.
-    if not isinstance(x, tl.tensor):
-        raise ValueError(f"Source must be tl.tensor, but got {type(x)}")
-    if not isinstance(tile, tl.tensor):
-        raise ValueError(f"Tile must be tl.tensor, but got {type(tile)}")
-
-    # Shapes must be compile-time integers so tile-grid math stays static.
-    src_shape = [tl._unwrap_if_constexpr(dim) for dim in x.type.shape]
-    tile_shape = [tl._unwrap_if_constexpr(dim) for dim in tile.type.shape]
-    if any(not isinstance(dim, int) for dim in src_shape):
-        raise ValueError("Source shape must be static for insert_tile")
-    if any(not isinstance(dim, int) for dim in tile_shape):
-        raise ValueError("Tile shape must be static for insert_tile")
-    if len(src_shape) != len(tile_shape):
-        raise ValueError(f"Source rank ({len(src_shape)}) must match tile rank ({len(tile_shape)})")
-    if x.type.element_ty != tile.type.element_ty:
-        raise ValueError(f"Element type mismatch: source={x.type.element_ty}, tile={tile.type.element_ty}")
-
-    # Build per-dimension tile grid: how many tiles exist in each axis.
-    grid = []
-    for i, (src_dim, tile_dim) in enumerate(zip(src_shape, tile_shape)):
-        if tile_dim <= 0:
-            raise ValueError(f"Tile dimension {i} must be positive, got {tile_dim}")
-        if src_dim % tile_dim != 0:
-            raise ValueError(f"Source dimension {i}: {src_dim} must be divisible by tile dimension {tile_dim}")
-        grid.append(src_dim // tile_dim)
-
-    # Parse index: dynamic scalar tensor or static scalar/multi-dim.
-    is_dynamic = False
-    index_value = None
-    index_ir_handle = None
-
-    if isinstance(index, tl.tensor):
-        is_dynamic = True
-        index_ir_handle = index.handle
-    else:
-        index_unwrapped = index
-        try:
-            index_unwrapped = tl._unwrap_if_constexpr(index_unwrapped)
-        except Exception:
-            pass
-        try:
-            if hasattr(index_unwrapped, "value"):
-                index_unwrapped = index_unwrapped.value
-        except Exception:
-            pass
-
-        index_list = None
-        if isinstance(index_unwrapped, (tuple, list, tl.tuple)):
-            index_list = list(index_unwrapped)
-            if len(index_list) != len(src_shape):
-                raise ValueError(f"Index rank {len(index_list)} must match source rank {len(src_shape)}")
-            has_tensor = any(isinstance(v, tl.tensor) for v in index_list)
-            # ------------------------------------------------
-            # dynamic multi-dim index
-            # ------------------------------------------------
-            if has_tensor:
-                index_ir_handle = _linearize_dynamic_multidim_index(index_list, src_shape, tile_shape, _semantic)
-                is_dynamic = True
-            # ------------------------------------------------
-            # static multi-dim index
-            # ------------------------------------------------
-            else:
-                idx = []
-                for i, v in enumerate(index_list):
-                    iv = _try_unwrap_int(v)
-                    if iv is None:
-                        raise ValueError("Multi-dim index must contain int/constexpr values")
-                    if iv < 0 or iv >= grid[i]:
-                        raise ValueError(f"Index[{i}]={iv} out of bounds for tile grid (0~{grid[i]-1})")
-                    idx.append(iv)
-                index_value = _linearize_static_multidim_index(idx, src_shape, tile_shape)
-        else:
-            # Path B: scalar static index -> treat as already-linearized tile id.
-            scalar_int = _try_unwrap_int(index_unwrapped)
-            if scalar_int is None:
-                raise ValueError(f"index must be int, constexpr, tuple/list of int/constexpr, "
-                                 f"or a scalar tl.tensor; got {type(index)}")
-            index_value = scalar_int
-
-    # Static index checks + optional semantic pass.
-    if not is_dynamic:
-        if index_value < 0:
-            raise ValueError("Scalar index must be non-negative")
-
-        total_tiles = 1
-        for g in grid:
-            total_tiles *= g
-        if index_value >= total_tiles:
-            raise ValueError(f"Scalar index {index_value} out of bounds for total tiles {total_tiles}")
-
-        try:
-            from .semantic import TLESemantic
-            if isinstance(_semantic, TLESemantic):
-                _semantic.analyze_insert_tile_operation(x, tile, index_value)
-        except ImportError:
-            pass
-
-    # Lower to IR and construct output tensor with the source tensor type.
-    try:
-        if is_dynamic:
-            index_ir = index_ir_handle
-        else:
-            index_ir = _semantic._convert_to_ir_values([index_value], require_i64=False)[0]
-        output = _semantic.builder.create_insert_tile(
-            x.handle,
-            tile.handle,
-            index_ir,
-        )
-        return tl.tensor(output, x.type)
-    except Exception as e:
-        raise RuntimeError(f"Failed to create insert_tile operation: {str(e)}") from e
-
-
 def _expand_index_to_shape(index: tl.tensor, shape: Sequence[int], axis: int, _semantic) -> tl.tensor:
     idx = index
     for _ in builtins.range(axis):
@@ -801,9 +387,10 @@ def local_ptr(
 
     Args:
         buffer: Local memory buffer tensor returned by ``tle.alloc``.
-        indices: Tuple of integer index tensors. The tuple length must equal
-            the rank of ``buffer`` and every tensor must have the same shape.
-            The output pointer tensor will have that same shape.
+        indices: Optional tuple of integer index tensors. If provided, tuple
+            length must equal ``rank(buffer)`` and every tensor must have the
+            same shape. If ``None``, emit a full-view pointer tensor over
+            ``buffer`` shape (or scalar pointer for rank-0 buffer).
         _semantic: Semantic analyzer (internal use).
         _generator: Triton code generator (internal use).
 
@@ -822,46 +409,51 @@ def local_ptr(
         remote_scope = getattr(buffer, "_tle_remote_scope", None)
     remote_buffer_marker = remote_shard_id is not None
 
+    buffer_shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in buffer.type.shape)
     indices = tl._unwrap_if_constexpr(indices)
-    if indices is None:
-        raise ValueError("local_ptr indices must be provided as a tuple of tensors")
-    if isinstance(indices, tl.tuple):
+    no_indices = indices is None
+    if no_indices:
+        indices_tuple = tuple()
+    elif isinstance(indices, tl.tuple):
         indices_tuple = tuple(indices.values)
     elif isinstance(indices, (tuple, list)):
         indices_tuple = tuple(indices)
     else:
-        raise ValueError("local_ptr indices must be a tuple or list of tensors")
-
-    buffer_shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in buffer.type.shape)
-    if len(indices_tuple) != len(buffer_shape):
+        raise ValueError("local_ptr indices must be a tuple/list of tensors or None")
+    if not no_indices and len(indices_tuple) != len(buffer_shape):
         raise ValueError(f"local_ptr indices must provide {len(buffer_shape)} tensors, got {len(indices_tuple)}")
 
     idx_tensors: list[tensor] = []
     view_shape: Optional[tuple[int, ...]] = None
     scalar_index_flags: list[bool] = []
-    for idx in indices_tuple:
-        idx_tensor = idx if isinstance(idx, tensor) else _semantic.to_tensor(idx)
-        if not idx_tensor.dtype.is_int():
-            raise ValueError("local_ptr indices must use integer dtypes")
-        is_scalar_index = not idx_tensor.type.is_block()
-        scalar_index_flags.append(is_scalar_index)
-        if is_scalar_index:
+    if not no_indices:
+        for idx in indices_tuple:
+            idx_tensor = idx if isinstance(idx, tensor) else _semantic.to_tensor(idx)
+            if not idx_tensor.dtype.is_int():
+                raise ValueError("local_ptr indices must use integer dtypes")
+            is_scalar_index = not idx_tensor.type.is_block()
+            scalar_index_flags.append(is_scalar_index)
+            if is_scalar_index:
+                idx_tensors.append(idx_tensor)
+                continue
+            if view_shape is None:
+                view_shape = tuple(idx_tensor.shape)
+            elif tuple(idx_tensor.shape) != view_shape:
+                raise ValueError("local_ptr indices must have identical shapes")
             idx_tensors.append(idx_tensor)
-            continue
-        if view_shape is None:
-            view_shape = tuple(idx_tensor.shape)
-        elif tuple(idx_tensor.shape) != view_shape:
-            raise ValueError("local_ptr indices must have identical shapes")
-        idx_tensors.append(idx_tensor)
 
-    if not idx_tensors:
-        raise ValueError("local_ptr indices cannot be empty")
-    all_scalar_indices = all(scalar_index_flags)
-    any_scalar_indices = any(scalar_index_flags)
-    if any_scalar_indices and not all_scalar_indices:
-        raise ValueError("local_ptr indices must be either all scalar or all tensors with identical shapes")
-    if not all_scalar_indices and view_shape is None:
-        view_shape = tuple()
+        if not idx_tensors:
+            raise ValueError("local_ptr indices cannot be empty")
+        all_scalar_indices = all(scalar_index_flags)
+        any_scalar_indices = any(scalar_index_flags)
+        if any_scalar_indices and not all_scalar_indices:
+            raise ValueError("local_ptr indices must be either all scalar or all tensors with identical shapes")
+        if not all_scalar_indices and view_shape is None:
+            view_shape = tuple()
+    else:
+        all_scalar_indices = len(buffer_shape) == 0
+        if not all_scalar_indices:
+            view_shape = buffer_shape
 
     try:
         from .semantic import TLESemantic
@@ -875,7 +467,14 @@ def local_ptr(
     insert_block = _semantic.builder.get_insertion_block()
     if insert_block is None:
         raise RuntimeError("TLE local_ptr called without an insertion block")
-    if all_scalar_indices:
+    if no_indices:
+        if len(buffer_shape) == 0:
+            result_ty = ptr_dtype
+            result_ir = ptr_dtype.to_ir(_semantic.builder)
+        else:
+            result_ty = tl.block_type(ptr_dtype, list(buffer_shape))
+            result_ir = result_ty.to_ir(_semantic.builder)
+    elif all_scalar_indices:
         result_ty = ptr_dtype
         result_ir = ptr_dtype.to_ir(_semantic.builder)
     else:
@@ -887,10 +486,10 @@ def local_ptr(
     result_tensor = tl.tensor(local_ptr_op.get_result(0), result_ty)
 
     if remote_buffer_marker:
-        if all_scalar_indices:
-            raise ValueError("local_ptr does not yet support scalar indices on remote buffers")
         # Keep remote semantics attached to the source buffered tensor and
-        # materialize them only when pointer view is requested.
+        # materialize them only when pointer view is requested. This applies
+        # to both block and scalar pointer views so remote/local_ptr semantics
+        # stay aligned with local shared-memory local_ptr.
         from triton.experimental.tle.language import distributed as _tle_distributed
         result_tensor = _tle_distributed._remote_pointer(
             result_tensor,

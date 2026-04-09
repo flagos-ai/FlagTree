@@ -24,7 +24,9 @@
 
 #include "tle/dialect/include/Transforms/Passes.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -88,8 +90,29 @@ class InsertLocalPointerBarriersPass
         Operation *owner = use.getOwner();
         if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(owner)) {
           tryTrackDerived(owner, convert.getSrc(), convert.getResult());
+        } else if (auto splat = dyn_cast<triton::SplatOp>(owner)) {
+          tryTrackDerived(owner, splat.getSrc(), splat.getResult());
         } else if (auto bcast = dyn_cast<triton::BroadcastOp>(owner)) {
           tryTrackDerived(owner, bcast.getSrc(), bcast.getResult());
+        } else if (auto expand = dyn_cast<triton::ExpandDimsOp>(owner)) {
+          tryTrackDerived(owner, expand.getSrc(), expand.getResult());
+        } else if (auto reshape = dyn_cast<triton::ReshapeOp>(owner)) {
+          tryTrackDerived(owner, reshape.getSrc(), reshape.getResult());
+        } else if (auto addptr = dyn_cast<triton::AddPtrOp>(owner)) {
+          // Only propagate along the pointer operand.
+          if (use.getOperandNumber() == 0)
+            tryTrackDerived(owner, addptr.getPtr(), addptr.getResult());
+        } else if (auto call = dyn_cast<triton::CallOp>(owner)) {
+          auto it = pointerGroups.find(current);
+          if (it == pointerGroups.end())
+            continue;
+          unsigned operandIdx = use.getOperandNumber();
+          auto callee = module.lookupSymbol<triton::FuncOp>(call.getCallee());
+          if (!callee || operandIdx >= callee.getNumArguments())
+            continue;
+          Value calleeArg = callee.getArgument(operandIdx);
+          if (pointerGroups.try_emplace(calleeArg, it->second).second)
+            worklist.push_back(calleeArg);
         }
       }
     }
@@ -108,11 +131,17 @@ class InsertLocalPointerBarriersPass
   void processBlock(Block &block) {
     llvm::DenseMap<int64_t, bool> dirtyGroups;
     for (Operation &op : block) {
-      if (!dirtyGroups.empty() && op.getNumRegions() > 0 &&
-          opHasLoadNeedingBarrier(op, dirtyGroups)) {
-        OpBuilder builder(&op);
-        builder.create<mlir::gpu::BarrierOp>(op.getLoc());
-        dirtyGroups.clear();
+      if (!dirtyGroups.empty() && op.getNumRegions() > 0) {
+        bool handledByIfSpecialization = false;
+        if (auto ifOp = dyn_cast<scf::IfOp>(&op))
+          handledByIfSpecialization = tryHandleUniformIf(ifOp, dirtyGroups);
+
+        if (!handledByIfSpecialization &&
+            opHasLoadNeedingBarrier(op, dirtyGroups)) {
+          OpBuilder builder(&op);
+          builder.create<mlir::gpu::BarrierOp>(op.getLoc());
+          dirtyGroups.clear();
+        }
       }
 
       if (auto store = dyn_cast<triton::StoreOp>(&op)) {
@@ -124,42 +153,107 @@ class InsertLocalPointerBarriersPass
           continue;
         OpBuilder builder(load);
         builder.create<mlir::gpu::BarrierOp>(load.getLoc());
-        dirtyGroups[*group] = false;
+        // A CTA barrier synchronizes all shared-memory groups, not only the
+        // group used by this load. Clearing all dirty groups avoids emitting
+        // redundant back-to-back barriers for consecutive loads from different
+        // tracked groups.
+        dirtyGroups.clear();
       } else if (isa<mlir::gpu::BarrierOp>(&op)) {
         dirtyGroups.clear();
       }
 
       for (Region &nested : op.getRegions())
         processRegion(nested);
+
+      // Propagate write hazards from nested regions to the parent block.
+      // Without this, a store inside scf.if/scf.for may not mark parent state
+      // dirty, so a subsequent outer load can miss the required barrier.
+      markGroupsWrittenByNestedRegions(op, dirtyGroups);
     }
+  }
+
+  bool tryHandleUniformIf(scf::IfOp ifOp,
+                          const llvm::DenseMap<int64_t, bool> &dirtyGroups) {
+    if (!isUniformCondition(ifOp.getCondition()))
+      return false;
+
+    for (Region &region : ifOp->getRegions()) {
+      if (!regionHasLoadNeedingBarrier(region, dirtyGroups))
+        continue;
+      if (region.empty() || region.front().empty())
+        continue;
+
+      Block &entry = region.front();
+      if (isa<mlir::gpu::BarrierOp>(entry.front()))
+        continue;
+
+      OpBuilder builder(&entry, entry.begin());
+      builder.create<mlir::gpu::BarrierOp>(ifOp.getLoc());
+    }
+    return true;
+  }
+
+  bool isUniformCondition(Value cond) const {
+    if (isa_and_nonnull<arith::ConstantOp>(cond.getDefiningOp()))
+      return true;
+
+    auto reduce = cond.getDefiningOp<triton::ReduceOp>();
+    if (!reduce || !cond.getType().isInteger(1))
+      return false;
+
+    Operation *combiner = reduce.getSingleCombiner();
+    return combiner && isa<arith::OrIOp>(combiner);
+  }
+
+  bool regionHasLoadNeedingBarrier(
+      Region &region, const llvm::DenseMap<int64_t, bool> &dirtyGroups) const {
+    for (Block &block : region) {
+      for (Operation &nestedOp : block) {
+        if (auto load = dyn_cast<triton::LoadOp>(&nestedOp)) {
+          if (auto group = lookupPointerGroup(load.getPtr());
+              group && dirtyGroups.lookup(*group))
+            return true;
+        }
+        if (nestedOp.getNumRegions() > 0 &&
+            opHasLoadNeedingBarrier(nestedOp, dirtyGroups))
+          return true;
+      }
+    }
+    return false;
   }
 
   bool opHasLoadNeedingBarrier(
       Operation &op, const llvm::DenseMap<int64_t, bool> &dirtyGroups) const {
-    bool needsBarrier = false;
     for (Region &region : op.getRegions()) {
-      for (Block &block : region) {
-        for (Operation &nestedOp : block) {
-          if (auto load = dyn_cast<triton::LoadOp>(&nestedOp)) {
-            if (auto group = lookupPointerGroup(load.getPtr());
-                group && dirtyGroups.lookup(*group)) {
-              needsBarrier = true;
-              break;
-            }
-          }
-          if (nestedOp.getNumRegions() > 0 &&
-              opHasLoadNeedingBarrier(nestedOp, dirtyGroups)) {
-            needsBarrier = true;
-            break;
-          }
-        }
-        if (needsBarrier)
-          break;
-      }
-      if (needsBarrier)
-        break;
+      if (regionHasLoadNeedingBarrier(region, dirtyGroups))
+        return true;
     }
-    return needsBarrier;
+    return false;
+  }
+
+  void markGroupsWrittenByNestedRegions(
+      Operation &op, llvm::DenseMap<int64_t, bool> &dirtyGroups) const {
+    if (op.getNumRegions() == 0)
+      return;
+    llvm::DenseSet<int64_t> writtenGroups;
+    for (Region &region : op.getRegions())
+      collectWrittenGroups(region, writtenGroups);
+    for (int64_t group : writtenGroups)
+      dirtyGroups[group] = true;
+  }
+
+  void collectWrittenGroups(Region &region,
+                            llvm::DenseSet<int64_t> &writtenGroups) const {
+    for (Block &block : region) {
+      for (Operation &nestedOp : block) {
+        if (auto store = dyn_cast<triton::StoreOp>(&nestedOp)) {
+          if (auto group = lookupPointerGroup(store.getPtr()))
+            writtenGroups.insert(*group);
+        }
+        for (Region &deeperRegion : nestedOp.getRegions())
+          collectWrittenGroups(deeperRegion, writtenGroups);
+      }
+    }
   }
 
   std::optional<int64_t> lookupPointerGroup(Value ptr) const {

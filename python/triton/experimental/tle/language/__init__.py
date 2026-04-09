@@ -1,6 +1,10 @@
 # flagtree tle
 from .core import (
-    load, )
+    cumsum,
+    extract_tile,
+    insert_tile,
+    load,
+)
 from .distributed import (
     B,
     P,
@@ -21,11 +25,11 @@ from .distributed import (
     sharding,
 )
 
-from . import distributed, gpu, raw
-from .gpu import extract_tile, insert_tile
-
 __all__ = [
     "load",
+    "cumsum",
+    "extract_tile",
+    "insert_tile",
     "device_mesh",
     "S",
     "P",
@@ -42,6 +46,6 @@ __all__ = [
     "distributed",
     "gpu",
     "raw",
-    "extract_tile",
-    "insert_tile",
 ]
+
+from . import distributed, gpu, raw

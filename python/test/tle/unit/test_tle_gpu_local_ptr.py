@@ -4,6 +4,8 @@ Unit test covering a minimal Triton kernel that stages data through
 TLE local pointers before writing results back to global memory.
 """
 
+import re
+
 import pytest
 import torch
 import triton
@@ -67,6 +69,66 @@ def _local_pointer_store_kernel(out_ptr, numel, value, BLOCK: tl.constexpr):
 
 
 @triton.jit
+def _local_pointer_full_view_store_kernel(out_ptr, numel, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < numel
+
+    smem_tile = tle.gpu.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem_ptrs = tle.gpu.local_ptr(smem_tile)
+
+    vals = tl.arange(0, BLOCK)
+    tl.store(smem_ptrs, vals)
+
+    out_vals = tl.load(smem_ptrs, mask=mask, other=-1)
+    tl.store(out_ptr + offsets, out_vals, mask=mask)
+
+
+@triton.jit
+def _local_pointer_local_load_none_kernel(out_ptr, BLOCK: tl.constexpr):
+    idx = tl.arange(0, BLOCK)
+    smem_tile = tle.gpu.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem_ptrs = tle.gpu.local_ptr(smem_tile)
+    tl.store(smem_ptrs, idx + 3)
+    vals = tl.load(smem_ptrs)
+    tl.store(out_ptr + idx, vals)
+
+
+@triton.jit
+def _local_pointer_local_load_full_indices_kernel(out_ptr, BLOCK: tl.constexpr):
+    idx = tl.arange(0, BLOCK)
+    smem_tile = tle.gpu.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem_ptrs = tle.gpu.local_ptr(smem_tile, (idx, ))
+    tl.store(smem_ptrs, idx + 5)
+    vals = tl.load(smem_ptrs)
+    tl.store(out_ptr + idx, vals)
+
+
+@triton.jit
+def _local_pointer_full_view_2d_copy_kernel(
+    x_ptr,
+    out_ptr,
+    stride_xm,
+    stride_xn,
+    stride_om,
+    stride_on,
+    ROWS: tl.constexpr,
+    COLS: tl.constexpr,
+):
+    smem = tle.gpu.alloc([ROWS, COLS], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    rows = tl.arange(0, ROWS)[:, None]
+    cols = tl.arange(0, COLS)[None, :]
+    x_tile = x_ptr + rows * stride_xm + cols * stride_xn
+    tle.gpu.copy(x_tile, smem, [ROWS, COLS])
+
+    full_ptrs = tle.gpu.local_ptr(smem)
+    vals = tl.load(full_ptrs)
+
+    out_tile = out_ptr + rows * stride_om + cols * stride_on
+    tl.store(out_tile, vals)
+
+
+@triton.jit
 def _local_pointer_conditional_mask_store_kernel(out_ptr, numel, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     idx = tl.arange(0, BLOCK)
@@ -76,7 +138,7 @@ def _local_pointer_conditional_mask_store_kernel(out_ptr, numel, BLOCK: tl.const
     ptrs = tle.gpu.local_ptr(smem, (idx, ))
 
     # Keep the masked store inside an scf.if region. This used to trigger a
-    # verifier failure in `triton-tle-assign-local-pointers-encoding` because the
+    # verifier failure in `triton-tle-select-encodings` because the
     # store mask did not match the pointer layout.
     if pid == 0:
         tl.store(ptrs, idx, mask=mask)
@@ -235,6 +297,33 @@ def _local_pointer_dynamic_scalar_load_after_vector_store_kernel(
         tl.store(out_ptr + i, scalar_val)
 
 
+@triton.jit
+def _local_pointer_full_view_dot_kernel(
+    a_ptr,
+    out_ptr,
+    stride_ai,
+    stride_aj,
+    stride_oi,
+    stride_oj,
+    BLOCK: tl.constexpr,
+):
+    offs_i = tl.arange(0, BLOCK)[:, None]
+    offs_j = tl.arange(0, BLOCK)[None, :]
+
+    a_tile_ptr = a_ptr + offs_i * stride_ai + offs_j * stride_aj
+    a_tile = tl.load(a_tile_ptr)
+
+    smem = tle.gpu.alloc([BLOCK, BLOCK], dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem_ptr = tle.gpu.local_ptr(smem)
+    tl.store(smem_ptr, a_tile)
+
+    staged = tl.load(smem_ptr)
+    acc = tl.dot(staged, tl.trans(staged), out_dtype=tl.float32)
+
+    out_ptrs = out_ptr + offs_i * stride_oi + offs_j * stride_oj
+    tl.store(out_ptrs, acc.to(tl.float16))
+
+
 class TestTLELocalPointerKernel:
     """Ensure kernels can perform load/compute/store entirely via local pointers."""
 
@@ -263,6 +352,86 @@ class TestTLELocalPointerKernel:
 
         expected = torch.full_like(out, value)
         torch.testing.assert_close(out, expected, atol=1e-7, rtol=0)
+
+    def test_local_pointer_none_generates_full_view_1d(self):
+        block = 128
+        numel = block - 9
+        out = torch.full((block, ), -1, device="cuda", dtype=torch.int32)
+
+        compiled = _local_pointer_full_view_store_kernel.warmup(
+            out,
+            numel,
+            BLOCK=block,
+            grid=(1, ),
+            num_warps=4,
+        )
+        ttgir = compiled.asm["ttgir"]
+        assert "ttg.local_store" in ttgir
+        line = next((line for line in ttgir.splitlines() if "tle.gpu.local_pointers" in line), None)
+        if line is not None:
+            line_lhs = line.split(":", 1)[0]
+            assert "tle.gpu.local_pointers" in line_lhs
+            assert "," not in line_lhs
+
+        _local_pointer_full_view_store_kernel[(1, )](
+            out,
+            numel,
+            BLOCK=block,
+            num_warps=4,
+        )
+        expected = torch.arange(block, device="cuda", dtype=torch.int32)
+        expected[numel:] = -1
+        torch.testing.assert_close(out, expected, atol=0, rtol=0)
+
+    def test_local_pointer_none_generates_full_view_2d(self):
+        rows = 16
+        cols = 32
+        x = torch.randn((rows, cols), device="cuda", dtype=torch.float32)
+        out = torch.empty_like(x)
+
+        _local_pointer_full_view_2d_copy_kernel[(1, )](
+            x,
+            out,
+            x.stride(0),
+            x.stride(1),
+            out.stride(0),
+            out.stride(1),
+            ROWS=rows,
+            COLS=cols,
+        )
+        torch.testing.assert_close(out, x, atol=1e-6, rtol=1e-6)
+
+    def test_local_pointer_none_load_rewrites_to_local_load(self):
+        block = 64
+        out = torch.empty((block, ), device="cuda", dtype=torch.int32)
+        compiled = _local_pointer_local_load_none_kernel.warmup(
+            out,
+            BLOCK=block,
+            grid=(1, ),
+            num_warps=4,
+        )
+        ttgir = compiled.asm["ttgir"]
+        assert "ttg.local_load" in ttgir
+
+        _local_pointer_local_load_none_kernel[(1, )](out, BLOCK=block, num_warps=4)
+        expected = torch.arange(block, device="cuda", dtype=torch.int32) + 3
+        torch.testing.assert_close(out, expected, atol=0, rtol=0)
+
+    def test_local_pointer_full_indices_load_rewrites_to_local_load(self):
+        block = 64
+        out = torch.empty((block, ), device="cuda", dtype=torch.int32)
+        compiled = _local_pointer_local_load_full_indices_kernel.warmup(
+            out,
+            BLOCK=block,
+            grid=(1, ),
+            num_warps=4,
+        )
+        ttgir = compiled.asm["ttgir"]
+        assert "ttg.local_load" in ttgir
+
+        _local_pointer_local_load_full_indices_kernel[(1, )](out, BLOCK=block, num_warps=4)
+        expected = torch.arange(block, device="cuda", dtype=torch.int32) + 5
+        torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
     def test_local_pointer_conditional_mask_store_compiles(self):
         block = 512
@@ -389,6 +558,41 @@ class TestTLELocalPointerKernel:
             atol=0,
             rtol=0,
         )
+
+    def test_local_pointer_full_view_dot_avoids_pointer_convert_layout(self):
+        block = 32
+        a = torch.randn((block, block), device="cuda", dtype=torch.float16)
+        out = torch.empty_like(a)
+
+        compiled = _local_pointer_full_view_dot_kernel.warmup(
+            a,
+            out,
+            a.stride(0),
+            a.stride(1),
+            out.stride(0),
+            out.stride(1),
+            BLOCK=block,
+            grid=(1, ),
+            num_warps=4,
+            num_stages=2,
+        )
+        ttgir = compiled.asm["ttgir"]
+        assert "ttg.local_load" in ttgir
+        assert re.search(r"ttg\\.convert_layout .*-> tensor<.*!tt\\.ptr", ttgir) is None
+
+        _local_pointer_full_view_dot_kernel[(1, )](
+            a,
+            out,
+            a.stride(0),
+            a.stride(1),
+            out.stride(0),
+            out.stride(1),
+            BLOCK=block,
+            num_warps=4,
+            num_stages=2,
+        )
+        expected = (a.float() @ a.float().T).to(torch.float16)
+        torch.testing.assert_close(out, expected, atol=2e-1, rtol=2e-1)
 
 
 if __name__ == "__main__":
