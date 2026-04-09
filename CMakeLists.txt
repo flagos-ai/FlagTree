@@ -457,8 +457,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endif()
   target_link_options(triton PRIVATE ${LLVM_LDFLAGS})
   set_target_properties(triton PROPERTIES
-  INSTALL_RPATH "$ORIGIN"
-)
+    INSTALL_RPATH "$ORIGIN"
+  )
 endif()
 
 if (UNIX AND NOT APPLE)
