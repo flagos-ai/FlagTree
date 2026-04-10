@@ -34,6 +34,8 @@ FlagTree 致力于打造多元 AI 芯片编译器及相关工具平台，发展�
 对于上游模型用户，提供多后端的统一编译能力；
 对于下游芯片厂商，提供 Triton 生态接入范例。
 
+## 多后端支持
+
 各后端基于不同版本的 Triton 适配，因此位于不同的主干分支。
 各主干分支均为保护分支且地位相等，表格中所有后端均搭建了 CI/CD Runner。
 
@@ -103,6 +105,10 @@ TLE 的主要优势包括：
 * 2025/03/19 新增接入 [mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/) 后端（对应 Triton 3.1），加入 CI/CD。
 * 2025/03/12 新增接入 [iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/) 后端（对应 Triton 3.1），加入 CI/CD。
 
+## 环境准备
+
+避免环境匹配问题的最佳实践是使用 [多后端支持](#多后端支持) 表格中推荐的镜像。
+
 ## 从源码安装
 
 安装依赖（注意使用正确的 python3.x 执行）：
@@ -113,6 +119,7 @@ python3 -m pip install -r python/requirements.txt
 ```
 
 通用的构建安装方式（网络畅通环境下推荐使用）：
+
 ```shell
 # Set FLAGTREE_BACKEND using the backend name from the table above
 export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia/amd/triton-shared
@@ -122,13 +129,9 @@ python3 -m pip show flagtree
 cd ${ANY_OTHER_PATH}; python3 -c 'import triton; print(triton.__path__)'
 ```
 
-- [从源码构建技巧](/documents/build_cn.md#从源码构建技巧)
-- [离线构建支持：预下载依赖包](/documents/build_cn.md#离线构建支持)
-
 ## 免源码安装
 
 如果不希望从源码安装，可以直接拉取安装 whl（支持部分后端）。
-避免环境匹配问题的最佳实践是使用 [从源码构建技巧](/documents/build_cn.md#从源码构建技巧) 中推荐的镜像。
 
 ```shell
 # Note: First install PyTorch, then execute the following commands

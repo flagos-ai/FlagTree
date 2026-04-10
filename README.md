@@ -34,6 +34,8 @@ Currently in its initial phase, the project aims to maintain compatibility with 
 For upstream model users, it provides unified compilation capabilities across multiple backends;
 for downstream chip manufacturers, it offers examples of Triton ecosystem integration.
 
+## Multi-backend support
+
 Each backend is based on different versions of Triton, and therefore resides in different protected branches.
 All these protected branches have equal status. CI/CD runners are provisioned for every backend listed in the table.
 
@@ -103,6 +105,10 @@ For detailed design, APIs, and examples, please refer to the [TLE Wiki](https://
 * 2025/03/19 Added [mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/) backend integration (based on Triton 3.1), and added CI/CD.
 * 2025/03/12 Added [iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/) backend integration (based on Triton 3.1), and added CI/CD.
 
+# Environment setup
+
+The best practice to avoid environment compatibility issues is to use the image recommended in [Multi-backend support](#multi-backend-support) table.
+
 ## Install from source
 
 Installation dependencies (Confirm the correct python3.x version is being used):
@@ -113,6 +119,7 @@ python3 -m pip install -r python/requirements.txt
 ```
 
 General building and installation procedure (Recommended for environments with good network connectivity):
+
 ```shell
 # Set FLAGTREE_BACKEND using the backend name from the table above
 export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia/amd/triton-shared
@@ -122,13 +129,9 @@ python3 -m pip show flagtree
 cd ${ANY_OTHER_PATH}; python3 -c 'import triton; print(triton.__path__)'
 ```
 
-- [Tips for building](/documents/build.md#tips-for-building)
-- [Offline build support: pre-downloading dependency packages](/documents/build.md#offline-build-support)
-
 ## Source-free Installation
 
 If you do not wish to build from source, you can directly pull and install whl (partial backend support).
-The best practice to avoid environment compatibility issues is to use the image recommended in [Tips for building](/documents/build.md#tips-for-building).
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
