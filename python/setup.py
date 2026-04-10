@@ -650,13 +650,26 @@ def get_git_commit_hash(length=8):
         return ""
 
 
+def get_flagtree_version():
+    import hashlib
+    PYPI_KEY_MD5 = "ed98ae2a2ba0429b189537c0d3dbef43"
+    key = os.environ.get("FLAGTREE_PYPI_KEY", "")
+    flagtree_ver = os.environ.get("FLAGTREE_WHEEL_VERSION", "")
+    if flagtree_ver:
+        if hashlib.md5(key.encode()).hexdigest() == PYPI_KEY_MD5:
+            return flagtree_ver
+        else:
+            return flagtree_ver + get_git_commit_hash().replace("+", ".")
+    return "0.5.0" + get_git_commit_hash()
+
+
 readme_path = os.path.join(get_base_dir(), "README.md")
 with open(readme_path, "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
     name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
-    version=os.environ.get("FLAGTREE_WHEEL_VERSION", "") or "0.5.0" + get_git_commit_hash(),
+    version=get_flagtree_version(),
     author="FlagOS",
     author_email="contact@flagos.io",
     description=

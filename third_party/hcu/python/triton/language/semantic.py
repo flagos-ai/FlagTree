@@ -1529,10 +1529,10 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
 
 
 def where(condition: tl.tensor, x: tl.tensor, y: tl.tensor, builder: ir.builder) -> tl.tensor:
-    if condition.dtype != tl.int1:
-        warnings.warn(
-            f"tl.where with a non-boolean condition is deprecated and will error out in a future triton release. Got {condition.dtype}"
-        )
+    # if condition.dtype != tl.int1:
+    #     warnings.warn(
+    #         f"tl.where with a non-boolean condition is deprecated and will error out in a future triton release. Got {condition.dtype}"
+    #     )
     condition = cast(condition, tl.int1, builder)
     x, y = binary_op_type_checking_impl(x, y, builder, True, True)
     # x, y are broadcasted

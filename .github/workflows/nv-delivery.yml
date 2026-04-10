@@ -16,6 +16,8 @@ on:
       PLATFORM:
         required: true
         default: 'x86_64'
+      FLAGTREE_PYPI_KEY:
+        required: false
   workflow_call:
     inputs:
       WHL_VER:
@@ -30,6 +32,9 @@ on:
         type: string
         required: true
         default: 'x86_64'
+      FLAGTREE_PYPI_KEY:
+        type: string
+        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.WHL_VER }}-${{ inputs.PYTHON_VER }}-${{ inputs.PLATFORM }}
@@ -85,6 +90,7 @@ jobs:
 
           cd python
           rm -rf ./build ./*.egg-info
+          { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
           env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true
 
@@ -111,6 +117,7 @@ jobs:
 
           cd python
           rm -rf ./build ./*.egg-info
+          { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
           env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true
 
@@ -137,6 +144,7 @@ jobs:
 
           cd python
           rm -rf ./build ./*.egg-info
+          { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
           env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true
 

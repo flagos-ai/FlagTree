@@ -28,9 +28,11 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: Check if only docs files changed
-        id: check_files
-        uses: flagos-ai/FlagTree/.github/actions/check-docs-only@main
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: nvidia
 
       - name: Detect Target Branch
         shell: bash
@@ -45,7 +47,7 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
       - name: FlagTree Build on NVidia (main branch)
-        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'main' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'main' }}
         shell: bash
         run: |
           set -x
@@ -54,7 +56,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Build on NVidia (triton_v3.2.x branch)
-        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.2.x' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.2.x' }}
         shell: bash
         run: |
           set -x
@@ -63,7 +65,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Build on NVidia (triton_v3.3.x branch)
-        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.3.x' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.3.x' }}
         shell: bash
         run: |
           set -x
@@ -72,7 +74,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on NVidia
-        if: steps.check_files.outputs.only_docs_changed != 'true'
+        if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x

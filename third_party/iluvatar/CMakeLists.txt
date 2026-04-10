@@ -3,11 +3,11 @@ add_compile_options("-Wno-error=deprecated-declarations")
 
 option(EDITABLE_MODE "Build in developer (editable) mode" OFF)
 if(FLAGTREE_PLUGIN)
-  set(ILUVATAR_PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
+  set(PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
 elseif(EDITABLE_MODE)
-  set(ILUVATAR_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  set(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 else()
-  set(ILUVATAR_PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
+  set(PLUGIN_DIR "$ENV{HOME}/.flagtree/iluvatar")
 endif()
 if(TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_PLUGIN)
@@ -16,29 +16,18 @@ if(TRITON_BUILD_PYTHON_MODULE)
       SHARED_LIB iluvatarTritonPlugin
     )
   else()
-    if(EDITABLE_MODE)
-      find_library(iluvatarTritonPluginLib
+    find_library(BackendTritonPluginLib
       NAMES
         iluvatarTritonPlugin.so
       PATHS
-        ${ILUVATAR_PLUGIN_DIR}
+        ${PLUGIN_DIR}
       REQUIRED
-      )
-      add_triton_plugin(TritonILUVATAR
-        SHARED_LIB ${iluvatarTritonPluginLib}
-      )
-    else()
-      find_library(iluvatarTritonPluginLib
-        NAMES
-          iluvatarTritonPlugin.so
-        PATHS
-        ${ILUVATAR_PLUGIN_DIR}
-        REQUIRED
-      )
-      add_triton_plugin(TritonILUVATAR
-        SHARED_LIB ${iluvatarTritonPluginLib}
-      )
-    endif()
+    )
+    add_triton_plugin(TritonILUVATAR
+      SHARED_LIB ${BackendTritonPluginLib}
+    )
+    list(APPEND CMAKE_BUILD_RPATH "$ORIGIN")
+    set(CMAKE_BUILD_RPATH "${CMAKE_BUILD_RPATH}" PARENT_SCOPE)
   endif()
 endif()
 

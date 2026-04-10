@@ -1,10 +1,12 @@
 add_subdirectory(include)
 add_subdirectory(lib)
 
-if(EDITABLE_MODE)
-  set(MTHREADS_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+if(FLAGTREE_PLUGIN)
+  set(PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
+elseif(EDITABLE_MODE)
+  set(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 else()
-  set (MTHREADS_PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
+  set(PLUGIN_DIR "$ENV{HOME}/.flagtree/mthreads")
 endif()
 if(TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_PLUGIN)
@@ -13,29 +15,18 @@ if(TRITON_BUILD_PYTHON_MODULE)
       SHARED_LIB mthreadsTritonPlugin
     )
   else()
-    if(EDITABLE_MODE)
-      find_library(mthreadsTritonPluginLib
+    find_library(BackendTritonPluginLib
       NAMES
         mthreadsTritonPlugin.so
       PATHS
-      ${CMAKE_CURRENT_SOURCE_DIR}
+        ${PLUGIN_DIR}
       REQUIRED
-      )
-      add_triton_plugin(TritonMTHREADS
-        SHARED_LIB ${mthreadsTritonPluginLib}
-      )
-    else()
-      find_library(mthreadsTritonPluginLib
-        NAMES
-          mthreadsTritonPlugin.so
-        PATHS
-        ${MTHREADS_PLUGIN_DIR}
-        REQUIRED
-      )
-      add_triton_plugin(TritonMTHREADS
-        SHARED_LIB ${mthreadsTritonPluginLib}
-      )
-    endif()
+    )
+    add_triton_plugin(TritonMTHREADS
+      SHARED_LIB ${BackendTritonPluginLib}
+    )
+    list(APPEND CMAKE_BUILD_RPATH "$ORIGIN")
+    set(CMAKE_BUILD_RPATH "${CMAKE_BUILD_RPATH}" PARENT_SCOPE)
   endif()
 endif()
 

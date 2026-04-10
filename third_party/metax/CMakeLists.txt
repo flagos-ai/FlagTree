@@ -3,11 +3,11 @@ add_subdirectory(lib)
 
 option(EDITABLE_MODE "Build in developer (editable) mode" OFF)
 if(FLAGTREE_PLUGIN)
-  set(METAX_PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
+  set(PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
 elseif(EDITABLE_MODE)
-  set(METAX_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  set(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 else()
-  set(METAX_PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
+  set(PLUGIN_DIR "$ENV{HOME}/.flagtree/metax")
 endif()
 if(TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_PLUGIN)
@@ -16,16 +16,18 @@ if(TRITON_BUILD_PYTHON_MODULE)
       SHARED_LIB metaxTritonPlugin
     )
   else()
-    find_library(metaxTritonPluginLib
+    find_library(BackendTritonPluginLib
       NAMES
         metaxTritonPlugin.so
       PATHS
-        ${METAX_PLUGIN_DIR}
+        ${PLUGIN_DIR}
       REQUIRED
     )
     add_triton_plugin(TritonMetax
-      SHARED_LIB ${metaxTritonPluginLib}
+      SHARED_LIB ${BackendTritonPluginLib}
     )
+    list(APPEND CMAKE_BUILD_RPATH "$ORIGIN")
+    set(CMAKE_BUILD_RPATH "${CMAKE_BUILD_RPATH}" PARENT_SCOPE)
   endif()
 endif()
 
