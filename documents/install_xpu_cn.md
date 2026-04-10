@@ -13,7 +13,7 @@
 如果网络环境畅通，也不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202603
+IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202603  # TODO
 # Plan A: docker pull (GB)
 docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
 # Plan B: docker load (GB)

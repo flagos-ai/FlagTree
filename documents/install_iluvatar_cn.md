@@ -14,7 +14,7 @@
 
 ```shell
 modinfo iluvatar | grep "description"  # f65d8ac7
-IMAGE=flagtree-iluvatar-py312-torch2.7.1-4.4.0release_f65d8ac7-ubuntu24.04:202603
+IMAGE=flagtree-iluvatar-py312-torch2.7.1-4.4.0release_f65d8ac7-ubuntu24.04:202603  # TODO
 # Plan A: docker pull (GB)
 docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
 # Plan B: docker load (GB)
@@ -48,7 +48,7 @@ case "$ABI" in
   1018) PLUGIN_TGZ=iluvatarTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.18-ubuntu-x86_64_v0.5.0.tar.gz ;;
   *) echo "不支持的 __GXX_ABI_VERSION=$ABI，请更新 plugin 包映射"; exit 1 ;;
 esac
-wget "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${PLUGIN_TGZ}"
+wget "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${PLUGIN_TGZ}"  # TODO: py312
 tar zxvf "${PLUGIN_TGZ}"
 ```
 
