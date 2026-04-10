@@ -3,11 +3,11 @@ add_compile_options("-Wno-error=deprecated-declarations")
 
 option(EDITABLE_MODE "Build in developer (editable) mode" OFF)
 if(FLAGTREE_PLUGIN)
-  set(SUNRISE_PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
+  set(PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
 elseif(EDITABLE_MODE)
-  set(SUNRISE_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  set(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 else()
-  set(SUNRISE_PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
+  set(PLUGIN_DIR "$ENV{HOME}/.flagtree/sunrise")
 endif()
 
 if(TRITON_BUILD_PYTHON_MODULE)
@@ -17,29 +17,18 @@ if(TRITON_BUILD_PYTHON_MODULE)
       SHARED_LIB sunriseTritonPlugin
     )
   else()
-    if(EDITABLE_MODE)
-      find_library(sunriseTritonPluginLib
+    find_library(BackendTritonPluginLib
       NAMES
         sunriseTritonPlugin.so
       PATHS
-        ${SUNRISE_PLUGIN_DIR}
+        ${PLUGIN_DIR}
       REQUIRED
-      )
-      add_triton_plugin(TritonSunrise
-        SHARED_LIB ${sunriseTritonPluginLib}
-      )
-    else()
-      find_library(sunriseTritonPluginLib
-        NAMES
-          sunriseTritonPlugin.so
-        PATHS
-          ${SUNRISE_PLUGIN_DIR}
-        REQUIRED
-      )
-      add_triton_plugin(TritonSunrise
-        SHARED_LIB ${sunriseTritonPluginLib}
-      )
-    endif()
+    )
+    add_triton_plugin(TritonSunrise
+      SHARED_LIB ${BackendTritonPluginLib}
+    )
+    list(APPEND CMAKE_BUILD_RPATH "$ORIGIN")
+    set(CMAKE_BUILD_RPATH "${CMAKE_BUILD_RPATH}" PARENT_SCOPE)
   endif()
 endif()
 
