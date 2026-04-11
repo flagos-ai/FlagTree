@@ -38,10 +38,9 @@ jobs:
         run: |
           set -x
           pip uninstall -y triton
-          source ~/env_setup.sh
           export FLAGTREE_BACKEND=metax
           cd python
-          MAX_JOBS=32 python3.10 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on Metax
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -49,4 +48,4 @@ jobs:
         run: |
           set -x
           source ~/env.sh
-          python3.10 -m pytest -s third_party/metax/python/test/unit
+          python3 -m pytest -s third_party/metax/python/test/unit
