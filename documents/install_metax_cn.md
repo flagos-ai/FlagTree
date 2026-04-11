@@ -13,7 +13,7 @@
 如果网络环境畅通，也不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-IMAGE=flagtree-metax-py310-torch2.6.0_metax3.0.0.3-ubuntu24.04-amd64:202603
+IMAGE=flagtree-metax-py312-torch2.8.0-vllm0.15.0-metax3.5.3.x-ubuntu22.04:202604-0.5.1
 # Plan A: docker pull (26.6GB)
 docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
 # Plan B: docker load (7.8GB)
@@ -39,10 +39,10 @@ docker exec -it ${CONTAINER} /bin/bash
 
 ```shell
 mkdir -p ~/.flagtree/metax; cd ~/.flagtree/metax
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0.tar.gz
-tar zxvf metaxTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-linux-x86_64_v0.4.0.tar.gz
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/ext_maca_mathlib_bc_v0.4.0.tar.gz
-tar zxvf ext_maca_mathlib_bc_v0.4.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-linux-x86_64_v0.5.0.tar.gz
+tar zxvf metaxTritonPlugin-cpython3.12-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-linux-x86_64_v0.5.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/ext_maca_mathlib_bc_v0.5.0.tar.gz
+tar zxvf ext_maca_mathlib_bc_v0.5.0.tar.gz
 # NOTE: Contact the Metax vendor to obtain maca-llvm-metax20250708.521-x86_64.tar.xz
 tar xvf maca-llvm-metax20250708.521-x86_64.tar.xz
 ```
