@@ -2,7 +2,7 @@
 
 # 💫 MetaX（沐曦股份）[metax](/third_party/metax/)
 
-- 对应的 Triton 版本为 3.1，基于 x64 平台
+- 对应的 Triton 版本为 3.0，基于 x64 平台
 - 可用于 C550
 
 ## 1. 构建及运行环境
@@ -14,11 +14,11 @@
 
 ```shell
 IMAGE=flagtree-metax-py312-torch2.8.0-vllm0.15.0-metax3.5.3.x-ubuntu22.04:202604-0.5.1
-# Plan A: docker pull (26.6GB)
+# Plan A: docker pull (28.1GB)
 docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
-# Plan B: docker load (7.8GB)
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-metax-py310-torch2.6.0_metax3.0.0.3-ubuntu24.04-amd64.202603.tar.gz
-docker load -i flagtree-metax-py310-torch2.6.0_metax3.0.0.3-ubuntu24.04-amd64.202603.tar.gz
+# Plan B: docker load (8.1GB)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-metax-py312-torch2.8.0-vllm0.15.0-metax3.5.3.x-ubuntu22.04.202604-0.5.1.tar.gz
+docker load -i flagtree-metax-py312-torch2.8.0-vllm0.15.0-metax3.5.3.x-ubuntu22.04.202604-0.5.1.tar.gz
 ```
 
 ```shell
@@ -67,7 +67,7 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x6
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3 -m pip install flagtree===0.5.1+metax3.1 $RES
+python3.12 -m pip install flagtree===0.5.1+metax3.0 $RES
 ```
 
 预装镜像中已安装 `flagtree`，可通过下列命令查看：

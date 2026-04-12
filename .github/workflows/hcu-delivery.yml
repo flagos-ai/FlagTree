@@ -72,7 +72,7 @@ jobs:
         shell: bash
         run: |
           set -x
-          TRITON_VER="3.0"
+          TRITON_VER="3.1"
           CHIP=""
           export FLAGTREE_BACKEND=hcu
           WHL_VER=${{ inputs.WHL_VER }}

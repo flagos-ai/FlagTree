@@ -72,7 +72,7 @@ jobs:
         shell: bash
         run: |
           set -x
-          TRITON_VER="3.1"
+          TRITON_VER="3.0"
           CHIP=""
           export FLAGTREE_BACKEND=metax
           WHL_VER=${{ inputs.WHL_VER }}
