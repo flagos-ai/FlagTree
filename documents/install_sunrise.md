@@ -1,13 +1,13 @@
 [[中文版](./install_sunrise_cn.md)|English]
 
-# 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
+## 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)
 
 - Based on Triton 3.4, x64
 - Available for S2
 
-## 1. Build and run environment
+### 1. Build and run environment
 
-### 1.1 Use the preinstalled image (S2)
+#### 1.1 Use the preinstalled image (S2)
 
 If you use this preinstalled image, you do not need to perform the later step 1.x.
 If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
@@ -16,7 +16,7 @@ If your network connection is available, you also do not need to perform the lat
 TODO
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+#### 1.2 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/sunrise; cd ~/.flagtree/sunrise
@@ -26,7 +26,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin-cp
 tar zxvf sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+#### 1.3 Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -38,9 +38,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.4.x-linux-x6
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-## 2. Installation Commands
+### 2. Installation Commands
 
-### 2.1 Source-free Installation
+#### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -55,7 +55,7 @@ python3 -m pip install flagtree===0.4.0+sunrise3.4 $RES
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+#### 2.2 Build from Source
 
 ```shell
 apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
@@ -69,6 +69,6 @@ export FLAGTREE_BACKEND=sunrise
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
-## 3. Testing and validation
+### 3. Testing and validation
 
 Refer to [Tests of sunrise backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.4.x/.github/workflows/sunrise-build-and-test.yml)

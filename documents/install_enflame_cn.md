@@ -1,13 +1,13 @@
 [中文版|[English](./install_enflame.md)]
 
-# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)（triton 3.5）
+## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)（triton 3.5）
 
 - 对应的 Triton 版本为 3.5，基于 x64 平台
 - 可用于 GCU300/GCU400
 
-## 1. 构建及运行环境
+### 1. 构建及运行环境
 
-### 1.1 使用镜像（triton 3.5）
+#### 1.1 使用镜像（triton 3.5）
 
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
@@ -35,7 +35,7 @@ docker start ${CONTAINER}
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 手动下载 FlagTree 依赖库
+#### 1.2 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -43,7 +43,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm22-189e06b
 tar zxvf enflame-llvm22-189e06b-gcc9-x64_v0.4.0.tar.gz
 ```
 
-### 1.3 手动下载 Triton 依赖库
+#### 1.3 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -55,9 +55,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.5.x-linux-x6
 执行完上述脚本后，原有的 ~/.triton 目录将被重命名，新的 ~/.triton 目录会被创建并存放预下载包。
 注意执行脚本过程中会提示手动确认。
 
-## 2. 安装命令
+### 2. 安装命令
 
-### 2.1 免源码安装
+#### 2.1 免源码安装
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -72,7 +72,7 @@ python3 -m pip install flagtree===0.5.0+enflame3.5 --break-system-packages $RES
 python3 -m pip show flagtree
 ```
 
-### 2.2 从源码构建
+#### 2.2 从源码构建
 
 ```shell
 apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
@@ -83,20 +83,20 @@ export FLAGTREE_BACKEND=enflame
 MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packages
 ```
 
-## 3. 测试验证
+### 3. 测试验证
 
 参考 [Tests of enflame-gcu400 backend (triton 3.5)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu400-build-and-test.yml)、[Tests of enflame-gcu300 backend (triton 3.5)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu300-build-and-test.yml)
 
 ---
 
-# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3 旧版本）
+## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3 旧版本）
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 - 可用于 GCU300
 
-## 1. 构建及运行环境
+### 1. 构建及运行环境
 
-### 1.1 使用镜像（triton 3.3）
+#### 1.1 使用镜像（triton 3.3）
 
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
@@ -124,7 +124,7 @@ docker start ${CONTAINER}
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 手动下载 FlagTree 依赖库
+#### 1.2 手动下载 FlagTree 依赖库
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -132,7 +132,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b
 tar zxvf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 ```
 
-### 1.3 手动下载 Triton 依赖库
+#### 1.3 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -144,9 +144,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x6
 执行完上述脚本后，原有的 ~/.triton 目录将被重命名，新的 ~/.triton 目录会被创建并存放预下载包。
 注意执行脚本过程中会提示手动确认。
 
-## 2. 安装命令
+### 2. 安装命令
 
-### 2.1 免源码安装
+#### 2.1 免源码安装
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -161,7 +161,7 @@ python3 -m pip install flagtree===0.4.0+enflame3.3 $RES
 python3 -m pip show flagtree
 ```
 
-### 2.2 从源码构建
+#### 2.2 从源码构建
 
 ```shell
 apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
@@ -172,6 +172,6 @@ export FLAGTREE_BACKEND=enflame
 MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v
 ```
 
-## 3. 测试验证
+### 3. 测试验证
 
 参考 [Tests of enflame-gcu300 backend (triton 3.3)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/.github/workflows/enflame-gcu300-3.3-build-and-test.yml)

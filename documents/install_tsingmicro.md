@@ -1,13 +1,13 @@
 [[中文版](./install_tsingmicro_cn.md)|English]
 
-# 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
+## 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)
 
 - Based on Triton 3.3, x64
 - Available for TX81
 
-## 1. Build and run environment
+### 1. Build and run environment
 
-### 1.1 Use the preinstalled image (TX81)
+#### 1.1 Use the preinstalled image (TX81)
 
 If you use this preinstalled image, you do not need to perform the later step 1.x.
 If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
@@ -33,7 +33,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+#### 1.2 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/tsingmicro; cd ~/.flagtree/tsingmicro
@@ -43,7 +43,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_dev_202603
 tar zxvf tx8_depends_dev_20260309_173649_v0.5.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+#### 1.3 Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -55,9 +55,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x6
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-## 2. Installation Commands
+### 2. Installation Commands
 
-### 2.1 Source-free Installation
+#### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -72,7 +72,7 @@ python3 -m pip install flagtree===0.5.0+tsingmicro3.3 $RES
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+#### 2.2 Build from Source
 
 Before building, you need to execute `source ~/env_setup.sh`. The content of this script is as follows:
 
@@ -93,7 +93,7 @@ export FLAGTREE_BACKEND=tsingmicro
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
-## 3. Testing and validation
+### 3. Testing and validation
 
 Before testing, you need to execute `source ~/env_setup.sh`. The content of this script is shown above.
 

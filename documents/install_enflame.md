@@ -1,13 +1,13 @@
 [[中文版](./install_enflame_cn.md)|English]
 
-# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) (Triton 3.5)
+## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) (Triton 3.5)
 
 - Based on Triton 3.5, x64
 - Available for GCU300/GCU400
 
-## 1. Build and run environment
+### 1. Build and run environment
 
-### 1.1 Use the image (Triton 3.5)
+#### 1.1 Use the image (Triton 3.5)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -35,7 +35,7 @@ docker start ${CONTAINER}
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+#### 1.2 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -43,7 +43,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm22-189e06b
 tar zxvf enflame-llvm22-189e06b-gcc9-x64_v0.4.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+#### 1.3 Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -55,9 +55,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.5.x-linux-x6
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-## 2. Installation Commands
+### 2. Installation Commands
 
-### 2.1 Source-free Installation
+#### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -72,7 +72,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+#### 2.2 Build from Source
 
 ```shell
 apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
@@ -83,20 +83,20 @@ export FLAGTREE_BACKEND=enflame
 MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packages
 ```
 
-## 3. Testing and validation
+### 3. Testing and validation
 
 Refer to [Tests of enflame-gcu400 backend (Triton 3.5)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu400-build-and-test.yml), [Tests of enflame-gcu300 backend (Triton 3.5)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu300-build-and-test.yml)
 
 ---
 
-# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) (older Triton 3.3 version)
+## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) (older Triton 3.3 version)
 
 - Based on Triton 3.3, x64
 - Available for GCU300
 
-## 1. Build and run environment
+### 1. Build and run environment
 
-### 1.1 Use the image (Triton 3.3)
+#### 1.1 Use the image (Triton 3.3)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -124,7 +124,7 @@ docker start ${CONTAINER}
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+#### 1.2 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -132,7 +132,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b
 tar zxvf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+#### 1.3 Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -144,9 +144,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.3.x-linux-x6
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-## 2. Installation Commands
+### 2. Installation Commands
 
-### 2.1 Source-free Installation
+#### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -161,7 +161,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+#### 2.2 Build from Source
 
 ```shell
 apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
@@ -172,6 +172,6 @@ export FLAGTREE_BACKEND=enflame
 MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v
 ```
 
-## 3. Testing and validation
+### 3. Testing and validation
 
 Refer to [Tests of enflame-gcu300 backend (Triton 3.3)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/.github/workflows/enflame-gcu300-3.3-build-and-test.yml)

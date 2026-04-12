@@ -1,12 +1,12 @@
 [中文版|[English](./install.md)]
 
-# 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
+## 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
 
 - 对应的 Triton 版本为 3.1/3.2/3.3/3.4/3.5/3.6，基于 x64 平台
 
-## 1. 构建及运行环境
+### 1. 构建及运行环境
 
-### 1.1 使用预装镜像（对应 Triton 3.6）
+#### 1.1 使用预装镜像（对应 Triton 3.6）
 
 使用该预装镜像，则不必执行后续步骤 1.x，除非需要安装 FlagTree 的非 Triton 3.6 对应版本。
 如果网络环境畅通，也不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
@@ -33,7 +33,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 手动下载 LLVM 依赖包
+#### 1.2 手动下载 LLVM 依赖包
 
 ```shell
 cd ${YOUR_LLVM_DOWNLOAD_DIR}
@@ -71,7 +71,7 @@ export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
 export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 ```
 
-### 1.3 手动下载 Triton 依赖库
+#### 1.3 手动下载 Triton 依赖库
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -101,9 +101,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.6.x-linux-x6
 执行完上述脚本后，原有的 ~/.triton 目录将被重命名，新的 ~/.triton 目录会被创建并存放预下载包。
 注意执行脚本过程中会提示手动确认。
 
-## 2. 安装命令
+### 2. 安装命令
 
-### 2.1 免源码安装
+#### 2.1 免源码安装
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -118,7 +118,7 @@ python3 -m pip install flagtree===0.5.0 $RES
 python3 -m pip show flagtree
 ```
 
-### 2.2 从源码构建
+#### 2.2 从源码构建
 
 ```shell
 apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
@@ -137,13 +137,13 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR
 ```
 
-## 3. 测试验证
+### 3. 测试验证
 
 参考 [Tests of nvidia backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/hopper-build-and-test.yml)
 
-# Q&A
+## Q&A
 
-## Q: 安装完成后，运行时报错：version GLIBC or GLIBCXX not found
+### Q: 安装完成后，运行时报错：version GLIBC or GLIBCXX not found
 
 A: 查询环境中的 libc.so.6、libstdc++.so.6.0.30 支持的 GLIBC / GLIBCXX 版本：
 

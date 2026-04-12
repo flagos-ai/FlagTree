@@ -1,13 +1,13 @@
 [[中文版](./install_hcu_cn.md)|English]
 
-# 💫 HYGON（海光信息）[hcu](/third_party/hcu/)
+## 💫 HYGON（海光信息）[hcu](/third_party/hcu/)
 
 - Based on Triton 3.0, x64
 - Available for K100/BW1000
 
-## 1. Build and run environment
+### 1. Build and run environment
 
-### 1.1 Use the preinstalled image (BW1000)
+#### 1.1 Use the preinstalled image (BW1000)
 
 If you use this preinstalled image, you do not need to perform the later step 1.x.
 If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
@@ -35,7 +35,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+#### 1.2 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/hcu; cd ~/.flagtree/hcu
@@ -43,7 +43,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm20-df0864e-gli
 tar zxvf hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+#### 1.3 Manually download the Triton dependencies
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -55,9 +55,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x6
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-## 2. Installation Commands
+### 2. Installation Commands
 
-### 2.1 Source-free Installation
+#### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -72,7 +72,7 @@ python3 -m pip install flagtree===0.5.0+hcu3.0 $RES
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+#### 2.2 Build from Source
 
 ```shell
 apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
@@ -82,6 +82,6 @@ export FLAGTREE_BACKEND=hcu
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
-## 3. Testing and validation
+### 3. Testing and validation
 
 Refer to [Tests of hcu backend](/.github/workflows/hcu-build-and-test.yml)
