@@ -13,6 +13,9 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#endif
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttg-utility"
@@ -1579,6 +1582,17 @@ void replaceUsesAndPropagateType(
     } else if (auto trans = dyn_cast<ttg::MemDescTransOp>(user)) {
       newVal = ttg::MemDescTransOp::create(builder, trans.getLoc(), val,
                                            trans.getOrder());
+#ifdef __TLE__
+    } else if (auto view = dyn_cast<triton::tle::MemDescWGMMAViewOp>(user)) {
+      ttg::MemDescType oldType = view.getType();
+      bool isMutable = cast<ttg::MemDescType>(val.getType()).getMutableMemory();
+      Type newDstType = ttg::MemDescType::get(
+          oldType.getShape(), oldType.getElementType(), oldType.getEncoding(),
+          oldType.getMemorySpace(), isMutable, oldType.getAllocShape());
+      builder.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+      newVal = triton::tle::MemDescWGMMAViewOp::create(
+          builder, view.getLoc(), newDstType, val, view.getOrder());
+#endif
     } else if (auto reshape = dyn_cast<ttg::MemDescReshapeOp>(user)) {
       auto shape = reshape.getType().getShape();
       newVal =

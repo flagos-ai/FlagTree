@@ -82,6 +82,37 @@ def TritonTleOptimizeLocalPointerStores
                            "mlir::triton::tle::TleDialect"];
 }
 
+def TritonTlePromoteLocalStoreStaging
+    : Pass<"triton-tle-promote-local-store-staging", "mlir::ModuleOp"> {
+  let summary =
+      "promote transient TLE local_store staging to pipelineable local_alloc";
+
+  let description = [{
+    This pass rewrites safe loop-local staging patterns of the form:
+
+      %v = tt.load ...
+      ttg.local_store %v, %smem
+      ... users of %smem ...
+
+    into:
+
+      %stage = ttg.local_alloc %v
+      ... users of %stage ...
+
+    for buffers that are overwritten every loop iteration and only read after
+    the store. The rewrite exposes the standard TritonGPU load -> local_alloc
+    pattern so the existing software pipeliner can expand it into double
+    buffered async copies when the loop has ``tt.num_stages > 1``.
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::gpu::GPUDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+
 def TritonTleOptimizeExclusiveCumsumLayouts
     : Pass<"triton-tle-optimize-exclusive-cumsum-layouts", "mlir::ModuleOp"> {
   let summary = "fold convert_layout around tle.exclusive_cumsum";

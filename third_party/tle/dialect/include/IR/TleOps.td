@@ -71,10 +71,56 @@ def Tle_LocalPointersOp : Tle_Op<"local_pointers", [Pure]> {
   let hasVerifier = 1;
 }
 
+def Tle_MemDescWGMMAViewOp : Tle_Op<"memdesc_wgmma_view", [Pure,
+                                                           MemDescViewTrait,
+                                                           SameOperandsAndResultElementType]> {
+  let summary = "create a WGMMA descriptor view of a shared memory descriptor";
+
+  let description = [{
+    This operation returns a descriptor-only view of an existing shared memory
+    allocation for WGMMA consumers. It does not allocate or move shared memory.
+
+    The result type carries the logical matrix shape and WGMMA shared encoding
+    required by the consumer. The source descriptor provides the underlying
+    storage. The order attribute describes how logical offsets are mapped from
+    the source view to the result view.
+  }];
+
+  let arguments = (
+    ins TTG_MemDescType:$src,
+    DenseI32ArrayAttr:$order
+  );
+
+  let results = (outs TTG_MemDescType:$result);
+
+  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+
+  let hasVerifier = 1;
+}
+
 def Tle_ExclusiveCumsumOp : Tle_Op<"exclusive_cumsum", [Pure, SameOperandsAndResultEncoding]> {
   let arguments = (ins TT_Tensor:$src, I32Attr:$axis, BoolAttr:$reverse);
   let results = (outs TT_Tensor:$exclusive, TT_Type:$total);
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($exclusive) `,` type($total)";
+  let hasVerifier = 1;
+}
+
+def Tle_WGMMASharedOperandFenceOp : Tle_Op<"wgmma_shared_operand_fence", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$deps,
+    BoolAttr:$bCluster
+  );
+
+  let summary = "fence shared-memory operands before WGMMA async-proxy reads";
+
+  let description = [{
+    Orders prior generic-proxy shared-memory writes to the listed WGMMA shared
+    operands before a following WGMMA reads them through the async proxy.
+  }];
+
+  let assemblyFormat = "$deps attr-dict `:` type($deps)";
   let hasVerifier = 1;
 }
 

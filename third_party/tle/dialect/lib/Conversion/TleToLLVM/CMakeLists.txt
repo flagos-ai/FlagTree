@@ -6,6 +6,8 @@ add_triton_library(TleToLLVM
     LocalPointersOpToLLVM.cpp
     PackOpToLLVM.cpp
     RemotePointerUtils.cpp
+    ViewOpToLLVM.cpp
+    WGMMAFenceOpToLLVM.cpp
 
     DEPENDS
     TleTableGen

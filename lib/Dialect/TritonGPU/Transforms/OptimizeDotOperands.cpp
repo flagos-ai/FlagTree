@@ -1,4 +1,5 @@
 #include "mlir/IR/TypeUtilities.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -10,6 +11,9 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#endif
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
 #include <memory>
@@ -17,6 +21,7 @@
 namespace mlir::triton::gpu {
 
 namespace {
+
 // Given
 //   dot(convert(trans(src)) #dot_operand) ->
 //   dot(convert(local_load(trans(alloc(src)))))
@@ -137,6 +142,46 @@ public:
     auto allocEncoding = cast<NVMMASharedEncodingAttr>(allocType.getEncoding());
     RankedTensorType srcTy = trans.getSrc().getType();
 
+#ifdef __TLE__
+    auto srcLocalLoad = trans.getSrc().getDefiningOp<LocalLoadOp>();
+    if (srcLocalLoad && !srcLocalLoad.getToken()) {
+      Value srcMemDesc = srcLocalLoad.getSrc();
+      auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
+      if (srcMemDescTy && srcMemDescTy.getShape() == srcTy.getShape() &&
+          srcMemDescTy.getElementType() == srcTy.getElementType() &&
+          srcMemDesc.getDefiningOp<LocalAllocOp>()) {
+        Attribute viewEncoding;
+        Dialect &srcDialect = srcMemDescTy.getEncoding().getDialect();
+        auto srcInferLayoutInterface =
+            cast<DialectInferLayoutInterface>(&srcDialect);
+        if (failed(srcInferLayoutInterface->inferTransOpEncoding(
+                srcMemDescTy.getEncoding(), srcMemDescTy.getShape(),
+                trans.getOrder(), viewEncoding, allocOp.getLoc()))) {
+          return failure();
+        }
+
+        auto viewShape =
+            applyPermutation(srcMemDescTy.getShape(), trans.getOrder());
+        SmallVector<int64_t> viewAllocShape =
+            applyPermutation(srcMemDescTy.getAllocShape().take_back(
+                                 trans.getOrder().size()),
+                             trans.getOrder());
+        viewAllocShape.insert(viewAllocShape.begin(),
+                              srcMemDescTy.getAllocShape().begin(),
+                              srcMemDescTy.getAllocShape().end() -
+                                  trans.getOrder().size());
+        auto viewType = MemDescType::get(
+            viewShape, srcMemDescTy.getElementType(), viewEncoding,
+            srcMemDescTy.getMemorySpace(), srcMemDescTy.getMutableMemory(),
+            viewAllocShape);
+        rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+        rewriter.replaceOpWithNewOp<triton::tle::MemDescWGMMAViewOp>(
+            allocOp, viewType, srcMemDesc, ArrayRef<int32_t>({1, 0}));
+        return success();
+      }
+    }
+#endif
+
     auto ctx = getContext();
     Dialect &dialect = allocEncoding.getDialect();
     auto inferLayoutInterface = cast<DialectInferLayoutInterface>(&dialect);
@@ -157,6 +202,57 @@ public:
     return success();
   }
 };
+
+#ifdef __TLE__
+// Rewrite
+//
+//   warp_group_dot(local_load(existing_smem), b, acc)
+//
+// to
+//
+//   warp_group_dot(existing_smem, b, acc)
+//
+// WGMMA supports A in shared memory as well as registers. This is a
+// descriptor-only reuse for TLE kernels that already staged the full A tile in
+// shared memory.
+class ReuseLocalLoadAsWGMMAA
+    : public OpRewritePattern<triton::nvidia_gpu::WarpGroupDotOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::nvidia_gpu::WarpGroupDotOp dotOp,
+                                PatternRewriter &rewriter) const override {
+    auto localLoad = dotOp.getA().getDefiningOp<LocalLoadOp>();
+    if (!localLoad || localLoad.getToken())
+      return failure();
+
+    Value srcMemDesc = localLoad.getSrc();
+    if (!srcMemDesc.getDefiningOp<LocalAllocOp>())
+      return failure();
+
+    auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
+    auto localLoadTy = dyn_cast<RankedTensorType>(localLoad.getType());
+    if (!srcMemDescTy || !localLoadTy)
+      return failure();
+
+    if (srcMemDescTy.getShape() != localLoadTy.getShape() ||
+        srcMemDescTy.getElementType() != localLoadTy.getElementType())
+      return failure();
+
+    if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(
+            srcMemDescTy.getEncoding()))
+      return failure();
+
+    auto newDot = triton::nvidia_gpu::WarpGroupDotOp::create(
+        rewriter, dotOp.getLoc(), dotOp.getD().getType(), srcMemDesc,
+        dotOp.getB(), dotOp.getC(), dotOp.getUseC(),
+        dotOp.getInputPrecision(), dotOp.getMaxNumImpreciseAcc(),
+        dotOp.getIsAsync());
+    rewriter.replaceOp(dotOp, newDot.getD());
+    return success();
+  }
+};
+#endif
 
 // Rewrite
 //
@@ -355,6 +451,12 @@ public:
   using impl::TritonGPUOptimizeDotOperandsBase<
       TritonGPUOptimizeDotOperandsPass>::TritonGPUOptimizeDotOperandsBase;
 
+#ifdef __TLE__
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<triton::tle::TleDialect>();
+  }
+#endif
+
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
@@ -367,6 +469,9 @@ public:
     mlir::RewritePatternSet patterns(context);
     patterns.add<SwizzleShmemConvert>(context);
     patterns.add<FuseTransMMAV3Plus, ReshapeMemDesc>(context);
+#ifdef __TLE__
+    patterns.add<ReuseLocalLoadAsWGMMAA>(context);
+#endif
     patterns.add<UseShmemForScales>(context);
     ConvertLayoutOp::getCanonicalizationPatterns(patterns, context);
     if (failed(applyPatternsGreedily(m, std::move(patterns))))

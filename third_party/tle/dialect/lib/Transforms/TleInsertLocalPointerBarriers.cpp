@@ -34,10 +34,12 @@
 #include "mlir/IR/Value.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include <optional>
 
 namespace mlir::triton::tle {
@@ -49,12 +51,178 @@ namespace {
 
 constexpr StringLiteral kBarrierGroupAttr = "tle.barrier_group";
 
+namespace ttg = mlir::triton::gpu;
+
+static Value stripConvertLayouts(Value value) {
+  Value current = value;
+  while (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>())
+    current = cvt.getSrc();
+  return current;
+}
+
+static Value stripIndexValueWrappers(Value value) {
+  Value current = value;
+  while (true) {
+    if (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>()) {
+      current = cvt.getSrc();
+      continue;
+    }
+    if (auto ext = current.getDefiningOp<arith::ExtSIOp>()) {
+      current = ext.getIn();
+      continue;
+    }
+    if (auto ext = current.getDefiningOp<arith::ExtUIOp>()) {
+      current = ext.getIn();
+      continue;
+    }
+    if (auto trunc = current.getDefiningOp<arith::TruncIOp>()) {
+      current = trunc.getIn();
+      continue;
+    }
+    if (auto cast = current.getDefiningOp<arith::IndexCastOp>()) {
+      current = cast.getIn();
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+static bool matchZeroStartMakeRange(Value value, int64_t extent) {
+  Value current = stripIndexValueWrappers(value);
+  auto range = current.getDefiningOp<triton::MakeRangeOp>();
+  return range && range.getStart() == 0 && range.getEnd() == extent;
+}
+
+static bool matchFullIndexTensorForAxis(Value index, size_t axis,
+                                        ArrayRef<int64_t> shape) {
+  auto indexTy = dyn_cast<RankedTensorType>(index.getType());
+  if (!indexTy || !indexTy.getElementType().isInteger())
+    return false;
+  if (indexTy.getShape() != shape)
+    return false;
+
+  Value current = stripIndexValueWrappers(index);
+  if (shape.size() == 1)
+    return matchZeroStartMakeRange(current, shape.front());
+
+  auto bcast = current.getDefiningOp<triton::BroadcastOp>();
+  if (!bcast)
+    return false;
+
+  auto bcastSrcTy = dyn_cast<RankedTensorType>(bcast.getSrc().getType());
+  if (!bcastSrcTy || bcastSrcTy.getRank() != static_cast<int64_t>(shape.size()))
+    return false;
+  for (auto [dim, dimSize] : llvm::enumerate(shape)) {
+    const int64_t expected = dim == axis ? dimSize : 1;
+    if (bcastSrcTy.getShape()[dim] != expected)
+      return false;
+  }
+
+  current = stripIndexValueWrappers(bcast.getSrc());
+  while (auto expand = current.getDefiningOp<triton::ExpandDimsOp>())
+    current = stripIndexValueWrappers(expand.getSrc());
+
+  auto rangeTy = dyn_cast<RankedTensorType>(current.getType());
+  if (!rangeTy || rangeTy.getRank() != 1)
+    return false;
+  if (rangeTy.getShape()[0] != shape[axis])
+    return false;
+
+  return matchZeroStartMakeRange(current, shape[axis]);
+}
+
+static std::optional<Value> matchFullViewMemDesc(triton::LoadOp load) {
+  if (load.getMask() || load.getOther() || load.getIsVolatile())
+    return std::nullopt;
+  if (load.getCache() != triton::CacheModifier::NONE ||
+      load.getEvict() != triton::EvictionPolicy::NORMAL)
+    return std::nullopt;
+
+  auto loadTy = dyn_cast<RankedTensorType>(load.getType());
+  if (!loadTy)
+    return std::nullopt;
+
+  Value ptr = stripConvertLayouts(load.getPtr());
+  auto localPointers = ptr.getDefiningOp<tle::LocalPointersOp>();
+  if (!localPointers)
+    return std::nullopt;
+
+  auto ptrTy = dyn_cast<RankedTensorType>(localPointers.getResult().getType());
+  auto memDescTy = dyn_cast<ttg::MemDescType>(localPointers.getSrc().getType());
+  if (!ptrTy || !memDescTy)
+    return std::nullopt;
+
+  auto memDescShape = memDescTy.getShape();
+  if (loadTy.getShape() != memDescShape || ptrTy.getShape() != memDescShape)
+    return std::nullopt;
+  if (loadTy.getElementType() != memDescTy.getElementType())
+    return std::nullopt;
+
+  auto indices = localPointers.getIndices();
+  if (indices.empty())
+    return localPointers.getSrc();
+  if (indices.size() != memDescShape.size())
+    return std::nullopt;
+
+  for (auto [axis, index] : llvm::enumerate(indices))
+    if (!matchFullIndexTensorForAxis(index, axis, memDescShape))
+      return std::nullopt;
+
+  return localPointers.getSrc();
+}
+
+static bool hasOnlyDotOperandUses(Value value,
+                                  llvm::SmallPtrSetImpl<Operation *> &seen) {
+  for (OpOperand &use : value.getUses()) {
+    Operation *user = use.getOwner();
+    if (!seen.insert(user).second)
+      continue;
+
+    if (auto cvt = dyn_cast<ttg::ConvertLayoutOp>(user)) {
+      if (!hasOnlyDotOperandUses(cvt.getResult(), seen))
+        return false;
+      continue;
+    }
+
+    auto dot = dyn_cast<triton::DotOpInterface>(user);
+    if (!dot)
+      return false;
+    if (dot.getA() != value && dot.getB() != value)
+      return false;
+  }
+  return true;
+}
+
+static bool isFullViewLoadUsedOnlyByDotOperands(triton::LoadOp load) {
+  if (!matchFullViewMemDesc(load))
+    return false;
+  llvm::SmallPtrSet<Operation *, 8> seen;
+  return hasOnlyDotOperandUses(load.getResult(), seen);
+}
+
+static bool isCudaTargetAtLeast(ModuleOp module, int minCapability) {
+  auto target = module->getAttrOfType<StringAttr>("ttg.target");
+  if (!target)
+    return false;
+
+  StringRef value = target.getValue();
+  if (!value.consume_front("cuda:"))
+    return false;
+
+  int capability = 0;
+  if (value.getAsInteger(10, capability))
+    return false;
+  return capability >= minCapability;
+}
+
 class InsertLocalPointerBarriersPass
     : public impl::TritonTleInsertLocalPointerBarriersBase<
           InsertLocalPointerBarriersPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
     pointerGroups.clear();
+    allowDotOperandBarrierElision = isCudaTargetAtLeast(module, 90);
     collectTrackedPointers(module);
 
     if (pointerGroups.empty())
@@ -151,6 +319,9 @@ class InsertLocalPointerBarriersPass
         auto group = lookupPointerGroup(load.getPtr());
         if (!group || !dirtyGroups.lookup(*group))
           continue;
+        if (allowDotOperandBarrierElision &&
+            isFullViewLoadUsedOnlyByDotOperands(load))
+          continue;
         OpBuilder builder(load);
         builder.create<mlir::gpu::BarrierOp>(load.getLoc());
         // A CTA barrier synchronizes all shared-memory groups, not only the
@@ -211,7 +382,9 @@ class InsertLocalPointerBarriersPass
       for (Operation &nestedOp : block) {
         if (auto load = dyn_cast<triton::LoadOp>(&nestedOp)) {
           if (auto group = lookupPointerGroup(load.getPtr());
-              group && dirtyGroups.lookup(*group))
+              group && dirtyGroups.lookup(*group) &&
+              !(allowDotOperandBarrierElision &&
+                isFullViewLoadUsedOnlyByDotOperands(load)))
             return true;
         }
         if (nestedOp.getNumRegions() > 0 &&
@@ -264,6 +437,7 @@ class InsertLocalPointerBarriersPass
   }
 
   llvm::DenseMap<Value, int64_t> pointerGroups;
+  bool allowDotOperandBarrierElision = false;
 };
 
 } // namespace

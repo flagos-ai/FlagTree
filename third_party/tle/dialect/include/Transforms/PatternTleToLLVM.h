@@ -16,4 +16,12 @@ void populateInsertTileOpToLLVMPatterns(mlir::LLVMTypeConverter &typeConverter,
                                         mlir::RewritePatternSet &patterns,
                                         unsigned benefit = 1);
 
+void populateMemDescWGMMAViewOpToLLVMPatterns(
+    mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
+    unsigned benefit = 1);
+
+void populateWGMMASharedOperandFenceOpToLLVMPatterns(
+    mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
+    unsigned benefit = 1);
+
 } // namespace mlir::triton::tle

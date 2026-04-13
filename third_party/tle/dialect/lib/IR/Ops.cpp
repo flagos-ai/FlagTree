@@ -1,6 +1,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
@@ -149,6 +150,57 @@ LogicalResult ExtractTileOp::verify() {
   if (!encoding)
     return success();
   return success();
+}
+
+LogicalResult MemDescWGMMAViewOp::verify() {
+  auto srcType = getSrc().getType();
+  auto resultType = getType();
+  auto order = getOrder();
+
+  if (srcType.getRank() != 2 || resultType.getRank() != 2)
+    return emitOpError("expects rank-2 source and result memdesc types");
+  if (order.size() != static_cast<size_t>(srcType.getRank()))
+    return emitOpError("expects order rank to match source rank");
+  llvm::SmallBitVector seen(order.size());
+  for (int32_t dim : order) {
+    if (dim < 0 || dim >= static_cast<int32_t>(order.size()) || seen[dim])
+      return emitOpError("expects order to be a permutation");
+    seen.set(dim);
+  }
+  if (srcType.getElementType() != resultType.getElementType())
+    return emitOpError("expects source and result element types to match");
+  if (srcType.getMemorySpace() != resultType.getMemorySpace())
+    return emitOpError("expects source and result memory spaces to match");
+  if (!isa<triton::gpu::SharedMemorySpaceAttr>(srcType.getMemorySpace()))
+    return emitOpError("expects shared memory descriptors");
+  if (mlir::product(srcType.getShape()) !=
+      mlir::product(resultType.getShape()))
+    return emitOpError("expects source and result to cover the same number of "
+                       "elements");
+  if (!isa<triton::gpu::NVMMASharedEncodingAttr,
+           triton::gpu::SharedLinearEncodingAttr>(resultType.getEncoding()))
+    return emitOpError("expects result to use a WGMMA-compatible shared "
+                       "encoding");
+  return success();
+}
+
+LogicalResult WGMMASharedOperandFenceOp::verify() {
+  if (getDeps().empty())
+    return emitOpError("expects at least one shared-memory operand");
+
+  for (Value dep : getDeps()) {
+    auto type = cast<triton::gpu::MemDescType>(dep.getType());
+    if (!isa<triton::gpu::SharedMemorySpaceAttr>(type.getMemorySpace()))
+      return emitOpError("expects only shared-memory operands");
+  }
+  return success();
+}
+
+void WGMMASharedOperandFenceOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  for (OpOperand &dep : getDepsMutable())
+    effects.emplace_back(MemoryEffects::Read::get(), &dep, SharedMemory::get());
 }
 
 // ============================================================================

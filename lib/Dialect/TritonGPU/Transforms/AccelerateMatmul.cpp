@@ -207,6 +207,26 @@ getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter, int opIdx,
       argType.getElementType(), isMMAv5Fp4Padded);
   auto newType = MemDescType::get(argType.getShape(), argType.getElementType(),
                                   newLayout, SharedMemorySpace);
+#ifdef __TLE__
+  // TLE can materialize a full shared-memory tile as:
+  //   tensor = ttg.local_load(existing_smem)
+  // If WGMMA needs the exact same shared layout, reuse the existing allocation
+  // instead of allocating another identical staging buffer.
+  if (auto localLoad = arg.getDefiningOp<LocalLoadOp>()) {
+    if (!localLoad.getToken()) {
+      Value src = localLoad.getSrc();
+      if (src.getDefiningOp<LocalAllocOp>()) {
+        auto srcType = dyn_cast<MemDescType>(src.getType());
+        if (srcType && srcType.getShape() == newType.getShape() &&
+            srcType.getElementType() == newType.getElementType() &&
+            srcType.getMemorySpace() == newType.getMemorySpace() &&
+            srcType.getEncoding() == newType.getEncoding()) {
+          return src;
+        }
+      }
+    }
+  }
+#endif
   rewriter.setInsertionPointAfterValue(arg);
   return LocalAllocOp::create(rewriter, arg.getLoc(), newType, arg);
 }

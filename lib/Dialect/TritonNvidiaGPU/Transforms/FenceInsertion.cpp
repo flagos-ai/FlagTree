@@ -3,6 +3,10 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
+#include "mlir/IR/DialectRegistry.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#endif
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/Support/Debug.h"
 
@@ -28,6 +32,11 @@ struct FenceInsertionPass
 public:
   using impl::TritonGPUFenceInsertionBase<
       FenceInsertionPass>::TritonGPUFenceInsertionBase;
+#ifdef __TLE__
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<triton::tle::TleDialect>();
+  }
+#endif
   // TODO: support more general patterns to insert fences. eg. any op(generic)
   // to shared in use-def chain which refers by async proxy. We have generic(
   // convertlayout with sts/stmatix) + fence + async(wgmma) up to now
@@ -45,8 +54,29 @@ public:
         return WalkResult::advance();
 
       OpBuilder builder(dotOp);
-      auto fence = FenceAsyncSharedOp::create(builder, dotOp.getLoc(),
-                                              /*bCluster=*/false);
+#ifdef __TLE__
+      SmallVector<Value> deps;
+      if (!copyRegToSharedOpsA.empty() && isa<ttg::MemDescType>(a.getType()))
+        deps.push_back(a);
+      if (!copyRegToSharedOpsB.empty() && isa<ttg::MemDescType>(b.getType()))
+        deps.push_back(b);
+      Operation *fence =
+          deps.empty()
+              ? FenceAsyncSharedOp::create(builder, dotOp.getLoc(),
+                                           /*bCluster=*/false)
+                    .getOperation()
+              : ([&]() -> Operation * {
+                  builder.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+                  return triton::tle::WGMMASharedOperandFenceOp::create(
+                             builder, dotOp.getLoc(), deps,
+                             /*bCluster=*/false)
+                      .getOperation();
+                })();
+#else
+      Operation *fence = FenceAsyncSharedOp::create(builder, dotOp.getLoc(),
+                                                    /*bCluster=*/false)
+                             .getOperation();
+#endif
       // If there is all the dependencies are outside of the loop try to hoist
       // the fence.
       while (auto loopOp = fence->getParentOfType<LoopLikeOpInterface>()) {
@@ -58,21 +88,71 @@ public:
             llvm::any_of(copyRegToSharedOpsB,
                          [&](Operation *op) { return loopOp->isAncestor(op); }))
           break;
+#ifdef __TLE__
+        if (!deps.empty() && llvm::any_of(deps, [&](Value dep) {
+              return valueDefinedInside(dep, loopOp);
+            }))
+          break;
+#endif
         loopOp.moveOutOfLoop(fence);
       }
 
       // If the previous op is already a fence, this one isn't needed.
+#ifdef __TLE__
+      if (hasEquivalentPreviousFence(fence))
+        fence->erase();
+#else
       if (auto lastFence =
               dyn_cast_or_null<FenceAsyncSharedOp>(fence->getPrevNode())) {
-        if (lastFence.getBCluster() == fence.getBCluster())
-          fence.erase();
+        if (lastFence.getBCluster() ==
+            cast<FenceAsyncSharedOp>(fence).getBCluster())
+          fence->erase();
       }
+#endif
 
       return WalkResult::advance();
     });
   }
 
 private:
+#ifdef __TLE__
+  bool valueDefinedInside(Value value, Operation *ancestor) const {
+    if (Operation *def = value.getDefiningOp())
+      return ancestor == def || ancestor->isAncestor(def);
+    auto arg = dyn_cast<BlockArgument>(value);
+    if (!arg)
+      return false;
+    Operation *owner = arg.getOwner()->getParentOp();
+    return owner && (owner == ancestor || ancestor->isAncestor(owner));
+  }
+
+  bool hasEquivalentPreviousFence(Operation *fence) const {
+    bool bCluster = false;
+    if (!getFenceCluster(fence, bCluster))
+      return false;
+    Operation *prev = fence->getPrevNode();
+    if (auto asyncFence = dyn_cast_or_null<FenceAsyncSharedOp>(prev))
+      return asyncFence.getBCluster() == bCluster;
+    if (auto operandFence =
+            dyn_cast_or_null<triton::tle::WGMMASharedOperandFenceOp>(prev))
+      return operandFence.getBCluster() == bCluster;
+    return false;
+  }
+
+  bool getFenceCluster(Operation *fence, bool &bCluster) const {
+    if (auto asyncFence = dyn_cast_or_null<FenceAsyncSharedOp>(fence)) {
+      bCluster = asyncFence.getBCluster();
+      return true;
+    }
+    if (auto operandFence =
+            dyn_cast_or_null<triton::tle::WGMMASharedOperandFenceOp>(fence)) {
+      bCluster = operandFence.getBCluster();
+      return true;
+    }
+    return false;
+  }
+#endif
+
   // Return true if the operand depends on a copy from register to shared.
   SmallVector<Operation *> findCopyRegToSharedOps(Value operand) {
     DenseSet<Value> visited;

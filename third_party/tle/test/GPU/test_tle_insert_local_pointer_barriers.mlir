@@ -206,3 +206,30 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#dot_a = #ttg.dot_op<{opIdx = 0, parent = #blocked}>
+#dot_b = #ttg.dot_op<{opIdx = 1, parent = #blocked}>
+#shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @dot_operand_full_view_load_skips_cta_barrier
+  tt.func @dot_operand_full_view_load_skips_cta_barrier(
+      %a: tensor<64x64xbf16, #dot_a>,
+      %b: tensor<64x64xbf16, #dot_b>) -> tensor<64x64xf32, #blocked> {
+    %acc = arith.constant dense<0.000000e+00> : tensor<64x64xf32, #blocked>
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<64x64xbf16, #shared, #smem, mutable>
+    %ptr = "tle.local_pointers"(%smem) {tle.barrier_group = 12 : i64} : (!ttg.memdesc<64x64xbf16, #shared, #smem, mutable>) -> tensor<64x64x!tt.ptr<bf16, 3>, #dot_a>
+    // CHECK: tt.store %{{.*}}, %{{.*}} : tensor<64x64x!tt.ptr<bf16, 3>, #ttg.dot_op
+    // CHECK-NEXT: %[[LOAD:.*]] = tt.load %{{.*}} : tensor<64x64x!tt.ptr<bf16, 3>, #ttg.dot_op
+    // CHECK-NOT: gpu.barrier
+    // CHECK-NEXT: %[[OUT:.*]] = tt.dot %[[LOAD]], %{{.*}}, %{{.*}} : tensor<64x64xbf16, #ttg.dot_op{{.*}} * tensor<64x64xbf16, #ttg.dot_op{{.*}} -> tensor<64x64xf32, #blocked>
+    tt.store %ptr, %a : tensor<64x64x!tt.ptr<bf16, 3>, #dot_a>
+    %load = tt.load %ptr : tensor<64x64x!tt.ptr<bf16, 3>, #dot_a>
+    %out = tt.dot %load, %b, %acc : tensor<64x64xbf16, #dot_a> * tensor<64x64xbf16, #dot_b> -> tensor<64x64xf32, #blocked>
+    tt.return %out : tensor<64x64xf32, #blocked>
+  }
+}

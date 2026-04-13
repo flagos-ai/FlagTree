@@ -28,6 +28,14 @@ except Exception:  # pragma: no cover - optional dependency
     T = None
     _HAVE_TILELANG = False
 
+try:
+    import flash_mla
+
+    _HAVE_FLASHMLA = True
+except Exception:  # pragma: no cover - optional dependency
+    flash_mla = None
+    _HAVE_FLASHMLA = False
+
 spar_mla_fwd_configs = [
     triton.Config({"num_stages": 1, "num_warps": 4}),
     triton.Config({"num_stages": 1, "num_warps": 8}),
@@ -43,10 +51,7 @@ spar_mla_fwd_configs = [
     triton.Config({"num_stages": 4, "num_warps": 32}),
 ]
 tle_spar_mla_fwd_configs = [
-    triton.Config({"num_stages": 2, "num_warps": 4}),
     triton.Config({"num_stages": 2, "num_warps": 8}),
-    triton.Config({"num_stages": 2, "num_warps": 16}),
-    triton.Config({"num_stages": 2, "num_warps": 32}),
 ]
 
 
@@ -92,6 +97,7 @@ def triton_sparse_mla_fwd(
     H: tl.constexpr,
     G: tl.constexpr,
     VG: tl.constexpr,
+    RH: tl.constexpr,
     BK: tl.constexpr,
     BH: tl.constexpr,
     is_causal: tl.constexpr,
@@ -132,35 +138,34 @@ def triton_sparse_mla_fwd(
     max_col = i_sq if is_causal else SQ - 1
 
     NK = tl.cdiv(K, BK)
-    for ck in tl.range(NK, num_stages=0):
-        if ck * BK <= max_col:
-            t_ptr = (BK * ck + offs_t) * stride_tt
-            t_msk = t_ptr < K
-            t_ptr += t_base
-            kv_ids = tl.load(t_ptr, t_msk, other=-1)
-            mask_ids = (kv_ids <= max_col) & (kv_ids >= 0)
+    for ck in tl.range(NK, num_stages=2):
+        t_ptr = (BK * ck + offs_t) * stride_tt
+        t_msk = t_ptr < K
+        t_ptr += t_base
+        kv_ids = tl.load(t_ptr, t_msk, other=-1)
+        mask_ids = (kv_ids <= max_col) & (kv_ids >= 0)
 
-            kv_ptr = kv_base + offs_d[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
-            kv_msk = mask_d[:, None] & mask_ids[None, :]
-            kv_blk = tl.load(kv_ptr, kv_msk, other=0.0)
+        kv_ptr = kv_base + offs_d[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
+        kv_msk = mask_d[:, None] & mask_ids[None, :]
+        kv_blk = tl.load(kv_ptr, kv_msk, other=0.0)
 
-            tkv_ptr = tkv_base + offs_td[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
-            tkv_msk = mask_td[:, None] & mask_ids[None, :]
-            tkv_blk = tl.load(tkv_ptr, tkv_msk, other=0.0)
+        tkv_ptr = tkv_base + offs_td[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
+        tkv_msk = mask_td[:, None] & mask_ids[None, :]
+        tkv_blk = tl.load(tkv_ptr, tkv_msk, other=0.0)
 
-            qk = tl.dot(tq_blk, tkv_blk, out_dtype=tl.float32)
-            qk = tl.dot(q_blk, kv_blk, qk, out_dtype=tl.float32)
-            qk = tl.where(mask_ids[None, :], qk, float("-inf"))
+        qk = tl.dot(tq_blk, tkv_blk, out_dtype=tl.float32)
+        qk = tl.dot(q_blk, kv_blk, qk, out_dtype=tl.float32)
+        qk = tl.where(mask_ids[None, :], qk, float("-inf"))
 
-            new_max = tl.maximum(max_prev, tl.max(qk, axis=1))
-            alpha = tl.math.exp2((max_prev - new_max) * log_scale)
-            exp_qk = tl.math.exp2(qk * log_scale - new_max[:, None] * log_scale)
-            sum_qk = tl.sum(exp_qk, axis=1)
-            sum_exp = sum_exp * alpha + sum_qk
-            acc = acc * alpha[:, None]
-            exp_qk = exp_qk.to(tl.bfloat16)
-            acc = tl.dot(exp_qk, tl.trans(kv_blk), acc, out_dtype=tl.float32)
-            max_prev = new_max
+        new_max = tl.maximum(max_prev, tl.max(qk, axis=1))
+        alpha = tl.math.exp2((max_prev - new_max) * log_scale)
+        exp_qk = tl.math.exp2(qk * log_scale - new_max[:, None] * log_scale)
+        sum_qk = tl.sum(exp_qk, axis=1)
+        sum_exp = sum_exp * alpha + sum_qk
+        acc = acc * alpha[:, None]
+        exp_qk = exp_qk.to(tl.bfloat16)
+        acc = tl.dot(exp_qk, tl.trans(kv_blk), acc, out_dtype=tl.float32)
+        max_prev = new_max
 
     out_vals = acc / sum_exp[:, None]
     o_ptr = o_base + offs_h[:, None] * stride_oh + offs_od[None, :] * stride_od
@@ -215,31 +220,34 @@ def tle_sparse_mla_fwd(
     H: tl.constexpr,
     G: tl.constexpr,
     VG: tl.constexpr,
+    RH: tl.constexpr,
     BK: tl.constexpr,
     BH: tl.constexpr,
     is_causal: tl.constexpr,
 ):
     # TileLang-style forward path:
-    # - stage Q and Q_tail once in shared memory;
-    # - load sparse KV/K_tail blocks directly from global memory per K tile;
+    # - stage Q/Q_tail once in shared memory;
+    # - for each sparse K tile, stage KV/K_tail into shared memory;
     # - online softmax on logits;
     # - use probabilities directly for the second GEMM.
-    i_b, i_sq, i_gbh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    i_g, i_bh = i_gbh // G, i_gbh % G
-    q_base = q + i_b * stride_qb + i_sq * stride_qm + i_gbh * (BH * stride_qh)
+    i_b, i_sq, i_grh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_g, i_rh = i_grh // RH, i_grh % RH
+    h_base = i_rh * BH
+    q_head_base = i_g * G + h_base
+    q_base = q + i_b * stride_qb + i_sq * stride_qm + q_head_base * stride_qh
     tq_base = q_base + D * stride_qd
     kv_base = kv + i_b * stride_kvb + i_g * stride_kvg
     tkv_base = kv_base + D * stride_kvd
     t_base = indices + i_b * stride_tb + i_sq * stride_tm + i_g * stride_tg
-    o_base = output + i_b * stride_ob + i_sq * stride_om + i_gbh * (BH * stride_oh)
-    l_base = lse + i_b * stride_lb + i_sq * stride_lm + i_gbh * (BH * stride_lh)
+    o_base = output + i_b * stride_ob + i_sq * stride_om + q_head_base * stride_oh
+    l_base = lse + i_b * stride_lb + i_sq * stride_lm + q_head_base * stride_lh
 
     offs_h = tl.arange(0, BH)
     offs_d = tl.arange(0, DP)
     offs_td = tl.arange(0, TDP)
     offs_od = tl.arange(0, DP)
     offs_t = tl.arange(0, BK)
-    mask_h = i_bh * BH + offs_h < G
+    mask_h = h_base + offs_h < G
     mask_d = offs_d < D
     mask_td = offs_td < TD
     mask_od = mask_d
@@ -263,7 +271,27 @@ def tle_sparse_mla_fwd(
         scope=tle.gpu.smem,
         nv_mma_shared_layout=True,
     )
-
+    kv_smem = tle.gpu.alloc(
+        [BK, DP],
+        dtype=q.dtype.element_ty,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=True,
+    )
+    tkv_smem = tle.gpu.alloc(
+        [BK, TDP],
+        dtype=q.dtype.element_ty,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=True,
+    )
+    p_smem = tle.gpu.alloc(
+        [BH, BK],
+        dtype=q.dtype.element_ty,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=True,
+    )
     q_smem_ptr = tle.gpu.local_ptr(q_smem)
     q_blk = tl.load(q_ptr, q_msk, other=0.0)
     tl.store(q_smem_ptr, q_blk)
@@ -271,7 +299,9 @@ def tle_sparse_mla_fwd(
     tq_smem_ptr = tle.gpu.local_ptr(tq_smem)
     tq_blk = tl.load(tq_ptr, tq_msk, other=0.0)
     tl.store(tq_smem_ptr, tq_blk)
-
+    kv_smem_ptr = tle.gpu.local_ptr(kv_smem)
+    tkv_smem_ptr = tle.gpu.local_ptr(tkv_smem)
+    p_smem_ptr = tle.gpu.local_ptr(p_smem)
     max_prev = tl.full([BH], float("-inf"), dtype=tl.float32)
     sum_exp = tl.full([BH], 1.0, dtype=tl.float32)
     acc = tl.zeros([BH, DP], dtype=tl.float32)
@@ -281,35 +311,42 @@ def tle_sparse_mla_fwd(
 
     NK = tl.cdiv(K, BK)
     for ck in tl.range(NK, num_stages=2):
-        if ck * BK <= max_col:
-            t_ptr = (BK * ck + offs_t) * stride_tt
-            t_msk = t_ptr < K
-            t_ptr += t_base
-            kv_ids = tl.load(t_ptr, t_msk, other=-1)
-            mask_ids = (kv_ids <= max_col) & (kv_ids >= 0)
-            kv_ids_safe = tl.where(mask_ids, kv_ids, 0)
+        t_ptr = (BK * ck + offs_t) * stride_tt
+        t_msk = t_ptr < K
+        t_ptr += t_base
+        kv_ids = tl.load(t_ptr, t_msk, other=-1)
+        mask_ids = (kv_ids <= max_col) & (kv_ids >= 0)
+        kv_ids_safe = tl.where(mask_ids, kv_ids, 0)
 
-            kv_ptr = kv_base + offs_d[:, None] * stride_kvd + kv_ids_safe[None, :] * stride_kvn
-            kv_col = tl.load(kv_ptr, mask=mask_d[:, None], other=0.0)
+        kv_ptr = kv_base + kv_ids_safe[:, None] * stride_kvn + offs_d[None, :] * stride_kvd
+        kv_msk = mask_ids[:, None] & mask_d[None, :]
+        kv_blk = tl.load(kv_ptr, mask=kv_msk, other=0.0)
+        tl.store(kv_smem_ptr, kv_blk)
 
-            tkv_ptr = tkv_base + offs_td[:, None] * stride_kvd + kv_ids_safe[None, :] * stride_kvn
-            tkv_col = tl.load(tkv_ptr, mask=mask_td[:, None], other=0.0)
+        tkv_ptr = tkv_base + kv_ids_safe[:, None] * stride_kvn + offs_td[None, :] * stride_kvd
+        tkv_msk = mask_ids[:, None] & mask_td[None, :]
+        tkv_blk = tl.load(tkv_ptr, mask=tkv_msk, other=0.0)
+        tl.store(tkv_smem_ptr, tkv_blk)
 
-            tq_blk = tl.load(tq_smem_ptr)
-            qk = tl.dot(tq_blk, tkv_col, out_dtype=tl.float32)
-            q_blk = tl.load(q_smem_ptr)
-            qk = tl.dot(q_blk, kv_col, qk, out_dtype=tl.float32)
-            qk = tl.where(mask_ids[None, :], qk, float("-inf"))
+        tq_blk = tl.load(tq_smem_ptr)
+        q_blk = tl.load(q_smem_ptr)
+        tkv_blk = tl.load(tkv_smem_ptr)
+        qk = tl.dot(tq_blk, tl.trans(tkv_blk), out_dtype=tl.float32)
+        kv_blk = tl.load(kv_smem_ptr)
+        qk = tl.dot(q_blk, tl.trans(kv_blk), qk, out_dtype=tl.float32)
+        qk = tl.where(mask_ids[None, :], qk, float("-inf"))
 
-            new_max = tl.maximum(max_prev, tl.max(qk, axis=1))
-            alpha = tl.math.exp2((max_prev - new_max) * log_scale)
-            exp_qk = tl.math.exp2(qk * log_scale - new_max[:, None] * log_scale)
-            sum_qk = tl.sum(exp_qk, axis=1)
-            sum_exp = sum_exp * alpha + sum_qk
-            acc = acc * alpha[:, None]
-            exp_qk = exp_qk.to(q.dtype.element_ty)
-            acc = tl.dot(exp_qk, tl.trans(kv_col), acc, out_dtype=tl.float32)
-            max_prev = new_max
+        new_max = tl.maximum(max_prev, tl.max(qk, axis=1))
+        alpha = tl.math.exp2((max_prev - new_max) * log_scale)
+        exp_qk = tl.math.exp2(qk * log_scale - new_max[:, None] * log_scale)
+        sum_qk = tl.sum(exp_qk, axis=1)
+        sum_exp = sum_exp * alpha + sum_qk
+        acc = acc * alpha[:, None]
+        prob = exp_qk.to(q.dtype.element_ty)
+        tl.store(p_smem_ptr, prob)
+        prob = tl.load(p_smem_ptr)
+        acc = tl.dot(prob, kv_blk, acc, out_dtype=tl.float32)
+        max_prev = new_max
 
     out_vals = acc / sum_exp[:, None]
     o_ptr = o_base + offs_h[:, None] * stride_oh + offs_od[None, :] * stride_od
@@ -340,12 +377,17 @@ def _sparse_mla_fwd_interface_impl(kernel, q, kv, indices, sm_scale=None, return
     G = H // VG
     if sm_scale is None:
         sm_scale = DT**-0.5
-    BH = 32
-    NH = triton.cdiv(G, BH)
+    if G > 64:
+        assert G % 64 == 0, f"TileLang-aligned TLE path requires heads-per-kv-group to be a multiple of 64, but got {G}"
+        BH = 64
+        RH = G // 64
+    else:
+        BH = max(triton.next_power_of_2(G), 16)
+        RH = 1
     BK = bk
     output = torch.zeros((B, SQ, H, D), device=q.device, dtype=q.dtype)
     lse = torch.full((B, SQ, H), float("-inf"), device=q.device, dtype=q.dtype)
-    grid = (B, SQ, VG * NH)
+    grid = (B, SQ, VG * RH)
     kernel[grid](
         q,
         kv,
@@ -383,6 +425,7 @@ def _sparse_mla_fwd_interface_impl(kernel, q, kv, indices, sm_scale=None, return
         H,
         G,
         VG,
+        RH,
         BK,
         BH,
         is_causal,
@@ -607,6 +650,59 @@ def tilelang_sparse_mla_fwd_interface(
     return out, lse
 
 
+def flashmla_sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, return_p_sum: bool = False, d_v=512):
+    if not _HAVE_FLASHMLA or flash_mla is None:
+        raise RuntimeError("FlashMLA is not installed, cannot run FlashMLA sparse MLA bench")
+
+    assert not return_p_sum, "This kernel file is for fwd only"
+    assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
+    B, SQ, H, DT = q.shape
+    _, SKV, HKV, _ = kv.shape
+    assert indices.shape[:3] == (B, SQ, HKV)
+    if HKV != 1:
+        raise ValueError(f"FlashMLA sparse prefill on sm90 requires h_kv == 1, but got {HKV}")
+    if d_v != 512:
+        raise ValueError(f"FlashMLA sparse prefill only supports d_v == 512, but got {d_v}")
+    if DT not in (512, 576):
+        raise ValueError(f"FlashMLA sparse prefill only supports d_qk in {{512, 576}}, but got {DT}")
+    if sm_scale is None:
+        sm_scale = DT**-0.5
+
+    padded_h = triton.cdiv(H, 64) * 64
+    if padded_h != H:
+        q_padded = torch.zeros((B, SQ, padded_h, DT), device=q.device, dtype=q.dtype)
+        q_padded[:, :, :H, :] = q
+    else:
+        q_padded = q
+
+    topk = indices.shape[-1]
+    padded_topk = triton.cdiv(max(topk, 1), 128) * 128
+    batch_offsets = torch.arange(B, device=indices.device, dtype=indices.dtype).view(B, 1, 1, 1) * SKV
+    valid_mask = (indices >= 0) & (indices < SKV)
+    flash_indices = torch.where(valid_mask, indices + batch_offsets, -torch.ones_like(indices))
+    topk_length = valid_mask.sum(dim=-1).reshape(B * SQ).to(torch.int32)
+    if padded_topk != topk:
+        flash_indices_padded = torch.full((B, SQ, HKV, padded_topk), -1, device=indices.device, dtype=indices.dtype)
+        flash_indices_padded[:, :, :, :topk] = flash_indices
+        flash_indices = flash_indices_padded
+
+    q_flat = q_padded.reshape(B * SQ, padded_h, DT).contiguous()
+    kv_flat = kv.reshape(B * SKV, HKV, DT).contiguous()
+    indices_flat = flash_indices.reshape(B * SQ, HKV, padded_topk).contiguous()
+
+    out, _max_logits, lse = flash_mla.flash_mla_sparse_fwd(
+        q_flat,
+        kv_flat,
+        indices_flat,
+        sm_scale=sm_scale,
+        d_v=d_v,
+        topk_length=topk_length,
+    )
+    out = out.reshape(B, SQ, padded_h, d_v)[:, :, :H, :]
+    lse = lse.reshape(B, SQ, padded_h)[:, :, :H]
+    return out, lse
+
+
 def _build_sparse_mla_inputs(B=1, S=4096, SKV=4096, H=128, HKV=1, DQK=576, topk=2048, dtype=torch.bfloat16, seed=0):
     torch.random.manual_seed(seed)
     q = torch.randn((B, S, H, DQK), dtype=dtype, device="cuda").requires_grad_(True)
@@ -678,15 +774,26 @@ def _bench_ms(fn, warmup=200, rep=100):
     return float(ms if not isinstance(ms, tuple) else ms[0])
 
 
-_BENCH_PROVIDERS = (["triton"] + ["tle"] + (["tilelang"] if _HAVE_TILELANG else []))
-_BENCH_NAMES = (["Triton"] + ["TLE"] + (["TileLang"] if _HAVE_TILELANG else []))
-_BENCH_STYLES = ([("red", "-")] + [("orange", "-")] + ([("blue", "-")] if _HAVE_TILELANG else []))
+_BENCH_PROVIDERS = (
+    ["triton"]
+    + (["tilelang"] if _HAVE_TILELANG else [])
+    + (["flashmla"] if _HAVE_FLASHMLA else [])
+)
+_BENCH_NAMES = (
+    ["Triton"]
+    + (["TileLang"] if _HAVE_TILELANG else [])
+    + (["FlashMLA"] if _HAVE_FLASHMLA else [])
+)
+_BENCH_STYLES = (
+    [("red", "-")]
+    + ([("blue", "-")] if _HAVE_TILELANG else [])
+    + ([("green", "-")] if _HAVE_FLASHMLA else [])
+)
 _BENCH_X_VALS = [
     # (B, S, SKV, H, HKV, DQK, DV, topk)
-    (1, 512, 1024, 128, 1, 192, 128, 512),
-    (1, 1024, 2048, 128, 1, 192, 128, 1024),
-    (1, 2048, 4096, 128, 1, 192, 128, 2048),
-    (1, 1024, 2048, 128, 1, 160, 128, 1024),
+    (1, 1024, 4096, 128, 1, 576, 512, 2048),
+    (1, 2048, 4096, 128, 1, 576, 512, 2048),
+    (1, 4096, 8192, 128, 1, 576, 512, 4096),
 ]
 
 
@@ -732,6 +839,13 @@ def benchmark_sparse_mla_fwd(
 
         def run():
             tle_sparse_mla_fwd_interface(q, kv, indices, d_v=DV)
+
+    elif provider == "flashmla":
+        if not _HAVE_FLASHMLA:
+            return float("nan"), float("nan"), float("nan")
+
+        def run():
+            flashmla_sparse_mla_fwd_interface(q, kv, indices, d_v=DV)
 
     else:
         if not _HAVE_TILELANG:
@@ -788,6 +902,7 @@ def test_sparse_mla_fwd(
     dtype=torch.bfloat16,
     check_tle=True,
     check_tilelang=False,
+    check_flashmla=False,
     tilelang_block_I=64,
     tilelang_num_stages=2,
     tilelang_threads=256,
@@ -840,6 +955,18 @@ def test_sparse_mla_fwd(
         ), "TileLang sparse MLA fwd bf16 does not match reference"
         print("TileLang sparse MLA fwd bf16 matches reference!")
 
+    if check_flashmla:
+        if not _HAVE_FLASHMLA:
+            raise RuntimeError("FlashMLA is not installed, cannot run FlashMLA correctness check")
+        flashmla_bf16_out, _flashmla_bf16_lse = flashmla_sparse_mla_fwd_interface(q, kv, indices, d_v=DV)
+        assert torch.allclose(
+            flashmla_bf16_out.float(),
+            ref_bf16_out.float(),
+            atol=1e-1,
+            rtol=1e-1,
+        ), "FlashMLA sparse MLA fwd bf16 does not match reference"
+        print("FlashMLA sparse MLA fwd bf16 matches reference!")
+
 
 def bench_sparse_mla_fwd(
     B=1,
@@ -871,6 +998,7 @@ def bench_sparse_mla_fwd(
 
     tle_out = None
     tilelang_out = None
+    flashmla_out = None
 
     def run_tle():
         return tle_sparse_mla_fwd_interface(q, kv, indices, d_v=DV)
@@ -910,6 +1038,21 @@ def bench_sparse_mla_fwd(
     else:
         print("TileLang is not installed, skip TileLang bench.")
 
+    if _HAVE_FLASHMLA:
+
+        def run_flashmla():
+            return flashmla_sparse_mla_fwd_interface(q, kv, indices, d_v=DV)
+
+        try:
+            flashmla_out, _ = run_flashmla()
+            flashmla_ms = _bench_ms(run_flashmla, warmup=warmup, rep=rep)
+            flashmla_tflops = _sparse_mla_tflops(B, S, H, DQK, DV, topk, flashmla_ms)
+            results.append(("flashmla", flashmla_ms, flashmla_tflops))
+        except Exception as exc:  # pragma: no cover - depends on flashmla/runtime constraints
+            print(f"FlashMLA bench skipped due to compile/runtime error: {exc}")
+    else:
+        print("FlashMLA is not installed, skip FlashMLA bench.")
+
     print(f"{'provider':<18}{'ms':>10}{'tflops':>12}{'speedup':>12}")
     for name, ms, tflops in results:
         print(f"{name:<18}{ms:>10.3f}{tflops:>12.2f}{(triton_ms / ms):>12.2f}x")
@@ -931,19 +1074,27 @@ def bench_sparse_mla_fwd(
                 rtol=1e-1,
             ), "Triton output does not match TileLang output"
             print("Triton and TileLang outputs match.")
+        if flashmla_out is not None:
+            assert torch.allclose(
+                triton_out.float(),
+                flashmla_out.float(),
+                atol=1e-1,
+                rtol=1e-1,
+            ), "Triton output does not match FlashMLA output"
+            print("Triton and FlashMLA outputs match.")
 
 
 def _parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["test", "bench", "bench-single"], default="bench")
     parser.add_argument("--B", type=int, default=1)
-    parser.add_argument("--S", type=int, default=128)
-    parser.add_argument("--SKV", type=int, default=1024)
-    parser.add_argument("--H", type=int, default=32)
+    parser.add_argument("--S", type=int, default=1024)
+    parser.add_argument("--SKV", type=int, default=4096)
+    parser.add_argument("--H", type=int, default=128)
     parser.add_argument("--HKV", type=int, default=1)
-    parser.add_argument("--DQK", type=int, default=288)
-    parser.add_argument("--DV", type=int, default=256)
-    parser.add_argument("--topk", type=int, default=64)
+    parser.add_argument("--DQK", type=int, default=576)
+    parser.add_argument("--DV", type=int, default=512)
+    parser.add_argument("--topk", type=int, default=2048)
     parser.add_argument("--dtype", choices=["bf16", "fp16"], default="bf16")
     parser.add_argument("--warmup", type=int, default=250)
     parser.add_argument("--rep", type=int, default=100)
@@ -951,6 +1102,7 @@ def _parse_args():
     parser.add_argument("--skip-output-check", action="store_true")
     parser.add_argument("--skip-tle-check", action="store_true")
     parser.add_argument("--check-tilelang", action="store_true")
+    parser.add_argument("--check-flashmla", action="store_true")
     parser.add_argument("--tilelang-block-I", type=int, default=64)
     parser.add_argument("--tilelang-num-stages", type=int, default=2)
     parser.add_argument("--tilelang-threads", type=int, default=256)
@@ -973,6 +1125,7 @@ if __name__ == "__main__":
             dtype=dtype,
             check_tle=not args.skip_tle_check,
             check_tilelang=args.check_tilelang,
+            check_flashmla=args.check_flashmla,
             tilelang_block_I=args.tilelang_block_I,
             tilelang_num_stages=args.tilelang_num_stages,
             tilelang_threads=args.tilelang_threads,
