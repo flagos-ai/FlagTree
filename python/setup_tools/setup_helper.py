@@ -293,7 +293,8 @@ def handle_flagtree_backend():
         print(f"\033[1;32m[INFO] FlagtreeBackend is {configs.flagtree_backend}\033[0m")
         configs.extend_backends.append(configs.flagtree_backend)
         if "editable_wheel" in sys.argv and configs.flagtree_backend not in configs.plugin_backends:
-            ext_sourcedir = os.path.abspath(f"./third_party/{configs.flagtree_backend}/python/{ext_sourcedir}") + "/"
+            configs.ext_sourcedir = os.path.abspath(
+                f"./third_party/{configs.flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
 
 
 def handle_plugin_backend(editable):
@@ -309,6 +310,8 @@ def handle_plugin_backend(editable):
             if not os.path.exists(dst_build_plugin_dir):
                 os.makedirs(dst_build_plugin_dir)
             dst_build_plugin_path = dst_build_plugin_dir / flagtree_plugin_so
+            shutil.copy(src_build_plugin_path, dst_build_plugin_path)
+            dst_build_plugin_path = Path(__file__).resolve().parent.parent.parent / "python" / "triton" / "_C"
             shutil.copy(src_build_plugin_path, dst_build_plugin_path)
         src_install_plugin_path = flagtree_backend_dir / flagtree_plugin_so
         if flagtree_backend in ("mthreads", "sunrise"):
@@ -361,8 +364,6 @@ download_flagtree_third_party("triton_shared", hock=utils.default.precompile_hoc
 
 download_flagtree_third_party("flir", condition=(flagtree_backend == "aipu"), hock=utils.aipu.precompile_hock,
                               required=True)
-
-handle_plugin_backend(False)
 
 handle_flagtree_backend()
 

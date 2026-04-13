@@ -453,7 +453,8 @@ class CMakeBuild(build_ext):
         thirdparty_cmake_args = get_thirdparty_packages([get_llvm_package_info()])
         thirdparty_cmake_args += self.get_pybind11_cmake_args()
         extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.path)))
-        wheeldir = os.path.dirname(extdir)
+        print(f"extdir {extdir}")
+        wheeldir = os.path.dirname(os.path.dirname(extdir))
 
         # create build directories
         if not os.path.exists(self.build_temp):
@@ -713,6 +714,11 @@ def add_link_to_backends(external_only):
 package_data_tools = ["compile.h", "compile.c"]
 if helper.flagtree_backend == "xpu":
     package_data_tools += ["compile_xpu.h", "compile_xpu.c"]
+
+if helper.flagtree_backend == "sunrise":
+    package_data = {"": ["*TritonPlugin.so"]}
+else:
+    package_data = {}
 #  package_data = {
 #       "triton/tools/extra": sum((b.tools_package_data for b in backends), []),
 #  **{f"triton/backends/{b.name}": b.package_data
@@ -855,8 +861,9 @@ setup(
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
     entry_points=get_entry_points(),
+    package_data=package_data,
     include_package_data=True,
-    ext_modules=[CMakeExtension("triton", "triton/_C/")],
+    ext_modules=[CMakeExtension("triton", helper.configs.ext_sourcedir)],
     cmdclass={
         "bdist_wheel": plugin_bdist_wheel,
         "build_ext": CMakeBuild,
