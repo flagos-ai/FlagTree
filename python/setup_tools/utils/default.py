@@ -1,3 +1,3 @@
-def precompile_hock(*args, **kargs):
+def precompile_hook(*args, **kargs):
     default_backends = kargs['default_backends']
     default_backends.append('triton_shared')
