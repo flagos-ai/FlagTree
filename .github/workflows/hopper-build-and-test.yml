@@ -23,46 +23,16 @@ jobs:
           source ~/env.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
 
-      - name: Checkout code (attempt 1)
-        id: checkout1
-        uses: actions/checkout@v6
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
         with:
-          fetch-depth: 0
-        continue-on-error: true
+          checkout_version: 'v6'
 
-      - name: Sleep before checkout2
-        if: steps.checkout1.outcome == 'failure'
-        run: |
-          echo "First checkout attempt failed. Sleeping for 120 seconds before retry..."
-          sleep 120
-
-      - name: Checkout code (attempt 2)
-        id: checkout2
-        if: steps.checkout1.outcome == 'failure'
-        uses: actions/checkout@v6
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
-          fetch-depth: 0
-        continue-on-error: true
-
-      - name: Sleep before final checkout
-        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
-        run: |
-          echo "Second checkout attempt failed. Sleeping for 180 seconds before final retry..."
-          sleep 180
-
-      - name: Checkout code (final attempt)
-        if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Verify checkout success
-        if: success()
-        run: echo "Checkout completed successfully"
-
-      - name: Check if only docs files changed
-        id: check_files
-        uses: flagos-ai/FlagTree/.github/actions/check-docs-only@main
+          backend: hopper
 
       - name: Detect Target Branch
         shell: bash
@@ -77,7 +47,7 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
       - name: FlagTree Build on NVidia (triton_v3.4.x branch)
-        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.4.x' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.4.x' }}
         shell: bash
         run: |
           set -x
@@ -87,7 +57,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Build on NVidia (triton_v3.5.x branch)
-        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
         shell: bash
         run: |
           set -x
@@ -97,7 +67,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Build on NVidia (triton_v3.6.x branch)
-        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.6.x' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.6.x' }}
         shell: bash
         run: |
           set -x
@@ -107,7 +77,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on NVidia (triton_v3.4.x branch)
-        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.4.x' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.4.x' }}
         shell: bash
         run: |
           set -x
@@ -122,7 +92,7 @@ jobs:
           fi
 
       - name: FlagTree Test on NVidia (triton_v3.5.x branch)
-        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
         shell: bash
         run: |
           set -x
@@ -179,7 +149,7 @@ jobs:
           python3 python/tutorials/tle/raw/mlir/06-test-vassert.py
 
       - name: FlagTree Test on NVidia (triton_v3.6.x branch)
-        if: ${{ steps.check_files.outputs.only_docs_changed != 'true' && env.TARGET_BRANCH == 'triton_v3.6.x' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.6.x' }}
         shell: bash
         run: |
           set -x
