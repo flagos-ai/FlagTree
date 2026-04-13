@@ -66,11 +66,13 @@ def dir_rollback(deep, base_path):
         deep -= 1
     return Path(base_path)
 
+
 def get_hook_instance(hook_name):
     if not configs.activated_module or not hook_name:
         return None
     hook_instance = getattr(configs.activated_module, hook_name, None)
     return hook_instance if callable(hook_instance) else None
+
 
 def enable_flagtree_third_party(name):
     if name in ["triton_shared"]:
@@ -401,7 +403,6 @@ download_flagtree_third_party("triton_shared", hook=utils.default.precompile_hoo
 
 download_flagtree_third_party("flir", condition=(flagtree_backend == "aipu"), hook=utils.aipu.precompile_hook,
                               required=True)
-
 '''
    FlagCX is a third-party library adopted by the tle distributed system,
    refer to https://github.com/flagos-ai/FlagCX

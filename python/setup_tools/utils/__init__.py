@@ -15,7 +15,6 @@ flagtree_submodules = {
     "flagcx":
     tools.Module(name="flagcx", url="https://github.com/flagos-ai/FlagCX.git",
                  dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "tle/third_party/flagcx")),
-
 }
 
 
