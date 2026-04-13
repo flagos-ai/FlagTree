@@ -674,7 +674,7 @@ setup(
     zip_safe=False,
     # for PyPI
     keywords=["Compiler", "Deep Learning"],
-    url="https://github.com/triton-lang/triton/",
+    url="https://github.com/flagos-ai/FlagTree/",
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
