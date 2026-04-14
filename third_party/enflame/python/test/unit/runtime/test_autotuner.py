@@ -9,7 +9,6 @@ import importlib.util
 if importlib.util.find_spec("triton.backends.enflame") is None:
     import triton_gcu.triton
 
-
 import pathlib
 import uuid
 from triton._internal_testing import is_cuda
@@ -416,8 +415,10 @@ def test_exceed_tmem(device):
 
 
 def test_exceed_threads(device):
-    if triton.runtime.driver.active.get_current_target().backend == "gcu": # TODO
-        pytest.skip("Test is not supported on gcu, because gcu backend will dynamically adjust the num_warps to fit the hardware limit.")
+    if triton.runtime.driver.active.get_current_target().backend == "gcu":  # TODO
+        pytest.skip(
+            "Test is not supported on gcu, because gcu backend will dynamically adjust the num_warps to fit the hardware limit."
+        )
     if not torch.cuda.is_available():
         pytest.skip("CUDA is not available")
     x = torch.empty(1024, device=device, dtype=torch.float32)

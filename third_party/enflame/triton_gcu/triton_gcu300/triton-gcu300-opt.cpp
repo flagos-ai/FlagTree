@@ -27,7 +27,7 @@ namespace mlir {
 namespace test {
 void registerTestFirstLastUserAnalysisPass();
 }
-}
+} // namespace mlir
 
 int main(int argc, char **argv) {
   mlir::DialectRegistry registry;

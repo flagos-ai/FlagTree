@@ -79,8 +79,8 @@ OpFoldResult remOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
 OpFoldResult divOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
                      const OpFoldResult rhs);
 
-}  // namespace gcu
-}  // namespace triton
-}  // namespace mlir
+} // namespace gcu
+} // namespace triton
+} // namespace mlir
 
-#endif  // GCU_ANALYSIS_OPFOLDRESULTUTILS_H
+#endif // GCU_ANALYSIS_OPFOLDRESULTUTILS_H

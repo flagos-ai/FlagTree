@@ -19,13 +19,13 @@
 #include <numeric>
 
 #include "Analysis/FirstLastUserAnalysis.h"
-#include "PatternTritonGPUOpToGCU.h"
-#include "Utility.h"
-#include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
+#include "PatternTritonGPUOpToGCU.h"
+#include "TritonGCUToGCU/TritionToGCUBase.h"
+#include "Utility.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -65,8 +65,8 @@ struct TTSmemLocalAllocOpLowering
 
     auto memrefType = MemRefType::get(
         shape, elemType, AffineMap{},
-        IntegerAttr::get(
-            IntegerType::get(alloc.getContext(), 64), /*addressSpace=*/2));
+        IntegerAttr::get(IntegerType::get(alloc.getContext(), 64),
+                         /*addressSpace=*/2));
 
     auto output = rewriter.create<memref::AllocOp>(alloc.getLoc(), memrefType);
 
@@ -105,9 +105,10 @@ struct TTSmemCopyGlobalToLocalOpLowering
     auto tagShare = getShareDTETag(rewriter, loadOp);
     triton::gcu::TagInfo tag(tagShare, zero, true);
 
-    auto defaultValue = loadOp.getDefaultValue()
-        ? adaptor.getDefaultValue()
-        : triton::gcu::createConstantZero(rewriter, loc, elemType);
+    auto defaultValue =
+        loadOp.getDefaultValue()
+            ? adaptor.getDefaultValue()
+            : triton::gcu::createConstantZero(rewriter, loc, elemType);
 
     // Shape check: all shape dims > 0
     Value shapeCheck = rewriter.create<arith::CmpIOp>(
@@ -119,27 +120,30 @@ struct TTSmemCopyGlobalToLocalOpLowering
     }
 
     // ConfigGcuLoad with IsShareOutput = true
-    auto total_size = rewriter.create<scf::IfOp>(
-        loc, shapeCheck,
-        [&](OpBuilder builder, Location loc) {
-          Value load_size = ConfigGcuLoad(
-              builder, loc, pTagPool, output,
-              loadOp, outputType, adaptor.getPtr(),
-              adaptor.getStrides(), adaptor.getShape(),
-              defaultValue, tag, /*IsShareOutput=*/true);
-          builder.create<scf::YieldOp>(loc, ValueRange{load_size});
-        },
-        [&](OpBuilder &builder, Location loc) {
-          builder.create<scf::YieldOp>(loc, ValueRange{zero});
-        }).getResult(0);
+    auto total_size =
+        rewriter
+            .create<scf::IfOp>(
+                loc, shapeCheck,
+                [&](OpBuilder builder, Location loc) {
+                  Value load_size =
+                      ConfigGcuLoad(builder, loc, pTagPool, output, loadOp,
+                                    outputType, adaptor.getPtr(),
+                                    adaptor.getStrides(), adaptor.getShape(),
+                                    defaultValue, tag, /*IsShareOutput=*/true);
+                  builder.create<scf::YieldOp>(loc, ValueRange{load_size});
+                },
+                [&](OpBuilder &builder, Location loc) {
+                  builder.create<scf::YieldOp>(loc, ValueRange{zero});
+                })
+            .getResult(0);
 
     // IsShareOutput wait: only thread0 waits, then barrier
     auto isThread0 = rewriter.create<arith::CmpIOp>(
         loc, arith::CmpIPredicate::eq,
         rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
     auto isAll = rewriter.create<arith::AndIOp>(loc, isThread0, shapeCheck);
-    rewriter.create<scf::IfOp>(loc, isAll,
-        [&](OpBuilder builder, Location loc) {
+    rewriter.create<scf::IfOp>(
+        loc, isAll, [&](OpBuilder builder, Location loc) {
           WaitGcuLoadStore(builder, loc, tag, total_size);
           builder.create<scf::YieldOp>(loc);
         });
@@ -214,30 +218,30 @@ private:
     Type elemType;
     unsigned bpe;
     unsigned VL;
-    unsigned K;              // inner dim per warp
-    unsigned M;              // outer dim per warp (1 for flat 1D)
+    unsigned K; // inner dim per warp
+    unsigned M; // outer dim per warp (1 for flat 1D)
     unsigned totalNumElems;
-    unsigned totalCols;      // full smem row width
+    unsigned totalCols; // full smem row width
     bool isColSplit;
 
     Value flatDst;
     Value warpFlatBase;
-    Value masksPtr;          // nullptr when no mask
-    Value vtOther;           // passthru vector
-    VectorType vtType;       // <VL x elemType>
-    VectorType maskVecType;  // <VL x i1>
+    Value masksPtr;         // nullptr when no mask
+    Value vtOther;          // passthru vector
+    VectorType vtType;      // <VL x elemType>
+    VectorType maskVecType; // <VL x i1>
     Value totalColsVal;
-    Value innerDimVal;       // ConstantIndexOp(K)
+    Value innerDimVal; // ConstantIndexOp(K)
 
     // For vector::GatherOp tail path
-    Value srcFlatI64;        // src ptrs as flat i64 memref
-    Value baseI64;           // first ptr value (i64 scalar)
-    Value baseMemref;        // base dynamic memref for GatherOp
-    Value baseI64Vec;        // broadcast of baseI64 to <VL x i64>
-    Value bpeVec;            // broadcast of bpe to <VL x i64>
-    VectorType i64VecType;   // <VL x i64>
-    VectorType i32VecType;   // <VL x i32>
-    Value zeroI64Passthru;   // <VL x 0_i64>
+    Value srcFlatI64;      // src ptrs as flat i64 memref
+    Value baseI64;         // first ptr value (i64 scalar)
+    Value baseMemref;      // base dynamic memref for GatherOp
+    Value baseI64Vec;      // broadcast of baseI64 to <VL x i64>
+    Value bpeVec;          // broadcast of bpe to <VL x i64>
+    VectorType i64VecType; // <VL x i64>
+    VectorType i32VecType; // <VL x i32>
+    Value zeroI64Passthru; // <VL x 0_i64>
   };
 
   LogicalResult buildContext(ConversionPatternRewriter &rewriter, Location loc,
@@ -574,9 +578,9 @@ private:
     // Pre-compute per-unroll-slot row and column offsets at compile time
     // to avoid DivSI/RemSI inside the loop.
     struct SlotInfo {
-      unsigned rowDelta;   // row offset from loop base row
-      unsigned colOffset;  // column offset within the row
-      bool isTail;         // whether this slot is a tail chunk
+      unsigned rowDelta;  // row offset from loop base row
+      unsigned colOffset; // column offset within the row
+      bool isTail;        // whether this slot is a tail chunk
     };
     SmallVector<SlotInfo> slots;
     slots.reserve(totalUnroll);
@@ -902,8 +906,7 @@ struct TTLocalLoadOpLowering
       SmallVector<OpFoldResult> offsets, sizes, strides;
       for (unsigned i = 0; i < rank; ++i) {
         Value offset = rewriter.create<arith::MulIOp>(
-            loc,
-            rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
+            loc, rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
             warpIds[i]);
         offsets.push_back(offset);
         sizes.push_back(rewriter.getIndexAttr(numElems[i]));
@@ -927,7 +930,6 @@ struct TTLocalLoadOpLowering
   }
 };
 
-
 #ifdef ENABLE_TLE
 // Lower triton_gcu.memdesc_to_ptr to gcu.memref2ptr.
 // At this stage the type converter has already turned the !ttg.memdesc input
@@ -947,8 +949,8 @@ struct MemDescToPtrOpLowering
 
     auto elemTy = srcMemRef.getElementType();
     auto gcuPtrTy = mlir::gcu::PtrType::get(op.getContext(), elemTy);
-    auto ptr = rewriter.create<mlir::gcu::MemRefToPtrOp>(
-        loc, gcuPtrTy, adaptor.getSrc());
+    auto ptr = rewriter.create<mlir::gcu::MemRefToPtrOp>(loc, gcuPtrTy,
+                                                         adaptor.getSrc());
 
     rewriter.replaceOp(op, ptr.getResult());
     return success();
@@ -1031,16 +1033,13 @@ void mlir::triton::populateTTSmemOpToGCUPatterns(
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateTagPool &pTagPool) {
-  patterns.add<TTSmemLocalAllocOpLowering,
-               TTSmemCopyGlobalToLocalOpLowering,
-               TTSmemGatherGlobalToLocalOpLowering,
-               TTLocalLoadOpLowering,
-               TTMemDescIndexOpLowering>(
-      converter, patterns.getContext(),
-      userAnalysis, replaced2Origin, pTagPool);
+  patterns.add<TTSmemLocalAllocOpLowering, TTSmemCopyGlobalToLocalOpLowering,
+               TTSmemGatherGlobalToLocalOpLowering, TTLocalLoadOpLowering,
+               TTMemDescIndexOpLowering>(converter, patterns.getContext(),
+                                         userAnalysis, replaced2Origin,
+                                         pTagPool);
 #ifdef ENABLE_TLE
-  patterns.add<MemDescToPtrOpLowering>(
-      converter, patterns.getContext(),
-      userAnalysis, replaced2Origin, pTagPool);
+  patterns.add<MemDescToPtrOpLowering>(converter, patterns.getContext(),
+                                       userAnalysis, replaced2Origin, pTagPool);
 #endif
 }

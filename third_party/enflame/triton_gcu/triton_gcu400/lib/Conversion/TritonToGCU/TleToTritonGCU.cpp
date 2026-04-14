@@ -61,8 +61,7 @@ static SmallVector<int64_t> computeRowMajorStrides(ArrayRef<int64_t> shape) {
 
 /// Try to look through a tt.broadcast to find the pre-broadcast source.
 static Value lookThroughBroadcast(Value v) {
-  if (auto broadcastOp =
-          v.getDefiningOp<triton::BroadcastOp>())
+  if (auto broadcastOp = v.getDefiningOp<triton::BroadcastOp>())
     return broadcastOp.getSrc();
   return v;
 }
@@ -121,8 +120,8 @@ struct ConvertLocalPointersOp : public RewritePattern {
 
     auto ptrElemTy = dyn_cast<triton::PointerType>(resultTy.getElementType());
     if (!ptrElemTy)
-      return rewriter.notifyMatchFailure(
-          op, "result element type is not tt.ptr");
+      return rewriter.notifyMatchFailure(op,
+                                         "result element type is not tt.ptr");
 
     auto strides = computeRowMajorStrides(bufferShape);
 
@@ -131,8 +130,8 @@ struct ConvertLocalPointersOp : public RewritePattern {
     auto i32Ty = rewriter.getI32Type();
 
     // %base_ptr = triton_gcu.memdesc_to_ptr %memdesc
-    auto basePtr = rewriter.create<triton::gcu::MemDescToPtrOp>(
-        loc, basePtrTy, memDescVal);
+    auto basePtr = rewriter.create<triton::gcu::MemDescToPtrOp>(loc, basePtrTy,
+                                                                memDescVal);
 
     // Process dimensions from high (dim 0) to low (dim N-1).
     // At each step we maintain a running pointer tensor `ptrAccum`.
@@ -150,8 +149,7 @@ struct ConvertLocalPointersOp : public RewritePattern {
 
       // Ensure index element type is i32.
       if (idxSrcTy.getElementType() != i32Ty) {
-        auto castTy =
-            RankedTensorType::get(idxSrcShape, i32Ty, idxSrcEncoding);
+        auto castTy = RankedTensorType::get(idxSrcShape, i32Ty, idxSrcEncoding);
         idxSrc = rewriter.create<arith::TruncIOp>(loc, castTy, idxSrc);
         idxSrcTy = cast<RankedTensorType>(idxSrc.getType());
         idxSrcShape = idxSrcTy.getShape();
@@ -167,20 +165,18 @@ struct ConvertLocalPointersOp : public RewritePattern {
         auto strideCstTy =
             RankedTensorType::get(idxSrcShape, i32Ty, idxSrcEncoding);
         auto strideCst = rewriter.create<arith::ConstantOp>(
-            loc, DenseElementsAttr::get(
-                     strideCstTy,
-                     rewriter.getI32IntegerAttr(
-                         static_cast<int32_t>(strideVal))));
+            loc, DenseElementsAttr::get(strideCstTy,
+                                        rewriter.getI32IntegerAttr(
+                                            static_cast<int32_t>(strideVal))));
         offset = rewriter.create<arith::MulIOp>(loc, idxSrc, strideCst);
       }
 
       if (!ptrAccum) {
         auto splatPtrTy =
             RankedTensorType::get(idxSrcShape, ptrElemTy, idxSrcEncoding);
-        ptrAccum =
-            rewriter.create<triton::SplatOp>(loc, splatPtrTy, basePtr);
-        ptrAccum =
-            rewriter.create<triton::AddPtrOp>(loc, splatPtrTy, ptrAccum, offset);
+        ptrAccum = rewriter.create<triton::SplatOp>(loc, splatPtrTy, basePtr);
+        ptrAccum = rewriter.create<triton::AddPtrOp>(loc, splatPtrTy, ptrAccum,
+                                                     offset);
       } else {
         auto ptrAccumTy = cast<RankedTensorType>(ptrAccum.getType());
         auto ptrAccumShape = ptrAccumTy.getShape();
@@ -191,30 +187,26 @@ struct ConvertLocalPointersOp : public RewritePattern {
 
         auto targetPtrTy =
             RankedTensorType::get(targetShape, ptrElemTy, encoding);
-        auto targetI32Ty =
-            RankedTensorType::get(targetShape, i32Ty, encoding);
+        auto targetI32Ty = RankedTensorType::get(targetShape, i32Ty, encoding);
 
         if (ptrAccumShape != ArrayRef<int64_t>(targetShape))
-          ptrAccum = rewriter.create<triton::BroadcastOp>(
-              loc, targetPtrTy, ptrAccum);
+          ptrAccum =
+              rewriter.create<triton::BroadcastOp>(loc, targetPtrTy, ptrAccum);
 
         if (idxSrcShape != ArrayRef<int64_t>(targetShape))
-          offset = rewriter.create<triton::BroadcastOp>(
-              loc, targetI32Ty, offset);
+          offset =
+              rewriter.create<triton::BroadcastOp>(loc, targetI32Ty, offset);
 
-        auto addPtrResultTy =
-            cast<RankedTensorType>(ptrAccum.getType());
-        ptrAccum = rewriter.create<triton::AddPtrOp>(
-            loc, addPtrResultTy, ptrAccum, offset);
+        auto addPtrResultTy = cast<RankedTensorType>(ptrAccum.getType());
+        ptrAccum = rewriter.create<triton::AddPtrOp>(loc, addPtrResultTy,
+                                                     ptrAccum, offset);
       }
     }
 
     // Final broadcast to result shape if needed (should already match).
-    auto ptrAccumShape =
-        cast<RankedTensorType>(ptrAccum.getType()).getShape();
+    auto ptrAccumShape = cast<RankedTensorType>(ptrAccum.getType()).getShape();
     if (ptrAccumShape != resultShape) {
-      auto finalPtrTy =
-          RankedTensorType::get(resultShape, ptrElemTy, encoding);
+      auto finalPtrTy = RankedTensorType::get(resultShape, ptrElemTy, encoding);
       ptrAccum =
           rewriter.create<triton::BroadcastOp>(loc, finalPtrTy, ptrAccum);
     }

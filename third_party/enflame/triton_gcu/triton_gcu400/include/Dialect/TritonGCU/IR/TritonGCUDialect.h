@@ -39,11 +39,8 @@
 
 namespace mlir {
 namespace triton {
-namespace gcu {
+namespace gcu {} // namespace gcu
+} // namespace triton
+} // namespace mlir
 
-
-}  // namespace gcu
-}  // namespace triton
-}  // namespace mlir
-
-#endif  // GCU_DIALECT_TRITON_GCU_DIALECT_H
+#endif // GCU_DIALECT_TRITON_GCU_DIALECT_H

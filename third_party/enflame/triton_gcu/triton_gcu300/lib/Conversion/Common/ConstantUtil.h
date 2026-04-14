@@ -28,8 +28,8 @@ Value createConstantZero(OpBuilder &builder, Location loc, Type elemType);
 Value createConstantNaN(OpBuilder &builder, Location loc, Type elemType);
 Value createConstantInf(OpBuilder &builder, Location loc, Type elemType,
                         bool isNegative = false);
-}  // namespace gcu
-}  // namespace triton
-}  // namespace mlir
+} // namespace gcu
+} // namespace triton
+} // namespace mlir
 
-#endif  // KURAMA_COMMON_CONSTANT_UTIL_H_
+#endif // KURAMA_COMMON_CONSTANT_UTIL_H_

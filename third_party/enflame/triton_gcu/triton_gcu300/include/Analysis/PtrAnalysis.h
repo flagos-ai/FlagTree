@@ -16,8 +16,8 @@
 #ifndef GCU_ANALYSIS_PTRANALYSIS_H
 #define GCU_ANALYSIS_PTRANALYSIS_H
 
-#include <vector>
 #include <string>
+#include <vector>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -259,18 +259,17 @@ public:
   //  The resulting state for all will be trans
   static void
   visitOperandTrans(PatternRewriter &rewriter, Location loc,
-                      triton::TransOp transOp, PtrState &state,
-                      llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+                    triton::TransOp transOp, PtrState &state,
+                    llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of dots
   // Main assumptions:
   //  Rank of source and result is the same
   // Expected result:
   //  The resulting state for all will be same
-  static void
-  visitOperandDot(PatternRewriter &rewriter, Location loc,
-                  triton::DotOp dotOp, PtrState &state,
-                  llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+  static void visitOperandDot(PatternRewriter &rewriter, Location loc,
+                              triton::DotOp dotOp, PtrState &state,
+                              llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of reduce
   // Main assumptions:
@@ -279,18 +278,17 @@ public:
   //  The resulting state for all will be same
   static void
   visitOperandReduce(PatternRewriter &rewriter, Location loc,
-                  triton::ReduceOp reduceOp, PtrState &state,
-                  llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+                     triton::ReduceOp reduceOp, PtrState &state,
+                     llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of load
   // Main assumptions:
   //  Rank of source and result is the same
   // Expected result:
   //  The resulting state for all will be same
-  static void
-  visitOperandLoad(PatternRewriter &rewriter, Location loc,
-                  triton::LoadOp loadOp, PtrState &state,
-                  llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+  static void visitOperandLoad(PatternRewriter &rewriter, Location loc,
+                               triton::LoadOp loadOp, PtrState &state,
+                               llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of extsi
   // Main assumptions:
@@ -299,8 +297,8 @@ public:
   //  The resulting state for all will be same
   static void
   visitOperandExtsi(PatternRewriter &rewriter, Location loc,
-                  arith::ExtSIOp extsiOp, PtrState &state,
-                  llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+                    arith::ExtSIOp extsiOp, PtrState &state,
+                    llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of extui
   // Main assumptions:
@@ -309,8 +307,8 @@ public:
   //  The resulting state for all will be same
   static void
   visitOperandExtui(PatternRewriter &rewriter, Location loc,
-                  arith::ExtUIOp extuiOp, PtrState &state,
-                  llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+                    arith::ExtUIOp extuiOp, PtrState &state,
+                    llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // bypass ForOp not include ld/st.
   static bool byPassForOp(PatternRewriter &rewriter, scf::ForOp op,
@@ -318,8 +316,7 @@ public:
   // Parse the state of ForOp, insert any instruction needed to calculate
   // strides and offsets, build PtrState for this operand, and record PtrState
   // in knownPtrs.
-  static LogicalResult
-  rewriteForOp(
+  static LogicalResult rewriteForOp(
       PatternRewriter &rewriter, scf::ForOp op,
       SmallDenseMap<Value, PtrState> &knownPtrs,
       SmallDenseMap<Value, MaskState> &knownMasks,
@@ -338,9 +335,8 @@ public:
                             llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Collect candidate load/store op which could be converted to dma.
-  static void
-  collectCandidateLoadStoreOps(ModuleOp &moduleOp,
-      llvm::SmallVector<Operation *, 8> &candidates,
+  static void collectCandidateLoadStoreOps(
+      ModuleOp &moduleOp, llvm::SmallVector<Operation *, 8> &candidates,
       llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateOrders);
 };
 

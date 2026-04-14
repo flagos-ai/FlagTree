@@ -339,9 +339,8 @@ struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
         reduceInputDims[reduceAxis] = sharedMemShape[axis];
       }
       auto loadFromShareForAllReduce =
-          [&](OpBuilder &builder, triton::gcu::TagInfo tag,
-              Type type, Value buffer,
-              triton::gcu::FirstLastUserAnalysis &userAnalysis,
+          [&](OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
+              Value buffer, triton::gcu::FirstLastUserAnalysis &userAnalysis,
               std::map<Operation *, Operation *> &replaced2Origin) {
             auto loc = buffer.getLoc();
             auto srcType = dyn_cast<MemRefType>(buffer.getType());
@@ -357,8 +356,8 @@ struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
             SmallVector<Value, 4> offsets;
             for (unsigned i = 0; i < srcType.getRank(); ++i) {
               if (i == axis) {
-                offsets.push_back(builder.create<arith::ConstantIntOp>(
-                    loc, 0, 32));
+                offsets.push_back(
+                    builder.create<arith::ConstantIntOp>(loc, 0, 32));
               } else {
                 offsets.push_back(builder.create<arith::MulIOp>(
                     loc,
@@ -369,8 +368,7 @@ struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
             }
             auto output =
                 syncAllocOp(builder, loc, std::make_pair(op.getOperation(), -1),
-                            userAnalysis,
-                            replaced2Origin, outputType);
+                            userAnalysis, replaced2Origin, outputType);
             auto defaultValue = triton::gcu::createConstantZero(
                 builder, loc, srcType.getElementType());
             if (srcType.getRank() > 5) {
@@ -381,8 +379,8 @@ struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
                                   mergedOffsets, srcType, outputType, buffer,
                                   output);
               builder.create<memref_ext::SliceStartOp>(
-                  loc, dst, src, mergedOffsets, defaultValue,
-                  tag.getTag(), ValueRange{tag.getIdx()});
+                  loc, dst, src, mergedOffsets, defaultValue, tag.getTag(),
+                  ValueRange{tag.getIdx()});
               auto [oriOutputStrides, oriOutputOffset] =
                   outputType.getStridesAndOffset();
               builder.create<memref::ReinterpretCastOp>(
@@ -391,8 +389,8 @@ struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
                   oriOutputStrides);
             } else {
               builder.create<memref_ext::SliceStartOp>(
-                  loc, output, buffer, offsets, defaultValue,
-                  tag.getTag(), ValueRange{tag.getIdx()});
+                  loc, output, buffer, offsets, defaultValue, tag.getTag(),
+                  ValueRange{tag.getIdx()});
             }
             builder.create<memref::DmaWaitOp>(
                 loc, tag.getTag(), ValueRange{tag.getIdx()}, totalNumElems);
@@ -632,8 +630,8 @@ private:
       reduceAxis = transposeLayout[reduceAxis];
       llvm::transform(transposeLayout, std::back_inserter(transposeLayoutValue),
                       [&](auto dim) {
-                        return rewriter.create<arith::ConstantIntOp>(
-                            loc, dim, 32);
+                        return rewriter.create<arith::ConstantIntOp>(loc, dim,
+                                                                     32);
                       });
       auto tag = pTagPool.getSyncTagInfo(op);
       llvm::transform(inputs, std::back_inserter(tmpBuffers), [&](auto input) {
@@ -643,8 +641,8 @@ private:
             loc,
             MemRefType::get(ArrayRef<int64_t>{reduceInputDims}, elementTy));
         rewriter.create<memref_ext::TransposeStartOp>(
-            loc, tmpBuffer, input, transposeLayoutValue,
-            tag.getTag(), ValueRange{tag.getIdx()});
+            loc, tmpBuffer, input, transposeLayoutValue, tag.getTag(),
+            ValueRange{tag.getIdx()});
         rewriter.create<memref::DmaWaitOp>(
             loc, tag.getTag(), ValueRange{tag.getIdx()},
             rewriter.create<arith::ConstantIndexOp>(loc,
@@ -1235,6 +1233,5 @@ void mlir::triton::populateReduceOpToGCUPatterns(
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateTagPool &pTagPool) {
   patterns.add<TTReduceOpLowering>(converter, patterns.getContext(),
-                                   userAnalysis,
-                                   replaced2Origin, pTagPool);
+                                   userAnalysis, replaced2Origin, pTagPool);
 }

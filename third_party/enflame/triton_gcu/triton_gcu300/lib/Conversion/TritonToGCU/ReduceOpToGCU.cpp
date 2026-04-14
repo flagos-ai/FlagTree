@@ -363,9 +363,8 @@ struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
       }
 
       auto loadFromShareForAllReduce =
-          [&](OpBuilder &builder, triton::gcu::TagInfo tag,
-              Type type, Value buffer,
-              triton::gcu::FirstLastUserAnalysis &userAnalysis,
+          [&](OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
+              Value buffer, triton::gcu::FirstLastUserAnalysis &userAnalysis,
               std::map<Operation *, Operation *> &replaced2Origin) {
             auto loc = buffer.getLoc();
             auto srcType = dyn_cast<MemRefType>(buffer.getType());
@@ -404,8 +403,8 @@ struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
                                   mergedOffsets, srcType, outputType, buffer,
                                   output);
               builder.create<memref_ext::SliceStartOp>(
-                  loc, dst, src, mergedOffsets, defaultValue,
-                  tag.getTag(), ValueRange{tag.getIdx()});
+                  loc, dst, src, mergedOffsets, defaultValue, tag.getTag(),
+                  ValueRange{tag.getIdx()});
               auto [oriOutputStrides, oriOutputOffset] =
                   outputType.getStridesAndOffset();
               builder.create<memref::ReinterpretCastOp>(
@@ -414,8 +413,8 @@ struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
                   oriOutputStrides);
             } else {
               builder.create<memref_ext::SliceStartOp>(
-                  loc, output, buffer, offsets, defaultValue,
-                  tag.getTag(), ValueRange{tag.getIdx()});
+                  loc, output, buffer, offsets, defaultValue, tag.getTag(),
+                  ValueRange{tag.getIdx()});
             }
             builder.create<memref::DmaWaitOp>(
                 loc, tag.getTag(), ValueRange{tag.getIdx()}, totalNumElems);
@@ -672,8 +671,8 @@ private:
     SmallVector<Type> elementTypes;
     unsigned maxBpe = 1;
     unsigned minBpe = 4;
-    auto target_supporti64 = !triton::gcu::get_bool_env("ENABLE_I64_CHECK",
-                                                         true);
+    auto target_supporti64 =
+        !triton::gcu::get_bool_env("ENABLE_I64_CHECK", true);
     bool is_i64 = false;
     for (auto output : outputs) {
       auto elementType = cast<MemRefType>(output.getType()).getElementType();
@@ -771,8 +770,8 @@ private:
             loc,
             MemRefType::get(ArrayRef<int64_t>{reduceInputDims}, elementTy));
         rewriter.create<memref_ext::TransposeStartOp>(
-            loc, tmpBuffer, input, transposeLayoutValue,
-            tag.getTag(), ValueRange{tag.getIdx()});
+            loc, tmpBuffer, input, transposeLayoutValue, tag.getTag(),
+            ValueRange{tag.getIdx()});
         rewriter.create<memref::DmaWaitOp>(
             loc, tag.getTag(), ValueRange{tag.getIdx()},
             rewriter.create<arith::ConstantIndexOp>(loc,
@@ -1703,16 +1702,16 @@ private:
       }
     }
     bool type_mixed = std::accumulate(int64_flags.begin(), int64_flags.end(),
-                      false, std::bit_xor<>());
+                                      false, std::bit_xor<>());
     if (type_mixed) {
       for (int32_t i = 0; i < int64_flags.size(); i++) {
         if (!int64_flags[i]) {
-            values[i] = builder.create<arith::ExtSIOp>(
-            loc,
-            VectorType::get(ArrayRef<int64_t>{vectorLength},
-                            builder.getI64Type()),
-            values[i]);
-         }
+          values[i] = builder.create<arith::ExtSIOp>(
+              loc,
+              VectorType::get(ArrayRef<int64_t>{vectorLength},
+                              builder.getI64Type()),
+              values[i]);
+        }
       }
     }
 
@@ -1805,7 +1804,7 @@ private:
     return values;
   }
 };
-}  // namespace
+} // namespace
 
 void mlir::triton::populateReduceOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
@@ -1813,6 +1812,5 @@ void mlir::triton::populateReduceOpToGCUPatterns(
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateDTETagPool &pTagPool) {
   patterns.add<TTReduceOpLowering>(converter, patterns.getContext(),
-                                   userAnalysis, replaced2Origin,
-                                   pTagPool);
+                                   userAnalysis, replaced2Origin, pTagPool);
 }

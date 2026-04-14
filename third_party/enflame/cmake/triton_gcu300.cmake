@@ -246,4 +246,3 @@ ${third_party_triton_${arch}_fetch_bin}/third_party/proton/Dialect/lib/ProtonGPU
 ${third_party_triton_${arch}_fetch_bin}/third_party/proton/Dialect/lib/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/CMakeFiles/ProtonNVIDIAGPUToLLVM.dir/TargetInfo.cpp.o
 ${third_party_triton_${arch}_fetch_bin}/third_party/proton/Dialect/lib/ProtonToProtonGPU/CMakeFiles/ProtonToProtonGPU.dir/ProtonToProtonGPUPass.cpp.o
 )
-

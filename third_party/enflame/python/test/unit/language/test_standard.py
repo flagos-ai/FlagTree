@@ -59,7 +59,7 @@ def test_sort(M, N, k, descending, dtype_str, device):
         y = torch.sort(x, descending=descending)[0]
     else:
         y = torch.topk(x, k=k).values
-    sort_kernel[(1, )](x, x.stride(0), z, z.stride(0), M, N, k, descending, num_warps=4) # TODO
+    sort_kernel[(1, )](x, x.stride(0), z, z.stride(0), M, N, k, descending, num_warps=4)  # TODO
     assert (y == z).all(), (y, z)
 
 

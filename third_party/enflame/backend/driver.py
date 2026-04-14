@@ -14,10 +14,12 @@
 # limitations under the License.
 #
 from triton.backends.compiler import GPUTarget
-from triton.backends.driver import  DriverBase
+from triton.backends.driver import DriverBase
 from triton.backends.enflame.backend import GCUBackend, GCUDriver, ty_to_cpp
 
+
 class _GCUDriver(DriverBase):
+
     def __new__(cls):
         if not hasattr(cls, 'instance'):
             cls.instance = super(_GCUDriver, cls).__new__(cls)

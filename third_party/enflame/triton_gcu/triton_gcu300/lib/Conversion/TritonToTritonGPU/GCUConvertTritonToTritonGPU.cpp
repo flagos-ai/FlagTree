@@ -38,7 +38,7 @@ namespace mlir {
 #define GEN_PASS_DECL_GCUCONVERTTRITONTOTRITONGPUPASS
 #define GEN_PASS_DEF_GCUCONVERTTRITONTOTRITONGPUPASS
 #include "Conversion/Passes.h.inc"
-}  // namespace mlir
+} // namespace mlir
 
 namespace {
 
@@ -56,8 +56,7 @@ static void addNamedAttrs(Operation *op, DictionaryAttr dictAttrs) {
 // Generic pattern: convert result types via the type converter
 //===----------------------------------------------------------------------===//
 
-template <class Op>
-struct GenericOpPattern : public OpConversionPattern<Op> {
+template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
   using OpConversionPattern<Op>::OpConversionPattern;
 
   LogicalResult
@@ -102,9 +101,9 @@ public:
 // Arith patterns
 //===----------------------------------------------------------------------===//
 
-void populateArithPatternsAndLegality(
-    GCUTritonGPUTypeConverter &typeConverter, RewritePatternSet &patterns,
-    GCUTritonGPUConversionTarget &target) {
+void populateArithPatternsAndLegality(GCUTritonGPUTypeConverter &typeConverter,
+                                      RewritePatternSet &patterns,
+                                      GCUTritonGPUConversionTarget &target) {
   MLIRContext *context = patterns.getContext();
   patterns.add<
       ArithConstantPattern, GenericOpPattern<arith::AddIOp>,
@@ -116,30 +115,29 @@ void populateArithPatternsAndLegality(
       GenericOpPattern<arith::RemSIOp>, GenericOpPattern<arith::AndIOp>,
       GenericOpPattern<arith::OrIOp>, GenericOpPattern<arith::XOrIOp>,
       GenericOpPattern<arith::ShLIOp>, GenericOpPattern<arith::ShRUIOp>,
-      GenericOpPattern<arith::ShRSIOp>,
-      GenericOpPattern<arith::AddFOp>, GenericOpPattern<arith::SubFOp>,
-      GenericOpPattern<arith::MaximumFOp>, GenericOpPattern<arith::MaxNumFOp>,
-      GenericOpPattern<arith::MaxSIOp>, GenericOpPattern<arith::MaxUIOp>,
-      GenericOpPattern<arith::MinimumFOp>, GenericOpPattern<arith::MinNumFOp>,
-      GenericOpPattern<arith::MinSIOp>, GenericOpPattern<arith::MinUIOp>,
-      GenericOpPattern<arith::MulFOp>, GenericOpPattern<arith::DivFOp>,
-      GenericOpPattern<arith::RemFOp>,
+      GenericOpPattern<arith::ShRSIOp>, GenericOpPattern<arith::AddFOp>,
+      GenericOpPattern<arith::SubFOp>, GenericOpPattern<arith::MaximumFOp>,
+      GenericOpPattern<arith::MaxNumFOp>, GenericOpPattern<arith::MaxSIOp>,
+      GenericOpPattern<arith::MaxUIOp>, GenericOpPattern<arith::MinimumFOp>,
+      GenericOpPattern<arith::MinNumFOp>, GenericOpPattern<arith::MinSIOp>,
+      GenericOpPattern<arith::MinUIOp>, GenericOpPattern<arith::MulFOp>,
+      GenericOpPattern<arith::DivFOp>, GenericOpPattern<arith::RemFOp>,
       GenericOpPattern<arith::CmpIOp>, GenericOpPattern<arith::CmpFOp>,
-      GenericOpPattern<arith::SelectOp>,
-      GenericOpPattern<arith::TruncIOp>, GenericOpPattern<arith::TruncFOp>,
-      GenericOpPattern<arith::ExtUIOp>, GenericOpPattern<arith::ExtSIOp>,
-      GenericOpPattern<arith::ExtFOp>, GenericOpPattern<arith::SIToFPOp>,
-      GenericOpPattern<arith::FPToSIOp>, GenericOpPattern<arith::FPToUIOp>,
-      GenericOpPattern<arith::UIToFPOp>>(typeConverter, context);
+      GenericOpPattern<arith::SelectOp>, GenericOpPattern<arith::TruncIOp>,
+      GenericOpPattern<arith::TruncFOp>, GenericOpPattern<arith::ExtUIOp>,
+      GenericOpPattern<arith::ExtSIOp>, GenericOpPattern<arith::ExtFOp>,
+      GenericOpPattern<arith::SIToFPOp>, GenericOpPattern<arith::FPToSIOp>,
+      GenericOpPattern<arith::FPToUIOp>, GenericOpPattern<arith::UIToFPOp>>(
+      typeConverter, context);
 }
 
 //===----------------------------------------------------------------------===//
 // Math patterns
 //===----------------------------------------------------------------------===//
 
-void populateMathPatternsAndLegality(
-    GCUTritonGPUTypeConverter &typeConverter, RewritePatternSet &patterns,
-    GCUTritonGPUConversionTarget &target) {
+void populateMathPatternsAndLegality(GCUTritonGPUTypeConverter &typeConverter,
+                                     RewritePatternSet &patterns,
+                                     GCUTritonGPUConversionTarget &target) {
   MLIRContext *context = patterns.getContext();
   patterns.add<GenericOpPattern<math::ExpOp>, GenericOpPattern<math::Exp2Op>,
                GenericOpPattern<math::FloorOp>, GenericOpPattern<math::CeilOp>,
@@ -371,9 +369,9 @@ struct TritonScanPattern : public OpConversionPattern<triton::ScanOp> {
   LogicalResult
   matchAndRewrite(triton::ScanOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto newScan = triton::ScanOp::create(
-        rewriter, op.getLoc(), adaptor.getOperands(), adaptor.getAxis(),
-        op.getReverse());
+    auto newScan =
+        triton::ScanOp::create(rewriter, op.getLoc(), adaptor.getOperands(),
+                               adaptor.getAxis(), op.getReverse());
     addNamedAttrs(newScan, adaptor.getAttributes());
     auto &newCombineOp = newScan.getCombineOp();
     rewriter.cloneRegionBefore(op.getCombineOp(), newCombineOp,
@@ -735,8 +733,8 @@ void populateCFPatterns(GCUTritonGPUTypeConverter &typeConverter,
 
 // Scan the module for tt.reduce ops and collect reduce axes with frequency.
 // Returns a map: axis -> occurrence count.
-static llvm::SmallDenseMap<unsigned, unsigned> collectReduceAxesWithFreq(
-    ModuleOp mod) {
+static llvm::SmallDenseMap<unsigned, unsigned>
+collectReduceAxesWithFreq(ModuleOp mod) {
   llvm::SmallDenseMap<unsigned, unsigned> axisFreq;
   mod.walk([&](triton::ReduceOp reduceOp) {
     ++axisFreq[static_cast<unsigned>(reduceOp.getAxis())];
@@ -744,31 +742,31 @@ static llvm::SmallDenseMap<unsigned, unsigned> collectReduceAxesWithFreq(
   return axisFreq;
 }
 
-static SmallVector<unsigned> buildReduceAwareOrder(
-    unsigned rank,
-    const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq) {
-    SmallVector<unsigned> nonReduceDims;
-    SmallVector<std::pair<unsigned, unsigned>> reduceDimsWithFreq;
-    for (int i = static_cast<int>(rank) - 1; i >= 0; --i) {
-      unsigned dim = static_cast<unsigned>(i);
-      auto it = axisFreq.find(dim);
-      if (it != axisFreq.end())
-        reduceDimsWithFreq.push_back({dim, it->second});
-      else
-        nonReduceDims.push_back(dim);
-    }
-    // Sort reduce dims by frequency ascending: less frequent = higher priority.
-    llvm::sort(reduceDimsWithFreq, [](const std::pair<unsigned, unsigned> &a,
-                                      const std::pair<unsigned, unsigned> &b) {
-      if (a.second != b.second)
-        return a.second < b.second;
-      return a.first > b.first;
-    });
-    SmallVector<unsigned> order;
-    order.append(nonReduceDims.begin(), nonReduceDims.end());
-    for (auto &[dim, freq] : reduceDimsWithFreq)
-      order.push_back(dim);
-    return order;
+static SmallVector<unsigned>
+buildReduceAwareOrder(unsigned rank,
+                      const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq) {
+  SmallVector<unsigned> nonReduceDims;
+  SmallVector<std::pair<unsigned, unsigned>> reduceDimsWithFreq;
+  for (int i = static_cast<int>(rank) - 1; i >= 0; --i) {
+    unsigned dim = static_cast<unsigned>(i);
+    auto it = axisFreq.find(dim);
+    if (it != axisFreq.end())
+      reduceDimsWithFreq.push_back({dim, it->second});
+    else
+      nonReduceDims.push_back(dim);
+  }
+  // Sort reduce dims by frequency ascending: less frequent = higher priority.
+  llvm::sort(reduceDimsWithFreq, [](const std::pair<unsigned, unsigned> &a,
+                                    const std::pair<unsigned, unsigned> &b) {
+    if (a.second != b.second)
+      return a.second < b.second;
+    return a.first > b.first;
+  });
+  SmallVector<unsigned> order;
+  order.append(nonReduceDims.begin(), nonReduceDims.end());
+  for (auto &[dim, freq] : reduceDimsWithFreq)
+    order.push_back(dim);
+  return order;
 }
 
 //===----------------------------------------------------------------------===//
@@ -791,13 +789,13 @@ public:
     mod.walk([&](Operation *op) {
       for (auto type : op->getResultTypes()) {
         if (auto tensorType = dyn_cast<RankedTensorType>(type))
-          maxRank = std::max(maxRank, static_cast<unsigned>(
-                                          tensorType.getRank()));
+          maxRank =
+              std::max(maxRank, static_cast<unsigned>(tensorType.getRank()));
       }
       for (auto type : op->getOperandTypes()) {
         if (auto tensorType = dyn_cast<RankedTensorType>(type))
-          maxRank = std::max(maxRank, static_cast<unsigned>(
-                                          tensorType.getRank()));
+          maxRank =
+              std::max(maxRank, static_cast<unsigned>(tensorType.getRank()));
       }
     });
     if (maxRank == 0)
@@ -823,8 +821,8 @@ public:
       } else {
         auto trialEnc = [&](ArrayRef<int64_t> shape) {
           return getBlockedEncodingWithOrder(context, shape, originalOrder,
-                                            axisFreq, numWarps, threadsPerWarp,
-                                            numCTAs);
+                                             axisFreq, numWarps, threadsPerWarp,
+                                             numCTAs);
         };
         auto isBlockedResult = [](Attribute enc) {
           return isa<triton::gpu::BlockedEncodingAttr>(enc);
@@ -900,7 +898,7 @@ public:
 
     // Step 2: Build type converter and conversion target.
     GCUTritonGPUTypeConverter typeConverter(context, numWarps, threadsPerWarp,
-                                           numCTAs, defaultOrder, axisFreq);
+                                            numCTAs, defaultOrder, axisFreq);
     GCUTritonGPUConversionTarget target(*context, typeConverter);
 
     // Step 3: Populate rewrite patterns.
@@ -925,4 +923,4 @@ public:
   }
 };
 
-}  // namespace
+} // namespace

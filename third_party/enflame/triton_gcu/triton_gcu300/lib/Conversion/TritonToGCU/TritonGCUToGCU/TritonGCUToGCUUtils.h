@@ -22,8 +22,6 @@
 
 #include "ConstantUtil.h"
 
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/Support/MathExtras.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -46,6 +44,8 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir {
 constexpr int64_t INVALID_ALIGNMENT = -1;
@@ -60,8 +60,8 @@ struct TagInfo {
   bool isShared;
 
   TagInfo() = default;
-  TagInfo(mlir::Value tag, mlir::Value idx, bool isShared) :
-      tag(tag), idx(idx), isShared(isShared) {}
+  TagInfo(mlir::Value tag, mlir::Value idx, bool isShared)
+      : tag(tag), idx(idx), isShared(isShared) {}
   TagInfo(const TagInfo &other) = default;
   TagInfo(TagInfo &&other) = default;
   TagInfo &operator=(const TagInfo &other) = default;
@@ -92,8 +92,8 @@ struct TagInfo {
 };
 
 class PrivateDTETagPool {
- public:
-  explicit PrivateDTETagPool(mlir::Operation* entryFunc) {
+public:
+  explicit PrivateDTETagPool(mlir::Operation *entryFunc) {
     OpBuilder builder(entryFunc);
     auto func = llvm::dyn_cast<FunctionOpInterface>(entryFunc);
     auto firstOp = &func.getFunctionBody().getBlocks().front().front();
@@ -101,27 +101,24 @@ class PrivateDTETagPool {
     size = 17;
     peakSize = 1;
     bitset = std::vector<bool>(size, false);
-    bitset[0] = true;  // for sync tag
+    bitset[0] = true; // for sync tag
 
     auto tagType =
         MemRefType::get(ArrayRef<int64_t>{size}, builder.getI32Type());
     builder.setInsertionPoint(firstOp);
-    tagsAllocOp =
-        builder.create<memref::AllocOp>(entryFunc->getLoc(), tagType);
+    tagsAllocOp = builder.create<memref::AllocOp>(entryFunc->getLoc(), tagType);
     tagsAllocOp->setAttr("gcu_private_tag", builder.getUnitAttr());
   }
 
-  ~PrivateDTETagPool() {
-    updateUsedSize();
-  }
+  ~PrivateDTETagPool() { updateUsedSize(); }
 
   PrivateDTETagPool(const PrivateDTETagPool &other) = delete;
   PrivateDTETagPool(PrivateDTETagPool &&other) = delete;
   PrivateDTETagPool &operator=(const PrivateDTETagPool &other) = delete;
   PrivateDTETagPool &operator=(PrivateDTETagPool &&other) = delete;
 
- public:
-  TagInfo getSyncTagInfo(mlir::Operation* op) {
+public:
+  TagInfo getSyncTagInfo(mlir::Operation *op) {
     auto loc = op->getLoc();
     auto builder = OpBuilder(op);
     auto tags = getTagsValue(op);
@@ -129,7 +126,7 @@ class PrivateDTETagPool {
     return TagInfo(tags, zero, false);
   }
 
-  TagInfo trygGetAsyncTagInfo(mlir::Operation* op) {
+  TagInfo trygGetAsyncTagInfo(mlir::Operation *op) {
     int32_t idx = -1;
     for (int32_t i = 1; i < size; i++) {
       if (!bitset[i]) {
@@ -156,7 +153,7 @@ class PrivateDTETagPool {
     op2TagInfoMap[op].push_back(tagInfo);
   }
 
-  bool isExistInMap(Operation* op) const {
+  bool isExistInMap(Operation *op) const {
     return op2TagInfoMap.count(op) != 0;
   }
 
@@ -171,9 +168,7 @@ class PrivateDTETagPool {
     op2TagInfoMap.erase(op);
   }
 
-  Type getTagsType() {
-    return tagsAllocOp->getResult(0).getType();
-  }
+  Type getTagsType() { return tagsAllocOp->getResult(0).getType(); }
 
   Value getTagsValue(Operation *op) {
     auto func = op->getParentOfType<FunctionOpInterface>();
@@ -218,8 +213,8 @@ class PrivateDTETagPool {
       SmallVector<Type> newResultTypes =
           llvm::to_vector(currentType.getResults());
       newInputTypes[argPos] = tagsType;
-      FunctionType newFuncType = FunctionType::get(
-          funcOp.getContext(), newInputTypes, newResultTypes);
+      FunctionType newFuncType =
+          FunctionType::get(funcOp.getContext(), newInputTypes, newResultTypes);
       funcOp.setType(newFuncType);
       Block &entryBlock = funcOp.getBody().front();
       entryBlock.getArgument(argPos).setType(tagsType);
@@ -234,7 +229,7 @@ class PrivateDTETagPool {
     funcName2TagArgPos[func.getName()] = argNum;
   }
 
- private:
+private:
   int32_t size;
   int32_t peakSize;
 
@@ -243,12 +238,12 @@ class PrivateDTETagPool {
   llvm::DenseMap<Operation *, std::vector<TagInfo>> op2TagInfoMap;
   llvm::DenseMap<llvm::StringRef, int32_t> funcName2TagArgPos;
 
-  mlir::Operation* tagsAllocOp;
+  mlir::Operation *tagsAllocOp;
 };
 
-}  // namespace gcu
-}  // namespace triton
-}  // namespace mlir
+} // namespace gcu
+} // namespace triton
+} // namespace mlir
 
 using namespace mlir;
 
@@ -269,21 +264,21 @@ Value castToMemref1D(OpBuilder &rewriter, Location loc, Value v,
 bool isMustAliasOp(mlir::Operation *op);
 
 mlir::Operation *
-promoteLastUser(std::pair<mlir::Operation*, int> &lastUser,
+promoteLastUser(std::pair<mlir::Operation *, int> &lastUser,
                 triton::gcu::FirstLastUserAnalysis &userAnalysis,
                 std::map<Operation *, Operation *> &replaced2Origin);
 
 void addDeallocAfterLastUser(OpBuilder &builder,
-                             std::pair<mlir::Operation*, int> lastUser,
+                             std::pair<mlir::Operation *, int> lastUser,
                              Value alloc);
 Value syncAllocOp(OpBuilder &builder, Location &loc,
-                  std::pair<Operation*, int> lastUser,
+                  std::pair<Operation *, int> lastUser,
                   triton::gcu::FirstLastUserAnalysis &userAnalysis,
                   std::map<Operation *, Operation *> &replaced2Origin,
                   MemRefType type, int64_t memoryAlignment = INVALID_ALIGNMENT);
 
 Value asyncAllocOp(OpBuilder &builder, Operation *ttParent, MemRefType type,
-                  int64_t memoryAlignment = INVALID_ALIGNMENT);
+                   int64_t memoryAlignment = INVALID_ALIGNMENT);
 
 void createPrintfOp(ConversionPatternRewriter &rewriter, Location loc,
                     ::llvm::StringRef printOpPrefix, bool hex, Value value);
@@ -297,44 +292,38 @@ void doMemFence(OpBuilder &rewriter, Operation *op);
 void doMemsetConfig(OpBuilder &rewriter, Location loc, Value output, Value v,
                     triton::gcu::TagInfo tag);
 
-void doMemset(OpBuilder &rewriter,
-              triton::gcu::PrivateDTETagPool &pTagPool,
-              Operation *op, Value output, Value v,
-              int totalNumElems);
+void doMemset(OpBuilder &rewriter, triton::gcu::PrivateDTETagPool &pTagPool,
+              Operation *op, Value output, Value v, int totalNumElems);
 
-Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
-                        Type type, Value buffer,
-                        bool onlyThread0,
-                        std::pair<mlir::Operation*, int> lastTTUser,
-                        std::pair<mlir::Operation*, int> firstTTUser,
+Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
+                        Value buffer, bool onlyThread0,
+                        std::pair<mlir::Operation *, int> lastTTUser,
+                        std::pair<mlir::Operation *, int> firstTTUser,
                         triton::gcu::FirstLastUserAnalysis &userAnalysis,
                         std::map<Operation *, Operation *> &replaced2Origin);
 
-Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
-                        Type type, Value buffer,
-                        bool onlyThread0,
-                        std::pair<mlir::Operation*, int> lastTTUser,
-                        std::pair<mlir::Operation*, int> firstTTUser,
+Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
+                        Value buffer, bool onlyThread0,
+                        std::pair<mlir::Operation *, int> lastTTUser,
+                        std::pair<mlir::Operation *, int> firstTTUser,
                         triton::gcu::FirstLastUserAnalysis &userAnalysis,
                         std::map<Operation *, Operation *> &replaced2Origin);
 
 Value loadFromSharedMemForDotOperand(
-    OpBuilder builder, triton::gcu::TagInfo tag,
-    Type type, ArrayRef<int64_t> mnShape,
-    Value sharedBuffer,
-    std::pair<mlir::Operation*, int> lastTTUser,
-    std::pair<mlir::Operation*, int> firstTTUser,
+    OpBuilder builder, triton::gcu::TagInfo tag, Type type,
+    ArrayRef<int64_t> mnShape, Value sharedBuffer,
+    std::pair<mlir::Operation *, int> lastTTUser,
+    std::pair<mlir::Operation *, int> firstTTUser,
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin);
 
 void storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
-                      TensorType type, Value sharedBuffer,
-                      Value buffer, bool onlyThread0);
+                      TensorType type, Value sharedBuffer, Value buffer,
+                      bool onlyThread0);
 
 Value storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
-                       TensorType type,
-                       Value buffer, bool onlyThread0,
-                       std::pair<mlir::Operation*, int> lastTTUser,
+                       TensorType type, Value buffer, bool onlyThread0,
+                       std::pair<mlir::Operation *, int> lastTTUser,
                        triton::gcu::FirstLastUserAnalysis &userAnalysis,
                        std::map<Operation *, Operation *> &replaced2Origin);
 
@@ -343,41 +332,44 @@ void AnalysisYieldOperendUseStage(
     std::map<Operation *, std::map<uint64_t, bool>>
         &TTYeiledOPerandHasMultiUseStage);
 
-void GetOrderValueByStride(OpBuilder &rewriter, Location loc,
-  SmallVector<unsigned> nInitStrideDims, SmallVector<Value, 4> &initStride,
-  SmallVector<Value, 4> &initShape, SmallVector<Value, 4> &initOffset,
-  SmallVector<Value, 4> &orderStride, SmallVector<Value, 4> &orderShape,
-  SmallVector<Value, 4> &orderOffset, SmallVector<Value, 4> &vOrder);
+void GetOrderValueByStride(
+    OpBuilder &rewriter, Location loc, SmallVector<unsigned> nInitStrideDims,
+    SmallVector<Value, 4> &initStride, SmallVector<Value, 4> &initShape,
+    SmallVector<Value, 4> &initOffset, SmallVector<Value, 4> &orderStride,
+    SmallVector<Value, 4> &orderShape, SmallVector<Value, 4> &orderOffset,
+    SmallVector<Value, 4> &vOrder);
 
-void GetOrderSlicefor30(OpBuilder &rewriter, Location loc,
-    int64_t rank, SmallVector<Value, 4> &initStride,
-    SmallVector<Value, 4> &initSliceShape,
-    SmallVector<Value, 4> &orderSliceShape);
+void GetOrderSlicefor30(OpBuilder &rewriter, Location loc, int64_t rank,
+                        SmallVector<Value, 4> &initStride,
+                        SmallVector<Value, 4> &initSliceShape,
+                        SmallVector<Value, 4> &orderSliceShape);
 
 Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
-      triton::gcu::PrivateDTETagPool &pTagPool,
-      Value srcOut, Value transOut, mlir::Operation *op, MemRefType resultType,
-      Value loadPtr, mlir::ValueRange configStrides,
-      mlir::ValueRange configShapes, Value defaultValue,
-      triton::gcu::TagInfo tag, bool IsShareOutput = false);
+                    triton::gcu::PrivateDTETagPool &pTagPool, Value srcOut,
+                    Value transOut, mlir::Operation *op, MemRefType resultType,
+                    Value loadPtr, mlir::ValueRange configStrides,
+                    mlir::ValueRange configShapes, Value defaultValue,
+                    triton::gcu::TagInfo tag, bool IsShareOutput = false);
 
 Value ConfigGcuLoadEx(OpBuilder &rewriter, Location loc,
-      triton::gcu::PrivateDTETagPool &pTagPool,
-      Value srcOut, Value tempBuffer, mlir::Operation *op,
-      MemRefType resultType, Value loadPtr, mlir::ValueRange configStrides,
-      mlir::ValueRange configShapes, Value defaultValue,
-      triton::gcu::TagInfo tag, bool IsShareOutput = false);
+                      triton::gcu::PrivateDTETagPool &pTagPool, Value srcOut,
+                      Value tempBuffer, mlir::Operation *op,
+                      MemRefType resultType, Value loadPtr,
+                      mlir::ValueRange configStrides,
+                      mlir::ValueRange configShapes, Value defaultValue,
+                      triton::gcu::TagInfo tag, bool IsShareOutput = false);
 
 Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
-      Value transOut, mlir::Operation *op, MemRefType storeValueType,
-      Value storePtr, mlir::ValueRange configStrides,
-      mlir::ValueRange configShapes, triton::gcu::TagInfo tag);
+                     Value transOut, mlir::Operation *op,
+                     MemRefType storeValueType, Value storePtr,
+                     mlir::ValueRange configStrides,
+                     mlir::ValueRange configShapes, triton::gcu::TagInfo tag);
 
 void WaitGcuLoadStore(OpBuilder &rewriter, Location loc,
-      triton::gcu::TagInfo tag, Value totalSize);
+                      triton::gcu::TagInfo tag, Value totalSize);
 
-void moveDeallocOp(ConversionPatternRewriter& rewriter,
-                   Value v, Operation* pos, size_t depth);
+void moveDeallocOp(ConversionPatternRewriter &rewriter, Value v, Operation *pos,
+                   size_t depth);
 
 void mergeContinuousDims(OpBuilder &subBuilder, Location loc,
                          Value &sharedMemref, Value &warpMemref,

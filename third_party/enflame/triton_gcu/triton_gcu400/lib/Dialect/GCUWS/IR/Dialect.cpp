@@ -34,12 +34,12 @@ using namespace mlir::triton::gcuws;
 void mlir::triton::gcuws::GCUWSDialect::initialize() {
   addAttributes<
 #define GET_ATTRDEF_LIST
-#include "Dialect/GCUWS/IR/GCUWSAttrDefs.cpp.inc"  // NOLINT(build/include)
+#include "Dialect/GCUWS/IR/GCUWSAttrDefs.cpp.inc" // NOLINT(build/include)
       >();
 
   addTypes<
 #define GET_TYPEDEF_LIST
-#include "Dialect/GCUWS/IR/Types.cpp.inc"  // NOLINT(build/include)
+#include "Dialect/GCUWS/IR/Types.cpp.inc" // NOLINT(build/include)
       >();
 
   addOperations<
@@ -47,4 +47,3 @@ void mlir::triton::gcuws::GCUWSDialect::initialize() {
 #include "Dialect/GCUWS/IR/Ops.cpp.inc"
       >();
 }
-

@@ -28,7 +28,7 @@ namespace mlir {
 namespace test {
 void registerTestFirstLastUserAnalysisPass();
 }
-}
+} // namespace mlir
 
 int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
@@ -36,9 +36,9 @@ int main(int argc, char **argv) {
   mlir::triton::gpu::registerTritonGPUPasses();
   mlir::triton::registerConvertTritonToTritonGPUPass();
   mlir::test::registerTestFirstLastUserAnalysisPass();
-  registry.insert<mlir::triton::TritonDialect,
-                  mlir::triton::gpu::TritonGPUDialect,
-                  mlir::triton::gcuws::GCUWSDialect>();
+  registry
+      .insert<mlir::triton::TritonDialect, mlir::triton::gpu::TritonGPUDialect,
+              mlir::triton::gcuws::GCUWSDialect>();
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "GCU optimizer driver\n", registry));
 }

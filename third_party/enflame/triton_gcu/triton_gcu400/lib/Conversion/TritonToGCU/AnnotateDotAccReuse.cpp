@@ -88,8 +88,7 @@ struct AnnotateDotAccReusePass
       if (forOp->getParentOfType<scf::ForOp>())
         return;
 
-      dotOp->setAttr("acc_reuse_candidate",
-                      UnitAttr::get(dotOp.getContext()));
+      dotOp->setAttr("acc_reuse_candidate", UnitAttr::get(dotOp.getContext()));
       LLVM_DEBUG(llvm::dbgs()
                  << "AnnotateDotAccReuse: marked dot op as reuse candidate\n");
     });

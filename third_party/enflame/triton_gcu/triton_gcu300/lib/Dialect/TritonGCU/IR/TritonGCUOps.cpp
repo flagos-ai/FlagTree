@@ -50,7 +50,7 @@ LogicalResult StoreOp::verify() {
   if (getOffsets().size() != getShape().size() ||
       getOffsets().size() != getStrides().size() ||
       getOffsets().size() !=
-        static_cast<unsigned>(getValue().getType().getRank()))
+          static_cast<unsigned>(getValue().getType().getRank()))
     return emitOpError() << "shape/strides/offsets mismatch with value rank";
   if (getPtr().getType().getElementType() !=
       getValue().getType().getElementType())

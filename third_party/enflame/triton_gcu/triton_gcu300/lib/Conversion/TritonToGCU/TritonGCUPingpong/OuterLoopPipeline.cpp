@@ -13,15 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <vector>
 #include <utility>
+#include <vector>
 
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 #include "PipelineExpander.h"
 #include "PipeliningUtility.h"
 #include "Schedule.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 using namespace mlir;
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;

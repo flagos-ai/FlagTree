@@ -123,7 +123,7 @@ BLOCK = tl.constexpr(1024)
 @pytest.mark.parametrize('size, seed, dtype, const_seed', [(size, seed, dtype, const_seed)
                                                            for size in ['10', '4,53', '400']
                                                            for seed in [0, 42, 124, 54, 0xffffffff, 0x0000000fcafeb0ba]
-                                                           for dtype in ['int32']#, 'int64'] # TODO
+                                                           for dtype in ['int32']  #, 'int64'] # TODO
                                                            for const_seed in [True, False]])
 def test_randint(size, seed, device, dtype, const_seed):
     # TODO
@@ -230,7 +230,9 @@ def test_seed_is_int(device):
 @pytest.mark.parametrize('size, seed, dtype, const_seed', [(size, seed, dtype, const_seed)
                                                            for size in [100000]
                                                            for seed in [0, 42, 124, 54]
-                                                           for dtype in ['int32', ] # 'int64'] # TODO
+                                                           for dtype in [
+                                                               'int32',
+                                                           ]  # 'int64'] # TODO
                                                            for const_seed in [True, False]])
 def test_randn(size, seed, dtype, device, const_seed):
 
@@ -261,7 +263,6 @@ def test_randn(size, seed, dtype, device, const_seed):
 
 
 # tl.rand() should never produce >=1.0
-
 
 # @pytest.mark.interpreter
 # @pytest.mark.parametrize('dtype', ['int32', 'int64'])

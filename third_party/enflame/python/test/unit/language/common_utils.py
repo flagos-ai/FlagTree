@@ -7,6 +7,7 @@ import importlib.util
 if importlib.util.find_spec("triton.backends.enflame") is None:
     import triton_gcu.triton
 
+
 def check_skip(file_path, test_name, params=None):
     """
     Checks if a test case should be skipped based on data from 'skip_tests_write.csv'.
@@ -37,16 +38,13 @@ def check_skip(file_path, test_name, params=None):
     # for test_convertmma2mma convert mma_pair object to parseable string
     if "mma_pair" in params:
         params["mma_pair"] = [
-            re.sub(r"versionMajor=\d+,?\s*|versionMinor=\d+,?\s*", "", str(x))
-            for x in params["mma_pair"]
+            re.sub(r"versionMajor=\d+,?\s*|versionMinor=\d+,?\s*", "", str(x)) for x in params["mma_pair"]
         ]
 
     target_arch = triton.runtime.driver.active.get_current_target().arch.split("--")[1]
 
     # Generate a unique case identifier
-    case_identifier = (
-        test_name + "_" + "".join(f"{key}={value}-" for key, value in params.items())
-    )
+    case_identifier = (test_name + "_" + "".join(f"{key}={value}-" for key, value in params.items()))
 
     try:
         print(f"\nDEBUG(check_skip): Case Identifier: <{case_identifier}>\n")

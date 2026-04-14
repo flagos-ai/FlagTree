@@ -32,7 +32,7 @@ namespace triton {
 namespace gcu {
 class FirstLastUserAnalysis;
 class PrivateTagPool;
-}
+} // namespace gcu
 
 void populateLoadStoreOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,

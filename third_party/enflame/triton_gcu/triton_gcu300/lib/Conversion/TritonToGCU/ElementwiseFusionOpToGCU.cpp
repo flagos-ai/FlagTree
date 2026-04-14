@@ -172,8 +172,8 @@ struct GCUElementwiseFusionOpLowering
     SmallVector<Value> results;
     SmallVector<Value> outputs;
     bool needCvtDataLayout = false;
-    for (auto [type, opResult] : llvm::zip(op.getResultTypes(),
-                                           op.getResults())) {
+    for (auto [type, opResult] :
+         llvm::zip(op.getResultTypes(), op.getResults())) {
       auto resultType =
           dyn_cast<MemRefType>(getTypeConverter()->convertType(type));
       auto lastUser = userAnalysis.getLastUser(opResult);
@@ -277,7 +277,7 @@ struct GCUElementwiseFusionOpLowering
       auto &ops = op.getRegion().front().getOperations();
       if (totalNumElems > vectorizationMaxLength / maxBpe) {
         if (ops.size() == 2 && hasBuiltinImpl(&ops.front()) &&
-           !isI64(&ops.front())) {
+            !isI64(&ops.front())) {
           SmallVector<Value, 4> builtinOperands;
           for (auto operand : ops.front().getOperands()) {
             builtinOperands.push_back(
@@ -661,7 +661,7 @@ private:
                                           operands);
     } else if (symbol == "__nv_tanf") {
       newOp = builder.create<math::TanOp>(loc, operands.front().getType(),
-                                           operands);
+                                          operands);
     } else if (symbol == "__nv_tanhf") {
       newOp = builder.create<math::TanhOp>(loc, operands.front().getType(),
                                            operands);
@@ -901,7 +901,7 @@ void mlir::triton::populateElementwiseFusionOpToGCUPatterns(
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateDTETagPool &pTagPool) {
-  patterns.add<GCUElementwiseFusionOpLowering>(
-      converter, patterns.getContext(),
-      userAnalysis, replaced2Origin, pTagPool);
+  patterns.add<GCUElementwiseFusionOpLowering>(converter, patterns.getContext(),
+                                               userAnalysis, replaced2Origin,
+                                               pTagPool);
 }

@@ -49,7 +49,6 @@ llvm::SmallVector<Value> getValues(OpBuilder &builder, Location loc,
   return values;
 }
 
-
 // Extract a scalar value from v.
 // If v is a scalar, return that directly. Otherwise, parse through operations
 // (currently only support splat and sitofp) that produce it and to extract they
@@ -124,7 +123,7 @@ OpFoldResult addOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     lhsValue = lhsOp.getResult();
   } else {
     assert(isa<IndexType>(lhsValue.getType()) ||
-      isa<IntegerType>(lhsValue.getType()));
+           isa<IntegerType>(lhsValue.getType()));
   }
 
   auto rhsValue = dyn_cast<Value>(rhs);
@@ -133,14 +132,17 @@ OpFoldResult addOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
         loc, builder.getIndexAttr(rhsIntAttr.value()));
     rhsValue = rhsOp.getResult();
   } else {
-    assert(isa<IndexType>(lhsValue.getType())  ||
-      isa<IntegerType>(lhsValue.getType()) );
+    assert(isa<IndexType>(lhsValue.getType()) ||
+           isa<IntegerType>(lhsValue.getType()));
   }
 
-  return builder.create<arith::AddIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-      rhsValue)).getResult();
+  return builder
+      .create<arith::AddIOp>(loc,
+                             builder.create<arith::IndexCastOp>(
+                                 loc, builder.getI64Type(), lhsValue),
+                             builder.create<arith::IndexCastOp>(
+                                 loc, builder.getI64Type(), rhsValue))
+      .getResult();
 }
 
 OpFoldResult subOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
@@ -171,9 +173,10 @@ OpFoldResult subOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     rhsValue = rhsOp.getResult();
   }
 
-  auto sumOp = builder.create<arith::SubIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+  auto sumOp = builder.create<arith::SubIOp>(
+      loc,
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
   return sumOp.getResult();
 }
 
@@ -213,19 +216,21 @@ OpFoldResult mulOFRValue(OpBuilder &builder, Location loc,
   if (lhsIntAttr && !rhsIsConst) {
     auto lhsConstOp = builder.create<arith::ConstantOp>(
         loc, builder.getIndexAttr(lhsIntAttr.value()));
-    auto mulOp = builder.create<arith::MulIOp>(loc,
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-        lhsConstOp.getResult()), builder.create<arith::IndexCastOp>(loc,
-        builder.getI64Type(), rhs));
+    auto mulOp = builder.create<arith::MulIOp>(
+        loc,
+        builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
+                                           lhsConstOp.getResult()),
+        builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhs));
     return mulOp.getResult();
   }
 
   // 2. if lhs is not constant
   assert(!lhsIntAttr);
-  auto mulOp = builder.create<arith::MulIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-      lhs.get<Value>()), builder.create<arith::IndexCastOp>(loc,
-      builder.getI64Type(), rhs));
+  auto mulOp = builder.create<arith::MulIOp>(
+      loc,
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
+                                         lhs.get<Value>()),
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhs));
   return mulOp.getResult();
 }
 
@@ -254,9 +259,10 @@ OpFoldResult minOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     rhsValue = rhsOp.getResult();
   }
 
-  auto minOp = builder.create<arith::MinSIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+  auto minOp = builder.create<arith::MinSIOp>(
+      loc,
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
   return minOp.getResult();
 }
 
@@ -285,9 +291,10 @@ OpFoldResult maxOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     rhsValue = rhsOp.getResult();
   }
 
-  auto maxOp = builder.create<arith::MaxSIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+  auto maxOp = builder.create<arith::MaxSIOp>(
+      loc,
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
   return maxOp.getResult();
 }
 
@@ -315,9 +322,10 @@ OpFoldResult remOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     rhsValue = rhsOp.getResult();
   }
 
-  auto remOp = builder.create<arith::RemSIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+  auto remOp = builder.create<arith::RemSIOp>(
+      loc,
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
   return remOp.getResult();
 }
 
@@ -345,9 +353,10 @@ OpFoldResult divOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     rhsValue = rhsOp.getResult();
   }
 
-  auto divOp = builder.create<arith::DivSIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+  auto divOp = builder.create<arith::DivSIOp>(
+      loc,
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
+      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
   return divOp.getResult();
 }
 

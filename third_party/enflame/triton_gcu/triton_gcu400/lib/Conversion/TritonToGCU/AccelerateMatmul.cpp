@@ -34,8 +34,8 @@
 #include "llvm/Support/Debug.h"
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
-#include "Utility.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Utility.h"
 
 #define DEBUG_TYPE "triton-accelerate-matmul"
 
@@ -82,10 +82,11 @@ static bool isGCU400OrGCU410Target(Operation *op) {
 
 SmallVector<unsigned, 2>
 warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps,
-               const SmallVector<unsigned, 3> &instrShape) {
+             const SmallVector<unsigned, 3> &instrShape) {
   auto rank = shape.size();
   // Early exit for batched matmul
-  if (rank == 3) return {(unsigned)numWarps, 1, 1};
+  if (rank == 3)
+    return {(unsigned)numWarps, 1, 1};
   assert(rank == 2 && "expected 2D tile shape");
 
   SetVector<Operation *> slices;
@@ -101,9 +102,7 @@ warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps,
   SmallVector<int64_t> shapePerWarp = {64, 128};
   SmallVector<int64_t> warps = {1, 1};
 
-  auto ceilDiv = [](int64_t x, int64_t y) {
-    return (x + y - 1) / y;
-  };
+  auto ceilDiv = [](int64_t x, int64_t y) { return (x + y - 1) / y; };
   auto product = [](const SmallVector<int64_t> &v) { return v[0] * v[1]; };
 
   // Compute repM and repN
@@ -203,11 +202,11 @@ public:
     bool aMatchesPattern = traceBackToLoadOp(a) != nullptr;
     bool bMatchesPattern = traceBackToLoadOp(b) != nullptr;
     LLVM_DEBUG(llvm::dbgs() << "BlockedToMMA: operand A "
-                           << (aMatchesPattern ? "matches" : "does NOT match")
-                           << " triton_gcu.load -> convert_layout pattern\n");
+                            << (aMatchesPattern ? "matches" : "does NOT match")
+                            << " triton_gcu.load -> convert_layout pattern\n");
     LLVM_DEBUG(llvm::dbgs() << "BlockedToMMA: operand B "
-                           << (bMatchesPattern ? "matches" : "does NOT match")
-                           << " triton_gcu.load -> convert_layout pattern\n");
+                            << (bMatchesPattern ? "matches" : "does NOT match")
+                            << " triton_gcu.load -> convert_layout pattern\n");
     if (!aMatchesPattern && !bMatchesPattern) {
       LLVM_DEBUG(llvm::dbgs()
                  << "BlockedToMMA: skip dot because neither operand matches "
@@ -220,15 +219,13 @@ public:
         warpsPerTile(dotOp, retShapePerCTA, numWarps, instrShape);
 
     auto mod = dotOp->getParentOfType<ModuleOp>();
-    int threadsPerWarp =
-        triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+    int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
 
     Attribute mmaEnc;
     if (threadsPerWarp == 32) {
-      mmaEnc = NvidiaMmaEncodingAttr::get(oldRetType.getContext(),
-                                          versionMajor, versionMinor,
-                                          warpsPerTileShape, CTALayout,
-                                          instrShape);
+      mmaEnc = NvidiaMmaEncodingAttr::get(oldRetType.getContext(), versionMajor,
+                                          versionMinor, warpsPerTileShape,
+                                          CTALayout, instrShape);
     } else {
       unsigned rank = oldRetType.getRank();
       SmallVector<unsigned> sizePerThread(rank, 1);
@@ -257,8 +254,8 @@ public:
       auto tensorTy = cast<RankedTensorType>(operand.getType());
       auto dotOpEnc = DotOperandEncodingAttr::get(
           dotOp.getContext(), opIdx, mmaEnc, tensorTy.getElementType());
-      auto newTy = RankedTensorType::get(
-          tensorTy.getShape(), tensorTy.getElementType(), dotOpEnc);
+      auto newTy = RankedTensorType::get(tensorTy.getShape(),
+                                         tensorTy.getElementType(), dotOpEnc);
       if (tensorTy == newTy)
         return operand;
       return rewriter.create<ConvertLayoutOp>(dotOp.getLoc(), newTy, operand);
@@ -347,8 +344,8 @@ static void decomposeMixedModeDotOp(mlir::gpu::GPUModuleOp mod) {
             promoteOperand(builder, cvt.getLoc(), cvt.getSrc(), promoteType);
         auto newCvtType = cast<RankedTensorType>(cvt.getType())
                               .cloneWith(std::nullopt, promoteType);
-        Value newCvt = builder.create<ConvertLayoutOp>(cvt.getLoc(),
-                                                       newCvtType, promotedSrc);
+        Value newCvt = builder.create<ConvertLayoutOp>(cvt.getLoc(), newCvtType,
+                                                       promotedSrc);
         dotOp.setOperand(opIdx, newCvt);
       } else {
         Value promoted = promoteOperand(builder, loc, operand, promoteType);

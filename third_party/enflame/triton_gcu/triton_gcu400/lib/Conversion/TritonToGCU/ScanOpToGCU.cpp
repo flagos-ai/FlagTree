@@ -21,8 +21,8 @@
 #include "Analysis/FirstLastUserAnalysis.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "PatternTritonGPUOpToGCU.h"
-#include "Utility.h"
 #include "TritonGCUToGCU/TritionToGCUBase.h"
+#include "Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -167,9 +167,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     auto indexVec = rewriter.create<arith::MulIOp>(
         loc,
         rewriter
-            .create<gcu::VectorStepOp>(loc, vecTy,
-                                       rewriter.create<arith::ConstantIntOp>(
-                                           loc, 0, 32))
+            .create<gcu::VectorStepOp>(
+                loc, vecTy, rewriter.create<arith::ConstantIntOp>(loc, 0, 32))
             .getResult(),
         rewriter.create<vector::BroadcastOp>(
             loc, vecTy,
@@ -401,7 +400,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     // create outputs
     SmallVector<Value, 4> outputs;
     SmallVector<Type, 4> outputElemTypes;
-    SmallVector<std::pair<Operation*, int>, 4> lastUsers;
+    SmallVector<std::pair<Operation *, int>, 4> lastUsers;
     for (unsigned i = 0; i < numOutput; ++i) {
       auto resultType =
           dyn_cast<MemRefType>(getTypeConverter()->convertType(op.getType(i)));
@@ -436,8 +435,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
         sharedInputs.push_back(storeToSharedMem(
             rewriter, tag,
             dyn_cast<RankedTensorType>(op.getSrcs()[i].getType()),
-            adaptor.getSrcs()[i], false,
-            std::make_pair(op.getOperation(), -1),
+            adaptor.getSrcs()[i], false, std::make_pair(op.getOperation(), -1),
             userAnalysis, replaced2Origin));
       }
 
@@ -453,8 +451,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
         mergedInputType = tensorType;
         mergedInputs.push_back(loadFromSharedMem(
             rewriter, tag, tensorType, sharedInputs[i], true,
-            std::make_pair(op.getOperation(), -1),
-            std::make_pair(nullptr, -1),
+            std::make_pair(op.getOperation(), -1), std::make_pair(nullptr, -1),
             userAnalysis, replaced2Origin));
       }
 
@@ -467,11 +464,9 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                                       getContext(), tType.getShape(), 1, 1, 1));
         auto resultType =
             dyn_cast<MemRefType>(getTypeConverter()->convertType(tensorType));
-        mergedOutputs.push_back(syncAllocOp(rewriter, loc,
-                                            std::make_pair(op.getOperation(),
-                                                           -1),
-                                            userAnalysis, replaced2Origin,
-                                            resultType));
+        mergedOutputs.push_back(
+            syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
+                        userAnalysis, replaced2Origin, resultType));
       }
 
       // computing in thread 0
@@ -500,11 +495,10 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
       }
       // load from shared memory
       for (unsigned i = 0; i < numOutput; ++i) {
-        outputs[i] =
-            loadFromSharedMem(rewriter, tag, op.getResultTypes()[i],
-                              mergedSharedOutputs[i], false,
-                              lastUsers[i], std::make_pair(nullptr, -1),
-                              userAnalysis, replaced2Origin);
+        outputs[i] = loadFromSharedMem(
+            rewriter, tag, op.getResultTypes()[i], mergedSharedOutputs[i],
+            false, lastUsers[i], std::make_pair(nullptr, -1), userAnalysis,
+            replaced2Origin);
       }
     } else {
       applyScan(op, rewriter, outputs,
@@ -539,7 +533,6 @@ void mlir::triton::populateScanOpToGCUPatterns(
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateTagPool &pTagPool) {
-  patterns.add<TTScanOpLowering>(converter, patterns.getContext(),
-                                 userAnalysis,
+  patterns.add<TTScanOpLowering>(converter, patterns.getContext(), userAnalysis,
                                  replaced2Origin, pTagPool);
 }

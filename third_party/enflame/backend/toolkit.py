@@ -27,16 +27,13 @@ RUNTIME_PATH = os.path.join(datadir, "lib")
 
 PY_TOOLS_PATH = Path(__file__).parent
 
+
 # toolkit
 def _run_command(cmd, content, *args):
     if not isinstance(content, str):
         content = str(content)
-    result = subprocess.run(
-        [os.path.join(TOOLKIT_PATH, cmd)]+list(args),
-        input=content,
-        capture_output=True,
-        text=True,
-        encoding="utf-8")
+    result = subprocess.run([os.path.join(TOOLKIT_PATH, cmd)] + list(args), input=content, capture_output=True,
+                            text=True, encoding="utf-8")
     if result.returncode != 0:
         raise Exception(result.stderr)
     # print(__file__, "run command: \n", [os.path.join(TOOLKIT_PATH, cmd)] + list(args))
@@ -44,15 +41,12 @@ def _run_command(cmd, content, *args):
     print(result.stderr)
     return result.stdout
 
+
 def _run_command2(cmd, content, *args):
     if not isinstance(content, str):
         content = str(content)
-    result = subprocess.run(
-        [PY_TOOLS_PATH / cmd] + list(args),
-        input=content,
-        capture_output=True,
-        text=True,
-        encoding="utf-8")
+    result = subprocess.run([PY_TOOLS_PATH / cmd] + list(args), input=content, capture_output=True, text=True,
+                            encoding="utf-8")
     if result.returncode != 0:
         raise Exception(result.stderr)
     # print(__file__, "run command: \n", [os.path.join(PY_TOOLS_PATH, cmd)] + list(args))
@@ -60,18 +54,22 @@ def _run_command2(cmd, content, *args):
     print(result.stderr)
     return result.stdout
 
+
 def triton_gcu_opt(content, *args, arch):
     passes = ["-mlir-print-op-generic"] + list(args)
     if arch == "gcu410":
         arch = "gcu400"
     return _run_command2(f"triton-{arch}-opt", content, *passes)
 
+
 def gcu_compiler_opt(content, *args):
     passes = ["-mlir-print-op-generic"] + list(args)
     return _run_command("gcu-compiler-opt", content, *passes)
 
+
 def compile(content, *args):
     return _run_command("gcu-compiler-compile", content, *args)
+
 
 # Return the boolean value of an environment variable.
 #
@@ -82,7 +80,7 @@ def compile(content, *args):
 def get_bool_env(env, defaultValue=False):
     s = os.getenv(env, "").lower()
     if (s == "1" or s == "true" or s == "on"):
-       return True
+        return True
     if (s == "0" or s == "false" or s == "off"):
-       return False
+        return False
     return defaultValue

@@ -17,8 +17,8 @@
 #ifndef KURANA_TRITONGPU_TO_GCU_UTILITY_H
 #define KURANA_TRITONGPU_TO_GCU_UTILITY_H
 
-#include <string>
 #include <map>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -61,8 +61,8 @@ struct TagInfo {
   bool isShared;
 
   TagInfo() = default;
-  TagInfo(mlir::Value tag, mlir::Value idx, bool isShared) :
-      tag(tag), idx(idx), isShared(isShared) {}
+  TagInfo(mlir::Value tag, mlir::Value idx, bool isShared)
+      : tag(tag), idx(idx), isShared(isShared) {}
   TagInfo(const TagInfo &other) = default;
   TagInfo(TagInfo &&other) = default;
 
@@ -101,7 +101,7 @@ class PrivateTagPool {
   std::vector<bool> bitset;
 
   ///  All tags
-  mlir::Operation* tagsAllocOp;
+  mlir::Operation *tagsAllocOp;
 
   /// before the operation, we can release corresponding tag.
   llvm::DenseMap<Operation *, std::vector<TagInfo>> op2TagInfoMap;
@@ -109,8 +109,8 @@ class PrivateTagPool {
   /// All tags locate at callee func's argument.
   llvm::DenseMap<llvm::StringRef, int32_t> funcName2TagArgPos;
 
- public:
-  PrivateTagPool(mlir::Operation* entryFunc, int32_t numWarps) {
+public:
+  PrivateTagPool(mlir::Operation *entryFunc, int32_t numWarps) {
     OpBuilder builder(entryFunc);
     auto func = llvm::dyn_cast<FunctionOpInterface>(entryFunc);
     auto firstOp = &func.getFunctionBody().getBlocks().front().front();
@@ -119,27 +119,24 @@ class PrivateTagPool {
     size = size > 0 ? size : 1;
     peakSize = 1;
     bitset = std::vector<bool>(size, false);
-    bitset[0] = true;  // for sync tag
+    bitset[0] = true; // for sync tag
 
     auto tagType =
         MemRefType::get(ArrayRef<int64_t>{size}, builder.getI32Type());
     builder.setInsertionPoint(firstOp);
-    tagsAllocOp =
-        builder.create<memref::AllocOp>(entryFunc->getLoc(), tagType);
+    tagsAllocOp = builder.create<memref::AllocOp>(entryFunc->getLoc(), tagType);
     tagsAllocOp->setAttr("gcu_private_tag", builder.getUnitAttr());
   }
 
-  ~PrivateTagPool() {
-    updateUsedSize();
-  }
+  ~PrivateTagPool() { updateUsedSize(); }
 
   PrivateTagPool(const PrivateTagPool &other) = delete;
   PrivateTagPool(PrivateTagPool &&other) = delete;
   PrivateTagPool &operator=(const PrivateTagPool &other) = delete;
   PrivateTagPool &operator=(PrivateTagPool &&other) = delete;
 
- public:
-  TagInfo getSyncTagInfo(mlir::Operation* op) {
+public:
+  TagInfo getSyncTagInfo(mlir::Operation *op) {
     auto loc = op->getLoc();
     auto builder = OpBuilder(op);
     auto tags = getTagsValue(op);
@@ -147,7 +144,7 @@ class PrivateTagPool {
     return TagInfo(tags, zero, false);
   }
 
-  TagInfo trygGetAsyncTagInfo(mlir::Operation* op) {
+  TagInfo trygGetAsyncTagInfo(mlir::Operation *op) {
     int32_t idx = -1;
     for (int32_t i = 1; i < size; i++) {
       if (!bitset[i]) {
@@ -174,7 +171,7 @@ class PrivateTagPool {
     op2TagInfoMap[op].push_back(tagInfo);
   }
 
-  bool isExistInMap(Operation* op) const {
+  bool isExistInMap(Operation *op) const {
     return op2TagInfoMap.count(op) != 0;
   }
 
@@ -189,9 +186,7 @@ class PrivateTagPool {
     op2TagInfoMap.erase(op);
   }
 
-  Type getTagsType() {
-    return tagsAllocOp->getResult(0).getType();
-  }
+  Type getTagsType() { return tagsAllocOp->getResult(0).getType(); }
 
   /// Tag memref for DMA sync; must be a value visible in `op`'s region (e.g.
   /// partition block arg for isolated `warp_specialize` partition regions).
@@ -228,8 +223,8 @@ class PrivateTagPool {
       SmallVector<Type> newResultTypes =
           llvm::to_vector(currentType.getResults());
       newInputTypes[argPos] = tagsType;
-      FunctionType newFuncType = FunctionType::get(
-          funcOp.getContext(), newInputTypes, newResultTypes);
+      FunctionType newFuncType =
+          FunctionType::get(funcOp.getContext(), newInputTypes, newResultTypes);
       funcOp.setType(newFuncType);
       Block &entryBlock = funcOp.getBody().front();
       entryBlock.getArgument(argPos).setType(tagsType);
@@ -245,8 +240,8 @@ class PrivateTagPool {
   }
 };
 
-}  // namespace gcu
-}  // namespace triton
+} // namespace gcu
+} // namespace triton
 
 void captureValuesToWarpSpecializeOp(Operation *entryFunc, Value capture);
 Value getPrivateDTETag(OpBuilder &builder, Operation *op);
@@ -268,9 +263,8 @@ promoteLastUser(std::pair<Operation *, int> &lastUser,
                 triton::gcu::FirstLastUserAnalysis &userAnalysis,
                 std::map<Operation *, Operation *> &replaced2Origin);
 
-void addDeallocAfterLastUser(
-    OpBuilder &builder, std::pair<Operation *, int> lastUser,
-    Value alloc);
+void addDeallocAfterLastUser(OpBuilder &builder,
+                             std::pair<Operation *, int> lastUser, Value alloc);
 Value syncAllocOp(OpBuilder &builder, Location &loc,
                   std::pair<Operation *, int> lastUser,
                   triton::gcu::FirstLastUserAnalysis &userAnalysis,
@@ -291,28 +285,25 @@ void doMemFence(OpBuilder &rewriter, Operation *op);
 void doMemsetConfig(OpBuilder &rewriter, Location loc, Value output, Value v,
                     triton::gcu::TagInfo tag);
 
-void doMemset(OpBuilder &rewriter,
-              triton::gcu::PrivateTagPool &pTagPool,
+void doMemset(OpBuilder &rewriter, triton::gcu::PrivateTagPool &pTagPool,
               Operation *op, Value output, Value v, int totalNumElems);
 
-Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
-                        Type type, Value buffer,
-                        bool onlyThread0,
+Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
+                        Value buffer, bool onlyThread0,
                         std::pair<Operation *, int> lastTTUser,
                         std::pair<Operation *, int> firstTTUser,
                         triton::gcu::FirstLastUserAnalysis &userAnalysis,
                         std::map<Operation *, Operation *> &replaced2Origin);
-Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
-                        Type type, Value buffer,
-                        bool onlyThread0,
+Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
+                        Value buffer, bool onlyThread0,
                         std::pair<Operation *, int> lastTTUser,
                         std::pair<Operation *, int> firstTTUser,
                         triton::gcu::FirstLastUserAnalysis &userAnalysis,
                         std::map<Operation *, Operation *> &replaced2Origin);
 
 void storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
-                      TensorType type, Value sharedBuffer,
-                      Value buffer, bool onlyThread0);
+                      TensorType type, Value sharedBuffer, Value buffer,
+                      bool onlyThread0);
 Value storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
                        TensorType type, Value buffer, bool onlyThread0,
                        std::pair<Operation *, int> lastTTUser,
@@ -326,30 +317,30 @@ void AnalysisYieldOperendUseStage(
     std::map<Operation *, std::map<uint64_t, bool>>
         &TTYeiledOPerandHasMultiUseStage);
 
-void GetOrderValueByStride(OpBuilder &rewriter, Location loc,
-  SmallVector<unsigned> nInitStrideDims, SmallVector<Value, 4> &initStride,
-  SmallVector<Value, 4> &initShape, SmallVector<Value, 4> &initOffset,
-  SmallVector<Value, 4> &orderStride, SmallVector<Value, 4> &orderShape,
-  SmallVector<Value, 4> &orderOffset, SmallVector<Value, 4> &vOrder);
+void GetOrderValueByStride(
+    OpBuilder &rewriter, Location loc, SmallVector<unsigned> nInitStrideDims,
+    SmallVector<Value, 4> &initStride, SmallVector<Value, 4> &initShape,
+    SmallVector<Value, 4> &initOffset, SmallVector<Value, 4> &orderStride,
+    SmallVector<Value, 4> &orderShape, SmallVector<Value, 4> &orderOffset,
+    SmallVector<Value, 4> &vOrder);
 
-Value ConfigGcuLoad(
-      OpBuilder &rewriter, Location loc,
-      triton::gcu::PrivateTagPool &pTagPool,
-      Value srcOut, mlir::Operation *op, MemRefType resultType,
-      Value loadPtr, mlir::ValueRange configStrides,
-      mlir::ValueRange configShapes, Value defaultValue,
-      triton::gcu::TagInfo tag, bool IsShareOutput = false);
+Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
+                    triton::gcu::PrivateTagPool &pTagPool, Value srcOut,
+                    mlir::Operation *op, MemRefType resultType, Value loadPtr,
+                    mlir::ValueRange configStrides,
+                    mlir::ValueRange configShapes, Value defaultValue,
+                    triton::gcu::TagInfo tag, bool IsShareOutput = false);
 
 Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
-      mlir::Operation *op, MemRefType storeValueType,
-      Value storePtr, mlir::ValueRange configStrides,
-      mlir::ValueRange configShapes, triton::gcu::TagInfo tag);
+                     mlir::Operation *op, MemRefType storeValueType,
+                     Value storePtr, mlir::ValueRange configStrides,
+                     mlir::ValueRange configShapes, triton::gcu::TagInfo tag);
 
 void WaitGcuLoadStore(OpBuilder &rewriter, Location loc,
-      triton::gcu::TagInfo tag, Value totalSize);
+                      triton::gcu::TagInfo tag, Value totalSize);
 
-void moveDeallocOp(ConversionPatternRewriter& rewriter,
-                   Value v, Operation* pos, size_t depth);
+void moveDeallocOp(ConversionPatternRewriter &rewriter, Value v, Operation *pos,
+                   size_t depth);
 
 void mergeContinuousDims(OpBuilder &subBuilder, Location loc,
                          Value &sharedMemref, Value &warpMemref,
@@ -358,10 +349,9 @@ void mergeContinuousDims(OpBuilder &subBuilder, Location loc,
                          MemRefType &sharedMemType, MemRefType &warpMemType,
                          Value &sharedBuffer, Value &warpOutput);
 
-
 namespace triton {
 namespace gcu {
-bool get_bool_env(const char* name);
+bool get_bool_env(const char *name);
 
 Value createConstantZero(OpBuilder &builder, Location loc, Type elemType);
 Value createConstantNaN(OpBuilder &builder, Location loc, Type elemType);
@@ -394,7 +384,7 @@ public:
   Value tarGather(VectorType type, Value &tarAddr, Value num, Value other,
                   Value mask);
   void tarScatter(Value &tarAddr, Value v, Value num, Value mask);
-  void tarJump(Value &tarAddr, const Value& tarValue);
+  void tarJump(Value &tarAddr, const Value &tarValue);
 
 private:
   Location loc;
