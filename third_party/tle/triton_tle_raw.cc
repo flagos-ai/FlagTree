@@ -131,14 +131,23 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   tgts = dslRegionOp.getOutputs().getTypes();
   for (auto &oldBlock : func.getBlocks()) {
     for (Operation &operation : oldBlock.getOperations()) {
-      SmallVector<Value> operands, yields;
-      if (dslRegionOp.getNumResults() == 0) {
-        operands = {};
-      } else if (dslRegionOp.getNumResults() == 1) {
-        operands = callOp.getResults();
-      } else {
-        operands = flatten(
-            self, cast<TypedValue<LLVM::LLVMStructType>>(callOp.getResult()));
+      if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
+        SmallVector<Value> operands, yields;
+        if (dslRegionOp.getNumResults() == 0) {
+          operands = {};
+        } else if (dslRegionOp.getNumResults() == 1) {
+          operands = callOp.getResults();
+        } else {
+          operands = flatten(
+              self, cast<TypedValue<LLVM::LLVMStructType>>(callOp.getResult()));
+        }
+        TypeRange tgts = dslRegionOp.getOutputs().getTypes();
+        for (Value operand : operands) {
+          SmallVector<Value> rets =
+              tle::protocol::ReturnPattern::apply(self, tgts, operand);
+          yields.append(std::move(rets));
+        }
+        builder.create<tle::YieldOp>(operation.getLoc(), yields);
       }
       TypeRange tgts = dslRegionOp.getOutputs().getTypes();
       for (Value operand : operands) {
