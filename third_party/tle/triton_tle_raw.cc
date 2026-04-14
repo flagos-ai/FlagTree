@@ -92,17 +92,6 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
           !isa<LLVM::ModuleFlagsOp>(op)) {
         builder.clone(op);
       }
-      op.walk([](LLVM::ReturnOp returnOp) {
-        llvm::outs() << "Found returnOp: ";
-        returnOp->print(llvm::outs());
-        llvm::outs() << "\nreturnOp operands (" << returnOp->getNumOperands()
-                     << "):\n";
-        for (auto [i, operand] : llvm::enumerate(returnOp->getOperands())) {
-          llvm::outs() << "  operand[" << i << "]: ";
-          operand.print(llvm::outs());
-          llvm::outs() << " type: " << operand.getType() << "\n";
-        }
-      });
     }
   }
   LLVM::LLVMFuncOp funcOp =
@@ -142,16 +131,6 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   tgts = dslRegionOp.getOutputs().getTypes();
   for (auto &oldBlock : func.getBlocks()) {
     for (Operation &operation : oldBlock.getOperations()) {
-      if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
-        llvm::outs() << "Found returnOp: ";
-        returnOp->print(llvm::outs());
-        llvm::outs() << "\nreturnOp operands (" << returnOp->getNumOperands()
-                     << "):\n";
-        for (auto [i, operand] : llvm::enumerate(returnOp->getOperands())) {
-          llvm::outs() << "  operand[" << i << "]: ";
-          operand.print(llvm::outs());
-          llvm::outs() << " type: " << operand.getType() << "\n";
-        }
         SmallVector<Value> operands, yields;
         if (dslRegionOp.getNumResults() == 0) {
           operands = {};
