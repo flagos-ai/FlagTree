@@ -5,7 +5,7 @@ from mlir.dialects import arith, math, memref, nvvm, scf
 import torch
 import triton
 import triton.language as tl
-from triton.experimental.tle.raw import dialect, InOut, Input
+from triton.experimental.tle.raw import dialect, Input
 import triton.experimental.tle.language.raw as tle_raw
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
@@ -21,7 +21,7 @@ def naive_softmax(x):
 
 
 @dialect(name="mlir")
-def edsl(y: InOut[L["memref<?xf32, 3>"]], x: Input[L["memref<?xf32, 3>"]]):
+def edsl(y: Input[L["memref<?xf32, 3>"]], x: Input[L["memref<?xf32, 3>"]]) -> L["memref<?xf32, 3>"]:
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
@@ -102,6 +102,7 @@ def edsl(y: InOut[L["memref<?xf32, 3>"]], x: Input[L["memref<?xf32, 3>"]]):
         val = arith.divf(val, sum_val)
         memref.store(val, y, [i])
         scf.yield_([])
+    return y
 
 
 @triton.jit
