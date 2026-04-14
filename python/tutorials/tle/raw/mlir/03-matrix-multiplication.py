@@ -71,7 +71,7 @@ def edsl(
     n = memref.dim(c, arith.constant(ir.IndexType.get(), 1))
     k = memref.dim(a, arith.constant(ir.IndexType.get(), 1))
     numel = arith.muli(m, n)
-    cref=c
+    cref = c
     for i in scf.for_(tidx, numel, bdimx):
         row = arith.divsi(i, n)
         col = arith.remsi(i, n)

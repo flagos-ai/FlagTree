@@ -95,7 +95,8 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
       op.walk([](LLVM::ReturnOp returnOp) {
         llvm::outs() << "Found returnOp: ";
         returnOp->print(llvm::outs());
-        llvm::outs() << "\nreturnOp operands (" << returnOp->getNumOperands() << "):\n";
+        llvm::outs() << "\nreturnOp operands (" << returnOp->getNumOperands()
+                     << "):\n";
         for (auto [i, operand] : llvm::enumerate(returnOp->getOperands())) {
           llvm::outs() << "  operand[" << i << "]: ";
           operand.print(llvm::outs());
@@ -144,7 +145,8 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
       if (LLVM::ReturnOp returnOp = dyn_cast<LLVM::ReturnOp>(operation)) {
         llvm::outs() << "Found returnOp: ";
         returnOp->print(llvm::outs());
-        llvm::outs() << "\nreturnOp operands (" << returnOp->getNumOperands() << "):\n";
+        llvm::outs() << "\nreturnOp operands (" << returnOp->getNumOperands()
+                     << "):\n";
         for (auto [i, operand] : llvm::enumerate(returnOp->getOperands())) {
           llvm::outs() << "  operand[" << i << "]: ";
           operand.print(llvm::outs());
