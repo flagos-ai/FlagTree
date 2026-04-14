@@ -84,8 +84,14 @@ private:
     auto promotedOperands = this->getTypeConverter()->promoteOperands(
         callOp.getLoc(), /*opOperands=*/callOp->getOperands(),
         adaptor.getOperands(), rewriter);
+#ifdef __TLE__
+    // The call-site offset is sufficient to derive the callee frame base.
+    // Kernel callers do not carry `allocation.offset` themselves.
+    if (!callOp->hasAttr("allocation.offset")) {
+#else
     if (!caller->hasAttr("allocation.offset") ||
         !callOp->hasAttr("allocation.offset")) {
+#endif
       auto base = LLVM::getStackPointer(rewriter, caller);
       promotedOperands.push_back(base);
     } else {

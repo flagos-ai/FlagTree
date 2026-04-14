@@ -3,6 +3,7 @@
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "tle/dialect/include/IR/Dialect.h"
@@ -18,24 +19,23 @@ namespace {
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
-constexpr llvm::StringLiteral kRemoteShardCarrierAttr =
-    "tle.remote_shard_id_carrier";
-constexpr llvm::StringLiteral kTTContiguityAttr = "tt.contiguity";
-constexpr llvm::StringLiteral kTTDivisibilityAttr = "tt.divisibility";
-constexpr llvm::StringLiteral kTTConstancyAttr = "tt.constancy";
 
-void copyAxisInfoAttrs(Operation *src, Operation *dst) {
-  if (!src || !dst)
-    return;
-  auto tryCopy = [&](StringRef name) {
-    if (dst->getDiscardableAttr(name))
-      return;
-    if (auto attr = src->getDiscardableAttr(name))
-      dst->setDiscardableAttr(name, attr);
-  };
-  tryCopy(kTTContiguityAttr);
-  tryCopy(kTTDivisibilityAttr);
-  tryCopy(kTTConstancyAttr);
+Value mapSharedToClusterPointer(ConversionPatternRewriter &rewriter,
+                                Location loc, Value ptr, Value ctaId) {
+  auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(ptr.getType());
+  if (!ptrTy)
+    return Value();
+  const unsigned sharedAddrSpace =
+      static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared);
+  const unsigned clusterSharedAddrSpace =
+      static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster);
+  if (ptrTy.getAddressSpace() == clusterSharedAddrSpace)
+    return ptr;
+  if (ptrTy.getAddressSpace() != sharedAddrSpace)
+    return Value();
+  auto clusterPtrTy =
+      LLVM::LLVMPointerType::get(rewriter.getContext(), clusterSharedAddrSpace);
+  return NVVM::MapaOp::create(rewriter, loc, clusterPtrTy, ptr, ctaId);
 }
 
 struct LocalPointersOpConversion
@@ -130,29 +130,61 @@ struct LocalPointersOpConversion
       return reportFailure("shared memory offsets rank mismatch");
 
     auto indexVals = adaptor.getIndices();
-    if (indexVals.size() != bufferRank)
-      return reportFailure("indices must provide buffer-rank values");
+    const bool hasExplicitIndices = !indexVals.empty();
+    if (hasExplicitIndices) {
+      if (indexVals.size() != bufferRank)
+        return reportFailure("indices must provide buffer-rank values");
+    } else {
+      if (!resultTensorTy && bufferRank != 0)
+        return reportFailure(
+            "zero-index scalar local_pointers requires rank-0 buffer");
+      if (resultTensorTy && resultTensorTy.getShape() != memDescTy.getShape())
+        return reportFailure(
+            "zero-index tensor local_pointers requires full buffer shape");
+    }
 
     SmallVector<SmallVector<Value>> indexElems;
-    indexElems.reserve(indexVals.size());
-    for (Value indexVal : indexVals) {
-      if (resultTensorTy) {
-        auto elems = unpackLLElements(loc, indexVal, rewriter);
-        if (elems.size() != outVals.size())
-          return reportFailure(
-              "indices tensors must match local_pointers result shape");
-        indexElems.push_back(std::move(elems));
-      } else {
-        Value scalar = ensureI32(indexVal);
-        if (!scalar)
-          return reportFailure("scalar indices must lower to i32 values");
-        indexElems.push_back(SmallVector<Value>{scalar});
+    if (hasExplicitIndices) {
+      indexElems.reserve(indexVals.size());
+      for (Value indexVal : indexVals) {
+        if (resultTensorTy) {
+          auto elems = unpackLLElements(loc, indexVal, rewriter);
+          if (elems.size() != outVals.size())
+            return reportFailure(
+                "indices tensors must match local_pointers result shape");
+          indexElems.push_back(std::move(elems));
+        } else {
+          Value scalar = ensureI32(indexVal);
+          if (!scalar)
+            return reportFailure("scalar indices must lower to i32 values");
+          indexElems.push_back(SmallVector<Value>{scalar});
+        }
+      }
+    } else if (resultTensorTy) {
+      auto fullCoords =
+          emitIndices(loc, rewriter, targetInfo, resultTensorTy.getEncoding(),
+                      resultTensorTy,
+                      /*withCTAOffset=*/false);
+      if (fullCoords.size() != outVals.size())
+        return reportFailure(
+            "failed to synthesize full indices for local_pointers");
+      indexElems.assign(bufferRank, SmallVector<Value>{});
+      for (size_t idx = 0; idx < fullCoords.size(); ++idx) {
+        if (fullCoords[idx].size() != bufferRank)
+          return reportFailure("synthesized full indices rank mismatch");
+        for (size_t dim = 0; dim < bufferRank; ++dim) {
+          Value coord = ensureI32(fullCoords[idx][dim]);
+          if (!coord)
+            return reportFailure(
+                "synthesized full indices must lower to i32 values");
+          indexElems[dim].push_back(coord);
+        }
       }
     }
 
     for (size_t idx = 0; idx < outVals.size(); ++idx) {
       SmallVector<Value> idxCoords;
-      idxCoords.reserve(indexVals.size());
+      idxCoords.reserve(bufferRank);
       for (size_t dim = 0; dim < indexElems.size(); ++dim) {
         Value val = ensureI32(indexElems[dim][idx]);
         if (!val)
@@ -165,7 +197,10 @@ struct LocalPointersOpConversion
       }
 
       Value elemOffset;
-      if (auto paddedEnc = dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
+      if (bufferRank == 0) {
+        elemOffset = b.i32_val(0);
+      } else if (auto paddedEnc =
+                     dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
         auto order = ttg::getOrder(sharedEnc, memDescTy.getShape());
         elemOffset =
             LLVM::linearize(rewriter, loc, idxCoords, bufferShape, order);
@@ -177,9 +212,43 @@ struct LocalPointersOpConversion
           logicalOffsets.push_back({dim, offset});
         LinearLayout sharedLayout = ttg::toLinearLayout(memDescTy);
         sharedLayout = sharedLayout.sublayout({kOffset}, dimNames);
-        elemOffset = applyLinearLayout(loc, rewriter, sharedLayout.invert(),
-                                       logicalOffsets)[0]
-                         .second;
+        LinearLayout invSharedLayout = sharedLayout.invert();
+
+        // Be robust to non-canonical input ordering produced by upstream
+        // transformations: reorder offsets to match the inverted layout's
+        // expected in-dim order before applying the mapping.
+        SmallVector<std::pair<StringAttr, Value>> orderedLogicalOffsets;
+        orderedLogicalOffsets.reserve(invSharedLayout.getNumInDims());
+        for (StringAttr inDim : invSharedLayout.getInDimNames()) {
+          bool found = false;
+          for (auto &logical : logicalOffsets) {
+            if (logical.first == inDim) {
+              orderedLogicalOffsets.push_back(logical);
+              found = true;
+              break;
+            }
+          }
+          if (!found)
+            return reportFailure(
+                "missing logical offset for inverted shared-layout in-dim");
+        }
+
+        auto remappedOffsets = applyLinearLayout(loc, rewriter, invSharedLayout,
+                                                 orderedLogicalOffsets);
+        if (remappedOffsets.empty())
+          return reportFailure("failed to remap shared-memory linear offsets");
+
+        bool foundOffset = false;
+        for (auto &mapped : remappedOffsets) {
+          if (mapped.first == kOffset) {
+            elemOffset = mapped.second;
+            foundOffset = true;
+            break;
+          }
+        }
+        if (!foundOffset)
+          return reportFailure(
+              "remapped shared layout does not contain offset");
       }
 
       Value byteOffset = elemOffset;
@@ -212,29 +281,67 @@ private:
 };
 
 struct RemotePointersOpConversion
-    : public OpConversionPattern<tle::RemotePointersOp> {
-  using OpConversionPattern<tle::RemotePointersOp>::OpConversionPattern;
+    : public ConvertOpToLLVMPattern<tle::RemotePointersOp> {
+  RemotePointersOpConversion(LLVMTypeConverter &typeConverter,
+                             PatternBenefit benefit)
+      : ConvertOpToLLVMPattern(typeConverter, benefit) {}
 
   LogicalResult
   matchAndRewrite(tle::RemotePointersOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Value offset = op.getShardId();
-    if (auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType())) {
-      auto shardTy = dyn_cast<RankedTensorType>(offset.getType());
-      if (!shardTy || shardTy.getShape() != srcTy.getShape() ||
-          shardTy.getEncoding() != srcTy.getEncoding()) {
-        auto offsetTy = RankedTensorType::get(
-            srcTy.getShape(), offset.getType(), srcTy.getEncoding());
-        offset =
-            rewriter.create<triton::SplatOp>(op.getLoc(), offsetTy, offset);
-      }
+    auto loc = op.getLoc();
+    auto *typeConverter = getTypeConverter();
+    auto reportFailure = [&](StringRef msg) -> LogicalResult {
+      llvm::errs() << "[RemotePointersOpConversion] " << msg << "\n";
+      return rewriter.notifyMatchFailure(op, msg);
+    };
+
+    auto srcElems = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    if (srcElems.empty())
+      return reportFailure("expected non-empty source pointer elements");
+
+    auto shardElems = unpackLLElements(loc, adaptor.getShardId(), rewriter);
+    if (shardElems.empty())
+      return reportFailure("expected non-empty shard_id elements");
+    if (shardElems.size() != 1 && shardElems.size() != srcElems.size())
+      return reportFailure(
+          "shard_id must be scalar or match source pointer element count");
+
+    auto ensureI32 = [&](Value v) -> Value {
+      if (!v)
+        return Value();
+      if (v.getType().isInteger(32))
+        return v;
+      auto intTy = dyn_cast<IntegerType>(v.getType());
+      if (!intTy)
+        return Value();
+      if (intTy.getWidth() > 32)
+        return rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), v);
+      if (intTy.isUnsigned())
+        return rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI32Type(), v);
+      return rewriter.create<LLVM::SExtOp>(loc, rewriter.getI32Type(), v);
+    };
+
+    SmallVector<Value> mappedPtrs;
+    mappedPtrs.reserve(srcElems.size());
+    for (auto [idx, srcPtr] : llvm::enumerate(srcElems)) {
+      if (!isa<LLVM::LLVMPointerType>(srcPtr.getType()))
+        return reportFailure("source elements must lower to LLVM pointers");
+      Value shardVal =
+          shardElems.size() == 1 ? shardElems.front() : shardElems[idx];
+      Value ctaId = ensureI32(shardVal);
+      if (!ctaId)
+        return reportFailure("shard_id must lower to i32 scalar elements");
+      Value mappedPtr = mapSharedToClusterPointer(rewriter, loc, srcPtr, ctaId);
+      if (!mappedPtr)
+        return reportFailure("source pointers must lower to "
+                             "shared/cluster-shared address space");
+      mappedPtrs.push_back(mappedPtr);
     }
-    auto addPtr = rewriter.create<triton::AddPtrOp>(op.getLoc(), op.getType(),
-                                                    op.getSrc(), offset);
-    addPtr->setAttr(kRemoteShardCarrierAttr, rewriter.getUnitAttr());
-    copyAxisInfoAttrs(op.getOperation(), addPtr.getOperation());
-    copyAxisInfoAttrs(op.getSrc().getDefiningOp(), addPtr.getOperation());
-    rewriter.replaceOp(op, addPtr.getResult());
+
+    Value packed =
+        packLLElements(loc, typeConverter, mappedPtrs, rewriter, op.getType());
+    rewriter.replaceOp(op, packed);
     return success();
   }
 };
@@ -245,6 +352,11 @@ void tle::populateLocalPointersOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
     RewritePatternSet &patterns, PatternBenefit benefit) {
   patterns.add<LocalPointersOpConversion>(typeConverter, targetInfo, benefit);
-  patterns.add<RemotePointersOpConversion>(typeConverter, patterns.getContext(),
-                                           benefit);
+}
+
+void tle::populateRemotePointersOpToLLVMPatterns(
+    LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
+    RewritePatternSet &patterns, PatternBenefit benefit) {
+  (void)targetInfo;
+  patterns.add<RemotePointersOpConversion>(typeConverter, benefit);
 }

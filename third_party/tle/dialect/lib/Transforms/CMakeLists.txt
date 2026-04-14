@@ -1,8 +1,12 @@
 # flagtree tle
 add_triton_library(TritonTLETransforms
   TleEarlyAssignMemorySpace.cpp
-  TleAssignLocalPointersEncoding.cpp
+  TleSelectEncodings.cpp
   TleInsertLocalPointerBarriers.cpp
+  TleOptimizeLocalPointerLoads.cpp
+  TleOptimizeLocalPointerStores.cpp
+  TleOptimizeExclusiveCumsumLayouts.cpp
+  TleLowerExclusiveCumsum.cpp
   TleLowerAsyncLoad.cpp
   TleTileToLLVMUtils.cpp
   ExtractTileToLLVM.cpp
@@ -11,7 +15,9 @@ add_triton_library(TritonTLETransforms
   TleLowerInsertTile.cpp
   TleLowerTmaCopy.cpp
   ConvertArgToMemDesc.cpp
+  RemoveRedundantCopy.cpp
   DSLRegionInline.cpp
+  TleUtility.cpp
 
   DEPENDS
   TritonTLETransformsIncGen

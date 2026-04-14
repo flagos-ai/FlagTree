@@ -12,20 +12,19 @@ flagtree_submodules = {
     "flir":
     tools.Module(name="flir", url="https://github.com/FlagTree/flir.git",
                  dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "flir")),
+    "flagcx":
+    tools.Module(name="flagcx", url="https://github.com/flagos-ai/FlagCX.git",
+                 dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "tle/third_party/flagcx")),
 }
 
 
 def activate(backend, suffix=".py"):
-    if not backend:
-        backend = "default"
+    backend = backend or "default"
     module_path = Path(os.path.dirname(__file__)) / backend
     module_path = str(module_path) + suffix
     spec = importlib.util.spec_from_file_location("module", module_path)
     module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        pass
+    spec.loader.exec_module(module)
     return module
 
 

@@ -2,6 +2,7 @@
 #define TRITON_CONVERSION_TRITONGPU_TO_LLVM_TARGETINFOBASE_H
 
 #include "triton/Conversion/MLIRTypes.h"
+#include <optional>
 
 namespace mlir::triton {
 enum class ProgramIDDim : uint32_t;
@@ -65,6 +66,15 @@ public:
                           SmallVector<Value> &acc, triton::ReduceOp op,
                           unsigned numLaneToReduce,
                           unsigned interleave) const = 0;
+
+#ifdef __TLE__
+  // Optional fastpath for CTA-wide boolean OR reduction.
+  // Returns std::nullopt when unsupported so callers can fall back.
+  virtual std::optional<Value>
+  ctaReduceOrPredicate(RewriterBase &rewriter, Location loc, Value pred) const {
+    return std::nullopt;
+  }
+#endif
 
   virtual std::string getMulhiFuncName(Type resultElementTy) const = 0;
   // Emits LLVM code with |rewriter| to print a message following the given

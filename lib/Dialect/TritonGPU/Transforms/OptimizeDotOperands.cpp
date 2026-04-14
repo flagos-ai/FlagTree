@@ -66,6 +66,32 @@ public:
     if (newInnerCvtEnc == cvtEncoding)
       return failure();
     rewriter.setInsertionPoint(trans);
+#ifdef __TLE__
+    // If the source is already loaded from a shared memdesc allocated in this
+    // function, directly retag that memdesc encoding and avoid inserting an
+    // additional local_alloc staging buffer.
+    if (auto srcLocalLoad = trans.getSrc().getDefiningOp<LocalLoadOp>()) {
+      Value srcMemDesc = srcLocalLoad.getSrc();
+      auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
+      if (srcMemDescTy && srcMemDescTy.getShape() == srcTy.getShape() &&
+          srcMemDescTy.getElementType() == srcTy.getElementType() &&
+          srcMemDesc.getDefiningOp<LocalAllocOp>()) {
+        auto updatedMemDescTy = MemDescType::get(
+            srcMemDescTy.getShape(), srcMemDescTy.getElementType(),
+            newInnerCvtEnc, srcMemDescTy.getMemorySpace(),
+            srcMemDescTy.getMutableMemory(), srcMemDescTy.getAllocShape());
+        srcMemDesc.setType(updatedMemDescTy);
+        auto newTrans = rewriter.create<MemDescTransOp>(
+            trans.getLoc(), srcMemDesc, ArrayRef<int32_t>({1, 0}));
+        auto localLoadOp = rewriter.create<LocalLoadOp>(
+            trans.getLoc(), sharedLoadTy, newTrans, srcLocalLoad.getToken());
+        rewriter.modifyOpInPlace(cvtOp, [&]() {
+          cvtOp.getSrcMutable().assign(localLoadOp.getResult());
+        });
+        return success();
+      }
+    }
+#endif
     auto sharedMemorySpace = SharedMemorySpaceAttr::get(getContext());
     auto alloc = LocalAllocOp::create(
         rewriter, trans.getLoc(),
