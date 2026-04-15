@@ -620,8 +620,10 @@ class GCUBackend(object):
         return {"triton.language.extra.libdevice": libdevice}
 
 
-driver = GCUBackend()
 """ never use
+
+driver = GCUBackend()
+
 class Kernel(object):
 
     def __init__(self, name, mod, func, launcher, constants):
