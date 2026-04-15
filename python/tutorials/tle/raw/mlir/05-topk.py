@@ -7,6 +7,7 @@ import torch
 import triton
 from triton.experimental.tle.raw import dialect, InOut, Input
 from triton.experimental.tle.raw.mlir import vassert
+import triton.experimental.tle.language.gpu as tle_gpu
 import triton.experimental.tle.language.raw as tle_raw
 import triton.language as tl
 
@@ -475,31 +476,49 @@ def kernel_bucket_sort_topk_edsl(  # grid(B,)
     l_end_idx = tl.load(ends + i_b).to(tl.int32)
 
     # Kernel1: Compute histogram
-    s_histogram = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
+    s_histogram_init = tl.zeros([HISTOGRAM_SIZE], dtype=tl.int32)
+    s_histogram_smem = tle_gpu.alloc(shape=[HISTOGRAM_SIZE], dtype=tl.int32, layout=None, scope=tle_gpu.smem,
+                                     init_value=s_histogram_init, nv_mma_shared_layout=False)
 
     # Kernel2: Call edsl1 for topk selection (threshold calculated in edsl1)
-    thre_bin_sum_buf = tl.zeros([1], dtype=tl.int32)
-    l_new_topk_buf = tl.zeros([1], dtype=tl.int32)
-    s_threshold_bin_id = tl.zeros([1], dtype=tl.int32)
+    thre_bin_sum_buf_init = tl.zeros([1], dtype=tl.int32)
+    thre_bin_sum_buf_smem = tle_gpu.alloc(shape=[1], dtype=tl.int32, layout=None, scope=tle_gpu.smem,
+                                          init_value=thre_bin_sum_buf_init, nv_mma_shared_layout=False)
+
+    l_new_topk_buf_init = tl.zeros([1], dtype=tl.int32)
+    l_new_topk_buf_smem = tle_gpu.alloc(shape=[1], dtype=tl.int32, layout=None, scope=tle_gpu.smem,
+                                        init_value=l_new_topk_buf_init, nv_mma_shared_layout=False)
+
+    s_threshold_bin_id_init = tl.zeros([1], dtype=tl.int32)
+    s_threshold_bin_id_smem = tle_gpu.alloc(shape=[1], dtype=tl.int32, layout=None, scope=tle_gpu.smem,
+                                            init_value=s_threshold_bin_id_init, nv_mma_shared_layout=False)
     s = S
     bs = BS
-    k_tensor = tl.full([1], K, dtype=tl.int32)  # Convert constexpr to tensor
-    thre_bin_sum_buf, l_new_topk_buf = tle_raw.call(
+    k_tensor_init = tl.full([1], K, dtype=tl.int32)  # Convert constexpr to tensor
+    k_tensor_smem = tle_gpu.alloc(shape=[1], dtype=tl.int32, layout=None, scope=tle_gpu.smem, init_value=k_tensor_init,
+                                  nv_mma_shared_layout=False)
+
+    thre_bin_sum_buf_smem, l_new_topk_buf_smem = tle_raw.call_smem(
         edsl1,
-        [thre_bin_sum_buf, l_new_topk_buf],
+        [thre_bin_sum_buf_smem, l_new_topk_buf_smem],
         [
-            s_threshold_bin_id,
+            s_threshold_bin_id_smem,
             indices_base,
             s_input_ids_base,
             inputs,
-            s_histogram,
+            s_histogram_smem,
             l_start_idx,
             l_end_idx,
             s,
             bs,
-            k_tensor,
+            k_tensor_smem,
         ],
     )
+
+    thre_bin_sum_ptr = tle_gpu.local_ptr(thre_bin_sum_buf_smem, (tl.arange(0, 1), ))
+    thre_bin_sum_buf = tl.load(thre_bin_sum_ptr)
+    l_new_topk_buf_ptr = tle_gpu.local_ptr(l_new_topk_buf_smem, (tl.arange(0, 1), ))
+    l_new_topk_buf = tl.load(l_new_topk_buf_ptr)
 
     thre_bin_sum = thre_bin_sum_buf.max(0)
     l_new_topk = l_new_topk_buf.max(0)

@@ -190,7 +190,7 @@ def get_extra_install_packages():
     ]
 
 
-def precompile_hock(*args, **kargs):
+def precompile_hook(*args, **kargs):
     third_party_base_dir = Path(kargs['third_party_base_dir'])
     ascend_path = Path(third_party_base_dir) / "ascend"
     patch_path = Path(ascend_path) / "triton_patch"

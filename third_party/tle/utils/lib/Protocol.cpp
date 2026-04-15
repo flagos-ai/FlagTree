@@ -55,6 +55,33 @@ SmallVector<Value> RankedTensorPattern::apply(TritonOpBuilder &builder,
   return rets;
 }
 
+SmallVector<Value> MemDescPattern::apply(TritonOpBuilder &builder,
+                                         TypeRange &tgts, TypedValue<E> src) {
+  const size_t rank = src.getType().getShape().size();
+  SmallVector<Value> rets;
+  Type tgt = tgts[0];
+  LLVM::LLVMPointerType ty = cast<LLVM::LLVMPointerType>(tgt);
+  rets.push_back(builder.create<ExtractAllocatedPtrOp>(ty, src));
+  tgt = tgts[1];
+  ty = cast<LLVM::LLVMPointerType>(tgt);
+  rets.push_back(builder.create<ExtractAlignedPtrOp>(ty, src));
+  tgt = tgts[2];
+  COND_CHECK(tgt.isInteger(64));
+  rets.push_back(builder.create<ExtractOffsetOp>(src));
+  for (size_t i = 3; i < 3 + 2 * rank; ++i) {
+    tgt = tgts[i];
+    COND_CHECK(tgt.isInteger(64));
+  }
+  ExtractSizesOp sizesOp = builder.create<ExtractSizesOp>(rank, src);
+  ExtractStridesOp stridesOp = builder.create<ExtractStridesOp>(rank, src);
+  for (const auto &result :
+       llvm::concat<OpResult>(sizesOp.getResults(), stridesOp.getResults())) {
+    rets.push_back(result);
+  }
+  tgts = tgts.drop_front(3 + 2 * rank);
+  return rets;
+}
+
 SmallVector<Value> PointerPattern::apply(TritonOpBuilder &builder,
                                          TypeRange &tgts, TypedValue<E> src) {
   Type tgt = tgts.front();
@@ -71,9 +98,18 @@ SmallVector<Value> LLVMStructurePattern::apply(TritonOpBuilder &builder,
                                                TypeRange &tgts,
                                                TypedValue<E> src) {
   COND_CHECK(!tgts.empty());
-  RankedTensorType tgt = dyn_cast<RankedTensorType>(tgts.front());
+  mlir::Type tgt;
+  size_t rank;
+  if (auto tensorTy = dyn_cast<RankedTensorType>(tgts.front())) {
+    tgt = tensorTy;
+    rank = tensorTy.getRank();
+  } else if (auto memdescTy = dyn_cast<ttg::MemDescType>(tgts.front())) {
+    tgt = memdescTy;
+    rank = memdescTy.getShape().size();
+  } else {
+    llvm_unreachable("Unsupported LLVM return type");
+  }
   COND_CHECK(tgt);
-  const size_t rank = tgt.getRank();
   LLVM::LLVMStructType structTy = src.getType();
   ArrayRef<Type> types = structTy.getBody();
   const size_t size = types.size();

@@ -175,6 +175,9 @@ def TritonTleLowerInsertTile
 def TleConvertArgToMemDesc
     : Pass<"tle-convert-arg-to-memdesc", "mlir::ModuleOp"> {}
 
+def TleRemoveRedundantCopy
+    : Pass<"tle-remove-redundant-copy", "mlir::ModuleOp"> {}
+
 def TleDSLRegionInline : Pass<"tle-dslregion-inline", "mlir::ModuleOp"> {}
 
 #endif // TRITON_TLE_PASSES
