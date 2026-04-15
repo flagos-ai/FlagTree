@@ -33,6 +33,7 @@ SmallVector<Value> RankedTensorPattern::apply(TritonOpBuilder &builder,
   const size_t rank = src.getType().getRank();
   SmallVector<Value> rets;
   Type tgt = tgts[0];
+  COND_CHECK(isa<LLVM::LLVMPointerType>(tgt));
   LLVM::LLVMPointerType ty = cast<LLVM::LLVMPointerType>(tgt);
   rets.push_back(builder.create<ExtractAllocatedPtrOp>(ty, src));
   tgt = tgts[1];

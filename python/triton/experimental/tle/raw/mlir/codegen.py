@@ -122,10 +122,10 @@ class MLIRCodeGenerator(ast.NodeVisitor):
         ret_val = node.value
         if ret_val is None:
             self._return_values = []
-        elif isinstance(ret_val, ast.Name):
-            self._return_values = [self.lscope[ret_val.id]]
         elif isinstance(ret_val, ast.Tuple):
-            self._return_values = [self.lscope[elt.id] for elt in ret_val.elts]
+            self._return_values = [self.visit(elt) for elt in ret_val.elts]
+        else:
+            self._return_values = [self.visit(ret_val)]
 
     @override
     def visit_List(self, node: ast.List) -> List[Any]:
