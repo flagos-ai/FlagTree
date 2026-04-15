@@ -105,9 +105,7 @@ def Tle_ExclusiveCumsumOp : Tle_Op<"exclusive_cumsum", [Pure, SameOperandsAndRes
   let hasVerifier = 1;
 }
 
-def Tle_WGMMASharedOperandFenceOp : Tle_Op<"wgmma_shared_operand_fence", [
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def Tle_WGMMASharedOperandFenceOp : Tle_Op<"wgmma_shared_operand_fence"> {
   let arguments = (ins
     Variadic<TTG_MemDescType>:$deps,
     BoolAttr:$bCluster

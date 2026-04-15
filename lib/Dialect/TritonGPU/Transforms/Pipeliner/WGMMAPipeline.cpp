@@ -31,6 +31,21 @@ namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 
+#ifdef __TLE__
+static constexpr llvm::StringLiteral kTleExplicitTileStylePipelineAttr(
+    "tle.explicit_tile_style_pipeline");
+
+static bool shouldPreserveAsyncWaitNum(ttg::AsyncWaitOp waitOp) {
+  Operation *parent = waitOp->getParentOp();
+  while (parent) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent))
+      return forOp->hasAttr(kTleExplicitTileStylePipelineAttr);
+    parent = parent->getParentOp();
+  }
+  return false;
+}
+#endif
+
 // Returns whether the dot is such that:
 // 1. The LHS comes from registers and
 // 1.1  The LHS is defined inside the loop
@@ -130,6 +145,10 @@ static int minNumInterleavedCommitOps(Operation *waitOp) {
 void mlir::triton::updateWaits(ModuleOp module) {
   llvm::SmallSetVector<ttg::AsyncWaitOp, 8> waitOps;
   module.walk([&](ttg::AsyncWaitOp waitOp) {
+#ifdef __TLE__
+    if (shouldPreserveAsyncWaitNum(waitOp))
+      return;
+#endif
     int minNumCommits = minNumInterleavedCommitOps(waitOp);
     waitOp.setNum(minNumCommits);
     waitOps.insert(waitOp);

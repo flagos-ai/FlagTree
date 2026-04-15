@@ -82,6 +82,36 @@ def TritonTleOptimizeLocalPointerStores
                            "mlir::triton::tle::TleDialect"];
 }
 
+def TritonTleOptimizeLocalPointerAsyncStores
+    : Pass<"triton-tle-optimize-local-pointer-async-stores", "mlir::ModuleOp"> {
+  let summary =
+      "rewrite gmem load -> tle.local_pointers subview store into async_copy";
+
+  let description = [{
+    This pass matches conservative staging patterns of the form:
+
+      %v = tt.load %gptr ...
+      tt.store %local_ptr_subview, %v ...
+
+    where ``%local_ptr_subview`` is produced by ``tle.local_pointers`` and
+    denotes a static full subview of a backing shared memdesc. The pass
+    rewrites the pair into:
+
+      %sub = ttg.memdesc_subslice %base[...]
+      %tok = ttg.async_copy_global_to_local %gptr, %sub ...
+      %grp = ttg.async_commit_group %tok
+      ttg.async_wait %grp {num = 0}
+
+    The transform is conservative and only fires when the store value is
+    produced by a single-use global load and the subview offsets are static.
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+
 def TritonTlePromoteLocalStoreStaging
     : Pass<"triton-tle-promote-local-store-staging", "mlir::ModuleOp"> {
   let summary =
@@ -111,6 +141,54 @@ def TritonTlePromoteLocalStoreStaging
                            "mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect",
                            "mlir::triton::tle::TleDialect"];
+}
+
+def TritonTleTileStylePipelineSchedule
+    : Pass<"triton-tle-tile-style-pipeline-schedule", "mlir::ModuleOp"> {
+  let summary =
+      "rewrite eligible Triton schedules into a TileLang-style preload-2 pipeline";
+
+  let description = [{
+    This pass runs after Triton loop scheduling and before software pipeline
+    expansion. For carefully selected loops, it rewrites the scheduled stages
+    from a standard ``stage0(load) + stage1(consume)`` layout into a
+    TileLang-style layout with an empty lead stage:
+
+      stage0(load) + stage2(consume)
+
+    together with ``tt.scheduled_max_stage = 2`` and a TLE marker attribute.
+    The resulting pipeline shape creates a two-iteration prologue while keeping
+    the original Triton software pipeliner as the fallback path when the loop
+    is not eligible.
+  }];
+
+  let dependentDialects = ["mlir::scf::SCFDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
+def TritonTleMaterializeTileStylePipeline
+    : Pass<"triton-tle-materialize-tile-style-pipeline", "mlir::ModuleOp"> {
+  let summary =
+      "materialize eligible TLE tile-style loops into explicit prologue/steady/epilogue form";
+
+  let description = [{
+    This pass is the TLE-owned entry point for replacing the native Triton
+    software pipeliner on selected Hopper tile-style loops. The intended final
+    form is an explicitly materialized pipeline:
+
+      prologue(issue 0, issue 1)
+      steady(consume i, issue i + 2)
+      epilogue(drain)
+
+    Initial integration keeps the pass disabled by default and preserves
+    fallback to the native Triton software pipeliner when the loop is not
+    handled.
+  }];
+
+  let dependentDialects = ["mlir::scf::SCFDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
 }
 
 def TritonTleOptimizeExclusiveCumsumLayouts

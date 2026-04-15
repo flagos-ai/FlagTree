@@ -116,6 +116,23 @@ public:
 
 private:
 #ifdef __TLE__
+  void findAsyncCopyToSharedUsers(Value value, DenseSet<Value> &visitedValues,
+                                  llvm::SetVector<Operation *> &result) {
+    if (!visitedValues.insert(value).second)
+      return;
+    for (Operation *user : value.getUsers()) {
+      if (auto asyncCopy = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(user)) {
+        if (asyncCopy.getResult() == value)
+          result.insert(user);
+        continue;
+      }
+      if (user->hasTrait<OpTrait::MemDescViewTrait>()) {
+        for (Value viewResult : user->getResults())
+          findAsyncCopyToSharedUsers(viewResult, visitedValues, result);
+      }
+    }
+  }
+
   bool valueDefinedInside(Value value, Operation *ancestor) const {
     if (Operation *def = value.getDefiningOp())
       return ancestor == def || ancestor->isAncestor(def);
@@ -189,6 +206,13 @@ private:
             return;
           }
         }
+#ifdef __TLE__
+        DenseSet<Value> visitedValues;
+        findAsyncCopyToSharedUsers(localAlloc.getResult(), visitedValues,
+                                   result);
+        if (!result.empty())
+          return;
+#endif
       }
       // if it is not an alloc, iterate over the operands.
       for (auto v : op->getOperands()) {

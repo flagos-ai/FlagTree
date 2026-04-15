@@ -18,6 +18,14 @@ import subprocess
 from pathlib import Path
 
 
+def _use_tle_tile_style_pipeline() -> bool:
+    return os.getenv("FLAGTREE_TLE_TILE_STYLE_PIPELINE", "1") != "0"
+
+
+def _use_tle_materialize_tile_style_pipeline() -> bool:
+    return os.getenv("FLAGTREE_TLE_MATERIALIZE_TILE_STYLE_PIPELINE", "0") != "0"
+
+
 def min_dot_size(target: GPUTarget):
 
     def check_dot_compatibility(lhs_type, rhs_type) -> Tuple[int, int, int]:  # [m, n, k]
@@ -284,6 +292,13 @@ class CUDABackend(BaseBackend):
         tle.passes.add_lower_extract_tile(pm)
         # flagtree tle: lower tle.insert_tile
         tle.passes.add_lower_insert_tile(pm)
+        if _is_tle_enabled():
+            # Canonicalize static gmem->local_ptr(shared) chunk copies after TTIR
+            # has been converted to TTGPU encodings, but before local-pointer
+            # lowering obscures the load->store pattern. This rewrites the
+            # source-level chunk staging into direct async copies targeting
+            # memdesc subviews of the final shared operand buffer.
+            tle.passes.add_optimize_local_pointer_async_stores(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_process_shared_memory_hint(pm)  # flagtree hints
@@ -315,6 +330,10 @@ class CUDABackend(BaseBackend):
             nvidia.passes.hopper.add_hopper_warpspec(pm, opt.num_stages, dump_enabled)
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
             passes.ttgpuir.add_schedule_loops(pm)
+            if _is_tle_enabled() and _use_tle_tile_style_pipeline():
+                tle.passes.add_tile_style_pipeline_schedule(pm)
+            if _is_tle_enabled() and _use_tle_materialize_tile_style_pipeline():
+                tle.passes.add_materialize_tile_style_pipeline(pm)
             passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
         elif capability // 10 >= 10:
             passes.ttgpuir.add_fuse_nested_loops(pm)

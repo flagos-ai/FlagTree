@@ -5,7 +5,10 @@ add_triton_library(TritonTLETransforms
   TleInsertLocalPointerBarriers.cpp
   TleOptimizeLocalPointerLoads.cpp
   TleOptimizeLocalPointerStores.cpp
+  TleOptimizeLocalPointerAsyncStores.cpp
   TlePromoteLocalStoreStaging.cpp
+  TleTileStylePipelineSchedule.cpp
+  TleMaterializeTileStylePipeline.cpp
   TleOptimizeExclusiveCumsumLayouts.cpp
   TleLowerExclusiveCumsum.cpp
   TleLowerAsyncLoad.cpp

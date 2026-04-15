@@ -320,13 +320,29 @@ def tle_sparse_mla_fwd(
 
         kv_ptr = kv_base + kv_ids_safe[:, None] * stride_kvn + offs_d[None, :] * stride_kvd
         kv_msk = mask_ids[:, None] & mask_d[None, :]
-        kv_blk = tl.load(kv_ptr, mask=kv_msk, other=0.0)
-        tl.store(kv_smem_ptr, kv_blk)
+        for d0 in tl.static_range(0, DP, 128):
+            offs_d_chunk = d0 + tl.arange(0, 128)
+            mask_d_chunk = offs_d_chunk < D
+            kv_ptr_chunk = kv_base + kv_ids_safe[:, None] * stride_kvn + offs_d_chunk[None, :] * stride_kvd
+            kv_msk_chunk = mask_ids[:, None] & mask_d_chunk[None, :]
+            kv_rows = tl.broadcast_to(offs_t[:, None], (BK, 128))
+            d_chunk = tl.broadcast_to(offs_d_chunk[None, :], (BK, 128))
+            kv_chunk_ptr = tle.gpu.local_ptr(kv_smem, (kv_rows, d_chunk))
+            kv_chunk = tl.load(kv_ptr_chunk, mask=kv_msk_chunk, other=0.0)
+            tl.store(kv_chunk_ptr, kv_chunk, mask=kv_msk_chunk)
 
         tkv_ptr = tkv_base + kv_ids_safe[:, None] * stride_kvn + offs_td[None, :] * stride_kvd
         tkv_msk = mask_ids[:, None] & mask_td[None, :]
-        tkv_blk = tl.load(tkv_ptr, mask=tkv_msk, other=0.0)
-        tl.store(tkv_smem_ptr, tkv_blk)
+        for td0 in tl.static_range(0, TDP, 16):
+            offs_td_chunk = td0 + tl.arange(0, 16)
+            mask_td_chunk = offs_td_chunk < TD
+            tkv_ptr_chunk = tkv_base + kv_ids_safe[:, None] * stride_kvn + offs_td_chunk[None, :] * stride_kvd
+            tkv_msk_chunk = mask_ids[:, None] & mask_td_chunk[None, :]
+            tkv_rows = tl.broadcast_to(offs_t[:, None], (BK, 16))
+            td_chunk = tl.broadcast_to(offs_td_chunk[None, :], (BK, 16))
+            tkv_chunk_ptr = tle.gpu.local_ptr(tkv_smem, (tkv_rows, td_chunk))
+            tkv_chunk = tl.load(tkv_ptr_chunk, mask=tkv_msk_chunk, other=0.0)
+            tl.store(tkv_chunk_ptr, tkv_chunk, mask=tkv_msk_chunk)
 
         tq_blk = tl.load(tq_smem_ptr)
         q_blk = tl.load(q_smem_ptr)
@@ -775,17 +791,17 @@ def _bench_ms(fn, warmup=200, rep=100):
 
 
 _BENCH_PROVIDERS = (
-    ["triton"]
+    ["triton", "tle"]
     + (["tilelang"] if _HAVE_TILELANG else [])
     + (["flashmla"] if _HAVE_FLASHMLA else [])
 )
 _BENCH_NAMES = (
-    ["Triton"]
+    ["Triton", "TLE"]
     + (["TileLang"] if _HAVE_TILELANG else [])
     + (["FlashMLA"] if _HAVE_FLASHMLA else [])
 )
 _BENCH_STYLES = (
-    [("red", "-")]
+    [("red", "-"), ("orange", "-")]
     + ([("blue", "-")] if _HAVE_TILELANG else [])
     + ([("green", "-")] if _HAVE_FLASHMLA else [])
 )

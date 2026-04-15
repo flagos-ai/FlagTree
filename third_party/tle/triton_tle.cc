@@ -271,8 +271,14 @@ void init_triton_tle_passes(py::module &&m) {
                      tle::createTritonTleOptimizeLocalPointerLoads);
   ADD_PASS_WRAPPER_0("add_optimize_local_pointer_stores",
                      tle::createTritonTleOptimizeLocalPointerStores);
+  ADD_PASS_WRAPPER_0("add_optimize_local_pointer_async_stores",
+                     tle::createTritonTleOptimizeLocalPointerAsyncStores);
   ADD_PASS_WRAPPER_0("add_promote_local_store_staging",
                      tle::createTritonTlePromoteLocalStoreStaging);
+  ADD_PASS_WRAPPER_0("add_tile_style_pipeline_schedule",
+                     tle::createTritonTleTileStylePipelineSchedule);
+  ADD_PASS_WRAPPER_0("add_materialize_tile_style_pipeline",
+                     tle::createTritonTleMaterializeTileStylePipeline);
   ADD_PASS_WRAPPER_0("add_optimize_exclusive_cumsum_layouts",
                      tle::createTritonTleOptimizeExclusiveCumsumLayouts);
   ADD_PASS_WRAPPER_0("add_lower_exclusive_cumsum",

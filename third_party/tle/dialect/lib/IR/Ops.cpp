@@ -196,13 +196,6 @@ LogicalResult WGMMASharedOperandFenceOp::verify() {
   return success();
 }
 
-void WGMMASharedOperandFenceOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  for (OpOperand &dep : getDepsMutable())
-    effects.emplace_back(MemoryEffects::Read::get(), &dep, SharedMemory::get());
-}
-
 // ============================================================================
 // InsertTileOp Type Inference + Verification
 // ============================================================================
