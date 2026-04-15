@@ -77,7 +77,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on NVidia
-        if: steps.check_backend.outputs.should_skip == 'true'
+        if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x

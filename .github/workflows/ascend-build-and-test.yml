@@ -33,7 +33,7 @@ jobs:
           backend: ascend
 
       - name: FlagTree Build on Ascend
-        if: steps.check_backend.outputs.should_skip == 'true'
+        if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
@@ -43,7 +43,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on Ascend
-        if: steps.check_backend.outputs.should_skip == 'true'
+        if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
