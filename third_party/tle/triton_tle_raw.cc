@@ -56,9 +56,9 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 //   - EDSL param type: "i32"
 //   - LLVM func: 1 arg = i32
 //   - Conversion: Use block argument directly
-tle::DSLRegionOp
-createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
-                             const std::vector<Value> &args) {
+tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
+                                              std::string_view text,
+                                              const std::vector<Value> &args) {
   ParserConfig config(self.getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   assert(module && "Failed to parse LLVM IR text");
@@ -96,7 +96,7 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   LLVM::LLVMFuncOp funcOp =
       curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName());
   assert(funcOp && "callee function not found in current module");
-  
+
   // Infer output types from LLVM function's return type
   SmallVector<Type> outputTys;
   Type retTy = funcOp.getFunctionType().getReturnType();
@@ -104,7 +104,7 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
     // For scalar returns (f32, i32, etc.), use the type directly
     outputTys.push_back(retTy);
   }
-  
+
   SmallVector<Value> operands(args.begin(), args.end());
   tle::DSLRegionOp dslRegionOp =
       self.create<tle::DSLRegionOp>(outputTys, operands);
