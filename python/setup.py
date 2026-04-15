@@ -825,7 +825,7 @@ setup(
     zip_safe=False,
     # for PyPI
     keywords=["Compiler", "Deep Learning"],
-    url="https://flagos.io",
+    url="https://github.com/flagos-ai/FlagTree/",
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
