@@ -3513,6 +3513,11 @@ def test_dot_mulbroadcasted(in_dtype, device):
 @pytest.mark.parametrize("dtype_str", int_dtypes + uint_dtypes + float_dtypes + ['bfloat16'])
 @pytest.mark.parametrize("shape", [(), (1, ), (128, )])
 def test_full(dtype_str, shape, device):
+    if dtype_str in uint_dtypes:  # TODO: torch-xpu 2.5 does not support uint
+        from packaging import version
+        torch_version = version.parse(torch.__version__)
+        if torch_version.major == 2 and torch_version.minor == 5:
+            return
     if dtype_str in uint_dtypes and not hasattr(torch, dtype_str):
         # PyTorch only has unsigned 8, but not 16, 32, or 64
         dtype = getattr(torch, dtype_str[1:])  # uintx -> intx
