@@ -298,16 +298,15 @@ void init_tle_raw_ir(py::module &&m) {
                                          results_range.end());
           },
           ret::reference)
-      .def(
-          "get_alias_operand_indices",
-          [](tle::DSLRegionOp &op) -> std::vector<int64_t> {
-            auto attr = op->getAttrOfType<DenseI64ArrayAttr>(
-                "tle.alias_operand_indices");
-            if (!attr)
-              return {};
-            return std::vector<int64_t>(attr.asArrayRef().begin(),
-                                        attr.asArrayRef().end());
-          })
+      .def("get_alias_operand_indices",
+           [](tle::DSLRegionOp &op) -> std::vector<int64_t> {
+             auto attr = op->getAttrOfType<DenseI64ArrayAttr>(
+                 "tle.alias_operand_indices");
+             if (!attr)
+               return {};
+             return std::vector<int64_t>(attr.asArrayRef().begin(),
+                                         attr.asArrayRef().end());
+           })
       .def("dump", &tle::DSLRegionOp::dump);
 
   py::class_<tle::YieldOp>(m, "YieldOp", py::module_local(), py::dynamic_attr())

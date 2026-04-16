@@ -72,7 +72,8 @@ static int64_t traceToDslArg(Value val, ArrayRef<int64_t> funcArgToDslArg) {
     current = ivOp.getContainer().getDefiningOp();
   }
 
-  if (!current || !(isa<LLVM::UndefOp>(current) || isa<LLVM::PoisonOp>(current)))
+  if (!current ||
+      !(isa<LLVM::UndefOp>(current) || isa<LLVM::PoisonOp>(current)))
     return -1;
   return aliasedDslIdx;
 }
@@ -195,7 +196,7 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
   LLVM::LLVMFuncOp funcOp =
       curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName());
   assert(funcOp && "callee function not found in current module");
-  
+
   // Infer output types from LLVM function's return type.
   // For struct returns (lowered memref descriptors), map back to the
   // corresponding Triton IR type (RankedTensorType) from the operands,
