@@ -38,7 +38,7 @@ docker load -i enflame-flagtree-0.5.0.tar.gz
 
 ```bash
 # 如果需要重建容器，请先删除
-# docker rm -f enflame-flagtree-0.4.0
+# docker rm -f enflame-flagtree-0.5.0
 
 # 假设 flagtree 源码位于 ~/flagtree
 docker run -itd --privileged --name enflame-flagtree-0.5.0 -v ~/FlagTree:/root/FlagTree enflame/flagtree:0.5.0 bash

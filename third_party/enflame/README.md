@@ -20,35 +20,35 @@ Flagtree Third Party Backend for Enflame accelerators, including core component 
 cd ~
 git clone https://github.com/flagos-ai/FlagTree.git
 cd FlagTree
-git checkout -b triton_v3.5.x origin/triton_v3.5.x
+git checkout -b triton_v3.6.x origin/triton_v3.6.x
 ```
 
 ### 2. Prepare Docker Image
 
 ```bash
 # Load pre-built container image
-curl -sL https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.4.0.tar.gz | docker load
+curl -sL https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz | docker load
 
 # Or manually download and load
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.4.0.tar.gz
-docker load -i enflame-flagtree-0.4.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz
+docker load -i enflame-flagtree-0.5.0.tar.gz
 ```
 
 ### 3. Start Docker Container
 
 ```bash
 # To re-run container, remove the existing one
-# docker rm -f enflame-flagtree
+# docker rm -f enflame-flagtree-0.5.0
 
 # Assuming flagtree source code is located at ~/flagtree
-docker run -itd --privileged --name enflame-flagtree -v ~/FlagTree:/root/FlagTree enflame/flagtree:0.4.0 bash
+docker run -itd --privileged --name enflame-flagtree-0.5.0 -v ~/FlagTree:/root/FlagTree enflame/flagtree:0.5.0 bash
 ```
 
 ### 4. Install Driver
 
 ```bash
 # Extract and install Enflame driver
-docker cp enflame-flagtree:/enflame enflame
+docker cp enflame-flagtree-0.5.0:/enflame enflame
 
 sudo bash enflame/driver/enflame-x86_64-gcc-*.run
 # Use other arguments if prompt, e.g.
@@ -72,7 +72,7 @@ Check driver status with efsmi. Example output:
 | TEMP   Lpm   Pwr(Usage/Cap) | Mem      GCU Virt | DUsed       SN            |
 |=============================================================================|
 | 0      Enflame L300         | 40.2.8.3          | 00:2d:00.0  Enable        |
-| 35℃    LP1      68W / 300W  | 147456MiB Disable | 0%          A098Q50610048 |
+| 35     LP1      68W / 300W  | 147456MiB Disable | 0%          A098Q50610048 |
 +-----------------------------+-------------------+---------------------------+
 ```
 
@@ -80,9 +80,9 @@ Check driver status with efsmi. Example output:
 
 ```bash
 # Restart docker
-docker restart enflame-flagtree
+docker restart enflame-flagtree-0.5.0
 # Execute docker
-docker exec -it enflame-flagtree bash
+docker exec -it enflame-flagtree-0.5.0 bash
 ```
 
 > Note: All subsequent commands should be executed within the container.
@@ -94,8 +94,8 @@ docker exec -it enflame-flagtree bash
 ```
 mkdir -p ~/.flagtree/enflame
 cd ~/.flagtree/enflame
-wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm22-fc83c68-gcc9-x64_v0.4.0.tar.gz
-tar -xzf enflame-llvm22-fc83c68-gcc9-x64_v0.4.0.tar.gz
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68-gcc9-x64_v0.5.0.tar.gz
+tar -xzf enflame-llvm23-fc83c68-gcc9-x64_v0.5.0.tar.gz
 ```
 
 ### 2. Configure Build Environment
