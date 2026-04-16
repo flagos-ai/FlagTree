@@ -501,8 +501,9 @@ def kernel_bucket_sort_topk_edsl(  # grid(B,)
 
     thre_bin_sum_buf_smem, l_new_topk_buf_smem = tle_raw.call_smem(
         edsl1,
-        [thre_bin_sum_buf_smem, l_new_topk_buf_smem],
         [
+            thre_bin_sum_buf_smem,
+            l_new_topk_buf_smem,
             s_threshold_bin_id_smem,
             indices_base,
             s_input_ids_base,

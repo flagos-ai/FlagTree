@@ -135,7 +135,7 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk,
         b_smem = tle_gpu.alloc(shape=[BLOCK_SIZE_K, BLOCK_SIZE_N], dtype=tl.float16, layout=None, scope=tle_gpu.smem,
                                nv_mma_shared_layout=False)
         tle_gpu.copy(b_ptrs, b_smem, shape=[BLOCK_SIZE_K, BLOCK_SIZE_N])
-        acc_smem = tle_raw.call_smem(edsl, [acc_smem], [a_smem, b_smem])
+        tle_raw.call_smem(edsl, [acc_smem, a_smem, b_smem])
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
 
