@@ -72,8 +72,7 @@ static int64_t traceToDslArg(Value val, ArrayRef<int64_t> funcArgToDslArg) {
     current = ivOp.getContainer().getDefiningOp();
   }
 
-  if (!current ||
-      !(isa<LLVM::UndefOp>(current) || isa<LLVM::PoisonOp>(current)))
+  if (!current || !isa<LLVM::UndefOp>(current))
     return -1;
   return aliasedDslIdx;
 }
@@ -156,9 +155,9 @@ analyzeFuncReturnAliases(LLVM::LLVMFuncOp func, size_t numResults,
 //   - EDSL param type: "i32"
 //   - LLVM func: 1 arg = i32
 //   - Conversion: Use block argument directly
-tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
-                                              std::string_view text,
-                                              const std::vector<Value> &args) {
+tle::DSLRegionOp
+createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             const std::vector<Value> &args) {
   ParserConfig config(self.getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   assert(module && "Failed to parse LLVM IR text");
@@ -196,7 +195,7 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
   LLVM::LLVMFuncOp funcOp =
       curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName());
   assert(funcOp && "callee function not found in current module");
-
+  
   // Infer output types from LLVM function's return type.
   // For struct returns (lowered memref descriptors), map back to the
   // corresponding Triton IR type (RankedTensorType) from the operands,
@@ -216,7 +215,7 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
       outputTys.push_back(retTy);
     }
   }
-
+  
   SmallVector<Value> operands(args.begin(), args.end());
   tle::DSLRegionOp dslRegionOp =
       self.create<tle::DSLRegionOp>(outputTys, operands);
