@@ -9,16 +9,15 @@
 
 #### 1.1 使用预装镜像（P800）
 
-使用该预装镜像，则不必执行后续步骤 1.x。
 如果网络环境畅通，也不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202603  # TODO
-# Plan A: docker pull (GB)
+IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
+# Plan A: docker pull (44.9GB)
 docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
 # Plan B: docker load (GB)
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-xpu-py310-torch2.5.1-ubuntu20.04.202603.tar.gz
-docker load -i flagtree-xpu-py310-torch2.5.1-ubuntu20.04.202603.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-xpu-py310-torch2.5.1-ubuntu20.04.202604-base.tar.gz
+docker load -i flagtree-xpu-py310-torch2.5.1-ubuntu20.04.202604-base.tar.gz
 ```
 
 ```shell
@@ -72,10 +71,10 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x6
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-#python3 -m pip install flagtree===0.5.1+xpu3.0 $RES  # TODO
+python3 -m pip install flagtree===0.5.1+xpu3.0 $RES
 ```
 
-预装镜像中已安装 `flagtree`，可通过下列命令查看：
+安装 `flagtree` 后，可通过下列命令查看：
 
 ```shell
 python3 -m pip show flagtree
