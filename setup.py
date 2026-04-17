@@ -816,6 +816,22 @@ def get_git_version_suffix():
         return get_git_commit_hash()
 
 
+def get_flagtree_version():
+    import hashlib
+    PYPI_KEY_MD5 = "ed98ae2a2ba0429b189537c0d3dbef43"
+    key = os.environ.get("FLAGTREE_PYPI_KEY", "")
+    flagtree_ver = os.environ.get("FLAGTREE_WHEEL_VERSION", "")
+    if flagtree_ver:
+        if hashlib.md5(key.encode()).hexdigest() == PYPI_KEY_MD5:
+            return flagtree_ver
+        else:
+            return flagtree_ver + get_git_commit_hash().replace("+", ".")
+    backend = os.environ.get("FLAGTREE_BACKEND", "")
+    if backend:
+        return "0.5.0+" + backend + get_git_commit_hash().replace("+", ".")
+    return "0.5.0" + get_git_commit_hash()
+
+
 # keep it separate for easy substitution
 TRITON_VERSION = "3.4.0" + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", "")
 
@@ -841,7 +857,7 @@ with open(readme_path, "r", encoding="utf-8") as fh:
 
 setup(
     name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
-    version=os.environ.get("FLAGTREE_WHEEL_VERSION", "") or "0.5.0" + get_git_commit_hash(),
+    version=get_flagtree_version(),
     author="FlagOS",
     author_email="contact@flagos.io",
     description=
