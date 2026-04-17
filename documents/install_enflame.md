@@ -92,7 +92,7 @@ Refer to [Tests of enflame-gcu400 backend (Triton 3.5)](https://github.com/flago
 
 ---
 
-## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) (older Triton 3.3 version)
+## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) (Triton 3.3)
 
 - Based on Triton 3.3, x64
 - Available for GCU300

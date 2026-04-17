@@ -9,7 +9,7 @@
 
 #### 1.1 Use the preinstalled image (P800)
 
-If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
+If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
 IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base

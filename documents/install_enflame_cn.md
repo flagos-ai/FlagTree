@@ -92,7 +92,7 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 
 ---
 
-## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3 旧版本）
+## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3）
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 - 可用于 GCU300
