@@ -28,6 +28,9 @@ tar zxvf sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.t
 
 #### 1.3 手动下载 Triton 依赖库
 
+预装镜像中已下载安装 Triton 依赖库。
+如果无需从源码构建 FlagTree 或 Triton，那么无需下载 Triton 依赖库。
+
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
 # For Triton 3.4 (x64)

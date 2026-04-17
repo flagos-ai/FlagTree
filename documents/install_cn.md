@@ -73,6 +73,9 @@ export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 
 #### 1.3 手动下载 Triton 依赖库
 
+预装镜像中已下载安装 Triton 依赖库。
+如果无需从源码构建 FlagTree 或 Triton，那么无需下载 Triton 依赖库。
+
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
 # For Triton 3.1 (x64)

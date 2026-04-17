@@ -45,6 +45,9 @@ tar zxvf enflame-llvm22-189e06b-gcc9-x64_v0.4.0.tar.gz
 
 #### 1.3 手动下载 Triton 依赖库
 
+预装镜像中已下载安装 Triton 依赖库。
+如果无需从源码构建 FlagTree 或 Triton，那么无需下载 Triton 依赖库。
+
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
 # For Triton 3.5 (x64)
@@ -133,6 +136,9 @@ tar zxvf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 ```
 
 #### 1.3 手动下载 Triton 依赖库
+
+预装镜像中已下载安装 Triton 依赖库。
+如果无需从源码构建 FlagTree 或 Triton，那么无需下载 Triton 依赖库。
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree

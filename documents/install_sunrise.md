@@ -28,6 +28,9 @@ tar zxvf sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.t
 
 #### 1.3 Manually download the Triton dependencies
 
+The Triton dependencies are already downloaded and installed in the preinstalled image.
+If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
 # For Triton 3.4 (x64)

@@ -42,6 +42,9 @@ tar zxvf llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz
 
 #### 1.3 手动下载 Triton 依赖库
 
+预装镜像中已下载安装 Triton 依赖库。
+如果无需从源码构建 FlagTree 或 Triton，那么无需下载 Triton 依赖库。
+
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
 # For Triton 3.3 (x64)

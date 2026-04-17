@@ -45,6 +45,9 @@ tar zxvf hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
 
 #### 1.3 Manually download the Triton dependencies
 
+The Triton dependencies are already downloaded and installed in the preinstalled image.
+If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
 # For Triton 3.1 (x64)
