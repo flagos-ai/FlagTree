@@ -13,6 +13,8 @@ on:
       PLATFORM:
         required: true
         default: 'x86_64'
+      FLAGTREE_PYPI_KEY:
+        required: false
   workflow_call:
     inputs:
       WHL_VER:
@@ -27,12 +29,16 @@ on:
         type: string
         required: true
         default: 'x86_64'
+      FLAGTREE_PYPI_KEY:
+        type: string
+        required: false
 
 jobs:
   call-delivery:
-    uses: flagos-ai/flagtree/.github/workflows/enflame-gcu400-delivery.yml@main
+    uses: flagos-ai/flagtree/.github/workflows/enflame3.5-gcu400-delivery.yml@main
     with:
       WHL_VER: ${{ inputs.WHL_VER }}
       PYTHON_VER: ${{ inputs.PYTHON_VER }}
       PLATFORM: ${{ inputs.PLATFORM }}
+      FLAGTREE_PYPI_KEY: ${{ inputs.FLAGTREE_PYPI_KEY }}
     secrets: inherit
