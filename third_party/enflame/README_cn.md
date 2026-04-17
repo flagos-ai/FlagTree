@@ -94,8 +94,8 @@ docker exec -it enflame-flagtree-0.5.0 bash
 ```
 mkdir -p ~/.flagtree/enflame
 cd ~/.flagtree/enflame
-wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68-gcc9-x64_v0.5.0.tar.gz
-tar -xzf enflame-llvm23-fc83c68-gcc9-x64_v0.5.0.tar.gz
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
+tar -xzf enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
 ```
 
 ### 2. 配置构建环境
