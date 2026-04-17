@@ -1,0 +1,141 @@
+name: CD-Xpu-triton_v3.1.x
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      WHL_VER:
+        description: '0.5.0.dev1 < 0.5.0a1 < 0.5.0b1 < 0.5.0rc1 < 0.5.0 < 0.5.0.post1'
+        required: true
+        default: '0.5.0'
+      PYTHON_VER:
+        required: true
+        default: '3.10'
+      PLATFORM:
+        required: true
+        default: 'x86_64'
+      FLAGTREE_PYPI_KEY:
+        required: false
+  workflow_call:
+    inputs:
+      WHL_VER:
+        type: string
+        required: true
+        default: '0.5.0'
+      PYTHON_VER:
+        type: string
+        required: true
+        default: '3.10'
+      PLATFORM:
+        type: string
+        required: true
+        default: 'x86_64'
+      FLAGTREE_PYPI_KEY:
+        type: string
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.WHL_VER }}-${{ inputs.PYTHON_VER }}-${{ inputs.PLATFORM }}
+  cancel-in-progress: true
+
+jobs:
+  xpu-cd:
+    runs-on: xpu-cd
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Check branch
+        shell: bash
+        run: |
+          TARGET_BRANCH="${{ github.ref_name }}"
+          if [[ ! "$TARGET_BRANCH" =~ ^(main)$ ]]; then
+            echo "❌ This workflow must be run from branch 'main', but got '${TARGET_BRANCH}'"
+            exit 1
+          fi
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+          echo "✅ Branch check passed: ${TARGET_BRANCH}"
+
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: FlagTree bdist_wheel on Xpu (main branch)
+        if: ${{ env.TARGET_BRANCH == 'main' }}
+        shell: bash
+        run: |
+          set -x
+          TRITON_VER="3.0"
+          CHIP=""
+          export FLAGTREE_BACKEND=xpu
+          WHL_VER=${{ inputs.WHL_VER }}
+          PYTHON_VER=${{ inputs.PYTHON_VER }}
+          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
+
+          RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
+          if python${PYTHON_VER} -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
+            echo "❌ flagtree==${FLAGTREE_WHEEL_VERSION} already exists!"
+            exit 1
+          else
+            echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
+          fi
+
+          cd python
+          rm -rf ./build ./*.egg-info
+          { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
+          MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
+          env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true
+
+      - name: FlagTree upload whl
+        shell: bash
+        run: |
+          set -x
+          PLATFORM=${{ inputs.PLATFORM }}
+          PYTHON_VER=${{ inputs.PYTHON_VER }}
+          CP_VER=$(printf '%s' "$PYTHON_VER" | tr -d '.')
+          FLAGTREE_WHL="flagtree-${FLAGTREE_WHEEL_VERSION}-cp${CP_VER}-cp${CP_VER}-linux_${PLATFORM}.whl"
+          pushd ~/dist-flagtree
+          twine check ${FLAGTREE_WHL}
+          echo "Upload ${FLAGTREE_WHL}"
+          bash upload_flagtree_whl.sh "${FLAGTREE_WHL}"
+          popd
+
+      - name: FlagTree push tag
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
+          TAG="${FLAGTREE_WHEEL_VERSION}"
+          git config user.name "flagtree-bot"
+          git config user.email "flagtree_ai@163.com"
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            echo "⚠️ Tag '${TAG}' already exists, force moving to current commit"
+            git tag -f -a "${TAG}" -m "pypi ${TAG}"
+          else
+            git tag -a "${TAG}" -m "pypi ${TAG}"
+          fi
+          MAX_RETRY=100
+          RETRY_INTERVAL=10
+          success=false
+          for i in $(seq 1 $MAX_RETRY); do
+            echo "Attempt ${i}/${MAX_RETRY}:"
+            if git push --force origin "${TAG}"; then
+              success=true
+              break
+            fi
+            echo "Push failed, retrying in ${RETRY_INTERVAL}s..."
+            sleep $RETRY_INTERVAL
+          done
+          if [ "$success" != "true" ]; then
+            echo "git push failed after $MAX_RETRY attempts"
+            exit 1
+          fi
