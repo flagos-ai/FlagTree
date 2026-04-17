@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   enflame3.6-gcu400-build-and-test:
-    runs-on: enflame36-gcu400
+    runs-on: "enflame3.6-gcu400"
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
