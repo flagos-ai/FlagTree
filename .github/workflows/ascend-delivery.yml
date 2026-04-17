@@ -1,0 +1,44 @@
+name: CD-Ascend-triton_v3.2.x
+
+on:
+  workflow_dispatch:
+    inputs:
+      WHL_VER:
+        description: '0.5.0.dev1 < 0.5.0a1 < 0.5.0b1 < 0.5.0rc1 < 0.5.0 < 0.5.0.post1'
+        required: true
+        default: '0.5.0'
+      PYTHON_VER:
+        required: true
+        default: '3.11'
+      PLATFORM:
+        required: true
+        default: 'x86_64'
+      FLAGTREE_PYPI_KEY:
+        required: false
+  workflow_call:
+    inputs:
+      WHL_VER:
+        type: string
+        required: true
+        default: '0.5.0'
+      PYTHON_VER:
+        type: string
+        required: true
+        default: '3.11'
+      PLATFORM:
+        type: string
+        required: true
+        default: 'x86_64'
+      FLAGTREE_PYPI_KEY:
+        type: string
+        required: false
+
+jobs:
+  call-delivery:
+    uses: flagos-ai/flagtree/.github/workflows/ascend-delivery.yml@main
+    with:
+      WHL_VER: ${{ inputs.WHL_VER }}
+      PYTHON_VER: ${{ inputs.PYTHON_VER }}
+      PLATFORM: ${{ inputs.PLATFORM }}
+      FLAGTREE_PYPI_KEY: ${{ inputs.FLAGTREE_PYPI_KEY }}
+    secrets: inherit
