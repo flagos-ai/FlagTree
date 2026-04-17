@@ -34,62 +34,122 @@ static int64_t getDslArgIdx(BlockArgument blockArg,
   return -1;
 }
 
-// Trace a single Value back to its source DSL arg index.
-// A memref descriptor is rebuilt from multiple LLVM func args that all map
-// to the same DSL arg. We check consistency at the DSL arg level.
-// Returns the DSL arg index, or -1 if unknown.
-static int64_t traceToDslArg(Value val, ArrayRef<int64_t> funcArgToDslArg) {
-  if (auto blockArg = dyn_cast<BlockArgument>(val))
-    return getDslArgIdx(blockArg, funcArgToDslArg);
+//===----------------------------------------------------------------------===//
+// Lightweight worklist-based DSL arg origin propagation.
+//
+// For each Value in the function, computes which DSL arg it originates from.
+// Three states per Value:
+//   kUninitialized (-2): not yet visited
+//   >= 0:               originates from DSL arg N
+//   kConflict (-1):     multiple origins or non-DSL-arg origin
+//
+// The propagation is a simple forward pass: initialize block args from
+// funcArgToDslArg, then iterate over all ops in program order. For each op
+// result, join the origins of all operands. Repeat until fixpoint.
+//===----------------------------------------------------------------------===//
+static constexpr int64_t kUninitialized = -2;
+static constexpr int64_t kConflict = -1;
 
-  auto insertOp = val.getDefiningOp<LLVM::InsertValueOp>();
-  if (!insertOp)
-    return -1;
+static int64_t joinOrigin(int64_t lhs, int64_t rhs) {
+  if (lhs == kUninitialized)
+    return rhs;
+  if (rhs == kUninitialized)
+    return lhs;
+  if (lhs == kConflict || rhs == kConflict)
+    return kConflict;
+  if (lhs == rhs)
+    return lhs;
+  return kConflict;
+}
 
-  int64_t aliasedDslIdx = -1;
-  Operation *current = insertOp;
-  while (auto ivOp = dyn_cast_or_null<LLVM::InsertValueOp>(current)) {
-    Value insertedVal = ivOp.getValue();
-    int64_t thisDslIdx = -1;
-    if (auto evOp = insertedVal.getDefiningOp<LLVM::ExtractValueOp>()) {
-      if (auto blockArg = dyn_cast<BlockArgument>(evOp.getContainer()))
-        thisDslIdx = getDslArgIdx(blockArg, funcArgToDslArg);
-      else
-        return -1;
-    } else if (auto blockArg = dyn_cast<BlockArgument>(insertedVal)) {
-      thisDslIdx = getDslArgIdx(blockArg, funcArgToDslArg);
-    } else {
-      return -1;
+// Run forward origin propagation on a function.
+// Returns a map from Value to DSL arg origin index.
+static DenseMap<Value, int64_t>
+computeDslArgOrigins(LLVM::LLVMFuncOp func,
+                     ArrayRef<int64_t> funcArgToDslArg) {
+  DenseMap<Value, int64_t> origins;
+
+  // Initialize all block arguments
+  for (Block &block : func.getBlocks()) {
+    for (BlockArgument arg : block.getArguments()) {
+      origins[arg] = getDslArgIdx(arg, funcArgToDslArg);
     }
-
-    if (thisDslIdx < 0)
-      return -1;
-    if (aliasedDslIdx == -1)
-      aliasedDslIdx = thisDslIdx;
-    else if (aliasedDslIdx != thisDslIdx)
-      return -1;
-
-    current = ivOp.getContainer().getDefiningOp();
   }
 
-  if (!current || !isa<LLVM::UndefOp>(current))
+  // Iterate until fixpoint
+  int iteration = 0;
+  bool changed = true;
+  while (changed) {
+    iteration++;
+    changed = false;
+    for (Block &block : func.getBlocks()) {
+      for (Operation &op : block.getOperations()) {
+        // undef/poison: leave as uninitialized (neutral in join)
+        if (isa<LLVM::UndefOp, LLVM::PoisonOp>(op)) {
+          for (Value result : op.getResults()) {
+            if (!origins.count(result)) {
+              origins[result] = kUninitialized;
+            }
+          }
+          continue;
+        }
+
+        // Compute joined origin of all operands
+        int64_t opOrigin = kUninitialized;
+        if (op.getNumOperands() == 0) {
+          // No operands (constants, etc.) → conflict
+          opOrigin = kConflict;
+        } else {
+          for (Value operand : op.getOperands()) {
+            int64_t operandOrigin = kUninitialized;
+            auto it = origins.find(operand);
+            if (it != origins.end())
+              operandOrigin = it->second;
+            opOrigin = joinOrigin(opOrigin, operandOrigin);
+          }
+        }
+
+        // Propagate to all results
+        for (Value result : op.getResults()) {
+          auto it = origins.find(result);
+          int64_t oldVal =
+              (it != origins.end()) ? it->second : kUninitialized;
+          int64_t newVal = joinOrigin(oldVal, opOrigin);
+          if (newVal != oldVal) {
+            origins[result] = newVal;
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+
+  return origins;
+}
+
+// Query the DSL arg origin for a Value from the precomputed map.
+// Returns the DSL arg index, or -1 if unknown/conflict.
+static int64_t queryOrigin(const DenseMap<Value, int64_t> &origins, Value val) {
+  auto it = origins.find(val);
+  if (it == origins.end())
     return -1;
-  return aliasedDslIdx;
+  return (it->second >= 0) ? it->second : -1;
 }
 
 // Analyze the LLVM function's return to determine per-result alias info.
 // Returns a vector of DSL arg indices (one per DSLRegionOp result).
 // -1 means unknown / no alias.
-//
-// numResults == 0: void → empty
-// numResults == 1: trace the whole return value
-// numResults >  1: outer struct, trace each top-level field independently
 static SmallVector<int64_t>
 analyzeFuncReturnAliases(LLVM::LLVMFuncOp func, size_t numResults,
                          ArrayRef<int64_t> funcArgToDslArg) {
   if (numResults == 0)
     return {};
 
+  // Run forward origin propagation
+  DenseMap<Value, int64_t> origins =
+      computeDslArgOrigins(func, funcArgToDslArg);
+
+  // Find the return op
   LLVM::ReturnOp retOp = nullptr;
   func.walk([&](LLVM::ReturnOp op) { retOp = op; });
   if (!retOp || retOp.getNumOperands() == 0)
@@ -97,31 +157,52 @@ analyzeFuncReturnAliases(LLVM::LLVMFuncOp func, size_t numResults,
 
   Value retVal = retOp.getOperand(0);
 
-  // Single result: trace the whole return value
-  if (numResults == 1)
-    return {traceToDslArg(retVal, funcArgToDslArg)};
 
-  // Multiple results: outer struct, each top-level field traced independently.
-  SmallVector<int64_t> result(numResults, -1);
-
-  // If the whole return is a BlockArgument, all fields alias it
-  if (auto blockArg = dyn_cast<BlockArgument>(retVal)) {
-    int64_t dslIdx = getDslArgIdx(blockArg, funcArgToDslArg);
-    return SmallVector<int64_t>(numResults, dslIdx);
+  // Single result: query the return value directly
+  if (numResults == 1) {
+    int64_t origin = queryOrigin(origins, retVal);
+    return {origin};
   }
 
+  // Multiple results: outer struct, trace each top-level field independently.
+  // Walk the insertvalue chain to find each field's value.
+  SmallVector<int64_t> result(numResults, -1);
   Value current = retVal;
   while (auto ivOp = current.getDefiningOp<LLVM::InsertValueOp>()) {
     ArrayRef<int64_t> position = ivOp.getPosition();
     if (position.size() == 1) {
       int64_t fieldIdx = position[0];
       if (fieldIdx >= 0 && fieldIdx < (int64_t)numResults)
-        result[fieldIdx] = traceToDslArg(ivOp.getValue(), funcArgToDslArg);
+        result[fieldIdx] = queryOrigin(origins, ivOp.getValue());
     }
     current = ivOp.getContainer();
   }
+
   return result;
 }
+
+// Compute funcArgToDslArg mapping from DSL arg types.
+// Each DSL arg expands to one or more LLVM func args based on its type:
+//   RankedTensorType(rank=r) / MemDescType(rank=r) → 3 + 2*r func args
+//   PointerType / IntegerType / FloatType → 1 func arg
+static SmallVector<int64_t>
+computeFuncArgToDslArg(const std::vector<Value> &args) {
+  SmallVector<int64_t> mapping;
+  int64_t dslArgIdx = 0;
+  for (const Value &arg : args) {
+    Type ty = arg.getType();
+    size_t numFuncArgs = 1;
+    if (auto tensorTy = dyn_cast<RankedTensorType>(ty))
+      numFuncArgs = 3 + 2 * tensorTy.getRank();
+    else if (auto memdescTy = dyn_cast<ttg::MemDescType>(ty))
+      numFuncArgs = 3 + 2 * memdescTy.getShape().size();
+    for (size_t i = 0; i < numFuncArgs; ++i)
+      mapping.push_back(dslArgIdx);
+    dslArgIdx++;
+  }
+  return mapping;
+}
+
 } // namespace
 
 // Create a DSLRegionOp that wraps an LLVM function, performing type conversion
@@ -179,8 +260,6 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   }
   ModuleOp curModule = cast<ModuleOp>(curOp);
   {
-    llvm::outs() << " curModule \n";
-    curModule->print(llvm::outs());
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(curModule.getBody());
     for (Operation &op : module->getOps()) {
@@ -195,27 +274,45 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   LLVM::LLVMFuncOp funcOp =
       curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName());
   assert(funcOp && "callee function not found in current module");
-  
-  // Infer output types from LLVM function's return type.
-  // For struct returns (lowered memref descriptors), map back to the
-  // corresponding Triton IR type (RankedTensorType) from the operands,
-  // since ReturnPattern expects Triton-level target types.
-  // For scalar returns (f32, i32, etc.), use the type directly.
+
+  // Compute funcArgToDslArg mapping early for return analysis and later reuse.
+  SmallVector<int64_t> funcArgToDslArg = computeFuncArgToDslArg(args);
+
+  // Infer output types by analyzing the return op and tracing return values
+  // back to DSL args. This correctly handles:
+  //   - void return → no outputs
+  //   - scalar return → use LLVM type directly
+  //   - single memref descriptor struct return → trace to DSL arg, use its type
+  //   - multi-result struct return → count nested structs, trace each to DSL arg
   SmallVector<Type> outputTys;
   Type retTy = funcOp.getFunctionType().getReturnType();
   if (!isa<LLVM::LLVMVoidType>(retTy)) {
-    if (isa<LLVM::LLVMStructType>(retTy)) {
-      for (const Value &arg : args) {
-        if (auto tensorTy = dyn_cast<RankedTensorType>(arg.getType())) {
-          outputTys.push_back(tensorTy);
-          break;
-        }
+    size_t numResults = 1;
+    if (auto structTy = dyn_cast<LLVM::LLVMStructType>(retTy)) {
+      // Count nested struct fields to determine number of results.
+      // A single memref descriptor has no nested structs (ptr, ptr, i64,
+      // array, array). A multi-result outer struct has nested struct fields.
+      size_t structCount = 0;
+      for (Type fieldTy : structTy.getBody()) {
+        if (isa<LLVM::LLVMStructType>(fieldTy))
+          structCount++;
       }
-    } else {
-      outputTys.push_back(retTy);
+      if (structCount > 0)
+        numResults = structCount;
+    }
+    SmallVector<int64_t> aliases =
+        analyzeFuncReturnAliases(func, numResults, funcArgToDslArg);
+    for (size_t i = 0; i < numResults; ++i) {
+      int64_t idx = aliases[i];
+      if (idx >= 0 && idx < (int64_t)args.size()) {
+        outputTys.push_back(args[idx].getType());
+      } else {
+        // Fallback for scalar returns or when tracing fails
+        outputTys.push_back(retTy);
+      }
     }
   }
-  
+
   SmallVector<Value> operands(args.begin(), args.end());
   tle::DSLRegionOp dslRegionOp =
       self.create<tle::DSLRegionOp>(outputTys, operands);
@@ -231,16 +328,11 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   ValueRange funcArgs = func.getArguments();
   TypeRange tgts = funcArgs.getType();
   SmallVector<Value> ops = {};
-  SmallVector<int64_t> funcArgToDslArg;
-  int64_t dslArgIdx = 0;
+  // funcArgToDslArg already computed above, reuse it.
   for (Value src : newBlock->getArguments()) {
-    size_t before = ops.size();
     SmallVector<Value> rets =
         tle::protocol::SignaturePattern::apply(self, tgts, src);
     ops.append(std::move(rets));
-    for (size_t i = before; i < ops.size(); ++i)
-      funcArgToDslArg.push_back(dslArgIdx);
-    dslArgIdx++;
   }
   for (auto [funcArg, op] : zip_equal(func.getArguments(), ops)) {
     mapper.map(funcArg, op);
