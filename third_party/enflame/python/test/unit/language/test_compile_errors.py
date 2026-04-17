@@ -501,7 +501,7 @@ def test_err_constexpr_and_do_not_specialize():
 
 
 def test_dot_scaled_shape_verification(fresh_triton_cache):
-    pass  # TODO: S60 not supported by enflame
+    pytest.skip("GCU300 not supported by enflame")
 
     @triton.jit
     def kernel():

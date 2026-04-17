@@ -1,3 +1,4 @@
+import pytest
 import torch_gcu
 import importlib.util
 if importlib.util.find_spec("triton.backends.enflame") is None:
@@ -8,9 +9,8 @@ import os
 
 
 def test_triton_reproducer_path(monkeypatch, tmp_path):
-    pass  # TODO: S60 not supported by enflame
+    pytest.skip("GCU300/GCU400 not supported by enflame")
 
-    # If we get a cache hit there will be no reproducer generated
     monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")
 
     @triton.jit
