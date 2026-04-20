@@ -94,7 +94,6 @@ class MLIRCodeGenerator(ast.NodeVisitor):
             for idx, arg in enumerate(node.args.args):
                 ty: ir.Type = ir.Type.parse(arg.annotation.slice.slice.value)
                 operand_tys += [ty]
-            # Determine output types from return annotation (-> L["memref<...>"])
             if node.returns is not None:
                 ret_ann = node.returns
                 if isinstance(ret_ann, ast.Subscript):
