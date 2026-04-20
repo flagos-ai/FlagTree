@@ -45,7 +45,7 @@ tar zxvf enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
 
 #### 1.3 Manually download the Triton dependencies
 
-The Triton dependencies are already downloaded and installed in the preinstalled image.
+The Triton dependencies are already downloaded and installed in the image.
 If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
@@ -137,7 +137,7 @@ tar zxvf enflame-llvm22-189e06b-gcc9-x64_v0.4.0.tar.gz
 
 #### 1.3 Manually download the Triton dependencies
 
-The Triton dependencies are already downloaded and installed in the preinstalled image.
+The Triton dependencies are already downloaded and installed in the image.
 If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
@@ -229,7 +229,7 @@ tar zxvf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 
 #### 1.3 Manually download the Triton dependencies
 
-The Triton dependencies are already downloaded and installed in the preinstalled image.
+The Triton dependencies are already downloaded and installed in the image.
 If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell

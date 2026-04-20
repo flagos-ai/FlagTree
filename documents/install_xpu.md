@@ -7,7 +7,7 @@
 
 ### 1. Build and run environment
 
-#### 1.1 Use the preinstalled image (P800)
+#### 1.1 Use the image (P800)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -53,7 +53,7 @@ tar zxvf xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
 
 #### 1.3 Manually download the Triton dependencies
 
-The Triton dependencies are already downloaded and installed in the preinstalled image.
+The Triton dependencies are already downloaded and installed in the image.
 If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
