@@ -30,6 +30,9 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
+#ifdef __TLE__
+#include <optional>
+#endif
 
 #include "triton/Dialect/TritonGPU/Transforms/PipelineExpander.h"
 
@@ -64,6 +67,9 @@ protected:
   Value lb;
   Value step;
   bool dynamicLoop;
+#ifdef __TLE__
+  bool predicatedStages;
+#endif
   triton::PipeliningOption::AnnotationlFnType annotateFn = nullptr;
   bool peelEpilogue;
   triton::PipeliningOption::PredicateOpFnType predicateFn = nullptr;
@@ -93,6 +99,14 @@ public:
   /// Initialize the information for the given `op`, return true if it
   /// satisfies the pre-condition to apply pipelining.
   bool initializeLoopInfo(ForOp op, const triton::PipeliningOption &options);
+  bool shouldPeelEpilogue() const { return peelEpilogue; }
+  bool shouldPredicateStages() const {
+#ifdef __TLE__
+    return predicatedStages;
+#else
+    return dynamicLoop;
+#endif
+  }
   /// Emits the prologue, this creates `maxStage - 1` part which will contain
   /// operations from stages [0; i], where i is the part index.
   LogicalResult emitPrologue(RewriterBase &rewriter);
@@ -127,6 +141,18 @@ static SetVector<Value> getNestedOperands(Operation *op) {
   return operands;
 }
 
+#ifdef __TLE__
+static std::optional<int64_t> getConstantIntValue(Value value) {
+  if (auto cst = value.getDefiningOp<arith::ConstantIndexOp>())
+    return cst.value();
+  if (auto cst = value.getDefiningOp<arith::ConstantOp>()) {
+    if (auto attr = dyn_cast<IntegerAttr>(cst.getValue()))
+      return attr.getInt();
+  }
+  return std::nullopt;
+}
+#endif
+
 bool LoopPipelinerInternal::initializeLoopInfo(
     ForOp op, const triton::PipeliningOption &options) {
   LDBG("Start initializeLoopInfo");
@@ -150,6 +176,32 @@ bool LoopPipelinerInternal::initializeLoopInfo(
   }
 
   dynamicLoop = true;
+#ifdef __TLE__
+  predicatedStages = false;
+  std::optional<int64_t> upperBoundCst = getConstantIntValue(ub);
+  std::optional<int64_t> lowerBoundCst = getConstantIntValue(lb);
+  std::optional<int64_t> stepCst = getConstantIntValue(step);
+  peelEpilogue = options.peelEpilogue;
+  if (!upperBoundCst || !lowerBoundCst || !stepCst) {
+    if (!options.supportDynamicLoops) {
+      LDBG("--dynamic loop not supported -> BAIL");
+      return false;
+    }
+    predicatedStages = true;
+  } else {
+    int64_t ubImm = *upperBoundCst;
+    int64_t lbImm = *lowerBoundCst;
+    int64_t stepImm = *stepCst;
+    int64_t numIteration = llvm::divideCeilSigned(ubImm - lbImm, stepImm);
+    bool needsPeeledKernel = numIteration <= maxStage;
+    bool needsPredicatedStages = numIteration < maxStage;
+    if (numIteration > maxStage) {
+      dynamicLoop = false;
+    }
+    peelEpilogue = options.peelEpilogue || needsPeeledKernel;
+    predicatedStages = needsPredicatedStages;
+  }
+#else
   auto upperBoundCst = ub.getDefiningOp<arith::ConstantIndexOp>();
   auto lowerBoundCst = lb.getDefiningOp<arith::ConstantIndexOp>();
   auto stepCst = step.getDefiningOp<arith::ConstantIndexOp>();
@@ -171,8 +223,13 @@ bool LoopPipelinerInternal::initializeLoopInfo(
     }
   }
   peelEpilogue = options.peelEpilogue;
+#endif
   predicateFn = options.predicateFn;
+#ifdef __TLE__
+  if ((!peelEpilogue || predicatedStages) && predicateFn == nullptr) {
+#else
   if ((!peelEpilogue || dynamicLoop) && predicateFn == nullptr) {
+#endif
     LDBG("--no epilogue or predicate set -> BAIL");
     return false;
   }
@@ -326,7 +383,7 @@ LogicalResult LoopPipelinerInternal::emitPrologue(RewriterBase &rewriter) {
                                       rewriter.getIntegerAttr(t, i))));
     setValueMapping(forOp.getInductionVar(), iv, i);
 
-    if (dynamicLoop) {
+    if (shouldPredicateStages()) {
       // pred = ub > lb + (i * step)
       predicates[i] = arith::CmpIOp::create(rewriter, loc,
                                             arith::CmpIPredicate::slt, iv, ub);
@@ -705,7 +762,7 @@ LoopPipelinerInternal::emitEpilogue(RewriterBase &rewriter,
     // increment to next iterI
     iterI = arith::AddIOp::create(rewriter, loc, iterI, one);
 
-    if (dynamicLoop) {
+    if (shouldPredicateStages()) {
       // Disable stages when `i` is greater than total_iters.
       // pred = total_iters >= i
       predicates[i] =
@@ -731,7 +788,7 @@ LoopPipelinerInternal::emitEpilogue(RewriterBase &rewriter,
               newOperand->set(replacement);
             }
           });
-      if (dynamicLoop) {
+      if (shouldPredicateStages()) {
         OpBuilder::InsertionGuard insertGuard(rewriter);
         newOp = predicateFn(rewriter, newOp, predicates[currentVersion]);
         if (!newOp)
@@ -761,7 +818,7 @@ LoopPipelinerInternal::emitEpilogue(RewriterBase &rewriter,
         }
       }
     }
-    if (dynamicLoop) {
+    if (shouldPredicateStages()) {
       // Select return values from this stage (live outs) based on predication.
       // If the stage is valid select the peeled value, else use previous stage
       // value.
@@ -837,7 +894,7 @@ mlir::triton::pipelineForLoop(RewriterBase &rewriter, ForOp forOp,
 
   llvm::SmallVector<Value> returnValues =
       newForOp.getResults().take_front(forOp->getNumResults());
-  if (options.peelEpilogue) {
+  if (pipeliner.shouldPeelEpilogue()) {
     // 4. Emit the epilogue after the new forOp.
     rewriter.setInsertionPointAfter(newForOp);
     if (failed(pipeliner.emitEpilogue(rewriter, returnValues)))
