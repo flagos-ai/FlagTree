@@ -18,12 +18,8 @@ struct OriginSet {
   llvm::SetVector<int64_t> indices; // DSL arg indices this value comes from
   bool conflict = false; // true if any non-DSL-arg origin is mixed in
 
-  /// Merge another OriginSet into this one (union of indices).
-  /// If either side is conflict, the result is conflict.
   bool merge(const OriginSet &other);
 
-  /// Check if this origin set has changed compared to another.
-  bool operator!=(const OriginSet &other) const;
 };
 
 /// Helper: get the DSL arg index for a BlockArgument via funcArgToDslArg map.

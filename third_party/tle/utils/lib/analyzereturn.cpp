@@ -23,18 +23,6 @@ bool OriginSet::merge(const OriginSet &other) {
   return changed;
 }
 
-bool OriginSet::operator!=(const OriginSet &other) const {
-  if (conflict != other.conflict)
-    return true;
-  if (indices.size() != other.indices.size())
-    return true;
-  for (int64_t idx : indices) {
-    if (!other.indices.contains(idx))
-      return true;
-  }
-  return false;
-}
-
 int64_t getDslArgIdx(BlockArgument blockArg,
                      ArrayRef<int64_t> funcArgToDslArg) {
   int64_t funcIdx = blockArg.getArgNumber();
@@ -101,37 +89,21 @@ computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
 SmallVector<int64_t>
 analyzeFuncReturnAliases(LLVM::LLVMFuncOp func,
                          ArrayRef<int64_t> funcArgToDslArg) {
-  // Run set-based forward origin propagation
   DenseMap<Value, OriginSet> origins =
       computeDslArgOrigins(func, funcArgToDslArg);
 
-  // Find the return op
   LLVM::ReturnOp retOp = nullptr;
   func.walk([&](LLVM::ReturnOp op) { retOp = op; });
   if (!retOp || retOp.getNumOperands() == 0)
     return {};
 
   Value retVal = retOp.getOperand(0);
-
-  // Query the return value's origin set
   auto it = origins.find(retVal);
-  if (it == origins.end())
-    return {};
+  if (it == origins.end() || it->second.conflict || it->second.indices.empty())
+    func.emitError("return value cannot be traced back to any DSL argument");
 
-  const OriginSet &retOrigin = it->second;
-
-  // If conflict (any non-DSL-arg origin mixed in), return is unreachable
-  if (retOrigin.conflict)
-    return {};
-
-  // If empty origin set, return is unreachable
-  if (retOrigin.indices.empty())
-    return {};
-
-  // Return DSL arg indices in insertion order (already deduplicated by
-  // SetVector)
-  return SmallVector<int64_t>(retOrigin.indices.begin(),
-                              retOrigin.indices.end());
+  return SmallVector<int64_t>(it->second.indices.begin(),
+                              it->second.indices.end());
 }
 
 SmallVector<int64_t> computeFuncArgToDslArg(const std::vector<Value> &args) {

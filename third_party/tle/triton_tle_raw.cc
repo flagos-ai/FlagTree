@@ -110,16 +110,9 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
   if (!isa<LLVM::LLVMVoidType>(retTy)) {
     SmallVector<int64_t> aliases =
         tle::dataanalyze::analyzeFuncReturnAliases(func, funcArgToDslArg);
-    if (aliases.empty()) {
-      // Fallback: return type could not be traced to DSL args
-      outputTys.push_back(retTy);
-    } else {
-      for (int64_t idx : aliases) {
-        if (idx >= 0 && idx < (int64_t)args.size()) {
-          outputTys.push_back(args[idx].getType());
-        } else {
-          outputTys.push_back(retTy);
-        }
+    for (int64_t idx : aliases) {
+      if (idx >= 0 && idx < (int64_t)args.size()) {
+        outputTys.push_back(args[idx].getType());
       }
     }
   }
