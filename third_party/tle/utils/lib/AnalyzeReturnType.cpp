@@ -2,6 +2,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -35,16 +36,16 @@ DenseMap<Value, OriginSet>
 computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
   DenseMap<Value, OriginSet> origins;
 
-  // Initialize all block arguments with their DSL arg origin
-  for (Block &block : func.getBlocks()) {
-    for (BlockArgument arg : block.getArguments()) {
-      int64_t dslIdx = getDslArgIdx(arg, funcArgToDslArg);
-      OriginSet &os = origins[arg];
-      if (dslIdx >= 0)
-        os.indices.insert(dslIdx);
-      else
-        os.conflict = true; // block arg not mapped to any DSL arg
-    }
+  // Initialize only entry block arguments from funcArgToDslArg.
+  // Non-entry block arguments get their origins via CFG propagation below.
+  Block &entryBlock = func.getBody().front();
+  for (BlockArgument arg : entryBlock.getArguments()) {
+    int64_t dslIdx = getDslArgIdx(arg, funcArgToDslArg);
+    OriginSet &os = origins[arg];
+    if (dslIdx >= 0)
+      os.indices.insert(dslIdx);
+    else
+      os.conflict = true; // entry block arg not mapped to any DSL arg
   }
 
   // Iterate until fixpoint
@@ -79,6 +80,7 @@ computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
           if (resultOrigin.merge(opOrigin))
             changed = true;
         }
+
       }
     }
   }

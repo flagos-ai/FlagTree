@@ -29,7 +29,9 @@ int64_t getDslArgIdx(mlir::BlockArgument blockArg,
 
 /// Run forward origin propagation on a function using set-based (meet)
 /// semantics. Each Value's origin is a set of DSL arg indices.
-/// - Block args: initialized from funcArgToDslArg
+/// - Entry block args: initialized from funcArgToDslArg
+/// - Non-entry block args: initialized empty, populated via CFG propagation
+///   (branch/switch operands are merged into successor block arguments)
 /// - undef/poison: empty set (neutral element)
 /// - Constants (no operands): conflict
 /// - Other ops: union of all operand origin sets; conflict if any operand is
