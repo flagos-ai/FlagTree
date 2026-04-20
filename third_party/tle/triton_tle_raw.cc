@@ -100,11 +100,6 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
   SmallVector<int64_t> funcArgToDslArg =
       tle::dataanalyze::computeFuncArgToDslArg(args);
 
-  // Infer output types by analyzing the return op and tracing return values
-  // back to DSL args using set-based origin propagation.
-  // analyzeFuncReturnAliases returns a deduplicated list of DSL arg indices
-  // (in insertion order) that the return value originates from.
-  // Each origin corresponds to one output result.
   SmallVector<Type> outputTys;
   Type retTy = funcOp.getFunctionType().getReturnType();
   if (!isa<LLVM::LLVMVoidType>(retTy)) {
