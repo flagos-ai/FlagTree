@@ -111,9 +111,7 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
     SmallVector<int64_t> aliases =
         tle::dataanalyze::analyzeFuncReturnAliases(func, funcArgToDslArg);
     for (int64_t idx : aliases) {
-      if (idx >= 0 && idx < (int64_t)args.size()) {
-        outputTys.push_back(args[idx].getType());
-      }
+      outputTys.push_back(args[idx].getType());
     }
   }
 
