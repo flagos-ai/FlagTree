@@ -97,8 +97,7 @@ analyzeFuncReturnAliases(LLVM::LLVMFuncOp func,
 
   Value retVal = retOp.getOperand(0);
   auto it = origins.find(retVal);
-  if (it == origins.end() || it->second.conflict ||
-      it->second.indices.empty())
+  if (it == origins.end() || it->second.conflict || it->second.indices.empty())
     return func.emitError(
         "return value cannot be traced back to any DSL argument");
 
