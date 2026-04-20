@@ -7,7 +7,7 @@
 #include "mlir/Parser/Parser.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/utils/include/Protocol.h"
-#include "tle/utils/include/analyzereturn.h"
+#include "tle/utils/include/AnalyzeReturnType.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVectorExtras.h"
 
@@ -98,7 +98,7 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
 
   // Compute funcArgToDslArg mapping early for return analysis and later reuse.
   SmallVector<int64_t> funcArgToDslArg =
-      tle::dataanalyze::computeFuncArgToDslArg(args);
+      tle::dataAnalyze::computeFuncArgToDslArg(args);
 
   // Analyze alias once: which DSLRegionOp result aliases which DSL operand
   SmallVector<int64_t> aliasOperandIndices;
@@ -106,7 +106,7 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
   Type retTy = funcOp.getFunctionType().getReturnType();
   if (!isa<LLVM::LLVMVoidType>(retTy)) {
     auto aliasesOrFailure =
-        tle::dataanalyze::analyzeFuncReturnAliases(func, funcArgToDslArg);
+        tle::dataAnalyze::analyzeFuncReturnAliases(func, funcArgToDslArg);
     assert(succeeded(aliasesOrFailure));
     aliasOperandIndices = *aliasesOrFailure;
     for (int64_t idx : aliasOperandIndices) {
