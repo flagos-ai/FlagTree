@@ -1,3 +1,4 @@
+import inspect
 import importlib.util
 from pathlib import Path
 
@@ -64,3 +65,12 @@ def test_sparse_mla_bench_cases_track_flashmla_v32_prefill_and_decode():
         (74, 2, 32768, 128, 1, 576, 512, 2048, 64),
         (128, 2, 32768, 128, 1, 576, 512, 2048, 64),
     ]
+
+
+def test_sparse_mla_bench_seed_is_explicit_and_shared():
+    module = _load_sparse_mla_module()
+
+    assert module.BENCH_DEFAULT_SEED == 1
+    assert inspect.signature(module.run_bench_table).parameters["seed"].default == module.BENCH_DEFAULT_SEED
+    assert inspect.signature(module.bench_sparse_mla_fwd).parameters["seed"].default == module.BENCH_DEFAULT_SEED
+    assert "seed" in inspect.signature(module.benchmark_sparse_mla_fwd.fn).parameters

@@ -1939,6 +1939,7 @@ def _sparse_mla_tflops_from_topk_length(topk_length, H, DQK, DV, ms):
 
 BENCH_DEFAULT_WARMUP_MS = 2000
 BENCH_DEFAULT_REP_MS = 5000
+BENCH_DEFAULT_SEED = 1
 
 
 def _bench_ms(fn, warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS):
@@ -2060,6 +2061,7 @@ def benchmark_sparse_mla_fwd(
     tilelang_num_stages,
     tilelang_threads,
     input_mode,
+    seed,
 ):
     dtype = torch.bfloat16
     is_causal = input_mode == "causal"
@@ -2073,7 +2075,7 @@ def benchmark_sparse_mla_fwd(
         DQK,
         topk,
         dtype,
-        seed=1,
+        seed=seed,
         input_mode=input_mode,
     )
     quantiles = [0.5, 0.2, 0.8]
@@ -2339,8 +2341,9 @@ def benchmark_sparse_mla_decode(
     return ms, max_ms, min_ms
 
 
-def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, show_plots=False, tilelang_block_I=64,
-                    tilelang_num_stages=2, tilelang_threads=256, input_mode="flashmla"):
+def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, show_plots=False,
+                    tilelang_block_I=64, tilelang_num_stages=2, tilelang_threads=256, input_mode="flashmla",
+                    seed=BENCH_DEFAULT_SEED):
     benchmark_sparse_mla_fwd.run(
         print_data=True,
         show_plots=show_plots,
@@ -2350,6 +2353,7 @@ def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, sh
         tilelang_num_stages=tilelang_num_stages,
         tilelang_threads=tilelang_threads,
         input_mode=input_mode,
+        seed=seed,
     )
 
 
@@ -2708,6 +2712,7 @@ def bench_sparse_mla_fwd(
     tilelang_num_stages=2,
     tilelang_threads=256,
     input_mode="flashmla",
+    seed=BENCH_DEFAULT_SEED,
 ):
     is_causal = input_mode == "causal"
     sm_scale = 0.5 if input_mode == "flashmla" else None
@@ -2720,7 +2725,7 @@ def bench_sparse_mla_fwd(
         DQK,
         topk,
         dtype,
-        seed=0,
+        seed=seed,
         input_mode=input_mode,
     )
     results = []
@@ -3125,6 +3130,8 @@ def _parse_args():
                         help="Benchmark measurement budget in milliseconds.")
     parser.add_argument("--show-plots", action="store_true")
     parser.add_argument("--bench-input-mode", choices=["flashmla", "causal"], default="flashmla")
+    parser.add_argument("--seed", type=int, default=BENCH_DEFAULT_SEED,
+                        help="Seed for benchmark input generation.")
     parser.add_argument("--skip-output-check", action="store_true")
     parser.add_argument("--skip-tle-check", action="store_true")
     parser.add_argument("--check-tilelang", action="store_true")
@@ -3199,6 +3206,7 @@ if __name__ == "__main__":
             tilelang_num_stages=args.tilelang_num_stages,
             tilelang_threads=args.tilelang_threads,
             input_mode=args.bench_input_mode,
+            seed=args.seed,
         )
     elif args.mode == "bench-decode-single":
         bench_sparse_mla_decode(
@@ -3237,4 +3245,5 @@ if __name__ == "__main__":
             tilelang_num_stages=args.tilelang_num_stages,
             tilelang_threads=args.tilelang_threads,
             input_mode=args.bench_input_mode,
+            seed=args.seed,
         )
