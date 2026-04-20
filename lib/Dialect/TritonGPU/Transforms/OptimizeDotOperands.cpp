@@ -1,5 +1,5 @@
-#include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -162,18 +162,16 @@ public:
 
         auto viewShape =
             applyPermutation(srcMemDescTy.getShape(), trans.getOrder());
-        SmallVector<int64_t> viewAllocShape =
-            applyPermutation(srcMemDescTy.getAllocShape().take_back(
-                                 trans.getOrder().size()),
-                             trans.getOrder());
-        viewAllocShape.insert(viewAllocShape.begin(),
-                              srcMemDescTy.getAllocShape().begin(),
-                              srcMemDescTy.getAllocShape().end() -
-                                  trans.getOrder().size());
-        auto viewType = MemDescType::get(
-            viewShape, srcMemDescTy.getElementType(), viewEncoding,
-            srcMemDescTy.getMemorySpace(), srcMemDescTy.getMutableMemory(),
-            viewAllocShape);
+        SmallVector<int64_t> viewAllocShape = applyPermutation(
+            srcMemDescTy.getAllocShape().take_back(trans.getOrder().size()),
+            trans.getOrder());
+        viewAllocShape.insert(
+            viewAllocShape.begin(), srcMemDescTy.getAllocShape().begin(),
+            srcMemDescTy.getAllocShape().end() - trans.getOrder().size());
+        auto viewType =
+            MemDescType::get(viewShape, srcMemDescTy.getElementType(),
+                             viewEncoding, srcMemDescTy.getMemorySpace(),
+                             srcMemDescTy.getMutableMemory(), viewAllocShape);
         rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
         rewriter.replaceOpWithNewOp<triton::tle::MemDescWGMMAViewOp>(
             allocOp, viewType, srcMemDesc, ArrayRef<int32_t>({1, 0}));
@@ -245,9 +243,8 @@ public:
 
     auto newDot = triton::nvidia_gpu::WarpGroupDotOp::create(
         rewriter, dotOp.getLoc(), dotOp.getD().getType(), srcMemDesc,
-        dotOp.getB(), dotOp.getC(), dotOp.getUseC(),
-        dotOp.getInputPrecision(), dotOp.getMaxNumImpreciseAcc(),
-        dotOp.getIsAsync());
+        dotOp.getB(), dotOp.getC(), dotOp.getUseC(), dotOp.getInputPrecision(),
+        dotOp.getMaxNumImpreciseAcc(), dotOp.getIsAsync());
     rewriter.replaceOp(dotOp, newDot.getD());
     return success();
   }

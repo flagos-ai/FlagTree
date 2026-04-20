@@ -11,9 +11,9 @@ struct WGMMASharedOperandFenceOpConversion
     : public ConvertOpToLLVMPattern<triton::tle::WGMMASharedOperandFenceOp> {
   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
 
-  LogicalResult matchAndRewrite(
-      triton::tle::WGMMASharedOperandFenceOp op, OpAdaptor adaptor,
-      ConversionPatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(triton::tle::WGMMASharedOperandFenceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
     auto kind = NVVM::ProxyKind::async_shared;
     auto space = op.getBCluster() ? NVVM::SharedSpace::shared_cluster
                                   : NVVM::SharedSpace::shared_cta;

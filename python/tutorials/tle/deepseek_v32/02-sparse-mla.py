@@ -691,15 +691,14 @@ if _HAVE_TILELANG:
         H_per_block = padded_H if replicate_h == 1 else 64
 
         @T.prim_func
-        def main(
-            Q: T.Tensor(q_shape, dtype),  # type: ignore
-            KV: T.Tensor(kv_shape, dtype),  # type: ignore
-            Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
-            TopkLengths: T.Tensor(topk_length_shape, indices_dtype),  # type: ignore
-            q_start_index_s: T.Tensor(1, indices_dtype),  # type: ignore
-            Output: T.Tensor(o_shape, dtype),  # type: ignore
-            Lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
-        ):
+        def main(Q: T.Tensor(q_shape, dtype),  # type: ignore
+                 KV: T.Tensor(kv_shape, dtype),  # type: ignore
+                 Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
+                 TopkLengths: T.Tensor(topk_length_shape, indices_dtype),  # type: ignore
+                 q_start_index_s: T.Tensor(1, indices_dtype),  # type: ignore
+                 Output: T.Tensor(o_shape, dtype),  # type: ignore
+                 Lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
+                 ):
             with T.Kernel((seq_len - KV_stride + 1 if CP0 else seq_len) * replicate_h, batch, kv_group,
                           threads=threads) as (bx, by, bz):
                 Q_shared_l = T.alloc_shared([H_per_block, D // 2], dtype)
@@ -737,8 +736,8 @@ if _HAVE_TILELANG:
                 bar_sScale_and_sS_free = T.alloc_barrier(arrive_count=256)
 
                 b_i, g_i = by, bz
-                s_i = (bx + (KV_stride - 1 if CP0 else 0)
-                       ) if replicate_h == 1 else (bx // replicate_h + (KV_stride - 1 if CP0 else 0))
+                s_i = (bx + (KV_stride - 1 if CP0 else 0)) if replicate_h == 1 else (bx // replicate_h +
+                                                                                     (KV_stride - 1 if CP0 else 0))
                 q_i = q_start_index_s[0] + s_i
                 max_kv_i = (q_i + 1 - KV_stride) // KV_stride if is_causal else seq_len_kv - 1
                 topk_len = TopkLengths[b_i, s_i, g_i]
@@ -861,52 +860,49 @@ if _HAVE_TILELANG:
                         for r in T.serial(4):
                             offset = (i_i * 2) * BI + r * 16 + (tx - 256) // 8
                             indices_local = Indices[b_i, s_i, g_i, offset]
-                            is_kv_valid[0, r * 16 + (tx - 256) // 8] = offset < topk_len and indices_local >= 0 and indices_local <= max_kv_i
+                            is_kv_valid[0, r * 16 + (tx - 256) //
+                                        8] = offset < topk_len and indices_local >= 0 and indices_local <= max_kv_i
                             if is_kv_valid[0, r * 16 + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
                                     for u in T.serial(4):
                                         for v in T.vectorized(8):
-                                            KV_shared_0_l[r * 16 + (tx - 256) // 8,
-                                                          64 * u + (tx - 256) % 8 * 8 + v] = KV[
-                                                              b_i, indices_local, g_i,
-                                                              64 * u + (tx - 256) % 8 * 8 + v]
-                                            KV_shared_0_r[r * 16 + (tx - 256) // 8,
-                                                          64 * u + (tx - 256) % 8 * 8 + v] = KV[
-                                                              b_i, indices_local, g_i,
-                                                              D // 2 + 64 * u + (tx - 256) % 8 * 8 + v]
+                                            KV_shared_0_l[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 +
+                                                          v] = KV[b_i, indices_local, g_i,
+                                                                  64 * u + (tx - 256) % 8 * 8 + v]
+                                            KV_shared_0_r[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 +
+                                                          v] = KV[b_i, indices_local, g_i,
+                                                                  D // 2 + 64 * u + (tx - 256) % 8 * 8 + v]
                                 with T.attr("default", "async_scope", 1):
                                     for v in T.vectorized(8):
                                         K_tail_shared_0[r * 16 + (tx - 256) // 8,
-                                                        (tx - 256) % 8 * 8 + v] = KV[
-                                                            b_i, indices_local, g_i, D + (tx - 256) % 8 * 8 + v]
+                                                        (tx - 256) % 8 * 8 + v] = KV[b_i, indices_local, g_i,
+                                                                                     D + (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
                             offset = (i_i * 2 + 1) * BI + r * 16 + (tx - 256) // 8
                             indices_local = Indices[b_i, s_i, g_i, offset]
-                            is_kv_valid[1, r * 16 + (tx - 256) // 8] = offset < topk_len and indices_local >= 0 and indices_local <= max_kv_i
+                            is_kv_valid[1, r * 16 + (tx - 256) //
+                                        8] = offset < topk_len and indices_local >= 0 and indices_local <= max_kv_i
                             if is_kv_valid[1, r * 16 + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
                                     for u in T.serial(4):
                                         for v in T.vectorized(8):
-                                            KV_shared_1_l[r * 16 + (tx - 256) // 8,
-                                                          64 * u + (tx - 256) % 8 * 8 + v] = KV[
-                                                              b_i, indices_local, g_i,
-                                                              64 * u + (tx - 256) % 8 * 8 + v]
-                                            KV_shared_1_r[r * 16 + (tx - 256) // 8,
-                                                          64 * u + (tx - 256) % 8 * 8 + v] = KV[
-                                                              b_i, indices_local, g_i,
-                                                              D // 2 + 64 * u + (tx - 256) % 8 * 8 + v]
+                                            KV_shared_1_l[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 +
+                                                          v] = KV[b_i, indices_local, g_i,
+                                                                  64 * u + (tx - 256) % 8 * 8 + v]
+                                            KV_shared_1_r[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 +
+                                                          v] = KV[b_i, indices_local, g_i,
+                                                                  D // 2 + 64 * u + (tx - 256) % 8 * 8 + v]
                                 with T.attr("default", "async_scope", 1):
                                     for v in T.vectorized(8):
                                         K_tail_shared_1[r * 16 + (tx - 256) // 8,
-                                                        (tx - 256) % 8 * 8 + v] = KV[
-                                                            b_i, indices_local, g_i, D + (tx - 256) % 8 * 8 + v]
+                                                        (tx - 256) % 8 * 8 + v] = KV[b_i, indices_local, g_i,
+                                                                                     D + (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
         return main
-
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -941,10 +937,11 @@ if _HAVE_TILELANG:
         threads=384,
     ):
         assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
-        assert tail_dim == tilelang.math.next_power_of_2(tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
+        assert tail_dim == tilelang.math.next_power_of_2(
+            tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
         assert topk % block_I == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
         if sm_scale is None:
-            sm_scale = (1.0 / (dim + tail_dim)) ** 0.5 * 1.44269504  # log2(e)
+            sm_scale = (1.0 / (dim + tail_dim))**0.5 * 1.44269504  # log2(e)
         else:
             sm_scale = sm_scale * 1.44269504  # log2(e)
 
@@ -963,12 +960,10 @@ if _HAVE_TILELANG:
         H = head_kv
         padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
         if padded_H != H:
-            assert kv_group == 1, (
-                "here we solve the H padding automatically, other wise you "
-                "should handle Q copy and Output copy with your mask (when "
-                "kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would "
-                "be handled automatically)"
-            )
+            assert kv_group == 1, ("here we solve the H padding automatically, other wise you "
+                                   "should handle Q copy and Output copy with your mask (when "
+                                   "kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would "
+                                   "be handled automatically)")
         BI = block_I
         NI = tilelang.cdiv(topk, block_I)
         assert NI % 2 == 0, "NI should be a multiple of 2"
@@ -986,22 +981,21 @@ if _HAVE_TILELANG:
         H_per_block = padded_H if REPLICATE_H == 1 else 64
 
         @T.prim_func
-        def main(
-            Q: T.Tensor(q_shape, dtype),  # type: ignore
-            KV: T.Tensor(kv_shape, dtype),  # type: ignore
-            Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
-            TopkLengths: T.Tensor(topk_length_shape, indices_dtype),  # type: ignore
-            q_start_index_s: T.Tensor(1, indices_dtype),  # type: ignore
-            Output: T.Tensor(o_shape, dtype),  # type: ignore
-            Lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
-        ):
+        def main(Q: T.Tensor(q_shape, dtype),  # type: ignore
+                 KV: T.Tensor(kv_shape, dtype),  # type: ignore
+                 Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
+                 TopkLengths: T.Tensor(topk_length_shape, indices_dtype),  # type: ignore
+                 q_start_index_s: T.Tensor(1, indices_dtype),  # type: ignore
+                 Output: T.Tensor(o_shape, dtype),  # type: ignore
+                 Lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
+                 ):
             with T.Kernel(
-                # If CP0 is True (i.e., start of sequence), skip the first (KV_stride - 1)
-                # queries that cannot see any KV. Also be careful that seq_len < kv_stride could cause negative grid size
+                    # If CP0 is True (i.e., start of sequence), skip the first (KV_stride - 1)
+                    # queries that cannot see any KV. Also be careful that seq_len < kv_stride could cause negative grid size
                 (max(0, seq_len - kv_stride + 1) if CP0 else seq_len) * REPLICATE_H,
-                batch,
-                kv_group,
-                threads=threads,
+                    batch,
+                    kv_group,
+                    threads=threads,
             ) as (bx, by, bz):
                 Q_shared_l = T.alloc_shared([H_per_block, D // 2], dtype)
                 Q_shared_r = T.alloc_shared([H_per_block, D // 2], dtype)
@@ -1076,7 +1070,8 @@ if _HAVE_TILELANG:
 
                 b_i, g_i = by, bz
                 # If it's the first chunk, start computing directly from the (kv_stride - 1)-th token
-                s_i = (bx + (KV_stride - 1 if CP0 else 0)) if REPLICATE_H == 1 else (bx // REPLICATE_H + (KV_stride - 1 if CP0 else 0))
+                s_i = (bx + (KV_stride - 1 if CP0 else 0)) if REPLICATE_H == 1 else (bx // REPLICATE_H +
+                                                                                     (KV_stride - 1 if CP0 else 0))
                 q_i = q_start_index_s[0] + s_i
                 # Sometimes to reduce kvcache size, we may not store KV for every token, but store
                 # KV every KV_stride tokens (usually the last token in the stride window),
@@ -1090,8 +1085,8 @@ if _HAVE_TILELANG:
 
                 tx = T.get_thread_binding()
 
-                T.copy(Q[b_i, s_i, H0:H1, 0 : D // 2], Q_shared_l)
-                T.copy(Q[b_i, s_i, H0:H1, D // 2 : D], Q_shared_r)
+                T.copy(Q[b_i, s_i, H0:H1, 0:D // 2], Q_shared_l)
+                T.copy(Q[b_i, s_i, H0:H1, D // 2:D], Q_shared_r)
                 T.copy(Q[b_i, s_i, H0:H1, D:], Q_tail_shared)
 
                 # Non-blockingly increment the barrier's internal counter, producer threads can start loading kv ahead of time
@@ -1122,7 +1117,8 @@ if _HAVE_TILELANG:
                             # mitigate long scoreboard stall here
                             offset = (i_i * 2) * BI + r * 16 + (tx - 256) // 8
                             index = prefetch_indices_0[r]
-                            is_kv_valid[0, r * 16 + (tx - 256) // 8] = offset < topk_len and index >= 0 and index <= max_kv_i
+                            is_kv_valid[0, r * 16 +
+                                        (tx - 256) // 8] = offset < topk_len and index >= 0 and index <= max_kv_i
                             if is_kv_valid[0, r * 16 + (tx - 256) // 8]:
                                 # Here we assume dim = 512, tail_dim = 64
                                 with T.attr("default", "async_scope", 1):
@@ -1133,24 +1129,24 @@ if _HAVE_TILELANG:
                                         for v in T.vectorized(8):
                                             # (tx - 256) // 8 determines which row the thread is responsible for,
                                             # (tx - 256) % 8 determines which part of the row the thread loads
-                                            KV_shared_0_l[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 + v] = KV[
-                                                b_i, index, g_i, 64 * u + (tx - 256) % 8 * 8 + v
-                                            ]
-                                            KV_shared_0_r[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 + v] = KV[
-                                                b_i, index, g_i, D // 2 + 64 * u + (tx - 256) % 8 * 8 + v
-                                            ]
+                                            KV_shared_0_l[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 +
+                                                          v] = KV[b_i, index, g_i, 64 * u + (tx - 256) % 8 * 8 + v]
+                                            KV_shared_0_r[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 +
+                                                          v] = KV[b_i, index, g_i,
+                                                                  D // 2 + 64 * u + (tx - 256) % 8 * 8 + v]
                                 with T.attr("default", "async_scope", 1):
                                     # tail_dim (length 64) only needs 8 threads collaborating in one iteration to complete loading
                                     for v in T.vectorized(8):
-                                        K_tail_shared_0[r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v] = KV[
-                                            b_i, index, g_i, D + (tx - 256) % 8 * 8 + v
-                                        ]
+                                        K_tail_shared_0[r * 16 + (tx - 256) // 8,
+                                                        (tx - 256) % 8 * 8 + v] = KV[b_i, index, g_i,
+                                                                                     D + (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
                         if i_i + 1 < num_k_pairs:
                             # Async prefetch indices needed for the next round of kv data loading, overlaps with current round to hide latency
                             for r in T.serial(4):
-                                prefetch_indices_0[r] = Indices[b_i, s_i, g_i, ((i_i + 1) * 2) * BI + r * 16 + (tx - 256) // 8]
+                                prefetch_indices_0[r] = Indices[b_i, s_i, g_i,
+                                                                ((i_i + 1) * 2) * BI + r * 16 + (tx - 256) // 8]
 
                         # Buffer 1
                         T.barrier_wait(bar_k_1_free[0], (i_i & 1))
@@ -1158,27 +1154,28 @@ if _HAVE_TILELANG:
                         for r in T.serial(4):
                             offset = (i_i * 2 + 1) * BI + r * 16 + (tx - 256) // 8
                             index = prefetch_indices_1[r]
-                            is_kv_valid[1, r * 16 + (tx - 256) // 8] = offset < topk_len and index >= 0 and index <= max_kv_i
+                            is_kv_valid[1, r * 16 +
+                                        (tx - 256) // 8] = offset < topk_len and index >= 0 and index <= max_kv_i
                             if is_kv_valid[1, r * 16 + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
                                     for u in T.serial(4):
                                         for v in T.vectorized(8):
-                                            KV_shared_1_l[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 + v] = KV[
-                                                b_i, index, g_i, 64 * u + (tx - 256) % 8 * 8 + v
-                                            ]
-                                            KV_shared_1_r[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 + v] = KV[
-                                                b_i, index, g_i, D // 2 + 64 * u + (tx - 256) % 8 * 8 + v
-                                            ]
+                                            KV_shared_1_l[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 +
+                                                          v] = KV[b_i, index, g_i, 64 * u + (tx - 256) % 8 * 8 + v]
+                                            KV_shared_1_r[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 +
+                                                          v] = KV[b_i, index, g_i,
+                                                                  D // 2 + 64 * u + (tx - 256) % 8 * 8 + v]
                                 with T.attr("default", "async_scope", 1):
                                     for v in T.vectorized(8):
-                                        K_tail_shared_1[r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v] = KV[
-                                            b_i, index, g_i, D + (tx - 256) % 8 * 8 + v
-                                        ]
+                                        K_tail_shared_1[r * 16 + (tx - 256) // 8,
+                                                        (tx - 256) % 8 * 8 + v] = KV[b_i, index, g_i,
+                                                                                     D + (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
                         if i_i + 1 < num_k_pairs:
                             for r in T.serial(4):
-                                prefetch_indices_1[r] = Indices[b_i, s_i, g_i, ((i_i + 1) * 2 + 1) * BI + r * 16 + (tx - 256) // 8]
+                                prefetch_indices_1[r] = Indices[b_i, s_i, g_i,
+                                                                ((i_i + 1) * 2 + 1) * BI + r * 16 + (tx - 256) // 8]
 
                 elif tx < 128:
                     # Check if 384 threads have already arrived at bar_q (phase0 completed),
@@ -1282,7 +1279,7 @@ if _HAVE_TILELANG:
                         sumexp_0[h_i] = T.log2(sumexp_0[h_i]) + m_i_0[h_i] * sm_scale
 
                     T.copy(acc_o_l, O_shared_l)
-                    T.copy(O_shared_l, Output[b_i, s_i, H0:H1, 0 : D // 2])
+                    T.copy(O_shared_l, Output[b_i, s_i, H0:H1, 0:D // 2])
                     T.copy(sumexp_0, Lse[b_i, s_i, H0:H1])  # Write LSE
 
                 elif tx >= 128 and tx < 256:
@@ -1370,7 +1367,7 @@ if _HAVE_TILELANG:
                         acc_o_r[h_i, d_i] /= sumexp_1[h_i]
 
                     T.copy(acc_o_r, O_shared_r)
-                    T.copy(O_shared_r, Output[b_i, s_i, H0:H1, D // 2 : D])
+                    T.copy(O_shared_r, Output[b_i, s_i, H0:H1, D // 2:D])
 
         return main
 
@@ -1469,8 +1466,7 @@ def tilelang_sparse_mla_fwd_pipelined_interface(
     ni = triton.cdiv(topk, resolved_block_i)
     if ni % 2 != 0:
         raise ValueError(
-            f"pipelined TileLang path requires an even number of K blocks, got topk={topk}, block_I={resolved_block_i}"
-        )
+            f"pipelined TileLang path requires an even number of K blocks, got topk={topk}, block_I={resolved_block_i}")
 
     kernel = tilelang_sparse_mla_fwd_pipelined(
         batch,
@@ -1534,8 +1530,7 @@ def tilelang_sparse_mla_fwd_seesaw_interface(
     ni = triton.cdiv(topk, resolved_block_i)
     if ni % 2 != 0:
         raise ValueError(
-            f"seesaw TileLang path requires an even number of K blocks, got topk={topk}, block_I={resolved_block_i}"
-        )
+            f"seesaw TileLang path requires an even number of K blocks, got topk={topk}, block_I={resolved_block_i}")
 
     kernel = tilelang_sparse_mla_fwd_seesaw(
         batch,
@@ -1627,7 +1622,8 @@ def _run_flashmla_sparse_prefill_prepared(prepared):
     return out, lse
 
 
-def flashmla_sparse_mla_fwd_interface(q, kv, indices, topk_length=None, sm_scale=None, return_p_sum: bool = False, d_v=512):
+def flashmla_sparse_mla_fwd_interface(q, kv, indices, topk_length=None, sm_scale=None, return_p_sum: bool = False,
+                                      d_v=512):
     assert not return_p_sum, "This kernel file is for fwd only"
     prepared = _prepare_flashmla_sparse_prefill_args(
         q,
@@ -1765,8 +1761,8 @@ def _quantize_v32_fp8_sparse_k_cache(input_k_cache):
         scales_inv = torch.abs(input_k_cache[..., lo:hi]).max(dim=-1).values.float() / 448.0
         scales_inv = _cast_scale_inv_to_ue8m0(scales_inv)
         result_scale[:, :, tile_idx] = scales_inv
-        result_nope[..., lo:hi] = (input_k_cache[..., lo:hi].float() /
-                                   scales_inv.unsqueeze(-1).float()).to(torch.float8_e4m3fn)
+        result_nope[..., lo:hi] = (input_k_cache[..., lo:hi].float() / scales_inv.unsqueeze(-1).float()).to(
+            torch.float8_e4m3fn)
 
     return result.view(num_blocks, block_size, 1, 656)
 
@@ -1811,8 +1807,8 @@ def _abs_indices_to_indices_in_kvcache(abs_indices, block_table, block_size):
     invalid_mask = abs_indices == -1
     abs_indices[invalid_mask] = 0
     batch_offsets = torch.arange(b, dtype=torch.int64, device=abs_indices.device).view(b, 1, 1) * max_blocks_per_seq
-    real_block_idxs = block_table.view(-1).index_select(
-        0, (abs_indices.to(torch.int64) // block_size + batch_offsets).reshape(-1))
+    real_block_idxs = block_table.view(-1).index_select(0, (abs_indices.to(torch.int64) // block_size +
+                                                            batch_offsets).reshape(-1))
     indices = real_block_idxs.view(b, s_q, topk) * block_size + abs_indices % block_size
     indices[invalid_mask] = -1
     return indices.to(torch.int32)
@@ -1839,10 +1835,10 @@ def _build_flashmla_sparse_decode_inputs(
     torch.random.manual_seed(seed)
     q = torch.randn((B, S, H, DQK), dtype=dtype, device="cuda").clamp_(min=-1.0, max=1.0).contiguous()
 
-    cache_seqlens_cpu = torch.full((B,), SKV, dtype=torch.int32, device="cpu")
+    cache_seqlens_cpu = torch.full((B, ), SKV, dtype=torch.int32, device="cpu")
     if is_varlen:
-        sampled = torch.normal(mean=float(SKV), std=float(SKV) / 2, size=(B,), device="cpu")
-        cache_seqlens_cpu = torch.maximum(sampled.to(torch.int32), torch.full((B,), S, dtype=torch.int32))
+        sampled = torch.normal(mean=float(SKV), std=float(SKV) / 2, size=(B, ), device="cpu")
+        cache_seqlens_cpu = torch.maximum(sampled.to(torch.int32), torch.full((B, ), S, dtype=torch.int32))
 
     max_seqlen_alignment = 4 * block_size
     max_seqlen_pad = max(triton.cdiv(int(cache_seqlens_cpu.max().item()), max_seqlen_alignment),
@@ -1852,10 +1848,9 @@ def _build_flashmla_sparse_decode_inputs(
     block_table = torch.arange(B * max_num_blocks, dtype=torch.int32, device="cpu").view(B, max_num_blocks)
     block_table = block_table.view(-1)[torch.randperm(block_table.numel())].view(B, max_num_blocks)
 
-    blocked_k = (torch.randn((block_table.numel(), block_size, HKV, DQK), dtype=dtype, device="cuda") /
-                 10).clamp_(min=-1.0, max=1.0)
-    abs_indices = _randperm_batch_cpu(B * S, cache_seqlens_cpu.repeat_interleave(S), topk,
-                                      padding=-1).view(B, S, topk)
+    blocked_k = (torch.randn(
+        (block_table.numel(), block_size, HKV, DQK), dtype=dtype, device="cuda") / 10).clamp_(min=-1.0, max=1.0)
+    abs_indices = _randperm_batch_cpu(B * S, cache_seqlens_cpu.repeat_interleave(S), topk, padding=-1).view(B, S, topk)
     indices_in_kvcache_cpu = _abs_indices_to_indices_in_kvcache(abs_indices, block_table, block_size)
     indices_in_kvcache = indices_in_kvcache_cpu.to("cuda", non_blocking=True).contiguous()
 
@@ -1908,10 +1903,9 @@ def ref_sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, is_casual=True, 
     g_index = g
     h_index = h // g
     if is_casual:
-        compressed_casual_mask = torch.arange(q_start_index, sq + q_start_index, dtype=torch.int32,
-                                              device="cuda").view(-1, 1) >= torch.arange(
-                                                  kv_stride - 1, sk * kv_stride, kv_stride, dtype=torch.int32,
-                                                  device="cuda").view(1, -1)
+        compressed_casual_mask = torch.arange(q_start_index, sq + q_start_index, dtype=torch.int32, device="cuda").view(
+            -1, 1) >= torch.arange(kv_stride - 1, sk * kv_stride, kv_stride, dtype=torch.int32,
+                                   device="cuda").view(1, -1)
     else:
         compressed_casual_mask = torch.ones((sq, sk), dtype=torch.bool, device="cuda")
 
@@ -1952,21 +1946,14 @@ def _bench_ms(fn, warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS):
     return float(ms if not isinstance(ms, tuple) else ms[0])
 
 
-_BENCH_PROVIDERS = (
-    ["triton", "tle"]
-    + (["tilelang", "tilelang-pipelined", "tilelang-seesaw"] if _HAVE_TILELANG else [])
-    + (["flashmla"] if _HAVE_FLASHMLA else [])
-)
-_BENCH_NAMES = (
-    ["Triton", "TLE"]
-    + (["TileLang", "TileLang-Pipelined", "TileLang-Seesaw"] if _HAVE_TILELANG else [])
-    + (["FlashMLA"] if _HAVE_FLASHMLA else [])
-)
-_BENCH_STYLES = (
-    [("red", "-"), ("orange", "-")]
-    + ([("blue", "-"), ("cyan", "-"), ("purple", "-")] if _HAVE_TILELANG else [])
-    + ([("green", "-")] if _HAVE_FLASHMLA else [])
-)
+_BENCH_PROVIDERS = (["triton", "tle"] +
+                    (["tilelang", "tilelang-pipelined", "tilelang-seesaw"] if _HAVE_TILELANG else []) +
+                    (["flashmla"] if _HAVE_FLASHMLA else []))
+_BENCH_NAMES = (["Triton", "TLE"] + (["TileLang", "TileLang-Pipelined", "TileLang-Seesaw"] if _HAVE_TILELANG else []) +
+                (["FlashMLA"] if _HAVE_FLASHMLA else []))
+_BENCH_STYLES = ([("red", "-"), ("orange", "-")] + ([("blue", "-"), ("cyan", "-"),
+                                                     ("purple", "-")] if _HAVE_TILELANG else []) +
+                 ([("green", "-")] if _HAVE_FLASHMLA else []))
 _BENCH_X_VALS = [
     # FlashMLA v0.1.8 sparse prefill V3.2 performance cases:
     # TestParam(s_q=4096, s_kv, topk=2048, h_q=128, h_kv=1, d_qk=576, d_v=512).
@@ -2094,14 +2081,14 @@ def benchmark_sparse_mla_fwd(
     if provider == "triton":
 
         def run():
-            triton_sparse_mla_fwd_interface(
-                q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV, is_causal=is_causal)
+            triton_sparse_mla_fwd_interface(q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV,
+                                            is_causal=is_causal)
 
     elif provider == "tle":
 
         def run():
-            tle_sparse_mla_fwd_interface(
-                q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV, is_causal=is_causal)
+            tle_sparse_mla_fwd_interface(q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV,
+                                         is_causal=is_causal)
 
     elif provider == "tilelang-pipelined":
         if not _HAVE_TILELANG:
@@ -2352,8 +2339,8 @@ def benchmark_sparse_mla_decode(
     return ms, max_ms, min_ms
 
 
-def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, show_plots=False,
-                    tilelang_block_I=64, tilelang_num_stages=2, tilelang_threads=256, input_mode="flashmla"):
+def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, show_plots=False, tilelang_block_I=64,
+                    tilelang_num_stages=2, tilelang_threads=256, input_mode="flashmla"):
     benchmark_sparse_mla_fwd.run(
         print_data=True,
         show_plots=show_plots,
@@ -2541,8 +2528,8 @@ def test_sparse_mla_fwd(
     if check_flashmla:
         if not _HAVE_FLASHMLA:
             raise RuntimeError("FlashMLA is not installed, cannot run FlashMLA correctness check")
-        flashmla_bf16_out, _flashmla_bf16_lse = flashmla_sparse_mla_fwd_interface(
-            q, kv, indices, topk_length=topk_length, d_v=DV)
+        flashmla_bf16_out, _flashmla_bf16_lse = flashmla_sparse_mla_fwd_interface(q, kv, indices,
+                                                                                  topk_length=topk_length, d_v=DV)
         assert torch.allclose(
             flashmla_bf16_out.float(),
             ref_bf16_out.float(),
@@ -2655,13 +2642,14 @@ def test_sparse_mla_decode(
             threads=tilelang_threads,
         )
         tilelang_out = tilelang_out_flat.view(B, S, H, DV)
-        assert torch.allclose(tilelang_out.float(), ref_out.float(), atol=1e-1, rtol=1e-1), (
-            "TileLang sparse decode-compatible output does not match reference")
+        assert torch.allclose(tilelang_out.float(), ref_out.float(), atol=1e-1,
+                              rtol=1e-1), ("TileLang sparse decode-compatible output does not match reference")
         print("TileLang sparse decode-compatible output matches reference!")
 
     if check_tilelang_pipelined:
         if not _HAVE_TILELANG:
-            raise RuntimeError("TileLang is not installed, cannot run pipelined TileLang sparse decode correctness check")
+            raise RuntimeError(
+                "TileLang is not installed, cannot run pipelined TileLang sparse decode correctness check")
         resolved_block_i = _resolve_tilelang_block_i(topk, tilelang_block_I)
         tilelang_out_flat, _ = tilelang_sparse_mla_fwd_pipelined_interface(
             inputs["q_flat"],
@@ -2676,8 +2664,9 @@ def test_sparse_mla_decode(
             kv_stride=1,
         )
         tilelang_out = tilelang_out_flat.view(B, S, H, DV)
-        assert torch.allclose(tilelang_out.float(), ref_out.float(), atol=1e-1, rtol=1e-1), (
-            "Pipelined TileLang sparse decode-compatible output does not match reference")
+        assert torch.allclose(
+            tilelang_out.float(), ref_out.float(), atol=1e-1,
+            rtol=1e-1), ("Pipelined TileLang sparse decode-compatible output does not match reference")
         print("Pipelined TileLang sparse decode-compatible output matches reference!")
 
     if check_tilelang_seesaw:
@@ -2697,8 +2686,8 @@ def test_sparse_mla_decode(
             kv_stride=1,
         )
         tilelang_out = tilelang_out_flat.view(B, S, H, DV)
-        assert torch.allclose(tilelang_out.float(), ref_out.float(), atol=1e-1, rtol=1e-1), (
-            "Seesaw TileLang sparse decode-compatible output does not match reference")
+        assert torch.allclose(tilelang_out.float(), ref_out.float(), atol=1e-1,
+                              rtol=1e-1), ("Seesaw TileLang sparse decode-compatible output does not match reference")
         print("Seesaw TileLang sparse decode-compatible output matches reference!")
 
 
@@ -2737,8 +2726,8 @@ def bench_sparse_mla_fwd(
     results = []
 
     def run_triton():
-        return triton_sparse_mla_fwd_interface(
-            q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV, is_causal=is_causal)
+        return triton_sparse_mla_fwd_interface(q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV,
+                                               is_causal=is_causal)
 
     triton_out, _ = run_triton()
     triton_ms = _bench_ms(run_triton, warmup=warmup, rep=rep)
@@ -2752,8 +2741,8 @@ def bench_sparse_mla_fwd(
     flashmla_out = None
 
     def run_tle():
-        return tle_sparse_mla_fwd_interface(
-            q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV, is_causal=is_causal)
+        return tle_sparse_mla_fwd_interface(q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV,
+                                            is_causal=is_causal)
 
     try:
         tle_out, _ = run_tle()
@@ -2794,6 +2783,7 @@ def bench_sparse_mla_fwd(
         print("TileLang is not installed, skip TileLang bench.")
 
     if _HAVE_TILELANG:
+
         def run_tilelang_pipelined():
             return tilelang_sparse_mla_fwd_pipelined_interface(
                 q,
@@ -2812,7 +2802,7 @@ def bench_sparse_mla_fwd(
             tilelang_pipelined_out, _ = run_tilelang_pipelined()
             tilelang_pipelined_ms = _bench_ms(run_tilelang_pipelined, warmup=warmup, rep=rep)
             tilelang_pipelined_tflops = _sparse_mla_tflops_from_topk_length(topk_length, H, DQK, DV,
-                                                                           tilelang_pipelined_ms)
+                                                                            tilelang_pipelined_ms)
             results.append(("tilelang-pipelined", tilelang_pipelined_ms, tilelang_pipelined_tflops))
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
             print(f"Pipelined TileLang bench skipped due to compile/runtime error: {exc}")
@@ -3008,8 +2998,7 @@ def bench_sparse_mla_decode(
             tilelang_out_flat, _ = run_tilelang()
             tilelang_out = tilelang_out_flat.view(B, S, H, DV)
             tilelang_ms = _bench_ms(run_tilelang, warmup=warmup, rep=rep)
-            tilelang_tflops = _sparse_mla_tflops_from_topk_length(inputs["topk_length_flat"], H, DQK, DV,
-                                                                  tilelang_ms)
+            tilelang_tflops = _sparse_mla_tflops_from_topk_length(inputs["topk_length_flat"], H, DQK, DV, tilelang_ms)
             results.append(("tilelang", tilelang_ms, tilelang_tflops))
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
             print(f"TileLang decode bench skipped due to compile/runtime error: {exc}")
@@ -3032,8 +3021,8 @@ def bench_sparse_mla_decode(
             tilelang_pipelined_out_flat, _ = run_tilelang_pipelined()
             tilelang_pipelined_out = tilelang_pipelined_out_flat.view(B, S, H, DV)
             tilelang_pipelined_ms = _bench_ms(run_tilelang_pipelined, warmup=warmup, rep=rep)
-            tilelang_pipelined_tflops = _sparse_mla_tflops_from_topk_length(
-                inputs["topk_length_flat"], H, DQK, DV, tilelang_pipelined_ms)
+            tilelang_pipelined_tflops = _sparse_mla_tflops_from_topk_length(inputs["topk_length_flat"], H, DQK, DV,
+                                                                            tilelang_pipelined_ms)
             results.append(("tilelang-pipelined", tilelang_pipelined_ms, tilelang_pipelined_tflops))
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
             print(f"Pipelined TileLang decode bench skipped due to compile/runtime error: {exc}")
@@ -3081,8 +3070,7 @@ def bench_sparse_mla_decode(
         try:
             flashmla_out, _ = run_flashmla()
             flashmla_ms = _bench_ms(run_flashmla, warmup=warmup, rep=rep)
-            flashmla_tflops = _sparse_mla_tflops_from_topk_length(inputs["topk_length_flat"], H, DQK, DV,
-                                                                  flashmla_ms)
+            flashmla_tflops = _sparse_mla_tflops_from_topk_length(inputs["topk_length_flat"], H, DQK, DV, flashmla_ms)
             results.append(("flashmla", flashmla_ms, flashmla_tflops))
         except Exception as exc:  # pragma: no cover - depends on flashmla/runtime constraints
             print(f"FlashMLA decode bench skipped due to compile/runtime error: {exc}")
@@ -3095,32 +3083,33 @@ def bench_sparse_mla_decode(
 
     if check_outputs:
         if flashmla_out is not None:
-            assert torch.allclose(triton_out.float(), flashmla_out.float(), atol=1e-1, rtol=1e-1), (
-                "Triton decode-compatible output does not match FlashMLA decode output")
+            assert torch.allclose(triton_out.float(), flashmla_out.float(), atol=1e-1,
+                                  rtol=1e-1), ("Triton decode-compatible output does not match FlashMLA decode output")
             print("Triton and FlashMLA decode outputs match.")
         if tle_out is not None:
-            assert torch.allclose(triton_out.float(), tle_out.float(), atol=1e-1, rtol=1e-1), (
-                "Triton decode-compatible output does not match TLE output")
+            assert torch.allclose(triton_out.float(), tle_out.float(), atol=1e-1,
+                                  rtol=1e-1), ("Triton decode-compatible output does not match TLE output")
             print("Triton and TLE decode-compatible outputs match.")
         if tilelang_out is not None:
-            assert torch.allclose(triton_out.float(), tilelang_out.float(), atol=1e-1, rtol=1e-1), (
-                "Triton decode-compatible output does not match TileLang output")
+            assert torch.allclose(triton_out.float(), tilelang_out.float(), atol=1e-1,
+                                  rtol=1e-1), ("Triton decode-compatible output does not match TileLang output")
             print("Triton and TileLang decode-compatible outputs match.")
         if tilelang_pipelined_out is not None:
-            assert torch.allclose(triton_out.float(), tilelang_pipelined_out.float(), atol=1e-1, rtol=1e-1), (
-                "Triton decode-compatible output does not match pipelined TileLang output")
+            assert torch.allclose(
+                triton_out.float(), tilelang_pipelined_out.float(), atol=1e-1,
+                rtol=1e-1), ("Triton decode-compatible output does not match pipelined TileLang output")
             print("Triton and pipelined TileLang decode-compatible outputs match.")
         if tilelang_seesaw_out is not None:
-            assert torch.allclose(triton_out.float(), tilelang_seesaw_out.float(), atol=1e-1, rtol=1e-1), (
-                "Triton decode-compatible output does not match seesaw TileLang output")
+            assert torch.allclose(triton_out.float(), tilelang_seesaw_out.float(), atol=1e-1,
+                                  rtol=1e-1), ("Triton decode-compatible output does not match seesaw TileLang output")
             print("Triton and seesaw TileLang decode-compatible outputs match.")
 
 
 def _parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode",
-                        choices=["test", "test-decode", "bench", "bench-single", "bench-decode", "bench-decode-single"],
-                        default="bench")
+                        choices=["test", "test-decode", "bench", "bench-single", "bench-decode",
+                                 "bench-decode-single"], default="bench")
     parser.add_argument("--B", type=int, default=1)
     parser.add_argument("--S", type=int, default=1024)
     parser.add_argument("--SKV", type=int, default=4096)

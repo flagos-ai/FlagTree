@@ -1,9 +1,9 @@
+#include "mlir/IR/DialectRegistry.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
-#include "mlir/IR/DialectRegistry.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
 #endif
@@ -66,7 +66,8 @@ public:
                                            /*bCluster=*/false)
                     .getOperation()
               : ([&]() -> Operation * {
-                  builder.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+                  builder.getContext()
+                      ->getOrLoadDialect<triton::tle::TleDialect>();
                   return triton::tle::WGMMASharedOperandFenceOp::create(
                              builder, dotOp.getLoc(), deps,
                              /*bCluster=*/false)

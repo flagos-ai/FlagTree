@@ -3,13 +3,7 @@ from pathlib import Path
 
 
 def _load_sparse_mla_module():
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "tutorials"
-        / "tle"
-        / "deepseek_v32"
-        / "02-sparse-mla.py"
-    )
+    path = (Path(__file__).resolve().parents[2] / "tutorials" / "tle" / "deepseek_v32" / "02-sparse-mla.py")
     spec = importlib.util.spec_from_file_location("sparse_mla_tutorial", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -34,9 +28,7 @@ def test_sparse_mla_autotune_configs_bind_num_warps_and_num_stages():
         (4, 16),
         (4, 32),
     }
-    actual_sparse = {
-        (cfg.num_stages, cfg.num_warps) for cfg in module.spar_mla_fwd_configs
-    }
+    actual_sparse = {(cfg.num_stages, cfg.num_warps) for cfg in module.spar_mla_fwd_configs}
     assert actual_sparse == expected_sparse
 
     for cfg in module.spar_mla_fwd_configs + module.tle_spar_mla_fwd_configs:

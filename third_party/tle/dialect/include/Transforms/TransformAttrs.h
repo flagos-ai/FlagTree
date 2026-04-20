@@ -13,8 +13,8 @@ namespace mlir::triton::tle {
 // staging canonicalization. Downstream TLE pipelining passes use this
 // provenance to distinguish TLE-owned direct-async families from generic
 // Triton async-copy loops.
-inline constexpr llvm::StringLiteral kTleLocalPointerAsyncStoreAttr(
-    "tle.local_ptr_async_store");
+inline constexpr llvm::StringLiteral
+    kTleLocalPointerAsyncStoreAttr("tle.local_ptr_async_store");
 
 } // namespace mlir::triton::tle
 

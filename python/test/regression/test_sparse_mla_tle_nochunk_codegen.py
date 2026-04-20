@@ -1,14 +1,7 @@
 import ast
 from pathlib import Path
 
-
-SPARSE_MLA_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "tutorials"
-    / "tle"
-    / "deepseek_v32"
-    / "02-sparse-mla.py"
-)
+SPARSE_MLA_PATH = (Path(__file__).resolve().parents[2] / "tutorials" / "tle" / "deepseek_v32" / "02-sparse-mla.py")
 
 
 def _get_function_source(function_name):
@@ -18,7 +11,7 @@ def _get_function_source(function_name):
 
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == function_name:
-            return "\n".join(lines[node.lineno - 1 : node.end_lineno])
+            return "\n".join(lines[node.lineno - 1:node.end_lineno])
     raise AssertionError(f"function {function_name!r} not found")
 
 
@@ -37,9 +30,8 @@ def test_tle_sparse_mla_stages_full_kv_tile_without_static_chunks():
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        assert not (
-            isinstance(func, ast.Attribute) and func.attr == "static_range"
-        ), "TLE sparse MLA must not split KV staging through static chunk loops"
+        assert not (isinstance(func, ast.Attribute) and func.attr
+                    == "static_range"), "TLE sparse MLA must not split KV staging through static chunk loops"
 
     forbidden_fragments = [
         "offs_d_chunk",

@@ -24,11 +24,11 @@
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 
 namespace mlir::triton::tle {
@@ -41,8 +41,8 @@ namespace {
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 
-static constexpr llvm::StringLiteral kTleTileStylePipelineAttr(
-    "tle.tile_style_pipeline");
+static constexpr llvm::StringLiteral
+    kTleTileStylePipelineAttr("tle.tile_style_pipeline");
 
 static IntegerAttr getI32Attr(MLIRContext *ctx, int64_t value) {
   return IntegerAttr::get(IntegerType::get(ctx, 32), value);
@@ -54,8 +54,7 @@ static bool hasTwoStagePipelineAttr(scf::ForOp forOp) {
 }
 
 static std::optional<int64_t> getScheduledMaxStage(scf::ForOp forOp) {
-  auto attr =
-      forOp->getAttrOfType<IntegerAttr>(tt::kScheduledMaxStageAttrName);
+  auto attr = forOp->getAttrOfType<IntegerAttr>(tt::kScheduledMaxStageAttrName);
   if (!attr)
     return std::nullopt;
   return attr.getInt();
@@ -114,8 +113,9 @@ static bool isTileProducerViewLikeOp(Operation *op) {
          op->getName().getStringRef() == "tle.memdesc_wgmma_view";
 }
 
-static bool hasTleMemdescWgmmaView(Value value,
-                                   llvm::SmallDenseSet<Operation *, 8> &visited) {
+static bool
+hasTleMemdescWgmmaView(Value value,
+                       llvm::SmallDenseSet<Operation *, 8> &visited) {
   for (Operation *user : value.getUsers()) {
     if (!visited.insert(user).second)
       continue;
@@ -153,8 +153,9 @@ static bool isTleLegacyLoadAllocProducer(Operation *op) {
   return hasTleMemdescWgmmaView(allocOp.getResult(), visited);
 }
 
-static Operation *getFirstDotLikeConsumerOp(
-    Value value, llvm::SmallDenseSet<Operation *, 8> &visited) {
+static Operation *
+getFirstDotLikeConsumerOp(Value value,
+                          llvm::SmallDenseSet<Operation *, 8> &visited) {
   Operation *firstDot = nullptr;
   for (Operation *user : value.getUsers()) {
     if (!visited.insert(user).second)
@@ -166,7 +167,8 @@ static Operation *getFirstDotLikeConsumerOp(
     }
     if (!isTileProducerViewLikeOp(user) || user->getNumResults() == 0)
       continue;
-    if (Operation *nested = getFirstDotLikeConsumerOp(user->getResult(0), visited)) {
+    if (Operation *nested =
+            getFirstDotLikeConsumerOp(user->getResult(0), visited)) {
       if (!firstDot || nested->isBeforeInBlock(firstDot))
         firstDot = nested;
     }
@@ -186,9 +188,9 @@ static bool isAsyncCopyLikeProducer(Operation *op) {
 }
 
 static bool hasAnyLoopStageAttr(scf::ForOp forOp) {
-  return llvm::any_of(forOp.getBody()->without_terminator(), [&](Operation &op) {
-    return op.hasAttr(tt::kLoopStageAttrName);
-  });
+  return llvm::any_of(
+      forOp.getBody()->without_terminator(),
+      [&](Operation &op) { return op.hasAttr(tt::kLoopStageAttrName); });
 }
 
 static Operation *findFirstDirectAsyncDotConsumer(scf::ForOp forOp) {
@@ -257,8 +259,8 @@ static bool isEligibleForTileStylePipeline(scf::ForOp forOp) {
     if (*stage > 1)
       return false;
     if (*stage == 0) {
-      hasStage0Producer |= isTleLegacyLoadAllocProducer(&op) ||
-                           isAsyncCopyLikeProducer(&op);
+      hasStage0Producer |=
+          isTleLegacyLoadAllocProducer(&op) || isAsyncCopyLikeProducer(&op);
       hasStage0Dot |= isDotLikeConsumer(&op);
     } else if (*stage == 1) {
       hasStage1Consumer |= isDotLikeConsumer(&op);
@@ -298,7 +300,8 @@ class TileStylePipelineSchedulePass
         auto stage = getLoopStage(&op);
         if (!stage || *stage == 0)
           continue;
-        op.setAttr(tt::kLoopStageAttrName, getI32Attr(op.getContext(), *stage + 1));
+        op.setAttr(tt::kLoopStageAttrName,
+                   getI32Attr(op.getContext(), *stage + 1));
       }
       forOp->setAttr(tt::kScheduledMaxStageAttrName,
                      getI32Attr(forOp.getContext(), 2));

@@ -3425,10 +3425,8 @@ def triton_topk_selector(
 # ---------------------------------
 
 TRTLLM_INDEXER_TOPK_COMMIT = "b882393d697bc485dd16fc11ccbb1fc4e5a1832d"
-TRTLLM_INDEXER_TOPK_KERNEL_URL = (
-    f"https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/{TRTLLM_INDEXER_TOPK_COMMIT}/"
-    "cpp/tensorrt_llm/kernels/indexerTopK.cu"
-)
+TRTLLM_INDEXER_TOPK_KERNEL_URL = (f"https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/{TRTLLM_INDEXER_TOPK_COMMIT}/"
+                                  "cpp/tensorrt_llm/kernels/indexerTopK.cu")
 FLASHINFER_TOPK_CUH_URL = ("https://raw.githubusercontent.com/flashinfer-ai/flashinfer/refs/heads/main/"
                            "include/flashinfer/topk.cuh")
 FLASHINFER_INCLUDE_BASE_URL = ("https://raw.githubusercontent.com/flashinfer-ai/flashinfer/refs/heads/main/"
@@ -3971,11 +3969,7 @@ _BENCH_XVALS = [
     (64, 131072, 2048),
     (64, 524288, 2048),
 ]
-_PERF_TOPK2048_XVALS = [
-    (batch, seq_len, 2048)
-    for batch in (1, 132, 4096)
-    for seq_len in (2048, 4096, 16384, 65536)
-]
+_PERF_TOPK2048_XVALS = [(batch, seq_len, 2048) for batch in (1, 132, 4096) for seq_len in (2048, 4096, 16384, 65536)]
 _TILELANG_SKIP_SEQ_LEN_MIN = 262144
 
 

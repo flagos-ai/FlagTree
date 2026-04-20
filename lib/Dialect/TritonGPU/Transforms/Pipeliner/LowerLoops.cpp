@@ -508,8 +508,8 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
 #endif
       if (canUseAsyncCp || isTMALoad(&op)) {
 #ifdef __TLE__
-        if (useTileStylePipeline && schedule[&op].first == 0 &&
-            stageDiff > 1 && requiresAdditionalBuffer) {
+        if (useTileStylePipeline && schedule[&op].first == 0 && stageDiff > 1 &&
+            requiresAdditionalBuffer) {
           stageDiff -= 1;
         }
 #endif

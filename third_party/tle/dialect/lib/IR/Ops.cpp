@@ -1,8 +1,8 @@
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "tle/dialect/include/IR/Dialect.h"
-#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
@@ -173,8 +173,7 @@ LogicalResult MemDescWGMMAViewOp::verify() {
     return emitOpError("expects source and result memory spaces to match");
   if (!isa<triton::gpu::SharedMemorySpaceAttr>(srcType.getMemorySpace()))
     return emitOpError("expects shared memory descriptors");
-  if (mlir::product(srcType.getShape()) !=
-      mlir::product(resultType.getShape()))
+  if (mlir::product(srcType.getShape()) != mlir::product(resultType.getShape()))
     return emitOpError("expects source and result to cover the same number of "
                        "elements");
   if (!isa<triton::gpu::NVMMASharedEncodingAttr,

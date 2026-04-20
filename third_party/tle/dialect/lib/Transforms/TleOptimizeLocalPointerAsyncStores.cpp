@@ -181,7 +181,8 @@ matchStaticSubviewMemDesc(triton::StoreOp store) {
   SmallVector<int32_t> offsets(memDescTy.getRank(), 0);
   if (indices.empty()) {
     if (llvm::equal(valueTy.getShape(), memDescTy.getShape()))
-      return StaticSubviewMatch{localPointers.getSrc(), std::move(offsets), valueTy};
+      return StaticSubviewMatch{localPointers.getSrc(), std::move(offsets),
+                                valueTy};
     return std::nullopt;
   }
   if (indices.size() != static_cast<size_t>(memDescTy.getRank()))
@@ -194,21 +195,23 @@ matchStaticSubviewMemDesc(triton::StoreOp store) {
     offsets[axis] = static_cast<int32_t>(offset);
   }
 
-  return StaticSubviewMatch{localPointers.getSrc(), std::move(offsets), valueTy};
+  return StaticSubviewMatch{localPointers.getSrc(), std::move(offsets),
+                            valueTy};
 }
 
 static Value createSubviewForStore(OpBuilder &builder, Location loc,
                                    StaticSubviewMatch match) {
   auto memDescTy = cast<ttg::MemDescType>(match.baseMemDesc.getType());
-  bool isFullView = llvm::equal(match.valueType.getShape(), memDescTy.getShape()) &&
-                    llvm::all_of(match.offsets, [](int32_t offset) { return offset == 0; });
+  bool isFullView =
+      llvm::equal(match.valueType.getShape(), memDescTy.getShape()) &&
+      llvm::all_of(match.offsets, [](int32_t offset) { return offset == 0; });
   if (isFullView)
     return match.baseMemDesc;
 
-  auto subTy = ttg::MemDescType::get(match.valueType.getShape(),
-                                     match.valueType.getElementType(),
-                                     memDescTy.getEncoding(), memDescTy.getMemorySpace(),
-                                     memDescTy.getMutableMemory(), memDescTy.getAllocShape());
+  auto subTy = ttg::MemDescType::get(
+      match.valueType.getShape(), match.valueType.getElementType(),
+      memDescTy.getEncoding(), memDescTy.getMemorySpace(),
+      memDescTy.getMutableMemory(), memDescTy.getAllocShape());
   return ttg::MemDescSubsliceOp::create(builder, loc, subTy, match.baseMemDesc,
                                         match.offsets);
 }
@@ -236,7 +239,8 @@ class OptimizeLocalPointerAsyncStoresPass
       auto match = matchStaticSubviewMemDesc(store);
       if (!match)
         continue;
-      if (cast<RankedTensorType>(load.getType()).getShape() != match->valueType.getShape())
+      if (cast<RankedTensorType>(load.getType()).getShape() !=
+          match->valueType.getShape())
         continue;
       if (cast<RankedTensorType>(load.getType()).getElementType() !=
           match->valueType.getElementType())

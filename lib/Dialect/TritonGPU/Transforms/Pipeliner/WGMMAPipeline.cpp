@@ -32,8 +32,8 @@ namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 
 #ifdef __TLE__
-static constexpr llvm::StringLiteral kTleExplicitTileStylePipelineAttr(
-    "tle.explicit_tile_style_pipeline");
+static constexpr llvm::StringLiteral
+    kTleExplicitTileStylePipelineAttr("tle.explicit_tile_style_pipeline");
 
 static bool shouldPreserveAsyncWaitNum(ttg::AsyncWaitOp waitOp) {
   Operation *parent = waitOp->getParentOp();

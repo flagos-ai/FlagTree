@@ -20,17 +20,17 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
-#include "tle/dialect/include/IR/Dialect.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/DenseSet.h"
 
 namespace mlir::triton::tle {
@@ -44,12 +44,12 @@ namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 
-static constexpr llvm::StringLiteral kTleTileStylePipelineAttr(
-    "tle.tile_style_pipeline");
-static constexpr llvm::StringLiteral kTleExplicitTileStylePipelineAttr(
-    "tle.explicit_tile_style_pipeline");
-static constexpr llvm::StringLiteral kTleAsyncTileProducerCountAttr(
-    "tle.async_tile_producer_count");
+static constexpr llvm::StringLiteral
+    kTleTileStylePipelineAttr("tle.tile_style_pipeline");
+static constexpr llvm::StringLiteral
+    kTleExplicitTileStylePipelineAttr("tle.explicit_tile_style_pipeline");
+static constexpr llvm::StringLiteral
+    kTleAsyncTileProducerCountAttr("tle.async_tile_producer_count");
 static constexpr bool kEnableExperimentalOneStepLeadMaterialization = true;
 
 struct AsyncTileProducerGroup {
@@ -110,9 +110,10 @@ static bool isProducerAllocOp(ArrayRef<AsyncTileProducerGroup> groups,
 static bool isProducerAsyncCopyOp(ArrayRef<AsyncTileProducerGroup> groups,
                                   Operation *op) {
   return llvm::any_of(groups, [&](AsyncTileProducerGroup group) {
-    return llvm::any_of(group.asyncCopyOps, [&](ttg::AsyncCopyGlobalToLocalOp copy) {
-      return copy.getOperation() == op;
-    });
+    return llvm::any_of(group.asyncCopyOps,
+                        [&](ttg::AsyncCopyGlobalToLocalOp copy) {
+                          return copy.getOperation() == op;
+                        });
   });
 }
 
@@ -140,9 +141,9 @@ static ttg::MemDescType ensureMutableMemDescType(ttg::MemDescType type) {
 }
 
 static bool hasAnyLoopStageAttr(scf::ForOp forOp) {
-  return llvm::any_of(forOp.getBody()->without_terminator(), [&](Operation &op) {
-    return op.hasAttr(tt::kLoopStageAttrName);
-  });
+  return llvm::any_of(
+      forOp.getBody()->without_terminator(),
+      [&](Operation &op) { return op.hasAttr(tt::kLoopStageAttrName); });
 }
 
 static ttg::LocalAllocOp getSingleDirectLocalAllocUser(tt::LoadOp loadOp) {
@@ -180,10 +181,11 @@ static bool isTileProducerViewLikeOp(Operation *op) {
 }
 
 static Operation *cloneWithUpdatedMemDescViewType(OpBuilder &builder,
-                                                 Operation *op,
-                                                 IRMapping &mapping) {
+                                                  Operation *op,
+                                                  IRMapping &mapping) {
   auto mapResults = [&](Operation *newOp) -> Operation * {
-    for (auto [oldResult, newResult] : llvm::zip(op->getResults(), newOp->getResults()))
+    for (auto [oldResult, newResult] :
+         llvm::zip(op->getResults(), newOp->getResults()))
       mapping.map(oldResult, newResult);
     return newOp;
   };
@@ -192,10 +194,11 @@ static Operation *cloneWithUpdatedMemDescViewType(OpBuilder &builder,
     auto oldTy = index.getType();
     bool isMutable = cast<ttg::MemDescType>(src.getType()).getMutableMemory();
     auto newTy = ttg::MemDescType::get(oldTy.getShape(), oldTy.getElementType(),
-                                       oldTy.getEncoding(), oldTy.getMemorySpace(),
-                                       isMutable);
-    auto newOp = ttg::MemDescIndexOp::create(builder, index.getLoc(), newTy, src,
-                                             mapping.lookupOrDefault(index.getIndex()));
+                                       oldTy.getEncoding(),
+                                       oldTy.getMemorySpace(), isMutable);
+    auto newOp =
+        ttg::MemDescIndexOp::create(builder, index.getLoc(), newTy, src,
+                                    mapping.lookupOrDefault(index.getIndex()));
     newOp->setAttrs(op->getAttrs());
     return mapResults(newOp);
   }
@@ -203,11 +206,11 @@ static Operation *cloneWithUpdatedMemDescViewType(OpBuilder &builder,
     Value src = mapping.lookupOrDefault(subslice.getSrc());
     auto oldTy = subslice.getType();
     bool isMutable = cast<ttg::MemDescType>(src.getType()).getMutableMemory();
-    auto newTy = ttg::MemDescType::get(oldTy.getShape(), oldTy.getElementType(),
-                                       oldTy.getEncoding(), oldTy.getMemorySpace(),
-                                       isMutable, oldTy.getAllocShape());
-    auto newOp = ttg::MemDescSubsliceOp::create(builder, subslice.getLoc(), newTy,
-                                                src, subslice.getOffsets());
+    auto newTy = ttg::MemDescType::get(
+        oldTy.getShape(), oldTy.getElementType(), oldTy.getEncoding(),
+        oldTy.getMemorySpace(), isMutable, oldTy.getAllocShape());
+    auto newOp = ttg::MemDescSubsliceOp::create(
+        builder, subslice.getLoc(), newTy, src, subslice.getOffsets());
     newOp->setAttrs(op->getAttrs());
     return mapResults(newOp);
   }
@@ -229,11 +232,11 @@ static Operation *cloneWithUpdatedMemDescViewType(OpBuilder &builder,
     Value src = mapping.lookupOrDefault(view.getSrc());
     auto oldTy = view.getType();
     bool isMutable = cast<ttg::MemDescType>(src.getType()).getMutableMemory();
-    auto newTy = ttg::MemDescType::get(oldTy.getShape(), oldTy.getElementType(),
-                                       oldTy.getEncoding(), oldTy.getMemorySpace(),
-                                       isMutable, oldTy.getAllocShape());
-    auto newOp = triton::tle::MemDescWGMMAViewOp::create(builder, view.getLoc(), newTy,
-                                                         src, view.getOrder());
+    auto newTy = ttg::MemDescType::get(
+        oldTy.getShape(), oldTy.getElementType(), oldTy.getEncoding(),
+        oldTy.getMemorySpace(), isMutable, oldTy.getAllocShape());
+    auto newOp = triton::tle::MemDescWGMMAViewOp::create(
+        builder, view.getLoc(), newTy, src, view.getOrder());
     newOp->setAttrs(op->getAttrs());
     return mapResults(newOp);
   }
@@ -248,10 +251,11 @@ static bool isRematerializablePrefixOp(Operation *op) {
   return false;
 }
 
-static bool isRematerializablePrefixValue(
-    Value value, Block *body, llvm::SmallDenseSet<Operation *, 32> &prefixSet,
-    ArrayRef<AsyncTileProducerGroup> producerGroups,
-    DenseMap<Value, bool> &cache) {
+static bool
+isRematerializablePrefixValue(Value value, Block *body,
+                              llvm::SmallDenseSet<Operation *, 32> &prefixSet,
+                              ArrayRef<AsyncTileProducerGroup> producerGroups,
+                              DenseMap<Value, bool> &cache) {
   auto it = cache.find(value);
   if (it != cache.end())
     return it->second;
@@ -272,7 +276,8 @@ static bool isRematerializablePrefixValue(
   Operation *def = value.getDefiningOp();
   if (!def)
     return cache[value] = false;
-  if (isProducerLoadOp(producerGroups, def) || isProducerAllocOp(producerGroups, def) ||
+  if (isProducerLoadOp(producerGroups, def) ||
+      isProducerAllocOp(producerGroups, def) ||
       isProducerAsyncCopyOp(producerGroups, def))
     return cache[value] = false;
   if (!prefixSet.contains(def) && !isRematerializablePrefixOp(def))
@@ -290,8 +295,7 @@ static bool isRematerializablePrefixValue(
   return true;
 }
 
-static LogicalResult
-materializeRematerializablePrefixValue(
+static LogicalResult materializeRematerializablePrefixValue(
     Value value, Block *body, llvm::SmallDenseSet<Operation *, 32> &prefixSet,
     ExplicitPipelinePlan &plan, OpBuilder &builder, IRMapping &mapping,
     llvm::SmallDenseSet<Operation *, 32> &activeDefs) {
@@ -344,11 +348,9 @@ materializeRematerializablePrefixValue(
   return success();
 }
 
-static LogicalResult
-materializeRematerializableOperands(Operation *op, Block *body,
-                                    llvm::SmallDenseSet<Operation *, 32> &prefixSet,
-                                    ExplicitPipelinePlan &plan, OpBuilder &builder,
-                                    IRMapping &mapping) {
+static LogicalResult materializeRematerializableOperands(
+    Operation *op, Block *body, llvm::SmallDenseSet<Operation *, 32> &prefixSet,
+    ExplicitPipelinePlan &plan, OpBuilder &builder, IRMapping &mapping) {
   llvm::SmallDenseSet<Operation *, 32> activeDefs;
   for (Value operand : op->getOperands()) {
     if (failed(materializeRematerializablePrefixValue(
@@ -358,8 +360,7 @@ materializeRematerializableOperands(Operation *op, Block *body,
   return success();
 }
 
-static bool hasDotLikeConsumer(Value value,
-                               Block *scopeBody,
+static bool hasDotLikeConsumer(Value value, Block *scopeBody,
                                llvm::SmallDenseSet<Operation *, 8> &visited) {
   for (Operation *user : value.getUsers()) {
     if (!visited.insert(user).second)
@@ -374,10 +375,9 @@ static bool hasDotLikeConsumer(Value value,
   return false;
 }
 
-static Operation *getFirstDotLikeConsumerOp(Value value,
-                                            Block *scopeBody,
-                                            llvm::SmallDenseSet<Operation *, 8>
-                                                &visited) {
+static Operation *
+getFirstDotLikeConsumerOp(Value value, Block *scopeBody,
+                          llvm::SmallDenseSet<Operation *, 8> &visited) {
   Operation *firstDot = nullptr;
   for (Operation *user : value.getUsers()) {
     if (!visited.insert(user).second)
@@ -389,8 +389,8 @@ static Operation *getFirstDotLikeConsumerOp(Value value,
     }
     if (!isTileProducerViewLikeOp(user) || user->getNumResults() == 0)
       continue;
-    if (Operation *nested = getFirstDotLikeConsumerOp(user->getResult(0), scopeBody,
-                                                      visited)) {
+    if (Operation *nested =
+            getFirstDotLikeConsumerOp(user->getResult(0), scopeBody, visited)) {
       if (!firstDot || nested->isBeforeInBlock(firstDot))
         firstDot = nested;
     }
@@ -413,8 +413,9 @@ static TileStyleLoopAnalysis analyzeTileStyleLoop(scf::ForOp forOp) {
       llvm::SmallDenseSet<Operation *, 8> visited;
       if (!hasDotLikeConsumer(allocOp.getResult(), body, visited))
         continue;
-      analysis.asyncTileProducers.push_back(
-          {.baseMemDesc = allocOp.getResult(), .loadOp = loadOp, .allocOp = allocOp});
+      analysis.asyncTileProducers.push_back({.baseMemDesc = allocOp.getResult(),
+                                             .loadOp = loadOp,
+                                             .allocOp = allocOp});
       continue;
     }
 
@@ -442,7 +443,8 @@ static TileStyleLoopAnalysis analyzeTileStyleLoop(scf::ForOp forOp) {
 }
 
 static bool isTileStyleCandidate(scf::ForOp forOp) {
-  auto numStagesAttr = forOp->getAttrOfType<IntegerAttr>(tt::kNumStagesAttrName);
+  auto numStagesAttr =
+      forOp->getAttrOfType<IntegerAttr>(tt::kNumStagesAttrName);
   if (!numStagesAttr || numStagesAttr.getInt() != 2)
     return false;
   if (auto tileStyleAttr =
@@ -451,16 +453,19 @@ static bool isTileStyleCandidate(scf::ForOp forOp) {
   if (hasAnyLoopStageAttr(forOp))
     return false;
   TileStyleLoopAnalysis analysis = analyzeTileStyleLoop(forOp);
-  return llvm::any_of(analysis.asyncTileProducers, [&](AsyncTileProducerGroup group) {
-    return group.isDirectAsyncFamily();
-  });
+  return llvm::any_of(analysis.asyncTileProducers,
+                      [&](AsyncTileProducerGroup group) {
+                        return group.isDirectAsyncFamily();
+                      });
 }
 
 static bool isPositiveConstantTripCount(scf::ForOp forOp) {
   auto getConstValue = [](Value value) -> std::optional<int64_t> {
-    if (auto cst = dyn_cast_or_null<arith::ConstantIntOp>(value.getDefiningOp()))
+    if (auto cst =
+            dyn_cast_or_null<arith::ConstantIntOp>(value.getDefiningOp()))
       return cst.value();
-    if (auto cst = dyn_cast_or_null<arith::ConstantIndexOp>(value.getDefiningOp()))
+    if (auto cst =
+            dyn_cast_or_null<arith::ConstantIndexOp>(value.getDefiningOp()))
       return cst.value();
     return std::nullopt;
   };
@@ -476,7 +481,8 @@ static bool isPositiveConstantTripCount(scf::ForOp forOp) {
 
 static bool hasAtLeastTwoConstantIterations(scf::ForOp forOp) {
   auto getConstValue = [](Value value) -> std::optional<int64_t> {
-    if (auto cst = dyn_cast_or_null<arith::ConstantIntOp>(value.getDefiningOp()))
+    if (auto cst =
+            dyn_cast_or_null<arith::ConstantIntOp>(value.getDefiningOp()))
       return cst.value();
     if (auto cst =
             dyn_cast_or_null<arith::ConstantIndexOp>(value.getDefiningOp()))
@@ -583,20 +589,20 @@ buildExplicitPipelinePlan(scf::ForOp forOp,
     for (Value result : op->getResults()) {
       if (isProducerAllocResult(producerGroups, result))
         continue;
-      bool escapesPrefix = llvm::any_of(result.getUsers(), [&](Operation *user) {
-        return restSet.contains(user);
-      });
+      bool escapesPrefix =
+          llvm::any_of(result.getUsers(),
+                       [&](Operation *user) { return restSet.contains(user); });
       if (!escapesPrefix || !seenValues.insert(result).second)
         continue;
-      if (isRematerializablePrefixValue(result, &body, prefixSet, producerGroups,
-                                        rematCache))
+      if (isRematerializablePrefixValue(result, &body, prefixSet,
+                                        producerGroups, rematCache))
         continue;
       carriedValues.push_back(result);
     }
   }
   return ExplicitPipelinePlan{
-      .producerGroups = SmallVector<AsyncTileProducerGroup>(producerGroups.begin(),
-                                                            producerGroups.end()),
+      .producerGroups = SmallVector<AsyncTileProducerGroup>(
+          producerGroups.begin(), producerGroups.end()),
       .prefixOps = std::move(prefixOps),
       .restOps = std::move(restOps),
       .carriedValues = std::move(carriedValues),
@@ -625,9 +631,10 @@ findProducerGroupByAlloc(ExplicitPipelinePlan &plan, Operation *op) {
 static std::optional<unsigned>
 findProducerGroupIndexByAsyncCopy(ExplicitPipelinePlan &plan, Operation *op) {
   for (auto [idx, group] : llvm::enumerate(plan.producerGroups)) {
-    if (llvm::any_of(group.asyncCopyOps, [&](ttg::AsyncCopyGlobalToLocalOp copy) {
-          return copy.getOperation() == op;
-        }))
+    if (llvm::any_of(group.asyncCopyOps,
+                     [&](ttg::AsyncCopyGlobalToLocalOp copy) {
+                       return copy.getOperation() == op;
+                     }))
       return idx;
   }
   return std::nullopt;
@@ -643,12 +650,12 @@ findProducerGroupIndexByAlloc(ExplicitPipelinePlan &plan, Operation *op) {
 }
 
 static SmallVector<Value> clonePrefixOps(ExplicitPipelinePlan &plan,
-                                         OpBuilder &builder,
-                                         IRMapping &mapping,
+                                         OpBuilder &builder, IRMapping &mapping,
                                          ArrayRef<Value> targetViews = {}) {
   SmallVector<Value> commitTokens;
   commitTokens.resize(plan.producerGroups.size());
-  SmallVector<SmallVector<Value>> groupedAsyncTokens(plan.producerGroups.size());
+  SmallVector<SmallVector<Value>> groupedAsyncTokens(
+      plan.producerGroups.size());
 
   if (!targetViews.empty()) {
     if (targetViews.size() != plan.producerGroups.size())
@@ -665,37 +672,40 @@ static SmallVector<Value> clonePrefixOps(ExplicitPipelinePlan &plan,
   for (Operation *op : plan.prefixOps) {
     if (findProducerGroupByLoad(plan, op))
       continue;
-    if (std::optional<unsigned> groupIdx = findProducerGroupIndexByAlloc(plan, op)) {
+    if (std::optional<unsigned> groupIdx =
+            findProducerGroupIndexByAlloc(plan, op)) {
       AsyncTileProducerGroup group = plan.producerGroups[*groupIdx];
       auto loadOp = group.loadOp;
       Value ptr = mapping.lookupOrDefault(loadOp.getPtr());
-      Value mask = loadOp.getMask() ? mapping.lookupOrDefault(loadOp.getMask()) : Value();
-      Value other =
-          loadOp.getOther() ? mapping.lookupOrDefault(loadOp.getOther()) : Value();
+      Value mask = loadOp.getMask() ? mapping.lookupOrDefault(loadOp.getMask())
+                                    : Value();
+      Value other = loadOp.getOther()
+                        ? mapping.lookupOrDefault(loadOp.getOther())
+                        : Value();
       Value asyncView;
       if (!targetViews.empty()) {
         if (targetViews.size() != plan.producerGroups.size())
           return {};
         asyncView = targetViews[*groupIdx];
       } else {
-        asyncView =
-            ttg::LocalAllocOp::create(builder, loadOp.getLoc(),
-                                      ensureMutableMemDescType(group.allocOp.getType()));
+        asyncView = ttg::LocalAllocOp::create(
+            builder, loadOp.getLoc(),
+            ensureMutableMemDescType(group.allocOp.getType()));
       }
       auto asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
           builder, loadOp.getLoc(), ptr, asyncView, mask, other,
           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
-      auto asyncCommit =
-          ttg::AsyncCommitGroupOp::create(builder, asyncCopy.getLoc(),
-                                          asyncCopy.getToken().getType(),
-                                          asyncCopy.getToken());
+      auto asyncCommit = ttg::AsyncCommitGroupOp::create(
+          builder, asyncCopy.getLoc(), asyncCopy.getToken().getType(),
+          asyncCopy.getToken());
       mapping.map(group.allocOp.getResult(), asyncView);
       commitTokens[*groupIdx] = asyncCommit.getResult();
       continue;
     }
     if (auto groupIdx = findProducerGroupIndexByAsyncCopy(plan, op)) {
       if (failed(materializeRematerializableOperands(
-              op, builder.getInsertionBlock(), prefixSet, plan, builder, mapping)))
+              op, builder.getInsertionBlock(), prefixSet, plan, builder,
+              mapping)))
         return {};
       Operation *cloned = cloneWithUpdatedMemDescViewType(builder, op, mapping);
       groupedAsyncTokens[*groupIdx].push_back(cloned->getResult(0));
@@ -704,7 +714,8 @@ static SmallVector<Value> clonePrefixOps(ExplicitPipelinePlan &plan,
     if (isa<ttg::AsyncCommitGroupOp, ttg::AsyncWaitOp>(op))
       continue;
     if (failed(materializeRematerializableOperands(
-            op, builder.getInsertionBlock(), prefixSet, plan, builder, mapping)))
+            op, builder.getInsertionBlock(), prefixSet, plan, builder,
+            mapping)))
       return {};
     cloneWithUpdatedMemDescViewType(builder, op, mapping);
   }
@@ -712,8 +723,9 @@ static SmallVector<Value> clonePrefixOps(ExplicitPipelinePlan &plan,
   for (auto [idx, group] : llvm::enumerate(plan.producerGroups)) {
     if (!group.isDirectAsyncFamily())
       continue;
-    auto commit = ttg::AsyncCommitGroupOp::create(builder, group.asyncCopyOps.front().getLoc(),
-                                                  ValueRange(groupedAsyncTokens[idx]));
+    auto commit = ttg::AsyncCommitGroupOp::create(
+        builder, group.asyncCopyOps.front().getLoc(),
+        ValueRange(groupedAsyncTokens[idx]));
     commitTokens[idx] = commit.getAsyncToken();
   }
   return commitTokens;
@@ -728,7 +740,8 @@ materializePrefixAt(OpBuilder &builder, scf::ForOp forOp,
   SmallVector<Value> views;
   views.reserve(baseAllocs.size());
   for (Value baseAlloc : baseAllocs)
-    views.push_back(triton::createSingleBufferView(builder, baseAlloc, slotIdx));
+    views.push_back(
+        triton::createSingleBufferView(builder, baseAlloc, slotIdx));
   SmallVector<Value> tokens = clonePrefixOps(plan, builder, mapping, views);
   if (tokens.size() != plan.producerGroups.size())
     return failure();
@@ -740,7 +753,8 @@ materializePrefixAt(OpBuilder &builder, scf::ForOp forOp,
       return failure();
     carriedValues.push_back(mapped);
   }
-  return PrefixMaterializationResult{std::move(carriedValues), std::move(tokens)};
+  return PrefixMaterializationResult{std::move(carriedValues),
+                                     std::move(tokens)};
 }
 
 static FailureOr<SmallVector<Value>>
@@ -760,7 +774,8 @@ materializeConsumeAt(OpBuilder &builder, scf::ForOp forOp,
   SmallVector<Value> views;
   views.reserve(baseAllocs.size());
   for (Value baseAlloc : baseAllocs)
-    views.push_back(triton::createSingleBufferView(builder, baseAlloc, slotIdx));
+    views.push_back(
+        triton::createSingleBufferView(builder, baseAlloc, slotIdx));
   for (auto [groupIdx, group] : llvm::enumerate(plan.producerGroups)) {
     mapping.map(group.baseMemDesc, views[groupIdx]);
     if (group.isLegacyLoadAlloc())
@@ -771,8 +786,8 @@ materializeConsumeAt(OpBuilder &builder, scf::ForOp forOp,
                                                  plan.prefixOps.end());
   Block *insertBlock = builder.getInsertionBlock();
   for (Operation *op : plan.restOps) {
-    if (failed(materializeRematerializableOperands(
-            op, insertBlock, prefixSet, plan, builder, mapping)))
+    if (failed(materializeRematerializableOperands(op, insertBlock, prefixSet,
+                                                   plan, builder, mapping)))
       return failure();
     if (op == plan.firstDotOp) {
       auto waitOp = builder.create<ttg::AsyncWaitOp>(
@@ -798,9 +813,11 @@ static Operation *materializeExplicitOneStepLead(OpBuilder &builder,
                                                  scf::ForOp forOp,
                                                  ExplicitPipelinePlan &plan) {
   auto getConstStepValue = [](Value value) -> std::optional<int64_t> {
-    if (auto cst = dyn_cast_or_null<arith::ConstantIndexOp>(value.getDefiningOp()))
+    if (auto cst =
+            dyn_cast_or_null<arith::ConstantIndexOp>(value.getDefiningOp()))
       return cst.value();
-    if (auto cst = dyn_cast_or_null<arith::ConstantIntOp>(value.getDefiningOp()))
+    if (auto cst =
+            dyn_cast_or_null<arith::ConstantIntOp>(value.getDefiningOp()))
       return cst.value();
     return std::nullopt;
   };
@@ -812,11 +829,12 @@ static Operation *materializeExplicitOneStepLead(OpBuilder &builder,
 
   Value zero = arith::ConstantIntOp::create(builder, forOp.getLoc(), 0, 32);
   Value one = arith::ConstantIntOp::create(builder, forOp.getLoc(), 1, 32);
-  Value hasAny = arith::CmpIOp::create(builder, forOp.getLoc(),
-                                       arith::CmpIPredicate::slt,
-                                       forOp.getLowerBound(), forOp.getUpperBound());
-  auto outerIf = scf::IfOp::create(builder, forOp.getLoc(), forOp.getResultTypes(),
-                                   hasAny, /*withElseRegion=*/true);
+  Value hasAny =
+      arith::CmpIOp::create(builder, forOp.getLoc(), arith::CmpIPredicate::slt,
+                            forOp.getLowerBound(), forOp.getUpperBound());
+  auto outerIf =
+      scf::IfOp::create(builder, forOp.getLoc(), forOp.getResultTypes(), hasAny,
+                        /*withElseRegion=*/true);
 
   auto eraseAndFail = [&]() -> Operation * {
     outerIf.erase();
@@ -836,37 +854,37 @@ static Operation *materializeExplicitOneStepLead(OpBuilder &builder,
     baseAllocs.reserve(plan.producerGroups.size());
     for (AsyncTileProducerGroup group : plan.producerGroups) {
       auto baseType = cast<ttg::MemDescType>(group.baseMemDesc.getType());
-      auto multiBufferType =
-          ensureMutableMemDescType(triton::getMultiBufferedType(baseType, /*depth=*/2));
-      Location allocLoc =
-          group.isLegacyLoadAlloc() ? group.allocOp.getLoc() : group.asyncCopyOps.front().getLoc();
-      Value baseAlloc = ttg::LocalAllocOp::create(thenBuilder, allocLoc,
-                                                  multiBufferType);
+      auto multiBufferType = ensureMutableMemDescType(
+          triton::getMultiBufferedType(baseType, /*depth=*/2));
+      Location allocLoc = group.isLegacyLoadAlloc()
+                              ? group.allocOp.getLoc()
+                              : group.asyncCopyOps.front().getLoc();
+      Value baseAlloc =
+          ttg::LocalAllocOp::create(thenBuilder, allocLoc, multiBufferType);
       baseAllocs.push_back(baseAlloc);
     }
 
-    FailureOr<PrefixMaterializationResult> curInit =
-        materializePrefixAt(thenBuilder, forOp, plan, baseAllocs,
-                            forOp.getLowerBound(), zero);
+    FailureOr<PrefixMaterializationResult> curInit = materializePrefixAt(
+        thenBuilder, forOp, plan, baseAllocs, forOp.getLowerBound(), zero);
     if (failed(curInit))
       return eraseAndFail();
 
-    Value nextInitIv =
-        arith::AddIOp::create(thenBuilder, forOp.getLoc(), forOp.getLowerBound(),
-                              forOp.getStep());
+    Value nextInitIv = arith::AddIOp::create(
+        thenBuilder, forOp.getLoc(), forOp.getLowerBound(), forOp.getStep());
     Value hasSecond = arith::CmpIOp::create(thenBuilder, forOp.getLoc(),
-                                            arith::CmpIPredicate::slt, nextInitIv,
-                                            forOp.getUpperBound());
+                                            arith::CmpIPredicate::slt,
+                                            nextInitIv, forOp.getUpperBound());
     auto secondIf = scf::IfOp::create(thenBuilder, forOp.getLoc(),
                                       forOp.getResultTypes(), hasSecond,
                                       /*withElseRegion=*/true);
 
     {
       OpBuilder elseBuilder = secondIf.getElseBodyBuilder();
-      FailureOr<SmallVector<Value>> singleResults = materializeConsumeAt(
-          elseBuilder, forOp, plan, baseAllocs, initState,
-          (*curInit).carriedValues, (*curInit).tokens, zero, forOp.getLowerBound(),
-          /*waitNum=*/0);
+      FailureOr<SmallVector<Value>> singleResults =
+          materializeConsumeAt(elseBuilder, forOp, plan, baseAllocs, initState,
+                               (*curInit).carriedValues, (*curInit).tokens,
+                               zero, forOp.getLowerBound(),
+                               /*waitNum=*/0);
       if (failed(singleResults))
         return eraseAndFail();
       for (Value baseAlloc : baseAllocs)
@@ -876,9 +894,8 @@ static Operation *materializeExplicitOneStepLead(OpBuilder &builder,
 
     {
       OpBuilder then2Builder = secondIf.getThenBodyBuilder();
-      FailureOr<PrefixMaterializationResult> nextInit =
-          materializePrefixAt(then2Builder, forOp, plan, baseAllocs, nextInitIv,
-                              one);
+      FailureOr<PrefixMaterializationResult> nextInit = materializePrefixAt(
+          then2Builder, forOp, plan, baseAllocs, nextInitIv, one);
       if (failed(nextInit))
         return eraseAndFail();
 
@@ -890,21 +907,18 @@ static Operation *materializeExplicitOneStepLead(OpBuilder &builder,
       steadyInitArgs.append((*nextInit).tokens);
       steadyInitArgs.push_back(one);
 
-      Value upperMinusStep =
-          arith::SubIOp::create(then2Builder, forOp.getLoc(), forOp.getUpperBound(),
-                                forOp.getStep());
-      Value steadyUpper =
-          arith::SubIOp::create(then2Builder, forOp.getLoc(), upperMinusStep,
-                                forOp.getStep());
+      Value upperMinusStep = arith::SubIOp::create(
+          then2Builder, forOp.getLoc(), forOp.getUpperBound(), forOp.getStep());
+      Value steadyUpper = arith::SubIOp::create(
+          then2Builder, forOp.getLoc(), upperMinusStep, forOp.getStep());
       auto steadyFor = then2Builder.create<scf::ForOp>(
           forOp.getLoc(), forOp.getLowerBound(), steadyUpper, forOp.getStep(),
           steadyInitArgs);
       steadyFor->setAttr(kTleExplicitTileStylePipelineAttr,
                          then2Builder.getI32IntegerAttr(1));
-      steadyFor->setAttr(
-          kTleAsyncTileProducerCountAttr,
-          then2Builder.getI32IntegerAttr(
-              static_cast<int32_t>(plan.producerGroups.size())));
+      steadyFor->setAttr(kTleAsyncTileProducerCountAttr,
+                         then2Builder.getI32IntegerAttr(
+                             static_cast<int32_t>(plan.producerGroups.size())));
       if (auto tileStyleAttr = forOp->getAttr(kTleTileStylePipelineAttr))
         steadyFor->setAttr(kTleTileStylePipelineAttr, tileStyleAttr);
 
@@ -914,19 +928,19 @@ static Operation *materializeExplicitOneStepLead(OpBuilder &builder,
       unsigned numCarried = plan.carriedValues.size();
       unsigned numGroups = plan.producerGroups.size();
       auto steadyArgs = steadyFor.getRegionIterArgs();
-      SmallVector<Value> loopStateArgs(
-          steadyArgs.begin(), steadyArgs.begin() + numLoopState);
-      SmallVector<Value> curCarriedArgs(
-          steadyArgs.begin() + numLoopState,
-          steadyArgs.begin() + numLoopState + numCarried);
+      SmallVector<Value> loopStateArgs(steadyArgs.begin(),
+                                       steadyArgs.begin() + numLoopState);
+      SmallVector<Value> curCarriedArgs(steadyArgs.begin() + numLoopState,
+                                        steadyArgs.begin() + numLoopState +
+                                            numCarried);
       SmallVector<Value> curTokenArgs(
           steadyArgs.begin() + numLoopState + numCarried,
           steadyArgs.begin() + numLoopState + numCarried + numGroups);
       Value curSlotArg = steadyArgs[numLoopState + numCarried + numGroups];
       unsigned nextBase = numLoopState + numCarried + numGroups + 1;
-      SmallVector<Value> nextCarriedArgs(
-          steadyArgs.begin() + nextBase,
-          steadyArgs.begin() + nextBase + numCarried);
+      SmallVector<Value> nextCarriedArgs(steadyArgs.begin() + nextBase,
+                                         steadyArgs.begin() + nextBase +
+                                             numCarried);
       SmallVector<Value> nextTokenArgs(
           steadyArgs.begin() + nextBase + numCarried,
           steadyArgs.begin() + nextBase + numCarried + numGroups);
@@ -937,20 +951,19 @@ static Operation *materializeExplicitOneStepLead(OpBuilder &builder,
           curTokenArgs, curSlotArg, steadyFor.getInductionVar(), /*waitNum=*/1);
       if (failed(curResults))
         return eraseAndFail();
-      Value nextIv = arith::AddIOp::create(bodyBuilder, forOp.getLoc(),
-                                           steadyFor.getInductionVar(),
-                                           forOp.getStep());
-      Value futureIv =
-          arith::AddIOp::create(bodyBuilder, forOp.getLoc(), nextIv, forOp.getStep());
-      FailureOr<PrefixMaterializationResult> futurePrefix =
-          materializePrefixAt(bodyBuilder, forOp, plan, baseAllocs, futureIv,
-                              curSlotArg);
+      Value nextIv =
+          arith::AddIOp::create(bodyBuilder, forOp.getLoc(),
+                                steadyFor.getInductionVar(), forOp.getStep());
+      Value futureIv = arith::AddIOp::create(bodyBuilder, forOp.getLoc(),
+                                             nextIv, forOp.getStep());
+      FailureOr<PrefixMaterializationResult> futurePrefix = materializePrefixAt(
+          bodyBuilder, forOp, plan, baseAllocs, futureIv, curSlotArg);
       if (failed(futurePrefix))
         return eraseAndFail();
 
       SmallVector<Value> steadyYield;
-      steadyYield.reserve(numLoopState + numCarried + numGroups + 1 + numCarried +
-                          numGroups + 1);
+      steadyYield.reserve(numLoopState + numCarried + numGroups + 1 +
+                          numCarried + numGroups + 1);
       steadyYield.append(*curResults);
       steadyYield.append(nextCarriedArgs);
       steadyYield.append(nextTokenArgs);
@@ -966,16 +979,16 @@ static Operation *materializeExplicitOneStepLead(OpBuilder &builder,
                                        steadyFor.getResults().end());
       SmallVector<Value> curLoopState(steadyResults.begin(),
                                       steadyResults.begin() + numLoopState);
-      SmallVector<Value> curCarriedFinal(
-          steadyResults.begin() + numLoopState,
-          steadyResults.begin() + numLoopState + numCarried);
+      SmallVector<Value> curCarriedFinal(steadyResults.begin() + numLoopState,
+                                         steadyResults.begin() + numLoopState +
+                                             numCarried);
       SmallVector<Value> curTokensFinal(
           steadyResults.begin() + numLoopState + numCarried,
           steadyResults.begin() + numLoopState + numCarried + numGroups);
       Value curSlotFinal = steadyResults[numLoopState + numCarried + numGroups];
-      SmallVector<Value> nextCarriedFinal(
-          steadyResults.begin() + nextBase,
-          steadyResults.begin() + nextBase + numCarried);
+      SmallVector<Value> nextCarriedFinal(steadyResults.begin() + nextBase,
+                                          steadyResults.begin() + nextBase +
+                                              numCarried);
       SmallVector<Value> nextTokensFinal(
           steadyResults.begin() + nextBase + numCarried,
           steadyResults.begin() + nextBase + numCarried + numGroups);
@@ -1003,9 +1016,9 @@ static Operation *materializeExplicitOneStepLead(OpBuilder &builder,
   return outerIf.getOperation();
 }
 
-static Operation *cloneLoopWithoutPipeliningAttrs(OpBuilder &builder,
-                                                  scf::ForOp forOp,
-                                                  TileStyleLoopAnalysis analysis) {
+static Operation *
+cloneLoopWithoutPipeliningAttrs(OpBuilder &builder, scf::ForOp forOp,
+                                TileStyleLoopAnalysis analysis) {
   auto newForOp =
       cast<scf::ForOp>(builder.cloneWithoutRegions(*forOp.getOperation()));
   IRMapping mapping;
@@ -1046,8 +1059,8 @@ static Operation *cloneLoopWithoutPipeliningAttrs(OpBuilder &builder,
   newForOp->setAttr(kTleExplicitTileStylePipelineAttr,
                     builder.getI32IntegerAttr(1));
   newForOp->setAttr(kTleAsyncTileProducerCountAttr,
-                    builder.getI32IntegerAttr(
-                        static_cast<int32_t>(analysis.asyncTileProducers.size())));
+                    builder.getI32IntegerAttr(static_cast<int32_t>(
+                        analysis.asyncTileProducers.size())));
 
   if (kEnableExperimentalOneStepLeadMaterialization &&
       !mappedAsyncTileProducers.empty()) {
@@ -1055,8 +1068,8 @@ static Operation *cloneLoopWithoutPipeliningAttrs(OpBuilder &builder,
             buildExplicitPipelinePlan(newForOp, mappedAsyncTileProducers)) {
       OpBuilder explicitBuilder(newForOp);
       explicitBuilder.setInsertionPoint(newForOp);
-      if (Operation *explicitOp =
-              materializeExplicitOneStepLead(explicitBuilder, newForOp, *plan)) {
+      if (Operation *explicitOp = materializeExplicitOneStepLead(
+              explicitBuilder, newForOp, *plan)) {
         SmallVector<Value> replacementResults;
         replacementResults.reserve(newForOp.getNumResults());
         for (unsigned i = 0; i < newForOp.getNumResults(); ++i)
@@ -1074,8 +1087,8 @@ static Operation *cloneLoopWithoutPipeliningAttrs(OpBuilder &builder,
     if (!group.isLegacyLoadAlloc())
       continue;
     ImplicitLocOpBuilder groupBuilder(group.loadOp.getLoc(), group.loadOp);
-    Value asyncAlloc =
-        ttg::LocalAllocOp::create(groupBuilder, ensureMutableMemDescType(group.allocOp.getType()));
+    Value asyncAlloc = ttg::LocalAllocOp::create(
+        groupBuilder, ensureMutableMemDescType(group.allocOp.getType()));
     Operation *asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
         groupBuilder, group.loadOp.getPtr(), asyncAlloc, group.loadOp.getMask(),
         group.loadOp.getOther(), group.loadOp.getCache(),
@@ -1083,12 +1096,12 @@ static Operation *cloneLoopWithoutPipeliningAttrs(OpBuilder &builder,
     Operation *asyncCommit =
         ttg::AsyncCommitGroupOp::create(groupBuilder, asyncCopy->getResult(0));
 
-      llvm::SmallDenseSet<Operation *, 8> visited;
-      if (Operation *firstDot =
-            getFirstDotLikeConsumerOp(group.allocOp.getResult(), newForOp.getBody(), visited)) {
-        ImplicitLocOpBuilder waitBuilder(group.loadOp.getLoc(), firstDot);
-      ttg::AsyncWaitOp::create(waitBuilder, ValueRange{asyncCommit->getResult(0)},
-                               0);
+    llvm::SmallDenseSet<Operation *, 8> visited;
+    if (Operation *firstDot = getFirstDotLikeConsumerOp(
+            group.allocOp.getResult(), newForOp.getBody(), visited)) {
+      ImplicitLocOpBuilder waitBuilder(group.loadOp.getLoc(), firstDot);
+      ttg::AsyncWaitOp::create(waitBuilder,
+                               ValueRange{asyncCommit->getResult(0)}, 0);
     }
 
     group.allocOp.replaceAllUsesWith(asyncAlloc);
