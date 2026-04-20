@@ -19,7 +19,6 @@ struct OriginSet {
   bool conflict = false; // true if any non-DSL-arg origin is mixed in
 
   bool merge(const OriginSet &other);
-
 };
 
 /// Helper: get the DSL arg index for a BlockArgument via funcArgToDslArg map.
