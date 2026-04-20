@@ -86,7 +86,7 @@ computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
   return origins;
 }
 
-SmallVector<int64_t>
+FailureOr<SmallVector<int64_t>>
 analyzeFuncReturnAliases(LLVM::LLVMFuncOp func,
                          ArrayRef<int64_t> funcArgToDslArg) {
   DenseMap<Value, OriginSet> origins =
@@ -94,13 +94,13 @@ analyzeFuncReturnAliases(LLVM::LLVMFuncOp func,
 
   LLVM::ReturnOp retOp = nullptr;
   func.walk([&](LLVM::ReturnOp op) { retOp = op; });
-  if (!retOp || retOp.getNumOperands() == 0)
-    return {};
 
   Value retVal = retOp.getOperand(0);
   auto it = origins.find(retVal);
-  if (it == origins.end() || it->second.conflict || it->second.indices.empty())
-    func.emitError("return value cannot be traced back to any DSL argument");
+  if (it == origins.end() || it->second.conflict ||
+      it->second.indices.empty())
+    return func.emitError(
+        "return value cannot be traced back to any DSL argument");
 
   return SmallVector<int64_t>(it->second.indices.begin(),
                               it->second.indices.end());

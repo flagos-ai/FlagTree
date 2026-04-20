@@ -100,12 +100,16 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
   SmallVector<int64_t> funcArgToDslArg =
       tle::dataanalyze::computeFuncArgToDslArg(args);
 
+  // Analyze alias once: which DSLRegionOp result aliases which DSL operand
+  SmallVector<int64_t> aliasOperandIndices;
   SmallVector<Type> outputTys;
   Type retTy = funcOp.getFunctionType().getReturnType();
   if (!isa<LLVM::LLVMVoidType>(retTy)) {
-    SmallVector<int64_t> aliases =
+    auto aliasesOrFailure =
         tle::dataanalyze::analyzeFuncReturnAliases(func, funcArgToDslArg);
-    for (int64_t idx : aliases) {
+    assert(succeeded(aliasesOrFailure));
+    aliasOperandIndices = *aliasesOrFailure;
+    for (int64_t idx : aliasOperandIndices) {
       outputTys.push_back(args[idx].getType());
     }
   }
@@ -160,9 +164,6 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
       }
     }
   }
-  // Analyze alias: which DSLRegionOp result aliases which DSL operand
-  SmallVector<int64_t> aliasOperandIndices =
-      tle::dataanalyze::analyzeFuncReturnAliases(func, funcArgToDslArg);
   dslRegionOp->setAttr(
       "tle.alias_operand_indices",
       DenseI64ArrayAttr::get(builder.getContext(), aliasOperandIndices));

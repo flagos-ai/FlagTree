@@ -3,6 +3,7 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
@@ -41,7 +42,7 @@ computeDslArgOrigins(mlir::LLVM::LLVMFuncOp func,
 /// Returns a sorted vector of DSL arg indices that the return value originates
 /// from. If the return value has any non-DSL-arg origin (conflict), returns
 /// empty vector. numResults = size of the returned vector.
-llvm::SmallVector<int64_t>
+mlir::FailureOr<llvm::SmallVector<int64_t>>
 analyzeFuncReturnAliases(mlir::LLVM::LLVMFuncOp func,
                          llvm::ArrayRef<int64_t> funcArgToDslArg);
 
