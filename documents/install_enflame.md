@@ -66,7 +66,7 @@ Note that the script will prompt for manual confirmation during execution.
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton --break-system-packages  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3 -m pip install flagtree===0.5.0+enflame3.6 --break-system-packages $RES
+python3.12 -m pip install flagtree===0.5.0+enflame3.6 --break-system-packages $RES
 ```
 
 After installing `flagtree`, you can check it with:
@@ -158,7 +158,7 @@ Note that the script will prompt for manual confirmation during execution.
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton --break-system-packages  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3 -m pip install flagtree===0.5.0+enflame3.5 --break-system-packages $RES
+python3.12 -m pip install flagtree===0.5.0+enflame3.5 --break-system-packages $RES
 ```
 
 After installing `flagtree`, you can check it with:
@@ -250,7 +250,7 @@ Note that the script will prompt for manual confirmation during execution.
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3 -m pip install flagtree===0.4.0+enflame3.3 $RES
+python3.10 -m pip install flagtree===0.4.0+enflame3.3 $RES
 ```
 
 After installing `flagtree`, you can check it with:

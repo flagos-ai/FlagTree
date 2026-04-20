@@ -66,7 +66,7 @@ Note that the script will prompt for manual confirmation during execution.
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3 -m pip install flagtree===0.5.0+tsingmicro3.3 $RES
+python3.10 -m pip install flagtree===0.5.0+tsingmicro3.3 $RES
 ```
 
 `flagtree` is already installed in the preinstalled image. You can check it with:

@@ -49,7 +49,7 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.4.x-linux-x6
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3 -m pip install flagtree===0.4.0+sunrise3.4 $RES
+python3.10 -m pip install flagtree===0.4.0+sunrise3.4 $RES
 ```
 
 预装镜像中已安装 `flagtree`，可通过下列命令查看：
