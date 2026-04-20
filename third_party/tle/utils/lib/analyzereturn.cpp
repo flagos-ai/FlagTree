@@ -35,7 +35,6 @@ bool OriginSet::operator!=(const OriginSet &other) const {
   return false;
 }
 
-
 int64_t getDslArgIdx(BlockArgument blockArg,
                      ArrayRef<int64_t> funcArgToDslArg) {
   int64_t funcIdx = blockArg.getArgNumber();
@@ -44,10 +43,8 @@ int64_t getDslArgIdx(BlockArgument blockArg,
   return -1;
 }
 
-
 DenseMap<Value, OriginSet>
-computeDslArgOrigins(LLVM::LLVMFuncOp func,
-                     ArrayRef<int64_t> funcArgToDslArg) {
+computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
   DenseMap<Value, OriginSet> origins;
 
   // Initialize all block arguments with their DSL arg origin
@@ -131,14 +128,13 @@ analyzeFuncReturnAliases(LLVM::LLVMFuncOp func,
   if (retOrigin.indices.empty())
     return {};
 
-  // Return DSL arg indices in insertion order (already deduplicated by SetVector)
+  // Return DSL arg indices in insertion order (already deduplicated by
+  // SetVector)
   return SmallVector<int64_t>(retOrigin.indices.begin(),
                               retOrigin.indices.end());
 }
 
-
-SmallVector<int64_t>
-computeFuncArgToDslArg(const std::vector<Value> &args) {
+SmallVector<int64_t> computeFuncArgToDslArg(const std::vector<Value> &args) {
   SmallVector<int64_t> mapping;
   int64_t dslArgIdx = 0;
   for (const Value &arg : args) {

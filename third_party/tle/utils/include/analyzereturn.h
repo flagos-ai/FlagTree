@@ -16,7 +16,7 @@ namespace mlir::triton::tle::dataanalyze {
 /// (e.g., constants), making it unreachable for return type inference.
 struct OriginSet {
   llvm::SetVector<int64_t> indices; // DSL arg indices this value comes from
-  bool conflict = false;            // true if any non-DSL-arg origin is mixed in
+  bool conflict = false; // true if any non-DSL-arg origin is mixed in
 
   /// Merge another OriginSet into this one (union of indices).
   /// If either side is conflict, the result is conflict.
@@ -31,20 +31,21 @@ struct OriginSet {
 int64_t getDslArgIdx(mlir::BlockArgument blockArg,
                      llvm::ArrayRef<int64_t> funcArgToDslArg);
 
-/// Run forward origin propagation on a function using set-based (meet) semantics.
-/// Each Value's origin is a set of DSL arg indices.
+/// Run forward origin propagation on a function using set-based (meet)
+/// semantics. Each Value's origin is a set of DSL arg indices.
 /// - Block args: initialized from funcArgToDslArg
 /// - undef/poison: empty set (neutral element)
 /// - Constants (no operands): conflict
-/// - Other ops: union of all operand origin sets; conflict if any operand is conflict
+/// - Other ops: union of all operand origin sets; conflict if any operand is
+/// conflict
 llvm::DenseMap<mlir::Value, OriginSet>
 computeDslArgOrigins(mlir::LLVM::LLVMFuncOp func,
                      llvm::ArrayRef<int64_t> funcArgToDslArg);
 
 /// Analyze the LLVM function's return to determine per-result alias info.
-/// Returns a sorted vector of DSL arg indices that the return value originates from.
-/// If the return value has any non-DSL-arg origin (conflict), returns empty vector.
-/// numResults = size of the returned vector.
+/// Returns a sorted vector of DSL arg indices that the return value originates
+/// from. If the return value has any non-DSL-arg origin (conflict), returns
+/// empty vector. numResults = size of the returned vector.
 llvm::SmallVector<int64_t>
 analyzeFuncReturnAliases(mlir::LLVM::LLVMFuncOp func,
                          llvm::ArrayRef<int64_t> funcArgToDslArg);
