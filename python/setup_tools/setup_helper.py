@@ -486,9 +486,9 @@ cache.store(
 
 # enflame
 cache.store(
-    file="llvm-189e06b-gcc9-x64",
+    file="llvm-fc83c68-gcc9-x64",
     condition=("enflame" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm22-189e06b-gcc9-x64_v0.4.0.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz",
     pre_hook=lambda: check_env('KURAMA_LLVM_DIR'),
     post_hook=lambda path: set_env({
         'KURAMA_LLVM_DIR': path,

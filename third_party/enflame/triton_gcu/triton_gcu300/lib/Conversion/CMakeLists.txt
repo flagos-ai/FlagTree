@@ -1,0 +1,3 @@
+add_subdirectory(TritonToGCU)
+add_subdirectory(TritonToTritonGPU)
+add_subdirectory(Common)
