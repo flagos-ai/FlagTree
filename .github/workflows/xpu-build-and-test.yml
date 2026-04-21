@@ -48,4 +48,5 @@ jobs:
         shell: bash
         run: |
           set -x
+          export XPU_EVENT_KL3_ENABLE=1
           python3 -m pytest -s third_party/xpu/python/test/unit

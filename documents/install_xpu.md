@@ -95,4 +95,6 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ### 3. Testing and validation
 
+Before testing, you need to execute `export XPU_EVENT_KL3_ENABLE=1`
+
 Refer to [Tests of xpu backend](/.github/workflows/xpu-build-and-test.yml)
