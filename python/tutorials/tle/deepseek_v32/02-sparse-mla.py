@@ -511,7 +511,6 @@ if _HAVE_TILELANG:
             assert kv_group == 1, "automatic head padding only supports kv_group == 1"
 
         BI = block_I
-        NI = tilelang.cdiv(topk, block_I)
         D = dim
         D_tail = tail_dim
 
@@ -669,7 +668,6 @@ if _HAVE_TILELANG:
             assert kv_group == 1, "automatic head padding only supports kv_group == 1"
 
         BI = block_I
-        NI = tilelang.cdiv(topk, block_I)
         D = dim
         D_tail = tail_dim
         KV_stride = kv_stride
@@ -947,7 +945,6 @@ if _HAVE_TILELANG:
         dtype = "bfloat16"
         accum_dtype = "float"
 
-        G = kv_group
         H = head_kv
         padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
         if padded_H != H:

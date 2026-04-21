@@ -1007,13 +1007,11 @@ def tle_tilelang_topk_selector_kernel(
             if r_idx == 0:
                 tl.store(s_num1_ptr, 0)
                 cur_num_ptr = s_num0_ptr
-                cur_num_ptrs = s_num0_ptrs
                 nxt_num_ptr = s_num1_ptr
                 nxt_num_ptrs = s_num1_ptrs
             else:
                 tl.store(s_num0_ptr, 0)
                 cur_num_ptr = s_num1_ptr
-                cur_num_ptrs = s_num1_ptrs
                 nxt_num_ptr = s_num0_ptr
                 nxt_num_ptrs = s_num0_ptrs
 
