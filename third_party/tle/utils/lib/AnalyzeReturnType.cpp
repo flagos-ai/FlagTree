@@ -45,13 +45,52 @@ computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
     if (dslIdx >= 0)
       os.indices.insert(dslIdx);
     else
-      os.conflict = true; // entry block arg not mapped to any DSL arg
+      os.conflict = true; 
+  }
+
+  // Pre-insert non-entry block arguments into the map so that later
+  // insertions during the fixpoint loop do not invalidate iterators.
+  for (Block &block : func.getBlocks()) {
+    if (&block == &entryBlock)
+      continue;
+    for (BlockArgument arg : block.getArguments())
+      origins.try_emplace(arg);
   }
 
   // Iterate until fixpoint
   bool changed = true;
   while (changed) {
     changed = false;
+
+    // --- CFG propagation via BranchOpInterface: propagate origins from
+    //     branch operands to successor block arguments (phi edges). ---
+    for (Block &block : func.getBlocks()) {
+      if (&block == &entryBlock)
+        continue; 
+      for (auto it = block.pred_begin(), e = block.pred_end(); it != e; ++it) {
+        Block *pred = *it;
+        Operation *term = pred->getTerminator();
+        if (auto branchOp = dyn_cast<BranchOpInterface>(term)) {
+          unsigned succIdx = it.getSuccessorIndex();
+          SuccessorOperands succOperands =
+              branchOp.getSuccessorOperands(succIdx);
+          for (auto [idx, arg] : llvm::enumerate(block.getArguments())) {
+            Value operand = succOperands[idx];
+            if (!operand)
+              continue;
+            auto opIt = origins.find(operand);
+            if (opIt != origins.end()) {
+              OriginSet srcOrigin = opIt->second;
+              auto argIt = origins.find(arg);
+              if (argIt->second.merge(srcOrigin))
+                changed = true;
+            }
+          }
+        }
+      }
+    }
+
+    // --- Intra-block propagation: propagate origins through operations. ---
     for (Block &block : func.getBlocks()) {
       for (Operation &op : block.getOperations()) {
         // undef/poison: empty set (neutral element), leave as default
@@ -76,8 +115,8 @@ computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
 
         // Propagate to all results
         for (Value result : op.getResults()) {
-          OriginSet &resultOrigin = origins[result];
-          if (resultOrigin.merge(opOrigin))
+          auto [resIt, _] = origins.try_emplace(result);
+          if (resIt->second.merge(opOrigin))
             changed = true;
         }
 

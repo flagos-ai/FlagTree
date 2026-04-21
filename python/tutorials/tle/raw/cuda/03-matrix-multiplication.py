@@ -110,7 +110,7 @@ def matmul_kernel(
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
         b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
-        accumulator = tle_raw.call(edsl, [accumulator], [a, b])
+        accumulator = tle_raw.call(edsl, [accumulator, a, b])
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
     if ACTIVATION == "leaky_relu":

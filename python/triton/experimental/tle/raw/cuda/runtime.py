@@ -27,6 +27,7 @@ class CUDAJITFunction(object):
                 "cuda",
                 "--cuda-device-only",
                 "-emit-llvm",
+                "-O2",
                 "-S",
                 "-",
                 "-o",
@@ -37,5 +38,6 @@ class CUDAJITFunction(object):
         )
         assert build.returncode == 0, (f"clang failed\nstderr:\n{build.stderr.decode()}")
         llvm_context = llvm.context()
+        print(build.stdout.decode())
         module = parse_llvm_ir(build.stdout.decode(), llvm_context, mlir_context)
         return f"{module}"
