@@ -36,29 +36,14 @@ except Exception:  # pragma: no cover - optional dependency
     flash_mla = None
     _HAVE_FLASHMLA = False
 
-spar_mla_fwd_configs = [
-    triton.Config({}, num_stages=1, num_warps=4),
-    triton.Config({}, num_stages=1, num_warps=8),
-    triton.Config({}, num_stages=1, num_warps=16),
-    triton.Config({}, num_stages=1, num_warps=32),
-    triton.Config({}, num_stages=2, num_warps=4),
-    triton.Config({}, num_stages=2, num_warps=8),
-    triton.Config({}, num_stages=2, num_warps=16),
-    triton.Config({}, num_stages=2, num_warps=32),
-    triton.Config({}, num_stages=4, num_warps=4),
-    triton.Config({}, num_stages=4, num_warps=8),
-    triton.Config({}, num_stages=4, num_warps=16),
-    triton.Config({}, num_stages=4, num_warps=32),
-]
-tle_spar_mla_fwd_configs = [
-    triton.Config({}, num_stages=2, num_warps=8),
-]
+TILELANG_SPARSE_MLA_THREADS = 256
+TILELANG_SPARSE_MLA_NUM_STAGES = 2
+TRITON_SPARSE_MLA_NUM_WARPS = TILELANG_SPARSE_MLA_THREADS // 32
+TRITON_SPARSE_MLA_NUM_STAGES = TILELANG_SPARSE_MLA_NUM_STAGES
+TLE_SPARSE_MLA_NUM_WARPS = TILELANG_SPARSE_MLA_THREADS // 32
+TLE_SPARSE_MLA_NUM_STAGES = TILELANG_SPARSE_MLA_NUM_STAGES
 
 
-@triton.autotune(
-    configs=spar_mla_fwd_configs,
-    key=["SQ", "K", "H", "D", "is_causal"],
-)
 @triton.jit
 def triton_sparse_mla_fwd(
     q,
@@ -182,10 +167,6 @@ def triton_sparse_mla_fwd(
     tl.store(l_ptr, fin_log.to(q_blk.dtype), l_msk)
 
 
-@triton.autotune(
-    configs=tle_spar_mla_fwd_configs,
-    key=["SQ", "K", "H", "D", "is_causal"],
-)
 @triton.jit
 def tle_sparse_mla_fwd(
     q,
@@ -363,7 +344,7 @@ def _compute_topk_length(indices, skv):
 
 
 def _sparse_mla_fwd_interface_impl(kernel, q, kv, indices, topk_length=None, sm_scale=None, return_p_sum: bool = False,
-                                   d_v=512, bk=32, is_causal=True):
+                                   d_v=512, bk=32, is_causal=True, extra_kernel_args=(), launch_kwargs=None):
     assert not return_p_sum, "This kernel file is for fwd only"
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
     B, SQ, H, DT = q.shape
@@ -418,8 +399,10 @@ def _sparse_mla_fwd_interface_impl(kernel, q, kv, indices, topk_length=None, sm_
         BK,
         BH,
         is_causal,
-    )
-    kernel[grid](*kernel_args)
+    ) + tuple(extra_kernel_args)
+    if launch_kwargs is None:
+        launch_kwargs = {}
+    kernel[grid](*kernel_args, **launch_kwargs)
     return output, lse
 
 
@@ -444,6 +427,10 @@ def triton_sparse_mla_fwd_interface(
         d_v=d_v,
         bk=32,
         is_causal=is_causal,
+        launch_kwargs={
+            "num_warps": TRITON_SPARSE_MLA_NUM_WARPS,
+            "num_stages": TRITON_SPARSE_MLA_NUM_STAGES,
+        },
     )
 
 
@@ -468,6 +455,10 @@ def tle_sparse_mla_fwd_interface(
         d_v=d_v,
         bk=64,
         is_causal=is_causal,
+        launch_kwargs={
+            "num_warps": TLE_SPARSE_MLA_NUM_WARPS,
+            "num_stages": TLE_SPARSE_MLA_NUM_STAGES,
+        },
     )
 
 
@@ -490,7 +481,7 @@ if _HAVE_TILELANG:
         is_causal=True,
         block_I=64,
         num_stages=2,
-        threads=256,
+        threads=TILELANG_SPARSE_MLA_THREADS,
     ):
         assert dim == tilelang.math.next_power_of_2(dim), f"dim should be power-of-2, but got {dim}"
         assert tail_dim == tilelang.math.next_power_of_2(tail_dim), f"tail_dim should be power-of-2, but got {tail_dim}"

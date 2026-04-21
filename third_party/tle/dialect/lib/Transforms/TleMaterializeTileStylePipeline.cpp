@@ -459,7 +459,7 @@ static bool isTileStyleCandidate(scf::ForOp forOp) {
                       });
 }
 
-static bool isPositiveConstantTripCount(scf::ForOp forOp) {
+static bool hasPositiveConstantStep(scf::ForOp forOp) {
   auto getConstValue = [](Value value) -> std::optional<int64_t> {
     if (auto cst =
             dyn_cast_or_null<arith::ConstantIntOp>(value.getDefiningOp()))
@@ -469,34 +469,8 @@ static bool isPositiveConstantTripCount(scf::ForOp forOp) {
       return cst.value();
     return std::nullopt;
   };
-  std::optional<int64_t> lower = getConstValue(forOp.getLowerBound());
-  std::optional<int64_t> upper = getConstValue(forOp.getUpperBound());
   std::optional<int64_t> step = getConstValue(forOp.getStep());
-  if (!lower || !upper || !step)
-    return false;
-  if (*step != 1)
-    return false;
-  return *upper > *lower;
-}
-
-static bool hasAtLeastTwoConstantIterations(scf::ForOp forOp) {
-  auto getConstValue = [](Value value) -> std::optional<int64_t> {
-    if (auto cst =
-            dyn_cast_or_null<arith::ConstantIntOp>(value.getDefiningOp()))
-      return cst.value();
-    if (auto cst =
-            dyn_cast_or_null<arith::ConstantIndexOp>(value.getDefiningOp()))
-      return cst.value();
-    return std::nullopt;
-  };
-  std::optional<int64_t> lower = getConstValue(forOp.getLowerBound());
-  std::optional<int64_t> upper = getConstValue(forOp.getUpperBound());
-  std::optional<int64_t> step = getConstValue(forOp.getStep());
-  if (!lower || !upper || !step)
-    return false;
-  if (*step != 1)
-    return false;
-  return *upper - *lower >= 2;
+  return step && *step > 0;
 }
 
 static void stripPipelineAttrs(Operation *op) {
@@ -513,7 +487,10 @@ static void stripPipelineAttrs(Operation *op) {
 static std::optional<ExplicitPipelinePlan>
 buildExplicitPipelinePlan(scf::ForOp forOp,
                           ArrayRef<AsyncTileProducerGroup> producerGroups) {
-  if (!isPositiveConstantTripCount(forOp))
+  // Dynamic trip counts are valid: the explicit materializer emits runtime
+  // guards for the empty and single-iteration cases. It only needs a known
+  // forward step to form the one-step lead/steady-state bounds.
+  if (!hasPositiveConstantStep(forOp))
     return std::nullopt;
   if (producerGroups.empty())
     return std::nullopt;

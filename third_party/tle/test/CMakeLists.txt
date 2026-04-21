@@ -7,7 +7,7 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
   MAIN_CONFIG
-  ${CMAKE_CURRENT_SOURCe_DIR}/lit.cfg.py
+  ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
 )
 
 set(TRITON_TLE_TEST_DEPENDS
@@ -26,4 +26,4 @@ add_lit_testsuite(check-triton-tle-lit-tests "Running the triton-tle regression 
 
 set_target_properties(check-triton-tle-lit-tests PROPERTIES FOLDER "Tests")
 
-add_lit_testsuites(TRITON-TLE-LIT-TESTS ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${TRITON_TLE_TEST_DEPENDS})
+add_lit_testsuites(TRITON-TLE-LIT-TESTS ${CMAKE_CURRENT_BINARY_DIR} DEPENDS ${TRITON_TLE_TEST_DEPENDS})

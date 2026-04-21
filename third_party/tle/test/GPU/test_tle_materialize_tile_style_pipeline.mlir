@@ -77,6 +77,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   }
 
   // CHECK-LABEL: tt.func @loop_with_async_tile_producer
+  // CHECK: scf.if
   // CHECK: ttg.local_alloc : () -> !ttg.memdesc<2x64x512xbf16
   // CHECK: ttg.memdesc_index
   // CHECK: ttg.async_copy_global_to_local
@@ -84,8 +85,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: ttg.memdesc_index
   // CHECK: ttg.async_copy_global_to_local
   // CHECK: ttg.async_commit_group
-  // CHECK: scf.if
-  // CHECK: scf.if
   // CHECK: scf.for {{.*}} iter_args({{.*}}!ttg.async.token, {{.*}}i32, {{.*}}!ttg.async.token, {{.*}}i32)
   // CHECK: ttg.memdesc_index
   // CHECK: ttg.async_wait {{.*}} {num = 1 : i32}
@@ -93,8 +92,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: ttg.memdesc_index
   // CHECK: ttg.async_copy_global_to_local
   // CHECK: ttg.async_commit_group
-  // CHECK: ttg.async_wait {{.*}} {num = 0 : i32}
   // CHECK: } {tle.async_tile_producer_count = 1 : i32, tle.explicit_tile_style_pipeline = 1 : i32, tle.tile_style_pipeline = 1 : i32}
+  // CHECK: ttg.async_wait {{.*}} {num = 0 : i32}
   // CHECK: ttg.local_dealloc
   tt.func @loop_with_async_tile_producer(
       %a: !ttg.memdesc<64x512xbf16, #shared, #smem, mutable>,
@@ -116,19 +115,18 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   }
 
   // CHECK-LABEL: tt.func @loop_with_rematerializable_seed_before_dot
+  // CHECK: scf.if
   // CHECK: ttg.local_alloc : () -> !ttg.memdesc<2x64x64xbf16
+  // CHECK: scf.for
   // CHECK: arith.cmpi
   // CHECK: arith.andi
   // CHECK: tt.expand_dims
   // CHECK: arith.select
   // CHECK: tt.broadcast
-  // CHECK: scf.if
-  // CHECK: scf.if
-  // CHECK: scf.for
   // CHECK: ttg.async_wait {{.*}} {num = 1 : i32}
   // CHECK: ttng.warp_group_dot
-  // CHECK: ttg.async_wait {{.*}} {num = 0 : i32}
   // CHECK: } {tle.async_tile_producer_count = 1 : i32, tle.explicit_tile_style_pipeline = 1 : i32, tle.tile_style_pipeline = 1 : i32}
+  // CHECK: ttg.async_wait {{.*}} {num = 0 : i32}
   tt.func @loop_with_rematerializable_seed_before_dot(
       %a: !ttg.memdesc<64x64xbf16, #shared, #smem, mutable>,
       %b_ptr: tensor<64x64x!tt.ptr<bf16>, #blocked>) {
@@ -162,6 +160,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   }
 
   // CHECK-LABEL: tt.func @loop_with_two_async_tile_producers
+  // CHECK: scf.if
   // CHECK: ttg.local_alloc : () -> !ttg.memdesc<2x64x512xbf16
   // CHECK: ttg.local_alloc : () -> !ttg.memdesc<2x64x64xbf16
   // CHECK: ttg.memdesc_index
@@ -174,8 +173,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: ttg.async_commit_group
   // CHECK: ttg.async_copy_global_to_local
   // CHECK: ttg.async_commit_group
-  // CHECK: scf.if
-  // CHECK: scf.if
   // CHECK: scf.for {{.*}} iter_args({{.*}}!ttg.async.token, {{.*}}!ttg.async.token, {{.*}}i32, {{.*}}!ttg.async.token, {{.*}}!ttg.async.token, {{.*}}i32)
   // CHECK: ttg.memdesc_index
   // CHECK: ttg.memdesc_index
@@ -222,11 +219,13 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: ttg.async_copy_global_to_local
   // CHECK: ttg.async_commit_group
   // CHECK: scf.for {{.*}} iter_args({{.*}}!ttg.async.token, {{.*}}i32, {{.*}}!ttg.async.token, {{.*}}i32)
-  // CHECK: ttg.async_wait {{.*}} {num = 1 : i32}
   // CHECK: tle.memdesc_wgmma_view
+  // CHECK: ttg.async_wait {{.*}} {num = 1 : i32}
   // CHECK: ttng.warp_group_dot
-  // CHECK: ttg.async_wait {{.*}} {num = 0 : i32}
+  // CHECK: ttg.async_copy_global_to_local
+  // CHECK: ttg.async_commit_group
   // CHECK: } {tle.async_tile_producer_count = 1 : i32, tle.explicit_tile_style_pipeline = 1 : i32, tle.tile_style_pipeline = 1 : i32}
+  // CHECK: ttg.async_wait {{.*}} {num = 0 : i32}
   tt.func @loop_with_direct_async_tile_family(
       %base: !tt.ptr<bf16> {tt.divisibility = 16 : i32},
       %a: !ttg.memdesc<64x512xbf16, #shared, #smem, mutable>,
@@ -295,6 +294,55 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       %next = ttng.warp_group_dot %a, %view, %acc {inputPrecision = 0 : i32} : !ttg.memdesc<64x512xbf16, #shared, #smem, mutable> * !ttg.memdesc<512x64xbf16, #shared1, #smem, mutable> -> tensor<64x64xf32, #mma>
       scf.yield %next : tensor<64x64xf32, #mma>
     } {tt.num_stages = 2 : i32}
+    tt.return %out : tensor<64x64xf32, #mma>
+  }
+
+  // CHECK-LABEL: tt.func @dynamic_loop_with_direct_async_tile_family
+  // CHECK: scf.if
+  // CHECK: ttg.local_alloc : () -> !ttg.memdesc<2x64x512xbf16
+  // CHECK: ttg.memdesc_index
+  // CHECK: ttg.memdesc_subslice
+  // CHECK: ttg.async_copy_global_to_local
+  // CHECK: ttg.async_commit_group
+  // CHECK: scf.if
+  // CHECK: arith.subi %arg0
+  // CHECK: scf.for {{.*}} iter_args({{.*}}!ttg.async.token, {{.*}}i32, {{.*}}!ttg.async.token, {{.*}}i32)
+  // CHECK: ttg.async_wait {{.*}} {num = 1 : i32}
+  // CHECK: ttng.warp_group_dot
+  // CHECK: ttg.async_copy_global_to_local
+  // CHECK: ttg.async_commit_group
+  // CHECK: } {tle.async_tile_producer_count = 1 : i32, tle.explicit_tile_style_pipeline = 1 : i32, tle.tile_style_pipeline = 1 : i32}
+  // CHECK: ttg.async_wait {{.*}} {num = 0 : i32}
+  tt.func @dynamic_loop_with_direct_async_tile_family(
+      %ub: i32,
+      %base: !tt.ptr<bf16> {tt.divisibility = 16 : i32},
+      %a: !ttg.memdesc<64x512xbf16, #shared, #smem, mutable>,
+      %dst: !ttg.memdesc<64x512xbf16, #shared, #smem, mutable>) -> tensor<64x64xf32, #mma> {
+    %c0_i32 = arith.constant 0 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %other = arith.constant dense<0.000000e+00> : tensor<64x128xbf16, #blocked>
+    %mask = arith.constant dense<true> : tensor<64x128xi1, #blocked>
+    %acc0 = arith.constant dense<0.000000e+00> : tensor<64x64xf32, #mma>
+    %offs_m = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 1, parent = #blocked}>>
+    %offs_k = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>>
+    %m = tt.expand_dims %offs_m {axis = 1 : i32} : tensor<64xi32, #ttg.slice<{dim = 1, parent = #blocked}>> -> tensor<64x1xi32, #blocked>
+    %k = tt.expand_dims %offs_k {axis = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<1x128xi32, #blocked>
+    %stride = arith.constant dense<512> : tensor<64x1xi32, #blocked>
+    %m_off = arith.muli %m, %stride : tensor<64x1xi32, #blocked>
+    %m_off_b = tt.broadcast %m_off : tensor<64x1xi32, #blocked> -> tensor<64x128xi32, #blocked>
+    %k_b = tt.broadcast %k : tensor<1x128xi32, #blocked> -> tensor<64x128xi32, #blocked>
+    %offs = arith.addi %m_off_b, %k_b : tensor<64x128xi32, #blocked>
+    %ptr = tt.splat %base : !tt.ptr<bf16> -> tensor<64x128x!tt.ptr<bf16>, #blocked>
+    %ptrs = tt.addptr %ptr, %offs : tensor<64x128x!tt.ptr<bf16>, #blocked>, tensor<64x128xi32, #blocked>
+    %out = scf.for %i = %c0_i32 to %ub step %c1_i32 iter_args(%acc = %acc0) -> (tensor<64x64xf32, #mma>) : i32 {
+      %sub = ttg.memdesc_subslice %dst[0, 0] {loop.cluster = 0 : i32, loop.stage = 0 : i32} : !ttg.memdesc<64x512xbf16, #shared, #smem, mutable> -> !ttg.memdesc<64x128xbf16, #shared, #smem, mutable, 64x512>
+      %tok = ttg.async_copy_global_to_local %ptrs, %sub mask %mask other %other {loop.cluster = 0 : i32, loop.stage = 0 : i32, tle.local_ptr_async_store} : tensor<64x128x!tt.ptr<bf16>, #blocked> -> <64x128xbf16, #shared, #smem, mutable, 64x512>
+      %commit = ttg.async_commit_group tokens %tok {loop.cluster = 0 : i32, loop.stage = 0 : i32}
+      %wait = ttg.async_wait %commit {loop.cluster = 0 : i32, loop.stage = 0 : i32, num = 0 : i32}
+      %view = tle.memdesc_wgmma_view %dst {loop.cluster = 0 : i32, loop.stage = 1 : i32, order = array<i32: 1, 0>} : !ttg.memdesc<64x512xbf16, #shared, #smem, mutable> -> !ttg.memdesc<512x64xbf16, #shared1, #smem, mutable>
+      %next = ttng.warp_group_dot %a, %view, %acc {inputPrecision = 0 : i32, loop.cluster = 0 : i32, loop.stage = 1 : i32} : !ttg.memdesc<64x512xbf16, #shared, #smem, mutable> * !ttg.memdesc<512x64xbf16, #shared1, #smem, mutable> -> tensor<64x64xf32, #mma>
+      scf.yield %next : tensor<64x64xf32, #mma>
+    } {tle.tile_style_pipeline = 1 : i32, tt.num_stages = 2 : i32}
     tt.return %out : tensor<64x64xf32, #mma>
   }
 }

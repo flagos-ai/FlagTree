@@ -247,6 +247,46 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
                                               : triton::nvgpu::WGMMALayout::col;
 
   auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
+#ifdef __TLE__
+  // Materialize the initial C accumulator before wgmma.fence.  Otherwise LLVM
+  // may leave struct packing/copies between wgmma.fence and the first
+  // wgmma.mma_async, which ptxas treats as accumulator definitions inside the
+  // WGMMA pipeline stage.
+  SmallVector<Type> accTypes;
+  SmallVector<Value> initialAccumulators;
+  SmallVector<Value> initialUseC;
+  for (int m = 0; m < numRepM; ++m) {
+    for (int n = 0; n < numRepN; ++n) {
+      llvm::SmallVector<Value> mmaOut =
+          loadReg(rewriter, loc, fc, (m * numRepN + n) * accSize, accSize, op);
+      llvm::SmallVector<Type> elemTypes;
+      for (Value accEl : mmaOut)
+        elemTypes.push_back(accEl.getType());
+      auto accTy =
+          LLVM::LLVMStructType::getLiteral(rewriter.getContext(), elemTypes);
+      Value d;
+      Value useC = tb.i1_val(0);
+      if (!zeroAcc) {
+        d = packLLElements(loc, typeConverter, mmaOut, rewriter, accTy);
+        useC = tb.i1_val(1);
+      }
+      if (useCOperand)
+        useC = tb.and_(useC, useCOperand);
+      accTypes.push_back(accTy);
+      initialAccumulators.push_back(d);
+      initialUseC.push_back(useC);
+    }
+  }
+
+  Operation *startSequence = NVVM::WgmmaFenceAlignedOp::create(rewriter, loc);
+  SmallVector<Value> mmaResults;
+  unsigned tileIdx = 0;
+  for (int m = 0; m < numRepM; ++m) {
+    for (int n = 0; n < numRepN; ++n) {
+      auto accTy = accTypes[tileIdx];
+      Value d = initialAccumulators[tileIdx];
+      Value useC = initialUseC[tileIdx++];
+#else
   Operation *startSequence = NVVM::WgmmaFenceAlignedOp::create(rewriter, loc);
   SmallVector<Value> mmaResults;
   for (int m = 0; m < numRepM; ++m) {
@@ -267,6 +307,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
       }
       if (useCOperand)
         useC = tb.and_(useC, useCOperand);
+#endif
       uint32_t numLowPrecisionAcc = 0;
       Value partialAcc;
       for (int k = 0; k < numRepK; ++k) {

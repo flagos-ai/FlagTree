@@ -103,7 +103,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: ttg.async_copy_global_to_local {{.*}} {loop.cluster = 0 : i32, loop.stage = 0 : i32, tle.local_ptr_async_store}
   // CHECK: ttg.async_commit_group {{.*}} {loop.cluster = 0 : i32, loop.stage = 0 : i32}
   // CHECK: ttg.async_wait {{.*}} {loop.cluster = 0 : i32, loop.stage = 0 : i32, num = 0 : i32}
-  // CHECK: tle.memdesc_wgmma_view {{.*}} {loop.cluster = 0 : i32, loop.stage = 2 : i32
+  // CHECK: tle.memdesc_wgmma_view {{.*}} {loop.cluster = 0 : i32, loop.stage = 0 : i32
   // CHECK: ttng.warp_group_dot {{.*}} {inputPrecision = 0 : i32, loop.cluster = 0 : i32, loop.stage = 2 : i32}
   // CHECK: } {tle.tile_style_pipeline = 1 : i32, tt.num_stages = 2 : i32, tt.scheduled_max_stage = 2 : i32}
   tt.func @tile_style_async_copy_reschedules_stage1_producers(%base: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %a: !ttg.memdesc<64x512xbf16, #shared, #smem, mutable>, %dst: !ttg.memdesc<64x512xbf16, #shared, #smem, mutable>) -> tensor<64x64xf32, #mma> {
