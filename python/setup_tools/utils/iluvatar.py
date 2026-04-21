@@ -24,13 +24,13 @@ def get_resources_hash(resource_name):
 _ILUVATAR_PLUGIN_URLS = {
     # python3.10, CentOS7/Ubuntu20
     (10, "1013"):
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.17-glibcxx3.4.19-cxxabi1.3.13-linux-x86_64_v0.5.0.tar.gz",
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.17-glibcxx3.4.19-cxxabi1.3.12-linux-x86_64_v0.5.0.tar.gz",
     # python3.10, Ubuntu22
     (10, "1016"):
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.16-ubuntu-x86_64_v0.5.0.tar.gz",
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.5.0.tar.gz",
     # python3.10, Ubuntu24
     (10, "1018"):
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.18-ubuntu-x86_64_v0.5.0.tar.gz",
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-ubuntu-x86_64_v0.5.0.tar.gz",
     # python3.12, Ubuntu24
     (12, "1018"):
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.12-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-ubuntu-x86_64_v0.5.0.tar.gz",
