@@ -449,15 +449,19 @@ def moe_align_block_size_triton_atomic_fused_coop(
     for local_expert_idx in range(EXPERTS_PER_PROG):
         expert_id = pid + local_expert_idx * NUM_BLOCKS
         valid_expert = expert_id < num_experts
-        start_idx = tl.load(tle.gpu.local_ptr(expert_starts_local, (expert_id, )), mask=valid_expert, other=0)
+        safe_expert_id = tl.minimum(expert_id, BLOCK_EXPERT - 1)
+        start_idx = tl.load(tle.gpu.local_ptr(expert_starts_local, (safe_expert_id, )), mask=valid_expert, other=0)
         next_expert = expert_id + 1
         has_next = valid_expert & (next_expert < num_experts)
-        end_idx = tl.load(tle.gpu.local_ptr(expert_starts_local, (next_expert, )), mask=has_next, other=total_tokens)
+        safe_next_expert = tl.minimum(next_expert, BLOCK_EXPERT - 1)
+        end_idx = tl.load(tle.gpu.local_ptr(expert_starts_local, (safe_next_expert, )), mask=has_next,
+                          other=total_tokens)
         end_idx = tl.where(has_next, end_idx, total_tokens)
         start_idx = tl.where(valid_expert, start_idx, 0)
         end_idx = tl.where(valid_expert, end_idx, 0)
         for i in range(start_idx, end_idx, block_size):
-            tl.store(expert_ids_ptr + i // block_size, expert_id)
+            expert_block = i // block_size
+            tl.store(expert_ids_ptr + expert_block, expert_id, mask=expert_block < numel_expert_ids)
 
     # Stage 4: scatter tokens using local prefix + expert starts.
     for base in range(pid * BLOCK_TOKENS, numel, NUM_BLOCKS * BLOCK_TOKENS):
@@ -468,7 +472,7 @@ def moe_align_block_size_triton_atomic_fused_coop(
         rank_with_prefix = tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
         rank_base = tl.load(tle.gpu.local_ptr(expert_starts_local, (expert_id, )), mask=mask, other=0)
         rank_post_pad = rank_with_prefix + rank_base
-        tl.store(sorted_token_ids_ptr + rank_post_pad, offs, mask=mask)
+        tl.store(sorted_token_ids_ptr + rank_post_pad, offs, mask=mask & (rank_post_pad < numel_sorted_token_ids))
 
 
 def _supports_tle_cluster_remote() -> bool:
@@ -539,6 +543,7 @@ def moe_align_block_size_tle_cluster_fused(
     sorted_token_ids_ptr,
     expert_ids_ptr,
     num_tokens_post_pad_ptr,
+    cumsum_ptr,
     num_experts: tl.constexpr,
     block_size: tl.constexpr,
     numel,
@@ -620,35 +625,34 @@ def moe_align_block_size_tle_cluster_fused(
         expert_cumsum_inclusive = tl.cumsum(aligned_counts, axis=0)
         expert_start_offsets = expert_cumsum_inclusive - aligned_counts
         tl.store(rank0_cumsum_ptrs, expert_start_offsets, mask=expert_mask)
+        tl.store(cumsum_ptr + expert_offsets, expert_start_offsets, mask=expert_mask)
 
         total_tokens = tl.sum(aligned_counts, axis=0)
         tl.store(num_tokens_post_pad_ptr, total_tokens)
+        tl.store(cumsum_ptr + num_experts, total_tokens)
 
     tle.distributed_barrier(mesh)
 
     # Stage 4a: fill expert_ids (moved from Stage 3).
     # Each shard handles one contiguous expert segment.
-    rank0_cumsum_remote = tle.remote(cumsum_local, 0, scope=mesh)
-    rank0_cumsum_remote_ptrs = tle.gpu.local_ptr(rank0_cumsum_remote, (expert_offsets, ))
-    cumsum_vals = tl.load(rank0_cumsum_remote_ptrs, mask=expert_mask, other=0)
-    tl.store(tle.gpu.local_ptr(cumsum_local, (expert_offsets, )), cumsum_vals, mask=expert_mask)
-    total_tokens = tl.load(num_tokens_post_pad_ptr)
+    total_tokens = tl.load(cumsum_ptr + num_experts)
 
     for local_expert_idx in range(EXPERTS_PER_SHARD):
         expert_idx = cluster_rank * EXPERTS_PER_SHARD + local_expert_idx
         expert_id = expert_idx
         valid_expert = expert_id < num_experts
-        start_ptr = tle.gpu.local_ptr(cumsum_local, (expert_id, ))
-        start_idx = tl.load(start_ptr, mask=valid_expert, other=0)
+        safe_expert_id = tl.minimum(expert_id, num_experts)
+        start_idx = tl.load(cumsum_ptr + safe_expert_id, mask=valid_expert, other=0)
         next_expert_id = expert_id + 1
         has_next = valid_expert & (next_expert_id < num_experts)
-        next_ptr = tle.gpu.local_ptr(cumsum_local, (next_expert_id, ))
-        end_from_next = tl.load(next_ptr, mask=has_next, other=0)
+        safe_next_expert_id = tl.minimum(next_expert_id, num_experts)
+        end_from_next = tl.load(cumsum_ptr + safe_next_expert_id, mask=has_next, other=0)
         end_idx = tl.where(has_next, end_from_next, total_tokens)
         start_idx = tl.where(valid_expert, start_idx, 0)
         end_idx = tl.where(valid_expert, end_idx, 0)
         for i in range(start_idx, end_idx, block_size):
-            tl.store(expert_ids_ptr + i // block_size, expert_idx)
+            expert_block = i // block_size
+            tl.store(expert_ids_ptr + expert_block, expert_idx, mask=expert_block < numel_expert_ids)
 
     tle.distributed_barrier(mesh)
 
@@ -661,10 +665,9 @@ def moe_align_block_size_tle_cluster_fused(
 
         count_ptrs = tle.gpu.local_ptr(local_counts, (expert_id, ))
         rank_with_prefix = tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
-        base_ptrs = tle.gpu.local_ptr(cumsum_local, (expert_id, ))
-        rank_base = tl.load(base_ptrs, mask=mask, other=0)
+        rank_base = tl.load(cumsum_ptr + expert_id, mask=mask, other=0)
         rank_post_pad = rank_with_prefix + rank_base
-        tl.store(sorted_token_ids_ptr + rank_post_pad, offs, mask=mask)
+        tl.store(sorted_token_ids_ptr + rank_post_pad, offs, mask=mask & (rank_post_pad < numel_sorted_token_ids))
 
 
 def _allocate_outputs(
@@ -719,6 +722,8 @@ def _make_bench_runner(
         cumsum = torch.empty((num_experts + 1, ), dtype=torch.int32, device=topk_ids.device)
     elif provider == "triton_atomic_fused":
         cumsum = torch.empty((num_experts, ), dtype=torch.int32, device=topk_ids.device)
+    elif provider == "tle_cluster_fused":
+        cumsum = torch.empty((num_experts + 1, ), dtype=torch.int32, device=topk_ids.device)
 
     def init_fn():
         if tokens_cnts is not None:
@@ -845,6 +850,7 @@ def _make_bench_runner(
                 sorted_ids,
                 expert_ids,
                 num_tokens_post_pad,
+                cumsum,
                 num_experts,
                 block_size,
                 numel,
@@ -1162,6 +1168,7 @@ def run_correctness(
     num_tokens: int,
     num_experts: int,
     block_size: int,
+    check_external_cuda: bool = False,
 ):
     torch.manual_seed(0)
     topk_ids = _rand_topk_ids(num_tokens, num_experts)
@@ -1224,41 +1231,48 @@ def run_correctness(
         print("Correctness: skip tle_cluster_fused (requires CUDA SM90+ and BLOCK_EXPERT<=1024).")
 
     sorted_ids_s, expert_ids_s, num_tokens_post_pad_s = _allocate_outputs(topk_ids, num_experts, block_size, False)
-    sglang_runner = _make_sglang_cuda_runner(
-        topk_ids,
-        num_experts,
-        block_size,
-        sorted_ids_s,
-        expert_ids_s,
-        num_tokens_post_pad_s,
-    )
+    sglang_runner = None
+    if check_external_cuda:
+        sglang_runner = _make_sglang_cuda_runner(
+            topk_ids,
+            num_experts,
+            block_size,
+            sorted_ids_s,
+            expert_ids_s,
+            num_tokens_post_pad_s,
+        )
     if sglang_runner is None:
-        print("Correctness: skip sglang_cuda (not available).")
+        reason = "not available" if check_external_cuda else "external CUDA provider disabled by default"
+        print(f"Correctness: skip sglang_cuda ({reason}).")
     else:
         init_fn_s, kernel_fn_s = sglang_runner
         init_fn_s()
         kernel_fn_s()
         outputs["sglang_cuda"] = (sorted_ids_s, expert_ids_s, num_tokens_post_pad_s)
 
-    try:
-        sorted_ids_y, expert_ids_y, num_tokens_post_pad_y = _allocate_outputs(topk_ids, num_experts, block_size, False)
-        yiakwy_runner = _make_yiakwy_cuda_runner(
-            topk_ids,
-            num_experts,
-            block_size,
-            sorted_ids_y,
-            expert_ids_y,
-            num_tokens_post_pad_y,
-        )
-        if yiakwy_runner is None:
-            print("Correctness: skip yiakwy_cuda (unsupported or unavailable).")
-        else:
-            init_fn_y, kernel_fn_y = yiakwy_runner
-            init_fn_y()
-            kernel_fn_y()
-            outputs["yiakwy_cuda"] = (sorted_ids_y, expert_ids_y, num_tokens_post_pad_y)
-    except Exception as ex:
-        print(f"Correctness: skip yiakwy_cuda ({ex})")
+    if not check_external_cuda:
+        print("Correctness: skip yiakwy_cuda (external CUDA provider disabled by default).")
+    else:
+        try:
+            sorted_ids_y, expert_ids_y, num_tokens_post_pad_y = _allocate_outputs(topk_ids, num_experts, block_size,
+                                                                                  False)
+            yiakwy_runner = _make_yiakwy_cuda_runner(
+                topk_ids,
+                num_experts,
+                block_size,
+                sorted_ids_y,
+                expert_ids_y,
+                num_tokens_post_pad_y,
+            )
+            if yiakwy_runner is None:
+                print("Correctness: skip yiakwy_cuda (unsupported or unavailable).")
+            else:
+                init_fn_y, kernel_fn_y = yiakwy_runner
+                init_fn_y()
+                kernel_fn_y()
+                outputs["yiakwy_cuda"] = (sorted_ids_y, expert_ids_y, num_tokens_post_pad_y)
+        except Exception as ex:
+            print(f"Correctness: skip yiakwy_cuda ({ex})")
 
     counts = torch.bincount(topk_ids, minlength=num_experts)
     aligned = torch.div(counts + (block_size - 1), block_size, rounding_mode="floor") * block_size
@@ -1644,15 +1658,23 @@ def run_real_data_benchmark(
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["test", "bench", "all"], default="test",
+                        help="Default no-arg mode is a CI-friendly correctness smoke test; benchmarks are explicit.")
     parser.add_argument("--block_size", type=int, default=16, help="MoE block size")
     parser.add_argument("--num_tokens", type=int, default=8192, help="num tokens")
     parser.add_argument("--num_experts", type=int, default=64, help="num experts")
     parser.add_argument("--skip_correctness", action="store_true", help="skip correctness checks")
+    parser.add_argument("--check_external_cuda", action="store_true",
+                        help="include external sglang/yiakwy CUDA providers in correctness checks")
     parser.add_argument("--real_data", type=str, default="", help="path to topk_ids.pt")
     args = parser.parse_args(argv)
 
-    if not args.skip_correctness:
-        run_correctness(args.num_tokens, args.num_experts, args.block_size)
+    if args.mode in ("test", "all") and not args.skip_correctness:
+        run_correctness(args.num_tokens, args.num_experts, args.block_size,
+                        check_external_cuda=args.check_external_cuda)
+
+    if args.mode == "test":
+        return
 
     if args.real_data:
         run_real_data_benchmark(
