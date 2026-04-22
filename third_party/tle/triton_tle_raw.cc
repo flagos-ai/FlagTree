@@ -57,9 +57,46 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 //   - EDSL param type: "i32"
 //   - LLVM func: 1 arg = i32
 //   - Conversion: Use block argument directly
-tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
-                                              std::string_view text,
-                                              const std::vector<Value> &args) {
+// Analyze the LLVM IR text and compute alias operand indices without creating
+// any ops. This is exposed as a separate pybinding so Python can obtain
+// aliased_args before calling createTLERawRegionByLLVMFunc.
+std::vector<int64_t>
+computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
+                           const std::vector<Value> &args) {
+  ParserConfig config(self.getContext());
+  OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
+  assert(module && "Failed to parse LLVM IR text");
+  LLVM::LLVMFuncOp func = nullptr;
+  for (auto op : module->getOps<LLVM::LLVMFuncOp>()) {
+    if (!op.empty() && op.getLinkage() != LLVM::Linkage::Internal) {
+      if (func) {
+        llvm_unreachable("Multiple functions found in LLVM IR text");
+      } else {
+        func = op;
+      }
+    }
+  }
+  assert(func && "No function found in LLVM IR text");
+
+  SmallVector<int64_t> funcArgToDslArg =
+      tle::data_analyze::computeFuncArgToDslArg(args);
+
+  auto funcType = func.getFunctionType();
+  Type retTy = funcType.getReturnType();
+  if (isa<LLVM::LLVMVoidType>(retTy))
+    return {};
+
+  auto aliasesOrFailure =
+      tle::data_analyze::analyzeFuncReturnAliases(func, funcArgToDslArg);
+  assert(succeeded(aliasesOrFailure));
+  SmallVector<int64_t> result = *aliasesOrFailure;
+  return std::vector<int64_t>(result.begin(), result.end());
+}
+
+tle::DSLRegionOp createTLERawRegionByLLVMFunc(
+    TritonOpBuilder &self, std::string_view text,
+    const std::vector<Value> &args,
+    const std::vector<int64_t> &aliasOperandIndices) {
   ParserConfig config(self.getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   assert(module && "Failed to parse LLVM IR text");
@@ -96,19 +133,10 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
       curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName());
   assert(funcOp && "callee function not found in current module");
 
-  // Compute funcArgToDslArg mapping early for return analysis and later reuse.
-  SmallVector<int64_t> funcArgToDslArg =
-      tle::data_analyze::computeFuncArgToDslArg(args);
-
-  // Analyze alias once: which DSLRegionOp result aliases which DSL operand
-  SmallVector<int64_t> aliasOperandIndices;
+  // Use the externally provided aliasOperandIndices to determine output types.
   SmallVector<Type> outputTys;
   Type retTy = funcOp.getFunctionType().getReturnType();
   if (!isa<LLVM::LLVMVoidType>(retTy)) {
-    auto aliasesOrFailure =
-        tle::data_analyze::analyzeFuncReturnAliases(func, funcArgToDslArg);
-    assert(succeeded(aliasesOrFailure));
-    aliasOperandIndices = *aliasesOrFailure;
     for (int64_t idx : aliasOperandIndices) {
       outputTys.push_back(args[idx].getType());
     }
