@@ -12,10 +12,11 @@
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
-IMAGE=flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202604-base
 # Plan A: docker pull (16.1GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202604-base
+docker pull ${IMAGE}
 # Plan B: docker load (3.5GB)
+IMAGE=flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202604-base
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202604-base.tar.gz
 docker load -i flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202604-base.tar.gz
 ```
@@ -104,10 +105,11 @@ Refer to [Tests of enflame-gcu400 backend (Triton 3.6)](https://github.com/flago
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
-IMAGE=flagtree-enflame3.5-py312-torch2.9.1-ubuntu24.04:202603
 # Plan A: docker pull (13.3GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-enflame3.5-py312-torch2.9.1-ubuntu24.04:202603
+docker pull ${IMAGE}
 # Plan B: docker load (2.8GB)
+IMAGE=flagtree-enflame3.5-py312-torch2.9.1-ubuntu24.04:202603
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-enflame3.5-py312-torch2.9.1-ubuntu24.04.202603.tar.gz
 docker load -i flagtree-enflame3.5-py312-torch2.9.1-ubuntu24.04.202603.tar.gz
 ```
@@ -196,10 +198,11 @@ Refer to [Tests of enflame-gcu400 backend (Triton 3.5)](https://github.com/flago
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
-IMAGE=flagtree-enflame3.3-py310-torch2.7.0-ubuntu22.04:202603
 # Plan A: docker pull (12.5GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-enflame3.3-py310-torch2.7.0-ubuntu22.04:202603
+docker pull ${IMAGE}
 # Plan B: docker load (5.7GB)
+IMAGE=flagtree-enflame3.3-py310-torch2.7.0-ubuntu22.04:202603
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu-py310-torch2.9.0-ubuntu22.04.202603.tar.gz
 docker load -i flagtree-hcu-py310-torch2.9.0-ubuntu22.04.202603.tar.gz
 ```

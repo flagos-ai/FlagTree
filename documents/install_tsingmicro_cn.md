@@ -13,10 +13,11 @@
 如果网络环境畅通，也不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-IMAGE=flagtree-tsingmicro-py310-torch2.7.0-ubuntu20.04:202603
 # Plan A: docker pull (105GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-tsingmicro-py310-torch2.7.0-ubuntu20.04:202603
+docker pull ${IMAGE}
 # Plan B: docker load (44GB)
+IMAGE=flagtree-tsingmicro-py310-torch2.7.0-ubuntu20.04:202603
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-tsingmicro-py310-torch2.7.0-ubuntu20.04.202603.tar.gz
 docker load -i flagtree-tsingmicro-py310-torch2.7.0-ubuntu20.04.202603.tar.gz
 ```

@@ -12,10 +12,11 @@ If you use this preinstalled image, you do not need to perform the later step 1.
 If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
-IMAGE=flagtree-aipu-py310-torch2.6.0-clang16-lld16-ubuntu22.04:202603
 # Plan A: docker pull (36.9GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-aipu-py310-torch2.6.0-clang16-lld16-ubuntu22.04:202603
+docker pull ${IMAGE}
 # Plan B: docker load (17GB)
+IMAGE=flagtree-aipu-py310-torch2.6.0-clang16-lld16-ubuntu22.04:202603
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-aipu-py310-torch2.6.0-clang16-lld16-ubuntu22.04.202603.tar.gz
 docker load -i flagtree-aipu-py310-torch2.6.0-clang16-lld16-ubuntu22.04.202603.tar.gz
 ```

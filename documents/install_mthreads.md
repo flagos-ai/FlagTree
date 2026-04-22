@@ -13,10 +13,11 @@ If you use this preinstalled image, you do not need to perform the later step 1.
 If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
-IMAGE=flagtree-mthreads-py310-torch2.7.1-musa4.3.5-ubuntu22.04:202603
 # Plan A: docker pull (55.3GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-mthreads-py310-torch2.7.1-musa4.3.5-ubuntu22.04:202603
+docker pull ${IMAGE}
 # Plan B: docker load (18GB)
+IMAGE=flagtree-mthreads-py310-torch2.7.1-musa4.3.5-ubuntu22.04:202603
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-mthreads-py310-torch2.7.1-musa4.3.5-ubuntu22.04.202603.tar.gz
 docker load -i flagtree-mthreads-py310-torch2.7.1-musa4.3.5-ubuntu22.04.202603.tar.gz
 ```

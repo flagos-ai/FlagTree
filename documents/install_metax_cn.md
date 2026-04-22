@@ -13,10 +13,11 @@
 如果网络环境畅通，也不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-IMAGE=flagtree-metax-py312-torch2.8.0-vllm0.15.0-metax3.5.3.x-ubuntu22.04:202604-0.5.1
 # Plan A: docker pull (28.1GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-metax-py312-torch2.8.0-vllm0.15.0-metax3.5.3.x-ubuntu22.04:202604-0.5.1
+docker pull ${IMAGE}
 # Plan B: docker load (8.1GB)
+IMAGE=flagtree-metax-py312-torch2.8.0-vllm0.15.0-metax3.5.3.x-ubuntu22.04:202604-0.5.1
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-metax-py312-torch2.8.0-vllm0.15.0-metax3.5.3.x-ubuntu22.04.202604-0.5.1.tar.gz
 docker load -i flagtree-metax-py312-torch2.8.0-vllm0.15.0-metax3.5.3.x-ubuntu22.04.202604-0.5.1.tar.gz
 ```

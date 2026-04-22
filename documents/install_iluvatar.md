@@ -13,10 +13,11 @@ If your network connection is available, you do not need to perform the later st
 
 ```shell
 modinfo iluvatar | grep "description"  # f65d8ac7
-IMAGE=flagtree-iluvatar-py312-torch2.7.1-4.4.0release_f65d8ac7-ubuntu24.04:202604-base
 # Plan A: docker pull (17.9GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-iluvatar-py312-torch2.7.1-4.4.0release_f65d8ac7-ubuntu24.04:202604-base
+docker pull ${IMAGE}
 # Plan B: docker load (5.1GB)
+IMAGE=flagtree-iluvatar-py312-torch2.7.1-4.4.0release_f65d8ac7-ubuntu24.04:202604-base
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-iluvatar-py312-torch2.7.1-4.4.0release_f65d8ac7-ubuntu24.04.202604-base.tar.gz
 docker load -i flagtree-iluvatar-py312-torch2.7.1-4.4.0release_f65d8ac7-ubuntu24.04.202604-base.tar.gz
 ```

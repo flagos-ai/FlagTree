@@ -12,10 +12,11 @@
 如果网络环境畅通，也不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-IMAGE=flagtree-aipu-py310-torch2.6.0-clang16-lld16-ubuntu22.04:202603
 # Plan A: docker pull (36.9GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-aipu-py310-torch2.6.0-clang16-lld16-ubuntu22.04:202603
+docker pull ${IMAGE}
 # Plan B: docker load (17GB)
+IMAGE=flagtree-aipu-py310-torch2.6.0-clang16-lld16-ubuntu22.04:202603
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-aipu-py310-torch2.6.0-clang16-lld16-ubuntu22.04.202603.tar.gz
 docker load -i flagtree-aipu-py310-torch2.6.0-clang16-lld16-ubuntu22.04.202603.tar.gz
 ```

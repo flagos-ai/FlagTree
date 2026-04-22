@@ -12,10 +12,11 @@ If you use this preinstalled image, you do not need to perform the later step 1.
 If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
-IMAGE=flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
 # Plan A: docker pull (37GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
+docker pull ${IMAGE}
 # Plan B: docker load (17GB)
+IMAGE=flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202603.tar.gz
 docker load -i flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202603.tar.gz
 ```

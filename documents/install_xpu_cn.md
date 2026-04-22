@@ -12,10 +12,11 @@
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
 # Plan A: docker pull (44.9GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
+docker pull ${IMAGE}
 # Plan B: docker load (21GB)
+IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-xpu-py310-torch2.5.1-ubuntu20.04.202604-base.tar.gz
 docker load -i flagtree-xpu-py310-torch2.5.1-ubuntu20.04.202604-base.tar.gz
 ```

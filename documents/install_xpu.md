@@ -12,10 +12,11 @@
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
-IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
 # Plan A: docker pull (44.9GB)
-docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
+docker pull ${IMAGE}
 # Plan B: docker load (21GB)
+IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-xpu-py310-torch2.5.1-ubuntu20.04.202604-base.tar.gz
 docker load -i flagtree-xpu-py310-torch2.5.1-ubuntu20.04.202604-base.tar.gz
 ```
