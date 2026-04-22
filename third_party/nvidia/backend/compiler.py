@@ -3,7 +3,6 @@ from triton._C.libtriton import ir, passes, llvm, nvidia
 from triton._C.libtriton import tle
 from triton import knobs
 from triton.runtime.errors import PTXASError
-from .driver import _is_tle_enabled
 
 from dataclasses import dataclass
 import functools
@@ -16,14 +15,6 @@ import signal
 import os
 import subprocess
 from pathlib import Path
-
-
-def _use_tle_tile_style_pipeline() -> bool:
-    return os.getenv("FLAGTREE_TLE_TILE_STYLE_PIPELINE", "1") != "0"
-
-
-def _use_tle_materialize_tile_style_pipeline() -> bool:
-    return os.getenv("FLAGTREE_TLE_MATERIALIZE_TILE_STYLE_PIPELINE", "0") != "0"
 
 
 def min_dot_size(target: GPUTarget):
@@ -292,13 +283,12 @@ class CUDABackend(BaseBackend):
         tle.passes.add_lower_extract_tile(pm)
         # flagtree tle: lower tle.insert_tile
         tle.passes.add_lower_insert_tile(pm)
-        if _is_tle_enabled():
-            # Canonicalize static gmem->local_ptr(shared) chunk copies after TTIR
-            # has been converted to TTGPU encodings, but before local-pointer
-            # lowering obscures the load->store pattern. This rewrites the
-            # source-level chunk staging into direct async copies targeting
-            # memdesc subviews of the final shared operand buffer.
-            tle.passes.add_optimize_local_pointer_async_stores(pm)
+        # Canonicalize static gmem->local_ptr(shared) chunk copies after TTIR
+        # has been converted to TTGPU encodings, but before local-pointer
+        # lowering obscures the load->store pattern. This rewrites the
+        # source-level chunk staging into direct async copies targeting
+        # memdesc subviews of the final shared operand buffer.
+        tle.passes.add_optimize_local_pointer_async_stores(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_process_shared_memory_hint(pm)  # flagtree hints
@@ -317,8 +307,7 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
-        if _is_tle_enabled():
-            tle.passes.add_promote_local_store_staging(pm)
+        tle.passes.add_promote_local_store_staging(pm)
         nvidia.passes.ttnvgpuir.add_optimize_descriptor_encoding(pm)
         passes.ttir.add_loop_aware_cse(pm)
         if capability // 10 in [8, 9]:
@@ -328,12 +317,11 @@ class CUDABackend(BaseBackend):
             passes.common.add_canonicalizer(pm)
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
             nvidia.passes.hopper.add_hopper_warpspec(pm, opt.num_stages, dump_enabled)
+            tle.passes.add_downgrade_invalid_async_copy(pm)
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
             passes.ttgpuir.add_schedule_loops(pm)
-            if _is_tle_enabled() and _use_tle_tile_style_pipeline():
-                tle.passes.add_tile_style_pipeline_schedule(pm)
-            if _is_tle_enabled() and _use_tle_materialize_tile_style_pipeline():
-                tle.passes.add_materialize_tile_style_pipeline(pm)
+            tle.passes.add_tile_style_pipeline_schedule(pm)
+            tle.passes.add_materialize_tile_style_pipeline(pm)
             passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
         elif capability // 10 >= 10:
             passes.ttgpuir.add_fuse_nested_loops(pm)
@@ -342,6 +330,7 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_optimize_accumulator_init(pm)
             passes.ttgpuir.add_hoist_tmem_alloc(pm, False)
             nvidia.passes.ttnvgpuir.add_promote_lhs_to_tmem(pm)
+            tle.passes.add_downgrade_invalid_async_copy(pm)
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
             passes.ttgpuir.add_schedule_loops(pm)
             passes.ttgpuir.add_warp_specialize(pm, opt.num_stages)
@@ -358,6 +347,7 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_prefetch(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
         passes.ttgpuir.add_coalesce_async_copy(pm)
+        tle.passes.add_downgrade_invalid_async_copy(pm)
         nvidia.passes.ttnvgpuir.add_optimize_tmem_layouts(pm)
         if capability // 10 >= 9:
             # flagtree tle: Apply TLE TMA copy lowering before standard NVIDIA TMA lowering

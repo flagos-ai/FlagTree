@@ -63,3 +63,24 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [8], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @preserve_cluster_shared_load_store
+  tt.func @preserve_cluster_shared_load_store(%rptr: tensor<64x!tt.ptr<i32, 7>, #blocked>) {
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<64xi32, #shared, #smem, mutable>
+    %offs = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #blocked>
+    %local = "tle.local_pointers"(%smem, %offs) : (!ttg.memdesc<64xi32, #shared, #smem, mutable>, tensor<64xi32, #blocked>) -> tensor<64x!tt.ptr<i32, 3>, #blocked>
+    // CHECK-NOT: ttg.async_copy_global_to_local
+    // CHECK: %[[V:.*]] = tt.load %{{.*}} : tensor<64x!tt.ptr<i32, 7>, #blocked>
+    // CHECK: tt.store %{{.*}}, %[[V]]
+    %v = tt.load %rptr : tensor<64x!tt.ptr<i32, 7>, #blocked>
+    tt.store %local, %v : tensor<64x!tt.ptr<i32, 3>, #blocked>
+    tt.return
+  }
+}

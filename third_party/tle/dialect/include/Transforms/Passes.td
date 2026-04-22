@@ -191,6 +191,24 @@ def TritonTleMaterializeTileStylePipeline
                            "mlir::triton::TritonDialect"];
 }
 
+def TritonTleDowngradeInvalidAsyncCopy
+    : Pass<"triton-tle-downgrade-invalid-async-copy", "mlir::ModuleOp"> {
+  let summary =
+      "downgrade TLE async copies that cannot be lowered to cp.async";
+
+  let description = [{
+    This pass is TLE-owned because it repairs async copies created or exposed
+    by TLE staging/pipeline transforms. For ``ttg.async_copy_global_to_local``
+    operations whose final vector width is not a legal cp.async transaction
+    size, it replaces the async copy and its simple token chain with a
+    synchronous ``tt.load`` plus ``ttg.local_store`` before software
+    pipelining.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
 def TritonTleOptimizeExclusiveCumsumLayouts
     : Pass<"triton-tle-optimize-exclusive-cumsum-layouts", "mlir::ModuleOp"> {
   let summary = "fold convert_layout around tle.exclusive_cumsum";

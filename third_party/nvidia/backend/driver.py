@@ -17,14 +17,6 @@ libraries = ['libcuda.so.1']
 PyCUtensorMap = None
 
 
-def _is_tle_enabled():
-    try:
-        import triton._C.libtriton as libtriton
-        return hasattr(libtriton, "tle")
-    except Exception:
-        return False
-
-
 @functools.lru_cache()
 def libcuda_dirs():
     if env_libcuda_path := knobs.nvidia.libcuda_path:
@@ -268,7 +260,7 @@ def make_launcher(constants, signature, tensordesc_meta):
     params = [f"&arg{i}" for i, ty in signature.items() if ty != "constexpr"]
     params.append("&global_scratch")
     params.append("&profile_scratch")
-    tle_cpp_define = "#define __TLE__ 1" if _is_tle_enabled() else ""
+    tle_cpp_define = "#define __TLE__ 1"
     src = f"""
 #include \"cuda.h\"
 #include <dlfcn.h>
@@ -830,7 +822,7 @@ class CudaLauncher(object):
         # counter protocol, which assumes a well-defined initial counter state.
         # Runtime scratch allocators may return uninitialized storage; for
         # cooperative launches, clear scratch before kernel launch.
-        if _is_tle_enabled() and self.launch_cooperative_grid and global_scratch is not None:
+        if self.launch_cooperative_grid and global_scratch is not None:
             zero_ = getattr(global_scratch, "zero_", None)
             if callable(zero_):
                 zero_()

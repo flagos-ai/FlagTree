@@ -9,6 +9,7 @@ add_triton_library(TritonTLETransforms
   TlePromoteLocalStoreStaging.cpp
   TleTileStylePipelineSchedule.cpp
   TleMaterializeTileStylePipeline.cpp
+  TleDowngradeInvalidAsyncCopy.cpp
   TleOptimizeExclusiveCumsumLayouts.cpp
   TleLowerExclusiveCumsum.cpp
   TleLowerAsyncLoad.cpp

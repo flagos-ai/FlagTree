@@ -279,6 +279,8 @@ void init_triton_tle_passes(py::module &&m) {
                      tle::createTritonTleTileStylePipelineSchedule);
   ADD_PASS_WRAPPER_0("add_materialize_tile_style_pipeline",
                      tle::createTritonTleMaterializeTileStylePipeline);
+  ADD_PASS_WRAPPER_0("add_downgrade_invalid_async_copy",
+                     tle::createTritonTleDowngradeInvalidAsyncCopy);
   ADD_PASS_WRAPPER_0("add_optimize_exclusive_cumsum_layouts",
                      tle::createTritonTleOptimizeExclusiveCumsumLayouts);
   ADD_PASS_WRAPPER_0("add_lower_exclusive_cumsum",

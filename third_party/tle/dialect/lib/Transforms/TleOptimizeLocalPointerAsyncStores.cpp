@@ -9,6 +9,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include <optional>
@@ -40,6 +41,16 @@ static Value stripStoreValueWrappers(Value value) {
     break;
   }
   return current;
+}
+
+static bool isGlobalPointerTensor(Value value) {
+  auto tensorTy = dyn_cast<RankedTensorType>(value.getType());
+  if (!tensorTy)
+    return false;
+  auto ptrTy = dyn_cast<tt::PointerType>(tensorTy.getElementType());
+  if (!ptrTy)
+    return false;
+  return ptrTy.getAddressSpace() == 1;
 }
 
 static Value stripIndexValueWrappers(Value value) {
@@ -235,6 +246,8 @@ class OptimizeLocalPointerAsyncStoresPass
       if (load.getIsVolatile())
         continue;
       if (!isa<RankedTensorType>(load.getType()))
+        continue;
+      if (!isGlobalPointerTensor(load.getPtr()))
         continue;
       auto match = matchStaticSubviewMemDesc(store);
       if (!match)
