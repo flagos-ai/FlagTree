@@ -8,10 +8,10 @@ def call(func, args, _semantic=None):
     context = _semantic.builder.get_context()
     llvm = func.make_llvm(context)
     handles = [arg.handle for arg in args]
-    
+
     alias_indices = _semantic.builder.compute_alias_operand_indices(llvm, handles)
     aliased_args = [args[idx] for idx in alias_indices]
-    
+
     dsl_region_op = _semantic.builder.create_tle_raw_region_by_llvm_func(llvm, handles, alias_indices)
     results = dsl_region_op.get_results()
     if len(results) == 0:
@@ -29,10 +29,10 @@ def call_smem(func, args, _semantic=None):
     context = _semantic.builder.get_context()
     llvm = func.make_llvm(context)
     handles = [arg.handle for arg in args]
-    
+
     alias_indices = _semantic.builder.compute_alias_operand_indices(llvm, handles)
     aliased_args = [args[idx] for idx in alias_indices]
-    
+
     dsl_region_op = _semantic.builder.create_tle_raw_region_by_llvm_func(llvm, handles, alias_indices)
     results = dsl_region_op.get_results()
     if len(results) == 0:

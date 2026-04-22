@@ -93,10 +93,10 @@ computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
   return std::vector<int64_t>(result.begin(), result.end());
 }
 
-tle::DSLRegionOp createTLERawRegionByLLVMFunc(
-    TritonOpBuilder &self, std::string_view text,
-    const std::vector<Value> &args,
-    const std::vector<int64_t> &aliasOperandIndices) {
+tle::DSLRegionOp
+createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             const std::vector<Value> &args,
+                             const std::vector<int64_t> &aliasOperandIndices) {
   ParserConfig config(self.getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   assert(module && "Failed to parse LLVM IR text");
