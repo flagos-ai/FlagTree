@@ -9,7 +9,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include <vector>
-namespace mlir::triton::tle::dataAnalyze {
+namespace mlir::triton::tle::data_analyze {
 
 /// Origin state for a Value during propagation.
 /// Each Value maps to a set of DSL arg indices it originates from.

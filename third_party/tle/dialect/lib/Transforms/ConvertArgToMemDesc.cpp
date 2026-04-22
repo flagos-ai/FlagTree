@@ -124,6 +124,10 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   }
   tle::DSLRegionOp newOp =
       rewriter.create<tle::DSLRegionOp>(op.getLoc(), newRetTys, newOperands);
+  // Preserve alias_operand_indices attribute
+  if (auto aliasAttr = op.getAliasOperandIndicesAttr()) {
+    newOp.setAliasOperandIndicesAttr(aliasAttr);
+  }
   PatternRewriter::InsertionGuard guard(rewriter);
   for (auto [idx, oldBlock] : llvm::enumerate(op.getBody().getBlocks())) {
     Block *newBlock = nullptr;

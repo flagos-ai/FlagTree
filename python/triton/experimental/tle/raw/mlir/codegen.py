@@ -99,8 +99,7 @@ class MLIRCodeGenerator(ast.NodeVisitor):
                 if isinstance(ret_ann, ast.Subscript):
                     output_tys += [ir.Type.parse(ret_ann.slice.value)]
                 elif isinstance(ret_ann, ast.Tuple):
-                    for elt in ret_ann.elts:
-                        output_tys += [ir.Type.parse(elt.slice.value)]
+                    output_tys += [ir.Type.parse(elt.slice.value) for elt in ret_ann.elts]
             fnty: ir.FunctionType = ir.FunctionType.get(operand_tys, output_tys)
             fn: func.FuncOp = func.FuncOp(node.name, fnty, visibility="public")
             block: ir.Block = fn.add_entry_block()
@@ -110,10 +109,7 @@ class MLIRCodeGenerator(ast.NodeVisitor):
             with ir.InsertionPoint(block):
                 for stmt in node.body:
                     self.visit(stmt)
-                if self._return_values is not None:
-                    func.return_(self._return_values)
-                else:
-                    func.return_([])
+                func.return_(self._return_values or [])
             return fn
 
     @override

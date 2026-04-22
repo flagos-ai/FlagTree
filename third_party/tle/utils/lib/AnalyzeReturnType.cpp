@@ -8,7 +8,7 @@
 
 using namespace mlir;
 
-namespace mlir::triton::tle::dataAnalyze {
+namespace mlir::triton::tle::data_analyze {
 
 /// Returns true if this OriginSet changed.
 bool OriginSet::merge(const OriginSet &other) {
@@ -27,7 +27,7 @@ bool OriginSet::merge(const OriginSet &other) {
 int64_t getDslArgIdx(BlockArgument blockArg,
                      ArrayRef<int64_t> funcArgToDslArg) {
   int64_t funcIdx = blockArg.getArgNumber();
-  if (funcIdx >= 0 && funcIdx < (int64_t)funcArgToDslArg.size())
+  if (funcIdx >= 0 && funcIdx < static_cast<int64_t>(funcArgToDslArg.size()))
     return funcArgToDslArg[funcIdx];
   return -1;
 }
@@ -98,26 +98,26 @@ computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
           for (Value result : op.getResults()) {
             origins.try_emplace(result);
           }
-          continue;
         }
-
-        // Compute merged origin of all operands
-        OriginSet opOrigin;
-        if (op.getNumOperands() == 0) {
-          opOrigin.conflict = true;
-        } else {
-          for (Value operand : op.getOperands()) {
-            auto it = origins.find(operand);
-            if (it != origins.end())
-              opOrigin.merge(it->second);
+        else {
+          // Compute merged origin of all operands
+          OriginSet opOrigin;
+          if (op.getNumOperands() == 0) {
+            opOrigin.conflict = true;
+          } else {
+            for (Value operand : op.getOperands()) {
+              auto it = origins.find(operand);
+              if (it != origins.end())
+                opOrigin.merge(it->second);
+            }
           }
-        }
 
-        // Propagate to all results
-        for (Value result : op.getResults()) {
-          auto [resIt, _] = origins.try_emplace(result);
-          if (resIt->second.merge(opOrigin))
-            changed = true;
+          // Propagate to all results
+          for (Value result : op.getResults()) {
+            auto [resIt, _] = origins.try_emplace(result);
+            if (resIt->second.merge(opOrigin))
+              changed = true;
+          }
         }
 
       }

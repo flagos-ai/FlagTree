@@ -300,8 +300,7 @@ void init_tle_raw_ir(py::module &&m) {
           ret::reference)
       .def("get_alias_operand_indices",
            [](tle::DSLRegionOp &op) -> std::vector<int64_t> {
-             auto attr = op->getAttrOfType<DenseI64ArrayAttr>(
-                 "tle.alias_operand_indices");
+             auto attr = op.getAliasOperandIndicesAttr();
              if (!attr)
                return {};
              return std::vector<int64_t>(attr.asArrayRef().begin(),
