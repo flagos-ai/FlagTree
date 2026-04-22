@@ -166,6 +166,5 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(TritonOpBuilder &self,
   }
   dslRegionOp.setAliasOperandIndicesAttr(
       DenseI64ArrayAttr::get(builder.getContext(), aliasOperandIndices));
-
   return dslRegionOp;
 }
