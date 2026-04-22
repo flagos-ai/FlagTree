@@ -134,13 +134,13 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
   assert(funcOp && "callee function not found in current module");
 
   // Use the externally provided aliasOperandIndices to determine output types.
-  SmallVector<Type> outputTys;
   Type retTy = funcOp.getFunctionType().getReturnType();
-  if (!isa<LLVM::LLVMVoidType>(retTy)) {
-    for (int64_t idx : aliasOperandIndices) {
-      outputTys.push_back(args[idx].getType());
-    }
-  }
+  SmallVector<Type> outputTys =
+      isa<LLVM::LLVMVoidType>(retTy)
+          ? SmallVector<Type>{}
+          : llvm::map_to_vector(aliasOperandIndices, [&](int64_t idx) -> Type {
+              return args[idx].getType();
+            });
 
   SmallVector<Value> operands(args.begin(), args.end());
   tle::DSLRegionOp dslRegionOp =
@@ -192,7 +192,5 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
       }
     }
   }
-  dslRegionOp.setAliasOperandIndicesAttr(
-      DenseI64ArrayAttr::get(builder.getContext(), aliasOperandIndices));
   return dslRegionOp;
 }

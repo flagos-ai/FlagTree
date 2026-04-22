@@ -100,8 +100,7 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure]> {
 def Tle_DSLRegionOp : Tle_Op<"dsl_region", [IsolatedFromAbove, MemDescViewTrait,
                                             RecursiveMemoryEffects]> {
   let arguments = (ins
-    Variadic<Tle_ArgType>:$inputs,
-    OptionalAttr<DenseI64ArrayAttr>:$alias_operand_indices
+    Variadic<Tle_ArgType>:$inputs
   );
   let results = (outs Variadic<Tle_ArgType>:$outputs);
   let regions = (region AnyRegion:$body);
