@@ -124,10 +124,20 @@ General building and installation procedure (Recommended for environments with g
 ```shell
 # Set FLAGTREE_BACKEND using the backend name from the table above
 export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia/amd/triton-shared
-cd python  # Need to enter the python directory for Triton 3.1/3.2/3.3
+
+# For Triton 3.1/3.2/3.3 (branch: main, triton_v3.2.x, triton_v3.3.x):
+cd python
 python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
+
+# For Triton 3.4/3.5/3.6 (branch: triton_v3.4.x, triton_v3.5.x, triton_v3.6.x)
+python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
+```
+
+After installing `flagtree`, you can check it with:
+
+```shell
 python3 -m pip show flagtree
-cd ${ANY_OTHER_PATH}; python3 -c 'import triton; print(triton.__path__)'
+cd ${ANY_DIR_OTHER_THAN_FLAGTREE_PYTHON}; python3 -c 'import triton; print(triton.__path__)'
 ```
 
 ## Source-free Installation
