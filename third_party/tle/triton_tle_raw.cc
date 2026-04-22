@@ -6,8 +6,8 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Parser/Parser.h"
 #include "tle/dialect/include/IR/Dialect.h"
-#include "tle/utils/include/Protocol.h"
 #include "tle/utils/include/AnalyzeReturnType.h"
+#include "tle/utils/include/Protocol.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVectorExtras.h"
 

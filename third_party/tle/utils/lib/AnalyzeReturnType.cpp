@@ -45,7 +45,7 @@ computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
     if (dslIdx >= 0)
       os.indices.insert(dslIdx);
     else
-      os.conflict = true; 
+      os.conflict = true;
   }
 
   // Pre-insert non-entry block arguments into the map so that later
@@ -66,7 +66,7 @@ computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
     //     branch operands to successor block arguments (phi edges). ---
     for (Block &block : func.getBlocks()) {
       if (&block == &entryBlock)
-        continue; 
+        continue;
       for (auto it = block.pred_begin(), e = block.pred_end(); it != e; ++it) {
         Block *pred = *it;
         Operation *term = pred->getTerminator();
@@ -98,8 +98,7 @@ computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
           for (Value result : op.getResults()) {
             origins.try_emplace(result);
           }
-        }
-        else {
+        } else {
           // Compute merged origin of all operands
           OriginSet opOrigin;
           if (op.getNumOperands() == 0) {
@@ -119,7 +118,6 @@ computeDslArgOrigins(LLVM::LLVMFuncOp func, ArrayRef<int64_t> funcArgToDslArg) {
               changed = true;
           }
         }
-
       }
     }
   }
@@ -163,4 +161,4 @@ SmallVector<int64_t> computeFuncArgToDslArg(const std::vector<Value> &args) {
   return mapping;
 }
 
-} // namespace mlir::triton::tle::dataAnalyze
+} // namespace mlir::triton::tle::data_analyze

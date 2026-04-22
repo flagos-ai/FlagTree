@@ -55,6 +55,6 @@ analyzeFuncReturnAliases(mlir::LLVM::LLVMFuncOp func,
 llvm::SmallVector<int64_t>
 computeFuncArgToDslArg(const std::vector<mlir::Value> &args);
 
-} // namespace mlir::triton::tle::dataAnalyze
+} // namespace mlir::triton::tle::data_analyze
 
 #endif // TLE_UTILS_ANALYZERETURN_H
