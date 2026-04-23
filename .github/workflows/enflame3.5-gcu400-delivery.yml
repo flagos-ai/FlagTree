@@ -1,4 +1,4 @@
-name: CD-Enflame-GCU400-triton_v3.5.x
+name: CD-Enflame3.5-GCU400
 
 permissions:
   contents: write

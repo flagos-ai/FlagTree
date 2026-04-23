@@ -1,4 +1,4 @@
-name: CD-Mthreads-triton_v3.2.x
+name: CD-Mthreads3.2
 
 permissions:
   contents: write

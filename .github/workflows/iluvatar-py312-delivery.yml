@@ -1,4 +1,4 @@
-name: CD-Iluvatar-py312-triton_v3.1.x
+name: CD-Iluvatar3.1-py312
 
 permissions:
   contents: write

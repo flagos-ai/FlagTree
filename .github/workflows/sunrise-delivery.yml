@@ -1,4 +1,4 @@
-name: CD-Sunrise-triton_v3.4.x
+name: CD-Sunrise3.4
 
 permissions:
   contents: write

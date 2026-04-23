@@ -12,10 +12,10 @@
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-# Plan A: docker pull (46.3GB)
+# Plan A: docker pull (43.5GB)
 IMAGE=harbor.baai.ac.cn/flagtree/flagtree-mthreads3.2-py310-torch2.7.1-musa4.3.5-ubuntu22.04:202604-base
 docker pull ${IMAGE}
-# Plan B: docker load (GB)
+# Plan B: docker load (13GB)
 IMAGE=flagtree-mthreads3.2-py310-torch2.7.1-musa4.3.5-ubuntu22.04:202604-base
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-mthreads3.2-py310-torch2.7.1-musa4.3.5-ubuntu22.04.202604-base.tar.gz
 docker load -i flagtree-mthreads3.2-py310-torch2.7.1-musa4.3.5-ubuntu22.04.202604-base.tar.gz

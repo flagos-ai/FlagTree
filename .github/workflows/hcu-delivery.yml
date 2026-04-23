@@ -1,4 +1,4 @@
-name: CD-Hcu-triton_v3.1.x
+name: CD-Hcu3.1
 
 permissions:
   contents: write

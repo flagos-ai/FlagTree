@@ -1,4 +1,4 @@
-name: CD-Tsingmicro-triton_v3.3.x
+name: CD-Tsingmicro3.3
 
 permissions:
   contents: write

@@ -1,4 +1,4 @@
-name: CD-AIPU-triton_v3.3.x
+name: CD-AIPU3.3
 
 permissions:
   contents: write

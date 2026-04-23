@@ -1,4 +1,4 @@
-name: CD-Xpu-triton_v3.1.x
+name: CD-Xpu3.0
 
 permissions:
   contents: write
