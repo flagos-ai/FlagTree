@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  xpu-cd:
+  delivery:
     runs-on: xpu-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  metax-cd:
+  delivery:
     runs-on: metax-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

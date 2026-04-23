@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame36-gcu400-cd:
+  delivery:
     runs-on: "enflame3.6-gcu400-cd"
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

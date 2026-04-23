@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  hopper-cd:
+  delivery:
     runs-on: hopper-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

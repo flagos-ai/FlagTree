@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  aipu-cd:
+  delivery:
     runs-on: aipu-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

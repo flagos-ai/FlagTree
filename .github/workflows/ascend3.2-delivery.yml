@@ -1,4 +1,4 @@
-name: CD-Ascend-triton_v3.2.x
+name: CD-Ascend3.2
 
 permissions:
   contents: write
@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ascend-cd:
+  delivery:
     runs-on: ascend-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
