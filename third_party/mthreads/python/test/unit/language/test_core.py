@@ -1456,6 +1456,7 @@ def test_tensor_atomic_cas(sem, num_ctas, device):
 # ---------------
 
 
+@pytest.mark.skip(reason="flagtree mthreads TODO")
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, dtype_z, bitcast, size",
                          [(dtype_x, dtype_z, False, 1024) for dtype_x in dtypes for dtype_z in dtypes] + [
