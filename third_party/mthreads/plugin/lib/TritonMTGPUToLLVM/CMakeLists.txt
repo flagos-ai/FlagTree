@@ -22,7 +22,6 @@ add_triton_library(TritonMTGPUToLLVM
 
     DEPENDS
     TritonMTGPUConversionPassIncGen
-    MTGPUAttrDefsIncGen
 
     LINK_LIBS PUBLIC
     TritonGPUToLLVM
