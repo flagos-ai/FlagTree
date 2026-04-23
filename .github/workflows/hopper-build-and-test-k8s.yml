@@ -23,12 +23,7 @@ jobs:
 
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
-      - name: Setup environment
-        shell: bash
-        run: |
-          # source ~/env.sh 
-          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
-
+  
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
         with:
@@ -58,7 +53,7 @@ jobs:
         run: |
           set -x
           pip uninstall -y triton
-          source ~/env-3.4.sh
+          source /mnt/airs-business/cicd/flagtree/nvidia/env-3.4.sh
           env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
@@ -68,7 +63,7 @@ jobs:
         run: |
           set -x
           pip uninstall -y triton
-          source ~/env-3.5.sh
+          source /mnt/airs-business/cicd/flagtree/nvidia/env-3.5.sh
           env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
@@ -100,7 +95,7 @@ jobs:
         shell: bash
         run: |
           set -x
-          source ~/env.sh
+          # source ~/env.sh
           # python tutorials
           python3 python/tutorials/01-vector-add.py --only_unit_test
           python3 python/tutorials/02-fused-softmax.py --only_unit_test
