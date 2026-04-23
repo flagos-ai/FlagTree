@@ -124,6 +124,7 @@ jobs:
           python3 python/tutorials/tle/03-topk.py
           python3 python/tutorials/tle/04-cluster-gemm.py
           python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py
+          python3 python/tutorials/tle/deepseek_v32/02-sparse-mla.py --mode test
           python3 python/tutorials/tle/deepseek_v32/02-sparse-mla.py
           # python unit test
           python3 -m pytest -s python/test/tle/integration
