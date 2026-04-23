@@ -32,6 +32,21 @@ jobs:
         with:
           backend: ascend
 
+      - name: FlagTree Editable Build And Test on Ascend
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=ascend
+          source ~/env.sh
+          python3 -m pip uninstall flagtree -y
+          pushd python
+          MAX_JOBS=32 python3 -m pip install -e . --no-build-isolation
+          popd
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          python3 -c "import triton"
+          python3 -m pip uninstall flagtree -y
+
       - name: FlagTree Build on Ascend
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
@@ -82,18 +97,3 @@ jobs:
           python3 test_vec_mathOps.py
           python3 test_tle_with_hints.py
           popd
-
-      - name: FlagTree Editable Build And Test on Ascend
-        if: steps.check_backend.outputs.should_skip != 'true'
-        shell: bash
-        run: |
-          set -x
-          export FLAGTREE_BACKEND=ascend
-          source ~/env.sh
-          python3 -m pip uninstall flagtree -y
-          pushd python
-          MAX_JOBS=32 python3 -m pip install -e . --no-build-isolation
-          popd
-          source /usr/local/Ascend/ascend-toolkit/set_env.sh
-          python3 -c "import triton"
-          python3 -m pip uninstall flagtree -y
