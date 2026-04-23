@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  nv-build-and-test:
     runs-on: flagtree-nvidia
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
@@ -51,7 +51,6 @@ jobs:
         shell: bash
         run: |
           set -x
-          pip uninstall -y triton
           source ~/env.sh
           cd python
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
@@ -61,7 +60,6 @@ jobs:
         shell: bash
         run: |
           set -x
-          pip uninstall -y triton
           source ~/env-3.2.sh
           cd python
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
@@ -71,7 +69,6 @@ jobs:
         shell: bash
         run: |
           set -x
-          pip uninstall -y triton
           source ~/env-3.3.sh
           cd python
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
