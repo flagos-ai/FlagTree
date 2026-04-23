@@ -219,7 +219,8 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
   auto srcThreadOffsets = computeThreadOffsets(loc, rewriter, srcTy);
   auto tileThreadOffsets = computeThreadOffsets(loc, rewriter, tileTy);
 
-  auto smemPtrTy = LLVM::LLVMPointerType::get(ctx, targetInfo.getSharedAddressSpace());
+  auto smemPtrTy =
+      LLVM::LLVMPointerType::get(ctx, targetInfo.getSharedAddressSpace());
   Value smemBase =
       LLVM::getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
 
@@ -389,8 +390,7 @@ struct InsertTileOpConversion : public ConvertOpToLLVMPattern<InsertTileOp> {
     }
 
     return lowerInsertTileViaSMEMDynamic(op, adaptor, rewriter,
-                                         this->getTypeConverter(),
-                                         targetInfo);
+                                         this->getTypeConverter(), targetInfo);
   }
 
 private:

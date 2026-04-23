@@ -137,7 +137,8 @@ getNvidiaAllocationAnalysisScratchSizeFn(TargetInfoBase &targetInfo) {
                                    (getBitwidth(dstTy) / 8));
     }
     if (auto insertTileOp = dyn_cast<triton::tle::InsertTileOp>(op)) {
-      auto tileTy = dyn_cast<RankedTensorType>(insertTileOp.getTile().getType());
+      auto tileTy =
+          dyn_cast<RankedTensorType>(insertTileOp.getTile().getType());
       if (!tileTy)
         return 0;
       return static_cast<unsigned>(tileTy.getNumElements() *
