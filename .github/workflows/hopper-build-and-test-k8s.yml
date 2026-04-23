@@ -31,7 +31,7 @@ jobs:
 
       - name: Check if backend-relevant files changed
         id: check_backend
-        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@triton_v3.6.x_k8s
         with:
           backend: hopper
 
