@@ -1,4 +1,4 @@
-name: Ascend-Build-And-Test
+name: Ascend3.2-Build-And-Test
 
 on:
   push:
@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ascend-build-and-test:
+  build-and-test:
     runs-on: flagtree-ascend
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

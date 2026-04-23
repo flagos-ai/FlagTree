@@ -1,4 +1,4 @@
-name: CD-Ascend-triton_v3.2.x
+name: CD-Mthreads3.2
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         default: '0.5.0'
       PYTHON_VER:
         required: true
-        default: '3.11'
+        default: '3.10'
       PLATFORM:
         required: true
         default: 'x86_64'
@@ -24,7 +24,7 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.11'
+        default: '3.10'
       PLATFORM:
         type: string
         required: true
@@ -35,7 +35,7 @@ on:
 
 jobs:
   call-delivery:
-    uses: flagos-ai/flagtree/.github/workflows/ascend-delivery.yml@main
+    uses: flagos-ai/flagtree/.github/workflows/mthreads3.2-delivery.yml@main
     with:
       WHL_VER: ${{ inputs.WHL_VER }}
       PYTHON_VER: ${{ inputs.PYTHON_VER }}
