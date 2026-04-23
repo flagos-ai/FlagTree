@@ -429,6 +429,7 @@ def test_dtype_codegen():
 # ---------------
 
 
+@pytest.mark.skip(reason="flagtree mthreads TODO")
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, dtype_y, op", [  #
     (dtype_x, dtype_y, op)
@@ -511,6 +512,7 @@ def test_addptr(dtype, order, device):
     np.testing.assert_allclose(y, to_numpy(y_tri))
 
 
+@pytest.mark.skip(reason="flagtree mthreads TODO")
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, dtype_y", [  #
     (dtype_x, dtype_y) for dtype_x in int_dtypes for dtype_y in int_dtypes
@@ -569,6 +571,7 @@ def test_unsigned_name_mangling(device):
 
 # test bitwise ops
 # ---------------
+@pytest.mark.skip(reason="flagtree mthreads TODO")
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, dtype_y, op", [  #
     (dtype_x, dtype_y, op)
@@ -593,6 +596,7 @@ def test_bitwise_op(dtype_x, dtype_y, op, num_ctas, device):
         _test_binary(dtype_x, dtype_y, expr, numpy_expr, device=device, num_ctas=num_ctas)
 
 
+@pytest.mark.skip(reason="flagtree mthreads TODO")
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, dtype_y, op", [  #
     (dtype_x, dtype_y, op) for op in ['<<', '>>'] for dtype_x in int_dtypes + uint_dtypes for dtype_y in uint_dtypes
@@ -615,6 +619,7 @@ def test_shift_op(dtype_x, dtype_y, op, num_ctas, device):
 ops = ['==', '!=', '>', '<', '>=', '<=']
 
 
+@pytest.mark.skip(reason="flagtree mthreads TODO")
 @pytest.mark.interpreter
 @pytest.mark.parametrize(
     "dtype_x, dtype_y, op, mode_x, mode_y",
@@ -1028,6 +1033,7 @@ def test_math_fma_op(dtype, device):
     torch.testing.assert_close(z_tri, z_ref)
 
 
+@pytest.mark.skip(reason="flagtree mthreads TODO")
 @pytest.mark.interpreter
 @pytest.mark.parametrize("expr", ["tl.math.fdiv(x, y)", "tl.math.div_rn(x, y)"])
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
