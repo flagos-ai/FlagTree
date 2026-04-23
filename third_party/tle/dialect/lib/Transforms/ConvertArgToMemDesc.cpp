@@ -9,6 +9,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/Passes.h"
+#include "tle/dialect/include/Transforms/TleUtility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
@@ -63,25 +64,47 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   SmallVector<Value> newOperands;
   IRMapping mapper;
   bool hasConversion = false;
+  bool needSync = false;
   for (const auto &operand : op->getOperands()) {
     if (RankedTensorType tensorTy =
             dyn_cast<RankedTensorType>(operand.getType())) {
       Operation *defOp = operand.getDefiningOp();
       PatternRewriter::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(op);
-      ttg::LocalAllocOp allocOp = rewriter.create<ttg::LocalAllocOp>(
-          op->getLoc(), getPlainMemDesc(tensorTy));
-      rewriter.create<ttg::LocalStoreOp>(op->getLoc(), operand, allocOp);
-      rewriter.setInsertionPointAfter(op);
-      rewriter.create<ttg::LocalDeallocOp>(op->getLoc(), allocOp);
+
+      ttg::LocalAllocOp allocOp;
+      auto forOp = dyn_cast<scf::ForOp>(op->getParentOp());
+      if (forOp && isSingleForLoop(forOp) && isFromIterArg(operand, forOp)) {
+        rewriter.setInsertionPoint(forOp);
+        allocOp = rewriter.create<ttg::LocalAllocOp>(op->getLoc(),
+                                                     getPlainMemDesc(tensorTy));
+
+        auto blockArg = dyn_cast<BlockArgument>(operand);
+        auto iterArgIdx = blockArg.getArgNumber() - forOp.getNumInductionVars();
+        rewriter.create<ttg::LocalStoreOp>(
+            op->getLoc(), forOp.getInitArgs()[iterArgIdx], allocOp);
+        rewriter.setInsertionPointAfter(forOp);
+        rewriter.create<ttg::LocalDeallocOp>(op->getLoc(), allocOp);
+      } else {
+        rewriter.setInsertionPoint(op);
+        allocOp = rewriter.create<ttg::LocalAllocOp>(op->getLoc(),
+                                                     getPlainMemDesc(tensorTy));
+        rewriter.create<ttg::LocalStoreOp>(op->getLoc(), operand, allocOp);
+        rewriter.setInsertionPointAfter(op);
+        rewriter.create<ttg::LocalDeallocOp>(op->getLoc(), allocOp);
+      }
+
       newOperands.push_back(allocOp);
       mapper.map(operand, allocOp);
       hasConversion = true;
+      needSync = true;
     } else {
+      if (isa<ttg::MemDescType>(operand.getType())) {
+        needSync = true;
+      }
       newOperands.push_back(operand);
     }
   }
-  if (hasConversion) {
+  if (needSync) {
     PatternRewriter::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(op);
     rewriter.create<NVVM::Barrier0Op>(op.getLoc());

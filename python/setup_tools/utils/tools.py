@@ -272,9 +272,9 @@ class OfflineBuildManager:
         else:
             shutil.copy(src_path, dst_path)
 
-    def handle_flagtree_hock(self, kargs):
-        if 'post_hock' in kargs and kargs['post_hock']:
-            kargs['post_hock'](self.src)
+    def handle_flagtree_hook(self, kargs):
+        if 'post_hook' in kargs and kargs['post_hook']:
+            kargs['post_hook'](self.src)
 
     def handle_triton_origin_toolkits(self):
 
@@ -343,7 +343,7 @@ class OfflineBuildManager:
         self.validate_offline_build(self.src, required, kargs=kargs)
         print(f"[INFO] Building in offline mode using directory: {self.src}")
         self.copy_to_flagtree_project(kargs)
-        self.handle_flagtree_hock(kargs)
+        self.handle_flagtree_hook(kargs)
         if is_skip_cuda_toolkits():
             print(f"[INFO] Skipping CUDA toolkits for {flagtree_configs.flagtree_backend} backend in offline build.")
         else:
