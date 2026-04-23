@@ -10,7 +10,7 @@ if (NOT FLAGTREE_PLUGIN)
     NAMES
       mthreadsTritonPluginLib.so
     PATHS
-      ${MTHREADS_PLUGIN_DIR}
+      ${PLUGIN_DIR}
     REQUIRED
   )
   list(APPEND mthreads_plugin_link_libs ${mthreadsTritonPluginLib})
