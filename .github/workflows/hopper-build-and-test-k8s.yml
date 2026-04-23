@@ -16,7 +16,7 @@ jobs:
   hopper-build-and-test-k8s:
     runs-on: [flagcicd-flagtree-nvidia]
     container:
-      image: harbor.baai.ac.cn/flagtree/flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
+      image: localhost:5000/flagtree:flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
       options: --gpus all --privileged --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
       volumes:
         - /mnt/airs-business/cicd:/mnt/airs-business/cicd
