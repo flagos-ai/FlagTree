@@ -7,7 +7,7 @@
 
 ### 1. Build and run environment
 
-#### 1.1 Use the image (Triton 3.6)
+#### 1.1 Use the image (Triton 3.6, GCU300/GCU400)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -89,7 +89,7 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 
 ### 3. Testing and validation
 
-Refer to [Tests of enflame-gcu400 backend (Triton 3.6)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/enflame-gcu400-build-and-test.yml), [Tests of enflame-gcu300 backend (Triton 3.6)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/enflame-gcu300-build-and-test.yml)
+Refer to [Tests of enflame3.6 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/enflame-gcu400-build-and-test.yml)
 
 ---
 
@@ -100,7 +100,7 @@ Refer to [Tests of enflame-gcu400 backend (Triton 3.6)](https://github.com/flago
 
 ### 1. Build and run environment
 
-#### 1.1 Use the image (Triton 3.5)
+#### 1.1 Use the image (Triton 3.5, GCU300/GCU400)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -182,7 +182,7 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 
 ### 3. Testing and validation
 
-Refer to [Tests of enflame-gcu400 backend (Triton 3.5)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu400-build-and-test.yml), [Tests of enflame-gcu300 backend (Triton 3.5)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu300-build-and-test.yml)
+Refer to [Tests of enflame3.5 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu400-build-and-test.yml)
 
 ---
 
@@ -193,7 +193,7 @@ Refer to [Tests of enflame-gcu400 backend (Triton 3.5)](https://github.com/flago
 
 ### 1. Build and run environment
 
-#### 1.1 Use the image (Triton 3.3)
+#### 1.1 Use the image (Triton 3.3, GCU300)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -275,4 +275,4 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v
 
 ### 3. Testing and validation
 
-Refer to [Tests of enflame-gcu300 backend (Triton 3.3)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/.github/workflows/enflame-gcu300-3.3-build-and-test.yml)
+Refer to [Tests of enflame3.3 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/.github/workflows/enflame-gcu300-3.3-build-and-test.yml)

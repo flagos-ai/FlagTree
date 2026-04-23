@@ -1,13 +1,13 @@
 [中文版|[English](./install_enflame.md)]
 
-## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/enflame/)（triton 3.6）
+## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/enflame/) (Triton 3.6)
 
 - 对应的 Triton 版本为 3.6，基于 x64 平台
 - 可用于 GCU300/GCU400
 
 ### 1. 构建及运行环境
 
-#### 1.1 使用镜像（triton 3.6）
+#### 1.1 使用镜像 (Triton 3.6, GCU300/GCU400)
 
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
@@ -89,18 +89,18 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 
 ### 3. 测试验证
 
-参考 [Tests of enflame-gcu400 backend (triton 3.6)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/enflame-gcu400-build-and-test.yml)、[Tests of enflame-gcu300 backend (triton 3.6)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/enflame-gcu300-build-and-test.yml)
+参考 [Tests of enflame3.6 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/enflame-gcu400-build-and-test.yml)
 
 ---
 
-## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)（triton 3.5）
+## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) (Triton 3.5)
 
 - 对应的 Triton 版本为 3.5，基于 x64 平台
 - 可用于 GCU300/GCU400
 
 ### 1. 构建及运行环境
 
-#### 1.1 使用镜像（triton 3.5）
+#### 1.1 使用镜像 (Triton 3.5, GCU300/GCU400)
 
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
@@ -182,18 +182,18 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 
 ### 3. 测试验证
 
-参考 [Tests of enflame-gcu400 backend (triton 3.5)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu400-build-and-test.yml)、[Tests of enflame-gcu300 backend (triton 3.5)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu300-build-and-test.yml)
+参考 [Tests of enflame3.5 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu400-build-and-test.yml)
 
 ---
 
-## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)（triton 3.3）
+## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) (Triton 3.3)
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
 - 可用于 GCU300
 
 ### 1. 构建及运行环境
 
-#### 1.1 使用镜像（triton 3.3）
+#### 1.1 使用镜像 (Triton 3.6, GCU300)
 
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
@@ -275,4 +275,4 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v
 
 ### 3. 测试验证
 
-参考 [Tests of enflame-gcu300 backend (triton 3.3)](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/.github/workflows/enflame-gcu300-3.3-build-and-test.yml)
+参考 [Tests of enflame3.3 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/.github/workflows/enflame-gcu300-3.3-build-and-test.yml)
