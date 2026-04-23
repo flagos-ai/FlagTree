@@ -8,7 +8,7 @@ if (NOT FLAGTREE_PLUGIN)
   include_directories(${CMAKE_CURRENT_BINARY_DIR}/plugin/include)
   find_library(mthreadsTritonPluginLib
     NAMES
-      mthreadsTritonPluginLib.so
+      mthreadsTritonPlugin.so
     PATHS
       ${PLUGIN_DIR}
     REQUIRED
