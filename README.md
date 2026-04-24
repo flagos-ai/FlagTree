@@ -76,7 +76,6 @@ For detailed design, APIs, and examples, please refer to the [TLE Wiki](https://
 * 2026/03/13 Upgraded the [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) backend to Triton 3.5 and added CI/CD.
 * 2026/01/23 Added the [sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/) backend integration (based on Triton 3.4) and added CI/CD.
 * 2026/01/08 Added wiki pages for new features [HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS), [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE), [TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw).
-* 2025/12/24 Support pull and install [Wheel](/README.md#source-free-installation).
 * 2025/12/08 Added the [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) backend integration (based on Triton 3.3) and added CI/CD.
 * 2025/11/26 Added FlagTree_Backend_Specialization Unified Design Document [FlagTree_Backend_Specialization](/documents/decoupling/).
 * 2025/10/28 Added support for the offline build with pre-downloaded dependency packages, improving the build experience in restricted environments. See the usage instructions below.
@@ -124,7 +123,7 @@ General building and installation procedure (Recommended for environments with g
 # Set FLAGTREE_BACKEND using the backend name from the table above
 export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia/amd/triton-shared
 
-# For Triton 3.1/3.2/3.3 (branch: main, triton_v3.2.x, triton_v3.3.x):
+# For Triton 3.1/3.2/3.3 (branch: main, triton_v3.2.x, triton_v3.3.x)
 cd python
 python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
 
