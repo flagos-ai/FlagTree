@@ -1,0 +1,28 @@
+# FlagTree build spike - measure nvidia backend build time and output size
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    python3 python3-pip python3-dev \
+    build-essential cmake ninja-build git \
+    zlib1g zlib1g-dev libxml2 libxml2-dev \
+    wget curl ca-certificates \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --upgrade pip setuptools wheel
+
+COPY . /workspace/FlagTree
+WORKDIR /workspace/FlagTree
+
+RUN pip3 install -r python/requirements.txt
+
+# Build nvidia backend (default when FLAGTREE_BACKEND is unset)
+WORKDIR /workspace/FlagTree/python
+RUN echo "=== Build start: $(date) ===" && \
+    MAX_JOBS=4 pip3 install . --no-build-isolation -v 2>&1 | tail -200 && \
+    echo "=== Build end: $(date) ===" && \
+    pip3 show flagtree && \
+    find /usr/local/lib/python3.10/dist-packages/triton -type f | head -20 && \
+    du -sh /usr/local/lib/python3.10/dist-packages/triton 2>/dev/null || \
+    du -sh /usr/local/lib/python3*/dist-packages/triton 2>/dev/null
