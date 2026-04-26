@@ -1,9 +1,6 @@
 # Two-stage RPM build: produce the wheel on Ubuntu, assemble the RPM on Fedora.
-#
-# Build:
-#   docker build -f packaging/rpm/helpers/Dockerfile.rpm \
-#     --target rpm-output \
-#     -t flagtree-rpm-nvidia .
+# COPY-narrowing in wheel-builder mirrors Dockerfile.deb — packaging-only
+# edits do NOT invalidate the wheel cache.
 
 # ---------- Stage 1: build the wheel (same as DEB pipeline) ----------
 FROM ubuntu:22.04 AS wheel-builder
@@ -21,7 +18,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel build
 
 WORKDIR /src
-COPY . /src
+COPY python /src/python
+COPY third_party /src/third_party
+COPY include /src/include
+COPY lib /src/lib
+COPY cmake /src/cmake
+COPY bin /src/bin
+COPY CMakeLists.txt pyproject.toml LICENSE README.md /src/
 RUN pip3 install --no-cache-dir -r python/requirements.txt
 
 WORKDIR /src/python

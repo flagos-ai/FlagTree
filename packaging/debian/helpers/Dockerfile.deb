@@ -11,17 +11,19 @@
 #     --target deb-output \
 #     -t flagtree-deb-nvidia .
 #
-# FLAGTREE_BACKEND notes:
-#   "nvidia" is FlagTree's *default* backend; setup_tools/utils/ contains
-#   default.py but no nvidia.py. Setting FLAGTREE_BACKEND=nvidia makes
-#   setup_helper.py try to import the missing module and silently produce
-#   an empty `module` object.
+# COPY-narrowing: the wheel-builder COPYs only the paths the build
+# needs (python/, third_party/, include/, lib/, cmake/, bin/,
+# CMakeLists.txt, *.toml, LICENSE, README*). It deliberately does NOT
+# copy packaging/, docs/, .github/, dockerfiles/, etc. — that way edits
+# to debian/control or rpm/specs/ don't invalidate the 36-min wheel
+# build cache. The deb-assembler stage gets packaging/debian via its
+# own narrow COPY.
 #
-#   Because `ARG FLAGTREE_BACKEND` automatically becomes an env var inside
-#   RUN under BuildKit, we explicitly `unset FLAGTREE_BACKEND` before
-#   running pip wheel for the nvidia variant — otherwise setup.py picks
-#   up the value and breaks. For real non-default backends, re-export
-#   FLAGTREE_BACKEND inside the RUN (currently only nvidia is wired up).
+# FLAGTREE_BACKEND notes: FlagTree's "default" backend IS nvidia (no
+# nvidia.py module exists in setup_tools/utils/). Setting
+# FLAGTREE_BACKEND=nvidia would make setup_helper.py try to import a
+# missing module and silently produce an empty stub. We unset the env
+# var explicitly in the wheel-build RUN.
 
 # ---------- Stage 1: build the wheel ----------
 FROM ubuntu:22.04 AS wheel-builder
@@ -39,7 +41,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel build
 
 WORKDIR /src
-COPY . /src
+# Narrow COPY: only the paths the wheel build actually needs.
+COPY python /src/python
+COPY third_party /src/third_party
+COPY include /src/include
+COPY lib /src/lib
+COPY cmake /src/cmake
+COPY bin /src/bin
+COPY CMakeLists.txt pyproject.toml LICENSE README.md /src/
 
 RUN pip3 install --no-cache-dir -r python/requirements.txt
 

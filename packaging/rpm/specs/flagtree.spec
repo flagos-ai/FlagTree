@@ -11,8 +11,8 @@
 #   2. rpmbuild -ba flagtree.spec --define "wheel_dir /wheels"
 #                                 --define "flagtree_backend nvidia"
 
-%define flagtree_backend %{?flagtree_backend}%{!?flagtree_backend:nvidia}
-%define wheel_dir %{?wheel_dir}%{!?wheel_dir:%{_sourcedir}}
+%{!?flagtree_backend: %global flagtree_backend nvidia}
+%{!?wheel_dir: %global wheel_dir %{_sourcedir}}
 
 # Disable byte-compile failures for the bundled vendored Python files.
 # Triton ships some files that aren't expected to compile under all interpreters.
