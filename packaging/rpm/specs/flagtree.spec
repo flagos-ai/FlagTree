@@ -97,7 +97,6 @@ rm -f "$PYDIR"/flagtree-*.dist-info/RECORD
 
 %files
 %{python3_sitearch}/triton
-%{python3_sitearch}/triton_kernels
 %{python3_sitearch}/flagtree-*.dist-info
 %{_bindir}/proton
 %{_bindir}/proton-viewer
