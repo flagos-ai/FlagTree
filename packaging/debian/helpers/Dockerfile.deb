@@ -2,26 +2,32 @@
 #
 # Two-stage:
 #   1. wheel-builder: heavy stage with CMake/Ninja/LLVM that compiles the
-#      flagtree wheel from source. Produces dist/flagtree-*.whl.
+#      flagtree wheel from source. Produces /wheels/flagtree-*.whl.
 #   2. deb-assembler: light stage that runs dpkg-buildpackage to wrap the
 #      pre-built wheel into a .deb. The deb stage does NOT recompile.
 #
 # Build:
 #   docker build -f packaging/debian/helpers/Dockerfile.deb \
-#     --build-arg FLAGTREE_BACKEND=nvidia \
 #     --target deb-output \
 #     -t flagtree-deb-nvidia .
-#   docker create --name x flagtree-deb-nvidia
-#   docker cp x:/output ./output && docker rm x
-
-ARG FLAGTREE_BACKEND=nvidia
+#
+# FLAGTREE_BACKEND notes:
+#   "nvidia" is FlagTree's *default* backend; setup_tools/utils/ contains
+#   default.py but no nvidia.py. Setting FLAGTREE_BACKEND=nvidia makes
+#   setup_helper.py try to import the missing module and silently produce
+#   an empty `module` object.
+#
+#   Because `ARG FLAGTREE_BACKEND` automatically becomes an env var inside
+#   RUN under BuildKit, we explicitly `unset FLAGTREE_BACKEND` before
+#   running pip wheel for the nvidia variant — otherwise setup.py picks
+#   up the value and breaks. For real non-default backends, re-export
+#   FLAGTREE_BACKEND inside the RUN (currently only nvidia is wired up).
 
 # ---------- Stage 1: build the wheel ----------
 FROM ubuntu:22.04 AS wheel-builder
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ARG FLAGTREE_BACKEND
 ENV DEBIAN_FRONTEND=noninteractive
-ENV FLAGTREE_BACKEND=${FLAGTREE_BACKEND}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-dev \
@@ -37,18 +43,19 @@ COPY . /src
 
 RUN pip3 install --no-cache-dir -r python/requirements.txt
 
-# Build wheel with MAX_JOBS capped to reduce peak RAM. The full nvidia build
-# takes ~36 min wall on a 4-core builder.
+# Build wheel with MAX_JOBS capped to reduce peak RAM. Spike timing on a
+# 4-core builder: ~36 min wall.
 WORKDIR /src/python
-RUN MAX_JOBS=4 python3 -m pip wheel . --no-build-isolation --no-deps -w /wheels -v 2>&1 | tail -200 \
-    && ls -lh /wheels/
+RUN unset FLAGTREE_BACKEND && \
+    MAX_JOBS=4 python3 -m pip wheel . --no-build-isolation --no-deps -w /wheels -v && \
+    ls -lh /wheels/ && \
+    test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)"
 
 # ---------- Stage 2: assemble the .deb ----------
 FROM ubuntu:22.04 AS deb-assembler
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ARG FLAGTREE_BACKEND
 ENV DEBIAN_FRONTEND=noninteractive
-ENV FLAGTREE_BACKEND=${FLAGTREE_BACKEND}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         debhelper dh-python python3-all python3-pip python3-setuptools \
@@ -59,11 +66,11 @@ WORKDIR /build
 COPY packaging/debian /build/debian
 COPY --from=wheel-builder /wheels /build/dist
 
-# debian/source/format = "3.0 (native)" so dpkg-buildpackage doesn't need
-# a separate orig.tar.gz. We point WHEEL_DIR at the staged wheels.
+# debian/source/format = "3.0 (native)" -> no orig.tar.gz needed.
 ENV WHEEL_DIR=/build/dist
 
-RUN dpkg-buildpackage -us -uc -b -d 2>&1 | tail -100
+RUN dpkg-buildpackage -us -uc -b -d && \
+    ls -lh /python3-flagtree-*.deb
 
 # ---------- Stage 3: just the .deb output ----------
 FROM scratch AS deb-output

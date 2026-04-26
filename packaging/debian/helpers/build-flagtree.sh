@@ -4,7 +4,7 @@
 # Usage:
 #   ./packaging/debian/helpers/build-flagtree.sh [backend]
 #
-# Output: ./dist/python3-flagtree-<backend>_*.deb
+# Output: ./dist/output/python3-flagtree-<backend>_*.deb
 #
 # Run from the FlagTree repo root (the one containing python/setup.py).
 
@@ -16,7 +16,9 @@ case "$BACKEND" in
     nvidia)
         ;;
     mthreads|metax|amd|iluvatar|cambricon|hcu|xpu)
-        echo "WARN: backend '$BACKEND' has not been validated for packaging yet."
+        echo "ERROR: backend '$BACKEND' is not yet wired up in Dockerfile.deb"
+        echo "       (only 'nvidia' is supported in this revision)"
+        exit 1
         ;;
     *)
         echo "ERROR: unknown backend '$BACKEND'"
@@ -29,13 +31,10 @@ cd "$REPO_ROOT"
 
 mkdir -p dist
 
-IMG="flagtree-deb-${BACKEND}:local"
-
-echo ">>> Building wheel + .deb for backend=${BACKEND} (image: ${IMG})"
+echo ">>> Building wheel + .deb for backend=${BACKEND}"
 docker build \
     --network=host \
     -f packaging/debian/helpers/Dockerfile.deb \
-    --build-arg FLAGTREE_BACKEND="${BACKEND}" \
     --target deb-output \
     --output "type=local,dest=${REPO_ROOT}/dist" \
     .

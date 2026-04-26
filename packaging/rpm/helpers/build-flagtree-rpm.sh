@@ -8,18 +8,23 @@ set -euo pipefail
 
 BACKEND="${1:-nvidia}"
 
+case "$BACKEND" in
+    nvidia) ;;
+    *)
+        echo "ERROR: only 'nvidia' is supported in this revision (got '$BACKEND')"
+        exit 1
+        ;;
+esac
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 mkdir -p dist-rpm
 
-IMG="flagtree-rpm-${BACKEND}:local"
-
-echo ">>> Building wheel + .rpm for backend=${BACKEND} (image: ${IMG})"
+echo ">>> Building wheel + .rpm for backend=${BACKEND}"
 docker build \
     --network=host \
     -f packaging/rpm/helpers/Dockerfile.rpm \
-    --build-arg FLAGTREE_BACKEND="${BACKEND}" \
     --target rpm-output \
     --output "type=local,dest=${REPO_ROOT}/dist-rpm" \
     .
