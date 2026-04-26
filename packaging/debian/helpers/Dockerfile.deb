@@ -48,6 +48,8 @@ COPY include /src/include
 COPY lib /src/lib
 COPY cmake /src/cmake
 COPY bin /src/bin
+COPY test /src/test
+COPY unittest /src/unittest
 COPY CMakeLists.txt pyproject.toml LICENSE README.md /src/
 
 RUN pip3 install --no-cache-dir -r python/requirements.txt
