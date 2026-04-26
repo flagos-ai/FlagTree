@@ -39,6 +39,7 @@ BuildRequires:  python3-wheel
 
 Requires:       python3
 Requires:       python3-filelock
+Requires:       python3-setuptools
 
 Provides:       python3-flagtree
 Provides:       python3-triton

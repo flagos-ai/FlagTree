@@ -24,7 +24,8 @@ Architecture: amd64
 Depends: ${python3:Depends},
          ${shlibs:Depends},
          ${misc:Depends},
-         python3-filelock
+         python3-filelock,
+         python3-setuptools
 Recommends: python3-numpy, python3-torch
 Provides: python3-flagtree, python3-triton
 Conflicts: python3-triton, python3-flagtree-iluvatar, python3-flagtree-mthreads,
