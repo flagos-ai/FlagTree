@@ -1,4 +1,4 @@
-name: NV-Build-And-Test
+name: flagcicd-NV-Build-And-Test
 
 on:
   schedule:
