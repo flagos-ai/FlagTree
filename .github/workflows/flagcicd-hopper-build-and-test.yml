@@ -13,11 +13,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  hopper-build-and-test-k8s:
+  hopper-build-and-test:
     runs-on: [flagcicd-flagtree-nvidia]
     container:
       image: harbor.baai.ac.cn/flagtree/flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
-      options: --net=host --uts=host --ipc=host --privileged  --ulimit stack=67108864 --ulimit memlock=-1 --security-opt seccomp=unconfined --gpus=all
+      options: --uts=host --ipc=host --privileged  --ulimit stack=67108864 --ulimit memlock=-1 --security-opt seccomp=unconfined --gpus=all
       volumes:
         - /mnt/airs-business/cicd:/mnt/airs-business/cicd
 
