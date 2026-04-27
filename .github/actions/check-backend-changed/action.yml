@@ -28,17 +28,17 @@ runs:
         if [ "${{ github.event_name }}" == "pull_request" ]; then
           # Fetch the target (base) branch of the PR to ensure the local Git environment has the reference
           git fetch origin ${{ github.base_ref }}
-          
+
           # Use three-dot syntax (...) to get the files changed strictly by this PR.
           # This compares HEAD against the common ancestor of the base branch and the PR branch,
           # ignoring any new commits made to the base branch after the PR was created.
           FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
         else
           # Handle 'push' events (or other events where 'base_ref' isn't applicable)
-          # Check if the 'before' SHA is all zeros, which indicates a newly created/pushed branch 
+          # Check if the 'before' SHA is all zeros, which indicates a newly created/pushed branch
           # or a force push where the previous history is missing.
           if [ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]; then
-            # Fallback: Try comparing with the immediate previous commit (HEAD~1). 
+            # Fallback: Try comparing with the immediate previous commit (HEAD~1).
             # If this fails (e.g., it's the very first commit of the entire repo), just list all files in the tree.
             FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-tree -r --name-only HEAD)
           else
