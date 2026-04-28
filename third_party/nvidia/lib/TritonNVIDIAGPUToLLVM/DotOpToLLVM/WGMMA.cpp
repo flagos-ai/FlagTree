@@ -248,6 +248,9 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
 
   auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
 #ifdef __TLE__
+  // TLE kernels often carry extra live values around WGMMA regions. Keep all
+  // ordinary register prep that feeds the first WGMMA outside the fence-to-MMA
+  // window so ptxas sees a clean WGMMA pipeline stage.
   // Materialize the initial C accumulator before wgmma.fence.  Otherwise LLVM
   // may leave struct packing/copies between wgmma.fence and the first
   // wgmma.mma_async, which ptxas treats as accumulator definitions inside the
@@ -276,6 +279,41 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
       initialAccumulators.push_back(d);
       initialUseC.push_back(useC);
     }
+  }
+
+  // Keep shared-memory descriptors near their WGMMA use. Treating them as
+  // ordinary pure integer SSA lets LLVM hoist them across the full dot region,
+  // which can make ptxas spill descriptor registers under high pressure.
+  auto buildRegisterA = [&](int m, int k, Operation *insertBefore) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(insertBefore);
+    auto aDotOpEnc = cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
+    assert(aDotOpEnc.getKWidth() == 32 / aTensorTy.getElementTypeBitWidth());
+
+    unsigned regASize = (instrMNK[0] * instrMNK[2]) / 32;
+    llvm::SmallVector<Value> regA =
+        loadReg(rewriter, loc, structA, (m * numRepK + k) * regASize,
+                regASize, insertBefore);
+    auto regATy = LLVM::LLVMStructType::getLiteral(
+        rewriter.getContext(), SmallVector<Type>(regA.size(), regA[0].getType()));
+    return packLLElements(loc, typeConverter, regA, rewriter, regATy);
+  };
+
+  Value firstA;
+  Value firstB;
+  if (numRepM > 0 && numRepN > 0 && numRepK > 0) {
+    // The first WGMMA reuses operands materialized before the fence; later
+    // descriptors are still localized at their individual WGMMA use sites.
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(op);
+    if (aInShared) {
+      firstA = aLoader.smemLoad(/*a=*/0, /*b=*/0, rewriter, loc,
+                                /*localizeDescriptor=*/true);
+    } else {
+      firstA = buildRegisterA(/*m=*/0, /*k=*/0, op);
+    }
+    firstB = bLoader.smemLoad(/*a=*/0, /*b=*/0, rewriter, loc,
+                              /*localizeDescriptor=*/true);
   }
 
   Operation *startSequence = NVVM::WgmmaFenceAlignedOp::create(rewriter, loc);
@@ -312,9 +350,24 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
       Value partialAcc;
       for (int k = 0; k < numRepK; ++k) {
         Value a;
+#ifdef __TLE__
+        bool isFirstWgmma = m == 0 && n == 0 && k == 0;
+#endif
         if (aInShared) {
+#ifdef __TLE__
+          a = isFirstWgmma
+                  ? firstA
+                  : aLoader.smemLoad(m * mmaSizeM, k * mmaSizeK, rewriter, loc,
+                                     /*localizeDescriptor=*/true);
+#else
           a = aLoader.smemLoad(m * mmaSizeM, k * mmaSizeK, rewriter, loc);
+#endif
         } else {
+#ifdef __TLE__
+          if (isFirstWgmma) {
+            a = firstA;
+          } else {
+#endif
           auto aDotOpEnc =
               cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
           assert(aDotOpEnc.getKWidth() ==
@@ -328,8 +381,18 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
               rewriter.getContext(),
               SmallVector<Type>(regA.size(), regA[0].getType()));
           a = packLLElements(loc, typeConverter, regA, rewriter, regATy);
+#ifdef __TLE__
+          }
+#endif
         }
+#ifdef __TLE__
+        auto b = isFirstWgmma
+                     ? firstB
+                     : bLoader.smemLoad(k * mmaSizeK, n * mmaSizeN, rewriter,
+                                        loc, /*localizeDescriptor=*/true);
+#else
         auto b = bLoader.smemLoad(k * mmaSizeK, n * mmaSizeN, rewriter, loc);
+#endif
         numLowPrecisionAcc += K;
         // If using native accumulation would cause use to do more low precion
         // accumulation than allowed do a separate allocation.

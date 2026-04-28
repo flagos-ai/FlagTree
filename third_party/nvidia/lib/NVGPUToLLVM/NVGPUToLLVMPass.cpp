@@ -351,9 +351,27 @@ public:
 
   LogicalResult matchAndRewrite(ttn::WGMMAOp op,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    // Earlier TLE lowering moves accumulator and first-operand prep before the
+    // WGMMA fence. Fuse an adjacent fence into the first MMA asm so later LLVM
+    // codegen cannot reinsert tied-operand moves in that protected window.
+    std::string ptxAsm = getPtxAsm(op);
+    Operation *prev = op->getPrevNode();
+    if (prev && isa<NVVM::WgmmaFenceAlignedOp>(prev)) {
+      // Keep the WGMMA fence in the same inline asm block as the first
+      // wgmma.mma_async. A separate fence op lets later LLVM codegen insert
+      // tied-operand register moves between the fence and the WGMMA asm, which
+      // ptxas treats as accumulator definitions inside the WGMMA pipeline.
+      ptxAsm = "wgmma.fence.sync.aligned;\n\t" + ptxAsm;
+      rewriter.eraseOp(prev);
+    }
+    return rewriteAsPtxAsm(op, rewriter, ptxAsm, getOperandsAndConstraints(op),
+                           getOutputConstraints(op));
+#else
     return rewriteAsPtxAsm(op, rewriter, getPtxAsm(op),
                            getOperandsAndConstraints(op),
                            getOutputConstraints(op));
+#endif
   }
 
   std::vector<std::string> getOutputConstraints(ttn::WGMMAOp op) const {
