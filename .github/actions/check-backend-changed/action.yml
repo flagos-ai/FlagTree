@@ -26,13 +26,7 @@ runs:
 
         # Check if the workflow is triggered by a Pull Request event
         if [ "${{ github.event_name }}" == "pull_request" ]; then
-          # Fetch the target (base) branch of the PR to ensure the local Git environment has the reference
-          git fetch origin ${{ github.base_ref }}
-
-          # Use three-dot syntax (...) to get the files changed strictly by this PR.
-          # This compares HEAD against the common ancestor of the base branch and the PR branch,
-          # ignoring any new commits made to the base branch after the PR was created.
-          FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }})
         else
           # Handle 'push' events (or other events where 'base_ref' isn't applicable)
           # Check if the 'before' SHA is all zeros, which indicates a newly created/pushed branch
