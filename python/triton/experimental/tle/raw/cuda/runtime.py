@@ -27,6 +27,7 @@ class CUDAJITFunction(object):
                 "cuda",
                 "--cuda-device-only",
                 "-emit-llvm",
+                "-O2",
                 "-S",
                 "-",
                 "-o",

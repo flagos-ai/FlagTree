@@ -4,12 +4,20 @@ from triton.experimental.tle.language.gpu import buffered_tensor
 
 
 @builtin
-def call(func, outputs, inputs, _semantic=None):
+def call(func, args, _semantic=None):
     context = _semantic.builder.get_context()
     llvm = func.make_llvm(context)
-    dsl_region_op = _semantic.builder.create_tle_raw_region_by_llvm_func(llvm, [output.handle for output in outputs],
-                                                                         [input.handle for input in inputs])
-    tensors = [tensor(result, output.type) for result, output in zip(dsl_region_op.get_results(), outputs)]
+    handles = [arg.handle for arg in args]
+
+    alias_indices = _semantic.builder.compute_alias_operand_indices(llvm, handles)
+    aliased_args = [args[idx] for idx in alias_indices]
+
+    dsl_region_op = _semantic.builder.create_tle_raw_region_by_llvm_func(llvm, handles, alias_indices)
+    results = dsl_region_op.get_results()
+    if len(results) == 0:
+        return None
+
+    tensors = [tensor(result, aliased.type) for result, aliased in zip(results, aliased_args)]
     if len(tensors) == 1:
         return tensors[0]
     else:
@@ -17,14 +25,22 @@ def call(func, outputs, inputs, _semantic=None):
 
 
 @builtin
-def call_smem(func, outputs, inputs, _semantic=None):
+def call_smem(func, args, _semantic=None):
     context = _semantic.builder.get_context()
     llvm = func.make_llvm(context)
-    dsl_region_op = _semantic.builder.create_tle_raw_region_by_llvm_func(llvm, [output.handle for output in outputs],
-                                                                         [input.handle for input in inputs])
+    handles = [arg.handle for arg in args]
+
+    alias_indices = _semantic.builder.compute_alias_operand_indices(llvm, handles)
+    aliased_args = [args[idx] for idx in alias_indices]
+
+    dsl_region_op = _semantic.builder.create_tle_raw_region_by_llvm_func(llvm, handles, alias_indices)
+    results = dsl_region_op.get_results()
+    if len(results) == 0:
+        return None
+
     buffer_tensors = [
-        buffered_tensor(result, output.dtype, output.shape, output.type.storage, output.type.layout,
-                        output.type.semantic) for result, output in zip(dsl_region_op.get_results(), outputs)
+        buffered_tensor(result, aliased.dtype, aliased.shape, aliased.type.storage, aliased.type.layout,
+                        aliased.type.semantic) for result, aliased in zip(results, aliased_args)
     ]
     if len(buffer_tensors) == 1:
         return buffer_tensors[0]

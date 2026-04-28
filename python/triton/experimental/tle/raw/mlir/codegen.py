@@ -91,28 +91,36 @@ class MLIRCodeGenerator(ast.NodeVisitor):
         with self.context, ir.Location.file(self.absfilename, node.lineno, node.col_offset):
             operand_tys: List[ir.Type] = []
             output_tys: List[ir.Type] = []
-            output_indices: List[int] = []
             for idx, arg in enumerate(node.args.args):
-                if arg.annotation.value.id == "InOut":
-                    ty: ir.Type = ir.Type.parse(arg.annotation.slice.slice.value)
-                    operand_tys += [ty]
-                    output_tys += [ty]
-                    output_indices += [idx]
-                elif arg.annotation.value.id == "Input":
-                    ty: ir.Type = ir.Type.parse(arg.annotation.slice.slice.value)
-                    operand_tys += [ty]
-                else:
-                    raise NotImplementedError(f"unsupported argument annotation: {ast.dump(arg.annotation)}")
+                ty: ir.Type = ir.Type.parse(arg.annotation.slice.slice.value)
+                operand_tys += [ty]
+            if node.returns is not None:
+                ret_ann = node.returns
+                if isinstance(ret_ann, ast.Subscript):
+                    output_tys += [ir.Type.parse(ret_ann.slice.value)]
+                elif isinstance(ret_ann, ast.Tuple):
+                    output_tys += [ir.Type.parse(elt.slice.value) for elt in ret_ann.elts]
             fnty: ir.FunctionType = ir.FunctionType.get(operand_tys, output_tys)
             fn: func.FuncOp = func.FuncOp(node.name, fnty, visibility="public")
             block: ir.Block = fn.add_entry_block()
             for k, arg in zip(map(lambda arg: arg.arg, node.args.args), block.arguments):
                 self.lscope[k] = arg
+            self._return_values = None
             with ir.InsertionPoint(block):
                 for stmt in node.body:
                     self.visit(stmt)
-                func.return_([block.arguments[idx] for idx in output_indices])
+                func.return_(self._return_values or [])
             return fn
+
+    @override
+    def visit_Return(self, node: ast.Return) -> None:
+        ret_val = node.value
+        if ret_val is None:
+            self._return_values = []
+        elif isinstance(ret_val, ast.Tuple):
+            self._return_values = [self.visit(elt) for elt in ret_val.elts]
+        else:
+            self._return_values = [self.visit(ret_val)]
 
     @override
     def visit_List(self, node: ast.List) -> List[Any]:

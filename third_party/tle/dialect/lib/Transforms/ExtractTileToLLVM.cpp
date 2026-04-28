@@ -7,11 +7,11 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
+#include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "llvm/Support/raw_ostream.h"
-#include <atomic>
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -19,8 +19,6 @@ using namespace mlir::triton;
 namespace {
 namespace ttg = mlir::triton::gpu;
 using namespace mlir::triton::tle;
-
-static std::atomic<uint64_t> smemExtractTileGlobalId{0};
 
 static SmallVector<int64_t> getTileShape(ExtractTileOp op) {
   SmallVector<int64_t> ts;
@@ -125,7 +123,8 @@ lowerExtractTileStatic(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
 static LogicalResult
 lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
                         ConversionPatternRewriter &rewriter,
-                        const LLVMTypeConverter *typeConverter) {
+                        const LLVMTypeConverter *typeConverter,
+                        const TargetInfoBase &targetInfo) {
 
   Location loc = op->getLoc();
   auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
@@ -143,10 +142,6 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   if (!llvmElemTy)
     return op.emitError("SMEM path: failed to convert element type");
   int64_t elemBytes = llvmElemTy.getIntOrFloatBitWidth() / 8;
-
-  int64_t totalDstElems = 1;
-  for (auto dim : dstShape)
-    totalDstElems *= dim;
 
   // Offsets for thread 0 (compile-time constants, wrapping semantics)
   auto srcOffsets = mlir::emitOffsetForLayout(srcTy.getEncoding(), srcTy);
@@ -179,27 +174,10 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   // ------------------------------------------------------------------
   // Step 1: Allocate SMEM buffer
   // ------------------------------------------------------------------
-  auto smemPtrTy = LLVM::LLVMPointerType::get(ctx, 3);
-  auto smemArrTy = LLVM::LLVMArrayType::get(
-      i8Ty, static_cast<uint64_t>(totalDstElems * elemBytes));
-  uint64_t smemId =
-      smemExtractTileGlobalId.fetch_add(1, std::memory_order_relaxed);
-  std::string smemName = "__smem_extract_tile_" + std::to_string(smemId);
-  auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(moduleOp.getBody());
-    rewriter.create<LLVM::GlobalOp>(loc, smemArrTy, false,
-                                    LLVM::Linkage::Internal, smemName,
-                                    Attribute{}, 16, 3);
-  }
-  Value smemBufArr =
-      rewriter.create<LLVM::AddressOfOp>(loc, smemPtrTy, smemName);
-  Value zero32 = rewriter.create<LLVM::ConstantOp>(
-      loc, i32Ty, rewriter.getI32IntegerAttr(0));
-  Value smemBase = rewriter.create<LLVM::GEPOp>(
-      loc, smemPtrTy, smemArrTy, smemBufArr, ValueRange{zero32, zero32},
-      LLVM::GEPNoWrapFlags::inbounds);
+  auto smemPtrTy =
+      LLVM::LLVMPointerType::get(ctx, targetInfo.getSharedAddressSpace());
+  Value smemBase =
+      LLVM::getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
 
   // ------------------------------------------------------------------
   // Step 2: Runtime compute tileStart[d] and tileEnd[d] (global coords)
@@ -381,7 +359,11 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
 // Dispatcher (unchanged)
 // ============================================================================
 struct ExtractTileOpConversion : public ConvertOpToLLVMPattern<ExtractTileOp> {
-  using ConvertOpToLLVMPattern<ExtractTileOp>::ConvertOpToLLVMPattern;
+  ExtractTileOpConversion(LLVMTypeConverter &typeConverter,
+                          const TargetInfoBase &targetInfo,
+                          PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<ExtractTileOp>(typeConverter, benefit),
+        targetInfo(targetInfo) {}
 
   LogicalResult
   matchAndRewrite(ExtractTileOp op, OpAdaptor adaptor,
@@ -400,8 +382,11 @@ struct ExtractTileOpConversion : public ConvertOpToLLVMPattern<ExtractTileOp> {
       return lowerExtractTileStatic(
           op, adaptor, rewriter, this->getTypeConverter(), staticIndex.value());
     return lowerExtractTileViaSMEM(op, adaptor, rewriter,
-                                   this->getTypeConverter());
+                                   this->getTypeConverter(), targetInfo);
   }
+
+private:
+  const TargetInfoBase &targetInfo;
 };
 
 } // anonymous namespace
@@ -409,7 +394,8 @@ struct ExtractTileOpConversion : public ConvertOpToLLVMPattern<ExtractTileOp> {
 namespace mlir::triton::tle {
 void populateExtractTileOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                          RewritePatternSet &patterns,
+                                         const TargetInfoBase &targetInfo,
                                          unsigned benefit) {
-  patterns.add<ExtractTileOpConversion>(typeConverter, benefit);
+  patterns.add<ExtractTileOpConversion>(typeConverter, targetInfo, benefit);
 }
 } // namespace mlir::triton::tle

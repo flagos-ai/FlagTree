@@ -36,7 +36,7 @@ def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n
         softmax_output = tl.zeros_like(row)
         output_row_start_ptr = output_ptr + row_idx * output_row_stride
         output_ptrs = output_row_start_ptr + col_offsets
-        softmax_output = tle_raw.call(edsl, [softmax_output], [row])
+        softmax_output = tle_raw.call(edsl, [softmax_output, row])
         tl.store(output_ptrs, softmax_output, mask=mask)
 
 

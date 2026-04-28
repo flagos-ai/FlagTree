@@ -5,7 +5,7 @@ from mlir.dialects import arith, memref, nvvm, scf
 import torch
 import triton
 import triton.language as tl
-from triton.experimental.tle.raw import dialect, InOut, Input
+from triton.experimental.tle.raw import dialect, Input
 import triton.experimental.tle.language.raw as tle_raw
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
@@ -59,10 +59,10 @@ def get_autotune_config():
 
 @dialect(name="mlir")
 def edsl(
-    c: InOut[L["memref<?x?xf32, strided<[?, ?], offset: ?>, 3>"]],
+    c: Input[L["memref<?x?xf32, strided<[?, ?], offset: ?>, 3>"]],
     a: Input[L["memref<?x?xf16,strided<[?, ?], offset: ?>, 3>"]],
     b: Input[L["memref<?x?xf16,strided<[?, ?], offset: ?>, 3>"]],
-):
+) -> L["memref<?x?xf32, strided<[?, ?], offset: ?>, 3>"]:
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))
     tidx = arith.index_cast(ir.IndexType.get(), tidx)
@@ -87,6 +87,7 @@ def edsl(
         init = memref.load(c, [row, col])
         memref.store(arith.addf(result, init), c, [row, col])
         scf.yield_([])
+    return c
 
 
 @triton.autotune(
@@ -139,7 +140,7 @@ def matmul_kernel(
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
         b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
-        accumulator = tle_raw.call(edsl, [accumulator], [a, b])
+        accumulator = tle_raw.call(edsl, [accumulator, a, b])
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
     if ACTIVATION == "leaky_relu":

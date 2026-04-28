@@ -27,7 +27,7 @@ def edsl_assert_test():
 
 @triton.jit
 def assert_kernel():
-    tle_raw.call(edsl_assert_test, [], [])
+    tle_raw.call(edsl_assert_test, [])
 
 
 def run_test():

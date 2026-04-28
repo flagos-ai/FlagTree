@@ -128,6 +128,23 @@ getNvidiaAllocationAnalysisScratchSizeFn(TargetInfoBase &targetInfo) {
       auto elems = getNumScratchElemsSwizzledCvt(srcTy, dstTy, targetInfo);
       return elems * getBitwidth(srcTy) / 8;
     }
+#ifdef __TLE__
+    if (auto extractTileOp = dyn_cast<triton::tle::ExtractTileOp>(op)) {
+      auto dstTy = dyn_cast<RankedTensorType>(extractTileOp.getType());
+      if (!dstTy)
+        return 0;
+      return static_cast<unsigned>(dstTy.getNumElements() *
+                                   (getBitwidth(dstTy) / 8));
+    }
+    if (auto insertTileOp = dyn_cast<triton::tle::InsertTileOp>(op)) {
+      auto tileTy =
+          dyn_cast<RankedTensorType>(insertTileOp.getTile().getType());
+      if (!tileTy)
+        return 0;
+      return static_cast<unsigned>(tileTy.getNumElements() *
+                                   (getBitwidth(tileTy) / 8));
+    }
+#endif
     return defaultAllocationAnalysisScratchSizeFn(op);
   };
   return allocation;

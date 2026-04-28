@@ -176,10 +176,10 @@ struct ConvertTritonGPUToLLVM
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
           typeConverter, targetInfo, patterns, benefit);
-      mlir::triton::tle::populateExtractTileOpToLLVMPatterns(typeConverter,
-                                                             patterns, benefit);
-      mlir::triton::tle::populateInsertTileOpToLLVMPatterns(typeConverter,
-                                                            patterns, benefit);
+      mlir::triton::tle::populateExtractTileOpToLLVMPatterns(
+          typeConverter, patterns, targetInfo, benefit);
+      mlir::triton::tle::populateInsertTileOpToLLVMPatterns(
+          typeConverter, patterns, targetInfo, benefit);
       mlir::triton::tle::populateMemDescWGMMAViewOpToLLVMPatterns(
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateExclusiveCumsumOpToLLVMPatterns(

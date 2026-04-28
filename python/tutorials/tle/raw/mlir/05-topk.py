@@ -5,7 +5,7 @@ from mlir.dialects import arith, memref, nvvm, scf, llvm
 from mlir import ir
 import torch
 import triton
-from triton.experimental.tle.raw import dialect, InOut, Input
+from triton.experimental.tle.raw import dialect, Input
 from triton.experimental.tle.raw.mlir import vassert
 import triton.experimental.tle.language.gpu as tle_gpu
 import triton.experimental.tle.language.raw as tle_raw
@@ -34,8 +34,8 @@ def convert_to_uint32(x):
 # NOTE: current implementation requires a thread number of 1024
 @dialect(name="mlir")
 def edsl1(
-    thre_bin_sum_buf: InOut[L["memref<?xi32, 3>"]],
-    l_new_topk_buf: InOut[L["memref<?xi32, 3>"]],
+    thre_bin_sum_buf: Input[L["memref<?xi32, 3>"]],
+    l_new_topk_buf: Input[L["memref<?xi32, 3>"]],
     s_threshold_bin_id: Input[L["memref<?xi32, 3>"]],
     indices_base: Input[L["!llvm.ptr<1>"]],
     s_input_ids_base: Input[L["!llvm.ptr<1>"]],
@@ -46,7 +46,7 @@ def edsl1(
     S: Input[L["i32"]],
     BS: Input[L["i32"]],
     K_tensor: Input[L["memref<?xi32, 3>"]],
-):
+) -> (L["memref<?xi32, 3>"], L["memref<?xi32, 3>"]):
     tidx = nvvm.read_ptx_sreg_tid_x(ir.IntegerType.get_signless(32))
     bidx = nvvm.read_ptx_sreg_ctaid_x(ir.IntegerType.get_signless(32))
     bdimx = nvvm.read_ptx_sreg_ntid_x(ir.IntegerType.get_signless(32))  # blockDim.x
@@ -268,6 +268,7 @@ def edsl1(
         scf.yield_([])
 
     nvvm.barrier0()
+    return thre_bin_sum_buf, l_new_topk_buf
 
 
 @triton.autotune(
@@ -500,8 +501,9 @@ def kernel_bucket_sort_topk_edsl(  # grid(B,)
 
     thre_bin_sum_buf_smem, l_new_topk_buf_smem = tle_raw.call_smem(
         edsl1,
-        [thre_bin_sum_buf_smem, l_new_topk_buf_smem],
         [
+            thre_bin_sum_buf_smem,
+            l_new_topk_buf_smem,
             s_threshold_bin_id_smem,
             indices_base,
             s_input_ids_base,

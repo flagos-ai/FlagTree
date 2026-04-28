@@ -59,10 +59,14 @@ namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 
+extern std::vector<int64_t>
+computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
+                           const std::vector<Value> &args);
+
 extern tle::DSLRegionOp
 createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
-                             const std::vector<Value> &outputs,
-                             const std::vector<Value> &inputs);
+                             const std::vector<Value> &args,
+                             const std::vector<int64_t> &aliasOperandIndices);
 
 void init_triton_tle_ir(py::module &&m) {
 
@@ -315,6 +319,8 @@ void init_tle_raw_ir(py::module &&m) {
       .def("dump", &tle::YieldOp::dump);
 
   auto *builder_cls = ir::getBuilderClass();
+  builder_cls->def("compute_alias_operand_indices",
+                   &computeAliasOperandIndices);
   builder_cls->def("create_tle_raw_region_by_llvm_func",
                    &createTLERawRegionByLLVMFunc);
   builder_cls->def("get_context", &TritonOpBuilder::getContext);

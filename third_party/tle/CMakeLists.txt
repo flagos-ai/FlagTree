@@ -10,6 +10,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle_raw.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/lib/Protocol.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/lib/AnalyzeReturnType.cpp
     LINK_LIBS
     MLIRTargetLLVMIRImport
     TritonTLETransforms

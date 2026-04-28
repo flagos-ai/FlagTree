@@ -6,6 +6,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Parser/Parser.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/utils/include/AnalyzeReturnType.h"
 #include "tle/utils/include/Protocol.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVectorExtras.h"
@@ -56,10 +57,46 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
 //   - EDSL param type: "i32"
 //   - LLVM func: 1 arg = i32
 //   - Conversion: Use block argument directly
+// Analyze the LLVM IR text and compute alias operand indices without creating
+// any ops. This is exposed as a separate pybinding so Python can obtain
+// aliased_args before calling createTLERawRegionByLLVMFunc.
+std::vector<int64_t>
+computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
+                           const std::vector<Value> &args) {
+  ParserConfig config(self.getContext());
+  OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
+  assert(module && "Failed to parse LLVM IR text");
+  LLVM::LLVMFuncOp func = nullptr;
+  for (auto op : module->getOps<LLVM::LLVMFuncOp>()) {
+    if (!op.empty() && op.getLinkage() != LLVM::Linkage::Internal) {
+      if (func) {
+        llvm_unreachable("Multiple functions found in LLVM IR text");
+      } else {
+        func = op;
+      }
+    }
+  }
+  assert(func && "No function found in LLVM IR text");
+
+  SmallVector<int64_t> funcArgToDslArg =
+      tle::data_analyze::computeFuncArgToDslArg(args);
+
+  auto funcType = func.getFunctionType();
+  Type retTy = funcType.getReturnType();
+  if (isa<LLVM::LLVMVoidType>(retTy))
+    return {};
+
+  auto aliasesOrFailure =
+      tle::data_analyze::analyzeFuncReturnAliases(func, funcArgToDslArg);
+  assert(succeeded(aliasesOrFailure));
+  SmallVector<int64_t> result = *aliasesOrFailure;
+  return std::vector<int64_t>(result.begin(), result.end());
+}
+
 tle::DSLRegionOp
 createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
-                             const std::vector<Value> &outputs,
-                             const std::vector<Value> &inputs) {
+                             const std::vector<Value> &args,
+                             const std::vector<int64_t> &aliasOperandIndices) {
   ParserConfig config(self.getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   assert(module && "Failed to parse LLVM IR text");
@@ -95,11 +132,17 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   LLVM::LLVMFuncOp funcOp =
       curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName());
   assert(funcOp && "callee function not found in current module");
-  SmallVector<Type> outputTys = llvm::map_to_vector(
-      outputs, [](Value value) -> Type { return value.getType(); });
-  SmallVector<Value> operands = llvm::to_vector(
-      llvm::concat<Value>(SmallVector<Value>(outputs.begin(), outputs.end()),
-                          SmallVector<Value>(inputs.begin(), inputs.end())));
+
+  // Use the externally provided aliasOperandIndices to determine output types.
+  Type retTy = funcOp.getFunctionType().getReturnType();
+  SmallVector<Type> outputTys =
+      isa<LLVM::LLVMVoidType>(retTy)
+          ? SmallVector<Type>{}
+          : llvm::map_to_vector(aliasOperandIndices, [&](int64_t idx) -> Type {
+              return args[idx].getType();
+            });
+
+  SmallVector<Value> operands(args.begin(), args.end());
   tle::DSLRegionOp dslRegionOp =
       self.create<tle::DSLRegionOp>(outputTys, operands);
   OpBuilder::InsertionGuard guard(builder);
@@ -111,16 +154,16 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
       &body, {}, operandTys,
       SmallVector<Location>(operandTys.size(), self.getLastLoc()));
   builder.setInsertionPointToStart(newBlock);
-  ValueRange args = func.getArguments();
-  TypeRange tgts = args.getType();
+  ValueRange funcArgs = func.getArguments();
+  TypeRange tgts = funcArgs.getType();
   SmallVector<Value> ops = {};
   for (Value src : newBlock->getArguments()) {
     SmallVector<Value> rets =
         tle::protocol::SignaturePattern::apply(self, tgts, src);
     ops.append(std::move(rets));
   }
-  for (auto [arg, op] : zip_equal(func.getArguments(), ops)) {
-    mapper.map(arg, op);
+  for (auto [funcArg, op] : zip_equal(func.getArguments(), ops)) {
+    mapper.map(funcArg, op);
   }
   builder.setInsertionPointToEnd(newBlock);
   LLVM::CallOp callOp = self.create<LLVM::CallOp>(funcOp, ops);

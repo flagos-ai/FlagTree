@@ -5,6 +5,7 @@
 #include "mlir/IR/Builders.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
+#include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
@@ -167,7 +168,8 @@ lowerInsertTileStatic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 static LogicalResult
 lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
                               ConversionPatternRewriter &rewriter,
-                              const LLVMTypeConverter *typeConverter) {
+                              const LLVMTypeConverter *typeConverter,
+                              const TargetInfoBase &targetInfo) {
   Location loc = op->getLoc();
   auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
   auto tileTy = cast<RankedTensorType>(op.getTile().getType());
@@ -217,28 +219,10 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
   auto srcThreadOffsets = computeThreadOffsets(loc, rewriter, srcTy);
   auto tileThreadOffsets = computeThreadOffsets(loc, rewriter, tileTy);
 
-  auto smemPtrTy = LLVM::LLVMPointerType::get(ctx, 3);
-  auto smemArrTy = LLVM::LLVMArrayType::get(
-      i8Ty, static_cast<uint64_t>(totalTileElems * elemBytes));
-  std::string smemName =
-      "__smem_insert_tile_" +
-      std::to_string(reinterpret_cast<uintptr_t>(op.getOperation()));
-  auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(moduleOp.getBody());
-    rewriter.create<LLVM::GlobalOp>(loc, smemArrTy, false,
-                                    LLVM::Linkage::Internal, smemName,
-                                    Attribute{}, 16, 3);
-  }
-  // Allocate global shared memory buffer for tile relay.
-  Value smemBufArr =
-      rewriter.create<LLVM::AddressOfOp>(loc, smemPtrTy, smemName);
-  Value zero32 = rewriter.create<LLVM::ConstantOp>(
-      loc, i32Ty, rewriter.getI32IntegerAttr(0));
-  Value smemBase = rewriter.create<LLVM::GEPOp>(
-      loc, smemPtrTy, smemArrTy, smemBufArr, ValueRange{zero32, zero32},
-      LLVM::GEPNoWrapFlags::inbounds);
+  auto smemPtrTy =
+      LLVM::LLVMPointerType::get(ctx, targetInfo.getSharedAddressSpace());
+  Value smemBase =
+      LLVM::getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
 
   SmallVector<int64_t> logicalGrid(rank), suffix(rank, 1);
   for (int d = 0; d < rank; ++d)
@@ -362,7 +346,11 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 // ============================================================================
 struct InsertTileOpConversion : public ConvertOpToLLVMPattern<InsertTileOp> {
 
-  using ConvertOpToLLVMPattern<InsertTileOp>::ConvertOpToLLVMPattern;
+  InsertTileOpConversion(LLVMTypeConverter &typeConverter,
+                         const TargetInfoBase &targetInfo,
+                         PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<InsertTileOp>(typeConverter, benefit),
+        targetInfo(targetInfo) {}
 
   LogicalResult
   matchAndRewrite(InsertTileOp op, OpAdaptor adaptor,
@@ -402,8 +390,11 @@ struct InsertTileOpConversion : public ConvertOpToLLVMPattern<InsertTileOp> {
     }
 
     return lowerInsertTileViaSMEMDynamic(op, adaptor, rewriter,
-                                         this->getTypeConverter());
+                                         this->getTypeConverter(), targetInfo);
   }
+
+private:
+  const TargetInfoBase &targetInfo;
 };
 
 } // anonymous namespace
@@ -415,8 +406,9 @@ namespace mlir::triton::tle {
 
 void populateInsertTileOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                         RewritePatternSet &patterns,
+                                        const TargetInfoBase &targetInfo,
                                         unsigned benefit) {
-  patterns.add<InsertTileOpConversion>(typeConverter, benefit);
+  patterns.add<InsertTileOpConversion>(typeConverter, targetInfo, benefit);
 }
 
 } // namespace mlir::triton::tle
