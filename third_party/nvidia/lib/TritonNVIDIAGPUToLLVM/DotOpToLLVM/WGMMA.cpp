@@ -292,10 +292,11 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
 
     unsigned regASize = (instrMNK[0] * instrMNK[2]) / 32;
     llvm::SmallVector<Value> regA =
-        loadReg(rewriter, loc, structA, (m * numRepK + k) * regASize,
-                regASize, insertBefore);
+        loadReg(rewriter, loc, structA, (m * numRepK + k) * regASize, regASize,
+                insertBefore);
     auto regATy = LLVM::LLVMStructType::getLiteral(
-        rewriter.getContext(), SmallVector<Type>(regA.size(), regA[0].getType()));
+        rewriter.getContext(),
+        SmallVector<Type>(regA.size(), regA[0].getType()));
     return packLLElements(loc, typeConverter, regA, rewriter, regATy);
   };
 
@@ -368,19 +369,19 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
             a = firstA;
           } else {
 #endif
-          auto aDotOpEnc =
-              cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
-          assert(aDotOpEnc.getKWidth() ==
-                 32 / aTensorTy.getElementTypeBitWidth());
+            auto aDotOpEnc =
+                cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
+            assert(aDotOpEnc.getKWidth() ==
+                   32 / aTensorTy.getElementTypeBitWidth());
 
-          unsigned regASize = (instrMNK[0] * instrMNK[2]) / 32;
-          llvm::SmallVector<Value> regA =
-              loadReg(rewriter, loc, structA, (m * numRepK + k) * regASize,
-                      regASize, startSequence);
-          auto regATy = LLVM::LLVMStructType::getLiteral(
-              rewriter.getContext(),
-              SmallVector<Type>(regA.size(), regA[0].getType()));
-          a = packLLElements(loc, typeConverter, regA, rewriter, regATy);
+            unsigned regASize = (instrMNK[0] * instrMNK[2]) / 32;
+            llvm::SmallVector<Value> regA =
+                loadReg(rewriter, loc, structA, (m * numRepK + k) * regASize,
+                        regASize, startSequence);
+            auto regATy = LLVM::LLVMStructType::getLiteral(
+                rewriter.getContext(),
+                SmallVector<Type>(regA.size(), regA[0].getType()));
+            a = packLLElements(loc, typeConverter, regA, rewriter, regATy);
 #ifdef __TLE__
           }
 #endif

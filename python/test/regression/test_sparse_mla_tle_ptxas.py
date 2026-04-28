@@ -6,7 +6,6 @@ import torch
 from triton import knobs
 from triton._internal_testing import is_cuda, is_hip
 
-
 SPARSE_MLA_PATH = (Path(__file__).resolve().parents[2] / "tutorials" / "tle" / "deepseek_v32" / "02-sparse-mla.py")
 SERIALIZED_WGMMA_WARNING = "Potential Performance Loss: wgmma.mma_async instructions are serialized"
 NO_SPILL_LINE = "0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads"

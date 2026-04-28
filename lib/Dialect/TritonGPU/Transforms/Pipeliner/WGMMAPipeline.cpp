@@ -71,11 +71,11 @@ static bool rsDotNeedsWait(Operation *dot, scf::ForOp forOp) {
 }
 
 #ifdef __TLE__
-// A non-zero accumulator that is not produced by another WGMMA requires ordinary
-// register materialization before the WGMMA can consume it as C. If such prep is
-// placed before the first wait while an older async group is still pending,
-// ptxas treats it as an accumulator definition inside the WGMMA pipeline and
-// serializes the following WGMMA group.
+// A non-zero accumulator that is not produced by another WGMMA requires
+// ordinary register materialization before the WGMMA can consume it as C. If
+// such prep is placed before the first wait while an older async group is still
+// pending, ptxas treats it as an accumulator definition inside the WGMMA
+// pipeline and serializes the following WGMMA group.
 static bool warpGroupDotNeedsAccumulatorPrewrite(ttng::WarpGroupDotOp dotOp) {
   Value acc = dotOp.getC();
   if (isZeroConst(acc))
