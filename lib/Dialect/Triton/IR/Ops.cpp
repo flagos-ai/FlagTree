@@ -1313,6 +1313,24 @@ Speculation::Speculatability ExternElementwiseOp::getSpeculatability() {
   return Speculation::NotSpeculatable;
 }
 
+// -- ExternCallOp --
+void ExternCallOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  if (getPure())
+    return;
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
+}
+
+Speculation::Speculatability ExternCallOp::getSpeculatability() {
+  if (getPure())
+    return Speculation::Speculatable;
+  return Speculation::NotSpeculatable;
+}
+
 // -- GatherOp --
 LogicalResult GatherOp::verify() {
   RankedTensorType indicesTy = getIndices().getType();
