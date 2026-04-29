@@ -12,7 +12,6 @@ on:
       - ready_for_review
       - synchronize
       - edited
-      #
 jobs:
   label:
     runs-on: ubuntu-latest
