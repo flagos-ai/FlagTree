@@ -11,6 +11,8 @@ on:
       - reopened
       - ready_for_review
       - synchronize
+      - edited
+      #
 jobs:
   label:
     runs-on: ubuntu-latest
@@ -24,3 +26,21 @@ jobs:
           repo-token: "${{ secrets.GITHUB_TOKEN }}"
           sync-labels: true
           configuration-path: .github/new-prs-labeler.yml
+          
+      - name: Sync target branch label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          # Define all known branch names that can be used as labels
+          BRANCH_LABELS=("main" "triton_v3.2.x" "triton_v3.3.x" "triton_v3.4.x" "triton_v3.5.x" "triton_v3.6.x")
+          # Remove all branch labels except the target one
+          for BRANCH in "${BRANCH_LABELS[@]}"; do
+            if [ "$BRANCH" != "$TARGET_BRANCH" ]; then
+              gh pr edit "$PR_NUMBER" --remove-label "$BRANCH" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+            fi
+          done
+          # Ensure the target branch label exists (create if needed) and add it
+          gh label create "$TARGET_BRANCH" --repo "$GITHUB_REPOSITORY" --force 2>/dev/null || true
+          gh pr edit "$PR_NUMBER" --add-label "$TARGET_BRANCH" --repo "$GITHUB_REPOSITORY"
