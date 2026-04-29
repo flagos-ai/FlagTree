@@ -61,22 +61,7 @@ Note that the script will prompt for manual confirmation during execution.
 
 ### 2. Installation Commands
 
-#### 2.1 Source-free Installation
-
-```shell
-# Note: First install PyTorch, then execute the following commands
-python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
-RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3.10 -m pip install flagtree===0.5.0+git9ff8af59 $RES
-```
-
-`flagtree` is already installed in the preinstalled image. You can check it with:
-
-```shell
-python3 -m pip show flagtree
-```
-
-#### 2.2 Build from Source
+#### 2.1 Build from Source
 
 ```shell
 apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev

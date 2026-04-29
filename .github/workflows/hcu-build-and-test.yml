@@ -39,6 +39,7 @@ jobs:
           set -x
           pip uninstall -y triton
           export FLAGTREE_BACKEND=hcu
+          git checkout -b triton_v3.6.x origin/triton_v3.6.x
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on Hcu
