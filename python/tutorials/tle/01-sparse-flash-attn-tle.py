@@ -603,7 +603,8 @@ class _attention(torch.autograd.Function):
                 output.stride(1), output.stride(2), B=B, Q_N=Q_N, Q_D=Q_D, Q_S=Q_S, KV_S=KV_S, K_D=K_D,
                 V_D=v_sparse.shape[3], sparse_mode=sparse_mode, O_N=output.shape[1], O_D=output.shape[2],
                 actual_seq_lengths_query=actual_seq_lengths_query, actual_seq_lengths_kv=actual_seq_lengths_kv,
-                blk_size=128, Q_BLOCK_SIZE=16, multibuffer=False)
+                blk_size=128, Q_BLOCK_SIZE=16, limit_auto_multi_buffer_only_for_local_buffer=False,
+                limit_auto_multi_buffer_of_local_buffer="no-limit")
 
         else:
             output = torch.empty(out_shape_bsnd, device=query.device, dtype=torch.float32)
@@ -614,7 +615,9 @@ class _attention(torch.autograd.Function):
                                      output.stride(2), output.stride(3), B=B, Q_N=Q_N, Q_D=Q_D, Q_S=Q_S, KV_S=KV_S,
                                      K_D=K_D, V_D=v_sparse.shape[3], sparse_mode=sparse_mode, O_N=output.shape[2],
                                      O_D=output.shape[3], actual_seq_lengths_query=actual_seq_lengths_query,
-                                     actual_seq_lengths_kv=actual_seq_lengths_kv, blk_size=128, Q_BLOCK_SIZE=16)
+                                     actual_seq_lengths_kv=actual_seq_lengths_kv, blk_size=128, Q_BLOCK_SIZE=16,
+                                     limit_auto_multi_buffer_only_for_local_buffer=False,
+                                     limit_auto_multi_buffer_of_local_buffer="no-limit")
             output = output.permute(0, 2, 1, 3).contiguous()
 
         ctx.save_for_backward(query, k_sparse, v_sparse, output)
@@ -865,7 +868,7 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_b
         sparse_mode=sparse_mode,
         block_table=block_table,
     )
-    npu_out = torch_npu.npu_sparse_flash_attention(
+    npu_out, _, _ = torch_npu.npu_sparse_flash_attention(
         query=query,
         key=key,
         value=value,
@@ -880,7 +883,7 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_b
         layout_kv='PA_BSND',
         sparse_mode=sparse_mode,
         block_table=block_table,
-        # attention_mode = 2,
+        attention_mode=2,
     )
     triton_out = triton_out.to(npu_out.dtype)
     torch.testing.assert_close(triton_out, npu_out, rtol=1e-2, atol=1e-2, equal_nan=True)
@@ -922,7 +925,7 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_b
             layout_kv='PA_BSND',
             sparse_mode=sparse_mode,
             block_table=block_table,
-            # attention_mode = 2,
+            attention_mode=2,
         ), clear_l2_cache=True, collect_prof=False)
     print(f"[Torch-NPU SFA] Time: {npu_time:.4f} us")
 
@@ -935,15 +938,21 @@ if __name__ == "__main__":
     print(f"====================第{i}次测试=================")
     test_op(T=1, B=1, KV_S=2560, Q_N=128, KV_N=1, D=512, D_rope=64, sparse_size=2048, scale_value=0.5,
             sparse_block_size=1, sparse_mode=0, block_size=128, act_kv_s=2560)
-    i += 1
-    print(f"====================第{i}次测试=================")
-    test_op(T=4, B=4, KV_S=6400, Q_N=128, KV_N=1, D=512, D_rope=64, sparse_size=2048, scale_value=0.5,
-            sparse_block_size=1, sparse_mode=0, block_size=128, act_kv_s=2560)
-    i += 1
-    print(f"====================第{i}次测试=================")
-    test_op(T=8, B=8, KV_S=48000, Q_N=128, KV_N=1, D=512, D_rope=64, sparse_size=2048, scale_value=0.5,
-            sparse_block_size=1, sparse_mode=0, block_size=128, act_kv_s=2560)
-    i += 1
-    print(f"====================第{i}次测试=================")
-    test_op(T=16, B=16, KV_S=48000, Q_N=128, KV_N=1, D=512, D_rope=64, sparse_size=2048, scale_value=0.5,
-            sparse_block_size=1, sparse_mode=0, block_size=128, act_kv_s=2560)
+    test_op(T=1, B=1, KV_S=5120, Q_N=128, KV_N=1, D=512, D_rope=64, sparse_size=2048, scale_value=0.5,
+            sparse_block_size=1, sparse_mode=0, block_size=128, act_kv_s=5120)
+    test_op(T=1, B=1, KV_S=10240, Q_N=128, KV_N=1, D=512, D_rope=64, sparse_size=2048, scale_value=0.5,
+            sparse_block_size=1, sparse_mode=0, block_size=128, act_kv_s=10240)
+    test_op(T=1, B=1, KV_S=20480, Q_N=128, KV_N=1, D=512, D_rope=64, sparse_size=2048, scale_value=0.5,
+            sparse_block_size=1, sparse_mode=0, block_size=128, act_kv_s=20480)
+    # i += 1
+    # print(f"====================第{i}次测试=================")
+    # test_op(T=4, B=4, KV_S=6400, Q_N=128, KV_N=1, D=512, D_rope=64, sparse_size=2048, scale_value=0.5,
+    #         sparse_block_size=1, sparse_mode=0, block_size=128, act_kv_s=2560)
+    # i += 1
+    # print(f"====================第{i}次测试=================")
+    # test_op(T=8, B=8, KV_S=48000, Q_N=128, KV_N=1, D=512, D_rope=64, sparse_size=2048, scale_value=0.5,
+    #         sparse_block_size=1, sparse_mode=0, block_size=128, act_kv_s=2560)
+    # i += 1
+    # print(f"====================第{i}次测试=================")
+    # test_op(T=16, B=16, KV_S=48000, Q_N=128, KV_N=1, D=512, D_rope=64, sparse_size=2048, scale_value=0.5,
+    #         sparse_block_size=1, sparse_mode=0, block_size=128, act_kv_s=2560)
