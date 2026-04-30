@@ -30,16 +30,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          # Define all known branch names that can be used as labels
-          BRANCH_LABELS=("main" "triton_v3.2.x" "triton_v3.3.x" "triton_v3.4.x" "triton_v3.5.x" "triton_v3.6.x")
-          # Remove all branch labels except the target one
-          for BRANCH in "${BRANCH_LABELS[@]}"; do
-            if [ "$BRANCH" != "$TARGET_BRANCH" ]; then
-              gh pr edit "$PR_NUMBER" --remove-label "$BRANCH" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"  # The base branch name of PR
+          PR_NUMBER="${{ github.event.pull_request.number }}"   # The PR number for API calls
+          # Get all branch names in the repo (dynamically, no hardcoded list needed)
+          BRANCH_NAMES=$(gh api "repos/$GITHUB_REPOSITORY/branches" --paginate --jq '.[].name')
+          # Get all labels currently on this PR, with one label per line
+          CURRENT_LABELS=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
+          # Remove any label that matches a branch name but is not the target branch
+          while IFS= read -r LABEL; do
+            if [ "$LABEL" != "$TARGET_BRANCH" ] && echo "$BRANCH_NAMES" | grep -qx "$LABEL"; then
+              gh pr edit "$PR_NUMBER" --remove-label "$LABEL" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
             fi
-          done
+          done <<< "$CURRENT_LABELS"
           # Ensure the target branch label exists (create if needed) and add it
-          gh label create "$TARGET_BRANCH" --repo "$GITHUB_REPOSITORY" --force 2>/dev/null || true
+          gh label create "$TARGET_BRANCH" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           gh pr edit "$PR_NUMBER" --add-label "$TARGET_BRANCH" --repo "$GITHUB_REPOSITORY"
