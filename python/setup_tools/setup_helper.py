@@ -524,6 +524,6 @@ cache.store(
     condition=("hcu" == flagtree_backend),
     url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm22-b0ca808-glibc2.35-glibcxx3.4.30-ubuntu-x86_64.tar.gz",
-    pre_hock=lambda: check_env('LLVM_SYSPATH'),
-    post_hock=set_llvm_env,
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
 )

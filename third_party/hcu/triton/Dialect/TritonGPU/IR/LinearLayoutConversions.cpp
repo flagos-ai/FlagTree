@@ -425,7 +425,7 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
       if (tiles > 0)
         tileLayout *= LinearLayout::identity1D(tiles, kRegister, dimN);
     }
-  }
+	}
 
   tileLayout = tileLayout.transposeOuts({dimN, dimM});
 

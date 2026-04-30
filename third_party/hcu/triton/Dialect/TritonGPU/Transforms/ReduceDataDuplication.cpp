@@ -27,8 +27,6 @@ namespace gpu {
 
 #ifdef __TLE__
 static bool isLikelyRemotePtr(Value ptr) {
-  constexpr StringLiteral kRemoteShardCarrierAttr =
-      "tle.remote_shard_id_carrier";
   SmallVector<Value> worklist{ptr};
   DenseSet<Value> visited;
   while (!worklist.empty()) {
@@ -41,8 +39,6 @@ static bool isLikelyRemotePtr(Value ptr) {
     if (def->getName().getStringRef() == "tle.remote_pointers")
       return true;
     if (auto addPtr = dyn_cast<triton::AddPtrOp>(def)) {
-      if (addPtr->hasAttr(kRemoteShardCarrierAttr))
-        return true;
       worklist.push_back(addPtr.getPtr());
       worklist.push_back(addPtr.getOffset());
       continue;

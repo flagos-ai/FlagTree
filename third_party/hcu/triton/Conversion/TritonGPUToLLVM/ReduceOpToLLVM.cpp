@@ -1,8 +1,10 @@
 #include "ReduceScanCommon.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include <optional>
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -30,6 +32,13 @@ public:
     assert(helper.isReduceWithinCTA() &&
            "Unexpected srcLayout in ReduceOpConversion");
     Location loc = op->getLoc();
+
+#ifdef __TLE__
+    if (succeeded(
+            tryLowerCtaOrReductionFastpath(op, adaptor, helper, rewriter))) {
+      return success();
+    }
+#endif
 
     auto srcValues = unpackInputs(loc, op, adaptor, rewriter);
     std::map<SmallVector<unsigned>, SmallVector<Value>> accs;
@@ -78,6 +87,48 @@ public:
 
 private:
   const TargetInfoBase &targetInfo;
+
+#ifdef __TLE__
+  bool isOrReductionToScalarI1(triton::ReduceOp op) const {
+    if (op.getNumOperands() != 1 || op.getNumResults() != 1)
+      return false;
+    if (!op.getResult()[0].getType().isInteger(1))
+      return false;
+    auto *combine = op.getSingleCombiner();
+    return combine && isa<arith::OrIOp>(combine);
+  }
+
+  LogicalResult
+  tryLowerCtaOrReductionFastpath(triton::ReduceOp op, OpAdaptor adaptor,
+                                 ReduceOpHelper &helper,
+                                 ConversionPatternRewriter &rewriter) const {
+    if (helper.isWarpSynchronous() || !isOrReductionToScalarI1(op))
+      return failure();
+
+    Location loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto srcValues = unpackInputs(loc, op, adaptor, rewriter);
+    std::optional<Value> threadAny;
+    for (unsigned i = 0; i < srcValues.size(); ++i) {
+      Value pred = srcValues[i][0];
+      if (!pred.getType().isInteger(1)) {
+        Type predTy = pred.getType();
+        pred = b.icmp_ne(pred, b.int_val(predTy.getIntOrFloatBitWidth(), 0));
+      }
+      threadAny = threadAny ? b.or_(*threadAny, pred) : pred;
+    }
+    if (!threadAny)
+      return failure();
+
+    std::optional<Value> ctaAny =
+        targetInfo.ctaReduceOrPredicate(rewriter, loc, *threadAny);
+    if (!ctaAny)
+      return failure();
+
+    rewriter.replaceOp(op, *ctaAny);
+    return success();
+  }
+#endif
 
   void accumulate(Location loc, ConversionPatternRewriter &rewriter,
                   Region &combineOp, SmallVector<Value> &acc, ValueRange cur,
