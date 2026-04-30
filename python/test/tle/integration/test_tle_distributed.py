@@ -28,17 +28,14 @@ BLOCK_CLUSTER_SUBMESH_COL0 = BLOCK_CLUSTER_MESH_2X2[:, 0]
 BLOCK_CLUSTER_SUBMESH_COL1 = BLOCK_CLUSTER_MESH_2X2[:, 1]
 
 
-def _require_hopper_cuda():
-    if not torch.cuda.is_available():
-        pytest.skip("Requires CUDA GPU")
-    major, _minor = torch.cuda.get_device_capability()
-    if major < 9:
-        pytest.skip("Requires NVIDIA Hopper (sm90+) for cluster instructions")
+def _has_cluster_cuda() -> bool:
+    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _cuda_guard():
-    _require_hopper_cuda()
+pytestmark = pytest.mark.skipif(
+    not _has_cluster_cuda(),
+    reason="Requires NVIDIA Hopper (sm90+) for cluster instructions",
+)
 
 
 @triton.jit

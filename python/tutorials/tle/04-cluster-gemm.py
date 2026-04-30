@@ -220,12 +220,13 @@ def _cluster_remote_gemm_kernel(
         tl.store(c_ptrs, acc.to(c_ptr.dtype.element_ty))
 
 
-def _require_cluster_remote_support() -> None:
+def _cluster_remote_support_skip_reason() -> str | None:
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA device is required")
+        return "CUDA device is required"
     major, _minor = torch.cuda.get_device_capability()
     if major < 9:
-        raise RuntimeError("cluster+remote path requires sm90+ (Hopper or newer)")
+        return "cluster+remote path requires sm90+ (Hopper or newer)"
+    return None
 
 
 def _grid_triton(M: int, N: int, BM: int, BN: int) -> tuple[int]:
@@ -510,7 +511,7 @@ def _print_results(results: list[BenchResult]) -> None:
         print(f"{r.name:<24}{r.ms:>10.3f}{r.tflops:>12.2f}{speedup:>12.2f}x")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--m", type=int, default=4096)
     parser.add_argument("--n", type=int, default=4096)
@@ -529,9 +530,12 @@ def main() -> None:
     parser.add_argument("--tune-rep", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--analyze-ir", action=argparse.BooleanOptionalAction, default=False)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    _require_cluster_remote_support()
+    skip_reason = _cluster_remote_support_skip_reason()
+    if skip_reason is not None:
+        print(f"SKIP: {skip_reason}")
+        return
 
     torch.manual_seed(args.seed)
     dtype = torch.float16
