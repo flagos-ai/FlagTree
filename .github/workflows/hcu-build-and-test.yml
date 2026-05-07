@@ -1,4 +1,4 @@
-name: Hcu-Build-And-Test
+name: Hcu3.6-Build-And-Test
 
 on:
   push:
@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  hcu-build-and-test:
+  hcu3.6-build-and-test:
     runs-on: hcu
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
@@ -37,7 +37,6 @@ jobs:
         shell: bash
         run: |
           set -x
-          pip uninstall -y triton
           export FLAGTREE_BACKEND=hcu
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 

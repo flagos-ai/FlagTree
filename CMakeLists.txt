@@ -192,7 +192,7 @@ endfunction()
 # Disable warnings that show up in external code (gtest;pybind11)
 if(NOT MSVC)
   if(FLAGTREE_BACKEND)
-    if (FLAGTREE_BACKEND MATCHES "^(enflame|hcu)$")
+    if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu)$")
       # For enflame backend, suppress visibility warnings in gluon_ir.cc
       # Also suppress -Wcomment for generated TritonGPUAttrDefs.h.inc (ASCII diagrams in TableGen output)
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-attributes -Wno-comment")
