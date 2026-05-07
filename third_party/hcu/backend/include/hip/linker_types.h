@@ -46,10 +46,10 @@ THE SOFTWARE.
 typedef enum hipJitOption {
   hipJitOptionMaxRegisters = 0, ///< CUDA Only Maximum registers may be used in
                                 ///< a thread, passed to compiler
-  hipJitOptionThreadsPerBlock, ///< CUDA Only Number of thread per block
-  hipJitOptionWallTime,        ///< CUDA Only Value for total wall clock time
-  hipJitOptionInfoLogBuffer,   ///< CUDA Only Pointer to the buffer with logged
-                               ///< information
+  hipJitOptionThreadsPerBlock,  ///< CUDA Only Number of thread per block
+  hipJitOptionWallTime,         ///< CUDA Only Value for total wall clock time
+  hipJitOptionInfoLogBuffer,    ///< CUDA Only Pointer to the buffer with logged
+                                ///< information
   hipJitOptionInfoLogBufferSizeBytes, ///< CUDA Only Size of the buffer in bytes
                                       ///< for logged info
   hipJitOptionErrorLogBuffer, ///< CUDA Only Pointer to the buffer with logged
@@ -73,12 +73,12 @@ typedef enum hipJitOption {
                                  ///< be relocated to the host
   hipJitOptionGlobalSymbolAddresses, ///< CUDA Only Array of host addresses to
                                      ///< be relocated to the device
-  hipJitOptionGlobalSymbolCount, ///< CUDA Only Number of symbol count.
+  hipJitOptionGlobalSymbolCount,     ///< CUDA Only Number of symbol count.
   hipJitOptionLto, ///< @deprecated CUDA Only Enable link-time optimization for
                    ///< device code
   hipJitOptionFtz, ///< @deprecated CUDA Only Set single-precision denormals.
-  hipJitOptionPrecDiv, ///< @deprecated CUDA Only Set single-precision
-                       ///< floating-point division and reciprocals
+  hipJitOptionPrecDiv,  ///< @deprecated CUDA Only Set single-precision
+                        ///< floating-point division and reciprocals
   hipJitOptionPrecSqrt, ///< @deprecated CUDA Only Set single-precision
                         ///< floating-point square root
   hipJitOptionFma, ///< @deprecated CUDA Only Enable floating-point multiplies

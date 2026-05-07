@@ -176,10 +176,10 @@ typedef struct hipDeviceProp_t {
                              ///< pitched memory
   int maxTexture2DGather[2]; ///< Maximum 2D tex dimensions if gather has to be
                              ///< performed
-  int maxTexture3D[3]; ///< Maximum dimensions (width, height, depth) of 3D
-                       ///< images, in image elements
-  int maxTexture3DAlt[3];     ///< Maximum alternate 3D texture dims
-  int maxTextureCubemap;      ///< Maximum cubemap texture dims
+  int maxTexture3D[3];    ///< Maximum dimensions (width, height, depth) of 3D
+                          ///< images, in image elements
+  int maxTexture3DAlt[3]; ///< Maximum alternate 3D texture dims
+  int maxTextureCubemap;  ///< Maximum cubemap texture dims
   int maxTexture1DLayered[2]; ///< Maximum number of elements in 1D array images
   int maxTexture2DLayered[3]; ///< Maximum number of elements in 2D array images
   int maxTextureCubemapLayered[2]; ///< Maximum cubemaps layered texture dims
@@ -232,24 +232,24 @@ typedef struct hipDeviceProp_t {
   int cooperativeLaunch;            ///< HIP device supports cooperative launch
   int cooperativeMultiDeviceLaunch; ///< HIP device supports cooperative launch
                                     ///< on multiple devices
-  size_t sharedMemPerBlockOptin; ///< Per device m ax shared mem per block
-                                 ///< usable by special opt in
+  size_t sharedMemPerBlockOptin;    ///< Per device m ax shared mem per block
+                                    ///< usable by special opt in
   int pageableMemoryAccessUsesHostPageTables; ///< Device accesses pageable
                                               ///< memory via the host's page
                                               ///< tables
   int directManagedMemAccessFromHost; ///< Host can directly access managed
                                       ///< memory on the device without
                                       ///< migration
-  int maxBlocksPerMultiProcessor; ///< Max number of blocks on CU
-  int accessPolicyMaxWindowSize;  ///< Max value of access policy window
+  int maxBlocksPerMultiProcessor;     ///< Max number of blocks on CU
+  int accessPolicyMaxWindowSize;      ///< Max value of access policy window
   size_t
       reservedSharedMemPerBlock; ///< Shared memory reserved by driver per block
   int hostRegisterSupported;     ///< Device supports hipHostRegister
   int sparseHipArraySupported;   ///< Indicates if device supports sparse hip
                                  ///< arrays
-  int hostRegisterReadOnlySupported; ///< Device supports using the
-                                     ///< hipHostRegisterReadOnly flag with
-                                     ///< hipHostRegistger
+  int hostRegisterReadOnlySupported;     ///< Device supports using the
+                                         ///< hipHostRegisterReadOnly flag with
+                                         ///< hipHostRegistger
   int timelineSemaphoreInteropSupported; ///< Indicates external timeline
                                          ///< semaphore support
   int memoryPoolsSupported; ///< Indicates if device supports hipMallocAsync and
@@ -265,8 +265,8 @@ typedef struct hipDeviceProp_t {
                                       ///< mempool based IPC
   int deferredMappingHipArraySupported; ///< Device supports deferred mapping
                                         ///< HIP arrays and HIP mipmapped arrays
-  int ipcEventSupported;       ///< Device supports IPC events
-  int clusterLaunch;           ///< Device supports cluster launch
+  int ipcEventSupported;                ///< Device supports IPC events
+  int clusterLaunch;                    ///< Device supports cluster launch
   int unifiedFunctionPointers; ///< Indicates device supports unified function
                                ///< pointers
   int reserved[63];            ///< CUDA Reserved.
@@ -281,7 +281,7 @@ typedef struct hipDeviceProp_t {
   int clockInstructionRate; ///< Frequency in khz of the timer used by the
                             ///< device-side "clock*" instructions.  New for
                             ///< HIP.
-  hipDeviceArch_t arch; ///< Architectural feature flags.  New for HIP.
+  hipDeviceArch_t arch;     ///< Architectural feature flags.  New for HIP.
   unsigned int
       *hdpMemFlushCntl; ///< Addres of HDP_MEM_COHERENCY_FLUSH_CNTL register
   unsigned int
@@ -363,7 +363,7 @@ typedef enum __HIP_NODISCARD hipError_t {
   hipSuccess = 0,           ///< Successful completion.
   hipErrorInvalidValue = 1, ///< One or more of the parameters passed to the API
                             ///< call is NULL or not in an acceptable range.
-  hipErrorOutOfMemory = 2, ///< out of memory range.
+  hipErrorOutOfMemory = 2,  ///< out of memory range.
   // Deprecated
   hipErrorMemoryAllocation = 2, ///< Memory allocation error.
   hipErrorNotInitialized = 3,   ///< Invalid not initialized
@@ -510,7 +510,7 @@ typedef enum hipDeviceAttribute_t {
   hipDeviceAttributeAccessPolicyMaxWindowSize, ///< Cuda only. The maximum size
                                                ///< of the window policy in
                                                ///< bytes.
-  hipDeviceAttributeAsyncEngineCount, ///< Asynchronous engines number.
+  hipDeviceAttributeAsyncEngineCount,          ///< Asynchronous engines number.
   hipDeviceAttributeCanMapHostMemory, ///< Whether host memory can be mapped
                                       ///< into device address space
   hipDeviceAttributeCanUseHostPointerForRegisteredMem, ///< Device can access
@@ -527,7 +527,7 @@ typedef enum hipDeviceAttribute_t {
   hipDeviceAttributeConcurrentManagedAccess, ///< Device can coherently access
                                              ///< managed memory concurrently
                                              ///< with the CPU
-  hipDeviceAttributeCooperativeLaunch, ///< Support cooperative launch
+  hipDeviceAttributeCooperativeLaunch,       ///< Support cooperative launch
   hipDeviceAttributeCooperativeMultiDeviceLaunch, ///< Support cooperative
                                                   ///< launch on multiple
                                                   ///< devices
@@ -543,8 +543,8 @@ typedef enum hipDeviceAttribute_t {
   hipDeviceAttributeHostNativeAtomicSupported, ///< Link between the device and
                                                ///< the host supports native
                                                ///< atomic operations
-  hipDeviceAttributeIntegrated,        ///< Device is integrated GPU
-  hipDeviceAttributeIsMultiGpuBoard,   ///< Multiple GPU devices.
+  hipDeviceAttributeIntegrated,                ///< Device is integrated GPU
+  hipDeviceAttributeIsMultiGpuBoard,           ///< Multiple GPU devices.
   hipDeviceAttributeKernelExecTimeout, ///< Run time limit for kernels executed
                                        ///< on the device
   hipDeviceAttributeL2CacheSize, ///< Size of L2 cache in bytes. 0 if the device
@@ -580,7 +580,7 @@ typedef enum hipDeviceAttribute_t {
                                        ///< Cubemap surface.
   hipDeviceAttributeMaxSurfaceCubemapLayered, ///< Cuda only. Maximum dimension
                                               ///< of Cubemap layered surface.
-  hipDeviceAttributeMaxTexture1DWidth,   ///< Maximum size of 1D texture.
+  hipDeviceAttributeMaxTexture1DWidth,        ///< Maximum size of 1D texture.
   hipDeviceAttributeMaxTexture1DLayered, ///< Maximum dimensions of 1D layered
                                          ///< texture.
   hipDeviceAttributeMaxTexture1DLinear,  ///< Maximum number of elements
@@ -599,20 +599,20 @@ typedef enum hipDeviceAttribute_t {
   hipDeviceAttributeMaxTexture2DLayered, ///< Maximum dimensions of 2D layered
                                          ///< texture.
   hipDeviceAttributeMaxTexture2DLinear,  ///< Maximum dimensions (width, height,
-                                        ///< pitch) of 2D textures bound to
-                                        ///< pitched memory.
-  hipDeviceAttributeMaxTexture2DMipmap, ///< Maximum dimensions of 2D mipmapped
-                                        ///< texture.
-  hipDeviceAttributeMaxTexture3DWidth,  ///< Maximum dimension width of 3D
-                                        ///< texture.
-  hipDeviceAttributeMaxTexture3DHeight, ///< Maximum dimension height of 3D
-                                        ///< texture.
-  hipDeviceAttributeMaxTexture3DDepth,  ///< Maximum dimension depth of 3D
-                                        ///< texture.
-  hipDeviceAttributeMaxTexture3DAlt,    ///< Maximum dimensions of alternate 3D
-                                        ///< texture.
-  hipDeviceAttributeMaxTextureCubemap,  ///< Maximum dimensions of Cubemap
-                                        ///< texture
+                                         ///< pitch) of 2D textures bound to
+                                         ///< pitched memory.
+  hipDeviceAttributeMaxTexture2DMipmap,  ///< Maximum dimensions of 2D mipmapped
+                                         ///< texture.
+  hipDeviceAttributeMaxTexture3DWidth,   ///< Maximum dimension width of 3D
+                                         ///< texture.
+  hipDeviceAttributeMaxTexture3DHeight,  ///< Maximum dimension height of 3D
+                                         ///< texture.
+  hipDeviceAttributeMaxTexture3DDepth,   ///< Maximum dimension depth of 3D
+                                         ///< texture.
+  hipDeviceAttributeMaxTexture3DAlt,     ///< Maximum dimensions of alternate 3D
+                                         ///< texture.
+  hipDeviceAttributeMaxTextureCubemap,   ///< Maximum dimensions of Cubemap
+                                         ///< texture
   hipDeviceAttributeMaxTextureCubemapLayered, ///< Maximum dimensions of Cubemap
                                               ///< layered texture.
   hipDeviceAttributeMaxThreadsDim,            ///< Maximum dimension of a block
@@ -629,7 +629,7 @@ typedef enum hipDeviceAttribute_t {
                                             ///< version number.
   hipDeviceAttributeMultiGpuBoardGroupID, ///< Unique ID of device group on the
                                           ///< same multi-GPU board
-  hipDeviceAttributeMultiprocessorCount, ///< Number of multi-processors. When
+  hipDeviceAttributeMultiprocessorCount,  ///< Number of multi-processors. When
                                          ///< the GPU works in Compute Unit (CU)
                                          ///< mode, this value equals the number
                                          ///< of CUs; when in Workgroup
@@ -661,7 +661,7 @@ typedef enum hipDeviceAttribute_t {
                                                    ///< available per block.
   hipDeviceAttributeReservedSharedMemPerBlock, ///< Shared memory reserved by
                                                ///< CUDA driver per block.
-  hipDeviceAttributeMaxSharedMemoryPerBlock, ///< Maximum shared memory
+  hipDeviceAttributeMaxSharedMemoryPerBlock,   ///< Maximum shared memory
                                              ///< available per block in bytes.
   hipDeviceAttributeSharedMemPerBlockOptin, ///< Maximum shared memory per block
                                             ///< usable by special opt in.
@@ -680,12 +680,12 @@ typedef enum hipDeviceAttribute_t {
   hipDeviceAttributeTexturePitchAlignment, ///< Pitch alignment requirement for
                                            ///< 2D texture references bound to
                                            ///< pitched memory;
-  hipDeviceAttributeTotalConstantMemory, ///< Constant memory size in bytes.
+  hipDeviceAttributeTotalConstantMemory,   ///< Constant memory size in bytes.
   hipDeviceAttributeTotalGlobalMem,    ///< Global memory available on devicice.
   hipDeviceAttributeUnifiedAddressing, ///< Cuda only. An unified address space
                                        ///< shared with the host.
-  hipDeviceAttributeUnused2,              ///< Previously hipDeviceAttributeUuid
-  hipDeviceAttributeWarpSize,             ///< Warp size in threads.
+  hipDeviceAttributeUnused2,           ///< Previously hipDeviceAttributeUuid
+  hipDeviceAttributeWarpSize,          ///< Warp size in threads.
   hipDeviceAttributeMemoryPoolsSupported, ///< Device supports HIP Stream
                                           ///< Ordered Memory Allocator
   hipDeviceAttributeVirtualMemoryManagementSupported, ///< Device supports HIP
@@ -703,7 +703,7 @@ typedef enum hipDeviceAttribute_t {
   hipDeviceAttributeClockInstructionRate =
       hipDeviceAttributeAmdSpecificBegin, ///< Frequency in khz of the timer
                                           ///< used by the device-side "clock*"
-  hipDeviceAttributeUnused3, ///< Previously hipDeviceAttributeArch
+  hipDeviceAttributeUnused3,              ///< Previously hipDeviceAttributeArch
   hipDeviceAttributeMaxSharedMemoryPerMultiprocessor, ///< Maximum Shared Memory
                                                       ///< PerMultiprocessor.
   hipDeviceAttributeUnused4, ///< Previously hipDeviceAttributeGcnArch
@@ -718,21 +718,21 @@ typedef enum hipDeviceAttribute_t {
                                                          ///< devices with
                                                          ///< unmatched
                                                          ///< functions
-  hipDeviceAttributeCooperativeMultiDeviceUnmatchedGridDim, ///< Supports
-                                                            ///< cooperative
-                                                            ///< launch on
-                                                            ///< multiple
-                                                            ///< devices with
-                                                            ///< unmatched grid
-                                                            ///< dimensions
-  hipDeviceAttributeCooperativeMultiDeviceUnmatchedBlockDim,  ///< Supports
-                                                              ///< cooperative
-                                                              ///< launch on
-                                                              ///< multiple
-                                                              ///< devices with
-                                                              ///< unmatched
-                                                              ///< block
-                                                              ///< dimensions
+  hipDeviceAttributeCooperativeMultiDeviceUnmatchedGridDim,  ///< Supports
+                                                             ///< cooperative
+                                                             ///< launch on
+                                                             ///< multiple
+                                                             ///< devices with
+                                                             ///< unmatched grid
+                                                             ///< dimensions
+  hipDeviceAttributeCooperativeMultiDeviceUnmatchedBlockDim, ///< Supports
+                                                             ///< cooperative
+                                                             ///< launch on
+                                                             ///< multiple
+                                                             ///< devices with
+                                                             ///< unmatched
+                                                             ///< block
+                                                             ///< dimensions
   hipDeviceAttributeCooperativeMultiDeviceUnmatchedSharedMem, ///< Supports
                                                               ///< cooperative
                                                               ///< launch on
@@ -761,7 +761,7 @@ typedef enum hipDeviceAttribute_t {
                                                 ///< (directly or indirectly
                                                 ///< addressable) VGPRs per
                                                 ///< thread in DWORDs.
-  hipDeviceAttributePciChipId, ///< GPU Manufacturer device id
+  hipDeviceAttributePciChipId,                  ///< GPU Manufacturer device id
 
   hipDeviceAttributeAmdSpecificEnd = 19999,
   hipDeviceAttributeVendorSpecificBegin = 20000,
@@ -1829,9 +1829,10 @@ typedef union hipLaunchAttributeValue {
                    ///< kernel is cooperative.
   int priority; ///< Value of launch attribute :: hipLaunchAttributePriority.
                 ///< Execution priority of kernel
-  hipSynchronizationPolicy syncPolicy; ///< Value of launch attribute ::
-                                       ///< hipLaunchAttributeSynchronizationPolicy.
-                                       ///< Used to work queued up in stream
+  hipSynchronizationPolicy
+      syncPolicy; ///< Value of launch attribute ::
+                  ///< hipLaunchAttributeSynchronizationPolicy.
+                  ///< Used to work queued up in stream
   hipLaunchMemSyncDomainMap
       memSyncDomainMap;                 ///< Value of launch attribute
                                         ///< hipLaunchAttributeMemSyncDomainMap
@@ -1925,8 +1926,8 @@ typedef enum hipGraphMemAttributeType {
                               ///< associated with graphs since the last time.
   hipGraphMemAttrReservedMemCurrent, ///< Amount of memory, in bytes, currently
                                      ///< allocated for graphs.
-  hipGraphMemAttrReservedMemHigh, ///< High watermark of memory, in bytes,
-                                  ///< currently allocated for graphs
+  hipGraphMemAttrReservedMemHigh,    ///< High watermark of memory, in bytes,
+                                     ///< currently allocated for graphs
 } hipGraphMemAttributeType;
 typedef enum hipUserObjectFlags {
   hipUserObjectNoDestructorSync =

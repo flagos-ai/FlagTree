@@ -51,19 +51,19 @@ typedef struct hipDeviceProp_tR0000 {
                            ///< number of CUs; when in Workgroup Processor (WGP)
                            ///< mode, this value equels half of CUs, because a
                            ///< single WGP contains two CUs.
-  int l2CacheSize;                 ///< L2 cache size.
+  int l2CacheSize;         ///< L2 cache size.
   int maxThreadsPerMultiProcessor; ///< Maximum resident threads per
                                    ///< multi-processor.
   int computeMode;                 ///< Compute mode.
   int clockInstructionRate; ///< Frequency in khz of the timer used by the
                             ///< device-side "clock*" instructions.  New for
                             ///< HIP.
-  hipDeviceArch_t arch;  ///< Architectural feature flags.  New for HIP.
-  int concurrentKernels; ///< Device can possibly execute multiple kernels
-                         ///< concurrently.
-  int pciDomainID;       ///< PCI Domain ID
-  int pciBusID;          ///< PCI Bus ID.
-  int pciDeviceID;       ///< PCI Device ID.
+  hipDeviceArch_t arch;     ///< Architectural feature flags.  New for HIP.
+  int concurrentKernels;    ///< Device can possibly execute multiple kernels
+                            ///< concurrently.
+  int pciDomainID;          ///< PCI Domain ID
+  int pciBusID;             ///< PCI Bus ID.
+  int pciDeviceID;          ///< PCI Device ID.
   size_t maxSharedMemoryPerMultiProcessor; ///< Maximum Shared Memory Per
                                            ///< Multiprocessor.
   int isMultiGpuBoard;   ///< 1 if device is on a multi-GPU board, 0 if not.

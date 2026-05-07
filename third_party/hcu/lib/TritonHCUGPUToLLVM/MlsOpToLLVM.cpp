@@ -1123,12 +1123,10 @@ private:
               unsigned groupOffset =
                   batchIdx * (mfmaTileNumRepNonK * mfmaInstrsPerWarpNonK) *
                       numRepK * numOfElems /* batch idx */
-                  +
-                  mfmaTileNonKIdx * mfmaInstrsPerWarpNonK * numRepK *
-                      numOfElems /* block idx*/
-                  +
-                  mfmaInsnNonKIdxInTile * numRepK *
-                      numOfElems + /* inblock idx */
+                  + mfmaTileNonKIdx * mfmaInstrsPerWarpNonK * numRepK *
+                        numOfElems /* block idx*/
+                  + mfmaInsnNonKIdxInTile * numRepK *
+                        numOfElems + /* inblock idx */
                   (mfmaTileKIdx + mfmaInsnKIdxInTile) * numOfElems;
 
               for (int j = 0; j < elemsPerGroup; ++j) {

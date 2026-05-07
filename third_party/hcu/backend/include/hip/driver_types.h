@@ -643,9 +643,9 @@ typedef enum hipFunction_attribute {
   HIP_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK, ///< The maximum number of threads
                                             ///< per block. Depends on function
                                             ///< and device.
-  HIP_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, ///< The statically allocated shared
-                                        ///< memory size in bytes per block
-                                        ///< required by the function.
+  HIP_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES,     ///< The statically allocated shared
+                                            ///< memory size in bytes per block
+                                            ///< required by the function.
   HIP_FUNC_ATTRIBUTE_CONST_SIZE_BYTES, ///< The user-allocated constant memory
                                        ///< by the function in bytes.
   HIP_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, ///< The local memory usage of each
@@ -675,13 +675,13 @@ typedef enum hipPointer_attribute {
                                      ///< a pointer
   HIP_POINTER_ATTRIBUTE_DEVICE_POINTER, ///< address at which the pointer is
                                         ///< allocated on the device
-  HIP_POINTER_ATTRIBUTE_HOST_POINTER, ///< address at which the pointer is
-                                      ///< allocated on the host
-  HIP_POINTER_ATTRIBUTE_P2P_TOKENS,   ///< A pair of tokens for use with Linux
-                                      ///< kernel interface
-                                      ///< @warning This attribute is not
-                                      ///< supported in HIP
-  HIP_POINTER_ATTRIBUTE_SYNC_MEMOPS,  ///< Synchronize every synchronous memory
+  HIP_POINTER_ATTRIBUTE_HOST_POINTER,   ///< address at which the pointer is
+                                        ///< allocated on the host
+  HIP_POINTER_ATTRIBUTE_P2P_TOKENS,     ///< A pair of tokens for use with Linux
+                                        ///< kernel interface
+                                        ///< @warning This attribute is not
+                                        ///< supported in HIP
+  HIP_POINTER_ATTRIBUTE_SYNC_MEMOPS, ///< Synchronize every synchronous memory
                                      ///< operation initiated on this region
   HIP_POINTER_ATTRIBUTE_BUFFER_ID, ///< Unique ID for an allocated memory region
   HIP_POINTER_ATTRIBUTE_IS_MANAGED,     ///< Indicates if the pointer points to
