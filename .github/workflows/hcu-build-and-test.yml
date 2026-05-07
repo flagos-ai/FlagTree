@@ -1,4 +1,4 @@
-name: Hcu-Build-And-Test
+name: Hcu3.1-Build-And-Test
 
 on:
   push:

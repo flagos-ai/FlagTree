@@ -2,7 +2,7 @@
 
 ## 💫 HYGON（海光信息）[hcu](/third_party/hcu/)
 
-- Based on Triton 3.0, x64
+- Based on Triton 3.1, x64
 - Available for K100/BW1000
 
 ### 1. Build and run environment
