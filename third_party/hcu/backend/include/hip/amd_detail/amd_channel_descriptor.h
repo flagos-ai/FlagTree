@@ -24,15 +24,15 @@ THE SOFTWARE.
 #define HIP_INCLUDE_HIP_AMD_DETAIL_CHANNEL_DESCRIPTOR_H
 
 #if !defined(__HIPCC_RTC__)
-#include <hip/hip_common.h>
-#include <hip/driver_types.h>
 #include <hip/amd_detail/amd_hip_vector_types.h>
+#include <hip/driver_types.h>
+#include <hip/hip_common.h>
 #endif
 
 #ifdef __cplusplus
 
-extern "C" HIP_PUBLIC_API hipChannelFormatDesc hipCreateChannelDesc(int x, int y, int z, int w,
-                                                                    hipChannelFormatKind f);
+extern "C" HIP_PUBLIC_API hipChannelFormatDesc
+hipCreateChannelDesc(int x, int y, int z, int w, hipChannelFormatKind f);
 
 static inline hipChannelFormatDesc hipCreateChannelDescHalf() {
   int e = (int)sizeof(unsigned short) * 8;
@@ -54,7 +54,8 @@ static inline hipChannelFormatDesc hipCreateChannelDescHalf4() {
   return hipCreateChannelDesc(e, e, e, e, hipChannelFormatKindFloat);
 }
 
-template <typename T> static inline hipChannelFormatDesc hipCreateChannelDesc() {
+template <typename T>
+static inline hipChannelFormatDesc hipCreateChannelDesc() {
   return hipCreateChannelDesc(0, 0, 0, 0, hipChannelFormatKindNone);
 }
 
@@ -93,7 +94,7 @@ template <> inline hipChannelFormatDesc hipCreateChannelDesc<char2>() {
   return hipCreateChannelDesc(e, e, 0, 0, hipChannelFormatKindSigned);
 }
 
-#ifndef __GNUC__  // vector3 is the same as vector4
+#ifndef __GNUC__ // vector3 is the same as vector4
 template <> inline hipChannelFormatDesc hipCreateChannelDesc<uchar3>() {
   int e = (int)sizeof(unsigned char) * 8;
   return hipCreateChannelDesc(e, e, e, 0, hipChannelFormatKindUnsigned);

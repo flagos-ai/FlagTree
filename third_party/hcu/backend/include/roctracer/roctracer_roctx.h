@@ -41,24 +41,24 @@ enum roctx_api_id_t {
 typedef struct roctx_api_data_s {
   union {
     struct {
-      const char* message;
+      const char *message;
       roctx_range_id_t id;
     };
     struct {
-      const char* message;
+      const char *message;
     } roctxMarkA;
     struct {
-      const char* message;
+      const char *message;
     } roctxRangePushA;
     struct {
-      const char* message;
+      const char *message;
     } roctxRangePop;
     struct {
-      const char* message;
+      const char *message;
       roctx_range_id_t id;
     } roctxRangeStartA;
     struct {
-      const char* message;
+      const char *message;
       roctx_range_id_t id;
     } roctxRangeStop;
   } args;

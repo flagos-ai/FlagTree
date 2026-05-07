@@ -1,11 +1,11 @@
 /*
  * Modification Copyright 2025 ByteDance Ltd. and/or its affiliates.
  */
-#include "triton/Conversion/TritonDistributedToLLVM/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "third_party/hcu/lib/TritonHCUGPUToLLVM/Utility.h"
+#include "triton/Conversion/TritonDistributedToLLVM/Passes.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 
 namespace mlir::triton {

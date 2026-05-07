@@ -347,12 +347,10 @@ MfmaIntrinsic::selectFor(Location loc, int version, unsigned mDim,
   return MfmaIntrinsic(symbol, mDim, nDim, k, kBase, aElemType, bElemType);
 }
 
-FailureOr<MfmaIntrinsic> MfmaIntrinsic::get(Location loc, int version,
-                                            unsigned mDim, unsigned nDim,
-                                            unsigned kDim, Type aElemType,
-                                            Type bElemType, bool withScale,
-                                            bool useTF32,
-                                            HCUISAFeature features) {
+FailureOr<MfmaIntrinsic>
+MfmaIntrinsic::get(Location loc, int version, unsigned mDim, unsigned nDim,
+                   unsigned kDim, Type aElemType, Type bElemType,
+                   bool withScale, bool useTF32, HCUISAFeature features) {
   const MfmaMap &mfmaMap = MfmaDatabase::get(aElemType.getContext());
   MfmaKey key = composeMfmaKeyFor(loc, version, mDim, nDim, aElemType,
                                   bElemType, withScale, useTF32, features);

@@ -53,12 +53,13 @@ enum HipVdiCommandKind {
  *
  * @returns None
  */
-void hipInitActivityCallback(void* id_callback, void* op_callback, void* arg);
+void hipInitActivityCallback(void *id_callback, void *op_callback, void *arg);
 
 /**
  * @brief Enables activity callback
  *
- * @param [input] op      Operation, which will trigger a callback (@see HipVdiOpId)
+ * @param [input] op      Operation, which will trigger a callback (@see
+ * HipVdiOpId)
  * @param [input] enable  Enable state for the callback
  *
  * @returns True if successful
@@ -72,6 +73,6 @@ bool hipEnableActivityCallback(uint32_t op, bool enable);
  *
  * @returns A pointer to a const string with the command description
  */
-const char* hipGetCmdName(uint32_t id);
+const char *hipGetCmdName(uint32_t id);
 
-#endif  // HIP_INCLUDE_HIP_AMD_DETAIL_HIP_RUNTIME_PROF_H
+#endif // HIP_INCLUDE_HIP_AMD_DETAIL_HIP_RUNTIME_PROF_H

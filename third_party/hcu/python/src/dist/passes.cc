@@ -21,12 +21,12 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 #include "mlir/Transforms/Passes.h"
-#include "triton/Conversion/TritonDistributedToLLVM/Passes.h"
-#include "triton/Conversion/TritonDistributedToTritonGPU/Passes.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "python/src/passes.h"
+#include "triton/Conversion/TritonDistributedToLLVM/Passes.h"
+#include "triton/Conversion/TritonDistributedToTritonGPU/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
 #include <pybind11/pybind11.h>

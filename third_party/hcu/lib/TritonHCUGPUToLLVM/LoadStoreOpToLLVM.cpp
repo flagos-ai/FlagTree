@@ -25,8 +25,8 @@ using ::mlir::LLVM::getSharedMemoryBase;
 using ::mlir::LLVM::HCU::getVectorSize;
 using ::mlir::LLVM::HCU::llLoad;
 using ::mlir::LLVM::HCU::llStore;
-using ::mlir::triton::HCU::ISAFamily;
 using ::mlir::triton::gpu::getTotalElemsPerThread;
+using ::mlir::triton::HCU::ISAFamily;
 
 namespace {
 
@@ -764,9 +764,10 @@ struct BufferLoadOpConversion
     if (llOther)
       otherElems = unpackLLElements(loc, llOther, rewriter);
 
-    // FIXME: Explicitly disable cache swizzling(introduced by oai commit 7fffa0df) for
-    //        buffer ops on HCUs as more hcu-specific details (stride field particularly)
-    //        should be considered.
+    // FIXME: Explicitly disable cache swizzling(introduced by oai commit
+    // 7fffa0df) for
+    //        buffer ops on HCUs as more hcu-specific details (stride field
+    //        particularly) should be considered.
     // Create the resource descriptor and then emit the buffer_load intrinsic(s)
     // Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr, llStride);
     Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr);
@@ -893,9 +894,10 @@ struct BufferLoadToLocalOpConversion
         zipLoadValues(rewriter, loc, vec, offsetElems, offsetTy, maskElems,
                       otherElems, otherTy, swizzledLaneOffsets);
 
-    // FIXME: Explicitly disable cache swizzling(introduced by oai commit 83229ced0479) for
-    //        buffer atomic ops on HCUs as more hcu-specific details (stride field particularly)
-    //        should be considered.
+    // FIXME: Explicitly disable cache swizzling(introduced by oai commit
+    // 83229ced0479) for
+    //        buffer atomic ops on HCUs as more hcu-specific details (stride
+    //        field particularly) should be considered.
     // Create the resource descriptor and then emit the buffer_loads to lds
     // based on the collected shared addresses and vector size
     // Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr, llStride);
@@ -1403,9 +1405,10 @@ struct BufferAtomicRMWOpConversion
     SmallVector<Value> maskElems =
         getMaskElemsAndUpdateVeclen(rewriter, loc, llMask, mask, vec);
 
-    // FIXME: Explicitly disable cache swizzling(introduced by oai commit 83229ced0479) for
-    //        buffer atomic ops on HCUs as more hcu-specific details (stride field particularly)
-    //        should be considered.
+    // FIXME: Explicitly disable cache swizzling(introduced by oai commit
+    // 83229ced0479) for
+    //        buffer atomic ops on HCUs as more hcu-specific details (stride
+    //        field particularly) should be considered.
     // Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr, llStride);
     Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr);
     SmallVector<Value> loadedVals;
@@ -1526,9 +1529,10 @@ struct BufferAtomicCASOpConversion
     SmallVector<Value> valElems = unpackLLElements(loc, llVal, rewriter);
     SmallVector<Value> cmpElems = unpackLLElements(loc, llCmp, rewriter);
 
-    // FIXME: Explicitly disable cache swizzling(introduced by oai commit 83229ced0479) for
-    //        buffer atomic ops on HCUs as more hcu-specific details (stride field particularly)
-    //        should be considered.
+    // FIXME: Explicitly disable cache swizzling(introduced by oai commit
+    // 83229ced0479) for
+    //        buffer atomic ops on HCUs as more hcu-specific details (stride
+    //        field particularly) should be considered.
     // Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr, llStride);
     Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr);
     SmallVector<Value> loadedVals;
@@ -1641,9 +1645,10 @@ struct BufferStoreOpConversion
     SmallVector<Value> maskElems =
         getMaskElemsAndUpdateVeclen(rewriter, loc, llMask, mask, vec);
 
-    // FIXME: Explicitly disable cache swizzling(introduced by oai commit 7fffa0df) for
-    //        buffer ops on HCUs as more hcu-specific details (stride field particularly)
-    //        should be considered.
+    // FIXME: Explicitly disable cache swizzling(introduced by oai commit
+    // 7fffa0df) for
+    //        buffer ops on HCUs as more hcu-specific details (stride field
+    //        particularly) should be considered.
     // Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr, llStride);
     Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr);
     MLIRContext *ctx = rewriter.getContext();
@@ -2035,10 +2040,12 @@ struct AsyncWaitOpConversion
       unsigned highBits = vmCnt >> 4 << 14;
       unsigned otherCnts = ~0xC00F; // C00F has bits 15:14 and 3:0 set
 
-      // HCU extend: bit 7 to enable backend hcu-update-wait-by-reverse-search optimize.
-      // see http://172.20.48.13/browse/DCUSW-3577 to know more details.
+      // HCU extend: bit 7 to enable backend hcu-update-wait-by-reverse-search
+      // optimize. see http://172.20.48.13/browse/DCUSW-3577 to know more
+      // details.
       unsigned enableOptWaitCntBits = 0x1 << 7;
-      unsigned waitValue = lowBits | highBits | otherCnts | enableOptWaitCntBits;
+      unsigned waitValue =
+          lowBits | highBits | otherCnts | enableOptWaitCntBits;
 
       ROCDL::SWaitcntOp::create(rewriter, loc, waitValue);
       break;

@@ -121,14 +121,13 @@ struct LoadInfo {
   bool isMatrixLoad = false;
 
   LoadInfo() = default;
-  LoadInfo(ttg::SwizzledSharedEncodingAttr sharedEncoding,
-           int distToUse, Operation *use)
-      : sharedEncoding(sharedEncoding), distToUse(distToUse),
-        use(use) {}
-  LoadInfo(ttg::HCUMlsSharedEncodingAttr mlsEncoding,
-           int distToUse, Operation *use)
-      : mlsEncoding(mlsEncoding), distToUse(distToUse),
-        use(use), isMatrixLoad(true) {}
+  LoadInfo(ttg::SwizzledSharedEncodingAttr sharedEncoding, int distToUse,
+           Operation *use)
+      : sharedEncoding(sharedEncoding), distToUse(distToUse), use(use) {}
+  LoadInfo(ttg::HCUMlsSharedEncodingAttr mlsEncoding, int distToUse,
+           Operation *use)
+      : mlsEncoding(mlsEncoding), distToUse(distToUse), use(use),
+        isMatrixLoad(true) {}
 };
 using LoadToInfoMap = llvm::MapVector<Operation *, LoadInfo>;
 
@@ -188,7 +187,7 @@ AsyncCopyChainOps createAsyncCopy(tt::MatrixLoadOp loadOp, Value alloc,
       loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(), viewLoad);
 
   auto mlsAttr = loadOp->getAttrOfType<tta::MlsEncodingAttr>(
-                                                        tta::MlsEncodingAttr::getMnemonic());
+      tta::MlsEncodingAttr::getMnemonic());
   copyOp->setAttr(tta::MlsEncodingAttr::getMnemonic(), mlsAttr);
 
   auto commitOp =
@@ -335,13 +334,13 @@ std::optional<ttg::HCUMlsSharedEncodingAttr>
 getMlsEncIfAllUsersAreDotEnc(Value val) {
   auto matrixOp = cast<tt::MatrixLoadOp>(val.getDefiningOp());
   auto matrixTy = cast<RankedTensorType>(matrixOp.getType());
-  auto mlsAttr = matrixOp->getAttrOfType<tta::MlsEncodingAttr>(tta::MlsEncodingAttr::getMnemonic());
+  auto mlsAttr = matrixOp->getAttrOfType<tta::MlsEncodingAttr>(
+      tta::MlsEncodingAttr::getMnemonic());
   auto ctaLayout = ttg::getCTALayout(matrixTy.getEncoding());
   auto attr = ttg::HCUMlsSharedEncodingAttr::get(
-                            matrixOp.getContext(), mlsAttr.getOpIdx(), mlsAttr.getMlsTile(),
-                            mlsAttr.getElemBitWidth(), mlsAttr.getAlt2Kind(),
-                            mlsAttr.getVersion(), mlsAttr.getOrder(),
-                            ctaLayout);
+      matrixOp.getContext(), mlsAttr.getOpIdx(), mlsAttr.getMlsTile(),
+      mlsAttr.getElemBitWidth(), mlsAttr.getAlt2Kind(), mlsAttr.getVersion(),
+      mlsAttr.getOrder(), ctaLayout);
   return attr;
 }
 
@@ -429,11 +428,11 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
     if (isLoadOp) {
       auto ty = cast<RankedTensorType>(loadOp->getResultTypes()[0]);
       alloc = triton::createAlloc(forOp, ty, loadOp->getLoc(),
-                                        info.sharedEncoding, numBuffers);
+                                  info.sharedEncoding, numBuffers);
     } else if (matrixLoadOp) {
       auto ty = cast<RankedTensorType>(matrixLoadOp->getResultTypes()[0]);
       alloc = triton::createAlloc(forOp, ty, matrixLoadOp->getLoc(),
-                                        info.mlsEncoding, numBuffers);
+                                  info.mlsEncoding, numBuffers);
     }
     assert(alloc && "Failed to create alloc for the async load.");
     // auto arch = getHCUArch(loadOp->getParentOfType<ModuleOp>());
@@ -449,7 +448,8 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
         loadToStreamOp[loadOp] = createStreamCopy(loadOp, alloc, extractIdx);
       }
     } else if (matrixLoadOp) {
-      loadToStreamOp[matrixLoadOp] = createAsyncCopy(matrixLoadOp, alloc, extractIdx);
+      loadToStreamOp[matrixLoadOp] =
+          createAsyncCopy(matrixLoadOp, alloc, extractIdx);
     }
   }
 
@@ -474,7 +474,8 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
           return;
         if (isa<tt::LoadOp, tt::MatrixLoadOp>(op)) {
           if (filterSmall && isa<tt::LoadOp>(op) &&
-              !canBeConvertedToAsyncLoad(cast<tt::LoadOp>(op), axisInfoAnalysis)) {
+              !canBeConvertedToAsyncLoad(cast<tt::LoadOp>(op),
+                                         axisInfoAnalysis)) {
             return;
           }
           if (loadOpToIndLevel.count(op)) {
@@ -557,9 +558,8 @@ preprocessLoop(triton::HCU::ModuleAxisInfoAnalysis &axisInfoAnalysis,
   bool pipelineWithoutDot = forOp->hasAttr(mlir::triton::kNumStagesAttrName);
   bool filterSmallVectors = isaFamily != triton::HCU::ISAFamily::CDNA4;
   llvm::MapVector<Operation *, std::pair<int, Operation *>> loadOpToIndLevel =
-      loadOpsToIndirectionLevel(forOp, pipelineWithoutDot,
-                                axisInfoAnalysis, numStages,
-                                filterSmallVectors);
+      loadOpsToIndirectionLevel(forOp, pipelineWithoutDot, axisInfoAnalysis,
+                                numStages, filterSmallVectors);
 
   LLVM_DEBUG({
     LDBG("Found " << loadOpToIndLevel.size() << " loads to pipeline:");
@@ -611,8 +611,7 @@ using Stages = std::array<int, SCHED_SIZE>;
 LogicalResult initScheduleSingleBuf(int maxDist, Stages &stages, int numStages,
                                     int &numBuffers, int globalPrefetch,
                                     int localPrefetch, bool useAsyncCopy,
-                                    bool waitAtTail,
-                                    bool &forceSchedLocalLoad,
+                                    bool waitAtTail, bool &forceSchedLocalLoad,
                                     Clusters &clusters,
                                     tt::CoarseSchedule &schedule) {
   bool pairedGlobalLoadLocalStore = true;
@@ -644,9 +643,9 @@ LogicalResult initScheduleSingleBuf(int maxDist, Stages &stages, int numStages,
   // the first in the main loop after pipelining.
   int asyncWaitCluster = 0;
   int localLoadCluster = 1;
-  int globalLoadCluster= 2;
-  int computeCluster   = 3;
-  int localStoreCluster= 4;
+  int globalLoadCluster = 2;
+  int computeCluster = 3;
+  int localStoreCluster = 4;
 
   // Make assignments
   Clusters clusterVec;
@@ -662,22 +661,25 @@ LogicalResult initScheduleSingleBuf(int maxDist, Stages &stages, int numStages,
   //       compute:         stage=i     cluster=3
   //       tail:            stage=i     cluster=3
   //
-  // case 2:  mix matrix_load(b) and load(a):               // and after ReorderInstrcutions pass
+  // case 2:  mix matrix_load(b) and load(a):               // and after
+  // ReorderInstrcutions pass
   //     for i in (...):
-  //                                                        global_loads(a):    stage=i+1
-  //       async_wait(b):      stage=i    cluster=0         async_wait(b):      stage=i
-  //       local_load(a, b):   stage=i    cluster=1         local_load(a, b):   stage=i
-  //       global_loads(a):    stage=i+1  cluster=2   -->
-  //       matrix_load_lds(b): stage=i+1  cluster=2         matrix_load_lds(b): stage=i+1
-  //       compute:            stage=i    cluster=3         compute:            stage=i
-  //       tail:               stage=i    cluster=3         tail:               stage=i
-  //       local_store(a):     stage=i+1  cluster=4         local_store(a):     stage=i+1
+  //                                                        global_loads(a):
+  //                                                        stage=i+1
+  //       async_wait(b):      stage=i    cluster=0         async_wait(b):
+  //       stage=i local_load(a, b):   stage=i    cluster=1 local_load(a, b):
+  //       stage=i global_loads(a):    stage=i+1  cluster=2   -->
+  //       matrix_load_lds(b): stage=i+1  cluster=2         matrix_load_lds(b):
+  //       stage=i+1 compute:            stage=i    cluster=3         compute:
+  //       stage=i tail:               stage=i    cluster=3         tail:
+  //       stage=i local_store(a):     stage=i+1  cluster=4 local_store(a):
+  //       stage=i+1
   //
   clusters[SCHED_GLOBAL_LOAD] = clusterVec[globalLoadCluster];
   clusters[SCHED_LOCAL_STORE] = clusterVec[localStoreCluster];
-  clusters[SCHED_LOCAL_LOAD]  = clusterVec[localLoadCluster];
-  clusters[SCHED_COMPUTE]     = clusterVec[computeCluster];
-  clusters[SCHED_ASYNC_WAIT]  = clusterVec[asyncWaitCluster];
+  clusters[SCHED_LOCAL_LOAD] = clusterVec[localLoadCluster];
+  clusters[SCHED_COMPUTE] = clusterVec[computeCluster];
+  clusters[SCHED_ASYNC_WAIT] = clusterVec[asyncWaitCluster];
 
   LDBG("Cluster schedule:" << "  GLOBAL_LOAD cluster = " << globalLoadCluster
                            << ", LOCAL_STORE cluster = " << localStoreCluster
@@ -689,7 +691,6 @@ LogicalResult initScheduleSingleBuf(int maxDist, Stages &stages, int numStages,
   return success();
 }
 
-
 // Init Schedule Config based on settings and loop characteristics.
 // Create clusters in order of ops in loop. This can interleave ops
 // from different stages in the same cluster to achieve better backend
@@ -699,10 +700,8 @@ LogicalResult initScheduleSingleBuf(int maxDist, Stages &stages, int numStages,
 LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
                            int &numBuffers, int globalPrefetch,
                            int localPrefetch, bool useAsyncCopy,
-                           bool waitAtTail,
-                           bool asyncCopySingleBuffer,
-                           bool &forceSchedLocalLoad,
-                           Clusters &clusters,
+                           bool waitAtTail, bool asyncCopySingleBuffer,
+                           bool &forceSchedLocalLoad, Clusters &clusters,
                            tt::CoarseSchedule &schedule) {
   int lastStage = numStages - 1;
   stages[SCHED_GLOBAL_LOAD] = 0;
@@ -713,11 +712,9 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
 
   bool _asyncCopySingleBuffer = maxDist == 0 ? asyncCopySingleBuffer : false;
   if (_asyncCopySingleBuffer) {
-    return initScheduleSingleBuf(maxDist, stages, numStages, numBuffers,
-                                 globalPrefetch, localPrefetch,
-                                 useAsyncCopy, waitAtTail,
-                                 forceSchedLocalLoad,
-                                 clusters, schedule);
+    return initScheduleSingleBuf(
+        maxDist, stages, numStages, numBuffers, globalPrefetch, localPrefetch,
+        useAsyncCopy, waitAtTail, forceSchedLocalLoad, clusters, schedule);
   }
 
   bool pairedGlobalLoadLocalStore = stages[SCHED_LOCAL_STORE] == 0;
@@ -791,13 +788,14 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
   }
 
   // num_stages = 3 with prefetch case
-  if (numBuffers == 2 && stages[SCHED_GLOBAL_LOAD] != stages[SCHED_LOCAL_STORE]
-      && stages[SCHED_LOCAL_STORE] != stages[SCHED_LOCAL_LOAD]) {
+  if (numBuffers == 2 &&
+      stages[SCHED_GLOBAL_LOAD] != stages[SCHED_LOCAL_STORE] &&
+      stages[SCHED_LOCAL_STORE] != stages[SCHED_LOCAL_LOAD]) {
     asyncWaitCluster = 0;
     localLoadCluster = 1;
-    globalLoadCluster= 2;
-    localStoreCluster= 3;
-    computeCluster   = 4;
+    globalLoadCluster = 2;
+    localStoreCluster = 3;
+    computeCluster = 4;
 
     forceSchedLocalLoad = true;
   }
@@ -809,8 +807,9 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
 
   // Streaming Schema cluster order and staging for multi-buffer.
   //
-  // note: the prefetch affect the stages of local_store and all the clusters, so for both matrix_load
-  // situation, the prefetch has no effect. for mix_load situation, the prefetch has effect.
+  // note: the prefetch affect the stages of local_store and all the clusters,
+  // so for both matrix_load situation, the prefetch has no effect. for mix_load
+  // situation, the prefetch has effect.
   //
   // case 1:  both matrix_load:
   //
@@ -827,45 +826,55 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
   //
   // case 2:  mix matrix_load(b) and load(a):
   //    Stream Prefetch = False(num_stages = 2, numBuffers = 2):
-  //       for i in (...):                             // and after ReorderInstrcutions pass
-  //                                                          global_loads(a):    stage=i+1
-  //         async_wait(b):      stage=i    cluster=0         async_wait(b):      stage=i
-  //         global_loads(a):    stage=i+1  cluster=1   -->
-  //         matrix_load_lds(b): stage=i+1  cluster=1         matrix_load_lds(b): stage=i+1
-  //         local_load(a, b):   stage=i    cluster=1         local_load(a, b):   stage=i
-  //         compute:            stage=i    cluster=1         compute:            stage=i
-  //         tail:               stage=i    cluster=1         tail:               stage=i
-  //         local_store(a):     stage=i+1  cluster=3         local_store(a):     stage=i+1
+  //       for i in (...):                             // and after
+  //       ReorderInstrcutions pass
+  //                                                          global_loads(a):
+  //                                                          stage=i+1
+  //         async_wait(b):      stage=i    cluster=0         async_wait(b):
+  //         stage=i global_loads(a):    stage=i+1  cluster=1   -->
+  //         matrix_load_lds(b): stage=i+1  cluster=1 matrix_load_lds(b):
+  //         stage=i+1 local_load(a, b):   stage=i    cluster=1 local_load(a,
+  //         b):   stage=i compute:            stage=i    cluster=1 compute:
+  //         stage=i tail:               stage=i    cluster=1         tail:
+  //         stage=i local_store(a):     stage=i+1  cluster=3 local_store(a):
+  //         stage=i+1
   //
   //
   //    Stream Prefetch = True(num_stages = 2, numBuffers = 2):
-  //       for i in (...):                             // and after ReorderInstrcutions pass
-  //                                                          global_loads(a):    stage=i+1
-  //         async_wait(b):      stage=i    cluster=0         async_wait(b):      stage=i
-  //         local_store(a):     stage=i    cluster=2         local_store(a):     stage=i
-  //         global_loads(a):    stage=i+1  cluster=3   -->
-  //         matrix_load_lds(b): stage=i+1  cluster=3         matrix_load_lds(b): stage=i+1
-  //         local_load(a, b):   stage=i    cluster=3         local_load(a, b):   stage=i
-  //         compute:            stage=i    cluster=3         compute:            stage=i
-  //         tail:               stage=i    cluster=3         tail:               stage=i
+  //       for i in (...):                             // and after
+  //       ReorderInstrcutions pass
+  //                                                          global_loads(a):
+  //                                                          stage=i+1
+  //         async_wait(b):      stage=i    cluster=0         async_wait(b):
+  //         stage=i local_store(a):     stage=i    cluster=2 local_store(a):
+  //         stage=i global_loads(a):    stage=i+1  cluster=3   -->
+  //         matrix_load_lds(b): stage=i+1  cluster=3 matrix_load_lds(b):
+  //         stage=i+1 local_load(a, b):   stage=i    cluster=3 local_load(a,
+  //         b):   stage=i compute:            stage=i    cluster=3 compute:
+  //         stage=i tail:               stage=i    cluster=3         tail:
+  //         stage=i
   //
-  // case 3: mix matrix_load(b) and load(a) with num_stages = 3 && prefetch case:
+  // case 3: mix matrix_load(b) and load(a) with num_stages = 3 && prefetch
+  // case:
   //    Stream Prefetch = True(num_stages = 3, numBuffers = 2):
-  //       for i in (...):                             // and after ReorderInstrcutions pass
-  //                                                          global_loads(a):    stage=i+2
-  //         async_wait(b):      stage=i    cluster=0         async_wait(b):      stage=i
-  //         local_load(a, b):   stage=i    cluster=1         local_load(a, b):   stage=i
-  //         global_loads(a):    stage=i+2  cluster=2   -->
-  //         matrix_load_lds(b): stage=i+2  cluster=2         matrix_load_lds(b): stage=i+2
-  //         local_store(a):     stage=i+1  cluster=3         local_store(a):     stage=i+1
-  //         compute:            stage=i    cluster=4         compute:            stage=i
-  //         tail:               stage=i    cluster=4         tail:               stage=i
+  //       for i in (...):                             // and after
+  //       ReorderInstrcutions pass
+  //                                                          global_loads(a):
+  //                                                          stage=i+2
+  //         async_wait(b):      stage=i    cluster=0         async_wait(b):
+  //         stage=i local_load(a, b):   stage=i    cluster=1 local_load(a, b):
+  //         stage=i global_loads(a):    stage=i+2  cluster=2   -->
+  //         matrix_load_lds(b): stage=i+2  cluster=2 matrix_load_lds(b):
+  //         stage=i+2 local_store(a):     stage=i+1  cluster=3 local_store(a):
+  //         stage=i+1 compute:            stage=i    cluster=4         compute:
+  //         stage=i tail:               stage=i    cluster=4         tail:
+  //         stage=i
   //
   clusters[SCHED_GLOBAL_LOAD] = clusterVec[globalLoadCluster];
   clusters[SCHED_LOCAL_STORE] = clusterVec[localStoreCluster];
-  clusters[SCHED_LOCAL_LOAD]  = clusterVec[localLoadCluster];
-  clusters[SCHED_COMPUTE]     = clusterVec[computeCluster];
-  clusters[SCHED_ASYNC_WAIT]  = clusterVec[asyncWaitCluster];
+  clusters[SCHED_LOCAL_LOAD] = clusterVec[localLoadCluster];
+  clusters[SCHED_COMPUTE] = clusterVec[computeCluster];
+  clusters[SCHED_ASYNC_WAIT] = clusterVec[asyncWaitCluster];
 
   LDBG("Cluster schedule:" << "  GLOBAL_LOAD cluster = " << globalLoadCluster
                            << ", LOCAL_STORE cluster = " << localStoreCluster
@@ -886,8 +895,10 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
 //   // Place ttg.async_commit_group op following AsyncCopyGlobalToLocal so the
 //   // later UpdateAsyncWaitCount pass can deduce better waitcnts
 //   schedule.insert(commitOp, loadStage, loadCluster);
-//   // If the LocalLoads are scheduled to a later stage than AsyncCopy we need to
-//   // place the AsyncCopy prefetches after the AsyncWaits which create a barrier
+//   // If the LocalLoads are scheduled to a later stage than AsyncCopy we need
+//   to
+//   // place the AsyncCopy prefetches after the AsyncWaits which create a
+//   barrier
 //   // to ensure all warps are finished reading the shared buffer we will write
 //   // into. This is done by scheduling AsyncWait as the first cluster.
 //   // If AsyncCopy and LocalLoads are in the same stage we do not assign a
@@ -896,15 +907,16 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
 //     schedule.insert(waitOp, stages[SCHED_ASYNC_WAIT],
 //                     clusters[SCHED_ASYNC_WAIT]);
 
-//   if (maybeLocalLoadOp && stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE]) {
+//   if (maybeLocalLoadOp && stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE])
+//   {
 //     scheduleLocalLoad(maybeLocalLoadOp, schedule, stages[SCHED_LOCAL_LOAD],
 //                       clusters[SCHED_LOCAL_LOAD]);
 //   }
 // }
 
-void scheduleAsyncCopy(const AsyncCopyChainOps &asyncOps, tt::MatrixLoadOp loadOp,
-                       tt::CoarseSchedule &schedule, const Stages &stages,
-                       const Clusters &clusters,
+void scheduleAsyncCopy(const AsyncCopyChainOps &asyncOps,
+                       tt::MatrixLoadOp loadOp, tt::CoarseSchedule &schedule,
+                       const Stages &stages, const Clusters &clusters,
                        bool forceSchedLocalLoad) {
   auto [copyOp, commitOp, waitOp, maybeLocalLoadOp] = asyncOps;
   auto [loadStage, loadCluster] = schedule[loadOp];
@@ -922,7 +934,8 @@ void scheduleAsyncCopy(const AsyncCopyChainOps &asyncOps, tt::MatrixLoadOp loadO
     schedule.insert(waitOp, stages[SCHED_ASYNC_WAIT],
                     clusters[SCHED_ASYNC_WAIT]);
 
-  if (maybeLocalLoadOp && stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE] || forceSchedLocalLoad) {
+  if (maybeLocalLoadOp && stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE] ||
+      forceSchedLocalLoad) {
     scheduleLocalLoad(maybeLocalLoadOp, schedule, stages[SCHED_LOCAL_LOAD],
                       clusters[SCHED_LOCAL_LOAD]);
   }
@@ -940,15 +953,16 @@ void scheduleStreamCopy(const StreamCopyChainOps &streamOps,
                   clusters[SCHED_LOCAL_STORE]);
   schedule.insert(localStoreOp, stages[SCHED_LOCAL_STORE],
                   clusters[SCHED_LOCAL_STORE]);
-  if (maybeLocalLoadOp && stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE] || forceSchedLocalLoad) {
+  if (maybeLocalLoadOp && stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE] ||
+      forceSchedLocalLoad) {
     scheduleLocalLoad(maybeLocalLoadOp, schedule, stages[SCHED_LOCAL_LOAD],
                       clusters[SCHED_LOCAL_LOAD]);
   }
 }
 
-LogicalResult scheduleLoads(const LoadToInfoMap &loadToInfo, int maxDist, int maxDistLoad,
-                            int numStages, const Stages &stages,
-                            const Clusters &clusters,
+LogicalResult scheduleLoads(const LoadToInfoMap &loadToInfo, int maxDist,
+                            int maxDistLoad, int numStages,
+                            const Stages &stages, const Clusters &clusters,
                             tt::CoarseSchedule &schedule) {
   // The stage gap between chained loads--this allows us to "spread" loads
   // with a non-one step in case the number of stages given by the user is
@@ -989,9 +1003,11 @@ void scheduleStreamOps(const LoadToStreamOpMap &loadToStreamOp,
       continue;
 
     if (auto asyncOps = std::get_if<AsyncCopyChainOps>(&streamOps)) {
-      scheduleAsyncCopy(*asyncOps, matrixLoadOp, schedule, stages, clusters, forceSchedLocalLoad);
+      scheduleAsyncCopy(*asyncOps, matrixLoadOp, schedule, stages, clusters,
+                        forceSchedLocalLoad);
     } else if (auto sOps = std::get_if<StreamCopyChainOps>(&streamOps)) {
-      scheduleStreamCopy(*sOps, loadOp, schedule, stages, clusters, forceSchedLocalLoad);
+      scheduleStreamCopy(*sOps, loadOp, schedule, stages, clusters,
+                         forceSchedLocalLoad);
     }
   }
 }
@@ -999,8 +1015,7 @@ void scheduleStreamOps(const LoadToStreamOpMap &loadToStreamOp,
 tt::CoarseSchedule
 buildSchedule(scf::ForOp &forOp, int numStages, const LoadToInfoMap &loadToInfo,
               int globalPrefetch, int localPrefetch, bool useAsyncCopy,
-              bool waitAtTail,
-              bool asyncCopySingleBuffer,
+              bool waitAtTail, bool asyncCopySingleBuffer,
               triton::HCU::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   tt::CoarseSchedule schedule(numStages);
   Stages stages;
@@ -1027,21 +1042,20 @@ buildSchedule(scf::ForOp &forOp, int numStages, const LoadToInfoMap &loadToInfo,
   bool forceSchedLocalLoad = false;
   if (failed(initSchedule(maxDist, stages, numStages, numBuffers,
                           globalPrefetch, localPrefetch, useAsyncCopy,
-                          waitAtTail,
-                          asyncCopySingleBuffer,
-                          forceSchedLocalLoad,
-                          clusters, schedule)))
+                          waitAtTail, asyncCopySingleBuffer,
+                          forceSchedLocalLoad, clusters, schedule)))
     return {};
 
-  if (failed(scheduleLoads(loadToInfo, maxDist, maxDistLoad, numStages, stages, clusters,
-                           schedule)))
+  if (failed(scheduleLoads(loadToInfo, maxDist, maxDistLoad, numStages, stages,
+                           clusters, schedule)))
     return {};
   dumpSchedule("Coarse schedule loads only:");
 
   // Convert the loads into shared memory allocations and loads from them.
   auto loadToStreamOp = createStreamOps(loadToInfo, forOp, numBuffers,
                                         useAsyncCopy, axisInfoAnalysis);
-  scheduleStreamOps(loadToStreamOp, schedule, stages, clusters, forceSchedLocalLoad);
+  scheduleStreamOps(loadToStreamOp, schedule, stages, clusters,
+                    forceSchedLocalLoad);
   dumpSchedule("Coarse schedule stream ops:");
 
   scheduleDependencies(forOp, schedule);
@@ -1079,9 +1093,8 @@ FailureOr<scf::ForOp> pipelineLoop(scf::ForOp forOp, int numStages,
   tt::CoarseSchedule schedule;
 
   schedule = SingleDotSchedule::buildSchedule(
-      forOp, numStages, loadToInfo, globalPrefetch, localPrefetch,
-      useAsyncCopy, waitAtTail,
-      asyncCopySingleBuffer, axisInfoAnalysis);
+      forOp, numStages, loadToInfo, globalPrefetch, localPrefetch, useAsyncCopy,
+      waitAtTail, asyncCopySingleBuffer, axisInfoAnalysis);
 
   if (schedule.empty()) {
     return failure();
@@ -1135,7 +1148,8 @@ FailureOr<scf::ForOp> pipelineLoop(scf::ForOp forOp, int numStages,
   return tt::pipelineForLoop(rewriter, forOp, options);
 }
 
-// HCU: Skip loop without matrix_load ops and leave it handled by StreamPipelinePass
+// HCU: Skip loop without matrix_load ops and leave it handled by
+// StreamPipelinePass
 bool skipLoopWithOutMatrixLoadOp(scf::ForOp forOp) {
   return llvm::all_of(forOp.getBody()->without_terminator(),
                       [](Operation &op) { return !isa<tt::MatrixLoadOp>(op); });
@@ -1143,7 +1157,8 @@ bool skipLoopWithOutMatrixLoadOp(scf::ForOp forOp) {
 
 } // namespace
 
-struct MlsPipelinePass : impl::TritonHCUGPUMlsStreamPipelineBase<MlsPipelinePass> {
+struct MlsPipelinePass
+    : impl::TritonHCUGPUMlsStreamPipelineBase<MlsPipelinePass> {
   using Base::Base;
 
   void runOnOperation() override {
@@ -1177,17 +1192,18 @@ struct MlsPipelinePass : impl::TritonHCUGPUMlsStreamPipelineBase<MlsPipelinePass
       }
 
       if (skipLoopWithOutMatrixLoadOp(forOp)) {
-        LDBG("Skip loop with matrix_load or matrix_load_to_local ops:\n" << *forOp);
+        LDBG("Skip loop with matrix_load or matrix_load_to_local ops:\n"
+             << *forOp);
         continue;
       }
 
       // i.e., we can still disable `waitAtTail` by explicitly disabling
       // pingpong, which is the only use case of this scheduling variant.
       int numStagesThis = tt::getNumStagesOrDefault(forOp, numStages);
-      bool waitAtTail = false; // usePingpong && (numStagesThis == 3) && useAsyncCopy;
+      bool waitAtTail =
+          false; // usePingpong && (numStagesThis == 3) && useAsyncCopy;
       (void)pipelineLoop(forOp, numStagesThis, globalPrefetch, localPrefetch,
-                         useAsyncCopy, waitAtTail,
-                         asyncCopySingleBuffer != 0);
+                         useAsyncCopy, waitAtTail, asyncCopySingleBuffer != 0);
     }
 
     // NOTE: Leave empty for now, until we utilize customEpiloguePeeling

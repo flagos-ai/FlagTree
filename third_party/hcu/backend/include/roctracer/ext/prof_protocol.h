@@ -43,7 +43,7 @@ typedef enum {
 
 /* API callback type */
 typedef void (*activity_rtapi_callback_t)(uint32_t domain, uint32_t cid,
-                                          const void* data, void* arg);
+                                          const void *data, void *arg);
 typedef uint32_t activity_kind_t;
 typedef uint32_t activity_op_t;
 
@@ -93,15 +93,16 @@ typedef struct activity_record_s {
   };
   union {
     size_t bytes;            /* data size bytes */
-    const char* kernel_name; /* kernel name */
-    const char* mark_message;
+    const char *kernel_name; /* kernel name */
+    const char *mark_message;
   };
 } activity_record_t;
 
 /* Activity sync callback type */
-typedef void (*activity_sync_callback_t)(uint32_t cid, activity_record_t* record, const void* data,
-                                         void* arg);
+typedef void (*activity_sync_callback_t)(uint32_t cid,
+                                         activity_record_t *record,
+                                         const void *data, void *arg);
 /* Activity async callback type */
-typedef void (*activity_async_callback_t)(uint32_t op, void* record, void* arg);
+typedef void (*activity_async_callback_t)(uint32_t op, void *record, void *arg);
 
 #endif /* EXT_PROF_PROTOCOL_H_ */

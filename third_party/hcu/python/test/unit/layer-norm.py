@@ -187,7 +187,7 @@ def _layer_norm_bwd_dx_fused(DX,  # pointer to the input gradient
 
     # need a barrier to ensure all threads finished before
     tl.debug_barrier()
-    
+
     # Release the lock
     tl.atomic_xchg(Lock, 0)
 
@@ -405,13 +405,9 @@ def bench_layer_norm(M, N, dtype, provider, mode='backward', eps=1e-5, device='c
                                                      grad_to_none=[x], rep=500)
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
+
 parser = argparse.ArgumentParser()
-parser.add_argument(
-    '--no_benchmark',
-    action='store_true',
-    default=False,
-    help='no benchmark test if true'
-)
+parser.add_argument('--no_benchmark', action='store_true', default=False, help='no benchmark test if true')
 args = parser.parse_args()
 
 test_layer_norm(1151, 8192, torch.float16)

@@ -29,8 +29,8 @@
 // Include TableGen'erated code
 #include "triton/Dialect/TritonGPU/IR/Dialect.cpp.inc"
 #include "triton/Dialect/TritonGPU/IR/OpInterfaces.cpp.inc"
-#include "triton/Dialect/TritonGPU/IR/TypeInterfaces.cpp.inc"
 #include "triton/Dialect/TritonGPU/IR/OpsEnums.cpp.inc"
+#include "triton/Dialect/TritonGPU/IR/TypeInterfaces.cpp.inc"
 
 using namespace mlir;
 using namespace mlir::triton;

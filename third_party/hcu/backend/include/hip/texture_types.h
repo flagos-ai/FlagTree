@@ -45,7 +45,7 @@ THE SOFTWARE.
 #if !defined(__HIPCC_RTC__)
 #include <hip/channel_descriptor.h>
 #include <hip/driver_types.h>
-#endif  // !defined(__HIPCC_RTC__)
+#endif // !defined(__HIPCC_RTC__)
 
 #define hipTextureType1D 0x01
 #define hipTextureType2D 0x02
@@ -61,13 +61,14 @@ THE SOFTWARE.
 #define HIP_IMAGE_OBJECT_SIZE_DWORD 12
 #define HIP_SAMPLER_OBJECT_SIZE_DWORD 8
 #define HIP_SAMPLER_OBJECT_OFFSET_DWORD HIP_IMAGE_OBJECT_SIZE_DWORD
-#define HIP_TEXTURE_OBJECT_SIZE_DWORD (HIP_IMAGE_OBJECT_SIZE_DWORD + HIP_SAMPLER_OBJECT_SIZE_DWORD)
+#define HIP_TEXTURE_OBJECT_SIZE_DWORD                                          \
+  (HIP_IMAGE_OBJECT_SIZE_DWORD + HIP_SAMPLER_OBJECT_SIZE_DWORD)
 
 /**
  * An opaque value that represents a hip texture object
  */
 struct __hip_texture;
-typedef struct __hip_texture* hipTextureObject_t;
+typedef struct __hip_texture *hipTextureObject_t;
 
 /**
  * hip texture address modes
@@ -87,19 +88,23 @@ enum hipTextureFilterMode { hipFilterModePoint = 0, hipFilterModeLinear = 1 };
 /**
  * hip texture read modes
  */
-enum hipTextureReadMode { hipReadModeElementType = 0, hipReadModeNormalizedFloat = 1 };
+enum hipTextureReadMode {
+  hipReadModeElementType = 0,
+  hipReadModeNormalizedFloat = 1
+};
 
 /**
  * hip texture reference
  */
 typedef struct textureReference {
   int normalized;
-  enum hipTextureReadMode readMode;  // used only for driver API's
+  enum hipTextureReadMode readMode; // used only for driver API's
   enum hipTextureFilterMode filterMode;
-  enum hipTextureAddressMode addressMode[3];  // Texture address mode for up to 3 dimensions
+  enum hipTextureAddressMode
+      addressMode[3]; // Texture address mode for up to 3 dimensions
   struct hipChannelFormatDesc channelDesc;
-  int sRGB;                    // Perform sRGB->linear conversion during texture read
-  unsigned int maxAnisotropy;  // Limit to the anisotropy ratio
+  int sRGB; // Perform sRGB->linear conversion during texture read
+  unsigned int maxAnisotropy; // Limit to the anisotropy ratio
   enum hipTextureFilterMode mipmapFilterMode;
   float mipmapLevelBias;
   float minMipmapLevelClamp;
@@ -114,10 +119,11 @@ typedef struct textureReference {
  * hip texture descriptor
  */
 typedef struct hipTextureDesc {
-  enum hipTextureAddressMode addressMode[3];  // Texture address mode for up to 3 dimensions
+  enum hipTextureAddressMode
+      addressMode[3]; // Texture address mode for up to 3 dimensions
   enum hipTextureFilterMode filterMode;
   enum hipTextureReadMode readMode;
-  int sRGB;  // Perform sRGB->linear conversion during texture read
+  int sRGB; // Perform sRGB->linear conversion during texture read
   float borderColor[4];
   int normalizedCoords;
   unsigned int maxAnisotropy;
@@ -140,7 +146,7 @@ typedef struct hipTextureDesc {
 #define __HIP_TEXTURE_ATTRIB
 #endif
 
-typedef textureReference* hipTexRef;
+typedef textureReference *hipTexRef;
 
 template <class T, int texType = hipTextureType1D,
           enum hipTextureReadMode mode = hipReadModeElementType>
@@ -162,8 +168,8 @@ struct __HIP_TEXTURE_ATTRIB texture : public textureReference {
     maxMipmapLevelClamp = 0;
   }
 
-  texture(int norm, enum hipTextureFilterMode fMode, enum hipTextureAddressMode aMode,
-          struct hipChannelFormatDesc desc) {
+  texture(int norm, enum hipTextureFilterMode fMode,
+          enum hipTextureAddressMode aMode, struct hipChannelFormatDesc desc) {
     normalized = norm;
     readMode = mode;
     filterMode = fMode;
@@ -183,7 +189,7 @@ struct __HIP_TEXTURE_ATTRIB texture : public textureReference {
 #endif /* __cplusplus */
 
 #else
-#error ("Must define exactly one of __HIP_PLATFORM_AMD__ or __HIP_PLATFORM_NVIDIA__");
+#error("Must define exactly one of __HIP_PLATFORM_AMD__ or __HIP_PLATFORM_NVIDIA__");
 #endif
 
 #if defined(__clang__)

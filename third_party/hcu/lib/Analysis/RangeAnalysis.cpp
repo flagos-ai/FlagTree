@@ -363,7 +363,8 @@ std::optional<ConstantIntRanges>
 TritonIntegerRangeAnalysis::maybeGetAssumedRange(Value anchor,
                                                  Block *useBlock) const {
   const auto &matchingAssumptions = this->assumptions.lookup(anchor);
-  if (matchingAssumptions.empty() || isa<tt::PointerType>(anchor.getType()) /* HCU Fix */)
+  if (matchingAssumptions.empty() ||
+      isa<tt::PointerType>(anchor.getType()) /* HCU Fix */)
     return {};
 
   return ::maybeGetAssumedRange(matchingAssumptions, anchor, useBlock, domInfo);

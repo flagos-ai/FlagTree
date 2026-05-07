@@ -3,6 +3,7 @@ import pytest
 import triton
 import triton.language as tl
 
+
 def get_hip_autotune_config():
     return [
         triton.Config(
@@ -21,6 +22,7 @@ def get_hip_autotune_config():
             {'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1, 'waves_per_eu': 8},
             num_warps=4, num_stages=2),
     ]
+
 
 # `triton.jit`'ed functions can be auto-tuned by using the `triton.autotune` decorator, which consumes:
 #   - A list of `triton.Config` objects that define different configurations of
@@ -114,6 +116,7 @@ def matmul_kernel(
 def leaky_relu(x):
     return tl.where(x >= 0, x, 0.01 * x)
 
+
 def matmul(a, b, activation=""):
     # Check constraints.
     assert a.shape[1] == b.shape[0], "Incompatible dimensions"
@@ -152,6 +155,7 @@ def test_matmul(M, N, K):
     rtol = 1e-2
     torch.testing.assert_close(triton_output, torch_output, atol=1e-2, rtol=rtol)
 
+
 # Benchmark
 configs = []
 configs.append(
@@ -167,6 +171,7 @@ configs.append(
         plot_name="matmul-performance-fp16",
     ))
 
+
 @triton.testing.perf_report(configs)
 def benchmark(M, N, K, provider):
     a = torch.randn((M, K), device='cuda', dtype=torch.float16)
@@ -177,6 +182,6 @@ def benchmark(M, N, K, provider):
     perf = lambda ms: 2 * M * N * K * 1e-12 / (ms * 1e-3)
     return perf(ms), perf(max_ms), perf(min_ms)
 
+
 if __name__ == "__main__":
     benchmark.run(show_plots=True, print_data=True)
-

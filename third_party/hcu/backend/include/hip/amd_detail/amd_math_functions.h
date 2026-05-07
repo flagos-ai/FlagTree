@@ -23,8 +23,8 @@ THE SOFTWARE.
 #pragma once
 
 #if !defined(__HIPCC_RTC__)
-#include "hip_fp16_math_fwd.h"
 #include "amd_hip_vector_types.h"
+#include "hip_fp16_math_fwd.h"
 #include "math_fwd.h"
 
 #include <hip/amd_detail/host_defines.h>
@@ -39,7 +39,7 @@ THE SOFTWARE.
 #include <limits.h>
 #include <limits>
 #include <stdint.h>
-#endif  // !defined(__HIPCC_RTC__)
+#endif // !defined(__HIPCC_RTC__)
 
 #pragma push_macro("__DEVICE__")
 #pragma push_macro("__RETURN_TYPE")

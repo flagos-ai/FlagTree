@@ -497,6 +497,7 @@ class HIPBackend(BaseBackend):
 
 # HCU: Modify to use compiler_hcu.py for HCU backend, will refine the code after new backend support.
 from .compiler_hcu import HIPBackend as HCUHIPBackend, HIPOptions as HCUHIPOptions
+
 HIPBackend = HCUHIPBackend
 HIPOptions = HCUHIPOptions
 del HCUHIPBackend

@@ -352,7 +352,7 @@ def test_where_warning(fresh_triton_cache):
         triton.compile(triton.compiler.ASTSource(fn=kernel, signature={}, constexprs={}))
 
 
-@pytest.mark.parametrize("dtype", [tl.float8e5, tl.float8e4nv]) #, tl.float8e5b16, tl.float8e4b8, tl.float8e4b15])
+@pytest.mark.parametrize("dtype", [tl.float8e5, tl.float8e4nv])  #, tl.float8e5b16, tl.float8e4b8, tl.float8e4b15])
 def test_fp8_support(fresh_triton_cache, dtype):
     warning_dtypes = []
     supported_dtypes = [tl.float8e5]

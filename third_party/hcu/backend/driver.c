@@ -173,8 +173,11 @@ struct HIPSymbolTable {
 };
 
 static struct HIPSymbolTable hipSymbolTable;
-// HCU: compatiable with DTK, hipDeviceProp_t -> hipDeviceProp_tR0600, hipGetDevicePropertiesR0600 for ROCM
-//                                            -> hipDeviceProp_t_v2,   hipGetDeviceProperties_v2   for DTK
+// HCU: compatiable with DTK, hipDeviceProp_t -> hipDeviceProp_tR0600,
+// hipGetDevicePropertiesR0600 for ROCM
+//                                            -> hipDeviceProp_t_v2,
+//                                            hipGetDeviceProperties_v2   for
+//                                            DTK
 static hipError_t (*hipGetDevicePropertiesCompat)(hipDeviceProp_t *prop,
                                                   int deviceId);
 

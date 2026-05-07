@@ -47,7 +47,7 @@ typedef struct {
 
 #ifdef __cplusplus
 extern "C" {
-#endif  // __cplusplus
+#endif // __cplusplus
 
 ////////////////////////////////////////////////////////////////////////////////
 // Application annotation API
@@ -70,12 +70,11 @@ roctracer_activity_push_external_correlation_id(activity_correlation_id_t id)
 // Notifies that the calling thread is leaving an external API region.
 // Pop an external correlation id for the calling thread.
 // 'lastId' returns the last external correlation if not NULL
-roctracer_status_t ROCTRACER_API
-roctracer_activity_pop_external_correlation_id(
-    activity_correlation_id_t* last_id) ROCTRACER_VERSION_4_1;
+roctracer_status_t ROCTRACER_API roctracer_activity_pop_external_correlation_id(
+    activity_correlation_id_t *last_id) ROCTRACER_VERSION_4_1;
 
 #ifdef __cplusplus
-}  // extern "C" block
-#endif  // __cplusplus
+} // extern "C" block
+#endif // __cplusplus
 
-#endif  // ROCTRACER_EXT_H_
+#endif // ROCTRACER_EXT_H_

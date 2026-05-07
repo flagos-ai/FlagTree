@@ -24,6 +24,7 @@ import triton
 import triton.language as tl
 import argparse
 
+
 @triton.jit
 def add_kernel(x_ptr,  # *Pointer* to first input vector.
                y_ptr,  # *Pointer* to second input vector.
@@ -131,12 +132,7 @@ def benchmark(size, provider):
 # We can now run the decorated function above. Pass `print_data=True` to see the performance number, `show_plots=True` to plot them, and/or
 # `save_path='/path/to/results/' to save them to disk along with raw CSV data:
 parser = argparse.ArgumentParser()
-parser.add_argument(
-    '--no_benchmark',
-    action='store_true',
-    default=False,
-    help='no benchmark test if true'
-)
+parser.add_argument('--no_benchmark', action='store_true', default=False, help='no benchmark test if true')
 args = parser.parse_args()
 if not args.no_benchmark:
     benchmark.run(print_data=True, show_plots=True)

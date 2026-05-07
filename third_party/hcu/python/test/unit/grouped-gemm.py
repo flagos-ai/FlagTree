@@ -32,6 +32,7 @@ import triton
 import triton.language as tl
 import argparse
 
+
 @triton.autotune(
     configs=[
         triton.Config({
@@ -281,13 +282,9 @@ def benchmark(N, provider):
             lambda: triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, group_size), quantiles=quantiles)
     return ms, max_ms, min_ms
 
+
 parser = argparse.ArgumentParser()
-parser.add_argument(
-    '--no_benchmark',
-    action='store_true',
-    default=True,
-    help='no benchmark test if true'
-)
+parser.add_argument('--no_benchmark', action='store_true', default=True, help='no benchmark test if true')
 args = parser.parse_args()
 if not args.no_benchmark:
     benchmark.run(show_plots=True, print_data=True)

@@ -396,9 +396,8 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
 
   LinearLayout tileLayout = LinearLayout::empty();
   if (isHCUMmac()) {
-    tileLayout = getLinearLayoutForMmacLayout(ctx,
-                                              getMmacLayout(),
-                                              {dimN, dimM});
+    tileLayout =
+        getLinearLayoutForMmacLayout(ctx, getMmacLayout(), {dimN, dimM});
   } else {
     if (!isTransposed) {
       // Each lane holds 'height' elements along the M dimension.
@@ -407,8 +406,9 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
       // Then, distribute the lanes along the M dimension. If the #elements
       // exceeds the mDim, duplicate elements across lanes - this can happen for
       // 4x4 output.
-      LinearLayout lanes = LinearLayout::identity1D(nDim, kLane, dimN) *
-                           LinearLayout::identity1D(warpSize / nDim, kLane, dimM);
+      LinearLayout lanes =
+          LinearLayout::identity1D(nDim, kLane, dimN) *
+          LinearLayout::identity1D(warpSize / nDim, kLane, dimM);
       tileLayout = (regs * lanes);
 
       // Repeat the above distribution along the M dimension to fits the tile.
@@ -418,14 +418,15 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
       // For the transposed output, we will use the same method for layout but
       // swap the order of the M and N dimensions.
       LinearLayout regs = LinearLayout::identity1D(height, kRegister, dimN);
-      LinearLayout lanes = LinearLayout::identity1D(mDim, kLane, dimM) *
-                           LinearLayout::identity1D(warpSize / mDim, kLane, dimN);
+      LinearLayout lanes =
+          LinearLayout::identity1D(mDim, kLane, dimM) *
+          LinearLayout::identity1D(warpSize / mDim, kLane, dimN);
       tileLayout = (regs * lanes);
 
       if (tiles > 0)
         tileLayout *= LinearLayout::identity1D(tiles, kRegister, dimN);
     }
-	}
+  }
 
   tileLayout = tileLayout.transposeOuts({dimN, dimM});
 

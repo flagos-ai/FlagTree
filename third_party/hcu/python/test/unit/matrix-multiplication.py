@@ -155,6 +155,7 @@ import triton
 import triton.language as tl
 import argparse
 
+
 def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
@@ -439,13 +440,9 @@ def benchmark(M, N, K, provider, fp8_inputs):
     perf = lambda ms: 2 * M * N * K * 1e-12 / (ms * 1e-3)
     return perf(ms), perf(max_ms), perf(min_ms)
 
+
 parser = argparse.ArgumentParser()
-parser.add_argument(
-    '--no_benchmark',
-    action='store_true',
-    default=False,
-    help='no benchmark test if true'
-)
+parser.add_argument('--no_benchmark', action='store_true', default=False, help='no benchmark test if true')
 args = parser.parse_args()
 if not args.no_benchmark:
     benchmark.run(show_plots=True, print_data=True)

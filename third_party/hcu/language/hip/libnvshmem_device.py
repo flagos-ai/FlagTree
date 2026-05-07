@@ -36,6 +36,7 @@ from typing import List
 pi_u64_t = tl.core.pointer_type(tl.core.dtype("uint64"))
 pi_i64_t = tl.core.pointer_type(tl.core.dtype("int64"))
 
+
 # adapted from python/triton/language/core.py
 def dispatch(func, lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: dict, is_pure: bool, _builder=None):
     '''
@@ -79,14 +80,14 @@ def dispatch(func, lib_name: str, lib_path: str, args: list, arg_type_symbol_dic
 
         if symbol == "":
             raise ValueError("Symbol can not be empty")
-        call = func(lib_name, lib_path, symbol, arg_list, [ret_type.to_ir(_builder) for ret_type in ret_types],
-                    is_pure)
+        call = func(lib_name, lib_path, symbol, arg_list, [ret_type.to_ir(_builder) for ret_type in ret_types], is_pure)
 
         if len(ret_types) == 0:
             return tensor(call, tl.void)
         if len(ret_types) == 1:
             return tensor(call.get_result(0), ret_types[0])
         return tuple(tensor(call.get_result(i), ty) for i, ty in enumerate(ret_types))
+
 
 @builtin
 def extern_call(lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: dict, is_pure: bool, _builder=None):
@@ -255,13 +256,12 @@ def int_p(dest, value, pe, _builder=None):
         "libnvshmem_device",
         "",
         [dest, value, pe],
-        {
-            (
-                core.pointer_type(core.dtype("int32")),
-                core.dtype("int32"),
-                core.dtype("int32"),
-            ): ("nvshmem_int_p", ()),  # void return type
-        },
+        {(
+            core.pointer_type(core.dtype("int32")),
+            core.dtype("int32"),
+            core.dtype("int32"),
+        ): ("nvshmem_int_p", ()),  # void return type
+         },
         is_pure=False,
         _builder=_builder,
     )
@@ -273,12 +273,9 @@ def _remote_ptr_wrapper(local_ptr, pe, _builder=None):
         "",
         "",
         [local_ptr, pe],
-        {
-            (core.pointer_type(core.void), core.dtype("int32")): (
-                "nvshmem_ptr",
-                core.pointer_type(core.void),  # of the same dtype
-            )
-        },
+        {(core.pointer_type(core.void), core.dtype("int32")): (
+             "nvshmem_ptr", core.pointer_type(core.void),  # of the same dtype
+         )},
         is_pure=False,
         _builder=_builder,
     )
@@ -309,22 +306,15 @@ def remote_ptr(local_ptr, pe, _builder=None):
 
 @core.extern
 def remote_mc_ptr(team, ptr, _semantic=None):
-    tl.static_assert(ptr.type.is_ptr(),
-                     "remote_mc_ptr(team, ptr) should be a pointer",
-                     _semantic=_semantic)
+    tl.static_assert(ptr.type.is_ptr(), "remote_mc_ptr(team, ptr) should be a pointer", _semantic=_semantic)
     return extern_call(
         "libnvshmem_device",
         "",
-        [
-            tl.cast(team, tl.int32, _semantic=_semantic),
-            tl.cast(ptr, void_ptr, _semantic=_semantic)
-        ],
-        {
-            (tl.int32, void_ptr): (
-                "nvshmemx_mc_ptr",
-                (ptr.type),  # of the same pointer type like ptr
-            )
-        },
+        [tl.cast(team, tl.int32, _semantic=_semantic),
+         tl.cast(ptr, void_ptr, _semantic=_semantic)],
+        {(tl.int32, void_ptr): (
+             "nvshmemx_mc_ptr", (ptr.type),  # of the same pointer type like ptr
+         )},
         is_pure=True,
         _semantic=_semantic,
     )
@@ -337,9 +327,7 @@ def _barrier_impl(team, SCOPE_SUFFIX: core.constexpr, _semantic=None):
         "",
         [team],
         {
-            (tl.int32, ):
-            (f"nvshmem{'x' if SCOPE_SUFFIX.value else ''}_barrier{SCOPE_SUFFIX.value}",
-             ()),
+            (tl.int32, ): (f"nvshmem{'x' if SCOPE_SUFFIX.value else ''}_barrier{SCOPE_SUFFIX.value}", ()),
         },
         is_pure=False,
         _semantic=_semantic,
@@ -368,9 +356,7 @@ def _barrier_all_impl(SCOPE_SUFFIX: core.constexpr, _semantic=None):
         "",
         [],
         {
-            ():
-            (f"nvshmem{'x' if SCOPE_SUFFIX.value else ''}_barrier_all{SCOPE_SUFFIX.value}",
-             ()),
+            (): (f"nvshmem{'x' if SCOPE_SUFFIX.value else ''}_barrier_all{SCOPE_SUFFIX.value}", ()),
         },
         is_pure=False,
         _semantic=_semantic,
@@ -399,9 +385,7 @@ def _sync_all_impl(SCOPE_SUFFIX: core.constexpr, _semantic=None):
         "",
         [],
         {
-            ():
-            (f"nvshmem{'x' if SCOPE_SUFFIX.value else ''}_sync_all{SCOPE_SUFFIX.value}",
-             ()),
+            (): (f"nvshmem{'x' if SCOPE_SUFFIX.value else ''}_sync_all{SCOPE_SUFFIX.value}", ()),
         },
         is_pure=False,
         _semantic=_semantic,
@@ -490,12 +474,7 @@ def fence(_semantic=None):
 
 
 @core.extern
-def _getmem_impl(dest,
-                 source,
-                 nbytes,
-                 pe,
-                 SCOPE_SUFFIX: core.constexpr,
-                 NBI: core.constexpr = core.constexpr(""),
+def _getmem_impl(dest, source, nbytes, pe, SCOPE_SUFFIX: core.constexpr, NBI: core.constexpr = core.constexpr(""),
                  _semantic=None):
     return extern_call(
         "libnvshmem_device",
@@ -507,8 +486,7 @@ def _getmem_impl(dest,
             tl.cast(pe, tl.int32, _semantic=_semantic),
         ],
         {
-            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32):
-            (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 f"nvshmem{'x' if SCOPE_SUFFIX.value else ''}_getmem{NBI.value}{SCOPE_SUFFIX.value}",
                 (),
             ),
@@ -520,77 +498,36 @@ def _getmem_impl(dest,
 
 @core.extern
 def getmem_nbi_block(dest, source, nbytes, pe, _semantic=None):
-    return _getmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr("_block"),
-                        core.constexpr("_nbi"),
-                        _semantic=_semantic)
+    return _getmem_impl(dest, source, nbytes, pe, core.constexpr("_block"), core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
 def getmem_block(dest, source, nbytes, pe, _semantic=None):
-    return _getmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr("_block"),
-                        core.constexpr(""),
-                        _semantic=_semantic)
+    return _getmem_impl(dest, source, nbytes, pe, core.constexpr("_block"), core.constexpr(""), _semantic=_semantic)
 
 
 @core.extern
 def getmem_nbi_warp(dest, source, nbytes, pe, _semantic=None):
-    return _getmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr("_warp"),
-                        core.constexpr("_nbi"),
-                        _semantic=_semantic)
+    return _getmem_impl(dest, source, nbytes, pe, core.constexpr("_warp"), core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
 def getmem_warp(dest, source, nbytes, pe, _semantic=None):
-    return _getmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr("_warp"),
-                        core.constexpr(""),
-                        _semantic=_semantic)
+    return _getmem_impl(dest, source, nbytes, pe, core.constexpr("_warp"), core.constexpr(""), _semantic=_semantic)
 
 
 @core.extern
 def getmem_nbi(dest, source, nbytes, pe, _semantic=None):
-    return _getmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr(""),
-                        core.constexpr("_nbi"),
-                        _semantic=_semantic)
+    return _getmem_impl(dest, source, nbytes, pe, core.constexpr(""), core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
 def getmem(dest, source, nbytes, pe, _semantic=None):
-    return _getmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr(""),
-                        core.constexpr(""),
-                        _semantic=_semantic)
+    return _getmem_impl(dest, source, nbytes, pe, core.constexpr(""), core.constexpr(""), _semantic=_semantic)
 
 
 @core.extern
-def _putmem_impl(dest,
-                 source,
-                 nbytes,
-                 pe,
-                 SCOPE_SUFFIX: core.constexpr,
-                 NBI: core.constexpr = core.constexpr(""),
+def _putmem_impl(dest, source, nbytes, pe, SCOPE_SUFFIX: core.constexpr, NBI: core.constexpr = core.constexpr(""),
                  _semantic=None):
     return extern_call(
         "libnvshmem_device",
@@ -602,8 +539,7 @@ def _putmem_impl(dest,
             tl.cast(pe, tl.int32, _semantic=_semantic),
         ],
         {
-            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32):
-            (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 f"nvshmem{'x' if SCOPE_SUFFIX.value else ''}_putmem{NBI.value}{SCOPE_SUFFIX.value}",
                 (),
             ),
@@ -615,84 +551,38 @@ def _putmem_impl(dest,
 
 @core.extern
 def putmem_block(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr("_block"),
-                        core.constexpr(""),
-                        _semantic=_semantic)
+    return _putmem_impl(dest, source, nbytes, pe, core.constexpr("_block"), core.constexpr(""), _semantic=_semantic)
 
 
 @core.extern
 def putmem_nbi_block(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr("_block"),
-                        core.constexpr("_nbi"),
-                        _semantic=_semantic)
+    return _putmem_impl(dest, source, nbytes, pe, core.constexpr("_block"), core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
 def putmem_warp(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr("_warp"),
-                        core.constexpr(""),
-                        _semantic=_semantic)
+    return _putmem_impl(dest, source, nbytes, pe, core.constexpr("_warp"), core.constexpr(""), _semantic=_semantic)
 
 
 @core.extern
 def putmem_nbi_warp(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr("_warp"),
-                        core.constexpr("_nbi"),
-                        _semantic=_semantic)
+    return _putmem_impl(dest, source, nbytes, pe, core.constexpr("_warp"), core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
 def putmem(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr(""),
-                        core.constexpr(""),
-                        _semantic=_semantic)
+    return _putmem_impl(dest, source, nbytes, pe, core.constexpr(""), core.constexpr(""), _semantic=_semantic)
 
 
 @core.extern
 def putmem_nbi(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_impl(dest,
-                        source,
-                        nbytes,
-                        pe,
-                        core.constexpr(""),
-                        core.constexpr("_nbi"),
-                        _semantic=_semantic)
+    return _putmem_impl(dest, source, nbytes, pe, core.constexpr(""), core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
-def _putmem_signal_impl(dest,
-                        source,
-                        nbytes,
-                        sig_addr,
-                        signal,
-                        sig_op,
-                        pe,
-                        SCOPE_SUFFIX: core.constexpr,
-                        NBI: core.constexpr = core.constexpr(""),
-                        _semantic=None):
-    tl.static_assert(sig_addr.dtype == pi_u64_t,
-                     "sig_addr should be a pointer of uint64_t",
-                     _semantic=_semantic)
+def _putmem_signal_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, SCOPE_SUFFIX: core.constexpr,
+                        NBI: core.constexpr = core.constexpr(""), _semantic=None):
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _semantic=_semantic)
     return extern_call(
         "libnvshmem_device",
         "",
@@ -700,15 +590,13 @@ def _putmem_signal_impl(dest,
             tl.cast(dest, tl.pointer_type(tl.void), _semantic=_semantic),
             tl.cast(source, tl.pointer_type(tl.void), _semantic=_semantic),
             tl.cast(nbytes, tl.uint64, _semantic=_semantic),
-            tl.cast(sig_addr, pi_u64_t,
-                    _semantic=_semantic),  # TODO(houqi.1993) should be uint64.
+            tl.cast(sig_addr, pi_u64_t, _semantic=_semantic),  # TODO(houqi.1993) should be uint64.
             tl.cast(signal, tl.uint64, _semantic=_semantic),
             tl.cast(sig_op, tl.int32, _semantic=_semantic),
             tl.cast(pe, tl.int32, _semantic=_semantic),
         ],
         {
-            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32):
-            (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 f"nvshmem{'x' if SCOPE_SUFFIX.value else ''}_putmem_signal{NBI.value}{SCOPE_SUFFIX.value}",
                 (),
             ),
@@ -719,14 +607,7 @@ def _putmem_signal_impl(dest,
 
 
 @core.extern
-def putmem_signal(dest,
-                  source,
-                  nbytes,
-                  sig_addr,
-                  signal,
-                  sig_op,
-                  pe,
-                  _semantic=None):
+def putmem_signal(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
     return _putmem_signal_impl(
         dest,
         source,
@@ -742,121 +623,43 @@ def putmem_signal(dest,
 
 
 @core.extern
-def putmem_signal_nbi(dest,
-                      source,
-                      nbytes,
-                      sig_addr,
-                      signal,
-                      sig_op,
-                      pe,
-                      _semantic=None):
-    return _putmem_signal_impl(dest,
-                               source,
-                               nbytes,
-                               sig_addr,
-                               signal,
-                               sig_op,
-                               pe,
-                               core.constexpr(""),
-                               core.constexpr("_nbi"),
-                               _semantic=_semantic)
+def putmem_signal_nbi(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr(""),
+                               core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
-def putmem_signal_block(dest,
-                        source,
-                        nbytes,
-                        sig_addr,
-                        signal,
-                        sig_op,
-                        pe,
-                        _semantic=None):
-    return _putmem_signal_impl(dest,
-                               source,
-                               nbytes,
-                               sig_addr,
-                               signal,
-                               sig_op,
-                               pe,
-                               core.constexpr("_block"),
-                               core.constexpr(""),
-                               _semantic=_semantic)
+def putmem_signal_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr("_block"),
+                               core.constexpr(""), _semantic=_semantic)
 
 
 @core.extern
-def putmem_signal_nbi_block(dest,
-                            source,
-                            nbytes,
-                            sig_addr,
-                            signal,
-                            sig_op,
-                            pe,
-                            _semantic=None):
-    return _putmem_signal_impl(dest,
-                               source,
-                               nbytes,
-                               sig_addr,
-                               signal,
-                               sig_op,
-                               pe,
-                               core.constexpr("_block"),
-                               core.constexpr("_nbi"),
-                               _semantic=_semantic)
+def putmem_signal_nbi_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr("_block"),
+                               core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
-def putmem_signal_warp(dest,
-                       source,
-                       nbytes,
-                       sig_addr,
-                       signal,
-                       sig_op,
-                       pe,
-                       _semantic=None):
-    return _putmem_signal_impl(dest,
-                               source,
-                               nbytes,
-                               sig_addr,
-                               signal,
-                               sig_op,
-                               pe,
-                               core.constexpr("_warp"),
-                               core.constexpr(""),
-                               _semantic=_semantic)
+def putmem_signal_warp(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr("_warp"),
+                               core.constexpr(""), _semantic=_semantic)
 
 
 @core.extern
-def putmem_signal_nbi_warp(dest,
-                           source,
-                           nbytes,
-                           sig_addr,
-                           signal,
-                           sig_op,
-                           pe,
-                           _semantic=None):
-    return _putmem_signal_impl(dest,
-                               source,
-                               nbytes,
-                               sig_addr,
-                               signal,
-                               sig_op,
-                               pe,
-                               core.constexpr("_warp"),
-                               core.constexpr("_nbi"),
-                               _semantic=_semantic)
+def putmem_signal_nbi_warp(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr("_warp"),
+                               core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
 def signal_op(sig_addr, signal, sig_op, pe, _builder=None):
-    tl.static_assert(sig_addr.dtype == pi_u64_t,
-                     "sig_addr should be a pointer of uint64_t",
-                     _builder=_builder)
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _builder=_builder)
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(sig_addr, pi_u64_t, _builder=_builder
-                    ),  # no cast: pointer type should be aligned
+            tl.cast(sig_addr, pi_u64_t, _builder=_builder),  # no cast: pointer type should be aligned
             tl.cast(signal, tl.uint64, _builder=_builder),
             tl.cast(sig_op, tl.int32, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
@@ -875,8 +678,7 @@ def signal_op(sig_addr, signal, sig_op, pe, _builder=None):
 @core.extern
 def signal_wait_until(sig_addr, cmp_, cmp_val, _builder=None):
     tl.static_assert(sig_addr.dtype == pi_u64_t or sig_addr.dtype == pi_i64_t,
-                     "sig_addr should be a pointer of uint64_t/int64_t",
-                     _builder=_builder)
+                     "sig_addr should be a pointer of uint64_t/int64_t", _builder=_builder)
     return extern_call(
         "libnvshmem_device",
         "",
@@ -901,10 +703,7 @@ def broadcast(team, dest, source, nelems, pe_root, _semantic=None):
     return extern_call(
         "libnvshmem_device",
         "",
-        [
-            team, dest, source,
-            tl.cast(nelems, tl.uint64, _semantic=_semantic), pe_root
-        ],  # no cast
+        [team, dest, source, tl.cast(nelems, tl.uint64, _semantic=_semantic), pe_root],  # no cast
         {
             (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64, tl.int32):
             ("nvshmem_int8_broadcast", (tl.int32)),
@@ -924,8 +723,7 @@ def broadcast(team, dest, source, nelems, pe_root, _semantic=None):
             ("nvshmem_uint64_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64, tl.int32):
             ("nvshmem_half_broadcast", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.bfloat16),
-             tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
             ("nvshmem_bfloat16_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64, tl.int32):
             ("nvshmem_float_broadcast", (tl.int32)),
@@ -942,10 +740,7 @@ def broadcast_warp(team, dest, source, nelems, pe_root, _semantic=None):
     return extern_call(
         "libnvshmem_device",
         "",
-        [
-            team, dest, source,
-            tl.cast(nelems, tl.uint64, _semantic=_semantic), pe_root
-        ],  # no cast
+        [team, dest, source, tl.cast(nelems, tl.uint64, _semantic=_semantic), pe_root],  # no cast
         {
             (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64, tl.int32):
             ("nvshmemx_int8_broadcast_warp", (tl.int32)),
@@ -965,8 +760,7 @@ def broadcast_warp(team, dest, source, nelems, pe_root, _semantic=None):
             ("nvshmemx_uint64_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64, tl.int32):
             ("nvshmemx_half_broadcast_warp", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.bfloat16),
-             tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
             ("nvshmemx_bfloat16_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64, tl.int32):
             ("nvshmemx_float_broadcast_warp", (tl.int32)),
@@ -983,10 +777,7 @@ def broadcast_block(team, dest, source, nelems, pe_root, _semantic=None):
     return extern_call(
         "libnvshmem_device",
         "",
-        [
-            team, dest, source,
-            tl.cast(nelems, tl.uint64, _semantic=_semantic), pe_root
-        ],  # no cast
+        [team, dest, source, tl.cast(nelems, tl.uint64, _semantic=_semantic), pe_root],  # no cast
         {
             (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64, tl.int32):
             ("nvshmemx_int8_broadcast_block", (tl.int32)),
@@ -1006,8 +797,7 @@ def broadcast_block(team, dest, source, nelems, pe_root, _semantic=None):
             ("nvshmemx_uint64_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64, tl.int32):
             ("nvshmemx_half_broadcast_block", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.bfloat16),
-             tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
             ("nvshmemx_bfloat16_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64, tl.int32):
             ("nvshmemx_float_broadcast_block", (tl.int32)),
@@ -1045,8 +835,7 @@ def fcollect(team, dest, source, nelems, _semantic=None):
     return extern_call(
         "libnvshmem_device",
         "",
-        [team, dest, source,
-         tl.cast(nelems, tl.uint64, _semantic=_semantic)],  # no cast
+        [team, dest, source, tl.cast(nelems, tl.uint64, _semantic=_semantic)],  # no cast
         {
             (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64):
             ("nvshmem_int8_fcollect", (tl.int32)),
@@ -1054,25 +843,24 @@ def fcollect(team, dest, source, nelems, _semantic=None):
             ("nvshmem_int16_fcollect", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64):
             ("nvshmem_int32_fcollect", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64):
-            ("nvshmem_int64_fcollect", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64):
-            ("nvshmem_uint8_fcollect", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64):
-            ("nvshmem_uint16_fcollect", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64):
-            ("nvshmem_uint32_fcollect", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64):
-            ("nvshmem_uint64_fcollect", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64):
-            ("nvshmem_half_fcollect", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.bfloat16),
-             tl.pointer_type(tl.bfloat16), tl.uint64):
+            (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64): ("nvshmem_int64_fcollect",
+                                                                                          (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64): ("nvshmem_uint8_fcollect",
+                                                                                          (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64): ("nvshmem_uint16_fcollect",
+                                                                                            (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64): ("nvshmem_uint32_fcollect",
+                                                                                            (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64): ("nvshmem_uint64_fcollect",
+                                                                                            (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64): ("nvshmem_half_fcollect",
+                                                                                              (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64):
             ("nvshmem_bfloat16_fcollect", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64):
-            ("nvshmem_float_fcollect", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64):
-            ("nvshmem_double_fcollect", (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64): ("nvshmem_float_fcollect",
+                                                                                              (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64): ("nvshmem_double_fcollect",
+                                                                                              (tl.int32)),
         },
         is_pure=False,
         _semantic=_semantic,
@@ -1084,11 +872,10 @@ def fcollect_warp(team, dest, source, nelems, _semantic=None):
     return extern_call(
         "libnvshmem_device",
         "",
-        [team, dest, source,
-         tl.cast(nelems, tl.uint64, _semantic=_semantic)],  # no cast
+        [team, dest, source, tl.cast(nelems, tl.uint64, _semantic=_semantic)],  # no cast
         {
-            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64):
-            ("nvshmemx_int8_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64): ("nvshmemx_int8_fcollect_warp",
+                                                                                        ()),
             (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64):
             ("nvshmemx_int16_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64):
@@ -1105,8 +892,7 @@ def fcollect_warp(team, dest, source, nelems, _semantic=None):
             ("nvshmemx_uint64_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64):
             ("nvshmemx_half_fcollect_warp", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.bfloat16),
-             tl.pointer_type(tl.bfloat16), tl.uint64):
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64):
             ("nvshmemx_bfloat16_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64):
             ("nvshmemx_float_fcollect_warp", (tl.int32)),
@@ -1123,11 +909,10 @@ def fcollect_block(team, dest, source, nelems, _semantic=None):
     return extern_call(
         "libnvshmem_device",
         "",
-        [team, dest, source,
-         tl.cast(nelems, tl.uint64, _semantic=_semantic)],  # no cast
+        [team, dest, source, tl.cast(nelems, tl.uint64, _semantic=_semantic)],  # no cast
         {
-            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64):
-            ("nvshmemx_int8_fcollect_block", (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64): ("nvshmemx_int8_fcollect_block",
+                                                                                        (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64):
             ("nvshmemx_int16_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64):
@@ -1144,8 +929,7 @@ def fcollect_block(team, dest, source, nelems, _semantic=None):
             ("nvshmemx_uint64_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64):
             ("nvshmemx_half_fcollect_block", (tl.int32)),
-            (tl.int32, tl.pointer_type(tl.bfloat16),
-             tl.pointer_type(tl.bfloat16), tl.uint64):
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64):
             ("nvshmemx_bfloat16_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64):
             ("nvshmemx_float_fcollect_block", (tl.int32)),
@@ -1158,12 +942,7 @@ def fcollect_block(team, dest, source, nelems, _semantic=None):
 
 
 @core.extern
-def _putmem_rma_impl(dest,
-                     source,
-                     nbytes,
-                     pe,
-                     SCOPE_SUFFIX: core.constexpr,
-                     NBI: core.constexpr = core.constexpr(""),
+def _putmem_rma_impl(dest, source, nbytes, pe, SCOPE_SUFFIX: core.constexpr, NBI: core.constexpr = core.constexpr(""),
                      _semantic=None):
     return extern_call(
         "libnvshmemi_device",
@@ -1175,8 +954,7 @@ def _putmem_rma_impl(dest,
             tl.cast(pe, tl.int32, _semantic=_semantic),
         ],
         {
-            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32):
-            (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 f"nvshmemi_transfer_rma_put{NBI.value}{SCOPE_SUFFIX.value}",
                 (),
             ),
@@ -1188,81 +966,40 @@ def _putmem_rma_impl(dest,
 
 @core.extern
 def putmem_rma(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_rma_impl(dest,
-                            source,
-                            nbytes,
-                            pe,
-                            core.constexpr(""),
-                            _semantic=_semantic)
+    return _putmem_rma_impl(dest, source, nbytes, pe, core.constexpr(""), _semantic=_semantic)
 
 
 @core.extern
 def putmem_rma_warp(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_rma_impl(dest,
-                            source,
-                            nbytes,
-                            pe,
-                            core.constexpr("_warp"),
-                            _semantic=_semantic)
+    return _putmem_rma_impl(dest, source, nbytes, pe, core.constexpr("_warp"), _semantic=_semantic)
 
 
 @core.extern
 def putmem_rma_block(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_rma_impl(dest,
-                            source,
-                            nbytes,
-                            pe,
-                            core.constexpr("_block"),
-                            _semantic=_semantic)
+    return _putmem_rma_impl(dest, source, nbytes, pe, core.constexpr("_block"), _semantic=_semantic)
 
 
 @core.extern
 def putmem_rma_nbi(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_rma_impl(dest,
-                            source,
-                            nbytes,
-                            pe,
-                            core.constexpr(""),
-                            core.constexpr("_nbi"),
-                            _semantic=_semantic)
+    return _putmem_rma_impl(dest, source, nbytes, pe, core.constexpr(""), core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
 def putmem_rma_nbi_warp(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_rma_impl(dest,
-                            source,
-                            nbytes,
-                            pe,
-                            core.constexpr("_warp"),
-                            core.constexpr("_nbi"),
+    return _putmem_rma_impl(dest, source, nbytes, pe, core.constexpr("_warp"), core.constexpr("_nbi"),
                             _semantic=_semantic)
 
 
 @core.extern
 def putmem_rma_nbi_block(dest, source, nbytes, pe, _semantic=None):
-    return _putmem_rma_impl(dest,
-                            source,
-                            nbytes,
-                            pe,
-                            core.constexpr("_block"),
-                            core.constexpr("_nbi"),
+    return _putmem_rma_impl(dest, source, nbytes, pe, core.constexpr("_block"), core.constexpr("_nbi"),
                             _semantic=_semantic)
 
 
 @core.extern
-def _putmem_signal_rma_impl(dest,
-                            source,
-                            nbytes,
-                            sig_addr,
-                            signal,
-                            sig_op,
-                            pe,
-                            SCOPE_SUFFIX: core.constexpr,
-                            NBI: core.constexpr = core.constexpr(""),
-                            _semantic=None):
-    tl.static_assert(sig_addr.dtype == pi_u64_t,
-                     "sig_addr should be a pointer of uint64_t",
-                     _semantic=_semantic)
+def _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, SCOPE_SUFFIX: core.constexpr,
+                            NBI: core.constexpr = core.constexpr(""), _semantic=None):
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _semantic=_semantic)
     return extern_call(
         "libnvshmem_device",
         "",
@@ -1270,15 +1007,13 @@ def _putmem_signal_rma_impl(dest,
             tl.cast(dest, tl.pointer_type(tl.void), _semantic=_semantic),
             tl.cast(source, tl.pointer_type(tl.void), _semantic=_semantic),
             tl.cast(nbytes, tl.uint64, _semantic=_semantic),
-            tl.cast(sig_addr, pi_u64_t, _semantic=_semantic
-                    ),  # no cast: pointer type should be aligned
+            tl.cast(sig_addr, pi_u64_t, _semantic=_semantic),  # no cast: pointer type should be aligned
             tl.cast(signal, tl.uint64, _semantic=_semantic),
             tl.cast(sig_op, tl.int32, _semantic=_semantic),
             tl.cast(pe, tl.int32, _semantic=_semantic),
         ],
         {
-            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32):
-            (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 # nvshmemi_transfer_put_signal_nbi
                 f"nvshmemi_transfer_put_signal{NBI.value}{SCOPE_SUFFIX.value}",
                 (),
@@ -1311,131 +1046,41 @@ def _team_translate_pe(src_team, pe_in_src_team, dest_team, _semantic=None):
 
 
 @core.extern
-def putmem_signal_rma(dest,
-                      source,
-                      nbytes,
-                      sig_addr,
-                      signal,
-                      sig_op,
-                      pe,
-                      _semantic=None):
-    return _putmem_signal_rma_impl(dest,
-                                   source,
-                                   nbytes,
-                                   sig_addr,
-                                   signal,
-                                   sig_op,
-                                   pe,
-                                   core.constexpr(""),
+def putmem_signal_rma(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr(""),
                                    _semantic=_semantic)
 
 
 @core.extern
-def putmem_signal_rma_warp(dest,
-                           source,
-                           nbytes,
-                           sig_addr,
-                           signal,
-                           sig_op,
-                           pe,
-                           _semantic=None):
-    return _putmem_signal_rma_impl(dest,
-                                   source,
-                                   nbytes,
-                                   sig_addr,
-                                   signal,
-                                   sig_op,
-                                   pe,
-                                   core.constexpr("_warp"),
+def putmem_signal_rma_warp(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr("_warp"),
                                    _semantic=_semantic)
 
 
 @core.extern
-def putmem_signal_rma_block(dest,
-                            source,
-                            nbytes,
-                            sig_addr,
-                            signal,
-                            sig_op,
-                            pe,
-                            _semantic=None):
-    return _putmem_signal_rma_impl(dest,
-                                   source,
-                                   nbytes,
-                                   sig_addr,
-                                   signal,
-                                   sig_op,
-                                   pe,
-                                   core.constexpr("_block"),
+def putmem_signal_rma_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr("_block"),
                                    _semantic=_semantic)
 
 
 @core.extern
-def putmem_signal_rma_nbi(dest,
-                          source,
-                          nbytes,
-                          sig_addr,
-                          signal,
-                          sig_op,
-                          pe,
-                          _semantic=None):
-    return _putmem_signal_rma_impl(dest,
-                                   source,
-                                   nbytes,
-                                   sig_addr,
-                                   signal,
-                                   sig_op,
-                                   pe,
-                                   core.constexpr(""),
-                                   core.constexpr("_nbi"),
-                                   _semantic=_semantic)
+def putmem_signal_rma_nbi(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr(""),
+                                   core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
-def putmem_signal_rma_nbi_warp(dest,
-                               source,
-                               nbytes,
-                               sig_addr,
-                               signal,
-                               sig_op,
-                               pe,
-                               _semantic=None):
-    return _putmem_signal_rma_impl(dest,
-                                   source,
-                                   nbytes,
-                                   sig_addr,
-                                   signal,
-                                   sig_op,
-                                   pe,
-                                   core.constexpr("_warp"),
-                                   core.constexpr("_nbi"),
-                                   _semantic=_semantic)
+def putmem_signal_rma_nbi_warp(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr("_warp"),
+                                   core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
-def putmem_signal_rma_nbi_block(dest,
-                                source,
-                                nbytes,
-                                sig_addr,
-                                signal,
-                                sig_op,
-                                pe,
-                                _semantic=None):
-    return _putmem_signal_rma_impl(dest,
-                                   source,
-                                   nbytes,
-                                   sig_addr,
-                                   signal,
-                                   sig_op,
-                                   pe,
-                                   core.constexpr("_block"),
-                                   core.constexpr("_nbi"),
-                                   _semantic=_semantic)
+def putmem_signal_rma_nbi_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
+    return _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr("_block"),
+                                   core.constexpr("_nbi"), _semantic=_semantic)
 
 
 @core.extern
 def team_translate_pe(src_team, pe_in_src_team, dest_team, _semantic=None):
-    return _team_translate_pe(src_team,
-                              pe_in_src_team,
-                              dest_team,
-                              _semantic=_semantic)
+    return _team_translate_pe(src_team, pe_in_src_team, dest_team, _semantic=_semantic)

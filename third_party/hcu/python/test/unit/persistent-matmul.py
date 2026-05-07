@@ -343,12 +343,9 @@ def matmul_tma_persistent(a, b):
     dtype = a.dtype
 
     c = torch.empty((M, N), device=a.device, dtype=dtype)
-    desc_a = TensorDescriptor(a, a.shape, a.stride(),
-                              [configs[dtype]["BLOCK_SIZE_M"], configs[dtype]["BLOCK_SIZE_K"]])
-    desc_b = TensorDescriptor(b, b.shape, b.stride(),
-                              [configs[dtype]["BLOCK_SIZE_N"], configs[dtype]["BLOCK_SIZE_K"]])
-    desc_c = TensorDescriptor(c, c.shape, c.stride(),
-                              [configs[dtype]["BLOCK_SIZE_M"], configs[dtype]["BLOCK_SIZE_N"]])
+    desc_a = TensorDescriptor(a, a.shape, a.stride(), [configs[dtype]["BLOCK_SIZE_M"], configs[dtype]["BLOCK_SIZE_K"]])
+    desc_b = TensorDescriptor(b, b.shape, b.stride(), [configs[dtype]["BLOCK_SIZE_N"], configs[dtype]["BLOCK_SIZE_K"]])
+    desc_c = TensorDescriptor(c, c.shape, c.stride(), [configs[dtype]["BLOCK_SIZE_M"], configs[dtype]["BLOCK_SIZE_N"]])
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
 
     grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"])), )
@@ -641,12 +638,7 @@ if __name__ == "__main__":
         "Number of output tiles calculated for each update of the tma descriptor in matmul_device_tma_persistent_kernel",
     )
     parser.add_argument("--prec", type=str, choices=["fp8", "fp16"], default="fp16")
-    parser.add_argument(
-        '--no_benchmark',
-        action='store_true',
-        default=False,
-        help='no benchmark test if true'
-    )
+    parser.add_argument('--no_benchmark', action='store_true', default=False, help='no benchmark test if true')
     args = parser.parse_args()
 
     if args.prec == 'fp8' and (not hasattr(torch, "float8_e4m3fn") or not is_cuda()):

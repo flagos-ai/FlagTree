@@ -41,22 +41,23 @@ enum class DppCtrl : uint32_t {
 };
 
 // HCU ISA features
-enum class HCUISAFeature : uint64_t{
-  NONE          = 0,
-  MMAC_LAYOUT   = 1 << 0,
-  MAMC_FP8      = 1 << 1,
-  MMAC_FP6FP4   = 1 << 2,
-  MMAC_SCALE    = 1 << 3,
-  MLS           = 1 << 4,
-  CVT_FP8F32    = 1 << 5,
-  CVT_FP8F16    = 1 << 6,
+enum class HCUISAFeature : uint64_t {
+  NONE = 0,
+  MMAC_LAYOUT = 1 << 0,
+  MAMC_FP8 = 1 << 1,
+  MMAC_FP6FP4 = 1 << 2,
+  MMAC_SCALE = 1 << 3,
+  MLS = 1 << 4,
+  CVT_FP8F32 = 1 << 5,
+  CVT_FP8F16 = 1 << 6,
 };
 
 inline constexpr bool operator&(HCUISAFeature lhs, HCUISAFeature rhs) {
   return static_cast<uint64_t>(lhs) & static_cast<uint64_t>(rhs);
 }
 inline constexpr HCUISAFeature operator|(HCUISAFeature lhs, HCUISAFeature rhs) {
-  return static_cast<HCUISAFeature>(static_cast<uint64_t>(lhs) | static_cast<uint64_t>(rhs));
+  return static_cast<HCUISAFeature>(static_cast<uint64_t>(lhs) |
+                                    static_cast<uint64_t>(rhs));
 }
 HCUISAFeature deduceHCUISAFeature(llvm::StringRef arch);
 bool supportsHCUISAFeature(llvm::StringRef arch, HCUISAFeature feature);

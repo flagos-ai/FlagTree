@@ -1,12 +1,12 @@
 #include "Utility.h"
 
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
 
-#include <limits>
 #include <deque>
+#include <limits>
 
 namespace tt = triton;
 namespace ttg = triton::gpu;
@@ -150,7 +150,6 @@ getDotOpIdxFromMatrixLoad(triton::MatrixLoadOp matrixOp) {
         }
       }
     }
-
   }
 
   return failure();

@@ -88,10 +88,8 @@ def remote_ptr(local_ptr, pe, _builder=None):
         extern_call(
             "librocshmem_device",
             "",
-            [
-                tl.cast(local_ptr, tl.pointer_type(tl.void), _builder=_builder),
-                tl.cast(pe, tl.int32, _builder=_builder)
-            ],
+            [tl.cast(local_ptr, tl.pointer_type(tl.void), _builder=_builder),
+             tl.cast(pe, tl.int32, _builder=_builder)],
             {
                 (tl.pointer_type(tl.void), tl.int32): ("rocshmem_ptr_wrapper", tl.pointer_type(tl.void)),
             },

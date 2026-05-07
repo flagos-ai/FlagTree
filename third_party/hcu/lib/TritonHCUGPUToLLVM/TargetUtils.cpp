@@ -99,15 +99,20 @@ bool isRDNA(ISAFamily isaFamily) {
 
 // HCU ISA features
 HCUISAFeature deduceHCUISAFeature(llvm::StringRef arch) {
-  HCUISAFeature commonFeatures1 = HCUISAFeature::MMAC_LAYOUT|HCUISAFeature::MAMC_FP8|
-                                  HCUISAFeature::MLS|HCUISAFeature::CVT_FP8F32;
-  static const llvm::DenseMap<llvm::AMDGPU::GPUKind, HCUISAFeature> hcuIsaFeatures = {
-    {llvm::AMDGPU::GK_GFX928, HCUISAFeature::NONE },
-    {llvm::AMDGPU::GK_GFX936, HCUISAFeature::NONE },
-    {llvm::AMDGPU::GK_GFX938, commonFeatures1 },
-    {llvm::AMDGPU::GK_GFX92A, commonFeatures1 | HCUISAFeature::MMAC_FP6FP4},
-    {llvm::AMDGPU::GK_GFX946, commonFeatures1 | HCUISAFeature::MMAC_FP6FP4 | HCUISAFeature::MMAC_SCALE },
-  };
+  HCUISAFeature commonFeatures1 = HCUISAFeature::MMAC_LAYOUT |
+                                  HCUISAFeature::MAMC_FP8 | HCUISAFeature::MLS |
+                                  HCUISAFeature::CVT_FP8F32;
+  static const llvm::DenseMap<llvm::AMDGPU::GPUKind, HCUISAFeature>
+      hcuIsaFeatures = {
+          {llvm::AMDGPU::GK_GFX928, HCUISAFeature::NONE},
+          {llvm::AMDGPU::GK_GFX936, HCUISAFeature::NONE},
+          {llvm::AMDGPU::GK_GFX938, commonFeatures1},
+          {llvm::AMDGPU::GK_GFX92A,
+           commonFeatures1 | HCUISAFeature::MMAC_FP6FP4},
+          {llvm::AMDGPU::GK_GFX946, commonFeatures1 |
+                                        HCUISAFeature::MMAC_FP6FP4 |
+                                        HCUISAFeature::MMAC_SCALE},
+      };
 
   llvm::AMDGPU::GPUKind kind = llvm::AMDGPU::parseArchAMDGCN(arch);
   auto it = hcuIsaFeatures.find(kind);

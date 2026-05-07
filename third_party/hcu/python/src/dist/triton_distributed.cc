@@ -21,9 +21,9 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "triton/Dialect/Distributed/IR/Dialect.h"
 #include "mlir/Pass/PassManager.h"
 #include "passes.h"
+#include "triton/Dialect/Distributed/IR/Dialect.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>

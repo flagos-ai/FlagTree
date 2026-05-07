@@ -107,23 +107,20 @@ void init_triton_hcu_passes_ttgpuir(py::module &&m) {
         mlir::createTritonHCUGPUInThreadTranspose());
   });
   ADD_PASS_OPTION_WRAPPER_3("add_mls_stream_pipeline",
-                            mlir::createTritonHCUGPUMlsStreamPipeline, int, int, int);
+                            mlir::createTritonHCUGPUMlsStreamPipeline, int, int,
+                            int);
   ADD_PASS_WRAPPER_0("add_mls_encoding_insertion",
                      mlir::createTritonHCUGPUMlsEncodingInsertion);
   ADD_PASS_WRAPPER_0("add_mls_lowering_pass",
                      mlir::createTritonHCUGPUMlsLowering);
-  m.def("add_warp_specialize_to_llvm", [](mlir::PassManager &pm, const std::string &arch,
-      int waspNumLoadWarps, int waspNumMmaWarps, bool wdraEnabled, int wdraNumLoadRegs, 
-      int wdraNumMmaRegsMain, int wdraNumMmaRegsTail) {
-    pm.addPass(createHCUGPUConvertWarpSpecializeToLLVM(
-        arch,
-        waspNumLoadWarps,
-        waspNumMmaWarps,
-        wdraEnabled,
-        wdraNumLoadRegs,
-        wdraNumMmaRegsMain,
-        wdraNumMmaRegsTail));
-  });
+  m.def("add_warp_specialize_to_llvm",
+        [](mlir::PassManager &pm, const std::string &arch, int waspNumLoadWarps,
+           int waspNumMmaWarps, bool wdraEnabled, int wdraNumLoadRegs,
+           int wdraNumMmaRegsMain, int wdraNumMmaRegsTail) {
+          pm.addPass(createHCUGPUConvertWarpSpecializeToLLVM(
+              arch, waspNumLoadWarps, waspNumMmaWarps, wdraEnabled,
+              wdraNumLoadRegs, wdraNumMmaRegsMain, wdraNumMmaRegsTail));
+        });
 }
 
 void addControlConstant(llvm::Module *module, const char *name,

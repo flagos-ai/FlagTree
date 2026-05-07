@@ -62,6 +62,7 @@ print(f'The maximum difference between torch and triton is '
       f'{torch.max(torch.abs(output_torch - output_triton))}')
 assert torch.allclose(output_triton, output_torch, atol=1e-2, rtol=0)
 
+
 # %%
 #  Customize the libdevice library path
 # -------------------------------------

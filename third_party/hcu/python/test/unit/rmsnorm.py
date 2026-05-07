@@ -18,31 +18,22 @@ torch_to_triton_dtype = {
     torch.bfloat16: tl.bfloat16,
 }
 
+
 def get_num_sms():
     current_device_index = torch.cuda.current_device()
     current_device = torch.cuda.get_device_properties(current_device_index)
     num_sms = current_device.multi_processor_count
     return num_sms
 
+
 def get_hip_autotune_config():
     return [triton.Config({'waves_per_eu': we}, num_warps=nw) for (we, nw) in product([0, 1, 2, 4], [4, 8, 16])]
 
+
 # @triton.autotune(configs=get_hip_autotune_config(), key=['n_rows', 'n_cols'])
 @triton.jit
-def _rms_norm_fwd_rocm(
-    Y_ptr,
-    Y_row_stride,
-    X_ptr,
-    X_row_stride,
-    W_ptr,
-    RSTD_ptr,
-    n_rows,
-    n_cols,
-    eps,
-    BLOCK_SIZE: tl.constexpr,
-    USE_BLOCKED: tl.constexpr,
-    NUM_PRGMS: tl.constexpr
-):
+def _rms_norm_fwd_rocm(Y_ptr, Y_row_stride, X_ptr, X_row_stride, W_ptr, RSTD_ptr, n_rows, n_cols, eps,
+                       BLOCK_SIZE: tl.constexpr, USE_BLOCKED: tl.constexpr, NUM_PRGMS: tl.constexpr):
     row_start = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     # as older version Triton doesn't support tl.assume and BUFF OPS, comment out for now
@@ -129,6 +120,7 @@ def _rms_norm_fwd_rocm(
             output_ptrs = tl.multiple_of(output_ptrs, (16, ))
             tl.store(output_ptrs, rms_norm.to(Y_ptr.type.element_ty), mask=mask)
 
+
 # @triton.autotune(configs=get_hip_autotune_config(), key=['n_rows', 'n_cols'])
 @triton.jit
 def _rms_norm_bwd(
@@ -160,7 +152,7 @@ def _rms_norm_bwd(
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
-    dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    dW_row = tl.zeros((BLOCK_SIZE, ), dtype=tl.float32)
 
     dY_ptr += row_start * dY_row_stride
     dX_ptr += row_start * dX_row_stride
@@ -180,9 +172,7 @@ def _rms_norm_bwd(
         X_row = X_row.to(tl.float32)
         m = dY_row * W_row
         dX_row = rstd_row * m
-        dX_row += (rstd_row) * (
-            -(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row
-        )
+        dX_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row)
 
         # here X_row is already in fp32 (see previous if block)
         dW_row += dY_row * (X_row * rstd_row)
@@ -195,6 +185,7 @@ def _rms_norm_bwd(
         RSTD_ptr += 1
 
     tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
+
 
 class _RMSNormFunction(torch.autograd.Function):
     """
@@ -224,27 +215,15 @@ class _RMSNormFunction(torch.autograd.Function):
         RSTD = torch.empty(n_rows, dtype=torch.float32, device=X.device)
 
         # Check constraints.
-        assert (
-            X.shape[1] == W.shape[0]
-        ), "Incompatible hidden size dimension between tensor1.shape[1] and tensor2.shape[0]"
+        assert (X.shape[1] == W.shape[0]
+                ), "Incompatible hidden size dimension between tensor1.shape[1] and tensor2.shape[0]"
 
-        assert(offset == 0.0), "rocm triton don't support offset"
+        assert (offset == 0.0), "rocm triton don't support offset"
         NUM_PRGMS = min(n_rows, get_num_sms())
         USE_BLOCKED = n_cols > BLOCK_SIZE
         grid = lambda meta: (NUM_PRGMS, )
-        _rms_norm_fwd_rocm[grid](
-            Y,
-            Y.stride(0),
-            X,
-            X.stride(0),
-            W,
-            RSTD,
-            n_rows,
-            n_cols,
-            eps,
-            BLOCK_SIZE,
-            USE_BLOCKED,
-            NUM_PRGMS)
+        _rms_norm_fwd_rocm[grid](Y, Y.stride(0), X, X.stride(0), W, RSTD, n_rows, n_cols, eps, BLOCK_SIZE, USE_BLOCKED,
+                                 NUM_PRGMS)
         ctx.offset = offset
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.save_for_backward(X, W, RSTD)
@@ -270,39 +249,21 @@ class _RMSNormFunction(torch.autograd.Function):
         if n_cols > BLOCK_SIZE:
             raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
         rows_per_program = math.ceil(n_rows / sm_count)
-        grid = (sm_count,)
+        grid = (sm_count, )
 
         dX = torch.zeros_like(dY)
 
-        _rms_norm_bwd[grid](
-            dY,
-            dY.stride(0),
-            dX,
-            dX.stride(0),
-            X,
-            X.stride(0),
-            torch_to_triton_dtype[X.dtype],
-            W,
-            RSTD,
-            _dW,
-            _dW.stride(0),
-            n_rows,
-            n_cols,
-            offset,
-            rows_per_program,
-            BLOCK_SIZE=BLOCK_SIZE
-        )
+        _rms_norm_bwd[grid](dY, dY.stride(0), dX, dX.stride(0), X, X.stride(0), torch_to_triton_dtype[X.dtype], W, RSTD,
+                            _dW, _dW.stride(0), n_rows, n_cols, offset, rows_per_program, BLOCK_SIZE=BLOCK_SIZE)
         dW = _dW.sum(dim=0).to(W.dtype)
 
         return dX, dW, None, None, None
 
+
 triton_rmsnorm = _RMSNormFunction.apply
 
-arg_to_torch_dtype = {
-    'fp16': torch.float16,
-    'bf16': torch.bfloat16,
-    'fp32': torch.float32
-}
+arg_to_torch_dtype = {'fp16': torch.float16, 'bf16': torch.bfloat16, 'fp32': torch.float32}
+
 
 def torch_rmsnorm(x, w, epsilon=1e-6, offset=0.0, out_dtype=torch.float16):
     M, N = x.shape
@@ -314,6 +275,7 @@ def torch_rmsnorm(x, w, epsilon=1e-6, offset=0.0, out_dtype=torch.float16):
     rms_norm_f32 = x_f32 * rsigma.unsqueeze(1) * (w_f32 + offset)
     rms_norm = rms_norm_f32.to(out_dtype)
     return rms_norm, rsigma
+
 
 @pytest.mark.parametrize("out_dtype_str", ["fp16"])
 @pytest.mark.parametrize("in_dtype_str", ["fp16"])
@@ -340,7 +302,7 @@ def test_rmsnorm(M, N, in_dtype_str, out_dtype_str):
     offset = 0.0
     ref_y, ref_rsigma = torch_rmsnorm(x, w, esp, offset, out_dtype)
     ref_y.backward(dy)
-    ref_dx, x.grad = x.grad.clone(), None # None is to clear gradient for next step
+    ref_dx, x.grad = x.grad.clone(), None  # None is to clear gradient for next step
     ref_dw, w.grad = w.grad.clone(), None
     triton_y = triton_rmsnorm(x, w, esp, offset, out_dtype)
     triton_y.backward(dy)
@@ -360,6 +322,7 @@ def test_rmsnorm(M, N, in_dtype_str, out_dtype_str):
     torch.testing.assert_close(triton_dx, ref_dx, atol=atol, rtol=rtol)
     torch.testing.assert_close(triton_dw, ref_dw, atol=atol, rtol=rtol)
 
+
 #Benchmark
 def run_benchmark(args):
     config = []
@@ -371,36 +334,22 @@ def run_benchmark(args):
                 x_vals_list.append(val)
                 val *= args.M_step
             mn_args = {'N': args.N_start}
-            plot_name = str("rmsnorm-performance_" + args.dtype +
-                            "_" + mode +
-                            "_N" + str(args.N_start) +
-                            "_M" + str(args.M_start) +
-                            "-" + str(args.M_end) + "-" + str(args.M_step))
+            plot_name = str("rmsnorm-performance_" + args.dtype + "_" + mode + "_N" + str(args.N_start) + "_M" +
+                            str(args.M_start) + "-" + str(args.M_end) + "-" + str(args.M_step))
             x_names = ['M']
         else:
             x_vals_list = [i for i in range(args.N_start, args.N_end, args.N_step)]
             mn_args = {'M': args.M_start}
             x_names = ['N']
-            plot_name = str("rmsnorm-performance_" + args.dtype +
-                            "_" + mode +
-                            "_M" + str(args.M_start) +
-                            "_N" + str(args.N_start) +
-                            "-" + str(args.N_end) + "-" + str(args.N_step))
+            plot_name = str("rmsnorm-performance_" + args.dtype + "_" + mode + "_M" + str(args.M_start) + "_N" +
+                            str(args.N_start) + "-" + str(args.N_end) + "-" + str(args.N_step))
         _args = mn_args
         _args['mode'] = mode
         _args['dtype'] = arg_to_torch_dtype[args.dtype]
         config.append(
-            triton.testing.Benchmark(
-                x_names=x_names,
-                x_vals=x_vals_list,
-                line_arg='provider',
-                line_vals=['triton'],
-                line_names=["Triton"],
-                styles=[('green', '-')],
-                ylabel="GB/s",
-                plot_name=plot_name,
-                args=_args
-            ))
+            triton.testing.Benchmark(x_names=x_names, x_vals=x_vals_list, line_arg='provider', line_vals=['triton'],
+                                     line_names=["Triton"], styles=[('green', '-')], ylabel="GB/s", plot_name=plot_name,
+                                     args=_args))
 
     @triton.testing.perf_report(config)
     def benchmark(M, N, provider, mode, dtype):
@@ -437,6 +386,7 @@ def run_benchmark(args):
 
     benchmark.run(print_data=True)
 
+
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="Benchmark RMSNorm",
@@ -452,8 +402,7 @@ def parse_args():
     parser.add_argument('-Ne', "--N_end", default="32768", type=int)
 
     parser.add_argument('-d', "--dtype", default="fp16")
-    parser.add_argument("-v", action='store_true', default=False,
-                        help="Print out the best tuning config")
+    parser.add_argument("-v", action='store_true', default=False, help="Print out the best tuning config")
 
     return parser.parse_args()
 
@@ -463,6 +412,7 @@ def main():
     global verbose
     verbose = args.v
     run_benchmark(args)
+
 
 if __name__ == "__main__":
     sys.exit(main())

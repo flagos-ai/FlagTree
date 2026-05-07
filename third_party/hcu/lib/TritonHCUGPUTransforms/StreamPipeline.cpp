@@ -1061,7 +1061,8 @@ FailureOr<scf::ForOp> pipelineLoop(scf::ForOp forOp, int numStages,
   return tt::pipelineForLoop(rewriter, forOp, options);
 }
 
-// HCU: Skip loop with matrix_load or matrix_load_to_local ops due to not support or already handled.
+// HCU: Skip loop with matrix_load or matrix_load_to_local ops due to not
+// support or already handled.
 bool skipLoopWithMatrixLoadOp(scf::ForOp forOp) {
   for (auto &op : forOp.getBody()->without_terminator()) {
     if (isa<tt::MatrixLoadOp, triton::hcugpu::MatrixLoadToLocalOp>(op)) {
@@ -1105,7 +1106,8 @@ struct PipelinePass : impl::TritonHCUGPUStreamPipelineBase<PipelinePass> {
       }
 
       if (skipLoopWithMatrixLoadOp(forOp)) {
-        LDBG("Skip loop with matrix_load or matrix_load_to_local ops:\n" << *forOp);
+        LDBG("Skip loop with matrix_load or matrix_load_to_local ops:\n"
+             << *forOp);
         continue;
       }
 

@@ -1,3 +1,8 @@
+#include "Dialect/TritonHCUGPU/IR/Dialect.h"
+#include "TritonHCUGPUToLLVM/TargetUtils.h"
+#include "TritonHCUGPUTransforms/MfmaGroup.h"
+#include "TritonHCUGPUTransforms/MlsGroup.h"
+#include "Utility.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -5,18 +10,13 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "triton/Analysis/Utility.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
-#include "TritonHCUGPUToLLVM/TargetUtils.h"
-#include "TritonHCUGPUTransforms/MfmaGroup.h"
-#include "TritonHCUGPUTransforms/MlsGroup.h"
-#include "triton/Analysis/Utility.h"
-#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
-#include "Dialect/TritonHCUGPU/IR/Dialect.h"
-#include "Utility.h"
 
 using namespace mlir;
 namespace tt = mlir::triton;
@@ -28,7 +28,8 @@ namespace {
 // Utility functions
 //===----------------------------------------------------------------------===//
 
-SmallVector<unsigned> getMatrixLoadTensorOrder(triton::MatrixLoadOp matrixOp, int opIdx) {
+SmallVector<unsigned> getMatrixLoadTensorOrder(triton::MatrixLoadOp matrixOp,
+                                               int opIdx) {
   auto strides = matrixOp.getStrides();
   assert(strides.size() == 2);
 
@@ -44,16 +45,16 @@ SmallVector<unsigned> getMatrixLoadTensorOrder(triton::MatrixLoadOp matrixOp, in
 
   if (opIdx == 0) {
     return {kMajor, !kMajor};
-  }
-  else {
+  } else {
     return {!kMajor, kMajor};
   }
 }
 
 // Chooses a proper MLS instruction
 FailureOr<MlsInsn> chooseMlsInstruction(tt::DotOp dot, int opIdx,
-                                        triton::MatrixLoadOp matrixOp, bool kMajor,
-                                        int version, int numWarps) {
+                                        triton::MatrixLoadOp matrixOp,
+                                        bool kMajor, int version,
+                                        int numWarps) {
   // get mfma encoding info
   auto aType = dot.getA().getType();
   auto bType = dot.getB().getType();
@@ -69,7 +70,8 @@ FailureOr<MlsInsn> chooseMlsInstruction(tt::DotOp dot, int opIdx,
 
   // Determine the kDim based on the matrix load and numWarps Info.
   unsigned kTile = 0;
-  unsigned nonKTile = opIdx == 0 ? mfmaEncoding.getMfmaTile()[0] : mfmaEncoding.getMfmaTile()[1];
+  unsigned nonKTile = opIdx == 0 ? mfmaEncoding.getMfmaTile()[0]
+                                 : mfmaEncoding.getMfmaTile()[1];
   if (bitwidth == 16) {
     kTile = kMajor ? (blockK >= 64 ? 64 : 32) : 16;
     if (kTile == 64 && kTile * nonKTile * numWarps > blockK * blockNonK)
@@ -82,16 +84,18 @@ FailureOr<MlsInsn> chooseMlsInstruction(tt::DotOp dot, int opIdx,
   auto altKind = MlsInterleaveKind::InterleaveNone;
 
   // select the mls insn
-  auto maybeMlsInsn = MlsInsn::selectOrGetMlsInsn(nonKTile, kTile, bitwidth,
-                                                  opIdx, kMajor, altKind, version);
+  auto maybeMlsInsn = MlsInsn::selectOrGetMlsInsn(
+      nonKTile, kTile, bitwidth, opIdx, kMajor, altKind, version);
   if (failed(maybeMlsInsn))
     llvm::report_fatal_error("No match found in MLS database\n");
 
   return maybeMlsInsn;
 }
 
-SmallVector<unsigned>
-warpsPerCTAMatrixLoad(ArrayRef<int64_t> shape, ArrayRef<unsigned> shapePerWarp, ArrayRef<unsigned> order, int numWarps) {
+SmallVector<unsigned> warpsPerCTAMatrixLoad(ArrayRef<int64_t> shape,
+                                            ArrayRef<unsigned> shapePerWarp,
+                                            ArrayRef<unsigned> order,
+                                            int numWarps) {
   unsigned rank = shape.size();
   SmallVector<unsigned> warpsPerCTA(rank);
 
@@ -101,7 +105,8 @@ warpsPerCTAMatrixLoad(ArrayRef<int64_t> shape, ArrayRef<unsigned> shapePerWarp, 
   // starting from the contiguous dimension
   for (unsigned d = 0; d < rank - 1; ++d) {
     unsigned i = order[d];
-    unsigned maxWarpsInDim = std::max<unsigned>(1, static_cast<unsigned>(shape[i]) / shapePerWarp[i]);
+    unsigned maxWarpsInDim = std::max<unsigned>(
+        1, static_cast<unsigned>(shape[i]) / shapePerWarp[i]);
     warpsPerCTA[i] = std::clamp<unsigned>(remainingWarps, 1, maxWarpsInDim);
     remainingWarps /= warpsPerCTA[i];
     prevWarps *= warpsPerCTA[i];
@@ -131,12 +136,13 @@ Value convertAndCastTensor(OpBuilder &builder, Value value,
 
 struct MlsEncodingInsertion : public OpRewritePattern<triton::MatrixLoadOp> {
 public:
-  MlsEncodingInsertion(MLIRContext *context)
-      : OpRewritePattern(context, 1) {}
+  MlsEncodingInsertion(MLIRContext *context) : OpRewritePattern(context, 1) {}
 
-  LogicalResult matchAndRewrite(triton::MatrixLoadOp matrixOp, PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(triton::MatrixLoadOp matrixOp,
+                                PatternRewriter &rewriter) const override {
     RankedTensorType oldRetType = matrixOp.getType();
-    if (!oldRetType.getEncoding() || !isa<ttg::BlockedEncodingAttr>(oldRetType.getEncoding()))
+    if (!oldRetType.getEncoding() ||
+        !isa<ttg::BlockedEncodingAttr>(oldRetType.getEncoding()))
       return failure();
 
     auto maybeDotOpIdxPair = getDotOpIdxFromMatrixLoad(matrixOp);
@@ -149,7 +155,8 @@ public:
       auto order = getMatrixLoadTensorOrder(matrixOp, opIdx);
       bool kMajor = opIdx == 0 ? order[0] == 1 : order[0] == 0;
       auto numWarps = triton::gpu::lookupNumWarps(matrixOp);
-      auto mlsInsn = chooseMlsInstruction(dotOp, opIdx, matrixOp, kMajor, 1, numWarps);
+      auto mlsInsn =
+          chooseMlsInstruction(dotOp, opIdx, matrixOp, kMajor, 1, numWarps);
 
       // 2. warps per tile calculate
       auto mlsTile = mlsInsn->getMlsTile();
@@ -161,35 +168,38 @@ public:
 
       // 3. create new matrix load op with new encoding and mls attr
       auto newEncoding = opIdx == 0 ? dotOp.getA().getType().getEncoding()
-                                               : dotOp.getB().getType().getEncoding();
-      if (dyn_cast<ttg::DotOperandEncodingAttr>(newEncoding).getKWidth() != mlsInsn->getDotLayoutKWidth()) {
-        newEncoding = ttg::DotOperandEncodingAttr::get(matrixOp.getContext(),
-                                                       opIdx,
-                                                       dyn_cast<ttg::DotOperandEncodingAttr>(newEncoding).getParent(),
-                                                       mlsInsn->getDotLayoutKWidth());
+                                    : dotOp.getB().getType().getEncoding();
+      if (dyn_cast<ttg::DotOperandEncodingAttr>(newEncoding).getKWidth() !=
+          mlsInsn->getDotLayoutKWidth()) {
+        newEncoding = ttg::DotOperandEncodingAttr::get(
+            matrixOp.getContext(), opIdx,
+            dyn_cast<ttg::DotOperandEncodingAttr>(newEncoding).getParent(),
+            mlsInsn->getDotLayoutKWidth());
       }
 
-      auto oldResultType = cast<RankedTensorType>(matrixOp.getResult().getType());
-      auto newResultType = RankedTensorType::get(oldResultType.getShape(),
-                                                                   oldResultType.getElementType(),
-                                                                   newEncoding);
+      auto oldResultType =
+          cast<RankedTensorType>(matrixOp.getResult().getType());
+      auto newResultType =
+          RankedTensorType::get(oldResultType.getShape(),
+                                oldResultType.getElementType(), newEncoding);
 
       auto newMatrixOp = rewriter.create<triton::MatrixLoadOp>(
-                              matrixOp.getLoc(), newResultType,
-                              matrixOp.getBase(), matrixOp.getShape(),
-                              matrixOp.getStrides(), matrixOp.getTensorShape(), matrixOp.getIndices(),
-                              matrixOp.getBoundaryCheck(), matrixOp.getCache(), matrixOp.getEvict(),
-                              matrixOp.getIsVolatile());
+          matrixOp.getLoc(), newResultType, matrixOp.getBase(),
+          matrixOp.getShape(), matrixOp.getStrides(), matrixOp.getTensorShape(),
+          matrixOp.getIndices(), matrixOp.getBoundaryCheck(),
+          matrixOp.getCache(), matrixOp.getEvict(), matrixOp.getIsVolatile());
       auto mlsEncoding = triton::hcugpu::MlsEncodingAttr::get(
-                                                          matrixOp.getContext(), opIdx, mlsTile,
-                                                          elemBitWidth, altKind, version,
-                                                          order, warpsPerCTA);
-      newMatrixOp->setAttr(triton::hcugpu::MlsEncodingAttr::getMnemonic(), mlsEncoding);
+          matrixOp.getContext(), opIdx, mlsTile, elemBitWidth, altKind, version,
+          order, warpsPerCTA);
+      newMatrixOp->setAttr(triton::hcugpu::MlsEncodingAttr::getMnemonic(),
+                           mlsEncoding);
 
       // 4. replace the original op
-      auto convertedTensor = convertAndCastTensor(rewriter, newMatrixOp.getResult(), matrixOp.getType().getEncoding());
+      auto convertedTensor = convertAndCastTensor(
+          rewriter, newMatrixOp.getResult(), matrixOp.getType().getEncoding());
       rewriter.replaceOp(matrixOp, convertedTensor);
-    } else {// non-dot case, try to construct a mfma encoding for the matrix load
+    } else { // non-dot case, try to construct a mfma encoding for the matrix
+             // load
       // 1. choose the mls instruction for matrixOp
       unsigned opIdx = 0;
       auto order = getMatrixLoadTensorOrder(matrixOp, opIdx);
@@ -218,12 +228,12 @@ public:
 
       auto altKind = MlsInterleaveKind::InterleaveNone;
       auto mlsInsn = MlsInsn::selectOrGetMlsInsn(nonKTile, kTile, bitwidth,
-                                                                     opIdx, kMajor,
-                                                                     altKind, 1);
+                                                 opIdx, kMajor, altKind, 1);
       if (failed(mlsInsn))
         llvm::report_fatal_error("No match found in MLS database\n");
 
-      assert(blockK % kTile == 0 && blockNonK % nonKTile == 0 && "M or N should be divisible by mDim or nDim");
+      assert(blockK % kTile == 0 && blockNonK % nonKTile == 0 &&
+             "M or N should be divisible by mDim or nDim");
 
       // 3. warps per tile calucate
       auto mlsTile = mlsInsn->getMlsTile();
@@ -234,13 +244,9 @@ public:
 
       // 3. try to construct a mfma encoding for the matrix load
       constexpr unsigned mfmaVersion = 3;
-      auto maybeMfmaInsn = MfmaIntrinsic::selectFor(matrixOp.getLoc(),
-                                                    mfmaVersion,
-                                                    16, 16,
-                                                    blockK, elemType,
-                                                    elemType,
-                                                    false, false,
-                                                    HCUISAFeature::MAMC_FP8);
+      auto maybeMfmaInsn = MfmaIntrinsic::selectFor(
+          matrixOp.getLoc(), mfmaVersion, 16, 16, blockK, elemType, elemType,
+          false, false, HCUISAFeature::MAMC_FP8);
       if (failed(maybeMfmaInsn))
         llvm::report_fatal_error("No match found in MFMA database\n");
 
@@ -259,50 +265,47 @@ public:
       bool hasBatchDim = rank == 3;
       int mIndex = 0 + hasBatchDim;
       int nIndex = 1 + hasBatchDim;
-      tilesPerWarp[mIndex] = tileM/maybeMfmaInsn->mDim;
-      tilesPerWarp[nIndex] = tileN/maybeMfmaInsn->nDim;
+      tilesPerWarp[mIndex] = tileM / maybeMfmaInsn->mDim;
+      tilesPerWarp[nIndex] = tileN / maybeMfmaInsn->nDim;
 
-      SmallVector<unsigned> warpsPerCTAMfma = warpsPerCTAMatrixLoad(shape, mfmaTiles, mfmaOrder, numWarps);
+      SmallVector<unsigned> warpsPerCTAMfma =
+          warpsPerCTAMatrixLoad(shape, mfmaTiles, mfmaOrder, numWarps);
       unsigned mfmaElementBitWidth = elemType.isF64() ? 64 : 32;
       auto mfmaEnc = ttg::AMDMfmaEncodingAttr::get(
-        matrixOp.getContext(),
-        /*versionMajor*/ mfmaVersion,
-        warpsPerCTAMfma,
-        /*instrShape=*/SmallVector<unsigned>{maybeMfmaInsn->mDim, maybeMfmaInsn->nDim,
-                                             maybeMfmaInsn->kDim},
-        /*isTransposed=*/false,
-        ttg::getCTALayout(matrixOp.getType().getEncoding()),
-        tilesPerWarp,
-        mfmaElementBitWidth,
-        ttg::MmacLayout::INTERLEAVE_TRANSPOSE);
-      auto dotAEncoding = ttg::DotOperandEncodingAttr::get(matrixOp.getContext(),
-                                                          0, mfmaEnc,
-                                                          maybeMfmaInsn->kBase);
+          matrixOp.getContext(),
+          /*versionMajor*/ mfmaVersion, warpsPerCTAMfma,
+          /*instrShape=*/
+          SmallVector<unsigned>{maybeMfmaInsn->mDim, maybeMfmaInsn->nDim,
+                                maybeMfmaInsn->kDim},
+          /*isTransposed=*/false,
+          ttg::getCTALayout(matrixOp.getType().getEncoding()), tilesPerWarp,
+          mfmaElementBitWidth, ttg::MmacLayout::INTERLEAVE_TRANSPOSE);
+      auto dotAEncoding = ttg::DotOperandEncodingAttr::get(
+          matrixOp.getContext(), 0, mfmaEnc, maybeMfmaInsn->kBase);
 
       // 4. create new matrix load op with new encoding and mls attr
       auto newEncoding = dotAEncoding;
 
-      auto oldResultType = cast<RankedTensorType>(matrixOp.getResult().getType());
-      auto newResultType = RankedTensorType::get(oldResultType.getShape(),
-                                                                   oldResultType.getElementType(),
-                                                                   newEncoding);
+      auto oldResultType =
+          cast<RankedTensorType>(matrixOp.getResult().getType());
+      auto newResultType =
+          RankedTensorType::get(oldResultType.getShape(),
+                                oldResultType.getElementType(), newEncoding);
 
       auto newMatrixOp = rewriter.create<triton::MatrixLoadOp>(
-                              matrixOp.getLoc(), newResultType,
-                              matrixOp.getBase(), matrixOp.getShape(),
-                              matrixOp.getStrides(), matrixOp.getTensorShape(), matrixOp.getIndices(),
-                              matrixOp.getBoundaryCheck(), matrixOp.getCache(), matrixOp.getEvict(),
-                              matrixOp.getIsVolatile());
+          matrixOp.getLoc(), newResultType, matrixOp.getBase(),
+          matrixOp.getShape(), matrixOp.getStrides(), matrixOp.getTensorShape(),
+          matrixOp.getIndices(), matrixOp.getBoundaryCheck(),
+          matrixOp.getCache(), matrixOp.getEvict(), matrixOp.getIsVolatile());
       auto mlsEncoding = triton::hcugpu::MlsEncodingAttr::get(
-                                                          matrixOp.getContext(), opIdx, mlsTile,
-                                                          elemBitWidth, static_cast<unsigned>(altKind), version,
-                                                          order, warpsPerCTA);
-      newMatrixOp->setAttr(triton::hcugpu::MlsEncodingAttr::getMnemonic(), mlsEncoding);
+          matrixOp.getContext(), opIdx, mlsTile, elemBitWidth,
+          static_cast<unsigned>(altKind), version, order, warpsPerCTA);
+      newMatrixOp->setAttr(triton::hcugpu::MlsEncodingAttr::getMnemonic(),
+                           mlsEncoding);
 
       // 5. replace the original op
-      auto convertedTensor = convertAndCastTensor(rewriter,
-                                                        newMatrixOp.getResult(),
-                                                        matrixOp.getType().getEncoding());
+      auto convertedTensor = convertAndCastTensor(
+          rewriter, newMatrixOp.getResult(), matrixOp.getType().getEncoding());
       rewriter.replaceOp(matrixOp, convertedTensor);
     }
 
@@ -326,7 +329,8 @@ class TritonHCUGPUMlsEncodingInsertionPass
           TritonHCUGPUMlsEncodingInsertionPass> {
 public:
   using impl::TritonHCUGPUMlsEncodingInsertionBase<
-      TritonHCUGPUMlsEncodingInsertionPass>::TritonHCUGPUMlsEncodingInsertionBase;
+      TritonHCUGPUMlsEncodingInsertionPass>::
+      TritonHCUGPUMlsEncodingInsertionBase;
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();

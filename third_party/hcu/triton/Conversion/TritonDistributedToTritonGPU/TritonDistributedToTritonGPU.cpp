@@ -195,12 +195,12 @@ struct TritonExpandDimsPattern
     std::iota(retOrder.begin(), retOrder.end(), 0);
 
     auto argCTALayout = argEncoding.getCTALayout();
-    auto retCTAsPerCGA =
-        insertOne(ArrayRef<unsigned>(argCTALayout.getCTAsPerCGA()), op.getAxis());
-    auto retCTASplitNum =
-        insertOne(ArrayRef<unsigned>(argCTALayout.getCTASplitNum()), op.getAxis());
-    auto retCTAOrder =
-        insertOrder(ArrayRef<unsigned>(argCTALayout.getCTAOrder()), op.getAxis());
+    auto retCTAsPerCGA = insertOne(
+        ArrayRef<unsigned>(argCTALayout.getCTAsPerCGA()), op.getAxis());
+    auto retCTASplitNum = insertOne(
+        ArrayRef<unsigned>(argCTALayout.getCTASplitNum()), op.getAxis());
+    auto retCTAOrder = insertOrder(
+        ArrayRef<unsigned>(argCTALayout.getCTAOrder()), op.getAxis());
     auto retCTALayout = triton::gpu::CTAEncodingAttr::fromSplitParams(
         getContext(), retCTAsPerCGA, retCTASplitNum, retCTAOrder);
 

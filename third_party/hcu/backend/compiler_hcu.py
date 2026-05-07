@@ -13,7 +13,7 @@ import functools
 import warnings
 import os
 from pathlib import Path
- 
+
 
 def get_min_dot_size(target: GPUTarget):
     # We fallback to use FMA and cast arguments if certain configurations is
@@ -122,7 +122,7 @@ class HIPOptions:
         # HCU toolchain uses this path.
         default_libdir = Path(HIPBackend.path_to_rocm()) / 'amdgcn/bitcode/'
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
-        for lib in ["ocml", "ockl", "hip", "opencl"]:   # Add hip and opencl for HCU toolchain.
+        for lib in ["ocml", "ockl", "hip", "opencl"]:  # Add hip and opencl for HCU toolchain.
             extern_libs[lib] = str(default_libdir / f'{lib}.bc')
         # rocshmem_device_lib = str(default_libdir / 'librocshmem_device.bc')
 
@@ -224,8 +224,7 @@ class HIPBackend(BaseBackend):
         from triton.language.extra.hip import libnvshmem_device
 
         return {
-            "triton.language.extra.libdevice": libdevice,
-            "triton.language.extra.libshmem_device": libnvshmem_device
+            "triton.language.extra.libdevice": libdevice, "triton.language.extra.libshmem_device": libnvshmem_device
         }
 
     def load_dialects(self, ctx):
@@ -297,17 +296,15 @@ class HIPBackend(BaseBackend):
         lld = Path("/usr/bin/ld.lld")
         if lld.is_file():
             return lld
-        raise Exception(
-            f"ROCm linker not found under {llvm_path}/bin/ld.lld. "
-            "Set 'TRITON_HIP_LLD_PATH' to its path."
-        )
+        raise Exception(f"ROCm linker not found under {llvm_path}/bin/ld.lld. "
+                        "Set 'TRITON_HIP_LLD_PATH' to its path.")
 
     @staticmethod
     def path_to_rocm_clang():
         llvm_path = HIPBackend.path_to_rocm_llvm()
         # Check env path for clang
         clang_env_path = os.getenv("TRITON_HIP_CLANG_PATH",
-                                    # By default, use clang-18
+                                   # By default, use clang-18
                                    str(llvm_path / "bin/clang-18"))
         if clang_env_path is not None:
             clang = Path(clang_env_path)
@@ -319,29 +316,27 @@ class HIPBackend(BaseBackend):
         clang = Path("/usr/bin/clang")
         if clang.is_file():
             return clang
-        raise Exception(
-            f"ROCm compiler not found under {llvm_path}/bin/clang. "
-            "Set 'TRITON_HIP_CLANG_PATH' to its path."
-        )
+        raise Exception(f"ROCm compiler not found under {llvm_path}/bin/clang. "
+                        "Set 'TRITON_HIP_CLANG_PATH' to its path.")
 
     @staticmethod
     def _get_clang_args(metadata, options):
         arch_args = {
             "gfx928": [
-                        "-mllvm=-support-512-vgprs=true",
-                      ],
+                "-mllvm=-support-512-vgprs=true",
+            ],
             "gfx936": [
-                        "-mllvm=-support-768-vgprs=true",
-                      ],
+                "-mllvm=-support-768-vgprs=true",
+            ],
             "gfx938": [
-                        "-mllvm=-support-768-vgprs=true",
-                      ],
+                "-mllvm=-support-768-vgprs=true",
+            ],
             "gfx946": [
-                        "-mllvm=-support-512-vgprs=true",
-                      ],
+                "-mllvm=-support-512-vgprs=true",
+            ],
             "gfx92a": [
-                        "-mllvm=-support-512-vgprs=true",
-                      ],
+                "-mllvm=-support-512-vgprs=true",
+            ],
         }
         if options.arch in arch_args:
             options_args = arch_args[options.arch]
@@ -363,8 +358,10 @@ class HIPBackend(BaseBackend):
 
         if options.sched_latency != 'none':
             sched_latency_args = {
-                "mmac5-ds10": ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=10"],
-                "mmac5-ds6" : ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=6" ],
+                "mmac5-ds10":
+                ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=10"],
+                "mmac5-ds6":
+                ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=6"],
             }
             if options.sched_latency in sched_latency_args:
                 options_args.extend(sched_latency_args[options.sched_latency])
@@ -372,7 +369,8 @@ class HIPBackend(BaseBackend):
                 raise ValueError(f"Unsupported scheduling latency: {options.sched_latency}")
 
         clang_args = [
-            "-target", hcu.TARGET_TRIPLE,
+            "-target",
+            hcu.TARGET_TRIPLE,
             f"-mcpu={options.arch}:xnack-",
             "-mllvm=-check-valu-data-forward-hazards=0",
             "-mllvm=-disable-cluster-lds-memops=true",
@@ -419,9 +417,7 @@ class HIPBackend(BaseBackend):
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
-        hcu.passes.ttgpuir.add_accelerate_matmul(pm, options.arch,
-                                                 options.matrix_instr_nonkdim,
-                                                 options.kpack,
+        hcu.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack,
                                                  options.mmac_layout_force)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         if options.optimize_epilogue:
@@ -446,7 +442,8 @@ class HIPBackend(BaseBackend):
         if options.schedule_hint == "local-prefetch":
             global_prefetch = 1
 
-        async_copy_single_buffer = options.async_copy_use_single_buffer and (options.num_stages == 2 and not global_prefetch)
+        async_copy_single_buffer = options.async_copy_use_single_buffer and (options.num_stages == 2
+                                                                             and not global_prefetch)
         hcu.passes.ttgpuir.add_mls_stream_pipeline(pm, options.num_stages, global_prefetch, async_copy_single_buffer)
 
         use_block_pingpong = is_pingpong_schedule_enabled(options.arch, use_async_copy)
@@ -454,9 +451,8 @@ class HIPBackend(BaseBackend):
 
         if not options.wasp_enabled:
             if hasattr(hcu.passes.ttgpuir, "add_stream_pipeline"):
-                hcu.passes.ttgpuir.add_stream_pipeline(
-                    pm, options.num_stages, global_prefetch, local_prefetch, use_async_copy, use_block_pingpong
-                )
+                hcu.passes.ttgpuir.add_stream_pipeline(pm, options.num_stages, global_prefetch, local_prefetch,
+                                                       use_async_copy, use_block_pingpong)
             else:
                 hcu.passes.ttgpuir.add_pipeline(pm, use_async_copy, use_block_pingpong)
         if use_async_copy:
@@ -478,8 +474,10 @@ class HIPBackend(BaseBackend):
             hcu.passes.ttgpuir.add_block_pingpong(pm, options.num_stages)
 
         if options.wasp_enabled:
-            passes.ttgpuir.add_warp_specialize_hcu(pm, 2, options.wdra_enabled, options.wasp_num_load_warps, options.wasp_num_mma_warps)
-            hcu.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack, options.mmac_layout_force)
+            passes.ttgpuir.add_warp_specialize_hcu(pm, 2, options.wdra_enabled, options.wasp_num_load_warps,
+                                                   options.wasp_num_mma_warps)
+            hcu.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack,
+                                                     options.mmac_layout_force)
             passes.ttgpuir.add_remove_layout_conversions(pm)
             if options.optimize_epilogue:
                 hcu.passes.ttgpuir.add_optimize_epilogue(pm)
@@ -500,7 +498,7 @@ class HIPBackend(BaseBackend):
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
-        if 1:#use_async_copy:
+        if 1:  #use_async_copy:
             hcu.passes.ttgpuir.add_update_async_wait_count(pm, options.arch)
         pm.run(mod, 'make_ttgir')
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
@@ -567,8 +565,10 @@ class HIPBackend(BaseBackend):
 
         if options.wasp_enabled:
             hcu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, options.arch, options.wasp_num_load_warps,
-                options.wasp_num_mma_warps, options.wdra_enabled, options.wdra_num_load_regs or 0,
-                options.wdra_num_mma_regs_main or 0, options.wdra_num_mma_regs_tail or 0)
+                                                           options.wasp_num_mma_warps, options.wdra_enabled,
+                                                           options.wdra_num_load_regs or 0,
+                                                           options.wdra_num_mma_regs_main or 0,
+                                                           options.wdra_num_mma_regs_tail or 0)
             passes.convert.add_arith_to_llvmir(pm)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
@@ -782,7 +782,7 @@ class HIPBackend(BaseBackend):
             hsaco_file = tempfile.mktemp(suffix=".hsaco")
 
             clang_path = HIPBackend.path_to_rocm_clang()
-            clang_args = HIPBackend._get_clang_args(metadata,options)
+            clang_args = HIPBackend._get_clang_args(metadata, options)
 
             # Compile to HSACO
             hsaco_command = [clang_path] + clang_args + [asm_file, "-x", "assembler", "-o", hsaco_file]

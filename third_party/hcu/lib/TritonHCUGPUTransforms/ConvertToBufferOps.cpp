@@ -39,19 +39,23 @@ namespace mlir {
 namespace {
 
 // ========================== HCU Utility Functions ==========================
-void collectAssumptionsForFuncArgPtr(ModuleOp mod, DenseMap<Value, SetVector<Operation *>> &assumptions) {
+void collectAssumptionsForFuncArgPtr(
+    ModuleOp mod, DenseMap<Value, SetVector<Operation *>> &assumptions) {
   mod.walk([&](LLVM::AssumeOp op) {
     if (auto cmpIOp = op.getCond().getDefiningOp<arith::CmpIOp>()) {
-      /*  HCU: add ConvertToBufferOp with ptr's offset are always non-negative support.
+      /*  HCU: add ConvertToBufferOp with ptr's offset are always non-negative
+       *support.
        *
-       *     This is a trick method to annotate ptr's offset are always non-negative.
-       *  CanonicalizeationPointersPass only propagate the ptr & ptr's user attributes, and this
-       *  lead the attributes which tagged on the offsets maybe abandoned.
-       *     So we need to put the assume info in ptr, not offsets.
-       *     Besides, annotate_hint operations currently can only operate on op, not block arguments.
-       *  and tl.assume operation is mlir & llvm native operation.
+       *     This is a trick method to annotate ptr's offset are always
+       *non-negative. CanonicalizeationPointersPass only propagate the ptr &
+       *ptr's user attributes, and this lead the attributes which tagged on the
+       *offsets maybe abandoned. So we need to put the assume info in ptr, not
+       *offsets. Besides, annotate_hint operations currently can only operate on
+       *op, not block arguments. and tl.assume operation is mlir & llvm native
+       *operation.
        *
-       *  Eg, below code annotate all loaded offset calc from sorted_token_ids_ptr are non-negative.
+       *  Eg, below code annotate all loaded offset calc from
+       *sorted_token_ids_ptr are non-negative.
        *    tl.assume(sorted_token_ids_ptr.to(tl.int64) >= 0)
        *    offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
        *    .....
@@ -63,13 +67,15 @@ void collectAssumptionsForFuncArgPtr(ModuleOp mod, DenseMap<Value, SetVector<Ope
        *    %2 = arith.cmpi sge, %1, %c0_i64 : i64
        *    llvm.intr.assume %2 : i1
        *
-       *  Here we detect the pattern and add the %arg6(sorted_token_ids_ptr) to the assumption.
-      **/
+       *  Here we detect the pattern and add the %arg6(sorted_token_ids_ptr) to
+       *the assumption.
+       **/
       bool isGe = (cmpIOp.getPredicate() == arith::CmpIPredicate::sge);
       if (isGe && cmpIOp->getOperand(0).getDefiningOp<triton::PtrToIntOp>()) {
-        auto ptrToIntOp = cmpIOp->getOperand(0).getDefiningOp<triton::PtrToIntOp>();
-        if (isa<BlockArgument>(ptrToIntOp->getOperand(0))
-            && ptrToIntOp->getBlock()->isEntryBlock()) {
+        auto ptrToIntOp =
+            cmpIOp->getOperand(0).getDefiningOp<triton::PtrToIntOp>();
+        if (isa<BlockArgument>(ptrToIntOp->getOperand(0)) &&
+            ptrToIntOp->getBlock()->isEntryBlock()) {
           assumptions[ptrToIntOp->getOperand(0)].insert(ptrToIntOp);
         }
       }
@@ -77,9 +83,11 @@ void collectAssumptionsForFuncArgPtr(ModuleOp mod, DenseMap<Value, SetVector<Ope
   });
 }
 
-bool isFuncArgPtrWithNonNegativeAssumption(mlir::Value value,
-  const DenseMap<Value, SetVector<Operation *>> &assumptions) {
-  while (value.getDefiningOp() && isa<triton::AddPtrOp>(value.getDefiningOp())) {
+bool isFuncArgPtrWithNonNegativeAssumption(
+    mlir::Value value,
+    const DenseMap<Value, SetVector<Operation *>> &assumptions) {
+  while (value.getDefiningOp() &&
+         isa<triton::AddPtrOp>(value.getDefiningOp())) {
     value = value.getDefiningOp<triton::AddPtrOp>().getPtr();
   }
 
@@ -230,7 +238,6 @@ bool canUseBufferOps(Value ptr,
   auto ofstBit =
       cast<RankedTensorType>(offset.getType()).getElementTypeBitWidth();
   LLVM_DEBUG(llvm::dbgs() << "offset bits:" << ofstBit << "\n");
-
 
   if (isFuncArgPtrWithNonNegativeAssumption(maybeSplatOp.getSrc(), assumptions))
     return true;

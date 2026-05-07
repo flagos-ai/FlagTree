@@ -1260,7 +1260,7 @@ def noinline_multi_values_fn(x, y, Z):
 
 
 @pytest.mark.interpreter
-@pytest.mark.parametrize("mode", ["simple", "call_graph", "dynamic", "multi_values"])#, "shared"])
+@pytest.mark.parametrize("mode", ["simple", "call_graph", "dynamic", "multi_values"])  #, "shared"])
 def test_noinline(mode, device):
 
     @triton.jit
@@ -5060,10 +5060,9 @@ def test_inline_asm_packed_multiple_outputs(device):
 # test map elementwise
 # -----------------------
 
-
 # @pytest.mark.parametrize("num_ctas", num_ctas_list)
 # def test_map_elementwise(num_ctas, device):
-# 
+#
 #     @triton.jit
 #     def compare(x, y):
 #         if x < y:
@@ -5072,14 +5071,14 @@ def test_inline_asm_packed_multiple_outputs(device):
 #             return 0
 #         else:
 #             return 1
-# 
+#
 #     @triton.jit
 #     def kernel(X, Y, Z, BLOCK: tl.constexpr):
 #         x = tl.load(X + tl.arange(0, BLOCK))
 #         y = tl.load(Y + tl.arange(0, BLOCK))
 #         z = tl.map_elementwise(compare, x, y)
 #         tl.store(Z + tl.arange(0, BLOCK), z)
-# 
+#
 #     shape = (128, )
 #     rs = RandomState(17)
 #     x = numpy_random(shape, dtype_str='int32', rs=rs)

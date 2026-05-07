@@ -36,7 +36,8 @@ __device__ __attribute__((pure)) _Float16 __ocml_exp_f16(_Float16);
 __device__ __attribute__((pure)) _Float16 __ocml_exp10_f16(_Float16);
 __device__ __attribute__((pure)) _Float16 __ocml_exp2_f16(_Float16);
 __device__ __attribute__((const)) _Float16 __ocml_floor_f16(_Float16);
-__device__ __attribute__((const)) _Float16 __ocml_fma_f16(_Float16, _Float16, _Float16);
+__device__ __attribute__((const)) _Float16 __ocml_fma_f16(_Float16, _Float16,
+                                                          _Float16);
 __device__ __attribute__((const)) _Float16 __ocml_fabs_f16(_Float16);
 __device__ __attribute__((const)) int __ocml_isinf_f16(_Float16);
 __device__ __attribute__((const)) int __ocml_isnan_f16(_Float16);
@@ -56,7 +57,8 @@ typedef _Float16 __2f16 __attribute__((ext_vector_type(2)));
 typedef short __2i16 __attribute__((ext_vector_type(2)));
 
 #if defined(__clang__) && defined(__HIP__)
-__device__ __attribute__((const)) float __ockl_fdot2(__2f16 a, __2f16 b, float c, bool s);
+__device__ __attribute__((const)) float __ockl_fdot2(__2f16 a, __2f16 b,
+                                                     float c, bool s);
 #endif
 
 __device__ __attribute__((const)) __2f16 __ocml_ceil_2f16(__2f16);
@@ -66,7 +68,8 @@ __device__ __attribute__((pure)) __2f16 __ocml_exp_2f16(__2f16);
 __device__ __attribute__((pure)) __2f16 __ocml_exp10_2f16(__2f16);
 __device__ __attribute__((pure)) __2f16 __ocml_exp2_2f16(__2f16);
 __device__ __attribute__((const)) __2f16 __ocml_floor_2f16(__2f16);
-__device__ __attribute__((const)) __2f16 __ocml_fma_2f16(__2f16, __2f16, __2f16);
+__device__
+    __attribute__((const)) __2f16 __ocml_fma_2f16(__2f16, __2f16, __2f16);
 __device__ __attribute__((const)) __2i16 __ocml_isinf_2f16(__2f16);
 __device__ __attribute__((const)) __2i16 __ocml_isnan_2f16(__2f16);
 __device__ __attribute__((pure)) __2f16 __ocml_log_2f16(__2f16);
@@ -82,8 +85,9 @@ __device__ __attribute__((const)) _Float16 __ocml_cvtrtn_f16_f32(float);
 __device__ __attribute__((const)) _Float16 __ocml_cvtrtp_f16_f32(float);
 __device__ __attribute__((const)) _Float16 __ocml_cvtrtz_f16_f32(float);
 }
-#endif  // !__CLANG_HIP_RUNTIME_WRAPPER_INCLUDED__
-// TODO: remove these after they get into clang header __clang_hip_libdevice_declares.h'
+#endif // !__CLANG_HIP_RUNTIME_WRAPPER_INCLUDED__
+// TODO: remove these after they get into clang header
+// __clang_hip_libdevice_declares.h'
 extern "C" {
 __device__ __attribute__((const)) _Float16 __ocml_fmax_f16(_Float16, _Float16);
 __device__ __attribute__((const)) _Float16 __ocml_fmin_f16(_Float16, _Float16);

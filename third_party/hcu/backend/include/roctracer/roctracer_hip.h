@@ -23,9 +23,9 @@
 
 #include "roctracer.h"
 
-#include <hip/hip_runtime.h>
-#include <hip/hip_deprecated.h>
 #include <hip/amd_detail/hip_prof_str.h>
+#include <hip/hip_deprecated.h>
+#include <hip/hip_runtime.h>
 
 typedef enum {
   HIP_OP_ID_DISPATCH = 0,
@@ -34,4 +34,4 @@ typedef enum {
   HIP_OP_ID_NUMBER = 3
 } hip_op_id_t;
 
-#endif  // ROCTRACER_HIP_H_
+#endif // ROCTRACER_HIP_H_

@@ -3,8 +3,8 @@
 
 #include "mlir/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/CTAEncodingAttr.h"
-#include "triton/Dialect/TritonGPU/IR/TritonGPUInterfaces.h"
 #include "triton/Dialect/TritonGPU/IR/OpsEnums.h.inc"
+#include "triton/Dialect/TritonGPU/IR/TritonGPUInterfaces.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "triton/Dialect/TritonGPU/IR/AttrDefs.h.inc"

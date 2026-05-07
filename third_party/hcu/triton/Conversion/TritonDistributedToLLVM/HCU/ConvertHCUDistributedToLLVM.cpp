@@ -20,9 +20,6 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-#include "triton/Conversion/TritonDistributedToLLVM/Passes.h"
-#include "triton/Dialect/Distributed/IR/Dialect.h"
-#include "triton/Dialect/SIMT/IR/Dialect.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
@@ -37,9 +34,12 @@
 #include "mlir/Pass/Pass.h"
 #include "third_party/hcu/include/Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/Utility.h"
+#include "triton/Conversion/TritonDistributedToLLVM/Passes.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/Distributed/IR/Dialect.h"
+#include "triton/Dialect/SIMT/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"

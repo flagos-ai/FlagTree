@@ -24,20 +24,21 @@ THE SOFTWARE.
 #define HIP_INCLUDE_HIP_AMD_DETAIL_DEVICE_FUNCTIONS_H
 
 #if !defined(__HIPCC_RTC__)
+#include "host_defines.h"
+#include "math_fwd.h"
 #include <hip/amd_detail/amd_hip_common.h>
 #include <hip/amd_detail/device_library_decls.h>
 #include <hip/amd_detail/hip_assert.h>
-#include "host_defines.h"
-#include "math_fwd.h"
 #include <hip/hip_runtime_api.h>
-#include <stddef.h>
 #include <hip/hip_vector_types.h>
-#endif  // !defined(__HIPCC_RTC__)
+#include <stddef.h>
+#endif // !defined(__HIPCC_RTC__)
 
 #if defined(__clang__) && defined(__HIP__)
-extern "C" __device__ int printf(const char* fmt, ...);
+extern "C" __device__ int printf(const char *fmt, ...);
 #else
-template <typename... All> static inline __device__ void printf(const char* format, All... all) {}
+template <typename... All>
+static inline __device__ void printf(const char *format, All... all) {}
 #endif
 
 extern "C" __device__ unsigned long long __ockl_steadyctr_u64();
@@ -54,7 +55,9 @@ __device__ static inline unsigned int __popcll(unsigned long long int input) {
   return __builtin_popcountll(input);
 }
 
-__device__ static inline int __clz(int input) { return __ockl_clz_u32((uint)input); }
+__device__ static inline int __clz(int input) {
+  return __ockl_clz_u32((uint)input);
+}
 
 __device__ static inline int __clzll(long long int input) {
   return __ockl_clz_u64((__hip_uint64_t)input);
@@ -76,11 +79,11 @@ __device__ static inline int __ffsll(long long int input) {
   return (input == 0 ? -1 : __builtin_ctzll(input)) + 1;
 }
 
-// Given a 32/64-bit value exec mask and an integer value base (between 0 and WAVEFRONT_SIZE),
-// find the n-th (given by offset) set bit in the exec mask from the base bit, and return the bit
-// position. If not found, return -1.
-__device__ static __hip_int32_t __fns64(__hip_uint64_t mask, __hip_uint32_t base,
-                                        __hip_int32_t offset) {
+// Given a 32/64-bit value exec mask and an integer value base (between 0 and
+// WAVEFRONT_SIZE), find the n-th (given by offset) set bit in the exec mask
+// from the base bit, and return the bit position. If not found, return -1.
+__device__ static __hip_int32_t
+__fns64(__hip_uint64_t mask, __hip_uint32_t base, __hip_int32_t offset) {
   __hip_uint64_t temp_mask = mask;
   __hip_int32_t temp_offset = offset;
 
@@ -94,7 +97,8 @@ __device__ static __hip_int32_t __fns64(__hip_uint64_t mask, __hip_uint32_t base
   }
 
   temp_mask = temp_mask & ((~0ULL) << base);
-  if (__builtin_popcountll(temp_mask) < temp_offset) return -1;
+  if (__builtin_popcountll(temp_mask) < temp_offset)
+    return -1;
   __hip_int32_t total = 0;
   for (int i = 0x20; i > 0; i >>= 1) {
     __hip_uint64_t temp_mask_lo = temp_mask & ((1ULL << i) - 1);
@@ -113,8 +117,8 @@ __device__ static __hip_int32_t __fns64(__hip_uint64_t mask, __hip_uint32_t base
     return total;
 }
 
-__device__ static __hip_int32_t __fns32(__hip_uint64_t mask, __hip_uint32_t base,
-                                        __hip_int32_t offset) {
+__device__ static __hip_int32_t
+__fns32(__hip_uint64_t mask, __hip_uint32_t base, __hip_int32_t offset) {
   __hip_uint32_t temp_mask = mask;
   __hip_int32_t temp_offset = offset;
   if (offset == 0) {
@@ -126,7 +130,8 @@ __device__ static __hip_int32_t __fns32(__hip_uint64_t mask, __hip_uint32_t base
     temp_offset = -offset;
   }
   temp_mask = temp_mask & ((~0U) << base);
-  if (__builtin_popcount(temp_mask) < temp_offset) return -1;
+  if (__builtin_popcount(temp_mask) < temp_offset)
+    return -1;
   __hip_int32_t total = 0;
   for (int i = 0x10; i > 0; i >>= 1) {
     __hip_uint32_t temp_mask_lo = temp_mask & ((1U << i) - 1);
@@ -146,7 +151,8 @@ __device__ static __hip_int32_t __fns32(__hip_uint64_t mask, __hip_uint32_t base
 }
 
 // Wrapper around __fns32() to make porting from CUDA easier
-__device__ static __hip_int32_t __fns(unsigned int mask, unsigned int base, int offset) {
+__device__ static __hip_int32_t __fns(unsigned int mask, unsigned int base,
+                                      int offset) {
   return __fns32(mask, base, offset);
 }
 
@@ -154,7 +160,8 @@ __device__ static inline unsigned int __brev(unsigned int input) {
   return __builtin_bitreverse32(input);
 }
 
-__device__ static inline unsigned long long int __brevll(unsigned long long int input) {
+__device__ static inline unsigned long long int
+__brevll(unsigned long long int input) {
   return __builtin_bitreverse64(input);
 }
 
@@ -162,30 +169,34 @@ __device__ static inline unsigned int __lastbit_u32_u64(__hip_uint64_t input) {
   return input == 0 ? -1 : __builtin_ctzl(input);
 }
 
-__device__ static inline unsigned int __bitextract_u32(unsigned int src0, unsigned int src1,
-                                                       unsigned int src2) {
+__device__ static inline unsigned int
+__bitextract_u32(unsigned int src0, unsigned int src1, unsigned int src2) {
   __hip_uint32_t offset = src1 & 31;
   __hip_uint32_t width = src2 & 31;
   return width == 0 ? 0 : (src0 << (32 - offset - width)) >> (32 - width);
 }
 
-__device__ static inline __hip_uint64_t __bitextract_u64(__hip_uint64_t src0, unsigned int src1,
-                                                         unsigned int src2) {
+__device__ static inline __hip_uint64_t
+__bitextract_u64(__hip_uint64_t src0, unsigned int src1, unsigned int src2) {
   __hip_uint64_t offset = src1 & 63;
   __hip_uint64_t width = src2 & 63;
   return width == 0 ? 0 : (src0 << (64 - offset - width)) >> (64 - width);
 }
 
-__device__ static inline unsigned int __bitinsert_u32(unsigned int src0, unsigned int src1,
-                                                      unsigned int src2, unsigned int src3) {
+__device__ static inline unsigned int __bitinsert_u32(unsigned int src0,
+                                                      unsigned int src1,
+                                                      unsigned int src2,
+                                                      unsigned int src3) {
   __hip_uint32_t offset = src2 & 31;
   __hip_uint32_t width = src3 & 31;
   __hip_uint32_t mask = (1 << width) - 1;
   return ((src0 & ~(mask << offset)) | ((src1 & mask) << offset));
 }
 
-__device__ static inline __hip_uint64_t __bitinsert_u64(__hip_uint64_t src0, __hip_uint64_t src1,
-                                                        unsigned int src2, unsigned int src3) {
+__device__ static inline __hip_uint64_t __bitinsert_u64(__hip_uint64_t src0,
+                                                        __hip_uint64_t src1,
+                                                        unsigned int src2,
+                                                        unsigned int src3) {
   __hip_uint64_t offset = src2 & 63;
   __hip_uint64_t width = src3 & 63;
   __hip_uint64_t mask = (1ULL << width) - 1;
@@ -195,13 +206,15 @@ __device__ static inline __hip_uint64_t __bitinsert_u64(__hip_uint64_t src0, __h
 __device__ inline unsigned int __funnelshift_l(unsigned int lo, unsigned int hi,
                                                unsigned int shift) {
   __hip_uint32_t mask_shift = shift & 31;
-  return mask_shift == 0 ? hi : __builtin_amdgcn_alignbit(hi, lo, 32 - mask_shift);
+  return mask_shift == 0 ? hi
+                         : __builtin_amdgcn_alignbit(hi, lo, 32 - mask_shift);
 }
 
-__device__ inline unsigned int __funnelshift_lc(unsigned int lo, unsigned int hi,
-                                                unsigned int shift) {
+__device__ inline unsigned int
+__funnelshift_lc(unsigned int lo, unsigned int hi, unsigned int shift) {
   __hip_uint32_t min_shift = shift >= 32 ? 32 : shift;
-  return min_shift == 0 ? hi : __builtin_amdgcn_alignbit(hi, lo, 32 - min_shift);
+  return min_shift == 0 ? hi
+                        : __builtin_amdgcn_alignbit(hi, lo, 32 - min_shift);
 }
 
 __device__ inline unsigned int __funnelshift_r(unsigned int lo, unsigned int hi,
@@ -209,12 +222,13 @@ __device__ inline unsigned int __funnelshift_r(unsigned int lo, unsigned int hi,
   return __builtin_amdgcn_alignbit(hi, lo, shift);
 }
 
-__device__ inline unsigned int __funnelshift_rc(unsigned int lo, unsigned int hi,
-                                                unsigned int shift) {
+__device__ inline unsigned int
+__funnelshift_rc(unsigned int lo, unsigned int hi, unsigned int shift) {
   return shift >= 32 ? hi : __builtin_amdgcn_alignbit(hi, lo, shift);
 }
 
-__device__ static unsigned int __byte_perm(unsigned int x, unsigned int y, unsigned int s);
+__device__ static unsigned int __byte_perm(unsigned int x, unsigned int y,
+                                           unsigned int s);
 __device__ static int __hadd(int x, int y);
 __device__ static int __mul24(int x, int y);
 __device__ static long long int __mul64hi(long long int x, long long int y);
@@ -227,7 +241,8 @@ __device__ static unsigned long long int __umul64hi(unsigned long long int x,
                                                     unsigned long long int y);
 __device__ static unsigned int __umulhi(unsigned int x, unsigned int y);
 __device__ static unsigned int __urhadd(unsigned int x, unsigned int y);
-__device__ static unsigned int __usad(unsigned int x, unsigned int y, unsigned int z);
+__device__ static unsigned int __usad(unsigned int x, unsigned int y,
+                                      unsigned int z);
 
 struct ucharHolder {
   union {
@@ -243,7 +258,8 @@ struct uchar2Holder {
   };
 } __attribute__((aligned(8)));
 
-__device__ static inline unsigned int __byte_perm(unsigned int x, unsigned int y, unsigned int s) {
+__device__ static inline unsigned int
+__byte_perm(unsigned int x, unsigned int y, unsigned int s) {
   struct uchar2Holder cHoldVal;
   struct ucharHolder cHoldKey;
   cHoldKey.ui = s;
@@ -257,9 +273,13 @@ __device__ static inline unsigned int __byte_perm(unsigned int x, unsigned int y
   return result;
 }
 
-__device__ static inline int __hadd(int x, int y) { return ((long long)x + (long long)y) >> 1; }
+__device__ static inline int __hadd(int x, int y) {
+  return ((long long)x + (long long)y) >> 1;
+}
 
-__device__ static inline int __mul24(int x, int y) { return __ockl_mul24_i32(x, y); }
+__device__ static inline int __mul24(int x, int y) {
+  return __ockl_mul24_i32(x, y);
+}
 
 __device__ static inline long long __mul64hi(long long int x, long long int y) {
   unsigned long long x0 = (unsigned long long)x & 0xffffffffUL;
@@ -274,7 +294,9 @@ __device__ static inline long long __mul64hi(long long int x, long long int y) {
   return x1 * y1 + z2 + (z1 >> 32);
 }
 
-__device__ static inline int __mulhi(int x, int y) { return __ockl_mul_hi_i32(x, y); }
+__device__ static inline int __mulhi(int x, int y) {
+  return __ockl_mul_hi_i32(x, y);
+}
 
 __device__ static inline int __rhadd(int x, int y) {
   return ((long long)x + (long long)y + 1) >> 1;
@@ -292,8 +314,8 @@ __device__ static inline int __umul24(unsigned int x, unsigned int y) {
   return __ockl_mul24_u32(x, y);
 }
 
-__device__ static inline unsigned long long __umul64hi(unsigned long long int x,
-                                                       unsigned long long int y) {
+__device__ static inline unsigned long long
+__umul64hi(unsigned long long int x, unsigned long long int y) {
   unsigned long long x0 = x & 0xffffffffUL;
   unsigned long long x1 = x >> 32;
   unsigned long long y0 = y & 0xffffffffUL;
@@ -314,15 +336,18 @@ __device__ static inline unsigned int __urhadd(unsigned int x, unsigned int y) {
   return ((unsigned long long)x + (unsigned long long)y + 1) >> 1;
 }
 
-__device__ static inline unsigned int __usad(unsigned int x, unsigned int y, unsigned int z) {
+__device__ static inline unsigned int __usad(unsigned int x, unsigned int y,
+                                             unsigned int z) {
   return __ockl_sadd_u32(x, y, z);
 }
 
-__device__ static inline unsigned int __mbcnt_lo(unsigned int x, unsigned int y) {
+__device__ static inline unsigned int __mbcnt_lo(unsigned int x,
+                                                 unsigned int y) {
   return __builtin_amdgcn_mbcnt_lo(x, y);
 };
 
-__device__ static inline unsigned int __mbcnt_hi(unsigned int x, unsigned int y) {
+__device__ static inline unsigned int __mbcnt_hi(unsigned int x,
+                                                 unsigned int y) {
   return __builtin_amdgcn_mbcnt_hi(x, y);
 };
 
@@ -371,10 +396,16 @@ __device__ static inline char4 __hip_hc_mul8pk(char4 in1, char4 in2) {
   return out;
 }
 
-__device__ static inline float __double2float_rd(double x) { return __ocml_cvtrtn_f32_f64(x); }
+__device__ static inline float __double2float_rd(double x) {
+  return __ocml_cvtrtn_f32_f64(x);
+}
 __device__ static inline float __double2float_rn(double x) { return x; }
-__device__ static inline float __double2float_ru(double x) { return __ocml_cvtrtp_f32_f64(x); }
-__device__ static inline float __double2float_rz(double x) { return __ocml_cvtrtz_f32_f64(x); }
+__device__ static inline float __double2float_ru(double x) {
+  return __ocml_cvtrtp_f32_f64(x);
+}
+__device__ static inline float __double2float_rz(double x) {
+  return __ocml_cvtrtz_f32_f64(x);
+}
 
 __device__ static inline int __double2hiint(double x) {
   static_assert(sizeof(double) == 2 * sizeof(int), "");
@@ -413,7 +444,9 @@ __device__ static inline long long int __double2ll_rn(double x) {
 __device__ static inline long long int __double2ll_ru(double x) {
   return (long long)__builtin_elementwise_ceil(x);
 }
-__device__ static inline long long int __double2ll_rz(double x) { return (long long)x; }
+__device__ static inline long long int __double2ll_rz(double x) {
+  return (long long)x;
+}
 
 __device__ static inline unsigned int __double2uint_rd(double x) {
   return (unsigned int)__builtin_elementwise_floor(x);
@@ -424,7 +457,9 @@ __device__ static inline unsigned int __double2uint_rn(double x) {
 __device__ static inline unsigned int __double2uint_ru(double x) {
   return (unsigned int)__builtin_elementwise_ceil(x);
 }
-__device__ static inline unsigned int __double2uint_rz(double x) { return (unsigned int)x; }
+__device__ static inline unsigned int __double2uint_rz(double x) {
+  return (unsigned int)x;
+}
 
 __device__ static inline unsigned long long int __double2ull_rd(double x) {
   return (unsigned long long int)__builtin_elementwise_floor(x);
@@ -461,10 +496,18 @@ CUDA implements half as unsigned short whereas, HIP doesn't.
 
 */
 
-__device__ static inline int __float2int_rd(float x) { return (int)__builtin_elementwise_floor(x); }
-__device__ static inline int __float2int_rn(float x) { return (int)__builtin_elementwise_rint(x); }
-__device__ static inline int __float2int_ru(float x) { return (int)__builtin_elementwise_ceil(x); }
-__device__ static inline int __float2int_rz(float x) { return (int)__builtin_elementwise_trunc(x); }
+__device__ static inline int __float2int_rd(float x) {
+  return (int)__builtin_elementwise_floor(x);
+}
+__device__ static inline int __float2int_rn(float x) {
+  return (int)__builtin_elementwise_rint(x);
+}
+__device__ static inline int __float2int_ru(float x) {
+  return (int)__builtin_elementwise_ceil(x);
+}
+__device__ static inline int __float2int_rz(float x) {
+  return (int)__builtin_elementwise_trunc(x);
+}
 
 __device__ static inline long long int __float2ll_rd(float x) {
   return (long long int)__builtin_elementwise_floor(x);
@@ -475,7 +518,9 @@ __device__ static inline long long int __float2ll_rn(float x) {
 __device__ static inline long long int __float2ll_ru(float x) {
   return (long long int)__builtin_elementwise_ceil(x);
 }
-__device__ static inline long long int __float2ll_rz(float x) { return (long long int)x; }
+__device__ static inline long long int __float2ll_rz(float x) {
+  return (long long int)x;
+}
 
 __device__ static inline unsigned int __float2uint_rd(float x) {
   return (unsigned int)__builtin_elementwise_floor(x);
@@ -486,7 +531,9 @@ __device__ static inline unsigned int __float2uint_rn(float x) {
 __device__ static inline unsigned int __float2uint_ru(float x) {
   return (unsigned int)__builtin_elementwise_ceil(x);
 }
-__device__ static inline unsigned int __float2uint_rz(float x) { return (unsigned int)x; }
+__device__ static inline unsigned int __float2uint_rz(float x) {
+  return (unsigned int)x;
+}
 
 __device__ static inline unsigned long long int __float2ull_rd(float x) {
   return (unsigned long long int)__builtin_elementwise_floor(x);
@@ -522,8 +569,8 @@ __device__ static inline unsigned int __float_as_uint(float x) {
 __device__ static inline double __hiloint2double(int hi, int lo) {
   static_assert(sizeof(double) == sizeof(__hip_uint64_t), "");
 
-  __hip_uint64_t tmp0 =
-      (static_cast<__hip_uint64_t>(hi) << 32ull) | static_cast<__hip_uint32_t>(lo);
+  __hip_uint64_t tmp0 = (static_cast<__hip_uint64_t>(hi) << 32ull) |
+                        static_cast<__hip_uint32_t>(lo);
   double tmp1;
   __builtin_memcpy(&tmp1, &tmp0, sizeof(tmp0));
 
@@ -532,10 +579,16 @@ __device__ static inline double __hiloint2double(int hi, int lo) {
 
 __device__ static inline double __int2double_rn(int x) { return (double)x; }
 
-__device__ static inline float __int2float_rd(int x) { return __ocml_cvtrtn_f32_s32(x); }
+__device__ static inline float __int2float_rd(int x) {
+  return __ocml_cvtrtn_f32_s32(x);
+}
 __device__ static inline float __int2float_rn(int x) { return (float)x; }
-__device__ static inline float __int2float_ru(int x) { return __ocml_cvtrtp_f32_s32(x); }
-__device__ static inline float __int2float_rz(int x) { return __ocml_cvtrtz_f32_s32(x); }
+__device__ static inline float __int2float_ru(int x) {
+  return __ocml_cvtrtp_f32_s32(x);
+}
+__device__ static inline float __int2float_rz(int x) {
+  return __ocml_cvtrtz_f32_s32(x);
+}
 
 __device__ static inline float __int_as_float(int x) {
   static_assert(sizeof(float) == sizeof(int), "");
@@ -546,15 +599,31 @@ __device__ static inline float __int_as_float(int x) {
   return tmp;
 }
 
-__device__ static inline double __ll2double_rd(long long int x) { return __ocml_cvtrtn_f64_s64(x); }
-__device__ static inline double __ll2double_rn(long long int x) { return (double)x; }
-__device__ static inline double __ll2double_ru(long long int x) { return __ocml_cvtrtp_f64_s64(x); }
-__device__ static inline double __ll2double_rz(long long int x) { return __ocml_cvtrtz_f64_s64(x); }
+__device__ static inline double __ll2double_rd(long long int x) {
+  return __ocml_cvtrtn_f64_s64(x);
+}
+__device__ static inline double __ll2double_rn(long long int x) {
+  return (double)x;
+}
+__device__ static inline double __ll2double_ru(long long int x) {
+  return __ocml_cvtrtp_f64_s64(x);
+}
+__device__ static inline double __ll2double_rz(long long int x) {
+  return __ocml_cvtrtz_f64_s64(x);
+}
 
-__device__ static inline float __ll2float_rd(long long int x) { return __ocml_cvtrtn_f32_s64(x); }
-__device__ static inline float __ll2float_rn(long long int x) { return (float)x; }
-__device__ static inline float __ll2float_ru(long long int x) { return __ocml_cvtrtp_f32_s64(x); }
-__device__ static inline float __ll2float_rz(long long int x) { return __ocml_cvtrtz_f32_s64(x); }
+__device__ static inline float __ll2float_rd(long long int x) {
+  return __ocml_cvtrtn_f32_s64(x);
+}
+__device__ static inline float __ll2float_rn(long long int x) {
+  return (float)x;
+}
+__device__ static inline float __ll2float_ru(long long int x) {
+  return __ocml_cvtrtp_f32_s64(x);
+}
+__device__ static inline float __ll2float_rz(long long int x) {
+  return __ocml_cvtrtz_f32_s64(x);
+}
 
 __device__ static inline double __longlong_as_double(long long int x) {
   static_assert(sizeof(double) == sizeof(long long), "");
@@ -565,12 +634,22 @@ __device__ static inline double __longlong_as_double(long long int x) {
   return tmp;
 }
 
-__device__ static inline double __uint2double_rn(unsigned int x) { return (double)x; }
+__device__ static inline double __uint2double_rn(unsigned int x) {
+  return (double)x;
+}
 
-__device__ static inline float __uint2float_rd(unsigned int x) { return __ocml_cvtrtn_f32_u32(x); }
-__device__ static inline float __uint2float_rn(unsigned int x) { return (float)x; }
-__device__ static inline float __uint2float_ru(unsigned int x) { return __ocml_cvtrtp_f32_u32(x); }
-__device__ static inline float __uint2float_rz(unsigned int x) { return __ocml_cvtrtz_f32_u32(x); }
+__device__ static inline float __uint2float_rd(unsigned int x) {
+  return __ocml_cvtrtn_f32_u32(x);
+}
+__device__ static inline float __uint2float_rn(unsigned int x) {
+  return (float)x;
+}
+__device__ static inline float __uint2float_ru(unsigned int x) {
+  return __ocml_cvtrtp_f32_u32(x);
+}
+__device__ static inline float __uint2float_rz(unsigned int x) {
+  return __ocml_cvtrtz_f32_u32(x);
+}
 
 __device__ static inline float __uint_as_float(unsigned int x) {
   static_assert(sizeof(float) == sizeof(unsigned int), "");
@@ -584,7 +663,9 @@ __device__ static inline float __uint_as_float(unsigned int x) {
 __device__ static inline double __ull2double_rd(unsigned long long int x) {
   return __ocml_cvtrtn_f64_u64(x);
 }
-__device__ static inline double __ull2double_rn(unsigned long long int x) { return (double)x; }
+__device__ static inline double __ull2double_rn(unsigned long long int x) {
+  return (double)x;
+}
 __device__ static inline double __ull2double_ru(unsigned long long int x) {
   return __ocml_cvtrtp_f64_u64(x);
 }
@@ -595,7 +676,9 @@ __device__ static inline double __ull2double_rz(unsigned long long int x) {
 __device__ static inline float __ull2float_rd(unsigned long long int x) {
   return __ocml_cvtrtn_f32_u64(x);
 }
-__device__ static inline float __ull2float_rn(unsigned long long int x) { return (float)x; }
+__device__ static inline float __ull2float_rn(unsigned long long int x) {
+  return (float)x;
+}
 __device__ static inline float __ull2float_ru(unsigned long long int x) {
   return __ocml_cvtrtp_f32_u64(x);
 }
@@ -617,33 +700,40 @@ __device__ void __named_sync();
 #ifdef __HIP_DEVICE_COMPILE__
 
 // Clock function to return GPU core cycle count.
-// GPU can change its core clock frequency at runtime. The maximum frequency can be queried
-// through hipDeviceAttributeClockRate attribute.
+// GPU can change its core clock frequency at runtime. The maximum frequency can
+// be queried through hipDeviceAttributeClockRate attribute.
 __device__ inline __attribute((always_inline)) long long int __clock64() {
   return (long long int)__builtin_readcyclecounter();
 }
 
-__device__ inline __attribute((always_inline)) long long int __clock() { return __clock64(); }
+__device__ inline __attribute((always_inline)) long long int __clock() {
+  return __clock64();
+}
 
-// Clock function to return wall clock count at a constant frequency that can be queried
-// through hipDeviceAttributeWallClockRate attribute.
+// Clock function to return wall clock count at a constant frequency that can be
+// queried through hipDeviceAttributeWallClockRate attribute.
 __device__ inline __attribute__((always_inline)) long long int wall_clock64() {
   return (long long int)__ockl_steadyctr_u64();
 }
 
-__device__ inline __attribute__((always_inline)) long long int clock64() { return __clock64(); }
+__device__ inline __attribute__((always_inline)) long long int clock64() {
+  return __clock64();
+}
 
-__device__ inline __attribute__((always_inline)) long long int clock() { return __clock(); }
+__device__ inline __attribute__((always_inline)) long long int clock() {
+  return __clock();
+}
 
 // hip.amdgcn.bc - named sync
 __device__ inline void __named_sync() { __builtin_amdgcn_s_barrier(); }
 
-#endif  // __HIP_DEVICE_COMPILE__
+#endif // __HIP_DEVICE_COMPILE__
 
 // hip.amdgcn.bc - lanemask
 __device__ inline __hip_uint64_t __lanemask_gt() {
   __hip_uint32_t lane = __ockl_lane_u32();
-  if (lane == 63) return 0;
+  if (lane == 63)
+    return 0;
   __hip_uint64_t ballot = __ballot64(1);
   __hip_uint64_t mask = (~((__hip_uint64_t)0)) << (lane + 1);
   return mask & ballot;
@@ -662,22 +752,26 @@ __device__ inline __hip_uint64_t __lanemask_eq() {
   return mask;
 }
 
-
-__device__ inline void* __local_to_generic(void* p) { return p; }
+__device__ inline void *__local_to_generic(void *p) { return p; }
 
 #ifdef __HIP_DEVICE_COMPILE__
-__device__ inline void* __get_dynamicgroupbaseptr() {
+__device__ inline void *__get_dynamicgroupbaseptr() {
   // Get group segment base pointer.
-  return (char*)__local_to_generic((void*)__to_local(__builtin_amdgcn_groupstaticsize()));
+  return (char *)__local_to_generic(
+      (void *)__to_local(__builtin_amdgcn_groupstaticsize()));
 }
 #else
-__device__ void* __get_dynamicgroupbaseptr();
-#endif  // __HIP_DEVICE_COMPILE__
+__device__ void *__get_dynamicgroupbaseptr();
+#endif // __HIP_DEVICE_COMPILE__
 
-__device__ inline void* __amdgcn_get_dynamicgroupbaseptr() { return __get_dynamicgroupbaseptr(); }
+__device__ inline void *__amdgcn_get_dynamicgroupbaseptr() {
+  return __get_dynamicgroupbaseptr();
+}
 
 // Memory Fence Functions
-__device__ inline static void __threadfence() { __builtin_amdgcn_fence(__ATOMIC_SEQ_CST, "agent"); }
+__device__ inline static void __threadfence() {
+  __builtin_amdgcn_fence(__ATOMIC_SEQ_CST, "agent");
+}
 
 __device__ inline static void __threadfence_block() {
   __builtin_amdgcn_fence(__ATOMIC_SEQ_CST, "workgroup");
@@ -704,25 +798,26 @@ __device__ inline static void __work_group_barrier(__cl_mem_fence_flags flags) {
   }
 }
 
-__device__ inline static void __barrier(int n) { __work_group_barrier((__cl_mem_fence_flags)n); }
+__device__ inline static void __barrier(int n) {
+  __work_group_barrier((__cl_mem_fence_flags)n);
+}
 
-__device__
-inline
-__attribute__((convergent))
-void __syncthreads()
-{
+__device__ inline __attribute__((convergent)) void __syncthreads() {
   __barrier(__CLK_GLOBAL_MEM_FENCE | __CLK_LOCAL_MEM_FENCE);
 }
 
-__device__ inline __attribute__((convergent)) int __syncthreads_count(int predicate) {
+__device__ inline __attribute__((convergent)) int
+__syncthreads_count(int predicate) {
   return __ockl_wgred_add_i32(!!predicate);
 }
 
-__device__ inline __attribute__((convergent)) int __syncthreads_and(int predicate) {
+__device__ inline __attribute__((convergent)) int
+__syncthreads_and(int predicate) {
   return __ockl_wgred_and_i32(!!predicate);
 }
 
-__device__ inline __attribute__((convergent)) int __syncthreads_or(int predicate) {
+__device__ inline __attribute__((convergent)) int
+__syncthreads_or(int predicate) {
   return __ockl_wgred_or_i32(!!predicate);
 }
 
@@ -775,7 +870,7 @@ __device__ inline __attribute__((convergent)) int __syncthreads_or(int predicate
 
 #if (defined(__gfx908__) || defined(__gfx90a__) || defined(__GFX11__))
 #define HW_ID_SE_ID_SIZE 3
-#else  // 4 SEs/XCC for 942
+#else // 4 SEs/XCC for 942
 #define HW_ID_SE_ID_SIZE 2
 #endif
 #if (defined(__GFX10__) || defined(__GFX11__))
@@ -808,29 +903,28 @@ __device__ inline __attribute__((convergent)) int __syncthreads_or(int predicate
 
 /*
   __smid returns the wave's assigned Compute Unit and Shader Engine.
-  The Compute Unit, CU_ID returned in bits 3:0, and Shader Engine, SE_ID in bits 5:4.
-  Note: the results vary over time.
-  SZ minus 1 since SIZE is 1-based.
+  The Compute Unit, CU_ID returned in bits 3:0, and Shader Engine, SE_ID in bits
+  5:4. Note: the results vary over time. SZ minus 1 since SIZE is 1-based.
 */
 __device__ inline unsigned __smid(void) {
-  unsigned se_id =
-      __builtin_amdgcn_s_getreg(GETREG_IMMED(HW_ID_SE_ID_SIZE - 1, HW_ID_SE_ID_OFFSET, HW_ID));
+  unsigned se_id = __builtin_amdgcn_s_getreg(
+      GETREG_IMMED(HW_ID_SE_ID_SIZE - 1, HW_ID_SE_ID_OFFSET, HW_ID));
 #if (defined(__GFX10__) || defined(__GFX11__))
-  unsigned wgp_id =
-      __builtin_amdgcn_s_getreg(GETREG_IMMED(HW_ID_WGP_ID_SIZE - 1, HW_ID_WGP_ID_OFFSET, HW_ID));
-  unsigned sa_id =
-      __builtin_amdgcn_s_getreg(GETREG_IMMED(HW_ID_SA_ID_SIZE - 1, HW_ID_SA_ID_OFFSET, HW_ID));
+  unsigned wgp_id = __builtin_amdgcn_s_getreg(
+      GETREG_IMMED(HW_ID_WGP_ID_SIZE - 1, HW_ID_WGP_ID_OFFSET, HW_ID));
+  unsigned sa_id = __builtin_amdgcn_s_getreg(
+      GETREG_IMMED(HW_ID_SA_ID_SIZE - 1, HW_ID_SA_ID_OFFSET, HW_ID));
 #if (defined(__AMDGCN_CUMODE__))
-  unsigned cu_id =
-      __builtin_amdgcn_s_getreg(GETREG_IMMED(HW_ID_CU_ID_SIZE - 1, HW_ID_CU_ID_OFFSET, HW_ID));
+  unsigned cu_id = __builtin_amdgcn_s_getreg(
+      GETREG_IMMED(HW_ID_CU_ID_SIZE - 1, HW_ID_CU_ID_OFFSET, HW_ID));
 #endif
 #else
 #if defined(__gfx94plus_clr__)
-  unsigned xcc_id =
-      __builtin_amdgcn_s_getreg(GETREG_IMMED(XCC_ID_XCC_ID_SIZE - 1, XCC_ID_XCC_ID_OFFSET, XCC_ID));
+  unsigned xcc_id = __builtin_amdgcn_s_getreg(
+      GETREG_IMMED(XCC_ID_XCC_ID_SIZE - 1, XCC_ID_XCC_ID_OFFSET, XCC_ID));
 #endif
-  unsigned cu_id =
-      __builtin_amdgcn_s_getreg(GETREG_IMMED(HW_ID_CU_ID_SIZE - 1, HW_ID_CU_ID_OFFSET, HW_ID));
+  unsigned cu_id = __builtin_amdgcn_s_getreg(
+      GETREG_IMMED(HW_ID_CU_ID_SIZE - 1, HW_ID_CU_ID_OFFSET, HW_ID));
 #endif
 #if (defined(__GFX10__) || defined(__GFX11__))
   unsigned temp = se_id;
@@ -852,19 +946,19 @@ __device__ inline unsigned __smid(void) {
 }
 
 /**
- * Map HIP_DYNAMIC_SHARED to "extern __shared__" for compatibility with old HIP applications
- * To be removed in a future release.
+ * Map HIP_DYNAMIC_SHARED to "extern __shared__" for compatibility with old HIP
+ * applications To be removed in a future release.
  */
 #define HIP_DYNAMIC_SHARED(type, var) extern __shared__ type var[];
 #define HIP_DYNAMIC_SHARED_ATTRIBUTE
 
-#endif  // defined(__clang__) && defined(__HIP__)
-
+#endif // defined(__clang__) && defined(__HIP__)
 
 // loop unrolling
-static inline __device__ void* __hip_hc_memcpy(void* dst, const void* src, size_t size) {
-  auto dstPtr = static_cast<unsigned char*>(dst);
-  auto srcPtr = static_cast<const unsigned char*>(src);
+static inline __device__ void *__hip_hc_memcpy(void *dst, const void *src,
+                                               size_t size) {
+  auto dstPtr = static_cast<unsigned char *>(dst);
+  auto srcPtr = static_cast<const unsigned char *>(src);
 
   while (size >= 4u) {
     dstPtr[0] = srcPtr[0];
@@ -877,19 +971,20 @@ static inline __device__ void* __hip_hc_memcpy(void* dst, const void* src, size_
     dstPtr += 4u;
   }
   switch (size) {
-    case 3:
-      dstPtr[2] = srcPtr[2];
-    case 2:
-      dstPtr[1] = srcPtr[1];
-    case 1:
-      dstPtr[0] = srcPtr[0];
+  case 3:
+    dstPtr[2] = srcPtr[2];
+  case 2:
+    dstPtr[1] = srcPtr[1];
+  case 1:
+    dstPtr[0] = srcPtr[0];
   }
 
   return dst;
 }
 
-static inline __device__ void* __hip_hc_memset(void* dst, unsigned char val, size_t size) {
-  auto dstPtr = static_cast<unsigned char*>(dst);
+static inline __device__ void *__hip_hc_memset(void *dst, unsigned char val,
+                                               size_t size) {
+  auto dstPtr = static_cast<unsigned char *>(dst);
 
   while (size >= 4u) {
     dstPtr[0] = val;
@@ -901,25 +996,25 @@ static inline __device__ void* __hip_hc_memset(void* dst, unsigned char val, siz
     dstPtr += 4u;
   }
   switch (size) {
-    case 3:
-      dstPtr[2] = val;
-    case 2:
-      dstPtr[1] = val;
-    case 1:
-      dstPtr[0] = val;
+  case 3:
+    dstPtr[2] = val;
+  case 2:
+    dstPtr[1] = val;
+  case 1:
+    dstPtr[0] = val;
   }
 
   return dst;
 }
 #ifndef __OPENMP_AMDGCN__
-static inline __device__ void* memcpy(void* dst, const void* src, size_t size) {
+static inline __device__ void *memcpy(void *dst, const void *src, size_t size) {
   return __hip_hc_memcpy(dst, src, size);
 }
 
-static inline __device__ void* memset(void* ptr, int val, size_t size) {
+static inline __device__ void *memset(void *ptr, int val, size_t size) {
   unsigned char val8 = static_cast<unsigned char>(val);
   return __hip_hc_memset(ptr, val8, size);
 }
-#endif  // !__OPENMP_AMDGCN__
+#endif // !__OPENMP_AMDGCN__
 
 #endif

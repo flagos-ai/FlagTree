@@ -34,10 +34,11 @@ THE SOFTWARE.
 #ifndef __HIP_PLATFORM_AMD__
 #define __HIP_PLATFORM_AMD__
 #endif
-#endif  // defined(__clang__) && defined(__HIP__)
+#endif // defined(__clang__) && defined(__HIP__)
 
 // Auto enable __HIP_PLATFORM_NVIDIA__ if compiling with NVIDIA platform
-#if defined(__NVCC__) || (defined(__clang__) && defined(__CUDA__) && !defined(__HIP__))
+#if defined(__NVCC__) ||                                                       \
+    (defined(__clang__) && defined(__CUDA__) && !defined(__HIP__))
 #ifndef __HIP_PLATFORM_NVIDIA__
 #define __HIP_PLATFORM_NVIDIA__
 #endif
@@ -46,10 +47,10 @@ THE SOFTWARE.
 #define __HIPCC__
 #endif
 
-#endif  //__NVCC__
+#endif //__NVCC__
 
 // Auto enable __HIP_DEVICE_COMPILE__ if compiled in HCC or NVCC device path
-#if (defined(__HCC_ACCELERATOR__) && __HCC_ACCELERATOR__ != 0) ||                                  \
+#if (defined(__HCC_ACCELERATOR__) && __HCC_ACCELERATOR__ != 0) ||              \
     (defined(__CUDA_ARCH__) && __CUDA_ARCH__ != 0)
 #define __HIP_DEVICE_COMPILE__ 1
 #endif

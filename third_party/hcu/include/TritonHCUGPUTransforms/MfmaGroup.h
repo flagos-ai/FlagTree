@@ -1,10 +1,10 @@
 #ifndef TRITON_THIRD_PARTY_HCU_INCLUDE_TRITONHCUGPUTRANSFORMS_MFMAGROUP_H_
 #define TRITON_THIRD_PARTY_HCU_INCLUDE_TRITONHCUGPUTRANSFORMS_MFMAGROUP_H_
 
+#include "TritonHCUGPUToLLVM/TargetUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/StringRef.h"
-#include "TritonHCUGPUToLLVM/TargetUtils.h"
 
 namespace mlir {
 using mlir::triton::HCU::HCUISAFeature;
@@ -17,18 +17,15 @@ inline bool isF8F6F4(mlir::Type type) {
 
 struct MfmaIntrinsic {
   // Chooses a suitable mfma instrinsic for the given input case.s
-  static FailureOr<MfmaIntrinsic> selectFor(Location loc, int version,
-                                            unsigned mDim, unsigned nDim,
-                                            unsigned inputKDim,
-                                            Type aElemType, Type bElemType,
-                                            bool withScale, bool useTF32,
-                                            HCUISAFeature features = HCUISAFeature::NONE);
+  static FailureOr<MfmaIntrinsic>
+  selectFor(Location loc, int version, unsigned mDim, unsigned nDim,
+            unsigned inputKDim, Type aElemType, Type bElemType, bool withScale,
+            bool useTF32, HCUISAFeature features = HCUISAFeature::NONE);
   // Gets the mfma intrinsic based on exact match of all parameters.
-  static FailureOr<MfmaIntrinsic> get(Location loc, int version, unsigned mDim,
-                                      unsigned nDim, unsigned kDim,
-                                      Type aElemType, Type bElemType,
-                                      bool withScale, bool useTF32,
-                                      HCUISAFeature features = HCUISAFeature::NONE);
+  static FailureOr<MfmaIntrinsic>
+  get(Location loc, int version, unsigned mDim, unsigned nDim, unsigned kDim,
+      Type aElemType, Type bElemType, bool withScale, bool useTF32,
+      HCUISAFeature features = HCUISAFeature::NONE);
 
   MfmaIntrinsic(StringRef symbol, unsigned m, unsigned n, unsigned k,
                 unsigned kB, Type aET, Type bET)

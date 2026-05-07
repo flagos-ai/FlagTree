@@ -1,4 +1,3 @@
-#include "TargetInfo.h"
 #include "BufferOpsEmitter.h"
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
@@ -7,6 +6,7 @@
 #include "Utility.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -17,15 +17,14 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
-#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 
 using namespace mlir;
 using namespace mlir::triton::gpu;
 
 using ::mlir::LLVM::delinearize;
 using ::mlir::LLVM::getSharedMemoryObjectFromStruct;
-using ::mlir::triton::hcugpu::MlsEncodingAttr;
 using ::mlir::triton::gpu::HCUMlsSharedEncodingAttr;
+using ::mlir::triton::hcugpu::MlsEncodingAttr;
 
 namespace {
 
@@ -41,7 +40,7 @@ SmallVector<unsigned> getShapePerCTA(ArrayRef<unsigned> mlsTile,
 }
 
 SmallVector<unsigned> getNumReps(const MlsEncodingAttr &blockLayout,
-                                    ArrayRef<int64_t> shape) {
+                                 ArrayRef<int64_t> shape) {
   auto rank = shape.size();
   assert(rank == 2);
 
@@ -84,30 +83,28 @@ struct MLSMatrixLoadToLocalOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
-    bool mABIsNeed = targetInfo.getGPUKind() == llvm::AMDGPU::GPUKind::GK_GFX938;
+    bool mABIsNeed =
+        targetInfo.getGPUKind() == llvm::AMDGPU::GPUKind::GK_GFX938;
 
     auto ctx = rewriter.getContext();
 
     auto dstTy = cast<MemDescType>(op.getDest().getType());
-    auto sharedLayout =
-        dyn_cast<HCUMlsSharedEncodingAttr>(dstTy.getEncoding());
-    auto blockLayout = op->getAttrOfType<MlsEncodingAttr>(
-        MlsEncodingAttr::getMnemonic());
+    auto sharedLayout = dyn_cast<HCUMlsSharedEncodingAttr>(dstTy.getEncoding());
+    auto blockLayout =
+        op->getAttrOfType<MlsEncodingAttr>(MlsEncodingAttr::getMnemonic());
     auto llvmElemTy = typeConverter->convertType(dstTy.getElementType());
-    auto smemObj = LLVM::getSharedMemoryObjectFromStruct(
-         loc, adaptor.getDest(), llvmElemTy, rewriter);
+    auto smemObj = LLVM::getSharedMemoryObjectFromStruct(loc, adaptor.getDest(),
+                                                         llvmElemTy, rewriter);
 
     auto opIdx = blockLayout.getOpIdx();
     auto kDimIdx = opIdx == 0 ? 1 : 0;
     auto nonKDimIdx = opIdx == 0 ? 0 : 1;
     auto mlsInsn = MlsInsn::selectOrGetMlsInsn(
-                               blockLayout.getMlsTile()[nonKDimIdx],
-                               blockLayout.getMlsTile()[kDimIdx],
-                               blockLayout.getElemBitWidth(),
-                               opIdx,
-                               blockLayout.getOrder()[0] == kDimIdx,
-                               static_cast<MlsInterleaveKind>(blockLayout.getAlt2Kind()),
-                               blockLayout.getVersion());
+        blockLayout.getMlsTile()[nonKDimIdx], blockLayout.getMlsTile()[kDimIdx],
+        blockLayout.getElemBitWidth(), opIdx,
+        blockLayout.getOrder()[0] == kDimIdx,
+        static_cast<MlsInterleaveKind>(blockLayout.getAlt2Kind()),
+        blockLayout.getVersion());
     auto mlInsnAttr = mlsInsn->getMatrixLoadInsnAttr();
 
     auto allocOp = op.getResult().getDefiningOp<triton::gpu::LocalAllocOp>();
@@ -123,8 +120,9 @@ struct MLSMatrixLoadToLocalOpConversion
 
     auto boundaryCheck = adaptor.getBoundaryCheck();
     bool needBoundaryCheck = boundaryCheck.size() > 0;
-    SmallVector<bool> boundaryCheckInfo = {needBoundaryCheck && boundaryCheck[0] == 0,
-                                           needBoundaryCheck && boundaryCheck[boundaryCheck.size() - 1] == 1};
+    SmallVector<bool> boundaryCheckInfo = {
+        needBoundaryCheck && boundaryCheck[0] == 0,
+        needBoundaryCheck && boundaryCheck[boundaryCheck.size() - 1] == 1};
     SmallVector<unsigned> numReps = getNumReps(blockLayout, dstTy.getShape());
     unsigned numRepsX = numReps[0] * mlInsnAttr.instrsPerWarp[0];
     unsigned numRepsY = numReps[1] * mlInsnAttr.instrsPerWarp[1];
@@ -137,14 +135,10 @@ struct MLSMatrixLoadToLocalOpConversion
 
     if (!useMatrixLoadStoreOffsetsWithMlOffs) {
       SmallVector<std::pair<Value, Value>> ldInBlkOffCoordMappings;
-      auto ldstInBlkMappings = computeMatrixLoadStoreOffsets(loc, rewriter,
-                                              blockLayout, mlInsnAttr,
-                                              sharedLayout,
-                                              dstTy.getShape(),
-                                              llStrides,
-                                              mlsInsn->isRowMajor(),
-                                              boundaryCheckInfo,
-                                              ldInBlkOffCoordMappings);
+      auto ldstInBlkMappings = computeMatrixLoadStoreOffsets(
+          loc, rewriter, blockLayout, mlInsnAttr, sharedLayout,
+          dstTy.getShape(), llStrides, mlsInsn->isRowMajor(), boundaryCheckInfo,
+          ldInBlkOffCoordMappings);
 
       unsigned iterIdx = 0;
       for (auto &ldstInBlkGroup : ldstInBlkMappings) {
@@ -152,8 +146,8 @@ struct MLSMatrixLoadToLocalOpConversion
 
         // global mem address calc
         Value ldOffset = b.add(ldInBlkOff64, ldBlkOff);
-        Value ldPtr = b.gep(ptr_ty(ctx, 1),
-                          elemByteWidth == 1 ? i8_ty : i16_ty, llBasePtr, ldOffset);
+        Value ldPtr = b.gep(ptr_ty(ctx, 1), elemByteWidth == 1 ? i8_ty : i16_ty,
+                            llBasePtr, ldOffset);
 
         // create matrix load lds inst
         Value llStride = llStrides[sharedLayout.getOrder()[1]];
@@ -164,31 +158,34 @@ struct MLSMatrixLoadToLocalOpConversion
         if (boundaryCheckInfo[0]) {
           Value ldInBlockOffCoordX = ldInBlkOffCoordMappings[iterIdx].first;
           Value posEnd = b.add(b.add(llBlockPos[0], ldInBlockOffCoordX),
-                              b.i32_val(mlInsnAttr.instrShape[0]));
+                               b.i32_val(mlInsnAttr.instrShape[0]));
           Value posGt = b.icmp_sgt(posEnd, llShape[0]);
-          paddingLenX = b.select(posGt, b.sub(posEnd, llShape[0]), b.i32_val(0));
+          paddingLenX =
+              b.select(posGt, b.sub(posEnd, llShape[0]), b.i32_val(0));
         }
         if (boundaryCheckInfo[1]) {
           Value ldInBlockOffCoordY = ldInBlkOffCoordMappings[iterIdx].second;
           Value posEnd = b.add(b.add(llBlockPos[1], ldInBlockOffCoordY),
-                              b.i32_val(mlInsnAttr.instrShape[1]));
+                               b.i32_val(mlInsnAttr.instrShape[1]));
           Value posGt = b.icmp_sgt(posEnd, llShape[1]);
-          paddingLenY = b.select(posGt, b.sub(posEnd, llShape[1]), b.i32_val(0));
+          paddingLenY =
+              b.select(posGt, b.sub(posEnd, llShape[1]), b.i32_val(0));
         }
-        Value mPadding  = mlsInsn->getMajorDimIndex() == 0 ? paddingLenX : paddingLenY;
-        Value nmPadding = mlsInsn->getMajorDimIndex() == 0 ? paddingLenY : paddingLenX;
+        Value mPadding =
+            mlsInsn->getMajorDimIndex() == 0 ? paddingLenX : paddingLenY;
+        Value nmPadding =
+            mlsInsn->getMajorDimIndex() == 0 ? paddingLenY : paddingLenX;
 
-        Value rsrcDesc = createRsrcDesc(loc, rewriter,
-                                        ldPtr, llStride, blockLayout.getAlt2Kind(),
-                                        mPadding, nmPadding);
+        Value rsrcDesc =
+            createRsrcDesc(loc, rewriter, ldPtr, llStride,
+                           blockLayout.getAlt2Kind(), mPadding, nmPadding);
 
         // share mem address calc
         Value stInBlkOff32 = ldstInBlkGroup.second;
         Value smemOff = stInBlkOff32;
-        Value smemPtr = b.gep(ptr_ty(ctx, 3),
-                            elemByteWidth == 1 ? i8_ty : i16_ty,
-                            smemObj.getBase(),
-                            smemOff);
+        Value smemPtr =
+            b.gep(ptr_ty(ctx, 3), elemByteWidth == 1 ? i8_ty : i16_ty,
+                  smemObj.getBase(), smemOff);
         if (mlsInsn->isTranspose() && mABIsNeed) {
           Value stPtrInt = b.ptrtoint(i32_ty, smemPtr);
           stPtrInt = b.or_(stPtrInt, b.i32_val(0x80000000));
@@ -196,23 +193,18 @@ struct MLSMatrixLoadToLocalOpConversion
         }
         bool t = mlsInsn->isRowMajor();
         bool r = false;
-        generateMatrixLoadLDSOp(loc, rewriter, mlInsnAttr.insn,
-                                rsrcDesc, smemPtr, t, 0, r, false, false, false);
+        generateMatrixLoadLDSOp(loc, rewriter, mlInsnAttr.insn, rsrcDesc,
+                                smemPtr, t, 0, r, false, false, false);
         iterIdx++;
       }
     } else {
       // compute matrix load/store offsets with desc group and diff ml offset.
       bool mlOffsInY;
       DenseMap<Value, Value> ldInBlkOffCoordMappings;
-      auto ldstInBlkMappings = computeMatrixLoadStoreOffsetsWithMlOffs(loc, rewriter,
-                                              blockLayout, mlInsnAttr,
-                                              sharedLayout,
-                                              dstTy.getShape(),
-                                              llStrides,
-                                              mlsInsn->isRowMajor(),
-                                              boundaryCheckInfo,
-                                              mlOffsInY,
-                                              ldInBlkOffCoordMappings);
+      auto ldstInBlkMappings = computeMatrixLoadStoreOffsetsWithMlOffs(
+          loc, rewriter, blockLayout, mlInsnAttr, sharedLayout,
+          dstTy.getShape(), llStrides, mlsInsn->isRowMajor(), boundaryCheckInfo,
+          mlOffsInY, ldInBlkOffCoordMappings);
       bool groupPaddingInY = !mlOffsInY;
 
       for (auto &ldstInBlkGroup : ldstInBlkMappings) {
@@ -220,8 +212,8 @@ struct MLSMatrixLoadToLocalOpConversion
 
         // global mem address calc
         Value ldOffset = b.add(ldInBlkOff64, ldBlkOff);
-        Value ldPtr = b.gep(ptr_ty(ctx, 1),
-                          elemByteWidth == 1 ? i8_ty : i16_ty, llBasePtr, ldOffset);
+        Value ldPtr = b.gep(ptr_ty(ctx, 1), elemByteWidth == 1 ? i8_ty : i16_ty,
+                            llBasePtr, ldOffset);
 
         // create matrix load lds inst
         Value llStride = llStrides[sharedLayout.getOrder()[1]];
@@ -230,33 +222,37 @@ struct MLSMatrixLoadToLocalOpConversion
         Value rsrcDesc;
         for (auto &ldstInBlkOff : ldstInBlkGroup.second) {
           unsigned ldInBlkOffC = ldstInBlkOff.first;
-          Value stInBlkOff32   = ldstInBlkOff.second;
+          Value stInBlkOff32 = ldstInBlkOff.second;
 
           if (!rsrcDesc) {
             Value paddingLen = b.i32_val(0);
             if (needBoundaryCheck) {
               int dimIdx = groupPaddingInY ? 1 : 0;
               Value ldInBlockOffCoordV = ldInBlkOffCoordMappings[ldInBlkOff64];
-              Value posEnd = b.add(b.add(llBlockPos[dimIdx], ldInBlockOffCoordV),
-                                  b.i32_val(mlInsnAttr.instrShape[dimIdx]));
+              Value posEnd =
+                  b.add(b.add(llBlockPos[dimIdx], ldInBlockOffCoordV),
+                        b.i32_val(mlInsnAttr.instrShape[dimIdx]));
               Value posGt = b.icmp_sgt(posEnd, llShape[dimIdx]);
-              paddingLen = b.select(posGt, b.sub(posEnd, llShape[dimIdx]), b.i32_val(0));
+              paddingLen =
+                  b.select(posGt, b.sub(posEnd, llShape[dimIdx]), b.i32_val(0));
             }
 
-            Value mPadding  = ((groupPaddingInY && mlsInsn->isRowMajor()) ||
-                               (!groupPaddingInY && !mlsInsn->isRowMajor())) ? paddingLen : b.i32_val(0);
-            Value nmPadding = mPadding == paddingLen ? b.i32_val(0) : paddingLen;
-            rsrcDesc = createRsrcDesc(loc, rewriter,
-                                      ldPtr, llStride, blockLayout.getAlt2Kind(),
-                                      mPadding, nmPadding);
+            Value mPadding = ((groupPaddingInY && mlsInsn->isRowMajor()) ||
+                              (!groupPaddingInY && !mlsInsn->isRowMajor()))
+                                 ? paddingLen
+                                 : b.i32_val(0);
+            Value nmPadding =
+                mPadding == paddingLen ? b.i32_val(0) : paddingLen;
+            rsrcDesc =
+                createRsrcDesc(loc, rewriter, ldPtr, llStride,
+                               blockLayout.getAlt2Kind(), mPadding, nmPadding);
           }
 
           // share mem address calc
           Value smemOff = stInBlkOff32;
-          Value smemPtr = b.gep(ptr_ty(ctx, 3),
-                              elemByteWidth == 1 ? i8_ty : i16_ty,
-                              smemObj.getBase(),
-                              smemOff);
+          Value smemPtr =
+              b.gep(ptr_ty(ctx, 3), elemByteWidth == 1 ? i8_ty : i16_ty,
+                    smemObj.getBase(), smemOff);
           if (mlsInsn->isTranspose() && mABIsNeed) {
             Value stPtrInt = b.ptrtoint(i32_ty, smemPtr);
             stPtrInt = b.or_(stPtrInt, b.i32_val(0x80000000));
@@ -266,8 +262,9 @@ struct MLSMatrixLoadToLocalOpConversion
           bool t = mlsInsn->isRowMajor();
           bool r = mlOffsInY;
           assert(ldInBlkOffC < 1024 && "ldInBlkOffC out of range"); // 2^10
-          generateMatrixLoadLDSOp(loc, rewriter, mlInsnAttr.insn,
-                                  rsrcDesc, smemPtr, t, ldInBlkOffC, r, false, false, false);
+          generateMatrixLoadLDSOp(loc, rewriter, mlInsnAttr.insn, rsrcDesc,
+                                  smemPtr, t, ldInBlkOffC, r, false, false,
+                                  false);
         }
       }
     }
@@ -282,20 +279,16 @@ private:
   /*
    * Calculate matrix load store offsets in blk: ldOffVal, stOffVal
    **/
-  SmallVector<std::pair<Value, Value>>
-  computeMatrixLoadStoreOffsets(Location loc, RewriterBase &rewriter,
-                                const MlsEncodingAttr &blockLayout,
-                                const MatrixLoadInsnAttr &mlInsnAttr,
-                                const HCUMlsSharedEncodingAttr &sharedLayout,
-                                ArrayRef<int64_t> tensorShape,
-                                ValueRange llStrides,
-                                bool mlsIsRowMajor,
-                                SmallVector<bool> boundaryCheckInfo,
-                                SmallVector<std::pair<Value, Value>> &ldInBlkOffCoordMappings) const {
+  SmallVector<std::pair<Value, Value>> computeMatrixLoadStoreOffsets(
+      Location loc, RewriterBase &rewriter, const MlsEncodingAttr &blockLayout,
+      const MatrixLoadInsnAttr &mlInsnAttr,
+      const HCUMlsSharedEncodingAttr &sharedLayout,
+      ArrayRef<int64_t> tensorShape, ValueRange llStrides, bool mlsIsRowMajor,
+      SmallVector<bool> boundaryCheckInfo,
+      SmallVector<std::pair<Value, Value>> &ldInBlkOffCoordMappings) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto warpsPerCta = blockLayout.getWarpsPerCTA();
-    auto shapePerCta = getShapePerCTA(blockLayout.getMlsTile(),
-                                                    warpsPerCta);
+    auto shapePerCta = getShapePerCTA(blockLayout.getMlsTile(), warpsPerCta);
     SmallVector<Value> multiDimWarpIds;
     auto dummyMapping = computeMatrixLoadStoreOffsetsMappingInCTA(
         loc, rewriter, blockLayout, mlInsnAttr, tensorShape, multiDimWarpIds);
@@ -307,8 +300,10 @@ private:
     flattenedMlsShape[1] = tensorShape[1] / blockLayout.getMlsTile()[1];
 
     auto rank = tensorShape.size();
-    Value offWarpX = b.mul(multiDimWarpIds[rank - 2], b.i32_val(blockLayout.getMlsTile()[rank - 2]));
-    Value offWarpY = b.mul(multiDimWarpIds[rank - 1], b.i32_val(blockLayout.getMlsTile()[rank - 1]));
+    Value offWarpX = b.mul(multiDimWarpIds[rank - 2],
+                           b.i32_val(blockLayout.getMlsTile()[rank - 2]));
+    Value offWarpY = b.mul(multiDimWarpIds[rank - 1],
+                           b.i32_val(blockLayout.getMlsTile()[rank - 1]));
 
     SmallVector<unsigned> numReps = getNumReps(blockLayout, tensorShape);
     unsigned numRepsX = numReps[0] * mlInsnAttr.instrsPerWarp[0];
@@ -319,22 +314,34 @@ private:
 
     for (unsigned ctaX = 0; ctaX < numReps[0]; ++ctaX) {
       for (unsigned ctaY = 0; ctaY < numReps[1]; ++ctaY) {
-        for (unsigned instIdxX = 0; instIdxX < mlInsnAttr.instrsPerWarp[0]; ++instIdxX) {
-          for (unsigned instIdxY = 0; instIdxY < mlInsnAttr.instrsPerWarp[1]; ++instIdxY) {
+        for (unsigned instIdxX = 0; instIdxX < mlInsnAttr.instrsPerWarp[0];
+             ++instIdxX) {
+          for (unsigned instIdxY = 0; instIdxY < mlInsnAttr.instrsPerWarp[1];
+               ++instIdxY) {
             unsigned ctaRow = ctaX * shapePerCta[0];
             unsigned ctaCol = ctaY * shapePerCta[1];
-            Value ldRow = b.add(offWarpX, b.i32_val(ctaRow + instIdxX * mlInsnAttr.instrShape[0]));
-            Value ldCol = b.add(offWarpY, b.i32_val(ctaCol + instIdxY * mlInsnAttr.instrShape[1]));
+            Value ldRow =
+                b.add(offWarpX,
+                      b.i32_val(ctaRow + instIdxX * mlInsnAttr.instrShape[0]));
+            Value ldCol =
+                b.add(offWarpY,
+                      b.i32_val(ctaCol + instIdxY * mlInsnAttr.instrShape[1]));
 
             Value ldOffV = dot64(loc, rewriter, {ldRow, ldCol}, llStrides);
-            Value stMlsRow = b.add(b.i32_val(ctaX * warpsPerCta[0]), multiDimWarpIds[0]);
-            Value stMlsCol = b.add(b.i32_val(ctaY * warpsPerCta[1]), multiDimWarpIds[1]);
+            Value stMlsRow =
+                b.add(b.i32_val(ctaX * warpsPerCta[0]), multiDimWarpIds[0]);
+            Value stMlsCol =
+                b.add(b.i32_val(ctaY * warpsPerCta[1]), multiDimWarpIds[1]);
 
-            Value stMlsOff = b.mul(linearize(rewriter, loc, {stMlsRow, stMlsCol},
+            Value stMlsOff =
+                b.mul(linearize(rewriter, loc, {stMlsRow, stMlsCol},
                                 flattenedMlsShape, sharedLayout.getOrder()),
-                                b.i32_val(product(blockLayout.getMlsTile())));
-            unsigned instIdx = instIdxX * mlInsnAttr.instrsPerWarp[1] + instIdxY;
-            Value stInMlsOff = b.i32_val(dsByteOffsets[instIdx]/elemByteWidth); // element offset in mls
+                      b.i32_val(product(blockLayout.getMlsTile())));
+            unsigned instIdx =
+                instIdxX * mlInsnAttr.instrsPerWarp[1] + instIdxY;
+            Value stInMlsOff =
+                b.i32_val(dsByteOffsets[instIdx] /
+                          elemByteWidth); // element offset in mls
             Value stOffV = b.add(stMlsOff, stInMlsOff);
 
             loadStoreOffsets.push_back(std::make_pair(ldOffV, stOffV));
@@ -347,27 +354,24 @@ private:
     return loadStoreOffsets;
   }
 
-
   /*
    * Calculate matrix load with mls offset field.
-   * For each vector, share same rsrc desc with ldOffValue, but has different ldOffConst offset & stOffValue.
-   * key: ldOffValue, value: std::pair<ldOffConst, stOffValue>
+   * For each vector, share same rsrc desc with ldOffValue, but has different
+   *ldOffConst offset & stOffValue. key: ldOffValue, value:
+   *std::pair<ldOffConst, stOffValue>
    **/
   DenseMap<Value, SmallVector<std::pair<unsigned, Value>>>
-  computeMatrixLoadStoreOffsetsWithMlOffs(Location loc, RewriterBase &rewriter,
-                                const MlsEncodingAttr &blockLayout,
-                                const MatrixLoadInsnAttr &mlInsnAttr,
-                                const HCUMlsSharedEncodingAttr &sharedLayout,
-                                ArrayRef<int64_t> tensorShape,
-                                ValueRange llStrides,
-                                bool mlsIsRowMajor,
-                                SmallVector<bool> boundaryCheckInfo,
-                                bool &mlOffsInY,     /* key: ldOffValue, value: ldCoordValue */
-                                DenseMap<Value, Value> &ldInBlkOffCoordMappings) const {
+  computeMatrixLoadStoreOffsetsWithMlOffs(
+      Location loc, RewriterBase &rewriter, const MlsEncodingAttr &blockLayout,
+      const MatrixLoadInsnAttr &mlInsnAttr,
+      const HCUMlsSharedEncodingAttr &sharedLayout,
+      ArrayRef<int64_t> tensorShape, ValueRange llStrides, bool mlsIsRowMajor,
+      SmallVector<bool> boundaryCheckInfo,
+      bool &mlOffsInY, /* key: ldOffValue, value: ldCoordValue */
+      DenseMap<Value, Value> &ldInBlkOffCoordMappings) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto warpsPerCta = blockLayout.getWarpsPerCTA();
-    auto shapePerCta = getShapePerCTA(blockLayout.getMlsTile(),
-                                                    warpsPerCta);
+    auto shapePerCta = getShapePerCTA(blockLayout.getMlsTile(), warpsPerCta);
     SmallVector<Value> multiDimWarpIds;
     auto dummyMapping = computeMatrixLoadStoreOffsetsMappingInCTA(
         loc, rewriter, blockLayout, mlInsnAttr, tensorShape, multiDimWarpIds);
@@ -379,67 +383,98 @@ private:
     flattenedMlsShape[1] = tensorShape[1] / blockLayout.getMlsTile()[1];
 
     auto rank = tensorShape.size();
-    Value offWarpX = b.mul(multiDimWarpIds[rank - 2], b.i32_val(blockLayout.getMlsTile()[rank - 2]));
-    Value offWarpY = b.mul(multiDimWarpIds[rank - 1], b.i32_val(blockLayout.getMlsTile()[rank - 1]));
+    Value offWarpX = b.mul(multiDimWarpIds[rank - 2],
+                           b.i32_val(blockLayout.getMlsTile()[rank - 2]));
+    Value offWarpY = b.mul(multiDimWarpIds[rank - 1],
+                           b.i32_val(blockLayout.getMlsTile()[rank - 1]));
 
     SmallVector<unsigned> numReps = getNumReps(blockLayout, tensorShape);
     unsigned numRepsX = numReps[0] * mlInsnAttr.instrsPerWarp[0];
     unsigned numRepsY = numReps[1] * mlInsnAttr.instrsPerWarp[1];
-    bool membersPerGroupInY = (numRepsX == numRepsY) ? mlsIsRowMajor
-                                 : numRepsX < numRepsY;  // per numRepsY mls insts share same coordX ?
+    bool membersPerGroupInY =
+        (numRepsX == numRepsY)
+            ? mlsIsRowMajor
+            : numRepsX < numRepsY; // per numRepsY mls insts share same coordX ?
     bool needBoundaryPadding = boundaryCheckInfo[0] || boundaryCheckInfo[1];
     if (needBoundaryPadding) {
-      assert(!(boundaryCheckInfo[0] && boundaryCheckInfo[1]) && "both padding condition should not here!");
+      assert(!(boundaryCheckInfo[0] && boundaryCheckInfo[1]) &&
+             "both padding condition should not here!");
       if (boundaryCheckInfo[1] && membersPerGroupInY)
         membersPerGroupInY = false;
     }
     mlOffsInY = membersPerGroupInY;
     bool groupPaddingInY = !mlOffsInY;
 
-    SmallVector<SmallVector<std::tuple<Value, unsigned, Value, Value>>> loadStoreOffsets;
-    unsigned numGroups = membersPerGroupInY ? numRepsX : numRepsY;     /* need create numGroups rsrc desc */
-    unsigned membersPerGroup = membersPerGroupInY ? numRepsY : numRepsX; /* per group has membersPerGroup mls insts */
+    SmallVector<SmallVector<std::tuple<Value, unsigned, Value, Value>>>
+        loadStoreOffsets;
+    unsigned numGroups = membersPerGroupInY
+                             ? numRepsX
+                             : numRepsY; /* need create numGroups rsrc desc */
+    unsigned membersPerGroup =
+        membersPerGroupInY
+            ? numRepsY
+            : numRepsX; /* per group has membersPerGroup mls insts */
     loadStoreOffsets.resize(numGroups);
     for (auto &innerVec : loadStoreOffsets) {
-        innerVec.resize(membersPerGroup);
+      innerVec.resize(membersPerGroup);
     }
 
     for (unsigned ctaX = 0; ctaX < numReps[0]; ++ctaX) {
       for (unsigned ctaY = 0; ctaY < numReps[1]; ++ctaY) {
-        for (unsigned instIdxX = 0; instIdxX < mlInsnAttr.instrsPerWarp[0]; ++instIdxX) {
-          for (unsigned instIdxY = 0; instIdxY < mlInsnAttr.instrsPerWarp[1]; ++instIdxY) {
-            unsigned groupIdx = membersPerGroupInY ? ctaX * mlInsnAttr.instrsPerWarp[0] + instIdxX
-                                                   : ctaY * mlInsnAttr.instrsPerWarp[1] + instIdxY;
-            unsigned memberIdx = membersPerGroupInY ? ctaY * mlInsnAttr.instrsPerWarp[1] + instIdxY
-                                                    : ctaX * mlInsnAttr.instrsPerWarp[0] + instIdxX;
+        for (unsigned instIdxX = 0; instIdxX < mlInsnAttr.instrsPerWarp[0];
+             ++instIdxX) {
+          for (unsigned instIdxY = 0; instIdxY < mlInsnAttr.instrsPerWarp[1];
+               ++instIdxY) {
+            unsigned groupIdx =
+                membersPerGroupInY
+                    ? ctaX * mlInsnAttr.instrsPerWarp[0] + instIdxX
+                    : ctaY * mlInsnAttr.instrsPerWarp[1] + instIdxY;
+            unsigned memberIdx =
+                membersPerGroupInY
+                    ? ctaY * mlInsnAttr.instrsPerWarp[1] + instIdxY
+                    : ctaX * mlInsnAttr.instrsPerWarp[0] + instIdxX;
 
             unsigned ctaRow = ctaX * shapePerCta[0];
             unsigned ctaCol = ctaY * shapePerCta[1];
-            Value ldRow = membersPerGroupInY ? b.add(offWarpX, b.i32_val(ctaRow)) : offWarpX;
-            Value ldCol = membersPerGroupInY ? offWarpY : b.add(offWarpY, b.i32_val(ctaCol));
+            Value ldRow = membersPerGroupInY
+                              ? b.add(offWarpX, b.i32_val(ctaRow))
+                              : offWarpX;
+            Value ldCol = membersPerGroupInY
+                              ? offWarpY
+                              : b.add(offWarpY, b.i32_val(ctaCol));
 
             Value ldOffV = dot64(loc, rewriter, {ldRow, ldCol}, llStrides);
-            unsigned ldOffC = membersPerGroupInY ? ctaCol + instIdxY * mlInsnAttr.instrShape[1]
-                                                 : ctaRow + instIdxX * mlInsnAttr.instrShape[0];
+            unsigned ldOffC =
+                membersPerGroupInY
+                    ? ctaCol + instIdxY * mlInsnAttr.instrShape[1]
+                    : ctaRow + instIdxX * mlInsnAttr.instrShape[0];
 
-            Value stMlsRow = b.add(b.i32_val(ctaX * warpsPerCta[0]), multiDimWarpIds[0]);
-            Value stMlsCol = b.add(b.i32_val(ctaY * warpsPerCta[1]), multiDimWarpIds[1]);
+            Value stMlsRow =
+                b.add(b.i32_val(ctaX * warpsPerCta[0]), multiDimWarpIds[0]);
+            Value stMlsCol =
+                b.add(b.i32_val(ctaY * warpsPerCta[1]), multiDimWarpIds[1]);
 
-            Value stMlsOff = b.mul(linearize(rewriter, loc, {stMlsRow, stMlsCol},
+            Value stMlsOff =
+                b.mul(linearize(rewriter, loc, {stMlsRow, stMlsCol},
                                 flattenedMlsShape, sharedLayout.getOrder()),
-                                b.i32_val(product(blockLayout.getMlsTile())));
-            unsigned instIdx = instIdxX * mlInsnAttr.instrsPerWarp[1] + instIdxY;
-            Value stInMlsOff = b.i32_val(dsByteOffsets[instIdx]/elemByteWidth); // element offset in mls
+                      b.i32_val(product(blockLayout.getMlsTile())));
+            unsigned instIdx =
+                instIdxX * mlInsnAttr.instrsPerWarp[1] + instIdxY;
+            Value stInMlsOff =
+                b.i32_val(dsByteOffsets[instIdx] /
+                          elemByteWidth); // element offset in mls
             Value stOffset = b.add(stMlsOff, stInMlsOff);
 
             Value ldInBlockOffVal = groupPaddingInY ? ldCol : ldRow;
-            loadStoreOffsets[groupIdx][memberIdx] = std::make_tuple(ldOffV, ldOffC, stOffset, ldInBlockOffVal);
+            loadStoreOffsets[groupIdx][memberIdx] =
+                std::make_tuple(ldOffV, ldOffC, stOffset, ldInBlockOffVal);
           }
         }
       }
     }
 
-    DenseMap<Value, SmallVector<std::pair<unsigned, Value>>> loadStoreOffsetsMap;
+    DenseMap<Value, SmallVector<std::pair<unsigned, Value>>>
+        loadStoreOffsetsMap;
     for (auto &group : loadStoreOffsets) {
       Value ldOffV = std::get<0>(group[0]);
       auto &curMap = loadStoreOffsetsMap[ldOffV];
@@ -458,12 +493,10 @@ private:
   }
 
   // reference: emitBaseIndexForMfmaLayout, emitMfmaOffsetForCTA
-  SmallVector<SmallVector<Value>>
-  computeMatrixLoadStoreOffsetsMappingInCTA(Location loc, RewriterBase &rewriter,
-                                       const MlsEncodingAttr &blockLayout,
-                                       const MatrixLoadInsnAttr &mlInsnAttr,
-                                       ArrayRef<int64_t> shape,
-                                       SmallVector<Value> &multiDimWarpIds) const {
+  SmallVector<SmallVector<Value>> computeMatrixLoadStoreOffsetsMappingInCTA(
+      Location loc, RewriterBase &rewriter, const MlsEncodingAttr &blockLayout,
+      const MatrixLoadInsnAttr &mlInsnAttr, ArrayRef<int64_t> shape,
+      SmallVector<Value> &multiDimWarpIds) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto rank = shape.size();
     assert(rank == 2);
@@ -480,7 +513,8 @@ private:
     Value warpSize = b.i32_val(64);
     Value laneId = b.urem(threadId, warpSize);
     // Note: To make the warpId as a uniform value for Matrix Load Rsrc Desc.
-    Value warpId = rewriter.create<ROCDL::ReadfirstlaneOp>(loc, i32_ty, b.udiv(threadId, warpSize));
+    Value warpId = rewriter.create<ROCDL::ReadfirstlaneOp>(
+        loc, i32_ty, b.udiv(threadId, warpSize));
     SmallVector<Value> multiDimWarpId =
         delinearize(rewriter, loc, warpId, _warpsPerCTA, warpOrder);
 
@@ -488,30 +522,33 @@ private:
       assert(shape[rank - 2] % mlsTile[rank - 2] == 0);
       multiDimWarpId[rank - 2] =
           b.urem(multiDimWarpId[rank - 2],
-               b.i32_val(ceil<unsigned>(shape[rank - 2], mlsTile[rank - 2])));
+                 b.i32_val(ceil<unsigned>(shape[rank - 2], mlsTile[rank - 2])));
     }
     if (shape[rank - 1] >= mlsTile[rank - 1]) {
       assert(shape[rank - 1] % mlsTile[rank - 1] == 0);
       multiDimWarpId[rank - 1] =
           b.urem(multiDimWarpId[rank - 1],
-               b.i32_val(ceil<unsigned>(shape[rank - 1], mlsTile[rank - 1])));
+                 b.i32_val(ceil<unsigned>(shape[rank - 1], mlsTile[rank - 1])));
     }
 
     multiDimWarpIds.push_back(multiDimWarpId[rank - 2]);
     multiDimWarpIds.push_back(multiDimWarpId[rank - 1]);
 
-    Value offWarpX = b.mul(multiDimWarpId[rank - 2], b.i32_val(mlsTile[rank - 2]));
-    Value offWarpY = b.mul(multiDimWarpId[rank - 1], b.i32_val(mlsTile[rank - 1]));
+    Value offWarpX =
+        b.mul(multiDimWarpId[rank - 2], b.i32_val(mlsTile[rank - 2]));
+    Value offWarpY =
+        b.mul(multiDimWarpId[rank - 1], b.i32_val(mlsTile[rank - 1]));
 
     SmallVector<SmallVector<Value>> multiDimOffsets;
     for (unsigned i = 0; i < mlInsnAttr.instrsPerWarp[0]; i++) {
       for (unsigned j = 0; j < mlInsnAttr.instrsPerWarp[1]; j++) {
-        assert((mlInsnAttr.instrsPerWarp[0] == 1 || mlInsnAttr.instrsPerWarp[1] == 1) &&
+        assert((mlInsnAttr.instrsPerWarp[0] == 1 ||
+                mlInsnAttr.instrsPerWarp[1] == 1) &&
                "add more code support!");
-        Value offElemX =
-            b.add(offWarpX, b.mul(b.i32_val(i), b.i32_val(mlInsnAttr.instrShape[0])));
-        Value offElemY =
-            b.add(offWarpY, b.mul(b.i32_val(j), b.i32_val(mlInsnAttr.instrShape[1])));
+        Value offElemX = b.add(
+            offWarpX, b.mul(b.i32_val(i), b.i32_val(mlInsnAttr.instrShape[0])));
+        Value offElemY = b.add(
+            offWarpY, b.mul(b.i32_val(j), b.i32_val(mlInsnAttr.instrShape[1])));
 
         multiDimOffsets.push_back({offElemX, offElemY});
       }
@@ -520,17 +557,18 @@ private:
     return multiDimOffsets;
   }
 
-  Value createRsrcDesc(Location loc, RewriterBase &rewriter,
-                       Value llBasePtr, Value llStride,
-                       unsigned alt2Kind, Value mPadding, Value nmPadding)  const {
+  Value createRsrcDesc(Location loc, RewriterBase &rewriter, Value llBasePtr,
+                       Value llStride, unsigned alt2Kind, Value mPadding,
+                       Value nmPadding) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     // 1. Create the resource descriptor
-    // dword 0: base_addr_lo, bit pos: [31:0], Byte base address 32 LSBs for global adressing
-    // dwrod 1: base_addr_hi, bit pos: [15:0], Byte base address 16 MSBs for global adressing
-    // dword 2: stride,       bit pos: [31:0], The unit is matrix element.
-    // dword 3:
+    // dword 0: base_addr_lo, bit pos: [31:0], Byte base address 32 LSBs for
+    // global adressing dwrod 1: base_addr_hi, bit pos: [15:0], Byte base
+    // address 16 MSBs for global adressing dword 2: stride,       bit pos:
+    // [31:0], The unit is matrix element. dword 3:
     //   mfilter,      bit pos: [7:0]
-    //                 The number of row/column needed to be zero-padded in matrix major direction.
+    //                 The number of row/column needed to be zero-padded in
+    //                 matrix major direction.
     //   nfilter,      bit pos: [15:8]
     //                 The number of row/column needed to be zero-padded ...
     //   cache_swizzle_enable, bit pos: [16]
@@ -545,9 +583,9 @@ private:
     // dword 0: base_addr_lo [31:0]
     Value baseLow = b.ptrtoint(i32_ty, llBasePtr);
     // dword 1: base_addr_hi [15:0]
-    Value baseHigh = b.and_(b.trunc(i32_ty, b.lshr(b.ptrtoint(i64_ty, llBasePtr),
-                                          b.i64_val(32))),
-                          b.i32_val(0xFFFF));
+    Value baseHigh = b.and_(
+        b.trunc(i32_ty, b.lshr(b.ptrtoint(i64_ty, llBasePtr), b.i64_val(32))),
+        b.i32_val(0xFFFF));
 
     // dword 2: stride [31:0]
     Value stride = llStride;
@@ -558,30 +596,32 @@ private:
     Value cacheSwizzle = b.i32_val(0);
     Value mfmt = b.i32_val(alt2Kind);
 
-    Value controlField = mfilter;                                                    // [7:0]
-    controlField = b.or_(controlField, b.shl(nfilter, b.i32_val(8)));       // [15:8]
-    controlField = b.or_(controlField, b.shl(cacheSwizzle, b.i32_val(16))); // [16]
-    controlField = b.or_(controlField, b.shl(mfmt, b.i32_val(17)));         // [18:17]
+    Value controlField = mfilter;                                     // [7:0]
+    controlField = b.or_(controlField, b.shl(nfilter, b.i32_val(8))); // [15:8]
+    controlField =
+        b.or_(controlField, b.shl(cacheSwizzle, b.i32_val(16)));    // [16]
+    controlField = b.or_(controlField, b.shl(mfmt, b.i32_val(17))); // [18:17]
 
     Value resource = b.undef(vec_ty(i32_ty, 4));
-    resource = b.insert_element(vec_ty(i32_ty, 4), resource, baseLow, b.i32_val(0));
-    resource = b.insert_element(vec_ty(i32_ty, 4), resource, baseHigh, b.i32_val(1));
-    resource = b.insert_element(vec_ty(i32_ty, 4), resource, stride, b.i32_val(2));
-    resource = b.insert_element(vec_ty(i32_ty, 4), resource, controlField, b.i32_val(3));
+    resource =
+        b.insert_element(vec_ty(i32_ty, 4), resource, baseLow, b.i32_val(0));
+    resource =
+        b.insert_element(vec_ty(i32_ty, 4), resource, baseHigh, b.i32_val(1));
+    resource =
+        b.insert_element(vec_ty(i32_ty, 4), resource, stride, b.i32_val(2));
+    resource = b.insert_element(vec_ty(i32_ty, 4), resource, controlField,
+                                b.i32_val(3));
 
     return resource;
   }
 
-  void generateMatrixLoadLDSOp(Location loc, RewriterBase &rewriter,
-                               StringRef mlInsnOpName,
-                               Value rsrcDesc,
-                               Value soffset,
-                               bool t,            // Transposition. 0: column major, 1: row major
-                               int32_t offset,    // Global address offset [9:0]
-                               bool r,            // Golbal address offset is in row direction ?
-                               bool glc = false,
-                               bool slc = false,
-                               bool bps = false) const {
+  void generateMatrixLoadLDSOp(
+      Location loc, RewriterBase &rewriter, StringRef mlInsnOpName,
+      Value rsrcDesc, Value soffset,
+      bool t,         // Transposition. 0: column major, 1: row major
+      int32_t offset, // Global address offset [9:0]
+      bool r,         // Golbal address offset is in row direction ?
+      bool glc = false, bool slc = false, bool bps = false) const {
     OperationState loweredOp(loc, mlInsnOpName);
     loweredOp.addOperands(rsrcDesc);
     loweredOp.addOperands(soffset);
@@ -596,8 +636,8 @@ private:
     rewriter.create(loweredOp);
   }
 
-  Value dot64(Location loc, RewriterBase &rewriter,
-            ValueRange offsets32, ValueRange strides64) const {
+  Value dot64(Location loc, RewriterBase &rewriter, ValueRange offsets32,
+              ValueRange strides64) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     assert(offsets32.size() == strides64.size());
     Value ret = b.i64_val(0);
@@ -635,8 +675,8 @@ struct MLSLocalAllocOpConversion
       return failure();
 
     auto llvmElemTy = typeConverter->convertType(resultTy.getElementType());
-    auto smemObj = LLVM::SharedMemoryObject(smemBase,
-                            llvmElemTy, resultTy.getRank(), loc, rewriter);
+    auto smemObj = LLVM::SharedMemoryObject(smemBase, llvmElemTy,
+                                            resultTy.getRank(), loc, rewriter);
     assert(!op.getSrc());
     auto retVal = LLVM::getStructFromSharedMemoryObject(loc, smemObj, rewriter);
     rewriter.replaceOp(op, retVal);
@@ -660,7 +700,7 @@ Value getWarpIdInBlock(ConversionPatternRewriter &rewriter, Location loc,
       delinearize(rewriter, loc, warpId, wpt, order);
 
   return b.urem(multiDimWarpId[nonKIdx],
-              b.i32_val(tensorSizeNonK / elemPerInstrNonK));
+                b.i32_val(tensorSizeNonK / elemPerInstrNonK));
 }
 
 struct MLSLocalLoadOpConversion
@@ -688,7 +728,7 @@ public:
           isa<AMDMfmaEncodingAttr>(
               cast<DotOperandEncodingAttr>(dstLayout).getParent())) {
         return lowerMLSSharedToDotOperand(op, adaptor, getTypeConverter(),
-                                        rewriter);
+                                          rewriter);
       } else {
         assert(false && "should been canonicalized and not reach here!");
         return failure();
@@ -702,7 +742,8 @@ private:
   const HCU::TargetInfo &targetInfo;
 
   // shared -> matrix_core_dot_operand
-  // reference: SharedToDotOperandMFMA::convertLayout in SharedToDotOperandMFMA.cpp
+  // reference: SharedToDotOperandMFMA::convertLayout in
+  // SharedToDotOperandMFMA.cpp
   LogicalResult
   lowerMLSSharedToDotOperand(triton::gpu::LocalLoadOp op,
                              triton::gpu::LocalLoadOpAdaptor adaptor,
@@ -726,13 +767,17 @@ private:
     auto opIdx = dotOperandLayout.getOpIdx();
     auto mfmaLayout = cast<AMDMfmaEncodingAttr>(dotOperandLayout.getParent());
     Value threadId = getThreadId(rewriter, loc);
-    if ((opIdx == 0 && mfmaLayout.getMfmaTile()[0] == mfmaLayout.getInstrShape()[0]) ||
-        (opIdx == 1 && mfmaLayout.getMfmaTile()[1] == mfmaLayout.getInstrShape()[1])) {
-      res = convertLayoutUnitTilesPerWarp(dotOperandLayout.getOpIdx(), rewriter, loc, src,
-                                          dotOperandLayout, smemObj, typeConverter, threadId);
+    if ((opIdx == 0 &&
+         mfmaLayout.getMfmaTile()[0] == mfmaLayout.getInstrShape()[0]) ||
+        (opIdx == 1 &&
+         mfmaLayout.getMfmaTile()[1] == mfmaLayout.getInstrShape()[1])) {
+      res = convertLayoutUnitTilesPerWarp(dotOperandLayout.getOpIdx(), rewriter,
+                                          loc, src, dotOperandLayout, smemObj,
+                                          typeConverter, threadId);
     } else {
-        res = convertLayoutMultiTilesPerWarp(dotOperandLayout.getOpIdx(), rewriter, loc, src,
-                                             dotOperandLayout, smemObj, typeConverter, threadId);
+      res = convertLayoutMultiTilesPerWarp(dotOperandLayout.getOpIdx(),
+                                           rewriter, loc, src, dotOperandLayout,
+                                           smemObj, typeConverter, threadId);
     }
 
     if (!res)
@@ -741,13 +786,13 @@ private:
     return success();
   }
 
-  Value
-  convertLayoutUnitTilesPerWarp(int opIdx, ConversionPatternRewriter &rewriter,
-                                Location loc, Value tensor,
-                                DotOperandEncodingAttr encoding,
-                                const SharedMemoryObject &smemObj,
-                                const LLVMTypeConverter *typeConverter,
-                                Value thread) const {
+  Value convertLayoutUnitTilesPerWarp(int opIdx,
+                                      ConversionPatternRewriter &rewriter,
+                                      Location loc, Value tensor,
+                                      DotOperandEncodingAttr encoding,
+                                      const SharedMemoryObject &smemObj,
+                                      const LLVMTypeConverter *typeConverter,
+                                      Value thread) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     assert((opIdx == 0 || opIdx == 1) && "unexpected operand idx");
     auto tensorTy = cast<MemDescType>(tensor.getType());
@@ -759,9 +804,9 @@ private:
     int nonKDimIdx2D = opIdx == 0 ? 0 : 1;
 
     auto mfmaLayout = cast<AMDMfmaEncodingAttr>(encoding.getParent());
-    assert(((opIdx==0 && mfmaLayout.getInstrsPerWarp()[0] == 1) ||
-            (opIdx==1 && mfmaLayout.getInstrsPerWarp()[1] == 1)) &&
-            "only support unit tiles per warp mfma layout!");
+    assert(((opIdx == 0 && mfmaLayout.getInstrsPerWarp()[0] == 1) ||
+            (opIdx == 1 && mfmaLayout.getInstrsPerWarp()[1] == 1)) &&
+           "only support unit tiles per warp mfma layout!");
     auto warpsPerCTA = mfmaLayout.getWarpsPerCTA();
 
     auto elemTy = tensorTy.getElementType();
@@ -827,11 +872,10 @@ private:
     assert(kMajor && "m16n16 mfma & mls only support kMajor layout!");
 
     auto mlsInsn = MlsInsn::selectOrGetMlsInsn(
-                               mlsTile[nonKDimIdx2D], mlsTile[kDimIdx2D],
-                               sharedLayout.getElemBitWidth(),
-                               opIdx, kMajor,
-                               static_cast<MlsInterleaveKind>(sharedLayout.getAlt2Kind()),
-                               sharedLayout.getVersion());
+        mlsTile[nonKDimIdx2D], mlsTile[kDimIdx2D],
+        sharedLayout.getElemBitWidth(), opIdx, kMajor,
+        static_cast<MlsInterleaveKind>(sharedLayout.getAlt2Kind()),
+        sharedLayout.getVersion());
 
     auto dsInsnAttr = mlsInsn->getDsReadMatrixInsnAttr();
 
@@ -847,10 +891,9 @@ private:
     }
 
     // 2. compute ds_read_matrix offsets
-    auto offsets = computeDsReadMatrixOffsets(rewriter, loc,
-                               sharedLayout, dsInsnAttr,
-                               spatialWarpId, warpsPerBlockNonK, mlsNumReps,
-                               smemObj, shape);
+    auto offsets = computeDsReadMatrixOffsets(
+        rewriter, loc, sharedLayout, dsInsnAttr, spatialWarpId,
+        warpsPerBlockNonK, mlsNumReps, smemObj, shape);
     Value smemBase = smemObj.getBase();
     Type smemPtrTy = ptr_ty(rewriter.getContext(), 3);
 
@@ -861,8 +904,9 @@ private:
     SmallVector<Value> loadedValues;
     for (int batchIdx = 0; batchIdx < repB; ++batchIdx) {
       int operandSize = shape[rank - 1] * shape[rank - 2];
-      Value batchOffset = b.mul(b.i32_val(operandSize),
-                              b.add(warpIdInBatch, b.i32_val(batchIdx * warpsPerBatch)));
+      Value batchOffset =
+          b.mul(b.i32_val(operandSize),
+                b.add(warpIdInBatch, b.i32_val(batchIdx * warpsPerBatch)));
       for (int mlsNonK = 0; mlsNonK < mlsNumRepNonK; ++mlsNonK) {
         for (int mlsKIdx = 0; mlsKIdx < mlsNumRepK; ++mlsKIdx) {
           auto loadOffset = offsets[mlsNonK * mlsNumRepK + mlsKIdx];
@@ -870,27 +914,25 @@ private:
           for (int loadIdx = 0; loadIdx < dsLoadsPerK; ++loadIdx) {
             Value loadAddress = b.gep(smemPtrTy, elemTy, smemBase, loadOffset);
 
-            auto dsInsnResTy = getDsReadMatrixInsnResType(loc, rewriter, tensorTy,
-                                                                dsInsnAttr,
-                                                                mlsInsn->getElemBitWidth());
-            Value loadedValue = generateDsReadMatrixOp(loc, rewriter, dsInsnAttr.insn,
-                                                       dsInsnResTy,
-                                                       loadAddress,
-                                                       dsInsnAttr.dsByteOffsets[loadIdx],
-                                                       dsInsnAttr.flags);
-            auto unpackedValues = unpackDsReadMatrixInsnRes(loc, rewriter, tensorTy,
-                                                            dsInsnAttr,
-                                                            mlsInsn->getElemBitWidth(),
-                                                            loadedValue);
+            auto dsInsnResTy =
+                getDsReadMatrixInsnResType(loc, rewriter, tensorTy, dsInsnAttr,
+                                           mlsInsn->getElemBitWidth());
+            Value loadedValue = generateDsReadMatrixOp(
+                loc, rewriter, dsInsnAttr.insn, dsInsnResTy, loadAddress,
+                dsInsnAttr.dsByteOffsets[loadIdx], dsInsnAttr.flags);
+            auto unpackedValues = unpackDsReadMatrixInsnRes(
+                loc, rewriter, tensorTy, dsInsnAttr, mlsInsn->getElemBitWidth(),
+                loadedValue);
             loadedValues.append(unpackedValues);
           }
         }
       }
     }
 
-    assert(loadedValues.size() == repB * mlsNumRepNonK * mlsNumRepK * dsLoadsPerK *
-                                  (dsInsnAttr.instrShape[kDimIdx2D] *
-                                   dsInsnAttr.instrShape[nonKDimIdx2D] / iWarpSize));
+    assert(loadedValues.size() ==
+           repB * mlsNumRepNonK * mlsNumRepK * dsLoadsPerK *
+               (dsInsnAttr.instrShape[kDimIdx2D] *
+                dsInsnAttr.instrShape[nonKDimIdx2D] / iWarpSize));
 
     MLIRContext *ctx = mfmaLayout.getContext();
     Type structTy = LLVM::LLVMStructType::getLiteral(
@@ -900,13 +942,13 @@ private:
     return result;
   }
 
-  Value
-  convertLayoutMultiTilesPerWarp(int opIdx, ConversionPatternRewriter &rewriter,
-                                 Location loc, Value tensor,
-                                 DotOperandEncodingAttr encoding,
-                                 const SharedMemoryObject &smemObj,
-                                 const LLVMTypeConverter *typeConverter,
-                                 Value thread) const {
+  Value convertLayoutMultiTilesPerWarp(int opIdx,
+                                       ConversionPatternRewriter &rewriter,
+                                       Location loc, Value tensor,
+                                       DotOperandEncodingAttr encoding,
+                                       const SharedMemoryObject &smemObj,
+                                       const LLVMTypeConverter *typeConverter,
+                                       Value thread) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     assert((opIdx == 0 || opIdx == 1) && "unexpected operand idx");
     auto tensorTy = cast<MemDescType>(tensor.getType());
@@ -942,7 +984,6 @@ private:
       return Value();
     }
 
-
     auto numReps = mfmaLayout.getRepForOperand(shape, kWidth, opIdx);
     auto numRepNonK = numReps[nonKDimIdx];
     auto numRepK = numReps[kDimIdx];
@@ -954,10 +995,12 @@ private:
       numRepK = numReps[kDimIdx + 1];
     }
 
-    auto mfmaTileNonK = opIdx == 0 ? mfmaLayout.getMfmaTile()[0] : mfmaLayout.getMfmaTile()[1];
+    auto mfmaTileNonK =
+        opIdx == 0 ? mfmaLayout.getMfmaTile()[0] : mfmaLayout.getMfmaTile()[1];
     auto mfmaTileK = mfmaInstrK;
     auto mfmaInstrsPerWarpNonK = mfmaLayout.getInstrsPerWarp()[nonKDimIdx2D];
-    auto mfmaTileNumReps = mfmaLayout.getMfmaTileRepForOperand(shape, kWidth, opIdx);
+    auto mfmaTileNumReps =
+        mfmaLayout.getMfmaTileRepForOperand(shape, kWidth, opIdx);
     auto mfmaTileNumRepNonK = mfmaTileNumReps[nonKDimIdx];
     if (rank == 2) {
       mfmaTileNumRepNonK = mfmaTileNumReps[nonKDimIdx + 1];
@@ -970,9 +1013,9 @@ private:
     Value lane = b.urem(thread, warpSize);
 
     auto warpOrder = triton::gpu::getMatrixOrder(rank, /*rowMajor*/ true);
-    Value spatialWarpId = getWarpIdInBlock(
-        rewriter, loc, linearWarpId, warpsPerCTA, mfmaTileNonK,
-        shape[nonKDimIdx], nonKDimIdx, warpOrder);
+    Value spatialWarpId =
+        getWarpIdInBlock(rewriter, loc, linearWarpId, warpsPerCTA, mfmaTileNonK,
+                         shape[nonKDimIdx], nonKDimIdx, warpOrder);
 
     int numSubBlocks = 1;
     // numOfElemsPerThreadPerMfmaInstr
@@ -992,11 +1035,10 @@ private:
     bool kMajor = sharedLayout.getOrder()[0] == kDimIdx;
 
     auto mlsInsn = MlsInsn::selectOrGetMlsInsn(
-                               mlsTile[nonKDimIdx2D], mlsTile[kDimIdx2D],
-                               sharedLayout.getElemBitWidth(),
-                               opIdx, kMajor,
-                               static_cast<MlsInterleaveKind>(sharedLayout.getAlt2Kind()),
-                               sharedLayout.getVersion());
+        mlsTile[nonKDimIdx2D], mlsTile[kDimIdx2D],
+        sharedLayout.getElemBitWidth(), opIdx, kMajor,
+        static_cast<MlsInterleaveKind>(sharedLayout.getAlt2Kind()),
+        sharedLayout.getVersion());
 
     auto dsInsnAttr = mlsInsn->getDsReadMatrixInsnAttr();
 
@@ -1012,10 +1054,9 @@ private:
     }
 
     // 2. compute ds_read_matrix offsets
-    auto offsets = computeDsReadMatrixOffsets(rewriter, loc,
-                               sharedLayout, dsInsnAttr,
-                               spatialWarpId, warpsPerBlockNonK, mlsNumReps,
-                               smemObj, shape);
+    auto offsets = computeDsReadMatrixOffsets(
+        rewriter, loc, sharedLayout, dsInsnAttr, spatialWarpId,
+        warpsPerBlockNonK, mlsNumReps, smemObj, shape);
     Value smemBase = smemObj.getBase();
     Type smemPtrTy = ptr_ty(rewriter.getContext(), 3);
 
@@ -1023,23 +1064,30 @@ private:
     auto dsLoadsPerK = product(dsInsnAttr.instrsPerWarp);
 
     // 3. create ds_read_matrix ops
-    assert((dsInsnAttr.instrsPerWarp[0] == 1 || dsInsnAttr.instrsPerWarp[1] == 1) &&
+    assert((dsInsnAttr.instrsPerWarp[0] == 1 ||
+            dsInsnAttr.instrsPerWarp[1] == 1) &&
            "add more code support!");
     bool isDsInsnRepInKDirection = dsInsnAttr.instrsPerWarp[kDimIdx2D] != 1;
-    unsigned mfmaGroupPerDsInsn = dsInsnAttr.instrShape[nonKDimIdx2D] / mfmaInstrNonK;
+    unsigned mfmaGroupPerDsInsn =
+        dsInsnAttr.instrShape[nonKDimIdx2D] / mfmaInstrNonK;
     assert(mfmaGroupPerDsInsn != 1);
 
     unsigned numOfElemsPerDsInsn = dsInsnAttr.instrShape[kDimIdx2D] *
-                                   dsInsnAttr.instrShape[nonKDimIdx2D] / iWarpSize;
-    unsigned totalElemsMfma = repB * (mfmaTileNumRepNonK * mfmaInstrsPerWarpNonK) * numRepK * numOfElems;
-    unsigned totalElemsMls  = repB * mlsNumRepNonK * mlsNumRepK * dsLoadsPerK * numOfElemsPerDsInsn;
+                                   dsInsnAttr.instrShape[nonKDimIdx2D] /
+                                   iWarpSize;
+    unsigned totalElemsMfma = repB *
+                              (mfmaTileNumRepNonK * mfmaInstrsPerWarpNonK) *
+                              numRepK * numOfElems;
+    unsigned totalElemsMls =
+        repB * mlsNumRepNonK * mlsNumRepK * dsLoadsPerK * numOfElemsPerDsInsn;
     assert(totalElemsMfma == totalElemsMls);
 
     SmallVector<Value> loadedValues(totalElemsMfma);
     for (int batchIdx = 0; batchIdx < repB; ++batchIdx) {
       int operandSize = shape[rank - 1] * shape[rank - 2];
-      Value batchOffset = b.mul(b.i32_val(operandSize),
-                              b.add(warpIdInBatch, b.i32_val(batchIdx * warpsPerBatch)));
+      Value batchOffset =
+          b.mul(b.i32_val(operandSize),
+                b.add(warpIdInBatch, b.i32_val(batchIdx * warpsPerBatch)));
       for (int mlsNonK = 0; mlsNonK < mlsNumRepNonK; ++mlsNonK) {
         int mfmaTileNonKIdx = mlsNonK;
         for (int mlsKIdx = 0; mlsKIdx < mlsNumRepK; ++mlsKIdx) {
@@ -1050,32 +1098,42 @@ private:
           for (int loadIdx = 0; loadIdx < dsLoadsPerK; ++loadIdx) {
             Value loadAddress = b.gep(smemPtrTy, elemTy, smemBase, loadOffset);
 
-            auto dsInsnResTy = getDsReadMatrixInsnResType(loc, rewriter, tensorTy,
-                                                                dsInsnAttr,
-                                                                mlsInsn->getElemBitWidth());
-            Value loadedValue = generateDsReadMatrixOp(loc, rewriter, dsInsnAttr.insn,
-                                              dsInsnResTy,
-                                                       loadAddress,
-                                                       dsInsnAttr.dsByteOffsets[loadIdx],
-                                                       dsInsnAttr.flags);
-            auto unpackedValues = unpackDsReadMatrixInsnRes(loc, rewriter, tensorTy,
-                                                            dsInsnAttr, mlsInsn->getElemBitWidth(),
-                                                            loadedValue);
+            auto dsInsnResTy =
+                getDsReadMatrixInsnResType(loc, rewriter, tensorTy, dsInsnAttr,
+                                           mlsInsn->getElemBitWidth());
+            Value loadedValue = generateDsReadMatrixOp(
+                loc, rewriter, dsInsnAttr.insn, dsInsnResTy, loadAddress,
+                dsInsnAttr.dsByteOffsets[loadIdx], dsInsnAttr.flags);
+            auto unpackedValues = unpackDsReadMatrixInsnRes(
+                loc, rewriter, tensorTy, dsInsnAttr, mlsInsn->getElemBitWidth(),
+                loadedValue);
 
             assert(unpackedValues.size() % mfmaGroupPerDsInsn == 0 &&
-                  "unpackedValues should be divisible by dsGroupSize");
+                   "unpackedValues should be divisible by dsGroupSize");
             unsigned elemsPerGroup = unpackedValues.size() / mfmaGroupPerDsInsn;
 
             for (int i = 0; i < mfmaGroupPerDsInsn; ++i) {
-              int mfmaInsnNonKIdxInTile = isDsInsnRepInKDirection ? i : loadIdx * mfmaGroupPerDsInsn + i;
-              int mfmaInsnKIdxInTile = isDsInsnRepInKDirection ? loadIdx * (dsInsnAttr.instrShape[kDimIdx2D] / mfmaTileK) : 0;
-              unsigned groupOffset = batchIdx * (mfmaTileNumRepNonK * mfmaInstrsPerWarpNonK) * numRepK * numOfElems /* batch idx */ +
-                                     mfmaTileNonKIdx * mfmaInstrsPerWarpNonK * numRepK * numOfElems /* block idx*/ +
-                                     mfmaInsnNonKIdxInTile * numRepK * numOfElems + /* inblock idx */
-                                     (mfmaTileKIdx + mfmaInsnKIdxInTile) * numOfElems;
+              int mfmaInsnNonKIdxInTile =
+                  isDsInsnRepInKDirection ? i
+                                          : loadIdx * mfmaGroupPerDsInsn + i;
+              int mfmaInsnKIdxInTile =
+                  isDsInsnRepInKDirection
+                      ? loadIdx * (dsInsnAttr.instrShape[kDimIdx2D] / mfmaTileK)
+                      : 0;
+              unsigned groupOffset =
+                  batchIdx * (mfmaTileNumRepNonK * mfmaInstrsPerWarpNonK) *
+                      numRepK * numOfElems /* batch idx */
+                  +
+                  mfmaTileNonKIdx * mfmaInstrsPerWarpNonK * numRepK *
+                      numOfElems /* block idx*/
+                  +
+                  mfmaInsnNonKIdxInTile * numRepK *
+                      numOfElems + /* inblock idx */
+                  (mfmaTileKIdx + mfmaInsnKIdxInTile) * numOfElems;
 
               for (int j = 0; j < elemsPerGroup; ++j) {
-                loadedValues[groupOffset + j] = unpackedValues[i * elemsPerGroup + j];
+                loadedValues[groupOffset + j] =
+                    unpackedValues[i * elemsPerGroup + j];
               }
             }
           }
@@ -1093,13 +1151,12 @@ private:
     return result;
   }
 
-  llvm::  SmallVector<Value>
-  computeDsReadMatrixOffsets(ConversionPatternRewriter &rewriter, Location loc,
-                             const HCUMlsSharedEncodingAttr &sharedLayout,
-                             const DsReadMatrixInsnAttr &dsInsnAttr,
-                             Value warpNonKId, int warpsPerBlockNonK,
-                             ArrayRef<unsigned> mlsReps, SharedMemoryObject smemObj,
-                             ArrayRef<int64_t> shape) const {
+  llvm::SmallVector<Value> computeDsReadMatrixOffsets(
+      ConversionPatternRewriter &rewriter, Location loc,
+      const HCUMlsSharedEncodingAttr &sharedLayout,
+      const DsReadMatrixInsnAttr &dsInsnAttr, Value warpNonKId,
+      int warpsPerBlockNonK, ArrayRef<unsigned> mlsReps,
+      SharedMemoryObject smemObj, ArrayRef<int64_t> shape) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto opIdx = sharedLayout.getOpIdx();
     auto mlsTile = sharedLayout.getMlsTile();
@@ -1128,12 +1185,14 @@ private:
         Value mlsNonKOff = b.add(b.i32_val(blockNonKOffset), warpNonKId);
         Value mlsKOff = b.i32_val(mlsTile);
 
-        std::array<Value, 2> mlsCoords = opIdx == 0 ? std::array<Value, 2>{mlsNonKOff, mlsKOff}
-                                                    : std::array<Value, 2>{mlsKOff, mlsNonKOff};
+        std::array<Value, 2> mlsCoords =
+            opIdx == 0 ? std::array<Value, 2>{mlsNonKOff, mlsKOff}
+                       : std::array<Value, 2>{mlsKOff, mlsNonKOff};
 
-        Value mlsOff = b.mul(linearize(rewriter, loc, mlsCoords,
-                                        flattenedMlsShape, sharedLayout.getOrder()),
-                            b.i32_val(product(sharedLayout.getMlsTile())));
+        Value mlsOff =
+            b.mul(linearize(rewriter, loc, mlsCoords, flattenedMlsShape,
+                            sharedLayout.getOrder()),
+                  b.i32_val(product(sharedLayout.getMlsTile())));
         offsets[block * blockSize + mlsTile] = mlsOff;
       }
     }
@@ -1142,12 +1201,13 @@ private:
   }
 
   Type getDsReadMatrixInsnResType(Location loc, RewriterBase &rewriter,
-                              const MemDescType &tensorTy,
-                              const DsReadMatrixInsnAttr &dsInsnAttr,
-                              unsigned elemBitWidth,
-                              unsigned iWarpSize = 64) const {
+                                  const MemDescType &tensorTy,
+                                  const DsReadMatrixInsnAttr &dsInsnAttr,
+                                  unsigned elemBitWidth,
+                                  unsigned iWarpSize = 64) const {
     auto dsInsnElemTy = tensorTy.getElementType();
-    auto dsInsnNumOfElems = dsInsnAttr.instrShape[0] * dsInsnAttr.instrShape[1] / iWarpSize;
+    auto dsInsnNumOfElems =
+        dsInsnAttr.instrShape[0] * dsInsnAttr.instrShape[1] / iWarpSize;
 
     if (elemBitWidth == 8) {
       dsInsnElemTy = i32_ty;
@@ -1156,13 +1216,9 @@ private:
     return vec_ty(dsInsnElemTy, dsInsnNumOfElems);
   }
 
-  Value
-  generateDsReadMatrixOp(Location loc, RewriterBase &rewriter,
-                         StringRef dsOpName,
-                         Type resType,
-                         Value soffset,
-                         unsigned offset,
-                         unsigned flags) const {
+  Value generateDsReadMatrixOp(Location loc, RewriterBase &rewriter,
+                               StringRef dsOpName, Type resType, Value soffset,
+                               unsigned offset, unsigned flags) const {
     OperationState loweredOp(loc, dsOpName);
     loweredOp.addTypes(resType);
     loweredOp.addOperands(soffset);
@@ -1183,10 +1239,9 @@ private:
 
   SmallVector<Value>
   unpackDsReadMatrixInsnRes(Location loc, RewriterBase &rewriter,
-                           const MemDescType &tensorTy,
-                           const DsReadMatrixInsnAttr &dsInsnAttr,
-                           unsigned elemBitWidth,
-                           Value dsLoadedValue) const {
+                            const MemDescType &tensorTy,
+                            const DsReadMatrixInsnAttr &dsInsnAttr,
+                            unsigned elemBitWidth, Value dsLoadedValue) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto dsInsnRetTy = cast<VectorType>(dsLoadedValue.getType());
     auto dsInsnElemTy = dsInsnRetTy.getElementType();
@@ -1200,12 +1255,14 @@ private:
     SmallVector<Value> retValues;
     auto elemTy = typeConverter->convertType(tensorTy.getElementType());
     for (int elemId = 0; elemId < dsInsnNumOfElems; ++elemId) {
-      Value elemVal = b.extract_element(dsInsnElemTy, dsLoadedValue, b.i32_val(elemId));
+      Value elemVal =
+          b.extract_element(dsInsnElemTy, dsLoadedValue, b.i32_val(elemId));
 
       if (numExtracts != 1) {
         auto vecVal = b.bitcast(elemVal, vec_ty(elemTy, numExtracts));
         for (int extractId = 0; extractId < numExtracts; ++extractId) {
-          Value subElemVal = b.extract_element(elemTy, vecVal, b.i32_val(extractId));
+          Value subElemVal =
+              b.extract_element(elemTy, vecVal, b.i32_val(extractId));
           retValues.push_back(subElemVal);
         }
       } else {
@@ -1224,8 +1281,7 @@ void populateMLSOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                  RewritePatternSet &patterns,
                                  ModuleAxisInfoAnalysis &axisInfoAnalysis,
                                  PatternBenefit benefit) {
-  patterns.add<MLSLocalAllocOpConversion,
-               MLSMatrixLoadToLocalOpConversion,
+  patterns.add<MLSLocalAllocOpConversion, MLSMatrixLoadToLocalOpConversion,
                MLSLocalLoadOpConversion>(typeConverter, targetInfo,
                                          axisInfoAnalysis, benefit);
 }

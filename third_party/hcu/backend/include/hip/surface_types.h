@@ -40,7 +40,7 @@ THE SOFTWARE.
  * An opaque value that represents a hip surface object
  */
 struct __hip_surface;
-typedef struct __hip_surface* hipSurfaceObject_t;
+typedef struct __hip_surface *hipSurfaceObject_t;
 
 /**
  * hip surface reference

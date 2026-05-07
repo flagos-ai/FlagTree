@@ -11,9 +11,9 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 namespace tt = mlir::triton;
 using mlir::triton::ModuleAxisInfoAnalysis;
+using mlir::triton::gpu::appendOrGetExternFuncOp;
 using mlir::triton::HCU::DppCtrl;
 using mlir::triton::HCU::ISAFamily;
-using mlir::triton::gpu::appendOrGetExternFuncOp;
 
 namespace {
 enum class ShflKind : uint32_t {

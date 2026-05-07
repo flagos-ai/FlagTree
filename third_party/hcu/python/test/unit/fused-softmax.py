@@ -30,15 +30,14 @@ import argparse
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
+
 def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
 
 
 def is_cdna():
-    return is_hip() and triton.runtime.driver.active.get_current_target().arch in ('gfx940', 'gfx941', 'gfx942',
-                                                                                   'gfx90a', 'gfx908', 'gfx916',
-                                                                                   'gfx926', 'gfx928', 'gfx936',
-                                                                                   'gfx938')
+    return is_hip() and triton.runtime.driver.active.get_current_target().arch in (
+        'gfx940', 'gfx941', 'gfx942', 'gfx90a', 'gfx908', 'gfx916', 'gfx926', 'gfx928', 'gfx936', 'gfx938')
 
 
 def naive_softmax(x):
@@ -237,13 +236,9 @@ def benchmark(M, N, provider):
     gbps = lambda ms: 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
     return gbps(ms)
 
+
 parser = argparse.ArgumentParser()
-parser.add_argument(
-    '--no_benchmark',
-    action='store_true',
-    default=False,
-    help='no benchmark test if true'
-)
+parser.add_argument('--no_benchmark', action='store_true', default=False, help='no benchmark test if true')
 args = parser.parse_args()
 if not args.no_benchmark:
     benchmark.run(show_plots=True, print_data=True)

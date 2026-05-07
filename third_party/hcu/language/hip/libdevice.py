@@ -493,11 +493,9 @@ def round(arg0, _semantic=None):
 
 @core.extern
 def __triton_hip_fdividef(arg0, arg1, _semantic=None):
-    return core.extern_elementwise(
-        "", "", [arg0, arg1], {
-            (core.dtype("fp32"), core.dtype("fp32")): ("__triton_hip_fdividef", core.dtype("fp32")),
-        }, is_pure=True, _semantic=_semantic)
-
+    return core.extern_elementwise("", "", [arg0, arg1], {
+        (core.dtype("fp32"), core.dtype("fp32")): ("__triton_hip_fdividef", core.dtype("fp32")),
+    }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern

@@ -1,5 +1,4 @@
 #include "TritonHCUGPUTransforms/Passes.h"
-#include "triton/Dialect/Distributed/IR/Dialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
@@ -18,6 +17,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Analysis/Utility.h"
+#include "triton/Dialect/Distributed/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/DiscardableAttributes.h"
 #include "triton/Dialect/Triton/IR/Types.h"
@@ -1355,8 +1355,7 @@ public:
   using PointerCanonicalizationPattern::PointerCanonicalizationPattern;
 
   LogicalResult
-  matchAndRewrite_(triton::gpu::WarpSpecializeOp wsOp,
-                   OneToNOpAdaptor adaptor,
+  matchAndRewrite_(triton::gpu::WarpSpecializeOp wsOp, OneToNOpAdaptor adaptor,
                    ConversionPatternRewriter &rewriter) const override {
     ArrayRef<ValueRange> remappedOperands = adaptor.getOperands();
 
@@ -1379,8 +1378,7 @@ public:
     state.addRegion();
     state.addRegion();
 
-    auto newOp =
-        cast<triton::gpu::WarpSpecializeOp>(rewriter.create(state));
+    auto newOp = cast<triton::gpu::WarpSpecializeOp>(rewriter.create(state));
 
     rewriter.inlineRegionBefore(wsOp.getDefaultRegion(),
                                 newOp.getDefaultRegion(),
@@ -2093,15 +2091,16 @@ void TritonHCUGPUCanonicalizePointersPass::runOnOperation() {
 
   target.addDynamicallyLegalDialect<tt::TritonDialect>(isLegal);
   target.addDynamicallyLegalDialect<triton::gpu::TritonGPUDialect>(isLegal);
-  target.addDynamicallyLegalDialect<triton::hcugpu::TritonHCUGPUDialect>(isLegal);
+  target.addDynamicallyLegalDialect<triton::hcugpu::TritonHCUGPUDialect>(
+      isLegal);
   target.addDynamicallyLegalDialect<scf::SCFDialect>(isLegal);
   target.addDynamicallyLegalDialect<cf::ControlFlowDialect>(isLegal);
   target.addDynamicallyLegalDialect<arith::ArithDialect>(isLegal);
   target.addDynamicallyLegalDialect<triton::hcugpu::TritonHCUGPUDialect>(
-    isLegal);
+      isLegal);
   // distributed dialect extension
   target.addDynamicallyLegalDialect<triton::distributed::DistributedDialect>(
-    isLegal);
+      isLegal);
 
   // Rewrite the rest of the ops.
   // Note we *do not* declare unrealized_cast an illegal op here in order that
@@ -2132,9 +2131,8 @@ void TritonHCUGPUCanonicalizePointersPass::runOnOperation() {
       MaterializeFatPointerVariadic<tt::PrintOp>, ConvertSCFForOp,
       ConvertExpandDims, ConvertSCFYieldOp, ConvertSCFIfOp,
       ConvertSCFConditionOp, ConvertSCFWhileOp, ConvertCFCondBranch,
-      ConvertWarpSpecializeOp,
-      ConvertCFBranch, ConvertArithSelectOp, ConvertReturnOp>(
-      patterns.getContext(), opsToRewrite, fatPrs);
+      ConvertWarpSpecializeOp, ConvertCFBranch, ConvertArithSelectOp,
+      ConvertReturnOp>(patterns.getContext(), opsToRewrite, fatPrs);
   if (failed(applyPartialConversion(func, target, std::move(patterns), config)))
     return signalPassFailure();
 

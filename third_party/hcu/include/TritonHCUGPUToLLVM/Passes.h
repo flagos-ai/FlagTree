@@ -49,10 +49,13 @@ createTritonHCUGPULowerInstructionSchedHintsPass(StringRef arch,
                                                  int32_t numStages);
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createHCUGPUConvertWarpSpecializeToLLVM(StringRef targetArch, int waspNumLoadWarps, 
-    int waspNumMmaWarps, bool wdraEnabled, int wdraNumLoadRegs,
-    int wdraNumMmaRegsMain, int wdraNumMmaRegsTail);
-                                                 
+createHCUGPUConvertWarpSpecializeToLLVM(StringRef targetArch,
+                                        int waspNumLoadWarps,
+                                        int waspNumMmaWarps, bool wdraEnabled,
+                                        int wdraNumLoadRegs,
+                                        int wdraNumMmaRegsMain,
+                                        int wdraNumMmaRegsTail);
+
 #define GEN_PASS_REGISTRATION
 #include "TritonHCUGPUToLLVM/Passes.h.inc"
 

@@ -20,11 +20,11 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-#include "triton/Conversion/TritonDistributedToLLVM/TritonDistributedToLLVMPass.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "triton/Conversion/TritonDistributedToLLVM/TritonDistributedToLLVMPass.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 
@@ -39,7 +39,7 @@ using namespace std::literals;
 
 namespace {
 
-bool useROCSHMEMLibrary(StringRef libname){
+bool useROCSHMEMLibrary(StringRef libname) {
   return libname == "librocshmem_device";
 }
 
@@ -139,23 +139,25 @@ public:
       llvmRetType = LLVM::LLVMPointerType::get(rewriter.getContext());
     }
 
-    Type funcType = mlir::triton::gpu::getFunctionType(llvmRetType, llvmOpearands);
+    Type funcType =
+        mlir::triton::gpu::getFunctionType(llvmRetType, llvmOpearands);
 
     LLVM::LLVMFuncOp funcOp = mlir::triton::gpu::appendOrGetExternFuncOp(
         rewriter, op, funcName, funcType, libname, libpath);
-    auto callOp =
-        LLVM::createLLVMCallOp(rewriter, loc, funcOp, llvmOpearands);
+    auto callOp = LLVM::createLLVMCallOp(rewriter, loc, funcOp, llvmOpearands);
 
     if (op->getNumResults() == 0) {
       rewriter.eraseOp(op);
     } else {
-      if (retType == llvmRetType){
-          auto newResult = callOp.getResult();
-          rewriter.replaceOp(op, newResult);
-      }
-      else{
+      if (retType == llvmRetType) {
+        auto newResult = callOp.getResult();
+        rewriter.replaceOp(op, newResult);
+      } else {
 
-        auto castOp = rewriter.create<LLVM::AddrSpaceCastOp>(loc, retType, callOp.getResult())->getResult(0);
+        auto castOp =
+            rewriter
+                .create<LLVM::AddrSpaceCastOp>(loc, retType, callOp.getResult())
+                ->getResult(0);
         rewriter.replaceOp(op, castOp);
       }
     }
@@ -318,11 +320,11 @@ void mlir::triton::HCU::populateDistributedOpToLLVMPatterns(
 
   // convert to rocshmem device func call
   registerGenericOpToROCSHMEMDevice<triton::distributed::GetRankOp>(
-      patterns, typeConverter, benefit, "rocshmem_my_pe_wrapper", ROCSHMEMLibname,
-      ROCSHMEMLibpath);
+      patterns, typeConverter, benefit, "rocshmem_my_pe_wrapper",
+      ROCSHMEMLibname, ROCSHMEMLibpath);
   registerGenericOpToROCSHMEMDevice<triton::distributed::GetNumRanksOp>(
-      patterns, typeConverter, benefit, "rocshmem_n_pes_wrapper", ROCSHMEMLibname,
-      ROCSHMEMLibpath);
+      patterns, typeConverter, benefit, "rocshmem_n_pes_wrapper",
+      ROCSHMEMLibname, ROCSHMEMLibpath);
   registerGenericOpToROCSHMEMDevice<triton::distributed::SymmAtOp>(
       patterns, typeConverter, benefit, "rocshmem_ptr_wrapper", ROCSHMEMLibname,
       ROCSHMEMLibpath);

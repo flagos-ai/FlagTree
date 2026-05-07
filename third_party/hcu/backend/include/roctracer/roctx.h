@@ -157,7 +157,7 @@ ROCTX_API uint32_t roctx_version_minor() ROCTX_VERSION_4_1;
  *
  * \param[in] message The message associated with the event.
  */
-ROCTX_API void roctxMarkA(const char* message) ROCTX_VERSION_4_1;
+ROCTX_API void roctxMarkA(const char *message) ROCTX_VERSION_4_1;
 #define roctxMark(message) roctxMarkA(message)
 
 /** @} */
@@ -179,7 +179,7 @@ ROCTX_API void roctxMarkA(const char* message) ROCTX_VERSION_4_1;
  * \return Returns the level this nested range is started at. Nested range
  * levels are 0 based.
  */
-ROCTX_API int roctxRangePushA(const char* message) ROCTX_VERSION_4_1;
+ROCTX_API int roctxRangePushA(const char *message) ROCTX_VERSION_4_1;
 #define roctxRangePush(message) roctxRangePushA(message)
 
 /**
@@ -211,7 +211,7 @@ typedef uint64_t roctx_range_id_t;
  *
  * \return Returns the ID of the new range.
  */
-ROCTX_API roctx_range_id_t roctxRangeStartA(const char* message)
+ROCTX_API roctx_range_id_t roctxRangeStartA(const char *message)
     ROCTX_VERSION_4_1;
 #define roctxRangeStart(message) roctxRangeStartA(message)
 
