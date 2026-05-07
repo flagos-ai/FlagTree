@@ -46,7 +46,7 @@ All these protected branches have equal status. CI/CD runners are provisioned fo
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|NVIDIA<br>AMD<br>x86_64 cpu<br>ARM China（安谋科技）<br>Tsingmicro（清微智能）<br>Enflame（燧原）|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/amd/)<br>[triton-shared](https://github.com/microsoft/triton-shared)<br>[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)<br>[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)<br>[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)|3.3|[install nvidia](/documents/install.md)<br>[install amd](/documents/install.md)<br>-<br>[install aipu](/documents/install_aipu.md)<br>[install tsingmicro](/documents/install_tsingmicro.md)<br>[install enflame](/documents/install_enflame.md)|
 |[triton_v3.4.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.4.x)|NVIDIA<br>AMD<br>Sunrise（曦望芯科）|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/amd/)<br>[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/)|3.4|[install nvidia](/documents/install.md)<br>[install amd](/documents/install.md)<br>[install sunrise](/documents/install_sunrise.md)|
 |[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|NVIDIA<br>AMD<br>Enflame（燧原）|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/amd/)<br>[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)|3.5|[install nvidia](/documents/install.md)<br>[install amd](/documents/install.md)<br>[install enflame](/documents/install_enflame.md)|
-|[triton_v3.6.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.6.x)|NVIDIA<br>AMD<br>Enflame（燧原）|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/amd/)<br>[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/enflame/)|3.6|[install nvidia](/documents/install.md)<br>[install amd](/documents/install.md)|
+|[triton_v3.6.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.6.x)|NVIDIA<br>AMD<br>Enflame（燧原）<br>HYGON（海光信息）|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/amd/)<br>[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/enflame/)[hcu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/hcu/)|3.6|[install nvidia](/documents/install.md)<br>[install amd](/documents/install.md)<br>[install enflame](/documents/install_enflame.md)<br>[install hcu](/documents/install_hcu.md)|
 
 FlagTree’s extension components are currently available on some backends:
 
@@ -71,6 +71,7 @@ For detailed design, APIs, and examples, please refer to the [TLE Wiki](https://
 
 ## Latest News
 
+* 2026/05/07 Upgraded the [hcu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/hcu/) backend to Triton 3.6 and added CI/CD.
 * 2026/04/24 Upgraded the [mthreads](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/mthreads/) backend to Triton 3.2 and added CI/CD.
 * 2026/04/17 Upgraded the [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/enflame/) backend to Triton 3.6 and added CI/CD.
 * 2026/03/13 Upgraded the [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) backend to Triton 3.5 and added CI/CD.
@@ -161,6 +162,7 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |xpu       |python3.10 -m pip install flagtree==0.5.1+xpu3.0 $RES          |3.0|GLIBC_2.31<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |metax     |python3.12 -m pip install flagtree==0.5.1+metax3.0 $RES        |3.0|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |hcu       |python3.10 -m pip install flagtree==0.5.1+hcu3.1 $RES          |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|hcu       |python3.10 -m pip install flagtree==0.5.1+hcu3.6 $RES          |3.6|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |ascend    |python3.11 -m pip install flagtree==0.5.0+ascend3.2 $RES       |3.2|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |tsingmicro|python3.10 -m pip install flagtree==0.5.0+tsingmicro3.3 $RES   |3.3|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |aipu      |python3.10 -m pip install flagtree==0.5.0+aipu3.3 $RES         |3.3|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
