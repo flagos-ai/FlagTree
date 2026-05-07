@@ -58,8 +58,8 @@ class HintManager:
             try:
                 module = importlib.import_module("triton.backends.nvidia.nvidia_hint_handler")
                 return module.NvidiaHintHandler()
-            except ImportError as e:
-                print(f"[FlagTree] Warning: Failed to load Nvidia Hint Handler: {e}", file=sys.stderr)
+            except ImportError:
+                # print(f"[FlagTree] Warning: Failed to load Nvidia Hint Handler: {e}", file=sys.stderr)
                 return BaseHintHandler()
         else:
             return BaseHintHandler()
