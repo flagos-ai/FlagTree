@@ -250,7 +250,7 @@ def test_line_info_ir_source(monkeypatch, status, tmp_path):
     file_lines = extract_file_lines(command, anchor, separator, kernel_info.asm[obj_kind])
     if status == "ttir":
         assert check_file_lines(file_lines, "/path/test.py", -1, should_contain=False)
-        assert check_file_lines(file_lines, str(temp_file), -1, should_contain=True)
+        assert check_file_lines(file_lines, "/".join(temp_file.parts[-2:]), -1, should_contain=True)
     else:
         assert check_file_lines(file_lines, "/path/test.py", -1, should_contain=True)
 
