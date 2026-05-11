@@ -45,14 +45,20 @@ class VariableCollector(ast.NodeVisitor):
 
 class KernelDependencyAnalyzer(ast.NodeVisitor):
 
+    # Parameter order of `tl.make_tensor_descriptor`, mirrored from
+    # `python/triton/language/core.py::make_tensor_descriptor`.
+    # Both positional and keyword call forms must be handled because user
+    # kernels routinely use either (e.g. `tl.make_tensor_descriptor(a_ptr,
+    # shape=..., strides=..., block_shape=...)` mixes positional `base` with
+    # keyword tail).
+    _MAKE_TMA_DESC_PARAM_ORDER = ('base', 'shape', 'strides', 'block_shape')
+
     def __init__(self, kernel_globals: dict | None = None):
         self.input_params = set[str]()  # input params
         self.constexpr_params = set[str]()  # constexpr params
         self.var_definitions = dict[str, ast.AST]()  # var -> latest definition node
         # for input-constexpr dependencies analyze
         self.load_addresses = list[ast.AST]()  # tl.load address expressions
-        # for make_tensor_descriptor dependencies analyze
-        self.tma_args = dict[ast.AST, dict[str, list[str]]]()  # base node -> {strides, bshape}
         # for TMA descriptor load dependencies analyze
         self.tma_load_assignments = list[dict[str, str | list[ast.AST]]]()
         self.transpose_args_nodes = list[ast.AST]()  # tl.trans args
@@ -107,19 +113,15 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 self.tma_load_assignments.append(
                     {'var_name': var_name, 'desc_name': desc_name, 'addr_exprs': addr_exprs})
 
-            # TMA device: record LHS name + shape/block_shape from make_tensor_descriptor
+            # TMA device: record LHS name + shape/block_shape from make_tensor_descriptor.
+            # Supports both positional (`tl.make_tensor_descriptor(a_ptr, [M,K], [K,1], [BM,BK])`)
+            # and keyword (`tl.make_tensor_descriptor(base=a_ptr, shape=..., block_shape=...)`)
+            # forms, and any partial mix of the two.
             if (isinstance(node.value, ast.Call) and self._is_tl_make_tensor_descriptor(node.value)):
-                shape_names = list[str]()
-                block_names = list[str]()
-                for kw in node.value.keywords:
-                    if getattr(kw, 'arg', None) == 'shape' and isinstance(kw.value, ast.List):
-                        for elt in kw.value.elts:
-                            if isinstance(elt, ast.Name):
-                                shape_names.append(elt.id)
-                    if getattr(kw, 'arg', None) == 'block_shape' and isinstance(kw.value, ast.List):
-                        for elt in kw.value.elts:
-                            if isinstance(elt, ast.Name):
-                                block_names.append(elt.id)
+                shape_node = self._resolve_call_arg(node.value, 'shape', self._MAKE_TMA_DESC_PARAM_ORDER)
+                block_shape_node = self._resolve_call_arg(node.value, 'block_shape', self._MAKE_TMA_DESC_PARAM_ORDER)
+                shape_names = self._extract_list_name_ids(shape_node)
+                block_names = self._extract_list_name_ids(block_shape_node)
                 if shape_names or block_names:
                     self.tma_device_desc_defs_map[var_name] = {"shape": shape_names, "block_shape": block_names}
 
@@ -163,7 +165,10 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         self.generic_visit(node)
 
-    # Capture tl.load addresses, tl.trans args, tl.dot, and make_tensor_descriptor args
+    # Capture tl.load addresses, tl.trans args, tl.dot
+    # (Device-side make_tensor_descriptor is handled in visit_Assign which
+    # populates `tma_device_desc_defs_map`; nothing else needs to be collected
+    # at the Call level here.)
     def visit_Call(self, node):
         if self._is_tl_load(node) and node.args:
             self.load_addresses.append(node.args[0])
@@ -173,20 +178,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             self.dot_calls.append(node)
         elif self._is_tl_func(node, 'cdiv') and len(node.args) >= 2:
             self.cdiv_calls.append(node)
-        elif self._is_tl_make_tensor_descriptor(node):
-            base = None
-            # Collect the base node
-            for kw in node.keywords:
-                if hasattr(kw, 'arg') and kw.arg == 'base':
-                    if kw.value not in self.tma_args:
-                        base = kw.value
-                        self.tma_args[base] = {'strides': [], 'block_shape': []}
-            # Collect strides and block_shape element nodes
-            for kw in node.keywords:
-                if hasattr(kw, 'arg') and (kw.arg in ['strides', 'block_shape']):
-                    if hasattr(kw, 'value') and isinstance(kw.value, ast.List):
-                        for elt in kw.value.elts:
-                            self.tma_args[base][kw.arg].append(elt)
         else:
             # User-defined helper that wraps tl.cdiv internally
             # (e.g. `prev_multiple_of(a, b) -> tl.cdiv(a, b) * b - b`).
@@ -343,6 +334,31 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
     def _is_tl_transpose(self, node) -> bool:
         return self._is_tl_func(node, 'trans')
+
+    # Return the AST node bound to parameter `name` in `call_node`, looking
+    # up either keyword form (`name=value`) or positional form (by index in
+    # `param_order`). `param_order` MUST mirror the callee's signature so
+    # positional resolution is correct.
+    #
+    # Returns None when `name` is neither passed positionally nor as kwarg.
+    @staticmethod
+    def _resolve_call_arg(call_node: ast.Call, name: str, param_order: tuple[str, ...]) -> ast.AST | None:
+        for kw in call_node.keywords:
+            if getattr(kw, 'arg', None) == name:
+                return kw.value
+        if name in param_order:
+            idx = param_order.index(name)
+            if idx < len(call_node.args):
+                return call_node.args[idx]
+        return None
+
+    # Given an AST node expected to be an `ast.List`, return its `Name` elements'
+    # ids (skipping non-Name elements such as BinOps / Constants).
+    @staticmethod
+    def _extract_list_name_ids(list_node: ast.AST | None) -> list[str]:
+        if not isinstance(list_node, ast.List):
+            return list[str]()
+        return [elt.id for elt in list_node.elts if isinstance(elt, ast.Name)]
 
     # Resolve a symbol (e.g. a local TMA desc var) to its underlying tensor input param
     def _resolve_tensor_param(self, symbol: str | None) -> str | None:
