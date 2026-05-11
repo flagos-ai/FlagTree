@@ -7,6 +7,7 @@ add_triton_library(TritonGPUToLLVM
     AssertOpToLLVM.cpp
     ControlFlowOpToLLVM.cpp
     ConvertLayoutOpToLLVM.cpp
+    ExternCallOpToLLVM.cpp
     ElementwiseOpToLLVM.cpp
     FuncOpToLLVM.cpp
     GatherOpToLLVM.cpp
