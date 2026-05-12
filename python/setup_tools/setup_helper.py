@@ -454,17 +454,12 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 
 # mthreads
 cache.store(
-    file="mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64",
+    file="mthreads-llvm22",
     condition=("mthreads" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64_v0.1.0.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.5.0.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )
-
-cache.store(
-    file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (not configs.flagtree_plugin), url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.3.0.tar.gz",
-    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="2a9ca0b8")
 
 # ascend
 cache.store(
