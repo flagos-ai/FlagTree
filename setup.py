@@ -704,8 +704,6 @@ def get_packages():
 
     if helper.flagtree_backend == "xpu":
         yield f"triton.language.extra.xpu"
-    elif helper.flagtree_backend == "mthreads":
-        yield f"triton/language/extra/musa"
 
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         yield "triton.profiler"

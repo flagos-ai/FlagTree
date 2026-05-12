@@ -1,0 +1,4 @@
+add_subdirectory(Dialect)
+add_subdirectory(MTGPUToLLVM)
+add_subdirectory(TritonMUSAGPUToLLVM)
+add_subdirectory(TritonMUSAGPUTransforms)
