@@ -43,11 +43,10 @@ docker exec -it ${CONTAINER} /bin/bash
 
 ```shell
 mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm19-glibc2.35-glibcxx3.4.30-x64_v0.4.0.tar.gz
-tar zxvf mthreads-llvm19-glibc2.35-glibcxx3.4.30-x64_v0.4.0.tar.gz \
-    -C ./mthreads-llvm19-glibc2.35-glibcxx3.4.30 --strip-components=1
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x64_v0.4.1.tar.gz
-tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x64_v0.4.1.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm20-x64_v0.5.0.tar.gz
+tar zxvf mthreads-llvm20-x64_v0.5.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-triton3.2-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-x64_v0.5.0.tar.gz
+tar zxvf mthreadsTritonPlugin-triton3.2-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-x64_v0.5.0.tar.gz
 ```
 
 #### 1.3 Manually download the Triton dependencies
