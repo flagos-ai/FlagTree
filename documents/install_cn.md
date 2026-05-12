@@ -62,14 +62,16 @@ export LLVM_SYSPATH=${YOUR_LLVM_DOWNLOAD_DIR}/llvm-7d5de303-ubuntu-x64
 wget https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-f6ded0be-ubuntu-x64.tar.gz
 tar zxvf llvm-f6ded0be-ubuntu-x64.tar.gz
 export LLVM_SYSPATH=${YOUR_LLVM_DOWNLOAD_DIR}/llvm-f6ded0be-ubuntu-x64
+# For all versions
+export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
+export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
+```
+
+```shell
 # For Triton 3.6 (Plan B for TLE-Raw)
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
 python3.12 -m pip install mlir $RES
 python3.12 -m pip show mlir
-export LLVM_SYSPATH=${MLIR_INSTALL_DIR}/llvm_artifact
-# For all versions
-export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
-export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 ```
 
 #### 1.3 手动下载 Triton 依赖库
