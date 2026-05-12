@@ -12,13 +12,13 @@
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
-# Plan A: docker pull (48.8GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-mthreads3.2-py310-torch2.7.1-musa5.1.0-ubuntu22.04:202604-base
+# Plan A: docker pull (59.4GB)
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-mthreads3.2-py310-torch2.7.1-musa5.1.0-ubuntu22.04:202605-base
 docker pull ${IMAGE}
-# Plan B: docker load (15GB)
-IMAGE=flagtree-mthreads3.2-py310-torch2.7.1-musa5.1.0-ubuntu22.04:202604-base
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-mthreads3.2-py310-torch2.7.1-musa5.1.0-ubuntu22.04.202604-base.tar.gz
-docker load -i flagtree-mthreads3.2-py310-torch2.7.1-musa5.1.0-ubuntu22.04.202604-base.tar.gz
+# Plan B: docker load (17GB)
+IMAGE=flagtree-mthreads3.2-py310-torch2.7.1-musa5.1.0-ubuntu22.04:202605-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-mthreads3.2-py310-torch2.7.1-musa5.1.0-ubuntu22.04.202605-base.tar.gz
+docker load -i flagtree-mthreads3.2-py310-torch2.7.1-musa5.1.0-ubuntu22.04.202605-base.tar.gz
 mcc_version  # 5.1.0
 ```
 
@@ -95,8 +95,6 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ### 3. Testing and validation
 
 Refer to [Tests of mthreads3.2 backend](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/.github/workflows/mthreads-build-and-test.yml)
-
-For triton kernels that use `tl.dot`, setting the environment variable `export MUSA_ENABLE_SQMMA=1` can improve performance.
 
 ## 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/) (Triton 3.1)
 
@@ -201,4 +199,4 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 Refer to [Tests of mthreads3.1 backend](/.github/workflows/mthreads-build-and-test.yml)
 
-For triton kernels that use `tl.dot`, setting the environment variable `export MUSA_ENABLE_SQMMA=1` can improve performance.
+For triton 3.1 kernels that use `tl.dot`, setting the environment variable `export MUSA_ENABLE_SQMMA=1` can improve performance.
