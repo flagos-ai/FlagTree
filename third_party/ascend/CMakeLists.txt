@@ -49,3 +49,4 @@ add_triton_plugin(TritonAscend
 if(TRITON_BUILD_UT)
   add_subdirectory(unittest)
 endif()
+add_subdirectory(ClearL2Cache)
