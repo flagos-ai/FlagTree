@@ -28,7 +28,7 @@ def hello_kernel():
 
 
 def hello():
-    hello_kernel[(1024,)]()
+    hello_kernel[(1024, )]()
     torch.cuda.synchronize()
 
 
