@@ -11,7 +11,6 @@ from mlir.dialects import nvvm
 from triton.experimental.tle.raw import dialect
 from triton.experimental.tle.raw.mlir import vprintf
 
-
 HELLO_RE = re.compile(r"Hello from bidx \d+, tidx \d+")
 
 
@@ -39,10 +38,10 @@ def _self_check():
 
     sys.stderr.write(result.stderr)
     if result.returncode or not HELLO_RE.findall(result.stdout):
-        print(f"❌ self-check failed")
+        print("❌ self-check failed")
         return 1
 
-    print(f"✅ Hello world test passed!")
+    print("✅ Hello world test passed!")
     return 0
 
 
@@ -51,8 +50,7 @@ def main():
         hello()
         return 0
 
-    return  _self_check()
-
+    return _self_check()
 
 
 if __name__ == "__main__":
