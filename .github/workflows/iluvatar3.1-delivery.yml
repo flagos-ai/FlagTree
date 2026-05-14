@@ -12,7 +12,7 @@ on:
         default: '0.5.0'
       PYTHON_VER:
         required: true
-        default: '3.10'
+        default: '3.12'
       PLATFORM:
         required: true
         default: 'x86_64'
@@ -27,7 +27,7 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.10'
+        default: '3.12'
       PLATFORM:
         type: string
         required: true
@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: iluvatar-cd
+    runs-on: iluvatar3.1-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
