@@ -7,7 +7,7 @@
 
 ### 1. 构建及运行环境
 
-#### 1.1 使用预装镜像 (Triton 3.6, MTT-S5000)
+#### 1.1 使用镜像 (Triton 3.6, MTT-S5000)
 
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
@@ -49,7 +49,7 @@ tar zxvf mthreads-llvm22-x64_v0.5.0.tar.gz
 
 #### 1.3 手动下载 Triton 依赖库
 
-预装镜像中已下载安装 Triton 依赖库。
+镜像中已下载安装 Triton 依赖库。
 如果无需从源码构建 FlagTree 或 Triton，那么无需下载 Triton 依赖库。
 
 ```shell
@@ -101,7 +101,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ### 1. 构建及运行环境
 
-#### 1.1 使用预装镜像 (Triton 3.2, MTT-S5000)
+#### 1.1 使用镜像 (Triton 3.2, MTT-S5000)
 
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
@@ -145,7 +145,7 @@ tar zxvf mthreadsTritonPlugin-triton3.2-cpython3.10-glibc2.35-glibcxx3.4.30-cxxa
 
 #### 1.3 手动下载 Triton 依赖库
 
-预装镜像中已下载安装 Triton 依赖库。
+镜像中已下载安装 Triton 依赖库。
 如果无需从源码构建 FlagTree 或 Triton，那么无需下载 Triton 依赖库。
 
 ```shell

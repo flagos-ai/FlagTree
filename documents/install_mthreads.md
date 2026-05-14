@@ -7,7 +7,7 @@
 
 ### 1. Build and run environment
 
-#### 1.1 Use the preinstalled image (Triton 3.6, MTT-S5000)
+#### 1.1 Use the image (Triton 3.6, MTT-S5000)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -101,7 +101,7 @@ Refer to [Tests of mthreads3.2 backend](https://github.com/flagos-ai/FlagTree/tr
 
 ### 1. Build and run environment
 
-#### 1.1 Use the preinstalled image (Triton 3.2, MTT-S5000)
+#### 1.1 Use the image (Triton 3.2, MTT-S5000)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 

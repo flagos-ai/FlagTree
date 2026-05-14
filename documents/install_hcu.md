@@ -7,7 +7,7 @@
 
 ### 1. Build and run environment
 
-#### 1.1 Use the preinstalled image (BW1000)
+#### 1.1 Use the image (BW1000)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
