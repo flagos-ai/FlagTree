@@ -1,4 +1,4 @@
-name: Iluvatar-Build-And-Test
+name: Iluvatar3.1-Build-And-Test
 
 on:
   push:
