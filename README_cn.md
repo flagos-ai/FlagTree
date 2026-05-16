@@ -71,7 +71,7 @@ TLE 的主要优势包括：
 
 ## 性能改进
 
-无需修改任何 Triton 算子代码，FlagTree 可在实际模型中的某些形状下获得性能增益。
+无需修改任何 Triton 算子代码，FlagTree 可在实际模型中的某些形状上获得性能增益。
 下面以 Qwen 模型中调用的一些形状下的 mm 算子为例，展示 FlagTree 在不同芯片上的性能增益。
 
 <img width="275" height="253" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" />  <img width="275" height="253" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
