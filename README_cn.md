@@ -72,9 +72,9 @@ TLE 的主要优势包括：
 ## 性能改进
 
 无需修改任何 Triton 算子代码，FlagTree 可在某些实际模型中的形状下获得性能增益。
-下面以 mm 算子为例，展示 qwen 模型中 GNDAttention conv1d 调用的形状 (M=1\~16384, K=4, N=2048) 和 MoE shared_expert_gate 调用的形状 (M=1\~16384, K=2048, N=1) 下的性能增益。
+下面以 mm 算子为例，展示 qwen 模型中 GNDAttention 和 MoE 调用的形状在不同芯片上的性能增益。
 
-<img width="332" height="306" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" /> <img width="332" height="306" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
+<img width="332" height="306" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" />  <img width="332" height="306" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
 
 ## 新特性
 
