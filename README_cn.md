@@ -69,6 +69,13 @@ TLE 的主要优势包括：
 
 详细设计、API 与示例请参考 [TLE Wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE) 和 [TLE-Raw Wiki](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)。
 
+## 性能改进
+
+无需修改任何 Triton 算子代码，FlagTree 可在某些实际模型中的形状下获得性能增益。
+下面以 mm 算子为例，展示 qwen 模型中 GNDAttention conv1d 调用的形状 (M=1~16384, K=4, N=2048) 和 MoE shared_expert_gate 调用的形状 (M=1~16384, K=2048, N=1) 下的性能增益。
+
+<img width="665" height="612" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" /> <img width="665" height="612" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
+
 ## 新特性
 
 * 2026/05/12 [mthreads](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/mthreads/) 后端升级到 Triton 3.6，加入 CI/CD。
@@ -108,7 +115,7 @@ TLE 的主要优势包括：
 
 ## 环境准备
 
-避免环境匹配问题的最佳实践是使用 [多后端支持](#多后端支持) 表格中推荐的镜像。
+避免环境匹配问题的最佳实践是使用上文 [多后端支持](#多后端支持) 表格中推荐的镜像。
 
 ## 从源码安装
 
