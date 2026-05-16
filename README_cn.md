@@ -75,8 +75,8 @@ TLE 的主要优势包括：
 下面以 mm 算子为例，展示 Qwen 模型中 GNDAttention 和 MoE 调用的形状在不同芯片上的性能增益。
 
 <img width="332" height="306" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" />  <img width="332" height="306" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
-<img width="332" height="306" alt="nv_h100_bf16_mm_1a" src=".github/assets/hcu_bf16_mm_1a.png" />  <img width="332" height="306" alt="nv_h100_fp32_mm_1a" src=".github/assets/hcu_fp32_mm_1a.png" />
-<img width="332" height="306" alt="nv_h100_bf16_mm_3d" src=".github/assets/hcu_bf16_mm_3d.png" />  <img width="332" height="306" alt="nv_h100_fp32_mm_3d" src=".github/assets/hcu_fp32_mm_3d.png" />
+<img width="332" height="306" alt="hcu_bf16_mm_1a" src=".github/assets/hcu_bf16_mm_1a.png" />  <img width="332" height="306" alt="hcu_fp32_mm_1a" src=".github/assets/hcu_fp32_mm_1a.png" />
+<img width="332" height="306" alt="hcu_bf16_mm_3d" src=".github/assets/hcu_bf16_mm_3d.png" />  <img width="332" height="306" alt="hcu_fp32_mm_3d" src=".github/assets/hcu_fp32_mm_3d.png" />
 
 ## 新特性
 

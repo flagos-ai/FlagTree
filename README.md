@@ -75,8 +75,8 @@ Without modifying any Triton operator code, FlagTree can achieve performance gai
 The following uses the mm operator as an example to demonstrate performance gains across different chips for shapes used in GNDAttention and MoE calls within the Qwen model.
 
 <img width="332" height="306" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" />  <img width="332" height="306" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
-<img width="332" height="306" alt="nv_h100_bf16_mm_1a" src=".github/assets/hcu_bf16_mm_1a.png" />  <img width="332" height="306" alt="nv_h100_fp32_mm_1a" src=".github/assets/hcu_fp32_mm_1a.png" />
-<img width="332" height="306" alt="nv_h100_bf16_mm_3d" src=".github/assets/hcu_bf16_mm_3d.png" />  <img width="332" height="306" alt="nv_h100_fp32_mm_3d" src=".github/assets/hcu_fp32_mm_3d.png" />
+<img width="332" height="306" alt="hcu_bf16_mm_1a" src=".github/assets/hcu_bf16_mm_1a.png" />  <img width="332" height="306" alt="hcu_fp32_mm_1a" src=".github/assets/hcu_fp32_mm_1a.png" />
+<img width="332" height="306" alt="hcu_bf16_mm_3d" src=".github/assets/hcu_bf16_mm_3d.png" />  <img width="332" height="306" alt="hcu_fp32_mm_3d" src=".github/assets/hcu_fp32_mm_3d.png" />
 
 ## Latest News
 
