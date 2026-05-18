@@ -20,11 +20,13 @@ ascend_aiv_core_nums = triton.language.constexpr(48)
 
 @triton.jit
 def swiglu_kernel(
-    input_a_ptr, input_b_ptr, output_ptr, 
-    M:tl.constexpr, 
-    H:tl.constexpr,
-    input_stride_m, input_stride_h,
-    output_stride_m, output_stride_h,
+    input_a_ptr,
+    input_b_ptr,
+    output_ptr,
+    M: tl.constexpr,
+    H: tl.constexpr,
+    input_stride_m,
+    output_stride_m,
     beta: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     TILE_SIZE_M: tl.constexpr,
@@ -37,19 +39,22 @@ def swiglu_kernel(
         for tile_h_idx in range(0, H, TILE_SIZE_H):
             offs_m = m_idx + tl.arange(0, TILE_SIZE_M)
             offs_h = tile_h_idx + tl.arange(0, TILE_SIZE_H)
+            mask_m = offs_m < M
+            mask_h = offs_h < H
+            mask = mask_m[:, None] & mask_h[None, :]
             input_offset = offs_m[:, None] * input_stride_m + offs_h[None, :]
-            x_a = tl.load(input_a_ptr + input_offset)
-            x_b = tl.load(input_b_ptr + input_offset)
+            x_a = tl.load(input_a_ptr + input_offset, mask=mask, other=0.0)
+            x_b = tl.load(input_b_ptr + input_offset, mask=mask, other=0.0)
 
-            tmp =  x_a * x_b
+            tmp = x_a * x_b
             sig = 1.0 / (1.0 + math.exp(-1 * x_a * beta))
-            out = tmp * sig.to(tl.float16) 
+            out = tmp * sig.to(tl.float16)
 
             output_offset = offs_m[:, None] * output_stride_m + offs_h[None, :]
             # tl.store(output_ptr + output_offset, out)
             out_buf = tle.dsa.to_buffer(out, space=tle.dsa.ascend.UB)
             with tle.dsa.hint(inter_no_alias=True):
-                tle.dsa.copy(out_buf, output_ptr + output_offset,[TILE_SIZE_M, TILE_SIZE_H])
+                tle.dsa.copy(out_buf, output_ptr + output_offset, [TILE_SIZE_M, TILE_SIZE_H])
 
 
 def swiglu(input_tensor: torch.Tensor, scalarValue: float) -> torch.Tensor:
@@ -67,34 +72,32 @@ def swiglu(input_tensor: torch.Tensor, scalarValue: float) -> torch.Tensor:
     output_2d = torch.empty(M, H, device=input_a.device, dtype=input_a.dtype)
 
     def get_core_num():
-        current_device = torch.npu.current_device()
-        torch.npu.set_device(current_device)
-        cores_dict = torch.npu.get_device_limit(current_device)
-        return cores_dict["vector_core_num"]
+        try:
+            current_device = torch.npu.current_device()
+            torch.npu.set_device(current_device)
+            cores_dict = torch.npu.get_device_limit(current_device)
+            return cores_dict["vector_core_num"]
+        except (AttributeError, KeyError, TypeError):
+            return None
 
     num_cores = 24 if get_core_num() is None else get_core_num()
 
-    TILE_SIZE_M=min(M, 32)
-    TILE_SIZE_H=min(H, 256)
+    TILE_SIZE_M = min(M, 32)
+    TILE_SIZE_H = min(H, 256)
     if (M * H < 256 * 64):
         num_cores = 1
     BLOCK_SIZE_M = int((M + num_cores - 1) // num_cores)
-    swiglu_kernel[(num_cores,)](
-        input_a, input_b, output_2d, M, H,
-        input_a.stride(0), input_a.stride(1),
-        output_2d.stride(0), output_2d.stride(1), 
-        beta=scalarValue,
-        BLOCK_SIZE_M=BLOCK_SIZE_M,
-        TILE_SIZE_M=TILE_SIZE_M, TILE_SIZE_H=TILE_SIZE_H,
-        multibuffer=True,
-        limit_auto_multi_buffer_of_local_buffer="no-limit"
-        )
+    swiglu_kernel[(num_cores, )](input_a, input_b, output_2d, M, H, input_a.stride(0), output_2d.stride(0),
+                                 beta=scalarValue, BLOCK_SIZE_M=BLOCK_SIZE_M, TILE_SIZE_M=TILE_SIZE_M,
+                                 TILE_SIZE_H=TILE_SIZE_H, multibuffer=True,
+                                 limit_auto_multi_buffer_of_local_buffer="no-limit")
     return output_2d
 
+
 def test_op(M, H, scalarValue):
-    input_tensor = torch.empty((M, H),dtype=torch.float16).normal_(mean=0.0, std=0.5).requires_grad_().npu()
+    input_tensor = torch.empty((M, H), dtype=torch.float16).normal_(mean=0.0, std=0.5).requires_grad_().npu()
     triton_out = swiglu(input_tensor, scalarValue)
-    npu_out = torch_npu.npu_swiglu(input_tensor.npu(), dim = -1)
+    npu_out = torch_npu.npu_swiglu(input_tensor.npu(), dim=-1)
     torch.testing.assert_close(triton_out, npu_out, rtol=1e-3, atol=1e-3, equal_nan=True)
     # print(npu_out)
     # print(triton_out)
@@ -102,7 +105,8 @@ def test_op(M, H, scalarValue):
 
     triton_time = do_bench_npu(lambda: swiglu(input_tensor, scalarValue), clear_l2_cache=True, collect_prof=False)
     print(f"Triton time: {triton_time:.2f} us")
-    npu_time = do_bench_npu(lambda: torch_npu.npu_swiglu(input_tensor.npu(), dim = -1), clear_l2_cache=True, collect_prof=False)
+    npu_time = do_bench_npu(lambda: torch_npu.npu_swiglu(input_tensor.npu(), dim=-1), clear_l2_cache=True,
+                            collect_prof=False)
     print(f"NPU Swiglu time: {npu_time:.2f} us")
 
 

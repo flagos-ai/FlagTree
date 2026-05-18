@@ -97,3 +97,7 @@ jobs:
           python3 test_vec_mathOps.py
           python3 test_tle_with_hints.py
           popd
+          # flagtree tle tutorial
+          pushd python/tutorials/tle
+          python3 06-swiglu.py
+          popd
