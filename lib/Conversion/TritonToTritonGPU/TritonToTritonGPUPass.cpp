@@ -41,8 +41,8 @@ template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Type> retTypes;
 #ifdef __TLE__
-    if (failed(this->getTypeConverter()->convertTypes(op->getResults(),
-                                                      retTypes)))
+    if (failed(
+            this->getTypeConverter()->convertTypes(op->getResults(), retTypes)))
 #else
     if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(),
                                                       retTypes)))

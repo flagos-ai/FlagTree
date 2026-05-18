@@ -84,10 +84,12 @@ static std::optional<int64_t> getConstantIntLike(Value value) {
   return std::nullopt;
 }
 
-static std::optional<StaticIndexCoverage> matchRangeWithStaticOffset(Value value) {
+static std::optional<StaticIndexCoverage>
+matchRangeWithStaticOffset(Value value) {
   Value current = stripIndexValueWrappers(value);
   if (auto range = current.getDefiningOp<tt::MakeRangeOp>())
-    return StaticIndexCoverage{range.getStart(), range.getEnd() - range.getStart()};
+    return StaticIndexCoverage{range.getStart(),
+                               range.getEnd() - range.getStart()};
 
   auto add = current.getDefiningOp<arith::AddIOp>();
   if (!add)
@@ -111,7 +113,8 @@ static std::optional<StaticIndexCoverage> matchRangeWithStaticOffset(Value value
   return tryMatch(add.getRhs(), add.getLhs());
 }
 
-static std::optional<StaticIndexCoverage> matchStaticIndexCoverage(Value index) {
+static std::optional<StaticIndexCoverage>
+matchStaticIndexCoverage(Value index) {
   if (auto cst = getConstantIntLike(index))
     return StaticIndexCoverage{*cst, 1};
 
@@ -232,8 +235,7 @@ static std::optional<unsigned> getElementByteWidth(Type type) {
   return std::nullopt;
 }
 
-static size_t linearizeStatic(ArrayRef<int64_t> coord,
-                              ArrayRef<unsigned> shape,
+static size_t linearizeStatic(ArrayRef<int64_t> coord, ArrayRef<unsigned> shape,
                               ArrayRef<unsigned> order) {
   size_t linear = 0;
   for (unsigned dim : llvm::reverse(order))
@@ -273,7 +275,8 @@ getStaticAccessIntervals(const Allocation *allocation, Value value,
       return std::nullopt;
     shape.push_back(static_cast<unsigned>(dim));
   }
-  if (shape.size() != view->offsets.size() || shape.size() != view->sizes.size())
+  if (shape.size() != view->offsets.size() ||
+      shape.size() != view->sizes.size())
     return std::nullopt;
 
   for (auto [offset, size, dim] :

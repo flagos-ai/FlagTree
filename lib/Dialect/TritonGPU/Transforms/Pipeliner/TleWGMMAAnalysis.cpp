@@ -105,8 +105,8 @@ static bool hasOnlyDirectAccumulatorChainUse(Value value,
   return foundTargetUse;
 }
 
-static ttng::WarpGroupDotOp getOnlyDirectAccumulatorChainTarget(
-    Value value, scf::ForOp forOp) {
+static ttng::WarpGroupDotOp
+getOnlyDirectAccumulatorChainTarget(Value value, scf::ForOp forOp) {
   SmallVector<Value> queue = {value};
   llvm::SmallDenseSet<Value, 8> visited;
   ttng::WarpGroupDotOp targetDot;
@@ -176,12 +176,11 @@ static bool isWgmmaAccumulatorChainBoundary(Operation *op) {
              ttng::TMAStoreWaitOp, ttg::LocalBarrierOp,
              ttnvws::ProducerAcquireOp, ttnvws::ProducerCommitOp,
              ttnvws::ConsumerWaitOp, ttnvws::ConsumerReleaseOp,
-             tttle::WGMMASharedOperandFenceOp,
-             tttle::TMAStoreCommitGroupOp, tttle::DistributedBarrierOp>(op);
+             tttle::WGMMASharedOperandFenceOp, tttle::TMAStoreCommitGroupOp,
+             tttle::DistributedBarrierOp>(op);
 }
 
-static bool hasWgmmaCommitGroupBoundaryBetween(Operation *from,
-                                               Operation *to) {
+static bool hasWgmmaCommitGroupBoundaryBetween(Operation *from, Operation *to) {
   assert(from && to && "expected valid commit-group endpoints");
   Operation *op = from->getNextNode();
   for (; op && op != to; op = op->getNextNode()) {
@@ -381,8 +380,7 @@ static bool isForIterArgBackedByLocalAlloc(BlockArgument arg,
   return isMemDescBackedByLocalAlloc(yield.getOperand(iterIdx), active);
 }
 
-static bool isForResultBackedByLocalAlloc(scf::ForOp forOp,
-                                          unsigned resultIdx,
+static bool isForResultBackedByLocalAlloc(scf::ForOp forOp, unsigned resultIdx,
                                           llvm::DenseSet<Value> &active) {
   if (resultIdx >= forOp.getInitArgs().size())
     return false;
@@ -432,8 +430,7 @@ static bool isMemDescBackedByLocalAlloc(Value value,
     return isForResultBackedByLocalAlloc(forOp, result.getResultNumber(),
                                          active);
   if (auto ifOp = dyn_cast<scf::IfOp>(result.getOwner()))
-    return isIfResultBackedByLocalAlloc(ifOp, result.getResultNumber(),
-                                        active);
+    return isIfResultBackedByLocalAlloc(ifOp, result.getResultNumber(), active);
 
   return false;
 }
@@ -644,8 +641,7 @@ static bool resourcesMayAlias(const MemDescResource &lhs,
 }
 
 SmallVector<MemDescResource, 2>
-TlePipeResourceAnalysis::getDotReadResources(
-    ttng::WarpGroupDotOp dotOp) const {
+TlePipeResourceAnalysis::getDotReadResources(ttng::WarpGroupDotOp dotOp) const {
   SmallVector<MemDescResource, 2> reads;
   if (isa<ttg::MemDescType>(dotOp.getA().getType()))
     reads.push_back(getMemDescResource(dotOp.getA()));
@@ -723,8 +719,8 @@ bool TlePipeResourceAnalysis::releasedResourcesMayAliasReads(
 
 bool TlePipeResourceAnalysis::boundaryMayAliasReads(
     Operation *op, ArrayRef<MemDescResource> readResources) const {
-  return releasedResourcesMayAliasReads(
-      getBoundaryReleasedResources(op), readResources);
+  return releasedResourcesMayAliasReads(getBoundaryReleasedResources(op),
+                                        readResources);
 }
 
 bool TlePipeResourceAnalysis::hasAliasingLifetimeBoundaryBetween(
@@ -757,8 +753,8 @@ bool TleWgmmaScheduleAnalysis::canReuseAccumulatorChainC(
 
   SmallVector<MemDescResource, 2> reads =
       resources.getDotReadResources(sourceDot);
-  if (resources.hasAliasingLifetimeBoundaryBetween(
-          sourceDot.getOperation(), dotOp.getOperation(), reads))
+  if (resources.hasAliasingLifetimeBoundaryBetween(sourceDot.getOperation(),
+                                                   dotOp.getOperation(), reads))
     return false;
   if (!hasOnlyDirectAccumulatorChainUse(sourceDot.getResult(), dotOp, forOp))
     return false;

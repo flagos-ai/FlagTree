@@ -101,8 +101,7 @@ def pipe(
             raise ValueError(f"tle.pipe field {field_name!r} must have rank >= 2, got {len(field.shape)}")
         if field.shape[0] != capacity:
             raise ValueError(
-                f"tle.pipe field {field_name!r} leading dimension must equal capacity {capacity}, got {field.shape[0]}"
-            )
+                f"tle.pipe field {field_name!r} leading dimension must equal capacity {capacity}, got {field.shape[0]}")
 
     _semantic.builder.create_pipe_create([field.handle for field in fields.values()], capacity, scope, name or "",
                                          list(fields.keys()), list(reader_names or ()), one_shot)

@@ -1416,7 +1416,8 @@ struct AsyncCopyGlobalToLocalOpConversion
     }
     assert(vecBytes == 16 || vecBytes == 8 || vecBytes == 4);
     if (op.getCache() != CacheModifier::NONE &&
-        op.getCache() != CacheModifier::CA && op.getCache() != CacheModifier::CG)
+        op.getCache() != CacheModifier::CA &&
+        op.getCache() != CacheModifier::CG)
       return op.emitError("cp.async supports only ca/cg cache modifiers");
 
     auto freeVarMasks = getFreeVariableMasks(srcTy);
@@ -1430,11 +1431,11 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value l2PolicyReg =
         createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
-    auto emitCpAsync = [&b, threadPred, ptrTy, hasMask = bool(llMask),
-                        opCache = op.getCache(), l2PolicyReg](
-                           RewriterBase &rewriter, Location loc,
-                           ArrayRef<Value> vals, Value shmemAddr, int startIdx,
-                           VectorType vecTy) -> SmallVector<Value> {
+    auto emitCpAsync =
+        [&b, threadPred, ptrTy, hasMask = bool(llMask), opCache = op.getCache(),
+         l2PolicyReg](RewriterBase &rewriter, Location loc,
+                      ArrayRef<Value> vals, Value shmemAddr, int startIdx,
+                      VectorType vecTy) -> SmallVector<Value> {
       assert(isa<VectorType>(vecTy));
       auto *ctx = rewriter.getContext();
       auto elemTy = vecTy.getElementType();
@@ -1443,10 +1444,10 @@ struct AsyncCopyGlobalToLocalOpConversion
       // Keep Triton's historical default when the user does not specify a
       // cache modifier, but honor tl.load/ttg.async_copy cache modifiers when
       // they are present.
-      CacheModifier srcCacheModifier = opCache == CacheModifier::NONE
-                                           ? (nBytes == 16 ? CacheModifier::CG
-                                                           : CacheModifier::CA)
-                                           : opCache;
+      CacheModifier srcCacheModifier =
+          opCache == CacheModifier::NONE
+              ? (nBytes == 16 ? CacheModifier::CG : CacheModifier::CA)
+              : opCache;
 
       auto structElem = vals[startIdx];
       auto srcElem = b.extract_val(ptrTy, structElem, 0);
@@ -1473,10 +1474,10 @@ struct AsyncCopyGlobalToLocalOpConversion
         auto selectOp = b.select(maskElem, b.i32_val(nBytes), b.i32_val(0));
         srcSize = ptxBuilder.newOperand(selectOp, "r");
       }
-      auto &copyExec = evictOpr ? copyAsyncOp(dstOperand, srcOperand, copySize,
-                                              srcSize, evictOpr)
-                                : copyAsyncOp(dstOperand, srcOperand, copySize,
-                                              srcSize);
+      auto &copyExec =
+          evictOpr
+              ? copyAsyncOp(dstOperand, srcOperand, copySize, srcSize, evictOpr)
+              : copyAsyncOp(dstOperand, srcOperand, copySize, srcSize);
       copyExec.maybePredicate(threadPred);
       ptxBuilder.launch(rewriter, loc, void_ty(ctx));
       return {};

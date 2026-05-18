@@ -574,8 +574,7 @@ class pipe_value_type(tl.base_type):
         for field_name, ty in self.fields:
             value, cursor = ty._unflatten_ir(handles, cursor)
             values[field_name] = value
-        return pipe_value(self.capacity, self.scope, self.name, values, self.readers,
-                          one_shot=self.one_shot), cursor
+        return pipe_value(self.capacity, self.scope, self.name, values, self.readers, one_shot=self.one_shot), cursor
 
     def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
         for _, ty in self.fields:
@@ -781,19 +780,20 @@ class pipe_reader(_pipe_endpoint):
     @tl.builtin
     def wait(self, iter, _semantic=None):
         stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
-        is_closed = _semantic.builder.create_pipe_reader_wait(self.pipe._field_handles(), stage.handle,
-                                                              phase.handle, self.pipe.capacity, self.pipe.scope,
-                                                              self.pipe._ir_name(), self.pipe._field_names(),
-                                                              self.reader_name or "", self._reader_field_names())
+        is_closed = _semantic.builder.create_pipe_reader_wait(self.pipe._field_handles(), stage.handle, phase.handle,
+                                                              self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
+                                                              self.pipe._field_names(), self.reader_name or "",
+                                                              self._reader_field_names())
         slot = self.pipe._make_slot(stage, _semantic=_semantic, field_names=self.field_names)
         return pipe_wait_result(slot, tl.tensor(is_closed, tl.int1))
 
     @tl.builtin
     def release(self, iter, _semantic=None):
         stage, _ = self.pipe._stage_phase(iter, _semantic=_semantic)
-        _semantic.builder.create_pipe_reader_release(self.pipe._field_handles(), stage.handle, self.pipe.capacity,
-                                                     self.pipe.scope, self.pipe._ir_name(), self.pipe._field_names(),
-                                                     self.reader_name or "", self._reader_field_names())
+        _semantic.builder.create_pipe_reader_release(self.pipe._field_handles(), stage.handle,
+                                                     self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
+                                                     self.pipe._field_names(), self.reader_name or "",
+                                                     self._reader_field_names())
 
 
 pipe_writer_type.value_cls = pipe_writer

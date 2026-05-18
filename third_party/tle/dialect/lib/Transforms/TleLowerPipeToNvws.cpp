@@ -84,7 +84,8 @@ static bool containsPipeLifecycleOp(tt::FuncOp func) {
 
 static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee) {
   if (callee.isExternal())
-    return call.emitOpError("cannot inline external callee containing pipe ops");
+    return call.emitOpError(
+        "cannot inline external callee containing pipe ops");
   Region &body = callee.getBody();
   if (!body.hasOneBlock())
     return call.emitOpError("cannot inline multi-block callee containing pipe "
@@ -99,7 +100,8 @@ static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee) {
     return call.emitOpError("callee return count does not match call results");
 
   IRMapping mapping;
-  for (auto [arg, operand] : llvm::zip(block.getArguments(), call.getOperands()))
+  for (auto [arg, operand] :
+       llvm::zip(block.getArguments(), call.getOperands()))
     mapping.map(arg, operand);
 
   OpBuilder builder(call);
@@ -205,8 +207,8 @@ getEnclosingWarpSpecializePartition(Operation *op) {
     if (!parent)
       break;
     if (auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(parent))
-      return std::make_pair(cast<ttg::WarpSpecializeOp>(partitions->getParentOp()),
-                            region);
+      return std::make_pair(
+          cast<ttg::WarpSpecializeOp>(partitions->getParentOp()), region);
     region = parent->getParentRegion();
   }
   return std::nullopt;
@@ -326,10 +328,9 @@ static FailureOr<int32_t> getTaskThreadCount(Operation *op) {
 
 static void setTokenCount(Value token, StringRef attrName, int32_t count) {
   auto createToken = cast<ttnvws::CreateTokenOp>(token.getDefiningOp());
-  createToken->setAttr(attrName,
-                       IntegerAttr::get(
-                           IntegerType::get(createToken.getContext(), 32),
-                           count));
+  createToken->setAttr(
+      attrName,
+      IntegerAttr::get(IntegerType::get(createToken.getContext(), 32), count));
 }
 
 static LogicalResult recordWriterTask(PipeState &state, Operation *op,
@@ -478,8 +479,8 @@ static bool sameIndexValue(Value lhs, Value rhs) {
   return false;
 }
 
-static std::optional<int32_t>
-inferPrefixParticipants(Type valueType, int32_t taskThreadCount) {
+static std::optional<int32_t> inferPrefixParticipants(Type valueType,
+                                                      int32_t taskThreadCount) {
   auto tensorTy = dyn_cast<RankedTensorType>(valueType);
   if (!tensorTy || !tensorTy.hasStaticShape() ||
       !isa<ttg::BlockedEncodingAttr>(tensorTy.getEncoding()))
@@ -492,12 +493,10 @@ inferPrefixParticipants(Type valueType, int32_t taskThreadCount) {
   if (elemsPerThread == 0)
     return std::nullopt;
 
-  int64_t participants =
-      (numElements + elemsPerThread - 1) / elemsPerThread;
+  int64_t participants = (numElements + elemsPerThread - 1) / elemsPerThread;
   if (participants <= 0)
     return std::nullopt;
-  return static_cast<int32_t>(
-      std::min<int64_t>(participants, taskThreadCount));
+  return static_cast<int32_t>(std::min<int64_t>(participants, taskThreadCount));
 }
 
 struct LocalStoreTarget {
@@ -581,7 +580,8 @@ inferLocalStoreParticipantCount(PipeWriterCommitOp commit,
   bool sawLocalStore = false;
   std::string commitKey = getPipeKey(commit.getOperation());
 
-  for (Operation *prev = commit->getPrevNode(); prev; prev = prev->getPrevNode()) {
+  for (Operation *prev = commit->getPrevNode(); prev;
+       prev = prev->getPrevNode()) {
     if (prev == token.getDefiningOp())
       break;
     if (auto acquire = dyn_cast<ttnvws::ProducerAcquireOp>(prev)) {
@@ -681,8 +681,8 @@ static LogicalResult verifyTmaCopyTypes(ttg::TMACopyOp op) {
 
   if (op.getIndices().size() != descTy.getBlockType().getRank())
     return op.emitOpError("used by a pipe TMA commit requires ")
-           << descTy.getBlockType().getRank()
-           << " TMA coordinates, but got " << op.getIndices().size();
+           << descTy.getBlockType().getRank() << " TMA coordinates, but got "
+           << op.getIndices().size();
 
   return success();
 }
@@ -700,7 +700,8 @@ static FailureOr<bool> isTmaPipeCommit(PipeWriterCommitOp commit) {
 
   llvm::DenseSet<Value> copiedRoots;
   bool sawPipeTmaCopy = false;
-  for (Operation *prev = commit->getPrevNode(); prev; prev = prev->getPrevNode()) {
+  for (Operation *prev = commit->getPrevNode(); prev;
+       prev = prev->getPrevNode()) {
     if (auto tmaCopy = dyn_cast<ttg::TMACopyOp>(prev)) {
       if (failed(verifyTmaCopyTypes(tmaCopy)))
         return failure();
@@ -745,19 +746,18 @@ static Attribute getCloseTagEncoding(MLIRContext *context, int64_t rank) {
     order.push_back(static_cast<unsigned>(dim));
   auto ctaLayout = ttg::CTAEncodingAttr::getDefault(context, rank);
   return ttg::SwizzledSharedEncodingAttr::get(context, 1, 1, 1, order,
-                                             ctaLayout);
+                                              ctaLayout);
 }
 
 static RankedTensorType getCloseTagTensorType(Operation *op, OpBuilder &builder,
-                                             ArrayRef<int64_t> shape) {
+                                              ArrayRef<int64_t> shape) {
   MLIRContext *context = op->getContext();
   auto module = op->getParentOfType<ModuleOp>();
   int numWarps = ttg::lookupNumWarps(op);
   int threadsPerWarp = ttg::TritonGPUDialect::getThreadsPerWarp(module);
   int numCTAs = ttg::TritonGPUDialect::getNumCTAs(module);
-  Attribute encoding =
-      ttg::getDefaultBlockedEncoding(context, shape, numWarps, threadsPerWarp,
-                                     numCTAs);
+  Attribute encoding = ttg::getDefaultBlockedEncoding(context, shape, numWarps,
+                                                      threadsPerWarp, numCTAs);
   return RankedTensorType::get(shape, builder.getI32Type(), encoding);
 }
 
@@ -780,10 +780,10 @@ static PipeState createPipeState(PipeCreateOp op) {
   if (!oneShot) {
     Attribute closeTagArrayEncoding = getCloseTagEncoding(context, 2);
     Attribute closeTagSlotEncoding = getCloseTagEncoding(context, 1);
-    auto closeTagArrayType = ttg::MemDescType::get(
-        {capacity, 1}, builder.getI32Type(), closeTagArrayEncoding,
-        sharedMemorySpace,
-        /*mutableMemory=*/true);
+    auto closeTagArrayType =
+        ttg::MemDescType::get({capacity, 1}, builder.getI32Type(),
+                              closeTagArrayEncoding, sharedMemorySpace,
+                              /*mutableMemory=*/true);
     closeTagSlotType =
         ttg::MemDescType::get({1}, builder.getI32Type(), closeTagSlotEncoding,
                               sharedMemorySpace, /*mutableMemory=*/true);
@@ -793,14 +793,13 @@ static PipeState createPipeState(PipeCreateOp op) {
     Value initialCloseTags =
         createCloseTagTensor(builder, loc, closeTagArrayTensorType,
                              /*value=*/false);
-    closeTags =
-        ttg::LocalAllocOp::create(builder, loc, closeTagArrayType,
-                                  initialCloseTags);
+    closeTags = ttg::LocalAllocOp::create(builder, loc, closeTagArrayType,
+                                          initialCloseTags);
     closeTagTensorType = getCloseTagTensorType(op, builder, {1});
   }
-  Value token =
-      ttnvws::CreateTokenOp::create(builder, loc, static_cast<uint32_t>(capacity),
-                                    ttnvws::TokenLoadType::LocalStoreOp);
+  Value token = ttnvws::CreateTokenOp::create(
+      builder, loc, static_cast<uint32_t>(capacity),
+      ttnvws::TokenLoadType::LocalStoreOp);
 
   SmallVector<std::string> readerNames;
   if (auto readersAttr = op->getAttrOfType<ArrayAttr>("readers")) {
@@ -809,7 +808,9 @@ static PipeState createPipeState(PipeCreateOp op) {
       readerNames.push_back(cast<StringAttr>(attr).getValue().str());
   }
 
-  PipeState state{token, closeTags, closeTagSlotType,
+  PipeState state{token,
+                  closeTags,
+                  closeTagSlotType,
                   closeTagTensorType,
                   readerNames,
                   oneShot,
@@ -826,7 +827,7 @@ static Value createCloseTagSlot(OpBuilder &builder, Location loc,
                                 const PipeState &state, Value closeTags,
                                 Value stage) {
   return ttg::MemDescIndexOp::create(builder, loc, state.closeTagSlotType,
-                                    closeTags, stage);
+                                     closeTags, stage);
 }
 
 static Value createCloseTagTensor(OpBuilder &builder, Location loc,
@@ -840,7 +841,8 @@ static void storeCloseTag(OpBuilder &builder, Location loc,
                           Operation *source, int32_t taskId) {
   Value closeTags = getWarpSpecializeCaptureForUse(source, state.closeTags);
   Value slot = createCloseTagSlot(builder, loc, state, closeTags, stage);
-  Value tag = createCloseTagTensor(builder, loc, state.closeTagTensorType, value);
+  Value tag =
+      createCloseTagTensor(builder, loc, state.closeTagTensorType, value);
   auto store = ttg::LocalStoreOp::create(builder, loc, tag, slot);
   setRoleTaskId(source, slot.getDefiningOp(), taskId);
   setRoleTaskId(source, tag.getDefiningOp(), taskId);
@@ -868,8 +870,7 @@ static Value loadCloseTag(OpBuilder &builder, Location loc,
 }
 
 class TritonTleLowerPipeToNvwsPass
-    : public impl::TritonTleLowerPipeToNvwsBase<
-          TritonTleLowerPipeToNvwsPass> {
+    : public impl::TritonTleLowerPipeToNvwsBase<TritonTleLowerPipeToNvwsPass> {
 public:
   void runOnOperation() override {
     ModuleOp module = getOperation();
@@ -914,8 +915,8 @@ public:
           acquire.erase();
           continue;
         }
-        auto taskId = getSingleTaskId(
-            op, getEnclosingDefaultTaskId(op, /*writer=*/0));
+        auto taskId =
+            getSingleTaskId(op, getEnclosingDefaultTaskId(op, /*writer=*/0));
         if (failed(taskId)) {
           signalPassFailure();
           return;
@@ -935,8 +936,8 @@ public:
       }
 
       if (auto commit = dyn_cast<PipeWriterCommitOp>(op)) {
-        auto taskId = getSingleTaskId(
-            op, getEnclosingDefaultTaskId(op, /*writer=*/0));
+        auto taskId =
+            getSingleTaskId(op, getEnclosingDefaultTaskId(op, /*writer=*/0));
         if (failed(taskId)) {
           signalPassFailure();
           return;
@@ -976,8 +977,8 @@ public:
           }
         }
 
-        auto nvwsOp = ttnvws::ProducerCommitOp::create(
-            builder, loc, token, commit.getStage());
+        auto nvwsOp = ttnvws::ProducerCommitOp::create(builder, loc, token,
+                                                       commit.getStage());
         setRoleTaskId(op, nvwsOp.getOperation(), *taskId);
         if (*tmaCommit) {
           setTokenLoadType(state.token, ttnvws::TokenLoadType::TMALoadOp);
@@ -1009,8 +1010,8 @@ public:
           signalPassFailure();
           return;
         }
-        auto taskId = getSingleTaskId(
-            op, getEnclosingDefaultTaskId(op, /*writer=*/0));
+        auto taskId =
+            getSingleTaskId(op, getEnclosingDefaultTaskId(op, /*writer=*/0));
         if (failed(taskId)) {
           signalPassFailure();
           return;
@@ -1031,16 +1032,16 @@ public:
         setRoleTaskId(op, acquireOp.getOperation(), *taskId);
         storeCloseTag(builder, loc, state, close.getStage(), /*value=*/true, op,
                       *taskId);
-        auto commitOp = ttnvws::ProducerCommitOp::create(
-            builder, loc, token, close.getStage());
+        auto commitOp = ttnvws::ProducerCommitOp::create(builder, loc, token,
+                                                         close.getStage());
         setRoleTaskId(op, commitOp.getOperation(), *taskId);
         close.erase();
         continue;
       }
 
       if (auto wait = dyn_cast<PipeReaderWaitOp>(op)) {
-        auto taskId = getSingleTaskId(
-            op, getEnclosingDefaultTaskId(op, /*reader=*/1));
+        auto taskId =
+            getSingleTaskId(op, getEnclosingDefaultTaskId(op, /*reader=*/1));
         if (failed(taskId)) {
           signalPassFailure();
           return;
@@ -1048,9 +1049,9 @@ public:
         auto threadCount = getTaskThreadCount(op);
         auto readerName = getPipeReaderName(state, op);
         if (failed(threadCount) || failed(readerName) ||
-            failed(recordReaderTask(state, op, *readerName, *taskId,
-                                    *threadCount,
-                                    /*updateEmptyCountForReader=*/!state.oneShot))) {
+            failed(recordReaderTask(
+                state, op, *readerName, *taskId, *threadCount,
+                /*updateEmptyCountForReader=*/!state.oneShot))) {
           signalPassFailure();
           return;
         }
@@ -1064,8 +1065,8 @@ public:
             isClosed = arith::ConstantIntOp::create(builder, loc, 0, 1);
             setRoleTaskId(op, isClosed.getDefiningOp(), *taskId);
           } else {
-            isClosed = loadCloseTag(builder, loc, state, wait.getStage(),
-                                    op, *taskId);
+            isClosed =
+                loadCloseTag(builder, loc, state, wait.getStage(), op, *taskId);
           }
           wait.getIsClosed().replaceAllUsesWith(isClosed);
         }
@@ -1083,8 +1084,8 @@ public:
         release.erase();
         continue;
       }
-      auto taskId = getSingleTaskId(
-          op, getEnclosingDefaultTaskId(op, /*reader=*/1));
+      auto taskId =
+          getSingleTaskId(op, getEnclosingDefaultTaskId(op, /*reader=*/1));
       if (failed(taskId)) {
         signalPassFailure();
         return;

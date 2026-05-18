@@ -88,20 +88,20 @@ static LogicalResult verifyTmaCopyTypes(TMACopyOp op, TensorDescType descTy,
     return op.emitOpError(direction)
            << " requires a shared-memory encoding on the destination memdesc";
 
-  auto memTensorTy = RankedTensorType::get(
-      memDescTy.getShape(), memDescTy.getElementType(), memDescTy.getEncoding());
+  auto memTensorTy =
+      RankedTensorType::get(memDescTy.getShape(), memDescTy.getElementType(),
+                            memDescTy.getEncoding());
   Attribute expectedEncoding = getEncodingFromDescriptor(op, memTensorTy, desc);
   if (expectedEncoding != memDescTy.getEncoding())
     return op.emitOpError(direction)
-           << " requires tensor descriptor shared encoding "
-           << expectedEncoding << " to match memdesc encoding "
-           << memDescTy.getEncoding();
+           << " requires tensor descriptor shared encoding " << expectedEncoding
+           << " to match memdesc encoding " << memDescTy.getEncoding();
 
   unsigned expectedIndices = descTy.getBlockType().getRank();
   if (op.getIndices().size() != expectedIndices)
     return op.emitOpError(direction)
-           << " requires " << expectedIndices
-           << " TMA coordinates, but got " << op.getIndices().size();
+           << " requires " << expectedIndices << " TMA coordinates, but got "
+           << op.getIndices().size();
 
   return success();
 }
@@ -212,8 +212,7 @@ public:
       auto tmaStore =
           rewriter.create<triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp>(
               op.getLoc(), op.getDst(), indices, op.getSrc());
-      tmaStore->setAttr(kTleTMAStoreExplicitCommitAttr,
-                        rewriter.getUnitAttr());
+      tmaStore->setAttr(kTleTMAStoreExplicitCommitAttr, rewriter.getUnitAttr());
       rewriter.create<TMAStoreCommitGroupOp>(loc);
 
       // Wait for store completion

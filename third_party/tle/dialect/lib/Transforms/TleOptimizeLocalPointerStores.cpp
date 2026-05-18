@@ -208,9 +208,9 @@ static std::optional<IntRange> getIntRange(Value value, unsigned depth = 0) {
         !checkedMul(lhs->max, rhs->min, products[2]) ||
         !checkedMul(lhs->max, rhs->max, products[3]))
       return std::nullopt;
-    return IntRange{*std::min_element(std::begin(products), std::end(products)),
-                    *std::max_element(std::begin(products),
-                                      std::end(products))};
+    return IntRange{
+        *std::min_element(std::begin(products), std::end(products)),
+        *std::max_element(std::begin(products), std::end(products))};
   }
 
   if (auto rem = current.getDefiningOp<arith::RemSIOp>()) {
@@ -252,8 +252,7 @@ static bool isComparisonKnownTrue(arith::CmpIOp cmp) {
 
   switch (cmp.getPredicate()) {
   case arith::CmpIPredicate::eq:
-    return lhs->min == lhs->max && rhs->min == rhs->max &&
-           lhs->min == rhs->min;
+    return lhs->min == lhs->max && rhs->min == rhs->max && lhs->min == rhs->min;
   case arith::CmpIPredicate::ne:
     return lhs->max < rhs->min || rhs->max < lhs->min;
   case arith::CmpIPredicate::slt:

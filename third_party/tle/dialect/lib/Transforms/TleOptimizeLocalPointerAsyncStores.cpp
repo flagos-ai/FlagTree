@@ -307,8 +307,8 @@ static bool canInterleaveBeforeGroupedWait(Operation *op) {
 }
 
 static bool isLocalPointerStore(triton::StoreOp store) {
-  return stripConvertLayouts(store.getPtr()).getDefiningOp<tle::LocalPointersOp>() !=
-         nullptr;
+  return stripConvertLayouts(store.getPtr())
+             .getDefiningOp<tle::LocalPointersOp>() != nullptr;
 }
 
 static bool canScanForPipeCommit(Operation *op) {
@@ -331,7 +331,8 @@ static bool pipeCommitContainsRoot(PipeWriterCommitOp commit, Value root) {
   });
 }
 
-static bool markPipeCommitsForAsyncCopies(ArrayRef<AsyncStoreCandidate *> group) {
+static bool
+markPipeCommitsForAsyncCopies(ArrayRef<AsyncStoreCandidate *> group) {
   llvm::DenseSet<Value> pendingRoots;
   for (AsyncStoreCandidate *candidate : group)
     pendingRoots.insert(getMemDescRoot(candidate->match.baseMemDesc));
@@ -386,15 +387,14 @@ static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group) {
   for (AsyncStoreCandidate *candidate : group) {
     triton::StoreOp store = candidate->store;
     OpBuilder builder(store);
-    Value dst = createSubviewForStore(builder, store.getLoc(),
-                                      candidate->match);
+    Value dst =
+        createSubviewForStore(builder, store.getLoc(), candidate->match);
     auto asyncCopy = builder.create<ttg::AsyncCopyGlobalToLocalOp>(
         store.getLoc(), candidate->load.getPtr(), dst,
         candidate->load.getMask(), candidate->load.getOther(),
         candidate->load.getCache(), candidate->load.getEvict(),
         candidate->load.getIsVolatile());
-    asyncCopy->setAttr(kTleLocalPointerAsyncStoreAttr,
-                       builder.getUnitAttr());
+    asyncCopy->setAttr(kTleLocalPointerAsyncStoreAttr, builder.getUnitAttr());
     tokens.push_back(asyncCopy.getToken());
   }
 
@@ -411,8 +411,7 @@ static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group) {
   for (AsyncStoreCandidate *candidate : group)
     candidate->store.erase();
   for (AsyncStoreCandidate *candidate : group)
-    eraseDeadStoreValueWrappers(candidate->originalStoreValue,
-                                candidate->load);
+    eraseDeadStoreValueWrappers(candidate->originalStoreValue, candidate->load);
 }
 
 class OptimizeLocalPointerAsyncStoresPass

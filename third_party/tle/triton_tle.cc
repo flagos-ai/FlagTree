@@ -219,8 +219,7 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_pipe_create",
            [](TritonOpBuilder &self, std::vector<Value> fields,
               int32_t capacity, const std::string &scope,
-              const std::string &pipeName,
-              std::vector<std::string> fieldNames,
+              const std::string &pipeName, std::vector<std::string> fieldNames,
               std::vector<std::string> readerNames, bool oneShot) -> void {
              auto &builder = self.getBuilder();
              SmallVector<Attribute> fieldNameAttrs;
@@ -303,8 +302,7 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_pipe_reader_wait",
            [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
               Value phase, int32_t capacity, const std::string &scope,
-              const std::string &pipeName,
-              std::vector<std::string> fieldNames,
+              const std::string &pipeName, std::vector<std::string> fieldNames,
               const std::string &readerName,
               std::vector<std::string>) -> Value {
              auto &builder = self.getBuilder();
@@ -327,10 +325,8 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_pipe_reader_release",
            [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
               int32_t capacity, const std::string &scope,
-              const std::string &pipeName,
-              std::vector<std::string> fieldNames,
-              const std::string &readerName,
-              std::vector<std::string>) -> void {
+              const std::string &pipeName, std::vector<std::string> fieldNames,
+              const std::string &readerName, std::vector<std::string>) -> void {
              auto &builder = self.getBuilder();
              SmallVector<Attribute> fieldNameAttrs;
              fieldNameAttrs.reserve(fieldNames.size());
@@ -438,7 +434,6 @@ void init_triton_tle_ir(py::module &&m) {
                                           memorySpace, /*mutableMemory=*/true,
                                           allocShape);
            });
-
 }
 
 void init_triton_tle_passes(py::module &&m) {

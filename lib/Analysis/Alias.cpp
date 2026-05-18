@@ -14,9 +14,8 @@ namespace mlir {
 
 static bool isSharedMemDescType(Type type) {
   auto memdescTy = dyn_cast<triton::gpu::MemDescType>(type);
-  return memdescTy &&
-         isa_and_nonnull<triton::gpu::SharedMemorySpaceAttr>(
-             memdescTy.getMemorySpace());
+  return memdescTy && isa_and_nonnull<triton::gpu::SharedMemorySpaceAttr>(
+                          memdescTy.getMemorySpace());
 }
 
 static bool isMemDescType(Type type) {

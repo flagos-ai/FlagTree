@@ -30,9 +30,9 @@ public:
   getDotReadResources(triton::nvidia_gpu::WarpGroupDotOp dotOp) const;
   SmallVector<MemDescResource, 2>
   getBoundaryReleasedResources(Operation *op) const;
-  bool releasedResourcesMayAliasReads(
-      ArrayRef<MemDescResource> releasedResources,
-      ArrayRef<MemDescResource> readResources) const;
+  bool
+  releasedResourcesMayAliasReads(ArrayRef<MemDescResource> releasedResources,
+                                 ArrayRef<MemDescResource> readResources) const;
   bool boundaryMayAliasReads(Operation *op,
                              ArrayRef<MemDescResource> readResources) const;
   bool hasAliasingLifetimeBoundaryBetween(
@@ -51,7 +51,8 @@ public:
   canDeferCommitToLaterDotC(triton::nvidia_gpu::WarpGroupDotOp dotOp) const;
   bool canAppendToCurrentWgmmaCommitGroup(
       triton::nvidia_gpu::WarpGroupDotOp dotOp) const;
-  bool canReuseAccumulatorChainC(triton::nvidia_gpu::WarpGroupDotOp dotOp) const;
+  bool
+  canReuseAccumulatorChainC(triton::nvidia_gpu::WarpGroupDotOp dotOp) const;
 
 private:
   scf::ForOp forOp;

@@ -212,8 +212,7 @@ static bool isValidPublicPipeName(StringRef name) {
 }
 
 static LogicalResult verifyPipeNameArray(Operation *op, ArrayAttr namesAttr,
-                                         StringRef attrName,
-                                         bool allowEmpty) {
+                                         StringRef attrName, bool allowEmpty) {
   if (!allowEmpty && namesAttr.empty())
     return op->emitOpError("expects ")
            << attrName << " to contain at least one name";

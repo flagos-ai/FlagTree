@@ -121,8 +121,9 @@ int TritonGPUTypeConverter::getNumWarps(Value value) const {
   return numWarps;
 }
 
-RankedTensorType TritonGPUTypeConverter::convertRankedTensorType(
-    RankedTensorType tensorType, int contextualNumWarps) const {
+RankedTensorType
+TritonGPUTypeConverter::convertRankedTensorType(RankedTensorType tensorType,
+                                                int contextualNumWarps) const {
   // Types with encoding are already in the right format.
   // TODO: check for layout encodings more specifically.
   if (tensorType.getEncoding())

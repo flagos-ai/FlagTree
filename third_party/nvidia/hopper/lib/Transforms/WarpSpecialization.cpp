@@ -2,11 +2,11 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
-#include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "nvidia/hopper/include/Transforms/Passes.h"
-#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 #define DEBUG_TYPE "nvgpu-warp-specialization"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -41,9 +41,8 @@ public:
     if (loops.empty()) {
       bool hasExplicitWarpSpecialize = false;
       bool hasNvwsToken = false;
-      funcOp->walk([&](ttg::WarpSpecializeOp) {
-        hasExplicitWarpSpecialize = true;
-      });
+      funcOp->walk(
+          [&](ttg::WarpSpecializeOp) { hasExplicitWarpSpecialize = true; });
       funcOp->walk([&](ttnvws::CreateTokenOp) { hasNvwsToken = true; });
       if (hasExplicitWarpSpecialize && hasNvwsToken)
         doTokenLowering(funcOp, /*numConsumerGroups=*/1);

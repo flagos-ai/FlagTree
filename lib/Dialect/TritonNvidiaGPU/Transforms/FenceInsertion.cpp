@@ -29,8 +29,7 @@ static constexpr llvm::StringLiteral
 
 static Value skipNoopDefs(Value value) {
   while (Operation *def = value.getDefiningOp()) {
-    if (!isNoop(def) || def->getNumOperands() != 1 ||
-        def->getNumResults() != 1)
+    if (!isNoop(def) || def->getNumOperands() != 1 || def->getNumResults() != 1)
       break;
     value = def->getOperand(0);
   }
@@ -141,7 +140,7 @@ public:
     });
   }
 
- private:
+private:
 #ifdef __TLE__
   void materializeAccumulatorChainBeforeLateFence(DotOpInterface dotOp,
                                                   Operation *fence) const {
@@ -167,8 +166,8 @@ public:
     }
 
     // FenceInsertion runs after the WGMMA wait scheduler. If it inserts a
-    // shared-operand fence in front of a dot that was previously allowed to use a
-    // pending accumulator as C, the pass has created a new ptxas-visible
+    // shared-operand fence in front of a dot that was previously allowed to use
+    // a pending accumulator as C, the pass has created a new ptxas-visible
     // accumulator pipeline boundary. Materialize the source accumulator before
     // that boundary and rewrite the later dot to consume the waited value. This
     // keeps the invariant used by the scheduler: non-WGMMA sync/fence ops may
@@ -187,8 +186,8 @@ public:
 
     unsigned pendings =
         commitsThroughSourceGroup > 0 ? commitsThroughSourceGroup - 1 : 0;
-    auto wait = WarpGroupDotWaitOp::create(builder, fence->getLoc(), waitOperands,
-                                           pendings);
+    auto wait = WarpGroupDotWaitOp::create(builder, fence->getLoc(),
+                                           waitOperands, pendings);
     targetDot.getCMutable().assign(wait.getResult(0));
     targetDot->removeAttr(kTleWgmmaAccumulatorChainCAttr);
   }
@@ -202,8 +201,8 @@ public:
     // scheduler-visible fences: a WGMMA commit group is a contiguous launch
     // region. If the fence lands after async WGMMA launches but before their
     // commit, close the group before the fence. This is only a commit boundary;
-    // materializeAccumulatorChainBeforeLateFence handles the separate case where
-    // the late fence splits an already-scheduled accumulator chain.
+    // materializeAccumulatorChainBeforeLateFence handles the separate case
+    // where the late fence splits an already-scheduled accumulator chain.
     for (Operation *prev = boundary->getPrevNode(); prev;
          prev = prev->getPrevNode()) {
       if (isa<WarpGroupDotCommitOp, WarpGroupDotWaitOp>(prev))
@@ -236,9 +235,10 @@ public:
   }
 
 #ifdef __TLE__
-  void findLocalStoresThroughMemDescViews(Value value,
-                                          DenseSet<Value> &visitedValues,
-                                          llvm::SetVector<Operation *> &result) {
+  void
+  findLocalStoresThroughMemDescViews(Value value,
+                                     DenseSet<Value> &visitedValues,
+                                     llvm::SetVector<Operation *> &result) {
     if (!visitedValues.insert(value).second)
       return;
     for (Operation *user : value.getUsers()) {
@@ -264,8 +264,9 @@ public:
       region->walk([&](Operation *op) {
         if (!op->hasTrait<OpTrait::MemDescViewTrait>())
           return;
-        if (!llvm::any_of(op->getOperands(),
-                          [&](Value operand) { return aliases.count(operand); }))
+        if (!llvm::any_of(op->getOperands(), [&](Value operand) {
+              return aliases.count(operand);
+            }))
           return;
         for (Value viewResult : op->getResults())
           changed |= aliases.insert(viewResult);

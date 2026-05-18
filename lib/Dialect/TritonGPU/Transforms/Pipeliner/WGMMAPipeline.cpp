@@ -602,8 +602,7 @@ static Value getWarpGroupDotWaitSource(Value value) {
 
 static Value skipNoopDefs(Value value) {
   while (Operation *def = value.getDefiningOp()) {
-    if (!isNoop(def) || def->getNumOperands() != 1 ||
-        def->getNumResults() != 1)
+    if (!isNoop(def) || def->getNumOperands() != 1 || def->getNumResults() != 1)
       break;
     value = def->getOperand(0);
   }
@@ -672,8 +671,9 @@ findPendingGroupForValue(Value value,
   return std::nullopt;
 }
 
-static bool isAllowedAccumulatorChainUse(
-    Operation *op, OpOperand &use, const TleWgmmaScheduleAnalysis &analysis) {
+static bool
+isAllowedAccumulatorChainUse(Operation *op, OpOperand &use,
+                             const TleWgmmaScheduleAnalysis &analysis) {
   auto dot = dyn_cast<ttng::WarpGroupDotOp>(op);
   return dot && use.getOperandNumber() == 2 &&
          analysis.canReuseAccumulatorChainC(dot);
@@ -713,8 +713,8 @@ insertWgmmaWaitBefore(Operation *op, unsigned lastCompletedGroup,
   IRRewriter builder(op->getContext());
   builder.setInsertionPoint(op);
 
-  auto wait = ttng::WarpGroupDotWaitOp::create(
-      builder, op->getLoc(), ArrayRef<Value>{}, pendings);
+  auto wait = ttng::WarpGroupDotWaitOp::create(builder, op->getLoc(),
+                                               ArrayRef<Value>{}, pendings);
 
   SmallVector<Value, 4> waitOperands(forwardedValues.begin(),
                                      forwardedValues.end());
@@ -732,9 +732,9 @@ insertWgmmaWaitBefore(Operation *op, unsigned lastCompletedGroup,
   return wait;
 }
 
-static void consumeExistingWait(
-    ttng::WarpGroupDotWaitOp wait,
-    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+static void
+consumeExistingWait(ttng::WarpGroupDotWaitOp wait,
+                    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
   unsigned completedCount =
       pendingGroups.size() -
       std::min<unsigned>(pendingGroups.size(), wait.getPendings());
@@ -785,9 +785,10 @@ static void drainForLifetimeBoundary(
                         /*forwardedValues=*/{});
 }
 
-static bool canAppendToPendingGroup(
-    ttng::WarpGroupDotOp dot, ArrayRef<PendingSharedWgmmaGroup> pendingGroups,
-    const TleWgmmaScheduleAnalysis &analysis) {
+static bool
+canAppendToPendingGroup(ttng::WarpGroupDotOp dot,
+                        ArrayRef<PendingSharedWgmmaGroup> pendingGroups,
+                        const TleWgmmaScheduleAnalysis &analysis) {
   if (!analysis.canAppendToCurrentWgmmaCommitGroup(dot) ||
       pendingGroups.empty())
     return false;
@@ -799,10 +800,11 @@ static bool canAppendToPendingGroup(
   return llvm::is_contained(tailGroup.dots, sourceDot);
 }
 
-static void recordPendingDot(
-    ttng::WarpGroupDotOp dot, const TlePipeResourceAnalysis &resources,
-    const TleWgmmaScheduleAnalysis &analysis,
-    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+static void
+recordPendingDot(ttng::WarpGroupDotOp dot,
+                 const TlePipeResourceAnalysis &resources,
+                 const TleWgmmaScheduleAnalysis &analysis,
+                 SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
   dot.setIsAsync(true);
 
   if (analysis.canReuseAccumulatorChainC(dot))
@@ -876,8 +878,9 @@ static void scheduleTleWgmmaWaitsInBlock(
                           /*forwardedValues=*/{});
 }
 
-static void markTleExplicitWgmmaCommitGroups(
-    scf::ForOp forOp, const TleWgmmaScheduleAnalysis &analysis) {
+static void
+markTleExplicitWgmmaCommitGroups(scf::ForOp forOp,
+                                 const TleWgmmaScheduleAnalysis &analysis) {
   IRRewriter builder(forOp.getContext());
   SmallVector<ttng::WarpGroupDotOp, 8> dots;
   forOp.getBody()->walk([&](ttng::WarpGroupDotOp dot) {

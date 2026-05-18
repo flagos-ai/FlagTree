@@ -507,11 +507,10 @@ public:
 
     rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
     rewriter.setInsertionPoint(allocOp);
-    auto viewTy =
-        MemDescType::get(transposedShape, srcMemDescTy.getElementType(),
-                         viewEncoding, srcMemDescTy.getMemorySpace(),
-                         srcMemDescTy.getMutableMemory(),
-                         getPermutedAllocShape(srcMemDescTy, trans.getOrder()));
+    auto viewTy = MemDescType::get(
+        transposedShape, srcMemDescTy.getElementType(), viewEncoding,
+        srcMemDescTy.getMemorySpace(), srcMemDescTy.getMutableMemory(),
+        getPermutedAllocShape(srcMemDescTy, trans.getOrder()));
     auto view = triton::tle::MemDescWGMMAViewOp::create(
         rewriter, allocOp.getLoc(), viewTy, srcMemDesc, trans.getOrder());
     mlir::triton::replaceUsesAndPropagateType(rewriter, allocOp, view);
@@ -686,11 +685,10 @@ public:
 
     rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
     rewriter.setInsertionPoint(dotOp);
-    auto viewTy =
-        MemDescType::get(transposedShape, srcMemDescTy.getElementType(),
-                         viewEncoding, srcMemDescTy.getMemorySpace(),
-                         srcMemDescTy.getMutableMemory(),
-                         getPermutedAllocShape(srcMemDescTy, trans.getOrder()));
+    auto viewTy = MemDescType::get(
+        transposedShape, srcMemDescTy.getElementType(), viewEncoding,
+        srcMemDescTy.getMemorySpace(), srcMemDescTy.getMutableMemory(),
+        getPermutedAllocShape(srcMemDescTy, trans.getOrder()));
     auto view = triton::tle::MemDescWGMMAViewOp::create(
         rewriter, allocOp.getLoc(), viewTy, srcMemDesc, trans.getOrder());
     auto newDot = triton::nvidia_gpu::WarpGroupDotOp::create(
@@ -1036,8 +1034,7 @@ public:
     patterns.add<FuseCanonicalizedTransMMAV3Plus,
                  ReuseTransposedLocalLoadAllocAsWGMMAOperand,
                  ReuseTransposedLocalLoadConvertAsWGMMAA,
-                 ReuseTransposedLocalLoadAllocAsWGMMAA,
-                 ReuseLocalLoadAsWGMMAA,
+                 ReuseTransposedLocalLoadAllocAsWGMMAA, ReuseLocalLoadAsWGMMAA,
                  ReuseLocalLoadAllocAsWGMMAB>(context);
 #endif
     patterns.add<UseShmemForScales>(context);

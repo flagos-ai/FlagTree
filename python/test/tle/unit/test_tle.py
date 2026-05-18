@@ -193,7 +193,8 @@ class TestBufferedTensor:
 
         def get_memdesc_type(self, shape, element_ty, layout, space, alloc_shape=None):
             self.memdesc_type_args = (list(shape), element_ty, layout, space, alloc_shape)
-            return ("memdesc", tuple(shape), element_ty, layout, space, None if alloc_shape is None else tuple(alloc_shape))
+            return ("memdesc", tuple(shape), element_ty, layout, space,
+                    None if alloc_shape is None else tuple(alloc_shape))
 
         def create_memdesc_index(self, result_ty, src, index):
             self.memdesc_index_args = (result_ty, src, index)
@@ -204,12 +205,11 @@ class TestBufferedTensor:
                                      one_shot)
 
         def create_pipe_writer_acquire(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
-            self.pipe_ops.append(("writer_acquire", list(fields), stage, phase, capacity, scope, pipe_name,
-                                  list(field_names)))
+            self.pipe_ops.append(
+                ("writer_acquire", list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
 
         def create_pipe_writer_commit(self, fields, stage, capacity, scope, pipe_name, field_names):
-            self.pipe_ops.append(
-                ("writer_commit", list(fields), stage, capacity, scope, pipe_name, list(field_names)))
+            self.pipe_ops.append(("writer_commit", list(fields), stage, capacity, scope, pipe_name, list(field_names)))
 
         def create_pipe_writer_close(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
             self.pipe_ops.append(
@@ -223,8 +223,9 @@ class TestBufferedTensor:
 
         def create_pipe_reader_release(self, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
                                        reader_field_names):
-            self.pipe_ops.append(("reader_release", list(fields), stage, capacity, scope, pipe_name, list(field_names),
-                                  reader_name, list(reader_field_names)))
+            self.pipe_ops.append(
+                ("reader_release", list(fields), stage, capacity, scope, pipe_name, list(field_names), reader_name,
+                 list(reader_field_names)))
 
     class _FakeSemantic:
 
@@ -425,10 +426,10 @@ class TestPipeFrontend:
         assert result.slot.b.shape == [32, 16]
         assert not hasattr(result.slot, "a")
         assert result.slot.type.fields == [("b", result.slot.b.type)]
-        assert semantic.builder.pipe_ops[0] == ("reader_wait", ["base", "base"], "stage_0", "pred_False", 4, "cta",
-                                                "", ["a", "b"], "right", ["b"])
-        assert semantic.builder.pipe_ops[1] == ("reader_release", ["base", "base"], "stage_0", 4, "cta", "",
+        assert semantic.builder.pipe_ops[0] == ("reader_wait", ["base", "base"], "stage_0", "pred_False", 4, "cta", "",
                                                 ["a", "b"], "right", ["b"])
+        assert semantic.builder.pipe_ops[1] == ("reader_release", ["base", "base"], "stage_0", 4, "cta", "", ["a", "b"],
+                                                "right", ["b"])
 
     def test_pipe_reader_rejects_invalid_field_subset(self):
         a, semantic = self._make_buffer([4, 16])
@@ -472,10 +473,10 @@ class TestPipeFrontend:
             "reader_wait",
             "reader_release",
         ]
-        assert semantic.builder.pipe_ops[0] == ("writer_acquire", ["base"], "stage_0", "pred_False", 4, "cta",
-                                                "a", ["a"])
-        assert semantic.builder.pipe_ops[3] == ("reader_wait", ["base"], "stage_0", "pred_False", 4, "cta", "a",
-                                                ["a"], "", ["a"])
+        assert semantic.builder.pipe_ops[0] == ("writer_acquire", ["base"], "stage_0", "pred_False", 4, "cta", "a",
+                                                ["a"])
+        assert semantic.builder.pipe_ops[3] == ("reader_wait", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"],
+                                                "", ["a"])
 
     def test_pipe_one_shot_keeps_frontend_contract(self):
         a, semantic = self._make_buffer([1, 16])

@@ -721,12 +721,12 @@ def tle_pipe_sparse_mla_fwd(
     )
     kv_writer = kv_pipe.writer()
     kv_left_reader = kv_pipe.reader("left")
-    kv_right_reader = kv_pipe.reader("right", fields=("kv_r",))
+    kv_right_reader = kv_pipe.reader("right", fields=("kv_r", ))
     score_writer = score_pipe.writer()
     score_reader = score_pipe.reader()
     q_writer = q_pipe.writer()
     q_left_reader = q_pipe.reader("left")
-    q_right_reader = q_pipe.reader("right", fields=("q_r",))
+    q_right_reader = q_pipe.reader("right", fields=("q_r", ))
 
     log_scale: tl.constexpr = sm_scale * 1.44269504
 
@@ -1282,15 +1282,12 @@ def tle_flashmla_prefill_fwd(
         is_kv_valid=is_kv_valid_smem,
     )
 
-    sM_smem = tle.gpu.alloc([1, BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
-                            nv_mma_shared_layout=False)
+    sM_smem = tle.gpu.alloc([1, BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     sS1_smem = tle.gpu.alloc([1, BH, BK], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
-    sL_smem = tle.gpu.alloc([2, BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
-                            nv_mma_shared_layout=False)
+    sL_smem = tle.gpu.alloc([2, BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     final_max_logits_smem = tle.gpu.alloc([BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
                                           nv_mma_shared_layout=False)
-    final_lse_smem = tle.gpu.alloc([BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
-                                   nv_mma_shared_layout=False)
+    final_lse_smem = tle.gpu.alloc([BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     sM_wg0_pipe = tle.pipe(capacity=1, scope="cta", name="flashmla_wg0_bunch_0_ready", sM=sM_smem)
     sM_wg1_pipe = tle.pipe(capacity=1, scope="cta", name="flashmla_wg1_bunch_0_ready", sM=sM_smem)
     sS0_pipe = tle.pipe(capacity=1, scope="cta", name="flashmla_sS0", sS0=sK0_tail_smem)
@@ -1399,6 +1396,7 @@ def _compute_topk_length(indices, skv):
 
 
 def _set_triton_descriptor_allocator(device):
+
     def alloc_fn(size: int, align: int, stream):
         return torch.empty(size, dtype=torch.int8, device=device)
 
@@ -1467,7 +1465,7 @@ def _sparse_mla_fwd_interface_impl(kernel, q, kv, indices, topk_length=None, sm_
         BH,
     )
     if include_is_causal_arg:
-        common_meta_args = common_meta_args + (is_causal,)
+        common_meta_args = common_meta_args + (is_causal, )
     if use_host_descriptors:
         kernel_args = (
             *host_descriptor_args,
@@ -1572,7 +1570,7 @@ def tle_pipe_sparse_mla_fwd_interface(
         d_v=d_v,
         bk=64,
         is_causal=is_causal,
-        extra_kernel_args=(TLE_PIPE_SPARSE_MLA_PIPE_STAGES,),
+        extra_kernel_args=(TLE_PIPE_SPARSE_MLA_PIPE_STAGES, ),
         use_host_descriptors=True,
         launch_kwargs={
             "num_warps": TLE_PIPE_SPARSE_MLA_NUM_WARPS,
@@ -1592,12 +1590,14 @@ def tle_flashmla_prefill_interface(
 ):
     assert not return_p_sum, "This kernel file is for fwd only"
     if is_causal:
-        raise ValueError("TLE FlashMLA prefill path mirrors FlashMLA sparse prefill, which does not support causal mask")
+        raise ValueError(
+            "TLE FlashMLA prefill path mirrors FlashMLA sparse prefill, which does not support causal mask")
     B, SQ, H, DT = q.shape
     _, _, VG, _ = kv.shape
     _, _, _, topk = indices.shape
     if VG != 1:
-        raise ValueError(f"TLE FlashMLA prefill path mirrors FlashMLA sm90 sparse prefill and requires h_kv == 1, got {VG}")
+        raise ValueError(
+            f"TLE FlashMLA prefill path mirrors FlashMLA sm90 sparse prefill and requires h_kv == 1, got {VG}")
     if d_v != 512:
         raise ValueError(f"TLE FlashMLA prefill path requires d_v == 512, got {d_v}")
     if DT != 576:
@@ -1622,9 +1622,7 @@ def tle_flashmla_prefill_interface(
         d_v=d_v,
         bk=64,
         is_causal=is_causal,
-        extra_kernel_args=(
-            TLE_FLASHMLA_PREFILL_PAIR_BLOCKS,
-        ),
+        extra_kernel_args=(TLE_FLASHMLA_PREFILL_PAIR_BLOCKS, ),
         use_host_descriptors=True,
         include_is_causal_arg=False,
         launch_kwargs={
@@ -3114,17 +3112,17 @@ _DECODE_BENCH_PROVIDERS = (["triton", "tle", "tle-pipe-pipelined"] +
 _DECODE_BENCH_NAMES = (["Triton", "TLE", "TLE-Pipe-Pipelined"] +
                        (["TileLang", "TileLang-Pipelined", "TileLang-Seesaw"] if _HAVE_TILELANG else []) +
                        (["FlashMLA"] if _HAVE_FLASHMLA else []))
-_DECODE_BENCH_STYLES = ([("red", "-"), ("orange", "-"), ("magenta", "-")] + ([("blue", "-"), ("cyan", "-"),
-                                                                               ("purple", "-")] if _HAVE_TILELANG else []) +
-                        ([("green", "-")] if _HAVE_FLASHMLA else []))
+_DECODE_BENCH_STYLES = ([("red", "-"), ("orange", "-"), ("magenta", "-")] +
+                        ([("blue", "-"), ("cyan", "-"),
+                          ("purple", "-")] if _HAVE_TILELANG else []) + ([("green", "-")] if _HAVE_FLASHMLA else []))
 _BENCH_PROVIDERS = (["triton", "tle", "tle-pipe-pipelined", "tle-flashmla-prefill"] +
                     (["tilelang", "tilelang-pipelined", "tilelang-seesaw"] if _HAVE_TILELANG else []) +
                     (["flashmla"] if _HAVE_FLASHMLA else []))
 _BENCH_NAMES = (["Triton", "TLE", "TLE-Pipe-Pipelined", "TLE-FlashMLA-Prefill"] +
                 (["TileLang", "TileLang-Pipelined", "TileLang-Seesaw"] if _HAVE_TILELANG else []) +
                 (["FlashMLA"] if _HAVE_FLASHMLA else []))
-_BENCH_STYLES = ([("red", "-"), ("orange", "-"), ("magenta", "-"), ("black", "-")] +
-                 ([("blue", "-"), ("cyan", "-"), ("purple", "-")] if _HAVE_TILELANG else []) +
+_BENCH_STYLES = ([("red", "-"), ("orange", "-"), ("magenta", "-"),
+                  ("black", "-")] + ([("blue", "-"), ("cyan", "-"), ("purple", "-")] if _HAVE_TILELANG else []) +
                  ([("green", "-")] if _HAVE_FLASHMLA else []))
 _BENCH_X_VALS = [
     # FlashMLA v0.1.8 sparse prefill V3.2 performance cases:
@@ -3267,7 +3265,7 @@ def benchmark_sparse_mla_fwd(
 
         def run():
             tle_pipe_sparse_mla_fwd_interface(q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV,
-                                             is_causal=is_causal)
+                                              is_causal=is_causal)
 
     elif provider == "tle-flashmla-prefill":
 
@@ -3993,7 +3991,7 @@ def bench_sparse_mla_fwd(
 
     def run_tle_pipe():
         return tle_pipe_sparse_mla_fwd_interface(q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV,
-                                                is_causal=is_causal)
+                                                 is_causal=is_causal)
 
     try:
         tle_pipe_out, _ = run_tle_pipe()
@@ -4407,8 +4405,7 @@ def bench_sparse_mla_decode(
             print("Triton and pipelined TileLang decode-compatible outputs match.")
         if tilelang_seesaw_out is not None:
             assert torch.allclose(triton_out.float(), tilelang_seesaw_out.float(), atol=1e-1,
-                                  rtol=1e-1), (
-                "Triton decode-compatible output does not match seesaw TileLang output")
+                                  rtol=1e-1), ("Triton decode-compatible output does not match seesaw TileLang output")
             print("Triton and seesaw TileLang decode-compatible outputs match.")
 
 
@@ -4456,8 +4453,7 @@ def _check_flashmla_sparse_prefill_fwd(
             d_v=DV,
             is_causal=False,
         )
-        print("tle FlashMLA-prefill bf16 done \n tle FlashMLA-prefill lse tensor: \n",
-              tle_flashmla_prefill_bf16_lse)
+        print("tle FlashMLA-prefill bf16 done \n tle FlashMLA-prefill lse tensor: \n", tle_flashmla_prefill_bf16_lse)
         print()
         assert torch.allclose(
             tle_flashmla_prefill_bf16_out.float(),

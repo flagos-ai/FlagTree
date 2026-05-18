@@ -261,8 +261,8 @@ struct MergeRedundantWarpGroupDotWait
 };
 } // namespace
 
-void WarpGroupDotWaitOp::getCanonicalizationPatterns(
-    RewritePatternSet &results, MLIRContext *context) {
+void WarpGroupDotWaitOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                     MLIRContext *context) {
   results.add<MergeRedundantWarpGroupDotWait>(context);
 }
 #endif

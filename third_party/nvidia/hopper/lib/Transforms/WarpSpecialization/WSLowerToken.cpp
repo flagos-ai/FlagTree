@@ -3,8 +3,8 @@
 #include "mlir/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 
-#include <set>
 #include <optional>
+#include <set>
 
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -71,10 +71,10 @@ void processProducerCommitOp(OpBuilder &builder, ttnvws::ProducerCommitOp op,
 
   if (op.getCommitKind() ==
       ttnvws::ProducerCommitKind::AsyncCopyMbarrierArrive) {
-    arriveOp = ttng::AsyncCopyMbarrierArriveOp::create(
-        builder, loc, bufferFull, /*noIncrement=*/true);
+    arriveOp = ttng::AsyncCopyMbarrierArriveOp::create(builder, loc, bufferFull,
+                                                       /*noIncrement=*/true);
   } else if (loadType == ttnvws::TokenLoadType::TMALoadOp ||
-      loadType == ttnvws::TokenLoadType::LocalStoreOp) {
+             loadType == ttnvws::TokenLoadType::LocalStoreOp) {
     // Get the count from the barriers: trace the local_alloc for the barrier
     // then find the count from init_barrier
 #ifdef __TLE__
@@ -89,15 +89,14 @@ void processProducerCommitOp(OpBuilder &builder, ttnvws::ProducerCommitOp op,
     // For proven local-store participants, each writer lane performs its own
     // release fence and single arrive. This removes the full partition
     // rendezvous while preserving the publish-before-ready contract: a lane can
-    // only arrive after its own stores, and the barrier completes only after all
-    // inferred writer participants have arrived.
+    // only arrive after its own stores, and the barrier completes only after
+    // all inferred writer participants have arrived.
     if (op.getCommitKind() ==
         ttnvws::ProducerCommitKind::ParticipantBarrierArrive)
       arriveBarrier.setParticipantArrive(true);
     arriveOp = arriveBarrier;
 #else
-    arriveOp =
-        ttng::ArriveBarrierOp::create(builder, loc, bufferFull, fullCnt);
+    arriveOp = ttng::ArriveBarrierOp::create(builder, loc, bufferFull, fullCnt);
 #endif
   } else {
     assert(false);
@@ -109,10 +108,9 @@ void processProducerCommitOp(OpBuilder &builder, ttnvws::ProducerCommitOp op,
 
 static int getTMACopyLoadSize(ttg::TMACopyOp copy) {
   auto dstTy = cast<ttg::MemDescType>(copy.getDst().getType());
-  auto shapePerCTA = ttg::getShapePerCTA(dstTy.getEncoding(),
-                                         dstTy.getShape());
-  return product(shapePerCTA) *
-         dstTy.getElementType().getIntOrFloatBitWidth() / 8;
+  auto shapePerCTA = ttg::getShapePerCTA(dstTy.getEncoding(), dstTy.getShape());
+  return product(shapePerCTA) * dstTy.getElementType().getIntOrFloatBitWidth() /
+         8;
 }
 
 static bool canInterleaveBeforeTmaCopyCommit(Operation *op) {
@@ -137,17 +135,17 @@ collectTmaCopiesForCommit(ttnvws::ProducerCommitOp op) {
   return copies;
 }
 
-static LogicalResult
-processProducerCommitTmaCopyOp(OpBuilder &builder,
-                               ttnvws::ProducerCommitOp op,
-                               Value bufferFull) {
+static LogicalResult processProducerCommitTmaCopyOp(OpBuilder &builder,
+                                                    ttnvws::ProducerCommitOp op,
+                                                    Value bufferFull) {
   SmallVector<ttg::TMACopyOp> tmaCopies = collectTmaCopiesForCommit(op);
   if (tmaCopies.empty())
     return op.emitOpError("with tma_copy_barrier_arrive must be preceded by "
                           "at least one ttg.tma_copy");
 
   Operation *bufferFullDef = bufferFull.getDefiningOp();
-  if (bufferFullDef && bufferFullDef->getBlock() == tmaCopies.front()->getBlock())
+  if (bufferFullDef &&
+      bufferFullDef->getBlock() == tmaCopies.front()->getBlock())
     bufferFullDef->moveBefore(tmaCopies.front());
 
   int sizeInBytes = 0;
@@ -165,15 +163,15 @@ processProducerCommitTmaCopyOp(OpBuilder &builder,
   auto loc = tmaCopies.front().getLoc();
   auto pred = arith::ConstantIntOp::create(builder, loc, 1, 1);
   setAsyncTaskIds(pred, taskIds);
-  auto expect =
-      ttng::BarrierExpectOp::create(builder, loc, bufferFull, sizeInBytes, pred);
+  auto expect = ttng::BarrierExpectOp::create(builder, loc, bufferFull,
+                                              sizeInBytes, pred);
   setAsyncTaskIds(expect, taskIds);
 
   for (ttg::TMACopyOp copy : tmaCopies) {
     auto srcTy = cast<tt::TensorDescType>(copy.getSrc().getType());
-    auto indices = ttng::translateTMAIndices(
-        builder, copy.getLoc(), srcTy.getBlockType().getEncoding(),
-        copy.getIndices());
+    auto indices = ttng::translateTMAIndices(builder, copy.getLoc(),
+                                             srcTy.getBlockType().getEncoding(),
+                                             copy.getIndices());
     builder.setInsertionPoint(copy);
     auto lowered = ttng::AsyncTMACopyGlobalToLocalOp::create(
         builder, copy.getLoc(), copy.getSrc(), indices, bufferFull,
@@ -202,9 +200,8 @@ void processConsumerReleaseOp(OpBuilder &builder, ttnvws::ConsumerReleaseOp op,
   auto loc = op.getLoc();
 #ifdef __TLE__
   SmallVector<Value> releasedFields(op.getReleasedFields());
-  auto arriveOp =
-      ttng::ArriveBarrierOp::create(builder, loc, bufferEmpty, releaseCnt,
-                                    op.getIdx(), releasedFields);
+  auto arriveOp = ttng::ArriveBarrierOp::create(
+      builder, loc, bufferEmpty, releaseCnt, op.getIdx(), releasedFields);
 #else
   auto arriveOp =
       ttng::ArriveBarrierOp::create(builder, loc, bufferEmpty, releaseCnt);

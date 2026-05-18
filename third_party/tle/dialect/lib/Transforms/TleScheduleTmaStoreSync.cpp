@@ -90,8 +90,7 @@ static Value getMemDescRoot(Value value) {
       current = canonicalizeWarpSpecializeCapture(reshape.getSrc());
       continue;
     }
-    if (auto reinterpret =
-            current.getDefiningOp<ttg::MemDescReinterpretOp>()) {
+    if (auto reinterpret = current.getDefiningOp<ttg::MemDescReinterpretOp>()) {
       current = canonicalizeWarpSpecializeCapture(reinterpret.getSrc());
       continue;
     }
@@ -121,8 +120,8 @@ findLatestAliasingGroup(ArrayRef<PendingTMAStoreGroup> pendingGroups,
   return latest;
 }
 
-static std::optional<unsigned>
-mergeLatest(std::optional<unsigned> lhs, std::optional<unsigned> rhs) {
+static std::optional<unsigned> mergeLatest(std::optional<unsigned> lhs,
+                                           std::optional<unsigned> rhs) {
   if (!lhs)
     return rhs;
   if (!rhs)
@@ -165,8 +164,8 @@ findMemoryReuseHazard(Operation *op,
     Value value = effect.getValue();
     if (!value || !isa<ttg::MemDescType>(value.getType()))
       continue;
-    latestHazard =
-        mergeLatest(latestHazard, findLatestAliasingGroup(pendingGroups, value));
+    latestHazard = mergeLatest(latestHazard,
+                               findLatestAliasingGroup(pendingGroups, value));
   }
   return latestHazard;
 }
@@ -180,8 +179,8 @@ findPipeReaderReleaseHazard(Operation *op,
 
   std::optional<unsigned> latestHazard;
   for (Value field : release.getFields()) {
-    latestHazard = mergeLatest(
-        latestHazard, findLatestAliasingGroup(pendingGroups, field));
+    latestHazard = mergeLatest(latestHazard,
+                               findLatestAliasingGroup(pendingGroups, field));
   }
   return latestHazard;
 }
@@ -192,10 +191,10 @@ static void insertWaitBefore(OpBuilder &builder, Operation *op,
   ttng::TMAStoreWaitOp::create(builder, op->getLoc(), pendings);
 }
 
-static bool waitThroughGroupBefore(OpBuilder &builder, Operation *op,
-                                   SmallVectorImpl<PendingTMAStoreGroup>
-                                       &pendingGroups,
-                                   unsigned groupIndex) {
+static bool
+waitThroughGroupBefore(OpBuilder &builder, Operation *op,
+                       SmallVectorImpl<PendingTMAStoreGroup> &pendingGroups,
+                       unsigned groupIndex) {
   assert(groupIndex < pendingGroups.size());
   unsigned pendings = pendingGroups.size() - groupIndex - 1;
   insertWaitBefore(builder, op, pendings);
@@ -204,9 +203,9 @@ static bool waitThroughGroupBefore(OpBuilder &builder, Operation *op,
   return true;
 }
 
-static bool waitAllBefore(OpBuilder &builder, Operation *op,
-                          SmallVectorImpl<PendingTMAStoreGroup>
-                              &pendingGroups) {
+static bool
+waitAllBefore(OpBuilder &builder, Operation *op,
+              SmallVectorImpl<PendingTMAStoreGroup> &pendingGroups) {
   if (pendingGroups.empty())
     return false;
   insertWaitBefore(builder, op, 0);
@@ -214,10 +213,10 @@ static bool waitAllBefore(OpBuilder &builder, Operation *op,
   return true;
 }
 
-static bool commitCurrentGroupBefore(OpBuilder &builder, Operation *op,
-                                     SmallVectorImpl<Value> &currentRoots,
-                                     SmallVectorImpl<PendingTMAStoreGroup>
-                                         &pendingGroups) {
+static bool
+commitCurrentGroupBefore(OpBuilder &builder, Operation *op,
+                         SmallVectorImpl<Value> &currentRoots,
+                         SmallVectorImpl<PendingTMAStoreGroup> &pendingGroups) {
   if (currentRoots.empty())
     return false;
 
@@ -231,10 +230,10 @@ static bool commitCurrentGroupBefore(OpBuilder &builder, Operation *op,
   return true;
 }
 
-static bool commitCurrentGroupAtEnd(OpBuilder &builder, Block &block,
-                                    SmallVectorImpl<Value> &currentRoots,
-                                    SmallVectorImpl<PendingTMAStoreGroup>
-                                        &pendingGroups) {
+static bool
+commitCurrentGroupAtEnd(OpBuilder &builder, Block &block,
+                        SmallVectorImpl<Value> &currentRoots,
+                        SmallVectorImpl<PendingTMAStoreGroup> &pendingGroups) {
   if (currentRoots.empty())
     return false;
 
@@ -251,8 +250,7 @@ static bool commitCurrentGroupAtEnd(OpBuilder &builder, Block &block,
 }
 
 static bool waitAllAtEnd(OpBuilder &builder, Block &block,
-                         SmallVectorImpl<PendingTMAStoreGroup>
-                             &pendingGroups) {
+                         SmallVectorImpl<PendingTMAStoreGroup> &pendingGroups) {
   if (pendingGroups.empty())
     return false;
 
@@ -350,8 +348,7 @@ class TritonTleScheduleTmaStoreSyncPass
           TritonTleScheduleTmaStoreSyncPass> {
 public:
   using impl::TritonTleScheduleTmaStoreSyncBase<
-      TritonTleScheduleTmaStoreSyncPass>::
-      TritonTleScheduleTmaStoreSyncBase;
+      TritonTleScheduleTmaStoreSyncPass>::TritonTleScheduleTmaStoreSyncBase;
 
   void runOnOperation() override {
     SmallVector<Block *, 16> blocks;
