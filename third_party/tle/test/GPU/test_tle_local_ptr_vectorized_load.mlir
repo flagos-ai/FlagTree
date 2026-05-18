@@ -7,6 +7,7 @@
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 16 : i32, ttg.target = "cuda:120", "ttg.threads-per-warp" = 32 : i32} {
   tt.func public @local_ptr_v4_load() {
     %c0_i32 = arith.constant 0 : i32
+    %c4 = arith.constant dense<4> : tensor<512x4xi32, #blocked>
     %smem = ttg.local_alloc {tle.barrier_group = 0 : i64} : () -> !ttg.memdesc<4096xi32, #shared, #smem, mutable>
     %base = "tle.local_pointers"(%smem, %c0_i32) {tle.barrier_group = 0 : i64} : (!ttg.memdesc<4096xi32, #shared, #smem, mutable>, i32) -> !tt.ptr<i32, 3>
     %basev = tt.splat %base : !tt.ptr<i32, 3> -> tensor<512x4x!tt.ptr<i32, 3>, #blocked>
@@ -17,7 +18,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 16 : i32, ttg.tar
     %col = tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32, #ttg.slice<{dim = 0, parent = #blocked}>>
     %col2d = tt.expand_dims %col {axis = 0 : i32} : tensor<4xi32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<1x4xi32, #blocked>
     %colb = tt.broadcast %col2d : tensor<1x4xi32, #blocked> -> tensor<512x4xi32, #blocked>
-    %offs = arith.addi %rowb, %colb : tensor<512x4xi32, #blocked>
+    %row_scaled = arith.muli %rowb, %c4 : tensor<512x4xi32, #blocked>
+    %offs = arith.addi %row_scaled, %colb : tensor<512x4xi32, #blocked>
 
     %ptrs = tt.addptr %basev, %offs : tensor<512x4x!tt.ptr<i32, 3>, #blocked>, tensor<512x4xi32, #blocked>
     %vals = tt.load %ptrs : tensor<512x4x!tt.ptr<i32, 3>, #blocked>

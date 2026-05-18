@@ -203,6 +203,31 @@ struct LoadStoreConversionBase {
     return std::min<unsigned>(128 / pointeeBitWidth, contiguity);
   }
 
+#ifdef __TLE__
+  unsigned getMaxVectorSizeByAlignment(Value ptr) const {
+    auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
+    if (!tensorTy)
+      return 1;
+    auto *axisInfo = axisAnalysisPass.getAxisInfo(ptr);
+    if (!axisInfo || axisInfo->getRank() == 0)
+      return 1;
+
+    auto linAttr = ttg::toLinearEncoding(tensorTy);
+    auto order = linAttr.getOrder();
+    if (order.empty() || order[0] >= axisInfo->getRank())
+      return 1;
+
+    unsigned pointeeBitWidth = triton::getPointeeBitWidth(tensorTy);
+    if (pointeeBitWidth == 0)
+      return 1;
+    unsigned elemBytes = std::max<unsigned>(pointeeBitWidth / 8, 1);
+    unsigned maxMultipleBytes = axisInfo->getDivisibility(order[0]);
+    unsigned maxMultiple = std::max<unsigned>(maxMultipleBytes / elemBytes, 1);
+
+    return std::min<unsigned>(128 / pointeeBitWidth, maxMultiple);
+  }
+#endif
+
   unsigned getMaskAlignment(Value mask) const {
     return axisAnalysisPass.getMaskAlignment(mask);
   }
@@ -256,10 +281,13 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     bool isSharedTensorPtr =
         ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
     if (!llMask && isSharedTensorPtr) {
-      // For TLE local/shared pointer chains, AxisInfo divisibility can be
-      // conservative on packed contiguous lanes. Recover vector width from
-      // the pointer layout as a lower-bound hint.
-      vec = std::max(vec, tte::inferTlePointerLayoutVectorHint(ptr));
+      // For TLE local/shared pointer chains, AxisInfo contiguity can be
+      // conservative on packed contiguous lanes. The layout hint may recover
+      // the lane grouping, but it is only legal up to the vector width whose
+      // first element alignment is proven by AxisInfo divisibility.
+      unsigned hint = tte::inferTlePointerLayoutVectorHint(ptr);
+      unsigned alignmentBound = getMaxVectorSizeByAlignment(ptr);
+      vec = std::max(vec, std::min(hint, alignmentBound));
     }
 #endif
     unsigned numElems = getTotalElemsPerThread(ptr.getType());
