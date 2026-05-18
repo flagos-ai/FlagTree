@@ -852,8 +852,10 @@ static void scheduleTleWgmmaWaitsInBlock(
 
       scheduleTleWgmmaWaitsInBlock(ifOp.thenBlock(), resources, analysis,
                                    thenPending);
-      if (!ifOp.elseBlock()->empty())
-        scheduleTleWgmmaWaitsInBlock(ifOp.elseBlock(), resources, analysis,
+      // scf.if may omit the else region. In that case the false edge simply
+      // falls through with the incoming WGMMA groups still pending.
+      if (Block *elseBlock = ifOp.elseBlock())
+        scheduleTleWgmmaWaitsInBlock(elseBlock, resources, analysis,
                                      elsePending);
 
       pendingGroups.clear();
