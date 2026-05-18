@@ -126,6 +126,18 @@ def TTNG_WarpGroupDotWaitOp : TTNG_Op<"warp_group_dot_wait", [DeclareOpInterface
   let hasVerifier = 1;
 }
 
+#ifdef __TLE__
+def TTNG_WarpGroupDotCommitOp : TTNG_Op<"warp_group_dot_commit",
+                                        [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "warp group dot commit";
+  let description = [{
+    Commits all previously issued async warp-group dot operations into one
+    WGMMA group.  A following warp_group_dot_wait waits on committed groups.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+#endif
+
 def TTNG_InitBarrierOp : TTNG_Op<"init_barrier"> {
   let summary = "Initialize a barrier in the given shared memory allocation.";
 
@@ -226,6 +238,77 @@ def TTNG_WaitBarrierOp : TTNG_Op<"wait_barrier", [AttrSizedOperandSegments]> {
   let hasVerifier = 1;
 }
 
+#ifdef __TLE__
+def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier", [AttrSizedOperandSegments]> {
+  let summary = "perform the arrive operation on an mbarrier";
+  let description = [{
+    The `ttng.arrive_barrier` operation performs the "arrive" operation on an
+    mbarrier object in shared memory. The operation requires a `count` attribute
+    of at least 1, and decreasing the pending arrival count of the mbarrier by
+    the specific count.
+
+    The operation accepts an optional predicate. When `release_fence` is set,
+    all threads in the current warp-specialized partition perform a CTA-scope
+    release fence before the single elected thread arrives at the mbarrier.
+    When `participant_arrive` is set, `count` names the number of prefix
+    participant threads in the current partition. Each participant performs its
+    own release fence and one-unit arrive; non-participants do neither. This is
+    used when a compiler pass has proven the exact writer lanes for a shared
+    memory payload, so ordinary shared stores can be published without a full
+    partition rendezvous.
+
+    Example:
+
+    ```mlir
+    ttng.arrive_barrier %barrier, 2 : !ttg.memdesc<1xi64, #shared, #smem, mutable>
+    ttng.arrive_barrier %barrier, 1, %pred : !ttg.memdesc<1xi64, #shared, #smem, mutable>
+    ```
+  }];
+
+  let arguments = (ins
+    Arg<TTG_MemDescType, "", [MemRead<SharedMemory>, MemWrite<SharedMemory>]>:$alloc,
+    I32Attr:$count,
+    Optional<I1>:$pred,
+    Optional<I32>:$releasedIdx,
+    Variadic<TTG_MemDescType>:$releasedFields,
+    DefaultValuedAttr<BoolAttr, "false">:$release_fence,
+    DefaultValuedAttr<BoolAttr, "false">:$participant_arrive
+  );
+
+  let assemblyFormat = [{
+    $alloc `,` $count (`,` $pred^)?
+    (`released` `[` $releasedIdx^ `]` `(` $releasedFields `)`)?
+    attr-dict `:` qualified(type($alloc)) (`,` type($releasedIdx)^)?
+    (`,` type($releasedFields)^)?
+  }];
+
+  let builders = [
+    OpBuilder<(ins "Value":$alloc, "uint32_t":$count), [{
+      return build($_builder, $_state, alloc, count, /*pred=*/Value(),
+                   /*releasedIdx=*/Value(), /*releasedFields=*/ValueRange(),
+                   /*releaseFence=*/false, /*participantArrive=*/false);
+    }]>,
+    OpBuilder<(ins "Value":$alloc, "uint32_t":$count, "Value":$pred), [{
+      return build($_builder, $_state, alloc, count, pred,
+                   /*releasedIdx=*/Value(), /*releasedFields=*/ValueRange(),
+                   /*releaseFence=*/false, /*participantArrive=*/false);
+    }]>,
+    OpBuilder<(ins "Value":$alloc, "uint32_t":$count,
+                   "Value":$releasedIdx, "ValueRange":$releasedFields), [{
+      return build($_builder, $_state, alloc, count, /*pred=*/Value(),
+                   releasedIdx, releasedFields, /*releaseFence=*/false,
+                   /*participantArrive=*/false);
+    }]>,
+    OpBuilder<(ins "Value":$alloc, "uint32_t":$count, "bool":$releaseFence), [{
+      return build($_builder, $_state, alloc, count, /*pred=*/Value(),
+                   /*releasedIdx=*/Value(), /*releasedFields=*/ValueRange(),
+                   releaseFence, /*participantArrive=*/false);
+    }]>
+  ];
+
+  let hasVerifier = 1;
+}
+#else
 def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier"> {
   let summary = "perform the arrive operation on an mbarrier";
   let description = [{
@@ -262,6 +345,7 @@ def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier"> {
 
   let hasVerifier = 1;
 }
+#endif
 
 def TTNG_AsyncCopyMbarrierArriveOp : TTNG_Op<"async_copy_mbarrier_arrive"> {
   let summary = "arrive on mbarrier once all previously issued copies are completed";

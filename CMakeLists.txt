@@ -181,6 +181,41 @@ function(add_triton_library name)
   llvm_update_compile_flags(${name})
 endfunction()
 
+function(flagtree_add_tle_generated_header_dependencies)
+  if(NOT TARGET TleTableGen)
+    return()
+  endif()
+
+  set(_flagtree_tle_codegen_deps TleTableGen)
+  if(TARGET TritonTLETransformsIncGen)
+    list(APPEND _flagtree_tle_codegen_deps TritonTLETransformsIncGen)
+  endif()
+
+  # Native compiler targets include TLE generated headers under __TLE__ guards.
+  # The TLE dialect is added after the core libraries, so the dependency must be
+  # attached explicitly once the TLE tablegen targets exist; otherwise a clean
+  # parallel build can compile those libraries before the generated .inc files.
+  foreach(_flagtree_tle_header_target IN ITEMS
+      TritonAnalysis
+      TritonToTritonGPU
+      TritonGPUTransforms
+      TritonNvidiaGPUTransforms
+      TritonNVIDIAGPUToLLVM
+      TritonGPUToLLVM
+      NVHopperTransforms
+      triton
+      triton-opt
+      triton-reduce
+      triton-lsp
+      triton-llvm-opt
+      triton-tensor-layout)
+    if(TARGET ${_flagtree_tle_header_target})
+      add_dependencies(${_flagtree_tle_header_target}
+        ${_flagtree_tle_codegen_deps})
+    endif()
+  endforeach()
+endfunction()
+
 set_property(GLOBAL PROPERTY TRITON_PLUGINS "")
 function(add_triton_plugin name)
   cmake_parse_arguments(ARG "" "SHARED_LIB" "LINK_LIBS" ${ARGN})
@@ -297,6 +332,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_TLE)
     list(APPEND TRITON_PLUGIN_NAMES "tle")
     add_subdirectory(third_party/tle)
+    flagtree_add_tle_generated_header_dependencies()
   endif()
 
   if (DEFINED TRITON_PLUGIN_DIRS)
@@ -510,6 +546,7 @@ if(NOT TRITON_BUILD_PYTHON_MODULE)
   # flagtree tle
   if(FLAGTREE_TLE)
     add_subdirectory(third_party/tle)
+    flagtree_add_tle_generated_header_dependencies()
   endif()
 endif()
 
@@ -519,6 +556,9 @@ add_subdirectory(third_party/f2reduce)
 
 if(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(aipu|tsingmicro|enflame)$")
   add_subdirectory(bin)
+  if(FLAGTREE_TLE)
+    flagtree_add_tle_generated_header_dependencies()
+  endif()
   add_subdirectory(test)
 endif()
 
