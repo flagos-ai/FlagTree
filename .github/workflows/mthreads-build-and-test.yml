@@ -1,0 +1,48 @@
+name: Mthreads3.6-Build-And-Test
+
+on:
+  push:
+    branches: [ "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "triton_v3.6.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mthreads-build-and-test:
+    runs-on: mthreads3.6
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: mthreads
+
+      - name: FlagTree Build on Mthreads
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=mthreads
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on Mthreads
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          python3 -m pytest -s third_party/mthreads/python/test/unit --device musa

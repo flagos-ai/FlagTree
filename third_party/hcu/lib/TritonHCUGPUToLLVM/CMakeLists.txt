@@ -1,0 +1,48 @@
+add_triton_library(TritonHCUGPUToLLVM
+    AsyncUtility.cpp
+    AtomicRMWOpsEmitter.cpp
+    AllocateSharedMemory.cpp
+    BufferOpsEmitter.cpp
+    TensorPtrOpsToLLVM.cpp
+    ConvertLayoutOpToLLVM.cpp
+    MemoryOpToLLVM.cpp
+    MaskedOpsToLLVM.cpp
+    DotOpToLLVM/FMA.cpp
+    # DotOpToLLVM/MFMA.cpp
+    DotOpToLLVM/WMMA.cpp
+    DotOpToLLVM.cpp
+    # ElementwiseOpToLLVM.cpp
+    LoadStoreOpToLLVM.cpp
+    GCNAsmFormat.cpp
+    TritonGPUToLLVM.cpp
+    BuiltinFuncToLLVM.cpp
+    Utility.cpp
+    TargetInfo.cpp
+    TargetUtils.cpp
+    OptimizeLDSUsage.cpp
+    OptimizeLDSUtility.cpp
+    SPMDOpToLLVM.cpp
+    SchedInstructions.cpp
+    UpcastMXFPToLLVM.cpp
+    Fp4ToFpOpToLLVM.cpp
+    MembarUtility.cpp
+    ScalarizePackedFOps.cpp
+    TDMUtility.cpp
+    BarrierOpToLLVM.cpp
+    # ---- HCU code ---- #
+    DotOpToLLVM/MMAC.cpp
+    ElementwiseOpHCUToLLVM.cpp
+    MlsOpToLLVM.cpp
+    ConvertWarpSpecializeToLLVM.cpp
+
+    DEPENDS
+    TritonHCUGPUConversionPassIncGen
+    LLVMIRIncGen
+
+    LINK_LIBS PUBLIC
+    TritonGPUToLLVM
+    TritonHCUGPUIR
+    LLVMCore
+    LLVMPasses
+    LLVMSupport
+)

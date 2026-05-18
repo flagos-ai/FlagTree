@@ -1,0 +1,7 @@
+add_subdirectory(Triton)
+add_subdirectory(TritonGPU)
+add_subdirectory(TritonNvidiaGPU)
+add_subdirectory(TritonInstrument)
+add_subdirectory(Gluon)
+add_subdirectory(NVGPU)
+add_subdirectory(NVWS)

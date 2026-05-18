@@ -1,0 +1,17 @@
+set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
+
+set(LLVM_TARGET_DEFINITIONS MTGPUOps.td)
+mlir_tablegen(Dialect.h.inc -gen-dialect-decls -dialect=mtgpu)
+mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs -dialect=mtgpu)
+mlir_tablegen(Ops.h.inc -gen-op-decls)
+mlir_tablegen(Ops.cpp.inc -gen-op-defs)
+mlir_tablegen(OpsEnums.h.inc -gen-enum-decls)
+mlir_tablegen(OpsEnums.cpp.inc -gen-enum-defs)
+add_mlir_doc(MTGPUDialect MTGPUDialect dialects/ -gen-dialect-doc)
+add_mlir_doc(MTGPUOps MTGPUOps dialects/ -gen-op-doc)
+add_public_tablegen_target(MTGPUTableGen)
+
+set(LLVM_TARGET_DEFINITIONS MTGPUTypes.td)
+mlir_tablegen(MTGPUTypes.h.inc -gen-typedef-decls -typedefs-dialect=mtgpu)
+mlir_tablegen(MTGPUTypes.cpp.inc -gen-typedef-defs -typedefs-dialect=mtgpu)
+add_public_tablegen_target(MTGPUTypesIncGen)

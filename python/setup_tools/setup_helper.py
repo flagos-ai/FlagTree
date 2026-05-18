@@ -101,6 +101,14 @@ def post_install():
         backend_spec_post_install_fn()
 
 
+def write_flagtree_backend_file(triton_pkg_dir=None):
+    if triton_pkg_dir is None:
+        triton_pkg_dir = Path(__file__).resolve().parents[1] / "triton"
+    backend_value = os.environ.get("FLAGTREE_BACKEND", "")
+    dest_file = Path(triton_pkg_dir) / "FLAGTREE_BACKEND"
+    dest_file.write_text(backend_value)
+
+
 class FlagTreeCache:
 
     def __init__(self):
@@ -360,7 +368,7 @@ def handle_flagtree_backend():
         print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
         configs.extend_backends.append(flagtree_backend)
         if "editable_wheel" in sys.argv and flagtree_backend not in configs.plugin_backends:
-            ext_sourcedir = os.path.abspath(f"../third_party/{flagtree_backend}/python/{ext_sourcedir}") + "/"
+            ext_sourcedir = os.path.abspath(f"../third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
 
 
 def set_env(env_dict: dict):
@@ -454,17 +462,12 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 
 # mthreads
 cache.store(
-    file="mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64",
+    file="mthreads-llvm22",
     condition=("mthreads" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm19-glibc2.34-glibcxx3.4.30-x64_v0.1.0.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.5.0.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )
-
-cache.store(
-    file="mthreadsTritonPlugin.so", condition=("mthreads" == flagtree_backend) and (not configs.flagtree_plugin), url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.3.0.tar.gz",
-    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="2a9ca0b8")
 
 # ascend
 cache.store(
@@ -520,10 +523,10 @@ cache.store(
 
 # hcu
 cache.store(
-    file="hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64",
+    file="hcu-llvm22-b0ca808-glibc2.35-glibcxx3.4.30-ubuntu-x86_64",
     condition=("hcu" == flagtree_backend),
     url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz",
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm22-b0ca808-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.5.0.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )

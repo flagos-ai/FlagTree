@@ -3555,6 +3555,17 @@ inline void sync_check_cuda_error(cudaStream_t) { C10_CUDA_CHECK(cudaGetLastErro
     return shim + src
 
 
+@lru_cache(maxsize=None)
+def _download_trtllm_indexer_topk_source():
+    """Download source once, cache the result."""
+    try:
+        with urllib.request.urlopen(TRTLLM_INDEXER_TOPK_KERNEL_URL, timeout=20) as resp:
+            return resp.read().decode("utf-8")
+    except Exception as ex:
+        print(f"warning: failed to download trtllm indexerTopK.cu: {ex}")
+        return None
+
+
 @lru_cache(maxsize=4)
 def _load_embedded_trtllm_indexer_topk(prefill_threads: int = 512):
     try:
@@ -3563,11 +3574,8 @@ def _load_embedded_trtllm_indexer_topk(prefill_threads: int = 512):
         print(f"warning: cannot import torch cpp_extension for trtllm topk: {ex}")
         return None
 
-    try:
-        with urllib.request.urlopen(TRTLLM_INDEXER_TOPK_KERNEL_URL, timeout=20) as resp:
-            cuda_src = resp.read().decode("utf-8")
-    except Exception as ex:
-        print(f"warning: failed to download trtllm indexerTopK.cu: {ex}")
+    cuda_src = _download_trtllm_indexer_topk_source()
+    if cuda_src is None:
         return None
 
     cuda_src = _patch_trtllm_indexer_topk_source(cuda_src, prefill_threads=prefill_threads)

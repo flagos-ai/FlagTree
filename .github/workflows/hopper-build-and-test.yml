@@ -32,7 +32,7 @@ jobs:
         id: check_backend
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
-          backend: hopper
+          backend: nvidia
 
       - name: Detect Target Branch
         shell: bash

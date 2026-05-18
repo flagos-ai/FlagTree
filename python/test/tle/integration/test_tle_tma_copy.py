@@ -16,6 +16,16 @@ import triton.language as tl
 import triton.experimental.tle.language as tle
 
 
+def _has_hopper_gpu() -> bool:
+    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9
+
+
+pytestmark = pytest.mark.skipif(
+    not _has_hopper_gpu(),
+    reason="TMA copy requires NVIDIA Hopper (sm90+)",
+)
+
+
 @triton.jit
 def elementwise_tma_add_kernel(
     a_desc,
@@ -82,7 +92,6 @@ def elementwise_add(A, B, C, XBLOCK=32, YBLOCK=64):
 class TestTLETmaCopy:
     """TLE TMA Copy Integration Tests"""
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
     def test_tma_copy_basic(self):
         """Test basic TMA copy functionality with element-wise addition"""
         torch.manual_seed(42)  # Ensure reproducibility
@@ -105,7 +114,6 @@ class TestTLETmaCopy:
         expected = a + b
         torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
     def test_tma_copy_different_block_sizes(self):
         """Test TMA copy with different block sizes"""
         torch.manual_seed(123)
@@ -130,7 +138,6 @@ class TestTLETmaCopy:
             expected = a + b
             torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
     def test_tma_copy_different_dtypes(self):
         """Test TMA copy with different data types"""
         torch.manual_seed(456)
@@ -157,7 +164,6 @@ class TestTLETmaCopy:
             torch.testing.assert_close(c, expected, atol=1e-3 if dtype == torch.float16 else 1e-5,
                                        rtol=1e-3 if dtype == torch.float16 else 1e-5)
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
     def test_tma_copy_large_tensor(self):
         """Test TMA copy with larger tensors"""
         torch.manual_seed(789)
@@ -182,7 +188,6 @@ class TestTLETmaCopy:
         expected = a + b
         torch.testing.assert_close(c, expected, atol=1e-4, rtol=1e-4)
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
     def test_tma_copy_non_divisible(self):
         """Test TMA copy with non-divisible tensor dimensions"""
         torch.manual_seed(101)

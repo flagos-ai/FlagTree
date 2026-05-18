@@ -374,6 +374,7 @@ class compilation_knobs(base_knobs):
 class autotuning_knobs(base_knobs):
     cache: env_bool = env_bool("TRITON_CACHE_AUTOTUNING")
     print: env_bool = env_bool("TRITON_PRINT_AUTOTUNING")
+    adjust_block_size: env_bool = env_bool("FLAGTREE_AABS", True)  # flagtree aabs
 
 
 class LaunchHook(Protocol):
@@ -507,6 +508,28 @@ class amd_knobs(base_knobs):
     use_buffer_atomics: env_bool = env_bool("AMDGCN_USE_BUFFER_ATOMICS", True)
     # Note: This requires use_buffer_ops be true to have any effect
     buffer_ops_analyze_small_tensor_range: env_bool = env_bool("AMDGCN_ANALYZE_SMALL_TENSOR_RANGE", False)
+
+    # flagtree hcu
+    optimize_epilogue: env_bool = env_bool("OPTIMIZE_EPILOGUE", False)
+    dump_amdgcn: env_bool = env_bool("AMDGCN_ENABLE_DUMP")
+    libhip_path: env_opt_str = env_opt_str("TRITON_LIBHIP_PATH")
+
+    # We use strs so that we can have a default value based on other runtime info
+    use_block_pingpong: env_opt_bool = env_opt_bool("TRITON_HIP_USE_BLOCK_PINGPONG")
+    use_in_thread_transpose: env_opt_bool = env_opt_bool("TRITON_HIP_USE_IN_THREAD_TRANSPOSE")
+
+    use_async_copy: env_bool = env_bool("TRITON_HIP_USE_ASYNC_COPY")
+    scalarize_packed_fops: env_bool = env_bool("AMDGCN_SCALARIZE_PACKED_FOPS")
+
+
+# flagtree hcu
+class hcu_knobs(base_knobs):
+    use_buffer_ops: env_bool = env_bool("AMDGCN_USE_BUFFER_OPS", True)
+    # Note: This requires use_buffer_ops be true to have any effect
+    use_buffer_atomics: env_bool = env_bool("AMDGCN_USE_BUFFER_ATOMICS", True)
+    # Note: This requires use_buffer_ops be true to have any effect
+    buffer_ops_analyze_small_tensor_range: env_bool = env_bool("AMDGCN_ANALYZE_SMALL_TENSOR_RANGE", False)
+    optimize_epilogue: env_bool = env_bool("OPTIMIZE_EPILOGUE", False)
     dump_amdgcn: env_bool = env_bool("AMDGCN_ENABLE_DUMP")
     libhip_path: env_opt_str = env_opt_str("TRITON_LIBHIP_PATH")
 
@@ -535,6 +558,7 @@ runtime = runtime_knobs()
 language = language_knobs()
 nvidia = nvidia_knobs()
 amd = amd_knobs()
+hcu = hcu_knobs()
 proton = proton_knobs()
 
 
