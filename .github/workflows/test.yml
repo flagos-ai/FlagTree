@@ -1,4 +1,4 @@
-name: flagcicd-Hopper-Build-And-Test
+name: pr Test
 
 on:
   schedule:
@@ -13,10 +13,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  flagcicd-hopper-build-and-test:
+  pr_test:
     runs-on: ubuntu-latest
     # '>' symbol folding multiple lines of text into a single line (newline characters will be replaced with spaces)
-    # 
+    ####
     if: >
       (github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree') &&
       !(
