@@ -1608,6 +1608,40 @@ void replaceUsesAndPropagateType(
   }
 
   // Perform late replacement.
+#ifdef __TLE__
+  SmallVector<OpOperand *> nonWaitOperandsToReplace;
+  SmallVector<std::pair<ttng::WarpGroupDotWaitOp, SmallVector<unsigned>>>
+      waitOperandsToReplace;
+  for (OpOperand *operand : operandsToReplace) {
+    if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(operand->getOwner())) {
+      auto existing = llvm::find_if(waitOperandsToReplace, [&](auto &entry) {
+        return entry.first == wait;
+      });
+      if (existing == waitOperandsToReplace.end()) {
+        waitOperandsToReplace.push_back({wait, {}});
+        waitOperandsToReplace.back().second.push_back(
+            operand->getOperandNumber());
+        continue;
+      }
+      existing->second.push_back(operand->getOperandNumber());
+    } else {
+      nonWaitOperandsToReplace.push_back(operand);
+    }
+  }
+  for (OpOperand *operand : nonWaitOperandsToReplace)
+    operand->set(val);
+  for (auto &[wait, operandNumbers] : waitOperandsToReplace) {
+    // Need to update the return type on the wait op as well.
+    builder.setInsertionPointAfter(wait);
+    auto operands = llvm::to_vector(wait.getOperands());
+    for (unsigned operandNumber : operandNumbers)
+      operands[operandNumber] = val;
+    auto newWait = ttng::WarpGroupDotWaitOp::create(
+        builder, wait.getLoc(), operands, wait.getPendings());
+    wait.replaceAllUsesWith(newWait.getResults());
+    wait.erase();
+  }
+#else
   for (OpOperand *operand : operandsToReplace) {
     if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(operand->getOwner())) {
       // Need to update the return type on the wait op as well
@@ -1622,6 +1656,7 @@ void replaceUsesAndPropagateType(
       operand->set(val);
     }
   }
+#endif
 
   // Perform late op erasure.
   for (Operation *op : opsToDelete)

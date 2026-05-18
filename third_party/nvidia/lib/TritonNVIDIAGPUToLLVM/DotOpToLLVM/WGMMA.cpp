@@ -36,6 +36,13 @@ using ::mlir::triton::gpu::MemDescType;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SharedEncodingTrait;
 
+#ifdef __TLE__
+static constexpr llvm::StringLiteral
+    kTleExplicitWgmmaCommitAttr("tle.explicit_wgmma_commit");
+static constexpr llvm::StringLiteral
+    kTleWgmmaAccumulatorChainCAttr("tle.wgmma_accumulator_chain_c");
+#endif
+
 triton::nvgpu::WGMMAEltType getMmaRetType(Value d) {
   auto dTy = cast<RankedTensorType>(d.getType()).getElementType();
   if (dTy.isF32()) {
@@ -210,6 +217,10 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   unsigned N = instrMNK[1];
   unsigned K = instrMNK[2];
   bool zeroAcc = isZeroConst(c);
+#ifdef __TLE__
+  bool reuseAccumulatorChainC =
+      !zeroAcc && op->hasAttr(kTleWgmmaAccumulatorChainCAttr);
+#endif
   auto warpSize = mmaEncoding.getWarpsPerCTA();
   auto shapePerCTATile = SmallVector<unsigned>{instrMNK[0] * warpSize[0],
                                                instrMNK[1] * warpSize[1]};
@@ -219,6 +230,11 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   int numRepM = ceil<unsigned>(dShapePerCTA[0], mmaSizeM);
   int numRepN = ceil<unsigned>(dShapePerCTA[1], mmaSizeN);
   int numRepK = ceil<unsigned>(aTensorTy.getShape()[1], mmaSizeK);
+#ifdef __TLE__
+  if (reuseAccumulatorChainC && (numRepM != 1 || numRepN != 1))
+    return op->emitOpError(
+        "cannot reuse WGMMA accumulator chain C for multi-tile results");
+#endif
   DotOpMmaSmemLoader aLoader;
   SmallVector<Value> structA;
   auto warpGroups = {warpSize[0] / 4, warpSize[1]};
@@ -235,7 +251,13 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
       loc, rewriter, bTensorTy, baseB, {K, N}, 1, 3, false, dTensorTy);
   bool transB = !bLoader.getDescriptor().transposed;
 
+#ifdef __TLE__
+  SmallVector<Value> fc;
+  if (!reuseAccumulatorChainC)
+    fc = unpackLLElements(loc, loadedC, rewriter);
+#else
   auto fc = unpackLLElements(loc, loadedC, rewriter);
+#endif
 
   triton::nvgpu::WGMMAEltType eltTypeC = getMmaRetType(d);
   triton::nvgpu::WGMMAEltType eltTypeA = getMmaOperandType(a, allowTF32);
@@ -260,18 +282,26 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   SmallVector<Value> initialUseC;
   for (int m = 0; m < numRepM; ++m) {
     for (int n = 0; n < numRepN; ++n) {
-      llvm::SmallVector<Value> mmaOut =
-          loadReg(rewriter, loc, fc, (m * numRepN + n) * accSize, accSize, op);
-      llvm::SmallVector<Type> elemTypes;
-      for (Value accEl : mmaOut)
-        elemTypes.push_back(accEl.getType());
-      auto accTy =
-          LLVM::LLVMStructType::getLiteral(rewriter.getContext(), elemTypes);
       Value d;
-      Value useC = tb.i1_val(0);
-      if (!zeroAcc) {
-        d = packLLElements(loc, typeConverter, mmaOut, rewriter, accTy);
+      Value useC;
+      LLVM::LLVMStructType accTy;
+      if (reuseAccumulatorChainC) {
+        accTy = cast<LLVM::LLVMStructType>(loadedC.getType());
+        d = loadedC;
         useC = tb.i1_val(1);
+      } else {
+        llvm::SmallVector<Value> mmaOut = loadReg(
+            rewriter, loc, fc, (m * numRepN + n) * accSize, accSize, op);
+        llvm::SmallVector<Type> elemTypes;
+        for (Value accEl : mmaOut)
+          elemTypes.push_back(accEl.getType());
+        accTy =
+            LLVM::LLVMStructType::getLiteral(rewriter.getContext(), elemTypes);
+        useC = tb.i1_val(0);
+        if (!zeroAcc) {
+          d = packLLElements(loc, typeConverter, mmaOut, rewriter, accTy);
+          useC = tb.i1_val(1);
+        }
       }
       if (useCOperand)
         useC = tb.and_(useC, useCOperand);
@@ -317,7 +347,9 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
                               /*localizeDescriptor=*/true);
   }
 
-  Operation *startSequence = NVVM::WgmmaFenceAlignedOp::create(rewriter, loc);
+  Operation *startSequence = op;
+  if (!reuseAccumulatorChainC)
+    startSequence = NVVM::WgmmaFenceAlignedOp::create(rewriter, loc);
   SmallVector<Value> mmaResults;
   unsigned tileIdx = 0;
   for (int m = 0; m < numRepM; ++m) {
@@ -423,7 +455,12 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
       }
     }
   }
+#ifdef __TLE__
+  if (!op->hasAttr(kTleExplicitWgmmaCommitAttr))
+    NVVM::WgmmaGroupSyncAlignedOp::create(rewriter, loc);
+#else
   NVVM::WgmmaGroupSyncAlignedOp::create(rewriter, loc);
+#endif
 
   if (sync)
     mmaResults = emitWait(rewriter, loc, mmaResults, 0);

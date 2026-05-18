@@ -12,7 +12,10 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #ifdef __TLE__
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "llvm/ADT/DenseSet.h"
 #endif
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
@@ -45,7 +48,7 @@ static Value getWarpSpecializeCapture(Value value) {
   return captures[argNo];
 }
 
-static Value getUnderlyingMemDesc(Value value) {
+static Value stripMemDescViews(Value value) {
   while (true) {
     value = getWarpSpecializeCapture(value);
     if (auto index = value.getDefiningOp<MemDescIndexOp>()) {
@@ -76,8 +79,92 @@ static Value getUnderlyingMemDesc(Value value) {
   }
 }
 
+static bool isBackedByLocalAlloc(Value value, llvm::DenseSet<Value> &active);
+
+static bool isForIterArgBackedByLocalAlloc(BlockArgument arg,
+                                           llvm::DenseSet<Value> &active) {
+  auto forOp = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp());
+  if (!forOp)
+    return false;
+
+  unsigned argNo = arg.getArgNumber();
+  if (argNo == 0)
+    return false;
+  unsigned iterIdx = argNo - 1;
+  if (iterIdx >= forOp.getInitArgs().size())
+    return false;
+
+  if (!isBackedByLocalAlloc(forOp.getInitArgs()[iterIdx], active))
+    return false;
+
+  auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  if (!yield || iterIdx >= yield.getNumOperands())
+    return false;
+
+  return isBackedByLocalAlloc(yield.getOperand(iterIdx), active);
+}
+
+static bool isForResultBackedByLocalAlloc(scf::ForOp forOp, unsigned resultIdx,
+                                          llvm::DenseSet<Value> &active) {
+  if (resultIdx >= forOp.getInitArgs().size())
+    return false;
+  if (!isBackedByLocalAlloc(forOp.getInitArgs()[resultIdx], active))
+    return false;
+
+  auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  if (!yield || resultIdx >= yield.getNumOperands())
+    return false;
+
+  return isBackedByLocalAlloc(yield.getOperand(resultIdx), active);
+}
+
+static bool isIfResultBackedByLocalAlloc(scf::IfOp ifOp, unsigned resultIdx,
+                                         llvm::DenseSet<Value> &active) {
+  if (resultIdx >= ifOp.thenYield().getNumOperands() ||
+      resultIdx >= ifOp.elseYield().getNumOperands())
+    return false;
+
+  return isBackedByLocalAlloc(ifOp.thenYield().getOperand(resultIdx), active) &&
+         isBackedByLocalAlloc(ifOp.elseYield().getOperand(resultIdx), active);
+}
+
+static bool isBackedByLocalAlloc(Value value, llvm::DenseSet<Value> &active) {
+  value = stripMemDescViews(value);
+  if (!active.insert(value).second)
+    return true;
+
+  if (value.getDefiningOp<LocalAllocOp>())
+    return true;
+
+  if (auto select = value.getDefiningOp<arith::SelectOp>())
+    return isBackedByLocalAlloc(select.getTrueValue(), active) &&
+           isBackedByLocalAlloc(select.getFalseValue(), active);
+
+  if (auto arg = dyn_cast<BlockArgument>(value))
+    return isForIterArgBackedByLocalAlloc(arg, active);
+
+  auto result = dyn_cast<OpResult>(value);
+  if (!result)
+    return false;
+
+  if (auto forOp = dyn_cast<scf::ForOp>(result.getOwner()))
+    return isForResultBackedByLocalAlloc(forOp, result.getResultNumber(),
+                                         active);
+  if (auto ifOp = dyn_cast<scf::IfOp>(result.getOwner()))
+    return isIfResultBackedByLocalAlloc(ifOp, result.getResultNumber(), active);
+
+  return false;
+}
+
 static bool isBackedByLocalAlloc(Value value) {
-  return getUnderlyingMemDesc(value).getDefiningOp<LocalAllocOp>() != nullptr;
+  llvm::DenseSet<Value> active;
+  return isBackedByLocalAlloc(value, active);
+}
+
+static void
+preserveWarpGroupDotAttrs(triton::nvidia_gpu::WarpGroupDotOp oldDot,
+                          triton::nvidia_gpu::WarpGroupDotOp newDot) {
+  newDot->setAttrs(oldDot->getAttrDictionary());
 }
 
 static SmallVector<int64_t> getPermutedAllocShape(MemDescType srcTy,
@@ -307,10 +394,28 @@ public:
     if (!isBackedByLocalAlloc(srcMemDesc))
       return failure();
 
+    // The descriptor view models `trans(local_load(srcMemDesc))` directly over
+    // the original slot.  Do not inherit the canonical staging trans result
+    // encoding: AccelerateMatmul may represent the staging path as a
+    // transposed local_alloc followed by a memdesc_trans back to the logical
+    // dot shape, while the WGMMA descriptor must keep the source-derived
+    // transposed shared encoding.
+    Attribute viewEncoding;
+    Dialect &srcDialect = srcMemDescTy.getEncoding().getDialect();
+    auto srcInferLayoutInterface =
+        cast<DialectInferLayoutInterface>(&srcDialect);
+    if (failed(srcInferLayoutInterface->inferTransOpEncoding(
+            srcMemDescTy.getEncoding(), srcMemDescTy.getShape(),
+            transOp.getOrder(), viewEncoding, transOp.getLoc())))
+      return failure();
+
+    if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(viewEncoding))
+      return failure();
+
     auto viewShape =
         applyPermutation(srcMemDescTy.getShape(), transOp.getOrder());
     auto viewTy = MemDescType::get(
-        viewShape, srcMemDescTy.getElementType(), transTy.getEncoding(),
+        viewShape, srcMemDescTy.getElementType(), viewEncoding,
         srcMemDescTy.getMemorySpace(), srcMemDescTy.getMutableMemory(),
         getPermutedAllocShape(srcMemDescTy, transOp.getOrder()));
     rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
@@ -388,11 +493,23 @@ public:
         }))
       return failure();
 
+    Attribute viewEncoding;
+    Dialect &srcDialect = srcMemDescTy.getEncoding().getDialect();
+    auto srcInferLayoutInterface =
+        cast<DialectInferLayoutInterface>(&srcDialect);
+    if (failed(srcInferLayoutInterface->inferTransOpEncoding(
+            srcMemDescTy.getEncoding(), srcMemDescTy.getShape(),
+            trans.getOrder(), viewEncoding, allocOp.getLoc())))
+      return failure();
+
+    if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(viewEncoding))
+      return failure();
+
     rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
     rewriter.setInsertionPoint(allocOp);
     auto viewTy =
         MemDescType::get(transposedShape, srcMemDescTy.getElementType(),
-                         allocTy.getEncoding(), srcMemDescTy.getMemorySpace(),
+                         viewEncoding, srcMemDescTy.getMemorySpace(),
                          srcMemDescTy.getMutableMemory(),
                          getPermutedAllocShape(srcMemDescTy, trans.getOrder()));
     auto view = triton::tle::MemDescWGMMAViewOp::create(
@@ -481,6 +598,7 @@ public:
         rewriter, dotOp.getLoc(), dotOp.getD().getType(), view, dotOp.getB(),
         dotOp.getC(), dotOp.getUseC(), dotOp.getInputPrecision(),
         dotOp.getMaxNumImpreciseAcc(), dotOp.getIsAsync());
+    preserveWarpGroupDotAttrs(dotOp, newDot);
     rewriter.replaceOp(dotOp, newDot.getD());
 
     if (cvt->use_empty())
@@ -579,6 +697,7 @@ public:
         rewriter, dotOp.getLoc(), dotOp.getD().getType(), view, dotOp.getB(),
         dotOp.getC(), dotOp.getUseC(), dotOp.getInputPrecision(),
         dotOp.getMaxNumImpreciseAcc(), dotOp.getIsAsync());
+    preserveWarpGroupDotAttrs(dotOp, newDot);
     rewriter.replaceOp(dotOp, newDot.getD());
 
     if (localLoad->use_empty())
@@ -636,6 +755,7 @@ public:
         rewriter, dotOp.getLoc(), dotOp.getD().getType(), srcMemDesc,
         dotOp.getB(), dotOp.getC(), dotOp.getUseC(), dotOp.getInputPrecision(),
         dotOp.getMaxNumImpreciseAcc(), dotOp.getIsAsync());
+    preserveWarpGroupDotAttrs(dotOp, newDot);
     rewriter.replaceOp(dotOp, newDot.getD());
     return success();
   }
@@ -917,7 +1037,8 @@ public:
                  ReuseTransposedLocalLoadAllocAsWGMMAOperand,
                  ReuseTransposedLocalLoadConvertAsWGMMAA,
                  ReuseTransposedLocalLoadAllocAsWGMMAA,
-                 ReuseLocalLoadAsWGMMAA, ReuseLocalLoadAllocAsWGMMAB>(context);
+                 ReuseLocalLoadAsWGMMAA,
+                 ReuseLocalLoadAllocAsWGMMAB>(context);
 #endif
     patterns.add<UseShmemForScales>(context);
     ConvertLayoutOp::getCanonicalizationPatterns(patterns, context);

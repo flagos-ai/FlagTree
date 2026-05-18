@@ -299,10 +299,17 @@ def NVWS_ConsumerReleaseOp : NVWS_Op<"consumer_release"> {
   let arguments = (ins
     TensorOf<[NVWS_TokenType]>:$token,
     I32:$idx,
+#ifdef __TLE__
+    Variadic<TTG_MemDescType>:$releasedFields,
+#endif
     OptionalAttr<I32Attr>:$release_count
   );
 
+#ifdef __TLE__
+  let assemblyFormat = "$token `,` $idx (`,` $releasedFields^)? attr-dict `:` type(operands)";
+#else
   let assemblyFormat = "$token `,` $idx attr-dict `:` type(operands)";
+#endif
   let hasVerifier = 1;
 }
 

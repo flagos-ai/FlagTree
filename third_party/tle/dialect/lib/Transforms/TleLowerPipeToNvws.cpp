@@ -15,6 +15,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <map>
 #include <optional>
 
@@ -44,6 +45,7 @@ struct PipeState {
   bool oneShot;
   std::optional<int32_t> writerTaskId;
   std::optional<int32_t> writerThreadCount;
+  std::optional<int32_t> writerFullCount;
   std::map<std::string, std::pair<int32_t, int32_t>> readerTasks;
   std::optional<PipeCommitTransport> dataTransport;
 };
@@ -171,6 +173,13 @@ static Value canonicalizePipeField(Value field) {
     field = captures[argNo];
   }
   return field;
+}
+
+static Value stripConvertLayouts(Value value) {
+  Value current = value;
+  while (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>())
+    current = cvt.getSrc();
+  return current;
 }
 
 static Value getMemDescRoot(Value value) {
@@ -333,15 +342,21 @@ static LogicalResult recordWriterTask(PipeState &state, Operation *op,
     return op->emitOpError("uses writer thread count ")
            << threadCount << " but pipe already has writer thread count "
            << *state.writerThreadCount;
-  for (const auto &reader : state.readerTasks) {
-    if (reader.second.first == taskId)
-      return op->emitOpError("uses the same async_task_id as pipe reader ")
-             << reader.first << "; writer and reader must be in different "
-             << "warp-specialize partitions";
-  }
   state.writerTaskId = taskId;
   state.writerThreadCount = threadCount;
-  setTokenCount(state.token, "full_count", threadCount);
+  return success();
+}
+
+static LogicalResult setWriterFullCount(PipeState &state, Operation *op,
+                                        int32_t count) {
+  if (state.writerFullCount && *state.writerFullCount != count)
+    return op->emitOpError("requires pipe full barrier count ")
+           << count << " but pipe already uses full barrier count "
+           << *state.writerFullCount
+           << "; local-store pipe commits on one pipe must have one proven "
+              "writer participant contract";
+  state.writerFullCount = count;
+  setTokenCount(state.token, "full_count", count);
   return success();
 }
 
@@ -403,10 +418,6 @@ static LogicalResult recordReaderTask(PipeState &state, Operation *op,
              << " but that reader already has thread count "
              << it->second.second;
   }
-  if (state.writerTaskId && *state.writerTaskId == taskId)
-    return op->emitOpError("uses the same async_task_id as the pipe "
-                           "writer; writer and reader must be in "
-                           "different warp-specialize partitions");
   state.readerTasks[readerName.str()] = {taskId, threadCount};
   if (updateEmptyCountForReader)
     updateTokenEmptyCount(state);
@@ -435,6 +446,197 @@ static LogicalResult recordDataTransport(PipeState &state, Operation *op,
               "a per-pipe contract";
   state.dataTransport = transport;
   return success();
+}
+
+static bool isSharedPointer(Value value) {
+  Type type = value.getType();
+  if (auto tensorTy = dyn_cast<RankedTensorType>(type))
+    type = tensorTy.getElementType();
+  auto ptrTy = dyn_cast<tt::PointerType>(type);
+  return ptrTy && ptrTy.getAddressSpace() == 3;
+}
+
+static bool isGlobalPointer(Value value) {
+  Type type = value.getType();
+  if (auto tensorTy = dyn_cast<RankedTensorType>(type))
+    type = tensorTy.getElementType();
+  auto ptrTy = dyn_cast<tt::PointerType>(type);
+  return ptrTy && ptrTy.getAddressSpace() == 1;
+}
+
+static bool sameIndexValue(Value lhs, Value rhs) {
+  if (lhs == rhs)
+    return true;
+  auto lhsCst = lhs.getDefiningOp<arith::ConstantIntOp>();
+  auto rhsCst = rhs.getDefiningOp<arith::ConstantIntOp>();
+  if (lhsCst && rhsCst)
+    return lhsCst.value() == rhsCst.value();
+  auto lhsIdx = lhs.getDefiningOp<arith::ConstantIndexOp>();
+  auto rhsIdx = rhs.getDefiningOp<arith::ConstantIndexOp>();
+  if (lhsIdx && rhsIdx)
+    return lhsIdx.value() == rhsIdx.value();
+  return false;
+}
+
+static std::optional<int32_t>
+inferPrefixParticipants(Type valueType, int32_t taskThreadCount) {
+  auto tensorTy = dyn_cast<RankedTensorType>(valueType);
+  if (!tensorTy || !tensorTy.hasStaticShape() ||
+      !isa<ttg::BlockedEncodingAttr>(tensorTy.getEncoding()))
+    return std::nullopt;
+
+  int64_t numElements = tensorTy.getNumElements();
+  if (numElements <= 0)
+    return std::nullopt;
+  unsigned elemsPerThread = ttg::getTotalElemsPerThread(tensorTy);
+  if (elemsPerThread == 0)
+    return std::nullopt;
+
+  int64_t participants =
+      (numElements + elemsPerThread - 1) / elemsPerThread;
+  if (participants <= 0)
+    return std::nullopt;
+  return static_cast<int32_t>(
+      std::min<int64_t>(participants, taskThreadCount));
+}
+
+struct LocalStoreTarget {
+  Value memdesc;
+  Type valueType;
+};
+
+static std::optional<LocalStoreTarget> getLocalStoreTarget(Operation *op) {
+  if (auto localStore = dyn_cast<ttg::LocalStoreOp>(op))
+    return LocalStoreTarget{localStore.getDst(), localStore.getSrc().getType()};
+
+  auto store = dyn_cast<tt::StoreOp>(op);
+  if (!store)
+    return std::nullopt;
+
+  Value ptr = stripConvertLayouts(store.getPtr());
+  while (auto addPtr = ptr.getDefiningOp<tt::AddPtrOp>())
+    ptr = stripConvertLayouts(addPtr.getPtr());
+  auto localPointers = ptr.getDefiningOp<LocalPointersOp>();
+  if (!localPointers)
+    return std::nullopt;
+  return LocalStoreTarget{localPointers.getSrc(), store.getValue().getType()};
+}
+
+static std::optional<Value>
+getCommitFieldRootForStore(Value memdesc, PipeWriterCommitOp commit) {
+  Value current = canonicalizePipeField(memdesc);
+  bool sawStageIndex = false;
+  while (true) {
+    if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
+      if (!sameIndexValue(index.getIndex(), commit.getStage()))
+        return std::nullopt;
+      sawStageIndex = true;
+      current = canonicalizePipeField(index.getSrc());
+      continue;
+    }
+    if (auto subslice = current.getDefiningOp<ttg::MemDescSubsliceOp>()) {
+      current = canonicalizePipeField(subslice.getSrc());
+      continue;
+    }
+    break;
+  }
+
+  if (!sawStageIndex && getPipeCapacity(commit.getOperation()) != 1)
+    return std::nullopt;
+  return current;
+}
+
+static bool canInterleaveBeforeLocalStorePipeCommit(Operation *op) {
+  if (op->getNumRegions() != 0 || op->hasTrait<OpTrait::IsTerminator>())
+    return false;
+  if (isMemoryEffectFree(op))
+    return true;
+  if (auto load = dyn_cast<tt::LoadOp>(op))
+    return !load.getIsVolatile() && isGlobalPointer(load.getPtr());
+  if (auto store = dyn_cast<tt::StoreOp>(op)) {
+    if (getLocalStoreTarget(op))
+      return true;
+    return isGlobalPointer(store.getPtr());
+  }
+  if (isa<ttg::LocalStoreOp>(op))
+    return true;
+  return false;
+}
+
+static std::optional<int32_t>
+inferLocalStoreParticipantCount(PipeWriterCommitOp commit,
+                                int32_t taskThreadCount, Value token) {
+  llvm::DenseSet<Value> fieldRoots;
+  for (Value field : commit.getFields()) {
+    Value root = getMemDescRoot(field);
+    // If multiple logical fields share one root allocation, root-only alias
+    // reasoning cannot distinguish which field was written. Keep the full
+    // partition contract rather than publish a partially observed payload.
+    if (!fieldRoots.insert(root).second)
+      return std::nullopt;
+  }
+
+  llvm::DenseSet<Value> storedRoots;
+  std::optional<int32_t> participants;
+  bool sawLocalStore = false;
+  std::string commitKey = getPipeKey(commit.getOperation());
+
+  for (Operation *prev = commit->getPrevNode(); prev; prev = prev->getPrevNode()) {
+    if (prev == token.getDefiningOp())
+      break;
+    if (auto acquire = dyn_cast<ttnvws::ProducerAcquireOp>(prev)) {
+      if (acquire.getToken() == token &&
+          sameIndexValue(acquire.getIdx(), commit.getStage()))
+        break;
+      return std::nullopt;
+    }
+    if (auto acquire = dyn_cast<PipeWriterAcquireOp>(prev)) {
+      if (getPipeKey(acquire.getOperation()) == commitKey)
+        break;
+      return std::nullopt;
+    }
+    if (auto create = dyn_cast<PipeCreateOp>(prev)) {
+      if (getPipeKey(create.getOperation()) == commitKey)
+        break;
+      return std::nullopt;
+    }
+    if (isPipeLifecycleOp(prev))
+      return std::nullopt;
+
+    std::optional<LocalStoreTarget> target = getLocalStoreTarget(prev);
+    if (target) {
+      std::optional<Value> root =
+          getCommitFieldRootForStore(target->memdesc, commit);
+      if (!root)
+        return std::nullopt;
+      if (fieldRoots.contains(*root)) {
+        std::optional<int32_t> count =
+            inferPrefixParticipants(target->valueType, taskThreadCount);
+        if (!count)
+          return std::nullopt;
+        participants = participants ? std::max(*participants, *count) : *count;
+        storedRoots.insert(*root);
+        sawLocalStore = true;
+      }
+      continue;
+    }
+
+    if (auto store = dyn_cast<tt::StoreOp>(prev)) {
+      if (isSharedPointer(store.getPtr()))
+        return std::nullopt;
+    }
+
+    if (!canInterleaveBeforeLocalStorePipeCommit(prev))
+      return std::nullopt;
+  }
+
+  if (!sawLocalStore || !participants)
+    return std::nullopt;
+  for (Value root : fieldRoots) {
+    if (!storedRoots.contains(root))
+      return std::nullopt;
+  }
+  return participants;
 }
 
 static LogicalResult verifyTmaCopyTypes(ttg::TMACopyOp op) {
@@ -613,6 +815,7 @@ static PipeState createPipeState(PipeCreateOp op) {
                   oneShot,
                   /*writerTaskId=*/std::nullopt,
                   /*writerThreadCount=*/std::nullopt,
+                  /*writerFullCount=*/std::nullopt,
                   /*readerTasks=*/{},
                   /*dataTransport=*/std::nullopt};
   op.erase();
@@ -739,11 +942,6 @@ public:
           return;
         }
         auto threadCount = getTaskThreadCount(op);
-        if (failed(threadCount) ||
-            failed(recordWriterTask(state, op, *taskId, *threadCount))) {
-          signalPassFailure();
-          return;
-        }
         FailureOr<bool> tmaCommit = isTmaPipeCommit(commit);
         if (failed(tmaCommit)) {
           signalPassFailure();
@@ -758,8 +956,26 @@ public:
           signalPassFailure();
           return;
         }
+        if (failed(threadCount) ||
+            failed(recordWriterTask(state, op, *taskId, *threadCount))) {
+          signalPassFailure();
+          return;
+        }
 
         Value token = getWarpSpecializeCaptureForUse(op, state.token);
+        std::optional<int32_t> participantCount;
+        if (transport == PipeCommitTransport::LocalStore)
+          participantCount =
+              inferLocalStoreParticipantCount(commit, *threadCount, token);
+        if (transport == PipeCommitTransport::LocalStore ||
+            transport == PipeCommitTransport::CpAsync) {
+          int32_t fullCount = participantCount.value_or(*threadCount);
+          if (failed(setWriterFullCount(state, op, fullCount))) {
+            signalPassFailure();
+            return;
+          }
+        }
+
         auto nvwsOp = ttnvws::ProducerCommitOp::create(
             builder, loc, token, commit.getStage());
         setRoleTaskId(op, nvwsOp.getOperation(), *taskId);
@@ -776,6 +992,12 @@ public:
               ttnvws::ProducerCommitKindAttr::get(
                   builder.getContext(),
                   ttnvws::ProducerCommitKind::AsyncCopyMbarrierArrive));
+        } else if (participantCount) {
+          nvwsOp->setAttr(
+              nvwsOp.getCommitKindAttrName(),
+              ttnvws::ProducerCommitKindAttr::get(
+                  builder.getContext(),
+                  ttnvws::ProducerCommitKind::ParticipantBarrierArrive));
         }
         commit.erase();
         continue;
@@ -796,6 +1018,10 @@ public:
         auto threadCount = getTaskThreadCount(op);
         if (failed(threadCount) ||
             failed(recordWriterTask(state, op, *taskId, *threadCount))) {
+          signalPassFailure();
+          return;
+        }
+        if (failed(setWriterFullCount(state, op, *threadCount))) {
           signalPassFailure();
           return;
         }
@@ -873,8 +1099,12 @@ public:
       }
       Value token = getWarpSpecializeCaptureForUse(op, state.token);
       auto releaseCountAttr = builder.getI32IntegerAttr(*threadCount);
+      SmallVector<Value> releasedFields;
+      for (Value field : release.getFields())
+        releasedFields.push_back(getWarpSpecializeCaptureForUse(op, field));
       auto nvwsOp = ttnvws::ConsumerReleaseOp::create(
-          builder, loc, token, release.getStage(), releaseCountAttr);
+          builder, loc, token, release.getStage(), releasedFields,
+          releaseCountAttr);
       setRoleTaskId(op, nvwsOp.getOperation(), *taskId);
       release.erase();
     }

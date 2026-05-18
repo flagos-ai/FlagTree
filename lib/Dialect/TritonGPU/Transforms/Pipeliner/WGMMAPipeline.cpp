@@ -1,10 +1,10 @@
 #include "mlir/Analysis/SliceAnalysis.h"
+#ifdef __TLE__
+#include "TleWGMMAAnalysis.h"
+#endif
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LLVM.h"
-#ifdef __TLE__
-#include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
-#endif
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -33,9 +33,6 @@ using namespace mlir;
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
-#ifdef __TLE__
-namespace ttnvws = mlir::triton::nvws;
-#endif
 
 #ifdef __TLE__
 static constexpr llvm::StringLiteral
@@ -75,79 +72,6 @@ static bool rsDotNeedsWait(Operation *dot, scf::ForOp forOp) {
   }
   return true;
 }
-
-#ifdef __TLE__
-// A non-zero accumulator that is not produced by another WGMMA requires
-// ordinary register materialization before the WGMMA can consume it as C. If
-// such prep is placed before the first wait while an older async group is still
-// pending, ptxas treats it as an accumulator definition inside the WGMMA
-// pipeline and serializes the following WGMMA group.
-static bool warpGroupDotNeedsAccumulatorPrewrite(ttng::WarpGroupDotOp dotOp) {
-  Value acc = dotOp.getC();
-  if (isZeroConst(acc))
-    return false;
-
-  while (Operation *def = acc.getDefiningOp()) {
-    if (isNoop(def)) {
-      assert(def->getNumOperands() == 1 && def->getNumResults() == 1 &&
-             "Expected no-op accumulator def to be single-input single-output");
-      acc = def->getOperand(0);
-      continue;
-    }
-    return !isa<ttng::WarpGroupDotOp>(def);
-  }
-
-  return false;
-}
-
-static bool hasAccumulatorPrewriteBeforeWait(scf::ForOp forOp,
-                                             ttng::WarpGroupDotWaitOp waitOp) {
-  for (Operation &op : forOp.getBody()->without_terminator()) {
-    if (&op == waitOp.getOperation())
-      return false;
-    auto dotOp = dyn_cast<ttng::WarpGroupDotOp>(op);
-    if (dotOp && warpGroupDotNeedsAccumulatorPrewrite(dotOp))
-      return true;
-  }
-  return false;
-}
-
-static bool canDeferWaitToLaterWarpGroupDotC(ttng::WarpGroupDotOp dotOp,
-                                             scf::ForOp forOp) {
-  SmallVector<Value> queue = {dotOp.getResult()};
-  llvm::SmallDenseSet<Value, 8> visited;
-  bool hasLaterWarpGroupDotCUse = false;
-
-  while (!queue.empty()) {
-    Value value = queue.pop_back_val();
-    if (!visited.insert(value).second)
-      continue;
-
-    for (OpOperand &use : value.getUses()) {
-      Operation *user = use.getOwner();
-      if (user->getParentOp() != forOp)
-        return false;
-
-      if (isNoop(user)) {
-        if (user->getNumResults() != 1)
-          return false;
-        queue.push_back(user->getResult(0));
-        continue;
-      }
-
-      auto userDot = dyn_cast<ttng::WarpGroupDotOp>(user);
-      if (!userDot || use.getOperandNumber() != 2)
-        return false;
-      if (userDot->getBlock() != dotOp->getBlock() ||
-          !dotOp->isBeforeInBlock(userDot))
-        return false;
-      hasLaterWarpGroupDotCUse = true;
-    }
-  }
-
-  return hasLaterWarpGroupDotCUse;
-}
-#endif
 
 /// Find the minimum number of async_commit_group ops between the wait
 /// and the associated async_commit_group. This can be safely used as the wait
@@ -633,44 +557,6 @@ static std::optional<int> dotCanBeProperlyAsync(ttng::WarpGroupDotOp dotOp,
   auto waitOps = forOp.getBody()->getOps<ttng::WarpGroupDotWaitOp>();
   auto firstWaitOpIter = llvm::find_if(
       waitOps, [&](auto waitOp) { return waitOp.getPendings() == 0; });
-#ifdef __TLE__
-  // The upstream Rule 3b only checks that loop-carried accumulator users are
-  // after a wait. For TLE kernels, that is not sufficient when the wait is
-  // before this dot in the loop body: the dot would stay pending across the
-  // backedge and ptxas inserts a hidden wait/serialization. Require the wait
-  // that protects Rule 3b to be after this dot in the same loop iteration.
-  if (firstWaitOpIter != waitOps.end()) {
-    if (!dotOp->isBeforeInBlock(*firstWaitOpIter)) {
-      LDBG("Can't make dot async because the first warp_group_dot_wait "
-           "{pendings=0} is before the dot, which would leave the WGMMA "
-           "pipeline stage open across the loop backedge.");
-      return std::nullopt;
-    }
-
-    if (llvm::all_of(iterArg.getUsers(), [&](Operation *user) {
-          assert(forOp->isAncestor(user));
-          while (user->getParentOp() != forOp) {
-            user = user->getParentOp();
-          }
-          return (*firstWaitOpIter)->isBeforeInBlock(user);
-        })) {
-      if (hasAccumulatorPrewriteBeforeWait(forOp, *firstWaitOpIter)) {
-        LDBG("Can't make dot async because a WGMMA before the first "
-             "warp_group_dot_wait {pendings=0} needs non-WGMMA accumulator "
-             "initialization.");
-        return std::nullopt;
-      }
-
-      LDBG("MMAv3 dot can be properly async because it follows a "
-           "warp_group_dot_wait "
-           "{pendings=0}.\n"
-           << "  wait: " << *firstWaitOpIter << "\n"
-           << "  dot: " << dotOp);
-      threadValuesThroughWait(*firstWaitOpIter, {iterArg});
-      return iterArgIdx;
-    }
-  }
-#else
   if (firstWaitOpIter != waitOps.end() &&
       llvm::all_of(iterArg.getUsers(), [&](Operation *user) {
         assert(forOp->isAncestor(user));
@@ -687,7 +573,6 @@ static std::optional<int> dotCanBeProperlyAsync(ttng::WarpGroupDotOp dotOp,
     threadValuesThroughWait(*firstWaitOpIter, {iterArg});
     return iterArgIdx;
   }
-#endif
 
   LDBG("Can't make dot async because its result from i-1 is used by "
        "something other than another MMAv3 dot as the `c` operand.");
@@ -695,28 +580,338 @@ static std::optional<int> dotCanBeProperlyAsync(ttng::WarpGroupDotOp dotOp,
 }
 
 #ifdef __TLE__
-static bool hasSharedMemDescOperand(ttng::WarpGroupDotOp dotOp) {
-  return isa<ttg::MemDescType>(dotOp.getA().getType()) ||
-         isa<ttg::MemDescType>(dotOp.getB().getType());
+namespace mlir::triton::gpu::detail {
+
+static constexpr llvm::StringLiteral
+    kTleExplicitWgmmaCommitAttr("tle.explicit_wgmma_commit");
+static constexpr llvm::StringLiteral
+    kTleWgmmaAccumulatorChainCAttr("tle.wgmma_accumulator_chain_c");
+
+static Value getWarpGroupDotWaitSource(Value value) {
+  while (auto result = dyn_cast<OpResult>(value)) {
+    auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(result.getOwner());
+    if (!wait)
+      break;
+    unsigned resultNo = result.getResultNumber();
+    if (resultNo >= wait.getNumOperands())
+      break;
+    value = wait.getOperand(resultNo);
+  }
+  return value;
 }
 
-static bool
-hasTlePipeLifetimeBoundaryBeforeFullWgmmaWait(ttng::WarpGroupDotOp dotOp) {
-  if (!hasSharedMemDescOperand(dotOp))
-    return false;
-
-  for (Operation *op = dotOp->getNextNode(); op; op = op->getNextNode()) {
-    if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(op)) {
-      if (wait.getPendings() == 0)
-        return false;
-    }
-    if (isa<ttnvws::ConsumerReleaseOp, ttng::ArriveBarrierOp>(op))
-      return true;
-    if (op->hasTrait<OpTrait::IsTerminator>())
-      return false;
+static Value skipNoopDefs(Value value) {
+  while (Operation *def = value.getDefiningOp()) {
+    if (!isNoop(def) || def->getNumOperands() != 1 ||
+        def->getNumResults() != 1)
+      break;
+    value = def->getOperand(0);
   }
+  return value;
+}
+
+static ttng::WarpGroupDotOp getAccumulatorChainSourceDot(Value value) {
+  return skipNoopDefs(value).getDefiningOp<ttng::WarpGroupDotOp>();
+}
+
+static bool valueDependsOn(Value value, Value root,
+                           llvm::SmallDenseSet<Value, 8> &visited) {
+  value = getWarpGroupDotWaitSource(value);
+  if (!visited.insert(value).second)
+    return false;
+  if (value == root)
+    return true;
+
+  if (Operation *def = value.getDefiningOp()) {
+    if (isNoop(def)) {
+      for (Value operand : def->getOperands()) {
+        if (valueDependsOn(operand, root, visited))
+          return true;
+      }
+      return false;
+    }
+
+    if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+      auto result = cast<OpResult>(value);
+      unsigned resultNo = result.getResultNumber();
+      if (resultNo < ifOp.thenYield().getNumOperands() &&
+          valueDependsOn(ifOp.thenYield().getOperand(resultNo), root, visited))
+        return true;
+      if (resultNo < ifOp.elseYield().getNumOperands() &&
+          valueDependsOn(ifOp.elseYield().getOperand(resultNo), root, visited))
+        return true;
+    }
+  }
+
   return false;
 }
+
+static bool valueDependsOn(Value value, Value root) {
+  llvm::SmallDenseSet<Value, 8> visited;
+  return valueDependsOn(value, root, visited);
+}
+
+static bool containsPendingDot(ArrayRef<PendingSharedWgmmaGroup> pendingGroups,
+                               Operation *dotOp) {
+  return llvm::any_of(pendingGroups, [&](const PendingSharedWgmmaGroup &group) {
+    return llvm::any_of(group.dots, [&](ttng::WarpGroupDotOp dot) {
+      return dot.getOperation() == dotOp;
+    });
+  });
+}
+
+static std::optional<unsigned>
+findPendingGroupForValue(Value value,
+                         ArrayRef<PendingSharedWgmmaGroup> pendingGroups) {
+  for (auto indexed : llvm::enumerate(pendingGroups)) {
+    for (ttng::WarpGroupDotOp dot : indexed.value().dots) {
+      if (valueDependsOn(value, dot.getResult()))
+        return indexed.index();
+    }
+  }
+  return std::nullopt;
+}
+
+static bool isAllowedAccumulatorChainUse(
+    Operation *op, OpOperand &use, const TleWgmmaScheduleAnalysis &analysis) {
+  auto dot = dyn_cast<ttng::WarpGroupDotOp>(op);
+  return dot && use.getOperandNumber() == 2 &&
+         analysis.canReuseAccumulatorChainC(dot);
+}
+
+static std::optional<unsigned> findLastMaterializedPendingGroup(
+    Operation *op, ArrayRef<PendingSharedWgmmaGroup> pendingGroups,
+    const TleWgmmaScheduleAnalysis &analysis,
+    SmallVectorImpl<Value> &materializedValues) {
+  std::optional<unsigned> lastIndex;
+  for (OpOperand &use : op->getOpOperands()) {
+    Value operand = use.get();
+    if (isa<ttg::MemDescType>(operand.getType()))
+      continue;
+    if (isAllowedAccumulatorChainUse(op, use, analysis))
+      continue;
+
+    std::optional<unsigned> index =
+        findPendingGroupForValue(operand, pendingGroups);
+    if (!index)
+      continue;
+
+    materializedValues.push_back(operand);
+    if (!lastIndex || *lastIndex < *index)
+      lastIndex = index;
+  }
+  return lastIndex;
+}
+
+static ttng::WarpGroupDotWaitOp
+insertWgmmaWaitBefore(Operation *op, unsigned lastCompletedGroup,
+                      SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups,
+                      ArrayRef<Value> forwardedValues) {
+  assert(lastCompletedGroup < pendingGroups.size() &&
+         "expected a valid pending group index");
+  unsigned pendings = pendingGroups.size() - lastCompletedGroup - 1;
+  IRRewriter builder(op->getContext());
+  builder.setInsertionPoint(op);
+
+  auto wait = ttng::WarpGroupDotWaitOp::create(
+      builder, op->getLoc(), ArrayRef<Value>{}, pendings);
+
+  SmallVector<Value, 4> waitOperands(forwardedValues.begin(),
+                                     forwardedValues.end());
+  if (waitOperands.empty()) {
+    for (unsigned i = 0; i <= lastCompletedGroup; ++i) {
+      assert(!pendingGroups[i].dots.empty() &&
+             "pending WGMMA group must contain at least one dot");
+      waitOperands.push_back(pendingGroups[i].dots.back().getResult());
+    }
+  }
+  ::threadValuesThroughWait(wait, waitOperands);
+
+  pendingGroups.erase(pendingGroups.begin(),
+                      pendingGroups.begin() + lastCompletedGroup + 1);
+  return wait;
+}
+
+static void consumeExistingWait(
+    ttng::WarpGroupDotWaitOp wait,
+    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+  unsigned completedCount =
+      pendingGroups.size() -
+      std::min<unsigned>(pendingGroups.size(), wait.getPendings());
+  pendingGroups.erase(pendingGroups.begin(),
+                      pendingGroups.begin() + completedCount);
+}
+
+static void drainForMaterializedOperands(
+    Operation *op, const TleWgmmaScheduleAnalysis &analysis,
+    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+  // Data-dependence rule: a pending WGMMA result is not materialized until a
+  // matching wgmma.wait_group completes. Any non-accumulator-chain user (for
+  // example softmax, local_store to a ready buffer, or global store) must wait
+  // before it reads the accumulator value. If that user later arrives on a
+  // ready/full barrier, the wait belongs here, before producing the ready data,
+  // not at the barrier itself.
+  SmallVector<Value, 4> materializedValues;
+  std::optional<unsigned> lastIndex = findLastMaterializedPendingGroup(
+      op, pendingGroups, analysis, materializedValues);
+  if (!lastIndex)
+    return;
+  insertWgmmaWaitBefore(op, *lastIndex, pendingGroups, materializedValues);
+}
+
+static void drainForLifetimeBoundary(
+    Operation *op, const TlePipeResourceAnalysis &resources,
+    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+  // Lifetime rule: releasing/freeing storage lets a producer overwrite it, so
+  // all pending WGMMA groups that may still read that storage must be waited
+  // before the release/empty arrive. Plain ready/full arrives are intentionally
+  // excluded by TlePipeResourceAnalysis::isLifetimeBoundary; they only publish
+  // data to readers and do not grant write/reuse permission.
+  if (!resources.isLifetimeBoundary(op))
+    return;
+
+  SmallVector<MemDescResource, 2> releasedResources =
+      resources.getBoundaryReleasedResources(op);
+  std::optional<unsigned> lastConflictIndex;
+  for (auto indexed : llvm::enumerate(pendingGroups)) {
+    if (resources.releasedResourcesMayAliasReads(releasedResources,
+                                                 indexed.value().reads))
+      lastConflictIndex = indexed.index();
+  }
+  if (!lastConflictIndex)
+    return;
+
+  insertWgmmaWaitBefore(op, *lastConflictIndex, pendingGroups,
+                        /*forwardedValues=*/{});
+}
+
+static bool canAppendToPendingGroup(
+    ttng::WarpGroupDotOp dot, ArrayRef<PendingSharedWgmmaGroup> pendingGroups,
+    const TleWgmmaScheduleAnalysis &analysis) {
+  if (!analysis.canAppendToCurrentWgmmaCommitGroup(dot) ||
+      pendingGroups.empty())
+    return false;
+
+  ttng::WarpGroupDotOp sourceDot = getAccumulatorChainSourceDot(dot.getC());
+  if (!sourceDot)
+    return false;
+  const PendingSharedWgmmaGroup &tailGroup = pendingGroups.back();
+  return llvm::is_contained(tailGroup.dots, sourceDot);
+}
+
+static void recordPendingDot(
+    ttng::WarpGroupDotOp dot, const TlePipeResourceAnalysis &resources,
+    const TleWgmmaScheduleAnalysis &analysis,
+    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+  dot.setIsAsync(true);
+
+  if (analysis.canReuseAccumulatorChainC(dot))
+    dot->setAttr(kTleWgmmaAccumulatorChainCAttr,
+                 UnitAttr::get(dot.getContext()));
+
+  if (!canAppendToPendingGroup(dot, pendingGroups, analysis))
+    pendingGroups.push_back(PendingSharedWgmmaGroup{});
+
+  pendingGroups.back().dots.push_back(dot);
+  llvm::append_range(pendingGroups.back().reads,
+                     resources.getDotReadResources(dot));
+}
+
+static void scheduleTleWgmmaWaitsInBlock(
+    Block *block, const TlePipeResourceAnalysis &resources,
+    const TleWgmmaScheduleAnalysis &analysis,
+    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+  for (Operation &bodyOp : llvm::make_early_inc_range(*block)) {
+    Operation *op = &bodyOp;
+    if (op->hasTrait<OpTrait::IsTerminator>())
+      break;
+
+    if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(op)) {
+      consumeExistingWait(wait, pendingGroups);
+      continue;
+    }
+
+    if (auto dot = dyn_cast<ttng::WarpGroupDotOp>(op)) {
+      drainForMaterializedOperands(op, analysis, pendingGroups);
+      recordPendingDot(dot, resources, analysis, pendingGroups);
+      continue;
+    }
+
+    drainForMaterializedOperands(op, analysis, pendingGroups);
+    drainForLifetimeBoundary(op, resources, pendingGroups);
+
+    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+      SmallVector<PendingSharedWgmmaGroup, 4> incomingPending(
+          pendingGroups.begin(), pendingGroups.end());
+      SmallVector<PendingSharedWgmmaGroup, 4> thenPending(
+          incomingPending.begin(), incomingPending.end());
+      SmallVector<PendingSharedWgmmaGroup, 4> elsePending(
+          incomingPending.begin(), incomingPending.end());
+
+      scheduleTleWgmmaWaitsInBlock(ifOp.thenBlock(), resources, analysis,
+                                   thenPending);
+      if (!ifOp.elseBlock()->empty())
+        scheduleTleWgmmaWaitsInBlock(ifOp.elseBlock(), resources, analysis,
+                                     elsePending);
+
+      pendingGroups.clear();
+      for (PendingSharedWgmmaGroup &pending : incomingPending) {
+        bool remainsPending = llvm::any_of(pending.dots, [&](auto dot) {
+          return containsPendingDot(thenPending, dot.getOperation()) ||
+                 containsPendingDot(elsePending, dot.getOperation());
+        });
+        if (remainsPending)
+          pendingGroups.push_back(pending);
+      }
+      continue;
+    }
+  }
+
+  Operation *terminator = block->getTerminator();
+  if (!terminator)
+    return;
+  drainForMaterializedOperands(terminator, analysis, pendingGroups);
+  if (!pendingGroups.empty())
+    insertWgmmaWaitBefore(terminator, pendingGroups.size() - 1, pendingGroups,
+                          /*forwardedValues=*/{});
+}
+
+static void markTleExplicitWgmmaCommitGroups(
+    scf::ForOp forOp, const TleWgmmaScheduleAnalysis &analysis) {
+  IRRewriter builder(forOp.getContext());
+  SmallVector<ttng::WarpGroupDotOp, 8> dots;
+  forOp.getBody()->walk([&](ttng::WarpGroupDotOp dot) {
+    if (dot->getParentOfType<scf::ForOp>() == forOp)
+      dots.push_back(dot);
+  });
+
+  for (ttng::WarpGroupDotOp dot : llvm::make_early_inc_range(dots)) {
+    dot->setAttr(kTleExplicitWgmmaCommitAttr, builder.getUnitAttr());
+
+    Operation *next = dot->getNextNode();
+    if (next && isa<ttng::WarpGroupDotCommitOp>(next))
+      continue;
+
+    if (analysis.canDeferCommitToLaterDotC(dot))
+      continue;
+
+    builder.setInsertionPointAfter(dot);
+    ttng::WarpGroupDotCommitOp::create(builder, dot.getLoc());
+  }
+}
+
+void scheduleTleWgmmaAsyncLaunch(scf::ForOp forOp) {
+  TlePipeResourceAnalysis resources;
+  TleWgmmaScheduleAnalysis analysis(forOp, resources);
+  SmallVector<PendingSharedWgmmaGroup, 4> pendingGroups;
+
+  scheduleTleWgmmaWaitsInBlock(forOp.getBody(), resources, analysis,
+                               pendingGroups);
+  markTleExplicitWgmmaCommitGroups(forOp, analysis);
+}
+
+} // namespace mlir::triton::gpu::detail
+
 #endif
 
 // If necessary, insert a dot-wait inside the loop, waiting for the results of
@@ -828,6 +1023,11 @@ static void insertAsyncWarpGroupDotWaitInLoop(
 void triton::asyncLaunchDots(scf::ForOp forOp) {
   LDBG("Original loop:\n" << *forOp);
 
+#ifdef __TLE__
+  ttg::detail::scheduleTleWgmmaAsyncLaunch(forOp);
+  return;
+#endif
+
   // First, change every MMAv3 ttng.warp_group_dot {isAsync=false}
   // into ttng.warp_group_dot {isAsync=true}.
   // The rest of this function is concerned with inserting
@@ -844,26 +1044,6 @@ void triton::asyncLaunchDots(scf::ForOp forOp) {
   llvm::MapVector<Operation *, int /*iterArgIdx*/> properlyAsyncDots;
   for (auto WarpGroupDotOp : forOp.getBody()->getOps<ttng::WarpGroupDotOp>()) {
     WarpGroupDotOp.setIsAsync(true);
-#ifdef __TLE__
-    if (hasTlePipeLifetimeBoundaryBeforeFullWgmmaWait(WarpGroupDotOp)) {
-      LDBG("Can't defer WGMMA wait across a pipe reader release lifetime "
-           "boundary: "
-           << WarpGroupDotOp);
-      builder.setInsertionPointAfter(WarpGroupDotOp);
-      auto wait = ttng::WarpGroupDotWaitOp::create(
-          builder, WarpGroupDotOp.getLoc(), ArrayRef<Value>{},
-          /*pendings=*/0);
-      SmallVector<Value> waitOperands = {WarpGroupDotOp.getResult()};
-      threadValuesThroughWait(wait, waitOperands);
-      continue;
-    }
-    if (canDeferWaitToLaterWarpGroupDotC(WarpGroupDotOp, forOp)) {
-      LDBG("Deferring WGMMA wait because the result is only consumed by later "
-           "WGMMA ops as the accumulator: "
-           << WarpGroupDotOp);
-      continue;
-    }
-#endif
     if (auto iterArgIdx = dotCanBeProperlyAsync(WarpGroupDotOp, forOp)) {
       properlyAsyncDots[WarpGroupDotOp] = *iterArgIdx;
     } else {

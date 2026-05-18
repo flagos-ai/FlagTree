@@ -130,4 +130,36 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     // CHECK-NOT: tle.pipe
     tt.return
   }
+
+  // CHECK-LABEL: tt.func @pipe_same_partition_writer_reader
+  tt.func @pipe_same_partition_writer_reader(%a: !ttg.memdesc<2x16xf16, #shared, #smem, mutable>) {
+    %c0 = arith.constant 0 : i32
+    %false = arith.constant false
+    // CHECK: %[[TOKEN:.*]] = nvws.create_token
+    // CHECK-SAME: empty_count = 128 : i32
+    // CHECK-SAME: full_count = 128 : i32
+    tle.pipe.create %a {capacity = 2 : i32, pipe_name = "same_partition", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+
+    // CHECK: ttg.warp_specialize(%arg0, %[[TOKEN]]
+    ttg.warp_specialize(%a) attributes {requestedRegisters = array<i32: 240>}
+    default {
+      ttg.warp_yield
+    }
+    partition0(%arg0: !ttg.memdesc<2x16xf16, #shared, #smem, mutable>) num_warps(4) {
+      %p0_c0 = arith.constant 0 : i32
+      %p0_false = arith.constant false
+      // CHECK: partition0
+      // CHECK: nvws.producer_acquire %{{.*}}{{.*}} {async_task_id = array<i32: 1>}
+      // CHECK: nvws.producer_commit %{{.*}}{{.*}} {async_task_id = array<i32: 1>}
+      // CHECK: nvws.consumer_wait %{{.*}}{{.*}} {async_task_id = array<i32: 1>}
+      // CHECK: nvws.consumer_release %{{.*}}{{.*}} {async_task_id = array<i32: 1>, release_count = 128 : i32}
+      tle.pipe.writer_acquire %arg0[%p0_c0, %p0_false] {capacity = 2 : i32, pipe_name = "same_partition", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+      tle.pipe.writer_commit %arg0[%p0_c0] {capacity = 2 : i32, pipe_name = "same_partition", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+      %closed = tle.pipe.reader_wait %arg0[%p0_c0, %p0_false] {capacity = 2 : i32, pipe_name = "same_partition", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+      tle.pipe.reader_release %arg0[%p0_c0] {capacity = 2 : i32, pipe_name = "same_partition", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+      ttg.warp_return
+    } : (!ttg.memdesc<2x16xf16, #shared, #smem, mutable>) -> ()
+    // CHECK-NOT: tle.pipe
+    tt.return
+  }
 }

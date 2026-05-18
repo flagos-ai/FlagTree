@@ -137,11 +137,11 @@ z = x.insert_tile(y, index=[0, 0])
 
 #### 3.2.3 Pipeline
 
-##### 3.2.3.1 `tle.pipeline_group`
+##### 3.2.3.1 `tle.pipe`
 
-Hint-style extension.
+`tle.pipe` is TLE's explicit dataflow edge: a writer fills one stage of a group of shared-memory buffers and `commit`s it; readers `wait` until that stage is ready, consume it, then `release` it. It combines "which buffer stage contains the data" and "when producer/consumer visibility is established" into one typed pipe descriptor, and is intended for CTA-local load/compute overlap, single-producer/single-consumer (SPSC), and single-producer/multi-consumer (SPMC) pipelines.
 
-Automatic stage partitioning:
+Automatic software pipelining can still be triggered with `tl.range(..., num_stages=...)`:
 
 ```python
 for yoff in tl.range(0, ynumel, YBLOCK, num_stages=2):
@@ -151,26 +151,27 @@ for yoff in tl.range(0, ynumel, YBLOCK, num_stages=2):
     V = tl.dot(Q, KT)
 ```
 
-Manual stage partitioning:
+Use an explicit pipe when the producer/consumer split should be visible in the program:
 
 ```python
-for yoff in tle.range(
-    0,
-    ynumel,
-    YBLOCK,
-    num_stages=2,
-    pipe_stages=[0, 0, 1] if LOAD_TRANS else [0, 1, 1],
-    pipe_orders=[0, 1, 2],
-    executors=[0, 0, 0] if ONE_CORE else [0, 0, range(1, 31)],
-):
-    # Warp specialization or heterogeneous units
-    with tle.pipeline_group(0):
-        Q = tl.load(...)
-        K = tl.load(...)
-    with tle.pipeline_group(1):
-        KT = tl.trans(K)
-    with tle.pipeline_group(2):
-        V = tl.dot(Q, KT)
+stage_buf = tle.gpu.alloc([2, BLOCK], dtype=tl.float32, scope=tle.gpu.smem)
+pipe = tle.pipe(capacity=2, scope="cta", name="x_pipe", x=stage_buf)
+writer = pipe.writer()
+reader = pipe.reader()
+offs = tl.arange(0, BLOCK)
+
+# producer partition
+for k in tl.range(0, n_tiles):
+    slot = writer.acquire(k)
+    tl.store(tle.gpu.local_ptr(slot.x), tl.load(x_ptr + k * BLOCK + offs))
+    writer.commit(k)
+
+# consumer partition
+for k in tl.range(0, n_tiles):
+    wait = reader.wait(k)
+    x = tl.load(tle.gpu.local_ptr(wait.slot.x))
+    acc += x
+    reader.release(k)
 ```
 
 #### 3.2.4 Distributed
@@ -389,22 +390,91 @@ sub = tl.maximum(sub, 0.0)  # ReLU on the sub-tile
 x = x.insert_tile(sub, index=[1, 0])
 ```
 
-##### 3.2.5.3 `tle.pipeline_group`
+##### 3.2.5.3 `tle.pipe`
 
-- Use `tle.pipeline_group(stage_id)` to explicitly tag operations into stages.
-- Useful when you need deterministic stage control (instead of fully heuristic grouping).
+- Signature: `tle.pipe(*, capacity, scope="cta", name=None, readers=None, one_shot=False, **fields)`
+- Purpose: create a typed pipe for explicit CTA-local producer/consumer dataflow, ring-buffer stage reuse, and synchronization edges.
+- Parameters:
+  - `capacity`: compile-time positive integer, the number of pipe stages. The leading dimension of every payload field must equal `capacity`.
+  - `scope`: the current MVP supports `"cta"`.
+  - `name`: optional pipe name for IR/diagnostics; if provided, it must be a string.
+  - `readers`: optional reader-name list. Omit it for the default SPSC reader; pass values such as `("left", "right")` for SPMC.
+  - `one_shot`: whether the pipe is a single ready/full edge, useful for one-time broadcast data. `one_shot=True` does not support `close`.
+  - `**fields`: one or more payload buffers. Each field must be a shared-memory buffered tensor returned by `tle.gpu.alloc(..., scope=tle.gpu.smem)`, with rank >= 2.
+- Endpoint API:
+  - `pipe.writer() -> pipe_writer`
+  - `pipe.reader(name=None, fields=None) -> pipe_reader`
+  - `writer.acquire(iter) -> pipe_slot`
+  - `writer.commit(iter) -> None`
+  - `writer.close(iter) -> None`
+  - `reader.wait(iter) -> pipe_wait_result`
+  - `reader.release(iter) -> None`
+- Semantics:
+  - `iter` maps to `stage = iter % capacity`, with a phase bit distinguishing ring-buffer reuse rounds.
+  - `writer.acquire` returns the slot for the current stage; fields are exposed by name on the slot, for example `slot.kv`.
+  - `reader.wait` returns `{slot, is_closed}`. Normal reads use `wait.slot`; close-aware flows inspect `is_closed`.
+  - `reader(..., fields=("kv_r",))` subscribes to only a subset of fields, reducing unnecessary dependencies.
+  - Current lowering maps CTA-scoped SMEM pipes to GPU NVWS token/mbarrier synchronization.
 
-Example: staged load-transform-matmul
+Example 1: SPSC double-buffered load/compute
 
 ```python
-for k in tle.range(0, K, BK, num_stages=2, pipe_stages=[0, 0, 1], pipe_orders=[0, 1, 2]):
-    with tle.pipeline_group(0):
-        a = tl.load(a_ptr + k * stride_a)
-        b = tl.load(b_ptr + k * stride_b)
-    with tle.pipeline_group(1):
-        bt = tl.trans(b)
-    with tle.pipeline_group(2):
-        acc = tl.dot(a, bt, acc)
+smem = tle.gpu.alloc([2, BLOCK], dtype=tl.float32, scope=tle.gpu.smem)
+pipe = tle.pipe(capacity=2, scope="cta", name="tile_pipe", tile=smem)
+writer = pipe.writer()
+reader = pipe.reader()
+offs = tl.arange(0, BLOCK)
+
+# producer partition
+for i in tl.range(0, n_tiles):
+    slot = writer.acquire(i)
+    ptr = tle.gpu.local_ptr(slot.tile)
+    tl.store(ptr, tl.load(gmem_ptr + i * BLOCK + offs))
+    writer.commit(i)
+
+# consumer partition
+for i in tl.range(0, n_tiles):
+    ready = reader.wait(i)
+    tile = tl.load(tle.gpu.local_ptr(ready.slot.tile))
+    acc += tile
+    reader.release(i)
+```
+
+Example 2: SPMC readers and partial-field subscription
+
+```python
+kv = tle.gpu.alloc([PIPE_CAPACITY, BK, D], dtype=tl.float16, scope=tle.gpu.smem)
+meta = tle.gpu.alloc(
+    [PIPE_CAPACITY, BK],
+    dtype=tl.int32,
+    scope=tle.gpu.smem,
+    nv_mma_shared_layout=False,
+)
+pipe = tle.pipe(
+    capacity=PIPE_CAPACITY,
+    scope="cta",
+    name="kv_pipe",
+    readers=("qk", "value"),
+    kv=kv,
+    meta=meta,
+)
+
+writer = pipe.writer()
+qk_reader = pipe.reader("qk")
+value_reader = pipe.reader("value", fields=("kv",))
+
+slot = writer.acquire(k)
+tl.store(tle.gpu.local_ptr(slot.kv), kv_tile)
+tl.store(tle.gpu.local_ptr(slot.meta), valid_mask.to(tl.int32))
+writer.commit(k)
+
+qk_slot = qk_reader.wait(k).slot
+qk = tl.dot(q, tl.trans(tl.load(tle.gpu.local_ptr(qk_slot.kv))))
+qk_reader.release(k)
+
+value_slot = value_reader.wait(k).slot
+acc = tl.dot(prob, tl.load(tle.gpu.local_ptr(value_slot.kv)), acc)
+value_reader.release(k)
 ```
 
 ##### 3.2.5.4 `tle.device_mesh` + `tle.sharding` + `tle.reshard`
@@ -597,6 +667,87 @@ Memory copy:
 
 ```python
 tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
+```
+
+##### 3.3.1.2 Execution Orchestration
+
+###### 3.3.1.2.1 `tle.gpu.warp_specialize`
+
+`tle.gpu.warp_specialize` creates an explicit warp-specialized region inside one CTA, placing different JIT functions into separate warp partitions. Typical uses include splitting TMA/cp.async producers, WGMMA consumers, epilogues, and reductions, with shared-memory data passed through `tle.pipe` or other explicit synchronization primitives.
+
+- Signature: `tle.gpu.warp_specialize(functions_and_args, worker_num_warps, worker_num_regs)`
+- Parameters:
+  - `functions_and_args`: `[(fn0, args0), (fn1, args1), ...]`. Entry 0 is emitted into the default partition; later entries are emitted into worker partitions.
+  - `worker_num_warps`: warp counts for worker partitions. Length must equal `len(functions_and_args) - 1`.
+  - `worker_num_regs`: requested register counts for worker partitions. Length must equal `len(functions_and_args) - 1`.
+- Semantics:
+  - Each `args` value must be a tuple. Plain Python `int/float/bool/tl.dtype` values are passed as constexpr arguments.
+  - The default partition may return values; the return value of `tle.gpu.warp_specialize(...)` comes from the default partition. Worker partitions perform side effects and end with warp return.
+  - Worker callees receive the corresponding `"ttg.num-warps"` attribute, and the region records `requestedRegisters`.
+  - Captured worker arguments are deduplicated in IR, so multiple workers can share the same pipe endpoint or buffer handle.
+  - `warp_specialize` does not itself provide data-visibility ordering. Producer/consumer ordering should be expressed with `tle.pipe` `commit/wait/release`, barriers, or other synchronization primitives.
+
+Example: one producer partition loads shared memory, one consumer worker computes.
+
+```python
+@triton.jit
+def producer(writer, x_ptr, n_tiles: tl.constexpr, BLOCK: tl.constexpr):
+    offs = tl.arange(0, BLOCK)
+    for i in tl.range(0, n_tiles):
+        slot = writer.acquire(i)
+        vals = tl.load(x_ptr + i * BLOCK + offs)
+        tl.store(tle.gpu.local_ptr(slot.tile), vals)
+        writer.commit(i)
+
+
+@triton.jit
+def consumer(reader, out_ptr, n_tiles: tl.constexpr, BLOCK: tl.constexpr):
+    offs = tl.arange(0, BLOCK)
+    acc = tl.zeros([BLOCK], dtype=tl.float32)
+    for i in tl.range(0, n_tiles):
+        ready = reader.wait(i)
+        tile = tl.load(tle.gpu.local_ptr(ready.slot.tile))
+        acc += tile
+        reader.release(i)
+    tl.store(out_ptr + offs, acc)
+
+
+@triton.jit
+def kernel(x_ptr, out_ptr, n_tiles: tl.constexpr, BLOCK: tl.constexpr):
+    smem = tle.gpu.alloc([2, BLOCK], dtype=tl.float32, scope=tle.gpu.smem)
+    pipe = tle.pipe(capacity=2, scope="cta", name="x_pipe", tile=smem)
+
+    tle.gpu.warp_specialize(
+        [
+            (producer, (pipe.writer(), x_ptr, n_tiles, BLOCK)),
+            (consumer, (pipe.reader(), out_ptr, n_tiles, BLOCK)),
+        ],
+        [4],      # consumer worker uses 4 warps
+        [168],    # consumer worker requested registers
+    )
+```
+
+Example: multiple workers with an SPMC pipe.
+
+```python
+tile = tle.gpu.alloc([2, BM, BK], dtype=tl.float16, scope=tle.gpu.smem)
+pipe = tle.pipe(
+    capacity=2,
+    scope="cta",
+    name="spmc_tile",
+    readers=("qk", "value"),
+    tile=tile,
+)
+
+tle.gpu.warp_specialize(
+    [
+        (load_tile_producer, (pipe.writer(), a_desc, b_desc)),
+        (qk_consumer, (pipe.reader("qk"), acc_qk)),
+        (value_consumer, (pipe.reader("value", fields=("tile",)), acc_v)),
+    ],
+    [4, 4],
+    [240, 168],
+)
 ```
 
 #### 3.3.2 DSA
@@ -926,115 +1077,7 @@ def add_kernel(
 Optimization and tests have been conducted for SparseMLA in DSA on RTX 5060Ti and H800.
 
 - TileLang version: `v0.1.7`
-- Example code: <https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/python/tutorials/tle/01-sparse-mla.py>
-
-Core kernel (excerpt):
-
-```python
-@triton.jit
-def triton_sparse_mla_fwd(
-    q,
-    kv,
-    indices,
-    sm_scale: tl.constexpr,
-    output,
-    lse,
-    stride_qb, stride_qh, stride_qm, stride_qd,
-    stride_kvb, stride_kvg, stride_kvn, stride_kvd,
-    stride_tb, stride_tg, stride_tm, stride_tt,
-    stride_ob, stride_oh, stride_om, stride_od,
-    stride_lb, stride_lh, stride_lm,
-    B: tl.constexpr,
-    SQ: tl.constexpr,
-    SKV: tl.constexpr,
-    K: tl.constexpr,
-    D: tl.constexpr,
-    TD: tl.constexpr,
-    DP: tl.constexpr,
-    TDP: tl.constexpr,
-    H: tl.constexpr,
-    G: tl.constexpr,
-    VG: tl.constexpr,
-    BK: tl.constexpr,
-    BH: tl.constexpr,
-    is_causal: tl.constexpr
-):
-    i_b, i_sq, i_gbh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    i_g, i_bh = i_gbh // G, i_gbh % G
-    q_base = q + i_b * stride_qb + i_sq * stride_qm + i_gbh * (BH * stride_qh)
-    tq_base = q_base + D * stride_qd
-    kv_base = kv + i_b * stride_kvb + i_g * stride_kvg
-    tkv_base = kv_base + D * stride_kvd
-    t_base = indices + i_b * stride_tb + i_sq * stride_tm + i_g * stride_tg
-    o_base = output + i_b * stride_ob + i_sq * stride_om + i_gbh * (BH * stride_oh)
-    l_base = lse + i_b * stride_lb + i_sq * stride_lm + i_gbh * (BH * stride_lh)
-
-    offs_h = tl.arange(0, BH)
-    offs_d = tl.arange(0, DP)
-    offs_td = tl.arange(0, TDP)
-    offs_od = tl.arange(0, DP)
-    offs_t = tl.arange(0, BK)
-    mask_h = i_bh * BH + offs_h < G
-    mask_d = offs_d < D
-    mask_td = offs_td < TD
-    mask_od = mask_d
-
-    q_ptr = q_base + offs_h[:, None] * stride_qh + offs_d[None, :] * stride_qd
-    q_msk = mask_h[:, None] & mask_d[None, :]
-    q_blk = tl.load(q_ptr, q_msk, other=0.0)
-
-    tq_ptr = tq_base + offs_h[:, None] * stride_qh + offs_td[None, :] * stride_qd
-    tq_msk = mask_h[:, None] & mask_td[None, :]
-    tq_blk = tl.load(tq_ptr, tq_msk, other=0.0)
-
-    max_log = tl.full([BH], float('-inf'), dtype=tl.bfloat16)
-    sum_exp = tl.full([BH], 1.0, dtype=tl.float32)
-    acc = tl.zeros([BH, DP], dtype=tl.float32)
-
-    log_scale: tl.constexpr = sm_scale * 1.44269504
-    max_col = i_sq if is_causal else SQ - 1
-    NK = tl.cdiv(K, BK)
-
-    for ck in tl.range(NK, num_stages=0):
-        if ck * BK <= max_col:
-            t_ptr = (BK * ck + offs_t) * stride_tt
-            t_msk = t_ptr < K
-            t_ptr += t_base
-            kv_ids = tl.load(t_ptr, t_msk, other=-1)
-            mask_ids = (kv_ids <= max_col) & (kv_ids >= 0)
-
-            kv_ptr = kv_base + offs_d[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
-            kv_msk = mask_d[:, None] & mask_ids[None, :]
-            kv_blk = tle.load(kv_ptr, kv_msk, other=0.0, is_async=True)
-
-            tkv_ptr = tkv_base + offs_td[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
-            tkv_msk = mask_td[:, None] & mask_ids[None, :]
-            tkv_blk = tl.load(tkv_ptr, tkv_msk, other=0.0)
-
-            qk = tl.dot(tq_blk, tkv_blk, out_dtype=tl.float32)
-            qk = tl.dot(q_blk, kv_blk, qk, out_dtype=tl.float32) * log_scale
-            qk = tl.where(mask_ids[None, :], qk, float('-inf'))
-
-            new_max = tl.maximum(max_log, tl.max(qk, axis=1))
-            exp_qk = tl.math.exp2(qk - new_max[:, None])
-            sum_qk = tl.sum(exp_qk, axis=1)
-            alpha = tl.math.exp2(max_log - new_max)
-            sum_exp = sum_exp * alpha + sum_qk
-            acc = acc * alpha[:, None]
-            acc = tl.dot(exp_qk.to(tl.bfloat16), kv_blk.trans(), acc, out_dtype=tl.float32)
-
-            max_log = new_max.to(tl.bfloat16)
-
-    out_vals = acc / sum_exp[:, None]
-    o_ptr = o_base + offs_h[:, None] * stride_oh + offs_od[None, :] * stride_od
-    o_msk = mask_h[:, None] & mask_od[None, :]
-    tl.store(o_ptr, out_vals.to(q_blk.dtype), o_msk)
-
-    fin_log = max_log + tl.math.log2(sum_exp.to(tl.float32))
-    l_ptr = l_base + offs_h * stride_lh
-    l_msk = mask_h
-    tl.store(l_ptr, fin_log.to(q_blk.dtype), l_msk)
-```
+- Example code: [`python/tutorials/tle/deepseek_v32/02-sparse-mla.py`](python/tutorials/tle/deepseek_v32/02-sparse-mla.py)
 
 Performance comparison (TFLOPS):
 
@@ -1046,10 +1089,11 @@ Performance comparison (TFLOPS):
 
 #### 4.1.1 DeepSeek V3.2 SparseMLA Prefill
 
-Current `feature/tle-pipe` benchmark on H800, commit `2c3c2966e`, using:
+Current `feature/tle-pipe` benchmark on H800, working tree based on commit `37bdfef28`, after removing trace instrumentation and using the producer-last low-reg TLE-FlashMLA prefill mapping, using:
 
 ```bash
-TRITON_CACHE_DIR=/tmp/tle_doc_prefill_bench_cache \
+PYTHONPATH=python:python/src \
+TRITON_CACHE_DIR=/tmp/tle_flashmla_producer_last_regs72_bench_cache \
 conda run -n flagtree python python/tutorials/tle/deepseek_v32/02-sparse-mla.py \
   --mode bench --warmup 200 --rep 500
 ```
@@ -1059,61 +1103,29 @@ The cases match the FlashMLA V3.2 sparse prefill performance fixture, with `attn
 
 Latency in milliseconds:
 
-| SKV | Triton | TLE | TLE-Pipe-Pipelined | TileLang | TileLang-Pipelined | TileLang-Seesaw | FlashMLA |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 8192 | 11.010 | 7.514 | 4.726 | 62.505 | 5.437 | 5.199 | **3.853** |
-| 32768 | 12.278 | 8.257 | 5.247 | 77.139 | 6.596 | 5.546 | **4.083** |
-| 65536 | 12.670 | 8.817 | 5.739 | 85.101 | 7.039 | 5.779 | **4.330** |
-| 98304 | 12.820 | 9.120 | 5.935 | 86.633 | 7.186 | 5.892 | **4.456** |
-| 131072 | 12.898 | 9.306 | 6.122 | 87.483 | 7.197 | 5.852 | **4.556** |
+| SKV | Triton | TLE | TLE-Pipe-Pipelined | TLE-FlashMLA-Prefill | TileLang | TileLang-Pipelined | TileLang-Seesaw | FlashMLA |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8192 | 9.896 | 6.927 | 4.832 | 4.273 | 62.409 | 5.432 | 5.160 | **3.850** |
+| 32768 | 11.210 | 7.624 | 5.321 | 4.834 | 75.160 | 6.428 | 5.577 | **4.117** |
+| 65536 | 11.655 | 8.378 | 5.731 | 5.305 | 84.432 | 6.865 | 5.786 | **4.348** |
+| 98304 | 11.835 | 8.658 | 5.972 | 5.599 | 86.561 | 7.139 | 5.873 | **4.447** |
+| 131072 | 11.923 | 8.863 | 6.122 | 5.887 | 87.448 | 7.143 | 5.916 | **4.534** |
 
 Speedup summary:
 
-| SKV | TLE-Pipe over Triton | TLE-Pipe over TileLang-Pipelined | FlashMLA over TLE-Pipe |
-| ---: | ---: | ---: | ---: |
-| 8192 | 2.33x | 1.15x | 1.23x |
-| 32768 | 2.34x | 1.26x | 1.28x |
-| 65536 | 2.21x | 1.23x | 1.33x |
-| 98304 | 2.16x | 1.21x | 1.33x |
-| 131072 | 2.11x | 1.18x | 1.34x |
-
-#### 4.1.2 DeepSeek V3.2 SparseMLA Decode
-
-Current `feature/tle-pipe` benchmark on H800, commit `2c3c2966e`, using:
-
-```bash
-TRITON_CACHE_DIR=/tmp/tle_doc_decode_bench_cache \
-conda run -n flagtree python python/tutorials/tle/deepseek_v32/02-sparse-mla.py \
-  --mode bench-decode --warmup 200 --rep 500
-```
-
-The cases match the FlashMLA V3.2 sparse decode production fixture:
-`S=2`, `SKV=32768`, `H=128`, `HKV=1`, `DQK=576`, `DV=512`, `topk=2048`, `block_size=64`, `is_varlen=True`.
-FlashMLA runs the FP8 quantized cache path; Triton, TLE, and TileLang run on the same dequantized flat KV data derived from that fixture.
-
-Latency in milliseconds:
-
-| B | Triton | TLE | TLE-Pipe-Pipelined | TileLang | TileLang-Pipelined | TileLang-Seesaw | FlashMLA |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2 | 0.208 | 0.140 | **0.082** | 1.480 | 0.108 | 0.114 | 0.025 |
-| 64 | 0.439 | 0.343 | 0.235 | 2.921 | **0.211** | 0.225 | 0.179 |
-| 74 | 0.639 | 0.483 | 0.316 | 4.281 | **0.290** | 0.310 | 0.218 |
-| 128 | 0.856 | 0.669 | 0.460 | 5.762 | **0.380** | 0.404 | 0.350 |
-
-Speedup summary:
-
-| B | TLE-Pipe over Triton | TLE-Pipe over TileLang-Pipelined | FlashMLA over TLE-Pipe |
-| ---: | ---: | ---: | ---: |
-| 2 | 2.55x | 1.32x | 3.23x |
-| 64 | 1.86x | 0.90x | 1.31x |
-| 74 | 2.02x | 0.92x | 1.45x |
-| 128 | 1.86x | 0.83x | 1.31x |
+| SKV | TLE-Pipe over Triton | TLE-FlashMLA over Triton | TLE-FlashMLA over TLE-Pipe | TLE-FlashMLA over FlashMLA | TLE-FlashMLA over TileLang-Seesaw |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8192 | 2.05x | 2.32x | 1.13x | 0.90x | 1.21x |
+| 32768 | 2.11x | 2.32x | 1.10x | 0.85x | 1.15x |
+| 65536 | 2.03x | 2.20x | 1.08x | 0.82x | 1.09x |
+| 98304 | 1.98x | 2.11x | 1.07x | 0.79x | 1.05x |
+| 131072 | 1.95x | 2.03x | 1.04x | 0.77x | 1.00x |
 
 ### 4.2 MoeAlignBlockSize
 
 With shared-memory extensions in `tle-struct`, it is possible to implement `vllm/sglang`-style `moe_align_block_size` and improve performance.
 
-- Example code: <https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/python/tutorials/tle/02-moe_align_block_size.py>
+- Example code: [`python/tutorials/tle/02-moe_align_block_size.py`](python/tutorials/tle/02-moe_align_block_size.py)
 
 #### 4.2.1 RTX 5060 Ti
 
@@ -1167,7 +1179,7 @@ With shared-memory extensions in `tle-struct`, it is possible to implement `vllm
 
 With shared-memory extensions in `tle-struct`, radix-select-based TopK can improve performance in MoE scenarios with large N and small K.
 
-- Example code: <https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/python/tutorials/tle/03-topk.py>
+- Example code: [`python/tutorials/tle/03-topk.py`](python/tutorials/tle/03-topk.py)
 
 #### 4.3.1 RTX 5060 Ti (`tle-topk-radix-vs-torch`)
 

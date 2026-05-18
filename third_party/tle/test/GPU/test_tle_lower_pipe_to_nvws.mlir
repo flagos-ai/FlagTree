@@ -39,7 +39,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     scf.if %closed {
     }
 
-    // CHECK: nvws.consumer_release %[[TOKEN]]
+    // CHECK: nvws.consumer_release %[[TOKEN]], %{{.*}}, %arg0
     tle.pipe.reader_release %a[%c1] {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
     // CHECK-NOT: tle.pipe
     tt.return
@@ -101,7 +101,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     // CHECK: nvws.consumer_wait %[[TOKEN]]
     // CHECK-SAME: async_task_id = array<i32: 1>
     %left_closed = tle.pipe.reader_wait %a[%c0, %false] {async_task_id = array<i32: 1>, capacity = 2 : i32, pipe_name = "broadcast", field_names = ["a"], reader_name = "left", scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    // CHECK: nvws.consumer_release %[[TOKEN]]
+    // CHECK: nvws.consumer_release %[[TOKEN]], %{{.*}}, %arg0
     // CHECK-SAME: async_task_id = array<i32: 1>
     // CHECK-SAME: release_count = 128 : i32
     tle.pipe.reader_release %a[%c0] {async_task_id = array<i32: 1>, capacity = 2 : i32, pipe_name = "broadcast", field_names = ["a"], reader_name = "left", scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
@@ -109,7 +109,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     // CHECK: nvws.consumer_wait %[[TOKEN]]
     // CHECK-SAME: async_task_id = array<i32: 2>
     %right_closed = tle.pipe.reader_wait %a[%c0, %false] {async_task_id = array<i32: 2>, capacity = 2 : i32, pipe_name = "broadcast", field_names = ["a"], reader_name = "right", scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    // CHECK: nvws.consumer_release %[[TOKEN]]
+    // CHECK: nvws.consumer_release %[[TOKEN]], %{{.*}}, %arg0
     // CHECK-SAME: async_task_id = array<i32: 2>
     // CHECK-SAME: release_count = 128 : i32
     tle.pipe.reader_release %a[%c0] {async_task_id = array<i32: 2>, capacity = 2 : i32, pipe_name = "broadcast", field_names = ["a"], reader_name = "right", scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>

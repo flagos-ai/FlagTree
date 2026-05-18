@@ -124,7 +124,22 @@ def TTNG_WarpGroupDotWaitOp : TTNG_Op<"warp_group_dot_wait", [DeclareOpInterface
 
   let assemblyFormat = "$inputs attr-dict `:` type($inputs)";
   let hasVerifier = 1;
+#ifdef __TLE__
+  let hasCanonicalizer = 1;
+#endif
 }
+
+#ifdef __TLE__
+def TTNG_WarpGroupDotCommitOp : TTNG_Op<"warp_group_dot_commit",
+                                        [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "warp group dot commit";
+  let description = [{
+    Commits all previously issued async warp-group dot operations into one
+    WGMMA group.  A following warp_group_dot_wait waits on committed groups.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+#endif
 
 def TTNG_InitBarrierOp : TTNG_Op<"init_barrier"> {
   let summary = "Initialize a barrier in the given shared memory allocation.";
@@ -227,7 +242,7 @@ def TTNG_WaitBarrierOp : TTNG_Op<"wait_barrier", [AttrSizedOperandSegments]> {
 }
 
 #ifdef __TLE__
-def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier"> {
+def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier", [AttrSizedOperandSegments]> {
   let summary = "perform the arrive operation on an mbarrier";
   let description = [{
     The `ttng.arrive_barrier` operation performs the "arrive" operation on an
@@ -238,6 +253,12 @@ def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier"> {
     The operation accepts an optional predicate. When `release_fence` is set,
     all threads in the current warp-specialized partition perform a CTA-scope
     release fence before the single elected thread arrives at the mbarrier.
+    When `participant_arrive` is set, `count` names the number of prefix
+    participant threads in the current partition. Each participant performs its
+    own release fence and one-unit arrive; non-participants do neither. This is
+    used when a compiler pass has proven the exact writer lanes for a shared
+    memory payload, so ordinary shared stores can be published without a full
+    partition rendezvous.
 
     Example:
 
@@ -251,19 +272,40 @@ def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier"> {
     Arg<TTG_MemDescType, "", [MemRead<SharedMemory>, MemWrite<SharedMemory>]>:$alloc,
     I32Attr:$count,
     Optional<I1>:$pred,
-    DefaultValuedAttr<BoolAttr, "false">:$release_fence
+    Optional<I32>:$releasedIdx,
+    Variadic<TTG_MemDescType>:$releasedFields,
+    DefaultValuedAttr<BoolAttr, "false">:$release_fence,
+    DefaultValuedAttr<BoolAttr, "false">:$participant_arrive
   );
 
   let assemblyFormat = [{
-    $alloc `,` $count (`,` $pred^)? attr-dict `:` qualified(type($alloc))
+    $alloc `,` $count (`,` $pred^)?
+    (`released` `[` $releasedIdx^ `]` `(` $releasedFields `)`)?
+    attr-dict `:` qualified(type($alloc)) (`,` type($releasedIdx)^)?
+    (`,` type($releasedFields)^)?
   }];
 
   let builders = [
     OpBuilder<(ins "Value":$alloc, "uint32_t":$count), [{
-      return build($_builder, $_state, alloc, count, /*pred=*/Value());
+      return build($_builder, $_state, alloc, count, /*pred=*/Value(),
+                   /*releasedIdx=*/Value(), /*releasedFields=*/ValueRange(),
+                   /*releaseFence=*/false, /*participantArrive=*/false);
+    }]>,
+    OpBuilder<(ins "Value":$alloc, "uint32_t":$count, "Value":$pred), [{
+      return build($_builder, $_state, alloc, count, pred,
+                   /*releasedIdx=*/Value(), /*releasedFields=*/ValueRange(),
+                   /*releaseFence=*/false, /*participantArrive=*/false);
+    }]>,
+    OpBuilder<(ins "Value":$alloc, "uint32_t":$count,
+                   "Value":$releasedIdx, "ValueRange":$releasedFields), [{
+      return build($_builder, $_state, alloc, count, /*pred=*/Value(),
+                   releasedIdx, releasedFields, /*releaseFence=*/false,
+                   /*participantArrive=*/false);
     }]>,
     OpBuilder<(ins "Value":$alloc, "uint32_t":$count, "bool":$releaseFence), [{
-      return build($_builder, $_state, alloc, count, /*pred=*/Value(), releaseFence);
+      return build($_builder, $_state, alloc, count, /*pred=*/Value(),
+                   /*releasedIdx=*/Value(), /*releasedFields=*/ValueRange(),
+                   releaseFence, /*participantArrive=*/false);
     }]>
   ];
 

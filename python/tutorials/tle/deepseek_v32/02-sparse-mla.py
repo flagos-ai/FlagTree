@@ -47,8 +47,10 @@ TLE_SPARSE_MLA_NUM_WARPS = TILELANG_SPARSE_MLA_THREADS // 32
 TLE_SPARSE_MLA_NUM_STAGES = TILELANG_SPARSE_MLA_NUM_STAGES
 TLE_PIPE_SPARSE_MLA_NUM_WARPS = 4
 TLE_PIPE_SPARSE_MLA_PIPE_STAGES = TILELANG_SPARSE_MLA_NUM_STAGES
-TLE_FLASHMLA_PREFILL_NUM_WARPS = 4
-TLE_FLASHMLA_PREFILL_PIPE_CAPACITY = 2
+# num_warps is per WS partition here; WS lowering emits the FlashMLA-aligned 384-thread CTA.
+TLE_FLASHMLA_PREFILL_NUM_THREADS = 128 * 3
+TLE_FLASHMLA_PREFILL_WORKER_NUM_WARPS = 4
+TLE_FLASHMLA_PREFILL_PAIR_BLOCKS = 2
 
 
 @triton.jit
@@ -181,7 +183,7 @@ def triton_sparse_mla_fwd(
     fin_log = max_prev * log_scale + tl.math.log2(sum_exp.to(tl.float32))
     l_ptr = l_base + offs_h
     l_msk = mask_h
-    tl.store(l_ptr, fin_log.to(q_blk.dtype), l_msk)
+    tl.store(l_ptr, fin_log, l_msk)
 
 
 @triton.jit
@@ -357,7 +359,7 @@ def tle_sparse_mla_fwd(
     fin_log = max_prev * log_scale + tl.math.log2(sum_exp.to(tl.float32))
     l_ptr = l_base + offs_h
     l_msk = mask_h
-    tl.store(l_ptr, fin_log.to(q.dtype.element_ty), l_msk)
+    tl.store(l_ptr, fin_log, l_msk)
 
 
 @triton.jit
@@ -373,7 +375,7 @@ def _tle_pipe_sparse_mla_producer(
     DPH: tl.constexpr,
     TDP: tl.constexpr,
     VG: tl.constexpr,
-    SKV: tl.constexpr,
+    SKV,
     is_causal: tl.constexpr,
     BK: tl.constexpr,
 ):
@@ -455,6 +457,7 @@ def _tle_pipe_sparse_mla_left_consumer(
     offs_dh = tl.arange(0, DPH)
     mask_h = h_base + offs_h < G
     mask_od_l = offs_dh < D
+
     q_wait_result = q_reader.wait(0)
     q_slot = q_wait_result.slot
     q_l_smem_ptr = tle.gpu.local_ptr(q_slot.q_l)
@@ -511,7 +514,7 @@ def _tle_pipe_sparse_mla_left_consumer(
     fin_log = max_prev * log_scale + tl.math.log2(sum_exp.to(tl.float32))
     l_ptr = l_base + offs_h
     l_msk = mask_h
-    tl.store(l_ptr, fin_log.to(OUT_DTYPE), l_msk)
+    tl.store(l_ptr, fin_log, l_msk)
 
 
 @triton.jit
@@ -580,9 +583,9 @@ def tle_pipe_sparse_mla_fwd(
     topk_lengths,
     sm_scale: tl.constexpr,
     lse,
-    B: tl.constexpr,
-    SQ: tl.constexpr,
-    SKV: tl.constexpr,
+    B,
+    SQ,
+    SKV,
     K: tl.constexpr,
     D: tl.constexpr,
     TD: tl.constexpr,
@@ -804,87 +807,14 @@ def tle_pipe_sparse_mla_fwd(
 
 
 @triton.jit
-def _tle_flashmla_prefill_stage_kv_ids(
-    index_smem,
-    t_base,
-    topk_len,
-    max_col,
-    ck,
-    BK: tl.constexpr,
-    PIPE_CAPACITY: tl.constexpr,
-):
-    offs_t = tl.arange(0, BK)
-    t_offs = BK * ck + offs_t
-    t_msk = t_offs < topk_len
-    kv_ids = tl.load(t_base + t_offs, t_msk, other=-1)
-    valid = t_msk & (kv_ids <= max_col) & (kv_ids >= 0)
-    staged_ids = tl.where(valid, kv_ids, -1).to(tl.int32)
-    slot_idx = ck % PIPE_CAPACITY
-    slot_vec = tl.full([BK], slot_idx, dtype=tl.int32)
-    tl.store(tle.gpu.local_ptr(index_smem, (slot_vec, offs_t)), staged_ids)
-
-
-@triton.jit
-def _tle_flashmla_prefill_copy_kv_step(
-    writer,
-    index_smem,
-    kv_base,
-    tkv_base,
-    ck,
-    D: tl.constexpr,
-    TD: tl.constexpr,
-    DPH: tl.constexpr,
-    TDP: tl.constexpr,
-    VG: tl.constexpr,
-    BK: tl.constexpr,
-    PIPE_CAPACITY: tl.constexpr,
-    copy_right: tl.constexpr,
-    copy_tail_valid: tl.constexpr,
-):
-    stride_kvn: tl.constexpr = VG * (TD + D)
-    slot = writer.acquire(ck)
-
-    offs_dh = tl.arange(0, DPH)
-    offs_t = tl.arange(0, BK)
-    index_slot = ck % PIPE_CAPACITY
-    index_slot_vec = tl.full([BK], index_slot, dtype=tl.int32)
-    kv_ids = tl.load(tle.gpu.local_ptr(index_smem, (index_slot_vec, offs_t)))
-    mask = kv_ids >= 0
-    kv_ids_safe = tl.where(mask, kv_ids, 0).to(tl.int64)
-
-    kv_rows = tl.broadcast_to(offs_t[:, None], (BK, DPH))
-    if copy_right:
-        kv_cols = tl.broadcast_to((DPH + offs_dh)[None, :], (BK, DPH))
-        kv_ptr = kv_base + kv_ids_safe[:, None] * stride_kvn + (DPH + offs_dh)[None, :]
-        kv_msk = mask[:, None] & ((DPH + offs_dh) < D)[None, :]
-    else:
-        kv_cols = tl.broadcast_to(offs_dh[None, :], (BK, DPH))
-        kv_ptr = kv_base + kv_ids_safe[:, None] * stride_kvn + offs_dh[None, :]
-        kv_msk = mask[:, None] & (offs_dh < D)[None, :]
-
-    kv_blk = tl.load(kv_ptr, mask=kv_msk, other=0.0)
-    tl.store(tle.gpu.local_ptr(slot.kv, (kv_rows, kv_cols)), kv_blk, mask=kv_msk)
-
-    if copy_tail_valid:
-        offs_td = tl.arange(0, TDP)
-        tkv_ptr = tkv_base + kv_ids_safe[:, None] * stride_kvn + offs_td[None, :]
-        tkv_msk = mask[:, None] & (offs_td < TD)[None, :]
-        tkv_blk = tl.load(tkv_ptr, mask=tkv_msk, other=0.0)
-        tl.store(tle.gpu.local_ptr(slot.tkv), tkv_blk, mask=tkv_msk)
-        tl.store(tle.gpu.local_ptr(slot.valid), mask.to(tl.int32))
-
-    writer.commit(ck)
-
-
-@triton.jit
 def _tle_flashmla_prefill_producer(
     k0_l_writer,
     k0_r_writer,
     k1_l_writer,
     k1_r_writer,
+    valid_writer,
     kv_base,
     tkv_base,
-    index_smem,
     t_base,
     topk_len_ptr,
     D: tl.constexpr,
@@ -892,50 +822,108 @@ def _tle_flashmla_prefill_producer(
     DPH: tl.constexpr,
     TDP: tl.constexpr,
     VG: tl.constexpr,
-    SKV: tl.constexpr,
-    is_causal: tl.constexpr,
+    SKV,
     BK: tl.constexpr,
-    PIPE_CAPACITY: tl.constexpr,
 ):
     topk_len = tl.load(topk_len_ptr)
-    i_sq = tl.program_id(1)
-    max_col = i_sq if is_causal else SKV - 1
+    max_col = SKV - 1
+    stride_kvn: tl.constexpr = VG * (TD + D)
     NK = tl.cdiv(topk_len, BK)
     NPAIRS = tl.cdiv(NK, 2)
+    offs_t = tl.arange(0, BK)
+    offs_tile = tl.arange(0, 64)
+    offs_td = tl.arange(0, TDP)
+    kv_tile_rows = tl.broadcast_to(offs_t[:, None], (BK, 64))
     for pair in tl.range(NPAIRS):
         ck0 = pair * 2
         ck1 = ck0 + 1
-        _tle_flashmla_prefill_stage_kv_ids(index_smem, t_base, topk_len, max_col, ck0, BK, PIPE_CAPACITY)
-        _tle_flashmla_prefill_stage_kv_ids(index_smem, t_base, topk_len, max_col, ck1, BK, PIPE_CAPACITY)
-        _tle_flashmla_prefill_copy_kv_step(
-            k0_l_writer, index_smem, kv_base, tkv_base, ck0, D, TD, DPH, TDP, VG, BK, PIPE_CAPACITY,
-            copy_right=False, copy_tail_valid=False)
-        _tle_flashmla_prefill_copy_kv_step(
-            k1_r_writer, index_smem, kv_base, tkv_base, ck1, D, TD, DPH, TDP, VG, BK, PIPE_CAPACITY,
-            copy_right=True, copy_tail_valid=True)
-        _tle_flashmla_prefill_copy_kv_step(
-            k0_r_writer, index_smem, kv_base, tkv_base, ck0, D, TD, DPH, TDP, VG, BK, PIPE_CAPACITY,
-            copy_right=True, copy_tail_valid=True)
-        _tle_flashmla_prefill_copy_kv_step(
-            k1_l_writer, index_smem, kv_base, tkv_base, ck1, D, TD, DPH, TDP, VG, BK, PIPE_CAPACITY,
-            copy_right=False, copy_tail_valid=False)
+        t_offs0 = BK * ck0 + offs_t
+        t_msk0 = t_offs0 < topk_len
+        kv_ids0 = tl.load(t_base + t_offs0, t_msk0, other=-1)
+        valid0 = t_msk0 & (kv_ids0 <= max_col) & (kv_ids0 >= 0)
+        kv_offsets0 = tl.where(valid0, kv_ids0, 0).to(tl.int64) * stride_kvn
+
+        t_offs1 = BK * ck1 + offs_t
+        t_msk1 = t_offs1 < topk_len
+        kv_ids1 = tl.load(t_base + t_offs1, t_msk1, other=-1)
+        valid1 = t_msk1 & (kv_ids1 <= max_col) & (kv_ids1 >= 0)
+        kv_offsets1 = tl.where(valid1, kv_ids1, 0).to(tl.int64) * stride_kvn
+
+        k0_l_slot = k0_l_writer.acquire(pair)
+        for tile in tl.static_range(0, DPH, 64):
+            k_cols = tile + offs_tile
+            k_cols_b = tl.broadcast_to(k_cols[None, :], (BK, 64))
+            k0_l_ptr = kv_base + kv_offsets0[:, None] + k_cols[None, :]
+            k0_l_msk = valid0[:, None] & (k_cols < D)[None, :]
+            k0_l_blk = tl.load(k0_l_ptr, mask=k0_l_msk, other=0.0, eviction_policy="evict_last")
+            tl.store(tle.gpu.local_ptr(k0_l_slot.sK, (kv_tile_rows, k_cols_b)), k0_l_blk, mask=k0_l_msk)
+        k0_l_writer.commit(pair)
+
+        k1_r_slot = k1_r_writer.acquire(pair)
+        for tile in tl.static_range(0, DPH, 64):
+            k_cols = DPH + tile + offs_tile
+            k_cols_b = tl.broadcast_to(k_cols[None, :], (BK, 64))
+            k1_r_ptr = kv_base + kv_offsets1[:, None] + k_cols[None, :]
+            k1_r_msk = valid1[:, None] & (k_cols < D)[None, :]
+            k1_r_blk = tl.load(k1_r_ptr, mask=k1_r_msk, other=0.0, eviction_policy="evict_last")
+            tl.store(tle.gpu.local_ptr(k1_r_slot.sK, (kv_tile_rows, k_cols_b)), k1_r_blk, mask=k1_r_msk)
+        k1_r_tail_ptr = tkv_base + kv_offsets1[:, None] + offs_td[None, :]
+        k1_r_tail_msk = valid1[:, None] & (offs_td < TD)[None, :]
+        k1_r_tail_blk = tl.load(k1_r_tail_ptr, mask=k1_r_tail_msk, other=0.0, eviction_policy="evict_last")
+        tl.store(tle.gpu.local_ptr(k1_r_slot.sK_tail), k1_r_tail_blk, mask=k1_r_tail_msk)
+        k1_r_writer.commit(pair)
+
+        k0_r_slot = k0_r_writer.acquire(pair)
+        for tile in tl.static_range(0, DPH, 64):
+            k_cols = DPH + tile + offs_tile
+            k_cols_b = tl.broadcast_to(k_cols[None, :], (BK, 64))
+            k0_r_ptr = kv_base + kv_offsets0[:, None] + k_cols[None, :]
+            k0_r_msk = valid0[:, None] & (k_cols < D)[None, :]
+            k0_r_blk = tl.load(k0_r_ptr, mask=k0_r_msk, other=0.0, eviction_policy="evict_last")
+            tl.store(tle.gpu.local_ptr(k0_r_slot.sK, (kv_tile_rows, k_cols_b)), k0_r_blk, mask=k0_r_msk)
+        k0_r_tail_ptr = tkv_base + kv_offsets0[:, None] + offs_td[None, :]
+        k0_r_tail_msk = valid0[:, None] & (offs_td < TD)[None, :]
+        k0_r_tail_blk = tl.load(k0_r_tail_ptr, mask=k0_r_tail_msk, other=0.0, eviction_policy="evict_last")
+        tl.store(tle.gpu.local_ptr(k0_r_slot.sK_tail), k0_r_tail_blk, mask=k0_r_tail_msk)
+        k0_r_writer.commit(pair)
+
+        k1_l_slot = k1_l_writer.acquire(pair)
+        for tile in tl.static_range(0, DPH, 64):
+            k_cols = tile + offs_tile
+            k_cols_b = tl.broadcast_to(k_cols[None, :], (BK, 64))
+            k1_l_ptr = kv_base + kv_offsets1[:, None] + k_cols[None, :]
+            k1_l_msk = valid1[:, None] & (k_cols < D)[None, :]
+            k1_l_blk = tl.load(k1_l_ptr, mask=k1_l_msk, other=0.0, eviction_policy="evict_last")
+            tl.store(tle.gpu.local_ptr(k1_l_slot.sK, (kv_tile_rows, k_cols_b)), k1_l_blk, mask=k1_l_msk)
+        k1_l_writer.commit(pair)
+
+        valid_slot = valid_writer.acquire(pair)
+        valid_row0 = tl.full([BK], 0, dtype=tl.int32)
+        valid_row1 = tl.full([BK], 1, dtype=tl.int32)
+        tl.store(tle.gpu.local_ptr(valid_slot.is_kv_valid, (valid_row0, offs_t)), valid0.to(tl.int8))
+        tl.store(tle.gpu.local_ptr(valid_slot.is_kv_valid, (valid_row1, offs_t)), valid1.to(tl.int8))
+        valid_writer.commit(pair)
 
 
 @triton.jit
 def _tle_flashmla_prefill_consumer0(
+    q_writer,
     q_reader,
+    q_desc,
+    tq_desc,
     k0_l_reader,
     k0_r_qk_reader,
     k1_l_remote_reader,
-    max0_writer,
-    max1_reader,
-    prob0_writer,
-    prob1_reader,
-    sum0_writer,
-    sum1_reader,
+    valid_reader,
+    sM_wg0_writer,
+    sM_wg1_reader,
+    sS0_writer,
+    sS1_reader,
+    sL_wg0_writer,
+    sL_wg1_reader,
     output_desc,
     output_row,
-    l_base,
+    h_base,
     topk_len_ptr,
     log_scale: tl.constexpr,
     D: tl.constexpr,
@@ -946,12 +934,8 @@ def _tle_flashmla_prefill_consumer0(
     DPH: tl.constexpr,
     TDP: tl.constexpr,
     G: tl.constexpr,
-    RH: tl.constexpr,
 ):
     topk_len = tl.load(topk_len_ptr)
-    i_grh = tl.program_id(2)
-    i_rh = i_grh % RH
-    h_base = i_rh * BH
     offs_h = tl.arange(0, BH)
     offs_dh = tl.arange(0, DPH)
     mask_h = h_base + offs_h < G
@@ -959,87 +943,101 @@ def _tle_flashmla_prefill_consumer0(
     kv_rows = tl.broadcast_to(tl.arange(0, BK)[:, None], (BK, DPH))
     kv_cols_l = tl.broadcast_to(offs_dh[None, :], (BK, DPH))
     kv_cols_r = tl.broadcast_to((DPH + offs_dh)[None, :], (BK, DPH))
+
+    q_write_slot = q_writer.acquire(0)
+    tle.gpu.copy(q_desc, q_write_slot.sQ_l, [BH, DPH], [output_row, 0])
+    tle.gpu.copy(q_desc, q_write_slot.sQ_r, [BH, DPH], [output_row, DPH])
+    tle.gpu.copy(tq_desc, q_write_slot.sQ_tail, [BH, TDP], [output_row, 0])
+    q_writer.commit(0)
+
     q_slot = q_reader.wait(0).slot
-    q_l_smem_ptr = tle.gpu.local_ptr(q_slot.q_l)
-    q_r_smem_ptr = tle.gpu.local_ptr(q_slot.q_r)
-    q_tail_smem_ptr = tle.gpu.local_ptr(q_slot.q_tail)
-    max_prev = tl.full([BH], float("-inf"), dtype=tl.float32)
+    q_l_smem_ptr = tle.gpu.local_ptr(q_slot.sQ_l)
+    q_r_smem_ptr = tle.gpu.local_ptr(q_slot.sQ_r)
+    q_tail_smem_ptr = tle.gpu.local_ptr(q_slot.sQ_tail)
+    max_prev = tl.full([BH], -1.0e30, dtype=tl.float32)
     sum_exp = tl.full([BH], 0.0, dtype=tl.float32)
     acc_l = tl.zeros([BH, DPH], dtype=tl.float32)
 
     NK = tl.cdiv(topk_len, BK)
     NPAIRS = tl.cdiv(NK, 2)
+
     for pair in tl.range(NPAIRS):
-        ck0 = pair * 2
-        ck1 = ck0 + 1
-        k0_l_wait = k0_l_reader.wait(ck0)
-        k0_r_wait = k0_r_qk_reader.wait(ck0)
+        k0_l_wait = k0_l_reader.wait(pair)
         k0_l_slot = k0_l_wait.slot
-        k0_r_slot = k0_r_wait.slot
 
         q_l_blk = tl.load(q_l_smem_ptr)
         q_r_blk = tl.load(q_r_smem_ptr)
         q_tail_blk = tl.load(q_tail_smem_ptr)
-        k0_l_blk = tl.load(tle.gpu.local_ptr(k0_l_slot.kv, (kv_rows, kv_cols_l)))
-        k0_r_blk = tl.load(tle.gpu.local_ptr(k0_r_slot.kv, (kv_rows, kv_cols_r)))
-        k0_t_blk = tl.load(tle.gpu.local_ptr(k0_r_slot.tkv))
-        valid0 = tl.load(tle.gpu.local_ptr(k0_r_slot.valid)) != 0
+        k0_l_blk = tl.load(tle.gpu.local_ptr(k0_l_slot.sK, (kv_rows, kv_cols_l)))
 
         qk0 = tl.full([BH, BK], 0.0, dtype=tl.float32)
         qk0 = tl.dot(q_l_blk, tl.trans(k0_l_blk), qk0, out_dtype=tl.float32)
+
+        k0_r_wait = k0_r_qk_reader.wait(pair)
+        k0_r_slot = k0_r_wait.slot
+        k0_r_blk = tl.load(tle.gpu.local_ptr(k0_r_slot.sK, (kv_rows, kv_cols_r)))
+        k0_t_blk = tl.load(tle.gpu.local_ptr(k0_r_slot.sK_tail))
         qk0 = tl.dot(q_r_blk, tl.trans(k0_r_blk), qk0, out_dtype=tl.float32)
         qk0 = tl.dot(q_tail_blk, tl.trans(k0_t_blk), qk0, out_dtype=tl.float32)
+
+        valid_wait = valid_reader.wait(pair)
+        row0 = tl.full([BK], 0, dtype=tl.int32)
+        valid0 = tl.load(tle.gpu.local_ptr(valid_wait.slot.is_kv_valid, (row0, tl.arange(0, BK)))) != 0
         qk0 = tl.where(valid0[None, :], qk0, float("-inf"))
+        valid_reader.release(pair)
 
-        candidate0 = tl.maximum(max_prev, tl.max(qk0, axis=1))
-        max0_slot = max0_writer.acquire(pair)
-        tl.store(tle.gpu.local_ptr(max0_slot.row_max), candidate0)
-        max0_writer.commit(pair)
-
-        max1_wait = max1_reader.wait(pair)
-        candidate1 = tl.load(tle.gpu.local_ptr(max1_wait.slot.row_max))
-        max_next = tl.maximum(candidate0, candidate1)
-        max1_reader.release(pair)
-
-        alpha = tl.math.exp2((max_prev - max_next) * log_scale)
-        prob0 = tl.math.exp2(qk0 * log_scale - max_next[:, None] * log_scale)
+        local_max = tl.maximum(max_prev, tl.max(qk0, axis=1))
+        alpha = tl.math.exp2((max_prev - local_max) * log_scale)
+        prob0 = tl.math.exp2(qk0 * log_scale - local_max[:, None] * log_scale)
         sum_exp = sum_exp * alpha + tl.sum(prob0, axis=1)
         acc_l = acc_l * alpha[:, None]
         prob0_b = prob0.to(OUT_DTYPE)
 
-        prob0_slot = prob0_writer.acquire(ck0)
-        tl.store(tle.gpu.local_ptr(prob0_slot.prob), prob0_b)
-        prob0_writer.commit(ck0)
+        sM_wg0_slot = sM_wg0_writer.acquire(pair)
+        tl.store(tle.gpu.local_ptr(sM_wg0_slot.sM), local_max)
+        sM_wg0_writer.commit(pair)
 
+        k0_l_blk = tl.load(tle.gpu.local_ptr(k0_l_slot.sK, (kv_rows, kv_cols_l)))
         acc_l = tl.dot(prob0_b, k0_l_blk, acc_l, out_dtype=tl.float32)
-        k0_l_reader.release(ck0)
-        k0_r_qk_reader.release(ck0)
+        k0_l_reader.release(pair)
+        k0_r_qk_reader.release(pair)
 
-        prob1_wait = prob1_reader.wait(ck1)
-        prob1 = tl.load(tle.gpu.local_ptr(prob1_wait.slot.prob))
-        k1_l_wait = k1_l_remote_reader.wait(ck1)
-        k1_l_blk = tl.load(tle.gpu.local_ptr(k1_l_wait.slot.kv, (kv_rows, kv_cols_l)))
+        sM_wg1_wait = sM_wg1_reader.wait(pair)
+        max_next = tl.load(tle.gpu.local_ptr(sM_wg1_wait.slot.sM))
+        sM_wg1_reader.release(pair)
+
+        final_scale = tl.math.exp2((local_max - max_next) * log_scale)
+        sum_exp = sum_exp * final_scale
+        acc_l = acc_l * final_scale[:, None]
+
+        prob0_scaled = prob0 * final_scale[:, None]
+        sS0_slot = sS0_writer.acquire(pair)
+        tl.store(tle.gpu.local_ptr(sS0_slot.sS0), prob0_scaled.to(OUT_DTYPE))
+        sS0_writer.commit(pair)
+
+        sS1_wait = sS1_reader.wait(pair)
+        prob1 = tl.load(tle.gpu.local_ptr(sS1_wait.slot.sS1))
+        k1_l_wait = k1_l_remote_reader.wait(pair)
+        k1_l_blk = tl.load(tle.gpu.local_ptr(k1_l_wait.slot.sK, (kv_rows, kv_cols_l)))
         acc_l = tl.dot(prob1, k1_l_blk, acc_l, out_dtype=tl.float32)
-        prob1_reader.release(ck1)
-        k1_l_remote_reader.release(ck1)
+        sS1_reader.release(pair)
+        k1_l_remote_reader.release(pair)
+
         max_prev = max_next
 
-    sum0_slot = sum0_writer.acquire(0)
-    tl.store(tle.gpu.local_ptr(sum0_slot.row_sum), sum_exp)
-    sum0_writer.commit(0)
-    sum1_wait = sum1_reader.wait(0)
-    peer_sum = tl.load(tle.gpu.local_ptr(sum1_wait.slot.row_sum))
+    sL_wg0_slot = sL_wg0_writer.acquire(0)
+    tl.store(tle.gpu.local_ptr(sL_wg0_slot.sL), sum_exp)
+    sL_wg0_writer.commit(0)
+    sL_wg1_wait = sL_wg1_reader.wait(1)
+    peer_sum = tl.load(tle.gpu.local_ptr(sL_wg1_wait.slot.sL))
     total_sum = sum_exp + peer_sum
-    sum1_reader.release(0)
+    sL_wg1_reader.release(1)
 
-    out_l_vals = acc_l / total_sum[:, None]
+    inv_total_sum = tl.fdiv(1.0, total_sum)
+    out_l_vals = acc_l * inv_total_sum[:, None]
     o_l_msk = mask_h[:, None] & mask_od_l[None, :]
     tl.store(q_l_smem_ptr, out_l_vals.to(OUT_DTYPE), o_l_msk)
-    tle.gpu.copy(q_slot.q_l, output_desc, [BH, DPH], [output_row, 0])
-
-    fin_log = max_prev * log_scale + tl.math.log2(total_sum.to(tl.float32))
-    l_ptr = l_base + offs_h
-    tl.store(l_ptr, fin_log.to(OUT_DTYPE), mask_h)
+    tle.gpu.copy(q_slot.sQ_l, output_desc, [BH, DPH], [output_row, 0])
 
 
 @triton.jit
@@ -1048,14 +1046,19 @@ def _tle_flashmla_prefill_consumer1(
     k1_r_reader,
     k1_l_qk_reader,
     k0_r_remote_reader,
-    max1_writer,
-    max0_reader,
-    prob1_writer,
-    prob0_reader,
-    sum1_writer,
-    sum0_reader,
+    valid_reader,
+    sM_wg1_writer,
+    sM_wg0_reader,
+    sS1_writer,
+    sS0_reader,
+    sL_wg1_writer,
+    sL_wg0_reader,
+    final_max_logits_smem,
+    final_lse_smem,
     output_desc,
     output_row,
+    l_base,
+    h_base,
     topk_len_ptr,
     log_scale: tl.constexpr,
     D: tl.constexpr,
@@ -1066,12 +1069,8 @@ def _tle_flashmla_prefill_consumer1(
     DPH: tl.constexpr,
     TDP: tl.constexpr,
     G: tl.constexpr,
-    RH: tl.constexpr,
 ):
     topk_len = tl.load(topk_len_ptr)
-    i_grh = tl.program_id(2)
-    i_rh = i_grh % RH
-    h_base = i_rh * BH
     offs_h = tl.arange(0, BH)
     offs_dh = tl.arange(0, DPH)
     mask_h = h_base + offs_h < G
@@ -1080,46 +1079,48 @@ def _tle_flashmla_prefill_consumer1(
     kv_cols_l = tl.broadcast_to(offs_dh[None, :], (BK, DPH))
     kv_cols_r = tl.broadcast_to((DPH + offs_dh)[None, :], (BK, DPH))
     q_slot = q_reader.wait(0).slot
-    q_l_smem_ptr = tle.gpu.local_ptr(q_slot.q_l)
-    q_r_smem_ptr = tle.gpu.local_ptr(q_slot.q_r)
-    q_tail_smem_ptr = tle.gpu.local_ptr(q_slot.q_tail)
-    max_prev = tl.full([BH], float("-inf"), dtype=tl.float32)
+    q_l_smem_ptr = tle.gpu.local_ptr(q_slot.sQ_l)
+    q_r_smem_ptr = tle.gpu.local_ptr(q_slot.sQ_r)
+    q_tail_smem_ptr = tle.gpu.local_ptr(q_slot.sQ_tail)
+    max_prev = tl.full([BH], -1.0e30, dtype=tl.float32)
     sum_exp = tl.full([BH], 0.0, dtype=tl.float32)
     acc_r = tl.zeros([BH, DPH], dtype=tl.float32)
 
     NK = tl.cdiv(topk_len, BK)
     NPAIRS = tl.cdiv(NK, 2)
     for pair in tl.range(NPAIRS):
-        ck0 = pair * 2
-        ck1 = ck0 + 1
-        k1_r_wait = k1_r_reader.wait(ck1)
-        k1_l_wait = k1_l_qk_reader.wait(ck1)
+        k1_r_wait = k1_r_reader.wait(pair)
         k1_r_slot = k1_r_wait.slot
-        k1_l_slot = k1_l_wait.slot
 
         q_l_blk = tl.load(q_l_smem_ptr)
         q_r_blk = tl.load(q_r_smem_ptr)
         q_tail_blk = tl.load(q_tail_smem_ptr)
-        k1_l_blk = tl.load(tle.gpu.local_ptr(k1_l_slot.kv, (kv_rows, kv_cols_l)))
-        k1_r_blk = tl.load(tle.gpu.local_ptr(k1_r_slot.kv, (kv_rows, kv_cols_r)))
-        k1_t_blk = tl.load(tle.gpu.local_ptr(k1_r_slot.tkv))
-        valid1 = tl.load(tle.gpu.local_ptr(k1_r_slot.valid)) != 0
+        k1_r_blk = tl.load(tle.gpu.local_ptr(k1_r_slot.sK, (kv_rows, kv_cols_r)))
+        k1_t_blk = tl.load(tle.gpu.local_ptr(k1_r_slot.sK_tail))
 
         qk1 = tl.full([BH, BK], 0.0, dtype=tl.float32)
         qk1 = tl.dot(q_r_blk, tl.trans(k1_r_blk), qk1, out_dtype=tl.float32)
         qk1 = tl.dot(q_tail_blk, tl.trans(k1_t_blk), qk1, out_dtype=tl.float32)
+        k1_l_wait = k1_l_qk_reader.wait(pair)
+        k1_l_slot = k1_l_wait.slot
+        k1_l_blk = tl.load(tle.gpu.local_ptr(k1_l_slot.sK, (kv_rows, kv_cols_l)))
         qk1 = tl.dot(q_l_blk, tl.trans(k1_l_blk), qk1, out_dtype=tl.float32)
+
+        valid_wait = valid_reader.wait(pair)
+        row1 = tl.full([BK], 1, dtype=tl.int32)
+        valid1 = tl.load(tle.gpu.local_ptr(valid_wait.slot.is_kv_valid, (row1, tl.arange(0, BK)))) != 0
         qk1 = tl.where(valid1[None, :], qk1, float("-inf"))
+        valid_reader.release(pair)
+
+        sM_wg0_wait = sM_wg0_reader.wait(pair)
+        candidate0 = tl.load(tle.gpu.local_ptr(sM_wg0_wait.slot.sM))
+        sM_wg0_reader.release(pair)
 
         candidate1 = tl.maximum(max_prev, tl.max(qk1, axis=1))
-        max1_slot = max1_writer.acquire(pair)
-        tl.store(tle.gpu.local_ptr(max1_slot.row_max), candidate1)
-        max1_writer.commit(pair)
-
-        max0_wait = max0_reader.wait(pair)
-        candidate0 = tl.load(tle.gpu.local_ptr(max0_wait.slot.row_max))
         max_next = tl.maximum(candidate1, candidate0)
-        max0_reader.release(pair)
+        sM_wg1_slot = sM_wg1_writer.acquire(pair)
+        tl.store(tle.gpu.local_ptr(sM_wg1_slot.sM), max_next)
+        sM_wg1_writer.commit(pair)
 
         alpha = tl.math.exp2((max_prev - max_next) * log_scale)
         prob1 = tl.math.exp2(qk1 * log_scale - max_next[:, None] * log_scale)
@@ -1127,35 +1128,53 @@ def _tle_flashmla_prefill_consumer1(
         acc_r = acc_r * alpha[:, None]
         prob1_b = prob1.to(OUT_DTYPE)
 
-        prob1_slot = prob1_writer.acquire(ck1)
-        tl.store(tle.gpu.local_ptr(prob1_slot.prob), prob1_b)
-        prob1_writer.commit(ck1)
+        k1_l_qk_reader.release(pair)
 
         acc_r = tl.dot(prob1_b, k1_r_blk, acc_r, out_dtype=tl.float32)
-        k1_r_reader.release(ck1)
-        k1_l_qk_reader.release(ck1)
 
-        prob0_wait = prob0_reader.wait(ck0)
-        prob0 = tl.load(tle.gpu.local_ptr(prob0_wait.slot.prob))
-        k0_r_wait = k0_r_remote_reader.wait(ck0)
-        k0_r_blk = tl.load(tle.gpu.local_ptr(k0_r_wait.slot.kv, (kv_rows, kv_cols_r)))
+        sS1_slot = sS1_writer.acquire(pair)
+        tl.store(tle.gpu.local_ptr(sS1_slot.sS1), prob1_b)
+        sS1_writer.commit(pair)
+
+        sS0_wait = sS0_reader.wait(pair)
+        prob0 = tl.load(tle.gpu.local_ptr(sS0_wait.slot.sS0))
+        k0_r_wait = k0_r_remote_reader.wait(pair)
+        k0_r_blk = tl.load(tle.gpu.local_ptr(k0_r_wait.slot.sK, (kv_rows, kv_cols_r)))
         acc_r = tl.dot(prob0, k0_r_blk, acc_r, out_dtype=tl.float32)
-        prob0_reader.release(ck0)
-        k0_r_remote_reader.release(ck0)
+        k1_r_reader.release(pair)
+        sS0_reader.release(pair)
+        k0_r_remote_reader.release(pair)
         max_prev = max_next
 
-    sum1_slot = sum1_writer.acquire(0)
-    tl.store(tle.gpu.local_ptr(sum1_slot.row_sum), sum_exp)
-    sum1_writer.commit(0)
-    sum0_wait = sum0_reader.wait(0)
-    peer_sum = tl.load(tle.gpu.local_ptr(sum0_wait.slot.row_sum))
+    sL_wg1_slot = sL_wg1_writer.acquire(1)
+    tl.store(tle.gpu.local_ptr(sL_wg1_slot.sL), sum_exp)
+    sL_wg1_writer.commit(1)
+    sL_wg0_wait = sL_wg0_reader.wait(0)
+    peer_sum = tl.load(tle.gpu.local_ptr(sL_wg0_wait.slot.sL))
     total_sum = sum_exp + peer_sum
-    sum0_reader.release(0)
+    sL_wg0_reader.release(0)
 
-    out_r_vals = acc_r / total_sum[:, None]
+    inv_total_sum = tl.fdiv(1.0, total_sum)
+    out_r_vals = acc_r * inv_total_sum[:, None]
     o_r_msk = mask_h[:, None] & mask_od_r[None, :]
     tl.store(q_r_smem_ptr, out_r_vals.to(OUT_DTYPE), o_r_msk)
-    tle.gpu.copy(q_slot.q_r, output_desc, [BH, DPH], [output_row, DPH])
+    tle.gpu.copy(q_slot.sQ_r, output_desc, [BH, DPH], [output_row, DPH])
+
+    final_max_logits_ptr = tle.gpu.local_ptr(final_max_logits_smem)
+    final_lse_ptr = tle.gpu.local_ptr(final_lse_smem)
+    is_no_valid_tokens = total_sum == 0.0
+    final_max_logits_log2 = max_prev * log_scale
+    final_max_logits = tl.where(is_no_valid_tokens, float("-inf"), final_max_logits_log2 * 0.6931471805599453)
+    fin_log = tl.where(
+        is_no_valid_tokens,
+        float("inf"),
+        (final_max_logits_log2 + tl.math.log2(total_sum.to(tl.float32))) * 0.6931471805599453,
+    )
+    tl.store(final_max_logits_ptr, final_max_logits, mask_h)
+    tl.store(final_lse_ptr, fin_log, mask_h)
+    fin_log = tl.load(final_lse_ptr, mask_h, other=float("inf"))
+    l_ptr = l_base + offs_h
+    tl.store(l_ptr, fin_log, mask_h)
 
 
 @triton.jit
@@ -1168,9 +1187,9 @@ def tle_flashmla_prefill_fwd(
     topk_lengths,
     sm_scale: tl.constexpr,
     lse,
-    B: tl.constexpr,
-    SQ: tl.constexpr,
-    SKV: tl.constexpr,
+    B,
+    SQ,
+    SKV,
     K: tl.constexpr,
     D: tl.constexpr,
     TD: tl.constexpr,
@@ -1182,8 +1201,7 @@ def tle_flashmla_prefill_fwd(
     RH: tl.constexpr,
     BK: tl.constexpr,
     BH: tl.constexpr,
-    is_causal: tl.constexpr,
-    PIPE_CAPACITY: tl.constexpr,
+    PAIR_BLOCKS: tl.constexpr,
 ):
     DPH: tl.constexpr = DP // 2
     stride_kvg: tl.constexpr = TD + D
@@ -1195,8 +1213,11 @@ def tle_flashmla_prefill_fwd(
     stride_lm = H
     stride_lb = SQ * stride_lm
 
-    i_b, i_sq, i_grh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    i_g, i_rh = i_grh // RH, i_grh % RH
+    i_b = tl.program_id(0)
+    i_sq = tl.program_id(1)
+    i_grh = tl.program_id(2)
+    i_g = i_grh // RH
+    i_rh = i_grh % RH
     h_base = i_rh * BH
     q_head_base = i_g * G + h_base
     i_b64 = i_b.to(tl.int64)
@@ -1210,118 +1231,97 @@ def tle_flashmla_prefill_fwd(
     l_base = lse + i_b64 * stride_lb + i_sq64 * stride_lm + q_head_base64
     q_row = (i_b * SQ + i_sq) * H + q_head_base
 
-    q_l_smem = tle.gpu.alloc([1, BH, DPH], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
-    q_r_smem = tle.gpu.alloc([1, BH, DPH], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
-    q_tail_smem = tle.gpu.alloc([1, BH, TDP], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
+    sQ_l_smem = tle.gpu.alloc([1, BH, DPH], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
+    sQ_r_smem = tle.gpu.alloc([1, BH, DPH], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
+    sQ_tail_smem = tle.gpu.alloc([1, BH, TDP], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
     q_pipe = tle.pipe(
         capacity=1,
         scope="cta",
-        name="flashmla_prefill_q",
+        name="flashmla_sQ",
         readers=("wg0", "wg1"),
         one_shot=True,
-        q_l=q_l_smem,
-        q_r=q_r_smem,
-        q_tail=q_tail_smem,
+        sQ_l=sQ_l_smem,
+        sQ_r=sQ_r_smem,
+        sQ_tail=sQ_tail_smem,
     )
 
-    k_smem = tle.gpu.alloc([PIPE_CAPACITY, BK, DP], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
-    ktail_smem = tle.gpu.alloc([PIPE_CAPACITY, BK, TDP], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
-    valid_smem = tle.gpu.alloc([PIPE_CAPACITY, BK], dtype=tl.int32, layout=None, scope=tle.gpu.smem,
-                               nv_mma_shared_layout=False)
-    index_smem = tle.gpu.alloc([PIPE_CAPACITY, BK], dtype=tl.int32, layout=None, scope=tle.gpu.smem,
-                               nv_mma_shared_layout=False)
-
-    k0_l_pipe = tle.pipe(capacity=PIPE_CAPACITY, scope="cta", name="flashmla_k0_l", kv=k_smem)
+    sK0_smem = tle.gpu.alloc([1, BK, DP], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
+    sK1_smem = tle.gpu.alloc([1, BK, DP], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
+    sK0_tail_smem = tle.gpu.alloc([1, BK, TDP], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
+    sK1_tail_smem = tle.gpu.alloc([1, BK, TDP], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
+    is_kv_valid_smem = tle.gpu.alloc([1, PAIR_BLOCKS, BK], dtype=tl.int8, layout=None, scope=tle.gpu.smem,
+                                     nv_mma_shared_layout=False)
+    k0_l_pipe = tle.pipe(capacity=1, scope="cta", name="flashmla_sK0_l", sK=sK0_smem)
     k0_r_pipe = tle.pipe(
-        capacity=PIPE_CAPACITY,
+        capacity=1,
         scope="cta",
-        name="flashmla_k0_r",
+        name="flashmla_sK0_r",
         readers=("qk", "remote"),
-        kv=k_smem,
-        tkv=ktail_smem,
-        valid=valid_smem,
+        sK=sK0_smem,
+        sK_tail=sK0_tail_smem,
     )
     k1_l_pipe = tle.pipe(
-        capacity=PIPE_CAPACITY,
+        capacity=1,
         scope="cta",
-        name="flashmla_k1_l",
+        name="flashmla_sK1_l",
         readers=("qk", "remote"),
-        kv=k_smem,
+        sK=sK1_smem,
     )
     k1_r_pipe = tle.pipe(
-        capacity=PIPE_CAPACITY,
+        capacity=1,
         scope="cta",
-        name="flashmla_k1_r",
-        kv=k_smem,
-        tkv=ktail_smem,
-        valid=valid_smem,
+        name="flashmla_sK1_r",
+        sK=sK1_smem,
+        sK_tail=sK1_tail_smem,
+    )
+    is_kv_valid_pipe = tle.pipe(
+        capacity=1,
+        scope="cta",
+        name="flashmla_is_kv_valid_ready",
+        readers=("wg0", "wg1"),
+        is_kv_valid=is_kv_valid_smem,
     )
 
-    max0_smem = tle.gpu.alloc([PIPE_CAPACITY, BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
-                              nv_mma_shared_layout=False)
-    max1_smem = tle.gpu.alloc([PIPE_CAPACITY, BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
-                              nv_mma_shared_layout=False)
-    sum0_smem = tle.gpu.alloc([1, BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
-                              nv_mma_shared_layout=False)
-    sum1_smem = tle.gpu.alloc([1, BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
-                              nv_mma_shared_layout=False)
-    max0_pipe = tle.pipe(capacity=PIPE_CAPACITY, scope="cta", name="flashmla_max0", row_max=max0_smem)
-    max1_pipe = tle.pipe(capacity=PIPE_CAPACITY, scope="cta", name="flashmla_max1", row_max=max1_smem)
-    prob0_pipe = tle.pipe(capacity=PIPE_CAPACITY, scope="cta", name="flashmla_prob0", prob=ktail_smem)
-    prob1_pipe = tle.pipe(capacity=PIPE_CAPACITY, scope="cta", name="flashmla_prob1", prob=ktail_smem)
-    sum0_pipe = tle.pipe(capacity=1, scope="cta", name="flashmla_sum0", row_sum=sum0_smem)
-    sum1_pipe = tle.pipe(capacity=1, scope="cta", name="flashmla_sum1", row_sum=sum1_smem)
-
-    q_writer = q_pipe.writer()
-    q_slot = q_writer.acquire(0)
-    tle.gpu.copy(q_desc, q_slot.q_l, [BH, DPH], [q_row, 0])
-    tle.gpu.copy(q_desc, q_slot.q_r, [BH, DPH], [q_row, DPH])
-    tle.gpu.copy(tq_desc, q_slot.q_tail, [BH, TDP], [q_row, 0])
-    q_writer.commit(0)
+    sM_smem = tle.gpu.alloc([1, BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                            nv_mma_shared_layout=False)
+    sS1_smem = tle.gpu.alloc([1, BH, BK], dtype=kv.dtype.element_ty, layout=None, scope=tle.gpu.smem)
+    sL_smem = tle.gpu.alloc([2, BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                            nv_mma_shared_layout=False)
+    final_max_logits_smem = tle.gpu.alloc([BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                                          nv_mma_shared_layout=False)
+    final_lse_smem = tle.gpu.alloc([BH], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                                   nv_mma_shared_layout=False)
+    sM_wg0_pipe = tle.pipe(capacity=1, scope="cta", name="flashmla_wg0_bunch_0_ready", sM=sM_smem)
+    sM_wg1_pipe = tle.pipe(capacity=1, scope="cta", name="flashmla_wg1_bunch_0_ready", sM=sM_smem)
+    sS0_pipe = tle.pipe(capacity=1, scope="cta", name="flashmla_sS0", sS0=sK0_tail_smem)
+    sS1_pipe = tle.pipe(capacity=1, scope="cta", name="flashmla_sS1", sS1=sS1_smem)
+    sL_wg0_pipe = tle.pipe(capacity=2, scope="cta", name="flashmla_sL_wg0", sL=sL_smem)
+    sL_wg1_pipe = tle.pipe(capacity=2, scope="cta", name="flashmla_sL_wg1", sL=sL_smem)
 
     log_scale: tl.constexpr = sm_scale * 1.44269504
 
     tle.gpu.warp_specialize(
         [
             (
-                _tle_flashmla_prefill_producer,
-                (
-                    k0_l_pipe.writer(),
-                    k0_r_pipe.writer(),
-                    k1_l_pipe.writer(),
-                    k1_r_pipe.writer(),
-                    kv_base,
-                    tkv_base,
-                    index_smem,
-                    t_base,
-                    topk_len_ptr,
-                    D,
-                    TD,
-                    DPH,
-                    TDP,
-                    VG,
-                    SKV,
-                    is_causal,
-                    BK,
-                    PIPE_CAPACITY,
-                ),
-            ),
-            (
                 _tle_flashmla_prefill_consumer0,
                 (
+                    q_pipe.writer(),
                     q_pipe.reader("wg0"),
+                    q_desc,
+                    tq_desc,
                     k0_l_pipe.reader(),
                     k0_r_pipe.reader("qk"),
-                    k1_l_pipe.reader("remote", fields=("kv", )),
-                    max0_pipe.writer(),
-                    max1_pipe.reader(),
-                    prob0_pipe.writer(),
-                    prob1_pipe.reader(),
-                    sum0_pipe.writer(),
-                    sum1_pipe.reader(),
+                    k1_l_pipe.reader("remote", fields=("sK", )),
+                    is_kv_valid_pipe.reader("wg0"),
+                    sM_wg0_pipe.writer(),
+                    sM_wg1_pipe.reader(),
+                    sS0_pipe.writer(),
+                    sS1_pipe.reader(),
+                    sL_wg0_pipe.writer(),
+                    sL_wg1_pipe.reader(),
                     output_desc,
                     q_row,
-                    l_base,
+                    h_base,
                     topk_len_ptr,
                     log_scale,
                     D,
@@ -1332,7 +1332,6 @@ def tle_flashmla_prefill_fwd(
                     DPH,
                     TDP,
                     G,
-                    RH,
                 ),
             ),
             (
@@ -1341,15 +1340,20 @@ def tle_flashmla_prefill_fwd(
                     q_pipe.reader("wg1"),
                     k1_r_pipe.reader(),
                     k1_l_pipe.reader("qk"),
-                    k0_r_pipe.reader("remote", fields=("kv", )),
-                    max1_pipe.writer(),
-                    max0_pipe.reader(),
-                    prob1_pipe.writer(),
-                    prob0_pipe.reader(),
-                    sum1_pipe.writer(),
-                    sum0_pipe.reader(),
+                    k0_r_pipe.reader("remote", fields=("sK", )),
+                    is_kv_valid_pipe.reader("wg1"),
+                    sM_wg1_pipe.writer(),
+                    sM_wg0_pipe.reader(),
+                    sS1_pipe.writer(),
+                    sS0_pipe.reader(),
+                    sL_wg1_pipe.writer(),
+                    sL_wg0_pipe.reader(),
+                    final_max_logits_smem,
+                    final_lse_smem,
                     output_desc,
                     q_row,
+                    l_base,
+                    h_base,
                     topk_len_ptr,
                     log_scale,
                     D,
@@ -1360,12 +1364,32 @@ def tle_flashmla_prefill_fwd(
                     DPH,
                     TDP,
                     G,
-                    RH,
+                ),
+            ),
+            (
+                _tle_flashmla_prefill_producer,
+                (
+                    k0_l_pipe.writer(),
+                    k0_r_pipe.writer(),
+                    k1_l_pipe.writer(),
+                    k1_r_pipe.writer(),
+                    is_kv_valid_pipe.writer(),
+                    kv_base,
+                    tkv_base,
+                    t_base,
+                    topk_len_ptr,
+                    D,
+                    TD,
+                    DPH,
+                    TDP,
+                    VG,
+                    SKV,
+                    BK,
                 ),
             ),
         ],
         [4, 4],
-        [216, 216],
+        [216, 72],
     )
 
 
@@ -1383,7 +1407,7 @@ def _set_triton_descriptor_allocator(device):
 
 def _sparse_mla_fwd_interface_impl(kernel, q, kv, indices, topk_length=None, sm_scale=None, return_p_sum: bool = False,
                                    d_v=512, bk=32, is_causal=True, extra_kernel_args=(), launch_kwargs=None,
-                                   use_host_descriptors=False):
+                                   use_host_descriptors=False, grid_fn=None, include_is_causal_arg=True):
     assert not return_p_sum, "This kernel file is for fwd only"
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
     _set_triton_descriptor_allocator(q.device)
@@ -1413,9 +1437,9 @@ def _sparse_mla_fwd_interface_impl(kernel, q, kv, indices, topk_length=None, sm_
         BH = max(triton.next_power_of_2(G), 16)
         RH = 1
     BK = bk
-    output = torch.zeros((B, SQ, H, D), device=q.device, dtype=q.dtype)
-    lse = torch.full((B, SQ, H), float("-inf"), device=q.device, dtype=q.dtype)
-    grid = (B, SQ, VG * RH)
+    output = torch.empty((B, SQ, H, D), device=q.device, dtype=q.dtype)
+    lse = torch.empty((B, SQ, H), device=q.device, dtype=torch.float32)
+    grid = grid_fn(B, SQ, VG, RH) if grid_fn is not None else (B, SQ, VG * RH)
     host_descriptor_args = ()
     if use_host_descriptors:
         DPH = DP // 2
@@ -1441,8 +1465,9 @@ def _sparse_mla_fwd_interface_impl(kernel, q, kv, indices, topk_length=None, sm_
         RH,
         BK,
         BH,
-        is_causal,
     )
+    if include_is_causal_arg:
+        common_meta_args = common_meta_args + (is_causal,)
     if use_host_descriptors:
         kernel_args = (
             *host_descriptor_args,
@@ -1563,9 +1588,11 @@ def tle_flashmla_prefill_interface(
     sm_scale=None,
     return_p_sum: bool = False,
     d_v=512,
-    is_causal=True,
+    is_causal=False,
 ):
     assert not return_p_sum, "This kernel file is for fwd only"
+    if is_causal:
+        raise ValueError("TLE FlashMLA prefill path mirrors FlashMLA sparse prefill, which does not support causal mask")
     B, SQ, H, DT = q.shape
     _, _, VG, _ = kv.shape
     _, _, _, topk = indices.shape
@@ -1577,12 +1604,14 @@ def tle_flashmla_prefill_interface(
         raise ValueError(f"TLE FlashMLA prefill path currently targets V3.2 d_qk == 576, got {DT}")
     if H % 64 != 0:
         raise ValueError(f"TLE FlashMLA prefill path requires h_q to be divisible by 64, got {H}")
-    if topk % 128 != 0:
-        raise ValueError(f"TLE FlashMLA prefill path requires topk to be divisible by 128, got {topk}")
-    if SQ <= 0 or B <= 0:
-        raise ValueError(f"TLE FlashMLA prefill path requires non-empty B and S, got B={B}, S={SQ}")
+    if topk <= 0 or topk % 128 != 0:
+        raise ValueError(f"TLE FlashMLA prefill path requires positive topk divisible by 128, got {topk}")
+    if B != 1:
+        raise ValueError(f"TLE FlashMLA prefill path mirrors FlashMLA sm90 sparse prefill and requires B == 1, got {B}")
+    if SQ <= 0:
+        raise ValueError(f"TLE FlashMLA prefill path requires non-empty S, got {SQ}")
 
-    return _sparse_mla_fwd_interface_impl(
+    out, lse = _sparse_mla_fwd_interface_impl(
         tle_flashmla_prefill_fwd,
         q,
         kv,
@@ -1593,12 +1622,17 @@ def tle_flashmla_prefill_interface(
         d_v=d_v,
         bk=64,
         is_causal=is_causal,
-        extra_kernel_args=(TLE_FLASHMLA_PREFILL_PIPE_CAPACITY,),
+        extra_kernel_args=(
+            TLE_FLASHMLA_PREFILL_PAIR_BLOCKS,
+        ),
         use_host_descriptors=True,
+        include_is_causal_arg=False,
         launch_kwargs={
-            "num_warps": TLE_FLASHMLA_PREFILL_NUM_WARPS,
+            "num_warps": TLE_FLASHMLA_PREFILL_WORKER_NUM_WARPS,
+            "num_stages": 1,
         },
     )
+    return out, lse
 
 
 if _HAVE_TILELANG:
@@ -3593,19 +3627,20 @@ def test_sparse_mla_fwd(
         ), "TLE pipe-pipelined sparse MLA fwd bf16 does not match reference"
         print("TLE pipe-pipelined sparse MLA fwd bf16 matches reference!")
 
-    if check_tle_flashmla_prefill:
-        tle_flashmla_prefill_bf16_out, tle_flashmla_prefill_bf16_lse = tle_flashmla_prefill_interface(
-            q, kv, indices, topk_length=topk_length, d_v=DV)
-        print("tle FlashMLA-prefill bf16 done \n tle FlashMLA-prefill lse tensor: \n",
-              tle_flashmla_prefill_bf16_lse)
-        print()
-        assert torch.allclose(
-            tle_flashmla_prefill_bf16_out.float(),
-            ref_bf16_out.float(),
-            atol=1e-1,
-            rtol=1e-1,
-        ), "TLE FlashMLA-prefill sparse MLA fwd bf16 does not match reference"
-        print("TLE FlashMLA-prefill sparse MLA fwd bf16 matches reference!")
+    if check_tle_flashmla_prefill or check_flashmla:
+        _check_flashmla_sparse_prefill_fwd(
+            B,
+            S,
+            SKV,
+            H,
+            HKV,
+            DQK,
+            DV,
+            topk,
+            dtype,
+            check_tle_flashmla_prefill=check_tle_flashmla_prefill,
+            check_flashmla=check_flashmla,
+        )
 
     if check_tilelang:
         if not _HAVE_TILELANG:
@@ -3718,19 +3753,6 @@ def test_sparse_mla_fwd(
             rtol=1e-3,
         ), "Seesaw TileLang sparse MLA fwd bf16 does not match reference"
         print("Seesaw TileLang sparse MLA fwd bf16 matches reference!")
-
-    if check_flashmla:
-        if not _HAVE_FLASHMLA:
-            raise RuntimeError("FlashMLA is not installed, cannot run FlashMLA correctness check")
-        flashmla_bf16_out, _flashmla_bf16_lse = flashmla_sparse_mla_fwd_interface(q, kv, indices,
-                                                                                  topk_length=topk_length, d_v=DV)
-        assert torch.allclose(
-            flashmla_bf16_out.float(),
-            ref_bf16_out.float(),
-            atol=1e-1,
-            rtol=1e-1,
-        ), "FlashMLA sparse MLA fwd bf16 does not match reference"
-        print("FlashMLA sparse MLA fwd bf16 matches reference!")
 
 
 def test_sparse_mla_decode(
@@ -4385,8 +4407,98 @@ def bench_sparse_mla_decode(
             print("Triton and pipelined TileLang decode-compatible outputs match.")
         if tilelang_seesaw_out is not None:
             assert torch.allclose(triton_out.float(), tilelang_seesaw_out.float(), atol=1e-1,
-                                  rtol=1e-1), ("Triton decode-compatible output does not match seesaw TileLang output")
+                                  rtol=1e-1), (
+                "Triton decode-compatible output does not match seesaw TileLang output")
             print("Triton and seesaw TileLang decode-compatible outputs match.")
+
+
+def _check_flashmla_sparse_prefill_fwd(
+    B,
+    S,
+    SKV,
+    H,
+    HKV,
+    DQK,
+    DV,
+    topk,
+    dtype,
+    check_tle_flashmla_prefill=True,
+    check_flashmla=False,
+):
+    q, kv, indices, topk_length = _build_flashmla_sparse_prefill_inputs(
+        B=B,
+        S=S,
+        SKV=SKV,
+        H=H,
+        HKV=HKV,
+        DQK=DQK,
+        topk=topk,
+        dtype=dtype,
+        seed=0,
+    )
+    sm_scale = 0.5
+    triton_bf16_out, _triton_lse = triton_sparse_mla_fwd_interface(
+        q,
+        kv,
+        indices,
+        topk_length=topk_length,
+        sm_scale=sm_scale,
+        d_v=DV,
+        is_causal=False,
+    )
+    if check_tle_flashmla_prefill:
+        tle_flashmla_prefill_bf16_out, tle_flashmla_prefill_bf16_lse = tle_flashmla_prefill_interface(
+            q,
+            kv,
+            indices,
+            topk_length=topk_length,
+            sm_scale=sm_scale,
+            d_v=DV,
+            is_causal=False,
+        )
+        print("tle FlashMLA-prefill bf16 done \n tle FlashMLA-prefill lse tensor: \n",
+              tle_flashmla_prefill_bf16_lse)
+        print()
+        assert torch.allclose(
+            tle_flashmla_prefill_bf16_out.float(),
+            triton_bf16_out.float(),
+            atol=1e-1,
+            rtol=1e-1,
+        ), "TLE FlashMLA-prefill sparse MLA fwd bf16 does not match non-causal Triton output"
+        try:
+            tle_flashmla_prefill_interface(
+                q,
+                kv,
+                indices,
+                topk_length=topk_length,
+                sm_scale=sm_scale,
+                d_v=DV,
+                is_causal=True,
+            )
+        except ValueError as exc:
+            assert "does not support causal" in str(exc)
+        else:
+            raise AssertionError("TLE FlashMLA-prefill accepted causal=True")
+        print("TLE FlashMLA-prefill sparse MLA fwd bf16 matches FlashMLA sparse prefill semantics!")
+
+    if check_flashmla:
+        if not _HAVE_FLASHMLA:
+            raise RuntimeError("FlashMLA is not installed, cannot run FlashMLA correctness check")
+        flashmla_bf16_out, _flashmla_bf16_lse = flashmla_sparse_mla_fwd_interface(
+            q,
+            kv,
+            indices,
+            topk_length=topk_length,
+            sm_scale=sm_scale,
+            d_v=DV,
+        )
+        assert torch.allclose(
+            flashmla_bf16_out.float(),
+            triton_bf16_out.float(),
+            atol=1e-1,
+            rtol=1e-1,
+        ), "FlashMLA sparse MLA fwd bf16 does not match non-causal Triton output"
+        print("FlashMLA sparse MLA fwd bf16 matches FlashMLA sparse prefill semantics!")
 
 
 def _parse_args():

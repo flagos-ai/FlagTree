@@ -1,4 +1,5 @@
 #include "Utility.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 
@@ -85,6 +86,14 @@ void processProducerCommitOp(OpBuilder &builder, ttnvws::ProducerCommitOp op,
     // producer partition's shared-memory stores.
     if (loadType == ttnvws::TokenLoadType::LocalStoreOp)
       arriveBarrier.setReleaseFence(true);
+    // For proven local-store participants, each writer lane performs its own
+    // release fence and single arrive. This removes the full partition
+    // rendezvous while preserving the publish-before-ready contract: a lane can
+    // only arrive after its own stores, and the barrier completes only after all
+    // inferred writer participants have arrived.
+    if (op.getCommitKind() ==
+        ttnvws::ProducerCommitKind::ParticipantBarrierArrive)
+      arriveBarrier.setParticipantArrive(true);
     arriveOp = arriveBarrier;
 #else
     arriveOp =
@@ -191,8 +200,15 @@ void processConsumerReleaseOp(OpBuilder &builder, ttnvws::ConsumerReleaseOp op,
                               Value bufferEmpty, int numCTAs,
                               unsigned releaseCnt) {
   auto loc = op.getLoc();
+#ifdef __TLE__
+  SmallVector<Value> releasedFields(op.getReleasedFields());
+  auto arriveOp =
+      ttng::ArriveBarrierOp::create(builder, loc, bufferEmpty, releaseCnt,
+                                    op.getIdx(), releasedFields);
+#else
   auto arriveOp =
       ttng::ArriveBarrierOp::create(builder, loc, bufferEmpty, releaseCnt);
+#endif
   assert(op.getOperation()->hasAttr("async_task_id"));
   setAsyncTaskIds(arriveOp, getAsyncTaskIds(op.getOperation()));
 }
@@ -203,6 +219,60 @@ static std::optional<unsigned> getTokenCountOverride(ttnvws::CreateTokenOp op,
   if (!attr)
     return std::nullopt;
   return static_cast<unsigned>(attr.getInt());
+}
+
+static bool isMBarrierInitSetupOp(Operation *op) {
+  if (auto alloc = dyn_cast<ttg::LocalAllocOp>(op))
+    return true;
+  if (isa<ttng::InitBarrierOp>(op))
+    return true;
+  return op->getNumRegions() == 0 && !op->hasTrait<OpTrait::IsTerminator>() &&
+         isMemoryEffectFree(op);
+}
+
+static bool closesMBarrierInitRun(gpu::BarrierOp barrier) {
+  bool sawInit = false;
+  for (Operation *op = barrier->getPrevNode(); op; op = op->getPrevNode()) {
+    if (isa<gpu::BarrierOp>(op))
+      break;
+    if (!isMBarrierInitSetupOp(op))
+      break;
+    sawInit |= isa<ttng::InitBarrierOp>(op);
+  }
+  return sawInit;
+}
+
+static void coalesceMBarrierInitBarriersInBlock(Block &block) {
+  gpu::BarrierOp pendingInitBarrier;
+  for (Operation &op : llvm::make_early_inc_range(block)) {
+    if (auto barrier = dyn_cast<gpu::BarrierOp>(op)) {
+      if (!closesMBarrierInitRun(barrier)) {
+        pendingInitBarrier = {};
+        continue;
+      }
+      if (pendingInitBarrier)
+        pendingInitBarrier.erase();
+      pendingInitBarrier = barrier;
+      continue;
+    }
+
+    if (pendingInitBarrier && !isMBarrierInitSetupOp(&op))
+      pendingInitBarrier = {};
+  }
+}
+
+static void coalesceMBarrierInitBarriersInRegion(Region &region) {
+  for (Block &block : region) {
+    coalesceMBarrierInitBarriersInBlock(block);
+    for (Operation &op : block)
+      for (Region &nested : op.getRegions())
+        coalesceMBarrierInitBarriersInRegion(nested);
+  }
+}
+
+static void coalesceMBarrierInitBarriers(Operation *parentOp) {
+  for (Region &region : parentOp->getRegions())
+    coalesceMBarrierInitBarriersInRegion(region);
 }
 
 void lowerTokenOperations(Operation *parentOp, int numCTAs,
@@ -462,6 +532,7 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
     }
     op->erase();
   }
+  coalesceMBarrierInitBarriers(parentOp);
 
   assert(numCTAs == 1 && "remote CTA is not supported yet");
   LLVM_DEBUG({

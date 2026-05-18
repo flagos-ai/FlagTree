@@ -85,6 +85,24 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
     ttng.async_tma_copy_global_to_local %tma[%x, %x] %alloc, %barrier, %pred : !tt.tensordesc<tensor<128x128xf32, #shared1>>, !ttg.memdesc<1xi64, #shared0, #smem> -> !ttg.memdesc<128x128xf32, #shared1, #smem, mutable>
     tt.return
   }
+
+  // CHECK-LABEL: tma_expect_two_copies_no_membar
+  // CHECK: mbarrier.arrive.expect_tx.shared.b64
+  // CHECK-NOT: nvvm.barrier0
+  // CHECK: cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes
+  // CHECK-NOT: nvvm.barrier0
+  // CHECK: cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes
+  // CHECK-NOT: nvvm.barrier0
+  // CHECK: return
+  tt.func @tma_expect_two_copies_no_membar(%tma: !tt.tensordesc<tensor<128x128xf32, #shared1>>, %x: i32, %pred: i1) {
+    %barrier = ttg.local_alloc {allocation.offset = 0 : i32} : () -> !ttg.memdesc<1xi64, #shared0, #smem, mutable>
+    %alloc0 = ttg.local_alloc {allocation.offset = 16 : i32} : () -> !ttg.memdesc<128x128xf32, #shared1, #smem, mutable>
+    %alloc1 = ttg.local_alloc {allocation.offset = 65552 : i32} : () -> !ttg.memdesc<128x128xf32, #shared1, #smem, mutable>
+    ttng.barrier_expect %barrier, 131072, %pred : !ttg.memdesc<1xi64, #shared0, #smem, mutable>
+    ttng.async_tma_copy_global_to_local %tma[%x, %x] %alloc0, %barrier, %pred : !tt.tensordesc<tensor<128x128xf32, #shared1>>, !ttg.memdesc<1xi64, #shared0, #smem, mutable> -> !ttg.memdesc<128x128xf32, #shared1, #smem, mutable>
+    ttng.async_tma_copy_global_to_local %tma[%x, %x] %alloc1, %barrier, %pred : !tt.tensordesc<tensor<128x128xf32, #shared1>>, !ttg.memdesc<1xi64, #shared0, #smem, mutable> -> !ttg.memdesc<128x128xf32, #shared1, #smem, mutable>
+    tt.return
+  }
 }
 
 // -----

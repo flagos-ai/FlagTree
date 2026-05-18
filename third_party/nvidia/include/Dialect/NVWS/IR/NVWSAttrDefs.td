@@ -54,7 +54,11 @@ def NVWS_ProducerCommitKindAttr : I32EnumAttr<
       I32EnumAttrCase<"AsyncCopyMbarrierArrive", 1,
                       "async_copy_mbarrier_arrive">,
       I32EnumAttrCase<"TmaCopyBarrierArrive", 2,
-                      "tma_copy_barrier_arrive">,
+                      "tma_copy_barrier_arrive">
+#ifdef __TLE__
+      , I32EnumAttrCase<"ParticipantBarrierArrive", 3,
+                        "participant_barrier_arrive">
+#endif
     ]>{
   let cppNamespace = "::mlir::triton::nvws";
 }

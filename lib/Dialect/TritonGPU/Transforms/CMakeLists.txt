@@ -1,3 +1,10 @@
+set(TritonGPUTransformsTleSources)
+if(FLAGTREE_TLE)
+  list(APPEND TritonGPUTransformsTleSources
+    Pipeliner/TleWGMMAAnalysis.cpp
+  )
+endif()
+
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
   ProcessSharedMemoryHint.cpp
@@ -15,6 +22,7 @@ add_triton_library(TritonGPUTransforms
   Pipeliner/LowerLoops.cpp
   Pipeliner/MMAv5PipelineUtility.cpp
   Pipeliner/ScheduleLoops.cpp
+  ${TritonGPUTransformsTleSources}
   Pipeliner/WGMMAPipeline.cpp
   Pipeliner/PipelineExpander.cpp
   Pipeliner/TestPipelineLowerLoop.cpp

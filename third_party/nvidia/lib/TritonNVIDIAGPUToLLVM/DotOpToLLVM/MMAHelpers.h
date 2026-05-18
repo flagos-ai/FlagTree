@@ -1,8 +1,5 @@
 #include "Utility.h"
 #include "mlir/Support/LLVM.h"
-#ifdef __TLE__
-#include "TritonNVIDIAGPUToLLVM/PTXAsmFormat.h"
-#endif
 #include "triton/Tools/LayoutUtils.h"
 
 namespace mlir {
@@ -153,11 +150,14 @@ public:
   }
 
 #ifdef __TLE__
-  // TLE can request descriptor localization for high-pressure WGMMA regions.
-  // The side-effect asm below prevents LLVM from treating descriptor arithmetic
-  // as a pure SSA value that can be hoisted far away from the WGMMA use.
+  // TLE may ask callers to materialize descriptors at a specific insertion
+  // point, but the descriptor arithmetic itself must stay as ordinary SSA.
+  // ptxas recognizes GMMA descriptors from normal integer operations and then
+  // packs A/B into gdesc uniform-register tuples. Hiding the add in side-effect
+  // inline asm breaks that recognition and can produce an invalid gdesc even
+  // when the PTX text looks equivalent.
   Value smemLoad(int a, int b, ConversionPatternRewriter &rewriter,
-                 Location loc, bool localizeDescriptor = false) const {
+                 Location loc, bool /*localizeDescriptor*/ = false) const {
 #else
   Value smemLoad(int a, int b, ConversionPatternRewriter &rewriter,
                  Location loc) const {
@@ -175,21 +175,6 @@ public:
     uint32_t mask = (desc.swizzlingByteWidth >> 4) - 1;
     currDesc.matrixBaseOffset = (smemByteOffsetb8 / 128) & mask;
     int32_t smemByteOffsetb128 = smemByteOffsetb8 >> 4;
-#ifdef __TLE__
-    if (localizeDescriptor) {
-      // Keep descriptor materialization anchored at the caller's insertion
-      // point. This shortens descriptor live ranges and avoids ptxas spills in
-      // kernels with many live WGMMA operands.
-      PTXBuilder ptxBuilder;
-      auto *dstOpr = ptxBuilder.newOperand("=l", false);
-      auto *baseOpr = ptxBuilder.newOperand(baseb128, "l");
-      auto *descOpr = ptxBuilder.newConstantOperand(
-          static_cast<int64_t>(currDesc.descriptor + smemByteOffsetb128));
-      ptxBuilder.create("add")->o("u64")(dstOpr, baseOpr, descOpr);
-      return ptxBuilder.launch(rewriter, loc, i64_ty,
-                               /*hasSideEffect=*/true);
-    }
-#endif
     Value descValBase =
         tb.int_val(64, currDesc.descriptor + smemByteOffsetb128);
     // Add the base address to the descriptor
@@ -275,7 +260,6 @@ private:
           if (llvm::Log2_32(instrShape[leadingDim]) > log2RowsTile) {
             lbo = ll.getBasis(dims[leadingDim], log2RowsTile, kOffset);
           }
-
           auto log2ColsTile = shmemTileInv.getInDimSizeLog2(dims[stridedDim]);
           if (llvm::Log2_32(instrShape[stridedDim]) > log2ColsTile) {
             sbo = ll.getBasis(dims[stridedDim], log2ColsTile, kOffset);
