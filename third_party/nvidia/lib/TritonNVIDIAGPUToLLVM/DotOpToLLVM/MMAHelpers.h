@@ -219,7 +219,7 @@ private:
     assert(to_vector(ll.getOutDimNames()) ==
            llvm::to_vector(
                ArrayRef<StringAttr>{str_attr("offset"), str_attr("block")}));
-    int32_t totalOffElems = ll.apply({{dims[0], a}, {dims[1], b}})[0].second;
+    int32_t totalOffElems = ll.apply({{dims[0], a}, { dims[1], b }})[0].second;
     int32_t smemByteOffsetb8 = totalOffElems * desc.bitwidth / 8;
     auto currDesc = desc.descriptor;
     // Take the next 0/1/2/3 bits after the 128b tile
