@@ -180,9 +180,22 @@ public:
 #else
   Value smemLoad(int a, int b, ConversionPatternRewriter &rewriter,
                  Location loc) const {
+    auto *ctx = loc.getContext();
     auto tb = TritonLLVMOpBuilder(loc, rewriter);
-    Value descValBase = tb.int_val(64, getDescriptorOffset(a, b));
-    // Add the base address to the descriptor.
+    auto dims = to_vector(ll.getInDimNames());
+    assert(to_vector(ll.getOutDimNames()) ==
+           llvm::to_vector(
+               ArrayRef<StringAttr>{str_attr("offset"), str_attr("block")}));
+    int32_t totalOffElems = ll.apply({{dims[0], a}, {dims[1], b}})[0].second;
+    int32_t smemByteOffsetb8 = totalOffElems * desc.bitwidth / 8;
+    auto currDesc = desc.descriptor;
+    // Take the next 0/1/2/3 bits after the 128b tile
+    uint32_t mask = (desc.swizzlingByteWidth >> 4) - 1;
+    currDesc.matrixBaseOffset = (smemByteOffsetb8 / 128) & mask;
+    int32_t smemByteOffsetb128 = smemByteOffsetb8 >> 4;
+    Value descValBase =
+        tb.int_val(64, currDesc.descriptor + smemByteOffsetb128);
+    // Add the base address to the descriptor
     Value descVal = tb.add(descValBase, baseb128);
     return descVal;
   }
@@ -199,6 +212,7 @@ private:
   Value baseb128;
   LinearLayout ll;
 
+#ifdef __TLE__
   int64_t getDescriptorOffset(int a, int b) const {
     auto dims = to_vector(ll.getInDimNames());
     auto *ctx = dims[0].getContext();
@@ -214,6 +228,7 @@ private:
     int32_t smemByteOffsetb128 = smemByteOffsetb8 >> 4;
     return static_cast<int64_t>(currDesc.descriptor + smemByteOffsetb128);
   }
+#endif
 
   static MMASMEMDescriptor getDescriptor(const LinearLayout &ll,
                                          ArrayRef<unsigned> instrShape,
