@@ -100,4 +100,5 @@ jobs:
           # flagtree tle tutorial
           pushd python/tutorials/tle
           python3 06-swiglu.py
+          python3 07-kv-rmsnorm-rope-cache.py
           popd
