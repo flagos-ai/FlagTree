@@ -41,6 +41,11 @@ static constexpr llvm::StringLiteral
     kTleExplicitWgmmaCommitAttr("tle.explicit_wgmma_commit");
 static constexpr llvm::StringLiteral
     kTleWgmmaAccumulatorChainCAttr("tle.wgmma_accumulator_chain_c");
+
+struct TleWgmmaOperand {
+  Value value;
+  std::optional<int64_t> descriptorImm;
+};
 #endif
 
 triton::nvgpu::WGMMAEltType getMmaRetType(Value d) {
@@ -314,7 +319,8 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   // Keep shared-memory descriptors near their WGMMA use. Treating them as
   // ordinary pure integer SSA lets LLVM hoist them across the full dot region,
   // which can make ptxas spill descriptor registers under high pressure.
-  auto buildRegisterA = [&](int m, int k, Operation *insertBefore) {
+  auto buildRegisterA = [&](int m, int k, Operation *insertBefore)
+      -> TleWgmmaOperand {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(insertBefore);
     auto aDotOpEnc = cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
@@ -327,24 +333,44 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
     auto regATy = LLVM::LLVMStructType::getLiteral(
         rewriter.getContext(),
         SmallVector<Type>(regA.size(), regA[0].getType()));
-    return packLLElements(loc, typeConverter, regA, rewriter, regATy);
+    return {packLLElements(loc, typeConverter, regA, rewriter, regATy),
+            std::nullopt};
   };
 
-  Value firstA;
-  Value firstB;
+  auto buildSharedA = [&](int m, int k) -> TleWgmmaOperand {
+    LocalizedSMEMDescriptor desc = aLoader.localizedSmemLoad(m, k);
+    return {desc.baseb128, desc.descriptorImm};
+  };
+
+  auto buildSharedB = [&](int k, int n) -> TleWgmmaOperand {
+    LocalizedSMEMDescriptor desc = bLoader.localizedSmemLoad(k, n);
+    return {desc.baseb128, desc.descriptorImm};
+  };
+
+  auto setDescriptorAttrs = [&](triton::nvgpu::WGMMAOp mmaOp,
+                                const TleWgmmaOperand &a,
+                                const TleWgmmaOperand &b) {
+    if (a.descriptorImm)
+      mmaOp->setAttr(nvgpu::kTleWgmmaOperandADescImmAttr,
+                     rewriter.getI64IntegerAttr(*a.descriptorImm));
+    if (b.descriptorImm)
+      mmaOp->setAttr(nvgpu::kTleWgmmaOperandBDescImmAttr,
+                     rewriter.getI64IntegerAttr(*b.descriptorImm));
+  };
+
+  TleWgmmaOperand firstA;
+  TleWgmmaOperand firstB;
   if (numRepM > 0 && numRepN > 0 && numRepK > 0) {
     // The first WGMMA reuses operands materialized before the fence; later
     // descriptors are still localized at their individual WGMMA use sites.
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(op);
     if (aInShared) {
-      firstA = aLoader.smemLoad(/*a=*/0, /*b=*/0, rewriter, loc,
-                                /*localizeDescriptor=*/true);
+      firstA = buildSharedA(/*m=*/0, /*k=*/0);
     } else {
       firstA = buildRegisterA(/*m=*/0, /*k=*/0, op);
     }
-    firstB = bLoader.smemLoad(/*a=*/0, /*b=*/0, rewriter, loc,
-                              /*localizeDescriptor=*/true);
+    firstB = buildSharedB(/*k=*/0, /*n=*/0);
   }
 
   Operation *startSequence = op;
@@ -384,21 +410,23 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
       for (int k = 0; k < numRepK; ++k) {
         Value a;
 #ifdef __TLE__
+        TleWgmmaOperand aOperand;
+        TleWgmmaOperand bOperand;
         bool isFirstWgmma = m == 0 && n == 0 && k == 0;
 #endif
         if (aInShared) {
 #ifdef __TLE__
-          a = isFirstWgmma
-                  ? firstA
-                  : aLoader.smemLoad(m * mmaSizeM, k * mmaSizeK, rewriter, loc,
-                                     /*localizeDescriptor=*/true);
+          aOperand = isFirstWgmma ? firstA
+                                  : buildSharedA(m * mmaSizeM, k * mmaSizeK);
+          a = aOperand.value;
 #else
           a = aLoader.smemLoad(m * mmaSizeM, k * mmaSizeK, rewriter, loc);
 #endif
         } else {
 #ifdef __TLE__
           if (isFirstWgmma) {
-            a = firstA;
+            aOperand = firstA;
+            a = aOperand.value;
           } else {
 #endif
             auto aDotOpEnc =
@@ -415,14 +443,14 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
                 SmallVector<Type>(regA.size(), regA[0].getType()));
             a = packLLElements(loc, typeConverter, regA, rewriter, regATy);
 #ifdef __TLE__
+            aOperand = {a, std::nullopt};
           }
 #endif
         }
 #ifdef __TLE__
-        auto b = isFirstWgmma
-                     ? firstB
-                     : bLoader.smemLoad(k * mmaSizeK, n * mmaSizeN, rewriter,
-                                        loc, /*localizeDescriptor=*/true);
+        bOperand = isFirstWgmma ? firstB
+                                : buildSharedB(k * mmaSizeK, n * mmaSizeN);
+        auto b = bOperand.value;
 #else
         auto b = bLoader.smemLoad(k * mmaSizeK, n * mmaSizeN, rewriter, loc);
 #endif
@@ -433,9 +461,13 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
             needsPartialAccumulator &&
             (numLowPrecisionAcc >= maxNumImpreciseAcc || k == numRepK - 1);
         Value mmaAcc = needsPartialAccumulator ? partialAcc : d;
-        mmaAcc = triton::nvgpu::WGMMAOp::create(
+        auto mmaOp = triton::nvgpu::WGMMAOp::create(
             rewriter, loc, accTy, a, b, useC, mmaAcc, M, N, K, eltTypeC,
             eltTypeA, eltTypeB, layoutA, layoutB);
+#ifdef __TLE__
+        setDescriptorAttrs(mmaOp, aOperand, bOperand);
+#endif
+        mmaAcc = mmaOp;
         useC = tb.i1_val(1);
         if (needsPartialAccumulator)
           partialAcc = mmaAcc;

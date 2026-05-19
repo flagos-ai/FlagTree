@@ -37,6 +37,13 @@ struct MemDescOperand {
   std::optional<int> offset;
 };
 
+#ifdef __TLE__
+struct LocalizedSMEMDescriptor {
+  Value baseb128;
+  int64_t descriptorImm;
+};
+#endif
+
 // Abstract class to calculate the address of a shared or tensor memory slice.
 class DotOpMmaMemLoader {
 public:
@@ -150,37 +157,36 @@ public:
   }
 
 #ifdef __TLE__
-  // TLE may ask callers to materialize descriptors at a specific insertion
-  // point, but the descriptor arithmetic itself must stay as ordinary SSA.
-  // ptxas recognizes GMMA descriptors from normal integer operations and then
-  // packs A/B into gdesc uniform-register tuples. Hiding the add in side-effect
-  // inline asm breaks that recognition and can produce an invalid gdesc even
-  // when the PTX text looks equivalent.
+  LocalizedSMEMDescriptor localizedSmemLoad(int a, int b) const {
+    return {baseb128, getDescriptorOffset(a, b)};
+  }
+
+  // Plain callers still get a fully materialized SSA descriptor. WGMMA lowering
+  // should use localizedSmemLoad instead, so the final WGMMA PTX block can
+  // materialize the descriptor immediately before the instruction that consumes
+  // it. That preserves ptxas' canonical descriptor recognition while avoiding a
+  // long-lived SSA descriptor value under high register pressure.
   Value smemLoad(int a, int b, ConversionPatternRewriter &rewriter,
-                 Location loc, bool /*localizeDescriptor*/ = false) const {
-#else
-  Value smemLoad(int a, int b, ConversionPatternRewriter &rewriter,
-                 Location loc) const {
-#endif
-    auto *ctx = loc.getContext();
+                 Location loc, bool localizeDescriptor = false) const {
     auto tb = TritonLLVMOpBuilder(loc, rewriter);
-    auto dims = to_vector(ll.getInDimNames());
-    assert(to_vector(ll.getOutDimNames()) ==
-           llvm::to_vector(
-               ArrayRef<StringAttr>{str_attr("offset"), str_attr("block")}));
-    int32_t totalOffElems = ll.apply({{dims[0], a}, {dims[1], b}})[0].second;
-    int32_t smemByteOffsetb8 = totalOffElems * desc.bitwidth / 8;
-    auto currDesc = desc.descriptor;
-    // Take the next 0/1/2/3 bits after the 128b tile
-    uint32_t mask = (desc.swizzlingByteWidth >> 4) - 1;
-    currDesc.matrixBaseOffset = (smemByteOffsetb8 / 128) & mask;
-    int32_t smemByteOffsetb128 = smemByteOffsetb8 >> 4;
-    Value descValBase =
-        tb.int_val(64, currDesc.descriptor + smemByteOffsetb128);
-    // Add the base address to the descriptor
+    (void)localizeDescriptor;
+    assert(!localizeDescriptor &&
+           "use localizedSmemLoad for WGMMA descriptor operands");
+    Value descValBase = tb.int_val(64, getDescriptorOffset(a, b));
+    // Add the base address to the descriptor.
     Value descVal = tb.add(descValBase, baseb128);
     return descVal;
   }
+#else
+  Value smemLoad(int a, int b, ConversionPatternRewriter &rewriter,
+                 Location loc) const {
+    auto tb = TritonLLVMOpBuilder(loc, rewriter);
+    Value descValBase = tb.int_val(64, getDescriptorOffset(a, b));
+    // Add the base address to the descriptor.
+    Value descVal = tb.add(descValBase, baseb128);
+    return descVal;
+  }
+#endif
   MemDescOperand memLoad(int a, int b, ConversionPatternRewriter &rewriter,
                          Location loc) const override {
     return {smemLoad(a, b, rewriter, loc), std::nullopt};
@@ -192,6 +198,22 @@ private:
   MMASMEMDescriptor desc;
   Value baseb128;
   LinearLayout ll;
+
+  int64_t getDescriptorOffset(int a, int b) const {
+    auto dims = to_vector(ll.getInDimNames());
+    auto *ctx = dims[0].getContext();
+    assert(to_vector(ll.getOutDimNames()) ==
+           llvm::to_vector(
+               ArrayRef<StringAttr>{str_attr("offset"), str_attr("block")}));
+    int32_t totalOffElems = ll.apply({{dims[0], a}, {dims[1], b}})[0].second;
+    int32_t smemByteOffsetb8 = totalOffElems * desc.bitwidth / 8;
+    auto currDesc = desc.descriptor;
+    // Take the next 0/1/2/3 bits after the 128b tile
+    uint32_t mask = (desc.swizzlingByteWidth >> 4) - 1;
+    currDesc.matrixBaseOffset = (smemByteOffsetb8 / 128) & mask;
+    int32_t smemByteOffsetb128 = smemByteOffsetb8 >> 4;
+    return static_cast<int64_t>(currDesc.descriptor + smemByteOffsetb128);
+  }
 
   static MMASMEMDescriptor getDescriptor(const LinearLayout &ll,
                                          ArrayRef<unsigned> instrShape,

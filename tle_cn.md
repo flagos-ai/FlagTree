@@ -1068,29 +1068,12 @@ def add_kernel(
 
 ### 4.1 SparseMLA
 
-当前已在 RTX 5060Ti 与 H800 上针对 DSA 中 SparseMLA 算子做优化和测试。
+当前已在 H800 上针对 DSA 中 SparseMLA 算子做优化和测试。
 
 - TileLang 版本：`v0.1.7`
 - 示例代码：[`python/tutorials/tle/deepseek_v32/02-sparse-mla.py`](python/tutorials/tle/deepseek_v32/02-sparse-mla.py)
 
-性能对比（TFLOPS）：
-
-| 设备 | 理论算力 | Triton | TileLang | TLE | TLE over Triton |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| H800 | 800 | 165.5 | **355.0** | 210.6 | 1.27x |
-| H20 | - | 81.0 | **110.2** | 93.2 | 1.15x |
-| RTX 5060Ti | - | 30.7 | Not supported | **32.8** | 1.07x |
-
 #### 4.1.1 DeepSeek V3.2 SparseMLA Prefill
-
-当前 `feature/tle-pipe` 在 H800 上的 benchmark 结果，基于 commit `37bdfef28` 的工作区，已移除 trace instrumentation，并使用 producer-last low-reg 的 TLE-FlashMLA prefill 映射，命令如下：
-
-```bash
-PYTHONPATH=python:python/src \
-TRITON_CACHE_DIR=/tmp/tle_flashmla_producer_last_regs72_bench_cache \
-conda run -n flagtree python python/tutorials/tle/deepseek_v32/02-sparse-mla.py \
-  --mode bench --warmup 200 --rep 500
-```
 
 测试 case 对齐 FlashMLA V3.2 sparse prefill performance fixture；由于本地 Triton、TLE、TileLang kernel 未实现 `attn_sink`，这里省略该特性：
 `B=1`、`S=4096`、`H=128`、`HKV=1`、`DQK=576`、`DV=512`、`topk=2048`。
