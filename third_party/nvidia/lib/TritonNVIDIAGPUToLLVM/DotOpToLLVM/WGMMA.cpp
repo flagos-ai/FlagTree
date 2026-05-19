@@ -319,8 +319,8 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   // Keep shared-memory descriptors near their WGMMA use. Treating them as
   // ordinary pure integer SSA lets LLVM hoist them across the full dot region,
   // which can make ptxas spill descriptor registers under high pressure.
-  auto buildRegisterA = [&](int m, int k, Operation *insertBefore)
-      -> TleWgmmaOperand {
+  auto buildRegisterA = [&](int m, int k,
+                            Operation *insertBefore) -> TleWgmmaOperand {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(insertBefore);
     auto aDotOpEnc = cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
@@ -416,8 +416,8 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
 #endif
         if (aInShared) {
 #ifdef __TLE__
-          aOperand = isFirstWgmma ? firstA
-                                  : buildSharedA(m * mmaSizeM, k * mmaSizeK);
+          aOperand =
+              isFirstWgmma ? firstA : buildSharedA(m * mmaSizeM, k * mmaSizeK);
           a = aOperand.value;
 #else
           a = aLoader.smemLoad(m * mmaSizeM, k * mmaSizeK, rewriter, loc);
@@ -448,8 +448,8 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
 #endif
         }
 #ifdef __TLE__
-        bOperand = isFirstWgmma ? firstB
-                                : buildSharedB(k * mmaSizeK, n * mmaSizeN);
+        bOperand =
+            isFirstWgmma ? firstB : buildSharedB(k * mmaSizeK, n * mmaSizeN);
         auto b = bOperand.value;
 #else
         auto b = bLoader.smemLoad(k * mmaSizeK, n * mmaSizeN, rewriter, loc);
