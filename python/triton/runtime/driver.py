@@ -4,7 +4,6 @@ from pathlib import Path
 from ..backends import backends, DriverBase
 
 
-
 def _create_driver() -> DriverBase:
     active_drivers = [x.driver for x in backends.values() if x.driver.is_active()]
     if len(active_drivers) != 1:
@@ -58,6 +57,7 @@ def spec_func(function_name: str):
             func = getattr(spec, function_name)
             return func
     return None
+
 
 def _get_active_backend_name() -> str | None:
     backend = os.environ.get("FLAGTREE_BACKEND")

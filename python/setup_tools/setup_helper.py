@@ -108,13 +108,13 @@ def write_flagtree_backend_file(triton_pkg_dir=None):
     dest_file = Path(triton_pkg_dir) / "FLAGTREE_BACKEND"
     dest_file.write_text(backend_value)
 
+
 def write_flagtree_source_root_file(triton_pkg_dir=None):
     if triton_pkg_dir is None:
         triton_pkg_dir = Path(__file__).resolve().parents[1] / "triton"
     source_root = Path(__file__).resolve().parents[2]
     dest_file = Path(triton_pkg_dir) / "FLAGTREE_SOURCE_ROOT"
     dest_file.write_text(str(source_root))
-
 
 
 class FlagTreeCache:
