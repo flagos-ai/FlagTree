@@ -58,25 +58,6 @@ def spec_func(function_name: str):
     return None
 
 
-def _get_active_backend_name() -> str | None:
-    backend = os.environ.get("FLAGTREE_BACKEND")
-    if backend:
-        return backend
-
-    try:
-        active_driver = driver.active
-    except Exception:
-        return None
-
-    module_name = active_driver.__class__.__module__
-    parts = module_name.split(".")
-    if "backends" in parts:
-        idx = parts.index("backends")
-        if idx + 1 < len(parts):
-            return parts[idx + 1]
-    return None
-
-
 # flagtree backend path specialization
 def spec_path(path_list: list):
     import os
