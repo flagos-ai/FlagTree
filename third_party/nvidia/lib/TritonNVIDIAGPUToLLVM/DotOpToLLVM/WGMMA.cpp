@@ -461,13 +461,17 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
             needsPartialAccumulator &&
             (numLowPrecisionAcc >= maxNumImpreciseAcc || k == numRepK - 1);
         Value mmaAcc = needsPartialAccumulator ? partialAcc : d;
+#ifdef __TLE__
         auto mmaOp = triton::nvgpu::WGMMAOp::create(
             rewriter, loc, accTy, a, b, useC, mmaAcc, M, N, K, eltTypeC,
             eltTypeA, eltTypeB, layoutA, layoutB);
-#ifdef __TLE__
         setDescriptorAttrs(mmaOp, aOperand, bOperand);
-#endif
         mmaAcc = mmaOp;
+#else
+        mmaAcc = triton::nvgpu::WGMMAOp::create(
+            rewriter, loc, accTy, a, b, useC, mmaAcc, M, N, K, eltTypeC,
+            eltTypeA, eltTypeB, layoutA, layoutB);
+#endif
         useC = tb.i1_val(1);
         if (needsPartialAccumulator)
           partialAcc = mmaAcc;

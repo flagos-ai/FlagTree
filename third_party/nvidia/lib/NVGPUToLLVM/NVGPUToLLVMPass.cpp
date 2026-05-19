@@ -536,24 +536,24 @@ public:
       }
       args += "}, ";
     } else {
-      uint32_t opAIdx = asmOpIdx++;
 #ifdef __TLE__
+      uint32_t opAIdx = asmOpIdx++;
       args += buildDescriptorOperand("__tle_wgmma_desc_a", opAIdx,
                                      ttn::kTleWgmmaOperandADescImmAttr) +
               ", ";
 #else
-      args += "$" + std::to_string(opAIdx) + ", ";
+      args += "$" + std::to_string(asmOpIdx++) + ", ";
 #endif
     }
 
     // Operand B (must be `desc`)
-    uint32_t opBIdx = asmOpIdx++;
 #ifdef __TLE__
+    uint32_t opBIdx = asmOpIdx++;
     args += buildDescriptorOperand("__tle_wgmma_desc_b", opBIdx,
                                    ttn::kTleWgmmaOperandBDescImmAttr) +
             ", ";
 #else
-    args += "$" + std::to_string(opBIdx) + ", ";
+    args += "$" + std::to_string(asmOpIdx++) + ", ";
 #endif
 
     // `scale-d`

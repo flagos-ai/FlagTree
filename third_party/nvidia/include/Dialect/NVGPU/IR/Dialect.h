@@ -43,14 +43,16 @@
 
 namespace mlir {
 namespace triton {
-namespace nvgpu {
 #ifdef __TLE__
+namespace nvgpu {
 inline constexpr llvm::StringLiteral
     kTleWgmmaOperandADescImmAttr("tle.wgmma_operand_a_desc_imm");
 inline constexpr llvm::StringLiteral
     kTleWgmmaOperandBDescImmAttr("tle.wgmma_operand_b_desc_imm");
-#endif
 } // namespace nvgpu
+#else
+namespace nvgpu {} // namespace nvgpu
+#endif
 } // namespace triton
 } // namespace mlir
 
