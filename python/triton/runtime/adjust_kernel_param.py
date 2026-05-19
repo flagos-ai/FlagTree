@@ -53,6 +53,12 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
     # keyword tail).
     _MAKE_TMA_DESC_PARAM_ORDER = ('base', 'shape', 'strides', 'block_shape')
 
+    # Parameter order of `tl.load_tensor_descriptor`, mirrored from
+    # `python/triton/language/core.py::load_tensor_descriptor`. This functional
+    # form lowers to `desc.load(offsets)` and is equivalent to the method-call
+    # form for our purposes.
+    _LOAD_TMA_DESC_PARAM_ORDER = ('desc', 'offsets')
+
     def __init__(self, kernel_globals: dict | None = None):
         self.input_params = set[str]()  # input params
         self.constexpr_params = set[str]()  # constexpr params
@@ -105,11 +111,13 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         if len(targets) == 1 and isinstance(targets[0], ast.Name):
             var_name = targets[0].id
 
-            # Capture desc.load([addr, ...]) assignments
-            if (isinstance(node.value, ast.Call) and self._is_tma_load(node.value) and node.value.args
-                    and isinstance(node.value.args[0], ast.List)):
-                desc_name = node.value.func.value.id
-                addr_exprs = node.value.args[0].elts
+            # Capture TMA descriptor load assignments in both call forms:
+            #   (a) method form:     a = a_desc.load([offset_am, offset_ak])
+            #   (b) functional form: a = tl.load_tensor_descriptor(a_desc, [offset_am, offset_ak])
+            # Both lower to the same TMA load; normalize into (desc_name, addr_exprs).
+            tma_load_record = self._extract_tma_load(node.value)
+            if tma_load_record is not None:
+                desc_name, addr_exprs = tma_load_record
                 self.tma_load_assignments.append(
                     {'var_name': var_name, 'desc_name': desc_name, 'addr_exprs': addr_exprs})
 
@@ -328,6 +336,35 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         if isinstance(node.func, ast.Attribute) and node.func.attr == 'load':
             return not self._is_tl_func(node, 'load')
         return False
+
+    # tl.load_tensor_descriptor(desc, offsets) — functional alias for `desc.load(offsets)`.
+    # See python/triton/language/core.py::load_tensor_descriptor for the lowering.
+    def _is_tl_load_tensor_descriptor(self, node) -> bool:
+        return self._is_tl_func(node, 'load_tensor_descriptor')
+
+    # Normalize either `desc.load([...])` or `tl.load_tensor_descriptor(desc, [...])`
+    # to `(desc_name, addr_exprs)`. Returns None when `node` is neither form or
+    # the desc/offsets cannot be statically resolved.
+    def _extract_tma_load(self, node: ast.AST) -> tuple[str, list[ast.AST]] | None:
+        if not isinstance(node, ast.Call):
+            return None
+        desc_name = None
+        offsets_node = None
+        # Method form: <desc>.load([...]) where <desc> must be a bare Name.
+        if self._is_tma_load(node) and node.args:
+            if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+                desc_name = node.func.value.id
+                offsets_node = node.args[0]
+        # Functional form: tl.load_tensor_descriptor(desc, offsets) in any
+        # positional / keyword / mixed combination.
+        elif self._is_tl_load_tensor_descriptor(node):
+            desc_arg = self._resolve_call_arg(node, 'desc', self._LOAD_TMA_DESC_PARAM_ORDER)
+            offsets_node = self._resolve_call_arg(node, 'offsets', self._LOAD_TMA_DESC_PARAM_ORDER)
+            if isinstance(desc_arg, ast.Name):
+                desc_name = desc_arg.id
+        if desc_name is None or not isinstance(offsets_node, ast.List):
+            return None
+        return desc_name, offsets_node.elts
 
     def _is_tl_make_tensor_descriptor(self, node) -> bool:
         return self._is_tl_func(node, 'make_tensor_descriptor')
