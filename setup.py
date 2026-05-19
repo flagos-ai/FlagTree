@@ -403,7 +403,6 @@ class CMakeBuildPy(build_py):
     def run(self) -> None:
         self.run_command('build_ext')
         helper.write_flagtree_backend_file()
-        helper.write_flagtree_source_root_file()
         return super().run()
 
 
@@ -774,7 +773,6 @@ class plugin_develop(develop):
         helper.uninstall_triton()
         add_links(external_only=False)
         helper.write_flagtree_backend_file()
-        helper.write_flagtree_source_root_file()
         super().run()
 
 
@@ -783,7 +781,6 @@ class plugin_editable_wheel(editable_wheel):
     def run(self):
         add_links(external_only=False)
         helper.write_flagtree_backend_file()
-        helper.write_flagtree_source_root_file()
         super().run()
 
 

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os
+
 from pathlib import Path
 from ..backends import backends, DriverBase
 
@@ -78,61 +78,19 @@ def _get_active_backend_name() -> str | None:
     return None
 
 
+# flagtree backend path specialization
 def spec_path(path_list: list):
-    if not path_list:
+    import os
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    if not path_list or not FLAGTREE_BACKEND:
         return
-
-    backend = _get_active_backend_name()
-    if not backend:
+    current_path = path_list[0].replace(os.sep, "/")
+    marker = "/triton/"
+    idx = current_path.find(marker)
+    if idx == -1:
         return
-
-    current_path = Path(path_list[0]).resolve()
-    current_path_str = current_path.as_posix()
-
-    repo_root = None
-    rel_path = None
-
-    # Source-tree mode:
-    #   /root/lmc/FlagTree/python/triton/compiler
-    #   /root/lmc/FlagTree/python/triton/experimental/gluon
-    source_marker = "/python/triton"
-    source_idx = current_path_str.find(source_marker)
-    if source_idx != -1:
-        repo_root = Path(current_path_str[:source_idx]).resolve()
-        triton_root = repo_root / "python" / "triton"
-        try:
-            rel_path = current_path.relative_to(triton_root)
-        except ValueError:
-            repo_root = None
-            rel_path = None
-
-    # Installed mode:
-    #   /usr/local/lib/python3.10/dist-packages/triton/compiler
-    #   /usr/local/lib/python3.10/dist-packages/triton/experimental/gluon
-    # In this mode, use FLAGTREE_SOURCE_ROOT to locate backend specializations.
-    if repo_root is None or rel_path is None:
-        source_root = os.environ.get("FLAGTREE_SOURCE_ROOT")
-        if not source_root:
-            source_root_file = Path(__file__).resolve().parents[1] / "FLAGTREE_SOURCE_ROOT"
-            if source_root_file.is_file():
-                source_root = source_root_file.read_text().strip()
-        if not source_root:
-            return
-
-        repo_root = Path(source_root).resolve()
-        installed_marker = "/triton/"
-        installed_idx = current_path_str.find(installed_marker)
-        if installed_idx == -1:
-            return
-        rel_path = Path(current_path_str[installed_idx + len(installed_marker):])
-
-    candidate_backend_spec = repo_root / "third_party" / backend / "backend" / "spec" / "triton" / rel_path
-    candidate_backend_python = repo_root / "third_party" / backend / "python" / "triton" / rel_path
-
-    # Prefer backend/spec first, then legacy third_party/<backend>/python.
-    for candidate_path in (candidate_backend_spec, candidate_backend_python):
-        if candidate_path.is_dir():
-            candidate = str(candidate_path)
-            if candidate not in path_list:
-                path_list.insert(0, candidate)
-            return
+    triton_root = current_path[:idx + len("/triton")]
+    rel_path = current_path[idx + len(marker):]
+    backend_path = os.path.join(triton_root, "backends", FLAGTREE_BACKEND, "spec", "triton", rel_path)
+    if os.path.isdir(backend_path) and backend_path not in path_list:
+        path_list.insert(0, backend_path)
