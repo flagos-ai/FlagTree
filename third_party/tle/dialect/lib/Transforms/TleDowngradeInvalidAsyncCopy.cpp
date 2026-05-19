@@ -1,6 +1,6 @@
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LLVM.h"
 #include "tle/dialect/include/Transforms/Passes.h"
@@ -87,20 +87,18 @@ static bool hasL2CachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
          copyOp.getEvict() == tt::EvictionPolicy::EVICT_LAST;
 }
 
-static void dropUnsafeLoopFreePartitionCachePolicy(
-    ttg::AsyncCopyGlobalToLocalOp copyOp) {
+static void
+dropUnsafeLoopFreePartitionCachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
   if (!copyOp->hasAttr(kTleLocalPointerAsyncStoreAttr) ||
-      !hasL2CachePolicy(copyOp) ||
-      !isInLoopFreeWarpSpecializePartition(copyOp))
+      !hasL2CachePolicy(copyOp) || !isInLoopFreeWarpSpecializePartition(copyOp))
     return;
 
   // PTXAS may emit undefined uniform registers for straight-line
   // warp-specialize producer partitions that use cp.async L2 cache-policy
   // operands. Eviction policy is a non-semantic hint, so keep the async copy
   // and drop only the unsafe hint in loop-free partitions.
-  copyOp.setEvictAttr(
-      tt::EvictionPolicyAttr::get(copyOp.getContext(),
-                                  tt::EvictionPolicy::NORMAL));
+  copyOp.setEvictAttr(tt::EvictionPolicyAttr::get(copyOp.getContext(),
+                                                  tt::EvictionPolicy::NORMAL));
 }
 
 static unsigned floorPowerOfTwo(unsigned value) {
