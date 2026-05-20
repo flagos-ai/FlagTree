@@ -45,4 +45,5 @@ jobs:
         shell: bash
         run: |
           set -x
+          source ~/env.sh
           python3 -m pytest -s third_party/hcu/python/test/unit
