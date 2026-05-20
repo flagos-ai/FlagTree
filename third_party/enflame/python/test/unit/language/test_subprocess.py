@@ -76,6 +76,7 @@ def test_print(func_type: str, data_type: str, device: str):
             elif func_type == "device_print_uint":
                 offset = (1 << 31)
 
+
 # TODO: check more
             target_arch = triton.runtime.driver.active.get_current_target().arch.split("--")[1]
             line = f"pid (0, 0, 0) idx ({i:3}) x: {i + offset}"
