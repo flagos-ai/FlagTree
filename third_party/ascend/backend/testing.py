@@ -27,7 +27,9 @@ from datetime import datetime, timezone
 import triton.runtime as runtime
 from triton._C.clear_l2 import do_bench_clear
 
-def do_bench_npu(funcs, warmup=25, active=100, prof_dir=None, clear_l2_cache=False, keep_res=False, collect_prof=True, return_mode="mean", quantiles=None):
+
+def do_bench_npu(funcs, warmup=25, active=100, prof_dir=None, clear_l2_cache=False, keep_res=False, collect_prof=True,
+                 return_mode="mean", quantiles=None):
     import torch
     import torch_npu
 
@@ -81,7 +83,7 @@ def do_bench_npu(funcs, warmup=25, active=100, prof_dir=None, clear_l2_cache=Fal
     n_warmup = min(5, max(1, int(warmup / estimate_ms)))
     n_repeat = min(30, max(1, int(active / estimate_ms)))
 
-    total =  n_warmup + n_repeat
+    total = n_warmup + n_repeat
     with torch_npu.profiler.profile(
             activities=[torch_npu.profiler.ProfilerActivity.NPU],
             on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(torch_path),
@@ -107,9 +109,10 @@ def do_bench_npu(funcs, warmup=25, active=100, prof_dir=None, clear_l2_cache=Fal
                 torch.npu.synchronize()
 
     if collect_prof:
-        time_cost = _collect_prof_result(torch_path, funcs, n_warmup, n_repeat, return_mode=return_mode, quantiles=quantiles) # read kernel_details.csv
+        time_cost = _collect_prof_result(torch_path, funcs, n_warmup, n_repeat, return_mode=return_mode,
+                                         quantiles=quantiles)  # read kernel_details.csv
     else:
-        time_cost = _collect_single(torch_path, return_mode=return_mode) # read op_static.csv
+        time_cost = _collect_single(torch_path, return_mode=return_mode)  # read op_static.csv
     _rm_dic(keep_res, torch_path)
     return time_cost
 
@@ -186,7 +189,8 @@ def _rm_dic(keep_res, torch_path):
         shutil.rmtree(torch_path)
 
 
-def _collect_prof_result(base_dir: str, funcs, num_warmup: int, num_active: int, key: str = None, return_mode="mean", quantiles=None):
+def _collect_prof_result(base_dir: str, funcs, num_warmup: int, num_active: int, key: str = None, return_mode="mean",
+                         quantiles=None):
     """
     Collect kernel performance from kernel_details.csv, returned in millisecond.
     The first `num_warmup` rows of each function are warmup data and will be ignored, the next `num_active` rows will be averaged.
