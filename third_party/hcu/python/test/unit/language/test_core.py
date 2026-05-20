@@ -1842,7 +1842,7 @@ def test_cast(dtype_x, dtype_z, bitcast, size, num_ctas, device):
                                      (dtype_x == "float8_e4m3fn" and dtype_z == 'bfloat16')):
             pytest.skip(f'test_cast{(dtype_x, dtype_z)} only supported on HIP CDNA4.')
 
-    torch.manual_seed(0)
+    # torch.manual_seed(0)
     # This is tricky because numpy doesn't have bfloat, and torch doesn't have uints.
     if dtype_x.startswith('bfloat'):
         x_tri = torch.randn(size, dtype=getattr(torch, dtype_x), device=device)
