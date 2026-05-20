@@ -245,11 +245,11 @@ def make_llir(mod, metadata, options):
     passes += [
         '-insert-local-fence=arch=' + options.arch, '--convert-vector-to-scf=target-rank=1', '-lower-affine',
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
-        '-convert-private-tag-to-gcu', '-convert-memref-to-gcu', '-kernel-memory-alloc=arch=' + options.arch +
-        ' num-warps=' + str(options.num_warps), '-loop-invariant-code-motion',
-        '-convert-scf-to-cf', '-canonicalize', '-cse', '--symbol-dce', '-gcu-remove-transform-ir',
-        '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
-        '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse',
+        '-convert-private-tag-to-gcu', '-convert-memref-to-gcu',
+        '-kernel-memory-alloc=arch=' + options.arch + ' num-warps=' + str(options.num_warps),
+        '-loop-invariant-code-motion', '-convert-scf-to-cf', '-canonicalize', '-cse', '--symbol-dce',
+        '-gcu-remove-transform-ir', '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8),
+        '-canonicalize', '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse',
         '--convert-gpu-to-gcu=chipset=' + options.arch + ' vector-bit-width=' + str(options.vector_length * 8),
         '--gcu-attach-target=arch=' + options.arch, '-convert-index-to-llvm', '-gpu-to-llvm', '-convert-llvm-to-gcu',
         '-alloca-to-entry', '-canonicalize'
