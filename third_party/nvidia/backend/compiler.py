@@ -512,7 +512,7 @@ class CUDABackend(BaseBackend):
         assert len(names) == 1
         metadata["name"] = names[0]
         # post-process
-        ptx_version = '8.5'
+        ptx_version = f'{ptx_version//10}.{ptx_version%10}'
         ret = re.sub(r'\.version \d+\.\d+', f'.version {ptx_version}', ret, flags=re.MULTILINE)
         ret = re.sub(r'\.target sm_\d+', f'.target sm_{capability}', ret, flags=re.MULTILINE)
         if not knobs.compilation.dump_ir_extract_di_local_variables:
@@ -526,7 +526,7 @@ class CUDABackend(BaseBackend):
         return ret
 
     def make_cubin(self, src, metadata, opt, capability):
-        ptxas = os.getenv("ptxas", "ptxas")
+        ptxas = get_ptxas(self.target.arch).path
         with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.ptx') as fsrc, \
             tempfile.NamedTemporaryFile(delete=False, mode='r', suffix='.log') as flog:
             fsrc.write(src)
@@ -625,11 +625,11 @@ please share the reproducer above with Triton project.
             if use_nvcc:
                 with open(fbin_combined, 'rb') as f:
                     cubin = f.read()
+                if os.path.exists(fbin_combined):
+                    os.remove(fbin_combined)
             else:
                 with open(fbin, 'rb') as f:
                     cubin = f.read()
-            if os.path.exists(fbin_combined):
-                os.remove(fbin_combined)
             if os.path.exists(fbin):
                 os.remove(fbin)
         return cubin

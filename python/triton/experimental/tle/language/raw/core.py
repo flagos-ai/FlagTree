@@ -5,6 +5,9 @@ from triton.experimental.tle.language.gpu import buffered_tensor
 
 @builtin
 def call(func, args, _semantic=None):
+    if func.libs is not None:
+        func.make_cubin()
+        return
     context = _semantic.builder.get_context()
     llvm = func.make_llvm(context)
     handles = [arg.handle for arg in args]
@@ -46,8 +49,3 @@ def call_smem(func, args, _semantic=None):
         return buffer_tensors[0]
     else:
         return tl.tuple(buffer_tensors)
-
-
-@builtin
-def call_nvshmem(func, outputs, inputs, _semantic=None):
-    func.make_cubin()

@@ -11,6 +11,7 @@ from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[report
 # TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 CLANG = os.getenv("CLANG", "clang")
 NVCC = os.getenv("NVCC", "nvcc")
+PTXAS = os.getenv("PTXAS", "ptxas")
 
 
 class CUDAJITFunction(object):
@@ -20,17 +21,21 @@ class CUDAJITFunction(object):
         self.fn: Final[Any] = fn
         self.code: Final[str] = file.read_text()
         self.file: Final[Path] = file
-        self.libs = kwargs.get("library", {})
+        self.libs = kwargs.get("library", None)
         self.__triton_builtin__: Final[bool] = True
 
     def make_llvm(self, mlir_context) -> str:
+        prop = torch.cuda.get_device_properties(torch.cuda.current_device())
+        arch = f"--cuda-gpu-arch=sm_{prop.major}{prop.minor}"
         build = subprocess.run(
             [
                 CLANG,
                 "-x",
                 "cuda",
                 "--cuda-device-only",
+                arch,
                 "-emit-llvm",
+                "-I/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/torch/include",
                 "-O2",
                 "-S",
                 "-",
@@ -56,7 +61,25 @@ class CUDAJITFunction(object):
         include_flags = [f"-I{inc_dir}" for inc_dir in include_dirs]
         prop = torch.cuda.get_device_properties(torch.cuda.current_device())
         arch = f"-arch=sm_{prop.major}{prop.minor}"
-        build = subprocess.run([NVCC, "-rdc=true", arch, *include_flags, "--extended-lambda", "-c", "-o", dst, src],
+        
+        # clang cubin
+        # build1 = subprocess.run([
+        #     CLANG, 
+        #     "-fgpu-rdc", 
+        #     "-c",
+        #     "--cuda-device-only", 
+        #     "--cuda-gpu-arch=sm_90", 
+        #     "-O3", 
+        #     *include_flags, 
+        #     "-o", 
+        #     dst, 
+        #     src
+        # ], capture_output=True)
+        # print("clang cuda")
+        # assert build1.returncode == 0, (f"clang failed\nstderr:\n{build1.stderr.decode()}")
+        
+        # nvcc cubin
+        build = subprocess.run([NVCC, "-rdc=true", arch, "-O3", *include_flags, "--extended-lambda", "-c", "-o", dst, src],
                                capture_output=True)
         assert build.returncode == 0, (f"nvcc failed\nstderr:\n{build.stderr.decode()}")
         # TODO: Remove the method of passing information by setting environment variables.
