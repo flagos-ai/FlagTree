@@ -72,6 +72,13 @@ def GCU_ESLEndpointType : GCUTypeDef<"ESLEndpoint", "esl_endpoint", [MemRefEleme
     }];
 }
 
+def GCU_IBGDAEngineType : GCUTypeDef<"IBGDAEngine", "ibgda_engine", [MemRefElementTypeInterface]> {
+    let summary = "IBGDA Engine type (`::mlir::gcu::IBGDAEngineType`) in GCU IR type system";
+    let description = [{
+       IBGDA Engine type for inter-node RDMA communication in GCU IR type system.
+    }];
+}
+
 // DTE Ctx Type
 def GCU_DTEType : GCUTypeDef<"DTE", "dte", [MemRefElementTypeInterface]> {
     let summary = "DTE ctx type (`::mlir::gcu::DTEType`) in GCU IR type system";
@@ -170,3 +177,4 @@ def GCU_VectorType : AnyTypeOf<[VectorOfRankAndLengthAndType<[1], [128 ,256, 512
                                 VectorOfRankAndLengthAndType<[1], [16, 32, 64, 128, 256], [I64]>]>;
 
 #endif //GCU_TYPES
+

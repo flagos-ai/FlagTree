@@ -43,12 +43,20 @@ except Exception:  # pragma: no cover - optional dependency
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 PI = math.pi
+target = triton.runtime.driver.active.get_current_target()
+
+def _is_enflame_backend():
+    return target.backend == "gcu"
+
+if _is_enflame_backend():
+    from torch_gcu import transfer_to_gcu
 
 _BITREV_CACHE: dict[Tuple[int, torch.device], torch.Tensor] = {}
 _TWIDDLE_CACHE: dict[Tuple[int, torch.device], Tuple[torch.Tensor, torch.Tensor]] = {}
 _CUTILE_CONST_CACHE: dict[Tuple[int, torch.device], tuple] = {}
 _FFT_REG_THRESHOLD = 256
-
+if _is_enflame_backend():
+    _FFT_REG_THRESHOLD = 0
 
 def _is_power_of_two(n: int) -> bool:
     return n > 0 and (n & (n - 1)) == 0
@@ -96,6 +104,10 @@ def _twiddle_tables(n: int, device: torch.device) -> Tuple[torch.Tensor, torch.T
 
 
 def _prepare_input(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    if _is_enflame_backend():
+        if isinstance(x, (list, tuple)):
+            real, imag = x
+            return real.to(torch.float32).contiguous(), imag.to(torch.float32).contiguous()
     if x.is_complex():
         if x.dtype not in (torch.complex64, torch.complex128):
             raise ValueError(f"unsupported complex dtype: {x.dtype}")
@@ -204,16 +216,16 @@ if _HAVE_CUTILE:
         W2,
         T0,
         T1,
-        N: ConstInt,
-        F0: ConstInt,
-        F1: ConstInt,
-        F2: ConstInt,
-        BS: ConstInt,
-        D: ConstInt,
+        N: ConstInt,   # type: ignore[valid-type]
+        F0: ConstInt,  # type: ignore[valid-type]
+        F1: ConstInt,  # type: ignore[valid-type]
+        F2: ConstInt,  # type: ignore[valid-type]
+        BS: ConstInt,  # type: ignore[valid-type]
+        D: ConstInt,   # type: ignore[valid-type]
     ):
-        F0F1 = F0 * F1
-        F1F2 = F1 * F2
-        F0F2 = F0 * F2
+        F0F1 = F0 * F1  # type: ignore[operator]
+        F1F2 = F1 * F2  # type: ignore[operator]
+        F0F2 = F0 * F2  # type: ignore[operator]
         bid = ct.bid(0)
 
         X_ri = ct.reshape(
@@ -1117,9 +1129,9 @@ def triton_fft(x: torch.Tensor) -> torch.Tensor:
         buf0_real.stride(0),
         m,
         N=n,
-        LOG_N=log_n,
-        num_warps=4,
-        num_stages=1,
+        LOG_N=log_n,  # type: ignore[arg-type]
+        num_warps=4,  # type: ignore[call-arg]
+        num_stages=1,  # type: ignore[call-arg]
     )
 
     if log_n % 2 == 0:
@@ -1163,9 +1175,9 @@ def tle_fft(x: torch.Tensor) -> torch.Tensor:
             out_real.stride(0),
             m,
             N=n,
-            LOG_N=log_n,
-            num_warps=4,
-            num_stages=1,
+            LOG_N=log_n,  # type: ignore[arg-type]
+            num_warps=4,  # type: ignore[call-arg]
+            num_stages=1,  # type: ignore[call-arg]
         )
     else:
         fft_kernel_tle[grid](
@@ -1212,18 +1224,43 @@ def _make_input(m: int, n: int, dtype: torch.dtype, complex_input: bool) -> torc
     return torch.randn((m, n), device=DEVICE, dtype=dtype)
 
 
+def _to_cpu_complex(x):
+    """Convert input to complex64 on CPU for reference FFT."""
+    if isinstance(x, (list, tuple)):
+        real, imag = x
+        return torch.complex(real.cpu().to(torch.float32), imag.cpu().to(torch.float32))
+    if x.is_complex():
+        return x.cpu().to(torch.complex64)
+    return x.cpu().to(torch.float32).to(torch.complex64)
+
+
 def run_correctness(m: int, n: int, dtype: torch.dtype, complex_input: bool):
     torch.manual_seed(0)
     x = _make_input(m, n, dtype, complex_input)
-    ref = torch.fft.fft(x.to(torch.complex64))
+    if _is_enflame_backend():
+        ref = torch.fft.fft(_to_cpu_complex(x))
+    else:
+        ref = torch.fft.fft(x.to(torch.complex64))
 
     y_triton = triton_fft(x)
     y_tle = tle_fft(x)
     if _HAVE_CUTILE:
         y_cutile = cutile_fft(x)
 
-    torch.testing.assert_close(y_triton, ref, rtol=1e-3, atol=1e-3)
-    torch.testing.assert_close(y_tle, ref, rtol=1e-3, atol=1e-3)
+    if _is_enflame_backend():
+        def _assert_close_ri(result_ri, ref_complex, rtol=1e-3, atol=1e-3):
+            """Compare (real, imag) tuple against complex reference (on CPU)."""
+            res_real, res_imag = result_ri.real, result_ri.imag
+            ref_real = ref_complex.real
+            ref_imag = ref_complex.imag
+            torch.testing.assert_close(res_real.cpu(), ref_real, rtol=rtol, atol=atol)
+            torch.testing.assert_close(res_imag.cpu(), ref_imag, rtol=rtol, atol=atol)
+
+        _assert_close_ri(y_triton, ref)
+        _assert_close_ri(y_tle, ref)
+    else:
+        torch.testing.assert_close(y_triton, ref, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(y_tle, ref, rtol=1e-3, atol=1e-3)
     if _HAVE_CUTILE:
         torch.testing.assert_close(y_cutile, ref, rtol=1e-3, atol=1e-3)
         print("Correctness check passed (triton/tle/cutile).")
@@ -1268,7 +1305,10 @@ def benchmark(M, N, provider, dtype, complex_input):
     quantiles = [0.5, 0.2, 0.8]
 
     if provider == "torch":
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.fft.fft(x.to(torch.complex64)), quantiles=quantiles)
+        if _is_enflame_backend():
+            ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.fft.fft( _to_cpu_complex(x)), quantiles=quantiles)
+        else:
+            ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.fft.fft(x.to(torch.complex64)), quantiles=quantiles)
     elif provider == "cutile":
         _cutile_constants(int(N), x.device)
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: cutile_fft(x), quantiles=quantiles)

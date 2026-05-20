@@ -8,4 +8,4 @@ set(LLVM_TARGET_DEFINITIONS MemrefExtOps.td)
 mlir_tablegen(MemrefExtOps.h.inc -gen-op-decls)
 mlir_tablegen(MemrefExtOps.cpp.inc -gen-op-defs)
 
-add_public_tablegen_target(MemrefExtTableGen${arch})
+add_public_tablegen_target(MemrefExtTableGen_gcu400)

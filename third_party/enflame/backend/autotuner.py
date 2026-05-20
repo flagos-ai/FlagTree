@@ -2,9 +2,7 @@ from triton.testing import do_bench, do_bench_cudagraph
 from triton.runtime.autotuner import Autotuner
 from triton.runtime.errors import OutOfResources
 
-
 class TritonGCUAutotuner(Autotuner):
-
     def _bench(self, *args, config, **meta):
         from triton.compiler.errors import CompileTimeAssertionFailure
 
@@ -45,6 +43,5 @@ class TritonGCUAutotuner(Autotuner):
             return do_bench(kernel_call, warmup=self.num_warmups, rep=self.num_reps, quantiles=(0.5, 0.2, 0.8))
         except (OutOfResources, CompileTimeAssertionFailure):
             return float("inf") if self.use_cuda_graph else [float("inf"), float("inf"), float("inf")]
-
 
 Autotuner._bench = TritonGCUAutotuner._bench

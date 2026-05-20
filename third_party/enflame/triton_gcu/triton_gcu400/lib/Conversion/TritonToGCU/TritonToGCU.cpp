@@ -24,18 +24,17 @@
 #include "Analysis/FirstLastUserAnalysis.h"
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
+#include "PatternTritonGPUOpToGCU.h"
+#include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
 #include "Dialect/GCUWS/IR/Dialect.h"
+#include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/MathExt/IR/MathExt.h"
 #include "Dialect/MathExt/IR/MathExtTypes.h"
-#include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
-#include "PatternTritonGPUOpToGCU.h"
-#include "TritonGCUToGCU/TritionToGCUBase.h"
 
-#include "Utility.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -48,8 +47,8 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
@@ -60,6 +59,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/Support/MathExtras.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
@@ -71,13 +71,13 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+#include "Utility.h"
 
 namespace mlir {
 #define GEN_PASS_DEF_CONVERTTRITONTOGCUPASS
 #include "Conversion/Passes.h.inc"
-} // namespace mlir
+}  // namespace mlir
 
 using namespace mlir;
 #define DEBUG_TYPE "triton-ir-to-gcu-ir"
@@ -89,17 +89,17 @@ struct ConvertTritonToGCUPass
   void runOnOperation() override;
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<triton::TritonDialect, triton::gpu::TritonGPUDialect,
-                affine::AffineDialect, arith::ArithDialect,
-                memref::MemRefDialect, vector::VectorDialect, scf::SCFDialect,
-                func::FuncDialect, math::MathDialect, gpu::GPUDialect,
-                gcu::GCUDialect, triton::gcu::TritonGCUDialect,
-                memref_ext::MemrefExtDialect, math_ext::MathExtDialect>();
+    registry.insert<
+        triton::TritonDialect, triton::gpu::TritonGPUDialect,
+        affine::AffineDialect, arith::ArithDialect, memref::MemRefDialect,
+        vector::VectorDialect, scf::SCFDialect, func::FuncDialect,
+        math::MathDialect, gpu::GPUDialect, gcu::GCUDialect,
+        triton::gcu::TritonGCUDialect, memref_ext::MemrefExtDialect,
+        math_ext::MathExtDialect>();
   }
 };
 
-} // namespace
+}  // namespace
 namespace {
 struct TTFuncOpLowering : SharedConversionPattern<triton::FuncOp> {
   using SharedConversionPattern::SharedConversionPattern;
@@ -111,7 +111,7 @@ struct TTFuncOpLowering : SharedConversionPattern<triton::FuncOp> {
     int32_t numArg = ttFuncOp.front().getNumArguments();
     // Remap proper input types.
     TypeConverter::SignatureConversion signConversion(numArg);
-    TypeConverter::SignatureConversion newSignConversion(numArg + 1);
+    TypeConverter::SignatureConversion newSignConversion(numArg + 2);
 
     // Convert argument types one by one and check for errors.
     for (auto [idx, type] :
@@ -136,26 +136,32 @@ struct TTFuncOpLowering : SharedConversionPattern<triton::FuncOp> {
     } else {
       std::vector<mlir::Type> argsTypes =
           signConversion.getConvertedTypes().vec();
-      argsTypes.push_back(pTagPool.getTagsType());
+
+      argsTypes.push_back(pTagPool.getPrivateTagsType());
+      argsTypes.push_back(pTagPool.getSharedTagsType());
 
       auto funcType = FunctionType::get(getContext(), argsTypes, resultTypes);
       auto funcName = ttFuncOp.getName().str();
       func = rewriter.create<func::FuncOp>(loc, funcName, funcType);
       func.setPrivate();
 
-      newSignConversion.addInputs(numArg, pTagPool.getTagsType());
+      newSignConversion.addInputs(numArg, pTagPool.getPrivateTagsType());
+      newSignConversion.addInputs(numArg + 1, pTagPool.getSharedTagsType());
 
-      pTagPool.setFuncNameMap(func.getOperation(), numArg);
+      pTagPool.setPrivateFuncNameMap(func.getOperation(), numArg);
+      pTagPool.setSharedFuncNameMap(func.getOperation(), numArg + 1);
     }
 
     auto internalLinkage = mlir::LLVM::linkage::Linkage::Internal;
-    auto linkage = mlir::LLVM::LinkageAttr::get(getContext(), internalLinkage);
+    auto linkage =
+        mlir::LLVM::LinkageAttr::get(getContext(), internalLinkage);
     func->setAttr("llvm.linkage", linkage);
     // Move the region to the new function, update the entry block signature.
     rewriter.inlineRegionBefore(ttFuncOp.getBody(), func.getBody(), func.end());
     if (ttFuncOp.isPublic()) {
-      if (failed(rewriter.convertRegionTypes(
-              &func.getBody(), *getTypeConverter(), &signConversion))) {
+      if (failed(rewriter.convertRegionTypes(&func.getBody(),
+                                             *getTypeConverter(),
+                                             &signConversion))) {
         return failure();
       }
 
@@ -173,8 +179,9 @@ struct TTFuncOpLowering : SharedConversionPattern<triton::FuncOp> {
           rewriter.create<func::CallOp>(loc, func, entryBlock->getArguments());
       rewriter.create<gpu::ReturnOp>(loc, call->getResults());
     } else {
-      if (failed(rewriter.convertRegionTypes(
-              &func.getBody(), *getTypeConverter(), &newSignConversion))) {
+      if (failed(rewriter.convertRegionTypes(&func.getBody(),
+                                             *getTypeConverter(),
+                                             &newSignConversion))) {
         return failure();
       }
     }
@@ -194,9 +201,11 @@ struct TTReturnOpLowering : SharedConversionPattern<triton::ReturnOp> {
       pTagPool.releaseMap(op.getOperation());
     }
     if (op->getParentOfType<gpu::GPUFuncOp>()) {
-      rewriter.replaceOpWithNewOp<gpu::ReturnOp>(op, op.getOperands());
+      rewriter.replaceOpWithNewOp<gpu::ReturnOp>(op,
+                                                 op.getOperands());
     } else {
-      rewriter.replaceOpWithNewOp<func::ReturnOp>(op, op.getOperands());
+      rewriter.replaceOpWithNewOp<func::ReturnOp>(op,
+                                                  op.getOperands());
     }
     return success();
   }
@@ -218,9 +227,10 @@ struct TTCallOpLowering : SharedConversionPattern<triton::CallOp> {
     }
     SmallVector<mlir::Value> operands(adaptor.getOperands().begin(),
                                       adaptor.getOperands().end());
-    operands.push_back(pTagPool.getTagsValue(op.getOperation()));
-    rewriter.replaceOpWithNewOp<func::CallOp>(op, op.getCallee(), resultTypes,
-                                              operands);
+    operands.push_back(pTagPool.getPrivateTagsValue(op.getOperation()));
+    operands.push_back(pTagPool.getSharedTagsValue(op.getOperation()));
+    rewriter.replaceOpWithNewOp<func::CallOp>(
+        op, op.getCallee(), resultTypes, operands);
     return success();
   }
 };
@@ -318,8 +328,8 @@ struct TTSCFYieldOpLowering : SharedConversionPattern<scf::YieldOp> {
       std::map<Operation *, Operation *> &replaced2Origin,
       triton::gcu::PrivateTagPool &pTagPool,
       std::map<Operation *, std::map<uint64_t, bool>> &operendStage)
-      : SharedConversionPattern(converter, ctx, userAnalysis, replaced2Origin,
-                                pTagPool),
+      : SharedConversionPattern(converter, ctx, userAnalysis,
+                                replaced2Origin, pTagPool),
         TTYeiledOPerandHasMultiUseStage(operendStage) {}
 
   LogicalResult
@@ -346,7 +356,7 @@ struct TTSCFYieldOpLowering : SharedConversionPattern<scf::YieldOp> {
           continue;
         }
 
-        auto tag = pTagPool.getSyncTagInfo(op);
+        auto tag = pTagPool.getPrivateSyncTagInfo(op);
         auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
         auto shape = dyn_cast<MemRefType>(operand.getType()).getShape();
         auto size = std::accumulate(shape.begin(), shape.end(), 1,
@@ -380,8 +390,8 @@ struct TTSCFYieldOpLowering : SharedConversionPattern<scf::YieldOp> {
           rewriter.create<memref::DmaStartOp>(
               loc, operand, SmallVector<Value, 4>(shape.size(), zero),
               nextLoopTensor, SmallVector<Value, 4>(shape.size(), zero),
-              rewriter.create<arith::ConstantIndexOp>(loc, size), tag.getTag(),
-              ValueRange{tag.getIdx()});
+              rewriter.create<arith::ConstantIndexOp>(loc, size),
+              tag.getTag(), ValueRange{tag.getIdx()});
           rewriter.create<memref::DmaWaitOp>(
               loc, tag.getTag(), ValueRange{tag.getIdx()},
               rewriter.create<arith::ConstantIndexOp>(loc, size));
@@ -400,8 +410,8 @@ struct TTSCFYieldOpLowering : SharedConversionPattern<scf::YieldOp> {
           rewriter.create<memref::DmaStartOp>(
               loc, operand, SmallVector<Value, 4>(shape.size(), zero),
               nextLoopTensor, SmallVector<Value, 4>(shape.size(), zero),
-              rewriter.create<arith::ConstantIndexOp>(loc, size), tag.getTag(),
-              ValueRange{tag.getIdx()});
+              rewriter.create<arith::ConstantIndexOp>(loc, size),
+              tag.getTag(), ValueRange{tag.getIdx()});
           rewriter.create<memref::DmaWaitOp>(
               loc, tag.getTag(), ValueRange{tag.getIdx()},
               rewriter.create<arith::ConstantIndexOp>(loc, size));
@@ -503,9 +513,9 @@ struct TTIntrinsicOpLowering : SharedConversionPattern<FT> {
   using SharedConversionPattern<FT>::SharedConversionPattern;
 
   LogicalResult
-  matchAndRewrite(FT op,
-                  typename SharedConversionPattern<FT>::OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  matchAndRewrite(
+      FT op, typename SharedConversionPattern<FT>::OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
     enterTritionOp(rewriter, op.getOperation());
     if (this->pTagPool.isExistInMap(op.getOperation())) {
       this->pTagPool.releaseMap(op.getOperation());
@@ -556,8 +566,8 @@ struct TTAssertOpLowering : SharedConversionPattern<triton::AssertOp> {
                        .Default([&](auto ty) { return operand; });
       // Create gcu.assert op
       rewriter.create<gcu::AssertOp>(
-          loc, value, mlir::StringAttr::get(rewriter.getContext(), message), "",
-          "", 0);
+          loc, value, mlir::StringAttr::get(rewriter.getContext(), message),
+          "", "", 0);
     };
 
     auto assertMemrefCondition = [&](Value operand) {
@@ -629,11 +639,11 @@ struct TTPrintOpLowering : SharedConversionPattern<triton::PrintOp> {
                        auto width = ty.getWidth();
                        if (hex) {
                          if (width < 64) {
-                           os << "0x%x ";
-                           return "0x%x ";
+                          os << "0x%x ";
+                          return "0x%x ";
                          } else {
-                           os << "0x%llx ";
-                           return "0x%llx ";
+                          os << "0x%llx ";
+                          return "0x%llx ";
                          }
                        } else {
                          if (isSigned) {
@@ -726,13 +736,14 @@ struct TTSplatOpLowering : SharedConversionPattern<triton::SplatOp> {
     auto numElems = triton::gcu::getElemsPerThread(splatOp.getType());
     auto resultType = dyn_cast<MemRefType>(
         getTypeConverter()->convertType(splatOp.getType()));
-    auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                              replaced2Origin, resultType);
+    auto output = syncAllocOp(rewriter, loc, lastUser,
+                              userAnalysis, replaced2Origin, resultType);
     auto v = isa<triton::PointerType>(splatOp.getSrc().getType())
                  ? rewriter.create<gcu::PtrToIntOp>(loc, adaptor.getSrc())
                  : adaptor.getSrc();
     auto totalNumElems = triton::gcu::getTotalElemsPerThread(splatOp.getType());
-    doMemset(rewriter, pTagPool, splatOp, output, v, totalNumElems);
+    auto tag = pTagPool.getPrivateSyncTagInfo(splatOp.getOperation());
+    doMemset(rewriter, tag, splatOp, output, v, totalNumElems);
     leaveTritionOp(rewriter, splatOp.getOperation());
     rewriter.replaceOp(splatOp, output);
     return success();
@@ -759,14 +770,15 @@ struct TTConstantOpLowering : SharedConversionPattern<arith::ConstantOp> {
         getTypeConverter()->convertType(constOp.getType()));
     auto valueAttr = constOp.getValue();
     auto array = dyn_cast<DenseElementsAttr>(valueAttr);
-    auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                              replaced2Origin, resultType);
+    auto output = syncAllocOp(rewriter, loc, lastUser,
+                              userAnalysis, replaced2Origin, resultType);
 
     // only support splat constant
     auto attr = array.getSplatValue<TypedAttr>();
     auto v =
         rewriter.create<arith::ConstantOp>(loc, array.getElementType(), attr);
-    doMemset(rewriter, pTagPool, constOp, output, v, totalNumElems);
+    auto tag = pTagPool.getPrivateSyncTagInfo(constOp.getOperation());
+    doMemset(rewriter, tag, constOp, output, v, totalNumElems);
     leaveTritionOp(rewriter, constOp.getOperation());
     rewriter.replaceOp(constOp, output);
     return success();
@@ -791,8 +803,8 @@ struct TTAddPtrOpLowering : SharedConversionPattern<triton::AddPtrOp> {
       auto numElems = triton::gcu::getElemsPerThread(addPtrOp.getType());
       auto resultType = dyn_cast<MemRefType>(
           getTypeConverter()->convertType(addPtrOp.getType()));
-      auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                                replaced2Origin, resultType);
+      auto output = syncAllocOp(rewriter, loc, lastUser,
+                                userAnalysis, replaced2Origin, resultType);
       auto ptrs = adaptor.getPtr();
       auto offsets = adaptor.getOffset();
       affine::buildAffineLoopNest(
@@ -848,11 +860,12 @@ struct TTAddPtrOpLowering : SharedConversionPattern<triton::AddPtrOp> {
   }
 };
 
-struct TTArithSelectOpLowering
-    : public SharedConversionPattern<arith::SelectOp> {
+struct TTArithSelectOpLowering :
+    public SharedConversionPattern<arith::SelectOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
-  LogicalResult matchAndRewrite(
+  LogicalResult
+  matchAndRewrite(
       arith::SelectOp op,
       typename SharedConversionPattern<arith::SelectOp>::OpAdaptor adaptor,
       ConversionPatternRewriter &rewriter) const override {
@@ -880,9 +893,9 @@ struct TTElementwiseOpLowering : public SharedConversionPattern<FT> {
   using SharedConversionPattern<FT>::SharedConversionPattern;
 
   LogicalResult
-  matchAndRewrite(FT op,
-                  typename SharedConversionPattern<FT>::OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  matchAndRewrite(
+      FT op, typename SharedConversionPattern<FT>::OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
     enterTritionOp(rewriter, op.getOperation());
     if (this->pTagPool.isExistInMap(op.getOperation())) {
       this->pTagPool.releaseMap(op.getOperation());
@@ -901,8 +914,9 @@ struct TTElementwiseOpLowering : public SharedConversionPattern<FT> {
     auto numElems = triton::gcu::getElemsPerThread(type);
     auto resultType =
         dyn_cast<MemRefType>(this->getTypeConverter()->convertType(type));
-    auto output = syncAllocOp(rewriter, loc, lastUser, this->userAnalysis,
-                              this->replaced2Origin, resultType);
+    auto output = syncAllocOp(rewriter, loc, lastUser,
+                              this->userAnalysis, this->replaced2Origin,
+                              resultType);
     affine::buildAffineLoopNest(
         rewriter, loc, SmallVector<int64_t, 4>(numElems.size(), 0),
         SmallVector<int64_t, 4>(numElems.begin(), numElems.end()),
@@ -1001,7 +1015,8 @@ struct TTReduceReturnOpLowering
   }
 };
 
-struct TTScanReturnOpLowering : SharedConversionPattern<triton::ScanReturnOp> {
+struct TTScanReturnOpLowering
+    : SharedConversionPattern<triton::ScanReturnOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
   LogicalResult
@@ -1096,16 +1111,32 @@ struct TTExternElemwiseOpLowering
       rewriter.replaceOpWithNewOp<math::TanhOp>(op, adaptor.getOperands());
       return success();
     } else if (name == "__gcu_begin_clock") {
-      auto newOp = rewriter.create<gcu::BeginClockOp>(op->getLoc(),
-                                                      adaptor.getOperands());
+      auto newOp = rewriter.create<gcu::BeginClockOp>(
+          op->getLoc(), adaptor.getOperands());
       rewriter.replaceOp(op, newOp->getResults());
       return success();
     } else if (name == "__gcu_end_clock") {
-      auto newOp =
-          rewriter.create<gcu::EndClockOp>(op->getLoc(), adaptor.getOperands());
+      auto newOp = rewriter.create<gcu::EndClockOp>(
+          op->getLoc(), adaptor.getOperands());
       rewriter.replaceOp(op, newOp->getResults());
       return success();
     }
+
+    auto libname = op.getLibname();
+    if (libname == "libnvshmem_device") {
+      auto loc = op->getLoc();
+      auto resultType = op.getResult().getType();
+      auto newOp = rewriter.create<gcu::ExternDeviceCallOp>(
+          loc,
+          resultType,
+          adaptor.getOperands(),
+          op.getLibnameAttr(),
+          op.getSymbolAttr(),
+          op.getPureAttr());
+      rewriter.replaceOp(op, newOp->getResults());
+      return success();
+    }
+
     return failure();
   }
 };
@@ -1127,7 +1158,7 @@ struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
     auto oneIndex = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     auto lastUser =
         userAnalysis.getLastUser(histogramOp.getOperation()->getResults()[0]);
-    auto tag = pTagPool.getSyncTagInfo(histogramOp);
+    auto tag = pTagPool.getPrivateSyncTagInfo(histogramOp);
     auto resultType = histogramOp.getType();
     auto wrapResultType =
         dyn_cast<MemRefType>(getTypeConverter()->convertType(resultType));
@@ -1136,7 +1167,7 @@ struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
     auto totalNumElems = triton::gcu::getTotalElemsPerThread(resultType);
     auto resCurWarp = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                                   replaced2Origin, resultMemRefType);
-    doMemset(rewriter, pTagPool, histogramOp, resCurWarp, zero, totalNumElems);
+    doMemset(rewriter, tag, histogramOp, resCurWarp, zero, totalNumElems);
     auto encoding = resultType.getEncoding();
     auto warpsPerCTA = triton::gcu::getWarpsPerCTA(encoding);
     auto sharedMemTensorType = RankedTensorType::get(
@@ -1144,16 +1175,16 @@ struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
         wrapResultType.getElementType(), encoding);
     rewriter.create<math_ext::HistogramOp>(loc, resCurWarp, adaptor.getSrc());
     /// store res of every warp to shared memry
-    auto sharedResMem =
-        storeToSharedMem(rewriter, tag, sharedMemTensorType, resCurWarp, false,
-                         std::make_pair(histogramOp.getOperation(), -1),
-                         userAnalysis, replaced2Origin);
+    auto sharedResMem = storeToSharedMem(
+        rewriter, tag, sharedMemTensorType, resCurWarp, false,
+        std::make_pair(histogramOp.getOperation(), -1),
+        userAnalysis, replaced2Origin);
     rewriter.create<memref::DeallocOp>(loc, resCurWarp);
     size_t allResSize = resultType.getShape()[0];
     size_t warpResSize = wrapResultType.getShape()[0];
     auto finalOutput = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                                    replaced2Origin, wrapResultType);
-    doMemset(rewriter, pTagPool, histogramOp, finalOutput, zero, totalNumElems);
+    doMemset(rewriter, tag, histogramOp, finalOutput, zero, totalNumElems);
     size_t warpsWalkNum = warpsPerCTA[0];
     // if input can't be divided by warp, do not calculate sum of res of every
     // warp
@@ -1227,89 +1258,85 @@ struct GCULoadOpLowering : SharedConversionPattern<triton::gcu::LoadOp> {
       originOp = replaced2Origin[originOp];
     }
     auto lastUser = userAnalysis.getLastUser(originOp->getResults()[0]);
-    auto firstUser = userAnalysis.getFirstUser(originOp->getResults()[0]);
+    auto firstUser =
+        userAnalysis.getFirstUser(originOp->getResults()[0]);
 
     auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto elemType = loadOp.getPtr().getType().getElementType();
     auto resultType =
         dyn_cast<MemRefType>(getTypeConverter()->convertType(loadType));
-    bool IsShareOutput = false; // output is shared layout
+    bool IsShareOutput = false;  // output is shared layout
     if (auto tType = dyn_cast<RankedTensorType>(loadType))
       if (mlir::isa<triton::gpu::SharedEncodingTrait>(tType.getEncoding()))
         IsShareOutput = true;
 
-    auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                              replaced2Origin, resultType);
-
-    auto tagShare = getShareDTETag(rewriter, loadOp);
+    auto output = syncAllocOp(rewriter, loc, lastUser,
+                              userAnalysis, replaced2Origin, resultType);
 
     triton::gcu::TagInfo tag;
     if (IsShareOutput) {
-      tag = triton::gcu::TagInfo(tagShare, zero, true);
+      tag = pTagPool.getSharedSyncTagInfo(loadOp);
     } else {
       if (firstUser.first != nullptr) {
-        tag = pTagPool.trygGetAsyncTagInfo(loadOp);
+        tag = pTagPool.tryGetPrivateAsyncTagInfo(loadOp);
       } else {
-        tag = pTagPool.getSyncTagInfo(loadOp);
+        tag = pTagPool.getPrivateSyncTagInfo(loadOp);
       }
     }
     if (tag.isAsync()) {
       pTagPool.setMap(firstUser.first, tag);
     }
 
-    auto defaultValue =
-        loadOp.getDefaultValue()
-            ? adaptor.getDefaultValue()
-            : triton::gcu::createConstantZero(rewriter, loc, elemType);
+    auto defaultValue = loadOp.getDefaultValue() ?
+        adaptor.getDefaultValue() : triton::gcu::createConstantZero(rewriter,
+        loc, elemType);
 
     // workaround for offset > tensor dims
     int64_t rank = resultType.getRank();
     Value shapeCheck = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::sgt, adaptor.getShape()[0], zero);
+      loc, arith::CmpIPredicate::sgt, adaptor.getShape()[0], zero);
     for (unsigned i = 1; i < rank; ++i) {
-      auto dimCheck = rewriter.create<arith::CmpIOp>(
+        auto dimCheck = rewriter.create<arith::CmpIOp>(
           loc, arith::CmpIPredicate::sgt, adaptor.getShape()[i], zero);
-      shapeCheck = rewriter.create<arith::AndIOp>(loc, shapeCheck, dimCheck);
+        shapeCheck = rewriter.create<arith::AndIOp>(loc, shapeCheck, dimCheck);
     }
 
-    auto total_size =
-        rewriter
-            .create<scf::IfOp>(
-                loc, shapeCheck,
-                [&](OpBuilder builder, Location loc) {
-                  Value load_size = zero;
-                  load_size = ConfigGcuLoad(
-                      builder, loc, pTagPool, output, loadOp, resultType,
-                      adaptor.getPtr(), adaptor.getStrides(),
-                      adaptor.getShape(), defaultValue, tag, IsShareOutput);
-                  builder.create<scf::YieldOp>(loc, ValueRange{load_size});
-                },
-                [&](OpBuilder &builder, Location loc) {
-                  auto totalNumElems =
-                      triton::gcu::getTotalElemsPerThread(loadType);
-                  doMemset(builder, pTagPool, loadOp, output, defaultValue,
-                           totalNumElems);
-                  if (triton::gcu::get_bool_env("TRITON_GCU_DEBUG")) {
-                    std::string locStr = "[warning]: load offset is out of "
-                                         "range for tensor. loc";
-                    if (auto fileLineColLoc = dyn_cast<FileLineColLoc>(loc)) {
-                      llvm::StringRef filename = fileLineColLoc.getFilename();
-                      locStr += filename.str();
-                      locStr += ":";
-                      locStr += std::to_string(fileLineColLoc.getLine());
-                    }
-                    builder.create<gpu::PrintfOp>(loc, locStr, ValueRange{});
-                  }
-                  builder.create<scf::YieldOp>(loc, ValueRange{zero});
-                })
-            .getResult(0);
+    auto total_size = rewriter.create<scf::IfOp>(
+        loc, shapeCheck,
+        [&](OpBuilder builder, Location loc) {
+          Value load_size = zero;
+          load_size = ConfigGcuLoad(builder, loc, output,
+            loadOp, resultType, adaptor.getPtr(), adaptor.getStrides(),
+            adaptor.getShape(), defaultValue, tag, IsShareOutput);
+          builder.create<scf::YieldOp>(loc, ValueRange{load_size});
+        },
+        [&](OpBuilder &builder, Location loc) {
+          auto totalNumElems = triton::gcu::getTotalElemsPerThread(loadType);
+          doMemset(builder, tag,
+                   loadOp, output, defaultValue, totalNumElems);
+          if (triton::gcu::get_bool_env("TRITON_GCU_DEBUG")) {
+            std::string locStr =
+              "[warning]: load offset is out of range for tensor. loc";
+            if (auto fileLineColLoc = dyn_cast<FileLineColLoc>(loc)) {
+              llvm::StringRef filename = fileLineColLoc.getFilename();
+              locStr += filename.str();
+              locStr += ":";
+              locStr += std::to_string(fileLineColLoc.getLine());
+            }
+            builder.create<gpu::PrintfOp>(loc, locStr, ValueRange{});
+          }
+          builder.create<scf::YieldOp>(loc, ValueRange{zero});
+        }).getResult(0);
     if (IsShareOutput) {
-      auto isThread0 = rewriter.create<arith::CmpIOp>(
+      auto masterWarpId = getMasterThreadId(loadOp.getOperation());
+      auto isMasterThread = rewriter.create<arith::CmpIOp>(
           loc, arith::CmpIPredicate::eq,
-          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
-      auto isAll = rewriter.create<arith::AndIOp>(loc, isThread0, shapeCheck);
-      rewriter.create<scf::IfOp>(
-          loc, isAll, [&](OpBuilder builder, Location loc) {
+          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+          rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+      auto isAll =
+          rewriter.create<arith::AndIOp>(loc, isMasterThread, shapeCheck);
+      rewriter.create<scf::IfOp>(loc, isAll,
+          [&](OpBuilder builder, Location loc) {
             WaitGcuLoadStore(builder, loc, tag, total_size);
             builder.create<scf::YieldOp>(loc);
           });
@@ -1319,8 +1346,8 @@ struct GCULoadOpLowering : SharedConversionPattern<triton::gcu::LoadOp> {
       if (tag.isAsync()) {
         rewriter.setInsertionPoint(firstUser.first);
       }
-      rewriter.create<scf::IfOp>(
-          loc, shapeCheck, [&](OpBuilder builder, Location loc) {
+      rewriter.create<scf::IfOp>(loc, shapeCheck,
+          [&](OpBuilder builder, Location loc) {
             WaitGcuLoadStore(builder, loc, tag, total_size);
             builder.create<scf::YieldOp>(loc);
           });
@@ -1371,8 +1398,9 @@ struct GCUStoreOpLowering : SharedConversionPattern<triton::gcu::StoreOp> {
     auto storeValueType =
         dyn_cast<MemRefType>(getTypeConverter()->convertType(storeType));
 
-    auto tag = isLastOp ? pTagPool.getSyncTagInfo(storeOp)
-                        : pTagPool.trygGetAsyncTagInfo(storeOp);
+     auto tag = isLastOp ?
+                    pTagPool.getPrivateSyncTagInfo(storeOp) :
+                    pTagPool.tryGetPrivateAsyncTagInfo(storeOp);
     if (tag.isAsync()) {
       auto &lastOp = storeOp.getOperation()->getBlock()->back();
       pTagPool.setMap(&lastOp, tag);
@@ -1380,55 +1408,52 @@ struct GCUStoreOpLowering : SharedConversionPattern<triton::gcu::StoreOp> {
     // workaround for offset > tensor dims
     int64_t rank = storeType.getRank();
     Value shapeCheck = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::sgt, adaptor.getShape()[0], zero);
+      loc, arith::CmpIPredicate::sgt, adaptor.getShape()[0], zero);
     for (unsigned i = 1; i < rank; ++i) {
-      auto dimCheck = rewriter.create<arith::CmpIOp>(
+        auto dimCheck = rewriter.create<arith::CmpIOp>(
           loc, arith::CmpIPredicate::sgt, adaptor.getShape()[i], zero);
-      shapeCheck = rewriter.create<arith::AndIOp>(loc, shapeCheck, dimCheck);
+        shapeCheck = rewriter.create<arith::AndIOp>(loc, shapeCheck, dimCheck);
     }
-    auto total_size =
-        rewriter
-            .create<scf::IfOp>(
-                loc, shapeCheck,
-                [&](OpBuilder builder, Location loc) {
-                  auto store_size = ConfigGcuStore(
-                      rewriter, loc, adaptor.getValue(), storeOp,
-                      storeValueType, adaptor.getPtr(), adaptor.getStrides(),
-                      adaptor.getShape(), tag);
-                  builder.create<scf::YieldOp>(loc, ValueRange{store_size});
-                },
-                [&](OpBuilder &builder, Location loc) {
-                  if (triton::gcu::get_bool_env("TRITON_GCU_DEBUG")) {
-                    std::string locStr = "[warning]: store offset is out of "
-                                         "range for tensor. loc:";
-                    if (auto fileLineColLoc = dyn_cast<FileLineColLoc>(loc)) {
-                      llvm::StringRef filename = fileLineColLoc.getFilename();
-                      locStr += filename.str();
-                      locStr += ":";
-                      locStr += std::to_string(fileLineColLoc.getLine());
-                    }
-                    builder.create<gpu::PrintfOp>(loc, locStr, ValueRange{});
-                  }
-                  builder.create<scf::YieldOp>(loc, ValueRange{zero});
-                })
-            .getResult(0);
+    auto total_size = rewriter.create<scf::IfOp>(
+        loc, shapeCheck,
+        [&](OpBuilder builder, Location loc) {
+          auto store_size = ConfigGcuStore(
+              rewriter, loc, adaptor.getValue(), storeOp,
+              storeValueType, adaptor.getPtr(), adaptor.getStrides(),
+              adaptor.getShape(), tag);
+          builder.create<scf::YieldOp>(loc, ValueRange{store_size});
+        },
+        [&](OpBuilder &builder, Location loc) {
+          if (triton::gcu::get_bool_env("TRITON_GCU_DEBUG")) {
+            std::string locStr =
+              "[warning]: store offset is out of range for tensor. loc:";
+            if (auto fileLineColLoc = dyn_cast<FileLineColLoc>(loc)) {
+              llvm::StringRef filename = fileLineColLoc.getFilename();
+              locStr += filename.str();
+              locStr += ":";
+              locStr += std::to_string(fileLineColLoc.getLine());
+            }
+            builder.create<gpu::PrintfOp>(loc, locStr, ValueRange{});
+          }
+          builder.create<scf::YieldOp>(loc, ValueRange{zero});
+        }).getResult(0);
     auto isNotZero = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::ne, total_size, zero);
+      loc, arith::CmpIPredicate::ne, total_size, zero);
 
     if (tag.isAsync()) {
       auto &lastOp = storeOp.getOperation()->getBlock()->back();
       auto ip = rewriter.saveInsertionPoint();
       rewriter.setInsertionPoint(&lastOp);
-      auto ifOp = rewriter.create<scf::IfOp>(
-          loc, isNotZero, [&](OpBuilder builder, Location loc) {
+      auto ifOp = rewriter.create<scf::IfOp>(loc, isNotZero,
+          [&](OpBuilder builder, Location loc) {
             WaitGcuLoadStore(builder, loc, tag, total_size);
             builder.create<scf::YieldOp>(loc);
           });
       rewriter.restoreInsertionPoint(ip);
       moveDeallocOp(rewriter, adaptor.getValue(), ifOp, 0);
     } else {
-      rewriter.create<scf::IfOp>(
-          loc, isNotZero, [&](OpBuilder builder, Location loc) {
+      rewriter.create<scf::IfOp>(loc, isNotZero,
+          [&](OpBuilder builder, Location loc) {
             WaitGcuLoadStore(builder, loc, tag, total_size);
             builder.create<scf::YieldOp>(loc);
           });
@@ -1484,8 +1509,7 @@ struct TTBroadcastOpLowering : SharedConversionPattern<triton::BroadcastOp> {
     auto elementType = wrapResultType.getElementType();
 
     auto loc = op.getLoc();
-    auto tag = pTagPool.getSyncTagInfo(op);
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto tag = pTagPool.getPrivateSyncTagInfo(op);
     auto lastUser =
         userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
 
@@ -1526,9 +1550,9 @@ struct TTBroadcastOpLowering : SharedConversionPattern<triton::BroadcastOp> {
         if (idx != broadcastedAxiesNum - 1) {
           broadcastShape[dim] = wrapResultType.getDimSize(dim);
           auto memrefType = MemRefType::get(broadcastShape, elementType);
-          temp_out =
-              syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
-                          userAnalysis, replaced2Origin, memrefType);
+          temp_out = syncAllocOp(rewriter, loc,
+                                 std::make_pair(op.getOperation(), -1),
+                                 userAnalysis, replaced2Origin, memrefType);
         }
 
         auto src = src_input;
@@ -1581,7 +1605,7 @@ struct TTBroadcastOpLowering : SharedConversionPattern<triton::BroadcastOp> {
         }
         auto totalNumElems = triton::gcu::getTotalElemsPerThread(srcType);
         rewriter.create<memref_ext::BroadcastStartOp>(
-            loc, dst, src, tag.getTag(), ValueRange{tag.getIdx()});
+          loc, dst, src, tag.getTag(), ValueRange{tag.getIdx()});
         rewriter.create<memref::DmaWaitOp>(
             loc, tag.getTag(), ValueRange{tag.getIdx()},
             rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
@@ -1594,20 +1618,23 @@ struct TTBroadcastOpLowering : SharedConversionPattern<triton::BroadcastOp> {
       return success();
     }
     // move source to shared memory
-    auto sharedSrc = storeToSharedMem(
-        rewriter, tag, srcType, adaptor.getSrc(), false,
-        std::make_pair(op.getOperation(), -1), userAnalysis, replaced2Origin);
-    auto mergedResultType =
-        MemRefType::get(resultType.getShape(), elementType, AffineMap{},
-                        rewriter.getI64IntegerAttr(2) /*shared memory*/);
+    auto sharedSrc =
+        storeToSharedMem(rewriter, tag, srcType, adaptor.getSrc(), false,
+            std::make_pair(op.getOperation(), -1),
+            userAnalysis, replaced2Origin);
+    auto mergedResultType = MemRefType::get(
+        resultType.getShape(), elementType, AffineMap{},
+        rewriter.getI64IntegerAttr(2)  /*shared memory*/ );
     auto mergedOutput =
         syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
                     userAnalysis, replaced2Origin, mergedResultType);
     auto totalNumElems = triton::gcu::getTotalElemsPerThread(srcType);
     // broadcast in thread 0
-    auto isThread0 = rewriter.create<arith::CmpIOp>(
+    auto masterWarpId = getMasterThreadId(op.getOperation());
+    auto isMasterThread = rewriter.create<arith::CmpIOp>(
         loc, arith::CmpIPredicate::eq,
-        rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
+        rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+        rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
     ArrayRef<int64_t> srcShape = srcType.getShape();
     auto src_input = sharedSrc;
 
@@ -1620,70 +1647,67 @@ struct TTBroadcastOpLowering : SharedConversionPattern<triton::BroadcastOp> {
       auto temp_out = mergedOutput;
       if (idx != broadcastedAxies.size() - 1) {
         broadcastShape[dim] = resultType.getDimSize(dim);
-        auto tempMemrefType =
-            MemRefType::get(broadcastShape, elementType, AffineMap{},
-                            rewriter.getI64IntegerAttr(2) /*shared memory*/);
-        temp_out =
-            syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
-                        userAnalysis, replaced2Origin, tempMemrefType);
+        auto tempMemrefType = MemRefType::get(broadcastShape, elementType,
+            AffineMap{}, rewriter.getI64IntegerAttr(2)  /*shared memory*/ );
+        temp_out = syncAllocOp(rewriter, loc,
+                               std::make_pair(op.getOperation(), -1),
+                               userAnalysis, replaced2Origin, tempMemrefType);
       }
 
       auto src = src_input;
       auto dst = temp_out;
-      if (rank > 3) { // reshape to rank 3 to broadcast
+      if (rank > 3) {  // reshape to rank 3 to broadcast
         ArrayRef<int64_t> beforeSrcShapes =
-            dyn_cast<MemRefType>(src_input.getType()).getShape();
+                      dyn_cast<MemRefType>(src_input.getType()).getShape();
         ArrayRef<int64_t> beforeDstShapes =
-            dyn_cast<MemRefType>(temp_out.getType()).getShape();
+                      dyn_cast<MemRefType>(temp_out.getType()).getShape();
         SmallVector<int64_t> afterSrcShapes;
         SmallVector<int64_t> afterDstShapes;
 
         int64_t tShape = std::accumulate(beforeSrcShapes.begin(),
-                                         beforeSrcShapes.begin() + dim, 1,
-                                         std::multiplies<int64_t>());
+                beforeSrcShapes.begin() + dim, 1, std::multiplies<int64_t>());
         afterSrcShapes.push_back(tShape);
         afterSrcShapes.push_back(beforeSrcShapes[dim]);
         tShape = std::accumulate(beforeSrcShapes.begin() + dim + 1,
-                                 beforeSrcShapes.end(), 1,
-                                 std::multiplies<int64_t>());
+                beforeSrcShapes.end(), 1, std::multiplies<int64_t>());
         afterSrcShapes.push_back(tShape);
 
         tShape = std::accumulate(beforeDstShapes.begin(),
-                                 beforeDstShapes.begin() + dim, 1,
-                                 std::multiplies<int64_t>());
+                beforeDstShapes.begin() + dim, 1, std::multiplies<int64_t>());
         afterDstShapes.push_back(tShape);
         afterDstShapes.push_back(beforeDstShapes[dim]);
         tShape = std::accumulate(beforeDstShapes.begin() + dim + 1,
-                                 beforeDstShapes.end(), 1,
-                                 std::multiplies<int64_t>());
+                beforeDstShapes.end(), 1, std::multiplies<int64_t>());
         afterDstShapes.push_back(tShape);
 
         auto afterSrcMemrefType =
             MemRefType::get(afterSrcShapes, elementType, AffineMap{},
-                            rewriter.getI64IntegerAttr(2) /*shared memory*/);
+            rewriter.getI64IntegerAttr(2)  /*shared memory*/);
         auto afterDstMemrefType =
             MemRefType::get(afterDstShapes, elementType, AffineMap{},
-                            rewriter.getI64IntegerAttr(2) /*shared memory*/);
+            rewriter.getI64IntegerAttr(2)  /*shared memory*/);
 
-        auto [srcStrides, srcOffset] = afterSrcMemrefType.getStridesAndOffset();
+        auto [srcStrides, srcOffset] =
+            afterSrcMemrefType.getStridesAndOffset();
         src = rewriter.create<memref::ReinterpretCastOp>(
-            loc, afterSrcMemrefType, src_input, srcOffset, afterSrcShapes,
-            srcStrides);
-        auto [dstStrides, dstOffset] = afterDstMemrefType.getStridesAndOffset();
+                                loc, afterSrcMemrefType, src_input, srcOffset,
+                                afterSrcShapes, srcStrides);
+        auto [dstStrides, dstOffset] =
+            afterDstMemrefType.getStridesAndOffset();
         dst = rewriter.create<memref::ReinterpretCastOp>(
-            loc, afterDstMemrefType, temp_out, dstOffset, afterDstShapes,
-            dstStrides);
+                                loc, afterDstMemrefType, temp_out, dstOffset,
+                                afterDstShapes, dstStrides);
       }
 
       rewriter.create<scf::IfOp>(
-          loc, isThread0, [&](OpBuilder &rewriter, Location loc) {
-            rewriter.create<memref_ext::BroadcastStartOp>(
-                loc, dst, src, tag.getTag(), ValueRange{tag.getIdx()});
-            rewriter.create<memref::DmaWaitOp>(
-                loc, tag.getTag(), ValueRange{tag.getIdx()},
-                rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
-            rewriter.create<scf::YieldOp>(loc);
-          });
+          loc, isMasterThread, [&](OpBuilder &rewriter, Location loc) {
+          rewriter.create<memref_ext::BroadcastStartOp>(
+              loc, dst, src, tag.getTag(), ValueRange{tag.getIdx()});
+          rewriter.create<memref::DmaWaitOp>(
+              loc, tag.getTag(), ValueRange{tag.getIdx()},
+              rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
+          rewriter.create<scf::YieldOp>(loc);
+      });
       src_input = temp_out;
       idx++;
     }
@@ -1691,14 +1715,16 @@ struct TTBroadcastOpLowering : SharedConversionPattern<triton::BroadcastOp> {
     // read back
     auto output = loadFromSharedMem(
         rewriter, tag, resultType, mergedOutput, false, lastUser,
-        std::make_pair(nullptr, -1), userAnalysis, replaced2Origin);
+        std::make_pair(nullptr, -1),
+        userAnalysis, replaced2Origin);
     leaveTritionOp(rewriter, op.getOperation());
     rewriter.replaceOp(op, output);
     return success();
   }
 };
 
-struct TTExpandDimsOpLowering : SharedConversionPattern<triton::ExpandDimsOp> {
+struct TTExpandDimsOpLowering
+    : SharedConversionPattern<triton::ExpandDimsOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
   LogicalResult
@@ -1729,22 +1755,24 @@ struct TTExpandDimsOpLowering : SharedConversionPattern<triton::ExpandDimsOp> {
     auto type = op.getType();
     auto lastUser =
         userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
-    auto tag = pTagPool.getSyncTagInfo(op);
+    auto tag = pTagPool.getPrivateSyncTagInfo(op);
     auto srcType = dyn_cast<TensorType>(op.getSrc().getType());
     auto resMemType =
         MemRefType::get(type.getShape(), resultType.getElementType(),
                         AffineMap{}, rewriter.getI64IntegerAttr(2));
     // move source to shared memory
-    auto sharedSrc = storeToSharedMem(
-        rewriter, tag, srcType, adaptor.getSrc(), false,
-        std::make_pair(op.getOperation(), -1), userAnalysis, replaced2Origin);
+    auto sharedSrc = storeToSharedMem(rewriter, tag, srcType, adaptor.getSrc(),
+                                      false,
+                                      std::make_pair(op.getOperation(), -1),
+                                      userAnalysis, replaced2Origin);
     auto [strides, offset] = resMemType.getStridesAndOffset();
     auto result = rewriter.create<memref::ReinterpretCastOp>(
         loc, resMemType, sharedSrc, offset, type.getShape(), strides);
     // copy back outputs
-    Value output = loadFromSharedMem(rewriter, tag, op.getType(), result, false,
-                                     lastUser, std::make_pair(nullptr, -1),
-                                     userAnalysis, replaced2Origin);
+    Value output = loadFromSharedMem(
+        rewriter, tag, op.getType(), result, false,
+        lastUser, std::make_pair(nullptr, -1),
+        userAnalysis, replaced2Origin);
     leaveTritionOp(rewriter, op.getOperation());
     rewriter.replaceOp(op, output);
     return success();
@@ -1779,14 +1807,15 @@ struct TTReshapeOpLowering : SharedConversionPattern<triton::ReshapeOp> {
     }
     auto type = op.getType();
 
-    auto tag = pTagPool.getSyncTagInfo(op);
+    auto tag = pTagPool.getPrivateSyncTagInfo(op);
     auto srcType = dyn_cast<TensorType>(op.getSrc().getType());
     // move source to shared memory
     auto lastUser =
         userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
-    auto sharedSrc = storeToSharedMem(
-        rewriter, tag, srcType, adaptor.getSrc(), false,
-        std::make_pair(op.getOperation(), -1), userAnalysis, replaced2Origin);
+    auto sharedSrc = storeToSharedMem(rewriter, tag, srcType, adaptor.getSrc(),
+                                      false,
+                                      std::make_pair(op.getOperation(), -1),
+                                      userAnalysis, replaced2Origin);
     auto resMemType =
         MemRefType::get(type.getShape(), resultType.getElementType(),
                         AffineMap{}, rewriter.getI64IntegerAttr(2));
@@ -1794,9 +1823,10 @@ struct TTReshapeOpLowering : SharedConversionPattern<triton::ReshapeOp> {
     auto result = rewriter.create<memref::ReinterpretCastOp>(
         loc, resMemType, sharedSrc, offset, type.getShape(), strides);
     // copy back outputs
-    Value output = loadFromSharedMem(rewriter, tag, op.getType(), result, false,
-                                     lastUser, std::make_pair(nullptr, -1),
-                                     userAnalysis, replaced2Origin);
+    Value output = loadFromSharedMem(
+        rewriter, tag, op.getType(), result, false,
+        lastUser, std::make_pair(nullptr, -1),
+        userAnalysis, replaced2Origin);
     leaveTritionOp(rewriter, op.getOperation());
     rewriter.replaceOp(op, output);
     return success();
@@ -1828,10 +1858,10 @@ struct TTSplitOpLowering : SharedConversionPattern<triton::SplitOp> {
 
     auto lastUser =
         userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
-    auto lhs = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                           replaced2Origin, outMemrefType);
-    auto rhs = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                           replaced2Origin, outMemrefType);
+    auto lhs = syncAllocOp(rewriter, loc, lastUser,
+                           userAnalysis, replaced2Origin, outMemrefType);
+    auto rhs = syncAllocOp(rewriter, loc, lastUser,
+                           userAnalysis, replaced2Origin, outMemrefType);
 
     auto outMemrefShape = outMemrefType.getShape();
     SmallVector<int64_t> sliceShape(outMemrefShape.size() + 1, 1);
@@ -1851,37 +1881,41 @@ struct TTSplitOpLowering : SharedConversionPattern<triton::SplitOp> {
     auto sliceRHS = rewriter.create<memref::ReinterpretCastOp>(
         loc, sliceType, rhs, 0, sliceShape, sliceStride);
 
-    auto tag = pTagPool.getSyncTagInfo(op);
+    auto tag = pTagPool.getPrivateSyncTagInfo(op);
 
     auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
     SmallVector<Value, 4> offsets;
     for (int i = 0; i < outType.getRank(); ++i) {
-      offsets.push_back(rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getI32Type(), zero));
+      offsets.push_back(
+          rewriter.create<arith::IndexCastOp>(
+              loc, rewriter.getI32Type(), zero));
     }
     SmallVector<Value, 4> offsetsLHS = offsets;
     SmallVector<Value, 4> offsetsRHS = offsets;
     offsetsLHS.push_back(
-        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), zero));
+        rewriter.create<arith::IndexCastOp>(loc,
+                                            rewriter.getI32Type(), zero));
     offsetsRHS.push_back(
-        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), one));
+        rewriter.create<arith::IndexCastOp>(loc,
+                                            rewriter.getI32Type(), one));
 
     auto totalNumElems = triton::gcu::getTotalElemsPerThread(outType);
-    auto defaultValue = triton::gcu::createConstantZero(
-        rewriter, loc, outMemrefType.getElementType());
+    auto defaultValue =
+        triton::gcu::createConstantZero(rewriter, loc,
+                                        outMemrefType.getElementType());
 
     rewriter.create<memref_ext::SliceStartOp>(
-        loc, sliceLHS, adaptor.getSrc(), offsetsLHS, defaultValue, tag.getTag(),
-        ValueRange{tag.getIdx()});
+        loc, sliceLHS, adaptor.getSrc(), offsetsLHS,
+        defaultValue, tag.getTag(), ValueRange{tag.getIdx()});
     rewriter.create<memref::DmaWaitOp>(
         loc, tag.getTag(), ValueRange{tag.getIdx()},
         rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
 
     rewriter.create<memref_ext::SliceStartOp>(
-        loc, sliceRHS, adaptor.getSrc(), offsetsRHS, defaultValue, tag.getTag(),
-        ValueRange{tag.getIdx()});
+        loc, sliceRHS, adaptor.getSrc(), offsetsRHS,
+        defaultValue, tag.getTag(), ValueRange{tag.getIdx()});
     rewriter.create<memref::DmaWaitOp>(
         loc, tag.getTag(), ValueRange{tag.getIdx()},
         rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
@@ -1918,8 +1952,8 @@ struct TTJoinOpLowering : SharedConversionPattern<triton::JoinOp> {
 
     auto lastUser =
         userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
-    auto result = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                              replaced2Origin, outMemrefType);
+    auto result = syncAllocOp(rewriter, loc, lastUser,
+                              userAnalysis, replaced2Origin, outMemrefType);
 
     auto lhsShape = lhsMemrefType.getShape();
     SmallVector<int64_t> desliceShape(lhsShape.size() + 1, 1);
@@ -1938,35 +1972,38 @@ struct TTJoinOpLowering : SharedConversionPattern<triton::JoinOp> {
     auto desliceRHS = rewriter.create<memref::ReinterpretCastOp>(
         loc, desliceType, adaptor.getRhs(), 0, desliceShape, desliceStride);
 
-    auto tag = pTagPool.getSyncTagInfo(op);
+    auto tag = pTagPool.getPrivateSyncTagInfo(op);
 
     auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
     SmallVector<Value, 4> offsets;
     for (int i = 0; i < lhsType.getRank(); ++i) {
-      offsets.push_back(rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getI32Type(), zero));
+      offsets.push_back(
+          rewriter.create<arith::IndexCastOp>(
+              loc, rewriter.getI32Type(), zero));
     }
     SmallVector<Value, 4> offsetsLHS = offsets;
     SmallVector<Value, 4> offsetsRHS = offsets;
     offsetsLHS.push_back(
-        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), zero));
+        rewriter.create<arith::IndexCastOp>(loc,
+                                            rewriter.getI32Type(), zero));
     offsetsRHS.push_back(
-        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), one));
+        rewriter.create<arith::IndexCastOp>(loc,
+                                            rewriter.getI32Type(), one));
 
     auto totalNumElems = triton::gcu::getTotalElemsPerThread(lhsType);
 
-    rewriter.create<memref_ext::DesliceStartOp>(loc, result, desliceLHS,
-                                                offsetsLHS, tag.getTag(),
-                                                ValueRange{tag.getIdx()});
+    rewriter.create<memref_ext::DesliceStartOp>(
+        loc, result, desliceLHS, offsetsLHS,
+        tag.getTag(), ValueRange{tag.getIdx()});
     rewriter.create<memref::DmaWaitOp>(
         loc, tag.getTag(), ValueRange{tag.getIdx()},
         rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
 
-    rewriter.create<memref_ext::DesliceStartOp>(loc, result, desliceRHS,
-                                                offsetsRHS, tag.getTag(),
-                                                ValueRange{tag.getIdx()});
+    rewriter.create<memref_ext::DesliceStartOp>(
+        loc, result, desliceRHS, offsetsRHS,
+        tag.getTag(), ValueRange{tag.getIdx()});
     rewriter.create<memref::DmaWaitOp>(
         loc, tag.getTag(), ValueRange{tag.getIdx()},
         rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
@@ -1992,7 +2029,7 @@ struct TTCatOpLowering : SharedConversionPattern<triton::CatOp> {
     auto resultType =
         dyn_cast<MemRefType>(getTypeConverter()->convertType(type));
 
-    auto tag = pTagPool.getSyncTagInfo(op);
+    auto tag = pTagPool.getPrivateSyncTagInfo(op);
     auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto lastUser =
         userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
@@ -2003,26 +2040,27 @@ struct TTCatOpLowering : SharedConversionPattern<triton::CatOp> {
         !outputSlicedAxies.count(0)) {
       auto totalNumElems = triton::gcu::getTotalElemsPerThread(type);
 
-      auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                                replaced2Origin, resultType);
+      auto output = syncAllocOp(rewriter, loc, lastUser,
+                                userAnalysis, replaced2Origin, resultType);
       SmallVector<Value, 4> offsets;
       for (unsigned i = 0; i < resultType.getRank(); ++i) {
         offsets.push_back(rewriter.create<arith::IndexCastOp>(
             loc, rewriter.getI32Type(), zero));
       }
-      rewriter.create<memref_ext::DesliceStartOp>(loc, output, adaptor.getLhs(),
-                                                  offsets, tag.getTag(),
-                                                  ValueRange{tag.getIdx()});
+      rewriter.create<memref_ext::DesliceStartOp>(
+          loc, output, adaptor.getLhs(), offsets,
+          tag.getTag(), ValueRange{tag.getIdx()});
       rewriter.create<memref::DmaWaitOp>(
           loc, tag.getTag(), ValueRange{tag.getIdx()},
           rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
 
       offsets[0] = rewriter.create<arith::ConstantIntOp>(
-          loc, dyn_cast<MemRefType>(adaptor.getLhs().getType()).getDimSize(0),
+          loc,
+          dyn_cast<MemRefType>(adaptor.getLhs().getType()).getDimSize(0),
           32);
-      rewriter.create<memref_ext::DesliceStartOp>(loc, output, adaptor.getRhs(),
-                                                  offsets, tag.getTag(),
-                                                  ValueRange{tag.getIdx()});
+      rewriter.create<memref_ext::DesliceStartOp>(
+          loc, output, adaptor.getRhs(), offsets,
+          tag.getTag(), ValueRange{tag.getIdx()});
       rewriter.create<memref::DmaWaitOp>(
           loc, tag.getTag(), ValueRange{tag.getIdx()},
           rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
@@ -2034,7 +2072,8 @@ struct TTCatOpLowering : SharedConversionPattern<triton::CatOp> {
                         rewriter.getI64IntegerAttr(2) /*shared memory*/);
     auto mergedOutput =
         syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
-                    userAnalysis, replaced2Origin, mergedResultType);
+                    userAnalysis,
+                    replaced2Origin, mergedResultType);
     auto lhsTy = op.getLhs().getType();
     auto [lhsStrides, lhsOffset] =
         dyn_cast<MemRefType>(getTypeConverter()->convertType(lhsTy))
@@ -2066,9 +2105,10 @@ struct TTCatOpLowering : SharedConversionPattern<triton::CatOp> {
         adaptor.getRhs(), false);
     (void)rhsOffset;
     // read back
-    auto output = loadFromSharedMem(
-        rewriter, tag, op.getType(), mergedOutput, false, lastUser,
-        std::make_pair(nullptr, -1), userAnalysis, replaced2Origin);
+    auto output =
+        loadFromSharedMem(rewriter, tag, op.getType(), mergedOutput, false,
+                          lastUser, std::make_pair(nullptr, -1),
+                          userAnalysis, replaced2Origin);
     rewriter.replaceOp(op, output);
     return success();
   }
@@ -2085,12 +2125,13 @@ struct TTTransOpLowering : SharedConversionPattern<triton::TransOp> {
 
     SmallVector<Value, 4> layout;
     for (auto i : order) {
-      layout.push_back(rewriter.create<arith::ConstantIntOp>(loc, i, 32));
+      layout.push_back(
+          rewriter.create<arith::ConstantIntOp>(loc, i, 32));
     }
     rewriter.create<memref_ext::TransposeStartOp>(
         loc, output, src, layout, tag.getTag(), ValueRange{tag.getIdx()});
-    rewriter.create<memref::DmaWaitOp>(loc, tag.getTag(),
-                                       ValueRange{tag.getIdx()}, totalNumElems);
+    rewriter.create<memref::DmaWaitOp>(
+        loc, tag.getTag(), ValueRange{tag.getIdx()}, totalNumElems);
   }
 
   LogicalResult
@@ -2110,7 +2151,6 @@ struct TTTransOpLowering : SharedConversionPattern<triton::TransOp> {
     auto dstLayout = dstTy.getEncoding();
     auto resultType = dyn_cast<MemRefType>(
         getTypeConverter()->convertType(op.getResult().getType()));
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto totalNumElems =
         triton::gcu::getTotalElemsPerThread(op.getSrc().getType());
     auto lastUser =
@@ -2124,9 +2164,9 @@ struct TTTransOpLowering : SharedConversionPattern<triton::TransOp> {
 
       triton::gcu::TagInfo tag;
       if (firstUser.first != nullptr) {
-        tag = pTagPool.trygGetAsyncTagInfo(op);
+        tag = pTagPool.tryGetPrivateAsyncTagInfo(op);
       } else {
-        tag = pTagPool.getSyncTagInfo(op);
+        tag = pTagPool.getPrivateSyncTagInfo(op);
       }
       if (tag.isAsync()) {
         pTagPool.setMap(firstUser.first, tag);
@@ -2143,36 +2183,39 @@ struct TTTransOpLowering : SharedConversionPattern<triton::TransOp> {
 
       SmallVector<Value, 4> layout;
       for (auto i : op.getOrder()) {
-        layout.push_back(rewriter.create<arith::ConstantIntOp>(loc, i, 32));
+        layout.push_back(rewriter.create<arith::ConstantIntOp>(
+            loc, i, 32));
       }
-      auto isThread0 = rewriter.create<arith::CmpIOp>(
+      auto masterWarpId = getMasterThreadId(op.getOperation());
+      auto isMasterThread = rewriter.create<arith::CmpIOp>(
           loc, arith::CmpIPredicate::eq,
-          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
+          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+          rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
       rewriter.create<scf::IfOp>(
-          loc, isThread0, [&](OpBuilder &builder, Location loc) {
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
             rewriter.create<memref_ext::TransposeStartOp>(
-                loc, sharedOutput, adaptor.getSrc(), layout, tag.getTag(),
-                ValueRange{tag.getIdx()});
+                loc, sharedOutput, adaptor.getSrc(), layout,
+                tag.getTag(), ValueRange{tag.getIdx()});
             builder.create<scf::YieldOp>(loc);
           });
-      if (tag.isAsync()) {
+       if (tag.isAsync()) {
         auto ip = rewriter.saveInsertionPoint();
         rewriter.setInsertionPoint(firstUser.first);
         rewriter.create<scf::IfOp>(
-            loc, isThread0, [&](OpBuilder &builder, Location loc) {
-              builder.create<memref::DmaWaitOp>(loc, tag.getTag(),
-                                                ValueRange{tag.getIdx()},
-                                                totalNumElemsValue);
+            loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
+              builder.create<memref::DmaWaitOp>(
+                  loc, tag.getTag(), ValueRange{tag.getIdx()},
+                  totalNumElemsValue);
               builder.create<scf::YieldOp>(loc);
             });
         rewriter.create<gpu::BarrierOp>(loc);
         rewriter.restoreInsertionPoint(ip);
       } else {
         rewriter.create<scf::IfOp>(
-            loc, isThread0, [&](OpBuilder &builder, Location loc) {
-              builder.create<memref::DmaWaitOp>(loc, tag.getTag(),
-                                                ValueRange{tag.getIdx()},
-                                                totalNumElemsValue);
+            loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
+              builder.create<memref::DmaWaitOp>(
+                  loc, tag.getTag(), ValueRange{tag.getIdx()},
+                  totalNumElemsValue);
               builder.create<scf::YieldOp>(loc);
             });
         rewriter.create<gpu::BarrierOp>(loc);
@@ -2183,9 +2226,11 @@ struct TTTransOpLowering : SharedConversionPattern<triton::TransOp> {
     } else if ((isa<triton::gpu::BlockedEncodingAttr>(srcLayout) &&
                 isa<triton::gpu::BlockedEncodingAttr>(dstLayout)) ||
                (isa<triton::gpu::SliceEncodingAttr>(srcLayout) &&
+                isa<triton::gpu::LinearEncodingAttr>(dstLayout)) ||
+                (isa<triton::gpu::LinearEncodingAttr>(srcLayout) &&
                 isa<triton::gpu::LinearEncodingAttr>(dstLayout))) {
       // move source to shared memory
-      auto tag = pTagPool.getSyncTagInfo(op);
+      auto tag = pTagPool.getPrivateSyncTagInfo(op);
       auto lastUser =
           userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
       auto sharedSrc = storeToSharedMem(
@@ -2198,24 +2243,28 @@ struct TTTransOpLowering : SharedConversionPattern<triton::TransOp> {
           op.getResult().getType().getShape(), resultType.getElementType(),
           AffineMap{}, rewriter.getI64IntegerAttr(2));
       auto sharedOutput =
-          syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
-                      userAnalysis, replaced2Origin, sharedOutputType);
+          syncAllocOp(rewriter, loc,
+                      std::make_pair(op.getOperation(), -1), userAnalysis,
+                      replaced2Origin, sharedOutputType);
 
       // split by thread 0
-      auto isThread0 = rewriter.create<arith::CmpIOp>(
+      auto masterWarpId = getMasterThreadId(op.getOperation());
+      auto isMasterThread = rewriter.create<arith::CmpIOp>(
           loc, arith::CmpIPredicate::eq,
-          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
+          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+          rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
       rewriter.create<scf::IfOp>(
-          loc, isThread0, [&](OpBuilder &builder, Location loc) {
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
             applyTranspose(builder, loc, sharedSrc, sharedOutput, tag,
                            op.getOrder(), totalNumElems);
             builder.create<scf::YieldOp>(loc);
           });
       rewriter.create<gpu::BarrierOp>(loc);
       // copy back outputs
-      Value output = loadFromSharedMem(
-          rewriter, tag, op.getResult().getType(), sharedOutput, false,
-          lastUser, std::make_pair(nullptr, -1), userAnalysis, replaced2Origin);
+      Value output = loadFromSharedMem(rewriter, tag, op.getResult().getType(),
+                                       sharedOutput, false,
+                                       lastUser, std::make_pair(nullptr, -1),
+                                       userAnalysis, replaced2Origin);
       leaveTritionOp(rewriter, op.getOperation());
       rewriter.replaceOp(op, output);
       return success();
@@ -2256,22 +2305,6 @@ struct TTGConvertLayoutOpLowering
     return subview.getResult();
   }
 
-  // Returns true if convert_layout can reuse the provided private memref (same
-  // memref type as the dot-operand lowering) instead of going through shared.
-  static bool canReusePrivateMemToDotOperand(const TypeConverter *converter,
-                                             RankedTensorType dstTensorTy,
-                                             Value srcMem) {
-    if (!isa<triton::gpu::DotOperandEncodingAttr>(dstTensorTy.getEncoding()))
-      return false;
-    auto dstMemTy = dyn_cast<MemRefType>(converter->convertType(dstTensorTy));
-    auto srcMemTy = dyn_cast<MemRefType>(srcMem.getType());
-    if (!dstMemTy || !srcMemTy)
-      return false;
-    if (srcMemTy.getShape() != dstMemTy.getShape() ||
-        srcMemTy.getElementType() != dstMemTy.getElementType())
-      return false;
-    return dstMemTy.getRank() != 0 && dstMemTy.hasStaticShape();
-  }
 
   LogicalResult
   matchAndRewrite(triton::gpu::ConvertLayoutOp op, OpAdaptor adaptor,
@@ -2301,37 +2334,42 @@ struct TTGConvertLayoutOpLowering
 
     if (srcNumElems == dstNumElems &&
         op.getSrc().getType().getShape() == op.getType().getShape()) {
-      if (mlir::isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
-          isa<triton::gpu::DotOperandEncodingAttr>(dstLayout)) {
-        // give up L2 to matmul because 1:acore crash 2:L2 latency is more
-        // 100cyle than L1 we don't had enough resource to refine latency
-      } else if (isa<triton::gpu::DotOperandEncodingAttr>(dstLayout)) {
-        // use strided layout
-      } else if (isa<triton::gpu::SliceEncodingAttr>(srcLayout) &&
-                 isa<triton::gpu::SliceEncodingAttr>(dstLayout)) {
+      if (isa<triton::gpu::SliceEncodingAttr>(srcLayout) &&
+          isa<triton::gpu::SliceEncodingAttr>(dstLayout)) {
         if (cast<triton::gpu::SliceEncodingAttr>(srcLayout).getDim() ==
-            cast<triton::gpu::SliceEncodingAttr>(dstLayout).getDim()) {
+                cast<triton::gpu::SliceEncodingAttr>(dstLayout).getDim() &&
+            triton::gcu::getWarpsPerCTA(srcLayout) ==
+                triton::gcu::getWarpsPerCTA(dstLayout)) {
+          rewriter.replaceOp(op, adaptor.getSrc());
+          return success();
+        }
+      } else if (isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
+                 (isa<triton::gpu::SliceEncodingAttr>(dstLayout) ||
+                  isa<triton::gpu::BlockedEncodingAttr>(dstLayout) ||
+                  isa<triton::gpu::DotOperandEncodingAttr>(dstLayout))) {
+        auto srcMemRef = dyn_cast<MemRefType>(adaptor.getSrc().getType());
+        auto noMemSpaceType =
+            MemRefType::get(srcMemRef.getShape(), srcMemRef.getElementType(),
+                            srcMemRef.getLayout());
+        auto castOp = rewriter.create<memref::MemorySpaceCastOp>(
+            op.getLoc(), noMemSpaceType, adaptor.getSrc());
+        rewriter.replaceOp(op, castOp.getResult());
+        return success();
+      } else if (isa<triton::gpu::SliceEncodingAttr>(srcLayout) &&
+                 isa<triton::gpu::BlockedEncodingAttr>(dstLayout)) {
+        if (triton::gcu::getWarpsPerCTA(srcLayout) ==
+            triton::gcu::getWarpsPerCTA(dstLayout)) {
+          rewriter.replaceOp(op, adaptor.getSrc());
+          return success();
+        }
+      } else if (isa<triton::gpu::BlockedEncodingAttr>(srcLayout) &&
+                 isa<triton::gpu::SliceEncodingAttr>(dstLayout)) {
+        if (triton::gcu::getWarpsPerCTA(srcLayout) ==
+            triton::gcu::getWarpsPerCTA(dstLayout)) {
           rewriter.replaceOp(op, adaptor.getSrc());
           return success();
         }
       } else {
-        if (mlir::isa<triton::gpu::SharedEncodingTrait>(srcLayout)) {
-          triton::gcu::TagInfo tag;
-          if (firstUser.first != nullptr) {
-            tag = pTagPool.trygGetAsyncTagInfo(op.getOperation());
-          } else {
-            tag = pTagPool.getSyncTagInfo(op.getOperation());
-          }
-          if (tag.isAsync()) {
-            pTagPool.setMap(firstUser.first, tag);
-          }
-          auto output = CopyFromSharedMem(
-              rewriter, tag, op.getResult().getType(), adaptor.getSrc(), false,
-              lastUser, firstUser, userAnalysis, replaced2Origin);
-          leaveTritionOp(rewriter, op.getOperation());
-          rewriter.replaceOp(op, output);
-          return success();
-        }
         rewriter.replaceOp(op, adaptor.getSrc());
         return success();
       }
@@ -2339,9 +2377,9 @@ struct TTGConvertLayoutOpLowering
 
     triton::gcu::TagInfo tag;
     if (firstUser.first != nullptr) {
-      tag = pTagPool.trygGetAsyncTagInfo(op.getOperation());
+      tag = pTagPool.tryGetPrivateAsyncTagInfo(op.getOperation());
     } else {
-      tag = pTagPool.getSyncTagInfo(op.getOperation());
+      tag = pTagPool.getPrivateSyncTagInfo(op.getOperation());
     }
     if (tag.isAsync()) {
       pTagPool.setMap(firstUser.first, tag);
@@ -2358,12 +2396,6 @@ struct TTGConvertLayoutOpLowering
       return success();
     } else if (isa<triton::gpu::BlockedEncodingAttr>(srcLayout) &&
                isa<triton::gpu::DotOperandEncodingAttr>(dstLayout)) {
-      if (canReusePrivateMemToDotOperand(getTypeConverter(), dstTy,
-                                         adaptor.getSrc())) {
-        leaveTritionOp(rewriter, op.getOperation());
-        rewriter.replaceOp(op, adaptor.getSrc());
-        return success();
-      }
       // Distributed to dot operand via shared memory
       auto sharedSrc = storeToSharedMem(
           rewriter, tag, dyn_cast<TensorType>(op.getSrc().getType()),
@@ -2399,7 +2431,8 @@ struct TTGConvertLayoutOpLowering
   }
 };
 
-struct GCUMatmulLowering : SharedConversionPattern<triton::gcu::MatmulOp> {
+struct GCUMatmulLowering
+    : SharedConversionPattern<triton::gcu::MatmulOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
   LogicalResult
@@ -2421,7 +2454,7 @@ struct GCUMatmulLowering : SharedConversionPattern<triton::gcu::MatmulOp> {
                               replaced2Origin, resultMemRefType);
     if (op.getType().getRank() == 2) {
       rewriter.create<gcu::MatMulOp>(loc, output, adaptor.getA(),
-                                     adaptor.getB(), Value());
+                                     adaptor.getB(), Value(), Value());
     }
     leaveTritionOp(rewriter, op.getOperation());
     rewriter.replaceOp(op, output);
@@ -2447,8 +2480,8 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
   // sets the "acc_reuse_candidate" attribute.  Here we verify the
   // type-compatibility conditions that require the TypeConverter, plus a
   // defensive one-use check on the original accumulator.
-  static bool canReuseAccumulatorBuffer(triton::DotOp op, OpAdaptor adaptor,
-                                        MemRefType resultMemRefType) {
+  static bool canReuseAccumulatorBuffer(
+      triton::DotOp op, OpAdaptor adaptor, MemRefType resultMemRefType) {
     if (!op->hasAttr("acc_reuse_candidate"))
       return false;
 
@@ -2486,40 +2519,30 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
       return false;
 
     Value initArg = forOp.getInitArgs()[iterArgIdx];
-    if (!initArg.getDefiningOp<memref::AllocOp>())
-      return false;
-
-    if (forOp->getParentOfType<scf::ForOp>())
-      return false;
+    if (auto outerFor = forOp->getParentOfType<scf::ForOp>()) {
+      // Reject if nested three or more levels deep -- only two-level
+      // nesting is supported for accumulator reuse.
+      if (outerFor->getParentOfType<scf::ForOp>())
+        return false;
+      // Reject if init comes from outer for's block arg (carried through
+      // the outer loop).
+      if (auto outerBlockArg = dyn_cast<BlockArgument>(initArg))
+        if (outerBlockArg.getOwner()->getParentOp() ==
+            outerFor.getOperation())
+          return false;
+      // Reject if outer for yields the inner for's accumulator result.
+      if (auto outerYield = dyn_cast<scf::YieldOp>(
+              outerFor.getBody()->getTerminator())) {
+        Value innerResult = forOp->getResult(iterArgIdx);
+        for (auto yieldedVal : outerYield.getOperands())
+          if (yieldedVal == innerResult)
+            return false;
+      }
+    }
 
     return true;
   }
 
-  // When reusing the accumulator buffer, the init-arg's dealloc was placed
-  // right after the for-op (based on the constant's last-user analysis).
-  // With reuse the buffer now lives through the for-result to downstream
-  // consumers (e.g. a store), so we must move the dealloc to the correct
-  // position.
-  void fixAccBufferLifetime(ConversionPatternRewriter &rewriter,
-                            triton::DotOp op, Value accBuffer) const {
-    auto blockArg = cast<BlockArgument>(accBuffer);
-    auto forOp = cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
-    unsigned iterArgIdx = blockArg.getArgNumber() - 1;
-    Value initArg = forOp.getInitArgs()[iterArgIdx];
-
-    if (auto allocOp = initArg.getDefiningOp<memref::AllocOp>()) {
-      for (auto *user :
-           llvm::make_early_inc_range(allocOp.getResult().getUsers())) {
-        if (isa<memref::DeallocOp>(user))
-          rewriter.eraseOp(user);
-      }
-    }
-
-    auto dotLastUser =
-        userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
-    promoteLastUser(dotLastUser, userAnalysis, replaced2Origin);
-    addDeallocAfterLastUser(rewriter, dotLastUser, initArg);
-  }
 
   LogicalResult
   matchAndRewrite(triton::DotOp op, OpAdaptor adaptor,
@@ -2538,10 +2561,16 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
         dyn_cast<MemRefType>(getTypeConverter()->convertType(op.getType()));
 
     Value output;
+    Value useBiasVal;
     bool reuseAcc = canReuseAccumulatorBuffer(op, adaptor, resultMemRefType);
     if (reuseAcc) {
       output = adaptor.getC();
-      fixAccBufferLifetime(rewriter, op, adaptor.getC());
+      auto blockArg = cast<BlockArgument>(adaptor.getC());
+      auto forOp = cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+      Value iv = forOp.getInductionVar();
+      Value lb = forOp.getLowerBound();
+      useBiasVal = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::ne, iv, lb);
       LLVM_DEBUG(llvm::dbgs() << "TTDotOpLowering: reusing accumulator buffer "
                                  "for in-place matmul\n");
     } else {
@@ -2555,10 +2584,10 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
       auto lhsVal = stripValueFromUnrealizedConversionCastOp(adaptor.getA());
       auto rhsVal = stripValueFromUnrealizedConversionCastOp(adaptor.getB());
       auto biasVal = adaptor.getC();
-      auto matmul_op =
-          rewriter.create<gcu::MatMulOp>(loc, output, lhsVal, rhsVal, biasVal);
+      auto matmulOp = rewriter.create<gcu::MatMulOp>(
+          loc, output, lhsVal, rhsVal, biasVal, useBiasVal);
       if (op->getAttr("inputPrecision") && aElemTy.isF32() && bElemTy.isF32()) {
-        matmul_op->setAttr("inputPrecision", op->getAttr("inputPrecision"));
+        matmulOp->setAttr("inputPrecision", op->getAttr("inputPrecision"));
       }
     } else {
       auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
@@ -2640,8 +2669,8 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
               newBias = sliceBatchToRank2(builder, loc, biasMemRef,
                                           biasMemRefType, m[0]);
             }
-            matmulOp = builder.create<gcu::MatMulOp>(loc, newOut, newLhs,
-                                                     newRhs, newBias);
+            matmulOp = builder.create<gcu::MatMulOp>(
+                loc, newOut, newLhs, newRhs, newBias, useBiasVal);
             if (op->getAttr("inputPrecision") && aElemTy.isF32() &&
                 bElemTy.isF32()) {
               matmulOp->setAttr("inputPrecision",
@@ -2703,6 +2732,138 @@ getGcuAtomicMemSyncScope(mlir::triton::MemSyncScope mem_sync) {
   }
 }
 
+// Build the CTA-scope serialized atomic loop:
+//   for iv = 0..numWarps:
+//     if (threadId == iv):
+//       elementLoop: for each element:
+//         elemFn(builder, loc, iters)
+//     barrier
+static void buildCTASerializedLoop(
+    ConversionPatternRewriter &rewriter, Location loc, Operation *op,
+    Value zero, Value one, SmallVector<unsigned> numElems,
+    SmallVector<Value, 4> numElemValues,
+    llvm::function_ref<void(OpBuilder &, Location, ValueRange)> elemFn) {
+  ModuleOp module = op->getParentOfType<ModuleOp>();
+  int numWarps = triton::gcu::getNumWarps(module);
+
+  // Fast path: a single subthread needs no serialization, barrier, or
+  // is-my-turn check — just the element loop.
+  if (numWarps <= 1) {
+    scf::buildLoopNest(
+        rewriter, loc, SmallVector<Value, 4>(numElems.size(), zero),
+        numElemValues, SmallVector<Value, 4>(numElems.size(), one), elemFn);
+    return;
+  }
+
+  auto numWarpsVal = rewriter.create<arith::ConstantIndexOp>(loc, numWarps);
+  auto threadId = rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
+
+  auto serializeLoop = rewriter.create<scf::ForOp>(loc, zero, numWarpsVal, one);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(serializeLoop.getBody());
+    Value iv = serializeLoop.getInductionVar();
+    auto isMyTurn = rewriter.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::eq, threadId, iv);
+
+    rewriter.create<scf::IfOp>(
+        loc, isMyTurn, [&](OpBuilder ifBuilder, Location loc) {
+          scf::buildLoopNest(
+              ifBuilder, loc, SmallVector<Value, 4>(numElems.size(), zero),
+              numElemValues, SmallVector<Value, 4>(numElems.size(), one),
+              elemFn);
+          ifBuilder.create<scf::YieldOp>(loc);
+        });
+    rewriter.create<gpu::BarrierOp>(loc);
+  }
+}
+
+// Emit a software RMW:
+//   old = load(memref[idx]);
+//   new = op(old, val);
+//   store(memref[idx], new);
+//   return old.
+static Value emitSoftwareRMW(OpBuilder &builder, Location loc,
+                             mlir::triton::RMWOp rmwOp, Value memref, Value idx,
+                             Value val, Type elemType) {
+  auto old =
+      builder.create<memref::LoadOp>(loc, elemType, memref, ValueRange{idx});
+  Value newVal;
+  bool isFloat = mlir::isa<FloatType>(elemType);
+  if (rmwOp == mlir::triton::RMWOp::ADD || rmwOp == mlir::triton::RMWOp::FADD) {
+    newVal = isFloat ? builder.create<arith::AddFOp>(loc, old, val).getResult()
+                     : builder.create<arith::AddIOp>(loc, old, val).getResult();
+  } else if (rmwOp == mlir::triton::RMWOp::AND) {
+    newVal = builder.create<arith::AndIOp>(loc, old, val);
+  } else if (rmwOp == mlir::triton::RMWOp::OR) {
+    newVal = builder.create<arith::OrIOp>(loc, old, val);
+  } else if (rmwOp == mlir::triton::RMWOp::XOR) {
+    newVal = builder.create<arith::XOrIOp>(loc, old, val);
+  } else if (rmwOp == mlir::triton::RMWOp::MAX) {
+    newVal = isFloat
+                 ? builder.create<arith::MaximumFOp>(loc, old, val).getResult()
+                 : builder.create<arith::MaxSIOp>(loc, old, val).getResult();
+  } else if (rmwOp == mlir::triton::RMWOp::MIN) {
+    newVal = isFloat
+                 ? builder.create<arith::MinimumFOp>(loc, old, val).getResult()
+                 : builder.create<arith::MinSIOp>(loc, old, val).getResult();
+  } else if (rmwOp == mlir::triton::RMWOp::UMAX) {
+    newVal = builder.create<arith::MaxUIOp>(loc, old, val);
+  } else if (rmwOp == mlir::triton::RMWOp::UMIN) {
+    newVal = builder.create<arith::MinUIOp>(loc, old, val);
+  } else if (rmwOp == mlir::triton::RMWOp::XCHG) {
+    newVal = val;
+  } else {
+    llvm::report_fatal_error("unsupported RMW op for CTA software emulation");
+  }
+  builder.create<memref::StoreOp>(loc, newVal, memref, ValueRange{idx});
+  return old;
+}
+
+// Emit a software CAS:
+//   old = load(memref[idx]);
+//   if (old == cmp):
+//     store(memref[idx], val);
+//   return old.
+static Value emitSoftwareCAS(OpBuilder &builder, Location loc, Value memref,
+                              Value idx, Value cmp, Value val, Type elemType) {
+  auto old =
+      builder.create<memref::LoadOp>(loc, elemType, memref, ValueRange{idx});
+  Value isEqual;
+  if (mlir::isa<FloatType>(elemType))
+    isEqual = builder.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OEQ,
+                                            old, cmp);
+  else
+    isEqual = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                            old, cmp);
+  builder.create<scf::IfOp>(
+      loc, isEqual, [&](OpBuilder innerBuilder, Location loc) {
+        innerBuilder.create<memref::StoreOp>(loc, val, memref,
+                                             ValueRange{idx});
+        innerBuilder.create<scf::YieldOp>(loc);
+      });
+  return old;
+}
+
+static bool isAtomicOnSharedMemory(mlir::Operation *op) {
+  Type ptrType;
+  if (auto rmwOp = dyn_cast<triton::AtomicRMWOp>(op)) {
+    ptrType = rmwOp.getPtr().getType();
+  } else if (auto casOp = dyn_cast<triton::AtomicCASOp>(op)) {
+    ptrType = casOp.getPtr().getType();
+  }
+
+  int addressSpace = 1;
+  if (auto tensorTy = dyn_cast_or_null<TensorType>(ptrType)) {
+    if (auto ptrElemTy =
+            dyn_cast<triton::PointerType>(tensorTy.getElementType()))
+      addressSpace = ptrElemTy.getAddressSpace();
+  } else if (auto ptrTy = dyn_cast<triton::PointerType>(ptrType)) {
+    addressSpace = ptrTy.getAddressSpace();
+  }
+  return addressSpace == 3 || addressSpace == 2;
+}
+
 struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
@@ -2717,6 +2878,13 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
     auto op_attr = getGcuAtomicOp(op.getAtomicRmwOp());
     auto mem_semantic = getGcuAtomicMemSemantic(op.getSem());
     auto mem_sync_scope = getGcuAtomicMemSyncScope(op.getScope());
+    bool isCtaScope = mem_sync_scope == mlir::gcu::MemSyncScope::CTA;
+    bool isSharedMem = isAtomicOnSharedMemory(op.getOperation());
+
+    if (isCtaScope && !isSharedMem) {
+      mem_sync_scope = mlir::gcu::MemSyncScope::GCU;
+      isCtaScope = false;
+    }
 
     if (op.getVal().getType().isIntOrFloat()) {
       mlir::Value ptr = adaptor.getPtr();
@@ -2724,18 +2892,20 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
       auto mask =
           adaptor.getMask()
               ? adaptor.getMask()
-              : rewriter.create<arith::ConstantIntOp>(loc, 1, 1).getResult();
+              : rewriter
+                    .create<arith::ConstantIntOp>(loc, 1, 1)
+                    .getResult();
       auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      auto subthread0_mask =
+      auto masterWarpId = getMasterThreadId(op.getOperation());
+      auto isMasterThread =
           rewriter
               .create<arith::CmpIOp>(
                   loc, arith::CmpIPredicate::eq,
                   rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
-                  zero)
+                  rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId))
               .getResult();
       auto thread_mask =
-          rewriter.create<arith::AndIOp>(loc, mask, subthread0_mask)
-              .getResult();
+          rewriter.create<arith::AndIOp>(loc, mask, isMasterThread).getResult();
 
       auto elemType = op.getResult().getType();
       auto memrefType =
@@ -2746,22 +2916,38 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
       auto localMem = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                                   replaced2Origin, memrefType);
 
-      rewriter.create<scf::IfOp>(
-          loc, thread_mask, [&](OpBuilder builder, Location loc) {
-            if (op.getSem() == mlir::triton::MemSemantic::RELEASE ||
-                op.getSem() == mlir::triton::MemSemantic::ACQUIRE_RELEASE)
-              builder.create<gcu::MFenceOp>(loc, gcu::MFenceType::Device);
+      if (isCtaScope) {
+        rewriter.create<scf::IfOp>(
+            loc, thread_mask, [&](OpBuilder builder, Location loc) {
+              auto dynMemType = MemRefType::get(
+                  ArrayRef<int64_t>{ShapedType::kDynamic}, elemType);
+              auto buffer =
+                  builder.create<gcu::PtrToMemRefOp>(loc, dynMemType, ptr);
+              auto oldVal = emitSoftwareRMW(builder, loc, op.getAtomicRmwOp(),
+                                            buffer, zero, val, elemType);
+              builder.create<memref::StoreOp>(loc, oldVal, localMem,
+                                              ValueRange{zero});
+              builder.create<scf::YieldOp>(loc);
+            });
+      } else {
+        rewriter.create<scf::IfOp>(
+            loc, thread_mask, [&](OpBuilder builder, Location loc) {
+              if (op.getSem() == mlir::triton::MemSemantic::RELEASE ||
+                  op.getSem() == mlir::triton::MemSemantic::ACQUIRE_RELEASE)
+                builder.create<gcu::MFenceOp>(loc, gcu::MFenceType::Device);
 
-            auto atomicRMWOp = rewriter.create<mlir::gcu::AtomicRMWOp>(
-                loc, elemType, op_attr, ptr, val, mem_semantic, mem_sync_scope);
-            builder.create<memref::StoreOp>(loc, atomicRMWOp.getResult(),
-                                            localMem, ValueRange{zero});
+              auto atomicRMWOp = rewriter.create<mlir::gcu::AtomicRMWOp>(
+                  loc, elemType, op_attr, ptr, val, mem_semantic,
+                  mem_sync_scope);
+              builder.create<memref::StoreOp>(loc, atomicRMWOp.getResult(),
+                                              localMem, ValueRange{zero});
 
-            if (op.getSem() == mlir::triton::MemSemantic::ACQUIRE ||
-                op.getSem() == mlir::triton::MemSemantic::ACQUIRE_RELEASE)
-              builder.create<gcu::MFenceOp>(loc, gcu::MFenceType::Device);
-            builder.create<scf::YieldOp>(loc);
-          });
+              if (op.getSem() == mlir::triton::MemSemantic::ACQUIRE ||
+                  op.getSem() == mlir::triton::MemSemantic::ACQUIRE_RELEASE)
+                builder.create<gcu::MFenceOp>(loc, gcu::MFenceType::Device);
+              builder.create<scf::YieldOp>(loc);
+            });
+      }
 
       rewriter.create<gpu::BarrierOp>(loc);
       rewriter.replaceOpWithNewOp<memref::LoadOp>(op, elemType, localMem,
@@ -2778,42 +2964,121 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
       auto true_bool = rewriter.create<arith::ConstantIntOp>(loc, 1, 1);
       auto numElems = triton::gcu::getElemsPerThread(op.getType());
       auto numElemValues = getElemsPerThread(rewriter, loc, op.getType());
-      scf::buildLoopNest(
-          rewriter, loc, SmallVector<Value, 4>(numElems.size(), zero),
-          numElemValues, SmallVector<Value, 4>(numElems.size(), one),
-          [&](OpBuilder &builder, Location loc, ValueRange iters) {
-            auto ptr_int =
-                builder.create<memref::LoadOp>(loc, ptrs, iters).getResult();
-            auto ptr = builder.create<gcu::IntToPtrOp>(
-                loc, gcu::PtrType::get(getContext(), elemType), ptr_int);
-            auto val =
-                builder.create<memref::LoadOp>(loc, vals, iters).getResult();
-            auto mask = adaptor.getMask()
-                            ? builder.create<memref::LoadOp>(loc, masks, iters)
-                                  .getResult()
-                            : builder.create<arith::ConstantIntOp>(loc, 1, 1)
-                                  .getResult();
-            auto thread_select = builder.create<arith::CmpIOp>(
-                loc, arith::CmpIPredicate::eq, mask, true_bool);
 
-            builder.create<scf::IfOp>(
-                loc, thread_select, [&](OpBuilder builder, Location loc) {
-                  if (op.getSem() == mlir::triton::MemSemantic::RELEASE ||
-                      op.getSem() == mlir::triton::MemSemantic::ACQUIRE_RELEASE)
-                    builder.create<gcu::MFenceOp>(loc, gcu::MFenceType::Device);
+      bool hasUsers = !op.getResult().use_empty();
+      Value output;
+      if (hasUsers) {
+        auto resultType = dyn_cast<MemRefType>(
+            getTypeConverter()->convertType(op.getResult().getType()));
+        auto lastUser =
+            userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
+        output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                             replaced2Origin, resultType);
 
-                  builder.create<mlir::gcu::AtomicRMWOp>(loc, elemType, op_attr,
-                                                         ptr, val, mem_semantic,
-                                                         mem_sync_scope);
+        // zero-init output so masked-off elements don't produce garbage values.
+        Value zeroVal;
+        if (mlir::isa<FloatType>(elemType))
+          zeroVal = rewriter.create<arith::ConstantFloatOp>(
+              loc, cast<FloatType>(elemType),
+              APFloat::getZero(cast<FloatType>(elemType).getFloatSemantics()));
+        else
+          zeroVal = rewriter.create<arith::ConstantIntOp>(loc, elemType, 0);
+        auto totalNumElems = triton::gcu::getTotalElemsPerThread(op.getType());
+        auto tag = pTagPool.getPrivateSyncTagInfo(op.getOperation());
+        doMemset(rewriter, tag, op.getOperation(), output, zeroVal,
+                 totalNumElems);
+      }
 
-                  if (op.getSem() == mlir::triton::MemSemantic::ACQUIRE ||
-                      op.getSem() == mlir::triton::MemSemantic::ACQUIRE_RELEASE)
-                    builder.create<gcu::MFenceOp>(loc, gcu::MFenceType::Device);
-                  builder.create<scf::YieldOp>(loc);
-                });
-          });
-      rewriter.create<gpu::BarrierOp>(loc);
-      rewriter.eraseOp(op);
+      if (isCtaScope) {
+        buildCTASerializedLoop(
+            rewriter, loc, op.getOperation(), zero, one, numElems,
+            numElemValues,
+            [&](OpBuilder &elemBuilder, Location loc, ValueRange iters) {
+              auto ptr_int =
+                  elemBuilder.create<memref::LoadOp>(loc, ptrs, iters)
+                      .getResult();
+              auto ptr = elemBuilder.create<gcu::IntToPtrOp>(
+                  loc, gcu::PtrType::get(getContext(), elemType), ptr_int);
+              auto val = elemBuilder.create<memref::LoadOp>(loc, vals, iters)
+                             .getResult();
+              auto mask =
+                  adaptor.getMask()
+                      ? elemBuilder.create<memref::LoadOp>(loc, masks, iters)
+                            .getResult()
+                      : elemBuilder.create<arith::ConstantIntOp>(loc, 1, 1)
+                            .getResult();
+              auto thread_select = elemBuilder.create<arith::CmpIOp>(
+                  loc, arith::CmpIPredicate::eq, mask, true_bool);
+
+              elemBuilder.create<scf::IfOp>(
+                  loc, thread_select,
+                  [&](OpBuilder innerBuilder, Location loc) {
+                    auto dynMemType = MemRefType::get(
+                        ArrayRef<int64_t>{ShapedType::kDynamic}, elemType);
+                    auto buffer = innerBuilder.create<gcu::PtrToMemRefOp>(
+                        loc, dynMemType, ptr);
+                    auto oldVal =
+                        emitSoftwareRMW(innerBuilder, loc, op.getAtomicRmwOp(),
+                                        buffer, zero, val, elemType);
+                    if (hasUsers) {
+                      innerBuilder.create<memref::StoreOp>(loc, oldVal, output,
+                                                           iters);
+                    }
+                    innerBuilder.create<scf::YieldOp>(loc);
+                  });
+            });
+      } else {
+        scf::buildLoopNest(
+            rewriter, loc, SmallVector<Value, 4>(numElems.size(), zero),
+            numElemValues, SmallVector<Value, 4>(numElems.size(), one),
+            [&](OpBuilder &builder, Location loc, ValueRange iters) {
+              auto ptr_int =
+                  builder.create<memref::LoadOp>(loc, ptrs, iters).getResult();
+              auto ptr = builder.create<gcu::IntToPtrOp>(
+                  loc, gcu::PtrType::get(getContext(), elemType), ptr_int);
+              auto val =
+                  builder.create<memref::LoadOp>(loc, vals, iters).getResult();
+              auto mask =
+                  adaptor.getMask()
+                      ? builder.create<memref::LoadOp>(loc, masks, iters)
+                            .getResult()
+                      : builder.create<arith::ConstantIntOp>(loc, 1, 1)
+                            .getResult();
+              auto thread_select = builder.create<arith::CmpIOp>(
+                  loc, arith::CmpIPredicate::eq, mask, true_bool);
+
+              builder.create<scf::IfOp>(
+                  loc, thread_select, [&](OpBuilder builder, Location loc) {
+                    if (op.getSem() == mlir::triton::MemSemantic::RELEASE ||
+                        op.getSem() ==
+                            mlir::triton::MemSemantic::ACQUIRE_RELEASE)
+                      builder.create<gcu::MFenceOp>(loc,
+                                                    gcu::MFenceType::Device);
+
+                    auto atomicRMWOp = builder.create<mlir::gcu::AtomicRMWOp>(
+                        loc, elemType, op_attr, ptr, val, mem_semantic,
+                        mem_sync_scope);
+                    if (hasUsers) {
+                      builder.create<memref::StoreOp>(
+                          loc, atomicRMWOp.getResult(), output, iters);
+                    }
+
+                    if (op.getSem() == mlir::triton::MemSemantic::ACQUIRE ||
+                        op.getSem() ==
+                            mlir::triton::MemSemantic::ACQUIRE_RELEASE)
+                      builder.create<gcu::MFenceOp>(loc,
+                                                    gcu::MFenceType::Device);
+                    builder.create<scf::YieldOp>(loc);
+                  });
+            });
+        rewriter.create<gpu::BarrierOp>(loc);
+      }
+      leaveTritionOp(rewriter, op.getOperation());
+      if (hasUsers) {
+        rewriter.replaceOp(op, output);
+      } else {
+        rewriter.eraseOp(op);
+      }
       return success();
     }
     return failure();
@@ -2833,15 +3098,49 @@ struct TTAtomicCASOpLowering : SharedConversionPattern<triton::AtomicCASOp> {
     auto loc = op.getLoc();
     auto mem_semantic = getGcuAtomicMemSemantic(op.getSem());
     auto mem_sync_scope = getGcuAtomicMemSyncScope(op.getScope());
+    bool isCtaScope = mem_sync_scope == mlir::gcu::MemSyncScope::CTA;
+    bool isSharedMem = isAtomicOnSharedMemory(op.getOperation());
+
+    if (isCtaScope && !isSharedMem) {
+      mem_sync_scope = mlir::gcu::MemSyncScope::GCU;
+      isCtaScope = false;
+    }
 
     if (op.getVal().getType().isIntOrFloat()) {
       mlir::Value ptr = adaptor.getPtr();
       mlir::Value cmp = adaptor.getCmp();
       mlir::Value val = adaptor.getVal();
-      auto new_op = rewriter.create<mlir::gcu::AtomicCASOp>(
-          loc, op.getResult().getType(), ptr, cmp, val, mem_semantic,
-          mem_sync_scope);
-      rewriter.replaceOp(op, new_op);
+      if (isCtaScope) {
+          auto elemType = op.getResult().getType();
+          auto dynMemType = MemRefType::get(
+              ArrayRef<int64_t>{ShapedType::kDynamic}, elemType);
+          auto buffer =
+              rewriter.create<gcu::PtrToMemRefOp>(loc, dynMemType, ptr);
+          auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+          auto oldVal =
+              emitSoftwareCAS(rewriter, loc, buffer, zero, cmp, val,
+                              op.getResult().getType());
+          rewriter.replaceOp(op, oldVal);
+      } else {
+        auto resTy = op.getResult().getType();
+        auto casTy = resTy;
+        bool needsBitcast = resTy.isF32();
+        if (needsBitcast) {
+          auto i32Ty = rewriter.getI32Type();
+          casTy = i32Ty;
+          ptr = rewriter.create<gcu::IntToPtrOp>(
+              loc, gcu::PtrType::get(getContext(), i32Ty),
+              rewriter.create<gcu::PtrToIntOp>(loc, ptr));
+          cmp = rewriter.create<arith::BitcastOp>(loc, i32Ty, cmp);
+          val = rewriter.create<arith::BitcastOp>(loc, i32Ty, val);
+        }
+        auto new_op = rewriter.create<mlir::gcu::AtomicCASOp>(
+            loc, casTy, ptr, cmp, val, mem_semantic, mem_sync_scope);
+        mlir::Value result = new_op.getResult();
+        if (needsBitcast)
+          result = rewriter.create<arith::BitcastOp>(loc, resTy, result);
+        rewriter.replaceOp(op, result);
+      }
       return success();
     } else if (mlir::isa<mlir::TensorType>(op.getVal().getType())) {
       mlir::Value ptrs = adaptor.getPtr();
@@ -2853,33 +3152,113 @@ struct TTAtomicCASOpLowering : SharedConversionPattern<triton::AtomicCASOp> {
       auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
       auto numElems = triton::gcu::getElemsPerThread(op.getType());
       auto numElemValues = getElemsPerThread(rewriter, loc, op.getType());
-      scf::buildLoopNest(
-          rewriter, loc, SmallVector<Value, 4>(numElems.size(), zero),
-          numElemValues, SmallVector<Value, 4>(numElems.size(), one),
-          [&](OpBuilder &builder, Location loc, ValueRange iters) {
-            auto ptr_int =
-                builder.create<memref::LoadOp>(loc, ptrs, iters).getResult();
-            auto ptr = builder.create<gcu::IntToPtrOp>(
-                loc, gcu::PtrType::get(getContext(), elemType), ptr_int);
-            auto cmp =
-                builder.create<memref::LoadOp>(loc, cmps, iters).getResult();
-            auto val =
-                builder.create<memref::LoadOp>(loc, vals, iters).getResult();
 
-            if (op.getSem() == mlir::triton::MemSemantic::RELEASE ||
-                op.getSem() == mlir::triton::MemSemantic::ACQUIRE_RELEASE) {
-              builder.create<gcu::MFenceOp>(loc, gcu::MFenceType::Device);
-            }
+      bool hasUsers = !op.getResult().use_empty();
+      Value output;
+      if (hasUsers) {
+        auto resultType = dyn_cast<MemRefType>(
+            getTypeConverter()->convertType(op.getResult().getType()));
+        auto lastUser =
+            userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
+        output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                             replaced2Origin, resultType);
 
-            builder.create<mlir::gcu::AtomicCASOp>(
-                loc, elemType, ptr, cmp, val, mem_semantic, mem_sync_scope);
+        // zero-init output so masked-off elements don't produce garbage values.
+        Value zeroVal;
+        if (mlir::isa<FloatType>(elemType))
+          zeroVal = rewriter.create<arith::ConstantFloatOp>(
+              loc, cast<FloatType>(elemType),
+              APFloat::getZero(cast<FloatType>(elemType).getFloatSemantics()));
+        else
+          zeroVal = rewriter.create<arith::ConstantIntOp>(loc, elemType, 0);
+        auto totalNumElems = triton::gcu::getTotalElemsPerThread(op.getType());
+        auto tag = pTagPool.getPrivateSyncTagInfo(op.getOperation());
+        doMemset(rewriter, tag, op.getOperation(), output, zeroVal,
+                 totalNumElems);
+      }
 
-            if (op.getSem() == mlir::triton::MemSemantic::ACQUIRE ||
-                op.getSem() == mlir::triton::MemSemantic::ACQUIRE_RELEASE) {
-              builder.create<gcu::MFenceOp>(loc, gcu::MFenceType::Device);
-            }
-          });
-      rewriter.eraseOp(op);
+      if (isCtaScope) {
+        // CTA scope: serialize across subthreads for correctness.
+        buildCTASerializedLoop(
+            rewriter, loc, op.getOperation(), zero, one, numElems,
+            numElemValues,
+            [&](OpBuilder &elemBuilder, Location loc, ValueRange iters) {
+              auto ptr_int =
+                  elemBuilder.create<memref::LoadOp>(loc, ptrs, iters)
+                      .getResult();
+              auto ptr = elemBuilder.create<gcu::IntToPtrOp>(
+                  loc, gcu::PtrType::get(getContext(), elemType), ptr_int);
+              auto cmp = elemBuilder.create<memref::LoadOp>(loc, cmps, iters)
+                             .getResult();
+              auto val = elemBuilder.create<memref::LoadOp>(loc, vals, iters)
+                             .getResult();
+
+              auto dynMemType = MemRefType::get(
+                  ArrayRef<int64_t>{ShapedType::kDynamic}, elemType);
+              auto buffer =
+                  elemBuilder.create<gcu::PtrToMemRefOp>(loc, dynMemType, ptr);
+              auto oldVal = emitSoftwareCAS(elemBuilder, loc, buffer, zero, cmp,
+                                            val, elemType);
+              if (hasUsers) {
+                elemBuilder.create<memref::StoreOp>(loc, oldVal, output, iters);
+              }
+            });
+      } else {
+        bool needsBitcast = elemType.isF32();
+        auto casElemTy = needsBitcast ? (Type)rewriter.getI32Type() : elemType;
+
+        scf::buildLoopNest(
+            rewriter, loc, SmallVector<Value, 4>(numElems.size(), zero),
+            numElemValues, SmallVector<Value, 4>(numElems.size(), one),
+            [&](OpBuilder &builder, Location loc, ValueRange iters) {
+              auto ptr_int =
+                  builder.create<memref::LoadOp>(loc, ptrs, iters)
+                      .getResult();
+              auto ptr = builder.create<gcu::IntToPtrOp>(
+                  loc, gcu::PtrType::get(getContext(), casElemTy), ptr_int);
+              auto cmp =
+                  builder.create<memref::LoadOp>(loc, cmps, iters)
+                      .getResult();
+              auto val =
+                  builder.create<memref::LoadOp>(loc, vals, iters)
+                      .getResult();
+
+              if (needsBitcast) {
+                cmp = builder.create<arith::BitcastOp>(loc, casElemTy, cmp);
+                val = builder.create<arith::BitcastOp>(loc, casElemTy, val);
+              }
+
+              if (op.getSem() == mlir::triton::MemSemantic::RELEASE ||
+                  op.getSem() ==
+                      mlir::triton::MemSemantic::ACQUIRE_RELEASE) {
+                builder.create<gcu::MFenceOp>(loc, gcu::MFenceType::Device);
+              }
+
+              auto atomicCasOp =
+                  builder.create<mlir::gcu::AtomicCASOp>(
+                      loc, casElemTy, ptr, cmp, val, mem_semantic,
+                      mem_sync_scope);
+              if (hasUsers) {
+                Value result = atomicCasOp.getResult();
+                if (needsBitcast)
+                  result =
+                      builder.create<arith::BitcastOp>(loc, elemType, result);
+                builder.create<memref::StoreOp>(loc, result, output, iters);
+              }
+
+              if (op.getSem() == mlir::triton::MemSemantic::ACQUIRE ||
+                  op.getSem() ==
+                      mlir::triton::MemSemantic::ACQUIRE_RELEASE) {
+                builder.create<gcu::MFenceOp>(loc, gcu::MFenceType::Device);
+              }
+            });
+      }
+      leaveTritionOp(rewriter, op.getOperation());
+      if (hasUsers) {
+        rewriter.replaceOp(op, output);
+      } else {
+        rewriter.eraseOp(op);
+      }
       return success();
     }
     return failure();
@@ -2904,16 +3283,18 @@ struct TTInitBarrierOpLowering
     auto newOp = rewriter.create<gcu::AllocBarrierOp>(loc, barrierType);
     auto barrier = newOp.getResult();
 
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto isThread0 = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::eq,
-        rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
+    auto masterWarpId = getMasterThreadId(op.getOperation());
+    auto threadId = rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
+    auto isMasterThread = rewriter.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::eq, threadId,
+        rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
     Value count = rewriter.create<arith::ConstantIntOp>(loc, op.getCount(), 32);
     rewriter.create<scf::IfOp>(
-        loc, isThread0, [&](OpBuilder &builder, Location loc) {
+        loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
           builder.create<gcu::InitBarrierOp>(loc, barrier, count);
           builder.create<scf::YieldOp>(loc);
         });
+    rewriter.create<gpu::BarrierOp>(loc);
     leaveTritionOp(rewriter, op);
     rewriter.replaceOp(op, newOp);
     return success();
@@ -2937,15 +3318,17 @@ struct TTInitPipelineOpLowering
     auto newOp = rewriter.create<gcu::AllocPipelineOp>(loc, pipelineType);
     auto pipeline = newOp.getResult();
 
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto isThread0 = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::eq,
-        rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
+    auto masterWarpId = getMasterThreadId(op.getOperation());
+    auto threadId = rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
+    auto isMasterThread = rewriter.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::eq, threadId,
+        rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
     rewriter.create<scf::IfOp>(
-        loc, isThread0, [&](OpBuilder &builder, Location loc) {
+        loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
           builder.create<gcu::InitPipelineOp>(loc, pipeline);
           builder.create<scf::YieldOp>(loc);
         });
+    rewriter.create<gpu::BarrierOp>(loc);
     leaveTritionOp(rewriter, op);
     rewriter.replaceOp(op, newOp);
     return success();
@@ -2989,13 +3372,21 @@ struct TTGWarpSpecializeOpLowering
     for (auto t : op.getResultTypes())
       resultTypes.push_back(getTypeConverter()->convertType(t));
 
+    const int32_t defaultNumWarps = 1;
+    int32_t defaultStartId = 0;
+    if (std::optional<ArrayRef<int32_t>> startIds = op.getWarpGroupStartIds()) {
+      defaultStartId = startIds->front() + op.getTotalPartitionWarps();
+    }
     auto newOp = rewriter.create<gcu::WarpSpecializeOp>(
         op.getLoc(), resultTypes, adaptor.getExplicitCaptures(),
-        op.getPartitionNumWarpsAttr(), op.getWarpGroupStartIdsAttr(),
-        op.getRequestedRegistersAttr(), op.getActualRegistersAttr());
+        rewriter.getI32IntegerAttr(defaultNumWarps),
+        op.getPartitionNumWarpsAttr(),
+        rewriter.getI32IntegerAttr(defaultStartId),
+        op.getWarpGroupStartIdsAttr(), op.getActualRegistersAttr());
 
     newOp.getDefaultRegion().getBlocks().clear();
-    rewriter.inlineRegionBefore(op.getDefaultRegion(), newOp.getDefaultRegion(),
+    rewriter.inlineRegionBefore(op.getDefaultRegion(),
+                                newOp.getDefaultRegion(),
                                 newOp.getDefaultRegion().end());
 
     newOp.getPartitionOpHolder().getBlocks().clear();
@@ -3085,7 +3476,7 @@ struct TTGWarpReturnOpLowering
   }
 };
 
-} // namespace
+}  // namespace
 
 void ConvertTritonToGCUPass::runOnOperation() {
   auto *ctx = &getContext();
@@ -3102,22 +3493,34 @@ void ConvertTritonToGCUPass::runOnOperation() {
   });
   assert(entryFunc && "entry function not found");
 
+  bool useAsyncSharedTag = false;
+  moduleOp.walk([&](triton::gcu::CopyGlobalToLocalOp copyOp) {
+    auto asyncAttr =
+        llvm::cast_if_present<BoolAttr>(copyOp->getAttr("tt.load.async"));
+    if (asyncAttr && asyncAttr.getValue()) {
+      useAsyncSharedTag = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+
   auto mod = moduleOp->getParentOfType<ModuleOp>();
   if (!mod->hasAttr("ttg.num-warps"))
     llvm::report_fatal_error(
         "TritonGPU module should contain a ttg.num-warps attribute");
-  auto numWarps = cast<IntegerAttr>(mod->getAttr("ttg.num-warps")).getInt();
-  triton::gcu::PrivateTagPool pTagPool(entryFunc, numWarps);
+  auto numWarps =
+      cast<IntegerAttr>(mod->getAttr("ttg.num-warps")).getInt();
+  triton::gcu::PrivateTagPool pTagPool(entryFunc, numWarps, useAsyncSharedTag);
 
   // pre analysis base triton ir
-  triton::gcu::FirstLastUserAnalysis &userAnalysis =
-      getAnalysis<triton::gcu::FirstLastUserAnalysis>();
+  triton::gcu::FirstLastUserAnalysis&
+  userAnalysis = getAnalysis<triton::gcu::FirstLastUserAnalysis>();
 
-  std::map<Operation *, Operation *> replaced2Origin;
+  std::map<Operation*, Operation*> replaced2Origin;
   replaced2Origin.clear();
 
   std::map<Operation *, std::map<uint64_t, bool>>
-      TTYeiledOPerandHasMultiUseStage;
+                                TTYeiledOPerandHasMultiUseStage;
   AnalysisYieldOperendUseStage(moduleOp, userAnalysis,
                                TTYeiledOPerandHasMultiUseStage);
 
@@ -3190,16 +3593,20 @@ void ConvertTritonToGCUPass::runOnOperation() {
 
   mlir::triton::populateLoadStoreOpToGCUPatterns(
       converter, patterns, userAnalysis, replaced2Origin, pTagPool);
-  mlir::triton::populateReduceOpToGCUPatterns(converter, patterns, userAnalysis,
-                                              replaced2Origin, pTagPool);
-  mlir::triton::populateScanOpToGCUPatterns(converter, patterns, userAnalysis,
-                                            replaced2Origin, pTagPool);
+  mlir::triton::populateReduceOpToGCUPatterns(
+      converter, patterns, userAnalysis, replaced2Origin, pTagPool);
+  mlir::triton::populateScanOpToGCUPatterns(
+      converter, patterns, userAnalysis, replaced2Origin, pTagPool);
   mlir::triton::populateElementwiseFusionOpToGCUPatterns(
       converter, patterns, userAnalysis, replaced2Origin, pTagPool);
   mlir::triton::populateMakeRangeOpToGCUPatterns(
       converter, patterns, userAnalysis, replaced2Origin, pTagPool);
-  mlir::triton::populateTTSmemOpToGCUPatterns(converter, patterns, userAnalysis,
-                                              replaced2Origin, pTagPool);
+  mlir::triton::populateTTSmemOpToGCUPatterns(
+      converter, patterns, userAnalysis, replaced2Origin, pTagPool);
+#ifdef ENABLE_TRITON_DISTRIBUTED
+  mlir::triton::populateDistributedOpToGCUPatterns(
+      converter, patterns, userAnalysis, replaced2Origin, pTagPool);
+#endif
 
   patterns.add<
       TTFuncOpLowering, TTReturnOpLowering, TTCallOpLowering,
@@ -3241,12 +3648,14 @@ void ConvertTritonToGCUPass::runOnOperation() {
   patterns.add<TTSCFYieldOpLowering>(converter, ctx, userAnalysis,
                                      replaced2Origin, pTagPool,
                                      TTYeiledOPerandHasMultiUseStage);
-  target.addLegalDialect<
-      gpu::GPUDialect, gcu::GCUDialect, arith::ArithDialect,
-      affine::AffineDialect, func::FuncDialect, scf::SCFDialect,
-      math::MathDialect, vector::VectorDialect, memref::MemRefDialect,
-      memref_ext::MemrefExtDialect, math_ext::MathExtDialect>();
-  target.addIllegalDialect<triton::TritonDialect, triton::gpu::TritonGPUDialect,
+  target.addLegalDialect<gpu::GPUDialect, gcu::GCUDialect, arith::ArithDialect,
+                         affine::AffineDialect, func::FuncDialect,
+                         scf::SCFDialect, math::MathDialect,
+                         vector::VectorDialect, memref::MemRefDialect,
+                         memref_ext::MemrefExtDialect,
+                         math_ext::MathExtDialect>();
+  target.addIllegalDialect<triton::TritonDialect,
+                           triton::gpu::TritonGPUDialect,
                            triton::gcuws::GCUWSDialect>();
   target.addIllegalOp<
       mlir::triton::gcu::ElementwiseFusionRegionOp, mlir::triton::gcu::YieldOp,
@@ -3254,19 +3663,30 @@ void ConvertTritonToGCUPass::runOnOperation() {
       mlir::triton::gcu::CopyGlobalToLocalOp,
       mlir::triton::gcu::GatherGlobalToLocalOp,
       mlir::triton::gcu::InitBarrierOp, mlir::triton::gcu::WaitBarrierOp,
-      mlir::triton::gcu::ArriveBarrierOp>();
+      mlir::triton::gcu::ArriveBarrierOp,
+      mlir::triton::gcu::SliceFromLocalOp,
+      mlir::triton::gcu::DesliceToLocalOp>();
+  target.addDynamicallyLegalOp(OperationName("tle.extract_tile", &getContext()),
+                               [](Operation *) { return false; });
+  target.addDynamicallyLegalOp(OperationName("tle.insert_tile", &getContext()),
+                               [](Operation *) { return false; });
+  target.addDynamicallyLegalOp(
+      OperationName("tle.exclusive_cumsum", &getContext()),
+      [](Operation *) { return false; });
   target.addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                                     scf::SCFDialect>([](Operation *op) {
-    return llvm::none_of(op->getOperandTypes(),
-                         [](auto t) {
-                           return isa<TensorType, triton::PointerType,
+    return llvm::none_of(
+               op->getOperandTypes(),
+               [](auto t) {
+                 return isa<TensorType, triton::PointerType,
                                       triton::gpu::MemDescType,
-                                      triton::gpu::AsyncTokenType>(t);
-                         }) &&
+                                      triton::gpu::AsyncTokenType>(
+                     t);
+               }) &&
            llvm::none_of(op->getResultTypes(), [](auto t) {
              return isa<TensorType, triton::PointerType,
-                        triton::gpu::MemDescType, triton::gpu::AsyncTokenType>(
-                 t);
+                        triton::gpu::MemDescType,
+                        triton::gpu::AsyncTokenType>(t);
            });
   });
 

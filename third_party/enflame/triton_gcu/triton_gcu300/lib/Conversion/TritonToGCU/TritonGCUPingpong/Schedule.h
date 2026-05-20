@@ -18,10 +18,11 @@
 #define TRITON_TRIRONTOGCU_PINGPONG_SCHEDULE_H_
 
 #include "PipelineExpander.h"
+#include <vector>
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
-#include <vector>
+
 
 namespace mlir {
 namespace triton {
@@ -32,11 +33,6 @@ namespace gcu {
 /// loads into async loads so that the IR is ready to be pipelined.
 bool preProcessLoopAndGetSchedule(scf::ForOp &forOp, int numStages,
                                   mlir::triton::gcu::PipeliningOption &options);
-
-/// Fills out pipelining options for an outer loop pipelining case. This
-/// schedules async copies to overlap with the epilogue of a loop.
-bool getOuterLoopSchedule(scf::ForOp &forOp, int numStages,
-                          mlir::triton::gcu::PipeliningOption &options);
 
 } // namespace gcu
 } // namespace triton

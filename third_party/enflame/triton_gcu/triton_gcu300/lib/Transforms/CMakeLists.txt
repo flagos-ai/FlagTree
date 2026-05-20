@@ -10,7 +10,7 @@ add_mlir_conversion_library(MLIRTritonGCUTransforms_${arch}
   TritonGCUTableGen_${arch}
   TritonGCUTransformsPassIncGen_${arch}
   TritonGCUCombineIncGen_${arch}
-  triton_${arch}
+  triton_gcu300
 
   LINK_LIBS PUBLIC
 #  TritonIR

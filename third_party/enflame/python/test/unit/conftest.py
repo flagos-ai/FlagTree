@@ -4,8 +4,86 @@ import tempfile
 from typing import Optional, Set
 
 
+def _is_gcu500():
+    """Check if the current target architecture is GCU500."""
+    arch = os.environ.get("COMPILE_ARCH", "")
+    if arch == "gcu500":
+        return True
+    if os.environ.get("INTERNAL_GCU_SIM", "").upper() == "DRACO":
+        return True
+    return False
+
+
+def _patch_triton_for_gcu500():
+    """Apply runtime patches to upstream triton for GCU500 compatibility.
+
+    Only called when _is_gcu500() is True (COMPILE_ARCH=gcu500 or
+    INTERNAL_GCU_SIM=DRACO).
+    """
+    import importlib
+
+    # Tolerate missing amd/nvidia backends during entry-point discovery
+    # so that the enflame backend can be found on GCU500 test hosts where
+    # the upstream triton package still registers amd/nvidia entry points.
+    import triton.backends as _backends
+
+    def _safe_discover():
+        backends = {}
+        if os.environ.get("TRITON_BACKENDS_IN_TREE") == "1":
+            root = os.path.dirname(_backends.__file__)
+            for name in os.listdir(root):
+                if not os.path.isdir(os.path.join(root, name)) or name.startswith('__'):
+                    continue
+                try:
+                    compiler = importlib.import_module(f"triton.backends.{name}.compiler")
+                    driver = importlib.import_module(f"triton.backends.{name}.driver")
+                    backends[name] = _backends.Backend(
+                        _backends._find_concrete_subclasses(compiler, _backends.BaseBackend),
+                        _backends._find_concrete_subclasses(driver, _backends.DriverBase))
+                except Exception:
+                    pass
+            return backends
+
+        import sys
+        if sys.version_info >= (3, 10):
+            from importlib.metadata import entry_points
+        else:
+            from importlib_metadata import entry_points
+        for ep in entry_points().select(group="triton.backends"):
+            try:
+                compiler = importlib.import_module(f"{ep.value}.compiler")
+                driver = importlib.import_module(f"{ep.value}.driver")
+                backends[ep.name] = _backends.Backend(
+                    _backends._find_concrete_subclasses(compiler, _backends.BaseBackend),
+                    _backends._find_concrete_subclasses(driver, _backends.DriverBase))
+            except Exception:
+                pass
+        return backends
+
+    _backends._discover_backends = _safe_discover
+    _backends.backends.clear()
+    _backends.backends.update(_safe_discover())
+
+    # Fix bfloat16 cast: perform on CPU first to avoid missing
+    # device-side topsop kernels on GCUSIM.
+    import triton_gcu.triton
+    import triton._internal_testing as _testing
+    _orig_to_triton = _testing.to_triton
+
+    def _patched_to_triton(x, device, dst_type=None):
+        import torch
+        t = x.dtype.name
+        if t == 'float32' and dst_type == 'bfloat16':
+            return torch.tensor(x).bfloat16().to(device)
+        return _orig_to_triton(x, device=device, dst_type=dst_type)
+
+    _testing.to_triton = _patched_to_triton
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "interpreter: indicate whether interpreter supports the test")
+    if _is_gcu500():
+        _patch_triton_for_gcu500()
 
 
 def pytest_addoption(parser):

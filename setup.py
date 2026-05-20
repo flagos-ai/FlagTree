@@ -2,6 +2,7 @@ import os
 import platform
 import re
 import contextlib
+import importlib.util
 import shlex
 import shutil
 import subprocess
@@ -554,6 +555,18 @@ class CMakeBuild(build_ext):
         update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
+
+        if helper.flagtree_backend == "enflame":
+            mlir_core_path = _find_mlir_core_path()
+            if mlir_core_path:
+                mlir_src = os.path.join(mlir_core_path, "mlir")
+                mlir_dst = os.path.join(self.build_lib, "mlir")
+                if os.path.isdir(mlir_src):
+                    if os.path.exists(mlir_dst):
+                        shutil.rmtree(mlir_dst)
+                    shutil.copytree(mlir_src, mlir_dst)
+                    print(f"Copied MLIR Python bindings from {mlir_src} to {mlir_dst}", file=sys.stderr)
+
         helper.install_extension(build_ext=self)
 
 
@@ -656,6 +669,37 @@ else:
     backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
 
 #backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+
+
+def _find_mlir_core_path():
+    """Find MLIR Python bindings (mlir_core) from LLVM env vars or flagtree cache."""
+    search_roots = []
+    for env_var in ("LLVM_SYSPATH", "KURAMA_LLVM_DIR"):
+        val = os.environ.get(env_var, "")
+        if val:
+            search_roots.append(val)
+
+    home = os.environ.get("HOME", os.path.expanduser("~"))
+    flagtree_cache = os.environ.get("FLAGTREE_CACHE_DIR", os.path.join(home, ".flagtree"))
+    enflame_cache = os.path.join(flagtree_cache, "enflame")
+    if os.path.isdir(enflame_cache):
+        for entry in os.listdir(enflame_cache):
+            entry_path = os.path.join(enflame_cache, entry)
+            if os.path.isdir(entry_path) and "llvm" in entry.lower():
+                search_roots.append(entry_path)
+
+    for root in search_roots:
+        candidate = os.path.join(root, "python_packages", "mlir_core")
+        if os.path.isdir(os.path.join(candidate, "mlir")):
+            return candidate
+
+    try:
+        spec = importlib.util.find_spec("mlir")
+        if spec and spec.origin:
+            return None
+    except (ModuleNotFoundError, ValueError):
+        pass
+    return None
 
 
 def get_package_dirs():

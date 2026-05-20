@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -54,6 +55,22 @@ const char *const kIsContinual = "IsContinual";
 constexpr unsigned kOaccSizeInBytes = 512;
 constexpr unsigned kLoopUnrollTimes = 16;
 
+static bool hasSideEffectBetween(Operation *from, Operation *to) {
+  assert(from && to && from->getBlock() == to->getBlock() &&
+         "from and to must be in the same block");
+  return llvm::any_of(
+      llvm::make_range(Block::iterator(from), Block::iterator(to)),
+      [](auto &op) { return !isMemoryEffectFree(&op); });
+}
+
+static bool mightHaveWriteEffectBetween(Operation *from, Operation *to) {
+  assert(from && to && from->getBlock() == to->getBlock() &&
+         "from and to must be in the same block");
+  return llvm::any_of(
+      llvm::make_range(Block::iterator(from), Block::iterator(to)),
+      [](auto &op) { return mightHaveEffect<MemoryEffects::Write>(&op); });
+}
+
 struct EliminateForOpInductionVars : public OpRewritePattern<scf::ForOp> {
   explicit EliminateForOpInductionVars(MLIRContext *context)
       : OpRewritePattern<scf::ForOp>(context) {}
@@ -64,11 +81,36 @@ struct EliminateForOpInductionVars : public OpRewritePattern<scf::ForOp> {
     if (eliminableInductionVarIndices.empty()) {
       return failure();
     }
-    auto forOp =
+
+    bool needExternalReplacement =
+        llvm::any_of(eliminableInductionVarIndices, [&](auto iter) {
+          return !op.getResult(iter).use_empty();
+        });
+
+    // We only require explicit step positivity check when materializing
+    // external replacements. For no-use eliminated iter args, we rely on
+    // scf.for legality invariants guaranteed by upstream pipeline.
+    if (needExternalReplacement &&
+        failed(verifyPositiveStepForExternalReplacement(op, rewriter))) {
+      return failure();
+    }
+
+    auto canonicalizedResult =
         createCanonicalizedForOp(rewriter, op, eliminableInductionVarIndices);
     for (unsigned i = 0, j = 0; i < op.getNumResults(); i++) {
-      if (!eliminableInductionVarIndices.contains(i)) {
-        rewriter.replaceAllUsesWith(op.getResult(i), forOp.getResult(j++));
+      if (eliminableInductionVarIndices.contains(i)) {
+        if (op.getResult(i).use_empty()) {
+          continue;
+        }
+        auto it = canonicalizedResult.eliminatedResultReplacements.find(i);
+        if (it == canonicalizedResult.eliminatedResultReplacements.end()) {
+          return rewriter.notifyMatchFailure(
+              op, "missing replacement for eliminated result");
+        }
+        rewriter.replaceAllUsesWith(op.getResult(i), it->second);
+      } else {
+        rewriter.replaceAllUsesWith(op.getResult(i),
+                                    canonicalizedResult.forOp.getResult(j++));
       }
     }
     rewriter.eraseOp(op);
@@ -76,9 +118,17 @@ struct EliminateForOpInductionVars : public OpRewritePattern<scf::ForOp> {
   }
 
 private:
+  struct CanonicalizedForOpResult {
+    scf::ForOp forOp;
+    DenseMap<unsigned, Value> eliminatedResultReplacements;
+  };
+
+  static LogicalResult
+  verifyPositiveStepForExternalReplacement(scf::ForOp op,
+                                           PatternRewriter &rewriter);
   static bool isEliminableIndVar(scf::ForOp forOp, unsigned iter);
   static DenseSet<unsigned> getEliminableIndVarIndices(scf::ForOp forOp);
-  static scf::ForOp createCanonicalizedForOp(
+  static CanonicalizedForOpResult createCanonicalizedForOp(
       OpBuilder &builder, scf::ForOp forOp,
       const DenseSet<unsigned> &eliminableInductionVarIndices);
 };
@@ -86,7 +136,7 @@ private:
 bool EliminateForOpInductionVars::isEliminableIndVar(scf::ForOp forOp,
                                                      unsigned iter) {
   auto arg = forOp.getRegionIterArg(iter);
-  if (!isa<TensorType>(arg.getType()) || !forOp.getResult(iter).use_empty()) {
+  if (!isa<TensorType>(arg.getType())) {
     return false;
   }
   auto yieldOp = forOp.getBody()->getTerminator();
@@ -105,6 +155,22 @@ bool EliminateForOpInductionVars::isEliminableIndVar(scf::ForOp forOp,
   return stride && forOp.isDefinedOutsideOfLoop(stride);
 }
 
+LogicalResult
+EliminateForOpInductionVars::verifyPositiveStepForExternalReplacement(
+    scf::ForOp op, PatternRewriter &rewriter) {
+  auto cstStep = op.getStep().getDefiningOp<arith::ConstantOp>();
+  if (!cstStep) {
+    return rewriter.notifyMatchFailure(
+        op, "external replacement requires constant positive step");
+  }
+  auto intAttr = dyn_cast<IntegerAttr>(cstStep.getValue());
+  if (!intAttr || !intAttr.getValue().isStrictlyPositive()) {
+    return rewriter.notifyMatchFailure(
+        op, "external replacement requires positive step");
+  }
+  return success();
+}
+
 DenseSet<unsigned>
 EliminateForOpInductionVars::getEliminableIndVarIndices(scf::ForOp forOp) {
   DenseSet<unsigned> eliminableInductionVarIndices;
@@ -116,7 +182,8 @@ EliminateForOpInductionVars::getEliminableIndVarIndices(scf::ForOp forOp) {
   return eliminableInductionVarIndices;
 }
 
-scf::ForOp EliminateForOpInductionVars::createCanonicalizedForOp(
+EliminateForOpInductionVars::CanonicalizedForOpResult
+EliminateForOpInductionVars::createCanonicalizedForOp(
     OpBuilder &builder, scf::ForOp op,
     const DenseSet<unsigned> &eliminableInductionVarIndices) {
   SmallVector<Value> initArgs;
@@ -126,6 +193,14 @@ scf::ForOp EliminateForOpInductionVars::createCanonicalizedForOp(
       initArgs.push_back(arg);
     }
   }
+  DenseMap<unsigned, Value> iterToStride;
+  for (auto iter : eliminableInductionVarIndices) {
+    auto addOp = yieldOp->getOperand(iter).getDefiningOp<arith::AddIOp>();
+    Value stride = addOp.getLhs() == op.getRegionIterArg(iter) ? addOp.getRhs()
+                                                               : addOp.getLhs();
+    iterToStride[iter] = stride;
+  }
+
   auto forOp = builder.create<scf::ForOp>(
       op.getLoc(), op.getLowerBound(), op.getUpperBound(), op.getStep(),
       initArgs,
@@ -148,14 +223,12 @@ scf::ForOp EliminateForOpInductionVars::createCanonicalizedForOp(
           if (addOp->hasOneUse()) {
             redundantAddOps.insert(addOp);
           }
-          Value stride = addOp.getLhs() == op.getRegionIterArg(iter)
-                             ? addOp.getRhs()
-                             : addOp.getLhs();
           // Replace iterative update `arg = arg + stride` with closed-form:
           //   init + stride * ((iv - lb) / step)
           auto splatIter = builder.create<triton::SplatOp>(
               loc, op.getRegionIterArg(iter).getType(), iterCount);
-          auto scaled = builder.create<arith::MulIOp>(loc, stride, splatIter);
+          auto scaled =
+              builder.create<arith::MulIOp>(loc, iterToStride[iter], splatIter);
           mapper.map(
               op.getRegionIterArg(iter),
               builder.create<arith::AddIOp>(
@@ -179,7 +252,30 @@ scf::ForOp EliminateForOpInductionVars::createCanonicalizedForOp(
         }
         builder.create<scf::YieldOp>(loc, results);
       });
-  return forOp;
+
+  if (llvm::all_of(eliminableInductionVarIndices,
+                   [&](auto iter) { return op.getResult(iter).use_empty(); })) {
+    return CanonicalizedForOpResult{forOp, DenseMap<unsigned, Value>{}};
+  }
+  auto loc = op.getLoc();
+  DenseMap<unsigned, Value> eliminatedResultReplacements;
+  auto span = builder.create<arith::SubIOp>(loc, op.getUpperBound(),
+                                            op.getLowerBound());
+  auto zero = builder.create<arith::ConstantOp>(
+      loc, span.getType(), builder.getIntegerAttr(span.getType(), 0));
+  auto tripCount = builder.create<arith::CeilDivSIOp>(
+      loc, builder.create<arith::MaxSIOp>(loc, span, zero), op.getStep());
+  for (auto [iter, stride] : iterToStride) {
+    if (op.getResult(iter).use_empty()) {
+      continue;
+    }
+    auto splatIter = builder.create<triton::SplatOp>(
+        loc, op.getRegionIterArg(iter).getType(), tripCount);
+    auto scaled = builder.create<arith::MulIOp>(loc, stride, splatIter);
+    eliminatedResultReplacements[iter] =
+        builder.create<arith::AddIOp>(loc, op.getInitArgs()[iter], scaled);
+  }
+  return CanonicalizedForOpResult{forOp, eliminatedResultReplacements};
 }
 
 struct PtrDecomposeResult {
@@ -189,6 +285,10 @@ struct PtrDecomposeResult {
 
 static FailureOr<PtrDecomposeResult>
 tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
+  auto bitcastOp = ptr.getDefiningOp<triton::BitcastOp>();
+  if (bitcastOp) {
+    ptr = bitcastOp.getSrc();
+  }
   auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
   if (!addPtrOp) {
     return failure();
@@ -240,6 +340,16 @@ tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
     while (auto addPtrOp = basePtr.getDefiningOp<triton::AddPtrOp>()) {
       basePtr = addPtrOp.getPtr();
       offset = accumulateOffset(offset, addPtrOp.getOffset(), true);
+    }
+    if (bitcastOp) {
+      auto pointeeType =
+          cast<triton::PointerType>(
+              cast<RankedTensorType>(bitcastOp.getType()).getElementType())
+              .getPointeeType();
+      auto origPtrType = cast<triton::PointerType>(basePtr.getType());
+      auto newPtrType =
+          triton::PointerType::get(pointeeType, origPtrType.getAddressSpace());
+      basePtr = builder.create<triton::BitcastOp>(loc, newPtrType, basePtr);
     }
     return PtrDecomposeResult{basePtr, offset};
   }
@@ -330,9 +440,10 @@ struct ConvertFpToFpOp : public OpRewritePattern<triton::FpToFpOp> {
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Operation *newOp = nullptr;
-    auto srcType = cast<RankedTensorType>(op.getSrc().getType());
-    auto resType = cast<RankedTensorType>(op.getResult().getType());
-    if (getElementBitWidth(resType) > getElementBitWidth(srcType)) {
+    auto srcType = getElementTypeOrSelf(op.getSrc().getType());
+    auto resType = getElementTypeOrSelf(op.getResult().getType());
+
+    if (resType.getIntOrFloatBitWidth() > srcType.getIntOrFloatBitWidth()) {
       // Cast from floating-point to wider floating-point, fp8->fp32
       newOp = rewriter.create<arith::ExtFOp>(loc, op.getType(), op.getSrc());
     } else {
@@ -445,16 +556,25 @@ static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
   }
   auto srcEnc = srcTy.getEncoding();
   auto dstEnc = dstTy.getEncoding();
-  if (isa<triton::gpu::SliceEncodingAttr, triton::gpu::BlockedEncodingAttr>(
-          srcEnc) &&
+  if (isa<triton::gpu::BlockedEncodingAttr>(srcEnc) &&
       isa<triton::gpu::BlockedEncodingAttr>(dstEnc)) {
     return true;
   }
 
-  if (auto srcSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(srcEnc)) {
-    if (auto dstSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(dstEnc)) {
-      return srcSliceEnc.getDim() == dstSliceEnc.getDim();
-    }
+  if ((isa<triton::gpu::BlockedEncodingAttr>(srcEnc) &&
+       isa<triton::gpu::SliceEncodingAttr>(dstEnc)) ||
+      (isa<triton::gpu::SliceEncodingAttr>(srcEnc) &&
+       isa<triton::gpu::BlockedEncodingAttr>(dstEnc))) {
+    return triton::gcu::getWarpsPerCTA(srcEnc) ==
+           triton::gcu::getWarpsPerCTA(dstEnc);
+  }
+
+  auto dstSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(dstEnc);
+  auto srcSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(srcEnc);
+  if (dstSliceEnc && srcSliceEnc) {
+    return dstSliceEnc.getDim() == srcSliceEnc.getDim() &&
+           triton::gcu::getWarpsPerCTA(srcEnc) ==
+               triton::gcu::getWarpsPerCTA(dstEnc);
   }
   return false;
 }
@@ -525,12 +645,6 @@ struct MaskedLoadStoreFusionContext {
         mapping.map(op->getResult(i), cloneOp->getResult(i));
       }
     }
-    for (auto iter = orderedDeps.rbegin(); iter != orderedDeps.rend(); ++iter) {
-      auto op = *iter;
-      if (op->use_empty()) {
-        op->erase();
-      }
-    }
   }
 
   void rewriteOperands() {
@@ -540,6 +654,14 @@ struct MaskedLoadStoreFusionContext {
       }
     }
   }
+
+  void eraseDeadDeps() {
+    for (auto *op : llvm::reverse(orderedDeps)) {
+      if (op->use_empty())
+        op->erase();
+    }
+  }
+
   Operation *userOp;
   DominanceInfo &dominanceInfo;
   llvm::DenseSet<Operation *> visitedOps;
@@ -549,6 +671,7 @@ struct MaskedLoadStoreFusionContext {
 
 static Operation *findEarliestSafeMovePoint(Value value,
                                             DominanceInfo &dominanceInfo) {
+  auto *defOp = value.getDefiningOp();
   Operation *movePoint = nullptr;
   for (auto user : value.getUsers()) {
     if (user->getBlock() == value.getParentBlock() &&
@@ -565,6 +688,11 @@ static Operation *findEarliestSafeMovePoint(Value value,
       }
     }
   }
+
+  if (movePoint &&
+      mightHaveWriteEffectBetween(defOp->getNextNode(), movePoint)) {
+    return nullptr;
+  }
   return movePoint;
 }
 
@@ -574,6 +702,7 @@ static void gatherOpDepsForFusion(Operation *op, ArrayRef<Value> depsToCollect,
   ctx.collectDepsFromOperands(depsToCollect);
   ctx.sinkDepsToUserOp();
   ctx.rewriteOperands();
+  ctx.eraseDeadDeps();
 }
 
 // Preprocess masked memory ops for subsequent fusion:
@@ -594,10 +723,10 @@ static void preProcessMaskedLoadStore(triton::FuncOp func,
 
   for (auto op : worklist) {
     if (auto maskedLoadOp = dyn_cast<triton::gcu::MaskedLoadOp>(op)) {
-      auto firstUser =
+      auto movePoint =
           findEarliestSafeMovePoint(maskedLoadOp.getResult(), dominanceInfo);
-      if (firstUser && op->getNextNode() != firstUser) {
-        op->moveBefore(firstUser);
+      if (movePoint && op->getNextNode() != movePoint) {
+        op->moveBefore(movePoint);
       }
       gatherOpDepsForFusion(op,
                             {maskedLoadOp.getOffset(), maskedLoadOp.getMask(),
@@ -617,7 +746,6 @@ static void sinkFusibleProducersToUses(triton::FuncOp func,
     if (!canFuse(op)) {
       return;
     }
-    auto block = op->getBlock();
     auto operands = llvm::to_vector(op->getOperands());
     for (auto operand : operands) {
       auto defOp = operand.getDefiningOp();
@@ -629,9 +757,7 @@ static void sinkFusibleProducersToUses(triton::FuncOp func,
           !canFuseBroadcast(cast<triton::BroadcastOp>(defOp))) {
         continue;
       }
-      // Same-block scheduling is handled by group fusion; ancestor moves can
-      // break region structure, so keep this pass cross-block only.
-      if (defOp->getBlock() == block || defOp->isAncestor(op)) {
+      if (defOp->isAncestor(op)) {
         continue;
       }
       if (llvm::all_of(defOp->getOperands(), [&](auto operand) {
@@ -662,6 +788,7 @@ struct GCUTritonFusionPass
     RewritePatternSet patterns(ctx);
     ModuleAxisInfoExAnalysis axisInfoExAnalysis(
         module->getParentOfType<ModuleOp>());
+    scf::populateUpliftWhileToForPatterns(patterns);
     patterns.add<RestoreDotOperandSplatConstantPattern>(ctx);
     patterns.add<EliminateForOpInductionVars>(ctx);
     patterns.add<ConvertTritonLoadOp, ConvertTritonStoreOp>(ctx,
@@ -685,7 +812,7 @@ struct GCUTritonFusionPass
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<TritonGCUDialect, arith::ArithDialect, math::MathDialect,
-                    triton::TritonDialect>();
+                    triton::TritonDialect, math_ext::MathExtDialect>();
   }
 
 private:
@@ -852,22 +979,19 @@ void GCUTritonFusionPass::fuseReduceOps(Block *block) {
 bool GCUTritonFusionPass::tryDeepFuse(
     SmallVector<std::unique_ptr<FusionGroup>> &fusionGroups) {
   auto numFusionGroup = fusionGroups.size();
-  auto hasBarrierBetween = [](const FusionGroup &first,
-                              const FusionGroup &second) {
-    return llvm::any_of(llvm::make_range(Block::iterator(first.back()),
-                                         Block::iterator(second.front())),
-                        [](auto &op) { return isa<mlir::gpu::BarrierOp>(op); });
-  };
   for (unsigned i = 0; i < numFusionGroup - 1; ++i) {
     if (auto firstUser = fusionGroups[i]->findFirstUserInBlock()) {
       for (unsigned j = i + 1; j < numFusionGroup; ++j) {
-        if (fusionGroups[i]->shape != fusionGroups[j]->shape) {
+        if (fusionGroups[i]->shape != fusionGroups[j]->shape ||
+            fusionGroups[i]->elemsPerThread !=
+                fusionGroups[j]->elemsPerThread) {
           continue;
         }
         if (!fusionGroups[j]->contains(firstUser)) {
           continue;
         }
-        if (hasBarrierBetween(*fusionGroups[i], *fusionGroups[j]) &&
+        if (hasSideEffectBetween(fusionGroups[i]->back()->getNextNode(),
+                                 fusionGroups[j]->front()) &&
             fusionGroups[i]->hasSideEffect()) {
           continue;
         }
@@ -877,14 +1001,16 @@ bool GCUTritonFusionPass::tryDeepFuse(
       }
     }
     for (unsigned j = i + 1; j < numFusionGroup; ++j) {
-      if (fusionGroups[i]->shape != fusionGroups[j]->shape) {
+      if (fusionGroups[i]->shape != fusionGroups[j]->shape ||
+          fusionGroups[i]->elemsPerThread != fusionGroups[j]->elemsPerThread) {
         continue;
       }
       if (!fusionGroups[j]->isDependentOn(*fusionGroups[i]) ||
           !fusionGroups[j]->isSafeToMergeIntoBackOf(*fusionGroups[i])) {
         continue;
       }
-      if (hasBarrierBetween(*fusionGroups[i], *fusionGroups[j]) &&
+      if (hasSideEffectBetween(fusionGroups[i]->back()->getNextNode(),
+                               fusionGroups[j]->front()) &&
           fusionGroups[j]->hasSideEffect()) {
         continue;
       }

@@ -113,7 +113,7 @@ def TTGCU_YieldOp : TTGCU_Op<"yield", [
   let description = [{
   }];
   let arguments = (ins Variadic<AnyType>:$operands);
-  let assemblyFormat = [{ $operands attr-dict `:` type($operands)}];
+  let assemblyFormat = [{ attr-dict ($operands^ `:` type($operands))? }];
 }
 
 //
@@ -256,6 +256,79 @@ def TritonGCU_GatherGlobalToLocalOp : TTGCU_Op<"gather_global_to_local", [
   }];
 }
 
+def TritonGCU_SliceFromLocalOp : TTGCU_Op<"slice_from_local", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Extract a sub-tile from shared memory into a distributed tensor";
+  let description = [{
+    Created by `triton-gcu-local-mem-optimize` when fusing a global load +
+    `tle.extract_tile` into an SMEM relay path. The source is always a
+    `TTG_MemDescType` (shared memory descriptor) populated by
+    `copy_global_to_local` or `gather_global_to_local`.
+
+    Partitions the SMEM buffer into a logical tile grid where
+    `grid[d] = src_shape[d] / tile_shape[d]`, then reads the tile at the
+    given linear index using DTE `SliceStartOp` with warp-aware offsets.
+
+    Example IR:
+    ```mlir
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<64x64xf16, #shared, #smem>
+    triton_gcu.copy_global_to_local %ptr, ..., %smem ...
+    %tile = triton_gcu.slice_from_local %smem[%idx]
+        {tile_shape = array<i64: 32, 64>}
+        : !ttg.memdesc<64x64xf16, #shared, #smem>, i32
+        -> tensor<32x64xf16, #blocked>
+    ```
+  }];
+  let arguments = (ins
+    TTG_MemDescType:$src,
+    AnyTypeOf<[TT_IntLike, Index]>:$index,
+    DenseI64ArrayAttr:$tile_shape,
+    OptionalAttr<DenseI64ArrayAttr>:$tile_strides
+  );
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = [{
+    $src `[` $index `]` attr-dict `:`
+    type($src) `,` type($index) `->` type($result)
+  }];
+}
+
+def TritonGCU_DesliceToLocalOp : TTGCU_Op<"deslice_to_local", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Insert a sub-tile into shared memory and load the full result";
+  let description = [{
+    Created by `triton-gcu-local-mem-optimize` when fusing a global load +
+    `tle.insert_tile` into an SMEM relay path. The source is always a
+    `TTG_MemDescType` (shared memory descriptor) populated by
+    `copy_global_to_local` or `gather_global_to_local`.
+
+    Writes the tile data into the SMEM buffer at the computed warp-aware
+    offset using DTE `DesliceStartOp`, synchronizes via barrier, then
+    loads the full result from SMEM.
+
+    Example IR:
+    ```mlir
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared, #smem>
+    triton_gcu.copy_global_to_local %ptr, ..., %smem ...
+    %out = triton_gcu.deslice_to_local %smem[%idx] = %tile
+        {tile_shape = array<i64: 32, 32>}
+        : !ttg.memdesc<64x64xf32, #shared, #smem>,
+          tensor<32x32xf32, #blocked>, i32
+        -> tensor<64x64xf32, #blocked>
+    ```
+  }];
+  let arguments = (ins
+    TTG_MemDescType:$src,
+    TT_Tensor:$tile,
+    AnyTypeOf<[TT_IntLike, Index]>:$index,
+    DenseI64ArrayAttr:$tile_shape,
+    OptionalAttr<DenseI64ArrayAttr>:$tile_strides
+  );
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = [{
+    $src `[` $index `]` `=` $tile attr-dict `:`
+    type($src) `,` type($tile) `,` type($index) `->` type($result)
+  }];
+}
 
 def TritonGCU_MatmulOp : TTGCU_Op<"matmul", [Pure]> {
     let summary = "matmul";

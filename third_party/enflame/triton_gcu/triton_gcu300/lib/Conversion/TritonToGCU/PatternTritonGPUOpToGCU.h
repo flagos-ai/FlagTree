@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef KURANA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
-#define KURANA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
+#ifndef KURAMA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
+#define KURAMA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
 
 #include <map>
 #include <string>
@@ -32,7 +32,7 @@ struct GCUInfo {
 };
 
 static const GCUInfo targetInfo[] = {{128, false, 4}, {512, false, 1}};
-} // namespace
+}  // namespace
 
 namespace mlir {
 namespace triton {
@@ -40,7 +40,7 @@ namespace triton {
 namespace gcu {
 class FirstLastUserAnalysis;
 class PrivateDTETagPool;
-} // namespace gcu
+}
 
 void populateReduceOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
@@ -60,7 +60,7 @@ void populateScanOpToGCUPatterns(
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateDTETagPool &pTagPool);
 
-} // namespace triton
-} // namespace mlir
+}  // namespace triton
+}  // namespace mlir
 
 #endif

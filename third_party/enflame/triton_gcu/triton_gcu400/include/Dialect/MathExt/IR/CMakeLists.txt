@@ -7,15 +7,15 @@ mlir_tablegen(MathExtOps.cpp.inc -gen-op-defs)
 # mlir_tablegen(MathExtOpsEnums.cpp.inc -gen-enum-defs)
 # mlir_tablegen(MathExtOpsAttributes.h.inc -gen-attrdef-decls)
 # mlir_tablegen(MathExtOpsAttributes.cpp.inc -gen-attrdef-defs)
-add_mlir_doc(MathExtOps MathExtOps_${arch} dialects/ -gen-op-doc)
+add_mlir_doc(MathExtOps MathExtOps_gcu400 dialects/ -gen-op-doc)
 
 set(LLVM_TARGET_DEFINITIONS MathExtDialect.td)
 mlir_tablegen(MathExtDialect.h.inc -gen-dialect-decls)
 mlir_tablegen(MathExtDialect.cpp.inc -gen-dialect-defs)
-add_mlir_doc(MathExtDialect MathExtDialect_${arch} dialects/ -gen-dialect-doc)
+add_mlir_doc(MathExtDialect MathExtDialect_gcu400 dialects/ -gen-dialect-doc)
 
 set(LLVM_TARGET_DEFINITIONS MathExtTypes.td)
 mlir_tablegen(MathExtTypes.h.inc -gen-typedef-decls)
 mlir_tablegen(MathExtTypes.cpp.inc -gen-typedef-defs)
 
-add_public_tablegen_target(MathExtTableGen${arch})
+add_public_tablegen_target(MathExtTableGen_gcu400)

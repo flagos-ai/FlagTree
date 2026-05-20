@@ -33,7 +33,7 @@ namespace mlir::triton::gcu {
 int doTaskPartition(mlir::triton::FuncOp &funcOp, unsigned numWarpGroups);
 int doTaskIdPropagate(triton::FuncOp &funcOp);
 void doCodePartition(triton::FuncOp &funcOp, unsigned numBuffers,
-                     unsigned numWarps, bool innerBarrier);
+                        unsigned numWarps, bool innerBarrier);
 } // namespace mlir::triton::gcu
 
 namespace mlir {
@@ -66,8 +66,8 @@ public:
 
     // Only support num_warp is 4
     int numWarps = ttg::lookupNumWarps(funcOp);
-    if (numWarps != 4) {
-      llvm::dbgs() << "WarpSpec currently only supports num_warp = 4.\n";
+    if (numWarps > 4) {
+      llvm::dbgs() << "WarpSpec currently only supports num_warp <= 4.\n";
       return;
     }
 

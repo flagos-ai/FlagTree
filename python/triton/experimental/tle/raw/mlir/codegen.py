@@ -27,6 +27,7 @@ class MLIRCodeGenerator(ast.NodeVisitor):
         self.decls: Final[Dict[str, func.FuncOp]] = {}
         self.constants: Final[Dict[str, Any]] = {}
         self.context: Final[ir.Context] = ir.Context() if context is None else context
+        self.context.allow_unregistered_dialects = True
         self.module: Optional[ir.Module] = None
 
     def call_function(self, fn, args: Sequence[Any], kwargs: Dict[str, Any]) -> Any:
