@@ -24,7 +24,7 @@ def _is_enflame_backend():
 
 
 if _is_enflame_backend():
-    pass
+    from torch_gcu import transfer_to_gcu # noqa: F401
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
