@@ -51,7 +51,7 @@ def _is_enflame_backend():
 
 
 if _is_enflame_backend():
-    from torch_gcu import transfer_to_gcu # noqa: F401
+    from torch_gcu import transfer_to_gcu  # noqa: F401
 
 _BITREV_CACHE: dict[Tuple[int, torch.device], torch.Tensor] = {}
 _TWIDDLE_CACHE: dict[Tuple[int, torch.device], Tuple[torch.Tensor, torch.Tensor]] = {}
