@@ -191,7 +191,6 @@ class GCUOps:
     def slice_pad_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
                         slice_shape: list[ir.Value], pad_value: ir.Value) -> None:
         seg = [1, 1, 1, len(offsets), len(slice_shape), 1]
-        i32 = ir.IntegerType.get_signless(32)
         seg_attr = ir.DenseI32ArrayAttr.get(seg)
         ir.Operation.create("gcu.slice_pad_async", operands=[dte, dst, src, *offsets, *slice_shape, pad_value],
                             attributes={"operandSegmentSizes": seg_attr})
