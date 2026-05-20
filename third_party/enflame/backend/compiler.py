@@ -246,7 +246,7 @@ def make_llir(mod, metadata, options):
         '-insert-local-fence=arch=' + options.arch, '--convert-vector-to-scf=target-rank=1', '-lower-affine',
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
         '-convert-private-tag-to-gcu', '-convert-memref-to-gcu', '-kernel-memory-alloc=arch=' + options.arch +
-        ' num-warps=' + str(options.num_warps), '-convert-warp-specialize-to-scf', '-loop-invariant-code-motion',
+        ' num-warps=' + str(options.num_warps), '-loop-invariant-code-motion',
         '-convert-scf-to-cf', '-canonicalize', '-cse', '--symbol-dce', '-gcu-remove-transform-ir',
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
         '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse',
