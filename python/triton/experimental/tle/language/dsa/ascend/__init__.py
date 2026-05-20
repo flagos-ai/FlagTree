@@ -6,6 +6,12 @@ from .core import (
     L0A,
     L0B,
     L0C,
+    PIPE,
+    sub_vec_id,
+    sub_vec_num,
+    sync_block_set,
+    sync_block_wait,
+    sync_block_all,
 )
 
 __all__ = [
@@ -14,4 +20,10 @@ __all__ = [
     "L0A",
     "L0B",
     "L0C",
+    "PIPE",
+    "sub_vec_id",
+    "sub_vec_num",
+    "sync_block_set",
+    "sync_block_wait",
+    "sync_block_all",
 ]
