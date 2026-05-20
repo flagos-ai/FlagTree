@@ -16,6 +16,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
     TritonTLETransforms
     TritonIR)
   target_link_libraries(TritonTLE PRIVATE Python3::Module pybind11::headers MLIRTargetLLVMIRImport)
+  # Ensure tablegen-generated headers are available before compiling TritonTLE sources
+  add_dependencies(TritonTLE TleTableGen TritonTLETransformsIncGen)
 endif()
 
 add_subdirectory(test)
