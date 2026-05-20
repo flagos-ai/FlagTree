@@ -46,11 +46,10 @@ protected:
   gpu::GPUModuleOp gpuModule;
 
   void SetUp() override {
-    ctx.loadDialect<arith::ArithDialect, func::FuncDialect,
-                     gpu::GPUDialect, scf::SCFDialect,
-                     triton::TritonDialect,
-                     triton::gpu::TritonGPUDialect,
-                     triton::gcu::TritonGCUDialect>();
+    ctx.loadDialect<arith::ArithDialect, func::FuncDialect, gpu::GPUDialect,
+                    scf::SCFDialect, triton::TritonDialect,
+                    triton::gpu::TritonGPUDialect,
+                    triton::gcu::TritonGCUDialect>();
 
     builder = std::make_unique<OpBuilder>(&ctx);
     auto l = builder->getUnknownLoc();
@@ -177,7 +176,7 @@ TEST_F(MaskAnalysisTestBase, ParseRemsi) {
 
   EXPECT_FALSE(state.isEmpty());
   ASSERT_TRUE(getIntAttr(state.scalar).has_value());
-  EXPECT_EQ(getIntAttr(state.scalar).value(), 13);  // addOFRs(10, 3) = 13
+  EXPECT_EQ(getIntAttr(state.scalar).value(), 13); // addOFRs(10, 3) = 13
   ASSERT_EQ(state.getRank(), 1);
   EXPECT_EQ(getIntAttr(state.dims[0]).value(), 1024);
 }
@@ -203,8 +202,8 @@ TEST_F(MaskAnalysisTestBase, ParseSelect) {
   Value falseVal = entry.getArgument(2);
 
   builder->setInsertionPoint(entry.getTerminator());
-  auto selectOp = builder->create<arith::SelectOp>(loc(), cond, trueVal,
-                                                    falseVal);
+  auto selectOp =
+      builder->create<arith::SelectOp>(loc(), cond, trueVal, falseVal);
 
   llvm::SmallDenseMap<Value, MaskState> knownMasks;
   knownMasks[trueVal] = makeRangeState(0, 512, {1024});
@@ -216,8 +215,7 @@ TEST_F(MaskAnalysisTestBase, ParseSelect) {
                                 knownMasks);
   EXPECT_TRUE(ok);
 #else
-  MaskAnalysis::parse(*builder, loc(), selectOp.getResult(), state,
-                      knownMasks);
+  MaskAnalysis::parse(*builder, loc(), selectOp.getResult(), state, knownMasks);
 #endif
 
   EXPECT_FALSE(state.isEmpty());
@@ -275,8 +273,8 @@ TEST_F(MaskAnalysisTestBase, ParseReduce) {
 
   MaskState state;
 #ifdef TEST_GCU400
-  bool ok = MaskAnalysis::parse(*builder, loc(), reduceOp->getResult(0),
-                                state, knownMasks);
+  bool ok = MaskAnalysis::parse(*builder, loc(), reduceOp->getResult(0), state,
+                                knownMasks);
   EXPECT_TRUE(ok);
 #else
   MaskAnalysis::parse(*builder, loc(), reduceOp->getResult(0), state,
@@ -347,8 +345,7 @@ TEST_F(MaskAnalysisTestBase, ParseUnrecognizedOp) {
   auto i32Type = builder->getI32Type();
   auto tensorType = RankedTensorType::get({1024}, i32Type);
 
-  auto funcOp =
-      makeFuncWithArgs("test_parse_unrec", {tensorType, tensorType});
+  auto funcOp = makeFuncWithArgs("test_parse_unrec", {tensorType, tensorType});
   Block &entry = funcOp.getBody().front();
 
   Value lhsArg = entry.getArgument(0);
@@ -403,9 +400,9 @@ TEST_F(MaskAnalysisTestBase, AddStatesOneScalar) {
   result.addStates(*builder, loc(), lhs, rhs);
 
   ASSERT_TRUE(getIntAttr(result.start).has_value());
-  EXPECT_EQ(getIntAttr(result.start).value(), 10);  // 0 + 10
+  EXPECT_EQ(getIntAttr(result.start).value(), 10); // 0 + 10
   ASSERT_TRUE(getIntAttr(result.end).has_value());
-  EXPECT_EQ(getIntAttr(result.end).value(), 138);  // 128 + 10
+  EXPECT_EQ(getIntAttr(result.end).value(), 138); // 128 + 10
   ASSERT_EQ(result.getRank(), 1);
   EXPECT_EQ(getIntAttr(result.dims[0]).value(), 1024);
 }

@@ -47,12 +47,10 @@ protected:
   int funcCounter = 0;
 
   void SetUp() override {
-    ctx.loadDialect<arith::ArithDialect, func::FuncDialect,
-                     scf::SCFDialect, vector::VectorDialect,
-                     triton::TritonDialect,
-                     triton::gpu::TritonGPUDialect>();
-    ctx.getDiagEngine().registerHandler(
-        [](Diagnostic &) { return success(); });
+    ctx.loadDialect<arith::ArithDialect, func::FuncDialect, scf::SCFDialect,
+                    vector::VectorDialect, triton::TritonDialect,
+                    triton::gpu::TritonGPUDialect>();
+    ctx.getDiagEngine().registerHandler([](Diagnostic &) { return success(); });
 
     builder = std::make_unique<OpBuilder>(&ctx);
     module = ModuleOp::create(builder->getUnknownLoc());
@@ -89,8 +87,8 @@ protected:
     block.addArgument(elemType, loc());
     block.addArgument(elemType, loc());
     builder->setInsertionPointToStart(&block);
-    Value result = bodyFn(*builder, loc(),
-                          block.getArgument(0), block.getArgument(1));
+    Value result =
+        bodyFn(*builder, loc(), block.getArgument(0), block.getArgument(1));
     builder->create<triton::ReduceReturnOp>(loc(), ValueRange{result});
     return reduceOp;
   }
@@ -99,8 +97,8 @@ protected:
 // ---------- inferIdentityAttrs tests ----------
 
 TEST_F(ReduceScanCommonTest, InferIdentity_ADD_Int) {
-  auto op = createReduceWithCombine(builder->getI32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getI32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::AddIOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -112,8 +110,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_ADD_Int) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_ADD_Float) {
-  auto op = createReduceWithCombine(builder->getF32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getF32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::AddFOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -125,8 +123,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_ADD_Float) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_MAXSI) {
-  auto op = createReduceWithCombine(builder->getI32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getI32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::MaxSIOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -138,8 +136,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_MAXSI) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_MINSI) {
-  auto op = createReduceWithCombine(builder->getI32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getI32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::MinSIOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -151,8 +149,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_MINSI) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_MAXNUMF) {
-  auto op = createReduceWithCombine(builder->getF32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getF32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::MaxNumFOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -165,8 +163,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_MAXNUMF) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_MINNUMF) {
-  auto op = createReduceWithCombine(builder->getF32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getF32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::MinNumFOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -179,8 +177,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_MINNUMF) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_AND) {
-  auto op = createReduceWithCombine(builder->getI32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getI32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::AndIOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -192,8 +190,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_AND) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_OR) {
-  auto op = createReduceWithCombine(builder->getI32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getI32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::OrIOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -205,8 +203,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_OR) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_XOR) {
-  auto op = createReduceWithCombine(builder->getI32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getI32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::XOrIOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -218,8 +216,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_XOR) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_MAXUI) {
-  auto op = createReduceWithCombine(builder->getI32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getI32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::MaxUIOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -231,8 +229,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_MAXUI) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_MINUI) {
-  auto op = createReduceWithCombine(builder->getI32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getI32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::MinUIOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -244,8 +242,8 @@ TEST_F(ReduceScanCommonTest, InferIdentity_MINUI) {
 }
 
 TEST_F(ReduceScanCommonTest, InferIdentity_MUL_Fails) {
-  auto op = createReduceWithCombine(builder->getI32Type(),
-      [](OpBuilder &b, Location l, Value a, Value c) {
+  auto op = createReduceWithCombine(
+      builder->getI32Type(), [](OpBuilder &b, Location l, Value a, Value c) {
         return b.create<arith::MulIOp>(l, a, c).getResult();
       });
   CombineOpDesc desc(op);
@@ -265,8 +263,8 @@ TEST_F(ReduceScanCommonTest, VectorizedCombine_CapturedBoolConst) {
   OpBuilder::InsertionGuard outerGuard(*builder);
   builder->setInsertionPointToStart(&entry);
 
-  auto trueCst = builder->create<arith::ConstantOp>(
-      loc(), builder->getBoolAttr(true));
+  auto trueCst =
+      builder->create<arith::ConstantOp>(loc(), builder->getBoolAttr(true));
 
   auto reduceOp = builder->create<triton::ReduceOp>(
       loc(), TypeRange{resultType}, ValueRange{entry.getArgument(0)},
@@ -279,25 +277,23 @@ TEST_F(ReduceScanCommonTest, VectorizedCombine_CapturedBoolConst) {
     OpBuilder::InsertionGuard innerGuard(*builder);
     builder->setInsertionPointToStart(&block);
     auto sel = builder->create<arith::SelectOp>(
-        loc(), trueCst.getResult(),
-        block.getArgument(0), block.getArgument(1));
-    builder->create<triton::ReduceReturnOp>(
-        loc(), ValueRange{sel.getResult()});
+        loc(), trueCst.getResult(), block.getArgument(0), block.getArgument(1));
+    builder->create<triton::ReduceReturnOp>(loc(), ValueRange{sel.getResult()});
   }
 
   builder->setInsertionPointAfter(reduceOp);
   CombineOpDesc desc(reduceOp);
 
   unsigned vectorLength = 4;
-  auto vecType = VectorType::get(
-      {static_cast<int64_t>(vectorLength)}, builder->getF32Type());
+  auto vecType = VectorType::get({static_cast<int64_t>(vectorLength)},
+                                 builder->getF32Type());
   SmallVector<float> zeros(vectorLength, 0.0f);
   auto zeroAttr = DenseElementsAttr::get(vecType, llvm::ArrayRef(zeros));
   auto v1 = builder->create<arith::ConstantOp>(loc(), zeroAttr);
   auto v2 = builder->create<arith::ConstantOp>(loc(), zeroAttr);
 
-  auto results = desc.applyVectorizedCombine(
-      *builder, loc(), ValueRange{v1, v2}, vectorLength);
+  auto results = desc.applyVectorizedCombine(*builder, loc(),
+                                             ValueRange{v1, v2}, vectorLength);
   ASSERT_EQ(results.size(), 1u);
   EXPECT_TRUE(isa<VectorType>(results[0].getType()));
 }

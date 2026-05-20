@@ -617,8 +617,8 @@ struct TritonGCULocalMemOptimizePass
         .add<FuseLoadLocalStorePattern, FuseLoadLocalAllocPattern,
              FuseGcuLoadSmemStorePattern, ReplaceSmemLoadWithLocalLoadPattern,
              FuseGcuLoadGcuStoreToSmemPattern,
-             FuseTritonLoadLocalAllocToGatherPattern,
-             FuseExtractTileSmemRelay, FuseInsertTileSmemRelay>(ctx);
+             FuseTritonLoadLocalAllocToGatherPattern, FuseExtractTileSmemRelay,
+             FuseInsertTileSmemRelay>(ctx);
     if (failed(applyPatternsGreedily(module, std::move(patterns))))
       signalPassFailure();
   }

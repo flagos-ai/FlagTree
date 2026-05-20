@@ -616,7 +616,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
 
     // Scalar combine for tail elements: inclusive -> {newAcc, newAcc}.
     ProcessScalarFn scalarCombine = [&](OpBuilder &b, Location loc, Value acc,
-                                         Value elem) {
+                                        Value elem) {
       SmallVector<Value, 2> args = {acc, elem};
       auto res = scalarCombineOpWithoutTerminator(loc, b, combineOp, args);
       return std::make_pair(res[0], res[0]);
@@ -710,9 +710,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     auto indexVec = rewriter.create<arith::MulIOp>(
         loc,
         rewriter
-            .create<gcu::VectorStepOp>(loc, vecTy,
-                                       rewriter.create<arith::ConstantIntOp>(
-                                           loc, 0, 32))
+            .create<gcu::VectorStepOp>(
+                loc, vecTy, rewriter.create<arith::ConstantIntOp>(loc, 0, 32))
             .getResult(),
         rewriter.create<vector::BroadcastOp>(
             loc, vecTy,
@@ -1365,8 +1364,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
         sharedInputs.push_back(storeToSharedMem(
             rewriter, tag,
             dyn_cast<RankedTensorType>(op.getSrcs()[i].getType()),
-            adaptor.getSrcs()[i], false,
-            std::make_pair(op.getOperation(), -1),
+            adaptor.getSrcs()[i], false, std::make_pair(op.getOperation(), -1),
             userAnalysis, replaced2Origin));
       }
 
@@ -1395,11 +1393,9 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                                       getContext(), tType.getShape(), 1, 1, 1));
         auto resultType =
             dyn_cast<MemRefType>(getTypeConverter()->convertType(tensorType));
-        mergedOutputs.push_back(syncAllocOp(rewriter, loc,
-                                            std::make_pair(op.getOperation(),
-                                                           -1),
-                                            userAnalysis, replaced2Origin,
-                                            resultType));
+        mergedOutputs.push_back(
+            syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
+                        userAnalysis, replaced2Origin, resultType));
       }
 
       // computing in thread 0
@@ -1441,11 +1437,10 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
       }
       // load from shared memory
       for (unsigned i = 0; i < numOutput; ++i) {
-        outputs[i] =
-            loadFromSharedMem(rewriter, tag, op.getResultTypes()[i],
-                              mergedSharedOutputs[i], false,
-                              lastUsers[i], std::make_pair(nullptr, -1),
-                              userAnalysis, replaced2Origin);
+        outputs[i] = loadFromSharedMem(
+            rewriter, tag, op.getResultTypes()[i], mergedSharedOutputs[i],
+            false, lastUsers[i], std::make_pair(nullptr, -1), userAnalysis,
+            replaced2Origin);
       }
     } else {
       // Warp-local path: try vectorized block scan first.
@@ -1852,8 +1847,7 @@ void mlir::triton::populateScanOpToGCUPatterns(
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateTagPool &pTagPool) {
-  patterns.add<TTScanOpLowering>(converter, patterns.getContext(),
-                                 userAnalysis,
+  patterns.add<TTScanOpLowering>(converter, patterns.getContext(), userAnalysis,
                                  replaced2Origin, pTagPool);
   patterns.add<TleExclusiveCumsumLowering>(converter, patterns.getContext(),
                                            userAnalysis, replaced2Origin,

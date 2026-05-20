@@ -16,9 +16,8 @@
 #ifndef TRITON_GCU_TRANSFORMS_PASSES_H
 #define TRITON_GCU_TRANSFORMS_PASSES_H
 
-#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Pass/Pass.h"
-
+#include "mlir/Pass/PassRegistry.h"
 
 namespace mlir {
 template <typename T> class InterfacePass;
@@ -30,6 +29,6 @@ class Pass;
 /// Generate the code for registering conversion passes.
 #define GEN_PASS_REGISTRATION
 #include "Transforms/Passes.h.inc"
-}  // namespace mlir
+} // namespace mlir
 
-#endif  // TRITON_GCU_TRANSFORMS_PASSES_H
+#endif // TRITON_GCU_TRANSFORMS_PASSES_H

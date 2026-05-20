@@ -9,6 +9,7 @@ if importlib.util.find_spec("triton.backends.enflame") is None:
     import triton_gcu.triton
 import torch_gcu
 
+
 def test_decorator_with_def(device):
 
     def triton_heuristics_pointwise(**kwargs):

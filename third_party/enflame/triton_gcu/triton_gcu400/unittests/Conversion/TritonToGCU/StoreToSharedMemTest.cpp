@@ -54,9 +54,9 @@ struct StoreToSharedMemFixture {
 
   StoreToSharedMemFixture() : builder(&ctx), loc(builder.getUnknownLoc()) {
     ctx.loadDialect<arith::ArithDialect, memref::MemRefDialect,
-                     func::FuncDialect, gpu::GPUDialect, scf::SCFDialect,
-                     memref_ext::MemrefExtDialect, gcu::GCUDialect,
-                     ttg::TritonGPUDialect>();
+                    func::FuncDialect, gpu::GPUDialect, scf::SCFDialect,
+                    memref_ext::MemrefExtDialect, gcu::GCUDialect,
+                    ttg::TritonGPUDialect>();
 
     module = ModuleOp::create(loc);
     builder.setInsertionPointToStart(module.getBody());
@@ -79,7 +79,7 @@ struct StoreToSharedMemFixture {
   }
 };
 
-}  // namespace
+} // namespace
 
 // Covers lines 1081-1088: onlyThread0=true with rank>5 (isNeedMerge=true)
 TEST(StoreToSharedMemTest, OnlyThread0HighRankMerge) {
@@ -91,8 +91,8 @@ TEST(StoreToSharedMemTest, OnlyThread0HighRankMerge) {
   auto tensorType = f.makeBlockedTensorType(shape, f32Type, warpsPerCTA);
 
   auto privateMemType = MemRefType::get(shape, f32Type);
-  auto sharedMemType = MemRefType::get(
-      shape, f32Type, AffineMap{}, f.builder.getI64IntegerAttr(2));
+  auto sharedMemType = MemRefType::get(shape, f32Type, AffineMap{},
+                                       f.builder.getI64IntegerAttr(2));
 
   auto funcType =
       f.builder.getFunctionType({privateMemType, sharedMemType}, {});

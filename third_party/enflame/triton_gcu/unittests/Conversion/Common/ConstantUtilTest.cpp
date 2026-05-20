@@ -73,8 +73,8 @@ TEST_F(ConstantUtilTest, Zero_F64) {
 }
 
 TEST_F(ConstantUtilTest, Zero_Float8E4M3B11FNUZ) {
-  auto v = createConstantZero(*builder, loc(),
-                              Float8E4M3B11FNUZType::get(&ctx));
+  auto v =
+      createConstantZero(*builder, loc(), Float8E4M3B11FNUZType::get(&ctx));
   ASSERT_TRUE(static_cast<bool>(v));
 }
 
@@ -131,8 +131,7 @@ TEST_F(ConstantUtilTest, NegInf_F32) {
 }
 
 TEST_F(ConstantUtilTest, Inf_Float8E4M3B11FNUZ) {
-  auto v =
-      createConstantInf(*builder, loc(), Float8E4M3B11FNUZType::get(&ctx));
+  auto v = createConstantInf(*builder, loc(), Float8E4M3B11FNUZType::get(&ctx));
   ASSERT_TRUE(static_cast<bool>(v));
 }
 

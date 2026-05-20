@@ -30,10 +30,10 @@
 #include "Dialect/GCUWS/IR/Dialect.h"
 #include "RegisterGCUDialects.h"
 
+#include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
-#include "triton/Conversion/TritonToTritonGPU/Passes.h"
 
 #ifdef ENABLE_TRITON_DISTRIBUTED
 #include "TritonDistributed/Dialect/Distributed/IR/Dialect.h"
@@ -95,13 +95,12 @@ Gcu400Pipeline gcu400_pipeline_create(void) {
   }
 }
 
-void gcu400_pipeline_destroy(Gcu400Pipeline p) {
-  delete p;
-}
+void gcu400_pipeline_destroy(Gcu400Pipeline p) { delete p; }
 
 void gcu400_pipeline_add_pass(Gcu400Pipeline p, const char *pass_name,
-                               const char *options_str) {
-  if (!p || !pass_name) return;
+                              const char *options_str) {
+  if (!p || !pass_name)
+    return;
 
   llvm::StringRef name(pass_name);
 
@@ -129,20 +128,20 @@ void gcu400_pipeline_add_pass(Gcu400Pipeline p, const char *pass_name,
     return;
   }
 
-  p->passes.emplace_back(name.str(),
-                          options_str ? options_str : std::string());
+  p->passes.emplace_back(name.str(), options_str ? options_str : std::string());
 }
 
-Gcu400String gcu400_pipeline_run(Gcu400Pipeline p,
-                                  const char *input, size_t input_len) {
-  if (!p) return nullString();
+Gcu400String gcu400_pipeline_run(Gcu400Pipeline p, const char *input,
+                                 size_t input_len) {
+  if (!p)
+    return nullString();
   p->lastError.clear();
 
   mlir::DialectRegistry registry;
   mlir::gcu::registerGCUDialects(registry);
-  registry.insert<mlir::triton::TritonDialect,
-                  mlir::triton::gpu::TritonGPUDialect,
-                  mlir::triton::gcuws::GCUWSDialect>();
+  registry
+      .insert<mlir::triton::TritonDialect, mlir::triton::gpu::TritonGPUDialect,
+              mlir::triton::gcuws::GCUWSDialect>();
 #ifdef ENABLE_TRITON_DISTRIBUTED
   registry.insert<mlir::triton::distributed::DistributedDialect,
                   mlir::triton::simt::SIMTDialect>();
@@ -155,8 +154,8 @@ Gcu400String gcu400_pipeline_run(Gcu400Pipeline p,
 
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(
-      llvm::MemoryBuffer::getMemBuffer(
-          llvm::StringRef(input, input_len), "<input>", false),
+      llvm::MemoryBuffer::getMemBuffer(llvm::StringRef(input, input_len),
+                                       "<input>", false),
       llvm::SMLoc());
 
   mlir::OwningOpRef<mlir::ModuleOp> module =
@@ -188,8 +187,7 @@ Gcu400String gcu400_pipeline_run(Gcu400Pipeline p,
       }
       continue;
     }
-    if (mlir::succeeded(
-            mlir::parsePassPipeline(spec, pm, llvm::nulls())))
+    if (mlir::succeeded(mlir::parsePassPipeline(spec, pm, llvm::nulls())))
       continue;
     std::string wrapped = "any(" + spec + ")";
     if (mlir::failed(mlir::parsePassPipeline(wrapped, pm))) {
@@ -226,9 +224,9 @@ static Gcu400String runOptOnChunk(llvm::StringRef chunk,
                                   bool verifyDiagnostics = false) {
   mlir::DialectRegistry registry;
   mlir::gcu::registerGCUDialects(registry);
-  registry.insert<mlir::triton::TritonDialect,
-                  mlir::triton::gpu::TritonGPUDialect,
-                  mlir::triton::gcuws::GCUWSDialect>();
+  registry
+      .insert<mlir::triton::TritonDialect, mlir::triton::gpu::TritonGPUDialect,
+              mlir::triton::gcuws::GCUWSDialect>();
 #ifdef ENABLE_TRITON_DISTRIBUTED
   registry.insert<mlir::triton::distributed::DistributedDialect,
                   mlir::triton::simt::SIMTDialect>();
@@ -245,14 +243,12 @@ static Gcu400String runOptOnChunk(llvm::StringRef chunk,
 
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(
-      llvm::MemoryBuffer::getMemBuffer(chunk, "<input>", false),
-      llvm::SMLoc());
+      llvm::MemoryBuffer::getMemBuffer(chunk, "<input>", false), llvm::SMLoc());
 
   std::unique_ptr<mlir::SourceMgrDiagnosticVerifierHandler> verifyHandler;
   if (verifyDiagnostics)
-    verifyHandler =
-        std::make_unique<mlir::SourceMgrDiagnosticVerifierHandler>(
-            sourceMgr, &ctx);
+    verifyHandler = std::make_unique<mlir::SourceMgrDiagnosticVerifierHandler>(
+        sourceMgr, &ctx);
 
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, &ctx);
@@ -289,8 +285,7 @@ static Gcu400String runOptOnChunk(llvm::StringRef chunk,
       }
       continue;
     }
-    if (mlir::succeeded(
-            mlir::parsePassPipeline(normalized, pm, llvm::nulls())))
+    if (mlir::succeeded(mlir::parsePassPipeline(normalized, pm, llvm::nulls())))
       continue;
     std::string wrapped = "any(" + normalized + ")";
     if (mlir::failed(mlir::parsePassPipeline(wrapped, pm))) {
@@ -363,8 +358,7 @@ Gcu400String gcu400_run_opt(const char *input, size_t input_len,
       printModuleScope = true;
       continue;
     }
-    if (a.starts_with("-mlir-timing") ||
-        a.starts_with("--mlir-timing")) {
+    if (a.starts_with("-mlir-timing") || a.starts_with("--mlir-timing")) {
       enableTiming = true;
       continue;
     }
@@ -410,10 +404,10 @@ Gcu400String gcu400_run_opt(const char *input, size_t input_len,
     if (trimmed.empty())
       continue;
 
-    Gcu400String result = runOptOnChunk(
-        chunk, passArgs, printGeneric, printAfterAll,
-        disableThreading, printModuleScope, enableTiming,
-        allowUnregisteredDialects, verifyDiagnostics);
+    Gcu400String result =
+        runOptOnChunk(chunk, passArgs, printGeneric, printAfterAll,
+                      disableThreading, printModuleScope, enableTiming,
+                      allowUnregisteredDialects, verifyDiagnostics);
     if (!result.data)
       return nullString();
 
@@ -431,4 +425,4 @@ void gcu400_string_free(Gcu400String s) {
   std::free(const_cast<char *>(s.data));
 }
 
-}  // extern "C"
+} // extern "C"

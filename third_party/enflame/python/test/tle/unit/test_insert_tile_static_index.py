@@ -61,7 +61,9 @@ def test_insert_tile_static_index():
     out = torch.empty_like(x)
 
     grid = (M // BLOCK_SIZE, N // BLOCK_SIZE)
-    print(f"Running insert_tile kernel with x={M}x{N}, tile={TM}x{TN}, BLOCK_SIZE={BLOCK_SIZE}, grid={grid}, index=[1, 1]...")
+    print(
+        f"Running insert_tile kernel with x={M}x{N}, tile={TM}x{TN}, BLOCK_SIZE={BLOCK_SIZE}, grid={grid}, index=[1, 1]..."
+    )
     insert_tile_kernel[grid](x, y, out, M, N, TM, TN, BLOCK_SIZE)
     print("Kernel executed.\n")
 

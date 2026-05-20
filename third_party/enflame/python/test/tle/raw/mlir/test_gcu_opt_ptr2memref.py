@@ -33,9 +33,7 @@ def edsl_ptr2memref(
     dyn = ir.ShapedType.get_dynamic_size()
     memref_type = ir.MemRefType.get([dyn], f32)
 
-    zeros = arith.constant(
-        vec128xf32,
-        ir.DenseElementsAttr.get_splat(vec128xf32, ir.FloatAttr.get(f32, 0.0)))
+    zeros = arith.constant(vec128xf32, ir.DenseElementsAttr.get_splat(vec128xf32, ir.FloatAttr.get(f32, 0.0)))
     c128 = arith.constant(i32, ir.IntegerAttr.get(i32, 128))
 
     block_id = gpu.block_id(gpu.Dimension.x)

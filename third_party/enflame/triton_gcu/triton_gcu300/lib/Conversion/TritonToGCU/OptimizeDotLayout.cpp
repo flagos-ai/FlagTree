@@ -19,13 +19,13 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -171,15 +171,15 @@ void TritonGCUDotLayoutOptimizePass::reWriteDotLayout(triton::DotOp dot) {
       warpsPerCTA[rank - 2] = warpsPerCTA[rank - 2] / 2;
       warpsPerCTA[rank - 1] = warpsPerCTA[rank - 1] * 2;
     } else if ((k % 64 == 0) && perWarpM < 32 && perWarpN > 64 &&
-                warpsPerCTA[rank - 2] >= 2) {
+               warpsPerCTA[rank - 2] >= 2) {
       warpsPerCTA[rank - 2] = warpsPerCTA[rank - 2] / 2;
       warpsPerCTA[rank - 1] = warpsPerCTA[rank - 1] * 2;
     } else if ((k % 32 == 0) && perWarpN < 64 && perWarpM > 128 &&
-                warpsPerCTA[rank - 1] >= 2) {
+               warpsPerCTA[rank - 1] >= 2) {
       warpsPerCTA[rank - 2] = warpsPerCTA[rank - 2] * 2;
       warpsPerCTA[rank - 1] = warpsPerCTA[rank - 1] / 2;
     } else if ((k % 64 == 0) && perWarpN < 64 && perWarpM > 32 &&
-                warpsPerCTA[rank - 1] >= 2) {
+               warpsPerCTA[rank - 1] >= 2) {
       warpsPerCTA[rank - 2] = warpsPerCTA[rank - 2] * 2;
       warpsPerCTA[rank - 1] = warpsPerCTA[rank - 1] / 2;
     }
@@ -198,19 +198,19 @@ void TritonGCUDotLayoutOptimizePass::reWriteDotLayout(triton::DotOp dot) {
       warpsPerCTA[rank - 2] = warpsPerCTA[rank - 2] / 2;
       warpsPerCTA[rank - 1] = warpsPerCTA[rank - 1] * 2;
     } else if (perWarpM < 64 && (k % 32 == 0) && perWarpN > 128 &&
-                warpsPerCTA[rank - 2] >= 2) {
+               warpsPerCTA[rank - 2] >= 2) {
       warpsPerCTA[rank - 2] = warpsPerCTA[rank - 2] / 2;
       warpsPerCTA[rank - 1] = warpsPerCTA[rank - 1] * 2;
     } else if (perWarpM < 128 && (k % 32 == 0) && perWarpN > 64 &&
-                warpsPerCTA[rank - 2] >= 2) {
+               warpsPerCTA[rank - 2] >= 2) {
       warpsPerCTA[rank - 2] = warpsPerCTA[rank - 2] / 2;
       warpsPerCTA[rank - 1] = warpsPerCTA[rank - 1] * 2;
     } else if ((k % 64 == 0) && perWarpN < 64 && perWarpM > 32 &&
-                warpsPerCTA[rank - 1] >= 2) {
+               warpsPerCTA[rank - 1] >= 2) {
       warpsPerCTA[rank - 2] = warpsPerCTA[rank - 2] * 2;
       warpsPerCTA[rank - 1] = warpsPerCTA[rank - 1] / 2;
     } else if ((k % 32 == 0) && perWarpN < 64 && perWarpM > 64 &&
-                warpsPerCTA[rank - 1] >= 2) {
+               warpsPerCTA[rank - 1] >= 2) {
       warpsPerCTA[rank - 2] = warpsPerCTA[rank - 2] * 2;
       warpsPerCTA[rank - 1] = warpsPerCTA[rank - 1] / 2;
     }

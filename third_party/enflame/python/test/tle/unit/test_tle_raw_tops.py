@@ -14,10 +14,10 @@ from triton.experimental.tle.raw.tops.runtime import (
 )
 from triton.experimental.tle.raw.tops.mlir_runtime import TOPSMLIRJITFunction
 
-
 # ---------------------------------------------------------------------------
 # TOPSJITFunction registration tests
 # ---------------------------------------------------------------------------
+
 
 class TestTOPSDialectRegistration:
 
@@ -51,6 +51,7 @@ class TestTOPSDialectRegistration:
 # ---------------------------------------------------------------------------
 # TOPSJITFunction constructor tests
 # ---------------------------------------------------------------------------
+
 
 class TestTOPSJITFunctionInit:
 
@@ -115,6 +116,7 @@ class TestTOPSJITFunctionInit:
 # Helper function tests
 # ---------------------------------------------------------------------------
 
+
 class TestHelperFunctions:
 
     def test_get_gcu_arch_default(self):
@@ -172,6 +174,7 @@ class TestHelperFunctions:
 # @dialect decorator tests
 # ---------------------------------------------------------------------------
 
+
 class TestDialectDecorator:
 
     def test_dialect_creates_tops_jit(self, tmp_path):
@@ -213,6 +216,7 @@ class TestDialectDecorator:
     def test_dialect_invalid_name_raises(self):
         from triton.experimental.tle.raw import dialect
         with pytest.raises(KeyError):
+
             @dialect(name="nonexistent_backend")
             def edsl(*args, **kwargs):
                 ...
@@ -221,6 +225,7 @@ class TestDialectDecorator:
 # ---------------------------------------------------------------------------
 # TOPSMLIRJITFunction tests
 # ---------------------------------------------------------------------------
+
 
 class TestTOPSMLIRJITFunction:
 
@@ -265,6 +270,7 @@ class TestTOPSMLIRJITFunction:
 # ---------------------------------------------------------------------------
 # TOPSJITFunction compile flow tests (mock topscc)
 # ---------------------------------------------------------------------------
+
 
 class TestTOPSJITFunctionCompile:
 
@@ -351,6 +357,7 @@ class TestTOPSJITFunctionCompile:
         mock_ir = "; ModuleID = 'test'\ntarget triple = \"dtu-enflame-tops--gcu400\"\n"
 
         import subprocess
+
         def mock_run(cmd, **kwargs):
             result = MagicMock()
             if "-S" in cmd:
@@ -374,12 +381,10 @@ class TestGCUIntrinsicRewrite:
 
     def test_replaces_bid_tid_intrinsics(self):
         """All blockIdx/threadIdx intrinsics should be rewritten."""
-        ir_text = (
-            'declare i32 @llvm.tcle.read.bid.x.i32() #1\n'
-            'declare i32 @llvm.tcle.read.tid.x.i32() #1\n'
-            '%0 = call noundef i32 @llvm.tcle.read.bid.x.i32()\n'
-            '%1 = call noundef i32 @llvm.tcle.read.tid.x.i32()\n'
-        )
+        ir_text = ('declare i32 @llvm.tcle.read.bid.x.i32() #1\n'
+                   'declare i32 @llvm.tcle.read.tid.x.i32() #1\n'
+                   '%0 = call noundef i32 @llvm.tcle.read.bid.x.i32()\n'
+                   '%1 = call noundef i32 @llvm.tcle.read.tid.x.i32()\n')
         result = TOPSJITFunction._rewrite_gcu_intrinsics(ir_text)
         assert "@llvm.tcle" not in result
         assert "@tcle_read_bid_x" in result
@@ -387,24 +392,20 @@ class TestGCUIntrinsicRewrite:
 
     def test_replaces_loadimplicitbase(self):
         """loadimplicitbase intrinsic should be rewritten."""
-        ir_text = (
-            'declare i64 @llvm.tcle.loadimplicitbase.i64() #2\n'
-            '%0 = call i64 @llvm.tcle.loadimplicitbase.i64()\n'
-        )
+        ir_text = ('declare i64 @llvm.tcle.loadimplicitbase.i64() #2\n'
+                   '%0 = call i64 @llvm.tcle.loadimplicitbase.i64()\n')
         result = TOPSJITFunction._rewrite_gcu_intrinsics(ir_text)
         assert "@llvm.tcle" not in result
         assert "@tcle_loadimplicitbase" in result
 
     def test_replaces_all_dimension_variants(self):
         """x/y/z variants of bid and tid should all be rewritten."""
-        ir_text = (
-            '%0 = call i32 @llvm.tcle.read.bid.x.i32()\n'
-            '%1 = call i32 @llvm.tcle.read.bid.y.i32()\n'
-            '%2 = call i32 @llvm.tcle.read.bid.z.i32()\n'
-            '%3 = call i32 @llvm.tcle.read.tid.x.i32()\n'
-            '%4 = call i32 @llvm.tcle.read.tid.y.i32()\n'
-            '%5 = call i32 @llvm.tcle.read.tid.z.i32()\n'
-        )
+        ir_text = ('%0 = call i32 @llvm.tcle.read.bid.x.i32()\n'
+                   '%1 = call i32 @llvm.tcle.read.bid.y.i32()\n'
+                   '%2 = call i32 @llvm.tcle.read.bid.z.i32()\n'
+                   '%3 = call i32 @llvm.tcle.read.tid.x.i32()\n'
+                   '%4 = call i32 @llvm.tcle.read.tid.y.i32()\n'
+                   '%5 = call i32 @llvm.tcle.read.tid.z.i32()\n')
         result = TOPSJITFunction._rewrite_gcu_intrinsics(ir_text)
         assert "@llvm.tcle" not in result
         for suffix in ("bid_x", "bid_y", "bid_z", "tid_x", "tid_y", "tid_z"):
@@ -412,10 +413,8 @@ class TestGCUIntrinsicRewrite:
 
     def test_replaces_stid_and_gcu_intrinsics(self):
         """Sub-thread ID and GCU intrinsics should be rewritten."""
-        ir_text = (
-            '%0 = call i32 @llvm.tcle.read.stid.x.i32()\n'
-            '%1 = call i64 @llvm.gcu.grid.param.addr.i64()\n'
-        )
+        ir_text = ('%0 = call i32 @llvm.tcle.read.stid.x.i32()\n'
+                   '%1 = call i64 @llvm.gcu.grid.param.addr.i64()\n')
         result = TOPSJITFunction._rewrite_gcu_intrinsics(ir_text)
         assert "@llvm.tcle" not in result
         assert "@llvm.gcu" not in result
@@ -424,20 +423,16 @@ class TestGCUIntrinsicRewrite:
 
     def test_no_change_without_intrinsics(self):
         """IR without GCU intrinsics passes through unchanged."""
-        ir_text = (
-            'define void @foo(float* %a) {\n'
-            '  ret void\n'
-            '}\n'
-        )
+        ir_text = ('define void @foo(float* %a) {\n'
+                   '  ret void\n'
+                   '}\n')
         result = TOPSJITFunction._rewrite_gcu_intrinsics(ir_text)
         assert result == ir_text
 
     def test_preserves_non_gcu_intrinsics(self):
         """Standard LLVM intrinsics should not be touched."""
-        ir_text = (
-            'declare float @llvm.fabs.f32(float)\n'
-            '%0 = call float @llvm.fabs.f32(float %x)\n'
-        )
+        ir_text = ('declare float @llvm.fabs.f32(float)\n'
+                   '%0 = call float @llvm.fabs.f32(float %x)\n')
         result = TOPSJITFunction._rewrite_gcu_intrinsics(ir_text)
         assert "@llvm.fabs.f32" in result
 
@@ -486,12 +481,10 @@ class TestGCUIntrinsicRoundTrip:
             rewrite_intrinsics_to_placeholders,
             restore_intrinsics_from_placeholders,
         )
-        original = (
-            'declare i32 @llvm.tcle.read.bid.x.i32()\n'
-            'declare i64 @llvm.tcle.loadimplicitbase.i64()\n'
-            '%0 = call i32 @llvm.tcle.read.bid.x.i32()\n'
-            '%1 = call i64 @llvm.tcle.loadimplicitbase.i64()\n'
-        )
+        original = ('declare i32 @llvm.tcle.read.bid.x.i32()\n'
+                    'declare i64 @llvm.tcle.loadimplicitbase.i64()\n'
+                    '%0 = call i32 @llvm.tcle.read.bid.x.i32()\n'
+                    '%1 = call i64 @llvm.tcle.loadimplicitbase.i64()\n')
         forward = rewrite_intrinsics_to_placeholders(original)
         assert '@llvm.tcle' not in forward
         restored = restore_intrinsics_from_placeholders(forward)

@@ -534,8 +534,7 @@ public:
 };
 
 void populateTritonPatterns(GCUTritonGPUTypeConverter &typeConverter,
-                            RewritePatternSet &patterns,
-                            bool hasReduceOps) {
+                            RewritePatternSet &patterns, bool hasReduceOps) {
   MLIRContext *context = patterns.getContext();
   patterns.insert<
       // clang-format off
@@ -826,20 +825,20 @@ public:
 void populateTlePatterns(GCUTritonGPUTypeConverter &typeConverter,
                          RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
-  patterns.add<
-      TleDSLRegionOpPattern, TleExtractTileOpPattern, TleInsertTileOpPattern,
-      GenericOpPattern<triton::tle::LocalPointersOp>,
-      GenericOpPattern<triton::tle::RemotePointersOp>,
-      GenericOpPattern<triton::tle::ExclusiveCumsumOp>,
-      GenericOpPattern<triton::tle::DistributedBarrierOp>,
-      GenericOpPattern<triton::tle::YieldOp>,
-      GenericOpPattern<triton::tle::ExtractAllocatedPtrOp>,
-      GenericOpPattern<triton::tle::ExtractAlignedPtrOp>,
-      GenericOpPattern<triton::tle::ExtractOffsetOp>,
-      GenericOpPattern<triton::tle::ExtractSizesOp>,
-      GenericOpPattern<triton::tle::ExtractStridesOp>,
-      GenericOpPattern<triton::tle::ExtractPtrOp>,
-      GenericOpPattern<triton::tle::PackOp>>(typeConverter, context);
+  patterns.add<TleDSLRegionOpPattern, TleExtractTileOpPattern,
+               TleInsertTileOpPattern,
+               GenericOpPattern<triton::tle::LocalPointersOp>,
+               GenericOpPattern<triton::tle::RemotePointersOp>,
+               GenericOpPattern<triton::tle::ExclusiveCumsumOp>,
+               GenericOpPattern<triton::tle::DistributedBarrierOp>,
+               GenericOpPattern<triton::tle::YieldOp>,
+               GenericOpPattern<triton::tle::ExtractAllocatedPtrOp>,
+               GenericOpPattern<triton::tle::ExtractAlignedPtrOp>,
+               GenericOpPattern<triton::tle::ExtractOffsetOp>,
+               GenericOpPattern<triton::tle::ExtractSizesOp>,
+               GenericOpPattern<triton::tle::ExtractStridesOp>,
+               GenericOpPattern<triton::tle::ExtractPtrOp>,
+               GenericOpPattern<triton::tle::PackOp>>(typeConverter, context);
 }
 #endif
 

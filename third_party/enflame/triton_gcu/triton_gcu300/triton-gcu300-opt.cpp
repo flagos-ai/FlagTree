@@ -68,9 +68,9 @@ int main(int argc, char **argv) {
     input = readStdin();
   }
 
-  Gcu300String result = gcu300_run_opt(
-      input.data(), input.size(),
-      passArgs.data(), static_cast<int>(passArgs.size()));
+  Gcu300String result =
+      gcu300_run_opt(input.data(), input.size(), passArgs.data(),
+                     static_cast<int>(passArgs.size()));
 
   if (!result.data) {
     std::cerr << "Error: optimization failed\n";

@@ -530,8 +530,7 @@ public:
 };
 
 void populateTritonPatterns(GCUTritonGPUTypeConverter &typeConverter,
-                            RewritePatternSet &patterns,
-                            bool hasReduceOps) {
+                            RewritePatternSet &patterns, bool hasReduceOps) {
   MLIRContext *context = patterns.getContext();
   patterns.insert<
       // clang-format off

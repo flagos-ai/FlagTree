@@ -258,7 +258,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     }
     if (is_i64)
       minBpe = 8;
-    //for vector step i32
+    // for vector step i32
     if (maxBpe < 4) {
       maxBpe = 4;
     }

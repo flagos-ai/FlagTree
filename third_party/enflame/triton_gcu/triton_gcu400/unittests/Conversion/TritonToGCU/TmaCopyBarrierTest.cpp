@@ -32,8 +32,8 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #ifdef TEST_GCU400
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Conversion/Passes.h"
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #endif
 
 using namespace mlir;
@@ -53,9 +53,8 @@ struct TmaCopyFixture {
 
   TmaCopyFixture() : builder(&ctx), loc(builder.getUnknownLoc()) {
     ctx.loadDialect<triton::TritonDialect, ttg::TritonGPUDialect,
-                     gpu::GPUDialect, func::FuncDialect,
-                     arith::ArithDialect,
-                     triton::gcu::TritonGCUDialect>();
+                    gpu::GPUDialect, func::FuncDialect, arith::ArithDialect,
+                    triton::gcu::TritonGCUDialect>();
 
     module = ModuleOp::create(loc);
     (*module)->setAttr("ttg.num-ctas", builder.getI32IntegerAttr(1));
@@ -73,21 +72,20 @@ struct TmaCopyFixture {
   ttg::MemDescType makeMemDescType(Type elemTy,
                                    ArrayRef<int64_t> shape = {32, 64}) {
     auto ctaLayout = ttg::CTAEncodingAttr::getDefault(&ctx, shape.size());
-    SmallVector<unsigned> order =
-        (shape.size() == 2) ? SmallVector<unsigned>{1, 0}
-                            : SmallVector<unsigned>{0};
-    auto sharedEnc = ttg::SwizzledSharedEncodingAttr::get(
-        &ctx, 1, 1, 1, order, ctaLayout);
+    SmallVector<unsigned> order = (shape.size() == 2)
+                                      ? SmallVector<unsigned>{1, 0}
+                                      : SmallVector<unsigned>{0};
+    auto sharedEnc =
+        ttg::SwizzledSharedEncodingAttr::get(&ctx, 1, 1, 1, order, ctaLayout);
     auto smem = ttg::SharedMemorySpaceAttr::get(&ctx);
     return ttg::MemDescType::get(shape, elemTy, sharedEnc, smem,
                                  /*mutableMemory=*/true);
   }
 
-  triton::TensorDescType makeTensorDescType(Type elemTy,
-                                            ArrayRef<int64_t> shape = {32,
-                                                                       64}) {
-    return triton::TensorDescType::get(
-        &ctx, RankedTensorType::get(shape, elemTy));
+  triton::TensorDescType
+  makeTensorDescType(Type elemTy, ArrayRef<int64_t> shape = {32, 64}) {
+    return triton::TensorDescType::get(&ctx,
+                                       RankedTensorType::get(shape, elemTy));
   }
 
   // -- IR building helpers ---------------------------------------------------
@@ -112,10 +110,14 @@ struct TmaCopyFixture {
     builder.setInsertionPointToStart(entryBlock);
 
     return {funcOp,
-            entryBlock->getArgument(0), entryBlock->getArgument(1),
-            entryBlock->getArgument(2), entryBlock->getArgument(3),
-            entryBlock->getArgument(4), entryBlock->getArgument(5),
-            entryBlock->getArgument(6), entryBlock->getArgument(7)};
+            entryBlock->getArgument(0),
+            entryBlock->getArgument(1),
+            entryBlock->getArgument(2),
+            entryBlock->getArgument(3),
+            entryBlock->getArgument(4),
+            entryBlock->getArgument(5),
+            entryBlock->getArgument(6),
+            entryBlock->getArgument(7)};
   }
 
   /// Build an unrealized_conversion_cast that mimics the pattern left by
@@ -123,10 +125,10 @@ struct TmaCopyFixture {
   Value createDescriptorCast(triton::TensorDescType descTy,
                              const UnpackFuncResult &uf) {
     return builder
-        .create<UnrealizedConversionCastOp>(
-            loc, TypeRange{descTy},
-            ValueRange{uf.base, uf.shape0, uf.shape1, uf.stride0, uf.stride1,
-                       uf.padding})
+        .create<UnrealizedConversionCastOp>(loc, TypeRange{descTy},
+                                            ValueRange{uf.base, uf.shape0,
+                                                       uf.shape1, uf.stride0,
+                                                       uf.stride1, uf.padding})
         .getResult(0);
   }
 
@@ -147,8 +149,7 @@ struct TmaCopyFixture {
 
   // -- Assertion helpers -----------------------------------------------------
 
-  template <typename OpT>
-  int countOps(func::FuncOp funcOp) {
+  template <typename OpT> int countOps(func::FuncOp funcOp) {
     int n = 0;
     funcOp.walk([&](OpT) { n++; });
     return n;
@@ -164,7 +165,7 @@ struct TmaCopyFixture {
   }
 };
 
-}  // namespace
+} // namespace
 
 // Verify that insertLocalPointerBarriers (Phase 1 of TleToTritonGCUPass)
 // inserts a gpu.barrier between a G2L ttg.tma_copy and a subsequent
@@ -189,8 +190,8 @@ TEST(TmaCopyBarrierTest, BarrierInsertedBetweenG2LAndL2G) {
   Value memdesc = entryBlock->getArgument(1);
   Value offset = entryBlock->getArgument(2);
 
-  f.createTmaCopy({tensorDesc, memdesc, offset});    // G2L
-  f.createTmaCopy({memdesc, tensorDesc, offset});     // L2G
+  f.createTmaCopy({tensorDesc, memdesc, offset}); // G2L
+  f.createTmaCopy({memdesc, tensorDesc, offset}); // L2G
   f.builder.create<func::ReturnOp>(f.loc);
 
   ASSERT_TRUE(succeeded(f.runPass()));
@@ -212,9 +213,10 @@ TEST(TmaCopyBarrierTest, BarrierInsertedBetweenG2LAndL2G) {
 // Verify that ConvertTMACopyOp (Phase 2 of TleToTritonGCUPass)
 // lowers a G2L ttg.tma_copy when the tensor_desc operand is produced by
 // an unrealized_conversion_cast with (ptr, shape0, shape1, stride0, stride1,
-// padding) — matching the pattern from add_rewrite_tensor_descriptor_to_pointer.
-// This triggers unpackTmaDescriptor to extract base/shapes/strides/padding,
-// then generates tmaGeneratePtr + tmaGenerateMask + tmaGenerateOther + tt.load
+// padding) — matching the pattern from
+// add_rewrite_tensor_descriptor_to_pointer. This triggers unpackTmaDescriptor
+// to extract base/shapes/strides/padding, then generates tmaGeneratePtr +
+// tmaGenerateMask + tmaGenerateOther + tt.load
 // + ttg.local_store.
 // Covers TleToTritonGCU.cpp:
 //   lines 645-655 (unpackTmaDescriptor body)
@@ -314,8 +316,7 @@ TEST(TmaCopyBarrierTest, ConvertTMACopyL2G) {
   auto localAlloc = f.builder.create<ttg::LocalAllocOp>(f.loc, memdescTy);
 
   // L2G: (memdesc, tensor_desc, offset0, offset1)
-  f.createTmaCopy(
-      {localAlloc.getResult(), descVal, uf.offset0, uf.offset1});
+  f.createTmaCopy({localAlloc.getResult(), descVal, uf.offset0, uf.offset1});
   f.builder.create<func::ReturnOp>(f.loc);
 
   ASSERT_TRUE(succeeded(f.runPass()));
@@ -330,7 +331,7 @@ TEST(TmaCopyBarrierTest, ConvertTMACopyL2G) {
       << "L2G should not produce arith.select";
 }
 
-#else  // TEST_GCU300
+#else // TEST_GCU300
 
 TEST(TmaCopyBarrierTest, NotApplicableOnGCU300) { SUCCEED(); }
 

@@ -21,7 +21,9 @@ from mlir.dialects import arith, func, memref, scf
 _this_dir = Path(__file__).resolve().parent
 _gcu_mod_path = _this_dir.parent.parent.parent.parent / "triton" / "experimental" / "tle" / "raw" / "tops" / "gcu_dialect.py"
 if not _gcu_mod_path.exists():
-    _gcu_mod_path = Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages" / "triton" / "experimental" / "tle" / "raw" / "tops" / "gcu_dialect.py"
+    _gcu_mod_path = Path(
+        sys.prefix
+    ) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages" / "triton" / "experimental" / "tle" / "raw" / "tops" / "gcu_dialect.py"
 
 spec = importlib.util.spec_from_file_location("gcu_dialect", str(_gcu_mod_path))
 _gcu_mod = importlib.util.module_from_spec(spec)
@@ -75,12 +77,12 @@ def test_dte_lifecycle():
                 func.return_([])
         ir_text = str(mod)
         for op_name in [
-            "gcu.alloc_dte",
-            "gcu.init_dte",
-            "gcu.trigger_dte",
-            "gcu.wait_dte",
-            "gcu.destroy_dte",
-            "gcu.dealloc_dte",
+                "gcu.alloc_dte",
+                "gcu.init_dte",
+                "gcu.trigger_dte",
+                "gcu.wait_dte",
+                "gcu.destroy_dte",
+                "gcu.dealloc_dte",
         ]:
             assert op_name in ir_text, f"missing {op_name}"
         assert "!gcu.dte<private>" in ir_text
@@ -135,11 +137,11 @@ def test_barrier_lifecycle():
                 func.return_([])
         ir_text = str(mod)
         for op_name in [
-            "gcu.alloc_barrier",
-            "gcu.init_barrier",
-            "gcu.arrive_and_wait_barrier",
-            "gcu.destroy_barrier",
-            "gcu.dealloc_barrier",
+                "gcu.alloc_barrier",
+                "gcu.init_barrier",
+                "gcu.arrive_and_wait_barrier",
+                "gcu.destroy_barrier",
+                "gcu.dealloc_barrier",
         ]:
             assert op_name in ir_text, f"missing {op_name}"
         assert "!gcu.barrier<shared>" in ir_text
@@ -266,9 +268,7 @@ def test_combined_dte_barrier_kernel():
             f32 = ir.F32Type.get()
             i32 = ir.IntegerType.get_signless(32)
             memref_ty = ir.MemRefType.get([1024], f32)
-            fnty = ir.FunctionType.get(
-                [memref_ty, memref_ty, memref_ty], []
-            )
+            fnty = ir.FunctionType.get([memref_ty, memref_ty, memref_ty], [])
             fn = func.FuncOp("dte_barrier_kernel", fnty, visibility="public")
             block = fn.add_entry_block()
             with ir.InsertionPoint(block):
@@ -362,9 +362,7 @@ def test_gcuws_pipeline_lifecycle():
             fn = func.FuncOp("ws_pipeline_test", fnty, visibility="public")
             block = fn.add_entry_block()
             with ir.InsertionPoint(block):
-                pipeline = gcuws.init_pipeline(
-                    stage_count=3, producer_count=2, consumer_count=4
-                )
+                pipeline = gcuws.init_pipeline(stage_count=3, producer_count=2, consumer_count=4)
                 gcuws.producer_acquire(pipeline)
                 gcuws.producer_commit(pipeline)
                 gcuws.consumer_wait(pipeline)
@@ -372,11 +370,11 @@ def test_gcuws_pipeline_lifecycle():
                 func.return_([])
         ir_text = str(mod)
         for op_name in [
-            "gcuws.init_pipeline",
-            "gcuws.producer_acquire",
-            "gcuws.producer_commit",
-            "gcuws.consumer_wait",
-            "gcuws.consumer_release",
+                "gcuws.init_pipeline",
+                "gcuws.producer_acquire",
+                "gcuws.producer_commit",
+                "gcuws.consumer_wait",
+                "gcuws.consumer_release",
         ]:
             assert op_name in ir_text, f"missing {op_name}"
         assert "!gcuws.pipeline<3, 2, 4, true>" in ir_text
@@ -398,9 +396,7 @@ def test_gcuws_pipeline_with_dte():
                 src = block.arguments[0]
                 dst = block.arguments[1]
 
-                pipeline = gcuws.init_pipeline(
-                    stage_count=2, producer_count=1, consumer_count=1
-                )
+                pipeline = gcuws.init_pipeline(stage_count=2, producer_count=1, consumer_count=1)
                 dte = gcu.alloc_dte("private")
                 gcu.init_dte(dte)
 
@@ -462,7 +458,9 @@ def test_print_gcuws_ir():
                 dst = block.arguments[1]
 
                 pipeline = gcuws.init_pipeline(
-                    stage_count=3, producer_count=2, consumer_count=4,
+                    stage_count=3,
+                    producer_count=2,
+                    consumer_count=4,
                     inner_barrier=True,
                 )
 

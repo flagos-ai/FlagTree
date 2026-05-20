@@ -43,7 +43,8 @@ public:
                                             unsigned vectorLength) const;
   SmallVector<Type> getElementTypes() const { return operandElementTypes; }
   unsigned getNumOperands() const { return operandElementTypes.size(); }
-  FailureOr<SmallVector<TypedAttr>> inferIdentityAttrs(OpBuilder &builder) const;
+  FailureOr<SmallVector<TypedAttr>>
+  inferIdentityAttrs(OpBuilder &builder) const;
 
 private:
   SmallVector<Type> operandElementTypes;

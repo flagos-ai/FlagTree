@@ -16,9 +16,9 @@
 #ifndef GCU_CONVERSION_TRITONTOTRITONGPU_GCUTRITONGPUCONVERSION_H
 #define GCU_CONVERSION_TRITONTOTRITONGPU_GCUTRITONGPUCONVERSION_H
 
-#include "llvm/ADT/DenseMap.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/DenseMap.h"
 
 namespace mlir {
 
@@ -59,6 +59,6 @@ triton::gpu::BlockedEncodingAttr getBlockedEncodingWithOrder(
     const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq, int numWarps,
     int threadsPerWarp, int numCTAs);
 
-}  // namespace mlir
+} // namespace mlir
 
-#endif  // GCU_CONVERSION_TRITONTOTRITONGPU_GCUTRITONGPUCONVERSION_H
+#endif // GCU_CONVERSION_TRITONTOTRITONGPU_GCUTRITONGPUCONVERSION_H

@@ -45,11 +45,13 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 PI = math.pi
 target = triton.runtime.driver.active.get_current_target()
 
+
 def _is_enflame_backend():
     return target.backend == "gcu"
 
+
 if _is_enflame_backend():
-    from torch_gcu import transfer_to_gcu
+    pass
 
 _BITREV_CACHE: dict[Tuple[int, torch.device], torch.Tensor] = {}
 _TWIDDLE_CACHE: dict[Tuple[int, torch.device], Tuple[torch.Tensor, torch.Tensor]] = {}
@@ -57,6 +59,7 @@ _CUTILE_CONST_CACHE: dict[Tuple[int, torch.device], tuple] = {}
 _FFT_REG_THRESHOLD = 256
 if _is_enflame_backend():
     _FFT_REG_THRESHOLD = 0
+
 
 def _is_power_of_two(n: int) -> bool:
     return n > 0 and (n & (n - 1)) == 0
@@ -209,19 +212,12 @@ if _HAVE_CUTILE:
 
     @ct.kernel
     def fft_kernel_cutile(  # noqa: C901
-        x_packed_in,
-        y_packed_out,
-        W0,
-        W1,
-        W2,
-        T0,
-        T1,
-        N: ConstInt,   # type: ignore[valid-type]
-        F0: ConstInt,  # type: ignore[valid-type]
-        F1: ConstInt,  # type: ignore[valid-type]
-        F2: ConstInt,  # type: ignore[valid-type]
-        BS: ConstInt,  # type: ignore[valid-type]
-        D: ConstInt,   # type: ignore[valid-type]
+            x_packed_in, y_packed_out, W0, W1, W2, T0, T1, N: ConstInt,  # type: ignore[valid-type]
+            F0: ConstInt,  # type: ignore[valid-type]
+            F1: ConstInt,  # type: ignore[valid-type]
+            F2: ConstInt,  # type: ignore[valid-type]
+            BS: ConstInt,  # type: ignore[valid-type]
+            D: ConstInt,  # type: ignore[valid-type]
     ):
         F0F1 = F0 * F1  # type: ignore[operator]
         F1F2 = F1 * F2  # type: ignore[operator]
@@ -1116,20 +1112,8 @@ def triton_fft(x: torch.Tensor) -> torch.Tensor:
 
     grid = (m, )
     fft_kernel_triton[grid](
-        in_real,
-        in_imag,
-        bitrev,
-        tw_real,
-        tw_imag,
-        buf0_real,
-        buf0_imag,
-        buf1_real,
-        buf1_imag,
-        in_real.stride(0),
-        buf0_real.stride(0),
-        m,
-        N=n,
-        LOG_N=log_n,  # type: ignore[arg-type]
+        in_real, in_imag, bitrev, tw_real, tw_imag, buf0_real, buf0_imag, buf1_real, buf1_imag, in_real.stride(0),
+        buf0_real.stride(0), m, N=n, LOG_N=log_n,  # type: ignore[arg-type]
         num_warps=4,  # type: ignore[call-arg]
         num_stages=1,  # type: ignore[call-arg]
     )
@@ -1164,18 +1148,8 @@ def tle_fft(x: torch.Tensor) -> torch.Tensor:
     grid = (m, )
     if n == _FFT_REG_THRESHOLD:
         fft_kernel_tle_reg[grid](
-            in_real,
-            in_imag,
-            bitrev,
-            tw_real,
-            tw_imag,
-            out_real,
-            out_imag,
-            in_real.stride(0),
-            out_real.stride(0),
-            m,
-            N=n,
-            LOG_N=log_n,  # type: ignore[arg-type]
+            in_real, in_imag, bitrev, tw_real, tw_imag, out_real, out_imag, in_real.stride(0), out_real.stride(0), m,
+            N=n, LOG_N=log_n,  # type: ignore[arg-type]
             num_warps=4,  # type: ignore[call-arg]
             num_stages=1,  # type: ignore[call-arg]
         )
@@ -1248,6 +1222,7 @@ def run_correctness(m: int, n: int, dtype: torch.dtype, complex_input: bool):
         y_cutile = cutile_fft(x)
 
     if _is_enflame_backend():
+
         def _assert_close_ri(result_ri, ref_complex, rtol=1e-3, atol=1e-3):
             """Compare (real, imag) tuple against complex reference (on CPU)."""
             res_real, res_imag = result_ri.real, result_ri.imag
@@ -1306,9 +1281,10 @@ def benchmark(M, N, provider, dtype, complex_input):
 
     if provider == "torch":
         if _is_enflame_backend():
-            ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.fft.fft( _to_cpu_complex(x)), quantiles=quantiles)
+            ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.fft.fft(_to_cpu_complex(x)), quantiles=quantiles)
         else:
-            ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.fft.fft(x.to(torch.complex64)), quantiles=quantiles)
+            ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.fft.fft(x.to(torch.complex64)),
+                                                         quantiles=quantiles)
     elif provider == "cutile":
         _cutile_constants(int(N), x.device)
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: cutile_fft(x), quantiles=quantiles)

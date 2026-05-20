@@ -148,8 +148,8 @@ struct AnnotateDotAccReusePass
             return;
         // Reject if outer for yields the inner for's accumulator result
         // (double accumulation across both loops).
-        if (auto outerYield = dyn_cast<scf::YieldOp>(
-                outerFor.getBody()->getTerminator())) {
+        if (auto outerYield =
+                dyn_cast<scf::YieldOp>(outerFor.getBody()->getTerminator())) {
           Value innerResult = forOp->getResult(iterArgIdx);
           for (auto yieldedVal : outerYield.getOperands())
             if (yieldedVal == innerResult)
@@ -161,8 +161,7 @@ struct AnnotateDotAccReusePass
           return;
       }
 
-      dotOp->setAttr("acc_reuse_candidate",
-                      UnitAttr::get(dotOp.getContext()));
+      dotOp->setAttr("acc_reuse_candidate", UnitAttr::get(dotOp.getContext()));
       LLVM_DEBUG(llvm::dbgs()
                  << "AnnotateDotAccReuse: marked dot op as reuse candidate\n");
     });
