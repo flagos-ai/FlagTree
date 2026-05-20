@@ -1,4 +1,4 @@
-name: CD-Metax3.0
+name: CD-Xpu3.0
 
 permissions:
   contents: write
@@ -12,7 +12,7 @@ on:
         default: '0.5.0'
       PYTHON_VER:
         required: true
-        default: '3.12'
+        default: '3.10'
       PLATFORM:
         required: true
         default: 'x86_64'
@@ -27,7 +27,7 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.12'
+        default: '3.10'
       PLATFORM:
         type: string
         required: true
@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: metax-cd
+    runs-on: xpu-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
@@ -67,27 +67,26 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Metax (main branch)
+      - name: FlagTree bdist_wheel on Xpu (main branch)
         if: ${{ env.TARGET_BRANCH == 'main' }}
         shell: bash
         run: |
           set -x
           TRITON_VER="3.0"
           CHIP=""
-          export FLAGTREE_BACKEND=metax
+          export FLAGTREE_BACKEND=xpu
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
-          if python${PYTHON_VER} -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
-            echo "❌ flagtree==${FLAGTREE_WHEEL_VERSION} already exists!"
+          if python${PYTHON_VER} -m pip download --no-deps "flagtree===${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
+            echo "❌ flagtree===${FLAGTREE_WHEEL_VERSION} already exists!"
             exit 1
           else
-            echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
+            echo "✅ flagtree===${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
-          source ~/env_setup.sh  # metax
           cd python
           rm -rf ./build ./*.egg-info
           { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null

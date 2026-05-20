@@ -1,4 +1,4 @@
-name: CD-Xpu3.0
+name: CD-Mthreads3.1
 
 permissions:
   contents: write
@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: xpu-cd
+    runs-on: mthreads-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
@@ -67,24 +67,24 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Xpu (main branch)
+      - name: FlagTree bdist_wheel on Mthreads (main branch)
         if: ${{ env.TARGET_BRANCH == 'main' }}
         shell: bash
         run: |
           set -x
-          TRITON_VER="3.0"
+          TRITON_VER="3.1"
           CHIP=""
-          export FLAGTREE_BACKEND=xpu
+          export FLAGTREE_BACKEND=mthreads
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple --trusted-host=https://resource.flagos.net"
-          if python${PYTHON_VER} -m pip download --no-deps "flagtree==${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
-            echo "❌ flagtree==${FLAGTREE_WHEEL_VERSION} already exists!"
+          if python${PYTHON_VER} -m pip download --no-deps "flagtree===${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
+            echo "❌ flagtree===${FLAGTREE_WHEEL_VERSION} already exists!"
             exit 1
           else
-            echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
+            echo "✅ flagtree===${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
           cd python
