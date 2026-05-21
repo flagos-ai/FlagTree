@@ -662,6 +662,31 @@ resolveTMESwizzleConfigFromEncoding(ttg::MemDescType localType) {
   return matches.front();
 }
 
+inline FailureOr<ResolvedTMESwizzleConfig>
+resolveTMESwizzleConfigFromMatrixView(ttg::MemDescType localType,
+                                      ArrayRef<int64_t> matrixPhysicalShape,
+                                      ArrayRef<unsigned> matrixOrder) {
+  if (localType.getShape().size() == 2)
+    return resolveTMESwizzleConfigFromEncoding(localType);
+
+  auto swizzled =
+      dyn_cast<ttg::SwizzledSharedEncodingAttr>(localType.getEncoding());
+  if (!swizzled || matrixPhysicalShape.size() != 2 || matrixOrder.size() < 2)
+    return failure();
+
+  MLIRContext *ctx = localType.getContext();
+  auto cgaLayout =
+      getDefaultTMECGALayout(ctx, /*rank=*/2, /*numCTAs=*/1, matrixOrder);
+  auto matrixEncoding = ttg::SwizzledSharedEncodingAttr::get(
+      ctx, swizzled.getVec(), swizzled.getPerPhase(), swizzled.getMaxPhase(),
+      matrixOrder, cgaLayout);
+  auto matrixTy =
+      ttg::MemDescType::get(matrixPhysicalShape, localType.getElementType(),
+                            matrixEncoding, localType.getMemorySpace(),
+                            localType.getMutableMemory(), matrixPhysicalShape);
+  return resolveTMESwizzleConfigFromEncoding(matrixTy);
+}
+
 inline ttg::SwizzledSharedEncodingAttr
 normalizeTMECompatibleSharedEncodingOrDefault(
     Operation *op, RankedTensorType tensorTy, Attribute encoding,

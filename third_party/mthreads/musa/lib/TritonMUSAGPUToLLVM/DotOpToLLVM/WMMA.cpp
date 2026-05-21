@@ -305,8 +305,42 @@ buildContiguousRank2WmmaFastPathState(
 
 static FailureOr<WmmaTilePlan>
 buildGenericWmmaTilePlan(MLIRContext *ctx, const LinearLayout &cLinearLayout,
-                         unsigned rank, unsigned instM, unsigned instN,
-                         unsigned cElemsPerThread, unsigned fcSize) {
+                         ArrayRef<int64_t> shape, unsigned instM,
+                         unsigned instN, unsigned cElemsPerThread,
+                         unsigned fcSize) {
+  unsigned rank = shape.size();
+  if (rank == 3) {
+    auto outDimNames = standardOutDimNames(ctx, rank);
+    StringAttr kRegister = StringAttr::get(ctx, "register");
+    StringAttr kLane = StringAttr::get(ctx, "lane");
+    StringAttr kWarp = StringAttr::get(ctx, "warp");
+    StringAttr kBlock = StringAttr::get(ctx, "block");
+
+    WmmaTilePlan plan;
+    plan.numRepK = 0;
+    plan.numRepN = 0;
+    plan.tiles.reserve(fcSize / cElemsPerThread);
+    for (unsigned regBase = 0; regBase < fcSize; regBase += cElemsPerThread) {
+      SmallVector<std::pair<StringAttr, int32_t>, 4> repCoords = {
+          {kRegister, static_cast<int32_t>(regBase)},
+          {kLane, 0},
+          {kWarp, 0},
+          {kBlock, 0}};
+      auto coords = cLinearLayout.apply(repCoords);
+      int batch = coords[0].second;
+      int mBase = coords[1].second;
+      int nBase = coords[2].second;
+      if (batch < 0 || mBase < 0 || nBase < 0)
+        return failure();
+      mBase = (mBase / static_cast<int>(instM)) * static_cast<int>(instM);
+      nBase = (nBase / static_cast<int>(instN)) * static_cast<int>(instN);
+      plan.numRepN =
+          std::max(plan.numRepN, static_cast<unsigned>(nBase / instN + 1));
+      plan.tiles.push_back({regBase, batch, mBase, nBase});
+    }
+    return plan;
+  }
+
   auto tileLayout = buildPH1WMMATileLayout(ctx, rank, instM, instN);
   auto quot = divideLeft(cLinearLayout, tileLayout);
   if (!quot)
@@ -551,7 +585,7 @@ LogicalResult convertWMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
       return op.emitError("MUSA WMMA: accumulator register size mismatch");
   } else {
     auto genericTilePlan =
-        buildGenericWmmaTilePlan(ctx, cLinearLayout, dTy.getRank(), instM,
+        buildGenericWmmaTilePlan(ctx, cLinearLayout, dTy.getShape(), instM,
                                  instN, cElemsPerThread, fc.size());
     if (failed(genericTilePlan))
       return op.emitError("MUSA WMMA: failed to derive repetition layout");

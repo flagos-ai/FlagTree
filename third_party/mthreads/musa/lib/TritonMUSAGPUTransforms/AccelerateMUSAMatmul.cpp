@@ -10,6 +10,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/DecomposeScaledBlocked.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -113,6 +114,45 @@ struct SelectedConfig {
   SmallVector<unsigned, 3> instrShape;
   SmallVector<unsigned, 2> warpsPerCTA;
 };
+
+struct DotMatrixShape {
+  unsigned rank;
+  unsigned batch;
+  unsigned m;
+  unsigned n;
+  unsigned k;
+};
+
+static FailureOr<DotMatrixShape> getDotMatrixShape(tt::DotOp dotOp) {
+  auto retTy = dyn_cast<RankedTensorType>(dotOp.getType());
+  auto aTy = dyn_cast<RankedTensorType>(dotOp.getA().getType());
+  auto bTy = dyn_cast<RankedTensorType>(dotOp.getB().getType());
+  if (!retTy || !aTy || !bTy)
+    return failure();
+
+  unsigned rank = retTy.getRank();
+  if (rank != 2 && rank != 3)
+    return failure();
+  if (aTy.getRank() != rank || bTy.getRank() != rank)
+    return failure();
+
+  auto shapePerCTA = ttg::getShapePerCTA(retTy);
+  if (shapePerCTA.size() != rank)
+    return failure();
+
+  int64_t m = shapePerCTA[rank - 2];
+  int64_t n = shapePerCTA[rank - 1];
+  int64_t k = aTy.getShape().back();
+  if (m <= 0 || n <= 0 || k <= 0)
+    return failure();
+  int64_t batch = rank == 3 ? shapePerCTA[0] : 1;
+  if (batch <= 0)
+    return failure();
+
+  return DotMatrixShape{rank, static_cast<unsigned>(batch),
+                        static_cast<unsigned>(m), static_cast<unsigned>(n),
+                        static_cast<unsigned>(k)};
+}
 
 static bool isKnownBrokenSqmmaConfig(Type elemTy, bool allowTF32,
                                      ArrayRef<unsigned> instrShape) {
@@ -341,29 +381,59 @@ static Value promoteDotOperand(OpBuilder &builder, Location loc, Value operand,
   return operand;
 }
 
-static void promoteResidualFp8DotForFma(ModuleOp mod) {
-  mod.walk([&](tt::DotOp dotOp) {
+static bool isLowPrecisionFloatingForFma(Type elemTy) {
+  return elemTy.isF16() || elemTy.isBF16();
+}
+
+static void promoteResidualDotForFma(ModuleOp mod) {
+  SmallVector<tt::DotOp> dots;
+  mod.walk([&](tt::DotOp dotOp) { dots.push_back(dotOp); });
+  for (tt::DotOp dotOp : dots) {
     auto aTy = dyn_cast<RankedTensorType>(dotOp.getA().getType());
     auto bTy = dyn_cast<RankedTensorType>(dotOp.getB().getType());
     auto dTy = dyn_cast<RankedTensorType>(dotOp.getType());
     if (!aTy || !bTy || !dTy)
-      return;
+      continue;
+    if (!isa_and_nonnull<ttg::BlockedEncodingAttr>(dTy.getEncoding()))
+      continue;
 
     Type aElemTy = aTy.getElementType();
     Type bElemTy = bTy.getElementType();
     Type dElemTy = dTy.getElementType();
-    if (!tt::type::isFloat8(aElemTy) && !tt::type::isFloat8(bElemTy))
-      return;
-    if (aElemTy == dElemTy && bElemTy == dElemTy)
-      return;
-
     OpBuilder builder(dotOp);
     Location loc = dotOp.getLoc();
-    Value newA = promoteDotOperand(builder, loc, dotOp.getA(), dElemTy);
-    Value newB = promoteDotOperand(builder, loc, dotOp.getB(), dElemTy);
-    dotOp.setOperand(0, newA);
-    dotOp.setOperand(1, newB);
-  });
+    if (tt::type::isFloat8(aElemTy) || tt::type::isFloat8(bElemTy)) {
+      if (aElemTy == dElemTy && bElemTy == dElemTy)
+        continue;
+
+      // Residual fp8 tt.dot paths that are not captured by SQMMA/WMMA rewrite
+      // must be promoted before FMA lowering, otherwise fp8 FMA conversion
+      // is unsupported and compilation fails.
+      Value newA = promoteDotOperand(builder, loc, dotOp.getA(), dElemTy);
+      Value newB = promoteDotOperand(builder, loc, dotOp.getB(), dElemTy);
+      dotOp.setOperand(0, newA);
+      dotOp.setOperand(1, newB);
+      continue;
+    }
+
+    if (!isLowPrecisionFloatingForFma(aElemTy) ||
+        !isLowPrecisionFloatingForFma(bElemTy) ||
+        !isLowPrecisionFloatingForFma(dElemTy))
+      continue;
+
+    Type carrierElemTy = builder.getF32Type();
+    auto carrierTy = dTy.cloneWith(std::nullopt, carrierElemTy);
+    Value newA = promoteDotOperand(builder, loc, dotOp.getA(), carrierElemTy);
+    Value newB = promoteDotOperand(builder, loc, dotOp.getB(), carrierElemTy);
+    Value newC = promoteDotOperand(builder, loc, dotOp.getC(), carrierElemTy);
+    auto newDot = tt::DotOp::create(builder, loc, carrierTy, newA, newB, newC,
+                                    dotOp.getInputPrecision(),
+                                    dotOp.getMaxNumImpreciseAcc());
+    Value truncated =
+        arith::TruncFOp::create(builder, loc, dTy, newDot.getResult());
+    dotOp.replaceAllUsesWith(truncated);
+    dotOp.erase();
+  }
 }
 
 static SmallVector<int64_t> getSqmmaPaddedAllocShape(RankedTensorType argType,
@@ -437,7 +507,8 @@ static Value getSharedMemorySqmmaOperand(Value v, PatternRewriter &rewriter,
   if (isa<ttg::MUSAWmmaEncodingAttr, ttg::MUSASqmmaEncodingAttr>(
           argType.getEncoding()))
     return {};
-  if (argType.getRank() != 2)
+  unsigned rank = argType.getRank();
+  if (rank != 2 && rank != 3)
     return {};
   int elemBitWidth = argType.getElementType().getIntOrFloatBitWidth();
   int elemBytes = std::max(1, (elemBitWidth + 7) / 8);
@@ -454,7 +525,9 @@ static Value getSharedMemorySqmmaOperand(Value v, PatternRewriter &rewriter,
 
   SmallVector<unsigned> newOrder = ttg::getOrderForMemory(argType);
   if (!allowTranspose) {
-    newOrder = SmallVector<unsigned>{1, 0};
+    newOrder.clear();
+    for (int dim = static_cast<int>(rank) - 1; dim >= 0; --dim)
+      newOrder.push_back(static_cast<unsigned>(dim));
   }
   bool isRowMajor =
       !newOrder.empty() && (newOrder.front() + 1 == argType.getRank());
@@ -684,21 +757,13 @@ public:
     if (!isSupportedWmmaOperandType(aElemTy, allowTF32))
       return failure();
 
-    auto shapePerCTA = ttg::getShapePerCTA(oldRetType);
-    if (shapePerCTA.size() != 2)
-      return failure();
-    if (shapePerCTA[0] <= 0 || shapePerCTA[1] <= 0)
+    auto matrixShape = getDotMatrixShape(dotOp);
+    if (failed(matrixShape))
       return failure();
 
-    if (aTy.getRank() < 2)
-      return failure();
-    auto kDim = aTy.getShape().back();
-    if (kDim <= 0)
-      return failure();
-
-    unsigned m = static_cast<unsigned>(shapePerCTA[0]);
-    unsigned n = static_cast<unsigned>(shapePerCTA[1]);
-    unsigned k = static_cast<unsigned>(kDim);
+    unsigned m = matrixShape->m;
+    unsigned n = matrixShape->n;
+    unsigned k = matrixShape->k;
     unsigned numWarps = ttg::lookupNumWarps(dotOp);
 
     auto config = selectWmmaConfig(m, n, k, numWarps, aElemTy, allowTF32);
@@ -800,13 +865,12 @@ public:
       return failure();
     if (isa<ttg::MUSAWmmaEncodingAttr, ttg::MUSASqmmaEncodingAttr>(oldEncoding))
       return failure();
-    if (oldRetType.getRank() != 2)
-      return failure();
     auto aTy = dyn_cast<RankedTensorType>(dotOp.getA().getType());
     auto bTy = dyn_cast<RankedTensorType>(dotOp.getB().getType());
     if (!aTy || !bTy)
       return failure();
-    if (aTy.getRank() != 2 || bTy.getRank() != 2)
+    auto matrixShape = getDotMatrixShape(dotOp);
+    if (failed(matrixShape))
       return failure();
 
     auto aElemTy = aTy.getElementType();
@@ -822,19 +886,9 @@ public:
     if (!isSupportedSqmmaOperandType(aElemTy, allowTF32))
       return failure();
 
-    auto shapePerCTA = ttg::getShapePerCTA(oldRetType);
-    if (shapePerCTA.size() != 2)
-      return failure();
-    if (shapePerCTA[0] <= 0 || shapePerCTA[1] <= 0)
-      return failure();
-
-    auto kDim = aTy.getShape().back();
-    if (kDim <= 0)
-      return failure();
-
-    unsigned m = static_cast<unsigned>(shapePerCTA[0]);
-    unsigned n = static_cast<unsigned>(shapePerCTA[1]);
-    unsigned k = static_cast<unsigned>(kDim);
+    unsigned m = matrixShape->m;
+    unsigned n = matrixShape->n;
+    unsigned k = matrixShape->k;
     unsigned numWarps = ttg::lookupNumWarps(dotOp);
     auto config = selectSqmmaConfig(m, n, k, numWarps, aElemTy, allowTF32);
     if (!config)
@@ -958,19 +1012,18 @@ struct TritonMUSAGPUAccelerateMatmulPass
     bool wmmaCandidate = computeCapability == 31 && !disableWmma;
 
     MLIRContext *context = &getContext();
-    if (sqmmaCandidate || wmmaCandidate) {
-      RewritePatternSet patterns(context);
-      // Keep 3.2-aligned rewrite precedence: SQMMA first, then WMMA.
-      if (sqmmaCandidate)
-        patterns.add<BlockedToMUSASqmma>(context, computeCapability);
-      if (wmmaCandidate)
-        patterns.add<BlockedToMUSAWmma>(context, computeCapability);
+    RewritePatternSet patterns(context);
+    ttg::populateDecomposeScaledBlockedPatterns(patterns, /*benefit=*/1);
+    // Keep 3.2-aligned rewrite precedence: SQMMA first, then WMMA.
+    if (sqmmaCandidate)
+      patterns.add<BlockedToMUSASqmma>(context, computeCapability);
+    if (wmmaCandidate)
+      patterns.add<BlockedToMUSAWmma>(context, computeCapability);
 
-      if (applyPatternsGreedily(mod, std::move(patterns)).failed())
-        signalPassFailure();
-    }
+    if (applyPatternsGreedily(mod, std::move(patterns)).failed())
+      signalPassFailure();
 
-    promoteResidualFp8DotForFma(mod);
+    promoteResidualDotForFma(mod);
   }
 };
 

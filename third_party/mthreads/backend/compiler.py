@@ -1,6 +1,7 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, mthreads
 from triton import knobs
+from triton.runtime.errors import OutOfResources
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,6 +92,24 @@ def _capability_from_arch(arch: object) -> int:
     if arch_str.startswith("ph1"):
         return 31
     raise ValueError(f"Unsupported MUSA arch: {arch}")
+
+
+def _max_static_shared_memory_from_arch(arch: object) -> Optional[int]:
+    capability = _capability_from_arch(arch)
+    if capability == 31:
+        return 196608
+    if capability == 22:
+        return 73728
+    return None
+
+
+def _check_static_shared_memory(metadata: Dict[str, Any], arch: object) -> None:
+    required = metadata.get("shared")
+    if required is None:
+        return
+    limit = _max_static_shared_memory_from_arch(arch)
+    if limit is not None and required > limit:
+        raise OutOfResources(required, limit, "shared memory")
 
 
 def _normalize_path(path: Optional[str]) -> Optional[str]:
@@ -190,6 +209,8 @@ def _strip_range_attributes(ir_text: str) -> str:
     out = ir_text
     pos = 0
     call_ret_re = re.compile(r"[^,\n@][^,\n@]*\s+@[A-Za-z_$.][A-Za-z0-9_$.]*\s*\(")
+    operand_value_re = re.compile(
+        r"(?:[-+]?\d+|0x[0-9A-Fa-f]+|true|false|null|none|zeroinitializer|undef|poison)(?=$|[\s,)\]}])")
     while True:
         start = out.find("range(", pos)
         if start < 0:
@@ -210,7 +231,7 @@ def _strip_range_attributes(ir_text: str) -> str:
         while end < len(out) and out[end].isspace():
             end += 1
         tail = out[end:]
-        if end < len(out) and (out[end] == "%" or call_ret_re.match(tail)):
+        if end < len(out) and (out[end] == "%" or operand_value_re.match(tail) or call_ret_re.match(tail)):
             out = out[:start] + out[end:]
             pos = start
         else:
@@ -819,6 +840,7 @@ class MUSABackend(BaseBackend):
     def make_mubin(src, metadata, opt, arch):
         if not isinstance(src, str):
             raise TypeError("Expected LLVM IR as a string for MUSA codegen")
+        _check_static_shared_memory(metadata, arch)
 
         llc_path, lld_path, llc_asm_path = _resolve_toolchain_paths(opt)
         if not llc_path or not lld_path:

@@ -44,9 +44,13 @@ buildSqmmaAccumulatorCarrierInfo(Type type) {
   unsigned squadsN = warpsPerCTA[1];
   unsigned tileM = instM * squadsM;
   unsigned tileN = instN * squadsN;
-  unsigned numRepM = std::max(1u, ceilDiv(shapePerCTA[0], tileM));
-  unsigned numRepN = std::max(1u, ceilDiv(shapePerCTA[1], tileN));
-  unsigned fragmentCount = numRepM * numRepN;
+  unsigned rank = tensorTy.getRank();
+  if (rank != 2 && rank != 3)
+    return failure();
+  unsigned batchCount = rank == 3 ? shapePerCTA[0] : 1;
+  unsigned numRepM = std::max(1u, ceilDiv(shapePerCTA[rank - 2], tileM));
+  unsigned numRepN = std::max(1u, ceilDiv(shapePerCTA[rank - 1], tileN));
+  unsigned fragmentCount = batchCount * numRepM * numRepN;
   unsigned totalAccElems = mmaEnc.getTotalElemsPerThread(tensorTy.getShape());
   if (fragmentCount == 0 || totalAccElems == 0 ||
       (totalAccElems % fragmentCount) != 0) {
