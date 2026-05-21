@@ -49,6 +49,7 @@ target = triton.runtime.driver.active.get_current_target()
 def _is_enflame_backend():
     return target.backend == "gcu"
 
+
 _BITREV_CACHE: dict[Tuple[int, torch.device], torch.Tensor] = {}
 _TWIDDLE_CACHE: dict[Tuple[int, torch.device], Tuple[torch.Tensor, torch.Tensor]] = {}
 _CUTILE_CONST_CACHE: dict[Tuple[int, torch.device], tuple] = {}
