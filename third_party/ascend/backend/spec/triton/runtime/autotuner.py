@@ -126,6 +126,7 @@ class Autotuner(KernelInterface):
             )
             # flagtree ascend: use do_bench_npu instead of do_bench
             if do_bench == "npu":
+
                 def _do_bench_npu(kernel_call, quantiles):
                     import triton
                     t_ms = triton.backends.ascend.testing.do_bench_npu(
