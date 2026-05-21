@@ -46,7 +46,7 @@ override_dh_shlibdeps:
 	# triton/_C/*.so link against libcuda.so etc. Those libs are not present
 	# at packaging time and cannot be expressed via shlibs anyway, so skip
 	# automatic ${shlibs:Depends} lookup for them.
-	dh_shlibdeps -- --ignore-missing-info || true
+	dh_shlibdeps -- --ignore-missing-info
 
 override_dh_strip:
 	# Stripping the embedded LLVM-built .so files breaks Triton's runtime,
