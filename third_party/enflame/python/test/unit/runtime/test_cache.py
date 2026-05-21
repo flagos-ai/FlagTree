@@ -452,13 +452,11 @@ def add_fn(a, b, o, N: tl.constexpr):
 
 
 def test_jit_noinline(device) -> None:
-
+    pytest.skip("GCU400 not supported by enflame")
     @triton.jit
     def kernel_add_device(a, b, o, N: tl.constexpr):
         add_fn(a, b, o, N)
 
-    print(os.path.expanduser("~/.triton/cache/"))
-    shutil.rmtree(os.path.expanduser("~/.triton/cache/"))
     device = getattr(torch, device).current_device()
     assert len(kernel_add_device.device_caches[device][0]) == 0
     kernel_add_device.warmup(torch.float32, torch.float32, torch.float32, 32, grid=(1, ))
