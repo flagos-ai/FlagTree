@@ -1,3 +1,4 @@
+import pytest
 import torch_gcu
 import importlib.util
 if importlib.util.find_spec("triton.backends.enflame") is None:
