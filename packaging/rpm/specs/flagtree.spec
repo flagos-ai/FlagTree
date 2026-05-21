@@ -54,6 +54,21 @@ Conflicts:      python3-flagtree-mthreads
 %if "%{flagtree_backend}" != "metax"
 Conflicts:      python3-flagtree-metax
 %endif
+%if "%{flagtree_backend}" != "amd"
+Conflicts:      python3-flagtree-amd
+%endif
+%if "%{flagtree_backend}" != "iluvatar"
+Conflicts:      python3-flagtree-iluvatar
+%endif
+%if "%{flagtree_backend}" != "cambricon"
+Conflicts:      python3-flagtree-cambricon
+%endif
+%if "%{flagtree_backend}" != "hcu"
+Conflicts:      python3-flagtree-hcu
+%endif
+%if "%{flagtree_backend}" != "xpu"
+Conflicts:      python3-flagtree-xpu
+%endif
 
 %description
 FlagTree is a unified compiler supporting multiple AI chip backends for
