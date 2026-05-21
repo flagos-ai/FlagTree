@@ -42,15 +42,6 @@ except Exception:  # pragma: no cover - optional dependency
     T = None
     _HAVE_TILELANG = False
 
-
-def _is_enflame_backend():
-    target = triton.runtime.driver.active.get_current_target()
-    return target.backend == "gcu"
-
-
-if _is_enflame_backend():
-    from torch_gcu import transfer_to_gcu  # noqa: F401
-
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 RADIX_BITS = 8
 RADIX = 1 << RADIX_BITS

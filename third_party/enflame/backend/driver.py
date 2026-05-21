@@ -56,6 +56,8 @@ class _GCUDriver(DriverBase):
 
     @staticmethod
     def is_active():
+        import torch_gcu
+        from torch_gcu import transfer_to_gcu  # noqa: F401
         return True
 
     def get_benchmarker(self):
