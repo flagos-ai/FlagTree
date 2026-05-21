@@ -13,7 +13,13 @@ on:
 
 jobs:
   build-deb:
+    # WARNING: this builds the full FlagTree LLVM/MLIR wheel from source
+    # (~36 min on a 4-core builder) and peaks well above 4 GB RAM. The
+    # public `ubuntu-latest` runner (4 vCPU / ~16 GB RAM) is on the edge
+    # of OOM; consider promoting to a self-hosted runner (FlagCX uses
+    # `runs-on: h20`) once one is wired up.
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
