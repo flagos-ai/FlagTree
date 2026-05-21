@@ -26,7 +26,7 @@ Name:           python3-flagtree-%{flagtree_backend}
 Version:        0.5.0
 Release:        1%{?dist}
 Summary:        FlagTree compiler with %{flagtree_backend} backend
-License:        MIT
+License:        MIT AND Apache-2.0 WITH LLVM-exception AND BSD-3-Clause AND LicenseRef-NVIDIA-CUDA-EULA
 URL:            https://github.com/flagos-ai/FlagTree
 BuildArch:      x86_64
 
@@ -111,10 +111,10 @@ fi
 rm -f "$PYDIR"/flagtree-*.dist-info/RECORD
 
 %files
+%license LICENSE
 %{python3_sitearch}/triton
 %{python3_sitearch}/flagtree-*.dist-info
-%{_bindir}/proton
-%{_bindir}/proton-viewer
+%{_bindir}/proton*
 
 %changelog
 * Mon Apr 27 2026 FlagOS Contributors <contact@flagos.io> - 0.5.0-1

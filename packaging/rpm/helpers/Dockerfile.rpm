@@ -36,7 +36,7 @@ RUN unset FLAGTREE_BACKEND && \
     test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)"
 
 # ---------- Stage 2: assemble the .rpm ----------
-FROM fedora:36 AS rpm-assembler
+FROM fedora:43 AS rpm-assembler
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN dnf install -y --setopt=install_weak_deps=False \
