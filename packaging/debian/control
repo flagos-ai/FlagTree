@@ -21,13 +21,14 @@ X-Build-Environment: This package wraps a pre-built FlagTree wheel into a .deb.
 
 Package: python3-flagtree-nvidia
 Architecture: amd64
-Depends: ${python3:Depends},
+Depends: python3:any,
          ${shlibs:Depends},
          ${misc:Depends},
          python3-filelock,
          python3-setuptools
-# python3-torch is pulled in automatically via ${python3:Depends} from the
-# wheel's pyproject requirements, so it must not also appear in Recommends.
+# python3-torch is intentionally NOT declared. The distro 'python3-torch'
+# is CPU-only and unsuitable for GPU workloads; users install matching
+# CUDA torch via pip — see packaging/INSTALL.md once published.
 Recommends: python3-numpy
 Provides: python3-flagtree, python3-triton
 Conflicts: python3-triton, python3-flagtree-iluvatar, python3-flagtree-mthreads,
