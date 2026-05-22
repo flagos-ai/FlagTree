@@ -30,7 +30,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build .deb
-        run: bash packaging/debian/helpers/build-flagtree.sh
+        run: bash packaging/debian/build-helpers/build-flagtree.sh
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

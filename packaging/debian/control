@@ -15,7 +15,7 @@ Vcs-Git: https://github.com/flagos-ai/FlagTree.git
 Rules-Requires-Root: no
 X-Build-Environment: This package wraps a pre-built FlagTree wheel into a .deb.
  The wheel is produced in a backend-specific container (see
- packaging/debian/helpers/Dockerfile.deb) which provides LLVM, CMake,
+ packaging/debian/build-helpers/Dockerfile.deb) which provides LLVM, CMake,
  Ninja and the chip vendor toolchain. The Build-Depends above are only what
  dpkg-buildpackage needs to assemble the .deb after the wheel is built.
 

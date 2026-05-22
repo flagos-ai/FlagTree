@@ -2,7 +2,7 @@
 # Build a FlagTree .deb for one backend.
 #
 # Usage:
-#   ./packaging/debian/helpers/build-flagtree.sh [backend]
+#   ./packaging/debian/build-helpers/build-flagtree.sh [backend]
 #
 # Output: ./dist/output/python3-flagtree-<backend>_*.deb
 #
@@ -34,7 +34,7 @@ mkdir -p dist
 echo ">>> Building wheel + .deb for backend=${BACKEND}"
 docker build \
     --network=host \
-    -f packaging/debian/helpers/Dockerfile.deb \
+    -f packaging/debian/build-helpers/Dockerfile.deb \
     --target deb-output \
     --output "type=local,dest=${REPO_ROOT}/dist" \
     .

@@ -15,7 +15,7 @@
 #      pre-built wheel into a .deb. The deb stage does NOT recompile.
 #
 # Build:
-#   docker build -f packaging/debian/helpers/Dockerfile.deb \
+#   docker build -f packaging/debian/build-helpers/Dockerfile.deb \
 #     --target deb-output \
 #     -t flagtree-deb-nvidia .
 #

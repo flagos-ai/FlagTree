@@ -43,7 +43,7 @@ into a `.deb`/`.rpm` — keeping the heavy lifting in a controlled container.
 
 ```sh
 # DEB
-./packaging/debian/helpers/build-flagtree.sh nvidia
+./packaging/debian/build-helpers/build-flagtree.sh nvidia
 # Output: ./dist/output/python3-flagtree-nvidia_*.deb
 
 # RPM
