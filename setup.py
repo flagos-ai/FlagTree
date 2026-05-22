@@ -132,7 +132,7 @@ class BackendInstaller:
         ]
 
 
-# Taken from http://minio.idc.sse/public/mirror/github/pytorch/pytorch/blob/master/tools/setup_helpers/env.py
+# Taken from https://github.com/pytorch/pytorch/blob/master/tools/setup_helpers/env.py
 def check_env_flag(name: str, default: str = "") -> bool:
     return os.getenv(name, default).upper() in ["ON", "1", "YES", "TRUE", "Y"]
 
@@ -190,7 +190,7 @@ class Package:
 
 # json
 def get_json_package_info():
-    url = "http://minio.idc.sse/public/mirror/github/nlohmann/json/releases/download/v3.11.3/include.zip"
+    url = "https://github.com/nlohmann/json/releases/download/v3.11.3/include.zip"
     return Package("json", "", url, "JSON_INCLUDE_DIR", "", "JSON_SYSPATH")
 
 
@@ -256,7 +256,7 @@ def get_llvm_package_info():
     name = f"llvm-{rev}-{system_suffix}"
     # Create a stable symlink that doesn't include revision
     sym_name = f"llvm-{system_suffix}"
-    url = f"http://minio.idc.sse/public/mirror/public/llvm-builds/{name}.tar.gz"
+    url = f"https://oaitriton.blob.core.windows.net/public/llvm-builds/{name}.tar.gz"
     return Package("llvm", name, url, "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH", sym_name=sym_name)
 
 
@@ -554,7 +554,6 @@ class CMakeBuild(build_ext):
         update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
-
         helper.install_extension(build_ext=self)
 
 
@@ -572,7 +571,7 @@ def download_and_copy_dependencies():
         variable="TRITON_PTXAS_PATH",
         version=NVIDIA_TOOLCHAIN_VERSION["ptxas"],
         url_func=lambda system, arch, version:
-        f"http://minio.idc.sse/public/mirror/nvidia/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
     )
 
     # We download a separate ptxas for blackwell, since there are some bugs when using it for hopper
@@ -583,7 +582,7 @@ def download_and_copy_dependencies():
         variable="TRITON_PTXAS_BLACKWELL_PATH",
         version=NVIDIA_TOOLCHAIN_VERSION["ptxas-blackwell"],
         url_func=lambda system, arch, version:
-        f"http://minio.idc.sse/public/mirror/nvidia/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
     )
     download_and_copy(
         name="cuobjdump",
@@ -593,7 +592,7 @@ def download_and_copy_dependencies():
         variable="TRITON_CUOBJDUMP_PATH",
         version=NVIDIA_TOOLCHAIN_VERSION["cuobjdump"],
         url_func=lambda system, arch, version:
-        f"http://minio.idc.sse/public/mirror/nvidia/cuda_cuobjdump/{system}-{arch}/cuda_cuobjdump-{system}-{arch}-{version}-archive.tar.xz",
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cuobjdump/{system}-{arch}/cuda_cuobjdump-{system}-{arch}-{version}-archive.tar.xz",
     )
     download_and_copy(
         name="nvdisasm",
@@ -603,7 +602,7 @@ def download_and_copy_dependencies():
         variable="TRITON_NVDISASM_PATH",
         version=NVIDIA_TOOLCHAIN_VERSION["nvdisasm"],
         url_func=lambda system, arch, version:
-        f"http://minio.idc.sse/public/mirror/nvidia/cuda_nvdisasm/{system}-{arch}/cuda_nvdisasm-{system}-{arch}-{version}-archive.tar.xz",
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvdisasm/{system}-{arch}/cuda_nvdisasm-{system}-{arch}-{version}-archive.tar.xz",
     )
     crt = "crt" if int(NVIDIA_TOOLCHAIN_VERSION["cudacrt"].split(".")[0]) >= 13 else "nvcc"
     download_and_copy(
@@ -613,7 +612,7 @@ def download_and_copy_dependencies():
         variable="TRITON_CUDACRT_PATH",
         version=NVIDIA_TOOLCHAIN_VERSION["cudacrt"],
         url_func=lambda system, arch, version:
-        f"http://minio.idc.sse/public/mirror/nvidia/cuda_{crt}/{system}-{arch}/cuda_{crt}-{system}-{arch}-{version}-archive.tar.xz",
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_{crt}/{system}-{arch}/cuda_{crt}-{system}-{arch}-{version}-archive.tar.xz",
     )
     download_and_copy(
         name="cudart",
@@ -622,7 +621,7 @@ def download_and_copy_dependencies():
         variable="TRITON_CUDART_PATH",
         version=NVIDIA_TOOLCHAIN_VERSION["cudart"],
         url_func=lambda system, arch, version:
-        f"http://minio.idc.sse/public/mirror/nvidia/cuda_cudart/{system}-{arch}/cuda_cudart-{system}-{arch}-{version}-archive.tar.xz",
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/{system}-{arch}/cuda_cudart-{system}-{arch}-{version}-archive.tar.xz",
     )
     download_and_copy(
         name="cupti",
@@ -631,7 +630,7 @@ def download_and_copy_dependencies():
         variable="TRITON_CUPTI_INCLUDE_PATH",
         version=NVIDIA_TOOLCHAIN_VERSION["cupti"],
         url_func=lambda system, arch, version:
-        f"http://minio.idc.sse/public/mirror/nvidia/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
     )
     download_and_copy(
         name="cupti",
@@ -640,7 +639,7 @@ def download_and_copy_dependencies():
         variable="TRITON_CUPTI_LIB_PATH",
         version=NVIDIA_TOOLCHAIN_VERSION["cupti"],
         url_func=lambda system, arch, version:
-        f"http://minio.idc.sse/public/mirror/nvidia/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
+        f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
     )
 
 
@@ -913,7 +912,7 @@ setup(
     zip_safe=False,
     # for PyPI
     keywords=["Compiler", "Deep Learning"],
-    url="http://minio.idc.sse/public/mirror/github/flagos-ai/FlagTree/",
+    url="https://github.com/flagos-ai/FlagTree/",
     python_requires=PYTHON_REQUIRES,
     classifiers=CLASSIFIERS,
     test_suite="tests",
