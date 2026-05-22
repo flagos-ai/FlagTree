@@ -115,5 +115,4 @@ def install_extension(*args, **kargs):
                 if os.path.exists(mlir_dst):
                     shutil.rmtree(mlir_dst)
                 shutil.copytree(mlir_src, mlir_dst)
-                print(f"Copied MLIR Python bindings from {mlir_src} to {mlir_dst}",
-                      file=sys.stderr)
+                print(f"Copied MLIR Python bindings from {mlir_src} to {mlir_dst}", file=sys.stderr)
