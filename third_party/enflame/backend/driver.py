@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 from triton.backends.compiler import GPUTarget
-from triton.backends.driver import  DriverBase
+from triton.backends.driver import DriverBase
 from triton.backends.enflame.backend import GCUBackend, GCUDriver, ty_to_cpp
 
 
