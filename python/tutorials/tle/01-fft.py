@@ -43,10 +43,10 @@ except Exception:  # pragma: no cover - optional dependency
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 PI = math.pi
-target = triton.runtime.driver.active.get_current_target()
 
 
 def _is_enflame_backend():
+    target = triton.runtime.driver.active.get_current_target()
     return target.backend == "gcu"
 
 
@@ -209,16 +209,23 @@ if _HAVE_CUTILE:
 
     @ct.kernel
     def fft_kernel_cutile(  # noqa: C901
-            x_packed_in, y_packed_out, W0, W1, W2, T0, T1, N: ConstInt,  # type: ignore[valid-type]
-            F0: ConstInt,  # type: ignore[valid-type]
-            F1: ConstInt,  # type: ignore[valid-type]
-            F2: ConstInt,  # type: ignore[valid-type]
-            BS: ConstInt,  # type: ignore[valid-type]
-            D: ConstInt,  # type: ignore[valid-type]
+        x_packed_in,
+        y_packed_out,
+        W0,
+        W1,
+        W2,
+        T0,
+        T1,
+        N: ConstInt,
+        F0: ConstInt,
+        F1: ConstInt,
+        F2: ConstInt,
+        BS: ConstInt,
+        D: ConstInt,
     ):
-        F0F1 = F0 * F1  # type: ignore[operator]
-        F1F2 = F1 * F2  # type: ignore[operator]
-        F0F2 = F0 * F2  # type: ignore[operator]
+        F0F1 = F0 * F1
+        F1F2 = F1 * F2
+        F0F2 = F0 * F2
         bid = ct.bid(0)
 
         X_ri = ct.reshape(
@@ -1109,10 +1116,22 @@ def triton_fft(x: torch.Tensor) -> torch.Tensor:
 
     grid = (m, )
     fft_kernel_triton[grid](
-        in_real, in_imag, bitrev, tw_real, tw_imag, buf0_real, buf0_imag, buf1_real, buf1_imag, in_real.stride(0),
-        buf0_real.stride(0), m, N=n, LOG_N=log_n,  # type: ignore[arg-type]
-        num_warps=4,  # type: ignore[call-arg]
-        num_stages=1,  # type: ignore[call-arg]
+        in_real,
+        in_imag,
+        bitrev,
+        tw_real,
+        tw_imag,
+        buf0_real,
+        buf0_imag,
+        buf1_real,
+        buf1_imag,
+        in_real.stride(0),
+        buf0_real.stride(0),
+        m,
+        N=n,
+        LOG_N=log_n,
+        num_warps=4,
+        num_stages=1,
     )
 
     if log_n % 2 == 0:
@@ -1145,10 +1164,20 @@ def tle_fft(x: torch.Tensor) -> torch.Tensor:
     grid = (m, )
     if n == _FFT_REG_THRESHOLD:
         fft_kernel_tle_reg[grid](
-            in_real, in_imag, bitrev, tw_real, tw_imag, out_real, out_imag, in_real.stride(0), out_real.stride(0), m,
-            N=n, LOG_N=log_n,  # type: ignore[arg-type]
-            num_warps=4,  # type: ignore[call-arg]
-            num_stages=1,  # type: ignore[call-arg]
+            in_real,
+            in_imag,
+            bitrev,
+            tw_real,
+            tw_imag,
+            out_real,
+            out_imag,
+            in_real.stride(0),
+            out_real.stride(0),
+            m,
+            N=n,
+            LOG_N=log_n,
+            num_warps=4,
+            num_stages=1,
         )
     else:
         fft_kernel_tle[grid](
