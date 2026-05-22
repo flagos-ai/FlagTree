@@ -13,9 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-import sys
-
 from triton.backends.compiler import GPUTarget
+<<<<<<< Updated upstream
 from triton.runtime.driver import DriverBase
 from .backend import GCUBackend, GCUDriver, ty_to_cpp
 
@@ -105,6 +104,10 @@ def _patch_cuda_is_available():
 
 
 _patch_cuda_is_available()
+=======
+from triton.backends.driver import  DriverBase
+from triton.backends.enflame.backend import GCUBackend, GCUDriver, ty_to_cpp
+>>>>>>> Stashed changes
 
 
 class _GCUDriver(DriverBase):
@@ -121,11 +124,9 @@ class _GCUDriver(DriverBase):
         self.get_current_stream = self._driver.get_current_stream
         self.get_current_device = self._driver.get_current_device
         self.launcher_cls = self._driver.launcher_cls
-        _ensure_transfer_to_gcu()
 
     def get_active_torch_device(self):
         import torch
-        _ensure_transfer_to_gcu()
         return torch.device("gcu", self.get_current_device())
 
     def get_device_properties(self, device):
@@ -147,7 +148,8 @@ class _GCUDriver(DriverBase):
 
     @staticmethod
     def is_active():
-        _ensure_transfer_to_gcu()
+        import torch_gcu
+        from torch_gcu import transfer_to_gcu  # noqa: F401
         return True
 
     def get_benchmarker(self):
