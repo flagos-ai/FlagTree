@@ -16,7 +16,7 @@
 import sys
 
 from triton.backends.compiler import GPUTarget
-from triton.runtime.driver import  DriverBase
+from triton.runtime.driver import DriverBase
 from .backend import GCUBackend, GCUDriver, ty_to_cpp
 
 
@@ -106,7 +106,9 @@ def _patch_cuda_is_available():
 
 _patch_cuda_is_available()
 
+
 class _GCUDriver(DriverBase):
+
     def __new__(cls):
         if not hasattr(cls, 'instance'):
             cls.instance = super(_GCUDriver, cls).__new__(cls)

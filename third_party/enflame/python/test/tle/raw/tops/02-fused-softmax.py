@@ -36,8 +36,8 @@ def naive_softmax(x):
 @triton.jit
 def softmax_kernel(output_ptr, input_ptr, n_rows, n_cols, input_row_stride, output_row_stride,
                    BLOCK_SIZE: tl.constexpr):
-    tle_raw.call(edsl, [output_ptr, input_ptr, n_rows, n_cols,
-                        input_row_stride, output_row_stride])
+    tle_raw.call(edsl, [output_ptr, input_ptr, n_rows, n_cols, input_row_stride, output_row_stride])
+
 
 def softmax(x):
     n_rows, n_cols = x.shape
