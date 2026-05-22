@@ -19,6 +19,7 @@ def _is_enflame_backend():
     target = triton.runtime.driver.active.get_current_target()
     return target.backend == "gcu"
 
+
 def _require_cuda():
     try:
         if _is_enflame_backend():
