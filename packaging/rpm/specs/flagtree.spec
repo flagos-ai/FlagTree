@@ -29,6 +29,9 @@ Summary:        FlagTree compiler with %{flagtree_backend} backend
 License:        MIT AND Apache-2.0 WITH LLVM-exception AND BSD-3-Clause AND LicenseRef-NVIDIA-CUDA-EULA
 URL:            https://github.com/flagos-ai/FlagTree
 BuildArch:      x86_64
+# ExclusiveArch makes rpmbuild refuse to start on a non-x86_64 host
+# (belt and suspenders with BuildArch above; this wheel is linux_x86_64 only).
+ExclusiveArch:  x86_64
 
 # No Source0: the wheel is supplied via --define "wheel_dir ...".
 
