@@ -35,7 +35,8 @@ Conflicts: python3-triton, python3-flagtree-iluvatar, python3-flagtree-mthreads,
            python3-flagtree-metax, python3-flagtree-amd, python3-flagtree-cambricon,
            python3-flagtree-hcu, python3-flagtree-xpu
 Replaces: python3-triton
-Breaks: python3-triton
+# Note: Breaks: without a version is equivalent to Conflicts:; using
+# Conflicts: above is enough (Debian Policy §7.4).
 Description: FlagTree compiler with NVIDIA backend
  FlagTree is a unified compiler supporting multiple AI chip backends for
  custom Deep Learning operations, forked from triton-lang/triton.

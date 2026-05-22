@@ -8,6 +8,13 @@ on:
     branches: [main]
     paths:
       - 'packaging/rpm/**'
+      - 'python/**'
+      - 'include/**'
+      - 'lib/**'
+      - 'cmake/**'
+      - 'bin/**'
+      - 'CMakeLists.txt'
+      - 'pyproject.toml'
       - '.github/workflows/build-rpm.yml'
   workflow_dispatch:
 

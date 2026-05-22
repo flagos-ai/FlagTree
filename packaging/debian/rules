@@ -21,17 +21,17 @@ override_dh_auto_build:
 override_dh_auto_test:
 
 override_dh_auto_install:
-	@if [ -z "$$(ls $(WHEEL_DIR)/flagtree-*.whl 2>/dev/null)" ]; then \
+	@wheel="$$(ls -1 $(WHEEL_DIR)/flagtree-*.whl 2>/dev/null | head -1)"; \
+	if [ -z "$$wheel" ]; then \
 		echo "ERROR: no flagtree-*.whl found under $(WHEEL_DIR)"; \
 		echo "Run packaging/debian/build-helpers/build-flagtree.sh first."; \
 		exit 1; \
-	fi
-	mkdir -p $(PYDIR)
+	fi; \
+	mkdir -p $(PYDIR); \
 	# pip install --target unpacks the wheel cleanly into the staging tree
 	# without running its own build steps.
 	python3 -m pip install --no-deps --no-compile --no-index \
-		--target=$(PYDIR) \
-		$(WHEEL_DIR)/flagtree-*.whl
+		--target=$(PYDIR) "$$wheel"
 	# Move console scripts out of dist-packages/bin into /usr/bin
 	if [ -d $(PYDIR)/bin ]; then \
 		mkdir -p debian/$(PKG)/usr/bin; \

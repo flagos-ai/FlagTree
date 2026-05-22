@@ -88,7 +88,7 @@ COPY --from=wheel-builder /wheels /build/dist
 # debian/source/format = "3.0 (native)" -> no orig.tar.gz needed.
 ENV WHEEL_DIR=/build/dist
 
-RUN dpkg-buildpackage -us -uc -b -d && \
+RUN dpkg-buildpackage -us -uc -b && \
     ls -lh /python3-flagtree-*.deb
 
 # ---------- Stage 3: just the .deb output ----------
