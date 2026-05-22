@@ -464,7 +464,7 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 cache.store(
     file="mthreads-llvm22",
     condition=("mthreads" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.5.0.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.5.1.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )
