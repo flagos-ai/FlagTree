@@ -424,6 +424,8 @@ class TestTLELocalPointerKernel:
             num_warps=4,
         )
         ttgir = compiled.asm["ttgir"]
+        if _is_enflame_backend():
+            ttgir = compiled.asm["gcuir"]
         assert "ttg.local_load" in ttgir
 
         _local_pointer_local_load_none_kernel[(1, )](out, BLOCK=block, num_warps=4)
@@ -440,6 +442,8 @@ class TestTLELocalPointerKernel:
             num_warps=4,
         )
         ttgir = compiled.asm["ttgir"]
+        if _is_enflame_backend():
+            ttgir = compiled.asm["gcuir"]
         assert "ttg.local_load" in ttgir
 
         _local_pointer_local_load_full_indices_kernel[(1, )](out, BLOCK=block, num_warps=4)
@@ -557,6 +561,8 @@ class TestTLELocalPointerKernel:
             num_warps=4,
         )
         ttgir = compiled.asm["ttgir"]
+        if _is_enflame_backend():
+            ttgir = compiled.asm["gcuir"]
         assert "gpu.barrier" in ttgir
         assert "\"tt.reduce\"" not in ttgir
 
@@ -590,6 +596,8 @@ class TestTLELocalPointerKernel:
             num_stages=2,
         )
         ttgir = compiled.asm["ttgir"]
+        if _is_enflame_backend():
+            ttgir = compiled.asm["gcuir"]
         assert "ttg.local_load" in ttgir
         assert re.search(r"ttg\\.convert_layout .*-> tensor<.*!tt\\.ptr", ttgir) is None
 

@@ -28,7 +28,6 @@ git checkout -b triton_v3.6.x origin/triton_v3.6.x
 ```bash
 cd ~
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run
-bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --container -y
 ```
 
 ### 2. 安装驱动
