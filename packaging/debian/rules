@@ -28,8 +28,6 @@ override_dh_auto_install:
 		exit 1; \
 	fi; \
 	mkdir -p $(PYDIR); \
-	# pip install --target unpacks the wheel cleanly into the staging tree
-	# without running its own build steps.
 	python3 -m pip install --no-deps --no-compile --no-index \
 		--target=$(PYDIR) "$$wheel"
 	# Move console scripts out of dist-packages/bin into /usr/bin
