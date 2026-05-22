@@ -28,6 +28,7 @@ import hashlib
 from triton.runtime.cache import get_cache_manager
 from triton._C.libtriton import ir, passes, llvm
 from . import passes as gcu_passes
+from .gcu_intrinsics import restore_intrinsics_from_placeholders as _restore_gcu_intrinsics
 from typing import Dict
 from types import ModuleType
 from triton.runtime.errors import OutOfResources
@@ -298,6 +299,7 @@ def make_fatbin(mod, metadata, options):
     if options.arch == "gcu500":
         return _make_fatbin_gcu500(str(mod), metadata, options)
     else:
+        mod = _restore_gcu_intrinsics(mod)
         with tempfile.TemporaryDirectory() as tmpdir:
             bin = os.path.join(tmpdir, "kernel.fatbin")
             compile_args = [

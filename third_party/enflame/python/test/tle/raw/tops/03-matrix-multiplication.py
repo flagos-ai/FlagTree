@@ -35,7 +35,7 @@ def matmul_kernel(
     K,
     BLOCK_SIZE: tl.constexpr,
 ):
-    tle_raw.call(edsl, [], [c_ptr, a_ptr, b_ptr, M, N, K])
+    tle_raw.call(edsl, [c_ptr, a_ptr, b_ptr, M, N, K])
 
 
 def matmul(a, b):
