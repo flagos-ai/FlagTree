@@ -43,8 +43,8 @@ docker exec -it ${CONTAINER} /bin/bash
 
 ```shell
 mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.5.0.tar.gz
-tar zxvf mthreads-llvm22-x64_v0.5.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.5.1.tar.gz
+tar zxvf mthreads-llvm22-x64_v0.5.1.tar.gz
 ```
 
 #### 1.3 手动下载 Triton 依赖库
@@ -70,7 +70,7 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.6.x-linux-x6
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3.10 -m pip install flagtree===0.5.1+mthreads3.6 $RES
+python3.10 -m pip install flagtree===0.5.2rc1+mthreads3.6 $RES
 ```
 
 安装 `flagtree` 后，可通过下列命令查看：

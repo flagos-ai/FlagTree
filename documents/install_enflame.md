@@ -12,27 +12,27 @@
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
-# Plan A: docker pull (16.1GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202604-base
+# Plan A: docker pull (32.3GB)
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202605-1.9.10-base
 docker pull ${IMAGE}
-# Plan B: docker load (3.5GB)
-IMAGE=flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202604-base
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202604-base.tar.gz
-docker load -i flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202604-base.tar.gz
+# Plan B: docker load (6.5GB)
+IMAGE=flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202605-1.9.10-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202605-1.9.10-base.tar.gz
+docker load -i flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202605-1.9.10-base.tar.gz
 ```
 
 ```shell
+cat /sys/module/enflame/version
+    # if version < 1.9.10, terminate the processes using GCU, and execute the following commands on the host:
+    # wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run  # 3.7GB
+    # bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --driver -y
+efsmi
 CONTAINER=flagtree-dev-xxx
 docker run -dit \
     --privileged \
     -v /etc/localtime:/etc/localtime:ro \
     -v /home:/home \
     -w /root --name ${CONTAINER} ${IMAGE} bash
-docker cp ${CONTAINER}:/enflame enflame    # Will create ./enflame dir
-bash enflame/driver/enflame-x86_64-gcc-1.7.2.14-20260302150833.run
-efsmi
-docker stop ${CONTAINER}
-docker start ${CONTAINER}
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
