@@ -22,6 +22,7 @@ class CUDAJITFunction(object):
         self.code: Final[str] = file.read_text()
         self.file: Final[Path] = file
         self.libs = kwargs.get("library", None)
+        self.macros = kwargs.get("macro", None)
         self.__triton_builtin__: Final[bool] = True
 
     def make_llvm(self, mlir_context) -> str:
@@ -59,6 +60,11 @@ class CUDAJITFunction(object):
             os.environ[(lib_name + "_home").upper()] = lib_path
             include_dirs.append(os.path.join(lib_path, "include"))
         include_flags = [f"-I{inc_dir}" for inc_dir in include_dirs]
+        
+        macro_flags = []
+        for macro_name, macro_value in self.macros.items():
+            macro_flags.append(f"-D{macro_name}={macro_value}")
+        
         prop = torch.cuda.get_device_properties(torch.cuda.current_device())
         arch = f"-arch=sm_{prop.major}{prop.minor}"
         
@@ -78,10 +84,21 @@ class CUDAJITFunction(object):
         # print("clang cuda")
         # assert build1.returncode == 0, (f"clang failed\nstderr:\n{build1.stderr.decode()}")
         
-        # nvcc cubin
-        build = subprocess.run([NVCC, "-rdc=true", arch, "-O3", *include_flags, "--extended-lambda", "-c", "-o", dst, src],
+        # nvcc -> cubin
+        build = subprocess.run([NVCC, "-rdc=true", arch, "-O3", *include_flags, *macro_flags, "--extended-lambda", "-c", "-o", dst, src],
                                capture_output=True)
         assert build.returncode == 0, (f"nvcc failed\nstderr:\n{build.stderr.decode()}")
+        
+        # nvcc -> ptx -> ptxas -> cubin
+        # max_reg_per_block = 65536
+        # maxnreg = max_reg_per_block // (4 * 32)
+        # NVCC_GENCODE = f"-gencode=arch=compute_{capability}{suffix},code={arch}"
+        # nvcc_cmd = [
+        #         NVCC, "-rdc=true", f"-maxrregcount={maxnreg}", "-ccbin", "g++", NVCC_GENCODE, 
+        #         "-I/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/torch/include",
+        #         fsrc.name, "-ptx", "-c", "-o", fptx.name
+        #     ]
+        
         # TODO: Remove the method of passing information by setting environment variables.
         os.environ["USE_NVCC"] = 'True'
         os.environ["CUDA_CUBIN"] = str(dst)

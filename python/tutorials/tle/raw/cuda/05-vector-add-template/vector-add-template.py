@@ -10,8 +10,10 @@ from triton.language.extra.cuda import libnvshmem_device
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
-@dialect(name="cuda", file=Path(__file__).parent / "01-vector-add.cu", 
-         library={})
+@dialect(name="cuda", 
+         file=Path(__file__).parent / "vector-add-template.cu", 
+         library={"nvshmem": "/home/zyl/zyuli/envs/nvshmem/lib/python3.12/site-packages/nvidia/nvshmem"},
+         macro={"VECTOR_ELEM_TYPE": "int"})
 def edsl(*args, **kwargs):
     ...
 
