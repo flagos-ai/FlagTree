@@ -86,6 +86,11 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
   addIllegalOp<scf::ExecuteRegionOp, scf::ParallelOp, scf::ReduceOp,
                scf::ReduceReturnOp>();
 
+#ifdef __TLE__
+  addDynamicallyLegalOp<triton::gpu::LocalAllocOp>(
+      [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
+#endif
+
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
                              scf::SCFDialect, ub::UBDialect>(

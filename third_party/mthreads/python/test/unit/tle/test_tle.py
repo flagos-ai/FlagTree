@@ -28,6 +28,15 @@ def test_tle_language_import_exports_load_signature():
         "_builder",
         "_semantic",
     ]
+    assert list(inspect.signature(tle.gpu.alloc).parameters) == [
+        "shape",
+        "dtype",
+        "layout",
+        "scope",
+        "init_value",
+        "nv_mma_shared_layout",
+        "_semantic",
+    ]
 
 
 def test_tle_load_sets_async_bool_attr():
@@ -69,6 +78,24 @@ def test_tle_gpu_memory_space_sets_shared_memory_string_attr():
 
     assert ttir.count(" = tt.load ") == 1
     assert 'tt.memory_space = "shared_memory"' in ttir
+
+
+def test_tle_gpu_alloc_emits_local_alloc_in_ttir():
+
+    @triton.jit(noinline=True)
+    def consume_alloc(buf, out):
+        tl.store(out, 0.0)
+
+    @triton.jit
+    def kernel(out):
+        buf = tle.gpu.alloc((16, ), dtype=tl.float32, nv_mma_shared_layout=False)
+        consume_alloc(buf, out)
+
+    ttir = compile_to_ttir(kernel, {"out": "*fp32"})
+
+    assert "ttg.local_alloc" in ttir, ttir
+    assert "!ttg.memdesc<16xf32" in ttir, ttir
+    assert "#smem" in ttir, ttir
 
 
 def test_tle_load_forwards_tl_load_options():

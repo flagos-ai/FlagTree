@@ -580,6 +580,9 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       TritonScanPattern,
       GenericOpPattern<triton::ScanReturnOp>,
       GenericOpPattern<triton::MakeRangeOp>,
+#ifdef __TLE__
+      GenericOpPattern<triton::gpu::LocalAllocOp>,
+#endif
       TritonExpandDimsPattern,
       TritonTransPattern,
       TritonDotPattern,
