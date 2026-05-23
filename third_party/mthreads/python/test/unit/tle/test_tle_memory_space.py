@@ -1,26 +1,12 @@
-import os
-
 import pytest
 import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
-from triton._C import libtriton
-from triton.backends.compiler import GPUTarget
-from triton.compiler import ASTSource
 
-if not hasattr(libtriton, "mthreads"):
-    pytest.skip("mthreads backend not built in libtriton", allow_module_level=True)
+from test_tle_utils import compile_musa, require_mthreads_libtriton
 
-
-def _musa_target():
-    arch = os.environ.get("TRITON_OVERRIDE_ARCH") or os.environ.get("TRITON_MUSA_ARCH") or "ph1"
-    return GPUTarget("musa", arch, 32)
-
-
-def _compile_musa(fn, signature, constexprs=None):
-    src = ASTSource(fn=fn, signature=signature, constexprs=constexprs or {})
-    return triton.compile(src, target=_musa_target())
+require_mthreads_libtriton()
 
 
 @triton.jit
@@ -48,7 +34,7 @@ def _memory_space_unsupported_kernel(out_ptr, BLOCK: tl.constexpr):
 
 
 def test_tle_memory_space_load_uses_shared_async_copy():
-    compiled = _compile_musa(
+    compiled = compile_musa(
         _memory_space_load_kernel,
         signature={"x_ptr": "*fp32", "out_ptr": "*fp32", "BLOCK": "constexpr"},
         constexprs={"BLOCK": 64},
@@ -63,7 +49,7 @@ def test_tle_memory_space_load_uses_shared_async_copy():
 
 
 def test_tle_memory_space_non_load_uses_initialized_shared_alloc():
-    compiled = _compile_musa(
+    compiled = compile_musa(
         _memory_space_non_load_kernel,
         signature={"out_ptr": "*fp32", "BLOCK": "constexpr"},
         constexprs={"BLOCK": 64},
@@ -78,7 +64,7 @@ def test_tle_memory_space_non_load_uses_initialized_shared_alloc():
 
 def test_tle_memory_space_rejects_unsupported_space(capfd):
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_musa(
+        compile_musa(
             _memory_space_unsupported_kernel,
             signature={"out_ptr": "*fp32", "BLOCK": "constexpr"},
             constexprs={"BLOCK": 64},
