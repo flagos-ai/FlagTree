@@ -191,6 +191,23 @@ def TritonMUSAGPUMarkInplaceLoads
 }
 
 #ifdef __TLE__
+def TritonMUSAGPUTLEEarlyAssignMemorySpace
+    : Pass<"tritonmusa-tle-early-assign-memory-space", "mlir::ModuleOp"> {
+  let summary = "Materialize TLE memory-space annotations for MUSA";
+  let description = [{
+    Rewrite tensors marked with `tt.memory_space = "shared_memory"` into
+    explicit shared-memory memdesc traffic before MUSA-specific layout and MMA
+    transforms run. Legal loads are lowered through MUSA async copy plus
+    commit/wait; all other producers use initialized local_alloc/local_load
+    materialization to preserve tensor semantics.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::triton::TritonDialect",
+    "mlir::triton::gpu::TritonGPUDialect"
+  ];
+}
+
 def TritonMUSAGPUTLELowerAsyncLoad
     : Pass<"tritonmusa-tle-lower-async-load", "mlir::ModuleOp"> {
   let summary = "Lower TLE async load hints to MUSA async copies";

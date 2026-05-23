@@ -51,6 +51,12 @@ def test_tle_language_import_exports_load_signature():
         "is_async",
         "_semantic",
     ]
+    assert list(inspect.signature(tle.gpu.memory_space).parameters) == [
+        "input",
+        "space",
+        "_builder",
+        "_semantic",
+    ]
 
 
 def test_tle_load_sets_async_bool_attr():
@@ -77,6 +83,21 @@ def test_tle_load_sets_async_bool_attr():
     assert non_async_ttir.count(" = tt.load ") == 1
     assert "tt.load.async = false" in non_async_ttir
     assert "tt.load.async = true" in async_ttir
+
+
+def test_tle_gpu_memory_space_sets_shared_memory_string_attr():
+
+    @triton.jit
+    def kernel(src, dst):
+        offsets = tl.arange(0, 16)
+        values = tle.load(src + offsets)
+        values = tle.gpu.memory_space(values, "shared_memory")
+        tl.store(dst + offsets, values)
+
+    ttir = _compile_to_ttir(kernel, {"src": "*fp32", "dst": "*fp32"})
+
+    assert ttir.count(" = tt.load ") == 1
+    assert 'tt.memory_space = "shared_memory"' in ttir
 
 
 def test_tle_load_forwards_tl_load_options():

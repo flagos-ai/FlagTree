@@ -1,5 +1,6 @@
 if(FLAGTREE_MTHREADS_TLE)
   set(_TLE_SOURCES
+    TLE/EarlyAssignMemorySpace.cpp
     TLE/LowerAsyncLoad.cpp
   )
 else()
