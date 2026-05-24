@@ -742,6 +742,14 @@ class MUSABackend(BaseBackend):
 
         if hasattr(mthreads.passes.ttgpuir, "add_tle_early_assign_memory_space"):
             mthreads.passes.ttgpuir.add_tle_early_assign_memory_space(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_select_encodings"):
+            mthreads.passes.ttgpuir.add_tle_select_encodings(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_insert_local_pointer_barriers"):
+            mthreads.passes.ttgpuir.add_tle_insert_local_pointer_barriers(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_optimize_local_pointer_loads"):
+            mthreads.passes.ttgpuir.add_tle_optimize_local_pointer_loads(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_optimize_local_pointer_stores"):
+            mthreads.passes.ttgpuir.add_tle_optimize_local_pointer_stores(pm)
         mthreads.passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         mthreads.passes.ttgpuir.add_optimize_dot_operands(pm)

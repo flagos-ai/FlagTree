@@ -4,6 +4,10 @@
 #include "TritonMUSAGPUToLLVM/Passes.h"
 #include "TritonMUSAGPUToLLVM/TargetInfo.h"
 #include "TritonMUSAGPUToLLVM/Utility.h"
+#ifdef __TLE__
+#include "Conversion/MUSATLEToLLVM/LocalPointersOpToLLVM.h"
+#include "Dialect/MUSATLE/IR/Dialect.h"
+#endif
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/GPUToMTVM/GPUToMTVMPass.h"
@@ -120,6 +124,9 @@ public:
     addIllegalDialect<triton::nvidia_gpu::TritonNvidiaGPUDialect>();
     addIllegalDialect<mlir::gpu::GPUDialect>();
     addIllegalDialect<triton::musa::MUSADialect>();
+#ifdef __TLE__
+    addIllegalDialect<triton::musa_tle::MUSATLEDialect>();
+#endif
     addLegalOp<mlir::UnrealizedConversionCastOp>();
 
     addLegalOp<triton::gpu::WarpSpecializeOp>();
@@ -358,6 +365,10 @@ struct ConvertTritonMUSAGPUToLLVM
 
     RewritePatternSet patterns(context);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
+#ifdef __TLE__
+    mlir::triton::musa_tle::populateMUSATLEToLLVMPatterns(
+        typeConverter, targetInfo, patterns, benefit);
+#endif
     mlir::triton::MUSA::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit);
     mlir::triton::MUSA::populateDotOpToLLVMPatterns(typeConverter, patterns,

@@ -224,6 +224,8 @@ def TritonMUSAGPUTLELowerAsyncLoad
     "mlir::triton::gpu::TritonGPUDialect"
   ];
 }
+
+include "MUSATLE/Transforms/Passes.td"
 #endif // __TLE__
 
 #endif // TRITONMUSAGPU_PASSES
