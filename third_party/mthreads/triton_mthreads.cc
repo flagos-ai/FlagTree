@@ -24,7 +24,8 @@ namespace py = pybind11;
 
 #ifdef __TLE__
 void init_triton_musa_tle_ir(py::module m);
-void init_triton_musa_tle_passes_ttgpuir(py::module m);
+void init_triton_musa_tle_frontend_passes_ttgpuir(py::module m);
+void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m);
 void register_triton_musa_tle_dialects(mlir::DialectRegistry &registry);
 #endif
 
@@ -144,12 +145,6 @@ void init_triton_musa_passes_ttgpuir(py::module m) {
                      mlir::createTritonMUSAGPUOptimizeDescriptorEncoding);
   ADD_PASS_WRAPPER_0("add_optimize_sqmma_accumulator_layout",
                      mlir::createTritonMUSAGPUOptimizeSqmmaAccumulatorLayout);
-#ifdef __TLE__
-  ADD_PASS_WRAPPER_0("add_tle_early_assign_memory_space",
-                     mlir::createTritonMUSAGPUTLEEarlyAssignMemorySpace);
-  ADD_PASS_WRAPPER_0("add_tle_lower_async_load",
-                     mlir::createTritonMUSAGPUTLELowerAsyncLoad);
-#endif // __TLE__
 }
 
 void init_triton_mthreads(py::module &&m) {
@@ -161,7 +156,8 @@ void init_triton_mthreads(py::module &&m) {
   auto ttgpuir = passes.def_submodule("ttgpuir");
   init_triton_musa_passes_ttgpuir(ttgpuir);
 #ifdef __TLE__
-  init_triton_musa_tle_passes_ttgpuir(ttgpuir);
+  init_triton_musa_tle_frontend_passes_ttgpuir(ttgpuir);
+  init_triton_musa_tle_dialect_passes_ttgpuir(ttgpuir);
 #endif // __TLE__
 
   // load dialects

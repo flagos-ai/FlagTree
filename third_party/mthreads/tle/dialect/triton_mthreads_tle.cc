@@ -20,6 +20,10 @@
 namespace py = pybind11;
 namespace ttg = mlir::triton::gpu;
 
+// Backend-local `musa_tle` dialect adapters. Frontend marker pass wrappers
+// live in tle/frontend/triton_mthreads_frontend.cc; keep them separate from
+// `musa_tle.local_pointers` builder and transform bindings.
+
 namespace {
 
 void checkCtaRank(llvm::ArrayRef<unsigned> order,
@@ -164,7 +168,7 @@ void init_triton_musa_tle_ir(py::module m) {
            });
 }
 
-void init_triton_musa_tle_passes_ttgpuir(py::module m) {
+void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m) {
   ADD_PASS_WRAPPER_0("add_tle_select_encodings",
                      mlir::createTritonMUSAGPUTLESelectEncodings);
   ADD_PASS_WRAPPER_0("add_tle_insert_local_pointer_barriers",

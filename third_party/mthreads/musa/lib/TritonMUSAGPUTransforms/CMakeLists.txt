@@ -1,12 +1,3 @@
-if(FLAGTREE_MTHREADS_TLE)
-  set(_TLE_SOURCES
-    TLE/EarlyAssignMemorySpace.cpp
-    TLE/LowerAsyncLoad.cpp
-  )
-else()
-  set(_TLE_SOURCES "")
-endif()
-
 add_triton_library(TritonMUSAGPUTransforms
   AccelerateMUSAMatmul.cpp
   CanonicalizeSqmmaResultConversions.cpp
@@ -22,7 +13,6 @@ add_triton_library(TritonMUSAGPUTransforms
   SqmmaPipelineUtils.cpp
   TMEPipelineUtils.cpp
   TMELowering.cpp
-  ${_TLE_SOURCES}
 
   DEPENDS
   TritonMUSAGPUTransformsIncGen

@@ -6,6 +6,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/musa/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/musa/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/tle/dialect/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/tle/dialect/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/tle/frontend/include)
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/tle/frontend/include)
 if(FLAGTREE_MTHREADS_TLE)
   add_subdirectory(tle)
 endif()
@@ -15,9 +17,15 @@ add_subdirectory(musa)
 if(TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_MTHREADS_TLE)
     set(_MTHREADS_TLE_PLUGIN_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/triton_mthreads_tle.cc)
-    set(_MTHREADS_TLE_PLUGIN_LIBS MUSATLEIR MUSATLETransforms)
-    set(_MTHREADS_TLE_PLUGIN_DEPS MUSATLETableGen MUSATLETransforms)
+        ${CMAKE_CURRENT_SOURCE_DIR}/tle/dialect/triton_mthreads_tle.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/tle/frontend/triton_mthreads_frontend.cc)
+    set(_MTHREADS_TLE_PLUGIN_LIBS
+        MUSATLEIR MUSATLETransforms MUSATLEFrontendTransforms)
+    set(_MTHREADS_TLE_PLUGIN_DEPS
+        MUSATLETableGen
+        MUSATLETransforms
+        MUSATLEFrontendTransformsIncGen
+        MUSATLEFrontendTransforms)
   else()
     set(_MTHREADS_TLE_PLUGIN_SOURCES "")
     set(_MTHREADS_TLE_PLUGIN_LIBS "")

@@ -1,7 +1,8 @@
+#include "MUSATLE/Frontend/Passes.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
-#include "TritonMUSAGPUTransforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
@@ -19,8 +20,12 @@ namespace ttg = mlir::triton::gpu;
 
 namespace {
 
-constexpr llvm::StringLiteral kMemorySpaceAttr = "tt.memory_space";
-constexpr llvm::StringLiteral kSharedMemory = "shared_memory";
+constexpr llvm::StringLiteral kAsyncLoadAttr = "tt.load.async";
+
+static bool isTrueAsyncLoadAttr(tt::LoadOp op) {
+  auto attr = op->getAttrOfType<BoolAttr>(kAsyncLoadAttr);
+  return attr && attr.getValue();
+}
 
 static bool isSplatConstantTrue(Value value) {
   auto splat = value.getDefiningOp<tt::SplatOp>();
@@ -80,9 +85,8 @@ getAsyncLoadContiguity(tt::LoadOp op,
   return std::max(1u, contiguity);
 }
 
-static bool
-canLowerAsyncMemorySpaceLoad(tt::LoadOp op,
-                             tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+static bool canLowerAsyncLoad(tt::LoadOp op,
+                              tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   if (op->use_empty())
     return false;
   auto resultTy = dyn_cast<RankedTensorType>(op.getType());
@@ -159,27 +163,17 @@ getForwardedLocalAllocInfo(tt::LoadOp op, ttg::MemDescType dstTy) {
   return info;
 }
 
-static ttg::SharedEncodingTrait getSharedEncodingFor(Operation *op,
-                                                     RankedTensorType type) {
-  if (isa<tt::LoadOp>(op))
-    return tt::getSharedEncoding(op);
-  return tt::getSharedEncoding(type);
-}
-
-static ttg::MemDescType getSharedMemDescType(Operation *op,
-                                             RankedTensorType type) {
-  auto sharedEncoding = getSharedEncodingFor(op, type);
-  auto sharedMemorySpace = ttg::SharedMemorySpaceAttr::get(type.getContext());
-  return ttg::MemDescType::get(type.getShape(), type.getElementType(),
-                               sharedEncoding, sharedMemorySpace,
-                               /*mutableMemory=*/true);
-}
-
 static ttg::LocalAllocOp createLocalAllocForLoad(OpBuilder &builder,
                                                  tt::LoadOp op,
                                                  bool &canForwardLocalAllocs) {
   auto resultTy = cast<RankedTensorType>(op.getType());
-  auto memDescTy = getSharedMemDescType(op.getOperation(), resultTy);
+  auto sharedEncoding = tt::getSharedEncoding(op);
+  auto sharedMemorySpace =
+      ttg::SharedMemorySpaceAttr::get(builder.getContext());
+  auto memDescTy = ttg::MemDescType::get(
+      resultTy.getShape(), resultTy.getElementType(), sharedEncoding,
+      sharedMemorySpace, /*mutableMemory=*/true);
+
   auto alloc = ttg::LocalAllocOp::create(builder, op.getLoc(), memDescTy);
   auto forwardInfo = getForwardedLocalAllocInfo(op, memDescTy);
   canForwardLocalAllocs = forwardInfo.canForward;
@@ -189,27 +183,8 @@ static ttg::LocalAllocOp createLocalAllocForLoad(OpBuilder &builder,
   return alloc;
 }
 
-static void materializeViaInitializedSharedAlloc(Operation *op,
-                                                 OpBuilder &builder) {
-  OpBuilder::InsertionGuard guard(builder);
-  Location loc = op->getLoc();
-  OpResult result = op->getResult(0);
-  auto type = cast<RankedTensorType>(result.getType());
-  auto memDescTy = getSharedMemDescType(op, type);
-
-  builder.setInsertionPointAfter(op);
-  auto alloc = ttg::LocalAllocOp::create(builder, loc, memDescTy, result);
-  auto localLoad =
-      ttg::LocalLoadOp::create(builder, loc, type, alloc.getResult());
-  result.replaceUsesWithIf(localLoad.getResult(), [&](OpOperand &use) {
-    return use.getOwner() != alloc.getOperation();
-  });
-  op->removeAttr(kMemorySpaceAttr);
-}
-
-static void
-lowerLoadViaAsyncSharedCopy(tt::LoadOp op, RewriterBase &rewriter,
-                            tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+static void lowerAsyncLoad(tt::LoadOp op, RewriterBase &rewriter,
+                           tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   OpBuilder::InsertionGuard guard(rewriter);
   Location loc = op.getLoc();
   rewriter.setInsertionPoint(op);
@@ -221,9 +196,8 @@ lowerLoadViaAsyncSharedCopy(tt::LoadOp op, RewriterBase &rewriter,
       op.getOther(), op.getCache(), op.getEvict(), op.getIsVolatile(),
       getAsyncLoadContiguity(op, axisInfoAnalysis));
   auto commit = ttg::AsyncCommitGroupOp::create(rewriter, loc, copy.getToken());
-
   Operation *firstUse = getFirstUseInSameBlock(op);
-  assert(firstUse && "memory_space async load should have a same-block use");
+  assert(firstUse && "async load should have a same-block use");
   rewriter.setInsertionPoint(firstUse);
   auto wait = ttg::AsyncWaitOp::create(rewriter, loc, commit.getResult(), 0);
 
@@ -250,57 +224,36 @@ lowerLoadViaAsyncSharedCopy(tt::LoadOp op, RewriterBase &rewriter,
 
 namespace mlir {
 
-#define GEN_PASS_DEF_TRITONMUSAGPUTLEEARLYASSIGNMEMORYSPACE
-#include "TritonMUSAGPUTransforms/Passes.h.inc"
+#define GEN_PASS_DEF_TRITONMUSAGPUTLELOWERASYNCLOAD
+#include "MUSATLE/Frontend/Passes.h.inc"
 
-struct TritonMUSAGPUTLEEarlyAssignMemorySpacePass
-    : impl::TritonMUSAGPUTLEEarlyAssignMemorySpaceBase<
-          TritonMUSAGPUTLEEarlyAssignMemorySpacePass> {
+struct TritonMUSAGPUTLELowerAsyncLoadPass
+    : impl::TritonMUSAGPUTLELowerAsyncLoadBase<
+          TritonMUSAGPUTLELowerAsyncLoadPass> {
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     IRRewriter rewriter(&getContext());
     tt::ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
 
-    SmallVector<Operation *> ops;
-    mod.walk([&](Operation *op) {
-      if (op->hasAttr(kMemorySpaceAttr))
-        ops.push_back(op);
+    SmallVector<tt::LoadOp> loadOps;
+    mod.walk([&](tt::LoadOp op) {
+      if (op->hasAttr(kAsyncLoadAttr))
+        loadOps.push_back(op);
     });
 
-    bool failed = false;
-    for (Operation *op : ops) {
-      auto memorySpace = op->getAttrOfType<StringAttr>(kMemorySpaceAttr);
-      if (!memorySpace || memorySpace.getValue() != kSharedMemory) {
-        op->emitError("unsupported MUSA TLE memory space: ")
-            << (memorySpace ? memorySpace.getValue() : "<missing>");
-        failed = true;
+    for (tt::LoadOp op : loadOps) {
+      if (!isTrueAsyncLoadAttr(op)) {
+        op->removeAttr(kAsyncLoadAttr);
         continue;
       }
 
-      if (op->getNumResults() != 1 ||
-          !isa<RankedTensorType>(op->getResult(0).getType())) {
-        op->emitError("MUSA TLE shared memory_space expects one ranked tensor "
-                      "result");
-        failed = true;
+      if (!canLowerAsyncLoad(op, axisInfoAnalysis)) {
+        op->removeAttr(kAsyncLoadAttr);
         continue;
       }
 
-      if (op->getResult(0).use_empty()) {
-        op->removeAttr(kMemorySpaceAttr);
-        continue;
-      }
-
-      if (auto load = dyn_cast<tt::LoadOp>(op);
-          load && canLowerAsyncMemorySpaceLoad(load, axisInfoAnalysis)) {
-        lowerLoadViaAsyncSharedCopy(load, rewriter, axisInfoAnalysis);
-        continue;
-      }
-
-      materializeViaInitializedSharedAlloc(op, rewriter);
+      lowerAsyncLoad(op, rewriter, axisInfoAnalysis);
     }
-
-    if (failed)
-      signalPassFailure();
   }
 };
 
