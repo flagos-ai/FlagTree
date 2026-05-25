@@ -208,6 +208,65 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             self.transpose_args_nodes.append(node.value)
         self.generic_visit(node)
 
+    # `for _ in range(start, stop, step)` (and `tl.range(...)`) with step ==
+    # constexpr BLOCK_X and stop == input/constexpr X iterates ceil(stop/step)
+    # times — semantically equivalent to `tl.cdiv(stop, step)`. Some kernels
+    # (e.g. mthreads gemv_kernel) write the K-loop as
+    #   `for k_start in range(0, K, BLOCK_K):`
+    # instead of the more common `for k in range(tl.cdiv(K, BLOCK_K)):` and
+    # therefore never expose any `tl.cdiv(X, BLOCK_X)` call. Synthesizing a
+    # virtual cdiv here recovers the BLOCK_X <-> X pairing.
+    def visit_For(self, node):
+        it = node.iter
+        if isinstance(it, ast.Call) and len(it.args) >= 3:
+            is_range = (isinstance(it.func, ast.Name) and it.func.id == 'range') or self._is_tl_func(it, 'range')
+            if is_range:
+                self._maybe_add_virtual_cdiv(stop_node=it.args[1], step_node=it.args[2])
+        self.generic_visit(node)
+
+    # `arange-derived < X` (or any inequality direction) where the arange-derived
+    # side traces back to exactly one BLOCK_X and X is an input/constexpr
+    # parameter is the canonical out-of-bounds-mask construction pattern. This
+    # provides the same (X, BLOCK_X) pairing signal as `tl.cdiv(X, BLOCK_X)`,
+    # used by kernels without a cdiv call (e.g. mthreads gemv_kernel:
+    #   `row_mask = row_offset < M`, `k_mask = k_offset < K`).
+    def visit_Compare(self, node):
+        if len(node.ops) == 1 and isinstance(node.ops[0], (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+            left, right = node.left, node.comparators[0]
+            # Try both directions; the arange-derived side could be on either side.
+            for arange_side, x_side in ((left, right), (right, left)):
+                if not isinstance(x_side, ast.Name):
+                    continue
+                if (x_side.id not in self.input_params and x_side.id not in self.constexpr_params):
+                    continue
+                bs_set = set[str]()
+                for v in VariableCollector.collect(arange_side):
+                    bs_set.update(self._extract_arange_bs_recursive(v))
+                # Only act when exactly one BLOCK_X is implicated; an ambiguous
+                # bs_set could otherwise pair the wrong block size with X.
+                if len(bs_set) == 1:
+                    bs_name = next(iter(bs_set))
+                    if self._maybe_add_virtual_cdiv(stop_node=x_side, step_node=ast.Name(id=bs_name, ctx=ast.Load())):
+                        break  # don't add twice when both directions happen to match
+        self.generic_visit(node)
+
+    # Synthesize `tl.cdiv(stop, step)` and append it to `cdiv_calls` when both
+    # operands are bare Names. The downstream `_find_paired_dim_size` performs
+    # the actual input/constexpr filtering, so this helper stays permissive.
+    # Returns True if a virtual cdiv was appended.
+    def _maybe_add_virtual_cdiv(self, stop_node: ast.AST, step_node: ast.AST) -> bool:
+        if not (isinstance(stop_node, ast.Name) and isinstance(step_node, ast.Name)):
+            return False
+        if stop_node.id == step_node.id:
+            return False
+        self.cdiv_calls.append(
+            ast.Call(
+                func=ast.Attribute(value=ast.Name(id='tl', ctx=ast.Load()), attr='cdiv', ctx=ast.Load()),
+                args=[stop_node, step_node],
+                keywords=[],
+            ))
+        return True
+
     # If `call_node` invokes a user-defined helper whose body wraps
     # `tl.cdiv(p_X, p_BLOCK_X)` (with p_X, p_BLOCK_X being the helper's formals),
     # build a synthetic `tl.cdiv(call_node.args[i], call_node.args[j])` Call
