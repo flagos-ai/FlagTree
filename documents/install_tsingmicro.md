@@ -89,10 +89,8 @@ export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
 ```
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree/python
 git checkout -b triton_v3.3.x origin/triton_v3.3.x
-python3 -m pip install -r requirements.txt
 export FLAGTREE_BACKEND=tsingmicro
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```

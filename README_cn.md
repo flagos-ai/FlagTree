@@ -77,6 +77,8 @@ TLE 的主要优势包括：
 <img width="275" height="253" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" />  <img width="275" height="253" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
 <img width="275" height="253" alt="hcu_bf16_mm_1a" src=".github/assets/hcu_bf16_mm_1a.png" />  <img width="275" height="253" alt="hcu_fp32_mm_1a" src=".github/assets/hcu_fp32_mm_1a.png" />
 <img width="275" height="253" alt="hcu_bf16_mm_3d" src=".github/assets/hcu_bf16_mm_3d.png" />  <img width="275" height="253" alt="hcu_fp32_mm_3d" src=".github/assets/hcu_fp32_mm_3d.png" />
+<img width="275" height="253" alt="mthreads_bf16_mm_1a_3c" src=".github/assets/mthreads_bf16_mm_1a_3c.png" />  <img width="275" height="253" alt="mthreads_fp32_mm_1a" src=".github/assets/mthreads_fp32_mm_1a.png" />
+<img width="275" height="253" alt="mthreads_bf16_mm_1c" src=".github/assets/mthreads_bf16_mm_1c.png" />  <img width="275" height="253" alt="mthreads_fp32_mm_1c" src=".github/assets/mthreads_fp32_mm_1c.png" />
 
 ## 新特性
 
@@ -124,7 +126,7 @@ TLE 的主要优势包括：
 安装依赖（注意使用正确的 python3.x 执行）：
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
+apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev nlohmann-json3-dev
 python3 -m pip install -r python/requirements.txt
 ```
 

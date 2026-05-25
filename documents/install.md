@@ -6,19 +6,18 @@
 
 ### 1. Environment for build and run
 
-#### 1.1 Use the preinstalled image (for Triton 3.6)
+#### 1.1 Use the image (for Triton 3.6)
 
-If you use this preinstalled image, you do not need to perform the later step 1.x unless you need to install a version of FlagTree other than the one for Triton 3.6.
-If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
+If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
-# Plan A: docker pull (37GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
+# Plan A: docker pull (35.5GB)
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
 docker pull ${IMAGE}
-# Plan B: docker load (17GB)
-IMAGE=flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202603.tar.gz
-docker load -i flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202603.tar.gz
+# Plan B: docker load (16GB)
+IMAGE=flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202605-3.6-base.tar.gz
+docker load -i flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202605-3.6-base.tar.gz
 ```
 
 ```shell
@@ -68,15 +67,14 @@ export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 ```
 
 ```shell
-# For Triton 3.6 (Plan B for TLE-Raw)
+# For Triton 3.6 (Plan B, Recommended)
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
 python3.12 -m pip install mlir $RES
-python3.12 -m pip show mlir
 ```
 
 #### 1.3 Manually download the Triton dependencies
 
-The Triton dependencies are already downloaded and installed in the preinstalled image.
+The Triton dependencies are already downloaded and installed in the image.
 If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
@@ -118,7 +116,7 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 python3.12 -m pip install flagtree===0.5.1 $RES
 ```
 
-`flagtree` is already installed in the preinstalled image. You can check it with:
+After installing `flagtree`, you can check it with:
 
 ```shell
 python3 -m pip show flagtree
@@ -127,7 +125,7 @@ python3 -m pip show flagtree
 #### 2.2 Build from Source
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
+apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev nlohmann-json3-dev
 cd ${YOUR_CODE_DIR}/FlagTree
 python3 -m pip install -r python/requirements.txt
 cd python  # For Triton 3.1, 3.2, 3.3, you need to enter the python directory to build

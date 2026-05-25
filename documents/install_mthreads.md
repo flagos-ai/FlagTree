@@ -82,10 +82,8 @@ python3 -m pip show flagtree
 #### 2.2 Build from Source
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree
 git checkout -b triton_v3.6.x origin/triton_v3.6.x
-python3 -m pip install -r requirements.txt
 export FLAGTREE_BACKEND=mthreads
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
@@ -178,10 +176,8 @@ python3 -m pip show flagtree
 #### 2.2 Build from Source
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree/python
 git checkout -b triton_v3.2.x origin/triton_v3.2.x
-python3 -m pip install -r requirements.txt
 export FLAGTREE_BACKEND=mthreads
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
@@ -282,9 +278,7 @@ python3 -m pip show flagtree
 #### 2.2 Build from Source
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree/python
-python3 -m pip install -r requirements.txt
 export FLAGTREE_BACKEND=mthreads
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```

@@ -79,10 +79,8 @@ python3 -m pip show flagtree
 #### 2.2 从源码构建
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree
 git checkout -b triton_v3.6.x origin/triton_v3.6.x
-python3 -m pip install -r python/requirements.txt --break-system-packages
 export FLAGTREE_BACKEND=enflame
 MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packages
 ```
@@ -172,10 +170,8 @@ python3 -m pip show flagtree
 #### 2.2 从源码构建
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree
 git checkout -b triton_v3.5.x origin/triton_v3.5.x
-python3 -m pip install -r python/requirements.txt --break-system-packages
 export FLAGTREE_BACKEND=enflame
 MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packages
 ```
@@ -265,10 +261,8 @@ python3 -m pip show flagtree
 #### 2.2 从源码构建
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree/python
 git checkout -b triton_v3.3.x origin/triton_v3.3.x
-python3 -m pip install -r requirements.txt
 export FLAGTREE_BACKEND=enflame
 MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v
 ```

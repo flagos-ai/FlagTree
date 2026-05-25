@@ -86,10 +86,8 @@ export PYTHONPATH=~/.flagtree/aipu/llvm-a66376b0-ubuntu-x64-clang16-lld16/python
 ```
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree/python
 git checkout -b triton_v3.3.x origin/triton_v3.3.x
-python3 -m pip install -r requirements.txt
 export FLAGTREE_BACKEND=aipu
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```

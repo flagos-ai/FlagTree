@@ -101,10 +101,8 @@ python3 -m pip show flagtree
 #### 2.2 从源码构建
 
 ```shell
-apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev
 cd ${YOUR_CODE_DIR}/FlagTree/python
 git checkout -b triton_v3.2.x origin/triton_v3.2.x
-python3 -m pip install -r requirements.txt
 export FLAGTREE_BACKEND=ascend
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
