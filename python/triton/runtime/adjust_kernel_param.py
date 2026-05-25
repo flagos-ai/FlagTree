@@ -1210,6 +1210,17 @@ def adjust_block_size_dot_m_dim(nargs, current, config, tma_k_map, tma_m_map, li
             update_bs(nargs, current, config, bs_name, limit, "tma tl.dot", f"< {limit}=limit_m")
 
 
+def adjust_block_size_dot_m_dim_only(nargs, current, config, tma_m_map, limit):
+    for bs_name in tma_m_map.keys():
+        if bs_name not in current:
+            continue
+        bs = current[bs_name]
+        if not isinstance(bs, int):
+            continue
+        if bs < limit:
+            update_bs(nargs, current, config, bs_name, limit, "tma tl.dot", f"< {limit}=limit_m only")
+
+
 def adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_mn_map, limit):
     for bs_name in ge_mn_map.keys():
         if bs_name not in current:
@@ -1245,6 +1256,8 @@ def auto_adjust_block_sizes(nargs, fn, configs, current, config):
             print("[AABS] 3. adjust bs in tl.dot with tma_device or tma_host")
         adjust_block_size_dot_k_dim(nargs, current, config, tma_k_map, 16)
         adjust_block_size_dot_m_dim(nargs, current, config, tma_k_map, tma_m_map, 128)
+        if FLAGTREE_BACKEND == "mthreads":
+            adjust_block_size_dot_m_dim_only(nargs, current, config, tma_m_map, 64)  # mthreads
 
     if ge_m_map or ge_n_map:  # tl.dot with general tl.load
         if FLAGTREE_BACKEND == "hcu":
