@@ -74,11 +74,11 @@ TLE 的主要优势包括：
 无需修改任何 Triton 算子代码，FlagTree 可在实际模型中的某些形状上获得性能增益。
 下面以 Qwen 模型中调用的一些形状下的 mm 算子为例，展示 FlagTree 在不同芯片上的性能增益。
 
-<img width="209" height="192" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" />  <img width="209" height="192" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
-<img width="209" height="192" alt="hcu_bf16_mm_1a" src=".github/assets/hcu_bf16_mm_1a.png" />  <img width="209" height="192" alt="hcu_fp32_mm_1a" src=".github/assets/hcu_fp32_mm_1a.png" />
-<img width="209" height="192" alt="hcu_bf16_mm_3d" src=".github/assets/hcu_bf16_mm_3d.png" />  <img width="209" height="192" alt="hcu_fp32_mm_3d" src=".github/assets/hcu_fp32_mm_3d.png" />
-<img width="209" height="192" alt="mthreads_bf16_mm_1a_3c" src=".github/assets/mthreads_bf16_mm_1a_3c.png" />  <img width="209" height="192" alt="mthreads_fp32_mm_1a" src=".github/assets/mthreads_fp32_mm_1a.png" />
-<img width="209" height="192" alt="mthreads_bf16_mm_1c" src=".github/assets/mthreads_bf16_mm_1c.png" />  <img width="209" height="192" alt="mthreads_fp32_mm_1c" src=".github/assets/mthreads_fp32_mm_1c.png" />
+<img width="197" height="181" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" />  <img width="197" height="181" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
+<img width="197" height="181" alt="hcu_bf16_mm_1a" src=".github/assets/hcu_bf16_mm_1a.png" />  <img width="197" height="181" alt="hcu_fp32_mm_1a" src=".github/assets/hcu_fp32_mm_1a.png" />
+<img width="197" height="181" alt="hcu_bf16_mm_3d" src=".github/assets/hcu_bf16_mm_3d.png" />  <img width="197" height="181" alt="hcu_fp32_mm_3d" src=".github/assets/hcu_fp32_mm_3d.png" />
+<img width="197" height="181" alt="mthreads_bf16_mm_1a_3c" src=".github/assets/mthreads_bf16_mm_1a_3c.png" />  <img width="197" height="181" alt="mthreads_fp32_mm_1a" src=".github/assets/mthreads_fp32_mm_1a.png" />
+<img width="197" height="181" alt="mthreads_bf16_mm_1c" src=".github/assets/mthreads_bf16_mm_1c.png" />  <img width="197" height="181" alt="mthreads_fp32_mm_1c" src=".github/assets/mthreads_fp32_mm_1c.png" />
 
 ## 新特性
 
