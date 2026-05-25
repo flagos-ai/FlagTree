@@ -23,6 +23,10 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
 def SharedMemory : Resource<"::mlir::triton::gpu::SharedMemory">;
 
+#ifdef __TLE__
+def TTG_TMACopyOperand : AnyTypeOf<[TT_TensorDescType, TTG_MemDescType]>;
+#endif // __TLE__
+
 class TTG_Op<string mnemonic, list<Trait> traits = []> :
     Op<TritonGPU_Dialect, mnemonic,
        !listconcat(traits, [VerifyTensorLayoutsTrait])> {
@@ -720,6 +724,29 @@ def TTG_BarrierOp : TTG_Op<"barrier"> {
     bool hasTensorWrite() { return hasAddrSpace(AddrSpace::TensorWrite); }
   }];
 }
+
+#ifdef __TLE__
+def TTG_TMACopyOp : TTG_Op<"tma_copy", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Pseudo op for descriptor-based copy between global tensor descriptor and shared memdesc.";
+
+  let description = [{
+    `ttg.tma_copy` represents an explicit copy between a global tensor
+    descriptor and a shared-memory memdesc. Backend-specific TME/TMA lowering
+    replaces it with the target hardware copy and synchronization operations.
+  }];
+
+  let arguments = (ins
+    TTG_TMACopyOperand:$src,
+    TTG_TMACopyOperand:$dst,
+    Variadic<I32>:$indices
+  );
+
+  let assemblyFormat =
+      "$src `,` $dst `,` `[` $indices `]` attr-dict `:` type($src) `,` type($dst)";
+
+  let hasVerifier = 1;
+}
+#endif // __TLE__
 
 def TTG_WarpIdOp : TTG_Op<"warp_id", [Pure]> {
   let summary = "Return the GPU warp ID";

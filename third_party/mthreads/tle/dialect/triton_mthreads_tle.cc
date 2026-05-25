@@ -156,6 +156,11 @@ void init_triton_musa_tle_ir(py::module m) {
                                           memorySpace,
                                           /*mutableMemory=*/true, allocShape);
            })
+      .def("create_tma_copy",
+           [](TritonOpBuilder &self, mlir::Value src, mlir::Value dst,
+              std::vector<mlir::Value> indices) -> void {
+             self.create<ttg::TMACopyOp>(src, dst, indices);
+           })
       .def("create_local_pointers",
            [](TritonOpBuilder &self, mlir::Type resultTy, mlir::Value memDesc,
               py::args args) -> mlir::OpState {
@@ -177,6 +182,9 @@ void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m) {
                      mlir::createTritonMUSAGPUTLEOptimizeLocalPointerLoads);
   ADD_PASS_WRAPPER_0("add_tle_optimize_local_pointer_stores",
                      mlir::createTritonMUSAGPUTLEOptimizeLocalPointerStores);
+  ADD_PASS_WRAPPER_0(
+      "add_tle_optimize_local_pointer_async_stores",
+      mlir::createTritonMUSAGPUTLEOptimizeLocalPointerAsyncStores);
 }
 
 void register_triton_musa_tle_dialects(mlir::DialectRegistry &registry) {

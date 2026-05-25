@@ -37,6 +37,36 @@ def test_tle_language_import_exports_load_signature():
         "nv_mma_shared_layout",
         "_semantic",
     ]
+    assert list(inspect.signature(tle.gpu.copy).parameters) == [
+        "src",
+        "dst",
+        "shape",
+        "offsets",
+        "_semantic",
+    ]
+    assert hasattr(tle.gpu, "copy")
+
+
+def test_tle_copy_mthreads_bindings_are_backend_local():
+    from triton._C import libtriton
+    from triton._C.libtriton import ir
+
+    from test_tle_utils import mthreads_backend
+
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    builder = ir.builder(context)
+
+    assert hasattr(builder, "create_local_pointers")
+    assert hasattr(builder, "create_tma_copy")
+    assert hasattr(libtriton, "mthreads")
+    assert not hasattr(libtriton, "tle")
+    assert hasattr(
+        libtriton.mthreads.passes.ttgpuir,
+        "add_tle_optimize_local_pointer_async_stores",
+    )
 
 
 def test_tle_load_sets_async_bool_attr():
