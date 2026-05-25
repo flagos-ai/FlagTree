@@ -7,14 +7,17 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <algorithm>
 #include <optional>
 
 namespace mlir {
@@ -225,11 +228,41 @@ static Value createSubviewForStore(OpBuilder &builder, Location loc,
                                         match.offsets);
 }
 
+static unsigned
+getAsyncCopyContiguity(tt::LoadOp load,
+                       tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  unsigned contiguity = axisInfoAnalysis.getContiguity(load.getPtr());
+  if (Value mask = load.getMask())
+    contiguity =
+        std::min<unsigned>(contiguity, axisInfoAnalysis.getMaskAlignment(mask));
+  return std::max(1u, contiguity);
+}
+
+static bool
+canUseAsyncCopyForStore(tt::LoadOp load, const StaticSubviewMatch &match,
+                        tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  if (!tt::canBeConvertedToAsyncLoad(load, axisInfoAnalysis))
+    return false;
+
+  auto loadTy = dyn_cast<RankedTensorType>(load.getType());
+  auto memDescTy = dyn_cast<ttg::MemDescType>(match.baseMemDesc.getType());
+  if (!loadTy || !memDescTy)
+    return false;
+
+  auto sharedEncoding =
+      dyn_cast<ttg::SharedEncodingTrait>(memDescTy.getEncoding());
+  if (!sharedEncoding)
+    return false;
+
+  return tt::getCopyVecBytes(loadTy, sharedEncoding) >= 4;
+}
+
 class OptimizeLocalPointerAsyncStoresPass
     : public impl::TritonMUSAGPUTLEOptimizeLocalPointerAsyncStoresBase<
           OptimizeLocalPointerAsyncStoresPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    tt::ModuleAxisInfoAnalysis axisInfoAnalysis(module);
 
     SmallVector<tt::StoreOp> stores;
     module.walk([&](tt::StoreOp store) { stores.push_back(store); });
@@ -256,13 +289,15 @@ class OptimizeLocalPointerAsyncStoresPass
       if (cast<RankedTensorType>(load.getType()).getElementType() !=
           match->valueType.getElementType())
         continue;
+      if (!canUseAsyncCopyForStore(load, *match, axisInfoAnalysis))
+        continue;
 
       OpBuilder builder(store);
       Value dst = createSubviewForStore(builder, store.getLoc(), *match);
       auto asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
           builder, store.getLoc(), load.getPtr(), dst, load.getMask(),
           load.getOther(), load.getCache(), load.getEvict(),
-          load.getIsVolatile());
+          load.getIsVolatile(), getAsyncCopyContiguity(load, axisInfoAnalysis));
       asyncCopy->setAttr(triton::musa_tle::kMUSATLELocalPointerAsyncStoreAttr,
                          builder.getUnitAttr());
       auto commit = ttg::AsyncCommitGroupOp::create(builder, store.getLoc(),
