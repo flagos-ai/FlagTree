@@ -74,11 +74,11 @@ For detailed design, APIs, and examples, please refer to the [TLE Wiki](https://
 Without modifying any Triton operator code, FlagTree can achieve performance gains for certain shapes in real-world models.
 The following uses the mm operator under some shapes called in the Qwen model as an example to demonstrate FlagTree's performance speedup ratio on various chips.
 
-<img width="275" height="253" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" />  <img width="275" height="253" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
-<img width="275" height="253" alt="hcu_bf16_mm_1a" src=".github/assets/hcu_bf16_mm_1a.png" />  <img width="275" height="253" alt="hcu_fp32_mm_1a" src=".github/assets/hcu_fp32_mm_1a.png" />
-<img width="275" height="253" alt="hcu_bf16_mm_3d" src=".github/assets/hcu_bf16_mm_3d.png" />  <img width="275" height="253" alt="hcu_fp32_mm_3d" src=".github/assets/hcu_fp32_mm_3d.png" />
-<img width="275" height="253" alt="mthreads_bf16_mm_1a_3c" src=".github/assets/mthreads_bf16_mm_1a_3c.png" />  <img width="275" height="253" alt="mthreads_fp32_mm_1a" src=".github/assets/mthreads_fp32_mm_1a.png" />
-<img width="275" height="253" alt="mthreads_bf16_mm_1c" src=".github/assets/mthreads_bf16_mm_1c.png" />  <img width="275" height="253" alt="mthreads_fp32_mm_1c" src=".github/assets/mthreads_fp32_mm_1c.png" />
+<img width="209" height="192" alt="nv_h100_bf16_mm_1a" src=".github/assets/nv_h100_bf16_mm_1a.png" />  <img width="209" height="192" alt="nv_h100_fp32_mm_1a" src=".github/assets/nv_h100_fp32_mm_1a.png" />
+<img width="209" height="192" alt="hcu_bf16_mm_1a" src=".github/assets/hcu_bf16_mm_1a.png" />  <img width="209" height="192" alt="hcu_fp32_mm_1a" src=".github/assets/hcu_fp32_mm_1a.png" />
+<img width="209" height="192" alt="hcu_bf16_mm_3d" src=".github/assets/hcu_bf16_mm_3d.png" />  <img width="209" height="192" alt="hcu_fp32_mm_3d" src=".github/assets/hcu_fp32_mm_3d.png" />
+<img width="209" height="192" alt="mthreads_bf16_mm_1a_3c" src=".github/assets/mthreads_bf16_mm_1a_3c.png" />  <img width="209" height="192" alt="mthreads_fp32_mm_1a" src=".github/assets/mthreads_fp32_mm_1a.png" />
+<img width="209" height="192" alt="mthreads_bf16_mm_1c" src=".github/assets/mthreads_bf16_mm_1c.png" />  <img width="209" height="192" alt="mthreads_fp32_mm_1c" src=".github/assets/mthreads_fp32_mm_1c.png" />
 
 ## Latest News
 
