@@ -1,33 +1,33 @@
 # tle.dsa.hint
 
-## 1. 函数概述
+## 1. Function Overview
 
-`hint` 是 TLE DSA 提供的 JIT 编译期作用域提示接口，用于通过 `with` 语句给作用域内的 TLE DSA builtin 传递编译提示。
+`hint` is a JIT compile-time scoped hint API provided by TLE DSA. It uses a `with` statement to pass compilation hints to TLE DSA builtins inside the scope.
 
 ```python
 with tle.dsa.hint(inter_no_alias=True):
     ...
 ```
 
-当前实现中，`hint` 主要用于向作用域内的 `tle.dsa.copy` 自动传递 `inter_no_alias` 参数。
+In the current implementation, `hint` is mainly used to automatically pass the `inter_no_alias` parameter to `tle.dsa.copy` calls inside the scope.
 
-`tle.dsa.hint` 与 `extension.compile_hint` 互为补充：`tle.dsa.hint` 适用于 `tle.dsa.copy(...)` 这类没有左值接收结果的语句级场景，`extension.compile_hint` 适用于已经有左值张量或指针变量、需要给该值附加编译元数据的场景。
+`tle.dsa.hint` and `extension.compile_hint` complement each other: `tle.dsa.hint` is suitable for statement-level calls without an lvalue, such as `tle.dsa.copy(...)`, while `extension.compile_hint` is suitable when an existing tensor or pointer value is available and compile-time metadata needs to be attached to that value.
 
-## 2. 规格
+## 2. Specification
 
-### 2.1 参数说明
+### 2.1 Parameters
 
-| 参数 | 类型 | 默认值 | 含义说明 |
-|------|------|--------|----------|
-| `inter_no_alias` | Python 常量 `bool` | 无 | 标记不同迭代之间的 copy 操作不存在 alias 关系 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `inter_no_alias` | Python constant `bool` | None | Marks copy operations from different iterations as non-aliasing. |
 
-`hint` 接收关键字参数，参数值必须是 Python AST 常量。例如 `True`、`False` 这类字面量可以使用，运行时变量不支持。
+`hint` accepts keyword arguments whose values must be Python AST constants. Literal values such as `True` and `False` are supported; runtime variables are not supported.
 
-### 2.2 作用范围
+### 2.2 Scope
 
-`hint` 通过 `with` 语句建立作用域。编译器在访问 `tle.dsa.copy` 调用时，会从当前嵌套的 `with` 作用域由内向外查找最近的 `inter_no_alias` 提示。
+`hint` creates a scope through a `with` statement. When the compiler visits a `tle.dsa.copy` call, it searches the current nested `with` scopes from inner to outer and uses the nearest `inter_no_alias` hint.
 
-建议尽量避免嵌套使用 `tle.dsa.hint`。虽然当前实现支持从内到外查找最近的 hint，但嵌套作用域会降低代码可读性，也容易让同一段代码中实际生效的 `inter_no_alias` 值变得不直观。
+Avoid nesting `tle.dsa.hint` when possible. Although the current implementation supports searching from inner scopes to outer scopes, nested scopes reduce readability and can make the effective `inter_no_alias` value less obvious.
 
 ```python
 with tle.dsa.hint(inter_no_alias=True):
@@ -39,33 +39,31 @@ with tle.dsa.hint(inter_no_alias=True):
     tle.dsa.copy(src2, dst2, [size])   # inter_no_alias=True
 ```
 
-如果 `tle.dsa.copy` 显式传入了 `inter_no_alias`，则显式参数优先，`hint` 不会覆盖该参数。
+If `tle.dsa.copy` explicitly passes `inter_no_alias`, the explicit argument takes precedence and the hint does not override it.
 
 ```python
 with tle.dsa.hint(inter_no_alias=True):
-    tle.dsa.copy(src, dst, [size], inter_no_alias=False)  # 使用显式传入的 False
+    tle.dsa.copy(src, dst, [size], inter_no_alias=False)  # uses explicit False
 ```
 
-### 2.3 生效接口
+### 2.3 Affected APIs
 
-当前实现只在调用名为 `copy` 的 builtin 时提取并应用 `hint` 作用域中的 `inter_no_alias`。
+The current implementation only extracts and applies `inter_no_alias` hints for builtin calls named `copy`.
 
-等价关系如下：
+The following forms are equivalent:
 
 ```python
 with tle.dsa.hint(inter_no_alias=True):
     tle.dsa.copy(src, dst, [size])
 ```
 
-等价于：
-
 ```python
 tle.dsa.copy(src, dst, [size], inter_no_alias=True)
 ```
 
-## 3. 与 `extension.compile_hint` 的关系
+## 3. Relationship with `extension.compile_hint`
 
-`compile_hint` 是 Ascend 后端扩展提供的编译提示接口，位于 `triton.language.extra.cann.extension` 命名空间下，用于给某个已有张量附加元数据信息，后端可据此指导优化和代码生成。
+`compile_hint` is a compile hint API provided by the Ascend backend extension. It is located in the `triton.language.extra.cann.extension` namespace and attaches metadata to an existing tensor so the backend can use it for optimization and code generation.
 
 ```python
 import triton.language.extra.cann.extension as extension
@@ -73,26 +71,26 @@ import triton.language.extra.cann.extension as extension
 extension.compile_hint(ptr, hint_name, hint_val=None)
 ```
 
-### 3.1 `extension.compile_hint` 参数说明
+### 3.1 `extension.compile_hint` Parameters
 
-| 参数 | 类型 | 默认值 | 含义说明 |
-|------|------|--------|----------|
-| `ptr` | `tensor` | 必需 | 需要附加提示的张量对象 |
-| `hint_name` | `str` / `tl.constexpr` | 必需 | 提示名称，必须表示字符串 |
-| `hint_val` | `None` / `bool` / `int` / `tl.constexpr` / `list` | `None` | 提示值 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `ptr` | `tensor` | Required | Tensor object to annotate. |
+| `hint_name` | `str` / `tl.constexpr` | Required | Hint name. It must represent a string. |
+| `hint_val` | `None` / `bool` / `int` / `tl.constexpr` / `list` | `None` | Hint value. |
 
-`extension.compile_hint` 不改变计算语义，只给指定张量附加编译期元数据。同一个张量可以多次标注不同 hint。
+`extension.compile_hint` does not change computation semantics. It only attaches compile-time metadata to the specified tensor. The same tensor can be annotated with multiple hints.
 
-### 3.2 适用场景对比
+### 3.2 Use Case Comparison
 
-| 接口 | 适用场景 | 典型形式 |
-|------|----------|----------|
-| `tle.dsa.hint` | 没有左值的语句级调用，需要给作用域内的 builtin 传递提示 | `with tle.dsa.hint(inter_no_alias=True): tle.dsa.copy(...)` |
-| `extension.compile_hint` | 有左值的张量或指针变量，需要给该值附加提示 | `extension.compile_hint(tmp, "hint_a")` |
+| API | Use Case | Typical Form |
+|-----|----------|--------------|
+| `tle.dsa.hint` | Statement-level calls without an lvalue need hints passed to builtins inside a scope. | `with tle.dsa.hint(inter_no_alias=True): tle.dsa.copy(...)` |
+| `extension.compile_hint` | Existing tensor or pointer values need metadata attached to that value. | `extension.compile_hint(tmp, "hint_a")` |
 
-例如，`tle.dsa.copy(...)` 本身没有返回值，也没有左值可以承载 hint，因此使用 `with tle.dsa.hint(...)` 包裹调用；而 `tl.load(...)` 的结果通常会赋给变量，可以对该变量使用 `extension.compile_hint(...)`。
+For example, `tle.dsa.copy(...)` has no return value and no lvalue to carry a hint, so it is wrapped by `with tle.dsa.hint(...)`. In contrast, the result of `tl.load(...)` is usually assigned to a variable, so `extension.compile_hint(...)` can be applied to that variable.
 
-### 3.3 `extension.compile_hint` 使用示例
+### 3.3 `extension.compile_hint` Example
 
 ```python
 import triton.language.extra.cann.extension as extension
@@ -116,14 +114,14 @@ def triton_compile_hint(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_
         tl.store(out_ptr0 + xindex, tmp2, xmask)
 ```
 
-### 3.4 `extension.compile_hint` 限制说明
+### 3.4 `extension.compile_hint` Limitations
 
-- `hint_name` 必须为字符串类型。
-- `hint_val` 支持 `None`、布尔值、整数、`tl.constexpr` 和列表。
-- 列表形式的 `hint_val` 仅支持整数数组，不支持浮点数或混合类型列表。
-- `extension.compile_hint` 需要作用在已有张量值上，不适合 `tle.dsa.copy(...)` 这类无返回值调用。
+- `hint_name` must be a string.
+- `hint_val` supports `None`, booleans, integers, `tl.constexpr`, and lists.
+- A list `hint_val` only supports integer arrays; floating-point or mixed-type lists are not supported.
+- `extension.compile_hint` must be applied to an existing tensor value and is not suitable for no-return calls such as `tle.dsa.copy(...)`.
 
-## 4. `tle.dsa.hint` 使用方法
+## 4. `tle.dsa.hint` Usage
 
 ```python
 import triton
@@ -141,7 +139,7 @@ def hint_kernel(result, index_value, k_cache_ptr, row_ids, token_num: tl.constex
             reload_result = tl.reshape(reload_result, (HEAD_DIM,))
 
             k_cache_offset = tle.dsa.extract_element(index_value, (i,)) * HEAD_DIM
-            res_buf = tle.dsa.to_buffer(reload_result)
+            res_buf = tle.dsa.to_buffer(reload_result, tle.dsa.ascend.UB)
 
             with tle.dsa.hint(inter_no_alias=True):
                 tle.dsa.copy(
@@ -151,13 +149,13 @@ def hint_kernel(result, index_value, k_cache_ptr, row_ids, token_num: tl.constex
                 )
 ```
 
-上例中，`with tle.dsa.hint(inter_no_alias=True)` 会使作用域内的 `tle.dsa.copy` 获得 `inter_no_alias=True` 参数，用于表达不同迭代之间的 copy 目标不存在 alias。
+In this example, `with tle.dsa.hint(inter_no_alias=True)` passes `inter_no_alias=True` to the scoped `tle.dsa.copy`, expressing that copy destinations from different iterations do not alias.
 
-## 5. 限制说明
+## 5. Limitations
 
-- `hint` 只能作为 `with` 上下文使用。
-- `hint` 本身不会在 JIT 运行时执行；它只用于 AST 解析和编译期提示提取。
-- 关键字参数值必须是常量，不支持运行时变量。
-- 当前只有 `inter_no_alias` 会被应用。
-- 当前只有 `tle.dsa.copy` 会消费 `inter_no_alias` hint。
-- 嵌套作用域中，离 `tle.dsa.copy` 最近的 `inter_no_alias` hint 生效；建议尽量避免嵌套使用 `tle.dsa.hint`，优先使用清晰的单层作用域。
+- `hint` can only be used as a `with` context.
+- `hint` itself is not executed at JIT runtime; it is only used for AST parsing and compile-time hint extraction.
+- Keyword argument values must be constants; runtime variables are not supported.
+- Currently, only `inter_no_alias` is applied.
+- Currently, only `tle.dsa.copy` consumes the `inter_no_alias` hint.
+- In nested scopes, the nearest `inter_no_alias` hint to `tle.dsa.copy` takes effect; prefer a clear single-layer scope and avoid nesting `tle.dsa.hint` when possible.
