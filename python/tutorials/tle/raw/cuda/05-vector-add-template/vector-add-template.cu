@@ -14,11 +14,3 @@ extern "C" __device__ void FuncName(                                   \
 #define CONCAT(a, b) a ## b
 #define VECTOR_ADD_FUNC_NAME(type) CONCAT(vector_add_, type)
 DEFINE_VECTOR_ADD(VECTOR_ELEM_TYPE, VECTOR_ADD_FUNC_NAME(VECTOR_ELEM_TYPE))
-
-// #ifdef ENABLE_FLOAT
-// DEFINE_VECTOR_ADD(float,  vector_add_float)
-// #endif
-
-// #ifdef ENABLE_INT
-// DEFINE_VECTOR_ADD(int, vector_add_int)
-// #endif

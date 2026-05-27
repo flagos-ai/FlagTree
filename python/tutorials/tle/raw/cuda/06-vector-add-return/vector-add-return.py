@@ -12,10 +12,10 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 @dialect(
     name="cuda", 
+    compiler="nvcc",
     file=Path(__file__).parent / "vector-add-return.cu", 
     extern=Path(__file__).parent / "vector-add-return-extern-call.py",
     extern_func_name="vector_add_return",
-    library={"nvshmem": "/home/zyl/zyuli/envs/nvshmem/lib/python3.12/site-packages/nvidia/nvshmem"}
 )
 def edsl(*args, **kwargs):
     ...
@@ -34,6 +34,7 @@ def add_kernel(
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
     
     ret = tle_raw.call(edsl, [output_ptr, x_ptr, y_ptr, n_elements])
+    tl.device_print("ret", ret)
     base = ret.to(tl.pointer_type(tl.float32), bitcast=True)
     x = tl.load(base + offsets)
     y = tl.full((BLOCK_SIZE, ), 1.0, tl.float32)

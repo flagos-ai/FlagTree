@@ -10,10 +10,12 @@ from triton.language.extra.cuda import libnvshmem_device
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
-@dialect(name="cuda", 
+@dialect(name="cuda",
+         compiler="nvcc",
          file=Path(__file__).parent / "vector-add-template.cu", 
-         library={"nvshmem": "/home/zyl/zyuli/envs/nvshmem/lib/python3.12/site-packages/nvidia/nvshmem"},
-         macro={"VECTOR_ELEM_TYPE": "int"})
+         extern=Path(__file__).parent / "vector-add-template-extern-call.py",
+         extern_func_name="vector_add",
+         macros={"VECTOR_ELEM_TYPE": "float"})
 def edsl(*args, **kwargs):
     ...
 
@@ -27,7 +29,6 @@ def add_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     tle_raw.call(edsl, [output_ptr, x_ptr, y_ptr, n_elements])
-    libnvshmem_device.vector_add(output_ptr, x_ptr, y_ptr, n_elements)
 
 
 def add(x: torch.Tensor, y: torch.Tensor):
@@ -40,13 +41,14 @@ def add(x: torch.Tensor, y: torch.Tensor):
 
 
 if __name__ == "__main__":
-    # dtype = torch.float32
-    # x = torch.randn(2048, dtype=dtype, device=DEVICE)
-    # y = torch.randn(2048, dtype=dtype, device=DEVICE)
+    dtype = torch.float32
+    x = torch.randn(2048, dtype=dtype, device=DEVICE)
+    y = torch.randn(2048, dtype=dtype, device=DEVICE)
     
-    dtype = torch.int32
-    x = torch.randint(low=0, high=10, size=(2048, ), dtype=dtype, device=DEVICE)
-    y = torch.randint(low=0, high=10, size=(2048, ), dtype=dtype, device=DEVICE)
+    # dtype = torch.int32
+    # x = torch.randint(low=0, high=10, size=(2048, ), dtype=dtype, device=DEVICE)
+    # y = torch.randint(low=0, high=10, size=(2048, ), dtype=dtype, device=DEVICE)
     
     z = add(x, y)
+    print(z)
     assert torch.allclose(x + y, z), (x + y, z)

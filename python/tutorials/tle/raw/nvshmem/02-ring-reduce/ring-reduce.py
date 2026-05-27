@@ -13,8 +13,12 @@ from triton.language.extra.cuda import libnvshmem_device
 
 @dialect(
     name="cuda",
-    file=(Path(__file__).parent / "ring-reduce-device.cu").resolve(),
-    library={"nvshmem": "/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/nvidia/nvshmem"},
+    compiler="nvcc",
+    file=(Path(__file__).parent / "ring-reduce-device.cu"),
+    extern=(Path(__file__).parent / "ring-reduce-device-extern-call.py"),
+    extern_func_name="ring_reduce",
+    libs={"nvshmem": "/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/nvidia/nvshmem"},
+    links=["nvshmem_device"]
 )
 def edsl(*args, **kwargs):
     ...
@@ -28,8 +32,8 @@ def ring_reduce_kernel(
     signal,
     chunk_size,
 ):
-    tle_raw.call(edsl, [])
-    libnvshmem_device.ring_reduce(dst, src, nreduce, signal, chunk_size)
+    tle_raw.call(edsl, [dst, src, nreduce, signal, chunk_size])
+    # libnvshmem_device.ring_reduce(dst, src, nreduce, signal, chunk_size)
 
 
 def cuda_host_compile(cuda_host_path, cuda_host_lib):
@@ -94,7 +98,6 @@ def ring_reduce():
         size
     )
     
-    # print("PE:", mype_in_node.value)
     dtype = torch.int32
     num_blocks = npes_in_node.value
     device = triton.runtime.driver.active.get_active_torch_device()
@@ -103,9 +106,6 @@ def ring_reduce():
     
     dst_storage = torch._C._construct_storage_from_data_pointer(dst.value, device, 4 * M * N)
     dst_tensor = torch.empty(0, dtype=torch.int32, device=device).set_(dst_storage).view(M, N)
-    
-    # data_h_storage = torch._C._construct_storage_from_data_pointer(data_h.value, device, 4 * M * N)
-    # data_h_tensor = torch.empty(0, dtype=torch.int32, device=device).set_(data_h_storage).view(M, N)
     
     signal_storage = torch._C._construct_storage_from_data_pointer(signal.value, device, 8 * num_blocks)
     signal_tensor = torch.empty(0, dtype=torch.int64, device=device).set_(signal_storage).view(num_blocks, )
@@ -123,8 +123,6 @@ def ring_reduce():
     knobs.runtime.jit_post_compile_hook = cumodule_init_hook
 
     curr_stream = torch.cuda.ExternalStream(stream.value, device=device)
-    # print(f"[PE {mype.value}] Using stream pointer: {hex(stream.value)}")
-    # print(f"[PE {mype.value}] Default stream before: {torch.cuda.default_stream().cuda_stream}")
     with torch.cuda.stream(curr_stream):
         chunk_size = int(M // num_blocks * dtype.itemsize)
         ring_reduce_kernel[(num_blocks, )](

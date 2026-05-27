@@ -14,7 +14,7 @@ from triton.language.extra.cuda import libnvshmem_device
 @dialect(
     name="cuda",
     file=(Path(__file__).parent / "on-stream-device-accumulate.cu").resolve(),
-    library={"nvshmem": "/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/nvidia/nvshmem"},
+    libs={"nvshmem": "/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/nvidia/nvshmem"},
 )
 def edsl_accumulate(*args, **kwargs):
     ...
@@ -23,7 +23,7 @@ def edsl_accumulate(*args, **kwargs):
 @dialect(
     name="cuda",
     file=(Path(__file__).parent / "on-stream-device-correct-accumulate.cu").resolve(),
-    library={"nvshmem": "/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/nvidia/nvshmem"},
+    libs={"nvshmem": "/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/nvidia/nvshmem"},
 )
 def edsl_correct_accumulate(*args, **kwargs):
     ...

@@ -1,4 +1,4 @@
-extern "C" __device__ float* vector_add_float_return(
+extern "C" __device__ int vector_add_float_return(
 		          __attribute__((address_space(1))) float *C,
                           __attribute__((address_space(1))) const float *A,
                           __attribute__((address_space(1))) const float *B,
@@ -8,5 +8,5 @@ extern "C" __device__ float* vector_add_float_return(
     C[i] = A[i] + B[i];
   }
 
-  return C;
+  return idx;
 }

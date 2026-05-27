@@ -22,7 +22,7 @@ def import_from_path(file_path):
 
 @builtin
 def call(func, args, _semantic=None):
-    if func.libs is not None:
+    if (func.compiler).lower() == "nvcc":
         func.make_cubin()
         patch_hash_method_for_pointer_type()
         module = import_from_path(func.extern)
