@@ -60,6 +60,26 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
                                 mlir::UnitAttr::get(llvmFuncOp.getContext()));
           llvmFuncOp.setArgAttr(i, LLVM::LLVMDialect::getAlignAttrName(),
                                 mlir::IntegerAttr::get(i32_type, 64));
+        } else if (attr.getName() == "tt.mt_tme_desc") {
+          const auto i32_type =
+              mlir::IntegerType::get(llvmFuncOp.getContext(), 32);
+          assert(attr.getValue() == mlir::IntegerAttr::get(i32_type, 1));
+          assert(isKernel &&
+                 "tt.mt_tme_desc is not supported for device functions");
+
+          auto *ctx = llvmFuncOp.getContext();
+          const auto byteType = mlir::IntegerType::get(ctx, 8);
+          const auto arrayType =
+              mlir::LLVM::LLVMArrayType::get(ctx, byteType, 64);
+          const auto structType =
+              mlir::LLVM::LLVMStructType::getLiteral(ctx, {arrayType},
+                                                     /*isPacked=*/false);
+          llvmFuncOp.setArgAttr(i, LLVM::LLVMDialect::getByValAttrName(),
+                                mlir::TypeAttr::get(structType));
+          llvmFuncOp.setArgAttr(i, "mtvm.grid_constant",
+                                mlir::UnitAttr::get(ctx));
+          llvmFuncOp.setArgAttr(i, LLVM::LLVMDialect::getAlignAttrName(),
+                                mlir::IntegerAttr::get(i32_type, 64));
         }
       }
     }

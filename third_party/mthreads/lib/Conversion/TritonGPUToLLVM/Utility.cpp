@@ -1672,11 +1672,16 @@ triton::FuncOp amendFuncOp(triton::FuncOp funcOp,
   auto funcTy = funcOp.getFunctionType();
   auto amendedInputTy = llvm::to_vector<4>(funcTy.getInputs());
   bool isKernel = triton::isKernel(funcOp);
-  if (isKernel && targetInfo.isCuda()) {
+  if (isKernel && (targetInfo.isCuda() || targetInfo.isMusa())) {
     for (auto i : llvm::seq(amendedInputTy.size())) {
       if (isa<TensorDescType>(amendedInputTy[i])) {
-        funcOp.setArgAttr(i, "tt.nv_tma_desc",
-                          mlir::IntegerAttr::get(i32_ty, 1));
+        if (targetInfo.isCuda()) {
+          funcOp.setArgAttr(i, "tt.nv_tma_desc",
+                            mlir::IntegerAttr::get(i32_ty, 1));
+        } else {
+          funcOp.setArgAttr(i, "tt.mt_tme_desc",
+                            mlir::IntegerAttr::get(i32_ty, 1));
+        }
       }
     }
   }

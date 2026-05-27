@@ -1,12 +1,18 @@
 #include "musa.h"
+#include <stdalign.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
-// Raises a Python exception and returns false if code is not MUSA_SUCCESS.
+typedef struct {
+  PyObject_HEAD;
+  _Alignas(64) MUtensorDescriptor desc;
+} PyMUtensorDescriptorObject;
+
 static bool gpuAssert(MUresult code, const char *file, int line) {
   if (code == MUSA_SUCCESS)
     return true;
@@ -213,105 +219,150 @@ static bool validateTMEDescriptorBlockBytes(unsigned rank,
   return false;
 }
 
-static PyObject *
-fillTMEDescriptorImpl(unsigned rank, unsigned long long global_address,
-                      const uint64_t *dims, const uint32_t *block_dims,
-                      int element_size, unsigned long long desc_address) {
+static bool encodeTMEDescriptor(unsigned rank,
+                                unsigned long long global_address,
+                                const uint64_t *dims,
+                                const uint32_t *block_dims, int element_size,
+                                MUtensorDescriptor *desc) {
   MUtensorDescriptorDataType type;
   if (!getTensorDescriptorDataType(element_size, &type))
-    return NULL;
+    return false;
   if (!validateTMEDescriptorBlockBytes(rank, block_dims, element_size))
-    return NULL;
+    return false;
 
   uint64_t global_strides[5] = {0};
   global_strides[0] = dims[0] * (uint64_t)element_size;
   for (unsigned i = 1; i < rank; ++i)
     global_strides[i] = global_strides[i - 1] * dims[i];
 
-  MUtensorDescriptor desc;
-  MUSA_CHECK_AND_RETURN_NULL(muTensorDescriptorEncode(
-      &desc, type, /*tensorRank=*/rank, (void *)global_address, dims,
-      global_strides, MU_TENSOR_DESCRIPTOR_INTERLEAVE_NONE, /*swizzle=*/0));
-  MUSA_CHECK_AND_RETURN_NULL(
-      muMemcpyHtoD((MUdeviceptr)desc_address, &desc, sizeof(desc)));
-  Py_INCREF(Py_None);
-  return Py_None;
+  return gpuAssert(muTensorDescriptorEncode(
+                       desc, type, /*tensorRank=*/rank, (void *)global_address,
+                       dims, global_strides,
+                       MU_TENSOR_DESCRIPTOR_INTERLEAVE_NONE, /*swizzle=*/0),
+                   __FILE__, __LINE__);
 }
 
-static PyObject *fill1DTMEDescriptor(PyObject *self, PyObject *args) {
-  unsigned long long global_address = 0;
-  uint64_t dims[1];
-  uint32_t block_dims[1];
-  int element_size = 0;
-  unsigned long long desc_address = 0;
-  if (!PyArg_ParseTuple(args, "KKiiK", &global_address, &dims[0],
-                        &block_dims[0], &element_size, &desc_address))
-    return NULL;
-
-  return fillTMEDescriptorImpl(/*rank=*/1, global_address, dims, block_dims,
-                               element_size, desc_address);
+static PyObject *
+PyMUtensorDescriptor_tme_desc_cpu_ptr(PyMUtensorDescriptorObject *self,
+                                      PyObject *Py_UNUSED(ignored)) {
+  return PyLong_FromUnsignedLongLong((unsigned long long)&self->desc);
 }
 
-static PyObject *fill2DTMEDescriptor(PyObject *self, PyObject *args) {
-  unsigned long long global_address = 0;
-  uint64_t dims[2];
-  uint32_t block_dims[2];
-  int element_size = 0;
-  unsigned long long desc_address = 0;
-  if (!PyArg_ParseTuple(args, "KKKiiiK", &global_address, &dims[1], &dims[0],
-                        &block_dims[1], &block_dims[0], &element_size,
-                        &desc_address))
-    return NULL;
+static PyMethodDef PyMUtensorDescriptor_methods[] = {
+    {"tme_desc_cpu_ptr", (PyCFunction)PyMUtensorDescriptor_tme_desc_cpu_ptr,
+     METH_NOARGS,
+     "Return the 64-byte aligned CPU address of the MUSA tensor descriptor"},
+    {NULL, NULL, 0, NULL}};
 
-  return fillTMEDescriptorImpl(/*rank=*/2, global_address, dims, block_dims,
-                               element_size, desc_address);
+static PyObject *PyMUtensorDescriptor_alloc(PyTypeObject *type,
+                                            Py_ssize_t n_items) {
+  void *mem = NULL;
+  if (posix_memalign(&mem, 64, type->tp_basicsize) != 0) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+  PyMUtensorDescriptorObject *self = (PyMUtensorDescriptorObject *)mem;
+  PyObject_INIT(self, type);
+  memset(&self->desc, 0, sizeof(self->desc));
+  return (PyObject *)self;
 }
 
-static PyObject *fill3DTMEDescriptor(PyObject *self, PyObject *args) {
-  unsigned long long global_address = 0;
-  uint64_t dims[3];
-  uint32_t block_dims[3];
-  int element_size = 0;
-  unsigned long long desc_address = 0;
-  if (!PyArg_ParseTuple(args, "KKKKiiiiK", &global_address, &dims[2], &dims[1],
-                        &dims[0], &block_dims[2], &block_dims[1],
-                        &block_dims[0], &element_size, &desc_address))
-    return NULL;
-
-  return fillTMEDescriptorImpl(/*rank=*/3, global_address, dims, block_dims,
-                               element_size, desc_address);
+static void PyMUtensorDescriptor_dealloc(PyObject *self) {
+  Py_TYPE(self)->tp_free(self);
 }
 
-static PyObject *fill4DTMEDescriptor(PyObject *self, PyObject *args) {
+static void PyMUtensorDescriptor_free(void *ptr) { free(ptr); }
+
+static PyTypeObject PyMUtensorDescriptorType = {
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name =
+        "triton.backends.musa.PyMUtensorDescriptor",
+    .tp_basicsize = sizeof(PyMUtensorDescriptorObject),
+    .tp_itemsize = 0,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_doc = "<PyMUtensorDescriptor object>",
+    .tp_new = PyType_GenericNew,
+    .tp_alloc = PyMUtensorDescriptor_alloc,
+    .tp_dealloc = (destructor)PyMUtensorDescriptor_dealloc,
+    .tp_free = PyMUtensorDescriptor_free,
+    .tp_methods = PyMUtensorDescriptor_methods,
+};
+
+static PyObject *fillTMEDescriptor(PyObject *self, PyObject *args) {
   unsigned long long global_address = 0;
-  uint64_t dims[4];
-  uint32_t block_dims[4];
+  PyObject *shape = NULL;
+  PyObject *block_shape = NULL;
   int element_size = 0;
-  unsigned long long desc_address = 0;
-  if (!PyArg_ParseTuple(args, "KKKKKiiiiiK", &global_address, &dims[3],
-                        &dims[2], &dims[1], &dims[0], &block_dims[3],
-                        &block_dims[2], &block_dims[1], &block_dims[0],
-                        &element_size, &desc_address))
+  if (!PyArg_ParseTuple(args, "KOOi", &global_address, &shape, &block_shape,
+                        &element_size))
     return NULL;
 
-  return fillTMEDescriptorImpl(/*rank=*/4, global_address, dims, block_dims,
-                               element_size, desc_address);
-}
+  PyObject *shape_fast = PySequence_Fast(shape, "shape must be a sequence");
+  if (!shape_fast)
+    return NULL;
+  PyObject *block_fast =
+      PySequence_Fast(block_shape, "block_shape must be a sequence");
+  if (!block_fast) {
+    Py_DECREF(shape_fast);
+    return NULL;
+  }
 
-static PyObject *fill5DTMEDescriptor(PyObject *self, PyObject *args) {
-  unsigned long long global_address = 0;
-  uint64_t dims[5];
-  uint32_t block_dims[5];
-  int element_size = 0;
-  unsigned long long desc_address = 0;
-  if (!PyArg_ParseTuple(args, "KKKKKKiiiiiiK", &global_address, &dims[4],
-                        &dims[3], &dims[2], &dims[1], &dims[0], &block_dims[4],
-                        &block_dims[3], &block_dims[2], &block_dims[1],
-                        &block_dims[0], &element_size, &desc_address))
+  Py_ssize_t rank = PySequence_Fast_GET_SIZE(shape_fast);
+  if (rank != PySequence_Fast_GET_SIZE(block_fast)) {
+    PyErr_SetString(PyExc_ValueError, "shape and block_shape rank mismatch");
+    Py_DECREF(shape_fast);
+    Py_DECREF(block_fast);
+    return NULL;
+  }
+  if (rank <= 0 || rank > 5) {
+    PyErr_SetString(PyExc_ValueError, "MUSA TME descriptor rank must be 1..5");
+    Py_DECREF(shape_fast);
+    Py_DECREF(block_fast);
+    return NULL;
+  }
+
+  uint64_t dims[5] = {0};
+  uint32_t block_dims[5] = {0};
+  for (Py_ssize_t i = 0; i < rank; ++i) {
+    PyObject *dim = PySequence_Fast_GET_ITEM(shape_fast, i);
+    PyObject *block_dim = PySequence_Fast_GET_ITEM(block_fast, i);
+    if (!PyLong_Check(dim) || !PyLong_Check(block_dim)) {
+      PyErr_SetString(PyExc_TypeError,
+                      "shape and block_shape values must be integers");
+      Py_DECREF(shape_fast);
+      Py_DECREF(block_fast);
+      return NULL;
+    }
+    Py_ssize_t desc_i = rank - i - 1;
+    uint64_t val = PyLong_AsUnsignedLongLong(dim);
+    if (val == (uint64_t)-1 && PyErr_Occurred()) {
+      Py_DECREF(shape_fast);
+      Py_DECREF(block_fast);
+      return NULL;
+    }
+    dims[desc_i] = val;
+    unsigned long bval = PyLong_AsUnsignedLong(block_dim);
+    if (bval == (unsigned long)-1 && PyErr_Occurred()) {
+      Py_DECREF(shape_fast);
+      Py_DECREF(block_fast);
+      return NULL;
+    }
+    block_dims[desc_i] = (uint32_t)bval;
+  }
+  Py_DECREF(shape_fast);
+  Py_DECREF(block_fast);
+
+  PyMUtensorDescriptorObject *desc =
+      (PyMUtensorDescriptorObject *)PyObject_CallObject(
+          (PyObject *)&PyMUtensorDescriptorType, NULL);
+  if (!desc)
     return NULL;
 
-  return fillTMEDescriptorImpl(/*rank=*/5, global_address, dims, block_dims,
-                               element_size, desc_address);
+  if (!encodeTMEDescriptor((unsigned)rank, global_address, dims, block_dims,
+                           element_size, &desc->desc)) {
+    Py_DECREF(desc);
+    return NULL;
+  }
+  return (PyObject *)desc;
 }
 
 static PyMethodDef ModuleMethods[] = {
@@ -321,18 +372,9 @@ static PyMethodDef ModuleMethods[] = {
      "Get the properties for a given device"},
     {"set_printf_fifo_size", setPrintfFifoSize, METH_VARARGS,
      "Set printf FIFO size"},
-    {"fill_1d_tma_descriptor", fill1DTMEDescriptor, METH_VARARGS,
-     "Fill a 1D TMA descriptor"},
-    {"fill_2d_tma_descriptor", fill2DTMEDescriptor, METH_VARARGS,
-     "Fill a 2D TMA descriptor"},
-    {"fill_3d_tma_descriptor", fill3DTMEDescriptor, METH_VARARGS,
-     "Fill a 3D TMA descriptor"},
-    {"fill_4d_tma_descriptor", fill4DTMEDescriptor, METH_VARARGS,
-     "Fill a 4D TMA descriptor"},
-    {"fill_5d_tma_descriptor", fill5DTMEDescriptor, METH_VARARGS,
-     "Fill a 5D TMA descriptor"},
-    {NULL, NULL, 0, NULL} // sentinel
-};
+    {"fill_tme_descriptor", fillTMEDescriptor, METH_VARARGS,
+     "Fill a host by-value TME descriptor"},
+    {NULL, NULL, 0, NULL}};
 
 static struct PyModuleDef ModuleDef = {PyModuleDef_HEAD_INIT, "musa_utils",
                                        NULL, // documentation
@@ -340,10 +382,15 @@ static struct PyModuleDef ModuleDef = {PyModuleDef_HEAD_INIT, "musa_utils",
                                        ModuleMethods};
 
 PyMODINIT_FUNC PyInit_musa_utils(void) {
+  if (PyType_Ready(&PyMUtensorDescriptorType) < 0)
+    return NULL;
   PyObject *m = PyModule_Create(&ModuleDef);
   if (m == NULL) {
     return NULL;
   }
   PyModule_AddFunctions(m, ModuleMethods);
+  Py_INCREF(&PyMUtensorDescriptorType);
+  PyModule_AddObject(m, "PyMUtensorDescriptor",
+                     (PyObject *)&PyMUtensorDescriptorType);
   return m;
 }

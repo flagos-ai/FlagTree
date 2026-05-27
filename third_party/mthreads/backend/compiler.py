@@ -125,11 +125,27 @@ def _maybe_tool_path(tool) -> Optional[str]:
         return None
 
 
-def _select_tool_path(explicit_path: Optional[str], tool) -> Optional[str]:
+def _local_backend_bin_dir() -> Optional[Path]:
+    bin_dir = Path(__file__).resolve().parent / "bin"
+    return bin_dir if bin_dir.is_dir() else None
+
+
+def _local_backend_tool_path(binary: str) -> Optional[str]:
+    bin_dir = _local_backend_bin_dir()
+    if not bin_dir:
+        return None
+    path = bin_dir / binary
+    return str(path) if path.is_file() else None
+
+
+def _select_tool_path(binary: str, explicit_path: Optional[str], tool_getter) -> Optional[str]:
+    local_path = _local_backend_tool_path(binary)
+    if local_path:
+        return local_path
     path = _normalize_path(explicit_path)
     if path:
         return path
-    return _maybe_tool_path(tool)
+    return _maybe_tool_path(tool_getter())
 
 
 def _resolve_toolchain_paths(options: "MUSAOptions") -> Tuple[str, str, Optional[str]]:
@@ -665,9 +681,9 @@ class MUSABackend(BaseBackend):
                     toolchain_path = str(Path(musa_home) / "bin") if musa_home else None
             args["toolchain_path"] = _normalize_path(toolchain_path)
         if "llc_path" not in opts:
-            args["llc_path"] = _select_tool_path(knobs.musa.llc_path, knobs.musa.llc)
+            args["llc_path"] = _select_tool_path("llc", knobs.musa.llc_path, lambda: knobs.musa.llc)
         if "lld_path" not in opts:
-            args["lld_path"] = _select_tool_path(knobs.musa.lld_path, knobs.musa.lld)
+            args["lld_path"] = _select_tool_path("ld.lld", knobs.musa.lld_path, lambda: knobs.musa.lld)
         if "llc_asm_path" not in opts:
             args["llc_asm_path"] = _normalize_path(knobs.musa.llc_asm_path)
         if "llc_options" not in opts:

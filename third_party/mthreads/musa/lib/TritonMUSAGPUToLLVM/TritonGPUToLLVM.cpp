@@ -21,6 +21,8 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Matchers.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Analysis/Allocation.h"
@@ -67,7 +69,7 @@ static StringRef getInplaceLoadIntrinsicName(InplaceLoadDataKind dataKind) {
 
 static SmallVector<Value>
 buildInplaceLoadCacheHintOperands(Value ptr, Location loc,
-                                  PatternRewriter &rewriter) {
+                                  RewriterBase &rewriter) {
   Type i32Ty = rewriter.getI32Type();
   Value innerPersist = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
                                                 rewriter.getI32IntegerAttr(0));
@@ -136,106 +138,157 @@ public:
   }
 };
 
-class PredicatedCallOpConversion : public RewritePattern {
-public:
-  explicit PredicatedCallOpConversion(MLIRContext *context,
-                                      int32_t computeCapability)
-      : RewritePattern(LLVM::CallOp::getOperationName(), 1, context),
-        computeCapability(computeCapability) {}
+enum class PredicatedCallKind { Load, InplaceLoad, Store };
 
-  LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override {
-    auto callOp = dyn_cast<LLVM::CallOp>(op);
-    if (!callOp || !callOp.getCallee())
-      return failure();
-    auto callee = callOp.getCallee().value();
-    if (callee.contains(LLVM::MUSA::Predicated_Load))
-      return rewritePredicatedLoad(callOp, rewriter, /*useCacheHint=*/false);
-    if (callee.contains(LLVM::MUSA::Predicated_InplaceLoad))
-      return rewritePredicatedLoad(callOp, rewriter,
-                                   /*useCacheHint=*/computeCapability == 31);
-    if (callee.contains(LLVM::MUSA::Predicated_Store))
-      return rewritePredicatedStore(callOp, rewriter);
-    return failure();
+static std::optional<PredicatedCallKind>
+getPredicatedCallKind(LLVM::CallOp callOp) {
+  if (!callOp || !callOp.getCallee())
+    return std::nullopt;
+
+  StringRef callee = callOp.getCallee().value();
+  if (callee.contains(LLVM::MUSA::Predicated_Load))
+    return PredicatedCallKind::Load;
+  if (callee.contains(LLVM::MUSA::Predicated_InplaceLoad))
+    return PredicatedCallKind::InplaceLoad;
+  if (callee.contains(LLVM::MUSA::Predicated_Store))
+    return PredicatedCallKind::Store;
+  return std::nullopt;
+}
+
+static Value emitPredicatedLoadBody(Value ptr, Type elemTy, bool useCacheHint,
+                                    Location loc, RewriterBase &rewriter) {
+  std::optional<unsigned> typeBits = getTypeBitWidth(elemTy);
+  InplaceLoadDataKind dataKind = getInplaceLoadDataKind(elemTy);
+  StringRef intrinsic = getInplaceLoadIntrinsicName(dataKind);
+  if (useCacheHint && typeBits && *typeBits == 128 && !intrinsic.empty()) {
+    SmallVector<Value> operands =
+        buildInplaceLoadCacheHintOperands(ptr, loc, rewriter);
+    return LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic,
+                                           TypeRange{elemTy}, operands)
+        .getResult(0);
   }
+  return LLVM::LoadOp::create(rewriter, loc, elemTy, ptr).getResult();
+}
 
-private:
-  static LogicalResult rewritePredicatedStore(LLVM::CallOp callOp,
-                                              PatternRewriter &rewriter) {
-    Location loc = callOp.getLoc();
-    auto operands = callOp.getOperands();
-    if (operands.size() != 3)
-      return failure();
-    Value ptr = operands[0];
-    Value val = operands[1];
-    Value pred = operands[2];
+static LogicalResult rewritePredicatedStore(LLVM::CallOp callOp,
+                                            RewriterBase &rewriter) {
+  Location loc = callOp.getLoc();
+  auto operands = callOp.getOperands();
+  if (operands.size() != 3)
+    return failure();
+  Value ptr = operands[0];
+  Value val = operands[1];
+  Value pred = operands[2];
 
-    Block *currentBlock = rewriter.getInsertionBlock();
-    Block *afterStore =
-        rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
-    Block *trueBlock = rewriter.createBlock(afterStore);
-
-    rewriter.setInsertionPointToEnd(currentBlock);
-    LLVM::CondBrOp::create(rewriter, loc, pred, trueBlock, afterStore);
-
-    rewriter.setInsertionPointToStart(trueBlock);
+  if (matchPattern(pred, m_One())) {
     LLVM::StoreOp::create(rewriter, loc, val, ptr);
-    LLVM::BrOp::create(rewriter, loc, afterStore);
-
-    rewriter.setInsertionPointToStart(afterStore);
+    rewriter.eraseOp(callOp);
+    return success();
+  }
+  if (matchPattern(pred, m_Zero())) {
     rewriter.eraseOp(callOp);
     return success();
   }
 
-  static LogicalResult rewritePredicatedLoad(LLVM::CallOp callOp,
-                                             PatternRewriter &rewriter,
-                                             bool useCacheHint) {
-    Location loc = callOp.getLoc();
-    auto operands = callOp.getOperands();
-    if (operands.size() != 3)
-      return failure();
-    Value ptr = operands[0];
-    Value pred = operands[1];
-    Value falseVal = operands[2];
+  Block *currentBlock = rewriter.getInsertionBlock();
+  Block *afterStore =
+      rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+  Block *trueBlock = rewriter.createBlock(afterStore);
 
-    Type elemTy = callOp.getResult().getType();
-    Block *currentBlock = rewriter.getInsertionBlock();
-    Block *afterLoad =
-        rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
-    afterLoad->addArgument(elemTy, loc);
-    Block *trueBlock = rewriter.createBlock(afterLoad);
-    Block *falseBlock =
-        rewriter.splitBlock(trueBlock, rewriter.getInsertionPoint());
+  rewriter.setInsertionPointToEnd(currentBlock);
+  LLVM::CondBrOp::create(rewriter, loc, pred, trueBlock, afterStore);
 
-    rewriter.setInsertionPointToEnd(currentBlock);
-    LLVM::CondBrOp::create(rewriter, loc, pred, trueBlock, falseBlock);
+  rewriter.setInsertionPointToStart(trueBlock);
+  LLVM::StoreOp::create(rewriter, loc, val, ptr);
+  LLVM::BrOp::create(rewriter, loc, afterStore);
 
-    rewriter.setInsertionPointToStart(trueBlock);
-    Value loaded;
-    std::optional<unsigned> typeBits = getTypeBitWidth(elemTy);
-    InplaceLoadDataKind dataKind = getInplaceLoadDataKind(elemTy);
-    StringRef intrinsic = getInplaceLoadIntrinsicName(dataKind);
-    if (useCacheHint && typeBits && *typeBits == 128 && !intrinsic.empty()) {
-      SmallVector<Value> operands =
-          buildInplaceLoadCacheHintOperands(ptr, loc, rewriter);
-      loaded = LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic,
-                                               TypeRange{elemTy}, operands)
-                   .getResult(0);
-    } else {
-      loaded = LLVM::LoadOp::create(rewriter, loc, elemTy, ptr);
-    }
-    LLVM::BrOp::create(rewriter, loc, loaded, afterLoad);
+  rewriter.setInsertionPointToStart(afterStore);
+  rewriter.eraseOp(callOp);
+  return success();
+}
 
-    rewriter.setInsertionPointToStart(falseBlock);
-    LLVM::BrOp::create(rewriter, loc, falseVal, afterLoad);
+static LogicalResult rewritePredicatedLoad(LLVM::CallOp callOp,
+                                           RewriterBase &rewriter,
+                                           bool useCacheHint) {
+  Location loc = callOp.getLoc();
+  auto operands = callOp.getOperands();
+  if (operands.size() != 3)
+    return failure();
+  Value ptr = operands[0];
+  Value pred = operands[1];
+  Value falseVal = operands[2];
 
-    rewriter.setInsertionPointToStart(afterLoad);
-    rewriter.replaceOp(callOp, afterLoad->getArgument(0));
+  Type elemTy = callOp.getResult().getType();
+  if (matchPattern(pred, m_One())) {
+    Value loaded =
+        emitPredicatedLoadBody(ptr, elemTy, useCacheHint, loc, rewriter);
+    rewriter.replaceOp(callOp, loaded);
+    return success();
+  }
+  if (matchPattern(pred, m_Zero())) {
+    rewriter.replaceOp(callOp, falseVal);
     return success();
   }
 
-  int32_t computeCapability;
-};
+  Block *currentBlock = rewriter.getInsertionBlock();
+  Block *afterLoad =
+      rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+  afterLoad->addArgument(elemTy, loc);
+  Block *trueBlock = rewriter.createBlock(afterLoad);
+  Block *falseBlock =
+      rewriter.splitBlock(trueBlock, rewriter.getInsertionPoint());
+
+  rewriter.setInsertionPointToEnd(currentBlock);
+  LLVM::CondBrOp::create(rewriter, loc, pred, trueBlock, falseBlock);
+
+  rewriter.setInsertionPointToStart(trueBlock);
+  Value loaded =
+      emitPredicatedLoadBody(ptr, elemTy, useCacheHint, loc, rewriter);
+  LLVM::BrOp::create(rewriter, loc, loaded, afterLoad);
+
+  rewriter.setInsertionPointToStart(falseBlock);
+  LLVM::BrOp::create(rewriter, loc, falseVal, afterLoad);
+
+  rewriter.setInsertionPointToStart(afterLoad);
+  rewriter.replaceOp(callOp, afterLoad->getArgument(0));
+  return success();
+}
+
+static LogicalResult rewritePredicatedCall(LLVM::CallOp callOp,
+                                           RewriterBase &rewriter,
+                                           int32_t computeCapability) {
+  std::optional<PredicatedCallKind> kind = getPredicatedCallKind(callOp);
+  if (!kind)
+    return failure();
+
+  switch (*kind) {
+  case PredicatedCallKind::Load:
+    return rewritePredicatedLoad(callOp, rewriter, /*useCacheHint=*/false);
+  case PredicatedCallKind::InplaceLoad:
+    return rewritePredicatedLoad(callOp, rewriter,
+                                 /*useCacheHint=*/computeCapability == 31);
+  case PredicatedCallKind::Store:
+    return rewritePredicatedStore(callOp, rewriter);
+  }
+  llvm_unreachable("unknown predicated call kind");
+}
+
+static LogicalResult lowerPredicatedLoadStoreCalls(ModuleOp mod,
+                                                   int32_t computeCapability) {
+  SmallVector<LLVM::CallOp> predicatedCalls;
+  mod.walk([&](LLVM::CallOp callOp) {
+    if (getPredicatedCallKind(callOp))
+      predicatedCalls.push_back(callOp);
+  });
+
+  IRRewriter rewriter(mod.getContext());
+  for (LLVM::CallOp callOp : predicatedCalls) {
+    rewriter.setInsertionPoint(callOp);
+    if (failed(rewritePredicatedCall(callOp, rewriter, computeCapability)))
+      return failure();
+  }
+  return success();
+}
 
 class CancelRedundantBFloatRoundTripPattern
     : public OpRewritePattern<LLVM::CallIntrinsicOp> {
@@ -433,10 +486,7 @@ struct ConvertTritonMUSAGPUToLLVM
     if (failed(applyPatternsGreedily(mod, std::move(cleanupPatterns))))
       return signalPassFailure();
 
-    RewritePatternSet predicatedPatterns(context);
-    predicatedPatterns.add<PredicatedCallOpConversion>(context,
-                                                       computeCapability);
-    if (failed(applyPatternsGreedily(mod, std::move(predicatedPatterns))))
+    if (failed(lowerPredicatedLoadStoreCalls(mod, computeCapability)))
       return signalPassFailure();
 
     TritonLLVMFunctionConversionTarget cfTarget(*context);

@@ -101,3 +101,6 @@ docs/sg_execution_times.rst
 
 # Agent
 AGENTS.md
+
+# MTHREADS LOCAL BINARY
+third_party/mthreads/backend/bin/

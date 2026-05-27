@@ -206,8 +206,6 @@ OpPrintingFlags getOpPrintingFlags() {
 py::list getTensorDescMetadata(ModuleOp &mod) {
   TritonSourceMgrDiagnosticHandler handler =
       setupTritonDiagnosticHandler(mod.getContext());
-  constexpr llvm::StringLiteral kHostTensorDescABIArgsAttr =
-      "musa.host_tensordesc_abi_args";
 
   py::list result;
   triton::FuncOp kernelFunc;
@@ -229,13 +227,6 @@ py::list getTensorDescMetadata(ModuleOp &mod) {
     auto encoding = blockType.getEncoding();
 
     py::dict metadata;
-    auto rank = std::max<int64_t>(1, blockType.getRank());
-    int64_t abiExpandedArgs = 1 + 2 * rank;
-    if (auto abiAttr = dyn_cast_or_null<IntegerAttr>(
-            kernelFunc.getArgAttr(i, kHostTensorDescABIArgsAttr))) {
-      abiExpandedArgs = abiAttr.getInt();
-    }
-    metadata["abi_expanded_args"] = abiExpandedArgs;
     if (isa<ttg::NVMMASharedEncodingAttr>(encoding)) {
       auto mmaEncoding = dyn_cast<ttg::NVMMASharedEncodingAttr>(encoding);
       auto swizzle = ttng::getTMASwizzleMode(arg.getLoc(), descTy);
