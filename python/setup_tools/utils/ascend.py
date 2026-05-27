@@ -2,10 +2,10 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(__file__))
-from tools import flagtree_root_dir, DownloadManager, Module  #noqa: E402
+from tools import flagtree_configs, DownloadManager, Module  #noqa: E402
 
 downloader = DownloadManager()
-flagtree_submodule_dir = os.path.join(flagtree_root_dir, "third_party")
+flagtree_submodule_dir = flagtree_configs.flagtree_submodule_dir
 
 
 def get_extra_install_packages():
@@ -34,8 +34,8 @@ def get_package_dir():
 
 
 def handle_editable_install_mode(is_editable=True):
-    prefix_dir = os.path.join(flagtree_root_dir, "third_party")
-    project_dir = flagtree_root_dir
+    prefix_dir = flagtree_configs.flagtree_submodule_dir
+    project_dir = flagtree_configs.flagtree_root_dir
     required_path_mapping = {f"{project_dir}/python/triton/extension": f"{prefix_dir}/ascend/python/triton/extension"}
     for dst, src in required_path_mapping.items():
         if not os.path.exists(src):
