@@ -387,7 +387,7 @@ else:
 
 download_flagtree_third_party("triton_shared", hock=utils.default.precompile_hock, condition=(not flagtree_backend))
 
-download_flagtree_third_party("flir", condition=(flagtree_backend == "aipu"), hock=utils.aipu.precompile_hock,
+download_flagtree_third_party("flir", condition=(flagtree_backend == "ascend"), hock=utils.ascend.precompile_hook_flir,
                               required=True)
 
 handle_flagtree_backend()
@@ -449,9 +449,10 @@ cache.store(
 
 # ascend
 cache.store(
-    file="llvm-b5cc222d-ubuntu-arm64",
+    file="llvm-7d5de303-ubuntu-aarch64-python312-compat",
     condition=("ascend" == flagtree_backend),
-    url="https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-b5cc222d-ubuntu-arm64.tar.gz",
+    url=
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-7d5de303-ubuntu-aarch64-python312-compat_v0.5.0.tar.gz",
     pre_hock=lambda: check_env('LLVM_SYSPATH'),
     post_hock=set_llvm_env,
 )
