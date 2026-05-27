@@ -301,6 +301,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
   set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/python/src)
   if(NOT (FLAGTREE_BACKEND AND EXISTS "${PYTHON_SRC_PATH}"))
     set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
+  elseif(FLAGTREE_BACKEND STREQUAL "ascend")
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/python/src)
   endif()
   include_directories(${PYTHON_SRC_PATH})
 
@@ -487,7 +489,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     include_directories(${PYTHON_ROOT_SRC_PATH})
     add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                 ${PYTHON_SRC_PATH}/ir.cc
-		${BUFFER_IR_SRC_PATH}/buffer_ir.cc
+                ${BUFFER_IR_SRC_PATH}/buffer_ir.cc
                 ${PYTHON_ROOT_SRC_PATH}/passes.cc
                 ${PYTHON_ROOT_SRC_PATH}/interpreter.cc
                 ${PYTHON_ROOT_SRC_PATH}/llvm.cc)
