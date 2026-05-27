@@ -40,8 +40,8 @@ elseif(FLAGTREE_BACKEND STREQUAL "ascend")
   set(CMAKE_C_COMPILER clang)
   set(CMAKE_CXX_COMPILER clang++)
   set(FLIR_BUILD_INCUBATED ON CACHE BOOL "Build FLIR incubated passes" FORCE)
-  # set(LLVM_MAJOR_VERSION_21_COMPATIBLE ON CACHE BOOL "AscendNPU-IR build with llvm major version 21 or later" FORCE)
-  # add_definitions(-D__LLVM_MAJOR_VERSION_21_COMPATIBLE__)
+  set(LLVM_MAJOR_VERSION_21_COMPATIBLE ON CACHE BOOL "AscendNPU-IR build with llvm major version 21 or later" FORCE)
+  add_definitions(-D__LLVM_MAJOR_VERSION_21_COMPATIBLE__)
   add_compile_options("-Wno-deprecated-declarations")
   add_compile_options("-Wno-error=deprecated-declarations")
   # AscendNPU-IR
@@ -59,6 +59,27 @@ set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
 if(FLAGTREE_PLUGIN)
   add_definitions(-D__FLAGTREE_PLUGIN__)
 endif()
+
+# FLAGTREE SPEC LIB GET FUNC
+function(get_flagtree_backend_lib lib_name output_lib)
+  set(ret FlagTree_${FLAGTREE_BACKEND}_${lib_name})
+  if(NOT TARGET ${ret})
+    set(ret "")
+  endif()
+  set(${output_lib} ${ret} PARENT_SCOPE)
+endfunction()
+
+# FLAGTREE SPEC TD FILE GET FUNC
+function(set_flagtree_backend_td output_td td_filename)
+  set(ret ${td_filename})
+  file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)
+  set(BACKEND_SPEC_TD ${BACKEND_SPEC_ROOT}/${relative_path}/${td_filename})
+  if(EXISTS ${BACKEND_SPEC_TD})
+    set(ret ${BACKEND_SPEC_TD})
+  endif()
+  set(${output_td} ${ret} PARENT_SCOPE)
+endfunction()
 
 project(triton CXX C)
 include(CTest)
@@ -135,7 +156,12 @@ if(TRITON_BUILD_UT)
 endif()
 
 # Compiler flags
-set(FLAGTREE_BACKEND_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND})
+set(FLAGTREE_BACKEND_DIR ${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND})
+## flagtree spec include dir
+set(BACKEND_SPEC_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/backend/spec/include)
+if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_SPEC_INCLUDE_DIR})
+  include_directories(${BACKEND_SPEC_INCLUDE_DIR})
+endif()
 ## flagtree third_party include dir
 set(BACKEND_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/include)
 if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
@@ -317,9 +343,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
   add_subdirectory(third_party/proton/Dialect)
 
   # Add TLE plugin
-  # RICKY TODO
-  # list(APPEND TRITON_PLUGIN_NAMES "tle")
-  # add_subdirectory(third_party/tle)
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    #list(APPEND TRITON_PLUGIN_NAMES "tle")
+    #add_subdirectory(third_party/tle/dsa)
+  endif()
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)

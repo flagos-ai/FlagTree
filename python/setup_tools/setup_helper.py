@@ -81,7 +81,7 @@ def download_flagtree_third_party(name, condition, required=False, hock=None):
             submodule = utils.flagtree_submodules[name]
             downloader.download(module=submodule, required=required)
             if callable(hock):
-                hock(third_party_base_dir=utils.flagtree_submodule_dir, backend=submodule,
+                hock(third_party_base_dir=configs.flagtree_submodule_dir, backend=submodule,
                      default_backends=configs.default_backends)
 
         else:
