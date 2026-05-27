@@ -313,8 +313,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
   link_libraries(${Python3_LIBRARIES})
   add_link_options(${Python3_LINK_OPTIONS})
 
-  # Add TLE plugin
   list(APPEND TRITON_PLUGIN_NAMES "tle")
+  add_subdirectory(third_party/tle)
   #add_subdirectory(third_party/tle/dsa)
 
   if (DEFINED TRITON_PLUGIN_DIRS)
@@ -542,12 +542,11 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
 endif()
 
 if(NOT TRITON_BUILD_PYTHON_MODULE)
+  add_subdirectory(third_party/tle)
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
   endforeach()
   add_subdirectory(third_party/proton/Dialect)
-  # flagtree tle
-  #add_subdirectory(third_party/tle)
 endif()
 
 find_package(Threads REQUIRED)
