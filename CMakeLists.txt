@@ -549,7 +549,7 @@ if(NOT TRITON_BUILD_PYTHON_MODULE)
   endforeach()
   add_subdirectory(third_party/proton/Dialect)
   # flagtree tle
-  add_subdirectory(third_party/tle)
+  #add_subdirectory(third_party/tle)
 endif()
 
 find_package(Threads REQUIRED)
