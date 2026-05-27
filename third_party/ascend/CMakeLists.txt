@@ -29,6 +29,9 @@ include_directories(${CMAKE_BINARY_DIR}/third_party/flir/include)
 
 add_subdirectory(backend/spec/lib)
 
+add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/flir/include
+                 ${CMAKE_BINARY_DIR}/third_party/flir/include)
+
 add_subdirectory(${PROJECT_SOURCE_DIR}/include
                  ${PROJECT_BINARY_DIR}/include)
 add_subdirectory(${PROJECT_SOURCE_DIR}/lib

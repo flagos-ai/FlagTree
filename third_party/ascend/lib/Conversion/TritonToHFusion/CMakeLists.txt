@@ -3,6 +3,8 @@ add_triton_library(TritonToHFusion
 
   DEPENDS
     TritonToHFusionConversionPassIncGen
+    TritonAscendTableGen
+    TritonAscendAttrDefsIncGen
 
   LINK_LIBS
     BiShengIRHFusionDialect
