@@ -1,14 +1,14 @@
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/flir/include)
-include_directories(${CMAKE_CURRENT_BINARY_DIR}/third_party/flir/include)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/flir/include)
+include_directories(${CMAKE_BINARY_DIR}/third_party/flir/include)
 
 # list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-# 
-# # Triton Ascend is dependent on AscendNPU IR
-# set(ASCENDNPU_IR_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/AscendNPU-IR")
-# set(ASCENDNPU_IR_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/AscendNPU-IR")
-# 
+
+# Triton Ascend is dependent on AscendNPU IR
+# set(ASCENDNPU_IR_SRC_DIR "${PROJECT_SOURCE_DIR}/third_party/ascend/AscendNPU-IR")
+# set(ASCENDNPU_IR_BINARY_DIR "${PROJECT_BINARY_DIR}/third_party/ascend/AscendNPU-IR")
+
 # set(BISHENGIR_ENABLE_A5_UNPUBLISHED_FEATURES ON)
 # set(BISHENGIR_BUILD_STANDALONE_IR_ONLY ON)
 # 
@@ -36,7 +36,7 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/lib
 add_subdirectory(include)
 add_subdirectory(lib)
 
-# add_triton_library(Registrar Registrar.cc)
+#add_triton_library(Registrar Registrar.cc)
 
 if(LLVM_MAJOR_VERSION_21_COMPATIBLE)
   set(_MLIRMeshDialect_LIB MLIRMeshDialect)
@@ -48,9 +48,10 @@ add_triton_plugin(TritonAscend
   ${CMAKE_CURRENT_SOURCE_DIR}/triton_ascend.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/ascend_ir.cc
   LINK_LIBS
-  TritonToLinalg
+  TritonToLinalgIncubated
   BiShengIRScopeDialect
   BiShengIRHIVMDialect
+  ${_MLIRMeshDialect_LIB}
 )
 
 option(TRITON_ENABLE_COVERAGE_LLVM_COV "Enable code llvm-cov coverage tool for Ascend plugin " OFF)
