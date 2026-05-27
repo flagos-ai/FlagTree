@@ -313,6 +313,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
   link_libraries(${Python3_LIBRARIES})
   add_link_options(${Python3_LINK_OPTIONS})
 
+  # Add TLE plugin
+  list(APPEND TRITON_PLUGIN_NAMES "tle")
+  #add_subdirectory(third_party/tle/dsa)
+
   if (DEFINED TRITON_PLUGIN_DIRS)
     foreach(PLUGIN_DIR ${TRITON_PLUGIN_DIRS})
       # Read the plugin name under dir/backend/name.conf
@@ -341,10 +345,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
   # We always build proton dialect
   list(APPEND TRITON_PLUGIN_NAMES "proton")
   add_subdirectory(third_party/proton/Dialect)
-
-  # Add TLE plugin
-  #list(APPEND TRITON_PLUGIN_NAMES "tle")
-  #add_subdirectory(third_party/tle/dsa)
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
