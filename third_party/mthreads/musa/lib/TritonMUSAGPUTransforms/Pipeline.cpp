@@ -605,9 +605,12 @@ static void createAsyncCopy(scf::ForOp forOp, tt::LoadOp loadOp, Value alloc,
 
   Value view = createMusaSingleBufferView(builder, alloc, insertIdx);
   auto sqmmaLocalAlloc = getSqmmaOperandLocalAllocUser(loadOp);
-  if (sqmmaLocalAlloc)
+  if (sqmmaLocalAlloc) {
+    if (auto allocOp = alloc.getDefiningOp())
+      triton::musa::copySqmmaAttrs(sqmmaLocalAlloc.getOperation(), allocOp);
     triton::musa::copySqmmaAttrs(sqmmaLocalAlloc.getOperation(),
                                  view.getDefiningOp());
+  }
   Operation *copy = ttg::AsyncCopyGlobalToLocalOp::create(
       builder, src, view, mask, other, loadOp.getCache(), loadOp.getEvict(),
       loadOp.getIsVolatile(), contiguity);

@@ -1,4 +1,5 @@
 #include "TritonMUSAGPUToLLVM/Utility.h"
+#include "mlir/IR/Matchers.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -323,6 +324,11 @@ Value llGetPid(Location loc, RewriterBase &rewriter, ModuleOp /*moduleOp*/,
 
 Value llLoad(RewriterBase &rewriter, Location loc, Value ptr, Type elemTy,
              Value pred, Value falseVal) {
+  if (!pred || matchPattern(pred, m_One()))
+    return LLVM::LoadOp::create(rewriter, loc, elemTy, ptr).getResult();
+  if (matchPattern(pred, m_Zero()))
+    return falseVal;
+
   Type funcType = getFunctionType(elemTy, ValueRange({ptr, pred, falseVal}));
   auto parent = ptr.getParentRegion()->getParentOfType<LLVM::LLVMFuncOp>();
   auto funcName = mangleFunc(Predicated_Load, funcType);
@@ -336,6 +342,9 @@ Value llLoad(RewriterBase &rewriter, Location loc, Value ptr, Type elemTy,
 
 Value llInplaceLoad(RewriterBase &rewriter, Location loc, Value ptr,
                     Type elemTy, Value pred, Value falseVal) {
+  if (pred && matchPattern(pred, m_Zero()))
+    return falseVal;
+
   Type funcType = getFunctionType(elemTy, ValueRange({ptr, pred, falseVal}));
   auto parent = ptr.getParentRegion()->getParentOfType<LLVM::LLVMFuncOp>();
   auto funcName = mangleFunc(Predicated_InplaceLoad, funcType);
@@ -349,6 +358,13 @@ Value llInplaceLoad(RewriterBase &rewriter, Location loc, Value ptr,
 
 void llStore(RewriterBase &rewriter, Location loc, Value ptr, Value val,
              Value pred) {
+  if (!pred || matchPattern(pred, m_One())) {
+    LLVM::StoreOp::create(rewriter, loc, val, ptr);
+    return;
+  }
+  if (matchPattern(pred, m_Zero()))
+    return;
+
   Type funcType = getFunctionType(void_ty(rewriter.getContext()),
                                   ValueRange({ptr, val, pred}));
   auto parent = ptr.getParentRegion()->getParentOfType<LLVM::LLVMFuncOp>();
@@ -356,6 +372,39 @@ void llStore(RewriterBase &rewriter, Location loc, Value ptr, Value val,
   LLVM::LLVMFuncOp funcOp =
       appendOrGetExternFuncOp(rewriter, parent, funcName, funcType);
   LLVM::CallOp::create(rewriter, loc, funcOp, ValueRange({ptr, val, pred}));
+}
+
+static Value bytePermuteI32(Location loc, RewriterBase &rewriter, Value a,
+                            Value b, Value selector) {
+  auto bld = TritonLLVMOpBuilder(loc, rewriter);
+
+  Value packed = bld.or_(bld.zext(i64_ty, a),
+                         bld.shl(i64_ty, bld.zext(i64_ty, b), bld.i64_val(32)));
+  Value result = bld.i32_val(0);
+  Value zero = bld.i32_val(0);
+  Value byteMask = bld.i32_val(0xff);
+
+  for (int i = 0; i < 4; ++i) {
+    Value nibble =
+        bld.and_(bld.lshr(selector, bld.i32_val(i * 4)), bld.i32_val(0xf));
+    Value byteIndex = bld.and_(nibble, bld.i32_val(0x7));
+    Value byteShift = bld.shl(byteIndex, bld.i32_val(3));
+
+    Value byte =
+        bld.trunc(i32_ty, bld.lshr(packed, bld.zext(i64_ty, byteShift)));
+    byte = bld.and_(byte, byteMask);
+
+    // Match generic PRMT selector bit 3 semantics: replicate the selected
+    // byte's sign bit across the destination byte.
+    Value signSet = bld.icmp_ne(bld.and_(byte, bld.i32_val(0x80)), zero);
+    Value signByte = bld.select(signSet, byteMask, zero);
+    Value signMode = bld.icmp_ne(bld.and_(nibble, bld.i32_val(0x8)), zero);
+    byte = bld.select(signMode, signByte, byte);
+
+    result = bld.or_(result, bld.shl(byte, bld.i32_val(i * 8)));
+  }
+
+  return result;
 }
 
 Value permute(Location loc, RewriterBase &rewriter, Value a, Value b,
@@ -406,9 +455,7 @@ Value permute(Location loc, RewriterBase &rewriter, Value a, Value b,
     bI32 = bld.bitcast(bI32, i32_ty);
   }
 
-  auto call = LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.prmt",
-                                              i32_ty, {aI32, bI32, mask});
-  Value result = call.getResult(0);
+  Value result = bytePermuteI32(loc, rewriter, aI32, bI32, mask);
   if (bits < 32)
     result = bld.trunc(rawTy, result);
   if (!valueTy.isIntOrIndex())

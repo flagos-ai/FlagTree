@@ -358,6 +358,19 @@ static FailureOr<Value> lowerResidualFMAOperandLoad(
 
 Value maybeAnd(ConversionPatternRewriter &rewriter, Location loc, Value a,
                Value b) {
+  if (!a)
+    return b;
+  if (!b)
+    return a;
+  if (matchPattern(a, m_One()))
+    return b;
+  if (matchPattern(b, m_One()))
+    return a;
+  if (matchPattern(a, m_Zero()))
+    return a;
+  if (matchPattern(b, m_Zero()))
+    return b;
+
   if (a && b) {
     return TritonLLVMOpBuilder(loc, rewriter).and_(a, b);
   }

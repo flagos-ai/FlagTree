@@ -103,6 +103,7 @@ public:
   virtual bool supportStMatrix() const { return false; }
   virtual bool supportLdStMatrixB8() const { return false; }
   virtual bool isCuda() const { return false; }
+  virtual bool isMusa() const { return false; }
 
   // Annotate target specific information to local load operations during
   // lowering to LLVM. `llLoadOp` is the generated LLVM load op.

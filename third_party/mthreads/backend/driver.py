@@ -109,10 +109,8 @@ class MusaUtils(object):
         self.load_binary = mod.load_binary
         self.get_device_properties = mod.get_device_properties
         self.set_printf_fifo_size = mod.set_printf_fifo_size
-        for name in ("fill_1d_tma_descriptor", "fill_2d_tma_descriptor", "fill_3d_tma_descriptor",
-                     "fill_4d_tma_descriptor", "fill_5d_tma_descriptor"):
-            if hasattr(mod, name):
-                setattr(self, name, getattr(mod, name))
+        if hasattr(mod, "fill_tme_descriptor"):
+            self.fill_tme_descriptor = mod.fill_tme_descriptor
 
 
 # ------------------------
@@ -124,6 +122,8 @@ def ty_to_cpp(ty):
     # Align ABI mapping with NVIDIA/AMD for host-side signatures.
     if ty[0] == '*':
         return "MUdeviceptr"
+    if ty == "mtTmeDesc":
+        return "MUtensorDescriptor"
     if ty.startswith("tensordesc<"):
         return "MUdeviceptr"
     return {
@@ -149,6 +149,8 @@ def ty_to_cpp(ty):
 def ty_to_cpp_param(ty):
     if ty[0] == '*':
         return "MUdeviceptr"
+    if ty == "mtTmeDesc":
+        return "MUtensorDescriptor"
     if ty.startswith("tensordesc<"):
         return "MUdeviceptr"
     return {
@@ -184,17 +186,6 @@ def _parse_tensordesc_type(ty: str):
     return dtype.strip(), len(dims)
 
 
-def _get_tensordesc_abi_expanded_args(rank: int, metadata):
-    full_abi_args = 1 + 2 * rank
-    if metadata is None:
-        return full_abi_args
-    abi_args = int(metadata.get("abi_expanded_args", full_abi_args))
-    if abi_args not in (1, full_abi_args):
-        raise ValueError(
-            f"unsupported MUSA tensor descriptor ABI expansion: expected 1 or {full_abi_args}, got {abi_args}")
-    return abi_args
-
-
 def _expand_tensordesc_signature(signature_types, tensordesc_meta=None):
     expanded_types = []
     expanded_index = {}
@@ -210,11 +201,27 @@ def _expand_tensordesc_signature(signature_types, tensordesc_meta=None):
         desc_meta = None
         if tensordesc_meta is not None and tensordesc_idx < len(tensordesc_meta):
             desc_meta = tensordesc_meta[tensordesc_idx]
-        abi_expanded_args = _get_tensordesc_abi_expanded_args(rank, desc_meta)
         mapped = []
-        expanded_types.append(f"*{dtype}")
-        mapped.append(len(expanded_types) - 1)
-        if abi_expanded_args != 1:
+        if desc_meta is not None:
+            expanded_types.append("mtTmeDesc")
+            mapped.append(len(expanded_types) - 1)
+            for _ in range(rank):
+                expanded_types.append("i32")
+                mapped.append(len(expanded_types) - 1)
+            for _ in range(rank):
+                expanded_types.append("i64")
+                mapped.append(len(expanded_types) - 1)
+        else:
+            expanded_types.append(f"*{dtype}")
+            mapped.append(len(expanded_types) - 1)
+            for _ in range(rank):
+                expanded_types.append("i64")
+                mapped.append(len(expanded_types) - 1)
+            for _ in range(rank):
+                expanded_types.append("i64")
+                mapped.append(len(expanded_types) - 1)
+            expanded_types.append("i1")
+            mapped.append(len(expanded_types) - 1)
             for _ in range(rank):
                 expanded_types.append("i32")
                 mapped.append(len(expanded_types) - 1)
@@ -256,16 +263,31 @@ def _expand_signature_tree(signature_types, tensordesc_meta=None):
             expanded_types.append(ty)
             return expanded_index[path]
 
-        _, rank = desc_info
+        dtype, rank = desc_info
         desc_meta = None
         if tensordesc_meta is not None and tensordesc_idx < len(tensordesc_meta):
             desc_meta = tensordesc_meta[tensordesc_idx]
-        abi_expanded_args = _get_tensordesc_abi_expanded_args(rank, desc_meta)
         mapped = []
-        dtype = desc_info[0]
-        expanded_types.append(f"*{dtype}")
-        mapped.append(len(expanded_types) - 1)
-        if abi_expanded_args != 1:
+        if desc_meta is not None:
+            expanded_types.append("mtTmeDesc")
+            mapped.append(len(expanded_types) - 1)
+            for _ in range(rank):
+                expanded_types.append("i32")
+                mapped.append(len(expanded_types) - 1)
+            for _ in range(rank):
+                expanded_types.append("i64")
+                mapped.append(len(expanded_types) - 1)
+        else:
+            expanded_types.append(f"*{dtype}")
+            mapped.append(len(expanded_types) - 1)
+            for _ in range(rank):
+                expanded_types.append("i64")
+                mapped.append(len(expanded_types) - 1)
+            for _ in range(rank):
+                expanded_types.append("i64")
+                mapped.append(len(expanded_types) - 1)
+            expanded_types.append("i1")
+            mapped.append(len(expanded_types) - 1)
             for _ in range(rank):
                 expanded_types.append("i32")
                 mapped.append(len(expanded_types) - 1)
@@ -291,40 +313,31 @@ def _expand_tensordesc_kernel_arg(arg, rank: int, metadata):
         raise ValueError(
             f"tensor descriptor rank mismatch: expected {rank}, got shape={len(shape)} strides={len(strides)}")
 
-    if metadata is not None and "block_size" in metadata:
-        block_shape = [int(v) for v in metadata["block_size"]]
-    else:
-        block_shape = [int(v) for v in getattr(arg, "block_shape", ())]
-    if len(block_shape) != rank:
-        raise ValueError(f"tensor descriptor block rank mismatch: expected {rank}, got {len(block_shape)}")
+    if metadata is not None:
+        import triton
+        if rank > 5:
+            raise RuntimeError(f"MUSA tensor descriptor rank {rank} is unsupported in launcher")
+        if "block_size" in metadata:
+            block_shape = [int(v) for v in metadata["block_size"]]
+        else:
+            block_shape = [int(v) for v in getattr(arg, "block_shape", ())]
+        if len(block_shape) != rank:
+            raise ValueError(f"tensor descriptor block rank mismatch: expected {rank}, got {len(block_shape)}")
+        if "elem_size" in metadata:
+            elem_size = int(metadata["elem_size"])
+        elif hasattr(arg.base, "element_size"):
+            elem_size = int(arg.base.element_size())
+        else:
+            raise TypeError("cannot infer tensor descriptor element size")
+        fill_fn = getattr(triton.runtime.driver.active.utils, "fill_tme_descriptor", None)
+        if fill_fn is None:
+            raise RuntimeError("musa driver utils missing fill_tme_descriptor")
+        descriptor = fill_fn(arg.base.data_ptr(), shape, block_shape, elem_size)
+        return [descriptor, *shape, *strides], descriptor
 
-    if metadata is not None and "elem_size" in metadata:
-        elem_size = int(metadata["elem_size"])
-    elif hasattr(arg.base, "element_size"):
-        elem_size = int(arg.base.element_size())
-    else:
-        raise TypeError("cannot infer tensor descriptor element size")
-
-    import torch
-    import triton
-
-    descriptor = torch.empty((64, ), dtype=torch.uint8, device=arg.base.device)
-    fill_name = f"fill_{rank}d_tma_descriptor"
-    fill_fn = getattr(triton.runtime.driver.active.utils, fill_name, None)
-    if fill_fn is None:
-        raise RuntimeError(f"musa driver utils missing {fill_name}")
-
-    if rank > 5:
-        raise RuntimeError(f"MUSA tensor descriptor rank {rank} is unsupported in launcher")
-    fill_fn(arg.base.data_ptr(), *shape, *block_shape, elem_size, descriptor.data_ptr())
-
-    if hasattr(torch, "musa"):
-        torch.musa.synchronize()
-
-    abi_expanded_args = _get_tensordesc_abi_expanded_args(rank, metadata)
-    if abi_expanded_args == 1:
-        return [descriptor], descriptor
-    return [descriptor, *shape, *strides], descriptor
+    padding = getattr(arg, "padding", None)
+    is_padding = padding == "nan"
+    return [arg.base, *shape, *strides, is_padding, *shape, *strides], arg.base
 
 
 def _make_tensordesc_cache_key(arg, rank: int, metadata):
@@ -356,7 +369,6 @@ def _make_tensordesc_cache_key(arg, rank: int, metadata):
         elem_size = int(base.element_size())
     else:
         return None
-    abi_expanded_args = _get_tensordesc_abi_expanded_args(rank, metadata)
 
     return (
         int(base.data_ptr()),
@@ -367,7 +379,6 @@ def _make_tensordesc_cache_key(arg, rank: int, metadata):
         block_shape,
         elem_size,
         int(rank),
-        abi_expanded_args,
     )
 
 
@@ -377,6 +388,8 @@ def make_launcher(constants, signature, ids, warp_size):
 
     def _parse_type(ty):
         if ty[0] == '*':
+            return "PyObject*"
+        if ty == "mtTmeDesc":
             return "PyObject*"
         if ty == "constexpr":
             # 3.5 runtime forwards constexpr Python objects in launch args.
@@ -413,6 +426,9 @@ def make_launcher(constants, signature, ids, warp_size):
         ty = signature[i]
         if ty[0] == "*":
             launch_args.append(f"ptr_info{i}.dev_ptr")
+            continue
+        if ty == "mtTmeDesc":
+            launch_args.append(f"*tme_desc_ptr{i}")
             continue
         if ty == "fp16":
             packed_decls.append(f"  uint16_t arg{i};")
@@ -580,6 +596,43 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   return ptr_info;
 }}
 
+static inline MUtensorDescriptor* getTmeDesc(PyObject *obj, int idx) {{
+  if (sizeof(MUtensorDescriptor*) != 8) {{
+    PyErr_SetString(PyExc_SystemError, "getTmeDesc() requires 64-bit compilation");
+    return NULL;
+  }}
+
+  PyObject *method_handle = PyObject_GetAttrString(obj, "tme_desc_cpu_ptr");
+  if (!method_handle) {{
+    PyErr_Format(PyExc_TypeError, "Tensor descriptor argument %d must provide tme_desc_cpu_ptr()", idx);
+    return NULL;
+  }}
+
+  PyObject *method_ret = PyObject_CallNoArgs(method_handle);
+  Py_DECREF(method_handle);
+  if (!method_ret)
+    return NULL;
+
+  if (!PyLong_Check(method_ret)) {{
+    PyErr_SetString(PyExc_TypeError, "tme_desc_cpu_ptr() must return 64-bit int");
+    Py_DECREF(method_ret);
+    return NULL;
+  }}
+
+  uint64_t ptr_as_uint = PyLong_AsUnsignedLongLong(method_ret);
+  Py_DECREF(method_ret);
+  if (!ptr_as_uint) {{
+    PyErr_SetString(PyExc_ValueError, "received NULL ptr from tme_desc_cpu_ptr()");
+    return NULL;
+  }}
+  if (ptr_as_uint % 64 != 0) {{
+    PyErr_SetString(PyExc_ValueError, "tme_desc_cpu_ptr() must be 64-byte aligned");
+    return NULL;
+  }}
+
+  return (MUtensorDescriptor*)(ptr_as_uint);
+}}
+
 static void ensureMusaContext() {{
   MUcontext pctx;
   MUSA_CHECK(muCtxGetCurrent(&pctx));
@@ -625,7 +678,8 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
       return NULL;
   }}
 
-  {'; '.join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" for i in params if signature[i][0] == "*"])};
+{'; '.join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" for i in params if signature[i][0] == "*"])};
+{'; '.join([f"MUtensorDescriptor* tme_desc_ptr{i} = getTmeDesc(_arg{i}, {i}); if (!tme_desc_ptr{i}) return NULL;" for i in params if signature[i] == "mtTmeDesc"])};
 {packed_decls_src}
 {packed_inits_src}
   Py_BEGIN_ALLOW_THREADS;
