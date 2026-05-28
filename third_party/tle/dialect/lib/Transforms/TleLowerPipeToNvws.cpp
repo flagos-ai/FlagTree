@@ -31,10 +31,10 @@ namespace ttnvws = mlir::triton::nvws;
 
 namespace {
 
-constexpr llvm::StringLiteral kTleInferArriveCountAttr(
-    "tle.infer_arrive_count");
-constexpr llvm::StringLiteral kTleInferFullCountOffsetAttr(
-    "tle.infer_full_count_offset");
+constexpr llvm::StringLiteral
+    kTleInferArriveCountAttr("tle.infer_arrive_count");
+constexpr llvm::StringLiteral
+    kTleInferFullCountOffsetAttr("tle.infer_full_count_offset");
 
 enum class PipeCommitTransport {
   LocalStore,
@@ -533,13 +533,10 @@ static bool canInterleaveBeforeLocalStorePipeCommit(Operation *op) {
   return canInterleaveBeforePipeMetadataOp(op);
 }
 
-static std::optional<int32_t>
-inferLocalStoreParticipantCountForRoots(PipeWriterCommitOp commit,
-                                        ArrayRef<Value> roots,
-                                        int32_t taskThreadCount, Value token,
-                                        const llvm::DenseSet<Value>
-                                            *allowedInterleavedTmaRoots =
-                                                nullptr) {
+static std::optional<int32_t> inferLocalStoreParticipantCountForRoots(
+    PipeWriterCommitOp commit, ArrayRef<Value> roots, int32_t taskThreadCount,
+    Value token,
+    const llvm::DenseSet<Value> *allowedInterleavedTmaRoots = nullptr) {
   llvm::DenseSet<Value> fieldRoots;
   for (Value rootValue : roots) {
     Value root = getMemDescRoot(rootValue);
@@ -608,8 +605,7 @@ inferLocalStoreParticipantCountForRoots(PipeWriterCommitOp commit,
             inferPrefixParticipants(target->valueType, taskThreadCount);
         if (!count)
           return std::nullopt;
-        participants =
-            participants ? std::max(*participants, *count) : *count;
+        participants = participants ? std::max(*participants, *count) : *count;
         storedRoots.insert(*root);
         sawLocalStore = true;
       }
@@ -627,8 +623,7 @@ inferLocalStoreParticipantCountForRoots(PipeWriterCommitOp commit,
             inferPrefixParticipants(target->valueType, taskThreadCount);
         if (!count)
           return std::nullopt;
-        participants =
-            participants ? std::max(*participants, *count) : *count;
+        participants = participants ? std::max(*participants, *count) : *count;
         storedRoots.insert(*root);
         sawLocalStore = true;
       }
@@ -659,7 +654,7 @@ inferLocalStoreParticipantCount(PipeWriterCommitOp commit,
   SmallVector<Value> roots(commit.getFields().begin(),
                            commit.getFields().end());
   return inferLocalStoreParticipantCountForRoots(commit, roots, taskThreadCount,
-                                                token);
+                                                 token);
 }
 
 // Conservative root-level implementation: Fix1 accepts only whole-field or
@@ -1330,9 +1325,9 @@ public:
               &tmaInfo->copiedRoots);
           std::string coverageFailure;
           if (!participantCount &&
-              !verifyRootLevelLocalStoreCoverage(
-                  commit, localStoreRoots, token, &tmaInfo->copiedRoots,
-                  &coverageFailure)) {
+              !verifyRootLevelLocalStoreCoverage(commit, localStoreRoots, token,
+                                                 &tmaInfo->copiedRoots,
+                                                 &coverageFailure)) {
             commit.emitOpError("mixed TMA/local-store pipe commit requires "
                                "proven local-store writes for the non-TMA "
                                "fields: ")
@@ -1343,9 +1338,9 @@ public:
         }
         if (transport == PipeCommitTransport::MixedTmaCpAsync) {
           std::string coverageFailure;
-          if (!verifyRootLevelAsyncCopyCoverage(
-                  commit, localStoreRoots, token, &tmaInfo->copiedRoots,
-                  &coverageFailure)) {
+          if (!verifyRootLevelAsyncCopyCoverage(commit, localStoreRoots, token,
+                                                &tmaInfo->copiedRoots,
+                                                &coverageFailure)) {
             commit.emitOpError("mixed TMA/cp.async pipe commit requires "
                                "proven cp.async copies for the non-TMA "
                                "fields: ")
@@ -1370,8 +1365,8 @@ public:
             return;
           }
           if (!participantCount) {
-            auto createToken = cast<ttnvws::CreateTokenOp>(
-                state.token.getDefiningOp());
+            auto createToken =
+                cast<ttnvws::CreateTokenOp>(state.token.getDefiningOp());
             createToken->setAttr(kTleInferFullCountOffsetAttr,
                                  builder.getI32IntegerAttr(1));
           }
@@ -1396,8 +1391,8 @@ public:
 
         if (transport == PipeCommitTransport::MixedTmaLocalStore) {
           createCommit(ttnvws::ProducerCommitKind::TmaCopyBarrierArrive);
-          auto localCommit =
-              createCommit(ttnvws::ProducerCommitKind::ParticipantBarrierArrive);
+          auto localCommit = createCommit(
+              ttnvws::ProducerCommitKind::ParticipantBarrierArrive);
           if (participantCount) {
             localCommit->setAttr("arrive_count",
                                  builder.getI32IntegerAttr(*participantCount));
@@ -1412,29 +1407,26 @@ public:
           setTokenLoadType(state.token, ttnvws::TokenLoadType::TMALoadOp);
           createCommit(ttnvws::ProducerCommitKind::TmaCopyBarrierArrive);
         } else if (hasCpAsyncPayload) {
-          auto nvwsOp =
-              ttnvws::ProducerCommitOp::create(builder, loc, token,
-                                               commit.getStage());
+          auto nvwsOp = ttnvws::ProducerCommitOp::create(builder, loc, token,
+                                                         commit.getStage());
           setRoleTaskId(op, nvwsOp.getOperation(), *taskId);
-          nvwsOp->setAttr(nvwsOp.getCommitKindAttrName(),
-                          ttnvws::ProducerCommitKindAttr::get(
-                              builder.getContext(),
-                              ttnvws::ProducerCommitKind::
-                                  AsyncCopyMbarrierArrive));
+          nvwsOp->setAttr(
+              nvwsOp.getCommitKindAttrName(),
+              ttnvws::ProducerCommitKindAttr::get(
+                  builder.getContext(),
+                  ttnvws::ProducerCommitKind::AsyncCopyMbarrierArrive));
         } else if (participantCount) {
-          auto nvwsOp =
-              ttnvws::ProducerCommitOp::create(builder, loc, token,
-                                               commit.getStage());
+          auto nvwsOp = ttnvws::ProducerCommitOp::create(builder, loc, token,
+                                                         commit.getStage());
           setRoleTaskId(op, nvwsOp.getOperation(), *taskId);
-          nvwsOp->setAttr(nvwsOp.getCommitKindAttrName(),
-                          ttnvws::ProducerCommitKindAttr::get(
-                              builder.getContext(),
-                              ttnvws::ProducerCommitKind::
-                                  ParticipantBarrierArrive));
+          nvwsOp->setAttr(
+              nvwsOp.getCommitKindAttrName(),
+              ttnvws::ProducerCommitKindAttr::get(
+                  builder.getContext(),
+                  ttnvws::ProducerCommitKind::ParticipantBarrierArrive));
         } else {
-          auto nvwsOp =
-              ttnvws::ProducerCommitOp::create(builder, loc, token,
-                                               commit.getStage());
+          auto nvwsOp = ttnvws::ProducerCommitOp::create(builder, loc, token,
+                                                         commit.getStage());
           setRoleTaskId(op, nvwsOp.getOperation(), *taskId);
         }
         commit.erase();

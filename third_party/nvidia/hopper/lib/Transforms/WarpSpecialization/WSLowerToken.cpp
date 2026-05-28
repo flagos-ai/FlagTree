@@ -244,10 +244,10 @@ static std::optional<unsigned> getTokenCountOverride(ttnvws::CreateTokenOp op,
 }
 
 #ifdef __TLE__
-constexpr llvm::StringLiteral kTleInferArriveCountAttr(
-    "tle.infer_arrive_count");
-constexpr llvm::StringLiteral kTleInferFullCountOffsetAttr(
-    "tle.infer_full_count_offset");
+constexpr llvm::StringLiteral
+    kTleInferArriveCountAttr("tle.infer_arrive_count");
+constexpr llvm::StringLiteral
+    kTleInferFullCountOffsetAttr("tle.infer_full_count_offset");
 
 static Value getMemDescRoot(Value value) {
   Value current = value;
@@ -339,9 +339,10 @@ static bool hasFollowingMixedPayloadCommit(ttnvws::ProducerCommitOp op) {
   return false;
 }
 
-static LogicalResult recordTleMixedLocalRoot(
-    ttnvws::ProducerCommitOp commit, Value memdesc,
-    llvm::DenseSet<Value> &localRoots, const llvm::DenseSet<Value> &tmaRoots) {
+static LogicalResult
+recordTleMixedLocalRoot(ttnvws::ProducerCommitOp commit, Value memdesc,
+                        llvm::DenseSet<Value> &localRoots,
+                        const llvm::DenseSet<Value> &tmaRoots) {
   Value root = getMemDescRoot(memdesc);
   if (tmaRoots.contains(root))
     return commit.emitOpError("cannot associate a mixed TMA/local-store "
@@ -426,8 +427,9 @@ static FailureOr<unsigned> getTaskThreadCount(Operation *op) {
   return static_cast<unsigned>(numWarps * threadsPerWarp);
 }
 
-static FailureOr<unsigned> inferPrefixParticipantsFromLayout(
-    ttnvws::ProducerCommitOp commit, Type valueType, unsigned taskThreadCount) {
+static FailureOr<unsigned>
+inferPrefixParticipantsFromLayout(ttnvws::ProducerCommitOp commit,
+                                  Type valueType, unsigned taskThreadCount) {
   auto tensorTy = dyn_cast<RankedTensorType>(valueType);
   if (!tensorTy || !tensorTy.hasStaticShape() || !tensorTy.getEncoding())
     return commit.emitOpError("requires encoded local-store value layout "
@@ -515,7 +517,8 @@ inferParticipantArriveCount(ttnvws::ProducerCommitOp commit) {
     }
 
     if (!canInterleaveBeforeInferredParticipantCommit(prev))
-      return commit.emitOpError("cannot infer participant barrier count across ")
+      return commit.emitOpError(
+                 "cannot infer participant barrier count across ")
              << prev->getName();
   }
 
@@ -525,8 +528,9 @@ inferParticipantArriveCount(ttnvws::ProducerCommitOp commit) {
   return *participants;
 }
 
-static LogicalResult recordInferredParticipantCount(
-    ttnvws::ProducerCommitOp commit, std::optional<unsigned> &tokenCount) {
+static LogicalResult
+recordInferredParticipantCount(ttnvws::ProducerCommitOp commit,
+                               std::optional<unsigned> &tokenCount) {
   if (!commit->hasAttr(kTleInferArriveCountAttr))
     return success();
 
@@ -538,9 +542,9 @@ static LogicalResult recordInferredParticipantCount(
     return commit.emitOpError("infers participant barrier count ")
            << *count << " but the same token already inferred " << *tokenCount;
   tokenCount = *count;
-  commit->setAttr("arrive_count",
-                  IntegerAttr::get(IntegerType::get(commit.getContext(), 32),
-                                   *count));
+  commit->setAttr(
+      "arrive_count",
+      IntegerAttr::get(IntegerType::get(commit.getContext(), 32), *count));
   commit->removeAttr(kTleInferArriveCountAttr);
   return success();
 }
@@ -684,8 +688,8 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
         bufferFullCount = *fullCount;
     }
 #ifdef __TLE__
-    if (auto offset =
-            getTokenCountOverride(createTokenOp, kTleInferFullCountOffsetAttr)) {
+    if (auto offset = getTokenCountOverride(createTokenOp,
+                                            kTleInferFullCountOffsetAttr)) {
       std::optional<unsigned> inferredArriveCount;
       auto recordTokenUser = [&](Operation *user) -> LogicalResult {
         if (auto commit = dyn_cast<ttnvws::ProducerCommitOp>(user))

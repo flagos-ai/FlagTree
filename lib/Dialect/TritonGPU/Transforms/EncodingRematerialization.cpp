@@ -54,8 +54,7 @@ static Type getScalarOrElementType(Type type) {
 
 static bool isSharedMemDesc(Type type) {
   auto memDescTy = dyn_cast<MemDescType>(type);
-  return memDescTy &&
-         isa<SharedMemorySpaceAttr>(memDescTy.getMemorySpace());
+  return memDescTy && isa<SharedMemorySpaceAttr>(memDescTy.getMemorySpace());
 }
 
 static bool isSharedMemDesc(Value value) {
@@ -65,8 +64,8 @@ static bool isSharedMemDesc(Value value) {
 static bool isPointerAddressSpace(Value value, int addressSpace) {
   if (!value)
     return false;
-  auto ptrTy = dyn_cast<triton::PointerType>(
-      getScalarOrElementType(value.getType()));
+  auto ptrTy =
+      dyn_cast<triton::PointerType>(getScalarOrElementType(value.getType()));
   return ptrTy && ptrTy.getAddressSpace() == addressSpace;
 }
 
@@ -236,8 +235,8 @@ static void cacheValue(Value source, Attribute targetEncoding,
 static void eraseOpsCreatedAfter(Operation *previous, Operation *insertBefore) {
   if (!insertBefore || !insertBefore->getBlock())
     return;
-  Operation *cur = previous ? previous->getNextNode()
-                            : &insertBefore->getBlock()->front();
+  Operation *cur =
+      previous ? previous->getNextNode() : &insertBefore->getBlock()->front();
   while (cur && cur != insertBefore) {
     Operation *next = cur->getNextNode();
     cur->erase();
@@ -274,8 +273,8 @@ static bool haveSameNonTensorOperands(
        llvm::zip(lhs->getOperands(), rhs->getOperands())) {
     if (isa<RankedTensorType>(lhsOperand.getType()) ||
         isa<RankedTensorType>(rhsOperand.getType())) {
-      if (!rematerializer.areEquivalentIgnoringEncoding(
-              lhsOperand, rhsOperand, active, depth + 1))
+      if (!rematerializer.areEquivalentIgnoringEncoding(lhsOperand, rhsOperand,
+                                                        active, depth + 1))
         return false;
       continue;
     }
@@ -292,8 +291,7 @@ static bool areLocalLoadsEquivalent(EncodingRematerializer &rematerializer,
     return false;
   if (lhs.getToken() || rhs.getToken())
     return lhs.getToken() == rhs.getToken();
-  const EncodingRematerializationPolicy &policy =
-      rematerializer.getPolicy();
+  const EncodingRematerializationPolicy &policy = rematerializer.getPolicy();
   Operation *insertBefore = rematerializer.getInsertBefore();
   return !policy.hasInterveningSharedMemoryWriteAlias(lhs, insertBefore,
                                                       lhs.getSrc()) &&
@@ -301,8 +299,9 @@ static bool areLocalLoadsEquivalent(EncodingRematerializer &rematerializer,
                                                       rhs.getSrc());
 }
 
-static bool isEncodingPolymorphicOp(
-    Operation *op, const EncodingRematerializationPolicy &policy) {
+static bool
+isEncodingPolymorphicOp(Operation *op,
+                        const EncodingRematerializationPolicy &policy) {
   if (!op)
     return false;
   if (op->hasTrait<OpTrait::Elementwise>())
@@ -313,9 +312,9 @@ static bool isEncodingPolymorphicOp(
   return policy.isCustomEncodingPolymorphicOp(op);
 }
 
-static Value findAvailableEquivalentValue(
-    Value value, Attribute targetEncoding,
-    EncodingRematerializer &rematerializer) {
+static Value
+findAvailableEquivalentValue(Value value, Attribute targetEncoding,
+                             EncodingRematerializer &rematerializer) {
   auto sourceTy = dyn_cast<RankedTensorType>(value.getType());
   Operation *insertBefore = rematerializer.getInsertBefore();
   if (!sourceTy || !targetEncoding || !insertBefore)
@@ -336,8 +335,8 @@ static Value findAvailableEquivalentValue(
       if (!rematerializer.isAvailableAt(candidate))
         continue;
       SmallVector<std::pair<Value, Value>, 16> active;
-      if (rematerializer.areEquivalentIgnoringEncoding(value, candidate,
-                                                       active, /*depth=*/0))
+      if (rematerializer.areEquivalentIgnoringEncoding(value, candidate, active,
+                                                       /*depth=*/0))
         return candidate;
     }
   }
@@ -376,8 +375,8 @@ static void collectEquivalentNvidiaMmaEncodingsImpl(
           if (!rematerializer.isAvailableAt(candidate))
             continue;
           SmallVector<std::pair<Value, Value>, 16> active;
-          if (rematerializer.areEquivalentIgnoringEncoding(
-                  root, candidate, active, /*depth=*/0))
+          if (rematerializer.areEquivalentIgnoringEncoding(root, candidate,
+                                                           active, /*depth=*/0))
             encodings.push_back(candidateTy.getEncoding());
         }
       }
@@ -388,9 +387,9 @@ static void collectEquivalentNvidiaMmaEncodingsImpl(
   if (!def)
     return;
   if (auto convert = dyn_cast<ConvertLayoutOp>(def)) {
-    collectEquivalentNvidiaMmaEncodingsImpl(
-        convert.getSrc(), insertBefore, dominance, policy, encodings, visited,
-        depth + 1);
+    collectEquivalentNvidiaMmaEncodingsImpl(convert.getSrc(), insertBefore,
+                                            dominance, policy, encodings,
+                                            visited, depth + 1);
     return;
   }
 
@@ -398,9 +397,9 @@ static void collectEquivalentNvidiaMmaEncodingsImpl(
     return;
   for (Value operand : def->getOperands())
     if (isa<RankedTensorType>(operand.getType()))
-      collectEquivalentNvidiaMmaEncodingsImpl(
-          operand, insertBefore, dominance, policy, encodings, visited,
-          depth + 1);
+      collectEquivalentNvidiaMmaEncodingsImpl(operand, insertBefore, dominance,
+                                              policy, encodings, visited,
+                                              depth + 1);
 }
 
 static FailureOr<Value> rematerializeConstant(arith::ConstantOp constant,
@@ -478,8 +477,8 @@ rematerializeBroadcast(EncodingRematerializer &rematerializer,
   if (!sourceTy || !inputTy || !hasSameShapeAndElementType(sourceTy, targetTy))
     return failure();
 
-  auto input = rematerializer.rematerialize(
-      broadcast.getSrc(), targetEncoding, active, depth + 1);
+  auto input = rematerializer.rematerialize(broadcast.getSrc(), targetEncoding,
+                                            active, depth + 1);
   if (failed(input))
     return failure();
 
@@ -488,9 +487,10 @@ rematerializeBroadcast(EncodingRematerializer &rematerializer,
       .getResult();
 }
 
-static bool canCloneSameShapePureOp(
-    Operation *op, RankedTensorType sourceResultTy, RankedTensorType targetTy,
-    const EncodingRematerializationPolicy &policy) {
+static bool
+canCloneSameShapePureOp(Operation *op, RankedTensorType sourceResultTy,
+                        RankedTensorType targetTy,
+                        const EncodingRematerializationPolicy &policy) {
   if (op->getNumResults() != 1 || op->getNumRegions() != 0 ||
       op->hasTrait<OpTrait::IsTerminator>())
     return false;
@@ -511,10 +511,10 @@ static bool canCloneSameShapePureOp(
   return true;
 }
 
-static FailureOr<Value> cloneSameShapePureOp(
-    EncodingRematerializer &rematerializer, Operation *op,
-    RankedTensorType targetTy, Attribute targetEncoding,
-    llvm::SmallPtrSetImpl<Value> &active, unsigned depth) {
+static FailureOr<Value>
+cloneSameShapePureOp(EncodingRematerializer &rematerializer, Operation *op,
+                     RankedTensorType targetTy, Attribute targetEncoding,
+                     llvm::SmallPtrSetImpl<Value> &active, unsigned depth) {
   IRMapping mapping;
   for (Value operand : op->getOperands()) {
     auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
@@ -673,8 +673,7 @@ EncodingRematerializer::rematerialize(Value value, Attribute targetEncoding,
     return value;
   }
 
-  if (Value cached =
-          lookupCached(value, targetEncoding, *this, cache))
+  if (Value cached = lookupCached(value, targetEncoding, *this, cache))
     return cached;
 
   if (Value equivalent =
@@ -717,11 +716,10 @@ EncodingRematerializer::rematerialize(Value value, Attribute targetEncoding,
     auto sourceTy = dyn_cast<RankedTensorType>(localLoad.getType());
     if (sourceTy && hasSameShapeAndElementType(sourceTy, targetTy) &&
         !localLoad.getToken() &&
-        !policy.hasInterveningSharedMemoryWriteAlias(
-            localLoad, insertBefore, localLoad.getSrc())) {
-      auto newLoad =
-          rewriter.create<LocalLoadOp>(localLoad.getLoc(), targetTy,
-                                       localLoad.getSrc());
+        !policy.hasInterveningSharedMemoryWriteAlias(localLoad, insertBefore,
+                                                     localLoad.getSrc())) {
+      auto newLoad = rewriter.create<LocalLoadOp>(localLoad.getLoc(), targetTy,
+                                                  localLoad.getSrc());
       newLoad->setAttrs(localLoad->getAttrs());
       result = newLoad.getResult();
     }
@@ -745,12 +743,10 @@ EncodingRematerializer::rematerialize(Value value, Attribute targetEncoding,
   return result;
 }
 
-FailureOr<Value>
-rematerializeWithEncoding(RewriterBase &rewriter, Operation *insertBefore,
-                          Value value, Attribute targetEncoding,
-                          EncodingRematerializationCache &cache,
-                          DominanceInfo &dominance,
-                          const EncodingRematerializationPolicy &policy) {
+FailureOr<Value> rematerializeWithEncoding(
+    RewriterBase &rewriter, Operation *insertBefore, Value value,
+    Attribute targetEncoding, EncodingRematerializationCache &cache,
+    DominanceInfo &dominance, const EncodingRematerializationPolicy &policy) {
   if (!targetEncoding || !insertBefore)
     return failure();
 
@@ -769,8 +765,8 @@ void collectAvailableEquivalentNvidiaMmaEncodings(
     return;
 
   llvm::SmallPtrSet<Value, 32> visited;
-  collectEquivalentNvidiaMmaEncodingsImpl(
-      root, insertBefore, dominance, policy, encodings, visited, /*depth=*/0);
+  collectEquivalentNvidiaMmaEncodingsImpl(root, insertBefore, dominance, policy,
+                                          encodings, visited, /*depth=*/0);
 }
 
 } // namespace mlir::triton::gpu

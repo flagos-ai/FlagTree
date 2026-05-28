@@ -34,8 +34,7 @@ public:
 
   virtual bool areCustomValuesEquivalent(
       EncodingRematerializer &rematerializer, Value lhs, Value rhs,
-      SmallVectorImpl<std::pair<Value, Value>> &active,
-      unsigned depth) const;
+      SmallVectorImpl<std::pair<Value, Value>> &active, unsigned depth) const;
 
   virtual FailureOr<Value> rematerializeCustomValue(
       EncodingRematerializer &rematerializer, Value value,
@@ -73,12 +72,10 @@ private:
   const EncodingRematerializationPolicy &policy;
 };
 
-FailureOr<Value>
-rematerializeWithEncoding(RewriterBase &rewriter, Operation *insertBefore,
-                          Value value, Attribute targetEncoding,
-                          EncodingRematerializationCache &cache,
-                          DominanceInfo &dominance,
-                          const EncodingRematerializationPolicy &policy);
+FailureOr<Value> rematerializeWithEncoding(
+    RewriterBase &rewriter, Operation *insertBefore, Value value,
+    Attribute targetEncoding, EncodingRematerializationCache &cache,
+    DominanceInfo &dominance, const EncodingRematerializationPolicy &policy);
 
 void collectAvailableEquivalentNvidiaMmaEncodings(
     Value root, Operation *insertBefore, DominanceInfo &dominance,

@@ -315,8 +315,7 @@ void ArriveBarrierOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   auto &alloc = getAllocMutable();
-  effects.emplace_back(MemoryEffects::Read::get(), &alloc,
-                       SharedMemory::get());
+  effects.emplace_back(MemoryEffects::Read::get(), &alloc, SharedMemory::get());
   effects.emplace_back(MemoryEffects::Write::get(), &alloc,
                        SharedMemory::get());
 

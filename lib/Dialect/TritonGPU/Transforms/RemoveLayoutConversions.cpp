@@ -1651,8 +1651,8 @@ bool backwardRematerialization(ModuleOp module) {
 
 #ifdef __TLE__
 static void eraseOpsCreatedAfter(Operation *previous, Operation *insertBefore) {
-  Operation *cur = previous ? previous->getNextNode()
-                            : &insertBefore->getBlock()->front();
+  Operation *cur =
+      previous ? previous->getNextNode() : &insertBefore->getBlock()->front();
   while (cur && cur != insertBefore) {
     Operation *next = cur->getNextNode();
     cur->erase();
@@ -1675,8 +1675,7 @@ bool rematerializeStoreLayoutDemands(ModuleOp module) {
     auto valueConvert = store.getValue().getDefiningOp<ConvertLayoutOp>();
     if (!valueConvert)
       continue;
-    auto targetTy =
-        dyn_cast<RankedTensorType>(valueConvert.getSrc().getType());
+    auto targetTy = dyn_cast<RankedTensorType>(valueConvert.getSrc().getType());
     if (!targetTy || !targetTy.getEncoding())
       continue;
     if (!isa<NvidiaMmaEncodingAttr>(targetTy.getEncoding()))
@@ -1684,17 +1683,17 @@ bool rematerializeStoreLayoutDemands(ModuleOp module) {
 
     Operation *rollbackPrevious = store->getPrevNode();
     EncodingRematerializationCache cache;
-    auto ptr = rematerializeWithEncoding(
-        rewriter, store, store.getPtr(), targetTy.getEncoding(), cache,
-        dominance, policy);
+    auto ptr = rematerializeWithEncoding(rewriter, store, store.getPtr(),
+                                         targetTy.getEncoding(), cache,
+                                         dominance, policy);
     if (failed(ptr))
       continue;
 
     Value mask;
     if (Value oldMask = store.getMask()) {
-      auto rematMask = rematerializeWithEncoding(
-          rewriter, store, oldMask, targetTy.getEncoding(), cache, dominance,
-          policy);
+      auto rematMask = rematerializeWithEncoding(rewriter, store, oldMask,
+                                                 targetTy.getEncoding(), cache,
+                                                 dominance, policy);
       if (failed(rematMask)) {
         eraseOpsCreatedAfter(rollbackPrevious, store);
         continue;
@@ -1731,9 +1730,9 @@ inferLocalStoreSourceTargetEncoding(LocalStoreOp store,
   }
 
   SmallVector<Attribute, 4> equivalentMmaEncodings;
-  collectAvailableEquivalentNvidiaMmaEncodings(
-      store.getSrc(), store.getOperation(), dominance, policy,
-      equivalentMmaEncodings);
+  collectAvailableEquivalentNvidiaMmaEncodings(store.getSrc(),
+                                               store.getOperation(), dominance,
+                                               policy, equivalentMmaEncodings);
   if (equivalentMmaEncodings.empty())
     return failure();
   if (equivalentMmaEncodings.front() == sourceTy.getEncoding())
@@ -1760,9 +1759,9 @@ bool rematerializeLocalStoreLayoutDemands(ModuleOp module) {
       continue;
 
     EncodingRematerializationCache cache;
-    auto source = rematerializeWithEncoding(
-        rewriter, store, store.getSrc(), *targetEncoding, cache, dominance,
-        policy);
+    auto source =
+        rematerializeWithEncoding(rewriter, store, store.getSrc(),
+                                  *targetEncoding, cache, dominance, policy);
     if (failed(source))
       continue;
 
