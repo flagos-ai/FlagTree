@@ -58,6 +58,11 @@ struct PipeState {
   std::optional<PipeCommitTransport> dataTransport;
 };
 
+struct PipeDefinition {
+  PipeCreateOp create;
+  bool oneShot = false;
+};
+
 enum class PipeProvenanceKind {
   Unknown,
   PipeFieldWhole,
@@ -466,24 +471,30 @@ static StringRef getTransportName(PipeCommitTransport transport) {
   llvm_unreachable("unknown pipe commit transport");
 }
 
-static LogicalResult recordDataTransport(PipeState &state, Operation *op,
-                                         PipeCommitTransport transport) {
-  if (state.dataTransport &&
-      *state.dataTransport == PipeCommitTransport::MixedTmaLocalStore &&
+static LogicalResult
+recordDataTransport(std::optional<PipeCommitTransport> &dataTransport,
+                    Operation *op, PipeCommitTransport transport) {
+  if (dataTransport &&
+      *dataTransport == PipeCommitTransport::MixedTmaLocalStore &&
       transport == PipeCommitTransport::MixedTmaLocalStore)
     return success();
-  if (state.dataTransport &&
-      *state.dataTransport == PipeCommitTransport::MixedTmaCpAsync &&
+  if (dataTransport &&
+      *dataTransport == PipeCommitTransport::MixedTmaCpAsync &&
       transport == PipeCommitTransport::MixedTmaCpAsync)
     return success();
-  if (state.dataTransport && *state.dataTransport != transport)
+  if (dataTransport && *dataTransport != transport)
     return op->emitOpError("mixes ")
-           << getTransportName(*state.dataTransport) << " and "
+           << getTransportName(*dataTransport) << " and "
            << getTransportName(transport)
            << " payload commits on the same pipe; pipe full-barrier count is "
               "a per-pipe contract";
-  state.dataTransport = transport;
+  dataTransport = transport;
   return success();
+}
+
+static LogicalResult recordDataTransport(PipeState &state, Operation *op,
+                                         PipeCommitTransport transport) {
+  return recordDataTransport(state.dataTransport, op, transport);
 }
 
 static std::optional<int32_t> inferPrefixParticipants(Type valueType,
@@ -535,7 +546,7 @@ static bool canInterleaveBeforeLocalStorePipeCommit(Operation *op) {
 
 static std::optional<int32_t> inferLocalStoreParticipantCountForRoots(
     PipeWriterCommitOp commit, ArrayRef<Value> roots, int32_t taskThreadCount,
-    Value token,
+    Operation *windowBegin,
     const llvm::DenseSet<Value> *allowedInterleavedTmaRoots = nullptr) {
   llvm::DenseSet<Value> fieldRoots;
   for (Value rootValue : roots) {
@@ -551,28 +562,12 @@ static std::optional<int32_t> inferLocalStoreParticipantCountForRoots(
   CompletedAsyncCopyState completedAsyncCopies;
   std::optional<int32_t> participants;
   bool sawLocalStore = false;
-  std::string commitKey = getPipeKey(commit.getOperation());
-
   for (Operation *prev = commit->getPrevNode(); prev;
        prev = prev->getPrevNode()) {
-    if (prev == token.getDefiningOp())
+    if (prev == windowBegin)
       break;
-    if (auto acquire = dyn_cast<ttnvws::ProducerAcquireOp>(prev)) {
-      if (acquire.getToken() == token &&
-          sameIndexValue(acquire.getIdx(), commit.getStage()))
-        break;
+    if (isa<ttnvws::ProducerAcquireOp>(prev))
       return std::nullopt;
-    }
-    if (auto acquire = dyn_cast<PipeWriterAcquireOp>(prev)) {
-      if (getPipeKey(acquire.getOperation()) == commitKey)
-        break;
-      return std::nullopt;
-    }
-    if (auto create = dyn_cast<PipeCreateOp>(prev)) {
-      if (getPipeKey(create.getOperation()) == commitKey)
-        break;
-      return std::nullopt;
-    }
     if (isPipeLifecycleOp(prev))
       return std::nullopt;
     if (auto tmaCopy = dyn_cast<ttg::TMACopyOp>(prev)) {
@@ -650,18 +645,19 @@ static std::optional<int32_t> inferLocalStoreParticipantCountForRoots(
 
 static std::optional<int32_t>
 inferLocalStoreParticipantCount(PipeWriterCommitOp commit,
-                                int32_t taskThreadCount, Value token) {
+                                int32_t taskThreadCount,
+                                Operation *windowBegin) {
   SmallVector<Value> roots(commit.getFields().begin(),
                            commit.getFields().end());
   return inferLocalStoreParticipantCountForRoots(commit, roots, taskThreadCount,
-                                                 token);
+                                                 windowBegin);
 }
 
-// Conservative root-level implementation: Fix1 accepts only whole-field or
+// Conservative root-level implementation: accept only whole-field or
 // root-disjoint mixed payloads. Exact byte-range/source-order repair is not
 // implemented here and must fail fast.
 static bool verifyRootLevelLocalStoreCoverage(
-    PipeWriterCommitOp commit, ArrayRef<Value> roots, Value token,
+    PipeWriterCommitOp commit, ArrayRef<Value> roots, Operation *windowBegin,
     const llvm::DenseSet<Value> *allowedInterleavedTmaRoots = nullptr,
     std::string *failureReason = nullptr) {
   auto fail = [&](Twine reason) {
@@ -679,27 +675,12 @@ static bool verifyRootLevelLocalStoreCoverage(
 
   llvm::DenseSet<Value> storedRoots;
   CompletedAsyncCopyState completedAsyncCopies;
-  std::string commitKey = getPipeKey(commit.getOperation());
   for (Operation *prev = commit->getPrevNode(); prev;
        prev = prev->getPrevNode()) {
-    if (prev == token.getDefiningOp())
+    if (prev == windowBegin)
       break;
-    if (auto acquire = dyn_cast<ttnvws::ProducerAcquireOp>(prev)) {
-      if (acquire.getToken() == token &&
-          sameIndexValue(acquire.getIdx(), commit.getStage()))
-        break;
+    if (isa<ttnvws::ProducerAcquireOp>(prev))
       return fail("encountered an unrelated NVWS producer acquire");
-    }
-    if (auto acquire = dyn_cast<PipeWriterAcquireOp>(prev)) {
-      if (getPipeKey(acquire.getOperation()) == commitKey)
-        break;
-      return fail("encountered an unrelated pipe writer acquire");
-    }
-    if (auto create = dyn_cast<PipeCreateOp>(prev)) {
-      if (getPipeKey(create.getOperation()) == commitKey)
-        break;
-      return fail("encountered an unrelated pipe create");
-    }
     if (isPipeLifecycleOp(prev))
       return fail(Twine("encountered pipe lifecycle op ") +
                   prev->getName().getStringRef());
@@ -765,11 +746,11 @@ static bool verifyRootLevelLocalStoreCoverage(
   return true;
 }
 
-// Conservative root-level implementation: Fix1 accepts only whole-field or
+// Conservative root-level implementation: accept only whole-field or
 // root-disjoint mixed payloads. Exact byte-range/source-order repair is not
 // implemented here and must fail fast.
 static bool verifyRootLevelAsyncCopyCoverage(
-    PipeWriterCommitOp commit, ArrayRef<Value> roots, Value token,
+    PipeWriterCommitOp commit, ArrayRef<Value> roots, Operation *windowBegin,
     const llvm::DenseSet<Value> *allowedInterleavedTmaRoots,
     std::string *failureReason = nullptr) {
   auto fail = [&](Twine reason) {
@@ -786,27 +767,12 @@ static bool verifyRootLevelAsyncCopyCoverage(
   }
 
   llvm::DenseSet<Value> copiedRoots;
-  std::string commitKey = getPipeKey(commit.getOperation());
   for (Operation *prev = commit->getPrevNode(); prev;
        prev = prev->getPrevNode()) {
-    if (prev == token.getDefiningOp())
+    if (prev == windowBegin)
       break;
-    if (auto acquire = dyn_cast<ttnvws::ProducerAcquireOp>(prev)) {
-      if (acquire.getToken() == token &&
-          sameIndexValue(acquire.getIdx(), commit.getStage()))
-        break;
+    if (isa<ttnvws::ProducerAcquireOp>(prev))
       return fail("encountered an unrelated NVWS producer acquire");
-    }
-    if (auto acquire = dyn_cast<PipeWriterAcquireOp>(prev)) {
-      if (getPipeKey(acquire.getOperation()) == commitKey)
-        break;
-      return fail("encountered an unrelated pipe writer acquire");
-    }
-    if (auto create = dyn_cast<PipeCreateOp>(prev)) {
-      if (getPipeKey(create.getOperation()) == commitKey)
-        break;
-      return fail("encountered an unrelated pipe create");
-    }
     if (isPipeLifecycleOp(prev))
       return fail(Twine("encountered pipe lifecycle op ") +
                   prev->getName().getStringRef());
@@ -931,53 +897,55 @@ struct TmaPipeCommitInfo {
   llvm::DenseSet<Value> copiedRoots;
 };
 
+struct PipeCommitAnalysis {
+  TmaPipeCommitInfo tmaInfo;
+  SmallVector<Value> uniqueFieldRoots;
+  SmallVector<Value> localStoreRoots;
+  PipeCommitTransport transport = PipeCommitTransport::LocalStore;
+  std::optional<int32_t> participantCount;
+};
+
 static FailureOr<TmaPipeCommitInfo>
-getRootLevelTmaPipeCommitInfo(PipeWriterCommitOp commit, Value token) {
+getRootLevelTmaPipeCommitInfo(PipeWriterCommitOp commit,
+                              Operation *windowBegin) {
   llvm::DenseSet<Value> fieldRoots;
   for (Value field : commit.getFields())
     fieldRoots.insert(getMemDescRoot(field));
 
   TmaPipeCommitInfo info;
   llvm::DenseSet<Value> interleavedLocalRoots;
-  std::string commitKey = getPipeKey(commit.getOperation());
-  for (Operation *prev = commit->getPrevNode(); prev;
-       prev = prev->getPrevNode()) {
-    if (auto acquire = dyn_cast<ttnvws::ProducerAcquireOp>(prev)) {
-      if (acquire.getToken() == token &&
-          sameIndexValue(acquire.getIdx(), commit.getStage()))
-        break;
+  for (Operation *op = windowBegin->getNextNode(); op && op != commit;
+       op = op->getNextNode()) {
+    bool sawPayload = info.sawPipeTmaCopy || !interleavedLocalRoots.empty();
+    if (isa<ttnvws::ProducerAcquireOp>(op)) {
       if (info.sawPipeTmaCopy)
         return commit.emitOpError("has an unrelated NVWS producer acquire "
                                   "between pipe payload TMA copies and "
                                   "commit");
       return info;
     }
-    if (auto acquire = dyn_cast<PipeWriterAcquireOp>(prev)) {
-      if (getPipeKey(acquire.getOperation()) == commitKey)
-        break;
-      if (info.sawPipeTmaCopy)
+    if (auto acquire = dyn_cast<PipeWriterAcquireOp>(op)) {
+      if (sawPayload)
         return commit.emitOpError("has an unrelated pipe writer acquire "
                                   "between pipe payload TMA copies and "
                                   "commit");
-      return info;
+      continue;
     }
-    if (auto create = dyn_cast<PipeCreateOp>(prev)) {
-      if (getPipeKey(create.getOperation()) == commitKey)
-        break;
-      if (info.sawPipeTmaCopy)
+    if (auto create = dyn_cast<PipeCreateOp>(op)) {
+      if (sawPayload)
         return commit.emitOpError("has an unrelated pipe create between pipe "
                                   "payload TMA copies and commit");
-      return info;
+      continue;
     }
-    if (isPipeLifecycleOp(prev)) {
-      if (info.sawPipeTmaCopy)
+    if (isPipeLifecycleOp(op)) {
+      if (sawPayload)
         return commit.emitOpError("has pipe lifecycle op ")
-               << prev->getName() << " between pipe payload TMA copies and "
+               << op->getName() << " between pipe payload TMA copies and "
                << "commit";
-      return info;
+      continue;
     }
 
-    if (auto tmaCopy = dyn_cast<ttg::TMACopyOp>(prev)) {
+    if (auto tmaCopy = dyn_cast<ttg::TMACopyOp>(op)) {
       if (failed(verifyTmaCopyTypes(tmaCopy)))
         return failure();
 
@@ -1006,51 +974,192 @@ getRootLevelTmaPipeCommitInfo(PipeWriterCommitOp commit, Value token) {
         return failure();
       }
       if (info.copiedRoots.contains(*root))
-        return commit.emitOpError("has a local-store payload and a "
-                                  "ttg.tma_copy targeting the same memdesc "
-                                  "root");
+        return commit.emitOpError("has a ttg.tma_copy and a local-store "
+                                  "payload targeting the same memdesc root");
       interleavedLocalRoots.insert(*root);
       return success();
     };
 
-    if (auto target = getAsyncCopyTarget(prev)) {
+    if (auto target = getAsyncCopyTarget(op)) {
       if (failed(recordLocalRoot(target->memdesc))) {
         if (info.sawPipeTmaCopy)
           return failure();
-        break;
+        continue;
       }
       continue;
     }
 
-    if (auto target = getLocalStoreTarget(prev)) {
+    if (auto target = getLocalStoreTarget(op)) {
       if (failed(recordLocalRoot(target->memdesc))) {
         if (info.sawPipeTmaCopy)
           return failure();
-        break;
+        continue;
       }
       continue;
     }
 
-    if (auto store = dyn_cast<tt::StoreOp>(prev)) {
+    if (auto store = dyn_cast<tt::StoreOp>(op)) {
       if (isSharedPointer(store.getPtr())) {
-        if (info.sawPipeTmaCopy)
+        if (sawPayload)
           return commit.emitOpError("has an opaque shared-memory store "
                                     "between pipe payload TMA copies and "
                                     "commit");
-        break;
+        continue;
       }
     }
 
-    if (canInterleaveBeforeTmaPipeCommit(prev))
+    if (canInterleaveBeforeTmaPipeCommit(op))
       continue;
-    if (info.sawPipeTmaCopy)
+    if (sawPayload)
       return commit.emitOpError("has unsupported interleaved op ")
-             << prev->getName() << " between pipe payload TMA copies and "
+             << op->getName() << " between pipe payload TMA copies and "
              << "commit";
-    break;
   }
 
   return info;
+}
+
+static bool isOneShotPipe(PipeCreateOp op) {
+  if (auto oneShotAttr = op->getAttrOfType<BoolAttr>("one_shot"))
+    return oneShotAttr.getValue();
+  return false;
+}
+
+static FailureOr<Operation *>
+getPipePayloadWindowBegin(PipeWriterCommitOp commit,
+                          PipeDefinition &definition) {
+  std::string commitKey = getPipeKey(commit.getOperation());
+  for (Operation *prev = commit->getPrevNode(); prev;
+       prev = prev->getPrevNode()) {
+    auto acquire = dyn_cast<PipeWriterAcquireOp>(prev);
+    if (!acquire || getPipeKey(acquire.getOperation()) != commitKey)
+      continue;
+    if (sameIndexValue(acquire.getStage(), commit.getStage()))
+      return acquire.getOperation();
+  }
+
+  if (definition.create->getBlock() != commit->getBlock()) {
+    commit.emitOpError("without a matching writer acquire must be in the same "
+                       "block as its pipe.create so the payload window is "
+                       "explicit");
+    return failure();
+  }
+  return definition.create.getOperation();
+}
+
+static FailureOr<PipeCommitAnalysis>
+analyzePipeCommit(PipeWriterCommitOp commit,
+                  PipeDefinition &definition) {
+  FailureOr<Operation *> windowBegin =
+      getPipePayloadWindowBegin(commit, definition);
+  if (failed(windowBegin))
+    return failure();
+
+  auto threadCount = getTaskThreadCount(commit.getOperation());
+  if (failed(threadCount))
+    return failure();
+
+  FailureOr<TmaPipeCommitInfo> tmaInfo =
+      getRootLevelTmaPipeCommitInfo(commit, *windowBegin);
+  if (failed(tmaInfo))
+    return failure();
+
+  PipeCommitAnalysis analysis;
+  analysis.tmaInfo = std::move(*tmaInfo);
+
+  llvm::DenseSet<Value> seenFieldRoots;
+  for (Value field : commit.getFields()) {
+    Value root = getMemDescRoot(field);
+    if (seenFieldRoots.insert(root).second)
+      analysis.uniqueFieldRoots.push_back(root);
+  }
+
+  for (Value root : analysis.uniqueFieldRoots) {
+    if (!analysis.tmaInfo.copiedRoots.contains(root))
+      analysis.localStoreRoots.push_back(root);
+  }
+
+  bool hasTmaPayload = analysis.tmaInfo.sawPipeTmaCopy;
+  bool hasLocalPayload = !analysis.localStoreRoots.empty();
+  bool hasCpAsyncPayload = commit->hasAttr(kTlePipeCommitCpAsyncAttr);
+
+  if (hasCpAsyncPayload)
+    analysis.transport = PipeCommitTransport::CpAsync;
+  if (hasTmaPayload && !hasLocalPayload)
+    analysis.transport = PipeCommitTransport::TmaCopy;
+  if (hasTmaPayload && hasLocalPayload && !hasCpAsyncPayload)
+    analysis.transport = PipeCommitTransport::MixedTmaLocalStore;
+  if (hasTmaPayload && hasLocalPayload && hasCpAsyncPayload)
+    analysis.transport = PipeCommitTransport::MixedTmaCpAsync;
+  if (hasTmaPayload && !hasLocalPayload && hasCpAsyncPayload) {
+    commit.emitOpError("marks cp.async payload but all commit fields are "
+                       "already covered by TMA");
+    return failure();
+  }
+
+  if (analysis.transport == PipeCommitTransport::LocalStore)
+    analysis.participantCount = inferLocalStoreParticipantCount(
+        commit, *threadCount, *windowBegin);
+  if (analysis.transport == PipeCommitTransport::MixedTmaLocalStore) {
+    analysis.participantCount = inferLocalStoreParticipantCountForRoots(
+        commit, analysis.localStoreRoots, *threadCount, *windowBegin,
+        &analysis.tmaInfo.copiedRoots);
+    std::string coverageFailure;
+    if (!analysis.participantCount &&
+        !verifyRootLevelLocalStoreCoverage(
+            commit, analysis.localStoreRoots, *windowBegin,
+            &analysis.tmaInfo.copiedRoots, &coverageFailure)) {
+      commit.emitOpError("mixed TMA/local-store pipe commit requires proven "
+                         "local-store writes for the non-TMA fields: ")
+          << coverageFailure;
+      return failure();
+    }
+  }
+  if (analysis.transport == PipeCommitTransport::MixedTmaCpAsync) {
+    std::string coverageFailure;
+    if (!verifyRootLevelAsyncCopyCoverage(
+            commit, analysis.localStoreRoots, *windowBegin,
+            &analysis.tmaInfo.copiedRoots, &coverageFailure)) {
+      commit.emitOpError("mixed TMA/cp.async pipe commit requires proven "
+                         "cp.async copies for the non-TMA fields: ")
+          << coverageFailure;
+      return failure();
+    }
+  }
+
+  return analysis;
+}
+
+static LogicalResult analyzePipeCommits(
+    ArrayRef<Operation *> ops, std::map<std::string, PipeDefinition> &pipes,
+    std::map<Operation *, PipeCommitAnalysis> &commitAnalyses) {
+  std::map<std::string, std::optional<PipeCommitTransport>> transports;
+
+  for (Operation *op : ops) {
+    std::string key = getPipeKey(op);
+    if (auto create = dyn_cast<PipeCreateOp>(op)) {
+      if (pipes.count(key))
+        return create.emitOpError("duplicates an existing pipe.create");
+      pipes.emplace(key, PipeDefinition{create, isOneShotPipe(create)});
+      continue;
+    }
+
+    auto it = pipes.find(key);
+    if (it == pipes.end())
+      return op->emitOpError("requires a preceding matching pipe.create");
+
+    if (auto commit = dyn_cast<PipeWriterCommitOp>(op)) {
+      FailureOr<PipeCommitAnalysis> analysis =
+          analyzePipeCommit(commit, it->second);
+      if (failed(analysis))
+        return failure();
+      if (failed(recordDataTransport(transports[key], op, analysis->transport)))
+        return failure();
+      commitAnalyses.emplace(op, std::move(*analysis));
+    }
+  }
+
+  return success();
 }
 
 static void setTokenLoadType(Value token, ttnvws::TokenLoadType loadType) {
@@ -1089,9 +1198,7 @@ static PipeState createPipeState(PipeCreateOp op) {
   Location loc = op.getLoc();
   MLIRContext *context = op->getContext();
   int64_t capacity = getPipeCapacity(op);
-  bool oneShot = false;
-  if (auto oneShotAttr = op->getAttrOfType<BoolAttr>("one_shot"))
-    oneShot = oneShotAttr.getValue();
+  bool oneShot = isOneShotPipe(op);
 
   auto sharedMemorySpace = ttg::SharedMemorySpaceAttr::get(context);
   Value closeTags;
@@ -1199,7 +1306,6 @@ public:
       return;
     }
 
-    std::map<std::string, PipeState> pipes;
     SmallVector<Operation *> ops;
 
     module.walk([&](Operation *op) {
@@ -1210,14 +1316,17 @@ public:
       module->setAttr(kTleEnableEncodingRematerializationAttr,
                       UnitAttr::get(module.getContext()));
 
+    std::map<std::string, PipeDefinition> pipeDefinitions;
+    std::map<Operation *, PipeCommitAnalysis> commitAnalyses;
+    if (failed(analyzePipeCommits(ops, pipeDefinitions, commitAnalyses))) {
+      signalPassFailure();
+      return;
+    }
+
+    std::map<std::string, PipeState> pipes;
     for (Operation *op : ops) {
       std::string key = getPipeKey(op);
       if (auto create = dyn_cast<PipeCreateOp>(op)) {
-        if (pipes.count(key)) {
-          create.emitOpError("duplicates an existing pipe.create");
-          signalPassFailure();
-          return;
-        }
         pipes.emplace(key, createPipeState(create));
         continue;
       }
@@ -1267,44 +1376,17 @@ public:
         }
         auto threadCount = getTaskThreadCount(op);
         Value token = getWarpSpecializeCaptureForUse(op, state.token);
-        FailureOr<TmaPipeCommitInfo> tmaInfo =
-            getRootLevelTmaPipeCommitInfo(commit, token);
-        if (failed(tmaInfo)) {
+        auto analysisIt = commitAnalyses.find(op);
+        if (analysisIt == commitAnalyses.end()) {
+          commit.emitOpError("is missing precomputed pipe commit analysis");
           signalPassFailure();
           return;
         }
-        bool hasTmaPayload = tmaInfo->sawPipeTmaCopy;
-
-        SmallVector<Value> uniqueFieldRoots;
-        llvm::DenseSet<Value> seenFieldRoots;
-        for (Value field : commit.getFields()) {
-          Value root = getMemDescRoot(field);
-          if (seenFieldRoots.insert(root).second)
-            uniqueFieldRoots.push_back(root);
-        }
-        SmallVector<Value> localStoreRoots;
-        for (Value root : uniqueFieldRoots) {
-          if (!tmaInfo->copiedRoots.contains(root))
-            localStoreRoots.push_back(root);
-        }
-        bool hasLocalPayload = !localStoreRoots.empty();
-
+        const PipeCommitAnalysis &analysis = analysisIt->second;
+        PipeCommitTransport transport = analysis.transport;
+        std::optional<int32_t> participantCount = analysis.participantCount;
+        bool hasTmaPayload = analysis.tmaInfo.sawPipeTmaCopy;
         bool hasCpAsyncPayload = commit->hasAttr(kTlePipeCommitCpAsyncAttr);
-        PipeCommitTransport transport = PipeCommitTransport::LocalStore;
-        if (hasCpAsyncPayload)
-          transport = PipeCommitTransport::CpAsync;
-        if (hasTmaPayload && !hasLocalPayload)
-          transport = PipeCommitTransport::TmaCopy;
-        if (hasTmaPayload && hasLocalPayload && !hasCpAsyncPayload)
-          transport = PipeCommitTransport::MixedTmaLocalStore;
-        if (hasTmaPayload && hasLocalPayload && hasCpAsyncPayload)
-          transport = PipeCommitTransport::MixedTmaCpAsync;
-        if (hasTmaPayload && !hasLocalPayload && hasCpAsyncPayload) {
-          commit.emitOpError("marks cp.async payload but all commit fields are "
-                             "already covered by TMA");
-          signalPassFailure();
-          return;
-        }
         if (failed(recordDataTransport(state, op, transport))) {
           signalPassFailure();
           return;
@@ -1313,41 +1395,6 @@ public:
             failed(recordWriterTask(state, op, *taskId, *threadCount))) {
           signalPassFailure();
           return;
-        }
-
-        std::optional<int32_t> participantCount;
-        if (transport == PipeCommitTransport::LocalStore)
-          participantCount =
-              inferLocalStoreParticipantCount(commit, *threadCount, token);
-        if (transport == PipeCommitTransport::MixedTmaLocalStore) {
-          participantCount = inferLocalStoreParticipantCountForRoots(
-              commit, localStoreRoots, *threadCount, token,
-              &tmaInfo->copiedRoots);
-          std::string coverageFailure;
-          if (!participantCount &&
-              !verifyRootLevelLocalStoreCoverage(commit, localStoreRoots, token,
-                                                 &tmaInfo->copiedRoots,
-                                                 &coverageFailure)) {
-            commit.emitOpError("mixed TMA/local-store pipe commit requires "
-                               "proven local-store writes for the non-TMA "
-                               "fields: ")
-                << coverageFailure;
-            signalPassFailure();
-            return;
-          }
-        }
-        if (transport == PipeCommitTransport::MixedTmaCpAsync) {
-          std::string coverageFailure;
-          if (!verifyRootLevelAsyncCopyCoverage(commit, localStoreRoots, token,
-                                                &tmaInfo->copiedRoots,
-                                                &coverageFailure)) {
-            commit.emitOpError("mixed TMA/cp.async pipe commit requires "
-                               "proven cp.async copies for the non-TMA "
-                               "fields: ")
-                << coverageFailure;
-            signalPassFailure();
-            return;
-          }
         }
         if (transport == PipeCommitTransport::LocalStore ||
             transport == PipeCommitTransport::CpAsync) {

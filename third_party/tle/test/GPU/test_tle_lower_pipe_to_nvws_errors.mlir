@@ -228,9 +228,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %false = arith.constant false
     tle.pipe.create %a {capacity = 2 : i32, pipe_name = "opaque", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
     tle.pipe.writer_acquire %a[%c0, %false] {capacity = 2 : i32, pipe_name = "opaque", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
-    tt.store %opaque, %v : tensor<64x!tt.ptr<i8, 3>, #blocked1>
     %slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
+    tt.store %opaque, %v : tensor<64x!tt.ptr<i8, 3>, #blocked1>
     // expected-error @+1 {{has an opaque shared-memory store between pipe payload TMA copies and commit}}
     tle.pipe.writer_commit %a[%c0] {capacity = 2 : i32, pipe_name = "opaque", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
     tt.return
@@ -254,8 +254,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     %shared_ptr = "tle.local_pointers"(%slot, %row0, %offs) : (!ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>, tensor<64xi32, #blocked1>, tensor<64xi32, #blocked1>) -> tensor<64x!tt.ptr<f32, 3>, #blocked1>
     %erased_ptr = builtin.unrealized_conversion_cast %shared_ptr : tensor<64x!tt.ptr<f32, 3>, #blocked1> to tensor<64x!tt.ptr<f32>, #blocked1>
-    tt.store %erased_ptr, %v : tensor<64x!tt.ptr<f32>, #blocked1>
     ttg.tma_copy %desc, %slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
+    tt.store %erased_ptr, %v : tensor<64x!tt.ptr<f32>, #blocked1>
     // expected-error @+1 {{has unsupported interleaved op tt.store between pipe payload TMA copies and commit}}
     tle.pipe.writer_commit %a[%c0] {capacity = 2 : i32, pipe_name = "erased_as", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
     tt.return
@@ -273,10 +273,10 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %false = arith.constant false
     tle.pipe.create %a {capacity = 2 : i32, pipe_name = "unrelated_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
     tle.pipe.writer_acquire %a[%c0, %false] {capacity = 2 : i32, pipe_name = "unrelated_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
-    %h_slot = ttg.memdesc_index %h[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
-    ttg.tma_copy %desc, %h_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     %a_slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %a_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
+    %h_slot = ttg.memdesc_index %h[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
+    ttg.tma_copy %desc, %h_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     // expected-error @+1 {{has an unrelated ttg.tma_copy between pipe payload TMA copies and commit}}
     tle.pipe.writer_commit %a[%c0] {capacity = 2 : i32, pipe_name = "unrelated_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
     tt.return

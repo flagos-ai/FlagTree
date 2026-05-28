@@ -184,6 +184,35 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     tt.return
   }
 
+  // CHECK-LABEL: @one_shot_multi_tma_fields_pipe_to_mbarrier
+  // CHECK-NOT: nvws.
+  // CHECK: ttg.local_alloc : () -> !ttg.memdesc<1x1xi64
+  // CHECK: ttng.init_barrier {{.*}}, 1
+  // CHECK-NOT: ttng.init_barrier {{.*}}, 128
+  // CHECK: ttng.barrier_expect {{.*}}, 16384
+  // CHECK: ttng.async_tma_copy_global_to_local
+  // CHECK: ttng.async_tma_copy_global_to_local
+  // CHECK: ttng.wait_barrier {{.*}} {async_task_id = array<i32: 1>}
+  // CHECK: arith.constant {{.*}}false
+  // CHECK-NOT: ttng.arrive_barrier
+  tt.func @one_shot_multi_tma_fields_pipe_to_mbarrier(%desc_a: !tt.tensordesc<tensor<32x64xf32, #nvmma>>, %desc_b: !tt.tensordesc<tensor<32x64xf32, #nvmma>>, %a: !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, %b: !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, %setup: !ttg.memdesc<1x16xf16, #shared, #smem, mutable>) {
+    %c0 = arith.constant 0 : i32
+    %false = arith.constant false
+    tle.pipe.create %a, %b {capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta", one_shot = true} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.create %setup {capacity = 1 : i32, pipe_name = "one_shot_multi_tma_setup", field_names = ["setup"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_acquire %a, %b[%c0, %false] {capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    %slot_a = ttg.memdesc_index %a[%c0] : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
+    %slot_b = ttg.memdesc_index %b[%c0] : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
+    ttg.tma_copy %desc_a, %slot_a, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
+    ttg.tma_copy %desc_b, %slot_b, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.writer_commit %a, %b[%c0] {capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    %closed = tle.pipe.reader_wait %a, %b[%c0, %false] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    scf.if %closed {
+    }
+    tle.pipe.reader_release %a, %b[%c0] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    tt.return
+  }
+
   // CHECK-LABEL: @coalesce_adjacent_pipe_init_barriers
   // CHECK: ttng.init_barrier
   // CHECK: ttng.init_barrier
