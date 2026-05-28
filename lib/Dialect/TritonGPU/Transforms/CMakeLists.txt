@@ -1,7 +1,7 @@
 set(TritonGPUTransformsTleSources)
 if(FLAGTREE_TLE)
   list(APPEND TritonGPUTransformsTleSources
-    EncodingRematerialization.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/lib/Transforms/EncodingRematerialization.cpp
     Pipeliner/TleWGMMAAnalysis.cpp
   )
 endif()

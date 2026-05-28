@@ -1,5 +1,4 @@
-#ifdef __TLE__
-#include "triton/Dialect/TritonGPU/Transforms/EncodingRematerialization.h"
+#include "tle/dialect/include/Transforms/EncodingRematerialization.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/IRMapping.h"
@@ -770,4 +769,3 @@ void collectAvailableEquivalentNvidiaMmaEncodings(
 }
 
 } // namespace mlir::triton::gpu
-#endif // __TLE__

@@ -23,7 +23,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/TritonGPUInterfaces.h"
 #ifdef __TLE__
-#include "triton/Dialect/TritonGPU/Transforms/EncodingRematerialization.h"
+#include "tle/dialect/include/Transforms/EncodingRematerialization.h"
 #endif
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
