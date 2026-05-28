@@ -290,7 +290,13 @@ def NVWS_ConsumerWaitOp : NVWS_Op<"consumer_wait"> {
   let assemblyFormat = "$token `,` $idx `,` $phase attr-dict `:` type(operands)";
 }
 
+#ifdef __TLE__
+def NVWS_ConsumerReleaseOp : NVWS_Op<"consumer_release", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+#else
 def NVWS_ConsumerReleaseOp : NVWS_Op<"consumer_release"> {
+#endif
   let summary = "Consumer releases the token";
   let description = [{ The consumer will release the token and signal the producer
     that the buffers are ready to be filled.

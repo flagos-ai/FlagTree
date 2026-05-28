@@ -170,7 +170,9 @@ def Tle_PipeReaderWaitOp : Tle_Op<"pipe.reader_wait"> {
   let hasVerifier = 1;
 }
 
-def Tle_PipeReaderReleaseOp : Tle_Op<"pipe.reader_release"> {
+def Tle_PipeReaderReleaseOp : Tle_Op<"pipe.reader_release", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
   let arguments = (ins
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,

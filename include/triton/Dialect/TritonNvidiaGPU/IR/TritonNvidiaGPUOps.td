@@ -242,7 +242,10 @@ def TTNG_WaitBarrierOp : TTNG_Op<"wait_barrier", [AttrSizedOperandSegments]> {
 }
 
 #ifdef __TLE__
-def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier", [AttrSizedOperandSegments]> {
+def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier", [
+  AttrSizedOperandSegments,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
   let summary = "perform the arrive operation on an mbarrier";
   let description = [{
     The `ttng.arrive_barrier` operation performs the "arrive" operation on an
@@ -269,7 +272,7 @@ def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier", [AttrSizedOperandSegments]>
   }];
 
   let arguments = (ins
-    Arg<TTG_MemDescType, "", [MemRead<SharedMemory>, MemWrite<SharedMemory>]>:$alloc,
+    TTG_MemDescType:$alloc,
     I32Attr:$count,
     Optional<I1>:$pred,
     Optional<I32>:$releasedIdx,

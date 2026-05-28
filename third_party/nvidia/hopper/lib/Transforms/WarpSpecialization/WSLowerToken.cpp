@@ -17,12 +17,21 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Analysis/TlePipeEffectAnalysis.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/ADT/DenseSet.h"
+#endif
 #include "llvm/ADT/STLExtras.h"
 
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 namespace ttng = ::mlir::triton::nvidia_gpu;
 namespace ttnvws = ::mlir::triton::nvws;
+#ifdef __TLE__
+namespace ttle = mlir::triton::tle;
+#endif
 namespace mlir {
 
 #define DEBUG_TYPE "tritongpu-warp-spec-lowering"
@@ -78,8 +87,11 @@ void processProducerCommitOp(OpBuilder &builder, ttnvws::ProducerCommitOp op,
     // Get the count from the barriers: trace the local_alloc for the barrier
     // then find the count from init_barrier
 #ifdef __TLE__
+    unsigned arriveCnt = fullCnt;
+    if (auto attr = op->getAttrOfType<IntegerAttr>("arrive_count"))
+      arriveCnt = static_cast<unsigned>(attr.getInt());
     auto arriveBarrier =
-        ttng::ArriveBarrierOp::create(builder, loc, bufferFull, fullCnt);
+        ttng::ArriveBarrierOp::create(builder, loc, bufferFull, arriveCnt);
     // Local-store pipe commits publish ordinary shared-memory writes from all
     // producer threads, while mbarrier.arrive is executed only by the elected
     // thread. Add an explicit CTA release fence so consumer waits observe the
@@ -135,10 +147,23 @@ collectTmaCopiesForCommit(ttnvws::ProducerCommitOp op) {
   return copies;
 }
 
+#ifdef __TLE__
+static FailureOr<SmallVector<ttg::TMACopyOp>>
+collectTmaCopiesForCommitTle(ttnvws::ProducerCommitOp op);
+#endif
+
 static LogicalResult processProducerCommitTmaCopyOp(OpBuilder &builder,
                                                     ttnvws::ProducerCommitOp op,
                                                     Value bufferFull) {
+#ifdef __TLE__
+  FailureOr<SmallVector<ttg::TMACopyOp>> maybeTmaCopies =
+      collectTmaCopiesForCommitTle(op);
+  if (failed(maybeTmaCopies))
+    return failure();
+  SmallVector<ttg::TMACopyOp> tmaCopies = std::move(*maybeTmaCopies);
+#else
   SmallVector<ttg::TMACopyOp> tmaCopies = collectTmaCopiesForCommit(op);
+#endif
   if (tmaCopies.empty())
     return op.emitOpError("with tma_copy_barrier_arrive must be preceded by "
                           "at least one ttg.tma_copy");
@@ -218,6 +243,309 @@ static std::optional<unsigned> getTokenCountOverride(ttnvws::CreateTokenOp op,
   return static_cast<unsigned>(attr.getInt());
 }
 
+#ifdef __TLE__
+constexpr llvm::StringLiteral kTleInferArriveCountAttr(
+    "tle.infer_arrive_count");
+constexpr llvm::StringLiteral kTleInferFullCountOffsetAttr(
+    "tle.infer_full_count_offset");
+
+static Value getMemDescRoot(Value value) {
+  Value current = value;
+  while (true) {
+    if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
+      current = index.getSrc();
+      continue;
+    }
+    if (auto subslice = current.getDefiningOp<ttg::MemDescSubsliceOp>()) {
+      current = subslice.getSrc();
+      continue;
+    }
+    if (auto reinterpret = current.getDefiningOp<ttg::MemDescReinterpretOp>()) {
+      current = reinterpret.getSrc();
+      continue;
+    }
+    if (auto trans = current.getDefiningOp<ttg::MemDescTransOp>()) {
+      current = trans.getSrc();
+      continue;
+    }
+    if (auto reshape = current.getDefiningOp<ttg::MemDescReshapeOp>()) {
+      current = reshape.getSrc();
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+static bool canInterleaveBeforeInferredParticipantCommit(Operation *op) {
+  if (op->getNumRegions() != 0 || op->hasTrait<OpTrait::IsTerminator>())
+    return false;
+  if (ttle::isCtaInvariantSpecialRegisterRead(op))
+    return true;
+  if (isMemoryEffectFree(op))
+    return true;
+  if (auto load = dyn_cast<tt::LoadOp>(op))
+    return !load.getIsVolatile() && ttle::isNonSharedPointer(load.getPtr());
+  if (auto store = dyn_cast<tt::StoreOp>(op)) {
+    if (ttle::getLocalStoreTarget(op))
+      return true;
+    return ttle::isNonSharedPointer(store.getPtr());
+  }
+  if (isa<ttg::LocalStoreOp, ttg::TMACopyOp>(op))
+    return true;
+  return false;
+}
+
+static bool canInterleaveBeforeTleMixedTmaCommit(Operation *op) {
+  if (op->getNumRegions() != 0 || op->hasTrait<OpTrait::IsTerminator>())
+    return false;
+  if (ttle::isCtaInvariantSpecialRegisterRead(op))
+    return true;
+  if (isMemoryEffectFree(op))
+    return true;
+  if (auto load = dyn_cast<tt::LoadOp>(op))
+    return !load.getIsVolatile() && ttle::isNonSharedPointer(load.getPtr());
+  if (auto store = dyn_cast<tt::StoreOp>(op))
+    return ttle::isNonSharedPointer(store.getPtr());
+  if (isa<ttg::AsyncCommitGroupOp, ttg::AsyncWaitOp>(op))
+    return true;
+  return false;
+}
+
+static bool isSameTokenSlot(ttnvws::ProducerCommitOp lhs,
+                            ttnvws::ProducerCommitOp rhs) {
+  return lhs.getToken() == rhs.getToken() &&
+         ttle::sameIndexValue(lhs.getIdx(), rhs.getIdx());
+}
+
+static bool hasFollowingMixedPayloadCommit(ttnvws::ProducerCommitOp op) {
+  for (Operation *next = op->getNextNode(); next; next = next->getNextNode()) {
+    if (auto nextCommit = dyn_cast<ttnvws::ProducerCommitOp>(next))
+      return isSameTokenSlot(op, nextCommit) &&
+             (nextCommit.getCommitKind() ==
+                  ttnvws::ProducerCommitKind::ParticipantBarrierArrive ||
+              nextCommit.getCommitKind() ==
+                  ttnvws::ProducerCommitKind::AsyncCopyMbarrierArrive);
+    if (auto arrive = dyn_cast<ttng::ArriveBarrierOp>(next)) {
+      if (arrive.getParticipantArrive())
+        continue;
+    }
+    if (isa<ttng::AsyncCopyMbarrierArriveOp>(next))
+      continue;
+    if (canInterleaveBeforeTleMixedTmaCommit(next))
+      continue;
+    return false;
+  }
+  return false;
+}
+
+static LogicalResult recordTleMixedLocalRoot(
+    ttnvws::ProducerCommitOp commit, Value memdesc,
+    llvm::DenseSet<Value> &localRoots, const llvm::DenseSet<Value> &tmaRoots) {
+  Value root = getMemDescRoot(memdesc);
+  if (tmaRoots.contains(root))
+    return commit.emitOpError("cannot associate a mixed TMA/local-store "
+                              "commit when a local-store payload aliases a "
+                              "TMA payload memdesc root");
+  localRoots.insert(root);
+  return success();
+}
+
+static FailureOr<SmallVector<ttg::TMACopyOp>>
+collectTmaCopiesForCommitTle(ttnvws::ProducerCommitOp op) {
+  if (!hasFollowingMixedPayloadCommit(op))
+    return collectTmaCopiesForCommit(op);
+
+  SmallVector<ttg::TMACopyOp> copies;
+  llvm::DenseSet<Value> tmaRoots;
+  llvm::DenseSet<Value> localRoots;
+  for (Operation *prev = op->getPrevNode(); prev; prev = prev->getPrevNode()) {
+    if (auto acquire = dyn_cast<ttnvws::ProducerAcquireOp>(prev)) {
+      if (acquire.getToken() == op.getToken() &&
+          ttle::sameIndexValue(acquire.getIdx(), op.getIdx()))
+        break;
+      return op.emitOpError("cannot associate mixed TMA copies across an "
+                            "unrelated producer acquire");
+    }
+    if (isa<ttnvws::ProducerCommitOp>(prev))
+      return op.emitOpError("cannot associate mixed TMA copies across an "
+                            "unrelated producer commit");
+
+    if (auto tmaCopy = dyn_cast<ttg::TMACopyOp>(prev)) {
+      Value root = getMemDescRoot(tmaCopy.getDst());
+      if (localRoots.contains(root))
+        return op.emitOpError("cannot associate a mixed TMA/local-store "
+                              "commit when a TMA payload aliases a "
+                              "local-store payload memdesc root");
+      tmaRoots.insert(root);
+      copies.push_back(tmaCopy);
+      continue;
+    }
+
+    if (auto target = ttle::getAsyncCopyTarget(prev)) {
+      if (failed(recordTleMixedLocalRoot(op, target->memdesc, localRoots,
+                                         tmaRoots)))
+        return failure();
+      continue;
+    }
+
+    if (auto target = ttle::getLocalStoreTarget(prev)) {
+      if (failed(recordTleMixedLocalRoot(op, target->memdesc, localRoots,
+                                         tmaRoots)))
+        return failure();
+      continue;
+    }
+
+    if (auto store = dyn_cast<tt::StoreOp>(prev)) {
+      if (ttle::isSharedPointer(store.getPtr()))
+        return op.emitOpError("cannot associate mixed TMA copies across an "
+                              "opaque shared-memory store");
+    }
+
+    if (canInterleaveBeforeTleMixedTmaCommit(prev))
+      continue;
+
+    return op.emitOpError("cannot associate mixed TMA copies across ")
+           << prev->getName();
+  }
+
+  std::reverse(copies.begin(), copies.end());
+  return copies;
+}
+
+static FailureOr<unsigned> getTaskThreadCount(Operation *op) {
+  auto module = op->getParentOfType<ModuleOp>();
+  if (!module)
+    return op->emitOpError("requires enclosing module to infer participant "
+                           "barrier count");
+  int numWarps = ttg::lookupNumWarps(op);
+  int threadsPerWarp = ttg::TritonGPUDialect::getThreadsPerWarp(module);
+  if (numWarps <= 0 || threadsPerWarp <= 0)
+    return op->emitOpError("requires positive num_warps and threads_per_warp "
+                           "to infer participant barrier count");
+  return static_cast<unsigned>(numWarps * threadsPerWarp);
+}
+
+static FailureOr<unsigned> inferPrefixParticipantsFromLayout(
+    ttnvws::ProducerCommitOp commit, Type valueType, unsigned taskThreadCount) {
+  auto tensorTy = dyn_cast<RankedTensorType>(valueType);
+  if (!tensorTy || !tensorTy.hasStaticShape() || !tensorTy.getEncoding())
+    return commit.emitOpError("requires encoded local-store value layout "
+                              "before participant barrier count inference");
+
+  int64_t numElements = tensorTy.getNumElements();
+  if (numElements <= 0)
+    return commit.emitOpError("requires non-empty local-store value shape for "
+                              "participant barrier count inference");
+  unsigned elemsPerThread = ttg::getTotalElemsPerThread(tensorTy);
+  if (elemsPerThread == 0)
+    return commit.emitOpError("requires positive elements-per-thread for "
+                              "participant barrier count inference");
+
+  int64_t participants = (numElements + elemsPerThread - 1) / elemsPerThread;
+  if (participants <= 0)
+    return commit.emitOpError("failed to infer participant barrier count");
+  return static_cast<unsigned>(
+      std::min<int64_t>(participants, taskThreadCount));
+}
+
+static FailureOr<unsigned>
+inferParticipantArriveCount(ttnvws::ProducerCommitOp commit) {
+  FailureOr<unsigned> taskThreadCount = getTaskThreadCount(commit);
+  if (failed(taskThreadCount))
+    return failure();
+
+  std::optional<unsigned> participants;
+  ttle::CompletedAsyncCopyState completedAsyncCopies;
+  for (Operation *prev = commit->getPrevNode(); prev;
+       prev = prev->getPrevNode()) {
+    if (auto acquire = dyn_cast<ttnvws::ProducerAcquireOp>(prev)) {
+      if (acquire.getToken() == commit.getToken() &&
+          ttle::sameIndexValue(acquire.getIdx(), commit.getIdx()))
+        break;
+      return commit.emitOpError("cannot infer participant barrier count across "
+                                "an unrelated producer acquire");
+    }
+    if (auto prevCommit = dyn_cast<ttnvws::ProducerCommitOp>(prev)) {
+      if (prevCommit.getToken() == commit.getToken() &&
+          ttle::sameIndexValue(prevCommit.getIdx(), commit.getIdx()) &&
+          prevCommit.getCommitKind() ==
+              ttnvws::ProducerCommitKind::TmaCopyBarrierArrive)
+        continue;
+      return commit.emitOpError("cannot infer participant barrier count across "
+                                "an unrelated producer commit");
+    }
+    if (auto wait = dyn_cast<ttg::AsyncWaitOp>(prev)) {
+      ttle::recordCompletedAsyncWait(wait, completedAsyncCopies);
+      continue;
+    }
+    if (auto asyncCommit = dyn_cast<ttg::AsyncCommitGroupOp>(prev)) {
+      ttle::propagateCompletedAsyncCommitGroup(asyncCommit,
+                                               completedAsyncCopies);
+      continue;
+    }
+    if (auto asyncCopy = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(prev)) {
+      auto target = ttle::getAsyncCopyTarget(prev);
+      assert(target && "async copy must have a local destination");
+      if (!ttle::isAsyncCopyComplete(asyncCopy, completedAsyncCopies))
+        return commit.emitOpError("cannot infer participant barrier count "
+                                  "from an async copy without a proven "
+                                  "async_wait before the producer commit");
+      FailureOr<unsigned> count = inferPrefixParticipantsFromLayout(
+          commit, target->valueType, *taskThreadCount);
+      if (failed(count))
+        return failure();
+      participants = participants ? std::max(*participants, *count) : *count;
+      continue;
+    }
+
+    if (auto target = ttle::getLocalStoreTarget(prev)) {
+      FailureOr<unsigned> count = inferPrefixParticipantsFromLayout(
+          commit, target->valueType, *taskThreadCount);
+      if (failed(count))
+        return failure();
+      participants = participants ? std::max(*participants, *count) : *count;
+      continue;
+    }
+
+    if (auto store = dyn_cast<tt::StoreOp>(prev)) {
+      if (ttle::isSharedPointer(store.getPtr()))
+        return commit.emitOpError("cannot infer participant barrier count "
+                                  "across an opaque shared-memory store");
+    }
+
+    if (!canInterleaveBeforeInferredParticipantCommit(prev))
+      return commit.emitOpError("cannot infer participant barrier count across ")
+             << prev->getName();
+  }
+
+  if (!participants)
+    return commit.emitOpError("requires at least one local-store contributor "
+                              "before inferred participant barrier commit");
+  return *participants;
+}
+
+static LogicalResult recordInferredParticipantCount(
+    ttnvws::ProducerCommitOp commit, std::optional<unsigned> &tokenCount) {
+  if (!commit->hasAttr(kTleInferArriveCountAttr))
+    return success();
+
+  FailureOr<unsigned> count = inferParticipantArriveCount(commit);
+  if (failed(count))
+    return failure();
+
+  if (tokenCount && *tokenCount != *count)
+    return commit.emitOpError("infers participant barrier count ")
+           << *count << " but the same token already inferred " << *tokenCount;
+  tokenCount = *count;
+  commit->setAttr("arrive_count",
+                  IntegerAttr::get(IntegerType::get(commit.getContext(), 32),
+                                   *count));
+  commit->removeAttr(kTleInferArriveCountAttr);
+  return success();
+}
+#endif
+
 static bool isMBarrierInitSetupOp(Operation *op) {
   if (auto alloc = dyn_cast<ttg::LocalAllocOp>(op))
     return true;
@@ -272,8 +600,14 @@ static void coalesceMBarrierInitBarriers(Operation *parentOp) {
     coalesceMBarrierInitBarriersInRegion(region);
 }
 
+#ifdef __TLE__
+LogicalResult lowerTokenOperations(Operation *parentOp, int numCTAs,
+                                   int numConsumerGroups)
+#else
 void lowerTokenOperations(Operation *parentOp, int numCTAs,
-                          int numConsumerGroups) {
+                          int numConsumerGroups)
+#endif
+{
   SmallVector<Operation *> deprecatedOps;
   SmallVector<Operation *> deprecatedTokenOps;
   DenseSet<Operation *> warpSpecOps;
@@ -281,7 +615,14 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
   DenseMap<Operation *, Value> tokenToEmpty;
   DenseMap<Operation *, bool> tokenNeedsFull;
   DenseMap<Operation *, bool> tokenNeedsEmpty;
+#ifdef __TLE__
+  bool loweringFailed = false;
+#endif
   parentOp->walk([&](ttnvws::CreateTokenOp createTokenOp) {
+#ifdef __TLE__
+    if (loweringFailed)
+      return;
+#endif
     ttnvws::TokenLoadType loadType = createTokenOp.getLoadType();
     MLIRContext *context = createTokenOp.getContext();
     OpBuilder builder(createTokenOp);
@@ -342,6 +683,44 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
       if (auto fullCount = getTokenCountOverride(createTokenOp, "full_count"))
         bufferFullCount = *fullCount;
     }
+#ifdef __TLE__
+    if (auto offset =
+            getTokenCountOverride(createTokenOp, kTleInferFullCountOffsetAttr)) {
+      std::optional<unsigned> inferredArriveCount;
+      auto recordTokenUser = [&](Operation *user) -> LogicalResult {
+        if (auto commit = dyn_cast<ttnvws::ProducerCommitOp>(user))
+          return recordInferredParticipantCount(commit, inferredArriveCount);
+        return success();
+      };
+      for (OpOperand &use : createTokenOp.getResult().getUses()) {
+        Operation *user = use.getOwner();
+        if (failed(recordTokenUser(user))) {
+          loweringFailed = true;
+          return;
+        }
+        if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(user)) {
+          unsigned opndNum = use.getOperandNumber();
+          for (Region *region : wsOp.getPartitionRegions()) {
+            BlockArgument tokenArg = region->getArgument(opndNum);
+            for (Operation *tokenUser : tokenArg.getUsers()) {
+              if (failed(recordTokenUser(tokenUser))) {
+                loweringFailed = true;
+                return;
+              }
+            }
+          }
+        }
+      }
+      if (!inferredArriveCount) {
+        createTokenOp.emitOpError("requires an inferred participant producer "
+                                  "commit for token full_count inference");
+        loweringFailed = true;
+        return;
+      }
+      bufferFullCount = *inferredArriveCount + *offset;
+      createTokenOp->removeAttr(kTleInferFullCountOffsetAttr);
+    }
+#endif
     unsigned bufferEmptyCount = THREADS_PER_TASK;
     if (auto emptyCount = getTokenCountOverride(createTokenOp, "empty_count"))
       bufferEmptyCount = *emptyCount;
@@ -457,6 +836,10 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
 
     deprecatedTokenOps.push_back(createTokenOp);
   });
+#ifdef __TLE__
+  if (loweringFailed)
+    return failure();
+#endif
   for (auto op : deprecatedOps) {
     LLVM_DEBUG({
       LDBG("erasing deprecatedOps");
@@ -536,14 +919,27 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
     LDBG("after lowering");
     parentOp->dump();
   });
+#ifdef __TLE__
+  return success();
+#endif
 }
 
-void doTokenLowering(triton::FuncOp &funcOp, unsigned numConsumerGroups) {
+#ifdef __TLE__
+LogicalResult doTokenLowering(triton::FuncOp &funcOp,
+                              unsigned numConsumerGroups)
+#else
+void doTokenLowering(triton::FuncOp &funcOp, unsigned numConsumerGroups)
+#endif
+{
   ModuleOp mod = funcOp.getOperation()->getParentOfType<ModuleOp>();
   int numCTAs = ttg::TritonGPUDialect::getNumCTAs(mod);
 
   // lowerGetAsyncTaskIdOp(mod, numConsumerGroups);
+#ifdef __TLE__
+  return lowerTokenOperations(mod, numCTAs, numConsumerGroups);
+#else
   lowerTokenOperations(mod, numCTAs, numConsumerGroups);
+#endif
 }
 
 } // namespace mlir

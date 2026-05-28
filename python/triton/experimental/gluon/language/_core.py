@@ -292,7 +292,7 @@ class shared_memory_descriptor(base_value):
         start = _unwrap_if_constexpr(start)
         length = _unwrap_if_constexpr(length)
         dim = _unwrap_if_constexpr(dim)
-        return _semantic.memdesc_slice(self, start, length, dim)
+        return _semantic.memdesc_subslice(self, start, length, dim)
 
     @builtin
     def index(self, index, _semantic: GluonSemantic = None) -> shared_memory_descriptor:

@@ -310,6 +310,23 @@ LogicalResult ArriveBarrierOp::verify() {
   return success();
 }
 
+#ifdef __TLE__
+void ArriveBarrierOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  auto &alloc = getAllocMutable();
+  effects.emplace_back(MemoryEffects::Read::get(), &alloc,
+                       SharedMemory::get());
+  effects.emplace_back(MemoryEffects::Write::get(), &alloc,
+                       SharedMemory::get());
+
+  MutableOperandRange fields = getReleasedFieldsMutable();
+  for (unsigned i = 0, e = fields.size(); i < e; ++i)
+    effects.emplace_back(MemoryEffects::Free::get(), &fields[i],
+                         SharedMemory::get());
+}
+#endif
+
 // -- AsyncTMACopyGlobalToLocalOp --
 LogicalResult AsyncTMACopyGlobalToLocalOp::verify() {
   if (failed(verifyBarrierType(*this, getBarrier().getType())))

@@ -24,6 +24,7 @@
 
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/Passes.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -645,6 +646,9 @@ class SelectEncodingsPass
     CachedConversionMap userOperandConversionCache;
     CachedConversionMap indexOperandConversionCache;
     module.walk([&](triton::tle::LocalPointersOp op) {
+      module->setAttr(kTleEnableEncodingRematerializationAttr,
+                      UnitAttr::get(module.getContext()));
+
       // Always tag local pointer ops so barrier insertion can track hazards
       // across different pointer views of the same alloc.
       tagDependencyGroup(op, builder);
@@ -903,6 +907,9 @@ class SelectEncodingsPass
     // passes can reason about remote operands without dialect-specific
     // visitors.
     module.walk([&](triton::tle::RemotePointersOp op) {
+      module->setAttr(kTleEnableEncodingRematerializationAttr,
+                      UnitAttr::get(module.getContext()));
+
       Operation *srcDef = peelAxisInfoCarrier(op.getSrc());
       copyAxisInfoAttrs(srcDef, op.getOperation());
     });

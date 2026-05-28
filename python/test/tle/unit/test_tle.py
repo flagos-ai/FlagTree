@@ -307,7 +307,6 @@ class TestBufferedTensor:
         with pytest.raises(ValueError, match="int32"):
             buffer.slot(stage, _semantic=semantic)
 
-
 class TestPipeFrontend:
     """Test strict front-end validation for tle.pipe."""
 

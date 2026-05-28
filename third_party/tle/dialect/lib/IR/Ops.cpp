@@ -335,6 +335,16 @@ LogicalResult PipeReaderReleaseOp::verify() {
   return verifyPipeStage(getOperation(), getStage());
 }
 
+void PipeReaderReleaseOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get());
+  MutableOperandRange fields = getFieldsMutable();
+  for (unsigned i = 0, e = fields.size(); i < e; ++i)
+    effects.emplace_back(MemoryEffects::Free::get(), &fields[i],
+                         triton::gpu::SharedMemory::get());
+}
+
 // ============================================================================
 // InsertTileOp Type Inference + Verification
 // ============================================================================

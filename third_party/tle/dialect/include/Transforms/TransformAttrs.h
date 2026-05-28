@@ -27,6 +27,11 @@ inline constexpr llvm::StringLiteral
 inline constexpr llvm::StringLiteral
     kTleTMAStoreExplicitCommitAttr("tle.tma_store_explicit_commit");
 
+// Marks modules that may use TLE-specific encoding rematerialization hooks in
+// native TritonGPU passes.
+inline constexpr llvm::StringLiteral kTleEnableEncodingRematerializationAttr(
+    "tle.enable_encoding_rematerialization");
+
 } // namespace mlir::triton::tle
 
 #endif // TRITON_TLE_TRANSFORM_ATTRS_H

@@ -370,8 +370,8 @@ public:
   // For padded layouts, we return the offsets without padding.
   static uint64_t getMaskSpanOffsets(triton::gpu::MemDescType srcTy);
 
-  // Returns whether the shared memory access had a memdesc_subslice
-  // that is rank-preserving (soon to be called memdesc_slice)
+  // Returns whether the shared memory access had a rank-preserving
+  // memdesc_subslice.
   static bool isAffineSharedMemoryAccess(triton::gpu::MemDescType srcTy) {
     return getMaskSpanOffsets(srcTy) != 0;
   }

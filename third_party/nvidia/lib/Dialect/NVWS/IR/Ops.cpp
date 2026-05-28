@@ -199,6 +199,18 @@ LogicalResult ConsumerReleaseOp::verify() {
   return success();
 }
 
+#ifdef __TLE__
+void ConsumerReleaseOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get());
+  MutableOperandRange fields = getReleasedFieldsMutable();
+  for (unsigned i = 0, e = fields.size(); i < e; ++i)
+    effects.emplace_back(MemoryEffects::Free::get(), &fields[i],
+                         gpu::SharedMemory::get());
+}
+#endif
+
 void ArefPutEnterOp::setStage(Value stage) { getStageMutable().assign(stage); }
 void ArefPutExitOp::setStage(Value stage) { getStageMutable().assign(stage); }
 void ArefGetExitOp::setStage(Value stage) { getStageMutable().assign(stage); }

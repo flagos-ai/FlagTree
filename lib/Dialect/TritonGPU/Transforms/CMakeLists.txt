@@ -1,6 +1,7 @@
 set(TritonGPUTransformsTleSources)
 if(FLAGTREE_TLE)
   list(APPEND TritonGPUTransformsTleSources
+    EncodingRematerialization.cpp
     Pipeliner/TleWGMMAAnalysis.cpp
   )
 endif()

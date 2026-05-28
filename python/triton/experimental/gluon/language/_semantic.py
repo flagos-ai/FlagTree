@@ -327,7 +327,7 @@ class GluonSemantic(TritonSemantic[TensorTy]):
         res_ty = ttgl.distributed_type(src_ty.element_ty, src_ty.shape, layout)
         return self.tensor(handle, res_ty)
 
-    def memdesc_slice(self, mem_desc, start, length, dim):
+    def memdesc_subslice(self, mem_desc, start, length, dim):
         _check(isinstance(start, int), lambda: f"expected 'start' to be an int but got {start}")
         _check(isinstance(length, int), lambda: f"expected 'length' to be an int but got {length}")
         _check(isinstance(dim, int), lambda: f"expected 'dim' to be an int but got {dim}")

@@ -30,6 +30,7 @@ add_triton_library(TritonTLETransforms
   TritonTLETransformsIncGen
 
   LINK_LIBS PUBLIC
+  TritonTLEAnalysis
   TritonGPUIR
   TritonAnalysis
   TritonIR
