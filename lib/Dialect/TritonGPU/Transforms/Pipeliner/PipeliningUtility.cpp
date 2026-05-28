@@ -181,16 +181,15 @@ static Operation *predicateWarpGroupDotWithIf(RewriterBase &rewriter,
                         /*withElseRegion=*/true);
 
   OpBuilder thenBuilder = ifOp.getThenBodyBuilder();
-  auto thenYield =
-      scf::YieldOp::create(thenBuilder, loc, dotOp.getResult());
+  auto thenYield = scf::YieldOp::create(thenBuilder, loc, dotOp.getResult());
   dotOp->moveBefore(thenYield);
 
   OpBuilder elseBuilder = ifOp.getElseBodyBuilder();
   scf::YieldOp::create(elseBuilder, loc, dotOp.getC());
 
-  dotOp.getResult().replaceUsesWithIf(
-      ifOp.getResult(0),
-      [&](OpOperand &use) { return use.getOwner() != thenYield; });
+  dotOp.getResult().replaceUsesWithIf(ifOp.getResult(0), [&](OpOperand &use) {
+    return use.getOwner() != thenYield;
+  });
   return ifOp;
 }
 #endif

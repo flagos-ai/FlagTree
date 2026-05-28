@@ -478,8 +478,7 @@ recordDataTransport(std::optional<PipeCommitTransport> &dataTransport,
       *dataTransport == PipeCommitTransport::MixedTmaLocalStore &&
       transport == PipeCommitTransport::MixedTmaLocalStore)
     return success();
-  if (dataTransport &&
-      *dataTransport == PipeCommitTransport::MixedTmaCpAsync &&
+  if (dataTransport && *dataTransport == PipeCommitTransport::MixedTmaCpAsync &&
       transport == PipeCommitTransport::MixedTmaCpAsync)
     return success();
   if (dataTransport && *dataTransport != transport)
@@ -1048,8 +1047,7 @@ getPipePayloadWindowBegin(PipeWriterCommitOp commit,
 }
 
 static FailureOr<PipeCommitAnalysis>
-analyzePipeCommit(PipeWriterCommitOp commit,
-                  PipeDefinition &definition) {
+analyzePipeCommit(PipeWriterCommitOp commit, PipeDefinition &definition) {
   FailureOr<Operation *> windowBegin =
       getPipePayloadWindowBegin(commit, definition);
   if (failed(windowBegin))
@@ -1098,8 +1096,8 @@ analyzePipeCommit(PipeWriterCommitOp commit,
   }
 
   if (analysis.transport == PipeCommitTransport::LocalStore)
-    analysis.participantCount = inferLocalStoreParticipantCount(
-        commit, *threadCount, *windowBegin);
+    analysis.participantCount =
+        inferLocalStoreParticipantCount(commit, *threadCount, *windowBegin);
   if (analysis.transport == PipeCommitTransport::MixedTmaLocalStore) {
     analysis.participantCount = inferLocalStoreParticipantCountForRoots(
         commit, analysis.localStoreRoots, *threadCount, *windowBegin,
@@ -1130,9 +1128,10 @@ analyzePipeCommit(PipeWriterCommitOp commit,
   return analysis;
 }
 
-static LogicalResult analyzePipeCommits(
-    ArrayRef<Operation *> ops, std::map<std::string, PipeDefinition> &pipes,
-    std::map<Operation *, PipeCommitAnalysis> &commitAnalyses) {
+static LogicalResult
+analyzePipeCommits(ArrayRef<Operation *> ops,
+                   std::map<std::string, PipeDefinition> &pipes,
+                   std::map<Operation *, PipeCommitAnalysis> &commitAnalyses) {
   std::map<std::string, std::optional<PipeCommitTransport>> transports;
 
   for (Operation *op : ops) {
