@@ -173,6 +173,20 @@ for k in tl.range(0, n_tiles):
     reader.release(k)
 ```
 
+mixed pipe 仍然使用同一个 `tle.pipe` 抽象，只是一个 payload 里有多个 field，
+这些 field 的字节可以由不同机制产生。例如，一个 field 由 TMA copy 写入，
+另一个 field 由 `cp.async` 写入，还有一个 field 由 CUDA core 通过
+`tle.gpu.local_ptr` + `tl.store` 写入。用户仍然按 chunk 生命周期创建一条
+逻辑 pipe，并在所有 field 生产完成后执行一次 `commit`。每个 field 的
+transport 由编译器根据 producer 侧 IR 推导，不是用户需要填写的 pipe 属性。
+
+mixed pipe 的动机是让同步粒度对齐逻辑数据流，而不是对齐底层搬运方式。没有
+mixed pipe 时，一个逻辑 chunk 往往要拆成 `q_pipe`、`v_pipe`、`scale_pipe`
+等按 transport 区分的多条 pipe，这会复制 ready/free barrier，也会让
+warp-specialized 代码偏离算法本身的数据流。mixed pipe 让这些 field 共享同一个
+slot、phase、reader set 和 ready/free 协议，同时保留 field 级 provenance 和
+编译期 hazard 检查。
+
 #### 3.2.4 分布式
 
 Triton 分布式 API 包含四个核心部分：设备网格定义、分片规格描述、重分片（集合通信）、远程访问（点对点通信）。
@@ -470,6 +484,71 @@ value_slot = value_reader.wait(k).slot
 acc = tl.dot(prob, tl.load(tle.gpu.local_ptr(value_slot.kv)), acc)
 value_reader.release(k)
 ```
+
+示例 3：mixed pipe，TMA 和 local-store transport 由编译器推导
+
+```python
+q = tle.gpu.alloc([PIPE_CAPACITY, BM, BK], dtype=tl.float16, scope=tle.gpu.smem)
+scale = tle.gpu.alloc(
+    [PIPE_CAPACITY, BM],
+    dtype=tl.float32,
+    scope=tle.gpu.smem,
+    nv_mma_shared_layout=False,
+)
+
+pipe = tle.pipe(
+    capacity=PIPE_CAPACITY,
+    scope="cta",
+    name="mixed_inputs",
+    readers=("mma", "epilogue"),
+    q=q,
+    scale=scale,
+)
+
+writer = pipe.writer()
+mma_reader = pipe.reader("mma", fields=("q",))
+epilogue_reader = pipe.reader("epilogue", fields=("q", "scale"))
+
+slot = writer.acquire(k)
+tle.gpu.copy(q_desc, slot.q, [BM, BK], [q_block, k_block])
+tl.store(tle.gpu.local_ptr(slot.scale, (tl.arange(0, BM),)), scale_values)
+writer.commit(k)
+
+q_ready = mma_reader.wait(k).slot
+q_tile = tl.load(tle.gpu.local_ptr(q_ready.q))
+mma_reader.release(k)
+
+epilogue_ready = epilogue_reader.wait(k).slot
+scale_tile = tl.load(tle.gpu.local_ptr(epilogue_ready.scale, (tl.arange(0, BM),)))
+epilogue_reader.release(k)
+```
+
+上面的例子是一条逻辑 pipe，而不是一条 TMA pipe 加一条 local-store pipe。
+`slot.q` 是 `tle.gpu.copy` 的 destination，因此被归类为 TMA-produced field；
+`slot.scale` 通过 `tle.gpu.local_ptr` 和 `tl.store` 写入，因此被归类为
+local-store field。两个 field 在同一个 `writer.commit(k)` 之后对订阅它们的
+reader 可见，reader 通过各自的 `wait(k)` 获取对应 slot view。
+
+mixed pipe 的使用规则：
+
+- 按逻辑生命周期和 reader 协议切 pipe，不按 transport 切 pipe。
+- 每个 payload component 分配一个 shared-memory field；所有 field 使用相同的
+  leading `capacity` 维度。
+- 每个 field 都必须在匹配的 `writer.acquire(iter)` 和 `writer.commit(iter)`
+  之间完成生产。
+- 每个 field 使用自然的生产操作：descriptor/TMA copy、cp.async 风格 copy，或
+  `tle.gpu.local_ptr` + `tl.store`。
+- 让编译器推导 transport，不要把 transport 编进 pipe 名、field 名或用户属性。
+- reader 只消费部分 field 时，用 `pipe.reader(name, fields=(...))` 收窄 view；
+  这不会创建新的 token。
+- 保持 pipe-field provenance 可见。opaque shared-memory pointer escape、
+  未跟踪的 shared store、无法证明安全的重叠写入会直接报错，不会 silent
+  fallback。
+
+当前 NVIDIA lowering 会把可接受的 mixed pipe 映射到 NVWS/mbarrier 同步。
+当前支持的是在 pipe-field root 粒度可证明的 TMA/local-store 和
+TMA/cp.async mixed payload；如果 payload window、field ownership、
+participant count 或源码顺序安全性无法证明，则 fail fast。
 
 ##### 3.2.5.4 `tle.device_mesh` + `tle.sharding` + `tle.reshard`
 

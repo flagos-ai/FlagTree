@@ -174,6 +174,23 @@ for k in tl.range(0, n_tiles):
     reader.release(k)
 ```
 
+A mixed pipe is the same `tle.pipe` abstraction used for a payload with
+multiple fields whose bytes are produced by different mechanisms. For example,
+one field may be filled by a TMA copy, another by `cp.async`, and another by a
+CUDA-core `tl.store` through `tle.gpu.local_ptr`. Users still create one logical
+pipe for the chunk lifecycle and call one `commit` after producing the fields.
+The compiler infers each field's transport from the producer-side IR; transport
+is not a user-facing pipe attribute.
+
+The motivation is to keep synchronization aligned with the logical dataflow
+edge instead of the implementation transport. Without mixed pipe support, a
+kernel often has to split one logical chunk into `q_pipe`, `v_pipe`,
+`scale_pipe`, and similar transport-specific pipes, which duplicates ready/free
+barriers and makes warp-specialized code diverge from the intended algorithm.
+Mixed pipe lets these fields share the same slot, phase, reader set, and
+ready/free protocol while still preserving field-level provenance and
+compile-time hazard checks.
+
 #### 3.2.4 Distributed
 
 Triton distributed API has four core parts: device mesh definition, sharding specification, resharding (collective communication), and remote access (point-to-point communication).
@@ -476,6 +493,73 @@ value_slot = value_reader.wait(k).slot
 acc = tl.dot(prob, tl.load(tle.gpu.local_ptr(value_slot.kv)), acc)
 value_reader.release(k)
 ```
+
+Example 3: mixed pipe with inferred TMA and local-store transports
+
+```python
+q = tle.gpu.alloc([PIPE_CAPACITY, BM, BK], dtype=tl.float16, scope=tle.gpu.smem)
+scale = tle.gpu.alloc(
+    [PIPE_CAPACITY, BM],
+    dtype=tl.float32,
+    scope=tle.gpu.smem,
+    nv_mma_shared_layout=False,
+)
+
+pipe = tle.pipe(
+    capacity=PIPE_CAPACITY,
+    scope="cta",
+    name="mixed_inputs",
+    readers=("mma", "epilogue"),
+    q=q,
+    scale=scale,
+)
+
+writer = pipe.writer()
+mma_reader = pipe.reader("mma", fields=("q",))
+epilogue_reader = pipe.reader("epilogue", fields=("q", "scale"))
+
+slot = writer.acquire(k)
+tle.gpu.copy(q_desc, slot.q, [BM, BK], [q_block, k_block])
+tl.store(tle.gpu.local_ptr(slot.scale, (tl.arange(0, BM),)), scale_values)
+writer.commit(k)
+
+q_ready = mma_reader.wait(k).slot
+q_tile = tl.load(tle.gpu.local_ptr(q_ready.q))
+mma_reader.release(k)
+
+epilogue_ready = epilogue_reader.wait(k).slot
+scale_tile = tl.load(tle.gpu.local_ptr(epilogue_ready.scale, (tl.arange(0, BM),)))
+epilogue_reader.release(k)
+```
+
+The example above is one logical pipe, not one TMA pipe plus one local-store
+pipe. `slot.q` is classified as a TMA-produced field because it is the
+destination of `tle.gpu.copy`. `slot.scale` is classified as a local-store field
+because it is written through `tle.gpu.local_ptr` and `tl.store`. Both fields
+become visible to subscribed readers after the same `writer.commit(k)` and the
+readers' `wait(k)`.
+
+Usage rules for mixed pipes:
+
+- Split pipes by logical lifecycle and reader protocol, not by transport.
+- Allocate one shared-memory field per payload component; all fields use the
+  same leading `capacity` dimension.
+- Produce every field between the matching `writer.acquire(iter)` and
+  `writer.commit(iter)`.
+- Use the natural operation for each field: descriptor/TMA copy, cp.async-style
+  copy, or `tle.gpu.local_ptr` plus `tl.store`.
+- Let the compiler infer the transport. Do not encode transport in pipe names,
+  field names, or user attributes.
+- Use `pipe.reader(name, fields=(...))` when a reader only consumes a subset of
+  fields; this narrows the reader view without creating another token.
+- Keep pipe-field provenance visible. Opaque shared-memory pointer escapes,
+  untracked shared stores, or unprovable overlapping writes are rejected instead
+  of lowered with a silent fallback.
+
+The current NVIDIA lowering maps accepted mixed pipes to NVWS/mbarrier
+synchronization. It supports provable TMA/local-store and TMA/cp.async mixed
+payloads at pipe-field root granularity and fails fast when the payload window,
+field ownership, participant count, or source-order safety cannot be proven.
 
 ##### 3.2.5.4 `tle.device_mesh` + `tle.sharding` + `tle.reshard`
 
