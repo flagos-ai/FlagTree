@@ -8,6 +8,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/MTVM/MTVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "passes.h"
 #include "llvm/IR/CallingConv.h"
@@ -154,6 +155,7 @@ void init_triton_mthreads(py::module &&m) {
         .insert<mlir::triton::mtgpu::MTGPUDialect,
                 mlir::triton::musa::MUSADialect, mlir::vector::VectorDialect>();
     mlir::registerLLVMDialectTranslation(registry);
+    mlir::registerMTVMDialectTranslation(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });

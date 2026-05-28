@@ -10,9 +10,17 @@ import triton.language as tl
 import triton.experimental.tle.language as tle
 
 
+def _is_enflame_backend():
+    target = triton.runtime.driver.active.get_current_target()
+    return target.backend == "gcu"
+
+
 def _require_cuda():
     try:
-        torch.cuda.init()
+        if _is_enflame_backend():
+            pass
+        else:
+            torch.cuda.init()
     except Exception as exc:
         pytest.skip(f"CUDA init failed: {exc}")
 

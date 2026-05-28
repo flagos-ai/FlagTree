@@ -11,6 +11,7 @@ import os
 def test_triton_reproducer_path(monkeypatch, tmp_path):
     pytest.skip("GCU300/GCU400 not supported by enflame")
 
+    # If we get a cache hit there will be no reproducer generated
     monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")
 
     @triton.jit

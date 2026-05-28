@@ -18,14 +18,17 @@ import os
 import tempfile
 from pathlib import Path
 from triton.backends.compiler import BaseBackend, GPUTarget
-from triton.backends.enflame.backend import GCUBackend, _version_key
-from triton.backends.enflame import toolkit
-from triton.backends.enflame.toolkit import *
+from .backend import GCUBackend, _version_key
+from . import toolkit
+from .toolkit import *
 from dataclasses import dataclass
 import functools
 from typing import Any, Tuple
 import hashlib
+from triton.runtime.cache import get_cache_manager
 from triton._C.libtriton import ir, passes, llvm
+from . import passes as gcu_passes
+from .gcu_intrinsics import restore_intrinsics_from_placeholders as _restore_gcu_intrinsics
 from typing import Dict
 from types import ModuleType
 from triton.runtime.errors import OutOfResources
@@ -84,29 +87,37 @@ def _patch_kernel_for_llir(kernel, arch):
                     kernel)
     kernel = re.sub(r'((?:")?arith\.trunci(?:")?\([^)]*\)\s*<\{)overflowFlags\s*=\s*#arith\.overflow<[^>]*>,\s*', r'\1',
                     kernel)
+    _overflow_map = {'0': 'none', '1': 'nsw', '2': 'nuw', '3': 'nsw, nuw'}
+
+    def _fix_overflow(m):
+        val = m.group(1)
+        return f'overflowFlags = #llvm.overflow<{_overflow_map.get(val, "none")}>'
+
+    kernel = re.sub(r'overflowFlags\s*=\s*(\d+)\s*:\s*i32', _fix_overflow, kernel)
     return kernel
 
 
 def make_ttir(mod, metadata, options):
-    if options.arch == "gcu400" or options.arch == "gcu410":
-        if options.num_warps > 4:
-            print(mod)
-            assert False, "num_warps must not exceed 4"
-    elif options.arch == "gcu300":
-        if options.num_warps > 8:
-            print(mod)
-            assert False, "num_warps must not exceed 8"
+    # Validate num_warps constraints
+    if options.arch in ("gcu400", "gcu410") and options.num_warps > 4:
+        print(mod)
+        assert False, "num_warps must not exceed 4"
+    elif options.arch in ("gcu300", "gcu500") and options.num_warps > 8:
+        print(mod)
+        assert False, "num_warps must not exceed 8"
     pm = ir.pass_manager(mod.context)
     pm.enable_debug()
+
     passes.common.add_inliner(pm)
-    #passes.ttir.add_rewrite_tensor_pointer(pm)
+    if options.arch == "gcu500":
+        passes.ttir.add_rewrite_tensor_pointer(pm)
     passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
-    passes.ttir.add_combine(pm)
     passes.common.add_canonicalizer(pm)
+    passes.ttir.add_combine(pm)
     passes.ttir.add_reorder_broadcast(pm)
     passes.common.add_cse(pm)
-    passes.common.add_licm(pm)
     passes.common.add_symbol_dce(pm)
+    passes.ttir.add_loop_unroll(pm)
     pm.run(mod, "ttir")
     return mod
 
@@ -114,12 +125,17 @@ def make_ttir(mod, metadata, options):
 def make_ttgir(mod, metadata, options):
     pm = ir.pass_manager(mod.context)
     pm.enable_debug()
-    if options.arch == "gcu400" or options.arch == "gcu410":
-        convert_to_ttgpuir_pass = passes.ttir.add_convert_to_ttgpuir(pm, f"gcu:{options.arch}", options.num_warps,
-                                                                     options.warp_size, options.num_ctas)
-        # passes.ttgpuir.add_coalesce(pm)
-        passes.ttgpuir.add_remove_layout_conversions(pm)
-    # passes.ttgpuir.add_optimize_thread_locality(pm)
+    # TritonToTritonGPU -- add GPU encoding (BlockedEncodingAttr).
+    # GCU300/400 handle this later in make_gcuir; GCU500 does it here (like NV/AMD).
+    if options.arch == "gcu500":
+        passes.ttir.add_convert_to_ttgpuir(pm, f"gcu:{options.arch}", options.num_warps, options.warp_size,
+                                           options.num_ctas)
+    if options.arch in ("gcu400", "gcu410", "gcu500"):
+        if options.arch == "gcu500":
+            try:
+                passes.ttgpuir.add_optimize_thread_locality(pm)
+            except AttributeError:
+                pass
     passes.ttgpuir.add_fuse_nested_loops(pm)
     passes.common.add_cse(pm)
     passes.common.add_symbol_dce(pm)
@@ -131,46 +147,90 @@ def make_ttgir(mod, metadata, options):
 def make_gcuir(mod, metadata, options):
     patched_mod = _patch_kernel_for_gcuir(str(mod))
     metadata['name'] = re.search('tt.func public @(\\w+)\\(', patched_mod).group(1).strip()
-    passes = []
+
+    arch = options.arch if options.arch != "gcu410" else "gcu400"
+    PipelineClass = toolkit.get_gcu_pipeline_class(arch)
+    pm = PipelineClass()
+
+    dump_enabled = False
+    ws_inner_barrier_enabled = True
     if toolkit.get_bool_env("MLIR_ENABLE_DUMP"):
-        passes.append('-mlir-print-ir-after-all')
-        passes.append('-mlir-disable-threading')
-        passes.append('-mlir-print-ir-module-scope')
+        gcu_passes.mlir.add_print_ir_after_all(pm)
+        gcu_passes.mlir.add_disable_threading(pm)
+        gcu_passes.mlir.add_print_ir_module_scope(pm)
+        dump_enabled = True
     if toolkit.get_bool_env("MLIR_ENABLE_TIMING"):
-        passes.append('--mlir-timing')
-        passes.append('--mlir-timing-display=list')
-    LOAD_STORE_TO_DMA_PASS = '-convert-triton-load-store-to-gcu-dma'
+        gcu_passes.mlir.add_timing(pm)
+        gcu_passes.mlir.add_timing_display(pm, 'list')
+
     if options.arch == "gcu300":
         if toolkit.get_bool_env("ENABLE_I64_CHECK", True):
-            passes.append('-gcu64-type-verifier')
-        if toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_BROADCAST"):
-            LOAD_STORE_TO_DMA_PASS += '=support_stride0=true'
-        passes += [
-            # '-mlir-disable-threading',
-            # '-mlir-print-ir-module-scope',
-            f'-gcu-convert-triton-to-tritongpu=num-warps={options.num_warps} threads-per-warp={options.warp_size} num-ctas={options.num_ctas} target=gcu:{options.arch}',
-            '-tritongpu-remove-layout-conversions', '-triton-gpu-to-triton-gcu', '-convert-tensor-pointer',
-            '-triton-gcu-dot-layout-optimize', '-tritongpu-remove-layout-conversions', LOAD_STORE_TO_DMA_PASS,
-            '-canonicalize', '-loop-invariant-code-motion', '-gcu-combine-ops', '-gcu-triton-fusion',
-            '-triton-gcu-data-layout-optimize', '-canonicalize',
-            '-triton-gcu-pingpong=' + 'num_stages=' + str(options.num_stages), '-flatten-triton-func',
-            '-convert-triton-to-gcu=' + 'vector-length=' + str(options.vector_length), '-cse', '-canonicalize'
-        ]
+            gcu_passes.gcu300.add_gcu64_type_verifier(pm)
+
+        support_stride0 = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_BROADCAST")
+
+        gcu_passes.gcu300.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
+                                                              options.num_ctas, f'gcu:{options.arch}')
+        gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
+        gcu_passes.gcu300.add_triton_gpu_to_triton_gcu(pm)
+        gcu_passes.gcu300.add_convert_tensor_pointer(pm)
+        gcu_passes.gcu300.add_triton_gcu_dot_layout_optimize(pm)
+        gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
+        gcu_passes.gcu300.add_convert_triton_load_store_to_gcu_dma(pm, support_stride0)
+        gcu_passes.mlir.add_canonicalize(pm)
+        gcu_passes.mlir.add_loop_invariant_code_motion(pm)
+        gcu_passes.gcu300.add_gcu_combine_ops(pm)
+        gcu_passes.gcu300.add_gcu_triton_fusion(pm)
+        gcu_passes.gcu300.add_triton_gcu_data_layout_optimize(pm)
+        gcu_passes.mlir.add_canonicalize(pm)
+        gcu_passes.gcu300.add_triton_gcu_pingpong(pm, options.num_stages)
+        gcu_passes.gcu300.add_flatten_triton_func(pm)
+        gcu_passes.gcu300.add_convert_triton_to_gcu(pm, options.vector_length)
+        gcu_passes.mlir.add_cse(pm)
+        gcu_passes.mlir.add_canonicalize(pm)
+
     elif options.arch == "gcu400" or options.arch == "gcu410":
         if toolkit.get_bool_env("ENABLE_I64_CHECK"):
-            passes.append('-gcu64-type-verifier')
-        if options.enable_stride0:
-            LOAD_STORE_TO_DMA_PASS += '=support_stride0=true'
-        passes += [
-            # '-mlir-disable-threading',
-            # '-mlir-print-ir-module-scope',
-            '-tle-to-triton-gcu', '-triton-gpu-to-triton-gcu', '-convert-tensor-pointer', LOAD_STORE_TO_DMA_PASS,
-            '-canonicalize', '-tritongcu-accelerate-matmul', '-cse', '-triton-wgdot-to-gcu',
-            '-tritongpu-remove-layout-conversions', '-triton-gcu-data-layout-optimize', '-loop-invariant-code-motion',
-            '-gcu-combine-ops', '-gcu-triton-fusion=arch=' + options.arch, '-cse', '-canonicalize',
-            '-flatten-triton-func', '-annotate-dot-acc-reuse', '-convert-triton-to-gcu', '-cse', '-canonicalize'
-        ]
-    return toolkit.triton_gcu_opt(patched_mod, *passes, arch=options.arch)
+            gcu_passes.gcu400.add_gcu64_type_verifier(pm)
+        has_tle_raw = '"tle.dsl_region"' in patched_mod
+        if has_tle_raw:
+            gcu_passes.gcu400.add_tle_to_triton_gcu(pm)
+            gcu_passes.gcu400.add_tle_convert_arg_to_memdesc(pm)
+            gcu_passes.gcu400.add_tle_remove_redundant_copy(pm)
+            gcu_passes.gcu400.add_tle_dslregion_inline(pm)
+        gcu_passes.gcu400.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
+                                                              options.num_ctas, f'gcu:{options.arch}')
+        gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
+        if not has_tle_raw:
+            gcu_passes.gcu400.add_tle_to_triton_gcu(pm)
+        gcu_passes.gcu400.add_triton_gpu_to_triton_gcu(pm)
+        gcu_passes.gcu400.add_tritongcu_accelerate_matmul(pm)
+        gcu_passes.mlir.add_cse(pm)
+        gcu_passes.gcu400.add_gcu_warp_specialization(pm, options.num_stages, dump_enabled, ws_inner_barrier_enabled)
+        gcu_passes.gcu400.add_triton_gcu_allocate_warp_groups(pm)
+        gcu_passes.gcu400.add_convert_tensor_pointer(pm)
+        gcu_passes.gcu400.add_convert_triton_load_store_to_gcu_dma(pm, options.enable_stride0, options.redundant_sip)
+        gcu_passes.mlir.add_canonicalize(pm)
+        gcu_passes.gcu400.add_gcu_tle_lower_async_load(pm)
+        gcu_passes.mlir.add_cse(pm)
+        gcu_passes.gcu400.add_triton_wgdot_to_gcu(pm)
+        gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
+        gcu_passes.gcu400.add_triton_gcu_data_layout_optimize(pm)
+        gcu_passes.mlir.add_loop_invariant_code_motion(pm)
+        gcu_passes.gcu400.add_gcu_combine_ops(pm)
+        gcu_passes.gcu400.add_gcu_triton_fusion(pm, options.arch)
+        gcu_passes.mlir.add_cse(pm)
+        gcu_passes.mlir.add_canonicalize(pm)
+        gcu_passes.gcu400.add_flatten_triton_func(pm)
+        gcu_passes.gcu400.add_annotate_dot_acc_reuse(pm)
+        gcu_passes.gcu400.add_triton_gcu_local_mem_optimize(pm)
+        gcu_passes.gcu400.add_convert_triton_to_gcu(pm)
+        gcu_passes.mlir.add_cse(pm)
+        gcu_passes.mlir.add_canonicalize(pm)
+
+    gcu_passes.mlir.add_print_op_generic(pm)
+
+    return pm.run(patched_mod)
 
 
 def make_llir(mod, metadata, options):
@@ -196,6 +256,12 @@ def make_llir(mod, metadata, options):
         '-alloca-to-entry', '-canonicalize'
     ]
 
+    # Get some metadata
+    # warp-specialization mutates num_warps
+    m = re.search(r'"ttg\.total-num-warps"\s*=\s*(\d+)\s*:\s*i32', mod)
+    if m:
+        metadata["num_warps"] = int(m.group(1))
+
     ## Do nothing, until we figure out how to link .bc into triton_gcu.
     #if options.extern_libs:
     #    paths = [path for (name, path) in options.extern_libs]
@@ -205,6 +271,11 @@ def make_llir(mod, metadata, options):
 
 
 def make_fatbin(mod, metadata, options):
+    """Unified fatbin generation for all GCU architectures.
+
+    For gcu500: uses EFGCU toolchain (llc + lld + bundler)
+    For gcu300/400/410: uses gcu-compiler-compile
+    """
     if options.arch == "gcu300":
         metadata['shared'] = int(re.search('gcu.shared_memory_size = (\\d+)', str(mod)).group(1).strip())
         local_mem_size = int(re.search('gcu.local_memory_size = (\\d+)', str(mod)).group(1).strip())
@@ -212,18 +283,92 @@ def make_fatbin(mod, metadata, options):
             raise OutOfResources(metadata['shared'], options.max_shared, "shared memory")
         if local_mem_size > options.max_local:
             raise OutOfResources(local_mem_size, options.max_local, "local memory")
-    elif options.arch == "gcu400" or options.arch == "gcu410":
+    elif options.arch in ("gcu400", "gcu410"):
         metadata['shared'] = 0
         dsm_mem_size = int(re.search('gcu.dsm_memory_size = (\\d+)', str(mod)).group(1).strip())
         if dsm_mem_size > options.max_dsm:
             raise OutOfResources(dsm_mem_size, options.max_dsm, "dsm memory")
+    elif options.arch == "gcu500":
+        metadata['shared'] = 0
+        dsm_mem_size_match = re.search('gcu.dsm_memory_size = (\\d+)', str(mod))
+        if dsm_mem_size_match:
+            dsm_mem_size = int(dsm_mem_size_match.group(1).strip())
+            if dsm_mem_size > options.max_dsm:
+                raise OutOfResources(dsm_mem_size, options.max_dsm, "dsm memory")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bin = os.path.join(tmpdir, "kernel.fatbin")
-        toolkit.compile(mod, "--device-only", "--is-triton-backend", f"--arch={options.arch}",
-                        f"--toolkit-path={datadir}", f"--output={bin}")
-        with open(bin, "rb") as f:
-            return f.read()
+    if options.arch == "gcu500":
+        return _make_fatbin_gcu500(str(mod), metadata, options)
+    else:
+        mod = _restore_gcu_intrinsics(mod)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin = os.path.join(tmpdir, "kernel.fatbin")
+            compile_args = [
+                "--device-only", "--is-triton-backend", f"--arch={options.arch}", f"--toolkit-path={toolkit.datadir}",
+                f"--output={bin}"
+            ]
+            toolkit.compile(mod, *compile_args)
+            with open(bin, "rb") as f:
+                return f.read()
+
+
+def _make_fatbin_gcu500(src_str, metadata, options):
+    """LLVM IR text -> fatbin via EFGCU llc + lld + bundler.
+
+    Pipeline (pure EFGCU, no gcu-compiler):
+    1. Patch LLIR for TOPS LLVM18 compatibility
+    2. Call toolkit.compile_llir_to_fatbin_gcu500 (llc + lld + bundler)
+    Saves .ll and .s alongside fatbin in the cache directory.
+
+    Note: metadata["shared"] should have been set by _make_llir_gcu500 already.
+    """
+    kernel_name = metadata.get("name", "kernel") if isinstance(metadata, dict) else "kernel"
+    gcu500 = toolkit._load_gcu_opt_module('gcu500')
+    patched = gcu500.patch_llir(src_str, kernel_name)
+
+    cache = get_cache_manager(metadata.get("hash"))
+    cache.put(patched, f"{kernel_name}.ll")
+
+    result = toolkit.compile_llir_to_fatbin_gcu500(patched, kernel_name)
+
+    if result["asm"]:
+        cache.put(result["asm"], f"{kernel_name}.s")
+
+    return result["fatbin"]
+
+
+def _make_llir_gcu500(mod, metadata, options):
+    """GCU500 LLIR stage: lower TTGIR directly to EFGCU LLVM IR.
+
+    Uses the _triton_gcu500 nanobind extension (in-process pipeline).
+    The pass pipeline mirrors the former triton-gcu500-opt pass list.
+    """
+    gcu500 = toolkit._load_gcu_opt_module('gcu500')
+
+    ttgir_str = str(mod)
+    m = re.search(r'tt\.func public @(\w+)\s*\(', ttgir_str)
+    if m and 'name' not in metadata:
+        metadata['name'] = m.group(1).strip()
+
+    pipeline = gcu500.Pipeline()
+    pipeline.add_allocate_gcu_shared_memory()
+    pipeline.add_convert_scf_to_cf()
+    pipeline.add_convert_index_to_llvm()
+    pipeline.add_convert_triton_gpu_to_efgcu()
+    pipeline.add_canonicalizer()
+    pipeline.add_cse()
+    pipeline.add_convert_cf_to_llvm()
+    pipeline.add_convert_arith_to_llvm()
+    pipeline.add_canonicalizer()
+    pipeline.add_cse()
+    pipeline.add_symbol_dce()
+
+    result_mlir = pipeline.run(ttgir_str)
+    kernel_name = metadata.get("name", "kernel")
+    cache = get_cache_manager(metadata.get("hash"))
+    cache.put(result_mlir, f"{kernel_name}.efvm.mlir")
+
+    llir = pipeline.translate_to_llvmir(result_mlir)
+    return llir
 
 
 @functools.lru_cache(None)
@@ -242,7 +387,6 @@ class GCUOptions:
     warp_size: int = 1
     num_ctas: int = 1
     num_stages: int = 3
-    arch: str = "gcu300"
     vector_length: int = 512
     debug: bool = False
     cluster_dims: tuple = (1, 1, 1)
@@ -256,6 +400,7 @@ class GCUOptions:
     max_num_imprecise_acc_default: int = 0
     enable_fp_fusion: bool = True
     enable_stride0: bool = False
+    redundant_sip: bool = False
     launch_cooperative_grid: bool = False
     extern_libs: dict = None
     sanitize_overflow: bool = False
@@ -268,6 +413,7 @@ class GCUOptions:
     max_local: int = 0
     max_dsm: int = 0
     instrumentation_mode: str = ""
+    launch_pdl: bool = False
 
     def __post_init__(self):
         architecture = GCUBackend().get_architecture_descriptor()
@@ -289,6 +435,24 @@ class GCUOptions:
                     print(f"warning: num_warps {self.num_warps}, "
                           f"exceeds triton-gcu limit (4). "
                           f"Triton-gcu automatically resets num_warps to 4!")
+        elif self.arch == "gcu500":
+            self.vector_length = 2048
+            self.allow_fp8e4nv = True
+            self.allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "ieee")
+            self.max_num_imprecise_acc_default = 2**30
+            self.supported_fp8_dtypes: Tuple[str] = ("fp8e4nv", "fp8e5")
+            self.deprecated_fp8_dot_operand_dtypes: Tuple[str] = ()
+            self.max_dsm = 312 * 1024  # Increased DSM for SIMT
+            # GCU500 (5.0): 1 warp = 128 threads (equivalent to 128 CUDA threads per warp)
+            self.warp_size = 128  # SIMT warp size (5.0: 128 threads per warp)
+            self.simt_lane_size = 128  # SIMT lane size (same as warp size for GCU500)
+            # Handle exceptions for the num_warps parameter (SIMT mode supports more warps)
+            if self.num_warps > 8:
+                self.num_warps = 8
+                if toolkit.get_bool_env("TRITON_GCU_DEBUG"):
+                    print(f"warning: num_warps {self.num_warps}, "
+                          f"exceeds triton-gcu500 limit (8). "
+                          f"Triton-gcu500 automatically resets num_warps to 8!")
         elif self.arch == "gcu300":
             self.max_local = (1024 * (1024 + 512) - 512)
             self.max_shared = 1024 * 1024 * 8 * self.num_warps
@@ -342,7 +506,6 @@ class _GCUBackend(BaseBackend):
             args["enable_stride0"] = opts["ENABLE_STRIDE_GATHER"]
         else:
             args["enable_stride0"] = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_GATHER")
-        args.update({k: opts[k] for k in GCUOptions.__dataclass_fields__.keys() if k in opts})
 
         return GCUOptions(**args)
 
@@ -373,8 +536,11 @@ class _GCUBackend(BaseBackend):
     def add_stages(self, stages, options, language):
         stages["ttir"] = lambda src, metadata: make_ttir(src, metadata, options)
         stages["ttgir"] = lambda src, metadata: make_ttgir(src, metadata, options)
-        stages["gcuir"] = lambda src, metadata: make_gcuir(src, metadata, options)
-        stages["llir"] = lambda src, metadata: make_llir(src, metadata, options)
+        if options.arch == "gcu500":
+            stages["llir"] = lambda src, metadata: _make_llir_gcu500(src, metadata, options)
+        else:
+            stages["gcuir"] = lambda src, metadata: make_gcuir(src, metadata, options)
+            stages["llir"] = lambda src, metadata: make_llir(src, metadata, options)
         stages["fatbin"] = lambda src, metadata: make_fatbin(src, metadata, options)
 
     def get_module_map(self) -> Dict[str, ModuleType]:

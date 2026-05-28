@@ -16,6 +16,7 @@
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -33,6 +34,35 @@ using namespace mlir;
 
 namespace {
 
+// Check whether a Value is a splat-zero constant, looking through
+// single-region wrapper ops (e.g. triton_gcu.elementwise_fusion_region).
+static bool isSplatZeroConstant(Value v) {
+  if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
+    auto denseAttr = dyn_cast<DenseElementsAttr>(constOp.getValue());
+    if (!denseAttr || !denseAttr.isSplat())
+      return false;
+    auto splatAttr = denseAttr.getSplatValue<Attribute>();
+    if (auto fAttr = dyn_cast<FloatAttr>(splatAttr))
+      return fAttr.getValue().isZero();
+    if (auto iAttr = dyn_cast<IntegerAttr>(splatAttr))
+      return iAttr.getValue().isZero();
+    return false;
+  }
+  // Look through single-region wrapper ops whose terminator yields
+  // the inner value (e.g. triton_gcu.elementwise_fusion_region).
+  Operation *defOp = v.getDefiningOp();
+  if (!defOp || defOp->getNumRegions() != 1)
+    return false;
+  Region &region = defOp->getRegion(0);
+  if (!region.hasOneBlock())
+    return false;
+  Operation *terminator = region.front().getTerminator();
+  auto resultIdx = cast<OpResult>(v).getResultNumber();
+  if (resultIdx >= terminator->getNumOperands())
+    return false;
+  return isSplatZeroConstant(terminator->getOperand(resultIdx));
+}
+
 // Pre-conversion analysis pass that identifies tt.dot ops eligible for
 // in-place accumulator buffer reuse (D = A * B + C where D and C share
 // the same storage).
@@ -46,7 +76,16 @@ namespace {
 //   2. The accumulator (C) is a loop-carried block argument of an scf.for.
 //   3. The accumulator tensor has exactly one use (this dot op).
 //   4. The dot result is yielded back at the same iter-arg position.
-//   5. The scf.for is NOT nested inside another scf.for.
+//   5. The accumulator init value must be a splat-zero constant (the
+//      downstream conversion re-initializes via memset to zero).  The
+//      constant may be wrapped in fusion regions.
+//   6. Only single or two-level loop nesting is supported; three or more
+//      levels are rejected.
+//   7. If the scf.for is nested inside another scf.for, the accumulator
+//      init arg must NOT be carried through the outer loop (i.e., it must
+//      not be an outer for block arg), and the inner for's result must NOT
+//      be yielded by the outer for.  The downstream conversion inserts a
+//      re-initialization of the accumulator buffer at each outer iteration.
 //
 // Type-compatibility conditions (accMemRefType == resultMemRefType, init-arg
 // is an AllocOp) are deferred to conversion time since they require the
@@ -85,8 +124,42 @@ struct AnnotateDotAccReusePass
       if (yieldOp.getOperand(iterArgIdx) != dotOp.getResult())
         return;
 
-      if (forOp->getParentOfType<scf::ForOp>())
+      // If the init arg for this iter position is the same SSA value as
+      // another iter arg, two dots would try to reuse the same buffer.
+      // This causes aliasing and a crash in fixAccBufferLifetime.
+      auto initArgs = forOp.getInitArgs();
+      Value initArg = initArgs[iterArgIdx];
+
+      // Only support zero-initialized accumulators -- fixAccBufferLifetime
+      // re-initializes via memset to zero, so a non-zero init would be lost.
+      if (!isSplatZeroConstant(initArg))
         return;
+
+      if (auto outerFor = forOp->getParentOfType<scf::ForOp>()) {
+        // Reject if nested three or more levels deep -- only two-level
+        // nesting is supported for accumulator reuse.
+        if (outerFor->getParentOfType<scf::ForOp>())
+          return;
+        // Reject if init comes from outer for's block arg (carried through
+        // the outer loop -- the buffer would not be re-initialized).
+        if (auto outerBlockArg = dyn_cast<BlockArgument>(initArg))
+          if (outerBlockArg.getOwner()->getParentOp() ==
+              outerFor.getOperation())
+            return;
+        // Reject if outer for yields the inner for's accumulator result
+        // (double accumulation across both loops).
+        if (auto outerYield =
+                dyn_cast<scf::YieldOp>(outerFor.getBody()->getTerminator())) {
+          Value innerResult = forOp->getResult(iterArgIdx);
+          for (auto yieldedVal : outerYield.getOperands())
+            if (yieldedVal == innerResult)
+              return;
+        }
+      }
+      for (unsigned i = 0, e = initArgs.size(); i < e; ++i) {
+        if (i != iterArgIdx && forOp.getInitArgs()[i] == initArg)
+          return;
+      }
 
       dotOp->setAttr("acc_reuse_candidate", UnitAttr::get(dotOp.getContext()));
       LLVM_DEBUG(llvm::dbgs()

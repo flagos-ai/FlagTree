@@ -70,6 +70,17 @@ struct ConvertTritonLoadStoreToDmaPass
   }
 };
 
+static void copyTritonLoadAttrsToGcuLoad(triton::LoadOp src,
+                                         triton::gcu::LoadOp dst) {
+  for (const NamedAttribute attr : src->getAttrs()) {
+    // This ODS-generated attribute encodes operand segment sizes and differs
+    // between tt.load and triton_gcu.load.
+    if (attr.getName().getValue() == "operandSegmentSizes")
+      continue;
+    dst->setAttr(attr.getName(), attr.getValue());
+  }
+}
+
 struct PreprocessForOp : public OpRewritePattern<scf::ForOp> {
   llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs;
   llvm::SmallDenseMap<Value, gcu::MaskState> &knownMasks;
@@ -303,6 +314,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
         auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
             loc, sliceType, ptrInfo.base, updateShapes, updateStrides,
             ptrInfo.offsets, defaultValue, dynamicOpHint);
+        copyTritonLoadAttrsToGcuLoad(op, load);
         auto broadcastOp =
             rewriter.create<triton::BroadcastOp>(loc, op.getType(), load);
         rewriter.replaceOp(op, broadcastOp);
@@ -311,6 +323,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
         auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
             loc, tType, ptrInfo.base, updateShapes, updateStrides,
             ptrInfo.offsets, defaultValue, dynamicOpHint);
+        copyTritonLoadAttrsToGcuLoad(op, load);
         rewriter.replaceOp(op, load);
         return success();
       }
@@ -417,6 +430,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
         auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
             loc, loadType, ptrInfo.base, updateShapes, updateOrder,
             ptrInfo.offsets, defaultValue, staticDefaultOrder);
+        copyTritonLoadAttrsToGcuLoad(op, load);
         auto broadcastOp =
             rewriter.create<triton::BroadcastOp>(loc, op.getType(), load);
         rewriter.replaceOp(op, broadcastOp);
@@ -425,6 +439,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
         auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
             loc, op.getType(), ptrInfo.base, updateShapes, updateOrder,
             ptrInfo.offsets, defaultValue, staticDefaultOrder);
+        copyTritonLoadAttrsToGcuLoad(op, load);
         rewriter.replaceOp(op, load);
         return success();
       }
@@ -606,6 +621,9 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
 
 void ConvertTritonLoadStoreToDmaPass::runOnOperation() {
   LLVM_DEBUG(llvm::dbgs() << "ConvertTritonLoadStoreToDmaPass\n");
+
+  if (skip_dma)
+    return;
 
   auto *ctx = &getContext();
   auto op = getOperation();

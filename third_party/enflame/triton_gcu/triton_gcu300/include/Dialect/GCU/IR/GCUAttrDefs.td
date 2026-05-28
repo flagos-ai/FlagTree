@@ -181,6 +181,15 @@ def GCU_VectorMovSftModeAttr : I64EnumAttr<
   let cppNamespace = "::mlir::gcu";
 }
 
+def GCU_VectorShiftDirectionAttr : I64EnumAttr<
+    "VectorShiftDirection", "the direction of vector shift",
+    [
+      I64EnumAttrCase<"RIGHT", 0, "right">,
+      I64EnumAttrCase<"LEFT", 1, "left">
+    ]> {
+  let cppNamespace = "::mlir::gcu";
+}
+
 // InputPrecision
 def GCU_InputPrecisionAttr : I32EnumAttr<
     "InputPrecision", "",

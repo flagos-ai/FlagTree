@@ -150,10 +150,14 @@ class Autotuner(KernelInterface):
             def _unwrap_to_jitfunction(fn):
                 from triton.runtime.jit import JITFunction
                 while not isinstance(fn, JITFunction):
+                    if not hasattr(fn, 'fn'):
+                        return None
                     fn = fn.fn
                 return fn
 
-            auto_adjust_block_sizes(self.nargs, _unwrap_to_jitfunction(self.fn), self.configs, current, config)
+            jit_fn = _unwrap_to_jitfunction(self.fn)
+            if jit_fn is not None:
+                auto_adjust_block_sizes(self.nargs, jit_fn, self.configs, current, config)
         meta_key = tuple(sorted(current.items()))
         if meta_key in self.seen_tuned_metas:
             return self.seen_tuned_metas[meta_key]  # flagtree aabs: deduplicate tuned meta

@@ -141,7 +141,8 @@ def check_type_supported(dtype, device):
     skip test if dtype is not supported on the current device
     '''
     # TODO
-    target_arch = triton.runtime.driver.active.get_current_target().arch.split("--")[1]
+    arch_str = triton.runtime.driver.active.get_current_target().arch
+    target_arch = arch_str.split("--")[1] if "--" in arch_str else arch_str
     if device in ['cuda']:
         cc = torch.cuda.get_device_capability()
         if cc[0] < 8 and (dtype is tl.bfloat16 or dtype == "bfloat16" or dtype is torch.bfloat16):
@@ -2614,7 +2615,7 @@ scan_configs = [(op, type, shape, axis, reverse, num_warps)
                 for reverse in [True, False]
                 for shape in scan2d_shapes
                 for op in ['cumsum', 'cumprod', 'get_first_element', 'linear_recurrence', 'cummax', 'roll']]
-negative_config = [('cumsum', 'float32', (32, 32), -1, False, 4)]
+scan_negative_config = [('cumsum', 'float32', (32, 32), -1, False, 4)]
 
 
 def test_sum_dtype(device):
@@ -2683,7 +2684,7 @@ def roll(a1, b1_last, b1_cur, a2, b2_last, b2_cur):
 
 
 @pytest.mark.interpreter
-@pytest.mark.parametrize("op, dtype_str, shape, axis, reverse, num_warps", scan_configs + negative_config)
+@pytest.mark.parametrize("op, dtype_str, shape, axis, reverse, num_warps", scan_configs + scan_negative_config)
 def test_scan2d(op, dtype_str, shape, axis, reverse, num_warps, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
     check_type_supported(dtype_str, device)

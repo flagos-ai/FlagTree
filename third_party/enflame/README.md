@@ -23,37 +23,17 @@ cd FlagTree
 git checkout -b triton_v3.6.x origin/triton_v3.6.x
 ```
 
-### 2. Prepare Docker Image
-
+### 2. Pull Software Package
 ```bash
-# Load pre-built container image
-curl -sL https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz | docker load
-
-# Or manually download and load
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz
-docker load -i enflame-flagtree-0.5.0.tar.gz
+cd ~
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run
 ```
 
-### 3. Start Docker Container
+### 3. Install Driver
 
 ```bash
-# To re-run container, remove the existing one
-# docker rm -f enflame-flagtree-0.5.0
-
-# Assuming flagtree source code is located at ~/flagtree
-docker run -itd --privileged --name enflame-flagtree-0.5.0 -v ~/FlagTree:/root/FlagTree enflame/flagtree:0.5.0 bash
-```
-
-### 4. Install Driver
-
-```bash
-# Extract and install Enflame driver
-docker cp enflame-flagtree-0.5.0:/enflame enflame
-
-sudo bash enflame/driver/enflame-x86_64-gcc-*.run
-# Use other arguments if prompt, e.g.
-# sudo bash enflame/driver/enflame-x86_64-gcc-*.run --virt-host
-
+cd ~
+bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --driver -y
 efsmi
 ```
 
@@ -76,12 +56,30 @@ Check driver status with efsmi. Example output:
 +-----------------------------+-------------------+---------------------------+
 ```
 
-### 5. Restart Docker Container and Enter
+### 3. Prepare Docker Image
 
 ```bash
-# Restart docker
-docker restart enflame-flagtree-0.5.0
-# Execute docker
+# Load pre-built container image
+curl -sL https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz | docker load
+
+# Or manually download and load
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz
+docker load -i enflame-flagtree-0.5.0.tar.gz
+```
+
+### 4. Start Docker Container
+
+```bash
+# To re-run container, remove the existing one
+# docker rm -f enflame-flagtree-0.5.0
+
+# Assuming flagtree source code is located at ~/flagtree
+docker run -itd --privileged --name enflame-flagtree-0.5.0 -v ~/FlagTree:/root/FlagTree enflame/flagtree:0.5.0 bash
+```
+
+### 5. Enter Docker Container
+
+```bash
 docker exec -it enflame-flagtree-0.5.0 bash
 ```
 
@@ -98,21 +96,27 @@ wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68-gcc9-x6
 tar -xzf enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
 ```
 
-### 2. Configure Build Environment
+### 2. Install Software Package
+```bash
+cd ~
+bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --container -y
+```
+
+### 3. Configure Build Environment
 
 ```bash
 export FLAGTREE_BACKEND=enflame
 git config --global --add safe.directory ~/FlagTree
 ```
 
-### 3. Install Python Dependencies
+### 4. Install Python Dependencies
 
 ```bash
 cd ~/FlagTree/python
 pip3 install -r requirements.txt --break-system-packages
 ```
 
-### 4. Build and Install Package
+### 5. Build and Install Package
 
 ```bash
 cd ~/FlagTree

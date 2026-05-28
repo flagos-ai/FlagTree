@@ -17,21 +17,24 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   TritonGPUtoTrtionGCU.cpp
   TTSmemLowerToGCU.cpp
   TleToTritonGCU.cpp
+  TritonGCULocalMemOptimize.cpp
   AllocateWarpGroups.cpp
   AnnotateDotAccReuse.cpp
+  ReduceScanCommon.cpp
+  Vectorize.cpp
 
   DEPENDS
   TritonGCUTableGen_${arch}
   MLIRTritonGCUConversionPassIncGen_${arch}
-  triton_${arch}
+  triton_gcu400
 
-  MemrefExtIR${arch}
-  MathExtIR${arch}
+  MemrefExtIR_${arch}
+  MathExtIR_${arch}
 
   LINK_LIBS PUBLIC
   TritonGCUAnalysis_${arch}
-  MemrefExtIR${arch}
-  MathExtIR${arch}
+  MemrefExtIR_${arch}
+  MathExtIR_${arch}
   MLIRAffineDialect
   MLIRAffineToStandard
   MLIRArithDialect

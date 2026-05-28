@@ -13,30 +13,72 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "RegisterGCUDialects.h"
+#include "lib/triton_gcu300_core.h"
 
-#include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
 
-#include "triton/Conversion/TritonToTritonGPU/Passes.h"
-
-#include "mlir/Tools/mlir-opt/MlirOptMain.h"
-
-namespace mlir {
-namespace test {
-void registerTestFirstLastUserAnalysisPass();
+static std::string readFile(const char *filename) {
+  std::ifstream ifs(filename, std::ios::binary);
+  if (!ifs) {
+    std::cerr << "Error: cannot open input file: " << filename << "\n";
+    return "";
+  }
+  std::ostringstream ss;
+  ss << ifs.rdbuf();
+  return ss.str();
 }
-} // namespace mlir
+
+static std::string readStdin() {
+  std::ostringstream ss;
+  ss << std::cin.rdbuf();
+  return ss.str();
+}
 
 int main(int argc, char **argv) {
-  mlir::DialectRegistry registry;
-  mlir::gcu::registerGCUDialects(registry);
-  mlir::triton::gpu::registerTritonGPUPasses();
-  mlir::triton::registerConvertTritonToTritonGPUPass();
-  mlir::test::registerTestFirstLastUserAnalysisPass();
-  registry.insert<mlir::triton::TritonDialect,
-                  mlir::triton::gpu::TritonGPUDialect>();
-  return mlir::asMainReturnCode(
-      mlir::MlirOptMain(argc, argv, "GCU optimizer driver\n", registry));
+  std::vector<const char *> passArgs;
+  const char *inputFile = nullptr;
+
+  for (int i = 1; i < argc; ++i) {
+    std::string arg(argv[i]);
+    if (arg == "--help" || arg == "-h") {
+      std::cout << "Usage: triton-gcu300-opt [options] <input-file>\n"
+                << "  Run MLIR optimization passes on GCU300 IR\n"
+                << "  Options are pass names and flags (e.g., --pass-name)\n"
+                << "  Use '-' for stdin input\n";
+      return 0;
+    }
+    if (arg[0] != '-') {
+      inputFile = argv[i];
+    } else {
+      passArgs.push_back(argv[i]);
+    }
+  }
+
+  std::string input;
+  if (inputFile && std::string(inputFile) != "-") {
+    input = readFile(inputFile);
+    if (input.empty()) {
+      return 1;
+    }
+  } else {
+    input = readStdin();
+  }
+
+  Gcu300String result =
+      gcu300_run_opt(input.data(), input.size(), passArgs.data(),
+                     static_cast<int>(passArgs.size()));
+
+  if (!result.data) {
+    std::cerr << "Error: optimization failed\n";
+    return 1;
+  }
+
+  std::cout.write(result.data, result.len);
+  gcu300_string_free(result);
+
+  return 0;
 }

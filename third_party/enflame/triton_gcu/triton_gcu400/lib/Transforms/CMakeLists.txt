@@ -1,8 +1,10 @@
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
+
 add_mlir_conversion_library(MLIRTritonGCUTransforms_${arch}
   Combine.cpp
   GCUSupportVerifier.cpp
   GCUWarpSpecialization.cpp
+  GCUTleLowerAsyncLoad.cpp
   WarpSpecialization/CodePartitionUtility.cpp
   WarpSpecialization/TaskIdPropagation.cpp
   WarpSpecialization/Utility.cpp
@@ -20,7 +22,7 @@ add_mlir_conversion_library(MLIRTritonGCUTransforms_${arch}
   TritonGCUTableGen_${arch}
   TritonGCUTransformsPassIncGen_${arch}
   TritonGCUCombineIncGen_${arch}
-  triton_${arch}
+  triton_gcu400
 
   LINK_LIBS PUBLIC
   MLIRGPUTransforms
@@ -30,10 +32,6 @@ add_mlir_conversion_library(MLIRTritonGCUTransforms_${arch}
   MLIRSideEffectInterfaces
   )
 
-target_compile_options(obj.MLIRTritonGCUTransforms_${arch}
-  PRIVATE
-  $<$<CXX_COMPILER_ID:GNU>:-Wno-error=comment>
-)
 
 set(LLVM_TARGET_DEFINITIONS Combine.td)
 mlir_tablegen(TritonGCUCombine.inc -gen-rewriters)

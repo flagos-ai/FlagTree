@@ -66,8 +66,8 @@ public:
 
     // Only support num_warp is 4
     int numWarps = ttg::lookupNumWarps(funcOp);
-    if (numWarps != 4) {
-      llvm::dbgs() << "WarpSpec currently only supports num_warp = 4.\n";
+    if (numWarps > 4) {
+      llvm::dbgs() << "WarpSpec currently only supports num_warp <= 4.\n";
       return;
     }
 

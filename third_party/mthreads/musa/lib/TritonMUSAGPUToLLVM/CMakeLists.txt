@@ -6,6 +6,7 @@ add_triton_library(TritonMUSAGPUToLLVM
   DotOpToLLVM/SQMMA.cpp
   DotOpToLLVM/WMMA.cpp
   ElementwiseOpToLLVM.cpp
+  Fp4ToFpOpToLLVM.cpp
   LoadStoreOpToLLVM.cpp
   MUSAOpsToLLVM.cpp
   SPMDOpToLLVM.cpp
@@ -29,5 +30,5 @@ add_triton_library(TritonMUSAGPUToLLVM
   MLIRUBToLLVM
   MTGPUIR
   MUSAIR
-  MLIRGPUToMTGPUTransforms
+  MLIRGPUToMTVMTransforms
 )

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include <string>
+#include <utility>
 
 #include "Analysis/MaskAnalysis.h"
 
@@ -304,17 +305,31 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
                             llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
 
-  assert(cmpOp.getPredicate() == arith::CmpIPredicate::slt ||
-         cmpOp.getPredicate() == arith::CmpIPredicate::ult ||
-         cmpOp.getPredicate() == arith::CmpIPredicate::sge ||
-         cmpOp.getPredicate() == arith::CmpIPredicate::uge);
+  auto predicate = cmpOp.getPredicate();
+  assert(predicate == arith::CmpIPredicate::slt ||
+         predicate == arith::CmpIPredicate::ult ||
+         predicate == arith::CmpIPredicate::sge ||
+         predicate == arith::CmpIPredicate::uge ||
+         predicate == arith::CmpIPredicate::sgt ||
+         predicate == arith::CmpIPredicate::ugt);
+
+  // Normalize sgt/ugt to slt/ult by swapping operands.
+  Value lhsOperand = cmpOp.getLhs();
+  Value rhsOperand = cmpOp.getRhs();
+  if (predicate == arith::CmpIPredicate::sgt) {
+    std::swap(lhsOperand, rhsOperand);
+    predicate = arith::CmpIPredicate::slt;
+  } else if (predicate == arith::CmpIPredicate::ugt) {
+    std::swap(lhsOperand, rhsOperand);
+    predicate = arith::CmpIPredicate::ult;
+  }
 
   MaskState lhsState;
-  parse(builder, loc, cmpOp.getLhs(), lhsState, knownMasks);
+  parse(builder, loc, lhsOperand, lhsState, knownMasks);
   assert(!lhsState.isEmpty());
 
   MaskState rhsState;
-  parse(builder, loc, cmpOp.getRhs(), rhsState, knownMasks);
+  parse(builder, loc, rhsOperand, rhsState, knownMasks);
   assert(!rhsState.isEmpty());
 
   // Process 1x1 tensor
@@ -327,7 +342,7 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
     assert((lhsState.scalar && rhsState.scalar) && "unsupported cmpi scenario");
 
     arith::CmpIOp cmpiOp = builder.create<arith::CmpIOp>(
-        loc, cmpOp.getPredicate(), getValue(builder, loc, lhsState.scalar),
+        loc, predicate, getValue(builder, loc, lhsState.scalar),
         getValue(builder, loc, rhsState.scalar));
 
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
@@ -353,8 +368,8 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
          "unexpected case where no dimension has size larger than 1");
 
   auto newDim = lhsState.dims[cmpDim];
-  if (cmpOp.getPredicate() == arith::CmpIPredicate::slt ||
-      cmpOp.getPredicate() == arith::CmpIPredicate::ult) {
+  if (predicate == arith::CmpIPredicate::slt ||
+      predicate == arith::CmpIPredicate::ult) {
     auto newEnd = minOFRs(builder, loc, lhsState.end, rhsState.scalar);
     newDim = subOFRs(builder, loc, newEnd, lhsState.start);
   } else {

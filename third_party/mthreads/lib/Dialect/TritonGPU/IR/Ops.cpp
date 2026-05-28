@@ -236,8 +236,12 @@ struct CanonicalizeConvertFromAlloc
       // the required shared-memory restaging contract for the next SQMMA.
       return failure();
     }
-    rewriter.replaceOpWithNewOp<triton::gpu::LocalAllocOp>(
-        op, op->getResult(0).getType(), convert.getSrc());
+    SmallVector<NamedAttribute> attrs(op->getAttrs().begin(),
+                                      op->getAttrs().end());
+    auto newAlloc = triton::gpu::LocalAllocOp::create(
+        rewriter, op.getLoc(), op->getResult(0).getType(), convert.getSrc());
+    newAlloc->setAttrs(attrs);
+    rewriter.replaceOp(op, newAlloc.getResult());
     return mlir::success();
   }
 };

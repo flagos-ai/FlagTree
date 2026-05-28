@@ -1,0 +1,6 @@
+{
+  global:
+    PyInit__triton_gcu400;
+  local:
+    *;
+};

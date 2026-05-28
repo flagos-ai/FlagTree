@@ -53,6 +53,12 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
     # keyword tail).
     _MAKE_TMA_DESC_PARAM_ORDER = ('base', 'shape', 'strides', 'block_shape')
 
+    # Parameter order of `tl.load_tensor_descriptor`, mirrored from
+    # `python/triton/language/core.py::load_tensor_descriptor`. This functional
+    # form lowers to `desc.load(offsets)` and is equivalent to the method-call
+    # form for our purposes.
+    _LOAD_TMA_DESC_PARAM_ORDER = ('desc', 'offsets')
+
     def __init__(self, kernel_globals: dict | None = None):
         self.input_params = set[str]()  # input params
         self.constexpr_params = set[str]()  # constexpr params
@@ -105,11 +111,13 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         if len(targets) == 1 and isinstance(targets[0], ast.Name):
             var_name = targets[0].id
 
-            # Capture desc.load([addr, ...]) assignments
-            if (isinstance(node.value, ast.Call) and self._is_tma_load(node.value) and node.value.args
-                    and isinstance(node.value.args[0], ast.List)):
-                desc_name = node.value.func.value.id
-                addr_exprs = node.value.args[0].elts
+            # Capture TMA descriptor load assignments in both call forms:
+            #   (a) method form:     a = a_desc.load([offset_am, offset_ak])
+            #   (b) functional form: a = tl.load_tensor_descriptor(a_desc, [offset_am, offset_ak])
+            # Both lower to the same TMA load; normalize into (desc_name, addr_exprs).
+            tma_load_record = self._extract_tma_load(node.value)
+            if tma_load_record is not None:
+                desc_name, addr_exprs = tma_load_record
                 self.tma_load_assignments.append(
                     {'var_name': var_name, 'desc_name': desc_name, 'addr_exprs': addr_exprs})
 
@@ -199,6 +207,65 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         if node.attr == 'T':
             self.transpose_args_nodes.append(node.value)
         self.generic_visit(node)
+
+    # `for _ in range(start, stop, step)` (and `tl.range(...)`) with step ==
+    # constexpr BLOCK_X and stop == input/constexpr X iterates ceil(stop/step)
+    # times — semantically equivalent to `tl.cdiv(stop, step)`. Some kernels
+    # (e.g. mthreads gemv_kernel) write the K-loop as
+    #   `for k_start in range(0, K, BLOCK_K):`
+    # instead of the more common `for k in range(tl.cdiv(K, BLOCK_K)):` and
+    # therefore never expose any `tl.cdiv(X, BLOCK_X)` call. Synthesizing a
+    # virtual cdiv here recovers the BLOCK_X <-> X pairing.
+    def visit_For(self, node):
+        it = node.iter
+        if isinstance(it, ast.Call) and len(it.args) >= 3:
+            is_range = (isinstance(it.func, ast.Name) and it.func.id == 'range') or self._is_tl_func(it, 'range')
+            if is_range:
+                self._maybe_add_virtual_cdiv(stop_node=it.args[1], step_node=it.args[2])
+        self.generic_visit(node)
+
+    # `arange-derived < X` (or any inequality direction) where the arange-derived
+    # side traces back to exactly one BLOCK_X and X is an input/constexpr
+    # parameter is the canonical out-of-bounds-mask construction pattern. This
+    # provides the same (X, BLOCK_X) pairing signal as `tl.cdiv(X, BLOCK_X)`,
+    # used by kernels without a cdiv call (e.g. mthreads gemv_kernel:
+    #   `row_mask = row_offset < M`, `k_mask = k_offset < K`).
+    def visit_Compare(self, node):
+        if len(node.ops) == 1 and isinstance(node.ops[0], (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+            left, right = node.left, node.comparators[0]
+            # Try both directions; the arange-derived side could be on either side.
+            for arange_side, x_side in ((left, right), (right, left)):
+                if not isinstance(x_side, ast.Name):
+                    continue
+                if (x_side.id not in self.input_params and x_side.id not in self.constexpr_params):
+                    continue
+                bs_set = set[str]()
+                for v in VariableCollector.collect(arange_side):
+                    bs_set.update(self._extract_arange_bs_recursive(v))
+                # Only act when exactly one BLOCK_X is implicated; an ambiguous
+                # bs_set could otherwise pair the wrong block size with X.
+                if len(bs_set) == 1:
+                    bs_name = next(iter(bs_set))
+                    if self._maybe_add_virtual_cdiv(stop_node=x_side, step_node=ast.Name(id=bs_name, ctx=ast.Load())):
+                        break  # don't add twice when both directions happen to match
+        self.generic_visit(node)
+
+    # Synthesize `tl.cdiv(stop, step)` and append it to `cdiv_calls` when both
+    # operands are bare Names. The downstream `_find_paired_dim_size` performs
+    # the actual input/constexpr filtering, so this helper stays permissive.
+    # Returns True if a virtual cdiv was appended.
+    def _maybe_add_virtual_cdiv(self, stop_node: ast.AST, step_node: ast.AST) -> bool:
+        if not (isinstance(stop_node, ast.Name) and isinstance(step_node, ast.Name)):
+            return False
+        if stop_node.id == step_node.id:
+            return False
+        self.cdiv_calls.append(
+            ast.Call(
+                func=ast.Attribute(value=ast.Name(id='tl', ctx=ast.Load()), attr='cdiv', ctx=ast.Load()),
+                args=[stop_node, step_node],
+                keywords=[],
+            ))
+        return True
 
     # If `call_node` invokes a user-defined helper whose body wraps
     # `tl.cdiv(p_X, p_BLOCK_X)` (with p_X, p_BLOCK_X being the helper's formals),
@@ -328,6 +395,35 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         if isinstance(node.func, ast.Attribute) and node.func.attr == 'load':
             return not self._is_tl_func(node, 'load')
         return False
+
+    # tl.load_tensor_descriptor(desc, offsets) — functional alias for `desc.load(offsets)`.
+    # See python/triton/language/core.py::load_tensor_descriptor for the lowering.
+    def _is_tl_load_tensor_descriptor(self, node) -> bool:
+        return self._is_tl_func(node, 'load_tensor_descriptor')
+
+    # Normalize either `desc.load([...])` or `tl.load_tensor_descriptor(desc, [...])`
+    # to `(desc_name, addr_exprs)`. Returns None when `node` is neither form or
+    # the desc/offsets cannot be statically resolved.
+    def _extract_tma_load(self, node: ast.AST) -> tuple[str, list[ast.AST]] | None:
+        if not isinstance(node, ast.Call):
+            return None
+        desc_name = None
+        offsets_node = None
+        # Method form: <desc>.load([...]) where <desc> must be a bare Name.
+        if self._is_tma_load(node) and node.args:
+            if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+                desc_name = node.func.value.id
+                offsets_node = node.args[0]
+        # Functional form: tl.load_tensor_descriptor(desc, offsets) in any
+        # positional / keyword / mixed combination.
+        elif self._is_tl_load_tensor_descriptor(node):
+            desc_arg = self._resolve_call_arg(node, 'desc', self._LOAD_TMA_DESC_PARAM_ORDER)
+            offsets_node = self._resolve_call_arg(node, 'offsets', self._LOAD_TMA_DESC_PARAM_ORDER)
+            if isinstance(desc_arg, ast.Name):
+                desc_name = desc_arg.id
+        if desc_name is None or not isinstance(offsets_node, ast.List):
+            return None
+        return desc_name, offsets_node.elts
 
     def _is_tl_make_tensor_descriptor(self, node) -> bool:
         return self._is_tl_func(node, 'make_tensor_descriptor')
@@ -1114,6 +1210,17 @@ def adjust_block_size_dot_m_dim(nargs, current, config, tma_k_map, tma_m_map, li
             update_bs(nargs, current, config, bs_name, limit, "tma tl.dot", f"< {limit}=limit_m")
 
 
+def adjust_block_size_dot_m_dim_only(nargs, current, config, tma_m_map, limit):
+    for bs_name in tma_m_map.keys():
+        if bs_name not in current:
+            continue
+        bs = current[bs_name]
+        if not isinstance(bs, int):
+            continue
+        if bs < limit:
+            update_bs(nargs, current, config, bs_name, limit, "tma tl.dot", f"< {limit}=limit_m only")
+
+
 def adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_mn_map, limit):
     for bs_name in ge_mn_map.keys():
         if bs_name not in current:
@@ -1149,6 +1256,8 @@ def auto_adjust_block_sizes(nargs, fn, configs, current, config):
             print("[AABS] 3. adjust bs in tl.dot with tma_device or tma_host")
         adjust_block_size_dot_k_dim(nargs, current, config, tma_k_map, 16)
         adjust_block_size_dot_m_dim(nargs, current, config, tma_k_map, tma_m_map, 128)
+        if FLAGTREE_BACKEND == "mthreads":
+            adjust_block_size_dot_m_dim_only(nargs, current, config, tma_m_map, 64)  # mthreads
 
     if ge_m_map or ge_n_map:  # tl.dot with general tl.load
         if FLAGTREE_BACKEND == "hcu":

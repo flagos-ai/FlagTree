@@ -2592,6 +2592,10 @@ MUSASqmmaEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape) const {
   repM = std::max(repM, 1u);
   repN = std::max(repN, 1u);
 
+  if (rank == 3) {
+    elemsPerThread[0] = std::max<int64_t>(1, shapePerCTA[0]);
+  }
+
   // PH1 SQMMA C/D matrix layout: each thread owns a logical (M/16)x(N/8)
   // fragment per repetition. The 4-warp squad decomposition stays in the warp
   // basis, not in the public instrShape contract.

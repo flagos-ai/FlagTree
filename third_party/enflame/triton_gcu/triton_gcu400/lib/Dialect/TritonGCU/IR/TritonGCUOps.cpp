@@ -104,6 +104,20 @@ void WarpGroupDotOp::getEffects(
                          mlir::triton::gpu::SharedMemory::get());
 }
 
+void SliceFromLocalOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
+                       mlir::triton::gpu::SharedMemory::get());
+}
+
+void DesliceToLocalOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), &getSrcMutable(),
+                       mlir::triton::gpu::SharedMemory::get());
+}
+
 bool WarpGroupDotOp::needsPartialAccumulator() {
   const auto &a = getA();
   const auto &d = getD();

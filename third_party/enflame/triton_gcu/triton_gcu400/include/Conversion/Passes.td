@@ -65,7 +65,9 @@ def ConvertTritonLoadStoreToGCUDmaPass: Pass<"convert-triton-load-store-to-gcu-d
            /*default=*/"\"gcu400\"",
            "Architecture that these operations will run on">,
     Option<"support_stride0", "support_stride0", "bool", /*default=*/"false",
-          "support broadcast for stride = 0 ">
+          "support broadcast for stride = 0 ">,
+    Option<"skip_dma", "skip_dma", "bool", /*default=*/"false",
+          "skip DMA conversion, keep contiguity analysis for downstream mask-load/store">
   ];
 }
 
@@ -188,14 +190,33 @@ def TritonGCUAllocateWarpGroups : Pass<"triton-gcu-allocate-warp-groups", "gpu::
 }
 
 //===----------------------------------------------------------------------===//
-// TLEToTritonGCU
+// TleToTritonGCU
 //===----------------------------------------------------------------------===//
-def TLEToTritonGCUPass
+def TleToTritonGCUPass
     : Pass<"tle-to-triton-gcu", "gpu::GPUModuleOp"> {
   let summary = "Unified FlagTree TLE op lowering for enflame GCU backend.";
   let description = [{
     This pass handles all TLE-related op lowering for the enflame backend.
     All patterns use string-based RewritePattern matching.
+  }];
+  let options = [];
+  let dependentDialects = ["mlir::triton::gcu::TritonGCUDialect"];
+}
+
+//===----------------------------------------------------------------------===//
+// TritonGCULocalMemOptimize
+//===----------------------------------------------------------------------===//
+def TritonGCULocalMemOptimizePass
+    : Pass<"triton-gcu-local-mem-optimize", "gpu::GPUModuleOp"> {
+  let summary = "Eliminate private memory transit for local (shared) memory ops.";
+  let description = [{
+    Fuses global memory load/store operations with local (shared) memory
+    operations to eliminate private register/memory intermediaries:
+      - triton_gcu.load + ttg.local_store      -> triton_gcu.copy_global_to_local
+      - triton_gcu.load + ttg.local_alloc(src) -> triton_gcu.copy_global_to_local
+      - triton_gcu.load + tt.store(smem_ptr)   -> triton_gcu.copy_global_to_local
+      - triton_gcu.load + triton_gcu.store(smem via int2ptr) -> triton_gcu.copy_global_to_local
+      - tt.load(smem_ptr)                      -> ttg.local_load
   }];
   let options = [];
   let dependentDialects = ["mlir::triton::gcu::TritonGCUDialect"];
@@ -218,6 +239,39 @@ def AnnotateDotAccReusePass
   }];
   let options = [];
   let dependentDialects = [];
+}
+
+//===----------------------------------------------------------------------===//
+// ConvertTritonToTritonGPU (GCU variant)
+//===----------------------------------------------------------------------===//
+def GCUConvertTritonToTritonGPUPass
+    : Pass<"gcu-convert-triton-to-tritongpu", "mlir::ModuleOp"> {
+  let summary = "Convert Triton IR to TritonGPU IR with GCU-aware layout.";
+  let description = [{
+    This pass annotates ranked tensors with TritonGPU layout encodings.
+    Unlike the upstream pass, it analyses reduce ops in the module to
+    determine the reduce axis, then constructs an order that gives the
+    reduce axis the lowest priority (most-strided position). This keeps
+    threads contiguous along non-reduce dimensions, which is beneficial
+    for GCU targets where cross-thread reduction is expensive.
+  }];
+  let options = [
+    Option<"numWarps", "num-warps", "unsigned", /*default=*/"4",
+           "Number of warps">,
+    Option<"threadsPerWarp", "threads-per-warp", "unsigned", /*default=*/"32",
+           "Number of threads per warp">,
+    Option<"numCTAs", "num-ctas", "unsigned", /*default=*/"1",
+           "Number of CTAs in a CGA">,
+    Option<"target", "target", "std::string", /*default=*/"\"\"",
+           "Target triple, e.g. gcu:400">
+  ];
+  let dependentDialects = [
+    "mlir::triton::gpu::TritonGPUDialect",
+    "mlir::triton::TritonDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::math::MathDialect",
+    "mlir::ub::UBDialect"
+  ];
 }
 
 #endif // GCU_CONVERSION_PASSES

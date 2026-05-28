@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef KURANA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
-#define KURANA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
+#ifndef KURAMA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
+#define KURAMA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
 
 #include <map>
 #include <string>

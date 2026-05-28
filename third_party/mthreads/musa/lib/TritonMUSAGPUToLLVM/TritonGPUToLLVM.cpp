@@ -6,7 +6,7 @@
 #include "TritonMUSAGPUToLLVM/Utility.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
-#include "mlir/Conversion/GPUToMTGPU/GPUToMTGPUPass.h"
+#include "mlir/Conversion/GPUToMTVM/GPUToMTVMPass.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
@@ -317,15 +317,6 @@ struct ConvertTritonMUSAGPUToLLVM
     ModuleOp mod = getOperation();
     TargetInfo targetInfo(computeCapability);
 
-    size_t numOps = 0;
-    size_t numConvertLayoutOps = 0;
-    mod.walk([&](Operation *op) {
-      numOps++;
-      if (isa<triton::gpu::ConvertLayoutOp>(op))
-        numConvertLayoutOps++;
-    });
-    bool isLargeKernel = numOps > 500 || numConvertLayoutOps > 10;
-
     auto groupedTMELoadWalk = mod.walk(
         [&](triton::musa::AsyncTMECopyGlobalToLocalOp op) -> WalkResult {
           if (failed(
@@ -371,6 +362,8 @@ struct ConvertTritonMUSAGPUToLLVM
         typeConverter, targetInfo, patterns, benefit);
     mlir::triton::MUSA::populateDotOpToLLVMPatterns(typeConverter, patterns,
                                                     benefit);
+    mlir::triton::MUSA::populateFp4ToFpToLLVMPatterns(typeConverter, patterns,
+                                                      benefit);
     mlir::triton::MUSA::populateMUSAOpsToLLVMPatterns(typeConverter, patterns,
                                                       benefit);
     mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
@@ -407,7 +400,7 @@ struct ConvertTritonMUSAGPUToLLVM
     mlir::arith::populateArithToLLVMConversionPatterns(typeConverter, patterns);
     mlir::populateMathToLLVMConversionPatterns(typeConverter, patterns);
     // Native lowering patterns.
-    mlir::populateGpuToMTGPUConversionPatterns(typeConverter, patterns);
+    mlir::populateGpuToMTVMConversionPatterns(typeConverter, patterns);
     mlir::ub::populateUBToLLVMConversionPatterns(typeConverter, patterns);
     mlir::triton::populateViewOpToLLVMPatterns(typeConverter, patterns,
                                                benefit);
@@ -426,35 +419,13 @@ struct ConvertTritonMUSAGPUToLLVM
 
     RewritePatternSet cleanupPatterns(context);
     cleanupPatterns.add<CancelRedundantBFloatRoundTripPattern>(context);
-
-    GreedyRewriteConfig cleanupConfig;
-    if (isLargeKernel) {
-      cleanupConfig.setMaxIterations(3)
-          .setMaxNumRewrites(1000)
-          .setStrictness(GreedyRewriteStrictness::ExistingOps)
-          .setUseTopDownTraversal(true)
-          .setRegionSimplificationLevel(GreedySimplifyRegionLevel::Disabled);
-    }
-
-    if (failed(applyPatternsGreedily(mod, std::move(cleanupPatterns),
-                                     cleanupConfig)))
+    if (failed(applyPatternsGreedily(mod, std::move(cleanupPatterns))))
       return signalPassFailure();
 
     RewritePatternSet predicatedPatterns(context);
     predicatedPatterns.add<PredicatedCallOpConversion>(context,
                                                        computeCapability);
-
-    GreedyRewriteConfig predicatedConfig;
-    if (isLargeKernel) {
-      predicatedConfig.setMaxIterations(3)
-          .setMaxNumRewrites(1000)
-          .setStrictness(GreedyRewriteStrictness::ExistingOps)
-          .setUseTopDownTraversal(true)
-          .setRegionSimplificationLevel(GreedySimplifyRegionLevel::Disabled);
-    }
-
-    if (failed(applyPatternsGreedily(mod, std::move(predicatedPatterns),
-                                     predicatedConfig)))
+    if (failed(applyPatternsGreedily(mod, std::move(predicatedPatterns))))
       return signalPassFailure();
 
     TritonLLVMFunctionConversionTarget cfTarget(*context);

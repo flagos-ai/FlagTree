@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "Analysis/FirstLastUserAnalysis.h"
+#include "Conversion/TritonToGCU/ReduceScanCommon.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
 #include "Dialect/MathExt/IR/MathExt.h"
@@ -75,6 +76,17 @@
 
 namespace mlir {
 
+int32_t getMasterThreadId(Region *region, int32_t defaultWarpId) {
+  if (auto wsOp =
+          region->getParentOp()->getParentOfType<mlir::gcu::WarpSpecializeOp>())
+    return wsOp.getMasterThreadId(region);
+  return defaultWarpId;
+}
+
+int32_t getMasterThreadId(Operation *op, int32_t defaultWarpId) {
+  return getMasterThreadId(op->getParentRegion(), defaultWarpId);
+}
+
 template <typename WarpSpecializeOpTy>
 void captureValuesToWarpSpecializeOp(WarpSpecializeOpTy wsOp, Value capture) {
   wsOp->insertOperands(wsOp.getNumOperands(), capture);
@@ -93,19 +105,6 @@ void captureValuesToWarpSpecializeOp(Operation *entryFunc, Value capture) {
   });
 }
 
-Value getPrivateDTETag(OpBuilder &builder, Operation *op) {
-  OpBuilder::InsertionGuard guard(builder);
-  auto func = op->getParentOfType<FunctionOpInterface>();
-  auto firstOp = &func.getFunctionBody().getBlocks().front().front();
-  auto tagType = MemRefType::get(ArrayRef<int64_t>{1}, builder.getI32Type());
-  if (isa<memref::AllocOp>(firstOp) && firstOp->getAttr("gcu.private_tag"))
-    return firstOp->getResult(0);
-  builder.setInsertionPoint(firstOp);
-  auto tag = builder.create<memref::AllocOp>(op->getLoc(), tagType);
-  tag->setAttr("gcu.private_tag", builder.getUnitAttr());
-  return tag;
-}
-
 Value getShareDTETag(OpBuilder &builder, Operation *op) {
   OpBuilder::InsertionGuard guard(builder);
   auto func = op->getParentOfType<FunctionOpInterface>();
@@ -118,13 +117,6 @@ Value getShareDTETag(OpBuilder &builder, Operation *op) {
   builder.setInsertionPoint(secondOp);
   auto tag = builder.create<memref::AllocOp>(op->getLoc(), tagType);
   tag->setAttr("gcu.share_tag", builder.getUnitAttr());
-  return tag;
-}
-
-Value createPrivateDTETag(OpBuilder &builder, Operation *op) {
-  auto tagType = MemRefType::get(ArrayRef<int64_t>{1}, builder.getI32Type());
-  auto tag = builder.create<memref::AllocOp>(op->getLoc(), tagType);
-  tag->setAttr("gcu.private_tag", builder.getUnitAttr());
   return tag;
 }
 
@@ -357,22 +349,8 @@ SmallVector<Value, 4> getElemsPerThread(OpBuilder &builder, Location loc,
   return numElems;
 }
 
-func::FuncOp getOrDefineFunction(gpu::GPUModuleOp moduleOp, Location loc,
-                                 OpBuilder &rewriter, StringRef name,
-                                 FunctionType type) {
-  func::FuncOp ret;
-  if (!(ret = moduleOp.template lookupSymbol<func::FuncOp>(name))) {
-    ConversionPatternRewriter::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(moduleOp.getBody());
-    ret = rewriter.create<func::FuncOp>(loc, name, type);
-    ret.setPrivate();
-  }
-  return ret;
-}
-
-void doSlicePadOrMemsetSlice(OpBuilder &rewriter, Location loc,
-                             triton::gcu::PrivateTagPool &pTagPool,
-                             Operation *op, Value output, Value src,
+void doSlicePadOrMemsetSlice(OpBuilder &rewriter, Location loc, Operation *op,
+                             Value output, Value src,
                              SmallVector<Value, 4> &offsets,
                              SmallVector<Value, 4> &sliceShape,
                              SmallVector<Value, 4> &padSizes,
@@ -397,8 +375,7 @@ void doSlicePadOrMemsetSlice(OpBuilder &rewriter, Location loc,
         builder.create<scf::YieldOp>(loc);
       },
       [&](OpBuilder &childBuilder, Location loc) {
-        doMemset(childBuilder, pTagPool, op, output, defaultValue,
-                 totalNumElems);
+        doMemset(childBuilder, tag, op, output, defaultValue, totalNumElems);
         childBuilder.create<memref_ext::SliceStartOp>(
             loc, output, src, offsets, defaultValue, tag.getTag(),
             ValueRange{tag.getIdx()});
@@ -416,11 +393,10 @@ void doMemsetConfig(OpBuilder &rewriter, Location loc, Value output, Value v,
                                              ValueRange{tag.getIdx()});
 }
 
-void doMemset(OpBuilder &rewriter, triton::gcu::PrivateTagPool &pTagPool,
-              Operation *op, Value output, Value v, int totalNumElems) {
+void doMemset(OpBuilder &rewriter, triton::gcu::TagInfo tag, Operation *op,
+              Value output, Value v, int totalNumElems) {
   auto loc = op->getLoc();
   if (totalNumElems > 128 || totalNumElems <= 0) {
-    auto tag = pTagPool.getSyncTagInfo(op);
     auto outType = dyn_cast<MemRefType>(output.getType());
     bool isNeedMerge = outType.getRank() > 5;
     Value outbuffer = output;
@@ -450,18 +426,71 @@ void doMemset(OpBuilder &rewriter, triton::gcu::PrivateTagPool &pTagPool,
   }
 }
 
-Value castToMemref1D(OpBuilder &rewriter, Location loc, Value v,
-                     Value totalNumElems) {
-  auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-  return rewriter.create<memref::ReinterpretCastOp>(
-      loc,
-      MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic},
-                      dyn_cast<MemRefType>(v.getType()).getElementType()),
-      v, zero, ArrayRef<Value>{totalNumElems}, ArrayRef<Value>{one});
+bool canReuseAccumulatorBuffer(triton::DotOp op, int32_t number) {
+  if (!op->hasAttr("acc_reuse_candidate"))
+    return false;
+
+  if (op.getType().getRank() != 2)
+    return false;
+
+  if (number != 2)
+    return false;
+
+  Value origAcc = op.getC();
+  auto accType = dyn_cast<RankedTensorType>(origAcc.getType());
+  auto resultType = dyn_cast<RankedTensorType>(op.getType());
+  if (!accType || !resultType)
+    return false;
+
+  auto blockArg = dyn_cast<BlockArgument>(origAcc);
+  if (!blockArg)
+    return false;
+
+  auto *parentOp = blockArg.getOwner()->getParentOp();
+  auto forOp = dyn_cast<scf::ForOp>(parentOp);
+  if (!forOp)
+    return false;
+
+  unsigned argIdx = blockArg.getArgNumber();
+  if (argIdx == 0)
+    return false;
+  unsigned iterArgIdx = argIdx - 1;
+
+  if (!origAcc.hasOneUse())
+    return false;
+
+  auto *terminator = forOp.getBody()->getTerminator();
+  auto yieldOp = dyn_cast<scf::YieldOp>(terminator);
+  if (!yieldOp || iterArgIdx >= yieldOp.getNumOperands())
+    return false;
+  if (yieldOp.getOperand(iterArgIdx) != op.getResult())
+    return false;
+
+  Value initArg = forOp.getInitArgs()[iterArgIdx];
+  if (auto outerFor = forOp->getParentOfType<scf::ForOp>()) {
+    // Reject if nested three or more levels deep -- only two-level
+    // nesting is supported for accumulator reuse.
+    if (outerFor->getParentOfType<scf::ForOp>())
+      return false;
+    // Reject if init comes from outer for's block arg (carried through
+    // the outer loop).
+    if (auto outerBlockArg = dyn_cast<BlockArgument>(initArg))
+      if (outerBlockArg.getOwner()->getParentOp() == outerFor.getOperation())
+        return false;
+    // Reject if outer for yields the inner for's accumulator result.
+    if (auto outerYield =
+            dyn_cast<scf::YieldOp>(outerFor.getBody()->getTerminator())) {
+      Value innerResult = forOp->getResult(iterArgIdx);
+      for (auto yieldedVal : outerYield.getOperands())
+        if (yieldedVal == innerResult)
+          return false;
+    }
+  }
+  return true;
 }
 
-bool isMustAliasOp(mlir::Operation *op) {
+bool isMustAliasOp(OpOperand &use) {
+  Operation *op = use.getOwner();
   if (llvm::isa<triton::PtrToIntOp, triton::IntToPtrOp, triton::BitcastOp,
                 gcu::PtrToMemRefOp, gcu::MemRefToPtrOp, gcu::IntToPtrOp,
                 gcu::PtrToIntOp>(op)) {
@@ -485,21 +514,22 @@ bool isMustAliasOp(mlir::Operation *op) {
     }
     if (srcNumElems == dstNumElems &&
         src.getType().getShape() == convertLayout.getType().getShape()) {
-      if (mlir::isa<triton::gpu::SharedEncodingTrait>(srcLayout)) {
-        return true;
-      } else if (isa<triton::gpu::SliceEncodingAttr>(srcLayout) &&
-                 isa<triton::gpu::SliceEncodingAttr>(dstLayout)) {
+      if (isa<triton::gpu::SliceEncodingAttr>(srcLayout) &&
+          isa<triton::gpu::SliceEncodingAttr>(dstLayout)) {
         if (cast<triton::gpu::SliceEncodingAttr>(srcLayout).getDim() ==
             cast<triton::gpu::SliceEncodingAttr>(dstLayout).getDim()) {
           return true;
+        } else {
+          return false;
         }
-      } else if (isa<triton::gpu::BlockedEncodingAttr>(srcLayout) &&
-                 isa<triton::gpu::BlockedEncodingAttr>(dstLayout)) {
-        return true;
-      } else if (isa<triton::gpu::BlockedEncodingAttr>(srcLayout) &&
-                 isa<triton::gpu::DotOperandEncodingAttr>(dstLayout)) {
+      } else {
         return true;
       }
+    }
+    // gcu400 dot use subview no data copy
+    if (isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
+        isa<triton::gpu::DotOperandEncodingAttr>(dstLayout)) {
+      return true;
     }
     return false;
   } else if (isa<triton::ExpandDimsOp>(op)) {
@@ -531,17 +561,36 @@ bool isMustAliasOp(mlir::Operation *op) {
     }
     return false;
   } else if (isa<triton::gpu::LocalLoadOp>(op)) {
-    ModuleOp builtinModule = op->getParentOfType<ModuleOp>();
-    int numWarps = triton::gcu::getNumWarps(builtinModule);
-    if (numWarps == 1) {
+    auto localLoadOp = cast<triton::gpu::LocalLoadOp>(op);
+    auto srcLayout =
+        cast<triton::gpu::TensorOrMemDesc>(localLoadOp.getSrc().getType())
+            .getEncoding();
+    auto dstLayout =
+        dyn_cast<RankedTensorType>(localLoadOp.getType()).getEncoding();
+    // share to Distributed
+    if (mlir::isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
+        isa<triton::gpu::BlockedEncodingAttr>(dstLayout)) {
+      // copy to local
+      ModuleOp builtinModule = op->getParentOfType<ModuleOp>();
+      int numWarps = triton::gcu::getNumWarps(builtinModule);
+      if (numWarps > 1) {
+        return false;
+      } else {
+        return true;
+      }
+    } else if (isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
+               isa<triton::gpu::DotOperandEncodingAttr>(dstLayout)) {
+      // subview for gcu 400
       return true;
     }
     return false;
+  } else if (isa<triton::DotOp>(op)) {
+    int32_t number = use.getOperandNumber();
+    return canReuseAccumulatorBuffer(cast<triton::DotOp>(op), number);
   } else {
     return false;
   }
 }
-
 // Find last user which is located at parent region of the op
 mlir::Operation *
 promoteLastUser(std::pair<mlir::Operation *, int> &lastUser,
@@ -653,15 +702,6 @@ Value syncAllocOp(OpBuilder &builder, Location &loc,
   }
   addDeallocAfterLastUser(builder, lastUser, output);
   return output;
-}
-
-Value asyncAllocOp(OpBuilder &builder, Operation *ttParent, MemRefType type,
-                   int64_t memoryAlignment) {
-  auto allocOp = builder.create<memref::AllocOp>(ttParent->getLoc(), type);
-  if (memoryAlignment != INVALID_ALIGNMENT) {
-    allocOp->setAttr(kAlignment, builder.getI64IntegerAttr(memoryAlignment));
-  }
-  return allocOp.getResult();
 }
 
 void createPrintfOp(OpBuilder &rewriter, Location loc,
@@ -822,7 +862,6 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
 
   auto warpIds = getWarpIds(builder, loc, type);
   SmallVector<Value, 4> offsets;
-  auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
   for (unsigned i = 0; i < srcType.getRank(); ++i) {
     offsets.push_back(builder.create<arith::MulIOp>(
         loc, builder.create<arith::ConstantIntOp>(loc, numElems[i], 32),
@@ -833,9 +872,11 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
   auto output = syncAllocOp(builder, loc, lastTTUser, userAnalysis,
                             replaced2Origin, outputType);
 
-  auto isThread0 = builder.create<arith::CmpIOp>(
+  auto masterWarpId = getMasterThreadId(buffer.getParentRegion());
+  auto isMasterThread = builder.create<arith::CmpIOp>(
       loc, arith::CmpIPredicate::eq,
-      builder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
+      builder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+      builder.create<arith::ConstantIndexOp>(loc, masterWarpId));
   auto defaultValue =
       triton::gcu::createConstantZero(builder, loc, srcType.getElementType());
   bool isNeedMerge = srcType.getRank() > 5;
@@ -845,7 +886,7 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
   if (!firstTTUser.first || !tag.isAsync()) {
     if (onlyThread0) {
       builder.create<scf::IfOp>(
-          loc, isThread0, [&](OpBuilder &builder, Location loc) {
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
             if (isNeedMerge) {
               mergeContinuousDims(builder, loc, src, dst, offsets,
                                   mergedOffsets, srcType, outputType, buffer,
@@ -892,7 +933,7 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
   } else {
     if (onlyThread0) {
       builder.create<scf::IfOp>(
-          loc, isThread0, [&](OpBuilder &builder, Location loc) {
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
             if (isNeedMerge) {
               mergeContinuousDims(builder, loc, src, dst, offsets,
                                   mergedOffsets, srcType, outputType, buffer,
@@ -916,7 +957,7 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
       auto ip = builder.saveInsertionPoint();
       builder.setInsertionPoint(firstTTUser.first);
       builder.create<scf::IfOp>(
-          loc, isThread0, [&](OpBuilder &builder, Location loc) {
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
             builder.create<memref::DmaWaitOp>(
                 loc, tag.getTag(), ValueRange{tag.getIdx()}, totalNumElems);
             builder.create<scf::YieldOp>(loc);
@@ -969,13 +1010,15 @@ Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
   auto output = syncAllocOp(builder, loc, lastTTUser, userAnalysis,
                             replaced2Origin, outputType);
   auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
-  auto isThread0 = builder.create<arith::CmpIOp>(
+  auto masterWarpId = getMasterThreadId(buffer.getParentRegion());
+  auto isMasterThread = builder.create<arith::CmpIOp>(
       loc, arith::CmpIPredicate::eq,
-      builder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
+      builder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+      builder.create<arith::ConstantIndexOp>(loc, masterWarpId));
   if (!firstTTUser.first || !tag.isAsync()) {
     if (onlyThread0) {
       builder.create<scf::IfOp>(
-          loc, isThread0, [&](OpBuilder &builder, Location loc) {
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
             builder.create<memref::DmaStartOp>(
                 loc, buffer, SmallVector<Value, 4>(shape.size(), zero), output,
                 SmallVector<Value, 4>(shape.size(), zero), totalNumElems,
@@ -995,7 +1038,7 @@ Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
   } else {
     if (onlyThread0) {
       builder.create<scf::IfOp>(
-          loc, isThread0, [&](OpBuilder &builder, Location loc) {
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
             builder.create<memref::DmaStartOp>(
                 loc, buffer, SmallVector<Value, 4>(shape.size(), zero), output,
                 SmallVector<Value, 4>(shape.size(), zero), totalNumElems,
@@ -1005,7 +1048,7 @@ Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
       auto ip = builder.saveInsertionPoint();
       builder.setInsertionPoint(firstTTUser.first);
       builder.create<scf::IfOp>(
-          loc, isThread0, [&](OpBuilder &builder, Location loc) {
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
             builder.create<memref::DmaWaitOp>(
                 loc, tag.getTag(), ValueRange{tag.getIdx()}, totalNumElems);
             builder.create<scf::YieldOp>(loc);
@@ -1038,7 +1081,6 @@ void storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
   SmallVector<Value, 4> offsets;
   SmallVector<int64_t> outputSize;
   auto warpIds = getWarpIds(builder, loc, type);
-  auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
   for (unsigned i = 0; i < srcType.getRank(); ++i) {
     offsets.push_back(builder.create<arith::MulIOp>(
         loc,
@@ -1047,16 +1089,18 @@ void storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
                                            warpIds[i])));
     outputSize.push_back(outputType.getShape()[i]);
   }
-  auto isThread0 = builder.create<arith::CmpIOp>(
+  auto masterWarpId = getMasterThreadId(buffer.getParentRegion());
+  auto isMasterThread = builder.create<arith::CmpIOp>(
       loc, arith::CmpIPredicate::eq,
-      builder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
+      builder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+      builder.create<arith::ConstantIndexOp>(loc, masterWarpId));
   bool isNeedMerge = srcType.getRank() > 5;
   SmallVector<Value, 4> mergedOffsets;
   Value src;
   Value dst;
   if (onlyThread0) {
     builder.create<scf::IfOp>(
-        loc, isThread0, [&](OpBuilder &builder, Location loc) {
+        loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
           if (isNeedMerge) {
             mergeContinuousDims(builder, loc, dst, src, offsets, mergedOffsets,
                                 outputType, srcType, sharedBuffer, buffer);
@@ -1140,7 +1184,15 @@ void AnalysisYieldOperendUseStage(
           if (lastUser.first == nullptr) {
             TTYeiledOPerandHasMultiUseStage[op.getOperation()][i] = true;
           } else {
-            if (definingOp->isBeforeInBlock(lastUser.first)) {
+            bool isMustAlias = false;
+            for (auto &use : reginArg.getUses()) {
+              if (use.getOwner() == definingOp) {
+                if (isMustAliasOp(use))
+                  isMustAlias = true;
+                break;
+              }
+            }
+            if (!isMustAlias && definingOp->isBeforeInBlock(lastUser.first)) {
               TTYeiledOPerandHasMultiUseStage[op.getOperation()][i] = true;
             }
           }
@@ -1262,8 +1314,7 @@ void GetTransByOrder(OpBuilder &rewriter, Location loc,
   transOrder = tmpTransOrderBuffer;
 }
 
-Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
-                    triton::gcu::PrivateTagPool &pTagPool, Value srcOut,
+Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
                     mlir::Operation *op, MemRefType resultType, Value loadPtr,
                     mlir::ValueRange configStrides,
                     mlir::ValueRange configShapes, Value defaultValue,
@@ -1566,13 +1617,15 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
   // ValueRange{vIntSlicehape[0], vIntSlicehape[1], vIntSlicehape[2]});
 
   if (IsShareOutput) {
-    auto isThread0 = rewriter.create<arith::CmpIOp>(
+    auto masterWarpId = getMasterThreadId(op);
+    auto isMasterThread = rewriter.create<arith::CmpIOp>(
         loc, arith::CmpIPredicate::eq,
-        rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
-    auto isPad = rewriter.create<arith::AndIOp>(loc, isNeedPad, isThread0);
+        rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+        rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+    auto isPad = rewriter.create<arith::AndIOp>(loc, isNeedPad, isMasterThread);
     if (bDynamicStride) {
       auto isTrans =
-          rewriter.create<arith::AndIOp>(loc, isDynamicTrans, isThread0);
+          rewriter.create<arith::AndIOp>(loc, isDynamicTrans, isMasterThread);
       rewriter.create<scf::IfOp>(
           loc, isTrans,
           [&](OpBuilder &builder, Location loc) {
@@ -1585,15 +1638,14 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
             builder.create<scf::IfOp>(
                 loc, isPad,
                 [&](OpBuilder &childBuilder, Location loc) {
-                  doSlicePadOrMemsetSlice(childBuilder, loc, pTagPool, op,
-                                          reshapeOut, src, vOrderOffsets,
-                                          vIntSlicehape, padSizes, defaultValue,
-                                          tag);
+                  doSlicePadOrMemsetSlice(childBuilder, loc, op, reshapeOut,
+                                          src, vOrderOffsets, vIntSlicehape,
+                                          padSizes, defaultValue, tag);
                   childBuilder.create<scf::YieldOp>(loc);
                 },
                 [&](OpBuilder &childBuilder, Location loc) {
                   childBuilder.create<scf::IfOp>(
-                      loc, isThread0,
+                      loc, isMasterThread,
                       [&](OpBuilder &child2Builder, Location loc) {
                         child2Builder.create<memref_ext::SliceStartOp>(
                             loc, reshapeOut, src, vOrderOffsets, defaultValue,
@@ -1606,7 +1658,7 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
           });
     } else if (bStaticTranspose) {
       rewriter.create<scf::IfOp>(
-          loc, isThread0, [&](OpBuilder &builder, Location loc) {
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
             builder.create<memref_ext::SliceTransposeStartOp>(
                 loc, reshapeOut, src, vOrderOffsets, vTransOrder, defaultValue,
                 tag.getTag(), ValueRange{tag.getIdx()});
@@ -1616,14 +1668,15 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
       rewriter.create<scf::IfOp>(
           loc, isPad,
           [&](OpBuilder &builder, Location loc) {
-            doSlicePadOrMemsetSlice(builder, loc, pTagPool, op, reshapeOut, src,
+            doSlicePadOrMemsetSlice(builder, loc, op, reshapeOut, src,
                                     vOrderOffsets, vIntSlicehape, padSizes,
                                     defaultValue, tag);
             builder.create<scf::YieldOp>(loc);
           },
           [&](OpBuilder &builder, Location loc) {
             builder.create<scf::IfOp>(
-                loc, isThread0, [&](OpBuilder &childBuilder, Location loc) {
+                loc, isMasterThread,
+                [&](OpBuilder &childBuilder, Location loc) {
                   childBuilder.create<memref_ext::SliceStartOp>(
                       loc, reshapeOut, src, vOrderOffsets, defaultValue,
                       tag.getTag(), ValueRange{tag.getIdx()});
@@ -1651,10 +1704,9 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
             builder.create<scf::IfOp>(
                 loc, isPad,
                 [&](OpBuilder &childBuilder, Location loc) {
-                  doSlicePadOrMemsetSlice(childBuilder, loc, pTagPool, op,
-                                          reshapeOut, src, vOrderOffsets,
-                                          vIntSlicehape, padSizes, defaultValue,
-                                          tag);
+                  doSlicePadOrMemsetSlice(childBuilder, loc, op, reshapeOut,
+                                          src, vOrderOffsets, vIntSlicehape,
+                                          padSizes, defaultValue, tag);
                   childBuilder.create<scf::YieldOp>(loc);
                 },
                 [&](OpBuilder &childBuilder, Location loc) {
@@ -1696,7 +1748,7 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
       rewriter.create<scf::IfOp>(
           loc, isPad,
           [&](OpBuilder &builder, Location loc) {
-            doSlicePadOrMemsetSlice(builder, loc, pTagPool, op, reshapeOut, src,
+            doSlicePadOrMemsetSlice(builder, loc, op, reshapeOut, src,
                                     vOrderOffsets, vIntSlicehape, padSizes,
                                     defaultValue, tag);
             builder.create<scf::YieldOp>(loc);
@@ -2120,33 +2172,283 @@ Value lookupPartitionTagArg(WarpSpecializeOpTy wsOp, Operation *op,
         return part->getArgument(i);
     }
     captureValuesToWarpSpecializeOp(wsOp, tagMemref);
-    return part->getArgument(wsOp.getNumOperands());
+    return part->getArgument(wsOp.getNumOperands() - 1);
   }
   return {};
 }
 
 } // namespace
 
-Value PrivateTagPool::getTagsValue(Operation *op) {
+PrivateTagPool::PrivateTagPool(mlir::Operation *entryFunc, int32_t numWarps,
+                               bool useAsyncSharedTag)
+    : useAsyncSharedTag(useAsyncSharedTag) {
+  OpBuilder builder(entryFunc);
+  auto func = llvm::dyn_cast<FunctionOpInterface>(entryFunc);
+  auto firstOp = &func.getFunctionBody().getBlocks().front().front();
+
+  int32_t totalTagsSize = numWarps > 4 ? 11 : 11 / 2;
+  if (this->useAsyncSharedTag) {
+    pTagsSize = 1;
+    sTagsSize = totalTagsSize - numWarps;
+  } else {
+    sTagsSize = 1;
+    pTagsSize = (totalTagsSize - 1) / numWarps;
+  }
+
+  pTagsPeakSize = 1;
+  pTagsBitset = std::vector<bool>(pTagsSize, false);
+  pTagsBitset[0] = true;
+
+  sTagsPeakSize = 1;
+  sTagsBitset = std::vector<bool>(sTagsSize, false);
+  sTagsBitset[0] = true;
+
+  builder.setInsertionPoint(firstOp);
+  auto pTagsType =
+      MemRefType::get(ArrayRef<int64_t>{pTagsSize}, builder.getI32Type());
+  pTagsAllocOp =
+      builder.create<memref::AllocOp>(entryFunc->getLoc(), pTagsType);
+  pTagsAllocOp->setAttr("gcu_private_tag", builder.getUnitAttr());
+
+  auto sTagsType =
+      MemRefType::get(ArrayRef<int64_t>{sTagsSize}, builder.getI32Type());
+  sTagsAllocOp =
+      builder.create<memref::AllocOp>(entryFunc->getLoc(), sTagsType);
+  sTagsAllocOp->setAttr("gcu_shared_tag", builder.getUnitAttr());
+
+  this->usedSyncSharedTag = false;
+}
+
+TagInfo PrivateTagPool::getPrivateSyncTagInfo(mlir::Operation *op) {
+  auto loc = op->getLoc();
+  auto builder = OpBuilder(op);
+  auto tags = getPrivateTagsValue(op);
+  auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+  return TagInfo(tags, zero, false);
+}
+
+TagInfo PrivateTagPool::tryGetPrivateAsyncTagInfo(mlir::Operation *op) {
+  int32_t idx = -1;
+  for (int32_t i = 1; i < pTagsSize; i++) {
+    if (!pTagsBitset[i]) {
+      pTagsPeakSize = pTagsPeakSize < (i + 1) ? (i + 1) : pTagsPeakSize;
+      idx = i;
+      break;
+    }
+  }
+
+  auto loc = op->getLoc();
+  auto builder = OpBuilder(op);
+  auto tags = getPrivateTagsValue(op);
+  if (idx == -1) {
+    auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+    return TagInfo(tags, zero, false);
+  } else {
+    pTagsBitset[idx] = true;
+    auto idxValue = builder.create<arith::ConstantIndexOp>(loc, idx);
+    return TagInfo(tags, idxValue, false);
+  }
+}
+
+TagInfo PrivateTagPool::getSharedSyncTagInfo(mlir::Operation *op) {
+  auto loc = op->getLoc();
+  auto builder = OpBuilder(op);
+  auto tags = getSharedTagsValue(op);
+  auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+  usedSyncSharedTag = true;
+  return TagInfo(tags, zero, true);
+}
+
+TagInfo PrivateTagPool::tryGetSharedAsyncTagInfo(mlir::Operation *op) {
+  int32_t idx = -1;
+  for (int32_t i = 1; i < sTagsSize; i++) {
+    if (!sTagsBitset[i]) {
+      sTagsPeakSize = sTagsPeakSize < (i + 1) ? (i + 1) : sTagsPeakSize;
+      idx = i;
+      break;
+    }
+  }
+
+  auto loc = op->getLoc();
+  auto builder = OpBuilder(op);
+  auto tags = getSharedTagsValue(op);
+  if (idx == -1) {
+    auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+    usedSyncSharedTag = true;
+    return TagInfo(tags, zero, true);
+  } else {
+    sTagsBitset[idx] = true;
+    auto idxValue = builder.create<arith::ConstantIndexOp>(loc, idx);
+    return TagInfo(tags, idxValue, true);
+  }
+}
+
+void PrivateTagPool::setMap(Operation *op, TagInfo tagInfo) {
+  op2TagInfoMap[op].push_back(tagInfo);
+}
+
+bool PrivateTagPool::isExistInMap(Operation *op) const {
+  return op2TagInfoMap.count(op) != 0;
+}
+
+void PrivateTagPool::releaseMap(Operation *op) {
+  if (op2TagInfoMap.count(op) == 0)
+    return;
+
+  auto tags = op2TagInfoMap[op];
+  for (size_t i = 0; i < tags.size(); ++i) {
+    if (tags[i].isSharedTag()) {
+      sTagsBitset[tags[i].getIdxInt()] = false;
+    } else {
+      pTagsBitset[tags[i].getIdxInt()] = false;
+    }
+  }
+  op2TagInfoMap.erase(op);
+}
+
+Type PrivateTagPool::getPrivateTagsType() {
+  return pTagsAllocOp->getResult(0).getType();
+}
+
+Type PrivateTagPool::getSharedTagsType() {
+  return sTagsAllocOp->getResult(0).getType();
+}
+
+Value PrivateTagPool::getPrivateTagsValue(Operation *op) {
   auto func = op->getParentOfType<FunctionOpInterface>();
   assert(func && "can't find func op");
 
-  Value tagMemref = tagsAllocOp->getResult(0);
+  Value pTagsMemref = pTagsAllocOp->getResult(0);
   if (auto wsOp = op->getParentOfType<triton::gpu::WarpSpecializeOp>()) {
-    if (!wsOp->isProperAncestor(tagsAllocOp))
-      if (Value v = lookupPartitionTagArg(wsOp, op, tagMemref))
+    if (!wsOp->isProperAncestor(pTagsAllocOp))
+      if (Value v = lookupPartitionTagArg(wsOp, op, pTagsMemref))
         return v;
   }
-
   if (auto wsOp = op->getParentOfType<mlir::gcu::WarpSpecializeOp>()) {
-    if (!wsOp->isProperAncestor(tagsAllocOp))
-      if (Value v = lookupPartitionTagArg(wsOp, op, tagMemref))
+    if (!wsOp->isProperAncestor(pTagsAllocOp))
+      if (Value v = lookupPartitionTagArg(wsOp, op, pTagsMemref))
         return v;
   }
 
-  if (funcName2TagArgPos.count(func.getName()) != 0)
-    return func.getArgument(funcName2TagArgPos[func.getName()]);
-  return tagMemref;
+  if (pTagsArgPosMap.count(func.getName()) != 0)
+    return func.getArgument(pTagsArgPosMap[func.getName()]);
+  return pTagsMemref;
+}
+
+Value PrivateTagPool::getSharedTagsValue(Operation *op) {
+  auto func = op->getParentOfType<FunctionOpInterface>();
+  assert(func && "can't find func op");
+
+  Value sTagsMemref = sTagsAllocOp->getResult(0);
+  if (auto wsOp = op->getParentOfType<triton::gpu::WarpSpecializeOp>()) {
+    if (!wsOp->isProperAncestor(sTagsAllocOp))
+      if (Value v = lookupPartitionTagArg(wsOp, op, sTagsMemref))
+        return v;
+  }
+  if (auto wsOp = op->getParentOfType<mlir::gcu::WarpSpecializeOp>()) {
+    if (!wsOp->isProperAncestor(sTagsAllocOp))
+      if (Value v = lookupPartitionTagArg(wsOp, op, sTagsMemref))
+        return v;
+  }
+
+  if (sTagsArgPosMap.count(func.getName()) != 0)
+    return func.getArgument(sTagsArgPosMap[func.getName()]);
+
+  return sTagsMemref;
+}
+
+void PrivateTagPool::updateUsedSize() {
+  OpBuilder builder(pTagsAllocOp);
+  auto loc = pTagsAllocOp->getLoc();
+
+  (void)useAsyncSharedTag;
+  auto pTagsType =
+      MemRefType::get(ArrayRef<int64_t>{pTagsPeakSize}, builder.getI32Type());
+  auto newPTagsAllocOp = builder.create<memref::AllocOp>(loc, pTagsType);
+  newPTagsAllocOp->setAttr("gcu_private_tag", builder.getUnitAttr());
+
+  pTagsAllocOp->getResult(0).replaceAllUsesWith(newPTagsAllocOp->getResult(0));
+  pTagsAllocOp->dropAllUses();
+  pTagsAllocOp->erase();
+
+  builder.setInsertionPoint(sTagsAllocOp);
+  loc = sTagsAllocOp->getLoc();
+  auto sTagsType =
+      MemRefType::get(ArrayRef<int64_t>{sTagsPeakSize}, builder.getI32Type());
+  auto newSTagsAllocOp = builder.create<memref::AllocOp>(loc, sTagsType);
+  newSTagsAllocOp->setAttr("gcu_shared_tag", builder.getUnitAttr());
+
+  if (!usedSyncSharedTag) {
+    newSTagsAllocOp->setAttr("unused_gcu_sync_shared_tag",
+                             builder.getUnitAttr());
+  }
+
+  sTagsAllocOp->getResult(0).replaceAllUsesWith(newSTagsAllocOp->getResult(0));
+  sTagsAllocOp->dropAllUses();
+  sTagsAllocOp->erase();
+
+  mlir::gpu::GPUModuleOp moduleOp =
+      newPTagsAllocOp->getParentOfType<mlir::gpu::GPUModuleOp>();
+  if (!moduleOp) {
+    llvm::report_fatal_error("can't find GPUModuleOp for tags");
+  }
+
+  auto updateFuncType = [](func::FuncOp funcOp, int32_t argPos, Type newType) {
+    if (static_cast<unsigned>(argPos) >= funcOp.getNumArguments()) {
+      llvm::report_fatal_error("arg index out of range for tags");
+      return;
+    }
+
+    FunctionType currentType = funcOp.getFunctionType();
+
+    SmallVector<Type> newInputTypes = llvm::to_vector(currentType.getInputs());
+    newInputTypes[argPos] = newType;
+
+    FunctionType newFuncType = FunctionType::get(
+        funcOp.getContext(), newInputTypes, currentType.getResults());
+    funcOp.setType(newFuncType);
+
+    Block &entryBlock = funcOp.getBody().front();
+    entryBlock.getArgument(argPos).setType(newType);
+  };
+
+  for (auto &[funcName, argPos] : pTagsArgPosMap) {
+    func::FuncOp funcOp = moduleOp.lookupSymbol<func::FuncOp>(funcName);
+    if (!funcOp) {
+      llvm::report_fatal_error(
+          "can't find func op in GPUModuleOp for private tags");
+      continue;
+    }
+    updateFuncType(funcOp, argPos, pTagsType);
+  }
+
+  for (auto &[funcName, argPos] : sTagsArgPosMap) {
+    func::FuncOp funcOp = moduleOp.lookupSymbol<func::FuncOp>(funcName);
+    if (!funcOp) {
+      llvm::report_fatal_error(
+          "can't find func op in GPUModuleOp for shared tags");
+      continue;
+    }
+    updateFuncType(funcOp, argPos, sTagsType);
+  }
+}
+
+void PrivateTagPool::setPrivateFuncNameMap(Operation *op, int argNum) {
+  assert(llvm::isa<FunctionOpInterface>(op) && "not a triton func op");
+  auto func = llvm::cast<FunctionOpInterface>(op);
+  assert(argNum >= 0 && "arg number is negative");
+  assert(static_cast<unsigned>(argNum) < func.getNumArguments() &&
+         "arg number is too big");
+  pTagsArgPosMap[func.getName()] = argNum;
+}
+
+void PrivateTagPool::setSharedFuncNameMap(Operation *op, int argNum) {
+  assert(llvm::isa<FunctionOpInterface>(op) && "not a triton func op");
+  auto func = llvm::cast<FunctionOpInterface>(op);
+  assert(argNum >= 0 && "arg number is negative");
+  assert(static_cast<unsigned>(argNum) < func.getNumArguments() &&
+         "arg number is too big");
+  sTagsArgPosMap[func.getName()] = argNum;
 }
 
 bool get_bool_env(const char *name) {
@@ -2210,67 +2512,6 @@ Value createConstantZero(OpBuilder &builder, Location loc, Type elemType) {
   return Value();
 }
 
-Value createConstantNaN(OpBuilder &builder, Location loc, Type elemType) {
-  const llvm::fltSemantics *sem = nullptr;
-  if (elemType.isF32()) {
-    sem = &llvm::APFloatBase::IEEEsingle();
-  } else if (elemType.isBF16()) {
-    sem = &llvm::APFloatBase::BFloat();
-  } else if (elemType.isF16()) {
-    sem = &llvm::APFloatBase::IEEEhalf();
-  } else if (elemType.isF64()) {
-    sem = &llvm::APFloatBase::IEEEdouble();
-  } else if (llvm::isa<Float8E4M3B11FNUZType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E4M3B11FNUZ();
-  } else if (llvm::isa<Float8E4M3FNUZType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E4M3FNUZ();
-  } else if (llvm::isa<Float8E5M2FNUZType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E5M2FNUZ();
-  } else if (llvm::isa<Float8E4M3FNType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E4M3FN();
-  } else if (llvm::isa<Float8E5M2Type>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E5M2();
-  } else {
-    std::string o;
-    llvm::raw_string_ostream os(o);
-    elemType.print(os);
-    llvm_unreachable((o + " is unsupported").c_str());
-  }
-  return builder.create<arith::ConstantFloatOp>(
-      loc, dyn_cast<FloatType>(elemType), APFloat::getNaN(*sem));
-}
-
-Value createConstantInf(OpBuilder &builder, Location loc, Type elemType,
-                        bool isNegative) {
-  const llvm::fltSemantics *sem = nullptr;
-  if (elemType.isF32()) {
-    sem = &llvm::APFloatBase::IEEEsingle();
-  } else if (elemType.isBF16()) {
-    sem = &llvm::APFloatBase::BFloat();
-  } else if (elemType.isF16()) {
-    sem = &llvm::APFloatBase::IEEEhalf();
-  } else if (elemType.isF64()) {
-    sem = &llvm::APFloatBase::IEEEdouble();
-  } else if (llvm::isa<Float8E4M3B11FNUZType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E4M3B11FNUZ();
-  } else if (llvm::isa<Float8E4M3FNUZType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E4M3FNUZ();
-  } else if (llvm::isa<Float8E5M2FNUZType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E5M2FNUZ();
-  } else if (llvm::isa<Float8E4M3FNType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E4M3FN();
-  } else if (llvm::isa<Float8E5M2Type>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E5M2();
-  } else {
-    std::string o;
-    llvm::raw_string_ostream os(o);
-    elemType.print(os);
-    llvm_unreachable((o + " is unsupported").c_str());
-  }
-  return builder.create<arith::ConstantFloatOp>(
-      loc, dyn_cast<FloatType>(elemType), APFloat::getInf(*sem, isNegative));
-}
-
 SmallVector<unsigned> getWarpsPerCTA(Attribute layout) {
   if (auto blockEnc = dyn_cast<triton::gpu::BlockedEncodingAttr>(layout)) {
     auto warpsPerCTA = blockEnc.getWarpsPerCTA();
@@ -2312,6 +2553,31 @@ SmallVector<unsigned> getWarpsPerCTA(Attribute layout) {
     assert(false && "not supported layout");
   }
   return SmallVector<unsigned>();
+}
+
+bool needsSmemRelay(RankedTensorType srcTy, ArrayRef<int64_t> tileShape) {
+  auto encoding = srcTy.getEncoding();
+  if (!encoding)
+    return true;
+
+  SmallVector<unsigned> warpsPerCTA;
+  if (auto blocked = dyn_cast<triton::gpu::BlockedEncodingAttr>(encoding))
+    warpsPerCTA = SmallVector<unsigned>(blocked.getWarpsPerCTA());
+  else if (auto linear = dyn_cast<triton::gpu::LinearEncodingAttr>(encoding))
+    warpsPerCTA = SmallVector<unsigned>(linear.getWarpsPerCTA());
+  else
+    return true;
+
+  auto srcShape = srcTy.getShape();
+  unsigned rank = srcShape.size();
+  if (rank != warpsPerCTA.size())
+    return true;
+
+  for (unsigned i = 0; i < rank; ++i) {
+    if (tileShape[i] != srcShape[i] && warpsPerCTA[i] != 1)
+      return true;
+  }
+  return false;
 }
 
 SmallVector<unsigned> getElemsPerThread(Type type) {
@@ -3026,7 +3292,7 @@ void ReduceGenerator::applyVectorizeImpl<2, 2>(OpBuilder &builder, Location loc,
     }
     return values;
   };
-  auto &combineOp = op.getCombineOp();
+  triton::gcu::CombineOpDesc combineOpDesc(op);
   builder.create<scf::ForOp>(
       loc, zero,
       builder.create<arith::ConstantIndexOp>(loc, reduceInputDims[0]), one,
@@ -3061,11 +3327,10 @@ void ReduceGenerator::applyVectorizeImpl<2, 2>(OpBuilder &builder, Location loc,
                         args[numOutputs + j] = curValues[i * numOutputs + j];
                       }
                       terminatorOperands.append(
-                          vectorizeCombineOpWithoutTerminator(
-                              builder, loc, combineOp, args, vectorLength));
+                          combineOpDesc.applyVectorizedCombine(
+                              builder, loc, args, vectorLength));
                     }
-                    vectorizeCombineOpTerminator(builder, loc,
-                                                 terminatorOperands);
+                    builder.create<scf::YieldOp>(loc, terminatorOperands);
                   });
               for (unsigned i = 0; i < numInputs; ++i) {
                 initArgs[i] = loop0.getResult(i);
@@ -3073,11 +3338,10 @@ void ReduceGenerator::applyVectorizeImpl<2, 2>(OpBuilder &builder, Location loc,
               }
               for (unsigned i = 0; i < loopCnt * reduceOutputDims[2]; ++i) {
                 for (unsigned j = 0; j < numOutputs; ++j) {
-                  auto results =
-                      vReduce(builder, loc, combineOp,
-                              ValueRange(loop0.getResults().slice(
-                                  numInputs + i * numOutputs, numOutputs)),
-                              vectorLength);
+                  auto results = triton::gcu::reduceVectorLanes(
+                      builder, loc, combineOpDesc,
+                      ValueRange(loop0.getResults().slice(
+                          numInputs + i * numOutputs, numOutputs)));
                   for (unsigned k = 0; k < reduceOutputDims[2]; ++k) {
                     builder.create<memref::StoreOp>(
                         loc, results[j], outputs[j],
@@ -3107,223 +3371,6 @@ void ReduceGenerator::applyReduce(OpBuilder &builder, Location loc,
   } else {
     llvm_unreachable("Not implemented");
   }
-}
-
-SmallVector<Value> ReduceGenerator::vectorizeCombineOpWithoutTerminator(
-    OpBuilder &builder, Location loc, Region &combineOp, ValueRange operands,
-    unsigned vectorLength) {
-  IRMapping mapper;
-  for (auto [arg, operand] : llvm::zip(combineOp.getArguments(), operands)) {
-    mapper.map(arg, operand);
-  }
-  for (auto &o : combineOp.back().without_terminator()) {
-    for (auto operand : o.getOperands()) {
-      if (auto constantOp = operand.getDefiningOp<arith::ConstantOp>()) {
-        if (!mapper.lookupOrNull(operand)) {
-          OpBuilder::InsertionGuard guard(builder);
-          builder.setInsertionPointAfter(constantOp);
-          if (operand.getType().isInteger(1)) {
-            auto boolAttr = dyn_cast<BoolAttr>(constantOp.getValue());
-            auto integerAttr = dyn_cast<IntegerAttr>(constantOp.getValue());
-            if ((boolAttr && !boolAttr.getValue()) ||
-                (integerAttr && integerAttr.getValue().isZero())) {
-              mapper.map(operand,
-                         builder.create<vector::ConstantMaskOp>(
-                             loc,
-                             VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                             operand.getType()),
-                             DenseI64ArrayAttr::get(builder.getContext(),
-                                                    ArrayRef<int64_t>{0})));
-            } else {
-              mapper.map(
-                  operand,
-                  builder.create<vector::ConstantMaskOp>(
-                      loc,
-                      VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                      operand.getType()),
-                      DenseI64ArrayAttr::get(builder.getContext(),
-                                             ArrayRef<int64_t>{vectorLength})));
-            }
-          } else {
-            mapper.map(operand,
-                       builder.create<vector::BroadcastOp>(
-                           loc,
-                           VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                           operand.getType()),
-                           operand));
-          }
-        }
-      }
-    }
-    Operation *cloneOp;
-    if (auto selectOp = dyn_cast<arith::SelectOp>(o)) {
-      auto condition = selectOp.getCondition();
-      auto mappingValue = mapper.lookup(condition);
-      if (cast<VectorType>(mappingValue.getType())
-              .getElementType()
-              .isInteger(8)) {
-        mapper.map(condition,
-                   builder
-                       .create<mlir::gcu::VectorConvertOp>(
-                           loc,
-                           VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                           builder.getIntegerType(1)),
-                           mappingValue)
-                       .getResult(0));
-        cloneOp = builder.clone(o, mapper);
-        mapper.map(condition, mappingValue);
-      } else {
-        cloneOp = builder.clone(o, mapper);
-      }
-    } else {
-      cloneOp = builder.clone(o, mapper);
-    }
-    SmallVector<Type> resultTypes;
-    auto typeInterface = dyn_cast<InferTypeOpInterface>(cloneOp);
-    if (typeInterface &&
-        succeeded(typeInterface.inferReturnTypes(
-            cloneOp->getContext(), cloneOp->getLoc(), cloneOp->getOperands(),
-            cloneOp->getAttrDictionary(), cloneOp->getPropertiesStorage(),
-            cloneOp->getRegions(), resultTypes))) {
-      for (unsigned i = 0; i < resultTypes.size(); ++i) {
-        cloneOp->getResult(i).setType(resultTypes[i]);
-        mapper.map(o.getResult(i), cloneOp->getResult(i));
-      }
-    } else {
-      for (unsigned i = 0; i < o.getNumResults(); ++i) {
-        auto elementTy = getElementTypeOrSelf(o.getResult(i).getType());
-        cloneOp->getResult(i).setType(
-            VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy));
-        mapper.map(o.getResult(i), cloneOp->getResult(i));
-      }
-    }
-  }
-  auto terminatorOprands = llvm::to_vector(llvm::map_range(
-      llvm::cast<triton::ReduceReturnOp>(combineOp.back().getTerminator())
-          .getResult(),
-      [&](auto v) {
-        auto mappingValue = mapper.lookupOrNull(v);
-        assert(mappingValue != nullptr);
-        return mappingValue;
-      }));
-  return terminatorOprands;
-}
-
-void ReduceGenerator::vectorizeCombineOpTerminator(OpBuilder &builder,
-                                                   Location loc,
-                                                   ValueRange operands) {
-  builder.create<triton::ReduceReturnOp>(loc, operands);
-}
-
-std::optional<vector::CombiningKind>
-ReduceGenerator::matchReduceCombiningKind(Region &combineOp) {
-  auto &opList = combineOp.front().getOperations();
-  if (opList.size() != 2) {
-    return std::nullopt;
-  }
-  auto elementWiseOp = &opList.front();
-  return TypeSwitch<Operation *, std::optional<vector::CombiningKind>>(
-             elementWiseOp)
-      .Case<triton::ExternElementwiseOp>(
-          [&](auto externElementwiseOp)
-              -> std::optional<vector::CombiningKind> {
-            auto symbol = externElementwiseOp.getSymbol();
-            if (symbol == "__nv_fmaxf") {
-              return vector::CombiningKind::MAXIMUMF;
-            } else if (symbol == "__nv_max") {
-              return vector::CombiningKind::MAXSI;
-            } else if (symbol == "__nv_umax") {
-              return vector::CombiningKind::MAXUI;
-            } else if (symbol == "__nv_fminf") {
-              return vector::CombiningKind::MINIMUMF;
-            } else if (symbol == "__nv_min") {
-              return vector::CombiningKind::MINSI;
-            } else if (symbol == "__nv_umin") {
-              return vector::CombiningKind::MINUI;
-            } else {
-              return std::nullopt;
-            }
-          })
-      .Case<arith::AddIOp, arith::AddFOp>(
-          [&](auto op) { return vector::CombiningKind::ADD; })
-      .Case<arith::MulIOp, arith::MulFOp>(
-          [&](auto op) { return vector::CombiningKind::MUL; })
-      .Case<arith::MaxSIOp>(
-          [&](auto op) { return vector::CombiningKind::MAXSI; })
-      .Case<arith::MaxUIOp>(
-          [&](auto op) { return vector::CombiningKind::MAXUI; })
-      .Case<arith::MaxNumFOp>(
-          [&](auto op) { return vector::CombiningKind::MAXNUMF; })
-      .Case<arith::MaximumFOp>(
-          [&](auto op) { return vector::CombiningKind::MAXIMUMF; })
-      .Case<arith::MinSIOp>(
-          [&](auto op) { return vector::CombiningKind::MINSI; })
-      .Case<arith::MinUIOp>(
-          [&](auto op) { return vector::CombiningKind::MINUI; })
-      .Case<arith::MinNumFOp>(
-          [&](auto op) { return vector::CombiningKind::MINNUMF; })
-      .Case<arith::MinimumFOp>(
-          [&](auto op) { return vector::CombiningKind::MINIMUMF; })
-      .Case<arith::AndIOp>([&](auto op) { return vector::CombiningKind::AND; })
-      .Case<arith::OrIOp>([&](auto op) { return vector::CombiningKind::OR; })
-      .Case<arith::XOrIOp>([&](auto op) { return vector::CombiningKind::XOR; })
-      .Default([&](auto op) { return std::nullopt; });
-}
-
-SmallVector<Value> ReduceGenerator::vReduce(OpBuilder &builder, Location loc,
-                                            Region &combineOp,
-                                            ValueRange vecValues,
-                                            unsigned vectorLength) {
-  assert(llvm::all_of(vecValues.getTypes(), [&](auto ty) {
-    auto vecTy = dyn_cast<VectorType>(ty);
-    return vecTy && vecTy.getRank() == 1 && vecTy.getDimSize(0) == vectorLength;
-  }));
-
-  if (auto kind = matchReduceCombiningKind(combineOp)) {
-    assert(vecValues.size() == 1);
-    return {builder.create<vector::ReductionOp>(loc, *kind, vecValues[0])};
-  }
-
-  SmallVector<Value> calValues;
-  SmallVector<Type, 4> resultElemTypes;
-  for (auto v : vecValues) {
-    calValues.emplace_back(builder.create<vector::ExtractOp>(loc, v, 0));
-    resultElemTypes.push_back(calValues.back().getType());
-  }
-  auto loop = builder.create<scf::ForOp>(
-      loc, builder.create<arith::ConstantIndexOp>(loc, 1),
-      builder.create<arith::ConstantIndexOp>(loc, vectorLength),
-      builder.create<arith::ConstantIndexOp>(loc, 1), calValues,
-      [&](OpBuilder &builder, Location loc, Value iter, ValueRange iterArgs) {
-        SmallVector<Value, 4> operands(iterArgs.begin(), iterArgs.end());
-        for (auto v : vecValues) {
-          operands.emplace_back(
-              builder.create<vector::ExtractOp>(loc, v, iter));
-        }
-        auto executeRegionOp =
-            builder.create<scf::ExecuteRegionOp>(loc, resultElemTypes);
-        executeRegionOp.getRegion().emplaceBlock();
-        IRMapping map;
-        for (auto [arg, operand] :
-             llvm::zip(combineOp.getArguments(), operands)) {
-          map.map(arg, operand);
-        }
-        {
-          OpBuilder::InsertionGuard guard(builder);
-          builder.setInsertionPointToStart(
-              &executeRegionOp.getRegion().getBlocks().back());
-          for (auto &o : combineOp.getBlocks().back()) {
-            auto newO = builder.clone(o, map);
-            for (auto [result, newResult] :
-                 llvm::zip(o.getResults(), newO->getResults())) {
-              map.map(result, newResult);
-            }
-          }
-        }
-        builder.create<scf::YieldOp>(loc,
-                                     ValueRange{executeRegionOp.getResults()});
-      });
-  return loop.getResults();
 }
 
 SmallVector<Value> ReduceGenerator::normalizeInputs(OpBuilder &builder,

@@ -38,9 +38,6 @@ class GCU_Op<string mnemonic, list<Trait> traits = []> :
        !listconcat(traits, [])> {
 }
 
-
-
-
 //
 // AllocESLEngine op
 //
@@ -308,6 +305,175 @@ def GCU_ESLGetQpSharedStatesPtrOp : GCU_Op<"esl_get_qp_shared_states_ptr", [Memo
 }
 
 //
+// ESLGetNLocalRanksOp op
+//
+def GCU_ESLGetNLocalRanksOp : GCU_Op<"esl_get_n_local_ranks", [MemoryEffectsOpInterface]> {
+  let summary = "Get number of local ranks from 'prims'";
+  let description = [{
+    `gcu.esl_get_n_local_ranks` get the number of local ranks (nLocalRanks) from 'prims'.
+    Used to determine whether a peer is intra-node or inter-node.
+  }];
+  let arguments = (ins GCU_PtrType:$prims);
+  let results = (outs I32:$n_local_ranks);
+  let assemblyFormat = "$prims attr-dict `:` type($prims) `,` type($n_local_ranks)";
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// AllocIBGDAEngine op
+//
+def GCU_AllocIBGDAEngineOp : GCU_Op<"alloc_ibgda_engine", [MemoryEffects<[MemAlloc]>]> {
+  let summary = "Allocate an IBGDA engine for inter-node RDMA";
+  let description = [{
+    `gcu.alloc_ibgda_engine` allocate an IBGDA engine for inter-node RDMA communication.
+  }];
+  let results = (outs GCU_IBGDAEngineType:$engine);
+  let assemblyFormat = "attr-dict `:` type($engine)";
+}
+
+//
+// IBGDALoadOp op
+//
+def GCU_IBGDALoadOp : GCU_Op<"ibgda_load", [MemoryEffectsOpInterface]> {
+  let summary = "Load IBGDA QP information for inter-node communication";
+  let description = [{
+    `gcu.ibgda_load` load IBGDA queue pair information.
+    Corresponds to `ibgda_engine.load(ibgda_info_ptr, qp_idx, max_qp_nums, rank, dst_rank)`.
+  }];
+  let arguments = (ins
+      GCU_IBGDAEngineType:$engine,
+      I64:$ibgda_info_ptr,
+      I32:$qp_idx,
+      I32:$max_qp_nums,
+      I32:$rank,
+      I32:$dst_rank
+  );
+  let assemblyFormat = "$engine `,` $ibgda_info_ptr `,` $qp_idx `,` $max_qp_nums `,` $rank `,` $dst_rank attr-dict `:` type($engine)";
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// IBGDASendOp op
+//
+def GCU_IBGDASendOp : GCU_Op<"ibgda_send", [MemoryEffectsOpInterface]> {
+  let summary = "Send data using IBGDA engine for inter-node RDMA";
+  let description = [{
+    `gcu.ibgda_send` send data using IBGDA engine.
+    Corresponds to `ibgda_engine.send(dst, src, nelem)`.
+  }];
+  let arguments = (ins
+      GCU_IBGDAEngineType:$engine,
+      GCU_PtrType:$dst,
+      GCU_PtrType:$src,
+      I64:$nelem
+  );
+  let assemblyFormat = "$engine `,` $dst `,` $src `,` $nelem attr-dict `:` type($dst) `,` type($src)";
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(1),
+                           SideEffects::DefaultResource::get());
+      effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(2),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// IBGDAPrepTransDataOp op
+//
+def GCU_IBGDAPrepTransDataOp : GCU_Op<"ibgda_prep_trans_data", [MemoryEffectsOpInterface]> {
+  let summary = "Prepare IBGDA transaction data for inter-node RDMA";
+  let description = [{
+    `gcu.ibgda_prep_trans_data` prepare a transaction (build WQE) without ringing the doorbell.
+    Corresponds to `ibgda_engine.prepTransData(dst, src, nelem)`.
+    Returns true if preparation succeeded, false on out-of-range error.
+  }];
+  let arguments = (ins
+      GCU_IBGDAEngineType:$engine,
+      GCU_PtrType:$dst,
+      GCU_PtrType:$src,
+      I64:$nelem
+  );
+  let assemblyFormat = "$engine `,` $dst `,` $src `,` $nelem attr-dict `:` type($dst) `,` type($src)";
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+      effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(2),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// IBGDARingDbOp op
+//
+def GCU_IBGDARingDbOp : GCU_Op<"ibgda_ring_db", [MemoryEffectsOpInterface]> {
+  let summary = "Ring doorbell for IBGDA engine";
+  let description = [{
+    `gcu.ibgda_ring_db` ring doorbell to trigger the previously prepared RDMA transaction.
+    Corresponds to `ibgda_engine.ringDb()`.
+  }];
+  let arguments = (ins GCU_IBGDAEngineType:$engine);
+  let assemblyFormat = "$engine attr-dict `:` type($engine)";
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// IBGDAWaitTransDoneOp op
+//
+def GCU_IBGDAWaitTransDoneOp : GCU_Op<"ibgda_wait_trans_done", [MemoryEffectsOpInterface]> {
+  let summary = "Wait for IBGDA transaction to complete";
+  let description = [{
+    `gcu.ibgda_wait_trans_done` wait for the IBGDA RDMA transaction to complete (poll CQ).
+    Corresponds to `ibgda_engine.waitTransDone()`.
+  }];
+  let arguments = (ins GCU_IBGDAEngineType:$engine);
+  let assemblyFormat = "$engine attr-dict `:` type($engine)";
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
 // AllocDTE Op
 //
 def GCU_AllocDTEOp : GCU_Op<"alloc_dte", [MemoryEffects<[MemAlloc]>]> {
@@ -315,9 +481,20 @@ def GCU_AllocDTEOp : GCU_Op<"alloc_dte", [MemoryEffects<[MemAlloc]>]> {
   let description = [{
     `gcu.alloc_dte` allocate a DTE context. If addrespace != private, the dte context needs
     to be called by `init` explicitly.
+
+    An optional `masterThreadId` attribute specifies the master thread that owns
+    this DTE context in a warp-specialized setting.
   }];
+  let arguments = (ins
+    OptionalAttr<I32Attr>:$masterThreadId
+  );
   let results = (outs GCU_DTEType:$dte);
   let assemblyFormat = "attr-dict `:` type($dte)";
+  let builders = [
+    OpBuilder<(ins "mlir::Type":$dte), [{
+      return build($_builder, $_state, dte, {});
+    }]>
+  ];
 }
 
 //
@@ -1073,8 +1250,6 @@ def GCU_ArriveBarrierOp : GCU_Op<"arrive_barrier", [MemoryEffectsOpInterface]> {
     void getEffects(
         SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
         effects) {
-      effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(0),
-                           SideEffects::DefaultResource::get());
       effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
                            SideEffects::DefaultResource::get());
     }
@@ -1217,6 +1392,17 @@ def GCU_ConsumerReleaseOp : GCU_Op<"consumer_release"> {
 }
 
 //
+// DeallocPipeline Op
+//
+def GCU_DeallocPipelineOp : GCU_Op<"dealloc_pipeline", [MemoryEffects<[MemFree]>]> {
+  let summary = "Deallocate a pipeline";
+  let description = [{
+    `gcu.dealloc_pipeline` deallocate a pipeline and the pipeline needs to be called by `destroy` explicitly.
+  }];
+  let arguments = (ins GCU_PipelineType:$pipeline);
+  let assemblyFormat = "$pipeline attr-dict `:` type($pipeline)";
+}
+
 // WarpSpecialize Op
 //
 def GCU_WarpSpecializeOp : GCU_Op<"warp_specialize", [
@@ -1260,9 +1446,10 @@ def GCU_WarpSpecializeOp : GCU_Op<"warp_specialize", [
 
   let arguments = (ins
     Variadic<AnyType>:$explicitCaptures,
+    I32Attr:$defaultNumWarps,
     DenseI32ArrayAttr:$partitionNumWarps,
-    OptionalAttr<DenseI32ArrayAttr>:$warpGroupStartIds,
-    OptionalAttr<DenseI32ArrayAttr>:$requestedRegisters,
+    OptionalAttr<I32Attr>:$defaultStartId,
+    OptionalAttr<DenseI32ArrayAttr>:$partitionStartIds,
     OptionalAttr<DenseI32ArrayAttr>:$actualRegisters
   );
   let results = (outs Variadic<AnyType>:$defaultPassthrough);
@@ -1275,17 +1462,20 @@ def GCU_WarpSpecializeOp : GCU_Op<"warp_specialize", [
   let extraClassDeclaration = [{
     RegionRange getPartitionRegions();
 
-    // Get the size and alignment of the capture list.
-    std::pair<uint64_t, uint64_t> getCaptureSizeAlign();
     // Get the total number of extra warps required.
     unsigned getTotalPartitionWarps();
+
+    // Get the master warp id.
+    int32_t getMasterThreadId(Region *region);
   }];
 
   let builders = [
     OpBuilder<(ins "TypeRange":$resultTypes,
+                   "int32_t":$defaultNumWarps,
                    "ArrayRef<int32_t>":$partitionNumWarps,
                    "unsigned":$numPartitionRegions)>,
     OpBuilder<(ins "TypeRange":$resultTypes, "ValueRange":$explicitCaptures,
+                   "int32_t":$defaultNumWarps,
                    "ArrayRef<int32_t>":$partitionNumWarps)>,
   ];
 
@@ -1579,14 +1769,23 @@ def GCU_ScatterStoreOp : GCU_Op<"scatter_store", [MemoryEffectsOpInterface]> {
 //
 // MatMul Op
 //
-def GCU_MatMulOp : GCU_Op<"matmul", [MemoryEffectsOpInterface]> {
-  let summary = "Matrix multiplication with bias";
+def GCU_MatMulOp : GCU_Op<"matmul", [MemoryEffectsOpInterface,
+                                     AttrSizedOperandSegments]> {
+  let summary = "Matrix multiplication with optional bias accumulation";
   let description = [{
     Performs a two dimensional matrix multiplication.
+    When useBias is provided and nonzero at runtime, bias is accumulated:
+      D = A * B + C
+    When useBias is zero (or bias is absent):
+      D = A * B
   }];
   let arguments = (ins AnyMemRef:$out, AnyMemRef:$lhs, AnyMemRef:$rhs, Optional<AnyMemRef>:$bias,
+      Optional<I1>:$useBias,
       DefaultValuedAttr<GCU_InputPrecisionAttr, "::mlir::gcu::InputPrecision::IEEE">:$inputPrecision);
-  let assemblyFormat = "$out `,` $lhs `,` $rhs (`,` $bias^)?  attr-dict `:` type($out) `,` type($lhs) `,` type($rhs) (`,` type($bias)^)?";
+  let assemblyFormat = [{
+    $out `,` $lhs `,` $rhs (`,` $bias^)? (`use_bias` $useBias^)?  attr-dict `:`
+    type($out) `,` type($lhs) `,` type($rhs) (`,` type($bias)^)?
+  }];
   let extraClassDeclaration = [{
     void getEffects(
         SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
@@ -1742,6 +1941,87 @@ def GCU_TarStoreOp : GCU_Op<"tar_store", []> {
   let results = (outs GCU_TarType:$dst_addr);
 }
 
+def GCU_LoadStrideOp : GCU_Op<"load_stride", []> {
+  let summary = "vector load with stride only for gcu400";
+  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$base, Variadic<Index>:$indices, I64:$stride);
+  let results = (outs GCU_VectorType:$value);
+  let extraClassDeclaration = [{
+    MemRefType getMemRefType() {
+      return ::llvm::cast<MemRefType>(getBase().getType());
+    }
+    VectorType getVectorType() {
+      return ::llvm::cast<VectorType>(getResult().getType());
+    }
+  }];
+  let hasVerifier = 1;
+}
+
+def GCU_StoreStrideOp : GCU_Op<"store_stride", []> {
+  let summary = "vector store with stride only for gcu400";
+  let arguments = (ins GCU_VectorType:$value_to_store,
+                   Arg<AnyMemRef, "", [MemWrite]>:$base,
+                   Variadic<Index>:$indices, I64:$stride);
+  let extraClassDeclaration = [{
+    MemRefType getMemRefType() {
+      return ::llvm::cast<MemRefType>(getBase().getType());
+    }
+
+    VectorType getVectorType() {
+      return ::llvm::cast<VectorType>(getValueToStore().getType());
+    }
+  }];
+  let hasVerifier = 1;
+}
+
+def GCU_MaskedLoadStrideOp : GCU_Op<"masked_load_stride", []> {
+  let summary = "masked vector load with stride only for gcu400";
+  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$base,
+                   Variadic<Index>:$indices, I64:$stride,
+                   GCU_VectorType:$mask, GCU_VectorType:$pass_thru);
+  let results = (outs GCU_VectorType:$value);
+  let extraClassDeclaration = [{
+    MemRefType getMemRefType() {
+      return ::llvm::cast<MemRefType>(getBase().getType());
+    }
+    VectorType getMaskVectorType() {
+      return ::llvm::cast<VectorType>(getMask().getType());
+    }
+    VectorType getPassThruVectorType() {
+      return ::llvm::cast<VectorType>(getPassThru().getType());
+    }
+    VectorType getVectorType() {
+      return ::llvm::cast<VectorType>(getResult().getType());
+    }
+  }];
+  let hasVerifier = 1;
+}
+
+def GCU_MaskedStoreStrideOp : GCU_Op<"masked_store_stride", []> {
+  let summary = "masked vector store with stride only for gcu400";
+  let arguments = (ins GCU_VectorType:$value_to_store,
+                   Arg<AnyMemRef, "", [MemWrite]>:$base,
+                   Variadic<Index>:$indices, I64:$stride,
+                   GCU_VectorType:$mask);
+  let extraClassDeclaration = [{
+    MemRefType getMemRefType() {
+      return ::llvm::cast<MemRefType>(getBase().getType());
+    }
+    VectorType getMaskVectorType() {
+      return ::llvm::cast<VectorType>(getMask().getType());
+    }
+    VectorType getVectorType() {
+      return ::llvm::cast<VectorType>(getValueToStore().getType());
+    }
+  }];
+  let hasVerifier = 1;
+}
+
+def GCU_VectorShiftOp : GCU_Op<"vector_shift", [Pure, AllTypesMatch<["vin", "vout"]>]> {
+  let summary = "shift the elements of vector";
+  let arguments = (ins GCU_VectorShiftDirectionAttr:$direction, GCU_VectorType:$vin, I32:$num);
+  let results = (outs GCU_VectorType:$vout);
+}
+
 def GCU_TarGatherOp : GCU_Op<"tar_gather", []> {
   let summary = "vector gather load to TAR only for gcu400";
   let arguments = (ins GCU_TarType:$src_addr, I32:$num, GCU_VectorType:$other, Optional<GCU_PtrType>:$mask);
@@ -1821,6 +2101,48 @@ def GCU_AtomicCASOp : GCU_Op<"atomic_cas", []> {
       $sem `,` $scope `,` $ptr `,` $cmp  `,` $val attr-dict `:`
       functional-type(operands, $result)
     }];
+}
+
+//
+// Extern Device Call Op — for efshmem / nvshmem device function calls
+//
+def GCU_ExternDeviceCallOp : GCU_Op<"extern_device_call",
+    [MemoryEffectsOpInterface]> {
+  let summary = "Call an external device library function (e.g. efshmem/nvshmem)";
+  let description = [{
+    Call a scalar function $symbol from an external device library $libname.
+    Supports scalar arguments (int, ptr, etc.) and an optional scalar result.
+    Used for efshmem device API calls such as nvshmem_fence, nvshmem_my_pe,
+    nvshmem_ptr, nvshmem_getmem, etc.
+
+    Unlike gcu.extern_elementwise_op which requires vector operands/results
+    for GCU libdevice math functions, this op handles scalar device runtime
+    calls that will be resolved by linking against libnvshmem_device.bc.
+  }];
+
+  let arguments = (ins
+    Variadic<AnyType>:$srcs,
+    StrAttr:$libname,
+    StrAttr:$symbol,
+    BoolAttr:$pure
+  );
+
+  let results = (outs Optional<AnyType>:$result);
+
+  let assemblyFormat = [{
+    `(` $srcs `)` attr-dict `:` functional-type($srcs, results)
+  }];
+
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      if (!getPure()) {
+        effects.emplace_back(MemoryEffects::Write::get());
+        effects.emplace_back(MemoryEffects::Read::get());
+      }
+    }
+  }];
 }
 
 #endif // GCU_OPS

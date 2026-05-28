@@ -71,7 +71,8 @@ struct MaskState {
   void minStates(OpBuilder &builder, Location loc, const MaskState &lhsState,
                  const MaskState &rhsState);
 
-  void setStates(OpBuilder &builder, Location loc, const MaskState &srcState);
+  void setStates(OpBuilder & /*builder*/, Location /*loc*/,
+                 const MaskState &srcState);
 };
 
 class MaskAnalysis {
@@ -87,15 +88,17 @@ public:
                      MaskState &state,
                      llvm::SmallDenseMap<Value, MaskState> &knownMasks);
 
-  static void parseIntScalar(OpBuilder &builder, Location loc, Value scalar,
-                             MaskState &state,
-                             llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+  static void
+  parseIntScalar(OpBuilder &builder, Location loc, Value scalar,
+                 MaskState &state,
+                 llvm::SmallDenseMap<Value, MaskState> & /*knownMasks*/);
 
   // Operand is the result of a constant
   // Get the value of the constant and assign it to scalar.
-  static void parseConstant(OpBuilder &builder, Location loc,
-                            arith::ConstantOp constOp, MaskState &state,
-                            llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+  static void
+  parseConstant(OpBuilder &builder, Location /*loc*/, arith::ConstantOp constOp,
+                MaskState &state,
+                llvm::SmallDenseMap<Value, MaskState> & /*knownMasks*/);
 
   // Operand is the result of addi
   // One and only one of the operands should be a scalar. Increment both start
@@ -121,9 +124,10 @@ public:
 
   // Operand is the result of make_range
   // Set start and end accordingly; step size must be 1.
-  static void parseMakeRange(OpBuilder &builder, Location loc,
-                             triton::MakeRangeOp rangeOp, MaskState &state,
-                             llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+  static void
+  parseMakeRange(OpBuilder &builder, Location /*loc*/,
+                 triton::MakeRangeOp rangeOp, MaskState &state,
+                 llvm::SmallDenseMap<Value, MaskState> & /*knownMasks*/);
 
   // Operand is the result of broadcast
   // Change dims only; assume only applies to tensors.

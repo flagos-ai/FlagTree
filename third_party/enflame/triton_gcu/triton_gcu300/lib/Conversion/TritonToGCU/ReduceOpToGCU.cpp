@@ -1704,7 +1704,7 @@ private:
     bool type_mixed = std::accumulate(int64_flags.begin(), int64_flags.end(),
                                       false, std::bit_xor<>());
     if (type_mixed) {
-      for (int32_t i = 0; i < int64_flags.size(); i++) {
+      for (size_t i = 0; i < int64_flags.size(); i++) {
         if (!int64_flags[i]) {
           values[i] = builder.create<arith::ExtSIOp>(
               loc,

@@ -41,7 +41,8 @@ def check_skip(file_path, test_name, params=None):
             re.sub(r"versionMajor=\d+,?\s*|versionMinor=\d+,?\s*", "", str(x)) for x in params["mma_pair"]
         ]
 
-    target_arch = triton.runtime.driver.active.get_current_target().arch.split("--")[1]
+    arch_str = triton.runtime.driver.active.get_current_target().arch
+    target_arch = arch_str.split("--")[1] if "--" in arch_str else arch_str
 
     # Generate a unique case identifier
     case_identifier = (test_name + "_" + "".join(f"{key}={value}-" for key, value in params.items()))

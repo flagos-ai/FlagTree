@@ -23,40 +23,21 @@ cd FlagTree
 git checkout -b triton_v3.6.x origin/triton_v3.6.x
 ```
 
-### 2. 准备 Docker 镜像
+### 1. 拉取软件包
 
 ```bash
-# 加载预构建的容器镜像
-curl -sL https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz | docker load
-
-# 或手动下载后加载
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz
-docker load -i enflame-flagtree-0.5.0.tar.gz
+cd ~
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run
 ```
 
-### 3. 启动Docker容器
+### 2. 安装驱动
 
 ```bash
-# 如果需要重建容器，请先删除
-# docker rm -f enflame-flagtree-0.5.0
-
-# 假设 flagtree 源码位于 ~/flagtree
-docker run -itd --privileged --name enflame-flagtree-0.5.0 -v ~/FlagTree:/root/FlagTree enflame/flagtree:0.5.0 bash
-```
-
-### 4. 安装驱动
-
-```bash
-# 提取并安装燧原驱动程序
-docker cp enflame-flagtree-0.5.0:/enflame enflame
-
-sudo bash enflame/driver/enflame-x86_64-gcc-*.run
-# 如果上面的命令提示你使用其它参数，请按照提示操作，比如
-# sudo bash enflame/driver/enflame-x86_64-gcc-*.run --virt-host
-
+cd ~
+bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --driver -y
+# 检查驱动是否正常安装
 efsmi
 ```
-
 用 efsmi 检查驱动是否正常安装，正常输出示意：
 
 ```
@@ -76,11 +57,30 @@ efsmi
 +-----------------------------+-------------------+---------------------------+
 ```
 
-### 5. 重启Docker容器后进入
+### 3. 准备 Docker 镜像
 
 ```bash
-# 重启docker
-docker restart enflame-flagtree-0.5.0
+# 加载预构建的容器镜像
+curl -sL https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz | docker load
+
+# 或手动下载后加载
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz
+docker load -i enflame-flagtree-0.5.0.tar.gz
+```
+
+### 4. 启动Docker容器
+
+```bash
+# 如果需要重建容器，请先删除
+# docker rm -f enflame-flagtree-0.5.0
+
+# 假设 flagtree 源码位于 ~/flagtree
+docker run -itd --privileged --name enflame-flagtree-0.5.0 -v ~/FlagTree:/root/FlagTree enflame/flagtree:0.5.0 bash
+```
+
+### 5. 进入Docker容器
+
+```bash
 # 执行docker
 docker exec -it enflame-flagtree-0.5.0 bash
 ```
@@ -98,21 +98,27 @@ wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68-gcc9-x6
 tar -xzf enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
 ```
 
-### 2. 配置构建环境
+### 2. 安装软件包
+```bash
+cd ~
+bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --container -y
+```
+
+### 3. 配置构建环境
 
 ```bash
 export FLAGTREE_BACKEND=enflame
 git config --global --add safe.directory ~/FlagTree
 ```
 
-### 3. 安装 Python 依赖
+### 4. 安装 Python 依赖
 
 ```bash
 cd ~/FlagTree/python
 pip3 install -r requirements.txt --break-system-packages
 ```
 
-### 4. 构建和安装包
+### 5. 构建和安装包
 
 ```bash
 cd ~/FlagTree

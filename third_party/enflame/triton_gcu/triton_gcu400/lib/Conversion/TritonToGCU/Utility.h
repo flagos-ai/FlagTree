@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef KURANA_TRITONGPU_TO_GCU_UTILITY_H
-#define KURANA_TRITONGPU_TO_GCU_UTILITY_H
+#ifndef KURAMA_TRITONGPU_TO_GCU_UTILITY_H
+#define KURAMA_TRITONGPU_TO_GCU_UTILITY_H
 
 #include <map>
 #include <string>
@@ -94,169 +94,76 @@ struct TagInfo {
 };
 
 class PrivateTagPool {
-  int32_t size;
-  int32_t peakSize;
+public:
+  PrivateTagPool(mlir::Operation *entryFunc, int32_t numWarps,
+                 bool useAsyncSharedTag);
+
+  ~PrivateTagPool() { updateUsedSize(); }
+
+  TagInfo getPrivateSyncTagInfo(mlir::Operation *op);
+  TagInfo tryGetPrivateAsyncTagInfo(mlir::Operation *op);
+  TagInfo getSharedSyncTagInfo(mlir::Operation *op);
+  TagInfo tryGetSharedAsyncTagInfo(mlir::Operation *op);
+
+  void setMap(Operation *op, TagInfo tagInfo);
+  bool isExistInMap(Operation *op) const;
+  void releaseMap(Operation *op);
+
+  Type getPrivateTagsType();
+  Type getSharedTagsType();
+
+  /// Tag memref for DMA sync; must be a value visible in `op`'s region (e.g.
+  /// partition block arg for isolated `warp_specialize` partition regions).
+  Value getPrivateTagsValue(Operation *op);
+  Value getSharedTagsValue(Operation *op);
+
+  void updateUsedSize();
+
+  void setPrivateFuncNameMap(Operation *op, int argNum);
+  void setSharedFuncNameMap(Operation *op, int argNum);
+
+private:
+  /// tt.load.async attribute is true, use async shared tag.
+  /// at the same time, we don't use async private tag.
+  bool useAsyncSharedTag;
+
+  /// if sync shared tag is not used, we don't need to allocate shared tag.
+  bool usedSyncSharedTag;
+
+  int32_t sTagsSize;
+  int32_t pTagsSize;
+
+  int32_t sTagsPeakSize;
+  int32_t pTagsPeakSize;
 
   /// To recognize unused tag in all tags 'tagsAllocOp'
-  std::vector<bool> bitset;
+  std::vector<bool> pTagsBitset;
+  std::vector<bool> sTagsBitset;
 
   ///  All tags
-  mlir::Operation *tagsAllocOp;
+  mlir::Operation *sTagsAllocOp;
+  mlir::Operation *pTagsAllocOp;
 
   /// before the operation, we can release corresponding tag.
   llvm::DenseMap<Operation *, std::vector<TagInfo>> op2TagInfoMap;
 
   /// All tags locate at callee func's argument.
-  llvm::DenseMap<llvm::StringRef, int32_t> funcName2TagArgPos;
-
-public:
-  PrivateTagPool(mlir::Operation *entryFunc, int32_t numWarps) {
-    OpBuilder builder(entryFunc);
-    auto func = llvm::dyn_cast<FunctionOpInterface>(entryFunc);
-    auto firstOp = &func.getFunctionBody().getBlocks().front().front();
-
-    size = 5 / numWarps;
-    size = size > 0 ? size : 1;
-    peakSize = 1;
-    bitset = std::vector<bool>(size, false);
-    bitset[0] = true; // for sync tag
-
-    auto tagType =
-        MemRefType::get(ArrayRef<int64_t>{size}, builder.getI32Type());
-    builder.setInsertionPoint(firstOp);
-    tagsAllocOp = builder.create<memref::AllocOp>(entryFunc->getLoc(), tagType);
-    tagsAllocOp->setAttr("gcu_private_tag", builder.getUnitAttr());
-  }
-
-  ~PrivateTagPool() { updateUsedSize(); }
-
-  PrivateTagPool(const PrivateTagPool &other) = delete;
-  PrivateTagPool(PrivateTagPool &&other) = delete;
-  PrivateTagPool &operator=(const PrivateTagPool &other) = delete;
-  PrivateTagPool &operator=(PrivateTagPool &&other) = delete;
-
-public:
-  TagInfo getSyncTagInfo(mlir::Operation *op) {
-    auto loc = op->getLoc();
-    auto builder = OpBuilder(op);
-    auto tags = getTagsValue(op);
-    auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
-    return TagInfo(tags, zero, false);
-  }
-
-  TagInfo trygGetAsyncTagInfo(mlir::Operation *op) {
-    int32_t idx = -1;
-    for (int32_t i = 1; i < size; i++) {
-      if (!bitset[i]) {
-        peakSize = peakSize < (i + 1) ? (i + 1) : peakSize;
-        idx = i;
-        break;
-      }
-    }
-
-    auto loc = op->getLoc();
-    auto builder = OpBuilder(op);
-    auto tags = getTagsValue(op);
-    if (idx == -1) {
-      auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
-      return TagInfo(tags, zero, false);
-    } else {
-      bitset[idx] = true;
-      auto idxValue = builder.create<arith::ConstantIndexOp>(loc, idx);
-      return TagInfo(tags, idxValue, false);
-    }
-  }
-
-  void setMap(Operation *op, TagInfo tagInfo) {
-    op2TagInfoMap[op].push_back(tagInfo);
-  }
-
-  bool isExistInMap(Operation *op) const {
-    return op2TagInfoMap.count(op) != 0;
-  }
-
-  void releaseMap(Operation *op) {
-    if (op2TagInfoMap.count(op) == 0)
-      return;
-
-    auto tags = op2TagInfoMap[op];
-    for (int i = 0; i < tags.size(); ++i) {
-      bitset[tags[i].getIdxInt()] = false;
-    }
-    op2TagInfoMap.erase(op);
-  }
-
-  Type getTagsType() { return tagsAllocOp->getResult(0).getType(); }
-
-  /// Tag memref for DMA sync; must be a value visible in `op`'s region (e.g.
-  /// partition block arg for isolated `warp_specialize` partition regions).
-  Value getTagsValue(Operation *op);
-
-  void updateUsedSize() {
-    OpBuilder builder(tagsAllocOp);
-    auto loc = tagsAllocOp->getLoc();
-    auto tagsType =
-        MemRefType::get(ArrayRef<int64_t>{peakSize}, builder.getI32Type());
-    auto allocOp = builder.create<memref::AllocOp>(loc, tagsType);
-    allocOp->setAttr("gcu_private_tag", builder.getUnitAttr());
-    tagsAllocOp->getResult(0).replaceAllUsesWith(allocOp->getResult(0));
-    tagsAllocOp->dropAllUses();
-    tagsAllocOp->erase();
-
-    mlir::gpu::GPUModuleOp moduleOp =
-        allocOp->getParentOfType<mlir::gpu::GPUModuleOp>();
-    if (!moduleOp) {
-      llvm::report_fatal_error("can't find GPUModuleOp for tags");
-    }
-
-    for (auto &[funcName, argPos] : funcName2TagArgPos) {
-      func::FuncOp funcOp = moduleOp.lookupSymbol<func::FuncOp>(funcName);
-      if (!funcOp) {
-        llvm::report_fatal_error("can't find func op in GPUModuleOp for tags");
-      }
-      if (argPos >= funcOp.getNumArguments()) {
-        llvm::report_fatal_error("arg index out of range for tags");
-      }
-      FunctionType currentType = funcOp.getFunctionType();
-      SmallVector<Type> newInputTypes =
-          llvm::to_vector(currentType.getInputs());
-      SmallVector<Type> newResultTypes =
-          llvm::to_vector(currentType.getResults());
-      newInputTypes[argPos] = tagsType;
-      FunctionType newFuncType =
-          FunctionType::get(funcOp.getContext(), newInputTypes, newResultTypes);
-      funcOp.setType(newFuncType);
-      Block &entryBlock = funcOp.getBody().front();
-      entryBlock.getArgument(argPos).setType(tagsType);
-    }
-  }
-
-  void setFuncNameMap(Operation *op, int argNum) {
-    assert(llvm::isa<FunctionOpInterface>(op) && "not a triton func op");
-    auto func = llvm::cast<FunctionOpInterface>(op);
-    assert(argNum >= 0 && "arg number is negative");
-    assert(argNum < func.getNumArguments() && "arg number is too big");
-    funcName2TagArgPos[func.getName()] = argNum;
-  }
+  llvm::DenseMap<llvm::StringRef, int32_t> pTagsArgPosMap;
+  llvm::DenseMap<llvm::StringRef, int32_t> sTagsArgPosMap;
 };
 
 } // namespace gcu
 } // namespace triton
 
+int32_t getMasterThreadId(Operation *op, int32_t defaultWarpId = 0);
+int32_t getMasterThreadId(Region *region, int32_t defaultWarpId = 0);
 void captureValuesToWarpSpecializeOp(Operation *entryFunc, Value capture);
-Value getPrivateDTETag(OpBuilder &builder, Operation *op);
 Value getShareDTETag(OpBuilder &builder, Operation *op);
-Value createPrivateDTETag(OpBuilder &builder, Operation *op);
 DenseSet<unsigned> getSlicedAxies(Type type);
 SmallVector<Value, 4> getWarpIds(OpBuilder &builder, Location loc, Type type);
 SmallVector<Value, 4> getElemsPerThread(OpBuilder &builder, Location loc,
                                         Type type);
-func::FuncOp getOrDefineFunction(gpu::GPUModuleOp moduleOp, Location loc,
-                                 OpBuilder &rewriter, StringRef name,
-                                 FunctionType type);
-Value castToMemref1D(OpBuilder &rewriter, Location loc, Value v,
-                     Value totalNumElems);
-bool isMustAliasOp(mlir::Operation *op);
+bool isMustAliasOp(OpOperand &use);
 
 mlir::Operation *
 promoteLastUser(std::pair<Operation *, int> &lastUser,
@@ -270,8 +177,6 @@ Value syncAllocOp(OpBuilder &builder, Location &loc,
                   triton::gcu::FirstLastUserAnalysis &userAnalysis,
                   std::map<Operation *, Operation *> &replaced2Origin,
                   MemRefType type, int64_t memoryAlignment = INVALID_ALIGNMENT);
-Value asyncAllocOp(OpBuilder &builder, Operation *ttParent, MemRefType type,
-                   int64_t memoryAlignment = INVALID_ALIGNMENT);
 
 void createPrintfOp(OpBuilder &rewriter, Location loc,
                     ::llvm::StringRef printOpPrefix, bool hex, Value value);
@@ -285,8 +190,8 @@ void doMemFence(OpBuilder &rewriter, Operation *op);
 void doMemsetConfig(OpBuilder &rewriter, Location loc, Value output, Value v,
                     triton::gcu::TagInfo tag);
 
-void doMemset(OpBuilder &rewriter, triton::gcu::PrivateTagPool &pTagPool,
-              Operation *op, Value output, Value v, int totalNumElems);
+void doMemset(OpBuilder &rewriter, triton::gcu::TagInfo tag, Operation *op,
+              Value output, Value v, int totalNumElems);
 
 Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
                         Value buffer, bool onlyThread0,
@@ -324,8 +229,7 @@ void GetOrderValueByStride(
     SmallVector<Value, 4> &orderShape, SmallVector<Value, 4> &orderOffset,
     SmallVector<Value, 4> &vOrder);
 
-Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
-                    triton::gcu::PrivateTagPool &pTagPool, Value srcOut,
+Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
                     mlir::Operation *op, MemRefType resultType, Value loadPtr,
                     mlir::ValueRange configStrides,
                     mlir::ValueRange configShapes, Value defaultValue,
@@ -354,11 +258,14 @@ namespace gcu {
 bool get_bool_env(const char *name);
 
 Value createConstantZero(OpBuilder &builder, Location loc, Type elemType);
-Value createConstantNaN(OpBuilder &builder, Location loc, Type elemType);
-Value createConstantInf(OpBuilder &builder, Location loc, Type elemType,
-                        bool isNegative = false);
 
 SmallVector<unsigned> getWarpsPerCTA(Attribute layout);
+
+/// Returns true if an extract_tile/insert_tile op needs SMEM relay because
+/// at least one cut dimension (tileShape[i] < srcShape[i]) has warpsPerCTA > 1,
+/// meaning cross-warp communication is required.
+bool needsSmemRelay(RankedTensorType srcTy, ArrayRef<int64_t> tileShape);
+
 SmallVector<unsigned> getElemsPerThread(Type type);
 unsigned getTotalElemsPerThread(Type type);
 unsigned getBpe(Type type);
@@ -445,18 +352,6 @@ private:
   template <unsigned reduceAxis, unsigned vectorizeAxis>
   void applyVectorizeImpl(OpBuilder &builder, Location loc,
                           ArrayRef<Value> outputs, ArrayRef<Value> inputs);
-
-  static SmallVector<Value>
-  vectorizeCombineOpWithoutTerminator(OpBuilder &builder, Location loc,
-                                      Region &combineOp, ValueRange operands,
-                                      unsigned vectorLength);
-  static void vectorizeCombineOpTerminator(OpBuilder &builder, Location loc,
-                                           ValueRange operands);
-  static SmallVector<Value> vReduce(OpBuilder &builder, Location loc,
-                                    Region &combineOp, ValueRange vecValues,
-                                    unsigned vectorLength);
-  static std::optional<vector::CombiningKind>
-  matchReduceCombiningKind(Region &combineOp);
 };
 } // namespace gcu
 } // namespace triton

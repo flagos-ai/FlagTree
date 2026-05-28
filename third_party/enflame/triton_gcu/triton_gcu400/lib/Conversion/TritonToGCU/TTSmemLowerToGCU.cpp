@@ -21,6 +21,7 @@
 #include "Analysis/FirstLastUserAnalysis.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
+#include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 #include "PatternTritonGPUOpToGCU.h"
@@ -33,6 +34,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 using namespace mlir;
@@ -99,11 +101,31 @@ struct TTSmemCopyGlobalToLocalOpLowering
     if (!outputType)
       return failure();
 
+    Operation *firstUse = nullptr;
+    for (Operation *user : loadOp.getDstMem().getUsers()) {
+      if (user == loadOp.getOperation())
+        continue;
+      if (!firstUse || (user->getBlock() == firstUse->getBlock() &&
+                        user->isBeforeInBlock(firstUse))) {
+        firstUse = user;
+      }
+    }
+
     auto elemType = outputType.getElementType();
     int64_t rank = outputType.getRank();
 
-    auto tagShare = getShareDTETag(rewriter, loadOp);
-    triton::gcu::TagInfo tag(tagShare, zero, true);
+    auto asyncAttr =
+        llvm::cast_if_present<BoolAttr>(loadOp->getAttr("tt.load.async"));
+    triton::gcu::TagInfo tag;
+    if (!asyncAttr || !asyncAttr.getValue() || firstUse == nullptr) {
+      tag = pTagPool.getSharedSyncTagInfo(loadOp.getOperation());
+    } else {
+      tag = pTagPool.tryGetSharedAsyncTagInfo(loadOp.getOperation());
+    }
+
+    if (tag.isAsync()) {
+      pTagPool.setMap(firstUse, tag);
+    }
 
     auto defaultValue =
         loadOp.getDefaultValue()
@@ -126,10 +148,10 @@ struct TTSmemCopyGlobalToLocalOpLowering
                 loc, shapeCheck,
                 [&](OpBuilder builder, Location loc) {
                   Value load_size =
-                      ConfigGcuLoad(builder, loc, pTagPool, output, loadOp,
-                                    outputType, adaptor.getPtr(),
-                                    adaptor.getStrides(), adaptor.getShape(),
-                                    defaultValue, tag, /*IsShareOutput=*/true);
+                      ConfigGcuLoad(builder, loc, output, loadOp, outputType,
+                                    adaptor.getPtr(), adaptor.getStrides(),
+                                    adaptor.getShape(), defaultValue, tag,
+                                    /*IsShareOutput=*/true);
                   builder.create<scf::YieldOp>(loc, ValueRange{load_size});
                 },
                 [&](OpBuilder &builder, Location loc) {
@@ -137,17 +159,27 @@ struct TTSmemCopyGlobalToLocalOpLowering
                 })
             .getResult(0);
 
+    auto ip = rewriter.saveInsertionPoint();
+    if (tag.isAsync()) {
+      rewriter.setInsertionPoint(firstUse);
+    }
+
     // IsShareOutput wait: only thread0 waits, then barrier
-    auto isThread0 = rewriter.create<arith::CmpIOp>(
+    auto masterWarpId = getMasterThreadId(loadOp.getOperation());
+    auto isMasterThread = rewriter.create<arith::CmpIOp>(
         loc, arith::CmpIPredicate::eq,
-        rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
-    auto isAll = rewriter.create<arith::AndIOp>(loc, isThread0, shapeCheck);
+        rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+        rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+    auto isAll =
+        rewriter.create<arith::AndIOp>(loc, isMasterThread, shapeCheck);
     rewriter.create<scf::IfOp>(
         loc, isAll, [&](OpBuilder builder, Location loc) {
           WaitGcuLoadStore(builder, loc, tag, total_size);
           builder.create<scf::YieldOp>(loc);
         });
-    rewriter.create<gpu::BarrierOp>(loc);
+    if (!loadOp->getParentOfType<gcu::WarpSpecializeOp>())
+      rewriter.create<gpu::BarrierOp>(loc);
+    rewriter.restoreInsertionPoint(ip);
 
     leaveTritionOp(rewriter, loadOp.getOperation());
     rewriter.eraseOp(loadOp);
@@ -207,7 +239,9 @@ struct TTSmemGatherGlobalToLocalOpLowering
     else
       emit1DGatherToLocal(rewriter, loc, adaptor, ctx);
 
-    rewriter.create<gpu::BarrierOp>(loc);
+    if (!gatherOp->getParentOfType<gcu::WarpSpecializeOp>())
+      rewriter.create<gpu::BarrierOp>(loc);
+
     leaveTritionOp(rewriter, gatherOp.getOperation());
     rewriter.eraseOp(gatherOp);
     return success();
@@ -868,9 +902,9 @@ struct TTLocalLoadOpLowering
         userAnalysis.getFirstUser(op.getOperation()->getResults()[0]);
     triton::gcu::TagInfo tag;
     if (firstUser.first != nullptr) {
-      tag = pTagPool.trygGetAsyncTagInfo(op);
+      tag = pTagPool.tryGetPrivateAsyncTagInfo(op);
     } else {
-      tag = pTagPool.getSyncTagInfo(op);
+      tag = pTagPool.getPrivateSyncTagInfo(op);
     }
     if (tag.isAsync()) {
       pTagPool.setMap(firstUser.first, tag);
@@ -879,19 +913,12 @@ struct TTLocalLoadOpLowering
     if (mlir::isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
         isa<triton::gpu::BlockedEncodingAttr>(dstLayout)) {
       // copy to local
-      ModuleOp builtinModule = op->getParentOfType<ModuleOp>();
-      int numWarps = triton::gcu::getNumWarps(builtinModule);
-      if (numWarps > 1) {
-        auto output = loadFromSharedMem(
-            rewriter, tag, op.getResult().getType(), adaptor.getSrc(), false,
-            lastUser, firstUser, userAnalysis, replaced2Origin);
-        leaveTritionOp(rewriter, op.getOperation());
-        rewriter.replaceOp(op, output);
-        return success();
-      } else {
-        rewriter.replaceOp(op, adaptor.getSrc());
-        return success();
-      }
+      auto output = loadFromSharedMem(rewriter, tag, op.getResult().getType(),
+                                      adaptor.getSrc(), false, lastUser,
+                                      firstUser, userAnalysis, replaced2Origin);
+      leaveTritionOp(rewriter, op.getOperation());
+      rewriter.replaceOp(op, output);
+      return success();
     } else if (isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
                isa<triton::gpu::DotOperandEncodingAttr>(dstLayout)) {
       auto loc = op.getLoc();
@@ -930,7 +957,39 @@ struct TTLocalLoadOpLowering
   }
 };
 
-#ifdef ENABLE_TLE
+// Lower ttg.local_store(src_tensor, dst_memdesc) via the storeToSharedMem
+// utility which uses DTE DesliceStartOp for private->shared transfers.
+struct TTLocalStoreOpLowering
+    : SharedConversionPattern<triton::gpu::LocalStoreOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    enterTritionOp(rewriter, op.getOperation());
+    if (pTagPool.isExistInMap(op.getOperation())) {
+      pTagPool.releaseMap(op.getOperation());
+    }
+
+    auto srcTensorType = dyn_cast<RankedTensorType>(op.getSrc().getType());
+    if (!srcTensorType)
+      return failure();
+
+    if (!dyn_cast<MemRefType>(adaptor.getSrc().getType()) ||
+        !dyn_cast<MemRefType>(adaptor.getDst().getType()))
+      return failure();
+
+    auto tag = pTagPool.getPrivateSyncTagInfo(op);
+
+    storeToSharedMem(rewriter, tag, srcTensorType, adaptor.getDst(),
+                     adaptor.getSrc(), /*onlyThread0=*/false);
+
+    leaveTritionOp(rewriter, op.getOperation());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 // Lower triton_gcu.memdesc_to_ptr to gcu.memref2ptr.
 // At this stage the type converter has already turned the !ttg.memdesc input
 // into a memref and the !tt.ptr result into a gcu.ptr, so we simply extract
@@ -947,8 +1006,8 @@ struct MemDescToPtrOpLowering
     if (!srcMemRef)
       return failure();
 
-    auto elemTy = srcMemRef.getElementType();
-    auto gcuPtrTy = mlir::gcu::PtrType::get(op.getContext(), elemTy);
+    auto elemType = srcMemRef.getElementType();
+    auto gcuPtrTy = mlir::gcu::PtrType::get(op.getContext(), elemType);
     auto ptr = rewriter.create<mlir::gcu::MemRefToPtrOp>(loc, gcuPtrTy,
                                                          adaptor.getSrc());
 
@@ -956,7 +1015,460 @@ struct MemDescToPtrOpLowering
     return success();
   }
 };
-#endif
+
+// ============================================================================
+// Helpers for extract_tile / insert_tile lowering
+// ============================================================================
+
+// Convert a linear tile index to multi-dim tile coordinates (row-major).
+//
+// The source tensor is viewed as a grid of tiles:
+//   grid[d] = srcShape[d] / tileShape[d]
+// Then linearIdx is delinearized into per-dim tile coordinates.
+//   e.g. srcShape=[64,64], tileShape=[32,32] -> grid=[2,2]
+//        linearIdx=3 -> coords=[1,1] (bottom-right tile)
+static SmallVector<Value> delinearizeTileIndex(OpBuilder &b, Location loc,
+                                               Value linearIdx,
+                                               ArrayRef<int64_t> srcShape,
+                                               ArrayRef<int64_t> tileShape) {
+  unsigned rank = srcShape.size();
+  SmallVector<int64_t> grid(rank);
+  for (unsigned d = 0; d < rank; ++d)
+    grid[d] = srcShape[d] / tileShape[d];
+
+  auto i32Ty = b.getI32Type();
+  Value idx = linearIdx;
+  if (idx.getType() != i32Ty)
+    idx = b.create<arith::IndexCastOp>(loc, i32Ty, idx);
+
+  SmallVector<Value> coords(rank);
+  for (unsigned d = 0; d < rank; ++d) {
+    int64_t suffix = 1;
+    for (unsigned dd = d + 1; dd < rank; ++dd)
+      suffix *= grid[dd];
+
+    if (suffix > 1) {
+      auto suffixCst = b.create<arith::ConstantIntOp>(loc, suffix, 32);
+      coords[d] = b.create<arith::DivSIOp>(loc, idx, suffixCst);
+      idx = b.create<arith::RemSIOp>(loc, idx, suffixCst);
+    } else {
+      coords[d] = idx;
+      idx = b.create<arith::ConstantIntOp>(loc, 0, 32);
+    }
+  }
+  return coords;
+}
+
+// Convert a linear tile index to element-level offsets in the source tensor.
+//
+// First delinearizes the index into tile coordinates, then scales each
+// coordinate by the tile size in that dimension to get the element offset.
+//   e.g. srcShape=[64,64], tileShape=[32,32], linearIdx=3
+//        -> coords=[1,1] -> offsets=[32,32]
+//        meaning the tile starts at row 32, col 32 of the source.
+static SmallVector<Value> computeElemOffsets(OpBuilder &b, Location loc,
+                                             Value linearIdx,
+                                             ArrayRef<int64_t> srcShape,
+                                             ArrayRef<int64_t> tileShape) {
+  auto coords = delinearizeTileIndex(b, loc, linearIdx, srcShape, tileShape);
+  unsigned rank = srcShape.size();
+  SmallVector<Value> offsets(rank);
+  for (unsigned d = 0; d < rank; ++d) {
+    auto cst = b.create<arith::ConstantIntOp>(
+        loc, static_cast<int32_t>(tileShape[d]), 32);
+    offsets[d] = b.create<arith::MulIOp>(loc, coords[d], cst);
+  }
+  return offsets;
+}
+
+// Combine tile element offsets with per-warp offsets for SMEM relay.
+//
+// In the SMEM relay path, data is laid out in shared memory using the full
+// source tensor shape. Each warp owns a contiguous slice along each dim,
+// so the final read/write position is:
+//   combinedOffsets[d] = elemOffsets[d] + numElems[d] * warpIds[d]
+//
+// where:
+//   elemOffsets[d] - tile start in dim d        (from computeElemOffsets)
+//   numElems[d]    - elements per warp in dim d (from getElemsPerThread)
+//   warpIds[d]     - warp index in dim d        (from getWarpIds)
+//
+//   e.g. srcShape=[64,64], tileShape=[32,32], encoding warpsPerCTA=[1,2]
+//        numElems=[32,16], warp 0: warpIds=[0,0], warp 1: warpIds=[0,1]
+//        For tile index 0: elemOffsets=[0,0]
+//          warp 0: combined=[0+32*0, 0+16*0]=[0,0]  -> reads SMEM[0:32, 0:16]
+//          warp 1: combined=[0+32*0, 0+16*1]=[0,16] -> reads SMEM[0:32, 16:32]
+static SmallVector<Value, 4> computeCombinedOffsets(OpBuilder &b, Location loc,
+                                                    ArrayRef<Value> elemOffsets,
+                                                    RankedTensorType tensorTy) {
+  auto numElems = triton::gcu::getElemsPerThread(tensorTy);
+  auto warpIds = getWarpIds(b, loc, tensorTy);
+  unsigned rank = tensorTy.getRank();
+
+  SmallVector<Value, 4> combined;
+  for (unsigned d = 0; d < rank; ++d) {
+    Value warpOff = b.create<arith::MulIOp>(
+        loc, b.create<arith::ConstantIntOp>(loc, numElems[d], 32),
+        b.create<arith::IndexCastOp>(loc, b.getI32Type(), warpIds[d]));
+    combined.push_back(b.create<arith::AddIOp>(loc, elemOffsets[d], warpOff));
+  }
+  return combined;
+}
+
+// ============================================================================
+// Common SMEM relay lowering functions
+//
+// Shared by TleExtractTileLowering (fallback path) and
+// SliceFromLocalOpLowering, and by TleInsertTileLowering (fallback path) and
+// DesliceToLocalOpLowering.
+// ============================================================================
+
+// Emit SliceStartOp from SMEM with combined (tile + warp) offsets.
+// smemBuf must already point to shared memory containing the source data.
+static Value
+emitSliceFromSmem(OpBuilder &rewriter, Location loc, Value smemBuf,
+                  Value convertedIndex, ArrayRef<int64_t> srcShape,
+                  ArrayRef<int64_t> tileShape, RankedTensorType resultTensorTy,
+                  MemRefType outputType,
+                  triton::gcu::FirstLastUserAnalysis &userAnalysis,
+                  std::map<Operation *, Operation *> &replaced2Origin,
+                  triton::gcu::PrivateTagPool &pTagPool, Operation *op) {
+  auto elemOffsets =
+      computeElemOffsets(rewriter, loc, convertedIndex, srcShape, tileShape);
+  auto lastUser = userAnalysis.getLastUser(op->getResults()[0]);
+  auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                            replaced2Origin, outputType);
+  auto totalNumElems = triton::gcu::getTotalElemsPerThread(resultTensorTy);
+  auto combinedOffsets =
+      computeCombinedOffsets(rewriter, loc, elemOffsets, resultTensorTy);
+  auto defaultValue = triton::gcu::createConstantZero(
+      rewriter, loc, resultTensorTy.getElementType());
+
+  auto sliceTag = pTagPool.getPrivateSyncTagInfo(op);
+  rewriter.create<memref_ext::SliceStartOp>(
+      loc, output, smemBuf, combinedOffsets, defaultValue, sliceTag.getTag(),
+      ValueRange{sliceTag.getIdx()});
+  rewriter.create<memref::DmaWaitOp>(
+      loc, sliceTag.getTag(), ValueRange{sliceTag.getIdx()},
+      rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
+  return output;
+}
+
+// Emit DesliceStartOp into SMEM, barrier, then loadFromSharedMem.
+// smemBuf must already point to shared memory containing the source data.
+static Value
+emitDesliceToSmem(OpBuilder &rewriter, Location loc, Value smemBuf,
+                  Value convertedTile, Value convertedIndex,
+                  ArrayRef<int64_t> srcShape, ArrayRef<int64_t> tileShape,
+                  RankedTensorType tileTensorTy,
+                  RankedTensorType resultTensorTy,
+                  triton::gcu::FirstLastUserAnalysis &userAnalysis,
+                  std::map<Operation *, Operation *> &replaced2Origin,
+                  triton::gcu::PrivateTagPool &pTagPool, Operation *op) {
+  auto elemOffsets =
+      computeElemOffsets(rewriter, loc, convertedIndex, srcShape, tileShape);
+  auto firstUser = userAnalysis.getFirstUser(op->getResults()[0]);
+  auto lastUser = userAnalysis.getLastUser(op->getResults()[0]);
+
+  auto totalNumElems = triton::gcu::getTotalElemsPerThread(tileTensorTy);
+  auto combinedOffsets =
+      computeCombinedOffsets(rewriter, loc, elemOffsets, tileTensorTy);
+
+  auto desliceTag = pTagPool.getPrivateSyncTagInfo(op);
+  rewriter.create<memref_ext::DesliceStartOp>(
+      loc, smemBuf, convertedTile, combinedOffsets, desliceTag.getTag(),
+      ValueRange{desliceTag.getIdx()});
+  rewriter.create<memref::DmaWaitOp>(
+      loc, desliceTag.getTag(), ValueRange{desliceTag.getIdx()},
+      rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
+
+  if (!op->getParentOfType<gcu::WarpSpecializeOp>())
+    rewriter.create<gpu::BarrierOp>(loc);
+
+  triton::gcu::TagInfo loadTag;
+  if (firstUser.first != nullptr)
+    loadTag = pTagPool.tryGetPrivateAsyncTagInfo(op);
+  else
+    loadTag = pTagPool.getPrivateSyncTagInfo(op);
+  if (loadTag.isAsync())
+    pTagPool.setMap(firstUser.first, loadTag);
+
+  return loadFromSharedMem(rewriter, loadTag, resultTensorTy, smemBuf, false,
+                           lastUser, firstUser, userAnalysis, replaced2Origin);
+}
+
+// ============================================================================
+// Lowering: tle.extract_tile (tensor src)
+//
+// Private path: SliceStartOp with tile offsets only.
+// SMEM fallback: storeToSharedMem + emitSliceFromSmem.
+// ============================================================================
+struct TleExtractTileLowering : SharedGenericConversionPattern {
+  TleExtractTileLowering(const TypeConverter &converter, MLIRContext *ctx,
+                         triton::gcu::FirstLastUserAnalysis &userAnalysis,
+                         std::map<Operation *, Operation *> &replaced2Origin,
+                         triton::gcu::PrivateTagPool &pTagPool)
+      : SharedGenericConversionPattern("tle.extract_tile", converter, ctx,
+                                       userAnalysis, replaced2Origin,
+                                       pTagPool) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op->getNumOperands() != 2 || op->getNumResults() != 1)
+      return failure();
+
+    enterTritionOp(rewriter, op);
+    if (pTagPool.isExistInMap(op))
+      pTagPool.releaseMap(op);
+
+    Value convertedSrc = operands[0];
+    Value convertedIndex = operands[1];
+    auto memType = dyn_cast<MemRefType>(convertedSrc.getType());
+    if (!memType)
+      return failure();
+
+    auto loc = op->getLoc();
+    auto resultTensorTy = cast<RankedTensorType>(op->getResult(0).getType());
+    auto tileShapeAttr = op->getAttrOfType<DenseI64ArrayAttr>("tile_shape");
+    if (!tileShapeAttr)
+      return failure();
+    auto tileShape = tileShapeAttr.asArrayRef();
+
+    auto srcTensorTy = cast<RankedTensorType>(op->getOperand(0).getType());
+    auto srcShape = srcTensorTy.getShape();
+    auto outputType =
+        dyn_cast<MemRefType>(getTypeConverter()->convertType(resultTensorTy));
+
+    if (!triton::gcu::needsSmemRelay(srcTensorTy, tileShape)) {
+      auto lastUser = userAnalysis.getLastUser(op->getResults()[0]);
+      auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                                replaced2Origin, outputType);
+      auto elemOffsets = computeElemOffsets(rewriter, loc, convertedIndex,
+                                            srcShape, tileShape);
+      auto totalNumElems = triton::gcu::getTotalElemsPerThread(resultTensorTy);
+      auto defaultValue = triton::gcu::createConstantZero(
+          rewriter, loc, resultTensorTy.getElementType());
+      auto sliceTag = pTagPool.getPrivateSyncTagInfo(op);
+      rewriter.create<memref_ext::SliceStartOp>(
+          loc, output, convertedSrc, elemOffsets, defaultValue,
+          sliceTag.getTag(), ValueRange{sliceTag.getIdx()});
+      rewriter.create<memref::DmaWaitOp>(
+          loc, sliceTag.getTag(), ValueRange{sliceTag.getIdx()},
+          rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
+
+      leaveTritionOp(rewriter, op);
+      rewriter.replaceOp(op, output);
+      return success();
+    }
+
+    // SMEM relay path: check if shared memory is already allocated.
+    auto memSpace = memType.getMemorySpace();
+    bool isInSharedMem =
+        (isa_and_nonnull<mlir::triton::gpu::SharedMemorySpaceAttr>(memSpace)) ||
+        (isa_and_nonnull<IntegerAttr>(memSpace) &&
+         cast<IntegerAttr>(memSpace).getInt() == 2);
+
+    auto smemBuf = convertedSrc;
+    if (!isInSharedMem) {
+      // Shared memory not yet allocated (local-mem-optimize didn't fuse).
+      // Store data to shared memory first.
+      auto lastUser = userAnalysis.getLastUser(op->getResults()[0]);
+      auto storeTag = pTagPool.getPrivateSyncTagInfo(op);
+      smemBuf = storeToSharedMem(rewriter, storeTag, srcTensorTy, convertedSrc,
+                                 /*onlyThread0=*/false, lastUser, userAnalysis,
+                                 replaced2Origin);
+    }
+
+    auto output =
+        emitSliceFromSmem(rewriter, loc, smemBuf, convertedIndex, srcShape,
+                          tileShape, resultTensorTy, outputType, userAnalysis,
+                          replaced2Origin, pTagPool, op);
+
+    leaveTritionOp(rewriter, op);
+    rewriter.replaceOp(op, output);
+    return success();
+  }
+};
+
+// ============================================================================
+// Lowering: tle.insert_tile (tensor src)
+//
+// Private path: SliceStartOp (copy src) + DesliceStartOp (write tile).
+// SMEM fallback: storeToSharedMem + emitDesliceToSmem.
+// ============================================================================
+struct TleInsertTileLowering : SharedGenericConversionPattern {
+  TleInsertTileLowering(const TypeConverter &converter, MLIRContext *ctx,
+                        triton::gcu::FirstLastUserAnalysis &userAnalysis,
+                        std::map<Operation *, Operation *> &replaced2Origin,
+                        triton::gcu::PrivateTagPool &pTagPool)
+      : SharedGenericConversionPattern("tle.insert_tile", converter, ctx,
+                                       userAnalysis, replaced2Origin,
+                                       pTagPool) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op->getNumOperands() != 3 || op->getNumResults() != 1)
+      return failure();
+
+    enterTritionOp(rewriter, op);
+    if (pTagPool.isExistInMap(op))
+      pTagPool.releaseMap(op);
+
+    Value convertedSrc = operands[0];
+    Value convertedTile = operands[1];
+    Value convertedIndex = operands[2];
+    auto memType = dyn_cast<MemRefType>(convertedSrc.getType());
+    if (!memType)
+      return failure();
+
+    auto loc = op->getLoc();
+    auto tileTensorTy = cast<RankedTensorType>(op->getOperand(1).getType());
+    auto resultTensorTy = cast<RankedTensorType>(op->getResult(0).getType());
+
+    auto tileShapeAttr = op->getAttrOfType<DenseI64ArrayAttr>("tile_shape");
+    SmallVector<int64_t> tileShapeVec;
+    if (tileShapeAttr) {
+      tileShapeVec.assign(tileShapeAttr.asArrayRef().begin(),
+                          tileShapeAttr.asArrayRef().end());
+    } else {
+      tileShapeVec.assign(tileTensorTy.getShape().begin(),
+                          tileTensorTy.getShape().end());
+    }
+    ArrayRef<int64_t> tileShape = tileShapeVec;
+
+    auto srcTensorTy = cast<RankedTensorType>(op->getOperand(0).getType());
+    auto srcShape = srcTensorTy.getShape();
+
+    if (!triton::gcu::needsSmemRelay(srcTensorTy, tileShape)) {
+      auto outputType =
+          dyn_cast<MemRefType>(getTypeConverter()->convertType(resultTensorTy));
+      auto lastUser = userAnalysis.getLastUser(op->getResults()[0]);
+      auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                                replaced2Origin, outputType);
+      auto elemOffsets = computeElemOffsets(rewriter, loc, convertedIndex,
+                                            srcShape, tileShape);
+
+      auto cpTag = pTagPool.getPrivateSyncTagInfo(op);
+      SmallVector<Value> zeroOffsets(
+          srcShape.size(), rewriter.create<arith::ConstantIntOp>(loc, 0, 32));
+      auto defaultValue = triton::gcu::createConstantZero(
+          rewriter, loc, resultTensorTy.getElementType());
+      auto totalNumElems = triton::gcu::getTotalElemsPerThread(srcTensorTy);
+      rewriter.create<memref_ext::SliceStartOp>(
+          loc, output, convertedSrc, zeroOffsets, defaultValue, cpTag.getTag(),
+          ValueRange{cpTag.getIdx()});
+      rewriter.create<memref::DmaWaitOp>(
+          loc, cpTag.getTag(), ValueRange{cpTag.getIdx()},
+          rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
+
+      auto tileTotalElems = triton::gcu::getTotalElemsPerThread(tileTensorTy);
+      auto dsTag = pTagPool.getPrivateSyncTagInfo(op);
+      rewriter.create<memref_ext::DesliceStartOp>(loc, output, convertedTile,
+                                                  elemOffsets, dsTag.getTag(),
+                                                  ValueRange{dsTag.getIdx()});
+      rewriter.create<memref::DmaWaitOp>(
+          loc, dsTag.getTag(), ValueRange{dsTag.getIdx()},
+          rewriter.create<arith::ConstantIndexOp>(loc, tileTotalElems));
+
+      leaveTritionOp(rewriter, op);
+      rewriter.replaceOp(op, output);
+      return success();
+    }
+
+    // SMEM relay path: check if shared memory is already allocated.
+    auto memSpace = memType.getMemorySpace();
+    bool isInSharedMem =
+        (isa_and_nonnull<mlir::triton::gpu::SharedMemorySpaceAttr>(memSpace)) ||
+        (isa_and_nonnull<IntegerAttr>(memSpace) &&
+         cast<IntegerAttr>(memSpace).getInt() == 2);
+
+    auto smemBuf = convertedSrc;
+    if (!isInSharedMem) {
+      // Shared memory not yet allocated (local-mem-optimize didn't fuse).
+      // Store data to shared memory first.
+      auto lastUser = userAnalysis.getLastUser(op->getResults()[0]);
+      auto storeTag = pTagPool.getPrivateSyncTagInfo(op);
+      smemBuf = storeToSharedMem(rewriter, storeTag, srcTensorTy, convertedSrc,
+                                 /*onlyThread0=*/false, lastUser, userAnalysis,
+                                 replaced2Origin);
+    }
+
+    auto output =
+        emitDesliceToSmem(rewriter, loc, smemBuf, convertedTile, convertedIndex,
+                          srcShape, tileShape, tileTensorTy, resultTensorTy,
+                          userAnalysis, replaced2Origin, pTagPool, op);
+
+    leaveTritionOp(rewriter, op);
+    rewriter.replaceOp(op, output);
+    return success();
+  }
+};
+
+// ============================================================================
+// Lowering: triton_gcu.slice_from_local (SMEM src, always from memdesc)
+//
+// Created by local-mem-optimize. src is always in shared memory.
+// Delegates to emitSliceFromSmem.
+// ============================================================================
+struct SliceFromLocalOpLowering
+    : SharedConversionPattern<triton::gcu::SliceFromLocalOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gcu::SliceFromLocalOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    enterTritionOp(rewriter, op.getOperation());
+    if (pTagPool.isExistInMap(op.getOperation()))
+      pTagPool.releaseMap(op.getOperation());
+
+    auto resultTensorTy = cast<RankedTensorType>(op.getResult().getType());
+    auto outputType =
+        dyn_cast<MemRefType>(getTypeConverter()->convertType(resultTensorTy));
+
+    auto output = emitSliceFromSmem(
+        rewriter, op.getLoc(), adaptor.getSrc(), adaptor.getIndex(),
+        op.getSrc().getType().getShape(), op.getTileShape(), resultTensorTy,
+        outputType, userAnalysis, replaced2Origin, pTagPool, op);
+
+    leaveTritionOp(rewriter, op.getOperation());
+    rewriter.replaceOp(op, output);
+    return success();
+  }
+};
+
+// ============================================================================
+// Lowering: triton_gcu.deslice_to_local (SMEM src, always from memdesc)
+//
+// Created by local-mem-optimize. src is always in shared memory.
+// Delegates to emitDesliceToSmem.
+// ============================================================================
+struct DesliceToLocalOpLowering
+    : SharedConversionPattern<triton::gcu::DesliceToLocalOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gcu::DesliceToLocalOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    enterTritionOp(rewriter, op.getOperation());
+    if (pTagPool.isExistInMap(op.getOperation()))
+      pTagPool.releaseMap(op.getOperation());
+
+    auto tileTensorTy = cast<RankedTensorType>(op.getTile().getType());
+    auto resultTensorTy = cast<RankedTensorType>(op.getResult().getType());
+
+    auto output = emitDesliceToSmem(
+        rewriter, op.getLoc(), adaptor.getSrc(), adaptor.getTile(),
+        adaptor.getIndex(), op.getSrc().getType().getShape(), op.getTileShape(),
+        tileTensorTy, resultTensorTy, userAnalysis, replaced2Origin, pTagPool,
+        op);
+
+    leaveTritionOp(rewriter, op.getOperation());
+    rewriter.replaceOp(op, output);
+    return success();
+  }
+};
 
 struct TTMemDescIndexOpLowering
     : SharedConversionPattern<triton::gpu::MemDescIndexOp> {
@@ -1035,11 +1547,12 @@ void mlir::triton::populateTTSmemOpToGCUPatterns(
     triton::gcu::PrivateTagPool &pTagPool) {
   patterns.add<TTSmemLocalAllocOpLowering, TTSmemCopyGlobalToLocalOpLowering,
                TTSmemGatherGlobalToLocalOpLowering, TTLocalLoadOpLowering,
-               TTMemDescIndexOpLowering>(converter, patterns.getContext(),
+               TTLocalStoreOpLowering, TTMemDescIndexOpLowering,
+               MemDescToPtrOpLowering, SliceFromLocalOpLowering,
+               DesliceToLocalOpLowering>(converter, patterns.getContext(),
                                          userAnalysis, replaced2Origin,
                                          pTagPool);
-#ifdef ENABLE_TLE
-  patterns.add<MemDescToPtrOpLowering>(converter, patterns.getContext(),
-                                       userAnalysis, replaced2Origin, pTagPool);
-#endif
+  patterns.add<TleExtractTileLowering, TleInsertTileLowering>(
+      converter, patterns.getContext(), userAnalysis, replaced2Origin,
+      pTagPool);
 }

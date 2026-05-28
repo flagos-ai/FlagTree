@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include <string>
+#include <utility>
 
 #include "Analysis/MaskAnalysis.h"
 
@@ -31,6 +32,7 @@ namespace gcu {
 static int64_t kIndentSpaceNum = 0;
 
 static void printBeforeVisit(Operation *op) {
+  (void)op;
   auto spaces = std::string(kIndentSpaceNum, ' ');
   kIndentSpaceNum += 3;
 
@@ -44,6 +46,7 @@ static void printBeforeVisit(Operation *op) {
 }
 
 static void printAfterVisit(Operation *op) {
+  (void)op;
   kIndentSpaceNum -= 3;
   auto spaces = std::string(kIndentSpaceNum, ' ');
 
@@ -98,7 +101,7 @@ void MaskState::minStates(OpBuilder &builder, Location loc,
   }
 }
 
-void MaskState::setStates(OpBuilder &builder, Location loc,
+void MaskState::setStates(OpBuilder & /*builder*/, Location /*loc*/,
                           const MaskState &srcState) {
   if (srcState.start)
     this->start = srcState.start;
@@ -227,8 +230,8 @@ void MaskAnalysis::parseBlockArgument(
 }
 
 void MaskAnalysis::parseConstant(
-    OpBuilder &builder, Location loc, arith::ConstantOp constOp,
-    MaskState &state, llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+    OpBuilder &builder, Location /*loc*/, arith::ConstantOp constOp,
+    MaskState &state, llvm::SmallDenseMap<Value, MaskState> & /*knownMasks*/) {
   assert(state.isEmpty());
 
   if (isa<DenseElementsAttr>(constOp.getValue())) {
@@ -253,7 +256,7 @@ void MaskAnalysis::parseConstant(
 
 void MaskAnalysis::parseIntScalar(
     OpBuilder &builder, Location loc, Value scalar, MaskState &state,
-    llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+    llvm::SmallDenseMap<Value, MaskState> & /*knownMasks*/) {
   assert(state.isEmpty());
   // scalar is the first argument of ForOp, which means it is an induction var
   // if (auto arg = dyn_cast<BlockArgument>(scalar)) {
@@ -314,10 +317,24 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
                             llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
 
-  assert(cmpOp.getPredicate() == arith::CmpIPredicate::slt ||
-         cmpOp.getPredicate() == arith::CmpIPredicate::ult ||
-         cmpOp.getPredicate() == arith::CmpIPredicate::sge ||
-         cmpOp.getPredicate() == arith::CmpIPredicate::uge);
+  auto predicate = cmpOp.getPredicate();
+  assert(predicate == arith::CmpIPredicate::slt ||
+         predicate == arith::CmpIPredicate::ult ||
+         predicate == arith::CmpIPredicate::sge ||
+         predicate == arith::CmpIPredicate::uge ||
+         predicate == arith::CmpIPredicate::sgt ||
+         predicate == arith::CmpIPredicate::ugt);
+
+  // Normalize sgt/ugt to slt/ult by swapping operands.
+  Value lhsOperand = cmpOp.getLhs();
+  Value rhsOperand = cmpOp.getRhs();
+  if (predicate == arith::CmpIPredicate::sgt) {
+    std::swap(lhsOperand, rhsOperand);
+    predicate = arith::CmpIPredicate::slt;
+  } else if (predicate == arith::CmpIPredicate::ugt) {
+    std::swap(lhsOperand, rhsOperand);
+    predicate = arith::CmpIPredicate::ult;
+  }
 
   MaskState lhsState;
   parse(builder, loc, cmpOp.getLhs(), lhsState, knownMasks);
@@ -337,7 +354,7 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
     assert((lhsState.scalar && rhsState.scalar) && "unsupported cmpi scenario");
 
     arith::CmpIOp cmpiOp = builder.create<arith::CmpIOp>(
-        loc, cmpOp.getPredicate(), getValue(builder, loc, lhsState.scalar),
+        loc, predicate, getValue(builder, loc, lhsState.scalar),
         getValue(builder, loc, rhsState.scalar));
 
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
@@ -363,8 +380,8 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
          "unexpected case where no dimension has size larger than 1");
 
   auto newDim = lhsState.dims[cmpDim];
-  if (cmpOp.getPredicate() == arith::CmpIPredicate::slt ||
-      cmpOp.getPredicate() == arith::CmpIPredicate::ult) {
+  if (predicate == arith::CmpIPredicate::slt ||
+      predicate == arith::CmpIPredicate::ult) {
     auto newEnd = minOFRs(builder, loc, lhsState.end, rhsState.scalar);
     newDim = subOFRs(builder, loc, newEnd, lhsState.start);
   } else {
@@ -381,8 +398,8 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
 }
 
 void MaskAnalysis::parseMakeRange(
-    OpBuilder &builder, Location loc, triton::MakeRangeOp rangeOp,
-    MaskState &state, llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+    OpBuilder &builder, Location /*loc*/, triton::MakeRangeOp rangeOp,
+    MaskState &state, llvm::SmallDenseMap<Value, MaskState> & /*knownMasks*/) {
   assert(state.isEmpty());
 
   auto shape = cast<ShapedType>(rangeOp.getType()).getShape();

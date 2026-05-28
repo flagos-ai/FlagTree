@@ -37,6 +37,44 @@ def cuda_capability_geq(major, minor=0):
 
 
 @constexpr_function
+def is_musa():
+    target = current_target()
+    return target is not None and target.backend == "musa"
+
+
+@constexpr_function
+def musa_capability_geq(major, minor=0):
+    """
+    Determines whether we have MUSA capability >= (major, minor) and
+    returns this as a constexpr boolean. This can be used for guarding
+    inline asm implementations that require a certain MUSA capability.
+    """
+    target = current_target()
+    if target is None or target.backend != "musa":
+        return False
+    arch = target.arch
+    if isinstance(arch, int):
+        capability = arch
+    elif isinstance(arch, str):
+        normalized = arch.lower()
+        if normalized.startswith("ph1"):
+            capability = 31
+        elif normalized.isdecimal():
+            capability = int(normalized)
+        elif "." in normalized:
+            arch_major, arch_minor = normalized.split(".", 1)
+            if arch_major.isdecimal() and arch_minor.isdecimal():
+                capability = int(arch_major) * 10 + int(arch_minor)
+            else:
+                capability = None
+        else:
+            capability = None
+    else:
+        capability = None
+    return capability is not None and capability >= major * 10 + minor
+
+
+@constexpr_function
 def is_hip():
     target = current_target()
     return target is not None and target.backend == "hip"

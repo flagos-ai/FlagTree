@@ -1,4 +1,5 @@
 #include "PatternTritonGPUOpToLLVM.h"
+#include "TritonMUSACommon/MMAOperandUtils.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUToLLVM/Utility.h"
@@ -77,7 +78,9 @@ struct PH1TMESwizzleValueConfig {
 
 static FailureOr<PH1TMESwizzleValueConfig>
 resolvePH1TMESwizzleValueConfig(Location loc, MemDescType memDescTy,
-                                ConversionPatternRewriter &rewriter) {
+                                ConversionPatternRewriter &rewriter,
+                                ArrayRef<int64_t> matrixPhysicalShape = {},
+                                ArrayRef<unsigned> matrixOrder = {}) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   PH1TMESwizzleValueConfig config;
 
@@ -94,7 +97,11 @@ resolvePH1TMESwizzleValueConfig(Location loc, MemDescType memDescTy,
         static_cast<int32_t>(triton::musa::getSwizzleLineBytes(line)));
   };
 
-  auto swizzle = triton::musa::resolveTMESwizzleConfigFromEncoding(memDescTy);
+  auto swizzle =
+      matrixPhysicalShape.empty()
+          ? triton::musa::resolveTMESwizzleConfigFromEncoding(memDescTy)
+          : triton::musa::resolveTMESwizzleConfigFromMatrixView(
+                memDescTy, matrixPhysicalShape, matrixOrder);
   if (failed(swizzle))
     return failure();
 
@@ -382,6 +389,19 @@ void emitIfPredicated(RewriterBase &rewriter, Location loc, Value pred,
   LLVM::BrOp::create(rewriter, loc, afterBlock);
 
   rewriter.setInsertionPointToStart(afterBlock);
+}
+
+bool asyncCopyMaskNeedsPredicate(Value mask) {
+  if (!mask)
+    return false;
+
+  if (matchPattern(mask, m_One()))
+    return false;
+
+  if (auto splatOp = mask.getDefiningOp<triton::SplatOp>())
+    return !matchPattern(splatOp.getSrc(), m_One());
+
+  return true;
 }
 
 Value emitRedundantThreadPredicate(
@@ -1068,8 +1088,33 @@ struct SqmmaLocalAllocOpConversion
     if (!sharedEnc)
       return failure();
     auto order = triton::gpu::getOrder(memDescTy);
-    if (order.size() != 2)
+    unsigned rank = memDescTy.getRank();
+    if ((rank != 2 && rank != 3) || order.size() != rank ||
+        regTy.getRank() != rank)
       return failure();
+
+    SmallVector<int64_t> physicalShape =
+        triton::musa::getMemDescPhysicalShape(memDescTy);
+    if (physicalShape.size() != rank)
+      return failure();
+    SmallVector<int64_t, 2> matrixPhysicalShape;
+    SmallVector<unsigned, 2> matrixOrder;
+    int64_t batchStrideElements = 0;
+    if (rank == 3) {
+      matrixPhysicalShape = {physicalShape[rank - 2], physicalShape[rank - 1]};
+      for (unsigned dim : order) {
+        if (dim < rank - 2)
+          continue;
+        matrixOrder.push_back(dim - (rank - 2));
+        if (matrixOrder.size() == 2)
+          break;
+      }
+      if (matrixOrder.size() != 2)
+        return failure();
+      batchStrideElements = matrixPhysicalShape[0] * matrixPhysicalShape[1];
+      if (batchStrideElements <= 0 || !triton::musa::toI32(batchStrideElements))
+        return failure();
+    }
 
     auto opIdx = triton::musa::getSqmmaOpIdx(op.getOperation());
     if (!opIdx)
@@ -1082,7 +1127,10 @@ struct SqmmaLocalAllocOpConversion
     unsigned elemBytes =
         std::max<unsigned>(1, memDescTy.getElementTypeBitWidth() / 8);
     auto swizzleConfig =
-        resolvePH1TMESwizzleValueConfig(loc, memDescTy, rewriter);
+        rank == 3
+            ? resolvePH1TMESwizzleValueConfig(loc, memDescTy, rewriter,
+                                              matrixPhysicalShape, matrixOrder)
+            : resolvePH1TMESwizzleValueConfig(loc, memDescTy, rewriter);
     if (failed(swizzleConfig))
       return failure();
 
@@ -1108,8 +1156,21 @@ struct SqmmaLocalAllocOpConversion
     for (auto [idx, coord] : llvm::enumerate(srcIndices)) {
       if (!isCanonicalIndex(static_cast<unsigned>(idx), regMask))
         continue;
-      auto lmsOffsetInElem = triton::musa::linearizePH1TMELinearCoords(
-          b, coord, shape, order, elemBytes);
+      FailureOr<Value> lmsOffsetInElem = failure();
+      if (rank == 3) {
+        SmallVector<Value, 2> matrixCoord{coord[rank - 2], coord[rank - 1]};
+        auto matrixOffsetInElem = triton::musa::linearizePH1TMELinearCoords(
+            b, matrixCoord, matrixPhysicalShape, matrixOrder, elemBytes);
+        if (failed(matrixOffsetInElem))
+          return failure();
+        Value batchOffsetInElem = b.mul(
+            coord[0], b.i32_val(static_cast<int32_t>(batchStrideElements)));
+        Value offsetInElem = b.add(batchOffsetInElem, *matrixOffsetInElem);
+        lmsOffsetInElem = offsetInElem;
+      } else {
+        lmsOffsetInElem = triton::musa::linearizePH1TMELinearCoords(
+            b, coord, shape, order, elemBytes);
+      }
       if (failed(lmsOffsetInElem))
         return failure();
       Value lmsAddrInByte =
@@ -1295,11 +1356,7 @@ struct AsyncCopyGlobalToLocalOpConversion
 
     Value threadPred = b.true_val();
 
-    bool usePred = false;
-    if (op.getMask()) {
-      Operation *maskOp = op.getMask().getDefiningOp();
-      usePred = !isa_and_nonnull<triton::SplatOp>(maskOp);
-    }
+    bool usePred = asyncCopyMaskNeedsPredicate(op.getMask());
 
     if (requiresAbsoluteSwizzledAsyncCopy(dstTy)) {
       auto sharedEnc = dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(

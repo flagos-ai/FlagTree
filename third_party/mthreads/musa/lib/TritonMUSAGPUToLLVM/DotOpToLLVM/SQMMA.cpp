@@ -66,14 +66,56 @@ struct SqmmaDescriptorIntrinsicSpec {
   Value swizzleStride;
 };
 
+struct SqmmaMatrixView {
+  SmallVector<int64_t, 2> physicalShape;
+  SmallVector<unsigned, 2> order;
+  int64_t batchStrideElements = 0;
+};
+
+static FailureOr<SqmmaMatrixView>
+buildSqmmaMatrixView(MemDescType memDescTy, ArrayRef<int64_t> physicalShape) {
+  unsigned rank = memDescTy.getRank();
+  if ((rank != 2 && rank != 3) || physicalShape.size() != rank)
+    return failure();
+
+  auto fullOrder =
+      triton::musa::getSharedOrder(memDescTy.getEncoding(), physicalShape);
+  if (fullOrder.size() < 2)
+    return failure();
+
+  if (rank == 2) {
+    return SqmmaMatrixView{
+        SmallVector<int64_t, 2>(physicalShape.begin(), physicalShape.end()),
+        SmallVector<unsigned, 2>(fullOrder.begin(), fullOrder.begin() + 2), 0};
+  }
+
+  SmallVector<unsigned, 2> matrixOrder;
+  matrixOrder.reserve(2);
+  for (unsigned dim : fullOrder) {
+    if (dim < rank - 2)
+      continue;
+    matrixOrder.push_back(dim - (rank - 2));
+    if (matrixOrder.size() == 2)
+      break;
+  }
+  if (matrixOrder.size() != 2)
+    return failure();
+
+  SmallVector<int64_t, 2> matrixPhysicalShape{physicalShape[rank - 2],
+                                              physicalShape[rank - 1]};
+  int64_t batchStrideElements = matrixPhysicalShape[0] * matrixPhysicalShape[1];
+  if (batchStrideElements <= 0)
+    return failure();
+  return SqmmaMatrixView{matrixPhysicalShape, matrixOrder, batchStrideElements};
+}
+
 static FailureOr<SqmmaDescriptorIntrinsicSpec>
 buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
                                   ArrayRef<int64_t> physicalShape,
+                                  ArrayRef<unsigned> order,
                                   triton::musa::SQMMAEltType eltType,
                                   const LLVMTypeConverter *typeConverter,
                                   ConversionPatternRewriter &rewriter) {
-  auto order =
-      triton::musa::getSharedOrder(memDescTy.getEncoding(), physicalShape);
   if (physicalShape.size() != 2 || order.size() < 2)
     return failure();
 
@@ -91,7 +133,8 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
       !llvm::isPowerOf2_64(static_cast<uint64_t>(groupedLeadingWidthBytes)))
     return failure();
 
-  auto swizzle = triton::musa::resolveTMESwizzleConfigFromEncoding(memDescTy);
+  auto swizzle = triton::musa::resolveTMESwizzleConfigFromMatrixView(
+      memDescTy, physicalShape, order);
   if (failed(swizzle))
     return failure();
 
@@ -137,18 +180,18 @@ class SqmmaSmemLoader {
 public:
   SqmmaSmemLoader() = default;
   SqmmaSmemLoader(Value tensor, Value affineBase,
-                  ArrayRef<int64_t> semanticShape,
-                  ArrayRef<int64_t> physicalShape, Value warpId,
+                  const SqmmaMatrixView &matrixView, Value warpId,
                   unsigned dimWpt, bool trans, unsigned nonKTile,
                   unsigned kTile, SqmmaDescriptorIntrinsicSpec descriptorSpec,
                   ConversionPatternRewriter &rewriter, Location loc)
-      : base(affineBase),
-        semanticShape(semanticShape.begin(), semanticShape.end()),
-        physicalShape(physicalShape.begin(), physicalShape.end()),
-        warpId(warpId), dimWpt(dimWpt), trans(trans), nonKTile(nonKTile),
-        kTile(kTile), descriptorSpec(descriptorSpec) {
+      : base(affineBase), physicalShape(matrixView.physicalShape.begin(),
+                                        matrixView.physicalShape.end()),
+        batchStrideElements(matrixView.batchStrideElements), warpId(warpId),
+        dimWpt(dimWpt), trans(trans), nonKTile(nonKTile), kTile(kTile),
+        descriptorSpec(descriptorSpec) {
     auto ty = cast<MemDescType>(tensor.getType());
-    ord = triton::musa::getSharedOrder(ty.getEncoding(), this->physicalShape);
+    (void)ty;
+    ord.assign(matrixView.order.begin(), matrixView.order.end());
     elemBytes = ty.getElementTypeBitWidth() / 8;
     uint32_t widthInByte = this->physicalShape[ord[0]] * elemBytes;
     elemsPerSwizzlingRow =
@@ -157,7 +200,7 @@ public:
         TritonLLVMOpBuilder(loc, rewriter).i32_val(elemsPerSwizzlingRow);
   }
 
-  Value smemDesc(unsigned tileNonKIdx, unsigned tileKIdx,
+  Value smemDesc(unsigned batchIdx, unsigned tileNonKIdx, unsigned tileKIdx,
                  ConversionPatternRewriter &rewriter, Location loc) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     Value k = b.i32_val(tileKIdx * kTile);
@@ -170,8 +213,12 @@ public:
         b.mul(b.udiv(k, elemsPerSwizzlingRowVal),
               b.i32_val(physicalShape[ord[1]] * elemsPerSwizzlingRow));
     Value strideOffset = b.mul(nonK, elemsPerSwizzlingRowVal);
-    Value offset = b.add(b.add(leadingOffset, strideOffset),
-                         b.urem(k, elemsPerSwizzlingRowVal));
+    Value matrixOffset = b.add(b.add(leadingOffset, strideOffset),
+                               b.urem(k, elemsPerSwizzlingRowVal));
+    Value offset = matrixOffset;
+    if (batchStrideElements > 0 && batchIdx > 0)
+      offset = b.add(offset, b.i32_val(static_cast<int32_t>(
+                                 batchIdx * batchStrideElements)));
     auto elemPtrTy = ptr_ty(rewriter.getContext(), 3);
     Value elemBase = b.bitcast(base, elemPtrTy);
     Value elemPtr = b.gep(elemPtrTy, descriptorSpec.loadType, elemBase, offset);
@@ -189,8 +236,8 @@ public:
 
 private:
   Value base;
-  SmallVector<int64_t> semanticShape;
   SmallVector<int64_t> physicalShape;
+  int64_t batchStrideElements = 0;
   Value warpId;
   unsigned dimWpt = 1;
   bool trans = false;
@@ -244,6 +291,66 @@ Value addAccumulatorLane(ConversionPatternRewriter &rewriter, Location loc,
   if (a.getType().isInteger())
     return LLVM::AddOp::create(rewriter, loc, a, b).getResult();
   return LLVM::FAddOp::create(rewriter, loc, a, b).getResult();
+}
+
+struct SqmmaTileState {
+  unsigned regBase;
+  unsigned fragmentIdx;
+  unsigned batch;
+  unsigned mRep;
+  unsigned nRep;
+};
+
+static std::optional<int32_t>
+findLinearLayoutCoord(ArrayRef<std::pair<StringAttr, int32_t>> coords,
+                      StringAttr name) {
+  for (auto [dim, value] : coords) {
+    if (dim == name)
+      return value;
+  }
+  return std::nullopt;
+}
+
+static FailureOr<SmallVector<SqmmaTileState>>
+buildSqmmaTilePlan(MLIRContext *ctx, const LinearLayout &cLinearLayout,
+                   unsigned rank, unsigned batchCount, unsigned numRepM,
+                   unsigned numRepN, unsigned tileM, unsigned tileN,
+                   unsigned accElemsPerThread, unsigned fcSize) {
+  if (rank != 2 && rank != 3)
+    return failure();
+
+  auto outDimNames = standardOutDimNames(ctx, rank);
+  StringAttr registerDim = StringAttr::get(ctx, "register");
+  auto inverse = cLinearLayout.pseudoinvert();
+  SmallVector<SqmmaTileState> plan;
+  plan.reserve(batchCount * numRepM * numRepN);
+
+  unsigned fragmentIdx = 0;
+  for (unsigned batch = 0; batch < batchCount; ++batch) {
+    for (unsigned mRep = 0; mRep < numRepM; ++mRep) {
+      for (unsigned nRep = 0; nRep < numRepN; ++nRep) {
+        SmallVector<std::pair<StringAttr, int32_t>, 3> outCoords;
+        if (rank == 3) {
+          outCoords = {{outDimNames[0], static_cast<int32_t>(batch)},
+                       {outDimNames[1], static_cast<int32_t>(mRep * tileM)},
+                       {outDimNames[2], static_cast<int32_t>(nRep * tileN)}};
+        } else {
+          outCoords = {{outDimNames[0], static_cast<int32_t>(mRep * tileM)},
+                       {outDimNames[1], static_cast<int32_t>(nRep * tileN)}};
+        }
+
+        auto inCoords = inverse.apply(outCoords);
+        auto regBase = findLinearLayoutCoord(inCoords, registerDim);
+        if (!regBase || *regBase < 0)
+          return failure();
+        unsigned regBaseUnsigned = static_cast<unsigned>(*regBase);
+        if (regBaseUnsigned + accElemsPerThread > fcSize)
+          return failure();
+        plan.push_back({regBaseUnsigned, fragmentIdx++, batch, mRep, nRep});
+      }
+    }
+  }
+  return plan;
 }
 
 static RankedTensorType getSqmmaAccumulatorTensorType(Type type) {
@@ -472,8 +579,9 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
   if (!mmaEnc.isPH1())
     return op.emitError("MUSA SQMMA: unsupported version");
 
-  if (dTy.getRank() != 2)
-    return op.emitError("MUSA SQMMA supports rank-2 tensors only");
+  unsigned rank = dTy.getRank();
+  if (rank != 2 && rank != 3)
+    return op.emitError("MUSA SQMMA supports rank-2 or rank-3 tensors only");
 
   auto instrShape = mmaEnc.getInstrShape();
   if (instrShape.size() != 3)
@@ -511,8 +619,8 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
     return op.emitError("MUSA SQMMA requires operand A in shared memory");
   if (!bMemTy || !triton::musa::isSharedEncoding(bMemTy.getEncoding()))
     return op.emitError("MUSA SQMMA requires operand B in shared memory");
-  if (aMemTy.getRank() != 2 || bMemTy.getRank() != 2)
-    return op.emitError("MUSA SQMMA supports rank-2 operands only");
+  if (aMemTy.getRank() != rank || bMemTy.getRank() != rank)
+    return op.emitError("MUSA SQMMA operands must match the result rank");
 
   auto eltTypeC = getDotEltTypeC(op);
   auto eltTypeA = getDotEltTypeA(op);
@@ -530,8 +638,11 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
     return op.emitError("MUSA SQMMA: invalid warpsPerCTA");
 
   auto dShapePerCTA = getShapePerCTA(dTy);
-  unsigned blockM = dShapePerCTA[0];
-  unsigned blockN = dShapePerCTA[1];
+  if (dShapePerCTA.size() != rank)
+    return op.emitError("MUSA SQMMA: invalid result shape per CTA");
+  unsigned batchCount = rank == 3 ? dShapePerCTA[0] : 1;
+  unsigned blockM = dShapePerCTA[rank - 2];
+  unsigned blockN = dShapePerCTA[rank - 1];
   unsigned squadsM = warpsPerCTA[0] / 4;
   unsigned squadsN = warpsPerCTA[1];
   unsigned tileM = instM * squadsM;
@@ -546,11 +657,17 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
   unsigned kDim = static_cast<unsigned>(kDimVal);
   unsigned numRepK = std::max(1u, ceilDiv(kDim, instK));
 
-  unsigned repCount = numRepM * numRepN;
+  unsigned repCount = batchCount * numRepM * numRepN;
   unsigned totalAccElems = mmaEnc.getTotalElemsPerThread(dTy.getShape());
   if (repCount == 0 || totalAccElems == 0 || (totalAccElems % repCount) != 0)
     return op.emitError("MUSA SQMMA: invalid accumulator partitioning");
   unsigned accElemsPerThread = totalAccElems / repCount;
+  auto cLinearLayout = mmaEnc.toLinearLayout(dTy.getShape());
+  auto tilePlan = buildSqmmaTilePlan(rewriter.getContext(), cLinearLayout, rank,
+                                     batchCount, numRepM, numRepN, tileM, tileN,
+                                     accElemsPerThread, totalAccElems);
+  if (failed(tilePlan))
+    return op.emitError("MUSA SQMMA: failed to derive accumulator tile plan");
   constexpr unsigned warpSize = 32;
 
   bool zeroAcc = isZeroConst(opC);
@@ -562,9 +679,7 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
     } else {
       Type accElemTy = typeConverter->convertType(dTy.getElementType());
       Value zero = LLVM::ZeroOp::create(rewriter, loc, accElemTy);
-      size_t totalAcc =
-          static_cast<size_t>(accElemsPerThread) * numRepM * numRepN;
-      fc.assign(totalAcc, zero);
+      fc.assign(totalAccElems, zero);
     }
   } else {
     if (carrierMode) {
@@ -575,8 +690,7 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
     }
   }
 
-  size_t expectedAccElems =
-      static_cast<size_t>(accElemsPerThread) * numRepM * numRepN;
+  size_t expectedAccElems = totalAccElems;
   if (!carrierMode && fc.size() != expectedAccElems) {
     if (fc.empty() || (fc.size() % expectedAccElems) != 0)
       return op.emitError("MUSA SQMMA: accumulator size mismatch");
@@ -602,25 +716,34 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
   int32_t intrinsicTransA = (layoutA == triton::musa::SQMMALayout::col) ? 1 : 0;
   int32_t intrinsicTransB = (layoutB == triton::musa::SQMMALayout::col) ? 1 : 0;
 
+  auto aMatrixView = buildSqmmaMatrixView(aMemTy, aOperand->physicalShape);
+  if (failed(aMatrixView))
+    return op.emitError(
+        "MUSA SQMMA failed to derive matrix view for operand A");
+  auto bMatrixView = buildSqmmaMatrixView(bMemTy, bOperand->physicalShape);
+  if (failed(bMatrixView))
+    return op.emitError(
+        "MUSA SQMMA failed to derive matrix view for operand B");
+
   auto aDescSpec = buildSqmmaDescriptorIntrinsicSpec(
-      loc, aMemTy, aOperand->physicalShape, eltTypeA, typeConverter, rewriter);
+      loc, aMemTy, aMatrixView->physicalShape, aMatrixView->order, eltTypeA,
+      typeConverter, rewriter);
   if (failed(aDescSpec))
     return op.emitError("MUSA SQMMA failed to derive descriptor contract for "
                         "operand A");
   auto bDescSpec = buildSqmmaDescriptorIntrinsicSpec(
-      loc, bMemTy, bOperand->physicalShape, eltTypeB, typeConverter, rewriter);
+      loc, bMemTy, bMatrixView->physicalShape, bMatrixView->order, eltTypeB,
+      typeConverter, rewriter);
   if (failed(bDescSpec))
     return op.emitError("MUSA SQMMA failed to derive descriptor contract for "
                         "operand B");
 
-  SqmmaSmemLoader aLoader(aOperand->memDesc, aOperand->affineBase,
-                          aMemTy.getShape(), aOperand->physicalShape, squadM,
-                          squadsM, loaderTransA, instM, instK, *aDescSpec,
-                          rewriter, loc);
-  SqmmaSmemLoader bLoader(bOperand->memDesc, bOperand->affineBase,
-                          bMemTy.getShape(), bOperand->physicalShape, squadN,
-                          squadsN, loaderTransB, instN, instK, *bDescSpec,
-                          rewriter, loc);
+  SqmmaSmemLoader aLoader(aOperand->memDesc, aOperand->affineBase, *aMatrixView,
+                          squadM, squadsM, loaderTransA, instM, instK,
+                          *aDescSpec, rewriter, loc);
+  SqmmaSmemLoader bLoader(bOperand->memDesc, bOperand->affineBase, *bMatrixView,
+                          squadN, squadsN, loaderTransB, instN, instK,
+                          *bDescSpec, rewriter, loc);
 
   auto accumulationMode = getDotAccumulationMode(op);
   uint32_t maxNumImpreciseAcc = getDotMaxNumImpreciseAcc(op);
@@ -633,139 +756,58 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
 
   SmallVector<Value> mmaResults;
   SmallVector<Value> mmaCarrierFragments;
-  for (unsigned mRep = 0; mRep < numRepM; ++mRep) {
-    for (unsigned nRep = 0; nRep < numRepN; ++nRep) {
-      size_t accBase = (mRep * numRepN + nRep) * accElemsPerThread;
-      unsigned fragmentIdx = mRep * numRepN + nRep;
-      auto ivecTy = vec_ty(IntegerType::get(rewriter.getContext(), 32),
-                           accElemsPerThread);
-      if (usesSoftwareAccumulator) {
-        SmallVector<Value> accumElems;
-        if (zeroAcc) {
-          if (carrierMode) {
-            Value zeroVec = LLVM::ZeroOp::create(rewriter, loc, accVecTy);
-            accumElems = unpackLLVector(loc, zeroVec, rewriter);
-          } else {
-            accumElems.append(fc.begin() + accBase,
-                              fc.begin() + accBase + accElemsPerThread);
-          }
-        } else {
-          Value accSliceVec;
-          if (carrierMode) {
-            accSliceVec = mlir::LLVM::MUSA::carrierFragmentToMathVec(
-                loc, fcFragments[fragmentIdx], dTy, rewriter);
-          } else {
-            auto accSlice = loadAccSlice(rewriter, loc, fc, accBase,
-                                         accElemsPerThread, nullptr);
-            accSliceVec = packLLVector(loc, accSlice, rewriter);
-          }
-          // In the software-accumulation family, useC=false keeps the 3.2
-          // contract of "hardware sees zero C, outer fadd still preserves the
-          // running accumulator". Only dynamic first-use flags introduced by
-          // accumulator-init rewriting should zero the carried accumulator
-          // here.
-          if (!useCConst) {
-            Value zeroSliceVec =
-                LLVM::ZeroOp::create(rewriter, loc, accSliceVec.getType());
-            accSliceVec = selectAccumulatorVector(loc, useCFlag, accSliceVec,
-                                                  zeroSliceVec, rewriter);
-          }
-          accumElems = unpackLLVector(loc, accSliceVec, rewriter);
-        }
-        for (unsigned kRep = 0; kRep < numRepK; ++kRep) {
-          Value opA = aLoader.smemDesc(mRep, kRep, rewriter, loc);
-          Value opB = bLoader.smemDesc(nRep, kRep, rewriter, loc);
+  if (!carrierMode && !usesSoftwareAccumulator)
+    mmaResults.resize(expectedAccElems);
+  if (carrierMode && !usesSoftwareAccumulator)
+    mmaCarrierFragments.resize(repCount);
 
-          SmallVector<Value> args = {
-              opA,
-              opB,
-              LLVM::ZeroOp::create(rewriter, loc, ivecTy),
-              b.i32_val(intrinsicTransA),
-              b.i32_val(intrinsicTransB),
-              b.i32_val(0), // aNeg
-              b.i32_val(0), // bNeg
-              b.i32_val(1), // scale_out
-              b.i32_val(0), // sat
-              b.i32_val(0), // stepA
-              b.i32_val(0), // stepB
-              b.i32_val(0)  // stepC
-          };
-          auto call = LLVM::createLLVMIntrinsicCallOp(
-              rewriter, loc, sqmmaIntrinsic, TypeRange{ivecTy}, args);
-          Value newAcc = call.getResult(0);
-          Value newMathVec = newAcc.getType() == accVecTy
-                                 ? newAcc
-                                 : b.bitcast(newAcc, accVecTy);
-          SmallVector<Value> newElems =
-              unpackLLVector(loc, newMathVec, rewriter);
-          if (accumElems.empty()) {
-            accumElems = std::move(newElems);
-          } else {
-            for (unsigned i = 0; i < newElems.size(); ++i) {
-              accumElems[i] =
-                  addAccumulatorLane(rewriter, loc, accumElems[i], newElems[i]);
-            }
-          }
-        }
+  for (const SqmmaTileState &tile : *tilePlan) {
+    size_t accBase = tile.regBase;
+    unsigned fragmentIdx = tile.fragmentIdx;
+    auto ivecTy =
+        vec_ty(IntegerType::get(rewriter.getContext(), 32), accElemsPerThread);
+    if (usesSoftwareAccumulator) {
+      SmallVector<Value> accumElems;
+      if (zeroAcc) {
         if (carrierMode) {
-          Value accumVec = packLLVector(loc, accumElems, rewriter);
-          fcFragments[fragmentIdx] = mlir::LLVM::MUSA::mathVecToCarrierFragment(
-              loc, accumVec, dTy, rewriter);
+          Value zeroVec = LLVM::ZeroOp::create(rewriter, loc, accVecTy);
+          accumElems = unpackLLVector(loc, zeroVec, rewriter);
         } else {
-          for (unsigned i = 0; i < accumElems.size(); ++i)
-            fc[accBase + i] = accumElems[i];
+          accumElems.append(fc.begin() + accBase,
+                            fc.begin() + accBase + accElemsPerThread);
         }
-        continue;
-      }
-
-      Type accElemTy = accLaneTy;
-      Value accVec;
-      if (carrierMode) {
-        accVec = zeroAcc ? LLVM::ZeroOp::create(rewriter, loc, ivecTy)
-                         : fcFragments[fragmentIdx];
-        if (!zeroAcc && (!useCConst || !*useCConst)) {
-          Value zeroVec = LLVM::ZeroOp::create(rewriter, loc, accVec.getType());
-          accVec =
-              selectAccumulatorVector(loc, useCFlag, accVec, zeroVec, rewriter);
-        }
-      } else if (zeroAcc) {
-        accVec = LLVM::ZeroOp::create(rewriter, loc,
-                                      vec_ty(accElemTy, accElemsPerThread));
       } else {
-        auto accSlice = loadAccSlice(rewriter, loc, fc, accBase,
-                                     accElemsPerThread, nullptr);
-        if (!accSlice.empty())
-          accElemTy = accSlice.front().getType();
-        accVec = packLLVector(loc, accSlice, rewriter);
-        if (!useCConst || !*useCConst) {
-          Value zeroVec = LLVM::ZeroOp::create(rewriter, loc, accVec.getType());
-          accVec =
-              selectAccumulatorVector(loc, useCFlag, accVec, zeroVec, rewriter);
+        Value accSliceVec;
+        if (carrierMode) {
+          accSliceVec = mlir::LLVM::MUSA::carrierFragmentToMathVec(
+              loc, fcFragments[fragmentIdx], dTy, rewriter);
+        } else {
+          auto accSlice = loadAccSlice(rewriter, loc, fc, accBase,
+                                       accElemsPerThread, nullptr);
+          accSliceVec = packLLVector(loc, accSlice, rewriter);
         }
+        // In the software-accumulation family, useC=false keeps the 3.2
+        // contract of "hardware sees zero C, outer fadd still preserves the
+        // running accumulator". Only dynamic first-use flags introduced by
+        // accumulator-init rewriting should zero the carried accumulator here.
+        if (!useCConst) {
+          Value zeroSliceVec =
+              LLVM::ZeroOp::create(rewriter, loc, accSliceVec.getType());
+          accSliceVec = selectAccumulatorVector(loc, useCFlag, accSliceVec,
+                                                zeroSliceVec, rewriter);
+        }
+        accumElems = unpackLLVector(loc, accSliceVec, rewriter);
       }
-      auto currentAccVecTy = accVec.getType();
-      Value vecAcc =
-          accVec.getType() == ivecTy ? accVec : b.bitcast(accVec, ivecTy);
-
-      Value dAcc = zeroAcc ? Value() : vecAcc;
-
-      uint32_t numLowPrecAcc = 0;
-      Value partialAcc;
       for (unsigned kRep = 0; kRep < numRepK; ++kRep) {
-        Value opA = aLoader.smemDesc(mRep, kRep, rewriter, loc);
-        Value opB = bLoader.smemDesc(nRep, kRep, rewriter, loc);
-        numLowPrecAcc += instK;
-        bool requireAdd =
-            needsPartialAccumulator &&
-            (numLowPrecAcc >= maxNumImpreciseAcc || kRep == numRepK - 1);
-        Value mmaAcc = needsPartialAccumulator ? partialAcc : dAcc;
-        Value inputAcc =
-            mmaAcc ? mmaAcc : LLVM::ZeroOp::create(rewriter, loc, ivecTy);
+        Value opA =
+            aLoader.smemDesc(tile.batch, tile.mRep, kRep, rewriter, loc);
+        Value opB =
+            bLoader.smemDesc(tile.batch, tile.nRep, kRep, rewriter, loc);
 
         SmallVector<Value> args = {
             opA,
             opB,
-            inputAcc,
+            LLVM::ZeroOp::create(rewriter, loc, ivecTy),
             b.i32_val(intrinsicTransA),
             b.i32_val(intrinsicTransB),
             b.i32_val(0), // aNeg
@@ -779,31 +821,97 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
         auto call = LLVM::createLLVMIntrinsicCallOp(
             rewriter, loc, sqmmaIntrinsic, TypeRange{ivecTy}, args);
         Value newAcc = call.getResult(0);
-        if (needsPartialAccumulator) {
-          partialAcc = newAcc;
+        Value newMathVec =
+            newAcc.getType() == accVecTy ? newAcc : b.bitcast(newAcc, accVecTy);
+        SmallVector<Value> newElems = unpackLLVector(loc, newMathVec, rewriter);
+        if (accumElems.empty()) {
+          accumElems = std::move(newElems);
         } else {
-          dAcc = newAcc;
-        }
-
-        if (requireAdd) {
-          Value partialFloat = partialAcc.getType() == accVecTy
-                                   ? partialAcc
-                                   : b.bitcast(partialAcc, accVecTy);
-          if (dAcc) {
-            Value dFloat =
-                dAcc.getType() == accVecTy ? dAcc : b.bitcast(dAcc, accVecTy);
-            dFloat = addAccumulate(rewriter, loc, dFloat, partialFloat);
-            dAcc =
-                dFloat.getType() == ivecTy ? dFloat : b.bitcast(dFloat, ivecTy);
-          } else {
-            dAcc = partialAcc;
+          for (unsigned i = 0; i < newElems.size(); ++i) {
+            accumElems[i] =
+                addAccumulatorLane(rewriter, loc, accumElems[i], newElems[i]);
           }
-          numLowPrecAcc = 0;
-          partialAcc = Value();
         }
       }
+      if (carrierMode) {
+        Value accumVec = packLLVector(loc, accumElems, rewriter);
+        fcFragments[fragmentIdx] = mlir::LLVM::MUSA::mathVecToCarrierFragment(
+            loc, accumVec, dTy, rewriter);
+      } else {
+        for (unsigned i = 0; i < accumElems.size(); ++i)
+          fc[accBase + i] = accumElems[i];
+      }
+      continue;
+    }
 
-      if (needsPartialAccumulator && partialAcc) {
+    Type accElemTy = accLaneTy;
+    Value accVec;
+    if (carrierMode) {
+      accVec = zeroAcc ? LLVM::ZeroOp::create(rewriter, loc, ivecTy)
+                       : fcFragments[fragmentIdx];
+      if (!zeroAcc && (!useCConst || !*useCConst)) {
+        Value zeroVec = LLVM::ZeroOp::create(rewriter, loc, accVec.getType());
+        accVec =
+            selectAccumulatorVector(loc, useCFlag, accVec, zeroVec, rewriter);
+      }
+    } else if (zeroAcc) {
+      accVec = LLVM::ZeroOp::create(rewriter, loc,
+                                    vec_ty(accElemTy, accElemsPerThread));
+    } else {
+      auto accSlice =
+          loadAccSlice(rewriter, loc, fc, accBase, accElemsPerThread, nullptr);
+      if (!accSlice.empty())
+        accElemTy = accSlice.front().getType();
+      accVec = packLLVector(loc, accSlice, rewriter);
+      if (!useCConst || !*useCConst) {
+        Value zeroVec = LLVM::ZeroOp::create(rewriter, loc, accVec.getType());
+        accVec =
+            selectAccumulatorVector(loc, useCFlag, accVec, zeroVec, rewriter);
+      }
+    }
+    auto currentAccVecTy = accVec.getType();
+    Value vecAcc =
+        accVec.getType() == ivecTy ? accVec : b.bitcast(accVec, ivecTy);
+
+    Value dAcc = zeroAcc ? Value() : vecAcc;
+
+    uint32_t numLowPrecAcc = 0;
+    Value partialAcc;
+    for (unsigned kRep = 0; kRep < numRepK; ++kRep) {
+      Value opA = aLoader.smemDesc(tile.batch, tile.mRep, kRep, rewriter, loc);
+      Value opB = bLoader.smemDesc(tile.batch, tile.nRep, kRep, rewriter, loc);
+      numLowPrecAcc += instK;
+      bool requireAdd =
+          needsPartialAccumulator &&
+          (numLowPrecAcc >= maxNumImpreciseAcc || kRep == numRepK - 1);
+      Value mmaAcc = needsPartialAccumulator ? partialAcc : dAcc;
+      Value inputAcc =
+          mmaAcc ? mmaAcc : LLVM::ZeroOp::create(rewriter, loc, ivecTy);
+
+      SmallVector<Value> args = {
+          opA,
+          opB,
+          inputAcc,
+          b.i32_val(intrinsicTransA),
+          b.i32_val(intrinsicTransB),
+          b.i32_val(0), // aNeg
+          b.i32_val(0), // bNeg
+          b.i32_val(1), // scale_out
+          b.i32_val(0), // sat
+          b.i32_val(0), // stepA
+          b.i32_val(0), // stepB
+          b.i32_val(0)  // stepC
+      };
+      auto call = LLVM::createLLVMIntrinsicCallOp(rewriter, loc, sqmmaIntrinsic,
+                                                  TypeRange{ivecTy}, args);
+      Value newAcc = call.getResult(0);
+      if (needsPartialAccumulator) {
+        partialAcc = newAcc;
+      } else {
+        dAcc = newAcc;
+      }
+
+      if (requireAdd) {
         Value partialFloat = partialAcc.getType() == accVecTy
                                  ? partialAcc
                                  : b.bitcast(partialAcc, accVecTy);
@@ -816,24 +924,38 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
         } else {
           dAcc = partialAcc;
         }
+        numLowPrecAcc = 0;
+        partialAcc = Value();
       }
-
-      Value finalReg = dAcc ? dAcc : vecAcc;
-      if (carrierMode) {
-        Value finalMathVec = finalReg.getType() == accVecTy
-                                 ? finalReg
-                                 : b.bitcast(finalReg, accVecTy);
-        Value carrierFragment = mlir::LLVM::MUSA::mathVecToCarrierFragment(
-            loc, finalMathVec, dTy, rewriter);
-        mmaCarrierFragments.push_back(carrierFragment);
+    }
+    if (needsPartialAccumulator && partialAcc) {
+      Value partialFloat = partialAcc.getType() == accVecTy
+                               ? partialAcc
+                               : b.bitcast(partialAcc, accVecTy);
+      if (dAcc) {
+        Value dFloat =
+            dAcc.getType() == accVecTy ? dAcc : b.bitcast(dAcc, accVecTy);
+        dFloat = addAccumulate(rewriter, loc, dFloat, partialFloat);
+        dAcc = dFloat.getType() == ivecTy ? dFloat : b.bitcast(dFloat, ivecTy);
       } else {
-        Value finalAcc = finalReg.getType() == currentAccVecTy
-                             ? finalReg
-                             : b.bitcast(finalReg, currentAccVecTy);
-        SmallVector<Value> accElems = unpackLLVector(loc, finalAcc, rewriter);
-        for (unsigned i = 0; i < accElems.size(); ++i)
-          mmaResults.push_back(accElems[i]);
+        dAcc = partialAcc;
       }
+    }
+    Value finalReg = dAcc ? dAcc : vecAcc;
+    if (carrierMode) {
+      Value finalMathVec = finalReg.getType() == accVecTy
+                               ? finalReg
+                               : b.bitcast(finalReg, accVecTy);
+      Value carrierFragment = mlir::LLVM::MUSA::mathVecToCarrierFragment(
+          loc, finalMathVec, dTy, rewriter);
+      mmaCarrierFragments[fragmentIdx] = carrierFragment;
+    } else {
+      Value finalAcc = finalReg.getType() == currentAccVecTy
+                           ? finalReg
+                           : b.bitcast(finalReg, currentAccVecTy);
+      SmallVector<Value> accElems = unpackLLVector(loc, finalAcc, rewriter);
+      for (unsigned i = 0; i < accElems.size(); ++i)
+        mmaResults[accBase + i] = accElems[i];
     }
   }
 

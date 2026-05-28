@@ -6,14 +6,8 @@ add_mlir_conversion_library(GCUWSIR_${arch}
   DEPENDS
   GCUWSTableGen_${arch}
   GCUWSAttrDefsIncGen_${arch}
-  triton_${arch}
+  triton_gcu400
 
   LINK_LIBS PUBLIC
   MLIRIR
-)
-
-target_compile_options(obj.GCUWSIR_${arch}
-  PRIVATE
-  $<$<CXX_COMPILER_ID:GNU>:-Wno-error=comment -Wno-unused-variable -Wno-unused-but-set-variable>
-  $<$<CXX_COMPILER_ID:Clang>:-Wno-error=comment -Wno-unused-variable>
 )

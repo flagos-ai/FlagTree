@@ -82,6 +82,19 @@ def GCUWarpSpecialization : Pass<"gcu-warp-specialization", "mlir::ModuleOp"> {
   ];
 }
 
+def GCUTleLowerAsyncLoad
+    : Pass<"gcu-tle-lower-async-load", "mlir::ModuleOp"> {
+  let summary = "Lower TLE async load operations";
+
+  let description = [{
+    This pass lowers tl::LoadOp with tt.load.async to target-specific GPU operations by converting
+    high-level asynchronous load operations into appropriate TritonGPU primitives.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
 def GCUTestWSTaskPartition : Pass<"gcu-test-ws-task-partition", "mlir::ModuleOp"> {
   let summary = "test warp specialization task partition";
 

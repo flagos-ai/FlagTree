@@ -50,4 +50,21 @@ protected:
   triton::gcu::PrivateTagPool &pTagPool;
 };
 
+class SharedGenericConversionPattern : public ConversionPattern {
+public:
+  SharedGenericConversionPattern(
+      StringRef opName, const TypeConverter &converter, MLIRContext *ctx,
+      triton::gcu::FirstLastUserAnalysis &userAnalysis,
+      std::map<Operation *, Operation *> &replaced2Origin,
+      triton::gcu::PrivateTagPool &pTagPool)
+      : ConversionPattern(converter, opName, /*benefit=*/1, ctx),
+        userAnalysis(userAnalysis), replaced2Origin(replaced2Origin),
+        pTagPool(pTagPool) {}
+
+protected:
+  triton::gcu::FirstLastUserAnalysis &userAnalysis;
+  std::map<Operation *, Operation *> &replaced2Origin;
+  triton::gcu::PrivateTagPool &pTagPool;
+};
+
 #endif

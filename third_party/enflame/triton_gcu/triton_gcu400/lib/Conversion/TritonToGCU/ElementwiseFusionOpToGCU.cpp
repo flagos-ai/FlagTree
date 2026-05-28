@@ -292,8 +292,8 @@ struct GCUElementwiseFusionOpLowering
             broadcastOnDim0.insert(argNum);
             auto elemsPerThread = triton::gcu::getElemsPerThread(srcType);
             auto elementNum = std::accumulate(
-                elemsPerThread.begin() + broadcastAxis, elemsPerThread.end(), 1,
-                std::multiplies<unsigned>());
+                elemsPerThread.begin() + broadcastAxis, elemsPerThread.end(),
+                1u, std::multiplies<unsigned>());
             auto elementTy =
                 dyn_cast<MemRefType>(inputs[argNum].getType()).getElementType();
             if (vectorLength > elementNum) {
@@ -375,7 +375,7 @@ struct GCUElementwiseFusionOpLowering
     triton::gcu::TritonGCUBuilder b(loc, rewriter);
     SmallVector<Value> initValues;
 
-    for (auto i = 0; i < inputs.size(); ++i) {
+    for (size_t i = 0; i < inputs.size(); ++i) {
       if (broadcastOnDim0.contains(i) || broadcastInfo.contains(i)) {
         continue;
       }
@@ -602,6 +602,16 @@ struct GCUElementwiseFusionOpLowering
               assert(maskedLoadOp.getMask());
               auto mask = operandMaps[i].lookup(maskedLoadOp.getMask());
               if (isSmallSize) {
+                if (getElementTypeOrSelf(mask.getType()).isInteger(8)) {
+                  mask =
+                      builder
+                          .create<gcu::VectorConvertOp>(
+                              loc,
+                              VectorType::get(ArrayRef<int64_t>{vectorLength},
+                                              builder.getIntegerType(1)),
+                              mask)
+                          .getResult(0);
+                }
                 mask = builder.create<arith::AndIOp>(
                     loc,
                     builder.create<vector::ConstantMaskOp>(
@@ -734,6 +744,16 @@ struct GCUElementwiseFusionOpLowering
                 }
                 auto mask = operandMaps[i].lookup(maskedStoreOp.getMask());
                 if (isSmallSize) {
+                  if (getElementTypeOrSelf(mask.getType()).isInteger(8)) {
+                    mask =
+                        builder
+                            .create<gcu::VectorConvertOp>(
+                                loc,
+                                VectorType::get(ArrayRef<int64_t>{vectorLength},
+                                                builder.getIntegerType(1)),
+                                mask)
+                            .getResult(0);
+                  }
                   mask = builder.create<arith::AndIOp>(
                       loc,
                       builder.create<vector::ConstantMaskOp>(

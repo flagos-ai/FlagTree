@@ -9,7 +9,9 @@ add_subdirectory(lib)
 add_subdirectory(musa)
 if(TRITON_BUILD_PYTHON_MODULE)
   add_triton_plugin(TritonMthreads ${CMAKE_CURRENT_SOURCE_DIR}/triton_mthreads.cc
-                    LINK_LIBS TritonMUSAGPUToLLVM MTGPUToLLVM TritonMUSAGPUTransforms)
+                    LINK_LIBS TritonMUSAGPUToLLVM MTGPUToLLVM
+                              TritonMUSAGPUTransforms
+                              MLIRMTVMToLLVMIRTranslation)
   add_dependencies(TritonMthreads
                    MUSATableGen
                    MUSAAttrDefsIncGen

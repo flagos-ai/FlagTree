@@ -1,3 +1,4 @@
+
 /**
  * Copyright 2024-2026 Enflame. All Rights Reserved.
  *
@@ -13,19 +14,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <functional>
-#include <memory>
-#include <utility>
-
+#include "Analysis/AxisInfoEx.h"
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
+#include "Dialect/MathExt/IR/MathExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Utility.h"
-
-#include "Analysis/AxisInfoEx.h"
-#include "Dialect/MathExt/IR/MathExt.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -38,37 +35,71 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
-
+#include <functional>
+#include <memory>
+#include <utility>
 namespace mlir {
 #define GEN_PASS_DEF_GCUTRITONFUSIONPASS
 #include "Conversion/Passes.h.inc"
 } // namespace mlir
-
 using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::triton::gcu;
-
 namespace {
-
 const char *const kIsContinual = "IsContinual";
 constexpr unsigned kOaccSizeInBytes = 512;
 constexpr unsigned kLoopUnrollTimes = 16;
-
+static bool hasSideEffectBetween(Operation *from, Operation *to) {
+  assert(from && to && from->getBlock() == to->getBlock() &&
+         "from and to must be in the same block");
+  return llvm::any_of(
+      llvm::make_range(Block::iterator(from), Block::iterator(to)),
+      [](auto &op) { return !isMemoryEffectFree(&op); });
+}
+static bool mightHaveWriteEffectBetween(Operation *from, Operation *to) {
+  assert(from && to && from->getBlock() == to->getBlock() &&
+         "from and to must be in the same block");
+  return llvm::any_of(
+      llvm::make_range(Block::iterator(from), Block::iterator(to)),
+      [](auto &op) { return mightHaveEffect<MemoryEffects::Write>(&op); });
+}
 struct EliminateForOpInductionVars : public OpRewritePattern<scf::ForOp> {
   explicit EliminateForOpInductionVars(MLIRContext *context)
       : OpRewritePattern<scf::ForOp>(context) {}
   mlir::LogicalResult
   matchAndRewrite(scf::ForOp op,
                   mlir::PatternRewriter &rewriter) const override {
-    auto eliminableInductionVarIndices = getEliminableIndVarIndices(op);
-    if (eliminableInductionVarIndices.empty()) {
+    auto eliminableInductionVarInfos = collectEliminableIndVarInfos(op);
+    if (eliminableInductionVarInfos.empty()) {
       return failure();
     }
-    auto forOp =
-        createCanonicalizedForOp(rewriter, op, eliminableInductionVarIndices);
+    bool needExternalReplacement =
+        llvm::any_of(eliminableInductionVarInfos.keys(), [&](auto iter) {
+          return !op.getResult(iter).use_empty();
+        });
+    // We only require explicit step positivity check when materializing
+    // external replacements. For no-use eliminated iter args, we rely on
+    // scf.for legality invariants guaranteed by upstream pipeline.
+    if (needExternalReplacement &&
+        failed(verifyPositiveStepForExternalReplacement(op, rewriter))) {
+      return failure();
+    }
+    auto canonicalizedResult =
+        createCanonicalizedForOp(rewriter, op, eliminableInductionVarInfos);
     for (unsigned i = 0, j = 0; i < op.getNumResults(); i++) {
-      if (!eliminableInductionVarIndices.contains(i)) {
-        rewriter.replaceAllUsesWith(op.getResult(i), forOp.getResult(j++));
+      if (eliminableInductionVarInfos.contains(i)) {
+        if (op.getResult(i).use_empty()) {
+          continue;
+        }
+        auto it = canonicalizedResult.eliminatedResultReplacements.find(i);
+        if (it == canonicalizedResult.eliminatedResultReplacements.end()) {
+          return rewriter.notifyMatchFailure(
+              op, "missing replacement for eliminated result");
+        }
+        rewriter.replaceAllUsesWith(op.getResult(i), it->second);
+      } else {
+        rewriter.replaceAllUsesWith(op.getResult(i),
+                                    canonicalizedResult.forOp.getResult(j++));
       }
     }
     rewriter.eraseOp(op);
@@ -76,53 +107,107 @@ struct EliminateForOpInductionVars : public OpRewritePattern<scf::ForOp> {
   }
 
 private:
-  static bool isEliminableIndVar(scf::ForOp forOp, unsigned iter);
-  static DenseSet<unsigned> getEliminableIndVarIndices(scf::ForOp forOp);
-  static scf::ForOp createCanonicalizedForOp(
-      OpBuilder &builder, scf::ForOp forOp,
-      const DenseSet<unsigned> &eliminableInductionVarIndices);
+  struct EliminableInductionVarInfo {
+    enum class UpdateKind : uint8_t { Add, Sub } kind;
+    Value stride;
+  };
+  struct CanonicalizedForOpResult {
+    scf::ForOp forOp;
+    DenseMap<unsigned, Value> eliminatedResultReplacements;
+  };
+  static LogicalResult
+  verifyPositiveStepForExternalReplacement(scf::ForOp op,
+                                           PatternRewriter &rewriter);
+  static std::optional<EliminableInductionVarInfo>
+  tryGetEliminableIndVarInfo(scf::ForOp forOp, unsigned iter);
+  static llvm::DenseMap<unsigned, EliminableInductionVarInfo>
+  collectEliminableIndVarInfos(scf::ForOp forOp);
+  static Value materializeIndVar(OpBuilder &builder, Location loc,
+                                 const EliminableInductionVarInfo &info,
+                                 Value init, Value tripCount);
+  static CanonicalizedForOpResult createCanonicalizedForOp(
+      OpBuilder &builder, scf::ForOp op,
+      const llvm::DenseMap<unsigned, EliminableInductionVarInfo>
+          &eliminableInductionVarInfos);
 };
-
-bool EliminateForOpInductionVars::isEliminableIndVar(scf::ForOp forOp,
-                                                     unsigned iter) {
+std::optional<EliminateForOpInductionVars::EliminableInductionVarInfo>
+EliminateForOpInductionVars::tryGetEliminableIndVarInfo(scf::ForOp forOp,
+                                                        unsigned iter) {
   auto arg = forOp.getRegionIterArg(iter);
-  if (!isa<TensorType>(arg.getType()) || !forOp.getResult(iter).use_empty()) {
-    return false;
-  }
-  auto yieldOp = forOp.getBody()->getTerminator();
-  auto addOp = yieldOp->getOperand(iter).getDefiningOp<arith::AddIOp>();
-  if (!addOp) {
-    return false;
+  if (!isa<TensorType>(arg.getType())) {
+    return std::nullopt;
   }
   Value stride;
-  if (addOp.getLhs() == arg) {
-    stride = addOp.getRhs();
-  } else if (addOp.getRhs() == arg) {
-    stride = addOp.getLhs();
+  EliminableInductionVarInfo::UpdateKind updateKind;
+  Value updateValue = forOp.getBody()->getTerminator()->getOperand(iter);
+  if (auto addOp = updateValue.getDefiningOp<arith::AddIOp>()) {
+    if (addOp.getLhs() == arg) {
+      stride = addOp.getRhs();
+    } else if (addOp.getRhs() == arg) {
+      stride = addOp.getLhs();
+    } else {
+      return std::nullopt;
+    }
+    updateKind = EliminableInductionVarInfo::UpdateKind::Add;
+  } else if (auto subOp = updateValue.getDefiningOp<arith::SubIOp>()) {
+    if (subOp.getLhs() != arg) {
+      return std::nullopt;
+    }
+    stride = subOp.getRhs();
+    updateKind = EliminableInductionVarInfo::UpdateKind::Sub;
+  } else {
+    return std::nullopt;
   }
-  // LICM can improve hit rate by hoisting loop-invariant stride,
-  // but correctness relies on `forOp.isDefinedOutsideOfLoop(stride)` below.
-  return stride && forOp.isDefinedOutsideOfLoop(stride);
+  if (!forOp.isDefinedOutsideOfLoop(stride)) {
+    return std::nullopt;
+  }
+  return EliminableInductionVarInfo{updateKind, stride};
 }
-
-DenseSet<unsigned>
-EliminateForOpInductionVars::getEliminableIndVarIndices(scf::ForOp forOp) {
-  DenseSet<unsigned> eliminableInductionVarIndices;
+llvm::DenseMap<unsigned,
+               EliminateForOpInductionVars::EliminableInductionVarInfo>
+EliminateForOpInductionVars::collectEliminableIndVarInfos(scf::ForOp forOp) {
+  llvm::DenseMap<unsigned, EliminableInductionVarInfo> infos;
   for (unsigned iter = 0; iter < forOp.getNumRegionIterArgs(); ++iter) {
-    if (isEliminableIndVar(forOp, iter)) {
-      eliminableInductionVarIndices.insert(iter);
+    if (auto info = tryGetEliminableIndVarInfo(forOp, iter)) {
+      infos.insert({iter, *info});
     }
   }
-  return eliminableInductionVarIndices;
+  return infos;
 }
-
-scf::ForOp EliminateForOpInductionVars::createCanonicalizedForOp(
+LogicalResult
+EliminateForOpInductionVars::verifyPositiveStepForExternalReplacement(
+    scf::ForOp op, PatternRewriter &rewriter) {
+  auto cstStep = op.getStep().getDefiningOp<arith::ConstantOp>();
+  if (!cstStep) {
+    return rewriter.notifyMatchFailure(
+        op, "external replacement requires constant positive step");
+  }
+  auto intAttr = dyn_cast<IntegerAttr>(cstStep.getValue());
+  if (!intAttr || !intAttr.getValue().isStrictlyPositive()) {
+    return rewriter.notifyMatchFailure(
+        op, "external replacement requires positive step");
+  }
+  return success();
+}
+Value EliminateForOpInductionVars::materializeIndVar(
+    OpBuilder &builder, Location loc, const EliminableInductionVarInfo &info,
+    Value init, Value tripCount) {
+  auto splatTrip =
+      builder.create<triton::SplatOp>(loc, init.getType(), tripCount);
+  auto scaled = builder.create<arith::MulIOp>(loc, info.stride, splatTrip);
+  return info.kind == EliminableInductionVarInfo::UpdateKind::Add
+             ? builder.create<arith::AddIOp>(loc, init, scaled).getResult()
+             : builder.create<arith::SubIOp>(loc, init, scaled).getResult();
+}
+EliminateForOpInductionVars::CanonicalizedForOpResult
+EliminateForOpInductionVars::createCanonicalizedForOp(
     OpBuilder &builder, scf::ForOp op,
-    const DenseSet<unsigned> &eliminableInductionVarIndices) {
+    const llvm::DenseMap<unsigned, EliminableInductionVarInfo>
+        &eliminableInductionVarInfos) {
   SmallVector<Value> initArgs;
   auto yieldOp = op.getBody()->getTerminator();
   for (auto [iter, arg] : llvm::enumerate(op.getInitArgs())) {
-    if (!eliminableInductionVarIndices.contains(iter)) {
+    if (!eliminableInductionVarInfos.contains(iter)) {
       initArgs.push_back(arg);
     }
   }
@@ -133,36 +218,30 @@ scf::ForOp EliminateForOpInductionVars::createCanonicalizedForOp(
         IRMapping mapper;
         mapper.map(op.getInductionVar(), iv);
         for (unsigned i = 0, j = 0; i < op.getNumRegionIterArgs(); i++) {
-          if (!eliminableInductionVarIndices.contains(i)) {
+          if (!eliminableInductionVarInfos.contains(i)) {
             mapper.map(op.getRegionIterArg(i), args[j++]);
           }
         }
         auto ivMinusLowerBound =
             builder.create<arith::SubIOp>(loc, iv, op.getLowerBound());
-        auto iterCount = builder.create<arith::DivSIOp>(loc, ivMinusLowerBound,
+        auto tripCount = builder.create<arith::DivSIOp>(loc, ivMinusLowerBound,
                                                         op.getStep());
-        DenseSet<Operation *> redundantAddOps;
-        for (auto iter : eliminableInductionVarIndices) {
+        DenseSet<Operation *> bypassedOps;
+        for (auto [iter, info] : eliminableInductionVarInfos) {
           mapper.map(op.getRegionIterArg(iter), op.getInitArgs()[iter]);
-          auto addOp = yieldOp->getOperand(iter).getDefiningOp<arith::AddIOp>();
-          if (addOp->hasOneUse()) {
-            redundantAddOps.insert(addOp);
+          auto updateOp = yieldOp->getOperand(iter).getDefiningOp();
+          if (updateOp->hasOneUse()) {
+            bypassedOps.insert(updateOp);
           }
-          Value stride = addOp.getLhs() == op.getRegionIterArg(iter)
-                             ? addOp.getRhs()
-                             : addOp.getLhs();
-          // Replace iterative update `arg = arg + stride` with closed-form:
-          //   init + stride * ((iv - lb) / step)
-          auto splatIter = builder.create<triton::SplatOp>(
-              loc, op.getRegionIterArg(iter).getType(), iterCount);
-          auto scaled = builder.create<arith::MulIOp>(loc, stride, splatIter);
-          mapper.map(
-              op.getRegionIterArg(iter),
-              builder.create<arith::AddIOp>(
-                  loc, mapper.lookup(op.getRegionIterArg(iter)), scaled));
+          // Replace iterative update `arg = arg +/- stride` with closed-form:
+          //   init +/- stride * ((iv - lb) / step)
+          mapper.map(op.getRegionIterArg(iter),
+                     materializeIndVar(builder, loc, info,
+                                       mapper.lookup(op.getRegionIterArg(iter)),
+                                       tripCount));
         }
         for (auto &o : op.getBody()->without_terminator()) {
-          if (redundantAddOps.contains(&o)) {
+          if (bypassedOps.contains(&o)) {
             continue;
           }
           Operation *cloneOp = builder.clone(o, mapper);
@@ -173,22 +252,43 @@ scf::ForOp EliminateForOpInductionVars::createCanonicalizedForOp(
         }
         SmallVector<Value> results;
         for (unsigned i = 0; i < yieldOp->getNumOperands(); i++) {
-          if (!eliminableInductionVarIndices.contains(i)) {
+          if (!eliminableInductionVarInfos.contains(i)) {
             results.push_back(mapper.lookup(yieldOp->getOperand(i)));
           }
         }
         builder.create<scf::YieldOp>(loc, results);
       });
-  return forOp;
+  if (llvm::all_of(eliminableInductionVarInfos.keys(),
+                   [&](auto iter) { return op.getResult(iter).use_empty(); })) {
+    return CanonicalizedForOpResult{forOp, DenseMap<unsigned, Value>{}};
+  }
+  auto loc = op.getLoc();
+  DenseMap<unsigned, Value> eliminatedResultReplacements;
+  auto span = builder.create<arith::SubIOp>(loc, op.getUpperBound(),
+                                            op.getLowerBound());
+  auto zero = builder.create<arith::ConstantOp>(
+      loc, span.getType(), builder.getIntegerAttr(span.getType(), 0));
+  auto tripCount = builder.create<arith::CeilDivSIOp>(
+      loc, builder.create<arith::MaxSIOp>(loc, span, zero), op.getStep());
+  for (auto [iter, info] : eliminableInductionVarInfos) {
+    if (op.getResult(iter).use_empty()) {
+      continue;
+    }
+    eliminatedResultReplacements[iter] = materializeIndVar(
+        builder, loc, info, op.getInitArgs()[iter], tripCount);
+  }
+  return CanonicalizedForOpResult{forOp, eliminatedResultReplacements};
 }
-
 struct PtrDecomposeResult {
   Value basePtr;
   Value offset;
 };
-
 static FailureOr<PtrDecomposeResult>
 tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
+  auto bitcastOp = ptr.getDefiningOp<triton::BitcastOp>();
+  if (bitcastOp) {
+    ptr = bitcastOp.getSrc();
+  }
   auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
   if (!addPtrOp) {
     return failure();
@@ -241,11 +341,20 @@ tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
       basePtr = addPtrOp.getPtr();
       offset = accumulateOffset(offset, addPtrOp.getOffset(), true);
     }
+    if (bitcastOp) {
+      auto pointeeType =
+          cast<triton::PointerType>(
+              cast<RankedTensorType>(bitcastOp.getType()).getElementType())
+              .getPointeeType();
+      auto origPtrType = cast<triton::PointerType>(basePtr.getType());
+      auto newPtrType =
+          triton::PointerType::get(pointeeType, origPtrType.getAddressSpace());
+      basePtr = builder.create<triton::BitcastOp>(loc, newPtrType, basePtr);
+    }
     return PtrDecomposeResult{basePtr, offset};
   }
   return failure();
 }
-
 struct ConvertTritonLoadOp : public OpRewritePattern<triton::LoadOp> {
   explicit ConvertTritonLoadOp(MLIRContext *context,
                                ModuleAxisInfoExAnalysis &analysis)
@@ -273,7 +382,6 @@ struct ConvertTritonLoadOp : public OpRewritePattern<triton::LoadOp> {
     return failure();
   }
 };
-
 struct ConvertTritonStoreOp : public OpRewritePattern<triton::StoreOp> {
   explicit ConvertTritonStoreOp(MLIRContext *context,
                                 ModuleAxisInfoExAnalysis &analysis)
@@ -301,10 +409,8 @@ struct ConvertTritonStoreOp : public OpRewritePattern<triton::StoreOp> {
     return failure();
   }
 };
-
 struct ConvertClampFOp : public OpRewritePattern<triton::ClampFOp> {
   using OpRewritePattern::OpRewritePattern;
-
   LogicalResult matchAndRewrite(triton::ClampFOp op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
@@ -322,17 +428,15 @@ struct ConvertClampFOp : public OpRewritePattern<triton::ClampFOp> {
     return success();
   }
 };
-
 struct ConvertFpToFpOp : public OpRewritePattern<triton::FpToFpOp> {
   using OpRewritePattern::OpRewritePattern;
-
   LogicalResult matchAndRewrite(triton::FpToFpOp op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Operation *newOp = nullptr;
-    auto srcType = cast<RankedTensorType>(op.getSrc().getType());
-    auto resType = cast<RankedTensorType>(op.getResult().getType());
-    if (getElementBitWidth(resType) > getElementBitWidth(srcType)) {
+    auto srcType = getElementTypeOrSelf(op.getSrc().getType());
+    auto resType = getElementTypeOrSelf(op.getResult().getType());
+    if (resType.getIntOrFloatBitWidth() > srcType.getIntOrFloatBitWidth()) {
       // Cast from floating-point to wider floating-point, fp8->fp32
       newOp = rewriter.create<arith::ExtFOp>(loc, op.getType(), op.getSrc());
     } else {
@@ -343,11 +447,9 @@ struct ConvertFpToFpOp : public OpRewritePattern<triton::FpToFpOp> {
     return success();
   }
 };
-
 template <typename FT, typename TT>
 struct ConvertTritonOp : public OpRewritePattern<FT> {
   using OpRewritePattern<FT>::OpRewritePattern;
-
   LogicalResult matchAndRewrite(FT op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
@@ -356,12 +458,10 @@ struct ConvertTritonOp : public OpRewritePattern<FT> {
     return success();
   }
 };
-
 // restore arith.constant(#ttg.dot_op) to constant(#parent) + ttg.cvt(parent)
 struct RestoreDotOperandSplatConstantPattern
     : public OpRewritePattern<arith::ConstantOp> {
   using OpRewritePattern::OpRewritePattern;
-
   LogicalResult matchAndRewrite(arith::ConstantOp op,
                                 PatternRewriter &rewriter) const override {
     auto tensorType = dyn_cast<RankedTensorType>(op.getType());
@@ -387,11 +487,9 @@ struct RestoreDotOperandSplatConstantPattern
     auto convertOp = rewriter.create<triton::gpu::ConvertLayoutOp>(
         loc, tensorType, newConstOp.getResult());
     rewriter.replaceOp(op, convertOp.getResult());
-
     return success();
   }
 };
-
 static bool isSupportedElementType(Type elementType) {
   return isa<Float8E5M2Type>(elementType) ||
          isa<Float8E4M3FNType>(elementType) || elementType.isBF16() ||
@@ -400,17 +498,14 @@ static bool isSupportedElementType(Type elementType) {
          elementType.isInteger(16) || elementType.isInteger(32) ||
          elementType.isInteger(64);
 }
-
 static bool canFuseBroadcast(triton::BroadcastOp op) {
   auto srcType = op.getSrc().getType();
   auto resultType = op.getType();
   auto rank = srcType.getRank();
-
   // TODO(peng.tian): support i1 broadcast
   if (getElementTypeOrSelf(srcType).isInteger(1)) {
     return false;
   }
-
   std::optional<unsigned> broadcastAxis;
   for (unsigned i = 0; i < rank; ++i) {
     if (srcType.getDimSize(i) != resultType.getDimSize(i)) {
@@ -423,7 +518,6 @@ static bool canFuseBroadcast(triton::BroadcastOp op) {
   if (!broadcastAxis || (*broadcastAxis != 0 && *broadcastAxis != rank - 1)) {
     return false;
   }
-
   auto elemsPerThread = broadcastAxis == 0
                             ? triton::gcu::getElemsPerThread(srcType)
                             : triton::gcu::getElemsPerThread(resultType);
@@ -435,7 +529,6 @@ static bool canFuseBroadcast(triton::BroadcastOp op) {
   // TODO(peng.tian): need to support general implementation
   return numOacc >= 1 && numOacc <= 4 * kLoopUnrollTimes;
 }
-
 static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
   auto srcTy = op.getSrc().getType();
   auto dstTy = op.getType();
@@ -445,20 +538,26 @@ static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
   }
   auto srcEnc = srcTy.getEncoding();
   auto dstEnc = dstTy.getEncoding();
-  if (isa<triton::gpu::SliceEncodingAttr, triton::gpu::BlockedEncodingAttr>(
-          srcEnc) &&
+  if (isa<triton::gpu::BlockedEncodingAttr>(srcEnc) &&
       isa<triton::gpu::BlockedEncodingAttr>(dstEnc)) {
     return true;
   }
-
-  if (auto srcSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(srcEnc)) {
-    if (auto dstSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(dstEnc)) {
-      return srcSliceEnc.getDim() == dstSliceEnc.getDim();
-    }
+  if ((isa<triton::gpu::BlockedEncodingAttr>(srcEnc) &&
+       isa<triton::gpu::SliceEncodingAttr>(dstEnc)) ||
+      (isa<triton::gpu::SliceEncodingAttr>(srcEnc) &&
+       isa<triton::gpu::BlockedEncodingAttr>(dstEnc))) {
+    return triton::gcu::getWarpsPerCTA(srcEnc) ==
+           triton::gcu::getWarpsPerCTA(dstEnc);
+  }
+  auto dstSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(dstEnc);
+  auto srcSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(srcEnc);
+  if (dstSliceEnc && srcSliceEnc) {
+    return dstSliceEnc.getDim() == srcSliceEnc.getDim() &&
+           triton::gcu::getWarpsPerCTA(srcEnc) ==
+               triton::gcu::getWarpsPerCTA(dstEnc);
   }
   return false;
 }
-
 static bool canFuse(Operation *op) {
   if (!op || !llvm::all_of(op->getResultTypes(), [](auto type) {
         auto tensorType = dyn_cast<RankedTensorType>(type);
@@ -467,7 +566,6 @@ static bool canFuse(Operation *op) {
       })) {
     return false;
   }
-
   if (auto constantOp = dyn_cast<arith::ConstantOp>(op)) {
     auto valueAttr = dyn_cast<DenseElementsAttr>(constantOp.getValue());
     return valueAttr && valueAttr.isSplat();
@@ -485,7 +583,6 @@ static bool canFuse(Operation *op) {
   }
   return OpTrait::hasElementwiseMappableTraits(op);
 }
-
 struct MaskedLoadStoreFusionContext {
   MaskedLoadStoreFusionContext(Operation *userOp, DominanceInfo &dominanceInfo)
       : userOp(userOp), dominanceInfo(dominanceInfo) {}
@@ -494,7 +591,6 @@ struct MaskedLoadStoreFusionContext {
       collectDepsFromOperand(value);
     }
   }
-
   void collectDepsFromOperand(Value value) {
     if (!value)
       return;
@@ -515,7 +611,6 @@ struct MaskedLoadStoreFusionContext {
     }
     orderedDeps.push_back(defOp);
   }
-
   void sinkDepsToUserOp() {
     OpBuilder builder(userOp);
     for (auto op : orderedDeps) {
@@ -525,19 +620,18 @@ struct MaskedLoadStoreFusionContext {
         mapping.map(op->getResult(i), cloneOp->getResult(i));
       }
     }
-    for (auto iter = orderedDeps.rbegin(); iter != orderedDeps.rend(); ++iter) {
-      auto op = *iter;
-      if (op->use_empty()) {
-        op->erase();
-      }
-    }
   }
-
   void rewriteOperands() {
     for (auto &operand : userOp->getOpOperands()) {
       if (auto mappingValue = mapping.lookupOrNull(operand.get())) {
         operand.set(mappingValue);
       }
+    }
+  }
+  void eraseDeadDeps() {
+    for (auto *op : llvm::reverse(orderedDeps)) {
+      if (op->use_empty())
+        op->erase();
     }
   }
   Operation *userOp;
@@ -546,9 +640,9 @@ struct MaskedLoadStoreFusionContext {
   SmallVector<Operation *> orderedDeps;
   IRMapping mapping;
 };
-
 static Operation *findEarliestSafeMovePoint(Value value,
                                             DominanceInfo &dominanceInfo) {
+  auto *defOp = value.getDefiningOp();
   Operation *movePoint = nullptr;
   for (auto user : value.getUsers()) {
     if (user->getBlock() == value.getParentBlock() &&
@@ -565,17 +659,20 @@ static Operation *findEarliestSafeMovePoint(Value value,
       }
     }
   }
+  if (movePoint &&
+      mightHaveWriteEffectBetween(defOp->getNextNode(), movePoint)) {
+    return nullptr;
+  }
   return movePoint;
 }
-
 static void gatherOpDepsForFusion(Operation *op, ArrayRef<Value> depsToCollect,
                                   DominanceInfo &dominanceInfo) {
   MaskedLoadStoreFusionContext ctx(op, dominanceInfo);
   ctx.collectDepsFromOperands(depsToCollect);
   ctx.sinkDepsToUserOp();
   ctx.rewriteOperands();
+  ctx.eraseDeadDeps();
 }
-
 // Preprocess masked memory ops for subsequent fusion:
 // 1) Move MaskedLoadOp to the earliest safe user point when possible.
 // 2) Materialize fusible dependency chains (offset/mask/other) near each
@@ -591,13 +688,12 @@ static void preProcessMaskedLoadStore(triton::FuncOp func,
       worklist.push_back(op);
     }
   });
-
   for (auto op : worklist) {
     if (auto maskedLoadOp = dyn_cast<triton::gcu::MaskedLoadOp>(op)) {
-      auto firstUser =
+      auto movePoint =
           findEarliestSafeMovePoint(maskedLoadOp.getResult(), dominanceInfo);
-      if (firstUser && op->getNextNode() != firstUser) {
-        op->moveBefore(firstUser);
+      if (movePoint && op->getNextNode() != movePoint) {
+        op->moveBefore(movePoint);
       }
       gatherOpDepsForFusion(op,
                             {maskedLoadOp.getOffset(), maskedLoadOp.getMask(),
@@ -610,14 +706,12 @@ static void preProcessMaskedLoadStore(triton::FuncOp func,
     }
   }
 }
-
 static void sinkFusibleProducersToUses(triton::FuncOp func,
                                        DominanceInfo &dominanceInfo) {
   func.walk([&](Operation *op) {
     if (!canFuse(op)) {
       return;
     }
-    auto block = op->getBlock();
     auto operands = llvm::to_vector(op->getOperands());
     for (auto operand : operands) {
       auto defOp = operand.getDefiningOp();
@@ -629,9 +723,7 @@ static void sinkFusibleProducersToUses(triton::FuncOp func,
           !canFuseBroadcast(cast<triton::BroadcastOp>(defOp))) {
         continue;
       }
-      // Same-block scheduling is handled by group fusion; ancestor moves can
-      // break region structure, so keep this pass cross-block only.
-      if (defOp->getBlock() == block || defOp->isAncestor(op)) {
+      if (defOp->isAncestor(op)) {
         continue;
       }
       if (llvm::all_of(defOp->getOperands(), [&](auto operand) {
@@ -647,21 +739,18 @@ static void sinkFusibleProducersToUses(triton::FuncOp func,
     }
   });
 }
-
 } // namespace
-
 namespace {
-
 struct GCUTritonFusionPass
     : public mlir::impl::GCUTritonFusionPassBase<GCUTritonFusionPass> {
   using Base::Base;
-
   void runOnOperation() override {
     auto module = getOperation();
     auto *ctx = &getContext();
     RewritePatternSet patterns(ctx);
     ModuleAxisInfoExAnalysis axisInfoExAnalysis(
         module->getParentOfType<ModuleOp>());
+    scf::populateUpliftWhileToForPatterns(patterns);
     patterns.add<RestoreDotOperandSplatConstantPattern>(ctx);
     patterns.add<EliminateForOpInductionVars>(ctx);
     patterns.add<ConvertTritonLoadOp, ConvertTritonStoreOp>(ctx,
@@ -682,10 +771,9 @@ struct GCUTritonFusionPass
       func.walk([&](Block *block) { fuseReduceOps(block); });
     }
   }
-
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<TritonGCUDialect, arith::ArithDialect, math::MathDialect,
-                    triton::TritonDialect>();
+                    triton::TritonDialect, math_ext::MathExtDialect>();
   }
 
 private:
@@ -776,14 +864,12 @@ private:
       other.ops.insert(other.ops.begin(), ops.begin(), ops.end());
       other.resolveOperandsAndResults();
     }
-
     bool isDependentOn(const FusionGroup &other) const {
       return llvm::any_of(operands, [&](auto operand) {
         return other.operands.contains(operand) ||
                other.results.contains(operand);
       });
     }
-
     bool isSafeToMergeIntoBackOf(const FusionGroup &other) const {
       assert(!ops.empty() && !other.ops.empty() &&
              "fusion groups must be non-empty");
@@ -798,7 +884,6 @@ private:
                defOp == other.back() || defOp->isBeforeInBlock(other.back());
       });
     }
-
     void mergeIntoBackOf(FusionGroup &other) {
       for (auto op : llvm::reverse(ops)) {
         op->moveAfter(other.back());
@@ -806,7 +891,6 @@ private:
       other.ops.append(ops.begin(), ops.end());
       other.resolveOperandsAndResults();
     }
-
     SmallVector<Operation *> ops;
     SetVector<Value> operands;
     SetVector<Value> results;
@@ -821,7 +905,6 @@ private:
   void fuseReduceOps(Block *block);
 };
 } // namespace
-
 void GCUTritonFusionPass::fuseReduceOps(Block *block) {
   for (auto &op : block->getOperations()) {
     auto fusionOp = dyn_cast<mlir::triton::gcu::ElementwiseFusionRegionOp>(op);
@@ -848,26 +931,22 @@ void GCUTritonFusionPass::fuseReduceOps(Block *block) {
     terminator->setOperand(0, reduceOp->getResult(0));
   }
 }
-
 bool GCUTritonFusionPass::tryDeepFuse(
     SmallVector<std::unique_ptr<FusionGroup>> &fusionGroups) {
   auto numFusionGroup = fusionGroups.size();
-  auto hasBarrierBetween = [](const FusionGroup &first,
-                              const FusionGroup &second) {
-    return llvm::any_of(llvm::make_range(Block::iterator(first.back()),
-                                         Block::iterator(second.front())),
-                        [](auto &op) { return isa<mlir::gpu::BarrierOp>(op); });
-  };
   for (unsigned i = 0; i < numFusionGroup - 1; ++i) {
     if (auto firstUser = fusionGroups[i]->findFirstUserInBlock()) {
       for (unsigned j = i + 1; j < numFusionGroup; ++j) {
-        if (fusionGroups[i]->shape != fusionGroups[j]->shape) {
+        if (fusionGroups[i]->shape != fusionGroups[j]->shape ||
+            fusionGroups[i]->elemsPerThread !=
+                fusionGroups[j]->elemsPerThread) {
           continue;
         }
         if (!fusionGroups[j]->contains(firstUser)) {
           continue;
         }
-        if (hasBarrierBetween(*fusionGroups[i], *fusionGroups[j]) &&
+        if (hasSideEffectBetween(fusionGroups[i]->back()->getNextNode(),
+                                 fusionGroups[j]->front()) &&
             fusionGroups[i]->hasSideEffect()) {
           continue;
         }
@@ -877,14 +956,16 @@ bool GCUTritonFusionPass::tryDeepFuse(
       }
     }
     for (unsigned j = i + 1; j < numFusionGroup; ++j) {
-      if (fusionGroups[i]->shape != fusionGroups[j]->shape) {
+      if (fusionGroups[i]->shape != fusionGroups[j]->shape ||
+          fusionGroups[i]->elemsPerThread != fusionGroups[j]->elemsPerThread) {
         continue;
       }
       if (!fusionGroups[j]->isDependentOn(*fusionGroups[i]) ||
           !fusionGroups[j]->isSafeToMergeIntoBackOf(*fusionGroups[i])) {
         continue;
       }
-      if (hasBarrierBetween(*fusionGroups[i], *fusionGroups[j]) &&
+      if (hasSideEffectBetween(fusionGroups[i]->back()->getNextNode(),
+                               fusionGroups[j]->front()) &&
           fusionGroups[j]->hasSideEffect()) {
         continue;
       }
@@ -895,7 +976,6 @@ bool GCUTritonFusionPass::tryDeepFuse(
   }
   return false;
 }
-
 void GCUTritonFusionPass::runFuse(Block *block) {
   SmallVector<std::unique_ptr<FusionGroup>> fusionGroups;
   auto startNewGroup = [&]() {
@@ -952,17 +1032,14 @@ void GCUTritonFusionPass::runFuse(Block *block) {
     fuseOps(std::move(fusionGroup));
   }
 }
-
 void GCUTritonFusionPass::fuseOps(std::unique_ptr<FusionGroup> fusionGroup) {
   auto &ops = fusionGroup->ops;
   assert(!ops.empty() && "fusion group must be non-empty");
-
   OpBuilder builder(ops.front());
   auto loc = ops.front()->getLoc();
   fusionGroup->resolveOperandsAndResults();
   auto operands = fusionGroup->operands.takeVector();
   auto results = fusionGroup->results.takeVector();
-
   auto resultTypes = llvm::to_vector(
       llvm::map_range(results, [](auto result) { return result.getType(); }));
   auto fusedOp = builder.create<mlir::triton::gcu::ElementwiseFusionRegionOp>(

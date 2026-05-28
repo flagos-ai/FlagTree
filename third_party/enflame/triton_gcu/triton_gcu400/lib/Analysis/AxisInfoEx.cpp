@@ -150,23 +150,25 @@ public:
   }
 
 protected:
-  virtual int64_t getDivisibility(OpTy op, const AxisInfoEx &lhs,
-                                  const AxisInfoEx &rhs, int dim) {
+  virtual int64_t getDivisibility(OpTy /*op*/, const AxisInfoEx & /*lhs*/,
+                                  const AxisInfoEx & /*rhs*/, int /*dim*/) {
     return 1;
   }
 
-  virtual int64_t getContinualSize(OpTy op, const AxisInfoEx &lhs,
-                                   const AxisInfoEx &rhs, int dim) {
+  virtual int64_t getContinualSize(OpTy /*op*/, const AxisInfoEx & /*lhs*/,
+                                   const AxisInfoEx & /*rhs*/, int /*dim*/) {
     return 1;
   }
 
-  virtual int64_t getContinualInterval(OpTy op, const AxisInfoEx &lhs,
-                                       const AxisInfoEx &rhs, int dim) {
+  virtual int64_t getContinualInterval(OpTy /*op*/, const AxisInfoEx & /*lhs*/,
+                                       const AxisInfoEx & /*rhs*/,
+                                       int /*dim*/) {
     return 1;
   }
 
-  virtual std::optional<int64_t>
-  getConstantValue(OpTy op, const AxisInfoEx &lhs, const AxisInfoEx &rhs) {
+  virtual std::optional<int64_t> getConstantValue(OpTy /*op*/,
+                                                  const AxisInfoEx & /*lhs*/,
+                                                  const AxisInfoEx & /*rhs*/) {
     return std::nullopt;
   }
 };
@@ -243,7 +245,7 @@ public:
   using AxisInfoExVisitorImpl<OpTy>::AxisInfoExVisitorImpl;
 
   AxisInfoEx getAxisInfoEx(
-      OpTy op,
+      OpTy /*op*/,
       ArrayRef<const dataflow::Lattice<AxisInfoEx> *> operands) override {
     return operands[0]->getValue();
   }
@@ -256,7 +258,7 @@ public:
 
   AxisInfoEx getAxisInfoEx(
       triton::MakeRangeOp op,
-      ArrayRef<const dataflow::Lattice<AxisInfoEx> *> operands) override {
+      ArrayRef<const dataflow::Lattice<AxisInfoEx> *> /*operands*/) override {
     auto start = op.getStart();
     auto end = op.getEnd();
     return AxisInfoEx(/*divisibility=*/{highestPowOf2Divisor(start)},
@@ -272,7 +274,7 @@ public:
 
   AxisInfoEx getAxisInfoEx(
       OpTy op,
-      ArrayRef<const dataflow::Lattice<AxisInfoEx> *> operands) override {
+      ArrayRef<const dataflow::Lattice<AxisInfoEx> *> /*operands*/) override {
     auto intAttr = dyn_cast<IntegerAttr>(op.getValue());
     auto boolAttr = dyn_cast<BoolAttr>(op.getValue());
     if (intAttr || boolAttr) {
@@ -310,8 +312,8 @@ public:
   using BinaryOpVisitorImpl<OpTy>::BinaryOpVisitorImpl;
 
 private:
-  int64_t getDivisibility(OpTy op, const AxisInfoEx &lhs, const AxisInfoEx &rhs,
-                          int dim) override {
+  int64_t getDivisibility(OpTy /*op*/, const AxisInfoEx &lhs,
+                          const AxisInfoEx &rhs, int dim) override {
     // lhs = k * d_lhs = k * k' * gcd(d_lhs, d_rhs)
     // rhs = p * d_rhs = p * p' * gcd(d_lhs, d_rhs)
     // lhs + rhs = k * d_lhs + p * d_rhs = (k * d_lhs + p * d_rhs) *
@@ -320,12 +322,12 @@ private:
     return gcd(lhs.getDivisibility(dim), rhsDivisibility);
   }
 
-  int64_t getContinualSize(OpTy op, const AxisInfoEx &lhs,
+  int64_t getContinualSize(OpTy /*op*/, const AxisInfoEx &lhs,
                            const AxisInfoEx &rhs, int dim) override {
     return gcd(lhs.getContinualSize(dim), rhs.getContinualSize(dim));
   }
 
-  int64_t getContinualInterval(OpTy op, const AxisInfoEx &lhs,
+  int64_t getContinualInterval(OpTy /*op*/, const AxisInfoEx &lhs,
                                const AxisInfoEx &rhs, int dim) override {
     if (lhs.getContinualInterval(dim) ==
             AxisInfoEx::kDefaultContinualInterval ||
@@ -335,7 +337,7 @@ private:
         applyOp(lhs.getContinualInterval(dim), rhs.getContinualInterval(dim)));
   }
 
-  std::optional<int64_t> getConstantValue(OpTy op, const AxisInfoEx &lhs,
+  std::optional<int64_t> getConstantValue(OpTy /*op*/, const AxisInfoEx &lhs,
                                           const AxisInfoEx &rhs) override {
     if (!lhs.getConstantValue().has_value() ||
         !rhs.getConstantValue().has_value()) {
@@ -365,20 +367,20 @@ public:
   using BinaryOpVisitorImpl<arith::MulIOp>::BinaryOpVisitorImpl;
 
 private:
-  int64_t getDivisibility(arith::MulIOp op, const AxisInfoEx &lhs,
+  int64_t getDivisibility(arith::MulIOp /*op*/, const AxisInfoEx &lhs,
                           const AxisInfoEx &rhs, int dim) override {
     auto lhsDivisibility = lhs.getDivisibility(dim);
     auto rhsDivisibility = rhs.getDivisibility(dim);
     return multiplyDivisor(lhsDivisibility, rhsDivisibility);
   }
 
-  int64_t getContinualSize(arith::MulIOp op, const AxisInfoEx &lhs,
+  int64_t getContinualSize(arith::MulIOp /*op*/, const AxisInfoEx &lhs,
                            const AxisInfoEx &rhs, int dim) override {
     return std::max(gcd(lhs.getConstancy(dim), rhs.getContinualSize(dim)),
                     gcd(lhs.getContinualSize(dim), rhs.getConstancy(dim)));
   }
 
-  int64_t getContinualInterval(arith::MulIOp op, const AxisInfoEx &lhs,
+  int64_t getContinualInterval(arith::MulIOp /*op*/, const AxisInfoEx &lhs,
                                const AxisInfoEx &rhs, int dim) override {
     if (lhs.getContinualInterval(dim) ==
             AxisInfoEx::kDefaultContinualInterval ||
@@ -398,7 +400,7 @@ private:
     return std::max(lhsStrideValue, rhsStrideValue);
   }
 
-  std::optional<int64_t> getConstantValue(arith::MulIOp op,
+  std::optional<int64_t> getConstantValue(arith::MulIOp /*op*/,
                                           const AxisInfoEx &lhs,
                                           const AxisInfoEx &rhs) override {
     if (lhs.getConstantValue().has_value() &&
@@ -606,7 +608,7 @@ public:
   using AxisInfoExVisitorImpl<triton::LoadOp>::AxisInfoExVisitorImpl;
 
   AxisInfoEx getAxisInfoEx(
-      triton::LoadOp op,
+      triton::LoadOp /*op*/,
       ArrayRef<const dataflow::Lattice<AxisInfoEx> *> operands) override {
     // If pointers and mask both have constancy properties, those properties
     // will also extend to output.
@@ -894,7 +896,7 @@ public:
   using AxisInfoExVisitorImpl<OpTy>::AxisInfoExVisitorImpl;
 
   AxisInfoEx getAxisInfoEx(
-      OpTy op,
+      OpTy /*op*/,
       ArrayRef<const dataflow::Lattice<AxisInfoEx> *> operands) override {
     assert((std::is_same_v<OpTy, arith::AndIOp> ||
             std::is_same_v<OpTy, arith::OrIOp> ||
@@ -1039,7 +1041,7 @@ public:
   using AxisInfoExVisitorImpl<OpTy>::AxisInfoExVisitorImpl;
 
   AxisInfoEx getAxisInfoEx(
-      OpTy op,
+      OpTy /*op*/,
       ArrayRef<const dataflow::Lattice<AxisInfoEx> *> operands) override {
     auto lhsInfo = operands[0]->getValue();
     auto rhsInfo = operands[1]->getValue();
@@ -1342,12 +1344,12 @@ unsigned ModuleAxisInfoExAnalysis::getPtrContiguity(Value ptr) {
   auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
   if (!tensorTy)
     return 1;
-  auto layout = tensorTy.getEncoding();
+  [[maybe_unused]] auto layout = tensorTy.getEncoding();
 
   // Here order should be ordered by contiguous first, so the first element
   // should have the largest contiguous.
   auto order = triton::gpu::getOrder(tensorTy);
-  unsigned align = getPtrAlignment(ptr);
+  [[maybe_unused]] unsigned align = getPtrAlignment(ptr);
 
   // auto uniqueContigPerThread =
   //     triton::gpu::getUniqueContigPerThread(layout, tensorTy.getShape());
@@ -1367,7 +1369,7 @@ unsigned ModuleAxisInfoExAnalysis::getPtrAlignment(Value ptr) {
   auto *axisInfo = getAxisInfoEx(ptr);
   if (!axisInfo)
     return 1;
-  auto layout = tensorTy.getEncoding();
+  [[maybe_unused]] auto layout = tensorTy.getEncoding();
   auto order = triton::gpu::getOrder(tensorTy);
   auto maxMultipleBytes = axisInfo->getDivisibility(order[0]);
   auto maxContig = axisInfo->getContiguity(order[0]);
@@ -1466,7 +1468,10 @@ void ModuleAxisInfoExAnalysis::update(CallOpInterface callOp,
       callee.setArgAttr(index, attrName, attr);
     };
     auto axisInfoEx = axisInfoExMap->lookup(value);
-    assert(axisInfoEx.getRank() == 1 && "only scalar arguments are supported");
+    // Only scalar arguments are supported. Do not forward multi-dimensional
+    // AxisInfo to the callee.
+    if (axisInfoEx.getRank() != 1)
+      continue;
     setAttrFn("tt.divisibility", axisInfoEx.getDivisibility(0));
     if (axisInfoEx.getContinualInterval(0) == 0)
       setAttrFn("tt.constancy", axisInfoEx.getContinualSize(0));

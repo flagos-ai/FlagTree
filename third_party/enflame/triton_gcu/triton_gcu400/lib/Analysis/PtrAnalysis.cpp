@@ -408,6 +408,10 @@ bool PtrAnalysis::visitOperand(
     printBeforeVisit(op);
     visitOperandLoad(rewriter, loc, op, state, knownPtrs);
     printAfterVisit(op);
+  } else if (auto op = operand.getDefiningOp<triton::gcu::MemDescToPtrOp>()) {
+    printBeforeVisit(op);
+    visitOperandMemDescToPtr(rewriter, loc, op, state, knownPtrs);
+    printAfterVisit(op);
   } else {
     operand.dump();
     return false;
@@ -421,7 +425,39 @@ void PtrAnalysis::visitBlockArgument(
   assert(state.isEmpty());
 
   assert(!isa<scf::ForOp>(blockArg.getOwner()->getParentOp()));
-  state.source = blockArg;
+
+  // Resolve redundant block arguments (single-predecessor blocks) to their
+  // incoming values. This prevents dangling Value references when Region
+  // Simplification later erases these block arguments via
+  // dropRedundantArguments.
+  Value source = blockArg;
+  llvm::SmallPtrSet<Value, 4> visited;
+  while (auto arg = dyn_cast<BlockArgument>(source)) {
+    if (!visited.insert(source).second)
+      break;
+    Block *block = arg.getOwner();
+    Block *pred = block->getSinglePredecessor();
+    if (!pred)
+      break;
+    auto *terminator = pred->getTerminator();
+    unsigned argNum = arg.getArgNumber();
+    if (auto condBr = dyn_cast<cf::CondBranchOp>(terminator)) {
+      auto operands = (condBr.getTrueDest() == block)
+                          ? condBr.getTrueDestOperands()
+                          : condBr.getFalseDestOperands();
+      if (argNum >= operands.size())
+        break;
+      source = operands[argNum];
+    } else if (auto br = dyn_cast<cf::BranchOp>(terminator)) {
+      auto operands = br.getDestOperands();
+      if (argNum >= operands.size())
+        break;
+      source = operands[argNum];
+    } else {
+      break;
+    }
+  }
+  state.source = source;
 }
 
 void PtrAnalysis::visitOperandConstSplat(
@@ -759,6 +795,14 @@ void PtrAnalysis::visitOperandExtui(
   state.setState(rewriter, loc, srcState);
 }
 
+void PtrAnalysis::visitOperandMemDescToPtr(
+    PatternRewriter &rewriter, Location loc,
+    triton::gcu::MemDescToPtrOp memdescToPtrOp, PtrState &state,
+    llvm::SmallDenseMap<Value, PtrState> &knownPtrs) {
+  assert(state.isEmpty());
+  state.source = memdescToPtrOp.getResult();
+}
+
 bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads);
 bool isMaskCandidate(Value v, llvm::DenseMap<Value, bool> &valueToCandiates);
 
@@ -832,7 +876,7 @@ void PtrAnalysis::rewriteYieldOp(
         operands.push_back(constOp.getResult());
       } else {
         operands.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), s.get<Value>()));
+            loc, rewriter.getIndexType(), cast<Value>(s)));
       }
     }
 
@@ -841,7 +885,7 @@ void PtrAnalysis::rewriteYieldOp(
              "PtrState strides for yield within for loop not expected to be "
              "attribute.");
       operands.push_back(rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getIndexType(), s.get<Value>()));
+          loc, rewriter.getIndexType(), cast<Value>(s)));
     }
   }
 
@@ -856,7 +900,7 @@ void PtrAnalysis::rewriteYieldOp(
         state.start = constOp.getResult();
       } else {
         operands.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), state.start.get<Value>()));
+            loc, rewriter.getIndexType(), cast<Value>(state.start)));
       }
     }
     if (state.end) {
@@ -868,7 +912,7 @@ void PtrAnalysis::rewriteYieldOp(
         state.end = constOp.getResult();
       } else {
         operands.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), state.end.get<Value>()));
+            loc, rewriter.getIndexType(), cast<Value>(state.end)));
       }
     }
   }
@@ -970,7 +1014,7 @@ LogicalResult PtrAnalysis::rewriteForOp(
         state.offsets[j] = constOp.getResult();
       } else {
         newInitArgs.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), s.get<Value>()));
+            loc, rewriter.getIndexType(), cast<Value>(s)));
       }
     }
 
@@ -983,7 +1027,7 @@ LogicalResult PtrAnalysis::rewriteForOp(
         state.strides[j] = constOp.getResult();
       } else {
         newInitArgs.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), s.get<Value>()));
+            loc, rewriter.getIndexType(), cast<Value>(s)));
       }
     }
   }
@@ -999,7 +1043,7 @@ LogicalResult PtrAnalysis::rewriteForOp(
         state.start = constOp.getResult();
       } else {
         newInitArgs.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), state.start.get<Value>()));
+            loc, rewriter.getIndexType(), cast<Value>(state.start)));
       }
     }
 
@@ -1012,7 +1056,7 @@ LogicalResult PtrAnalysis::rewriteForOp(
         state.end = constOp.getResult();
       } else {
         newInitArgs.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), state.end.get<Value>()));
+            loc, rewriter.getIndexType(), cast<Value>(state.end)));
       }
     }
     (void)i;
@@ -1252,21 +1296,21 @@ bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads) {
       .Case<arith::SelectOp, arith::DivSIOp, arith::SubIOp, arith::RemSIOp,
             arith::RemUIOp, arith::MinSIOp, arith::FPToSIOp, arith::FPToUIOp,
             triton::DotOp, triton::ReduceOp, triton::ReshapeOp,
-            triton::gpu::ConvertLayoutOp, triton::HistogramOp, triton::CatOp>(
-          [&](auto op) {
-            // Now bypass SelectOP, SubIOp, DivSIOp, RemSIOp and RemUIOp.
-            // Optimization will be considered in subsequent steps
-            LLVM_DEBUG(llvm::dbgs()
-                       << "bypass from :" << op->getName().getStringRef().str()
-                       << "\n");
-            bypass = true;
-          })
+            triton::gpu::ConvertLayoutOp, triton::HistogramOp, triton::CatOp,
+            triton::IntToPtrOp>([&](auto op) {
+        // Now bypass SelectOP, SubIOp, DivSIOp, RemSIOp and RemUIOp.
+        // Optimization will be considered in subsequent steps
+        LLVM_DEBUG(llvm::dbgs() << "bypass from :"
+                                << op->getName().getStringRef().str() << "\n");
+        bypass = true;
+      })
       .Case<scf::ForOp, scf::IfOp, scf::WhileOp>([&](auto op) {
         // Now bypass ForOp, WhileOp, IfOp op
         LLVM_DEBUG(llvm::dbgs() << "bypass from :"
                                 << op->getName().getStringRef().str() << "\n");
         bypass = true;
       })
+      .Case<triton::gcu::MemDescToPtrOp>([&](auto op) { bypass = false; })
       .Default([&](auto op) {
         LLVM_DEBUG(llvm::dbgs()
                    << "bypass from :" << op->getName().getStringRef().str()
@@ -1460,7 +1504,9 @@ bool isMaskCandidate(Value v, llvm::DenseMap<Value, bool> &valueToCandiates) {
         if (op.getPredicate() == arith::CmpIPredicate::slt ||
             op.getPredicate() == arith::CmpIPredicate::ult ||
             op.getPredicate() == arith::CmpIPredicate::sge ||
-            op.getPredicate() == arith::CmpIPredicate::uge) {
+            op.getPredicate() == arith::CmpIPredicate::uge ||
+            op.getPredicate() == arith::CmpIPredicate::sgt ||
+            op.getPredicate() == arith::CmpIPredicate::ugt) {
           if (auto tensorType = dyn_cast<TensorType>(op.getLhs().getType())) {
             auto shape = tensorType.getShape();
             if (shape.size() >= 2 &&
@@ -1615,7 +1661,7 @@ bool rewriteForBlocks(triton::FuncOp originalFunc, Value &condition) {
   Block *elseEntry = nullptr;
   std::map<Block *, Block *> mapBlock;
   IRMapping mapperBlock;
-  for (int i = 0; i < original_size; ++i) {
+  for (size_t i = 0; i < original_size; ++i) {
     Block *cloneBlock = originalBlocks[i];
     Block *newBlock = builder.createBlock(&originalFunc.getBody());
     if (!elseEntry)
@@ -1662,21 +1708,7 @@ bool rewriteForBlocks(triton::FuncOp originalFunc, Value &condition) {
   builder.setInsertionPointToStart(newEntryBlock);
   LLVM_DEBUG(llvm::dbgs() << "create new entry block end--------------- \n");
 
-  Value tmp_condition = builder.create<arith::ConstantIntOp>(loc, 1, 1);
-  Value zero = builder.create<arith::ConstantIntOp>(loc, 0, 32);
-  Value dynamicStride = nullptr;
-  for (auto arg : originalFunc.getArguments()) {
-    if (arg.getType().isInteger(32)) {
-      dynamicStride = arg;
-      break;
-    }
-  }
-
-  if (dynamicStride) {
-    tmp_condition = builder.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::ult, dynamicStride, zero);
-  }
-  condition = tmp_condition;
+  condition = builder.create<arith::ConstantIntOp>(loc, 1, 1);
   LLVM_DEBUG(llvm::dbgs() << "create temp condition \n");
 
   SmallVector<Value> entryArgs;
@@ -1702,20 +1734,6 @@ bool rewriteForOneBlock(triton::FuncOp originalFunc, Value &condition) {
   skipCloneOps.insert(originalTerminator);
 
   Value tmp_condition = builder.create<arith::ConstantIntOp>(loc, 1, 1);
-  Value zero = builder.create<arith::ConstantIntOp>(loc, 0, 32);
-  Value dynamicStride = nullptr;
-  for (auto arg : originalFunc.getArguments()) {
-    if (arg.getType().isInteger(32)) {
-      dynamicStride = arg;
-      break;
-    }
-  }
-
-  if (dynamicStride) {
-    tmp_condition = builder.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::ult, dynamicStride, zero);
-    skipCloneOps.insert(zero.getDefiningOp());
-  }
   condition = tmp_condition;
   skipCloneOps.insert(tmp_condition.getDefiningOp());
   SmallVector<Value> callArgs;
@@ -1823,17 +1841,38 @@ bool PtrAnalysis::preProcessEntry(ModuleOp &moduleOp, Value &condition) {
   return true;
 }
 
+// Trace through type-cast ops (IndexCastOp, ExtSIOp, ExtUIOp, TruncIOp)
+// to find the original BlockArgument. Returns nullptr if not found.
+static Value traceToBlockArg(Value v) {
+  while (v) {
+    if (isa<BlockArgument>(v))
+      return v;
+    auto *defOp = v.getDefiningOp();
+    if (!defOp)
+      return nullptr;
+    if (auto indexCast = dyn_cast<arith::IndexCastOp>(defOp))
+      v = indexCast.getIn();
+    else if (auto extsi = dyn_cast<arith::ExtSIOp>(defOp))
+      v = extsi.getIn();
+    else if (auto extui = dyn_cast<arith::ExtUIOp>(defOp))
+      v = extui.getIn();
+    else if (auto trunci = dyn_cast<arith::TruncIOp>(defOp))
+      v = trunci.getIn();
+    else
+      return nullptr;
+  }
+  return nullptr;
+}
+
 Value CheckStrideRatio(OpBuilder builder, Location loc,
                        SmallVector<SmallVector<Operation *>> &strideRatioOps) {
   Value CheckCondition = builder.create<arith::ConstantIntOp>(loc, 1, 1);
   for (auto ratioOps : strideRatioOps) {
     SmallVector<Value> strides;
     for (auto strideOp : ratioOps) {
-      if (dyn_cast<arith::IndexCastOp>(strideOp)) {
-        auto indexCastOP = cast<arith::IndexCastOp>(strideOp);
-        if (isa<IntegerType>(indexCastOP.getIn().getType()) &&
-            isa<BlockArgument>(indexCastOP.getIn())) {
-          strides.push_back(indexCastOP.getIn());
+      if (auto blockArg = traceToBlockArg(strideOp->getResult(0))) {
+        if (isa<IntegerType>(blockArg.getType())) {
+          strides.push_back(blockArg);
         }
       } else if (dyn_cast<arith::ConstantOp>(strideOp)) {
         auto constStride = cast<arith::ConstantOp>(strideOp);
@@ -1842,8 +1881,8 @@ Value CheckStrideRatio(OpBuilder builder, Location loc,
       }
     }
     auto zero = builder.create<arith::ConstantIntOp>(loc, 0, 32);
-    for (int i = 0; i < strides.size(); ++i) {
-      for (int j = i + 1; j < strides.size(); ++j) {
+    for (size_t i = 0; i < strides.size(); ++i) {
+      for (size_t j = i + 1; j < strides.size(); ++j) {
         // auto cmp = builder.create<arith::CmpIOp>(loc,
         //           arith::CmpIPredicate::sgt, strides[i], strides[j]);
         // auto curCond = builder.create<scf::IfOp>(loc, cmp,
@@ -1920,12 +1959,14 @@ void PtrAnalysis::postProcessEntry(ModuleOp &moduleOp, Value &condition,
 
         for (auto ratioOps : strideRatioOps) {
           for (auto strideOp : ratioOps) {
-            if (dyn_cast<arith::IndexCastOp>(strideOp)) {
-              auto indexCastOP = cast<arith::IndexCastOp>(strideOp);
-              if (isa<IntegerType>(indexCastOP.getIn().getType()) &&
-                  isa<BlockArgument>(indexCastOP.getIn())) {
+            if (auto blockArg = traceToBlockArg(strideOp->getResult(0))) {
+              if (isa<IntegerType>(blockArg.getType())) {
+                auto castArg = blockArg;
+                if (blockArg.getType() != builder.getI32Type())
+                  castArg = builder.create<arith::IndexCastOp>(
+                      loc, builder.getI32Type(), blockArg);
                 auto curCondition = builder.create<arith::CmpIOp>(
-                    loc, arith::CmpIPredicate::sgt, indexCastOP.getIn(), zero);
+                    loc, arith::CmpIPredicate::sgt, castArg, zero);
                 newCondition = builder.create<arith::AndIOp>(loc, newCondition,
                                                              curCondition);
               }
