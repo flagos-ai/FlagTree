@@ -76,14 +76,22 @@ def do_bench_npu(funcs, warmup=25, active=100, prof_dir=None, clear_l2_cache=Fal
         for _ in range(5):
             cache.zero_()
             fn()
+            di.synchronize()
     end_event.record()
-    di.synchronize()
     estimate_ms = start_event.elapsed_time(end_event) / 5
 
     n_warmup = min(5, max(1, int(warmup / estimate_ms)))
     n_repeat = min(30, max(1, int(active / estimate_ms)))
 
+    # cal warmup num
     total = n_warmup + n_repeat
+    print(f"total={total}, n_warmup={n_warmup}, n_repeat={n_repeat}")
+
+    # Run for 300 μs to raise the frequency to 800.
+    mat_a = torch.randn(4096, 4096).to(dtype=torch.bfloat16).npu()
+    mat_b = torch.randn(4096, 4096).to(dtype=torch.bfloat16).npu()
+    mat_c = torch.matmul(mat_a, mat_b)
+    mat_c.cpu()
     with torch_npu.profiler.profile(
             activities=[torch_npu.profiler.ProfilerActivity.NPU],
             on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(torch_path),
@@ -94,20 +102,15 @@ def do_bench_npu(funcs, warmup=25, active=100, prof_dir=None, clear_l2_cache=Fal
             with_modules=False,
             experimental_config=experimental_config,
     ) as prof:
-        # Run for 300 μs to raise the frequency to 800.
-        mat_a = torch.randn(4096, 4096).to(dtype=torch.bfloat16)
-        mat_b = torch.randn(4096, 4096).to(dtype=torch.bfloat16)
-        mat_c = torch.matmul(mat_a, mat_b)
-        mat_c.cpu()
-
         for fn in funcs:
-            # execute
             for _ in builtins.range(total):
                 if clear_l2_cache:
                     do_bench_clear(buffer.data_ptr(), buffer.numel(), stream)
+                    torch.npu.synchronize()
                 fn()
                 torch.npu.synchronize()
-
+    if clear_l2_cache:
+        del buffer
     if collect_prof:
         time_cost = _collect_prof_result(torch_path, funcs, n_warmup, n_repeat, return_mode=return_mode,
                                          quantiles=quantiles)  # read kernel_details.csv
@@ -205,7 +208,7 @@ def _collect_prof_result(base_dir: str, funcs, num_warmup: int, num_active: int,
     :type num_active: int
     :param key: filter key for kernel name
     :type key: str
-    :param return mode
+    :param return mode: the mode for returning the collected times
     :type return_mode: str
     :param quantiles: Performance percentile to return in addition to the median.
     :type quantiles: list[float], optional
