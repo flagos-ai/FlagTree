@@ -13,7 +13,7 @@
 #include "ascend/include/TritonToStructured/Passes.h"
 #include "ascend/include/TritonToAnnotation/Passes.h"
 #include "ascend/include/TritonToLinalg/Passes.h"
-#include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
+#include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h"
 #include "ascend/include/TritonToUnstructure/Passes.h"
 #include "ascend/include/TritonToHIVM/Passes.h"
