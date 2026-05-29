@@ -515,6 +515,14 @@ def causal_conv1d_fn(
     stride_istate_token = 0
     num_cache_lines = 0
     BLOCK_M = 128
+    if dim <= 64:
+        BLOCK_N = 64
+    elif dim <= 128:
+        BLOCK_N = 128
+    elif dim <= 256:
+        BLOCK_N = 256
+    else:
+        BLOCK_N = 512
     if conv_states is not None:
         # extensions to support vLLM:
         # 1. conv_states is used to replaced initial_states
@@ -663,7 +671,7 @@ def causal_conv1d_fn(
         NP2_STATELEN=np2_statelen,
         # launch_cooperative_grid=True
         BLOCK_M=BLOCK_M,
-        BLOCK_N=512,
+        BLOCK_N=BLOCK_N,
         num_stages=2,
     )
 
@@ -876,6 +884,8 @@ def test_causal_conv1d_varlen(batch, with_padding, dim, seqlen, width, has_bias,
 if __name__ == "__main__":
     print(torch_npu.__version__)
     test_causal_conv1d_varlen(batch=4, with_padding=True, dim=64, seqlen=8, width=4, has_bias=True,
+                              silu_activation=True, itype=torch.bfloat16)
+    test_causal_conv1d_varlen(batch=4, with_padding=True, dim=1024, seqlen=8, width=4, has_bias=True,
                               silu_activation=True, itype=torch.bfloat16)
     test_causal_conv1d_varlen(batch=8, with_padding=True, dim=4096, seqlen=6, width=3, has_bias=False,
                               silu_activation=True, itype=torch.bfloat16)
