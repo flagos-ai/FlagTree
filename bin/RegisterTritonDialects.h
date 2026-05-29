@@ -7,6 +7,7 @@
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #endif
+#ifdef __PROTON__
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonAMDGPUToLLVM/Passes.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/Passes.h"
@@ -14,6 +15,7 @@
 #include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "proton/Dialect/include/Dialect/ProtonGPU/IR/Dialect.h"
 #include "proton/Dialect/include/Dialect/ProtonGPU/Transforms/Passes.h"
+#endif
 #ifdef __TLE__
 #include "third_party/tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/IR/Dialect.h" // flagtree tle raw
@@ -65,7 +67,9 @@ void registerTestAMDGPUMembarPass();
 void registerTestTritonAMDGPURangeAnalysis();
 void registerTestLoopPeelingPass();
 namespace proton {
+#ifdef __PROTON__
 void registerTestScopeIdAllocationPass();
+#endif
 } // namespace proton
 } // namespace test
 } // namespace mlir
@@ -142,6 +146,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 #endif
 
   // Proton passes
+#ifdef __PROTON__
   mlir::test::proton::registerTestScopeIdAllocationPass();
   mlir::triton::proton::registerConvertProtonToProtonGPU();
   mlir::triton::proton::gpu::registerConvertProtonNvidiaGPUToLLVM();
@@ -150,6 +155,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::proton::gpu::registerAllocateProtonGlobalScratchBufferPass();
   mlir::triton::proton::gpu::registerScheduleBufferStorePass();
   mlir::triton::proton::gpu::registerAddSchedBarriersPass();
+#endif
 
   registry.insert<
       mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
@@ -167,8 +173,10 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 #ifdef __AMD__
       mlir::triton::amdgpu::TritonAMDGPUDialect,
 #endif
+#ifdef __PROTON__
       mlir::triton::proton::ProtonDialect,
       mlir::triton::proton::gpu::ProtonGPUDialect,
+#endif
 #ifdef __AMD__
       mlir::ROCDL::ROCDLDialect,
 #endif
