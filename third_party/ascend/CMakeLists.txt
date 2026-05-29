@@ -36,7 +36,7 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/lib
 add_subdirectory(include)
 add_subdirectory(lib)
 
-#add_triton_library(Registrar Registrar.cc)
+add_triton_library(Registrar Registrar.cc)
 
 if(LLVM_MAJOR_VERSION_21_COMPATIBLE)
   set(_MLIRMeshDialect_LIB MLIRMeshDialect)
