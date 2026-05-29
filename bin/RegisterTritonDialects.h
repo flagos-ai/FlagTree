@@ -99,12 +99,12 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::gpu::registerAllocateSharedMemoryPass();
   mlir::triton::gpu::registerTritonGPUAllocateWarpGroups();
   mlir::triton::gpu::registerTritonGPUGlobalScratchAllocationPass();
+#ifdef __NVIDIA__
   mlir::triton::registerConvertWarpSpecializeToLLVM();
   mlir::triton::registerConvertTritonGPUToLLVMPass();
-#ifdef __NVIDIA__
   mlir::triton::registerConvertNVGPUToLLVMPass();
-#endif
   mlir::triton::registerAllocateSharedMemoryNvPass();
+#endif
   mlir::registerLLVMDIScope();
 
 #ifdef __AMD__
@@ -133,10 +133,10 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerTritonAMDFoldTrueCmpI();
 #endif
 
+#ifdef __NVIDIA__
   // NVWS passes
   mlir::triton::registerNVWSTransformsPasses();
 
-#ifdef __NVIDIA__
   // NVGPU transform passes
   mlir::registerNVHopperTransformsPasses();
 #endif
@@ -159,8 +159,9 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::gpu::TritonGPUDialect,
       mlir::triton::instrument::TritonInstrumentDialect,
       mlir::math::MathDialect, mlir::arith::ArithDialect, mlir::scf::SCFDialect,
-      mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect, mlir::NVVM::NVVMDialect,
+      mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect,
 #ifdef __NVIDIA__
+      mlir::NVVM::NVVMDialect,
       mlir::triton::nvgpu::NVGPUDialect, mlir::triton::nvws::NVWSDialect,
 #endif
 #ifdef __AMD__
