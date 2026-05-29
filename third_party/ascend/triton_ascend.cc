@@ -352,7 +352,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
 
   m.def("add_triton_to_structure", [](mlir::PassManager &pm,
     bool enableMaskFallbackConversion, bool optimizeDynamicOffset) {
-    pm.addPass(mlir::triton::createTritonToStructuredPass(
+    pm.addPass(mlir::triton::createTritonToStructuredIncubatedPass(
       enableMaskFallbackConversion, optimizeDynamicOffset)); });
 
   m.def("add_triton_to_annotation", [](mlir::PassManager &pm) {
@@ -361,7 +361,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
   m.def("add_triton_to_linalg", [](mlir::PassManager &pm, bool globalKernel,
     bool namedOps, bool enableNd2nzOnVector, bool enableSelectAnalysis,
     bool compileOn91095) {
-    pm.addPass(mlir::triton::createTritonToLinalgPass(
+    pm.addPass(mlir::triton::createTritonToLinalgIncubatedPass(
       globalKernel, namedOps, enableNd2nzOnVector,
       enableSelectAnalysis, compileOn91095)); });
 
@@ -370,7 +370,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
     TritonToUnstructureOptions opts;
     opts.compileOn91095 = compileOn91095;
     opts.forceSimtTemplate = forceSimtTemplate;
-    pm.addPass(mlir::triton::createTritonToUnstructurePass(opts));});
+    pm.addPass(mlir::triton::createTritonToUnstructureIncubatedPass(opts));});
 
   m.def("add_triton_to_hfusion", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createTritonToHFusionPass());});
