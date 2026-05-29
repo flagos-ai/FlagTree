@@ -358,7 +358,7 @@ void tt::scheduleDependencies(scf::ForOp forOp, tt::CoarseSchedule &schedule) {
         insertOrderDependency(insertOrderDependency, prevBarrier, stage,
                               cluster);
       }
-#endif
     }
   }
+#endif
 }
