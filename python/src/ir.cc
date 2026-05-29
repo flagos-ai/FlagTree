@@ -1767,7 +1767,12 @@ void init_triton_ir(py::module &&m) {
           context->disableMultithreading();
           self.enableCrashReproducerGeneration(reproducerPath,
                                                /*genLocalReproducer=*/true);
-        } else {
+        } else if (std::getenv("TRITON_ENABLE_CONSOLE_REPRODUCER") != nullptr) {
+          // Off by default: LLVM a66376b0 cannot serialize
+          // ConvertVectorToLLVM's Option<VectorTransformsOptions> in
+          // printAsTextualPipeline (PassOptions.h:168 "unknown data value for
+          // option"), so reproducer generation aborts and masks the real pass
+          // error.
           self.enableCrashReproducerGeneration(makeConsoleReproducer());
         }
 

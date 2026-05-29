@@ -43,6 +43,9 @@ elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
   set(CMAKE_MODULE_LINKER_FLAGS "-fuse-ld=lld-21")
   set(CMAKE_SHARED_LINKER_FLAGS "-fuse-ld=lld-21")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-dangling-assignment-gsl")
+elseif(FLAGTREE_BACKEND STREQUAL "cpu")
+  # CPU backend - uses standard host compiler
+  add_definitions(-D__CPU__)
 endif()
 set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
 if(FLAGTREE_PLUGIN)
@@ -51,6 +54,23 @@ endif()
 
 project(triton CXX C)
 include(CTest)
+
+# CPU backend OpenMP support (must be after project() to have languages enabled)
+if(FLAGTREE_BACKEND STREQUAL "cpu")
+  find_package(OpenMP)
+  if(OpenMP_CXX_FOUND)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+    message(STATUS "OpenMP found: ${OpenMP_CXX_FLAGS}")
+  else()
+    message(STATUS "OpenMP not found; CPU kernels will run single-threaded")
+  endif()
+  # ARM64 ISA features for the NEON/SVE2 TLE runtime (vdotq_s32 / i8mm / bf16).
+  # Required so always_inline NEON intrinsics compile in TritonCPURuntime.
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv9-a+sve2+i8mm+bf16+fp16+dotprod -msve-vector-bits=128")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv9-a+sve2+i8mm+bf16+fp16+dotprod -msve-vector-bits=128")
+  endif()
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -223,6 +243,12 @@ if (FLAGTREE_BACKEND MATCHES "^(cambricon|aipu|tsingmicro|enflame)$")
   include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
   add_subdirectory(include)
   add_subdirectory(lib)
+elseif(FLAGTREE_BACKEND STREQUAL "cpu")
+  # CPU backend needs include and lib for Triton dialects
+  include_directories(${PROJECT_SOURCE_DIR}/include)
+  include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+  add_subdirectory(include)
+  add_subdirectory(lib)
 elseif(NOT FLAGTREE_BACKEND)
   add_subdirectory(include)
   add_subdirectory(lib)
@@ -288,6 +314,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
   # Add TLE plugin
   list(APPEND TRITON_PLUGIN_NAMES "tle")
   add_subdirectory(third_party/tle)
+
+  # TLE-ARM64 plugin
+  if(FLAGTREE_BACKEND STREQUAL "cpu")
+    list(APPEND TRITON_PLUGIN_NAMES "tle_arm64")
+    add_subdirectory(third_party/tle_arm64)
+  endif()
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
@@ -388,6 +420,55 @@ if(TRITON_BUILD_PYTHON_MODULE)
       LLVMRISCVCodeGen
       LLVMRISCVAsmParser
     )
+  elseif(FLAGTREE_BACKEND STREQUAL "cpu")
+    set(TRITON_LIBRARIES
+      ${triton_libs}
+      ${triton_plugins}
+
+      # Core MLIR infrastructure
+      MLIRIR
+      MLIRPass
+      MLIRTransforms
+      MLIRSupport
+      MLIRBytecodeWriter
+      MLIRLLVMDialect
+      MLIRTargetLLVMIRExport
+
+      # Control flow and arithmetic lowering
+      MLIRControlFlowToLLVM
+      MLIRArithToLLVM
+      MLIRFuncToLLVM
+      MLIRIndexToLLVM
+      MLIRSCFToControlFlow
+      MLIRReconcileUnrealizedCasts
+      MLIRUBToLLVM
+
+      # Math lowering
+      MLIRMathToLLVM
+      MLIRMathToLibm
+
+      # Vector and affine lowering (CPU-specific)
+      MLIRVectorToSCF
+      MLIRAffineToStandard
+      MLIRAffineDialect
+      MLIRVectorDialect
+      MLIRVectorTransforms
+
+      # MemRef lowering
+      MLIRMemRefToLLVM
+      MLIRMemRefTransforms
+      MLIRMemRefDialect
+
+      # AMX translation (x86 only, but harmless on other arches)
+      MLIRAMXToLLVMIRTranslation
+
+      # LLVM
+      LLVMPasses
+    )
+    # OpenMP runtime linkage for parallel kernel dispatch
+    if(OpenMP_CXX_FOUND)
+      list(APPEND TRITON_LIBRARIES OpenMP::OpenMP_CXX)
+    endif()
   endif()
 
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64

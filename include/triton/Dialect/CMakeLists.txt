@@ -1,3 +1,6 @@
 add_subdirectory(Triton)
 add_subdirectory(TritonGPU)
 add_subdirectory(TritonNvidiaGPU)
+if(FLAGTREE_BACKEND STREQUAL "cpu")
+  add_subdirectory(TritonCPU)
+endif()
