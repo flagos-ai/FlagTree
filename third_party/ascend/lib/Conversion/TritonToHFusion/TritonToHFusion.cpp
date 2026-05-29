@@ -134,10 +134,10 @@ namespace {
   };
 
   struct TritonConv1dToHFusionConversion
-    : OpRewritePattern<triton::ascend::Conv1DOp> {
-    using OpRewritePattern<triton::ascend::Conv1DOp>::OpRewritePattern;
+    : OpRewritePattern<triton::ascend::Conv1dOp> {
+    using OpRewritePattern<triton::ascend::Conv1dOp>::OpRewritePattern;
 
-    LogicalResult matchAndRewrite(triton::ascend::Conv1DOp op,
+    LogicalResult matchAndRewrite(triton::ascend::Conv1dOp op,
       PatternRewriter &rewriter) const final {
       auto loc = op.getLoc();
 
