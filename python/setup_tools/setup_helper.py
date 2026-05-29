@@ -347,6 +347,10 @@ class CommonUtils:
         return package_dict
 
 
+def print_info(message):
+    print(f"\033[1;32m[INFO] {message}\033[0m")
+
+
 def handle_flagtree_backend():
     global ext_sourcedir
     if flagtree_backend:
