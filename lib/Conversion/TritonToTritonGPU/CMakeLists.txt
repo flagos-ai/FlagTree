@@ -1,3 +1,11 @@
+if(TRITON_BUILD_PROTON)
+  set(_ProtonIRLib ProtonIR)
+endif()
+
+if(FLAGTREE_TLE)
+  set(_TleIRLib TleIR)  # flagtree tle raw
+endif()
+
 add_triton_library(TritonToTritonGPU
     RelayoutTritonGPU.cpp
     TritonGPUConversion.cpp
@@ -11,7 +19,7 @@ add_triton_library(TritonToTritonGPU
     MLIRPass
     MLIRTransforms
     TritonIR
-    ProtonIR
+    ${_ProtonIRLib}
     TritonGPUIR
-    TleIR # flagtree tle raw
+    ${_TleIRLib}
 )

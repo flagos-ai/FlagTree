@@ -1,3 +1,21 @@
+if(COMPILE_NVIDIA)
+  set(_NVIDIA_SRC
+    WarpSpecialization/AutomaticWarpSpecialization.cpp
+    WarpSpecialization/LoadMMASpecialization.cpp
+    WarpSpecialization/Partition.cpp
+    WarpSpecialization/OptimizePartitionWarps.cpp
+    WarpSpecialization/PartitionBuilder.cpp
+    WarpSpecialization/PartitionLoops.cpp
+    WarpSpecialization/PartitionScheduling.cpp
+    WarpSpecialization/RewritePartitionDependencies.cpp
+  )
+  set(_NVIDIA_LIBS
+    TritonNvidiaGPUIR
+    NVWSIR
+    NVWSTransforms
+  )
+endif()
+
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
   ProcessSharedMemoryHint.cpp
@@ -28,14 +46,7 @@ add_triton_library(TritonGPUTransforms
   ReorderInstructions.cpp
   CoalesceAsyncCopy.cpp
   Utility.cpp
-  WarpSpecialization/AutomaticWarpSpecialization.cpp
-  WarpSpecialization/LoadMMASpecialization.cpp
-  WarpSpecialization/Partition.cpp
-  WarpSpecialization/OptimizePartitionWarps.cpp
-  WarpSpecialization/PartitionBuilder.cpp
-  WarpSpecialization/PartitionLoops.cpp
-  WarpSpecialization/PartitionScheduling.cpp
-  WarpSpecialization/RewritePartitionDependencies.cpp
+  ${_NVIDIA_SRC}
   DEPENDS
   TritonGPUTransformsIncGen
 
@@ -46,9 +57,7 @@ add_triton_library(TritonGPUTransforms
   TritonIR
   TritonTransforms
   TritonGPUIR
-  TritonNvidiaGPUIR
-  NVWSIR
-  NVWSTransforms
+  ${_NVIDIA_LIBS}
   TritonToTritonGPU
   TritonInstrumentIR
   MLIRTransformUtils
