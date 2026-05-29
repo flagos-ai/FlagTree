@@ -75,17 +75,24 @@ def enable_flagtree_third_party(name):
         return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
 
-def download_flagtree_third_party(name, condition, required=False, hock=None):
+def get_hook_instance(hook_name):
+    if not configs.activated_module:
+        return None
+    hook_instance = getattr(configs.activated_module, hook_name, None)
+    return hook_instance if callable(hook_instance) else None
+
+
+def download_flagtree_third_party(name, condition, required=False, hook=None):
     if condition:
         if enable_flagtree_third_party(name):
             submodule = utils.flagtree_submodules[name]
             downloader.download(module=submodule, required=required)
-            if callable(hock):
-                hock(third_party_base_dir=configs.flagtree_submodule_dir, backend=submodule,
-                     default_backends=configs.default_backends)
-
+            hook_func = get_hook_instance(hook)
+            if hook_func:
+                configs.default_backends = hook_func(third_party_base_dir=configs.flagtree_submodule_dir,
+                                                     backend=submodule, default_backends=configs.default_backends)
         else:
-            print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
+            print_info(f"Skip downloading {name} since USE_{name.upper()} is set to OFF")
 
 
 def post_install():
@@ -385,9 +392,9 @@ else:
     print('[INFO] FlagTree Offline Build: No offline build for triton origin toolkits')
     offline_build = False
 
-download_flagtree_third_party("triton_shared", hock=utils.default.precompile_hock, condition=(not flagtree_backend))
+#download_flagtree_third_party("triton_shared", hook=utils.default.precompile_hock, condition=(not flagtree_backend))
 
-download_flagtree_third_party("flir", condition=(flagtree_backend == "ascend"), hock=utils.ascend.precompile_hook_flir,
+download_flagtree_third_party("flir", condition=(flagtree_backend == "ascend"), hook="precompile_hook_flir",
                               required=True)
 
 handle_flagtree_backend()
