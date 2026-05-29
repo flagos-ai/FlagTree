@@ -100,7 +100,7 @@ class BackendInstaller:
             language_dir = None
 
         tools_dir = os.path.join(backend_src_dir, "tools")
-        if not os.path.exists(tools_dir):
+        if not os.path.exists(tools_dir) or backend_name in ("flir"):
             tools_dir = None
 
         for file in ["compiler.py", "driver.py"]:
