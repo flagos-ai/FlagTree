@@ -9,7 +9,7 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/Pass/PassManager.h"
 
-#include "ascend/include/AutoBlockify/Passes.h"
+#include "incubated/Conversion/AutoBlockifyIncubated/Passes.h"
 #include "ascend/include/TritonToStructured/Passes.h"
 #include "ascend/include/TritonToAnnotation/Passes.h"
 #include "ascend/include/TritonToLinalg/Passes.h"
@@ -20,10 +20,10 @@
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToLLVM/Passes.h"
 
-#include "ascend/include/DynamicCVPipeline/Passes.h"
-#include "ascend/include/DynamicCVPipeline/Common/BufferCountManager.h"
+#include "incubated/Conversion/DynamicCVPipelineIncubated/Passes.h"
+#include "incubated/Conversion/DynamicCVPipelineIncubated/Common/BufferCountManager.h"
 // todo: this code will be removed in version 530.
-#include "ascend/include/TritonAffinityOpt/Passes.h"
+#include "incubated/Conversion/TritonAffinityOptIncubated/Passes.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "ir.h" // TritonOpBuilder
