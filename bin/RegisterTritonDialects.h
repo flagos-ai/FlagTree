@@ -172,9 +172,11 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 #ifdef __AMD__
       mlir::ROCDL::ROCDLDialect,
 #endif
-      mlir::triton::gluon::GluonDialect,
 #ifdef __TLE__
+      mlir::triton::gluon::GluonDialect,
       mlir::triton::tle::TleDialect // flagtree tle raw
+#else
+      mlir::triton::gluon::GluonDialect
 #endif
       >();
 }
