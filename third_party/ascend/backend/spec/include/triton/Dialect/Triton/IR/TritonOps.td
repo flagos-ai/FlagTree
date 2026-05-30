@@ -14,12 +14,16 @@ include "mlir/Interfaces/ControlFlowInterfaces.td" // BranchOpInterface
 include "mlir/Interfaces/InferTypeOpInterface.td" // SameOperandsAndResultType
 include "mlir/Interfaces/CallInterfaces.td" // CallOpInterface
 include "triton/Dialect/Triton/IR/TritonOpInterfaces.td"
+include "mlir/IR/BuiltinAttributes.td"
 
 
 //
 // Interfaces
 //
 def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
+// begin flagtree tle
+def SharedMemory : Resource<"::mlir::triton::SharedMemory">;
+// end flagtree tle
 
 //
 // Op Base
@@ -247,31 +251,41 @@ def TT_LoadOp : TT_Op<"load", [
       OptionalAttr<TT_PaddingOptionAttr>:$padding,
       DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
       DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict,
-      DefaultValuedAttr<BoolAttr, "false">:$isVolatile
+      DefaultValuedAttr<BoolAttr, "false">:$isVolatile,
+      // begin flagtree tle
+      DefaultValuedAttr<StrAttr, "\"\"">:$flagtree_hints
+      // end flagtree tle
     );
 
     let results = (outs TT_Type:$result);
 
+    // begin flagtree tle
     let builders = [
         // A tensor of pointers or a pointer to a scalar
         OpBuilder<(ins "Value":$ptr, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
         // A tensor pointer with boundary check and padding
         OpBuilder<(ins "Value":$ptr, "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
         // A tensor of pointers or a pointer to a scalar with mask
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
         // A tensor of pointers or a pointer to a scalar with mask and other
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
         // A utility function to build the operation with all attributes
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
                        "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>
     ];
+    // end flagtree tle
 
     // Specify `cacheModifier` and `evictionPolicy` explicitly in the
     // assemblyFormat instead of as part of attr-dict so that they get printed
@@ -350,6 +364,10 @@ def TT_StoreOp : TT_Op<"store", [
 def TT_AtomicRMWOp : TT_Op<"atomic_rmw", [
   SameOperandsAndResultShape,
   SameOperandsAndResultEncoding,
+// begin flagtree tle
+  TypesMatchWith<"value type matches ptr type", "ptr", "val",
+                 "getPointeeType($_self)">,
+// end flagtree tle
   TypesMatchWith<"ptr type matches value type", "val", "ptr",
                  "getPointerTypeSameShape($_self)">,
   TypesMatchWith<"mask type matches value type",
@@ -366,7 +384,10 @@ def TT_AtomicRMWOp : TT_Op<"atomic_rmw", [
 
     let arguments = (ins
       TT_AtomicRMWAttr:$atomic_rmw_op,
-      Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$ptr,
+// begin flagtree tle
+      Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>,
+                           MemRead<SharedMemory>, MemWrite<SharedMemory>]>:$ptr,
+// end flagtree tle
       TT_Type:$val,
       Optional<TT_BoolLike>:$mask,
       TT_MemSemanticAttr:$sem,
@@ -386,10 +407,12 @@ def TT_AtomicRMWOp : TT_Op<"atomic_rmw", [
 def TT_AtomicCASOp : TT_Op<"atomic_cas", [
   SameOperandsAndResultShape,
   SameOperandsAndResultEncoding,
-  TypesMatchWith<"ptr type matches cmp type", "cmp", "ptr",
-                  "getPointerTypeSameShape($_self)">,
-  TypesMatchWith<"ptr type matches value type", "val", "ptr",
-                  "getPointerTypeSameShape($_self)">
+// begin flagtree tle
+  TypesMatchWith<"cmp type matches ptr type", "ptr", "cmp",
+                  "getPointeeType($_self)">,
+  TypesMatchWith<"value type matches ptr type", "ptr", "val",
+                  "getPointeeType($_self)">
+// end flagtree tle
 ]> {
     let summary = "atomic cas";
 
@@ -404,7 +427,10 @@ def TT_AtomicCASOp : TT_Op<"atomic_cas", [
     }];
 
     let arguments = (ins
-      Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$ptr,
+// begin flagtree tle
+      Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>,
+                           MemRead<SharedMemory>, MemWrite<SharedMemory>]>:$ptr,
+// end flagtree tle
       TT_Type:$cmp,
       TT_Type:$val,
       TT_MemSemanticAttr:$sem,
