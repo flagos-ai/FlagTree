@@ -3,7 +3,7 @@ import hashlib
 import json
 from .._C.libtriton import get_cache_invalidating_env_vars, ir
 from ..backends import backends
-from ..backends.compiler import Language
+from ..backends.compiler import Language, StageResult
 from ..backends.compiler import BaseBackend, GPUTarget
 from .. import __version__, knobs
 from ..runtime.autotuner import OutOfResources
@@ -51,16 +51,31 @@ def convert_type_repr(x):
 
 class ASTSource:
 
-    def __init__(self, fn, signature, constexprs=None, attrs=None) -> None:
+    def __init__(self, fn, signature, constexprs=None, attrs=None, constants=None) -> None:
         self.fn = fn
         self.language = Language.TRITON
         self.ext = "ttir"
         self.name = fn.__name__
+        # Backwards-compat: accept 3.1.0-era `constants=` kwarg; treat as `constexprs=`.
+        if constants is not None:
+            if constexprs is not None:
+                raise TypeError("Pass either constants= (deprecated) or constexprs=, not both")
+            constexprs = constants
+        # Backwards-compat: accept integer signature keys; convert via fn.arg_names.
+        if any(not isinstance(k, str) for k in signature.keys()):
+            signature = {
+                (fn.arg_names[k] if isinstance(k, int) else k): v
+                for k, v in signature.items()
+            }
         self.signature = signature
         self.constants = dict()
         if constexprs is not None:
             for k, v in constexprs.items():
-                k = (fn.arg_names.index(k), ) if isinstance(k, str) else k
+                if isinstance(k, str):
+                    k = (fn.arg_names.index(k),)
+                elif isinstance(k, int):
+                    # Backwards-compat: accept plain int key from the 3.1.0-era API.
+                    k = (k,)
                 assert isinstance(k, tuple)
                 self.constants[k] = v
         self.attrs = attrs or dict()
@@ -321,23 +336,52 @@ def compile(src, target=None, options=None, _env_vars=None):
     if compilation_listener:
         timer.finished_ir_initialization()
     for ext, compile_ir in list(stages.items())[first_stage:]:
-        next_module = compile_ir(module, metadata)
+        result = compile_ir(module, metadata)
+        # Stages may return either a plain object (used both as the next-stage
+        # value and as the serialized artifact) or a StageResult(value, artifact)
+        # — used by backends like RPU where the next-stage value is an in-memory
+        # bundle and the serialized artifact is a separate text/bytes form.
+        if isinstance(result, StageResult):
+            next_module, artifact, split_stage = result.value, result.artifact, True
+        else:
+            next_module, artifact, split_stage = result, result, False
         ir_filename = f"{file_name}.{ext}"
         if fn_override_manager is None:
             # Users can override kernels at scale by setting `ir_override` in autotune config
             # without TRITON_KERNEL_OVERRIDE
             if (ir_override := metadata.get("ir_override", None)) and ir_override.endswith(f".{ext}"):
+                if split_stage:
+                    raise RuntimeError(
+                        f"ir_override for split-stage artifact {ir_filename} is not supported"
+                    )
                 next_module = parse(ir_override, ext, context)
+                artifact = next_module
         elif full_name := fn_override_manager.get_file(ir_filename):
-            print(f"\nOverriding kernel with file {full_name}")
-            next_module = parse(full_name, ext, context)
+            if split_stage:
+                parse_split = getattr(backend, "parse_split_stage_override", None)
+                if parse_split is None:
+                    raise RuntimeError(
+                        f"Override for split-stage artifact {ir_filename} requires "
+                        "backend.parse_split_stage_override"
+                    )
+                override = parse_split(full_name, ext, context, metadata)
+                if not isinstance(override, StageResult):
+                    raise RuntimeError(
+                        f"backend.parse_split_stage_override must return a StageResult; "
+                        f"got {type(override).__name__}"
+                    )
+                next_module, artifact = override.value, override.artifact
+            else:
+                print(f"\nOverriding kernel with file {full_name}")
+                next_module = parse(full_name, ext, context)
+                artifact = next_module
         # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json
         if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
-            metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
+            metadata_group[ir_filename] = fn_cache_manager.put(artifact, ir_filename)
         if fn_dump_manager is not None:
-            fn_dump_manager.put(next_module, ir_filename)
+            fn_dump_manager.put(artifact, ir_filename)
             if ext == "cubin":
-                sass = get_sass(next_module)
+                sass = get_sass(artifact)
                 fn_dump_manager.put(sass, file_name + ".sass")
         # use an env variable to parse ir from file
         if use_ir_loc == ext:
@@ -424,10 +468,12 @@ class CompiledKernel:
         # stores the text of each level of IR that was generated during compilation
         asm_files = [Path(p) for c, p in metadata_group.items() if not c.endswith(".json")]
         binary_ext = backend.binary_ext
-        self.asm = AsmDict({
-            file.suffix[1:]: file.read_bytes() if file.suffix[1:] == binary_ext else file.read_text()
-            for file in asm_files
-        })
+        binary_exts = set(getattr(backend, "binary_exts", ()) or ()) | {binary_ext}
+        asm = AsmDict()
+        for f in asm_files:
+            key = f.suffix[1:]
+            asm[key] = f.read_bytes() if key in binary_exts else f.read_text()
+        self.asm = asm
         self.metadata_group = metadata_group
         self.kernel = self.asm[binary_ext]
         # binaries are lazily initialized

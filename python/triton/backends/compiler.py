@@ -20,6 +20,21 @@ class Language(Enum):
     GLUON = 1
 
 
+@dataclass(frozen=True)
+class StageResult(object):
+    """Optional return type for stage functions registered via add_stages.
+
+    A stage may return:
+      - a plain object — used as both the next-stage value and the
+        serialized artifact (cache/dump/asm); or
+      - StageResult(value, artifact) — `value` is passed to the next
+        stage, `artifact` is what gets serialized.
+    StageResult is an internal backend/compiler contract; not user-facing.
+    """
+    value: object
+    artifact: object
+
+
 class BaseBackend(metaclass=ABCMeta):
     supports_native_tensor_specialization = True
 

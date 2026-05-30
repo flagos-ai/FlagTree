@@ -87,7 +87,12 @@ def normalize_backend_name(name: str) -> str:
 def hint_get_flagtree_backend() -> str:
     detected_backend = ""
 
-    import torch
+    try:
+        import torch
+    except ImportError:
+        # torch is optional for backends like RPU that drive execution via
+        # external subprocesses; fall through to return "" (no hint backend).
+        return ""
 
     # Priority 1: Triton Driver
     try:
