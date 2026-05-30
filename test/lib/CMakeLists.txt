@@ -1,6 +1,4 @@
 add_subdirectory(Analysis)
 add_subdirectory(Dialect)
 add_subdirectory(Instrumentation)
-if(NOT FLAGTREE_BACKEND STREQUAL "ascend")
-  add_subdirectory(Proton)
-endif()
+add_subdirectory(Proton)
