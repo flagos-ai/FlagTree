@@ -644,7 +644,11 @@ def download_and_copy_dependencies():
 
 
 if helper.flagtree_backend:
-    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame"):
+    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu"):
+        # These backends still consume shared TritonGPU transforms whose
+        # generated headers reference the nvidia/amd dialects, so the default
+        # (nvidia, amd) codegen backends must be copied alongside the selected
+        # one. The backend itself is selected via FLAGTREE_BACKEND.
         backends = [
             *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
             *BackendInstaller.copy_externals(),
