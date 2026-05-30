@@ -96,9 +96,11 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 #endif
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
-                             scf::SCFDialect, ub::UBDialect,
 #ifdef __TLE__
+                             scf::SCFDialect, ub::UBDialect,
                              LLVM::LLVMDialect // flagtree tle raw
+#else
+                             scf::SCFDialect, ub::UBDialect
 #endif
                              >(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
@@ -124,6 +126,7 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     return true;
   });
 
+#ifdef __TLE__
   addDynamicallyLegalDialect<triton::tle::TleDialect // flagtree tle raw
                              >([&](Operation *op) {
     bool hasLegalRegions = true;
@@ -132,6 +135,7 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     }
     return hasLegalRegions && typeConverter.isLegal(op);
   });
+#endif
 }
 
 bool TritonGPUConversionTarget::isDynamicallyLegal(
