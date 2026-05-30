@@ -1,0 +1,7 @@
+#ifndef ASCEND_FLAGTREE_SPEC_H_
+#define ASCEND_FLAGTREE_SPEC_H_
+
+#define FLAGTREE_SPEC_Dialect_Triton_IR_Ops_cpp
+#define FLAGTREE_SPEC_Dialect_Triton_IR_Traits_cpp
+
+#endif // ASCEND_FLAGTREE_SPEC_H_

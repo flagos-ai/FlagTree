@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Dialect_Triton_IR_Traits_cpp
+
 #include "triton/Dialect/Triton/IR/Traits.h"
 
 #include <numeric>
@@ -217,3 +223,5 @@ OpTrait::impl::verifySameLoadStoreOperandsAndResultShape(Operation *op) {
 
   return verifySameLoadStoreOperandsShape(op);
 }
+
+#endif
