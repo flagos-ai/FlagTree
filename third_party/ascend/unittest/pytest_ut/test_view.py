@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 import torch
@@ -44,16 +43,14 @@ def fn_npu_(output_ptr, x_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.conste
     tl.store(output_ptr + oidx, ret)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (2, 256, 16), 1, 2, 256, 16],
-                             ['float32', (8, 8, 4), 1, 8, 8, 4],
-                             ['float16', (2, 256, 16), 1, 2, 256, 16],
-                             ['float16', (8, 8, 4), 1, 8, 8, 4],
-                             ['int8', (2, 256, 16), 1, 2, 256, 16],
-                             ['int8', (8, 8, 4), 1, 8, 8, 4],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 256, 16), 1, 2, 256, 16],
+    ['float32', (8, 8, 4), 1, 8, 8, 4],
+    ['float16', (2, 256, 16), 1, 2, 256, 16],
+    ['float16', (8, 8, 4), 1, 8, 8, 4],
+    ['int8', (2, 256, 16), 1, 2, 256, 16],
+    ['int8', (8, 8, 4), 1, 8, 8, 4],
+])
 def test_case(param_list):
     dtype, shape, ncore, XB, YB, ZB = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()

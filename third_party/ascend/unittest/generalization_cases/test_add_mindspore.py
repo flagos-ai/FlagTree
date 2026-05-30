@@ -25,18 +25,17 @@ import numpy as np
 import mindspore
 import pytest
 
-
 pytestmark = pytest.mark.backend("mindspore")
 
 
 @triton.jit
 def add_kernel(x_ptr,  # *Pointer* to first input vector.
-              y_ptr,  # *Pointer* to second input vector.
-              output_ptr,  # *Pointer* to output vector.
-              n_elements,  # Size of the vector.
-              BLOCK_SIZE: tl.constexpr,  # Number of elements each program should process.
-              # NOTE: `constexpr` so it can be used as a shape value.
-              ):
+               y_ptr,  # *Pointer* to second input vector.
+               output_ptr,  # *Pointer* to output vector.
+               n_elements,  # Size of the vector.
+               BLOCK_SIZE: tl.constexpr,  # Number of elements each program should process.
+               # NOTE: `constexpr` so it can be used as a shape value.
+               ):
     # There are multiple 'programs' processing different data. We identify which program
     # we are here:
     pid = tl.program_id(axis=0)  # We use a 1D launch grid so axis is 0.
@@ -69,11 +68,10 @@ def add_mindspore(x, y):
     return x + y
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (2, 4096, 8)],
-                                ['float16', (2, 4096, 8)],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8)],
+    ['float16', (2, 4096, 8)],
+])
 def test_add_mindspore(param_list):
     os.environ["TRITON_BACKEND"] = "mindspore"
     dtype, shape = param_list

@@ -109,26 +109,20 @@ def merge_16x16_to_64x64_inverse_kernel(
     offs_n = tl.arange(0, 32)
     mask_store = (offs_m[:, None] < T) & (offs_n[None, :] < 64)
     ptr_Ai = Ai + offs_m[:, None] * (H * 64) + offs_n[None, :]
-    tl.store(ptr_Ai,
-             Ai_11_32.to(ptr_Ai.dtype.element_ty, fp_downcast_rounding="rtne"),
-             mask=mask_store)
+    tl.store(ptr_Ai, Ai_11_32.to(ptr_Ai.dtype.element_ty, fp_downcast_rounding="rtne"), mask=mask_store)
 
     # store Ai_22_32 to (i_t * 64 + 32, 32)
     offs_m = i_t * 64 + 32 + tl.arange(0, 32)
     offs_n = 32 + tl.arange(0, 32)
     mask_store = (offs_m[:, None] < T) & (offs_n[None, :] < 64)
     ptr_Ai = Ai + offs_m[:, None] * (H * 64) + offs_n[None, :]
-    tl.store(ptr_Ai,
-             Ai_22_32.to(ptr_Ai.dtype.element_ty, fp_downcast_rounding="rtne"),
-             mask=mask_store)
+    tl.store(ptr_Ai, Ai_22_32.to(ptr_Ai.dtype.element_ty, fp_downcast_rounding="rtne"), mask=mask_store)
 
     # store Ai_21_32 to (i_t * 64 + 32, 32)
     offs_n = tl.arange(0, 32)
     mask_store = (offs_m[:, None] < T) & (offs_n[None, :] < 64)
     ptr_Ai = Ai + offs_m[:, None] * (H * 64) + offs_n[None, :]
-    tl.store(ptr_Ai,
-             Ai_21_32.to(ptr_Ai.dtype.element_ty, fp_downcast_rounding="rtne"),
-             mask=mask_store)
+    tl.store(ptr_Ai, Ai_21_32.to(ptr_Ai.dtype.element_ty, fp_downcast_rounding="rtne"), mask=mask_store)
 
     # zero out the upper-right 32 * 32 block (rows 0 ~ 31, cols 32 ~ 63)
     offs_m = i_t * 64 + tl.arange(0, 32)

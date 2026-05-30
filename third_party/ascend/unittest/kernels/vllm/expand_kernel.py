@@ -18,8 +18,7 @@ def expand_kernel(
     offset = req_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     len_mask = offset < vec_len
 
-    start_idx = tl.where(offset == 0, 0,
-                         tl.load(cu_num_tokens_ptr + offset - 1, len_mask))
+    start_idx = tl.where(offset == 0, 0, tl.load(cu_num_tokens_ptr + offset - 1, len_mask))
     end_idx = tl.load(cu_num_tokens_ptr + offset, len_mask)
     num_tokens = end_idx - start_idx
 
@@ -31,6 +30,4 @@ def expand_kernel(
         start_idx1 = extension.get_element(start_idx, (i, ))
         src_val1 = extension.get_element(src_val, (i, ))
         offset1 = tl.arange(0, MAX_NUM_TOKENS)
-        tl.store(output_ptr + start_idx1 + offset1,
-                 src_val1,
-                 mask=offset1 < num_tokens1)
+        tl.store(output_ptr + start_idx1 + offset1, src_val1, mask=offset1 < num_tokens1)

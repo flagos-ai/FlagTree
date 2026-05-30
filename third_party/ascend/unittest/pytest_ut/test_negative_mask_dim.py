@@ -35,16 +35,14 @@ def triton_negative_mask_dim(in_ptr0, out_ptr0, XBLOCK: tl.constexpr):
     tl.store(out_ptr0 + index, tmp0, None)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (32,), 32],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (32, ), 32],
+])
 def test_negative_mask_dim(param_list):
     dtype, shape, xblock = param_list
     x0 = torch.ones(shape, dtype=eval('torch.' + dtype)).npu()
     y_ref = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
 
     y_cal = torch.ones(shape, dtype=eval('torch.' + dtype)).npu()
-    triton_negative_mask_dim[(1,)](x0, y_cal, xblock)
+    triton_negative_mask_dim[(1, )](x0, y_cal, xblock)
     assert torch.allclose(y_cal, y_ref)
-

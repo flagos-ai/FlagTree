@@ -62,9 +62,12 @@ def _init_npu_params():
 
 
 def __getattr__(name):
-    if name in ['target', 'device', 'prop', 'num_cube_core', 'num_vector_core', 'ub_size_in_kbytes', 'rf_size_in_kbytes']:
+    if name in [
+            'target', 'device', 'prop', 'num_cube_core', 'num_vector_core', 'ub_size_in_kbytes', 'rf_size_in_kbytes'
+    ]:
         return _init_npu_params()[name]
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 
 # wrapper npu 32 bytes align, get and pass unalign info to triton meta
 # then autotune choose tiling param and send them to bishengIR
@@ -86,10 +89,10 @@ byte_per_numel = {
 
 # Some PyTorch versions expose extra fp8 dtypes. Register them when available.
 for fp8_dtype_name in (
-    "float8_e4m3fn",
-    "float8_e4m3fnuz",
-    "float8_e5m2",
-    "float8_e5m2fnuz",
+        "float8_e4m3fn",
+        "float8_e4m3fnuz",
+        "float8_e5m2",
+        "float8_e5m2fnuz",
 ):
     fp8_dtype = getattr(torch, fp8_dtype_name, None)
     if fp8_dtype is not None:

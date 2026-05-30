@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import torch
 import torch_npu
 import triton
@@ -45,7 +44,7 @@ def test_npu_tensor_should_success():
     y_npu = torch.rand(size, device='npu')
     output = torch.empty(size, device='npu')
 
-    simple_kernel[(1,)](x_npu, y_npu, output, size)
+    simple_kernel[(1, )](x_npu, y_npu, output, size)
 
     expected = x_npu + y_npu
     actual = output
@@ -62,7 +61,7 @@ def test_cpu_tensor_should_fail():
     output = torch.empty(size, device='npu')
 
     with pytest.raises(ValueError) as exc_info:
-        simple_kernel[(1,)](x_cpu, y_cpu, output, size)
+        simple_kernel[(1, )](x_cpu, y_cpu, output, size)
 
     error_msg = str(exc_info.value)
     assert "cannot be accessed from Triton (cpu tensor?)" in error_msg, \

@@ -27,16 +27,18 @@ import pytest
 import test_common
 from test_common import TestUtils
 
-
 full_dtype = test_common._float_dtypes + test_common._int_dtypes + test_common._uint_dtypes
 temporarily_not_support_dtype = ['bool']
 
 
 @triton.jit
 def triton_tensor_descriptor_2d(
-        out_ptr, x_ptr,
-        M: tl.constexpr, N: tl.constexpr,
-        M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr,
+    out_ptr,
+    x_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    M_BLOCK: tl.constexpr,
+    N_BLOCK: tl.constexpr,
 ):
     in_desc = tl.make_tensor_descriptor(
         x_ptr,
@@ -58,10 +60,17 @@ def triton_tensor_descriptor_2d(
 
 @triton.jit
 def triton_tensor_descriptor_3d(
-        out_ptr, x_ptr,
-        M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
-        stride_m: tl.constexpr, stride_n: tl.constexpr, stride_k: tl.constexpr,
-        M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr, K_BLOCK: tl.constexpr,
+    out_ptr,
+    x_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    stride_m: tl.constexpr,
+    stride_n: tl.constexpr,
+    stride_k: tl.constexpr,
+    M_BLOCK: tl.constexpr,
+    N_BLOCK: tl.constexpr,
+    K_BLOCK: tl.constexpr,
 ):
     in_desc = tl.make_tensor_descriptor(
         x_ptr,
@@ -84,13 +93,20 @@ def triton_tensor_descriptor_3d(
 
 @triton.jit
 def triton_tensor_descriptor_4d(
-        out_ptr, x_ptr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, 
-        SHAPE_3: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, 
-        STRIDE_3: tl.constexpr, 
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, 
-        BLOCK_3: tl.constexpr,
+    out_ptr,
+    x_ptr,
+    SHAPE_0: tl.constexpr,
+    SHAPE_1: tl.constexpr,
+    SHAPE_2: tl.constexpr,
+    SHAPE_3: tl.constexpr,
+    STRIDE_0: tl.constexpr,
+    STRIDE_1: tl.constexpr,
+    STRIDE_2: tl.constexpr,
+    STRIDE_3: tl.constexpr,
+    BLOCK_0: tl.constexpr,
+    BLOCK_1: tl.constexpr,
+    BLOCK_2: tl.constexpr,
+    BLOCK_3: tl.constexpr,
 ):
     pid0 = tl.program_id(0)
     pid1 = tl.program_id(1)
@@ -119,13 +135,23 @@ def triton_tensor_descriptor_4d(
 
 @triton.jit
 def triton_tensor_descriptor_5d(
-        out_ptr, x_ptr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr,
-        SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr,
-        STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, 
-        BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr,
+    out_ptr,
+    x_ptr,
+    SHAPE_0: tl.constexpr,
+    SHAPE_1: tl.constexpr,
+    SHAPE_2: tl.constexpr,
+    SHAPE_3: tl.constexpr,
+    SHAPE_4: tl.constexpr,
+    STRIDE_0: tl.constexpr,
+    STRIDE_1: tl.constexpr,
+    STRIDE_2: tl.constexpr,
+    STRIDE_3: tl.constexpr,
+    STRIDE_4: tl.constexpr,
+    BLOCK_0: tl.constexpr,
+    BLOCK_1: tl.constexpr,
+    BLOCK_2: tl.constexpr,
+    BLOCK_3: tl.constexpr,
+    BLOCK_4: tl.constexpr,
 ):
     pid0 = tl.program_id(0)
     pid1 = tl.program_id(1)
@@ -156,9 +182,12 @@ def triton_tensor_descriptor_5d(
 
 @triton.jit
 def triton_tensor_descriptor_function_2d(
-        out_ptr, x_ptr,
-        M: tl.constexpr, N: tl.constexpr,
-        M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr,
+    out_ptr,
+    x_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    M_BLOCK: tl.constexpr,
+    N_BLOCK: tl.constexpr,
 ):
     in_desc = tl.make_tensor_descriptor(
         x_ptr,
@@ -191,7 +220,7 @@ def test_tensor_descriptor_load_store_nd(dtype, shape):
     out = inp.new_empty(shape)
     blocks = list(inp.size())
     strides = list(inp.stride())
-    grid = (1,)
+    grid = (1, )
     dims = len(shape)
 
     # 如果最后一维小于16字节，则跳过
@@ -224,7 +253,7 @@ def test_tensor_descriptor_in_function(dtype):
 
     if dtype in temporarily_not_support_dtype:
         pytest.skip(f"{dtype} not supported")
-    
+
     M, N = 32, 128
     inp = test_common.generate_numpy((M, N), dtype)
     inp = torch.from_numpy(inp).npu()

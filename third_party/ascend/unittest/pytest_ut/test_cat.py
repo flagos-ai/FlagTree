@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 
@@ -27,6 +26,7 @@ import torch_npu
 import pytest
 import test_common
 import math
+
 
 @triton.jit
 def fn_npu_(output_ptr, x_ptr, y_ptr, XB: tl.constexpr):
@@ -43,8 +43,10 @@ def fn_npu_(output_ptr, x_ptr, y_ptr, XB: tl.constexpr):
 
 
 # The CAT operator in the Triton community also does not support boolean types.
-@pytest.mark.parametrize('shape', [(32,), (741,)]) #triton only support 1D cat
-@pytest.mark.parametrize('dtype', ['float32',])
+@pytest.mark.parametrize('shape', [(32, ), (741, )])  #triton only support 1D cat
+@pytest.mark.parametrize('dtype', [
+    'float32',
+])
 def test_cat(shape, dtype):
     m = shape[0]
     x = torch.full((m, ), 100, dtype=eval("torch." + dtype)).npu()

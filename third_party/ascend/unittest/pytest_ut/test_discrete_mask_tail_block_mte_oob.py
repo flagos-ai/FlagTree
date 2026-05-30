@@ -108,8 +108,8 @@ def _fill_segment_to_boundary(dtype, device, in_bytes, target_free, chunk_max_by
     pool1 = torch.npu.memory_reserved(0)
     alloc1 = torch.npu.memory_allocated(0)
 
-    seg_size = pool1 - pool0       # should be 2 MB = 2097152 bytes
-    probe_actual = alloc1 - alloc0     # NPU 512-byte aligned → 512 bytes
+    seg_size = pool1 - pool0  # should be 2 MB = 2097152 bytes
+    probe_actual = alloc1 - alloc0  # NPU 512-byte aligned → 512 bytes
 
     print(f"\n[mte] Step 1: probe")
     print(f"[mte]   segment_size = {seg_size} bytes ({seg_size // 1024} KB)")
@@ -121,25 +121,23 @@ def _fill_segment_to_boundary(dtype, device, in_bytes, target_free, chunk_max_by
     # avoid opening a new segment via the large-alloc path.
     pre_fillers = [probe]
 
-    for chunk in [chunk_max_bytes,
-                  chunk_max_bytes // 2,
-                  chunk_max_bytes // 4,
-                  chunk_max_bytes // 8,
-                  32 * 1024, 16 * 1024, 8 * 1024,
-                  4 * 1024, 2 * 1024, 1024, 512]:
+    for chunk in [
+            chunk_max_bytes, chunk_max_bytes // 2, chunk_max_bytes // 4, chunk_max_bytes // 8, 32 * 1024, 16 * 1024,
+            8 * 1024, 4 * 1024, 2 * 1024, 1024, 512
+    ]:
         while True:
             free = torch.npu.memory_reserved(0) - torch.npu.memory_allocated(0)
             if free <= in_bytes:
-                break   # not enough room even for in_tensor; stop
+                break  # not enough room even for in_tensor; stop
             if free <= target_free:
-                break   # already in target range; try smaller chunk
+                break  # already in target range; try smaller chunk
             if free <= target_free + chunk:
-                break   # this chunk would overshoot; try smaller chunk
+                break  # this chunk would overshoot; try smaller chunk
             try:
                 t = torch.empty(chunk // elem_size, dtype=dtype, device=device)
                 pre_fillers.append(t)
             except RuntimeError:
-                break   # segment exhausted; try smaller chunk
+                break  # segment exhausted; try smaller chunk
 
     pool_free_after_fill = torch.npu.memory_reserved(0) - torch.npu.memory_allocated(0)
     pre_bytes = sum(t.numel() * elem_size for t in pre_fillers)
@@ -159,7 +157,7 @@ def _fill_segment_to_boundary(dtype, device, in_bytes, target_free, chunk_max_by
 def test_mte_segment_boundary_oob(BLOCK_M, BLOCK_N, M):
     """Regression: combined discrete mask load causes OOB on tail blocks.
 
-    Verifies that DiscreteMaskAccessConversionPass correctly bounds 
+    Verifies that DiscreteMaskAccessConversionPass correctly bounds
     the memory copy to M rows (the contiguous range), not BLOCK_M rows (the full tile).
 
     Test outcome:
@@ -170,12 +168,12 @@ def test_mte_segment_boundary_oob(BLOCK_M, BLOCK_N, M):
     device = 'npu'
     elem_size = 2  # float16
 
-    in_bytes = M * BLOCK_N * elem_size                        # 8192 bytes
-    oob_bytes = (BLOCK_M - M) * BLOCK_N * elem_size           # 24576 bytes
+    in_bytes = M * BLOCK_N * elem_size  # 8192 bytes
+    oob_bytes = (BLOCK_M - M) * BLOCK_N * elem_size  # 24576 bytes
     # TARGET_FREE: midpoint between in_bytes and oob_bytes.
     # Ensures in_tensor fits AND gap < oob_bytes so OOB crosses segment boundary.
-    target_free = (in_bytes + oob_bytes) // 2                 # 16384 bytes
-    chunk_max_bytes = 512 * 1024                              # 512 KB
+    target_free = (in_bytes + oob_bytes) // 2  # 16384 bytes
+    chunk_max_bytes = 512 * 1024  # 512 KB
 
     print(f"\n[mte] BLOCK_M={BLOCK_M}  BLOCK_N={BLOCK_N}  M={M}")
     print(f"[mte] in_bytes    = {in_bytes} bytes  (in_tensor: {M}×{BLOCK_N}×{elem_size})")
@@ -188,9 +186,8 @@ def test_mte_segment_boundary_oob(BLOCK_M, BLOCK_N, M):
     in_tensor = None
 
     try:
-        pre_fillers, pool_free_after_fill, _ = _fill_segment_to_boundary(
-            dtype, device, in_bytes, target_free, chunk_max_bytes
-        )
+        pre_fillers, pool_free_after_fill, _ = _fill_segment_to_boundary(dtype, device, in_bytes, target_free,
+                                                                         chunk_max_bytes)
     except Exception as exc:
         torch.npu.empty_cache()
         pytest.skip(f"Memory layout setup failed (allocator behaviour may differ): {exc}")
@@ -200,11 +197,9 @@ def test_mte_segment_boundary_oob(BLOCK_M, BLOCK_N, M):
         for t in reversed(pre_fillers):
             del t
         torch.npu.empty_cache()
-        pytest.skip(
-            f"pre_fill did not reach target range [{in_bytes}, {target_free}] bytes; "
-            f"got {pool_free_after_fill} bytes.  "
-            f"Skipping MTE check (NPU allocator behaviour may differ)."
-        )
+        pytest.skip(f"pre_fill did not reach target range [{in_bytes}, {target_free}] bytes; "
+                    f"got {pool_free_after_fill} bytes.  "
+                    f"Skipping MTE check (NPU allocator behaviour may differ).")
 
     try:
         # Step 3: allocate in_tensor — lands at the very end of the segment.
@@ -218,27 +213,21 @@ def test_mte_segment_boundary_oob(BLOCK_M, BLOCK_N, M):
         print(f"[mte]   gap     = {gap} bytes  (in_tensor end → segment end)")
 
         if oob_bytes <= gap:
-            pytest.skip(
-                f"gap ({gap} bytes) >= oob_bytes ({oob_bytes} bytes): "
-                f"OOB would not cross the segment boundary.  "
-                f"Skipping MTE check."
-            )
+            pytest.skip(f"gap ({gap} bytes) >= oob_bytes ({oob_bytes} bytes): "
+                        f"OOB would not cross the segment boundary.  "
+                        f"Skipping MTE check.")
         print(f"[mte]   oob_bytes({oob_bytes} B) > gap({gap} B) → MTE expected if unfixed ✓")
 
         # Step 4: run kernel
         num_pids_m = math.ceil(M / BLOCK_M)
         print(f"\n[mte] Step 4: kernel  (grid=({num_pids_m},))")
-        cont_disc_oob_inplace_2d_kernel[(num_pids_m,)](
-            in_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N
-        )
+        cont_disc_oob_inplace_2d_kernel[(num_pids_m, )](in_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
         torch.npu.synchronize()
         print("[mte] PASSED: fix is effective, no OOB.")
 
     except RuntimeError as exc:
-        pytest.fail(
-            f"MTE OOB triggered — DiscreteMaskAccessConversionPass fix "
-            f"may not be applied or is incomplete.\nError: {exc}"
-        )
+        pytest.fail(f"MTE OOB triggered — DiscreteMaskAccessConversionPass fix "
+                    f"may not be applied or is incomplete.\nError: {exc}")
 
     finally:
         if in_tensor is not None:

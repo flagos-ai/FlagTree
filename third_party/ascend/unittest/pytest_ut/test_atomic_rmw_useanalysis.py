@@ -14,10 +14,10 @@ def atomic_rmw_useanalysis_kernel(
 ):
     pid = tl.program_id(0)
     base_idx = pid * 8
-    
+
     term1 = 15.0 * 15.0
     term2 = 8.0 * (7.0 - base_idx)
-    
+
     delta = term1 + term2
     sqrt_delta = tl.sqrt(delta)
 
@@ -36,7 +36,7 @@ def atomic_rmw_useanalysis_kernel(
     p = tl.exp(scaled)
 
     result = p * (data * 2.0 - d_val)
-    
+
     output_offsets = offsets
     tl.atomic_add(output_ptr + output_offsets, result, mask=mask)
 
@@ -52,7 +52,7 @@ def test_atomic_rmw_useanalysis():
     d_data = torch.randn(N, dtype=torch.float32, device=DEVICE)
     output_data = torch.zeros(N, dtype=torch.float32, device=DEVICE)
 
-    grid = (8,)
+    grid = (8, )
 
     atomic_rmw_useanalysis_kernel[grid](
         input_data,
@@ -63,7 +63,7 @@ def test_atomic_rmw_useanalysis():
         BLOCK_SIZE=BLOCK_SIZE,
     )
     output_sum = output_data.abs().sum().item()
-    
+
     if output_sum == 0:
         raise AssertionError("UseAnalysis bug detected: atomic_rmw dependencies were erased")
     else:

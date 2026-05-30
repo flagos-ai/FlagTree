@@ -36,9 +36,8 @@ def torch_erf(x0):
 
 
 @triton.jit
-def fn_npu_(output_ptr, x_ptr, y_ptr, z_ptr,
-            XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr,
-            XNUMEL: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_(output_ptr, x_ptr, y_ptr, z_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, XNUMEL: tl.constexpr,
+            YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     xoffs = tl.program_id(0) * XB
     yoffs = tl.program_id(1) * YB
     zoffs = tl.program_id(2) * ZB
@@ -58,16 +57,11 @@ def fn_npu_(output_ptr, x_ptr, y_ptr, z_ptr,
 
 
 @triton.jit
-def triton_erf_4d_5d(
-        output_ptr, x_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr,
-        BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-        SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
-        STRIDE_4: tl.constexpr,
-        BLOCK_TOTAL: tl.constexpr
-):
+def triton_erf_4d_5d(output_ptr, x_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                     BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                     SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                     STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr,
+                     BLOCK_TOTAL: tl.constexpr):
 
     pid = tl.program_id(0)
     start_idx = pid * BLOCK_TOTAL
@@ -95,8 +89,7 @@ def triton_erf_4d_5d(
 
 
 @pytest.mark.parametrize('shape', TestUtils.full_shape)
-@pytest.mark.parametrize('dtype',
-                         ['float32', 'float16', 'bfloat16'])
+@pytest.mark.parametrize('dtype', ['float32', 'float16', 'bfloat16'])
 def test_case2(dtype, shape):
     # 生成数据
     x = test_common.generate_tensor(shape, dtype).npu()
@@ -171,15 +164,9 @@ def test_erf_4d_5d(shape, dtype):
             break
     block_total = torch.prod(torch.tensor(block_5d)).item()
 
-    grid = (triton.cdiv(total_elements, block_total),)
+    grid = (triton.cdiv(total_elements, block_total), )
     logging.debug(f"Grid={grid}, block_5d={block_5d}, block_total={block_total}")
 
-    triton_erf_4d_5d[grid](
-        output, x,
-        *block_5d,
-        *shape_5d,
-        *strides_5d,
-        block_total
-    )
+    triton_erf_4d_5d[grid](output, x, *block_5d, *shape_5d, *strides_5d, block_total)
 
     test_common.validate_cmp(dtype, ans, output)

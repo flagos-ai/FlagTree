@@ -139,4 +139,3 @@ tt.func public @triton_ldst_indirect_08_kernel(%arg0: !tt.ptr<f32>, %arg1: !tt.p
 // CHECK:           ascend.indirect_store %[[VAL_0:.*]] : <f32>, %[[VAL_29:.*]] : tensor<8x16xi64>, %[[VAL_24:.*]] : tensor<8x16xf32>
 // CHECK:           tt.return
 // CHECK:         }
-

@@ -40,15 +40,10 @@ def kernel_rand(x_ptr, n_rounds: tl.constexpr, N: tl.constexpr, XBLOCK: tl.const
 
 
 @triton.jit
-def triton_rand_4d_5d(
-        output_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
-        BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr,
-        SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr,
-        STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr
-):
+def triton_rand_4d_5d(output_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                      BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                      SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                      STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr):
     # 1D program_id for flatten multi-d offset
     pid = tl.program_id(0)
     # base offset for dimension 0
@@ -83,15 +78,10 @@ def kernel_randn(x_ptr, n_rounds: tl.constexpr, N: tl.constexpr, XBLOCK: tl.cons
 
 
 @triton.jit
-def triton_randn_4d_5d(
-        output_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
-        BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr,
-        SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr,
-        STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr
-):
+def triton_randn_4d_5d(output_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                       BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                       SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                       STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr):
     # 1D program_id for flatten multi-d offset
     pid = tl.program_id(0)
     # base offset for dimension 0
@@ -126,15 +116,11 @@ def kernel_randint(x_ptr, n_rounds: tl.constexpr, N: tl.constexpr, XBLOCK: tl.co
 
 
 @triton.jit
-def triton_randint_4d_5d(
-        output_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
-        BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr,
-        SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr,
-        STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr
-):
+def triton_randint_4d_5d(output_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                         BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                         SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                         STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
+                         STRIDE_4: tl.constexpr):
     # 1D program_id for flatten multi-d offset
     pid = tl.program_id(0)
     # base offset for dimension 0
@@ -171,15 +157,11 @@ def kernel_randint4x(x_ptr, n_rounds: tl.constexpr, N: tl.constexpr, XBLOCK: tl.
 
 
 @triton.jit
-def triton_randint4x_4d_5d(
-        output_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
-        BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr,
-        SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr,
-        STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr
-):
+def triton_randint4x_4d_5d(output_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                           BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                           SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                           STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
+                           STRIDE_4: tl.constexpr):
     # 1D program_id for flatten multi-d offset
     pid = tl.program_id(0)
     # base offset for dimension 0
@@ -222,7 +204,7 @@ def test_rand_case(shape):
     for _ in range(100):
         ref = np.random.random_sample(shape).flatten()
         kernel_rand[ncore, 1, 1](y_calf, 10, numel, xblock)
-        
+
         pvalue = scipy.stats.kstest(ref, y_calf.cpu().numpy().flatten()).pvalue
         if pvalue > 0.01:
             correctness += 1
@@ -246,7 +228,7 @@ def test_randn_case(shape):
     for _ in range(100):
         ref = np.random.standard_normal(shape).flatten()
         kernel_randn[ncore, 1, 1](y_calf, 10, numel, xblock)
-        
+
         pvalue = scipy.stats.kstest(ref, y_calf.cpu().numpy().flatten()).pvalue
         if pvalue > 0.01:
             correctness += 1
@@ -271,7 +253,7 @@ def test_randint_case(shape):
     for _ in range(100):
         ref = np.random.randint(low=ii32.min, high=ii32.max, size=shape).flatten()
         kernel_randint[ncore, 1, 1](y_cali, 10, numel, xblock)
-        
+
         pvalue = scipy.stats.kstest(ref, y_cali.cpu().numpy().flatten()).pvalue
         if pvalue > 0.01:
             correctness += 1
@@ -296,7 +278,7 @@ def test_randint4x_case(shape):
     for _ in range(100):
         ref = np.random.randint(low=ii32.min, high=ii32.max, size=shape).flatten()
         kernel_randint4x[ncore, 1, 1](y_cali, 10, numel, xblock)
-        
+
         pvalue = scipy.stats.kstest(ref, y_cali.cpu().numpy().flatten()).pvalue
         if pvalue > 0.01:
             correctness += 1
@@ -315,7 +297,7 @@ def test_rand_4d_5d(shape):
         blocks.append(1)
         strides.append(1)
 
-    grid = (1,)
+    grid = (1, )
     triton_rand_4d_5d[grid](x, *blocks, *blocks, *strides)
     triton_randn_4d_5d[grid](x, *blocks, *blocks, *strides)
     triton_randint_4d_5d[grid](y, *blocks, *blocks, *strides)

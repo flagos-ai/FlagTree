@@ -25,7 +25,6 @@ import pytest
 import numpy as np
 import triton.language as tl
 
-
 pytestmark = pytest.mark.backend("mindspore")
 activation = "leaky_relu_custom"
 
@@ -158,9 +157,7 @@ def matmul(a, b, activation_func=""):
     # Allocates output.
     c = mindspore.mint.empty((M, N), dtype=mindspore.float16)
     # 1D launch kernel where each block gets its own program.
-    grid = lambda META: (
-        triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
-    )
+    grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
     matmul_kernel[grid](
         a,
         b,

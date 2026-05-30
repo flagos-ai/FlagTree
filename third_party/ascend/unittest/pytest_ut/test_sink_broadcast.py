@@ -59,10 +59,9 @@ def triton_sink_broadcast3(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, YBLOCK: tl.c
     tl.store(out_ptr0 + index, tmp0, index < XBLOCK * YBLOCK)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (32, 32), 32, 32],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (32, 32), 32, 32],
+])
 def test_sink_broadcast(param_list):
     dtype, shape, xblock, yblock = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()
@@ -71,21 +70,20 @@ def test_sink_broadcast(param_list):
 
     y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     y_cal2 = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
-    triton_sink_broadcast1[(1,)](x0, y_cal, xblock, yblock)
-    triton_sink_broadcast2[(1,)](x0, y_cal2, xblock, yblock)
+    triton_sink_broadcast1[(1, )](x0, y_cal, xblock, yblock)
+    triton_sink_broadcast2[(1, )](x0, y_cal2, xblock, yblock)
     test_common.validate_cmp(dtype, y_cal, y_ref)
     test_common.validate_cmp(dtype, y_cal2, y_ref)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (32, 32), 32, 32],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (32, 32), 32, 32],
+])
 def test_sink_broadcast3(param_list):
     dtype, shape, xblock, yblock = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()
     y_ref = x0.clone()
 
     y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
-    triton_sink_broadcast3[(1,)](x0, y_cal, xblock, yblock)
+    triton_sink_broadcast3[(1, )](x0, y_cal, xblock, yblock)
     test_common.validate_cmp(dtype, y_cal, y_ref)

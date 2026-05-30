@@ -30,13 +30,12 @@ def test_triton_dot_case1(mock_autotuner):
     """
     import triton.backends.ascend.runtime
 
-    @triton.autotune(
-        configs=[],
-        key=["M", "N", "K"]
-    )
+    @triton.autotune(configs=[], key=["M", "N", "K"])
     @triton.jit
     def triton_dot_case1(
-        A, B, C,
+        A,
+        B,
+        C,
         M: tl.constexpr,
         N: tl.constexpr,
         K: tl.constexpr,
@@ -65,9 +64,9 @@ def test_triton_dot_case1(mock_autotuner):
 
                 for loop_k in range(loops_k):
                     kdx = loop_k * KBLOCK_SUB + tl.arange(0, KBLOCK_SUB)
-                    kdx_m = kdx[None, :] # <-
-                    A_ptr = A + mdx * K + kdx_m 
-                    a_mask = (mdx < M) & (kdx_m < K) # Use res of Subscript in mask compare
+                    kdx_m = kdx[None, :]  # <-
+                    A_ptr = A + mdx * K + kdx_m
+                    a_mask = (mdx < M) & (kdx_m < K)  # Use res of Subscript in mask compare
                     a = tl.load(A_ptr, mask=a_mask, other=0.0)
 
                     kdx_n = kdx[:, None]
@@ -76,7 +75,7 @@ def test_triton_dot_case1(mock_autotuner):
                     b = tl.load(B_ptr, mask=b_mask, other=0.0)
 
                     acc += tl.dot(a, b)
-                
+
                 C_ptr = C + mdx * N + ndx
                 c_mask = (mdx < M) & (ndx < N)
                 tl.store(C_ptr, acc, mask=c_mask)
@@ -102,13 +101,12 @@ def test_triton_dot_case2(mock_autotuner):
     """
     import triton.backends.ascend.runtime
 
-    @triton.autotune(
-        configs=[],
-        key=["M", "N", "K"]
-    )
+    @triton.autotune(configs=[], key=["M", "N", "K"])
     @triton.jit
     def triton_dot_case2(
-        A, B, C,
+        A,
+        B,
+        C,
         M: tl.constexpr,
         N: tl.constexpr,
         K: tl.constexpr,
@@ -137,8 +135,8 @@ def test_triton_dot_case2(mock_autotuner):
 
                 for loop_k in range(loops_k):
                     kdx = loop_k * KBLOCK_SUB + tl.arange(0, KBLOCK_SUB)
-                    A_ptr = A + mdx * K + kdx[None, :] # <- 
-                    a_mask = (mdx < M) & (kdx[None, :] < K) # Cal subsript directly in mask compare
+                    A_ptr = A + mdx * K + kdx[None, :]  # <-
+                    a_mask = (mdx < M) & (kdx[None, :] < K)  # Cal subsript directly in mask compare
                     a = tl.load(A_ptr, mask=a_mask, other=0.0)
 
                     B_ptr = B + kdx[:, None] * N + ndx
@@ -146,7 +144,7 @@ def test_triton_dot_case2(mock_autotuner):
                     b = tl.load(B_ptr, mask=b_mask, other=0.0)
 
                     acc += tl.dot(a, b)
-                
+
                 C_ptr = C + mdx * N + ndx
                 c_mask = (mdx < M) & (ndx < N)
                 tl.store(C_ptr, acc, mask=c_mask)

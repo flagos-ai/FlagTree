@@ -102,10 +102,8 @@ def main() -> None:
     elif parsed:
         print("Note: parsed sizes differ from spec; inspect MLIR spelling below.")
     else:
-        print(
-            "Could not parse extra_buffers_sizes automatically; "
-            "search the dump for 'extra_buffers_sizes'."
-        )
+        print("Could not parse extra_buffers_sizes automatically; "
+              "search the dump for 'extra_buffers_sizes'.")
 
     print("\n--- MLIR excerpt (lines containing hivm.hir.custom) ---")
     for line in mlir.splitlines():

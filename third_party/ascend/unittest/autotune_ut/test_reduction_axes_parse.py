@@ -25,18 +25,15 @@ from test_common import check_axes_parse_res, mock_autotuner
 def test_triton_max_last_dim_case1(mock_autotuner):
     import triton.backends.ascend.runtime
 
-    @triton.autotune(
-        configs=[],
-        key=["x0_numel", "r1_numel"]
-    )
+    @triton.autotune(configs=[], key=["x0_numel", "r1_numel"])
     @triton.jit
     def triton_max_last_dim1(
-        in_ptr0, 
-        out_ptr0, 
-        x0_numel, 
-        r1_numel, 
-        X0BLOCK: tl.constexpr, 
-        X0BLOCK_SUB: tl.constexpr, 
+        in_ptr0,
+        out_ptr0,
+        x0_numel,
+        r1_numel,
+        X0BLOCK: tl.constexpr,
+        X0BLOCK_SUB: tl.constexpr,
         R1BLOCK_SUB: tl.constexpr,
     ):
         x0_offset = tl.program_id(0) * X0BLOCK
@@ -54,7 +51,7 @@ def test_triton_max_last_dim_case1(mock_autotuner):
                 tmp = tl.load(in_ptr0 + (r1 + r1_numel * x0), r1_mask & x0_mask, other=float("-inf"))
                 block_val = tl.maximum(block_val, tmp)
             # Reduce along axis = 1 (the last dimension in this 2D tensor)
-            block_res = tl.max(block_val, axis=1)[:, None] # <- explicit positive axis index
+            block_res = tl.max(block_val, axis=1)[:, None]  # <- explicit positive axis index
             tl.store(out_ptr0 + x0, block_res, x0_mask)
 
     ref_res = {
@@ -64,7 +61,7 @@ def test_triton_max_last_dim_case1(mock_autotuner):
         "low_dim_axes": ["ry"],
         "reduction_axes": ["ry"],
     }
-    grid = lambda meta: (meta["X0BLOCK"],)
+    grid = lambda meta: (meta["X0BLOCK"], )
     act_res = triton_max_last_dim1[grid]()
 
     check_axes_parse_res(act_res, ref_res)
@@ -73,18 +70,15 @@ def test_triton_max_last_dim_case1(mock_autotuner):
 def test_triton_max_last_dim_case2(mock_autotuner):
     import triton.backends.ascend.runtime
 
-    @triton.autotune(
-        configs=[],
-        key=["x0_numel", "r1_numel"]
-    )
+    @triton.autotune(configs=[], key=["x0_numel", "r1_numel"])
     @triton.jit
     def triton_max_last_dim2(
-        in_ptr0, 
-        out_ptr0, 
-        x0_numel, 
-        r1_numel, 
-        X0BLOCK: tl.constexpr, 
-        X0BLOCK_SUB: tl.constexpr, 
+        in_ptr0,
+        out_ptr0,
+        x0_numel,
+        r1_numel,
+        X0BLOCK: tl.constexpr,
+        X0BLOCK_SUB: tl.constexpr,
         R1BLOCK_SUB: tl.constexpr,
     ):
         x0_offset = tl.program_id(0) * X0BLOCK
@@ -102,7 +96,7 @@ def test_triton_max_last_dim_case2(mock_autotuner):
                 tmp = tl.load(in_ptr0 + (r1 + r1_numel * x0), r1_mask & x0_mask, other=float("-inf"))
                 block_val = tl.maximum(block_val, tmp)
             # Reduce along axis=-1 (the last dimension, equivalent to axis=1 in 2D)
-            block_res = tl.max(block_val, axis=-1)[:, None] # <- negative axis index (last dim)
+            block_res = tl.max(block_val, axis=-1)[:, None]  # <- negative axis index (last dim)
             tl.store(out_ptr0 + x0, block_res, x0_mask)
 
     ref_res = {
@@ -112,7 +106,7 @@ def test_triton_max_last_dim_case2(mock_autotuner):
         "low_dim_axes": ["ry"],
         "reduction_axes": ["ry"],
     }
-    grid = lambda meta: (meta["X0BLOCK"],)
+    grid = lambda meta: (meta["X0BLOCK"], )
     act_res = triton_max_last_dim2[grid]()
 
     check_axes_parse_res(act_res, ref_res)
@@ -121,18 +115,15 @@ def test_triton_max_last_dim_case2(mock_autotuner):
 def test_triton_max_last_dim_case3(mock_autotuner):
     import triton.backends.ascend.runtime
 
-    @triton.autotune(
-        configs=[],
-        key=["x0_numel", "r1_numel"]
-    )
+    @triton.autotune(configs=[], key=["x0_numel", "r1_numel"])
     @triton.jit
     def triton_max_last_dim3(
-        in_ptr0, 
-        out_ptr0, 
-        x0_numel, 
-        r1_numel, 
-        X0BLOCK: tl.constexpr, 
-        X0BLOCK_SUB: tl.constexpr, 
+        in_ptr0,
+        out_ptr0,
+        x0_numel,
+        r1_numel,
+        X0BLOCK: tl.constexpr,
+        X0BLOCK_SUB: tl.constexpr,
         R1BLOCK_SUB: tl.constexpr,
     ):
         x0_offset = tl.program_id(0) * X0BLOCK
@@ -150,7 +141,7 @@ def test_triton_max_last_dim_case3(mock_autotuner):
                 tmp = tl.load(in_ptr0 + (r1 + r1_numel * x0), r1_mask & x0_mask, other=float("-inf"))
                 block_val = tl.maximum(block_val, tmp)
             # Reduce along axis=1, passed as a positional argument (not keyword `axis=...`)
-            block_res = tl.max(block_val, 1)[:, None] # <- explicit positive axis index
+            block_res = tl.max(block_val, 1)[:, None]  # <- explicit positive axis index
             tl.store(out_ptr0 + x0, block_res, x0_mask)
 
     ref_res = {
@@ -160,7 +151,7 @@ def test_triton_max_last_dim_case3(mock_autotuner):
         "low_dim_axes": ["ry"],
         "reduction_axes": ["ry"],
     }
-    grid = lambda meta: (meta["X0BLOCK"],)
+    grid = lambda meta: (meta["X0BLOCK"], )
     act_res = triton_max_last_dim3[grid]()
 
     check_axes_parse_res(act_res, ref_res)

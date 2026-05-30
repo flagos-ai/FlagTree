@@ -244,7 +244,7 @@ namespace ir {
 static py::class_<TritonOpBuilder> *builderClassPtr = nullptr;
 py::class_<TritonOpBuilder> *getBuilderClass() { return builderClassPtr; }
 
-}
+} // namespace ir
 
 void init_triton_ir(py::module &&m) {
   using ret = py::return_value_policy;
@@ -334,8 +334,9 @@ void init_triton_ir(py::module &&m) {
 
   py::class_<MLIRContext>(m, "context", py::module_local())
       .def(py::init<>())
-      .def("__enter__", [](MLIRContext &self) -> MLIRContext& { return self; },
-           py::return_value_policy::reference)
+      .def(
+          "__enter__", [](MLIRContext &self) -> MLIRContext & { return self; },
+          py::return_value_policy::reference)
       .def("__exit__",
            [](MLIRContext &, py::object, py::object, py::object) -> bool {
              // Keep context alive for the duration of the scope.
@@ -787,11 +788,12 @@ void init_triton_ir(py::module &&m) {
   static py::class_<TritonOpBuilder> builderClass(
       m, "builder", py::module_local(), py::dynamic_attr());
   ir::builderClassPtr = &builderClass;
-  builderClass.def(py::init<MLIRContext *, const std::string &>(),
-                   py::arg("context"),
-                   py::arg("compile_mode") = "simd",
-                   "Create a TritonOpBuilder with optional compile_mode (simt or simd, default: simd)")
- 	    .def("is_simt_mode", &TritonOpBuilder::isSimtMode,
+  builderClass
+      .def(py::init<MLIRContext *, const std::string &>(), py::arg("context"),
+           py::arg("compile_mode") = "simd",
+           "Create a TritonOpBuilder with optional compile_mode (simt or simd, "
+           "default: simd)")
+      .def("is_simt_mode", &TritonOpBuilder::isSimtMode,
            "Check if the compile mode is simt")
       .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
       // getters
@@ -843,13 +845,13 @@ void init_triton_ir(py::module &&m) {
              return self.getBuilder().getStringAttr(value);
            })
       .def("get_i64_array_attr",
-           [](TritonOpBuilder &self, const std::vector<int64_t>& array) {
+           [](TritonOpBuilder &self, const std::vector<int64_t> &array) {
              return self.getBuilder().getI64ArrayAttr(array);
            })
       .def("get_type_array_attr",
-          [](TritonOpBuilder &self, const std::vector<Type>& array) {
-            return self.getBuilder().getTypeArrayAttr(array);
-          })
+           [](TritonOpBuilder &self, const std::vector<Type> &array) {
+             return self.getBuilder().getTypeArrayAttr(array);
+           })
       .def("get_disable_loop_licm_attr",
            [](TritonOpBuilder &self) -> Attribute {
              auto licmAttr =
@@ -932,13 +934,13 @@ void init_triton_ir(py::module &&m) {
            })
       .def("get_fp8e4nv",
            [](TritonOpBuilder &self, double v) -> Value {
-             return self.create<arith::ConstantOp>(
-                 FloatAttr::get(Float8E4M3FNType::get((self.getBuilder().getContext())), v));
+             return self.create<arith::ConstantOp>(FloatAttr::get(
+                 Float8E4M3FNType::get((self.getBuilder().getContext())), v));
            })
       .def("get_fp8e5",
            [](TritonOpBuilder &self, double v) -> Value {
-             return self.create<arith::ConstantOp>(
-                 FloatAttr::get(Float8E5M2Type::get(self.getBuilder().getContext()), v));
+             return self.create<arith::ConstantOp>(FloatAttr::get(
+                 Float8E5M2Type::get(self.getBuilder().getContext()), v));
            })
       .def("get_null_value",
            [](TritonOpBuilder &self, Type type) -> Value {

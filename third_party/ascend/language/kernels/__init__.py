@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Optimized Triton kernels for Ascend NPU.
 
@@ -25,6 +24,5 @@ This module provides high-level, optimized kernels written in Triton for common 
 These are different from the low-level builtin extensions in `cann.extension`.
 """
 __all__ = ["gather_2d_simd"]
-
 
 from .gather import gather_2d_simd

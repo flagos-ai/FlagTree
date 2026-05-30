@@ -32,23 +32,13 @@ def profiler_wrapper(fn, *args):
     stream = torch.npu.current_stream()
     experimental_config = torch_npu.profiler._ExperimentalConfig(
         aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
-        profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
-        l2_cache=False,
-        data_simplification=False
-    )
+        profiler_level=torch_npu.profiler.ProfilerLevel.Level1, l2_cache=False, data_simplification=False)
     with torch_npu.profiler.profile(
-            activities=[
-                torch_npu.profiler.ProfilerActivity.CPU,
-                torch_npu.profiler.ProfilerActivity.NPU
-            ],
+            activities=[torch_npu.profiler.ProfilerActivity.CPU, torch_npu.profiler.ProfilerActivity.NPU],
             schedule=torch_npu.profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=repeat,
                                                  skip_first=skip_first),
-            on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(result_path),
-            record_shapes=True,
-            profile_memory=False,
-            with_stack=False,
-            with_flops=False,
-            with_modules=False,
+            on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(result_path), record_shapes=True,
+            profile_memory=False, with_stack=False, with_flops=False, with_modules=False,
             experimental_config=experimental_config) as prof:
         stream.synchronize()
         for _ in range(skip_first + (wait + warmup + active) * repeat):
@@ -103,17 +93,17 @@ def test_elementwise_ops(dtype, low, high):
     test_case_is_inductor = False
 
     if dtype == torch.bool:
-        x0 = torch.randint(low=low, high=high, size=(N,)).bool().npu()
-        x1 = torch.randint(low=low, high=high, size=(N,)).bool().npu()
+        x0 = torch.randint(low=low, high=high, size=(N, )).bool().npu()
+        x1 = torch.randint(low=low, high=high, size=(N, )).bool().npu()
         triton_cal = triton_or_func(x0, x1, N)
         ref = x0 | x1
     else:
         if dtype.is_floating_point:
-            x0 = torch.rand((N,), dtype=dtype).npu()
-            x1 = torch.rand((N,), dtype=dtype).npu()
+            x0 = torch.rand((N, ), dtype=dtype).npu()
+            x1 = torch.rand((N, ), dtype=dtype).npu()
         else:
-            x0 = torch.randint(low=low, high=high, size=(N,), dtype=dtype).npu()
-            x1 = torch.randint(low=low, high=high, size=(N,), dtype=dtype).npu()
+            x0 = torch.randint(low=low, high=high, size=(N, ), dtype=dtype).npu()
+            x1 = torch.randint(low=low, high=high, size=(N, ), dtype=dtype).npu()
 
         triton_cal = triton_add_func(x0, x1, N)
         ref = x0 + x1
@@ -122,4 +112,5 @@ def test_elementwise_ops(dtype, low, high):
 
     def wrapper():
         _ = triton_add_func(x0, x1, N) if dtype != torch.bool else triton_or_func(x0, x1, N)
+
     profiler_wrapper(wrapper)

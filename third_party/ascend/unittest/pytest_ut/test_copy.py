@@ -91,6 +91,7 @@ def test_copy():
     print(f"✅ Generated MLIR ({len(mlir)} chars):\n")
     print(mlir)
 
+
 # ============== Main for manual testing ==============
 if __name__ == "__main__":
     test_copy()

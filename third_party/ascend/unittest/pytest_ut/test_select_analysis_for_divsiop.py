@@ -39,10 +39,8 @@ def torch_divsiop_select_analysis(offs_num, divnum, maxindex, index, query):
 
 
 @triton.jit
-def divsiop_select_analysis_kernel1(index, out_ptr, query,
-                                          offs_num: tl.constexpr,
-                                          divnum: tl.constexpr,
-                                          maxindex: tl.constexpr):
+def divsiop_select_analysis_kernel1(index, out_ptr, query, offs_num: tl.constexpr, divnum: tl.constexpr,
+                                    maxindex: tl.constexpr):
     idx = tl.load(query + index)
     offs_m = tl.arange(0, offs_num)
 
@@ -54,43 +52,33 @@ def divsiop_select_analysis_kernel1(index, out_ptr, query,
 
 
 @triton.jit
-def divsiop_select_analysis_kernel2(index, out_ptr, query,
-                                          offs_num: tl.constexpr,
-                                          divnum: tl.constexpr,
-                                          maxindex: tl.constexpr):
+def divsiop_select_analysis_kernel2(index, out_ptr, query, offs_num: tl.constexpr, divnum: tl.constexpr,
+                                    maxindex: tl.constexpr):
     idx = tl.load(query + index)
     offs_m = tl.arange(0, offs_num)
 
-    query_pos = -idx + offs_m // divnum 
+    query_pos = -idx + offs_m // divnum
     mask = query_pos < maxindex
 
     query_mask = tl.where(mask, 1, 0).to(tl.int1)
     tl.store(out_ptr + tl.arange(0, offs_num), query_mask)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                            [16, 4, 2, index] for index in range(0, 4)
-                         ]
-                        )
+@pytest.mark.parametrize('param_list', [[16, 4, 2, index] for index in range(0, 4)])
 def test_divsiop_select_analysis1(param_list):
     offs_num, divnum, maxindex, index = param_list
     query = torch.tensor(range(0, divnum)).npu()
     y_ref = torch_divsiop_select_analysis(offs_num, divnum, maxindex, index, query).npu()
-    y_cal = torch.full((offs_num,), 2, dtype=torch.int32).npu()
-    divsiop_select_analysis_kernel1[(1,)](index, y_cal, query, offs_num, divnum, maxindex)
+    y_cal = torch.full((offs_num, ), 2, dtype=torch.int32).npu()
+    divsiop_select_analysis_kernel1[(1, )](index, y_cal, query, offs_num, divnum, maxindex)
     test_common.validate_cmp('int32', y_cal, y_ref)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                            [16, 4, 2, index] for index in range(0, 4)
-                         ]
-                        )
+@pytest.mark.parametrize('param_list', [[16, 4, 2, index] for index in range(0, 4)])
 def test_divsiop_select_analysis2(param_list):
     offs_num, divnum, maxindex, index = param_list
     query = torch.tensor(range(0, divnum)).npu()
     y_ref = torch_divsiop_select_analysis(offs_num, divnum, maxindex, index, query).npu()
-    y_cal = torch.full((offs_num,), 2, dtype=torch.int32).npu()
-    divsiop_select_analysis_kernel2[(1,)](index, y_cal, query, offs_num, divnum, maxindex)
+    y_cal = torch.full((offs_num, ), 2, dtype=torch.int32).npu()
+    divsiop_select_analysis_kernel2[(1, )](index, y_cal, query, offs_num, divnum, maxindex)
     test_common.validate_cmp('int32', y_cal, y_ref)

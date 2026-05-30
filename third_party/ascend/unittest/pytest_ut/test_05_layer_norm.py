@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Layer Normalization
 =============
@@ -109,7 +108,7 @@ def test_layer_norm(dtype):
     device = 'npu'
 
     x_shape = (M, N)
-    w_shape = (x_shape[-1],)
+    w_shape = (x_shape[-1], )
     weight = torch.rand(w_shape, dtype=dtype, device=device)
     bias = torch.rand(w_shape, dtype=dtype, device=device)
     x = -2.3 + 0.5 * torch.randn(x_shape, dtype=dtype, device=device)

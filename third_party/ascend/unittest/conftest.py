@@ -34,9 +34,5 @@ def assign_npu(worker_id):
 
 
 def pytest_addoption(parser):
-    parser.addoption(
-        "--kernel",
-        action="append",
-        default=None,
-        help="run only specified kernel(s); can be supplied multiple times"
-    )
+    parser.addoption("--kernel", action="append", default=None,
+                     help="run only specified kernel(s); can be supplied multiple times")

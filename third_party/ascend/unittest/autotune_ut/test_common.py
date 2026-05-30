@@ -55,7 +55,7 @@ def check_axes_parse_res(act: dict, ref: dict):
 
     assert set(ref_keys.values()) == set(act_keys.values()), \
         f"Semantic dimensions mismatch: ref={set(ref_keys.values())}, act={set(act_keys.values())}"
-    
+
     def normalize_param_dict(param_dict: dict, sym_to_sem: dict) -> dict:
         """Convert {symbol: value} -> {semantic: value}"""
         return {sym_to_sem[sym]: value for sym, value in param_dict.items()}
@@ -74,7 +74,7 @@ def check_axes_parse_res(act: dict, ref: dict):
 
     ref_red = normalize_axis_list(ref["reduction_axes"], ref_keys)
     act_red = normalize_axis_list(act["reduction_axes"], act_keys)
-    
+
     # Compare normalized structures
     assert ref_split == act_split, f"split_params mismatch: {ref_split} vs {act_split}"
     assert ref_tiling == act_tiling, f"tiling_params mismatch: {ref_tiling} vs {act_tiling}"
@@ -84,12 +84,8 @@ def check_axes_parse_res(act: dict, ref: dict):
 
 @pytest.fixture
 def mock_autotuner():
-    with mock.patch(
-        "triton.backends.ascend.runtime.autotuner.AutoTilingTuner.run",
-        new=MockAutoTilingTunerRun
-    ):
+    with mock.patch("triton.backends.ascend.runtime.autotuner.AutoTilingTuner.run", new=MockAutoTilingTunerRun):
         yield
-
 
 
 def generate_tensor(shape, dtype):
@@ -105,4 +101,3 @@ def generate_tensor(shape, dtype):
         return torch.randint(low=0, high=255, size=shape, dtype=torch.uint8)
     else:
         raise ValueError('Invalid parameter \"dtype\" is found : {}'.format(dtype))
-

@@ -64,15 +64,11 @@ def triton_min_5d_dim13(in_ptr0, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: 
     kblk_idx = tl.arange(0, K)
     zblk_idx = tl.arange(0, Z)
 
-    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M +
-           mblk_idx[None, :, None, None, None] * Z * K * N +
-           nblk_idx[None, None, :, None, None] * Z * K +
-           kblk_idx[None, None, None, :, None] * Z +
+    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M + mblk_idx[None, :, None, None, None] * Z * K * N +
+           nblk_idx[None, None, :, None, None] * Z * K + kblk_idx[None, None, None, :, None] * Z +
            zblk_idx[None, None, None, None, :])
 
-    odx = (lblk_idx[:, None, None] * N * Z +
-           nblk_idx[None, :, None] * Z +
-           zblk_idx[None, None, :])
+    odx = (lblk_idx[:, None, None] * N * Z + nblk_idx[None, :, None] * Z + zblk_idx[None, None, :])
 
     x = tl.load(in_ptr0 + idx)
     ret_k = tl.reduce(x, 3, minimum)  # [L, M, N, Z]
@@ -89,16 +85,12 @@ def triton_min_5d_dim0(in_ptr0, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: t
     kblk_idx = tl.arange(0, K)
     zblk_idx = tl.arange(0, Z)
 
-    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M +
-           mblk_idx[None, :, None, None, None] * Z * K * N +
-           nblk_idx[None, None, :, None, None] * Z * K +
-           kblk_idx[None, None, None, :, None] * Z +
+    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M + mblk_idx[None, :, None, None, None] * Z * K * N +
+           nblk_idx[None, None, :, None, None] * Z * K + kblk_idx[None, None, None, :, None] * Z +
            zblk_idx[None, None, None, None, :])
 
-    odx = (mblk_idx[:, None, None, None] * N * K * Z +
-           nblk_idx[None, :, None, None] * K * Z +
-           kblk_idx[None, None, :, None] * Z +
-           zblk_idx[None, None, None, :])
+    odx = (mblk_idx[:, None, None, None] * N * K * Z + nblk_idx[None, :, None, None] * K * Z +
+           kblk_idx[None, None, :, None] * Z + zblk_idx[None, None, None, :])
 
     x = tl.load(in_ptr0 + idx)
     ret = tl.reduce(x, 0, minimum)
@@ -114,16 +106,12 @@ def triton_min_5d_dim1(in_ptr0, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: t
     kblk_idx = tl.arange(0, K)
     zblk_idx = tl.arange(0, Z)
 
-    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M +
-           mblk_idx[None, :, None, None, None] * Z * K * N +
-           nblk_idx[None, None, :, None, None] * Z * K +
-           kblk_idx[None, None, None, :, None] * Z +
+    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M + mblk_idx[None, :, None, None, None] * Z * K * N +
+           nblk_idx[None, None, :, None, None] * Z * K + kblk_idx[None, None, None, :, None] * Z +
            zblk_idx[None, None, None, None, :])
 
-    odx = (lblk_idx[:, None, None, None] * N * K * Z +
-           nblk_idx[None, :, None, None] * K * Z +
-           kblk_idx[None, None, :, None] * Z +
-           zblk_idx[None, None, None, :])
+    odx = (lblk_idx[:, None, None, None] * N * K * Z + nblk_idx[None, :, None, None] * K * Z +
+           kblk_idx[None, None, :, None] * Z + zblk_idx[None, None, None, :])
 
     x = tl.load(in_ptr0 + idx)
     ret = tl.reduce(x, 1, minimum)
@@ -139,16 +127,12 @@ def triton_min_5d_dim2(in_ptr0, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: t
     kblk_idx = tl.arange(0, K)
     zblk_idx = tl.arange(0, Z)
 
-    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M +
-           mblk_idx[None, :, None, None, None] * Z * K * N +
-           nblk_idx[None, None, :, None, None] * Z * K +
-           kblk_idx[None, None, None, :, None] * Z +
+    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M + mblk_idx[None, :, None, None, None] * Z * K * N +
+           nblk_idx[None, None, :, None, None] * Z * K + kblk_idx[None, None, None, :, None] * Z +
            zblk_idx[None, None, None, None, :])
 
-    odx = (lblk_idx[:, None, None, None] * M * K * Z +
-           mblk_idx[None, :, None, None] * K * Z +
-           kblk_idx[None, None, :, None] * Z +
-           zblk_idx[None, None, None, :])
+    odx = (lblk_idx[:, None, None, None] * M * K * Z + mblk_idx[None, :, None, None] * K * Z +
+           kblk_idx[None, None, :, None] * Z + zblk_idx[None, None, None, :])
 
     x = tl.load(in_ptr0 + idx)
     ret = tl.reduce(x, 2, minimum)
@@ -164,16 +148,12 @@ def triton_min_5d_dim3(in_ptr0, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: t
     kblk_idx = tl.arange(0, K)
     zblk_idx = tl.arange(0, Z)
 
-    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M +
-           mblk_idx[None, :, None, None, None] * Z * K * N +
-           nblk_idx[None, None, :, None, None] * Z * K +
-           kblk_idx[None, None, None, :, None] * Z +
+    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M + mblk_idx[None, :, None, None, None] * Z * K * N +
+           nblk_idx[None, None, :, None, None] * Z * K + kblk_idx[None, None, None, :, None] * Z +
            zblk_idx[None, None, None, None, :])
 
-    odx = (lblk_idx[:, None, None, None] * M * N * Z +
-           mblk_idx[None, :, None, None] * N * Z +
-           nblk_idx[None, None, :, None] * Z +
-           zblk_idx[None, None, None, :])
+    odx = (lblk_idx[:, None, None, None] * M * N * Z + mblk_idx[None, :, None, None] * N * Z +
+           nblk_idx[None, None, :, None] * Z + zblk_idx[None, None, None, :])
 
     x = tl.load(in_ptr0 + idx)
     ret = tl.reduce(x, 3, minimum)
@@ -189,16 +169,12 @@ def triton_min_5d_dim4(in_ptr0, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: t
     kblk_idx = tl.arange(0, K)
     zblk_idx = tl.arange(0, Z)
 
-    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M +
-           mblk_idx[None, :, None, None, None] * Z * K * N +
-           nblk_idx[None, None, :, None, None] * Z * K +
-           kblk_idx[None, None, None, :, None] * Z +
+    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M + mblk_idx[None, :, None, None, None] * Z * K * N +
+           nblk_idx[None, None, :, None, None] * Z * K + kblk_idx[None, None, None, :, None] * Z +
            zblk_idx[None, None, None, None, :])
 
-    odx = (lblk_idx[:, None, None, None] * M * N * K +
-           mblk_idx[None, :, None, None] * N * K +
-           nblk_idx[None, None, :, None] * K +
-           kblk_idx[None, None, None, :])
+    odx = (lblk_idx[:, None, None, None] * M * N * K + mblk_idx[None, :, None, None] * N * K +
+           nblk_idx[None, None, :, None] * K + kblk_idx[None, None, None, :])
 
     x = tl.load(in_ptr0 + idx)
     ret = tl.reduce(x, 4, minimum)
@@ -214,10 +190,8 @@ def triton_min_5d_all(in_ptr0, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: tl
     kblk_idx = tl.arange(0, K)
     zblk_idx = tl.arange(0, Z)
 
-    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M +
-           mblk_idx[None, :, None, None, None] * Z * K * N +
-           nblk_idx[None, None, :, None, None] * Z * K +
-           kblk_idx[None, None, None, :, None] * Z +
+    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M + mblk_idx[None, :, None, None, None] * Z * K * N +
+           nblk_idx[None, None, :, None, None] * Z * K + kblk_idx[None, None, None, :, None] * Z +
            zblk_idx[None, None, None, None, :])
 
     x = tl.load(in_ptr0 + idx)
@@ -233,23 +207,20 @@ testlist = [
     (triton_min_5d_dim024, (1, 1, 1, 1, 1), "dim024"),
     (triton_min_5d_dim024, (2, 2, 2, 2, 2), "dim024"),
     (triton_min_5d_dim024, (3, 11, 1, 3, 42), "dim024"),
-
     (triton_min_5d_dim13, (1, 1, 1, 1, 1024), "dim13"),
-
     (triton_min_5d_dim0, (2, 2, 2, 2, 2), "dim0"),
     (triton_min_5d_dim1, (2, 2, 2, 2, 2), "dim1"),
     (triton_min_5d_dim2, (2, 2, 2, 2, 2), "dim2"),
     (triton_min_5d_dim3, (2, 2, 2, 2, 2), "dim3"),
     (triton_min_5d_dim4, (2, 2, 2, 2, 2), "dim4"),
-
     (triton_min_5d_all, (3, 11, 1, 3, 42), "all"),
 ]
 
 typelist = ['int8', 'int16', 'int32', 'int64', 'float16', 'float32', 'bfloat16', 'bool']
 
-ids = ["{}-{}-{}".format(testfunc.__name__, "-".join(map(str, shape)), dim_name)
-       for testfunc, shape, dim_name in testlist
-       ]
+ids = [
+    "{}-{}-{}".format(testfunc.__name__, "-".join(map(str, shape)), dim_name) for testfunc, shape, dim_name in testlist
+]
 
 
 @pytest.mark.parametrize('testfunc, shape, dim_name', testlist, ids=ids)
@@ -267,7 +238,7 @@ def test_min(testfunc, dtype, shape, dim_name):
             ans, _ = torch.min(x0, 4)
             ans, _ = torch.min(ans, 2)
             ans, _ = torch.min(ans, 0)
-        output = torch.zeros((shape[1],) + (shape[3],), dtype=eval('torch.' + dtype)).npu()
+        output = torch.zeros((shape[1], ) + (shape[3], ), dtype=eval('torch.' + dtype)).npu()
 
     elif dim_name == "dim13":
         if 'int' in dtype:
@@ -277,7 +248,7 @@ def test_min(testfunc, dtype, shape, dim_name):
         else:
             ans, _ = torch.min(x0, 3)
             ans, _ = torch.min(ans, 1)
-        output = torch.zeros((shape[0],) + (shape[2],) + (shape[4],), dtype=eval('torch.' + dtype)).npu()
+        output = torch.zeros((shape[0], ) + (shape[2], ) + (shape[4], ), dtype=eval('torch.' + dtype)).npu()
 
     elif dim_name == "dim0":
         if 'int' in dtype:
@@ -285,7 +256,8 @@ def test_min(testfunc, dtype, shape, dim_name):
             ans = ans.to(dtype=eval('torch.' + dtype))
         else:
             ans, _ = torch.min(x0, 0)
-        output = torch.zeros((shape[1],) + (shape[2],) + (shape[3],) + (shape[4],), dtype=eval('torch.' + dtype)).npu()
+        output = torch.zeros((shape[1], ) + (shape[2], ) + (shape[3], ) + (shape[4], ),
+                             dtype=eval('torch.' + dtype)).npu()
 
     elif dim_name == "dim1":
         if 'int' in dtype:
@@ -293,7 +265,8 @@ def test_min(testfunc, dtype, shape, dim_name):
             ans = ans.to(dtype=eval('torch.' + dtype))
         else:
             ans, _ = torch.min(x0, 1)
-        output = torch.zeros((shape[0],) + (shape[2],) + (shape[3],) + (shape[4],), dtype=eval('torch.' + dtype)).npu()
+        output = torch.zeros((shape[0], ) + (shape[2], ) + (shape[3], ) + (shape[4], ),
+                             dtype=eval('torch.' + dtype)).npu()
 
     elif dim_name == "dim2":
         if 'int' in dtype:
@@ -301,7 +274,8 @@ def test_min(testfunc, dtype, shape, dim_name):
             ans = ans.to(dtype=eval('torch.' + dtype))
         else:
             ans, _ = torch.min(x0, 2)
-        output = torch.zeros((shape[0],) + (shape[1],) + (shape[3],) + (shape[4],), dtype=eval('torch.' + dtype)).npu()
+        output = torch.zeros((shape[0], ) + (shape[1], ) + (shape[3], ) + (shape[4], ),
+                             dtype=eval('torch.' + dtype)).npu()
 
     elif dim_name == "dim3":
         if 'int' in dtype:
@@ -309,7 +283,8 @@ def test_min(testfunc, dtype, shape, dim_name):
             ans = ans.to(dtype=eval('torch.' + dtype))
         else:
             ans, _ = torch.min(x0, 3)
-        output = torch.zeros((shape[0],) + (shape[1],) + (shape[2],) + (shape[4],), dtype=eval('torch.' + dtype)).npu()
+        output = torch.zeros((shape[0], ) + (shape[1], ) + (shape[2], ) + (shape[4], ),
+                             dtype=eval('torch.' + dtype)).npu()
 
     elif dim_name == "dim4":
         if 'int' in dtype:
@@ -317,7 +292,8 @@ def test_min(testfunc, dtype, shape, dim_name):
             ans = ans.to(dtype=eval('torch.' + dtype))
         else:
             ans, _ = torch.min(x0, 4)
-        output = torch.zeros((shape[0],) + (shape[1],) + (shape[2],) + (shape[3],), dtype=eval('torch.' + dtype)).npu()
+        output = torch.zeros((shape[0], ) + (shape[1], ) + (shape[2], ) + (shape[3], ),
+                             dtype=eval('torch.' + dtype)).npu()
 
     elif dim_name == "all":
         if 'int' in dtype:
@@ -325,8 +301,8 @@ def test_min(testfunc, dtype, shape, dim_name):
             ans = torch.tensor([ans], dtype=eval('torch.' + dtype))
         else:
             ans = torch.tensor([torch.min(x0)], dtype=eval('torch.' + dtype))
-        output = torch.zeros((1,), dtype=eval('torch.' + dtype)).npu()
+        output = torch.zeros((1, ), dtype=eval('torch.' + dtype)).npu()
 
-    testfunc[(1,)](x0, output, *shape)
+    testfunc[(1, )](x0, output, *shape)
 
     test_common.validate_cmp(dtype, output, ans)

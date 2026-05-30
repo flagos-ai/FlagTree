@@ -29,7 +29,7 @@ import test_common
 @triton.jit
 def promote_to_tensor(x):
     # Addition promotes to tensor for us
-    return x + tl.zeros((1,), tl.int1)
+    return x + tl.zeros((1, ), tl.int1)
 
 
 @triton.jit
@@ -87,11 +87,9 @@ def triton_kernel(in_ptr0, in_ptr1, out_ptr0, out_ptr1, x0_numel, r1_numel, XBLO
             tl.store(out_ptr1 + r1, tmp5[None, :], None)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (128, 65), 1, 128, 65, 32],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['float32', (128, 65), 1, 128, 65, 32],
+])
 def test_max_with_index_dim0(param_list):
     dtype, shape, ncore, XB, YB, RBLOCK = param_list
     import math

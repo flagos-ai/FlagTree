@@ -24,6 +24,7 @@ import triton
 import triton.language as tl
 import torch_npu
 
+
 @triton.jit
 def _layer_norm_fwd_fused(
     X,  # pointer to the input

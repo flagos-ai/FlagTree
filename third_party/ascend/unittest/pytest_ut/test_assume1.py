@@ -5,9 +5,7 @@ import torch_npu
 import pytest
 import test_common
 
-from triton._internal_testing import (
-    is_interpreter
-)
+from triton._internal_testing import (is_interpreter)
 
 
 @triton.jit

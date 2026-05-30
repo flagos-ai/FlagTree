@@ -30,7 +30,8 @@ import torch_npu
 
 
 @triton.jit
-def triton_reduce_deadcode(v_ptr, in_ptr0, in_ptr1, out_ptr0, VBLOCK: tl.constexpr, XBLOCK: tl.constexpr, YBLOCK: tl.constexpr):
+def triton_reduce_deadcode(v_ptr, in_ptr0, in_ptr1, out_ptr0, VBLOCK: tl.constexpr, XBLOCK: tl.constexpr,
+                           YBLOCK: tl.constexpr):
     v_idx = tl.arange(0, VBLOCK)
     v = tl.load(v_ptr + v_idx)
     v_ret = tl.argmax(v, 0)
@@ -65,9 +66,9 @@ def test_reduce_deadcode():
     dtype = torch.float32
     in0 = torch.randn((XBLOCK, YBLOCK), dtype=dtype, device='npu')
     in1 = torch.randn((XBLOCK, YBLOCK), dtype=dtype, device='npu')
-    v = torch.randn((VBLOCK,), dtype=dtype, device='npu')
+    v = torch.randn((VBLOCK, ), dtype=dtype, device='npu')
     out = torch.zeros((XBLOCK, YBLOCK), dtype=dtype, device='npu')
 
-    triton_reduce_deadcode[(1,)](v, in0, in1, out, VBLOCK=VBLOCK, XBLOCK=XBLOCK, YBLOCK=YBLOCK)
+    triton_reduce_deadcode[(1, )](v, in0, in1, out, VBLOCK=VBLOCK, XBLOCK=XBLOCK, YBLOCK=YBLOCK)
     expected = torch_reduce_deadcode(in0, in1, v)
     test_common.validate_cmp(sigtype, out, expected)

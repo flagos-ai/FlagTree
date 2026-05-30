@@ -18,32 +18,13 @@ def my_kernel(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
     index = tl.full([8], 0, tl.int32)
     value = tl.full([8, 64], 0, tl.float32)
     tmp = tl.full([8], 0, tl.float32)
-    x = al.custom("__builtin_index_select",
-                   x_ptr, index,
-                   dim=0,
-                   bound=100,
-                   end_offset=(2, 2),
-                   start_offset=(0, 0),
-                   src_stride=(4, 1),
-                   out=x)
-    al.custom("__builtin_index_put",
-              x_ptr, index, value,
-              dim=0,
-              bound=12,
-              dst_shape=(1, 2, 3),
-              dst_offset=(4, 5, 6),
+    x = al.custom("__builtin_index_select", x_ptr, index, dim=0, bound=100, end_offset=(2, 2), start_offset=(0, 0),
+                  src_stride=(4, 1), out=x)
+    al.custom("__builtin_index_put", x_ptr, index, value, dim=0, bound=12, dst_shape=(1, 2, 3), dst_offset=(4, 5, 6),
               dst_stride=(8, 4, 1))
-    tmp = al.custom("__builtin_gather_load",
-              y_ptr, index,
-              bound=100,
-              dim=0,
-              src_stride=(1,),
-              index_shape=(3,),
-              offsets=(0,),
-              out=tmp)
-    al.custom("__builtin_scatter_store",
-              out_ptr, value, index,
-              1, 0, (1, ), (2, ), (1, ))
+    tmp = al.custom("__builtin_gather_load", y_ptr, index, bound=100, dim=0, src_stride=(1, ), index_shape=(3, ),
+                    offsets=(0, ), out=tmp)
+    al.custom("__builtin_scatter_store", out_ptr, value, index, 1, 0, (1, ), (2, ), (1, ))
     y = al.custom("__builtin_indirect_load", x_ptr, index, mask=i < n, other=y, out=y)
     al.custom("__builtin_indirect_store", out_ptr, index, value)
     tl.store(out_ptr + i, y, mask=i < n)

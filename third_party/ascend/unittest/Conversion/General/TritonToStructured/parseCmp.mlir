@@ -50,7 +50,7 @@ tt.func public @test_cmp_ult(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %
 // CHECK:           %[[VAL_23:.*]] = arith.cmpi slt, %[[VAL_22]], %[[VAL_4]] : tensor<2xi32>
 // CHECK:           %[[VAL_24:.*]] = tt.load %[[VAL_19]], %[[VAL_23]], %[[VAL_3]] : tensor<2x!tt.ptr<f32>>
 // CHECK:           %[[VAL_25:.*]] = tensor.empty() : tensor<2x512xf32>
-// CHECK:           %[[VAL_26:.*]] = linalg.broadcast ins(%[[VAL_24]] : tensor<2xf32>) outs(%[[VAL_25]] : tensor<2x512xf32>) dimensions = [1] 
+// CHECK:           %[[VAL_26:.*]] = linalg.broadcast ins(%[[VAL_24]] : tensor<2xf32>) outs(%[[VAL_25]] : tensor<2x512xf32>) dimensions = [1]
 // CHECK:           %[[VAL_27:.*]] = tensor.reshape %[[VAL_26]](%[[VAL_2]]) : (tensor<2x512xf32>, tensor<1xi64>) -> tensor<1024xf32>
 // CHECK:           %[[VAL_28:.*]] = arith.muli %[[VAL_7]], %[[VAL_6]] : i32
 // CHECK:           %[[VAL_29:.*]] = tt.splat %[[VAL_28]] : i32 -> tensor<1024xi32>
@@ -73,12 +73,12 @@ tt.func public @test_cmp_uge(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %
   %0 = tt.get_program_id x : i32
   %1 = arith.muli %0, %c1024_i32 {tt.divisibility = dense<512> : tensor<1xi32>} : i32
   %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32>
-  %3 = tt.splat %1 : i32 -> tensor<1024xi32>  
+  %3 = tt.splat %1 : i32 -> tensor<1024xi32>
   %4 = arith.addi %3, %2 : tensor<1024xi32>
   %5 = arith.divsi %4, %cst_1 : tensor<1024xi32>
   %6 = arith.cmpi uge, %cst_0, %5 : tensor<1024xi32>
   %7 = arith.muli %5, %cst_1 : tensor<1024xi32>
-  %8 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<1024x!tt.ptr<f32>> 
+  %8 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<1024x!tt.ptr<f32>>
   %9 = tt.addptr %8, %7 : tensor<1024x!tt.ptr<f32>>, tensor<1024xi32>
   %10 = tt.load %9, %6, %cst : tensor<1024x!tt.ptr<f32>>
   %11 = arith.muli %0, %c1024_i32 : i32

@@ -44,12 +44,11 @@ def triton_ge(in_ptr0, in_ptr1, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.c
         tl.store(out_ptr0 + (x0), tmp2, None)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float16', (2, 4096, 8), 2, 32768, 1024],
-                             ['float32', (2, 4096, 8), 2, 32768, 1024],
-                             ['int8', (2, 4096, 8), 2, 32768, 1024],
-                         ])
+@pytest.mark.parametrize('param_list', [
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+    ['int8', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_ge(param_list):
     # 生成数据
     dtype, shape, ncore, xblock, xblock_sub = param_list

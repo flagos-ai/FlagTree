@@ -97,9 +97,8 @@ def kernel_scope_disable_auto_sync(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr
 
 def test_nested_scope():
     """Test nested scopes compile successfully."""
-    mlir = compile_kernel(
-        kernel_nested_scope, {"x_ptr": "*fp32", "y_ptr": "*fp32", "out_ptr": "*fp32", "n": "i32"}, {"BLOCK": 256}
-    )
+    mlir = compile_kernel(kernel_nested_scope, {"x_ptr": "*fp32", "y_ptr": "*fp32", "out_ptr": "*fp32", "n": "i32"},
+                          {"BLOCK": 256})
     assert "scope.scope" in mlir
     assert len(mlir) > 0
 
@@ -113,9 +112,8 @@ def test_scope_escape():
 
 def test_scope_cube_mode():
     """Test cube core mode generates correct attributes."""
-    mlir = compile_kernel(
-        kernel_scope_cube, {"x_ptr": "*fp32", "y_ptr": "*fp32", "out_ptr": "*fp32", "n": "i32"}, {"BLOCK": 256}
-    )
+    mlir = compile_kernel(kernel_scope_cube, {"x_ptr": "*fp32", "y_ptr": "*fp32", "out_ptr": "*fp32", "n": "i32"},
+                          {"BLOCK": 256})
     assert "scope.scope" in mlir
     # Check for cube core type attribute
     assert "hivm.tcore_type" in mlir or "CUBE" in mlir.upper()
@@ -123,9 +121,8 @@ def test_scope_cube_mode():
 
 def test_scope_vector_mode():
     """Test vector core mode generates correct attributes."""
-    mlir = compile_kernel(
-        kernel_scope_vector, {"x_ptr": "*fp32", "y_ptr": "*fp32", "out_ptr": "*fp32", "n": "i32"}, {"BLOCK": 256}
-    )
+    mlir = compile_kernel(kernel_scope_vector, {"x_ptr": "*fp32", "y_ptr": "*fp32", "out_ptr": "*fp32", "n": "i32"},
+                          {"BLOCK": 256})
     assert "scope.scope" in mlir
     # Check for vector core type attribute
     assert "hivm.tcore_type" in mlir or "VECTOR" in mlir.upper()
@@ -149,9 +146,8 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Test 1: Nested Scopes")
     print("=" * 60)
-    mlir = compile_kernel(
-        kernel_nested_scope, {"x_ptr": "*fp32", "y_ptr": "*fp32", "out_ptr": "*fp32", "n": "i32"}, {"BLOCK": 256}
-    )
+    mlir = compile_kernel(kernel_nested_scope, {"x_ptr": "*fp32", "y_ptr": "*fp32", "out_ptr": "*fp32", "n": "i32"},
+                          {"BLOCK": 256})
     print(f"✅ Generated MLIR ({len(mlir)} chars):\n")
     print(mlir)
 

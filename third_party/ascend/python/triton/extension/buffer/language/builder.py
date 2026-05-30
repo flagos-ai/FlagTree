@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 buffer-specific builder utilities for code generation.
 """
@@ -72,4 +71,3 @@ def setup_unified_builder_with_buffer_builder(main_builder, buffer_builder):
         'subview',
     ]
     attach_builder_methods_with_buffer_builder(main_builder, buffer_builder, buffer_methods)
-

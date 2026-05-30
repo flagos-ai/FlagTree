@@ -57,9 +57,7 @@ def do_bench_npu(funcs, warmup=5, active=30, clear_l2_cache=False, prof_dir=None
         pid = process.pid
         process_name = process.name
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-        base_path = os.path.join(
-            get_home_dir(), ".triton", "profile_results"
-        )
+        base_path = os.path.join(get_home_dir(), ".triton", "profile_results")
         torch_path = os.path.join(base_path, f"prof_{timestamp}_{process_name}-{pid}")
 
     if clear_l2_cache:
@@ -70,14 +68,14 @@ def do_bench_npu(funcs, warmup=5, active=30, clear_l2_cache=False, prof_dir=None
 
     total = warmup + active
     with torch_npu.profiler.profile(
-        activities=[torch_npu.profiler.ProfilerActivity.NPU],
-        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(torch_path),
-        record_shapes=False,
-        profile_memory=False,
-        with_stack=False,
-        with_flops=False,
-        with_modules=False,
-        experimental_config=experimental_config,
+            activities=[torch_npu.profiler.ProfilerActivity.NPU],
+            on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(torch_path),
+            record_shapes=False,
+            profile_memory=False,
+            with_stack=False,
+            with_flops=False,
+            with_modules=False,
+            experimental_config=experimental_config,
     ) as prof:
         for fn in funcs:
             for _ in builtins.range(total):

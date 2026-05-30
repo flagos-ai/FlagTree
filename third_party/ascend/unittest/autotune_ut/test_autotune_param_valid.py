@@ -29,23 +29,20 @@ import triton.language as tl
 
 
 @triton.autotune(
-    configs=[],
-    key={"x": "n_elements"},
-    hints={
+    configs=[], key={"x": "n_elements"}, hints={
         "split_params": {"x": "BLOCK_SIZE"},
         "tiling_params": {"x": "BLOCK_SIZE_SUB"},
         "low_dim_axes": ["x"],
         "reduction_axes": [],
-    }
-)
+    })
 @triton.jit
 def add_kernel(
-        x_ptr,
-        y_ptr,
-        output_ptr,
-        n_elements,
-        BLOCK_SIZE: tl.constexpr,
-        BLOCK_SIZE_SUB: tl.constexpr,
+    x_ptr,
+    y_ptr,
+    output_ptr,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_SIZE_SUB: tl.constexpr,
 ):
     offset = tl.program_id(0) * BLOCK_SIZE
     loops1 = (BLOCK_SIZE + BLOCK_SIZE_SUB - 1) // BLOCK_SIZE_SUB
@@ -65,12 +62,14 @@ def add_torch(x, y):
 def add_autotune(x, y):
     output = torch.empty_like(x)
     n_elements = output.numel()
-    add_kernel[lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)](x, y, output, n_elements)
+    add_kernel[lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]), )](x, y, output, n_elements)
     return output
 
 
 @pytest.mark.autotune
-@pytest.mark.parametrize('size', [2048, ])
+@pytest.mark.parametrize('size', [
+    2048,
+])
 def test_add(size: int):
     x = torch.rand(size, device="npu")
     y = torch.rand(size, device="npu")
@@ -83,15 +82,13 @@ def test_add(size: int):
 @pytest.mark.autotune
 def test_add_no_reduction_axes():
     try:
+
         @triton.autotune(
-            configs=[],
-            key={"x": "n_elements"},
-            hints={
+            configs=[], key={"x": "n_elements"}, hints={
                 "split_params": {"x": "BLOCK_SIZE"},
                 "tiling_params": {"x": "BLOCK_SIZE_SUB"},
                 "low_dim_axes": ["x"],
-            }
-        )
+            })
         @triton.jit
         def add_kernel_exception():
             pass
@@ -102,15 +99,13 @@ def test_add_no_reduction_axes():
 @pytest.mark.autotune
 def test_add_no_low_dim_axes():
     try:
+
         @triton.autotune(
-            configs=[],
-            key={"x": "n_elements"},
-            hints={
+            configs=[], key={"x": "n_elements"}, hints={
                 "split_params": {"x": "BLOCK_SIZE"},
                 "tiling_params": {"x": "BLOCK_SIZE_SUB"},
                 "reduction_axes": [],
-            }
-        )
+            })
         @triton.jit
         def add_kernel_exception():
             pass
@@ -121,15 +116,12 @@ def test_add_no_low_dim_axes():
 @pytest.mark.autotune
 def test_add_no_tiling_params():
     try:
-        @triton.autotune(
-            configs=[],
-            key={"x": "n_elements"},
-            hints={
-                "split_params": {"x": "BLOCK_SIZE"},
-                "low_dim_axes": ["x"],
-                "reduction_axes": [],
-            }
-        )
+
+        @triton.autotune(configs=[], key={"x": "n_elements"}, hints={
+            "split_params": {"x": "BLOCK_SIZE"},
+            "low_dim_axes": ["x"],
+            "reduction_axes": [],
+        })
         @triton.jit
         def add_kernel_exception():
             pass
@@ -140,15 +132,13 @@ def test_add_no_tiling_params():
 @pytest.mark.autotune
 def test_add_no_split_params():
     try:
+
         @triton.autotune(
-            configs=[],
-            key={"x": "n_elements"},
-            hints={
+            configs=[], key={"x": "n_elements"}, hints={
                 "tiling_params": {"x": "BLOCK_SIZE_SUB"},
                 "low_dim_axes": ["x"],
                 "reduction_axes": [],
-            }
-        )
+            })
         @triton.jit
         def add_kernel_exception():
             pass
@@ -159,15 +149,13 @@ def test_add_no_split_params():
 @pytest.mark.autotune
 def test_add_no_keyname():
     try:
+
         @triton.autotune(
-            configs=[],
-            key={"x0": "n_elements"},
-            hints={
+            configs=[], key={"x0": "n_elements"}, hints={
                 "tiling_params": {"x": "BLOCK_SIZE_SUB"},
                 "low_dim_axes": ["x"],
                 "reduction_axes": [],
-            }
-        )
+            })
         @triton.jit
         def add_kernel_exception():
             pass

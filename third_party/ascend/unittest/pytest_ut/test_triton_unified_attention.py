@@ -34,44 +34,42 @@ def apply_softcap(S, x):
 
 
 @triton.jit
-def kernel_unified_attention_2d(
-        output_ptr,  # [num_tokens, num_query_heads, head_size]
-        query_ptr,  # [num_tokens, num_query_heads, head_size]
-        key_cache_ptr,  # [num_blks, blk_size, num_kv_heads, head_size]
-        value_cache_ptr,  # [num_blks, blk_size, num_kv_heads, head_size]
-        block_tables_ptr,  # [num_seqs, max_num_blocks_per_seq]
-        seq_lens_ptr,  # [num_seqs]
-        alibi_slopes_ptr,  # [num_query_heads]
-        scale,  # float32
-        k_scale,  # float32
-        v_scale,  # float32
-        softcap,  # float32
-        num_query_heads: tl.constexpr,  # int
-        num_queries_per_kv: tl.constexpr,  # int
-        block_table_stride: tl.int64,  # int
-        query_stride_0: tl.int64,  # int
-        query_stride_1: tl.int64,  # int, should be equal to head_size
-        output_stride_0: tl.int64,  # int
-        output_stride_1: tl.int64,  # int, should be equal to head_size
-        BLOCK_SIZE: tl.constexpr,  # int
-        HEAD_SIZE: tl.constexpr,  # int
-        HEAD_SIZE_PADDED: tl.constexpr,  # int, must be power of 2
-        USE_ALIBI_SLOPES: tl.constexpr,  # bool
-        USE_SOFTCAP: tl.constexpr,  # bool
-        SLIDING_WINDOW: tl.constexpr,  # int
-        stride_k_cache_0: tl.int64,  # int
-        stride_k_cache_1: tl.int64,  # int
-        stride_k_cache_2: tl.int64,  # int
-        stride_k_cache_3: tl.constexpr,  # int
-        stride_v_cache_0: tl.int64,  # int
-        stride_v_cache_1: tl.int64,  # int
-        stride_v_cache_2: tl.int64,  # int
-        stride_v_cache_3: tl.constexpr,  # int
-        query_start_len_ptr,  # [num_seqs+1]
-        BLOCK_Q: tl.constexpr,  # int
-        num_seqs: tl.int32,
-        BLOCK_M: tl.constexpr,  # int
-):
+def kernel_unified_attention_2d(output_ptr,  # [num_tokens, num_query_heads, head_size]
+                                query_ptr,  # [num_tokens, num_query_heads, head_size]
+                                key_cache_ptr,  # [num_blks, blk_size, num_kv_heads, head_size]
+                                value_cache_ptr,  # [num_blks, blk_size, num_kv_heads, head_size]
+                                block_tables_ptr,  # [num_seqs, max_num_blocks_per_seq]
+                                seq_lens_ptr,  # [num_seqs]
+                                alibi_slopes_ptr,  # [num_query_heads]
+                                scale,  # float32
+                                k_scale,  # float32
+                                v_scale,  # float32
+                                softcap,  # float32
+                                num_query_heads: tl.constexpr,  # int
+                                num_queries_per_kv: tl.constexpr,  # int
+                                block_table_stride: tl.int64,  # int
+                                query_stride_0: tl.int64,  # int
+                                query_stride_1: tl.int64,  # int, should be equal to head_size
+                                output_stride_0: tl.int64,  # int
+                                output_stride_1: tl.int64,  # int, should be equal to head_size
+                                BLOCK_SIZE: tl.constexpr,  # int
+                                HEAD_SIZE: tl.constexpr,  # int
+                                HEAD_SIZE_PADDED: tl.constexpr,  # int, must be power of 2
+                                USE_ALIBI_SLOPES: tl.constexpr,  # bool
+                                USE_SOFTCAP: tl.constexpr,  # bool
+                                SLIDING_WINDOW: tl.constexpr,  # int
+                                stride_k_cache_0: tl.int64,  # int
+                                stride_k_cache_1: tl.int64,  # int
+                                stride_k_cache_2: tl.int64,  # int
+                                stride_k_cache_3: tl.constexpr,  # int
+                                stride_v_cache_0: tl.int64,  # int
+                                stride_v_cache_1: tl.int64,  # int
+                                stride_v_cache_2: tl.int64,  # int
+                                stride_v_cache_3: tl.constexpr,  # int
+                                query_start_len_ptr,  # [num_seqs+1]
+                                BLOCK_Q: tl.constexpr,  # int
+                                num_seqs: tl.int32, BLOCK_M: tl.constexpr,  # int
+                                ):
 
     q_block_global_idx = tl.program_id(0)
     kv_head_idx = tl.program_id(1)
@@ -87,8 +85,7 @@ def kernel_unified_attention_2d(
             right = mid
 
     seq_idx = left - 1
-    q_block_start_idx = tl.load(query_start_len_ptr +
-                                seq_idx) // BLOCK_Q + seq_idx
+    q_block_start_idx = tl.load(query_start_len_ptr + seq_idx) // BLOCK_Q + seq_idx
 
     q_block_local_idx = q_block_global_idx - q_block_start_idx
 
@@ -108,8 +105,8 @@ def kernel_unified_attention_2d(
     query_offset_0 = cur_batch_in_all_start_index + query_pos
     query_offset_1 = kv_head_idx * num_queries_per_kv + \
         offs_m % num_queries_per_kv
-    query_offset = (query_offset_0[:, None] * query_stride_0 +
-                    query_offset_1[:, None] * query_stride_1 + offs_d[None, :])
+    query_offset = (query_offset_0[:, None] * query_stride_0 + query_offset_1[:, None] * query_stride_1 +
+                    offs_d[None, :])
 
     dim_mask = tl.where(offs_d < HEAD_SIZE, 1, 0).to(tl.int1)
     query_mask_0 = tl.where(query_pos < cur_batch_query_len, 1, 0).to(tl.int1)
@@ -135,9 +132,7 @@ def kernel_unified_attention_2d(
 
     # alibi slope for this head
     if USE_ALIBI_SLOPES:
-        alibi_slope = tl.load(alibi_slopes_ptr + query_offset_1,
-                              mask=query_mask_1,
-                              other=0.0)
+        alibi_slope = tl.load(alibi_slopes_ptr + query_offset_1, mask=query_mask_1, other=0.0)
 
     num_blocks = cdiv_fn(seq_len, BLOCK_SIZE)
 
@@ -148,19 +143,13 @@ def kernel_unified_attention_2d(
 
         offs_n = tl.arange(0, BLOCK_SIZE)
 
-        v_offset = (physical_block_idx * stride_v_cache_0 +
-                    kv_head_idx * stride_v_cache_2 +
-                    offs_d[None, :] * stride_v_cache_3 +
-                    offs_n[:, None] * stride_v_cache_1)
+        v_offset = (physical_block_idx * stride_v_cache_0 + kv_head_idx * stride_v_cache_2 +
+                    offs_d[None, :] * stride_v_cache_3 + offs_n[:, None] * stride_v_cache_1)
 
-        k_offset = (physical_block_idx * stride_k_cache_0 +
-                    kv_head_idx * stride_k_cache_2 +
-                    offs_d[:, None] * stride_k_cache_3 +
-                    offs_n[None, :] * stride_k_cache_1)
+        k_offset = (physical_block_idx * stride_k_cache_0 + kv_head_idx * stride_k_cache_2 +
+                    offs_d[:, None] * stride_k_cache_3 + offs_n[None, :] * stride_k_cache_1)
 
-        K_load = tl.load(key_cache_ptr + k_offset,
-                         mask=dim_mask[:, None],
-                         other=0.0)
+        K_load = tl.load(key_cache_ptr + k_offset, mask=dim_mask[:, None], other=0.0)
 
         if K_load.dtype.is_fp8():
             if Q.dtype.is_fp8():
@@ -170,9 +159,7 @@ def kernel_unified_attention_2d(
         else:
             K = K_load
 
-        V_load = tl.load(value_cache_ptr + v_offset,
-                         mask=dim_mask[None, :],
-                         other=0.0)
+        V_load = tl.load(value_cache_ptr + v_offset, mask=dim_mask[None, :], other=0.0)
 
         if V_load.dtype.is_fp8():
             if Q.dtype.is_fp8():
@@ -193,12 +180,10 @@ def kernel_unified_attention_2d(
         if USE_SOFTCAP:
             S = apply_softcap(S, softcap)
 
-        S = tl.where(query_mask_1[:, None] & query_mask_0[:, None] & seq_mask,
-                     S, float("-inf"))
+        S = tl.where(query_mask_1[:, None] & query_mask_0[:, None] & seq_mask, S, float("-inf"))
 
         if SLIDING_WINDOW > 0:
-            S = tl.where((context_len + query_pos[:, None] - seq_offset)
-                         < SLIDING_WINDOW, S, float("-inf"))
+            S = tl.where((context_len + query_pos[:, None] - seq_offset) < SLIDING_WINDOW, S, float("-inf"))
 
         if USE_ALIBI_SLOPES:
             S += alibi_slope[:, None] * (seq_offset - context_len)
@@ -226,8 +211,7 @@ def kernel_unified_attention_2d(
     # epilogue
     acc = acc / L[:, None]
 
-    output_offset = (query_offset_0[:, None] * output_stride_0 +
-                     query_offset_1[:, None] * output_stride_1 +
+    output_offset = (query_offset_0[:, None] * output_stride_0 + query_offset_1[:, None] * output_stride_1 +
                      offs_d[None, :])
 
     tl.store(
@@ -368,9 +352,7 @@ def ref_paged_attn(
         mask = torch.triu(empty_mask, diagonal=kv_len - query_len + 1).bool()
         if sliding_window is not None:
             sliding_window_mask = torch.triu(empty_mask,
-                                             diagonal=kv_len -
-                                             (query_len + sliding_window) +
-                                             1).bool().logical_not()
+                                             diagonal=kv_len - (query_len + sliding_window) + 1).bool().logical_not()
             mask |= sliding_window_mask
         if soft_cap is not None and soft_cap > 0:
             attn = soft_cap * torch.tanh(attn / soft_cap)
@@ -385,9 +367,7 @@ def ref_paged_attn(
 
 
 @pytest.mark.perf(repeat=17)
-@pytest.mark.parametrize("seq_lens",
-                         [[(1, 1328), (5, 18),
-                           (129, 463)], [(1, 523), (1, 37), (1, 2011)]])
+@pytest.mark.parametrize("seq_lens", [[(1, 1328), (5, 18), (129, 463)], [(1, 523), (1, 37), (1, 2011)]])
 @pytest.mark.parametrize("num_heads", NUM_HEADS)
 @pytest.mark.parametrize("head_size", HEAD_SIZES)
 @pytest.mark.parametrize("block_size", BLOCK_SIZES)
@@ -421,30 +401,17 @@ def test_triton_unified_attn(
     assert num_query_heads % num_kv_heads == 0
     max_query_len = max(query_lens)
     max_kv_len = max(kv_lens)
-    window_size = ((sliding_window - 1, 0) if sliding_window is not None else
-                   (-1, -1))
+    window_size = ((sliding_window - 1, 0) if sliding_window is not None else (-1, -1))
     scale = head_size**-0.5
 
-    query = torch.randn(sum(query_lens),
-                        num_query_heads,
-                        head_size,
-                        dtype=dtype)
-    key_cache = torch.randn(num_blocks,
-                            block_size,
-                            num_kv_heads,
-                            head_size,
-                            dtype=dtype)
+    query = torch.randn(sum(query_lens), num_query_heads, head_size, dtype=dtype)
+    key_cache = torch.randn(num_blocks, block_size, num_kv_heads, head_size, dtype=dtype)
     value_cache = torch.randn_like(key_cache)
-    cu_query_lens = torch.tensor([0] + query_lens,
-                                 dtype=torch.int32).cumsum(dim=0,
-                                                           dtype=torch.int32)
+    cu_query_lens = torch.tensor([0] + query_lens, dtype=torch.int32).cumsum(dim=0, dtype=torch.int32)
     kv_lens = torch.tensor(kv_lens, dtype=torch.int32)
 
     max_num_blocks_per_seq = (max_kv_len + block_size - 1) // block_size
-    block_tables = torch.randint(0,
-                                 num_blocks,
-                                 (num_seqs, max_num_blocks_per_seq),
-                                 dtype=torch.int32)
+    block_tables = torch.randint(0, num_blocks, (num_seqs, max_num_blocks_per_seq), dtype=torch.int32)
 
     output = torch.empty_like(query)
 

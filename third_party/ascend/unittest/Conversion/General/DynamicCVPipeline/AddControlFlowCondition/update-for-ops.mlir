@@ -41,7 +41,7 @@ module attributes {hacc.target = #hacc.target<"Ascend950PR_9579">} {
         %memspacecast_9 = memref.memory_space_cast %alloc_8 {ssbuffer.intraDeps = [0 : i32, 1 : i32]} : memref<128xf32, #hivm.address_space<ub>> to memref<128xf32>
         %8 = bufferization.to_tensor %memspacecast_9 writable : memref<128xf32> to tensor<128xf32>
         // CHECK: scf.for %arg17
-        // CHECK: iter_args({{.*}}, {{.*}}, {{.*}}, %{{.*}}, %{{.*}}) -> (tensor<128xf32>, tensor<128x128xf32>, tensor<128xf32>, i32, i32)   
+        // CHECK: iter_args({{.*}}, {{.*}}, {{.*}}, %{{.*}}, %{{.*}}) -> (tensor<128xf32>, tensor<128x128xf32>, tensor<128xf32>, i32, i32)
         %9:3 = scf.for %arg17 = %c0_i32 to %c8192_i32 step %c128_i32 iter_args(%arg18 = %6, %arg19 = %2, %arg20 = %5) -> (tensor<128xf32>, tensor<128x128xf32>, tensor<128xf32>)  : i32 {
           // CHECK: hivm.hir.sync_block_wait[<VECTOR>, <PIPE_S>, <PIPE_S>] flag = 15
           %true = arith.constant true

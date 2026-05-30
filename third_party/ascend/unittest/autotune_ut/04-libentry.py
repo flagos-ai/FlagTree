@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Vector Add with Libentry
 =============
@@ -43,19 +42,16 @@ from triton.backends.ascend.testing import do_bench_npu
         triton.Config({'BLOCK_SIZE': 12 * 1024, 'multibuffer': True}),
         triton.Config({'BLOCK_SIZE': 12 * 1024, 'multibuffer': False}),
         triton.Config({'BLOCK_SIZE': 8 * 1024, 'multibuffer': True}),
-    ],
-    key=["n_elements"]
-)
+    ], key=["n_elements"])
 @libentry()
 @triton.jit
-def add_kernel(
-    x_ptr,  # *Pointer* to first input vector.
-    y_ptr,  # *Pointer* to second input vector.
-    output_ptr,  # *Pointer* to output vector.
-    n_elements,  # Size of the vector.
-    BLOCK_SIZE: tl.constexpr,  # Number of elements each program should process.
-    # NOTE: `constexpr` so it can be used as a shape value.
-):
+def add_kernel(x_ptr,  # *Pointer* to first input vector.
+               y_ptr,  # *Pointer* to second input vector.
+               output_ptr,  # *Pointer* to output vector.
+               n_elements,  # Size of the vector.
+               BLOCK_SIZE: tl.constexpr,  # Number of elements each program should process.
+               # NOTE: `constexpr` so it can be used as a shape value.
+               ):
     # There are multiple 'programs' processing different data. We identify which program
     # we are here:
     pid = tl.program_id(axis=0)  # We use a 1D launch grid so axis is 0.
@@ -83,7 +79,7 @@ def add_torch(x, y):
 def add_autotune(x, y):
     output = torch.empty_like(x)
     n_elements = output.numel()
-    add_kernel[lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)](x, y, output, n_elements)
+    add_kernel[lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]), )](x, y, output, n_elements)
     return output
 
 

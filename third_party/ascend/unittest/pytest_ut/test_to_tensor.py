@@ -48,11 +48,13 @@ def compile_kernel(kernel, signature, constants):
     ir.load_dialects(context)
     buffer_ir.load_dialects(context)
     ascend_ir.load_dialects(context)
-    module = ast_to_ttir(kernel, src, context, Options(), {"create_address_space": al.semantic.create_address_space}, {})
+    module = ast_to_ttir(kernel, src, context, Options(), {"create_address_space": al.semantic.create_address_space},
+                         {})
     return str(module)
 
 
 # ============== Kernel definitions ==============
+
 
 @triton.jit
 def kernel_func(XBLOCK: tl.constexpr):
@@ -68,8 +70,6 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Test 1: Nested Scopes")
     print("=" * 60)
-    mlir = compile_kernel(
-        kernel_func, {}, {"XBLOCK": 256}
-    )
+    mlir = compile_kernel(kernel_func, {}, {"XBLOCK": 256})
     print(f"✅ Generated MLIR ({len(mlir)} chars):\n")
     print(mlir)

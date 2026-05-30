@@ -40,8 +40,7 @@ def torch_invert(x0, ddtype):
 
 @triton.jit
 def triton_sub(output_ptr, x_ptr, y_ptr, z_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr,
-               XNUMEL: tl.constexpr,
-               YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+               XNUMEL: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     xoffs = tl.program_id(0) * XB
     yoffs = tl.program_id(1) * YB
     zoffs = tl.program_id(2) * ZB
@@ -61,15 +60,10 @@ def triton_sub(output_ptr, x_ptr, y_ptr, z_ptr, XB: tl.constexpr, YB: tl.constex
 
 
 @triton.jit
-def triton_invert_4d_5d(
-        output_ptr, x_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr,
-        BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-        SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
-        STRIDE_4: tl.constexpr
-):
+def triton_invert_4d_5d(output_ptr, x_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                        BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                        SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                        STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr):
     offsets = tl.program_id(0)
 
     offsets = offsets + tl.arange(0, BLOCK_0) * STRIDE_0
@@ -93,7 +87,7 @@ def triton_invert_4d_5d(
     tl.store(output_ptr + offsets, ret, mask=masks)
 
 
-test_shape_1d_2d_3d = [(1,), (2,), (1, 1), (3, 13), (1, 1, 1), (4, 3, 8)]
+test_shape_1d_2d_3d = [(1, ), (2, ), (1, 1), (3, 13), (1, 1, 1), (4, 3, 8)]
 test_shape_4_5d = [(1, 1, 1, 1), (2, 2, 2, 2), (1, 1, 1, 1, 1), (2, 2, 2, 2, 1)]
 
 
@@ -168,7 +162,7 @@ def test_invert_4d_5d(shape, dtype):
         blocks.append(1)
         strides.append(1)
 
-    grid = (1,)
+    grid = (1, )
     triton_invert_4d_5d[grid](output, x, *blocks, *blocks, *strides)
 
     test_common.validate_cmp(dtype, ans, output)

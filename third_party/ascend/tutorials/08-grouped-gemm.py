@@ -18,7 +18,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Group GEMM
 ============================
@@ -163,7 +162,7 @@ def group_gemm_fn(group_A, group_B):
     d_g_lds = torch.tensor(g_lds, dtype=torch.int32, device=device)
 
     def grid(meta):
-        return (meta['NUM_SM'],)
+        return (meta['NUM_SM'], )
 
     grouped_matmul_kernel[grid](
         d_a_ptrs,
@@ -205,7 +204,7 @@ def test():
 def triton_perf_fn(a_ptrs, b_ptrs, c_ptrs, sizes, lds, group_size):
 
     def grid(meta):
-        return (meta['NUM_SM'],)
+        return (meta['NUM_SM'], )
 
     grouped_matmul_kernel[grid](
         a_ptrs,

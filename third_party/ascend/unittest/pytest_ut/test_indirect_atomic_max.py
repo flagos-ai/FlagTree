@@ -46,7 +46,6 @@ import torch_npu
 import triton
 import triton.language as tl
 
-
 SUPPORTED_DTYPES = [
     ("int32", torch.int32),
     ("int64", torch.int64),
@@ -56,7 +55,7 @@ SUPPORTED_DTYPES = [
 ]
 
 RANK_SHAPES = {
-    1: (8,),
+    1: (8, ),
     2: (4, 4),
     3: (2, 3, 4),
     4: (2, 2, 3, 4),
@@ -383,8 +382,8 @@ def _build_partial_structured_offsets(shape):
     tail_shape = shape[1:]
     tail_numel = math.prod(tail_shape)
     remapped_first = ((torch.arange(first_dim, dtype=torch.int64) + 1) % first_dim)
-    first_offsets = remapped_first.reshape((first_dim,) + (1,) * len(tail_shape))
-    tail_offsets = torch.arange(tail_numel, dtype=torch.int64).reshape((1,) + tail_shape)
+    first_offsets = remapped_first.reshape((first_dim, ) + (1, ) * len(tail_shape))
+    tail_offsets = torch.arange(tail_numel, dtype=torch.int64).reshape((1, ) + tail_shape)
     return first_offsets * tail_numel + tail_offsets, math.prod(shape)
 
 
@@ -433,28 +432,26 @@ def _simulate_atomic_max(base_output, offsets, values, mask=None):
 def _assert_equal(actual, expected, dtype_name, rank, scenario):
     actual_cpu = actual.cpu()
     expected_cpu = expected.cpu()
-    assert torch.equal(actual_cpu, expected_cpu), (
-        f"scenario={scenario}, dtype={dtype_name}, rank={rank}\n"
-        f"Expected:\n{expected_cpu}\nGot:\n{actual_cpu}"
-    )
+    assert torch.equal(actual_cpu, expected_cpu), (f"scenario={scenario}, dtype={dtype_name}, rank={rank}\n"
+                                                   f"Expected:\n{expected_cpu}\nGot:\n{actual_cpu}")
 
 
 def _launch_structured_discrete_mask(rank, values, output, old, shape):
     kernel = STRUCTURED_DISC_MASK_KERNELS[rank]
     kwargs = {f"D{dim}": size for dim, size in enumerate(shape)}
-    kernel[(1,)](values, output, old, **kwargs)
+    kernel[(1, )](values, output, old, **kwargs)
 
 
 def _launch_partial_structured(rank, values, output, old, shape):
     kernel = PARTIAL_STRUCTURED_KERNELS[rank]
     kwargs = {f"D{dim}": size for dim, size in enumerate(shape)}
-    kernel[(1,)](values, output, old, **kwargs)
+    kernel[(1, )](values, output, old, **kwargs)
 
 
 def _launch_fully_unstructured(rank, offsets, values, output, old, shape):
     kernel = FULLY_UNSTRUCTURED_KERNELS[rank]
     kwargs = {f"D{dim}": size for dim, size in enumerate(shape)}
-    kernel[(1,)](offsets, values, output, old, **kwargs)
+    kernel[(1, )](offsets, values, output, old, **kwargs)
 
 
 @pytest.mark.parametrize("dtype_name, torch_dtype", TEST_DTYPE)

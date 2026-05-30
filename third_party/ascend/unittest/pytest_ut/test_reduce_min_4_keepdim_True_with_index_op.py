@@ -14,7 +14,7 @@ import test_common
 @triton.jit
 def promote_to_tensor(x):
     # Addition promotes to tensor for us
-    return x + tl.zeros((1,), tl.int1)
+    return x + tl.zeros((1, ), tl.int1)
 
 
 @triton.jit
@@ -33,8 +33,8 @@ def minimum_with_index(a_value, a_index, b_value, b_index):
 
 
 @triton.jit
-def triton_min_5d_dim4_keepdim(in_ptr0, in_ptr1, out_ptr0, out_ptr1, L: tl.constexpr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
-                  Z: tl.constexpr):
+def triton_min_5d_dim4_keepdim(in_ptr0, in_ptr1, out_ptr0, out_ptr1, L: tl.constexpr, M: tl.constexpr, N: tl.constexpr,
+                               K: tl.constexpr, Z: tl.constexpr):
     lblk_idx = tl.arange(0, L)
     mblk_idx = tl.arange(0, M)
     nblk_idx = tl.arange(0, N)
@@ -74,9 +74,7 @@ testlist = [
 
 typelist = ['int8', 'int16', 'int32', 'int64', 'float16', 'float32', 'bfloat16', 'bool']
 
-ids = ["{}-{}".format(testfunc.__name__, "-".join(map(str, shape)))
-    for testfunc, shape in testlist
-]
+ids = ["{}-{}".format(testfunc.__name__, "-".join(map(str, shape))) for testfunc, shape in testlist]
 
 
 @pytest.mark.parametrize('testfunc, shape', testlist, ids=ids)
@@ -93,6 +91,6 @@ def test_min_dim4_keepdim(testfunc, sigtype, shape):
         ans, ans1 = torch.min(x0, 4)
     output = torch.zeros(shape[0:4], dtype=dtype).npu()
     output1 = torch.zeros(shape[0:4], dtype=torch.int32).npu()
-    testfunc[(1,)](x0, x1, output, output1, *shape, debug=True)
+    testfunc[(1, )](x0, x1, output, output1, *shape, debug=True)
     test_common.validate_cmp(sigtype, output, ans)
     test_common.validate_cmp('int32', output1, ans1)

@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Ascend-specific interpreter builder extensions.
 
@@ -41,6 +40,7 @@ class AscendReduceOps(ReduceOps):
     Ascend reduce operations that override only the apply_impl logic.
     All other methods (sum, min_max, generic_reduce, etc.) are inherited from ReduceOps.
     """
+
     def apply_impl(self, input_param):
         if self.combine_fn == tl.standard._argmin_combine_tie_break_left:
             return self.min_max(input_param[0], val_reduce_op=np.min, idx_reduce_op=np.argmin)
@@ -48,7 +48,7 @@ class AscendReduceOps(ReduceOps):
             return self.min_max(input_param[0], val_reduce_op=np.max, idx_reduce_op=np.argmax)
         # Ta has modified the implemention of tl.max
         elif self.combine_fn == tl.standard._elementwise_max_default:
-            return self.min_max(input_param[0], val_reduce_op=np.nanmax, idx_reduce_op=None)    
+            return self.min_max(input_param[0], val_reduce_op=np.nanmax, idx_reduce_op=None)
         elif self.combine_fn == tl.standard._elementwise_max_propagate_nan:
             return self.min_max(input_param[0], val_reduce_op=np.max, idx_reduce_op=None)
         elif self.combine_fn == tl.standard._elementwise_min:
@@ -70,7 +70,7 @@ def _compute_strides(shape):
 class AscendInterpreterBuilder(InterpreterBuilder):
     """
     Extended InterpreterBuilder with Ascend-specific extension operations.
-    
+
     This class inherits from InterpreterBuilder and adds support for:
     - get_element (extract_scalar): Extract scalar from tensor using indices
     - insert_slice: Insert sub-tensor into full tensor
@@ -78,11 +78,11 @@ class AscendInterpreterBuilder(InterpreterBuilder):
     - index_select_simd: SIMD gather operation
     - get_sub_vec_id: Get vector core ID for 1:2 ratio emulation
     - Synchronization operations: sync_block_set/wait/all
-    
+
     All extension operations handle both TensorHandle and Python int types
     for interpreter mode compatibility.
     """
-    
+
     def __init__(self) -> None:
         super().__init__()
         # Sub-vector core ID for simulating 1:2 hardware ratio
@@ -93,7 +93,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
     def to_int_val(self, val):
         """
         Convert a value (int or TensorHandle) to Python int.
-        
+
         :param val: Value to convert (int, TensorHandle, or other)
         :return: Python integer
         """
@@ -123,18 +123,18 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         tl.extra.cann.extension.parallel = _new_range
         tl.reduce = _new_reduce
         tl.core.reduce = _new_reduce
-    
+
     def get_additional_reserved_keywords(self):
         """
         Return additional reserved keywords specific to Ascend backend.
-        
+
         These keywords will be filtered out from kernel call arguments
         and are not supported by the interpreter.
-        
+
         :return: List of additional reserved keyword strings
         """
         return [
-            "multibuffer",      # Ascend-specific memory buffering
+            "multibuffer",  # Ascend-specific memory buffering
             "debug",
             "optimize_dynamic_offset",
             "enable_mixed_cv",
@@ -144,21 +144,21 @@ class AscendInterpreterBuilder(InterpreterBuilder):
             # "ascend_option1",
             # "ascend_option2",
         ]
-    
+
     def patch_extensions(self, fn):
         """
         Patch Ascend extension modules for the given function.
-        
+
         This method handles all Ascend-specific extension module patching,
         including CANN extensions and any other extension modules found in
         the function's global namespace.
-        
+
         :param fn: The kernel function to patch extensions for
         """
         # Import _patch_builtin from parent module
         from .interpreter import _patch_builtin
         self._patch_lang_ascend(fn)
-        
+
         # Patch all modules in fn's globals that might be extension modules
         for name, value in list(fn.__globals__.items()):
             if value is None:
@@ -176,7 +176,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                         pass
             except Exception:
                 pass
-        
+
         # Also try importing extension directly as fallback
         try:
             import triton.language.extra.cann.extension as extension
@@ -184,15 +184,15 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         except (ImportError, AttributeError):
             # Extension module not available (e.g., non-Ascend backend)
             pass
-    
+
     def execute_with_sub_vec_simulation(self, fn, args, grid):
         """
         Execute function with optional 1:2 sub-vector core simulation.
-        
+
         Sub-vector simulation is only activated when create_get_sub_vec_id() is
         actually called during execution. This avoids unnecessary double execution
         for code that doesn't use sub_vec_id functionality.
-        
+
         :param fn: The kernel function to execute
         :param args: Function arguments
         :param grid: Grid dimensions (nx, ny, nz)
@@ -200,14 +200,14 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         # Reset simulation flag at the beginning of each execution
         self._sub_vec_simulation_enabled = False
         self.sub_vec_id = 0
-        
+
         # First, try a single execution to see if sub_vec_id is used
         for x in range(grid[0]):
             for y in range(grid[1]):
                 for z in range(grid[2]):
                     self.set_grid_idx(x, y, z)
                     fn(**args)
-        
+
         # If sub_vec_id was accessed during execution, run again with sub_vec_id=1
         if self._sub_vec_simulation_enabled:
             self.sub_vec_id = 1
@@ -224,9 +224,9 @@ class AscendInterpreterBuilder(InterpreterBuilder):
     def create_extract_scalar(self, tensor_handle, indices):
         """
         Extract a scalar from a tensor using indices (equivalent to get_element).
-        
+
         Handles mixed types: Python int (from loops) and TensorHandle (from other ops).
-        
+
         :param tensor_handle: The tensor to extract from (TensorHandle)
         :param indices: List of scalar indices (can be TensorHandle or Python int)
         :return: Scalar value as TensorHandle
@@ -242,9 +242,10 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                 index_values.append(int(idx.data.item()) if hasattr(idx.data, 'item') else int(idx.data))
             else:
                 # Fallback: try to extract data
-                index_values.append(int(idx.data.item()) if hasattr(idx, 'data') and hasattr(idx.data, 'item') 
-                                  else int(idx.data) if hasattr(idx, 'data') else int(idx))
-        
+                index_values.append(
+                    int(idx.data.item()) if hasattr(idx, 'data') and hasattr(idx.data, 'item') else
+                    int(idx.data) if hasattr(idx, 'data') else int(idx))
+
         # Extract the scalar value
         scalar_data = tensor_handle.data[tuple(index_values)]
         return TensorHandle(np.array([scalar_data]), tensor_handle.dtype.scalar)
@@ -252,9 +253,9 @@ class AscendInterpreterBuilder(InterpreterBuilder):
     def create_insert_slice(self, full_tensor, sub_tensor, offsets, sizes, strides):
         """
         Insert a sub-tensor into a full tensor at specified offsets.
-        
+
         Handles mixed types: Python int and TensorHandle for offsets.
-        
+
         :param full_tensor: The full tensor (destination, TensorHandle)
         :param sub_tensor: The sub-tensor to insert (TensorHandle)
         :param offsets: List of offset TensorHandle objects or Python ints
@@ -263,7 +264,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         :return: Modified tensor with sub_tensor inserted (TensorHandle)
         """
         result = full_tensor.data.copy()
-        
+
         # Convert offsets from TensorHandle or Python int to integers
         offset_values = []
         for off in offsets:
@@ -275,9 +276,10 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                 offset_values.append(int(off.data.item()) if hasattr(off.data, 'item') else int(off.data))
             else:
                 # Fallback
-                offset_values.append(int(off.data.item()) if hasattr(off, 'data') and hasattr(off.data, 'item')
-                                   else int(off.data) if hasattr(off, 'data') else int(off))
-        
+                offset_values.append(
+                    int(off.data.item()) if hasattr(off, 'data') and hasattr(off.data, 'item') else
+                    int(off.data) if hasattr(off, 'data') else int(off))
+
         # Build slices for insertion
         slices = []
         for i, (offset, size, stride) in enumerate(zip(offset_values, sizes, strides)):
@@ -286,18 +288,18 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                 slices.append(slice(offset, end))
             else:
                 slices.append(slice(offset, end, stride))
-        
+
         # Insert the sub-tensor
         result[tuple(slices)] = sub_tensor.data
-        
+
         return TensorHandle(result, full_tensor.dtype.scalar)
 
     def create_extract_slice(self, full_tensor, offsets, sizes, strides):
         """
         Extract a slice from a full tensor.
-        
+
         Handles mixed types: Python int and TensorHandle for offsets.
-        
+
         :param full_tensor: The full tensor (TensorHandle)
         :param offsets: List of offset TensorHandle objects or Python ints
         :param sizes: List of size integers
@@ -315,9 +317,10 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                 offset_values.append(int(off.data.item()) if hasattr(off.data, 'item') else int(off.data))
             else:
                 # Fallback
-                offset_values.append(int(off.data.item()) if hasattr(off, 'data') and hasattr(off.data, 'item')
-                                   else int(off.data) if hasattr(off, 'data') else int(off))
-        
+                offset_values.append(
+                    int(off.data.item()) if hasattr(off, 'data') and hasattr(off.data, 'item') else
+                    int(off.data) if hasattr(off, 'data') else int(off))
+
         # Build slices for extraction
         slices = []
         for i, (offset, size, stride) in enumerate(zip(offset_values, sizes, strides)):
@@ -326,19 +329,19 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                 slices.append(slice(offset, end))
             else:
                 slices.append(slice(offset, end, stride))
-        
+
         # Extract the slice
         extracted = full_tensor.data[tuple(slices)]
-        
+
         return TensorHandle(extracted, full_tensor.dtype.scalar)
 
     def create_index_select_simd(self, src_ptr, index_tensor, dim, src_shape, src_offset, read_shape, result_shape):
         """
         SIMD index_select operation (gather with indices along a dimension).
-        
+
         This is a hardware-accelerated gather operation that selects elements
         from a tensor using a set of indices along a specified dimension.
-        
+
         :param src_ptr: Source tensor pointer (TensorHandle), just ptr address, not value
         :param index_tensor: 1D tensor of indices (TensorHandle or array)
         :param dim: Dimension to select from (int)
@@ -353,13 +356,13 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         src_offset_vals = [self.to_int_val(s) if s != -1 else -1 for s in src_offset]
         read_shape_vals = [self.to_int_val(r) if r != -1 else -1 for r in read_shape]
         result_shape_vals = [self.to_int_val(r) for r in result_shape]
-        
+
         # Get index values - handle both array and TensorHandle
         if isinstance(index_tensor, TensorHandle):
             indices = index_tensor.data.flatten()
         else:
             indices = np.asarray(index_tensor).flatten()
-        
+
         # Ensure indices are integers
         if indices.dtype not in [np.int32, np.int64]:
             indices = indices.astype(np.int32)
@@ -369,10 +372,10 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         dtype_np = _get_np_dtype(dtype_tt)
         src_strides = _compute_strides(src_shape_vals)
         base_addr = int(src_ptr.data.item())
-        
+
         # Create result tensor
         result = np.empty(result_shape_vals, dtype=dtype_np)
-        
+
         # Perform index_select: for each index, read the specified data
         for out_idx, in_idx in enumerate(indices):
             in_idx = int(in_idx)
@@ -423,25 +426,25 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                 else:
                     result_slices.append(slice(None))
             result[tuple(result_slices)] = tile_data
- 
+
         return TensorHandle(result, dtype_tt)
 
     def create_get_sub_vec_id(self):
         """
         Get the Vector Core index on the AI Core.
-        
+
         In Interpreter mode, simulate multiple vector cores by maintaining
         a sub_vec_id counter. This is used for 1:2 hardware ratio emulation
         where different vector cores process different partitions of the data.
-        
+
         The first call to this method enables sub_vec_simulation, causing
         the kernel to be executed twice (once for each sub_vec_id value).
-        
+
         :return: Vector Core ID as TensorHandle (int64, scalar)
         """
         # Enable sub_vec_id simulation when this method is called
         self._sub_vec_simulation_enabled = True
-        
+
         # Return the current sub_vec_id
         vec_id = np.int64(self.sub_vec_id)
         return TensorHandle(np.array([vec_id], dtype=np.int64), tl.int64)
@@ -449,10 +452,10 @@ class AscendInterpreterBuilder(InterpreterBuilder):
     def sync_block_set(self, sender, receiver, event_id, sender_pipe_value, receiver_pipe_value):
         """
         Set synchronization event between compute and vector units.
-        
+
         In Interpreter mode, this is a no-op since we execute single-threaded.
         Synchronization is not needed in CPU emulation.
-        
+
         :param sender: Source unit ("cube" or "vector")
         :param receiver: Destination unit ("cube" or "vector")
         :param event_id: Event ID (TensorHandle)
@@ -465,10 +468,10 @@ class AscendInterpreterBuilder(InterpreterBuilder):
     def sync_block_wait(self, sender, receiver, event_id, sender_pipe_value, receiver_pipe_value):
         """
         Wait for synchronization event between compute and vector units.
-        
+
         In Interpreter mode, this is a no-op since we execute single-threaded.
         Synchronization is not needed in CPU emulation.
-        
+
         :param sender: Source unit ("cube" or "vector")
         :param receiver: Destination unit ("cube" or "vector")
         :param event_id: Event ID (TensorHandle)
@@ -481,10 +484,10 @@ class AscendInterpreterBuilder(InterpreterBuilder):
     def sync_block_all(self, mode, event_id):
         """
         Synchronize all compute or vector units globally.
-        
+
         In Interpreter mode, this is a no-op since we execute single-threaded.
         Synchronization is not needed in CPU emulation.
-        
+
         :param mode: Sync mode ("all_cube", "all_vector", "all", "all_sub_vector")
         :param event_id: Event ID (int, constexpr, or TensorHandle)
         """
@@ -510,8 +513,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         ndim = ptr_data.data.ndim
         norm_dim = dim if dim >= 0 else dim + ndim
         if not (0 <= norm_dim < ndim):
-            raise IndexError(
-                f"Dimension out of range(expected to be in range of [{-ndim}, {ndim - 1}], but got {dim})")
+            raise IndexError(f"Dimension out of range(expected to be in range of [{-ndim}, {ndim - 1}], but got {dim})")
 
         if descending:
             sorted_asc = np.sort(ptr_data.data, axis=norm_dim)
@@ -524,11 +526,11 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         ndim = ptr_data.data.ndim
         norm_dim = dim if dim >= 0 else dim + ndim
         if not (0 <= norm_dim < ndim):
-            raise IndexError(
-                f"Dimension out of range(expected to be in range of [{-ndim}, {ndim - 1}], but got {dim})")
+            raise IndexError(f"Dimension out of range(expected to be in range of [{-ndim}, {ndim - 1}], but got {dim})")
         return TensorHandle(np.flip(ptr_data.data, axis=norm_dim), ptr_data.dtype.scalar)
 
-    def create_gather_out_to_ub(self, src_ptr, index_tensor, index_boundary, dim, src_stride, end_offset, start_offset, other=None):
+    def create_gather_out_to_ub(self, src_ptr, index_tensor, index_boundary, dim, src_stride, end_offset, start_offset,
+                                other=None):
         # Convert src_stride, start_offset, end_offset to integers
         src_stride_vals = [self.to_int_val(s) for s in src_stride]
         start_offset_vals = [self.to_int_val(s) for s in start_offset]
@@ -548,7 +550,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         for idx in range(total_elements):
             coord = np.unravel_index(idx, index_shape)
             all_coords.append(coord)
-        
+
         # Compute the source tensor coordinates for each position in all_coords
         src_coords = []
         for coord in all_coords:
@@ -578,7 +580,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                 address = base_addr + offset * element_size
                 addresses.append(address)
                 valid_mask.append(True)
-        
+
         addr_array = np.array(addresses, dtype=np.uint64)
         mask_array = np.array(valid_mask, dtype=bool)
 
@@ -597,16 +599,17 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         result = flat_result.reshape(index_shape)
         return TensorHandle(result, dtype_tt)
 
-    def create_scatter_ub_to_out(self, dst_ptr, value_tensor, index_tensor, index_boundary, dim, dst_stride, end_offset, start_offset):
+    def create_scatter_ub_to_out(self, dst_ptr, value_tensor, index_tensor, index_boundary, dim, dst_stride, end_offset,
+                                 start_offset):
         # Convert dst_stride, start_offset, end_offset to integers
         dst_stride_vals = [self.to_int_val(s) for s in dst_stride]
         start_offset_vals = [self.to_int_val(s) for s in start_offset]
-        end_offset_vals = [self.to_int_val(s) for s in end_offset]        
+        end_offset_vals = [self.to_int_val(s) for s in end_offset]
 
         # Element type
         dtype_tt = dst_ptr.get_element_ty()
         dtype_np = _get_np_dtype(dtype_tt)
-        element_size = np.dtype(dtype_np).itemsize        
+        element_size = np.dtype(dtype_np).itemsize
         base_addr = int(dst_ptr.data.item())
 
         index_shape = index_tensor.data.shape
@@ -633,7 +636,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                 dst_coord = []
                 for d in range(index_rank):
                     if d == dim:
-                        dst_coord.append(start_offset_vals[d] + index_value)                                            
+                        dst_coord.append(start_offset_vals[d] + index_value)
                     else:
                         dst_coord.append(start_offset_vals[d] + coord[d])
                 offset = 0
@@ -642,28 +645,29 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                 address = base_addr + offset * element_size
                 addresses.append(address)
                 valid_mask.append(True)
-        
+
         addr_array = np.array(addresses, dtype=np.uint64)
         mask_array = np.array(valid_mask, dtype=bool)
 
         _interpreter.store(addr_array, flat_values, mask_array)
 
-    def create_index_put(self, dst_ptr, index_tensor, value_tensor, dim, index_boundary, end_offset, start_offset, dst_stride):
+    def create_index_put(self, dst_ptr, index_tensor, value_tensor, dim, index_boundary, end_offset, start_offset,
+                         dst_stride):
         # Convert dst_stride, start_offset, end_offset_ to integers
         dst_stride_vals = [self.to_int_val(s) for s in dst_stride]
         start_offset_vals = [self.to_int_val(s) for s in start_offset]
-        end_offset_vals = [self.to_int_val(s) for s in end_offset]        
+        end_offset_vals = [self.to_int_val(s) for s in end_offset]
 
         # Element type
         dtype_tt = dst_ptr.get_element_ty()
         dtype_np = _get_np_dtype(dtype_tt)
-        element_size = np.dtype(dtype_np).itemsize        
+        element_size = np.dtype(dtype_np).itemsize
         base_addr = int(dst_ptr.data.item())
 
         value_shape = value_tensor.data.shape
         value_rank = len(value_shape)
-        
-        flat_values = value_tensor.data.flatten()      
+
+        flat_values = value_tensor.data.flatten()
         total_elements = flat_values.size
 
         # Generate  coordinates
@@ -692,7 +696,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                 dst_coord = []
                 for d in range(value_rank):
                     if d == dim:
-                        dst_coord.append(index_value)                                            
+                        dst_coord.append(index_value)
                     else:
                         dst_coord.append(start_offset_vals[d] + coord[d])
                 offset = 0
@@ -710,26 +714,23 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         _interpreter.store(addr_array, values_array, mask_array)
 
     def get_bool_attr(self, val):
-        return bool(val) 
+        return bool(val)
 
     def get_unit_attr(self):
         return None  # None valule in compile_hint return uint
 
-    def get_int32_attr(self, val):        
+    def get_int32_attr(self, val):
         return int(val)
 
     def get_str_attr(self, val):
         return str(val)
 
-    def get_i64_array_attr(self, val):      
+    def get_i64_array_attr(self, val):
         return [int(x) for x in val]
 
     def create_annotation_mark(self, ptr_data, hint_name: str, hint_val):
         if hint_name == "overflow_mode":
             raise ValueError(f"overflow_mode is not supported in interpreter mode, may have accuracy issues")
         else:
-            warnings.warn(
-            f"compile_hint '{hint_name}' is not supported in interpreter mode, just pass it",
-            UserWarning,
-            stacklevel=2 
-        )
+            warnings.warn(f"compile_hint '{hint_name}' is not supported in interpreter mode, just pass it", UserWarning,
+                          stacklevel=2)

@@ -40,7 +40,7 @@ def single_disc_mask_atomic_add_kernel(
 def test_single_discrete_mask_atomic_add(BLOCK_N):
     in_tensor = torch.arange(BLOCK_N, dtype=torch.float16, device='npu')
     expected = in_tensor.clone()
-    single_disc_mask_atomic_add_kernel[(1,)](in_tensor, BLOCK_N=BLOCK_N)
+    single_disc_mask_atomic_add_kernel[(1, )](in_tensor, BLOCK_N=BLOCK_N)
 
     half = BLOCK_N // 2
     expected[:half] += 1

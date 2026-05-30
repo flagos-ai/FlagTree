@@ -33,10 +33,10 @@ def torch_pointwise(x0, x1):
     res = torch.where(x0 < x1, x0, 1)
     return res
 
+
 @triton.jit
-def fn_npu_(output_ptr, x_ptr, y_ptr, z_ptr,
-            XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr,
-            XNUMEL: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def fn_npu_(output_ptr, x_ptr, y_ptr, z_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, XNUMEL: tl.constexpr,
+            YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     xoffs = tl.program_id(0) * XB
     yoffs = tl.program_id(1) * YB
     zoffs = tl.program_id(2) * ZB
@@ -57,8 +57,7 @@ def fn_npu_(output_ptr, x_ptr, y_ptr, z_ptr,
 
 
 @pytest.mark.parametrize('shape', TestUtils.full_shape)
-@pytest.mark.parametrize('dtype',
-                         ['bool', 'float32', 'float16', 'bfloat16', 'int8', 'int16', 'int32', 'int64'])
+@pytest.mark.parametrize('dtype', ['bool', 'float32', 'float16', 'bfloat16', 'int8', 'int16', 'int32', 'int64'])
 def test_case2(dtype, shape):
     # 生成数据
     x = test_common.generate_tensor(shape, dtype).npu()
@@ -88,7 +87,8 @@ def test_case2(dtype, shape):
 
 
 @triton.jit
-def fn_npu_multi_d(output_ptr, x_ptr, y_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr, NB: tl.constexpr, DIMS: tl.constexpr):
+def fn_npu_multi_d(output_ptr, x_ptr, y_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr,
+                   NB: tl.constexpr, DIMS: tl.constexpr):
     offsets = tl.arange(0, XB) * (YB * ZB * MB * NB)
     if DIMS > 1:
         offsets = offsets[:, None] + tl.arange(0, YB)[None, :] * (ZB * MB * NB)
@@ -112,12 +112,10 @@ def fn_npu_multi_d(output_ptr, x_ptr, y_ptr, XB: tl.constexpr, YB: tl.constexpr,
 @pytest.mark.parametrize('shape', [
     (4, 2, 8, 4),
     (2, 4, 2, 8, 1),
-
     (4, 3, 8, 1),
     (3, 4, 2, 8, 4),
 ])
-@pytest.mark.parametrize('dtype',
-                         ['float32', 'float16', 'bfloat16', 'int8', 'int16', 'int32', 'int64'])
+@pytest.mark.parametrize('dtype', ['float32', 'float16', 'bfloat16', 'int8', 'int16', 'int32', 'int64'])
 def test_case_4d_5d(dtype, shape):
     # 生成数据
     x = test_common.generate_tensor(shape, dtype).npu()

@@ -36,9 +36,8 @@ def torch_softmax_d0(x1):
 
 
 @triton.jit
-def tt_softmax_1d(in_ptr, out_ptr,
-                  xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr,
-                  XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr):
+def tt_softmax_1d(in_ptr, out_ptr, xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr, XB: tl.constexpr,
+                  YB: tl.constexpr, ZB: tl.constexpr):
     idx = tl.arange(0, XB)
     x = tl.load(in_ptr + idx)
     ret = tl.softmax(x)
@@ -46,9 +45,8 @@ def tt_softmax_1d(in_ptr, out_ptr,
 
 
 @triton.jit
-def tt_softmax_2d(in_ptr, out_ptr,
-                  xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr,
-                  XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr):
+def tt_softmax_2d(in_ptr, out_ptr, xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr, XB: tl.constexpr,
+                  YB: tl.constexpr, ZB: tl.constexpr):
     xoffs = tl.program_id(0) * XB
     yoffs = tl.program_id(1) * YB
     xidx = tl.arange(0, XB) + xoffs
@@ -62,9 +60,8 @@ def tt_softmax_2d(in_ptr, out_ptr,
 
 
 @triton.jit
-def tt_softmax_3d(in_ptr, out_ptr,
-                  xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr,
-                  XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr):
+def tt_softmax_3d(in_ptr, out_ptr, xnumel: tl.constexpr, ynumel: tl.constexpr, znumel: tl.constexpr, XB: tl.constexpr,
+                  YB: tl.constexpr, ZB: tl.constexpr):
     xoffs = tl.program_id(0) * XB
     yoffs = tl.program_id(1) * YB
     zoffs = tl.program_id(2) * ZB
@@ -82,15 +79,11 @@ def tt_softmax_3d(in_ptr, out_ptr,
 
 
 @triton.jit
-def triton_softmax_4d_5d(
-        output_ptr, x_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr,
-        BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-        SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
-        STRIDE_4: tl.constexpr
-):
+def triton_softmax_4d_5d(output_ptr, x_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                         BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                         SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                         STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
+                         STRIDE_4: tl.constexpr):
     offsets = tl.program_id(0)
 
     offsets = offsets + tl.arange(0, BLOCK_0) * STRIDE_0
@@ -127,7 +120,7 @@ def test_softmax(dtype, shape):
     if len(shape) == 1:
         tt_softmax_1d[grid](x, y_cal, x.numel(), 1, 1, x.numel(), 1, 1)
     elif len(shape) == 2:
-        xnumel, ynumel, znumel = shape + (1,)
+        xnumel, ynumel, znumel = shape + (1, )
         XB, YB, ZB = xnumel, ynumel, znumel
         if x.numel() * x.element_size() > 8192:
             grid = (1, ynumel, 1)
@@ -157,9 +150,9 @@ invalid_types = [
 @pytest.mark.parametrize("dtype", invalid_types)
 @test_common.raises_with_match(triton.compiler.errors.CompilationError, "Expected dtype")
 def test_softmax_invalid_dtype_case(dtype):
-    x0 = test_common.generate_tensor((1,), dtype).npu()
+    x0 = test_common.generate_tensor((1, ), dtype).npu()
 
-    y_cal = torch.zeros((1,), dtype=eval('torch.' + dtype)).npu()
+    y_cal = torch.zeros((1, ), dtype=eval('torch.' + dtype)).npu()
     tt_softmax_1d[1, 1, 1](x0, y_cal, 0, 0, 0, 1, 0, 0)
 
 
@@ -180,7 +173,7 @@ def test_softmax_4d_5d(shape, dtype):
         blocks.append(1)
         strides.append(1)
 
-    grid = (1,)
+    grid = (1, )
     triton_softmax_4d_5d[grid](output, x, *blocks, *blocks, *strides)
 
     test_common.validate_cmp(dtype, ans, output)

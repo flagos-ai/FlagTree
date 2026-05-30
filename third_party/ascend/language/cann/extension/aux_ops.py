@@ -1,17 +1,7 @@
 import triton.language as tl
 from triton.language import core
-from triton.language.core import (
-    _unwrap_if_constexpr,
-    _tensor_member_fn,
-    _unwrap_iterable,
-    builtin,
-    constexpr,
-    dtype,
-    tensor,
-    check_bit_width,
-    _unwrap_if_constexpr,
-    range
-)
+from triton.language.core import (_unwrap_if_constexpr, _tensor_member_fn, _unwrap_iterable, builtin, constexpr, dtype,
+                                  tensor, check_bit_width, _unwrap_if_constexpr, range)
 
 from typing import Optional, Tuple, List, overload, Union
 from triton._C.libtriton import ir
@@ -49,8 +39,10 @@ def sync_block_set(sender, receiver, event_id, _semantic=None):
     sender = _unwrap_if_constexpr(sender)
     receiver = _unwrap_if_constexpr(receiver)
     event_id = _unwrap_if_constexpr(event_id)
-    assert isinstance(sender, str) and (sender == "cube" or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
-    assert isinstance(receiver, str) and (receiver == "cube" or receiver == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
+    assert isinstance(sender, str) and (sender == "cube"
+                                        or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
+    assert isinstance(receiver, str) and (receiver == "cube" or receiver
+                                          == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
     if sender == receiver:
         raise ValueError(f'Unexpected pair: {sender} -> {receiver}, only supports cube -> vector or vector -> cube')
@@ -70,8 +62,10 @@ def sync_block_wait(sender, receiver, event_id, _semantic=None):
     sender = _unwrap_if_constexpr(sender)
     receiver = _unwrap_if_constexpr(receiver)
     event_id = _unwrap_if_constexpr(event_id)
-    assert isinstance(sender, str) and (sender == "cube" or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
-    assert isinstance(receiver, str) and (receiver == "cube" or receiver == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
+    assert isinstance(sender, str) and (sender == "cube"
+                                        or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
+    assert isinstance(receiver, str) and (receiver == "cube" or receiver
+                                          == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
     if sender == receiver:
         raise ValueError(f'Unexpected pair: {sender} -> {receiver}, only supports cube -> vector or vector -> cube')
@@ -88,7 +82,9 @@ class parallel(range):
         This is used in the mixed cube-vector kernel on 910B. The number of vector cores is determined by the number of
         iteration in this loop. Currently on 910B, max 2 vector cores could be used.
     """
-    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None, bind_sub_block: bool = False):
+
+    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
+                 bind_sub_block: bool = False):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
         self.bind_sub_block = bind_sub_block
 
@@ -114,6 +110,7 @@ def compile_hint_impl(ptr: tensor, hint_name: str, hint_val, builder: ir.builder
         raise ValueError(f"Unsupported hint value type: {type(hint_val)}")
     builder.create_annotation_mark(ptr.handle, hint_name, hint_val)
 
+
 @builtin
 def compile_hint(ptr, hint_name, hint_val=None, _semantic=None):
     # simt mode does not support hint annotations
@@ -131,6 +128,7 @@ def compile_hint(ptr, hint_name, hint_val=None, _semantic=None):
         hint_val = _unwrap(hint_val)
     hint_val = _unwrap_if_constexpr(hint_val) if hint_val else hint_val
     compile_hint_impl(ptr, hint_name, hint_val, _semantic.builder)
+
 
 @builtin
 def multibuffer(src: tensor, size, _semantic=None):

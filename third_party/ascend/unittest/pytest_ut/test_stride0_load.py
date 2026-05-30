@@ -58,7 +58,7 @@ def test_case():
 
     in0_triton = in0
     in1_triton = in1
-    out0_triton = torch.empty((YBLOCK * XBLOCK,), device="npu", dtype=torch.int32)
+    out0_triton = torch.empty((YBLOCK * XBLOCK, ), device="npu", dtype=torch.int32)
 
     triton_expanddims_load[(1, 1, 1)](in0_triton, in1_triton, out0_triton, YBLOCK, XBLOCK)
     out0_triton = out0_triton.view(YBLOCK, XBLOCK)

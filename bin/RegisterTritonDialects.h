@@ -157,34 +157,34 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::proton::gpu::registerAddSchedBarriersPass();
 #endif
 
-  registry.insert<
-      mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
+  registry.insert<mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
 #ifdef __NVIDIA__
-      mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect,
+                  mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect,
 #endif
-      mlir::triton::gpu::TritonGPUDialect,
-      mlir::triton::instrument::TritonInstrumentDialect,
-      mlir::math::MathDialect, mlir::arith::ArithDialect, mlir::scf::SCFDialect,
-      mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect,
+                  mlir::triton::gpu::TritonGPUDialect,
+                  mlir::triton::instrument::TritonInstrumentDialect,
+                  mlir::math::MathDialect, mlir::arith::ArithDialect,
+                  mlir::scf::SCFDialect, mlir::gpu::GPUDialect,
+                  mlir::LLVM::LLVMDialect,
 #ifdef __NVIDIA__
-      mlir::NVVM::NVVMDialect,
-      mlir::triton::nvgpu::NVGPUDialect, mlir::triton::nvws::NVWSDialect,
+                  mlir::NVVM::NVVMDialect, mlir::triton::nvgpu::NVGPUDialect,
+                  mlir::triton::nvws::NVWSDialect,
 #endif
 #ifdef __AMD__
-      mlir::triton::amdgpu::TritonAMDGPUDialect,
+                  mlir::triton::amdgpu::TritonAMDGPUDialect,
 #endif
 #ifdef __PROTON__
-      mlir::triton::proton::ProtonDialect,
-      mlir::triton::proton::gpu::ProtonGPUDialect,
+                  mlir::triton::proton::ProtonDialect,
+                  mlir::triton::proton::gpu::ProtonGPUDialect,
 #endif
 #ifdef __AMD__
-      mlir::ROCDL::ROCDLDialect,
+                  mlir::ROCDL::ROCDLDialect,
 #endif
 #ifdef __TLE__
-      mlir::triton::gluon::GluonDialect,
-      mlir::triton::tle::TleDialect // flagtree tle raw
+                  mlir::triton::gluon::GluonDialect,
+                  mlir::triton::tle::TleDialect // flagtree tle raw
 #else
-      mlir::triton::gluon::GluonDialect
+                  mlir::triton::gluon::GluonDialect
 #endif
-      >();
+                  >();
 }

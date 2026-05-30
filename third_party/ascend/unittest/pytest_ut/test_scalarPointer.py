@@ -19,6 +19,7 @@ import torch_npu
 import triton
 import triton.language as tl
 
+
 @triton.autotune(
     configs=[
         triton.Config({'BLOCK_SIZE': 64}),
@@ -85,8 +86,7 @@ def _state_passing_fwd_kernel(
     tl.store(out_ptrs, states, mask=offs_m < dim)
     out_ptrs += stride_out_chunk
     for c in range(nchunks):
-        new_states = tl.load(states_ptrs, mask=offs_m < dim,
-                             other=0.0).to(tl.float32)
+        new_states = tl.load(states_ptrs, mask=offs_m < dim, other=0.0).to(tl.float32)
         #dA_cs = tl.load(dA_cs_ptr + tl.arange(0,1)).to(tl.float32)
         dA_cs = tl.load(dA_cs_ptr).to(tl.float32)
         scale = tl.exp(dA_cs)
@@ -98,7 +98,6 @@ def _state_passing_fwd_kernel(
         states_ptrs += stride_states_chunk
         dA_cs_ptr += stride_dA_cs_chunk
         out_ptrs += stride_out_chunk
-
 
 
 def _state_passing_fwd(
@@ -128,12 +127,8 @@ def _state_passing_fwd(
         seqlen = seq_idx.shape[-1]
         assert seq_idx.shape == (batch, seqlen)
     out_dtype = states.dtype if out_dtype is None else out_dtype
-    out = torch.empty((batch, nchunks, nheads, dim),
-                      device=states.device,
-                      dtype=out_dtype)
-    final_states = torch.empty((batch, nheads, dim),
-                               device=states.device,
-                               dtype=torch.float32)
+    out = torch.empty((batch, nchunks, nheads, dim), device=states.device, dtype=out_dtype)
+    final_states = torch.empty((batch, nheads, dim), device=states.device, dtype=torch.float32)
     grid = lambda META: (triton.cdiv(dim, META['BLOCK_SIZE']), batch, nheads)
     # with torch.cuda.device(states.device.index):
     _state_passing_fwd_kernel[grid](
@@ -162,15 +157,14 @@ def _state_passing_fwd(
         dA_chunk_cumsum.stride(2),
         dA_chunk_cumsum.stride(1),
         *((initial_states.stride(0), initial_states.stride(1),
-           initial_states.stride(2)) if initial_states is not None else
-          (0, 0, 0)),
-        *((seq_idx.stride(0),
-           seq_idx.stride(1)) if seq_idx is not None else (0, 0)),
+           initial_states.stride(2)) if initial_states is not None else (0, 0, 0)),
+        *((seq_idx.stride(0), seq_idx.stride(1)) if seq_idx is not None else (0, 0)),
         HAS_INITSTATES=initial_states is not None,
         HAS_SEQ_IDX=seq_idx is not None,
         IS_CONT_BATCHED=is_cont_batched,
     )
     return out, final_states
+
 
 @pytest.mark.perf(repeat=17)
 def test_state_passing_fwd():
@@ -179,12 +173,6 @@ def test_state_passing_fwd():
     initial_states = None
     cu_seqlens = None
     states, final_states = _state_passing_fwd(
-        rearrange(states, "... p n -> ... (p n)"),
-        dA_cumsum[:, :, :, -1],
-        initial_states=rearrange(initial_states, "... p n -> ... (p n)")
-        if initial_states is not None else None,
-        seq_idx=None,
-        chunk_size=17,
-        out_dtype=torch.float32,
-        is_cont_batched=cu_seqlens is not None)
-
+        rearrange(states, "... p n -> ... (p n)"), dA_cumsum[:, :, :, -1],
+        initial_states=rearrange(initial_states, "... p n -> ... (p n)") if initial_states is not None else None,
+        seq_idx=None, chunk_size=17, out_dtype=torch.float32, is_cont_batched=cu_seqlens is not None)

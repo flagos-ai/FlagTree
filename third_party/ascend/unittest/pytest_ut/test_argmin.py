@@ -23,22 +23,20 @@ def triton_argmin_1d(in_ptr0, out_ptr1, xnumel, XBLOCK: tl.constexpr):
     tl.store(out_ptr1, tmp4, None)
 
 
-@pytest.mark.parametrize('shape', [(128,), (256,), (37,), (741,)])
+@pytest.mark.parametrize('shape', [(128, ), (256, ), (37, ), (741, )])
 @pytest.mark.parametrize('dtype', ['int32', 'float32', 'uint8', 'int8'])
 def test_argmin_1d(dtype, shape):
     x0 = test_common.generate_tensor(shape, dtype).npu()
     triton_res = torch.empty(1, dtype=torch.int32).npu()
     numel = shape[0]
-    triton_argmin_1d[(1,)](x0, triton_res, numel, numel)
+    triton_argmin_1d[(1, )](x0, triton_res, numel, numel)
     torch_res = torch_argmin(x0, dim=0, keepdim=True)
     test_common.validate_cmp("int32", triton_res, torch_res)
 
 
 @triton.jit
-def triton_argmin_2d(in_ptr0, out_ptr0,
-                     dim: tl.constexpr,
-                     M: tl.constexpr, N: tl.constexpr,
-                     MNUMEL: tl.constexpr, NNUMEL: tl.constexpr):
+def triton_argmin_2d(in_ptr0, out_ptr0, dim: tl.constexpr, M: tl.constexpr, N: tl.constexpr, MNUMEL: tl.constexpr,
+                     NNUMEL: tl.constexpr):
     mblk_idx = tl.arange(0, MNUMEL)
     nblk_idx = tl.arange(0, NNUMEL)
     mmask = mblk_idx < M
@@ -59,7 +57,9 @@ def triton_argmin_2d(in_ptr0, out_ptr0,
 def test_argmin_2d(dtype, shape, dim):
     shapex, shapey = shape
     x0 = test_common.generate_tensor(shape, dtype).npu()
-    triton_res = torch.empty([shape[1 - dim], ], dtype=torch.int32).npu()
+    triton_res = torch.empty([
+        shape[1 - dim],
+    ], dtype=torch.int32).npu()
     triton_argmin_2d[(1, 1)](x0, triton_res, dim, shapex, shapey, shapex, shapey)
     torch_res = torch_argmin(x0, dim=dim, keepdim=False)
     test_common.validate_cmp("int32", triton_res, torch_res)

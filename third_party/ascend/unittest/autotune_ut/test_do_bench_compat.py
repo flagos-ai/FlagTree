@@ -33,6 +33,7 @@ def _make_tuner(do_bench):
     tuner.user_defined_do_bench = True
 
     def _make_kernel_call(self, *args, config, **meta):
+
         def kernel_call(warmup):
             return None
 
@@ -60,6 +61,7 @@ def test_batch_bench_supports_do_bench_with_quantiles():
 
 
 def test_batch_bench_requires_do_bench_quantiles_parameter():
+
     def _do_bench(fn):
         fn()
         return (2.0, 2.0, 2.0)
@@ -96,6 +98,7 @@ def test_batch_bench_npu_env_respects_user_do_bench(monkeypatch):
 
 
 def test_batch_bench_npu_env_uses_do_bench_npu_without_user_do_bench(monkeypatch):
+
     def _do_bench(fn, quantiles):
         raise AssertionError("self.do_bench should not be used when no user do_bench is provided")
 
@@ -152,6 +155,7 @@ def test_ascend_autotune_decorator_forwards_do_bench(monkeypatch):
     captured = {}
 
     class DummyAutoTilingTuner:
+
         def __init__(self, *args, **kwargs):
             captured["do_bench"] = kwargs.get("do_bench")
 

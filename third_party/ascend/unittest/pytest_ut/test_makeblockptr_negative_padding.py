@@ -84,9 +84,7 @@ def negative_padding_with_store_kernel(
     tl.store(out_ptr, in_val, boundary_check=(0, 1))
 
 
-@pytest.mark.parametrize('param_list', [
-    (8, 8), (16, 16), (32, 32), (64, 64)
-])
+@pytest.mark.parametrize('param_list', [(8, 8), (16, 16), (32, 32), (64, 64)])
 def test_makeblockptr_load_with_negative_padding(param_list):
     shape = param_list
     torch.manual_seed(1)
@@ -112,9 +110,7 @@ def test_makeblockptr_load_with_negative_padding(param_list):
     test_common.validate_cmp("int32", output, output_ref)
 
 
-@pytest.mark.parametrize('param_list', [
-    (8, 8), (16, 16), (32, 32), (64, 64)
-])
+@pytest.mark.parametrize('param_list', [(8, 8), (16, 16), (32, 32), (64, 64)])
 def test_makeblockptr_store_with_negative_padding(param_list):
     shape = param_list
     torch.manual_seed(1)

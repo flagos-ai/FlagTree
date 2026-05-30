@@ -54,17 +54,16 @@ struct AscendNPUIROpBuilder : public TritonOpBuilder {
   explicit AscendNPUIROpBuilder(MLIRContext *context, std::string target = "")
       : TritonOpBuilder(context), target(target) {}
 
-  bool is_910_95() const
-  {
+  bool is_910_95() const {
     // TODO: Use enum instead of strings after enabling HACC in satandalone
     // build
     constexpr size_t kLen910 = sizeof(kTarget910_95) - 1;
     bool match_910 = target.size() >= kLen910 &&
-      target.compare(0, kLen910, kTarget910_95) == 0;
+                     target.compare(0, kLen910, kTarget910_95) == 0;
 
     constexpr size_t kLen950 = sizeof(kTarget950) - 1;
-    bool match_950 = target.size() >= kLen950 &&
-      target.compare(0, kLen950, kTarget950) == 0;
+    bool match_950 =
+        target.size() >= kLen950 && target.compare(0, kLen950, kTarget950) == 0;
 
     return match_910 || match_950;
   }
@@ -73,8 +72,7 @@ struct AscendNPUIROpBuilder : public TritonOpBuilder {
 namespace {
 MLIRContext *gDefaultAscendContext = nullptr;
 
-MLIRContext *resolveContext(const py::object &contextObj)
-{
+MLIRContext *resolveContext(const py::object &contextObj) {
   if (!contextObj.is_none()) {
     return &py::cast<MLIRContext &>(contextObj);
   }
@@ -92,8 +90,8 @@ struct ModeAndPipes {
   hivm::PipeAttr vectorPipe = {};
 };
 
-hivm::TCoreTypeAttr GetCore(MLIRContext *ctx, llvm::StringRef opName, llvm::StringRef sender)
-{
+hivm::TCoreTypeAttr GetCore(MLIRContext *ctx, llvm::StringRef opName,
+                            llvm::StringRef sender) {
   // Decide core type
   hivm::TCoreTypeAttr core;
   if (sender == "cube") {
@@ -103,7 +101,8 @@ hivm::TCoreTypeAttr GetCore(MLIRContext *ctx, llvm::StringRef opName, llvm::Stri
       core = hivm::TCoreTypeAttr::get(ctx, hivm::TCoreType::VECTOR);
   } else {
     if (sender != "vector") {
-      throw std::runtime_error("sync_block_set/wait only supports 'cube' or 'vector' as sender");
+      throw std::runtime_error(
+          "sync_block_set/wait only supports 'cube' or 'vector' as sender");
     }
     if (opName == "sync_block_set")
       core = hivm::TCoreTypeAttr::get(ctx, hivm::TCoreType::VECTOR);
@@ -114,9 +113,9 @@ hivm::TCoreTypeAttr GetCore(MLIRContext *ctx, llvm::StringRef opName, llvm::Stri
   return core;
 }
 
-void buildSyncBlockOp(AscendNPUIROpBuilder &self, const std::string &opName, std::string &sender,
-                      std::string &receiver, Value id, hivm::PIPE senderPipe, hivm::PIPE receiverPipe)
-{
+void buildSyncBlockOp(AscendNPUIROpBuilder &self, const std::string &opName,
+                      std::string &sender, std::string &receiver, Value id,
+                      hivm::PIPE senderPipe, hivm::PIPE receiverPipe) {
   auto *ctx = self.getBuilder().getContext();
   hivm::TCoreTypeAttr coreAttr = GetCore(ctx, opName, sender);
   hivm::PipeAttr prodPipe = hivm::PipeAttr::get(ctx, senderPipe);
@@ -138,8 +137,7 @@ void buildSyncBlockOp(AscendNPUIROpBuilder &self, const std::string &opName, std
 }
 
 ModeAndPipes GetSyncBlockModeAndPipes(MLIRContext *ctx,
-                                      const std::string &mode)
-{
+                                      const std::string &mode) {
   hivm::SyncBlockModeAttr modeAttr = {};
   hivm::PipeAttr cubePipe = {};
   hivm::PipeAttr vectorPipe = {};
@@ -163,7 +161,8 @@ ModeAndPipes GetSyncBlockModeAndPipes(MLIRContext *ctx,
     cubePipe = hivm::PipeAttr{};
     vectorPipe = hivm::PipeAttr::get(ctx, hivm::PIPE::PIPE_ALL);
   } else {
-    llvm::report_fatal_error(llvm::StringRef("Invalid sync-block mode: " + mode));
+    llvm::report_fatal_error(
+        llvm::StringRef("Invalid sync-block mode: " + mode));
   }
   return {modeAttr, cubePipe, vectorPipe};
 }
@@ -173,58 +172,63 @@ void init_ascend_ir(py::module &&m) {
   auto affineExprClass =
       py::class_<AffineExpr>(m, "affine_expr", py::module_local());
   affineExprClass
-      .def("__str__", [](AffineExpr self) {
-        std::string str;
-        llvm::raw_string_ostream os(str);
-        self.print(os);
-        return os.str();
-      })
-      .def("__repr__", [](AffineExpr self) {
-        std::string str;
-        llvm::raw_string_ostream os(str);
-        self.print(os);
-        return "<affine_expr " + os.str() + ">";
-      })
+      .def("__str__",
+           [](AffineExpr self) {
+             std::string str;
+             llvm::raw_string_ostream os(str);
+             self.print(os);
+             return os.str();
+           })
+      .def("__repr__",
+           [](AffineExpr self) {
+             std::string str;
+             llvm::raw_string_ostream os(str);
+             self.print(os);
+             return "<affine_expr " + os.str() + ">";
+           })
       .def("is_symbolic_or_constant", &AffineExpr::isSymbolicOrConstant)
       .def("is_pure_affine", &AffineExpr::isPureAffine)
       .def("is_function_of_dim", &AffineExpr::isFunctionOfDim)
       .def("compose",
            [](AffineExpr self, AffineMap map) { return self.compose(map); })
       .def("get_largest_known_divisor", &AffineExpr::getLargestKnownDivisor)
-      .def("floordiv",
-           [](AffineExpr self, AffineExpr other) { return self.floorDiv(other); })
-      .def("ceildiv",
-           [](AffineExpr self, AffineExpr other) { return self.ceilDiv(other); })
+      .def("floordiv", [](AffineExpr self,
+                          AffineExpr other) { return self.floorDiv(other); })
+      .def("ceildiv", [](AffineExpr self,
+                         AffineExpr other) { return self.ceilDiv(other); })
       .def("mod",
            [](AffineExpr self, AffineExpr other) { return self % other; })
-      .def("__hash__", [](AffineExpr self) {
-        return py::int_(static_cast<uint64_t>(mlir::hash_value(self)));
-      })
-      .def("__eq__",
-           [](AffineExpr lhs, AffineExpr rhs) { return lhs == rhs; })
+      .def("__hash__",
+           [](AffineExpr self) {
+             return py::int_(static_cast<uint64_t>(mlir::hash_value(self)));
+           })
+      .def("__eq__", [](AffineExpr lhs, AffineExpr rhs) { return lhs == rhs; })
       .def(py::self + py::self)
       .def(py::self - py::self)
       .def(py::self * py::self)
       .def(py::self % py::self);
   affineExprClass
-      .def_static("get_constant",
-                  [](int64_t val, py::object contextObj) {
-                    auto *context = resolveContext(contextObj);
-                    return getAffineConstantExpr(val, context);
-                  },
-                  py::arg("value"), py::arg("context") = py::none())
-      .def_static("get_dim",
-                  [](uint32_t pos, py::object contextObj) {
-                    auto *context = resolveContext(contextObj);
-                    return getAffineDimExpr(pos, context);
-                  },
-                  py::arg("pos"), py::arg("context") = py::none())
-      .def_static("get_symbol",
-                  [](uint32_t pos, py::object contextObj) {
-                    auto *context = resolveContext(contextObj);
-                    return getAffineSymbolExpr(pos, context);
-                  },
-                  py::arg("pos"), py::arg("context") = py::none());
+      .def_static(
+          "get_constant",
+          [](int64_t val, py::object contextObj) {
+            auto *context = resolveContext(contextObj);
+            return getAffineConstantExpr(val, context);
+          },
+          py::arg("value"), py::arg("context") = py::none())
+      .def_static(
+          "get_dim",
+          [](uint32_t pos, py::object contextObj) {
+            auto *context = resolveContext(contextObj);
+            return getAffineDimExpr(pos, context);
+          },
+          py::arg("pos"), py::arg("context") = py::none())
+      .def_static(
+          "get_symbol",
+          [](uint32_t pos, py::object contextObj) {
+            auto *context = resolveContext(contextObj);
+            return getAffineSymbolExpr(pos, context);
+          },
+          py::arg("pos"), py::arg("context") = py::none());
 
   py::class_<AffineConstantExpr, AffineExpr>(m, "affine_constant_expr",
                                              py::module_local())
@@ -240,20 +244,23 @@ void init_ascend_ir(py::module &&m) {
       .def("get_lhs", &AffineBinaryOpExpr::getLHS)
       .def("get_rhs", &AffineBinaryOpExpr::getRHS);
 
-  auto affineMapClass = py::class_<AffineMap>(m, "affine_map", py::module_local());
+  auto affineMapClass =
+      py::class_<AffineMap>(m, "affine_map", py::module_local());
   affineMapClass
-      .def("__str__", [](AffineMap &self) {
-        std::string str;
-        llvm::raw_string_ostream os(str);
-        self.print(os);
-        return os.str();
-      })
-      .def("__repr__", [](AffineMap &self) {
-        std::string str;
-        llvm::raw_string_ostream os(str);
-        self.print(os);
-        return "<affine_map " + os.str() + ">";
-      })
+      .def("__str__",
+           [](AffineMap &self) {
+             std::string str;
+             llvm::raw_string_ostream os(str);
+             self.print(os);
+             return os.str();
+           })
+      .def("__repr__",
+           [](AffineMap &self) {
+             std::string str;
+             llvm::raw_string_ostream os(str);
+             self.print(os);
+             return "<affine_map " + os.str() + ">";
+           })
       .def("is_identity", &AffineMap::isIdentity)
       .def("is_permutation", &AffineMap::isPermutation)
       .def("get_num_dims", &AffineMap::getNumDims)
@@ -262,12 +269,14 @@ void init_ascend_ir(py::module &&m) {
       .def("is_empty", &AffineMap::isEmpty)
       .def("is_single_constant", &AffineMap::isSingleConstant)
       .def("is_constant", &AffineMap::isConstant)
-      .def("get_constant_result", [](AffineMap &self) -> int64_t {
-        if (!self.isSingleConstant()) {
-          throw std::runtime_error("affine map is not a single constant map");
-        }
-        return self.getSingleConstantResult();
-      })
+      .def("get_constant_result",
+           [](AffineMap &self) -> int64_t {
+             if (!self.isSingleConstant()) {
+               throw std::runtime_error(
+                   "affine map is not a single constant map");
+             }
+             return self.getSingleConstantResult();
+           })
       .def("get_result",
            [](AffineMap &self, uint32_t pos) {
              if (pos >= self.getNumResults()) {
@@ -285,33 +294,36 @@ void init_ascend_ir(py::module &&m) {
              return self.replace(expr, replacement, numResultDims,
                                  numResultSymbols);
            })
-      .def("compose", [](AffineMap &self, AffineMap map) {
-        return self.compose(map);
-      })
-      .def("get_results", [](AffineMap &self) -> std::vector<AffineExpr> {
-        auto results = self.getResults();
-        return std::vector<AffineExpr>(results.begin(), results.end());
-      })
-      .def("__hash__", [](AffineMap &self) {
-        return py::int_(static_cast<uint64_t>(mlir::hash_value(self)));
-      })
+      .def("compose",
+           [](AffineMap &self, AffineMap map) { return self.compose(map); })
+      .def("get_results",
+           [](AffineMap &self) -> std::vector<AffineExpr> {
+             auto results = self.getResults();
+             return std::vector<AffineExpr>(results.begin(), results.end());
+           })
+      .def("__hash__",
+           [](AffineMap &self) {
+             return py::int_(static_cast<uint64_t>(mlir::hash_value(self)));
+           })
       .def("__eq__", [](AffineMap &lhs, AffineMap &rhs) { return lhs == rhs; })
-      .def("inverse_permutation", [](AffineMap &self) -> py::object {
-        // Validate it's a permutation first
-        if (!self.isPermutation()) {
-          throw py::value_error("AffineMap must be a valid permutation to compute inverse");
-        }
+      .def("inverse_permutation",
+           [](AffineMap &self) -> py::object {
+             // Validate it's a permutation first
+             if (!self.isPermutation()) {
+               throw py::value_error(
+                   "AffineMap must be a valid permutation to compute inverse");
+             }
 
-        // Returns AffineMap directly, not a pointer
-        AffineMap inverse = mlir::inversePermutation(self);
+             // Returns AffineMap directly, not a pointer
+             AffineMap inverse = mlir::inversePermutation(self);
 
-        // Check if result is valid (null AffineMap)
-        if (!inverse) {
-          throw py::value_error("Failed to compute inverse permutation");
-        }
+             // Check if result is valid (null AffineMap)
+             if (!inverse) {
+               throw py::value_error("Failed to compute inverse permutation");
+             }
 
-        return py::cast(inverse);
-      })
+             return py::cast(inverse);
+           })
       .def("to_dict", [](AffineMap &self) -> py::dict {
         py::list results;
         for (AffineExpr result : self.getResults()) {
@@ -332,7 +344,8 @@ void init_ascend_ir(py::module &&m) {
         return ret;
       });
   affineMapClass
-      .def_static("get",
+      .def_static(
+          "get",
           [](int64_t numDims, int64_t numSymbols, const py::iterable &resultsIn,
              py::object contextObj) -> AffineMap {
             MLIRContext *context = nullptr;
@@ -372,44 +385,47 @@ void init_ascend_ir(py::module &&m) {
           },
           py::arg("num_dims"), py::arg("num_symbols"), py::arg("result_dims"),
           py::arg("context") = py::none())
-      .def_static("get_identity",
-                  [](int64_t numDims, py::object contextObj) -> AffineMap {
-                    auto *context = resolveContext(contextObj);
-                    if (numDims < 0) {
-                      throw std::invalid_argument(
-                          "num_dims must be non-negative");
-                    }
-                    return AffineMap::getMultiDimIdentityMap(numDims, context);
-                  },
-                  py::arg("num_dims"), py::arg("context") = py::none())
-      .def_static("get_minor_identity",
-                  [](int64_t dims, int64_t results, py::object contextObj) {
-                    auto *context = resolveContext(contextObj);
-                    if (dims < 0 || results < 0) {
-                      throw std::invalid_argument(
-                          "dims/results must be non-negative");
-                    }
-                    return AffineMap::getMinorIdentityMap(dims, results, context);
-                  },
-                  py::arg("dims"), py::arg("results"),
-                  py::arg("context") = py::none())
-      .def_static("get_empty", [](py::object contextObj) {
-        auto *context = resolveContext(contextObj);
-        return AffineMap::get(0, 0, {}, context);
-      }, py::arg("context") = py::none())
-      .def_static("get_permutation",
-                  [](const std::vector<unsigned> &permutation,
-                     py::object contextObj) {
-                    auto *context = resolveContext(contextObj);
-                    return AffineMap::getPermutationMap(permutation, context);
-                  },
-                  py::arg("permutation"), py::arg("context") = py::none())
-      .def_static("get_constant",
-                  [](int64_t value, py::object contextObj) {
-                    auto *context = resolveContext(contextObj);
-                    return AffineMap::getConstantMap(value, context);
-                  },
-                  py::arg("value"), py::arg("context") = py::none());
+      .def_static(
+          "get_identity",
+          [](int64_t numDims, py::object contextObj) -> AffineMap {
+            auto *context = resolveContext(contextObj);
+            if (numDims < 0) {
+              throw std::invalid_argument("num_dims must be non-negative");
+            }
+            return AffineMap::getMultiDimIdentityMap(numDims, context);
+          },
+          py::arg("num_dims"), py::arg("context") = py::none())
+      .def_static(
+          "get_minor_identity",
+          [](int64_t dims, int64_t results, py::object contextObj) {
+            auto *context = resolveContext(contextObj);
+            if (dims < 0 || results < 0) {
+              throw std::invalid_argument("dims/results must be non-negative");
+            }
+            return AffineMap::getMinorIdentityMap(dims, results, context);
+          },
+          py::arg("dims"), py::arg("results"), py::arg("context") = py::none())
+      .def_static(
+          "get_empty",
+          [](py::object contextObj) {
+            auto *context = resolveContext(contextObj);
+            return AffineMap::get(0, 0, {}, context);
+          },
+          py::arg("context") = py::none())
+      .def_static(
+          "get_permutation",
+          [](const std::vector<unsigned> &permutation, py::object contextObj) {
+            auto *context = resolveContext(contextObj);
+            return AffineMap::getPermutationMap(permutation, context);
+          },
+          py::arg("permutation"), py::arg("context") = py::none())
+      .def_static(
+          "get_constant",
+          [](int64_t value, py::object contextObj) {
+            auto *context = resolveContext(contextObj);
+            return AffineMap::getConstantMap(value, context);
+          },
+          py::arg("value"), py::arg("context") = py::none());
 
   py::enum_<hivm::AddressSpace>(m, "AddressSpace", py::module_local())
       .value("L1", hivm::AddressSpace::L1)
@@ -438,25 +454,25 @@ void init_ascend_ir(py::module &&m) {
       .export_values();
 
   py::enum_<hivm::VFMode>(m, "MODE", py::module_local())
-    .value("SIMD", hivm::VFMode::SIMD)
-    .value("SIMT", hivm::VFMode::SIMT)
-    .value("MIX", hivm::VFMode::MIX)
-    .export_values();
+      .value("SIMD", hivm::VFMode::SIMD)
+      .value("SIMT", hivm::VFMode::SIMT)
+      .value("MIX", hivm::VFMode::MIX)
+      .export_values();
 
   py::enum_<hivm::IteratorType>(m, "IteratorType", py::module_local())
-    .value("Parallel", hivm::IteratorType::kParallel)
-    .value("Broadcast", hivm::IteratorType::kBroadcast)
-    .value("Transpose", hivm::IteratorType::kTranspose)
-    .value("Reduction", hivm::IteratorType::kReduction)
-    .value("Interleave", hivm::IteratorType::kInterleave)
-    .value("Deinterleave", hivm::IteratorType::kDeinterleave)
-    .value("Inverse", hivm::IteratorType::kInverse)
-    .value("Pad", hivm::IteratorType::kPad)
-    .value("Concat", hivm::IteratorType::kConcat)
-    .value("Gather", hivm::IteratorType::kGather)
-    .value("Cumulative", hivm::IteratorType::kCumulative)
-    .value("Opaque", hivm::IteratorType::kOpaque)
-    .export_values();
+      .value("Parallel", hivm::IteratorType::kParallel)
+      .value("Broadcast", hivm::IteratorType::kBroadcast)
+      .value("Transpose", hivm::IteratorType::kTranspose)
+      .value("Reduction", hivm::IteratorType::kReduction)
+      .value("Interleave", hivm::IteratorType::kInterleave)
+      .value("Deinterleave", hivm::IteratorType::kDeinterleave)
+      .value("Inverse", hivm::IteratorType::kInverse)
+      .value("Pad", hivm::IteratorType::kPad)
+      .value("Concat", hivm::IteratorType::kConcat)
+      .value("Gather", hivm::IteratorType::kGather)
+      .value("Cumulative", hivm::IteratorType::kCumulative)
+      .value("Opaque", hivm::IteratorType::kOpaque)
+      .export_values();
 
   py::enum_<hivm::FixpipeDMAMode>(m, "FixpipeDMAMode", py::module_local())
       .value("NZ2DN", hivm::FixpipeDMAMode::NZ2DN)
@@ -487,9 +503,9 @@ void init_ascend_ir(py::module &&m) {
       .value("P_RELU", hivm::FixpipePreReluMode::P_RELU)
       .export_values();
   py::enum_<hivm::DataLayout>(m, "DataLayout", py::module_local())
-        .value("nZ", hivm::DataLayout::nZ)
-        .value("zN", hivm::DataLayout::zN)
-        .export_values();
+      .value("nZ", hivm::DataLayout::nZ)
+      .value("zN", hivm::DataLayout::zN)
+      .export_values();
 
   m.def("load_dialects", [](MLIRContext &context) {
     gDefaultAscendContext = &context;
@@ -509,7 +525,8 @@ void init_ascend_ir(py::module &&m) {
              return IntegerAttr::get(self.getBuilder().getI64Type(), value);
            })
       .def("get_core_type_attr",
-           [](AscendNPUIROpBuilder &self, hivm::TCoreType core_type) -> Attribute {
+           [](AscendNPUIROpBuilder &self,
+              hivm::TCoreType core_type) -> Attribute {
              return self.getBuilder().getAttr<hivm::TCoreTypeAttr>(core_type);
            })
       .def("get_pipe_attr",
@@ -521,12 +538,15 @@ void init_ascend_ir(py::module &&m) {
              return self.getBuilder().getAttr<hivm::VFModeAttr>(mode);
            })
       .def("get_iterator_types_attr",
-          [](AscendNPUIROpBuilder &self, const std::vector<hivm::IteratorType>& array) {
-          auto attrs = llvm::to_vector(llvm::map_range(array, [&self](hivm::IteratorType type) {
-                return cast<Attribute>(self.getBuilder().getAttr<hivm::IteratorTypeAttr>(type));
-          }));
-          return self.getBuilder().getArrayAttr(attrs);
-          })
+           [](AscendNPUIROpBuilder &self,
+              const std::vector<hivm::IteratorType> &array) {
+             auto attrs = llvm::to_vector(
+                 llvm::map_range(array, [&self](hivm::IteratorType type) {
+                   return cast<Attribute>(
+                       self.getBuilder().getAttr<hivm::IteratorTypeAttr>(type));
+                 }));
+             return self.getBuilder().getArrayAttr(attrs);
+           })
       .def("get_t_core_type_attr_name",
            [](AscendNPUIROpBuilder &self) -> std::string {
              return hivm::TCoreTypeAttr::name.str();
@@ -544,7 +564,8 @@ void init_ascend_ir(py::module &&m) {
       .def("parse_attr",
            [](TritonOpBuilder &self, std::string value) -> Attribute {
              auto *ctx = self.getBuilder().getContext();
-             // Enable parsing of HACC attributes by allowing unregistered dialects.
+             // Enable parsing of HACC attributes by allowing unregistered
+             // dialects.
              ctx->allowUnregisteredDialects();
              return mlir::parseAttribute(value, ctx);
            })
@@ -571,63 +592,76 @@ void init_ascend_ir(py::module &&m) {
              return MemRefType::get(shape, elementType, layout, memorySpace);
            })
       .def("create_fixpipe",
-           [](AscendNPUIROpBuilder &self, Value src, py::object dst_obj, hivm::FixpipeDMAMode dma_mode,
-              hivm::FixpipeDualDstMode dual_dst_mode, hivm::FixpipePreQuantMode pre_quant_mode,
+           [](AscendNPUIROpBuilder &self, Value src, py::object dst_obj,
+              hivm::FixpipeDMAMode dma_mode,
+              hivm::FixpipeDualDstMode dual_dst_mode,
+              hivm::FixpipePreQuantMode pre_quant_mode,
               hivm::FixpipePreReluMode pre_relu_mode) -> py::object {
-               if (!dyn_cast<RankedTensorType>(src.getType())) {
-                   llvm_unreachable("src is not of RankedTensorType");
+             if (!dyn_cast<RankedTensorType>(src.getType())) {
+               llvm_unreachable("src is not of RankedTensorType");
+             }
+
+             auto *ctx = self.getBuilder().getContext();
+             auto loc = self.getLastLoc();
+
+             Value dstValue;
+             bool needCreateDst = dst_obj.is_none();
+
+             if (needCreateDst) {
+               auto srcType = dyn_cast<RankedTensorType>(src.getType());
+               auto srcShape = srcType.getShape();
+
+               llvm::SmallVector<int64_t> dstShape(srcShape.begin(),
+                                                   srcShape.end());
+
+               if (dual_dst_mode == hivm::FixpipeDualDstMode::ROW_SPLIT) {
+                 if (dstShape.size() >= 1 && dstShape[0] > 0) {
+                   dstShape[0] = dstShape[0] / 2;
+                 }
+               } else if (dual_dst_mode ==
+                          hivm::FixpipeDualDstMode::COLUMN_SPLIT) {
+                 if (dstShape.size() >= 2 && dstShape[1] > 0) {
+                   dstShape[1] = dstShape[1] / 2;
+                 }
                }
 
-               auto *ctx = self.getBuilder().getContext();
-               auto loc = self.getLastLoc();
-
-               Value dstValue;
-               bool needCreateDst = dst_obj.is_none();
-
-               if (needCreateDst) {
-                   auto srcType = dyn_cast<RankedTensorType>(src.getType());
-                   auto srcShape = srcType.getShape();
-
-                   llvm::SmallVector<int64_t> dstShape(srcShape.begin(), srcShape.end());
-
-                   if (dual_dst_mode == hivm::FixpipeDualDstMode::ROW_SPLIT) {
-                       if (dstShape.size() >= 1 && dstShape[0] > 0) {
-                           dstShape[0] = dstShape[0] / 2;
-                       }
-                   } else if (dual_dst_mode == hivm::FixpipeDualDstMode::COLUMN_SPLIT) {
-                       if (dstShape.size() >= 2 && dstShape[1] > 0) {
-                           dstShape[1] = dstShape[1] / 2;
-                       }
-                   }
-
-                   auto dstType = RankedTensorType::get(dstShape, srcType.getElementType());
-                   auto emptyTensor = self.create<tensor::EmptyOp>(dstType.getShape(), dstType.getElementType());
-                   dstValue = emptyTensor.getResult();
-               } else {
-                   dstValue = py::cast<Value>(dst_obj);
-                   if (!dyn_cast<ShapedType>(dstValue.getType())) {
-                       llvm_unreachable("dst is not of ShapedType");
-                   }
+               auto dstType =
+                   RankedTensorType::get(dstShape, srcType.getElementType());
+               auto emptyTensor = self.create<tensor::EmptyOp>(
+                   dstType.getShape(), dstType.getElementType());
+               dstValue = emptyTensor.getResult();
+             } else {
+               dstValue = py::cast<Value>(dst_obj);
+               if (!dyn_cast<ShapedType>(dstValue.getType())) {
+                 llvm_unreachable("dst is not of ShapedType");
                }
+             }
 
-               auto dma_mode_attr = mlir::hivm::FixpipeDMAModeAttr::get(ctx, dma_mode);
-               auto dual_dst_mode_attr = mlir::hivm::FixpipeDualDstModeAttr::get(ctx, dual_dst_mode);
-               auto pre_quant_mode_attr = mlir::hivm::FixpipePreQuantModeAttr::get(ctx, pre_quant_mode);
-               auto pre_relu_mode_attr = mlir::hivm::FixpipePreReluModeAttr::get(ctx, pre_relu_mode);
-               auto channel_split = BoolAttr::get(ctx, false);
-               if (needCreateDst) {
-                   return py::cast<Value>(self.create<hivm::FixpipeOp>(mlir::TypeRange {dstValue.getType()}, src,
-                                                                       dstValue, dma_mode_attr, dual_dst_mode_attr,
-                                                                       pre_quant_mode_attr, pre_relu_mode_attr,
-                                                                       channel_split)
-                                              .getResult(0));
+             auto dma_mode_attr =
+                 mlir::hivm::FixpipeDMAModeAttr::get(ctx, dma_mode);
+             auto dual_dst_mode_attr =
+                 mlir::hivm::FixpipeDualDstModeAttr::get(ctx, dual_dst_mode);
+             auto pre_quant_mode_attr =
+                 mlir::hivm::FixpipePreQuantModeAttr::get(ctx, pre_quant_mode);
+             auto pre_relu_mode_attr =
+                 mlir::hivm::FixpipePreReluModeAttr::get(ctx, pre_relu_mode);
+             auto channel_split = BoolAttr::get(ctx, false);
+             if (needCreateDst) {
+               return py::cast<Value>(
+                   self.create<hivm::FixpipeOp>(
+                           mlir::TypeRange{dstValue.getType()}, src, dstValue,
+                           dma_mode_attr, dual_dst_mode_attr,
+                           pre_quant_mode_attr, pre_relu_mode_attr,
+                           channel_split)
+                       .getResult(0));
 
-               } else {
-                   self.create<hivm::FixpipeOp>(mlir::TypeRange {}, src, dstValue, dma_mode_attr, dual_dst_mode_attr,
-                                                pre_quant_mode_attr, pre_relu_mode_attr, channel_split);
-                   return py::none();
-               }
-
+             } else {
+               self.create<hivm::FixpipeOp>(mlir::TypeRange{}, src, dstValue,
+                                            dma_mode_attr, dual_dst_mode_attr,
+                                            pre_quant_mode_attr,
+                                            pre_relu_mode_attr, channel_split);
+               return py::none();
+             }
            })
       .def("create_annotation_mark",
            [](TritonOpBuilder &self, Value &ptr, const std::string &attrKey,
@@ -651,17 +685,16 @@ void init_ascend_ir(py::module &&m) {
                                    attrVal);
            })
       .def("create_custom_op",
-           [](AscendNPUIROpBuilder &self,
-               const std::string &name,
-               const py::dict &attrs,
-               const std::vector<Value> &ins,
-               const std::vector<Value> &outs,
-               const std::vector<py::dict> &arg_attrs) -> std::vector<Value> {
+           [](AscendNPUIROpBuilder &self, const std::string &name,
+              const py::dict &attrs, const std::vector<Value> &ins,
+              const std::vector<Value> &outs,
+              const std::vector<py::dict> &arg_attrs) -> std::vector<Value> {
              ValueRange inputs{ins};
              ValueRange outputs{outs};
              ValueRange temp_buffers{};
              TypeRange res_types{outputs};
-             auto op = self.create<hivm::CustomOp>(res_types, name, inputs, outputs, temp_buffers);
+             auto op = self.create<hivm::CustomOp>(res_types, name, inputs,
+                                                   outputs, temp_buffers);
              for (auto &attr : attrs) {
                std::string attr_name = py::cast<std::string>(attr.first);
                Attribute attr_value = py::cast<Attribute>(attr.second);
@@ -683,14 +716,15 @@ void init_ascend_ir(py::module &&m) {
                for (const auto &attr : attrs) {
                  std::string attr_name = py::cast<std::string>(attr.first);
                  Attribute attr_value = py::cast<Attribute>(attr.second);
-                 namedAttrs.push_back(
-                    NamedAttribute(self.getBuilder().getStringAttr(attr_name), attr_value));
+                 namedAttrs.push_back(NamedAttribute(
+                     self.getBuilder().getStringAttr(attr_name), attr_value));
                }
 
                dictAttrs[idx] = self.getBuilder().getDictionaryAttr(namedAttrs);
              }
 
-             ArrayAttr arg_attrs_array = self.getBuilder().getArrayAttr(dictAttrs);
+             ArrayAttr arg_attrs_array =
+                 self.getBuilder().getArrayAttr(dictAttrs);
              op->setAttr("arg_attrs", arg_attrs_array);
 
              auto results = op->getResults();
@@ -741,8 +775,10 @@ void init_ascend_ir(py::module &&m) {
              auto moduleOp = subBlockIdxOp->getParentOfType<ModuleOp>();
              auto *ctx = self.getBuilder().getContext();
              // If user explicitly uses sub.block idx, add attribute to module.
-             // NPU compiler will parse this attribute and disable auto tile and bind subblock pass.
-             moduleOp->setAttr("hivm.disable_auto_tile_and_bind_subblock", mlir::UnitAttr::get(ctx));
+             // NPU compiler will parse this attribute and disable auto tile and
+             // bind subblock pass.
+             moduleOp->setAttr("hivm.disable_auto_tile_and_bind_subblock",
+                               mlir::UnitAttr::get(ctx));
              return subBlockIdxOp;
            })
       .def("sync_block_all",
@@ -764,16 +800,20 @@ void init_ascend_ir(py::module &&m) {
            })
       .def("create_copy_tensor",
            [](AscendNPUIROpBuilder &self, Value src, Value dst) {
-             return self.create<hivm::CopyOp>(mlir::TypeRange{dst.getType()}, src, dst).getResult(0);
+             return self
+                 .create<hivm::CopyOp>(mlir::TypeRange{dst.getType()}, src, dst)
+                 .getResult(0);
            })
       .def("create_convert_layout",
            [](AscendNPUIROpBuilder &self, Value src, Type memrefType) -> Value {
              // src is a memref
              // the layout is incorrect (temporarily)
              auto *ctx = self.getBuilder().getContext();
-             return self.create<hivm::ConvertLayoutOp>(
-                 memrefType, src,
-                 hivm::DataLayoutAttr::get(ctx, hivm::DataLayout::ND),
-                 hivm::DataLayoutAttr::get(ctx, hivm::DataLayout::ND)).getResult();
+             return self
+                 .create<hivm::ConvertLayoutOp>(
+                     memrefType, src,
+                     hivm::DataLayoutAttr::get(ctx, hivm::DataLayout::ND),
+                     hivm::DataLayoutAttr::get(ctx, hivm::DataLayout::ND))
+                 .getResult();
            });
 }

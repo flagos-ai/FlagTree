@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import torch
 import triton
 import triton.language as tl
@@ -92,17 +91,22 @@ def test_celoss_indices_kernel(shape=(1, 2)):
     D = 1
 
     inp = torch.randn(shape, dtype=dtype, device=device)
-    tgt = torch.randint(0, C, (N,), dtype=torch.int64, device=device)
+    tgt = torch.randint(0, C, (N, ), dtype=torch.int64, device=device)
     wgt = torch.randn(C, dtype=dtype, device=device)
 
-    out_triton = torch.empty((N * D,), dtype=torch.float32, device=device)
-    w_tgt_triton = torch.empty((N * D,), dtype=torch.float32, device=device)
+    out_triton = torch.empty((N * D, ), dtype=torch.float32, device=device)
+    w_tgt_triton = torch.empty((N * D, ), dtype=torch.float32, device=device)
 
     grid = (triton.cdiv(D, BLOCK_D), N)
     celoss_indices_kernel[grid](
-        inp, tgt, wgt, out_triton, w_tgt_triton,
+        inp,
+        tgt,
+        wgt,
+        out_triton,
+        w_tgt_triton,
         ignore_index,
-        C, D,
+        C,
+        D,
         BLOCK_C=BLOCK_C,
         BLOCK_D=BLOCK_D,
     )

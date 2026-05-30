@@ -30,6 +30,7 @@ def torch_where_lt_case1(x0, x1):
     res = torch.where(x0 < x1, x0, 1)
     return res
 
+
 @triton.jit
 def triton_where_lt_case1(in_ptr0, in_ptr1, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     xoffset = tl.program_id(0) * XBLOCK
@@ -43,14 +44,12 @@ def triton_where_lt_case1(in_ptr0, in_ptr1, out_ptr0, xnumel, XBLOCK: tl.constex
         tmp3 = tl.where(tmp2, tmp0, 1)
         tl.store(out_ptr0 + (xindex), tmp3, xmask)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                            ['float32', (2, 1024, 8), 2, 8192, 1024],
-                            ['float16', (2, 1024, 8), 2, 8192, 1024],
-                            ['int8', (2, 1024, 8), 2, 8192, 1024],
-                         ]
-                         )
 
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 1024, 8), 2, 8192, 1024],
+    ['float16', (2, 1024, 8), 2, 8192, 1024],
+    ['int8', (2, 1024, 8), 2, 8192, 1024],
+])
 def test_where_lt_case1(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()

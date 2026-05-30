@@ -12,7 +12,6 @@ from types import ModuleType
 
 from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, List
 
-
 import triton.language.extra.cann.extension as extension
 from triton.extension.buffer.language import core as bl
 from triton.extension.buffer.language.builder import setup_unified_builder_with_buffer_builder
@@ -34,12 +33,15 @@ def check_identifier_legality(name, type):
     if not re.match(pattern, name):
         raise CompilationError(f"invalid {type} identifier: {name}", name)
     return name
+
+
 # Central registry for all 'with' statement handlers
 WITH_DISPATCH = {}
 
 # Import and register Ascend extension dispatch handlers
 from triton.language.extra.cann.extension.dispatch import ASCEND_WITH_DISPATCH
 from triton.language.extra.cann.extension.builder import setup_unified_builder
+
 WITH_DISPATCH.update(ASCEND_WITH_DISPATCH)
 
 
@@ -1004,7 +1006,7 @@ class CodeGenerator(ast.NodeVisitor):
         """
         Handle 'with' statements with dispatch pattern for Ascend extensions,
         falling back to standard context manager protocol for general cases.
-        
+
         This implementation:
         1. First tries dispatch mechanism for Ascend-specific context managers (e.g., scope)
         2. Falls back to standard Python context manager protocol for general cases
@@ -1019,7 +1021,7 @@ class CodeGenerator(ast.NodeVisitor):
                 if handler:
                     # Dispatch to registered handler (e.g., handle_scope_with)
                     return handler(self, node)
-        
+
         # Fall back to standard context manager protocol (community logic)
         # Lower `with` statements by constructing context managers and calling their enter/exit hooks
         # Instantiate each context manager with builder injection
@@ -1378,7 +1380,7 @@ class CodeGenerator(ast.NodeVisitor):
         if isinstance(fn, JITFunction):
             _check_fn_args(node, fn, args)
             return self.call_JitFunction(fn, args, kws)
-        if (hasattr(fn, '__self__') and _is_triton_value(fn.__self__)) or language.core.is_builtin(fn)or isinstance(
+        if (hasattr(fn, '__self__') and _is_triton_value(fn.__self__)) or language.core.is_builtin(fn) or isinstance(
                 fn, ConstexprFunction):
             # Copy builder's location and insertion point.
             ip, last_loc = self._get_insertion_point_and_loc()

@@ -47,7 +47,7 @@ def cal_atten_mask_kernel(
 
     if cur_s1 >= SEQ_LEN:
         return
-    
+
     beg_sbs = idx_sub_sbs * BLOCK_SBS // sparse_block_size
     end_sbs = ((idx_sub_sbs + 1) * BLOCK_SBS) // sparse_block_size
 
@@ -61,11 +61,7 @@ def cal_atten_mask_kernel(
     mask_n = offs_n < SEQ_LEN
     mask_load = mask_m[:, None] & mask_n[None, :]
 
-    qk_ub = tl.load(
-        QK_ptr + offs_m[:, None] * stride_qk_m + offs_n[None, :] * stride_qk_n,
-        mask=mask_load,
-        other=0.0
-    )
+    qk_ub = tl.load(QK_ptr + offs_m[:, None] * stride_qk_m + offs_n[None, :] * stride_qk_n, mask=mask_load, other=0.0)
 
     for idx_k in range(beg_sbs, end_sbs):
         idx_s2 = tl.load(Indices_ptr + TOPK_BASE + idx_k * stride_ik)
@@ -78,19 +74,10 @@ def cal_atten_mask_kernel(
             mask_higher_sbs = tl.arange(0, BLOCK_SBS) < idx_higher_sbs
             qk_ub = tl.where((mask_lower_sbs & mask_higher_sbs)[None, :], float("-inf"), qk_ub)
 
-    tl.store(
-        QK_ptr + offs_m[:, None] * stride_qk_m + offs_n[None, :] * stride_qk_n,
-        qk_ub,
-        mask=mask_load
-    )
+    tl.store(QK_ptr + offs_m[:, None] * stride_qk_m + offs_n[None, :] * stride_qk_n, qk_ub, mask=mask_load)
 
 
-def launch_cal_atten_mask(
-    qk_tensor,
-    indices_tensor,
-    sparse_block_size=64,
-    block_sbs=128
-):
+def launch_cal_atten_mask(qk_tensor, indices_tensor, sparse_block_size=64, block_sbs=128):
     """
     qk_tensor: (SEQ_LEN, SEQ_LEN)
     indices_tensor: (K,) / (BATCH, K, ...)
@@ -154,16 +141,12 @@ def torch_cal_atten_mask(
     return qk_out
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                            ['float32', 1024, 128, 64]
-                         ]
-                        )
+@pytest.mark.parametrize('param_list', [['float32', 1024, 128, 64]])
 def test_divsiop_select_analysis1(param_list):
     dtype, SEQ_LEN, BLOCK_SBS, SPARSE_BLOCK = param_list
     qk = torch.zeros((SEQ_LEN, SEQ_LEN), dtype=eval('torch.' + dtype), device='npu')
     K_SIZE = 20
-    indices = torch.full((K_SIZE,), -1, dtype=torch.int32, device='npu')
+    indices = torch.full((K_SIZE, ), -1, dtype=torch.int32, device='npu')
     indices[10] = 20
     qk_ref = torch_cal_atten_mask(qk.clone(), indices, sparse_block_size=SPARSE_BLOCK, block_sbs=BLOCK_SBS)
     qk_cal = launch_cal_atten_mask(qk, indices, sparse_block_size=SPARSE_BLOCK, block_sbs=BLOCK_SBS)

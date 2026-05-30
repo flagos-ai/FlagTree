@@ -23,13 +23,13 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
+#include <algorithm>
+#include <fstream>
 #include <memory>
 #include <string>
-#include <vector>
 #include <tuple>
 #include <unordered_map>
-#include <fstream>
-#include <algorithm>
+#include <vector>
 
 #include "runtime/runtime/rt.h"
 
@@ -37,9 +37,10 @@
 static std::unordered_map<std::string, size_t> registered_names;
 static std::unordered_map<std::string, std::unique_ptr<size_t>> func_stubs;
 
-static std::tuple<void *, void *>
-registerKernel(const char *name, const void *data, size_t data_size,
-               int device, const char *kernel_mode_str) {
+static std::tuple<void *, void *> registerKernel(const char *name,
+                                                 const void *data,
+                                                 size_t data_size, int device,
+                                                 const char *kernel_mode_str) {
   rtError_t rtRet;
 
   rtDevBinary_t devbin;
@@ -138,25 +139,25 @@ static PyObject *getAiCoreNum(PyObject *self, PyObject *args) {
 }
 
 static PyObject *createStream(PyObject *self, PyObject *args) {
-	rtStream_t stream;
+  rtStream_t stream;
 
-	rtError_t rtRet = rtStreamCreate(&stream, 0);
+  rtError_t rtRet = rtStreamCreate(&stream, 0);
 
-	if (rtRet != RT_ERROR_NONE) {
-		printf("rtStreamCreate failed, 0x%x", rtRet);
-		return nullptr;
-	}
-	if (PyErr_Occurred()) {
-		return nullptr;
-	}
-	uint64_t stream_uint64 = reinterpret_cast<uint64_t>(stream);
-    PyObject* result = Py_BuildValue("K", stream_uint64);
+  if (rtRet != RT_ERROR_NONE) {
+    printf("rtStreamCreate failed, 0x%x", rtRet);
+    return nullptr;
+  }
+  if (PyErr_Occurred()) {
+    return nullptr;
+  }
+  uint64_t stream_uint64 = reinterpret_cast<uint64_t>(stream);
+  PyObject *result = Py_BuildValue("K", stream_uint64);
 
-    if (result == nullptr) {
-        rtStreamDestroy(stream);
-    }
+  if (result == nullptr) {
+    rtStreamDestroy(stream);
+  }
 
-    return result;
+  return result;
 }
 
 /**
@@ -166,158 +167,164 @@ static PyObject *createStream(PyObject *self, PyObject *args) {
  * @return Vector of floats read from the file
  * @throws std::runtime_error if file cannot be opened or read
  */
-std::vector<char> readDataFromBinaryFile(const std::string& filename) {
-	std::ifstream file(filename, std::ios::binary);
-	if (!file.is_open()) {
-		throw std::runtime_error("Failed to open file: " + filename);
-	}
+std::vector<char> readDataFromBinaryFile(const std::string &filename) {
+  std::ifstream file(filename, std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Failed to open file: " + filename);
+  }
 
-	file.seekg(0, std::ios::end);
-	const size_t fileSize = file.tellg();
-	file.seekg(0, std::ios::beg);
+  file.seekg(0, std::ios::end);
+  const size_t fileSize = file.tellg();
+  file.seekg(0, std::ios::beg);
 
-	// const size_t count = fileSize / sizeof(float);
-	// if (fileSize % num_bytes_in_elem != 0) {
-	// 	throw std::runtime_error("File size is not a multiple of float size");
-	// }
+  // const size_t count = fileSize / sizeof(float);
+  // if (fileSize % num_bytes_in_elem != 0) {
+  // 	throw std::runtime_error("File size is not a multiple of float size");
+  // }
 
-	// Read the data into a vector
-	std::vector<char> data(fileSize);
-	file.read(data.data(), fileSize);
+  // Read the data into a vector
+  std::vector<char> data(fileSize);
+  file.read(data.data(), fileSize);
 
-	// Check if the read was successful
-	if (!file) {
-		throw std::runtime_error("Failed to read entire file");
-	}
+  // Check if the read was successful
+  if (!file) {
+    throw std::runtime_error("Failed to read entire file");
+  }
 
-	return data;
+  return data;
 }
 
 static PyObject *readDataFromBinaryFileWrapper(PyObject *self, PyObject *args) {
-	const char *filename;
-	uint64_t arr_ptr;
-	if (!PyArg_ParseTuple(args, "sK", &filename, &arr_ptr)) {
-		return nullptr;
-	}
+  const char *filename;
+  uint64_t arr_ptr;
+  if (!PyArg_ParseTuple(args, "sK", &filename, &arr_ptr)) {
+    return nullptr;
+  }
 
-	try {
-		std::vector<char> data = readDataFromBinaryFile(filename);
-		char *arr = reinterpret_cast<char *>(arr_ptr);
-		std::copy(data.begin(), data.end(), arr);
-		return Py_None;
-	} catch (const std::exception& e) {
-		PyErr_SetString(PyExc_RuntimeError, e.what());
-		return nullptr;
-	}
+  try {
+    std::vector<char> data = readDataFromBinaryFile(filename);
+    char *arr = reinterpret_cast<char *>(arr_ptr);
+    std::copy(data.begin(), data.end(), arr);
+    return Py_None;
+  } catch (const std::exception &e) {
+    PyErr_SetString(PyExc_RuntimeError, e.what());
+    return nullptr;
+  }
 }
 
-void writeDataToBinaryFile(const std::string& filename, const char* data, size_t num_bytes) {
-	std::ofstream file(filename, std::ios::binary);
-	if (!file.is_open()) {
-		throw std::runtime_error("Failed to open file: " + filename);
-	}
+void writeDataToBinaryFile(const std::string &filename, const char *data,
+                           size_t num_bytes) {
+  std::ofstream file(filename, std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Failed to open file: " + filename);
+  }
 
-	file.write(data, num_bytes);
+  file.write(data, num_bytes);
 
-	if (!file) {
-		throw std::runtime_error("Failed to write to file");
-	}
+  if (!file) {
+    throw std::runtime_error("Failed to write to file");
+  }
 }
 
 static PyObject *writeDataToBinaryFileWrapper(PyObject *self, PyObject *args) {
-	const char *filename;
-	uint64_t arr_ptr;
-	size_t num_bytes;
+  const char *filename;
+  uint64_t arr_ptr;
+  size_t num_bytes;
 
-	if (!PyArg_ParseTuple(args, "sKn", &filename, &arr_ptr, &num_bytes)) {
-		return nullptr;
-	}
+  if (!PyArg_ParseTuple(args, "sKn", &filename, &arr_ptr, &num_bytes)) {
+    return nullptr;
+  }
 
-	try {
-		const char* data = reinterpret_cast<const char*>(arr_ptr);
-		writeDataToBinaryFile(filename, data, num_bytes);
-		return Py_None;
-	} catch (const std::exception& e) {
-		PyErr_SetString(PyExc_RuntimeError, e.what());
-		return nullptr;
-	}
+  try {
+    const char *data = reinterpret_cast<const char *>(arr_ptr);
+    writeDataToBinaryFile(filename, data, num_bytes);
+    return Py_None;
+  } catch (const std::exception &e) {
+    PyErr_SetString(PyExc_RuntimeError, e.what());
+    return nullptr;
+  }
 }
 
-static PyObject* allocateHostMemory(PyObject* self, PyObject* args) {
-	uint64_t num_bytes;
-	if (!PyArg_ParseTuple(args, "K", &num_bytes)) {
-		return nullptr;
-	}
+static PyObject *allocateHostMemory(PyObject *self, PyObject *args) {
+  uint64_t num_bytes;
+  if (!PyArg_ParseTuple(args, "K", &num_bytes)) {
+    return nullptr;
+  }
 
-	void* host_ptr = nullptr;
-	rtError_t error = rtMallocHost(&host_ptr, num_bytes, RT_MEMORY_HOST);
-	if (error != RT_ERROR_NONE) {
-		PyErr_Format(PyExc_RuntimeError, "rtMallocHost failed with error code: 0x%x", error);
-		return nullptr;
-	}
+  void *host_ptr = nullptr;
+  rtError_t error = rtMallocHost(&host_ptr, num_bytes, RT_MEMORY_HOST);
+  if (error != RT_ERROR_NONE) {
+    PyErr_Format(PyExc_RuntimeError,
+                 "rtMallocHost failed with error code: 0x%x", error);
+    return nullptr;
+  }
 
-    PyObject* result = Py_BuildValue("K", (uint64_t)host_ptr);
+  PyObject *result = Py_BuildValue("K", (uint64_t)host_ptr);
 
-    if (result == nullptr) {
-        rtFreeHost(host_ptr);
-    }
+  if (result == nullptr) {
+    rtFreeHost(host_ptr);
+  }
 
-    return result;
+  return result;
 }
 
-static PyObject* allocateDeviceMemory(PyObject* self, PyObject* args) {
-	uint64_t num_bytes;
-	if (!PyArg_ParseTuple(args, "K", &num_bytes)) {
-		return nullptr;
-	}
+static PyObject *allocateDeviceMemory(PyObject *self, PyObject *args) {
+  uint64_t num_bytes;
+  if (!PyArg_ParseTuple(args, "K", &num_bytes)) {
+    return nullptr;
+  }
 
-	void* device_ptr = nullptr;
-	rtError_t error = rtMalloc(&device_ptr, num_bytes, RT_MEMORY_HBM, 0);
-	if (error != RT_ERROR_NONE) {
-		PyErr_Format(PyExc_RuntimeError, "rtMalloc failed with error code: 0x%x", error);
-		return nullptr;
-	}
+  void *device_ptr = nullptr;
+  rtError_t error = rtMalloc(&device_ptr, num_bytes, RT_MEMORY_HBM, 0);
+  if (error != RT_ERROR_NONE) {
+    PyErr_Format(PyExc_RuntimeError, "rtMalloc failed with error code: 0x%x",
+                 error);
+    return nullptr;
+  }
 
-    PyObject* result = Py_BuildValue("K", (uint64_t)device_ptr);
+  PyObject *result = Py_BuildValue("K", (uint64_t)device_ptr);
 
-    if (result == nullptr) {
-        rtFree(device_ptr);
-    }
+  if (result == nullptr) {
+    rtFree(device_ptr);
+  }
 
-    return result;
+  return result;
 }
 
-static PyObject* copyMemory(PyObject* self, PyObject* args) {
-	uint64_t dst_ptr;
-	uint64_t src_ptr;
-	size_t count;
-	const char* direction_str;
-	rtMemcpyKind_t copy_direction;
+static PyObject *copyMemory(PyObject *self, PyObject *args) {
+  uint64_t dst_ptr;
+  uint64_t src_ptr;
+  size_t count;
+  const char *direction_str;
+  rtMemcpyKind_t copy_direction;
 
-	if (!PyArg_ParseTuple(args, "KKns", &dst_ptr, &src_ptr, &count, &direction_str)) {
-		return nullptr;
-	}
+  if (!PyArg_ParseTuple(args, "KKns", &dst_ptr, &src_ptr, &count,
+                        &direction_str)) {
+    return nullptr;
+  }
 
-	if (strcmp(direction_str, "H2D") == 0) {
-		copy_direction = RT_MEMCPY_HOST_TO_DEVICE;
-	} else if (strcmp(direction_str, "D2H") == 0) {
-		copy_direction = RT_MEMCPY_DEVICE_TO_HOST;
-	} else {
-		PyErr_SetString(PyExc_ValueError, "Invalid copy direction. Must be 'H2D' or 'D2H'.");
-		return nullptr;
-	}
+  if (strcmp(direction_str, "H2D") == 0) {
+    copy_direction = RT_MEMCPY_HOST_TO_DEVICE;
+  } else if (strcmp(direction_str, "D2H") == 0) {
+    copy_direction = RT_MEMCPY_DEVICE_TO_HOST;
+  } else {
+    PyErr_SetString(PyExc_ValueError,
+                    "Invalid copy direction. Must be 'H2D' or 'D2H'.");
+    return nullptr;
+  }
 
-	void *dst = (void*)dst_ptr;
-	void *src = (void*)src_ptr;
+  void *dst = (void *)dst_ptr;
+  void *src = (void *)src_ptr;
 
-	rtError_t error = rtMemcpy(dst, count, src, count, copy_direction);
-	if (error != RT_ERROR_NONE) {
-		PyErr_Format(PyExc_RuntimeError, "rtMemcpy failed with error code: 0x%x", error);
-		return nullptr;
-	}
+  rtError_t error = rtMemcpy(dst, count, src, count, copy_direction);
+  if (error != RT_ERROR_NONE) {
+    PyErr_Format(PyExc_RuntimeError, "rtMemcpy failed with error code: 0x%x",
+                 error);
+    return nullptr;
+  }
 
-	Py_INCREF(Py_None);
-	return Py_None;
+  Py_INCREF(Py_None);
+  return Py_None;
 }
 
 static PyMethodDef NpuUtilsMethods[] = {
@@ -326,12 +333,17 @@ static PyMethodDef NpuUtilsMethods[] = {
     {"get_arch", getArch, METH_VARARGS, "Get soc version of NPU"},
     // sentinel
     {"get_aicore_num", getAiCoreNum, METH_VARARGS, "Get the number of AI core"},
-	{"create_stream", createStream, METH_VARARGS, "Create a stream"},
-	{"read_data_from_file", readDataFromBinaryFileWrapper, METH_VARARGS, "Read binary file into the array already allocated"},
-	{"write_data_to_file", writeDataToBinaryFileWrapper, METH_VARARGS, "Write an array to a binary file"},
-	{"allocate_device_memory", allocateDeviceMemory, METH_VARARGS, "Allocate device memory"},
-	{"allocate_host_memory", allocateHostMemory, METH_VARARGS, "Allocate host memory"},
-	{"copy_memory", copyMemory, METH_VARARGS, "Copy data between host and device"},
+    {"create_stream", createStream, METH_VARARGS, "Create a stream"},
+    {"read_data_from_file", readDataFromBinaryFileWrapper, METH_VARARGS,
+     "Read binary file into the array already allocated"},
+    {"write_data_to_file", writeDataToBinaryFileWrapper, METH_VARARGS,
+     "Write an array to a binary file"},
+    {"allocate_device_memory", allocateDeviceMemory, METH_VARARGS,
+     "Allocate device memory"},
+    {"allocate_host_memory", allocateHostMemory, METH_VARARGS,
+     "Allocate host memory"},
+    {"copy_memory", copyMemory, METH_VARARGS,
+     "Copy data between host and device"},
     {nullptr, nullptr, 0, nullptr}};
 
 static PyModuleDef ModuleDef = {

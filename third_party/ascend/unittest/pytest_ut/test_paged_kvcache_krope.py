@@ -45,15 +45,11 @@ def test_bubbleup_extract_nonzero_offset():
     total_tokens = num_pages * PAGE_SIZE
     kv_cache = torch.zeros(total_tokens, head_dim, dtype=torch.float32, device=device)
     for token_id in range(total_tokens):
-        kv_cache[token_id, :head_dim_v] = (
-            torch.arange(head_dim_v, dtype=torch.float32) + token_id * 100
-        )
-        kv_cache[token_id, head_dim_v:] = (
-            torch.arange(head_dim_v, head_dim, dtype=torch.float32) + token_id * 1000
-        )
+        kv_cache[token_id, :head_dim_v] = (torch.arange(head_dim_v, dtype=torch.float32) + token_id * 100)
+        kv_cache[token_id, head_dim_v:] = (torch.arange(head_dim_v, head_dim, dtype=torch.float32) + token_id * 1000)
     output = torch.zeros(BLOCK_N, rope_dim, dtype=torch.float32, device=device)
 
-    rope_like_load_kernel[(1,)](
+    rope_like_load_kernel[(1, )](
         kv_cache.flatten(),
         req_to_tokens,
         output.flatten(),
@@ -67,14 +63,10 @@ def test_bubbleup_extract_nonzero_offset():
 
     expected = torch.zeros(BLOCK_N, rope_dim, dtype=torch.float32, device=device)
     for token_id in range(BLOCK_N):
-        expected[token_id] = (
-            torch.arange(head_dim_v, head_dim, dtype=torch.float32) + token_id * 1000
-        )
+        expected[token_id] = (torch.arange(head_dim_v, head_dim, dtype=torch.float32) + token_id * 1000)
 
     buggy = torch.zeros(BLOCK_N, rope_dim, dtype=torch.float32, device=device)
     for token_id in range(BLOCK_N):
-        buggy[token_id] = (
-            torch.arange(rope_dim, dtype=torch.float32) + token_id * 100
-        )
+        buggy[token_id] = (torch.arange(rope_dim, dtype=torch.float32) + token_id * 100)
 
     assert torch.allclose(output, expected, atol=1e-5)

@@ -74,28 +74,20 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
     if USE_INITIAL_STATE:
         h0_ptr = h0 + i_nh * K * V
         ptr_h0_bv1 = h0_ptr + offs_k * V + offs_v1 * 1
-        b_h1_bv1 += tl.load(ptr_h0_bv1, mask=mask_kv1,
-                            other=0.0).to(tl.float32)
+        b_h1_bv1 += tl.load(ptr_h0_bv1, mask=mask_kv1, other=0.0).to(tl.float32)
 
         ptr_h0_bv2 = h0_ptr + offs_k * V + offs_v2 * 1
-        b_h1_bv2 += tl.load(ptr_h0_bv2, mask=mask_kv2,
-                            other=0.0).to(tl.float32)
+        b_h1_bv2 += tl.load(ptr_h0_bv2, mask=mask_kv2, other=0.0).to(tl.float32)
 
     # main recurrence
     for i_t in range(NT):
         h_base = h + (boh + i_t) * H * K * V + i_h * K * V
 
-        p_h1_bv1 = tl.make_block_ptr(h_base, (K, V), (V, 1), (0, v_start1),
-                                     (128, 64), (1, 0))
-        tl.store(p_h1_bv1,
-                 b_h1_bv1.to(p_h1_bv1.dtype.element_ty),
-                 boundary_check=(0, 1))
+        p_h1_bv1 = tl.make_block_ptr(h_base, (K, V), (V, 1), (0, v_start1), (128, 64), (1, 0))
+        tl.store(p_h1_bv1, b_h1_bv1.to(p_h1_bv1.dtype.element_ty), boundary_check=(0, 1))
 
-        p_h1_bv2 = tl.make_block_ptr(h_base, (K, V), (V, 1), (0, v_start2),
-                                     (128, 64), (1, 0))
-        tl.store(p_h1_bv2,
-                 b_h1_bv2.to(p_h1_bv2.dtype.element_ty),
-                 boundary_check=(0, 1))
+        p_h1_bv2 = tl.make_block_ptr(h_base, (K, V), (V, 1), (0, v_start2), (128, 64), (1, 0))
+        tl.store(p_h1_bv2, b_h1_bv2.to(p_h1_bv2.dtype.element_ty), boundary_check=(0, 1))
 
         offs_t_wv = (i_t * BT + tl.arange(0, BT))[:, None]
         offs_k_wv = tl.arange(0, 128)[None, :]
@@ -106,8 +98,7 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
         b_w = tl.load(ptr_w, mask=mask_w, other=0.0)
 
         k_base = k + bos * Hg * K + (i_h // (H // Hg)) * K
-        p_k = tl.make_block_ptr(k_base, (K, T), (1, stride_k), (0, i_t * BT),
-                                (128, BT), (0, 1))
+        p_k = tl.make_block_ptr(k_base, (K, T), (1, stride_k), (0, i_t * BT), (128, BT), (0, 1))
         b_k = tl.load(p_k, boundary_check=(0, 1))
 
         v_new_base = v_new + bos * H * V + i_h * V
@@ -133,12 +124,8 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
         b_v_new1 -= tl.dot(b_w, b_h1_bv1.to(b_w.dtype))
 
         if SAVE_NEW_VALUE:
-            p_v_new1 = tl.make_block_ptr(v_new_base, (T, V), (stride_v, 1),
-                                         (i_t * BT, v_start1), (BT, 64),
-                                         (1, 0))
-            tl.store(p_v_new1,
-                     b_v_new1.to(p_v_new1.dtype.element_ty),
-                     boundary_check=(0, 1))
+            p_v_new1 = tl.make_block_ptr(v_new_base, (T, V), (stride_v, 1), (i_t * BT, v_start1), (BT, 64), (1, 0))
+            tl.store(p_v_new1, b_v_new1.to(p_v_new1.dtype.element_ty), boundary_check=(0, 1))
 
         if USE_G:
             b_v_new1 = b_v_new1 * b_g[:, None]
@@ -154,12 +141,8 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
         b_v_new2 -= tl.dot(b_w, b_h1_bv2.to(b_w.dtype))
 
         if SAVE_NEW_VALUE:
-            p_v_new2 = tl.make_block_ptr(v_new_base, (T, V), (stride_v, 1),
-                                         (i_t * BT, v_start2), (BT, 64),
-                                         (1, 0))
-            tl.store(p_v_new2,
-                     b_v_new2.to(p_v_new2.dtype.element_ty),
-                     boundary_check=(0, 1))
+            p_v_new2 = tl.make_block_ptr(v_new_base, (T, V), (stride_v, 1), (i_t * BT, v_start2), (BT, 64), (1, 0))
+            tl.store(p_v_new2, b_v_new2.to(p_v_new2.dtype.element_ty), boundary_check=(0, 1))
 
         if USE_G:
             b_v_new2 = b_v_new2 * b_g[:, None]
@@ -172,14 +155,8 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
     if STORE_FINAL_STATE:
         ht_ptr = ht + i_nh * K * V
 
-        p_ht1_bv1 = tl.make_block_ptr(ht_ptr, (K, V), (V, 1), (0, v_start1),
-                                      (128, 64), (1, 0))
-        tl.store(p_ht1_bv1,
-                 b_h1_bv1.to(p_ht1_bv1.dtype.element_ty),
-                 boundary_check=(0, 1))
+        p_ht1_bv1 = tl.make_block_ptr(ht_ptr, (K, V), (V, 1), (0, v_start1), (128, 64), (1, 0))
+        tl.store(p_ht1_bv1, b_h1_bv1.to(p_ht1_bv1.dtype.element_ty), boundary_check=(0, 1))
 
-        p_ht1_bv2 = tl.make_block_ptr(ht_ptr, (K, V), (V, 1), (0, v_start2),
-                                      (128, 64), (1, 0))
-        tl.store(p_ht1_bv2,
-                 b_h1_bv2.to(p_ht1_bv2.dtype.element_ty),
-                 boundary_check=(0, 1))
+        p_ht1_bv2 = tl.make_block_ptr(ht_ptr, (K, V), (V, 1), (0, v_start2), (128, 64), (1, 0))
+        tl.store(p_ht1_bv2, b_h1_bv2.to(p_ht1_bv2.dtype.element_ty), boundary_check=(0, 1))

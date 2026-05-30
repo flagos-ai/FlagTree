@@ -39,8 +39,7 @@ constexpr unsigned kIntegerAttrBitWidth = 64;
 
 struct BufferOpBuilder : public TritonOpBuilder {};
 
-void init_buffer_ir(py::module &&m)
-{
+void init_buffer_ir(py::module &&m) {
   m.def("load_dialects", [](MLIRContext &context) {
     DialectRegistry registry;
     registry.insert<memref::MemRefDialect>();
@@ -54,9 +53,12 @@ void init_buffer_ir(py::module &&m)
       .def(py::init<MLIRContext *>())
       .def("get_null_attr", [](BufferOpBuilder &self) { return Attribute(); })
       .def("get_str_array_attr",
-           [](BufferOpBuilder &self, const std::vector<std::string> &array) -> ArrayAttr {
-               auto strRefVec = to_vector(llvm::map_range(array, [](const auto &s) { return llvm::StringRef(s); }));
-               return self.getBuilder().getStrArrayAttr(llvm::ArrayRef<StringRef> {strRefVec});
+           [](BufferOpBuilder &self,
+              const std::vector<std::string> &array) -> ArrayAttr {
+             auto strRefVec = to_vector(llvm::map_range(
+                 array, [](const auto &s) { return llvm::StringRef(s); }));
+             return self.getBuilder().getStrArrayAttr(
+                 llvm::ArrayRef<StringRef>{strRefVec});
            })
       .def("alloc",
            [](BufferOpBuilder &self, Type memrefType) -> Value {
@@ -64,41 +66,48 @@ void init_buffer_ir(py::module &&m)
                  mlir::cast<MemRefType>(memrefType));
            })
       .def("to_buffer",
-           [](BufferOpBuilder &self, Value &src, const Attribute &addressSpace) -> Value {
-               auto tensorType = dyn_cast<RankedTensorType>(src.getType());
-               if (!tensorType) {
-                   llvm::report_fatal_error("to_buffer: src must be tensor type");
-               }
-               auto memrefType =
-                   MemRefType::get(tensorType.getShape(), tensorType.getElementType(), MemRefLayoutAttrInterface {});
-               // TODO: We need to add a pass before OneShotBufferize to generate MemorySpaceCastOp
-               Operation *memref = self.create<bufferization::ToBufferOp>(memrefType, src);
-               if (addressSpace) {
-                   memref = self.create<memref::MemorySpaceCastOp>(
-                       MemRefType::get(memrefType.getShape(), memrefType.getElementType(), memrefType.getLayout(),
-                                       addressSpace),
-                       memref->getResult(0));
-               }
-               return memref->getResult(0);
+           [](BufferOpBuilder &self, Value &src,
+              const Attribute &addressSpace) -> Value {
+             auto tensorType = dyn_cast<RankedTensorType>(src.getType());
+             if (!tensorType) {
+               llvm::report_fatal_error("to_buffer: src must be tensor type");
+             }
+             auto memrefType = MemRefType::get(tensorType.getShape(),
+                                               tensorType.getElementType(),
+                                               MemRefLayoutAttrInterface{});
+             // TODO: We need to add a pass before OneShotBufferize to generate
+             // MemorySpaceCastOp
+             Operation *memref =
+                 self.create<bufferization::ToBufferOp>(memrefType, src);
+             if (addressSpace) {
+               memref = self.create<memref::MemorySpaceCastOp>(
+                   MemRefType::get(memrefType.getShape(),
+                                   memrefType.getElementType(),
+                                   memrefType.getLayout(), addressSpace),
+                   memref->getResult(0));
+             }
+             return memref->getResult(0);
            })
       .def("to_tensor",
            [](BufferOpBuilder &self, Value &src, bool writable) -> Value {
              const auto &memrefType = mlir::cast<MemRefType>(src.getType());
-             auto tensorType = mlir::RankedTensorType::get(memrefType.getShape(), memrefType.getElementType());
+             auto tensorType = mlir::RankedTensorType::get(
+                 memrefType.getShape(), memrefType.getElementType());
              auto hasAddressSpace = memrefType.getMemorySpace();
              if (hasAddressSpace) {
-              MemRefType targetType = MemRefType::get(memrefType.getShape(), memrefType.getElementType(), memrefType.getLayout());
+               MemRefType targetType = MemRefType::get(
+                   memrefType.getShape(), memrefType.getElementType(),
+                   memrefType.getLayout());
                return self.create<bufferization::ToTensorOp>(
                    tensorType,
-                   self.create<memref::MemorySpaceCastOp>(
-                       targetType,
-                       src),
+                   self.create<memref::MemorySpaceCastOp>(targetType, src),
                    true ? mlir::UnitAttr::get(self.getContext()) : nullptr,
                    writable ? mlir::UnitAttr::get(self.getContext()) : nullptr);
              }
-             return self.create<bufferization::ToTensorOp>(tensorType, src, 
-                true ? mlir::UnitAttr::get(self.getContext()) : nullptr,
-                writable ? mlir::UnitAttr::get(self.getContext()) : nullptr);
+             return self.create<bufferization::ToTensorOp>(
+                 tensorType, src,
+                 true ? mlir::UnitAttr::get(self.getContext()) : nullptr,
+                 writable ? mlir::UnitAttr::get(self.getContext()) : nullptr);
            })
       .def("subview",
            [](BufferOpBuilder &self, Value source, std::vector<Value> &offsets,
@@ -146,7 +155,8 @@ void init_buffer_ir(py::module &&m)
                  throw std::runtime_error("Expected strides to be positive");
                }
 
-               // getDimSize() returns -1 (ShapedType::kDynamic) for dynamic dimensions
+               // getDimSize() returns -1 (ShapedType::kDynamic) for dynamic
+               // dimensions
                if (!ShapedType::isDynamic(srcDim)) {
                  // verify the subview size does not exceed the source dimension
                  if (size > srcDim) {
@@ -161,10 +171,10 @@ void init_buffer_ir(py::module &&m)
                  }
                }
 
-               mixedSizes.push_back(
-                   IntegerAttr::get(IntegerType::get(context, kIntegerAttrBitWidth), size));
-               mixedStrides.push_back(
-                   IntegerAttr::get(IntegerType::get(context, kIntegerAttrBitWidth), stride));
+               mixedSizes.push_back(IntegerAttr::get(
+                   IntegerType::get(context, kIntegerAttrBitWidth), size));
+               mixedStrides.push_back(IntegerAttr::get(
+                   IntegerType::get(context, kIntegerAttrBitWidth), stride));
              }
 
              return self.create<memref::SubViewOp>(source, mixedOffsets,

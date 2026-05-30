@@ -24,7 +24,6 @@ import triton
 import triton.language as tl
 import test_common
 
-
 types_all = [
     (torch.float32, 'float32'),
 ]
@@ -97,19 +96,12 @@ def addptr_implicit_perm_store_2d(
 
 
 @triton.jit
-def addptr_implicit_perm_load_store_2d_static_stride(
-    ptr,
-    out,
-    ynumel,
-    xnumel,
-    stride_y: tl.constexpr,
-    stride_x: tl.constexpr,
-    YBLOCK: tl.constexpr,
-    XBLOCK: tl.constexpr
-):
+def addptr_implicit_perm_load_store_2d_static_stride(ptr, out, ynumel, xnumel, stride_y: tl.constexpr,
+                                                     stride_x: tl.constexpr, YBLOCK: tl.constexpr,
+                                                     XBLOCK: tl.constexpr):
     # logical indices (A^T view)
-    x = tl.program_id(0) * XBLOCK + tl.arange(0, XBLOCK)[:, None] # [XBLOCK, 1]
-    y = tl.program_id(1) * YBLOCK + tl.arange(0, YBLOCK)[None, :] # [1, YBLOCK]
+    x = tl.program_id(0) * XBLOCK + tl.arange(0, XBLOCK)[:, None]  # [XBLOCK, 1]
+    y = tl.program_id(1) * YBLOCK + tl.arange(0, YBLOCK)[None, :]  # [1, YBLOCK]
     mask = (x < xnumel) & (y < ynumel)
 
     # IMPORTANT:
@@ -132,8 +124,8 @@ def addptr_implicit_perm_load_store_2d(
     XBLOCK: tl.constexpr,
 ):
     # logical indices (A^T view)
-    x = tl.program_id(0) * XBLOCK + tl.arange(0, XBLOCK)[:, None]   # [XBLOCK, 1]
-    y = tl.program_id(1) * YBLOCK + tl.arange(0, YBLOCK)[None, :]   # [1, YBLOCK]
+    x = tl.program_id(0) * XBLOCK + tl.arange(0, XBLOCK)[:, None]  # [XBLOCK, 1]
+    y = tl.program_id(1) * YBLOCK + tl.arange(0, YBLOCK)[None, :]  # [1, YBLOCK]
 
     mask = (x < xnumel) & (y < ynumel)
 
@@ -220,9 +212,9 @@ def addptr_implicit_perm_load_store_4d_static_stride(
     YBLOCK: tl.constexpr,
     XBLOCK: tl.constexpr,
 ):
-    pid0 = tl.program_id(0)   # covers (w, x)
-    pid1 = tl.program_id(1)   # y
-    pid2 = tl.program_id(2)   # z
+    pid0 = tl.program_id(0)  # covers (w, x)
+    pid1 = tl.program_id(1)  # y
+    pid2 = tl.program_id(2)  # z
 
     xblocks_per_w = (xnumel + XBLOCK - 1) // XBLOCK
 
@@ -263,9 +255,9 @@ def addptr_implicit_perm_load_store_4d(
     YBLOCK: tl.constexpr,
     XBLOCK: tl.constexpr,
 ):
-    pid0 = tl.program_id(0)   # covers (w, x)
-    pid1 = tl.program_id(1)   # y
-    pid2 = tl.program_id(2)   # z
+    pid0 = tl.program_id(0)  # covers (w, x)
+    pid1 = tl.program_id(1)  # y
+    pid2 = tl.program_id(2)  # z
 
     xblocks_per_w = (xnumel + XBLOCK - 1) // XBLOCK
 
@@ -363,20 +355,13 @@ def make_tensor_ptr_implicit_perm_store_2d(
 
 
 @triton.jit
-def make_tensor_ptr_implicit_perm_load_store_2d_static_stride(
-    ptr,
-    out,
-    ynumel,
-    xnumel,
-    STRIDE_Y: tl.constexpr,
-    STRIDE_X: tl.constexpr,
-    YBLOCK: tl.constexpr,
-    XBLOCK: tl.constexpr
-):
+def make_tensor_ptr_implicit_perm_load_store_2d_static_stride(ptr, out, ynumel, xnumel, STRIDE_Y: tl.constexpr,
+                                                              STRIDE_X: tl.constexpr, YBLOCK: tl.constexpr,
+                                                              XBLOCK: tl.constexpr):
     y0 = tl.program_id(1) * YBLOCK
     x0 = tl.program_id(0) * XBLOCK
-    y = y0 + tl.arange(0, YBLOCK)[None, :]   # [1, YBLOCK]
-    x = x0 + tl.arange(0, XBLOCK)[:, None]   # [XBLOCK, 1]
+    y = y0 + tl.arange(0, YBLOCK)[None, :]  # [1, YBLOCK]
+    x = x0 + tl.arange(0, XBLOCK)[:, None]  # [XBLOCK, 1]
     xmask = x < xnumel
     ymask = y < ynumel
     mask = xmask & ymask
@@ -480,9 +465,9 @@ def make_tensor_ptr_implicit_perm_load_store_3d(
 def make_tensor_ptr_implicit_perm_load_3d_static_stride(
     ptr,
     out,
-    znumel,   # logical z (== X)
-    ynumel,   # logical y (== Y)
-    xnumel,   # logical x (== Z)
+    znumel,  # logical z (== X)
+    ynumel,  # logical y (== Y)
+    xnumel,  # logical x (== Z)
     STRIDE_Z: tl.constexpr,
     STRIDE_Y: tl.constexpr,
     STRIDE_X: tl.constexpr,
@@ -528,16 +513,9 @@ def make_tensor_ptr_implicit_perm_load_3d_static_stride(
 # Triton kernel: advance with implicit permute kernels
 # ----------------------------------------------------------
 @triton.jit
-def advance_implicit_perm_load_store_2d_static_stride(
-    ptr,
-    out,
-    ynumel,
-    xnumel,
-    STRIDE_Y: tl.constexpr,
-    STRIDE_X: tl.constexpr,
-    YBLOCK: tl.constexpr,
-    XBLOCK: tl.constexpr
-):
+def advance_implicit_perm_load_store_2d_static_stride(ptr, out, ynumel, xnumel, STRIDE_Y: tl.constexpr,
+                                                      STRIDE_X: tl.constexpr, YBLOCK: tl.constexpr,
+                                                      XBLOCK: tl.constexpr):
     y0 = tl.program_id(1) * YBLOCK
     x0 = tl.program_id(0) * XBLOCK
     y = y0 + tl.arange(0, YBLOCK)[None, :]
@@ -630,9 +608,7 @@ def _assert_row_major_4d(A, X, Y, Z, W):
 # ----------------------------------------------------------
 @pytest.mark.parametrize("X, Y, XBLOCK, YBLOCK", case_2d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_addptr_implicit_perm_load_2d(
-    X, Y, XBLOCK, YBLOCK, dtype, sigtype
-):
+def test_addptr_implicit_perm_load_2d(X, Y, XBLOCK, YBLOCK, dtype, sigtype):
     A = test_common.generate_tensor(shape=(X, Y), dtype=sigtype).npu()
     _assert_row_major_2d(A, X, Y)
 
@@ -668,9 +644,7 @@ def test_addptr_implicit_perm_load_2d(
 
 @pytest.mark.parametrize("X, Y, XBLOCK, YBLOCK", case_2d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_addptr_implicit_perm_store_2d(
-    X, Y, XBLOCK, YBLOCK, dtype, sigtype
-):
+def test_addptr_implicit_perm_store_2d(X, Y, XBLOCK, YBLOCK, dtype, sigtype):
     """
     Test goal:
       - Real memory layout: A[X, Y], row-major (stride = (Y, 1))
@@ -740,8 +714,8 @@ def test_addptr_implicit_perm_load_store_2d_static_stride(
     out = torch.zeros_like(A)
 
     # A^T logical shape
-    xnumel = Y   # cols of A
-    ynumel = X   # rows of A
+    xnumel = Y  # cols of A
+    ynumel = X  # rows of A
 
     # A^T logical stride
     stride_x = 1
@@ -790,8 +764,8 @@ def test_addptr_implicit_perm_load_store_2d(
     out = torch.zeros_like(A)
 
     # A^T logical shape
-    xnumel = Y   # cols of A
-    ynumel = X   # rows of A
+    xnumel = Y  # cols of A
+    ynumel = X  # rows of A
 
     # A^T logical stride
     stride_x = 1
@@ -819,9 +793,7 @@ def test_addptr_implicit_perm_load_store_2d(
 
 @pytest.mark.parametrize("X, Y, Z, XBLOCK, YBLOCK, ZBLOCK", case_3d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_addptr_implicit_perm_load_store_3d_static_stride(
-    X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype
-):
+def test_addptr_implicit_perm_load_store_3d_static_stride(X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype):
     """
     Test goal:
       - Real memory layout: A[X, Y, Z], row-major (stride = (Y*Z, Z, 1))
@@ -870,9 +842,7 @@ def test_addptr_implicit_perm_load_store_3d_static_stride(
 
 @pytest.mark.parametrize("X, Y, Z, XBLOCK, YBLOCK, ZBLOCK", case_3d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_addptr_implicit_perm_load_store_3d(
-    X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype
-):
+def test_addptr_implicit_perm_load_store_3d(X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype):
     """
     Same as static-stride version, but stride passed as runtime values.
     """
@@ -913,9 +883,7 @@ def test_addptr_implicit_perm_load_store_3d(
 
 @pytest.mark.parametrize("X, Y, Z, W, XBLOCK, YBLOCK, ZBLOCK, WBLOCK", case_4d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_addptr_implicit_perm_load_store_4d_static_stride(
-    X, Y, Z, W, XBLOCK, YBLOCK, ZBLOCK, WBLOCK, dtype, sigtype
-):
+def test_addptr_implicit_perm_load_store_4d_static_stride(X, Y, Z, W, XBLOCK, YBLOCK, ZBLOCK, WBLOCK, dtype, sigtype):
     """
     Test goal:
       - Real memory layout: A[X, Y, Z, W], row-major (stride = (Y*Z*W, Z*W, W, 1))
@@ -972,9 +940,7 @@ def test_addptr_implicit_perm_load_store_4d_static_stride(
 
 @pytest.mark.parametrize("X, Y, Z, W, XBLOCK, YBLOCK, ZBLOCK, WBLOCK", case_4d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_addptr_implicit_perm_load_store_4d(
-    X, Y, Z, W, XBLOCK, YBLOCK, ZBLOCK, WBLOCK, dtype, sigtype
-):
+def test_addptr_implicit_perm_load_store_4d(X, Y, Z, W, XBLOCK, YBLOCK, ZBLOCK, WBLOCK, dtype, sigtype):
     """
     Same as static-stride version, but stride passed as runtime values.
     """
@@ -1025,9 +991,7 @@ def test_addptr_implicit_perm_load_store_4d(
 # ----------------------------------------------------------
 @pytest.mark.parametrize("X, Y, XBLOCK, YBLOCK", case_2d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_make_tensor_ptr_implicit_perm_load_2d(
-    X, Y, XBLOCK, YBLOCK, dtype, sigtype
-):
+def test_make_tensor_ptr_implicit_perm_load_2d(X, Y, XBLOCK, YBLOCK, dtype, sigtype):
     """
     Test goal:
       - Real memory layout: A[X, Y], row-major (stride = (Y, 1))
@@ -1072,9 +1036,7 @@ def test_make_tensor_ptr_implicit_perm_load_2d(
 
 @pytest.mark.parametrize("X, Y, XBLOCK, YBLOCK", case_2d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_make_tensor_ptr_implicit_perm_store_2d(
-    X, Y, XBLOCK, YBLOCK, dtype, sigtype
-):
+def test_make_tensor_ptr_implicit_perm_store_2d(X, Y, XBLOCK, YBLOCK, dtype, sigtype):
     """
     Test goal:
       - Real memory layout: A[X, Y], row-major (stride = (Y, 1))
@@ -1119,9 +1081,7 @@ def test_make_tensor_ptr_implicit_perm_store_2d(
 
 @pytest.mark.parametrize("X, Y, XBLOCK, YBLOCK", case_2d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_make_tensor_ptr_implicit_perm_load_store_2d_static_stride(
-    X, Y, XBLOCK, YBLOCK, dtype, sigtype
-):
+def test_make_tensor_ptr_implicit_perm_load_store_2d_static_stride(X, Y, XBLOCK, YBLOCK, dtype, sigtype):
     """
     Test goal matches addptr_2d_static_stride, but uses tl.make_block_ptr + tl.load(tptr).
     Real layout: A[X,Y] row-major stride=(Y,1)
@@ -1154,9 +1114,7 @@ def test_make_tensor_ptr_implicit_perm_load_store_2d_static_stride(
 
 @pytest.mark.parametrize("X, Y, Z, XBLOCK, YBLOCK, ZBLOCK", case_3d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_make_tensor_ptr_implicit_perm_load_store_3d_static_stride(
-    X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype
-):
+def test_make_tensor_ptr_implicit_perm_load_store_3d_static_stride(X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype):
     """
     Real layout: A[X,Y,Z] row-major stride=(Y*Z, Z, 1)
     Kernel view (logical): shape=(Z,Y,X), strides=(1, Z, Y*Z)
@@ -1197,9 +1155,7 @@ def test_make_tensor_ptr_implicit_perm_load_store_3d_static_stride(
 
 @pytest.mark.parametrize("X, Y, Z, XBLOCK, YBLOCK, ZBLOCK", case_3d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_make_tensor_ptr_implicit_perm_load_store_3d(
-    X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype
-):
+def test_make_tensor_ptr_implicit_perm_load_store_3d(X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype):
     """
     Same as static stride but STRIDE_* passed at runtime.
     """
@@ -1239,9 +1195,7 @@ def test_make_tensor_ptr_implicit_perm_load_store_3d(
 
 @pytest.mark.parametrize("X, Y, Z, XBLOCK, YBLOCK, ZBLOCK", case_3d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_make_tensor_ptr_implicit_perm_load_3d_static_stride(
-    X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype
-):
+def test_make_tensor_ptr_implicit_perm_load_3d_static_stride(X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype):
     A = test_common.generate_tensor(shape=(X, Y, Z), dtype=sigtype).npu()
     _assert_row_major_3d(A, X, Y, Z)
 
@@ -1259,7 +1213,7 @@ def test_make_tensor_ptr_implicit_perm_load_3d_static_stride(
     out = torch.empty((xnumel, ynumel, znumel), device="npu", dtype=A.dtype)
     assert out.is_contiguous()
     OUT_STRIDE0 = ynumel * znumel  # Y*X
-    OUT_STRIDE1 = znumel           # X
+    OUT_STRIDE1 = znumel  # X
     OUT_STRIDE2 = 1
 
     grid = (
@@ -1295,9 +1249,7 @@ def test_make_tensor_ptr_implicit_perm_load_3d_static_stride(
 # ----------------------------------------------------------
 @pytest.mark.parametrize("X, Y, XBLOCK, YBLOCK", case_2d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_advance_implicit_perm_load_store_2d_static_stride(
-    X, Y, XBLOCK, YBLOCK, dtype, sigtype
-):
+def test_advance_implicit_perm_load_store_2d_static_stride(X, Y, XBLOCK, YBLOCK, dtype, sigtype):
     """
     Same goal as addptr_2d_static_stride, but uses tl.make_block_ptr + tl.advance.
     """
@@ -1327,9 +1279,7 @@ def test_advance_implicit_perm_load_store_2d_static_stride(
 
 @pytest.mark.parametrize("X, Y, Z, XBLOCK, YBLOCK, ZBLOCK", case_3d)
 @pytest.mark.parametrize("dtype, sigtype", types_all)
-def test_advance_implicit_perm_load_store_3d_static_stride(
-    X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype
-):
+def test_advance_implicit_perm_load_store_3d_static_stride(X, Y, Z, XBLOCK, YBLOCK, ZBLOCK, dtype, sigtype):
     """
     Real layout: A[X,Y,Z] row-major stride=(Y*Z, Z, 1)
     Kernel view (logical): shape=(Z,Y,X), strides=(1, Z, Y*Z)

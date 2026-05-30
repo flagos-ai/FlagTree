@@ -26,12 +26,12 @@ import numpy as np
 from triton.runtime import driver
 import pytest
 
-
 pytestmark = pytest.mark.backend("mindspore")
 
 
 @triton.jit
-def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols, BLOCK_SIZE: tl.constexpr):
+def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols,
+                   BLOCK_SIZE: tl.constexpr):
     # starting row of the program
     row_start = tl.program_id(0)
     row_step = tl.num_programs(0)
@@ -80,23 +80,14 @@ def softmax(x):
     num_programs = min(num_programs, n_rows)
 
     # Create a number of persistent programs.
-    kernel[(num_programs, 1, 1)](
-        y,
-        x,
-        x.stride(0),
-        y.stride(0),
-        n_rows,
-        n_cols,
-        BLOCK_SIZE
-    )
+    kernel[(num_programs, 1, 1)](y, x, x.stride(0), y.stride(0), n_rows, n_cols, BLOCK_SIZE)
     return y
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (1823, 781)],
-                                ['float16', (1823, 781)],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (1823, 781)],
+    ['float16', (1823, 781)],
+])
 def test_softmax_mindspore(param_list):
     os.environ["TRITON_BACKEND"] = "mindspore"
     dtype, shape = param_list

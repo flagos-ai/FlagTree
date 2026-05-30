@@ -8,7 +8,7 @@
 
 module attributes {hacc.target = #hacc.target<"Ascend910_9382">} {
   tt.func public @_triton_mrope_forward(%q_ptr: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %k_ptr: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %cos: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %sin: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %num_tokens: i32 {tt.divisibility = 16 : i32}) attributes {noinline = false} {
-    %cst = arith.constant dense<0.000000e+00> : tensor<16x64xf32> 
+    %cst = arith.constant dense<0.000000e+00> : tensor<16x64xf32>
     %cst_0 = arith.constant dense<0.000000e+00> : tensor<64xf32>
     %cst_1 = arith.constant dense<64> : tensor<16x64xi32>
     %cst_2 = arith.constant dense<64> : tensor<1x64xi32>
@@ -36,7 +36,7 @@ module attributes {hacc.target = #hacc.target<"Ascend910_9382">} {
     %h_mask_12 = arith.cmpi slt, %cos_offsets, %cst_5 : tensor<64xi32>
     %h_mask_13 = arith.andi %h_mask, %h_mask_12 : tensor<64xi1>
     %w_mask = arith.cmpi sge, %cos_offsets, %cst_5 : tensor<64xi32>
-    %w_mask_14 = arith.andi %w_mask, %h_mask_12 : tensor<64xi1> 
+    %w_mask_14 = arith.andi %w_mask, %h_mask_12 : tensor<64xi1>
     %t_cos_row = tt.splat %t_cos_10 : !tt.ptr<f32> -> tensor<64x!tt.ptr<f32>>
     %t_cos_row_15 = tt.addptr %t_cos_row, %cos_offsets : tensor<64x!tt.ptr<f32>>, tensor<64xi32>
     %t_cos_row_16 = tt.load %t_cos_row_15, %t_mask, %cst_0 : tensor<64x!tt.ptr<f32>>
@@ -50,10 +50,10 @@ module attributes {hacc.target = #hacc.target<"Ascend910_9382">} {
     %t_sin_row_21 = tt.addptr %t_sin_row, %cos_offsets : tensor<64x!tt.ptr<f32>>, tensor<64xi32>
     %t_sin_row_22 = tt.load %t_sin_row_21, %t_mask, %cst_0 : tensor<64x!tt.ptr<f32>>
     %h_sin_row = tt.splat %h_sin : !tt.ptr<f32> -> tensor<64x!tt.ptr<f32>>
-    %h_sin_row_23 = tt.addptr %h_sin_row, %cos_offsets : tensor<64x!tt.ptr<f32>>, tensor<64xi32> 
+    %h_sin_row_23 = tt.addptr %h_sin_row, %cos_offsets : tensor<64x!tt.ptr<f32>>, tensor<64xi32>
     %h_sin_row_24 = tt.load %h_sin_row_23, %h_mask_13, %cst_0 : tensor<64x!tt.ptr<f32>>
     %w_sin_row = tt.splat %w_sin : !tt.ptr<f32> -> tensor<64x!tt.ptr<f32>>
-    %w_sin_row_25 = tt.addptr %w_sin_row, %cos_offsets : tensor<64x!tt.ptr<f32>>, tensor<64xi32> 
+    %w_sin_row_25 = tt.addptr %w_sin_row, %cos_offsets : tensor<64x!tt.ptr<f32>>, tensor<64xi32>
     %w_sin_row_26 = tt.load %w_sin_row_25, %w_mask_14, %cst_0 : tensor<64x!tt.ptr<f32>>
     %cos_row = arith.addf %t_cos_row_16, %h_cos_row_18 : tensor<64xf32>
     %cos_row_27 = arith.addf %cos_row, %w_cos_row_20 : tensor<64xf32>

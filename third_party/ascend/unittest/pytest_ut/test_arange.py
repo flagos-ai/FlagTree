@@ -32,7 +32,8 @@ def torch_arange(start, end):
     if end < start:
         raise ValueError("arange's end argument must be greater than the start argument")
     if end - start > TRITON_MAX_TENSOR_NUMEL:
-        raise ValueError(f"end - start must be less than or equal to TRITON_MAX_TENSOR_NUMEL = {TRITON_MAX_TENSOR_NUMEL}")
+        raise ValueError(
+            f"end - start must be less than or equal to TRITON_MAX_TENSOR_NUMEL = {TRITON_MAX_TENSOR_NUMEL}")
     return torch.arange(start, end)
 
 
@@ -57,13 +58,11 @@ def triton_arange_access(z, BLOCK: tl.constexpr, START: tl.constexpr, END: tl.co
     tl.store(z + off, val)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             [0, 128],
-                             [7, 128],
-                             [128, 1024],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    [0, 128],
+    [7, 128],
+    [128, 1024],
+])
 def test_case(param_list):
     start, end = param_list
     shape = [end - start]
@@ -73,18 +72,16 @@ def test_case(param_list):
     y_ref = torch_arange(start, end)
     y_cal = torch.zeros(shape, dtype=torch.int32).npu()
 
-    triton_arange[(1, )](y_cal, START = start, END = end, BLOCK = block)
+    triton_arange[(1, )](y_cal, START=start, END=end, BLOCK=block)
 
     test_common.validate_cmp(dtype, y_cal, y_ref)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             [0, 128],
-                             [7, 128],
-                             [128, 1024],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    [0, 128],
+    [7, 128],
+    [128, 1024],
+])
 def test_case_access(param_list):
     start, end = param_list
     shape = [end]
@@ -94,25 +91,23 @@ def test_case_access(param_list):
     y_ref = torch_arange_access(start, end)
     y_cal = torch.zeros(shape, dtype=torch.int32).npu()
 
-    triton_arange_access[(1, )](y_cal, START = start, END = end, BLOCK = block)
+    triton_arange_access[(1, )](y_cal, START=start, END=end, BLOCK=block)
 
     test_common.validate_cmp(dtype, y_cal, y_ref)
 
 
-@pytest.mark.parametrize('invalid_param_list',
-                         [
-                             [0, 10000000],
-                             [1024, 128],
-                         ]
-                         )
+@pytest.mark.parametrize('invalid_param_list', [
+    [0, 10000000],
+    [1024, 128],
+])
 def test_arange_invalid_range(invalid_param_list):
     start, end = invalid_param_list
     shape = [end - start]
     block = end - start
-    flag=False
+    flag = False
     try:
         y_cal = torch.zeros(shape, dtype=torch.int32).npu()
-        triton_arange[(1, )](y_cal, START = start, END = end, BLOCK = block)
+        triton_arange[(1, )](y_cal, START=start, END=end, BLOCK=block)
     except Exception as e:
-        flag=True
+        flag = True
     assert flag

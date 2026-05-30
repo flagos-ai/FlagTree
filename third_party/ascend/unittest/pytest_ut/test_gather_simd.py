@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Unit test for gather_2d_simd kernel.
 """
@@ -39,14 +38,9 @@ def test_gather_2d_simd(M, N, K):
     src = torch.randn(M, N, dtype=torch.float32, device='npu')
     indices = torch.randint(0, N, (M, K), dtype=torch.int32, device='npu')
     output = torch.empty((M, K), dtype=src.dtype, device='npu')
-    
-    grid = (triton.cdiv(M, 32),)
-    gather_2d_simd[grid](
-        src, indices, output,
-        M, N, K,
-        XBLOCK=32,
-        XBLOCK_SUB=4
-    )
-    
+
+    grid = (triton.cdiv(M, 32), )
+    gather_2d_simd[grid](src, indices, output, M, N, K, XBLOCK=32, XBLOCK_SUB=4)
+
     ref = torch.gather(src, 1, indices.long())
     assert torch.allclose(output, ref, rtol=1e-5, atol=1e-5)

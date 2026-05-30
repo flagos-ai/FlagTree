@@ -19,7 +19,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Libdevice (`tl.extra.libdevice`) function
 ==============================
@@ -71,8 +70,7 @@ def test():
     print(output_torch)
     print(output_triton)
     print(f'The maximum difference between torch and triton is '
-        f'{torch.max(torch.abs(output_torch - output_triton))}')
-
+          f'{torch.max(torch.abs(output_torch - output_triton))}')
 
     current_file = inspect.getfile(inspect.currentframe())
     current_dir = Path(os.path.dirname(os.path.abspath(current_file)))
@@ -84,7 +82,7 @@ def test():
     print(output_torch)
     print(output_triton)
     print(f'The maximum difference between torch and triton is '
-        f'{torch.max(torch.abs(output_torch - output_triton))}')
+          f'{torch.max(torch.abs(output_torch - output_triton))}')
 
 
 if __name__ == "__main__":

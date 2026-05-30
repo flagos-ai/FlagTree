@@ -15,7 +15,8 @@ using namespace triton;
 // A custom op builder that keeps track of the last location
 class TritonOpBuilder {
 public:
-  TritonOpBuilder(mlir::MLIRContext *context, const std::string &compile_mode = "simd") {
+  TritonOpBuilder(mlir::MLIRContext *context,
+                  const std::string &compile_mode = "simd") {
     builder = std::make_unique<OpBuilder>(context);
     lastLoc = std::make_unique<Location>(builder->getUnknownLoc());
     this->compile_mode = compile_mode;

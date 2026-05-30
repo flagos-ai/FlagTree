@@ -17,8 +17,7 @@ def sample_recovered_tokens_kernel(
     SUB_BLOCK: tl.constexpr,
 ):
     req_idx = tl.program_id(0)
-    start_idx = 0 if req_idx == 0 else tl.load(cu_num_draft_tokens_ptr +
-                                               req_idx - 1)
+    start_idx = 0 if req_idx == 0 else tl.load(cu_num_draft_tokens_ptr + req_idx - 1)
     end_idx = tl.load(cu_num_draft_tokens_ptr + req_idx)
     num_draft_tokens = end_idx - start_idx
 
@@ -36,18 +35,13 @@ def sample_recovered_tokens_kernel(
         # Temporarily zero out the probability of the draft token.
         # This is essentially the same as target_prob - draft_prob, except that
         # n-gram does not have draft_prob. We regard it as 1.
-        tl.store(
-            target_probs_ptr + (start_idx + pos) * vocab_size + draft_token_id,
-            0)
+        tl.store(target_probs_ptr + (start_idx + pos) * vocab_size + draft_token_id, 0)
         for loop_i in range(loop):
             vocab_start = loop_i * SUB_BLOCK
             vocab_offset = vocab_start + tl.arange(0, SUB_BLOCK)
-            prob = tl.load(target_probs_ptr + (start_idx + pos) * vocab_size +
-                           vocab_offset,
-                           mask=vocab_offset < vocab_size,
-                           other=0)
-            q = tl.load(q_ptr + req_idx * vocab_size + vocab_offset,
-                        mask=vocab_offset < vocab_size,
+            prob = tl.load(target_probs_ptr + (start_idx + pos) * vocab_size + vocab_offset, mask=vocab_offset
+                           < vocab_size, other=0)
+            q = tl.load(q_ptr + req_idx * vocab_size + vocab_offset, mask=vocab_offset < vocab_size,
                         other=float("-inf"))
             new_p = prob / q
             recovered_id = tl.argmax(new_p, axis=-1)
@@ -59,20 +53,15 @@ def sample_recovered_tokens_kernel(
         for loop_i in range(loop):
             vocab_start = loop_i * SUB_BLOCK
             vocab_offset = vocab_start + tl.arange(0, SUB_BLOCK)
-            draft_prob = tl.load(draft_probs_ptr +
-                                 (start_idx + pos) * vocab_size + vocab_offset,
-                                 mask=vocab_offset < vocab_size,
-                                 other=0)
-            target_prob = tl.load(target_probs_ptr +
-                                  (start_idx + pos) * vocab_size + vocab_offset,
-                                  mask=vocab_offset < vocab_size,
-                                  other=0)
+            draft_prob = tl.load(draft_probs_ptr + (start_idx + pos) * vocab_size + vocab_offset, mask=vocab_offset
+                                 < vocab_size, other=0)
+            target_prob = tl.load(target_probs_ptr + (start_idx + pos) * vocab_size + vocab_offset, mask=vocab_offset
+                                  < vocab_size, other=0)
             prob = tl.maximum(target_prob - draft_prob, 0)
             # NOTE(woosuk): We don't need `prob = prob / tl.sum(prob)` here because
             # `tl.argmax` will select the maximum value.
 
-            q = tl.load(q_ptr + req_idx * vocab_size + vocab_offset,
-                        mask=vocab_offset < vocab_size,
+            q = tl.load(q_ptr + req_idx * vocab_size + vocab_offset, mask=vocab_offset < vocab_size,
                         other=float("-inf"))
             new_p = prob / q
             recovered_id = tl.argmax(new_p, axis=-1)
@@ -85,6 +74,4 @@ def sample_recovered_tokens_kernel(
 
     if NO_DRAFT_PROBS:
         # Restore the original probability.
-        tl.store(
-            target_probs_ptr + (start_idx + pos) * vocab_size + draft_token_id,
-            orig_prob)
+        tl.store(target_probs_ptr + (start_idx + pos) * vocab_size + draft_token_id, orig_prob)

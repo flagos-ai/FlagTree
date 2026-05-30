@@ -45,21 +45,17 @@ def torch_func(x, dim, reverse):
 @libentry()
 @triton.jit
 def triton_kernel(
-        out_ptr0,
-        in_ptr0,
-        dim: tl.constexpr,
-        reverse: tl.constexpr,
-        numel_x: tl.constexpr,
-        numel_r: tl.constexpr,
-        XBLOCK: tl.constexpr,
-        RBLOCK: tl.constexpr,
+    out_ptr0,
+    in_ptr0,
+    dim: tl.constexpr,
+    reverse: tl.constexpr,
+    numel_x: tl.constexpr,
+    numel_r: tl.constexpr,
+    XBLOCK: tl.constexpr,
+    RBLOCK: tl.constexpr,
 ):
-    tl.static_assert(
-        numel_x == XBLOCK, "numel_x must be equal to XBLOCK in this kernel"
-    )
-    tl.static_assert(
-        numel_r == RBLOCK, "numel_r must be equal to RBLOCK in this kernel"
-    )
+    tl.static_assert(numel_x == XBLOCK, "numel_x must be equal to XBLOCK in this kernel")
+    tl.static_assert(numel_r == RBLOCK, "numel_r must be equal to RBLOCK in this kernel")
     idx_x = tl.arange(0, XBLOCK)
     idx_r = tl.arange(0, RBLOCK)
     idx = idx_x[:, None] * numel_r + idx_r[None, :]
@@ -70,9 +66,7 @@ def triton_kernel(
 
 def triton_func(x, dim, reverse):
     res = torch.empty_like(x)
-    triton_kernel[1, 1, 1](
-        res, x, dim, reverse, x.shape[0], x.shape[1], x.shape[0], x.shape[1]
-    )
+    triton_kernel[1, 1, 1](res, x, dim, reverse, x.shape[0], x.shape[1], x.shape[0], x.shape[1])
     return res
 
 

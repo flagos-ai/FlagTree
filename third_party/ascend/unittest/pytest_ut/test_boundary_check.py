@@ -27,19 +27,13 @@ import pytest
 # ========== Test 1: Static base address + boundary_check ==========
 @triton.jit
 def static_base_boundary_check_kernel(
-        out_ptr,
-        in_ptr,
-        BLOCK_SIZE: tl.constexpr,
+    out_ptr,
+    in_ptr,
+    BLOCK_SIZE: tl.constexpr,
 ):
-    ptr = tl.make_block_ptr(
-        base=in_ptr,
-        shape=(BLOCK_SIZE * 2,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,)
-    )
-    data = tl.load(ptr, boundary_check=(0,), padding_option="zero")
+    ptr = tl.make_block_ptr(base=in_ptr, shape=(BLOCK_SIZE * 2, ), strides=(1, ), offsets=(0, ),
+                            block_shape=(BLOCK_SIZE, ), order=(0, ))
+    data = tl.load(ptr, boundary_check=(0, ), padding_option="zero")
     result = tl.sum(data)
     tl.store(out_ptr, result)
 
@@ -52,7 +46,7 @@ def test_static_base():
     BLOCK_SIZE = 64
     in_tensor = torch.randn(BLOCK_SIZE * 2, dtype=torch.float32).npu()
     out_tensor = torch.zeros(1, dtype=torch.float32).npu()
-    static_base_boundary_check_kernel[(1,)](
+    static_base_boundary_check_kernel[(1, )](
         out_ptr=out_tensor,
         in_ptr=in_tensor,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -64,21 +58,15 @@ def test_static_base():
 # ========== Test 2: Simple dynamic base address + boundary_check ==========
 @triton.jit
 def simple_dynamic_base_boundary_check_kernel(
-        out_ptr,
-        in_ptr,
-        offset: tl.int32,
-        BLOCK_SIZE: tl.constexpr,
+    out_ptr,
+    in_ptr,
+    offset: tl.int32,
+    BLOCK_SIZE: tl.constexpr,
 ):
     base = in_ptr + offset
-    ptr = tl.make_block_ptr(
-        base=base,
-        shape=(BLOCK_SIZE * 2,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,)
-    )
-    data = tl.load(ptr, boundary_check=(0,), padding_option="zero")
+    ptr = tl.make_block_ptr(base=base, shape=(BLOCK_SIZE * 2, ), strides=(1, ), offsets=(0, ),
+                            block_shape=(BLOCK_SIZE, ), order=(0, ))
+    data = tl.load(ptr, boundary_check=(0, ), padding_option="zero")
     result = tl.sum(data)
     tl.store(out_ptr, result)
 
@@ -88,7 +76,7 @@ def test_simple_dynamic_base():
     offset = 32
     in_tensor = torch.randn(BLOCK_SIZE * 4, dtype=torch.float32).npu()
     out_tensor = torch.zeros(1, dtype=torch.float32).npu()
-    simple_dynamic_base_boundary_check_kernel[(1,)](
+    simple_dynamic_base_boundary_check_kernel[(1, )](
         out_ptr=out_tensor,
         in_ptr=in_tensor,
         offset=offset,
@@ -101,12 +89,12 @@ def test_simple_dynamic_base():
 # ========== Test 3: Nested loop + dynamic base address + advance + boundary_check ==========
 @triton.jit
 def nested_dynamic_advance_boundary_kernel(
-        out_ptr,
-        in_ptr,
-        stride_in: tl.int32,
-        OUTER_LOOP: tl.constexpr,
-        INNER_LOOP: tl.constexpr,
-        BLOCK_SIZE: tl.constexpr,
+    out_ptr,
+    in_ptr,
+    stride_in: tl.int32,
+    OUTER_LOOP: tl.constexpr,
+    INNER_LOOP: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
 ):
     """
     Smallest reproducible code: The dynamic base address is in the outer loop,
@@ -114,17 +102,11 @@ def nested_dynamic_advance_boundary_kernel(
     """
     for i in range(OUTER_LOOP):
         base = in_ptr + i * stride_in
-        ptr = tl.make_block_ptr(
-            base=base,
-            shape=(INNER_LOOP * BLOCK_SIZE,),
-            strides=(1,),
-            offsets=(0,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,)
-        )
+        ptr = tl.make_block_ptr(base=base, shape=(INNER_LOOP * BLOCK_SIZE, ), strides=(1, ), offsets=(0, ),
+                                block_shape=(BLOCK_SIZE, ), order=(0, ))
         for j in range(INNER_LOOP):
-            cur_ptr = tl.advance(ptr, (j * BLOCK_SIZE,))
-            data = tl.load(cur_ptr, boundary_check=(0,), padding_option="zero")
+            cur_ptr = tl.advance(ptr, (j * BLOCK_SIZE, ))
+            data = tl.load(cur_ptr, boundary_check=(0, ), padding_option="zero")
             result = tl.sum(data)
             tl.store(out_ptr + i * INNER_LOOP + j, result)
 
@@ -147,7 +129,7 @@ def test_nested_dynamic():
     INNER_LOOP = 2
     in_tensor = torch.randn(OUTER_LOOP * INNER_LOOP * BLOCK_SIZE * 2, dtype=torch.float32).npu()
     out_tensor = torch.zeros(OUTER_LOOP * INNER_LOOP, dtype=torch.float32).npu()
-    nested_dynamic_advance_boundary_kernel[(1,)](
+    nested_dynamic_advance_boundary_kernel[(1, )](
         out_ptr=out_tensor,
         in_ptr=in_tensor,
         stride_in=INNER_LOOP * BLOCK_SIZE,
@@ -162,19 +144,13 @@ def test_nested_dynamic():
 # ========== Test 4: Explicit out-of-bounds access + zero padding  + boundary_check ==========
 @triton.jit
 def out_of_bound_zero_padding_kernel(
-        out_ptr,
-        in_ptr,
-        BLOCK_SIZE: tl.constexpr,
+    out_ptr,
+    in_ptr,
+    BLOCK_SIZE: tl.constexpr,
 ):
-    ptr = tl.make_block_ptr(
-        base=in_ptr,
-        shape=(BLOCK_SIZE,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_SIZE * 2,),
-        order=(0,)
-    )
-    data = tl.load(ptr, boundary_check=(0,), padding_option="zero")
+    ptr = tl.make_block_ptr(base=in_ptr, shape=(BLOCK_SIZE, ), strides=(1, ), offsets=(0, ),
+                            block_shape=(BLOCK_SIZE * 2, ), order=(0, ))
+    data = tl.load(ptr, boundary_check=(0, ), padding_option="zero")
     result = tl.sum(data)
     tl.store(out_ptr, result)
 
@@ -183,7 +159,7 @@ def test_out_of_bound():
     BLOCK_SIZE = 64
     in_tensor = torch.randn(BLOCK_SIZE, dtype=torch.float32).npu()
     out_tensor = torch.zeros(1, dtype=torch.float32).npu()
-    out_of_bound_zero_padding_kernel[(1,)](
+    out_of_bound_zero_padding_kernel[(1, )](
         out_ptr=out_tensor,
         in_ptr=in_tensor,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -195,19 +171,13 @@ def test_out_of_bound():
 # ========== Test 5：padding_option = NAN + boundary_check==========
 @triton.jit
 def nan_padding_kernel(
-        out_ptr,
-        in_ptr,
-        BLOCK_SIZE: tl.constexpr,
+    out_ptr,
+    in_ptr,
+    BLOCK_SIZE: tl.constexpr,
 ):
-    ptr = tl.make_block_ptr(
-        base=in_ptr,
-        shape=(BLOCK_SIZE,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_SIZE * 2,),
-        order=(0,)
-    )
-    data = tl.load(ptr, boundary_check=(0,), padding_option="nan")
+    ptr = tl.make_block_ptr(base=in_ptr, shape=(BLOCK_SIZE, ), strides=(1, ), offsets=(0, ),
+                            block_shape=(BLOCK_SIZE * 2, ), order=(0, ))
+    data = tl.load(ptr, boundary_check=(0, ), padding_option="nan")
     result = tl.sum(data)
     tl.store(out_ptr, result)
 
@@ -217,7 +187,7 @@ def test_nan_padding():
     in_tensor = torch.randn(BLOCK_SIZE, dtype=torch.float32).npu()
     out_tensor = torch.zeros(1, dtype=torch.float32).npu()
     try:
-        nan_padding_kernel[(1,)](
+        nan_padding_kernel[(1, )](
             out_ptr=out_tensor,
             in_ptr=in_tensor,
             BLOCK_SIZE=BLOCK_SIZE,
@@ -230,22 +200,16 @@ def test_nan_padding():
 # ========== Test 6：Multi-layer advance + boundary_check ==========
 @triton.jit
 def multi_advance_kernel(
-        out_ptr,
-        in_ptr,
-        BLOCK_SIZE: tl.constexpr,
+    out_ptr,
+    in_ptr,
+    BLOCK_SIZE: tl.constexpr,
 ):
     base = in_ptr
-    ptr0 = tl.make_block_ptr(
-        base=base,
-        shape=(BLOCK_SIZE * 4,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,)
-    )
-    ptr1 = tl.advance(ptr0, (BLOCK_SIZE,))
-    ptr2 = tl.advance(ptr1, (BLOCK_SIZE,))
-    data = tl.load(ptr2, boundary_check=(0,), padding_option="zero")
+    ptr0 = tl.make_block_ptr(base=base, shape=(BLOCK_SIZE * 4, ), strides=(1, ), offsets=(0, ),
+                             block_shape=(BLOCK_SIZE, ), order=(0, ))
+    ptr1 = tl.advance(ptr0, (BLOCK_SIZE, ))
+    ptr2 = tl.advance(ptr1, (BLOCK_SIZE, ))
+    data = tl.load(ptr2, boundary_check=(0, ), padding_option="zero")
     result = tl.sum(data)
     tl.store(out_ptr, result)
 
@@ -254,7 +218,7 @@ def test_multi_advance():
     BLOCK_SIZE = 64
     in_tensor = torch.randn(BLOCK_SIZE * 4, dtype=torch.float32).npu()
     out_tensor = torch.zeros(1, dtype=torch.float32).npu()
-    multi_advance_kernel[(1,)](
+    multi_advance_kernel[(1, )](
         out_ptr=out_tensor,
         in_ptr=in_tensor,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -266,23 +230,17 @@ def test_multi_advance():
 # ========== Test 7：Complex base address calculation + boundary_check ==========
 @triton.jit
 def complex_base_calculation_kernel(
-        out_ptr,
-        in_ptr,
-        offset1: tl.int32,
-        offset2: tl.int32,
-        scale: tl.int32,
-        BLOCK_SIZE: tl.constexpr,
+    out_ptr,
+    in_ptr,
+    offset1: tl.int32,
+    offset2: tl.int32,
+    scale: tl.int32,
+    BLOCK_SIZE: tl.constexpr,
 ):
     base = in_ptr + offset1 * scale + offset2
-    ptr = tl.make_block_ptr(
-        base=base,
-        shape=(BLOCK_SIZE * 2,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,)
-    )
-    data = tl.load(ptr, boundary_check=(0,), padding_option="zero")
+    ptr = tl.make_block_ptr(base=base, shape=(BLOCK_SIZE * 2, ), strides=(1, ), offsets=(0, ),
+                            block_shape=(BLOCK_SIZE, ), order=(0, ))
+    data = tl.load(ptr, boundary_check=(0, ), padding_option="zero")
     result = tl.sum(data)
     tl.store(out_ptr, result)
 
@@ -293,7 +251,7 @@ def test_complex_base():
     total_offset = offset1 * scale + offset2
     in_tensor = torch.randn(total_offset + BLOCK_SIZE * 2, dtype=torch.float32).npu()
     out_tensor = torch.zeros(1, dtype=torch.float32).npu()
-    complex_base_calculation_kernel[(1,)](
+    complex_base_calculation_kernel[(1, )](
         out_ptr=out_tensor,
         in_ptr=in_tensor,
         offset1=offset1,

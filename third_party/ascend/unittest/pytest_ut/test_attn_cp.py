@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import time
 import torch
 import torch_npu
@@ -73,14 +72,13 @@ def profile_test(fn, fn_triton, args=(), name="gen_fn", times=10, repeat=10):
 
     experimental_config = torch_npu.profiler._ExperimentalConfig(
         aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
-        profiler_level=torch_npu.profiler.ProfilerLevel.Level1, )
+        profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+    )
     prof = torch_npu.profiler.profile(
         activities=[
             # torch_npu.profiler.ProfilerActivity.CPU,
-            torch_npu.profiler.ProfilerActivity.NPU],
-        record_shapes=False,
-        profile_memory=False,
-        with_stack=False,
+            torch_npu.profiler.ProfilerActivity.NPU
+        ], record_shapes=False, profile_memory=False, with_stack=False,
         schedule=torch_npu.profiler.schedule(wait=0, warmup=1, active=100, repeat=1, skip_first=10),
         on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./result_dir"),
         experimental_config=experimental_config)
@@ -101,14 +99,13 @@ def benchmark_test(fn, fn_triton, args=(), name="gen_fn", times=10, repeat=10, p
 
     experimental_config = torch_npu.profiler._ExperimentalConfig(
         aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
-        profiler_level=torch_npu.profiler.ProfilerLevel.Level1, )
+        profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+    )
     prof = torch_npu.profiler.profile(
         activities=[
             # torch_npu.profiler.ProfilerActivity.CPU,
-            torch_npu.profiler.ProfilerActivity.NPU],
-        record_shapes=False,
-        profile_memory=False,
-        with_stack=False,
+            torch_npu.profiler.ProfilerActivity.NPU
+        ], record_shapes=False, profile_memory=False, with_stack=False,
         schedule=torch_npu.profiler.schedule(wait=0, warmup=0, active=100, repeat=1, skip_first=10),
         on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./result_dir"),
         experimental_config=experimental_config)
@@ -139,7 +136,8 @@ def benchmark_test(fn, fn_triton, args=(), name="gen_fn", times=10, repeat=10, p
     time_eager *= 1000000
     time_compiled *= 1000000
     print(
-        f"Accelerated: {(time_eager - time_compiled) / time_compiled * 100:.4f}% eager takes {time_eager:.3f} us, triton takes {time_compiled:.3f} us")
+        f"Accelerated: {(time_eager - time_compiled) / time_compiled * 100:.4f}% eager takes {time_eager:.3f} us, triton takes {time_compiled:.3f} us"
+    )
 
     return time_eager, time_compiled
 
@@ -162,8 +160,7 @@ def broadcast_and_trans_BNSD2SBH(x, h):
     return trans_BNSD2SBH(new_x)
 
 
-def forward_update(prev_attn_out, prev_softmax_max, prev_softmax_sum,
-                   cur_attn_out, cur_softmax_max, cur_softmax_sum):
+def forward_update(prev_attn_out, prev_softmax_max, prev_softmax_sum, cur_attn_out, cur_softmax_max, cur_softmax_sum):
     # update softmax_max
     org_dtype = prev_attn_out.dtype
     softmax_max = torch.maximum(prev_softmax_max, cur_softmax_max)
@@ -186,17 +183,16 @@ def forward_update(prev_attn_out, prev_softmax_max, prev_softmax_sum,
 
 
 def prove_forward_update():
+
     def data_validation(prev_softmax_max, cur_softmax_max, prev_softmax_sum, cur_softmax_sum, prev_attn_out,
                         cur_attn_out):
 
-        (tt_attn_out, tt_softmax_max, tt_softmax_sum) = forward_update_triton(prev_attn_out,
-                                                                              prev_softmax_max, prev_softmax_sum,
-                                                                              cur_attn_out, cur_softmax_max,
-                                                                              cur_softmax_sum)
+        (tt_attn_out, tt_softmax_max, tt_softmax_sum) = forward_update_triton(prev_attn_out, prev_softmax_max,
+                                                                              prev_softmax_sum, cur_attn_out,
+                                                                              cur_softmax_max, cur_softmax_sum)
 
         (attn_out, softmax_max, softmax_sum) = forward_update(prev_attn_out, prev_softmax_max, prev_softmax_sum,
-                                                              cur_attn_out,
-                                                              cur_softmax_max, cur_softmax_sum)
+                                                              cur_attn_out, cur_softmax_max, cur_softmax_sum)
 
         try:
             assert torch.equal(softmax_max, tt_softmax_max)
@@ -210,7 +206,8 @@ def prove_forward_update():
             print(e)
             print("comparison not passed")
         print(
-            f"proving finished, attn shape:{prev_attn_out.shape}, stride:{prev_attn_out.stride(), cur_attn_out.stride()}, softmax shape:{prev_softmax_sum.shape}, stride:{prev_softmax_sum.stride(), cur_softmax_sum.stride()}")
+            f"proving finished, attn shape:{prev_attn_out.shape}, stride:{prev_attn_out.stride(), cur_attn_out.stride()}, softmax shape:{prev_softmax_sum.shape}, stride:{prev_softmax_sum.stride(), cur_softmax_sum.stride()}"
+        )
 
     (S, B, H, N) = (4096, 1, 6144, 48)
     DS = 2 * S
@@ -262,15 +259,15 @@ def benchmark_forward_update():
     cur_softmax_max_s = torch.rand((B, N, S), dtype=DTYPE).npu().unsqueeze(3).repeat(1, 1, 1, F32_BLK_SIZE)
     cur_softmax_sum_s = torch.rand((B, N, S), dtype=DTYPE).npu().unsqueeze(3).repeat(1, 1, 1, F32_BLK_SIZE)
 
-    benchmark_test(forward_update, forward_update_triton, args=(prev_attn_out,
-                                                                prev_softmax_max, prev_softmax_sum, cur_attn_out,
-                                                                cur_softmax_max, cur_softmax_sum),
-                   name="forward_update_2s", times=10, repeat=10)
+    benchmark_test(
+        forward_update, forward_update_triton,
+        args=(prev_attn_out, prev_softmax_max, prev_softmax_sum, cur_attn_out, cur_softmax_max, cur_softmax_sum),
+        name="forward_update_2s", times=10, repeat=10)
 
-    benchmark_test(forward_update, forward_update_triton, args=(prev_attn_out,
-                                                                prev_softmax_max, prev_softmax_sum, cur_attn_out,
-                                                                cur_softmax_max, cur_softmax_sum),
-                   name="forward_update_s", times=10, repeat=10)
+    benchmark_test(
+        forward_update, forward_update_triton,
+        args=(prev_attn_out, prev_softmax_max, prev_softmax_sum, cur_attn_out, cur_softmax_max, cur_softmax_sum),
+        name="forward_update_s", times=10, repeat=10)
 
 
 def profile_forward_update():
@@ -294,15 +291,15 @@ def profile_forward_update():
     cur_softmax_max_s = torch.rand((B, N, S), dtype=DTYPE).npu().unsqueeze(3).repeat(1, 1, 1, F32_BLK_SIZE)
     cur_softmax_sum_s = torch.rand((B, N, S), dtype=DTYPE).npu().unsqueeze(3).repeat(1, 1, 1, F32_BLK_SIZE)
 
-    profile_test(forward_update, forward_update_triton, args=(prev_attn_out,
-                                                              prev_softmax_max, prev_softmax_sum, cur_attn_out,
-                                                              cur_softmax_max, cur_softmax_sum),
-                 name="forward_update_2s", times=10, repeat=10)
+    profile_test(
+        forward_update, forward_update_triton,
+        args=(prev_attn_out, prev_softmax_max, prev_softmax_sum, cur_attn_out, cur_softmax_max, cur_softmax_sum),
+        name="forward_update_2s", times=10, repeat=10)
 
-    profile_test(forward_update, forward_update_triton, args=(prev_attn_out,
-                                                              prev_softmax_max, prev_softmax_sum, cur_attn_out,
-                                                              cur_softmax_max, cur_softmax_sum),
-                 name="forward_update_s", times=10, repeat=10)
+    profile_test(
+        forward_update, forward_update_triton,
+        args=(prev_attn_out, prev_softmax_max, prev_softmax_sum, cur_attn_out, cur_softmax_max, cur_softmax_sum),
+        name="forward_update_s", times=10, repeat=10)
 
 
 def backward_update(dq, dk, dv, cur_dq, cur_dk, cur_dv, i=7, rank=1):
@@ -398,8 +395,7 @@ def benchmark_backward_update():
                    name="backward_update_0")
 
 
-def forward_update_la(prev_attn_out, prev_softmax_log_max_sum,
-                      cur_attn_out, cur_softmax_log_max_sum):
+def forward_update_la(prev_attn_out, prev_softmax_log_max_sum, cur_attn_out, cur_softmax_log_max_sum):
     if prev_attn_out is None:
         return cur_attn_out, cur_softmax_log_max_sum
     softmax_log_max_sum = torch.log(torch.exp(cur_softmax_log_max_sum) + torch.exp(prev_softmax_log_max_sum))
@@ -409,15 +405,15 @@ def forward_update_la(prev_attn_out, prev_softmax_log_max_sum,
 
 
 # simuldate origin code :call foward_update then call copy
-def forward_update_copy(prev_attn_out, prev_softmax_log_max_sum,
-                        cur_attn_out, cur_softmax_log_max_sum):
-    attn_out, softmax = forward_update_la(prev_attn_out, prev_softmax_log_max_sum,
-                                          cur_attn_out, cur_softmax_log_max_sum)
+def forward_update_copy(prev_attn_out, prev_softmax_log_max_sum, cur_attn_out, cur_softmax_log_max_sum):
+    attn_out, softmax = forward_update_la(prev_attn_out, prev_softmax_log_max_sum, cur_attn_out,
+                                          cur_softmax_log_max_sum)
     prev_attn_out.copy_(attn_out)
     prev_softmax_log_max_sum.copy_(softmax)
 
 
 def prove_forward_update_la():
+
     def data_validation(prev_attn_out, prev_softmax_sum, cur_attn_out, cur_softmax_sum):
 
         (attn_out, softmax_sum) = forward_update_la(prev_attn_out, prev_softmax_sum, cur_attn_out, cur_softmax_sum)
@@ -434,7 +430,8 @@ def prove_forward_update_la():
             print("comparison not passed")
 
         print(
-            f"proving finished, attn shape:{prev_attn_out.shape}, stride:{prev_attn_out.stride(), cur_attn_out.stride()}, softmax shape:{prev_softmax_sum.shape}, stride:{prev_softmax_sum.stride(), cur_softmax_sum.stride()}")
+            f"proving finished, attn shape:{prev_attn_out.shape}, stride:{prev_attn_out.stride(), cur_attn_out.stride()}, softmax shape:{prev_softmax_sum.shape}, stride:{prev_softmax_sum.stride(), cur_softmax_sum.stride()}"
+        )
 
     (S, B, N, D) = (4096, 1, 48, 128)
     DS = 2 * S
@@ -479,21 +476,25 @@ def benchmark_forward_update_la():
     attn_out_s = attn_out.view(*attn_out.shape[:2], 2, attn_out.shape[2] // 2, attn_out.shape[-1])
     softmax_sum_s = softmax_sum.view(*softmax_sum.shape[:2], 2, softmax_sum.shape[2] // 2, softmax_sum.shape[-1])
 
-    benchmark_test(forward_update_copy, forward_update_triton_la, args=(attn_out_s[:, :, 1], softmax_sum_s[:, :, 1],
-                                                                        cur_attn_out_s, cur_softmax_sum_s),
+    benchmark_test(forward_update_copy, forward_update_triton_la,
+                   args=(attn_out_s[:, :, 1], softmax_sum_s[:, :, 1], cur_attn_out_s, cur_softmax_sum_s),
                    name="forward_update_la", profile=False, repeat=1000)
+
 
 @pytest.mark.skip(reason="attn_cp")
 def test_prove_forward_update():
     prove_forward_update()
 
+
 @pytest.mark.skip(reason="attn_cp")
 def test_prove_forward_update_la():
     prove_forward_update_la()
 
+
 @pytest.mark.skip(reason="attn_cp")
 def test_prove_backward_update():
     prove_backward_update()
+
 
 if __name__ == "__main__":
     pytest.main([__file__])

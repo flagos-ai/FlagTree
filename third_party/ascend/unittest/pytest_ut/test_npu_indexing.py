@@ -36,12 +36,27 @@ def foo(a, b, c):
 
 
 @triton.jit
-def triton_foo(in_ptr0, in_ptr1, in_ptr2, out_ptr0, BLOCK1: tl.constexpr, BLOCK1_SUB: tl.constexpr,
-                BLOCK2: tl.constexpr,
-                Z: tl.constexpr, Y: tl.constexpr, X: tl.constexpr, R: tl.constexpr,
-                Z_STRIDE: tl.constexpr, Y_STRIDE: tl.constexpr, X_STRIDE: tl.constexpr, R_STRIDE: tl.constexpr,
-                Z_STRIDE1: tl.constexpr, Y_STRIDE1: tl.constexpr, X_STRIDE1: tl.constexpr, R_STRIDE1: tl.constexpr,
-                ):
+def triton_foo(
+    in_ptr0,
+    in_ptr1,
+    in_ptr2,
+    out_ptr0,
+    BLOCK1: tl.constexpr,
+    BLOCK1_SUB: tl.constexpr,
+    BLOCK2: tl.constexpr,
+    Z: tl.constexpr,
+    Y: tl.constexpr,
+    X: tl.constexpr,
+    R: tl.constexpr,
+    Z_STRIDE: tl.constexpr,
+    Y_STRIDE: tl.constexpr,
+    X_STRIDE: tl.constexpr,
+    R_STRIDE: tl.constexpr,
+    Z_STRIDE1: tl.constexpr,
+    Y_STRIDE1: tl.constexpr,
+    X_STRIDE1: tl.constexpr,
+    R_STRIDE1: tl.constexpr,
+):
     offset: tl.constexpr = tl.program_id(0) * BLOCK1
     base1 = tl.arange(0, BLOCK1_SUB)
     base2 = tl.arange(0, BLOCK2)
@@ -89,13 +104,32 @@ def foo_triton_wrapper(a, b, c):
     BLOCK2 = 64
 
     value = torch.empty_strided((c.shape[0], c.shape[1], c.shape[2], c.shape[3]),
-                                (c.stride()[0], c.stride()[1], c.stride()[2], c.stride()[3]), dtype=torch.float32).npu()
+                                (c.stride()[0], c.stride()[1], c.stride()[2], c.stride()[3]),
+                                dtype=torch.float32).npu()
 
-    triton_foo[NBLOCKS, 1, 1](a, b, c, value, BLOCK1, BLOCK1_SUB, BLOCK2,
-                   a.shape[0], a.shape[1], a.shape[2], a.shape[3],
-                   a.stride()[0], a.stride()[1], a.stride()[2], a.stride()[3],
-                   c.stride()[0], c.stride()[1], c.stride()[2], c.stride()[3],)
+    triton_foo[NBLOCKS, 1, 1](
+        a,
+        b,
+        c,
+        value,
+        BLOCK1,
+        BLOCK1_SUB,
+        BLOCK2,
+        a.shape[0],
+        a.shape[1],
+        a.shape[2],
+        a.shape[3],
+        a.stride()[0],
+        a.stride()[1],
+        a.stride()[2],
+        a.stride()[3],
+        c.stride()[0],
+        c.stride()[1],
+        c.stride()[2],
+        c.stride()[3],
+    )
     return value
+
 
 def test_npu_indexing():
     Z, Y, X, R = (1, 1, 64, 64)

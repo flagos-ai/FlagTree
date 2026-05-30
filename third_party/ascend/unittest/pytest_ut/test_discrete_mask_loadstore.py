@@ -62,7 +62,7 @@ def test_single_discrete_mask_load(BLOCK_N):
     in_tensor = torch.arange(BLOCK_N, dtype=torch.float16, device='npu')
     out_tensor = torch.empty(BLOCK_N, dtype=torch.float16, device='npu')
 
-    single_disc_mask_load_kernel[(1,)](in_tensor, out_tensor, BLOCK_N=BLOCK_N)
+    single_disc_mask_load_kernel[(1, )](in_tensor, out_tensor, BLOCK_N=BLOCK_N)
 
     half = BLOCK_N // 2
     expected = torch.zeros(BLOCK_N, dtype=torch.float16, device='npu')
@@ -91,12 +91,12 @@ def single_disc_mask_store_kernel(
 @pytest.mark.parametrize("BLOCK_N", [8])
 def test_single_discrete_mask_store(BLOCK_N):
     in_tensor = torch.arange(BLOCK_N, dtype=torch.float16, device='npu')
-    out_tensor = torch.full((BLOCK_N,), -1.0, dtype=torch.float16, device='npu')
+    out_tensor = torch.full((BLOCK_N, ), -1.0, dtype=torch.float16, device='npu')
 
-    single_disc_mask_store_kernel[(1,)](in_tensor, out_tensor, BLOCK_N=BLOCK_N)
+    single_disc_mask_store_kernel[(1, )](in_tensor, out_tensor, BLOCK_N=BLOCK_N)
 
     half = BLOCK_N // 2
-    expected = torch.full((BLOCK_N,), -1.0, dtype=torch.float16, device='npu')
+    expected = torch.full((BLOCK_N, ), -1.0, dtype=torch.float16, device='npu')
     expected[:half] = in_tensor[:half]
     assert torch.allclose(out_tensor, expected), \
         f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}"
@@ -113,7 +113,7 @@ def single_cont_mask_load_kernel(
     BLOCK_M: tl.constexpr,
 ):
     row_offs = tl.arange(0, BLOCK_M)
-    cont_mask = row_offs < M # Continuous mask
+    cont_mask = row_offs < M  # Continuous mask
     ptr_in = in_ptr + row_offs
     ptr_out = out_ptr + row_offs
     data = tl.load(ptr_in, mask=cont_mask, other=0.0)
@@ -123,11 +123,11 @@ def single_cont_mask_load_kernel(
 @pytest.mark.parametrize("M,BLOCK_M", [(6, 8)])
 def test_single_continuous_mask_load(M, BLOCK_M):
     in_tensor = torch.arange(BLOCK_M, dtype=torch.float16, device='npu')
-    out_tensor = torch.full((BLOCK_M,), -1.0, dtype=torch.float16, device='npu')
+    out_tensor = torch.full((BLOCK_M, ), -1.0, dtype=torch.float16, device='npu')
 
-    single_cont_mask_load_kernel[(1,)](in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M)
+    single_cont_mask_load_kernel[(1, )](in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M)
 
-    expected = torch.full((BLOCK_M,), -1.0, dtype=torch.float16, device='npu')
+    expected = torch.full((BLOCK_M, ), -1.0, dtype=torch.float16, device='npu')
     expected[:M] = in_tensor[:M]
     assert torch.allclose(out_tensor, expected), \
         f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}"
@@ -154,9 +154,9 @@ def single_cont_mask_store_kernel(
 @pytest.mark.parametrize("M,BLOCK_M", [(6, 8)])
 def test_single_continuous_mask_store(M, BLOCK_M):
     in_tensor = torch.arange(BLOCK_M, dtype=torch.float16, device='npu')
-    out_tensor = torch.full((BLOCK_M,), -1.0, dtype=torch.float16, device='npu')
-    single_cont_mask_store_kernel[(1,)](in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M)
-    expected = torch.full((BLOCK_M,), -1.0, dtype=torch.float16, device='npu')
+    out_tensor = torch.full((BLOCK_M, ), -1.0, dtype=torch.float16, device='npu')
+    single_cont_mask_store_kernel[(1, )](in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M)
+    expected = torch.full((BLOCK_M, ), -1.0, dtype=torch.float16, device='npu')
     expected[:M] = in_tensor[:M]
     assert torch.allclose(out_tensor, expected), \
         f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}"
@@ -191,8 +191,7 @@ def test_cont_disc_combined_mask_load(M, BLOCK_M, BLOCK_N):
     in_tensor = torch.ones((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
     out_tensor = torch.empty((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
 
-    cont_disc_combined_mask_load_kernel[(1,)](
-        in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
+    cont_disc_combined_mask_load_kernel[(1, )](in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
 
     half_n = BLOCK_N // 2
     expected = torch.zeros((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
@@ -214,8 +213,8 @@ def cont_disc_combined_mask_store_kernel(
 ):
     row_offs = tl.arange(0, BLOCK_M)
     col_offs = tl.arange(0, BLOCK_N)
-    row_boundary = row_offs < M              # continuous -> contLeaf
-    col_stride = (col_offs * 2) < BLOCK_N    # discrete   -> discLeaf
+    row_boundary = row_offs < M  # continuous -> contLeaf
+    col_stride = (col_offs * 2) < BLOCK_N  # discrete   -> discLeaf
     mask = row_boundary[:, None] & col_stride[None, :]
     ptr_in = in_ptr + row_offs[:, None] * BLOCK_N + col_offs[None, :]
     ptr_out = out_ptr + row_offs[:, None] * BLOCK_N + col_offs[None, :]
@@ -227,8 +226,7 @@ def cont_disc_combined_mask_store_kernel(
 def test_cont_disc_combined_mask_store(M, BLOCK_M, BLOCK_N):
     in_tensor = torch.ones((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
     out_tensor = torch.full((BLOCK_M, BLOCK_N), -1.0, dtype=torch.float16, device='npu')
-    cont_disc_combined_mask_store_kernel[(1,)](
-        in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
+    cont_disc_combined_mask_store_kernel[(1, )](in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
     half_n = BLOCK_N // 2
     expected = torch.full((BLOCK_M, BLOCK_N), -1.0, dtype=torch.float16, device='npu')
     expected[:M, :half_n] = 1.0
@@ -249,9 +247,9 @@ def interleave_cont_disc_mask_kernel(
     pid = tl.program_id(0)
     col_offs = tl.arange(0, N)
     even_col_offs = tl.arange(0, N // 2) * 2
-    even_col_mask = even_col_offs < N    # discrete: cmpi(muli(range,2), N)
+    even_col_mask = even_col_offs < N  # discrete: cmpi(muli(range,2), N)
     row_offs = tl.arange(0, M)
-    row_mask = row_offs < M              # continuous: cmpi(range_M, M)
+    row_mask = row_offs < M  # continuous: cmpi(range_M, M)
     in_even_ptr = in_ptr + row_offs[:, None] * N + even_col_offs[None, :]
     in_odd_ptr = in_ptr + row_offs[:, None] * N + even_col_offs[None, :] + 1
     even_data = tl.load(in_even_ptr, mask=row_mask[:, None] & even_col_mask[None, :], other=0.0)
@@ -268,7 +266,7 @@ def test_discrete_mask_load_store(M, N):
     """Regression test: mask=row_mask & even_col_mask (continuous & discrete 2-way)"""
     input_tensor = torch.arange(M * N, dtype=torch.float16, device='npu').reshape(M, N)
     output_tensor = torch.empty_like(input_tensor)
-    interleave_cont_disc_mask_kernel[(1,)](input_tensor, output_tensor, M=M, N=N)
+    interleave_cont_disc_mask_kernel[(1, )](input_tensor, output_tensor, M=M, N=N)
     even_cols = input_tensor[:, 0::2]
     odd_cols = input_tensor[:, 1::2]
     ref_output = torch.empty_like(input_tensor)
@@ -292,15 +290,12 @@ def multi_cont_disc_mask_load_store_kernel(
     row_offs = tl.arange(0, BLOCK_M)
     col_offs = tl.arange(0, BLOCK_N)
 
-    row_boundary = row_offs < M              # continuous mask
-    col_boundary = col_offs < N              # continuous mask
-    row_stride = (row_offs * 2) < BLOCK_M    # discrete mask
-    col_stride = (col_offs * 2) < BLOCK_N    # discrete mask
+    row_boundary = row_offs < M  # continuous mask
+    col_boundary = col_offs < N  # continuous mask
+    row_stride = (row_offs * 2) < BLOCK_M  # discrete mask
+    col_stride = (col_offs * 2) < BLOCK_N  # discrete mask
 
-    mask = (row_boundary[:, None]
-            & col_boundary[None, :]
-            & row_stride[:, None]
-            & col_stride[None, :])
+    mask = (row_boundary[:, None] & col_boundary[None, :] & row_stride[:, None] & col_stride[None, :])
 
     ptr_in = in_ptr + row_offs[:, None] * BLOCK_N + col_offs[None, :]
     ptr_out = out_ptr + row_offs[:, None] * BLOCK_N + col_offs[None, :]
@@ -317,18 +312,15 @@ def test_multi_cont_disc_mask_load_store(M, N, BLOCK_M, BLOCK_N):
     in_tensor = torch.ones((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
     out_tensor = torch.zeros((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
 
-    multi_cont_disc_mask_load_store_kernel[(1,)](
-        in_tensor, out_tensor, M=M, N=N, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
+    multi_cont_disc_mask_load_store_kernel[(1, )](in_tensor, out_tensor, M=M, N=N, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
 
-    half_m = BLOCK_M // 2   # = 4
-    half_n = BLOCK_N // 2   # = 4
+    half_m = BLOCK_M // 2  # = 4
+    half_n = BLOCK_N // 2  # = 4
     expected = torch.zeros((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
     expected[:half_m, :half_n] = 2.0
 
-    assert torch.allclose(out_tensor, expected), (
-        f"BLOCK=({BLOCK_M},{BLOCK_N}), valid=({M},{N})\n"
-        f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}"
-    )
+    assert torch.allclose(out_tensor, expected), (f"BLOCK=({BLOCK_M},{BLOCK_N}), valid=({M},{N})\n"
+                                                  f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}")
 
 
 # =============================================================================
@@ -361,8 +353,7 @@ def test_broadcast_cont_disc_2d_load(M, BLOCK_M, BLOCK_N):
     in_tensor = torch.ones((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
     out_tensor = torch.empty((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
 
-    broadcast_cont_disc_2d_load_kernel[(1,)](
-        in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
+    broadcast_cont_disc_2d_load_kernel[(1, )](in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
 
     disc_true_rows = BLOCK_M // 2
     both_true_rows = min(M, disc_true_rows)
@@ -370,10 +361,8 @@ def test_broadcast_cont_disc_2d_load(M, BLOCK_M, BLOCK_N):
     expected = torch.zeros((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
     expected[:both_true_rows, :] = 1.0
 
-    assert torch.allclose(out_tensor, expected), (
-        f"M={M}, BLOCK_M={BLOCK_M}, BLOCK_N={BLOCK_N}\n"
-        f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}"
-    )
+    assert torch.allclose(out_tensor, expected), (f"M={M}, BLOCK_M={BLOCK_M}, BLOCK_N={BLOCK_N}\n"
+                                                  f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}")
 
 
 # =============================================================================
@@ -407,8 +396,7 @@ def test_broadcast_cont_disc_2d_load_store(M, BLOCK_M, BLOCK_N):
     in_tensor = torch.ones((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
     out_tensor = torch.full((BLOCK_M, BLOCK_N), -1.0, dtype=torch.float16, device='npu')
 
-    broadcast_cont_disc_2d_load_store_kernel[(1,)](
-        in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
+    broadcast_cont_disc_2d_load_store_kernel[(1, )](in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
 
     disc_true_rows = BLOCK_M // 2
     both_true_rows = min(M, disc_true_rows)
@@ -416,7 +404,5 @@ def test_broadcast_cont_disc_2d_load_store(M, BLOCK_M, BLOCK_N):
     expected = torch.full((BLOCK_M, BLOCK_N), -1.0, dtype=torch.float16, device='npu')
     expected[:both_true_rows, :] = 1.0
 
-    assert torch.allclose(out_tensor, expected), (
-        f"M={M}, BLOCK_M={BLOCK_M}, BLOCK_N={BLOCK_N}\n"
-        f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}"
-    )
+    assert torch.allclose(out_tensor, expected), (f"M={M}, BLOCK_M={BLOCK_M}, BLOCK_N={BLOCK_N}\n"
+                                                  f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}")

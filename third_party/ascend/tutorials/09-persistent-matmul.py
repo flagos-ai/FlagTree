@@ -19,7 +19,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Persistent Matmul
 =====================
@@ -311,10 +310,8 @@ def validate(M, N, K):
     persistent_vs_torch = "✅" if torch.allclose(persistent_result, torch_result, atol=1.0) else "❌"
     naive_vs_persistent = "✅" if torch.allclose(naive_result, persistent_result, atol=1.0) else "❌"
 
-    print(
-        f"M={M}, N={N}, K={K} verification naive vs torch: {naive_vs_torch} "
-        f"persistent vs torch: {persistent_vs_torch} naive vs persistent: {naive_vs_persistent}"
-    )
+    print(f"M={M}, N={N}, K={K} verification naive vs torch: {naive_vs_torch} "
+          f"persistent vs torch: {persistent_vs_torch} naive vs persistent: {naive_vs_persistent}")
 
 
 if __name__ == "__main__":

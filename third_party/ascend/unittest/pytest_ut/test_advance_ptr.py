@@ -18,8 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
-
 import triton
 import triton.language as tl
 
@@ -30,22 +28,10 @@ import pytest
 
 @triton.jit
 def fn_npu_3d(output_ptr, x_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr):
-    block_ptr_in = tl.make_block_ptr(
-        base=x_ptr,
-        shape=(XB, YB, ZB),
-        strides=(YB * ZB, ZB, 1),
-        offsets=(0, 0, 0),
-        block_shape=(XB, YB, 2),
-        order=(2, 1, 0)
-    )
-    block_ptr_out = tl.make_block_ptr(
-        base=output_ptr,
-        shape=(XB, YB, ZB),
-        strides=(YB * ZB, ZB, 1),
-        offsets=(0, 0, 0),
-        block_shape=(XB, YB, 2),
-        order=(2, 1, 0)
-    )
+    block_ptr_in = tl.make_block_ptr(base=x_ptr, shape=(XB, YB, ZB), strides=(YB * ZB, ZB, 1), offsets=(0, 0, 0),
+                                     block_shape=(XB, YB, 2), order=(2, 1, 0))
+    block_ptr_out = tl.make_block_ptr(base=output_ptr, shape=(XB, YB, ZB), strides=(YB * ZB, ZB, 1), offsets=(0, 0, 0),
+                                      block_shape=(XB, YB, 2), order=(2, 1, 0))
     pid = tl.program_id(axis=0)  # pid=0,1  BLOCK_SIZE_N=8
     for _ in range(ZB // 2):
         X = tl.load(block_ptr_in, boundary_check=(0, 1, 2))

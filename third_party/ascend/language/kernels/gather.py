@@ -17,12 +17,10 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Gather kernel optimized for Ascend NPU.
 """
 __all__ = ["gather_2d_simd"]
-
 
 import triton
 import triton.language as tl
@@ -30,24 +28,16 @@ from triton.language.core import constexpr
 
 
 @triton.jit
-def gather_2d_simd(
-    src_ptr,
-    idx_ptr,
-    out_ptr,
-    M: constexpr,
-    N: constexpr,
-    K: constexpr,
-    XBLOCK: constexpr,
-    XBLOCK_SUB: constexpr
-):
+def gather_2d_simd(src_ptr, idx_ptr, out_ptr, M: constexpr, N: constexpr, K: constexpr, XBLOCK: constexpr,
+                   XBLOCK_SUB: constexpr):
     """
     2D gather kernel for axis=1 (tail axis) with SIMD-style vectorization.
-    
+
     This kernel is optimized for Ascend NPU architecture with focus on:
     - Vectorized memory access using XBLOCK_SUB
     - Efficient global memory (GM) access patterns
     - Suitable for cases where N and K are not extremely large
-    
+
     Args:
         src_ptr: [M, N] source tensor in GM (Global Memory)
         idx_ptr: [M, K] indices tensor in GM
@@ -57,50 +47,42 @@ def gather_2d_simd(
         K: output dimension size (number of indices per batch)
         XBLOCK: outer block size for M dimension (for program distribution)
         XBLOCK_SUB: inner block size for M dimension (for SIMD vectorization)
-    
+
     Example:
         import torch
         import triton
         from third_party.ascend.language.kernels import gather_2d_simd
-        
+
         M, N, K = 128, 256, 64
         src = torch.randn(M, N, device='npu')
         indices = torch.randint(0, N, (M, K), dtype=torch.int32, device='npu')
         output = torch.empty((M, K), dtype=src.dtype, device='npu')
-        
+
         grid = (triton.cdiv(M, 32),)
-        gather_2d_simd[grid](src, indices, output, M, N, K, 
+        gather_2d_simd[grid](src, indices, output, M, N, K,
                              XBLOCK=32, XBLOCK_SUB=4)
     """
     pid = tl.program_id(0)
     m_start = pid * XBLOCK
     m_end = min(m_start + XBLOCK, M)
     m_base = tl.arange(0, XBLOCK_SUB)
-    
+
     # Process multiple rows at once using XBLOCK_SUB for vectorization
     for m_tile_start in range(m_start, m_end, XBLOCK_SUB):
         # M dimension offsets: [XBLOCK_SUB]
         m_offs = m_tile_start + m_base
         m_mask = m_offs < M
-        
+
         # Load indices: [XBLOCK_SUB, K]
         k_offs = tl.arange(0, K)
-        idx_tile = tl.load(
-            idx_ptr + m_offs[:, None] * K + k_offs[None, :]
-        )
+        idx_tile = tl.load(idx_ptr + m_offs[:, None] * K + k_offs[None, :])
 
         # Load source data: [XBLOCK_SUB, N]
         n_offs = tl.arange(0, N)
-        src_tile = tl.load(
-            src_ptr + m_offs[:, None] * N + n_offs[None, :]
-        )
-        
+        src_tile = tl.load(src_ptr + m_offs[:, None] * N + n_offs[None, :])
+
         # Gather operation along axis=1
         gathered_values = tl.gather(src_tile, idx_tile, axis=1)
-            
+
         # Store results
-        tl.store(
-            out_ptr + m_offs[:, None] * K + k_offs[None, :],
-            gathered_values,
-            mask=m_mask[:, None]
-        )
+        tl.store(out_ptr + m_offs[:, None] * K + k_offs[None, :], gathered_values, mask=m_mask[:, None])

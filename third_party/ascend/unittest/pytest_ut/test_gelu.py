@@ -27,6 +27,7 @@ import test_common
 import torch
 import torch_npu
 
+
 def standard_unary(x0, dtype):
     res = x0 * 0.5 * (1.0 + torch.erf(x0 / torch.sqrt(torch.tensor(2.0))))
     return res
@@ -85,13 +86,13 @@ def test_elementwsie_common(dtype, sigtype, N, NUMEL):
 
     print(f"elementwise : ({N},) {dtype} {sigtype}")
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype)
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype)
 
     ans = standard_unary(x0, dtype)
     x0 = x0.npu()
     print(ans)
 
-    out = torch.zeros((N,), dtype=dtype).npu()
+    out = torch.zeros((N, ), dtype=dtype).npu()
     triton_elementwise_unary[1, 1, 1](x0, out, N=N, NUMEL=NUMEL, debug=True)
     print(out)
 

@@ -27,6 +27,7 @@ import triton.language.extra.ascend.libdevice as libdevice
 from test_common import TestUtils
 import math
 
+
 def torch_relu(x0, x1):
     res = x0 + torch.relu(x1)
     return res

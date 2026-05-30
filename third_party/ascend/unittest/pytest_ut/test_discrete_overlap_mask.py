@@ -27,10 +27,10 @@ import triton.language as tl
 # ---------------------------------------------------------------------------
 # Fixed Constants
 # ---------------------------------------------------------------------------
-_M_ROWS = 16   # Rows per program
-_OFFS = 8      # Write window offset for two programs
-_HALF = 12     # Mask threshold
-_NUM_C = 24    # Rows of matrix C (= OFFS + M_ROWS, ensure pid=1 write window not out of bounds)
+_M_ROWS = 16  # Rows per program
+_OFFS = 8  # Write window offset for two programs
+_HALF = 12  # Mask threshold
+_NUM_C = 24  # Rows of matrix C (= OFFS + M_ROWS, ensure pid=1 write window not out of bounds)
 
 assert _OFFS < _HALF < _M_ROWS, "OFFS < HALF < M_ROWS to ensure True/False on both sides"
 assert _NUM_C >= _OFFS + _M_ROWS, "NUM_C must accommodate upper bound of pid=1 write window"
@@ -41,7 +41,8 @@ assert _NUM_C >= _OFFS + _M_ROWS, "NUM_C must accommodate upper bound of pid=1 w
 # ---------------------------------------------------------------------------
 @triton.jit
 def _copy_matrix_kernel(
-    A_ptr, idx_ptr,
+    A_ptr,
+    idx_ptr,
     C_ptr,
     idx_stride,
     A_row_stride,
@@ -64,8 +65,8 @@ def _copy_matrix_kernel(
     OFFS: tl.constexpr = 8
     M_ROWS: tl.constexpr = 16
 
-    N_BLOCK = N_id * BLOCK_N + tl.arange(0, BLOCK_N)   # shape: (BLOCK_N,)
-    M_BLOCK = tl.arange(0, M_ROWS)                      # shape: (M_ROWS,)
+    N_BLOCK = N_id * BLOCK_N + tl.arange(0, BLOCK_N)  # shape: (BLOCK_N,)
+    M_BLOCK = tl.arange(0, M_ROWS)  # shape: (M_ROWS,)
 
     # Discrete row indices (loaded at runtime -> mask cannot be statically analyzed)
     idx = tl.load(idx_ptr + program_id * idx_stride + M_BLOCK)
@@ -83,8 +84,7 @@ def _copy_matrix_kernel(
 
     # Write to C (mask=False rows rely on load-select-store to preserve original values)
     tl.store(
-        C_ptr + (OFFS * program_id + M_BLOCK[:, None]) * C_row_stride
-              + N_BLOCK[None, :] * C_col_stride,
+        C_ptr + (OFFS * program_id + M_BLOCK[:, None]) * C_row_stride + N_BLOCK[None, :] * C_col_stride,
         val,
         mask=mask[:, None],
     )
@@ -109,6 +109,7 @@ def _make_idx(device: str) -> torch.Tensor:
       First  4      values ∈ [OFFS, OFFS+4)  -> mask=False
       Last HALF=12 values ∈ [HALF, HALF*2)  -> mask=True
     """
+
     def shuffle_quads(lst: list) -> list:
         """Reverse each group of 4 elements (ignore if less than 4)."""
         out = lst[:]
@@ -117,15 +118,15 @@ def _make_idx(device: str) -> torch.Tensor:
                 out[i + 3], out[i + 2], out[i + 1], out[i]
         return out
 
-    num_false = _M_ROWS - _HALF   # = 4
+    num_false = _M_ROWS - _HALF  # = 4
 
-    seg0_true = shuffle_quads(list(range(0, _HALF)))                  # 12 values, < 12
-    seg0_false = shuffle_quads(list(range(_HALF, _HALF + num_false))) # 4 values, >= 12
-    idx0 = seg0_true + seg0_false                                     # Total length 16
+    seg0_true = shuffle_quads(list(range(0, _HALF)))  # 12 values, < 12
+    seg0_false = shuffle_quads(list(range(_HALF, _HALF + num_false)))  # 4 values, >= 12
+    idx0 = seg0_true + seg0_false  # Total length 16
 
-    seg1_false = shuffle_quads(list(range(_OFFS, _OFFS + num_false))) # 4 values, < 12
-    seg1_true = shuffle_quads(list(range(_HALF, _HALF + _HALF)))      # 12 values, >= 12
-    idx1 = seg1_false + seg1_true                                     # Total length 16
+    seg1_false = shuffle_quads(list(range(_OFFS, _OFFS + num_false)))  # 4 values, < 12
+    seg1_true = shuffle_quads(list(range(_HALF, _HALF + _HALF)))  # 12 values, >= 12
+    idx1 = seg1_false + seg1_true  # Total length 16
 
     assert len(idx0) == _M_ROWS, f"idx0 length error: {len(idx0)}"
     assert len(idx1) == _M_ROWS, f"idx1 length error: {len(idx1)}"
@@ -175,10 +176,14 @@ def _run_once(BLOCK_N: int, dtype_str: str) -> None:
 
     grid = (2, 1)
     _copy_matrix_kernel[grid](
-        A_ptr=A, idx_ptr=idx, C_ptr=C,
+        A_ptr=A,
+        idx_ptr=idx,
+        C_ptr=C,
         idx_stride=idx.stride(0),
-        A_row_stride=A.stride(0), A_col_stride=A.stride(1),
-        C_row_stride=C.stride(0), C_col_stride=C.stride(1),
+        A_row_stride=A.stride(0),
+        A_col_stride=A.stride(1),
+        C_row_stride=C.stride(0),
+        C_col_stride=C.stride(1),
         BLOCK_N=BLOCK_N,
         HALF=_HALF,
         enable_sync_block_lock=True,
@@ -187,12 +192,10 @@ def _run_once(BLOCK_N: int, dtype_str: str) -> None:
     # Verification
     assert torch.all(C[:_HALF] == zero_val), (
         f"[dtype={dtype_str}, BLOCK_N={BLOCK_N}] "
-        f"C[:HALF] should all be {zero_val}, actual unique values: {C[:_HALF].unique().tolist()}"
-    )
+        f"C[:HALF] should all be {zero_val}, actual unique values: {C[:_HALF].unique().tolist()}")
     assert torch.all(C[_HALF:] == one_val), (
         f"[dtype={dtype_str}, BLOCK_N={BLOCK_N}] "
-        f"C[HALF:] should all be {one_val}, actual unique values: {C[_HALF:].unique().tolist()}"
-    )
+        f"C[HALF:] should all be {one_val}, actual unique values: {C[_HALF:].unique().tolist()}")
 
 
 @pytest.mark.parametrize("param_list", [

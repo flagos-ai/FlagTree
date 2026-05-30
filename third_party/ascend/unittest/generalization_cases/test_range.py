@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import pytest
 import triton
 import torch
@@ -30,8 +29,8 @@ from test_common import TestUtils
 
 
 @triton.jit
-def triton_range(output_ptr, x_ptr, y_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr,
-                 XNUMEL: tl.constexpr, YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
+def triton_range(output_ptr, x_ptr, y_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, XNUMEL: tl.constexpr,
+                 YNUMEL: tl.constexpr, ZNUMEL: tl.constexpr):
     xoffs = tl.program_id(0) * XB
     yoffs = tl.program_id(1) * YB
     zoffs = tl.program_id(2) * ZB
@@ -75,7 +74,7 @@ def triton_static_range(output_ptr, x_ptr, y_ptr, XB: tl.constexpr, YB: tl.const
     tl.store(output_ptr + idx, ret)
 
 
-test_shape = [(1,), (2,), (1, 1), (3, 4), (1, 1, 1), (2, 4, 8)]
+test_shape = [(1, ), (2, ), (1, 1), (3, 4), (1, 1, 1), (2, 4, 8)]
 
 
 @pytest.mark.parametrize('shape', test_shape)

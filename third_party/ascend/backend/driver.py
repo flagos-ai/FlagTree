@@ -31,20 +31,14 @@ import hashlib
 from triton.runtime.cache import get_cache_manager, get_dump_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
-from triton.backends.ascend.utils import (
-    _precompile_npu_hash,
-    _precompile_npu_ext,
-    _build_npu_ext,
-    _check_cxx11_abi,
-    convert_sigtype_to_int,
-    _is_auto_map_parallel_blocks_enabled,
-    get_ascend_arch_from_env,
-    is_ffts_supported,
-    force_disable_ffts,
-    get_backend_func
-)
+from triton.backends.ascend.utils import (_precompile_npu_hash, _precompile_npu_ext, _build_npu_ext, _check_cxx11_abi,
+                                          convert_sigtype_to_int, _is_auto_map_parallel_blocks_enabled,
+                                          get_ascend_arch_from_env, is_ffts_supported, force_disable_ffts,
+                                          get_backend_func)
+
 
 class NPUUtils(object):
+
     def __new__(cls):
         if not hasattr(cls, 'instance'):
             cls.instance = super(NPUUtils, cls).__new__(cls)
@@ -101,9 +95,11 @@ class NPUUtils(object):
 
 
 class NPULauncher(object):
+
     def __init__(self, src, metadata):
         self.compile_only = os.getenv("TRITON_COMPILE_ONLY", 'false').lower() in ('true', '1')
-        self.enable_msprof_register_tensor = os.getenv("TRITON_REGISTER_TENSOR_MSPROF", 'false').lower() in ('true', '1')
+        self.enable_msprof_register_tensor = os.getenv("TRITON_REGISTER_TENSOR_MSPROF",
+                                                       'false').lower() in ('true', '1')
         debug_mode = metadata.debug
         header_src = generate_npu_header_src()
         constants = src.constants if hasattr(src, "constants") else dict()
@@ -140,7 +136,9 @@ class NPULauncher(object):
             import triton
             triton.backends.ascend.utils.TRITON_PROFILER_REGISTERED = True if profiler_registered == 1 else False
 
+
 class NPUDriver(DriverBase):
+
     def __init__(self):
         self.utils = NPUUtils()
         self.launcher_cls = NPULauncher
@@ -148,11 +146,13 @@ class NPUDriver(DriverBase):
 
     @classmethod
     def is_active(cls):
+
         def test_npucompiler():
             from triton.backends.ascend.utils import _get_bisheng_path
             npucompiler = _get_bisheng_path()
             targets = subprocess.check_output([npucompiler, "-print-targets"]).decode().strip().split()
             return "hiipu64" in targets
+
         try:
             return test_npucompiler()
         except Exception as e_npucompiler:
@@ -180,7 +180,7 @@ class NPUDriver(DriverBase):
         Get current device
         """
         return get_backend_func("get_current_device")
-    
+
     def get_active_torch_device(self):
         import torch_npu
         return torch.device("npu", self.get_current_device())
@@ -220,7 +220,7 @@ def _precompile_npu_ext_with_lock(header_src, enable_precompile):
     cache = get_cache_manager(precompile_hash)
     gch_path = cache.get_file("precompiled.h.gch")
     header_path = cache.get_file("precompiled.h")
-    if enable_precompile: 
+    if enable_precompile:
         if header_path is not None and gch_path is not None:
             return header_path
     else:
@@ -248,7 +248,7 @@ def _precompile_npu_ext_with_lock(header_src, enable_precompile):
             return header_path
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
-    
+
 
 def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     """
@@ -258,7 +258,7 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     # if precompile header file and its gch file not exist, do precompile
     header_path = _precompile_npu_ext_with_lock(header_src, enable_precompile)
     assert header_path is not None, "the precompiled.h path is empty."
-    
+
     # try to get cached file
     so_cache_key = hashlib.sha256(wrapper_src.encode("utf-8")).hexdigest()
     so_cache_manager = get_cache_manager(so_cache_key)
@@ -275,7 +275,7 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
             print(f"Dumping precompiled.h to {dump_manager.cache_dir}")
             dump_manager.put(header_src, "precompiled.h", binary=False)
         print(f"Dumping {name}.cxx to {dump_manager.cache_dir}")
-        dump_manager.put(wrapper_src, f"{name}.cxx", binary = False)
+        dump_manager.put(wrapper_src, f"{name}.cxx", binary=False)
 
     cache_path = so_cache_manager.get_file(so_name)
     if cache_path is not None:
@@ -283,12 +283,12 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
 
     kernel_launcher_type = "torch"
 
-
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, f"{name}.cxx")
         with open(src_path, "w") as f:
             f.write(wrapper_src)
-        so_path = _build_npu_ext(name, header_path, src_path, kernel_launcher=kernel_launcher_type, precompile=enable_precompile)
+        so_path = _build_npu_ext(name, header_path, src_path, kernel_launcher=kernel_launcher_type,
+                                 precompile=enable_precompile)
         if debug:
             with open(so_path, "rb") as f:
                 dump_manager.put(f.read(), so_name, binary=True)
@@ -366,8 +366,7 @@ def extract_device_print_code_from_cann():
 
 
 def generate_npu_header_src():
-    enable_taskqueue = os.getenv(
-        "TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
+    enable_taskqueue = os.getenv("TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
     return f"""
 /*
  * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
@@ -408,6 +407,7 @@ def generate_npu_header_src():
 #endif
 """
 
+
 # ------------------------
 # Launcher
 # ------------------------
@@ -434,6 +434,7 @@ def ty_to_cpp(ty):
         "fp64": "double",
     }[ty]
 
+
 # the template is from triton-adapter HEAD. Wrapping the generated kernel binary into a python module
 def make_launcher(constants, signature, metadata):
     import os
@@ -450,9 +451,9 @@ def make_launcher(constants, signature, metadata):
     enable_simt = ("simt" in parallel_mode) or metadata.force_simt_only
 
     def _serialize_signature(sig):
-      if isinstance(sig, tuple):
-          return ','.join(map(_serialize_signature, sig))
-      return sig
+        if isinstance(sig, tuple):
+            return ','.join(map(_serialize_signature, sig))
+        return sig
 
     def _extracted_type(ty):
         if isinstance(ty, tuple):
@@ -530,7 +531,7 @@ def make_launcher(constants, signature, metadata):
             internal_args_list.append(f"ptr_info{i}.dev_ptr")
         elif ty != "constexpr":
             internal_args_list.append(f"_arg{i}")
-    
+
     # generate glue code
     newline = '\n  '
     ptr_decls = [
@@ -544,19 +545,15 @@ def make_launcher(constants, signature, metadata):
 
     arch = get_ascend_arch_from_env()
     target_support_ffts = is_ffts_supported(arch) and (not force_disable_ffts())
-    enable_device_print = os.getenv(
-        "TRITON_DEVICE_PRINT", 'false').lower() in ('true', '1')
-    enable_taskqueue = os.getenv(
-        "TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
-    enable_grid_warn_print = os.getenv(
-        "TRITON_GRID_WARN_PRINT", 'false').lower() in ('true', '1')
+    enable_device_print = os.getenv("TRITON_DEVICE_PRINT", 'false').lower() in ('true', '1')
+    enable_taskqueue = os.getenv("TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
+    enable_grid_warn_print = os.getenv("TRITON_GRID_WARN_PRINT", 'false').lower() in ('true', '1')
     # Per-kernel metadata wins; fall back to the env var when unset.
     enable_auto_map_parallel_blocks = getattr(metadata, "enable_auto_blockify", None)
     if enable_auto_map_parallel_blocks is None:
         enable_auto_map_parallel_blocks = _is_auto_map_parallel_blocks_enabled()
     npu_utils = NPUUtils()
-    num_physical_blocks = npu_utils.get_aivector_core_num(
-    ) if mix_mode == "aiv" else npu_utils.get_aicore_num()
+    num_physical_blocks = npu_utils.get_aivector_core_num() if mix_mode == "aiv" else npu_utils.get_aicore_num()
     task_type, mix_block_dim_ratio = _format_of_msprof_task_type_ratio(bs_task_type, mix_mode)
     is_mix_task_type = "true" if ("MIX" in task_type) else "false"
     LINE_CHANGE_CHAR = chr(10)  # it is \n

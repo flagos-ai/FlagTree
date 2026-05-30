@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Ascend-specific code generation handlers for 'with' statement context managers.
 """
@@ -86,20 +85,18 @@ def _handle_core_mode_attr(builder, core_mode):
     if core_mode not in ("cube", "vector"):
         return {}
     return {
-        builder.get_t_core_type_attr_name(): (
-            builder.get_t_core_type_cube_attr() if core_mode == "cube"
-            else builder.get_t_core_type_vector_attr()
-        )
+        builder.get_t_core_type_attr_name():
+        (builder.get_t_core_type_cube_attr() if core_mode == "cube" else builder.get_t_core_type_vector_attr())
     }
 
 
 def _build_mlir_attrs_from_scope_attrs(builder, scope_attrs):
     """Convert Python scope attributes to MLIR attributes.
-    
+
     Args:
         builder: The IR builder
         scope_attrs: Dict of scope attributes (e.g., {'core_mode': 'vector', 'noinline': True})
-        
+
     Returns:
         Dict of MLIR attributes
     """
@@ -137,10 +134,10 @@ def _reconstruct_value_from_ir(language, entry_block_arg, ret_type):
 def handle_scope_with(generator, node):
     """
     Handle 'with scope(...)' statements by creating a scope.scope operation.
-    
+
     This creates a scope.scope operation with a region for the scope block.
     Uses SSA threading to properly handle variables modified inside the scope.
-    
+
     Args:
         generator: The CodeGenerator instance
         node: AST node for the with statement
@@ -148,10 +145,10 @@ def handle_scope_with(generator, node):
     # Lazy imports to avoid circular dependency
     from triton import language
     from triton.compiler.code_generator import enter_sub_region, _is_triton_value, _is_triton_tensor
-    
+
     context_expr = node.items[0].context_expr
     scope_attrs = _extract_scope_attributes(context_expr)
-    
+
     with enter_sub_region(generator) as sr:
         liveins, _ = sr
         ip, last_loc = generator._get_insertion_point_and_loc()
@@ -173,18 +170,14 @@ def handle_scope_with(generator, node):
             names.append(name)
             if name in liveins:
                 live_val = liveins[name]
-                _verify_loop_carried_variable(
-                    _is_triton_value, _is_triton_tensor, name, scope_val, live_val)
+                _verify_loop_carried_variable(_is_triton_value, _is_triton_tensor, name, scope_val, live_val)
 
         # Convert Python primitives to MLIR attributes
         mlir_attrs = _build_mlir_attrs_from_scope_attrs(generator.builder, scope_attrs)
 
         # Create scope operation with operands (values from outside)
         generator._set_insertion_point_and_loc(ip, last_loc)
-        scope_op = generator.builder.create_scope_op(
-            mlir_attrs,
-            [ty.to_ir(generator.builder) for ty in ret_types]
-        )
+        scope_op = generator.builder.create_scope_op(mlir_attrs, [ty.to_ir(generator.builder) for ty in ret_types])
 
         # Create the entry block with arguments matching the operands
         entry_block = generator.builder.create_block_with_parent(scope_op.get_region(0), [])
@@ -206,4 +199,3 @@ def handle_scope_with(generator, node):
     for i, name in enumerate(names):
         generator.set_value(name, _reconstruct_value_from_ir(language, scope_op.get_result(i), ret_types[i]))
     return None
-

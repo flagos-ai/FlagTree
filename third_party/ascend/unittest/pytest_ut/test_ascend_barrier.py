@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 
-
 import pytest
 import triton
 import triton.language as tl
@@ -10,7 +9,6 @@ from triton.compiler.compiler import ASTSource
 from triton.compiler.code_generator import ast_to_ttir
 from triton._C.libtriton import ir
 from triton._C.libtriton.ascend import ir as ascend_ir
-
 
 os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
 

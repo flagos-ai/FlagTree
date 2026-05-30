@@ -44,7 +44,9 @@ def test_triton_kernel(module_path, kernel_name, pytestconfig):
             urllib.request.urlretrieve(pt_url, local_pt)
             downloaded = True
         except Exception as e:
-            pytest.fail(f"Failed to download the {kernel_name}.pt file. Please check whether the {kernel_name}.pt file has been uploaded to the OBS bucket: {e}")
+            pytest.fail(
+                f"Failed to download the {kernel_name}.pt file. Please check whether the {kernel_name}.pt file has been uploaded to the OBS bucket: {e}"
+            )
     try:
         mod = importlib.import_module(module_path)
     except Exception as e:

@@ -112,13 +112,12 @@ def triton_dot_2_ignore_tf32(output_ptr, x_ptr, y_ptr, B: tl.constexpr, C: tl.co
     oidx = bidx[:, None] * D + didx[None, :]
     tl.store(output_ptr + oidx, ret, mask=out_mask)
 
+
 testlist1 = [
     (10, 13, 35, 39),
 ]
 
-testlist2 = [
-    (16, 32, 16)
-]
+testlist2 = [(16, 32, 16)]
 
 typelist = [
     'float32',
@@ -138,8 +137,7 @@ def test_dot_2(restore_npu_hf32_setting, sigtype, B, C, D):
 
 
 @pytest.mark.xfail(
-    reason="Temporarily disabled: TA backend does not support allow_tf32 yet. Will be fixed in follow-up."
-)
+    reason="Temporarily disabled: TA backend does not support allow_tf32 yet. Will be fixed in follow-up.")
 @pytest.mark.parametrize("B, C, D", testlist2)
 @pytest.mark.parametrize("sigtype", typelist)
 def test_dot_2_allow_tf32(restore_npu_hf32_setting, sigtype, B, C, D):

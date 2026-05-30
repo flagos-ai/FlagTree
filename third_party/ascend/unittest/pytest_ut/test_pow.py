@@ -38,6 +38,7 @@ shapes = [
 @pytest.mark.parametrize("sigtype", ["float32"])
 @pytest.mark.parametrize("N", shapes)
 def test_pow_vv(sigtype, N):
+
     def torch_func(x0, x1):
         res = torch.pow(x0, x1)
         return res
@@ -55,8 +56,8 @@ def test_pow_vv(sigtype, N):
         triton_kernel[1, 1, 1](out, x0, x1, N)
         return out
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    x1 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
+    x1 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
 
     triton_cal = triton_func(x0, x1, N)
     torch_ref = torch_func(x0, x1)
@@ -66,6 +67,7 @@ def test_pow_vv(sigtype, N):
 @pytest.mark.parametrize("sigtype", ["float32"])
 @pytest.mark.parametrize("N", shapes)
 def test_pow_vs_dynamic(sigtype, N):
+
     def torch_func(x0, x1):
         res = torch.pow(x0, x1)
         return res
@@ -83,8 +85,8 @@ def test_pow_vs_dynamic(sigtype, N):
         triton_kernel[1, 1, 1](out, x0, x1, N)
         return out
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    x1 = test_common.generate_tensor(shape=(1,), dtype=sigtype).npu()
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
+    x1 = test_common.generate_tensor(shape=(1, ), dtype=sigtype).npu()
 
     triton_cal = triton_func(x0, x1, N)
     torch_ref = torch_func(x0, x1)
@@ -94,6 +96,7 @@ def test_pow_vs_dynamic(sigtype, N):
 @pytest.mark.parametrize("sigtype", ["float32"])
 @pytest.mark.parametrize("N", shapes)
 def test_pow_vs_const(sigtype, N):
+
     def torch_func(x0, x1):
         res = torch.pow(x0, x1)
         return res
@@ -110,8 +113,8 @@ def test_pow_vs_const(sigtype, N):
         triton_kernel[1, 1, 1](out, x0, x1, N)
         return out
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    x1 = test_common.generate_tensor(shape=(1,), dtype=sigtype).item()
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
+    x1 = test_common.generate_tensor(shape=(1, ), dtype=sigtype).item()
 
     triton_cal = triton_func(x0, x1, N)
     torch_ref = torch_func(x0, x1)

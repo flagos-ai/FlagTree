@@ -23,6 +23,7 @@ from .._C.libtriton import ir as _ir
 _has_ascend_support = False
 AscendInterpreterBuilder = None
 
+
 def _try_import_ascend():
     global _has_ascend_support, AscendInterpreterBuilder
     try:
@@ -226,9 +227,9 @@ def _convert_float(input, input_dtype, output_dtype, rounding_mode):
     output_max_exponent = (1 << output_exponent_width) - 1
     exponent_output = np.maximum(0, np.minimum(exponent_unclamped, output_max_exponent))
     exponent_output = exponent_output.astype(output_unint_dtype)
-    # mark overflow index 
+    # mark overflow index
     overflow_index = exponent_unclamped > output_max_exponent - 1
-    
+
     sign_output = sign.astype(output_unint_dtype)
     if input_dtype.primitive_bitwidth > output_dtype.primitive_bitwidth:  # Downcast
         significand_output = (significand >> (input_dtype.fp_mantissa_width - output_dtype.fp_mantissa_width)) & (
@@ -257,7 +258,7 @@ def _convert_float(input, input_dtype, output_dtype, rounding_mode):
         significand_output[subnormal_index] = (significand_output[subnormal_index] >> shift[subnormal_index]) | (
             1 << (output_dtype.fp_mantissa_width - shift[subnormal_index]))
     # covert overflow value to inf
-    significand_output[overflow_index & ~input_nan_index] = 0 
+    significand_output[overflow_index & ~input_nan_index] = 0
     output = (sign_output << (output_dtype.primitive_bitwidth - 1)) | (
         exponent_output << output_dtype.fp_mantissa_width) | significand_output
     return output.reshape(input.shape)

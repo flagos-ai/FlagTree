@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Autotune
 =============
@@ -45,10 +44,9 @@ def get_autotune_config():
     key=["numel"],
 )
 @triton.jit
-def triton_calc_kernel(
-        out_ptr0, in_ptr0, in_ptr1, numel,
-        XS: tl.constexpr  # Block size controlling how many elements each thread block processes
-):
+def triton_calc_kernel(out_ptr0, in_ptr0, in_ptr1, numel,
+                       XS: tl.constexpr  # Block size controlling how many elements each thread block processes
+                       ):
     pid = tl.program_id(0)
     idx = pid * XS + tl.arange(0, XS)
     msk = idx < numel
@@ -81,8 +79,8 @@ def test_triton_autotune():
     DEV = "npu"
     DTYPE = torch.float32
     N = 192 * 1024
-    x0 = torch.randn((N,), dtype=DTYPE, device=DEV)
-    x1 = torch.randn((N,), dtype=DTYPE, device=DEV)
+    x0 = torch.randn((N, ), dtype=DTYPE, device=DEV)
+    x1 = torch.randn((N, ), dtype=DTYPE, device=DEV)
 
     torch_ref = torch_calc_func(x0, x1)
     triton_cal = triton_calc_func(x0, x1)

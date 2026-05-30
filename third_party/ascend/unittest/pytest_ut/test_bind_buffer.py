@@ -21,7 +21,6 @@
 #!/usr/bin/env python3
 import os
 
-
 import triton
 import triton.language as tl
 import triton.extension.buffer.language as bl

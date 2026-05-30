@@ -33,7 +33,7 @@ import triton.language.extra.cann.extension as extension
 def gen_1d_cat_shapes(min_val=1, max_val=4096):
     shape1 = random.randint(min_val, max_val)
     shape2 = random.randint(min_val, max_val)
-    return (shape1,), (shape2,), 0
+    return (shape1, ), (shape2, ), 0
 
 
 def gen_2d_cat_shapes(dim=0, min_val=1, max_val=4096):
@@ -85,12 +85,7 @@ def gen_3d_cat_shapes(dim=0, min_val=1, max_val=4096):
     return shape1, shape2, dim
 
 
-def gen_100_cat_shapes(
-    num_groups=100,
-    mix_ratio=(0.3, 0.3, 0.4),
-    min_val=1,
-    max_val=4096
-):
+def gen_100_cat_shapes(num_groups=100, mix_ratio=(0.3, 0.3, 0.4), min_val=1, max_val=4096):
 
     shape_list = []
     num_1d = int(num_groups * mix_ratio[0])
@@ -111,12 +106,8 @@ def gen_100_cat_shapes(
     random.shuffle(shape_list)
     return shape_list
 
-full_shape = gen_100_cat_shapes(
-    num_groups=100,
-    mix_ratio=(0.3, 0.4, 0.3),
-    min_val=1,
-    max_val=4096
-)
+
+full_shape = gen_100_cat_shapes(num_groups=100, mix_ratio=(0.3, 0.4, 0.3), min_val=1, max_val=4096)
 
 
 @triton.jit
@@ -130,7 +121,6 @@ def _cat_helper_func_2D_1(
     x1_numel,
     Y0BLOCK: tl.constexpr,
     Y0BLOCK_SUB: tl.constexpr,
-
 ):
     y0_offset = tl.program_id(0) * Y0BLOCK_SUB
     base_y0 = tl.arange(0, Y0BLOCK_SUB)
@@ -152,7 +142,8 @@ def _cat_helper_func_2D_1(
 
 
 @triton.jit
-def triton_unk_fused_cat_dim0_sameshape(output_ptr, x_ptr, y_ptr, y0_numel, x1_numel, Y0BLOCK: tl.constexpr, Y0BLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
+def triton_unk_fused_cat_dim0_sameshape(output_ptr, x_ptr, y_ptr, y0_numel, x1_numel, Y0BLOCK: tl.constexpr,
+                                        Y0BLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
     y0_offset = tl.program_id(0) * Y0BLOCK
     base_y0 = tl.arange(0, Y0BLOCK_SUB)
     loops_y0 = (Y0BLOCK + Y0BLOCK_SUB - 1) // Y0BLOCK_SUB
@@ -184,7 +175,7 @@ def triton_unk_fused_cat_dim0_sameshape(output_ptr, x_ptr, y_ptr, y0_numel, x1_n
 
 @triton.jit
 def triton_unk_fused_cat_dim0_diffshape(output_ptr, x_ptr, y_ptr, y0_numel, y1_numel, x1_numel, YBLOCK: tl.constexpr,
-                                   YBLOCK_2: tl.constexpr, YBLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
+                                        YBLOCK_2: tl.constexpr, YBLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
     y0_offset = tl.program_id(0) * YBLOCK
     base_y0 = tl.arange(0, YBLOCK_SUB)
     loops_y0 = (YBLOCK + YBLOCK_SUB - 1) // YBLOCK_SUB
@@ -223,7 +214,8 @@ def triton_unk_fused_cat_dim0_diffshape(output_ptr, x_ptr, y_ptr, y0_numel, y1_n
             new_z0 = tl.arange(0, 2)[:, None, None]
             new_x2_mask = new_x2 < x1_numel
             new_y1_mask = new_y1 < min_numel
-            tl.store(output_ptr + (new_x2 + x1_numel * new_y1 + x1_numel * y0_numel * new_z0), tmp13, new_x2_mask & new_y1_mask)
+            tl.store(output_ptr + (new_x2 + x1_numel * new_y1 + x1_numel * y0_numel * new_z0), tmp13,
+                     new_x2_mask & new_y1_mask)
 
     loops_y1 = (YBLOCK_2 + YBLOCK_SUB - 1) // YBLOCK_SUB
     y2_offset = tl.program_id(0) * YBLOCK_2 + min_numel
@@ -263,7 +255,8 @@ def triton_unk_fused_cat_dim0_diffshape(output_ptr, x_ptr, y_ptr, y0_numel, y1_n
 
 
 @triton.jit
-def triton_unk_fused_cat_dim1_sameshape(output_ptr, x_ptr, y_ptr, y0_numel, x1_numel, Y0BLOCK: tl.constexpr, Y0BLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
+def triton_unk_fused_cat_dim1_sameshape(output_ptr, x_ptr, y_ptr, y0_numel, x1_numel, Y0BLOCK: tl.constexpr,
+                                        Y0BLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
     y0_offset = tl.program_id(0) * Y0BLOCK
     base_y0 = tl.arange(0, Y0BLOCK_SUB)
     loops_y0 = (Y0BLOCK + Y0BLOCK_SUB - 1) // Y0BLOCK_SUB
@@ -290,11 +283,13 @@ def triton_unk_fused_cat_dim1_sameshape(output_ptr, x_ptr, y_ptr, y0_numel, x1_n
             new_z0 = tl.arange(0, 2)[None, :, None]
             new_x2_mask = new_x2 < x1_numel
             new_y1_mask = new_y1 < y0_numel
-            tl.store(output_ptr + (new_x2 + 2 * x1_numel * new_y1 + x1_numel * new_z0), tmp13, new_x2_mask & new_y1_mask)
+            tl.store(output_ptr + (new_x2 + 2 * x1_numel * new_y1 + x1_numel * new_z0), tmp13,
+                     new_x2_mask & new_y1_mask)
 
 
 @triton.jit
-def triton_unk_fused_cat_dim1_diffshape(output_ptr, x_ptr, y_ptr, y0_numel, x0_numel, x1_numel, Y0BLOCK: tl.constexpr, Y0BLOCK_SUB: tl.constexpr, XBLOCK_SUB: tl.constexpr):
+def triton_unk_fused_cat_dim1_diffshape(output_ptr, x_ptr, y_ptr, y0_numel, x0_numel, x1_numel, Y0BLOCK: tl.constexpr,
+                                        Y0BLOCK_SUB: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     y0_offset = tl.program_id(0) * Y0BLOCK
     base_y0 = tl.arange(0, Y0BLOCK_SUB)
     loops_y0 = (Y0BLOCK + Y0BLOCK_SUB - 1) // Y0BLOCK_SUB
@@ -373,7 +368,8 @@ def triton_unk_fused_cat_dim1_diffshape(output_ptr, x_ptr, y_ptr, y0_numel, x0_n
 
 
 @triton.jit
-def triton_unk_fused_cat_3d_dim0(output_ptr, x_ptr, y_ptr, z0_numel, z1_numel, y1_numel, x1_numel, ZBLOCK: tl.constexpr, ZBLOCK_2: tl.constexpr, ZBLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
+def triton_unk_fused_cat_3d_dim0(output_ptr, x_ptr, y_ptr, z0_numel, z1_numel, y1_numel, x1_numel, ZBLOCK: tl.constexpr,
+                                 ZBLOCK_2: tl.constexpr, ZBLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
     z0_offset = tl.program_id(0) * ZBLOCK
     base_z0 = tl.arange(0, ZBLOCK_SUB)
     loops_z0 = (ZBLOCK + ZBLOCK_SUB - 1) // ZBLOCK_SUB
@@ -413,7 +409,8 @@ def triton_unk_fused_cat_3d_dim0(output_ptr, x_ptr, y_ptr, z0_numel, z1_numel, y
             new_z0 = tl.arange(0, 2)[:, None, None]
             new_x2_mask = new_x2 < xy_numel
             new_z1_mask = new_z1 < min_numel
-            tl.store(output_ptr + (new_x2 + xy_numel * new_z1 + xy_numel * z0_numel * new_z0), tmp13, new_x2_mask & new_z1_mask)
+            tl.store(output_ptr + (new_x2 + xy_numel * new_z1 + xy_numel * z0_numel * new_z0), tmp13,
+                     new_x2_mask & new_z1_mask)
 
     loops_z1 = (ZBLOCK_2 + ZBLOCK_SUB - 1) // ZBLOCK_SUB
     z2_offset = tl.program_id(0) * ZBLOCK_2 + min_numel
@@ -453,7 +450,8 @@ def triton_unk_fused_cat_3d_dim0(output_ptr, x_ptr, y_ptr, z0_numel, z1_numel, y
 
 
 @triton.jit
-def triton_unk_fused_cat_3d_dim1(output_ptr, x_ptr, y_ptr, z0_numel, y0_numel, y1_numel, x0_numel, Z0BLOCK: tl.constexpr, Z0BLOCK_SUB: tl.constexpr, XBLOCK_SUB: tl.constexpr):
+def triton_unk_fused_cat_3d_dim1(output_ptr, x_ptr, y_ptr, z0_numel, y0_numel, y1_numel, x0_numel,
+                                 Z0BLOCK: tl.constexpr, Z0BLOCK_SUB: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     z0_offset = tl.program_id(0) * Z0BLOCK
     base_z0 = tl.arange(0, Z0BLOCK_SUB)
     loops_z0 = (Z0BLOCK + Z0BLOCK_SUB - 1) // Z0BLOCK_SUB
@@ -493,7 +491,8 @@ def triton_unk_fused_cat_3d_dim1(output_ptr, x_ptr, y_ptr, z0_numel, y0_numel, y
             new_x2_mask = new_x2 < min_numel
             new_z1_mask = new_z1 < z0_numel
             sum_numel = min_numel + max_numel
-            tl.store(output_ptr + (new_x2 + sum_numel * new_z1 + x0_numel * y0_numel * new_z0), tmp13, new_x2_mask & new_z1_mask)
+            tl.store(output_ptr + (new_x2 + sum_numel * new_z1 + x0_numel * y0_numel * new_z0), tmp13,
+                     new_x2_mask & new_z1_mask)
 
     if y0_numel == y1_numel:
         return
@@ -535,7 +534,8 @@ def triton_unk_fused_cat_3d_dim1(output_ptr, x_ptr, y_ptr, z0_numel, y0_numel, y
 
 
 @triton.jit
-def triton_unk_fused_cat_3d_dim2(output_ptr, x_ptr, y_ptr, z0_numel, y0_numel, x0_numel, x1_numel, Y0BLOCK: tl.constexpr, Y0BLOCK_SUB: tl.constexpr, XBLOCK_SUB: tl.constexpr):
+def triton_unk_fused_cat_3d_dim2(output_ptr, x_ptr, y_ptr, z0_numel, y0_numel, x0_numel, x1_numel,
+                                 Y0BLOCK: tl.constexpr, Y0BLOCK_SUB: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     y0_offset = tl.program_id(0) * Y0BLOCK
     base_y0 = tl.arange(0, Y0BLOCK_SUB)
     loops_y0 = (Y0BLOCK + Y0BLOCK_SUB - 1) // Y0BLOCK_SUB
@@ -619,12 +619,12 @@ def triton_unk_fused_cat_3d_dim2(output_ptr, x_ptr, y_ptr, z0_numel, y0_numel, x
 
 testlist = [
     # ===================== 1D场景（15组，dim=0） =====================
-    ((3,), (3,), 0),
-    ((7,), (9,), 0),
-    ((13,), (11,), 0),
-    ((2047,), (2047,), 0),
-    ((2701,), (3003,), 0),
-    ((4093,), (3095,), 0),
+    ((3, ), (3, ), 0),
+    ((7, ), (9, ), 0),
+    ((13, ), (11, ), 0),
+    ((2047, ), (2047, ), 0),
+    ((2701, ), (3003, ), 0),
+    ((4093, ), (3095, ), 0),
 
     # ===================== 2D场景（20组，dim0/dim1） =====================
     # dim0（行拼接，列维度一致）
@@ -672,13 +672,16 @@ def test_cat_bigshape(testlists, dtype):
         if cat_dim == 0:
             ZBLOCK = (min(x0.shape[0], x1.shape[0]) + num_core - 1) // num_core
             ZBLOCK_2 = (max(x0.shape[0], x1.shape[0]) - min(x0.shape[0], x1.shape[0]) + num_core - 1) // num_core
-            triton_unk_fused_cat_3d_dim0[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x1.shape[0], x0.shape[1], x0.shape[2], ZBLOCK, ZBLOCK_2, 1, 256)
+            triton_unk_fused_cat_3d_dim0[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x1.shape[0], x0.shape[1],
+                                                         x0.shape[2], ZBLOCK, ZBLOCK_2, 1, 256)
         elif cat_dim == 1:
             Z0BLOCK = (x0.shape[0] + num_core - 1) // num_core
-            triton_unk_fused_cat_3d_dim1[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1], x1.shape[1], x1.shape[2], Z0BLOCK, 1, 256)
+            triton_unk_fused_cat_3d_dim1[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1], x1.shape[1],
+                                                         x1.shape[2], Z0BLOCK, 1, 256)
         else:
             Y0BLOCK = (x0.shape[0] * x0.shape[1] + num_core - 1) // num_core
-            triton_unk_fused_cat_3d_dim2[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1], x0.shape[2], x1.shape[2], Y0BLOCK, 1, 256)
+            triton_unk_fused_cat_3d_dim2[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1], x0.shape[2],
+                                                         x1.shape[2], Y0BLOCK, 1, 256)
         test_common.validate_cmp(dtype, torch_res, triton_res)
         return
     numel_large = torch_res.numel() > 512 and len(x0.shape) < 3
@@ -693,17 +696,21 @@ def test_cat_bigshape(testlists, dtype):
         if cat_dim == 1:
             Y0BLOCK = (x0.shape[0] + num_core - 1) // num_core
             if x0.shape[1] == x1.shape[1]:
-                triton_unk_fused_cat_dim1_sameshape[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1], Y0BLOCK, 1, 256)
+                triton_unk_fused_cat_dim1_sameshape[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1],
+                                                                    Y0BLOCK, 1, 256)
             else:
-                triton_unk_fused_cat_dim1_diffshape[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1], x1.shape[1], Y0BLOCK, 1, 256)
+                triton_unk_fused_cat_dim1_diffshape[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1],
+                                                                    x1.shape[1], Y0BLOCK, 1, 256)
         else:
             if x0.shape[0] == x1.shape[0]:
                 Y0BLOCK = (x0.shape[0] + num_core - 1) // num_core
-                triton_unk_fused_cat_dim0_sameshape[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1], Y0BLOCK, 1, 256)
+                triton_unk_fused_cat_dim0_sameshape[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1],
+                                                                    Y0BLOCK, 1, 256)
             else:
                 YBLOCK = (min(x0.shape[0], x1.shape[0]) + num_core - 1) // num_core
                 YBLOCK_2 = (max(x0.shape[0], x1.shape[0]) - min(x0.shape[0], x1.shape[0]) + num_core - 1) // num_core
-                triton_unk_fused_cat_dim0_diffshape[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x1.shape[0], x1.shape[1], YBLOCK, YBLOCK_2, 1, 256)
+                triton_unk_fused_cat_dim0_diffshape[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x1.shape[0],
+                                                                    x1.shape[1], YBLOCK, YBLOCK_2, 1, 256)
         if squeeze_flag:
             triton_res = triton_res.squeeze()
     else:
@@ -713,7 +720,8 @@ def test_cat_bigshape(testlists, dtype):
             x0 = torch.unsqueeze(x0, dim=0)
             x1 = torch.unsqueeze(x1, dim=0)
             triton_res = torch.unsqueeze(triton_res, dim=0)
-        _cat_helper_func_2D_1[num_core, 1, 1](x0, x1, triton_res, x0.shape[1], x1.shape[1], x0.shape[0], x0.shape[1] + x1.shape[1], 256, 16)
+        _cat_helper_func_2D_1[num_core, 1, 1](x0, x1, triton_res, x0.shape[1], x1.shape[1], x0.shape[0],
+                                              x0.shape[1] + x1.shape[1], 256, 16)
         if squeeze_flag:
             triton_res = triton_res.squeeze()
 

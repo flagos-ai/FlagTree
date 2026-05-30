@@ -85,12 +85,12 @@ def test_elementwsie_common(dtype, sigtype, N, NUMEL):
 
     print(f"elementwise : ({N},) {dtype} {sigtype}")
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    x1 = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
+    x1 = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
     ans = standard_binary(x0, x1, dtype)
     print(ans)
 
-    out = torch.zeros((N,), dtype=dtype).npu()
+    out = torch.zeros((N, ), dtype=dtype).npu()
     triton_elementwise_binary[1, 1, 1](x0, x1, out, N=N, NUMEL=NUMEL, debug=True)
     print(out)
 

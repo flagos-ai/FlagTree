@@ -456,7 +456,8 @@ class CompiledKernel:
         binary_ext = backend.binary_ext
         binary_extensions = getattr(backend, 'binary_extensions', {binary_ext})
         self.asm = AsmDict({
-            file.suffix[1:]: file.read_bytes() if file.suffix[1:] in binary_extensions else file.read_text()
+            file.suffix[1:]:
+            file.read_bytes() if file.suffix[1:] in binary_extensions else file.read_text()
             for file in asm_files
         })
         self.metadata_group = metadata_group

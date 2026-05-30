@@ -23,6 +23,7 @@ import torch_npu
 import triton
 import triton.language as tl
 
+
 # load with mask, store with scalar
 @triton.jit
 def sum_kernel_1(inp, mid, M, BLOCK_SIZE: tl.constexpr):
@@ -42,4 +43,4 @@ def test_case():
     mid = torch.empty(4, device="npu", dtype=torch.float32)
     sum_kernel_1[(4, 1, 1)](inp, mid, 16, 4)
     ref = torch.tensor([4.0, 4.0, 4.0, 4.0], device="npu", dtype=torch.float32)
-    assert torch.allclose(mid, ref,  rtol=1e-03, atol=1e-03, equal_nan=True)
+    assert torch.allclose(mid, ref, rtol=1e-03, atol=1e-03, equal_nan=True)

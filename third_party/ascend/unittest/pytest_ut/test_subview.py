@@ -30,7 +30,6 @@ import triton.language.extra.cann.extension as al
 from triton._C.libtriton import ir, buffer_ir
 from triton._C.libtriton.ascend import ir as ascend_ir
 
-
 os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
 
 
@@ -50,7 +49,8 @@ def compile_kernel(kernel, signature, constants):
     ir.load_dialects(context)
     buffer_ir.load_dialects(context)
     ascend_ir.load_dialects(context)
-    module = ast_to_ttir(kernel, src, context, Options(), {"create_address_space": al.semantic.create_address_space}, {})
+    module = ast_to_ttir(kernel, src, context, Options(), {"create_address_space": al.semantic.create_address_space},
+                         {})
     return str(module)
 
 
@@ -62,12 +62,7 @@ def test_subview_kernel1(XBLOCK: tl.constexpr):
     # 1. Allocate a local buffer
     src_buffer = bl.alloc(tl.float32, [XBLOCK, XBLOCK])
 
-    result_buffer = bl.subview(
-        src_buffer,
-        offsets=[1, 1],
-        sizes=[XBLOCK - 2, XBLOCK - 2],
-        strides=[1, 1]
-    )
+    result_buffer = bl.subview(src_buffer, offsets=[1, 1], sizes=[XBLOCK - 2, XBLOCK - 2], strides=[1, 1])
 
 
 @triton.jit
@@ -89,9 +84,6 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("Test 2: test_subview_constructor")
     print("=" * 60)
-    mlir = compile_kernel(
-        test_subview_kernel2, {},
-        {"XBLOCK": 32, "offsets": 1, "sizes": 30, "strides": 1}
-    )
+    mlir = compile_kernel(test_subview_kernel2, {}, {"XBLOCK": 32, "offsets": 1, "sizes": 30, "strides": 1})
     print(f"Generated MLIR ({len(mlir)} chars):\n")
     print(mlir)

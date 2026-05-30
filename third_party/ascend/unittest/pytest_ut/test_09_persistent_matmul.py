@@ -19,7 +19,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 Persistent Matmul
 =====================
@@ -217,7 +216,7 @@ def matmul(a, b):
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
 
     def grid(meta):
-        return (triton.cdiv(M, meta["BLOCK_SIZE_M"]) * triton.cdiv(N, meta["BLOCK_SIZE_N"]),)
+        return (triton.cdiv(M, meta["BLOCK_SIZE_M"]) * triton.cdiv(N, meta["BLOCK_SIZE_N"]), )
 
     matmul_kernel[grid](
         a,
@@ -252,7 +251,7 @@ def matmul_persistent(a, b):
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
 
     def grid(meta):
-        return (min(num_sms, triton.cdiv(M, meta["BLOCK_SIZE_M"]) * triton.cdiv(N, meta["BLOCK_SIZE_N"])),)
+        return (min(num_sms, triton.cdiv(M, meta["BLOCK_SIZE_M"]) * triton.cdiv(N, meta["BLOCK_SIZE_N"])), )
 
     matmul_kernel_persistent[grid](
         a,

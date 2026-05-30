@@ -28,8 +28,9 @@ import test_common
 import torch
 import torch_npu
 
+
 @triton.jit
-def triton_acos(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.constexpr):
+def triton_acos(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     offset = tl.program_id(0) * XBLOCK
     base1 = tl.arange(0, XBLOCK_SUB)
     loops1: tl.constexpr = XBLOCK // XBLOCK_SUB
@@ -40,16 +41,11 @@ def triton_acos(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.conste
         tl.store(out_ptr0 + (x0), tmp1, None)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                'float32',
-                                'float16',
-                                'bfloat16'
-                            ])
+@pytest.mark.parametrize('param_list', ['float32', 'float16', 'bfloat16'])
 def test_asinh_special(param_list):
     dtype = param_list
-    x0 = torch.linspace(-1.0 + 1e-6, 1.0 - 1e-6, 256, dtype=eval("torch."+dtype)).npu()
-    
+    x0 = torch.linspace(-1.0 + 1e-6, 1.0 - 1e-6, 256, dtype=eval("torch." + dtype)).npu()
+
     y_ref = torch.acos(x0)
     y_cal = torch.zeros_like(y_ref)
     triton_acos[1, 1, 1](x0, y_cal, x0.shape[0], x0.shape[0])
@@ -78,7 +74,7 @@ def test_accuracy_acos(shape, dtype):
     ref_out = torch.acos(inp)
     res_out = torch.zeros_like(ref_out)
     n_elements = inp.numel()
-    grid = (triton.cdiv(n_elements, 1024),)
+    grid = (triton.cdiv(n_elements, 1024), )
     acos_kernel[grid](inp, res_out, n_elements, BLOCK_SIZE=1024)
     print("ref_out:", ref_out)
     print("res_out:", res_out)

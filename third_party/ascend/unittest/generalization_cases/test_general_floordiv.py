@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import pytest
 
 import triton
@@ -51,15 +50,11 @@ def triton_floordiv(output_ptr, x_ptr, y_ptr, z_ptr, XB: tl.constexpr, YB: tl.co
 
 
 @triton.jit
-def triton_floordiv_4d_5d(
-        output_ptr, x_ptr, y_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr,
-        BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-        SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
-        STRIDE_4: tl.constexpr
-):
+def triton_floordiv_4d_5d(output_ptr, x_ptr, y_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                          BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                          SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                          STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
+                          STRIDE_4: tl.constexpr):
     offsets = tl.program_id(0)
 
     offsets = offsets + tl.arange(0, BLOCK_0) * STRIDE_0
@@ -83,7 +78,7 @@ def triton_floordiv_4d_5d(
     tl.store(output_ptr + offsets, ret, mask=masks)
 
 
-@pytest.mark.parametrize('shape', TestUtils.full_shape) # some shape with int8 over ub
+@pytest.mark.parametrize('shape', TestUtils.full_shape)  # some shape with int8 over ub
 @pytest.mark.parametrize('dtype', ['int8', 'int16', 'int32', 'int64'])
 def test_floordiv(shape, dtype):
     logging.log(logging.DEBUG, f"shape = {shape}")
@@ -136,17 +131,17 @@ def test_floordiv_4d_5d(shape, dtype):
     ans_mask = (x.to(torch.int64) % y.to(torch.int64) != 0) & (~((x ^ y) > 0)).to(ans.dtype)
     ans = ans + ans_mask
 
-
     blocks = list(x.size())
     strides = list(x.stride())
     while len(blocks) < 5:
         blocks.append(1)
         strides.append(1)
 
-    grid = (1,)
+    grid = (1, )
     triton_floordiv_4d_5d[grid](output, x, y, *blocks, *blocks, *strides)
 
     test_common.validate_cmp(dtype, ans, output)
+
 
 invalid_types = [
     'float16',
@@ -159,10 +154,10 @@ invalid_types = [
 @test_common.raises_with_match(triton.compiler.errors.CompilationError, "unexpected type")
 def test_invalid_types(sigtype):
     N = 32
-    x = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    y = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
+    x = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
+    y = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
     y = y.masked_fill(y == 0, 1)
-    z = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
-    output = test_common.generate_tensor(shape=(N,), dtype=sigtype).npu()
+    z = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
+    output = test_common.generate_tensor(shape=(N, ), dtype=sigtype).npu()
 
     triton_floordiv[1, 1, 1](output, x, y, z, 32, 1, 1, 32, 1, 1)

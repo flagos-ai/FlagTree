@@ -23,10 +23,12 @@ from typing import Callable, Dict
 
 
 class BackendStrategyRegistry:
+
     def __init__(self):
-        self.strategies: Dict[str: Dict[str, Callable]] = {}
+        self.strategies: Dict[str:Dict[str, Callable]] = {}
 
     def register(self, category: str, method: str):
+
         def decorator(func: Callable):
             if category not in self.strategies:
                 self.strategies[category] = {}
@@ -34,6 +36,7 @@ class BackendStrategyRegistry:
                 raise ValueError(f"Strategy {method} already registered")
             self.strategies[category][method] = func
             return func
+
         return decorator
 
     def execute_func(self, category, method, *args, **kwargs):
@@ -53,6 +56,7 @@ class BackendStrategyRegistry:
 
 
 class _LazyBackendStrategyRegister:
+
     def __init__(self):
         self._instance = None
 
@@ -66,6 +70,7 @@ class _LazyBackendStrategyRegister:
 
     def execute_func(self, *args, **kwargs):
         return self._get_instance().execute_func(*args, **kwargs)
+
 
 backend_strategy_registry = _LazyBackendStrategyRegister()
 
@@ -199,9 +204,9 @@ def get_cc_cmd(build_pch):
     ]
     if not build_pch:
         cc_cmd += [
-                f"-L{os.path.join(mindspore_path, 'lib')}",
-                f"-lmindspore_pynative_utils",
-            ]
+            f"-L{os.path.join(mindspore_path, 'lib')}",
+            f"-lmindspore_pynative_utils",
+        ]
     return cc_cmd
 
 

@@ -45,7 +45,8 @@ def gather_after_reduce_kernel(
         mask = offsets < vocab_size
         vals = tl.load(
             logits_ptr + req_idx * logits_stride + offsets,
-            mask=mask, other=-float('inf'),
+            mask=mask,
+            other=-float('inf'),
         )
         block_max = tl.max(vals)
         max_val = tl.maximum(max_val, block_max)
@@ -79,13 +80,18 @@ def test_gather_after_reduce(num_rows, vocab_size):
     logits = logits_ref.npu()
     logits_flat = logits.reshape(-1)
 
-    topk_ids_ref = torch.randint(0, vocab_size, (num_rows,), dtype=torch.int64)
+    topk_ids_ref = torch.randint(0, vocab_size, (num_rows, ), dtype=torch.int64)
     topk_ids = topk_ids_ref.npu()
 
     output = torch.empty(num_rows, dtype=torch.float32).npu()
 
-    gather_after_reduce_kernel[(num_rows,)](
-        logits_flat, topk_ids, output, vocab_size, vocab_size, BLOCK=BLOCK,
+    gather_after_reduce_kernel[(num_rows, )](
+        logits_flat,
+        topk_ids,
+        output,
+        vocab_size,
+        vocab_size,
+        BLOCK=BLOCK,
     )
 
     output_ref = torch_reference(logits_ref, topk_ids_ref)

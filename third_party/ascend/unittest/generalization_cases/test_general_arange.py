@@ -38,7 +38,8 @@ def torch_arange(start, end):
     if end < start:
         raise ValueError("arange's end argument must be greater than the start argument")
     if end - start > TRITON_MAX_TENSOR_NUMEL:
-        raise ValueError(f"end - start must be less than or equal to TRITON_MAX_TENSOR_NUMEL = {TRITON_MAX_TENSOR_NUMEL}")
+        raise ValueError(
+            f"end - start must be less than or equal to TRITON_MAX_TENSOR_NUMEL = {TRITON_MAX_TENSOR_NUMEL}")
     return torch.arange(start, end)
 
 
@@ -60,6 +61,6 @@ def test_case(shape):
     y_ref = torch_arange(start, end)
     y_cal = torch.zeros(shape, dtype=torch.int32).npu()
 
-    triton_arange[(1, )](y_cal, START = start, END = end, BLOCK = block)
+    triton_arange[(1, )](y_cal, START=start, END=end, BLOCK=block)
 
     assert torch.equal(y_cal.cpu(), y_ref.cpu())

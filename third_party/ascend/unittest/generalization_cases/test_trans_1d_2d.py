@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton
 import triton.language as tl
 import torch
@@ -28,8 +27,9 @@ from test_common import TestUtils, check_ub_mem_overflow
 import math
 import logging
 
+
 @triton.jit
-def fn_npu_1d(output_ptr, x_ptr, xnumel:tl.constexpr):
+def fn_npu_1d(output_ptr, x_ptr, xnumel: tl.constexpr):
     idx = tl.arange(0, xnumel)
 
     X = tl.load(x_ptr + idx)
@@ -37,6 +37,7 @@ def fn_npu_1d(output_ptr, x_ptr, xnumel:tl.constexpr):
     ret = tl.trans(X, 0)
 
     tl.store(output_ptr + idx, ret)
+
 
 @pytest.mark.parametrize('shape', TestUtils.test_shape1d)
 @pytest.mark.parametrize('dtype', TestUtils.dtype_list)
@@ -47,9 +48,10 @@ def test_trans_1d(shape, dtype):
     x = torch.randint(low=0, high=2, size=shape, dtype=data_type).npu()
 
     triton_res = torch.randint(1, shape, dtype=data_type).npu()
-    torch_res = torch.permute(x, (0,))
+    torch_res = torch.permute(x, (0, ))
     fn_npu_1d[1, 1, 1](triton_res, x, shape[0])
     test_common.validate_cmp(dtype, triton_res, torch_res)
+
 
 @triton.jit
 def fn_npu_021(output_ptr, x_ptr, YB: tl.constexpr, ZB: tl.constexpr):
@@ -66,22 +68,25 @@ def fn_npu_021(output_ptr, x_ptr, YB: tl.constexpr, ZB: tl.constexpr):
 
     tl.store(output_ptr + oidx, ret)
 
+
 bisheng_notsupport_dtype = ['int64']
 tritonascend_notsupport_dtype = ['bool']
 # check_ub_mem_overflow没拦住，在kernel中最大ub占用超过ubsize
 mem_overflow_scene = [
-('bfloat16', (128, 256)), 
-('bfloat16', (256, 128)),
-('int8', (741,256)),
-('int8', (256,741)),
-('int16', (256,256)),
-('float16', (256,256)),
-('bfloat16', (256,256)),
-('int32', (128, 256)),
-('int32', (256, 128)),
-('float32', (128,256)),
-('float32', (256,128)),
+    ('bfloat16', (128, 256)),
+    ('bfloat16', (256, 128)),
+    ('int8', (741, 256)),
+    ('int8', (256, 741)),
+    ('int16', (256, 256)),
+    ('float16', (256, 256)),
+    ('bfloat16', (256, 256)),
+    ('int32', (128, 256)),
+    ('int32', (256, 128)),
+    ('float32', (128, 256)),
+    ('float32', (256, 128)),
 ]
+
+
 @pytest.mark.parametrize('shape', TestUtils.test_shape2d)
 @pytest.mark.parametrize('dtype', TestUtils.dtype_list)
 def test_permute(shape, dtype):
@@ -101,6 +106,7 @@ def test_permute(shape, dtype):
     torch_res = torch.permute(x, (1, 0))
     fn_npu_021[1, 1, 1](triton_res, x, YB, ZB)
     test_common.validate_cmp(dtype, triton_res, torch_res)
+
 
 if __name__ == "__main__":
     for shape in [(37, 3)]:

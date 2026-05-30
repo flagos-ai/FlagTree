@@ -40,9 +40,7 @@ def atomic_add(in_ptr0, out_ptr0, out_ptr1, n_elements, BLOCK_SIZE: tl.constexpr
 
 
 @triton.jit
-def atomic_add_supply(
-    in_ptr0, out_ptr0, n_elements, BLOCK_SIZE: tl.constexpr
-):
+def atomic_add_supply(in_ptr0, out_ptr0, n_elements, BLOCK_SIZE: tl.constexpr):
     xoffset = tl.program_id(0) * BLOCK_SIZE
     xindex = xoffset + tl.arange(0, BLOCK_SIZE)[:]
     yindex = xoffset + tl.arange(0, BLOCK_SIZE)[:]
@@ -54,37 +52,31 @@ def atomic_add_supply(
 
 
 @triton.jit
-def atomic_add_for_load_offset(
-    index_ptr, in_ptr0, out_ptr0
-):
+def atomic_add_for_load_offset(index_ptr, in_ptr0, out_ptr0):
     index = tl.atomic_add(index_ptr, 1)
     val = tl.load(in_ptr0 + index)
     tl.store(out_ptr0, val)
 
 
 @triton.jit
-def atomic_add_for_store_offset(
-    index_ptr, out_ptr0
-):
+def atomic_add_for_store_offset(index_ptr, out_ptr0):
     index = tl.atomic_add(index_ptr, 1)
     tl.store(out_ptr0 + index, 1)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['int64', (256, 32), 2],
-                             ['int32', (32, 32), 2],
-                             ['int16', (32, 32), 2],
-                             ['int8', (32, 32), 2],
-                             ['uint8', (32, 32), 2],
-                             ['float32', (32, 32), 2],
-                             ['float16', (64, 64), 4],
-                             ['bfloat16', (64, 64), 4],
-                             ['float32', (128, 128), 8],
-                             ['float16', (128, 128), 16],
-                             ['float32', (32768, 16), 32],
-                         ]
-                         )
+@pytest.mark.parametrize('param_list', [
+    ['int64', (256, 32), 2],
+    ['int32', (32, 32), 2],
+    ['int16', (32, 32), 2],
+    ['int8', (32, 32), 2],
+    ['uint8', (32, 32), 2],
+    ['float32', (32, 32), 2],
+    ['float16', (64, 64), 4],
+    ['bfloat16', (64, 64), 4],
+    ['float32', (128, 128), 8],
+    ['float16', (128, 128), 16],
+    ['float32', (32768, 16), 32],
+])
 def test_atomic_add(param_list):
     dtype, shape, ncore = param_list
     block_size = shape[0] * shape[1] / ncore
@@ -104,14 +96,13 @@ def test_atomic_add(param_list):
     atomic_add[ncore, 1, 1](x0, x1, y, n_elements, BLOCK_SIZE=split_size * shape[1])
     test_common.validate_cmp(dtype, x1, x1_ref)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['int16', (32, 32), 1],
-                             ['int32', (32, 32), 1],
-                             ['float32', (32, 32), 1],
-                             ['float16', (64, 64), 1],
-                         ]
-                         )
+
+@pytest.mark.parametrize('param_list', [
+    ['int16', (32, 32), 1],
+    ['int32', (32, 32), 1],
+    ['float32', (32, 32), 1],
+    ['float16', (64, 64), 1],
+])
 def test_atomic_add_return_value(param_list):
     dtype, shape, ncore = param_list
     block_size = shape[0] * shape[1] / ncore
@@ -129,8 +120,10 @@ def test_atomic_add_return_value(param_list):
     test_common.validate_cmp(dtype, x1, x1_ref)
     test_common.validate_cmp(dtype, y, y_ref)
 
+
 @triton.jit
-def atomic_add_2d(in_ptr0, out_ptr0, out_ptr1, numel_0, numel_1, BLOCK_SIZE_0 : tl.constexpr, BLOCK_SIZE_1 : tl.constexpr):
+def atomic_add_2d(in_ptr0, out_ptr0, out_ptr1, numel_0, numel_1, BLOCK_SIZE_0: tl.constexpr,
+                  BLOCK_SIZE_1: tl.constexpr):
     pid = tl.program_id(0)
     idx0_in = pid * BLOCK_SIZE_0 + tl.arange(0, BLOCK_SIZE_0)[:, None]
     idx0_out = tl.arange(0, BLOCK_SIZE_0)[:, None]
@@ -143,11 +136,10 @@ def atomic_add_2d(in_ptr0, out_ptr0, out_ptr1, numel_0, numel_1, BLOCK_SIZE_0 : 
     tmp1 = tl.atomic_add(out_ptr0 + idx_out, tmp0, msk_out)
     tl.store(out_ptr1 + idx_out, tmp1, msk_out)
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (32, 32), 2],
-                         ]
-                         )
+
+@pytest.mark.parametrize('param_list', [
+    ['float32', (32, 32), 2],
+])
 def test_atomic_add_2d(param_list):
     dtype, shape, ncore = param_list
     split_size = shape[0] // ncore
@@ -191,7 +183,7 @@ def test_atomic_add_for_load_offset():
     index_ref += 1
     output_ref = output.clone()
     output_ref = input_tensor[index]
-    
+
     atomic_add_for_load_offset[(1, )](index, input_tensor, output)
     torch.equal(index, index_ref)
     torch.equal(output, output_ref)
@@ -204,7 +196,7 @@ def test_atomic_add_for_store_offset():
     index_ref += 1
     output_ref = output.clone()
     output_ref[index] = 1
-    
+
     atomic_add_for_store_offset[(1, )](index, output)
     torch.equal(index, index_ref)
     torch.equal(output, output_ref)

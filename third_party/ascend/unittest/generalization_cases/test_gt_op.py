@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import logging
 import pytest
 import triton
@@ -31,52 +30,47 @@ from test_common import TestUtils
 
 
 @triton.jit
-def triton_gt_3d(in_ptr0, in_ptr1, out_ptr0, L : tl.constexpr, M : tl.constexpr, N : tl.constexpr):
-    lblk_idx = tl.arange(0,L)
-    mblk_idx = tl.arange(0,M)
-    nblk_idx = tl.arange(0,N)
-    idx = lblk_idx[:,None,None]*N*M+mblk_idx[None,:,None]*N+nblk_idx[None,None,:]
-    x0=tl.load(in_ptr0+idx)
-    x1=tl.load(in_ptr1+idx)
+def triton_gt_3d(in_ptr0, in_ptr1, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: tl.constexpr):
+    lblk_idx = tl.arange(0, L)
+    mblk_idx = tl.arange(0, M)
+    nblk_idx = tl.arange(0, N)
+    idx = lblk_idx[:, None, None] * N * M + mblk_idx[None, :, None] * N + nblk_idx[None, None, :]
+    x0 = tl.load(in_ptr0 + idx)
+    x1 = tl.load(in_ptr1 + idx)
     ret = x0 > x1
     odx = lblk_idx[:, None, None] * N * M + mblk_idx[None, :, None] * N + nblk_idx[None, None, :]
-    tl.store(out_ptr0+odx, ret)
+    tl.store(out_ptr0 + odx, ret)
 
 
 @triton.jit
-def triton_gt_2d(in_ptr0, in_ptr1, out_ptr0, M : tl.constexpr, N : tl.constexpr):
+def triton_gt_2d(in_ptr0, in_ptr1, out_ptr0, M: tl.constexpr, N: tl.constexpr):
     moffs = tl.program_id(0) * M
-    mblk_idx = tl.arange(0,M) + moffs
-    nblk_idx = tl.arange(0,N)
-    idx = mblk_idx[:,None]*N+nblk_idx[None,:]
-    x0=tl.load(in_ptr0+idx)
-    x1=tl.load(in_ptr1+idx)
+    mblk_idx = tl.arange(0, M) + moffs
+    nblk_idx = tl.arange(0, N)
+    idx = mblk_idx[:, None] * N + nblk_idx[None, :]
+    x0 = tl.load(in_ptr0 + idx)
+    x1 = tl.load(in_ptr1 + idx)
     ret = x0 > x1
-    odx = mblk_idx[:,None]*N+nblk_idx[None,:]
-    tl.store(out_ptr0+odx, ret)
+    odx = mblk_idx[:, None] * N + nblk_idx[None, :]
+    tl.store(out_ptr0 + odx, ret)
 
 
 @triton.jit
-def triton_gt_1d(in_ptr0, in_ptr1, out_ptr0, L : tl.constexpr):
-    lblk_idx = tl.arange(0,L)
+def triton_gt_1d(in_ptr0, in_ptr1, out_ptr0, L: tl.constexpr):
+    lblk_idx = tl.arange(0, L)
     idx = lblk_idx[:]
-    x0=tl.load(in_ptr0+idx)
-    x1=tl.load(in_ptr1+idx)
+    x0 = tl.load(in_ptr0 + idx)
+    x1 = tl.load(in_ptr1 + idx)
     ret = x0 > x1
     odx = lblk_idx[:]
-    tl.store(out_ptr0+odx, ret)
+    tl.store(out_ptr0 + odx, ret)
 
 
 @triton.jit
-def triton_gt_4d_5d(
-        x_ptr, y_ptr, output_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr,
-        BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-        SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
-        STRIDE_4: tl.constexpr
-):
+def triton_gt_4d_5d(x_ptr, y_ptr, output_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                    BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                    SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                    STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr):
     offsets = tl.program_id(0)
 
     offsets = offsets + tl.arange(0, BLOCK_0) * STRIDE_0
@@ -114,12 +108,13 @@ dtype_mapping = {
     'bool': (torch.bool),
 }
 
+
 @pytest.mark.parametrize('shape', TestUtils.test_shape1_2_3d)
-@pytest.mark.parametrize('sigtype',typelist)
+@pytest.mark.parametrize('sigtype', typelist)
 def test_gt(sigtype, shape):
     dtype = dtype_mapping[sigtype]
-    x0 = test_common.generate_tensor(shape = shape,dtype = sigtype).npu()
-    x1 = test_common.generate_tensor(shape = shape,dtype = sigtype).npu()
+    x0 = test_common.generate_tensor(shape=shape, dtype=sigtype).npu()
+    x1 = test_common.generate_tensor(shape=shape, dtype=sigtype).npu()
     # ncore, xblock, xblock_sub = 2, 32768, 1024
     y_ref = torch.where(torch.gt(x0, x1), torch.ones_like(x0), torch.zeros_like(x0)).to(eval('torch.' + sigtype))
     output = torch.zeros(shape, dtype=dtype).npu()
@@ -157,7 +152,7 @@ def test_gt_4d_5d(shape, dtype):
         blocks.append(1)
         strides.append(1)
 
-    grid = (1,)
+    grid = (1, )
     triton_gt_4d_5d[grid](x, y, output, *blocks, *blocks, *strides)
 
     test_common.validate_cmp(dtype, ans, output)

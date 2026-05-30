@@ -25,6 +25,7 @@ import torch
 import pytest
 import test_common
 
+
 def torch_pointwise(x0, x1):
     res = x0 * x1
     return res
@@ -44,20 +45,17 @@ def triton_mul(in_ptr0, in_ptr1, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.
         tl.store(out_ptr0 + (x0), tmp2, None)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                            ['float32', (2, 4096, 8), 2, 32768, 1024],
-                            ['float16', (2, 4096, 8), 2, 32768, 1024],
-                            ['int8', (2, 4096, 8), 2, 32768, 1024],
-                            ['uint8', (2, 4096, 8), 2, 32768, 1024],
-                         ]
-                         )
-
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+    ['int8', (2, 4096, 8), 2, 32768, 1024],
+    ['uint8', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_case(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()
     x1 = test_common.generate_tensor(shape, dtype).npu()
     y_ref = torch_pointwise(x0, x1)
-    y_cal = torch.zeros(shape, dtype = eval('torch.' + dtype)).npu()
+    y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     triton_mul[ncore, 1, 1](x0, x1, y_cal, xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)

@@ -32,6 +32,6 @@ def _empty_kernel():
 
 @pytest.mark.interpreter
 def test_launcher_empty_signature():
-    grid = (1,)
+    grid = (1, )
     _empty_kernel[grid]()
     assert True

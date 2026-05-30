@@ -37,20 +37,18 @@ def case_torch(x):
     return torch.permute(x, (1, 0))
 
 
-@triton.autotune(
-    configs=[],
-    key=['xnumel', 'ynumel'],
-    hints={
-        "auto_gen_config": True,
-    }
-)
+@triton.autotune(configs=[], key=['xnumel', 'ynumel'], hints={
+    "auto_gen_config": True,
+})
 @triton.jit
-def triton_permute_2d(output_ptr,
-                      x_ptr,
-                      xnumel: tl.constexpr,
-                      ynumel: tl.constexpr,
-                      XBLOCK: tl.constexpr,
-                      YBLOCK: tl.constexpr, ):
+def triton_permute_2d(
+    output_ptr,
+    x_ptr,
+    xnumel: tl.constexpr,
+    ynumel: tl.constexpr,
+    XBLOCK: tl.constexpr,
+    YBLOCK: tl.constexpr,
+):
     xpid = tl.program_id(0)
     ypid = tl.program_id(1)
 
@@ -72,11 +70,13 @@ def case_triton(x_cal, is_simt_only=False):
     ynumel = x_cal.shape[1]
     output = torch.randint(1, (ynumel, xnumel), dtype=x_cal.dtype, device=x_cal.device)
     if is_simt_only:
-        (triton_permute_2d[lambda meta: (triton.cdiv(xnumel, meta['XBLOCK']), triton.cdiv(ynumel, meta['YBLOCK']), 1)]
-         (output, x_cal, xnumel, ynumel, force_simt_only=True))
+        (triton_permute_2d[lambda meta: (triton.cdiv(xnumel, meta['XBLOCK']), triton.cdiv(ynumel, meta['YBLOCK']), 1)](
+            output, x_cal, xnumel, ynumel, force_simt_only=True))
     else:
-        (triton_permute_2d[lambda meta: (triton.cdiv(xnumel, meta['XBLOCK']), triton.cdiv(ynumel, meta['YBLOCK']), 1)]
-         (output, x_cal, xnumel, ynumel))
+        (triton_permute_2d[lambda meta:
+                           (triton.cdiv(xnumel, meta['XBLOCK']), triton.cdiv(ynumel, meta['YBLOCK']), 1)](output, x_cal,
+                                                                                                          xnumel,
+                                                                                                          ynumel))
     return output
 
 

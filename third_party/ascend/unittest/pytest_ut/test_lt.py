@@ -43,10 +43,9 @@ def triton_lt(in_ptr0, in_ptr1, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.c
         tl.store(out_ptr0 + x_index, tmp2, None)
 
 
-@pytest.mark.parametrize('param_list',
-                         [
-                             ['float32', (32,), 1, 32, 32],
-                         ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (32, ), 1, 32, 32],
+])
 def test_lt(param_list):
     # 生成数据
     dtype, shape, ncore, xblock, xblock_sub = param_list

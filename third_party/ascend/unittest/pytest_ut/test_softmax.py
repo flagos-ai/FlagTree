@@ -25,6 +25,7 @@ import triton.language as tl
 import test_common
 import pytest
 
+
 def naive_softmax(x):
     # read  MN elements ; write M  elements
     x_max = x.max(dim=1)[0]
@@ -41,7 +42,8 @@ def naive_softmax(x):
 
 
 @triton.jit
-def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols, BLOCK_SIZE: tl.constexpr):
+def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols,
+                   BLOCK_SIZE: tl.constexpr):
     # starting row of the program
     row_start = tl.program_id(0)
     row_step = tl.num_programs(0)
@@ -68,6 +70,7 @@ def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n
 
 kernels = {}
 
+
 def softmax(x, stream):
     n_rows, n_cols = x.shape
 
@@ -84,15 +87,7 @@ def softmax(x, stream):
     num_programs = min(num_programs, n_rows)
 
     # Create a number of persistent programs.
-    kernel[(num_programs, 1, 1)](
-        y,
-        x,
-        x.stride(0),
-        y.stride(0),
-        n_rows,
-        n_cols,
-        BLOCK_SIZE
-    )
+    kernel[(num_programs, 1, 1)](y, x, x.stride(0), y.stride(0), n_rows, n_cols, BLOCK_SIZE)
     return y
 
 
@@ -113,13 +108,14 @@ shapes = [
 
 map_for_64_t = {37: 31}
 
+
 @pytest.mark.skip(reason="randomly failed")
-@pytest.mark.parametrize('dtype, sigtype',types)
-@pytest.mark.parametrize('M, N',shapes)
+@pytest.mark.parametrize('dtype, sigtype', types)
+@pytest.mark.parametrize('M, N', shapes)
 def test_softmax(dtype, sigtype, M, N):
     torch_npu.npu.utils.set_device(0)
-    M = (-M)//torch.tensor(0,dtype=dtype).element_size() if M<0 else M
-    N = (-N)//torch.tensor(0,dtype=dtype).element_size() if N<0 else N
+    M = (-M) // torch.tensor(0, dtype=dtype).element_size() if M < 0 else M
+    N = (-N) // torch.tensor(0, dtype=dtype).element_size() if N < 0 else N
 
     if sigtype == 'int64':
         M = map_for_64_t[M] if M in map_for_64_t else M

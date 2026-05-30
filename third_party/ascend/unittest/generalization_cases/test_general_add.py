@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import pytest
 
 import triton
@@ -52,10 +51,10 @@ def triton_add(output_ptr, x_ptr, y_ptr, z_ptr, XB: tl.constexpr, YB: tl.constex
 
 
 @triton.jit
-def triton_add_broadcast(in_ptr0, in_ptr1, out_ptr0, X_SHAPE_0: tl.constexpr,
-                X_SHAPE_1: tl.constexpr, X_SHAPE_2: tl.constexpr, X_SHAPE_3: tl.constexpr, X_SHAPE_4: tl.constexpr,
-                Y_SHAPE_0: tl.constexpr, Y_SHAPE_1: tl.constexpr, Y_SHAPE_2: tl.constexpr, Y_SHAPE_3: tl.constexpr,
-                Y_SHAPE_4: tl.constexpr):
+def triton_add_broadcast(in_ptr0, in_ptr1, out_ptr0, X_SHAPE_0: tl.constexpr, X_SHAPE_1: tl.constexpr,
+                         X_SHAPE_2: tl.constexpr, X_SHAPE_3: tl.constexpr, X_SHAPE_4: tl.constexpr,
+                         Y_SHAPE_0: tl.constexpr, Y_SHAPE_1: tl.constexpr, Y_SHAPE_2: tl.constexpr,
+                         Y_SHAPE_3: tl.constexpr, Y_SHAPE_4: tl.constexpr):
     x_idx0 = tl.arange(0, X_SHAPE_0)
     x_idx1 = tl.arange(0, X_SHAPE_1)
     x_idx2 = tl.arange(0, X_SHAPE_2)
@@ -86,15 +85,10 @@ def triton_add_broadcast(in_ptr0, in_ptr1, out_ptr0, X_SHAPE_0: tl.constexpr,
 
 
 @triton.jit
-def triton_add_4d_5d(
-        output_ptr, x_ptr, y_ptr,
-        BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr, BLOCK_3: tl.constexpr,
-        BLOCK_4: tl.constexpr,
-        SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr, SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr,
-        SHAPE_4: tl.constexpr,
-        STRIDE_0: tl.constexpr, STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr,
-        STRIDE_4: tl.constexpr
-):
+def triton_add_4d_5d(output_ptr, x_ptr, y_ptr, BLOCK_0: tl.constexpr, BLOCK_1: tl.constexpr, BLOCK_2: tl.constexpr,
+                     BLOCK_3: tl.constexpr, BLOCK_4: tl.constexpr, SHAPE_0: tl.constexpr, SHAPE_1: tl.constexpr,
+                     SHAPE_2: tl.constexpr, SHAPE_3: tl.constexpr, SHAPE_4: tl.constexpr, STRIDE_0: tl.constexpr,
+                     STRIDE_1: tl.constexpr, STRIDE_2: tl.constexpr, STRIDE_3: tl.constexpr, STRIDE_4: tl.constexpr):
     offsets = tl.program_id(0)
 
     offsets = offsets + tl.arange(0, BLOCK_0) * STRIDE_0
@@ -168,7 +162,7 @@ def test_add_4d_5d(shape, dtype):
         blocks.append(1)
         strides.append(1)
 
-    grid = (1,)
+    grid = (1, )
     triton_add_4d_5d[grid](output, x, y, *blocks, *blocks, *strides)
 
     test_common.validate_cmp(dtype, ans, output)
@@ -181,11 +175,10 @@ def promote_dtype(x_dtype, y_dtype):
     # 如果两个数据类型一致，直接返回
     if x_dtype == y_dtype:
         return y_dtype
-    
+
     # 构建类型的优先级列表（从低到高）
     priority = [
-        torch.bool, torch.int8, torch.int16, torch.int32, torch.int64,
-        torch.float16, torch.bfloat16, torch.float32
+        torch.bool, torch.int8, torch.int16, torch.int32, torch.int64, torch.float16, torch.bfloat16, torch.float32
     ]
 
     # 查找两种类型在优先级列表中的位置
@@ -200,17 +193,10 @@ def promote_dtype(x_dtype, y_dtype):
 
 
 @pytest.mark.parametrize('param_list',
-                         [
-                            [(5, 1, 1, 1, 1), (5, 1, 1, 2, 1)],
-                            [(2, 1), (2, 4)],
-                            [(2, 1, 1), (2, 4, 2)],
-                            [(2, 1, 1, 1), (2, 4, 2, 2)],
-                            [(2, 1, 1, 1, 1), (2, 4, 2, 2, 2)],
-                            [(1, ), (4, )],
-                            [(1, 2, 1), (1, 2, 3)],
-                            [(1, 1, 1, 1), (7, 1, 1, 1)]
-                         ]
-                         )
+                         [[(5, 1, 1, 1, 1),
+                           (5, 1, 1, 2, 1)], [(2, 1), (2, 4)], [(2, 1, 1), (2, 4, 2)], [(2, 1, 1, 1), (2, 4, 2, 2)],
+                          [(2, 1, 1, 1, 1),
+                           (2, 4, 2, 2, 2)], [(1, ), (4, )], [(1, 2, 1), (1, 2, 3)], [(1, 1, 1, 1), (7, 1, 1, 1)]])
 @pytest.mark.parametrize('x_dtype_str', ['int8', 'int16', 'int32', 'int64', 'float16', 'float32', 'bfloat16', 'bool'])
 @pytest.mark.parametrize('y_dtype_str', ['int8', 'int16', 'int32', 'int64', 'float16', 'float32', 'bfloat16', 'bool'])
 def test_add_broadcast(param_list, x_dtype_str, y_dtype_str):
@@ -246,12 +232,12 @@ def test_add_broadcast(param_list, x_dtype_str, y_dtype_str):
         torch.testing.assert_close(out, ans, rtol=1e-3, atol=1e-3)
     else:
         torch.testing.assert_close(out, ans)
-    
 
 
 @triton.jit
-def add_5d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr, NB: tl.constexpr,
-                            XB1: tl.constexpr, YB1: tl.constexpr, ZB1: tl.constexpr, MB1: tl.constexpr, NB1: tl.constexpr):
+def add_5d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr,
+           NB: tl.constexpr, XB1: tl.constexpr, YB1: tl.constexpr, ZB1: tl.constexpr, MB1: tl.constexpr,
+           NB1: tl.constexpr):
     offsets = tl.arange(0, XB) * (YB * ZB * MB * NB)
     offsets = offsets[:, None] + tl.arange(0, YB)[None, :] * (ZB * MB * NB)
     offsets = offsets[:, :, None] + tl.arange(0, ZB)[None, None, :] * (MB * NB)
@@ -263,7 +249,7 @@ def add_5d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.con
     offsets1 = offsets1[:, :, None] + tl.arange(0, ZB1)[None, None, :] * (MB1 * NB1)
     offsets1 = offsets1[:, :, :, None] + tl.arange(0, MB1)[None, None, None, :] * NB1
     offsets1 = offsets1[:, :, :, :, None] + tl.arange(0, NB1)[None, None, None, None, :]
-    
+
     tmp0 = tl.load(x_ptr + offsets)
     tmp1 = tl.load(y_ptr + offsets1)
     tmp2 = tl.load(out_ptr + offsets1)
@@ -273,17 +259,17 @@ def add_5d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.con
 
 @triton.jit
 def add_4d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, MB: tl.constexpr,
-                            XB1: tl.constexpr, YB1: tl.constexpr, ZB1: tl.constexpr, MB1: tl.constexpr):
+           XB1: tl.constexpr, YB1: tl.constexpr, ZB1: tl.constexpr, MB1: tl.constexpr):
     offsets = tl.arange(0, XB) * (YB * ZB * MB)
     offsets = offsets[:, None] + tl.arange(0, YB)[None, :] * (ZB * MB)
     offsets = offsets[:, :, None] + tl.arange(0, ZB)[None, None, :] * (MB)
-    offsets = offsets[:, :, :, None] + tl.arange(0, MB)[None, None, None, :] 
+    offsets = offsets[:, :, :, None] + tl.arange(0, MB)[None, None, None, :]
 
     offsets1 = tl.arange(0, XB1) * (YB1 * ZB1 * MB1)
     offsets1 = offsets1[:, None] + tl.arange(0, YB1)[None, :] * (ZB1 * MB1)
     offsets1 = offsets1[:, :, None] + tl.arange(0, ZB1)[None, None, :] * (MB1)
     offsets1 = offsets1[:, :, :, None] + tl.arange(0, MB1)[None, None, None, :]
-    
+
     tmp0 = tl.load(x_ptr + offsets)
     tmp1 = tl.load(y_ptr + offsets1)
     tmp2 = tl.load(out_ptr + offsets1)
@@ -292,8 +278,8 @@ def add_4d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.con
 
 
 @triton.jit
-def add_3d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr,
-                            XB1: tl.constexpr, YB1: tl.constexpr, ZB1: tl.constexpr):
+def add_3d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.constexpr, XB1: tl.constexpr,
+           YB1: tl.constexpr, ZB1: tl.constexpr):
     offsets = tl.arange(0, XB) * (YB * ZB)
     offsets = offsets[:, None] + tl.arange(0, YB)[None, :] * (ZB)
     offsets = offsets[:, :, None] + tl.arange(0, ZB)[None, None, :]
@@ -301,7 +287,7 @@ def add_3d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.con
     offsets1 = tl.arange(0, XB1) * (YB1 * ZB1)
     offsets1 = offsets1[:, None] + tl.arange(0, YB1)[None, :] * (ZB1)
     offsets1 = offsets1[:, :, None] + tl.arange(0, ZB1)[None, None, :]
-    
+
     tmp0 = tl.load(x_ptr + offsets)
     tmp1 = tl.load(y_ptr + offsets1)
     tmp2 = tl.load(out_ptr + offsets1)
@@ -310,14 +296,13 @@ def add_3d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.con
 
 
 @triton.jit
-def add_2d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr,
-                            XB1: tl.constexpr, YB1: tl.constexpr):
+def add_2d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr, XB1: tl.constexpr, YB1: tl.constexpr):
     offsets = tl.arange(0, XB) * (YB)
     offsets = offsets[:, None] + tl.arange(0, YB)[None, :]
 
     offsets1 = tl.arange(0, XB1) * (YB1)
     offsets1 = offsets1[:, None] + tl.arange(0, YB1)[None, :]
-    
+
     tmp0 = tl.load(x_ptr + offsets)
     tmp1 = tl.load(y_ptr + offsets1)
     tmp2 = tl.load(out_ptr + offsets1)
@@ -325,11 +310,9 @@ def add_2d(x_ptr, y_ptr, out_ptr, XB: tl.constexpr, YB: tl.constexpr,
     tl.store(out_ptr + offsets1, out)
 
 
-@pytest.mark.parametrize('param_list',
-    [
-        [(5, 1, 1, 1, 1), (5, 1, 1, 2, 1)],
-    ]
-    )
+@pytest.mark.parametrize('param_list', [
+    [(5, 1, 1, 1, 1), (5, 1, 1, 2, 1)],
+])
 @pytest.mark.parametrize('x_dtype_str', ['int8', 'int16', 'int32', 'int64', 'float16', 'float32', 'bfloat16', 'bool'])
 @pytest.mark.parametrize('y_dtype_str', ['int8', 'int16', 'int32', 'int64', 'float16', 'float32', 'bfloat16', 'bool'])
 def test_add_2d_to_5d(x_dtype_str, y_dtype_str, param_list):
@@ -368,8 +351,10 @@ def test_add_2d_to_5d(x_dtype_str, y_dtype_str, param_list):
             x_ptr=x0,
             y_ptr=y,
             out_ptr=out,
-            XB=XB, YB=YB,
-            XB1=XB1, YB1=YB1,
+            XB=XB,
+            YB=YB,
+            XB1=XB1,
+            YB1=YB1,
         )
 
     elif ndim == 3:
@@ -380,8 +365,12 @@ def test_add_2d_to_5d(x_dtype_str, y_dtype_str, param_list):
             x_ptr=x0,
             y_ptr=y,
             out_ptr=out,
-            XB=XB, YB=YB, ZB=ZB,
-            XB1=XB1, YB1=YB1, ZB1=ZB1,
+            XB=XB,
+            YB=YB,
+            ZB=ZB,
+            XB1=XB1,
+            YB1=YB1,
+            ZB1=ZB1,
         )
 
     elif ndim == 4:
@@ -392,8 +381,14 @@ def test_add_2d_to_5d(x_dtype_str, y_dtype_str, param_list):
             x_ptr=x0,
             y_ptr=y,
             out_ptr=out,
-            XB=XB, YB=YB, ZB=ZB, MB=MB,
-            XB1=XB1, YB1=YB1, ZB1=ZB1, MB1=MB1,
+            XB=XB,
+            YB=YB,
+            ZB=ZB,
+            MB=MB,
+            XB1=XB1,
+            YB1=YB1,
+            ZB1=ZB1,
+            MB1=MB1,
         )
 
     elif ndim == 5:
@@ -404,8 +399,16 @@ def test_add_2d_to_5d(x_dtype_str, y_dtype_str, param_list):
             x_ptr=x0,
             y_ptr=y,
             out_ptr=out,
-            XB=XB, YB=YB, ZB=ZB, MB=MB, NB=NB,
-            XB1=XB1, YB1=YB1, ZB1=ZB1, MB1=MB1, NB1=NB1,
+            XB=XB,
+            YB=YB,
+            ZB=ZB,
+            MB=MB,
+            NB=NB,
+            XB1=XB1,
+            YB1=YB1,
+            ZB1=ZB1,
+            MB1=MB1,
+            NB1=NB1,
         )
 
     else:
@@ -420,16 +423,16 @@ def test_add_uint(shape, dtype):
     torch_dtype = eval('torch.' + dtype)
     np_x0 = test_common.generate_numpy(shape, dtype)
     np_x1 = test_common.generate_numpy(shape, dtype)
-    np_x2 = test_common.generate_numpy(shape, dtype)  
+    np_x2 = test_common.generate_numpy(shape, dtype)
 
     x0 = torch.from_numpy(np_x0).to(torch_dtype).npu()
     x1 = torch.from_numpy(np_x1).to(torch_dtype).npu()
-    x2 = torch.from_numpy(np_x2).to(torch_dtype).npu()   
+    x2 = torch.from_numpy(np_x2).to(torch_dtype).npu()
 
     #numpy result
     ans_numpy = np_x0 + np_x1
     z_ref1 = torch.from_numpy(ans_numpy).npu()
 
     triton_res = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
-    triton_add[1, 1, shape[0]](triton_res, x0, x1, x2, 1, 1, 1, 1, 1, shape[0]) 
+    triton_add[1, 1, shape[0]](triton_res, x0, x1, x2, 1, 1, 1, 1, 1, shape[0])
     test_common.validate_cmp(dtype, z_ref1, triton_res)

@@ -63,9 +63,7 @@ def test_multibuffer():
     print("=" * 60)
     print("Test 1: test_alloc_ub_multibuffer")
     print("=" * 60)
-    mlir = compile_kernel(
-        multibuffer, {}, {"XBLOCK": 256}
-    )
+    mlir = compile_kernel(multibuffer, {}, {"XBLOCK": 256})
     print(f"Generated MLIR ({len(mlir)} chars):\n")
     print(mlir)
 

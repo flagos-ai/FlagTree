@@ -120,7 +120,7 @@ def test_sub_vec_id_1to2(dtype, ashape, bshape):
     TBuff = test_common.generate_tensor((M, N), dtype).npu()
 
     # Run
-    grid_matmul_exp = (1,)  # grid
+    grid_matmul_exp = (1, )  # grid
     triton_matmul_exp[grid_matmul_exp](A, B, C, TBuff, M, N, K, sub_M)
 
     # Reference result

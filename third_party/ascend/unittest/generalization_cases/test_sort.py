@@ -143,9 +143,7 @@ def test_sort_3d(shape, descending, dtype):
 # 4D sort kernel
 # ----------------------
 @triton.jit
-def sort_kernel_4d(X, Z,
-                   D0: tl.constexpr, D1: tl.constexpr,
-                   D2: tl.constexpr, D3: tl.constexpr,
+def sort_kernel_4d(X, Z, D0: tl.constexpr, D1: tl.constexpr, D2: tl.constexpr, D3: tl.constexpr,
                    descending: tl.constexpr):
     pid = tl.program_id(0)
     row_id = pid % D2
@@ -189,10 +187,7 @@ def test_sort_4d(shape, descending, dtype):
 # 5D sort kernel
 # ----------------------
 @triton.jit
-def sort_kernel_5d(X, Z,
-                   D0: tl.constexpr, D1: tl.constexpr,
-                   D2: tl.constexpr, D3: tl.constexpr,
-                   D4: tl.constexpr,
+def sort_kernel_5d(X, Z, D0: tl.constexpr, D1: tl.constexpr, D2: tl.constexpr, D3: tl.constexpr, D4: tl.constexpr,
                    descending: tl.constexpr):
     pid = tl.program_id(0)
     row_id = pid % D3

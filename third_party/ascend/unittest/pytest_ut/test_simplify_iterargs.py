@@ -54,27 +54,25 @@ def triton_fn_broadcast(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, YBLOCK: tl.cons
         tl.store(out_ptr0 + (x0), tmp0, None)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (128, 128), 128, 128, 32],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (128, 128), 128, 128, 32],
+])
 def test_expanddims(param_list):
     dtype, shape, xblock, yblock, yblock_sub = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()
 
     y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
-    triton_fn_expanddims[(1,)](x0, y_cal, xblock, yblock, yblock_sub)
+    triton_fn_expanddims[(1, )](x0, y_cal, xblock, yblock, yblock_sub)
     test_common.validate_cmp(dtype, y_cal, x0)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (128, 128), 128, 128, 32],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (128, 128), 128, 128, 32],
+])
 def test_broadcast(param_list):
     dtype, shape, xblock, yblock, yblock_sub = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()
 
     y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
-    triton_fn_broadcast[(1,)](x0, y_cal, xblock, yblock, yblock_sub)
+    triton_fn_broadcast[(1, )](x0, y_cal, xblock, yblock, yblock_sub)
     test_common.validate_cmp(dtype, y_cal, x0)

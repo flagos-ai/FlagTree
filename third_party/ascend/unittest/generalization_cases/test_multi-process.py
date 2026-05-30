@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
 """
 testing the compilation of multi-process operators
 =============
@@ -35,7 +34,13 @@ import triton.language as tl
 
 
 @triton.jit
-def add_kernel(x_ptr, y_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr, ):
+def add_kernel(
+    x_ptr,
+    y_ptr,
+    output_ptr,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
     pid = tl.program_id(axis=0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
@@ -54,7 +59,15 @@ def add_triton(x, y):
     output = torch.empty_like(x)
     n_elements = output.numel()
     BLOCK_SIZE = 1024
-    add_kernel[triton.cdiv(n_elements, BLOCK_SIZE), ](x, y, output, n_elements, BLOCK_SIZE,)
+    add_kernel[
+        triton.cdiv(n_elements, BLOCK_SIZE),
+    ](
+        x,
+        y,
+        output,
+        n_elements,
+        BLOCK_SIZE,
+    )
     return output
 
 
@@ -85,7 +98,7 @@ def test_multi_process():
     multiprocessing.set_start_method("spawn", force=True)
     results = []
     with multiprocessing.Pool(processes=process_num) as pool:
-        results = pool.map(case_add, [(98432,)] * process_num)
+        results = pool.map(case_add, [(98432, )] * process_num)
     success_num = 0
     for result in results:
         if result and "success" in result:

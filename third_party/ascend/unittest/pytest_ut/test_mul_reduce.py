@@ -22,20 +22,16 @@ def triton_pw_rdc5d(in_ptr0, in_ptr1, out_ptr0, L: tl.constexpr, M: tl.constexpr
     nblk_idx = tl.arange(0, N)
     kblk_idx = tl.arange(0, K)
     zblk_idx = tl.arange(0, Z)
-    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M +
-           mblk_idx[None, :, None, None, None] * Z * K * N +
-           nblk_idx[None, None, :, None, None] * Z * K +
-           kblk_idx[None, None, None, :, None] * Z +
+    idx = (lblk_idx[:, None, None, None, None] * Z * K * N * M + mblk_idx[None, :, None, None, None] * Z * K * N +
+           nblk_idx[None, None, :, None, None] * Z * K + kblk_idx[None, None, None, :, None] * Z +
            zblk_idx[None, None, None, None, :])
     x0 = tl.load(in_ptr0 + idx)
     x1 = tl.load(in_ptr1 + idx)
     ret0 = x0 * x1
     ret = tl.reduce(ret0, 4, minimum, keep_dims=True)
     zblk_idx = tl.arange(0, 1)
-    odx = (lblk_idx[:, None, None, None, None] * K * N * M +
-           mblk_idx[None, :, None, None, None] * K * N +
-           nblk_idx[None, None, :, None, None] * K +
-           kblk_idx[None, None, None, :, None] +
+    odx = (lblk_idx[:, None, None, None, None] * K * N * M + mblk_idx[None, :, None, None, None] * K * N +
+           nblk_idx[None, None, :, None, None] * K + kblk_idx[None, None, None, :, None] +
            zblk_idx[None, None, None, None, :])
     tl.store(out_ptr0 + odx, ret)
 
@@ -50,10 +46,7 @@ def test_pw_rdc5d(dtype, shape):
 
     expected = (a * b).to(dtype)
 
-    triton_pw_rdc5d[(1,)](
-        a, b, out,
-        L=L, M=M, N=N, K=K, Z=Z
-    )
+    triton_pw_rdc5d[(1, )](a, b, out, L=L, M=M, N=N, K=K, Z=Z)
 
     torch.testing.assert_close(out.cpu(), expected.cpu(), rtol=1e-3, atol=1e-3)
 

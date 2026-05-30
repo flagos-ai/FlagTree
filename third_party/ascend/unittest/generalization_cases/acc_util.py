@@ -68,8 +68,10 @@ def assert_close(gold: torch.Tensor, act: torch.Tensor, eval_type: str = 'DEFAUL
         if not torch.any(not_close):
             return False
 
-        assert torch.sum(not_close).item() < not_close.numel() * eps, "actual tensor are not close enough with golden tensor,\
+        assert torch.sum(
+            not_close).item() < not_close.numel() * eps, "actual tensor are not close enough with golden tensor,\
 you can use 'benchmark_compare_close' function to compare again!"
+
     elif eval_type == 'ABS':
         act = act.to(gold.dtype)
         assert torch.equal(gold, act), "actual tensor and golden tensor are not binary equal!"
@@ -113,7 +115,7 @@ def benchmark_compare_close(gold: torch.Tensor, act: torch.Tensor, std: torch.te
     std_small_error_ratio = std_small_error_count / std_total
 
     def calculate_rmse(tensor):
-        dlt2 = (tensor - gold) ** 2
+        dlt2 = (tensor - gold)**2
         dlt2_except_small_mean = torch.where(mask, 0, dlt2).sum() / small_count
         return torch.sqrt(dlt2_except_small_mean)
 
@@ -123,7 +125,8 @@ def benchmark_compare_close(gold: torch.Tensor, act: torch.Tensor, std: torch.te
     print(f"act_re.max = {act_re.max()}, std_re.max = {std_re.max()}, limit ratio = 10")
     print(f"act_re.sum = {act_re.sum()}, std_re.sum = {std_re.sum()}, limit_ratio = 2")
     print(
-        f"act_small_error_ratio = {act_small_error_ratio}, std_small_error_ratio = {std_small_error_ratio}, limit_ratio = 2")
+        f"act_small_error_ratio = {act_small_error_ratio}, std_small_error_ratio = {std_small_error_ratio}, limit_ratio = 2"
+    )
     print(f"act_rmse = {act_rmse}, std_rmse = {std_rmse}, limit_ratio = 2")
 
     # 条件 1：actual 与 golden 相对误差最大值超过 10 倍 standard 与 golden 相对误差最大值

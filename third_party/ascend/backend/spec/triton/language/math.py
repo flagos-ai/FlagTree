@@ -257,7 +257,6 @@ def fma(x, y, z, _semantic=None):
     return core.tensor(_semantic.builder.create_fma(x.handle, y.handle, z.handle), x.type)
 
 
-
 @core.builtin
 @_add_math_2arg_docstr("cdiv")
 @core._tensor_member_fn
@@ -285,10 +284,7 @@ def cdiv(x, div, _semantic=None):
         raise ValueError("cdiv does not support boolean type")
     elif x_scalar_type.is_int() and div_scalar_type.is_int():
         # integer cdiv: (x + div - 1) // div as before
-        return _semantic.floordiv(
-            _semantic.add(x, _semantic.sub(div, 1, True), True),
-            div
-        )
+        return _semantic.floordiv(_semantic.add(x, _semantic.sub(div, 1, True), True), div)
     else:
         div_res = _semantic.truediv(x, div)
         cdiv_res = core.tensor(_semantic.builder.create_ceil(div_res.handle), div_res.type)

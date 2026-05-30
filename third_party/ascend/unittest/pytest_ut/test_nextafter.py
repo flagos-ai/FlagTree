@@ -47,11 +47,10 @@ def triton_nextafter(in_ptr0, in_ptr1, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SU
         tl.store(out_ptr0 + (x0), tmp2, None)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (2, 4096, 8), 2, 32768, 1024],
-                                ['float16', (2, 4096, 8), 2, 32768, 1024],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_nextafter(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x0_ref = test_common.generate_tensor(shape, dtype)
@@ -59,6 +58,6 @@ def test_nextafter(param_list):
     x0 = x0_ref.npu()
     x1 = x1_ref.npu()
     y_ref = torch_nextafter(x0_ref, x1_ref)
-    y_cal = torch.zeros(shape, dtype = eval('torch.' + dtype)).npu()
+    y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     triton_nextafter[ncore, 1, 1](x0, x1, y_cal, xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)

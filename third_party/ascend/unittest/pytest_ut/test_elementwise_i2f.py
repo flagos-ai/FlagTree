@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import pytest
 
 import triton
@@ -77,7 +76,7 @@ def triton_i2f_bfloat16(in_ptr0, out_ptr0, N: tl.constexpr, NUMEL: tl.constexpr)
 types = [
     # (torch.int8, 'int8'),   # TO BE FIXED i8 -> f16、bf16
     # (torch.int16, 'int16'), # TO BE FIXED i16 -> f32、bf16
-    (torch.int32, 'int32'), # TO BE FIXED i32 -> f16、bf16
+    (torch.int32, 'int32'),  # TO BE FIXED i32 -> f16、bf16
     # (torch.int64, 'int64'), # TO BE FIXED i64 -> bf16
 ]
 
@@ -113,12 +112,12 @@ def test_elementwise_common(opName, tritonOp, standOp, dst_sigtype, dtype, sigty
     if sigtype == 'int64':
         N = map_for_64_t[N] if N in map_for_64_t else N
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype)
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype)
 
     ans = standOp(x0)
     x0 = x0.npu()
 
-    output = test_common.generate_tensor(shape=(N,), dtype=dst_sigtype).npu()
+    output = test_common.generate_tensor(shape=(N, ), dtype=dst_sigtype).npu()
     tritonOp[1, 1, 1](x0, output, N=N, NUMEL=NUMEL, debug=True)
 
     test_common.validate_cmp(dst_sigtype, output, ans)

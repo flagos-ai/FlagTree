@@ -28,8 +28,9 @@ import test_common
 import torch
 import torch_npu
 
+
 @triton.jit
-def triton_asinh(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.constexpr):
+def triton_asinh(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     offset = tl.program_id(0) * XBLOCK
     base1 = tl.arange(0, XBLOCK_SUB)
     loops1: tl.constexpr = XBLOCK // XBLOCK_SUB
@@ -40,20 +41,15 @@ def triton_asinh(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.const
         tl.store(out_ptr0 + (x0), tmp1, None)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                'float32',
-                                'float16',
-                                'bfloat16'
-                            ])
+@pytest.mark.parametrize('param_list', ['float32', 'float16', 'bfloat16'])
 def test_asinh_special(param_list):
     dtype = param_list
-    x_near = torch.linspace(1.0 + 1e-6, 2.0, 500, dtype=eval("torch."+dtype)).npu()
-    x_far = torch.linspace(2.0, 1e4, 300, dtype=eval("torch."+dtype)).npu()
+    x_near = torch.linspace(1.0 + 1e-6, 2.0, 500, dtype=eval("torch." + dtype)).npu()
+    x_far = torch.linspace(2.0, 1e4, 300, dtype=eval("torch." + dtype)).npu()
     x0 = torch.cat([x_near, x_far], dim=0)
-    x_special = torch.tensor([1.0, 1.0 + 1e-8, 2.0, 1000.0, 1e4], dtype=eval("torch."+dtype)).npu()
+    x_special = torch.tensor([1.0, 1.0 + 1e-8, 2.0, 1000.0, 1e4], dtype=eval("torch." + dtype)).npu()
     x0 = torch.cat([x0, x_special], dim=0)
-    
+
     if dtype == 'float16':
         x0 = torch.clamp(x0, max=240)
     y_ref = torch.asinh(x0)

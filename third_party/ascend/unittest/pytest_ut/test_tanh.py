@@ -45,12 +45,11 @@ def triton_tanh(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexp
         tl.store(out_ptr0 + (x0), tmp1, None)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float16', (2, 4096, 8), 2, 32768, 1024],
-                                ['bfloat16', (2, 4096, 8), 2, 32768, 1024],
-                                ['float32', (2, 4096, 8), 2, 32768, 1024],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+    ['bfloat16', (2, 4096, 8), 2, 32768, 1024],
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_tanh(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     x0 = test_common.generate_tensor(shape, dtype).npu()

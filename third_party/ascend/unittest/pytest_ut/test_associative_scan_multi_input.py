@@ -23,8 +23,10 @@ import triton
 import triton.language as tl
 import pytest
 
+
 def combine_fn_test_torch_add(a, b):
     return a + b
+
 
 def torch_func_scan(x: torch.Tensor, dim: int, reverse: bool):
     """
@@ -53,17 +55,22 @@ def torch_func_scan(x: torch.Tensor, dim: int, reverse: bool):
 
     return output
 
+
 @triton.jit
 def add_combine_fn(a_value, a_index, b_value, b_index):
     new_val = a_value + b_value
     new_idx = a_index + b_index
     return (new_val, new_idx)
 
+
 @triton.jit
 def prefix_scan_last_dim_kernel(
-    vals_ptr, idx_ptr,
-    out_vals_ptr, out_idxs_ptr,
-    axis_size, total_slices,
+    vals_ptr,
+    idx_ptr,
+    out_vals_ptr,
+    out_idxs_ptr,
+    axis_size,
+    total_slices,
     BLOCK_SIZE: tl.constexpr,
     reverse: tl.constexpr,
 ):
@@ -78,9 +85,7 @@ def prefix_scan_last_dim_kernel(
     vals = tl.load(vals_ptr + base + offs, mask=mask, other=0.0)
     idxs = tl.load(idx_ptr + base + offs, mask=mask, other=0)
 
-    pre_vals, pre_idxs = tl.associative_scan(
-        (vals, idxs), axis=0, combine_fn=add_combine_fn, reverse=reverse
-    )
+    pre_vals, pre_idxs = tl.associative_scan((vals, idxs), axis=0, combine_fn=add_combine_fn, reverse=reverse)
 
     tl.store(out_vals_ptr + base + offs, pre_vals, mask=mask)
     tl.store(out_idxs_ptr + base + offs, pre_idxs, mask=mask)
@@ -116,13 +121,8 @@ def multi_input_prefix_sum(values: torch.Tensor, index: torch.Tensor, axis=0, re
 
     BLOCK_SIZE = 1 << (axis_size - 1).bit_length()
 
-    prefix_scan_last_dim_kernel[(total_slices,)](
-        vals_p, idxs_p,
-        out_vals_p, out_idxs_p,
-        axis_size, total_slices,
-        BLOCK_SIZE=BLOCK_SIZE,
-        reverse=reverse
-    )
+    prefix_scan_last_dim_kernel[(total_slices, )](vals_p, idxs_p, out_vals_p, out_idxs_p, axis_size, total_slices,
+                                                  BLOCK_SIZE=BLOCK_SIZE, reverse=reverse)
 
     # 2. permute back
     out_vals = out_vals_p.permute(inv_order)
@@ -131,14 +131,14 @@ def multi_input_prefix_sum(values: torch.Tensor, index: torch.Tensor, axis=0, re
 
 
 @pytest.mark.parametrize("shape, axis", [
-    ((10,), 0),
+    ((10, ), 0),
     ((4, 4), 0),
     ((4, 4), 1),
     ((2, 10, 5), 0),
     ((2, 10, 5), 1),
     ((2, 10, 5), 2),
 ])
-@pytest.mark.parametrize("reverse", [False,True])
+@pytest.mark.parametrize("reverse", [False, True])
 def test_multi_input_prefix_sum(shape, axis, reverse):
     torch.manual_seed(0)
     device = "npu"

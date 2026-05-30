@@ -80,8 +80,7 @@ def example_op(src, index, offset, axis, _semantic=None):
     # output can be provided here to make it easy to use.
     x = _semantic.full(src.shape, 0, tl.float32)
     y = _semantic.full(index.shape, 0, tl.float32)
-    return al.custom_semantic(_example_custom_op.name,
-        src, index, offset, axis, out=(x, y), _semantic=_semantic)
+    return al.custom_semantic(_example_custom_op.name, src, index, offset, axis, out=(x, y), _semantic=_semantic)
 
 
 @triton.jit

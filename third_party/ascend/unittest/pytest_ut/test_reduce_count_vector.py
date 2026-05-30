@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import pytest
 
 import triton
@@ -133,7 +132,7 @@ def test_reduce_count_vector(opName, tritonOp, standOp, cmp_val, dtype, sigtype,
     if sigtype == 'int64':
         N = map_for_64_t[N] if N in map_for_64_t else N
 
-    x0 = test_common.generate_tensor(shape=(N,), dtype=sigtype)
+    x0 = test_common.generate_tensor(shape=(N, ), dtype=sigtype)
     ans = standOp(x0, cmp_val, 0)
     x0 = x0.npu()
 

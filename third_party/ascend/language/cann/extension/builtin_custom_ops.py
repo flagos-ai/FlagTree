@@ -20,7 +20,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-
 import triton.language.core as tl
 from .custom_op import register_custom_op
 from .core import CORE, PIPE, MODE
@@ -80,14 +79,15 @@ class _index_select:
         assert src.type.is_ptr() or src.dtype.is_ptr(), f"src should be a pointer, but got {src.type}"
         assert index.dtype.is_int(), "index should be integer tensor"
         src_rank = len(src_stride)
-        idx_rank = len(index.shape) 
+        idx_rank = len(index.shape)
         assert 2 <= src_rank <= 5, f"src rank should in [2, 5], but got {src_rank}"
         assert 1 <= idx_rank <= 2, f"index rank should in [1, 2], but got {idx_rank}"
         assert _is_int_like_elem(dim), "dim should be an integer"
         assert _is_int_like_elem(bound), "bound should be an integer"
         assert 0 <= dim < src_rank, f"dim should in [0, {src_rank - 1}], but got {dim}"
         assert len(start_offset) == len(src_stride), "start_offset and src_stride should have same size"
-        assert len(end_offset) == idx_rank + len(start_offset) - 1, "len(end_offset) should be equal to index rank + len(start_offset) - 1"
+        assert len(end_offset) == idx_rank + len(
+            start_offset) - 1, "len(end_offset) should be equal to index rank + len(start_offset) - 1"
 
         _assert_int_like_tuple("end_offset", end_offset)
         _assert_int_like_tuple("start_offset", start_offset)
@@ -127,7 +127,7 @@ class _index_put:
     def __init__(self, dst, index, value, dim, bound: tl.int64, dst_shape, dst_offset, dst_stride):
         assert dst.type.is_ptr() or dst.dtype.is_ptr(), f"dst should be a pointer, but got {dst.type}"
         assert index.dtype.is_int(), "index should be integer tensor"
-        value_rank = len(value.shape) 
+        value_rank = len(value.shape)
         assert 2 <= value_rank <= 5, f"value rank should in [2, 5], but got {value_rank}"
         assert isinstance(dim, int), "dim should be an integer"
         assert isinstance(bound, int), "bound should be an integer"

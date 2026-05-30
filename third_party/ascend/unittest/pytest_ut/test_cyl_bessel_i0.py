@@ -35,7 +35,7 @@ def torch_modified_bessel_i0(x0):
 
 
 @triton.jit
-def triton_modified_bessel_i0(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.constexpr):
+def triton_modified_bessel_i0(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     offset = tl.program_id(0) * XBLOCK
     base1 = tl.arange(0, XBLOCK_SUB)
     loops1: tl.constexpr = XBLOCK // XBLOCK_SUB
@@ -46,17 +46,16 @@ def triton_modified_bessel_i0(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_S
         tl.store(out_ptr0 + (x0), tmp1, None)
 
 
-@pytest.mark.parametrize('param_list',
-                            [
-                                ['float32', (2, 4096, 8), 2, 32768, 1024],
-                                ['float16', (2, 4096, 8), 2, 32768, 1024],
-                            ])
+@pytest.mark.parametrize('param_list', [
+    ['float32', (2, 4096, 8), 2, 32768, 1024],
+    ['float16', (2, 4096, 8), 2, 32768, 1024],
+])
 def test_modified_bessel_i0(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list
     np_x0 = test_common.generate_numpy(shape, dtype)
     y_ref = np.i0(np_x0)
     y_ref = torch.from_numpy(y_ref).to(eval('torch.' + dtype))
     x0 = torch.from_numpy(np_x0).to(eval('torch.' + dtype)).npu()
-    y_cal = torch.zeros(shape, dtype = eval('torch.' + dtype)).npu()
+    y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     triton_modified_bessel_i0[ncore, 1, 1](x0, y_cal, xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)

@@ -26,9 +26,7 @@ __all__ = [
 ]
 
 import enum
-from typing import (
-    TypeVar, List, Union
-)
+from typing import (TypeVar, List, Union)
 
 from triton._C.libtriton import ir
 from triton._C.libtriton.ascend import ir as ascend_ir
@@ -36,14 +34,11 @@ import triton.language.core as tl
 import triton.language.extra.cann.extension as al
 import triton.extension.buffer.language as bl
 
-
 T = TypeVar('T')
 
 
-def create_address_space(
-    address_space: ascend_ir.AddressSpace,
-    builder: ascend_ir.ascendnpu_ir_builder
-) -> ir.attribute:
+def create_address_space(address_space: ascend_ir.AddressSpace,
+                         builder: ascend_ir.ascendnpu_ir_builder) -> ir.attribute:
     return builder.get_target_attribute(address_space)
 
 
@@ -61,29 +56,25 @@ class PIPE(enum.Enum):
 def create_sync_block_set(sender, receiver, event_id, sender_pipe: PIPE, receiver_pipe: PIPE, _semantic=None):
     if isinstance(event_id, int):
         _semantic.builder.sync_block_set(sender, receiver,
-                                _semantic.to_tensor(tl.constexpr(event_id)).handle,
-                                sender_pipe.value, receiver_pipe.value)
+                                         _semantic.to_tensor(tl.constexpr(event_id)).handle, sender_pipe.value,
+                                         receiver_pipe.value)
     elif isinstance(event_id, tl.constexpr):
         _semantic.builder.sync_block_set(sender, receiver,
-                                _semantic.to_tensor(event_id).handle,
-                                sender_pipe.value, receiver_pipe.value)
+                                         _semantic.to_tensor(event_id).handle, sender_pipe.value, receiver_pipe.value)
     else:
-        _semantic.builder.sync_block_set(sender, receiver,
-                                event_id.handle, sender_pipe.value, receiver_pipe.value)
+        _semantic.builder.sync_block_set(sender, receiver, event_id.handle, sender_pipe.value, receiver_pipe.value)
 
 
 def create_sync_block_wait(sender, receiver, event_id, sender_pipe: PIPE, receiver_pipe: PIPE, _semantic=None):
     if isinstance(event_id, int):
         _semantic.builder.sync_block_wait(sender, receiver,
-                                 _semantic.to_tensor(tl.constexpr(event_id)).handle,
-                                 sender_pipe.value, receiver_pipe.value)
+                                          _semantic.to_tensor(tl.constexpr(event_id)).handle, sender_pipe.value,
+                                          receiver_pipe.value)
     elif isinstance(event_id, tl.constexpr):
         _semantic.builder.sync_block_wait(sender, receiver,
-                                 _semantic.to_tensor(event_id).handle,
-                                 sender_pipe.value, receiver_pipe.value)
+                                          _semantic.to_tensor(event_id).handle, sender_pipe.value, receiver_pipe.value)
     else:
-        _semantic.builder.sync_block_wait(sender, receiver,
-                                 event_id.handle, sender_pipe.value, receiver_pipe.value)
+        _semantic.builder.sync_block_wait(sender, receiver, event_id.handle, sender_pipe.value, receiver_pipe.value)
 
 
 def sub_vec_id(_semantic=None) -> tl.tensor:
@@ -177,24 +168,12 @@ def debug_barrier(sync_mode: str, _semantic=None) -> None:
     _semantic.builder.create_debug_barrier(target.handle, "SYNC_IN_VF", attr)
 
 
-def conv1d(
-    input_tensor: tl.tensor, weight_tensor: tl.tensor, bias: Union[tl.tensor, None],
-    stride: int, padding_size: int, dilation: int, groups: int,
-    output_shape, _semantic=None
-) -> tl.tensor:
+def conv1d(input_tensor: tl.tensor, weight_tensor: tl.tensor, bias: Union[tl.tensor, None], stride: int,
+           padding_size: int, dilation: int, groups: int, output_shape, _semantic=None) -> tl.tensor:
     bias_handle = None if bias is None else bias.handle
 
     element_ty = input_tensor.type.element_ty
     output_ty = tl.block_type(element_ty, output_shape)
-    out = _semantic.builder.create_conv1d(
-        input_tensor.handle,
-        weight_tensor.handle,
-        bias_handle,
-        stride,
-        padding_size,
-        dilation,
-        groups,
-        output_ty.to_ir(_semantic.builder)
-    )
+    out = _semantic.builder.create_conv1d(input_tensor.handle, weight_tensor.handle, bias_handle, stride, padding_size,
+                                          dilation, groups, output_ty.to_ir(_semantic.builder))
     return tl.tensor(out, output_ty)
-    
