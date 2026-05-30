@@ -44,6 +44,7 @@ elseif(FLAGTREE_BACKEND STREQUAL "ascend")
   set(CMAKE_C_COMPILER clang)
   set(CMAKE_CXX_COMPILER clang++)
   set(FLIR_BUILD_INCUBATED ON CACHE BOOL "Build FLIR incubated passes" FORCE)
+  set(LLVM_MAJOR_VERSION_22_OR_HIGHER ON)
   set(LLVM_MAJOR_VERSION_22_COMPATIBLE ON CACHE BOOL "AscendNPU-IR build with llvm major version 22 or later" FORCE)
   add_definitions(-D__LLVM_MAJOR_VERSION_22_COMPATIBLE__)
   add_compile_options("-Wno-deprecated-declarations")
@@ -498,6 +499,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                 ${PYTHON_SRC_PATH}/ir.cc
                 ${BUFFER_IR_SRC_PATH}/buffer_ir.cc
+                ${PYTHON_ROOT_SRC_PATH}/gluon_ir.cc
                 ${PYTHON_ROOT_SRC_PATH}/passes.cc
                 ${PYTHON_ROOT_SRC_PATH}/interpreter.cc
                 ${PYTHON_ROOT_SRC_PATH}/llvm.cc)

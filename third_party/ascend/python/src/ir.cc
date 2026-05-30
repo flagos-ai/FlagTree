@@ -37,10 +37,23 @@
 #include "triton/Dialect/TritonInstrument/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 
 #include "ir.h"
+
+void setAsyncTaskIds(mlir::Operation *op,
+                     llvm::ArrayRef<AsyncTaskId> asyncTaskIds) {
+  llvm::SmallVector<AsyncTaskId> sortedAsyncTaskIds(asyncTaskIds.begin(),
+                                                    asyncTaskIds.end());
+  sort(sortedAsyncTaskIds);
+  auto i32Ty = IntegerType::get(op->getContext(), 32);
+  auto size = static_cast<int64_t>(sortedAsyncTaskIds.size());
+  auto vecTy = VectorType::get(size, i32Ty);
+  op->setAttr("async_task_id",
+              DenseI32ArrayAttr::get(op->getContext(), sortedAsyncTaskIds));
+}
 namespace {
 
 namespace py = pybind11;
