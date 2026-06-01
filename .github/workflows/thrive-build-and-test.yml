@@ -1,0 +1,46 @@
+name: Thrive3.6-Build-And-Test
+
+on:
+  push:
+    branches: [ "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "triton_v3.6.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  thrive-build-and-test:
+    runs-on: thrive3.6
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: thrive
+
+      - name: FlagTree Build on Thrive
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=thrive
+          MAX_JOBS=32 python3 setup.py bdist_wheel
+          ssh -p 1024 root@localhost "rm -f /work/flagtree-*.whl"
+          scp -P 1024 dist/flagtree-*.whl root@localhost:/work
+          ssh -p 1024 root@localhost "pip3 install /work/flagtree-*.whl --force-reinstall"
+
+      - name: FlagTree Test on Thrive
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          ssh -p 1024 root@localhost "cd /usr/local/lib/python3.10/dist-packages/triton/backends/thrive/test && \
+                                      python3 -m pytest unit/language/test_standard.py --device thrive -v -s"
