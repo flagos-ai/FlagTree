@@ -43,5 +43,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: flagtree-nvidia-packages
-          path: debian-packages/*.deb
+          path: dist/output/*.deb
           retention-days: 7

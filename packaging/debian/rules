@@ -29,6 +29,7 @@ override_dh_auto_install:
 	fi; \
 	mkdir -p $(PYDIR); \
 	python3 -m pip install --no-deps --no-compile --no-index \
+		--break-system-packages \
 		--target=$(PYDIR) "$$wheel"
 	# Move console scripts out of dist-packages/bin into /usr/bin
 	if [ -d $(PYDIR)/bin ]; then \
@@ -49,4 +50,4 @@ override_dh_shlibdeps:
 override_dh_strip:
 	# Stripping the embedded LLVM-built .so files breaks Triton's runtime,
 	# which expects symbols for JIT codegen lookups.
-	dh_strip --no-automatic-dbgsym -X _C/libtriton.so -X _C/libproton.so
+	dh_strip --no-automatic-dbgsym -X libtriton -X libproton
