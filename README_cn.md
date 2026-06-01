@@ -23,6 +23,8 @@
   </a>
 </div>
 
+<img width="90" height="514" alt="FlagTree" src=".github/assets/FlagTree.png" />
+
 FlagTree 是 [FlagOS](https://flagos.io/) 的一部分。
 FlagOS 是一个面向多元AI芯片的开源、统一系统软件栈，旨在打通模型、系统与芯片层，培育开放协作的生态系统。
 它支持 “一次开发，多芯运行” 的工作流，兼容多样化的 AI 加速芯片。
