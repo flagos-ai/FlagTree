@@ -10,18 +10,13 @@
 #   1. build-flagtree-rpm.sh produces /wheels/flagtree-*.whl
 #   2. rpmbuild -ba flagtree.spec --define "wheel_dir /wheels"
 #                                 --define "flagtree_backend nvidia"
+#
+# The wheel must be built with the same Python ABI as the RPM build
+# environment. pip validates the wheel tag during %install, so a cp310 wheel
+# cannot be installed by a cp314 Fedora Python, for example.
 
 %{!?flagtree_backend: %global flagtree_backend nvidia}
 %{!?wheel_dir: %global wheel_dir %{_sourcedir}}
-
-# TODO(known issue): the FlagTree wheel produced by Stage-1 wheel-builder is
-# tagged cp310-cp310-linux_x86_64 (ubuntu:22.04 Python 3.10). Fedora 43
-# ships Python 3.14, so `pip install` here rejects the wheel as
-# "not a supported wheel on this platform". Two ways forward:
-#   - build the wheel against fedora:43's Python 3.14 in a parallel RPM
-#     wheel-builder stage (clean but doubles build time), OR
-#   - retag the wheel to abi3 stable ABI (upstream change in setup.py)
-# Until either lands, the .rpm build will fail; .deb side ships fine.
 
 # Disable byte-compile failures for the bundled vendored Python files.
 # Triton ships some files that aren't expected to compile under all interpreters.
@@ -41,8 +36,9 @@ URL:            https://github.com/flagos-ai/FlagTree
 # ExclusiveArch instead of BuildArch so rpmbuild refuses to start on a
 # non-x86_64 host rather than producing a mislabeled rpm.
 ExclusiveArch:  x86_64
+Source0:        LICENSE
 
-# No Source0: the wheel is supplied via --define "wheel_dir ...".
+# The wheel itself is supplied via --define "wheel_dir ...".
 
 BuildRequires:  python3-devel
 BuildRequires:  python3-pip
@@ -118,12 +114,19 @@ if [ -d "$PYDIR/bin" ]; then
     rmdir "$PYDIR/bin" 2>/dev/null || true
 fi
 
+# pip writes console-script shebangs from sys.executable, which may resolve to
+# /usr/sbin/python3 under rpmbuild. Normalize them to Fedora's Python path so
+# RPM auto-requires are satisfiable from the python3 package.
+sed -i "1s|^#!.*python3$|#!%{__python3}|" %{buildroot}%{_bindir}/proton*
+
 # RECORD references absolute paths under --target which become wrong after
 # rpmbuild relocates them. Drop it; pip doesn't need RECORD to function.
 rm -f "$PYDIR"/flagtree-*.dist-info/RECORD
 
+install -D -m 0644 %{SOURCE0} %{buildroot}%{_licensedir}/%{name}/LICENSE
+
 %files
-%license LICENSE
+%license %{_licensedir}/%{name}/LICENSE
 %{python3_sitearch}/triton
 %{python3_sitearch}/flagtree-*.dist-info
 %{_bindir}/proton*

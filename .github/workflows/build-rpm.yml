@@ -37,5 +37,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: flagtree-nvidia-rpm-packages
-          path: rpm-packages/*.rpm
+          path: dist-rpm/output/*.rpm
           retention-days: 7

@@ -20,6 +20,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 mkdir -p dist-rpm
+rm -rf dist-rpm/output
 
 echo ">>> Building wheel + .rpm for backend=${BACKEND}"
 docker build \
