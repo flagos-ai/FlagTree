@@ -12,13 +12,13 @@
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-# Plan A: docker pull (32.3GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202605-1.9.10-base
+# Plan A: docker pull (18.9GB)
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202605-1.9.7-base
 docker pull ${IMAGE}
-# Plan B: docker load (6.5GB)
-IMAGE=flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202605-1.9.10-base
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202605-1.9.10-base.tar.gz
-docker load -i flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202605-1.9.10-base.tar.gz
+# Plan B: docker load (4.0GB)
+IMAGE=flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202605-1.9.7-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202605-1.9.7-base.tar.gz
+docker load -i flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202605-1.9.7-base.tar.gz
 ```
 
 ```shell
@@ -189,7 +189,7 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 
 ### 1. 构建及运行环境
 
-#### 1.1 使用镜像 (Triton 3.6, GCU300)
+#### 1.1 使用镜像 (Triton 3.3, GCU300)
 
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 

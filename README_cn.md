@@ -82,6 +82,7 @@ TLE 的主要优势包括：
 
 ## 新特性
 
+* 2026/06/01 新增接入 [thrive](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/thrive/) 后端（对应 Triton 3.6），加入 CI/CD。
 * 2026/05/12 [mthreads](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/mthreads/) 后端升级到 Triton 3.6，加入 CI/CD。
 * 2026/05/07 [hcu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/hcu/) 后端升级到 Triton 3.6，加入 CI/CD。
 * 2026/04/23 [mthreads](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/mthreads/) 后端升级到 Triton 3.2，加入 CI/CD。
