@@ -12,6 +12,7 @@ dist/
 .eggs/
 
 # Packaging outputs (avoid re-bundling previous build products)
+dist-rpm/
 debian-packages/
 rpm-packages/
 

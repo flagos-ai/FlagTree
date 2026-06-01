@@ -24,7 +24,7 @@ packaging/
 ├── rpm/                          # .rpm packaging
 │   ├── specs/flagtree.spec       # uses pre-built wheel via wheel_dir define
 │   └── helpers/
-│       ├── Dockerfile.rpm        # 2 stages: ubuntu wheel → fedora rpm
+│       ├── Dockerfile.rpm        # 2 stages: rpm-base wheel → rpm assemble
 │       └── build-flagtree-rpm.sh
 └── spike/
     └── Dockerfile-nvidia         # original build-time spike for reference
