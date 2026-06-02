@@ -315,10 +315,17 @@ if(TRITON_BUILD_PYTHON_MODULE)
   list(APPEND TRITON_PLUGIN_NAMES "tle")
   add_subdirectory(third_party/tle)
 
-  # TLE-ARM64 plugin
+  # CPU backend plugins
   if(FLAGTREE_BACKEND STREQUAL "cpu")
+    # TLE-ARM64 plugin: TritonCPU dialect op builder injection
     list(APPEND TRITON_PLUGIN_NAMES "tle_arm64")
     add_subdirectory(third_party/tle_arm64)
+
+    # Host-CPU LLVM helper bindings (translate_to_host_asm / get_cpu_name /
+    # get_cpu_features / set_host_target) — sunk out of common-dir llvm.cc
+    # into a CPU-only plugin that injects into the libtriton.llvm submodule.
+    list(APPEND TRITON_PLUGIN_NAMES "host_cpu_llvm")
+    add_subdirectory(third_party/cpu/python)
   endif()
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
@@ -459,16 +466,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
       MLIRMemRefTransforms
       MLIRMemRefDialect
 
-      # AMX translation (x86 only, but harmless on other arches)
-      MLIRAMXToLLVMIRTranslation
-
       # LLVM
       LLVMPasses
     )
-    # OpenMP runtime linkage for parallel kernel dispatch
-    if(OpenMP_CXX_FOUND)
-      list(APPEND TRITON_LIBRARIES OpenMP::OpenMP_CXX)
-    endif()
   endif()
 
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64

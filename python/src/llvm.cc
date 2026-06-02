@@ -21,7 +21,6 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/TargetParser/Host.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
@@ -30,7 +29,6 @@
 #include <memory>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <set>
 #include <stdexcept>
 
 namespace py = pybind11;
@@ -436,38 +434,6 @@ void init_triton_llvm(py::module &&m) {
       },
       ret::take_ownership);
 
-  m.def(
-      "translate_to_host_asm",
-      [](std::string llvmIR, bool enable_fp_fusion) -> py::object {
-        std::string res;
-        {
-          // when allow_threads goes out of scope, gil will be released
-          py::gil_scoped_release allow_threads;
-          // create LLVM module from C++
-          llvm::LLVMContext context;
-          std::unique_ptr<llvm::MemoryBuffer> buffer =
-              llvm::MemoryBuffer::getMemBuffer(llvmIR.c_str());
-          llvm::SMDiagnostic error;
-          std::unique_ptr<llvm::Module> module =
-              llvm::parseIR(buffer->getMemBufferRef(), error, context);
-          if (!module) {
-            llvm::report_fatal_error(
-                "failed to parse IR: " + error.getMessage() +
-                "lineno: " + std::to_string(error.getLineNo()));
-          }
-          // Get default target triple
-          std::string triple = llvm::sys::getDefaultTargetTriple();
-          if (triple.empty()) {
-            triple = llvm::sys::getProcessTriple();
-          }
-          res = translateLLVMIRToASM(*module, triple,
-                                     llvm::sys::getHostCPUName().str(), "", {},
-                                     enable_fp_fusion, false);
-        }
-        return py::str(res);
-      },
-      ret::take_ownership);
-
   m.def("init_targets", []() {
     static std::once_flag init_flag;
     std::call_once(init_flag, []() {
@@ -477,37 +443,6 @@ void init_triton_llvm(py::module &&m) {
       llvm::InitializeAllAsmParsers();
       llvm::InitializeAllAsmPrinters();
     });
-  });
-
-  m.def("get_cpu_name", []() { return llvm::sys::getHostCPUName().str(); });
-  m.def("get_cpu_features", []() {
-    auto features = llvm::sys::getHostCPUFeatures();
-    std::set<std::string> res;
-    for (auto &f : features) {
-      if (f.second)
-        res.insert(f.first().str());
-    }
-    return res;
-  });
-
-  m.def("set_host_target", [](llvm::Module *mod) {
-    // Use getDefaultTargetTriple which returns the target the LLVM was built
-    // for
-    std::string triple = llvm::sys::getDefaultTargetTriple();
-    if (triple.empty()) {
-      triple = llvm::sys::getProcessTriple();
-    }
-    mod->setTargetTriple(triple);
-    std::string error;
-    auto target =
-        llvm::TargetRegistry::lookupTarget(mod->getTargetTriple(), error);
-    if (!target) {
-      throw std::runtime_error("target lookup error: " + error);
-    }
-    std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
-        mod->getTargetTriple(), llvm::sys::getHostCPUName(), "", {},
-        llvm::Reloc::PIC_));
-    mod->setDataLayout(machine->createDataLayout());
   });
 
   m.def("link_extern_libs", [](llvm::Module *dstMod,

@@ -746,6 +746,12 @@ def get_packages():
         "triton/experimental/tle/language",
         "triton/experimental/tle/language/dsa",
     ]
+    if helper.flagtree_backend == "cpu":
+        # CPU backend has no `third_party/cpu/tools/`, so the auto-symlink in
+        # `add_link_to_backends()` never creates `triton/tools/extra/`.
+        # Declaring it as a package then forces shipping an empty
+        # `__init__.py` marker; drop the declaration for CPU instead.
+        packages.remove("triton/tools/extra")
     if helper.flagtree_backend == "xpu":
         packages.append("triton/language/extra/xpu")
     elif helper.flagtree_backend == "mthreads":

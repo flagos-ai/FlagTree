@@ -1767,14 +1767,21 @@ void init_triton_ir(py::module &&m) {
           context->disableMultithreading();
           self.enableCrashReproducerGeneration(reproducerPath,
                                                /*genLocalReproducer=*/true);
+#ifdef __CPU__
         } else if (std::getenv("TRITON_ENABLE_CONSOLE_REPRODUCER") != nullptr) {
-          // Off by default: LLVM a66376b0 cannot serialize
-          // ConvertVectorToLLVM's Option<VectorTransformsOptions> in
-          // printAsTextualPipeline (PassOptions.h:168 "unknown data value for
-          // option"), so reproducer generation aborts and masks the real pass
-          // error.
+          // CPU backend only: off by default because LLVM a66376b0 cannot
+          // serialize ConvertVectorToLLVM's Option<VectorTransformsOptions>
+          // in printAsTextualPipeline (PassOptions.h:168 "unknown data value
+          // for option"), so reproducer generation aborts and masks the real
+          // pass error. GPU backends keep the upstream always-on default
+          // below.
           self.enableCrashReproducerGeneration(makeConsoleReproducer());
         }
+#else
+        } else {
+          self.enableCrashReproducerGeneration(makeConsoleReproducer());
+        }
+#endif
 
         if (triton::tools::getBoolEnv("TRITON_ENABLE_LLVM_DEBUG")) {
           ::llvm::DebugFlag = true;
