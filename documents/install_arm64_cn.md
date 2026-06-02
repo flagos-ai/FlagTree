@@ -5,8 +5,10 @@
 - 对应 Triton 版本 3.3，基于 LLVM **a66376b0**，aarch64 平台
 - 目标平台：AArch64 Linux，支持 NEON / SVE2 + i8mm（如 Armv9-A Cortex-A720）
 - ⚠️ cpu 后端的 C++ 扩展层（TritonCPU dialect + NEON/SVE2 C runtime）位于独立的
-  [triton-cpu](https://github.com/flagos-ai/triton-cpu) 仓库，需先构建再软链接进 FlagTree。
-  TLE 算子由 `third_party/tle_arm64` 插件以 `create_cpu_*` builder 方法注入。
+  [flagtree-cpu](https://github.com/flagos-ai/flagtree-cpu) 仓库。辅助脚本
+  `python/scripts/link_flagtree_cpu.sh`（在 FlagTree 根目录下运行）会把它克隆到
+  `third_party/triton-cpu/` 并建好构建所需的软链接。TLE 算子由 `third_party/tle_arm64` 插件以
+  `create_cpu_*` builder 方法注入。
 - 暂未提供 docker 镜像，请按下述源码方式安装。
 
 ### 1. 构建及运行环境
@@ -26,13 +28,16 @@ sudo apt-get update && sudo apt-get install -y \
 python3 -m venv ~/venv-flagtree
 source ~/venv-flagtree/bin/activate
 pip install --upgrade pip setuptools wheel
+# 构建依赖 —— 使用 --no-build-isolation（步骤 2.2 Step 3）时，pyproject 的
+# build 依赖不会自动安装，必须预装：
+pip install pybind11
 # 先装 PyTorch（aarch64 CPU 版）
 pip install torch==2.10.0+cpu --index-url https://download.pytorch.org/whl/cpu
 ```
 
-#### 1.3 手动下载 LLVM 依赖包
+#### 1.3 LLVM 工具链
 
-如果网络可访问 `oaitriton.blob.core.windows.net`，LLVM 工具链会在首次构建（步骤 2.2 Step 1）
+如果网络可访问 `oaitriton.blob.core.windows.net`，LLVM 工具链会在首次构建（步骤 2.2 Step 3）
 时按 `cmake/llvm-hash.txt`（a66376b0）自动拉取并缓存到 `~/.triton/llvm/`，**无需手动操作**。
 
 网络受限时手动下载（注意是 **arm64** 包，对应 Triton 3.3）：
@@ -54,74 +59,69 @@ export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 
 #### 2.2 从源码构建
 
-cpu 后端依赖独立的 triton-cpu 仓库（C++ 扩展基座），共三步：**构建 triton-cpu → 软链接进
-FlagTree → 构建 FlagTree**。
+共三步：**克隆 FlagTree → 用辅助脚本接好 flagtree-cpu → 构建 FlagTree**。
 
-> 注：下文用**合入后**的仓库/分支（flagos-ai）。合入前自测时，把 `flagos-ai/triton-cpu`(main) 与
-> `flagos-ai/FlagTree`(`triton_v3.3.x`) 替换为各自未合入的 PR 仓库/分支即可。
+> 注：下文用**合入后**的仓库/分支（flagos-ai）。合入前自测时，把 `flagos-ai/flagtree-cpu`(main) 与
+> `flagos-ai/FlagTree`(`triton_v3.3.x`) 替换为各自未合入的 PR 仓库/分支即可（脚本支持
+> `--flagtree-cpu-url` 与 `--flagtree-cpu-ref` 来覆盖默认值）。
 
-**Step 1 — 构建 triton-cpu（C++ 扩展基座）**
-
-```shell
-cd ${YOUR_CODE_DIR}
-git clone https://github.com/flagos-ai/triton-cpu.git
-cd triton-cpu          # main 分支（含 a66376b0 ARM64 后端）
-cd python
-TRITON_BUILD_BACKENDS=cpu TRITON_OFFLINE_BUILD=1 TRITON_BUILD_PROTON=OFF \
-    MAX_JOBS=$(nproc) pip install -e . --no-build-isolation --no-deps -v
-cd ../..
-```
-
-首次构建会自动下载并缓存 LLVM a66376b0（约 4.4 GB）到 `~/.triton/llvm/`；ARM64 硬件上约 30–60 分钟。
-
-**Step 2 — 软链接 triton-cpu 到 FlagTree**
-
-克隆 FlagTree 并切到带 cpu 后端的 **`triton_v3.3.x`** 分支（软链接必须建在正确分支的树里）。
-cpu 后端的 C++ 源码、TritonCPU dialect 头文件、NEON/SVE2 运行时与 TLE Python builtins 都驻留在
-triton-cpu，需软链接进 FlagTree 树内：
+**Step 1 — 克隆 FlagTree 并切到 cpu 后端分支**
 
 ```shell
 cd ${YOUR_CODE_DIR}
 git clone https://github.com/flagos-ai/FlagTree.git
 cd FlagTree
-git checkout -b triton_v3.3.x origin/triton_v3.3.x   # flagos-ai/FlagTree 的 3.3.x 分支（含 cpu 后端）
-TRITON_CPU=$(realpath ../triton-cpu)
-
-# TritonCPU MLIR dialect 头文件 + 实现
-ln -sf $TRITON_CPU/include/triton/Dialect/TritonCPU  include/triton/Dialect/TritonCPU
-ln -sf $TRITON_CPU/lib/Dialect/TritonCPU             lib/Dialect/TritonCPU
-
-# cpu 后端 C++ 源 + 运行时 + sleef
-ln -sf $TRITON_CPU/third_party/cpu/CMakeLists.txt    third_party/cpu/CMakeLists.txt
-ln -sf $TRITON_CPU/third_party/cpu/include           third_party/cpu/include
-ln -sf $TRITON_CPU/third_party/cpu/lib               third_party/cpu/lib
-ln -sf $TRITON_CPU/third_party/cpu/runtime           third_party/cpu/runtime
-ln -sf $TRITON_CPU/third_party/cpu/triton_cpu.cc     third_party/cpu/triton_cpu.cc
-ln -sf $TRITON_CPU/third_party/sleef                 third_party/sleef
-
-# TLE Python builtins（tle_ops.py 调用 create_cpu_*）
-ln -sf $TRITON_CPU/third_party/cpu/language/cpu/neon.py     third_party/cpu/language/cpu/neon.py
-ln -sf $TRITON_CPU/third_party/cpu/language/cpu/runtime.py  third_party/cpu/language/cpu/runtime.py
-ln -sf $TRITON_CPU/third_party/cpu/language/cpu/tle_ops.py  third_party/cpu/language/cpu/tle_ops.py
-
-# 让 triton.language.extra.cpu 可导入
-ln -sf $(realpath third_party/cpu/language/cpu)  python/triton/language/extra/cpu
+git checkout -b triton_v3.3.x origin/triton_v3.3.x   # FlagTree 的 3.3.x 分支（含 cpu 后端）
 ```
+
+**Step 2 — 接好 flagtree-cpu（克隆 + 软链接）**
+
+C++ 扩展层（TritonCPU MLIR dialect + NEON/SVE2 C runtime + Python TLE builtins）位于
+`flagos-ai/flagtree-cpu`。一行脚本完成两件事：把它克隆到 `third_party/triton-cpu/`，并建好 cpu 后端
+构建所需的 12 条软链接（TritonCPU dialect 头文件、`third_party/cpu/*`、sleef、
+`third_party/cpu/language/cpu/` 下的 Python TLE builtins，以及让
+`triton.language.extra.cpu` 可导入的 `python/triton/language/extra/cpu`）：
+
+```shell
+bash python/scripts/link_flagtree_cpu.sh
+```
+
+如果本地已经有 flagtree-cpu clone，可以复用，免去重 clone：
+
+```shell
+bash python/scripts/link_flagtree_cpu.sh --flagtree-cpu-path /path/to/flagtree-cpu
+```
+
+所有生成的软链接均为**相对路径**——整个 worktree 可以整体移动而不会破坏链接。脚本可安全重复执行
+（已正确的链接会跳过；若有非软链接的常规文件占位，脚本会以清晰错误信息退出而不静默覆盖）。
 
 **Step 3 — 构建 FlagTree（cpu 后端）**
 
 ```shell
-cd ${YOUR_CODE_DIR}/FlagTree/python
-FLAGTREE_BACKEND=cpu \
-LLVM_SYSPATH=$(ls -d ~/.triton/llvm/llvm-a66376b0-ubuntu-arm64) \
-TRITON_OFFLINE_BUILD=1 TRITON_BUILD_PROTON=OFF MAX_JOBS=$(nproc) \
-    pip install -e . --no-build-isolation -v
+FLAGTREE_BACKEND=cpu TRITON_BUILD_PROTON=OFF MAX_JOBS=$(nproc) \
+TRITON_APPEND_CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=/tmp/flagtree_install" \
+    pip install -e python/ --no-build-isolation -v
 ```
 
-> 若之后要构建其他后端，请先清理 LLVM 相关环境变量：
+`TRITON_APPEND_CMAKE_ARGS` 用于重定向 `cmake --install` 步骤：不加的话，sleef 子工程会把
+`libsleef.so` 往 `/usr/local/lib` 复制，非 root 用户构建会报 *Permission denied*。kernel
+实际链接的 `python/triton/_C/` 下的副本不受影响，两种方式都会安装。
+
+如果做过 §1.3 的手动下载，你 `export` 的 `LLVM_SYSPATH` 会被自动 pick up；
+若想严格断网构建，可额外传 `TRITON_OFFLINE_BUILD=1`。
+
+> 若在同一 shell 之后要构建其他后端，请先清理 LLVM 相关环境变量：
 > `unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR FLAGTREE_BACKEND`
 
 ### 3. 测试验证
+
+⚠️ 运行任何会 JIT 编译 kernel 的程序（包括下面的验证脚本和模型推理）前，需 export
+`FLAGTREE_BACKEND=cpu` —— 运行时编译 `kernel.s` 所需的 ARM `-march` 标志、OpenMP 链接
+和 GCC 汇编器兼容处理都由它启用：
+
+```shell
+export FLAGTREE_BACKEND=cpu
+```
 
 确认 cpu 后端已注册、且 tle_arm64 插件注入的 `create_cpu_*` TLE builder 方法可见：
 
@@ -168,9 +168,9 @@ print("max err:", (out.float() - ref).abs().max().item(), "-> OK")
 
 ## Q&A
 
-### Q: big.LITTLE SoC 上性能只有一半？
+### 问题：big.LITTLE SoC 上性能只有一半？
 
-A: 在大小核异构 SoC（如 Cortex-A720 大核 + A520 小核）上，务必用 `taskset` **只绑大核**——小核进入
+回答：在大小核异构 SoC（如 Cortex-A720 大核 + A520 小核）上，务必用 `taskset` **只绑大核**——小核进入
 OMP 线程池会卡在 barrier，整体掉约 2 倍。并把调频设为 performance：
 
 ```shell
@@ -181,9 +181,9 @@ done
 taskset -c 0,1,6,7,8,9,10,11 python your_inference.py ...
 ```
 
-### Q: 运行时报 version GLIBC / GLIBCXX not found？
+### 问题：运行时报 version GLIBC / GLIBCXX not found？
 
-A: 查询环境支持的版本，必要时 LD_PRELOAD（路径用 aarch64）：
+回答：查询环境支持的版本，必要时 LD_PRELOAD（路径用 aarch64）：
 
 ```shell
 strings /lib/aarch64-linux-gnu/libc.so.6 | grep GLIBC
@@ -192,10 +192,13 @@ export LD_PRELOAD=/lib/aarch64-linux-gnu/libc.so.6           # 找不到 GLIBC �
 export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libstdc++.so.6  # 找不到 GLIBCXX 时
 ```
 
-### Q: `import triton.language.extra.cpu.tle_ops` 报 No module named ...？
+### 问题：kernel 编译报 `kernel.s: Error: junk at end of line, first unrecognized character is `"``？
 
-A: Step 2 的软链接没建全——清空环境下最容易漏 `third_party/cpu/language/cpu/{neon,runtime,tle_ops}.py`
-和 `python/triton/language/extra/cpu`。确认下列均指向 triton-cpu：`include/triton/Dialect/TritonCPU`、
-`lib/Dialect/TritonCPU`、`third_party/cpu/{include,lib,runtime,triton_cpu.cc}`、
-`third_party/cpu/language/cpu/{neon,runtime,tle_ops}.py`、`python/triton/language/extra/cpu`、
-`third_party/sleef`。
+回答：当前 shell 没有 export `FLAGTREE_BACKEND=cpu`。它不只是构建开关——运行时 JIT 编译
+`kernel.s` 同样依赖它（启用对 GNU 汇编器不接受的 LLVM `.file`/`.loc` 调试指令的清理，以及
+ARM `-march` 标志）。export 后重跑即可。
+
+### 问题：`import triton.language.extra.cpu.tle_ops` 报 No module named ...？
+
+回答：Step 2 的软链接没建全。重跑 `bash python/scripts/link_flagtree_cpu.sh` 即可——脚本幂等，且会在
+任何应有的软链接 resolve 失败时以非零退出。
