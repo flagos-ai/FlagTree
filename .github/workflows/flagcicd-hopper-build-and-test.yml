@@ -15,7 +15,7 @@ jobs:
     runs-on: [flagcicd-flagtree-nvidia3.6]
     container:
       image: harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
-      options: 
+      options:
         --uts=host
         --ipc=host
         --privileged
@@ -80,7 +80,7 @@ jobs:
           IGNORE_LIST="${CONFIG_DIR}/ignore_list.txt"
           OPERATORS_YAML="${FLAGGEMS_DIR}/conf/operators.yaml"
 
-          # echo "${FLAGGEMS_BASE}"   "${CONFIG_DIR}"   "${SCRIPTS_DIR}" 
+          # echo "${FLAGGEMS_BASE}"   "${CONFIG_DIR}"   "${SCRIPTS_DIR}"
 
           if [ ! -d "$FLAGGEMS_DIR" ]; then
             echo "Error: FlagGems directory not found at $FLAGGEMS_DIR"
@@ -117,7 +117,7 @@ jobs:
           cd tests/
           # pass the file path of the ignore list to the Python plugin
           export FLAGGEMS_IGNORE_LIST_PATH="$IGNORE_LIST"
-          
+
           # Add the "scripts" directory to the Python search path
           export PYTHONPATH="${SCRIPTS_DIR}:$PYTHONPATH"
 
@@ -135,7 +135,7 @@ jobs:
           bash -c "$PYTEST_CMD"
           EXIT_CODE=$?
           set -e
-          
+
           if [ $EXIT_CODE -eq 0 ]; then
               echo "All tests passed"
               echo "FlagGems accuracy tests completed successfully"
