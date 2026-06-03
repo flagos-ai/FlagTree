@@ -1,4 +1,4 @@
-name: Metax-Build-And-Test
+name: Metax3.0-Build-And-Test
 
 on:
   push:
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   metax-build-and-test:
-    runs-on: flagtree-metax
+    runs-on: metax3.0
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment

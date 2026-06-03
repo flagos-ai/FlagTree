@@ -1,5 +1,5 @@
 
-name: Xpu-Build-And-Test
+name: Xpu3.0-Build-And-Test
 
 on:
   push:
@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   xpu-build-and-test:
-    runs-on: xpu
+    runs-on: xpu3.0
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment

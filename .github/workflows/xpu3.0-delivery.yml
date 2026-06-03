@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: xpu-cd
+    runs-on: xpu3.0-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
