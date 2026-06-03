@@ -8,6 +8,9 @@
 
 #include "Dialect/MTGPU/IR/Dialect.h"
 #include "Dialect/MUSA/IR/Dialect.h"
+#ifdef __TLE__
+#include "Dialect/MUSATLE/IR/Dialect.h"
+#endif
 #include "MTGPUToLLVM/Passes.h"
 #include "TritonMUSAGPUToLLVM/Passes.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
@@ -122,6 +125,9 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::gpu::TritonGPUDialect,
       mlir::triton::instrument::TritonInstrumentDialect,
       mlir::triton::musa::MUSADialect, mlir::triton::mtgpu::MTGPUDialect,
+#ifdef __TLE__
+      mlir::triton::musa_tle::MUSATLEDialect,
+#endif
       mlir::math::MathDialect, mlir::arith::ArithDialect, mlir::scf::SCFDialect,
       mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect, mlir::NVVM::NVVMDialect,
       mlir::triton::nvgpu::NVGPUDialect, mlir::triton::nvws::NVWSDialect,

@@ -6,6 +6,9 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
+#ifdef __TLE__
+#include "Dialect/MUSATLE/IR/Dialect.h"
+#endif
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -85,6 +88,13 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
   // Some ops from SCF are illegal
   addIllegalOp<scf::ExecuteRegionOp, scf::ParallelOp, scf::ReduceOp,
                scf::ReduceReturnOp>();
+
+#ifdef __TLE__
+  addDynamicallyLegalOp<triton::gpu::LocalAllocOp>(
+      [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
+  addDynamicallyLegalDialect<mlir::triton::musa_tle::MUSATLEDialect>(
+      [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
+#endif
 
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,

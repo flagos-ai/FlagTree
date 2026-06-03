@@ -1,0 +1,283 @@
+#ifdef __TLE__
+
+#include "Conversion/MUSATLEToLLVM/LocalPointersOpToLLVM.h"
+
+#include "Dialect/MUSATLE/IR/Dialect.h"
+#include "mlir/Conversion/LLVMCommon/Pattern.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/Triton/IR/Types.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Tools/LayoutUtils.h"
+#include "llvm/ADT/STLExtras.h"
+
+namespace {
+
+using namespace mlir;
+using namespace mlir::triton;
+namespace ttg = mlir::triton::gpu;
+namespace musa_tle = mlir::triton::musa_tle;
+
+struct LocalPointersOpConversion
+    : public ConvertOpToLLVMPattern<musa_tle::LocalPointersOp> {
+  LocalPointersOpConversion(LLVMTypeConverter &typeConverter,
+                            const TargetInfoBase &targetInfo,
+                            PatternBenefit benefit)
+      : ConvertOpToLLVMPattern(typeConverter, benefit), targetInfo(targetInfo) {
+  }
+
+  LogicalResult
+  matchAndRewrite(musa_tle::LocalPointersOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto *ctx = op.getContext();
+    auto typeConverter = getTypeConverter();
+    auto reportFailure = [&](StringRef msg) -> LogicalResult {
+      return op.emitOpError() << msg;
+    };
+
+    auto memDescTy = cast<ttg::MemDescType>(op.getSrc().getType());
+    auto resultTensorTy = dyn_cast<RankedTensorType>(op.getResult().getType());
+    auto resultPtrTy = dyn_cast<triton::PointerType>(op.getResult().getType());
+    if (!resultTensorTy && !resultPtrTy)
+      return reportFailure("local_pointers result must be tensor<ptr> or ptr");
+    auto ptrTy =
+        resultTensorTy
+            ? cast<triton::PointerType>(resultTensorTy.getElementType())
+            : resultPtrTy;
+    auto llvmElemTy = typeConverter->convertType(memDescTy.getElementType());
+    auto llvmPtrTy =
+        cast<LLVM::LLVMPointerType>(typeConverter->convertType(ptrTy));
+    if (llvmPtrTy.getAddressSpace() !=
+        static_cast<unsigned>(targetInfo.getSharedAddressSpace()))
+      return reportFailure("local_pointers must lower to shared addrspace");
+
+    auto smemObj = LLVM::getSharedMemoryObjectFromStruct(loc, adaptor.getSrc(),
+                                                         llvmElemTy, rewriter);
+    auto i32Ty = rewriter.getIntegerType(32);
+    auto ensureI32 = [&](Value v) -> Value {
+      if (v.getType() == i32Ty)
+        return v;
+      if (auto intTy = dyn_cast<IntegerType>(v.getType())) {
+        if (intTy.getWidth() > 32)
+          return LLVM::TruncOp::create(rewriter, loc, i32Ty, v);
+        if (intTy.isUnsigned())
+          return LLVM::ZExtOp::create(rewriter, loc, i32Ty, v);
+        return LLVM::SExtOp::create(rewriter, loc, i32Ty, v);
+      }
+      return Value();
+    };
+
+    auto sharedEnc = cast<ttg::SharedEncodingTrait>(memDescTy.getEncoding());
+    auto kReg = str_attr("register");
+    auto kOffset = str_attr("offset");
+    LinearLayout regLayout;
+    if (resultTensorTy) {
+      if (!resultTensorTy.getEncoding())
+        return reportFailure(
+            "tensor local_pointers result must carry an encoding");
+      regLayout = ttg::toLinearLayout(resultTensorTy);
+    }
+    for (Value operand : op.getIndices()) {
+      if (resultTensorTy) {
+        auto idxTy = dyn_cast<RankedTensorType>(operand.getType());
+        if (!idxTy)
+          return reportFailure("tensor result requires ranked-tensor indices");
+        if (resultTensorTy.getEncoding() && idxTy.getEncoding() &&
+            resultTensorTy.getEncoding() != idxTy.getEncoding())
+          return reportFailure(
+              "indices tensor encoding must match result encoding");
+      } else if (!isa<IntegerType>(operand.getType())) {
+        return reportFailure("scalar result requires scalar integer indices");
+      }
+    }
+
+    const size_t outSize = resultTensorTy ? regLayout.getInDimSize(kReg) : 1;
+    SmallVector<Value> outVals(outSize, Value());
+
+    TritonLLVMOpBuilder b(loc, rewriter);
+    int elemBits = llvmElemTy.getIntOrFloatBitWidth();
+    assert(elemBits % 8 == 0 && "element bitwidth must be byte addressable");
+    int elemBytes = elemBits / 8;
+    Value elemBytesVal =
+        elemBytes > 1 ? b.i32_val(static_cast<int32_t>(elemBytes)) : Value();
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i8PtrTy = LLVM::LLVMPointerType::get(ctx, llvmPtrTy.getAddressSpace());
+
+    SmallVector<unsigned> bufferShape;
+    for (int64_t dim : memDescTy.getShape())
+      bufferShape.push_back(static_cast<unsigned>(dim));
+    auto bufferRank = bufferShape.size();
+    auto smemOffsets = smemObj.getOffsets();
+    const bool isRank0BackingMemDesc =
+        bufferRank == 1 && memDescTy.getShape().front() == 1;
+    const bool isLogicalRank0Scalar =
+        !resultTensorTy && op.getIndices().empty() &&
+        (bufferRank == 0 || isRank0BackingMemDesc);
+    if (!isLogicalRank0Scalar && smemOffsets.size() != bufferRank)
+      return reportFailure("shared memory offsets rank mismatch");
+
+    auto indexVals = adaptor.getIndices();
+    const bool hasExplicitIndices = !indexVals.empty();
+    if (hasExplicitIndices) {
+      if (indexVals.size() != bufferRank)
+        return reportFailure("indices must provide buffer-rank values");
+    } else {
+      if (!resultTensorTy && !isLogicalRank0Scalar)
+        return reportFailure(
+            "zero-index scalar local_pointers requires rank-0 buffer");
+      if (resultTensorTy && resultTensorTy.getShape() != memDescTy.getShape())
+        return reportFailure(
+            "zero-index tensor local_pointers requires full buffer shape");
+    }
+
+    SmallVector<SmallVector<Value>> indexElems;
+    if (hasExplicitIndices) {
+      indexElems.reserve(indexVals.size());
+      for (Value indexVal : indexVals) {
+        if (resultTensorTy) {
+          auto elems = unpackLLElements(loc, indexVal, rewriter);
+          if (elems.size() != outVals.size())
+            return reportFailure(
+                "indices tensors must match local_pointers result shape");
+          indexElems.push_back(std::move(elems));
+        } else {
+          Value scalar = ensureI32(indexVal);
+          if (!scalar)
+            return reportFailure("scalar indices must lower to i32 values");
+          indexElems.push_back(SmallVector<Value>{scalar});
+        }
+      }
+    } else if (resultTensorTy) {
+      auto fullCoords =
+          emitIndices(loc, rewriter, targetInfo, resultTensorTy.getEncoding(),
+                      resultTensorTy,
+                      /*withCTAOffset=*/false);
+      if (fullCoords.size() != outVals.size())
+        return reportFailure(
+            "failed to synthesize full indices for local_pointers");
+      indexElems.assign(bufferRank, SmallVector<Value>{});
+      for (size_t idx = 0; idx < fullCoords.size(); ++idx) {
+        if (fullCoords[idx].size() != bufferRank)
+          return reportFailure("synthesized full indices rank mismatch");
+        for (size_t dim = 0; dim < bufferRank; ++dim) {
+          Value coord = ensureI32(fullCoords[idx][dim]);
+          if (!coord)
+            return reportFailure(
+                "synthesized full indices must lower to i32 values");
+          indexElems[dim].push_back(coord);
+        }
+      }
+    }
+
+    for (size_t idx = 0; idx < outVals.size(); ++idx) {
+      SmallVector<Value> idxCoords;
+      idxCoords.reserve(bufferRank);
+      for (size_t dim = 0; dim < indexElems.size(); ++dim) {
+        Value val = ensureI32(indexElems[dim][idx]);
+        if (!val)
+          return reportFailure("indices must lower to i32 scalars");
+        Value offset = smemOffsets[dim];
+        Value offVal = ensureI32(offset);
+        if (!offVal)
+          return reportFailure("shared memory offsets must be i32");
+        idxCoords.push_back(b.add(val, offVal));
+      }
+
+      Value elemOffset;
+      if (isLogicalRank0Scalar || bufferRank == 0) {
+        elemOffset = b.i32_val(0);
+      } else if (isa<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
+        auto order = ttg::getOrder(sharedEnc, memDescTy.getShape());
+        elemOffset =
+            LLVM::linearize(rewriter, loc, idxCoords, bufferShape, order);
+      } else {
+        auto dimNames = standardOutDimNames(ctx, bufferRank);
+        SmallVector<std::pair<StringAttr, Value>> logicalOffsets;
+        logicalOffsets.reserve(bufferRank);
+        for (auto [dim, offset] : llvm::zip_equal(dimNames, idxCoords))
+          logicalOffsets.push_back({dim, offset});
+        LinearLayout sharedLayout = ttg::toLinearLayout(memDescTy);
+        sharedLayout = sharedLayout.sublayout({kOffset}, dimNames);
+        LinearLayout invSharedLayout = sharedLayout.invert();
+
+        SmallVector<std::pair<StringAttr, Value>> orderedLogicalOffsets;
+        orderedLogicalOffsets.reserve(invSharedLayout.getNumInDims());
+        for (StringAttr inDim : invSharedLayout.getInDimNames()) {
+          bool found = false;
+          for (auto &logical : logicalOffsets) {
+            if (logical.first == inDim) {
+              orderedLogicalOffsets.push_back(logical);
+              found = true;
+              break;
+            }
+          }
+          if (!found)
+            return reportFailure(
+                "missing logical offset for inverted shared-layout in-dim");
+        }
+
+        auto remappedOffsets = applyLinearLayout(loc, rewriter, invSharedLayout,
+                                                 orderedLogicalOffsets);
+        if (remappedOffsets.empty())
+          return reportFailure("failed to remap shared-memory linear offsets");
+
+        bool foundOffset = false;
+        for (auto &mapped : remappedOffsets) {
+          if (mapped.first == kOffset) {
+            elemOffset = mapped.second;
+            foundOffset = true;
+            break;
+          }
+        }
+        if (!foundOffset)
+          return reportFailure(
+              "remapped shared layout does not contain offset");
+      }
+
+      Value byteOffset = elemOffset;
+      if (elemBytes > 1)
+        byteOffset = b.mul(byteOffset, elemBytesVal);
+      if (auto paddedEnc = dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
+        auto shifts = getPaddedSharedShifts(paddedEnc, elemBits,
+                                            /*offsetInBytes=*/true);
+        byteOffset = applyPadding(loc, rewriter, byteOffset, shifts);
+      }
+
+      Value ptrI8 = b.bitcast(smemObj.getBase(), i8PtrTy);
+      Value advanced = b.gep(i8PtrTy, i8Ty, ptrI8, byteOffset,
+                             LLVM::GEPNoWrapFlags::inbounds);
+      outVals[idx] = b.bitcast(advanced, llvmPtrTy);
+    }
+
+    if (resultTensorTy) {
+      Value result =
+          packLLElements(loc, typeConverter, outVals, rewriter, resultTensorTy);
+      rewriter.replaceOp(op, result);
+    } else {
+      rewriter.replaceOp(op, outVals.front());
+    }
+    return success();
+  }
+
+private:
+  const TargetInfoBase &targetInfo;
+};
+
+} // namespace
+
+namespace mlir::triton::musa_tle {
+
+void populateMUSATLEToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                   const TargetInfoBase &targetInfo,
+                                   RewritePatternSet &patterns,
+                                   PatternBenefit benefit) {
+  patterns.add<LocalPointersOpConversion>(typeConverter, targetInfo, benefit);
+}
+
+} // namespace mlir::triton::musa_tle
+
+#endif // __TLE__

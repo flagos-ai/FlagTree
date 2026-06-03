@@ -67,11 +67,14 @@ def test_compiled_kernel_loads_within_shared_limit(monkeypatch):
     monkeypatch.setattr(active_driver.utils, "load_binary", load_binary, raising=False)
     triton_compiler.max_shared_mem.cache_clear()
 
-    kernel = _make_compiled_kernel(shared=1, num_warps=1)
-    kernel._init_handles()
-    assert calls["args"] == ("dummy_kernel", b"\x00", 1, 0)
-    assert kernel.module == "mod"
-    assert kernel.function == "func"
+    try:
+        kernel = _make_compiled_kernel(shared=1, num_warps=1)
+        kernel._init_handles()
+        assert calls["args"] == ("dummy_kernel", b"\x00", 1, 0)
+        assert kernel.module == "mod"
+        assert kernel.function == "func"
+    finally:
+        triton_compiler.max_shared_mem.cache_clear()
 
 
 def test_autotuner_drops_out_of_resources():

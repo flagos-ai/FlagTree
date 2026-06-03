@@ -1,5 +1,5 @@
+#include "MUSATLE/Frontend/Passes.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
-#include "TritonMUSAGPUTransforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
@@ -225,7 +225,7 @@ static void lowerAsyncLoad(tt::LoadOp op, RewriterBase &rewriter,
 namespace mlir {
 
 #define GEN_PASS_DEF_TRITONMUSAGPUTLELOWERASYNCLOAD
-#include "TritonMUSAGPUTransforms/Passes.h.inc"
+#include "MUSATLE/Frontend/Passes.h.inc"
 
 struct TritonMUSAGPUTLELowerAsyncLoadPass
     : impl::TritonMUSAGPUTLELowerAsyncLoadBase<
