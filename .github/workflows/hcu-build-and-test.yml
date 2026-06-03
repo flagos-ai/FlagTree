@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   hcu-build-and-test:
-    runs-on: hcu
+    runs-on: hcu3.1
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
