@@ -11,6 +11,7 @@ python/_deps/
 python/triton/_C/*.pyd
 python/triton/_C/*.so
 python/triton/_C/*.dylib
+python/triton/FLAGTREE_BACKEND
 
 # Backends copied from submodules
 python/triton/backends/

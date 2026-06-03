@@ -1,4 +1,4 @@
-name: CD-Mthreads3.1
+name: CD-Thrive3.6
 
 permissions:
   contents: write
@@ -42,15 +42,15 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: mthreads3.1-cd
+    runs-on: thrive3.6-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
         shell: bash
         run: |
           TARGET_BRANCH="${{ github.ref_name }}"
-          if [[ ! "$TARGET_BRANCH" =~ ^(main)$ ]]; then
-            echo "❌ This workflow must be run from branch 'main', but got '${TARGET_BRANCH}'"
+          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3.6.x)$ ]]; then
+            echo "❌ This workflow must be run from branch 'triton_v3.6.x', but got '${TARGET_BRANCH}'"
             exit 1
           fi
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
@@ -67,14 +67,14 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Mthreads (main branch)
-        if: ${{ env.TARGET_BRANCH == 'main' }}
+      - name: FlagTree bdist_wheel on Thrive (triton_v3.6.x branch)
+        if: ${{ env.TARGET_BRANCH == 'triton_v3.6.x' }}
         shell: bash
         run: |
           set -x
-          TRITON_VER="3.1"
+          TRITON_VER="3.6"
           CHIP=""
-          export FLAGTREE_BACKEND=mthreads
+          export FLAGTREE_BACKEND=thrive
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
@@ -87,7 +87,6 @@ jobs:
             echo "✅ flagtree===${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
-          cd python
           rm -rf ./build ./*.egg-info
           { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree

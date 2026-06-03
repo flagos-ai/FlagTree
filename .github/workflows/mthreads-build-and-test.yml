@@ -1,4 +1,4 @@
-name: Mthreads-Build-And-Test
+name: Mthreads3.1-Build-And-Test
 
 on:
   push:
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   mthreads-build-and-test:
-    runs-on: mthreads
+    runs-on: mthreads3.1
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
