@@ -1,14 +1,14 @@
 #!/bin/bash
-# link_triton_cpu.sh — set up flagos-ai/triton-cpu sources for the FlagTree
+# link_flagtree_cpu.sh — set up flagos-ai/flagtree-cpu sources for the FlagTree
 # ARM64 CPU backend.
 #
 # The CPU backend's C++ extension layer (TritonCPU MLIR dialect + NEON/SVE2 C
-# runtime + Python TLE builtins) lives in the separate flagos-ai/triton-cpu
+# runtime + Python TLE builtins) lives in the separate flagos-ai/flagtree-cpu
 # repository. This script:
 #
-#   1. Ensures third_party/triton-cpu/ exists — either clones flagos-ai/triton-cpu
+#   1. Ensures third_party/triton-cpu/ exists — either clones flagos-ai/flagtree-cpu
 #      fresh (default) or symlinks to an existing local clone via
-#      --triton-cpu-path.
+#      --flagtree-cpu-path.
 #   2. Creates the 12 symlinks the FlagTree CPU build expects at the standard
 #      paths (include/triton/Dialect/TritonCPU, lib/Dialect/TritonCPU,
 #      third_party/cpu/*, third_party/sleef,
@@ -20,9 +20,9 @@
 #
 # Usage (run from FlagTree root after `git checkout triton_v3.3.x`):
 #
-#   bash python/scripts/link_triton_cpu.sh                           # clone fresh
-#   bash python/scripts/link_triton_cpu.sh --triton-cpu-path PATH    # reuse local clone
-#   bash python/scripts/link_triton_cpu.sh --triton-cpu-ref <SHA>    # pin a ref
+#   bash python/scripts/link_flagtree_cpu.sh                           # clone fresh
+#   bash python/scripts/link_flagtree_cpu.sh --flagtree-cpu-path PATH    # reuse local clone
+#   bash python/scripts/link_flagtree_cpu.sh --flagtree-cpu-ref <SHA>    # pin a ref
 #
 # The script does not run pip install. After it succeeds, run:
 #
@@ -32,7 +32,7 @@
 
 set -euo pipefail
 
-TRITON_CPU_URL="https://github.com/flagos-ai/triton-cpu.git"
+TRITON_CPU_URL="https://github.com/flagos-ai/flagtree-cpu.git"
 TRITON_CPU_REF="main"
 TRITON_CPU_PATH=""
 
@@ -43,25 +43,25 @@ usage() {
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --triton-cpu-url)  TRITON_CPU_URL="$2";  shift 2 ;;
-        --triton-cpu-ref)  TRITON_CPU_REF="$2";  shift 2 ;;
-        --triton-cpu-path) TRITON_CPU_PATH="$2"; shift 2 ;;
+        --flagtree-cpu-url)  TRITON_CPU_URL="$2";  shift 2 ;;
+        --flagtree-cpu-ref)  TRITON_CPU_REF="$2";  shift 2 ;;
+        --flagtree-cpu-path) TRITON_CPU_PATH="$2"; shift 2 ;;
         -h|--help) usage 0 ;;
-        *) echo "[link_triton_cpu] unknown arg: $1" >&2; usage 1 ;;
+        *) echo "[link_flagtree_cpu] unknown arg: $1" >&2; usage 1 ;;
     esac
 done
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 TRITON_CPU_DIR="$ROOT/third_party/triton-cpu"
 
-log() { echo "[link_triton_cpu] $*" >&2; }
-die() { echo "[link_triton_cpu] ERROR: $*" >&2; exit 1; }
+log() { echo "[link_flagtree_cpu] $*" >&2; }
+die() { echo "[link_flagtree_cpu] ERROR: $*" >&2; exit 1; }
 
 log "FlagTree root: $ROOT"
 
 # Step 1: ensure third_party/triton-cpu exists -------------------------------
 if [ -n "$TRITON_CPU_PATH" ]; then
-    [ -d "$TRITON_CPU_PATH" ] || die "--triton-cpu-path $TRITON_CPU_PATH is not a directory"
+    [ -d "$TRITON_CPU_PATH" ] || die "--flagtree-cpu-path $TRITON_CPU_PATH is not a directory"
     # Compute target as relative to third_party/ so the resulting symlink is
     # portable (the whole worktree can be moved without breaking links).
     REL_TARGET=$(realpath --relative-to="$(dirname "$TRITON_CPU_DIR")" "$TRITON_CPU_PATH")
@@ -78,7 +78,7 @@ if [ -n "$TRITON_CPU_PATH" ]; then
 elif [ -d "$TRITON_CPU_DIR/.git" ]; then
     log "third_party/triton-cpu already a git checkout; reusing"
 elif [ -e "$TRITON_CPU_DIR" ] && [ ! -L "$TRITON_CPU_DIR" ]; then
-    die "$TRITON_CPU_DIR exists but is not a git checkout; remove it or pass --triton-cpu-path"
+    die "$TRITON_CPU_DIR exists but is not a git checkout; remove it or pass --flagtree-cpu-path"
 else
     [ -L "$TRITON_CPU_DIR" ] && rm "$TRITON_CPU_DIR"
     log "cloning $TRITON_CPU_URL -> $TRITON_CPU_DIR"

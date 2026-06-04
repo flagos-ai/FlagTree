@@ -9,7 +9,7 @@
 // loads the TritonCPU dialect defensively before building its op.
 //
 // The MLIR op classes (cpu::SdotGemvOp, cpu::FusedMlpOp, etc.) live in
-// triton-cpu's TritonCPU dialect (TritonCPUOps.td) and compile into
+// flagtree-cpu's TritonCPU dialect (TritonCPUOps.td) and compile into
 // libtriton.so. This plugin only adds the Python builder methods so that
 // tle_ops.py can call _builder.create_cpu_*().
 //
