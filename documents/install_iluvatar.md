@@ -3,7 +3,7 @@
 ## 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
 
 - Based on Triton 3.1, x64
-- Available for MR-V100/BI-V150
+- Available for MR-V100, BI-V150
 
 ### 1. Build and run environment
 
