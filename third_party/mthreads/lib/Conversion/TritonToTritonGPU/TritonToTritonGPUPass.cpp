@@ -13,6 +13,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_CONVERTTRITONTOTRITONGPU
@@ -800,10 +801,60 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
 }
 
 #ifdef __TLE__
+struct MUSATLEExtractTilePattern
+    : public OpConversionPattern<mlir::triton::musa_tle::ExtractTileOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(mlir::triton::musa_tle::ExtractTileOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto srcTy = dyn_cast<RankedTensorType>(adaptor.getSrc().getType());
+    if (!srcTy || !srcTy.getEncoding())
+      return failure();
+
+    SmallVector<int64_t> tileShape;
+    llvm::append_range(tileShape, op.getTileShape());
+    auto resultTy = RankedTensorType::get(tileShape, srcTy.getElementType(),
+                                          srcTy.getEncoding());
+    OperationState state(
+        op.getLoc(), mlir::triton::musa_tle::ExtractTileOp::getOperationName());
+    state.addOperands({adaptor.getSrc(), adaptor.getIndex()});
+    state.addAttributes(op->getAttrs());
+    state.addTypes(resultTy);
+    Operation *newOp = rewriter.create(state);
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+
+struct MUSATLEInsertTilePattern
+    : public OpConversionPattern<mlir::triton::musa_tle::InsertTileOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(mlir::triton::musa_tle::InsertTileOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto srcTy = dyn_cast<RankedTensorType>(adaptor.getSrc().getType());
+    if (!srcTy || !srcTy.getEncoding())
+      return failure();
+
+    OperationState state(
+        op.getLoc(), mlir::triton::musa_tle::InsertTileOp::getOperationName());
+    state.addOperands(
+        {adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex()});
+    state.addAttributes(op->getAttrs());
+    state.addTypes(srcTy);
+    Operation *newOp = rewriter.create(state);
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+
 void populateMUSATlePatterns(TritonGPUTypeConverter &typeConverter,
                              RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
-  patterns.add<GenericOpPattern<mlir::triton::musa_tle::LocalPointersOp>>(
+  patterns.add<GenericOpPattern<mlir::triton::musa_tle::LocalPointersOp>,
+               MUSATLEExtractTilePattern, MUSATLEInsertTilePattern>(
       typeConverter, context);
 }
 #endif

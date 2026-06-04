@@ -1,10 +1,14 @@
 #ifdef __TLE__
 
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/STLExtras.h"
+#include <optional>
 
 // clang-format off
 #include "Dialect/MUSATLE/IR/Dialect.cpp.inc"
@@ -34,7 +38,153 @@ constexpr int kSharedMemoryAddressSpace = 3;
 static bool isRank0BackingMemDesc(ttg::MemDescType memDescTy) {
   return memDescTy.getShape().size() == 1 && memDescTy.getShape().front() == 1;
 }
+
+static SmallVector<int64_t> getDenseI64Array(Attribute attr) {
+  SmallVector<int64_t> values;
+  if (auto dense = dyn_cast_or_null<DenseI64ArrayAttr>(attr))
+    llvm::append_range(values, dense.asArrayRef());
+  return values;
+}
+
+static LogicalResult verifyTileShape(Operation *op, ArrayRef<int64_t> srcShape,
+                                     ArrayRef<int64_t> tileShape,
+                                     StringRef attrName) {
+  if (tileShape.size() != srcShape.size())
+    return op->emitOpError() << attrName << " rank must match source rank";
+  for (size_t idx = 0; idx < srcShape.size(); ++idx) {
+    int64_t srcDim = srcShape[idx];
+    int64_t tileDim = tileShape[idx];
+    if (tileDim <= 0)
+      return op->emitOpError()
+             << attrName << " must be positive at dimension " << idx;
+    if (srcDim % tileDim != 0)
+      return op->emitOpError()
+             << "source shape must be divisible by " << attrName
+             << " at dimension " << idx << " (source=" << srcDim
+             << ", tile=" << tileDim << ")";
+  }
+  return success();
+}
+
+static std::optional<int64_t> getConstantIndex(Value index) {
+  auto constOp = index.getDefiningOp<arith::ConstantOp>();
+  if (!constOp)
+    return std::nullopt;
+  auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue());
+  if (!intAttr)
+    return std::nullopt;
+  return intAttr.getInt();
+}
+
+static LogicalResult verifyStaticTileIndex(Operation *op, Value index,
+                                           ArrayRef<int64_t> srcShape,
+                                           ArrayRef<int64_t> tileShape) {
+  std::optional<int64_t> staticIndex = getConstantIndex(index);
+  if (!staticIndex)
+    return success();
+
+  int64_t totalTiles = 1;
+  for (auto [srcDim, tileDim] : llvm::zip_equal(srcShape, tileShape))
+    totalTiles *= srcDim / tileDim;
+  if (*staticIndex < 0 || *staticIndex >= totalTiles)
+    return op->emitOpError("index out of bounds for tile grid: index=")
+           << *staticIndex << ", total_tiles=" << totalTiles;
+  return success();
+}
 } // namespace
+
+void ExtractTileOp::build(OpBuilder &builder, OperationState &state, Value src,
+                          Value index, ArrayRef<int64_t> tileShape) {
+  auto srcTy = cast<RankedTensorType>(src.getType());
+  auto resultTy = RankedTensorType::get(tileShape, srcTy.getElementType(),
+                                        srcTy.getEncoding());
+  state.addOperands({src, index});
+  state.addAttribute("tile_shape", builder.getDenseI64ArrayAttr(tileShape));
+  state.addTypes(resultTy);
+}
+
+LogicalResult ExtractTileOp::verify() {
+  auto srcTy = dyn_cast<RankedTensorType>(getSrc().getType());
+  auto resultTy = dyn_cast<RankedTensorType>(getResult().getType());
+  if (!srcTy || !resultTy)
+    return emitOpError("expects source and result to be ranked tensors");
+
+  SmallVector<int64_t> tileShape =
+      getDenseI64Array(getOperation()->getAttr("tile_shape"));
+  if (failed(verifyTileShape(getOperation(), srcTy.getShape(), tileShape,
+                             "tile_shape")))
+    return failure();
+  if (srcTy.getElementType() != resultTy.getElementType())
+    return emitOpError("result element type must match source element type");
+  if (srcTy.getRank() != resultTy.getRank())
+    return emitOpError("result rank must match source rank");
+  if (resultTy.getShape() != ArrayRef<int64_t>(tileShape))
+    return emitOpError("result shape must equal tile_shape");
+  if (srcTy.getEncoding() && resultTy.getEncoding() &&
+      srcTy.getEncoding() != resultTy.getEncoding())
+    return emitOpError("result encoding must match source encoding");
+  return verifyStaticTileIndex(getOperation(), getIndex(), srcTy.getShape(),
+                               tileShape);
+}
+
+void InsertTileOp::build(OpBuilder &builder, OperationState &state, Value src,
+                         Value tile, Value index) {
+  auto srcTy = cast<RankedTensorType>(src.getType());
+  auto tileTy = cast<RankedTensorType>(tile.getType());
+  SmallVector<int64_t> tileShape(tileTy.getShape());
+  state.addOperands({src, tile, index});
+  state.addAttribute("tile_shape", builder.getDenseI64ArrayAttr(tileShape));
+  state.addTypes(srcTy);
+}
+
+LogicalResult InsertTileOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  if (operands.size() < 3)
+    return failure();
+  auto srcTy = dyn_cast<RankedTensorType>(operands[0].getType());
+  auto tileTy = dyn_cast<RankedTensorType>(operands[1].getType());
+  if (!srcTy || !tileTy)
+    return failure();
+  if (srcTy.getElementType() != tileTy.getElementType() ||
+      srcTy.getRank() != tileTy.getRank())
+    return failure();
+  inferredReturnTypes.clear();
+  inferredReturnTypes.push_back(srcTy);
+  return success();
+}
+
+LogicalResult InsertTileOp::verify() {
+  auto srcTy = dyn_cast<RankedTensorType>(getSrc().getType());
+  auto tileTy = dyn_cast<RankedTensorType>(getTile().getType());
+  auto resultTy = dyn_cast<RankedTensorType>(getResult().getType());
+  if (!srcTy || !tileTy || !resultTy)
+    return emitOpError("expects source, tile, and result to be ranked tensors");
+
+  SmallVector<int64_t> tileShape =
+      getDenseI64Array(getOperation()->getAttr("tile_shape"));
+  if (failed(verifyTileShape(getOperation(), srcTy.getShape(), tileShape,
+                             "tile_shape")))
+    return failure();
+  if (tileTy.getShape() != ArrayRef<int64_t>(tileShape))
+    return emitOpError("tile shape must equal tile_shape");
+  if (srcTy.getElementType() != tileTy.getElementType())
+    return emitOpError("tile element type must match source element type");
+  if (srcTy.getElementType() != resultTy.getElementType())
+    return emitOpError("result element type must match source element type");
+  if (srcTy.getRank() != tileTy.getRank())
+    return emitOpError("tile rank must match source rank");
+  if (srcTy.getRank() != resultTy.getRank())
+    return emitOpError("result rank must match source rank");
+  if (resultTy.getShape() != srcTy.getShape())
+    return emitOpError("result shape must equal source shape");
+  if (srcTy.getEncoding() && resultTy.getEncoding() &&
+      srcTy.getEncoding() != resultTy.getEncoding())
+    return emitOpError("result encoding must match source encoding");
+  return verifyStaticTileIndex(getOperation(), getIndex(), srcTy.getShape(),
+                               tileShape);
+}
 
 LogicalResult LocalPointersOp::verify() {
   auto memDescTy = dyn_cast<ttg::MemDescType>(getSrc().getType());

@@ -1,6 +1,9 @@
 #include "TritonMUSAGPUToLLVM/Allocation.h"
 #include "TritonMUSAGPUToLLVM/Passes.h"
 #include "TritonMUSAGPUToLLVM/TargetInfo.h"
+#ifdef __TLE__
+#include "Dialect/MUSATLE/IR/Dialect.h"
+#endif
 #include "triton/Analysis/Allocation.h"
 #include "triton/Conversion/TritonGPUToLLVM/AllocateSharedMemoryUtility.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -194,6 +197,17 @@ static unsigned getNumScratchElemsSwizzledCvt(RankedTensorType srcTy,
 
 static unsigned getMusaScratchSizeInBytes(Operation *op,
                                           const TargetInfoBase &targetInfo) {
+#ifdef __TLE__
+  if (auto extract = dyn_cast<triton::musa_tle::ExtractTileOp>(op)) {
+    auto resultTy = cast<RankedTensorType>(extract.getResult().getType());
+    return product<int64_t>(resultTy.getShape()) * getBitwidth(resultTy) / 8;
+  }
+  if (auto insert = dyn_cast<triton::musa_tle::InsertTileOp>(op)) {
+    auto tileTy = cast<RankedTensorType>(insert.getTile().getType());
+    return product<int64_t>(tileTy.getShape()) * getBitwidth(tileTy) / 8;
+  }
+#endif
+
   auto cvtOp = dyn_cast<ConvertLayoutOp>(op);
   if (!cvtOp)
     return defaultAllocationAnalysisScratchSizeFn(op);

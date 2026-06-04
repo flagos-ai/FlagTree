@@ -276,6 +276,8 @@ void populateMUSATLEToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                    RewritePatternSet &patterns,
                                    PatternBenefit benefit) {
   patterns.add<LocalPointersOpConversion>(typeConverter, targetInfo, benefit);
+  populateMUSATLETileOpToLLVMPatterns(typeConverter, targetInfo, patterns,
+                                      benefit);
 }
 
 } // namespace mlir::triton::musa_tle

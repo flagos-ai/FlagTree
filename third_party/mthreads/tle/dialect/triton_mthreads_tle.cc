@@ -170,6 +170,20 @@ void init_triton_musa_tle_ir(py::module m) {
                indices.push_back(py::cast<mlir::Value>(arg));
              return self.create<mlir::triton::musa_tle::LocalPointersOp>(
                  resultTy, memDesc, indices);
+           })
+      .def("create_extract_tile",
+           [](TritonOpBuilder &self, mlir::Value input, mlir::Value index,
+              std::vector<int64_t> tileShape) -> mlir::Value {
+             auto op = self.create<mlir::triton::musa_tle::ExtractTileOp>(
+                 input, index, tileShape);
+             return op.getResult();
+           })
+      .def("create_insert_tile",
+           [](TritonOpBuilder &self, mlir::Value input, mlir::Value tile,
+              mlir::Value index) -> mlir::Value {
+             auto op = self.create<mlir::triton::musa_tle::InsertTileOp>(
+                 input, tile, index);
+             return op.getResult();
            });
 }
 

@@ -92,6 +92,9 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 #ifdef __TLE__
   addDynamicallyLegalOp<triton::gpu::LocalAllocOp>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
+  addDynamicallyLegalOp<mlir::triton::musa_tle::ExtractTileOp,
+                        mlir::triton::musa_tle::InsertTileOp>(
+      [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
   addDynamicallyLegalDialect<mlir::triton::musa_tle::MUSATLEDialect>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
 #endif

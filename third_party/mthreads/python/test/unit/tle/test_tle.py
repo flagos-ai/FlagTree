@@ -59,6 +59,8 @@ def test_tle_copy_mthreads_bindings_are_backend_local():
     backend.load_dialects(context)
     builder = ir.builder(context)
 
+    assert hasattr(builder, "create_extract_tile")
+    assert hasattr(builder, "create_insert_tile")
     assert hasattr(builder, "create_local_pointers")
     assert hasattr(builder, "create_tma_copy")
     assert hasattr(libtriton, "mthreads")

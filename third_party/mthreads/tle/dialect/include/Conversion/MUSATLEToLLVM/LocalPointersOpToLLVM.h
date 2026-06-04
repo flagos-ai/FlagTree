@@ -11,6 +11,13 @@ void populateMUSATLEToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                    RewritePatternSet &patterns,
                                    PatternBenefit benefit);
 
+#ifdef __TLE__
+void populateMUSATLETileOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                         const TargetInfoBase &targetInfo,
+                                         RewritePatternSet &patterns,
+                                         PatternBenefit benefit);
+#endif // __TLE__
+
 } // namespace mlir::triton::musa_tle
 
 #endif // MTHREADS_MUSATLE_CONVERSION_MUSATLETOLLVM_LOCALPOINTERSOPTOLLVM_H
