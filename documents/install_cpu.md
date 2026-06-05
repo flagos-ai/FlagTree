@@ -1,4 +1,4 @@
-[[中文版](./install_arm64_cn.md)|English]
+[[中文版](./install_cpu_cn.md)|English]
 
 ## 💫 ARM64 CPU [cpu](/third_party/cpu/) & [tle_arm64](/third_party/tle_arm64/)
 
