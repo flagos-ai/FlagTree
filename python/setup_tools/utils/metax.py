@@ -1,6 +1,7 @@
 import shutil
 from pathlib import Path
 
+
 def install_extension(*args, **kargs):
     # Copy knobs.py
     _python_dir = Path(__file__).parent.parent.parent
