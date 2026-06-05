@@ -118,6 +118,8 @@ void processProducerCommitOp(OpBuilder &builder, ttnvws::ProducerCommitOp op,
   setAsyncTaskIds(arriveOp, getAsyncTaskIds(op.getOperation()));
 }
 
+#ifndef USE_MACA
+// TODO: failed because ttg::TMACopyOp not defined on metax backend's ttgpuir
 static int getTMACopyLoadSize(ttg::TMACopyOp copy) {
   auto dstTy = cast<ttg::MemDescType>(copy.getDst().getType());
   auto shapePerCTA = ttg::getShapePerCTA(dstTy.getEncoding(), dstTy.getShape());
@@ -207,6 +209,15 @@ static LogicalResult processProducerCommitTmaCopyOp(OpBuilder &builder,
 
   return success();
 }
+#else
+static LogicalResult processProducerCommitTmaCopyOp(OpBuilder &builder,
+                                                    ttnvws::ProducerCommitOp op,
+                                                    Value bufferFull) {
+  (void)builder;
+  (void)bufferFull;
+  return op.emitOpError("with tma_copy_barrier_arrive requires TLE support");
+}
+#endif
 
 void processConsumerWaitOp(OpBuilder &builder, ttnvws::ConsumerWaitOp op,
                            Value bufferFull) {

@@ -479,6 +479,8 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       else
         (*ld)(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
 #else
+      auto *addrOpr =
+          ptxBuilder.newAddrOperand(ptrElems[vecStart], "1", in_off);
       // Create L2 cache policy register if needed
       Value l2PolicyReg =
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
@@ -720,6 +722,8 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
         (*ptxStoreInstr)(asmAddr, asmArgList, evictOpr)
             .maybePredicate(pred, "b");
 #else
+      auto *asmAddr =
+          ptxBuilder.newAddrOperand(ptrElems[vecStart], "1", in_off);
       // Create L2 cache policy register if needed
       Value l2PolicyReg =
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);

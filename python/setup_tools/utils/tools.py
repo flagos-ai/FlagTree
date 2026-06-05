@@ -39,6 +39,7 @@ class FlagtreeConfigs:
         "ascend": "ascend",
         "cambricon": "mlu",
         "thrive": "thrive",
+        "metax":"metax",
     }))
 
     def __post_init__(self):
