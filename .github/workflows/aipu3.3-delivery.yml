@@ -1,4 +1,4 @@
-name: CD-Tsingmicro3.3
+name: CD-AIPU3.3
 
 permissions:
   contents: write
@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: tsingmicro-cd
+    runs-on: aipu3.3-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
@@ -67,14 +67,14 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Tsingmicro (triton_v3.3.x branch)
+      - name: FlagTree bdist_wheel on AIPU (triton_v3.3.x branch)
         if: ${{ env.TARGET_BRANCH == 'triton_v3.3.x' }}
         shell: bash
         run: |
           set -x
           TRITON_VER="3.3"
           CHIP=""
-          export FLAGTREE_BACKEND=tsingmicro
+          export FLAGTREE_BACKEND=aipu
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
@@ -87,6 +87,7 @@ jobs:
             echo "✅ flagtree===${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
+          source ~/env_setup.sh  # aipu
           cd python
           rm -rf ./build ./*.egg-info
           { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null

@@ -3,11 +3,11 @@
 ## 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
 
 - Based on Triton 3.1, x64
-- Available for MR-V100/BI-V150
+- Available for MR-V100, BI-V150
 
 ### 1. Build and run environment
 
-#### 1.1 Use the preinstalled image (BI-V150)
+#### 1.1 Use the image (BI-V150)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -39,25 +39,22 @@ docker exec -it ${CONTAINER} /bin/bash
 
 ```shell
 mkdir -p ~/.flagtree/iluvatar; cd ~/.flagtree/iluvatar
+# llvm
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.5.0.tar.gz
 tar zxvf iluvatar-llvm18-x86_64_v0.5.0.tar.gz
-```
 
-```shell
+# iluvatarTritonPlugin
 ABI=$(echo | g++ -dM -E -x c++ - | awk '/__GXX_ABI_VERSION/{print $3}')
-# For python3.12 in the image
-case "${ABI}" in
+case "${ABI}" in  # For python3.12 in the image
   1018) PLUGIN_TGZ=iluvatarTritonPlugin-cpython3.12-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-ubuntu-x86_64_v0.5.0.tar.gz ;;
   *) echo "Unsupported __GXX_ABI_VERSION=${ABI}"; exit 1 ;;
 esac
-# For python3.10, not suitable for the image
-case "${ABI}" in
+case "${ABI}" in  # For python3.10, not suitable for this image
   1013) PLUGIN_TGZ=iluvatarTritonPlugin-cpython3.10-glibc2.17-glibcxx3.4.19-cxxabi1.3.12-linux-x86_64_v0.5.0.tar.gz ;;
   1016) PLUGIN_TGZ=iluvatarTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-x86_64_v0.5.0.tar.gz ;;
   1018) PLUGIN_TGZ=iluvatarTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-cxxabi1.3.15-ubuntu-x86_64_v0.5.0.tar.gz ;;
   *) echo "Unsupported __GXX_ABI_VERSION=${ABI}"; exit 1 ;;
 esac
-#
 wget "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${PLUGIN_TGZ}"
 tar zxvf "${PLUGIN_TGZ}"
 ```

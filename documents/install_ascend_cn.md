@@ -3,7 +3,7 @@
 ## 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)
 
 - 对应的 Triton 版本为 3.2，基于 aarch64 平台
-- 可用于 910B/910C
+- 可用于 910B, 910C
 
 ### 1. 构建及运行环境
 
