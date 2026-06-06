@@ -1,12 +1,12 @@
 #pragma once
-#include "incubated/Conversion/DiscreteMaskAccessConversion/Passes.h"
-#include "incubated/Conversion/AutoBlockify/Passes.h"
-#include "incubated/Conversion/DynamicCVPipeline/AddControlFlowCondition.h"
-#include "incubated/Conversion/TritonToAnnotation/Passes.h"
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToHIVM/Passes.h"
-#include "incubated/Conversion/TritonToLinalgIncubated/Passes.h"
 #include "ascend/include/TritonToLLVM/Passes.h"
+#include "incubated/Conversion/AutoBlockify/Passes.h"
+#include "incubated/Conversion/DiscreteMaskAccessConversion/Passes.h"
+#include "incubated/Conversion/DynamicCVPipeline/AddControlFlowCondition.h"
+#include "incubated/Conversion/TritonToAnnotation/Passes.h"
+#include "incubated/Conversion/TritonToLinalgIncubated/Passes.h"
 
 #include "incubated/Conversion/TritonToGraph/Passes.h"
 #include "incubated/Conversion/TritonToStructuredIncubated/Passes.h"
@@ -18,9 +18,9 @@
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "bishengir/Dialect/Scope/IR/Scope.h"
 
-#include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "amd/include/TritonAMDGPUTransforms/Passes.h"
+#include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h"
@@ -161,15 +161,15 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::gpu::TritonGPUDialect,
       mlir::triton::instrument::TritonInstrumentDialect,
       mlir::math::MathDialect, mlir::arith::ArithDialect, mlir::scf::SCFDialect,
-      mlir::tensor::TensorDialect,
-      mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect, mlir::NVVM::NVVMDialect,
+      mlir::tensor::TensorDialect, mlir::gpu::GPUDialect,
+      mlir::LLVM::LLVMDialect, mlir::NVVM::NVVMDialect,
       mlir::triton::nvgpu::NVGPUDialect, mlir::triton::nvws::NVWSDialect,
       mlir::triton::amdgpu::TritonAMDGPUDialect,
       mlir::triton::proton::ProtonDialect,
       mlir::triton::proton::gpu::ProtonGPUDialect, mlir::ROCDL::ROCDLDialect,
       mlir::triton::gluon::GluonDialect,
-      mlir::triton::ascend::TritonAscendDialect,
-      mlir::hivm::HIVMDialect, mlir::scope::ScopeDialect, mlir::hacc::HACCDialect,
+      mlir::triton::ascend::TritonAscendDialect, mlir::hivm::HIVMDialect,
+      mlir::scope::ScopeDialect, mlir::hacc::HACCDialect,
       mlir::annotation::AnnotationDialect, mlir::hfusion::HFusionDialect,
       mlir::tensor::TensorDialect, mlir::linalg::LinalgDialect,
       mlir::memref::MemRefDialect, mlir::bufferization::BufferizationDialect,

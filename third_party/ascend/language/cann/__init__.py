@@ -52,7 +52,7 @@ math.tanh = libdevice.tanh
 
 __all__ = ["libdevice", "extension"]
 
-
 # flagtree language extension
 from triton.flagtree_spec import bind_language_extension_symbols_to_tl
+
 bind_language_extension_symbols_to_tl(extension)

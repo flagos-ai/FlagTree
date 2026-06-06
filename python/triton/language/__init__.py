@@ -5,7 +5,6 @@ spec_path(__path__)
 
 # flagtree backend specialization
 spec("language_extend_globals", globals())
-
 """isort:skip_file"""
 # Import order is significant here.
 
@@ -36,8 +35,8 @@ from .standard import (
 )
 
 if FLAGTREE_BACKEND not in ("ascend"):
-  from .standard import cdiv
-  from .core import async_task
+    from .standard import cdiv
+    from .core import async_task
 
 from .core import (
     PropagateNan,

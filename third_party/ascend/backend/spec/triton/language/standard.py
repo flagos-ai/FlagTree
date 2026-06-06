@@ -26,6 +26,7 @@ def _is_power_of_two(i):
 # Standard library
 # -----------------------
 
+
 @core._tensor_member_fn
 @jit
 def cdiv(x, div):
