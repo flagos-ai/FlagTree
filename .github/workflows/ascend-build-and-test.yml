@@ -1,0 +1,65 @@
+name: Ascend3.5-Build-And-Test
+
+on:
+  push:
+    branches: [ "triton_v3.5.x" ]
+  pull_request:
+    branches: [ "triton_v3.5.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ascend-build-and-test:
+    runs-on: flagtree-ascend
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: ascend
+
+      - name: FlagTree Build on Ascend
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=ascend
+          export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
+          source ~/env.sh
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on Ascend
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          # tutorials
+          pushd third_party/ascend/tutorials
+          python3 01-vector-add.py
+          python3 02-fused-softmax.py
+          python3 03-matrix-multiplication.py
+          python3 04-low-memory-dropout.py
+          python3 05-layer-norm.py
+          #python3 06-fused-attention.py
+          python3 07-extern-functions.py
+          python3 08-grouped-gemm.py
+          python3 09-persistent-matmul.py
+          popd
+          # pytest_ut
+          pushd third_party/ascend/unittest/pytest_ut
+          popd

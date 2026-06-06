@@ -50,7 +50,8 @@ def validate_block_shape(shape: List[int]):
     for i, d in enumerate(shape):
         if not isinstance(d, int):
             raise TypeError(f"Shape element {i} must have type `constexpr[int]`, got `constexpr[{type(d)}]")
-        if not is_power_of_two(d):
+        from ._flagtree_backend import FLAGTREE_BACKEND
+        if not is_power_of_two(d) and FLAGTREE_BACKEND not in ("ascend"):
             raise ValueError(f"Shape element {i} must be a power of 2")
         numel *= d
 

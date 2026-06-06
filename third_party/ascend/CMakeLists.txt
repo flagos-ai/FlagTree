@@ -35,6 +35,7 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/lib
                  ${PROJECT_BINARY_DIR}/lib)
 add_subdirectory(include)
 add_subdirectory(lib)
+add_subdirectory(bin)
 
 add_triton_library(Registrar Registrar.cc)
 

@@ -1,4 +1,4 @@
-name: CD-Enflame-GCU400-triton_v3.5.x
+name: CD-Ascend3.5
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         default: '0.6.0'
       PYTHON_VER:
         required: true
-        default: '3.12'
+        default: '3.11'
       PLATFORM:
         required: true
         default: 'x86_64'
@@ -24,7 +24,7 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.12'
+        default: '3.11'
       PLATFORM:
         type: string
         required: true
@@ -35,7 +35,7 @@ on:
 
 jobs:
   call-delivery:
-    uses: flagos-ai/flagtree/.github/workflows/enflame3.5-gcu400-delivery.yml@main
+    uses: flagos-ai/flagtree/.github/workflows/ascend3.5-delivery.yml@main
     with:
       WHL_VER: ${{ inputs.WHL_VER }}
       PYTHON_VER: ${{ inputs.PYTHON_VER }}

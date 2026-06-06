@@ -1,0 +1,1 @@
+from .triton.language import language_extend_globals

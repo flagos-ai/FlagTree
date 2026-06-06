@@ -19,6 +19,7 @@ python/triton/_C/*.pdb
 python/triton/_C/*.exe
 python/triton/_C/*.ilk
 python/triton/FileCheck
+python/triton/FLAGTREE_BACKEND
 
 # Backends copied from submodules
 python/triton/backends/*

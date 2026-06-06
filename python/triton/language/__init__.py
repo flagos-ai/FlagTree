@@ -1,13 +1,21 @@
+from triton.flagtree_spec import spec_path, spec
+
+# flagtree backend path specialization
+spec_path(__path__)
+
+# flagtree backend specialization
+spec("language_extend_globals", globals())
+
 """isort:skip_file"""
 # Import order is significant here.
 
+from triton._flagtree_backend import FLAGTREE_BACKEND
 from . import math
 from . import extra
 from .standard import (
     argmax,
     argmin,
     bitonic_merge,
-    cdiv,
     cumprod,
     cumsum,
     flip,
@@ -26,6 +34,11 @@ from .standard import (
     zeros,
     zeros_like,
 )
+
+if FLAGTREE_BACKEND not in ("ascend"):
+  from .standard import cdiv
+  from .core import async_task
+
 from .core import (
     PropagateNan,
     TRITON_MAX_TENSOR_NUMEL,
@@ -39,7 +52,7 @@ from .core import (
     arange,
     associative_scan,
     assume,
-    async_task,
+    # async_task,
     atomic_add,
     atomic_and,
     atomic_cas,
@@ -120,6 +133,9 @@ from .core import (
 )
 from .math import (umulhi, exp, exp2, fma, log, log2, cos, rsqrt, sin, sqrt, sqrt_rn, abs, fdiv, div_rn, erf, floor,
                    ceil)
+if FLAGTREE_BACKEND in ("ascend"):
+    from .math import cdiv
+
 from .random import (
     pair_uniform_to_normal,
     philox,
