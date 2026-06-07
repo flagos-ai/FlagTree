@@ -38,8 +38,9 @@ jobs:
         run: |
           set -x
           export FLAGTREE_BACKEND=ascend
-          export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
           source ~/env.sh
+          export PATH=~/.flagtree/ascend/llvm-7d5de303-ubuntu-aarch64-python311-compat/bin/:${PATH}  # clang
+          export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on Ascend
@@ -55,11 +56,73 @@ jobs:
           python3 03-matrix-multiplication.py
           python3 04-low-memory-dropout.py
           python3 05-layer-norm.py
-          #python3 06-fused-attention.py
+          python3 06-fused-attention.py
           python3 07-extern-functions.py
           python3 08-grouped-gemm.py
           python3 09-persistent-matmul.py
           popd
           # pytest_ut
           pushd third_party/ascend/unittest/pytest_ut
+          python3 -m pytest -s . \
+            --ignore=test_03_matrix_multiplication.py \  # nan, inf
+            --ignore=test_device_print.py \  # coredump
+            --ignore=test_device_print_comprehensive.py \  # coredump
+            --ignore=test_device_print_script.py \  # coredump
+            --ignore=test_10_gather_sorted.py \  # Passed, but takes a long time; same below
+            --ignore=test_16_profiler.py \
+            --ignore=test_18_gather.py \
+            --ignore=test_cat_help_func.py \
+            --ignore=test_argmax.py \
+            --ignore=test_argmin.py \
+            --ignore=test_atomic_add.py \
+            --ignore=test_atomic_cas.py \
+            --ignore=test_atomic_max.py \
+            --ignore=test_atomic_min.py \
+            --ignore=test_cannonicalize_tl_where.py \
+            --ignore=test_dot_scaled.py \
+            --ignore=test_elementwise_round.py \
+            --ignore=test_eq.py \
+            --ignore=test_exp_.py \
+            --ignore=test_for_ptr.py \
+            --ignore=test_ge.py \
+            --ignore=test_implicit_permute.py \
+            --ignore=test_index_select.py \
+            --ignore=test_join.py \
+            --ignore=test_le.py \
+            --ignore=test_linearize_mask.py \
+            --ignore=test_linearize_mask_fallback.py \
+            --ignore=test_linearize_permute.py \
+            --ignore=test_load.py \
+            --ignore=test_load_store.py \
+            --ignore=test_mean_dim0.py \
+            --ignore=test_mean_vector.py \
+            --ignore=test_permute_full.py \
+            --ignore=test_reduce_count_vector.py \
+            --ignore=test_reduce_maximum.py \
+            --ignore=test_reduce_min_4_keepdim_True_with_index_op.py \
+            --ignore=test_reduce_minimum.py \
+            --ignore=test_scalar_calc.py \
+            --ignore=test_sort.py \
+            --ignore=test_sqrt.py \
+            --ignore=test_sum_dim1.py \
+            --ignore=test_sum_vector.py \
+            --ignore=test_tensor_descriptor.py \
+            --ignore=test_topk.py
+          python3 -m pytest -s test_argmax.py -k test_argmax_1d
+          python3 -m pytest -s test_argmin.py -k test_argmin_1d
+          python3 -m pytest -s test_atomic_add.py -k test_atomic_add_2d
+          python3 -m pytest -s test_atomic_cas.py -k test_atomic_cas_with_full
+          python3 -m pytest -s test_atomic_max.py -k test_atomic_max_2d_supply
+          python3 -m pytest -s test_atomic_min.py -k test_atomic_min_2d_supply
+          python3 -m pytest -s test_dot_scaled.py -k test_scaled_dot_fast_math
+          python3 -m pytest -s test_implicit_permute.py -k test_addptr_implicit_perm_load_2d
+          python3 -m pytest -s test_index_select.py -k test_index_select_manual
+          python3 -m pytest -s test_linearize_mask.py -k test_linearize_mask_rem
+          python3 -m pytest -s test_linearize_permute.py -k test_triton_gpu_kernel
+          python3 -m pytest -s test_load.py -k test_load_store
+          python3 -m pytest -s test_load_store.py -k test_load_store
+          python3 -m pytest -s test_scalar_calc.py -k test_scalar_ceil_calc
+          python3 -m pytest -s test_sort.py -k test_sort_2d
+          python3 -m pytest -s test_sum_vector.py -k test_sum
+          python3 -m pytest -s test_tensor_descriptor.py -k test_tensor_descriptor_functional_interface
           popd
