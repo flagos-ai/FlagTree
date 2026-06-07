@@ -66,6 +66,13 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-a
 tar zxvf llvm-a66376b0-ubuntu-aarch64-python311-compat_v0.3.0.tar.gz
 ```
 
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree/third_party
+git clone https://github.com/flagos-ai/flir.git
+cd flir
+git checkout -b triton_v3.3.x origin/triton_v3.3.x  # For flagtree triton_v3.2.x triton_v3.3.x
+```
+
 #### 1.4 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the preinstalled image.
@@ -89,7 +96,7 @@ Note that the script will prompt for manual confirmation during execution.
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3.11 -m pip install flagtree===0.5.0+ascend3.2 $RES
+python3.11 -m pip install flagtree===0.6.0rc1+ascend3.2 $RES
 ```
 
 `flagtree` is already installed in the preinstalled image. You can check it with:

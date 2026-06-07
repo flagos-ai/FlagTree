@@ -66,6 +66,13 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-a66376b0-ubuntu-a
 tar zxvf llvm-a66376b0-ubuntu-aarch64-python311-compat_v0.3.0.tar.gz
 ```
 
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree/third_party
+git clone https://github.com/flagos-ai/flir.git
+cd flir
+git checkout -b triton_v3.3.x origin/triton_v3.3.x  # For flagtree triton_v3.2.x triton_v3.3.x
+```
+
 #### 1.4 手动下载 Triton 依赖库
 
 预装镜像中已下载安装 Triton 依赖库。
@@ -89,7 +96,7 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.2.x-linux-aa
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3.11 -m pip install flagtree===0.5.0+ascend3.2 $RES
+python3.11 -m pip install flagtree===0.6.0rc1+ascend3.2 $RES
 ```
 
 预装镜像中已安装 `flagtree`，可通过下列命令查看：
