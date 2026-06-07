@@ -857,8 +857,8 @@ def get_flagtree_version():
             return flagtree_ver + get_git_commit_hash().replace("+", ".")
     backend = os.environ.get("FLAGTREE_BACKEND", "")
     if backend:
-        return "0.5.0+" + backend + get_git_commit_hash().replace("+", ".")
-    return "0.5.0" + get_git_commit_hash()
+        return "0.6.0+" + backend + get_git_commit_hash().replace("+", ".")
+    return "0.6.0" + get_git_commit_hash()
 
 
 # Dynamically define supported Python versions and classifiers
