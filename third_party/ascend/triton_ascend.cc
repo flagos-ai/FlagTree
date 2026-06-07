@@ -343,7 +343,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
         [](mlir::PassManager &pm, bool enableMaskFallbackConversion,
            bool optimizeDynamicOffset) {
           pm.addPass(mlir::triton::createTritonToStructuredIncubatedPass(
-              enableMaskFallbackConversion, optimizeDynamicOffset, false));
+              enableMaskFallbackConversion, optimizeDynamicOffset));
         });
 
   m.def("add_triton_to_annotation", [](mlir::PassManager &pm) {
@@ -379,6 +379,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
     DiscreteMaskAccessConversionOptions opts;
     opts.compileOn91095 = compileOn91095;
     opts.forceSimtTemplate = forceSimtTemplate;
+    opts.enableSyncBlockLock = enableSyncBlockLock;
     pm.addPass(mlir::triton::createDiscreteMaskAccessConversionPass(opts));
   });
 
