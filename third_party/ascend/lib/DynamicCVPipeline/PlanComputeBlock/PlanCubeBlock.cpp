@@ -42,9 +42,9 @@
 
 #include "ascend/include/DynamicCVPipeline/PlanComputeBlock/PlanCubeBlockPass.h"
 
-#include "DynamicCVPipeline/Common/MemoryEffectsTracker.h"
-#include "DynamicCVPipeline/PlanComputeBlock/Common.h"
-#include "DynamicCVPipeline/PlanComputeBlock/ComputeBlockIdManager.h"
+#include "ascend/include/DynamicCVPipeline/Common/MemoryEffectsTracker.h"
+#include "ascend/include/DynamicCVPipeline/PlanComputeBlock/Common.h"
+#include "ascend/include/DynamicCVPipeline/PlanComputeBlock/ComputeBlockIdManager.h"
 
 using namespace mlir;
 using namespace triton;

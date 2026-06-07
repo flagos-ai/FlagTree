@@ -44,9 +44,9 @@
 #include "ascend/include/DynamicCVPipeline/PlanComputeBlock/Common.h"
 #include "ascend/include/DynamicCVPipeline/PlanComputeBlock/ReorderOpsByBlockId.h"
 
-#include "DynamicCVPipeline/Common/Utils.h"
-#include "DynamicCVPipeline/PlanComputeBlock/ComputeBlockIdManager.h"
-#include "TritonToUnstructure/OffsetAnalysis.h"
+#include "ascend/include/DynamicCVPipeline/Common/Utils.h"
+#include "ascend/include/DynamicCVPipeline/PlanComputeBlock/ComputeBlockIdManager.h"
+#include "incubated/Conversion/TritonToUnstructureIncubated/OffsetAnalysis.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 using namespace mlir;
