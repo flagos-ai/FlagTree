@@ -1,5 +1,5 @@
 #include "./RegisterTritonDialects.h"
-#include "incubated/Conversion/DynamicCVPipeline/AllocMultiCache/AddMultiBufferInnerScope.h"
+#include "ascend/include/DynamicCVPipeline/AllocMultiCache/AddMultiBufferInnerScope.h"
 
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 

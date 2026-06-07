@@ -40,7 +40,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 
-#include "Utils/Utils.h"
+#include "incubated/Conversion/UtilsIncubated/Utils.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include <optional>

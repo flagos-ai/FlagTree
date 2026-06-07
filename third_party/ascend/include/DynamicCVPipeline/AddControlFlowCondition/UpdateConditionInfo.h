@@ -30,7 +30,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Pass/Pass.h"
-#include "third_party/ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
+#include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
