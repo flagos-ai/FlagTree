@@ -31,15 +31,16 @@ namespace mlir {
 namespace triton {
 
 // PlanComputeBlockPass for partitioning operations into compute blocks
-class PlanComputeBlockPass : public PassWrapper<PlanComputeBlockPass, OperationPass<ModuleOp>> {
+class PlanComputeBlockPass
+    : public PassWrapper<PlanComputeBlockPass, OperationPass<ModuleOp>> {
 public:
-    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PlanComputeBlockPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PlanComputeBlockPass)
 
-    // Constructor
-    PlanComputeBlockPass() = default;
+  // Constructor
+  PlanComputeBlockPass() = default;
 
-    // Run the pass
-    void runOnOperation() override;
+  // Run the pass
+  void runOnOperation() override;
 };
 
 // Create the pass

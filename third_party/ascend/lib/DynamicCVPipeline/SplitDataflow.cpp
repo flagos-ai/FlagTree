@@ -20,13 +20,13 @@
  * THE SOFTWARE.
  */
 
-#include "ascend/include/DynamicCVPipeline/SplitDataflowPass.h"
 #include "ascend/include/DynamicCVPipeline/SplitDataflow/AddBlockIdForControlOps.h"
 #include "ascend/include/DynamicCVPipeline/SplitDataflow/DataDependencyAnalysis.h"
 #include "ascend/include/DynamicCVPipeline/SplitDataflow/InterCoreTransferAndSync.h"
 #include "ascend/include/DynamicCVPipeline/SplitDataflow/MarkMainLoop.h"
 #include "ascend/include/DynamicCVPipeline/SplitDataflow/PreserveControlAttrsCanonicalize.h"
 #include "ascend/include/DynamicCVPipeline/SplitDataflow/SeparateCVScope.h"
+#include "ascend/include/DynamicCVPipeline/SplitDataflowPass.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/Support/Debug.h"
 
@@ -38,44 +38,42 @@ using namespace mlir;
 using namespace triton;
 
 // Run the pass
-void SplitDataflowPass::runOnOperation()
-{
-    ModuleOp module = getOperation();
-    OpPassManager pm(module.getOperationName());
-    LDBG("Enter pass.");
+void SplitDataflowPass::runOnOperation() {
+  ModuleOp module = getOperation();
+  OpPassManager pm(module.getOperationName());
+  LDBG("Enter pass.");
 
-    // Step 1: Add block_id for control flow operations
-    pm.addPass(createAddBlockIdForControlOpsPass());
+  // Step 1: Add block_id for control flow operations
+  pm.addPass(createAddBlockIdForControlOpsPass());
 
-    // Step 2: Analyze data dependencies between Vector and Cube blocks
-    pm.addPass(createDataDependencyAnalysisPass());
+  // Step 2: Analyze data dependencies between Vector and Cube blocks
+  pm.addPass(createDataDependencyAnalysisPass());
 
-    // Step 3: Run InterCoreTransferAndSync
-    pm.addPass(createInterCoreTransferAndSyncPass());
+  // Step 3: Run InterCoreTransferAndSync
+  pm.addPass(createInterCoreTransferAndSyncPass());
 
-    // Step 4: Mark the main computation loop
-    pm.addPass(createMarkMainLoopPass());
+  // Step 4: Mark the main computation loop
+  pm.addPass(createMarkMainLoopPass());
 
-    // Step 5: Run SeparateCVScope
-    pm.addPass(createSeparateCVScopePass());
+  // Step 5: Run SeparateCVScope
+  pm.addPass(createSeparateCVScopePass());
 
-    // Step 6: Canonicalize to preserve control flow attributes
-    pm.addPass(createPreserveControlAttrsCanonicalizePass());
+  // Step 6: Canonicalize to preserve control flow attributes
+  pm.addPass(createPreserveControlAttrsCanonicalizePass());
 
-    if (failed(runPipeline(pm, module))) {
-        module->emitError() << "[" << DEBUG_TYPE << "] Pass failed!";
-        signalPassFailure();
-    }
+  if (failed(runPipeline(pm, module))) {
+    module->emitError() << "[" << DEBUG_TYPE << "] Pass failed!";
+    signalPassFailure();
+  }
 
-    LDBG("Process successfully");
+  LDBG("Process successfully");
 }
 
 namespace mlir {
 namespace triton {
 
-std::unique_ptr<OperationPass<ModuleOp>> createSplitDataflowPass()
-{
-    return std::make_unique<SplitDataflowPass>();
+std::unique_ptr<OperationPass<ModuleOp>> createSplitDataflowPass() {
+  return std::make_unique<SplitDataflowPass>();
 }
 } // namespace triton
 } // namespace mlir

@@ -29,15 +29,16 @@
 namespace mlir {
 namespace triton {
 
-class SplitDataflowPass : public PassWrapper<SplitDataflowPass, OperationPass<ModuleOp>> {
+class SplitDataflowPass
+    : public PassWrapper<SplitDataflowPass, OperationPass<ModuleOp>> {
 public:
-    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SplitDataflowPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SplitDataflowPass)
 
-    // Constructor
-    SplitDataflowPass() = default;
+  // Constructor
+  SplitDataflowPass() = default;
 
-    // Run the pass
-    void runOnOperation() override;
+  // Run the pass
+  void runOnOperation() override;
 };
 
 // Create the pass

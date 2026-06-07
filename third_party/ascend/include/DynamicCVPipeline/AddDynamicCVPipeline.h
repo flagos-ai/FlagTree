@@ -36,8 +36,8 @@ extern bool compileOn91095Flag;
 
 namespace mlir {
 namespace triton {
-std::unique_ptr<OperationPass<ModuleOp>> createAddDynamicCVPipelinePass(
-    const AddDynamicCVPipelineOptions &options = {});
+std::unique_ptr<OperationPass<ModuleOp>>
+createAddDynamicCVPipelinePass(const AddDynamicCVPipelineOptions &options = {});
 } // namespace triton
 } // namespace mlir
 
@@ -48,8 +48,8 @@ using namespace triton;
 class AddDynamicCVPipelinePass
     : public ::impl::AddDynamicCVPipelineBase<AddDynamicCVPipelinePass> {
 public:
-    explicit AddDynamicCVPipelinePass(const AddDynamicCVPipelineOptions &options);
-    void runOnOperation() override;
+  explicit AddDynamicCVPipelinePass(const AddDynamicCVPipelineOptions &options);
+  void runOnOperation() override;
 };
 
 } // namespace

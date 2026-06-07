@@ -23,12 +23,12 @@
 #ifndef TRITON_TO_CFG_TENSOR_H
 #define TRITON_TO_CFG_TENSOR_H
 
-#include "mlir/IR/Types.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "triton/Dialect/Triton/IR/Types.h"
 
 namespace mlir {
 namespace triton {
@@ -36,9 +36,9 @@ namespace cfg {
 
 // Compute类型（用于指令分类）
 enum class ComputeType {
-  CUBE,    // shape为2维
-  VECTOR,  // shape为1维
-  SCALAR   // 其他标量
+  CUBE,   // shape为2维
+  VECTOR, // shape为1维
+  SCALAR  // 其他标量
 };
 
 // TensorObject - Tensor对象定义
@@ -46,20 +46,20 @@ class TensorObject {
 public:
   // Tensor类型分类
   enum class TensorKind {
-    GLOBAL_MEMORY,  // 全局内存tensor（如gm_obj）
-    L2,             // L2 Cache
-    L1,             // L1 Cache
-    UB              // Unified Buffer
+    GLOBAL_MEMORY, // 全局内存tensor（如gm_obj）
+    L2,            // L2 Cache
+    L1,            // L1 Cache
+    UB             // Unified Buffer
   };
 
   // 构造函数
-  TensorObject(StringRef name, ArrayRef<int64_t> shape, Type type, Type elementType,
-               TensorKind kind = TensorKind::GLOBAL_MEMORY)
-      : name(name.str()), shape(shape.begin(), shape.end()),
-        type(type), elementType(elementType), kind(kind) {}
+  TensorObject(StringRef name, ArrayRef<int64_t> shape, Type type,
+               Type elementType, TensorKind kind = TensorKind::GLOBAL_MEMORY)
+      : name(name.str()), shape(shape.begin(), shape.end()), type(type),
+        elementType(elementType), kind(kind) {}
 
   // 获取tensor名称
-  const std::string& getName() const { return name; }
+  const std::string &getName() const { return name; }
 
   // 设置tensor名称
   void setName(StringRef newName) { name = newName.str(); }
@@ -104,10 +104,11 @@ public:
   bool isScalar() const { return shape.empty(); }
 
   // 打印信息
-  void print(llvm::raw_ostream& os) const {
+  void print(llvm::raw_ostream &os) const {
     os << "Tensor[" << name << ", shape=[";
     for (size_t i = 0; i < shape.size(); ++i) {
-      if (i > 0) os << ", ";
+      if (i > 0)
+        os << ", ";
       os << shape[i];
     }
     os << "], element=" << elementType << ", kind=" << getKindString() << "]";
@@ -116,33 +117,37 @@ public:
   // 获取kind的字符串表示
   std::string getKindString() const {
     switch (kind) {
-      case TensorKind::GLOBAL_MEMORY: return "GLOBAL_MEMORY";
-      case TensorKind::L2: return "L2";
-      case TensorKind::L1: return "L1";
-      case TensorKind::UB: return "UB";
+    case TensorKind::GLOBAL_MEMORY:
+      return "GLOBAL_MEMORY";
+    case TensorKind::L2:
+      return "L2";
+    case TensorKind::L1:
+      return "L1";
+    case TensorKind::UB:
+      return "UB";
     }
     return "UNKNOWN";
   }
 
 private:
-  std::string name;          // Tensor名称，如"gm_obj_0"
+  std::string name; // Tensor名称，如"gm_obj_0"
   SmallVector<int64_t> shape;
-  Type type;                 // 完整类型（如tensor<64x64xf32>）
-  Type elementType;          // 元素数据类型（如f32, i8, f16等）
+  Type type;        // 完整类型（如tensor<64x64xf32>）
+  Type elementType; // 元素数据类型（如f32, i8, f16等）
   TensorKind kind;
 };
 
 // 从类型中提取shape和element type
-inline void extractShapeAndElementType(Type type, SmallVectorImpl<int64_t>& shape,
-                                       Type& elementType) {
+inline void extractShapeAndElementType(Type type,
+                                       SmallVectorImpl<int64_t> &shape,
+                                       Type &elementType) {
   if (auto rankedType = mlir::dyn_cast<RankedTensorType>(type)) {
     shape.append(rankedType.getShape().begin(), rankedType.getShape().end());
     elementType = rankedType.getElementType();
   } else if (auto ptrType = mlir::dyn_cast<triton::PointerType>(type)) {
     Type pointeeType = ptrType.getPointeeType();
     if (auto rankedType = mlir::dyn_cast<RankedTensorType>(pointeeType)) {
-      shape.append(rankedType.getShape().begin(),
-                   rankedType.getShape().end());
+      shape.append(rankedType.getShape().begin(), rankedType.getShape().end());
       elementType = rankedType.getElementType();
     } else {
       // 标量指针

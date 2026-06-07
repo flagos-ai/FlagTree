@@ -23,9 +23,9 @@
 #ifndef TRITON_ADAPTER_ALLOC_MULTI_CACHE_ADD_MULTI_BUFFER_OUTER_SCOPE_PASS_H
 #define TRITON_ADAPTER_ALLOC_MULTI_CACHE_ADD_MULTI_BUFFER_OUTER_SCOPE_PASS_H
 
-#include "mlir/Pass/Pass.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
 
@@ -36,80 +36,86 @@ namespace triton {
 
 /// Buffer alloc pair: {allocOp, markOp}
 struct BufferAllocPair {
-    Operation *allocOp = nullptr;
-    Operation *markOp = nullptr;
+  Operation *allocOp = nullptr;
+  Operation *markOp = nullptr;
 };
 
 /// Transfer operation chain for sender or receiver side
 struct TransferOpChain {
-    Operation *waitOp = nullptr;
-    Operation *transferOp = nullptr;  // fixpipe / hir.copy / memory_space_cast / convert_layout
-    Operation *toTensorOp = nullptr;  // bufferization.to_tensor (memory_space_cast scenario only)
-    Operation *setOp = nullptr;
+  Operation *waitOp = nullptr;
+  Operation *transferOp =
+      nullptr; // fixpipe / hir.copy / memory_space_cast / convert_layout
+  Operation *toTensorOp =
+      nullptr; // bufferization.to_tensor (memory_space_cast scenario only)
+  Operation *setOp = nullptr;
 };
 
 /// Buffer alloc info: {sender, receiver}
 struct BufferAllocInfo {
-    BufferAllocPair sender;
-    BufferAllocPair receiver;
+  BufferAllocPair sender;
+  BufferAllocPair receiver;
 };
 
 /// Extra sync info for sync ops whose parent does NOT have main_loop attribute
 struct ExtraSyncInfo {
-    Operation *setOp = nullptr;
-    Operation *waitOp = nullptr;
+  Operation *setOp = nullptr;
+  Operation *waitOp = nullptr;
 };
 
 /// Transfer chain info: {senderChain, receiverChain}
 struct TransferChainInfo {
-    TransferOpChain sender;
-    TransferOpChain receiver;
+  TransferOpChain sender;
+  TransferOpChain receiver;
 };
 
 /// Complete transfer group information
 struct TransferGroupInfo {
-    int tid = -1;
-    int originalFlag = -1;
-    int outputFlag = -1;
-    bool isCtoV = false;  // true=C→V, false=V→C
+  int tid = -1;
+  int originalFlag = -1;
+  int outputFlag = -1;
+  bool isCtoV = false; // true=C→V, false=V→C
 
-    BufferAllocPair senderBuf;
-    BufferAllocPair receiverBuf;
+  BufferAllocPair senderBuf;
+  BufferAllocPair receiverBuf;
 
-    TransferOpChain senderChain;
-    TransferOpChain receiverChain;
+  TransferOpChain senderChain;
+  TransferOpChain receiverChain;
 
-    // Input/output buffer values
-    Value senderInputBuffer;
-    Value senderOutputBuffer;
-    Value receiverInputBuffer;
-    Value receiverOutputBuffer;
+  // Input/output buffer values
+  Value senderInputBuffer;
+  Value senderOutputBuffer;
+  Value receiverInputBuffer;
+  Value receiverOutputBuffer;
 
-    // TCB ID shared across all 4 buffers in the same transfer group
-    int tcbId = -1;
+  // TCB ID shared across all 4 buffers in the same transfer group
+  int tcbId = -1;
 
-    // Extra sync positions for output flag synchronization
-    Operation *extraSyncSetOp = nullptr;
-    Operation *extraSyncWaitOp = nullptr;
+  // Extra sync positions for output flag synchronization
+  Operation *extraSyncSetOp = nullptr;
+  Operation *extraSyncWaitOp = nullptr;
 };
 
-/// AddMultiBufferOuterScopePass for adding outer (CV inter-core) multi-buffer optimization
+/// AddMultiBufferOuterScopePass for adding outer (CV inter-core) multi-buffer
+/// optimization
 class AddMultiBufferOuterScopePass
-    : public PassWrapper<AddMultiBufferOuterScopePass, OperationPass<ModuleOp>> {
+    : public PassWrapper<AddMultiBufferOuterScopePass,
+                         OperationPass<ModuleOp>> {
 public:
-    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AddMultiBufferOuterScopePass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AddMultiBufferOuterScopePass)
 
-    // Constructor
-    AddMultiBufferOuterScopePass() = default;
+  // Constructor
+  AddMultiBufferOuterScopePass() = default;
 
-    // Pass argument
-    StringRef getArgument() const override { return "add_multi_buffer_outer_scope"; }
+  // Pass argument
+  StringRef getArgument() const override {
+    return "add_multi_buffer_outer_scope";
+  }
 
-    // Run the pass
-    void runOnOperation() override;
+  // Run the pass
+  void runOnOperation() override;
 
-    // Get dependent dialects
-    void getDependentDialects(DialectRegistry &registry) const override;
+  // Get dependent dialects
+  void getDependentDialects(DialectRegistry &registry) const override;
 };
 
 std::unique_ptr<OperationPass<ModuleOp>> createAddMultiBufferOuterScopePass();

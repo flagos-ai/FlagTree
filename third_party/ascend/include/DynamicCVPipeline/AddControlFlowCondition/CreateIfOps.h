@@ -37,25 +37,21 @@ public:
 
   void runOnOperation() override;
 
-  void setConditionInfo(ControlFlowConditionInfo *info)
-  {
-    this->info = info;
-  }
+  void setConditionInfo(ControlFlowConditionInfo *info) { this->info = info; }
 
-  LogicalResult computeYieldValues(scf::ForOp forOp,
-                         const llvm::DenseMap<int, SmallVector<Operation *>> &blockOps,
-                         llvm::DenseMap<int, SmallVector<Value>> &thenYieldValues,
-                         llvm::DenseMap<int, SmallVector<Value>> &elseYieldValues);
+  LogicalResult computeYieldValues(
+      scf::ForOp forOp,
+      const llvm::DenseMap<int, SmallVector<Operation *>> &blockOps,
+      llvm::DenseMap<int, SmallVector<Value>> &thenYieldValues,
+      llvm::DenseMap<int, SmallVector<Value>> &elseYieldValues);
 
-  LogicalResult createIfInMainLoop(scf::ForOp forOp,
-                         const llvm::DenseMap<int, SmallVector<Operation *>> &blockOps,
-                         const llvm::DenseMap<int, SmallVector<Value>> &thenYieldValues,
-                         const llvm::DenseMap<int, SmallVector<Value>> &elseYieldValues);
+  LogicalResult createIfInMainLoop(
+      scf::ForOp forOp,
+      const llvm::DenseMap<int, SmallVector<Operation *>> &blockOps,
+      const llvm::DenseMap<int, SmallVector<Value>> &thenYieldValues,
+      const llvm::DenseMap<int, SmallVector<Value>> &elseYieldValues);
 
-  llvm::StringRef getArgument() const override
-  {
-    return "create-if-ops";
-  }
+  llvm::StringRef getArgument() const override { return "create-if-ops"; }
 
 private:
   ControlFlowConditionInfo *info = nullptr;

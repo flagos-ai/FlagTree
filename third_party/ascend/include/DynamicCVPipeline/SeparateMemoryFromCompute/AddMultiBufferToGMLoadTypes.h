@@ -33,50 +33,51 @@ namespace gmload {
 
 // One marked op and the topo-sorted dependency chain needed to reproduce it.
 struct MarkedLoad {
-    mlir::Operation *markedOp = nullptr;
-    llvm::SmallVector<mlir::Operation *> chain;
-    mlir::memref::AllocOp allocOp;
+  mlir::Operation *markedOp = nullptr;
+  llvm::SmallVector<mlir::Operation *> chain;
+  mlir::memref::AllocOp allocOp;
 };
 
 // Each marked load gets its own independent LoadGroup with its own
 // producer/consumer counter pair.
 struct LoadGroup {
-    llvm::SmallVector<MarkedLoad> loads;
-    int depth = 0;
-    llvm::SmallVector<llvm::SmallVector<mlir::Value>> bufSlots; // bufSlots[slot][load]
-    llvm::SmallVector<mlir::Operation *> mergedChain;
+  llvm::SmallVector<MarkedLoad> loads;
+  int depth = 0;
+  llvm::SmallVector<llvm::SmallVector<mlir::Value>>
+      bufSlots; // bufSlots[slot][load]
+  llvm::SmallVector<mlir::Operation *> mergedChain;
 };
 
 // Transformation context for one scf.for.
 struct ForBufferCtx {
-    mlir::scf::ForOp forOp;
-    llvm::SmallVector<LoadGroup> groups;
+  mlir::scf::ForOp forOp;
+  llvm::SmallVector<LoadGroup> groups;
 };
 
 // Iter-arg handles for one LoadGroup inside the extended scf.for.
 struct GroupIterArgs {
-    llvm::SmallVector<mlir::Value> flagArgs;
-    mlir::Value prodCounter;
-    mlir::Value consCounter;
+  llvm::SmallVector<mlir::Value> flagArgs;
+  mlir::Value prodCounter;
+  mlir::Value consCounter;
 };
 
 // Output of buildExtendedFor: new loop + per-group iter_arg handles.
 struct ExtendedForInfo {
-    mlir::scf::ForOp newForOp;
-    mlir::Block *oldBody = nullptr;
-    mlir::Block *newBody = nullptr;
-    mlir::IRMapping mapping;
-    llvm::SmallVector<GroupIterArgs> groupArgs;
-    mlir::Value falseVal;
-    int numOrig = 0;
-    int depth = 0;
+  mlir::scf::ForOp newForOp;
+  mlir::Block *oldBody = nullptr;
+  mlir::Block *newBody = nullptr;
+  mlir::IRMapping mapping;
+  llvm::SmallVector<GroupIterArgs> groupArgs;
+  mlir::Value falseVal;
+  int numOrig = 0;
+  int depth = 0;
 };
 
 // One consecutive top-level run in an old loop body.
 struct BodyRun {
-    bool hasBlockId = false;
-    int32_t blockId = 0;
-    llvm::SmallVector<mlir::Operation *> ops;
+  bool hasBlockId = false;
+  int32_t blockId = 0;
+  llvm::SmallVector<mlir::Operation *> ops;
 };
 
 } // namespace gmload

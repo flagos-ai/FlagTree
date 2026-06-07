@@ -23,15 +23,14 @@
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition/CloneOps.h"
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition/CreateIfOps.h"
-#include "ascend/include/DynamicCVPipeline/AddControlFlowCondition/UpdateConditionInfo.h"
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition/InitDependentMap.h"
+#include "ascend/include/DynamicCVPipeline/AddControlFlowCondition/UpdateConditionInfo.h"
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition/UpdateForOps.h"
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition/UpdateLoopIterTimes.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "bishengir/Dialect/Scope/IR/Scope.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/Support/Debug.h"
-#include "mlir/Pass/PassManager.h"
 
 static constexpr const char *DEBUG_TYPE = "AddControlFlowCondition";
 #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
@@ -41,8 +40,7 @@ using namespace mlir;
 using namespace triton;
 
 // Check if the module should be skipped for control flow condition processing
-static bool shouldSkipControlFlowCondition(ModuleOp module)
-{
+static bool shouldSkipControlFlowCondition(ModuleOp module) {
   int cubeScopeCount = 0;
   int vectorScopeCount = 0;
 
@@ -91,8 +89,7 @@ static bool shouldSkipControlFlowCondition(ModuleOp module)
   return false;
 }
 
-void AddControlFlowConditionPass::runOnOperation()
-{
+void AddControlFlowConditionPass::runOnOperation() {
   ModuleOp module = getOperation();
 
   LDBG("Enter add controlflow condition pass.");
@@ -105,7 +102,8 @@ void AddControlFlowConditionPass::runOnOperation()
   ControlFlowConditionInfo info;
 
   // Step0: Initialize crossCoreDependentMap and intraCoreDependentMap
-  std::unique_ptr<InitDependentMapPass> initDependentMapPass(new InitDependentMapPass());
+  std::unique_ptr<InitDependentMapPass> initDependentMapPass(
+      new InitDependentMapPass());
   initDependentMapPass->setConditionInfo(&info);
   pm.addPass(std::move(initDependentMapPass));
 
@@ -124,13 +122,15 @@ void AddControlFlowConditionPass::runOnOperation()
   updateForOpsPass->setConditionInfo(&info);
   pm.addPass(std::move(updateForOpsPass));
 
-  // Step4:Update the conditions of ifOp based on the intraCoreDependentMap and crossCoreDependentMap
+  // Step4:Update the conditions of ifOp based on the intraCoreDependentMap and
+  // crossCoreDependentMap
   auto updatePass = std::make_unique<UpdateConditionInfoPass>();
   updatePass->setConditionInfo(&info);
   pm.addPass(std::move(updatePass));
 
   // Step5: Update for loop iteration times based on intraCoreDependentMap
-  std::unique_ptr<UpdateLoopIterTimesPass> updateLoopIterTimesPass(new UpdateLoopIterTimesPass());
+  std::unique_ptr<UpdateLoopIterTimesPass> updateLoopIterTimesPass(
+      new UpdateLoopIterTimesPass());
   updateLoopIterTimesPass->setConditionInfo(&info);
   pm.addPass(std::move(updateLoopIterTimesPass));
 
@@ -145,17 +145,15 @@ void AddControlFlowConditionPass::runOnOperation()
 namespace mlir {
 namespace triton {
 
-std::unique_ptr<OperationPass<ModuleOp>> createAddControlFlowConditionPass()
-{
+std::unique_ptr<OperationPass<ModuleOp>> createAddControlFlowConditionPass() {
   return std::make_unique<AddControlFlowConditionPass>();
 }
 
-void registerAddControlFlowConditionPasses()
-{
-    registerPass(createCloneOpsPass);
-    registerPass(createCreateIfOpsPass);
-    registerPass(createUpdateForOpsPass);
-    registerPass(createAddControlFlowConditionPass);
+void registerAddControlFlowConditionPasses() {
+  registerPass(createCloneOpsPass);
+  registerPass(createCreateIfOpsPass);
+  registerPass(createUpdateForOpsPass);
+  registerPass(createAddControlFlowConditionPass);
 }
 } // namespace triton
 } // namespace mlir

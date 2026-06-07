@@ -23,12 +23,12 @@
 #ifndef TRITON_TO_CFG_CONTROL_FLOW_GRAPH_H
 #define TRITON_TO_CFG_CONTROL_FLOW_GRAPH_H
 
+#include "TritonToGraph/MemorySSA.h"
 #include "mlir/IR/Block.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Region.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "TritonToGraph/MemorySSA.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
@@ -75,29 +75,30 @@ public:
   void dump() const;
 
   // Memory SSA信息
-  MemorySSAInfo& getMemorySSAInfo() { return memorySSAInfo; }
-  const MemorySSAInfo& getMemorySSAInfo() const { return memorySSAInfo; }
+  MemorySSAInfo &getMemorySSAInfo() { return memorySSAInfo; }
+  const MemorySSAInfo &getMemorySSAInfo() const { return memorySSAInfo; }
 
 private:
-  size_t id;                    // 唯一ID
-  Operation *operation;         // 对应的 MLIR Operation
-  BasicBlock *parentBlock;      // 所属的 BasicBlock
-  std::unique_ptr<ControlFlowGraph> subGraph;  // 子图（用于 reduce 等有内部区域的操作）
-  MemorySSAInfo memorySSAInfo;  // Memory SSA信息（用于tensor/pointer分析）
+  size_t id;               // 唯一ID
+  Operation *operation;    // 对应的 MLIR Operation
+  BasicBlock *parentBlock; // 所属的 BasicBlock
+  std::unique_ptr<ControlFlowGraph>
+      subGraph;                // 子图（用于 reduce 等有内部区域的操作）
+  MemorySSAInfo memorySSAInfo; // Memory SSA信息（用于tensor/pointer分析）
 };
 
 // 基本块类型
 enum class BlockType {
-  NORMAL,         // 普通块（包含多个指令）
-  ENTRY,          // 函数入口块
-  EXIT,           // 函数出口块
-  IF_COND,        // if 条件判断块（包含单个 scf.if 指令）
-  FOR_COND,       // for 循环头块（包含单个 scf.for 指令）
-  WHILE_COND,     // while 条件块（包含单个 scf.while 指令）
-  COND_BR,        // cf.cond_br 条件分支块（包含单个 cf.cond_br 指令）
-  BR,             // cf.br 无条件跳转块（包含单个 cf.br 指令）
-  LOOP_BODY,      // 循环体块
-  LOOP_EXIT,      // 循环出口块
+  NORMAL,     // 普通块（包含多个指令）
+  ENTRY,      // 函数入口块
+  EXIT,       // 函数出口块
+  IF_COND,    // if 条件判断块（包含单个 scf.if 指令）
+  FOR_COND,   // for 循环头块（包含单个 scf.for 指令）
+  WHILE_COND, // while 条件块（包含单个 scf.while 指令）
+  COND_BR,    // cf.cond_br 条件分支块（包含单个 cf.cond_br 指令）
+  BR,         // cf.br 无条件跳转块（包含单个 cf.br 指令）
+  LOOP_BODY,  // 循环体块
+  LOOP_EXIT,  // 循环出口块
 };
 
 // 基本块节点
@@ -124,7 +125,9 @@ public:
   void addInstruction(std::unique_ptr<Instruction> inst);
   Instruction *getInstruction(size_t idx) const;
   size_t getNumInstructions() const { return instructions.size(); }
-  const SmallVector<std::unique_ptr<Instruction>> &getInstructions() const { return instructions; }
+  const SmallVector<std::unique_ptr<Instruction>> &getInstructions() const {
+    return instructions;
+  }
 
   // 检查最后一条指令是否为 ReturnOp
   bool endsWithReturnOp() const;
@@ -154,13 +157,14 @@ public:
   void exportToJSON(raw_ostream &os, unsigned indent = 0) const;
 
 private:
-  size_t id;                                          // 唯一ID
-  BlockType type;                                     // 块类型
-  BasicBlock *parentStructure;                        // 外层结构（loop/if）的 basic block
-  BasicBlock *exitBlock = nullptr;                    // 对应控制流结构的出口块（用于 IF_COND/FOR_COND/WHILE_COND）
-  SmallVector<std::unique_ptr<Instruction>> instructions;  // 指令列表
-  SmallVector<BasicBlock *> successors;               // 后继块指针列表
-  SmallVector<BasicBlock *> predecessors;             // 前驱块指针列表
+  size_t id;                   // 唯一ID
+  BlockType type;              // 块类型
+  BasicBlock *parentStructure; // 外层结构（loop/if）的 basic block
+  BasicBlock *exitBlock =
+      nullptr; // 对应控制流结构的出口块（用于 IF_COND/FOR_COND/WHILE_COND）
+  SmallVector<std::unique_ptr<Instruction>> instructions; // 指令列表
+  SmallVector<BasicBlock *> successors;                   // 后继块指针列表
+  SmallVector<BasicBlock *> predecessors;                 // 前驱块指针列表
 };
 
 // 控制流图
@@ -173,14 +177,17 @@ public:
   triton::FuncOp getFunction() const { return function; }
 
   // 基本块操作
-  BasicBlock *createBasicBlock(BlockType type, BasicBlock *parentStructure = nullptr);
+  BasicBlock *createBasicBlock(BlockType type,
+                               BasicBlock *parentStructure = nullptr);
 
   BasicBlock *getBasicBlock(size_t id) {
-    if (id < basicBlocks.size()) return basicBlocks[id].get();
+    if (id < basicBlocks.size())
+      return basicBlocks[id].get();
     return nullptr;
   }
   const BasicBlock *getBasicBlock(size_t id) const {
-    if (id < basicBlocks.size()) return basicBlocks[id].get();
+    if (id < basicBlocks.size())
+      return basicBlocks[id].get();
     return nullptr;
   }
 
@@ -221,7 +228,7 @@ public:
   // IF_COND/FOR_COND/WHILE_COND 块：递归访问每个 successor
   // 遇到 exitBlock 时停止
   using OperationVisitor = llvm::function_ref<void(Operation *)>;
-  void searchNormalBlock(BasicBlock* block, OperationVisitor callback) const;
+  void searchNormalBlock(BasicBlock *block, OperationVisitor callback) const;
   void searchCondBlock(BasicBlock *block, OperationVisitor callback) const;
   void searchBlock(BasicBlock *block, OperationVisitor callback) const;
 
@@ -242,14 +249,14 @@ public:
   void exportToJSON(raw_ostream &os) const;
 
 private:
-  triton::FuncOp function;                                      // 所属函数
-  SmallVector<std::unique_ptr<BasicBlock>> basicBlocks;         // 基本块节点
-  BasicBlock *entryBlock = nullptr;                             // 入口块
-  BasicBlock *exitBlock = nullptr;                              // 出口块
-  size_t nextBlockId = 0;                                       // 下一个块ID
+  triton::FuncOp function;                              // 所属函数
+  SmallVector<std::unique_ptr<BasicBlock>> basicBlocks; // 基本块节点
+  BasicBlock *entryBlock = nullptr;                     // 入口块
+  BasicBlock *exitBlock = nullptr;                      // 出口块
+  size_t nextBlockId = 0;                               // 下一个块ID
 
   // Operation 到 Instruction 的映射（支持快速查询）
-  std::unordered_map<Operation*, Instruction*> opToInstructionMap;
+  std::unordered_map<Operation *, Instruction *> opToInstructionMap;
 };
 
 } // namespace cfg

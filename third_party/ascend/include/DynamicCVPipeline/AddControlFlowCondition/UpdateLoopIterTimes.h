@@ -23,10 +23,10 @@
 #ifndef TRITON_ADAPTER_UPDATE_LOOP_ITER_TIMES_H
 #define TRITON_ADAPTER_UPDATE_LOOP_ITER_TIMES_H
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -35,11 +35,11 @@
 namespace mlir {
 namespace triton {
 
-  // Loop iteration times info
+// Loop iteration times info
 struct IterationTimesInfo {
-  int ifCount = 0;           // Number of if operations
-  int requiredBuffers = 1;   // Number of required buffers
-  int x = 1;                 // Number of producer buffers
+  int ifCount = 0;                       // Number of if operations
+  int requiredBuffers = 1;               // Number of required buffers
+  int x = 1;                             // Number of producer buffers
   SmallVector<scf::IfOp> ifOpsInThisFor; // If operations in this loop
 };
 
@@ -54,23 +54,22 @@ private:
   ControlFlowConditionInfo *info = nullptr;
 
   int GetMainLoopIdToLoopOpMap(ModuleOp module,
-                                DenseMap<int, SmallVector<Operation *>> &cmap,
-                                DenseMap<int, SmallVector<Operation *>> &vmap);
+                               DenseMap<int, SmallVector<Operation *>> &cmap,
+                               DenseMap<int, SmallVector<Operation *>> &vmap);
 
   int ComputeMainLoopTimes(DenseMap<int, SmallVector<Operation *>> &loopMap,
-                            DenseMap<Operation *, IterationTimesInfo> &infoMap);
+                           DenseMap<Operation *, IterationTimesInfo> &infoMap);
 
-  int UpdateForLoopIteration(DenseMap<int, SmallVector<Operation *>> &cmap,
-                              DenseMap<int, SmallVector<Operation *>> &vmap,
-                              DenseMap<Operation *, IterationTimesInfo> &infoMap);
+  int UpdateForLoopIteration(
+      DenseMap<int, SmallVector<Operation *>> &cmap,
+      DenseMap<int, SmallVector<Operation *>> &vmap,
+      DenseMap<Operation *, IterationTimesInfo> &infoMap);
 
-  int collectForOpsAndUpdateMax(DenseMap<int, SmallVector<Operation *>> &map,
-                                  int id,
-                                  SmallVector<Operation *> &allForOps,
-                                  int &maxIfCount,
-                                  int &maxRequiredBuffers,
-                                  int &maxX,
-                                  DenseMap<Operation *, IterationTimesInfo> &infoMap);
+  int collectForOpsAndUpdateMax(
+      DenseMap<int, SmallVector<Operation *>> &map, int id,
+      SmallVector<Operation *> &allForOps, int &maxIfCount,
+      int &maxRequiredBuffers, int &maxX,
+      DenseMap<Operation *, IterationTimesInfo> &infoMap);
 
   int replaceForOpCounterInIfOps();
 
@@ -83,15 +82,17 @@ private:
                                        IRMapping &mapper,
                                        SmallVector<scf::IfOp> &ifOpsInThisFor);
 
-  Value computeNewLoopUpperBound(OpBuilder &builder, Location loc, scf::ForOp forOp,
-                                int ifCount, int requiredBuffers, int x);
+  Value computeNewLoopUpperBound(OpBuilder &builder, Location loc,
+                                 scf::ForOp forOp, int ifCount,
+                                 int requiredBuffers, int x);
 
   scf::ForOp cloneForOpWithNewUpperBound(OpBuilder &builder, Location loc,
-                                          scf::ForOp oldForOp, Value newUpperBound,
-                                          IRMapping &mapper);
+                                         scf::ForOp oldForOp,
+                                         Value newUpperBound,
+                                         IRMapping &mapper);
 
   int updateCntArgsAfterClone(scf::ForOp oldForOp, IRMapping &mapper,
-                               SmallVector<scf::IfOp> &ifOpsInThisFor);
+                              SmallVector<scf::IfOp> &ifOpsInThisFor);
 };
 
 std::unique_ptr<OperationPass<ModuleOp>> createUpdateLoopIterTimesPass();

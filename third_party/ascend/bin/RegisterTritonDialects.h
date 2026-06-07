@@ -1,11 +1,11 @@
 #pragma once
+#include "ascend/include/AutoBlockify/Passes.h"
+#include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
+#include "ascend/include/TritonToAnnotation/Passes.h"
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToHIVM/Passes.h"
 #include "ascend/include/TritonToLLVM/Passes.h"
-#include "ascend/include/AutoBlockify/Passes.h"
 #include "incubated/Conversion/DiscreteMaskAccessConversion/Passes.h"
-#include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
-#include "ascend/include/TritonToAnnotation/Passes.h"
 #include "incubated/Conversion/TritonToLinalgIncubated/Passes.h"
 
 #include "ascend/include/TritonToGraph/Passes.h"

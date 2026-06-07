@@ -442,8 +442,8 @@ def SortOp : TT_Ascend_Op<"sort", [
 // Conv Op
 //
 def Conv1dOp : TT_Ascend_Op<"conv1d", [
-    Pure, 
-    DeclareOpInterfaceMethods<InferTypeOpInterface> 
+    Pure,
+    DeclareOpInterfaceMethods<InferTypeOpInterface>
 ]> {
     let summary = "1D convolution operation";
     let description = [{
@@ -463,7 +463,7 @@ def Conv1dOp : TT_Ascend_Op<"conv1d", [
     let results = (outs TT_Tensor:$result);
 
     let assemblyFormat = [{
-        `(` operands `)` 
+        `(` operands `)`
         attr-dict `:` functional-type(operands, $result)
     }];
 

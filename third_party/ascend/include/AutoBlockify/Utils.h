@@ -25,16 +25,15 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 using namespace mlir;
 using namespace triton;
 
 constexpr llvm::StringLiteral autoBlockifySizeAttr = "auto_blockify_size";
 constexpr llvm::StringLiteral logicalBlockIdAttr = "logical_block_id";
-constexpr llvm::StringLiteral autoBlockifyLoopAttr =
-    "auto_blockify_loop";
+constexpr llvm::StringLiteral autoBlockifyLoopAttr = "auto_blockify_loop";
 constexpr llvm::StringLiteral autoBlockifyRegionOpAttr =
     "auto_blockify_region_op";
 

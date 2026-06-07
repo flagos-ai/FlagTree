@@ -22,31 +22,31 @@
 
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition/CreateIfOps.h"
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition/Utils.h"
-#include "llvm/Support/Debug.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/IRMapping.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "bishengir/Dialect/Scope/IR/Scope.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
+#include "bishengir/Dialect/Scope/IR/Scope.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/IRMapping.h"
+#include "llvm/Support/Debug.h"
 
 static constexpr const char *DEBUG_TYPE = "CreateIfOps";
 #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
-#define LDBG(...) \
-LLVM_DEBUG({ \
-  DBGS(); \
-  llvm::outs() << __VA_ARGS__; \
-  llvm::outs() << "\n"; \
-})
+#define LDBG(...)                                                              \
+  LLVM_DEBUG({                                                                 \
+    DBGS();                                                                    \
+    llvm::outs() << __VA_ARGS__;                                               \
+    llvm::outs() << "\n";                                                      \
+  })
 
 using namespace llvm;
 using namespace mlir;
 using namespace triton;
 
 // Check if a value is used outside the given region ops
-static bool isUsedOutsideRegion(Value v, const llvm::DenseSet<Operation *> &regionOps)
-{
+static bool isUsedOutsideRegion(Value v,
+                                const llvm::DenseSet<Operation *> &regionOps) {
   for (OpOperand &use : v.getUses()) {
     if (!regionOps.contains(use.getOwner())) {
       return true;
@@ -57,8 +57,7 @@ static bool isUsedOutsideRegion(Value v, const llvm::DenseSet<Operation *> &regi
 }
 
 // Find the iteration argument in main loop that corresponds to the given value
-static Value findIterArgInMainLoop(Value v, mlir::Type t)
-{
+static Value findIterArgInMainLoop(Value v, mlir::Type t) {
   for (Operation *user : v.getUsers()) {
     auto yieldOp = dyn_cast<scf::YieldOp>(user);
     if (!yieldOp) {
@@ -84,9 +83,10 @@ static Value findIterArgInMainLoop(Value v, mlir::Type t)
   return nullptr;
 }
 
-// Replace uses of old values that are outside the ifOp with the new values from ifOp
-static LogicalResult replaceExternalIfOpUses(scf::IfOp ifOp, ArrayRef<Value> oldYieldValues)
-{
+// Replace uses of old values that are outside the ifOp with the new values from
+// ifOp
+static LogicalResult replaceExternalIfOpUses(scf::IfOp ifOp,
+                                             ArrayRef<Value> oldYieldValues) {
   for (size_t i = 0; i < oldYieldValues.size(); ++i) {
     Value oldVal = oldYieldValues[i];
 
@@ -96,13 +96,16 @@ static LogicalResult replaceExternalIfOpUses(scf::IfOp ifOp, ArrayRef<Value> old
     }
 
     if (i >= ifOp.getNumResults()) {
-      LDBG("[Error]: index " << i << " exceeds ifOp results count " << ifOp.getNumResults() << "\n");
+      LDBG("[Error]: index " << i << " exceeds ifOp results count "
+                             << ifOp.getNumResults() << "\n");
       return failure();
     }
 
     Value newVal = ifOp.getResult(i);
     if (oldVal.getType() != newVal.getType()) {
-      LDBG("[Error]: type mismatch at index " << i << ": " << oldVal.getType() << " vs " << newVal.getType() << "\n");
+      LDBG("[Error]: type mismatch at index " << i << ": " << oldVal.getType()
+                                              << " vs " << newVal.getType()
+                                              << "\n");
       return failure();
     }
 
@@ -117,7 +120,8 @@ static LogicalResult replaceExternalIfOpUses(scf::IfOp ifOp, ArrayRef<Value> old
       }
 
       // Skip uses after the ifOp in the same block
-      if (user->getBlock() == ifOp->getBlock() && !ifOp->isBeforeInBlock(user)) {
+      if (user->getBlock() == ifOp->getBlock() &&
+          !ifOp->isBeforeInBlock(user)) {
         continue;
       }
 
@@ -132,12 +136,13 @@ static LogicalResult replaceExternalIfOpUses(scf::IfOp ifOp, ArrayRef<Value> old
   return success();
 }
 
-// Compute yield values for each block: values that need to be yielded from the if
-LogicalResult CreateIfOpsPass::computeYieldValues(scf::ForOp forOp,
-                                                  const llvm::DenseMap<int, SmallVector<Operation *>> &blockOps,
-                                                  llvm::DenseMap<int, SmallVector<Value>> &thenYieldValues,
-                                                  llvm::DenseMap<int, SmallVector<Value>> &elseYieldValues)
-{
+// Compute yield values for each block: values that need to be yielded from the
+// if
+LogicalResult CreateIfOpsPass::computeYieldValues(
+    scf::ForOp forOp,
+    const llvm::DenseMap<int, SmallVector<Operation *>> &blockOps,
+    llvm::DenseMap<int, SmallVector<Value>> &thenYieldValues,
+    llvm::DenseMap<int, SmallVector<Value>> &elseYieldValues) {
   for (auto &p : blockOps) {
     int id = p.first;
     const SmallVector<Operation *> &ops = p.second;
@@ -179,8 +184,8 @@ LogicalResult CreateIfOpsPass::computeYieldValues(scf::ForOp forOp,
 }
 
 // Create result types from yield values
-static SmallVector<mlir::Type> getResultTypes(const SmallVector<Value> &values)
-{
+static SmallVector<mlir::Type>
+getResultTypes(const SmallVector<Value> &values) {
   SmallVector<mlir::Type> types;
 
   for (Value v : values) {
@@ -191,15 +196,15 @@ static SmallVector<mlir::Type> getResultTypes(const SmallVector<Value> &values)
 }
 
 // Create ifOp for a single block
-static scf::IfOp createIfOpForBlock(OpBuilder &builder, Location loc, int blockId,
+static scf::IfOp createIfOpForBlock(OpBuilder &builder, Location loc,
+                                    int blockId,
                                     const SmallVector<Value> &thenValues,
-                                    const SmallVector<Value> &elseValues)
-{
+                                    const SmallVector<Value> &elseValues) {
   bool needsYield = !thenValues.empty();
   // Check size consistency
   if (needsYield && thenValues.size() != elseValues.size()) {
-    LDBG("[Error]: then/else yield count mismatch: " << thenValues.size()
-          << " vs " << elseValues.size() << "\n");
+    LDBG("[Error]: then/else yield count mismatch: "
+         << thenValues.size() << " vs " << elseValues.size() << "\n");
     return scf::IfOp();
   }
 
@@ -207,8 +212,9 @@ static scf::IfOp createIfOpForBlock(OpBuilder &builder, Location loc, int blockI
   if (needsYield) {
     for (size_t i = 0; i < thenValues.size(); ++i) {
       if (thenValues[i].getType() != elseValues[i].getType()) {
-        LDBG("[Error]: then/else yield type mismatch at index " << i << ": "
-              << thenValues[i].getType() << " vs " << elseValues[i].getType() << "\n");
+        LDBG("[Error]: then/else yield type mismatch at index "
+             << i << ": " << thenValues[i].getType() << " vs "
+             << elseValues[i].getType() << "\n");
         return scf::IfOp();
       }
     }
@@ -216,7 +222,8 @@ static scf::IfOp createIfOpForBlock(OpBuilder &builder, Location loc, int blockI
 
   SmallVector<mlir::Type> resultTypes = getResultTypes(thenValues);
 
-  Value trueVal = builder.create<arith::ConstantOp>(loc, builder.getI1Type(), builder.getBoolAttr(true));
+  Value trueVal = builder.create<arith::ConstantOp>(loc, builder.getI1Type(),
+                                                    builder.getBoolAttr(true));
 
   scf::IfOp ifOp;
   if (needsYield) {
@@ -231,10 +238,11 @@ static scf::IfOp createIfOpForBlock(OpBuilder &builder, Location loc, int blockI
 }
 
 // Move ops to then branch and create yield
-static LogicalResult moveOpsToThenBranch(scf::IfOp ifOp, SmallVector<Operation *> &ops,
+static LogicalResult moveOpsToThenBranch(scf::IfOp ifOp,
+                                         SmallVector<Operation *> &ops,
                                          const SmallVector<Value> &thenValues,
-                                         const SmallVector<Value> &elseValues, Location loc)
-{
+                                         const SmallVector<Value> &elseValues,
+                                         Location loc) {
   if (ops.empty() && !thenValues.empty()) {
     LDBG("[Error]: moving empty ops but thenValues not empty\n");
     return failure();
@@ -259,11 +267,11 @@ static LogicalResult moveOpsToThenBranch(scf::IfOp ifOp, SmallVector<Operation *
 }
 
 // Create if ops (scf.if %true) for each block_id in the main loop
-LogicalResult CreateIfOpsPass::createIfInMainLoop(scf::ForOp forOp,
-                                                  const llvm::DenseMap<int, SmallVector<Operation *>> &blockOps,
-                                                  const llvm::DenseMap<int, SmallVector<Value>> &thenYieldValues,
-                                                  const llvm::DenseMap<int, SmallVector<Value>> &elseYieldValues)
-{
+LogicalResult CreateIfOpsPass::createIfInMainLoop(
+    scf::ForOp forOp,
+    const llvm::DenseMap<int, SmallVector<Operation *>> &blockOps,
+    const llvm::DenseMap<int, SmallVector<Value>> &thenYieldValues,
+    const llvm::DenseMap<int, SmallVector<Value>> &elseYieldValues) {
   SmallVector<int> ids = getBlockIdsInOrder(forOp);
 
   for (int id : ids) {
@@ -275,9 +283,9 @@ LogicalResult CreateIfOpsPass::createIfInMainLoop(scf::ForOp forOp,
     OpBuilder builder(ops.front());
     Location loc = ops.front()->getLoc();
 
-    scf::IfOp ifOp = createIfOpForBlock(builder, loc, id,
-                                        thenYieldValues.lookup(id),
-                                        elseYieldValues.lookup(id));
+    scf::IfOp ifOp =
+        createIfOpForBlock(builder, loc, id, thenYieldValues.lookup(id),
+                           elseYieldValues.lookup(id));
     if (!ifOp) {
       return failure();
     }
@@ -297,8 +305,7 @@ LogicalResult CreateIfOpsPass::createIfInMainLoop(scf::ForOp forOp,
   return success();
 }
 
-void CreateIfOpsPass::runOnOperation()
-{
+void CreateIfOpsPass::runOnOperation() {
   ModuleOp module = getOperation();
 
   LDBG("before createIfOps:\n" << module << "\n");
@@ -328,12 +335,14 @@ void CreateIfOpsPass::runOnOperation()
     llvm::DenseMap<int, SmallVector<Value>> thenYieldValues;
     llvm::DenseMap<int, SmallVector<Value>> elseYieldValues;
 
-    if (failed(computeYieldValues(forOp, blockOps, thenYieldValues, elseYieldValues))) {
+    if (failed(computeYieldValues(forOp, blockOps, thenYieldValues,
+                                  elseYieldValues))) {
       signalPassFailure();
       return WalkResult::interrupt();
     }
 
-    if (failed(createIfInMainLoop(forOp, blockOps, thenYieldValues, elseYieldValues))) {
+    if (failed(createIfInMainLoop(forOp, blockOps, thenYieldValues,
+                                  elseYieldValues))) {
       signalPassFailure();
       return WalkResult::interrupt();
     }
@@ -346,8 +355,7 @@ void CreateIfOpsPass::runOnOperation()
 namespace mlir {
 namespace triton {
 
-std::unique_ptr<OperationPass<ModuleOp>> createCreateIfOpsPass()
-{
+std::unique_ptr<OperationPass<ModuleOp>> createCreateIfOpsPass() {
   return std::make_unique<CreateIfOpsPass>();
 }
 

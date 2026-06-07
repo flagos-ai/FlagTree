@@ -24,8 +24,8 @@
 #include "TritonToGraph/ControlFlowGraphBuilder.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "icfg"
 
@@ -47,7 +47,8 @@ void InterProceduralCFG::build() {
 
   // 遍历模块中的所有函数
   for (triton::FuncOp func : module.getOps<triton::FuncOp>()) {
-    LLVM_DEBUG(llvm::dbgs() << "Building CFG for function: " << func.getName() << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "Building CFG for function: " << func.getName() << "\n");
 
     // 为每个函数构建CFG
     auto cfg = builder.build(func);
@@ -63,7 +64,8 @@ ControlFlowGraph *InterProceduralCFG::getFunctionCFG(triton::FuncOp func) {
   return nullptr;
 }
 
-const ControlFlowGraph *InterProceduralCFG::getFunctionCFG(triton::FuncOp func) const {
+const ControlFlowGraph *
+InterProceduralCFG::getFunctionCFG(triton::FuncOp func) const {
   auto it = functionCFGs.find(func);
   if (it != functionCFGs.end()) {
     return it->second.get();
@@ -94,7 +96,8 @@ void InterProceduralCFG::connectCallGraph() {
       StringRef calleeName;
       if (auto symbolRef = callable.dyn_cast<SymbolRefAttr>()) {
         calleeName = symbolRef.getRootReference();
-      } else if (auto flatSymbolRef = op->getAttrOfType<FlatSymbolRefAttr>("callee")) {
+      } else if (auto flatSymbolRef =
+                     op->getAttrOfType<FlatSymbolRefAttr>("callee")) {
         calleeName = flatSymbolRef.getValue();
       }
 
@@ -126,7 +129,8 @@ void InterProceduralCFG::connectCallGraph() {
                     break;
                   }
                 }
-                if (callBlock) break;
+                if (callBlock)
+                  break;
               }
 
               if (callBlock) {
@@ -144,8 +148,9 @@ void InterProceduralCFG::connectCallGraph() {
                 callGraph[callerFunc].push_back(calleeFunc);
                 reverseCallGraph[calleeFunc].push_back(callerFunc);
 
-                LLVM_DEBUG(llvm::dbgs() << "Found call: " << callerFunc.getName()
-                                        << " -> " << calleeFunc.getName() << "\n");
+                LLVM_DEBUG(llvm::dbgs()
+                           << "Found call: " << callerFunc.getName() << " -> "
+                           << calleeFunc.getName() << "\n");
               }
             }
           }
@@ -155,7 +160,8 @@ void InterProceduralCFG::connectCallGraph() {
   });
 }
 
-SmallVector<triton::FuncOp> InterProceduralCFG::getCallees(triton::FuncOp caller) const {
+SmallVector<triton::FuncOp>
+InterProceduralCFG::getCallees(triton::FuncOp caller) const {
   auto it = callGraph.find(caller);
   if (it != callGraph.end()) {
     return it->second;
@@ -163,7 +169,8 @@ SmallVector<triton::FuncOp> InterProceduralCFG::getCallees(triton::FuncOp caller
   return SmallVector<triton::FuncOp>();
 }
 
-SmallVector<triton::FuncOp> InterProceduralCFG::getCallers(triton::FuncOp callee) const {
+SmallVector<triton::FuncOp>
+InterProceduralCFG::getCallers(triton::FuncOp callee) const {
   auto it = reverseCallGraph.find(callee);
   if (it != reverseCallGraph.end()) {
     return it->second;
@@ -195,7 +202,8 @@ void InterProceduralCFG::computeReachability() {
   }
 }
 
-bool InterProceduralCFG::isReachable(triton::FuncOp from, triton::FuncOp to) const {
+bool InterProceduralCFG::isReachable(triton::FuncOp from,
+                                     triton::FuncOp to) const {
   auto it = reachability.find(from);
   if (it != reachability.end()) {
     return it->second.contains(to);
@@ -217,7 +225,7 @@ void InterProceduralCFG::dumpToDot(const std::string &filename) const {
 
   // 输出所有函数节点
   for (const auto &[func, cfg] : functionCFGs) {
-    StringRef name = const_cast<triton::FuncOp&>(func).getName();
+    StringRef name = const_cast<triton::FuncOp &>(func).getName();
     file << "  \"" << name << "\" [label=\"" << name << "\"];\n";
   }
 
@@ -225,9 +233,9 @@ void InterProceduralCFG::dumpToDot(const std::string &filename) const {
 
   // 输出调用边
   for (const auto &[caller, callees] : callGraph) {
-    StringRef callerName = const_cast<triton::FuncOp&>(caller).getName();
+    StringRef callerName = const_cast<triton::FuncOp &>(caller).getName();
     for (auto callee : callees) {
-      StringRef calleeName = const_cast<triton::FuncOp&>(callee).getName();
+      StringRef calleeName = const_cast<triton::FuncOp &>(callee).getName();
       file << "  \"" << callerName << "\" -> \"" << calleeName
            << "\" [label=\"call\"];\n";
     }
@@ -243,17 +251,18 @@ void InterProceduralCFG::print(raw_ostream &os) const {
 
   os << "\nCall Graph:\n";
   for (const auto &[caller, callees] : callGraph) {
-    StringRef callerName = const_cast<triton::FuncOp&>(caller).getName();
+    StringRef callerName = const_cast<triton::FuncOp &>(caller).getName();
     os << "  " << callerName << " -> ";
     for (auto callee : callees) {
-      StringRef calleeName = const_cast<triton::FuncOp&>(callee).getName();
+      StringRef calleeName = const_cast<triton::FuncOp &>(callee).getName();
       os << calleeName << " ";
     }
     os << "\n";
   }
 }
 
-llvm::Error InterProceduralCFG::exportToHTML(const std::string &filename) const {
+llvm::Error
+InterProceduralCFG::exportToHTML(const std::string &filename) const {
   std::error_code ec;
   llvm::raw_fd_ostream os(filename, ec, llvm::sys::fs::OF_Text);
 
@@ -304,17 +313,18 @@ llvm::Error InterProceduralCFG::exportToHTML(const std::string &filename) const 
 
   // 添加函数节点
   for (const auto &[func, cfg] : functionCFGs) {
-    StringRef name = const_cast<triton::FuncOp&>(func).getName();
+    StringRef name = const_cast<triton::FuncOp &>(func).getName();
     os << "    nodes.add({id: '" << name << "', label: '" << name << "', ";
     os << "color: {background: '#90EE90', border: '#666'}});\n";
   }
 
   // 添加调用边
   for (const auto &[caller, callees] : callGraph) {
-    StringRef callerName = const_cast<triton::FuncOp&>(caller).getName();
+    StringRef callerName = const_cast<triton::FuncOp &>(caller).getName();
     for (auto callee : callees) {
-      StringRef calleeName = const_cast<triton::FuncOp&>(callee).getName();
-      os << "    edges.add({from: '" << callerName << "', to: '" << calleeName << "', ";
+      StringRef calleeName = const_cast<triton::FuncOp &>(callee).getName();
+      os << "    edges.add({from: '" << callerName << "', to: '" << calleeName
+         << "', ";
       os << "arrows: 'to', color: {color: '#666'}});\n";
     }
   }

@@ -59,7 +59,8 @@ public:
                                 PatternRewriter &rewriter) const override;
 
 private:
-  void handleBlockifyLoop(scf::ForOp blockifyLoop, Operation *op, PatternRewriter &rewriter) const;
+  void handleBlockifyLoop(scf::ForOp blockifyLoop, Operation *op,
+                          PatternRewriter &rewriter) const;
   void rewriteSplat(UnrealizedConversionCastOp op, triton::SplatOp splatOp,
                     PatternRewriter &rewriter) const;
   void rewriteExpandDims(UnrealizedConversionCastOp op,
@@ -88,8 +89,8 @@ private:
                     PatternRewriter &rewriter) const;
   void rewriteLoop(UnrealizedConversionCastOp op, LoopLikeOpInterface loopOp,
                    PatternRewriter &rewriter) const;
-  void rewriteIf(UnrealizedConversionCastOp &op, scf::IfOp ifOp, ArrayRef<int64_t> indices,
-                 PatternRewriter &rewriter) const;
+  void rewriteIf(UnrealizedConversionCastOp &op, scf::IfOp ifOp,
+                 ArrayRef<int64_t> indices, PatternRewriter &rewriter) const;
   void rewriteYield(UnrealizedConversionCastOp &op, scf::YieldOp yieldOp,
                     PatternRewriter &rewriter) const;
   void rewriteCondition(UnrealizedConversionCastOp op,

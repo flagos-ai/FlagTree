@@ -23,13 +23,13 @@
 #ifndef TRITON_ADAPTER_DYNAMIC_CV_PIPELINE_ADD_CONTROLFLOW_CONDITION_PASS_H
 #define TRITON_ADAPTER_DYNAMIC_CV_PIPELINE_ADD_CONTROLFLOW_CONDITION_PASS_H
 
-#include "llvm/ADT/SmallVector.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
 namespace triton {
@@ -40,7 +40,8 @@ struct ControlFlowConditionInfo {
   llvm::DenseMap<scf::ForOp, SmallVector<int>> innerDepConds;
 
   llvm::DenseMap<Value, SmallVector<Value>> crossCoreDependentMap;
-  llvm::DenseMap<scf::ForOp, llvm::DenseMap<Value, SmallVector<Value>>> intraCoreDependentMap;
+  llvm::DenseMap<scf::ForOp, llvm::DenseMap<Value, SmallVector<Value>>>
+      intraCoreDependentMap;
 
   // unique counter value for each ifblock
   llvm::DenseMap<scf::IfOp, Value> cntArgs;
@@ -53,12 +54,13 @@ public:
 
   void runOnOperation() override;
 
-  void getDependentDialects(DialectRegistry &registry) const override
-  {
+  void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<LLVM::LLVMDialect>();
   }
 
-  llvm::StringRef getArgument() const override { return "add-control-flow-condition"; }
+  llvm::StringRef getArgument() const override {
+    return "add-control-flow-condition";
+  }
 };
 
 std::unique_ptr<OperationPass<ModuleOp>> createAddControlFlowConditionPass();

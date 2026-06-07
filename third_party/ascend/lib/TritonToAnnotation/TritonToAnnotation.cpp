@@ -22,11 +22,11 @@
 
 #include "TritonToAnnotation/Passes.h"
 
+#include "Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "bishengir/Dialect/Annotation/IR/Annotation.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "Dialect/TritonAscend/IR/TritonAscendDialect.h"
 namespace mlir {
 namespace triton {
 #define GEN_PASS_DEF_TRITONTOANNOTATION

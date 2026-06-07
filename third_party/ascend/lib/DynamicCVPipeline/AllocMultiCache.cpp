@@ -29,44 +29,42 @@
 
 static constexpr const char *DEBUG_TYPE = "AllocMultiCache";
 #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
-#define LDBG(...) \
-LLVM_DEBUG({ \
-  DBGS(); \
-  llvm::outs() << __VA_ARGS__; \
-  llvm::outs() << "\n"; \
-})
+#define LDBG(...)                                                              \
+  LLVM_DEBUG({                                                                 \
+    DBGS();                                                                    \
+    llvm::outs() << __VA_ARGS__;                                               \
+    llvm::outs() << "\n";                                                      \
+  })
 
 using namespace mlir;
 using namespace triton;
 
 // Run the pass
-void AllocMultiCachePass::runOnOperation()
-{
-    ModuleOp module = getOperation();
-    OpPassManager pm(module.getOperationName());
-    LDBG("Enter pass.");
-    LDBG("before innerscope:\n" << module << "\n");
-    // Step 1:Inner multibuffer
-    pm.addPass(createAddMultiBufferInnerScopePass());
+void AllocMultiCachePass::runOnOperation() {
+  ModuleOp module = getOperation();
+  OpPassManager pm(module.getOperationName());
+  LDBG("Enter pass.");
+  LDBG("before innerscope:\n" << module << "\n");
+  // Step 1:Inner multibuffer
+  pm.addPass(createAddMultiBufferInnerScopePass());
 
-    // Step 2: Outer multibuffer
-    pm.addPass(createAddMultiBufferOuterScopePass());
+  // Step 2: Outer multibuffer
+  pm.addPass(createAddMultiBufferOuterScopePass());
 
-    if (failed(runPipeline(pm, module))) {
-        module->emitError() << "[" << DEBUG_TYPE << "] Pass failed!";
-        signalPassFailure();
-    }
-    
-    LDBG("Process successfully");
-    LDBG(llvm::StringRef("after innerscope:\n") << module << "\n");
+  if (failed(runPipeline(pm, module))) {
+    module->emitError() << "[" << DEBUG_TYPE << "] Pass failed!";
+    signalPassFailure();
+  }
+
+  LDBG("Process successfully");
+  LDBG(llvm::StringRef("after innerscope:\n") << module << "\n");
 }
 
 namespace mlir {
 namespace triton {
 
-std::unique_ptr<OperationPass<ModuleOp>> createAllocMultiCachePass()
-{
-    return std::make_unique<AllocMultiCachePass>();
+std::unique_ptr<OperationPass<ModuleOp>> createAllocMultiCachePass() {
+  return std::make_unique<AllocMultiCachePass>();
 }
 
 } // namespace triton

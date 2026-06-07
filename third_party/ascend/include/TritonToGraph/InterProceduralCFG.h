@@ -56,11 +56,11 @@ public:
 
   // 在调用点连接调用者和被调用者的CFG
   struct CallSite {
-    Operation *callOp;          // 调用操作
-    triton::FuncOp caller;      // 调用者函数
-    triton::FuncOp callee;      // 被调用者函数
-    BasicBlock *callBlock;      // 调用点的基本块
-    Instruction *callInst;      // 调用指令
+    Operation *callOp;     // 调用操作
+    triton::FuncOp caller; // 调用者函数
+    triton::FuncOp callee; // 被调用者函数
+    BasicBlock *callBlock; // 调用点的基本块
+    Instruction *callInst; // 调用指令
   };
 
   // 获取所有调用点

@@ -12,7 +12,7 @@ def AutoBlockify : Pass<"auto-blockify", "mlir::ModuleOp"> {
         "mlir::triton::TritonDialect"
     ];
     let options = [
-        Option<"autoBlockifySize", "auto-blockify-size", "int", "1", 
+        Option<"autoBlockifySize", "auto-blockify-size", "int", "1",
            "Apply auto blockify v2 when TRITON_ALL_BLOCKS_PARALLEL is 1."
            "Expand highest dimension with blockify size">
     ];

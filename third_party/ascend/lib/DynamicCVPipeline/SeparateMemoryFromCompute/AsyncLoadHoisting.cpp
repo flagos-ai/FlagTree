@@ -24,14 +24,14 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Block.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/Block.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
@@ -41,20 +41,21 @@
 using namespace mlir;
 using namespace triton;
 
-
 namespace mlir {
 namespace triton {
 
 // Check if op is a mask processing operation (broadcast, cmpf, select, etc.)
 // Mask values are not directly fed into Cube
-static bool isMaskProcessingOp(Operation* op)
-{
-  return mlir::isa<arith::CmpFOp, arith::SelectOp, arith::MaximumFOp, arith::MinimumFOp>(op);
+static bool isMaskProcessingOp(Operation *op) {
+  return mlir::isa<arith::CmpFOp, arith::SelectOp, arith::MaximumFOp,
+                   arith::MinimumFOp>(op);
 }
 
-// Recursively check if all downstream users of op are mask processing operations
-static bool isOnlyUsedByMaskProcessingOpsRecursively(Operation* op, llvm::DenseSet<Operation*>& visited)
-{
+// Recursively check if all downstream users of op are mask processing
+// operations
+static bool
+isOnlyUsedByMaskProcessingOpsRecursively(Operation *op,
+                                         llvm::DenseSet<Operation *> &visited) {
   if (visited.count(op)) {
     return true; // Already visited
   }
@@ -66,9 +67,10 @@ static bool isOnlyUsedByMaskProcessingOpsRecursively(Operation* op, llvm::DenseS
 
   bool hasAnyUsers = false;
   for (auto result : op->getResults()) {
-    for (auto* user : result.getUsers()) {
+    for (auto *user : result.getUsers()) {
       hasAnyUsers = true;
-      if (!isMaskProcessingOp(user) && !isOnlyUsedByMaskProcessingOpsRecursively(user, visited)) {
+      if (!isMaskProcessingOp(user) &&
+          !isOnlyUsedByMaskProcessingOpsRecursively(user, visited)) {
         return false;
       }
     }
@@ -80,14 +82,12 @@ static bool isOnlyUsedByMaskProcessingOpsRecursively(Operation* op, llvm::DenseS
 }
 
 // Check if all downstream users of op are mask processing operations
-static bool isOnlyUsedByMaskProcessingOps(Operation* op)
-{
-  llvm::DenseSet<Operation*> visited;
+static bool isOnlyUsedByMaskProcessingOps(Operation *op) {
+  llvm::DenseSet<Operation *> visited;
   return isOnlyUsedByMaskProcessingOpsRecursively(op, visited);
 }
 
-static bool isLoadOp(Operation* op)
-{
+static bool isLoadOp(Operation *op) {
   auto effectInterface = dyn_cast<MemoryEffectOpInterface>(op);
   if (!effectInterface) {
     return false;
@@ -102,7 +102,7 @@ static bool isLoadOp(Operation* op)
   if (mlir::isa<memref::LoadOp>(op)) {
     bool allScalarIndices = true;
     for (size_t i = 1; i < op->getNumOperands(); ++i) {
-      auto* defOp = op->getOperand(i).getDefiningOp();
+      auto *defOp = op->getOperand(i).getDefiningOp();
       if (!defOp || !llvm::isa<arith::ConstantOp>(defOp)) {
         allScalarIndices = false;
         break;
@@ -121,26 +121,33 @@ static bool isLoadOp(Operation* op)
 }
 
 // Check if a Value's computation chain is linear and predictable.
-// Returns false if the chain contains remsi (modulo), load (indirect addressing),
-// or complex loops.
-static bool isLinearAndPredictable(mlir::Value value, llvm::DenseSet<mlir::Value>& visited)
-{
-  if (value.getDefiningOp<mlir::arith::ConstantOp>()) return true;
-  if (mlir::isa<mlir::BlockArgument>(value)) return true;
-  if (!visited.insert(value).second) return true;
+// Returns false if the chain contains remsi (modulo), load (indirect
+// addressing), or complex loops.
+static bool isLinearAndPredictable(mlir::Value value,
+                                   llvm::DenseSet<mlir::Value> &visited) {
+  if (value.getDefiningOp<mlir::arith::ConstantOp>())
+    return true;
+  if (mlir::isa<mlir::BlockArgument>(value))
+    return true;
+  if (!visited.insert(value).second)
+    return true;
 
-  mlir::Operation* defOp = value.getDefiningOp();
-  if (!defOp) return true;
+  mlir::Operation *defOp = value.getDefiningOp();
+  if (!defOp)
+    return true;
 
-  // Block nonlinear ops: memref.load (indirect addressing), scf.while/for (complex control flow)
-  if (mlir::isa<mlir::memref::LoadOp, mlir::scf::WhileOp, mlir::scf::ForOp>(defOp)) {
+  // Block nonlinear ops: memref.load (indirect addressing), scf.while/for
+  // (complex control flow)
+  if (mlir::isa<mlir::memref::LoadOp, mlir::scf::WhileOp, mlir::scf::ForOp>(
+          defOp)) {
     return false;
   }
 
   // Recursively check operands
   for (mlir::Value operand : defOp->getOperands()) {
-    mlir::Operation* operandDefOp = operand.getDefiningOp();
-    if (!operandDefOp || operandDefOp->getParentRegion() != defOp->getParentRegion()) {
+    mlir::Operation *operandDefOp = operand.getDefiningOp();
+    if (!operandDefOp ||
+        operandDefOp->getParentRegion() != defOp->getParentRegion()) {
       return true; // Cross-region boundary, treat as linear
     }
     if (!isLinearAndPredictable(operand, visited)) {
@@ -152,11 +159,12 @@ static bool isLinearAndPredictable(mlir::Value value, llvm::DenseSet<mlir::Value
 }
 
 // Check if all reinterpret_cast offsets in chain are linearly predictable
-static bool filterNonLinearReinterpretCast(const std::vector<mlir::Operation*>& chain)
-{
-  for (mlir::Operation* op : chain) {
+static bool
+filterNonLinearReinterpretCast(const std::vector<mlir::Operation *> &chain) {
+  for (mlir::Operation *op : chain) {
     auto castOp = llvm::dyn_cast<mlir::memref::ReinterpretCastOp>(op);
-    if (!castOp) continue;
+    if (!castOp)
+      continue;
 
     llvm::DenseSet<mlir::Value> visited;
 
@@ -170,29 +178,31 @@ static bool filterNonLinearReinterpretCast(const std::vector<mlir::Operation*>& 
 }
 
 // Get ssbuffer.block_id attribute value, returns -1 if not present
-static int64_t getBlockId(Operation* op)
-{
+static int64_t getBlockId(Operation *op) {
   if (auto blockIdAttr = op->getAttrOfType<IntegerAttr>("ssbuffer.block_id")) {
     return blockIdAttr.getInt();
   }
   return -1;
 }
 
-static void collectAddressGenerationOps(Operation* op, int64_t expectedBlockId, llvm::DenseSet<Operation*>& visited, std::vector<Operation*>& chain)
-{
+static void collectAddressGenerationOps(Operation *op, int64_t expectedBlockId,
+                                        llvm::DenseSet<Operation *> &visited,
+                                        std::vector<Operation *> &chain) {
   for (auto operand : op->getOperands()) {
-    auto* defOp = operand.getDefiningOp();
+    auto *defOp = operand.getDefiningOp();
 
     if (!defOp || visited.count(defOp) || llvm::isa<arith::ConstantOp>(defOp)) {
       continue;
     }
 
-    if (isLoadOp(defOp)) continue;
+    if (isLoadOp(defOp))
+      continue;
 
     if (mlir::isa<MemRefType>(operand.getType())) {
-      for (auto* user : operand.getUsers()) {
+      for (auto *user : operand.getUsers()) {
         if (auto copyOp = llvm::dyn_cast<memref::CopyOp>(user);
-            copyOp && copyOp.getTarget() == operand && visited.insert(copyOp).second) {
+            copyOp && copyOp.getTarget() == operand &&
+            visited.insert(copyOp).second) {
           chain.push_back(copyOp);
           collectAddressGenerationOps(copyOp, expectedBlockId, visited, chain);
           continue;
@@ -200,11 +210,12 @@ static void collectAddressGenerationOps(Operation* op, int64_t expectedBlockId, 
         if (mlir::isa<memref::SubViewOp>(user) && visited.insert(user).second) {
           chain.push_back(user);
           for (auto result : user->getResults()) {
-            for (auto* subviewUser : result.getUsers()) {
+            for (auto *subviewUser : result.getUsers()) {
               if (auto copyOp = llvm::dyn_cast<memref::CopyOp>(subviewUser);
                   visited.insert(copyOp).second) {
                 chain.push_back(copyOp);
-                collectAddressGenerationOps(copyOp, expectedBlockId, visited, chain);
+                collectAddressGenerationOps(copyOp, expectedBlockId, visited,
+                                            chain);
               }
             }
           }
@@ -220,12 +231,12 @@ static void collectAddressGenerationOps(Operation* op, int64_t expectedBlockId, 
   }
 }
 // Returns full chain and filtered chain (only ops with same block_id)
-static std::pair<std::vector<Operation*>, std::vector<Operation*>> getAddressGenerationChainWithFilter(Operation* loadOp)
-{
-  std::vector<Operation*> chain;
+static std::pair<std::vector<Operation *>, std::vector<Operation *>>
+getAddressGenerationChainWithFilter(Operation *loadOp) {
+  std::vector<Operation *> chain;
   chain.push_back(loadOp);
 
-  llvm::DenseSet<Operation*> visitedOp;
+  llvm::DenseSet<Operation *> visitedOp;
   visitedOp.insert(loadOp);
 
   int64_t expectedBlockId = getBlockId(loadOp);
@@ -233,21 +244,24 @@ static std::pair<std::vector<Operation*>, std::vector<Operation*>> getAddressGen
   collectAddressGenerationOps(loadOp, expectedBlockId, visitedOp, chain);
 
   if (chain.size() > 1) {
-    auto* block = loadOp->getBlock();
+    auto *block = loadOp->getBlock();
     auto sortStartIter = chain.begin() + 1;
-    std::stable_sort(sortStartIter, chain.end(), [block](Operation* a, Operation* b) {
-      for (auto& op : *block) {
-        if (&op == a) return true;
-        if (&op == b) return false;
-      }
-      return false;
-    });
+    std::stable_sort(sortStartIter, chain.end(),
+                     [block](Operation *a, Operation *b) {
+                       for (auto &op : *block) {
+                         if (&op == a)
+                           return true;
+                         if (&op == b)
+                           return false;
+                       }
+                       return false;
+                     });
     auto loadOpIter = chain.begin();
     std::rotate(loadOpIter, loadOpIter + 1, chain.end());
   }
 
-  std::vector<Operation*> filteredChain;
-  for (Operation* op : chain) {
+  std::vector<Operation *> filteredChain;
+  for (Operation *op : chain) {
     if (getBlockId(op) == expectedBlockId) {
       filteredChain.push_back(op);
     }
@@ -257,11 +271,10 @@ static std::pair<std::vector<Operation*>, std::vector<Operation*>> getAddressGen
 }
 
 // Check if chain contains any block argument
-static bool chainContainsBlockArg(Operation* loadOp)
-{
+static bool chainContainsBlockArg(Operation *loadOp) {
   auto [fullChain, filteredChain] = getAddressGenerationChainWithFilter(loadOp);
 
-  for (Operation* op : fullChain) {
+  for (Operation *op : fullChain) {
     for (auto operand : op->getOperands()) {
       if (!operand.getDefiningOp()) {
         return true;
@@ -271,36 +284,36 @@ static bool chainContainsBlockArg(Operation* loadOp)
   return false;
 }
 
-
 // Process all load ops with the same block_id
-static void scanAndHoistBlock(llvm::SmallVector<Operation*> &cache)
-{
-    for (Operation* opPtr : cache) {
-      bool isLoad = isLoadOp(opPtr);
-      bool hasBlockArg = chainContainsBlockArg(opPtr);
-      if (isLoad) {
-        auto [fullChain, filteredChain] = getAddressGenerationChainWithFilter(opPtr);
-        (void)fullChain;
-        bool passNonLinear = filterNonLinearReinterpretCast(filteredChain);
-        if (passNonLinear && hasBlockArg) {
-          opPtr->setAttr("gm_load_bufferable", UnitAttr::get(opPtr->getContext()));
-        }
+static void scanAndHoistBlock(llvm::SmallVector<Operation *> &cache) {
+  for (Operation *opPtr : cache) {
+    bool isLoad = isLoadOp(opPtr);
+    bool hasBlockArg = chainContainsBlockArg(opPtr);
+    if (isLoad) {
+      auto [fullChain, filteredChain] =
+          getAddressGenerationChainWithFilter(opPtr);
+      (void)fullChain;
+      bool passNonLinear = filterNonLinearReinterpretCast(filteredChain);
+      if (passNonLinear && hasBlockArg) {
+        opPtr->setAttr("gm_load_bufferable",
+                       UnitAttr::get(opPtr->getContext()));
       }
     }
+  }
 }
 
 // Traverse all ops in region, grouped by ssbuffer.block_id
-static void asyncLoadHoistingImpl(Region& region)
-{
-  llvm::SmallVector<Operation*> cache;
+static void asyncLoadHoistingImpl(Region &region) {
+  llvm::SmallVector<Operation *> cache;
 
-  for (Block& block : llvm::make_early_inc_range(region)) {
-    for (Operation& op : llvm::make_early_inc_range(block)) {
+  for (Block &block : llvm::make_early_inc_range(region)) {
+    for (Operation &op : llvm::make_early_inc_range(block)) {
       int64_t opBlockId = getBlockId(&op);
 
       if (op.getNumRegions() > 0) {
-        for (Region& childRegion : op.getRegions()) {
-          if (childRegion.empty()) continue;
+        for (Region &childRegion : op.getRegions()) {
+          if (childRegion.empty())
+            continue;
           asyncLoadHoistingImpl(childRegion);
         }
         continue;
@@ -331,29 +344,30 @@ static void asyncLoadHoistingImpl(Region& region)
 } // namespace triton
 } // namespace mlir
 
-void AsyncLoadHoistingPass::runOnOperation()
-{
+void AsyncLoadHoistingPass::runOnOperation() {
   auto module = getOperation();
 
   LLVM_DEBUG({
-    llvm::dbgs() << "[async-load-hoisting] Before AsyncLoadHoistingPass:\n" << module << "\n";
+    llvm::dbgs() << "[async-load-hoisting] Before AsyncLoadHoistingPass:\n"
+                 << module << "\n";
   });
 
-  module->walk([&](func::FuncOp func) {
-    asyncLoadHoistingImpl(func.getBody());
-  });
+  module->walk(
+      [&](func::FuncOp func) { asyncLoadHoistingImpl(func.getBody()); });
 
   LLVM_DEBUG({
-    llvm::dbgs() << "[async-load-hoisting] After AsyncLoadHoistingPass:\n" << module << "\n";
+    llvm::dbgs() << "[async-load-hoisting] After AsyncLoadHoistingPass:\n"
+                 << module << "\n";
   });
 }
 
-std::unique_ptr<OperationPass<ModuleOp>> mlir::triton::createAsyncLoadHoistingPass()
-{
+std::unique_ptr<OperationPass<ModuleOp>>
+mlir::triton::createAsyncLoadHoistingPass() {
   return std::make_unique<AsyncLoadHoistingPass>();
 }
 
-void mlir::triton::registerAsyncLoadHoistingPasses()
-{
-  registerPass([]() -> std::unique_ptr<mlir::Pass> { return createAsyncLoadHoistingPass(); });
+void mlir::triton::registerAsyncLoadHoistingPasses() {
+  registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createAsyncLoadHoistingPass();
+  });
 }

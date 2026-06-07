@@ -23,14 +23,14 @@
 #ifndef TRITON_TO_CFG_ALIAS_ANALYSIS_H
 #define TRITON_TO_CFG_ALIAS_ANALYSIS_H
 
+#include "TritonToGraph/tensor.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/Value.h"
-#include "mlir/IR/Types.h"
 #include "mlir/IR/TypeUtilities.h"
+#include "mlir/IR/Types.h"
+#include "mlir/IR/Value.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "llvm/ADT/DenseMap.h"
-#include "TritonToGraph/tensor.h"
 
 namespace mlir {
 namespace triton {
@@ -49,7 +49,7 @@ public:
   Value getBasePointer(Value ptr) const;
 
   // 获取Value对应的TensorObject
-  TensorObject* getTensorObject(Value value) const {
+  TensorObject *getTensorObject(Value value) const {
     auto it = baseTensorMap.find(value);
     return (it != baseTensorMap.end()) ? it->second : nullptr;
   }
@@ -60,14 +60,15 @@ public:
   }
 
   // 添加alias关系
-  void addAlias(Value ptr, Value base, TensorObject* tensor) {
+  void addAlias(Value ptr, Value base, TensorObject *tensor) {
     aliasMap[ptr] = base;
     baseTensorMap[ptr] = tensor;
   }
 
   // 判断是否是指针类型
   static bool isPointerType(Type type) {
-    if (auto ptrType = mlir::dyn_cast<triton::PointerType>(getElementTypeOrSelf(type))) {
+    if (auto ptrType =
+            mlir::dyn_cast<triton::PointerType>(getElementTypeOrSelf(type))) {
       return true;
     }
     return false;
@@ -104,20 +105,22 @@ public:
   }
 
   // 获取所有tracked的base pointer
-  const DenseMap<Value, Value>& getAliasMap() const { return aliasMap; }
+  const DenseMap<Value, Value> &getAliasMap() const { return aliasMap; }
 
   // 获取所有tracked的tensor对象
-  const DenseMap<Value, TensorObject*>& getBaseTensorMap() const { return baseTensorMap; }
+  const DenseMap<Value, TensorObject *> &getBaseTensorMap() const {
+    return baseTensorMap;
+  }
 
   // 打印所有alias信息
-  void print(llvm::raw_ostream& os) const {
+  void print(llvm::raw_ostream &os) const {
     os << "=== Alias Analysis Result ===\n";
     os << "Total tracked aliases: " << aliasMap.size() << "\n";
 
-    for (const auto& entry : aliasMap) {
+    for (const auto &entry : aliasMap) {
       Value ptr = entry.first;
       Value base = entry.second;
-      TensorObject* tensor = baseTensorMap.lookup(ptr);
+      TensorObject *tensor = baseTensorMap.lookup(ptr);
 
       os << "  " << ptr << " -> " << base;
       if (tensor) {
@@ -146,8 +149,8 @@ private:
   // 分析splat操作
   void analyzeSplatOp(mlir::triton::SplatOp splatOp);
 
-  DenseMap<Value, Value> aliasMap;              // ptr -> base ptr
-  DenseMap<Value, TensorObject*> baseTensorMap; // value -> tensor
+  DenseMap<Value, Value> aliasMap;               // ptr -> base ptr
+  DenseMap<Value, TensorObject *> baseTensorMap; // value -> tensor
 };
 
 } // namespace cfg

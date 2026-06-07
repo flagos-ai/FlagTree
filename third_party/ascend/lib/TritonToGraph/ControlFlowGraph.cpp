@@ -28,10 +28,10 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <deque>
 #include <fstream>
 #include <sstream>
-#include <algorithm>
 
 using namespace mlir;
 using namespace triton;
@@ -42,7 +42,8 @@ using namespace cfg;
 //===----------------------------------------------------------------------===//
 
 std::string Instruction::getAsString() const {
-  if (!operation) return "<null operation>";
+  if (!operation)
+    return "<null operation>";
   std::string str;
   llvm::raw_string_ostream os(str);
   operation->print(os);
@@ -56,8 +57,8 @@ void Instruction::print(raw_ostream &os, unsigned indent) const {
   if (operation) {
     BlockType parentType = parentBlock->getType();
     if (parentType == BlockType::IF_COND || parentType == BlockType::FOR_COND ||
-        parentType == BlockType::WHILE_COND || parentType == BlockType::COND_BR ||
-        parentType == BlockType::BR) {
+        parentType == BlockType::WHILE_COND ||
+        parentType == BlockType::COND_BR || parentType == BlockType::BR) {
       size_t newlinePos = instStr.find('\n');
       if (newlinePos != std::string::npos) {
         instStr = instStr.substr(0, newlinePos) + " ...";
@@ -69,9 +70,7 @@ void Instruction::print(raw_ostream &os, unsigned indent) const {
   }
 }
 
-void Instruction::dump() const {
-  print(llvm::errs());
-}
+void Instruction::dump() const { print(llvm::errs()); }
 
 //===----------------------------------------------------------------------===//
 // BasicBlock
@@ -89,20 +88,24 @@ Instruction *BasicBlock::getInstruction(size_t idx) const {
 }
 
 void BasicBlock::addSuccessor(BasicBlock *succ) {
-  if (!succ) return;
+  if (!succ)
+    return;
   // 避免重复添加
   for (auto *s : successors) {
-    if (s == succ) return;
+    if (s == succ)
+      return;
   }
   successors.push_back(succ);
   succ->addPredecessor(this);
 }
 
 void BasicBlock::addPredecessor(BasicBlock *pred) {
-  if (!pred) return;
+  if (!pred)
+    return;
   // 避免重复添加
   for (auto *p : predecessors) {
-    if (p == pred) return;
+    if (p == pred)
+      return;
   }
   predecessors.push_back(pred);
 }
@@ -118,35 +121,45 @@ bool BasicBlock::endsWithReturnOp() const {
   if (instructions.empty()) {
     return false;
   }
-  
+
   // 获取最后一条指令
   const Instruction *lastInst = instructions.back().get();
   if (!lastInst) {
     return false;
   }
-  
+
   // 获取对应的 Operation
   Operation *op = lastInst->getOperation();
   if (!op) {
     return false;
   }
-  
+
   // 检查是否为 triton::ReturnOp
   return isa<triton::ReturnOp>(op);
 }
 
 StringRef BasicBlock::getTypeString() const {
   switch (type) {
-  case BlockType::NORMAL: return "NORMAL";
-  case BlockType::ENTRY: return "ENTRY";
-  case BlockType::EXIT: return "EXIT";
-  case BlockType::IF_COND: return "IF_COND";
-  case BlockType::FOR_COND: return "FOR_COND";
-  case BlockType::WHILE_COND: return "WHILE_COND";
-  case BlockType::COND_BR: return "COND_BR";
-  case BlockType::BR: return "BR";
-  case BlockType::LOOP_BODY: return "LOOP_BODY";
-  case BlockType::LOOP_EXIT: return "LOOP_EXIT";
+  case BlockType::NORMAL:
+    return "NORMAL";
+  case BlockType::ENTRY:
+    return "ENTRY";
+  case BlockType::EXIT:
+    return "EXIT";
+  case BlockType::IF_COND:
+    return "IF_COND";
+  case BlockType::FOR_COND:
+    return "FOR_COND";
+  case BlockType::WHILE_COND:
+    return "WHILE_COND";
+  case BlockType::COND_BR:
+    return "COND_BR";
+  case BlockType::BR:
+    return "BR";
+  case BlockType::LOOP_BODY:
+    return "LOOP_BODY";
+  case BlockType::LOOP_EXIT:
+    return "LOOP_EXIT";
   }
   return "UNKNOWN";
 }
@@ -162,7 +175,8 @@ void BasicBlock::print(raw_ostream &os) const {
   if (!predecessors.empty()) {
     os << "  Predecessors: [";
     for (size_t i = 0; i < predecessors.size(); ++i) {
-      if (i > 0) os << ", ";
+      if (i > 0)
+        os << ", ";
       os << predecessors[i]->getName();
     }
     os << "]\n";
@@ -172,7 +186,8 @@ void BasicBlock::print(raw_ostream &os) const {
   if (!successors.empty()) {
     os << "  Successors: [";
     for (size_t i = 0; i < successors.size(); ++i) {
-      if (i > 0) os << ", ";
+      if (i > 0)
+        os << ", ";
       os << successors[i]->getName();
     }
     os << "]\n";
@@ -182,24 +197,22 @@ void BasicBlock::print(raw_ostream &os) const {
   os << "  Instructions (" << instructions.size() << "):\n";
   for (const auto &inst : instructions) {
     std::string instStr = inst->getAsString();
-    
+
     // 对COND节点截断：只保留第一行
-    if (type == BlockType::IF_COND || type == BlockType::FOR_COND || 
+    if (type == BlockType::IF_COND || type == BlockType::FOR_COND ||
         type == BlockType::WHILE_COND) {
       size_t newlinePos = instStr.find('\n');
       if (newlinePos != std::string::npos) {
         instStr = instStr.substr(0, newlinePos) + " ...";
       }
     }
-    
+
     os.indent(4) << "Inst[" << inst->getId() << "]: " << instStr << "\n";
   }
   os << "\n";
 }
 
-void BasicBlock::dump() const {
-  print(llvm::errs());
-}
+void BasicBlock::dump() const { print(llvm::errs()); }
 
 void BasicBlock::exportToJSON(raw_ostream &os, unsigned indent) const {
   std::string ind(indent, ' ');
@@ -207,12 +220,15 @@ void BasicBlock::exportToJSON(raw_ostream &os, unsigned indent) const {
   os << ind << "  \"id\": " << id << ",\n";
   os << ind << "  \"name\": \"" << getName() << "\",\n";
   os << ind << "  \"type\": \"" << getTypeString() << "\",\n";
-  os << ind << "  \"parentStructure\": " << (parentStructure ? std::to_string(parentStructure->getId()) : "null") << ",\n";
+  os << ind << "  \"parentStructure\": "
+     << (parentStructure ? std::to_string(parentStructure->getId()) : "null")
+     << ",\n";
 
   // 前驱
   os << ind << "  \"predecessors\": [";
   for (size_t i = 0; i < predecessors.size(); ++i) {
-    if (i > 0) os << ", ";
+    if (i > 0)
+      os << ", ";
     os << predecessors[i]->getId();
   }
   os << "],\n";
@@ -220,7 +236,8 @@ void BasicBlock::exportToJSON(raw_ostream &os, unsigned indent) const {
   // 后继
   os << ind << "  \"successors\": [";
   for (size_t i = 0; i < successors.size(); ++i) {
-    if (i > 0) os << ", ";
+    if (i > 0)
+      os << ", ";
     os << successors[i]->getId();
   }
   os << "],\n";
@@ -232,24 +249,29 @@ void BasicBlock::exportToJSON(raw_ostream &os, unsigned indent) const {
     os << ind << "      \"id\": " << instructions[i]->getId() << ",\n";
     // 转义字符串用于 JSON
     std::string instStr = instructions[i]->getAsString();
-    
+
     // COND节点只取第一行
-    if (type == BlockType::IF_COND || type == BlockType::FOR_COND || 
+    if (type == BlockType::IF_COND || type == BlockType::FOR_COND ||
         type == BlockType::WHILE_COND) {
       size_t newlinePos = instStr.find('\n');
       if (newlinePos != std::string::npos) {
         instStr = instStr.substr(0, newlinePos) + " ...";
       }
     }
-    
+
     // 简单的 JSON 字符串转义
     std::string escaped;
     for (char c : instStr) {
-      if (c == '"') escaped += "\\\"";
-      else if (c == '\\') escaped += "\\\\";
-      else if (c == '\n') escaped += "\\n";
-      else if (c == '\r') escaped += "\\r";
-      else if (c == '\t') escaped += "\\t";
+      if (c == '"')
+        escaped += "\\\"";
+      else if (c == '\\')
+        escaped += "\\\\";
+      else if (c == '\n')
+        escaped += "\\n";
+      else if (c == '\r')
+        escaped += "\\r";
+      else if (c == '\t')
+        escaped += "\\t";
       else if ((unsigned char)c < 0x20) {
         char buf[8];
         snprintf(buf, sizeof(buf), "\\u%04x", c);
@@ -260,7 +282,8 @@ void BasicBlock::exportToJSON(raw_ostream &os, unsigned indent) const {
     }
     os << ind << "      \"operation\": \"" << escaped << "\"\n";
     os << ind << "    }";
-    if (i < instructions.size() - 1) os << ",";
+    if (i < instructions.size() - 1)
+      os << ",";
     os << "\n";
   }
   os << ind << "  ]\n";
@@ -275,20 +298,24 @@ ControlFlowGraph::ControlFlowGraph(triton::FuncOp func) : function(func) {}
 
 ControlFlowGraph::~ControlFlowGraph() = default;
 
-BasicBlock *ControlFlowGraph::createBasicBlock(BlockType type, BasicBlock *parentStructure) {
+BasicBlock *ControlFlowGraph::createBasicBlock(BlockType type,
+                                               BasicBlock *parentStructure) {
   auto bb = std::make_unique<BasicBlock>(nextBlockId++, type, parentStructure);
   BasicBlock *bbPtr = bb.get();
   basicBlocks.push_back(std::move(bb));
 
   // 自动设置入口/出口块
-  if (type == BlockType::ENTRY) entryBlock = bbPtr;
-  if (type == BlockType::EXIT) exitBlock = bbPtr;
+  if (type == BlockType::ENTRY)
+    entryBlock = bbPtr;
+  if (type == BlockType::EXIT)
+    exitBlock = bbPtr;
 
   return bbPtr;
 }
 
 void ControlFlowGraph::addEdge(BasicBlock *from, BasicBlock *to) {
-  if (!from || !to) return;
+  if (!from || !to)
+    return;
   from->addSuccessor(to);
 }
 
@@ -303,14 +330,15 @@ bool ControlFlowGraph::isBackEdge(BasicBlock *from, BasicBlock *to) const {
   // 方法：检查 from 的 parentStructure 链是否包含 to
   BasicBlock *current = from;
   while (current) {
-    if (current == to) return true;
+    if (current == to)
+      return true;
     current = current->getParentStructure();
   }
   return false;
 }
 
-void ControlFlowGraph::searchNormalBlock(BasicBlock* block, OperationVisitor callback) const
-{
+void ControlFlowGraph::searchNormalBlock(BasicBlock *block,
+                                         OperationVisitor callback) const {
   for (const auto &inst : block->getInstructions()) {
     if (Operation *op = inst->getOperation()) {
       callback(op);
@@ -318,8 +346,8 @@ void ControlFlowGraph::searchNormalBlock(BasicBlock* block, OperationVisitor cal
   }
 }
 
-void ControlFlowGraph::searchCondBlock(BasicBlock *block, OperationVisitor callback) const
-{
+void ControlFlowGraph::searchCondBlock(BasicBlock *block,
+                                       OperationVisitor callback) const {
   if (!block)
     return;
 
@@ -347,8 +375,7 @@ void ControlFlowGraph::searchCondBlock(BasicBlock *block, OperationVisitor callb
       // 对当前 block 调用 searchBlock
       searchBlock(current, callback);
 
-      if(current->getType() == BlockType::NORMAL)
-      {
+      if (current->getType() == BlockType::NORMAL) {
         // 将后继加入队列（排除回边）
         for (BasicBlock *next : current->getSuccessors()) {
           // 跳过回边避免无限循环
@@ -356,11 +383,9 @@ void ControlFlowGraph::searchCondBlock(BasicBlock *block, OperationVisitor callb
             continue;
           workList.push_back(next);
         }
-      }
-      else if (block->getType() == BlockType::IF_COND ||
-              block->getType() == BlockType::FOR_COND ||
-              block->getType() == BlockType::WHILE_COND) 
-      {
+      } else if (block->getType() == BlockType::IF_COND ||
+                 block->getType() == BlockType::FOR_COND ||
+                 block->getType() == BlockType::WHILE_COND) {
         BasicBlock *next = block->getExitBlock();
         if (isBackEdge(current, next))
           continue;
@@ -370,16 +395,13 @@ void ControlFlowGraph::searchCondBlock(BasicBlock *block, OperationVisitor callb
   }
 }
 
-void ControlFlowGraph::searchBlock(BasicBlock *block, OperationVisitor callback) const
-{
-  if (block->getType() == BlockType::NORMAL) 
-  {
+void ControlFlowGraph::searchBlock(BasicBlock *block,
+                                   OperationVisitor callback) const {
+  if (block->getType() == BlockType::NORMAL) {
     searchNormalBlock(block, callback);
-  } 
-  else if (block->getType() == BlockType::IF_COND ||
-          block->getType() == BlockType::FOR_COND ||
-          block->getType() == BlockType::WHILE_COND) 
-  {
+  } else if (block->getType() == BlockType::IF_COND ||
+             block->getType() == BlockType::FOR_COND ||
+             block->getType() == BlockType::WHILE_COND) {
     searchCondBlock(block, callback);
   }
 }
@@ -418,9 +440,10 @@ void ControlFlowGraph::traverse(BlockVisitor visitor) {
 }
 
 void ControlFlowGraph::print(raw_ostream &os) const {
-  auto funcName = const_cast<triton::FuncOp&>(function).getName();
+  auto funcName = const_cast<triton::FuncOp &>(function).getName();
   os << "=================================================================\n";
-  os << "Control Flow Graph for function '" << (funcName.empty() ? "unnamed" : funcName) << "'\n";
+  os << "Control Flow Graph for function '"
+     << (funcName.empty() ? "unnamed" : funcName) << "'\n";
   os << "Number of blocks: " << basicBlocks.size() << "\n";
   os << "=================================================================\n\n";
 
@@ -429,62 +452,68 @@ void ControlFlowGraph::print(raw_ostream &os) const {
   }
 }
 
-void ControlFlowGraph::dump() const {
-  print(llvm::errs());
-}
+void ControlFlowGraph::dump() const { print(llvm::errs()); }
 
 void ControlFlowGraph::exportDOT(raw_ostream &os) const {
-  auto funcName = const_cast<triton::FuncOp&>(function).getName();
+  auto funcName = const_cast<triton::FuncOp &>(function).getName();
   std::string funcNameStr = funcName.empty() ? "unnamed" : funcName.str();
 
   // 清理函数名用于 DOT 标识符
   std::string cleanFuncName;
   for (char c : funcNameStr) {
-    if (isalnum(c) || c == '_') cleanFuncName += c;
-    else cleanFuncName += '_';
+    if (isalnum(c) || c == '_')
+      cleanFuncName += c;
+    else
+      cleanFuncName += '_';
   }
 
   os << "digraph CFG_" << cleanFuncName << " {\n";
   os << "  label=\"CFG for " << funcNameStr << "\";\n";
   os << "  labelloc=t;\n";
   os << "  rankdir=TB;\n";
-  os << "  splines=true;\n";           // 使用曲线边
-  os << "  overlap=false;\n";          // 防止节点重叠
-  os << "  nodesep=0.6;\n";           // 节点水平间距
-  os << "  ranksep=1.2;\n";           // 层间距
+  os << "  splines=true;\n";  // 使用曲线边
+  os << "  overlap=false;\n"; // 防止节点重叠
+  os << "  nodesep=0.6;\n";   // 节点水平间距
+  os << "  ranksep=1.2;\n";   // 层间距
   os << "  fontsize=12;\n\n";
 
   // 设置节点样式
   for (const auto &bb : basicBlocks) {
     os << "  \"" << bb->getName() << "\" [";
     os << "label=\"" << bb->getName() << "\\n(" << bb->getTypeString() << ")";
-    
+
     // 指令摘要：COND节点只取第一行，其他节点最多3条
     size_t numInsts = bb->getNumInstructions();
     if (numInsts > 0) {
       os << "\\n";
-      
+
       // COND节点只显示第一条指令的第一行
-      if (bb->getType() == BlockType::IF_COND || 
-          bb->getType() == BlockType::FOR_COND || 
+      if (bb->getType() == BlockType::IF_COND ||
+          bb->getType() == BlockType::FOR_COND ||
           bb->getType() == BlockType::WHILE_COND) {
         std::string instStr = bb->getInstruction(0)->getAsString();
         size_t newlinePos = instStr.find('\n');
         if (newlinePos != std::string::npos) {
           instStr = instStr.substr(0, newlinePos);
         }
-        if (instStr.length() > 40) instStr = instStr.substr(0, 37) + "...";
-        
+        if (instStr.length() > 40)
+          instStr = instStr.substr(0, 37) + "...";
+
         // 转义
         std::string escaped;
         for (char c : instStr) {
-          if (c == '"') escaped += "\\\"";
-          else if (c == '\\') escaped += "\\\\";
-          else if (c == '\n') escaped += "\\n";
-          else escaped += c;
+          if (c == '"')
+            escaped += "\\\"";
+          else if (c == '\\')
+            escaped += "\\\\";
+          else if (c == '\n')
+            escaped += "\\n";
+          else
+            escaped += c;
         }
         os << escaped;
-        if (numInsts > 1) os << "\\n... (" << (numInsts - 1) << " more)";
+        if (numInsts > 1)
+          os << "\\n... (" << (numInsts - 1) << " more)";
       } else {
         // 其他节点显示最多3条
         for (size_t i = 0; i < std::min(numInsts, (size_t)3); ++i) {
@@ -494,23 +523,29 @@ void ControlFlowGraph::exportDOT(raw_ostream &os) const {
           if (newlinePos != std::string::npos) {
             instStr = instStr.substr(0, newlinePos) + "...";
           }
-          if (instStr.length() > 40) instStr = instStr.substr(0, 37) + "...";
-          
+          if (instStr.length() > 40)
+            instStr = instStr.substr(0, 37) + "...";
+
           std::string escaped;
           for (char c : instStr) {
-            if (c == '"') escaped += "\\\"";
-            else if (c == '\\') escaped += "\\\\";
-            else if (c == '\n') escaped += "\\n";
-            else escaped += c;
+            if (c == '"')
+              escaped += "\\\"";
+            else if (c == '\\')
+              escaped += "\\\\";
+            else if (c == '\n')
+              escaped += "\\n";
+            else
+              escaped += c;
           }
           os << escaped << "\\n";
         }
-        if (numInsts > 3) os << "... (" << (numInsts - 3) << " more)\\n";
+        if (numInsts > 3)
+          os << "... (" << (numInsts - 3) << " more)\\n";
       }
     }
 
     os << "\", ";
-    
+
     // 形状和颜色
     switch (bb->getType()) {
     case BlockType::ENTRY:
@@ -549,7 +584,7 @@ void ControlFlowGraph::exportDOT(raw_ostream &os) const {
       os << " [color=" << (isBack ? "red" : "green");
       os << ", penwidth=" << (isBack ? "2.5" : "1.5") << "";
       if (isBack) {
-        os << ", style=dashed";  // 回边用虚线
+        os << ", style=dashed"; // 回边用虚线
       }
       os << "];\n";
     }
@@ -581,7 +616,7 @@ llvm::Error ControlFlowGraph::exportToFile(StringRef filename) const {
 }
 
 void ControlFlowGraph::exportToJSON(raw_ostream &os) const {
-  auto funcName = const_cast<triton::FuncOp&>(function).getName();
+  auto funcName = const_cast<triton::FuncOp &>(function).getName();
   std::string funcNameStr = funcName.empty() ? "unnamed" : funcName.str();
 
   os << "{\n";
@@ -591,23 +626,24 @@ void ControlFlowGraph::exportToJSON(raw_ostream &os) const {
 
   for (size_t i = 0; i < basicBlocks.size(); ++i) {
     basicBlocks[i]->exportToJSON(os, 4);
-    if (i < basicBlocks.size() - 1) os << ",";
+    if (i < basicBlocks.size() - 1)
+      os << ",";
     os << "\n";
   }
 
   // 添加边信息（带类型标记）
   os << "  ],\n";
   os << "  \"edges\": [\n";
-  
+
   bool first = true;
   for (const auto &bb : basicBlocks) {
     for (auto *succ : bb->getSuccessors()) {
-      if (!first) os << ",\n";
+      if (!first)
+        os << ",\n";
       first = false;
-      
+
       bool isBack = isBackEdge(bb.get(), succ);
-      os << "    {\"from\": " << bb->getId() 
-         << ", \"to\": " << succ->getId()
+      os << "    {\"from\": " << bb->getId() << ", \"to\": " << succ->getId()
          << ", \"fromName\": \"" << bb->getName() << "\""
          << ", \"toName\": \"" << succ->getName() << "\""
          << ", \"type\": \"" << (isBack ? "back" : "normal") << "\"}";
@@ -626,14 +662,15 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
                                    "Failed to open file: " + filename);
   }
 
-  auto funcName = const_cast<triton::FuncOp&>(function).getName();
+  auto funcName = const_cast<triton::FuncOp &>(function).getName();
   std::string funcNameStr = funcName.empty() ? "unnamed" : funcName.str();
 
   os << R"html(<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>CFG for )html" << funcNameStr << R"html(</title>
+    <title>CFG for )html"
+     << funcNameStr << R"html(</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
     <script src="https://unpkg.com/dagre-d3@0.6.4/dist/dagre-d3.min.js"></script>
@@ -747,7 +784,7 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
             margin-right: 12px;
             border-radius: 2px;
         }
-        
+
         /* SVG 样式 - 适配浅色背景 */
         .node rect {
             stroke-width: 2px;
@@ -780,7 +817,8 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
         <div class="legend-item"><div class="legend-line" style="background: #d32f2f; border-top: 2px dashed #d32f2f; height: 0;"></div>循环回边 (向上)</div>
     </div>
     <div id="sidebar">
-        <h1>CFG: )html" << funcNameStr << R"html(</h1>
+        <h1>CFG: )html"
+     << funcNameStr << R"html(</h1>
         <div id="default-msg">
             <p>Click on a node to view block details</p>
         </div>
@@ -808,7 +846,7 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
 
     // 使用 dagre 计算布局
     const g = new dagre.graphlib.Graph({ compound: true });
-    
+
     g.setGraph({
         rankdir: 'TB',           // 自上而下
         ranksep: 120,            // 层间距
@@ -819,7 +857,7 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
         acyclicer: 'greedy',
         ranker: 'longest-path'
     });
-    
+
     g.setDefaultEdgeLabel(function() { return {}; });
 
     // 颜色配置 - 适配浅色背景
@@ -833,7 +871,7 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
         'LOOP_EXIT': '#f8bbd0',   // 浅粉
         'NORMAL': '#f5f5f5'      // 浅灰
     };
-    
+
     const borderMap = {
         'ENTRY': '#2e7d32',
         'EXIT': '#c62828',
@@ -859,11 +897,11 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
         const isCond = ['IF_COND', 'FOR_COND', 'WHILE_COND'].includes(block.type);
         const isEntry = block.type === 'ENTRY';
         const isExit = block.type === 'EXIT';
-        
+
         // 构建多行标签
         let lines = [];
         lines.push(block.name + ' (' + block.type + ')');
-        
+
         if (isCond && block.instructions.length > 0) {
             // COND节点：只显示第一行指令
             let firstLine = truncateLine(block.instructions[0].operation.split('\n')[0], 58);
@@ -882,10 +920,10 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
                 lines.push('  +' + (block.instructions.length - 3) + ' more...');
             }
         }
-        
+
         const label = lines.join('\n');
         const height = 50 + lines.length * lineHeight;  // 基础高度+行高
-        
+
         const nodeConfig = {
             label: label,
             width: nodeWidth,
@@ -895,14 +933,14 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
             strokeColor: borderMap[block.type] || '#424242',
             isCond: isCond
         };
-        
+
         // ENTRY固定最上层(rank: source)，EXIT固定最下层(rank: sink)
         if (isEntry) {
             nodeConfig.rank = 'source';
         } else if (isExit) {
             nodeConfig.rank = 'sink';
         }
-        
+
         g.setNode(block.id.toString(), nodeConfig);
     });
 
@@ -946,11 +984,11 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
         .attr('d', function(e) {
             const edge = g.edge(e);
             const points = edge.points;
-            
+
             // Manhattan routing: 直角线段
             let d = d3.path();
             d.moveTo(points[0].x, points[0].y);
-            
+
             for (let i = 1; i < points.length; i++) {
                 d.lineTo(points[i].x, points[i].y);
             }
@@ -969,15 +1007,15 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
             const points = edge.points;
             const last = points[points.length - 1];
             const prev = points[points.length - 2] || points[0];
-            
+
             const dx = last.x - prev.x;
             const dy = last.y - prev.y;
             const angle = Math.atan2(dy, dx);
-            
+
             const size = 10;
             const angle1 = angle + Math.PI * 0.85;
             const angle2 = angle - Math.PI * 0.85;
-            
+
             return [
                 [last.x, last.y],
                 [last.x + Math.cos(angle1) * size, last.y + Math.sin(angle1) * size],
@@ -992,9 +1030,9 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
         .enter()
         .append('g')
         .attr('class', 'node')
-        .attr('transform', function(v) { 
+        .attr('transform', function(v) {
             const node = g.node(v);
-            return 'translate(' + (node.x - node.width/2) + ',' + (node.y - node.height/2) + ')'; 
+            return 'translate(' + (node.x - node.width/2) + ',' + (node.y - node.height/2) + ')';
         })
         .style('cursor', 'pointer')
         .on('click', function(event, v) {
@@ -1016,7 +1054,7 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
         const node = g.node(v);
         const lines = node.label.split('\n');
         const selection = d3.select(this);
-        
+
         lines.forEach((line, i) => {
             selection.append('text')
                 .attr('x', 14)
@@ -1039,7 +1077,7 @@ llvm::Error ControlFlowGraph::exportToHTML(StringRef filename) const {
         container.clientHeight / graphHeight,
         1.0
     ) * 0.9;
-    
+
     const transform = d3.zoomIdentity
         .translate(container.clientWidth/2 - graphWidth*scale/2, 40)
         .scale(scale);

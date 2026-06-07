@@ -51,25 +51,22 @@ struct CoreAndPipes {
   PipeAttr consumer;
 };
 
-static LogicalResult EmitUnknownOpError(Operation *op,
-                                        llvm::StringRef opName) {
+static LogicalResult EmitUnknownOpError(Operation *op, llvm::StringRef opName) {
   op->emitError("Unknown custom operation: ") << opName;
   return failure();
 }
 
 static void CreateSyncBlock(PatternRewriter &rewriter, Location loc,
                             MLIRContext *ctx, Operation *op, int64_t id,
-                            hivm::SyncBlockMode mode,
-                            PipeAttr pipe1, PipeAttr pipe2) {
+                            hivm::SyncBlockMode mode, PipeAttr pipe1,
+                            PipeAttr pipe2) {
   auto syncMode = hivm::SyncBlockModeAttr::get(ctx, mode);
   auto newOp = rewriter.create<hivm::SyncBlockOp>(
-      loc, syncMode, rewriter.getI16IntegerAttr(id),
-      Value{}, pipe1, pipe2);
+      loc, syncMode, rewriter.getI16IntegerAttr(id), Value{}, pipe1, pipe2);
   rewriter.replaceOp(op, newOp);
 }
 
-static CoreAndPipes GetCoreAndPipes(MLIRContext *ctx,
-                                    llvm::StringRef opName,
+static CoreAndPipes GetCoreAndPipes(MLIRContext *ctx, llvm::StringRef opName,
                                     llvm::StringRef sender) {
   // Step 1: Decide pipes
   PipeAttr producer;
@@ -101,69 +98,63 @@ static CoreAndPipes GetCoreAndPipes(MLIRContext *ctx,
 } // end anonymous namespace
 namespace {
 struct TritonToHIVMPass
-    : public mlir::triton::impl::TritonToHIVMBase<
-          TritonToHIVMPass> {
+    : public mlir::triton::impl::TritonToHIVMBase<TritonToHIVMPass> {
   void runOnOperation() override;
 };
 } // namespace
-
 
 struct TritonCustomOpToHIVMSyncOpConversion
     : OpRewritePattern<triton::ascend::CustomOp> {
   using OpRewritePattern<triton::ascend::CustomOp>::OpRewritePattern;
 
-LogicalResult matchAndRewrite(triton::ascend::CustomOp op,
-                              PatternRewriter &rewriter) const final {
-  auto *ctx = op->getContext();
-  auto loc = op->getLoc();
-  auto args = op.getStrArgs();
-  auto argAttr = dyn_cast<StringAttr>(args[0]);
-  auto id = dyn_cast<IntegerAttr>(args[1]).getInt();
-  llvm::StringRef opName = op.getOpName();
-  llvm::StringRef arg = argAttr.getValue();
+  LogicalResult matchAndRewrite(triton::ascend::CustomOp op,
+                                PatternRewriter &rewriter) const final {
+    auto *ctx = op->getContext();
+    auto loc = op->getLoc();
+    auto args = op.getStrArgs();
+    auto argAttr = dyn_cast<StringAttr>(args[0]);
+    auto id = dyn_cast<IntegerAttr>(args[1]).getInt();
+    llvm::StringRef opName = op.getOpName();
+    llvm::StringRef arg = argAttr.getValue();
 
-  if (opName == "sync_block_all") {
-    if (arg == "all_cube") {
-      CreateSyncBlock(rewriter, loc, ctx, op, id,
-                      hivm::SyncBlockMode::ALL_CUBE,
-                      PipeAttr::get(ctx, PIPE::PIPE_FIX),
-                      hivm::PipeAttr{});
-    } else if (arg == "all_vector") {
-      CreateSyncBlock(rewriter, loc, ctx, op, id,
-                      hivm::SyncBlockMode::ALL_VECTOR,
-                      hivm::PipeAttr{},
-                      PipeAttr::get(ctx, PIPE::PIPE_MTE3));
-    } else if (arg == "all") {
-      CreateSyncBlock(rewriter, loc, ctx, op, id,
-                      hivm::SyncBlockMode::ALL,
-                      PipeAttr::get(ctx, PIPE::PIPE_FIX),
-                      PipeAttr::get(ctx, PIPE::PIPE_MTE3));
-    } else {
-      return EmitUnknownOpError(op, opName);
+    if (opName == "sync_block_all") {
+      if (arg == "all_cube") {
+        CreateSyncBlock(rewriter, loc, ctx, op, id,
+                        hivm::SyncBlockMode::ALL_CUBE,
+                        PipeAttr::get(ctx, PIPE::PIPE_FIX), hivm::PipeAttr{});
+      } else if (arg == "all_vector") {
+        CreateSyncBlock(rewriter, loc, ctx, op, id,
+                        hivm::SyncBlockMode::ALL_VECTOR, hivm::PipeAttr{},
+                        PipeAttr::get(ctx, PIPE::PIPE_MTE3));
+      } else if (arg == "all") {
+        CreateSyncBlock(rewriter, loc, ctx, op, id, hivm::SyncBlockMode::ALL,
+                        PipeAttr::get(ctx, PIPE::PIPE_FIX),
+                        PipeAttr::get(ctx, PIPE::PIPE_MTE3));
+      } else {
+        return EmitUnknownOpError(op, opName);
+      }
+      return success();
     }
-    return success();
-  }
 
-  if (opName == "sync_block_set") {
-    auto [coreAttr, prodPipe, consPipe] = GetCoreAndPipes(ctx, opName, arg);
-    rewriter.replaceOp(op, rewriter.create<hivm::SyncBlockSetOp>(
-                                loc, coreAttr, prodPipe, consPipe,
-                                rewriter.getIndexAttr(id)));
-    return success();
-  }
+    if (opName == "sync_block_set") {
+      auto [coreAttr, prodPipe, consPipe] = GetCoreAndPipes(ctx, opName, arg);
+      rewriter.replaceOp(op, rewriter.create<hivm::SyncBlockSetOp>(
+                                 loc, coreAttr, prodPipe, consPipe,
+                                 rewriter.getIndexAttr(id)));
+      return success();
+    }
 
-  if (opName == "sync_block_wait") {
-    auto [coreAttr, prodPipe, consPipe] = GetCoreAndPipes(ctx, opName, arg);
-    rewriter.replaceOp(op, rewriter.create<hivm::SyncBlockWaitOp>(
-                                loc, coreAttr, prodPipe, consPipe,
-                                rewriter.getIndexAttr(id)));
-    return success();
-  }
+    if (opName == "sync_block_wait") {
+      auto [coreAttr, prodPipe, consPipe] = GetCoreAndPipes(ctx, opName, arg);
+      rewriter.replaceOp(op, rewriter.create<hivm::SyncBlockWaitOp>(
+                                 loc, coreAttr, prodPipe, consPipe,
+                                 rewriter.getIndexAttr(id)));
+      return success();
+    }
 
-  return EmitUnknownOpError(op, opName);
-}
+    return EmitUnknownOpError(op, opName);
+  }
 };
-
 
 void TritonToHIVMPass::runOnOperation() {
   auto module = getOperation();
@@ -177,6 +168,7 @@ void TritonToHIVMPass::runOnOperation() {
   }
 }
 
-std::unique_ptr<OperationPass<ModuleOp>> mlir::triton::createTritonToHIVMPass() {
+std::unique_ptr<OperationPass<ModuleOp>>
+mlir::triton::createTritonToHIVMPass() {
   return std::make_unique<TritonToHIVMPass>();
 }

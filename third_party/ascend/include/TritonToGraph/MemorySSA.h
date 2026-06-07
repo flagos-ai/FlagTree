@@ -23,11 +23,11 @@
 #ifndef TRITON_TO_CFG_MEMORY_SSA_H
 #define TRITON_TO_CFG_MEMORY_SSA_H
 
+#include "TritonToGraph/tensor.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/SmallVector.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "TritonToGraph/tensor.h"
 
 namespace mlir {
 namespace triton {
@@ -44,16 +44,16 @@ class ControlFlowGraph;
 class MemorySSADef {
 public:
   // 构造函数
-  MemorySSADef(TensorObject* tensor, Operation* defOp, unsigned version = 0)
+  MemorySSADef(TensorObject *tensor, Operation *defOp, unsigned version = 0)
       : tensor(tensor), defOp(defOp), version(version) {}
 
   // 获取tensor对象
-  TensorObject* getTensor() const { return tensor; }
+  TensorObject *getTensor() const { return tensor; }
 
   // 获取创建该definition的操作
   // - 对于入参，返回nullptr
   // - 对于其他操作，返回对应的Operation指针
-  Operation* getDefOp() const { return defOp; }
+  Operation *getDefOp() const { return defOp; }
 
   // 获取版本号（函数内全局唯一序数）
   unsigned getVersion() const { return version; }
@@ -74,7 +74,7 @@ public:
   }
 
   // 打印信息
-  void print(llvm::raw_ostream& os) const {
+  void print(llvm::raw_ostream &os) const {
     os << "Definition[" << getId() << ", tensor=" << tensor->getName();
     if (defOp) {
       os << ", op=" << defOp->getName();
@@ -85,34 +85,32 @@ public:
   }
 
 private:
-  TensorObject* tensor;      // 对应的tensor对象
-  Operation* defOp;         // 创建该definition的操作
-  unsigned version;         // 版本号（函数内全局递增）
+  TensorObject *tensor; // 对应的tensor对象
+  Operation *defOp;     // 创建该definition的操作
+  unsigned version;     // 版本号（函数内全局递增）
 };
 
 // Memory SSA Use - 表示tensor/pointer的使用
 class MemorySSAUse {
 public:
   // 构造函数
-  MemorySSAUse(MemorySSADef* definition, Operation* userOp, unsigned operandIdx)
+  MemorySSAUse(MemorySSADef *definition, Operation *userOp, unsigned operandIdx)
       : definition(definition), userOp(userOp), operandIdx(operandIdx) {
     // 缓存value以提高查询性能
     operandValue = userOp->getOperand(operandIdx);
   }
 
   // 获取使用的definition
-  MemorySSADef* getDefinition() const { return definition; }
+  MemorySSADef *getDefinition() const { return definition; }
 
   // 获取使用该definition的操作
-  Operation* getUserOp() const { return userOp; }
+  Operation *getUserOp() const { return userOp; }
 
   // 获取operand序号
   unsigned getOperandIdx() const { return operandIdx; }
 
   // 获取Value（从userOp的operand）
-  Value getValue() const {
-    return operandValue;
-  }
+  Value getValue() const { return operandValue; }
 
   // 获取用户操作的名称
   std::string getUserOpName() const {
@@ -120,7 +118,7 @@ public:
   }
 
   // 打印信息
-  void print(llvm::raw_ostream& os) const {
+  void print(llvm::raw_ostream &os) const {
     os << "Use[";
     if (definition) {
       os << definition->getId();
@@ -131,8 +129,8 @@ public:
   }
 
 private:
-  MemorySSADef* definition;    // 使用的definition
-  Operation* userOp;        // 使用该definition的操作
+  MemorySSADef *definition; // 使用的definition
+  Operation *userOp;        // 使用该definition的操作
   unsigned operandIdx;      // operand序号
   Value operandValue;       // 缓存的operand value
 };
@@ -141,27 +139,26 @@ private:
 struct PhiInfo {
   // Phi类型
   enum Type {
-    ITER_ARG,   // scf.for的iter_arg
-    IF_RESULT,  // scf.if的result
-    WHILE_ARG   // scf.while的arg
+    ITER_ARG,  // scf.for的iter_arg
+    IF_RESULT, // scf.if的result
+    WHILE_ARG  // scf.while的arg
   };
 
   Type type;
-  BasicBlock *loopHeader;  // 循环头基本块
+  BasicBlock *loopHeader; // 循环头基本块
 
   // Phi值的来源
   struct {
-    MemorySSADef *initialValue;  // 初始值（初始iteration）
-    MemorySSADef *yieldValue;    // yield的值（后续iteration）
+    MemorySSADef *initialValue; // 初始值（初始iteration）
+    MemorySSADef *yieldValue;   // yield的值（后续iteration）
   } comingFrom;
 
   // 是否是第一次迭代
   bool isInitial() const { return comingFrom.yieldValue == nullptr; }
 
   // 获取当前definition（根据上下文决定）
-  MemorySSADef* getCurrentDefinition(int iteration) const {
-    return (iteration == 0) ? comingFrom.initialValue
-                           : comingFrom.yieldValue;
+  MemorySSADef *getCurrentDefinition(int iteration) const {
+    return (iteration == 0) ? comingFrom.initialValue : comingFrom.yieldValue;
   }
 };
 
@@ -171,32 +168,33 @@ struct MemorySSAInfo {
   SmallVector<MemorySSAUse> uses;
 
   // 指令的results创建的definitions
-  SmallVector<MemorySSADef*> definitions;
+  SmallVector<MemorySSADef *> definitions;
 
   // Alias信息（仅对pointer相关操作）
   struct AliasInfo {
-    Value aliasee;              // 别名的源value
-    TensorObject* baseTensor;   // 对应的tensor对象
+    Value aliasee;            // 别名的源value
+    TensorObject *baseTensor; // 对应的tensor对象
   };
   std::optional<AliasInfo> aliasInfo;
 
   // 快速查询接口
   bool hasDefinition(Value value) const {
-      // 通过 getDefiningOp() 获取定义该 value 的操作
-      Operation* defOp = value.getDefiningOp();
-      if (!defOp) return false;
-      
-      // 获取该操作的所有 results
-      auto results = defOp->getResults();
-      for (size_t i = 0; i < definitions.size() && i < results.size(); ++i) {
-          if (results[i] == value) {
-              return definitions[i] != nullptr;
-          }
-      }
+    // 通过 getDefiningOp() 获取定义该 value 的操作
+    Operation *defOp = value.getDefiningOp();
+    if (!defOp)
       return false;
+
+    // 获取该操作的所有 results
+    auto results = defOp->getResults();
+    for (size_t i = 0; i < definitions.size() && i < results.size(); ++i) {
+      if (results[i] == value) {
+        return definitions[i] != nullptr;
+      }
+    }
+    return false;
   }
 
-  MemorySSADef* getDefinition(Value value) const {
+  MemorySSADef *getDefinition(Value value) const {
     // 查找该value在results中的索引
     for (auto result : llvm::enumerate(value.getDefiningOp()->getResults())) {
       if (result.value() == value) {
@@ -211,7 +209,7 @@ struct MemorySSAInfo {
   }
 
   bool hasUse(Value value) const {
-    for (const MemorySSAUse& use : uses) {
+    for (const MemorySSAUse &use : uses) {
       if (use.getValue() == value) {
         return true;
       }
@@ -221,7 +219,7 @@ struct MemorySSAInfo {
 
   SmallVector<MemorySSAUse> getUses(Value value) const {
     SmallVector<MemorySSAUse> result;
-    for (const MemorySSAUse& use : uses) {
+    for (const MemorySSAUse &use : uses) {
       if (use.getValue() == value) {
         result.push_back(use);
       }
@@ -234,7 +232,7 @@ struct MemorySSAInfo {
 
   // 判断是否是写入操作
   bool isMemoryWriter() const {
-    for (MemorySSADef* def : definitions) {
+    for (MemorySSADef *def : definitions) {
       if (def && !def->isParameter()) {
         return true;
       }
@@ -243,15 +241,17 @@ struct MemorySSAInfo {
   }
 
   // 遍历定义
-  void forEachDefinition(llvm::function_ref<void(MemorySSADef*)> func) const {
-    for (MemorySSADef* def : definitions) {
-      if (def) func(def);
+  void forEachDefinition(llvm::function_ref<void(MemorySSADef *)> func) const {
+    for (MemorySSADef *def : definitions) {
+      if (def)
+        func(def);
     }
   }
 
-  void forEachUse(llvm::function_ref<void(const MemorySSAUse&)> func) const {
-    for (const MemorySSAUse& use : uses) {
-      if (use.getDefinition()) func(use);
+  void forEachUse(llvm::function_ref<void(const MemorySSAUse &)> func) const {
+    for (const MemorySSAUse &use : uses) {
+      if (use.getDefinition())
+        func(use);
     }
   }
 
@@ -263,16 +263,16 @@ struct MemorySSAInfo {
   }
 
   // 打印信息
-  void print(llvm::raw_ostream& os) const {
+  void print(llvm::raw_ostream &os) const {
     os << "MemorySSAInfo[\n";
     os << "  Uses: " << uses.size() << "\n";
-    for (const MemorySSAUse& use : uses) {
+    for (const MemorySSAUse &use : uses) {
       os << "    ";
       use.print(os);
       os << "\n";
     }
     os << "  Definitions: " << definitions.size() << "\n";
-    for (MemorySSADef* def : definitions) {
+    for (MemorySSADef *def : definitions) {
       if (def) {
         os << "    ";
         def->print(os);
@@ -280,7 +280,8 @@ struct MemorySSAInfo {
       }
     }
     if (aliasInfo) {
-      os << "  Alias: " << aliasInfo->aliasee << " -> " << aliasInfo->baseTensor->getName() << "\n";
+      os << "  Alias: " << aliasInfo->aliasee << " -> "
+         << aliasInfo->baseTensor->getName() << "\n";
     }
     os << "]";
   }

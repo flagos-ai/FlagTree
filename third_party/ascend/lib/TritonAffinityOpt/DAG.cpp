@@ -1,5 +1,7 @@
 #include "TritonAffinityOpt/DAG.h"
+#include "bishengir/Dialect/Annotation/IR/Annotation.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OperationSupport.h"
@@ -11,7 +13,6 @@
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -30,41 +31,36 @@
 #include <memory>
 #include <type_traits>
 #include <utility>
-#include "bishengir/Dialect/Annotation/IR/Annotation.h"
 
-namespace mlir { namespace AffinityDAG {
+namespace mlir {
+namespace AffinityDAG {
 
-const auto printFlags = OpPrintingFlags()
-                                    .enableDebugInfo(true, true)
-                                    .skipRegions();
+const auto printFlags =
+    OpPrintingFlags().enableDebugInfo(true, true).skipRegions();
 
-const char* literalCoreType(CoreType ct) {
+const char *literalCoreType(CoreType ct) {
   switch (ct) {
-    case VECTOR_ONLY:
-      return "VECTOR_ONLY";
-    case CUBE_ONLY:
-      return "CUBE_ONLY";
-    case CUBE_AND_VECTOR:
-      return "CUBE_AND_VECTOR";
-    case UNDETERMINED:
-      return "UNDETERMINED";
+  case VECTOR_ONLY:
+    return "VECTOR_ONLY";
+  case CUBE_ONLY:
+    return "CUBE_ONLY";
+  case CUBE_AND_VECTOR:
+    return "CUBE_AND_VECTOR";
+  case UNDETERMINED:
+    return "UNDETERMINED";
   }
   return "Unknown";
 }
 
-
-bool opIsScf(Operation* op) {
+bool opIsScf(Operation *op) {
   if (!llvm::isa<scf::SCFDialect>(op->getDialect()))
     return false;
   return true;
 }
 
-Graph::Graph(Block* block, Graph* parent, OpMap opMap, ValueMap valueMap, bool inheritParent) :
-  block(block),
-  parent(parent),
-  opMap(opMap),
-  valueMap(valueMap)
-{
+Graph::Graph(Block *block, Graph *parent, OpMap opMap, ValueMap valueMap,
+             bool inheritParent)
+    : block(block), parent(parent), opMap(opMap), valueMap(valueMap) {
 
   if (parent && inheritParent) {
     if (!this->opMap) {
@@ -84,12 +80,12 @@ Graph::Graph(Block* block, Graph* parent, OpMap opMap, ValueMap valueMap, bool i
     this->valueMap = std::make_shared<ValueMapRaw>();
   }
 
-  for(auto blockArg : block->getArguments()) {
+  for (auto blockArg : block->getArguments()) {
     (*this->valueMap)[blockArg] = std::make_unique<ValueNode>(blockArg);
     blockArgs.push_back((*this->valueMap)[blockArg].get());
   }
 
-  for(auto& opRef : block->getOperations()) {
+  for (auto &opRef : block->getOperations()) {
     opCount += 1;
     auto op = &opRef;
     auto opNodeUnique = std::make_unique<OpNode>(op, this);
@@ -100,7 +96,7 @@ Graph::Graph(Block* block, Graph* parent, OpMap opMap, ValueMap valueMap, bool i
       terminator = opNode;
     }
 
-    for (auto& subgraph : opNode->subgraphs) {
+    for (auto &subgraph : opNode->subgraphs) {
       opCount += subgraph.opCount;
     }
   }
@@ -140,63 +136,59 @@ OpAbility OpNode::canRunOn() const {
   if (opIsScf(op)) {
     return OpAbility::CUBE_AND_VECTOR;
   }
-  return llvm::TypeSwitch<Operation*, OpAbility>(op)
-    .Case<triton::DotOp>([](auto) {
-      return OpAbility::CUBE_ONLY;
-    })
-    .Case<arith::ConstantOp, triton::AdvanceOp, triton::TransOp, annotation::MarkOp>([](auto) {
-      return OpAbility::CUBE_AND_VECTOR;
-    })
-    .Case<arith::SelectOp>([](arith::SelectOp op) {
-      // when cond is vector, selectOp should be vector, otherwise scalar
-      return (
-        valueIsScalar(op.getCondition()) ? OpAbility::CUBE_AND_VECTOR : OpAbility::PREFER_VECTOR
-      );
-    })
-    .Default([](Operation* op) {
-      auto isVector = false;
-      for(auto operand : op->getOperands()) {
-        if (!valueIsScalar(operand)) {
-          // if (valueIsTensorOfPtr(operand)) {
-          //   return SCALAR;
-          // }
-          isVector = true;
+  return llvm::TypeSwitch<Operation *, OpAbility>(op)
+      .Case<triton::DotOp>([](auto) { return OpAbility::CUBE_ONLY; })
+      .Case<arith::ConstantOp, triton::AdvanceOp, triton::TransOp,
+            annotation::MarkOp>([](auto) { return OpAbility::CUBE_AND_VECTOR; })
+      .Case<arith::SelectOp>([](arith::SelectOp op) {
+        // when cond is vector, selectOp should be vector, otherwise scalar
+        return (valueIsScalar(op.getCondition()) ? OpAbility::CUBE_AND_VECTOR
+                                                 : OpAbility::PREFER_VECTOR);
+      })
+      .Default([](Operation *op) {
+        auto isVector = false;
+        for (auto operand : op->getOperands()) {
+          if (!valueIsScalar(operand)) {
+            // if (valueIsTensorOfPtr(operand)) {
+            //   return SCALAR;
+            // }
+            isVector = true;
+          }
         }
-      }
 
-      for(auto result : op->getResults()) {
-        if (!valueIsScalar(result)) {
-          // if (valueIsTensorOfPtr(result)) {
-          //   return SCALAR;
-          // }
-          isVector = true;
+        for (auto result : op->getResults()) {
+          if (!valueIsScalar(result)) {
+            // if (valueIsTensorOfPtr(result)) {
+            //   return SCALAR;
+            // }
+            isVector = true;
+          }
         }
-      }
 
-      if (isVector) {
-        return OpAbility::PREFER_VECTOR;
-      }
+        if (isVector) {
+          return OpAbility::PREFER_VECTOR;
+        }
 
-      return OpAbility::CUBE_AND_VECTOR;
-    });
+        return OpAbility::CUBE_AND_VECTOR;
+      });
 }
 
-OpNode::OpNode(Operation* op, Graph* graph) : Node(Node::NK_Op), op(op) {
+OpNode::OpNode(Operation *op, Graph *graph) : Node(Node::NK_Op), op(op) {
   if (op == nullptr) {
     return;
   }
 
   llvm::outs() << op << "\n";
 
-  auto& valueMap = *graph->valueMap.get();
-  auto& opMap = *graph->opMap.get();
-  for(const auto operand : op->getOperands()) {
+  auto &valueMap = *graph->valueMap.get();
+  auto &opMap = *graph->opMap.get();
+  for (const auto operand : op->getOperands()) {
     auto valueNode = valueMap.at(operand).get();
     valueNode->outputs.push_back(this);
     inputs.push_back(valueNode);
   }
 
-  for(const auto& result : op->getResults()) {
+  for (const auto &result : op->getResults()) {
     auto valueNodeUnique = std::make_unique<ValueNode>(result);
     auto valueNode = valueNodeUnique.get();
     valueMap[result] = std::move(valueNodeUnique);
@@ -205,39 +197,39 @@ OpNode::OpNode(Operation* op, Graph* graph) : Node(Node::NK_Op), op(op) {
   }
 
   // if (!op->hasTrait<OpTrait::SingleBlock>()) {
-  //   llvm::dbgs() << "Not building subgraph because op is not SingleBlock: " << op << '\n';
-  //   return;
+  //   llvm::dbgs() << "Not building subgraph because op is not SingleBlock: "
+  //   << op << '\n'; return;
   // }
 
   if (auto branchOp = llvm::dyn_cast<RegionBranchOpInterface>(op)) {
 
-    OpNode* terminator = nullptr;
-    llvm::SmallVector<std::pair<Region&, Graph&>, 2> validRegions;
+    OpNode *terminator = nullptr;
+    llvm::SmallVector<std::pair<Region &, Graph &>, 2> validRegions;
 
-    for(auto& region : branchOp->getRegions()) {
+    for (auto &region : branchOp->getRegions()) {
       if (region.getBlocks().empty())
         continue;
       subgraphs.emplace_back(&region.getBlocks().front(), graph);
       validRegions.emplace_back(region, subgraphs.back());
     }
 
-    for(auto [region, subgraph] : validRegions) {
+    for (auto [region, subgraph] : validRegions) {
       SmallVector<RegionSuccessor, 2> succRegions;
 
       branchOp.getSuccessorRegions(region, succRegions);
-      if (auto currTerminator = dyn_cast<RegionBranchTerminatorOpInterface>(subgraph.terminator->op)) {
-        for(auto& succ : succRegions) {
+      if (auto currTerminator = dyn_cast<RegionBranchTerminatorOpInterface>(
+              subgraph.terminator->op)) {
+        for (auto &succ : succRegions) {
           auto forwardedVal = currTerminator.getSuccessorOperands(succ);
           if (succ.isParent()) {
             // Step1: first yield to parent -> results: double direction
             if (!terminator && subgraph.terminator) {
               terminator = subgraph.terminator;
-              for(auto [forwardedVal, resultNode] : llvm::zip_equal(
-                forwardedVal,
-                outputs
-              )) {
+              for (auto [forwardedVal, resultNode] :
+                   llvm::zip_equal(forwardedVal, outputs)) {
                 auto resultValueNode = llvm::dyn_cast<ValueNode>(resultNode);
-                assert(resultValueNode && "Output of a OpNode should be ValueNode!");
+                assert(resultValueNode &&
+                       "Output of a OpNode should be ValueNode!");
                 auto forwardedNode = valueMap[forwardedVal].get();
                 resultValueNode->source = forwardedNode;
                 forwardedNode->outputs.push_back(resultNode);
@@ -248,10 +240,8 @@ OpNode::OpNode(Operation* op, Graph* graph) : Node(Node::NK_Op), op(op) {
             // Step2: Region terminator -> Succ Operands
             auto succRegion = succ.getSuccessor();
 
-            for(auto [operand, succInput] : llvm::zip_equal(
-              forwardedVal,
-              succ.getSuccessorInputs()
-            )) {
+            for (auto [operand, succInput] :
+                 llvm::zip_equal(forwardedVal, succ.getSuccessorInputs())) {
               auto forwardedNode = valueMap[operand].get();
               auto succNode = valueMap[succInput].get();
               forwardedNode->outputs.push_back(succNode);
@@ -263,13 +253,17 @@ OpNode::OpNode(Operation* op, Graph* graph) : Node(Node::NK_Op), op(op) {
     }
 
     if (auto loopOp = llvm::dyn_cast<LoopLikeOpInterface>(op)) {
-      // Step3: inits->iter_args (single directional) (should be handled in step 2: ) last terminator -> iter_args (bidirectional)
-      for(auto [init, iterArgVal] : llvm::zip_equal(loopOp.getInits(), loopOp.getRegionIterArgs())) {
-        auto& initNode = valueMap[init];
-        auto& iterArgNode = valueMap[iterArgVal];
+      // Step3: inits->iter_args (single directional) (should be handled in step
+      // 2: ) last terminator -> iter_args (bidirectional)
+      for (auto [init, iterArgVal] :
+           llvm::zip_equal(loopOp.getInits(), loopOp.getRegionIterArgs())) {
+        auto &initNode = valueMap[init];
+        auto &iterArgNode = valueMap[iterArgVal];
         initNode->outputs.push_back(iterArgNode.get());
       }
-      // for(auto [init, iterArgVal, yieldNode] : llvm::zip_equal(loopOp.getInits(), loopOp.getRegionIterArgs(), terminator->outputs)) {
+      // for(auto [init, iterArgVal, yieldNode] :
+      // llvm::zip_equal(loopOp.getInits(), loopOp.getRegionIterArgs(),
+      // terminator->outputs)) {
       //   auto& initNode = valueMap[init];
       //   auto& iterArgNode = valueMap[iterArgVal];
       //   initNode->outputs.push_back(iterArgNode.get());
@@ -295,16 +289,17 @@ OpNode::OpNode(Operation* op, Graph* graph) : Node(Node::NK_Op), op(op) {
 //     return 0;
 //   };
 
-//   std::stable_sort(result.begin(), result.end(), [&](ValueNode* a, ValueNode* b) {
+//   std::stable_sort(result.begin(), result.end(), [&](ValueNode* a, ValueNode*
+//   b) {
 //     return getPriority(a) < getPriority(b);
 //   });
 
 //   return result;
 // }
 
-ValueNode* getWriteDataSource(OpNode* op) {
+ValueNode *getWriteDataSource(OpNode *op) {
   auto inputRange = op->getInputs();
-  for(auto node : inputRange.drop_front()) {
+  for (auto node : inputRange.drop_front()) {
     auto typ = getElementTypeOrSelf(node->value);
     if (!typ.isInteger(1)) {
       return node;
@@ -314,11 +309,7 @@ ValueNode* getWriteDataSource(OpNode* op) {
   return nullptr;
 }
 
-enum class MemPolicy {
-  NONE,
-  READ,
-  WRITE
-};
+enum class MemPolicy { NONE, READ, WRITE };
 
 CoreType Node::absorbCommon() {
 
@@ -327,7 +318,7 @@ CoreType Node::absorbCommon() {
 
   if (!sourceNode || !op) {
     CoreType newCoreType = isOnPrivate;
-    for(auto output : outputs) {
+    for (auto output : outputs) {
       newCoreType = newCoreType | output->isOn();
       isUpstreamOfCubeMem = isUpstreamOfCubeMem || output->isUpstreamOfCubeMem;
     }
@@ -346,7 +337,8 @@ CoreType Node::absorbCommon() {
   auto memPolicy = MemPolicy::NONE;
 
   if (memIface) {
-    // Possible improvements: Determine the policy to use based on shapes, inputs and outputs, etc
+    // Possible improvements: Determine the policy to use based on shapes,
+    // inputs and outputs, etc
     if (memIface.hasEffect<MemoryEffects::Write>()) {
       memPolicy = MemPolicy::WRITE;
     } else if (memIface.hasEffect<MemoryEffects::Read>()) {
@@ -369,29 +361,24 @@ CoreType Node::absorbCommon() {
     return VECTOR_ONLY;
   }
 
-  for(auto output : outputs) {
+  for (auto output : outputs) {
     switch (output->isOn()) {
-      case CUBE_AND_VECTOR:
-        newCoreType = newCoreType | VECTOR_ONLY;
-        // not breaking the switch because we need to handle cube
-      case CUBE_ONLY:
-        if (
-          ability != OpAbility::PREFER_VECTOR ||
-          output->isUpstreamOfCubeMem ||
-          memPolicy == MemPolicy::READ
-        ) {
-          isUpstreamOfCubeMem = (
-            isUpstreamOfCubeMem ||
-            output->isUpstreamOfCubeMem ||
-            memPolicy == MemPolicy::READ
-          );
-          newCoreType = newCoreType | CUBE_ONLY;
-        }
-        break;
-      case VECTOR_ONLY:
-        newCoreType = newCoreType | VECTOR_ONLY;
-      default: // UNDETERMINED, skip
-        break;
+    case CUBE_AND_VECTOR:
+      newCoreType = newCoreType | VECTOR_ONLY;
+      // not breaking the switch because we need to handle cube
+    case CUBE_ONLY:
+      if (ability != OpAbility::PREFER_VECTOR || output->isUpstreamOfCubeMem ||
+          memPolicy == MemPolicy::READ) {
+        isUpstreamOfCubeMem =
+            (isUpstreamOfCubeMem || output->isUpstreamOfCubeMem ||
+             memPolicy == MemPolicy::READ);
+        newCoreType = newCoreType | CUBE_ONLY;
+      }
+      break;
+    case VECTOR_ONLY:
+      newCoreType = newCoreType | VECTOR_ONLY;
+    default: // UNDETERMINED, skip
+      break;
     };
   }
 
@@ -414,9 +401,7 @@ CoreType OpNode::absorbImpl() {
   return newCoreType;
 }
 
-CoreType ValueNode::absorbImpl() {
-  return absorbCommon();
-}
+CoreType ValueNode::absorbImpl() { return absorbCommon(); }
 
 std::unique_ptr<Graph> Graph::fromMultiBlockFunc(triton::FuncOp funcOp) {
 
@@ -425,37 +410,35 @@ std::unique_ptr<Graph> Graph::fromMultiBlockFunc(triton::FuncOp funcOp) {
   auto dummyNode = std::make_unique<OpNode>(nullptr, dummyGraph.get());
   size_t opCount = 0;
 
-  for (auto& block : funcOp.getBody()) {
-    auto& subgraph = dummyNode->subgraphs.emplace_back(
-      &block,
-      dummyGraph.get()
-    );
+  for (auto &block : funcOp.getBody()) {
+    auto &subgraph =
+        dummyNode->subgraphs.emplace_back(&block, dummyGraph.get());
     opCount += subgraph.opCount;
   }
 
-  auto& opMap = *dummyGraph->opMap.get();
-  auto& valueMap = *dummyGraph->valueMap.get();
+  auto &opMap = *dummyGraph->opMap.get();
+  auto &valueMap = *dummyGraph->valueMap.get();
 
-  llvm::SmallVector<Node*, 0> nodes;
+  llvm::SmallVector<Node *, 0> nodes;
   nodes.reserve(opMap.size() + valueMap.size());
 
-  for(auto& [_, node] : opMap) {
+  for (auto &[_, node] : opMap) {
     if (node.get())
       nodes.push_back(node.get());
   }
 
-  for(auto& [_, node] : valueMap) {
+  for (auto &[_, node] : valueMap) {
     if (node.get())
       nodes.push_back(node.get());
   }
 
   auto diffuse = [&]() {
     // Not sure if determinism is required
-    llvm::SmallSetVector<Node*, 16> worklist(nodes.begin(), nodes.end());
+    llvm::SmallSetVector<Node *, 16> worklist(nodes.begin(), nodes.end());
 
     size_t threshold = worklist.size() * 5;
 
-    for(size_t i = 0; i< threshold; i++) {
+    for (size_t i = 0; i < threshold; i++) {
       if (worklist.empty()) {
         break;
       }
@@ -471,7 +454,7 @@ std::unique_ptr<Graph> Graph::fromMultiBlockFunc(triton::FuncOp funcOp) {
 
   diffuse();
 
-  for(auto node : nodes) {
+  for (auto node : nodes) {
     if (node->isOn() == UNDETERMINED) {
       node->isOnPrivate = VECTOR_ONLY;
     }
@@ -482,29 +465,28 @@ std::unique_ptr<Graph> Graph::fromMultiBlockFunc(triton::FuncOp funcOp) {
   OpPrintingFlags flags;
   flags.skipRegions();
 
-  for(auto [idx, node] : llvm::enumerate(nodes)) {
-    llvm::TypeSwitch<Node*>(node)
-      .Case<OpNode>([&, idx=idx](OpNode* node) {
-        if (node->op) {
-          llvm::dbgs() << llvm::formatv("\n\n====== OpNode on: {1} @ {0} ======\n",
-            node->op,
-            literalCoreType(node->isOn())
-          );
-          node->op->print(llvm::dbgs(), flags);
-          llvm::dbgs() << "\nAbility: " << literalCoreType(toCoreType(node->canRunOn()));
-          llvm::dbgs() << llvm::formatv("\n====== {0} ======\n", node->op);
-        }
-      })
-      .Case<ValueNode>([&, idx=idx](ValueNode* node) {
-        if (node->value) {
-          llvm::dbgs() << llvm::formatv("\n\n====== ValueNode on {1} @ {0} ======\n",
-            node->value,
-            literalCoreType(node->isOn())
-          );
-          node->value.print(llvm::dbgs(), flags);
-          llvm::dbgs() << llvm::formatv("\n====== {0} ======\n", node->value);
-        }
-      });
+  for (auto [idx, node] : llvm::enumerate(nodes)) {
+    llvm::TypeSwitch<Node *>(node)
+        .Case<OpNode>([&, idx = idx](OpNode *node) {
+          if (node->op) {
+            llvm::dbgs() << llvm::formatv(
+                "\n\n====== OpNode on: {1} @ {0} ======\n", node->op,
+                literalCoreType(node->isOn()));
+            node->op->print(llvm::dbgs(), flags);
+            llvm::dbgs() << "\nAbility: "
+                         << literalCoreType(toCoreType(node->canRunOn()));
+            llvm::dbgs() << llvm::formatv("\n====== {0} ======\n", node->op);
+          }
+        })
+        .Case<ValueNode>([&, idx = idx](ValueNode *node) {
+          if (node->value) {
+            llvm::dbgs() << llvm::formatv(
+                "\n\n====== ValueNode on {1} @ {0} ======\n", node->value,
+                literalCoreType(node->isOn()));
+            node->value.print(llvm::dbgs(), flags);
+            llvm::dbgs() << llvm::formatv("\n====== {0} ======\n", node->value);
+          }
+        });
     // if (auto opNode = llvm::dyn_cast<OpNode>(node)) {
     //   if (auto forOp = llvm::dyn_cast_if_present<scf::ForOp>(opNode->op)) {
     //     llvm::dbgs() << "\n==== ForOp ====\n";
@@ -522,7 +504,8 @@ std::unique_ptr<Graph> Graph::fromMultiBlockFunc(triton::FuncOp funcOp) {
     //     }
     //     llvm::dbgs() << "\n---- Results ----\n";
     //     for(auto result : forOp.getResults()) {
-    //       llvm::dbgs() << result.getResultNumber() << ' ' << literalCoreType(valueMap[result]->isOn()) << '\n';
+    //       llvm::dbgs() << result.getResultNumber() << ' ' <<
+    //       literalCoreType(valueMap[result]->isOn()) << '\n';
     //     }
     //   }
     // }
@@ -531,4 +514,5 @@ std::unique_ptr<Graph> Graph::fromMultiBlockFunc(triton::FuncOp funcOp) {
   return dummyGraph;
 };
 
-} }
+} // namespace AffinityDAG
+} // namespace mlir

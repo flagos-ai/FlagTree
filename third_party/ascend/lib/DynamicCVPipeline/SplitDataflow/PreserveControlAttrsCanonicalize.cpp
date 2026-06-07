@@ -35,140 +35,129 @@ using namespace mlir;
 static constexpr const char *DEBUG_TYPE = "PreserveControlAttrsCanonicalize";
 #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
 
-template <typename... Args>
-static void logDebug(const Args &...args)
-{
-    LLVM_DEBUG({
-        auto &debugStream = llvm::dbgs();
-        debugStream << '[' << DEBUG_TYPE << "] ";
-        (debugStream << ... << args);
-        debugStream << "\n";
-    });
+template <typename... Args> static void logDebug(const Args &...args) {
+  LLVM_DEBUG({
+    auto &debugStream = llvm::dbgs();
+    debugStream << '[' << DEBUG_TYPE << "] ";
+    (debugStream << ... << args);
+    debugStream << "\n";
+  });
 }
 
 namespace {
 
-static bool isTrackedControlFlowOp(Operation *op)
-{
-    return isa<scf::ForOp, scf::IfOp, scf::WhileOp, scf::ParallelOp>(op);
+static bool isTrackedControlFlowOp(Operation *op) {
+  return isa<scf::ForOp, scf::IfOp, scf::WhileOp, scf::ParallelOp>(op);
 }
 
-static bool canTransferAttrs(Operation *from, Operation *to)
-{
-    return from && to && from != to && isTrackedControlFlowOp(from) &&
-           isTrackedControlFlowOp(to) && from->getName() == to->getName();
+static bool canTransferAttrs(Operation *from, Operation *to) {
+  return from && to && from != to && isTrackedControlFlowOp(from) &&
+         isTrackedControlFlowOp(to) && from->getName() == to->getName();
 }
 
 class PreserveControlAttrsListener : public RewriterBase::Listener {
 public:
-    void notifyOperationInserted(Operation *op, OpBuilder::InsertPoint) override
-    {
-        recentInserts.insert(op);
-    }
+  void notifyOperationInserted(Operation *op, OpBuilder::InsertPoint) override {
+    recentInserts.insert(op);
+  }
 
-    void notifyOperationErased(Operation *op) override
-    {
-        recentInserts.remove(op);
-    }
+  void notifyOperationErased(Operation *op) override {
+    recentInserts.remove(op);
+  }
 
-    void notifyOperationReplaced(Operation *op, Operation *newOp) override
-    {
-        transferAttrs(op, newOp);
-    }
+  void notifyOperationReplaced(Operation *op, Operation *newOp) override {
+    transferAttrs(op, newOp);
+  }
 
-    void notifyOperationReplaced(Operation *op, ValueRange values) override
-    {
-        if (Operation *newOp = findReplacementOp(op, values)) {
-            transferAttrs(op, newOp);
-        }
+  void notifyOperationReplaced(Operation *op, ValueRange values) override {
+    if (Operation *newOp = findReplacementOp(op, values)) {
+      transferAttrs(op, newOp);
     }
+  }
 
 private:
-    Operation *findReplacementOp(Operation *oldOp, ValueRange replacements) const
-    {
-        if (!isTrackedControlFlowOp(oldOp)) {
-            return nullptr;
-        }
-
-        for (Value value : replacements) {
-            Operation *defOp = value.getDefiningOp();
-            if (defOp && recentInserts.contains(defOp) && canTransferAttrs(oldOp, defOp)) {
-                return defOp;
-            }
-        }
-
-        for (Operation *candidate : llvm::reverse(recentInserts.getArrayRef())) {
-            if (canTransferAttrs(oldOp, candidate)) {
-                return candidate;
-            }
-        }
-        return nullptr;
+  Operation *findReplacementOp(Operation *oldOp,
+                               ValueRange replacements) const {
+    if (!isTrackedControlFlowOp(oldOp)) {
+      return nullptr;
     }
 
-    static void transferAttrs(Operation *from, Operation *to)
-    {
-        if (!canTransferAttrs(from, to)) {
-            return;
-        }
-
-        for (NamedAttribute attr : from->getAttrs()) {
-            if (to->hasAttr(attr.getName())) {
-                continue;
-            }
-            to->setAttr(attr.getName(), attr.getValue());
-            logDebug("carry attr '", attr.getName(), "' from ",
-                     from->getName().getStringRef(), " to ",
-                     to->getName().getStringRef());
-        }
+    for (Value value : replacements) {
+      Operation *defOp = value.getDefiningOp();
+      if (defOp && recentInserts.contains(defOp) &&
+          canTransferAttrs(oldOp, defOp)) {
+        return defOp;
+      }
     }
 
-    llvm::SetVector<Operation *> recentInserts;
+    for (Operation *candidate : llvm::reverse(recentInserts.getArrayRef())) {
+      if (canTransferAttrs(oldOp, candidate)) {
+        return candidate;
+      }
+    }
+    return nullptr;
+  }
+
+  static void transferAttrs(Operation *from, Operation *to) {
+    if (!canTransferAttrs(from, to)) {
+      return;
+    }
+
+    for (NamedAttribute attr : from->getAttrs()) {
+      if (to->hasAttr(attr.getName())) {
+        continue;
+      }
+      to->setAttr(attr.getName(), attr.getValue());
+      logDebug("carry attr '", attr.getName(), "' from ",
+               from->getName().getStringRef(), " to ",
+               to->getName().getStringRef());
+    }
+  }
+
+  llvm::SetVector<Operation *> recentInserts;
 };
 
 static void populateCanonicalizationPatterns(MLIRContext *ctx,
-                                             RewritePatternSet &patterns)
-{
-    for (Dialect *dialect : ctx->getLoadedDialects()) {
-        dialect->getCanonicalizationPatterns(patterns);
-    }
+                                             RewritePatternSet &patterns) {
+  for (Dialect *dialect : ctx->getLoadedDialects()) {
+    dialect->getCanonicalizationPatterns(patterns);
+  }
 
-    for (RegisteredOperationName opName : ctx->getRegisteredOperations()) {
-        opName.getCanonicalizationPatterns(patterns, ctx);
-    }
+  for (RegisteredOperationName opName : ctx->getRegisteredOperations()) {
+    opName.getCanonicalizationPatterns(patterns, ctx);
+  }
 }
 
 } // namespace
 
-void mlir::triton::PreserveControlAttrsCanonicalizePass::runOnOperation()
-{
-    RewritePatternSet patterns(&getContext());
-    populateCanonicalizationPatterns(&getContext(), patterns);
+void mlir::triton::PreserveControlAttrsCanonicalizePass::runOnOperation() {
+  RewritePatternSet patterns(&getContext());
+  populateCanonicalizationPatterns(&getContext(), patterns);
 
-    PreserveControlAttrsListener listener;
-    GreedyRewriteConfig config;
-    config.setListener(&listener);
+  PreserveControlAttrsListener listener;
+  GreedyRewriteConfig config;
+  config.setListener(&listener);
 
-    if (failed(applyPatternsGreedily(getOperation(),
-                                     FrozenRewritePatternSet(std::move(patterns)),
-                                     config))) {
-        getOperation()->emitError("PreserveControlAttrsCanonicalizePass failed");
-        signalPassFailure();
-    }
+  if (failed(applyPatternsGreedily(getOperation(),
+                                   FrozenRewritePatternSet(std::move(patterns)),
+                                   config))) {
+    getOperation()->emitError("PreserveControlAttrsCanonicalizePass failed");
+    signalPassFailure();
+  }
 }
 
 namespace mlir {
 namespace triton {
 
-std::unique_ptr<OperationPass<ModuleOp>> createPreserveControlAttrsCanonicalizePass()
-{
-    return std::make_unique<PreserveControlAttrsCanonicalizePass>();
+std::unique_ptr<OperationPass<ModuleOp>>
+createPreserveControlAttrsCanonicalizePass() {
+  return std::make_unique<PreserveControlAttrsCanonicalizePass>();
 }
 
-void registerPreserveControlAttrsCanonicalizePasses()
-{
-    registerPass([]() -> std::unique_ptr<mlir::Pass> {
-        return createPreserveControlAttrsCanonicalizePass();
-    });
+void registerPreserveControlAttrsCanonicalizePasses() {
+  registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createPreserveControlAttrsCanonicalizePass();
+  });
 }
 
 } // namespace triton

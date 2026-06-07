@@ -37,20 +37,17 @@ public:
 
   void runOnOperation() override;
 
-  void setConditionInfo(ControlFlowConditionInfo *info)
-  {
-    this->info = info;
-  }
+  void setConditionInfo(ControlFlowConditionInfo *info) { this->info = info; }
 
-  llvm::StringRef getArgument() const override
-  {
-    return "update-for-ops";
-  }
+  llvm::StringRef getArgument() const override { return "update-for-ops"; }
 
 private:
-  LogicalResult addBlockCountersAndInnerDepConds(ModuleOp module, ControlFlowConditionInfo *info);
+  LogicalResult
+  addBlockCountersAndInnerDepConds(ModuleOp module,
+                                   ControlFlowConditionInfo *info);
 
-  LogicalResult deriveBlockCountersFromIfOps(ModuleOp module, ControlFlowConditionInfo *info);
+  LogicalResult deriveBlockCountersFromIfOps(ModuleOp module,
+                                             ControlFlowConditionInfo *info);
 
   LogicalResult insertInterCorePipeS(ModuleOp module);
 

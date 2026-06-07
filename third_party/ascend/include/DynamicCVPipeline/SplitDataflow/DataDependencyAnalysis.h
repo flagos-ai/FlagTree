@@ -39,94 +39,91 @@ namespace triton {
 enum class DependencyType { VectorToCube, CubeToVector };
 
 struct BlockInfo {
-    int blockId;
-    bool isCube;
-    bool isControl;
-    llvm::SmallVector<mlir::Value> inputs;
-    llvm::SmallVector<mlir::Value> outputs;
-    llvm::SmallVector<mlir::Operation *> Operations;
+  int blockId;
+  bool isCube;
+  bool isControl;
+  llvm::SmallVector<mlir::Value> inputs;
+  llvm::SmallVector<mlir::Value> outputs;
+  llvm::SmallVector<mlir::Operation *> Operations;
 };
 
 struct DependencyInfo {
-    DependencyType type;
-    mlir::Value value;
+  DependencyType type;
+  mlir::Value value;
 
-    int producerBlockId;
-    int consumerBlockId;
-    int iniProducerBlockId;
-    int iniConsumerBlockId;
+  int producerBlockId;
+  int consumerBlockId;
+  int iniProducerBlockId;
+  int iniConsumerBlockId;
 };
 
 class DataDependencyInfo {
 public:
-    explicit DataDependencyInfo(mlir::Operation *op) {}
+  explicit DataDependencyInfo(mlir::Operation *op) {}
 
-    bool isValid() const
-    {
-        return valid;
-    }
+  bool isValid() const { return valid; }
 
-    // for MLIR Analysis framework
-    bool isInvalidated(const mlir::AnalysisManager::PreservedAnalyses &pa)
-    {
-        return false;
-    }
+  // for MLIR Analysis framework
+  bool isInvalidated(const mlir::AnalysisManager::PreservedAnalyses &pa) {
+    return false;
+  }
 
-    static bool classof(const DataDependencyInfo *info)
-    {
-        return true;
-    }
+  static bool classof(const DataDependencyInfo *info) { return true; }
 
-    // get analyze result
-    llvm::DenseMap<int, BlockInfo> &getBlockInfoMap() { return blockInfoMap; }
-    llvm::SmallVector<DependencyInfo> &getV2CDependencies() { return v2cDependencies; }
-    llvm::SmallVector<DependencyInfo> &getC2VDependencies() { return c2vDependencies; }
-    llvm::SmallVector<DependencyInfo> &getMemoryDependencies() { return memoryDependencies; }
+  // get analyze result
+  llvm::DenseMap<int, BlockInfo> &getBlockInfoMap() { return blockInfoMap; }
+  llvm::SmallVector<DependencyInfo> &getV2CDependencies() {
+    return v2cDependencies;
+  }
+  llvm::SmallVector<DependencyInfo> &getC2VDependencies() {
+    return c2vDependencies;
+  }
+  llvm::SmallVector<DependencyInfo> &getMemoryDependencies() {
+    return memoryDependencies;
+  }
 
-    void setValid(bool v)
-    {
-        valid = v;
-    }
+  void setValid(bool v) { valid = v; }
 
 private:
-    bool valid = false;
-    llvm::DenseMap<int, BlockInfo> blockInfoMap;
-    llvm::SmallVector<DependencyInfo> v2cDependencies;
-    llvm::SmallVector<DependencyInfo> c2vDependencies;
-    llvm::SmallVector<DependencyInfo> c2cDependencies;
-    llvm::SmallVector<DependencyInfo> memoryDependencies;
+  bool valid = false;
+  llvm::DenseMap<int, BlockInfo> blockInfoMap;
+  llvm::SmallVector<DependencyInfo> v2cDependencies;
+  llvm::SmallVector<DependencyInfo> c2vDependencies;
+  llvm::SmallVector<DependencyInfo> c2cDependencies;
+  llvm::SmallVector<DependencyInfo> memoryDependencies;
 };
 
 // Define pass
 // Pass for analyzing data dependencies between Vector and Cube blocks
-class DataDependencyAnalysisPass : public PassWrapper<DataDependencyAnalysisPass, OperationPass<ModuleOp>> {
+class DataDependencyAnalysisPass
+    : public PassWrapper<DataDependencyAnalysisPass, OperationPass<ModuleOp>> {
 public:
-    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DataDependencyAnalysisPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DataDependencyAnalysisPass)
 
-    DataDependencyAnalysisPass() = default;
+  DataDependencyAnalysisPass() = default;
 
-    // Run the pass
-    void runOnOperation();
+  // Run the pass
+  void runOnOperation();
 
 private:
-    void createBlockInfoMap(DataDependencyInfo &info);
-    void collectBlockInfo(DataDependencyInfo &info, int blockId,
-                          llvm::SmallVector<mlir::Operation *> &ops);
+  void createBlockInfoMap(DataDependencyInfo &info);
+  void collectBlockInfo(DataDependencyInfo &info, int blockId,
+                        llvm::SmallVector<mlir::Operation *> &ops);
 
-    void collectDepInfo(mlir::Value depvalue, DependencyType dependencyType,
-                        llvm::SmallVector<DependencyInfo> &dependencies,
-                        int iniProdId, int iniConsId, DataDependencyInfo &info);
-    void analyzeExternalInputs(DataDependencyInfo &info);
-    void analyzeExternalOutputs(DataDependencyInfo &info);
+  void collectDepInfo(mlir::Value depvalue, DependencyType dependencyType,
+                      llvm::SmallVector<DependencyInfo> &dependencies,
+                      int iniProdId, int iniConsId, DataDependencyInfo &info);
+  void analyzeExternalInputs(DataDependencyInfo &info);
+  void analyzeExternalOutputs(DataDependencyInfo &info);
 
-    void analyzeMemoryEffect(DataDependencyInfo &info);
-    std::pair<int, int> findCommonLevelBlockIds(DataDependencyInfo &info,
-                                                int producerBlockId,
-                                                int consumerBlockId);
+  void analyzeMemoryEffect(DataDependencyInfo &info);
+  std::pair<int, int> findCommonLevelBlockIds(DataDependencyInfo &info,
+                                              int producerBlockId,
+                                              int consumerBlockId);
 
-    bool isControlFlowOp(mlir::Operation *op);
+  bool isControlFlowOp(mlir::Operation *op);
 
-    mlir::ModuleOp module;
+  mlir::ModuleOp module;
 };
 
 std::unique_ptr<OperationPass<ModuleOp>> createDataDependencyAnalysisPass();

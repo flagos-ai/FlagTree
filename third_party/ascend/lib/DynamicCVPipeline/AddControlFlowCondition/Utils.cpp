@@ -26,8 +26,9 @@ using namespace mlir;
 using namespace llvm;
 
 // Collect all nested ops within an operation's regions
-LogicalResult triton::collectAllNestedOps(Operation *op, llvm::DenseSet<Operation *> &regionOps)
-{
+LogicalResult
+triton::collectAllNestedOps(Operation *op,
+                            llvm::DenseSet<Operation *> &regionOps) {
   if (!op) {
     return failure();
   }
@@ -51,9 +52,8 @@ LogicalResult triton::collectAllNestedOps(Operation *op, llvm::DenseSet<Operatio
 }
 
 // Group operations by their block_id attribute
-LogicalResult triton::collectOpsByBlockId(scf::ForOp forOp,
-                                          llvm::DenseMap<int, SmallVector<Operation *>> &blockOps)
-{
+LogicalResult triton::collectOpsByBlockId(
+    scf::ForOp forOp, llvm::DenseMap<int, SmallVector<Operation *>> &blockOps) {
   for (Operation &op : forOp.getBody()->without_terminator()) {
     if (auto attr = op.getAttrOfType<IntegerAttr>("ssbuffer.block_id")) {
       blockOps[attr.getInt()].push_back(&op);
@@ -66,13 +66,12 @@ LogicalResult triton::collectOpsByBlockId(scf::ForOp forOp,
 }
 
 // DFS for topological sort - returns failure if cycle detected
-static LogicalResult dfsTopologicalSort(
-    Operation *op, llvm::DenseSet<Operation *> &visited,
-    llvm::DenseSet<Operation *> &inStack,
-    const llvm::DenseSet<Operation *> &ops,
-    llvm::DenseMap<Operation *, int> *opOrder,
-    SmallVectorImpl<Operation *> &sorted)
-{
+static LogicalResult
+dfsTopologicalSort(Operation *op, llvm::DenseSet<Operation *> &visited,
+                   llvm::DenseSet<Operation *> &inStack,
+                   const llvm::DenseSet<Operation *> &ops,
+                   llvm::DenseMap<Operation *, int> *opOrder,
+                   SmallVectorImpl<Operation *> &sorted) {
   if (!op) {
     return success();
   }
@@ -96,11 +95,14 @@ static LogicalResult dfsTopologicalSort(
   }
 
   if (opOrder && !opOrder->empty()) {
-    llvm::sort(deps, [&](Operation *a, Operation *b) { return (*opOrder)[a] < (*opOrder)[b]; });
+    llvm::sort(deps, [&](Operation *a, Operation *b) {
+      return (*opOrder)[a] < (*opOrder)[b];
+    });
   }
 
   for (Operation *dep : deps) {
-    if (failed(dfsTopologicalSort(dep, visited, inStack, ops, opOrder, sorted))) {
+    if (failed(
+            dfsTopologicalSort(dep, visited, inStack, ops, opOrder, sorted))) {
       return failure();
     }
   }
@@ -113,26 +115,27 @@ static LogicalResult dfsTopologicalSort(
 // Topological sort of operations based on operand dependencies
 LogicalResult triton::topologicalSort(llvm::DenseSet<Operation *> &ops,
                                       llvm::DenseMap<Operation *, int> *opOrder,
-                                      SmallVectorImpl<Operation *> &sorted)
-{
+                                      SmallVectorImpl<Operation *> &sorted) {
   llvm::DenseSet<Operation *> visited;
   llvm::DenseSet<Operation *> inStack;
 
   SmallVector<Operation *> opList(ops.begin(), ops.end());
   if (opOrder && !opOrder->empty()) {
-    llvm::sort(opList, [&](Operation *a, Operation *b) { return (*opOrder)[a] < (*opOrder)[b]; });
+    llvm::sort(opList, [&](Operation *a, Operation *b) {
+      return (*opOrder)[a] < (*opOrder)[b];
+    });
   }
 
   for (Operation *op : opList) {
-    if (failed(dfsTopologicalSort(op, visited, inStack, ops, opOrder, sorted))) {
+    if (failed(
+            dfsTopologicalSort(op, visited, inStack, ops, opOrder, sorted))) {
       return failure();
     }
   }
   return success();
 }
 
-LogicalResult triton::topologicalSort(SmallVector<Operation *> &ops)
-{
+LogicalResult triton::topologicalSort(SmallVector<Operation *> &ops) {
   llvm::DenseSet<Operation *> opSet(ops.begin(), ops.end());
   SmallVector<Operation *> sorted;
 
@@ -144,8 +147,7 @@ LogicalResult triton::topologicalSort(SmallVector<Operation *> &ops)
 }
 
 // Get block_ids in order of appearance in for loop body
-SmallVector<int> triton::getBlockIdsInOrder(scf::ForOp forOp)
-{
+SmallVector<int> triton::getBlockIdsInOrder(scf::ForOp forOp) {
   SmallVector<int> idsInOrder;
   llvm::DenseSet<int> seenIds;
 

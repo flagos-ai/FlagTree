@@ -23,29 +23,33 @@
 #ifndef TRITON_ADAPTER_ALLOC_MULTI_CACHE_ADD_MULTI_BUFFER_INNER_SCOPE_PASS_H
 #define TRITON_ADAPTER_ALLOC_MULTI_CACHE_ADD_MULTI_BUFFER_INNER_SCOPE_PASS_H
 
-#include "mlir/Pass/Pass.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/Pass.h"
 
 namespace mlir {
 namespace triton {
 
-// AddMultiBufferInnerScopePass for adding multi-buffer optimization within inner scope
+// AddMultiBufferInnerScopePass for adding multi-buffer optimization within
+// inner scope
 class AddMultiBufferInnerScopePass
-    : public PassWrapper<AddMultiBufferInnerScopePass, OperationPass<ModuleOp>> {
+    : public PassWrapper<AddMultiBufferInnerScopePass,
+                         OperationPass<ModuleOp>> {
 public:
-    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AddMultiBufferInnerScopePass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AddMultiBufferInnerScopePass)
 
-    // Constructor
-    AddMultiBufferInnerScopePass() = default;
+  // Constructor
+  AddMultiBufferInnerScopePass() = default;
 
-    // Pass argument
-    StringRef getArgument() const override { return "add_multi_buffer_inner_scope"; }
+  // Pass argument
+  StringRef getArgument() const override {
+    return "add_multi_buffer_inner_scope";
+  }
 
-    // Dependent dialects
-    void getDependentDialects(DialectRegistry &registry) const override;
+  // Dependent dialects
+  void getDependentDialects(DialectRegistry &registry) const override;
 
-    // Run the pass
-    void runOnOperation() override;
+  // Run the pass
+  void runOnOperation() override;
 };
 
 // Create the pass

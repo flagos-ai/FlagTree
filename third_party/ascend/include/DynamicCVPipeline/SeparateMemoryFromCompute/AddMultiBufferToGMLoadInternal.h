@@ -46,13 +46,16 @@ using namespace mlir;
 // ============================================================================
 
 static constexpr const char *DEBUG_TYPE = "add-multi-buffer-to-gm-load";
-#define LOG_DEBUG(...) LLVM_DEBUG(llvm::dbgs() << " [" << DEBUG_TYPE << "] " << __VA_ARGS__)
+#define LOG_DEBUG(...)                                                         \
+  LLVM_DEBUG(llvm::dbgs() << " [" << DEBUG_TYPE << "] " << __VA_ARGS__)
 
 static constexpr llvm::StringLiteral kBufferableMarker("gm_load_bufferable");
 static constexpr llvm::StringLiteral kBlockIdAttr("ssbuffer.block_id");
 static constexpr llvm::StringLiteral kLoadStoreAttr("ssbuffer.load_store");
-static constexpr llvm::StringLiteral kGMLoadMultiBufferStage("gm-load multi-buffer");
-static constexpr unsigned kInitialRefCapacity = 8; // Tuned for typical load chain depth
+static constexpr llvm::StringLiteral
+    kGMLoadMultiBufferStage("gm-load multi-buffer");
+static constexpr unsigned kInitialRefCapacity =
+    8; // Tuned for typical load chain depth
 static constexpr unsigned kForInductionVarArgIndex = 0;
 static constexpr unsigned kForBodyIterArgOffset = 1;
 // Each load group carries `depth` slot flags plus producer/consumer counters.
@@ -62,7 +65,8 @@ static constexpr int kLoadGroupProducerCounterOffset = 0;
 static constexpr int kLoadGroupConsumerCounterOffset = 1;
 
 // ============================================================================
-// Data structures (debug/utility only, types are in AddMultiBufferToGMLoadTypes.h)
+// Data structures (debug/utility only, types are in
+// AddMultiBufferToGMLoadTypes.h)
 // ============================================================================
 
 namespace gmload {
@@ -71,30 +75,30 @@ namespace gmload {
 /// duplicates. Pre-populated by scanning a block; get-or-create semantics.
 /// Suitable for untagged constants only (no ssbuffer.block_id attribution).
 struct ConstantCache {
-    llvm::DenseMap<mlir::Attribute, Value> table;
+  llvm::DenseMap<mlir::Attribute, Value> table;
 
-    void scan(Block *block)
-    {
-        for (auto &op : *block)
-            if (auto cst = dyn_cast<arith::ConstantOp>(op))
-                table.try_emplace(cst.getValue(), cst.getResult());
-    }
+  void scan(Block *block) {
+    for (auto &op : *block)
+      if (auto cst = dyn_cast<arith::ConstantOp>(op))
+        table.try_emplace(cst.getValue(), cst.getResult());
+  }
 
-    Value get(OpBuilder &builder, Location loc, mlir::TypedAttr attr)
-    {
-        auto [cacheIt, inserted] = table.try_emplace(attr, Value {});
-        if (!inserted)
-            return cacheIt->second;
-        cacheIt->second = builder.create<arith::ConstantOp>(loc, attr).getResult();
-        return cacheIt->second;
-    }
+  Value get(OpBuilder &builder, Location loc, mlir::TypedAttr attr) {
+    auto [cacheIt, inserted] = table.try_emplace(attr, Value{});
+    if (!inserted)
+      return cacheIt->second;
+    cacheIt->second = builder.create<arith::ConstantOp>(loc, attr).getResult();
+    return cacheIt->second;
+  }
 
-    Value getFalse(OpBuilder &builder, Location loc) { return get(builder, loc, builder.getBoolAttr(false)); }
+  Value getFalse(OpBuilder &builder, Location loc) {
+    return get(builder, loc, builder.getBoolAttr(false));
+  }
 
-    Value getIndex(OpBuilder &builder, Location loc, int64_t value)
-    {
-        return get(builder, loc, cast<mlir::TypedAttr>(builder.getIndexAttr(value)));
-    }
+  Value getIndex(OpBuilder &builder, Location loc, int64_t value) {
+    return get(builder, loc,
+               cast<mlir::TypedAttr>(builder.getIndexAttr(value)));
+  }
 };
 
 // ============================================================================
@@ -102,42 +106,60 @@ struct ConstantCache {
 // ============================================================================
 
 Operation *getAncestorInBlock(Operation *op, Block *scopeBlock);
-void backwardTrace(Operation *op, Block *scopeBlock, llvm::SetVector<Operation *> &visited,
+void backwardTrace(Operation *op, Block *scopeBlock,
+                   llvm::SetVector<Operation *> &visited,
                    SmallVectorImpl<Operation *> &worklist);
-void backwardTraceFromWorklist(llvm::SetVector<Operation *> &visited, SmallVectorImpl<Operation *> &worklist,
+void backwardTraceFromWorklist(llvm::SetVector<Operation *> &visited,
+                               SmallVectorImpl<Operation *> &worklist,
                                Block *scopeBlock);
-SmallVector<Operation *> forwardTraceFromAllocs(llvm::SetVector<Operation *> &visited, Block *scopeBlock);
-void captureRegionFreeVars(llvm::SetVector<Operation *> &visited, SmallVectorImpl<Operation *> &worklist,
+SmallVector<Operation *>
+forwardTraceFromAllocs(llvm::SetVector<Operation *> &visited,
+                       Block *scopeBlock);
+void captureRegionFreeVars(llvm::SetVector<Operation *> &visited,
+                           SmallVectorImpl<Operation *> &worklist,
                            Block *scopeBlock);
-SmallVector<Operation *> computeLoadChain(Operation *markedOp, Block *scopeBlock);
-memref::AllocOp findBackingAlloc(Operation *markedOp, ArrayRef<Operation *> chain);
+SmallVector<Operation *> computeLoadChain(Operation *markedOp,
+                                          Block *scopeBlock);
+memref::AllocOp findBackingAlloc(Operation *markedOp,
+                                 ArrayRef<Operation *> chain);
 SmallVector<MarkedLoad> collectMarkedOps(ModuleOp module);
 std::optional<int64_t> getConstantTripCount(scf::ForOp forOp);
-void groupByEnclosingForOp(SmallVector<MarkedLoad> &markedOps, SmallVectorImpl<ForBufferCtx> &contexts);
-void collectChainAndMarkedOps(const SmallVector<MarkedLoad> &loads, llvm::DenseSet<Operation *> &allChainOps,
+void groupByEnclosingForOp(SmallVector<MarkedLoad> &markedOps,
+                           SmallVectorImpl<ForBufferCtx> &contexts);
+void collectChainAndMarkedOps(const SmallVector<MarkedLoad> &loads,
+                              llvm::DenseSet<Operation *> &allChainOps,
                               llvm::DenseSet<Operation *> &markedOps);
-bool isResultUsedExternally(Value result, Operation *yieldOp, const llvm::DenseSet<Operation *> &allChainOps,
+bool isResultUsedExternally(Value result, Operation *yieldOp,
+                            const llvm::DenseSet<Operation *> &allChainOps,
                             Block *forBody);
-SmallVector<Value, kInitialRefCapacity> collectOperandsIncludingRegions(Operation *op);
-llvm::DenseSet<Operation *> computeSkipInConsumer(const SmallVector<MarkedLoad> &loads, Block *forBody);
+SmallVector<Value, kInitialRefCapacity>
+collectOperandsIncludingRegions(Operation *op);
+llvm::DenseSet<Operation *>
+computeSkipInConsumer(const SmallVector<MarkedLoad> &loads, Block *forBody);
 
 // ============================================================================
 // Function declarations: Loop transformation utilities
 // ============================================================================
 
 bool isLoopInvariant(Value value, scf::ForOp forOp);
-bool getLinearIterArgDelta(Value iterArg, Value yieldVal, scf::ForOp forOp, Value &delta);
-Value castIndexTo(OpBuilder &builder, Location loc, Value value, Type targetType);
+bool getLinearIterArgDelta(Value iterArg, Value yieldVal, scf::ForOp forOp,
+                           Value &delta);
+Value castIndexTo(OpBuilder &builder, Location loc, Value value,
+                  Type targetType);
 Value castToIndex(OpBuilder &builder, Location loc, Value value);
 void tagWithBlockId(Value value, IntegerAttr blockId);
-void allocateBufferSlots(OpBuilder &builder, Location loc, scf::ForOp forOp, LoadGroup &group);
-ExtendedForInfo buildExtendedFor(OpBuilder &builder, Location loc, scf::ForOp forOp, ArrayRef<LoadGroup> groups,
+void allocateBufferSlots(OpBuilder &builder, Location loc, scf::ForOp forOp,
+                         LoadGroup &group);
+ExtendedForInfo buildExtendedFor(OpBuilder &builder, Location loc,
+                                 scf::ForOp forOp, ArrayRef<LoadGroup> groups,
                                  ConstantCache &cache);
 bool isDeadIterArg(scf::ForOp forOp, unsigned iterArgIdx);
-FailureOr<scf::ForOp> pruneDeadIterArgs(OpBuilder &builder, scf::ForOp forOp, unsigned candidateCount);
+FailureOr<scf::ForOp> pruneDeadIterArgs(OpBuilder &builder, scf::ForOp forOp,
+                                        unsigned candidateCount);
 void eraseDeadBodyOps(Block *body);
 bool isAvailableForClone(Value value, Block *oldBody, const IRMapping &mapping);
-bool areOperandsAvailableForClone(Operation *op, Block *oldBody, const IRMapping &mapping);
+bool areOperandsAvailableForClone(Operation *op, Block *oldBody,
+                                  const IRMapping &mapping);
 std::optional<int32_t> getBlockId(Operation *op);
 bool sameRunBlockId(const BodyRun &run, std::optional<int32_t> bid);
 SmallVector<BodyRun> collectBodyRuns(Block *body);
@@ -146,30 +168,36 @@ int findFirstRunWithBlockId(ArrayRef<BodyRun> runs, int32_t blockId);
 void logRepeatedTopLevelBlockRuns(Block *body, llvm::StringRef stage);
 bool isAncestorBlock(Block *ancestor, Block *descendant);
 void deduplicateConstants(ModuleOp module);
-LogicalResult applyMultiBufferToForLoop(ForBufferCtx &context, const llvm::DenseSet<Operation *> &allCtxForOps);
+LogicalResult
+applyMultiBufferToForLoop(ForBufferCtx &context,
+                          const llvm::DenseSet<Operation *> &allCtxForOps);
 
 // ============================================================================
 // Function declarations: Consumer/Producer emission
 // ============================================================================
 
-Value emitLoadSlotSelection(OpBuilder &builder, Location loc, const MarkedLoad &load, ArrayRef<Value> slotBufs,
-                            Value target, int depth, IRMapping &mapping, ArrayRef<Value> slotConsts);
-Value emitSlotFlagClear(OpBuilder &builder, Location loc, Value target, Value slotConst, Value flagNext, Value falseVal,
+Value emitLoadSlotSelection(OpBuilder &builder, Location loc,
+                            const MarkedLoad &load, ArrayRef<Value> slotBufs,
+                            Value target, int depth, IRMapping &mapping,
+                            ArrayRef<Value> slotConsts);
+Value emitSlotFlagClear(OpBuilder &builder, Location loc, Value target,
+                        Value slotConst, Value flagNext, Value falseVal,
                         IntegerAttr blockId);
-FailureOr<std::pair<Value, Value>> emitProducerFillForSlot(OpBuilder &builder, Location loc, Block *oldBody,
-                                                           Block *newBody, const LoadGroup &group, int slotIdx,
-                                                           Value flagArg, Value currentProducerCounter,
-                                                           Value tripCount, Value falseVal, Value loopLowerBound,
-                                                           Value loopStep, Value trueFlag, Value indexOne,
-                                                           const SmallVector<Value> &iterArgDeltas,
-                                                           scf::ForOp origForOp);
-LogicalResult emitMultiBufferLoopBody(OpBuilder &builder, Location loc, SmallVectorImpl<LoadGroup> &groups,
-                                      ExtendedForInfo &info, const SmallVector<Value> &groupIndexOneVals,
-                                      const SmallVector<SmallVector<Value>> &allGroupSlotConsts,
-                                      const SmallVector<Value> &allGroupDepthConsts,
-                                      const llvm::DenseSet<Operation *> &allCtxForOps, Value tripCount,
-                                      Value loopLowerBound, Value loopStep, const SmallVector<Value> &groupTrueFlagVals,
-                                      const SmallVector<Value> &iterArgDeltas, scf::ForOp origForOp);
+FailureOr<std::pair<Value, Value>> emitProducerFillForSlot(
+    OpBuilder &builder, Location loc, Block *oldBody, Block *newBody,
+    const LoadGroup &group, int slotIdx, Value flagArg,
+    Value currentProducerCounter, Value tripCount, Value falseVal,
+    Value loopLowerBound, Value loopStep, Value trueFlag, Value indexOne,
+    const SmallVector<Value> &iterArgDeltas, scf::ForOp origForOp);
+LogicalResult emitMultiBufferLoopBody(
+    OpBuilder &builder, Location loc, SmallVectorImpl<LoadGroup> &groups,
+    ExtendedForInfo &info, const SmallVector<Value> &groupIndexOneVals,
+    const SmallVector<SmallVector<Value>> &allGroupSlotConsts,
+    const SmallVector<Value> &allGroupDepthConsts,
+    const llvm::DenseSet<Operation *> &allCtxForOps, Value tripCount,
+    Value loopLowerBound, Value loopStep,
+    const SmallVector<Value> &groupTrueFlagVals,
+    const SmallVector<Value> &iterArgDeltas, scf::ForOp origForOp);
 
 } // namespace gmload
 

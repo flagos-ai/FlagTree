@@ -31,14 +31,15 @@ namespace mlir {
 namespace triton {
 // Define pass
 // Pass for adding block_id attributes to control flow operations
-class AddBlockIdForControlOpsPass : public PassWrapper<AddBlockIdForControlOpsPass, OperationPass<ModuleOp>> {
+class AddBlockIdForControlOpsPass
+    : public PassWrapper<AddBlockIdForControlOpsPass, OperationPass<ModuleOp>> {
 public:
-    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AddBlockIdForControlOpsPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AddBlockIdForControlOpsPass)
 
-    AddBlockIdForControlOpsPass() = default;
+  AddBlockIdForControlOpsPass() = default;
 
-    // Run the pass
-    void runOnOperation() override;
+  // Run the pass
+  void runOnOperation() override;
 
 private:
 };

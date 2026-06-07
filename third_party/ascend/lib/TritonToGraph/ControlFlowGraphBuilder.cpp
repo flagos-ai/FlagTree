@@ -22,14 +22,14 @@
 
 #include "TritonToGraph/ControlFlowGraphBuilder.h"
 #include "TritonToGraph/DataflowGraph.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "build-cfg"
 
@@ -67,7 +67,7 @@ void BuildCFGPass::runOnOperation() {
     }
 
     // 打印 CFG 到标准输出
-    //cfg->print(llvm::outs());
+    // cfg->print(llvm::outs());
 
     // 导出到文件
     std::string baseName = func.getName().str();
@@ -131,10 +131,9 @@ BuildCFGPass::buildForFunction(triton::FuncOp func) {
   return cfgBuilder.build(func);
 }
 
-ControlFlowGraphBuilder::RegionBlocks
-ControlFlowGraphBuilder::buildForRegion(Region &region, cfg::ControlFlowGraph &cfg,
-                              cfg::BasicBlock *entryBlock,
-                              cfg::BasicBlock *parentStructure) {
+ControlFlowGraphBuilder::RegionBlocks ControlFlowGraphBuilder::buildForRegion(
+    Region &region, cfg::ControlFlowGraph &cfg, cfg::BasicBlock *entryBlock,
+    cfg::BasicBlock *parentStructure) {
   cfg::BasicBlock *currentBB = entryBlock;
   cfg::BasicBlock *lastBlock = entryBlock;
 
@@ -177,8 +176,7 @@ ControlFlowGraphBuilder::buildForRegion(Region &region, cfg::ControlFlowGraph &c
 
     if (currentBB) {
       lastBlock = currentBB;
-      if(lastBlock->endsWithReturnOp())
-      {
+      if (lastBlock->endsWithReturnOp()) {
         cfg.addEdge(lastBlock, cfg.getExitBlock());
       }
     }
@@ -187,17 +185,20 @@ ControlFlowGraphBuilder::buildForRegion(Region &region, cfg::ControlFlowGraph &c
   return {entryBlock, lastBlock};
 }
 
-cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::ControlFlowGraph &cfg,
-                                             cfg::BasicBlock *currentBB,
-                                             cfg::BasicBlock *parentStructure) {
-  if (!currentBB) return nullptr;
+cfg::BasicBlock *
+ControlFlowGraphBuilder::processBlock(Block &block, cfg::ControlFlowGraph &cfg,
+                                      cfg::BasicBlock *currentBB,
+                                      cfg::BasicBlock *parentStructure) {
+  if (!currentBB)
+    return nullptr;
 
   // 遍历 block 中的所有操作
   for (Operation &op : block) {
     // 检查是否是控制流操作
     if (isa<scf::IfOp>(op)) {
       // 为 if 条件创建单独的 basic block
-      auto *ifCondBB = cfg.createBasicBlock(BlockType::IF_COND, parentStructure);
+      auto *ifCondBB =
+          cfg.createBasicBlock(BlockType::IF_COND, parentStructure);
 
       // 将当前 if 指令添加到 ifCondBB
       createInstruction(&op, ifCondBB, cfg);
@@ -206,11 +207,12 @@ cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::Contro
       cfg.addEdge(currentBB, ifCondBB);
 
       // 处理 if 操作，返回 if 后面的块
-      currentBB = handleIfOp(cast<scf::IfOp>(op), cfg, ifCondBB, parentStructure);
-    }
-    else if (isa<scf::ForOp>(op)) {
+      currentBB =
+          handleIfOp(cast<scf::IfOp>(op), cfg, ifCondBB, parentStructure);
+    } else if (isa<scf::ForOp>(op)) {
       // 为 for 条件创建单独的 basic block
-      auto *forCondBB = cfg.createBasicBlock(BlockType::FOR_COND, parentStructure);
+      auto *forCondBB =
+          cfg.createBasicBlock(BlockType::FOR_COND, parentStructure);
 
       // 将当前 for 指令添加到 forCondBB
       createInstruction(&op, forCondBB, cfg);
@@ -219,11 +221,12 @@ cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::Contro
       cfg.addEdge(currentBB, forCondBB);
 
       // 处理 for 操作，返回 for 后面的块
-      currentBB = handleForOp(cast<scf::ForOp>(op), cfg, forCondBB, parentStructure);
-    }
-    else if (isa<scf::WhileOp>(op)) {
+      currentBB =
+          handleForOp(cast<scf::ForOp>(op), cfg, forCondBB, parentStructure);
+    } else if (isa<scf::WhileOp>(op)) {
       // 为 while 条件创建单独的 basic block
-      auto *whileCondBB = cfg.createBasicBlock(BlockType::WHILE_COND, parentStructure);
+      auto *whileCondBB =
+          cfg.createBasicBlock(BlockType::WHILE_COND, parentStructure);
 
       // 将当前 while 指令添加到 whileCondBB
       createInstruction(&op, whileCondBB, cfg);
@@ -232,19 +235,18 @@ cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::Contro
       cfg.addEdge(currentBB, whileCondBB);
 
       // 处理 while 操作，返回 while 后面的块
-      currentBB = handleWhileOp(cast<scf::WhileOp>(op), cfg, whileCondBB, parentStructure);
-    }
-    else if (isa<scf::YieldOp>(op)) {
+      currentBB = handleWhileOp(cast<scf::WhileOp>(op), cfg, whileCondBB,
+                                parentStructure);
+    } else if (isa<scf::YieldOp>(op)) {
       // yield 操作：创建指令并继续（后续由循环处理逻辑连接）
       createInstruction(&op, currentBB, cfg);
-    }
-    else if (isa<scf::ConditionOp>(op)) {
+    } else if (isa<scf::ConditionOp>(op)) {
       // condition 操作（while 循环条件）：创建指令并继续
       createInstruction(&op, currentBB, cfg);
-    }
-    else if (isa<cf::CondBranchOp>(op)) {
+    } else if (isa<cf::CondBranchOp>(op)) {
       // cf.cond_br 条件分支 - 创建专门的 COND_BR 块并处理
-      auto *condBrBB = cfg.createBasicBlock(BlockType::COND_BR, parentStructure);
+      auto *condBrBB =
+          cfg.createBasicBlock(BlockType::COND_BR, parentStructure);
 
       // 将 cond_br 指令添加到 condBrBB
       createInstruction(&op, condBrBB, cfg);
@@ -253,9 +255,9 @@ cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::Contro
       cfg.addEdge(currentBB, condBrBB);
 
       // 处理 cond_br 操作，返回后续的基本块
-      currentBB = handleCondBranchOp(cast<cf::CondBranchOp>(op), cfg, condBrBB, parentStructure);
-    }
-    else if (isa<cf::BranchOp>(op)) {
+      currentBB = handleCondBranchOp(cast<cf::CondBranchOp>(op), cfg, condBrBB,
+                                     parentStructure);
+    } else if (isa<cf::BranchOp>(op)) {
       // cf.br 无条件跳转 - 创建专门的 BR 块并处理
       auto *brBB = cfg.createBasicBlock(BlockType::BR, parentStructure);
 
@@ -266,19 +268,19 @@ cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::Contro
       cfg.addEdge(currentBB, brBB);
 
       // 处理 br 操作
-      currentBB = handleBranchOp(cast<cf::BranchOp>(op), cfg, brBB, parentStructure);
-    }
-    else if (isa<triton::ReturnOp>(op)) {
+      currentBB =
+          handleBranchOp(cast<cf::BranchOp>(op), cfg, brBB, parentStructure);
+    } else if (isa<triton::ReturnOp>(op)) {
       // return 操作
       createInstruction(&op, currentBB, cfg);
-    }
-    else if (op.getNumRegions() > 0) {
+    } else if (op.getNumRegions() > 0) {
       // 有内部区域的 Triton 操作 (如 tt.reduce, tt.scan 等)
       // 先创建指令
       auto *inst = createInstruction(&op, currentBB, cfg);
 
       // 为该操作创建子图
-      auto subGraph = std::make_unique<cfg::ControlFlowGraph>(cfg.getFunction());
+      auto subGraph =
+          std::make_unique<cfg::ControlFlowGraph>(cfg.getFunction());
       auto *subEntry = subGraph->createBasicBlock(cfg::BlockType::ENTRY);
       subGraph->setEntryBlock(subEntry);
       auto *subExit = subGraph->createBasicBlock(cfg::BlockType::EXIT);
@@ -297,7 +299,8 @@ cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::Contro
 
           for (Block &regionBlock : region) {
             auto *bb = subGraph->createBasicBlock(cfg::BlockType::NORMAL);
-            if (!regionEntryBB) regionEntryBB = bb;
+            if (!regionEntryBB)
+              regionEntryBB = bb;
 
             // 将区域中的操作添加到子图的基本块
             for (Operation &regionOp : regionBlock) {
@@ -330,8 +333,7 @@ cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::Contro
 
       // 设置子图
       inst->setSubGraph(std::move(subGraph));
-    }
-    else {
+    } else {
       // 普通操作，直接添加到当前 basic block
       createInstruction(&op, currentBB, cfg);
     }
@@ -340,9 +342,10 @@ cfg::BasicBlock *ControlFlowGraphBuilder::processBlock(Block &block, cfg::Contro
   return currentBB;
 }
 
-cfg::BasicBlock *ControlFlowGraphBuilder::handleIfOp(scf::IfOp ifOp, cfg::ControlFlowGraph &cfg,
-                                           cfg::BasicBlock *ifCondBB,
-                                           cfg::BasicBlock *parentStructure) {
+cfg::BasicBlock *
+ControlFlowGraphBuilder::handleIfOp(scf::IfOp ifOp, cfg::ControlFlowGraph &cfg,
+                                    cfg::BasicBlock *ifCondBB,
+                                    cfg::BasicBlock *parentStructure) {
   // 创建 if 后面的汇合块
   auto *mergeBB = cfg.createBasicBlock(BlockType::NORMAL, parentStructure);
 
@@ -357,7 +360,8 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleIfOp(scf::IfOp ifOp, cfg::Contro
     cfg.addEdge(ifCondBB, thenEntryBB);
 
     // 构建 then 区域的 CFG
-    auto result = buildForRegion(ifOp.getThenRegion(), cfg, thenEntryBB, ifCondBB);
+    auto result =
+        buildForRegion(ifOp.getThenRegion(), cfg, thenEntryBB, ifCondBB);
     thenExitBB = result.exitBlock;
   }
 
@@ -371,7 +375,8 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleIfOp(scf::IfOp ifOp, cfg::Contro
     cfg.addEdge(ifCondBB, elseEntryBB);
 
     // 构建 else 区域的 CFG
-    auto result = buildForRegion(ifOp.getElseRegion(), cfg, elseEntryBB, ifCondBB);
+    auto result =
+        buildForRegion(ifOp.getElseRegion(), cfg, elseEntryBB, ifCondBB);
     elseExitBB = result.exitBlock;
   }
 
@@ -399,21 +404,23 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleIfOp(scf::IfOp ifOp, cfg::Contro
   return mergeBB;
 }
 
-cfg::BasicBlock *ControlFlowGraphBuilder::handleForOp(scf::ForOp forOp, cfg::ControlFlowGraph &cfg,
-                                            cfg::BasicBlock *forCondBB,
-                                            cfg::BasicBlock *parentStructure) {
+cfg::BasicBlock *ControlFlowGraphBuilder::handleForOp(
+    scf::ForOp forOp, cfg::ControlFlowGraph &cfg, cfg::BasicBlock *forCondBB,
+    cfg::BasicBlock *parentStructure) {
   // 创建循环体入口块
   auto *loopBodyEntryBB = cfg.createBasicBlock(BlockType::LOOP_BODY, forCondBB);
   cfg.addEdge(forCondBB, loopBodyEntryBB);
 
   // 创建循环出口块
-  auto *loopExitBB = cfg.createBasicBlock(BlockType::LOOP_EXIT, parentStructure);
+  auto *loopExitBB =
+      cfg.createBasicBlock(BlockType::LOOP_EXIT, parentStructure);
 
   // 设置 forCondBB 的出口块为 loopExitBB
   forCondBB->setExitBlock(loopExitBB);
 
   // 构建循环体的 CFG
-  auto result = buildForRegion(forOp.getRegion(), cfg, loopBodyEntryBB, forCondBB);
+  auto result =
+      buildForRegion(forOp.getRegion(), cfg, loopBodyEntryBB, forCondBB);
 
   // 循环体结束需要回到循环头（通过 yield 操作）
   if (result.exitBlock) {
@@ -426,9 +433,9 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleForOp(scf::ForOp forOp, cfg::Con
   return loopExitBB;
 }
 
-cfg::BasicBlock *ControlFlowGraphBuilder::handleWhileOp(scf::WhileOp whileOp, cfg::ControlFlowGraph &cfg,
-                                              cfg::BasicBlock *whileCondBB,
-                                              cfg::BasicBlock *parentStructure) {
+cfg::BasicBlock *ControlFlowGraphBuilder::handleWhileOp(
+    scf::WhileOp whileOp, cfg::ControlFlowGraph &cfg,
+    cfg::BasicBlock *whileCondBB, cfg::BasicBlock *parentStructure) {
   // while 操作有两个区域：before（条件）和 after（循环体）
   // 控制流：
   //   whileCondBB (包含 scf.while 指令)
@@ -451,18 +458,21 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleWhileOp(scf::WhileOp whileOp, cf
   auto *afterEntryBB = cfg.createBasicBlock(BlockType::LOOP_BODY, whileCondBB);
 
   // 创建循环出口块
-  auto *loopExitBB = cfg.createBasicBlock(BlockType::LOOP_EXIT, parentStructure);
+  auto *loopExitBB =
+      cfg.createBasicBlock(BlockType::LOOP_EXIT, parentStructure);
 
   // 设置 whileCondBB 的出口块为 loopExitBB
   whileCondBB->setExitBlock(loopExitBB);
 
   // 构建 before 区域的 CFG（条件计算区域）
   // before 区域以一个 scf.condition 操作结束
-  auto beforeResult = buildForRegion(whileOp.getBefore(), cfg, beforeEntryBB, whileCondBB);
+  auto beforeResult =
+      buildForRegion(whileOp.getBefore(), cfg, beforeEntryBB, whileCondBB);
 
   // 构建 after 区域的 CFG（循环体区域）
   // after 区域以 scf.yield 结束，yield 的参数会传递给 before 区域的参数
-  auto afterResult = buildForRegion(whileOp.getAfter(), cfg, afterEntryBB, whileCondBB);
+  auto afterResult =
+      buildForRegion(whileOp.getAfter(), cfg, afterEntryBB, whileCondBB);
 
   // 处理 before 区域结束后的分支
   // before 区域应该以一个 scf.condition 操作结束
@@ -484,10 +494,13 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleWhileOp(scf::WhileOp whileOp, cf
   return loopExitBB;
 }
 
-cfg::Instruction *ControlFlowGraphBuilder::createInstruction(Operation *op, cfg::BasicBlock *parentBlock, cfg::ControlFlowGraph &cfg) {
-  if (!op || !parentBlock) return nullptr;
+cfg::Instruction *ControlFlowGraphBuilder::createInstruction(
+    Operation *op, cfg::BasicBlock *parentBlock, cfg::ControlFlowGraph &cfg) {
+  if (!op || !parentBlock)
+    return nullptr;
 
-  auto inst = std::make_unique<cfg::Instruction>(getNextInstructionId(), op, parentBlock);
+  auto inst = std::make_unique<cfg::Instruction>(getNextInstructionId(), op,
+                                                 parentBlock);
   cfg::Instruction *instPtr = inst.get();
   parentBlock->addInstruction(std::move(inst));
 
@@ -546,10 +559,9 @@ ControlFlowGraphBuilder::buildForModule(ModuleOp module) {
   return cfgs;
 }
 
-cfg::BasicBlock *ControlFlowGraphBuilder::handleCondBranchOp(cf::CondBranchOp condBrOp,
-                                                             cfg::ControlFlowGraph &cfg,
-                                                             cfg::BasicBlock *condBrBB,
-                                                             cfg::BasicBlock *parentStructure) {
+cfg::BasicBlock *ControlFlowGraphBuilder::handleCondBranchOp(
+    cf::CondBranchOp condBrOp, cfg::ControlFlowGraph &cfg,
+    cfg::BasicBlock *condBrBB, cfg::BasicBlock *parentStructure) {
   // 创建汇合块（用于 cond_br 之后的代码）
   auto *mergeBB = cfg.createBasicBlock(BlockType::NORMAL, parentStructure);
 
@@ -572,10 +584,12 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleCondBranchOp(cf::CondBranchOp co
   LLVM_DEBUG(llvm::dbgs() << "    False dest: " << falseDest << "\n");
 
   // 为 true 分支创建入口块（如果目标块还没有对应的 BasicBlock）
-  cfg::BasicBlock *trueEntryBB = getOrCreateBasicBlockForBlock(trueDest, cfg, parentStructure);
+  cfg::BasicBlock *trueEntryBB =
+      getOrCreateBasicBlockForBlock(trueDest, cfg, parentStructure);
 
   // 为 false 分支创建入口块
-  cfg::BasicBlock *falseEntryBB = getOrCreateBasicBlockForBlock(falseDest, cfg, parentStructure);
+  cfg::BasicBlock *falseEntryBB =
+      getOrCreateBasicBlockForBlock(falseDest, cfg, parentStructure);
 
   // 连接 COND_BR 块到两个分支
   cfg.addEdge(condBrBB, trueEntryBB);
@@ -591,10 +605,9 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleCondBranchOp(cf::CondBranchOp co
   return mergeBB;
 }
 
-cfg::BasicBlock *ControlFlowGraphBuilder::handleBranchOp(cf::BranchOp brOp,
-                                                         cfg::ControlFlowGraph &cfg,
-                                                         cfg::BasicBlock *brBB,
-                                                         cfg::BasicBlock *parentStructure) {
+cfg::BasicBlock *ControlFlowGraphBuilder::handleBranchOp(
+    cf::BranchOp brOp, cfg::ControlFlowGraph &cfg, cfg::BasicBlock *brBB,
+    cfg::BasicBlock *parentStructure) {
   // 无条件跳转没有汇合块，直接连接到目标块
 
   // 获取目标块和参数
@@ -605,7 +618,8 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleBranchOp(cf::BranchOp brOp,
   LLVM_DEBUG(llvm::dbgs() << "    Dest: " << dest << "\n");
 
   // 获取或创建目标块对应的 BasicBlock
-  cfg::BasicBlock *destBB = getOrCreateBasicBlockForBlock(dest, cfg, parentStructure);
+  cfg::BasicBlock *destBB =
+      getOrCreateBasicBlockForBlock(dest, cfg, parentStructure);
 
   // 连接 BR 块到目标块
   cfg.addEdge(brBB, destBB);
@@ -615,7 +629,8 @@ cfg::BasicBlock *ControlFlowGraphBuilder::handleBranchOp(cf::BranchOp brOp,
 }
 
 cfg::BasicBlock *ControlFlowGraphBuilder::getOrCreateBasicBlockForBlock(
-    Block *block, cfg::ControlFlowGraph &cfg, cfg::BasicBlock *parentStructure) {
+    Block *block, cfg::ControlFlowGraph &cfg,
+    cfg::BasicBlock *parentStructure) {
   // 检查是否已经有对应的 BasicBlock
   auto it = blockToBasicBlockMap.find(block);
   if (it != blockToBasicBlockMap.end()) {
@@ -631,7 +646,8 @@ cfg::BasicBlock *ControlFlowGraphBuilder::getOrCreateBasicBlockForBlock(
   return bb;
 }
 
-void ControlFlowGraphBuilder::registerBlockMapping(Block *mlirBlock, cfg::BasicBlock *cfgBlock) {
+void ControlFlowGraphBuilder::registerBlockMapping(Block *mlirBlock,
+                                                   cfg::BasicBlock *cfgBlock) {
   blockToBasicBlockMap[mlirBlock] = cfgBlock;
 }
 
@@ -738,7 +754,8 @@ ControlFlowGraphBuilder::getBranchMapping(cfg::BasicBlock *brBB) {
   return mapping;
 }
 
-std::unique_ptr<OperationPass<ModuleOp>> mlir::triton::cfg::createBuildCFGPass() {
+std::unique_ptr<OperationPass<ModuleOp>>
+mlir::triton::cfg::createBuildCFGPass() {
   return std::unique_ptr<OperationPass<ModuleOp>>(new BuildCFGPass());
 }
 

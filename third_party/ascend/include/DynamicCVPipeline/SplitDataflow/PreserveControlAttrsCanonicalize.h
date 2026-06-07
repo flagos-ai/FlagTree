@@ -33,35 +33,32 @@ class PreserveControlAttrsCanonicalizePass
     : public PassWrapper<PreserveControlAttrsCanonicalizePass,
                          OperationPass<ModuleOp>> {
 public:
-    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-        PreserveControlAttrsCanonicalizePass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
+      PreserveControlAttrsCanonicalizePass)
 
-    PreserveControlAttrsCanonicalizePass() = default;
+  PreserveControlAttrsCanonicalizePass() = default;
 
-    void runOnOperation() override;
+  void runOnOperation() override;
 
-    static constexpr ::llvm::StringRef getArgumentName()
-    {
-        return "preserve-control-attrs-canonicalize";
-    }
+  static constexpr ::llvm::StringRef getArgumentName() {
+    return "preserve-control-attrs-canonicalize";
+  }
 
-    ::llvm::StringRef getArgument() const override
-    {
-        return "preserve-control-attrs-canonicalize";
-    }
+  ::llvm::StringRef getArgument() const override {
+    return "preserve-control-attrs-canonicalize";
+  }
 
-    ::llvm::StringRef getDescription() const override
-    {
-        return "Canonicalize while preserving selected control-flow attrs";
-    }
+  ::llvm::StringRef getDescription() const override {
+    return "Canonicalize while preserving selected control-flow attrs";
+  }
 
-    ::llvm::StringRef getName() const override
-    {
-        return "PreserveControlAttrsCanonicalizePass";
-    }
+  ::llvm::StringRef getName() const override {
+    return "PreserveControlAttrsCanonicalizePass";
+  }
 };
 
-std::unique_ptr<OperationPass<ModuleOp>> createPreserveControlAttrsCanonicalizePass();
+std::unique_ptr<OperationPass<ModuleOp>>
+createPreserveControlAttrsCanonicalizePass();
 
 void registerPreserveControlAttrsCanonicalizePasses();
 

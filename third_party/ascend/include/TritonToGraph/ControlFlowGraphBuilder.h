@@ -24,15 +24,15 @@
 #define TRITON_TO_CFG_CONTROL_FLOW_GRAPH_BUILDER_H
 
 #include "TritonToGraph/ControlFlowGraph.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "mlir/IR/Value.h"
 
-#include <stack>
 #include <optional>
+#include <stack>
 
 namespace mlir {
 namespace triton {
@@ -58,7 +58,8 @@ public:
 
   // 获取依赖的方言
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<triton::TritonDialect, scf::SCFDialect, cf::ControlFlowDialect>();
+    registry.insert<triton::TritonDialect, scf::SCFDialect,
+                    cf::ControlFlowDialect>();
   }
 
 protected:
@@ -119,7 +120,8 @@ public:
   std::unique_ptr<cfg::ControlFlowGraph> build(triton::FuncOp func);
 
   // 为模块构建所有函数的 CFG
-  std::vector<std::unique_ptr<cfg::ControlFlowGraph>> buildForModule(ModuleOp module);
+  std::vector<std::unique_ptr<cfg::ControlFlowGraph>>
+  buildForModule(ModuleOp module);
 
   // 处理一个 region，返回该 region 的入口块和出口块
   struct RegionBlocks {
@@ -128,68 +130,80 @@ public:
   };
 
   RegionBlocks buildForRegion(Region &region, cfg::ControlFlowGraph &cfg,
-                               cfg::BasicBlock *entryBlock,
-                               cfg::BasicBlock *parentStructure = nullptr);
+                              cfg::BasicBlock *entryBlock,
+                              cfg::BasicBlock *parentStructure = nullptr);
 
   // 处理 block 中的操作，返回最后处理的基本块
   cfg::BasicBlock *processBlock(Block &block, cfg::ControlFlowGraph &cfg,
-                                 cfg::BasicBlock *currentBB,
-                                 cfg::BasicBlock *parentStructure = nullptr);
-
-  // 处理 scf.if 操作，返回 if 后面的基本块
-  cfg::BasicBlock *handleIfOp(scf::IfOp ifOp, cfg::ControlFlowGraph &cfg,
-                               cfg::BasicBlock *currentBB,
-                               cfg::BasicBlock *parentStructure = nullptr);
-
-  // 处理 scf.for 操作，返回 for 后面的基本块
-  cfg::BasicBlock *handleForOp(scf::ForOp forOp, cfg::ControlFlowGraph &cfg,
                                 cfg::BasicBlock *currentBB,
                                 cfg::BasicBlock *parentStructure = nullptr);
 
+  // 处理 scf.if 操作，返回 if 后面的基本块
+  cfg::BasicBlock *handleIfOp(scf::IfOp ifOp, cfg::ControlFlowGraph &cfg,
+                              cfg::BasicBlock *currentBB,
+                              cfg::BasicBlock *parentStructure = nullptr);
+
+  // 处理 scf.for 操作，返回 for 后面的基本块
+  cfg::BasicBlock *handleForOp(scf::ForOp forOp, cfg::ControlFlowGraph &cfg,
+                               cfg::BasicBlock *currentBB,
+                               cfg::BasicBlock *parentStructure = nullptr);
+
   // 处理 scf.while 操作，返回 while 后面的基本块
-  cfg::BasicBlock *handleWhileOp(scf::WhileOp whileOp, cfg::ControlFlowGraph &cfg,
-                                  cfg::BasicBlock *currentBB,
-                                  cfg::BasicBlock *parentStructure = nullptr);
+  cfg::BasicBlock *handleWhileOp(scf::WhileOp whileOp,
+                                 cfg::ControlFlowGraph &cfg,
+                                 cfg::BasicBlock *currentBB,
+                                 cfg::BasicBlock *parentStructure = nullptr);
 
   // 处理 cf.cond_br 操作，返回条件分支后面的基本块
-  cfg::BasicBlock *handleCondBranchOp(cf::CondBranchOp condBrOp, cfg::ControlFlowGraph &cfg,
-                                       cfg::BasicBlock *currentBB,
-                                       cfg::BasicBlock *parentStructure = nullptr);
+  cfg::BasicBlock *
+  handleCondBranchOp(cf::CondBranchOp condBrOp, cfg::ControlFlowGraph &cfg,
+                     cfg::BasicBlock *currentBB,
+                     cfg::BasicBlock *parentStructure = nullptr);
 
   // 处理 cf.br 操作，返回无条件跳转后面的基本块
   cfg::BasicBlock *handleBranchOp(cf::BranchOp brOp, cfg::ControlFlowGraph &cfg,
-                                   cfg::BasicBlock *currentBB,
-                                   cfg::BasicBlock *parentStructure = nullptr);
+                                  cfg::BasicBlock *currentBB,
+                                  cfg::BasicBlock *parentStructure = nullptr);
 
   // 创建一个新的指令并添加到 basic block
-  cfg::Instruction *createInstruction(Operation *op, cfg::BasicBlock *parentBlock, cfg::ControlFlowGraph &cfg);
+  cfg::Instruction *createInstruction(Operation *op,
+                                      cfg::BasicBlock *parentBlock,
+                                      cfg::ControlFlowGraph &cfg);
 
   // 1. 快速收集所有的 IF_COND 基本块
   // 遍历 CFG 中所有基本块，返回类型为 IF_COND 的基本块列表
-  SmallVector<cfg::BasicBlock *> collectIfCondBlocks(cfg::ControlFlowGraph &cfg);
+  SmallVector<cfg::BasicBlock *>
+  collectIfCondBlocks(cfg::ControlFlowGraph &cfg);
 
   // 2. 快速收集所有的 FOR_COND 基本块
   // 遍历 CFG 中所有基本块，返回类型为 FOR_COND 的基本块列表
-  SmallVector<cfg::BasicBlock *> collectForCondBlocks(cfg::ControlFlowGraph &cfg);
+  SmallVector<cfg::BasicBlock *>
+  collectForCondBlocks(cfg::ControlFlowGraph &cfg);
 
   // 3. 获取 IF_COND 对应的 yield value 和 result value 的对应关系
   // 参数: IF_COND 类型的基本块
-  // 返回: IfYieldResultMapping 结构体，包含 then/else 的 yield values 和 result values
-  std::optional<IfYieldResultMapping> getIfYieldResultMapping(cfg::BasicBlock *ifCondBB);
+  // 返回: IfYieldResultMapping 结构体，包含 then/else 的 yield values 和 result
+  // values
+  std::optional<IfYieldResultMapping>
+  getIfYieldResultMapping(cfg::BasicBlock *ifCondBB);
 
   // 4. 获取 FOR_COND 对应的 yield value 和 iter args value 的对应关系
   // 参数: FOR_COND 类型的基本块
-  // 返回: ForYieldIterArgMapping 结构体，包含 yield values、iter_args 和 result values
-  std::optional<ForYieldIterArgMapping> getForYieldIterArgMapping(cfg::BasicBlock *forCondBB);
+  // 返回: ForYieldIterArgMapping 结构体，包含 yield values、iter_args 和 result
+  // values
+  std::optional<ForYieldIterArgMapping>
+  getForYieldIterArgMapping(cfg::BasicBlock *forCondBB);
 
   // 5. 快速收集所有的 COND_BR 基本块
   // 遍历 CFG 中所有基本块，返回类型为 COND_BR 的基本块列表
-  SmallVector<cfg::BasicBlock *> collectCondBrBlocks(cfg::ControlFlowGraph &cfg);
+  SmallVector<cfg::BasicBlock *>
+  collectCondBrBlocks(cfg::ControlFlowGraph &cfg);
 
   // 6. 获取 COND_BR 对应的条件分支信息
   // 参数: COND_BR 类型的基本块
   // 返回: CondBranchMapping 结构体，包含条件、目标块和参数信息
-  std::optional<CondBranchMapping> getCondBranchMapping(cfg::BasicBlock *condBrBB);
+  std::optional<CondBranchMapping>
+  getCondBranchMapping(cfg::BasicBlock *condBrBB);
 
   // 7. 快速收集所有的 BR 基本块
   // 遍历 CFG 中所有基本块，返回类型为 BR 的基本块列表
@@ -207,20 +221,21 @@ public:
   DenseMap<Block *, cfg::BasicBlock *> blockToBasicBlockMap;
 
   // 获取或创建 Block 对应的 BasicBlock
-  cfg::BasicBlock *getOrCreateBasicBlockForBlock(Block *block, cfg::ControlFlowGraph &cfg,
-                                                  cfg::BasicBlock *parentStructure = nullptr);
+  cfg::BasicBlock *
+  getOrCreateBasicBlockForBlock(Block *block, cfg::ControlFlowGraph &cfg,
+                                cfg::BasicBlock *parentStructure = nullptr);
 
   // 注册 Block 到 BasicBlock 的映射
   void registerBlockMapping(Block *mlirBlock, cfg::BasicBlock *cfgBlock);
 
 private:
-  size_t nextInstructionId = 0;      // 下一个指令 ID
+  size_t nextInstructionId = 0; // 下一个指令 ID
 };
 
 // 创建 Pass 的工厂函数
 std::unique_ptr<OperationPass<mlir::ModuleOp>> createBuildCFGPass();
 
-}
+} // namespace cfg
 } // namespace triton
 } // namespace mlir
 

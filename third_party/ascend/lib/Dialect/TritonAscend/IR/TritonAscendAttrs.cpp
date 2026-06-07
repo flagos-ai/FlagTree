@@ -1,4 +1,5 @@
-//===- TritonAscendAttrs.cpp - TritonAscend Attributes Definition --------------===//
+//===- TritonAscendAttrs.cpp - TritonAscend Attributes Definition
+//--------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,6 +12,4 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
-namespace mlir::triton::ascend {
-
-} // namespace mlir::triton::ascend
+namespace mlir::triton::ascend {} // namespace mlir::triton::ascend
