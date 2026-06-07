@@ -191,7 +191,7 @@ def test():
     torch_output = torch_matmul(a, b, activation)
     print(f"triton_output_with_fp16_inputs={triton_output}")
     print(f"torch_output_with_fp16_inputs={torch_output}")
-    torch.testing.assert_close(triton_output, torch_output, atol=1e-2, rtol=1e-2)  # Origin is 1e-3, 1e-3
+    torch.testing.assert_close(triton_output, torch_output, atol=1e-3, rtol=1e-3)
     print("Passed")
 
 
