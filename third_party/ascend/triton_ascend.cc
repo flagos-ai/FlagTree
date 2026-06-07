@@ -12,18 +12,18 @@
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToHIVM/Passes.h"
 #include "ascend/include/TritonToLLVM/Passes.h"
-#include "incubated/Conversion/AutoBlockify/Passes.h"
+#include "ascend/include/AutoBlockify/Passes.h"
 #include "incubated/Conversion/DiscreteMaskAccessConversion/Passes.h"
-#include "incubated/Conversion/TritonToAnnotation/Passes.h"
+#include "ascend/include/TritonToAnnotation/Passes.h"
 #include "incubated/Conversion/TritonToLinalgIncubated/Passes.h"
 #include "incubated/Conversion/TritonToStructuredIncubated/Passes.h"
 #include "incubated/Conversion/TritonToUnstructureIncubated/Passes.h"
-#include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
+#include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 
-#include "incubated/Conversion/DynamicCVPipeline/Common/BufferCountManager.h"
-#include "incubated/Conversion/DynamicCVPipeline/Passes.h"
+#include "ascend/include/DynamicCVPipeline/Common/BufferCountManager.h"
+#include "ascend/include/DynamicCVPipeline/Passes.h"
 // todo: this code will be removed in version 530.
-#include "incubated/Conversion/TritonAffinityOpt/Passes.h"
+#include "ascend/include/TritonAffinityOpt/Passes.h"
 
 #include "ir.h" // TritonOpBuilder
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -343,7 +343,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
         [](mlir::PassManager &pm, bool enableMaskFallbackConversion,
            bool optimizeDynamicOffset) {
           pm.addPass(mlir::triton::createTritonToStructuredIncubatedPass(
-              enableMaskFallbackConversion, optimizeDynamicOffset, false));
+              enableMaskFallbackConversion, optimizeDynamicOffset));
         });
 
   m.def("add_triton_to_annotation", [](mlir::PassManager &pm) {
@@ -379,6 +379,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
     DiscreteMaskAccessConversionOptions opts;
     opts.compileOn91095 = compileOn91095;
     opts.forceSimtTemplate = forceSimtTemplate;
+    opts.enableSyncBlockLock = enableSyncBlockLock;
     pm.addPass(mlir::triton::createDiscreteMaskAccessConversionPass(opts));
   });
 

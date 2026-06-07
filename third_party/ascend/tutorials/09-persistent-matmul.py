@@ -198,7 +198,7 @@ def get_configs(dtype):
     return {
         torch.float16: {
             "BLOCK_SIZE_M": 128,
-            "BLOCK_SIZE_N": 256,
+            "BLOCK_SIZE_N": 64,  # Origin is 256, ub overflow
             "BLOCK_SIZE_K": 64,
             "GROUP_SIZE_M": 8,
             "num_stages": 3,

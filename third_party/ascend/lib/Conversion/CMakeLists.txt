@@ -1,3 +1,0 @@
-add_subdirectory(TritonToHIVM)
-add_subdirectory(TritonToHFusion)
-add_subdirectory(TritonToLLVM)

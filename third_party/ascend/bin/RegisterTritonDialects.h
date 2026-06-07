@@ -2,13 +2,13 @@
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToHIVM/Passes.h"
 #include "ascend/include/TritonToLLVM/Passes.h"
-#include "incubated/Conversion/AutoBlockify/Passes.h"
+#include "ascend/include/AutoBlockify/Passes.h"
 #include "incubated/Conversion/DiscreteMaskAccessConversion/Passes.h"
-#include "incubated/Conversion/DynamicCVPipeline/AddControlFlowCondition.h"
-#include "incubated/Conversion/TritonToAnnotation/Passes.h"
+#include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
+#include "ascend/include/TritonToAnnotation/Passes.h"
 #include "incubated/Conversion/TritonToLinalgIncubated/Passes.h"
 
-#include "incubated/Conversion/TritonToGraph/Passes.h"
+#include "ascend/include/TritonToGraph/Passes.h"
 #include "incubated/Conversion/TritonToStructuredIncubated/Passes.h"
 #include "incubated/Conversion/TritonToUnstructureIncubated/Passes.h"
 
@@ -20,7 +20,7 @@
 
 #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "amd/include/TritonAMDGPUTransforms/Passes.h"
-#include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
+#include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h"
