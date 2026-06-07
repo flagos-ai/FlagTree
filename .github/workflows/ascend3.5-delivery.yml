@@ -12,7 +12,7 @@ on:
         default: '3.11'
       PLATFORM:
         required: true
-        default: 'x86_64'
+        default: 'aarch64'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -28,7 +28,7 @@ on:
       PLATFORM:
         type: string
         required: true
-        default: 'x86_64'
+        default: 'aarch64'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
