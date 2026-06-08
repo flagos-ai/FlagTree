@@ -670,15 +670,20 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
     %c1 = arith.constant 1 : index
     %c8 = arith.constant 8 : index
     %zero = arith.constant dense<0.000000e+00> : tensor<64x64xf32, #mma>
+    // CHECK: %[[RES:.+]] = scf.for
     %res = scf.for %iv = %c0 to %c8 step %c1 iter_args(%acc = %zero) -> (tensor<64x64xf32, #mma>) {
       // CHECK: %[[DOT:.+]] = ttng.warp_group_dot
       %dot = ttng.warp_group_dot %a, %b, %acc {inputPrecision = 0 : i32} : !ttg.memdesc<64x64xbf16, #shared, #smem> * !ttg.memdesc<64x64xbf16, #shared1, #smem, mutable> -> tensor<64x64xf32, #mma>
       // CHECK-NEXT: ttng.warp_group_dot_commit
+      // CHECK-NEXT: %[[DEPTH:.+]]:{{.*}} = ttng.warp_group_dot_wait %[[DOT]]{{.*}} {pendings = 1 : i32}
       // CHECK-NEXT: ttng.arrive_barrier {{.*}} {release_fence = true}
-      // CHECK-NEXT: %[[WAIT:.+]]:{{.*}} = ttng.warp_group_dot_wait %[[DOT]]{{.*}} {pendings = 0 : i32}
       ttng.arrive_barrier %barrier, 128 {release_fence = true} : !ttg.memdesc<1xi64, #barrier_shared, #smem, mutable>
+      // CHECK-NEXT: scf.yield %[[DEPTH]]#0
       scf.yield %dot : tensor<64x64xf32, #mma>
     }
+    // CHECK-NEXT: }
+    // CHECK-NEXT: %[[FINAL:.+]] = ttng.warp_group_dot_wait %[[RES]] {pendings = 0 : i32}
+    // CHECK-NEXT: tt.store %{{.*}}, %[[FINAL]]
     tt.store %out, %res : tensor<64x64x!tt.ptr<f32>, #mma>
     tt.return
   }

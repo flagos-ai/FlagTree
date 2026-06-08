@@ -175,6 +175,23 @@ static SmallVector<int64_t> getPermutedAllocShape(MemDescType srcTy,
                     srcTy.getAllocShape().end() - order.size());
   return allocShape;
 }
+
+static bool supportsWGMMAOperandTranspose(Type elementType) {
+  return elementType.isF16() || elementType.isBF16();
+}
+
+static bool isLegalWGMMAOperandDescriptorLayout(MemDescType type,
+                                                int operandIdx) {
+  auto nvmma = dyn_cast<NVMMASharedEncodingAttr>(type.getEncoding());
+  if (!nvmma || supportsWGMMAOperandTranspose(type.getElementType()))
+    return true;
+
+  if (operandIdx == 0)
+    return !nvmma.getTransposed();
+  if (operandIdx == 1)
+    return nvmma.getTransposed();
+  return false;
+}
 #endif
 
 // Given
@@ -305,6 +322,8 @@ public:
       if (srcMemDescTy && srcMemDescTy.getShape() == srcTy.getShape() &&
           srcMemDescTy.getElementType() == srcTy.getElementType() &&
           isBackedByLocalAlloc(srcMemDesc)) {
+        if (!supportsWGMMAOperandTranspose(srcMemDescTy.getElementType()))
+          return failure();
         Attribute viewEncoding;
         Dialect &srcDialect = srcMemDescTy.getEncoding().getDialect();
         auto srcInferLayoutInterface =
@@ -391,6 +410,8 @@ public:
     if (srcMemDescTy.getShape() != localLoadTy.getShape() ||
         srcMemDescTy.getElementType() != localLoadTy.getElementType())
       return failure();
+    if (!supportsWGMMAOperandTranspose(srcMemDescTy.getElementType()))
+      return failure();
     if (!isBackedByLocalAlloc(srcMemDesc))
       return failure();
 
@@ -474,6 +495,8 @@ public:
 
     if (srcMemDescTy.getShape() != localLoadTy.getShape() ||
         srcMemDescTy.getElementType() != localLoadTy.getElementType())
+      return failure();
+    if (!supportsWGMMAOperandTranspose(srcMemDescTy.getElementType()))
       return failure();
 
     auto transposedShape =
@@ -565,6 +588,8 @@ public:
 
     if (srcMemDescTy.getShape() != localLoadTy.getShape() ||
         srcMemDescTy.getElementType() != localLoadTy.getElementType())
+      return failure();
+    if (!supportsWGMMAOperandTranspose(srcMemDescTy.getElementType()))
       return failure();
 
     auto transposedShape =
@@ -661,6 +686,8 @@ public:
     if (srcMemDescTy.getShape() != srcLocalLoadTy.getShape() ||
         srcMemDescTy.getElementType() != srcLocalLoadTy.getElementType())
       return failure();
+    if (!supportsWGMMAOperandTranspose(srcMemDescTy.getElementType()))
+      return failure();
 
     auto transposedShape =
         applyPermutation(srcMemDescTy.getShape(), trans.getOrder());
@@ -748,6 +775,8 @@ public:
     if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(
             srcMemDescTy.getEncoding()))
       return failure();
+    if (!isLegalWGMMAOperandDescriptorLayout(srcMemDescTy, /*operandIdx=*/0))
+      return failure();
 
     auto newDot = triton::nvidia_gpu::WarpGroupDotOp::create(
         rewriter, dotOp.getLoc(), dotOp.getD().getType(), srcMemDesc,
@@ -797,6 +826,8 @@ public:
         srcMemDescTy.getElementType() != allocTy.getElementType() ||
         srcMemDescTy.getMemorySpace() != allocTy.getMemorySpace() ||
         srcMemDescTy.getEncoding() != allocTy.getEncoding())
+      return failure();
+    if (!isLegalWGMMAOperandDescriptorLayout(srcMemDescTy, /*operandIdx=*/1))
       return failure();
 
     if (!llvm::all_of(allocOp->getUsers(), [](Operation *user) {
