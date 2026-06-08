@@ -28,15 +28,17 @@ import triton.runtime as runtime
 from triton._C.clear_l2 import do_bench_clear
 
 
-def do_bench_npu(funcs, warmup=25, active=100, prof_dir=None, clear_l2_cache=False, keep_res=False, collect_prof=True,
-                 return_mode="mean", quantiles=None):
+def do_bench_npu(funcs, warmup=5, active=30, prof_dir=None, clear_l2_cache=False, keep_res=False):
     import torch
     import torch_npu
 
-    assert return_mode in ["min", "max", "mean", "median", "all"]
-
     if not isinstance(funcs, list):
         funcs = [funcs]
+
+    # warmup kernel
+    for fn in funcs:
+        fn()
+        torch.npu.synchronize()
 
     experimental_config = torch_npu.profiler._ExperimentalConfig(
         aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
@@ -52,73 +54,41 @@ def do_bench_npu(funcs, warmup=25, active=100, prof_dir=None, clear_l2_cache=Fal
         pid = process.pid
         process_name = process.name
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-        base_path = os.path.join(runtime.cache.get_home_dir(), ".triton", "profile_results")
+        base_path = os.path.join(
+            runtime.cache.get_home_dir(), ".triton", "profile_results"
+        )
         torch_path = os.path.join(base_path, f"prof_{timestamp}_{process_name}-{pid}")
 
     if clear_l2_cache:
-        device = triton.runtime.driver.active.get_current_device()
-        stream = triton.runtime.driver.active.get_current_stream(device)
         buffer = runtime.driver.active.get_empty_cache_for_benchmark()
-        do_bench_clear(buffer.data_ptr(), buffer.numel(), stream)
+        buffer = buffer.float()  # to avoid type cast
+        buffer.sum()
         torch.npu.synchronize()  # shake out of any npu error
 
-    # cal warmup num
-    di = runtime.driver.active.get_device_interface()
-    for fn in funcs:
-        fn()
-        di.synchronize()
-
-    cache = runtime.driver.active.get_empty_cache_for_benchmark()
-    start_event = di.Event(enable_timing=True)
-    end_event = di.Event(enable_timing=True)
-    start_event.record()
-    for fn in funcs:
-        for _ in range(5):
-            cache.zero_()
-            fn()
-            di.synchronize()
-    end_event.record()
-    estimate_ms = start_event.elapsed_time(end_event) / 5
-
-    n_warmup = min(5, max(1, int(warmup / estimate_ms)))
-    n_repeat = min(30, max(1, int(active / estimate_ms)))
-
-    # cal warmup num
-    total = n_warmup + n_repeat
-    print(f"total={total}, n_warmup={n_warmup}, n_repeat={n_repeat}")
-
-    # Run for 300 μs to raise the frequency to 800.
-    mat_a = torch.randn(4096, 4096).to(dtype=torch.bfloat16).npu()
-    mat_b = torch.randn(4096, 4096).to(dtype=torch.bfloat16).npu()
-    mat_c = torch.matmul(mat_a, mat_b)
-    mat_c.cpu()
+    total = warmup + active
     with torch_npu.profiler.profile(
-            activities=[torch_npu.profiler.ProfilerActivity.NPU],
-            on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(torch_path),
-            record_shapes=False,
-            profile_memory=False,
-            with_stack=False,
-            with_flops=False,
-            with_modules=False,
-            experimental_config=experimental_config,
+        activities=[torch_npu.profiler.ProfilerActivity.NPU],
+        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(torch_path),
+        record_shapes=False,
+        profile_memory=False,
+        with_stack=False,
+        with_flops=False,
+        with_modules=False,
+        experimental_config=experimental_config,
     ) as prof:
         for fn in funcs:
             for _ in builtins.range(total):
                 if clear_l2_cache:
-                    do_bench_clear(buffer.data_ptr(), buffer.numel(), stream)
+                    buffer.sum()  # use buffer read to clear l2 cache
                     torch.npu.synchronize()
                 fn()
                 torch.npu.synchronize()
     if clear_l2_cache:
         del buffer
-    if collect_prof:
-        time_cost = _collect_prof_result(torch_path, funcs, n_warmup, n_repeat, return_mode=return_mode,
-                                         quantiles=quantiles)  # read kernel_details.csv
-    else:
-        time_cost = _collect_single(torch_path, return_mode=return_mode)  # read op_static.csv
+
+    time_cost = _collect_prof_result(torch_path, funcs, warmup, active)
     _rm_dic(keep_res, torch_path)
     return time_cost
-
 
 # keep the original behavior to get the statistics for the specified kernel func
 def _collect_single(base_dir: str, key: str = None, print_flag=True, return_mode="mean") -> float:
