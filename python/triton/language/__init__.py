@@ -34,7 +34,7 @@ from .standard import (
     zeros_like,
 )
 
-if FLAGTREE_BACKEND not in ("ascend",):
+if FLAGTREE_BACKEND not in ("ascend", ):
     from .standard import cdiv
     from .core import async_task
 
@@ -132,7 +132,7 @@ from .core import (
 )
 from .math import (umulhi, exp, exp2, fma, log, log2, cos, rsqrt, sin, sqrt, sqrt_rn, abs, fdiv, div_rn, erf, floor,
                    ceil)
-if FLAGTREE_BACKEND in ("ascend",):
+if FLAGTREE_BACKEND in ("ascend", ):
     from .math import cdiv
 
 from .random import (
