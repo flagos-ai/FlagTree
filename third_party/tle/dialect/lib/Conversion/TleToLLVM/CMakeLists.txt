@@ -9,4 +9,5 @@ add_triton_library(TleToLLVM
     DEPENDS
     TleTableGen
     TritonGPUTypeInterfacesIncGen
+    NVGPUAttrDefsIncGen
 )

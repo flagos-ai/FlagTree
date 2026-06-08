@@ -10,6 +10,7 @@ add_triton_library(TritonTLETransforms
 
   DEPENDS
   TritonTLETransformsIncGen
+  NVWSAttrDefsIncGen
 
   LINK_LIBS PUBLIC
   TritonGPUIR
