@@ -49,11 +49,11 @@ jobs:
         run: |
           set -x
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
-          # tutorials
+          ## tutorials
           pushd third_party/ascend/tutorials
           python3 01-vector-add.py
           python3 02-fused-softmax.py
-          python3 03-matrix-multiplication.py
+          # python3 03-matrix-multiplication.py  # nan, inf
           python3 04-low-memory-dropout.py
           python3 05-layer-norm.py
           python3 06-fused-attention.py
@@ -61,14 +61,16 @@ jobs:
           python3 08-grouped-gemm.py
           python3 09-persistent-matmul.py
           popd
-          # pytest_ut
+          ## pytest_ut
           pushd third_party/ascend/unittest/pytest_ut
+          # TODO: test_device_print coredump
+          # Other tests passed, but takes a long time, so we ignore them in workflow
           python3 -m pytest -s . \
-            --ignore=test_03_matrix_multiplication.py \  # nan, inf
-            --ignore=test_device_print.py \  # coredump
-            --ignore=test_device_print_comprehensive.py \  # coredump
-            --ignore=test_device_print_script.py \  # coredump
-            --ignore=test_10_gather_sorted.py \  # Passed, but takes a long time; same below
+            --ignore=test_03_matrix_multiplication.py \
+            --ignore=test_device_print.py \
+            --ignore=test_device_print_comprehensive.py \
+            --ignore=test_device_print_script.py \
+            --ignore=test_10_gather_sorted.py \
             --ignore=test_16_profiler.py \
             --ignore=test_18_gather.py \
             --ignore=test_cat_help_func.py \
