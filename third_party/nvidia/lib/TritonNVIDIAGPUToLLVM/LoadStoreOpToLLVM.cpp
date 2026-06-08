@@ -204,6 +204,14 @@ struct LoadStoreConversionBase {
   }
 
 #ifdef __TLE__
+  bool isTleSharedTensorPtr(Value ptr) const {
+    auto ptrTensorTy = dyn_cast<RankedTensorType>(ptr.getType());
+    auto ptrElemTy = ptrTensorTy
+                         ? dyn_cast<PointerType>(ptrTensorTy.getElementType())
+                         : PointerType();
+    return ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
+  }
+
   unsigned getMaxVectorSizeByAlignment(Value ptr) const {
     auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
     if (!tensorTy)
@@ -225,6 +233,18 @@ struct LoadStoreConversionBase {
     unsigned maxMultiple = std::max<unsigned>(maxMultipleBytes / elemBytes, 1);
 
     return std::min<unsigned>(128 / pointeeBitWidth, maxMultiple);
+  }
+
+  unsigned getTleSharedPointerVectorSize(Value ptr, unsigned vec) const {
+    if (!isTleSharedTensorPtr(ptr))
+      return vec;
+
+    // AxisInfo contiguity and TLE layout hints may both propose vectorized
+    // shared-memory accesses. They are legal only up to the width whose first
+    // element alignment is proven by AxisInfo divisibility.
+    unsigned hint = tte::inferTlePointerLayoutVectorHint(ptr);
+    unsigned alignmentBound = getMaxVectorSizeByAlignment(ptr);
+    return std::min(std::max(vec, hint), alignmentBound);
   }
 #endif
 
@@ -274,21 +294,8 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         typeConverter->convertType(getElementTypeOrSelf(op.getType()));
     unsigned vec = getVectorSize(ptr);
 #ifdef __TLE__
-    auto ptrTensorTy = dyn_cast<RankedTensorType>(ptr.getType());
-    auto ptrElemTy = ptrTensorTy
-                         ? dyn_cast<PointerType>(ptrTensorTy.getElementType())
-                         : PointerType();
-    bool isSharedTensorPtr =
-        ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
-    if (!llMask && isSharedTensorPtr) {
-      // For TLE local/shared pointer chains, AxisInfo contiguity can be
-      // conservative on packed contiguous lanes. The layout hint may recover
-      // the lane grouping, but it is only legal up to the vector width whose
-      // first element alignment is proven by AxisInfo divisibility.
-      unsigned hint = tte::inferTlePointerLayoutVectorHint(ptr);
-      unsigned alignmentBound = getMaxVectorSizeByAlignment(ptr);
-      vec = std::max(vec, std::min(hint, alignmentBound));
-    }
+    if (!llMask)
+      vec = getTleSharedPointerVectorSize(ptr, vec);
 #endif
     unsigned numElems = getTotalElemsPerThread(ptr.getType());
     unsigned vecOrig = vec;
@@ -579,6 +586,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     const bool isClusterSharedPtr =
         inferPtrAddrSpace(ptrElems).value_or(1) ==
         static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster);
+    vec = getTleSharedPointerVectorSize(ptr, vec);
 #else
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     auto valueElems = unpackLLElements(loc, llValue, rewriter);
