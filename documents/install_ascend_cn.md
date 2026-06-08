@@ -42,7 +42,7 @@ docker exec -it ${CONTAINER} /bin/bash
 
 #### 1.2 安装 cann
 
-- 910B 镜像中已经安装 A2 cann，对于 910C 需在 https://www.hiascend.com/developer/download/community/result?module=cann 注册账号后下载对应平台的 `cann-ops`
+- 910B 镜像中已经安装 A2 cann。对于 910C 需在 https://www.hiascend.com/developer/download/community/result?module=cann 注册账号后下载对应平台的 `cann-ops`。
 
 ```shell
 # cann-toolkit (A2|A3)
@@ -112,13 +112,18 @@ python3 -m pip show flagtree
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
 git checkout -b triton_v3.5.x origin/triton_v3.5.x
+export PATH=~/.flagtree/ascend/llvm-7d5de303-ubuntu-aarch64-python311-compat/bin/:${PATH}  # clang
 export FLAGTREE_BACKEND=ascend
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
 ### 3. 测试验证
 
+测试前需执行 `source /usr/local/Ascend/ascend-toolkit/set_env.sh`
+
 参考 [Tests of ascend backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/ascend-build-and-test.yml)
+
+---
 
 ## 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend) (Triton 3.2)
 
@@ -164,7 +169,7 @@ docker exec -it ${CONTAINER} /bin/bash
 
 #### 1.2 安装 cann
 
-- 910C 镜像中已经安装 A3 cann，对于 910B 需在 https://www.hiascend.com/developer/download/community/result?module=cann 注册账号后下载对应平台的 `cann-ops`
+- 910C 镜像中已经安装 A3 cann。对于 910B 需在 https://www.hiascend.com/developer/download/community/result?module=cann 注册账号后下载对应平台的 `cann-ops`。
 
 ```shell
 # cann-toolkit (A2|A3)
@@ -241,5 +246,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
 ### 3. 测试验证
+
+测试前需执行 `source /usr/local/Ascend/ascend-toolkit/set_env.sh`
 
 参考 [Tests of ascend backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/.github/workflows/ascend-build-and-test.yml)
