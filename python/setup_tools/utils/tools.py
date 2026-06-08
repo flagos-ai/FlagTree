@@ -73,7 +73,10 @@ class Module:
     name: str
     url: str
     commit_id: str = None
+    branch: str = None
+    tag: str = None
     dst_path: str = None
+    spec_submodule: str = None
 
 
 def dir_rollback(deep, base_path):
@@ -185,11 +188,22 @@ class DownloadManager:
             return False
         retry_count = NetConfig.max_retry
         has_specialization_commit = module.commit_id is not None
+        has_specialization_branch = module.branch is not None
+        has_specialization_tag = module.tag is not None
+        has_specialization_submodule = module.spec_submodule is not None
         while (retry_count):
             try:
-                repo = git.Repo.clone_from(module.url, module.dst_path)
+                clone_kwargs = {}
+                if has_specialization_branch:
+                    clone_kwargs['branch'] = module.branch
+                repo = git.Repo.clone_from(module.url, module.dst_path, **clone_kwargs)
                 if has_specialization_commit:
                     repo.git.checkout(module.commit_id)
+                elif has_specialization_tag:
+                    repo.git.checkout(module.tag)
+                if has_specialization_submodule:
+                    submodule = repo.submodules[module.spec_submodule]
+                    submodule.update(init=True, recursive=False)
                 return True
             except Exception:
                 retry_count -= 1
@@ -199,13 +213,24 @@ class DownloadManager:
     def sys_clone(self, module):
         retry_count = NetConfig.max_retry
         has_specialization_commit = module.commit_id is not None
+        has_specialization_branch = module.branch is not None
+        has_specialization_tag = module.tag is not None
+        has_specialization_submodule = module.spec_submodule is not None
         while (retry_count):
             try:
-                os.system(f"git clone {module.url} {module.dst_path}")
+                clone_cmd = "git clone"
+                if has_specialization_branch:
+                    clone_cmd += f" -b {module.branch}"
+                clone_cmd += f" {module.url} {module.dst_path}"
+                os.system(clone_cmd)
                 if has_specialization_commit:
-                    os.system(f"cd {module.dst_path}")
-                    os.system(f"git checkout {module.commit_id}")
-                    os.system("cd -")
+                    os.system(f"cd {module.dst_path} && git checkout {module.commit_id}")
+                elif has_specialization_tag:
+                    os.system(f"cd {module.dst_path} && git checkout {module.tag}")
+                if has_specialization_submodule:
+                    os.system(
+                        f"cd {module.dst_path} && git submodule update --init --recursive --force {module.spec_submodule}"
+                    )
                 return True
             except Exception:
                 retry_count -= 1
