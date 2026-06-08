@@ -23,7 +23,7 @@ def _get_flagtree_root() -> str:
 @dataclass
 class FlagtreeConfigs:
     default_backends: tuple = ("nvidia", "amd")
-    plugin_backends: tuple = ("cambricon", "ascend", "aipu", "tsingmicro", "enflame", "hcu")
+    plugin_backends: tuple = ("cambricon", "ascend", "aipu", "tsingmicro", "enflame", "hcu", "thrive")
     use_cuda_toolkit_backends: tuple = ('aipu', )
     language_extra_backends: tuple = ('xpu', 'mthreads', "cambricon")
     ext_sourcedir: str = "triton/_C/"
@@ -38,6 +38,7 @@ class FlagtreeConfigs:
         "mthreads": "musa",
         "ascend": "ascend",
         "cambricon": "mlu",
+        "thrive": "thrive",
     }))
 
     def __post_init__(self):

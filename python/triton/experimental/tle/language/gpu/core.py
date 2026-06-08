@@ -4,6 +4,7 @@ import triton.language.core as tl
 from typing import Optional, Sequence
 from enum import Enum
 from . import types as tle
+from .mthreads import copy as mthreads_copy
 from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
 
 from triton.language.core import (
@@ -360,6 +361,7 @@ def copy(
         TMA copy with offsets:
             tle.copy(tma_desc, local_buf, [64, 64], [x_offset, y_offset])
     """
+    mthreads_enabled = mthreads_copy.enabled()
 
     def normcopy(
         src: tl.tensor,
@@ -368,6 +370,8 @@ def copy(
         direction,
         _semantic=None,
     ) -> None:
+        if mthreads_enabled:
+            mthreads_copy.validate_normal_copy(src, dst, shape, direction)
 
         # Semantic analysis
         try:
@@ -389,8 +393,10 @@ def copy(
 
         try:
             if direction == CopyDirection.GM_TO_LOCAL:
+                # None fills the FlagTree hints slot; TLE copy has no hints to pass.
+                load_extra_args = () if mthreads_enabled else (None, )
                 tt_load = _semantic.load(src, mask, other, boundary_check, padding_option, cache_modifier,
-                                         eviction_policy, volatile, None)
+                                         eviction_policy, volatile, *load_extra_args)
                 local_ptrs = local_ptr(dst, _make_full_indices(dst, _semantic), _semantic=_semantic)
                 _semantic.store(local_ptrs, tt_load, mask, boundary_check, cache_modifier, eviction_policy)
             else:
@@ -492,6 +498,8 @@ def copy(
             raise ValueError(f"Shape parameter must be tuple or list, but got {type(shape)}")
     if is_normcopy:
         return normcopy(src, dst, shape, direction, _semantic)
+    if mthreads_enabled:
+        return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, _semantic)
     else:
         return tmacopy(src, dst, direction, shape, offsets, _semantic)
 

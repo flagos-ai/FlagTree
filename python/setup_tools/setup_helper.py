@@ -530,3 +530,12 @@ cache.store(
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )
+
+# thrive
+cache.store(
+    file="llvm-f6ded0be-ubuntu-x64",
+    condition=("thrive" == flagtree_backend),
+    url="https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-f6ded0be-ubuntu-x64.tar.gz",
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
+)
