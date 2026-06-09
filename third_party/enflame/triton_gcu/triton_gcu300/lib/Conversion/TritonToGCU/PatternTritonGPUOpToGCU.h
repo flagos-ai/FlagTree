@@ -32,7 +32,7 @@ struct GCUInfo {
 };
 
 static const GCUInfo targetInfo[] = {{128, false, 4}, {512, false, 1}};
-}  // namespace
+} // namespace
 
 namespace mlir {
 namespace triton {
@@ -40,7 +40,7 @@ namespace triton {
 namespace gcu {
 class FirstLastUserAnalysis;
 class PrivateDTETagPool;
-}
+} // namespace gcu
 
 void populateReduceOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
@@ -60,7 +60,7 @@ void populateScanOpToGCUPatterns(
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateDTETagPool &pTagPool);
 
-}  // namespace triton
-}  // namespace mlir
+} // namespace triton
+} // namespace mlir
 
 #endif

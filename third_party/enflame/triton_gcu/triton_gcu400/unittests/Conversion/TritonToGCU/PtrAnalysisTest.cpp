@@ -20,8 +20,8 @@
 
 #ifdef TEST_GCU400
 
-#include "Analysis/PtrAnalysis.h"
 #include "Analysis/OpFoldResultUtils.h"
+#include "Analysis/PtrAnalysis.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -60,12 +60,10 @@ protected:
   gpu::GPUModuleOp gpuModule;
 
   void SetUp() override {
-    ctx.loadDialect<arith::ArithDialect, func::FuncDialect,
-                     gpu::GPUDialect, scf::SCFDialect,
-                     cf::ControlFlowDialect,
-                     triton::TritonDialect,
-                     triton::gpu::TritonGPUDialect,
-                     triton::gcu::TritonGCUDialect>();
+    ctx.loadDialect<arith::ArithDialect, func::FuncDialect, gpu::GPUDialect,
+                    scf::SCFDialect, cf::ControlFlowDialect,
+                    triton::TritonDialect, triton::gpu::TritonGPUDialect,
+                    triton::gcu::TritonGCUDialect>();
 
     irRewriter = std::make_unique<IRRewriter>(&ctx);
     auto l = irRewriter->getUnknownLoc();
@@ -89,8 +87,7 @@ protected:
     return s;
   }
 
-  func::FuncOp makeFuncWithArgs(StringRef name,
-                                ArrayRef<Type> argTypes) {
+  func::FuncOp makeFuncWithArgs(StringRef name, ArrayRef<Type> argTypes) {
     auto funcType = FunctionType::get(&ctx, argTypes, {});
     auto funcOp = irRewriter->create<func::FuncOp>(loc(), name, funcType);
     funcOp.addEntryBlock();
@@ -117,10 +114,10 @@ TEST_F(PtrStateRemTest, ConstantAttributes) {
   ASSERT_EQ(result.getRank(), 1);
   auto offsetAttr = getIntAttr(result.offsets[0]);
   ASSERT_TRUE(offsetAttr.has_value());
-  EXPECT_EQ(offsetAttr.value(), 1);  // 10 % 3
+  EXPECT_EQ(offsetAttr.value(), 1); // 10 % 3
   auto strideAttr = getIntAttr(result.strides[0]);
   ASSERT_TRUE(strideAttr.has_value());
-  EXPECT_EQ(strideAttr.value(), 2);  // copied from lhs
+  EXPECT_EQ(strideAttr.value(), 2); // copied from lhs
   auto sizeAttr = getIntAttr(result.sizes[0]);
   ASSERT_TRUE(sizeAttr.has_value());
   EXPECT_EQ(sizeAttr.value(), 1024);
@@ -147,8 +144,8 @@ TEST_F(PtrStateRemTest, MultiDim) {
   result.remState(*irRewriter, loc(), lhs, rhs);
 
   ASSERT_EQ(result.getRank(), 2);
-  EXPECT_EQ(getIntAttr(result.offsets[0]).value(), 20 % 7);  // 6
-  EXPECT_EQ(getIntAttr(result.offsets[1]).value(), 15 % 4);  // 3
+  EXPECT_EQ(getIntAttr(result.offsets[0]).value(), 20 % 7); // 6
+  EXPECT_EQ(getIntAttr(result.offsets[1]).value(), 15 % 4); // 3
 }
 
 // ======================================================================
@@ -167,10 +164,10 @@ TEST_F(PtrStateDivTest, ConstantAttributes) {
   ASSERT_EQ(result.getRank(), 1);
   auto offsetAttr = getIntAttr(result.offsets[0]);
   ASSERT_TRUE(offsetAttr.has_value());
-  EXPECT_EQ(offsetAttr.value(), 3);  // 10 / 3
+  EXPECT_EQ(offsetAttr.value(), 3); // 10 / 3
   auto strideAttr = getIntAttr(result.strides[0]);
   ASSERT_TRUE(strideAttr.has_value());
-  EXPECT_EQ(strideAttr.value(), 2);  // copied from lhs
+  EXPECT_EQ(strideAttr.value(), 2); // copied from lhs
 }
 
 TEST_F(PtrStateDivTest, MultiDim) {
@@ -194,8 +191,8 @@ TEST_F(PtrStateDivTest, MultiDim) {
   result.divState(*irRewriter, loc(), lhs, rhs);
 
   ASSERT_EQ(result.getRank(), 2);
-  EXPECT_EQ(getIntAttr(result.offsets[0]).value(), 21 / 7);    // 3
-  EXPECT_EQ(getIntAttr(result.offsets[1]).value(), 100 / 10);  // 10
+  EXPECT_EQ(getIntAttr(result.offsets[0]).value(), 21 / 7);   // 3
+  EXPECT_EQ(getIntAttr(result.offsets[1]).value(), 100 / 10); // 10
 }
 
 // ======================================================================
@@ -227,7 +224,7 @@ TEST_F(VisitOperandTest, RemSIOp) {
   ASSERT_EQ(state.getRank(), 1);
   auto offsetAttr = getIntAttr(state.offsets[0]);
   ASSERT_TRUE(offsetAttr.has_value());
-  EXPECT_EQ(offsetAttr.value(), 1);  // 10 % 3
+  EXPECT_EQ(offsetAttr.value(), 1); // 10 % 3
 }
 
 // ======================================================================
@@ -257,7 +254,7 @@ TEST_F(VisitOperandTest, DivSIOp) {
   ASSERT_EQ(state.getRank(), 1);
   auto offsetAttr = getIntAttr(state.offsets[0]);
   ASSERT_TRUE(offsetAttr.has_value());
-  EXPECT_EQ(offsetAttr.value(), 3);  // 10 / 3
+  EXPECT_EQ(offsetAttr.value(), 3); // 10 / 3
 }
 
 // ======================================================================
@@ -377,9 +374,8 @@ TEST_F(VisitOperandTest, ReduceOp) {
   knownPtrs[srcArg] = srcState;
 
   PtrState state;
-  bool ok = PtrAnalysis::visitOperand(rewriter(), loc(),
-                                      reduceOp->getResult(0), state,
-                                      knownPtrs);
+  bool ok = PtrAnalysis::visitOperand(rewriter(), loc(), reduceOp->getResult(0),
+                                      state, knownPtrs);
   EXPECT_TRUE(ok);
   // Reduce on axis=0: removes dim 0, keeps dim 1
   ASSERT_EQ(state.getRank(), 1);
@@ -456,12 +452,10 @@ TEST_F(VisitOperandTest, UnrecognizedOp) {
 
 TEST(PreProcessEntryTest, MultiBlockFunction) {
   MLIRContext ctx;
-  ctx.loadDialect<arith::ArithDialect, func::FuncDialect,
-                   gpu::GPUDialect, scf::SCFDialect,
-                   cf::ControlFlowDialect,
-                   triton::TritonDialect,
-                   triton::gpu::TritonGPUDialect,
-                   triton::gcu::TritonGCUDialect>();
+  ctx.loadDialect<arith::ArithDialect, func::FuncDialect, gpu::GPUDialect,
+                  scf::SCFDialect, cf::ControlFlowDialect,
+                  triton::TritonDialect, triton::gpu::TritonGPUDialect,
+                  triton::gcu::TritonGCUDialect>();
 
   OpBuilder builder(&ctx);
   auto loc = builder.getUnknownLoc();
@@ -490,10 +484,10 @@ TEST(PreProcessEntryTest, MultiBlockFunction) {
   block1->addArgument(i32Type, loc);
 
   builder.setInsertionPointToStart(block1);
-  builder.create<triton::LoadOp>(
-      loc, block1->getArgument(0), /*mask=*/Value(), /*other=*/Value(),
-      triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL,
-      /*isVolatile=*/false);
+  builder.create<triton::LoadOp>(loc, block1->getArgument(0), /*mask=*/Value(),
+                                 /*other=*/Value(), triton::CacheModifier::NONE,
+                                 triton::EvictionPolicy::NORMAL,
+                                 /*isVolatile=*/false);
   builder.create<triton::ReturnOp>(loc);
 
   // Back to entry: branch to block1
@@ -521,11 +515,11 @@ TEST(PreProcessEntryTest, MultiBlockFunction) {
   EXPECT_TRUE(isa<cf::CondBranchOp>(terminator));
 }
 
-#else  // TEST_GCU300
+#else // TEST_GCU300
 
 // PtrAnalysis gcu300 has a different API; these tests target gcu400 only.
 TEST(PtrAnalysisTest, Gcu300Placeholder) {
   SUCCEED() << "PtrAnalysis gtest targets gcu400 only";
 }
 
-#endif  // TEST_GCU400
+#endif // TEST_GCU400

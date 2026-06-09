@@ -46,11 +46,9 @@ protected:
 
   void SetUp() override {
     ctx.loadDialect<arith::ArithDialect, func::FuncDialect,
-                     vector::VectorDialect, triton::TritonDialect,
-                     triton::gpu::TritonGPUDialect,
-                     mlir::gcu::GCUDialect>();
-    ctx.getDiagEngine().registerHandler(
-        [](Diagnostic &) { return success(); });
+                    vector::VectorDialect, triton::TritonDialect,
+                    triton::gpu::TritonGPUDialect, mlir::gcu::GCUDialect>();
+    ctx.getDiagEngine().registerHandler([](Diagnostic &) { return success(); });
     builder = std::make_unique<OpBuilder>(&ctx);
     module = ModuleOp::create(builder->getUnknownLoc());
     builder->setInsertionPointToStart(module.getBody());
@@ -64,11 +62,13 @@ protected:
   Location loc() { return builder->getUnknownLoc(); }
 };
 
-// ---------- SelectVectorizeHandler i8 condition branch (lines 62-70) ----------
+// ---------- SelectVectorizeHandler i8 condition branch (lines 62-70)
+// ----------
 
 TEST_F(VectorizeTest, SelectHandler_I8Condition) {
   auto funcType = builder->getFunctionType({}, {});
-  auto funcOp = builder->create<func::FuncOp>(loc(), "test_select_i8", funcType);
+  auto funcOp =
+      builder->create<func::FuncOp>(loc(), "test_select_i8", funcType);
   auto &entry = funcOp.getBody().emplaceBlock();
   OpBuilder::InsertionGuard guard(*builder);
   builder->setInsertionPointToStart(&entry);
@@ -88,7 +88,7 @@ TEST_F(VectorizeTest, SelectHandler_I8Condition) {
 
   auto vecF32 = VectorType::get({static_cast<int64_t>(vectorLength)}, f32Ty);
   auto vecI8 = VectorType::get({static_cast<int64_t>(vectorLength)},
-                                builder->getIntegerType(8));
+                               builder->getIntegerType(8));
 
   SmallVector<float> ones(vectorLength, 1.0f);
   SmallVector<float> zeros(vectorLength, 0.0f);
@@ -169,8 +169,7 @@ TEST_F(VectorizeTest, ExternElementwise_MixedPrecision) {
   builder->setInsertionPointToStart(&entry);
 
   auto externOp = builder->create<triton::ExternElementwiseOp>(
-      loc(), tensorTy,
-      ValueRange{entry.getArgument(0), entry.getArgument(1)},
+      loc(), tensorTy, ValueRange{entry.getArgument(0), entry.getArgument(1)},
       /*libname=*/"libgcu", /*libpath=*/"",
       /*symbol=*/"__gcu_wadd_f32_bf16", /*pure=*/true);
 
@@ -200,8 +199,7 @@ TEST_F(VectorizeTest, ExternElementwise_MixedPrecision) {
 TEST_F(VectorizeTest, Engine_DefaultHandlerVectorize) {
   auto f32Ty = builder->getF32Type();
   auto funcType = builder->getFunctionType({}, {});
-  auto funcOp =
-      builder->create<func::FuncOp>(loc(), "test_engine", funcType);
+  auto funcOp = builder->create<func::FuncOp>(loc(), "test_engine", funcType);
   auto &entry = funcOp.getBody().emplaceBlock();
   OpBuilder::InsertionGuard guard(*builder);
   builder->setInsertionPointToStart(&entry);

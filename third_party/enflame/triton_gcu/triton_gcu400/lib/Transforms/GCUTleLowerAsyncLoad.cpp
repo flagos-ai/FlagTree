@@ -16,8 +16,8 @@
 
 #include "Transforms/Passes.h"
 
-#include "mlir/Pass/Pass.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "mlir/Pass/Pass.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/Support/Debug.h"
@@ -74,8 +74,7 @@ public:
       for (auto localLoadUser : localLoad->getUsers()) {
         if (auto localAllocOp = dyn_cast<ttg::LocalAllocOp>(localLoadUser)) {
           for (auto allocUser : localAllocOp->getUsers()) {
-            if (auto otherLocalLoadOp =
-                    dyn_cast<ttg::LocalLoadOp>(allocUser)) {
+            if (auto otherLocalLoadOp = dyn_cast<ttg::LocalLoadOp>(allocUser)) {
               // Replace local load + local alloc + local load with the new
               // local load when the types already match.
               if (otherLocalLoadOp.getType() == localLoad.getType()) {
@@ -83,8 +82,8 @@ public:
                   otherLocalLoadOp->replaceAllUsesWith(localLoad);
               } else {
                 builder.setInsertionPointAfter(otherLocalLoadOp);
-                auto newLocalLoad = createLocalLoad(
-                    builder, otherLocalLoadOp, localAlloc);
+                auto newLocalLoad =
+                    createLocalLoad(builder, otherLocalLoadOp, localAlloc);
                 otherLocalLoadOp->replaceAllUsesWith(newLocalLoad);
               }
             } else if (auto otherMemDescTransOp =
@@ -141,9 +140,8 @@ public:
     for (Operation *user : loadOp.getDefiningOp()->getResult(0).getUsers()) {
       if (user == loadOp.getDefiningOp())
         continue;
-      if (!firstUse ||
-          (user->getBlock() == firstUse->getBlock() &&
-           user->isBeforeInBlock(firstUse))) {
+      if (!firstUse || (user->getBlock() == firstUse->getBlock() &&
+                        user->isBeforeInBlock(firstUse))) {
         firstUse = user;
       }
     }

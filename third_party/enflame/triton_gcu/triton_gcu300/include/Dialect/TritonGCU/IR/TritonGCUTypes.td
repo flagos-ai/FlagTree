@@ -40,4 +40,3 @@ def TTGCU_PtrType : TTGCUTypeDef<"Ptr", "ptr", [MemRefElementTypeInterface]> {
 }
 
 #endif //TRITON_GCU_TYPES
-

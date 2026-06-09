@@ -27,8 +27,7 @@ def add_gcu64_type_verifier(pipeline):
     pipeline.add_pass('gcu64-type-verifier')
 
 
-def add_gcu_convert_triton_to_tritongpu(pipeline, num_warps: int, threads_per_warp: int,
-                                        num_ctas: int, target: str):
+def add_gcu_convert_triton_to_tritongpu(pipeline, num_warps: int, threads_per_warp: int, num_ctas: int, target: str):
     """Add Triton to TritonGPU conversion pass for GCU.
 
     Args:

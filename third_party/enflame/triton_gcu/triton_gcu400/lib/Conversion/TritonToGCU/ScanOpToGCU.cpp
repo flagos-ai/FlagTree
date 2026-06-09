@@ -1573,12 +1573,12 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                              userAnalysis, replaced2Origin);
 
         // Allocate output in SMEM
-        auto smemOutputType = MemRefType::get(
-            tType.getShape(), outputElemTypes[0], AffineMap{},
-            rewriter.getI64IntegerAttr(2));
-        Value smemOutput = syncAllocOp(
-            rewriter, loc, std::make_pair(op.getOperation(), -1), userAnalysis,
-            replaced2Origin, smemOutputType);
+        auto smemOutputType =
+            MemRefType::get(tType.getShape(), outputElemTypes[0], AffineMap{},
+                            rewriter.getI64IntegerAttr(2));
+        Value smemOutput =
+            syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
+                        userAnalysis, replaced2Origin, smemOutputType);
 
         // Master warp runs miota-based inclusive scan on SMEM directly
         auto masterWarpId = getMasterThreadId(op.getOperation());
@@ -1598,10 +1598,10 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
         rewriter.create<gpu::BarrierOp>(loc);
 
         // Broadcast SMEM output back to per-warp private memory
-        outputs[0] = loadFromSharedMem(
-            rewriter, tag, op.getResultTypes()[0], smemOutput, false,
-            lastUsers[0], std::make_pair(nullptr, -1), userAnalysis,
-            replaced2Origin);
+        outputs[0] =
+            loadFromSharedMem(rewriter, tag, op.getResultTypes()[0], smemOutput,
+                              false, lastUsers[0], std::make_pair(nullptr, -1),
+                              userAnalysis, replaced2Origin);
       } else {
         // Warp-local path: call miota builtin on per-warp data directly
         auto useMiotaAttr = rewriter.getUnitAttr();

@@ -72,7 +72,7 @@ static bool canReuseOaccCache(triton::DotOp op) {
   ModuleOp mod = op->getParentOfType<ModuleOp>();
   int32_t numWarps = triton::gcu::getNumWarps(mod);
 
-  int64_t maxM = OACC_MAX_NUM;  // should get from max register size
+  int64_t maxM = OACC_MAX_NUM; // should get from max register size
   if (numWarps > 4) {
     maxM /= (numWarps / 4);
   }
@@ -195,8 +195,8 @@ struct AnnotateDotAccReusePass
             return;
         // Reject if outer for yields the inner for's accumulator result
         // (double accumulation across both loops).
-        if (auto outerYield = dyn_cast<scf::YieldOp>(
-                outerFor.getBody()->getTerminator())) {
+        if (auto outerYield =
+                dyn_cast<scf::YieldOp>(outerFor.getBody()->getTerminator())) {
           Value innerResult = forOp->getResult(iterArgIdx);
           for (auto yieldedVal : outerYield.getOperands())
             if (yieldedVal == innerResult)

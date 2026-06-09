@@ -2281,4 +2281,3 @@ def GCU_ExternDeviceCallOp : GCU_Op<"extern_device_call",
 }
 
 #endif // GCU_OPS
-

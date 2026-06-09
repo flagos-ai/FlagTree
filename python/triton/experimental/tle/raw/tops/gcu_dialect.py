@@ -33,10 +33,10 @@ from __future__ import annotations
 from mlir import ir
 from mlir.dialects import arith, llvm
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _register_gcu_dialect(ctx: ir.Context) -> None:
     ctx.allow_unregistered_dialects = True
@@ -65,6 +65,7 @@ def _parse(type_str: str) -> ir.Type:
 # ---------------------------------------------------------------------------
 # GCUOps – mirrors every op in GCUOps.td
 # ---------------------------------------------------------------------------
+
 
 class GCUOps:
     """Stateless helper that builds GCU dialect MLIR operations.
@@ -101,18 +102,13 @@ class GCUOps:
         Returns the raw byte-level local memory handle.
         Multiple views can be carved from the same handle at different offsets.
         """
-        raw_ty = ir.MemRefType.get(
-            [ir.ShapedType.get_dynamic_size()],
-            ir.IntegerType.get_signless(8),
-            memory_space=ir.IntegerAttr.get(
-                ir.IntegerType.get_signless(64), 9))
+        raw_ty = ir.MemRefType.get([ir.ShapedType.get_dynamic_size()], ir.IntegerType.get_signless(8),
+                                   memory_space=ir.IntegerAttr.get(ir.IntegerType.get_signless(64), 9))
         return gcu.dynamic_shared_memory(raw_ty)
 
     @staticmethod
-    def view_local(
-        raw: ir.Value, elem_type: ir.Type, num_elems: int,
-        byte_offset: ir.Value
-    ) -> tuple[ir.Value, ir.Value]:
+    def view_local(raw: ir.Value, elem_type: ir.Type, num_elems: int,
+                   byte_offset: ir.Value) -> tuple[ir.Value, ir.Value]:
         """Create a typed view into raw local memory at given byte offset.
 
         Mirrors native Triton IR pattern:
@@ -121,17 +117,11 @@ class GCUOps:
         Returns (typed_local_memref, generic_memref) pair.
         The generic memref (no address space) is suitable for DTE/ptr ops.
         """
-        local_ty = ir.MemRefType.get(
-            [num_elems], elem_type,
-            memory_space=ir.IntegerAttr.get(
-                ir.IntegerType.get_signless(64), 9))
+        local_ty = ir.MemRefType.get([num_elems], elem_type,
+                                     memory_space=ir.IntegerAttr.get(ir.IntegerType.get_signless(64), 9))
         gen_ty = ir.MemRefType.get([num_elems], elem_type)
-        typed = ir.Operation.create(
-            "memref.view", operands=[raw, byte_offset],
-            results=[local_ty]).result
-        generic = ir.Operation.create(
-            "memref.memory_space_cast", operands=[typed],
-            results=[gen_ty]).result
+        typed = ir.Operation.create("memref.view", operands=[raw, byte_offset], results=[local_ty]).result
+        generic = ir.Operation.create("memref.memory_space_cast", operands=[typed], results=[gen_ty]).result
         return typed, generic
 
     @staticmethod
@@ -193,71 +183,54 @@ class GCUOps:
         ir.Operation.create("gcu.memset_async", operands=[dte, dst, value])
 
     @staticmethod
-    def slice_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                    offsets: list[ir.Value], default_value: ir.Value) -> None:
-        ir.Operation.create("gcu.slice_async",
-                            operands=[dte, dst, src, *offsets, default_value])
+    def slice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
+                    default_value: ir.Value) -> None:
+        ir.Operation.create("gcu.slice_async", operands=[dte, dst, src, *offsets, default_value])
 
     @staticmethod
-    def slice_pad_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                        offsets: list[ir.Value], slice_shape: list[ir.Value],
-                        pad_value: ir.Value) -> None:
+    def slice_pad_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
+                        slice_shape: list[ir.Value], pad_value: ir.Value) -> None:
         seg = [1, 1, 1, len(offsets), len(slice_shape), 1]
         seg_attr = ir.DenseI32ArrayAttr.get(seg)
-        ir.Operation.create("gcu.slice_pad_async",
-                            operands=[dte, dst, src, *offsets, *slice_shape, pad_value],
+        ir.Operation.create("gcu.slice_pad_async", operands=[dte, dst, src, *offsets, *slice_shape, pad_value],
                             attributes={"operandSegmentSizes": seg_attr})
 
     @staticmethod
-    def deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                      offsets: list[ir.Value]) -> None:
-        ir.Operation.create("gcu.deslice_async",
-                            operands=[dte, dst, src, *offsets])
+    def deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value]) -> None:
+        ir.Operation.create("gcu.deslice_async", operands=[dte, dst, src, *offsets])
 
     @staticmethod
-    def slice_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                            offsets: list[ir.Value], slice_shape: list[ir.Value],
-                            dst_offsets: list[ir.Value]) -> None:
-        ir.Operation.create("gcu.slice_deslice_async",
-                            operands=[dte, dst, src, *offsets, *slice_shape, *dst_offsets])
+    def slice_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
+                            slice_shape: list[ir.Value], dst_offsets: list[ir.Value]) -> None:
+        ir.Operation.create("gcu.slice_deslice_async", operands=[dte, dst, src, *offsets, *slice_shape, *dst_offsets])
 
     @staticmethod
-    def transpose_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                        layout: list[ir.Value]) -> None:
-        ir.Operation.create("gcu.transpose_async",
-                            operands=[dte, dst, src, *layout])
+    def transpose_async(dte: ir.Value, dst: ir.Value, src: ir.Value, layout: list[ir.Value]) -> None:
+        ir.Operation.create("gcu.transpose_async", operands=[dte, dst, src, *layout])
 
     @staticmethod
     def broadcast_async(dte: ir.Value, dst: ir.Value, src: ir.Value) -> None:
         ir.Operation.create("gcu.broadcast_async", operands=[dte, dst, src])
 
     @staticmethod
-    def slice_broadcast_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                              offsets: list[ir.Value],
+    def slice_broadcast_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
                               slice_shape: list[ir.Value]) -> None:
-        ir.Operation.create("gcu.slice_broadcast_async",
-                            operands=[dte, dst, src, *offsets, *slice_shape])
+        ir.Operation.create("gcu.slice_broadcast_async", operands=[dte, dst, src, *offsets, *slice_shape])
 
     @staticmethod
-    def slice_transpose_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                              offsets: list[ir.Value], layout: list[ir.Value],
-                              pad_value: ir.Value) -> None:
-        ir.Operation.create("gcu.slice_transpose_async",
-                            operands=[dte, dst, src, *offsets, *layout, pad_value])
+    def slice_transpose_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
+                              layout: list[ir.Value], pad_value: ir.Value) -> None:
+        ir.Operation.create("gcu.slice_transpose_async", operands=[dte, dst, src, *offsets, *layout, pad_value])
 
     @staticmethod
-    def transpose_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                                layout: list[ir.Value],
+    def transpose_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, layout: list[ir.Value],
                                 offsets: list[ir.Value]) -> None:
-        ir.Operation.create("gcu.transpose_deslice_async",
-                            operands=[dte, dst, src, *layout, *offsets])
+        ir.Operation.create("gcu.transpose_deslice_async", operands=[dte, dst, src, *layout, *offsets])
 
     @staticmethod
-    def memset_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                             offsets: list[ir.Value],
+    def memset_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
                              value: ir.Value) -> None:
-        ir.Operation.create("gcu.memset_deslice_async",
-                            operands=[dte, dst, src, *offsets, value])
+        ir.Operation.create("gcu.memset_deslice_async", operands=[dte, dst, src, *offsets, value])
 
     # mirror ops
 
@@ -270,32 +243,24 @@ class GCUOps:
         ir.Operation.create("gcu.mirror_lr_async", operands=[dte, dst, src])
 
     @staticmethod
-    def mirror_tb_pad_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                            pad_low: list[ir.Value], pad_high: list[ir.Value],
-                            pad_mid: list[ir.Value],
-                            pad_value: ir.Value) -> None:
+    def mirror_tb_pad_async(dte: ir.Value, dst: ir.Value, src: ir.Value, pad_low: list[ir.Value],
+                            pad_high: list[ir.Value], pad_mid: list[ir.Value], pad_value: ir.Value) -> None:
         ir.Operation.create("gcu.mirror_tb_pad_async",
                             operands=[dte, dst, src, *pad_low, *pad_high, *pad_mid, pad_value])
 
     @staticmethod
-    def mirror_lr_pad_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                            pad_low: list[ir.Value], pad_high: list[ir.Value],
-                            pad_mid: list[ir.Value],
-                            pad_value: ir.Value) -> None:
+    def mirror_lr_pad_async(dte: ir.Value, dst: ir.Value, src: ir.Value, pad_low: list[ir.Value],
+                            pad_high: list[ir.Value], pad_mid: list[ir.Value], pad_value: ir.Value) -> None:
         ir.Operation.create("gcu.mirror_lr_pad_async",
                             operands=[dte, dst, src, *pad_low, *pad_high, *pad_mid, pad_value])
 
     @staticmethod
-    def mirror_tb_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                                dst_offsets: list[ir.Value]) -> None:
-        ir.Operation.create("gcu.mirror_tb_deslice_async",
-                            operands=[dte, dst, src, *dst_offsets])
+    def mirror_tb_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, dst_offsets: list[ir.Value]) -> None:
+        ir.Operation.create("gcu.mirror_tb_deslice_async", operands=[dte, dst, src, *dst_offsets])
 
     @staticmethod
-    def mirror_lr_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value,
-                                dst_offsets: list[ir.Value]) -> None:
-        ir.Operation.create("gcu.mirror_lr_deslice_async",
-                            operands=[dte, dst, src, *dst_offsets])
+    def mirror_lr_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, dst_offsets: list[ir.Value]) -> None:
+        ir.Operation.create("gcu.mirror_lr_deslice_async", operands=[dte, dst, src, *dst_offsets])
 
     # -----------------------------------------------------------------------
     # Barrier synchronization
@@ -370,13 +335,12 @@ class GCUOps:
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def alloc_esl_engine(ibgda_info_ptr: ir.Value, qp_shared_states_ptr: ir.Value,
-                         rank: ir.Value, num_ranks: ir.Value) -> ir.Value:
+    def alloc_esl_engine(ibgda_info_ptr: ir.Value, qp_shared_states_ptr: ir.Value, rank: ir.Value,
+                         num_ranks: ir.Value) -> ir.Value:
         engine_type = _parse('!gcu.esl_engine')
-        return ir.Operation.create(
-            "gcu.alloc_esl_engine",
-            operands=[ibgda_info_ptr, qp_shared_states_ptr, rank, num_ranks],
-            results=[engine_type]).result
+        return ir.Operation.create("gcu.alloc_esl_engine",
+                                   operands=[ibgda_info_ptr, qp_shared_states_ptr, rank,
+                                             num_ranks], results=[engine_type]).result
 
     @staticmethod
     def alloc_esl_endpoint() -> ir.Value:
@@ -384,69 +348,49 @@ class GCUOps:
         return ir.Operation.create("gcu.alloc_esl_endpoint", results=[ep_type]).result
 
     @staticmethod
-    def esl_get_qp(engine: ir.Value, dst_rank: ir.Value,
-                   qp_idx: ir.Value, endpoint: ir.Value) -> None:
-        ir.Operation.create("gcu.esl_get_qp",
-                            operands=[engine, dst_rank, qp_idx, endpoint])
+    def esl_get_qp(engine: ir.Value, dst_rank: ir.Value, qp_idx: ir.Value, endpoint: ir.Value) -> None:
+        ir.Operation.create("gcu.esl_get_qp", operands=[engine, dst_rank, qp_idx, endpoint])
 
     @staticmethod
     def esl_get_num_rc_per_pe(engine: ir.Value) -> ir.Value:
         ctx = ir.Context.current
-        return ir.Operation.create(
-            "gcu.esl_get_num_rc_per_pe",
-            operands=[engine], results=[_i32(ctx)]).result
+        return ir.Operation.create("gcu.esl_get_num_rc_per_pe", operands=[engine], results=[_i32(ctx)]).result
 
     @staticmethod
-    def esl_get_wqe_slots(engine: ir.Value, endpoint: ir.Value,
-                          num_wqes: ir.Value) -> ir.Value:
+    def esl_get_wqe_slots(engine: ir.Value, endpoint: ir.Value, num_wqes: ir.Value) -> ir.Value:
         ctx = ir.Context.current
-        return ir.Operation.create(
-            "gcu.esl_get_wqe_slots",
-            operands=[engine, endpoint, num_wqes],
-            results=[_i64(ctx)]).result
+        return ir.Operation.create("gcu.esl_get_wqe_slots", operands=[engine, endpoint, num_wqes],
+                                   results=[_i64(ctx)]).result
 
     @staticmethod
-    def esl_ring_db(engine: ir.Value, endpoint: ir.Value,
-                    wqe_idx: ir.Value, num_wqes: ir.Value) -> ir.Value:
+    def esl_ring_db(engine: ir.Value, endpoint: ir.Value, wqe_idx: ir.Value, num_wqes: ir.Value) -> ir.Value:
         ctx = ir.Context.current
-        return ir.Operation.create(
-            "gcu.esl_ring_db",
-            operands=[engine, endpoint, wqe_idx, num_wqes],
-            results=[_i64(ctx)]).result
+        return ir.Operation.create("gcu.esl_ring_db", operands=[engine, endpoint, wqe_idx, num_wqes],
+                                   results=[_i64(ctx)]).result
 
     @staticmethod
-    def esl_wait_done(engine: ir.Value, endpoint: ir.Value,
-                      wait_id: ir.Value) -> None:
-        ir.Operation.create("gcu.esl_wait_done",
-                            operands=[engine, endpoint, wait_id])
+    def esl_wait_done(engine: ir.Value, endpoint: ir.Value, wait_id: ir.Value) -> None:
+        ir.Operation.create("gcu.esl_wait_done", operands=[engine, endpoint, wait_id])
 
     @staticmethod
-    def esl_send(engine: ir.Value, dst: ir.Value, src: ir.Value,
-                 endpoint: ir.Value, wqe_idx: ir.Value, nelem: ir.Value,
+    def esl_send(engine: ir.Value, dst: ir.Value, src: ir.Value, endpoint: ir.Value, wqe_idx: ir.Value, nelem: ir.Value,
                  fence: ir.Value) -> None:
-        ir.Operation.create("gcu.esl_send",
-                            operands=[engine, dst, src, endpoint, wqe_idx, nelem, fence])
+        ir.Operation.create("gcu.esl_send", operands=[engine, dst, src, endpoint, wqe_idx, nelem, fence])
 
     @staticmethod
     def esl_get_rdma_peer_base(prims: ir.Value, rank: ir.Value) -> ir.Value:
         ctx = ir.Context.current
-        return ir.Operation.create(
-            "gcu.esl_get_rdma_peer_base",
-            operands=[prims, rank], results=[_i64(ctx)]).result
+        return ir.Operation.create("gcu.esl_get_rdma_peer_base", operands=[prims, rank], results=[_i64(ctx)]).result
 
     @staticmethod
     def esl_get_ibgda_info_ptr(prims: ir.Value) -> ir.Value:
         ctx = ir.Context.current
-        return ir.Operation.create(
-            "gcu.esl_get_ibgda_info_ptr",
-            operands=[prims], results=[_i64(ctx)]).result
+        return ir.Operation.create("gcu.esl_get_ibgda_info_ptr", operands=[prims], results=[_i64(ctx)]).result
 
     @staticmethod
     def esl_get_qp_shared_states_ptr(prims: ir.Value) -> ir.Value:
         ctx = ir.Context.current
-        return ir.Operation.create(
-            "gcu.esl_get_qp_shared_states_ptr",
-            operands=[prims], results=[_i64(ctx)]).result
+        return ir.Operation.create("gcu.esl_get_qp_shared_states_ptr", operands=[prims], results=[_i64(ctx)]).result
 
     # -----------------------------------------------------------------------
     # Memory conversion
@@ -463,45 +407,36 @@ class GCUOps:
         """
         type_str = str(result_type_or_elem)
         if type_str.startswith("memref"):
-            return ir.Operation.create("gcu.ptr2memref",
-                                       results=[result_type_or_elem],
-                                       operands=[ptr]).result
+            return ir.Operation.create("gcu.ptr2memref", results=[result_type_or_elem], operands=[ptr]).result
         else:
             return GCUMemRef(ptr, result_type_or_elem)
 
     @staticmethod
     def memref2ptr(memref: ir.Value, ptr_type: ir.Type) -> ir.Value:
-        return ir.Operation.create("gcu.memref2ptr",
-                                   results=[ptr_type], operands=[memref]).result
+        return ir.Operation.create("gcu.memref2ptr", results=[ptr_type], operands=[memref]).result
 
     @staticmethod
     def ptr2int(ptr: ir.Value) -> ir.Value:
         ctx = ir.Context.current
-        return ir.Operation.create("gcu.ptr2int",
-                                   results=[_i64(ctx)], operands=[ptr]).result
+        return ir.Operation.create("gcu.ptr2int", results=[_i64(ctx)], operands=[ptr]).result
 
     @staticmethod
     def int2ptr(value: ir.Value, ptr_type: ir.Type) -> ir.Value:
-        return ir.Operation.create("gcu.int2ptr",
-                                   results=[ptr_type], operands=[value]).result
+        return ir.Operation.create("gcu.int2ptr", results=[ptr_type], operands=[value]).result
 
     @staticmethod
-    def get_memref_offset(memref: ir.Value,
-                          offsets: list[ir.Value] | None = None) -> ir.Value:
+    def get_memref_offset(memref: ir.Value, offsets: list[ir.Value] | None = None) -> ir.Value:
         ctx = ir.Context.current
         ops = [memref] + (offsets or [])
-        return ir.Operation.create("gcu.get_memref_offset",
-                                   results=[_index(ctx)], operands=ops).result
+        return ir.Operation.create("gcu.get_memref_offset", results=[_index(ctx)], operands=ops).result
 
     @staticmethod
     def materialize_in_destination(source: ir.Value, dest: ir.Value) -> None:
-        ir.Operation.create("gcu.materialize_in_destination",
-                            operands=[source, dest])
+        ir.Operation.create("gcu.materialize_in_destination", operands=[source, dest])
 
     @staticmethod
     def dynamic_shared_memory(memref_type: ir.Type) -> ir.Value:
-        return ir.Operation.create("gcu.dynamic_shared_memory",
-                                   results=[memref_type]).result
+        return ir.Operation.create("gcu.dynamic_shared_memory", results=[memref_type]).result
 
     # -----------------------------------------------------------------------
     # Memory helpers (load / store over LLVM pointers)
@@ -523,8 +458,7 @@ class GCUOps:
         return llvm.load(elem_type, gep)
 
     @staticmethod
-    def store(value: ir.Value, ptr: ir.Value, indices: list,
-              elem_type: ir.Type = None) -> None:
+    def store(value: ir.Value, ptr: ir.Value, indices: list, elem_type: ir.Type = None) -> None:
         """Store element to a GCU pointer (mapped to !llvm.ptr<1>).
 
         Emits llvm.getelementptr + llvm.store.
@@ -554,17 +488,13 @@ class GCUOps:
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def gather_load(dst: ir.Value, src: ir.Value, offsets: ir.Value,
-                    masks: ir.Value, others: ir.Value,
+    def gather_load(dst: ir.Value, src: ir.Value, offsets: ir.Value, masks: ir.Value, others: ir.Value,
                     size: ir.Value) -> None:
-        ir.Operation.create("gcu.gather_load",
-                            operands=[dst, src, offsets, masks, others, size])
+        ir.Operation.create("gcu.gather_load", operands=[dst, src, offsets, masks, others, size])
 
     @staticmethod
-    def scatter_store(dst: ir.Value, src: ir.Value, offsets: ir.Value,
-                      masks: ir.Value, size: ir.Value) -> None:
-        ir.Operation.create("gcu.scatter_store",
-                            operands=[dst, src, offsets, masks, size])
+    def scatter_store(dst: ir.Value, src: ir.Value, offsets: ir.Value, masks: ir.Value, size: ir.Value) -> None:
+        ir.Operation.create("gcu.scatter_store", operands=[dst, src, offsets, masks, size])
 
     # -----------------------------------------------------------------------
     # TAR (Thread Address Register) – GCU400 only
@@ -576,53 +506,41 @@ class GCUOps:
 
     @staticmethod
     def tar_init(addr_i64: ir.Value) -> ir.Value:
-        return ir.Operation.create("gcu.tar_init",
-                                   operands=[addr_i64],
-                                   results=[gcu._tar_type()]).result
+        return ir.Operation.create("gcu.tar_init", operands=[addr_i64], results=[gcu._tar_type()]).result
 
     @staticmethod
-    def tar_load(src_addr: ir.Value, stride: ir.Value,
-                 vec_type: ir.Type) -> tuple[ir.Value, ir.Value]:
-        op = ir.Operation.create("gcu.tar_load",
-                                 operands=[src_addr, stride],
-                                 results=[vec_type, gcu._tar_type()])
+    def tar_load(src_addr: ir.Value, stride: ir.Value, vec_type: ir.Type) -> tuple[ir.Value, ir.Value]:
+        op = ir.Operation.create("gcu.tar_load", operands=[src_addr, stride], results=[vec_type, gcu._tar_type()])
         return op.results[0], op.results[1]
 
     @staticmethod
-    def tar_store(v: ir.Value, src_addr: ir.Value,
-                  stride: ir.Value) -> ir.Value:
-        return ir.Operation.create("gcu.tar_store",
-                                   operands=[v, src_addr, stride],
-                                   results=[gcu._tar_type()]).result
+    def tar_store(v: ir.Value, src_addr: ir.Value, stride: ir.Value) -> ir.Value:
+        return ir.Operation.create("gcu.tar_store", operands=[v, src_addr, stride], results=[gcu._tar_type()]).result
 
     @staticmethod
-    def tar_gather(src_addr: ir.Value, num: ir.Value, other: ir.Value,
-                   vec_type: ir.Type, mask: ir.Value = None) -> tuple[ir.Value, ir.Value]:
+    def tar_gather(src_addr: ir.Value, num: ir.Value, other: ir.Value, vec_type: ir.Type,
+                   mask: ir.Value = None) -> tuple[ir.Value, ir.Value]:
         tar_type = _parse('!gcu.tar')
         ops = [src_addr, num, other]
         if mask is not None:
             ops.append(mask)
-        op = ir.Operation.create("gcu.tar_gather",
-                                 operands=ops, results=[vec_type, tar_type])
+        op = ir.Operation.create("gcu.tar_gather", operands=ops, results=[vec_type, tar_type])
         return op.results[0], op.results[1]
 
     @staticmethod
-    def tar_scatter(src_addr: ir.Value, v: ir.Value, num: ir.Value,
-                    mask: ir.Value = None) -> ir.Value:
+    def tar_scatter(src_addr: ir.Value, v: ir.Value, num: ir.Value, mask: ir.Value = None) -> ir.Value:
         tar_type = _parse('!gcu.tar')
         ops = [src_addr, v, num]
         if mask is not None:
             ops.append(mask)
-        return ir.Operation.create("gcu.tar_scatter",
-                                   operands=ops, results=[tar_type]).result
+        return ir.Operation.create("gcu.tar_scatter", operands=ops, results=[tar_type]).result
 
     # -----------------------------------------------------------------------
     # MatMul
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def matmul(out: ir.Value, lhs: ir.Value, rhs: ir.Value,
-               bias: ir.Value = None) -> None:
+    def matmul(out: ir.Value, lhs: ir.Value, rhs: ir.Value, bias: ir.Value = None) -> None:
         operands = [out, lhs, rhs]
         if bias is not None:
             operands.append(bias)
@@ -633,82 +551,70 @@ class GCUOps:
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def reduce(op_attr: str, out: ir.Value, inp: ir.Value,
-               axis: int, workspace: ir.Value = None) -> None:
+    def reduce(op_attr: str, out: ir.Value, inp: ir.Value, axis: int, workspace: ir.Value = None) -> None:
         """gcu.reduce with named reduction op (e.g. "add", "max")."""
         operands = [out, inp]
         if workspace is not None:
             operands.append(workspace)
-        ir.Operation.create("gcu.reduce", operands=operands,
-                            attributes={"op": ir.Attribute.parse(f'#gcu<reduce_op {op_attr}>'),
-                                        "axis": ir.IntegerAttr.get(_i32(ir.Context.current), axis)})
+        ir.Operation.create(
+            "gcu.reduce", operands=operands, attributes={
+                "op": ir.Attribute.parse(f'#gcu<reduce_op {op_attr}>'), "axis":
+                ir.IntegerAttr.get(_i32(ir.Context.current), axis)
+            })
 
     @staticmethod
-    def reduce_arg(op_attr: str, out: ir.Value, out_index: ir.Value,
-                   inp: ir.Value, in_index: ir.Value, axis: int,
+    def reduce_arg(op_attr: str, out: ir.Value, out_index: ir.Value, inp: ir.Value, in_index: ir.Value, axis: int,
                    workspace: ir.Value = None) -> None:
         operands = [out, out_index, inp, in_index]
         if workspace is not None:
             operands.append(workspace)
-        ir.Operation.create("gcu.reduce_arg", operands=operands,
-                            attributes={"op": ir.Attribute.parse(f'#gcu<reduce_op {op_attr}>'),
-                                        "axis": ir.IntegerAttr.get(_i32(ir.Context.current), axis)})
+        ir.Operation.create(
+            "gcu.reduce_arg", operands=operands, attributes={
+                "op": ir.Attribute.parse(f'#gcu<reduce_op {op_attr}>'), "axis":
+                ir.IntegerAttr.get(_i32(ir.Context.current), axis)
+            })
 
     # -----------------------------------------------------------------------
     # Vector ops
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def vector_convert(inputs: list[ir.Value],
-                       output_types: list[ir.Type]) -> list[ir.Value]:
-        op = ir.Operation.create("gcu.vector_convert",
-                                 operands=inputs, results=output_types)
+    def vector_convert(inputs: list[ir.Value], output_types: list[ir.Type]) -> list[ir.Value]:
+        op = ir.Operation.create("gcu.vector_convert", operands=inputs, results=output_types)
         return list(op.results)
 
     @staticmethod
     def vector_movsft(vin: ir.Value, unit: int, mode: str = "left") -> ir.Value:
         """gcu.vector_movsft with mode attr and unit attr."""
         return ir.Operation.create(
-            "gcu.vector_movsft",
-            operands=[vin],
-            results=[vin.type],
-            attributes={
+            "gcu.vector_movsft", operands=[vin], results=[vin.type], attributes={
                 "mode": ir.Attribute.parse(f'#gcu<vector_movsft_mode {mode}>'),
                 "unit": ir.IntegerAttr.get(_i32(ir.Context.current), unit),
             }).result
 
     @staticmethod
     def vector_step(start: ir.Value, result_type: ir.Type) -> ir.Value:
-        return ir.Operation.create("gcu.vector_step",
-                                   operands=[start], results=[result_type]).result
+        return ir.Operation.create("gcu.vector_step", operands=[start], results=[result_type]).result
 
     # -----------------------------------------------------------------------
     # Atomic ops
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def atomic_rmw(rmw_op: str, ptr: ir.Value, val: ir.Value,
-                   result_type: ir.Type,
-                   sem: str = "relaxed", scope: str = "gpu") -> ir.Value:
+    def atomic_rmw(rmw_op: str, ptr: ir.Value, val: ir.Value, result_type: ir.Type, sem: str = "relaxed",
+                   scope: str = "gpu") -> ir.Value:
         return ir.Operation.create(
-            "gcu.atomic_rmw",
-            operands=[ptr, val],
-            results=[result_type],
-            attributes={
+            "gcu.atomic_rmw", operands=[ptr, val], results=[result_type], attributes={
                 "atomic_rmw_op": ir.Attribute.parse(f'#gcu<atomic_rmw_op {rmw_op}>'),
                 "sem": ir.Attribute.parse(f'#gcu<mem_semantic {sem}>'),
                 "scope": ir.Attribute.parse(f'#gcu<mem_sync_scope {scope}>'),
             }).result
 
     @staticmethod
-    def atomic_cas(ptr: ir.Value, cmp: ir.Value, val: ir.Value,
-                   result_type: ir.Type,
-                   sem: str = "relaxed", scope: str = "gpu") -> ir.Value:
+    def atomic_cas(ptr: ir.Value, cmp: ir.Value, val: ir.Value, result_type: ir.Type, sem: str = "relaxed",
+                   scope: str = "gpu") -> ir.Value:
         return ir.Operation.create(
-            "gcu.atomic_cas",
-            operands=[ptr, cmp, val],
-            results=[result_type],
-            attributes={
+            "gcu.atomic_cas", operands=[ptr, cmp, val], results=[result_type], attributes={
                 "sem": ir.Attribute.parse(f'#gcu<mem_semantic {sem}>'),
                 "scope": ir.Attribute.parse(f'#gcu<mem_sync_scope {scope}>'),
             }).result
@@ -741,15 +647,13 @@ class GCUOps:
     def vector_broadcast(scalar: ir.Value, vector_type: ir.Type) -> ir.Value:
         """vector.broadcast: scalar → vector.
         Named vector_broadcast to avoid confusion with DTE broadcast_async."""
-        return ir.Operation.create(
-            "vector.broadcast", operands=[scalar], results=[vector_type]).result
+        return ir.Operation.create("vector.broadcast", operands=[scalar], results=[vector_type]).result
 
     @staticmethod
     def constant_mask(mask_dims: list[int], mask_type: ir.Type) -> ir.Value:
         """vector.constant_mask with given active lanes."""
-        return ir.Operation.create(
-            "vector.constant_mask", results=[mask_type],
-            attributes={"mask_dim_sizes": ir.DenseI64ArrayAttr.get(mask_dims)}).result
+        return ir.Operation.create("vector.constant_mask", results=[mask_type],
+                                   attributes={"mask_dim_sizes": ir.DenseI64ArrayAttr.get(mask_dims)}).result
 
     @staticmethod
     def iota_vector(vec_type: ir.Type) -> ir.Value:
@@ -759,9 +663,7 @@ class GCUOps:
         elem_type = ir.VectorType(vec_type).element_type
         attrs = [ir.IntegerAttr.get(elem_type, i) for i in range(n)]
         dense = ir.DenseElementsAttr.get(attrs, type=vec_type)
-        return ir.Operation.create(
-            "arith.constant", results=[vec_type],
-            attributes={"value": dense}).result
+        return ir.Operation.create("arith.constant", results=[vec_type], attributes={"value": dense}).result
 
     @staticmethod
     def ptr_to_memref(ptr: ir.Value, memref_type: ir.Type) -> ir.Value:
@@ -771,15 +673,11 @@ class GCUOps:
         but vector.maskedload/maskedstore require memref operands.
         NOTE: This may not survive LLVM translation; prefer vec_masked_load/store.
         """
-        return ir.Operation.create(
-            "builtin.unrealized_conversion_cast",
-            operands=[ptr], results=[memref_type]).result
+        return ir.Operation.create("builtin.unrealized_conversion_cast", operands=[ptr], results=[memref_type]).result
 
     @staticmethod
-    def vec_masked_load(base_ptr: ir.Value, offset: ir.Value,
-                        mask: ir.Value, passthru: ir.Value,
-                        result_type: ir.Type, elem_type: ir.Type = None,
-                        alignment: int = 4) -> ir.Value:
+    def vec_masked_load(base_ptr: ir.Value, offset: ir.Value, mask: ir.Value, passthru: ir.Value, result_type: ir.Type,
+                        elem_type: ir.Type = None, alignment: int = 4) -> ir.Value:
         """Vectorized masked load via llvm.getelementptr + llvm.intr.masked.load.
 
         Computes effective address = base_ptr + offset * sizeof(elem),
@@ -790,28 +688,21 @@ class GCUOps:
         ptr_type = ir.Type.parse("!llvm.ptr<1>")
         # Cast offset to i64 for getelementptr
         i64 = ir.IntegerType.get_signless(64)
-        offset_i64 = ir.Operation.create(
-            "llvm.sext", operands=[offset], results=[i64]).result
+        offset_i64 = ir.Operation.create("llvm.sext", operands=[offset], results=[i64]).result
         # getelementptr
         eff_ptr = ir.Operation.create(
-            "llvm.getelementptr", operands=[base_ptr, offset_i64],
-            results=[ptr_type],
-            attributes={
+            "llvm.getelementptr", operands=[base_ptr, offset_i64], results=[ptr_type], attributes={
                 "elem_type": ir.TypeAttr.get(elem_type),
                 "rawConstantIndices": ir.DenseI32ArrayAttr.get([-2147483648]),
             }).result
         # llvm.intr.masked.load
         return ir.Operation.create(
-            "llvm.intr.masked.load", operands=[eff_ptr, mask, passthru],
-            results=[result_type],
-            attributes={"alignment": ir.IntegerAttr.get(
-                ir.IntegerType.get_signless(32), alignment)}).result
+            "llvm.intr.masked.load", operands=[eff_ptr, mask, passthru], results=[result_type],
+            attributes={"alignment": ir.IntegerAttr.get(ir.IntegerType.get_signless(32), alignment)}).result
 
     @staticmethod
-    def vec_masked_store(base_ptr: ir.Value, offset: ir.Value,
-                         mask: ir.Value, value: ir.Value,
-                         elem_type: ir.Type = None,
-                         alignment: int = 4) -> None:
+    def vec_masked_store(base_ptr: ir.Value, offset: ir.Value, mask: ir.Value, value: ir.Value,
+                         elem_type: ir.Type = None, alignment: int = 4) -> None:
         """Vectorized masked store via llvm.getelementptr + llvm.intr.masked.store.
 
         Computes effective address = base_ptr + offset * sizeof(elem),
@@ -821,37 +712,26 @@ class GCUOps:
             elem_type = ir.F32Type.get()
         ptr_type = ir.Type.parse("!llvm.ptr<1>")
         i64 = ir.IntegerType.get_signless(64)
-        offset_i64 = ir.Operation.create(
-            "llvm.sext", operands=[offset], results=[i64]).result
+        offset_i64 = ir.Operation.create("llvm.sext", operands=[offset], results=[i64]).result
         eff_ptr = ir.Operation.create(
-            "llvm.getelementptr", operands=[base_ptr, offset_i64],
-            results=[ptr_type],
-            attributes={
+            "llvm.getelementptr", operands=[base_ptr, offset_i64], results=[ptr_type], attributes={
                 "elem_type": ir.TypeAttr.get(elem_type),
                 "rawConstantIndices": ir.DenseI32ArrayAttr.get([-2147483648]),
             }).result
-        ir.Operation.create(
-            "llvm.intr.masked.store", operands=[value, eff_ptr, mask],
-            attributes={"alignment": ir.IntegerAttr.get(
-                ir.IntegerType.get_signless(32), alignment)})
+        ir.Operation.create("llvm.intr.masked.store", operands=[value, eff_ptr, mask],
+                            attributes={"alignment": ir.IntegerAttr.get(ir.IntegerType.get_signless(32), alignment)})
 
     @staticmethod
-    def maskedload(memref_val: ir.Value, index: ir.Value,
-                   mask: ir.Value, passthru: ir.Value,
+    def maskedload(memref_val: ir.Value, index: ir.Value, mask: ir.Value, passthru: ir.Value,
                    result_type: ir.Type) -> ir.Value:
         """vector.maskedload: vectorized memory read with mask."""
-        return ir.Operation.create(
-            "vector.maskedload",
-            operands=[memref_val, index, mask, passthru],
-            results=[result_type]).result
+        return ir.Operation.create("vector.maskedload", operands=[memref_val, index, mask, passthru],
+                                   results=[result_type]).result
 
     @staticmethod
-    def maskedstore(memref_val: ir.Value, index: ir.Value,
-                    mask: ir.Value, value: ir.Value) -> None:
+    def maskedstore(memref_val: ir.Value, index: ir.Value, mask: ir.Value, value: ir.Value) -> None:
         """vector.maskedstore: vectorized memory write with mask."""
-        ir.Operation.create(
-            "vector.maskedstore",
-            operands=[memref_val, index, mask, value])
+        ir.Operation.create("vector.maskedstore", operands=[memref_val, index, mask, value])
 
     # -----------------------------------------------------------------------
     # Misc
@@ -863,22 +743,17 @@ class GCUOps:
 
     @staticmethod
     def begin_clock() -> ir.Value:
-        return ir.Operation.create("gcu.begin_clock",
-                                   results=[_i64(ir.Context.current)]).result
+        return ir.Operation.create("gcu.begin_clock", results=[_i64(ir.Context.current)]).result
 
     @staticmethod
     def end_clock() -> ir.Value:
-        return ir.Operation.create("gcu.end_clock",
-                                   results=[_i64(ir.Context.current)]).result
+        return ir.Operation.create("gcu.end_clock", results=[_i64(ir.Context.current)]).result
 
     @staticmethod
-    def device_assert(condition: ir.Value, message: str = "",
-                      file: str = "", func: str = "", line: int = 0) -> None:
+    def device_assert(condition: ir.Value, message: str = "", file: str = "", func: str = "", line: int = 0) -> None:
         ctx = ir.Context.current
         ir.Operation.create(
-            "gcu.assert",
-            operands=[condition],
-            attributes={
+            "gcu.assert", operands=[condition], attributes={
                 "message": ir.StringAttr.get(message, context=ctx),
                 "file": ir.StringAttr.get(file, context=ctx),
                 "func": ir.StringAttr.get(func, context=ctx),
@@ -888,9 +763,7 @@ class GCUOps:
     @staticmethod
     def mem_map(ptr: ir.Value, num: ir.Value) -> ir.Value:
         """GCU300 only: mmu map memory."""
-        return ir.Operation.create("gcu.mem_map",
-                                   operands=[ptr, num],
-                                   results=[_i32(ir.Context.current)]).result
+        return ir.Operation.create("gcu.mem_map", operands=[ptr, num], results=[_i32(ir.Context.current)]).result
 
     @staticmethod
     def mem_unmap(addr: ir.Value, num: ir.Value) -> None:
@@ -898,35 +771,28 @@ class GCUOps:
         ir.Operation.create("gcu.mem_unmap", operands=[addr, num])
 
     @staticmethod
-    def extern_elementwise_op(srcs: list[ir.Value], result_type: ir.Type,
-                              symbol: str) -> ir.Value:
+    def extern_elementwise_op(srcs: list[ir.Value], result_type: ir.Type, symbol: str) -> ir.Value:
         ctx = ir.Context.current
-        return ir.Operation.create(
-            "gcu.extern_elementwise_op",
-            operands=srcs,
-            results=[result_type],
-            attributes={"symbol": ir.StringAttr.get(symbol, context=ctx)}).result
+        return ir.Operation.create("gcu.extern_elementwise_op", operands=srcs, results=[result_type],
+                                   attributes={"symbol": ir.StringAttr.get(symbol, context=ctx)}).result
 
     @staticmethod
-    def builtin_elementwise_op(output: ir.Value, inputs: list[ir.Value],
-                               symbol: str,
+    def builtin_elementwise_op(output: ir.Value, inputs: list[ir.Value], symbol: str,
                                params: list[ir.Value] | None = None) -> None:
         ctx = ir.Context.current
         ops = [output, *inputs]
         if params:
             ops.extend(params)
-        ir.Operation.create(
-            "gcu.builtin_elementwise_op",
-            operands=ops,
-            attributes={"symbol": ir.StringAttr.get(symbol, context=ctx)})
+        ir.Operation.create("gcu.builtin_elementwise_op", operands=ops,
+                            attributes={"symbol": ir.StringAttr.get(symbol, context=ctx)})
 
 
 gcu = GCUOps()
 
-
 # ---------------------------------------------------------------------------
 # GCUMemRef – Python-level memref wrapper over !llvm.ptr<1>
 # ---------------------------------------------------------------------------
+
 
 class GCUMemRef:
     """Memref-like Python wrapper over a GCU pointer (!llvm.ptr<1>).
@@ -992,6 +858,7 @@ class GCUMemRef:
 # GCUWS (Warp Specialization) dialect helpers
 # ---------------------------------------------------------------------------
 
+
 class GCUWSOps:
     """Python helpers for the GCUWS (GCU Warp Specialization) dialect.
 
@@ -1006,11 +873,9 @@ class GCUWSOps:
         inner_barrier: bool = True,
     ) -> ir.Value:
         ib = "true" if inner_barrier else "false"
-        pipeline_type = _parse(
-            f'!gcuws.pipeline<{stage_count}, {producer_count}, '
-            f'{consumer_count}, {ib}>')
-        return ir.Operation.create("gcuws.init_pipeline",
-                                   results=[pipeline_type]).result
+        pipeline_type = _parse(f'!gcuws.pipeline<{stage_count}, {producer_count}, '
+                               f'{consumer_count}, {ib}>')
+        return ir.Operation.create("gcuws.init_pipeline", results=[pipeline_type]).result
 
     @staticmethod
     def producer_acquire(pipeline: ir.Value) -> None:
@@ -1031,10 +896,10 @@ class GCUWSOps:
 
 gcuws = GCUWSOps()
 
-
 # ---------------------------------------------------------------------------
 # GCU Warp Specialize ops (in the 'gcu' dialect)
 # ---------------------------------------------------------------------------
+
 
 class GCUWarpOps:
     """Helpers for gcu.warp_yield / gcu.warp_return."""

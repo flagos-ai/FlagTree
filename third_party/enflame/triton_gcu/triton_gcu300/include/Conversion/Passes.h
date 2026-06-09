@@ -16,8 +16,8 @@
 #ifndef TRITON_GCU_CONVERSION_PASSES_H
 #define TRITON_GCU_CONVERSION_PASSES_H
 
-#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassRegistry.h"
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
@@ -26,7 +26,6 @@ namespace mlir {
 #define GEN_PASS_REGISTRATION
 #include "Conversion/Passes.h.inc"
 
+} // namespace mlir
 
-}  // namespace mlir
-
-#endif  // TRITON_GCU_CONVERSION_PASSES_H
+#endif // TRITON_GCU_CONVERSION_PASSES_H

@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <algorithm>
 #include <optional>
 #include <utility>
-#include <algorithm>
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
@@ -66,7 +66,8 @@ struct ConvertTritonLoadStoreToDmaPass
   void runOnOperation() override;
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<arith::ArithDialect, memref::MemRefDialect,
+    registry
+        .insert<arith::ArithDialect, memref::MemRefDialect,
                 triton::TritonDialect, mlir::triton::gcu::TritonGCUDialect>();
   }
 };
@@ -82,10 +83,10 @@ struct PreprocessForOp : public OpRewritePattern<scf::ForOp> {
       llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs,
       llvm::SmallDenseMap<Value, gcu::MaskState> &knownMasks,
       llvm::SmallVector<Operation *, 8> &candidateOps,
-      llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints) :
-    OpRewritePattern<scf::ForOp>(context),
-    knownPtrs(knownPtrs), knownMasks(knownMasks),
-    candidateOps(candidateOps), candidateHints(candidateHints) {}
+      llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints)
+      : OpRewritePattern<scf::ForOp>(context), knownPtrs(knownPtrs),
+        knownMasks(knownMasks), candidateOps(candidateOps),
+        candidateHints(candidateHints) {}
 
   LogicalResult matchAndRewrite(scf::ForOp op,
                                 PatternRewriter &rewriter) const override {
@@ -111,7 +112,7 @@ struct PostprocessForOp : public OpRewritePattern<scf::ForOp> {
   }
 };
 
-bool IsStaticStride(SmallVector<int32_t>& candidateHints) {
+bool IsStaticStride(SmallVector<int32_t> &candidateHints) {
   bool bStaticStride = true;
   int32_t rank = candidateHints.size();
   for (int32_t i = 0; i < rank; ++i) {
@@ -124,7 +125,7 @@ bool IsStaticStride(SmallVector<int32_t>& candidateHints) {
   return bStaticStride;
 }
 
-bool IsStaticReshape(SmallVector<int32_t>& candidateHints) {
+bool IsStaticReshape(SmallVector<int32_t> &candidateHints) {
   bool isReshape = true;
   int32_t rank = candidateHints.size();
   if (IsStaticStride(candidateHints)) {
@@ -141,7 +142,7 @@ bool IsStaticReshape(SmallVector<int32_t>& candidateHints) {
   return isReshape;
 }
 
-SmallVector<int32_t> GetOrderByHint(SmallVector<int32_t>& candidateHints) {
+SmallVector<int32_t> GetOrderByHint(SmallVector<int32_t> &candidateHints) {
   SmallVector<int32_t> orderHint;
   int32_t rank = candidateHints.size();
   assert(IsStaticStride(candidateHints) &&
@@ -156,10 +157,9 @@ SmallVector<int32_t> GetOrderByHint(SmallVector<int32_t>& candidateHints) {
     if (candidateHints[i] != 0)
       orderHint.push_back(i);
 
-  std::sort(orderHint.begin(), orderHint.end(),
-    [&](int32_t a, int32_t b) {
-      return (candidateHints[a] > candidateHints[b]);
-    });
+  std::sort(orderHint.begin(), orderHint.end(), [&](int32_t a, int32_t b) {
+    return (candidateHints[a] > candidateHints[b]);
+  });
 
   if (orderHint.size() < static_cast<unsigned>(rank))
     for (auto dim : broadcastDims)
@@ -171,11 +171,11 @@ SmallVector<int32_t> GetOrderByHint(SmallVector<int32_t>& candidateHints) {
 
   for (int32_t i = 0; i < rank; ++i)
     LLVM_DEBUG(llvm::dbgs() << "dim: " << i << "\n"
-              << "order: " << orderHint[i] << "\n");
+                            << "order: " << orderHint[i] << "\n");
 
   for (int32_t i = 0; i < rank; ++i)
     LLVM_DEBUG(llvm::dbgs() << "trans order: " << i << "\n"
-              << "order: " << transOrder[i] << "\n");
+                            << "order: " << transOrder[i] << "\n");
 
   return transOrder;
 }
@@ -244,7 +244,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
     }
 
     assert(candidateHints.find(op.getOperation()) != candidateHints.end() &&
-          "get order failed");
+           "get order failed");
     auto opHint = candidateHints[op.getOperation()];
     // dynamic stride process
     if (!IsStaticStride(opHint)) {
@@ -278,19 +278,19 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
             else
               sliceShape[i] = resultShape[i];
           }
-          auto sliceType = RankedTensorType::get(sliceShape, elemType,
-                                                tType.getEncoding());
+          auto sliceType =
+              RankedTensorType::get(sliceShape, elemType, tType.getEncoding());
           auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
-            loc, sliceType, ptrInfo.base, updateShapes, updateStrides,
-            ptrInfo.offsets, defaultValue, dynamicOpHint);
-          auto broadcastOp = rewriter.create<triton::BroadcastOp>(
-            loc, op.getType(), load);
+              loc, sliceType, ptrInfo.base, updateShapes, updateStrides,
+              ptrInfo.offsets, defaultValue, dynamicOpHint);
+          auto broadcastOp =
+              rewriter.create<triton::BroadcastOp>(loc, op.getType(), load);
           rewriter.replaceOp(op, broadcastOp);
           return success();
         } else {
-          auto load = rewriter.create<mlir::triton::gcu::LoadOp>(loc, tType,
-            ptrInfo.base, updateShapes, updateStrides, ptrInfo.offsets,
-            defaultValue, dynamicOpHint);
+          auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
+              loc, tType, ptrInfo.base, updateShapes, updateStrides,
+              ptrInfo.offsets, defaultValue, dynamicOpHint);
           rewriter.replaceOp(op, load);
           return success();
         }
@@ -299,125 +299,150 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
           Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
           Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
           Value bIsDynicBroadcast = rewriter.create<arith::CmpIOp>(
-            loc, arith::CmpIPredicate::eq, ptrInfo.strides[0], zero);
-          Value replaceOp = rewriter.create<scf::IfOp>(loc, bIsDynicBroadcast,
-            [&](OpBuilder &builder, Location loc) {
-              SmallVector<Value> updateStrides{one};
-              SmallVector<Value> updateShapes{one};
-              SmallVector<int32_t> dynamicOpHint{0};
-              SmallVector<int64_t, 4> sliceShape{1};
-              auto sliceType = RankedTensorType::get(sliceShape, elemType,
-                                                    tType.getEncoding());
-              auto loadSlice = builder.create<mlir::triton::gcu::LoadOp>(
-                loc, sliceType, ptrInfo.base, updateShapes, updateStrides,
-                ptrInfo.offsets, defaultValue, dynamicOpHint);
-              auto broadcastOp = builder.create<triton::BroadcastOp>(
-                  loc, op.getType(), loadSlice);
-              builder.create<scf::YieldOp>(loc, ValueRange{broadcastOp});
-            },
-            [&](OpBuilder &builder, Location loc) {
-              auto load = rewriter.create<mlir::triton::gcu::LoadOp>(loc, tType,
-              ptrInfo.base, ptrInfo.shape, ptrInfo.strides, ptrInfo.offsets,
-              defaultValue, opHint);
-              builder.create<scf::YieldOp>(loc, ValueRange{load});
-            }).getResult(0);
-            rewriter.replaceOp(op, replaceOp);
-            return success();
-        // } else if (rank == 2) {
-        //   Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-        //   Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-        //   SmallVector<Value> vIsBrDim;
-        //   for (int i = 0; i < rank; ++i)
-        //     vIsBrDim.push_back(rewriter.create<arith::CmpIOp>(
-        //       loc, arith::CmpIPredicate::eq, ptrInfo.strides[i], zero));
-        //   Value bIsAll = rewriter.create<arith::AndIOp>(loc,
-        //     vIsBrDim[0], vIsBrDim[1]);
-        //   SmallVector<Value> updateStrides;
-        //   SmallVector<Value> updateShapes;
-        //   for (int i = 0; i < rank; ++i) {
-        //  updateStrides.push_back(rewriter.create<scf::IfOp>(loc, vIsBrDim[i],
-        //       [&](OpBuilder &builder, Location loc) {
-        //         builder.create<scf::YieldOp>(loc, ValueRange{one});
-        //       },
-        //       [&](OpBuilder &builder, Location loc) {
-        //    builder.create<scf::YieldOp>(loc, ValueRange{ptrInfo.strides[i]});
-        //       }).getResult(0));
-        //   updateShapes.push_back(rewriter.create<scf::IfOp>(loc, vIsBrDim[i],
-        //       [&](OpBuilder &builder, Location loc) {
-        //         builder.create<scf::YieldOp>(loc, ValueRange{one});
-        //       },
-        //       [&](OpBuilder &builder, Location loc) {
-        //      builder.create<scf::YieldOp>(loc, ValueRange{ptrInfo.shape[i]});
-        //       }).getResult(0));
-        //   }
-        //   Value replaceOp = rewriter.create<scf::IfOp>(loc, bIsAll,
-        //     [&](OpBuilder &builder, Location loc) {
-        //       SmallVector<int32_t> dynamicOpHint{1, 0};
-        //       SmallVector<int64_t> sliceShape{1, 1};
-        //       auto sliceType = RankedTensorType::get(sliceShape, elemType,
-        //                                             tType.getEncoding());
-        //       auto loadSlice = builder.create<mlir::triton::gcu::LoadOp>(
-        //         loc, sliceType, ptrInfo.base, updateShapes, updateStrides,
-        //         ptrInfo.offsets, defaultValue, dynamicOpHint);
-        //       auto broadcastOp = builder.create<triton::BroadcastOp>(
-        //           loc, op.getType(), loadSlice);
-        //       builder.create<scf::YieldOp>(loc, ValueRange{broadcastOp});
-        //     },
-        //     [&](OpBuilder &builder, Location loc) {
-        //       Value brDim0OP = builder.create<scf::IfOp>(loc, vIsBrDim[0],
-        //         [&](OpBuilder &childbuilder, Location loc) {
-        //           SmallVector<int32_t> dynamicOpHint{1, opHint[1]};
-        //           SmallVector<int64_t, 4> sliceShape{1, resultShape[1]};
-    //           auto sliceType = RankedTensorType::get(sliceShape, elemType,
-    //                                                 tType.getEncoding());
-    //        auto loadSlice = childbuilder.create<mlir::triton::gcu::LoadOp>(
-    //             loc, sliceType, ptrInfo.base, updateShapes, updateStrides,
-    //             ptrInfo.offsets, defaultValue, dynamicOpHint);
-    //           auto broadcastOp = childbuilder.create<triton::BroadcastOp>(
-    //               loc, op.getType(), loadSlice);
-    //        childbuilder.create<scf::YieldOp>(loc, ValueRange{broadcastOp});
-        //         },
-        //         [&](OpBuilder &childbuilder, Location loc) {
-        //           Value brDim1OP =
-        //            childbuilder.create<scf::IfOp>(loc, vIsBrDim[1],
-        //             [&](OpBuilder &child1builder, Location loc) {
-        //               SmallVector<int32_t> dynamicOpHint{opHint[0], 1};
-        //               SmallVector<int64_t, 4> sliceShape{resultShape[0], 1};
-      //            auto sliceType = RankedTensorType::get(sliceShape, elemType,
-      //                                                  tType.getEncoding());
-        //               auto loadSlice =
-        //                child1builder.create<mlir::triton::gcu::LoadOp>(loc,
-        //                sliceType, ptrInfo.base, updateShapes, updateStrides,
-        //                 ptrInfo.offsets, defaultValue, dynamicOpHint);
-        //               auto broadcastOp =
-        //                 child1builder.create<triton::BroadcastOp>(
-        //                   loc, op.getType(), loadSlice);
-        //               child1builder.create<scf::YieldOp>(loc,
-        //                 ValueRange{broadcastOp});
-        //             },
-        //             [&](OpBuilder &child1builder, Location loc) {
-      //            auto load = child1builder.create<mlir::triton::gcu::LoadOp>(
-      //               loc, tType, ptrInfo.base, ptrInfo.shape, ptrInfo.strides,
-      //               ptrInfo.offsets, defaultValue, opHint);
-      //              child1builder.create<scf::YieldOp>(loc, ValueRange{load});
-      //             }).getResult(0);
-      //           childbuilder.create<scf::YieldOp>(loc, ValueRange{brDim1OP});
-        //         }).getResult(0);
-        //       builder.create<scf::YieldOp>(loc, ValueRange{brDim0OP});
-        //     }).getResult(0);
-        //     rewriter.replaceOp(op, replaceOp);
-        //     return success();
+              loc, arith::CmpIPredicate::eq, ptrInfo.strides[0], zero);
+          Value replaceOp =
+              rewriter
+                  .create<scf::IfOp>(
+                      loc, bIsDynicBroadcast,
+                      [&](OpBuilder &builder, Location loc) {
+                        SmallVector<Value> updateStrides{one};
+                        SmallVector<Value> updateShapes{one};
+                        SmallVector<int32_t> dynamicOpHint{0};
+                        SmallVector<int64_t, 4> sliceShape{1};
+                        auto sliceType = RankedTensorType::get(
+                            sliceShape, elemType, tType.getEncoding());
+                        auto loadSlice =
+                            builder.create<mlir::triton::gcu::LoadOp>(
+                                loc, sliceType, ptrInfo.base, updateShapes,
+                                updateStrides, ptrInfo.offsets, defaultValue,
+                                dynamicOpHint);
+                        auto broadcastOp = builder.create<triton::BroadcastOp>(
+                            loc, op.getType(), loadSlice);
+                        builder.create<scf::YieldOp>(loc,
+                                                     ValueRange{broadcastOp});
+                      },
+                      [&](OpBuilder &builder, Location loc) {
+                        auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
+                            loc, tType, ptrInfo.base, ptrInfo.shape,
+                            ptrInfo.strides, ptrInfo.offsets, defaultValue,
+                            opHint);
+                        builder.create<scf::YieldOp>(loc, ValueRange{load});
+                      })
+                  .getResult(0);
+          rewriter.replaceOp(op, replaceOp);
+          return success();
+          // } else if (rank == 2) {
+          //   Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+          //   Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+          //   SmallVector<Value> vIsBrDim;
+          //   for (int i = 0; i < rank; ++i)
+          //     vIsBrDim.push_back(rewriter.create<arith::CmpIOp>(
+          //       loc, arith::CmpIPredicate::eq, ptrInfo.strides[i], zero));
+          //   Value bIsAll = rewriter.create<arith::AndIOp>(loc,
+          //     vIsBrDim[0], vIsBrDim[1]);
+          //   SmallVector<Value> updateStrides;
+          //   SmallVector<Value> updateShapes;
+          //   for (int i = 0; i < rank; ++i) {
+          //  updateStrides.push_back(rewriter.create<scf::IfOp>(loc,
+          //  vIsBrDim[i],
+          //       [&](OpBuilder &builder, Location loc) {
+          //         builder.create<scf::YieldOp>(loc, ValueRange{one});
+          //       },
+          //       [&](OpBuilder &builder, Location loc) {
+          //    builder.create<scf::YieldOp>(loc,
+          //    ValueRange{ptrInfo.strides[i]});
+          //       }).getResult(0));
+          //   updateShapes.push_back(rewriter.create<scf::IfOp>(loc,
+          //   vIsBrDim[i],
+          //       [&](OpBuilder &builder, Location loc) {
+          //         builder.create<scf::YieldOp>(loc, ValueRange{one});
+          //       },
+          //       [&](OpBuilder &builder, Location loc) {
+          //      builder.create<scf::YieldOp>(loc,
+          //      ValueRange{ptrInfo.shape[i]});
+          //       }).getResult(0));
+          //   }
+          //   Value replaceOp = rewriter.create<scf::IfOp>(loc, bIsAll,
+          //     [&](OpBuilder &builder, Location loc) {
+          //       SmallVector<int32_t> dynamicOpHint{1, 0};
+          //       SmallVector<int64_t> sliceShape{1, 1};
+          //       auto sliceType = RankedTensorType::get(sliceShape, elemType,
+          //                                             tType.getEncoding());
+          //       auto loadSlice = builder.create<mlir::triton::gcu::LoadOp>(
+          //         loc, sliceType, ptrInfo.base, updateShapes, updateStrides,
+          //         ptrInfo.offsets, defaultValue, dynamicOpHint);
+          //       auto broadcastOp = builder.create<triton::BroadcastOp>(
+          //           loc, op.getType(), loadSlice);
+          //       builder.create<scf::YieldOp>(loc, ValueRange{broadcastOp});
+          //     },
+          //     [&](OpBuilder &builder, Location loc) {
+          //       Value brDim0OP = builder.create<scf::IfOp>(loc, vIsBrDim[0],
+          //         [&](OpBuilder &childbuilder, Location loc) {
+          //           SmallVector<int32_t> dynamicOpHint{1, opHint[1]};
+          //           SmallVector<int64_t, 4> sliceShape{1, resultShape[1]};
+          //           auto sliceType = RankedTensorType::get(sliceShape,
+          //           elemType,
+          //                                                 tType.getEncoding());
+          //        auto loadSlice =
+          //        childbuilder.create<mlir::triton::gcu::LoadOp>(
+          //             loc, sliceType, ptrInfo.base, updateShapes,
+          //             updateStrides, ptrInfo.offsets, defaultValue,
+          //             dynamicOpHint);
+          //           auto broadcastOp =
+          //           childbuilder.create<triton::BroadcastOp>(
+          //               loc, op.getType(), loadSlice);
+          //        childbuilder.create<scf::YieldOp>(loc,
+          //        ValueRange{broadcastOp});
+          //         },
+          //         [&](OpBuilder &childbuilder, Location loc) {
+          //           Value brDim1OP =
+          //            childbuilder.create<scf::IfOp>(loc, vIsBrDim[1],
+          //             [&](OpBuilder &child1builder, Location loc) {
+          //               SmallVector<int32_t> dynamicOpHint{opHint[0], 1};
+          //               SmallVector<int64_t, 4> sliceShape{resultShape[0],
+          //               1};
+          //            auto sliceType = RankedTensorType::get(sliceShape,
+          //            elemType,
+          //                                                  tType.getEncoding());
+          //               auto loadSlice =
+          //                child1builder.create<mlir::triton::gcu::LoadOp>(loc,
+          //                sliceType, ptrInfo.base, updateShapes,
+          //                updateStrides,
+          //                 ptrInfo.offsets, defaultValue, dynamicOpHint);
+          //               auto broadcastOp =
+          //                 child1builder.create<triton::BroadcastOp>(
+          //                   loc, op.getType(), loadSlice);
+          //               child1builder.create<scf::YieldOp>(loc,
+          //                 ValueRange{broadcastOp});
+          //             },
+          //             [&](OpBuilder &child1builder, Location loc) {
+          //            auto load =
+          //            child1builder.create<mlir::triton::gcu::LoadOp>(
+          //               loc, tType, ptrInfo.base, ptrInfo.shape,
+          //               ptrInfo.strides, ptrInfo.offsets, defaultValue,
+          //               opHint);
+          //              child1builder.create<scf::YieldOp>(loc,
+          //              ValueRange{load});
+          //             }).getResult(0);
+          //           childbuilder.create<scf::YieldOp>(loc,
+          //           ValueRange{brDim1OP});
+          //         }).getResult(0);
+          //       builder.create<scf::YieldOp>(loc, ValueRange{brDim0OP});
+          //     }).getResult(0);
+          //     rewriter.replaceOp(op, replaceOp);
+          //     return success();
         } else {
-          auto load = rewriter.create<mlir::triton::gcu::LoadOp>(loc, tType,
-            ptrInfo.base, ptrInfo.shape, ptrInfo.strides, ptrInfo.offsets,
-            defaultValue, opHint);
-            load.getOperation()->setAttr(
-              triton::gcu::kLoadEx, rewriter.getBoolAttr(true));
+          auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
+              loc, tType, ptrInfo.base, ptrInfo.shape, ptrInfo.strides,
+              ptrInfo.offsets, defaultValue, opHint);
+          load.getOperation()->setAttr(triton::gcu::kLoadEx,
+                                       rewriter.getBoolAttr(true));
           rewriter.replaceOp(op, load);
           return success();
         }
       }
-    } else { //static stride process will be delete for pingpong support dynamic
+    } else { // static stride process will be delete for pingpong support
+             // dynamic
       LLVM_DEBUG(llvm::dbgs() << "=== static stride process ===\n");
       auto staticOrder = GetOrderByHint(opHint);
 
@@ -467,25 +492,30 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
           if (i == rank - 1)
             orderStrides[i] = one;
           else
-            orderStrides[i] = rewriter.create<arith::MulIOp>(loc,
-              orderShapes[i+1], orderStrides[i+1]);
+            orderStrides[i] = rewriter.create<arith::MulIOp>(
+                loc, orderShapes[i + 1], orderStrides[i + 1]);
         }
       }
 
       if (rank > 2) {
         Value checkStride = orderStrides[0];
-        for (unsigned i = 1; i < rank-1; ++i) {
+        for (unsigned i = 1; i < rank - 1; ++i) {
           if (ptrInfo.broadcastDims.count(i)) {
-            auto cond = rewriter.create<arith::CmpIOp>(loc,
-                  arith::CmpIPredicate::ne, orderStrides[i], checkStride);
-            orderStrides[i] = rewriter.create<scf::IfOp>(loc, cond,
-              [&](OpBuilder &ifBuilder, Location loc) {
-                ifBuilder.create<scf::YieldOp>(loc, ValueRange{checkStride});
-              },
-              [&](OpBuilder &elseBuilder, Location loc) {
-                elseBuilder.create<scf::YieldOp>(loc,
-                  ValueRange{orderStrides[i]});
-              }).getResult(0);
+            auto cond = rewriter.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::ne, orderStrides[i], checkStride);
+            orderStrides[i] =
+                rewriter
+                    .create<scf::IfOp>(
+                        loc, cond,
+                        [&](OpBuilder &ifBuilder, Location loc) {
+                          ifBuilder.create<scf::YieldOp>(
+                              loc, ValueRange{checkStride});
+                        },
+                        [&](OpBuilder &elseBuilder, Location loc) {
+                          elseBuilder.create<scf::YieldOp>(
+                              loc, ValueRange{orderStrides[i]});
+                        })
+                    .getResult(0);
           }
           checkStride = orderStrides[i];
         }
@@ -515,44 +545,45 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
           sliceOrder[order[i]] = staticOrder[i];
         }
 
-        auto sliceOutType = RankedTensorType::get(sliceResultShape, elemType,
+        auto sliceOutType = RankedTensorType::get(
+            sliceResultShape, elemType,
             triton::gpu::BlockedEncodingAttr::get(
-              getContext(), SmallVector<unsigned>(rank, 1),
-              SmallVector<unsigned>(rank, 1), sliceWarpsPerCTA, sliceOrder,
-              ctaLayout));
+                getContext(), SmallVector<unsigned>(rank, 1),
+                SmallVector<unsigned>(rank, 1), sliceWarpsPerCTA, sliceOrder,
+                ctaLayout));
 
         auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
             loc, sliceOutType, ptrInfo.base, orderShapes, orderStrides,
             ptrInfo.offsets, defaultValue, staticDefaultOrder);
         if (bNeedBroadCast) {
-          auto transType = RankedTensorType::get(updateResultShape,
-            elemType,  tType.getEncoding());
-          auto transpose = rewriter.create<triton::TransOp>(
-            loc, transType, load, staticOrder);
+          auto transType = RankedTensorType::get(updateResultShape, elemType,
+                                                 tType.getEncoding());
+          auto transpose = rewriter.create<triton::TransOp>(loc, transType,
+                                                            load, staticOrder);
           auto broadcastOp = rewriter.create<triton::BroadcastOp>(
-            loc, op.getType(), transpose);
+              loc, op.getType(), transpose);
           rewriter.replaceOp(op, broadcastOp);
           return success();
         } else {
-          auto transpose = rewriter.create<triton::TransOp>(
-            loc, op.getType(), load, staticOrder);
+          auto transpose = rewriter.create<triton::TransOp>(loc, op.getType(),
+                                                            load, staticOrder);
           rewriter.replaceOp(op, transpose);
           return success();
         }
       } else if (bNeedBroadCast) {
-        auto loadType = RankedTensorType::get(
-          updateResultShape, elemType,  tType.getEncoding());
+        auto loadType = RankedTensorType::get(updateResultShape, elemType,
+                                              tType.getEncoding());
         auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
             loc, loadType, ptrInfo.base, orderShapes, orderStrides,
             ptrInfo.offsets, defaultValue, staticDefaultOrder);
-        auto broadcastOp = rewriter.create<triton::BroadcastOp>(
-            loc, op.getType(), load);
+        auto broadcastOp =
+            rewriter.create<triton::BroadcastOp>(loc, op.getType(), load);
         rewriter.replaceOp(op, broadcastOp);
         return success();
       } else {
         auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
-          loc, tType, ptrInfo.base, orderShapes, orderStrides,
-          ptrInfo.offsets, defaultValue, staticDefaultOrder);
+            loc, tType, ptrInfo.base, orderShapes, orderStrides,
+            ptrInfo.offsets, defaultValue, staticDefaultOrder);
         rewriter.replaceOp(op, load);
         return success();
       }
@@ -623,7 +654,7 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
         vSliceShape.push_back(ptrInfo.shape[i]);
     }
     assert(candidateHints.find(op.getOperation()) != candidateHints.end() &&
-          "get order failed");
+           "get order failed");
     auto opHint = candidateHints[op.getOperation()];
     // dynamic stride process
     if (!IsStaticStride(opHint)) {
@@ -650,7 +681,8 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
           ptrInfo.offsets, dynamicOpHint);
       rewriter.replaceOp(op, store);
       return success();
-    } else { //static stride process will be delete for pingpong support dynamic
+    } else { // static stride process will be delete for pingpong support
+             // dynamic
       auto staticOrder = GetOrderByHint(opHint);
       // if (IsStaticReshape(opHint)) {
       //   for (int i = 0; i < rank; ++i)
@@ -693,8 +725,8 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
           if (i == rank - 1)
             orderStrides[i] = one;
           else
-            orderStrides[i] = rewriter.create<arith::MulIOp>(loc,
-              orderShapes[i+1], orderStrides[i+1]);
+            orderStrides[i] = rewriter.create<arith::MulIOp>(
+                loc, orderShapes[i + 1], orderStrides[i + 1]);
         }
       }
 
@@ -729,14 +761,14 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
             transShapes, elemType,
             triton::gpu::BlockedEncodingAttr::get(
                 getContext(), SmallVector<unsigned>(rank, 1),
-                SmallVector<unsigned>(rank, 1), transWarpsPerCTA,
-                transOrder, ctaLayout));
+                SmallVector<unsigned>(rank, 1), transWarpsPerCTA, transOrder,
+                ctaLayout));
 
         auto transpose = rewriter.create<triton::TransOp>(
             loc, transType, op.getValue(), staticOrder);
         auto store = rewriter.create<mlir::triton::gcu::StoreOp>(
-          loc, transpose, ptrInfo.base, orderShapes, orderStrides,
-          ptrInfo.offsets, staticDefaultOrder);
+            loc, transpose, ptrInfo.base, orderShapes, orderStrides,
+            ptrInfo.offsets, staticDefaultOrder);
         rewriter.replaceOp(op, store);
         return success();
       } else {
@@ -783,25 +815,23 @@ void ConvertTritonLoadStoreToDmaPass::runOnOperation() {
   llvm::SmallDenseMap<Value, gcu::MaskState> knowMasks;
   llvm::SmallDenseMap<Value, gcu::PtrState> knownPtrs;
   RewritePatternSet prePatterns(ctx);
-  prePatterns.add<PreprocessForOp>(
-      ctx, knownPtrs, knowMasks, candidateOps, candidateHints);
+  prePatterns.add<PreprocessForOp>(ctx, knownPtrs, knowMasks, candidateOps,
+                                   candidateHints);
 
-  if (applyPatternsGreedily(op, std::move(prePatterns), rewriteConfig)
-          .failed())
+  if (applyPatternsGreedily(op, std::move(prePatterns), rewriteConfig).failed())
     signalPassFailure();
 
   // 3. Start to process load/store op
   RewritePatternSet patterns(ctx);
-  patterns.add<ConvertLoadOpToDma, ConvertStoreOpToDma>(ctx, knownPtrs,
-                                      knowMasks, candidateOps, candidateHints,
-                                      support_stride0);
+  patterns.add<ConvertLoadOpToDma, ConvertStoreOpToDma>(
+      ctx, knownPtrs, knowMasks, candidateOps, candidateHints, support_stride0);
   if (applyPatternsGreedily(op, std::move(patterns)).failed())
     signalPassFailure();
 
   // 4. Post-process some ops
   RewritePatternSet postPatterns(ctx);
   postPatterns.add<PostprocessForOp>(ctx, knownPtrs);
-  if (applyPatternsGreedily(op, std::move(postPatterns),
-                                   rewriteConfig).failed())
+  if (applyPatternsGreedily(op, std::move(postPatterns), rewriteConfig)
+          .failed())
     signalPassFailure();
 }

@@ -51,7 +51,7 @@ LogicalResult StoreOp::verify() {
   if (getOffsets().size() != getShape().size() ||
       getOffsets().size() != getStrides().size() ||
       getOffsets().size() !=
-        static_cast<unsigned>(getValue().getType().getRank()))
+          static_cast<unsigned>(getValue().getType().getRank()))
     return emitOpError() << "shape/strides/offsets mismatch with value rank";
   auto ptrElemTy = getPtr().getType().getElementType();
   auto valElemTy = getValue().getType().getElementType();
@@ -66,45 +66,45 @@ LogicalResult StoreOp::verify() {
 
 // -- WarpGroupDotOp --
 mlir::LogicalResult WarpGroupDotOp::inferReturnTypes(
-  MLIRContext *context, std::optional<Location> location, ValueRange operands,
-  DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
-  SmallVectorImpl<Type> &inferredReturnTypes) {
-auto accTy = cast<RankedTensorType>(operands[2].getType());
-inferredReturnTypes.push_back(accTy);
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  auto accTy = cast<RankedTensorType>(operands[2].getType());
+  inferredReturnTypes.push_back(accTy);
 
-auto aEnc =
-    cast<triton::gpu::TensorOrMemDesc>(operands[0].getType()).getEncoding();
-auto bEnc =
-    cast<triton::gpu::TensorOrMemDesc>(operands[1].getType()).getEncoding();
-auto retEnc = accTy.getEncoding();
-if (aEnc) {
-  assert(bEnc);
-  auto checkDotOpEncoding = [&](Attribute enc, unsigned opIdx) {
-    if (mlir::isa<triton::gpu::NVMMASharedEncodingAttr>(enc))
-      return mlir::success();
-    Dialect &dialect = enc.getDialect();
-    auto interface = cast<DialectInferLayoutInterface>(&dialect);
-    return interface->inferDotOpEncoding(enc, opIdx, retEnc, location);
-  };
-  if (checkDotOpEncoding(aEnc, 0).failed())
-    return mlir::failure();
-  if (checkDotOpEncoding(bEnc, 1).failed())
-    return mlir::failure();
-}
-return mlir::success();
+  auto aEnc =
+      cast<triton::gpu::TensorOrMemDesc>(operands[0].getType()).getEncoding();
+  auto bEnc =
+      cast<triton::gpu::TensorOrMemDesc>(operands[1].getType()).getEncoding();
+  auto retEnc = accTy.getEncoding();
+  if (aEnc) {
+    assert(bEnc);
+    auto checkDotOpEncoding = [&](Attribute enc, unsigned opIdx) {
+      if (mlir::isa<triton::gpu::NVMMASharedEncodingAttr>(enc))
+        return mlir::success();
+      Dialect &dialect = enc.getDialect();
+      auto interface = cast<DialectInferLayoutInterface>(&dialect);
+      return interface->inferDotOpEncoding(enc, opIdx, retEnc, location);
+    };
+    if (checkDotOpEncoding(aEnc, 0).failed())
+      return mlir::failure();
+    if (checkDotOpEncoding(bEnc, 1).failed())
+      return mlir::failure();
+  }
+  return mlir::success();
 }
 
 void WarpGroupDotOp::getEffects(
-  SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-      &effects) {
-auto &a = getAMutable();
-auto &b = getBMutable();
-if (isa<mlir::triton::gpu::MemDescType>(a.get().getType()))
-  effects.emplace_back(MemoryEffects::Read::get(), &a,
-                       mlir::triton::gpu::SharedMemory::get());
-if (isa<mlir::triton::gpu::MemDescType>(b.get().getType()))
-  effects.emplace_back(MemoryEffects::Read::get(), &b,
-                       mlir::triton::gpu::SharedMemory::get());
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  auto &a = getAMutable();
+  auto &b = getBMutable();
+  if (isa<mlir::triton::gpu::MemDescType>(a.get().getType()))
+    effects.emplace_back(MemoryEffects::Read::get(), &a,
+                         mlir::triton::gpu::SharedMemory::get());
+  if (isa<mlir::triton::gpu::MemDescType>(b.get().getType()))
+    effects.emplace_back(MemoryEffects::Read::get(), &b,
+                         mlir::triton::gpu::SharedMemory::get());
 }
 
 void SliceFromLocalOp::getEffects(
@@ -122,16 +122,16 @@ void DesliceToLocalOp::getEffects(
 }
 
 bool WarpGroupDotOp::needsPartialAccumulator() {
-const auto &a = getA();
-const auto &d = getD();
-auto aTensorTy = cast<triton::gpu::TensorOrMemDesc>(a.getType());
-auto aElTy = aTensorTy.getElementType();
-bool isFP8 = llvm::isa<Float8E5M2Type, Float8E4M3FNType, Float8E5M2FNUZType,
-                       Float8E4M3FNUZType>(aElTy);
-bool accFP32 =
-    cast<triton::gpu::TensorOrMemDesc>(d.getType()).getElementType().isF32();
-uint32_t maxNumImpreciseAcc = getMaxNumImpreciseAcc();
-return isFP8 && accFP32 && maxNumImpreciseAcc <= aTensorTy.getShape()[1];
+  const auto &a = getA();
+  const auto &d = getD();
+  auto aTensorTy = cast<triton::gpu::TensorOrMemDesc>(a.getType());
+  auto aElTy = aTensorTy.getElementType();
+  bool isFP8 = llvm::isa<Float8E5M2Type, Float8E4M3FNType, Float8E5M2FNUZType,
+                         Float8E4M3FNUZType>(aElTy);
+  bool accFP32 =
+      cast<triton::gpu::TensorOrMemDesc>(d.getType()).getElementType().isF32();
+  uint32_t maxNumImpreciseAcc = getMaxNumImpreciseAcc();
+  return isFP8 && accFP32 && maxNumImpreciseAcc <= aTensorTy.getShape()[1];
 }
 
 bool WarpGroupDotOp::verifyDims() {
@@ -173,10 +173,10 @@ LogicalResult WarpGroupDotOp::verify() {
     if (!dimCompatible(aShape[i], bShape[i]) ||
         !dimCompatible(aShape[i], cShape[i]) ||
         !dimCompatible(aShape[i], dShape[i])) {
-      return emitOpError()
-             << "batch dimensions of A/B/C/D must match at dim " << i
-             << ", but got A:" << aShape[i] << ", B:" << bShape[i]
-             << ", C:" << cShape[i] << ", D:" << dShape[i];
+      return emitOpError() << "batch dimensions of A/B/C/D must match at dim "
+                           << i << ", but got A:" << aShape[i]
+                           << ", B:" << bShape[i] << ", C:" << cShape[i]
+                           << ", D:" << dShape[i];
     }
   }
 
@@ -193,8 +193,8 @@ LogicalResult WarpGroupDotOp::verify() {
     return emitOpError() << "expects A(..., M, K) and B(..., K, N), but got K="
                          << kA << " and " << kB;
 
-  if (!dimCompatible(m, cM) || !dimCompatible(m, dM) ||
-      !dimCompatible(n, cN) || !dimCompatible(n, dN)) {
+  if (!dimCompatible(m, cM) || !dimCompatible(m, dM) || !dimCompatible(n, cN) ||
+      !dimCompatible(n, dN)) {
     return emitOpError()
            << "expects C/D shape (..., M, N) from A(..., M, K) * B(..., K, N), "
            << "but got A M=" << m << ", B N=" << n << ", C tail=(" << cM << ", "

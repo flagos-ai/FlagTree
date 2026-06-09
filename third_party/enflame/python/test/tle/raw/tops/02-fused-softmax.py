@@ -34,19 +34,16 @@ def naive_softmax(x):
 
 
 @triton.jit
-def softmax_kernel(output_ptr, input_ptr, n_rows, n_cols,
-                   input_row_stride, output_row_stride,
+def softmax_kernel(output_ptr, input_ptr, n_rows, n_cols, input_row_stride, output_row_stride,
                    BLOCK_SIZE: tl.constexpr):
-    tle_raw.call(edsl, [output_ptr, input_ptr, n_rows, n_cols,
-                        input_row_stride, output_row_stride])
+    tle_raw.call(edsl, [output_ptr, input_ptr, n_rows, n_cols, input_row_stride, output_row_stride])
 
 
 def softmax(x):
     n_rows, n_cols = x.shape
     BLOCK_SIZE = triton.next_power_of_2(n_cols)
     y = torch.empty_like(x)
-    softmax_kernel[(n_rows, 1, 1)](y, x, n_rows, n_cols,
-                                   x.stride(0), y.stride(0), BLOCK_SIZE)
+    softmax_kernel[(n_rows, 1, 1)](y, x, n_rows, n_cols, x.stride(0), y.stride(0), BLOCK_SIZE)
     return y
 
 

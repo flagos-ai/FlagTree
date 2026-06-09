@@ -44,12 +44,10 @@ protected:
   ModuleOp module;
 
   void SetUp() override {
-    ctx.loadDialect<arith::ArithDialect, func::FuncDialect,
-                     gpu::GPUDialect, scf::SCFDialect,
-                     LLVM::LLVMDialect,
-                     triton::TritonDialect,
-                     triton::gpu::TritonGPUDialect,
-                     triton::gcu::TritonGCUDialect>();
+    ctx.loadDialect<arith::ArithDialect, func::FuncDialect, gpu::GPUDialect,
+                    scf::SCFDialect, LLVM::LLVMDialect, triton::TritonDialect,
+                    triton::gpu::TritonGPUDialect,
+                    triton::gcu::TritonGCUDialect>();
 
     builder = std::make_unique<OpBuilder>(&ctx);
     module = ModuleOp::create(loc());
@@ -73,8 +71,8 @@ protected:
   }
 
   Value createDenseConstant(RankedTensorType ty, int64_t val) {
-    auto attr = DenseElementsAttr::get(
-        ty, IntegerAttr::get(ty.getElementType(), val));
+    auto attr =
+        DenseElementsAttr::get(ty, IntegerAttr::get(ty.getElementType(), val));
     return builder->create<arith::ConstantOp>(loc(), attr);
   }
 
@@ -155,8 +153,8 @@ TEST_F(AxisInfoExTest, DivStridedByConst) {
   auto funcOp = createFunc("test_div_strided", {});
 
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
-  auto rangeOp = builder->create<triton::MakeRangeOp>(
-      loc(), tensorTy, /*start=*/0, /*end=*/16);
+  auto rangeOp = builder->create<triton::MakeRangeOp>(loc(), tensorTy,
+                                                      /*start=*/0, /*end=*/16);
   Value cst4 = createDenseConstant(tensorTy, 4);
   auto divOp = builder->create<arith::DivSIOp>(loc(), rangeOp, cst4);
 
@@ -262,8 +260,8 @@ TEST_F(AxisInfoExTest, CmpIBothConstantsSlt) {
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
   Value cst3 = createDenseConstant(tensorTy, 3);
   Value cst10 = createDenseConstant(tensorTy, 10);
-  auto cmpOp = builder->create<arith::CmpIOp>(
-      loc(), arith::CmpIPredicate::slt, cst3, cst10);
+  auto cmpOp = builder->create<arith::CmpIOp>(loc(), arith::CmpIPredicate::slt,
+                                              cst3, cst10);
 
   auto analysis = runAnalysis();
   auto *info = analysis->getAxisInfoEx(cmpOp.getResult());
@@ -279,8 +277,8 @@ TEST_F(AxisInfoExTest, CmpIBothConstantsEq) {
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
   Value cst5 = createDenseConstant(tensorTy, 5);
   Value cst5b = createDenseConstant(tensorTy, 5);
-  auto cmpOp = builder->create<arith::CmpIOp>(
-      loc(), arith::CmpIPredicate::eq, cst5, cst5b);
+  auto cmpOp = builder->create<arith::CmpIOp>(loc(), arith::CmpIPredicate::eq,
+                                              cst5, cst5b);
 
   auto analysis = runAnalysis();
   auto *info = analysis->getAxisInfoEx(cmpOp.getResult());
@@ -296,8 +294,8 @@ TEST_F(AxisInfoExTest, CmpIBothConstantsNe) {
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
   Value cst3 = createDenseConstant(tensorTy, 3);
   Value cst10 = createDenseConstant(tensorTy, 10);
-  auto cmpOp = builder->create<arith::CmpIOp>(
-      loc(), arith::CmpIPredicate::ne, cst3, cst10);
+  auto cmpOp = builder->create<arith::CmpIOp>(loc(), arith::CmpIPredicate::ne,
+                                              cst3, cst10);
 
   auto analysis = runAnalysis();
   auto *info = analysis->getAxisInfoEx(cmpOp.getResult());
@@ -313,8 +311,8 @@ TEST_F(AxisInfoExTest, CmpIBothConstantsSle) {
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
   Value cst3 = createDenseConstant(tensorTy, 3);
   Value cst3b = createDenseConstant(tensorTy, 3);
-  auto cmpOp = builder->create<arith::CmpIOp>(
-      loc(), arith::CmpIPredicate::sle, cst3, cst3b);
+  auto cmpOp = builder->create<arith::CmpIOp>(loc(), arith::CmpIPredicate::sle,
+                                              cst3, cst3b);
 
   auto analysis = runAnalysis();
   auto *info = analysis->getAxisInfoEx(cmpOp.getResult());
@@ -330,8 +328,8 @@ TEST_F(AxisInfoExTest, CmpIBothConstantsSgt) {
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
   Value cst10 = createDenseConstant(tensorTy, 10);
   Value cst3 = createDenseConstant(tensorTy, 3);
-  auto cmpOp = builder->create<arith::CmpIOp>(
-      loc(), arith::CmpIPredicate::sgt, cst10, cst3);
+  auto cmpOp = builder->create<arith::CmpIOp>(loc(), arith::CmpIPredicate::sgt,
+                                              cst10, cst3);
 
   auto analysis = runAnalysis();
   auto *info = analysis->getAxisInfoEx(cmpOp.getResult());
@@ -347,8 +345,8 @@ TEST_F(AxisInfoExTest, CmpIBothConstantsSge) {
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
   Value cst10 = createDenseConstant(tensorTy, 10);
   Value cst10b = createDenseConstant(tensorTy, 10);
-  auto cmpOp = builder->create<arith::CmpIOp>(
-      loc(), arith::CmpIPredicate::sge, cst10, cst10b);
+  auto cmpOp = builder->create<arith::CmpIOp>(loc(), arith::CmpIPredicate::sge,
+                                              cst10, cst10b);
 
   auto analysis = runAnalysis();
   auto *info = analysis->getAxisInfoEx(cmpOp.getResult());
@@ -364,8 +362,8 @@ TEST_F(AxisInfoExTest, CmpIBothConstantsUlt) {
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
   Value cst3 = createDenseConstant(tensorTy, 3);
   Value cst10 = createDenseConstant(tensorTy, 10);
-  auto cmpOp = builder->create<arith::CmpIOp>(
-      loc(), arith::CmpIPredicate::ult, cst3, cst10);
+  auto cmpOp = builder->create<arith::CmpIOp>(loc(), arith::CmpIPredicate::ult,
+                                              cst3, cst10);
 
   auto analysis = runAnalysis();
   auto *info = analysis->getAxisInfoEx(cmpOp.getResult());
@@ -381,8 +379,8 @@ TEST_F(AxisInfoExTest, CmpIBothConstantsUle) {
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
   Value cst3 = createDenseConstant(tensorTy, 3);
   Value cst10 = createDenseConstant(tensorTy, 10);
-  auto cmpOp = builder->create<arith::CmpIOp>(
-      loc(), arith::CmpIPredicate::ule, cst3, cst10);
+  auto cmpOp = builder->create<arith::CmpIOp>(loc(), arith::CmpIPredicate::ule,
+                                              cst3, cst10);
 
   auto analysis = runAnalysis();
   auto *info = analysis->getAxisInfoEx(cmpOp.getResult());
@@ -398,8 +396,8 @@ TEST_F(AxisInfoExTest, CmpIBothConstantsUgt) {
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
   Value cst10 = createDenseConstant(tensorTy, 10);
   Value cst3 = createDenseConstant(tensorTy, 3);
-  auto cmpOp = builder->create<arith::CmpIOp>(
-      loc(), arith::CmpIPredicate::ugt, cst10, cst3);
+  auto cmpOp = builder->create<arith::CmpIOp>(loc(), arith::CmpIPredicate::ugt,
+                                              cst10, cst3);
 
   auto analysis = runAnalysis();
   auto *info = analysis->getAxisInfoEx(cmpOp.getResult());
@@ -415,8 +413,8 @@ TEST_F(AxisInfoExTest, CmpIBothConstantsUge) {
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
   Value cst10 = createDenseConstant(tensorTy, 10);
   Value cst10b = createDenseConstant(tensorTy, 10);
-  auto cmpOp = builder->create<arith::CmpIOp>(
-      loc(), arith::CmpIPredicate::uge, cst10, cst10b);
+  auto cmpOp = builder->create<arith::CmpIOp>(loc(), arith::CmpIPredicate::uge,
+                                              cst10, cst10b);
 
   auto analysis = runAnalysis();
   auto *info = analysis->getAxisInfoEx(cmpOp.getResult());
@@ -437,8 +435,8 @@ TEST_F(AxisInfoExTest, SelectConstantFalse) {
   funcOp.setArgAttr(1, "tt.divisibility", builder->getI64IntegerAttr(8));
 
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
-  auto falseAttr = DenseElementsAttr::get(i1TensorTy,
-                                          builder->getBoolAttr(false));
+  auto falseAttr =
+      DenseElementsAttr::get(i1TensorTy, builder->getBoolAttr(false));
   Value cond = builder->create<arith::ConstantOp>(loc(), falseAttr);
   Value arg0 = funcOp.getArgument(0);
   Value arg1 = funcOp.getArgument(1);
@@ -462,8 +460,8 @@ TEST_F(AxisInfoExTest, SelectConstantTrue) {
   funcOp.setArgAttr(1, "tt.divisibility", builder->getI64IntegerAttr(8));
 
   builder->setInsertionPoint(funcOp.getBody().front().getTerminator());
-  auto trueAttr = DenseElementsAttr::get(i1TensorTy,
-                                         builder->getBoolAttr(true));
+  auto trueAttr =
+      DenseElementsAttr::get(i1TensorTy, builder->getBoolAttr(true));
   Value cond = builder->create<arith::ConstantOp>(loc(), trueAttr);
   Value arg0 = funcOp.getArgument(0);
   Value arg1 = funcOp.getArgument(1);
@@ -682,7 +680,8 @@ TEST_F(AxisInfoExTest, ContiguityAttributeOverride) {
   auto addOp = builder->create<arith::AddIOp>(loc(), arg0, arg1);
 
   auto attrTy = RankedTensorType::get({1}, builder->getI32Type());
-  addOp->setDiscardableAttr("tt.contiguity",
+  addOp->setDiscardableAttr(
+      "tt.contiguity",
       DenseElementsAttr::get(attrTy, builder->getI32IntegerAttr(8)));
 
   auto analysis = runAnalysis();
@@ -706,7 +705,8 @@ TEST_F(AxisInfoExTest, ConstancyAttributeOverride) {
   auto addOp = builder->create<arith::AddIOp>(loc(), arg0, arg1);
 
   auto attrTy = RankedTensorType::get({1}, builder->getI32Type());
-  addOp->setDiscardableAttr("tt.constancy",
+  addOp->setDiscardableAttr(
+      "tt.constancy",
       DenseElementsAttr::get(attrTy, builder->getI32IntegerAttr(4)));
 
   auto analysis = runAnalysis();
@@ -725,7 +725,8 @@ TEST_F(AxisInfoExTest, DenseElementsAttrFuncArg) {
   auto funcOp = createFunc("test_dense_attr", {tensorTy});
 
   auto attrTy = RankedTensorType::get({1}, builder->getI32Type());
-  funcOp.setArgAttr(0, "tt.divisibility",
+  funcOp.setArgAttr(
+      0, "tt.divisibility",
       DenseElementsAttr::get(attrTy, builder->getI32IntegerAttr(32)));
 
   auto analysis = runAnalysis();
@@ -748,9 +749,11 @@ TEST_F(AxisInfoExTest, DiscardableAttrOnDefiningOp) {
   auto addOp = builder->create<arith::AddIOp>(loc(), arg0, arg1);
 
   auto attrTy = RankedTensorType::get({1}, builder->getI32Type());
-  addOp->setDiscardableAttr("tt.divisibility",
+  addOp->setDiscardableAttr(
+      "tt.divisibility",
       DenseElementsAttr::get(attrTy, builder->getI32IntegerAttr(64)));
-  addOp->setDiscardableAttr("tt.constancy",
+  addOp->setDiscardableAttr(
+      "tt.constancy",
       DenseElementsAttr::get(attrTy, builder->getI32IntegerAttr(4)));
 
   auto analysis = runAnalysis();
@@ -768,8 +771,8 @@ TEST_F(AxisInfoExTest, UpdateCallGraphDivisibility) {
   auto i32Ty = builder->getI32Type();
 
   auto calleeType = FunctionType::get(&ctx, {i32Ty}, {});
-  auto calleeFuncOp = builder->create<func::FuncOp>(loc(), "callee_div",
-                                                     calleeType);
+  auto calleeFuncOp =
+      builder->create<func::FuncOp>(loc(), "callee_div", calleeType);
   calleeFuncOp.addEntryBlock();
   {
     OpBuilder::InsertionGuard guard(*builder);
@@ -778,11 +781,10 @@ TEST_F(AxisInfoExTest, UpdateCallGraphDivisibility) {
   }
 
   auto callerType = FunctionType::get(&ctx, {i32Ty}, {});
-  auto callerFuncOp = builder->create<func::FuncOp>(loc(), "caller_div",
-                                                     callerType);
+  auto callerFuncOp =
+      builder->create<func::FuncOp>(loc(), "caller_div", callerType);
   callerFuncOp.addEntryBlock();
-  callerFuncOp.setArgAttr(0, "tt.divisibility",
-                           builder->getI64IntegerAttr(16));
+  callerFuncOp.setArgAttr(0, "tt.divisibility", builder->getI64IntegerAttr(16));
   {
     OpBuilder::InsertionGuard guard(*builder);
     builder->setInsertionPointToStart(&callerFuncOp.getBody().front());
@@ -793,8 +795,7 @@ TEST_F(AxisInfoExTest, UpdateCallGraphDivisibility) {
 
   auto analysis = runAnalysis();
 
-  auto attr = calleeFuncOp.getArgAttrOfType<IntegerAttr>(
-      0, "tt.divisibility");
+  auto attr = calleeFuncOp.getArgAttrOfType<IntegerAttr>(0, "tt.divisibility");
   ASSERT_TRUE(attr != nullptr);
   EXPECT_EQ(attr.getInt(), 16);
 }
@@ -807,8 +808,8 @@ TEST_F(AxisInfoExTest, UpdateCallGraphConstancy) {
   auto i32Ty = builder->getI32Type();
 
   auto calleeType = FunctionType::get(&ctx, {i32Ty}, {});
-  auto calleeFuncOp = builder->create<func::FuncOp>(loc(), "callee_cst",
-                                                     calleeType);
+  auto calleeFuncOp =
+      builder->create<func::FuncOp>(loc(), "callee_cst", calleeType);
   calleeFuncOp.addEntryBlock();
   {
     OpBuilder::InsertionGuard guard(*builder);
@@ -817,13 +818,11 @@ TEST_F(AxisInfoExTest, UpdateCallGraphConstancy) {
   }
 
   auto callerType = FunctionType::get(&ctx, {i32Ty}, {});
-  auto callerFuncOp = builder->create<func::FuncOp>(loc(), "caller_cst",
-                                                     callerType);
+  auto callerFuncOp =
+      builder->create<func::FuncOp>(loc(), "caller_cst", callerType);
   callerFuncOp.addEntryBlock();
-  callerFuncOp.setArgAttr(0, "tt.divisibility",
-                           builder->getI64IntegerAttr(8));
-  callerFuncOp.setArgAttr(0, "tt.constancy",
-                           builder->getI64IntegerAttr(4));
+  callerFuncOp.setArgAttr(0, "tt.divisibility", builder->getI64IntegerAttr(8));
+  callerFuncOp.setArgAttr(0, "tt.constancy", builder->getI64IntegerAttr(4));
   {
     OpBuilder::InsertionGuard guard(*builder);
     builder->setInsertionPointToStart(&callerFuncOp.getBody().front());
@@ -834,8 +833,8 @@ TEST_F(AxisInfoExTest, UpdateCallGraphConstancy) {
 
   auto analysis = runAnalysis();
 
-  auto constAttr = calleeFuncOp.getArgAttrOfType<IntegerAttr>(
-      0, "tt.constancy");
+  auto constAttr =
+      calleeFuncOp.getArgAttrOfType<IntegerAttr>(0, "tt.constancy");
   ASSERT_TRUE(constAttr != nullptr);
   EXPECT_EQ(constAttr.getInt(), 4);
 }
@@ -848,8 +847,8 @@ TEST_F(AxisInfoExTest, UpdateCallGraphContiguity) {
   auto i32Ty = builder->getI32Type();
 
   auto calleeType = FunctionType::get(&ctx, {i32Ty}, {});
-  auto calleeFuncOp = builder->create<func::FuncOp>(loc(), "callee_cont",
-                                                     calleeType);
+  auto calleeFuncOp =
+      builder->create<func::FuncOp>(loc(), "callee_cont", calleeType);
   calleeFuncOp.addEntryBlock();
   {
     OpBuilder::InsertionGuard guard(*builder);
@@ -858,13 +857,11 @@ TEST_F(AxisInfoExTest, UpdateCallGraphContiguity) {
   }
 
   auto callerType = FunctionType::get(&ctx, {i32Ty}, {});
-  auto callerFuncOp = builder->create<func::FuncOp>(loc(), "caller_cont",
-                                                     callerType);
+  auto callerFuncOp =
+      builder->create<func::FuncOp>(loc(), "caller_cont", callerType);
   callerFuncOp.addEntryBlock();
-  callerFuncOp.setArgAttr(0, "tt.divisibility",
-                           builder->getI64IntegerAttr(8));
-  callerFuncOp.setArgAttr(0, "tt.contiguity",
-                           builder->getI64IntegerAttr(8));
+  callerFuncOp.setArgAttr(0, "tt.divisibility", builder->getI64IntegerAttr(8));
+  callerFuncOp.setArgAttr(0, "tt.contiguity", builder->getI64IntegerAttr(8));
   {
     OpBuilder::InsertionGuard guard(*builder);
     builder->setInsertionPointToStart(&callerFuncOp.getBody().front());
@@ -875,8 +872,8 @@ TEST_F(AxisInfoExTest, UpdateCallGraphContiguity) {
 
   auto analysis = runAnalysis();
 
-  auto contAttr = calleeFuncOp.getArgAttrOfType<IntegerAttr>(
-      0, "tt.contiguity");
+  auto contAttr =
+      calleeFuncOp.getArgAttrOfType<IntegerAttr>(0, "tt.contiguity");
   ASSERT_TRUE(contAttr != nullptr);
   EXPECT_EQ(contAttr.getInt(), 8);
 }

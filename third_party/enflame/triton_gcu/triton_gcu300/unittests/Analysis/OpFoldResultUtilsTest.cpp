@@ -42,11 +42,9 @@ protected:
   ModuleOp module;
 
   void SetUp() override {
-    ctx.loadDialect<arith::ArithDialect, func::FuncDialect,
-                     gpu::GPUDialect, triton::TritonDialect,
-                     triton::gpu::TritonGPUDialect>();
-    ctx.getDiagEngine().registerHandler(
-        [](Diagnostic &) { return success(); });
+    ctx.loadDialect<arith::ArithDialect, func::FuncDialect, gpu::GPUDialect,
+                    triton::TritonDialect, triton::gpu::TritonGPUDialect>();
+    ctx.getDiagEngine().registerHandler([](Diagnostic &) { return success(); });
 
     builder = std::make_unique<OpBuilder>(&ctx);
     module = ModuleOp::create(builder->getUnknownLoc());
@@ -64,13 +62,10 @@ protected:
     return builder->create<arith::ConstantIndexOp>(loc(), val).getResult();
   }
 
-  OpFoldResult makeIndexAttr(int64_t val) {
-    return builder->getIndexAttr(val);
-  }
+  OpFoldResult makeIndexAttr(int64_t val) { return builder->getIndexAttr(val); }
 
   func::FuncOp makeFuncWithIndexArg(StringRef name) {
-    auto funcType =
-        builder->getFunctionType({builder->getIndexType()}, {});
+    auto funcType = builder->getFunctionType({builder->getIndexType()}, {});
     auto funcOp = builder->create<func::FuncOp>(loc(), name, funcType);
     auto &entryBlock = funcOp.getBody().emplaceBlock();
     entryBlock.addArgument(builder->getIndexType(), loc());
@@ -101,8 +96,7 @@ TEST_F(OpFoldResultUtilsTest, SIToFPAfterSplat) {
   auto intScalar =
       builder->create<arith::ConstantOp>(loc(), builder->getI32IntegerAttr(0));
   auto intTensorTy = RankedTensorType::get({16}, builder->getI32Type());
-  auto splat =
-      builder->create<triton::SplatOp>(loc(), intTensorTy, intScalar);
+  auto splat = builder->create<triton::SplatOp>(loc(), intTensorTy, intScalar);
   auto fpTensorTy = RankedTensorType::get({16}, builder->getF32Type());
   auto sitofp = builder->create<arith::SIToFPOp>(loc(), fpTensorTy, splat);
 
@@ -195,8 +189,8 @@ TEST_F(OpFoldResultUtilsTest, RemOFRs_DynamicBoth) {
   Value dynamicLhs = funcOp.getBody().front().getArgument(0);
   auto rhsVal = makeIndexValue(5);
 
-  auto result = remOFRs(*builder, loc(), OpFoldResult(dynamicLhs),
-                         OpFoldResult(rhsVal));
+  auto result =
+      remOFRs(*builder, loc(), OpFoldResult(dynamicLhs), OpFoldResult(rhsVal));
   EXPECT_TRUE(llvm::isa<Value>(result));
   resetInsertionToModule();
 }
@@ -218,8 +212,8 @@ TEST_F(OpFoldResultUtilsTest, DivOFRs_DynamicBoth) {
   Value dynamicLhs = funcOp.getBody().front().getArgument(0);
   auto rhsVal = makeIndexValue(4);
 
-  auto result = divOFRs(*builder, loc(), OpFoldResult(dynamicLhs),
-                         OpFoldResult(rhsVal));
+  auto result =
+      divOFRs(*builder, loc(), OpFoldResult(dynamicLhs), OpFoldResult(rhsVal));
   EXPECT_TRUE(llvm::isa<Value>(result));
   resetInsertionToModule();
 }
@@ -395,8 +389,8 @@ TEST_F(OpFoldResultUtilsTest, SubOFRs_DynamicBoth) {
   Value dynamicLhs = funcOp.getBody().front().getArgument(0);
   auto rhsVal = makeIndexValue(2);
 
-  auto result = subOFRs(*builder, loc(), OpFoldResult(dynamicLhs),
-                         OpFoldResult(rhsVal));
+  auto result =
+      subOFRs(*builder, loc(), OpFoldResult(dynamicLhs), OpFoldResult(rhsVal));
   EXPECT_TRUE(llvm::isa<Value>(result));
   resetInsertionToModule();
 }
@@ -454,8 +448,8 @@ TEST_F(OpFoldResultUtilsTest, MinOFRs_DynamicBoth) {
   Value dynamicLhs = funcOp.getBody().front().getArgument(0);
   auto rhsVal = makeIndexValue(10);
 
-  auto result = minOFRs(*builder, loc(), OpFoldResult(dynamicLhs),
-                         OpFoldResult(rhsVal));
+  auto result =
+      minOFRs(*builder, loc(), OpFoldResult(dynamicLhs), OpFoldResult(rhsVal));
   EXPECT_TRUE(llvm::isa<Value>(result));
   resetInsertionToModule();
 }
@@ -487,8 +481,8 @@ TEST_F(OpFoldResultUtilsTest, MaxOFRs_DynamicBoth) {
   Value dynamicLhs = funcOp.getBody().front().getArgument(0);
   auto rhsVal = makeIndexValue(10);
 
-  auto result = maxOFRs(*builder, loc(), OpFoldResult(dynamicLhs),
-                         OpFoldResult(rhsVal));
+  auto result =
+      maxOFRs(*builder, loc(), OpFoldResult(dynamicLhs), OpFoldResult(rhsVal));
   EXPECT_TRUE(llvm::isa<Value>(result));
   resetInsertionToModule();
 }
