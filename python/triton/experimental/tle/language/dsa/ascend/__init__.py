@@ -12,6 +12,8 @@ from .core import (
     sync_block_set,
     sync_block_wait,
     sync_block_all,
+    compile_hint,
+    multibuffer
 )
 
 __all__ = [
@@ -26,4 +28,6 @@ __all__ = [
     "sync_block_set",
     "sync_block_wait",
     "sync_block_all",
+    "compile_hint",
+    "multibuffer",
 ]
