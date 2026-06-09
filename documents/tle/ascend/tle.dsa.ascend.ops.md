@@ -41,3 +41,4 @@ tle.dsa.ascend.UB
 | `tle.dsa.ascend.sync_block_all` | 插入全局核间同步，支持 cube、vector、all 和 sub vector 等同步模式。 | [tle.dsa.ascend.sync_block_all.md](tle.dsa.ascend.sync_block_all.md) |
 | `tle.dsa.ascend.sync_block_set` | 分离式核间同步中的 set 操作，配合 `sync_block_wait` 使用。 | [tle.dsa.ascend.sync_block_set.md](tle.dsa.ascend.sync_block_set.md) |
 | `tle.dsa.ascend.sync_block_wait` | 分离式核间同步中的 wait 操作，等待指定同步事件后继续执行。 | [tle.dsa.ascend.sync_block_wait.md](tle.dsa.ascend.sync_block_wait.md) |
+| `tle.dsa.ascend.compile_hint` | 向编译器传递优化提示，指导代码生成和性能调优，支持 `bitwise_mask` 等 Hint 类型。 | [tle.dsa.ascend.compile_hint.md](tle.dsa.ascend.compile_hint.md) | |
