@@ -17,6 +17,7 @@
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "llvm/Support/Casting.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -29,12 +30,11 @@
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
-#include "llvm/Support/Casting.h"
 
 namespace mlir {
 #define GEN_PASS_DEF_TRITONWGDOTTOGCU
 #include "Conversion/Passes.h.inc"
-} // namespace mlir
+}  // namespace mlir
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -47,9 +47,10 @@ struct TritonWGDotToGCUPass
 
   void runOnOperation() override;
 };
-} // namespace
+}  // namespace
 
-static Attribute convertResultEncodingToBlocked(RankedTensorType tensorType) {
+static Attribute
+convertResultEncodingToBlocked(RankedTensorType tensorType) {
   auto enc = tensorType.getEncoding();
   if (auto blockedEnc = dyn_cast<BlockedEncodingAttr>(enc))
     return blockedEnc;
@@ -107,20 +108,20 @@ public:
       if (auto tensorTy = dyn_cast<RankedTensorType>(operand.getType())) {
         if (isa<DotOperandEncodingAttr>(tensorTy.getEncoding()))
           return operand;
-        auto dotOpEnc = DotOperandEncodingAttr::get(ctx, opIdx, blockedEnc,
-                                                    tensorTy.getElementType());
-        auto newTy = RankedTensorType::get(tensorTy.getShape(),
-                                           tensorTy.getElementType(), dotOpEnc);
+        auto dotOpEnc = DotOperandEncodingAttr::get(
+            ctx, opIdx, blockedEnc, tensorTy.getElementType());
+        auto newTy = RankedTensorType::get(
+            tensorTy.getShape(), tensorTy.getElementType(), dotOpEnc);
         if (tensorTy == newTy)
           return operand;
         return rewriter.create<ConvertLayoutOp>(loc, newTy, operand);
       }
       // SharedMemory MemDesc — emit LocalLoadOp.
       auto memDescTy = cast<MemDescType>(operand.getType());
-      auto dotOpEnc = DotOperandEncodingAttr::get(ctx, opIdx, blockedEnc,
-                                                  memDescTy.getElementType());
-      auto loadTy = RankedTensorType::get(memDescTy.getShape(),
-                                          memDescTy.getElementType(), dotOpEnc);
+      auto dotOpEnc = DotOperandEncodingAttr::get(
+          ctx, opIdx, blockedEnc, memDescTy.getElementType());
+      auto loadTy = RankedTensorType::get(
+          memDescTy.getShape(), memDescTy.getElementType(), dotOpEnc);
       return rewriter.create<triton::gpu::LocalLoadOp>(loc, loadTy, operand);
     };
 
@@ -145,9 +146,9 @@ public:
       newAcc = rewriter.create<ConvertLayoutOp>(loc, accTargetType, oldAcc);
     }
 
-    auto newDot = rewriter.create<DotOp>(loc, newRetType, newA, newB, newAcc,
-                                         wgDotOp.getInputPrecision(),
-                                         wgDotOp.getMaxNumImpreciseAcc());
+    auto newDot = rewriter.create<DotOp>(
+        loc, newRetType, newA, newB, newAcc,
+        wgDotOp.getInputPrecision(), wgDotOp.getMaxNumImpreciseAcc());
     if (!newDot->getParentOfType<triton::gpu::WarpSpecializeOp>())
       rewriter.create<mlir::gpu::BarrierOp>(loc);
 
@@ -167,8 +168,8 @@ public:
           if (targetType == newRetType) {
             rewriter.replaceOp(cvtUser, dotResult);
           } else {
-            rewriter.replaceOpWithNewOp<ConvertLayoutOp>(cvtUser, targetType,
-                                                         dotResult);
+            rewriter.replaceOpWithNewOp<ConvertLayoutOp>(
+                cvtUser, targetType, dotResult);
           }
           continue;
         }

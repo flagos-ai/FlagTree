@@ -41,9 +41,9 @@ protected:
 
   void SetUp() override {
     ctx.loadDialect<triton::TritonDialect, ttg::TritonGPUDialect,
-                    gpu::GPUDialect, func::FuncDialect, arith::ArithDialect,
-                    scf::SCFDialect, cf::ControlFlowDialect,
-                    triton::gcu::TritonGCUDialect>();
+                     gpu::GPUDialect, func::FuncDialect, arith::ArithDialect,
+                     scf::SCFDialect, cf::ControlFlowDialect,
+                     triton::gcu::TritonGCUDialect>();
   }
 
   OwningOpRef<ModuleOp> parseModule(StringRef source) {
@@ -93,8 +93,7 @@ TEST_F(ConvertTensorPointerTest, RewriteIfOp_TensorPointerResult) {
     }) {noinline = false} : () -> ()
   }) : () -> ()
 }) {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = ")" +
-                   std::string(kTarget) +
-                   R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
+    std::string(kTarget) + R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
   )";
 
   auto module = parseModule(ir);
@@ -103,8 +102,7 @@ TEST_F(ConvertTensorPointerTest, RewriteIfOp_TensorPointerResult) {
   EXPECT_TRUE(succeeded(result));
 }
 
-// scf.if with non-tensor-pointer results exercises the early return
-// (needRewrite=false).
+// scf.if with non-tensor-pointer results exercises the early return (needRewrite=false).
 TEST_F(ConvertTensorPointerTest, RewriteIfOp_NonTensorPointerResult) {
   std::string ir = R"(
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 1], warpsPerCTA = [1, 4], order = [1, 0]}>
@@ -134,8 +132,7 @@ TEST_F(ConvertTensorPointerTest, RewriteIfOp_NonTensorPointerResult) {
     }) {noinline = false} : () -> ()
   }) : () -> ()
 }) {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = ")" +
-                   std::string(kTarget) +
-                   R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
+    std::string(kTarget) + R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
   )";
 
   auto module = parseModule(ir);
@@ -174,8 +171,7 @@ TEST_F(ConvertTensorPointerTest, RewriteIfOp_MixedResults) {
     }) {noinline = false} : () -> ()
   }) : () -> ()
 }) {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = ")" +
-                   std::string(kTarget) +
-                   R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
+    std::string(kTarget) + R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
   )";
 
   auto module = parseModule(ir);

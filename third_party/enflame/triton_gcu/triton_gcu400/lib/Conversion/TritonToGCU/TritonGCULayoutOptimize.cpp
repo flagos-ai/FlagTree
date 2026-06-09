@@ -5,9 +5,9 @@
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
+#include "Utility.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
-#include "Utility.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -47,13 +47,35 @@ struct TritonGCULayoutOptimizePass
 
   void runOnOperation() override;
   void RefineGcuLoadStoreLayout();
+  void reWriteGcuLoadLayout(triton::gcu::LoadOp load);
   void reWriteGcuStoreLayout(triton::gcu::StoreOp store);
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
         .insert<arith::ArithDialect, memref::MemRefDialect,
-                triton::TritonDialect, mlir::triton::gcu::TritonGCUDialect>();
+                triton::TritonDialect,
+                mlir::triton::gcu::TritonGCUDialect>();
   }
 };
+
+void TritonGCULayoutOptimizePass::reWriteGcuLoadLayout(
+    triton::gcu::LoadOp load) {
+  auto dst = load.getResult();
+  if (dst.hasOneUse()) {
+    if (auto convertLayout =
+            dyn_cast<triton::gpu::ConvertLayoutOp>(*dst.user_begin())) {
+      if (auto targetType =
+              dyn_cast<RankedTensorType>(convertLayout.getResult().getType())) {
+        auto encoding = targetType.getEncoding();
+        if (!encoding ||
+            mlir::isa<triton::gpu::DotOperandEncodingAttr>(encoding))
+          return;
+      }
+      load.getResult().setType(convertLayout.getResult().getType());
+      convertLayout.getResult().replaceAllUsesWith(load.getResult());
+      convertLayout.erase();
+    }
+  }
+}
 
 void TritonGCULayoutOptimizePass::reWriteGcuStoreLayout(
     triton::gcu::StoreOp store) {
@@ -72,6 +94,13 @@ void TritonGCULayoutOptimizePass::reWriteGcuStoreLayout(
 
 void TritonGCULayoutOptimizePass::RefineGcuLoadStoreLayout() {
   auto trionModule = getOperation();
+
+  llvm::SmallVector<triton::gcu::LoadOp> loadList;
+  trionModule.walk([&](triton::gcu::LoadOp load) { loadList.push_back(load); });
+  for (auto &load : loadList) {
+    reWriteGcuLoadLayout(load);
+  }
+
   llvm::SmallVector<triton::gcu::StoreOp> storeList;
   trionModule.walk(
       [&](triton::gcu::StoreOp store) { storeList.push_back(store); });

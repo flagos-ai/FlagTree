@@ -42,13 +42,14 @@ protected:
 
   void SetUp() override {
     ctx.loadDialect<triton::TritonDialect, ttg::TritonGPUDialect,
-                    gpu::GPUDialect, func::FuncDialect, arith::ArithDialect,
-                    scf::SCFDialect, cf::ControlFlowDialect,
-                    triton::gcu::TritonGCUDialect>();
+                     gpu::GPUDialect, func::FuncDialect, arith::ArithDialect,
+                     scf::SCFDialect, cf::ControlFlowDialect,
+                     triton::gcu::TritonGCUDialect>();
     ctx.allowUnregisteredDialects();
   }
 
-  OwningOpRef<ModuleOp> parseModule(StringRef source, bool verify = true) {
+  OwningOpRef<ModuleOp> parseModule(StringRef source,
+                                    bool verify = true) {
     if (verify)
       return parseSourceString<ModuleOp>(source, &ctx);
     ParserConfig config(&ctx, /*verifyAfterParse=*/false);
@@ -88,8 +89,7 @@ TEST_F(TritonToGCULayoutTest, TransBlocked) {
     }) {noinline = false} : () -> ()
   }) : () -> ()
 }) {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = ")" +
-                   std::string(kTarget) +
-                   R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
+    std::string(kTarget) + R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
   )";
 
   auto module = parseModule(ir);
@@ -122,8 +122,7 @@ TEST_F(TritonToGCULayoutTest, ConvertLayoutIdentity) {
     }) {noinline = false} : () -> ()
   }) : () -> ()
 }) {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = ")" +
-                   std::string(kTarget) +
-                   R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
+    std::string(kTarget) + R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
   )";
 
   auto module = parseModule(ir);
@@ -159,8 +158,7 @@ TEST_F(TritonToGCULayoutTest, BroadcastCrossLayout) {
     }) {noinline = false} : () -> ()
   }) : () -> ()
 }) {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = ")" +
-                   std::string(kTarget) +
-                   R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
+    std::string(kTarget) + R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
   )";
 
   auto module = parseModule(ir, /*verify=*/false);
@@ -196,8 +194,7 @@ TEST_F(TritonToGCULayoutTest, ExpandDimsSharedRoundTrip) {
     }) {noinline = false} : () -> ()
   }) : () -> ()
 }) {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = ")" +
-                   std::string(kTarget) +
-                   R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
+    std::string(kTarget) + R"(", "ttg.threads-per-warp" = 1 : i32} : () -> ()
   )";
 
   auto module = parseModule(ir);

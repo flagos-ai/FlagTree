@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
+#include <list>
+#include <utility>
+#include <vector>
 #include "PipelineExpander.h"
 #include "PipeliningUtility.h"
 #include "Schedule.h"
@@ -34,13 +35,12 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
-#include <list>
-#include <utility>
-#include <vector>
 
 #define DEBUG_TYPE "triton-matmul-loop-pipeline"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")

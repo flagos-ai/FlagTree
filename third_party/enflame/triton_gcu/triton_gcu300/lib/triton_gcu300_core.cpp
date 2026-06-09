@@ -31,10 +31,10 @@
 
 #include "RegisterGCUDialects.h"
 
-#include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include "triton/Conversion/TritonToTritonGPU/Passes.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -44,6 +44,11 @@
 #include "mlir/Pass/PassManager.h"
 
 #include "mlir/IR/Diagnostics.h"
+
+#include "mlir/InitAllDialects.h"
+#include "mlir/InitAllExtensions.h"
+#include "mlir/InitAllPasses.h"
+#include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
@@ -93,12 +98,13 @@ Gcu300Pipeline gcu300_pipeline_create(void) {
   }
 }
 
-void gcu300_pipeline_destroy(Gcu300Pipeline p) { delete p; }
+void gcu300_pipeline_destroy(Gcu300Pipeline p) {
+  delete p;
+}
 
 void gcu300_pipeline_add_pass(Gcu300Pipeline p, const char *pass_name,
-                              const char *options_str) {
-  if (!p || !pass_name)
-    return;
+                               const char *options_str) {
+  if (!p || !pass_name) return;
 
   llvm::StringRef name(pass_name);
 
@@ -126,13 +132,13 @@ void gcu300_pipeline_add_pass(Gcu300Pipeline p, const char *pass_name,
     return;
   }
 
-  p->passes.emplace_back(name.str(), options_str ? options_str : std::string());
+  p->passes.emplace_back(name.str(),
+                          options_str ? options_str : std::string());
 }
 
-Gcu300String gcu300_pipeline_run(Gcu300Pipeline p, const char *input,
-                                 size_t input_len) {
-  if (!p)
-    return nullString();
+Gcu300String gcu300_pipeline_run(Gcu300Pipeline p,
+                                  const char *input, size_t input_len) {
+  if (!p) return nullString();
   p->lastError.clear();
 
   mlir::DialectRegistry registry;
@@ -147,8 +153,8 @@ Gcu300String gcu300_pipeline_run(Gcu300Pipeline p, const char *input,
 
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(
-      llvm::MemoryBuffer::getMemBuffer(llvm::StringRef(input, input_len),
-                                       "<input>", false),
+      llvm::MemoryBuffer::getMemBuffer(
+          llvm::StringRef(input, input_len), "<input>", false),
       llvm::SMLoc());
 
   mlir::OwningOpRef<mlir::ModuleOp> module =
@@ -180,7 +186,8 @@ Gcu300String gcu300_pipeline_run(Gcu300Pipeline p, const char *input,
       }
       continue;
     }
-    if (mlir::succeeded(mlir::parsePassPipeline(spec, pm, llvm::nulls())))
+    if (mlir::succeeded(
+            mlir::parsePassPipeline(spec, pm, llvm::nulls())))
       continue;
     std::string wrapped = "any(" + spec + ")";
     if (mlir::failed(mlir::parsePassPipeline(wrapped, pm))) {
@@ -231,12 +238,14 @@ static Gcu300String runOptOnChunk(llvm::StringRef chunk,
 
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(
-      llvm::MemoryBuffer::getMemBuffer(chunk, "<input>", false), llvm::SMLoc());
+      llvm::MemoryBuffer::getMemBuffer(chunk, "<input>", false),
+      llvm::SMLoc());
 
   std::unique_ptr<mlir::SourceMgrDiagnosticVerifierHandler> verifyHandler;
   if (verifyDiagnostics)
-    verifyHandler = std::make_unique<mlir::SourceMgrDiagnosticVerifierHandler>(
-        sourceMgr, &ctx);
+    verifyHandler =
+        std::make_unique<mlir::SourceMgrDiagnosticVerifierHandler>(
+            sourceMgr, &ctx);
 
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, &ctx);
@@ -273,7 +282,8 @@ static Gcu300String runOptOnChunk(llvm::StringRef chunk,
       }
       continue;
     }
-    if (mlir::succeeded(mlir::parsePassPipeline(normalized, pm, llvm::nulls())))
+    if (mlir::succeeded(
+            mlir::parsePassPipeline(normalized, pm, llvm::nulls())))
       continue;
     std::string wrapped = "any(" + normalized + ")";
     if (mlir::failed(mlir::parsePassPipeline(wrapped, pm))) {
@@ -334,7 +344,8 @@ Gcu300String gcu300_run_opt(const char *input, size_t input_len,
       printModuleScope = true;
       continue;
     }
-    if (a.starts_with("-mlir-timing") || a.starts_with("--mlir-timing")) {
+    if (a.starts_with("-mlir-timing") ||
+        a.starts_with("--mlir-timing")) {
       enableTiming = true;
       continue;
     }
@@ -382,10 +393,10 @@ Gcu300String gcu300_run_opt(const char *input, size_t input_len,
     if (trimmed.empty())
       continue;
 
-    Gcu300String result =
-        runOptOnChunk(chunk, passArgs, printGeneric, printAfterAll,
-                      disableThreading, printModuleScope, enableTiming,
-                      allowUnregisteredDialects, verifyDiagnostics);
+    Gcu300String result = runOptOnChunk(
+        chunk, passArgs, printGeneric, printAfterAll,
+        disableThreading, printModuleScope, enableTiming,
+        allowUnregisteredDialects, verifyDiagnostics);
     if (!result.data)
       return nullString();
 
@@ -403,4 +414,30 @@ void gcu300_string_free(Gcu300String s) {
   std::free(const_cast<char *>(s.data));
 }
 
-} // extern "C"
+// ---------------------------------------------------------------------------
+// gcu300_opt_main -- full MlirOptMain entry point
+//
+// MLIR standard passes are registered through MLIRRegisterAllPasses linked
+// into this .so (static initializers).  Only GCU / Triton-specific passes
+// need explicit registration here.
+// ---------------------------------------------------------------------------
+
+int gcu300_opt_main(int argc, char **argv) {
+  mlir::DialectRegistry registry;
+  mlir::registerAllDialects(registry);
+  mlir::gcu::registerGCUDialects(registry);
+  registry.insert<mlir::triton::TritonDialect,
+                  mlir::triton::gpu::TritonGPUDialect>();
+  mlir::registerAllExtensions(registry);
+
+  static std::once_flag optRegFlag;
+  std::call_once(optRegFlag, []() {
+    mlir::triton::gpu::registerTritonGPUPasses();
+    mlir::triton::registerConvertTritonToTritonGPUPass();
+  });
+
+  return mlir::asMainReturnCode(
+      mlir::MlirOptMain(argc, argv, "GCU300 optimizer driver\n", registry));
+}
+
+}  // extern "C"

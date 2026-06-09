@@ -65,11 +65,7 @@ jobs:
               --ignore=third_party/enflame/python/test/unit/language/test_core.py
 
           ## tle unit test
-          python3 -m pytest -s python/test/tle \
-              --ignore=python/test/tle/unit/test_extract_tile_static_index.py \
-              --ignore=python/test/tle/unit/test_insert_tile_static_index.py
-          python3 third_party/enflame/python/test/tle/unit/test_extract_tile_static_index.py
-          python3 third_party/enflame/python/test/tle/unit/test_insert_tile_static_index.py
+          python3 -m pytest -s python/test/tle
 
           ## tle raw test
           python3 -m pytest -s third_party/enflame/python/test/tle/raw
@@ -78,6 +74,7 @@ jobs:
           python3 python/tutorials/tle/01-fft.py
           python3 python/tutorials/tle/02-moe_align_block_size.py
           python3 python/tutorials/tle/03-topk.py
+          python3 third_party/enflame/python/test/tle/tutorials/03-topk.py
           # python3 python/tutorials/tle/04-cluster-gemm.py
-          # python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py
+          python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py
           python3 third_party/enflame/python/test/tle/tutorials/deepseek_v32/02-sparse-mla.py

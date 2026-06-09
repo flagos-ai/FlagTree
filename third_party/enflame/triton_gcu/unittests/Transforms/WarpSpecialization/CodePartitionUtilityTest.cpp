@@ -91,8 +91,8 @@ TEST_F(CodePartitionUtilityTest, Enclosing_IfOp) {
 
 TEST_F(CodePartitionUtilityTest, Enclosing_ForOp) {
   auto funcType = builder->getFunctionType({}, {});
-  auto funcOp = builder->create<mlir::func::FuncOp>(loc(), "test_enclosing_for",
-                                                    funcType);
+  auto funcOp =
+      builder->create<mlir::func::FuncOp>(loc(), "test_enclosing_for", funcType);
   auto *entry = funcOp.addEntryBlock();
   builder->setInsertionPointToStart(entry);
 
@@ -188,8 +188,8 @@ TEST_F(CodePartitionUtilityTest, GetAccumCnts_ForOp_Branch) {
 
 TEST_F(CodePartitionUtilityTest, GetBarrierForPipelineStage) {
   auto funcType = builder->getFunctionType({}, {});
-  auto funcOp =
-      builder->create<mlir::func::FuncOp>(loc(), "test_barrier", funcType);
+  auto funcOp = builder->create<mlir::func::FuncOp>(
+      loc(), "test_barrier", funcType);
   auto *entry = funcOp.addEntryBlock();
   builder->setInsertionPointToStart(entry);
 
@@ -198,8 +198,8 @@ TEST_F(CodePartitionUtilityTest, GetBarrierForPipelineStage) {
   SmallVector<unsigned> order{0};
   auto sharedEnc =
       ttg::SwizzledSharedEncodingAttr::get(&ctx, 1, 1, 1, order, ctaLayout);
-  auto barrierAllocTy = ttg::MemDescType::get({4}, builder->getI64Type(),
-                                              sharedEnc, sharedMemSpace, true);
+  auto barrierAllocTy = ttg::MemDescType::get(
+      {4}, builder->getI64Type(), sharedEnc, sharedMemSpace, true);
 
   auto barrierAlloc = entry->addArgument(barrierAllocTy, loc());
 

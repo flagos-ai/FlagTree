@@ -1,4 +1,3 @@
-
 /**
  * Copyright 2024-2026 Enflame. All Rights Reserved.
  *
@@ -14,11 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "Analysis/AxisInfoEx.h"
+#include <functional>
+#include <memory>
+#include <utility>
+
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
-#include "Dialect/MathExt/IR/MathExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Utility.h"
+
+#include "Analysis/AxisInfoEx.h"
+#include "Dialect/MathExt/IR/MathExt.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -35,20 +39,22 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
-#include <functional>
-#include <memory>
-#include <utility>
+
 namespace mlir {
 #define GEN_PASS_DEF_GCUTRITONFUSIONPASS
 #include "Conversion/Passes.h.inc"
 } // namespace mlir
+
 using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::triton::gcu;
+
 namespace {
+
 const char *const kIsContinual = "IsContinual";
 constexpr unsigned kOaccSizeInBytes = 512;
 constexpr unsigned kLoopUnrollTimes = 16;
+
 static bool hasSideEffectBetween(Operation *from, Operation *to) {
   assert(from && to && from->getBlock() == to->getBlock() &&
          "from and to must be in the same block");
@@ -56,6 +62,7 @@ static bool hasSideEffectBetween(Operation *from, Operation *to) {
       llvm::make_range(Block::iterator(from), Block::iterator(to)),
       [](auto &op) { return !isMemoryEffectFree(&op); });
 }
+
 static bool mightHaveWriteEffectBetween(Operation *from, Operation *to) {
   assert(from && to && from->getBlock() == to->getBlock() &&
          "from and to must be in the same block");
@@ -63,6 +70,7 @@ static bool mightHaveWriteEffectBetween(Operation *from, Operation *to) {
       llvm::make_range(Block::iterator(from), Block::iterator(to)),
       [](auto &op) { return mightHaveEffect<MemoryEffects::Write>(&op); });
 }
+
 struct EliminateForOpInductionVars : public OpRewritePattern<scf::ForOp> {
   explicit EliminateForOpInductionVars(MLIRContext *context)
       : OpRewritePattern<scf::ForOp>(context) {}
@@ -73,10 +81,12 @@ struct EliminateForOpInductionVars : public OpRewritePattern<scf::ForOp> {
     if (eliminableInductionVarInfos.empty()) {
       return failure();
     }
+
     bool needExternalReplacement =
         llvm::any_of(eliminableInductionVarInfos.keys(), [&](auto iter) {
           return !op.getResult(iter).use_empty();
         });
+
     // We only require explicit step positivity check when materializing
     // external replacements. For no-use eliminated iter args, we rely on
     // scf.for legality invariants guaranteed by upstream pipeline.
@@ -84,6 +94,7 @@ struct EliminateForOpInductionVars : public OpRewritePattern<scf::ForOp> {
         failed(verifyPositiveStepForExternalReplacement(op, rewriter))) {
       return failure();
     }
+
     auto canonicalizedResult =
         createCanonicalizedForOp(rewriter, op, eliminableInductionVarInfos);
     for (unsigned i = 0, j = 0; i < op.getNumResults(); i++) {
@@ -111,13 +122,16 @@ private:
     enum class UpdateKind : uint8_t { Add, Sub } kind;
     Value stride;
   };
+
   struct CanonicalizedForOpResult {
     scf::ForOp forOp;
     DenseMap<unsigned, Value> eliminatedResultReplacements;
   };
+
   static LogicalResult
   verifyPositiveStepForExternalReplacement(scf::ForOp op,
                                            PatternRewriter &rewriter);
+
   static std::optional<EliminableInductionVarInfo>
   tryGetEliminableIndVarInfo(scf::ForOp forOp, unsigned iter);
   static llvm::DenseMap<unsigned, EliminableInductionVarInfo>
@@ -130,6 +144,7 @@ private:
       const llvm::DenseMap<unsigned, EliminableInductionVarInfo>
           &eliminableInductionVarInfos);
 };
+
 std::optional<EliminateForOpInductionVars::EliminableInductionVarInfo>
 EliminateForOpInductionVars::tryGetEliminableIndVarInfo(scf::ForOp forOp,
                                                         unsigned iter) {
@@ -163,6 +178,7 @@ EliminateForOpInductionVars::tryGetEliminableIndVarInfo(scf::ForOp forOp,
   }
   return EliminableInductionVarInfo{updateKind, stride};
 }
+
 llvm::DenseMap<unsigned,
                EliminateForOpInductionVars::EliminableInductionVarInfo>
 EliminateForOpInductionVars::collectEliminableIndVarInfos(scf::ForOp forOp) {
@@ -174,6 +190,7 @@ EliminateForOpInductionVars::collectEliminableIndVarInfos(scf::ForOp forOp) {
   }
   return infos;
 }
+
 LogicalResult
 EliminateForOpInductionVars::verifyPositiveStepForExternalReplacement(
     scf::ForOp op, PatternRewriter &rewriter) {
@@ -189,6 +206,7 @@ EliminateForOpInductionVars::verifyPositiveStepForExternalReplacement(
   }
   return success();
 }
+
 Value EliminateForOpInductionVars::materializeIndVar(
     OpBuilder &builder, Location loc, const EliminableInductionVarInfo &info,
     Value init, Value tripCount) {
@@ -199,6 +217,7 @@ Value EliminateForOpInductionVars::materializeIndVar(
              ? builder.create<arith::AddIOp>(loc, init, scaled).getResult()
              : builder.create<arith::SubIOp>(loc, init, scaled).getResult();
 }
+
 EliminateForOpInductionVars::CanonicalizedForOpResult
 EliminateForOpInductionVars::createCanonicalizedForOp(
     OpBuilder &builder, scf::ForOp op,
@@ -211,6 +230,7 @@ EliminateForOpInductionVars::createCanonicalizedForOp(
       initArgs.push_back(arg);
     }
   }
+
   auto forOp = builder.create<scf::ForOp>(
       op.getLoc(), op.getLowerBound(), op.getUpperBound(), op.getStep(),
       initArgs,
@@ -258,6 +278,7 @@ EliminateForOpInductionVars::createCanonicalizedForOp(
         }
         builder.create<scf::YieldOp>(loc, results);
       });
+
   if (llvm::all_of(eliminableInductionVarInfos.keys(),
                    [&](auto iter) { return op.getResult(iter).use_empty(); })) {
     return CanonicalizedForOpResult{forOp, DenseMap<unsigned, Value>{}};
@@ -279,10 +300,12 @@ EliminateForOpInductionVars::createCanonicalizedForOp(
   }
   return CanonicalizedForOpResult{forOp, eliminatedResultReplacements};
 }
+
 struct PtrDecomposeResult {
   Value basePtr;
   Value offset;
 };
+
 static FailureOr<PtrDecomposeResult>
 tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
   auto bitcastOp = ptr.getDefiningOp<triton::BitcastOp>();
@@ -355,6 +378,7 @@ tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
   }
   return failure();
 }
+
 struct ConvertTritonLoadOp : public OpRewritePattern<triton::LoadOp> {
   explicit ConvertTritonLoadOp(MLIRContext *context,
                                ModuleAxisInfoExAnalysis &analysis)
@@ -382,6 +406,7 @@ struct ConvertTritonLoadOp : public OpRewritePattern<triton::LoadOp> {
     return failure();
   }
 };
+
 struct ConvertTritonStoreOp : public OpRewritePattern<triton::StoreOp> {
   explicit ConvertTritonStoreOp(MLIRContext *context,
                                 ModuleAxisInfoExAnalysis &analysis)
@@ -409,8 +434,10 @@ struct ConvertTritonStoreOp : public OpRewritePattern<triton::StoreOp> {
     return failure();
   }
 };
+
 struct ConvertClampFOp : public OpRewritePattern<triton::ClampFOp> {
   using OpRewritePattern::OpRewritePattern;
+
   LogicalResult matchAndRewrite(triton::ClampFOp op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
@@ -428,14 +455,17 @@ struct ConvertClampFOp : public OpRewritePattern<triton::ClampFOp> {
     return success();
   }
 };
+
 struct ConvertFpToFpOp : public OpRewritePattern<triton::FpToFpOp> {
   using OpRewritePattern::OpRewritePattern;
+
   LogicalResult matchAndRewrite(triton::FpToFpOp op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Operation *newOp = nullptr;
     auto srcType = getElementTypeOrSelf(op.getSrc().getType());
     auto resType = getElementTypeOrSelf(op.getResult().getType());
+
     if (resType.getIntOrFloatBitWidth() > srcType.getIntOrFloatBitWidth()) {
       // Cast from floating-point to wider floating-point, fp8->fp32
       newOp = rewriter.create<arith::ExtFOp>(loc, op.getType(), op.getSrc());
@@ -447,9 +477,11 @@ struct ConvertFpToFpOp : public OpRewritePattern<triton::FpToFpOp> {
     return success();
   }
 };
+
 template <typename FT, typename TT>
 struct ConvertTritonOp : public OpRewritePattern<FT> {
   using OpRewritePattern<FT>::OpRewritePattern;
+
   LogicalResult matchAndRewrite(FT op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
@@ -458,10 +490,12 @@ struct ConvertTritonOp : public OpRewritePattern<FT> {
     return success();
   }
 };
+
 // restore arith.constant(#ttg.dot_op) to constant(#parent) + ttg.cvt(parent)
 struct RestoreDotOperandSplatConstantPattern
     : public OpRewritePattern<arith::ConstantOp> {
   using OpRewritePattern::OpRewritePattern;
+
   LogicalResult matchAndRewrite(arith::ConstantOp op,
                                 PatternRewriter &rewriter) const override {
     auto tensorType = dyn_cast<RankedTensorType>(op.getType());
@@ -487,9 +521,11 @@ struct RestoreDotOperandSplatConstantPattern
     auto convertOp = rewriter.create<triton::gpu::ConvertLayoutOp>(
         loc, tensorType, newConstOp.getResult());
     rewriter.replaceOp(op, convertOp.getResult());
+
     return success();
   }
 };
+
 static bool isSupportedElementType(Type elementType) {
   return isa<Float8E5M2Type>(elementType) ||
          isa<Float8E4M3FNType>(elementType) || elementType.isBF16() ||
@@ -498,14 +534,21 @@ static bool isSupportedElementType(Type elementType) {
          elementType.isInteger(16) || elementType.isInteger(32) ||
          elementType.isInteger(64);
 }
+
+static bool canFuseReshapeOp(triton::ReshapeOp op) {
+  return !triton::gcu::isExpensiveView(op.getSrc().getType(), op.getType());
+}
+
 static bool canFuseBroadcast(triton::BroadcastOp op) {
   auto srcType = op.getSrc().getType();
   auto resultType = op.getType();
   auto rank = srcType.getRank();
+
   // TODO(peng.tian): support i1 broadcast
   if (getElementTypeOrSelf(srcType).isInteger(1)) {
     return false;
   }
+
   std::optional<unsigned> broadcastAxis;
   for (unsigned i = 0; i < rank; ++i) {
     if (srcType.getDimSize(i) != resultType.getDimSize(i)) {
@@ -518,6 +561,7 @@ static bool canFuseBroadcast(triton::BroadcastOp op) {
   if (!broadcastAxis || (*broadcastAxis != 0 && *broadcastAxis != rank - 1)) {
     return false;
   }
+
   auto elemsPerThread = broadcastAxis == 0
                             ? triton::gcu::getElemsPerThread(srcType)
                             : triton::gcu::getElemsPerThread(resultType);
@@ -529,6 +573,7 @@ static bool canFuseBroadcast(triton::BroadcastOp op) {
   // TODO(peng.tian): need to support general implementation
   return numOacc >= 1 && numOacc <= 4 * kLoopUnrollTimes;
 }
+
 static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
   auto srcTy = op.getSrc().getType();
   auto dstTy = op.getType();
@@ -542,6 +587,7 @@ static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
       isa<triton::gpu::BlockedEncodingAttr>(dstEnc)) {
     return true;
   }
+
   if ((isa<triton::gpu::BlockedEncodingAttr>(srcEnc) &&
        isa<triton::gpu::SliceEncodingAttr>(dstEnc)) ||
       (isa<triton::gpu::SliceEncodingAttr>(srcEnc) &&
@@ -549,6 +595,7 @@ static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
     return triton::gcu::getWarpsPerCTA(srcEnc) ==
            triton::gcu::getWarpsPerCTA(dstEnc);
   }
+
   auto dstSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(dstEnc);
   auto srcSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(srcEnc);
   if (dstSliceEnc && srcSliceEnc) {
@@ -558,6 +605,7 @@ static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
   }
   return false;
 }
+
 static bool canFuse(Operation *op) {
   if (!op || !llvm::all_of(op->getResultTypes(), [](auto type) {
         auto tensorType = dyn_cast<RankedTensorType>(type);
@@ -566,6 +614,7 @@ static bool canFuse(Operation *op) {
       })) {
     return false;
   }
+
   if (auto constantOp = dyn_cast<arith::ConstantOp>(op)) {
     auto valueAttr = dyn_cast<DenseElementsAttr>(constantOp.getValue());
     return valueAttr && valueAttr.isSplat();
@@ -581,8 +630,12 @@ static bool canFuse(Operation *op) {
   if (auto cvtLayoutOp = dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
     return canFuseConvertLayout(cvtLayoutOp);
   }
+  if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(op)) {
+    return canFuseReshapeOp(reshapeOp);
+  }
   return OpTrait::hasElementwiseMappableTraits(op);
 }
+
 struct MaskedLoadStoreFusionContext {
   MaskedLoadStoreFusionContext(Operation *userOp, DominanceInfo &dominanceInfo)
       : userOp(userOp), dominanceInfo(dominanceInfo) {}
@@ -591,6 +644,7 @@ struct MaskedLoadStoreFusionContext {
       collectDepsFromOperand(value);
     }
   }
+
   void collectDepsFromOperand(Value value) {
     if (!value)
       return;
@@ -611,6 +665,7 @@ struct MaskedLoadStoreFusionContext {
     }
     orderedDeps.push_back(defOp);
   }
+
   void sinkDepsToUserOp() {
     OpBuilder builder(userOp);
     for (auto op : orderedDeps) {
@@ -621,6 +676,7 @@ struct MaskedLoadStoreFusionContext {
       }
     }
   }
+
   void rewriteOperands() {
     for (auto &operand : userOp->getOpOperands()) {
       if (auto mappingValue = mapping.lookupOrNull(operand.get())) {
@@ -628,18 +684,21 @@ struct MaskedLoadStoreFusionContext {
       }
     }
   }
+
   void eraseDeadDeps() {
     for (auto *op : llvm::reverse(orderedDeps)) {
       if (op->use_empty())
         op->erase();
     }
   }
+
   Operation *userOp;
   DominanceInfo &dominanceInfo;
   llvm::DenseSet<Operation *> visitedOps;
   SmallVector<Operation *> orderedDeps;
   IRMapping mapping;
 };
+
 static Operation *findEarliestSafeMovePoint(Value value,
                                             DominanceInfo &dominanceInfo) {
   auto *defOp = value.getDefiningOp();
@@ -659,12 +718,14 @@ static Operation *findEarliestSafeMovePoint(Value value,
       }
     }
   }
+
   if (movePoint &&
       mightHaveWriteEffectBetween(defOp->getNextNode(), movePoint)) {
     return nullptr;
   }
   return movePoint;
 }
+
 static void gatherOpDepsForFusion(Operation *op, ArrayRef<Value> depsToCollect,
                                   DominanceInfo &dominanceInfo) {
   MaskedLoadStoreFusionContext ctx(op, dominanceInfo);
@@ -673,6 +734,7 @@ static void gatherOpDepsForFusion(Operation *op, ArrayRef<Value> depsToCollect,
   ctx.rewriteOperands();
   ctx.eraseDeadDeps();
 }
+
 // Preprocess masked memory ops for subsequent fusion:
 // 1) Move MaskedLoadOp to the earliest safe user point when possible.
 // 2) Materialize fusible dependency chains (offset/mask/other) near each
@@ -688,6 +750,7 @@ static void preProcessMaskedLoadStore(triton::FuncOp func,
       worklist.push_back(op);
     }
   });
+
   for (auto op : worklist) {
     if (auto maskedLoadOp = dyn_cast<triton::gcu::MaskedLoadOp>(op)) {
       auto movePoint =
@@ -706,6 +769,7 @@ static void preProcessMaskedLoadStore(triton::FuncOp func,
     }
   }
 }
+
 static void sinkFusibleProducersToUses(triton::FuncOp func,
                                        DominanceInfo &dominanceInfo) {
   func.walk([&](Operation *op) {
@@ -739,11 +803,178 @@ static void sinkFusibleProducersToUses(triton::FuncOp func,
     }
   });
 }
+
 } // namespace
+
 namespace {
+
+struct FusionTensorDesc {
+  SmallVector<int64_t> shape;
+  SmallVector<unsigned> elemsPerThread;
+  bool operator==(const FusionTensorDesc &other) const {
+    return shape == other.shape && elemsPerThread == other.elemsPerThread;
+  }
+  bool operator!=(const FusionTensorDesc &other) const {
+    return !(*this == other);
+  }
+};
+
+static FusionTensorDesc getFusionTensorDesc(RankedTensorType type) {
+  FusionTensorDesc desc;
+  desc.shape = llvm::to_vector(type.getShape());
+  desc.elemsPerThread = getElemsPerThread(type);
+  return desc;
+}
+
+struct FusionGroup {
+  bool empty() const { return ops.empty(); }
+  bool isUsedBy(Operation *op) const {
+    return llvm::any_of(ops, [op](auto innerOp) {
+      return llvm::any_of(innerOp->getUsers(),
+                          [op](auto user) { return user == op; });
+    });
+  }
+  bool tryInsert(Operation *op) {
+    auto tensorType =
+        isa<triton::gcu::MaskedStoreOp>(op)
+            ? cast<triton::gcu::MaskedStoreOp>(op).getValue().getType()
+            : cast<RankedTensorType>(op->getResultTypes().front());
+    auto tensorDesc = getFusionTensorDesc(tensorType);
+    if (ops.empty()) {
+      ops.push_back(op);
+      tensorDescs.emplace_back(tensorDesc);
+      return true;
+    }
+    if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(op)) {
+      if (!llvm::is_contained(
+              tensorDescs, getFusionTensorDesc(reshapeOp.getSrc().getType()))) {
+        return false;
+      }
+      if (!llvm::is_contained(tensorDescs, tensorDesc)) {
+        tensorDescs.emplace_back(tensorDesc);
+      }
+      ops.push_back(op);
+      return true;
+    }
+    if (!llvm::is_contained(tensorDescs, tensorDesc)) {
+      return false;
+    }
+    ops.push_back(op);
+    return true;
+  }
+  Operation *front() const { return ops.front(); }
+  Operation *back() const { return ops.back(); }
+  bool hasSideEffect() const {
+    return llvm::any_of(ops, [](auto op) { return !isMemoryEffectFree(op); });
+  }
+  void resolveOperandsAndResults() {
+    DenseSet<Operation *> opSet(ops.begin(), ops.end());
+    operands.clear();
+    results.clear();
+    for (auto op : ops) {
+      for (auto operand : op->getOperands()) {
+        auto defOp = operand.getDefiningOp();
+        if (!opSet.contains(defOp)) {
+          operands.insert(operand);
+        }
+      }
+      for (auto result : op->getResults()) {
+        if (llvm::any_of(result.getUsers(),
+                         [&](auto user) { return !opSet.contains(user); })) {
+          results.insert(result);
+        }
+      }
+    }
+  }
+  Operation *findFirstUserInBlock() const {
+    assert(!ops.empty() && "cannot find user of an empty group");
+    auto block = ops.front()->getBlock();
+    auto region = ops.front()->getParentRegion();
+    Operation *firstUser = nullptr;
+    for (auto result : results) {
+      for (auto user : result.getUsers()) {
+        // if the user is inside a nested region (e.g., body of
+        // scf.for/scf.if), walk up the parent chain until we find an
+        // ancestor op in the same block, or reach the same region but a
+        // different block (CFG control flow)
+        while (user && user->getBlock() != block &&
+               user->getParentRegion() != region) {
+          user = user->getParentOp();
+        }
+        if (!user || user->getBlock() != block) {
+          continue;
+        }
+        if (back()->isBeforeInBlock(user) &&
+            (!firstUser || user->isBeforeInBlock(firstUser))) {
+          firstUser = user;
+        }
+      }
+    }
+    return firstUser;
+  }
+  bool contains(Operation *op) const {
+    return op == ops.front() || op == ops.back() ||
+           (op->isBeforeInBlock(ops.back()) &&
+            ops.front()->isBeforeInBlock(op));
+  }
+  void mergeIntoFrontOf(FusionGroup &other) {
+    for (auto op : ops) {
+      op->moveBefore(other.front());
+    }
+    for (auto tensorDesc : tensorDescs) {
+      if (!llvm::is_contained(other.tensorDescs, tensorDesc)) {
+        other.tensorDescs.push_back(tensorDesc);
+      }
+    }
+    other.ops.insert(other.ops.begin(), ops.begin(), ops.end());
+    other.resolveOperandsAndResults();
+  }
+
+  bool isDependentOn(const FusionGroup &other) const {
+    return llvm::any_of(operands, [&](auto operand) {
+      return other.operands.contains(operand) ||
+             other.results.contains(operand);
+    });
+  }
+
+  bool isSafeToMergeIntoBackOf(const FusionGroup &other) const {
+    assert(!ops.empty() && !other.ops.empty() &&
+           "fusion groups must be non-empty");
+    auto block = ops.front()->getBlock();
+    if (block != other.front()->getBlock() ||
+        !other.back()->isBeforeInBlock(ops.front())) {
+      return false;
+    }
+    return llvm::all_of(operands, [&](auto operand) {
+      auto defOp = operand.getDefiningOp();
+      return defOp == nullptr || defOp->getBlock() != block ||
+             defOp == other.back() || defOp->isBeforeInBlock(other.back());
+    });
+  }
+
+  void mergeIntoBackOf(FusionGroup &other) {
+    for (auto op : llvm::reverse(ops)) {
+      op->moveAfter(other.back());
+    }
+    for (auto tensorDesc : tensorDescs) {
+      if (!llvm::is_contained(other.tensorDescs, tensorDesc)) {
+        other.tensorDescs.push_back(tensorDesc);
+      }
+    }
+    other.ops.append(ops.begin(), ops.end());
+    other.resolveOperandsAndResults();
+  }
+
+  SmallVector<Operation *> ops;
+  SetVector<Value> operands;
+  SetVector<Value> results;
+  SmallVector<FusionTensorDesc> tensorDescs;
+};
+
 struct GCUTritonFusionPass
     : public mlir::impl::GCUTritonFusionPassBase<GCUTritonFusionPass> {
   using Base::Base;
+
   void runOnOperation() override {
     auto module = getOperation();
     auto *ctx = &getContext();
@@ -771,132 +1002,11 @@ struct GCUTritonFusionPass
       func.walk([&](Block *block) { fuseReduceOps(block); });
     }
   }
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<TritonGCUDialect, arith::ArithDialect, math::MathDialect,
                     triton::TritonDialect, math_ext::MathExtDialect>();
   }
-
-private:
-  struct FusionGroup {
-    bool empty() const { return ops.empty(); }
-    bool isUsedBy(Operation *op) const {
-      return llvm::any_of(ops, [op](auto innerOp) {
-        return llvm::any_of(innerOp->getUsers(),
-                            [op](auto user) { return user == op; });
-      });
-    }
-    bool tryInsert(Operation *op) {
-      auto tensorType =
-          isa<triton::gcu::MaskedStoreOp>(op)
-              ? cast<triton::gcu::MaskedStoreOp>(op).getValue().getType()
-              : cast<RankedTensorType>(op->getResultTypes().front());
-      if (ops.empty()) {
-        ops.push_back(op);
-        shape = llvm::to_vector(tensorType.getShape());
-        elemsPerThread = getElemsPerThread(tensorType);
-        return true;
-      }
-      if (shape == tensorType.getShape() &&
-          elemsPerThread == getElemsPerThread(tensorType)) {
-        ops.push_back(op);
-        return true;
-      }
-      return false;
-    }
-    Operation *front() const { return ops.front(); }
-    Operation *back() const { return ops.back(); }
-    bool hasSideEffect() const {
-      return llvm::any_of(ops, [](auto op) { return !isMemoryEffectFree(op); });
-    }
-    void resolveOperandsAndResults() {
-      DenseSet<Operation *> opSet(ops.begin(), ops.end());
-      operands.clear();
-      results.clear();
-      for (auto op : ops) {
-        for (auto operand : op->getOperands()) {
-          auto defOp = operand.getDefiningOp();
-          if (!opSet.contains(defOp)) {
-            operands.insert(operand);
-          }
-        }
-        for (auto result : op->getResults()) {
-          if (llvm::any_of(result.getUsers(),
-                           [&](auto user) { return !opSet.contains(user); })) {
-            results.insert(result);
-          }
-        }
-      }
-    }
-    Operation *findFirstUserInBlock() const {
-      assert(!ops.empty() && "cannot find user of an empty group");
-      auto block = ops.front()->getBlock();
-      auto region = ops.front()->getParentRegion();
-      Operation *firstUser = nullptr;
-      for (auto result : results) {
-        for (auto user : result.getUsers()) {
-          // if the user is inside a nested region (e.g., body of
-          // scf.for/scf.if), walk up the parent chain until we find an
-          // ancestor op in the same block, or reach the same region but a
-          // different block (CFG control flow)
-          while (user && user->getBlock() != block &&
-                 user->getParentRegion() != region) {
-            user = user->getParentOp();
-          }
-          if (!user || user->getBlock() != block) {
-            continue;
-          }
-          if (!firstUser || user->isBeforeInBlock(firstUser)) {
-            firstUser = user;
-          }
-        }
-      }
-      return firstUser;
-    }
-    bool contains(Operation *op) const {
-      return op == ops.front() || op == ops.back() ||
-             (op->isBeforeInBlock(ops.back()) &&
-              ops.front()->isBeforeInBlock(op));
-    }
-    void mergeIntoFrontOf(FusionGroup &other) {
-      for (auto op : ops) {
-        op->moveBefore(other.front());
-      }
-      other.ops.insert(other.ops.begin(), ops.begin(), ops.end());
-      other.resolveOperandsAndResults();
-    }
-    bool isDependentOn(const FusionGroup &other) const {
-      return llvm::any_of(operands, [&](auto operand) {
-        return other.operands.contains(operand) ||
-               other.results.contains(operand);
-      });
-    }
-    bool isSafeToMergeIntoBackOf(const FusionGroup &other) const {
-      assert(!ops.empty() && !other.ops.empty() &&
-             "fusion groups must be non-empty");
-      auto block = ops.front()->getBlock();
-      if (block != other.front()->getBlock() ||
-          !other.back()->isBeforeInBlock(ops.front())) {
-        return false;
-      }
-      return llvm::all_of(operands, [&](auto operand) {
-        auto defOp = operand.getDefiningOp();
-        return defOp == nullptr || defOp->getBlock() != block ||
-               defOp == other.back() || defOp->isBeforeInBlock(other.back());
-      });
-    }
-    void mergeIntoBackOf(FusionGroup &other) {
-      for (auto op : llvm::reverse(ops)) {
-        op->moveAfter(other.back());
-      }
-      other.ops.append(ops.begin(), ops.end());
-      other.resolveOperandsAndResults();
-    }
-    SmallVector<Operation *> ops;
-    SetVector<Value> operands;
-    SetVector<Value> results;
-    SmallVector<int64_t> shape;
-    SmallVector<unsigned> elemsPerThread;
-  };
 
 private:
   void runFuse(Block *block);
@@ -905,6 +1015,7 @@ private:
   void fuseReduceOps(Block *block);
 };
 } // namespace
+
 void GCUTritonFusionPass::fuseReduceOps(Block *block) {
   for (auto &op : block->getOperations()) {
     auto fusionOp = dyn_cast<mlir::triton::gcu::ElementwiseFusionRegionOp>(op);
@@ -931,15 +1042,18 @@ void GCUTritonFusionPass::fuseReduceOps(Block *block) {
     terminator->setOperand(0, reduceOp->getResult(0));
   }
 }
+
 bool GCUTritonFusionPass::tryDeepFuse(
     SmallVector<std::unique_ptr<FusionGroup>> &fusionGroups) {
   auto numFusionGroup = fusionGroups.size();
   for (unsigned i = 0; i < numFusionGroup - 1; ++i) {
     if (auto firstUser = fusionGroups[i]->findFirstUserInBlock()) {
       for (unsigned j = i + 1; j < numFusionGroup; ++j) {
-        if (fusionGroups[i]->shape != fusionGroups[j]->shape ||
-            fusionGroups[i]->elemsPerThread !=
-                fusionGroups[j]->elemsPerThread) {
+        if (llvm::none_of(fusionGroups[i]->tensorDescs,
+                          [&](const FusionTensorDesc &desc) {
+                            return llvm::is_contained(
+                                fusionGroups[j]->tensorDescs, desc);
+                          })) {
           continue;
         }
         if (!fusionGroups[j]->contains(firstUser)) {
@@ -956,8 +1070,10 @@ bool GCUTritonFusionPass::tryDeepFuse(
       }
     }
     for (unsigned j = i + 1; j < numFusionGroup; ++j) {
-      if (fusionGroups[i]->shape != fusionGroups[j]->shape ||
-          fusionGroups[i]->elemsPerThread != fusionGroups[j]->elemsPerThread) {
+      if (llvm::none_of(
+              fusionGroups[i]->tensorDescs, [&](const FusionTensorDesc &desc) {
+                return llvm::is_contained(fusionGroups[j]->tensorDescs, desc);
+              })) {
         continue;
       }
       if (!fusionGroups[j]->isDependentOn(*fusionGroups[i]) ||
@@ -976,6 +1092,7 @@ bool GCUTritonFusionPass::tryDeepFuse(
   }
   return false;
 }
+
 void GCUTritonFusionPass::runFuse(Block *block) {
   SmallVector<std::unique_ptr<FusionGroup>> fusionGroups;
   auto startNewGroup = [&]() {
@@ -1032,14 +1149,17 @@ void GCUTritonFusionPass::runFuse(Block *block) {
     fuseOps(std::move(fusionGroup));
   }
 }
+
 void GCUTritonFusionPass::fuseOps(std::unique_ptr<FusionGroup> fusionGroup) {
   auto &ops = fusionGroup->ops;
   assert(!ops.empty() && "fusion group must be non-empty");
+
   OpBuilder builder(ops.front());
   auto loc = ops.front()->getLoc();
   fusionGroup->resolveOperandsAndResults();
   auto operands = fusionGroup->operands.takeVector();
   auto results = fusionGroup->results.takeVector();
+
   auto resultTypes = llvm::to_vector(
       llvm::map_range(results, [](auto result) { return result.getType(); }));
   auto fusedOp = builder.create<mlir::triton::gcu::ElementwiseFusionRegionOp>(

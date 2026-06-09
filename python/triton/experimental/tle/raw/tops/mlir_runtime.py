@@ -30,8 +30,15 @@ class TOPSMLIRJITFunction(object):
     The EDSL output is wrapped in gpu.module before passing to gcu-compiler-opt.
     """
 
-    def __init__(self, fn: Any, pipeline: Optional[List[str]] = None, context: Optional[ir.Context] = None,
-                 arch: str = "gcu400", use_gcu_opt: bool = True, *args, **kwargs) -> None:
+    def __init__(
+        self,
+        fn: Any,
+        pipeline: Optional[List[str]] = None,
+        context: Optional[ir.Context] = None,
+        arch: str = "gcu400",
+        use_gcu_opt: bool = True,
+        *args, **kwargs
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.fn: Final[Any] = fn
         self.arch: Final[str] = arch
@@ -115,9 +122,11 @@ class TOPSMLIRJITFunction(object):
         inner = re.search(r"module\b[^{]*\{(.*)\}\s*$", mlir_text, re.DOTALL)
         body = inner.group(1) if inner else mlir_text
 
-        wrapped = ('module attributes {gpu.container_module} {\n'
-                   f'  gpu.module @triton {{\n{body}\n  }}\n'
-                   '}\n')
+        wrapped = (
+            'module attributes {gpu.container_module} {\n'
+            f'  gpu.module @triton {{\n{body}\n  }}\n'
+            '}\n'
+        )
 
         local_mem_size = TOPSMLIRJITFunction._compute_local_mem_size(wrapped)
         wrapped = self._fix_gcu_types(wrapped)
@@ -127,18 +136,12 @@ class TOPSMLIRJITFunction(object):
         debug_passes: list[str] = []
         if os.environ.get("MLIR_ENABLE_DUMP"):
             debug_passes.append("--mlir-print-ir-after-all")
-        if os.environ.get("TRITON_DISABLE_LINE_INFO", "1").lower() not in (
-                "1",
-                "true",
-                "yes",
-                "on",
+        if not os.environ.get("TRITON_DISABLE_LINE_INFO", "1").lower() in (
+            "1", "true", "yes", "on",
         ):
             debug_passes.append("--ensure-debug-info-scope-on-llvm-func")
         if os.environ.get("MLIR_ENABLE_TIMING", "").lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
+            "1", "true", "yes", "on",
         ):
             debug_passes += ["--mlir-timing", "--mlir-timing-display=list"]
         passes = [
@@ -175,20 +178,25 @@ class TOPSMLIRJITFunction(object):
 
         if os.environ.get("EDSL_DEBUG_OPT", "").lower() in ("1", "true"):
             dbg_cmd = [_GCU_COMPILER_OPT, "--mlir-print-ir-after-all", *passes]
-            dbg_proc = subprocess.run(dbg_cmd, input=wrapped, capture_output=True, text=True, timeout=60)
+            dbg_proc = subprocess.run(
+                dbg_cmd, input=wrapped, capture_output=True, text=True, timeout=60
+            )
             import sys
             print("=== gcu-compiler-opt STDERR (debug) ===", file=sys.stderr)
             for line in dbg_proc.stderr.splitlines():
-                if any(kw in line
-                       for kw in ("memref.alloc", "malloc", "IR Dump", "alloca", "local_memory_size", "address_space")):
+                if any(kw in line for kw in ("memref.alloc", "malloc", "IR Dump", "alloca", "local_memory_size", "address_space")):
                     print(line, file=sys.stderr)
             print("=== end debug ===", file=sys.stderr)
 
-        proc = subprocess.run(cmd, input=wrapped, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(
+            cmd, input=wrapped, capture_output=True, text=True, timeout=60
+        )
         if proc.returncode != 0:
-            raise RuntimeError(f"gcu-compiler-opt failed (rc={proc.returncode}):\n"
-                               f"STDIN:\n{wrapped}\n"
-                               f"STDERR:\n{proc.stderr}")
+            raise RuntimeError(
+                f"gcu-compiler-opt failed (rc={proc.returncode}):\n"
+                f"STDIN:\n{wrapped}\n"
+                f"STDERR:\n{proc.stderr}"
+            )
         result = self._unwrap_gpu_module(proc.stdout)
         result = self._rename_local_mem(result, self.fnname)
         result = self._fix_local_mem_size(result, local_mem_size)
@@ -237,15 +245,20 @@ class TOPSMLIRJITFunction(object):
         and generic format:
           "memref.view"(%base, %off) : (...) -> memref<4096xf32, 9>
         """
-        type_sizes = {'f32': 4, 'f16': 2, 'bf16': 2, 'i32': 4, 'i8': 1, 'i16': 2, 'i64': 8, 'f64': 8}
+        type_sizes = {'f32': 4, 'f16': 2, 'bf16': 2, 'i32': 4, 'i8': 1,
+                      'i16': 2, 'i64': 8, 'f64': 8}
         constants = {}
-        for cm in re.finditer(r'(%\w+)\s*=\s*arith\.constant\s+(\d+)\s*:\s*index', text):
+        for cm in re.finditer(
+            r'(%\w+)\s*=\s*arith\.constant\s+(\d+)\s*:\s*index', text
+        ):
             constants[cm.group(1)] = int(cm.group(2))
 
         max_end = 0
         for m in re.finditer(
-                r'memref\.view\s+%\w+\[(%\w+)\].*?'
-                r'memref<(\d+)x(\w+),\s*(?:9|#gcu\.address_space<local>)>', text):
+            r'memref\.view\s+%\w+\[(%\w+)\].*?'
+            r'memref<(\d+)x(\w+),\s*(?:9|#gcu\.address_space<local>)>',
+            text
+        ):
             offset_name = m.group(1)
             num_elems = int(m.group(2))
             elem_ty = m.group(3)
@@ -256,8 +269,11 @@ class TOPSMLIRJITFunction(object):
             if end > max_end:
                 max_end = end
 
-        for m in re.finditer(r'"memref\.view".*?'
-                             r'memref<(\d+)x(\w+),\s*(?:9|#gcu\.address_space<local>)>', text):
+        for m in re.finditer(
+            r'"memref\.view".*?'
+            r'memref<(\d+)x(\w+),\s*(?:9|#gcu\.address_space<local>)>',
+            text
+        ):
             num_elems = int(m.group(1))
             elem_ty = m.group(2)
             elem_size = type_sizes.get(elem_ty, 4)

@@ -46,9 +46,13 @@ def add_gcu_convert_triton_to_tritongpu(pipeline, num_warps: int, threads_per_wa
     pipeline.add_pass('gcu-convert-triton-to-tritongpu', options)
 
 
-def add_tle_to_triton_gcu(pipeline):
+def add_tle_to_triton_gcu(pipeline, cluster_dims=(1, 1, 1)):
     """Convert TLE dialect to TritonGCU dialect."""
-    pipeline.add_pass('tle-to-triton-gcu')
+    options = (f'cluster-dim-x={cluster_dims[0]} '
+               f'cluster-dim-y={cluster_dims[1]} '
+               f'cluster-dim-z={cluster_dims[2]}')
+    pipeline.add_pass('tle-to-triton-gcu', options)
+
 
 
 def add_triton_gpu_to_triton_gcu(pipeline):
@@ -77,11 +81,9 @@ def add_convert_triton_load_store_to_gcu_dma(pipeline, support_stride0: bool = F
     options = ' '.join(parts)
     pipeline.add_pass('convert-triton-load-store-to-gcu-dma', options)
 
-
 def add_gcu_tle_lower_async_load(pipeline):
     """Lower GCU TLE async load operations."""
     pipeline.add_pass('gcu-tle-lower-async-load')
-
 
 def add_tle_convert_arg_to_memdesc(pipeline):
     """Convert TLE arguments to memory descriptors."""
@@ -96,7 +98,6 @@ def add_tle_remove_redundant_copy(pipeline):
 def add_tle_dslregion_inline(pipeline):
     """Inline TLE DSL region operations."""
     pipeline.add_pass('tle-dslregion-inline')
-
 
 def add_tritongcu_accelerate_matmul(pipeline):
     """Accelerate matrix multiplication operations for GCU."""

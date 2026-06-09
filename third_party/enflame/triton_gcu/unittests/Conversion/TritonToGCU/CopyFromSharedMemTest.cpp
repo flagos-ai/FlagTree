@@ -57,9 +57,9 @@ struct CopyFromSharedMemFixture {
 
   CopyFromSharedMemFixture() : builder(&ctx), loc(builder.getUnknownLoc()) {
     ctx.loadDialect<arith::ArithDialect, memref::MemRefDialect,
-                    func::FuncDialect, gpu::GPUDialect, scf::SCFDialect,
-                    memref_ext::MemrefExtDialect, gcu::GCUDialect,
-                    ttg::TritonGPUDialect>();
+                     func::FuncDialect, gpu::GPUDialect, scf::SCFDialect,
+                     memref_ext::MemrefExtDialect, gcu::GCUDialect,
+                     ttg::TritonGPUDialect>();
 
     module = ModuleOp::create(loc);
     builder.setInsertionPointToStart(module.getBody());
@@ -82,16 +82,18 @@ struct CopyFromSharedMemFixture {
   }
 };
 
-} // namespace
+}  // namespace
 
 // Branch 1: sync tag, onlyThread0=true → lines 996-1006
 TEST(CopyFromSharedMemTest, SyncOnlyThread0) {
   CopyFromSharedMemFixture f;
 
   auto f32Type = f.builder.getF32Type();
-  auto tensorType = f.makeBlockedTensorType({4, 4}, f32Type, {1, 1});
-  auto bufferType = MemRefType::get({4, 4}, f32Type, AffineMap{},
-                                    f.builder.getI64IntegerAttr(2));
+  auto tensorType =
+      f.makeBlockedTensorType({4, 4}, f32Type, {1, 1});
+  auto bufferType = MemRefType::get({4, 4}, f32Type,
+                                     AffineMap{},
+                                     f.builder.getI64IntegerAttr(2));
 
   auto funcType = f.builder.getFunctionType({bufferType}, {});
   auto funcOp =
@@ -108,6 +110,7 @@ TEST(CopyFromSharedMemTest, SyncOnlyThread0) {
   auto tag = tagPool.trygGetAsyncTagInfo(returnOp);
 #endif
 
+
   f.builder.setInsertionPoint(returnOp);
 
   Value buffer = entryBlock->getArgument(0);
@@ -119,8 +122,8 @@ TEST(CopyFromSharedMemTest, SyncOnlyThread0) {
   std::pair<Operation *, int> firstTTUser = {nullptr, -1};
 
   auto result = CopyFromSharedMem(f.builder, tag, tensorType, buffer,
-                                  /*onlyThread0=*/true, lastTTUser, firstTTUser,
-                                  userAnalysis, replaced2Origin);
+                                  /*onlyThread0=*/true, lastTTUser,
+                                  firstTTUser, userAnalysis, replaced2Origin);
   ASSERT_TRUE(result != nullptr);
 
   bool hasDmaStart = false;
@@ -140,9 +143,11 @@ TEST(CopyFromSharedMemTest, SyncAllThreads) {
   CopyFromSharedMemFixture f;
 
   auto f32Type = f.builder.getF32Type();
-  auto tensorType = f.makeBlockedTensorType({4, 4}, f32Type, {1, 1});
-  auto bufferType = MemRefType::get({4, 4}, f32Type, AffineMap{},
-                                    f.builder.getI64IntegerAttr(2));
+  auto tensorType =
+      f.makeBlockedTensorType({4, 4}, f32Type, {1, 1});
+  auto bufferType = MemRefType::get({4, 4}, f32Type,
+                                     AffineMap{},
+                                     f.builder.getI64IntegerAttr(2));
 
   auto funcType = f.builder.getFunctionType({bufferType}, {});
   auto funcOp =
@@ -191,9 +196,11 @@ TEST(CopyFromSharedMemTest, AsyncOnlyThread0) {
   CopyFromSharedMemFixture f;
 
   auto f32Type = f.builder.getF32Type();
-  auto tensorType = f.makeBlockedTensorType({4, 4}, f32Type, {1, 1});
-  auto bufferType = MemRefType::get({4, 4}, f32Type, AffineMap{},
-                                    f.builder.getI64IntegerAttr(2));
+  auto tensorType =
+      f.makeBlockedTensorType({4, 4}, f32Type, {1, 1});
+  auto bufferType = MemRefType::get({4, 4}, f32Type,
+                                     AffineMap{},
+                                     f.builder.getI64IntegerAttr(2));
 
   auto funcType = f.builder.getFunctionType({bufferType}, {});
   auto funcOp =
@@ -221,8 +228,8 @@ TEST(CopyFromSharedMemTest, AsyncOnlyThread0) {
   std::pair<Operation *, int> firstTTUser = {returnOp, 0};
 
   auto result = CopyFromSharedMem(f.builder, tag, tensorType, buffer,
-                                  /*onlyThread0=*/true, lastTTUser, firstTTUser,
-                                  userAnalysis, replaced2Origin);
+                                  /*onlyThread0=*/true, lastTTUser,
+                                  firstTTUser, userAnalysis, replaced2Origin);
   ASSERT_TRUE(result != nullptr);
 
   int dmaStartCount = 0;
@@ -237,15 +244,16 @@ TEST(CopyFromSharedMemTest, AsyncOnlyThread0) {
   EXPECT_EQ(scfIfCount, 2);
 }
 
-// Branch 4: async tag, firstTTUser non-null, onlyThread0=false → lines
-// 1034-1044
+// Branch 4: async tag, firstTTUser non-null, onlyThread0=false → lines 1034-1044
 TEST(CopyFromSharedMemTest, AsyncAllThreads) {
   CopyFromSharedMemFixture f;
 
   auto f32Type = f.builder.getF32Type();
-  auto tensorType = f.makeBlockedTensorType({4, 4}, f32Type, {1, 1});
-  auto bufferType = MemRefType::get({4, 4}, f32Type, AffineMap{},
-                                    f.builder.getI64IntegerAttr(2));
+  auto tensorType =
+      f.makeBlockedTensorType({4, 4}, f32Type, {1, 1});
+  auto bufferType = MemRefType::get({4, 4}, f32Type,
+                                     AffineMap{},
+                                     f.builder.getI64IntegerAttr(2));
 
   auto funcType = f.builder.getFunctionType({bufferType}, {});
   auto funcOp =

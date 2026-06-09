@@ -41,9 +41,10 @@ using namespace mlir;
 // rank > 5 and totalNumElems > 128 (the defensive merge path).
 TEST(DoMemsetTest, ReinterpretCastForHighRankMemRef) {
   MLIRContext ctx;
-  ctx.loadDialect<arith::ArithDialect, memref::MemRefDialect, func::FuncDialect,
-                  affine::AffineDialect, memref_ext::MemrefExtDialect,
-                  gcu::GCUDialect, gpu::GPUDialect>();
+  ctx.loadDialect<arith::ArithDialect, memref::MemRefDialect,
+                   func::FuncDialect, affine::AffineDialect,
+                   memref_ext::MemrefExtDialect, gcu::GCUDialect,
+                   gpu::GPUDialect>();
 
   OpBuilder builder(&ctx);
   auto loc = builder.getUnknownLoc();
@@ -56,7 +57,8 @@ TEST(DoMemsetTest, ReinterpretCastForHighRankMemRef) {
   builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
 
   // Rank 6 (> 5) triggers isNeedMerge = true inside doMemset.
-  auto memrefType = MemRefType::get({2, 2, 2, 2, 2, 2}, builder.getF32Type());
+  auto memrefType =
+      MemRefType::get({2, 2, 2, 2, 2, 2}, builder.getF32Type());
   auto funcType =
       builder.getFunctionType({memrefType, builder.getF32Type()}, {});
   auto funcOp = builder.create<func::FuncOp>(loc, "test_func", funcType);
@@ -100,9 +102,10 @@ TEST(DoMemsetTest, ReinterpretCastForHighRankMemRef) {
 // even if totalNumElems > 128 (isNeedMerge = false).
 TEST(DoMemsetTest, NoReinterpretCastForLowRankMemRef) {
   MLIRContext ctx;
-  ctx.loadDialect<arith::ArithDialect, memref::MemRefDialect, func::FuncDialect,
-                  affine::AffineDialect, memref_ext::MemrefExtDialect,
-                  gcu::GCUDialect, gpu::GPUDialect>();
+  ctx.loadDialect<arith::ArithDialect, memref::MemRefDialect,
+                   func::FuncDialect, affine::AffineDialect,
+                   memref_ext::MemrefExtDialect, gcu::GCUDialect,
+                   gpu::GPUDialect>();
 
   OpBuilder builder(&ctx);
   auto loc = builder.getUnknownLoc();
@@ -114,7 +117,8 @@ TEST(DoMemsetTest, NoReinterpretCastForLowRankMemRef) {
   builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
 
   // Rank 5 (<= 5) keeps isNeedMerge = false.
-  auto memrefType = MemRefType::get({2, 2, 2, 2, 2}, builder.getF32Type());
+  auto memrefType =
+      MemRefType::get({2, 2, 2, 2, 2}, builder.getF32Type());
   auto funcType =
       builder.getFunctionType({memrefType, builder.getF32Type()}, {});
   auto funcOp = builder.create<func::FuncOp>(loc, "test_func2", funcType);
@@ -142,7 +146,9 @@ TEST(DoMemsetTest, NoReinterpretCastForLowRankMemRef) {
 #endif
 
   bool hasReinterpretCast = false;
-  funcOp.walk([&](memref::ReinterpretCastOp) { hasReinterpretCast = true; });
+  funcOp.walk([&](memref::ReinterpretCastOp) {
+    hasReinterpretCast = true;
+  });
 
   EXPECT_FALSE(hasReinterpretCast);
 }

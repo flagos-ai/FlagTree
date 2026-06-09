@@ -45,9 +45,10 @@ struct MergeContinuousDimsFixture {
   Block *entryBlock;
   func::ReturnOp returnOp;
 
-  MergeContinuousDimsFixture() : builder(&ctx), loc(builder.getUnknownLoc()) {
+  MergeContinuousDimsFixture()
+      : builder(&ctx), loc(builder.getUnknownLoc()) {
     ctx.loadDialect<arith::ArithDialect, memref::MemRefDialect,
-                    func::FuncDialect>();
+                     func::FuncDialect>();
     module = ModuleOp::create(loc);
     builder.setInsertionPointToStart(module.getBody());
   }
@@ -57,11 +58,13 @@ struct MergeContinuousDimsFixture {
   // Returns {sharedBuffer, warpOutput} values.
   std::pair<Value, Value> setup(ArrayRef<int64_t> sharedShape,
                                 ArrayRef<int64_t> warpShape) {
-    auto sharedMemType =
-        MemRefType::get(sharedShape, builder.getF32Type(), AffineMap{},
-                        builder.getI64IntegerAttr(2));
-    auto warpMemType = MemRefType::get(warpShape, builder.getF32Type());
-    auto funcType = builder.getFunctionType({sharedMemType, warpMemType}, {});
+    auto sharedMemType = MemRefType::get(
+        sharedShape, builder.getF32Type(), AffineMap{},
+        builder.getI64IntegerAttr(2));
+    auto warpMemType =
+        MemRefType::get(warpShape, builder.getF32Type());
+    auto funcType =
+        builder.getFunctionType({sharedMemType, warpMemType}, {});
     funcOp = builder.create<func::FuncOp>(loc, "test_merge", funcType);
     entryBlock = funcOp.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);

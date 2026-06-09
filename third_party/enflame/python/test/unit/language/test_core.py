@@ -54,14 +54,14 @@ from triton._internal_testing import (
 )
 from triton.runtime.errors import InterpreterError
 
+
+
 # TODO
 from common_utils import check_skip
-
 
 def is_gcu():
     return not is_interpreter() and \
         triton.runtime.driver.active.get_current_target().backend == "gcu"
-
 
 @contextlib.contextmanager
 def promotion_numpy_2_0():
@@ -161,11 +161,10 @@ def check_type_supported(dtype, device):
         pytest.skip("Not supported on gcu300: dtype fp8 is not supported on gcu300")
     elif dtype in ["float8_e4m3fn"]:
         pytest.skip("Not supported on gcu300/gcu400: dtype float8_e4m3fn is not supported on gcu300/gcu400")
-    elif dtype in ["int64"]:  ## TODO: consider GCU400 for int64
+    elif dtype in ["int64"]:
         pytest.skip("Not supported on gcu300: dtype i64 is not supported on gcu300")
     elif dtype in ["uint64"]:
         pytest.skip("Not supported on gcu300: dtype ui64 is not supported on gcu300")
-
 
 def get_src_element_ty_size(dtype_str):
     if dtype_str in ["int8", "uint8", "float8e4b15"]:
@@ -182,7 +181,6 @@ def get_src_element_ty_size(dtype_str):
 @pytest.mark.interpreter
 def test_scalar_overflow(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def kernel():
         huge_int: tl.constexpr = 0xFFFFFFFFFFFFFF
@@ -1635,15 +1633,15 @@ def test_tensor_atomic_add_access_patterns(shape, idx_order, mask_step, num_ctas
         tl.atomic_add(out_ptr + (idx_offset + idx_base), in_elem, mask, sem='relaxed')
 
     shape0, shape1 = shape
-    idx_row = torch.arange(0, shape1, device=device, dtype=torch.int32)  # TODO
+    idx_row = torch.arange(0, shape1, device=device, dtype=torch.int32) # TODO
     if idx_order == 'increase':
         idx = torch.stack([idx_row.repeat_interleave(i + 1)[:shape1] for i in range(shape0)])
     if idx_order == 'decrease':
         idx = torch.stack([idx_row.flip(0).repeat_interleave(i + 1)[:shape1] for i in range(shape0)])
     if idx_order == 'random_no_duplication':
-        idx = torch.stack([torch.randperm(shape1, device=device, dtype=torch.int32) for _ in idx_row])  # TODO
+        idx = torch.stack([torch.randperm(shape1, device=device, dtype=torch.int32) for _ in idx_row]) # TODO
     if idx_order == 'random':
-        idx = torch.randint(0, shape1, size=(shape0, shape1), device=device, dtype=torch.int32)  # TODO
+        idx = torch.randint(0, shape1, size=(shape0, shape1), device=device, dtype=torch.int32) # TODO
 
     dtype = getattr(torch, dtype_x_str)
     val = torch.randn((shape0, shape1), dtype=dtype, device=device)
@@ -2615,12 +2613,11 @@ scan_configs = [(op, type, shape, axis, reverse, num_warps)
                 for reverse in [True, False]
                 for shape in scan2d_shapes
                 for op in ['cumsum', 'cumprod', 'get_first_element', 'linear_recurrence', 'cummax', 'roll']]
-scan_negative_config = [('cumsum', 'float32', (32, 32), -1, False, 4)]
+scan_negative_config  = [('cumsum', 'float32', (32, 32), -1, False, 4)]
 
 
 def test_sum_dtype(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def kernel_dtype(out_ptr, init, in_dtype: tl.constexpr, out_dtype: tl.constexpr):
         x = tl.full((32, 32), init, dtype=in_dtype)
@@ -2684,14 +2681,14 @@ def roll(a1, b1_last, b1_cur, a2, b2_last, b2_cur):
 
 
 @pytest.mark.interpreter
-@pytest.mark.parametrize("op, dtype_str, shape, axis, reverse, num_warps", scan_configs + scan_negative_config)
+@pytest.mark.parametrize("op, dtype_str, shape, axis, reverse, num_warps", scan_configs + scan_negative_config )
 def test_scan2d(op, dtype_str, shape, axis, reverse, num_warps, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
     check_type_supported(dtype_str, device)
     if dtype_str == 'bfloat16':
-        if is_gcu() == False:  # TODO
-            if op == 'cummax':
-                pytest.skip("bfloat16 compare not supported before sm90")
+        if is_gcu() == False: # TODO
+          if op == 'cummax':
+              pytest.skip("bfloat16 compare not supported before sm90")
         if op == 'linear_recurrence':
             pytest.skip("Skipping linear_recurrence scan on bfloat16 due to accuracy issues")
     numpy_dtype_str = 'float32' if dtype_str == 'bfloat16' else dtype_str
@@ -2758,7 +2755,7 @@ def test_scan2d(op, dtype_str, shape, axis, reverse, num_warps, device):
     elif op == 'cummax':
         # NumPy does not have cummax
         # z = np.empty_like(x, dtype=np.int64)
-        ## TODO: not support 64
+	## TODO: not support 64
         z = np.empty_like(x, dtype=np.int32)
         z_ref = torch.cummax(torch.from_numpy(x_in.copy()), axis=axis).indices.numpy()
         if reverse:
@@ -2909,7 +2906,6 @@ def test_histogram_mask(M, N, device):
 @pytest.mark.parametrize("M, N", [(1, 64), (2, 32), (4, 16), (8, 8), (16, 4), (32, 2), (64, 1)])
 def test_scan_1d(M, N, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def scan_kernel(out_ptr, in_ptr, M: tl.constexpr, N: tl.constexpr):
         input = tl.load(in_ptr + tl.arange(0, M))
@@ -2999,7 +2995,6 @@ def test_no_rematerialization_op():
             tl.store(sum_output + my_idxs, accum)
             sum_plus_0 = tl.full((1, 2), 0, tl.float32) + accum[:, None]
             tl.store(out_1 + my_idxs[:, None] * 2 + tl.arange(0, 2)[None, :], sum_plus_0)
-
     # TODO
     device = "gcu"
     data_len = 32
@@ -3187,7 +3182,6 @@ def test_trans_4d(dtype_str, shape, perm, device, with_allocator):
         )
         val = in_desc.load([0, 0, 0, 0]).permute((trans1, trans2, trans3, trans4))
         out_desc.store([0], val.reshape(out_desc.block_shape))
-
     # TODO
     # input = torch.arange(math.prod(shape), dtype=getattr(torch, dtype_str), device=device).reshape(shape)
     input = torch.arange(math.prod(shape), device=device).to(getattr(torch, dtype_str)).reshape(shape)
@@ -3352,7 +3346,7 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
         if input_precision == "bf16x3" or input_precision == "bf16x6":
             pytest.skip(f"input_precision {input_precision} is not supported in the interpreter")
     else:
-        if not is_hip() and (M < 16 or N < 16 or K < 16):  # TODO
+        if not is_hip() and (M < 16 or N < 16 or K < 16): # TODO
             pytest.skip("small dots are supported only on HIP at the moment")
         if is_cuda():
             capability = torch.cuda.get_device_capability()
@@ -3912,7 +3906,7 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
      for in_dtype_str, out_dtype_str in [('float16', 'float16'), ('float32', 'float32')]])
 def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_str, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-    if is_hip() or (device == 'gcu'):  # TODO
+    if is_hip() or (device == 'gcu'): # TODO
         # hip does not support tf32 precision, so use ieee for all tests
         input_precision = "ieee"
         arch = triton.runtime.driver.active.get_current_target().arch
@@ -4481,7 +4475,6 @@ def test_vectorization_hints(has_hints, device):
 @pytest.mark.interpreter
 def test_assume(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def _kernel(out_ptr, N: tl.constexpr, BLOCK_N: tl.constexpr):
         current_size = N - tl.program_id(0) * BLOCK_N
@@ -4499,7 +4492,7 @@ def test_assume(device):
 
     assert 'llvm.intr.assume' in pgm.asm['ttgir']
     # tritonamdgpu-fold-true-cmpi on AMD folds true cmpi ops to %true (which llvm itself then DCEs).
-    if not (is_hip() or is_gcu()):  # TODO
+    if not (is_hip() or is_gcu()): # TODO
         assert 'llvm.assume' in pgm.asm['llir']
 
 
@@ -4819,7 +4812,6 @@ def test_reshape_err(device):
 @pytest.mark.interpreter
 def test_tma_load_block_shape_err(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def kernel(ptr):
         desc = tl.make_tensor_descriptor(ptr, [128, 128], [128, 1], [1, 2])
@@ -4836,7 +4828,6 @@ def test_tma_load_block_shape_err(device):
 @pytest.mark.interpreter
 def test_tma_store_block_shape_err(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def kernel(ptr):
         desc = tl.make_tensor_descriptor(ptr, [128, 128], [128, 1], [8, 4])
@@ -5223,7 +5214,6 @@ def test_inline_asm_packed_multiple_outputs(device):
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_map_elementwise(num_ctas, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def compare(x, y):
         if x < y:
@@ -5254,7 +5244,6 @@ def test_map_elementwise(num_ctas, device):
 
 def test_map_elementwise_multiple_outputs(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def divmod(a, b):
         return a // b, a % b
@@ -5288,7 +5277,6 @@ def test_map_elementwise_multiple_outputs(device):
 
 def test_map_elementwise_pack(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def divmod(a0, a1, b0, b1):
         return a0 // b0, a1 // b1, a0 % b0, a1 % b1
@@ -5595,7 +5583,6 @@ def test_constexpr_if_return(device):
     # Reproducer for #4883, return statement in an if with a constexpr causes
     # errors when combined with non-trivial control flow graphs
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def kernel(Semaphore, Out, total: tl.constexpr):
         if total == 1:
@@ -5660,7 +5647,6 @@ def return_poison(x):
 
 def test_poison_return(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def kernel(Out):
         tl.store(Out, return_poison(0))
@@ -5890,7 +5876,7 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
     A = numpy_random((M, K), dtype_str=in_type_str)
     B = numpy_random((K, N), dtype_str=in_type_str)
     C = torch.empty((M, N), dtype=torch.float32, device=device)
-    num_warps = 4  # TODO
+    num_warps = 4 # TODO
     a = to_triton(A, device=device, dst_type=in_type_str)
     b = to_triton(B, device=device, dst_type=in_type_str)
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1)
@@ -6261,10 +6247,8 @@ def test_tl_range_fuse_dependent(device):
     torch.testing.assert_close(out_i, ref_i, atol=0, rtol=0)
     torch.testing.assert_close(out_j, ref_j, atol=0, rtol=0)
 
-
 def test_tl_range_option_none():
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def kernel(ub):
         for i in tl.range(0, ub, num_stages=None, loop_unroll_factor=None):
@@ -6277,7 +6261,6 @@ def test_tl_range_option_none():
 
 def test_disable_licm():
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def while_no_licm(n):
         i = 0
@@ -6406,7 +6389,6 @@ def test_num_programs(device):
 
 def test_unroll_attr(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def _kernel(dst, unroll_factor: tl.constexpr):
         pid = tl.program_id(axis=0)
@@ -6485,7 +6467,6 @@ def test_side_effectful_reduction_2d(device, reduce_dim):
 @pytest.mark.interpreter
 def test_dtype(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def kernel(X):
         dtype_x: tl.constexpr = X.dtype.element_ty
@@ -6525,7 +6506,6 @@ def test_side_effectful_scan(device):
 ])
 def test_chained_reductions(in_shape, perm, red_dims, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def kernel(In, Out,  #
                dim_0: tl.constexpr, dim_1: tl.constexpr, dim_2: tl.constexpr, dim_3: tl.constexpr, dim_4: tl.constexpr,
@@ -6591,7 +6571,6 @@ def gather_test_kernel_1d(src_ptr, idx_ptr, out_ptr, axis: tl.constexpr, src_dim
 ])
 def test_gather(src_shape, indices_shape, axis, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     def triton_gather(src: torch.Tensor, axis: int, indices: torch.Tensor):
         output = torch.empty(indices.shape, dtype=src.dtype, device=src.device)
 
@@ -6607,7 +6586,7 @@ def test_gather(src_shape, indices_shape, axis, device):
 
     src = torch.randn(src_shape, device=device)
     # TODO
-    indices = torch.randint(0, src.shape[axis], indices_shape, device=device, dtype=torch.int32)  # TODO
+    indices = torch.randint(0, src.shape[axis], indices_shape, device=device, dtype=torch.int32) # TODO
     ref = torch.gather(src, axis, indices)
     result = triton_gather(src, axis, indices)
     torch.testing.assert_close(result, ref, rtol=0, atol=0)
@@ -6625,7 +6604,6 @@ def apply_binary_op(x, combine_op):
 
 def test_jit_function_arg(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def square_kernel_jit_function(in_ptr, out_ptr, BLOCK_SIZE: tl.constexpr):
         offsets = tl.arange(0, BLOCK_SIZE)
@@ -6646,7 +6624,6 @@ def test_jit_function_arg(device):
 @pytest.mark.interpreter
 def test_zero_strided_tensors(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def _simple_add(
         X,
@@ -6676,7 +6653,6 @@ def test_zero_strided_tensors(device):
 @pytest.mark.interpreter
 def test_aliasing(device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def aliasing_kernel(buffer, buffer2):
         triton.language.store(buffer, 1)
@@ -6690,7 +6666,6 @@ def test_aliasing(device):
 @pytest.mark.parametrize("dtype", list(dtypes) + ["bfloat16"])
 def test_strided_load(dtype, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def take_every_second_element(x_ptr, output_ptr, BLOCK_SIZE: tl.constexpr):
         strided_offsets = tl.arange(0, BLOCK_SIZE) * 2
@@ -6715,7 +6690,6 @@ def test_strided_load(dtype, device):
 @pytest.mark.parametrize("dtype", list(dtypes) + ["bfloat16"])
 def test_strided_store(dtype, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def store_into_every_second(x_ptr, output_ptr, BLOCK_SIZE: tl.constexpr):
         strided_offsets = tl.arange(0, BLOCK_SIZE) * 2
@@ -6742,7 +6716,6 @@ def test_strided_store(dtype, device):
 @pytest.mark.parametrize("dtype", list(dtypes) + ["bfloat16"])
 def test_indirect_load(dtype, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def indirect_load(offset_ptr, x_ptr, output_ptr, SIZE: tl.constexpr):
         linear_offsets = tl.arange(0, SIZE)
@@ -6765,7 +6738,6 @@ def test_indirect_load(dtype, device):
 @pytest.mark.parametrize("dtype", list(dtypes) + ["bfloat16"])
 def test_indirect_store(dtype, device):
     check_skip("test_core_skip.csv", inspect.currentframe().f_code.co_name, locals())
-
     @triton.jit
     def indirect_store(offset_ptr, x_ptr, output_ptr, SIZE: tl.constexpr):
         linear_offsets = tl.arange(0, SIZE)

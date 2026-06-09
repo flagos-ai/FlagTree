@@ -37,15 +37,17 @@
 #ifdef TEST_GCU400
 // ConfigGcuLoadEx only exists in gcu300.
 #else
-#include "Conversion/TritonToGCU/TritonGCUToGCU/TritonGCUToGCUUtils.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Conversion/TritonToGCU/TritonGCUToGCU/TritonGCUToGCUUtils.h"
 #endif
 
 using namespace mlir;
 
 #ifdef TEST_GCU400
 
-TEST(ConfigGcuLoadExTest, NotApplicableOnGCU400) { SUCCEED(); }
+TEST(ConfigGcuLoadExTest, NotApplicableOnGCU400) {
+  SUCCEED();
+}
 
 #else
 
@@ -62,10 +64,10 @@ struct ConfigGcuLoadExFixture {
 
   ConfigGcuLoadExFixture() : builder(&ctx), loc(builder.getUnknownLoc()) {
     ctx.loadDialect<arith::ArithDialect, memref::MemRefDialect,
-                    func::FuncDialect, gpu::GPUDialect, scf::SCFDialect,
-                    math::MathDialect, memref_ext::MemrefExtDialect,
-                    gcu::GCUDialect, triton::gcu::TritonGCUDialect,
-                    ttg::TritonGPUDialect>();
+                     func::FuncDialect, gpu::GPUDialect, scf::SCFDialect,
+                     math::MathDialect, memref_ext::MemrefExtDialect,
+                     gcu::GCUDialect, triton::gcu::TritonGCUDialect,
+                     ttg::TritonGPUDialect>();
 
     module = ModuleOp::create(loc);
     builder.setInsertionPointToStart(module.getBody());
@@ -75,7 +77,7 @@ struct ConfigGcuLoadExFixture {
   }
 };
 
-} // namespace
+}  // namespace
 
 // Covers lines 2292-2295 and 2305-2308 in TritonGCUToGCUUtils.cpp:
 // the AsyncLoadFromGlobalOp branches of getOrderHint and getDefaultValue
@@ -87,8 +89,8 @@ TEST(ConfigGcuLoadExTest, AsyncLoadFromGlobalOpBranches) {
   [[maybe_unused]] auto indexType = f.builder.getIndexType();
 
   // Result memref type: memref<32x64xf16, 2> (shared memory)
-  auto resultType = MemRefType::get({32, 64}, f16Type, AffineMap{},
-                                    f.builder.getI64IntegerAttr(2));
+  auto resultType = MemRefType::get(
+      {32, 64}, f16Type, AffineMap{}, f.builder.getI64IntegerAttr(2));
 
   // gcu::PtrType for loadPtr (used by gcu.ptr2memref)
   auto gcuPtrType = gcu::PtrType::get(&f.ctx, f16Type);
@@ -139,9 +141,10 @@ TEST(ConfigGcuLoadExTest, AsyncLoadFromGlobalOpBranches) {
 
   // Create AsyncLoadFromGlobalOp with order_hint=[-1, 0]
   // This triggers bDynamicStride=true inside ConfigGcuLoadEx.
-  auto asyncLoadOp = f.builder.create<triton::gcu::AsyncLoadFromGlobalOp>(
-      f.loc, asyncPtr, shape, strides, offsets, dstMem, defaultValue,
-      ArrayRef<int32_t>{-1, 0});
+  auto asyncLoadOp =
+      f.builder.create<triton::gcu::AsyncLoadFromGlobalOp>(
+          f.loc, asyncPtr, shape, strides, offsets, dstMem, defaultValue,
+          ArrayRef<int32_t>{-1, 0});
 
   // Get a TagInfo from the pool
   auto tag = tagPool.getSyncTagInfo(returnOp);
@@ -167,8 +170,8 @@ TEST(ConfigGcuLoadExTest, StaticReshapeBranch) {
 
   auto f16Type = f.builder.getF16Type();
 
-  auto resultType = MemRefType::get({32, 64}, f16Type, AffineMap{},
-                                    f.builder.getI64IntegerAttr(2));
+  auto resultType = MemRefType::get(
+      {32, 64}, f16Type, AffineMap{}, f.builder.getI64IntegerAttr(2));
   auto gcuPtrType = gcu::PtrType::get(&f.ctx, f16Type);
   auto ttgcuPtrType = triton::gcu::PtrType::get(&f.ctx, f16Type);
   auto ctaLayout = ttg::CTAEncodingAttr::getDefault(&f.ctx, 2);
@@ -182,8 +185,8 @@ TEST(ConfigGcuLoadExTest, StaticReshapeBranch) {
   auto funcType = f.builder.getFunctionType(
       {gcuPtrType, resultType, resultType, ttgcuPtrType, memdescType, f16Type},
       {});
-  auto funcOp =
-      f.builder.create<func::FuncOp>(f.loc, "test_static_reshape", funcType);
+  auto funcOp = f.builder.create<func::FuncOp>(
+      f.loc, "test_static_reshape", funcType);
   auto *entryBlock = funcOp.addEntryBlock();
   f.builder.setInsertionPointToStart(entryBlock);
   auto returnOp = f.builder.create<func::ReturnOp>(f.loc);
@@ -208,11 +211,11 @@ TEST(ConfigGcuLoadExTest, StaticReshapeBranch) {
   SmallVector<Value> strides = {c64, c1};
   SmallVector<Value> offsets = {c0, c0};
 
-  // order_hint={2, 1}: all values > 0, so bStaticReshape=true,
-  // bDynamicStride=false.
-  auto asyncLoadOp = f.builder.create<triton::gcu::AsyncLoadFromGlobalOp>(
-      f.loc, asyncPtr, shape, strides, offsets, dstMem, defaultValue,
-      ArrayRef<int32_t>{2, 1});
+  // order_hint={2, 1}: all values > 0, so bStaticReshape=true, bDynamicStride=false.
+  auto asyncLoadOp =
+      f.builder.create<triton::gcu::AsyncLoadFromGlobalOp>(
+          f.loc, asyncPtr, shape, strides, offsets, dstMem, defaultValue,
+          ArrayRef<int32_t>{2, 1});
 
   auto tag = tagPool.getSyncTagInfo(returnOp);
 
@@ -233,8 +236,8 @@ TEST(ConfigGcuLoadExTest, IdentityOrderShareOutput) {
 
   auto f16Type = f.builder.getF16Type();
 
-  auto resultType = MemRefType::get({32, 64}, f16Type, AffineMap{},
-                                    f.builder.getI64IntegerAttr(2));
+  auto resultType = MemRefType::get(
+      {32, 64}, f16Type, AffineMap{}, f.builder.getI64IntegerAttr(2));
   auto gcuPtrType = gcu::PtrType::get(&f.ctx, f16Type);
   auto ttgcuPtrType = triton::gcu::PtrType::get(&f.ctx, f16Type);
   auto ctaLayout = ttg::CTAEncodingAttr::getDefault(&f.ctx, 2);
@@ -248,8 +251,8 @@ TEST(ConfigGcuLoadExTest, IdentityOrderShareOutput) {
   auto funcType = f.builder.getFunctionType(
       {gcuPtrType, resultType, resultType, ttgcuPtrType, memdescType, f16Type},
       {});
-  auto funcOp =
-      f.builder.create<func::FuncOp>(f.loc, "test_identity_order", funcType);
+  auto funcOp = f.builder.create<func::FuncOp>(
+      f.loc, "test_identity_order", funcType);
   auto *entryBlock = funcOp.addEntryBlock();
   f.builder.setInsertionPointToStart(entryBlock);
   auto returnOp = f.builder.create<func::ReturnOp>(f.loc);
@@ -274,9 +277,10 @@ TEST(ConfigGcuLoadExTest, IdentityOrderShareOutput) {
   SmallVector<Value> strides = {c64, c1};
   SmallVector<Value> offsets = {c0, c0};
 
-  auto asyncLoadOp = f.builder.create<triton::gcu::AsyncLoadFromGlobalOp>(
-      f.loc, asyncPtr, shape, strides, offsets, dstMem, defaultValue,
-      ArrayRef<int32_t>{0, 1});
+  auto asyncLoadOp =
+      f.builder.create<triton::gcu::AsyncLoadFromGlobalOp>(
+          f.loc, asyncPtr, shape, strides, offsets, dstMem, defaultValue,
+          ArrayRef<int32_t>{0, 1});
 
   auto tag = tagPool.getSyncTagInfo(returnOp);
 
@@ -295,8 +299,8 @@ TEST(ConfigGcuLoadExTest, NonShareStaticTranspose) {
 
   auto f16Type = f.builder.getF16Type();
 
-  auto resultType = MemRefType::get({32, 64}, f16Type, AffineMap{},
-                                    f.builder.getI64IntegerAttr(2));
+  auto resultType = MemRefType::get(
+      {32, 64}, f16Type, AffineMap{}, f.builder.getI64IntegerAttr(2));
   auto gcuPtrType = gcu::PtrType::get(&f.ctx, f16Type);
   auto ttgcuPtrType = triton::gcu::PtrType::get(&f.ctx, f16Type);
 
@@ -345,8 +349,8 @@ TEST(ConfigGcuLoadExTest, NonShareStaticTranspose) {
   auto tag = tagPool.getSyncTagInfo(returnOp);
 
   ConfigGcuLoadEx(f.builder, f.loc, tagPool, srcOut, tempBuffer,
-                  loadOp.getOperation(), resultType, loadPtr, strides, shape,
-                  defaultValue, tag, /*IsShareOutput=*/false);
+                  loadOp.getOperation(), resultType, loadPtr, strides,
+                  shape, defaultValue, tag, /*IsShareOutput=*/false);
 
   SUCCEED();
 }
@@ -358,8 +362,8 @@ TEST(ConfigGcuLoadExTest, NonShareIdentityOrder) {
 
   auto f16Type = f.builder.getF16Type();
 
-  auto resultType = MemRefType::get({32, 64}, f16Type, AffineMap{},
-                                    f.builder.getI64IntegerAttr(2));
+  auto resultType = MemRefType::get(
+      {32, 64}, f16Type, AffineMap{}, f.builder.getI64IntegerAttr(2));
   auto gcuPtrType = gcu::PtrType::get(&f.ctx, f16Type);
   auto ttgcuPtrType = triton::gcu::PtrType::get(&f.ctx, f16Type);
 
@@ -374,8 +378,8 @@ TEST(ConfigGcuLoadExTest, NonShareIdentityOrder) {
 
   auto funcType = f.builder.getFunctionType(
       {gcuPtrType, resultType, resultType, ttgcuPtrType, f16Type}, {});
-  auto funcOp =
-      f.builder.create<func::FuncOp>(f.loc, "test_nonshare_identity", funcType);
+  auto funcOp = f.builder.create<func::FuncOp>(
+      f.loc, "test_nonshare_identity", funcType);
   auto *entryBlock = funcOp.addEntryBlock();
   f.builder.setInsertionPointToStart(entryBlock);
   auto returnOp = f.builder.create<func::ReturnOp>(f.loc);
@@ -408,8 +412,8 @@ TEST(ConfigGcuLoadExTest, NonShareIdentityOrder) {
   auto tag = tagPool.getSyncTagInfo(returnOp);
 
   ConfigGcuLoadEx(f.builder, f.loc, tagPool, srcOut, tempBuffer,
-                  loadOp.getOperation(), resultType, loadPtr, strides, shape,
-                  defaultValue, tag, /*IsShareOutput=*/false);
+                  loadOp.getOperation(), resultType, loadPtr, strides,
+                  shape, defaultValue, tag, /*IsShareOutput=*/false);
 
   SUCCEED();
 }

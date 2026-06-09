@@ -2498,6 +2498,8 @@ test_store_op_src_layout2-32,Mmalayout is not supported on gcu,Not supported on 
 test_store_op_src_layout2-64,Mmalayout is not supported on gcu,Not supported on gcu,"test_store_op_M=64-src_layout=#triton_gpu.nvidia_mma<{versionMajor=2, versionMinor=0, warpsPerCTA=[4, 1], CTAsPerCGA=[1, 1], CTASplitNum=[1, 1], CTAOrder=[0, 1], instrShape=[16, 8]}>-",gcu300/gcu400/gcu410
 test_store_op_src_layout2-128,Mmalayout is not supported on gcu,Not supported on gcu,"test_store_op_M=128-src_layout=#triton_gpu.nvidia_mma<{versionMajor=2, versionMinor=0, warpsPerCTA=[4, 1], CTAsPerCGA=[1, 1], CTASplitNum=[1, 1], CTAOrder=[0, 1], instrShape=[16, 8]}>-",gcu300/gcu400/gcu410
 test_store_op_src_layout2-256,Mmalayout is not supported on gcu,Not supported on gcu,"test_store_op_M=256-src_layout=#triton_gpu.nvidia_mma<{versionMajor=2, versionMinor=0, warpsPerCTA=[4, 1], CTAsPerCGA=[1, 1], CTASplitNum=[1, 1], CTAOrder=[0, 1], instrShape=[16, 8]}>-",gcu300/gcu400/gcu410
+test_bin_op_1-float16-float16-fmod,truncf builtin not available on gcu500,Not supported on gcu500 GCUSIM,test_bin_op_dtype_x=float16-dtype_y=float16-op=%-num_ctas=1-,gcu500
+test_bin_op_1-float32-float32-fmod,truncf builtin not available on gcu500,Not supported on gcu500 GCUSIM,test_bin_op_dtype_x=float32-dtype_y=float32-op=%-num_ctas=1-,gcu500
 test_value_specialization_2147483648-i64,dtype i64 is not supported on gcu300,Not supported on gcu300,test_value_specialization_value=2147483648-value_type=i64-,gcu300/gcu400/gcu410
 test_value_specialization_4294967295-i64,dtype i64 is not supported on gcu300,Not supported on gcu300,test_value_specialization_value=4294967295-value_type=i64-,gcu300/gcu400/gcu410
 test_value_specialization_4294967296-i64,dtype i64 is not supported on gcu300,Not supported on gcu300,test_value_specialization_value=4294967296-value_type=i64-,gcu300/gcu400/gcu410
@@ -3406,12 +3408,3 @@ test_split_subview_128-128-64-64,test_split_subview is not supported as we doesn
 test_split_subview_128-128-64-32,test_split_subview is not supported as we doesn't support ttg.local_alloc() and ttg.memdesc_index and ttg.local_store,Not supported on gcu,test_split_subview_M=128-N=128-M_tile_size=64-N_tile_size=32-,gcu300/gcu400/gcu410
 test_split_subview_128-64-64-32,test_split_subview is not supported as we doesn't support ttg.local_alloc() and ttg.memdesc_index and ttg.local_store,Not supported on gcu,test_split_subview_M=128-N=64-M_tile_size=64-N_tile_size=32-,gcu300/gcu400/gcu410
 test_split_subview_256-128-64-64,test_split_subview is not supported as we doesn't support ttg.local_alloc() and ttg.memdesc_index and ttg.local_store,Not supported on gcu,test_split_subview_M=256-N=128-M_tile_size=64-N_tile_size=64-,gcu300/gcu400/gcu410
-test_abs_int8,tl.abs for signed int does not correctly negate negative values,Not supported on gcu500 GCUSIM,test_abs_dtype_x=int8-,gcu500
-test_abs_int16,tl.abs for signed int does not correctly negate negative values,Not supported on gcu500 GCUSIM,test_abs_dtype_x=int16-,gcu500
-test_abs_int32,tl.abs for signed int does not correctly negate negative values,Not supported on gcu500 GCUSIM,test_abs_dtype_x=int32-,gcu500
-test_shift_op_1-int32-uint8,shift_op int32 to smaller unsigned types incorrect on gcu500,Not supported on gcu500 GCUSIM,test_shift_op_dtype_x=int32-dtype_y=uint8-op=<<-num_ctas=1-,gcu500
-test_shift_op_1-int32-uint16,shift_op int32 to smaller unsigned types incorrect on gcu500,Not supported on gcu500 GCUSIM,test_shift_op_dtype_x=int32-dtype_y=uint16-op=<<-num_ctas=1-,gcu500
-test_shift_op_1-int32-uint32,shift_op int32 to smaller unsigned types incorrect on gcu500,Not supported on gcu500 GCUSIM,test_shift_op_dtype_x=int32-dtype_y=uint32-op=<<-num_ctas=1-,gcu500
-test_shift_op_1-int32-uint8-rshift,shift_op int32 to smaller unsigned types incorrect on gcu500,Not supported on gcu500 GCUSIM,test_shift_op_dtype_x=int32-dtype_y=uint8-op=>>-num_ctas=1-,gcu500
-test_shift_op_1-int32-uint16-rshift,shift_op int32 to smaller unsigned types incorrect on gcu500,Not supported on gcu500 GCUSIM,test_shift_op_dtype_x=int32-dtype_y=uint16-op=>>-num_ctas=1-,gcu500
-test_shift_op_1-int32-uint32-rshift,shift_op int32 to smaller unsigned types incorrect on gcu500,Not supported on gcu500 GCUSIM,test_shift_op_dtype_x=int32-dtype_y=uint32-op=>>-num_ctas=1-,gcu500

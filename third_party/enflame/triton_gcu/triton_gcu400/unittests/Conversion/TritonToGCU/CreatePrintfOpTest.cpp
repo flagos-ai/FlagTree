@@ -49,8 +49,8 @@ struct PrintfTestFixture {
 
   PrintfTestFixture() : builder(&ctx), loc(builder.getUnknownLoc()) {
     ctx.loadDialect<arith::ArithDialect, memref::MemRefDialect,
-                    func::FuncDialect, affine::AffineDialect, gpu::GPUDialect,
-                    gcu::GCUDialect>();
+                     func::FuncDialect, affine::AffineDialect,
+                     gpu::GPUDialect, gcu::GCUDialect>();
     module = ModuleOp::create(loc);
     builder.setInsertionPointToStart(module.getBody());
     gpuModule = builder.create<gpu::GPUModuleOp>(loc, "triton");
@@ -113,7 +113,8 @@ TEST(CreatePrintfOpTest, ScalarI32) {
 // Test: scalar i32 with hex=true → gpu.printf with "0x%x " format
 TEST(CreatePrintfOpTest, ScalarI32Hex) {
   PrintfTestFixture f;
-  auto [funcOp, val] = f.setup(f.builder.getI32Type(), "test_printf_i32_hex");
+  auto [funcOp, val] =
+      f.setup(f.builder.getI32Type(), "test_printf_i32_hex");
 
   createPrintfOp(f.builder, f.loc, "addr", /*hex=*/true, val);
 
@@ -130,7 +131,8 @@ TEST(CreatePrintfOpTest, ScalarI32Hex) {
 // Test: memref<2x3xf32> → affine loop nest + memref.load + gpu.printf per elem
 TEST(CreatePrintfOpTest, MemRef2D) {
   PrintfTestFixture f;
-  auto memrefType = MemRefType::get({2, 3}, f.builder.getF32Type());
+  auto memrefType =
+      MemRefType::get({2, 3}, f.builder.getF32Type());
   auto [funcOp, val] = f.setup(memrefType, "test_printf_memref");
 
   createPrintfOp(f.builder, f.loc, "mem", /*hex=*/false, val);

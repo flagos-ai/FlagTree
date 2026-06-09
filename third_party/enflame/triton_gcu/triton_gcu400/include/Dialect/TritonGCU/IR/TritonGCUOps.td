@@ -113,7 +113,7 @@ def TTGCU_YieldOp : TTGCU_Op<"yield", [
   let description = [{
   }];
   let arguments = (ins Variadic<AnyType>:$operands);
-  let assemblyFormat = [{ attr-dict ($operands^ `:` type($operands))? }];
+  let assemblyFormat = [{ $operands attr-dict `:` type($operands)}];
 }
 
 //
@@ -149,7 +149,6 @@ def TritonGCU_IntToPtrOp : TTGCU_Op<"int2ptr", [Elementwise, Pure]>
 //
 def ElementwiseFusionRegionOp : TTGCU_Op<"elementwise_fusion_region", [
     IsolatedFromAbove,
-    AllShapesMatch<["results"]>,
     RecursiveMemoryEffects,
     SingleBlockImplicitTerminator<"YieldOp">]> {
   let summary = "Elementwise fusion region";
@@ -190,6 +189,38 @@ def TritonGCU_MemDescToPtrOp : TTGCU_Op<"memdesc_to_ptr", [Pure]>
   let arguments = (ins TTG_MemDescType:$src);
   let results = (outs TT_Ptr:$result);
   let assemblyFormat = [{ $src attr-dict `:` type($src) `->` type($result) }];
+}
+
+//
+// RemoteMemDesc Op
+//
+def TritonGCU_RemoteMemDescOp : TTGCU_Op<"remote_memdesc", [Pure]>
+{
+  let summary = "Produce a memdesc that refers to a remote CTA's shared memory";
+  let description = [{
+    Given a local shared-memory memdesc and a scalar shard_id (the target CTA
+    index within the cluster), return a memdesc of the same type that
+    semantically points to the corresponding buffer in the remote CTA's
+    shared memory.
+
+    On GCU 400/410, all CTAs in a cluster share the same DSM address space,
+    so the remote memdesc carries the shard_id for offset computation in
+    later lowering passes (KernelMemAllocPass).
+
+    Example:
+    ```mlir
+    %local = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared, #smem, mutable>
+    %remote = triton_gcu.remote_memdesc %local, %shard_id
+        : !ttg.memdesc<64x64xf32, #shared, #smem, mutable>, i32
+        -> !ttg.memdesc<64x64xf32, #shared, #smem, mutable>
+    %val = ttg.local_load %remote : ... -> tensor<64x64xf32>
+    ```
+  }];
+  let arguments = (ins TTG_MemDescType:$src, I32:$shard_id);
+  let results = (outs TTG_MemDescType:$result);
+  let assemblyFormat = [{
+    $src `,` $shard_id attr-dict `:` type($src) `,` type($shard_id) `->` type($result)
+  }];
 }
 
 //
@@ -413,6 +444,8 @@ def TritonGCU_MaskedLoadOp : TTGCU_Op<"maskedload", [
         return ::mlir::success();
       }
     }];
+
+    let hasCanonicalizeMethod = 1;
 }
 
 def TritonGCU_MaskedStoreOp : TTGCU_Op<"maskedstore", [
@@ -451,6 +484,8 @@ def TritonGCU_MaskedStoreOp : TTGCU_Op<"maskedstore", [
       $ptr `,` $offset `,` $value (`,` $mask^)?
       attr-dict `:` type($ptr) `,` type($offset) `,` type($value) (`,` type($mask)^)?
     }];
+
+    let hasCanonicalizeMethod = 1;
 }
 
 //
