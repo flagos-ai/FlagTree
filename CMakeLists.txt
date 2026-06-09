@@ -231,7 +231,7 @@ endfunction()
 # Disable warnings that show up in external code (gtest;pybind11)
 if(NOT MSVC)
   if(FLAGTREE_BACKEND)
-    if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|thrive)$")
+    if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive)$")
       # Suppress visibility warnings in gluon_ir.cc (GCC 13+ -Wattributes on pybind11 hidden types)
       # Also suppress -Wcomment for generated TritonGPUAttrDefs.h.inc (ASCII diagrams in TableGen output)
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-attributes -Wno-comment")
@@ -259,7 +259,7 @@ include_directories(${PROJECT_SOURCE_DIR}/third_party)
 include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
 
 # link_directories(${LLVM_LIBRARY_DIR})
-if (FLAGTREE_BACKEND MATCHES "^(cambricon|aipu|tsingmicro|enflame|thrive)$")
+if (FLAGTREE_BACKEND MATCHES "^(cambricon|aipu|tsingmicro|enflame|rpu|thrive)$")
   include_directories(${PROJECT_SOURCE_DIR}/include)
   include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
   add_subdirectory(include)
@@ -554,7 +554,7 @@ find_package(Threads REQUIRED)
 
 add_subdirectory(third_party/f2reduce)
 
-if(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(aipu|tsingmicro|enflame|thrive)$")
+if(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(aipu|tsingmicro|enflame|rpu|thrive)$")
   add_subdirectory(bin)
   if(FLAGTREE_TLE)
     flagtree_add_tle_generated_header_dependencies()

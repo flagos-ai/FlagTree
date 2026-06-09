@@ -644,7 +644,7 @@ def download_and_copy_dependencies():
 
 
 if helper.flagtree_backend:
-    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "thrive"):
+    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive"):
         backends = [
             *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
             *BackendInstaller.copy_externals(),
