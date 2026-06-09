@@ -1,0 +1,82 @@
+name: Rpu3.6-Build-And-Test
+
+on:
+  push:
+    branches: [ "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "triton_v3.6.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# The RPU CI runner is a small x86 host that orchestrates the build/test on a
+# separate aarch64 RPU board over SSH. The board cannot be reached directly
+# from a generic runner, so every wiring detail (board address, login user,
+# SSH key) lives only in the runner's local ~/.ssh/config under the opaque
+# alias `rpuboard` -- nothing host-specific is committed here. The runner
+# checks the source out locally, mirrors it to the board, then drives a clean
+# build and the test suite on the board.
+jobs:
+  rpu-build-and-test:
+    runs-on: rpu3.6
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          # The orchestrating runner has no ~/env.sh (the toolchain lives on the
+          # board); tolerate its absence and only forward any proxy settings.
+          source ~/env.sh 2>/dev/null || true
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: rpu
+
+      - name: Sync source to RPU board
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          # Exact mirror to the board (--delete removes files deleted upstream;
+          # .git is not needed for the build).
+          rsync -az --delete --exclude '.git' \
+            -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no' \
+            ./ rpuboard:~/FlagTree-ci/
+
+      - name: FlagTree Build on RPU board (via SSH)
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          # Clean build on the board: drop the previous build tree so nothing is
+          # stale, then build/install. ccache (configured in the board's env.sh)
+          # keeps the rebuild fast.
+          ssh -tt -o BatchMode=yes -o StrictHostKeyChecking=no rpuboard 'set -e
+            cd ~/FlagTree-ci
+            source ~/env.sh
+            export FLAGTREE_BACKEND=rpu
+            rm -rf python/build
+            MAX_JOBS=8 pip3 install --user --force-reinstall . --no-build-isolation'
+
+      - name: FlagTree Test on RPU board (via SSH)
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          # Unit suite, then the on-board launch_kernel dispatch smoke. The smoke
+          # uses --require-board so a misconfigured board (missing toolchain /
+          # runtime / /dev/rpu) fails the job instead of silently skipping.
+          ssh -tt -o BatchMode=yes -o StrictHostKeyChecking=no rpuboard 'set -e
+            cd ~/FlagTree-ci
+            source ~/env.sh
+            pytest -q third_party/rpu/python/test/unit
+            python3 third_party/rpu/python/test/board/lk_board_smoke.py --require-board -v'
