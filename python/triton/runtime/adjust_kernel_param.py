@@ -1124,7 +1124,7 @@ def update_bs(nargs, current, config, bs_name, bs, title, reason):
     config.kwargs[bs_name] = bs
 
 
-def adjust_block_size_tl_load(nargs, current, config, bs_name, ts_name):
+def adjust_block_size_tl_load(nargs, current, config, bs_name, ts_name, min_bs=1):
     if bs_name not in current or ts_name not in nargs:
         return
     bs = current[bs_name]
@@ -1133,7 +1133,10 @@ def adjust_block_size_tl_load(nargs, current, config, bs_name, ts_name):
         return
     if bs > ts:  # block_size > tensor_size
         from triton import next_power_of_2
-        update_bs(nargs, current, config, bs_name, next_power_of_2(ts), "tl.load", f"> {ts}")
+        updated_bs = next_power_of_2(ts)
+        if updated_bs < min_bs:
+            updated_bs = min_bs
+        update_bs(nargs, current, config, bs_name, updated_bs, "tl.load", f"> {ts}")
 
 
 def adjust_block_size_tma(nargs, current, config, desc_name, bs_names):
@@ -1241,8 +1244,11 @@ def auto_adjust_block_sizes(nargs, fn, configs, current, config):
     if load_map:  # tl.load or tma_device.load
         if knobs.autotuning.print:
             print("[AABS] 1. adjust bs in tl.load or tma_device.load")
+        min_bs = 1
+        if FLAGTREE_BACKEND == "enflame":
+            min_bs = 4
         for bs_name, ts_name in load_map.items():
-            adjust_block_size_tl_load(nargs, current, config, bs_name, ts_name)
+            adjust_block_size_tl_load(nargs, current, config, bs_name, ts_name, min_bs)
 
     if tma_map:  # tma_host.load
         if knobs.autotuning.print:
