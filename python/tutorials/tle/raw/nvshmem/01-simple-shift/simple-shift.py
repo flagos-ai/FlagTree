@@ -10,11 +10,16 @@ from pathlib import Path
 from triton.experimental.tle.raw import dialect
 from triton.language.extra.cuda import libnvshmem_device
 
+NVSHMEM_HOME = "/data/zyuli/miniconda3/envs/flagtree_triton_v3.6.x/lib/python3.12/site-packages/nvidia/nvshmem"
 
 @dialect(
     name="cuda",
-    file=(Path(__file__).parent / "simple-shift-device.cu").resolve(),
-    library={"nvshmem": "/home/zyl/zyuli/envs/nvshmem/lib/python3.12/site-packages/nvidia/nvshmem"},
+    compiler="nvcc",
+    file=(Path(__file__).parent / "simple-shift-device.cu"),
+    extern=(Path(__file__).parent / "simple-shift-device-extern-call.py"),
+    extern_func_name="simple_shift",
+    libs={"nvshmem": NVSHMEM_HOME},
+    links=["nvshmem_device"]
 )
 def edsl(*args, **kwargs):
     ...
@@ -23,13 +28,12 @@ def edsl(*args, **kwargs):
 @triton.jit
 def simple_shift_kernel(destination_ptr, ):
     # TODO: Combine with tle_raw.call, then dispatch
-    tle_raw.call_nvshmem(edsl, [], [destination_ptr])
-    libnvshmem_device.simple_shift(destination_ptr)
+    tle_raw.call(edsl, [destination_ptr])
+    # libnvshmem_device.simple_shift(destination_ptr)
 
 
 def cuda_host_compile(cuda_host_path, cuda_host_lib):
     NVCC = os.getenv("NVCC", "nvcc")
-    NVSHMEM_HOME = "/home/zyl/zyuli/envs/nvshmem/lib/python3.12/site-packages/nvidia/nvshmem"
     include_path = f"-I{os.path.join(NVSHMEM_HOME, 'include')}"
     lib_path = f"-L{os.path.join(NVSHMEM_HOME, 'lib')}"
 
@@ -103,9 +107,9 @@ def simpe_shift():
         kernel._init_handles()
         ret = lib.nvshmemx_cumodule_init_wrapper(ctypes.c_void_p(kernel.module))
         assert ret == 0, f"nvshmemx_cumodule_init_wrapper failed: {ret}"
-
     knobs.runtime.jit_post_compile_hook = cumodule_init_hook
 
+    # extern_libs = {'simple-shift': 'simple-shift-device-opti.bc'}
     simple_shift_kernel[(1, )](dest_tensor)
 
     stream_ptr = stream.cuda_stream

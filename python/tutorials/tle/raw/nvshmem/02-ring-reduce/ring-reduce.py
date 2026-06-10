@@ -10,14 +10,14 @@ from pathlib import Path
 from triton.experimental.tle.raw import dialect
 from triton.language.extra.cuda import libnvshmem_device
 
-
+NVSHMEM_HOME = "/data/zyuli/miniconda3/envs/flagtree_triton_v3.6.x/lib/python3.12/site-packages/nvidia/nvshmem"
 @dialect(
     name="cuda",
     compiler="nvcc",
     file=(Path(__file__).parent / "ring-reduce-device.cu"),
     extern=(Path(__file__).parent / "ring-reduce-device-extern-call.py"),
     extern_func_name="ring_reduce",
-    libs={"nvshmem": "/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/nvidia/nvshmem"},
+    libs={"nvshmem": NVSHMEM_HOME},
     links=["nvshmem_device"]
 )
 def edsl(*args, **kwargs):
@@ -33,12 +33,10 @@ def ring_reduce_kernel(
     chunk_size,
 ):
     tle_raw.call(edsl, [dst, src, nreduce, signal, chunk_size])
-    # libnvshmem_device.ring_reduce(dst, src, nreduce, signal, chunk_size)
 
 
 def cuda_host_compile(cuda_host_path, cuda_host_lib):
     NVCC = os.getenv("NVCC", "nvcc")
-    NVSHMEM_HOME = "/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/nvidia/nvshmem"
     include_path = f"-I{os.path.join(NVSHMEM_HOME, 'include')}"
     lib_path = f"-L{os.path.join(NVSHMEM_HOME, 'lib')}"
 
@@ -58,23 +56,24 @@ def ring_reduce():
     cu_file = (Path(__file__).parent / "ring-reduce-host.cu").resolve()
     lib_file = Path(cu_file).with_suffix('.so')
 
-    rank = int(os.getenv("OMPI_COMM_WORLD_RANK", "0"))
-    if rank == 0:
-        cuda_host_compile(cu_file, lib_file)
+    # rank = int(os.getenv("OMPI_COMM_WORLD_RANK", "0"))
+    rank = int(os.environ["PMI_RANK"])
+    # if rank == 0:
+    #     cuda_host_compile(cu_file, lib_file)
 
-    import time
-    timeout = 60
-    start = time.time()
-    while True:
-        if lib_file.exists():
-            try:
-                ctypes.CDLL(str(lib_file))
-                break
-            except OSError:
-                pass
-        if time.time() - start > timeout:
-            raise RuntimeError(f"Timeout waiting for {lib_file}")
-        time.sleep(0.1)
+    # import time
+    # timeout = 60
+    # start = time.time()
+    # while True:
+    #     if lib_file.exists():
+    #         try:
+    #             ctypes.CDLL(str(lib_file))
+    #             break
+    #         except OSError:
+    #             pass
+    #     if time.time() - start > timeout:
+    #         raise RuntimeError(f"Timeout waiting for {lib_file}")
+    #     time.sleep(0.1)
 
     M, N = 64, 8
     lib = ctypes.CDLL(lib_file)
@@ -108,7 +107,7 @@ def ring_reduce():
     dst_tensor = torch.empty(0, dtype=torch.int32, device=device).set_(dst_storage).view(M, N)
     
     signal_storage = torch._C._construct_storage_from_data_pointer(signal.value, device, 8 * num_blocks)
-    signal_tensor = torch.empty(0, dtype=torch.int64, device=device).set_(signal_storage).view(num_blocks, )
+    signal_tensor = torch.empty(0, dtype=torch.uint64, device=device).set_(signal_storage).view(num_blocks, )
 
     def cumodule_init_hook(*args, **kwargs):
         key = kwargs["key"]
@@ -133,6 +132,7 @@ def ring_reduce():
             chunk_size
         )
     
+    print(f"PE {mype.value}: {npes.value}")
     lib.ring_reduce_after_launch(
         stream, 
         src, dst, data_h, signal, 

@@ -144,7 +144,7 @@ class CUDAJITFunction(object):
         self.macros = kwargs.get("macros", None)
         self.__triton_builtin__: Final[bool] = True
         
-        if (self.compiler).lower() == "nvcc":
+        if (self.compiler).lower() == "nvcc" and (knobs.runtime.add_stages_inspection_hook is None):
             bound_hook = partial(make_cubin_inspection_hook, self)
             knobs.runtime.add_stages_inspection_hook = bound_hook
 
