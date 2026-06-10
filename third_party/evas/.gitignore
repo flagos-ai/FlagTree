@@ -1,0 +1,15 @@
+__pycache__/
+.cache/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+*.so
+*.elf
+*.mlir
+*.log
+accuracy_result.json
+runtime/ev_torch/build/
+runtime/ev_torch/ev_torch/lib/

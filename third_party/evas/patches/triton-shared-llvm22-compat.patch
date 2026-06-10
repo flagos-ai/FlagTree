@@ -1,0 +1,75 @@
+diff --git a/include/triton-shared/Analysis/UseAnalysis.h b/include/triton-shared/Analysis/UseAnalysis.h
+--- a/include/triton-shared/Analysis/UseAnalysis.h
++++ b/include/triton-shared/Analysis/UseAnalysis.h
+@@ -49,6 +49,7 @@ struct UseInfo : public dataflow::AbstractSparseLattice {
+     case UseType::MixUse:
+       return ChangeResult::NoChange;
+     }
++    return ChangeResult::NoChange;
+   }
+ 
+   ChangeResult meet(const AbstractSparseLattice &other) override {
+@@ -87,12 +87,6 @@ public:
+ 
+   void visitCallOperand(OpOperand &operand) override { return; }
+ 
+-  void
+-  visitNonControlFlowArguments(RegionSuccessor &successor,
+-                               ArrayRef<BlockArgument> arguments) override {
+-    return;
+-  }
+-
+   void setToExitState(UseInfo *lattice) override {
+     lattice->type = UseType::Undefined;
+   }
+ 
+diff --git a/lib/Analysis/MaskAnalysis.cpp b/lib/Analysis/MaskAnalysis.cpp
+--- a/lib/Analysis/MaskAnalysis.cpp
++++ b/lib/Analysis/MaskAnalysis.cpp
+@@ -65,7 +65,8 @@ tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
+   SmallVector<OpFoldResult> offsets(getRank(), builder.getIndexAttr(0));
+   SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
+ 
+-  auto dstType = tensor::ExtractSliceOp::inferResultType(sourceType, dims);
++  auto dstType =
++      tensor::ExtractSliceOp::inferResultType(sourceType, offsets, dims, strides);
+ 
+   return tensor::ExtractSliceOp::create(builder, loc, dstType, source, offsets,
+                                         dims, strides);
+diff --git a/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp b/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp
+--- a/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp
++++ b/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp
+@@ -974,7 +974,8 @@ private:
+     SmallVector<OpFoldResult> offsets(rank, b.getIndexAttr(0));
+     SmallVector<OpFoldResult> strides(rank, b.getIndexAttr(1));
+ 
+-    auto dstType = tensor::ExtractSliceOp::inferResultType(sourceType, dims);
++    auto dstType =
++        tensor::ExtractSliceOp::inferResultType(sourceType, offsets, dims, strides);
+ 
+     return tensor::ExtractSliceOp::create(b, loc, dstType, source, offsets,
+                                           dims, strides);
+diff --git a/triton_shared.cc b/triton_shared.cc
+--- a/triton_shared.cc
++++ b/triton_shared.cc
+@@ -25,10 +25,9 @@
+ #include "mlir/Conversion/Passes.h"
+ #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+ #include "mlir/Dialect/Affine/IR/AffineOps.h"
+-#include "mlir/Dialect/Affine/Transforms/Passes.h"
++#include "mlir/Dialect/Affine/Passes.h"
+ #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
+ #include "mlir/Dialect/Arith/Transforms/Passes.h"
+-#include "mlir/Dialect/Bufferization/Extensions/AllExtensions.h"
+ #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+ #include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
+ #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
+@@ -70,8 +69,6 @@ void init_triton_triton_shared(py::module &&m) {
+     cf::registerBufferizableOpInterfaceExternalModels(registry);
+     tensor::registerInferTypeOpInterfaceExternalModels(registry);
+ 
+-    mlir::bufferization::registerAllExtensions(registry);
+-
+     context.appendDialectRegistry(registry);
+     context.loadAllAvailableDialects();
+   });
