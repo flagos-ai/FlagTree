@@ -1,5 +1,6 @@
 add_triton_library(MUSATLETransforms
   InsertLocalPointerBarriers.cpp
+  LowerExclusiveCumsum.cpp
   OptimizeLocalPointerAsyncStores.cpp
   OptimizeLocalPointerLoads.cpp
   OptimizeLocalPointerStores.cpp

@@ -47,6 +47,15 @@ def MUSATLE_InsertTileOp
   }];
   let hasVerifier = 1;
 }
+
+def MUSATLE_ExclusiveCumsumOp
+    : MUSATLE_Op<"exclusive_cumsum",
+                 [Pure, SameOperandsAndResultEncoding]> {
+  let arguments = (ins TT_Tensor:$src, I32Attr:$axis, BoolAttr:$reverse);
+  let results = (outs TT_Tensor:$exclusive, TT_Type:$total);
+  let assemblyFormat = "$src attr-dict `:` type($src) `->` type($exclusive) `,` type($total)";
+  let hasVerifier = 1;
+}
 #endif // __TLE__
 
 #endif // MUSA_TLE_OPS

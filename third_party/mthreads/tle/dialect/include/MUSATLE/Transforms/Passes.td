@@ -71,4 +71,22 @@ def TritonMUSAGPUTLEOptimizeLocalPointerAsyncStores
   ];
 }
 
+def TritonMUSAGPUTLELowerExclusiveCumsum
+    : Pass<"tritonmusa-tle-lower-exclusive-cumsum", "mlir::ModuleOp"> {
+  let summary = "Lower musa_tle.exclusive_cumsum to Triton scan and reduce ops";
+
+  let description = [{
+    Lower ``musa_tle.exclusive_cumsum`` into ``tt.scan`` for prefix
+    accumulation, subtract the original input to form the exclusive sum, and use
+    an index-select ``tt.reduce`` over the inclusive result to produce the
+    total sum.
+  }];
+
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::triton::TritonDialect",
+    "mlir::triton::musa_tle::MUSATLEDialect"
+  ];
+}
+
 #endif // MUSA_TLE_TRANSFORMS_PASSES

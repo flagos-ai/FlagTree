@@ -854,6 +854,7 @@ void populateMUSATlePatterns(TritonGPUTypeConverter &typeConverter,
                              RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns.add<GenericOpPattern<mlir::triton::musa_tle::LocalPointersOp>,
+               GenericOpPattern<mlir::triton::musa_tle::ExclusiveCumsumOp>,
                MUSATLEExtractTilePattern, MUSATLEInsertTilePattern>(
       typeConverter, context);
 }

@@ -171,6 +171,14 @@ void init_triton_musa_tle_ir(py::module m) {
              return self.create<mlir::triton::musa_tle::LocalPointersOp>(
                  resultTy, memDesc, indices);
            })
+      .def("create_exclusive_cumsum",
+           [](TritonOpBuilder &self, mlir::Type exclusiveTy, mlir::Type totalTy,
+              mlir::Value src, int axis, bool reverse) -> mlir::OpState {
+             auto &builder = self.getBuilder();
+             return self.create<mlir::triton::musa_tle::ExclusiveCumsumOp>(
+                 mlir::TypeRange{exclusiveTy, totalTy}, src,
+                 builder.getI32IntegerAttr(axis), builder.getBoolAttr(reverse));
+           })
       .def("create_extract_tile",
            [](TritonOpBuilder &self, mlir::Value input, mlir::Value index,
               std::vector<int64_t> tileShape) -> mlir::Value {
@@ -190,6 +198,8 @@ void init_triton_musa_tle_ir(py::module m) {
 void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m) {
   ADD_PASS_WRAPPER_0("add_tle_select_encodings",
                      mlir::createTritonMUSAGPUTLESelectEncodings);
+  ADD_PASS_WRAPPER_0("add_tle_lower_exclusive_cumsum",
+                     mlir::createTritonMUSAGPUTLELowerExclusiveCumsum);
   ADD_PASS_WRAPPER_0("add_tle_insert_local_pointer_barriers",
                      mlir::createTritonMUSAGPUTLEInsertLocalPointerBarriers);
   ADD_PASS_WRAPPER_0("add_tle_optimize_local_pointer_loads",

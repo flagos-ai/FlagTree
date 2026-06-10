@@ -8,6 +8,8 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
+#include <cstdint>
+#include <limits>
 #include <optional>
 
 // clang-format off
@@ -275,6 +277,40 @@ LogicalResult LocalPointersOp::verify() {
     }
     return emitOpError() << "scalar result expects scalar integer indices";
   }
+
+  return success();
+}
+
+LogicalResult ExclusiveCumsumOp::verify() {
+  auto srcTy = dyn_cast<RankedTensorType>(getSrc().getType());
+  if (!srcTy)
+    return emitOpError() << "expects src to be a ranked tensor";
+
+  auto exclusiveTy = dyn_cast<RankedTensorType>(getExclusive().getType());
+  if (!exclusiveTy)
+    return emitOpError() << "expects exclusive result to be a ranked tensor";
+  if (exclusiveTy != srcTy)
+    return emitOpError() << "expects exclusive result type to match src type";
+
+  if (srcTy.getRank() != 1)
+    return emitOpError() << "currently only rank-1 tensors are supported";
+  int64_t axisExtent = srcTy.getShape()[0];
+  if (ShapedType::isDynamic(axisExtent) || axisExtent <= 0)
+    return emitOpError() << "currently only static, positive axis extent is "
+                            "supported";
+  if (axisExtent > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+    return emitOpError() << "axis extent is too large";
+
+  const int64_t rank = srcTy.getRank();
+  int64_t axis = static_cast<int64_t>(getAxis());
+  if (axis < 0)
+    axis += rank;
+  if (axis != 0)
+    return emitOpError() << "currently only axis=0 is supported";
+
+  if (getTotal().getType() != srcTy.getElementType())
+    return emitOpError() << "expects total result type to match src element "
+                            "type";
 
   return success();
 }
