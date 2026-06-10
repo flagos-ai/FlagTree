@@ -732,8 +732,8 @@ insertWgmmaWaitBefore(Operation *op, unsigned lastCompletedGroup,
   return wait;
 }
 
-static SmallVector<Value, 4> getPendingGroupResultValues(
-    ArrayRef<PendingSharedWgmmaGroup> pendingGroups) {
+static SmallVector<Value, 4>
+getPendingGroupResultValues(ArrayRef<PendingSharedWgmmaGroup> pendingGroups) {
   SmallVector<Value, 4> values;
   for (const PendingSharedWgmmaGroup &group : pendingGroups) {
     assert(!group.dots.empty() &&
@@ -921,8 +921,7 @@ static void scheduleTleWgmmaWaitsInBlock(
 }
 
 static void insertFinalWgmmaWaitAfterLoop(
-    scf::ForOp forOp,
-    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+    scf::ForOp forOp, SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
   if (pendingGroups.empty())
     return;
 
