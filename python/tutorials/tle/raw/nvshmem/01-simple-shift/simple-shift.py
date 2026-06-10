@@ -8,7 +8,6 @@ import triton.experimental.tle.language.raw as tle_raw
 
 from pathlib import Path
 from triton.experimental.tle.raw import dialect
-from triton.language.extra.cuda import libnvshmem_device
 
 NVSHMEM_HOME = "/data/zyuli/miniconda3/envs/flagtree_triton_v3.6.x/lib/python3.12/site-packages/nvidia/nvshmem"
 
@@ -27,49 +26,14 @@ def edsl(*args, **kwargs):
 
 @triton.jit
 def simple_shift_kernel(destination_ptr, ):
-    # TODO: Combine with tle_raw.call, then dispatch
     tle_raw.call(edsl, [destination_ptr])
-    # libnvshmem_device.simple_shift(destination_ptr)
-
-
-def cuda_host_compile(cuda_host_path, cuda_host_lib):
-    NVCC = os.getenv("NVCC", "nvcc")
-    include_path = f"-I{os.path.join(NVSHMEM_HOME, 'include')}"
-    lib_path = f"-L{os.path.join(NVSHMEM_HOME, 'lib')}"
-
-    prop = torch.cuda.get_device_properties(torch.cuda.current_device())
-    arch = f"-arch=sm_{prop.major}{prop.minor}"
-    tmp_file = Path(cuda_host_lib).with_suffix('.so.tmp')
-    build = [
-        NVCC, "-shared", "-Xcompiler", "-fPIC", "-rdc=true", arch, include_path, lib_path, "-lnvshmem_host",
-        "-lnvshmem_device", "-o", tmp_file, cuda_host_path
-    ]
-    build = subprocess.run(build, capture_output=True)
-    assert build.returncode == 0, (f"NVCC host failed\nstderr:\n{build.stderr.decode()}")
-    tmp_file.rename(cuda_host_lib)
 
 
 def simpe_shift():
     cu_file = (Path(__file__).parent / "simple-shift-host.cu").resolve()
     lib_file = Path(cu_file).with_suffix('.so')
-
-    rank = int(os.getenv("OMPI_COMM_WORLD_RANK", "0"))
-    if rank == 0:
-        cuda_host_compile(cu_file, lib_file)
-
-    import time
-    timeout = 60
-    start = time.time()
-    while True:
-        if lib_file.exists():
-            try:
-                ctypes.CDLL(str(lib_file))
-                break
-            except OSError:
-                pass
-        if time.time() - start > timeout:
-            raise RuntimeError(f"Timeout waiting for {lib_file}")
-        time.sleep(0.1)
+    
+    rank = int(os.getenv("PMI_RANK", "0"))
 
     lib = ctypes.CDLL(lib_file)
     lib.nvshmem_init_wrapper.argtypes = []
@@ -109,7 +73,6 @@ def simpe_shift():
         assert ret == 0, f"nvshmemx_cumodule_init_wrapper failed: {ret}"
     knobs.runtime.jit_post_compile_hook = cumodule_init_hook
 
-    # extern_libs = {'simple-shift': 'simple-shift-device-opti.bc'}
     simple_shift_kernel[(1, )](dest_tensor)
 
     stream_ptr = stream.cuda_stream

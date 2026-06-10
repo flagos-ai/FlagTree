@@ -161,7 +161,6 @@ class CUDAJITFunction(object):
                 "--cuda-device-only",
                 f"--cuda-gpu-arch={arch}",
                 "-emit-llvm",
-                "-I/home/zyuli/miniconda3/envs/flagtree/lib/python3.12/site-packages/torch/include",
                 "-O2",
                 "-S",
                 "-",
