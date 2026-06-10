@@ -1,6 +1,4 @@
-import sys
 import shutil
-import inspect
 from pathlib import Path
 
 from setuptools import find_packages
@@ -85,39 +83,10 @@ def _patch_mthreads_cmdclass(existing_cmdclass):
     return cmdclass
 
 
-def _wrap_setup(original_setup):
-    if getattr(original_setup, "_mthreads_python_root_patched", False):
-        return original_setup
-
-    def setup_with_mthreads_python_root(*args, **kwargs):
-        kwargs["packages"] = _merge_mthreads_packages(kwargs.get("packages", []))
-        kwargs["package_dir"] = _merge_mthreads_package_dir(kwargs.get("package_dir", {}))
-        kwargs["cmdclass"] = _patch_mthreads_cmdclass(kwargs.get("cmdclass", {}))
-        return original_setup(*args, **kwargs)
-
-    setup_with_mthreads_python_root._mthreads_python_root_patched = True
-    setup_with_mthreads_python_root._mthreads_original_setup = original_setup
-    return setup_with_mthreads_python_root
-
-
-def _patch_setup_for_mthreads_python_root():
-    patched = False
-
-    frame = inspect.currentframe()
-    while frame is not None:
-        setup_func = frame.f_globals.get("setup")
-        if callable(setup_func):
-            frame.f_globals["setup"] = _wrap_setup(setup_func)
-            patched = True
-        frame = frame.f_back
-
-    main_module = sys.modules.get("__main__")
-    if main_module is not None and hasattr(main_module, "setup"):
-        main_module.setup = _wrap_setup(main_module.setup)
-        patched = True
-
-    if not patched:
-        raise RuntimeError("mthreads setup hook could not find setup() to patch")
-
-
-_patch_setup_for_mthreads_python_root()
+def apply_mthreads_setup_args(kwargs):
+    """Apply mthreads package overrides to setup() kwargs.
+    Called from setup.py when FLAGTREE_BACKEND=mthreads and not editable install."""
+    kwargs["packages"] = _merge_mthreads_packages(kwargs.get("packages", []))
+    kwargs["package_dir"] = _merge_mthreads_package_dir(kwargs.get("package_dir", {}))
+    kwargs["cmdclass"] = _patch_mthreads_cmdclass(kwargs.get("cmdclass", {}))
+    return kwargs

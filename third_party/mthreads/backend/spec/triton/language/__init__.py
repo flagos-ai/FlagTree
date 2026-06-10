@@ -1,10 +1,6 @@
 """isort:skip_file"""
 # Import order is significant here.
 
-# flagtree backend path specialization
-from triton.flagtree_spec import spec_path
-spec_path(__path__)
-
 from . import math
 from . import extra
 from .standard import (
@@ -23,9 +19,11 @@ from .standard import (
     sigmoid,
     softmax,
     sort,
+    squeeze,
     sum,
     swizzle2d,
     topk,
+    unsqueeze,
     xor_sum,
     zeros,
     zeros_like,
@@ -35,6 +33,8 @@ from .core import (
     TRITON_MAX_TENSOR_NUMEL,
     load_tensor_descriptor,
     store_tensor_descriptor,
+    _experimental_descriptor_load,
+    _experimental_descriptor_store,
     make_tensor_descriptor,
     tensor_descriptor,
     tensor_descriptor_type,
@@ -112,6 +112,7 @@ from .core import (
     store,
     sub,
     tensor,
+    to_tensor,
     trans,
     tuple,
     tuple_type,
@@ -144,6 +145,8 @@ __all__ = [
     "TRITON_MAX_TENSOR_NUMEL",
     "load_tensor_descriptor",
     "store_tensor_descriptor",
+    "_experimental_descriptor_load",
+    "_experimental_descriptor_store",
     "make_tensor_descriptor",
     "tensor_descriptor",
     "abs",
@@ -256,6 +259,7 @@ __all__ = [
     "split",
     "sqrt",
     "sqrt_rn",
+    "squeeze",
     "static_assert",
     "static_print",
     "static_range",
@@ -266,6 +270,7 @@ __all__ = [
     "target_info",
     "tensor",
     "topk",
+    "to_tensor",
     "trans",
     "tuple",
     "uint16",
@@ -274,6 +279,7 @@ __all__ = [
     "uint8",
     "uint_to_uniform_float",
     "umulhi",
+    "unsqueeze",
     "view",
     "void",
     "where",
