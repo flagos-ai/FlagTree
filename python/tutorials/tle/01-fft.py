@@ -292,7 +292,7 @@ if _HAVE_CUTILE:
 def cutile_fft(x: torch.Tensor) -> torch.Tensor:
     if not _HAVE_CUTILE:
         raise RuntimeError("cuda.tile/cupy not available")
-    assert x.is_cuda, "input must be on CUDA"
+    assert x.device.type == DEVICE.type, "input must be on device"
     assert x.ndim == 2, "input must be 2D (M, N)"
     m, n = x.shape
     if not _is_power_of_two(n):
@@ -1096,7 +1096,7 @@ def fft_kernel_tle_reg(
 
 
 def triton_fft(x: torch.Tensor) -> torch.Tensor:
-    assert x.is_cuda, "input must be on CUDA"
+    assert x.device.type == DEVICE.type, "input must be on device"
     assert x.ndim == 2, "input must be 2D (M, N)"
     m, n = x.shape
     if not _is_power_of_two(n):
@@ -1145,7 +1145,7 @@ def triton_fft(x: torch.Tensor) -> torch.Tensor:
 
 
 def tle_fft(x: torch.Tensor) -> torch.Tensor:
-    assert x.is_cuda, "input must be on CUDA"
+    assert x.device.type == DEVICE.type, "input must be on device"
     assert x.ndim == 2, "input must be 2D (M, N)"
     m, n = x.shape
     if not _is_power_of_two(n):
