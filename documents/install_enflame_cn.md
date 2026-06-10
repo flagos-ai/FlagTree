@@ -3,7 +3,7 @@
 ## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/enflame/) (Triton 3.6)
 
 - 对应的 Triton 版本为 3.6，基于 x64 平台
-- 可用于 GCU300, GCU400 (L300/L600)
+- 可用于 GCU300 (S60), GCU400 (L300/L600)
 
 ### 1. 构建及运行环境
 
@@ -94,7 +94,7 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 ## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) (Triton 3.5)
 
 - 对应的 Triton 版本为 3.5，基于 x64 平台
-- 可用于 GCU300, GCU400 (L300/L600)
+- 可用于 GCU300 (S60), GCU400 (L300/L600)
 
 ### 1. 构建及运行环境
 
@@ -185,7 +185,7 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 ## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) (Triton 3.3)
 
 - 对应的 Triton 版本为 3.3，基于 x64 平台
-- 可用于 GCU300
+- 可用于 GCU300 (S60)
 
 ### 1. 构建及运行环境
 
