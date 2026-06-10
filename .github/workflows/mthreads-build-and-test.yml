@@ -46,3 +46,13 @@ jobs:
         run: |
           set -x
           python3 -m pytest -s third_party/mthreads/python/test/unit --device musa
+
+      - name: Direct Kernel Test on Mthreads
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export TRITON_DEFAULT_BACKEND=mthreads
+          python3 third_party/mthreads/python/test/test_verify_service.py \
+            --chip moore \
+            --all
