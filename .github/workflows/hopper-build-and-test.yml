@@ -1,4 +1,4 @@
-name: Hopper-Build-And-Test
+name: Hopper3.6-Build-And-Test
 
 on:
   schedule:
