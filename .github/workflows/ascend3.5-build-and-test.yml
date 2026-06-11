@@ -63,13 +63,13 @@ jobs:
           popd
           ## pytest_ut
           pushd third_party/ascend/unittest/pytest_ut
-          # TODO: test_device_print coredump
+          # TODO: test_03_matrix_multiplication.py nan, inf
           # Other tests passed, but takes a long time, so we ignore them in workflow
           python3 -m pytest -s . \
-            --ignore=test_03_matrix_multiplication.py \
             --ignore=test_device_print.py \
             --ignore=test_device_print_comprehensive.py \
             --ignore=test_device_print_script.py \
+            --ignore=test_03_matrix_multiplication.py \
             --ignore=test_10_gather_sorted.py \
             --ignore=test_16_profiler.py \
             --ignore=test_18_gather.py \
@@ -127,4 +127,8 @@ jobs:
           python3 -m pytest -s test_sort.py -k test_sort_2d
           python3 -m pytest -s test_sum_vector.py -k test_sum
           python3 -m pytest -s test_tensor_descriptor.py -k test_tensor_descriptor_functional_interface
+          export LD_PRELOAD=/usr/local/python3.11.15/lib/python3.11/site-packages/torch/lib/libtorch_cpu.so  # device_print
+          python3 -m pytest -s test_device_print.py
+          python3 -m pytest -s test_device_print_comprehensive.py
+          python3 -m pytest -s test_device_print_script.py
           popd
