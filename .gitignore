@@ -25,6 +25,7 @@ python/triton/FLAGTREE_BACKEND
 third_party/mthreads/python/triton/_C/*.so
 third_party/mthreads/python/triton/FileCheck
 third_party/mthreads/python/*.egg-info
+third_party/nvidia/backend/flagcx*
 
 # Backends copied from submodules
 python/triton/backends/*
@@ -56,7 +57,6 @@ python/triton/instrumentation
 # runtime
 python/triton/experimental/tle/language/include
 python/triton/experimental/tle/language/flagcx*
-
 
 # Python caches
 __pycache__/
