@@ -1,4 +1,5 @@
 from triton.backends.nvidia.distributed import flagcx_rt_conf
+
 enabled = flagcx_rt_conf.is_available
 
 if enabled:
@@ -21,7 +22,7 @@ if enabled:
 
     def _libflagcx_path():
         return Path(FLAGCX_LIB_PATH) / "libflagcx.so"
-    
+
     _allocator = None
     _allocator_wrapper = None
     _mem_pool = None
@@ -92,8 +93,8 @@ def compile_flagcx_allocator():
     except Exception as e:
         _flagcx_allocator_failed_to_compile = True
         print(f"[WARNING] Failed to compile FlagCX memory allocator: {e}\n"
-            f"  Ensure FLAGCX_LIB_PATH ({FLAGCX_LIB_PATH}) contains libflagcx.so\n"
-            f"  and FLAGCX_INCLUDE_PATH ({FLAGCX_INCLUDE_PATH}) contains flagcx.h")
+              f"  Ensure FLAGCX_LIB_PATH ({FLAGCX_LIB_PATH}) contains libflagcx.so\n"
+              f"  and FLAGCX_INCLUDE_PATH ({FLAGCX_INCLUDE_PATH}) contains flagcx.h")
 
 
 def get_mem_pool():
@@ -198,7 +199,7 @@ def create_comm_tensor(buf_tensor):
     dev_comm_dptr = flagcx.flagcxDevCommGetDevicePtr(dev_comm)
     dev_mem_dptr = flagcx.flagcxDevMemGetDevicePtr(dev_mem)
     print(f"[Rank {rank}] Device pointers: comm={dev_comm_dptr.value:#x}, "
-        f"mem={dev_mem_dptr.value:#x}")
+          f"mem={dev_mem_dptr.value:#x}")
 
     # Synchronize all ranks before kernel launch
     dist.barrier()

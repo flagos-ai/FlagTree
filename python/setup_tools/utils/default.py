@@ -9,6 +9,7 @@ global registrar
 def printinfo(msgs):
     print(f" [TLE-DIST-INFO]: {msgs}. \n")
 
+
 class FlagCXRegistrar:
 
     def __init__(self, external):
@@ -35,15 +36,16 @@ class FlagCXRegistrar:
 
     def _get_runtime_path(self, lib_name):
         return {
-            self.shared_lib_name : Path(self.flagtree_dir) / "python" / "triton" / "_C" / self.shared_lib_name,
-            self.bitcode_name: Path(self.flagtree_dir) / "third_party" / self.backend_name  / "backend" /"lib" / self.bitcode_name
+            self.shared_lib_name:
+            Path(self.flagtree_dir) / "python" / "triton" / "_C" / self.shared_lib_name, self.bitcode_name:
+            Path(self.flagtree_dir) / "third_party" / self.backend_name / "backend" / "lib" / self.bitcode_name
         }.get(lib_name)
-
 
     def get_compile_cmds(self):
         nproc = os.cpu_count()
         return {
-            self.bitcode_name: ["make", "-C", "bindings/ir/nvidia"], self.shared_lib_name: ["make", "-j",                                                                                   str(nproc)]
+            self.bitcode_name: ["make", "-C", "bindings/ir/nvidia"], self.shared_lib_name: ["make", "-j",
+                                                                                            str(nproc)]
         }
 
     def _compile_and_cache(self):
