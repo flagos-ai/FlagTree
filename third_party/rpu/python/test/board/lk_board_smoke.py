@@ -346,7 +346,9 @@ def _kill_dispatch(proc, case_dir, use_sudo):
     if use_sudo:
         subprocess.run(
             ["sudo", "-n", "pkill", "-9", "-f", str(case_dir)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
         )
     try:
         proc.wait(timeout=5)
@@ -361,8 +363,12 @@ def _run_cli(runner, case_dir, elf_name, kernel_name, specs):
     # start_new_session so the dispatch is its own process group and a hang can
     # be torn down as a group (see _kill_dispatch) instead of leaking an orphan.
     proc = subprocess.Popen(
-        cmd, cwd=case_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, start_new_session=True,
+        cmd,
+        cwd=case_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
     )
     try:
         out, err = proc.communicate(timeout=120)
