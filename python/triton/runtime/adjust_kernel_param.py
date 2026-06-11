@@ -557,9 +557,16 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             # Case2.1: found tl.arange(0, BLOCK_M) => 'BLOCK_M'
             #          VariableCollector.collect(def_node) = {}
             for child_var in VariableCollector.collect(def_node):
-                if child_var != var_name and child_var not in self.input_params and child_var not in self.constexpr_params:
-                    # Filter out input_params('A', 'M', 'stride_*') and constexpr_params('BLOCK_*')
-                    ret.update(self._extract_arange_bs_recursive(child_var, visited.copy()))
+                if child_var == var_name or child_var in self.constexpr_params:
+                    continue
+                # For plain input params (never reassigned) skip them to avoid noise from
+                # tensor pointers and stride parameters.
+                # Exception: if an input param was augassigned inside the kernel
+                # (e.g. `weight_ptr += stride * arange_derived_offset`), its entry in
+                # var_all_definitions carries block-size information that we must follow.
+                if child_var in self.input_params and child_var not in self.var_all_definitions:
+                    continue
+                ret.update(self._extract_arange_bs_recursive(child_var, visited.copy()))
         return ret
 
     def get_dependencies(self, var_name: str) -> tuple[set[str], set[str]]:
@@ -739,8 +746,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             # -> k_map = {'BLOCK_K': {'A', 'B'}}
             # -> n_map = {'BLOCK_N': {'B'}}
         """
-        valid_bs = set(load_map.keys())
-
         # var -> tensor_param and var -> set of BLOCK_X, derived from the
         # earliest tl.load definition of `var` (handles later reassignments
         # like `a = a.to(C.dtype.element_ty)` without losing the load info).
@@ -757,11 +762,20 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 tensor_base = self._find_tensor_base(addr)
                 if tensor_base is not None:
                     var_to_tensor[var_name] = tensor_base
-                # BLOCK_X via tl.arange chain, filtered by load_map keys.
+                # Collect BLOCK_X names reachable via tl.arange chains from the
+                # load address.  We intentionally do NOT filter by load_map.keys()
+                # here: for kernels that use augassigned pointer bases
+                # (e.g. `ptr += stride * arange_offset; curr_ptr = ptr + ...`),
+                # the relevant BLOCK_X may not appear in load_map because the
+                # paired dimension is an intermediate local variable rather than a
+                # raw input param, so cdiv-based pairing never fires.
+                # The cardinality checks (len(common)==1, len(m_blocks)==1,
+                # len(n_blocks)==1) below act as the safety net against spurious
+                # block names slipping through.
                 used_bs = set[str]()
                 for v in VariableCollector.collect(addr):
                     used_bs.update(self._extract_arange_bs_recursive(v))
-                var_to_bs[var_name] = used_bs & valid_bs
+                var_to_bs[var_name] = used_bs
                 break  # earliest tl.load definition wins
 
         # Chain through tl.trans: `var2 = tl.trans(var1)` inherits var1's info.
