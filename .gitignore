@@ -26,6 +26,7 @@ third_party/mthreads/python/triton/_C/*.so
 third_party/mthreads/python/triton/FileCheck
 third_party/mthreads/python/*.egg-info
 third_party/nvidia/backend/flagcx*
+third_party/nvidia/backend/lib/libflagcx*
 
 # Backends copied from submodules
 python/triton/backends/*

@@ -1,6 +1,8 @@
-from triton.backends.nvidia.distributed import flagcx_rt_conf
-
-enabled = flagcx_rt_conf.is_available
+try:
+    from triton.backends.nvidia.distributed import flagcx_rt_conf
+    enabled = flagcx_rt_conf.is_available
+except Exception:
+    enabled = False
 
 if enabled:
     from .flagcx_wrapper import (

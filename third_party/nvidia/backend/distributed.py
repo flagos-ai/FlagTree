@@ -99,7 +99,7 @@ class Distributed:
     def __init__(self):
         self.extern_libs = {}
         if flagcx_rt_conf.is_available:
-            self.extern_libs["libflagcx"] = flagcx_rt_conf.bitcode_path
+            self.extern_libs["libflagcx"] = str(flagcx_rt_conf.bitcode_path)
 
     def get_extern_libs(self):
         return self.extern_libs
