@@ -481,6 +481,37 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         return None
 
+    # Find the input-param tensor base of an address expression used in
+    # `tl.load(addr)`. Handles two common patterns:
+    #
+    #   Inline:      tl.load(A + offs_m[:,None] * K + offs_k[None,:])
+    #                -> walk BinOp.left* until Name in input_params
+    #
+    #   Indirect:    a_ptrs = A + offs_m[:,None] * K + offs_k[None,:]
+    #                tl.load(a_ptrs)
+    #                -> addr is Name('a_ptrs'); look up var_all_definitions
+    #                   and recurse on each definition until an input param is
+    #                   found; cycle-safe via `visited`.
+    def _find_tensor_base(self, addr_node: ast.AST, visited: set[str] | None = None) -> str | None:
+        if visited is None:
+            visited = set()
+        # Walk BinOp.left* to find the leftmost atom
+        base = addr_node
+        while isinstance(base, ast.BinOp):
+            base = base.left
+        # Direct match: leftmost atom is already an input param
+        if isinstance(base, ast.Name) and base.id in self.input_params:
+            return base.id
+        # Indirect: addr is a bare Name referencing a local pointer variable
+        if isinstance(addr_node, ast.Name) and addr_node.id not in visited:
+            var_id = addr_node.id
+            new_visited = visited | {var_id}
+            for def_node in self.var_all_definitions.get(var_id, []):
+                result = self._find_tensor_base(def_node, new_visited)
+                if result is not None:
+                    return result
+        return None
+
     def _is_tl_dot(self, node) -> bool:
         return self._is_tl_func(node, 'dot')
 
@@ -683,9 +714,10 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         Algorithm:
           1. For every var that has a `tl.load(addr)` definition in its history
              (`var_all_definitions`), derive:
-               - tensor_param: leftmost `Name` reached by walking `BinOp.left`
-                 chains of `addr`, restricted to input parameters (typically a
-                 tensor pointer like `A`);
+               - tensor_param: resolved via `_find_tensor_base(addr)` which
+                 handles both inline pointer expressions
+                 (`tl.load(A + offset)`) and intermediate pointer variables
+                 (`tl.load(a_ptrs)` where `a_ptrs = A + offset`);
                - bs_set: BLOCK_X used in `addr` (via `_extract_arange_bs_recursive`),
                  intersected with `load_map.keys()` to filter out spurious BLOCKs.
           2. Chain through `tl.trans`: `var2 = tl.trans(var1)` inherits var1's
@@ -719,14 +751,12 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 if not (isinstance(def_node, ast.Call) and self._is_tl_load(def_node) and def_node.args):
                     continue
                 addr = def_node.args[0]
-                # Base tensor: leftmost atom of nested BinOp(Add, ...) chains.
-                # Covers both `tl.load(A + offset)` and `tl.load(A)` (where A
-                # was previously rebound to `A + offset`).
-                base = addr
-                while isinstance(base, ast.BinOp):
-                    base = base.left
-                if isinstance(base, ast.Name) and base.id in self.input_params:
-                    var_to_tensor[var_name] = base.id
+                # Base tensor: use _find_tensor_base which handles both inline
+                # pointer expressions (`tl.load(A + offset)`) and intermediate
+                # pointer variables (`tl.load(a_ptrs)` where `a_ptrs = A + offset`).
+                tensor_base = self._find_tensor_base(addr)
+                if tensor_base is not None:
+                    var_to_tensor[var_name] = tensor_base
                 # BLOCK_X via tl.arange chain, filtered by load_map keys.
                 used_bs = set[str]()
                 for v in VariableCollector.collect(addr):
@@ -1265,7 +1295,11 @@ def auto_adjust_block_sizes(nargs, fn, configs, current, config):
         if FLAGTREE_BACKEND == "mthreads":
             adjust_block_size_dot_m_dim_only(nargs, current, config, tma_m_map, 64)  # mthreads
 
-    if ge_m_map or ge_n_map:  # tl.dot with general tl.load
+    if ge_k_map:  # tl.dot with general tl.load
+        if FLAGTREE_BACKEND == "":
+            if knobs.autotuning.print:
+                print("[AABS] 4. adjust bs in tl.dot with general tl.load")
+            adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_k_map, 16)
         if FLAGTREE_BACKEND == "hcu":
             if knobs.autotuning.print:
                 print("[AABS] 4. adjust bs in tl.dot with general tl.load")
