@@ -12,20 +12,20 @@
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
-# Plan A: docker pull (18.9GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202605-1.9.7-base
+# Plan A: docker pull (31.6GB)
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202606-1.9.17-base
 docker pull ${IMAGE}
-# Plan B: docker load (4.0GB)
-IMAGE=flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202605-1.9.7-base
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202605-1.9.7-base.tar.gz
-docker load -i flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202605-1.9.7-base.tar.gz
+# Plan B: docker load (6.4GB)
+IMAGE=flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04:202606-1.9.17-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202606-1.9.17-base.tar.gz
+docker load -i flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04.202606-1.9.17-base.tar.gz
 ```
 
 ```shell
 cat /sys/module/enflame/version
-    # if version < 1.9.10, terminate the processes using GCU, and execute the following commands on the host:
-    # wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run  # 3.7GB
-    # bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --driver -y
+    # if version < 1.9.17, terminate the processes using GCU, and execute the following commands on the host:
+    # wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/TopsRider_Triton_gcu-3.6.0_1.0.20260610.cc.1.9.17_deb_amd64.run  # 1.8GB
+    # bash TopsRider_Triton_gcu-3.6.0_1.0.20260610.cc.1.9.17_deb_amd64.run --driver -y
 efsmi
 CONTAINER=flagtree-dev-xxx
 docker run -dit \
@@ -87,7 +87,7 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 
 ### 3. 测试验证
 
-参考 [Tests of enflame3.6 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/enflame-gcu400-build-and-test.yml)
+参考 [Tests of enflame3.6 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/enflame3.6-gcu400-build-and-test.yml)
 
 ---
 
@@ -178,7 +178,7 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 
 ### 3. 测试验证
 
-参考 [Tests of enflame3.5 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame-gcu400-build-and-test.yml)
+参考 [Tests of enflame3.5 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/enflame3.5-gcu400-build-and-test.yml)
 
 ---
 

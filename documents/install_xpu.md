@@ -1,6 +1,6 @@
 [[中文版](./install_xpu_cn.md)|English]
 
-## 💫 KLX [xpu](/third_party/xpu/)
+## 💫 KLX [xpu](/third_party/xpu/) (Triton 3.0)
 
 - Based on Triton 3.0, x64
 - Available for P800
@@ -96,4 +96,4 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 Before testing, you need to execute `export XPU_EVENT_KL3_ENABLE=1`
 
-Refer to [Tests of xpu backend](/.github/workflows/xpu-build-and-test.yml)
+Refer to [Tests of xpu3.0 backend](/.github/workflows/xpu3.0-build-and-test.yml)

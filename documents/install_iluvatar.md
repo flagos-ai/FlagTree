@@ -1,6 +1,6 @@
 [[中文版](./install_iluvatar_cn.md)|English]
 
-## 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)
+## 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/) (Triton 3.1)
 
 - Based on Triton 3.1, x64
 - Available for MR-V100, BI-V150
@@ -101,4 +101,4 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ### 3. Testing and validation
 
-Refer to [Tests of iluvatar backend](/.github/workflows/iluvatar-build-and-test.yml)
+Refer to [Tests of iluvatar3.1 backend](/.github/workflows/iluvatar3.1-build-and-test.yml)

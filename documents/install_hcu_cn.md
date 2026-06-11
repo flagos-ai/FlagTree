@@ -13,12 +13,12 @@
 
 ```shell
 # Plan A: docker pull (28.4GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-hcu3.6-py310-torch2.9.0-ubuntu22.04:202604-base
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-hcu3.6-py310-torch2.4.1-ubuntu22.04:202604-base
 docker pull ${IMAGE}
 # Plan B: docker load (7.3GB)
-IMAGE=flagtree-hcu3.6-py310-torch2.9.0-ubuntu22.04:202604-base
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu3.6-py310-torch2.9.0-ubuntu22.04.202604-base.tar.gz
-docker load -i flagtree-hcu3.6-py310-torch2.9.0-ubuntu22.04.202604-base.tar.gz
+IMAGE=flagtree-hcu3.6-py310-torch2.4.1-ubuntu22.04:202604-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu3.6-py310-torch2.4.1-ubuntu22.04.202604-base.tar.gz
+docker load -i flagtree-hcu3.6-py310-torch2.4.1-ubuntu22.04.202604-base.tar.gz
 ```
 
 ```shell
@@ -86,7 +86,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ### 3. 测试验证
 
-参考 [Tests of hcu3.6 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/hcu-build-and-test.yml)
+参考 [Tests of hcu3.6 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/hcu3.6-build-and-test.yml)
 
 ## 💫 HYGON（海光信息）[hcu](/third_party/hcu/) (Triton 3.1)
 
@@ -102,12 +102,12 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ```shell
 # Plan A: docker pull (22.7GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-hcu-py310-torch2.9.0-ubuntu22.04:202603
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-hcu-py310-torch2.4.1-ubuntu22.04:202603
 docker pull ${IMAGE}
 # Plan B: docker load (5.7GB)
-IMAGE=flagtree-hcu-py310-torch2.9.0-ubuntu22.04:202603
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu-py310-torch2.9.0-ubuntu22.04.202603.tar.gz
-docker load -i flagtree-hcu-py310-torch2.9.0-ubuntu22.04.202603.tar.gz
+IMAGE=flagtree-hcu-py310-torch2.4.1-ubuntu22.04:202603
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu-py310-torch2.4.1-ubuntu22.04.202603.tar.gz
+docker load -i flagtree-hcu-py310-torch2.4.1-ubuntu22.04.202603.tar.gz
 ```
 
 ```shell
@@ -174,4 +174,4 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ### 3. 测试验证
 
-参考 [Tests of hcu backend](/.github/workflows/hcu-build-and-test.yml)
+参考 [Tests of hcu3.1 backend](/.github/workflows/hcu3.1-build-and-test.yml)

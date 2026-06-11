@@ -1,6 +1,6 @@
 [[中文版](./install_metax_cn.md)|English]
 
-## 💫 MetaX（沐曦股份）[metax](/third_party/metax/)
+## 💫 MetaX（沐曦股份）[metax](/third_party/metax/) (Triton 3.0)
 
 - Based on Triton 3.0, x64
 - Available for C550
@@ -90,4 +90,4 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ### 3. Testing and validation
 
-Refer to [Tests of metax backend](/.github/workflows/metax-build-and-test.yml)
+Refer to [Tests of metax3.0 backend](/.github/workflows/metax3.0-build-and-test.yml)

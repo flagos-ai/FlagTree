@@ -121,7 +121,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 Before testing, you need to execute `source /usr/local/Ascend/ascend-toolkit/set_env.sh`
 
-Refer to [Tests of ascend backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/ascend-build-and-test.yml)
+Refer to [Tests of ascend3.5 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/.github/workflows/ascend3.5-build-and-test.yml)
 
 ---
 
@@ -249,4 +249,4 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 Before testing, you need to execute `source /usr/local/Ascend/ascend-toolkit/set_env.sh`
 
-Refer to [Tests of ascend backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/.github/workflows/ascend-build-and-test.yml)
+Refer to [Tests of ascend3.2 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/.github/workflows/ascend-build-and-test.yml)
