@@ -397,9 +397,19 @@ void init_triton_tle_ir(py::module &&m) {
           py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
           py::arg("group_mask"))
       .def("create_remote_pointers",
-           [](TritonOpBuilder &self, Type resultTy, Value src,
-              Value shardId) -> OpState {
-             return self.create<tle::RemotePointersOp>(resultTy, src, shardId);
+           [](TritonOpBuilder &self, Type resultTy, Value src, Value shardId,
+              const std::string &space) -> OpState {
+             auto &builder = self.getBuilder();
+             static const std::unordered_set<std::string> valid = {
+                 "cluster", "device", "node"};
+             if (valid.find(space) == valid.end()) {
+               throw std::invalid_argument(
+                   "Invalid space: " + space +
+                   ". Expected one of: cluster, device, node.");
+             }
+             auto space_attr = builder.getStringAttr(space);
+             return self.create<tle::RemotePointersOp>(resultTy, src, shardId,
+                                                       space_attr);
            })
       .def("get_memdesc_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,

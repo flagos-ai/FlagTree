@@ -158,6 +158,16 @@ def test_launch_with_options(options) -> None:
         if is_cuda():
             libdir = current_dir.parent.parent.parent.parent / 'third_party/nvidia/backend/lib'
             options["extern_libs"] = {"libdevice": str(libdir / 'libdevice.10.bc')}
+            use_flagcx = os.environ.get("USE_FLAGCX", False)
+            try:
+                import triton.experimental.tle.language as tle
+                use_flagcx = tle.communication.enabled
+            except ImportError:
+                use_flagcx = False
+            if (use_flagcx):
+                lib_flagcx_dir = pathlib.Path.home() / ".flagtree" / "flagcx"
+                options["extern_libs"].update({"libflagcx": str(lib_flagcx_dir / 'libflagcx_device.bc')})
+
         elif is_hip():
             libdir = current_dir.parent.parent.parent.parent / 'third_party/amd/backend/lib'
             options["extern_libs"] = {"ocml": str(libdir / 'ocml.bc'), "ockl": str(libdir / 'ockl.bc')}

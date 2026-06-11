@@ -185,7 +185,7 @@ class DownloadManager:
         except ImportError:
             return False
         retry_count = NetConfig.max_retry
-        has_specialization_commit = module.commit_id is not None
+        has_specialization_commit = module.commit_id
         while (retry_count):
             try:
                 repo = git.Repo.clone_from(module.url, module.dst_path)
@@ -203,10 +203,9 @@ class DownloadManager:
         while (retry_count):
             try:
                 os.system(f"git clone {module.url} {module.dst_path}")
+                import subprocess
                 if has_specialization_commit:
-                    os.system(f"cd {module.dst_path}")
-                    os.system(f"git checkout {module.commit_id}")
-                    os.system("cd -")
+                    subprocess.run(["git", "checkout", module.commit_id], cwd=module.dst_path, check=True)
                 return True
             except Exception:
                 retry_count -= 1

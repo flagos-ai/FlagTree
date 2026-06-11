@@ -18,9 +18,9 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
-BLOCK_CLUSTER_MESH = tle.device_mesh({"block_cluster": [("cluster_x", 2)]})
+BLOCK_CLUSTER_MESH = tle.device_mesh(tle.MeshConfig(block_cluster=[("cluster_x", 2)]))
 BLOCK_CLUSTER_MESH_8 = tle.device_mesh({"block_cluster": [("cluster_x", 8)]})
-BLOCK_CLUSTER_MESH_2X2 = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+BLOCK_CLUSTER_MESH_2X2 = tle.device_mesh(tle.MeshConfig(block_cluster=[("cluster_x", 2), ("cluster_y", 2)]))
 BLOCK_GRID_MESH_8 = tle.device_mesh({"block": [("block_x", 8)]})
 BLOCK_CLUSTER_SUBMESH_ROW0 = BLOCK_CLUSTER_MESH_2X2[0, :]
 BLOCK_CLUSTER_SUBMESH_ROW1 = BLOCK_CLUSTER_MESH_2X2[1, :]
@@ -971,11 +971,11 @@ class TestTLEDistributed:
         )
         ttgir = compiled.asm["ttgir"]
         ptx = compiled.asm["ptx"]
-
         # local/remote pointer tensors should keep the load-friendly encoding.
         assert re.search(r"tensor<256x!tt\.ptr<f16,\s*3>,\s*#blocked[0-9]*>", ttgir) is not None
         assert re.search(
-            r"\"tle\.remote_pointers\"\(%[^,]+,\s*%[^)]+\)\s*:\s*"
+            r"\"tle\.remote_pointers\"\(%[^,]+,\s*%[^)]+\)\s*"
+            r"<\{space\s*=\s*\"cluster\"\}>\s*:\s*"
             r"\(tensor<256x!tt\.ptr<f16,\s*3>,\s*#blocked[0-9]*>,\s*i32\)\s*->\s*"
             r"tensor<256x!tt\.ptr<f16,\s*7>,\s*#blocked[0-9]*>",
             ttgir,

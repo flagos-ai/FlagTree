@@ -75,10 +75,11 @@ def get_hook_instance(hook_name):
 
 
 def enable_flagtree_third_party(name):
-    if name in ["triton_shared"]:
-        return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
+    env_var = f"USE_{name.upper()}"
+    if name in ["triton_shared", "flagcx"]:
+        return os.environ.get(env_var, 'OFF') == 'ON'
     else:
-        return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
+        return os.environ.get(env_var, 'ON') == 'ON'
 
 
 def download_flagtree_third_party(name, condition, required=False, hook=None):
@@ -86,10 +87,9 @@ def download_flagtree_third_party(name, condition, required=False, hook=None):
         if enable_flagtree_third_party(name):
             submodule = utils.flagtree_submodules[name]
             downloader.download(module=submodule, required=required)
-            hook_func = get_hook_instance(hook)
-            if hook_func:
-                configs.default_backends = hook_func(third_party_base_dir=configs.flagtree_submodule_dir,
-                                                     backend=submodule, default_backends=configs.default_backends)
+            hook_call = get_hook_instance(hook)
+            if hook_call:
+                hook_call(configs=configs, backend=submodule, cache=cache)
 
         else:
             print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
@@ -407,19 +407,15 @@ else:
     print('[INFO] FlagTree Offline Build: No offline build for triton origin toolkits')
     offline_build = False
 
-download_flagtree_third_party("triton_shared", hook=utils.default.precompile_hook, condition=(not flagtree_backend))
-
-download_flagtree_third_party("flir", condition=(flagtree_backend == "aipu"), hook=utils.aipu.precompile_hook,
-                              required=True)
+cache = FlagTreeCache()
 '''
    FlagCX is a third-party library adopted by the tle distributed system,
    refer to https://github.com/flagos-ai/FlagCX
 '''
-download_flagtree_third_party("flagcx", condition=(not flagtree_backend))
+
+download_flagtree_third_party("flagcx", condition=(not flagtree_backend), hook="handle_flagcx", required=True)
 
 handle_flagtree_backend()
-
-cache = FlagTreeCache()
 
 # iluvatar
 cache.store(

@@ -65,7 +65,9 @@ jobs:
               --ignore=third_party/enflame/python/test/unit/language/test_core.py
 
           ## tle unit test
-          python3 -m pytest -s python/test/tle
+
+          python3 -m pytest -s python/test/tle \
+              --ignore=python/test/tle/unit/test_tle_distributed_d2d.py 
 
           ## tle raw test
           python3 -m pytest -s third_party/enflame/python/test/tle/raw

@@ -1,9 +1,10 @@
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}")
 # flagtree tle
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/dialect/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/dialect/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/utils/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/flagcx/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/flagcx/adaptor/include)
+
 add_subdirectory(dialect)
 if(TRITON_BUILD_PYTHON_MODULE)
   add_triton_plugin(TritonTLE
@@ -14,9 +15,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
     LINK_LIBS
     MLIRTargetLLVMIRImport
     TritonTLETransforms
-    TritonIR)
+    TritonIR
+    )
+
   target_link_libraries(TritonTLE PRIVATE Python3::Module pybind11::headers MLIRTargetLLVMIRImport)
-  # Ensure tablegen-generated headers are available before compiling TritonTLE sources
   add_dependencies(TritonTLE TleTableGen TritonTLETransformsIncGen)
 endif()
 

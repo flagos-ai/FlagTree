@@ -4,6 +4,7 @@
 add_triton_library(TleIR
   Dialect.cpp
   Ops.cpp
+  VerfiyUtils.cpp
 
   DEPENDS
   TleTableGen

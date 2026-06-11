@@ -13,7 +13,6 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/raw_ostream.h"
-
 namespace {
 
 using namespace mlir;
@@ -36,6 +35,29 @@ Value mapSharedToClusterPointer(ConversionPatternRewriter &rewriter,
   auto clusterPtrTy =
       LLVM::LLVMPointerType::get(rewriter.getContext(), clusterSharedAddrSpace);
   return NVVM::MapaOp::create(rewriter, loc, clusterPtrTy, ptr, ctaId);
+}
+
+static LLVM::LLVMFuncOp getOrInsertGetPeerPointer(ModuleOp module,
+                                                  MLIRContext *ctx) {
+
+  const char *funcName = "flagcxGetIntraPointerC";
+  if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
+    return func;
+
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto i64Ty = IntegerType::get(ctx, 64);
+  auto floatTy = Float32Type::get(ctx);
+  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+
+  auto funcType =
+      LLVM::LLVMFunctionType::get(PtrTy, {PtrTy, i64Ty, i32Ty}, false);
+
+  OpBuilder builder(module.getBodyRegion());
+  auto func =
+      builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName, funcType);
+
+  func.setLinkage(LLVM::Linkage::External);
+  return func;
 }
 
 struct LocalPointersOpConversion
@@ -280,6 +302,110 @@ private:
   const TargetInfoBase &targetInfo;
 };
 
+LogicalResult lowerClusterSpace(Location loc, ValueRange srcElems,
+                                ValueRange shardElems,
+                                ConversionPatternRewriter &rewriter,
+                                SmallVectorImpl<Value> &resultPtrs) {
+
+  auto reportFailure = [&](StringRef msg) -> LogicalResult {
+    llvm::errs() << "[RemotePointersOpConversion][cluster] " << msg << "\n";
+    return failure();
+  };
+
+  auto ensureI32 = [&](Value v) -> Value {
+    if (!v)
+      return Value();
+    if (v.getType().isInteger(32))
+      return v;
+    auto intTy = dyn_cast<IntegerType>(v.getType());
+    if (!intTy)
+      return Value();
+    if (intTy.getWidth() > 32)
+      return rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), v);
+    if (intTy.isUnsigned())
+      return rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI32Type(), v);
+    return rewriter.create<LLVM::SExtOp>(loc, rewriter.getI32Type(), v);
+  };
+
+  resultPtrs.reserve(srcElems.size());
+
+  for (auto [idx, srcPtr] : llvm::enumerate(srcElems)) {
+    if (!isa<LLVM::LLVMPointerType>(srcPtr.getType()))
+      return reportFailure("source elements must lower to LLVM pointers");
+
+    Value shardVal =
+        shardElems.size() == 1 ? shardElems.front() : shardElems[idx];
+
+    Value ctaId = ensureI32(shardVal);
+    if (!ctaId)
+      return reportFailure("shard_id must lower to i32");
+
+    Value mappedPtr = mapSharedToClusterPointer(rewriter, loc, srcPtr, ctaId);
+
+    if (!mappedPtr)
+      return reportFailure("expected shared/cluster-shared address space");
+
+    resultPtrs.push_back(mappedPtr);
+  }
+
+  return success();
+}
+
+LogicalResult lowerDeviceSpace(Location loc, ValueRange srcElems,
+                               ValueRange shardElems,
+                               ConversionPatternRewriter &rewriter,
+                               SmallVectorImpl<Value> &resultPtrs) {
+  ModuleOp module =
+      rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
+
+  if (!module) {
+    return rewriter.notifyMatchFailure(loc, "expected module context");
+  }
+  auto func = getOrInsertGetPeerPointer(module, rewriter.getContext());
+
+  Value memPtr = srcElems[0];
+  Value offset = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
+  Value peer = shardElems[0];
+
+  auto intTy = dyn_cast<IntegerType>(memPtr.getType());
+  if (!intTy || intTy.getWidth() != 64)
+    return failure();
+
+  auto ctx = rewriter.getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+
+  Value comm_dev_ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, memPtr);
+
+  auto isGlobalAddrSpace = [&](auto ptrTy) -> bool {
+    auto addrSpace = ptrTy.getAddressSpace();
+    return addrSpace == static_cast<unsigned>(NVVM::NVVMMemorySpace::Global);
+  };
+
+  if (!isGlobalAddrSpace(ptrTy))
+    return failure();
+
+  auto getPeerPtrCall = rewriter.create<LLVM::CallOp>(
+      loc, TypeRange{func.getFunctionType().getReturnType()},
+      FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr, offset, peer});
+
+  Value peerPtr = getPeerPtrCall.getResult();
+  auto peerPtrTy = dyn_cast<LLVM::LLVMPointerType>(peerPtr.getType());
+
+  if (!isGlobalAddrSpace(peerPtrTy))
+    return failure();
+
+  resultPtrs.push_back(peerPtr);
+
+  return success();
+}
+
+LogicalResult lowerNodeSpace(Location loc, ValueRange srcElems,
+                             ValueRange shardElems,
+                             ConversionPatternRewriter &rewriter,
+                             SmallVectorImpl<Value> &resultPtrs) {
+  return failure(); // Not implemented yet
+}
+
 struct RemotePointersOpConversion
     : public ConvertOpToLLVMPattern<tle::RemotePointersOp> {
   RemotePointersOpConversion(LLVMTypeConverter &typeConverter,
@@ -295,7 +421,6 @@ struct RemotePointersOpConversion
       llvm::errs() << "[RemotePointersOpConversion] " << msg << "\n";
       return rewriter.notifyMatchFailure(op, msg);
     };
-
     auto srcElems = unpackLLElements(loc, adaptor.getSrc(), rewriter);
     if (srcElems.empty())
       return reportFailure("expected non-empty source pointer elements");
@@ -307,36 +432,26 @@ struct RemotePointersOpConversion
       return reportFailure(
           "shard_id must be scalar or match source pointer element count");
 
-    auto ensureI32 = [&](Value v) -> Value {
-      if (!v)
-        return Value();
-      if (v.getType().isInteger(32))
-        return v;
-      auto intTy = dyn_cast<IntegerType>(v.getType());
-      if (!intTy)
-        return Value();
-      if (intTy.getWidth() > 32)
-        return rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), v);
-      if (intTy.isUnsigned())
-        return rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI32Type(), v);
-      return rewriter.create<LLVM::SExtOp>(loc, rewriter.getI32Type(), v);
-    };
+    auto space = adaptor.getSpace();
 
     SmallVector<Value> mappedPtrs;
-    mappedPtrs.reserve(srcElems.size());
-    for (auto [idx, srcPtr] : llvm::enumerate(srcElems)) {
-      if (!isa<LLVM::LLVMPointerType>(srcPtr.getType()))
-        return reportFailure("source elements must lower to LLVM pointers");
-      Value shardVal =
-          shardElems.size() == 1 ? shardElems.front() : shardElems[idx];
-      Value ctaId = ensureI32(shardVal);
-      if (!ctaId)
-        return reportFailure("shard_id must lower to i32 scalar elements");
-      Value mappedPtr = mapSharedToClusterPointer(rewriter, loc, srcPtr, ctaId);
-      if (!mappedPtr)
-        return reportFailure("source pointers must lower to "
-                             "shared/cluster-shared address space");
-      mappedPtrs.push_back(mappedPtr);
+    if (space == "cluster") {
+      if (failed(lowerClusterSpace(loc, srcElems, shardElems, rewriter,
+                                   mappedPtrs))) {
+        return rewriter.notifyMatchFailure(op, "cluster lowering failed");
+      }
+    } else if (space == "device") {
+      if (failed(lowerDeviceSpace(loc, srcElems, shardElems, rewriter,
+                                  mappedPtrs))) {
+        return rewriter.notifyMatchFailure(op, "device lowering failed");
+      }
+    } else if (space == "node") {
+      if (failed(lowerNodeSpace(loc, srcElems, shardElems, rewriter,
+                                mappedPtrs))) {
+        return rewriter.notifyMatchFailure(op, "node lowering failed");
+      }
+    } else {
+      return reportFailure("unsupported remote space: " + space.str());
     }
 
     Value packed =

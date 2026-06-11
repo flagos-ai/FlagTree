@@ -20,6 +20,7 @@ from .distributed import (
     ShardedTensor,
     ShardingSpec,
     device_mesh,
+    MeshConfig,
     distributed_barrier,
     distributed_dot,
     _infer_submesh_barrier_group,
@@ -32,34 +33,14 @@ from .distributed import (
     shard_id,
     sharding,
 )
+from . import communication
+from .communication import get_mem_pool, create_comm_tensor, cleanup_communicator
 
 __all__ = [
-    "load",
-    "cumsum",
-    "extract_tile",
-    "insert_tile",
-    "pipe",
-    "pipe_reader",
-    "pipe_slot",
-    "pipe_value",
-    "pipe_wait_result",
-    "pipe_writer",
-    "device_mesh",
-    "S",
-    "P",
-    "B",
-    "sharding",
-    "ShardingSpec",
-    "ShardedTensor",
-    "make_sharded_tensor",
-    "reshard",
-    "remote",
-    "shard_id",
-    "distributed_barrier",
-    "distributed_dot",
-    "distributed",
-    "gpu",
-    "raw",
+    "load", "cumsum", "extract_tile", "insert_tile", "MeshConfig", "pipe", "pipe_reader", "pipe_slot", "pipe_value",
+    "pipe_wait_result", "pipe_writer", "device_mesh", "S", "P", "B", "sharding", "ShardingSpec", "ShardedTensor",
+    "make_sharded_tensor", "reshard", "remote", "shard_id", "distributed_barrier", "distributed_dot", "distributed",
+    "gpu", "raw", "mem_pool", "get_mem_pool", "create_comm_tensor", "cleanup_communicator"
 ]
 
 from . import distributed, gpu, raw

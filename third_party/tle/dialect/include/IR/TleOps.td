@@ -61,7 +61,7 @@ def Tle_InsertTileOp
 
 def Tle_TensorType : AnyTypeOf<[TT_Type, TTG_MemDescType]>;
 def Tle_ArgType : AnyTypeOf<[Tle_TensorType, LLVMPointerType, LLVMStructType]>;
-def Tle_LocalPointerResultType : AnyTypeOf<[TT_Tensor, TT_Ptr]>;
+def Tle_LocalPointerResultType : AnyTypeOf<[TT_Tensor, TT_Ptr, TT_Int]>;
 def Tle_LocalPointerIndexType : AnyTypeOf<[TT_Tensor, TT_Int]>;
 
 def Tle_LocalPointersOp : Tle_Op<"local_pointers", [Pure]> {
@@ -238,7 +238,12 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
 }
 
 def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure]> {
-  let arguments = (ins Tle_LocalPointerResultType:$src, TT_Int:$shard_id);
+  let arguments = (ins
+    Tle_LocalPointerResultType:$src,
+    TT_Int:$shard_id,
+    StrAttr:$space
+  );
+
   let results = (outs Tle_LocalPointerResultType:$result);
   let hasVerifier = 1;
 }

@@ -11,6 +11,7 @@ python/build/
 python/dist/
 python/triton*.egg-info/
 python/triton_kernels/triton*.egg-info/
+python/flagtree.egg-info
 
 python/triton/_C/*.pyd
 python/triton/_C/*.so
@@ -36,6 +37,9 @@ python/triton/language/extra/*
 !python/triton/language/extra/__init__.py
 !python/triton/language/extra/libdevice.py
 
+#Backends Generated files
+python/triton/FLAGTREE_BACKEND
+
 # Tools extras
 python/triton/tools/extra
 
@@ -47,6 +51,12 @@ pytest.ini
 
 # Instrumentation
 python/triton/instrumentation
+
+
+# runtime
+python/triton/experimental/tle/language/include
+python/triton/experimental/tle/language/flagcx*
+
 
 # Python caches
 __pycache__/
@@ -75,6 +85,7 @@ ptxas-blackwell
 # Third-party include
 third_party/nvidia/backend/include
 third_party/nvidia/backend/lib/cupti
+third_party/tle/third_party
 
 # Docs
 docs/_build/
