@@ -2,7 +2,6 @@
 # reference https://github.com/vllm-project/vllm/blob/main/vllm/distributed/device_communicators/pynccl_wrapper.py
 
 import ctypes
-import platform
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +39,7 @@ flagcxP2pMr_t = ctypes.c_uint64
 FLAGCX_WIN_DEFAULT = 0x00
 FLAGCX_WIN_COLL_SYMMETRIC = 0x01
 
+
 class flagcxDevCommRequirements(ctypes.Structure):
     _fields_ = [
         ("intraMulticast", ctypes.c_bool),
@@ -54,26 +54,21 @@ class flagcxDevCommRequirements(ctypes.Structure):
         ("interCounterCount", ctypes.c_int),
     ]
 
+
 class flagcxUniqueId(ctypes.Structure):
     _fields_ = [("internal", ctypes.c_byte * 256)]
+
+
 flagcxUniqueId_t = ctypes.POINTER(flagcxUniqueId)
 
 DEVICE_SYNCHRONIZE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t)
-DEVICE_MEMCPY_FUNCTYPE = ctypes.CFUNCTYPE(
-    flagcxResult_t, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
-    flagcxMemcpyType_t, flagcxStream_t
-)
-DEVICE_MEMSET_FUNCTYPE = ctypes.CFUNCTYPE(
-    flagcxResult_t, ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t,
-    flagcxMemType_t, flagcxStream_t
-)
-DEVICE_MALLOC_FUNCTYPE = ctypes.CFUNCTYPE(
-    flagcxResult_t, ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t,
-    flagcxMemType_t, flagcxStream_t
-)
-DEVICE_FREE_FUNCTYPE = ctypes.CFUNCTYPE(
-    flagcxResult_t, ctypes.c_void_p, flagcxMemType_t, flagcxStream_t
-)
+DEVICE_MEMCPY_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+                                          flagcxMemcpyType_t, flagcxStream_t)
+DEVICE_MEMSET_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t,
+                                          flagcxMemType_t, flagcxStream_t)
+DEVICE_MALLOC_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t,
+                                          flagcxMemType_t, flagcxStream_t)
+DEVICE_FREE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.c_void_p, flagcxMemType_t, flagcxStream_t)
 SET_DEVICE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.c_int)
 GET_DEVICE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.POINTER(ctypes.c_int))
 GET_DEVICE_COUNT_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.POINTER(ctypes.c_int))
@@ -94,11 +89,13 @@ EVENT_RECORD_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxEvent_t, flagcxSt
 EVENT_SYNCHRONIZE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxEvent_t)
 EVENT_QUERY_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxEvent_t)
 
-IPC_MEM_HANDLE_CREATE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.POINTER(flagcxIpcMemHandle_t), ctypes.POINTER(ctypes.c_size_t))
+IPC_MEM_HANDLE_CREATE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.POINTER(flagcxIpcMemHandle_t),
+                                                  ctypes.POINTER(ctypes.c_size_t))
 IPC_MEM_HANDLE_GET_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxIpcMemHandle_t, ctypes.c_void_p)
 IPC_MEM_HANDLE_OPEN_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxIpcMemHandle_t, ctypes.POINTER(ctypes.c_void_p))
 IPC_MEM_HANDLE_CLOSE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.c_void_p)
 IPC_MEM_HANDLE_FREE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxIpcMemHandle_t)
+
 
 class flagcxDeviceHandle(ctypes.Structure):
     _fields_ = [
@@ -134,7 +131,10 @@ class flagcxDeviceHandle(ctypes.Structure):
         ("ipcMemHandleClose", IPC_MEM_HANDLE_CLOSE_FUNCTYPE),
         ("ipcMemHandleFree", IPC_MEM_HANDLE_FREE_FUNCTYPE),
     ]
+
+
 flagcxDeviceHandle_t = ctypes.POINTER(flagcxDeviceHandle)
+
 
 class flagcxHandlerGroup(ctypes.Structure):
     _fields_ = [
@@ -142,6 +142,8 @@ class flagcxHandlerGroup(ctypes.Structure):
         ("comm", flagcxComm_t),
         ("devHandle", flagcxDeviceHandle_t),
     ]
+
+
 flagcxHandlerGroup_t = ctypes.POINTER(flagcxHandlerGroup)
 
 
@@ -216,71 +218,48 @@ class Function:
 
 class FLAGCXLibrary:
     exported_functions = [
-        Function("flagcxDeviceHandleInit", flagcxResult_t,
-                [ctypes.POINTER(flagcxDeviceHandle_t)]),
-        Function("flagcxDeviceHandleFree", flagcxResult_t,
-                [flagcxDeviceHandle_t]),
+        Function("flagcxDeviceHandleInit", flagcxResult_t, [ctypes.POINTER(flagcxDeviceHandle_t)]),
+        Function("flagcxDeviceHandleFree", flagcxResult_t, [flagcxDeviceHandle_t]),
         Function("flagcxGetErrorString", ctypes.c_char_p, [flagcxResult_t]),
-        Function("flagcxGetVersion", flagcxResult_t,
-                 [ctypes.POINTER(ctypes.c_int)]),
-        Function("flagcxGetUniqueId", flagcxResult_t,
-                [ctypes.POINTER(flagcxUniqueId)]),
+        Function("flagcxGetVersion", flagcxResult_t, [ctypes.POINTER(ctypes.c_int)]),
+        Function("flagcxGetUniqueId", flagcxResult_t, [ctypes.POINTER(flagcxUniqueId)]),
         # Note that flagcxComm_t is a pointer type, so the first argument
         # is a pointer to a pointer
-        Function("flagcxCommInitRank", flagcxResult_t, [
-            ctypes.POINTER(flagcxComm_t), ctypes.c_int, ctypes.POINTER(flagcxUniqueId),
-            ctypes.c_int
-        ]),
+        Function("flagcxCommInitRank", flagcxResult_t,
+                 [ctypes.POINTER(flagcxComm_t), ctypes.c_int,
+                  ctypes.POINTER(flagcxUniqueId), ctypes.c_int]),
         # Note that flagcxStream_t is a pointer type, so the last argument
         # is a pointer
-        Function("flagcxAllReduce", flagcxResult_t, [
-            buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t,
-            flagcxRedOp_t, flagcxComm_t, flagcxStream_t
-        ]),
+        Function(
+            "flagcxAllReduce", flagcxResult_t,
+            [buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t, flagcxRedOp_t, flagcxComm_t, flagcxStream_t]),
 
         # Note that flagcxStream_t is a pointer type, so the last argument
         # is a pointer
         Function("flagcxReduce", flagcxResult_t, [
-            buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t,
-            flagcxRedOp_t, ctypes.c_int, flagcxComm_t, flagcxStream_t
+            buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t, flagcxRedOp_t, ctypes.c_int, flagcxComm_t,
+            flagcxStream_t
         ]),
 
         # Note that flagcxStream_t is a pointer type, so the last argument
         # is a pointer
-        Function("flagcxAllGather", flagcxResult_t, [
-            buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t,
-            flagcxComm_t, flagcxStream_t
-        ]),
+        Function("flagcxAllGather", flagcxResult_t,
+                 [buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t, flagcxComm_t, flagcxStream_t]),
 
         # Note that flagcxStream_t is a pointer type, so the last argument
         # is a pointer
-        Function("flagcxReduceScatter", flagcxResult_t, [
-            buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t,
-            flagcxRedOp_t, flagcxComm_t, flagcxStream_t
-        ]),
-
-        Function("flagcxSend", flagcxResult_t, [
-            buffer_type, ctypes.c_size_t, flagcxDataType_t, ctypes.c_int,
-            flagcxComm_t, flagcxStream_t
-        ]),
-
-        Function("flagcxRecv", flagcxResult_t, [
-            buffer_type, ctypes.c_size_t, flagcxDataType_t, ctypes.c_int,
-            flagcxComm_t, flagcxStream_t
-        ]),
-
-        Function("flagcxBroadcast", flagcxResult_t, [
-            buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t,
-            ctypes.c_int, flagcxComm_t, flagcxStream_t
-        ]),
-
-        Function("flagcxGroupStart", flagcxResult_t, [
-            flagcxComm_t
-        ]),
-
-        Function("flagcxGroupEnd", flagcxResult_t, [
-            flagcxComm_t
-        ]),
+        Function(
+            "flagcxReduceScatter", flagcxResult_t,
+            [buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t, flagcxRedOp_t, flagcxComm_t, flagcxStream_t]),
+        Function("flagcxSend", flagcxResult_t,
+                 [buffer_type, ctypes.c_size_t, flagcxDataType_t, ctypes.c_int, flagcxComm_t, flagcxStream_t]),
+        Function("flagcxRecv", flagcxResult_t,
+                 [buffer_type, ctypes.c_size_t, flagcxDataType_t, ctypes.c_int, flagcxComm_t, flagcxStream_t]),
+        Function(
+            "flagcxBroadcast", flagcxResult_t,
+            [buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t, ctypes.c_int, flagcxComm_t, flagcxStream_t]),
+        Function("flagcxGroupStart", flagcxResult_t, [flagcxComm_t]),
+        Function("flagcxGroupEnd", flagcxResult_t, [flagcxComm_t]),
 
         # be cautious! this is a collective call, it will block until all
         # processes in the communicator have called this function.
@@ -288,40 +267,25 @@ class FLAGCXLibrary:
         # it is better not to call it at all.
         # flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
         Function("flagcxCommDestroy", flagcxResult_t, [flagcxComm_t]),
-        
-        Function("flagcxCommRegister", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
-            ctypes.POINTER(ctypes.c_void_p)
-        ]),
-        
-        Function("flagcxOneSideRegister", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t
-        ]),
-
-        Function("flagcxOneSideSignalRegister", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int
-        ]),
-
-        Function("flagcxOneSideStagingRegister", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t
-        ]),
-
+        Function("flagcxCommRegister", flagcxResult_t,
+                 [flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
+                  ctypes.POINTER(ctypes.c_void_p)]),
+        Function("flagcxOneSideRegister", flagcxResult_t, [flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t]),
+        Function("flagcxOneSideSignalRegister", flagcxResult_t,
+                 [flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]),
+        Function("flagcxOneSideStagingRegister", flagcxResult_t, [flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t]),
         Function("flagcxOneSideStagingDeregister", flagcxResult_t, [flagcxComm_t]),
-
-        Function("flagcxGet", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_int,
-            ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
-            ctypes.c_int, ctypes.c_int
-        ]),
-
-        Function("flagcxPut", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_int,
-            ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
-            ctypes.c_int, ctypes.c_int
-        ]),
-
+        Function(
+            "flagcxGet", flagcxResult_t,
+            [flagcxComm_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int, ctypes.c_int
+             ]),
+        Function(
+            "flagcxPut", flagcxResult_t,
+            [flagcxComm_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int, ctypes.c_int
+             ]),
         Function("flagcxBatchPut", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_int,
+            flagcxComm_t,
+            ctypes.c_int,
             ctypes.POINTER(ctypes.c_size_t),
             ctypes.POINTER(ctypes.c_size_t),
             ctypes.POINTER(ctypes.c_size_t),
@@ -329,81 +293,45 @@ class FLAGCXLibrary:
             ctypes.POINTER(ctypes.c_int),
             ctypes.c_size_t,
         ]),
-
         Function("flagcxPutSignal", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_int,
-            ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
-            ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
-            ctypes.c_uint64
+            flagcxComm_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint64
         ]),
-
-        Function("flagcxSignal", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_int,
-            ctypes.c_size_t, ctypes.c_uint64
-        ]),
-
-        Function("flagcxWaitSignal", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_int,
-            ctypes.c_size_t, ctypes.c_uint64,
-            flagcxStream_t
-        ]),
-
-        Function("flagcxReadCounter", flagcxResult_t, [
-            flagcxComm_t, ctypes.POINTER(ctypes.c_uint64)
-        ]),
-
-        Function("flagcxWaitCounter", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_uint64
-        ]),
+        Function("flagcxSignal", flagcxResult_t, [flagcxComm_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_uint64]),
+        Function("flagcxWaitSignal", flagcxResult_t,
+                 [flagcxComm_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_uint64, flagcxStream_t]),
+        Function("flagcxReadCounter", flagcxResult_t, [flagcxComm_t, ctypes.POINTER(ctypes.c_uint64)]),
+        Function("flagcxWaitCounter", flagcxResult_t, [flagcxComm_t, ctypes.c_uint64]),
 
         # Device API — Memory Management
-        Function("flagcxMemAlloc", flagcxResult_t, [
-            ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t
-        ]),
-
+        Function("flagcxMemAlloc", flagcxResult_t, [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]),
         Function("flagcxMemFree", flagcxResult_t, [ctypes.c_void_p]),
 
         # Device API — Window Registration
-        Function("flagcxCommWindowRegister", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
-            ctypes.POINTER(flagcxWindow_t), ctypes.c_int
-        ]),
-
-        Function("flagcxCommWindowDeregister", flagcxResult_t, [
-            flagcxComm_t, flagcxWindow_t
-        ]),
+        Function("flagcxCommWindowRegister", flagcxResult_t,
+                 [flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
+                  ctypes.POINTER(flagcxWindow_t), ctypes.c_int]),
+        Function("flagcxCommWindowDeregister", flagcxResult_t, [flagcxComm_t, flagcxWindow_t]),
 
         # Device API — DevComm Lifecycle
-        Function("flagcxDevCommCreate", flagcxResult_t, [
-            flagcxComm_t, ctypes.POINTER(flagcxDevCommRequirements),
-            ctypes.POINTER(flagcxDevComm_t)
-        ]),
-
-        Function("flagcxDevCommDestroy", flagcxResult_t, [
-            flagcxComm_t, flagcxDevComm_t
-        ]),
+        Function(
+            "flagcxDevCommCreate", flagcxResult_t,
+            [flagcxComm_t, ctypes.POINTER(flagcxDevCommRequirements),
+             ctypes.POINTER(flagcxDevComm_t)]),
+        Function("flagcxDevCommDestroy", flagcxResult_t, [flagcxComm_t, flagcxDevComm_t]),
 
         # Device API — DevMem Lifecycle
-        Function("flagcxDevMemCreate", flagcxResult_t, [
-            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
-            flagcxWindow_t, ctypes.POINTER(flagcxDevMem_t)
-        ]),
-
-        Function("flagcxDevMemDestroy", flagcxResult_t, [
-            flagcxComm_t, flagcxDevMem_t
-        ]),
+        Function("flagcxDevMemCreate", flagcxResult_t,
+                 [flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t, flagcxWindow_t,
+                  ctypes.POINTER(flagcxDevMem_t)]),
+        Function("flagcxDevMemDestroy", flagcxResult_t, [flagcxComm_t, flagcxDevMem_t]),
 
         # Device API — Device Pointer Retrieval
-        Function("flagcxDevCommGetDevicePtr", flagcxResult_t, [
-            flagcxDevComm_t, ctypes.POINTER(ctypes.c_void_p)
-        ]),
-
+        Function("flagcxDevCommGetDevicePtr", flagcxResult_t,
+                 [flagcxDevComm_t, ctypes.POINTER(ctypes.c_void_p)]),
         Function("flagcxDevCommFreeDevicePtr", flagcxResult_t, [flagcxDevComm_t]),
-
-        Function("flagcxDevMemGetDevicePtr", flagcxResult_t, [
-            flagcxDevMem_t, ctypes.POINTER(ctypes.c_void_p)
-        ]),
-
+        Function("flagcxDevMemGetDevicePtr", flagcxResult_t,
+                 [flagcxDevMem_t, ctypes.POINTER(ctypes.c_void_p)]),
         Function("flagcxDevMemFreeDevicePtr", flagcxResult_t, [flagcxDevMem_t]),
     ]
 
@@ -412,15 +340,13 @@ class FLAGCXLibrary:
         Function("flagcxP2pRpcEngineDestroy", None, [flagcxP2pEngine_t]),
         Function("flagcxP2pRpcGetPort", ctypes.c_int, [flagcxP2pEngine_t]),
         Function("flagcxP2pRpcStartServer", ctypes.c_int, [flagcxP2pEngine_t]),
-        Function("flagcxP2pRpcRegister", ctypes.c_int, [
-            flagcxP2pEngine_t, ctypes.c_uint64, ctypes.c_uint64,
-            ctypes.POINTER(ctypes.c_uint64)
-        ]),
-        Function("flagcxP2pRpcGetConn", flagcxP2pConn_t, [
-            flagcxP2pEngine_t, ctypes.c_char_p
-        ]),
+        Function("flagcxP2pRpcRegister", ctypes.c_int,
+                 [flagcxP2pEngine_t, ctypes.c_uint64, ctypes.c_uint64,
+                  ctypes.POINTER(ctypes.c_uint64)]),
+        Function("flagcxP2pRpcGetConn", flagcxP2pConn_t, [flagcxP2pEngine_t, ctypes.c_char_p]),
         Function("flagcxP2pRpcBatchWriteSync", ctypes.c_int, [
-            flagcxP2pConn_t, ctypes.c_int,
+            flagcxP2pConn_t,
+            ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint64),
             ctypes.POINTER(ctypes.c_uint64),
             ctypes.POINTER(ctypes.c_uint64),
@@ -444,24 +370,18 @@ class FLAGCXLibrary:
             so_path = os.path.join(flagcx_path, "lib", "libflagcx.so")
             if os.path.isfile(so_path):
                 return so_path
-            raise FileNotFoundError(
-                f"FLAGCX_PATH is set to '{flagcx_path}' but "
-                f"'{so_path}' does not exist. "
-                f"Please build FlagCX or check FLAGCX_PATH."
-            )
+            raise FileNotFoundError(f"FLAGCX_PATH is set to '{flagcx_path}' but "
+                                    f"'{so_path}' does not exist. "
+                                    f"Please build FlagCX or check FLAGCX_PATH.")
         # 2. Fall back to <repo_root>/build/lib/libflagcx.so
-        repo_root = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..")
-        )
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         so_path = os.path.join(repo_root, "build", "lib", "libflagcx.so")
         if os.path.isfile(so_path):
             return so_path
-        raise FileNotFoundError(
-            f"Cannot find libflagcx.so. Searched:\n"
-            f"  - $FLAGCX_PATH/lib/libflagcx.so (FLAGCX_PATH not set)\n"
-            f"  - {so_path} (not found)\n"
-            f"Please set FLAGCX_PATH or build FlagCX first."
-        )
+        raise FileNotFoundError(f"Cannot find libflagcx.so. Searched:\n"
+                                f"  - $FLAGCX_PATH/lib/libflagcx.so (FLAGCX_PATH not set)\n"
+                                f"  - {so_path} (not found)\n"
+                                f"Please set FLAGCX_PATH or build FlagCX first.")
 
     def __init__(self, so_file: Optional[str] = None):
         if so_file is None:
@@ -523,8 +443,7 @@ class FLAGCXLibrary:
 
     def flagcxGetUniqueId(self) -> flagcxUniqueId:
         unique_id = flagcxUniqueId()
-        self.FLAGCX_CHECK(self._funcs["flagcxGetUniqueId"](
-            ctypes.byref(unique_id)))
+        self.FLAGCX_CHECK(self._funcs["flagcxGetUniqueId"](ctypes.byref(unique_id)))
         return unique_id
 
     def unique_id_from_bytes(self, data: bytes) -> flagcxUniqueId:
@@ -538,83 +457,64 @@ class FLAGCXLibrary:
             ValueError: If the input data length is not 256 bytes.
         """
         if len(data) != 256:
-            raise ValueError(
-                f"Expected 256 bytes for ncclUniqueId, got {len(data)} bytes")
+            raise ValueError(f"Expected 256 bytes for ncclUniqueId, got {len(data)} bytes")
 
         unique_id = flagcxUniqueId()
         ctypes.memmove(ctypes.addressof(unique_id.internal), data, 256)
         return unique_id
 
-    def flagcxCommInitRank(self, world_size: int, unique_id: flagcxUniqueId,
-                         rank: int) -> flagcxComm_t:
+    def flagcxCommInitRank(self, world_size: int, unique_id: flagcxUniqueId, rank: int) -> flagcxComm_t:
         comm = flagcxComm_t()
-        self.FLAGCX_CHECK(self._funcs["flagcxCommInitRank"](ctypes.byref(comm),
-                                                        world_size, ctypes.byref(unique_id),
-                                                        rank))
+        self.FLAGCX_CHECK(self._funcs["flagcxCommInitRank"](ctypes.byref(comm), world_size, ctypes.byref(unique_id),
+                                                            rank))
         return comm
 
-    def flagcxAllReduce(self, sendbuff: buffer_type, recvbuff: buffer_type,
-                      count: int, datatype: int, op: int, comm: flagcxComm_t,
-                      stream: flagcxStream_t) -> None:
+    def flagcxAllReduce(self, sendbuff: buffer_type, recvbuff: buffer_type, count: int, datatype: int, op: int,
+                        comm: flagcxComm_t, stream: flagcxStream_t) -> None:
         # `datatype` actually should be `flagcxDataType_t`
         # and `op` should be `flagcxRedOp_t`
         # both are aliases of `ctypes.c_int`
         # when we pass int to a function, it will be converted to `ctypes.c_int`
         # by ctypes automatically
-        self.FLAGCX_CHECK(self._funcs["flagcxAllReduce"](sendbuff, recvbuff, count,
-                                                     datatype, op, comm,
-                                                     stream))
+        self.FLAGCX_CHECK(self._funcs["flagcxAllReduce"](sendbuff, recvbuff, count, datatype, op, comm, stream))
 
-    def flagcxReduce(self, sendbuff: buffer_type, recvbuff: buffer_type,
-                      count: int, datatype: int, op: int, root: int, comm: flagcxComm_t,
-                      stream: flagcxStream_t) -> None:
+    def flagcxReduce(self, sendbuff: buffer_type, recvbuff: buffer_type, count: int, datatype: int, op: int, root: int,
+                     comm: flagcxComm_t, stream: flagcxStream_t) -> None:
         # `datatype` actually should be `flagcxDataType_t`
         # and `op` should be `flagcxRedOp_t`
         # both are aliases of `ctypes.c_int`
         # when we pass int to a function, it will be converted to `ctypes.c_int`
         # by ctypes automatically
-        self.FLAGCX_CHECK(self._funcs["flagcxReduce"](sendbuff, recvbuff, count,
-                                                     datatype, op, root, comm,
-                                                     stream))
+        self.FLAGCX_CHECK(self._funcs["flagcxReduce"](sendbuff, recvbuff, count, datatype, op, root, comm, stream))
 
-    def flagcxReduceScatter(self, sendbuff: buffer_type, recvbuff: buffer_type,
-                          count: int, datatype: int, op: int, comm: flagcxComm_t,
-                          stream: flagcxStream_t) -> None:
+    def flagcxReduceScatter(self, sendbuff: buffer_type, recvbuff: buffer_type, count: int, datatype: int, op: int,
+                            comm: flagcxComm_t, stream: flagcxStream_t) -> None:
         # `datatype` actually should be `flagcxDataType_t`
         # and `op` should be `flagcxRedOp_t`
         # both are aliases of `ctypes.c_int`
         # when we pass int to a function, it will be converted to `ctypes.c_int`
         # by ctypes automatically
-        self.FLAGCX_CHECK(self._funcs["flagcxReduceScatter"](sendbuff, recvbuff,
-                                                         count, datatype, op,
-                                                         comm, stream))
+        self.FLAGCX_CHECK(self._funcs["flagcxReduceScatter"](sendbuff, recvbuff, count, datatype, op, comm, stream))
 
-    def flagcxAllGather(self, sendbuff: buffer_type, recvbuff: buffer_type,
-                      count: int, datatype: int, comm: flagcxComm_t,
-                      stream: flagcxStream_t) -> None:
+    def flagcxAllGather(self, sendbuff: buffer_type, recvbuff: buffer_type, count: int, datatype: int,
+                        comm: flagcxComm_t, stream: flagcxStream_t) -> None:
         # `datatype` actually should be `flagcxDataType_t`
         # which is an aliases of `ctypes.c_int`
         # when we pass int to a function, it will be converted to `ctypes.c_int`
         # by ctypes automatically
-        self.FLAGCX_CHECK(self._funcs["flagcxAllGather"](sendbuff, recvbuff, count,
-                                                     datatype, comm, stream))
+        self.FLAGCX_CHECK(self._funcs["flagcxAllGather"](sendbuff, recvbuff, count, datatype, comm, stream))
 
-    def flagcxSend(self, sendbuff: buffer_type, count: int, datatype: int,
-                 dest: int, comm: flagcxComm_t, stream: flagcxStream_t) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxSend"](sendbuff, count, datatype,
-                                                dest, comm, stream))
+    def flagcxSend(self, sendbuff: buffer_type, count: int, datatype: int, dest: int, comm: flagcxComm_t,
+                   stream: flagcxStream_t) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxSend"](sendbuff, count, datatype, dest, comm, stream))
 
-    def flagcxRecv(self, recvbuff: buffer_type, count: int, datatype: int,
-                 src: int, comm: flagcxComm_t, stream: flagcxStream_t) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxRecv"](recvbuff, count, datatype, src,
-                                                comm, stream))
+    def flagcxRecv(self, recvbuff: buffer_type, count: int, datatype: int, src: int, comm: flagcxComm_t,
+                   stream: flagcxStream_t) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxRecv"](recvbuff, count, datatype, src, comm, stream))
 
-    def flagcxBroadcast(self, sendbuff: buffer_type, recvbuff: buffer_type,
-                      count: int, datatype: int, root: int, comm: flagcxComm_t,
-                      stream: flagcxStream_t) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxBroadcast"](sendbuff, recvbuff, count,
-                                                     datatype, root, comm,
-                                                     stream))
+    def flagcxBroadcast(self, sendbuff: buffer_type, recvbuff: buffer_type, count: int, datatype: int, root: int,
+                        comm: flagcxComm_t, stream: flagcxStream_t) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxBroadcast"](sendbuff, recvbuff, count, datatype, root, comm, stream))
 
     def flagcxGroupStart(self, comm: flagcxComm_t) -> None:
         self.FLAGCX_CHECK(self._funcs["flagcxGroupStart"](comm))
@@ -627,97 +527,67 @@ class FLAGCXLibrary:
 
     def flagcxCommRegister(self, comm: flagcxComm_t, buff: int, size: int) -> ctypes.c_void_p:
         handle = ctypes.c_void_p()
-        self.FLAGCX_CHECK(self._funcs["flagcxCommRegister"](
-            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
-            ctypes.byref(handle)))
+        self.FLAGCX_CHECK(self._funcs["flagcxCommRegister"](comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
+                                                            ctypes.byref(handle)))
         return handle
 
-    def flagcxOneSideRegister(self, comm: flagcxComm_t,
-                              buff: int, size: int) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxOneSideRegister"](
-            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size)))
+    def flagcxOneSideRegister(self, comm: flagcxComm_t, buff: int, size: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxOneSideRegister"](comm, ctypes.c_void_p(buff), ctypes.c_size_t(size)))
 
-    def flagcxOneSideSignalRegister(self, comm: flagcxComm_t,
-                                    buff: int, size: int,
-                                    ptrType: int = 1) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxOneSideSignalRegister"](
-            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
-            ctypes.c_int(ptrType)))
+    def flagcxOneSideSignalRegister(self, comm: flagcxComm_t, buff: int, size: int, ptrType: int = 1) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxOneSideSignalRegister"](comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
+                                                                     ctypes.c_int(ptrType)))
 
-    def flagcxOneSideStagingRegister(self, comm: flagcxComm_t,
-                                     buff: int, size: int) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxOneSideStagingRegister"](
-            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size)))
+    def flagcxOneSideStagingRegister(self, comm: flagcxComm_t, buff: int, size: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxOneSideStagingRegister"](comm, ctypes.c_void_p(buff),
+                                                                      ctypes.c_size_t(size)))
 
-    def flagcxGet(self, comm: flagcxComm_t, peer: int,
-                  srcOffset: int, dstOffset: int, size: int,
-                  srcMrIdx: int, dstMrIdx: int) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxGet"](
-            comm, peer, ctypes.c_size_t(srcOffset), ctypes.c_size_t(dstOffset),
-            ctypes.c_size_t(size), srcMrIdx, dstMrIdx))
+    def flagcxGet(self, comm: flagcxComm_t, peer: int, srcOffset: int, dstOffset: int, size: int, srcMrIdx: int,
+                  dstMrIdx: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxGet"](comm, peer, ctypes.c_size_t(srcOffset), ctypes.c_size_t(dstOffset),
+                                                   ctypes.c_size_t(size), srcMrIdx, dstMrIdx))
 
-    def flagcxPut(self, comm: flagcxComm_t, peer: int,
-                  srcOffset: int, dstOffset: int, size: int,
-                  srcMrIdx: int, dstMrIdx: int) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxPut"](
-            comm, peer, ctypes.c_size_t(srcOffset), ctypes.c_size_t(dstOffset),
-            ctypes.c_size_t(size), srcMrIdx, dstMrIdx))
+    def flagcxPut(self, comm: flagcxComm_t, peer: int, srcOffset: int, dstOffset: int, size: int, srcMrIdx: int,
+                  dstMrIdx: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxPut"](comm, peer, ctypes.c_size_t(srcOffset), ctypes.c_size_t(dstOffset),
+                                                   ctypes.c_size_t(size), srcMrIdx, dstMrIdx))
 
-    def flagcxBatchPut(self, comm: flagcxComm_t, peer: int,
-                       srcOffsets: list[int], dstOffsets: list[int],
-                       sizes: list[int], srcMrIdxs: list[int],
-                       dstMrIdxs: list[int]) -> None:
+    def flagcxBatchPut(self, comm: flagcxComm_t, peer: int, srcOffsets: list[int], dstOffsets: list[int],
+                       sizes: list[int], srcMrIdxs: list[int], dstMrIdxs: list[int]) -> None:
         count = len(sizes)
         if count == 0:
             return
-        if (
-            len(srcOffsets) != count or len(dstOffsets) != count
-            or len(srcMrIdxs) != count or len(dstMrIdxs) != count
-        ):
+        if (len(srcOffsets) != count or len(dstOffsets) != count or len(srcMrIdxs) != count or len(dstMrIdxs) != count):
             raise ValueError("flagcxBatchPut argument lengths do not match")
         size_array = ctypes.c_size_t * count
         int_array = ctypes.c_int * count
-        self.FLAGCX_CHECK(self._funcs["flagcxBatchPut"](
-            comm, peer,
-            size_array(*srcOffsets),
-            size_array(*dstOffsets),
-            size_array(*sizes),
-            int_array(*srcMrIdxs),
-            int_array(*dstMrIdxs),
-            ctypes.c_size_t(count)))
+        self.FLAGCX_CHECK(self._funcs["flagcxBatchPut"](comm, peer, size_array(*srcOffsets), size_array(*dstOffsets),
+                                                        size_array(*sizes), int_array(*srcMrIdxs),
+                                                        int_array(*dstMrIdxs), ctypes.c_size_t(count)))
 
-    def flagcxPutSignal(self, comm: flagcxComm_t, peer: int,
-                        srcOffset: int, dstOffset: int, size: int,
-                        signalOffset: int, srcMrIdx: int, dstMrIdx: int,
-                        signalValue: int) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxPutSignal"](
-            comm, peer,
-            ctypes.c_size_t(srcOffset), ctypes.c_size_t(dstOffset),
-            ctypes.c_size_t(size), ctypes.c_size_t(signalOffset),
-            srcMrIdx, dstMrIdx, ctypes.c_uint64(signalValue)))
+    def flagcxPutSignal(self, comm: flagcxComm_t, peer: int, srcOffset: int, dstOffset: int, size: int,
+                        signalOffset: int, srcMrIdx: int, dstMrIdx: int, signalValue: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxPutSignal"](comm, peer, ctypes.c_size_t(srcOffset),
+                                                         ctypes.c_size_t(dstOffset), ctypes.c_size_t(size),
+                                                         ctypes.c_size_t(signalOffset), srcMrIdx, dstMrIdx,
+                                                         ctypes.c_uint64(signalValue)))
 
-    def flagcxSignal(self, comm: flagcxComm_t, peer: int,
-                     signalOffset: int, signalValue: int) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxSignal"](
-            comm, peer, ctypes.c_size_t(signalOffset),
-            ctypes.c_uint64(signalValue)))
+    def flagcxSignal(self, comm: flagcxComm_t, peer: int, signalOffset: int, signalValue: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxSignal"](comm, peer, ctypes.c_size_t(signalOffset),
+                                                      ctypes.c_uint64(signalValue)))
 
-    def flagcxWaitSignal(self, comm: flagcxComm_t, peer: int,
-                         signalOffset: int, expected: int,
+    def flagcxWaitSignal(self, comm: flagcxComm_t, peer: int, signalOffset: int, expected: int,
                          stream: flagcxStream_t) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxWaitSignal"](
-            comm, peer, ctypes.c_size_t(signalOffset),
-            ctypes.c_uint64(expected), stream))
+        self.FLAGCX_CHECK(self._funcs["flagcxWaitSignal"](comm, peer, ctypes.c_size_t(signalOffset),
+                                                          ctypes.c_uint64(expected), stream))
 
     def flagcxReadCounter(self, comm: flagcxComm_t) -> int:
         count = ctypes.c_uint64(0)
-        self.FLAGCX_CHECK(self._funcs["flagcxReadCounter"](
-            comm, ctypes.byref(count)))
+        self.FLAGCX_CHECK(self._funcs["flagcxReadCounter"](comm, ctypes.byref(count)))
         return count.value
 
     def flagcxWaitCounter(self, comm: flagcxComm_t, target: int) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxWaitCounter"](
-            comm, ctypes.c_uint64(target)))
+        self.FLAGCX_CHECK(self._funcs["flagcxWaitCounter"](comm, ctypes.c_uint64(target)))
 
     def flagcxMemAlloc(self, size: int) -> ctypes.c_void_p:
         ptr = ctypes.c_void_p()
@@ -727,34 +597,29 @@ class FLAGCXLibrary:
     def flagcxMemFree(self, ptr: ctypes.c_void_p) -> None:
         self.FLAGCX_CHECK(self._funcs["flagcxMemFree"](ptr))
 
-    def flagcxCommWindowRegister(self, comm: flagcxComm_t, buff: int, size: int,
-                                  flags: int = 0) -> flagcxWindow_t:
+    def flagcxCommWindowRegister(self, comm: flagcxComm_t, buff: int, size: int, flags: int = 0) -> flagcxWindow_t:
         win = flagcxWindow_t()
-        self.FLAGCX_CHECK(self._funcs["flagcxCommWindowRegister"](
-            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
-            ctypes.byref(win), ctypes.c_int(flags)))
+        self.FLAGCX_CHECK(self._funcs["flagcxCommWindowRegister"](comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
+                                                                  ctypes.byref(win), ctypes.c_int(flags)))
         return win
 
     def flagcxCommWindowDeregister(self, comm: flagcxComm_t, win: flagcxWindow_t) -> None:
         self.FLAGCX_CHECK(self._funcs["flagcxCommWindowDeregister"](comm, win))
 
-    def flagcxDevCommCreate(self, comm: flagcxComm_t,
-                             reqs: flagcxDevCommRequirements) -> flagcxDevComm_t:
+    def flagcxDevCommCreate(self, comm: flagcxComm_t, reqs: flagcxDevCommRequirements) -> flagcxDevComm_t:
         dev_comm = flagcxDevComm_t()
-        self.FLAGCX_CHECK(self._funcs["flagcxDevCommCreate"](
-            comm, ctypes.byref(reqs), ctypes.byref(dev_comm)))
+        self.FLAGCX_CHECK(self._funcs["flagcxDevCommCreate"](comm, ctypes.byref(reqs), ctypes.byref(dev_comm)))
         return dev_comm
 
     def flagcxDevCommDestroy(self, comm: flagcxComm_t, dev_comm: flagcxDevComm_t) -> None:
         self.FLAGCX_CHECK(self._funcs["flagcxDevCommDestroy"](comm, dev_comm))
 
     def flagcxDevMemCreate(self, comm: flagcxComm_t, buff: int, size: int,
-                            win: flagcxWindow_t = None) -> flagcxDevMem_t:
+                           win: flagcxWindow_t = None) -> flagcxDevMem_t:
         dev_mem = flagcxDevMem_t()
-        self.FLAGCX_CHECK(self._funcs["flagcxDevMemCreate"](
-            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
-            win if win is not None else flagcxWindow_t(),
-            ctypes.byref(dev_mem)))
+        self.FLAGCX_CHECK(self._funcs["flagcxDevMemCreate"](comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
+                                                            win if win is not None else flagcxWindow_t(),
+                                                            ctypes.byref(dev_mem)))
         return dev_mem
 
     def flagcxDevMemDestroy(self, comm: flagcxComm_t, dev_mem: flagcxDevMem_t) -> None:
@@ -778,10 +643,8 @@ class FLAGCXLibrary:
 
     def flagcxP2pEngineCreate(self) -> flagcxP2pEngine_t:
         if "flagcxP2pRpcEngineCreate" not in self._funcs:
-            raise RuntimeError(
-                "libflagcx.so lacks P2P engine symbols; rebuild FlagCX with "
-                "USE_IBUC=1 (or the IB-capable backend)."
-            )
+            raise RuntimeError("libflagcx.so lacks P2P engine symbols; rebuild FlagCX with "
+                               "USE_IBUC=1 (or the IB-capable backend).")
         engine = self._funcs["flagcxP2pRpcEngineCreate"]()
         if not engine:
             raise RuntimeError("flagcxP2pEngineCreate returned NULL")
@@ -800,38 +663,30 @@ class FLAGCXLibrary:
         if self._funcs["flagcxP2pRpcStartServer"](engine) != 0:
             raise RuntimeError("flagcxP2pStartRpcServer failed")
 
-    def flagcxP2pRegister(self, engine: flagcxP2pEngine_t,
-                          addr: int, size: int) -> int:
+    def flagcxP2pRegister(self, engine: flagcxP2pEngine_t, addr: int, size: int) -> int:
         mr_id = ctypes.c_uint64(0)
-        rc = self._funcs["flagcxP2pRpcRegister"](
-            engine, ctypes.c_uint64(addr), ctypes.c_uint64(size),
-            ctypes.byref(mr_id))
+        rc = self._funcs["flagcxP2pRpcRegister"](engine, ctypes.c_uint64(addr), ctypes.c_uint64(size),
+                                                 ctypes.byref(mr_id))
         if rc != 0:
-            raise RuntimeError(
-                f"flagcxP2pRegister failed (addr={hex(addr)}, size={size})")
+            raise RuntimeError(f"flagcxP2pRegister failed (addr={hex(addr)}, size={size})")
         return mr_id.value
 
-    def flagcxP2pGetConn(self, engine: flagcxP2pEngine_t,
-                         session: str) -> flagcxP2pConn_t:
-        conn = self._funcs["flagcxP2pRpcGetConn"](
-            engine, session.encode("utf-8"))
+    def flagcxP2pGetConn(self, engine: flagcxP2pEngine_t, session: str) -> flagcxP2pConn_t:
+        conn = self._funcs["flagcxP2pRpcGetConn"](engine, session.encode("utf-8"))
         if not conn:
             raise RuntimeError(f"flagcxP2pGetConn failed for session {session}")
         return ctypes.c_void_p(conn)
 
-    def flagcxP2pBatchWriteSync(self, conn: flagcxP2pConn_t,
-                                src_vas: list[int], dst_vas: list[int],
+    def flagcxP2pBatchWriteSync(self, conn: flagcxP2pConn_t, src_vas: list[int], dst_vas: list[int],
                                 sizes: list[int]) -> None:
         count = len(sizes)
         if count == 0:
             return
         if len(src_vas) != count or len(dst_vas) != count:
-            raise ValueError(
-                "flagcxP2pBatchWriteSync argument lengths do not match")
+            raise ValueError("flagcxP2pBatchWriteSync argument lengths do not match")
         u64 = ctypes.c_uint64 * count
-        rc = self._funcs["flagcxP2pRpcBatchWriteSync"](
-            conn, ctypes.c_int(count),
-            u64(*src_vas), u64(*dst_vas), u64(*sizes))
+        rc = self._funcs["flagcxP2pRpcBatchWriteSync"](conn, ctypes.c_int(count), u64(*src_vas), u64(*dst_vas),
+                                                       u64(*sizes))
         if rc != 0:
             raise RuntimeError("flagcxP2pBatchWriteSync failed")
 
@@ -851,12 +706,12 @@ class FLAGCXLibrary:
 
     def adaptor_stream_destroy(self, stream):
         self.FLAGCX_CHECK(self.devHandle.contents.streamDestroy(stream))
-    
+
     def sync_stream(self, stream):
         self.FLAGCX_CHECK(self.devHandle.contents.streamSynchronize(stream))
 
 
 __all__ = [
-    "FLAGCXLibrary", "flagcxDataTypeEnum", "flagcxRedOpTypeEnum", "flagcxUniqueId",
-    "flagcxDeviceHandle_t", "flagcxComm_t", "flagcxStream_t", "flagcxEvent_t", "buffer_type"
+    "FLAGCXLibrary", "flagcxDataTypeEnum", "flagcxRedOpTypeEnum", "flagcxUniqueId", "flagcxDeviceHandle_t",
+    "flagcxComm_t", "flagcxStream_t", "flagcxEvent_t", "buffer_type"
 ]

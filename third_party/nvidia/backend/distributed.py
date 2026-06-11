@@ -33,9 +33,9 @@ Typical usage:
 
 @dataclass
 class FlagcxRuntimeConfig:
-    bt_name : str = 'libflagcx_device.bc'
-    shared_name : str = 'libflagcx.so'
-    include_name : str = 'include'
+    bt_name: str = 'libflagcx_device.bc'
+    shared_name: str = 'libflagcx.so'
+    include_name: str = 'include'
     flagcx_cache_dir = Path.home() / ".flagtree" / "flagcx"
     triton_path = Path(__file__).parent.parent.parent
 
@@ -49,16 +49,14 @@ class FlagcxRuntimeConfig:
         if not user_action:
             return False
         try:
-            from .flagcx_wrapper import (
-                FLAGCXLibrary,
-                flagcxDevCommRequirements,
-                flagcxUniqueId,  # noqa: F401
-                FLAGCX_WIN_COLL_SYMMETRIC,
-            )
+            from .flagcx_wrapper import (FLAGCXLibrary,  # noqa: F401
+                                         flagcxDevCommRequirements,  # noqa: F401
+                                         flagcxUniqueId,  # noqa: F401
+                                         FLAGCX_WIN_COLL_SYMMETRIC,  # noqa: F401
+                                         )
             return True
         except ImportError:
             return False
-
 
     def __init__(self, path_order=0):
         self.is_available = self._is_available()
@@ -66,42 +64,38 @@ class FlagcxRuntimeConfig:
             self.bitcode_path = self._get_bitcode_paths()[path_order]
             self.shared_lib_path = self._get_shared_lib_paths()[path_order]
             self.include_path = self._get_include_paths()[path_order]
-        
 
     def _check_path_available(self, paths):
         available_paths = [Path(p) for p in paths if p and p.exists()]
         if len(paths) == 0:
-            raise RuntimeError(f"There are no available {self.bt_name} path in this {available_paths}") 
+            raise RuntimeError(f"There are no available {self.bt_name} path in this {available_paths}")
         return available_paths
 
     def _get_bitcode_paths(self):
-        paths = (
-            Path(__file__).parent / "lib" /  self.bt_name ,
-            self.flagcx_cache_dir /  self.bt_name,
-            os.environ.get("FLAGCX_BITCODE_PATH")
-        )
+        paths = (Path(__file__).parent / "lib" / self.bt_name, self.flagcx_cache_dir / self.bt_name,
+                 os.environ.get("FLAGCX_BITCODE_PATH"))
         return self._check_path_available(paths)
-    
+
     def _get_shared_lib_paths(self):
         paths = (
-            self.triton_path / "_C" /  self.shared_name ,
-            self.flagcx_cache_dir /  self.shared_name,
+            self.triton_path / "_C" / self.shared_name,
+            self.flagcx_cache_dir / self.shared_name,
             os.environ.get("FLAGCX_LIB_PATH"),
         )
         return self._check_path_available(paths)
 
     def _get_include_paths(self):
-        paths = (
-            self.flagcx_cache_dir / self.include_name,
-            self.triton_path/ "experimental" / "tle" / "language" / "include",
-            os.environ.get("FLAGCX_INCLUDE_PATH")
-        )
+        paths = (self.flagcx_cache_dir / self.include_name,
+                 self.triton_path / "experimental" / "tle" / "language" / "include",
+                 os.environ.get("FLAGCX_INCLUDE_PATH"))
         return self._check_path_available(paths)
-    
+
+
 flagcx_rt_conf = FlagcxRuntimeConfig()
 
 
 class Distributed:
+
     def __init__(self):
         self.extern_libs = {}
         if flagcx_rt_conf.is_available:
