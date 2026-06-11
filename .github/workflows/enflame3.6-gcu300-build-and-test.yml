@@ -52,7 +52,7 @@ jobs:
           python3 -m pip uninstall -y triton --break-system-packages
           python3 -m pip uninstall -y triton_gcu --break-system-packages
           export FLAGTREE_BACKEND=enflame
-          MAX_JOBS=8 python3 -m pip install . --no-build-isolation --break-system-packages
+          MAX_JOBS=4 python3 -m pip install . --no-build-isolation --break-system-packages
 
       - name: FlagTree Test on Enflame
         if: steps.check_backend.outputs.should_skip != 'true'
