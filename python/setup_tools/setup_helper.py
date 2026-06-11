@@ -75,7 +75,7 @@ def get_hook_instance(hook_name):
 
 
 def enable_flagtree_third_party(name):
-    if name in ["triton_shared"]:
+    if name in ["triton_shared", "flagcx"]:
         return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
     else:
         return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
