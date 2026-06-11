@@ -82,6 +82,7 @@ TLE 的主要优势包括：
 <img width="200" height="184" alt="hcu_bf16_mm_3d" src=".github/assets/hcu_bf16_mm_3d.png" />  <img width="200" height="184" alt="hcu_fp32_mm_3d" src=".github/assets/hcu_fp32_mm_3d.png" />
 <img width="200" height="184" alt="mthreads_bf16_mm_1a_3c" src=".github/assets/mthreads_bf16_mm_1a_3c.png" />  <img width="200" height="184" alt="mthreads_fp32_mm_1a" src=".github/assets/mthreads_fp32_mm_1a.png" />
 <img width="200" height="184" alt="mthreads_bf16_mm_1c" src=".github/assets/mthreads_bf16_mm_1c.png" />  <img width="200" height="184" alt="mthreads_fp32_mm_1c" src=".github/assets/mthreads_fp32_mm_1c.png" />
+<img width="200" height="184" alt="enflame_bf16_mm_3d" src=".github/assets/enflame_bf16_mm_3d.png" />  <img width="200" height="184" alt="enflame_fp32_mm_3d" src=".github/assets/enflame_fp32_mm_3d.png" />
 
 ## 新特性
 
@@ -170,27 +171,27 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 
 |后端       |安装命令（版本号对应 git tag）|Triton<br>版本|libc.so & libstdc++.so|
 |:---------|:---------|:---------|:---------|
-|nvidia    |python3.12 -m pip install flagtree===0.6.0rc1 $RES           |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|nvidia    |python3.12 -m pip install flagtree===0.6.0rc2 $RES           |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |nvidia    |python3.12 -m pip install flagtree===0.5.0+3.5 $RES          |3.5|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |nvidia    |python3.12 -m pip install flagtree===0.4.0+3.3 $RES          |3.3|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |nvidia    |python3.12 -m pip install flagtree===0.5.0+3.1 $RES          |3.1|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |iluvatar  |python3.12 -m pip install flagtree===0.5.1+iluvatar3.1 $RES  |3.1|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |iluvatar  |python3.10 -m pip install flagtree===0.5.1+iluvatar3.1 $RES  |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|mthreads  |python3.10 -m pip install flagtree===0.5.1+mthreads3.1 $RES  |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|mthreads  |python3.10 -m pip install flagtree===0.6.0rc2+mthreads3.6 $RES |3.6|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |mthreads  |python3.10 -m pip install flagtree===0.5.1+mthreads3.2 $RES  |3.2|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|mthreads  |python3.10 -m pip install flagtree===0.6.0rc1+mthreads3.6 $RES |3.6|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|mthreads  |python3.10 -m pip install flagtree===0.5.1+mthreads3.1 $RES  |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |xpu       |python3.10 -m pip install flagtree===0.5.1+xpu3.0 $RES       |3.0|GLIBC_2.31<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |metax     |python3.12 -m pip install flagtree===0.5.1+metax3.0 $RES     |3.0|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|hcu       |python3.10 -m pip install flagtree===0.5.1+hcu3.1 $RES       |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |hcu       |python3.10 -m pip install flagtree===0.6.0rc1+hcu3.6 $RES    |3.6|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|ascend    |python3.11 -m pip install flagtree===0.6.0rc1+ascend3.2 $RES |3.2|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|hcu       |python3.10 -m pip install flagtree===0.5.1+hcu3.1 $RES       |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |ascend    |python3.11 -m pip install flagtree===0.6.0rc1+ascend3.5 $RES |3.5|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
+|ascend    |python3.11 -m pip install flagtree===0.6.0rc1+ascend3.2 $RES |3.2|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |tsingmicro|python3.10 -m pip install flagtree===0.5.0+tsingmicro3.3 $RES|3.3|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
 |aipu      |python3.10 -m pip install flagtree===0.5.0+aipu3.3 $RES      |3.3|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |sunrise   |python3.10 -m pip install flagtree===0.4.0+sunrise3.4 $RES   |3.4|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|enflame   |python3.10 -m pip install flagtree===0.4.0+enflame3.3 $RES   |3.3|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|enflame   |python3.12 -m pip install flagtree===0.5.0+enflame3.5 $RES   |3.5|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |enflame   |python3.12 -m pip install flagtree===0.6.0rc1+enflame3.6 $RES|3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|enflame   |python3.12 -m pip install flagtree===0.5.0+enflame3.5 $RES   |3.5|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|enflame   |python3.10 -m pip install flagtree===0.4.0+enflame3.3 $RES   |3.3|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 
 flagtree 历史版本可以在 https://resource.flagos.net/#browse/search/pypi/=assets.attributes.pypi.description%3Dflagtree 查询
 
