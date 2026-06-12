@@ -59,6 +59,7 @@ Exit codes: 0 = pass (or skip when not required); 1 = failure.
 import argparse
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -326,11 +327,55 @@ def _stage_lk_case(case_dir, elf, args, out_index, out_elems):
     return specs
 
 
+def _kill_dispatch(proc, case_dir, use_sudo):
+    """Tear down a hung launch_kernel dispatch so it cannot wedge the device.
+
+    A plain ``subprocess`` timeout only SIGKILLs the direct child (``sudo``);
+    sudo runs the real dispatcher (``launch_kernel_runner``) in its own pty
+    session, so it survives as an orphan that keeps ``/dev/rpu`` open and
+    leaves ``run_work`` stuck in the RPU driver queue -- every later case then
+    times out too. Kill the whole spawned process group, then reap any runner
+    still matching this case's unique work dir (its argv carries the
+    ``kernel.ref`` path, so the match is surgical and never touches a
+    concurrent job on a shared board).
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    if use_sudo:
+        subprocess.run(
+            ["sudo", "-n", "pkill", "-9", "-f", str(case_dir)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def _run_cli(runner, case_dir, elf_name, kernel_name, specs):
     use_sudo = os.environ.get("RPU_LK_SUDO", "1") not in ("0", "OFF", "FALSE", "NO")
     cmd = (["sudo", "-n"] if use_sudo else []) + [runner, str(Path(case_dir) / elf_name), kernel_name]
     cmd += [f"{role}:{size}:{path}" for role, size, path in specs]
-    return subprocess.run(cmd, cwd=case_dir, capture_output=True, text=True, timeout=120)
+    # start_new_session so the dispatch is its own process group and a hang can
+    # be torn down as a group (see _kill_dispatch) instead of leaking an orphan.
+    proc = subprocess.Popen(
+        cmd,
+        cwd=case_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        _kill_dispatch(proc, case_dir, use_sudo)
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def _compare(out_path, golden, n_elements, compare):

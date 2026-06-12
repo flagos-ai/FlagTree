@@ -78,5 +78,15 @@ jobs:
           ssh -tt -o BatchMode=yes -o StrictHostKeyChecking=no rpuboard 'set -e
             cd ~/FlagTree-ci
             source ~/env.sh
+            # Reap any leaked launch_kernel_runner from an earlier wedged run:
+            # an orphan holding /dev/rpu leaves run_work stuck in the RPU queue
+            # and makes every dispatch here time out. Only kill ones alive far
+            # longer than the 120s per-case cap -- a healthy dispatch finishes
+            # in seconds, so this never touches a concurrent job on the shared
+            # board.
+            for pid in $(pgrep -f launch_kernel_runner 2>/dev/null); do
+              et=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d " ")
+              if [ -n "$et" ] && [ "$et" -gt 130 ]; then sudo -n kill -9 "$pid" 2>/dev/null || true; fi
+            done
             pytest -q third_party/rpu/python/test/unit
             python3 third_party/rpu/python/test/board/lk_board_smoke.py --require-board -v'

@@ -74,6 +74,7 @@ jobs:
           pip uninstall -y triton
           source ~/env-3.6.sh
           env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
+          rm -rf ~/.triton/cache
           USE_FLAGCX=ON MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on NVidia (triton_v3.4.x branch)
