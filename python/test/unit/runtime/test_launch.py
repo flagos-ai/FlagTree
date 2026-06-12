@@ -165,8 +165,8 @@ def test_launch_with_options(options) -> None:
             except ImportError:
                 use_flagcx = False
             if (use_flagcx):
-                lib_flagcx_dir = pathlib.Path.home() / ".flagtree" / "flagcx"
-                options["extern_libs"].update({"libflagcx": str(lib_flagcx_dir / 'libflagcx_device.bc')})
+                from triton.backends.nvidia.distributed import flagcx_rt_conf
+                options["extern_libs"].update({"libflagcx": str(flagcx_rt_conf.bitcode_path)})
 
         elif is_hip():
             libdir = current_dir.parent.parent.parent.parent / 'third_party/amd/backend/lib'
