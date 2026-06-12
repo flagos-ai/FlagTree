@@ -302,7 +302,7 @@ public:
     vectorLength = computeVectorLength();
   }
   static Reduction3DContext
-  normalizeReductionTo3D(ArrayRef<unsigned> elemsPerThread, int axis);
+  normalizeReductionTo3D(ArrayRef<unsigned> elemsPerThread, unsigned axis);
 
   DispatchPlan buildDispatchPlan(OpBuilder &builder, ArrayRef<Value> inputs,
                                  const Reduction3DContext &context) const;
@@ -418,25 +418,11 @@ private:
 
 Reduction3DContext
 ReduceGenerator::normalizeReductionTo3D(ArrayRef<unsigned> elemsPerThread,
-                                        int axis) {
-  std::array<int64_t, 3> reduceInputDims = {1, 1, 1};
-  std::array<int64_t, 3> reduceOutputDims = {1, 1, 1};
-  int64_t reduceAxis = 2;
-  for (int i = elemsPerThread.size() - 1, j = 2; i >= 0; i--) {
-    if (i == axis) {
-      if (reduceInputDims[j] == 1) {
-        reduceInputDims[j] = elemsPerThread[i];
-      } else {
-        reduceInputDims[--j] = elemsPerThread[i];
-      }
-      reduceAxis = j;
-      reduceOutputDims[reduceAxis] = 1;
-      --j;
-    } else {
-      reduceInputDims[j] *= elemsPerThread[i];
-      reduceOutputDims[j] = reduceInputDims[j];
-    }
-  }
+                                        unsigned axis) {
+  auto [reduceInputDims, reduceAxis] =
+      triton::gcu::foldTo3D(elemsPerThread, axis);
+  std::array<int64_t, 3> reduceOutputDims = reduceInputDims;
+  reduceOutputDims[reduceAxis] = 1;
   assert((reduceAxis == 1 || reduceAxis == 2) &&
          "normalize N-D reduction to 3D, the reduce axis must be 1 or 2");
   return {reduceInputDims, reduceOutputDims, reduceAxis};

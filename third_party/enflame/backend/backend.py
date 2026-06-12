@@ -68,7 +68,7 @@ def _get_topscc_root():
 
 
 def _kernel_to_fatbin(kernel: str, arch: int, enable_transform: bool):
-    print(kernel)
+    # print(kernel)
     with tempfile.TemporaryDirectory() as tmpdir:
         bin = os.path.join(tmpdir, "kernel.fatbin")
         toolkit.compile(kernel, "--device-only", f"--arch=gcu{arch}", f"--output={bin}",
@@ -332,6 +332,31 @@ def generate_launcher(constants, signature, arch='gcu300', no_constant_args=Fals
         if ty != "constexpr":
             nonconst_args_size += 1
 
+    # GCU 400/410: validate cluster dims at launch time.
+    #   Supports 2D clusters: clusterDimX * clusterDimY <= 6, clusterDimZ == 1.
+    #   cluster-internal CTA sharing (like NVIDIA DSMEM) is supported.
+    #   Cooperative grid launch (grid-level barrier) is supported via
+    #   topsLaunchAttributeCooperative on topsModuleLaunchKernelEx.
+    #   (clusterDimX, clusterDimY, clusterDimZ) maps to config.blockDim.
+    cluster_check_str = ''
+    if 'gcu400' == arch or 'gcu410' == arch:
+        cluster_check_str = """
+      if (clusterDimZ != 1) {
+        PyErr_Format(PyExc_ValueError,
+          "GCU 400/410 does not support 3-D cluster: "
+          "cluster_dims=(%d,%d,%d), clusterDimZ must be 1.",
+          clusterDimX, clusterDimY, clusterDimZ);
+        return NULL;
+      }
+      int cluster_total = clusterDimX * clusterDimY;
+      if (cluster_total < 1 || cluster_total > 6) {
+        PyErr_Format(PyExc_ValueError,
+          "GCU 400/410 cluster size clusterDimX*clusterDimY = %d*%d = %d exceeds limit. "
+          "Must be between 1 and 6 (max CTAs sharing local memory within a cluster).",
+          clusterDimX, clusterDimY, cluster_total);
+        return NULL;
+      }"""
+
     # generate glue code
     launch_str = ''
     if 'gcu400' == arch or 'gcu410' == arch:
@@ -352,19 +377,26 @@ def generate_launcher(constants, signature, arch='gcu300', no_constant_args=Fals
       l_config.stream = stream;
       TOPS_CHECK(topsModuleLaunchKernelEx(&l_config, function, params, NULL));"""
         else:
-            launch_str += f"""topsLaunchConfig_t l_config;
-      memset(&l_config, 0x0, sizeof(l_config));
-      l_config.gridDim = dim3(gridX, gridY, gridZ);
-      l_config.blockDim = dim3(1, 1, 1);
-      struct topsLaunchAttribute att[1];
-      att[0].id = topsLaunchAttributeThreadDimension;
-      att[0].val.ThreadDim.x = num_warps;
-      att[0].val.ThreadDim.y = 1;
-      att[0].val.ThreadDim.z = 1;
-      l_config.attrs = att;
-      l_config.numAttrs = 1;
-      l_config.stream = stream;
-      TOPS_CHECK(topsModuleLaunchKernelEx(&l_config, function, params, NULL));"""
+            launch_str += f"""topsLaunchAttribute attrs[2];
+      int num_attrs = 0;
+      attrs[num_attrs].id = topsLaunchAttributeThreadDimension;
+      attrs[num_attrs].val.ThreadDim = {{(unsigned int)num_warps, 1, 1}};
+      ++num_attrs;
+
+      if (launch_cooperative_grid != 0) {{
+        attrs[num_attrs].id = topsLaunchAttributeCooperative;
+        attrs[num_attrs].val.cooperative = 1;
+        ++num_attrs;
+      }}
+
+      topsLaunchConfig_t config = {{}};
+      config.gridDim = {{(unsigned int)gridX, (unsigned int)gridY, (unsigned int)gridZ}};
+      config.blockDim = {{(unsigned int)clusterDimX, (unsigned int)clusterDimY, (unsigned int)clusterDimZ}};
+      config.dynamicSmemBytes = shared_memory;
+      config.attrs = attrs;
+      config.numAttrs = num_attrs;
+      config.stream = stream;
+      TOPS_CHECK(topsModuleLaunchKernelEx(&config, function, params, NULL));"""
     elif 'gcu500' == arch:
         launch_str += 'TOPS_CHECK(topsModuleLaunchKernel(function, gridX, gridY, gridZ, num_warps * 128, 1, 1, shared_memory, stream, params, 0));'
     else:
@@ -393,10 +425,9 @@ static inline void gcuAssert(topsError_t code, const char *file, int line)
 
 #define TOPS_CHECK(ans) {{ gcuAssert((ans), __FILE__, __LINE__); }}
 
-static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int clusterDimX, int clusterDimY, int clusterDimZ, int shared_memory, topsStream_t stream, topsFunction_t function{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int clusterDimX, int clusterDimY, int clusterDimZ, int launch_cooperative_grid, int shared_memory, topsStream_t stream, topsFunction_t function{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
   void *params[] = {{ {', '.join(params)} }};
   if (gridX*gridY*gridZ > 0) {{
-      //printf("xxx %d %d %d\\n", gridX, gridY, gridZ);
       {launch_str}
   }}
 }}
@@ -484,9 +515,25 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   // extract kernel metadata
   int num_warps, num_ctas, shared_memory, clusterDimX, clusterDimY, clusterDimZ;
-  if (!PyArg_ParseTuple(kernel_metadata, \"iiiiii\", &num_warps, &num_ctas, &shared_memory, &clusterDimX, &clusterDimY, &clusterDimZ)) {{
+  int launch_cooperative_grid = 0;
+  if (!PyTuple_Check(kernel_metadata)) {{
+    PyErr_SetString(PyExc_TypeError, "kernel_metadata must be a tuple");
     return NULL;
   }}
+  Py_ssize_t kernel_metadata_size = PyTuple_Size(kernel_metadata);
+  if (kernel_metadata_size == 7) {{
+    if (!PyArg_ParseTuple(kernel_metadata, \"iiiiiii\", &num_warps, &num_ctas, &shared_memory, &clusterDimX, &clusterDimY, &clusterDimZ, &launch_cooperative_grid)) {{
+      return NULL;
+    }}
+  }} else if (kernel_metadata_size == 6) {{
+    if (!PyArg_ParseTuple(kernel_metadata, \"iiiiii\", &num_warps, &num_ctas, &shared_memory, &clusterDimX, &clusterDimY, &clusterDimZ)) {{
+      return NULL;
+    }}
+  }} else {{
+    PyErr_SetString(PyExc_TypeError, "kernel_metadata must contain 6 or 7 integers");
+    return NULL;
+  }}
+  {cluster_check_str}
   // extract launch metadata
   if (launch_enter_hook != Py_None){{
     PyObject* args = Py_BuildValue("(O)", launch_metadata);
@@ -500,7 +547,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   // raise exception asap
   {newline.join(ptr_decls)}
   {newline.join(float_storage_decls)}
-  _launch(gridX, gridY, gridZ, num_warps, num_ctas, clusterDimX, clusterDimY, clusterDimZ, shared_memory, (topsStream_t)_stream, (topsFunction_t)_function{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+  _launch(gridX, gridY, gridZ, num_warps, num_ctas, clusterDimX, clusterDimY, clusterDimZ, launch_cooperative_grid, shared_memory, (topsStream_t)_stream, (topsFunction_t)_function{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
     PyObject* args = Py_BuildValue("(O)", launch_metadata);

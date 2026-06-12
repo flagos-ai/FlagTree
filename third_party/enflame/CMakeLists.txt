@@ -68,5 +68,11 @@ if(HACK_INCLUDE_DIRS)
     set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY INCLUDE_DIRECTORIES "${include_dirs}")
 endif()
 
+# Install python directory to install prefix
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/
+    DESTINATION python
+    USE_SOURCE_PERMISSIONS
+)
+
 # Add triton_gcu subdirectory build
 add_subdirectory(triton_gcu)

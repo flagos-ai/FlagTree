@@ -199,7 +199,14 @@ def TleToTritonGCUPass
     This pass handles all TLE-related op lowering for the enflame backend.
     All patterns use string-based RewritePattern matching.
   }];
-  let options = [];
+  let options = [
+    Option<"clusterDimX", "cluster-dim-x", "unsigned", /*default=*/"1",
+           "Cluster dimension X">,
+    Option<"clusterDimY", "cluster-dim-y", "unsigned", /*default=*/"1",
+           "Cluster dimension Y">,
+    Option<"clusterDimZ", "cluster-dim-z", "unsigned", /*default=*/"1",
+           "Cluster dimension Z">,
+  ];
   let dependentDialects = ["mlir::triton::gcu::TritonGCUDialect"];
 }
 

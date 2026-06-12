@@ -669,6 +669,9 @@ struct GCUElementwiseFusionOpLowering
                            dyn_cast<triton::gpu::ConvertLayoutOp>(o)) {
               operandMaps[i].map(cvtLayoutOp.getResult(),
                                  operandMaps[i].lookup(cvtLayoutOp.getSrc()));
+            } else if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(o)) {
+              operandMaps[i].map(reshapeOp.getResult(),
+                                 operandMaps[i].lookup(reshapeOp.getSrc()));
             } else if (auto broadcastOp = dyn_cast<triton::BroadcastOp>(o)) {
               operandMaps[i].map(broadcastOp.getResult(),
                                  operandMaps[i].lookup(broadcastOp.getSrc()));
@@ -1903,7 +1906,17 @@ private:
           cast<TensorType>(cvtOp.getOut().getType())
               .getElementType()
               .isInteger(8)) {
-        map.map(cvtOp.getOut(), map.lookup(cvtOp.getIn()));
+        auto inValue = map.lookup(cvtOp.getIn());
+        if (getElementTypeOrSelf(inValue.getType()).isInteger(1)) {
+          inValue = builder
+                        .create<gcu::VectorConvertOp>(
+                            op.getLoc(),
+                            VectorType::get(ArrayRef<int64_t>{vectorLength},
+                                            builder.getIntegerType(8)),
+                            inValue)
+                        .getResult(0);
+        }
+        map.map(cvtOp.getOut(), inValue);
         return;
       } else {
         auto outElementType = getElementTypeOrSelf(cvtOp.getOut().getType());

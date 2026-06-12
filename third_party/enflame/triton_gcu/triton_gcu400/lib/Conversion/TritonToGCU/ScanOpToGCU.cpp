@@ -22,8 +22,11 @@
 #include "Utility.h"
 
 #include "Analysis/FirstLastUserAnalysis.h"
+#include "Conversion/TritonToGCU/ReduceScanCommon.h"
 #include "Dialect/GCU/IR/Dialect.h"
+#include "Dialect/MathExt/IR/MathExt.h"
 #include "Dialect/MemrefExt/IR/MemrefExt.h"
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "PatternTritonGPUOpToGCU.h"
 #include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -34,141 +37,74 @@ using namespace mlir;
 
 namespace {
 
-// ===----------------------------------------------------------------------===
-// Vectorized combiner helpers (ported from GCU 300).
-// Vectorize the scalar combine region of tt.scan into SIMD vector ops.
-// ===----------------------------------------------------------------------===
-SmallVector<Value> vectorizeCombineOpWithoutTerminator(Location loc,
-                                                       OpBuilder &builder,
-                                                       Region &combineOp,
-                                                       ValueRange operands,
-                                                       unsigned vectorLength) {
-  IRMapping map;
-  for (auto [arg, operand] : llvm::zip(combineOp.getArguments(), operands)) {
-    map.map(arg, operand);
+// Returns true when the scan input is known to contain only 0/1 values
+// (i.e., produced by extending a bool tensor to i32). This enables miota
+// hardware acceleration for the inclusive prefix sum.
+bool isBoolValuedInput(triton::ScanOp op) {
+  if (op.getSrcs().size() != 1)
+    return false;
+  auto src = op.getSrcs()[0];
+  auto srcType = dyn_cast<RankedTensorType>(src.getType());
+  if (!srcType || !srcType.getElementType().isInteger(32))
+    return false;
+  // Check if the input is an extension from i1
+  auto defOp = src.getDefiningOp();
+  if (!defOp)
+    return false;
+  if (auto extSI = dyn_cast<arith::ExtSIOp>(defOp)) {
+    auto inType = dyn_cast<RankedTensorType>(extSI.getIn().getType());
+    return inType && inType.getElementType().isInteger(1);
   }
-  for (auto &o : combineOp.back().without_terminator()) {
-    for (auto operand : o.getOperands()) {
-      if (auto constantOp = operand.getDefiningOp<arith::ConstantOp>()) {
-        if (!map.lookupOrNull(operand)) {
-          OpBuilder::InsertionGuard guard(builder);
-          builder.setInsertionPointAfter(constantOp);
-          if (operand.getType().isInteger(1)) {
-            auto boolAttr = dyn_cast<BoolAttr>(constantOp.getValue());
-            auto integerAttr = dyn_cast<IntegerAttr>(constantOp.getValue());
-            if ((boolAttr && !boolAttr.getValue()) ||
-                (integerAttr && integerAttr.getValue().isZero())) {
-              map.map(operand,
-                      builder.create<vector::ConstantMaskOp>(
-                          loc,
-                          VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                          operand.getType()),
-                          DenseI64ArrayAttr::get(builder.getContext(),
-                                                 ArrayRef<int64_t>{0})));
-            } else {
-              map.map(
-                  operand,
-                  builder.create<vector::ConstantMaskOp>(
-                      loc,
-                      VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                      operand.getType()),
-                      DenseI64ArrayAttr::get(builder.getContext(),
-                                             ArrayRef<int64_t>{vectorLength})));
-            }
-          } else {
-            map.map(operand,
-                    builder.create<vector::BroadcastOp>(
-                        loc,
-                        VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                        operand.getType()),
-                        operand));
+  if (auto extUI = dyn_cast<arith::ExtUIOp>(defOp)) {
+    auto inType = dyn_cast<RankedTensorType>(extUI.getIn().getType());
+    return inType && inType.getElementType().isInteger(1);
+  }
+  // Check inside ElementwiseFusionRegionOp: if the yield value is produced
+  // by ExtSI/ExtUI from i1, the scan input is bool-valued.
+  if (auto fusionOp = dyn_cast<triton::gcu::ElementwiseFusionRegionOp>(defOp)) {
+    auto &region = fusionOp.getRegion();
+    if (region.hasOneBlock()) {
+      auto &block = region.front();
+      auto terminator = block.getTerminator();
+      if (terminator->getNumOperands() >= 1) {
+        unsigned resultIdx = 0;
+        for (unsigned i = 0; i < fusionOp->getNumResults(); ++i) {
+          if (fusionOp->getResult(i) == src) {
+            resultIdx = i;
+            break;
+          }
+        }
+        if (resultIdx < terminator->getNumOperands()) {
+          auto yieldVal = terminator->getOperand(resultIdx);
+          auto yieldDefOp = yieldVal.getDefiningOp();
+          if (!yieldDefOp)
+            return false;
+          if (auto extSI = dyn_cast<arith::ExtSIOp>(yieldDefOp)) {
+            auto inType = extSI.getIn().getType();
+            if (inType.isInteger(1))
+              return true;
+            if (auto tensorTy = dyn_cast<RankedTensorType>(inType))
+              return tensorTy.getElementType().isInteger(1);
+          }
+          if (auto extUI = dyn_cast<arith::ExtUIOp>(yieldDefOp)) {
+            auto inType = extUI.getIn().getType();
+            if (inType.isInteger(1))
+              return true;
+            if (auto tensorTy = dyn_cast<RankedTensorType>(inType))
+              return tensorTy.getElementType().isInteger(1);
           }
         }
       }
     }
-    Operation *newOp;
-    if (auto selectOp = dyn_cast<arith::SelectOp>(o)) {
-      auto condition = selectOp.getCondition();
-      auto mapValue = map.lookup(condition);
-      if (cast<VectorType>(mapValue.getType()).getElementType().isInteger(8)) {
-        map.map(condition,
-                builder
-                    .create<gcu::VectorConvertOp>(
-                        loc,
-                        VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                        builder.getIntegerType(1)),
-                        mapValue)
-                    .getResult(0));
-        newOp = builder.clone(o, map);
-        map.map(condition, mapValue);
-      } else {
-        newOp = builder.clone(o, map);
-      }
-    } else {
-      newOp = builder.clone(o, map);
-    }
-    SmallVector<Type> resultTypes;
-    auto typeInterface = dyn_cast<InferTypeOpInterface>(newOp);
-    if (typeInterface &&
-        succeeded(typeInterface.inferReturnTypes(
-            newOp->getContext(), newOp->getLoc(), newOp->getOperands(),
-            newOp->getAttrDictionary(), newOp->getPropertiesStorage(),
-            newOp->getRegions(), resultTypes))) {
-      for (auto [resultType, result, newResult] :
-           llvm::zip(resultTypes, o.getResults(), newOp->getResults())) {
-        newResult.setType(resultType);
-        map.map(result, newResult);
-      }
-    } else {
-      for (auto [result, newResult] :
-           llvm::zip(o.getResults(), newOp->getResults())) {
-        auto vectorTy =
-            VectorType::get(ArrayRef<int64_t>{vectorLength}, result.getType());
-        newResult.setType(vectorTy);
-        map.map(result, newResult);
-      }
-    }
   }
-  auto terminatorOprands = llvm::to_vector(llvm::map_range(
-      llvm::cast<triton::ScanReturnOp>(combineOp.back().getTerminator())
-          .getResult(),
-      [&](auto v) {
-        auto mappingValue = map.lookupOrNull(v);
-        assert(mappingValue != nullptr);
-        return mappingValue;
-      }));
-  return terminatorOprands;
+  return false;
 }
 
-// Apply combine region to scalar operands (no vectorization).
-// operands = [lhs0, ..., lhsN, rhs0, ..., rhsN] matching block args.
-SmallVector<Value> scalarCombineOpWithoutTerminator(Location loc,
-                                                    OpBuilder &builder,
-                                                    Region &combineOp,
-                                                    ValueRange operands) {
-  IRMapping map;
-  for (auto [arg, operand] : llvm::zip(combineOp.getArguments(), operands))
-    map.map(arg, operand);
-  for (auto &o : combineOp.back().without_terminator()) {
-    auto *newOp = builder.clone(o, map);
-    for (auto [result, newResult] :
-         llvm::zip(o.getResults(), newOp->getResults()))
-      map.map(result, newResult);
-  }
-  auto terminatorOprands = llvm::to_vector(llvm::map_range(
-      llvm::cast<triton::ScanReturnOp>(combineOp.back().getTerminator())
-          .getResult(),
-      [&](auto v) {
-        auto mappingValue = map.lookupOrNull(v);
-        assert(mappingValue != nullptr);
-        return mappingValue;
-      }));
-  return terminatorOprands;
-}
-
-void vectorizeCombineOpTerminator(Location loc, OpBuilder &builder,
-                                  ValueRange operands) {
-  builder.create<triton::ScanReturnOp>(loc, operands);
+// Returns true when the scan combine operation is addition.
+bool isAddCombine(triton::ScanOp op) {
+  auto combineOpDesc = triton::gcu::CombineOpDesc(op);
+  auto kind = combineOpDesc.getCombiningKind();
+  return kind.has_value() && *kind == vector::CombiningKind::ADD;
 }
 
 // ===----------------------------------------------------------------------===
@@ -184,31 +120,6 @@ void vectorizeCombineOpTerminator(Location loc, OpBuilder &builder,
 //                                                   and scan serially.
 //                                          false -> scan in-place on each warp.
 // ===----------------------------------------------------------------------===
-
-// Fold per-thread element counts into a 3D shape {dim0, dim1, dim2}, placing
-// the scan axis into one of the three dimensions.  Non-scan dimensions are
-// collapsed (multiplied) into the remaining slots.
-//
-//   scanInOutDims[out] will always be 1 for the dimension that is unused.
-//   scanAxis          is the index (0-2) where the scan happens.
-void foldTo3DScanShape(const SmallVector<unsigned> &numElems, unsigned axis,
-                       std::array<int64_t, 3> &scanInOutDims,
-                       int64_t &scanAxis) {
-  scanInOutDims = {1, 1, 1};
-  scanAxis = 2;
-  for (int i = numElems.size() - 1, j = 2; i >= 0; i--) {
-    if (static_cast<unsigned>(i) == axis) {
-      if (scanInOutDims[j] == 1)
-        scanInOutDims[j] = numElems[i];
-      else
-        scanInOutDims[--j] = numElems[i];
-      scanAxis = j;
-      --j;
-    } else {
-      scanInOutDims[j] *= numElems[i];
-    }
-  }
-}
 
 // Returns true when every dimension satisfies
 //   dim == elems_per_thread × threads_per_warp × warps_per_cta
@@ -270,7 +181,7 @@ bool mustRunOnMasterThread(RankedTensorType inputType, unsigned axis,
 bool isOneDimReshapeCandidate(const std::array<int64_t, 3> &scanInOutDims,
                               int64_t scanAxis, int64_t VL, int64_t &N,
                               int64_t &M, int64_t &tail) {
-  constexpr int64_t minM = 2;
+  constexpr int64_t minM = 1;
   N = 0;
   if (scanAxis == 2 && scanInOutDims[0] == 1 && scanInOutDims[1] == 1 &&
       scanInOutDims[2] >= VL * minM) {
@@ -283,6 +194,34 @@ bool isOneDimReshapeCandidate(const std::array<int64_t, 3> &scanInOutDims,
   }
   M = N / VL;
   tail = N % VL;
+  return true;
+}
+
+// When B >= this threshold, use vector carry (VectorShiftOp + identity
+// patching) instead of B scalar extract/insert ops. Vector operations have
+// higher per-op latency (~16x scalar cycle), but amortize when B is large
+// enough that 3B scalar ops > 2 vector ops.
+constexpr int64_t kVectorCarryThreshold = 16;
+
+// Returns true when batch-1D interleaved scan is applicable.
+// Requires shape {1, N, B} with scanAxis=1, B>1, VL%B==0, N*B >= VL.
+// On success sets N, B, M (full blocks), tail (remaining elements).
+bool isBatchOneDimCandidate(const std::array<int64_t, 3> &scanInOutDims,
+                            int64_t scanAxis, int64_t VL, int64_t &N,
+                            int64_t &B, int64_t &M, int64_t &tail) {
+  if (scanAxis != 1 || scanInOutDims[0] != 1)
+    return false;
+  N = scanInOutDims[1];
+  B = scanInOutDims[2];
+  if (B <= 1)
+    return false;
+  if (VL % B != 0)
+    return false;
+  int64_t totalElems = N * B;
+  if (totalElems < VL)
+    return false;
+  M = totalElems / VL;
+  tail = totalElems % VL;
   return true;
 }
 
@@ -344,7 +283,7 @@ Value applyOneDimReshapeScanCommon(OpBuilder &rewriter, Location loc,
   auto mConst = rewriter.create<arith::ConstantIndexOp>(loc, M);
 
   Value carry;
-  assert(M >= 2 && "M must be at least 2");
+  assert(M >= 1 && "M must be at least 1");
 
   // NOTE: The exclusive (initVal) and inclusive (!initVal) branches are kept
   // separate intentionally.  The exclusive path uses a single unified ForOp
@@ -368,7 +307,7 @@ Value applyOneDimReshapeScanCommon(OpBuilder &rewriter, Location loc,
               processBlock(b, loc, vec, blkCarry, /*isFirstBlock=*/false);
           b.create<vector::StoreOp>(loc, newVec, outFlat,
                                     ValueRange{blkI, zero});
-          vectorizeCombineOpTerminator(loc, b, ValueRange(newCarry));
+          b.create<scf::YieldOp>(loc, ValueRange(newCarry));
         });
     carry = forOp.getResult(0);
   } else {
@@ -386,25 +325,28 @@ Value applyOneDimReshapeScanCommon(OpBuilder &rewriter, Location loc,
     carry = newCarry;
 
     // - the remaining M-1 blocks, with carry fused in the first lane.
-    Value lb = reverse ? zero : one;
-    Value ub = reverse ? rewriter.create<arith::ConstantIndexOp>(loc, M - 1)
-                       : rewriter.create<arith::ConstantIndexOp>(loc, M);
-    auto mMinusTwo = rewriter.create<arith::ConstantIndexOp>(loc, M - 2);
-    auto forOp = rewriter.create<scf::ForOp>(
-        loc, lb, ub, one, ValueRange{carry},
-        [&](OpBuilder &b, Location loc, Value blkIdx, ValueRange iterArgs) {
-          Value blkCarry = iterArgs[0];
-          Value blkI = reverse ? b.create<arith::SubIOp>(loc, mMinusTwo, blkIdx)
-                               : blkIdx;
-          Value vec = b.create<vector::LoadOp>(loc, vecTy, inFlat,
-                                               ValueRange{blkI, zero});
-          auto [newVec, newCarry] =
-              processBlock(b, loc, vec, blkCarry, /*isFirstBlock=*/false);
-          b.create<vector::StoreOp>(loc, newVec, outFlat,
-                                    ValueRange{blkI, zero});
-          vectorizeCombineOpTerminator(loc, b, ValueRange(newCarry));
-        });
-    carry = forOp.getResult(0);
+    if (M > 1) {
+      Value lb = reverse ? zero : one;
+      Value ub = reverse ? rewriter.create<arith::ConstantIndexOp>(loc, M - 1)
+                         : rewriter.create<arith::ConstantIndexOp>(loc, M);
+      auto mMinusTwo = rewriter.create<arith::ConstantIndexOp>(loc, M - 2);
+      auto forOp = rewriter.create<scf::ForOp>(
+          loc, lb, ub, one, ValueRange{carry},
+          [&](OpBuilder &b, Location loc, Value blkIdx, ValueRange iterArgs) {
+            Value blkCarry = iterArgs[0];
+            Value blkI = reverse
+                             ? b.create<arith::SubIOp>(loc, mMinusTwo, blkIdx)
+                             : blkIdx;
+            Value vec = b.create<vector::LoadOp>(loc, vecTy, inFlat,
+                                                 ValueRange{blkI, zero});
+            auto [newVec, newCarry] =
+                processBlock(b, loc, vec, blkCarry, /*isFirstBlock=*/false);
+            b.create<vector::StoreOp>(loc, newVec, outFlat,
+                                      ValueRange{blkI, zero});
+            b.create<scf::YieldOp>(loc, ValueRange(newCarry));
+          });
+      carry = forOp.getResult(0);
+    }
   }
 
   // - Tail handling: scalar combine via combineScalar callback.
@@ -428,7 +370,7 @@ Value applyOneDimReshapeScanCommon(OpBuilder &rewriter, Location loc,
           auto [stored, newAcc] = combineScalar(b, loc, acc, elem);
           b.create<memref::StoreOp>(loc, stored, outFlat,
                                     ValueRange{rowIdx, colIdx});
-          vectorizeCombineOpTerminator(loc, b, ValueRange(newAcc));
+          b.create<scf::YieldOp>(loc, ValueRange(newAcc));
         });
     return tailFor.getResult(0);
   }
@@ -446,69 +388,51 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     auto loc = op.getLoc();
     auto numElems = triton::gcu::getElemsPerThread(type);
     auto numOutput = outputs.size();
-    auto totalNumElems = triton::gcu::getTotalElemsPerThread(type);
-    auto tag = pTagPool.getPrivateSyncTagInfo(op);
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto [scanInOutDims, scanAxis] = triton::gcu::foldTo3D(numElems, axis);
 
-    // initialize outputs by inputs
-    for (unsigned i = 0; i < numOutput; ++i) {
-      rewriter.create<memref::DmaStartOp>(
-          loc, inputs[i], SmallVector<Value, 4>(numElems.size(), zero),
-          outputs[i], SmallVector<Value, 4>(numElems.size(), zero),
-          rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems),
-          tag.getTag(), ValueRange{tag.getIdx()});
-      rewriter.create<memref::DmaWaitOp>(
-          loc, tag.getTag(), ValueRange{tag.getIdx()},
-          rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
-    }
-
-    std::array<int64_t, 3> scanInOutDims = {1, 1, 1};
-    int64_t scanAxis = 2;
-    for (int i = numElems.size() - 1, j = 2; i >= 0; i--) {
-      if (static_cast<unsigned>(i) == axis) {
-        if (scanInOutDims[j] == 1) {
-          scanInOutDims[j] = numElems[i];
-        } else {
-          scanInOutDims[--j] = numElems[i];
-        }
-        scanAxis = j;
-        --j;
-      } else {
-        scanInOutDims[j] *= numElems[i];
-      }
-    }
-    SmallVector<Value, 4> outs;
-    llvm::transform(outputs, std::back_inserter(outs), [&](auto output) {
-      return rewriter.create<memref::ReinterpretCastOp>(
-          loc,
-          MemRefType::get(scanInOutDims,
-                          cast<MemRefType>(output.getType()).getElementType()),
-          output, ValueRange{}, ValueRange{}, ValueRange{},
-          ArrayRef<int64_t>{0},
-          ArrayRef<int64_t>{scanInOutDims[0], scanInOutDims[1],
-                            scanInOutDims[2]},
-          ArrayRef<int64_t>{scanInOutDims[1] * scanInOutDims[2],
-                            scanInOutDims[2], 1});
-    });
     // 1D specialized path: when the scan axis occupies the only "large"
     // dimension and the vectorize axis is equal to 1, reshape so the scan axis
     // becomes dim1 and the vectorize axis becomes dim2. After scan, apply lane
     // postfix to combine independent per-lane scans.
-    if (succeeded(applyOneDimReshapeScan(op, rewriter, outs, scanInOutDims,
-                                         scanAxis, reverse))) {
+    if (succeeded(applyOneDimReshapeScan(op, rewriter, inputs, outputs,
+                                         scanInOutDims, scanAxis, reverse))) {
       return;
     }
-    if (succeeded(applyGeneralScan(op, rewriter, outs, scanInOutDims, scanAxis,
-                                   reverse))) {
+
+    SmallVector<Value, 4> outs;
+    SmallVector<Value, 4> ins;
+    for (unsigned i = 0; i < numOutput; ++i) {
+      auto memrefType = MemRefType::get(
+          scanInOutDims,
+          cast<MemRefType>(outputs[i].getType()).getElementType());
+      ins.push_back(rewriter.create<memref::ReinterpretCastOp>(
+          loc, memrefType, inputs[i], 0,
+          ArrayRef<int64_t>{scanInOutDims[0], scanInOutDims[1],
+                            scanInOutDims[2]},
+          ArrayRef<int64_t>{scanInOutDims[1] * scanInOutDims[2],
+                            scanInOutDims[2], 1}));
+      outs.push_back(rewriter.create<memref::ReinterpretCastOp>(
+          loc, memrefType, outputs[i], 0,
+          ArrayRef<int64_t>{scanInOutDims[0], scanInOutDims[1],
+                            scanInOutDims[2]},
+          ArrayRef<int64_t>{scanInOutDims[1] * scanInOutDims[2],
+                            scanInOutDims[2], 1}));
+    }
+    if (succeeded(applyBatchOneDimScan(op, rewriter, ins, outs, scanInOutDims,
+                                       scanAxis, reverse))) {
       return;
     }
-    return applyScanFallback(op, rewriter, outs, scanInOutDims, scanAxis,
+    if (succeeded(applyGeneralScan(op, rewriter, ins, outs, scanInOutDims,
+                                   scanAxis, reverse))) {
+      return;
+    }
+    return applyScanFallback(op, rewriter, ins, outs, scanInOutDims, scanAxis,
                              reverse);
   }
 
   LogicalResult
   applyOneDimReshapeScan(triton::ScanOp op, OpBuilder &rewriter,
-                         ArrayRef<Value> outputs,
+                         ArrayRef<Value> inputs, ArrayRef<Value> outputs,
                          const std::array<int64_t, 3> &scanInOutDims,
                          int64_t scanAxis, bool reverse) const {
     unsigned maxBpe = 4;
@@ -531,21 +455,17 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
       return failure();
 
     auto loc = op.getLoc();
-    auto &combineOp = op.getCombineOp();
+    auto combineOpDesc = triton::gcu::CombineOpDesc(op);
     auto elTy = cast<MemRefType>(outputs[0].getType()).getElementType();
 
-    // Check if the combine op is add — enables Hillis-Steele O(log2(VL)).
-    bool isAddOp = false;
-    if (combineOp.hasOneBlock()) {
-      auto &block = combineOp.front();
-      if (llvm::hasSingleElement(block.without_terminator())) {
-        auto &frontOp = block.front();
-        isAddOp = isa<arith::AddIOp>(frontOp) || isa<arith::AddFOp>(frontOp);
-      }
-    }
+    auto identityAttrs = combineOpDesc.inferIdentityAttrs(rewriter);
+    bool isZeroIdentity =
+        succeeded(identityAttrs) && identityAttrs->size() == 1 &&
+        (*identityAttrs)[0] ==
+            rewriter.getZeroAttr((*identityAttrs)[0].getType());
 
     ProcessBlockFn inclusiveScan;
-    if (isAddOp) {
+    if (isZeroIdentity) {
       // Hillis-Steele O(log2(VL)) inclusive scan for add combine.
       // Phase 1: fuse cross-block carry into firstLane (scalar insert).
       // Phase 2: log2(VL) steps of vector_shift + vectorized combine.
@@ -559,7 +479,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
           Value firstElem = b.create<vector::ExtractOp>(
               loc, vec, ArrayRef<int64_t>{firstLane});
           SmallVector<Value, 2> args = {carry, firstElem};
-          auto res = scalarCombineOpWithoutTerminator(loc, b, combineOp, args);
+          auto res = combineOpDesc.applyScalarCombine(b, loc, args);
           vec = b.create<vector::InsertOp>(loc, res[0], vec,
                                            ArrayRef<int64_t>{firstLane});
         }
@@ -569,8 +489,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
               b.create<arith::ConstantIntOp>(loc, b.getI32Type(), stride);
           Value shifted =
               b.create<gcu::VectorShiftOp>(loc, shiftDir, vec, shiftVal);
-          auto res = vectorizeCombineOpWithoutTerminator(
-              loc, b, combineOp, ValueRange{shifted, vec}, VL);
+          auto res = combineOpDesc.applyVectorizedCombine(
+              b, loc, ValueRange{shifted, vec}, VL);
           vec = res[0];
         }
 
@@ -594,7 +514,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
           acc = firstElem;
         } else {
           SmallVector<Value, 2> args = {carry, firstElem};
-          auto res = scalarCombineOpWithoutTerminator(loc, b, combineOp, args);
+          auto res = combineOpDesc.applyScalarCombine(b, loc, args);
           acc = res[0];
           vec = b.create<vector::InsertOp>(loc, acc, vec,
                                            ArrayRef<int64_t>{firstLane});
@@ -605,7 +525,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
           Value elem =
               b.create<vector::ExtractOp>(loc, vec, ArrayRef<int64_t>{lane});
           SmallVector<Value, 2> args = {acc, elem};
-          auto res = scalarCombineOpWithoutTerminator(loc, b, combineOp, args);
+          auto res = combineOpDesc.applyScalarCombine(b, loc, args);
           acc = res[0];
           vec = b.create<vector::InsertOp>(loc, acc, vec,
                                            ArrayRef<int64_t>{lane});
@@ -618,7 +538,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     ProcessScalarFn scalarCombine = [&](OpBuilder &b, Location loc, Value acc,
                                         Value elem) {
       SmallVector<Value, 2> args = {acc, elem};
-      auto res = scalarCombineOpWithoutTerminator(loc, b, combineOp, args);
+      auto res = combineOpDesc.applyScalarCombine(b, loc, args);
       return std::make_pair(res[0], res[0]);
     };
 
@@ -626,13 +546,18 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     // passes isFirstBlock=true, so the callback ignores the initVal entirely
     // (first lane untouched — correct for any monoid).  initVal is only used
     // as a syntactic placeholder to satisfy the ProcessBlockFn signature.
-    applyOneDimReshapeScanCommon(rewriter, loc, outputs[0], outputs[0], N, VL,
-                                 reverse, elTy, Value(), inclusiveScan,
+    Value identityValue =
+        succeeded(identityAttrs) && identityAttrs->size() == 1
+            ? rewriter.create<arith::ConstantOp>(loc, (*identityAttrs)[0])
+            : Value();
+    applyOneDimReshapeScanCommon(rewriter, loc, inputs[0], outputs[0], N, VL,
+                                 reverse, elTy, identityValue, inclusiveScan,
                                  scalarCombine);
     return success();
   }
 
   LogicalResult applyGeneralScan(triton::ScanOp op, OpBuilder &rewriter,
+                                 ArrayRef<Value> inputs,
                                  ArrayRef<Value> outputs,
                                  const std::array<int64_t, 3> &scanInOutDims,
                                  int64_t scanAxis, bool reverse) const {
@@ -673,8 +598,23 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     if (scanInOutDims[vectorizeAxis] < vectorLength) {
       return failure();
     }
+    auto totalNumElems = scanInOutDims[0] * scanInOutDims[1] * scanInOutDims[2];
+    auto tag = pTagPool.getPrivateSyncTagInfo(op);
     auto numOutput = outputs.size();
     auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+
+    // initialize outputs by inputs
+    for (unsigned i = 0; i < numOutput; ++i) {
+      rewriter.create<memref::DmaStartOp>(
+          loc, inputs[i], SmallVector<Value>(3, zero), outputs[i],
+          SmallVector<Value>(3, zero),
+          rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems),
+          tag.getTag(), ValueRange{tag.getIdx()});
+      rewriter.create<memref::DmaWaitOp>(
+          loc, tag.getTag(), ValueRange{tag.getIdx()},
+          rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
+    }
+
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     SmallVector<VectorType, 4> vectorTypes;
     llvm::transform(
@@ -843,8 +783,252 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     return success();
   }
 
+  // Batch-1D scan: for scanInOutDims = {1, N, B} with scanAxis=1.
+  // Memory layout is [N][B] row-major, so B batch lanes are interleaved.
+  // A VL-wide vector covers VL/B scan positions across all B lanes.
+  //
+  // For add-only combine: use Hillis-Steele with stride=B*2^k to scan
+  // within each batch lane simultaneously, avoiding gather/scatter.
+  //
+  // For general combine: gather each batch lane to a contiguous buffer,
+  // run the 1D scan, then scatter back.
+  LogicalResult
+  applyBatchOneDimScan(triton::ScanOp op, OpBuilder &rewriter,
+                       ArrayRef<Value> inputs, ArrayRef<Value> outputs,
+                       const std::array<int64_t, 3> &scanInOutDims,
+                       int64_t scanAxis, bool reverse) const {
+    auto numOutput = outputs.size();
+    if (numOutput != 1)
+      return failure();
+
+    auto elTy = cast<MemRefType>(outputs[0].getType()).getElementType();
+    unsigned bpe = mlir::triton::gcu::getBpe(elTy);
+    unsigned minBpe = bpe < 4 ? 4 : bpe;
+    int64_t VL = oaccSizeInBytes / minBpe;
+
+    int64_t N, B, M, tail;
+    if (!isBatchOneDimCandidate(scanInOutDims, scanAxis, VL, N, B, M, tail))
+      return failure();
+
+    auto loc = op.getLoc();
+    auto combineOpDesc = triton::gcu::CombineOpDesc(op);
+
+    auto identityAttrs = combineOpDesc.inferIdentityAttrs(rewriter);
+    if (failed(identityAttrs) || identityAttrs->size() != 1) {
+      op.emitWarning("batch-1D scan: CombineOpDesc::inferIdentityAttrs failed "
+                     "for a recognized combine op; falling back to "
+                     "gather/scatter. Please add the missing identity to "
+                     "ReduceScanCommon.cpp.");
+      return failure();
+    }
+    bool isZeroIdentity = (*identityAttrs)[0] ==
+                          rewriter.getZeroAttr((*identityAttrs)[0].getType());
+
+    // Interleaved Hillis-Steele: shift by B*2^k to scan within each batch lane
+    // simultaneously. No gather/scatter needed. For non-zero identity ops (mul,
+    // and, min, max), patch the zero-filled vacated lanes from VectorShiftOp
+    // with the identity before combining.
+    auto vecTy = VectorType::get(VL, elTy);
+    auto flatTy = MemRefType::get({M + (tail > 0 ? 1 : 0), VL}, elTy);
+
+    Value inFlat = rewriter.create<memref::ReinterpretCastOp>(
+        loc, flatTy, inputs[0], ValueRange{}, ValueRange{}, ValueRange{},
+        ArrayRef<int64_t>{0}, ArrayRef<int64_t>{M + (tail > 0 ? 1 : 0), VL},
+        ArrayRef<int64_t>{VL, 1});
+    Value outFlat = rewriter.create<memref::ReinterpretCastOp>(
+        loc, flatTy, outputs[0], ValueRange{}, ValueRange{}, ValueRange{},
+        ArrayRef<int64_t>{0}, ArrayRef<int64_t>{M + (tail > 0 ? 1 : 0), VL},
+        ArrayRef<int64_t>{VL, 1});
+
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto shiftDir = reverse ? gcu::VectorShiftDirection::LEFT
+                            : gcu::VectorShiftDirection::RIGHT;
+
+    // For non-zero-identity ops, build a lane-index vector and an
+    // identity-broadcast vector once, used to patch VectorShiftOp output.
+    Value identityVec;
+    Value laneIdxVec;
+    if (!isZeroIdentity) {
+      Value identity =
+          rewriter.create<arith::ConstantOp>(loc, elTy, (*identityAttrs)[0]);
+      identityVec = rewriter.create<vector::BroadcastOp>(loc, vecTy, identity);
+      auto i32VecTy = VectorType::get(VL, rewriter.getI32Type());
+      Value zeroI32 =
+          rewriter.create<arith::ConstantIntOp>(loc, rewriter.getI32Type(), 0);
+      laneIdxVec = rewriter.create<gcu::VectorStepOp>(loc, i32VecTy, zeroI32);
+    }
+
+    bool useVectorCarry = (B >= kVectorCarryThreshold);
+
+    // Prepare vector carry infrastructure when B >= threshold.
+    auto carryShiftDir = reverse ? gcu::VectorShiftDirection::RIGHT
+                                 : gcu::VectorShiftDirection::LEFT;
+    Value carryShiftAmt;
+    Value carryPatchMask;
+    if (useVectorCarry) {
+      carryShiftAmt = rewriter.create<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), VL - B);
+      if (!isZeroIdentity) {
+        auto i32VecTy = VectorType::get(VL, rewriter.getI32Type());
+        Value bVec = rewriter.create<vector::BroadcastOp>(
+            loc, i32VecTy,
+            rewriter.create<arith::ConstantIntOp>(loc, rewriter.getI32Type(),
+                                                  B));
+        if (reverse) {
+          Value vlMinusB = rewriter.create<vector::BroadcastOp>(
+              loc, i32VecTy,
+              rewriter.create<arith::ConstantIntOp>(loc, rewriter.getI32Type(),
+                                                    VL - B));
+          carryPatchMask = rewriter.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::ult, laneIdxVec, vlMinusB);
+        } else {
+          carryPatchMask = rewriter.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::uge, laneIdxVec, bVec);
+        }
+      }
+    }
+
+    // Interleaved Hillis-Steele inclusive scan on one VL-wide block.
+    // carryArgs: B scalars (B < threshold) or 1 vector (B >= threshold).
+    auto interleavedScan =
+        [&](OpBuilder &builder, Location loc, Value vec,
+            ArrayRef<Value> carryArgs,
+            bool isFirstBlock) -> std::pair<Value, SmallVector<Value>> {
+      // Fuse carry from previous block.
+      if (!isFirstBlock) {
+        if (useVectorCarry) {
+          Value shifted = builder.create<gcu::VectorShiftOp>(
+              loc, carryShiftDir, carryArgs[0], carryShiftAmt);
+          if (!isZeroIdentity) {
+            shifted = builder.create<arith::SelectOp>(loc, carryPatchMask,
+                                                      identityVec, shifted);
+          }
+          auto res = combineOpDesc.applyVectorizedCombine(
+              builder, loc, ValueRange{shifted, vec}, VL);
+          vec = res[0];
+        } else {
+          for (int64_t bi = 0; bi < B; ++bi) {
+            int64_t lane = reverse ? VL - B + bi : bi;
+            Value vecElem = builder.create<vector::ExtractOp>(
+                loc, vec, ArrayRef<int64_t>{lane});
+            SmallVector<Value, 2> args = {carryArgs[bi], vecElem};
+            auto res = combineOpDesc.applyScalarCombine(builder, loc, args);
+            vec = builder.create<vector::InsertOp>(loc, res[0], vec,
+                                                   ArrayRef<int64_t>{lane});
+          }
+        }
+      }
+
+      // Hillis-Steele: shift by stride B, 2B, 4B, ...
+      for (int64_t stride = B; stride < VL; stride *= 2) {
+        Value shiftVal = builder.create<arith::ConstantIntOp>(
+            loc, builder.getI32Type(), stride);
+        Value shifted =
+            builder.create<gcu::VectorShiftOp>(loc, shiftDir, vec, shiftVal);
+        if (!isZeroIdentity) {
+          auto i32VecTy = VectorType::get(VL, builder.getI32Type());
+          Value strideVec = builder.create<vector::BroadcastOp>(
+              loc, i32VecTy,
+              builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(),
+                                                   stride));
+          Value mask;
+          if (reverse) {
+            Value vlMinusStride = builder.create<vector::BroadcastOp>(
+                loc, i32VecTy,
+                builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(),
+                                                     VL - stride));
+            mask = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::uge,
+                                                 laneIdxVec, vlMinusStride);
+          } else {
+            mask = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult,
+                                                 laneIdxVec, strideVec);
+          }
+          shifted =
+              builder.create<arith::SelectOp>(loc, mask, identityVec, shifted);
+        }
+        auto res = combineOpDesc.applyVectorizedCombine(
+            builder, loc, ValueRange{shifted, vec}, VL);
+        vec = res[0];
+      }
+
+      // Extract carry for next block.
+      if (useVectorCarry) {
+        return {vec, {vec}};
+      }
+      SmallVector<Value> newCarry(B);
+      for (int64_t bIdx = 0; bIdx < B; ++bIdx) {
+        int64_t lane = reverse ? bIdx : VL - B + bIdx;
+        newCarry[bIdx] = builder.create<vector::ExtractOp>(
+            loc, vec, ArrayRef<int64_t>{lane});
+      }
+      return {vec, newCarry};
+    };
+
+    // First block
+    int64_t firstBlkIdx = reverse ? M - 1 : 0;
+    auto blkI = rewriter.create<arith::ConstantIndexOp>(loc, firstBlkIdx);
+    Value vec = rewriter.create<vector::LoadOp>(loc, vecTy, inFlat,
+                                                ValueRange{blkI, zero});
+    auto [newVec, carryArgs] = interleavedScan(rewriter, loc, vec, {}, true);
+    rewriter.create<vector::StoreOp>(loc, newVec, outFlat,
+                                     ValueRange{blkI, zero});
+
+    // Remaining M-1 blocks
+    if (M > 1) {
+      SmallVector<Value> initArgs(carryArgs.begin(), carryArgs.end());
+      Value lb = reverse ? zero : one;
+      Value ub = reverse ? rewriter.create<arith::ConstantIndexOp>(loc, M - 1)
+                         : rewriter.create<arith::ConstantIndexOp>(loc, M);
+      auto mMinusTwo = rewriter.create<arith::ConstantIndexOp>(loc, M - 2);
+      auto forOp = rewriter.create<scf::ForOp>(
+          loc, lb, ub, one, initArgs,
+          [&](OpBuilder &b, Location loc, Value blkIdx, ValueRange iterArgs) {
+            SmallVector<Value> blkCarry(iterArgs.begin(), iterArgs.end());
+            Value blkI = reverse
+                             ? b.create<arith::SubIOp>(loc, mMinusTwo, blkIdx)
+                             : blkIdx;
+            Value vec = b.create<vector::LoadOp>(loc, vecTy, inFlat,
+                                                 ValueRange{blkI, zero});
+            auto [newVec, newCarry] =
+                interleavedScan(b, loc, vec, blkCarry, false);
+            b.create<vector::StoreOp>(loc, newVec, outFlat,
+                                      ValueRange{blkI, zero});
+            b.create<scf::YieldOp>(loc, ValueRange(SmallVector<Value>(
+                                            newCarry.begin(), newCarry.end())));
+          });
+      for (size_t i = 0; i < carryArgs.size(); ++i)
+        carryArgs[i] = forOp.getResult(i);
+    }
+
+    // Tail handling: masked vector load/store for the partial last block.
+    // TODO(haizhu,shao TBD): if tail is small, it may be more efficient to
+    // scalarize instead of vectorize with a mask.
+    if (tail > 0) {
+      int64_t tailBlkIdx = reverse ? 0 : M;
+      auto tailBlkI = rewriter.create<arith::ConstantIndexOp>(loc, tailBlkIdx);
+      Value tailCount = rewriter.create<arith::ConstantIndexOp>(loc, tail);
+      auto maskTy = VectorType::get(VL, rewriter.getI1Type());
+      Value mask =
+          rewriter.create<vector::CreateMaskOp>(loc, maskTy, tailCount);
+      Value passThru = rewriter.create<arith::ConstantOp>(
+          loc, vecTy, rewriter.getZeroAttr(vecTy));
+      Value tailVec = rewriter.create<vector::MaskedLoadOp>(
+          loc, vecTy, inFlat, ValueRange{tailBlkI, zero}, mask, passThru);
+
+      auto [newTailVec, unusedCarry] =
+          interleavedScan(rewriter, loc, tailVec, carryArgs,
+                          /*isFirstBlock=*/false);
+      (void)unusedCarry; // silence unused variable warning
+      rewriter.create<vector::MaskedStoreOp>(
+          loc, outFlat, ValueRange{tailBlkI, zero}, mask, newTailVec);
+    }
+
+    return success();
+  }
+
   void applyScanFallback(triton::ScanOp op, OpBuilder &rewriter,
-                         ArrayRef<Value> outputs,
+                         ArrayRef<Value> inputs, ArrayRef<Value> outputs,
                          const std::array<int64_t, 3> &scanInOutDims,
                          int64_t scanAxis, bool reverse) const {
     auto loc = op.getLoc();
@@ -853,11 +1037,34 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
     SmallVector<Value, 4> lbs(scanInOutDims.size(), zero);
-    lbs[scanAxis] = one;
     SmallVector<Value, 4> ubs{
         rewriter.create<arith::ConstantIndexOp>(loc, scanInOutDims[0]),
         rewriter.create<arith::ConstantIndexOp>(loc, scanInOutDims[1]),
         rewriter.create<arith::ConstantIndexOp>(loc, scanInOutDims[2])};
+
+    if (reverse) {
+      lbs[scanAxis] = rewriter.create<arith::ConstantIndexOp>(
+          loc, scanInOutDims[scanAxis] - 1);
+      ubs[scanAxis] =
+          rewriter.create<arith::ConstantIndexOp>(loc, scanInOutDims[scanAxis]);
+    } else {
+      lbs[scanAxis] = zero;
+      ubs[scanAxis] = one;
+    }
+    scf::buildLoopNest(
+        rewriter, loc, lbs, ubs,
+        SmallVector<Value, 4>(scanInOutDims.size(), one),
+        [&](OpBuilder &builder, Location loc, ValueRange iters) {
+          for (unsigned i = 0; i < numOutput; ++i) {
+            builder.create<memref::StoreOp>(
+                loc, builder.create<memref::LoadOp>(loc, inputs[i], iters),
+                outputs[i], iters);
+          }
+        });
+
+    lbs[scanAxis] = one;
+    ubs[scanAxis] =
+        rewriter.create<arith::ConstantIndexOp>(loc, scanInOutDims[scanAxis]);
 
     scf::buildLoopNest(
         rewriter, loc, lbs, ubs,
@@ -890,7 +1097,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
           }
           for (unsigned i = 0; i < numOutput; ++i) {
             operands.push_back(
-                builder.create<memref::LoadOp>(loc, outputs[i], outputIters));
+                builder.create<memref::LoadOp>(loc, inputs[i], outputIters));
             resultElemTypes.push_back(operands.back().getType());
           }
 
@@ -919,7 +1126,6 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                                             outputs[i], outputIters);
           }
         });
-
     doMemFence(rewriter, op);
   }
 
@@ -947,7 +1153,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     }
     auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto &combineOp = op.getCombineOp();
+    auto combineOpDesc = triton::gcu::CombineOpDesc(op);
     rewriter.create<scf::ForOp>(
         loc, zero,
         rewriter.create<arith::ConstantIndexOp>(loc, scanInOutDims[0]), one,
@@ -983,8 +1189,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                     args[numOutput + j] =
                         vectorList[(i * 2 + 1) * numOutput + j];
                   }
-                  auto combinOut = vectorizeCombineOpWithoutTerminator(
-                      loc, builder, combineOp, args, vectorLength);
+                  auto combinOut = combineOpDesc.applyVectorizedCombine(
+                      builder, loc, args, vectorLength);
                   for (unsigned j = 0; j < numOutput; ++j) {
                     vectorList[(i * 2 + 1) * numOutput + j] = combinOut[j];
                   }
@@ -996,8 +1202,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                     args[numOutput + j] =
                         vectorList[(i * 2 + 1) * numOutput + j];
                   }
-                  auto combinOut = vectorizeCombineOpWithoutTerminator(
-                      loc, builder, combineOp, args, vectorLength);
+                  auto combinOut = combineOpDesc.applyVectorizedCombine(
+                      builder, loc, args, vectorLength);
                   for (unsigned j = 0; j < numOutput; ++j) {
                     vectorList[(i * 2 + 1) * numOutput + j] = combinOut[j];
                   }
@@ -1008,8 +1214,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                     args[j] = vectorList[((i - 1) * 2 + 1) * numOutput + j];
                     args[numOutput + j] = vectorList[(i * 2) * numOutput + j];
                   }
-                  auto combinOut = vectorizeCombineOpWithoutTerminator(
-                      loc, builder, combineOp, args, vectorLength);
+                  auto combinOut = combineOpDesc.applyVectorizedCombine(
+                      builder, loc, args, vectorLength);
                   for (unsigned j = 0; j < numOutput; ++j) {
                     vectorList[(i * 2) * numOutput + j] = combinOut[j];
                   }
@@ -1068,8 +1274,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                           args[numOutput + j] =
                               vectorListInner[(i * 2 + 1) * numOutput + j];
                         }
-                        auto combinOut = vectorizeCombineOpWithoutTerminator(
-                            loc, builder, combineOp, args, vectorLength);
+                        auto combinOut = combineOpDesc.applyVectorizedCombine(
+                            builder, loc, args, vectorLength);
                         for (unsigned j = 0; j < numOutput; ++j) {
                           vectorListInner[(i * 2 + 1) * numOutput + j] =
                               combinOut[j];
@@ -1081,8 +1287,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                         args[numOutput + j] =
                             vectorListInner[(1) * numOutput + j];
                       }
-                      auto combinOut = vectorizeCombineOpWithoutTerminator(
-                          loc, builder, combineOp, args, vectorLength);
+                      auto combinOut = combineOpDesc.applyVectorizedCombine(
+                          builder, loc, args, vectorLength);
                       for (unsigned j = 0; j < numOutput; ++j) {
                         vectorListInner[(1) * numOutput + j] = combinOut[j];
                       }
@@ -1095,8 +1301,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                           args[numOutput + j] =
                               vectorListInner[(i * 2 + 1) * numOutput + j];
                         }
-                        auto combinOut = vectorizeCombineOpWithoutTerminator(
-                            loc, builder, combineOp, args, vectorLength);
+                        auto combinOut = combineOpDesc.applyVectorizedCombine(
+                            builder, loc, args, vectorLength);
                         for (unsigned j = 0; j < numOutput; ++j) {
                           vectorListInner[(i * 2 + 1) * numOutput + j] =
                               combinOut[j];
@@ -1107,8 +1313,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                         args[j] = lastBlockOut[j];
                         args[numOutput + j] = vectorListInner[j];
                       }
-                      combinOut = vectorizeCombineOpWithoutTerminator(
-                          loc, builder, combineOp, args, vectorLength);
+                      combinOut = combineOpDesc.applyVectorizedCombine(
+                          builder, loc, args, vectorLength);
                       for (unsigned j = 0; j < numOutput; ++j) {
                         vectorListInner[j] = combinOut[j];
                       }
@@ -1120,8 +1326,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                           args[numOutput + j] =
                               vectorListInner[(i * 2) * numOutput + j];
                         }
-                        auto combinOut = vectorizeCombineOpWithoutTerminator(
-                            loc, builder, combineOp, args, vectorLength);
+                        auto combinOut = combineOpDesc.applyVectorizedCombine(
+                            builder, loc, args, vectorLength);
                         for (unsigned j = 0; j < numOutput; ++j) {
                           vectorListInner[(i * 2) * numOutput + j] =
                               combinOut[j];
@@ -1150,7 +1356,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                         blockOut[j] =
                             vectorListInner[(loopCnt - 1) * numOutput + j];
                       }
-                      vectorizeCombineOpTerminator(loc, builder, blockOut);
+                      builder.create<scf::YieldOp>(loc, ValueRange(blockOut));
                     });
                 builder.create<scf::YieldOp>(loc);
               });
@@ -1350,9 +1556,73 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
 
     auto numElems = triton::gcu::getElemsPerThread(inputType);
     auto axis = op.getAxis();
-    std::array<int64_t, 3> scanInOutDims;
-    int64_t scanAxis;
-    foldTo3DScanShape(numElems, axis, scanInOutDims, scanAxis);
+    auto [scanInOutDims, scanAxis] = triton::gcu::foldTo3D(numElems, axis);
+
+    // Fast path: bool-valued inclusive add scan using miota hardware.
+    if (numInput == 1 && numOutput == 1 && isAddCombine(op) &&
+        isBoolValuedInput(op)) {
+      bool needsMasterThread = mustRunOnMasterThread(
+          inputType, axis, scanInOutDims, scanAxis, vectorLength);
+      if (needsMasterThread) {
+        auto tag = pTagPool.getPrivateSyncTagInfo(op);
+        auto tType = dyn_cast<RankedTensorType>(op.getSrcs()[0].getType());
+
+        Value smemInput =
+            storeToSharedMem(rewriter, tag, tType, adaptor.getSrcs()[0], false,
+                             std::make_pair(op.getOperation(), -1),
+                             userAnalysis, replaced2Origin);
+
+        // Allocate output in SMEM
+        auto smemOutputType =
+            MemRefType::get(tType.getShape(), outputElemTypes[0], AffineMap{},
+                            rewriter.getI64IntegerAttr(2));
+        Value smemOutput =
+            syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
+                        userAnalysis, replaced2Origin, smemOutputType);
+
+        // Master warp runs miota-based inclusive scan on SMEM directly
+        auto masterWarpId = getMasterThreadId(op.getOperation());
+        auto isMasterThread = rewriter.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::eq,
+            rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+            rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+        rewriter.create<scf::IfOp>(
+            loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
+              auto useMiotaAttr = builder.getUnitAttr();
+              auto reverseAttr =
+                  op.getReverse() ? builder.getUnitAttr() : UnitAttr();
+              builder.create<math_ext::InclusiveScanOp>(
+                  loc, smemOutput, smemInput, useMiotaAttr, reverseAttr);
+              builder.create<scf::YieldOp>(loc);
+            });
+        rewriter.create<gpu::BarrierOp>(loc);
+
+        // Broadcast SMEM output back to per-warp private memory
+        outputs[0] =
+            loadFromSharedMem(rewriter, tag, op.getResultTypes()[0], smemOutput,
+                              false, lastUsers[0], std::make_pair(nullptr, -1),
+                              userAnalysis, replaced2Origin);
+      } else {
+        // Warp-local path: call miota builtin on per-warp data directly
+        auto useMiotaAttr = rewriter.getUnitAttr();
+        auto reverseAttr =
+            op.getReverse() ? rewriter.getUnitAttr() : UnitAttr();
+        rewriter.create<math_ext::InclusiveScanOp>(
+            loc, outputs[0], adaptor.getSrcs()[0], useMiotaAttr, reverseAttr);
+      }
+      // Finalize
+      SmallVector<Value, 4> finalOutputs;
+      auto resultType = dyn_cast<MemRefType>(
+          getTypeConverter()->convertType(op.getResultTypes()[0]));
+      if (resultType.getNumElements() !=
+          dyn_cast<MemRefType>(outputs[0].getType()).getNumElements()) {
+        rewriter.create<gpu::BarrierOp>(loc);
+      }
+      finalOutputs.push_back(outputs[0]);
+      leaveTritionOp(rewriter, op.getOperation());
+      rewriter.replaceOp(op, finalOutputs);
+      return success();
+    }
 
     if (mustRunOnMasterThread(inputType, axis, scanInOutDims, scanAxis,
                               vectorLength)) {
@@ -1406,12 +1676,10 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
           rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
       rewriter.create<scf::IfOp>(
           loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
-            std::array<int64_t, 3> mergeInOutDims;
-            int64_t mergeScanAxis;
-            foldTo3DScanShape(
+            auto [mergeInOutDims, mergeScanAxis] = triton::gcu::foldTo3D(
                 SmallVector<unsigned>(mergedInputType.getShape().begin(),
                                       mergedInputType.getShape().end()),
-                axis, mergeInOutDims, mergeScanAxis);
+                axis);
             // Try vectorized block scan first, fallback to original applyScan.
             if (!succeeded(applyVectorizationScan(
                     op, builder, mergedOutputs, mergedInputs, mergeInOutDims,
@@ -1545,7 +1813,7 @@ public:
             Value srcVal =
                 b.create<memref::LoadOp>(loc, srcFlat1d, ValueRange{iv});
             Value newAcc = addCombine(b, loc, acc, srcVal, elemTy);
-            vectorizeCombineOpTerminator(loc, b, ValueRange(newAcc));
+            b.create<scf::YieldOp>(loc, ValueRange(newAcc));
           });
       return forOp.getResult(0);
 
@@ -1565,7 +1833,7 @@ public:
             Value srcVal =
                 b.create<memref::LoadOp>(loc, srcFlat1d, ValueRange{actualIdx});
             Value newAcc = addCombine(b, loc, acc, srcVal, elemTy);
-            vectorizeCombineOpTerminator(loc, b, ValueRange(newAcc));
+            b.create<scf::YieldOp>(loc, ValueRange(newAcc));
           });
       return forOp.getResult(0);
     }
@@ -1644,8 +1912,7 @@ public:
                                    Type elemTy) const {
     auto loc = op->getLoc();
     unsigned bpe = mlir::triton::gcu::getBpe(elemTy);
-    unsigned minBpe = bpe < 4 ? 4 : bpe;
-    int64_t VL = oaccSizeInBytes / minBpe;
+    int64_t VL = oaccSizeInBytes / bpe;
     std::array<int64_t, 3> dims = {1, 1, totalNumElems};
     int64_t N, M, tail;
     if (!isOneDimReshapeCandidate(dims, /*scanAxis=*/2, VL, N, M, tail))
@@ -1693,6 +1960,213 @@ public:
                                         exclusiveScan, scalarCombine);
   }
 
+  // Strategy 2: batch-1D interleaved exclusive scan for {1, N, B} shapes.
+  // Uses interleaved Hillis-Steele with stride=B*2^k, then converts
+  // inclusive->exclusive by shifting by B and inserting per-lane carry.
+  // Returns the total scalar (sum of all elements), or null to signal fallback.
+  Value runBatchOneDimExclusiveScan(Operation *op, OpBuilder &rewriter,
+                                    Value srcInput, Value exclusiveOut,
+                                    const std::array<int64_t, 3> &scanInOutDims,
+                                    int64_t scanAxis, bool reverse,
+                                    Type elemTy) const {
+    unsigned bpe = mlir::triton::gcu::getBpe(elemTy);
+    unsigned minBpe = bpe < 4 ? 4 : bpe;
+    int64_t VL = oaccSizeInBytes / minBpe;
+
+    int64_t N, B, M, tail;
+    if (!isBatchOneDimCandidate(scanInOutDims, scanAxis, VL, N, B, M, tail))
+      return Value();
+
+    auto loc = op->getLoc();
+    auto vecTy = VectorType::get(VL, elemTy);
+    auto flatTy = MemRefType::get({M + (tail > 0 ? 1 : 0), VL}, elemTy);
+
+    Value srcFlat = rewriter.create<memref::ReinterpretCastOp>(
+        loc, flatTy, srcInput, ValueRange{}, ValueRange{}, ValueRange{},
+        ArrayRef<int64_t>{0}, ArrayRef<int64_t>{M + (tail > 0 ? 1 : 0), VL},
+        ArrayRef<int64_t>{VL, 1});
+    Value outFlat = rewriter.create<memref::ReinterpretCastOp>(
+        loc, flatTy, exclusiveOut, ValueRange{}, ValueRange{}, ValueRange{},
+        ArrayRef<int64_t>{0}, ArrayRef<int64_t>{M + (tail > 0 ? 1 : 0), VL},
+        ArrayRef<int64_t>{VL, 1});
+
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto shiftDir = reverse ? gcu::VectorShiftDirection::LEFT
+                            : gcu::VectorShiftDirection::RIGHT;
+
+    Value zeroVal = rewriter.create<arith::ConstantOp>(
+        loc, elemTy, rewriter.getZeroAttr(elemTy));
+    Value zeroVec = rewriter.create<arith::ConstantOp>(
+        loc, vecTy, rewriter.getZeroAttr(vecTy));
+
+    bool useVectorCarry = B >= kVectorCarryThreshold;
+
+    auto carryShiftDir = reverse ? gcu::VectorShiftDirection::RIGHT
+                                 : gcu::VectorShiftDirection::LEFT;
+    Value carryShiftAmt;
+    if (useVectorCarry) {
+      carryShiftAmt = rewriter.create<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), VL - B);
+    }
+
+    // Lambda: interleaved inclusive scan + convert to exclusive.
+    // carryArgs: B scalars (B < threshold) or 1 vector (B >= threshold).
+    auto interleavedExclusiveScan =
+        [&](OpBuilder &builder, Location loc, Value vec,
+            ArrayRef<Value> carryArgs,
+            bool isFirstBlock) -> std::pair<Value, SmallVector<Value>> {
+      // Fuse carry into boundary lanes before inclusive scan
+      if (!isFirstBlock) {
+        if (useVectorCarry) {
+          Value shifted = builder.create<gcu::VectorShiftOp>(
+              loc, carryShiftDir, carryArgs[0], carryShiftAmt);
+          if (isa<FloatType>(elemTy))
+            vec = builder.create<arith::AddFOp>(loc, vecTy, shifted, vec);
+          else
+            vec = builder.create<arith::AddIOp>(loc, vecTy, shifted, vec);
+        } else {
+          for (int64_t bi = 0; bi < B; ++bi) {
+            int64_t lane = reverse ? VL - B + bi : bi;
+            Value vecElem = builder.create<vector::ExtractOp>(
+                loc, vec, ArrayRef<int64_t>{lane});
+            Value combined =
+                addCombine(builder, loc, carryArgs[bi], vecElem, elemTy);
+            vec = builder.create<vector::InsertOp>(loc, combined, vec,
+                                                   ArrayRef<int64_t>{lane});
+          }
+        }
+      }
+
+      // Hillis-Steele inclusive with stride B, 2B, 4B, ...
+      for (int64_t stride = B; stride < VL; stride *= 2) {
+        Value shiftVal = builder.create<arith::ConstantIntOp>(
+            loc, builder.getI32Type(), stride);
+        Value shifted =
+            builder.create<gcu::VectorShiftOp>(loc, shiftDir, vec, shiftVal);
+        if (isa<FloatType>(elemTy))
+          vec = builder.create<arith::AddFOp>(loc, vecTy, shifted, vec);
+        else
+          vec = builder.create<arith::AddIOp>(loc, vecTy, shifted, vec);
+      }
+
+      Value inclusive = vec;
+
+      // Convert inclusive -> exclusive: shift by B, fill boundary lanes.
+      Value bShift =
+          builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), B);
+      Value excVec =
+          builder.create<gcu::VectorShiftOp>(loc, shiftDir, inclusive, bShift);
+
+      if (useVectorCarry) {
+        if (!isFirstBlock) {
+          Value carryPrefix = builder.create<gcu::VectorShiftOp>(
+              loc, carryShiftDir, carryArgs[0], carryShiftAmt);
+          if (isa<FloatType>(elemTy))
+            excVec =
+                builder.create<arith::AddFOp>(loc, vecTy, excVec, carryPrefix);
+          else
+            excVec =
+                builder.create<arith::AddIOp>(loc, vecTy, excVec, carryPrefix);
+        }
+        return {excVec, {inclusive}};
+      }
+
+      // Scalar carry: extract B carry scalars, insert into boundary lanes.
+      SmallVector<Value> newCarry(B);
+      for (int64_t bIdx = 0; bIdx < B; ++bIdx) {
+        int64_t lane = reverse ? bIdx : VL - B + bIdx;
+        newCarry[bIdx] = builder.create<vector::ExtractOp>(
+            loc, inclusive, ArrayRef<int64_t>{lane});
+      }
+      for (int64_t bi = 0; bi < B; ++bi) {
+        int64_t lane = reverse ? VL - B + bi : bi;
+        Value carryVal = isFirstBlock ? zeroVal : carryArgs[bi];
+        excVec = builder.create<vector::InsertOp>(loc, carryVal, excVec,
+                                                  ArrayRef<int64_t>{lane});
+      }
+      return {excVec, newCarry};
+    };
+
+    // First block
+    int64_t firstBlkIdx = reverse ? M - 1 : 0;
+    auto blkI = rewriter.create<arith::ConstantIndexOp>(loc, firstBlkIdx);
+    Value vec = rewriter.create<vector::LoadOp>(loc, vecTy, srcFlat,
+                                                ValueRange{blkI, zero});
+    auto [excVec, carryArgs] =
+        interleavedExclusiveScan(rewriter, loc, vec, {}, true);
+    rewriter.create<vector::StoreOp>(loc, excVec, outFlat,
+                                     ValueRange{blkI, zero});
+
+    // Remaining M-1 blocks
+    if (M > 1) {
+      SmallVector<Value> initArgs(carryArgs.begin(), carryArgs.end());
+      Value lb = reverse ? zero : one;
+      Value ub = reverse ? rewriter.create<arith::ConstantIndexOp>(loc, M - 1)
+                         : rewriter.create<arith::ConstantIndexOp>(loc, M);
+      auto mMinusTwo = rewriter.create<arith::ConstantIndexOp>(loc, M - 2);
+      auto forOp = rewriter.create<scf::ForOp>(
+          loc, lb, ub, one, initArgs,
+          [&](OpBuilder &b, Location loc, Value blkIdx, ValueRange iterArgs) {
+            SmallVector<Value> blkCarry(iterArgs.begin(), iterArgs.end());
+            Value blkI = reverse
+                             ? b.create<arith::SubIOp>(loc, mMinusTwo, blkIdx)
+                             : blkIdx;
+            Value vec = b.create<vector::LoadOp>(loc, vecTy, srcFlat,
+                                                 ValueRange{blkI, zero});
+            auto [excVec, newCarry] =
+                interleavedExclusiveScan(b, loc, vec, blkCarry, false);
+            b.create<vector::StoreOp>(loc, excVec, outFlat,
+                                      ValueRange{blkI, zero});
+            b.create<scf::YieldOp>(loc, ValueRange(SmallVector<Value>(
+                                            newCarry.begin(), newCarry.end())));
+          });
+      for (size_t i = 0; i < carryArgs.size(); ++i)
+        carryArgs[i] = forOp.getResult(i);
+    }
+
+    // Tail handling: masked vector load/store for the partial last block.
+    // TODO(haizhu,shao TBD): if tail is small, it may be more efficient to
+    // scalarize instead of vectorize with a mask.
+    if (tail > 0) {
+      int64_t tailBlkIdx = reverse ? 0 : M;
+      auto tailBlkI = rewriter.create<arith::ConstantIndexOp>(loc, tailBlkIdx);
+      Value tailCount = rewriter.create<arith::ConstantIndexOp>(loc, tail);
+      auto maskTy = VectorType::get(VL, rewriter.getI1Type());
+      Value mask =
+          rewriter.create<vector::CreateMaskOp>(loc, maskTy, tailCount);
+
+      Value tailSrc = rewriter.create<vector::MaskedLoadOp>(
+          loc, vecTy, srcFlat, ValueRange{tailBlkI, zero}, mask, zeroVec);
+      auto [tailExc, tailCarry] =
+          interleavedExclusiveScan(rewriter, loc, tailSrc, carryArgs,
+                                   /*isFirstBlock=*/false);
+      rewriter.create<vector::MaskedStoreOp>(
+          loc, outFlat, ValueRange{tailBlkI, zero}, mask, tailExc);
+      for (size_t i = 0; i < carryArgs.size(); ++i)
+        carryArgs[i] = tailCarry[i];
+    }
+
+    // Total = sum of all B lane carries
+    Value total;
+    if (useVectorCarry) {
+      int64_t firstCarryLane = reverse ? 0 : VL - B;
+      total = rewriter.create<vector::ExtractOp>(
+          loc, carryArgs[0], ArrayRef<int64_t>{firstCarryLane});
+      for (int64_t i = 1; i < B; ++i)
+        total = addCombine(
+            rewriter, loc, total,
+            rewriter.create<vector::ExtractOp>(
+                loc, carryArgs[0], ArrayRef<int64_t>{firstCarryLane + i}),
+            elemTy);
+    } else {
+      total = carryArgs[0];
+      for (int64_t i = 1; i < B; ++i)
+        total = addCombine(rewriter, loc, total, carryArgs[i], elemTy);
+    }
+    return total;
+  }
+
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
@@ -1724,9 +2198,7 @@ public:
     unsigned vectorLength = oaccSizeInBytes / minBpe;
 
     auto numElems = triton::gcu::getElemsPerThread(srcTensorTy);
-    std::array<int64_t, 3> scanInOutDims;
-    int64_t scanAxis;
-    foldTo3DScanShape(numElems, axis, scanInOutDims, scanAxis);
+    auto [scanInOutDims, scanAxis] = triton::gcu::foldTo3D(numElems, axis);
 
     // Allocate per-thread outputs for exclusive result
     auto exclusiveTensorTy =
@@ -1789,6 +2261,16 @@ public:
             Value tv =
                 runVectorizedExclusiveScan(op, b, mergedSrc, mergedExclusive,
                                            totalMergedElems, reverse, elemTy);
+            if (!tv) {
+              // Recompute fold for merged shape (all warps combined)
+              auto mergedNumElems =
+                  triton::gcu::getElemsPerThread(mergedTensorTy);
+              auto [mergedDims, mergedScanAxis] =
+                  triton::gcu::foldTo3D(mergedNumElems, axis);
+              tv = runBatchOneDimExclusiveScan(op, b, mergedSrc,
+                                               mergedExclusive, mergedDims,
+                                               mergedScanAxis, reverse, elemTy);
+            }
             if (!tv)
               tv = runScalarExclusiveScan(op, b, mergedSrc, mergedExclusive,
                                           totalMergedElems, reverse, elemTy);
@@ -1813,6 +2295,10 @@ public:
       totalScalar =
           runVectorizedExclusiveScan(op, rewriter, adaptorSrc, exclusiveOut,
                                      totalNumElems, reverse, elemTy);
+      if (!totalScalar)
+        totalScalar = runBatchOneDimExclusiveScan(op, rewriter, adaptorSrc,
+                                                  exclusiveOut, scanInOutDims,
+                                                  scanAxis, reverse, elemTy);
       if (!totalScalar)
         totalScalar =
             runScalarExclusiveScan(op, rewriter, adaptorSrc, exclusiveOut,

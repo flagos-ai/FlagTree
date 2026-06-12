@@ -46,9 +46,12 @@ def add_gcu_convert_triton_to_tritongpu(pipeline, num_warps: int, threads_per_wa
     pipeline.add_pass('gcu-convert-triton-to-tritongpu', options)
 
 
-def add_tle_to_triton_gcu(pipeline):
+def add_tle_to_triton_gcu(pipeline, cluster_dims=(1, 1, 1)):
     """Convert TLE dialect to TritonGCU dialect."""
-    pipeline.add_pass('tle-to-triton-gcu')
+    options = (f'cluster-dim-x={cluster_dims[0]} '
+               f'cluster-dim-y={cluster_dims[1]} '
+               f'cluster-dim-z={cluster_dims[2]}')
+    pipeline.add_pass('tle-to-triton-gcu', options)
 
 
 def add_triton_gpu_to_triton_gcu(pipeline):

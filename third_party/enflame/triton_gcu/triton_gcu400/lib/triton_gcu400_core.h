@@ -59,6 +59,11 @@ Gcu400String gcu400_run_opt(const char *input, size_t input_len,
 // Free a Gcu400String.
 void gcu400_string_free(Gcu400String s);
 
+// Full MlirOptMain wrapper -- registers all GCU400 dialects and passes,
+// then forwards argc/argv to MlirOptMain.  Allows the opt binary to be
+// a thin C wrapper with no LLVM/MLIR link dependency.
+int gcu400_opt_main(int argc, char **argv);
+
 #ifdef __cplusplus
 }
 #endif

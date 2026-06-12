@@ -19,7 +19,8 @@ import subprocess
 from typing import Any
 
 device_name = "gcu"
-datadir = "/opt/triton_gcu"
+datadir = os.getenv("TRITON_GCU_PATH") or "/opt/triton_gcu"
+
 if not os.path.exists(datadir):
     raise Exception("Cannot find data directory in " + datadir)
 
@@ -285,6 +286,8 @@ def compile_llir_to_fatbin_gcu500(llir_str: str, kernel_name: str = "kernel") ->
             "-O3",
             "--relocation-model=pic",
             "-vectorize-slp=false",
+            "--vectorize-loops=false",
+            "-mattr=multi-addrspaces",
         ]
 
         result = subprocess.run(

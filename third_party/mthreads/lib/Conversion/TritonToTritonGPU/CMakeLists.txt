@@ -1,3 +1,11 @@
+if(FLAGTREE_MTHREADS_TLE)
+    set(_MUSATLE_DEPS MUSATLETableGen)
+    set(_MUSATLE_LIBS MUSATLEIR)
+else()
+    set(_MUSATLE_DEPS "")
+    set(_MUSATLE_LIBS "")
+endif()
+
 add_triton_library(TritonToTritonGPU
     RelayoutTritonGPU.cpp
     TritonGPUConversion.cpp
@@ -5,6 +13,7 @@ add_triton_library(TritonToTritonGPU
 
     DEPENDS
     TritonConversionPassIncGen
+    ${_MUSATLE_DEPS}
 
     LINK_LIBS PUBLIC
     MLIRIR
@@ -13,4 +22,5 @@ add_triton_library(TritonToTritonGPU
     TritonIR
     ProtonIR
     TritonGPUIR
+    ${_MUSATLE_LIBS}
 )

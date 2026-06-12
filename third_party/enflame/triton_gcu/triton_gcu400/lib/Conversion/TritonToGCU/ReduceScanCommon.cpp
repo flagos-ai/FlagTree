@@ -27,14 +27,32 @@ namespace mlir {
 namespace triton {
 namespace gcu {
 
-static void registerReduceVectorizeHandlers(VectorizeEngine &engine) {
+Fold3DResult foldTo3D(ArrayRef<unsigned> elemsPerThread, unsigned axis) {
+  std::array<int64_t, 3> dims = {1, 1, 1};
+  int64_t foldedAxis = 2;
+  for (int i = elemsPerThread.size() - 1, j = 2; i >= 0; i--) {
+    if (static_cast<unsigned>(i) == axis) {
+      if (dims[j] == 1)
+        dims[j] = elemsPerThread[i];
+      else
+        dims[--j] = elemsPerThread[i];
+      foldedAxis = j;
+      --j;
+    } else {
+      dims[j] *= elemsPerThread[i];
+    }
+  }
+  return {dims, foldedAxis};
+}
+
+static void registerCombineOpVectorizeHandlers(VectorizeEngine &engine) {
   engine.addHandler(std::make_unique<SelectVectorizeHandler>());
 }
 
-static const VectorizeEngine &getReduceVectorizeEngine() {
+static const VectorizeEngine &getCombineOpVectorizeEngine() {
   static const VectorizeEngine &engine = []() {
     VectorizeEngine engine;
-    registerReduceVectorizeHandlers(engine);
+    registerCombineOpVectorizeHandlers(engine);
     return engine;
   }();
   return engine;
@@ -130,7 +148,7 @@ CombineOpDesc::applyVectorizedCombine(OpBuilder &builder, Location loc,
        llvm::zip_equal(combineBody->getArguments(), operands)) {
     mapper.map(arg, operand);
   }
-  auto &engine = getReduceVectorizeEngine();
+  auto &engine = getCombineOpVectorizeEngine();
   VectorizeContext ctx{builder, loc, mapper, vectorLength};
   for (auto &op : combineBody->without_terminator()) {
     for (auto operand : op.getOperands()) {

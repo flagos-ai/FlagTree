@@ -1553,7 +1553,8 @@ struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
     auto sharedMemTensorType = RankedTensorType::get(
         ArrayRef<int64_t>{resultType.getShape()[0] * warpsPerCTA[0]},
         wrapResultType.getElementType(), encoding);
-    rewriter.create<math_ext::HistogramOp>(loc, resCurWarp, adaptor.getSrc());
+    rewriter.create<math_ext::HistogramOp>(loc, resCurWarp, adaptor.getSrc(),
+                                           UnitAttr());
     /// store res of every warp to shared memry
     auto sharedResMem = storeToSharedMem(
         rewriter, tag, sharedMemTensorType, resCurWarp, false,

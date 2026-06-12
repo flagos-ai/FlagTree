@@ -45,6 +45,11 @@
 
 #include "mlir/IR/Diagnostics.h"
 
+#include "mlir/InitAllDialects.h"
+#include "mlir/InitAllExtensions.h"
+#include "mlir/InitAllPasses.h"
+#include "mlir/Tools/mlir-opt/MlirOptMain.h"
+
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -401,6 +406,32 @@ Gcu300String gcu300_run_opt(const char *input, size_t input_len,
 
 void gcu300_string_free(Gcu300String s) {
   std::free(const_cast<char *>(s.data));
+}
+
+// ---------------------------------------------------------------------------
+// gcu300_opt_main -- full MlirOptMain entry point
+//
+// MLIR standard passes are registered through MLIRRegisterAllPasses linked
+// into this .so (static initializers).  Only GCU / Triton-specific passes
+// need explicit registration here.
+// ---------------------------------------------------------------------------
+
+int gcu300_opt_main(int argc, char **argv) {
+  mlir::DialectRegistry registry;
+  mlir::registerAllDialects(registry);
+  mlir::gcu::registerGCUDialects(registry);
+  registry.insert<mlir::triton::TritonDialect,
+                  mlir::triton::gpu::TritonGPUDialect>();
+  mlir::registerAllExtensions(registry);
+
+  static std::once_flag optRegFlag;
+  std::call_once(optRegFlag, []() {
+    mlir::triton::gpu::registerTritonGPUPasses();
+    mlir::triton::registerConvertTritonToTritonGPUPass();
+  });
+
+  return mlir::asMainReturnCode(
+      mlir::MlirOptMain(argc, argv, "GCU300 optimizer driver\n", registry));
 }
 
 } // extern "C"

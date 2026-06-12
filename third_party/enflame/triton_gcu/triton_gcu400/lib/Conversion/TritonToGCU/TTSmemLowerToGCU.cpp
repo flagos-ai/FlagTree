@@ -21,6 +21,7 @@
 #include "Analysis/FirstLastUserAnalysis.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
+#include "Dialect/GCUWS/IR/Dialect.h"
 #include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
@@ -72,6 +73,15 @@ struct TTSmemLocalAllocOpLowering
 
     auto output = rewriter.create<memref::AllocOp>(alloc.getLoc(), memrefType);
 
+    if (auto clusterAttr =
+            alloc->getAttrOfType<BoolAttr>("ttg.local_alloc.mesh_share")) {
+      output->setAttr("ttg.local_alloc.mesh_share", clusterAttr);
+    }
+    if (auto axisAttr =
+            alloc->getAttrOfType<StringAttr>("ttg.local_alloc.mesh_axis")) {
+      output->setAttr("ttg.local_alloc.mesh_axis", axisAttr);
+    }
+
     leaveTritionOp(rewriter, alloc.getOperation());
     rewriter.replaceOp(alloc, output);
     return success();
@@ -102,12 +112,26 @@ struct TTSmemCopyGlobalToLocalOpLowering
       return failure();
 
     Operation *firstUse = nullptr;
+    Block *defBlock = loadOp->getBlock();
     for (Operation *user : loadOp.getDstMem().getUsers()) {
       if (user == loadOp.getOperation())
         continue;
-      if (!firstUse || (user->getBlock() == firstUse->getBlock() &&
-                        user->isBeforeInBlock(firstUse))) {
-        firstUse = user;
+      Operation *ancestor = user;
+      while (ancestor && ancestor->getBlock() != defBlock)
+        ancestor = ancestor->getParentOp();
+      if (!ancestor)
+        continue;
+      if (!firstUse || ancestor->isBeforeInBlock(firstUse))
+        firstUse = ancestor;
+    }
+
+    if (firstUse == nullptr &&
+        loadOp->getParentOfType<gcu::WarpSpecializeOp>()) {
+      for (Operation *op = loadOp->getNextNode(); op; op = op->getNextNode()) {
+        if (isa<gcu::ProducerCommitOp, triton::gcuws::ProducerCommitOp>(op)) {
+          firstUse = op;
+          break;
+        }
       }
     }
 
@@ -115,7 +139,7 @@ struct TTSmemCopyGlobalToLocalOpLowering
     int64_t rank = outputType.getRank();
 
     auto asyncAttr =
-        llvm::cast_if_present<BoolAttr>(loadOp->getAttr("tt.load.async"));
+        llvm::cast_if_present<BoolAttr>(loadOp->getAttr(kLoadAsync));
     triton::gcu::TagInfo tag;
     if (!asyncAttr || !asyncAttr.getValue() || firstUse == nullptr) {
       tag = pTagPool.getSharedSyncTagInfo(loadOp.getOperation());

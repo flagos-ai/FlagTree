@@ -19,6 +19,7 @@
 
 #include <mlir/IR/Attributes.h>
 #include <optional>
+#include <utility>
 
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -27,11 +28,19 @@ namespace mlir {
 namespace triton {
 namespace gcu {
 
+struct Fold3DResult {
+  std::array<int64_t, 3> dims;
+  int64_t axis;
+};
+
+Fold3DResult foldTo3D(ArrayRef<unsigned> elemsPerThread, unsigned axis);
+
 class CombineOpDesc {
 public:
   explicit CombineOpDesc(triton::ReduceOp op)
-      : operandElementTypes(op.getElementTypes()), combineOp(op.getCombineOp()),
-        combiningKind(matchCombiningKind(combineOp)) {}
+      : CombineOpDesc(op.getCombineOp(), op.getElementTypes()) {}
+  explicit CombineOpDesc(triton::ScanOp op)
+      : CombineOpDesc(op.getCombineOp(), op.getElementTypes()) {}
   const std::optional<vector::CombiningKind> &getCombiningKind() const {
     return combiningKind;
   }
@@ -52,6 +61,10 @@ private:
   std::optional<vector::CombiningKind> combiningKind;
 
 private:
+  CombineOpDesc(Region &combineOp, SmallVector<Type> elementTypes)
+      : operandElementTypes(std::move(elementTypes)), combineOp(combineOp),
+        combiningKind(matchCombiningKind(combineOp)) {}
+
   static std::optional<vector::CombiningKind>
   matchCombiningKind(Region &combineOp);
 };

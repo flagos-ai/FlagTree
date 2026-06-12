@@ -63,6 +63,11 @@ Gcu300String gcu300_run_opt(const char *input, size_t input_len,
 // Free a Gcu300String.
 void gcu300_string_free(Gcu300String s);
 
+// Full MlirOptMain wrapper -- registers all GCU300 dialects and passes,
+// then forwards argc/argv to MlirOptMain.  Allows the opt binary to be
+// a thin C wrapper with no LLVM/MLIR link dependency.
+int gcu300_opt_main(int argc, char **argv);
+
 #ifdef __cplusplus
 }
 #endif

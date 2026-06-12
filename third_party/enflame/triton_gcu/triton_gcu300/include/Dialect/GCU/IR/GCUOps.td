@@ -1802,6 +1802,27 @@ def GCU_MatMulOp : GCU_Op<"matmul", [MemoryEffectsOpInterface,
 }
 
 //
+// Matrix Store Op
+//
+def GCU_MatrixStoreOp : GCU_Op<"matrix_store", [AttrSizedOperandSegments, MemoryEffects<[MemWrite]>]> {
+  let summary = "matrix store";
+  let description = [{
+    Performs a two dimensional matrix store.
+    value: the value to store
+    ptr: the pointer to the destination memory
+    mem_dims: the memory dimensions of the destination
+    real_dims: the real dimensions of the destination
+  }];
+  let arguments = (ins AnyMemRef:$value,
+                       GCU_PtrType:$ptr,
+                       Variadic<Index>:$mem_dims,
+                       Variadic<Index>:$real_dims);
+  let assemblyFormat = [{$value `,` $ptr `,` `[` $mem_dims `]` `,` `[` $real_dims `]`
+                        attr-dict `:` type($value) `,` type($ptr)}];
+  let hasVerifier = 1;
+}
+
+//
 // Assert Op
 //
 def GCU_AssertOp : GCU_Op<"assert", []>
@@ -1921,6 +1942,120 @@ def GCU_GetGlobalThreadIdOp : GCU_Op<"get_global_thread_id", [Pure]>
   }];
   let results = (outs Index:$result);
   let assemblyFormat = [{ attr-dict `:` type($result) }];
+}
+
+//
+// CTAId Op — cluster-local block index (GCU 400)
+//
+def GCU_CTAIdOp : GCU_Op<"cta_id", [Pure]>
+{
+  let summary = "Get the cluster-local CTA id along a given dimension";
+
+  let description = [{
+    `gcu.cta_id` returns the cluster-local block index of the current CTA
+    along the specified dimension.
+
+    On GCU 400/410, `config.blockDim` defines the cluster shape (number of
+    CTAs sharing local memory). This op reads the hardware register
+    `md25_wrk` via `tops_get_cta_id(dim)` to obtain the current CTA's
+    coordinate within the cluster.
+
+    The `dim` argument selects the axis: 0 = x, 1 = y, 2 = z.
+
+    Example:
+    ```mlir
+    %cta_x = gcu.cta_id {dim = 0 : i32} : index
+    %cta_y = gcu.cta_id {dim = 1 : i32} : index
+    ```
+  }];
+
+  let arguments = (ins I32Attr:$dim);
+  let results = (outs Index:$result);
+  let assemblyFormat = [{ attr-dict `:` type($result) }];
+}
+
+//
+// ClusterBarrier Op — inter-CTA synchronization within a cluster (GCU 400)
+//
+def GCU_ClusterBarrierOp : GCU_Op<"cluster_barrier", []>
+{
+  let summary = "Synchronize all CTAs within the current cluster";
+
+  let description = [{
+    `gcu.cluster_barrier` synchronizes all CTAs (blocks) sharing local memory
+    within the current cluster.
+
+    On GCU 400/410 the thread hierarchy differs from NVIDIA GPUs:
+      GCU thread  = GPU CTA (block)
+      GCU subthread = GPU warp/thread
+
+    Therefore inter-CTA synchronization maps to `__syncthreads()` (which
+    synchronizes GCU threads, i.e. all CTAs in the cluster), NOT to
+    `__syncblocks()` (which is grid-level).
+
+    Example:
+    ```mlir
+    gcu.cluster_barrier
+    ```
+  }];
+
+  let assemblyFormat = "attr-dict";
+}
+
+//
+// GridBarrier Op — grid-level synchronization across all blocks (GCU 400)
+//
+def GCU_GridBarrierOp : GCU_Op<"grid_barrier", []>
+{
+  let summary = "Synchronize all blocks across the entire grid";
+
+  let description = [{
+    `gcu.grid_barrier` synchronizes all blocks (GCU threads) in the grid.
+
+    On GCU 400/410 this maps to `__syncblocks()` via `tops_syncblocks`,
+    which provides grid-level synchronization for cooperative kernels.
+
+    Example:
+    ```mlir
+    gcu.grid_barrier
+    ```
+  }];
+
+  let assemblyFormat = "attr-dict";
+}
+
+//
+// RemoteMemRef Op — produce a memref referring to a remote CTA's shared memory
+//
+def GCU_RemoteMemRefOp : GCU_Op<"remote_memref", [Pure]>
+{
+  let summary = "Produce a memref referring to a remote CTA's shared memory";
+
+  let description = [{
+    `gcu.remote_memref` takes a local shared-memory memref and a scalar
+    shard_id (the target CTA index within the cluster), and returns a
+    memref of the same type that semantically points to the corresponding
+    buffer in the remote CTA's shared memory.
+
+    On GCU 400/410, all CTAs in a cluster share the same DSM address space.
+    The shard_id is used by later lowering passes to compute the correct
+    base-address offset into the remote CTA's shared memory region.
+
+    This is the GCU-dialect target for `triton_gcu.remote_memdesc`.
+
+    Example:
+    ```mlir
+    %local = memref.alloc() : memref<64x64xf16, 3>
+    %remote = gcu.remote_memref %local, %shard_id
+        : memref<64x64xf16, 3>, i32 -> memref<64x64xf16, 3>
+    ```
+  }];
+
+  let arguments = (ins AnyMemRef:$src, I32:$shard_id);
+  let results = (outs AnyMemRef:$result);
+  let assemblyFormat = [{
+    $src `,` $shard_id attr-dict `:` type($src) `,` type($shard_id) `->` type($result)
+  }];
 }
 
 def GCU_TarInitOp : GCU_Op<"tar_init", []> {

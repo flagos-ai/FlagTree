@@ -161,7 +161,7 @@ def check_type_supported(dtype, device):
         pytest.skip("Not supported on gcu300: dtype fp8 is not supported on gcu300")
     elif dtype in ["float8_e4m3fn"]:
         pytest.skip("Not supported on gcu300/gcu400: dtype float8_e4m3fn is not supported on gcu300/gcu400")
-    elif dtype in ["int64"]:  ## TODO: consider GCU400 for int64
+    elif dtype in ["int64"]:
         pytest.skip("Not supported on gcu300: dtype i64 is not supported on gcu300")
     elif dtype in ["uint64"]:
         pytest.skip("Not supported on gcu300: dtype ui64 is not supported on gcu300")

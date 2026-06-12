@@ -15,6 +15,7 @@
  */
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
+#include "Utility.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -22,6 +23,8 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Attributes.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/Support/Debug.h"
 
 namespace mlir {
@@ -38,6 +41,8 @@ namespace {
 // single-region wrapper ops (e.g. triton_gcu.elementwise_fusion_region).
 static bool isSplatZeroConstant(Value v) {
   if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
+    if (!constOp->hasOneUse())
+      return false;
     auto denseAttr = dyn_cast<DenseElementsAttr>(constOp.getValue());
     if (!denseAttr || !denseAttr.isSplat())
       return false;
@@ -61,6 +66,48 @@ static bool isSplatZeroConstant(Value v) {
   if (resultIdx >= terminator->getNumOperands())
     return false;
   return isSplatZeroConstant(terminator->getOperand(resultIdx));
+}
+
+static bool canReuseOaccCache(triton::DotOp op) {
+  ModuleOp mod = op->getParentOfType<ModuleOp>();
+  int32_t numWarps = triton::gcu::getNumWarps(mod);
+
+  int64_t maxM = OACC_MAX_NUM; // should get from max register size
+  if (numWarps > 4) {
+    maxM /= (numWarps / 4);
+  }
+
+  auto type = dyn_cast<RankedTensorType>(op.getType());
+  auto originShape = type.getShape();
+  auto numElems = triton::gcu::getElemsPerThread(type);
+  int64_t mSize = numElems[0];
+  int64_t nSize = numElems[1];
+  return mSize <= maxM &&
+         (nSize == OACC_F32_LENGTH ||
+          (nSize < OACC_F32_LENGTH && originShape[1] == nSize));
+}
+
+// Determine the acc_store mode by tracing the scf.for result's use chain.
+//   - "global":     result → triton_gcu.store (same type)
+//   - "cvt_global": result → truncf/trunci → triton_gcu.store
+//   - "local":      result → maxtrix_store → ...
+//   - "cvt_local":  result → truncf/trunci → maxtrix_store → ...
+static StringRef determineAccStoreMode(Value forResult) {
+  Value val = forResult;
+  bool hasCvt = false;
+  while (val.hasOneUse()) {
+    Operation *user = *val.getUsers().begin();
+    if (isa<triton::gcu::StoreOp>(user))
+      return hasCvt ? kAccStoreCvtGlobal : kAccStoreGlobal;
+    if (isa<arith::TruncFOp, arith::TruncIOp>(user)) {
+      hasCvt = true;
+      val = user->getResult(0);
+      continue;
+    }
+    break;
+  }
+  return kAccStoreLocal;
+  // return hasCvt ? kAccStoreCvtLocal : kAccStoreLocal;
 }
 
 // Pre-conversion analysis pass that identifies tt.dot ops eligible for
@@ -161,9 +208,22 @@ struct AnnotateDotAccReusePass
           return;
       }
 
-      dotOp->setAttr("acc_reuse_candidate", UnitAttr::get(dotOp.getContext()));
+      auto ctx = dotOp.getContext();
+      bool isOaccCache = canReuseOaccCache(dotOp);
+      StringRef accReuseMode = isOaccCache ? kAccReuseOacc : kAccReuseLocal;
+      dotOp->setAttr(kAccReuseCandidate, StringAttr::get(ctx, accReuseMode));
+
       LLVM_DEBUG(llvm::dbgs()
-                 << "AnnotateDotAccReuse: marked dot op as reuse candidate\n");
+                 << "AnnotateDotAccReuse: marked dot op as reuse candidate"
+                 << ", acc_reuse_candidate=" << accReuseMode << "\n");
+
+      if (isOaccCache) {
+        Value forResult = forOp->getResult(iterArgIdx);
+        StringRef accStoreMode = determineAccStoreMode(forResult);
+        dotOp->setAttr(kAccStore, StringAttr::get(ctx, accStoreMode));
+        LLVM_DEBUG(llvm::dbgs() << "AnnotateDotAccReuse: acc oacc store"
+                                << ", acc_store=" << accStoreMode << "\n");
+      }
     });
   }
 };

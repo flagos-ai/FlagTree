@@ -53,8 +53,11 @@ LogicalResult StoreOp::verify() {
       getOffsets().size() !=
           static_cast<unsigned>(getValue().getType().getRank()))
     return emitOpError() << "shape/strides/offsets mismatch with value rank";
-  if (getPtr().getType().getElementType() !=
-      getValue().getType().getElementType())
+  auto ptrElemTy = getPtr().getType().getElementType();
+  auto valElemTy = getValue().getType().getElementType();
+  if (ptrElemTy != valElemTy &&
+      !(isa<FloatType>(ptrElemTy) && isa<FloatType>(valElemTy)) &&
+      !(isa<IntegerType>(ptrElemTy) && isa<IntegerType>(valElemTy)))
     return emitOpError() << "pointer element type mismatch";
   if (getOrderHint().size() > getShape().size())
     return emitOpError() << "order_hint rank mismatch with result rank";
@@ -205,6 +208,44 @@ LogicalResult WarpGroupDotOp::verify() {
 LogicalResult InitBarrierOp::verify() {
   if (getCount() < 1)
     return emitOpError("count must be greater than or equal to 1");
+  return success();
+}
+
+LogicalResult
+triton::gcu::MaskedLoadOp::canonicalize(MaskedLoadOp op,
+                                        PatternRewriter &rewriter) {
+  auto mask = op.getMask();
+  if (!mask)
+    return failure();
+
+  DenseElementsAttr attr;
+  if (!matchPattern(mask, m_Constant(&attr)))
+    return failure();
+  if (!attr.isSplat() || !attr.getSplatValue<bool>())
+    return failure();
+
+  rewriter.replaceOpWithNewOp<triton::gcu::MaskedLoadOp>(
+      op, op.getType(), op.getPtr(), op.getOffset(),
+      /*mask=*/Value(), /*other=*/Value());
+  return success();
+}
+
+LogicalResult
+triton::gcu::MaskedStoreOp::canonicalize(MaskedStoreOp op,
+                                         PatternRewriter &rewriter) {
+  auto mask = op.getMask();
+  if (!mask)
+    return failure();
+
+  DenseElementsAttr attr;
+  if (!matchPattern(mask, m_Constant(&attr)))
+    return failure();
+  if (!attr.isSplat() || !attr.getSplatValue<bool>())
+    return failure();
+
+  rewriter.replaceOpWithNewOp<triton::gcu::MaskedStoreOp>(
+      op, op.getPtr(), op.getOffset(), op.getValue(),
+      /*mask=*/Value());
   return success();
 }
 

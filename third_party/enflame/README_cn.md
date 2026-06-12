@@ -27,14 +27,14 @@ git checkout -b triton_v3.6.x origin/triton_v3.6.x
 
 ```bash
 cd ~
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/TopsRider_Triton_gcu-3.6.0_1.0.20260610.cc.1.9.10_deb_amd64.run
 ```
 
 ### 2. 安装驱动
 
 ```bash
 cd ~
-bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --driver -y
+bash TopsRider_Triton_gcu-3.6.0_1.0.20260610.cc.1.9.10_deb_amd64.run --driver -y
 # 检查驱动是否正常安装
 efsmi
 ```
@@ -101,7 +101,7 @@ tar -xzf enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
 ### 2. 安装软件包
 ```bash
 cd ~
-bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --container -y
+bash TopsRider_Triton_gcu-3.6.0_1.0.20260610.cc.1.9.17_deb_amd64.run --container -y
 ```
 
 ### 3. 配置构建环境

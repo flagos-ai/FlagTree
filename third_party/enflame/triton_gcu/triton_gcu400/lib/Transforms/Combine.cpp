@@ -18,8 +18,10 @@
 #include <type_traits>
 #include <utility>
 
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Transforms/Passes.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -551,6 +553,117 @@ public:
   }
 };
 
+// DotOp + CvtOp + StoreOp -> DotOp + StoreOp
+template <typename CvtOp>
+class ElideCvtBeforeAccReuseStore : public OpRewritePattern<CvtOp> {
+public:
+  using OpRewritePattern<CvtOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CvtOp cvtOp,
+                                PatternRewriter &rewriter) const override {
+    if (!cvtOp.getResult().hasOneUse())
+      return failure();
+
+    auto storeOp =
+        dyn_cast<triton::gcu::StoreOp>(*cvtOp.getResult().getUsers().begin());
+    if (!storeOp)
+      return failure();
+
+    // Check if the dot op is an acc reuse candidate
+    Value input = cvtOp->getOperand(0);
+    auto dotOp = getDotOp(input);
+    if (!dotOp || !dotOp->hasAttr("acc_reuse_candidate") ||
+        mlir::cast<StringAttr>(dotOp->getAttr("acc_reuse_candidate"))
+                .getValue() != "acc_reuse_oacc")
+      return failure();
+
+    // Update oacc store mode
+    const char *const kAccStore = "acc_store";
+    if (!dotOp->hasAttr(kAccStore))
+      return failure();
+    dotOp->setAttr(kAccStore,
+                   StringAttr::get(dotOp.getContext(), "cvt_global"));
+
+    rewriter.replaceOp(cvtOp, input);
+    return success();
+  }
+
+private:
+  static triton::DotOp getDotOp(Value val) {
+    if (auto dotOp = dyn_cast<triton::DotOp>(val.getDefiningOp()))
+      return dotOp;
+
+    if (auto forResult = dyn_cast<OpResult>(val)) {
+      if (auto forOp = dyn_cast<scf::ForOp>(forResult.getOwner())) {
+        unsigned resultIdx = forResult.getResultNumber();
+        auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+        Value yieldedVal = yieldOp.getOperand(resultIdx);
+        if (auto dotOp = dyn_cast<triton::DotOp>(yieldedVal.getDefiningOp()))
+          return dotOp;
+      }
+    }
+
+    return nullptr;
+  }
+};
+
+class FoldCmpMakeRange : public OpRewritePattern<arith::CmpIOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::CmpIOp op,
+                                PatternRewriter &rewriter) const override {
+    auto rhs = op.getRhs();
+    auto lhs = op.getLhs();
+    auto makeRangeOp = lhs.getDefiningOp<triton::MakeRangeOp>();
+    if (!makeRangeOp)
+      return failure();
+
+    auto constantOp = rhs.getDefiningOp<arith::ConstantOp>();
+    if (!constantOp)
+      return failure();
+
+    auto denseAttr = dyn_cast<DenseElementsAttr>(constantOp.getValue());
+    if (!denseAttr || !denseAttr.isSplat())
+      return failure();
+
+    auto start = makeRangeOp.getStartAttr().getInt();
+    auto end = makeRangeOp.getEndAttr().getInt();
+    auto constValue = denseAttr.getSplatValue<IntegerAttr>().getInt();
+
+    bool allTrue = false;
+    switch (op.getPredicate()) {
+    case arith::CmpIPredicate::slt:
+    case arith::CmpIPredicate::ult:
+      allTrue = (end <= constValue);
+      break;
+    case arith::CmpIPredicate::sle:
+    case arith::CmpIPredicate::ule:
+      allTrue = (end - 1 <= constValue);
+      break;
+    case arith::CmpIPredicate::sgt:
+    case arith::CmpIPredicate::ugt:
+      allTrue = (start > constValue);
+      break;
+    case arith::CmpIPredicate::sge:
+    case arith::CmpIPredicate::uge:
+      allTrue = (start >= constValue);
+      break;
+    default:
+      return failure();
+    }
+
+    if (!allTrue)
+      return failure();
+
+    auto resultType = cast<ShapedType>(op.getResult().getType());
+    auto trueAttr =
+        DenseElementsAttr::get(resultType, rewriter.getBoolAttr(true));
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, trueAttr);
+    return success();
+  }
+};
+
 struct GCUCombineOps : public impl::GCUCombineOpsBase<GCUCombineOps> {
   using Base::Base;
   void runOnOperation() override {
@@ -558,6 +671,12 @@ struct GCUCombineOps : public impl::GCUCombineOpsBase<GCUCombineOps> {
     RewritePatternSet patterns(context);
     auto gpuModuleOp = getOperation();
 
+    // These conversion ops can be elided before acc reuse store. If added,
+    // useMatrixStore must be updated and MATRIX_STORE_IMPL must be updated.
+    // arith::FPToSIOp, arith::FPToUIOp, arith::SIToFPOp, arith::UIToFPOp,
+    // arith::ExtFOp, arith::ExtSIOp, arith::ExtUIOp
+    patterns.add<ElideCvtBeforeAccReuseStore<arith::TruncFOp>,
+                 ElideCvtBeforeAccReuseStore<arith::TruncIOp>>(context);
     patterns.add<CombineSigmoidPattern, CombineSoftplusPattern<math::LogOp>,
                  CombineSoftplusPattern<triton::ExternElementwiseOp>>(context);
     patterns.add<CombineMACPattern<arith::AddFOp>,
@@ -575,7 +694,7 @@ struct GCUCombineOps : public impl::GCUCombineOpsBase<GCUCombineOps> {
                    CombineMixedPrecisionPattern<arith::AddIOp>,
                    CombineMixedPrecisionPattern<arith::MulIOp>>(context);
     }
-
+    patterns.add<FoldCmpMakeRange>(context);
     if (applyPatternsGreedily(gpuModuleOp, std::move(patterns)).failed())
       signalPassFailure();
   }

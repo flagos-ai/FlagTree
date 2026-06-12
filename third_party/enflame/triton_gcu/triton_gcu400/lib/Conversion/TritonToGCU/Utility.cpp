@@ -542,15 +542,12 @@ bool isMustAliasOp(OpOperand &use) {
       return true;
     }
     return false;
-  } else if (isa<triton::ReshapeOp>(op)) {
-    auto reshapeOp = cast<triton::ReshapeOp>(op);
-    auto srcNumElems =
-        triton::gcu::getElemsPerThread(reshapeOp.getSrc().getType());
-    auto dstNumElems = triton::gcu::getElemsPerThread(reshapeOp.getType());
-    if (srcNumElems == dstNumElems) {
-      return true;
-    }
-    return false;
+  } else if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(op)) {
+    // Triton allows tt.reshape with allow_reorder to permute per-thread
+    // elements. GCU does not implement that semantics yet, so must-alias here
+    // only checks layout via isExpensiveView and ignores allow_reorder.
+    return !triton::gcu::isExpensiveView(reshapeOp.getSrc().getType(),
+                                         reshapeOp.getType());
   } else if (isa<triton::BroadcastOp>(op)) {
     auto broastOp = cast<triton::BroadcastOp>(op);
     auto srcNumElems =
@@ -1814,10 +1811,13 @@ Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
   for (unsigned i = 0; i < rank; ++i) {
     if (order_hint[i] == -1) {
       bDynamicStride = true;
-      auto trueCondition = rewriter.create<arith::CmpIOp>(
-          loc, arith::CmpIPredicate::ne, configStrides[i], zero);
-      rewriter.create<triton::gcu::AssertOp>(
-          loc, trueCondition, "Not Support dynamic stride is 0", "", "", 0);
+      if (triton::gcu::get_bool_env("TRITON_GCU_DEBUG") ||
+          triton::gcu::get_bool_env("TRITON_ENABLE_ASAN")) {
+        auto trueCondition = rewriter.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::ne, configStrides[i], zero);
+        rewriter.create<triton::gcu::AssertOp>(
+            loc, trueCondition, "Not Support dynamic stride is 0", "", "", 0);
+      }
     }
   }
 
@@ -2078,6 +2078,197 @@ void WaitGcuLoadStore(OpBuilder &rewriter, Location loc,
                                      ValueRange{tag.getIdx()}, totalSize);
 }
 
+bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue) {
+  if (storeOp.getValue().getType().getRank() != 2) {
+    LLVM_DEBUG(llvm::dbgs() << "useMatrixStore: storeOp shape rank != 2\n");
+    return false;
+  }
+
+  auto getStoreVal = [](Value val) {
+    while (auto *defOp = val.getDefiningOp()) {
+      if (isa<arith::TruncFOp, arith::TruncIOp, arith::FPToSIOp,
+              arith::FPToUIOp, arith::SIToFPOp, arith::UIToFPOp, arith::ExtFOp,
+              arith::ExtSIOp, arith::ExtUIOp>(defOp))
+        val = defOp->getOperand(0);
+      else
+        break;
+    }
+    return val;
+  };
+
+  auto isAccStoreGlobal = [](Value val) {
+    auto defOp = val.getDefiningOp();
+    if (defOp && isa<triton::DotOp, gcu::MatMulOp>(defOp)) {
+      if (auto accStore = defOp->getAttr(kAccStore)) {
+        StringRef accStoreVal = mlir::cast<StringAttr>(accStore).getValue();
+        return accStoreVal == kAccStoreGlobal ||
+               accStoreVal == kAccStoreCvtGlobal;
+      }
+    }
+    return false;
+  };
+
+  bool useMatrixStore = false;
+  Value storeVal = getStoreVal(adaptedValue);
+  if (isAccStoreGlobal(storeVal)) {
+    useMatrixStore = true;
+  } else if (auto forOp = storeVal.getDefiningOp<scf::ForOp>()) {
+    unsigned resultIdx = cast<OpResult>(storeVal).getResultNumber();
+    auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    Value yieldedVal = getStoreVal(yieldOp.getOperand(resultIdx));
+    useMatrixStore = isAccStoreGlobal(yieldedVal);
+  }
+  return useMatrixStore;
+}
+
+void ConfigMatrixStore(OpBuilder &rewriter, Location loc,
+                       triton::gcu::StoreOp storeOp, Value value, Value ptr,
+                       ValueRange dstShapes, ValueRange dstStrides,
+                       ValueRange dstOffsets, bool hasTrans) {
+  auto storeType = storeOp.getValue().getType();
+  int64_t rank = storeType.getRank();
+  assert(rank == 2 && "matrix_store value must be 2D memref");
+  auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+
+  // Single warp info
+  auto numElems = triton::gcu::getElemsPerThread(storeType);
+  SmallVector<Value, 4> vNumElems;
+  for (unsigned i = 0; i < rank; ++i)
+    vNumElems.push_back(
+        rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]));
+
+  auto warpIds = getWarpIds(rewriter, loc, storeType);
+  SmallVector<Value, 2> warpOffsets;
+  for (unsigned i = 0; i < rank; ++i)
+    warpOffsets.push_back(
+        rewriter.create<arith::MulIOp>(loc, warpIds[i], vNumElems[i]));
+
+  // Dst ptr with block-level offset applied
+  Value dstPtr = ptr;
+  if (!hasTrans) {
+    auto dstElemType = storeOp.getPtr().getType().getElementType();
+    int64_t elemBytes = (dstElemType.getIntOrFloatBitWidth() + 7) / 8;
+    auto i64Type = rewriter.getI64Type();
+    Value ptrInt = rewriter.create<gcu::PtrToIntOp>(loc, ptr);
+    Value linearOffset =
+        rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(0));
+    for (unsigned i = 0; i < rank; ++i) {
+      Value offset = rewriter.create<arith::IndexCastOp>(
+          loc, i64Type,
+          rewriter.create<arith::AddIOp>(loc, warpOffsets[i], dstOffsets[i]));
+      Value stride =
+          rewriter.create<arith::IndexCastOp>(loc, i64Type, dstStrides[i]);
+      Value product = rewriter.create<arith::MulIOp>(loc, offset, stride);
+      linearOffset = rewriter.create<arith::AddIOp>(loc, linearOffset, product);
+    }
+    Value elemSizeVal = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getI64IntegerAttr(elemBytes));
+    Value byteOffset =
+        rewriter.create<arith::MulIOp>(loc, linearOffset, elemSizeVal);
+    Value offsetPtrInt =
+        rewriter.create<arith::AddIOp>(loc, ptrInt, byteOffset);
+    dstPtr = rewriter.create<gcu::IntToPtrOp>(loc, ptr.getType(), offsetPtrInt);
+  }
+
+  // Dst mem dims
+  SmallVector<Value, 2> memDims;
+  if (hasTrans) {
+    auto srcShape = dyn_cast<MemRefType>(value.getType()).getShape();
+    memDims.push_back(
+        rewriter.create<arith::ConstantIndexOp>(loc, srcShape[0]));
+    memDims.push_back(
+        rewriter.create<arith::ConstantIndexOp>(loc, srcShape[1]));
+  } else {
+    memDims.push_back(dstShapes[0]);
+    memDims.push_back(dstStrides[0]);
+  }
+
+  // Dst real dims
+  SmallVector<Value, 2> realDims;
+  for (unsigned i = 0; i < rank; ++i) {
+    Value remaining =
+        rewriter.create<arith::SubIOp>(loc, dstShapes[i], warpOffsets[i]);
+    Value clamped = rewriter.create<arith::MaxSIOp>(loc, zero, remaining);
+    Value sliceShape =
+        rewriter.create<arith::MinSIOp>(loc, vNumElems[i], clamped);
+    realDims.push_back(sliceShape);
+  }
+
+  rewriter.create<gcu::MatrixStoreOp>(loc, value, dstPtr, memDims, realDims);
+}
+
+void removeRedundantZeroFill(ConversionPatternRewriter &rewriter,
+                             memref::AllocOp allocOp) {
+  for (auto *user :
+       llvm::make_early_inc_range(allocOp.getResult().getUsers())) {
+    auto rcOp = dyn_cast<memref::ReinterpretCastOp>(user);
+    if (!rcOp)
+      continue;
+
+    SmallVector<Operation *> chain;
+    SmallPtrSet<Operation *, 16> visited;
+    scf::ForOp zeroFillForOp;
+    std::function<void(Operation *)> collect = [&](Operation *o) {
+      if (!visited.insert(o).second)
+        return;
+      for (auto r : o->getResults())
+        for (auto *u : r.getUsers())
+          collect(u);
+      if (auto f = dyn_cast<scf::ForOp>(o))
+        zeroFillForOp = f;
+      chain.push_back(o);
+    };
+    collect(rcOp);
+
+    if (!zeroFillForOp)
+      continue;
+
+    bool isZeroFill = true;
+    bool hasBodyOps = false;
+    for (auto &bodyOp : zeroFillForOp.getBody()->without_terminator()) {
+      hasBodyOps = true;
+      auto tarStore = dyn_cast<gcu::TarStoreOp>(&bodyOp);
+      if (!tarStore) {
+        isZeroFill = false;
+        break;
+      }
+      auto bc = tarStore.getV().getDefiningOp<vector::BroadcastOp>();
+      if (!bc) {
+        isZeroFill = false;
+        break;
+      }
+      auto cst = bc.getSource().getDefiningOp<arith::ConstantOp>();
+      if (!cst) {
+        isZeroFill = false;
+        break;
+      }
+      if (auto fAttr = dyn_cast<FloatAttr>(cst.getValue())) {
+        if (!fAttr.getValue().isZero()) {
+          isZeroFill = false;
+          break;
+        }
+      } else if (auto iAttr = dyn_cast<IntegerAttr>(cst.getValue())) {
+        if (!iAttr.getValue().isZero()) {
+          isZeroFill = false;
+          break;
+        }
+      } else {
+        isZeroFill = false;
+        break;
+      }
+    }
+
+    if (!isZeroFill || !hasBodyOps)
+      continue;
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "removeRedundantZeroFill: removing zero-fill chain for "
+                  "constant-zero init arg\n");
+    for (auto *o : chain)
+      rewriter.eraseOp(o);
+  }
+}
+
 void moveDeallocOp(ConversionPatternRewriter &rewriter, Value v, Operation *pos,
                    size_t depth) {
   if (depth > 1)
@@ -2180,13 +2371,14 @@ Value lookupPartitionTagArg(WarpSpecializeOpTy wsOp, Operation *op,
 } // namespace
 
 PrivateTagPool::PrivateTagPool(mlir::Operation *entryFunc, int32_t numWarps,
-                               bool useAsyncSharedTag)
+                               bool useAsyncSharedTag, bool useAllTags)
     : useAsyncSharedTag(useAsyncSharedTag) {
   OpBuilder builder(entryFunc);
   auto func = llvm::dyn_cast<FunctionOpInterface>(entryFunc);
   auto firstOp = &func.getFunctionBody().getBlocks().front().front();
 
-  int32_t totalTagsSize = numWarps > 4 ? 11 : 11 / 2;
+  int32_t totalTagsSize =
+      numWarps > 4 || (useAsyncSharedTag && useAllTags) ? 11 : 11 / 2;
   if (this->useAsyncSharedTag) {
     pTagsSize = 1;
     sTagsSize = totalTagsSize - numWarps;
@@ -2580,6 +2772,32 @@ bool needsSmemRelay(RankedTensorType srcTy, ArrayRef<int64_t> tileShape) {
   return false;
 }
 
+bool isExpensiveView(Type srcType, Type dstType) {
+  auto mergeContig = [](RankedTensorType type) {
+    auto elemsPerThread = getElemsPerThread(type);
+    auto warpsPerCTA = getWarpsPerCTA(type.getEncoding());
+    SmallVector<unsigned> mergedElemsPerThread;
+    unsigned acc = 1;
+    for (int i = elemsPerThread.size() - 1; i >= 0; --i) {
+      acc *= elemsPerThread[i];
+      if (warpsPerCTA[i] != 1) {
+        mergedElemsPerThread.push_back(acc);
+        acc = 1;
+      }
+    }
+    if (acc != 1) {
+      mergedElemsPerThread.push_back(acc);
+    }
+    std::reverse(mergedElemsPerThread.begin(), mergedElemsPerThread.end());
+    return mergedElemsPerThread;
+  };
+  if (triton::gpu::isExpensiveView(srcType, dstType)) {
+    return true;
+  }
+  return mergeContig(cast<RankedTensorType>(srcType)) !=
+         mergeContig(cast<RankedTensorType>(dstType));
+}
+
 SmallVector<unsigned> getElemsPerThread(Type type) {
   if (auto tType = dyn_cast<RankedTensorType>(type)) {
     if (auto dotEnc = dyn_cast<triton::gpu::DotOperandEncodingAttr>(
@@ -2735,10 +2953,103 @@ unsigned getTotalElemsPerThread(Type type) {
 }
 
 int getNumWarps(ModuleOp mod) {
-  if (!mod->hasAttr("ttg.num-warps"))
+  if (!mod->hasAttr(kNumWarps))
     llvm::report_fatal_error(
         "TritonGPU module should contain a ttg.num-warps attribute");
-  return cast<IntegerAttr>(mod->getAttr("ttg.num-warps")).getInt();
+  return cast<IntegerAttr>(mod->getAttr(kNumWarps)).getInt();
+}
+
+int getTotalNumWarps(mlir::gpu::GPUModuleOp mod) {
+  if (!mod->hasAttr(kTotalNumWarps))
+    return triton::gpu::lookupNumWarps(mod);
+  return cast<IntegerAttr>(mod->getAttr(kTotalNumWarps)).getInt();
+}
+
+SmallVector<bool> getFreeWarpMask(Type type) {
+  auto tType = dyn_cast<RankedTensorType>(type);
+  if (!tType)
+    return {true};
+
+  SmallVector<unsigned> warps;
+  SmallVector<int64_t> shapePerCTA;
+  auto encoding = tType.getEncoding();
+
+  if (auto blockEnc = dyn_cast<triton::gpu::BlockedEncodingAttr>(encoding)) {
+    warps = SmallVector<unsigned>(blockEnc.getWarpsPerCTA());
+    shapePerCTA = triton::gpu::getShapePerCTA(blockEnc, tType.getShape());
+  } else if (auto linearEnc =
+                 dyn_cast<triton::gpu::LinearEncodingAttr>(encoding)) {
+    warps = SmallVector<unsigned>(linearEnc.getWarpsPerCTA());
+    shapePerCTA = triton::gpu::getShapePerCTA(linearEnc, tType.getShape());
+  } else if (auto sliceEnc =
+                 dyn_cast<triton::gpu::SliceEncodingAttr>(encoding)) {
+    auto parent = sliceEnc.getParent();
+    auto outShape = sliceEnc.paddedShape(tType.getShape());
+    SmallVector<unsigned> sliceDims;
+    sliceDims.push_back(sliceEnc.getDim());
+    while (auto inner = dyn_cast<triton::gpu::SliceEncodingAttr>(parent)) {
+      auto curDim = inner.getDim();
+      for (auto &d : sliceDims) {
+        if (d >= curDim)
+          d++;
+      }
+      llvm::ArrayRef<int64_t> inShape = outShape;
+      outShape = inner.paddedShape(inShape);
+      sliceDims.push_back(curDim);
+      parent = inner.getParent();
+    }
+    if (auto blockP = dyn_cast<triton::gpu::BlockedEncodingAttr>(parent)) {
+      warps = SmallVector<unsigned>(blockP.getWarpsPerCTA());
+      shapePerCTA = triton::gpu::getShapePerCTA(blockP, outShape);
+    } else {
+      return {true};
+    }
+  } else {
+    return {true};
+  }
+
+  unsigned rank = warps.size();
+  unsigned totalWarps = 1;
+  for (auto w : warps)
+    totalWarps *= w;
+
+  auto slicedAxies = getSlicedAxies(type);
+
+  SmallVector<unsigned> effectiveWarps(rank);
+  for (unsigned i = 0; i < rank; ++i) {
+    if (slicedAxies.count(i)) {
+      unsigned s = static_cast<unsigned>(shapePerCTA[i]);
+      unsigned repeatNum = s >= warps[i] ? 1 : warps[i] / s;
+      effectiveWarps[i] = warps[i] / repeatNum;
+    } else {
+      effectiveWarps[i] = 1;
+    }
+  }
+
+  SmallVector<unsigned> warpMods(rank);
+  SmallVector<unsigned> warpStrides(rank);
+  unsigned warpMod = 1;
+  unsigned warpStride = 1;
+  for (int i = rank - 1; i >= 0; --i) {
+    warpMod *= warps[i];
+    warpMods[i] = warpMod;
+    warpStrides[i] = warpStride;
+    warpStride *= warps[i];
+  }
+
+  SmallVector<bool> mask(totalWarps, false);
+  for (unsigned w = 0; w < totalWarps; ++w) {
+    bool nonRedundant = true;
+    for (unsigned i = 0; i < rank; ++i) {
+      unsigned warpIdx = (w % warpMods[i]) / warpStrides[i];
+      if (warpIdx >= effectiveWarps[i]) {
+        nonRedundant = false;
+        break;
+      }
+    }
+    mask[w] = nonRedundant;
+  }
+  return mask;
 }
 
 unsigned getBpe(Type type) {

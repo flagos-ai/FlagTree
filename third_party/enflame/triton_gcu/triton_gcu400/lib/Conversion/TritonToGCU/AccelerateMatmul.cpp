@@ -33,6 +33,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
+#include "Constants.h"
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Utility.h"
@@ -54,9 +55,10 @@ using namespace mlir::triton::gpu;
 
 namespace {
 
-// Match the fixed pattern: tt.load -> ttg.convert_layout -> tt.dot
-// Returns the tt.load op if |v| is produced by a ConvertLayoutOp
-// whose source is a triton::LoadOp; nullptr otherwise.
+// Match patterns leading to tt.dot through ConvertLayoutOp:
+//   tt.load -> ttg.convert_layout -> tt.dot
+//   tt.load -> tt.trans -> ttg.convert_layout -> tt.dot
+// Returns the tt.load op if matched; nullptr otherwise.
 static Operation *traceBackToLoadOp(Value v) {
   auto cvt = v.getDefiningOp<ConvertLayoutOp>();
   if (!cvt)
@@ -66,6 +68,15 @@ static Operation *traceBackToLoadOp(Value v) {
   auto userNumber = std::distance(users.begin(), users.end());
   if (srcOp && isa<triton::LoadOp>(srcOp) && userNumber == 1)
     return srcOp;
+  // Also trace through tt.trans: tt.load -> tt.trans -> convert_layout
+  if (srcOp && isa<triton::TransOp>(srcOp) && userNumber == 1) {
+    auto transOp = cast<triton::TransOp>(srcOp);
+    auto *transSrc = transOp.getSrc().getDefiningOp();
+    auto transUsers = transOp.getSrc().getUsers();
+    auto transUserNum = std::distance(transUsers.begin(), transUsers.end());
+    if (transSrc && isa<triton::LoadOp>(transSrc) && transUserNum == 1)
+      return transSrc;
+  }
   return nullptr;
 }
 
@@ -168,6 +179,14 @@ static Value getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter,
   return rewriter.create<LocalAllocOp>(arg.getLoc(), newType, arg);
 }
 
+void setLoadAsyncAttr(Value v, mlir::PatternRewriter &rewriter) {
+  Value arg = v;
+  if (auto cvtOp = v.getDefiningOp<ConvertLayoutOp>())
+    arg = cvtOp.getSrc();
+  if (auto loadOp = arg.getDefiningOp<triton::LoadOp>())
+    loadOp->setAttr(kLoadAsync, rewriter.getBoolAttr(true));
+}
+
 class BlockedToMMA : public mlir::OpRewritePattern<DotOp> {
 public:
   explicit BlockedToMMA(mlir::MLIRContext *context)
@@ -202,6 +221,9 @@ public:
     // If neither operand matches, bail out entirely.
     bool aMatchesPattern = traceBackToLoadOp(a) != nullptr;
     bool bMatchesPattern = traceBackToLoadOp(b) != nullptr;
+    setLoadAsyncAttr(a, rewriter);
+    setLoadAsyncAttr(b, rewriter);
+    // setLoadAsyncAttr(dotOp.getC(), rewriter);
     LLVM_DEBUG(llvm::dbgs() << "BlockedToMMA: operand A "
                             << (aMatchesPattern ? "matches" : "does NOT match")
                             << " tt.load -> convert_layout pattern\n");
@@ -362,9 +384,9 @@ public:
     mlir::gpu::GPUModuleOp m = getOperation();
     // skip if num_warps is 1
     auto builtinModule = m->getParentOfType<ModuleOp>();
-    if (builtinModule && builtinModule->hasAttr("ttg.num-warps")) {
+    if (builtinModule && builtinModule->hasAttr(kNumWarps)) {
       auto numWarps =
-          cast<IntegerAttr>(builtinModule->getAttr("ttg.num-warps")).getInt();
+          cast<IntegerAttr>(builtinModule->getAttr(kNumWarps)).getInt();
       if (numWarps == 1)
         return;
     }

@@ -160,6 +160,85 @@ static LogicalResult lowerDescriptorStore(tt::DescriptorStoreOp op,
   return success();
 }
 
+#ifdef __TLE__
+static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
+  auto loc = op.getLoc();
+  auto srcDescTy = dyn_cast<tt::TensorDescType>(op.getSrc().getType());
+  auto dstDescTy = dyn_cast<tt::TensorDescType>(op.getDst().getType());
+  auto srcMemDescTy = dyn_cast<ttg::MemDescType>(op.getSrc().getType());
+  auto dstMemDescTy = dyn_cast<ttg::MemDescType>(op.getDst().getType());
+
+  const bool globalToLocal = srcDescTy && dstMemDescTy;
+  const bool localToGlobal = srcMemDescTy && dstDescTy;
+  if (!globalToLocal && !localToGlobal) {
+    return op.emitOpError("expects one tensor descriptor operand and one "
+                          "shared memdesc operand");
+  }
+
+  auto descTy = globalToLocal ? srcDescTy : dstDescTy;
+  auto memDescTy = globalToLocal ? dstMemDescTy : srcMemDescTy;
+  auto descBlockTy = descTy.getSignlessBlockType();
+  if (memDescTy.getShape() != descBlockTy.getShape())
+    return op.emitOpError("memdesc shape must match descriptor block shape");
+  if (memDescTy.getElementType() != descBlockTy.getElementType())
+    return op.emitOpError("memdesc element type must match descriptor element "
+                          "type");
+
+  rewriter.setInsertionPoint(op);
+  auto coord =
+      triton::musa::materializeTMECoordValues(loc, op.getIndices(), rewriter);
+  if (failed(coord))
+    return op.emitOpError("unsupported descriptor block rank for TME copy");
+
+  Value pred = arith::ConstantIntOp::create(rewriter, loc, 1, 1);
+  if (globalToLocal) {
+    auto config = triton::musa::resolveFinalTMECopyConfig(
+        memDescTy, descBlockTy.getShape(),
+        triton::musa::TMECopyKind::GlobalToLocal);
+    if (failed(config))
+      return op.emitOpError("unable to resolve final TME load config");
+
+    auto barId = triton::musa::reserveFreshBarrierId(op);
+    if (failed(barId))
+      return op.emitOpError("exhausted MUSA async barrier ids");
+    Value barIdValue = arith::ConstantIntOp::create(rewriter, loc, *barId, 32);
+    Value phaseInit = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+    Value arriveCnt = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+    Value alwaysIssue = arith::ConstantIntOp::create(rewriter, loc, 1, 1);
+    Value totalBytes = materializeStaticTMETransactionBytes(
+        loc, descBlockTy.getShape(), memDescTy.getElementType(), rewriter);
+    if (!totalBytes)
+      return op.emitOpError("unable to materialize TME copy transaction "
+                            "bytes");
+
+    triton::musa::InitArrivalOp::create(rewriter, loc, barIdValue, arriveCnt,
+                                        phaseInit);
+    triton::musa::BarrierAddTransOp::create(rewriter, loc, barIdValue,
+                                            totalBytes, alwaysIssue);
+    triton::musa::createAsyncTMECopyGlobalToLocal(rewriter, loc, op.getSrc(),
+                                                  *coord, barIdValue,
+                                                  op.getDst(), pred, *config);
+    triton::musa::ArriveBarrierNoRetOp::create(rewriter, loc, barIdValue,
+                                               alwaysIssue);
+    triton::musa::WaitBarrierOp::create(rewriter, loc, barIdValue, phaseInit);
+  } else {
+    auto config = triton::musa::resolveFinalTMECopyConfig(
+        memDescTy, descBlockTy.getShape(),
+        triton::musa::TMECopyKind::LocalToGlobal);
+    if (failed(config))
+      return op.emitOpError("unable to resolve final TME store config");
+
+    triton::musa::createAsyncTMECopyLocalToGlobal(
+        rewriter, loc, op.getDst(), *coord, op.getSrc(), pred, *config);
+    triton::musa::TMEStoreCommitOp::create(rewriter, loc);
+    triton::musa::TMEStoreReadWaitOp::create(rewriter, loc);
+  }
+
+  rewriter.eraseOp(op);
+  return success();
+}
+#endif // __TLE__
+
 } // namespace
 
 namespace mlir {
@@ -175,6 +254,19 @@ struct TritonMUSAGPUTMELoweringPass
     IRRewriter rewriter(&getContext());
 
     for (tt::FuncOp func : mod.getOps<tt::FuncOp>()) {
+#ifdef __TLE__
+      SmallVector<ttg::TMACopyOp> tmaCopyOps;
+      func.walk([&](ttg::TMACopyOp op) { tmaCopyOps.push_back(op); });
+      for (ttg::TMACopyOp op : tmaCopyOps) {
+        if (!op->getBlock())
+          continue;
+        if (failed(lowerTMACopy(op, rewriter))) {
+          signalPassFailure();
+          return;
+        }
+      }
+#endif // __TLE__
+
       SmallVector<tt::DescriptorLoadOp> loadOps;
       func.walk([&](tt::DescriptorLoadOp op) { loadOps.push_back(op); });
       for (tt::DescriptorLoadOp op : loadOps) {

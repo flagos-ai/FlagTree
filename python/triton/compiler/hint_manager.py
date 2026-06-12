@@ -87,10 +87,9 @@ def normalize_backend_name(name: str) -> str:
 def hint_get_flagtree_backend() -> str:
     detected_backend = ""
 
-    import torch
-
     # Priority 1: Triton Driver
     try:
+        import torch
         from triton.runtime import driver
         if hasattr(driver, 'active') and hasattr(driver.active, 'get_active_torch_device'):
             device = driver.active.get_active_torch_device()
@@ -100,7 +99,7 @@ def hint_get_flagtree_backend() -> str:
             elif isinstance(device, str):
                 detected_backend = device
     except ImportError:
-        pass
+        return ""
 
     # TODO : some backend may not support priority 1, so keep priority 2 is necessary
     # Priority 2: Torch Global State

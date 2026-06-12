@@ -18,17 +18,18 @@ import os
 import tempfile
 from pathlib import Path
 from triton.backends.compiler import BaseBackend, GPUTarget
-from .backend import GCUBackend, _version_key
-from . import toolkit
-from .toolkit import *
+from triton.backends.enflame.backend import GCUBackend, _version_key
+from triton.backends.enflame import toolkit
+from triton.backends.enflame.toolkit import *
+
 from dataclasses import dataclass
 import functools
 from typing import Any, Tuple
 import hashlib
 from triton.runtime.cache import get_cache_manager
 from triton._C.libtriton import ir, passes, llvm
-from . import passes as gcu_passes
-from .gcu_intrinsics import restore_intrinsics_from_placeholders as _restore_gcu_intrinsics
+from triton.backends.enflame import passes as gcu_passes
+from triton.backends.enflame.gcu_intrinsics import restore_intrinsics_from_placeholders as _restore_gcu_intrinsics
 from typing import Dict
 from types import ModuleType
 from triton.runtime.errors import OutOfResources
@@ -141,12 +142,15 @@ def make_ttgir(mod, metadata, options):
     passes.common.add_symbol_dce(pm)
     passes.common.add_canonicalizer(pm)
     pm.run(mod, "ttgir")
+    metadata["launch_cooperative_grid"] = getattr(options, "launch_cooperative_grid", False)
+    metadata["cluster_dims"] = tuple(getattr(options, "cluster_dims", (1, 1, 1)))
     return mod
 
 
 def make_gcuir(mod, metadata, options):
     patched_mod = _patch_kernel_for_gcuir(str(mod))
     metadata['name'] = re.search('tt.func public @(\\w+)\\(', patched_mod).group(1).strip()
+    metadata['tle_raw'] = '"tle.dsl_region"' in patched_mod
 
     arch = options.arch if options.arch != "gcu410" else "gcu400"
     PipelineClass = toolkit.get_gcu_pipeline_class(arch)
@@ -192,17 +196,14 @@ def make_gcuir(mod, metadata, options):
     elif options.arch == "gcu400" or options.arch == "gcu410":
         if toolkit.get_bool_env("ENABLE_I64_CHECK"):
             gcu_passes.gcu400.add_gcu64_type_verifier(pm)
-        has_tle_raw = '"tle.dsl_region"' in patched_mod
-        if has_tle_raw:
-            gcu_passes.gcu400.add_tle_to_triton_gcu(pm)
+        if metadata['tle_raw']:
             gcu_passes.gcu400.add_tle_convert_arg_to_memdesc(pm)
             gcu_passes.gcu400.add_tle_remove_redundant_copy(pm)
             gcu_passes.gcu400.add_tle_dslregion_inline(pm)
         gcu_passes.gcu400.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
                                                               options.num_ctas, f'gcu:{options.arch}')
         gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
-        if not has_tle_raw:
-            gcu_passes.gcu400.add_tle_to_triton_gcu(pm)
+        gcu_passes.gcu400.add_tle_to_triton_gcu(pm, getattr(options, 'cluster_dims', (1, 1, 1)))
         gcu_passes.gcu400.add_triton_gpu_to_triton_gcu(pm)
         gcu_passes.gcu400.add_tritongcu_accelerate_matmul(pm)
         gcu_passes.mlir.add_cse(pm)
@@ -211,19 +212,18 @@ def make_gcuir(mod, metadata, options):
         gcu_passes.gcu400.add_convert_tensor_pointer(pm)
         gcu_passes.gcu400.add_convert_triton_load_store_to_gcu_dma(pm, options.enable_stride0, options.redundant_sip)
         gcu_passes.mlir.add_canonicalize(pm)
-        gcu_passes.gcu400.add_gcu_tle_lower_async_load(pm)
-        gcu_passes.mlir.add_cse(pm)
         gcu_passes.gcu400.add_triton_wgdot_to_gcu(pm)
         gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
         gcu_passes.gcu400.add_triton_gcu_data_layout_optimize(pm)
         gcu_passes.mlir.add_loop_invariant_code_motion(pm)
+        gcu_passes.gcu400.add_annotate_dot_acc_reuse(pm)
         gcu_passes.gcu400.add_gcu_combine_ops(pm)
         gcu_passes.gcu400.add_gcu_triton_fusion(pm, options.arch)
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.gcu400.add_flatten_triton_func(pm)
-        gcu_passes.gcu400.add_annotate_dot_acc_reuse(pm)
         gcu_passes.gcu400.add_triton_gcu_local_mem_optimize(pm)
+        gcu_passes.gcu400.add_gcu_tle_lower_async_load(pm)
         gcu_passes.gcu400.add_convert_triton_to_gcu(pm)
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.mlir.add_canonicalize(pm)
@@ -246,11 +246,11 @@ def make_llir(mod, metadata, options):
     passes += [
         '-insert-local-fence=arch=' + options.arch, '--convert-vector-to-scf=target-rank=1', '-lower-affine',
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
-        '-convert-private-tag-to-gcu', '-convert-memref-to-gcu',
-        '-kernel-memory-alloc=arch=' + options.arch + ' num-warps=' + str(options.num_warps),
-        '-loop-invariant-code-motion', '-convert-scf-to-cf', '-canonicalize', '-cse', '--symbol-dce',
-        '-gcu-remove-transform-ir', '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8),
-        '-canonicalize', '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse',
+        '-convert-private-tag-to-gcu', '-convert-memref-to-gcu', '-kernel-memory-alloc=arch=' + options.arch +
+        ' num-warps=' + str(options.num_warps), '-convert-warp-specialize-to-scf', '-loop-invariant-code-motion',
+        '-convert-scf-to-cf', '-canonicalize', '-cse', '--symbol-dce', '-gcu-remove-transform-ir',
+        '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
+        '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse',
         '--convert-gpu-to-gcu=chipset=' + options.arch + ' vector-bit-width=' + str(options.vector_length * 8),
         '--gcu-attach-target=arch=' + options.arch, '-convert-index-to-llvm', '-gpu-to-llvm', '-convert-llvm-to-gcu',
         '-alloca-to-entry', '-canonicalize'
@@ -283,13 +283,18 @@ def make_fatbin(mod, metadata, options):
             raise OutOfResources(metadata['shared'], options.max_shared, "shared memory")
         if local_mem_size > options.max_local:
             raise OutOfResources(local_mem_size, options.max_local, "local memory")
-    elif options.arch in ("gcu400", "gcu410"):
-        metadata['shared'] = 0
+    elif options.arch == "gcu400" or options.arch == "gcu410":
+        metadata['shared'] = int(re.search('gcu.shared_memory_size = (\\d+)', str(mod)).group(1).strip())
         dsm_mem_size = int(re.search('gcu.dsm_memory_size = (\\d+)', str(mod)).group(1).strip())
         if dsm_mem_size > options.max_dsm:
             raise OutOfResources(dsm_mem_size, options.max_dsm, "dsm memory")
+        block_dsm_mem_size = int(match.group(1).strip()) if (match := re.search('gcu.block_dsm_memory_size = (\\d+)',
+                                                                                str(mod))) else 0
+        if block_dsm_mem_size > 7 * 1024 * 1024:
+            raise OutOfResources(block_dsm_mem_size, 7 * 1024 * 1024, "block dsm memory")
     elif options.arch == "gcu500":
-        metadata['shared'] = 0
+        if 'shared' not in metadata:
+            metadata['shared'] = 0
         dsm_mem_size_match = re.search('gcu.dsm_memory_size = (\\d+)', str(mod))
         if dsm_mem_size_match:
             dsm_mem_size = int(dsm_mem_size_match.group(1).strip())
@@ -299,7 +304,8 @@ def make_fatbin(mod, metadata, options):
     if options.arch == "gcu500":
         return _make_fatbin_gcu500(str(mod), metadata, options)
     else:
-        mod = _restore_gcu_intrinsics(mod)
+        if metadata['tle_raw']:
+            mod = _restore_gcu_intrinsics(str(mod))
         with tempfile.TemporaryDirectory() as tmpdir:
             bin = os.path.join(tmpdir, "kernel.fatbin")
             compile_args = [
@@ -320,6 +326,10 @@ def _make_fatbin_gcu500(src_str, metadata, options):
     Saves .ll and .s alongside fatbin in the cache directory.
 
     Note: metadata["shared"] should have been set by _make_llir_gcu500 already.
+    All f32 intrinsics (maxnumf/minnumf/exp/exp2) are handled by C++ MLIR
+    patterns in ConvertTritonGPUToEFGCU for both scalar and tensor types.
+    Vector scalarization is unnecessary because the MLIR type converter
+    produces struct-of-scalars, not LLVM vectors.
     """
     kernel_name = metadata.get("name", "kernel") if isinstance(metadata, dict) else "kernel"
     gcu500 = toolkit._load_gcu_opt_module('gcu500')
@@ -366,6 +376,15 @@ def _make_llir_gcu500(mod, metadata, options):
     kernel_name = metadata.get("name", "kernel")
     cache = get_cache_manager(metadata.get("hash"))
     cache.put(result_mlir, f"{kernel_name}.efvm.mlir")
+
+    shared_match = re.search(r'ttg\.shared\s*=\s*(\d+)', result_mlir)
+    if shared_match:
+        metadata['shared'] = int(shared_match.group(1))
+
+    gcu_shared_match = re.search(r'gcu\.shared_memory_size\s*=\s*(\d+)', result_mlir)
+    if gcu_shared_match:
+        gcu_shared = int(gcu_shared_match.group(1))
+        metadata['shared'] = max(metadata.get('shared', 0), gcu_shared)
 
     llir = pipeline.translate_to_llvmir(result_mlir)
     return llir
@@ -506,6 +525,7 @@ class _GCUBackend(BaseBackend):
             args["enable_stride0"] = opts["ENABLE_STRIDE_GATHER"]
         else:
             args["enable_stride0"] = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_GATHER")
+        args.update({k: opts[k] for k in GCUOptions.__dataclass_fields__.keys() if k in opts})
 
         return GCUOptions(**args)
 
@@ -531,6 +551,7 @@ class _GCUBackend(BaseBackend):
             metadata.cluster_dims[0],
             metadata.cluster_dims[1],
             metadata.cluster_dims[2],
+            int(getattr(metadata, "launch_cooperative_grid", False)),
         )
 
     def add_stages(self, stages, options, language):

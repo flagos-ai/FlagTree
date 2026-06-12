@@ -888,6 +888,40 @@ LogicalResult AsyncCopyGlobalToLocalOp::verify() {
   return success();
 }
 
+#ifdef __TLE__
+LogicalResult TMACopyOp::verify() {
+  auto srcDescTy = dyn_cast<triton::TensorDescType>(getSrc().getType());
+  auto dstDescTy = dyn_cast<triton::TensorDescType>(getDst().getType());
+  auto srcMemDescTy = dyn_cast<MemDescType>(getSrc().getType());
+  auto dstMemDescTy = dyn_cast<MemDescType>(getDst().getType());
+
+  const bool globalToLocal = srcDescTy && dstMemDescTy;
+  const bool localToGlobal = srcMemDescTy && dstDescTy;
+  if (!globalToLocal && !localToGlobal) {
+    return emitOpError("expects one tensor descriptor operand and one memdesc "
+                       "operand");
+  }
+
+  auto descTy = globalToLocal ? srcDescTy : dstDescTy;
+  auto memDescTy = globalToLocal ? dstMemDescTy : srcMemDescTy;
+  auto blockTy = descTy.getBlockType();
+  if (getIndices().size() != static_cast<size_t>(blockTy.getRank())) {
+    return emitOpError("expects ")
+           << blockTy.getRank() << " indices, got " << getIndices().size();
+  }
+  if (memDescTy.getShape() != blockTy.getShape()) {
+    return emitOpError("memdesc shape must match descriptor block shape");
+  }
+  if (memDescTy.getElementType() != blockTy.getElementType()) {
+    return emitOpError("memdesc element type must match descriptor element "
+                       "type");
+  }
+  if (globalToLocal && !memDescTy.getMutableMemory())
+    return emitOpError("cannot copy into immutable memdesc");
+  return success();
+}
+#endif // __TLE__
+
 LogicalResult MemDescIndexOp::verify() {
   auto srcTy = getSrc().getType();
   auto dstTy = getType();

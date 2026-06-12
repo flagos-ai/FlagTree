@@ -75,7 +75,7 @@ def get_hook_instance(hook_name):
 
 
 def enable_flagtree_third_party(name):
-    if name in ["triton_shared"]:
+    if name in ["triton_shared", "flagcx"]:
         return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
     else:
         return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
@@ -527,6 +527,15 @@ cache.store(
     condition=("hcu" == flagtree_backend),
     url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm22-b0ca808-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.5.0.tar.gz",
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
+)
+
+# thrive
+cache.store(
+    file="llvm-f6ded0be-ubuntu-x64",
+    condition=("thrive" == flagtree_backend),
+    url="https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-f6ded0be-ubuntu-x64.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )

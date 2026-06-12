@@ -732,6 +732,40 @@ insertWgmmaWaitBefore(Operation *op, unsigned lastCompletedGroup,
   return wait;
 }
 
+static SmallVector<Value, 4>
+getPendingGroupResultValues(ArrayRef<PendingSharedWgmmaGroup> pendingGroups) {
+  SmallVector<Value, 4> values;
+  for (const PendingSharedWgmmaGroup &group : pendingGroups) {
+    assert(!group.dots.empty() &&
+           "pending WGMMA group must contain at least one dot");
+    values.push_back(group.dots.back()->getResult(0));
+  }
+  return values;
+}
+
+static ttng::WarpGroupDotWaitOp insertWgmmaDepthWaitAfterLastPendingDot(
+    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+  // Keep loop-carried accumulator groups bounded across iterations without
+  // materializing the current iteration's WGMMA result. The final wait_group 0
+  // is emitted after the loop, so the pending groups remain tracked here.
+  assert(!pendingGroups.empty() && "expected at least one pending group");
+  ttng::WarpGroupDotOp lastDot = pendingGroups.back().dots.back();
+  Operation *anchor = lastDot.getOperation();
+  if (Operation *next = anchor->getNextNode();
+      next && isa<ttng::WarpGroupDotCommitOp>(next))
+    anchor = next;
+
+  IRRewriter builder(anchor->getContext());
+  builder.setInsertionPointAfter(anchor);
+  auto wait = ttng::WarpGroupDotWaitOp::create(
+      builder, anchor->getLoc(), ArrayRef<Value>{}, pendingGroups.size());
+
+  SmallVector<Value, 4> waitOperands =
+      getPendingGroupResultValues(pendingGroups);
+  ::threadValuesThroughWait(wait, waitOperands);
+  return wait;
+}
+
 static void
 consumeExistingWait(ttng::WarpGroupDotWaitOp wait,
                     SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
@@ -822,7 +856,8 @@ recordPendingDot(ttng::WarpGroupDotOp dot,
 static void scheduleTleWgmmaWaitsInBlock(
     Block *block, const TlePipeResourceAnalysis &resources,
     const TleWgmmaScheduleAnalysis &analysis,
-    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+    SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups,
+    bool deferLoopCarriedYield = false) {
   for (Operation &bodyOp : llvm::make_early_inc_range(*block)) {
     Operation *op = &bodyOp;
     if (op->hasTrait<OpTrait::IsTerminator>())
@@ -874,10 +909,36 @@ static void scheduleTleWgmmaWaitsInBlock(
   Operation *terminator = block->getTerminator();
   if (!terminator)
     return;
+  if (deferLoopCarriedYield && isa<scf::YieldOp>(terminator)) {
+    if (!pendingGroups.empty())
+      insertWgmmaDepthWaitAfterLastPendingDot(pendingGroups);
+    return;
+  }
   drainForMaterializedOperands(terminator, analysis, pendingGroups);
   if (!pendingGroups.empty())
     insertWgmmaWaitBefore(terminator, pendingGroups.size() - 1, pendingGroups,
                           /*forwardedValues=*/{});
+}
+
+static void insertFinalWgmmaWaitAfterLoop(
+    scf::ForOp forOp, SmallVectorImpl<PendingSharedWgmmaGroup> &pendingGroups) {
+  if (pendingGroups.empty())
+    return;
+
+  SmallVector<Value, 4> waitOperands;
+  if (auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator())) {
+    for (auto indexed : llvm::enumerate(yield.getOperands())) {
+      if (findPendingGroupForValue(indexed.value(), pendingGroups))
+        waitOperands.push_back(forOp.getResult(indexed.index()));
+    }
+  }
+
+  IRRewriter builder(forOp.getContext());
+  builder.setInsertionPointAfter(forOp);
+  auto wait = ttng::WarpGroupDotWaitOp::create(
+      builder, forOp.getLoc(), ArrayRef<Value>{}, /*pendings=*/0);
+  ::threadValuesThroughWait(wait, waitOperands);
+  pendingGroups.clear();
 }
 
 static void
@@ -911,7 +972,9 @@ void scheduleTleWgmmaAsyncLaunch(scf::ForOp forOp) {
   SmallVector<PendingSharedWgmmaGroup, 4> pendingGroups;
 
   scheduleTleWgmmaWaitsInBlock(forOp.getBody(), resources, analysis,
-                               pendingGroups);
+                               pendingGroups,
+                               /*deferLoopCarriedYield=*/true);
+  insertFinalWgmmaWaitAfterLoop(forOp, pendingGroups);
   markTleExplicitWgmmaCommitGroups(forOp, analysis);
 }
 

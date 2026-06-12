@@ -76,6 +76,12 @@ void populateDistributedOpToGCUPatterns(
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateTagPool &pTagPool);
 
+void populateTleOpToGCUPatterns(
+    const TypeConverter &converter, RewritePatternSet &patterns,
+    ConversionTarget &target, gcu::FirstLastUserAnalysis &userAnalysis,
+    std::map<Operation *, Operation *> &replaced2Origin,
+    triton::gcu::PrivateTagPool &pTagPool);
+
 } // namespace triton
 } // namespace mlir
 

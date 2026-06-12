@@ -191,22 +191,7 @@ def TritonMUSAGPUMarkInplaceLoads
 }
 
 #ifdef __TLE__
-def TritonMUSAGPUTLELowerAsyncLoad
-    : Pass<"tritonmusa-tle-lower-async-load", "mlir::ModuleOp"> {
-  let summary = "Lower TLE async load hints to MUSA async copies";
-  let description = [{
-    Rewrite `tt.load` operations marked with `tt.load.async = true` into
-    `ttg.async_copy_global_to_local` plus commit/wait/local_load when the
-    load can be represented by the MUSA async global-to-shared copy path.
-    Unsupported hints are dropped so `tle.load(..., is_async=True)` remains
-    a scheduling hint with ordinary `tt.load` correctness semantics.
-  }];
-  let dependentDialects = [
-    "mlir::arith::ArithDialect",
-    "mlir::triton::TritonDialect",
-    "mlir::triton::gpu::TritonGPUDialect"
-  ];
-}
+include "MUSATLE/Transforms/Passes.td"
 #endif // __TLE__
 
 #endif // TRITONMUSAGPU_PASSES

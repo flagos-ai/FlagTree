@@ -838,6 +838,10 @@ struct TTAddPtrOpLowering : SharedConversionPattern<triton::AddPtrOp> {
     auto elemBytes = (elemType.getIntOrFloatBitWidth() + 7) / 8;
     auto ptr = adaptor.getPtr();
     auto offset = adaptor.getOffset();
+    if (offset.getType().getIntOrFloatBitWidth() < 64) {
+      offset =
+          rewriter.create<arith::ExtSIOp>(loc, rewriter.getI64Type(), offset);
+    }
     offset = rewriter.create<arith::MulIOp>(
         loc, offset,
         rewriter.create<arith::ConstantIntOp>(
@@ -845,11 +849,7 @@ struct TTAddPtrOpLowering : SharedConversionPattern<triton::AddPtrOp> {
     auto v = rewriter.create<gcu::IntToPtrOp>(
         loc, resultType,
         rewriter.create<arith::AddIOp>(
-            loc, rewriter.create<gcu::PtrToIntOp>(loc, ptr),
-            offset.getType().getIntOrFloatBitWidth() < 64
-                ? rewriter.create<arith::ExtSIOp>(loc, rewriter.getI64Type(),
-                                                  offset)
-                : offset));
+            loc, rewriter.create<gcu::PtrToIntOp>(loc, ptr), offset));
     rewriter.replaceOp(addPtrOp, v);
     return success();
   }
@@ -1153,16 +1153,77 @@ struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
     auto resultMemRefType =
         MemRefType::get(resultType.getShape(), wrapResultType.getElementType());
     auto totalNumElems = triton::gcu::getTotalElemsPerThread(resultType);
+    auto encoding = resultType.getEncoding();
+    auto warpsPerCTA = triton::gcu::getWarpsPerCTA(encoding);
+
+    // Check if we can use mradix hardware (<= 32 bins, as mradix has 32 bins.)
+    auto inputTensorType =
+        dyn_cast<RankedTensorType>(histogramOp.getOperand(0).getType());
+    int64_t numBins = resultType.getShape()[0];
+    bool useMradix =
+        (numBins <= 32) && inputTensorType.getElementType().isInteger(32);
+
+    if (useMradix) {
+      // Gather all warp inputs to shared memory, then single-warp
+      // mradix histogram. This avoids multi-warp merge and uses hardware
+      // acceleration.
+
+      // Step 1: All warps store their input shards to shared memory
+      auto inputType =
+          dyn_cast<RankedTensorType>(histogramOp.getOperand(0).getType());
+      auto sharedInputTensorType = RankedTensorType::get(
+          inputType.getShape(), inputType.getElementType(), encoding);
+      auto sharedInputMem = storeToSharedMem(
+          rewriter, tag, sharedInputTensorType, adaptor.getSrc(), false,
+          std::make_pair(histogramOp.getOperation(), -1), userAnalysis,
+          replaced2Origin);
+
+      // Step 2: Allocate output in SMEM (skip SMEM->private copy for input)
+      auto smemResultType = MemRefType::get(
+          resultType.getShape(), wrapResultType.getElementType(), AffineMap{},
+          rewriter.getI64IntegerAttr(2));
+      auto smemResMem = syncAllocOp(
+          rewriter, loc, std::make_pair(histogramOp.getOperation(), -1),
+          userAnalysis, replaced2Origin, smemResultType);
+
+      // Step 3: Master warp runs mradix histogram directly on SMEM
+      auto masterWarpId = getMasterThreadId(histogramOp.getOperation());
+      auto isMasterThread = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::eq,
+          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+          rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+      auto useMradixAttr = rewriter.getUnitAttr();
+      rewriter.create<scf::IfOp>(
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
+            doMemset(builder, tag, histogramOp, smemResMem, zero,
+                     totalNumElems);
+            builder.create<math_ext::HistogramOp>(
+                loc, smemResMem, sharedInputMem, useMradixAttr);
+            builder.create<scf::YieldOp>(loc);
+          });
+      rewriter.create<gpu::BarrierOp>(loc);
+
+      // Step 4: Broadcast SMEM output to per-warp private
+      auto finalOutput = loadFromSharedMem(
+          rewriter, tag, resultType, smemResMem, false, lastUser,
+          std::make_pair(nullptr, -1), userAnalysis, replaced2Origin);
+
+      rewriter.create<gpu::BarrierOp>(loc);
+      leaveTritionOp(rewriter, histogramOp.getOperation());
+      rewriter.replaceOp(histogramOp, finalOutput);
+      return success();
+    }
+
+    // Fallback: Per-warp histogram + merge path
     auto resCurWarp = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                                   replaced2Origin, resultMemRefType);
     doMemset(rewriter, tag, histogramOp, resCurWarp, zero, totalNumElems);
-    auto encoding = resultType.getEncoding();
-    auto warpsPerCTA = triton::gcu::getWarpsPerCTA(encoding);
     auto sharedMemTensorType = RankedTensorType::get(
         ArrayRef<int64_t>{resultType.getShape()[0] * warpsPerCTA[0]},
         wrapResultType.getElementType(), encoding);
-    rewriter.create<math_ext::HistogramOp>(loc, resCurWarp, adaptor.getSrc());
-    /// store res of every warp to shared memry
+    rewriter.create<math_ext::HistogramOp>(loc, resCurWarp, adaptor.getSrc(),
+                                           UnitAttr());
+    /// store res of every warp to shared memory
     auto sharedResMem =
         storeToSharedMem(rewriter, tag, sharedMemTensorType, resCurWarp, false,
                          std::make_pair(histogramOp.getOperation(), -1),
@@ -1356,10 +1417,110 @@ struct GCULoadOpLowering : SharedConversionPattern<triton::gcu::LoadOp> {
 struct GCUStoreOpLowering : SharedConversionPattern<triton::gcu::StoreOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
+  static bool needsTransposeForStore(triton::gcu::StoreOp storeOp) {
+    int64_t rank = storeOp.getValue().getType().getRank();
+    auto hint = storeOp.getOrderHint();
+    int64_t hint_size = static_cast<int64_t>(hint.size());
+
+    SmallVector<int32_t> order_hint;
+    for (int64_t i = 0; i < rank; ++i)
+      order_hint.push_back(hint_size == 0 ? -1 : hint[i]);
+
+    bool bDynamicStride = false;
+    for (int64_t i = 0; i < rank; ++i) {
+      if (order_hint[i] == -1)
+        bDynamicStride = true;
+    }
+
+    bool bReshape = true;
+    for (int64_t i = 0; i < rank; ++i) {
+      if ((order_hint[i] == 0 && !bDynamicStride) ||
+          (order_hint[i] == 1 && bDynamicStride)) {
+        bReshape = false;
+        break;
+      }
+    }
+
+    if (bReshape) {
+      if (bDynamicStride) {
+        order_hint.push_back(1);
+      } else {
+        for (int64_t i = 0; i < rank; ++i)
+          order_hint[i]--;
+        order_hint.push_back(rank);
+      }
+      rank += 1;
+    }
+
+    if (rank == 2 && bDynamicStride) {
+      if (order_hint[1] == 1) {
+        order_hint[0] = 0;
+        bDynamicStride = false;
+      } else if (order_hint[0] == 1) {
+        order_hint[1] = 0;
+        bDynamicStride = false;
+      }
+    }
+
+    if (bDynamicStride)
+      return true;
+
+    for (int64_t i = 0; i < rank; ++i) {
+      if (order_hint[i] != i)
+        return true;
+    }
+    return false;
+  }
+
   LogicalResult
   matchAndRewrite(triton::gcu::StoreOp storeOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     enterTritionOp(rewriter, storeOp.getOperation());
+    auto loc = storeOp.getLoc();
+
+    // Matrix store
+    Value storeValue = adaptor.getValue();
+    if (useMatrixStore(storeOp, storeValue)) {
+      bool hasTrans = needsTransposeForStore(storeOp);
+      // hasTrans = true;
+      Value dstPtr = adaptor.getPtr();
+      auto dstPtrElemTy = storeOp.getPtr().getType().getElementType();
+      if (hasTrans) {
+        // Copy accumulator to a local buffer, then DMA to global
+        auto lastUser = userAnalysis.getLastUser(storeOp.getValue());
+        auto storeInMemRefType = dyn_cast<MemRefType>(storeValue.getType());
+        auto dotOutMemRefType =
+            MemRefType::get(storeInMemRefType.getShape(), dstPtrElemTy);
+        auto dotOut = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                                  replaced2Origin, dotOutMemRefType);
+        auto dotOutPtrType = gcu::PtrType::get(
+            rewriter.getContext(), dotOutMemRefType.getElementType());
+        dstPtr =
+            rewriter.create<gcu::MemRefToPtrOp>(loc, dotOutPtrType, dotOut);
+        storeValue = dotOut;
+      }
+
+      ConfigMatrixStore(rewriter, loc, storeOp, adaptor.getValue(), dstPtr,
+                        adaptor.getShape(), adaptor.getStrides(),
+                        adaptor.getOffsets(), hasTrans);
+      if (!hasTrans) {
+        leaveTritionOp(rewriter, storeOp.getOperation());
+        rewriter.eraseOp(storeOp);
+        return success();
+      }
+    }
+
+    // DMA only supports same element type transfers
+    auto valElemTy =
+        dyn_cast<MemRefType>(storeValue.getType()).getElementType();
+    auto ptrElemTy = storeOp.getPtr().getType().getElementType();
+    if (valElemTy != ptrElemTy) {
+      return storeOp.emitOpError()
+             << "DMA store requires matching element types, got value="
+             << valElemTy << " ptr=" << ptrElemTy;
+    }
+
+    // Dma store
     if (pTagPool.isExistInMap(storeOp.getOperation())) {
       pTagPool.releaseMap(storeOp.getOperation());
     }
@@ -1382,7 +1543,6 @@ struct GCUStoreOpLowering : SharedConversionPattern<triton::gcu::StoreOp> {
       nextOp = nextOp->getNextNode();
     }
 
-    auto loc = storeOp.getLoc();
     auto storeType = storeOp.getValue().getType();
     if (!isa<TensorType>(storeType))
       return failure();
@@ -1412,8 +1572,8 @@ struct GCUStoreOpLowering : SharedConversionPattern<triton::gcu::StoreOp> {
                 loc, shapeCheck,
                 [&](OpBuilder builder, Location loc) {
                   auto store_size = ConfigGcuStore(
-                      rewriter, loc, adaptor.getValue(), storeOp,
-                      storeValueType, adaptor.getPtr(), adaptor.getStrides(),
+                      rewriter, loc, storeValue, storeOp, storeValueType,
+                      adaptor.getPtr(), adaptor.getStrides(),
                       adaptor.getShape(), tag);
                   builder.create<scf::YieldOp>(loc, ValueRange{store_size});
                 },
@@ -1445,7 +1605,7 @@ struct GCUStoreOpLowering : SharedConversionPattern<triton::gcu::StoreOp> {
             builder.create<scf::YieldOp>(loc);
           });
       rewriter.restoreInsertionPoint(ip);
-      moveDeallocOp(rewriter, adaptor.getValue(), ifOp, 0);
+      moveDeallocOp(rewriter, storeValue, ifOp, 0);
     } else {
       rewriter.create<scf::IfOp>(
           loc, isNotZero, [&](OpBuilder builder, Location loc) {
@@ -1785,11 +1945,8 @@ struct TTReshapeOpLowering : SharedConversionPattern<triton::ReshapeOp> {
     auto loc = op.getLoc();
     auto resultType =
         dyn_cast<MemRefType>(getTypeConverter()->convertType(op.getType()));
-    auto srcNumElems = triton::gcu::getElemsPerThread(op.getSrc().getType());
-    auto dstNumElems = triton::gcu::getElemsPerThread(op.getType());
 
-    // noop expand dims
-    if (srcNumElems == dstNumElems) {
+    if (!triton::gcu::isExpensiveView(op.getSrc().getType(), op.getType())) {
       auto [strides, offset] = resultType.getStridesAndOffset();
       auto output = rewriter.create<memref::ReinterpretCastOp>(
           loc, resultType, adaptor.getSrc(), offset, resultType.getShape(),
@@ -1798,6 +1955,7 @@ struct TTReshapeOpLowering : SharedConversionPattern<triton::ReshapeOp> {
       rewriter.replaceOp(op, output);
       return success();
     }
+
     auto type = op.getType();
 
     auto tag = pTagPool.getPrivateSyncTagInfo(op);
@@ -2447,75 +2605,57 @@ static Value stripValueFromUnrealizedConversionCastOp(Value v) {
   return v;
 }
 
+// Create a stack allocation for the OACC accumulator buffer.
+// The hardware requires the physical buffer to be at least
+// GEMM_MIN_M (32) rows and OACC_F32_LENGTH (128) columns.
+// When the original shape is smaller, allocate a padded buffer and
+// reinterpret_cast back to the original type.
+static Value createOaccAlloca(OpBuilder &rewriter, memref::AllocOp allocOp) {
+  auto origAllocType = cast<MemRefType>(allocOp.getType());
+  auto origShape = origAllocType.getShape();
+  bool needsPadM = origAllocType.getRank() >= 2 &&
+                   origShape[origShape.size() - 2] < GEMM_MIN_M;
+  bool needsPadN =
+      origAllocType.getRank() >= 2 && origShape.back() < OACC_F32_LENGTH;
+  bool needsOaccPad = needsPadM || needsPadN;
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(allocOp);
+  if (needsOaccPad) {
+    SmallVector<int64_t> paddedShape(origShape);
+    if (needsPadM)
+      paddedShape[paddedShape.size() - 2] = GEMM_MIN_M;
+    if (needsPadN)
+      paddedShape.back() = OACC_F32_LENGTH;
+    auto paddedType =
+        MemRefType::get(paddedShape, origAllocType.getElementType());
+    auto allocaOp =
+        rewriter.create<memref::AllocaOp>(allocOp.getLoc(), paddedType);
+    allocaOp.setAlignment(512);
+
+    SmallVector<OpFoldResult> sizes;
+    SmallVector<OpFoldResult> strides;
+    for (auto s : origShape)
+      sizes.push_back(rewriter.getIndexAttr(s));
+    int64_t stride = 1;
+    SmallVector<int64_t> strideVals(origShape.size());
+    for (int i = origShape.size() - 1; i >= 0; --i) {
+      strideVals[i] = stride;
+      stride *= origShape[i];
+    }
+    for (auto sv : strideVals)
+      strides.push_back(rewriter.getIndexAttr(sv));
+    return rewriter.create<memref::ReinterpretCastOp>(
+        allocOp.getLoc(), origAllocType, allocaOp.getResult(),
+        rewriter.getIndexAttr(0), sizes, strides);
+  }
+  auto allocaOp =
+      rewriter.create<memref::AllocaOp>(allocOp.getLoc(), origAllocType);
+  allocaOp.setAlignment(512);
+  return allocaOp.getResult();
+}
+
 struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
   using SharedConversionPattern::SharedConversionPattern;
-
-  // Check whether the dot accumulator (C) can be reused as the output (D).
-  // Structural eligibility is pre-checked by AnnotateDotAccReusePass which
-  // sets the "acc_reuse_candidate" attribute.  Here we verify the
-  // type-compatibility conditions that require the TypeConverter, plus a
-  // defensive one-use check on the original accumulator.
-  static bool canReuseAccumulatorBuffer(triton::DotOp op, OpAdaptor adaptor,
-                                        MemRefType resultMemRefType) {
-    if (!op->hasAttr("acc_reuse_candidate"))
-      return false;
-
-    if (op.getType().getRank() != 2)
-      return false;
-
-    Value accBuffer = adaptor.getC();
-    auto accMemRefType = dyn_cast<MemRefType>(accBuffer.getType());
-    if (!accMemRefType || accMemRefType != resultMemRefType)
-      return false;
-
-    auto blockArg = dyn_cast<BlockArgument>(accBuffer);
-    if (!blockArg)
-      return false;
-
-    auto *parentOp = blockArg.getOwner()->getParentOp();
-    auto forOp = dyn_cast<scf::ForOp>(parentOp);
-    if (!forOp)
-      return false;
-
-    unsigned argIdx = blockArg.getArgNumber();
-    if (argIdx == 0)
-      return false;
-    unsigned iterArgIdx = argIdx - 1;
-
-    Value origAcc = op.getC();
-    if (!origAcc.hasOneUse())
-      return false;
-
-    auto *terminator = forOp.getBody()->getTerminator();
-    auto yieldOp = dyn_cast<scf::YieldOp>(terminator);
-    if (!yieldOp || iterArgIdx >= yieldOp.getNumOperands())
-      return false;
-    if (yieldOp.getOperand(iterArgIdx) != op.getResult())
-      return false;
-
-    Value initArg = forOp.getInitArgs()[iterArgIdx];
-    if (auto outerFor = forOp->getParentOfType<scf::ForOp>()) {
-      // Reject if nested three or more levels deep -- only two-level
-      // nesting is supported for accumulator reuse.
-      if (outerFor->getParentOfType<scf::ForOp>())
-        return false;
-      // Reject if init comes from outer for's block arg (carried through
-      // the outer loop).
-      if (auto outerBlockArg = dyn_cast<BlockArgument>(initArg))
-        if (outerBlockArg.getOwner()->getParentOp() == outerFor.getOperation())
-          return false;
-      // Reject if outer for yields the inner for's accumulator result.
-      if (auto outerYield =
-              dyn_cast<scf::YieldOp>(outerFor.getBody()->getTerminator())) {
-        Value innerResult = forOp->getResult(iterArgIdx);
-        for (auto yieldedVal : outerYield.getOperands())
-          if (yieldedVal == innerResult)
-            return false;
-      }
-    }
-
-    return true;
-  }
 
   LogicalResult
   matchAndRewrite(triton::DotOp op, OpAdaptor adaptor,
@@ -2525,6 +2665,7 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
       pTagPool.releaseMap(op.getOperation());
     }
     auto loc = op.getLoc();
+    auto ctx = op.getContext();
     if (!isa<RankedTensorType>(op.getA().getType()) ||
         !isa<RankedTensorType>(op.getB().getType()))
       return failure();
@@ -2535,7 +2676,7 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
 
     Value output;
     Value useBiasVal;
-    bool reuseAcc = canReuseAccumulatorBuffer(op, adaptor, resultMemRefType);
+    bool reuseAcc = op->hasAttr(kAccReuseCandidate);
     if (reuseAcc) {
       output = adaptor.getC();
       auto blockArg = cast<BlockArgument>(adaptor.getC());
@@ -2544,6 +2685,82 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
       Value lb = forOp.getLowerBound();
       useBiasVal =
           rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne, iv, lb);
+
+      unsigned iterArgIdx = blockArg.getArgNumber() - 1;
+      Value initArg = forOp.getInitArgs()[iterArgIdx];
+      auto allocOp = initArg.getDefiningOp<memref::AllocOp>();
+      assert(allocOp && "allocOp is null");
+
+      auto forOpOrig = cast<scf::ForOp>(replaced2Origin[forOp.getOperation()]);
+      Value initArgOrig = forOpOrig.getInitArgs()[iterArgIdx];
+      bool initArgHasOneUse = initArgOrig.hasOneUse();
+      if (initArgHasOneUse)
+        removeRedundantZeroFill(rewriter, allocOp);
+
+      auto accReuseAttr = dyn_cast<StringAttr>(op->getAttr(kAccReuseCandidate));
+      assert(accReuseAttr && "acc_reuse_candidate attr is not a StringAttr");
+      if (accReuseAttr.getValue() == kAccReuseOacc) {
+        Value allocaVal = createOaccAlloca(rewriter, allocOp);
+        if (initArgHasOneUse) {
+          for (auto *user :
+               llvm::make_early_inc_range(allocOp.getResult().getUsers())) {
+            if (isa<memref::DeallocOp>(user))
+              rewriter.eraseOp(user);
+          }
+          rewriter.replaceOp(allocOp, allocaVal);
+        } else {
+          forOp.getInitArgsMutable()[iterArgIdx].set(allocaVal);
+        }
+
+        // Store to local memory
+        if (auto accStore = op->getAttr(kAccStore)) {
+          StringRef accStoreVal = mlir::cast<StringAttr>(accStore).getValue();
+          if (accStoreVal == kAccStoreLocal ||
+              accStoreVal == kAccStoreCvtLocal) {
+            OpBuilder::InsertionGuard guard(rewriter);
+            rewriter.setInsertionPointAfter(forOp);
+
+            auto dotOutMemRefType = resultMemRefType;
+            Operation *cvtOp = nullptr;
+            if (accStoreVal == kAccStoreCvtLocal) {
+              cvtOp = *op->getResult(0).getUsers().begin();
+              if (isa<arith::TruncFOp, arith::TruncIOp>(cvtOp)) {
+                dotOutMemRefType = MemRefType::get(
+                    resultMemRefType.getShape(),
+                    dyn_cast<MemRefType>(cvtOp->getResult(0).getType())
+                        .getElementType());
+              } else {
+                assert(false && "only support truncf or trunci for dot cvt op");
+              }
+            }
+
+            auto dotOut = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                                      replaced2Origin, dotOutMemRefType);
+            auto dotOutPtrType =
+                gcu::PtrType::get(ctx, dotOutMemRefType.getElementType());
+            auto dotOutPtr =
+                rewriter.create<gcu::MemRefToPtrOp>(loc, dotOutPtrType, dotOut);
+            SmallVector<Value, 2> memDims;
+            auto dotOutShape = dotOutMemRefType.getShape();
+            memDims.push_back(
+                rewriter.create<arith::ConstantIndexOp>(loc, dotOutShape[0]));
+            memDims.push_back(
+                rewriter.create<arith::ConstantIndexOp>(loc, dotOutShape[1]));
+            SmallVector<Value, 2> realDims;
+            realDims.push_back(rewriter.create<memref::DimOp>(loc, dotOut, 0));
+            realDims.push_back(rewriter.create<memref::DimOp>(loc, dotOut, 1));
+
+            Value forResult = forOp->getResult(iterArgIdx);
+            auto matStoreOp = rewriter.create<gcu::MatrixStoreOp>(
+                loc, forResult, dotOutPtr, memDims, realDims);
+            if (accStoreVal == kAccStoreCvtLocal) {
+              rewriter.replaceOp(cvtOp, dotOut);
+            } else {
+              rewriter.replaceAllUsesExcept(forResult, dotOut, matStoreOp);
+            }
+          }
+        }
+      }
       LLVM_DEBUG(llvm::dbgs() << "TTDotOpLowering: reusing accumulator buffer "
                                  "for in-place matmul\n");
     } else {
@@ -2559,9 +2776,12 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
       auto biasVal = adaptor.getC();
       auto matmulOp = rewriter.create<gcu::MatMulOp>(
           loc, output, lhsVal, rhsVal, biasVal, useBiasVal);
-      if (op->getAttr("inputPrecision") && aElemTy.isF32() && bElemTy.isF32()) {
+      if (op->getAttr("inputPrecision") && aElemTy.isF32() && bElemTy.isF32())
         matmulOp->setAttr("inputPrecision", op->getAttr("inputPrecision"));
-      }
+      if (op->getAttr(kAccReuseCandidate))
+        matmulOp->setAttr(kAccReuseCandidate, op->getAttr(kAccReuseCandidate));
+      if (op->getAttr(kAccStore))
+        matmulOp->setAttr(kAccStore, op->getAttr(kAccStore));
     } else {
       auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
@@ -2645,10 +2865,14 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
             matmulOp = builder.create<gcu::MatMulOp>(
                 loc, newOut, newLhs, newRhs, newBias, useBiasVal);
             if (op->getAttr("inputPrecision") && aElemTy.isF32() &&
-                bElemTy.isF32()) {
+                bElemTy.isF32())
               matmulOp->setAttr("inputPrecision",
                                 op->getAttr("inputPrecision"));
-            }
+            if (op->getAttr(kAccReuseCandidate))
+              matmulOp->setAttr(kAccReuseCandidate,
+                                op->getAttr(kAccReuseCandidate));
+            if (op->getAttr(kAccStore))
+              matmulOp->setAttr(kAccStore, op->getAttr(kAccStore));
           });
     }
     leaveTritionOp(rewriter, op.getOperation());
@@ -2705,12 +2929,18 @@ getGcuAtomicMemSyncScope(mlir::triton::MemSyncScope mem_sync) {
   }
 }
 
-// Build the CTA-scope serialized atomic loop:
-//   for iv = 0..numWarps:
-//     if (threadId == iv):
-//       elementLoop: for each element:
-//         elemFn(builder, loc, iters)
-//     barrier
+// Build the cluster+CTA serialized atomic loop.
+// Ensures at most one thread across the cluster executes at a time:
+//
+//   for cta = 0 .. totalCTAs:       // cluster-level serialization
+//     if (flatCtaId == cta):
+//       for warp = 0 .. numWarps:   // CTA-level serialization
+//         if (threadId == warp):
+//           elementLoop: for each element:
+//             elemFn(builder, loc, iters)
+//         barrier                   // intra-CTA barrier
+//     cluster_barrier               // inter-CTA barrier within cluster
+//
 static void buildCTASerializedLoop(
     ConversionPatternRewriter &rewriter, Location loc, Operation *op,
     Value zero, Value one, SmallVector<unsigned> numElems,
@@ -2719,35 +2949,76 @@ static void buildCTASerializedLoop(
   ModuleOp module = op->getParentOfType<ModuleOp>();
   int numWarps = triton::gcu::getNumWarps(module);
 
-  // Fast path: a single subthread needs no serialization, barrier, or
-  // is-my-turn check — just the element loop.
-  if (numWarps <= 1) {
-    scf::buildLoopNest(
-        rewriter, loc, SmallVector<Value, 4>(numElems.size(), zero),
-        numElemValues, SmallVector<Value, 4>(numElems.size(), one), elemFn);
-    return;
-  }
+  // --- Read cluster dims from module attributes ---
+  auto getClusterDim = [&](StringRef name) -> int {
+    if (auto attr = module->getAttrOfType<IntegerAttr>(name))
+      return attr.getInt();
+    return 1;
+  };
+  int clusterDimX = getClusterDim("ttg.cluster-dims-x");
+  int clusterDimY = getClusterDim("ttg.cluster-dims-y");
+  int clusterDimZ = getClusterDim("ttg.cluster-dims-z");
+  int totalCTAs = clusterDimX * clusterDimY * clusterDimZ;
 
-  auto numWarpsVal = rewriter.create<arith::ConstantIndexOp>(loc, numWarps);
-  auto threadId = rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
+  // --- Compute flat CTA ID within the cluster ---
+  // flatCtaId = ctaIdX + ctaIdY * clusterDimX   (clusterDimZ == 1)
+  auto ctaIdX = rewriter.create<gcu::CTAIdOp>(loc, rewriter.getIndexType(),
+                                              rewriter.getI32IntegerAttr(0));
+  auto ctaIdY = rewriter.create<gcu::CTAIdOp>(loc, rewriter.getIndexType(),
+                                              rewriter.getI32IntegerAttr(1));
+  auto dimXVal = rewriter.create<arith::ConstantIndexOp>(loc, clusterDimX);
+  auto flatCtaId = rewriter.create<arith::AddIOp>(
+      loc, ctaIdX, rewriter.create<arith::MulIOp>(loc, ctaIdY, dimXVal));
 
-  auto serializeLoop = rewriter.create<scf::ForOp>(loc, zero, numWarpsVal, one);
+  auto totalCTAsVal = rewriter.create<arith::ConstantIndexOp>(loc, totalCTAs);
+
+  // --- Outer loop: CTAs in the cluster take turns ---
+  auto ctaLoop = rewriter.create<scf::ForOp>(loc, zero, totalCTAsVal, one);
   {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(serializeLoop.getBody());
-    Value iv = serializeLoop.getInductionVar();
-    auto isMyTurn = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::eq, threadId, iv);
+    OpBuilder::InsertionGuard ctaGuard(rewriter);
+    rewriter.setInsertionPointToStart(ctaLoop.getBody());
+    Value ctaIv = ctaLoop.getInductionVar();
+    auto isMyCTA = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                  flatCtaId, ctaIv);
 
     rewriter.create<scf::IfOp>(
-        loc, isMyTurn, [&](OpBuilder ifBuilder, Location loc) {
-          scf::buildLoopNest(
-              ifBuilder, loc, SmallVector<Value, 4>(numElems.size(), zero),
-              numElemValues, SmallVector<Value, 4>(numElems.size(), one),
-              elemFn);
-          ifBuilder.create<scf::YieldOp>(loc);
+        loc, isMyCTA, [&](OpBuilder ctaBuilder, Location loc) {
+          if (numWarps <= 1) {
+            scf::buildLoopNest(
+                ctaBuilder, loc, SmallVector<Value, 4>(numElems.size(), zero),
+                numElemValues, SmallVector<Value, 4>(numElems.size(), one),
+                elemFn);
+          } else {
+            // --- Inner loop: warps take turns within this CTA ---
+            auto numWarpsVal =
+                ctaBuilder.create<arith::ConstantIndexOp>(loc, numWarps);
+            auto threadId =
+                ctaBuilder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
+
+            auto warpLoop =
+                ctaBuilder.create<scf::ForOp>(loc, zero, numWarpsVal, one);
+            {
+              OpBuilder::InsertionGuard warpGuard(ctaBuilder);
+              ctaBuilder.setInsertionPointToStart(warpLoop.getBody());
+              Value warpIv = warpLoop.getInductionVar();
+              auto isMyWarp = ctaBuilder.create<arith::CmpIOp>(
+                  loc, arith::CmpIPredicate::eq, threadId, warpIv);
+
+              ctaBuilder.create<scf::IfOp>(
+                  loc, isMyWarp, [&](OpBuilder warpBuilder, Location loc) {
+                    scf::buildLoopNest(
+                        warpBuilder, loc,
+                        SmallVector<Value, 4>(numElems.size(), zero),
+                        numElemValues,
+                        SmallVector<Value, 4>(numElems.size(), one), elemFn);
+                    warpBuilder.create<scf::YieldOp>(loc);
+                  });
+              ctaBuilder.create<gpu::BarrierOp>(loc);
+            }
+          }
+          ctaBuilder.create<scf::YieldOp>(loc);
         });
-    rewriter.create<gpu::BarrierOp>(loc);
+    rewriter.create<gcu::ClusterBarrierOp>(loc);
   }
 }
 
@@ -2887,18 +3158,58 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                                   replaced2Origin, memrefType);
 
       if (isCtaScope) {
-        rewriter.create<scf::IfOp>(
-            loc, thread_mask, [&](OpBuilder builder, Location loc) {
-              auto dynMemType = MemRefType::get(
-                  ArrayRef<int64_t>{ShapedType::kDynamic}, elemType);
-              auto buffer =
-                  builder.create<gcu::PtrToMemRefOp>(loc, dynMemType, ptr);
-              auto oldVal = emitSoftwareRMW(builder, loc, op.getAtomicRmwOp(),
-                                            buffer, zero, val, elemType);
-              builder.create<memref::StoreOp>(loc, oldVal, localMem,
-                                              ValueRange{zero});
-              builder.create<scf::YieldOp>(loc);
-            });
+        ModuleOp module = op->getParentOfType<ModuleOp>();
+        auto getClusterDim = [&](StringRef name) -> int {
+          if (auto attr = module->getAttrOfType<IntegerAttr>(name))
+            return attr.getInt();
+          return 1;
+        };
+        int clusterDimX = getClusterDim("ttg.cluster-dims-x");
+        int clusterDimY = getClusterDim("ttg.cluster-dims-y");
+        int clusterDimZ = getClusterDim("ttg.cluster-dims-z");
+        int totalCTAs = clusterDimX * clusterDimY * clusterDimZ;
+
+        auto ctaIdX = rewriter.create<gcu::CTAIdOp>(
+            loc, rewriter.getIndexType(), rewriter.getI32IntegerAttr(0));
+        auto ctaIdY = rewriter.create<gcu::CTAIdOp>(
+            loc, rewriter.getIndexType(), rewriter.getI32IntegerAttr(1));
+        auto dimXVal =
+            rewriter.create<arith::ConstantIndexOp>(loc, clusterDimX);
+        auto flatCtaId = rewriter.create<arith::AddIOp>(
+            loc, ctaIdX, rewriter.create<arith::MulIOp>(loc, ctaIdY, dimXVal));
+        auto totalCTAsVal =
+            rewriter.create<arith::ConstantIndexOp>(loc, totalCTAs);
+        auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+        auto ctaLoop =
+            rewriter.create<scf::ForOp>(loc, zero, totalCTAsVal, one);
+        {
+          OpBuilder::InsertionGuard ctaGuard(rewriter);
+          rewriter.setInsertionPointToStart(ctaLoop.getBody());
+          Value ctaIv = ctaLoop.getInductionVar();
+          auto isMyCTA = rewriter.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::eq, flatCtaId, ctaIv);
+
+          rewriter.create<scf::IfOp>(
+              loc, isMyCTA, [&](OpBuilder ctaBuilder, Location loc) {
+                ctaBuilder.create<scf::IfOp>(
+                    loc, thread_mask,
+                    [&](OpBuilder innerBuilder, Location loc) {
+                      auto dynMemType = MemRefType::get(
+                          ArrayRef<int64_t>{ShapedType::kDynamic}, elemType);
+                      auto buffer = innerBuilder.create<gcu::PtrToMemRefOp>(
+                          loc, dynMemType, ptr);
+                      auto oldVal = emitSoftwareRMW(innerBuilder, loc,
+                                                    op.getAtomicRmwOp(), buffer,
+                                                    zero, val, elemType);
+                      innerBuilder.create<memref::StoreOp>(
+                          loc, oldVal, localMem, ValueRange{zero});
+                      innerBuilder.create<scf::YieldOp>(loc);
+                    });
+                ctaBuilder.create<scf::YieldOp>(loc);
+              });
+          rewriter.create<gcu::ClusterBarrierOp>(loc);
+        }
       } else {
         rewriter.create<scf::IfOp>(
             loc, thread_mask, [&](OpBuilder builder, Location loc) {
@@ -2960,6 +3271,16 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
       }
 
       if (isCtaScope) {
+        auto freeWarpMask = triton::gcu::getFreeWarpMask(op.getType());
+        bool hasWarpRedundancy =
+            llvm::any_of(freeWarpMask, [](bool b) { return !b; });
+        int32_t warpBitmask = 0;
+        if (hasWarpRedundancy) {
+          for (unsigned i = 0; i < freeWarpMask.size(); ++i)
+            if (freeWarpMask[i])
+              warpBitmask |= (1 << i);
+        }
+
         buildCTASerializedLoop(
             rewriter, loc, op.getOperation(), zero, one, numElems,
             numElemValues,
@@ -2977,8 +3298,35 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                             .getResult()
                       : elemBuilder.create<arith::ConstantIntOp>(loc, 1, 1)
                             .getResult();
-              auto thread_select = elemBuilder.create<arith::CmpIOp>(
-                  loc, arith::CmpIPredicate::eq, mask, true_bool);
+              Value thread_select =
+                  elemBuilder
+                      .create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                             mask, true_bool)
+                      .getResult();
+
+              if (hasWarpRedundancy) {
+                auto threadId =
+                    elemBuilder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
+                auto tidI32 = elemBuilder.create<arith::IndexCastOp>(
+                    loc, elemBuilder.getI32Type(), threadId);
+                auto bitmaskVal = elemBuilder.create<arith::ConstantIntOp>(
+                    loc, warpBitmask, 32);
+                auto shifted =
+                    elemBuilder.create<arith::ShRUIOp>(loc, bitmaskVal, tidI32);
+                auto oneI32 =
+                    elemBuilder.create<arith::ConstantIntOp>(loc, 1, 32);
+                auto bit =
+                    elemBuilder.create<arith::AndIOp>(loc, shifted, oneI32);
+                auto zeroI32 =
+                    elemBuilder.create<arith::ConstantIntOp>(loc, 0, 32);
+                auto isNonRedundant = elemBuilder.create<arith::CmpIOp>(
+                    loc, arith::CmpIPredicate::ne, bit, zeroI32);
+                thread_select =
+                    elemBuilder
+                        .create<arith::AndIOp>(loc, thread_select,
+                                               isNonRedundant.getResult())
+                        .getResult();
+              }
 
               elemBuilder.create<scf::IfOp>(
                   loc, thread_select,
@@ -3453,23 +3801,51 @@ void ConvertTritonToGCUPass::runOnOperation() {
   });
   assert(entryFunc && "entry function not found");
 
+  // Scan triton IR for triton_gcu.remote_memdesc to detect cross-CTA sharing.
+  // (tle.remote_pointers has already been lowered to remote_memdesc by
+  // TleToTritonGCUPass which runs before this pass.)
+  bool hasCrossCTAShare = false;
+  moduleOp.walk([&](triton::gcu::RemoteMemDescOp) {
+    hasCrossCTAShare = true;
+    return WalkResult::interrupt();
+  });
+
+  // Private tag pool
+  int numWarps = triton::gcu::getTotalNumWarps(moduleOp);
   bool useAsyncSharedTag = false;
+  bool useAllTags = false;
   moduleOp.walk([&](triton::gcu::CopyGlobalToLocalOp copyOp) {
     auto asyncAttr =
-        llvm::cast_if_present<BoolAttr>(copyOp->getAttr("tt.load.async"));
+        llvm::cast_if_present<BoolAttr>(copyOp->getAttr(kLoadAsync));
     if (asyncAttr && asyncAttr.getValue()) {
       useAsyncSharedTag = true;
-      return WalkResult::interrupt();
+      if (copyOp->getParentOfType<gcu::WarpSpecializeOp>()) {
+        useAllTags = true;
+        return WalkResult::interrupt();
+        // } else if (numWarps >= 4) {
+        //   for (Operation *user : copyOp.getDstMem().getUsers()) {
+        //     if (user == copyOp.getOperation())
+        //       continue;
+        //     if (isa<triton::DotOp>(user)) {
+        //       useAllTags = true;
+        //       return WalkResult::interrupt();
+        //     } else if (auto localLoadOp =
+        //                    dyn_cast<triton::gpu::LocalLoadOp>(user)) {
+        //       if (localLoadOp->hasOneUse() &&
+        //           isa<triton::DotOp>(*localLoadOp.getResult().user_begin()))
+        //           {
+        //         useAllTags = true;
+        //         return WalkResult::interrupt();
+        //       }
+        //     }
+        //   }
+        //   return WalkResult::advance();
+      }
     }
     return WalkResult::advance();
   });
-
-  auto mod = moduleOp->getParentOfType<ModuleOp>();
-  if (!mod->hasAttr("ttg.num-warps"))
-    llvm::report_fatal_error(
-        "TritonGPU module should contain a ttg.num-warps attribute");
-  auto numWarps = cast<IntegerAttr>(mod->getAttr("ttg.num-warps")).getInt();
-  triton::gcu::PrivateTagPool pTagPool(entryFunc, numWarps, useAsyncSharedTag);
+  triton::gcu::PrivateTagPool pTagPool(entryFunc, numWarps, useAsyncSharedTag,
+                                       useAllTags);
 
   // pre analysis base triton ir
   triton::gcu::FirstLastUserAnalysis &userAnalysis =
@@ -3566,6 +3942,8 @@ void ConvertTritonToGCUPass::runOnOperation() {
   mlir::triton::populateDistributedOpToGCUPatterns(
       converter, patterns, userAnalysis, replaced2Origin, pTagPool);
 #endif
+  mlir::triton::populateTleOpToGCUPatterns(
+      converter, patterns, target, userAnalysis, replaced2Origin, pTagPool);
 
   patterns.add<
       TTFuncOpLowering, TTReturnOpLowering, TTCallOpLowering,
@@ -3646,4 +4024,28 @@ void ConvertTritonToGCUPass::runOnOperation() {
 
   if (failed(applyPartialConversion(moduleOp, target, std::move(patterns))))
     signalPassFailure();
+
+  if (hasCrossCTAShare) {
+    moduleOp->setAttr("gcu.UseCrossCTAShare", UnitAttr::get(ctx));
+  }
+
+  // Post-conversion fixup: redirect uses of OACC for-loop results to their
+  // local buffer copies. During dialect conversion, replaceAllUsesExcept in
+  // TTDotOpLowering cannot update the framework's value mapping, so ops
+  // converted after the dot (e.g. ElementwiseFusionRegionOp) still reference
+  // the raw OACC for-result. Now that all ops are materialized, we can
+  // reliably replace those uses with the matrix_store destination buffer.
+  moduleOp.walk([](gcu::MatrixStoreOp matStoreOp) {
+    Value src = matStoreOp.getValue();
+    auto opResult = dyn_cast<OpResult>(src);
+    if (!opResult || !isa<scf::ForOp>(opResult.getOwner()))
+      return;
+    auto memref2ptr = matStoreOp.getPtr().getDefiningOp<gcu::MemRefToPtrOp>();
+    if (!memref2ptr)
+      return;
+    Value dotOut = memref2ptr.getMemref();
+    if (src == dotOut)
+      return;
+    src.replaceAllUsesExcept(dotOut, matStoreOp);
+  });
 }

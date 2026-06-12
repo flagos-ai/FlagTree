@@ -236,7 +236,7 @@ def triton_radix_topk(
     out_vals: torch.Tensor | None = None,
     out_idx: torch.Tensor | None = None,
 ):
-    assert x.is_cuda, "input must be on CUDA"
+    assert x.device.type == DEVICE.type, "input must be on device"
     assert x.ndim == 2, "input must be 2D (M, N)"
     n_rows, n_cols = x.shape
     if k > n_cols:
@@ -292,7 +292,7 @@ def triton_topk(
     out_vals: torch.Tensor | None = None,
     out_idx: torch.Tensor | None = None,
 ):
-    assert x.is_cuda, "input must be on CUDA"
+    assert x.device.type == DEVICE.type, "input must be on device"
     assert x.ndim == 2, "input must be 2D (M, N)"
     n_rows, n_cols = x.shape
     if k > n_cols:

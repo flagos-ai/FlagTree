@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "Constants.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -47,9 +48,6 @@
 #include "mlir/Transforms/DialectConversion.h"
 
 namespace mlir {
-
-constexpr int64_t INVALID_ALIGNMENT = -1;
-const char *const kAlignment = "alignment";
 
 namespace triton {
 namespace gcu {
@@ -96,7 +94,7 @@ struct TagInfo {
 class PrivateTagPool {
 public:
   PrivateTagPool(mlir::Operation *entryFunc, int32_t numWarps,
-                 bool useAsyncSharedTag);
+                 bool useAsyncSharedTag, bool useAllTags = false);
 
   ~PrivateTagPool() { updateUsedSize(); }
 
@@ -151,6 +149,10 @@ private:
   llvm::DenseMap<llvm::StringRef, int32_t> pTagsArgPosMap;
   llvm::DenseMap<llvm::StringRef, int32_t> sTagsArgPosMap;
 };
+
+/// Returns true if tt.reshape needs extra overhead instead of a zero-copy
+/// memref.reinterpret_cast
+bool isExpensiveView(Type srcTy, Type dstTy);
 
 } // namespace gcu
 } // namespace triton
@@ -243,6 +245,16 @@ Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
 void WaitGcuLoadStore(OpBuilder &rewriter, Location loc,
                       triton::gcu::TagInfo tag, Value totalSize);
 
+bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue);
+
+void ConfigMatrixStore(OpBuilder &rewriter, Location loc,
+                       triton::gcu::StoreOp storeOp, Value value, Value ptr,
+                       ValueRange dstShapes, ValueRange dstStrides,
+                       ValueRange dstOffsets, bool hasTrans);
+
+void removeRedundantZeroFill(ConversionPatternRewriter &rewriter,
+                             memref::AllocOp allocOp);
+
 void moveDeallocOp(ConversionPatternRewriter &rewriter, Value v, Operation *pos,
                    size_t depth);
 
@@ -270,12 +282,19 @@ SmallVector<unsigned> getElemsPerThread(Type type);
 unsigned getTotalElemsPerThread(Type type);
 unsigned getBpe(Type type);
 
+// For each flat warp index [0, totalWarps), returns true if the warp holds
+// unique data for the given tensor layout, false if it is a redundant copy of
+// another warp's data.  Used to guard operations like atomics where only
+// non-redundant warps should participate.
+SmallVector<bool> getFreeWarpMask(Type type);
+
 inline int64_t ceilDiv(int64_t lhs, int64_t rhs) {
   assert(rhs >= 1);
   // C/C++'s integer division rounds towards 0.
   return lhs % rhs > 0 ? lhs / rhs + 1 : lhs / rhs;
 }
 int getNumWarps(ModuleOp mod);
+int getTotalNumWarps(mlir::gpu::GPUModuleOp mod);
 
 class TritonGCUBuilder {
 public:

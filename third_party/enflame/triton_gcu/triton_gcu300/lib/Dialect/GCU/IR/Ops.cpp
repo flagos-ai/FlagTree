@@ -687,6 +687,21 @@ LogicalResult MatMulOp::verify() {
   return success();
 }
 
+LogicalResult MatrixStoreOp::verify() {
+  if (getMemDims().size() != 2)
+    return emitOpError("mem_dims must have exactly 2 dimensions, got ")
+           << getMemDims().size();
+  if (getRealDims().size() != 2)
+    return emitOpError("real_dims must have exactly 2 dimensions, got ")
+           << getRealDims().size();
+
+  MemRefType valVType = getValue().getType();
+  if (valVType.getRank() != 2)
+    return emitOpError() << "value must be a 2D vector, got "
+                         << valVType.getRank();
+  return success();
+}
+
 LogicalResult ReduceOp::verify() {
   auto dims = getIn().getType().getShape();
   ReduceOperation op = getOp();

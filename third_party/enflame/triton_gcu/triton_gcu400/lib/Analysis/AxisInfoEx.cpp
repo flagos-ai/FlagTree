@@ -292,7 +292,7 @@ public:
     auto splatAttr = dyn_cast<SplatElementsAttr>(op.getValue());
     if (splatAttr && splatAttr.getElementType().isIntOrIndex()) {
       int64_t value = splatAttr.template getSplatValue<APInt>().getZExtValue();
-      TensorType ty = cast<TensorType>(splatAttr.getType());
+      auto ty = dyn_cast<ShapedType>(splatAttr.getType());
       return AxisInfoEx(
           /*divisibility=*/
           AxisInfoEx::DimVectorT(ty.getRank(), highestPowOf2Divisor(value)),
