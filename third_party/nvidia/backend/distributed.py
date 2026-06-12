@@ -14,6 +14,8 @@ Expected directory layout:
   ~/.flagtree/flagcx/
       ├── libflagcx_device.bc
       └── libflagcx.so
+      └── include
+
 
 Main components:
 
@@ -61,6 +63,7 @@ class FlagcxRuntimeConfig:
     def __init__(self, path_order=0):
         self.is_available = self._is_available()
         if self.is_available:
+            self._find_flagcx_module_path()
             self.bitcode_path = self._get_bitcode_paths()[path_order]
             self.shared_lib_path = self._get_shared_lib_paths()[path_order]
             self.include_path = self._get_include_paths()[path_order]
@@ -71,23 +74,38 @@ class FlagcxRuntimeConfig:
             raise RuntimeError(f"There are no available {self.bt_name} path in this {available_paths}")
         return available_paths
 
+    def _find_flagcx_module_path(self):
+        module_path = os.environ.get("FLAGCX_MODULE_PATH", None)
+        if module_path:
+            module_path = Path(module_path)
+            os.environ.update({
+                "FLAGCX_BITCODE_PATH": str(module_path / self.bt_name), "FLAGCX_LIB_PATH":
+                str(module_path / self.shared_name), "FLAGCX_INCLUDE_PATH": str(module_path / self.include_name)
+            })
+
     def _get_bitcode_paths(self):
-        paths = (Path(__file__).parent / "lib" / self.bt_name, self.flagcx_cache_dir / self.bt_name,
-                 os.environ.get("FLAGCX_BITCODE_PATH"))
+        paths = (
+            os.environ.get("FLAGCX_BITCODE_PATH"),
+            Path(__file__).parent / "lib" / self.bt_name,
+            self.flagcx_cache_dir / self.bt_name,
+        )
         return self._check_path_available(paths)
 
     def _get_shared_lib_paths(self):
         paths = (
+            os.environ.get("FLAGCX_LIB_PATH"),
             self.triton_path / "_C" / self.shared_name,
             self.flagcx_cache_dir / self.shared_name,
-            os.environ.get("FLAGCX_LIB_PATH"),
         )
         return self._check_path_available(paths)
 
     def _get_include_paths(self):
-        paths = (self.flagcx_cache_dir / self.include_name,
-                 self.triton_path / "experimental" / "tle" / "language" / "include",
-                 os.environ.get("FLAGCX_INCLUDE_PATH"))
+
+        paths = (
+            os.environ.get("FLAGCX_INCLUDE_PATH"),
+            self.triton_path / "experimental" / "tle" / "language" / "include",
+            self.flagcx_cache_dir / self.include_name,
+        )
         return self._check_path_available(paths)
 
 

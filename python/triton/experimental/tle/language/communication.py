@@ -19,8 +19,8 @@ if enabled:
     from torch.utils.cpp_extension import load_inline
     from pathlib import Path
 
-    FLAGCX_LIB_PATH = flagcx_rt_conf.shared_lib_path.parent
-    FLAGCX_INCLUDE_PATH = flagcx_rt_conf.include_path.parent
+    FLAGCX_LIB_PATH = str(flagcx_rt_conf.shared_lib_path.parent)
+    FLAGCX_INCLUDE_PATH = str(flagcx_rt_conf.include_path.parent)
 
     def _libflagcx_path():
         return Path(FLAGCX_LIB_PATH) / "libflagcx.so"
