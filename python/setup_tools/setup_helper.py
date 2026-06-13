@@ -472,10 +472,9 @@ cache.store(
 cache.store(file="mthreads_local_binary", condition=("mthreads" == flagtree_backend),
             url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads_local_binary_v0.6.0.tar.gz")
 
-cache.store(
-    files=("ld.lld", "llc"), condition=("mthreads" == flagtree_backend),
-    copy_src_path=f"{cache.dir_path}/{flagtree_backend}/mthreads_local_binary",
-    copy_dst_path=f"third_party/{flagtree_backend}/bin")
+cache.store(files=("ld.lld", "llc"), condition=("mthreads" == flagtree_backend),
+            copy_src_path=f"{cache.dir_path}/{flagtree_backend}/mthreads_local_binary",
+            copy_dst_path=f"third_party/{flagtree_backend}/bin")
 
 # ascend
 cache.store(
