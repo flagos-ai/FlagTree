@@ -11,7 +11,6 @@ python/build/
 python/dist/
 python/triton*.egg-info/
 python/triton_kernels/triton*.egg-info/
-python/flagtree.egg-info
 
 python/triton/_C/*.pyd
 python/triton/_C/*.so
