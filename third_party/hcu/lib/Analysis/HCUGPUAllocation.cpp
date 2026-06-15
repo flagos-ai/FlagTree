@@ -3,6 +3,9 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#endif
 
 #include "third_party/hcu/include/Dialect/TritonHCUGPU/Utility/CommonUtils.h"
 
@@ -138,6 +141,23 @@ unsigned HCUAllocationAnalysisScratchSizeFn(Operation *op) {
     return getConvertLayoutScratchInBytes(srcTy, dstTy,
                                           op->hasAttr(AttrSharedMemPadded));
   }
+
+#ifdef __TLE__
+  if (auto extractTileOp = dyn_cast<mlir::triton::tle::ExtractTileOp>(op)) {
+    auto dstTy = dyn_cast<RankedTensorType>(extractTileOp.getType());
+    if (!dstTy)
+      return 0;
+    return static_cast<unsigned>(dstTy.getNumElements() *
+                                 (getBitwidth(dstTy) / 8));
+  }
+  if (auto insertTileOp = dyn_cast<mlir::triton::tle::InsertTileOp>(op)) {
+    auto tileTy = dyn_cast<RankedTensorType>(insertTileOp.getTile().getType());
+    if (!tileTy)
+      return 0;
+    return static_cast<unsigned>(tileTy.getNumElements() *
+                                 (getBitwidth(tileTy) / 8));
+  }
+#endif
 
   return defaultAllocationAnalysisScratchSizeFn(op);
 }

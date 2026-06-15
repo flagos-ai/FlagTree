@@ -53,8 +53,11 @@ LogicalResult StoreOp::verify() {
       getOffsets().size() !=
           static_cast<unsigned>(getValue().getType().getRank()))
     return emitOpError() << "shape/strides/offsets mismatch with value rank";
-  if (getPtr().getType().getElementType() !=
-      getValue().getType().getElementType())
+  auto ptrElemTy = getPtr().getType().getElementType();
+  auto valElemTy = getValue().getType().getElementType();
+  if (ptrElemTy != valElemTy &&
+      !(isa<FloatType>(ptrElemTy) && isa<FloatType>(valElemTy)) &&
+      !(isa<IntegerType>(ptrElemTy) && isa<IntegerType>(valElemTy)))
     return emitOpError() << "pointer element type mismatch";
   if (getOrderHint().size() > getShape().size())
     return emitOpError() << "order_hint rank mismatch with result rank";
@@ -102,6 +105,20 @@ void WarpGroupDotOp::getEffects(
   if (isa<mlir::triton::gpu::MemDescType>(b.get().getType()))
     effects.emplace_back(MemoryEffects::Read::get(), &b,
                          mlir::triton::gpu::SharedMemory::get());
+}
+
+void SliceFromLocalOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
+                       mlir::triton::gpu::SharedMemory::get());
+}
+
+void DesliceToLocalOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), &getSrcMutable(),
+                       mlir::triton::gpu::SharedMemory::get());
 }
 
 bool WarpGroupDotOp::needsPartialAccumulator() {
@@ -191,6 +208,44 @@ LogicalResult WarpGroupDotOp::verify() {
 LogicalResult InitBarrierOp::verify() {
   if (getCount() < 1)
     return emitOpError("count must be greater than or equal to 1");
+  return success();
+}
+
+LogicalResult
+triton::gcu::MaskedLoadOp::canonicalize(MaskedLoadOp op,
+                                        PatternRewriter &rewriter) {
+  auto mask = op.getMask();
+  if (!mask)
+    return failure();
+
+  DenseElementsAttr attr;
+  if (!matchPattern(mask, m_Constant(&attr)))
+    return failure();
+  if (!attr.isSplat() || !attr.getSplatValue<bool>())
+    return failure();
+
+  rewriter.replaceOpWithNewOp<triton::gcu::MaskedLoadOp>(
+      op, op.getType(), op.getPtr(), op.getOffset(),
+      /*mask=*/Value(), /*other=*/Value());
+  return success();
+}
+
+LogicalResult
+triton::gcu::MaskedStoreOp::canonicalize(MaskedStoreOp op,
+                                         PatternRewriter &rewriter) {
+  auto mask = op.getMask();
+  if (!mask)
+    return failure();
+
+  DenseElementsAttr attr;
+  if (!matchPattern(mask, m_Constant(&attr)))
+    return failure();
+  if (!attr.isSplat() || !attr.getSplatValue<bool>())
+    return failure();
+
+  rewriter.replaceOpWithNewOp<triton::gcu::MaskedStoreOp>(
+      op, op.getPtr(), op.getOffset(), op.getValue(),
+      /*mask=*/Value());
   return success();
 }
 

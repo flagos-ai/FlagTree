@@ -62,8 +62,10 @@ triton::gpu::BlockedEncodingAttr mlir::getBlockedEncodingWithOrder(
       return a.first > b.first;
     });
     effectiveOrder.append(nonReduceDims.begin(), nonReduceDims.end());
-    for (auto &[dim, freq] : reduceDimsWithFreq)
+    for (auto &[dim, freq] : reduceDimsWithFreq) {
+      (void)freq;
       effectiveOrder.push_back(dim);
+    }
   }
 
   SmallVector<unsigned> sizePerThread(rank, 1);

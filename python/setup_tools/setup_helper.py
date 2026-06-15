@@ -75,7 +75,7 @@ def get_hook_instance(hook_name):
 
 
 def enable_flagtree_third_party(name):
-    if name in ["triton_shared"]:
+    if name in ["triton_shared", "flagcx"]:
         return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
     else:
         return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
@@ -464,10 +464,17 @@ cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
 cache.store(
     file="mthreads-llvm22",
     condition=("mthreads" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.5.0.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.5.1.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )
+
+cache.store(file="mthreads_local_binary", condition=("mthreads" == flagtree_backend),
+            url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads_local_binary_v0.6.0.tar.gz")
+
+cache.store(files=("ld.lld", "llc"), condition=("mthreads" == flagtree_backend),
+            copy_src_path=f"{cache.dir_path}/{flagtree_backend}/mthreads_local_binary",
+            copy_dst_path=f"third_party/{flagtree_backend}/bin")
 
 # ascend
 cache.store(
@@ -527,6 +534,15 @@ cache.store(
     condition=("hcu" == flagtree_backend),
     url=
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/hcu-llvm22-b0ca808-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.5.0.tar.gz",
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
+)
+
+# thrive
+cache.store(
+    file="llvm-f6ded0be-ubuntu-x64",
+    condition=("thrive" == flagtree_backend),
+    url="https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-f6ded0be-ubuntu-x64.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )

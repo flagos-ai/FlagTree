@@ -6,6 +6,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
+#include <cctype>
 #include <limits>
 
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -193,6 +194,155 @@ LogicalResult WGMMASharedOperandFenceOp::verify() {
       return emitOpError("expects only shared-memory operands");
   }
   return success();
+}
+
+static bool isAsciiIdentStart(char c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+static bool isAsciiIdentChar(char c) {
+  return isAsciiIdentStart(c) || (c >= '0' && c <= '9') || c == '_';
+}
+
+static bool isValidPublicPipeName(StringRef name) {
+  if (name.empty() || name == "fields" || name == "readers" ||
+      name.starts_with("_") || !isAsciiIdentStart(name.front()))
+    return false;
+  return llvm::all_of(name.drop_front(), isAsciiIdentChar);
+}
+
+static LogicalResult verifyPipeNameArray(Operation *op, ArrayAttr namesAttr,
+                                         StringRef attrName, bool allowEmpty) {
+  if (!allowEmpty && namesAttr.empty())
+    return op->emitOpError("expects ")
+           << attrName << " to contain at least one name";
+
+  llvm::SmallSet<StringRef, 8> seenNames;
+  for (Attribute attr : namesAttr) {
+    auto nameAttr = dyn_cast<StringAttr>(attr);
+    if (!nameAttr)
+      return op->emitOpError("expects ")
+             << attrName << " to contain only strings";
+    StringRef name = nameAttr.getValue();
+    if (!isValidPublicPipeName(name))
+      return op->emitOpError("expects valid public pipe ")
+             << attrName << " names";
+    if (!seenNames.insert(name).second)
+      return op->emitOpError("expects unique pipe ") << attrName << " names";
+  }
+
+  return success();
+}
+
+static LogicalResult verifyPipeAttrs(Operation *op, OperandRange fields) {
+  auto capacityAttr = op->getAttrOfType<IntegerAttr>("capacity");
+  if (!capacityAttr)
+    return op->emitOpError("requires capacity attribute");
+  int64_t capacity = capacityAttr.getInt();
+  if (capacity <= 0)
+    return op->emitOpError("requires positive capacity");
+
+  auto scopeAttr = op->getAttrOfType<StringAttr>("scope");
+  if (!scopeAttr)
+    return op->emitOpError("requires scope attribute");
+  if (scopeAttr.getValue() != "cta")
+    return op->emitOpError("MVP supports only scope = \"cta\"");
+
+  auto fieldNamesAttr = op->getAttrOfType<ArrayAttr>("field_names");
+  if (!fieldNamesAttr)
+    return op->emitOpError("requires field_names attribute");
+  if (fieldNamesAttr.size() != fields.size())
+    return op->emitOpError("expects field_names size to match field operands");
+
+  if (failed(verifyPipeNameArray(op, fieldNamesAttr, "field", false)))
+    return failure();
+
+  if (auto readersAttr = op->getAttrOfType<ArrayAttr>("readers")) {
+    if (failed(verifyPipeNameArray(op, readersAttr, "reader", false)))
+      return failure();
+  }
+
+  if (auto readerNameAttr = op->getAttrOfType<StringAttr>("reader_name")) {
+    if (!isValidPublicPipeName(readerNameAttr.getValue()))
+      return op->emitOpError("expects valid public pipe reader_name");
+  }
+
+  if (fields.empty())
+    return op->emitOpError("expects at least one pipe field");
+  for (Value field : fields) {
+    auto type = cast<triton::gpu::MemDescType>(field.getType());
+    if (!isa<triton::gpu::SharedMemorySpaceAttr>(type.getMemorySpace()))
+      return op->emitOpError("expects only shared-memory pipe fields");
+    if (type.getRank() < 2)
+      return op->emitOpError("expects pipe fields to have rank >= 2");
+    if (type.getShape()[0] != capacity)
+      return op->emitOpError("expects field leading dimension to equal "
+                             "pipe capacity");
+  }
+  return success();
+}
+
+static LogicalResult verifyPipeStagePhase(Operation *op, Value stage,
+                                          Value phase) {
+  if (!stage.getType().isInteger(32))
+    return op->emitOpError("expects stage to be i32");
+  if (!phase.getType().isInteger(1))
+    return op->emitOpError("expects phase to be i1");
+  return success();
+}
+
+static LogicalResult verifyPipeStage(Operation *op, Value stage) {
+  if (!stage.getType().isInteger(32))
+    return op->emitOpError("expects stage to be i32");
+  return success();
+}
+
+LogicalResult PipeCreateOp::verify() {
+  return verifyPipeAttrs(getOperation(), getFields());
+}
+
+LogicalResult PipeWriterAcquireOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStagePhase(getOperation(), getStage(), getPhase());
+}
+
+LogicalResult PipeWriterCommitOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStage(getOperation(), getStage());
+}
+
+LogicalResult PipeWriterCloseOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStagePhase(getOperation(), getStage(), getPhase());
+}
+
+LogicalResult PipeReaderWaitOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  if (failed(verifyPipeStagePhase(getOperation(), getStage(), getPhase())))
+    return failure();
+  if (!getIsClosed().getType().isInteger(1))
+    return emitOpError("expects is_closed result to be i1");
+  return success();
+}
+
+LogicalResult PipeReaderReleaseOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStage(getOperation(), getStage());
+}
+
+void PipeReaderReleaseOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get());
+  MutableOperandRange fields = getFieldsMutable();
+  for (unsigned i = 0, e = fields.size(); i < e; ++i)
+    effects.emplace_back(MemoryEffects::Free::get(), &fields[i],
+                         triton::gpu::SharedMemory::get());
 }
 
 // ============================================================================

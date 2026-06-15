@@ -136,11 +136,11 @@ z = x.insert_tile(y, index=[0, 0])
 
 #### 3.2.3 流水线
 
-##### 3.2.3.1 `tle.pipeline_group`
+##### 3.2.3.1 `tle.pipe`
 
-Hint 类扩展。
+`tle.pipe` 是 TLE 的显式数据流边：writer 把一组 shared-memory buffer 的某个 stage 填满并 `commit`，reader 通过 `wait` 等待该 stage ready，读完后 `release`。它把“数据在哪个 buffer stage 中”和“producer/consumer 之间何时可见”合并成一个 typed pipe 描述，适合表达 CTA 内的加载-计算重叠、single-producer/single-consumer（SPSC）或 single-producer/multi-consumer（SPMC）流水。
 
-自动分 Stage：
+自动软件流水仍可由 `tl.range(..., num_stages=...)` 触发：
 
 ```python
 for yoff in tl.range(0, ynumel, YBLOCK, num_stages=2):
@@ -150,27 +150,42 @@ for yoff in tl.range(0, ynumel, YBLOCK, num_stages=2):
     V = tl.dot(Q, KT)
 ```
 
-手动分 Stage：
+显式 pipe 适用于 producer/consumer 拆分更清晰的场景：
 
 ```python
-for yoff in tle.range(
-    0,
-    ynumel,
-    YBLOCK,
-    num_stages=2,
-    pipe_stages=[0, 0, 1] if LOAD_TRANS else [0, 1, 1],
-    pipe_orders=[0, 1, 2],
-    executors=[0, 0, 0] if ONE_CORE else [0, 0, range(1, 31)],
-):
-    # Warp-spec 或异构单元
-    with tle.pipeline_group(0):
-        Q = tl.load(...)
-        K = tl.load(...)
-    with tle.pipeline_group(1):
-        KT = tl.trans(K)
-    with tle.pipeline_group(2):
-        V = tl.dot(Q, KT)
+stage_buf = tle.gpu.alloc([2, BLOCK], dtype=tl.float32, scope=tle.gpu.smem)
+pipe = tle.pipe(capacity=2, scope="cta", name="x_pipe", x=stage_buf)
+writer = pipe.writer()
+reader = pipe.reader()
+offs = tl.arange(0, BLOCK)
+
+# producer partition
+for k in tl.range(0, n_tiles):
+    slot = writer.acquire(k)
+    tl.store(tle.gpu.local_ptr(slot.x), tl.load(x_ptr + k * BLOCK + offs))
+    writer.commit(k)
+
+# consumer partition
+for k in tl.range(0, n_tiles):
+    wait = reader.wait(k)
+    x = tl.load(tle.gpu.local_ptr(wait.slot.x))
+    acc += x
+    reader.release(k)
 ```
+
+mixed pipe 仍然使用同一个 `tle.pipe` 抽象，只是一个 payload 里有多个 field，
+这些 field 的字节可以由不同机制产生。例如，一个 field 由 TMA copy 写入，
+另一个 field 由 `cp.async` 写入，还有一个 field 由 CUDA core 通过
+`tle.gpu.local_ptr` + `tl.store` 写入。用户仍然按 chunk 生命周期创建一条
+逻辑 pipe，并在所有 field 生产完成后执行一次 `commit`。每个 field 的
+transport 由编译器根据 producer 侧 IR 推导，不是用户需要填写的 pipe 属性。
+
+mixed pipe 的动机是让同步粒度对齐逻辑数据流，而不是对齐底层搬运方式。没有
+mixed pipe 时，一个逻辑 chunk 往往要拆成 `q_pipe`、`v_pipe`、`scale_pipe`
+等按 transport 区分的多条 pipe，这会复制 ready/free barrier，也会让
+warp-specialized 代码偏离算法本身的数据流。mixed pipe 让这些 field 共享同一个
+slot、phase、reader set 和 ready/free 协议，同时保留 field 级 provenance 和
+编译期 hazard 检查。
 
 #### 3.2.4 分布式
 
@@ -383,23 +398,157 @@ sub = tl.maximum(sub, 0.0)  # 对子 tile 做 ReLU
 x = x.insert_tile(sub, index=[1, 0])
 ```
 
-##### 3.2.5.3 `tle.pipeline_group`
+##### 3.2.5.3 `tle.pipe`
 
-- 通过 `tle.pipeline_group(stage_id)` 把操作显式标记到不同 stage。
-- 适用于需要“可控 stage 划分”的场景（而不是完全依赖启发式自动分组）。
+- Signature: `tle.pipe(*, capacity, scope="cta", name=None, readers=None, one_shot=False, **fields)`
+- 用途：创建 typed pipe，用于显式描述 CTA 内 producer/consumer 数据流、ring buffer stage 复用和同步边。
+- 参数：
+  - `capacity`: 编译期正整数，表示 pipe stage 数量；每个 payload field 的第 0 维必须等于 `capacity`。
+  - `scope`: 当前 MVP 支持 `"cta"`。
+  - `name`: 可选 pipe 名称，用于 IR/诊断；传入时必须是字符串。
+  - `readers`: 可选 reader 名称列表；省略时是默认 SPSC reader，传入如 `("left", "right")` 时表示 SPMC。
+  - `one_shot`: 是否为单次 ready/full 边；适合一次性广播的启动数据。`one_shot=True` 不支持 `close`。
+  - `**fields`: 一个或多个 payload buffer，必须是 `tle.gpu.alloc(..., scope=tle.gpu.smem)` 返回的 shared-memory buffered tensor，rank 必须 >= 2。
+- Endpoint API:
+  - `pipe.writer() -> pipe_writer`
+  - `pipe.reader(name=None, fields=None) -> pipe_reader`
+  - `writer.acquire(iter) -> pipe_slot`
+  - `writer.commit(iter) -> None`
+  - `writer.close(iter) -> None`
+  - `reader.wait(iter) -> pipe_wait_result`
+  - `reader.release(iter) -> None`
+- 语义：
+  - `iter` 映射到 `stage = iter % capacity`，并用 phase bit 区分环形 buffer 复用轮次。
+  - `writer.acquire` 返回当前 stage 的 slot，slot 上按 field 名暴露 buffer（如 `slot.kv`）。
+  - `reader.wait` 返回 `{slot, is_closed}`；正常读写使用 `wait.slot`，需要处理 producer close 时检查 `is_closed`。
+  - `reader(..., fields=("kv_r",))` 可只订阅部分 field，降低不必要的依赖。
+  - 当前 lowering 将 CTA-scoped SMEM pipe 转成 GPU NVWS token/mbarrier 同步。
 
-示例：load-transform-matmul 手动分 stage
+示例 1：SPSC 双缓冲加载-计算
 
 ```python
-for k in tle.range(0, K, BK, num_stages=2, pipe_stages=[0, 0, 1], pipe_orders=[0, 1, 2]):
-    with tle.pipeline_group(0):
-        a = tl.load(a_ptr + k * stride_a)
-        b = tl.load(b_ptr + k * stride_b)
-    with tle.pipeline_group(1):
-        bt = tl.trans(b)
-    with tle.pipeline_group(2):
-        acc = tl.dot(a, bt, acc)
+smem = tle.gpu.alloc([2, BLOCK], dtype=tl.float32, scope=tle.gpu.smem)
+pipe = tle.pipe(capacity=2, scope="cta", name="tile_pipe", tile=smem)
+writer = pipe.writer()
+reader = pipe.reader()
+offs = tl.arange(0, BLOCK)
+
+# producer partition
+for i in tl.range(0, n_tiles):
+    slot = writer.acquire(i)
+    ptr = tle.gpu.local_ptr(slot.tile)
+    tl.store(ptr, tl.load(gmem_ptr + i * BLOCK + offs))
+    writer.commit(i)
+
+# consumer partition
+for i in tl.range(0, n_tiles):
+    ready = reader.wait(i)
+    tile = tl.load(tle.gpu.local_ptr(ready.slot.tile))
+    acc += tile
+    reader.release(i)
 ```
+
+示例 2：SPMC reader 和部分 field 订阅
+
+```python
+kv = tle.gpu.alloc([PIPE_CAPACITY, BK, D], dtype=tl.float16, scope=tle.gpu.smem)
+meta = tle.gpu.alloc(
+    [PIPE_CAPACITY, BK],
+    dtype=tl.int32,
+    scope=tle.gpu.smem,
+    nv_mma_shared_layout=False,
+)
+pipe = tle.pipe(
+    capacity=PIPE_CAPACITY,
+    scope="cta",
+    name="kv_pipe",
+    readers=("qk", "value"),
+    kv=kv,
+    meta=meta,
+)
+
+writer = pipe.writer()
+qk_reader = pipe.reader("qk")
+value_reader = pipe.reader("value", fields=("kv",))
+
+slot = writer.acquire(k)
+tl.store(tle.gpu.local_ptr(slot.kv), kv_tile)
+tl.store(tle.gpu.local_ptr(slot.meta), valid_mask.to(tl.int32))
+writer.commit(k)
+
+qk_slot = qk_reader.wait(k).slot
+qk = tl.dot(q, tl.trans(tl.load(tle.gpu.local_ptr(qk_slot.kv))))
+qk_reader.release(k)
+
+value_slot = value_reader.wait(k).slot
+acc = tl.dot(prob, tl.load(tle.gpu.local_ptr(value_slot.kv)), acc)
+value_reader.release(k)
+```
+
+示例 3：mixed pipe，TMA 和 local-store transport 由编译器推导
+
+```python
+q = tle.gpu.alloc([PIPE_CAPACITY, BM, BK], dtype=tl.float16, scope=tle.gpu.smem)
+scale = tle.gpu.alloc(
+    [PIPE_CAPACITY, BM],
+    dtype=tl.float32,
+    scope=tle.gpu.smem,
+    nv_mma_shared_layout=False,
+)
+
+pipe = tle.pipe(
+    capacity=PIPE_CAPACITY,
+    scope="cta",
+    name="mixed_inputs",
+    readers=("mma", "epilogue"),
+    q=q,
+    scale=scale,
+)
+
+writer = pipe.writer()
+mma_reader = pipe.reader("mma", fields=("q",))
+epilogue_reader = pipe.reader("epilogue", fields=("q", "scale"))
+
+slot = writer.acquire(k)
+tle.gpu.copy(q_desc, slot.q, [BM, BK], [q_block, k_block])
+tl.store(tle.gpu.local_ptr(slot.scale, (tl.arange(0, BM),)), scale_values)
+writer.commit(k)
+
+q_ready = mma_reader.wait(k).slot
+q_tile = tl.load(tle.gpu.local_ptr(q_ready.q))
+mma_reader.release(k)
+
+epilogue_ready = epilogue_reader.wait(k).slot
+scale_tile = tl.load(tle.gpu.local_ptr(epilogue_ready.scale, (tl.arange(0, BM),)))
+epilogue_reader.release(k)
+```
+
+上面的例子是一条逻辑 pipe，而不是一条 TMA pipe 加一条 local-store pipe。
+`slot.q` 是 `tle.gpu.copy` 的 destination，因此被归类为 TMA-produced field；
+`slot.scale` 通过 `tle.gpu.local_ptr` 和 `tl.store` 写入，因此被归类为
+local-store field。两个 field 在同一个 `writer.commit(k)` 之后对订阅它们的
+reader 可见，reader 通过各自的 `wait(k)` 获取对应 slot view。
+
+mixed pipe 的使用规则：
+
+- 按逻辑生命周期和 reader 协议切 pipe，不按 transport 切 pipe。
+- 每个 payload component 分配一个 shared-memory field；所有 field 使用相同的
+  leading `capacity` 维度。
+- 每个 field 都必须在匹配的 `writer.acquire(iter)` 和 `writer.commit(iter)`
+  之间完成生产。
+- 每个 field 使用自然的生产操作：descriptor/TMA copy、cp.async 风格 copy，或
+  `tle.gpu.local_ptr` + `tl.store`。
+- 让编译器推导 transport，不要把 transport 编进 pipe 名、field 名或用户属性。
+- reader 只消费部分 field 时，用 `pipe.reader(name, fields=(...))` 收窄 view；
+  这不会创建新的 token。
+- 保持 pipe-field provenance 可见。opaque shared-memory pointer escape、
+  未跟踪的 shared store、无法证明安全的重叠写入会直接报错，不会 silent
+  fallback。
+
+当前 NVIDIA lowering 会把可接受的 mixed pipe 映射到 NVWS/mbarrier 同步。
+当前支持的是在 pipe-field root 粒度可证明的 TMA/local-store 和
+TMA/cp.async mixed payload；如果 payload window、field ownership、
+participant count 或源码顺序安全性无法证明，则 fail fast。
 
 ##### 3.2.5.4 `tle.device_mesh` + `tle.sharding` + `tle.reshard`
 
@@ -591,6 +740,87 @@ vals = tl.load(remote_ptr)
 
 ```python
 tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
+```
+
+##### 3.3.1.2 执行编排
+
+###### 3.3.1.2.1 `tle.gpu.warp_specialize`
+
+`tle.gpu.warp_specialize` 用于在同一个 CTA 内显式创建 warp-specialized region，把不同 JIT 函数放进不同 warp partition。典型用途是把 TMA/cp.async producer、WGMMA consumer、epilogue/reduction 等任务拆开执行，并通过 `tle.pipe` 或其它显式同步原语传递 shared-memory 数据。
+
+- Signature: `tle.gpu.warp_specialize(functions_and_args, worker_num_warps, worker_num_regs)`
+- 参数：
+  - `functions_and_args`: `[(fn0, args0), (fn1, args1), ...]`。第 0 项进入 default partition；后续项进入 worker partitions。
+  - `worker_num_warps`: worker partition 的 warp 数列表，长度必须等于 `len(functions_and_args) - 1`。
+  - `worker_num_regs`: worker partition 的 requested register 数列表，长度必须等于 `len(functions_and_args) - 1`。
+- 语义：
+  - 每个 `args` 必须是 tuple；普通 Python `int/float/bool/tl.dtype` 会按 constexpr 传入。
+  - default partition 可以返回值，`tle.gpu.warp_specialize(...)` 的返回值来自 default partition；worker partition 只执行副作用并以 warp return 结束。
+  - worker partition 的 callee 会带上对应 `"ttg.num-warps"` 属性，region 上会记录 `requestedRegisters`。
+  - 捕获到的 worker 参数会在 IR 中去重，多个 worker 可共享同一个 pipe endpoint 或 buffer handle。
+  - `warp_specialize` 本身不提供数据可见性保证；producer/consumer 顺序应通过 `tle.pipe` 的 `commit/wait/release`、barrier 或其它同步原语表达。
+
+示例：一个 producer partition 加载 shared memory，一个 consumer worker 计算。
+
+```python
+@triton.jit
+def producer(writer, x_ptr, n_tiles: tl.constexpr, BLOCK: tl.constexpr):
+    offs = tl.arange(0, BLOCK)
+    for i in tl.range(0, n_tiles):
+        slot = writer.acquire(i)
+        vals = tl.load(x_ptr + i * BLOCK + offs)
+        tl.store(tle.gpu.local_ptr(slot.tile), vals)
+        writer.commit(i)
+
+
+@triton.jit
+def consumer(reader, out_ptr, n_tiles: tl.constexpr, BLOCK: tl.constexpr):
+    offs = tl.arange(0, BLOCK)
+    acc = tl.zeros([BLOCK], dtype=tl.float32)
+    for i in tl.range(0, n_tiles):
+        ready = reader.wait(i)
+        tile = tl.load(tle.gpu.local_ptr(ready.slot.tile))
+        acc += tile
+        reader.release(i)
+    tl.store(out_ptr + offs, acc)
+
+
+@triton.jit
+def kernel(x_ptr, out_ptr, n_tiles: tl.constexpr, BLOCK: tl.constexpr):
+    smem = tle.gpu.alloc([2, BLOCK], dtype=tl.float32, scope=tle.gpu.smem)
+    pipe = tle.pipe(capacity=2, scope="cta", name="x_pipe", tile=smem)
+
+    tle.gpu.warp_specialize(
+        [
+            (producer, (pipe.writer(), x_ptr, n_tiles, BLOCK)),
+            (consumer, (pipe.reader(), out_ptr, n_tiles, BLOCK)),
+        ],
+        [4],      # consumer worker 使用 4 个 warps
+        [168],    # consumer worker requested registers
+    )
+```
+
+示例：多 worker 与 SPMC pipe 搭配。
+
+```python
+tile = tle.gpu.alloc([2, BM, BK], dtype=tl.float16, scope=tle.gpu.smem)
+pipe = tle.pipe(
+    capacity=2,
+    scope="cta",
+    name="spmc_tile",
+    readers=("qk", "value"),
+    tile=tile,
+)
+
+tle.gpu.warp_specialize(
+    [
+        (load_tile_producer, (pipe.writer(), a_desc, b_desc)),
+        (qk_consumer, (pipe.reader("qk"), acc_qk)),
+        (value_consumer, (pipe.reader("value", fields=("tile",)), acc_v)),
+    ],
+    [4, 4],
+    [240, 168],
+)
 ```
 
 #### 3.3.2 DSA
@@ -917,132 +1147,41 @@ def add_kernel(
 
 ### 4.1 SparseMLA
 
-当前已在 RTX 5060Ti 与 H800 上针对 DSA 中 SparseMLA 算子做优化和测试。
+当前已在 H800 上针对 DSA 中 SparseMLA 算子做优化和测试。
 
 - TileLang 版本：`v0.1.7`
-- 示例代码：<https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/python/tutorials/tle/01-sparse-mla.py>
+- 示例代码：[`python/tutorials/tle/deepseek_v32/02-sparse-mla.py`](python/tutorials/tle/deepseek_v32/02-sparse-mla.py)
 
-核心 kernel（节选）：
+#### 4.1.1 DeepSeek V3.2 SparseMLA Prefill
 
-```python
-@triton.jit
-def triton_sparse_mla_fwd(
-    q,
-    kv,
-    indices,
-    sm_scale: tl.constexpr,
-    output,
-    lse,
-    stride_qb, stride_qh, stride_qm, stride_qd,
-    stride_kvb, stride_kvg, stride_kvn, stride_kvd,
-    stride_tb, stride_tg, stride_tm, stride_tt,
-    stride_ob, stride_oh, stride_om, stride_od,
-    stride_lb, stride_lh, stride_lm,
-    B: tl.constexpr,
-    SQ: tl.constexpr,
-    SKV: tl.constexpr,
-    K: tl.constexpr,
-    D: tl.constexpr,
-    TD: tl.constexpr,
-    DP: tl.constexpr,
-    TDP: tl.constexpr,
-    H: tl.constexpr,
-    G: tl.constexpr,
-    VG: tl.constexpr,
-    BK: tl.constexpr,
-    BH: tl.constexpr,
-    is_causal: tl.constexpr
-):
-    i_b, i_sq, i_gbh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    i_g, i_bh = i_gbh // G, i_gbh % G
-    q_base = q + i_b * stride_qb + i_sq * stride_qm + i_gbh * (BH * stride_qh)
-    tq_base = q_base + D * stride_qd
-    kv_base = kv + i_b * stride_kvb + i_g * stride_kvg
-    tkv_base = kv_base + D * stride_kvd
-    t_base = indices + i_b * stride_tb + i_sq * stride_tm + i_g * stride_tg
-    o_base = output + i_b * stride_ob + i_sq * stride_om + i_gbh * (BH * stride_oh)
-    l_base = lse + i_b * stride_lb + i_sq * stride_lm + i_gbh * (BH * stride_lh)
+测试 case 对齐 FlashMLA V3.2 sparse prefill performance fixture；由于本地 Triton、TLE、TileLang kernel 未实现 `attn_sink`，这里省略该特性：
+`B=1`、`S=4096`、`H=128`、`HKV=1`、`DQK=576`、`DV=512`、`topk=2048`。
 
-    offs_h = tl.arange(0, BH)
-    offs_d = tl.arange(0, DP)
-    offs_td = tl.arange(0, TDP)
-    offs_od = tl.arange(0, DP)
-    offs_t = tl.arange(0, BK)
-    mask_h = i_bh * BH + offs_h < G
-    mask_d = offs_d < D
-    mask_td = offs_td < TD
-    mask_od = mask_d
+延迟单位为毫秒：
 
-    q_ptr = q_base + offs_h[:, None] * stride_qh + offs_d[None, :] * stride_qd
-    q_msk = mask_h[:, None] & mask_d[None, :]
-    q_blk = tl.load(q_ptr, q_msk, other=0.0)
+| SKV | Triton | TLE | TLE-Pipe-Pipelined | TLE-FlashMLA-Prefill | TileLang | TileLang-Pipelined | TileLang-Seesaw | FlashMLA |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8192 | 9.896 | 6.927 | 4.832 | 4.273 | 62.409 | 5.432 | 5.160 | **3.850** |
+| 32768 | 11.210 | 7.624 | 5.321 | 4.834 | 75.160 | 6.428 | 5.577 | **4.117** |
+| 65536 | 11.655 | 8.378 | 5.731 | 5.305 | 84.432 | 6.865 | 5.786 | **4.348** |
+| 98304 | 11.835 | 8.658 | 5.972 | 5.599 | 86.561 | 7.139 | 5.873 | **4.447** |
+| 131072 | 11.923 | 8.863 | 6.122 | 5.887 | 87.448 | 7.143 | 5.916 | **4.534** |
 
-    tq_ptr = tq_base + offs_h[:, None] * stride_qh + offs_td[None, :] * stride_qd
-    tq_msk = mask_h[:, None] & mask_td[None, :]
-    tq_blk = tl.load(tq_ptr, tq_msk, other=0.0)
+加速比汇总：
 
-    max_log = tl.full([BH], float('-inf'), dtype=tl.bfloat16)
-    sum_exp = tl.full([BH], 1.0, dtype=tl.float32)
-    acc = tl.zeros([BH, DP], dtype=tl.float32)
-
-    log_scale: tl.constexpr = sm_scale * 1.44269504
-    max_col = i_sq if is_causal else SQ - 1
-    NK = tl.cdiv(K, BK)
-
-    for ck in tl.range(NK, num_stages=0):
-        if ck * BK <= max_col:
-            t_ptr = (BK * ck + offs_t) * stride_tt
-            t_msk = t_ptr < K
-            t_ptr += t_base
-            kv_ids = tl.load(t_ptr, t_msk, other=-1)
-            mask_ids = (kv_ids <= max_col) & (kv_ids >= 0)
-
-            kv_ptr = kv_base + offs_d[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
-            kv_msk = mask_d[:, None] & mask_ids[None, :]
-            kv_blk = tle.load(kv_ptr, kv_msk, other=0.0, is_async=True)
-
-            tkv_ptr = tkv_base + offs_td[:, None] * stride_kvd + kv_ids[None, :] * stride_kvn
-            tkv_msk = mask_td[:, None] & mask_ids[None, :]
-            tkv_blk = tl.load(tkv_ptr, tkv_msk, other=0.0)
-
-            qk = tl.dot(tq_blk, tkv_blk, out_dtype=tl.float32)
-            qk = tl.dot(q_blk, kv_blk, qk, out_dtype=tl.float32) * log_scale
-            qk = tl.where(mask_ids[None, :], qk, float('-inf'))
-
-            new_max = tl.maximum(max_log, tl.max(qk, axis=1))
-            exp_qk = tl.math.exp2(qk - new_max[:, None])
-            sum_qk = tl.sum(exp_qk, axis=1)
-            alpha = tl.math.exp2(max_log - new_max)
-            sum_exp = sum_exp * alpha + sum_qk
-            acc = acc * alpha[:, None]
-            acc = tl.dot(exp_qk.to(tl.bfloat16), kv_blk.trans(), acc, out_dtype=tl.float32)
-
-            max_log = new_max.to(tl.bfloat16)
-
-    out_vals = acc / sum_exp[:, None]
-    o_ptr = o_base + offs_h[:, None] * stride_oh + offs_od[None, :] * stride_od
-    o_msk = mask_h[:, None] & mask_od[None, :]
-    tl.store(o_ptr, out_vals.to(q_blk.dtype), o_msk)
-
-    fin_log = max_log + tl.math.log2(sum_exp.to(tl.float32))
-    l_ptr = l_base + offs_h * stride_lh
-    l_msk = mask_h
-    tl.store(l_ptr, fin_log.to(q_blk.dtype), l_msk)
-```
-
-性能对比（TFLOPS）：
-
-| 设备 | 理论算力 | Triton | TileLang | TLE | TLE over Triton |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| H800 | 800 | 165.5 | **355.0** | 210.6 | 1.27x |
-| H20 | - | 81.0 | **110.2** | 93.2 | 1.15x |
-| RTX 5060Ti | - | 30.7 | Not supported | **32.8** | 1.07x |
+| SKV | TLE-Pipe over Triton | TLE-FlashMLA over Triton | TLE-FlashMLA over TLE-Pipe | TLE-FlashMLA over FlashMLA | TLE-FlashMLA over TileLang-Seesaw |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8192 | 2.05x | 2.32x | 1.13x | 0.90x | 1.21x |
+| 32768 | 2.11x | 2.32x | 1.10x | 0.85x | 1.15x |
+| 65536 | 2.03x | 2.20x | 1.08x | 0.82x | 1.09x |
+| 98304 | 1.98x | 2.11x | 1.07x | 0.79x | 1.05x |
+| 131072 | 1.95x | 2.03x | 1.04x | 0.77x | 1.00x |
 
 ### 4.2 MoeAlignBlockSize
 
 利用 `tle-struct` 中 shared memory 相关扩展，可对标实现 `vllm/sglang` 的 `moe_align_block_size`，实现性能提升。
 
-- 示例代码：<https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/python/tutorials/tle/02-moe_align_block_size.py>
+- 示例代码：[`python/tutorials/tle/02-moe_align_block_size.py`](python/tutorials/tle/02-moe_align_block_size.py)
 
 #### 4.2.1 RTX 5060 Ti
 
@@ -1096,7 +1235,7 @@ def triton_sparse_mla_fwd(
 
 利用 `tle-struct` 中 shared memory 相关扩展，可实现 radix-select-based TopK，在大 N、小 K 的 MoE 场景取得性能提升。
 
-- 示例代码：<https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/python/tutorials/tle/03-topk.py>
+- 示例代码：[`python/tutorials/tle/03-topk.py`](python/tutorials/tle/03-topk.py)
 
 #### 4.3.1 RTX 5060 Ti (`tle-topk-radix-vs-torch`)
 

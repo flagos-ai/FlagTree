@@ -12,10 +12,15 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Pass/Pass.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
+#endif
 #include "third_party/hcu/include/Analysis/AxisInfoExt.h"
 #include "third_party/hcu/include/Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "triton/Analysis/Allocation.h"
@@ -63,6 +68,9 @@ public:
     addIllegalDialect<triton::TritonDialect>();
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
     addIllegalDialect<triton::nvidia_gpu::TritonNvidiaGPUDialect>();
+#ifdef __TLE__
+    addIllegalDialect<triton::tle::TleDialect>();
+#endif
     addIllegalDialect<mlir::gpu::GPUDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
     addLegalOp<triton::hcugpu::InstructionSchedHint>();
@@ -74,6 +82,21 @@ public:
     addLegalOp<triton::gpu::WarpReturnOp>();
   }
 };
+
+#ifdef __TLE__
+class TleLLVMConversionTarget : public ConversionTarget {
+public:
+  explicit TleLLVMConversionTarget(MLIRContext &ctx,
+                                   LLVMTypeConverter &typeConverter)
+      : ConversionTarget(ctx) {
+    addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect, ROCDL::ROCDLDialect,
+                    mlir::scf::SCFDialect>();
+    addIllegalDialect<triton::tle::TleDialect>();
+    addLegalOp<mlir::UnrealizedConversionCastOp>();
+    markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
+  }
+};
+#endif
 
 class TritonHCUGPUToLLVMTypeConverter : public TritonGPUToLLVMTypeConverter {
 public:
@@ -175,6 +198,22 @@ struct ConvertTritonHCUGPUToLLVM
     }
 
     HCU::ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+
+#ifdef __TLE__
+    {
+      TleLLVMConversionTarget tleTarget(*context, typeConverter);
+      RewritePatternSet tlePatterns(context);
+      mlir::triton::tle::populateExtractTileOpToLLVMPatterns(
+          typeConverter, tlePatterns, targetInfo,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateInsertTileOpToLLVMPatterns(
+          typeConverter, tlePatterns, targetInfo,
+          patternBenefitPrioritizeOverLLVMConversions);
+      if (failed(
+              applyPartialConversion(mod, tleTarget, std::move(tlePatterns))))
+        return signalPassFailure();
+    }
+#endif
 
     // Emit logics to get threadId/blockIds/linearized clusterCTAId etc. and
     // cache the values. The reason to do it here is that cluster_ctaid is

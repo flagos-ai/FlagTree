@@ -1,4 +1,8 @@
 # should store at third_party/nvidia/backend/
+import functools
+import tokenize
+from io import StringIO
+
 from triton.compiler.hint_manager import BaseHintHandler
 
 
@@ -7,11 +11,8 @@ class NvidiaHintHandler(BaseHintHandler):
     # TODO : below can be reused by other backend which need to implement "hint";
     @staticmethod
     def get_node_hints(code_generator, node):
-        line_num = node.lineno
-        function_def = code_generator.jit_fn.parse()
-        line_flagtree_hints = getattr(function_def.body[0], 'line_flagtree_hints', {})
-        flagtree_hints = line_flagtree_hints.get(line_num)
-        return flagtree_hints
+        line_flagtree_hints = getattr(code_generator, 'flagtree_line_hints', {})
+        return line_flagtree_hints.get(node.lineno)
 
     @staticmethod
     def inject_kwargs_with_hints(fn, flagtree_hints, line_num, kws):
@@ -24,11 +25,13 @@ class NvidiaHintHandler(BaseHintHandler):
 
     @staticmethod
     def maps_line_numbers_to_comment_hints(jit_fn):
-        import tokenize
-        from io import StringIO
+        return dict(NvidiaHintHandler._maps_line_numbers_to_comment_hints_from_source(jit_fn.src))
+
+    @staticmethod
+    @functools.lru_cache(maxsize=256)
+    def _maps_line_numbers_to_comment_hints_from_source(code_str):
         # Maps line numbers to comment hints
         line_flagtree_hints = {}
-        code_str = jit_fn.src
         g = tokenize.generate_tokens(StringIO(code_str).readline)
         for tok_type, tok_text, start, end, _ in g:
             if tok_type == tokenize.COMMENT:

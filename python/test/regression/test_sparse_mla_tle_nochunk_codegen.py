@@ -57,3 +57,14 @@ def test_tle_sparse_mla_masks_qk_before_dot_accumulation():
     main_dot_pos = source.index("qk = tl.dot(q_blk, tl.trans(kv_blk), qk")
 
     assert mask_pos < tail_dot_pos < main_dot_pos
+
+
+def test_triton_sparse_mla_splits_group_head_program_id_by_rh():
+    source = _get_function_source("triton_sparse_mla_fwd")
+
+    assert "i_g, i_bh = i_gbh // RH, i_gbh % RH" in source
+    assert "h_base = i_bh * BH" in source
+    assert "q_head_base = i_g * G + h_base" in source
+    assert "shape=[G - h_base, D]" in source
+    assert "shape=[G - h_base, TD]" in source
+    assert "i_g, i_bh = i_gbh // G, i_gbh % G" not in source

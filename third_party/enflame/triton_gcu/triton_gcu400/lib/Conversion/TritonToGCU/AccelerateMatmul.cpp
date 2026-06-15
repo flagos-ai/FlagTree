@@ -33,6 +33,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
+#include "Constants.h"
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Utility.h"
@@ -54,16 +55,28 @@ using namespace mlir::triton::gpu;
 
 namespace {
 
-// Match the fixed pattern: triton_gcu.load -> ttg.convert_layout -> tt.dot
-// Returns the triton_gcu.load op if |v| is produced by a ConvertLayoutOp
-// whose source is a triton_gcu::LoadOp; nullptr otherwise.
+// Match patterns leading to tt.dot through ConvertLayoutOp:
+//   tt.load -> ttg.convert_layout -> tt.dot
+//   tt.load -> tt.trans -> ttg.convert_layout -> tt.dot
+// Returns the tt.load op if matched; nullptr otherwise.
 static Operation *traceBackToLoadOp(Value v) {
   auto cvt = v.getDefiningOp<ConvertLayoutOp>();
   if (!cvt)
     return nullptr;
   auto *srcOp = cvt.getSrc().getDefiningOp();
-  if (srcOp && isa<triton::gcu::LoadOp>(srcOp))
+  auto users = cvt.getSrc().getUsers();
+  auto userNumber = std::distance(users.begin(), users.end());
+  if (srcOp && isa<triton::LoadOp>(srcOp) && userNumber == 1)
     return srcOp;
+  // Also trace through tt.trans: tt.load -> tt.trans -> convert_layout
+  if (srcOp && isa<triton::TransOp>(srcOp) && userNumber == 1) {
+    auto transOp = cast<triton::TransOp>(srcOp);
+    auto *transSrc = transOp.getSrc().getDefiningOp();
+    auto transUsers = transOp.getSrc().getUsers();
+    auto transUserNum = std::distance(transUsers.begin(), transUsers.end());
+    if (transSrc && isa<triton::LoadOp>(transSrc) && transUserNum == 1)
+      return transSrc;
+  }
   return nullptr;
 }
 
@@ -81,8 +94,7 @@ static bool isGCU400OrGCU410Target(Operation *op) {
 }
 
 SmallVector<unsigned, 2>
-warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps,
-             const SmallVector<unsigned, 3> &instrShape) {
+warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps) {
   auto rank = shape.size();
   // Early exit for batched matmul
   if (rank == 3)
@@ -116,7 +128,7 @@ warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps,
   // repM and repN. We then untie towards M, as the lhs tile has 4 elements,
   // and the rhs tile has just 2.
   while (product(warps) < numWarps) {
-    if (reps[0] >= reps[1]) {
+    if (reps[0] > reps[1] || reps[1] == 1) {
       warps[0] *= 2;
       // Too many warps for this mma (repM == repN == 1).
       // We allocate the remaining warps to the left (arbitrary choice).
@@ -125,7 +137,9 @@ warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps,
       }
     } else {
       warps[1] *= 2;
-      reps[1] /= 2;
+      if (reps[1] != 1) {
+        reps[1] /= 2;
+      }
     }
   }
   return {(unsigned)warps[0], (unsigned)warps[1]};
@@ -165,6 +179,14 @@ static Value getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter,
   return rewriter.create<LocalAllocOp>(arg.getLoc(), newType, arg);
 }
 
+void setLoadAsyncAttr(Value v, mlir::PatternRewriter &rewriter) {
+  Value arg = v;
+  if (auto cvtOp = v.getDefiningOp<ConvertLayoutOp>())
+    arg = cvtOp.getSrc();
+  if (auto loadOp = arg.getDefiningOp<triton::LoadOp>())
+    loadOp->setAttr(kLoadAsync, rewriter.getBoolAttr(true));
+}
+
 class BlockedToMMA : public mlir::OpRewritePattern<DotOp> {
 public:
   explicit BlockedToMMA(mlir::MLIRContext *context)
@@ -177,6 +199,9 @@ public:
       return failure();
 
     RankedTensorType oldRetType = dotOp.getType();
+    if (oldRetType.getRank() >= 3)
+      return failure();
+
     if (!oldRetType.getEncoding() ||
         mlir::isa<NvidiaMmaEncodingAttr>(oldRetType.getEncoding()))
       return failure();
@@ -186,58 +211,47 @@ public:
     int numWarps = lookupNumWarps(dotOp);
     auto CTALayout = getCTALayout(oldRetType.getEncoding());
 
-    int versionMajor = 3;
-
-    auto instrShape = mmaVersionToInstrShape(
-        versionMajor, retShapePerCTA, dotOp.getA().getType().getElementType(),
-        numWarps);
     // operands
     Value a = dotOp.getA();
     Value b = dotOp.getB();
 
     // Check each operand independently for the fixed pattern:
-    //   triton_gcu.load -> ttg.convert_layout
+    //   tt.load -> ttg.convert_layout
     // Only operands matching this pattern will be converted to SharedMemory.
     // If neither operand matches, bail out entirely.
     bool aMatchesPattern = traceBackToLoadOp(a) != nullptr;
     bool bMatchesPattern = traceBackToLoadOp(b) != nullptr;
+    setLoadAsyncAttr(a, rewriter);
+    setLoadAsyncAttr(b, rewriter);
+    // setLoadAsyncAttr(dotOp.getC(), rewriter);
     LLVM_DEBUG(llvm::dbgs() << "BlockedToMMA: operand A "
                             << (aMatchesPattern ? "matches" : "does NOT match")
-                            << " triton_gcu.load -> convert_layout pattern\n");
+                            << " tt.load -> convert_layout pattern\n");
     LLVM_DEBUG(llvm::dbgs() << "BlockedToMMA: operand B "
                             << (bMatchesPattern ? "matches" : "does NOT match")
-                            << " triton_gcu.load -> convert_layout pattern\n");
+                            << " tt.load -> convert_layout pattern\n");
     if (!aMatchesPattern && !bMatchesPattern) {
       LLVM_DEBUG(llvm::dbgs()
                  << "BlockedToMMA: skip dot because neither operand matches "
-                    "triton_gcu.load -> convert_layout pattern\n");
+                    "tt.load -> convert_layout pattern\n");
       return failure();
     }
 
-    int versionMinor = 0;
-    auto warpsPerTileShape =
-        warpsPerTile(dotOp, retShapePerCTA, numWarps, instrShape);
+    auto warpsPerTileShape = warpsPerTile(dotOp, retShapePerCTA, numWarps);
 
     auto mod = dotOp->getParentOfType<ModuleOp>();
     int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
 
-    Attribute mmaEnc;
-    if (threadsPerWarp == 32) {
-      mmaEnc = NvidiaMmaEncodingAttr::get(oldRetType.getContext(), versionMajor,
-                                          versionMinor, warpsPerTileShape,
-                                          CTALayout, instrShape);
-    } else {
-      unsigned rank = oldRetType.getRank();
-      SmallVector<unsigned> sizePerThread(rank, 1);
-      SmallVector<unsigned> threadsPerWarpVec(rank, 1);
-      threadsPerWarpVec[rank - 1] = threadsPerWarp;
-      SmallVector<unsigned> order(rank);
-      for (unsigned i = 0; i < rank; ++i)
-        order[i] = rank - 1 - i;
-      mmaEnc = BlockedEncodingAttr::get(oldRetType.getContext(), sizePerThread,
-                                        threadsPerWarpVec, warpsPerTileShape,
-                                        order, CTALayout);
-    }
+    unsigned rank = oldRetType.getRank();
+    SmallVector<unsigned> sizePerThread(rank, 1);
+    SmallVector<unsigned> threadsPerWarpVec(rank, 1);
+    threadsPerWarpVec[rank - 1] = threadsPerWarp;
+    SmallVector<unsigned> order(rank);
+    for (unsigned i = 0; i < rank; ++i)
+      order[i] = rank - 1 - i;
+    Attribute mmaEnc = BlockedEncodingAttr::get(
+        oldRetType.getContext(), sizePerThread, threadsPerWarpVec,
+        warpsPerTileShape, order, CTALayout);
 
     // PatternRewriterWithAsyncTaskIds taskIdRewriter(rewriter, dotOp);
     auto newRetType = RankedTensorType::get(
@@ -370,9 +384,9 @@ public:
     mlir::gpu::GPUModuleOp m = getOperation();
     // skip if num_warps is 1
     auto builtinModule = m->getParentOfType<ModuleOp>();
-    if (builtinModule && builtinModule->hasAttr("ttg.num-warps")) {
+    if (builtinModule && builtinModule->hasAttr(kNumWarps)) {
       auto numWarps =
-          cast<IntegerAttr>(builtinModule->getAttr("ttg.num-warps")).getInt();
+          cast<IntegerAttr>(builtinModule->getAttr(kNumWarps)).getInt();
       if (numWarps == 1)
         return;
     }

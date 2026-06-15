@@ -170,10 +170,40 @@ bool mlir::triton::isOuterLoop(scf::ForOp forOp) {
   });
 }
 
+#ifdef __TLE__
+static Operation *predicateWarpGroupDotWithIf(RewriterBase &rewriter,
+                                              ttng::WarpGroupDotOp dotOp,
+                                              Value pred) {
+  Location loc = dotOp.getLoc();
+  rewriter.setInsertionPoint(dotOp);
+  auto ifOp =
+      scf::IfOp::create(rewriter, loc, dotOp.getResult().getType(), pred,
+                        /*withElseRegion=*/true);
+
+  OpBuilder thenBuilder = ifOp.getThenBodyBuilder();
+  auto thenYield = scf::YieldOp::create(thenBuilder, loc, dotOp.getResult());
+  dotOp->moveBefore(thenYield);
+
+  OpBuilder elseBuilder = ifOp.getElseBodyBuilder();
+  scf::YieldOp::create(elseBuilder, loc, dotOp.getC());
+
+  dotOp.getResult().replaceUsesWithIf(ifOp.getResult(0), [&](OpOperand &use) {
+    return use.getOwner() != thenYield;
+  });
+  return ifOp;
+}
+#endif
+
 // Function to mask operations during scheduling.
 Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
                                      Value pred) {
   OpBuilder::InsertionGuard guard(rewriter);
+#ifdef __TLE__
+  if (!isConstantIntValue(pred, 1)) {
+    if (auto dotOp = dyn_cast<ttng::WarpGroupDotOp>(op))
+      return predicateWarpGroupDotWithIf(rewriter, dotOp, pred);
+  }
+#endif
   if (mlir::isMemoryEffectFree(op))
     return op;
   if (isConstantIntValue(pred, 1))

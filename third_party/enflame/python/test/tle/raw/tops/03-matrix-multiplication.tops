@@ -1,0 +1,20 @@
+#include <stdint.h>
+
+__device__ void
+MatMulKernel(__attribute__((address_space(1))) float *C,
+             __attribute__((address_space(1))) const float *A,
+             __attribute__((address_space(1))) const float *B,
+             const int M,
+             const int N,
+             const int K) {
+  const int total = M * N;
+  for (int idx = 0; idx < total; idx++) {
+    const int row = idx / N;
+    const int col = idx % N;
+    float acc = 0.0f;
+    for (int j = 0; j < K; j++) {
+      acc += A[row * K + j] * B[j * N + col];
+    }
+    C[row * N + col] = acc;
+  }
+}

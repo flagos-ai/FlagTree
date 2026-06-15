@@ -17,10 +17,14 @@
 #include "mlir/Transforms/RegionUtils.h"
 #include "triton/Analysis/Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/TritonGPUInterfaces.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Transforms/EncodingRematerialization.h"
+#endif
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -1645,6 +1649,130 @@ bool backwardRematerialization(ModuleOp module) {
   return changed;
 }
 
+#ifdef __TLE__
+static void eraseOpsCreatedAfter(Operation *previous, Operation *insertBefore) {
+  Operation *cur =
+      previous ? previous->getNextNode() : &insertBefore->getBlock()->front();
+  while (cur && cur != insertBefore) {
+    Operation *next = cur->getNextNode();
+    cur->erase();
+    cur = next;
+  }
+}
+
+bool rematerializeStoreLayoutDemands(ModuleOp module) {
+  bool changed = false;
+  EncodingRematerializationPolicy policy;
+  IRRewriter rewriter(module.getContext());
+  DominanceInfo dominance(module);
+
+  SmallVector<StoreOp> stores;
+  module.walk([&](StoreOp store) { stores.push_back(store); });
+
+  for (StoreOp store : stores) {
+    if (!store || !store->getBlock())
+      continue;
+    auto valueConvert = store.getValue().getDefiningOp<ConvertLayoutOp>();
+    if (!valueConvert)
+      continue;
+    auto targetTy = dyn_cast<RankedTensorType>(valueConvert.getSrc().getType());
+    if (!targetTy || !targetTy.getEncoding())
+      continue;
+    if (!isa<NvidiaMmaEncodingAttr>(targetTy.getEncoding()))
+      continue;
+
+    Operation *rollbackPrevious = store->getPrevNode();
+    EncodingRematerializationCache cache;
+    auto ptr = rematerializeWithEncoding(rewriter, store, store.getPtr(),
+                                         targetTy.getEncoding(), cache,
+                                         dominance, policy);
+    if (failed(ptr))
+      continue;
+
+    Value mask;
+    if (Value oldMask = store.getMask()) {
+      auto rematMask = rematerializeWithEncoding(rewriter, store, oldMask,
+                                                 targetTy.getEncoding(), cache,
+                                                 dominance, policy);
+      if (failed(rematMask)) {
+        eraseOpsCreatedAfter(rollbackPrevious, store);
+        continue;
+      }
+      mask = *rematMask;
+    }
+
+    store.getPtrMutable().assign(*ptr);
+    store.getValueMutable().assign(valueConvert.getSrc());
+    if (mask)
+      store.getMaskMutable().assign(mask);
+    if (valueConvert->use_empty())
+      valueConvert.erase();
+    changed = true;
+  }
+
+  return changed;
+}
+
+FailureOr<Attribute>
+inferLocalStoreSourceTargetEncoding(LocalStoreOp store,
+                                    DominanceInfo &dominance,
+                                    EncodingRematerializationPolicy &policy) {
+  auto sourceTy = dyn_cast<RankedTensorType>(store.getSrc().getType());
+  if (!sourceTy || !sourceTy.getEncoding())
+    return failure();
+
+  if (auto convert = store.getSrc().getDefiningOp<ConvertLayoutOp>()) {
+    auto convertSrcTy = dyn_cast<RankedTensorType>(convert.getSrc().getType());
+    if (convertSrcTy && convertSrcTy.getEncoding() &&
+        isa<NvidiaMmaEncodingAttr>(convertSrcTy.getEncoding()) &&
+        convertSrcTy.getEncoding() != sourceTy.getEncoding())
+      return convertSrcTy.getEncoding();
+  }
+
+  SmallVector<Attribute, 4> equivalentMmaEncodings;
+  collectAvailableEquivalentNvidiaMmaEncodings(store.getSrc(),
+                                               store.getOperation(), dominance,
+                                               policy, equivalentMmaEncodings);
+  if (equivalentMmaEncodings.empty())
+    return failure();
+  if (equivalentMmaEncodings.front() == sourceTy.getEncoding())
+    return failure();
+  return equivalentMmaEncodings.front();
+}
+
+bool rematerializeLocalStoreLayoutDemands(ModuleOp module) {
+  bool changed = false;
+  EncodingRematerializationPolicy policy;
+  IRRewriter rewriter(module.getContext());
+  DominanceInfo dominance(module);
+
+  SmallVector<LocalStoreOp> stores;
+  module.walk([&](LocalStoreOp store) { stores.push_back(store); });
+
+  for (LocalStoreOp store : stores) {
+    if (!store || !store->getBlock())
+      continue;
+
+    auto targetEncoding =
+        inferLocalStoreSourceTargetEncoding(store, dominance, policy);
+    if (failed(targetEncoding))
+      continue;
+
+    EncodingRematerializationCache cache;
+    auto source =
+        rematerializeWithEncoding(rewriter, store, store.getSrc(),
+                                  *targetEncoding, cache, dominance, policy);
+    if (failed(source))
+      continue;
+
+    store.getSrcMutable().assign(*source);
+    changed = true;
+  }
+
+  return changed;
+}
+#endif
+
 void hoistConvert(ModuleOp module) {
   SmallVector<ConvertLayoutOp> convertOps;
   module.walk([](FuncOp funcOp) {
@@ -1716,6 +1844,14 @@ public:
 
       // Cleanup dummy converts created during backward remat.
       cleanupConvertOps();
+#ifdef __TLE__
+      if (m->hasAttr(
+              ::mlir::triton::tle::kTleEnableEncodingRematerializationAttr)) {
+        changed |= rematerializeStoreLayoutDemands(m);
+        changed |= rematerializeLocalStoreLayoutDemands(m);
+        cleanupConvertOps();
+      }
+#endif
     } while (changed);
     // 3. For remaining converts, try to hoist them above cast generating larger
     // size types in order to reduce the cost of the convert op.

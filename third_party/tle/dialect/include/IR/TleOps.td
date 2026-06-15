@@ -98,6 +98,94 @@ def Tle_MemDescWGMMAViewOp : Tle_Op<"memdesc_wgmma_view", [Pure,
   let hasVerifier = 1;
 }
 
+def Tle_PipeCreateOp : Tle_Op<"pipe.create"> {
+  let summary = "create a typed TLE GPU pipe";
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<ArrayAttr>:$readers,
+    OptionalAttr<BoolAttr>:$one_shot
+  );
+  let assemblyFormat = "$fields attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeWriterAcquireOp : Tle_Op<"pipe.writer_acquire"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeWriterCommitOp : Tle_Op<"pipe.writer_commit"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeWriterCloseOp : Tle_Op<"pipe.writer_close"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeReaderWaitOp : Tle_Op<"pipe.reader_wait"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<StrAttr>:$reader_name
+  );
+  let results = (outs I1:$is_closed);
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeReaderReleaseOp : Tle_Op<"pipe.reader_release", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<StrAttr>:$reader_name
+  );
+  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
 def Tle_ExclusiveCumsumOp : Tle_Op<"exclusive_cumsum", [Pure, SameOperandsAndResultEncoding]> {
   let arguments = (ins TT_Tensor:$src, I32Attr:$axis, BoolAttr:$reverse);
   let results = (outs TT_Tensor:$exclusive, TT_Type:$total);
@@ -120,6 +208,20 @@ def Tle_WGMMASharedOperandFenceOp : Tle_Op<"wgmma_shared_operand_fence"> {
 
   let assemblyFormat = "$deps attr-dict `:` type($deps)";
   let hasVerifier = 1;
+}
+
+def Tle_TMAStoreCommitGroupOp
+    : Tle_Op<"tma_store.commit_group", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "commit the current TMA store bulk group";
+
+  let description = [{
+    Commits outstanding shared-to-global TMA store messages issued by this
+    agent into the current bulk group.  This op makes TMA store group
+    boundaries explicit in TLE IR so scheduling passes can group adjacent
+    stores and place waits at the latest safe point.
+  }];
+
+  let assemblyFormat = "attr-dict";
 }
 
 def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",

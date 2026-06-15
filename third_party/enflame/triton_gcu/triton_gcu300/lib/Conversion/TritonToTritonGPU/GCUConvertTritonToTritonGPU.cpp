@@ -155,7 +155,12 @@ void populateMathPatternsAndLegality(GCUTritonGPUTypeConverter &typeConverter,
 
 struct TritonExpandDimsPattern
     : public OpConversionPattern<triton::ExpandDimsOp> {
-  using OpConversionPattern::OpConversionPattern;
+  bool preserveOrder;
+
+  TritonExpandDimsPattern(GCUTritonGPUTypeConverter &typeConverter,
+                          MLIRContext *context, bool preserveOrder)
+      : OpConversionPattern(typeConverter, context),
+        preserveOrder(preserveOrder) {}
 
   LogicalResult
   matchAndRewrite(triton::ExpandDimsOp op, OpAdaptor adaptor,
@@ -175,9 +180,16 @@ struct TritonExpandDimsPattern
     retThreadsPerWarp.insert(retThreadsPerWarp.begin() + op.getAxis(), 1);
     auto retWarpsPerCTA = to_vector(argEncoding.getWarpsPerCTA());
     retWarpsPerCTA.insert(retWarpsPerCTA.begin() + op.getAxis(), 1);
-    SmallVector<unsigned, 4> retOrder(retShape.size());
-    std::iota(retOrder.begin(), retOrder.end(), 0);
-
+    SmallVector<unsigned, 4> retOrder(newRank);
+    if (preserveOrder) {
+      for (unsigned i = 0; i < argEncoding.getOrder().size(); ++i) {
+        unsigned o = argEncoding.getOrder()[i];
+        retOrder[i] = o >= op.getAxis() ? o + 1 : o;
+      }
+      retOrder[newRank - 1] = op.getAxis();
+    } else {
+      std::iota(retOrder.begin(), retOrder.end(), 0);
+    }
     auto ctaLl = argEncoding.getCTALayout().getLinearLayout();
     auto kBlock = *ctaLl.getInDimNames().begin();
     auto *ctx = kBlock.getContext();
@@ -518,7 +530,7 @@ public:
 };
 
 void populateTritonPatterns(GCUTritonGPUTypeConverter &typeConverter,
-                            RewritePatternSet &patterns) {
+                            RewritePatternSet &patterns, bool hasReduceOps) {
   MLIRContext *context = patterns.getContext();
   patterns.insert<
       // clang-format off
@@ -546,7 +558,6 @@ void populateTritonPatterns(GCUTritonGPUTypeConverter &typeConverter,
       TritonScanPattern,
       GenericOpPattern<triton::ScanReturnOp>,
       GenericOpPattern<triton::MakeRangeOp>,
-      TritonExpandDimsPattern,
       TritonTransPattern,
       TritonDotPattern,
       TritonMapElementwisePattern,
@@ -570,6 +581,8 @@ void populateTritonPatterns(GCUTritonGPUTypeConverter &typeConverter,
       TritonFuncOpPattern
       // clang-format on
       >(typeConverter, context);
+  patterns.insert<TritonExpandDimsPattern>(typeConverter, context,
+                                           hasReduceOps);
 }
 
 //===----------------------------------------------------------------------===//
@@ -764,8 +777,10 @@ buildReduceAwareOrder(unsigned rank,
   });
   SmallVector<unsigned> order;
   order.append(nonReduceDims.begin(), nonReduceDims.end());
-  for (auto &[dim, freq] : reduceDimsWithFreq)
+  for (auto &[dim, freq] : reduceDimsWithFreq) {
+    (void)freq;
     order.push_back(dim);
+  }
   return order;
 }
 
@@ -800,95 +815,20 @@ public:
     });
     if (maxRank == 0)
       maxRank = 1;
-    auto originalOrder = buildReduceAwareOrder(maxRank, axisFreq);
-    bool hasDot = false;
+
     bool orderIncompatible = false;
     mod.walk([&](Operation *op) -> WalkResult {
-      if (isa<triton::DotOp>(op)) {
-        hasDot = true;
+      if (isa<triton::DotOp>(op) || isa<triton::ReshapeOp>(op) ||
+          isa<triton::SplitOp>(op) || isa<triton::JoinOp>(op)) {
+        orderIncompatible = true;
         return WalkResult::interrupt();
       }
       return WalkResult::advance();
     });
 
-    if (!hasDot && !axisFreq.empty()) {
-      auto *inferInterface =
-          context->getOrLoadDialect<triton::gpu::TritonGPUDialect>()
-              ->getRegisteredInterface<triton::DialectInferLayoutInterface>();
-
-      if (!inferInterface) {
-        orderIncompatible = true;
-      } else {
-        auto trialEnc = [&](ArrayRef<int64_t> shape) {
-          return getBlockedEncodingWithOrder(context, shape, originalOrder,
-                                             axisFreq, numWarps, threadsPerWarp,
-                                             numCTAs);
-        };
-        auto isBlockedResult = [](Attribute enc) {
-          return isa<triton::gpu::BlockedEncodingAttr>(enc);
-        };
-
-        mod.walk([&](Operation *op) -> WalkResult {
-          if (orderIncompatible)
-            return WalkResult::interrupt();
-
-          if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(op)) {
-            if (reshapeOp.getAllowReorder())
-              return WalkResult::advance();
-            ArrayRef<int64_t> srcShape =
-                reshapeOp.getSrc().getType().getShape();
-            ArrayRef<int64_t> dstShape = reshapeOp.getType().getShape();
-
-            auto srcEnc = trialEnc(srcShape);
-            Attribute inferredDst;
-            if (failed(inferInterface->inferReshapeOpEncoding(
-                    srcShape, srcEnc, dstShape, inferredDst, std::nullopt)) ||
-                !isBlockedResult(inferredDst)) {
-              orderIncompatible = true;
-              return WalkResult::interrupt();
-            }
-
-            auto dstEnc = trialEnc(dstShape);
-            Attribute inferredSrc;
-            if (failed(inferInterface->inferReshapeOpEncoding(
-                    dstShape, dstEnc, srcShape, inferredSrc, std::nullopt)) ||
-                !isBlockedResult(inferredSrc)) {
-              orderIncompatible = true;
-              return WalkResult::interrupt();
-            }
-          }
-
-          if (auto splitOp = dyn_cast<triton::SplitOp>(op)) {
-            auto inputShape = splitOp.getSrc().getType().getShape();
-            auto enc = trialEnc(inputShape);
-            Attribute inferredDst;
-            if (failed(inferInterface->inferSplitOpEncoding(
-                    enc, inferredDst, inputShape, std::nullopt)) ||
-                !isBlockedResult(inferredDst)) {
-              orderIncompatible = true;
-              return WalkResult::interrupt();
-            }
-          }
-
-          if (auto joinOp = dyn_cast<triton::JoinOp>(op)) {
-            auto resultShape = joinOp.getType().getShape();
-            auto enc = trialEnc(resultShape);
-            Attribute inferredDst;
-            if (failed(inferInterface->inferSplitOpEncoding(
-                    enc, inferredDst, resultShape, std::nullopt)) ||
-                !isBlockedResult(inferredDst)) {
-              orderIncompatible = true;
-              return WalkResult::interrupt();
-            }
-          }
-
-          return WalkResult::advance();
-        });
-      }
-    }
-
     SmallVector<unsigned> defaultOrder;
-    if (hasDot || orderIncompatible || axisFreq.empty()) {
+    if (orderIncompatible || axisFreq.empty()) {
+      axisFreq.clear();
       defaultOrder.resize(maxRank);
       std::iota(defaultOrder.begin(), defaultOrder.end(), 0);
       std::reverse(defaultOrder.begin(), defaultOrder.end());
@@ -905,7 +845,7 @@ public:
     RewritePatternSet patterns(context);
     populateArithPatternsAndLegality(typeConverter, patterns, target);
     populateMathPatternsAndLegality(typeConverter, patterns, target);
-    populateTritonPatterns(typeConverter, patterns);
+    populateTritonPatterns(typeConverter, patterns, !axisFreq.empty());
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);

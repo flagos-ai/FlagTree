@@ -66,6 +66,38 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 
 // -----
 
+#blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [32, 1], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 4, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @group_independent_async_stores
+  tt.func @group_independent_async_stores(%gptr0: tensor<64x128x!tt.ptr<bf16>, #blocked>, %gptr1: tensor<64x128x!tt.ptr<bf16>, #blocked>) {
+    %smem0 = ttg.local_alloc : () -> !ttg.memdesc<64x128xbf16, #shared, #smem, mutable>
+    %smem1 = ttg.local_alloc : () -> !ttg.memdesc<64x128xbf16, #shared, #smem, mutable>
+    %row = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 1, parent = #blocked}>>
+    %row2d = tt.expand_dims %row {axis = 1 : i32} : tensor<64xi32, #ttg.slice<{dim = 1, parent = #blocked}>> -> tensor<64x1xi32, #blocked>
+    %rowb = tt.broadcast %row2d : tensor<64x1xi32, #blocked> -> tensor<64x128xi32, #blocked>
+    %col = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>>
+    %col2d = tt.expand_dims %col {axis = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<1x128xi32, #blocked>
+    %colb = tt.broadcast %col2d : tensor<1x128xi32, #blocked> -> tensor<64x128xi32, #blocked>
+    %ptr0 = "tle.local_pointers"(%smem0, %rowb, %colb) : (!ttg.memdesc<64x128xbf16, #shared, #smem, mutable>, tensor<64x128xi32, #blocked>, tensor<64x128xi32, #blocked>) -> tensor<64x128x!tt.ptr<bf16, 3>, #blocked>
+    %ptr1 = "tle.local_pointers"(%smem1, %rowb, %colb) : (!ttg.memdesc<64x128xbf16, #shared, #smem, mutable>, tensor<64x128xi32, #blocked>, tensor<64x128xi32, #blocked>) -> tensor<64x128x!tt.ptr<bf16, 3>, #blocked>
+    %v0 = tt.load %gptr0 : tensor<64x128x!tt.ptr<bf16>, #blocked>
+    // CHECK: %[[TOK0:.*]] = ttg.async_copy_global_to_local %{{.*}}, %{{.*}} {tle.local_ptr_async_store}
+    tt.store %ptr0, %v0 : tensor<64x128x!tt.ptr<bf16, 3>, #blocked>
+    %v1 = tt.load %gptr1 : tensor<64x128x!tt.ptr<bf16>, #blocked>
+    // CHECK: %[[TOK1:.*]] = ttg.async_copy_global_to_local %{{.*}}, %{{.*}} {tle.local_ptr_async_store}
+    // CHECK: %[[COMMIT:.*]] = ttg.async_commit_group tokens %[[TOK0]], %[[TOK1]]
+    // CHECK: ttg.async_wait %[[COMMIT]] {num = 0 : i32}
+    // CHECK-NOT: tt.store
+    tt.store %ptr1, %v1 : tensor<64x128x!tt.ptr<bf16, 3>, #blocked>
+    tt.return
+  }
+}
+
+// -----
+
 #blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [8], order = [0]}>
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
 #smem = #ttg.shared_memory
@@ -81,6 +113,39 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, ttg.targ
     // CHECK: tt.store %{{.*}}, %[[V]]
     %v = tt.load %rptr : tensor<64x!tt.ptr<i32, 7>, #blocked>
     tt.store %local, %v : tensor<64x!tt.ptr<i32, 3>, #blocked>
+    tt.return
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [32, 1], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared2 = #ttg.swizzled_shared<{vec = 4, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#shared3 = #ttg.swizzled_shared<{vec = 4, perPhase = 1, maxPhase = 1, order = [2, 1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @async_store_pipe_commit
+  tt.func @async_store_pipe_commit(%gptr0: tensor<64x128x!tt.ptr<bf16>, #blocked>, %gptr1: tensor<64x128x!tt.ptr<bf16>, #blocked>) {
+    %c0 = arith.constant 0 : i32
+    %field0 = ttg.local_alloc : () -> !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>
+    %field1 = ttg.local_alloc : () -> !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>
+    tle.pipe.create %field0, %field1 {capacity = 2 : i32, pipe_name = "async", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>, !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>
+    %slot0 = ttg.memdesc_index %field0[%c0] : !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable> -> !ttg.memdesc<64x128xbf16, #shared2, #smem, mutable>
+    %slot1 = ttg.memdesc_index %field1[%c0] : !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable> -> !ttg.memdesc<64x128xbf16, #shared2, #smem, mutable>
+    %ptr0 = "tle.local_pointers"(%slot0) : (!ttg.memdesc<64x128xbf16, #shared2, #smem, mutable>) -> tensor<64x128x!tt.ptr<bf16, 3>, #blocked>
+    %ptr1 = "tle.local_pointers"(%slot1) : (!ttg.memdesc<64x128xbf16, #shared2, #smem, mutable>) -> tensor<64x128x!tt.ptr<bf16, 3>, #blocked>
+    %v0 = tt.load %gptr0 : tensor<64x128x!tt.ptr<bf16>, #blocked>
+    // CHECK: ttg.async_copy_global_to_local
+    tt.store %ptr0, %v0 : tensor<64x128x!tt.ptr<bf16, 3>, #blocked>
+    %v1 = tt.load %gptr1 : tensor<64x128x!tt.ptr<bf16>, #blocked>
+    // CHECK: ttg.async_copy_global_to_local
+    tt.store %ptr1, %v1 : tensor<64x128x!tt.ptr<bf16, 3>, #blocked>
+    // CHECK-NOT: ttg.async_commit_group
+    // CHECK-NOT: ttg.async_wait
+    // CHECK: tle.pipe.writer_commit
+    // CHECK-SAME: tle.pipe_commit_cp_async
+    tle.pipe.writer_commit %field0, %field1[%c0] {capacity = 2 : i32, pipe_name = "async", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>, !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>
     tt.return
   }
 }

@@ -15,9 +15,17 @@ import triton.experimental.tle.language as tle
 BLOCK_SIZE = 64
 
 
+def _is_enflame_backend():
+    target = triton.runtime.driver.active.get_current_target()
+    return target.backend == "gcu"
+
+
 def _require_cuda():
     try:
-        torch.cuda.init()
+        if _is_enflame_backend():
+            pass
+        else:
+            torch.cuda.init()
     except Exception as exc:
         pytest.skip(f"CUDA init failed: {exc}")
 
@@ -365,13 +373,21 @@ class TestTLELocalPointerKernel:
             grid=(1, ),
             num_warps=4,
         )
-        ttgir = compiled.asm["ttgir"]
-        assert "ttg.local_store" in ttgir
-        line = next((line for line in ttgir.splitlines() if "tle.gpu.local_pointers" in line), None)
-        if line is not None:
-            line_lhs = line.split(":", 1)[0]
-            assert "tle.gpu.local_pointers" in line_lhs
-            assert "," not in line_lhs
+        if _is_enflame_backend():
+            gcuir = compiled.asm["gcuir"]
+            line = next((line for line in gcuir.splitlines() if "tle.local_pointers" in line), None)
+            if line is not None:
+                line_lhs = line.split(":", 1)[0]
+                assert "tle.local_pointers" in line_lhs
+                assert "," not in line_lhs
+        else:
+            ttgir = compiled.asm["ttgir"]
+            assert "ttg.local_store" in ttgir
+            line = next((line for line in ttgir.splitlines() if "tle.gpu.local_pointers" in line), None)
+            if line is not None:
+                line_lhs = line.split(":", 1)[0]
+                assert "tle.gpu.local_pointers" in line_lhs
+                assert "," not in line_lhs
 
         _local_pointer_full_view_store_kernel[(1, )](
             out,
@@ -411,6 +427,8 @@ class TestTLELocalPointerKernel:
             num_warps=4,
         )
         ttgir = compiled.asm["ttgir"]
+        if _is_enflame_backend():
+            ttgir = compiled.asm["gcuir"]
         assert "ttg.local_load" in ttgir
 
         _local_pointer_local_load_none_kernel[(1, )](out, BLOCK=block, num_warps=4)
@@ -427,6 +445,8 @@ class TestTLELocalPointerKernel:
             num_warps=4,
         )
         ttgir = compiled.asm["ttgir"]
+        if _is_enflame_backend():
+            ttgir = compiled.asm["gcuir"]
         assert "ttg.local_load" in ttgir
 
         _local_pointer_local_load_full_indices_kernel[(1, )](out, BLOCK=block, num_warps=4)
@@ -544,6 +564,8 @@ class TestTLELocalPointerKernel:
             num_warps=4,
         )
         ttgir = compiled.asm["ttgir"]
+        if _is_enflame_backend():
+            ttgir = compiled.asm["gcuir"]
         assert "gpu.barrier" in ttgir
         assert "\"tt.reduce\"" not in ttgir
 
@@ -577,6 +599,8 @@ class TestTLELocalPointerKernel:
             num_stages=2,
         )
         ttgir = compiled.asm["ttgir"]
+        if _is_enflame_backend():
+            ttgir = compiled.asm["gcuir"]
         assert "ttg.local_load" in ttgir
         assert re.search(r"ttg\\.convert_layout .*-> tensor<.*!tt\\.ptr", ttgir) is None
 

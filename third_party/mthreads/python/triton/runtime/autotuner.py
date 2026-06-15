@@ -13,6 +13,7 @@ from .jit import KernelInterface, JITFunction
 from .errors import OutOfResources, PTXASError, AutotunerError
 from .driver import driver
 from .cache import get_cache_manager, triton_key
+from .adjust_kernel_param import auto_adjust_block_sizes
 from triton._C.libtriton import get_cache_invalidating_env_vars
 
 
@@ -33,6 +34,8 @@ class Autotuner(KernelInterface):
             self.configs = [Config({}, num_warps=4, num_stages=3, num_ctas=1)]
         else:
             self.configs = configs
+        if self.configs and (len(self.configs) > 0):
+            self.shared_config_pre_hook = self.configs[0].pre_hook  # flagtree aabs
         self.keys = key
         self.cache: Dict[Tuple, Config] = {}
         self.arg_names = arg_names
@@ -98,6 +101,7 @@ class Autotuner(KernelInterface):
         except Exception:
             cuda_graph_available = False
         self.use_cuda_graph = use_cuda_graph and cuda_graph_available
+        self.seen_tuned_metas = {}  # flagtree aabs: deduplicate tuned meta
 
         # If we got explicitly called via the old interface, raise a warning
         # and proceed with the old behavior.
@@ -145,6 +149,23 @@ class Autotuner(KernelInterface):
                              " Make sure that you don't re-define auto-tuned symbols.")
         # augment meta-parameters with tunable ones
         current = dict(meta, **config.all_kwargs())
+        # flagtree aabs: auto_adjust_block_sizes
+        if knobs.autotuning.adjust_block_size:
+
+            def _unwrap_to_jitfunction(fn):
+                from triton.runtime.jit import JITFunction
+                while not isinstance(fn, JITFunction):
+                    if not hasattr(fn, 'fn'):
+                        return None
+                    fn = fn.fn
+                return fn
+
+            jit_fn = _unwrap_to_jitfunction(self.fn)
+            if jit_fn is not None:
+                auto_adjust_block_sizes(self.nargs, jit_fn, self.configs, current, config)
+        meta_key = tuple(sorted(current.items()))
+        if meta_key in self.seen_tuned_metas:
+            return self.seen_tuned_metas[meta_key]  # flagtree aabs: deduplicate tuned meta
         full_nargs = {**self.nargs, **current}
 
         def kernel_call():
@@ -166,11 +187,14 @@ class Autotuner(KernelInterface):
             self.post_hook(full_nargs, exception=None)
 
         try:
-            return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
+            rett = self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
         except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
             if verbose:
                 print(f"Autotuning failed with {e}")
-            return [float("inf"), float("inf"), float("inf")]
+            rett = [float("inf"), float("inf"), float("inf")]
+
+        self.seen_tuned_metas[meta_key] = rett  # flagtree aabs: deduplicate tuned meta
+        return rett
 
     def check_disk_cache(self, tuning_key, configs, bench_fn):
         # We can't serialize prehooks, so just give up and run the benchmarks.
@@ -215,6 +239,7 @@ class Autotuner(KernelInterface):
         return False
 
     def run(self, *args, **kwargs):
+        self.seen_tuned_metas = {}  # flagtree aabs: deduplicate tuned meta
         self.nargs = dict(zip(self.arg_names, args))
         used_cached_result = True
         if len(self.configs) > 1:
@@ -263,7 +288,10 @@ class Autotuner(KernelInterface):
         return ret
 
     def prune_configs(self, kwargs: Dict) -> List[Config]:
-        pruned_configs = self.configs
+        # flagtree aabs: use deepcopy to prevent modification of the original configs
+        import copy
+        pruned_configs = copy.deepcopy(self.configs)
+        # pruned_configs = self.configs
         if self.early_config_prune:
             pruned_configs = self.early_config_prune(self.configs, self.nargs, **kwargs)
             if not pruned_configs:

@@ -15,6 +15,7 @@
 #include "Utility.h"
 #ifdef __TLE__
 #include "tle/dialect/include/Conversion/TleToLLVM/RemotePointerUtils.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 #endif
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -202,6 +203,51 @@ struct LoadStoreConversionBase {
     return std::min<unsigned>(128 / pointeeBitWidth, contiguity);
   }
 
+#ifdef __TLE__
+  bool isTleSharedTensorPtr(Value ptr) const {
+    auto ptrTensorTy = dyn_cast<RankedTensorType>(ptr.getType());
+    auto ptrElemTy = ptrTensorTy
+                         ? dyn_cast<PointerType>(ptrTensorTy.getElementType())
+                         : PointerType();
+    return ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
+  }
+
+  unsigned getMaxVectorSizeByAlignment(Value ptr) const {
+    auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
+    if (!tensorTy)
+      return 1;
+    auto *axisInfo = axisAnalysisPass.getAxisInfo(ptr);
+    if (!axisInfo || axisInfo->getRank() == 0)
+      return 1;
+
+    auto linAttr = ttg::toLinearEncoding(tensorTy);
+    auto order = linAttr.getOrder();
+    if (order.empty() || order[0] >= axisInfo->getRank())
+      return 1;
+
+    unsigned pointeeBitWidth = triton::getPointeeBitWidth(tensorTy);
+    if (pointeeBitWidth == 0)
+      return 1;
+    unsigned elemBytes = std::max<unsigned>(pointeeBitWidth / 8, 1);
+    unsigned maxMultipleBytes = axisInfo->getDivisibility(order[0]);
+    unsigned maxMultiple = std::max<unsigned>(maxMultipleBytes / elemBytes, 1);
+
+    return std::min<unsigned>(128 / pointeeBitWidth, maxMultiple);
+  }
+
+  unsigned getTleSharedPointerVectorSize(Value ptr, unsigned vec) const {
+    if (!isTleSharedTensorPtr(ptr))
+      return vec;
+
+    // AxisInfo contiguity and TLE layout hints may both propose vectorized
+    // shared-memory accesses. They are legal only up to the width whose first
+    // element alignment is proven by AxisInfo divisibility.
+    unsigned hint = tte::inferTlePointerLayoutVectorHint(ptr);
+    unsigned alignmentBound = getMaxVectorSizeByAlignment(ptr);
+    return std::min(std::max(vec, hint), alignmentBound);
+  }
+#endif
+
   unsigned getMaskAlignment(Value mask) const {
     return axisAnalysisPass.getMaskAlignment(mask);
   }
@@ -248,18 +294,8 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         typeConverter->convertType(getElementTypeOrSelf(op.getType()));
     unsigned vec = getVectorSize(ptr);
 #ifdef __TLE__
-    auto ptrTensorTy = dyn_cast<RankedTensorType>(ptr.getType());
-    auto ptrElemTy = ptrTensorTy
-                         ? dyn_cast<PointerType>(ptrTensorTy.getElementType())
-                         : PointerType();
-    bool isSharedTensorPtr =
-        ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
-    if (!llMask && isSharedTensorPtr) {
-      // For TLE local/shared pointer chains, AxisInfo divisibility can be
-      // conservative on packed contiguous lanes. Recover vector width from
-      // the pointer layout as a lower-bound hint.
-      vec = std::max(vec, tte::inferTlePointerLayoutVectorHint(ptr));
-    }
+    if (!llMask)
+      vec = getTleSharedPointerVectorSize(ptr, vec);
 #endif
     unsigned numElems = getTotalElemsPerThread(ptr.getType());
     unsigned vecOrig = vec;
@@ -550,6 +586,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     const bool isClusterSharedPtr =
         inferPtrAddrSpace(ptrElems).value_or(1) ==
         static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster);
+    vec = getTleSharedPointerVectorSize(ptr, vec);
 #else
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     auto valueElems = unpackLLElements(loc, llValue, rewriter);
@@ -1329,9 +1366,11 @@ struct AsyncCopyGlobalToLocalOpConversion
       public LoadStoreConversionBase {
   AsyncCopyGlobalToLocalOpConversion(LLVMTypeConverter &converter,
                                      const NVIDIA::TargetInfo &targetInfo,
+                                     int computeCapability,
                                      ModuleAxisInfoAnalysis &axisAnalysisPass,
                                      PatternBenefit benefit)
       : ConvertOpToLLVMPattern(converter, benefit),
+        computeCapability(computeCapability),
         LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
 
   LogicalResult
@@ -1412,6 +1451,10 @@ struct AsyncCopyGlobalToLocalOpConversion
              << vecBytes << " bytes";
     }
     assert(vecBytes == 16 || vecBytes == 8 || vecBytes == 4);
+    if (op.getCache() != CacheModifier::NONE &&
+        op.getCache() != CacheModifier::CA &&
+        op.getCache() != CacheModifier::CG)
+      return op.emitError("cp.async supports only ca/cg cache modifiers");
 
     auto freeVarMasks = getFreeVariableMasks(srcTy);
     // NOTE(@peterbell10): We load redundant data on different CTAs, so the data
@@ -1421,30 +1464,41 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
 
-    auto emitCpAsync = [&b, threadPred, ptrTy, hasMask = bool(llMask)](
-                           RewriterBase &rewriter, Location loc,
-                           ArrayRef<Value> vals, Value shmemAddr, int startIdx,
-                           VectorType vecTy) -> SmallVector<Value> {
+    Value l2PolicyReg =
+        createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+
+    auto emitCpAsync =
+        [&b, threadPred, ptrTy, hasMask = bool(llMask), opCache = op.getCache(),
+         l2PolicyReg](RewriterBase &rewriter, Location loc,
+                      ArrayRef<Value> vals, Value shmemAddr, int startIdx,
+                      VectorType vecTy) -> SmallVector<Value> {
       assert(isa<VectorType>(vecTy));
       auto *ctx = rewriter.getContext();
       auto elemTy = vecTy.getElementType();
       auto nBytes = vecTy.getNumElements() * elemTy.getIntOrFloatBitWidth() / 8;
       assert(nBytes == 16 || nBytes == 8 || nBytes == 4);
-      // Tune CG and CA.
+      // Keep Triton's historical default when the user does not specify a
+      // cache modifier, but honor tl.load/ttg.async_copy cache modifiers when
+      // they are present.
       CacheModifier srcCacheModifier =
-          nBytes == 16 ? CacheModifier::CG : CacheModifier::CA;
+          opCache == CacheModifier::NONE
+              ? (nBytes == 16 ? CacheModifier::CG : CacheModifier::CA)
+              : opCache;
 
       auto structElem = vals[startIdx];
       auto srcElem = b.extract_val(ptrTy, structElem, 0);
       auto maskElem = b.extract_val(i1_ty, structElem, 1);
 
       PTXBuilder ptxBuilder;
-      auto &copyAsyncOp =
-          *ptxBuilder.create<PTXCpAsyncLoadInstr>(srcCacheModifier);
+      auto &copyAsyncOp = *ptxBuilder.create<PTXCpAsyncLoadInstr>(
+          srcCacheModifier, l2PolicyReg != Value());
       auto *dstOperand = ptxBuilder.newAddrOperand(shmemAddr, "r");
       auto *srcOperand = ptxBuilder.newAddrOperand(srcElem, "l");
       auto *copySize = ptxBuilder.newConstantOperand(nBytes);
       auto *srcSize = copySize;
+      PTXBuilder::Operand *evictOpr = nullptr;
+      if (l2PolicyReg)
+        evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
       if (hasMask) {
         // We don't use predicate in this case, setting src-size to 0
         // if there's any mask. cp.async will automatically fill the
@@ -1456,8 +1510,11 @@ struct AsyncCopyGlobalToLocalOpConversion
         auto selectOp = b.select(maskElem, b.i32_val(nBytes), b.i32_val(0));
         srcSize = ptxBuilder.newOperand(selectOp, "r");
       }
-      copyAsyncOp(dstOperand, srcOperand, copySize, srcSize)
-          .maybePredicate(threadPred);
+      auto &copyExec =
+          evictOpr
+              ? copyAsyncOp(dstOperand, srcOperand, copySize, srcSize, evictOpr)
+              : copyAsyncOp(dstOperand, srcOperand, copySize, srcSize);
+      copyExec.maybePredicate(threadPred);
       ptxBuilder.launch(rewriter, loc, void_ty(ctx));
       return {};
     };
@@ -1489,6 +1546,8 @@ struct AsyncCopyGlobalToLocalOpConversion
     rewriter.replaceOp(op, zero);
     return success();
   }
+
+  int computeCapability;
 };
 
 static LinearLayout getMsgToPackedOffsetLayout(ttg::MemDescType ty) {
@@ -1713,7 +1772,10 @@ LogicalResult convertTMAStoreLikeOp(Operation *op,
 
   // TODO: Separate the syncronizations operations into separate TTGIR ops to
   // be able to schedule them at the high level.
-  NVVM::CpAsyncBulkCommitGroupOp::create(rewriter, loc);
+#ifdef __TLE__
+  if (!op->hasAttr(tte::kTleTMAStoreExplicitCommitAttr))
+#endif
+    NVVM::CpAsyncBulkCommitGroupOp::create(rewriter, loc);
 
   rewriter.eraseOp(op);
   return success();
@@ -2098,9 +2160,10 @@ void mlir::triton::NVIDIA::populateLoadStoreOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
     int computeCapability, RewritePatternSet &patterns,
     ModuleAxisInfoAnalysis &axisInfoAnalysis, PatternBenefit benefit) {
-  patterns.add<AsyncCopyGlobalToLocalOpConversion, AtomicCASOpConversion,
-               AtomicRMWOpConversion>(typeConverter, targetInfo,
-                                      axisInfoAnalysis, benefit);
+  patterns.add<AsyncCopyGlobalToLocalOpConversion>(
+      typeConverter, targetInfo, computeCapability, axisInfoAnalysis, benefit);
+  patterns.add<AtomicCASOpConversion, AtomicRMWOpConversion>(
+      typeConverter, targetInfo, axisInfoAnalysis, benefit);
   patterns.add<LoadOpConversion, StoreOpConversion>(
       typeConverter, targetInfo, computeCapability, axisInfoAnalysis, benefit);
   patterns.add<AsyncCommitGroupOpConversion, AsyncWaitOpConversion,

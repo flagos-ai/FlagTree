@@ -1,6 +1,7 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, mthreads
 from triton import knobs
+from triton.runtime.errors import OutOfResources
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +94,24 @@ def _capability_from_arch(arch: object) -> int:
     raise ValueError(f"Unsupported MUSA arch: {arch}")
 
 
+def _max_static_shared_memory_from_arch(arch: object) -> Optional[int]:
+    capability = _capability_from_arch(arch)
+    if capability == 31:
+        return 196608
+    if capability == 22:
+        return 73728
+    return None
+
+
+def _check_static_shared_memory(metadata: Dict[str, Any], arch: object) -> None:
+    required = metadata.get("shared")
+    if required is None:
+        return
+    limit = _max_static_shared_memory_from_arch(arch)
+    if limit is not None and required > limit:
+        raise OutOfResources(required, limit, "shared memory")
+
+
 def _normalize_path(path: Optional[str]) -> Optional[str]:
     if not path:
         return None
@@ -106,11 +125,27 @@ def _maybe_tool_path(tool) -> Optional[str]:
         return None
 
 
-def _select_tool_path(explicit_path: Optional[str], tool) -> Optional[str]:
+def _local_backend_bin_dir() -> Optional[Path]:
+    bin_dir = Path(__file__).resolve().parent / "bin"
+    return bin_dir if bin_dir.is_dir() else None
+
+
+def _local_backend_tool_path(binary: str) -> Optional[str]:
+    bin_dir = _local_backend_bin_dir()
+    if not bin_dir:
+        return None
+    path = bin_dir / binary
+    return str(path) if path.is_file() else None
+
+
+def _select_tool_path(binary: str, explicit_path: Optional[str], tool_getter) -> Optional[str]:
+    local_path = _local_backend_tool_path(binary)
+    if local_path:
+        return local_path
     path = _normalize_path(explicit_path)
     if path:
         return path
-    return _maybe_tool_path(tool)
+    return _maybe_tool_path(tool_getter())
 
 
 def _resolve_toolchain_paths(options: "MUSAOptions") -> Tuple[str, str, Optional[str]]:
@@ -190,6 +225,8 @@ def _strip_range_attributes(ir_text: str) -> str:
     out = ir_text
     pos = 0
     call_ret_re = re.compile(r"[^,\n@][^,\n@]*\s+@[A-Za-z_$.][A-Za-z0-9_$.]*\s*\(")
+    operand_value_re = re.compile(
+        r"(?:[-+]?\d+|0x[0-9A-Fa-f]+|true|false|null|none|zeroinitializer|undef|poison)(?=$|[\s,)\]}])")
     while True:
         start = out.find("range(", pos)
         if start < 0:
@@ -210,7 +247,7 @@ def _strip_range_attributes(ir_text: str) -> str:
         while end < len(out) and out[end].isspace():
             end += 1
         tail = out[end:]
-        if end < len(out) and (out[end] == "%" or call_ret_re.match(tail)):
+        if end < len(out) and (out[end] == "%" or operand_value_re.match(tail) or call_ret_re.match(tail)):
             out = out[:start] + out[end:]
             pos = start
         else:
@@ -644,9 +681,9 @@ class MUSABackend(BaseBackend):
                     toolchain_path = str(Path(musa_home) / "bin") if musa_home else None
             args["toolchain_path"] = _normalize_path(toolchain_path)
         if "llc_path" not in opts:
-            args["llc_path"] = _select_tool_path(knobs.musa.llc_path, knobs.musa.llc)
+            args["llc_path"] = _select_tool_path("llc", knobs.musa.llc_path, lambda: knobs.musa.llc)
         if "lld_path" not in opts:
-            args["lld_path"] = _select_tool_path(knobs.musa.lld_path, knobs.musa.lld)
+            args["lld_path"] = _select_tool_path("ld.lld", knobs.musa.lld_path, lambda: knobs.musa.lld)
         if "llc_asm_path" not in opts:
             args["llc_asm_path"] = _normalize_path(knobs.musa.llc_asm_path)
         if "llc_options" not in opts:
@@ -719,6 +756,20 @@ class MUSABackend(BaseBackend):
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
 
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_optimize_local_pointer_async_stores"):
+            mthreads.passes.ttgpuir.add_tle_optimize_local_pointer_async_stores(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_early_assign_memory_space"):
+            mthreads.passes.ttgpuir.add_tle_early_assign_memory_space(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_select_encodings"):
+            mthreads.passes.ttgpuir.add_tle_select_encodings(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_lower_exclusive_cumsum"):
+            mthreads.passes.ttgpuir.add_tle_lower_exclusive_cumsum(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_insert_local_pointer_barriers"):
+            mthreads.passes.ttgpuir.add_tle_insert_local_pointer_barriers(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_optimize_local_pointer_loads"):
+            mthreads.passes.ttgpuir.add_tle_optimize_local_pointer_loads(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_optimize_local_pointer_stores"):
+            mthreads.passes.ttgpuir.add_tle_optimize_local_pointer_stores(pm)
         mthreads.passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         mthreads.passes.ttgpuir.add_optimize_dot_operands(pm)
@@ -819,6 +870,7 @@ class MUSABackend(BaseBackend):
     def make_mubin(src, metadata, opt, arch):
         if not isinstance(src, str):
             raise TypeError("Expected LLVM IR as a string for MUSA codegen")
+        _check_static_shared_memory(metadata, arch)
 
         llc_path, lld_path, llc_asm_path = _resolve_toolchain_paths(opt)
         if not llc_path or not lld_path:

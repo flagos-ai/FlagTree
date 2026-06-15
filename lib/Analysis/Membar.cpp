@@ -1,5 +1,7 @@
 #include "triton/Analysis/Membar.h"
 #ifdef __TLE__
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -11,6 +13,344 @@
 #include <deque>
 
 namespace mlir {
+
+#ifdef __TLE__
+namespace {
+
+namespace tt = mlir::triton;
+namespace ttg = mlir::triton::gpu;
+
+struct StaticAccessView {
+  Value root;
+  SmallVector<int64_t> offsets;
+  SmallVector<int64_t> sizes;
+  int64_t rank = 0;
+};
+
+struct StaticIndexCoverage {
+  int64_t offset = 0;
+  int64_t size = 1;
+};
+
+static Value stripConvertLayouts(Value value) {
+  Value current = value;
+  while (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>())
+    current = cvt.getSrc();
+  return current;
+}
+
+static Value stripIndexValueWrappers(Value value) {
+  Value current = value;
+  while (true) {
+    if (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>()) {
+      current = cvt.getSrc();
+      continue;
+    }
+    if (auto ext = current.getDefiningOp<arith::ExtSIOp>()) {
+      current = ext.getIn();
+      continue;
+    }
+    if (auto ext = current.getDefiningOp<arith::ExtUIOp>()) {
+      current = ext.getIn();
+      continue;
+    }
+    if (auto trunc = current.getDefiningOp<arith::TruncIOp>()) {
+      current = trunc.getIn();
+      continue;
+    }
+    if (auto cast = current.getDefiningOp<arith::IndexCastOp>()) {
+      current = cast.getIn();
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+static std::optional<int64_t> getConstantIntLike(Value value) {
+  value = stripIndexValueWrappers(value);
+  if (auto splat = value.getDefiningOp<tt::SplatOp>())
+    return getConstantIntLike(splat.getSrc());
+  if (auto cst = value.getDefiningOp<arith::ConstantOp>()) {
+    if (auto dense = dyn_cast<DenseIntElementsAttr>(cst.getValue())) {
+      if (dense.isSplat())
+        return dense.getSplatValue<APInt>().getSExtValue();
+    }
+  }
+  if (auto cst = value.getDefiningOp<arith::ConstantIntOp>())
+    return cst.value();
+  if (auto cst = value.getDefiningOp<arith::ConstantIndexOp>())
+    return cst.value();
+  return std::nullopt;
+}
+
+static std::optional<StaticIndexCoverage>
+matchRangeWithStaticOffset(Value value) {
+  Value current = stripIndexValueWrappers(value);
+  if (auto range = current.getDefiningOp<tt::MakeRangeOp>())
+    return StaticIndexCoverage{range.getStart(),
+                               range.getEnd() - range.getStart()};
+
+  auto add = current.getDefiningOp<arith::AddIOp>();
+  if (!add)
+    return std::nullopt;
+
+  auto tryMatch = [&](Value lhs,
+                      Value rhs) -> std::optional<StaticIndexCoverage> {
+    Value lhsStripped = stripIndexValueWrappers(lhs);
+    auto range = lhsStripped.getDefiningOp<tt::MakeRangeOp>();
+    if (!range)
+      return std::nullopt;
+    std::optional<int64_t> cst = getConstantIntLike(rhs);
+    if (!cst)
+      return std::nullopt;
+    return StaticIndexCoverage{range.getStart() + *cst,
+                               range.getEnd() - range.getStart()};
+  };
+
+  if (auto coverage = tryMatch(add.getLhs(), add.getRhs()))
+    return coverage;
+  return tryMatch(add.getRhs(), add.getLhs());
+}
+
+static std::optional<StaticIndexCoverage>
+matchStaticIndexCoverage(Value index) {
+  if (auto cst = getConstantIntLike(index))
+    return StaticIndexCoverage{*cst, 1};
+
+  Value current = stripIndexValueWrappers(index);
+  if (auto coverage = matchRangeWithStaticOffset(current))
+    return coverage;
+
+  if (auto bcast = current.getDefiningOp<tt::BroadcastOp>())
+    current = stripIndexValueWrappers(bcast.getSrc());
+
+  while (auto expand = current.getDefiningOp<tt::ExpandDimsOp>())
+    current = stripIndexValueWrappers(expand.getSrc());
+
+  return matchRangeWithStaticOffset(current);
+}
+
+static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
+  auto memDescTy = dyn_cast<ttg::MemDescType>(value.getType());
+  if (!memDescTy)
+    return std::nullopt;
+
+  if (auto index = value.getDefiningOp<ttg::MemDescIndexOp>()) {
+    auto srcView = getStaticMemDescView(index.getSrc());
+    if (!srcView)
+      return std::nullopt;
+    auto cstIndex = getConstantIntLike(index.getIndex());
+    if (!cstIndex)
+      return std::nullopt;
+
+    auto srcTy = index.getSrc().getType();
+    int64_t rootRank = srcView->offsets.size();
+    int64_t srcRank = srcTy.getRank();
+    int64_t axis = rootRank - srcRank;
+    if (axis < 0 || axis >= rootRank)
+      return std::nullopt;
+
+    srcView->offsets[axis] += *cstIndex;
+    srcView->sizes[axis] = 1;
+    srcView->rank = memDescTy.getRank();
+    auto dstShape = memDescTy.getShape();
+    for (auto [i, dimSize] : llvm::enumerate(dstShape))
+      srcView->sizes[axis + 1 + static_cast<int64_t>(i)] = dimSize;
+    return srcView;
+  }
+
+  if (auto subslice = value.getDefiningOp<ttg::MemDescSubsliceOp>()) {
+    auto srcView = getStaticMemDescView(subslice.getSrc());
+    if (!srcView)
+      return std::nullopt;
+
+    auto srcTy = subslice.getSrc().getType();
+    int64_t rootRank = srcView->offsets.size();
+    int64_t srcRank = srcTy.getRank();
+    int64_t firstAxis = rootRank - srcRank;
+    if (firstAxis < 0)
+      return std::nullopt;
+
+    for (auto [i, offset] : llvm::enumerate(subslice.getOffsets()))
+      srcView->offsets[firstAxis + static_cast<int64_t>(i)] += offset;
+    auto dstShape = memDescTy.getShape();
+    for (auto [i, dimSize] : llvm::enumerate(dstShape))
+      srcView->sizes[firstAxis + static_cast<int64_t>(i)] = dimSize;
+    srcView->rank = memDescTy.getRank();
+    return srcView;
+  }
+
+  SmallVector<int64_t> shape(memDescTy.getShape().begin(),
+                             memDescTy.getShape().end());
+  return StaticAccessView{value, SmallVector<int64_t>(shape.size(), 0),
+                          std::move(shape), memDescTy.getRank()};
+}
+
+static std::optional<StaticAccessView> getStaticLocalPointerView(Value value) {
+  Value ptr = stripConvertLayouts(value);
+  auto localPointers = ptr.getDefiningOp<tt::tle::LocalPointersOp>();
+  if (!localPointers)
+    return std::nullopt;
+
+  auto srcView = getStaticMemDescView(localPointers.getSrc());
+  if (!srcView)
+    return std::nullopt;
+  auto srcTy = localPointers.getSrc().getType();
+  if (localPointers.getIndices().empty())
+    return srcView;
+  if (localPointers.getIndices().size() != static_cast<size_t>(srcTy.getRank()))
+    return std::nullopt;
+
+  int64_t rootRank = srcView->offsets.size();
+  int64_t firstAxis = rootRank - srcTy.getRank();
+  if (firstAxis < 0)
+    return std::nullopt;
+
+  for (auto [axis, index] : llvm::enumerate(localPointers.getIndices())) {
+    auto coverage = matchStaticIndexCoverage(index);
+    if (!coverage)
+      return std::nullopt;
+    int64_t rootAxis = firstAxis + static_cast<int64_t>(axis);
+    srcView->offsets[rootAxis] += coverage->offset;
+    srcView->sizes[rootAxis] = coverage->size;
+  }
+  srcView->rank = srcTy.getRank();
+  return srcView;
+}
+
+static std::optional<StaticAccessView> getStaticAccessView(Value value) {
+  if (isa<ttg::MemDescType>(value.getType()))
+    return getStaticMemDescView(value);
+  return getStaticLocalPointerView(value);
+}
+
+static std::optional<unsigned> getElementByteWidth(Type type) {
+  if (auto intTy = dyn_cast<IntegerType>(type))
+    return llvm::divideCeil(intTy.getWidth(), 8);
+  if (auto floatTy = dyn_cast<FloatType>(type))
+    return llvm::divideCeil(floatTy.getWidth(), 8);
+  if (isa<tt::PointerType>(type))
+    return 8;
+  return std::nullopt;
+}
+
+static size_t linearizeStatic(ArrayRef<int64_t> coord, ArrayRef<unsigned> shape,
+                              ArrayRef<unsigned> order) {
+  size_t linear = 0;
+  for (unsigned dim : llvm::reverse(order))
+    linear = linear * shape[dim] + coord[dim];
+  return linear;
+}
+
+static bool containsBufferId(const Allocation::BufferIdSetT &bufferIds,
+                             Allocation::BufferId bufferId) {
+  return llvm::any_of(bufferIds,
+                      [&](Allocation::BufferId id) { return id == bufferId; });
+}
+
+static std::optional<SmallVector<Interval<size_t>>>
+getStaticAccessIntervals(const Allocation *allocation, Value value,
+                         Allocation::BufferId bufferId) {
+  auto view = getStaticAccessView(value);
+  if (!view)
+    return std::nullopt;
+  if (!containsBufferId(allocation->getBufferIds(view->root), bufferId))
+    return std::nullopt;
+
+  auto rootTy = dyn_cast<ttg::MemDescType>(view->root.getType());
+  if (!rootTy)
+    return std::nullopt;
+  auto elemBytes = getElementByteWidth(rootTy.getElementType());
+  if (!elemBytes)
+    return std::nullopt;
+
+  SmallVector<unsigned> shape;
+  ArrayRef<int64_t> typeShape = rootTy.getAllocShape();
+  if (typeShape.empty())
+    typeShape = rootTy.getShape();
+  shape.reserve(typeShape.size());
+  for (int64_t dim : typeShape) {
+    if (dim <= 0)
+      return std::nullopt;
+    shape.push_back(static_cast<unsigned>(dim));
+  }
+  if (shape.size() != view->offsets.size() ||
+      shape.size() != view->sizes.size())
+    return std::nullopt;
+
+  for (auto [offset, size, dim] :
+       llvm::zip_equal(view->offsets, view->sizes, shape)) {
+    if (offset < 0 || size <= 0 || offset + size > static_cast<int64_t>(dim))
+      return std::nullopt;
+  }
+
+  auto order = ttg::getOrder(rootTy);
+  if (order.size() != shape.size())
+    return std::nullopt;
+
+  size_t outerCount = 1;
+  unsigned fastestDim = order.front();
+  for (unsigned dim = 0, rank = shape.size(); dim < rank; ++dim) {
+    if (dim == fastestDim)
+      continue;
+    outerCount *= static_cast<size_t>(view->sizes[dim]);
+    if (outerCount > 4096)
+      return std::nullopt;
+  }
+
+  SmallVector<unsigned> outerDims;
+  for (unsigned dim = 0, rank = shape.size(); dim < rank; ++dim)
+    if (dim != fastestDim)
+      outerDims.push_back(dim);
+
+  SmallVector<Interval<size_t>> intervals;
+  intervals.reserve(std::max<size_t>(outerCount, 1));
+  size_t base = allocation->getAllocatedInterval(bufferId).start();
+  for (size_t linearOuter = 0; linearOuter < std::max<size_t>(outerCount, 1);
+       ++linearOuter) {
+    size_t residue = linearOuter;
+    SmallVector<int64_t> start(view->offsets.begin(), view->offsets.end());
+    SmallVector<int64_t> end = start;
+    for (unsigned dim : llvm::reverse(outerDims)) {
+      int64_t size = view->sizes[dim];
+      int64_t idx = residue % size;
+      residue /= size;
+      start[dim] += idx;
+      end[dim] += idx;
+    }
+    end[fastestDim] = start[fastestDim] + view->sizes[fastestDim] - 1;
+    size_t startElem = linearizeStatic(start, shape, order);
+    size_t endElem = linearizeStatic(end, shape, order) + 1;
+    if (startElem > endElem)
+      return std::nullopt;
+    intervals.emplace_back(base + startElem * *elemBytes,
+                           base + endElem * *elemBytes);
+  }
+  return intervals;
+}
+
+static void addEffectIntervals(const Allocation *allocation, Value value,
+                               bool isWrite, Operation *op,
+                               BlockInfo &curBlockInfo) {
+  for (auto bufferId : allocation->getBufferIds(value)) {
+    if (bufferId == Allocation::InvalidBufferId)
+      continue;
+    auto intervals = getStaticAccessIntervals(allocation, value, bufferId);
+    if (!intervals)
+      intervals = SmallVector<Interval<size_t>, 1>{
+          allocation->getAllocatedInterval(bufferId)};
+    for (auto interval : *intervals) {
+      if (isWrite)
+        curBlockInfo.syncWriteIntervals[interval].insert(op);
+      else
+        curBlockInfo.syncReadIntervals[interval].insert(op);
+    }
+  }
+}
+
+} // namespace
+#endif
 
 void MembarOrFenceAnalysis::run(FuncBlockInfoMapT &funcBlockInfoMap) {
   FunctionOpInterface funcOp =
@@ -201,6 +541,17 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       memoryEffectOpInterface.getEffects(effectInstances);
       for (auto effectInstance : effectInstances) {
         if (auto value = effectInstance.getValue()) {
+#ifdef __TLE__
+          // TLE local_ptr and memdesc views can denote disjoint static subviews
+          // of the same shared allocation. Track those subviews as byte
+          // intervals so membar only inserts CTA barriers for real overlaps.
+          if (isa<MemoryEffects::Write>(effectInstance.getEffect()))
+            addEffectIntervals(allocation, value, /*isWrite=*/true, op,
+                               curBlockInfo);
+          else if (isa<MemoryEffects::Read>(effectInstance.getEffect()))
+            addEffectIntervals(allocation, value, /*isWrite=*/false, op,
+                               curBlockInfo);
+#else
           for (auto bufferId : allocation->getBufferIds(value)) {
             if (bufferId != Allocation::InvalidBufferId) {
               if (isa<MemoryEffects::Write>(effectInstance.getEffect()))
@@ -215,16 +566,34 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                     .insert(op);
             }
           }
+#endif
         }
       }
     }
     // If this op is may be signalling other threads asynchronously, make sure
     // all shared memory transactions are complete beforehand.
+#ifdef __TLE__
+    if (auto arrive = dyn_cast<triton::nvidia_gpu::ArriveBarrierOp>(op)) {
+      // `participant_arrive` is only emitted after the pipe lowering has proven
+      // the prefix set of writer lanes. Those lanes each execute their own
+      // release fence and one-unit mbarrier arrive, so adding a CTA rendezvous
+      // here would duplicate the publication edge that the op already models.
+      // Non-participant/elected arrives still need this conservative
+      // all-shared-memory dependency because one elected lane cannot publish
+      // stores performed by other lanes without a preceding barrier.
+      if (!arrive.getParticipantArrive()) {
+        Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
+        curBlockInfo.syncWriteIntervals[allIntervals].insert(op);
+        curBlockInfo.syncReadIntervals[allIntervals].insert(op);
+      }
+    }
+#else
     if (isa<triton::nvidia_gpu::ArriveBarrierOp>(op)) {
       Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
       curBlockInfo.syncWriteIntervals[allIntervals].insert(op);
       curBlockInfo.syncReadIntervals[allIntervals].insert(op);
     }
+#endif
     scratchBufferId = allocation->getBufferId(op);
   }
 

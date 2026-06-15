@@ -44,16 +44,15 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
     %19 = ttg.local_alloc %9 : (tensor<128x64xf16, #blocked1>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
     %20 = ttg.local_alloc %18 : (tensor<64x16xf16, #blocked>) -> !ttg.memdesc<64x16xf16, #shared1, #smem>
     // CHECK:          %[[LOOP:[^ :]+]]{{.*}} scf.for {{.*}} iter_args(%[[PREV_DOT2:[^ ]+]]
-    // CHECK:            %[[DOT0:.+]] = ttng.warp_group_dot
-    // CHECK-NOT:        ttng.warp_group_dot_wait
-    // CHECK:            %[[DOT1:.+]] = ttng.warp_group_dot
-    // CHECK-NEXT:       ttng.warp_group_dot_wait %[[DOT1]]
+    // CHECK:            %[[DOT1:[^ ]+]] = ttng.warp_group_dot %{{.*}}, %{{.*}}, %{{.*}}
+    // CHECK:            ttng.warp_group_dot_commit
+    // CHECK:            ttng.warp_group_dot_wait %[[DOT1]]
     // CHECK-SAME:         {pendings = 0 : i32}
-    // CHECK:            %[[DOT2:.+]] = ttng.warp_group_dot
-    // CHECK-NEXT:       %[[WAIT2:.+]]:{{.*}} = ttng.warp_group_dot_wait %[[DOT2]]
+    // CHECK:            %[[DOT2:[^ ]+]] = ttng.warp_group_dot %{{.*}}, %{{.*}}, %{{.*}}
+    // CHECK-NEXT:       ttng.warp_group_dot_commit
+    // CHECK:            %[[WAIT2:.+]]:{{.*}} = ttng.warp_group_dot_wait %[[DOT2]]
     // CHECK-SAME:         {pendings = 0 : i32}
     // CHECK:          scf.yield %[[WAIT2]]#0
-    // CHECK:          ttng.warp_group_dot_wait %[[LOOP]]#3 {pendings = 0 : i32}
     %17:4 = scf.for %arg3 = %c0_i32 to %c8_i32 step %c1_i32 iter_args(%prev_dot2 = %cst_3, %arg5 = %16, %prev_dot1 = %cst_2, %prev_dot0 = %cst_2) -> (tensor<128x64xf32, #mma>, tensor<64x16x!tt.ptr<f16>, #blocked>, tensor<128x16xf32, #mma1>, tensor<128x16xf32, #mma1>)  : i32 {
       %dot0 = ttng.warp_group_dot %19, %20, %prev_dot1 : !ttg.memdesc<128x64xf16, #shared, #smem> * !ttg.memdesc<64x16xf16, #shared1, #smem> -> tensor<128x16xf32, #mma1>
       %dot1 = ttng.warp_group_dot %19, %20, %prev_dot1 : !ttg.memdesc<128x64xf16, #shared, #smem> * !ttg.memdesc<64x16xf16, #shared1, #smem> -> tensor<128x16xf32, #mma1>

@@ -235,15 +235,33 @@ struct ArriveBarrierOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     // TODO: Add phase result as needed.
     std::stringstream ptxAsm;
+#ifdef __TLE__
+    if (op.getReleaseFence()) {
+      if (op.getParticipantArrive())
+        ptxAsm << "@$0 membar.cta;\n";
+      else
+        ptxAsm << "membar.cta;\n";
+    }
+#endif
     ptxAsm << "@$0 mbarrier.arrive.shared::cta.b64 _, [$1]";
+#ifdef __TLE__
+    if (!op.getParticipantArrive() && op.getCount() > 1) {
+#else
     if (op.getCount() > 1) {
+#endif
       ptxAsm << ", " << op.getCount();
     }
     ptxAsm << ";";
 
     TritonLLVMOpBuilder b(op.getLoc(), rewriter);
     Value id = getThreadId(rewriter, op.getLoc());
+#ifdef __TLE__
+    Value pred = op.getParticipantArrive()
+                     ? b.icmp_ult(id, b.i32_val(op.getCount()))
+                     : b.icmp_eq(id, b.i32_val(0));
+#else
     Value pred = b.icmp_eq(id, b.i32_val(0));
+#endif
     if (op.getPred())
       pred = b.and_(pred, adaptor.getPred());
 

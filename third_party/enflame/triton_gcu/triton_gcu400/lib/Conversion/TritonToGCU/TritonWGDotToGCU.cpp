@@ -148,6 +148,8 @@ public:
     auto newDot = rewriter.create<DotOp>(loc, newRetType, newA, newB, newAcc,
                                          wgDotOp.getInputPrecision(),
                                          wgDotOp.getMaxNumImpreciseAcc());
+    if (!newDot->getParentOfType<triton::gpu::WarpSpecializeOp>())
+      rewriter.create<mlir::gpu::BarrierOp>(loc);
 
     Value dotResult = newDot.getResult();
 
@@ -182,83 +184,12 @@ public:
   }
 };
 
-// Match triton_gcu.load followed by ttg.local_alloc and insert a
-// triton_gcu.load_global_to_share that fuses them into a DMA transfer.
-class LoadAllocToLoadGlobalToSharePattern
-    : public OpRewritePattern<triton::gcu::LoadOp> {
-public:
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(triton::gcu::LoadOp loadOp,
-                                PatternRewriter &rewriter) const override {
-    if (!loadOp.getResult().hasOneUse())
-      return failure();
-    auto localAllocOp = dyn_cast<triton::gpu::LocalAllocOp>(
-        *loadOp.getResult().getUsers().begin());
-    if (!localAllocOp || localAllocOp.getSrc() != loadOp.getResult())
-      return failure();
-
-    if (auto afterAlloc = localAllocOp->getNextNode())
-      if (auto copyOp = dyn_cast<triton::gcu::CopyGlobalToLocalOp>(afterAlloc))
-        if (copyOp.getDstMem() == localAllocOp.getResult())
-          return failure();
-
-    rewriter.setInsertionPointAfter(localAllocOp);
-    rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
-        loadOp.getLoc(), loadOp.getPtr(), loadOp.getShape(),
-        loadOp.getStrides(), loadOp.getOffsets(), localAllocOp.getResult(),
-        loadOp.getDefaultValue(), loadOp.getOrderHint());
-    rewriter.modifyOpInPlace(localAllocOp, [&]() {
-      localAllocOp->setOperands(ValueRange{});
-      auto oldType =
-          cast<triton::gpu::MemDescType>(localAllocOp.getResult().getType());
-      auto mutableType = triton::gpu::MemDescType::get(
-          oldType.getShape(), oldType.getElementType(), oldType.getEncoding(),
-          oldType.getMemorySpace(), /*mutableMemory=*/true);
-      localAllocOp.getResult().setType(mutableType);
-    });
-    rewriter.eraseOp(loadOp);
-
-    return success();
-  }
-};
-
-// Match triton_gcu.load followed by ttg.local_store and insert a
-// triton_gcu.load_global_to_share that fuses them into a DMA transfer.
-class LoadStoreToLoadGlobalToSharePattern
-    : public OpRewritePattern<triton::gcu::LoadOp> {
-public:
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(triton::gcu::LoadOp loadOp,
-                                PatternRewriter &rewriter) const override {
-    if (!loadOp.getResult().hasOneUse())
-      return failure();
-    auto localStoreOp = dyn_cast<triton::gpu::LocalStoreOp>(
-        *loadOp.getResult().getUsers().begin());
-    if (!localStoreOp || localStoreOp.getSrc() != loadOp.getResult())
-      return failure();
-
-    rewriter.setInsertionPointAfter(loadOp);
-    rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
-        loadOp.getLoc(), loadOp.getPtr(), loadOp.getShape(),
-        loadOp.getStrides(), loadOp.getOffsets(), localStoreOp.getDst(),
-        loadOp.getDefaultValue(), loadOp.getOrderHint());
-    rewriter.eraseOp(localStoreOp);
-    rewriter.eraseOp(loadOp);
-
-    return success();
-  }
-};
-
 void TritonWGDotToGCUPass::runOnOperation() {
   auto *ctx = &getContext();
   mlir::gpu::GPUModuleOp m = getOperation();
 
   RewritePatternSet patterns(ctx);
-  patterns.add<LoadAllocToLoadGlobalToSharePattern,
-               LoadStoreToLoadGlobalToSharePattern, WarpGroupDotToDotPattern>(
-      ctx);
+  patterns.add<WarpGroupDotToDotPattern>(ctx);
   if (applyPatternsGreedily(m, std::move(patterns)).failed())
     signalPassFailure();
 }

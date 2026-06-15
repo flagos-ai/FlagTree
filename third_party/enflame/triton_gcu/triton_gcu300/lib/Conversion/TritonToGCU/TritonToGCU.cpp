@@ -1553,7 +1553,8 @@ struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
     auto sharedMemTensorType = RankedTensorType::get(
         ArrayRef<int64_t>{resultType.getShape()[0] * warpsPerCTA[0]},
         wrapResultType.getElementType(), encoding);
-    rewriter.create<math_ext::HistogramOp>(loc, resCurWarp, adaptor.getSrc());
+    rewriter.create<math_ext::HistogramOp>(loc, resCurWarp, adaptor.getSrc(),
+                                           UnitAttr());
     /// store res of every warp to shared memry
     auto sharedResMem = storeToSharedMem(
         rewriter, tag, sharedMemTensorType, resCurWarp, false,
@@ -2818,7 +2819,7 @@ struct GCUMatmulLowering : SharedConversionPattern<triton::gcu::MatmulOp> {
     auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                               replaced2Origin, resultMemRefType);
     rewriter.create<gcu::MatMulOp>(loc, output, adaptor.getA(), adaptor.getB(),
-                                   Value());
+                                   Value(), Value());
     leaveTritionOp(rewriter, op.getOperation());
     rewriter.replaceOp(op, output);
     return success();
@@ -2847,7 +2848,7 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
                               replaced2Origin, resultMemRefType);
     if (op.getType().getRank() == 2) {
       rewriter.create<gcu::MatMulOp>(loc, output, adaptor.getA(),
-                                     adaptor.getB(), adaptor.getC());
+                                     adaptor.getB(), adaptor.getC(), Value());
     } else {
       auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
@@ -2916,7 +2917,8 @@ struct TTDotOpLowering : SharedConversionPattern<triton::DotOp> {
             Value newOutMemRef =
                 createViewWithOffset(resultMemRefType, outBuffer);
             rewriter.create<gcu::MatMulOp>(loc, newOutMemRef, newLhsMemRef,
-                                           newRhsMemRef, newBiasMemRef);
+                                           newRhsMemRef, newBiasMemRef,
+                                           Value());
           });
     }
     leaveTritionOp(rewriter, op.getOperation());

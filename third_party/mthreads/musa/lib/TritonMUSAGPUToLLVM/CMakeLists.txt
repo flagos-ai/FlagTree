@@ -1,3 +1,9 @@
+if(FLAGTREE_MTHREADS_TLE)
+  set(_TLE_LIBS MUSATLEToLLVM)
+else()
+  set(_TLE_LIBS "")
+endif()
+
 add_triton_library(TritonMUSAGPUToLLVM
   AllocateSharedMemory.cpp
   BarrierOpToLLVM.cpp
@@ -6,6 +12,7 @@ add_triton_library(TritonMUSAGPUToLLVM
   DotOpToLLVM/SQMMA.cpp
   DotOpToLLVM/WMMA.cpp
   ElementwiseOpToLLVM.cpp
+  Fp4ToFpOpToLLVM.cpp
   LoadStoreOpToLLVM.cpp
   MUSAOpsToLLVM.cpp
   SPMDOpToLLVM.cpp
@@ -29,5 +36,6 @@ add_triton_library(TritonMUSAGPUToLLVM
   MLIRUBToLLVM
   MTGPUIR
   MUSAIR
-  MLIRGPUToMTGPUTransforms
+  ${_TLE_LIBS}
+  MLIRGPUToMTVMTransforms
 )

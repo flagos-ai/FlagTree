@@ -13,30 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "RegisterGCUDialects.h"
 
-#include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+// Thin wrapper -- all MLIR/LLVM logic lives in libtriton_gcu300_core.so
+// to avoid duplicate LLVM symbol registration.
+#include "lib/triton_gcu300_core.h"
 
-#include "triton/Conversion/TritonToTritonGPU/Passes.h"
-
-#include "mlir/Tools/mlir-opt/MlirOptMain.h"
-
-namespace mlir {
-namespace test {
-void registerTestFirstLastUserAnalysisPass();
-}
-} // namespace mlir
-
-int main(int argc, char **argv) {
-  mlir::DialectRegistry registry;
-  mlir::gcu::registerGCUDialects(registry);
-  mlir::triton::gpu::registerTritonGPUPasses();
-  mlir::triton::registerConvertTritonToTritonGPUPass();
-  mlir::test::registerTestFirstLastUserAnalysisPass();
-  registry.insert<mlir::triton::TritonDialect,
-                  mlir::triton::gpu::TritonGPUDialect>();
-  return mlir::asMainReturnCode(
-      mlir::MlirOptMain(argc, argv, "GCU optimizer driver\n", registry));
-}
+int main(int argc, char **argv) { return gcu300_opt_main(argc, argv); }

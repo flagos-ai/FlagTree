@@ -1842,7 +1842,7 @@ def test_cast(dtype_x, dtype_z, bitcast, size, num_ctas, device):
                                      (dtype_x == "float8_e4m3fn" and dtype_z == 'bfloat16')):
             pytest.skip(f'test_cast{(dtype_x, dtype_z)} only supported on HIP CDNA4.')
 
-    torch.manual_seed(0)
+    # torch.manual_seed(0)
     # This is tricky because numpy doesn't have bfloat, and torch doesn't have uints.
     if dtype_x.startswith('bfloat'):
         x_tri = torch.randn(size, dtype=getattr(torch, dtype_x), device=device)
@@ -2740,7 +2740,7 @@ def test_histogram(M, N, device):
         biased = z + bias
         tl.store(z_ptr + offset2, z)
 
-    torch.manual_seed(17)
+    # torch.manual_seed(17)
     x = torch.randint(0, N, (M, ), device=device, dtype=torch.int32)
     z = torch.empty(N, dtype=torch.int32, device=device)
     # torch.histc does not work when the input type is not float and the device is CPU
@@ -2786,7 +2786,7 @@ def test_histogram_mask(M, N, device):
         z = tl.histogram(x, N, mask)
         tl.store(z_ptr + offset2, z)
 
-    torch.manual_seed(17)
+    # torch.manual_seed(17)
     x1 = torch.randint(0, N, (M, ), device=device, dtype=torch.int32)
     x = torch.cat((x1, x1), 0)
     z = torch.empty(N, dtype=torch.int32, device=device)
@@ -2853,7 +2853,7 @@ def test_optimize_thread_locality(op, BLOCK_N, N, num_pid_n, device):
         'min': np.min,
     }[op]
     kernel = patch_kernel(kernel, {'ACCUMULATE_PATCH': reduce_patch, 'INITIALIZE_PATCH': initialize_patch})
-    torch.manual_seed(0)
+    # torch.manual_seed(0)
     BLOCK_M = 32
     x = torch.randn((BLOCK_M, N), dtype=torch.float32, device=device)
     y = torch.randn((BLOCK_M, num_pid_n), dtype=torch.float32, device=device)
@@ -2893,7 +2893,7 @@ def test_no_rematerialization_op():
     device = "cuda"
     data_len = 32
     data_dim = 64
-    torch.manual_seed(0)
+    # torch.manual_seed(0)
     input_data = torch.randn((data_len, data_dim), dtype=torch.float32, device=device)
     sum_output = torch.full((data_len, ), -1, dtype=torch.float32, device=device)
     out_1 = torch.full((data_len, 2), -1, dtype=torch.float32, device=device)
@@ -3678,7 +3678,7 @@ def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, nu
     # overflow when scaling.
     comp_dtype_max_exp = 6 if normal_type == "fp16" else 15
 
-    torch.manual_seed(0)
+    # torch.manual_seed(0)
 
     def make_arg(shape, ty, col_major=False):
         if col_major:
@@ -5609,7 +5609,7 @@ def test_ptx_cast(dtype_str, device):
             _tmp4 = tl.where(rmask & xmask & tmp5, tmp3, _tmp4)
             tl.store(out_ptr2 + (r1 + (197 * x0) + tl.zeros([XBLOCK, RBLOCK], tl.int32)), _tmp4, rmask & xmask)
 
-    torch.manual_seed(123)
+    # torch.manual_seed(123)
     if dtype_str == 'int16':
         torch_dtype = torch.int16
         triton_dtype = tl.int32
@@ -6244,7 +6244,7 @@ def test_side_effectful_reduction(device):
         tl.store(Z, z)
 
     BLOCK = 512
-    torch.manual_seed(42)
+    # torch.manual_seed(42)
     X = torch.randint(0, 10, [BLOCK], device="cuda", dtype=torch.int32)
     X[:300] = 32
     X[300:] = 0
@@ -6269,7 +6269,7 @@ def test_side_effectful_reduction_2d(device, reduce_dim):
     BLOCK_0 = 16
     BLOCK_1 = 32
     NON_REDUCE_DIM = BLOCK_1 if reduce_dim == 0 else BLOCK_0
-    torch.manual_seed(42)
+    # torch.manual_seed(42)
     X = torch.randint(0, 10, [BLOCK_0, BLOCK_1], device="cuda", dtype=torch.int32)
     Z = torch.zeros([NON_REDUCE_DIM], device="cuda", dtype=torch.int32)
     sanitize_sum_2d_kernel[(1, )](Z, X, BLOCK_0=BLOCK_0, BLOCK_1=BLOCK_1, reduce_dim=reduce_dim,
@@ -6302,7 +6302,7 @@ def test_side_effectful_scan(device):
         tl.store(Z + tl.arange(0, BLOCK), z)
 
     BLOCK = 512
-    torch.manual_seed(42)
+    # torch.manual_seed(42)
     X = torch.randint(0, 10, [BLOCK], device="cuda", dtype=torch.int32)
     X[:300] = 32
     X[300:] = 0

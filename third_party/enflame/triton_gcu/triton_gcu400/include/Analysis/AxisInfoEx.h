@@ -230,7 +230,7 @@ public:
     for (auto root : getRoots()) {
       walk<WalkOrder::PreOrder, WalkOrder::PostOrder>(
           // Pre-order edge walk callback
-          [](CallOpInterface callOp, FunctionOpInterface funcOp) {},
+          [](CallOpInterface /*callOp*/, FunctionOpInterface /*funcOp*/) {},
           // Post-order node walk callback
           [&](FunctionOpInterface funcOp) {
             funcs.push_back(funcOp);

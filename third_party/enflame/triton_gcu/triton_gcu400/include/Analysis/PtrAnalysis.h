@@ -24,6 +24,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 //===--------------------------------------------------------------------===//
@@ -299,6 +300,16 @@ public:
   visitOperandExtsi(PatternRewriter &rewriter, Location loc,
                     arith::ExtSIOp extsiOp, PtrState &state,
                     llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+
+  // Operand is the result of triton_gcu.memdesc_to_ptr.
+  // Treat as a scalar base pointer for shared memory.
+  // Expected result:
+  //  source = memdesc_to_ptr result (scalar shared memory pointer)
+  static void
+  visitOperandMemDescToPtr(PatternRewriter &rewriter, Location loc,
+                           triton::gcu::MemDescToPtrOp memdescToPtrOp,
+                           PtrState &state,
+                           llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of extui
   // Main assumptions:

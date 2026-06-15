@@ -16,6 +16,8 @@
 #ifndef GCU_REGISTER_GCU_DIALECT_H
 #define GCU_REGISTER_GCU_DIALECT_H
 
+#include <mutex>
+
 #include "Conversion/Passes.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/MathExt/IR/MathExt.h"
@@ -31,40 +33,59 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMIRToLLVMTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 
+#ifdef ENABLE_EFVM_DIALECT
+#include "Dialect/EFVM/IR/EFVMDialect.h"
+#include "Target/EFVM/EFVMToLLVMIRTranslation.h"
+#endif
+
 #ifdef ENABLE_TLE
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/Passes.h"
 #endif
 
 namespace mlir {
+namespace test {
+void registerTestFirstLastUserAnalysisPass();
+} // namespace test
+
 namespace gcu {
 
 inline void registerGCUDialects(mlir::DialectRegistry &registry) {
-  // dialects
   mlir::registerAllDialects(registry);
   registry.insert<mlir::gcu::GCUDialect, mlir::triton::gcu::TritonGCUDialect,
                   mlir::memref_ext::MemrefExtDialect,
                   mlir::math_ext::MathExtDialect>();
+#ifdef ENABLE_EFVM_DIALECT
+  registry.insert<mlir::EFVM::EFVMDialect>();
+#endif
 #ifdef ENABLE_TLE
   registry.insert<mlir::triton::tle::TleDialect>();
 #endif
 
-  // extensions
   mlir::registerAllExtensions(registry);
 
-  // passes
-  mlir::registerAllPasses();
-
-  mlir::registerTritonGCUConversionPasses();
-  mlir::registerTritonGCUTransformsPasses();
-
-  // translation
-  mlir::registerAllTranslations();
+  static std::once_flag globalRegFlag;
+  std::call_once(globalRegFlag, []() {
+    mlir::registerAllPasses();
+    mlir::registerTritonGCUConversionPasses();
+    mlir::registerTritonGCUTransformsPasses();
+#ifdef ENABLE_TLE
+    // mlir::triton::tle::registerPasses();
+    mlir::triton::tle::registerTleConvertArgToMemDesc();
+    mlir::triton::tle::registerTleRemoveRedundantCopy();
+    mlir::triton::tle::registerTleDSLRegionInline();
+#endif
+    mlir::test::registerTestFirstLastUserAnalysisPass();
+    mlir::registerAllTranslations();
+  });
 
   mlir::registerBuiltinDialectTranslation(registry);
   mlir::registerGPUDialectTranslation(registry);
   mlir::registerLLVMDialectTranslation(registry);
+#ifdef ENABLE_EFVM_DIALECT
+  mlir::registerEFVMDialectTranslation(registry);
+#endif
 
-  // Extension required for translating GPU offloading Ops.
   gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
 }
 

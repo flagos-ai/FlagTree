@@ -24,6 +24,9 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
+#ifdef __TLE__
+#include "mlir/IR/PatternMatch.h"
+#endif
 #include "mlir/Support/LLVM.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
@@ -33,6 +36,9 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/TensorMemoryUtils.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUOpInterfaces.cpp.inc"
+#ifdef __TLE__
+#include "llvm/ADT/SetVector.h"
+#endif
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace mlir::triton::gpu;
@@ -164,6 +170,103 @@ LogicalResult WarpGroupDotWaitOp::verify() {
   return success();
 }
 
+#ifdef __TLE__
+static Value getWarpGroupDotWaitSource(Value value) {
+  while (auto result = dyn_cast<OpResult>(value)) {
+    auto wait = dyn_cast<mlir::triton::nvidia_gpu::WarpGroupDotWaitOp>(
+        result.getOwner());
+    if (!wait)
+      break;
+    unsigned resultNo = result.getResultNumber();
+    if (resultNo >= wait.getNumOperands())
+      break;
+    value = wait.getOperand(resultNo);
+  }
+  return value;
+}
+
+static bool isAvailableBefore(Value value, Operation *op) {
+  if (isa<BlockArgument>(value))
+    return true;
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return true;
+  if (def->getBlock() != op->getBlock())
+    return false;
+  return def->isBeforeInBlock(op);
+}
+
+namespace {
+struct MergeRedundantWarpGroupDotWait
+    : public OpRewritePattern<WarpGroupDotWaitOp> {
+  using OpRewritePattern<WarpGroupDotWaitOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WarpGroupDotWaitOp wait,
+                                PatternRewriter &rewriter) const override {
+    Operation *scan = wait->getPrevNode();
+    while (scan) {
+      if (isa<WarpGroupDotOp>(scan) || scan->getNumRegions() != 0)
+        return failure();
+
+      auto anchor = dyn_cast<WarpGroupDotWaitOp>(scan);
+      if (!anchor) {
+        scan = scan->getPrevNode();
+        continue;
+      }
+
+      if (anchor.getPendings() > wait.getPendings())
+        return failure();
+
+      bool canMerge = llvm::all_of(wait.getOperands(), [&](Value operand) {
+        Value source = getWarpGroupDotWaitSource(operand);
+        return isAvailableBefore(source, anchor);
+      });
+      if (!canMerge)
+        return failure();
+
+      llvm::SetVector<Value> operands;
+      for (Value operand : anchor.getOperands())
+        operands.insert(getWarpGroupDotWaitSource(operand));
+      for (Value operand : wait.getOperands())
+        operands.insert(getWarpGroupDotWaitSource(operand));
+
+      DenseMap<Value, unsigned> operandToIndex;
+      SmallVector<Value> newOperands = operands.takeVector();
+      for (auto indexed : llvm::enumerate(newOperands))
+        operandToIndex[indexed.value()] = indexed.index();
+
+      rewriter.setInsertionPoint(anchor);
+      auto newWait = WarpGroupDotWaitOp::create(
+          rewriter, anchor.getLoc(), newOperands, anchor.getPendings());
+
+      auto replaceResults = [&](WarpGroupDotWaitOp oldWait) {
+        for (auto indexed : llvm::enumerate(oldWait.getOperands())) {
+          Value source = getWarpGroupDotWaitSource(indexed.value());
+          auto it = operandToIndex.find(source);
+          assert(it != operandToIndex.end() && "missing merged wait operand");
+          oldWait.getResult(indexed.index())
+              .replaceAllUsesWith(newWait.getResult(it->second));
+        }
+      };
+
+      replaceResults(wait);
+      replaceResults(anchor);
+      rewriter.eraseOp(wait);
+      rewriter.eraseOp(anchor);
+      return success();
+    }
+
+    return failure();
+  }
+};
+} // namespace
+
+void WarpGroupDotWaitOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                     MLIRContext *context) {
+  results.add<MergeRedundantWarpGroupDotWait>(context);
+}
+#endif
+
 // -- InitBarrierOp --
 LogicalResult InitBarrierOp::verify() {
   if (failed(verifyBarrierType(*this, getAlloc().getType())))
@@ -198,8 +301,30 @@ LogicalResult ArriveBarrierOp::verify() {
     return failure();
   if (getCount() < 1)
     return emitOpError("count must be greater than or equal to 1");
+#ifdef __TLE__
+  if (getParticipantArrive() && !getReleaseFence())
+    return emitOpError("participant_arrive requires release_fence");
+  if (getParticipantArrive() && !getReleasedFields().empty())
+    return emitOpError("participant_arrive does not support released fields");
+#endif
   return success();
 }
+
+#ifdef __TLE__
+void ArriveBarrierOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  auto &alloc = getAllocMutable();
+  effects.emplace_back(MemoryEffects::Read::get(), &alloc, SharedMemory::get());
+  effects.emplace_back(MemoryEffects::Write::get(), &alloc,
+                       SharedMemory::get());
+
+  MutableOperandRange fields = getReleasedFieldsMutable();
+  for (unsigned i = 0, e = fields.size(); i < e; ++i)
+    effects.emplace_back(MemoryEffects::Free::get(), &fields[i],
+                         SharedMemory::get());
+}
+#endif
 
 // -- AsyncTMACopyGlobalToLocalOp --
 LogicalResult AsyncTMACopyGlobalToLocalOp::verify() {

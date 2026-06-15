@@ -25,4 +25,8 @@ void populateWGMMASharedOperandFenceOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
     unsigned benefit = 1);
 
+void populateTMAStoreCommitGroupOpToLLVMPatterns(
+    mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
+    unsigned benefit = 1);
+
 } // namespace mlir::triton::tle

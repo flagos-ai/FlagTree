@@ -41,6 +41,15 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 
+#ifdef __TLE__
+// Pointer to the TritonOpBuilder class, used to register IR ops for third-party
+// dialects.
+static py::class_<TritonOpBuilder> *builderClassPtr = nullptr;
+namespace ir {
+py::class_<TritonOpBuilder> *getBuilderClass() { return builderClassPtr; }
+} // namespace ir
+#endif
+
 namespace {
 
 namespace py = pybind11;
@@ -197,8 +206,6 @@ OpPrintingFlags getOpPrintingFlags() {
 py::list getTensorDescMetadata(ModuleOp &mod) {
   TritonSourceMgrDiagnosticHandler handler =
       setupTritonDiagnosticHandler(mod.getContext());
-  constexpr llvm::StringLiteral kHostTensorDescABIArgsAttr =
-      "musa.host_tensordesc_abi_args";
 
   py::list result;
   triton::FuncOp kernelFunc;
@@ -220,13 +227,6 @@ py::list getTensorDescMetadata(ModuleOp &mod) {
     auto encoding = blockType.getEncoding();
 
     py::dict metadata;
-    auto rank = std::max<int64_t>(1, blockType.getRank());
-    int64_t abiExpandedArgs = 1 + 2 * rank;
-    if (auto abiAttr = dyn_cast_or_null<IntegerAttr>(
-            kernelFunc.getArgAttr(i, kHostTensorDescABIArgsAttr))) {
-      abiExpandedArgs = abiAttr.getInt();
-    }
-    metadata["abi_expanded_args"] = abiExpandedArgs;
     if (isa<ttg::NVMMASharedEncodingAttr>(encoding)) {
       auto mmaEncoding = dyn_cast<ttg::NVMMASharedEncodingAttr>(encoding);
       auto swizzle = ttng::getTMASwizzleMode(arg.getLoc(), descTy);
@@ -838,9 +838,12 @@ void init_triton_ir(py::module &&m) {
 
   py::class_<OpBuilder::InsertPoint>(m, "InsertPoint", py::module_local());
 
-  py::class_<TritonOpBuilder>(m, "builder", py::module_local(),
-                              py::dynamic_attr())
-      .def(py::init<MLIRContext *>())
+  static py::class_<TritonOpBuilder> builderClass(
+      m, "builder", py::module_local(), py::dynamic_attr());
+#ifdef __TLE__
+  builderClassPtr = &builderClass;
+#endif
+  builderClass.def(py::init<MLIRContext *>())
       .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
       // getters
       .def("create_module",

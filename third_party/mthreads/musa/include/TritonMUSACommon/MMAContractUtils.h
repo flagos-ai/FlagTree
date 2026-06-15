@@ -315,10 +315,7 @@ inline bool isSupportedSqmma(SQMMAEltType eltTypeA, SQMMAEltType eltTypeB,
     switch (type) {
     case SQMMAEltType::f16:
     case SQMMAEltType::bf16:
-      if (kVal == 16 || kVal == 32 || kVal == 64)
-        return true;
-      return kVal == 128 &&
-             ((mVal == 16 && nVal == 64) || (mVal == 64 && nVal == 16));
+      return kVal == 16 || kVal == 32 || kVal == 64;
     case SQMMAEltType::tf32:
       return kVal == 8 || kVal == 16 || kVal == 32;
     case SQMMAEltType::s8:

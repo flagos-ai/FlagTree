@@ -1,3 +1,4 @@
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -50,6 +51,54 @@ static bool hasLegalCpAsyncWidth(ttg::AsyncCopyGlobalToLocalOp copyOp,
 
   unsigned vecBytes = maxVec * elemBits / 8;
   return llvm::is_contained({4u, 8u, 16u}, vecBytes);
+}
+
+static std::optional<Region *>
+getEnclosingWarpSpecializePartition(Operation *op) {
+  for (Region *region = op->getParentRegion(); region;) {
+    Operation *parent = region->getParentOp();
+    if (!parent)
+      break;
+    if (isa<ttg::WarpSpecializePartitionsOp>(parent))
+      return region;
+    region = parent->getParentRegion();
+  }
+  return std::nullopt;
+}
+
+static bool isInLoopFreeWarpSpecializePartition(Operation *op) {
+  auto partition = getEnclosingWarpSpecializePartition(op);
+  if (!partition)
+    return false;
+
+  Operation *partitionOp = (*partition)->getParentOp();
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (isa<scf::ForOp>(parent))
+      return false;
+    if (parent == partitionOp)
+      return true;
+  }
+  return false;
+}
+
+static bool hasL2CachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
+  return copyOp.getEvict() == tt::EvictionPolicy::EVICT_FIRST ||
+         copyOp.getEvict() == tt::EvictionPolicy::EVICT_LAST;
+}
+
+static void
+dropUnsafeLoopFreePartitionCachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
+  if (!copyOp->hasAttr(kTleLocalPointerAsyncStoreAttr) ||
+      !hasL2CachePolicy(copyOp) || !isInLoopFreeWarpSpecializePartition(copyOp))
+    return;
+
+  // PTXAS may emit undefined uniform registers for straight-line
+  // warp-specialize producer partitions that use cp.async L2 cache-policy
+  // operands. Eviction policy is a non-semantic hint, so keep the async copy
+  // and drop only the unsafe hint in loop-free partitions.
+  copyOp.setEvictAttr(tt::EvictionPolicyAttr::get(copyOp.getContext(),
+                                                  tt::EvictionPolicy::NORMAL));
 }
 
 static unsigned floorPowerOfTwo(unsigned value) {
@@ -269,6 +318,7 @@ struct DowngradeInvalidAsyncCopyPass
 
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> invalidCopies;
     module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
+      dropUnsafeLoopFreePartitionCachePolicy(copyOp);
       if (hasLegalCpAsyncWidth(copyOp, axisInfo))
         return;
       invalidCopies.push_back(copyOp);

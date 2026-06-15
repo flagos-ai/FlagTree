@@ -63,6 +63,7 @@ public:
   int getSharedAddressSpace() const override;
   int getAddressSpace(Attribute addressSpace) const override;
   bool supportVectorizedAtomics() const override;
+  bool isMusa() const override { return true; }
 
 private:
   int computeCapability;

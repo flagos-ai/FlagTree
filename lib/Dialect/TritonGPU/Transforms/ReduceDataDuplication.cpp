@@ -78,13 +78,58 @@ static bool comesFromRemoteLoad(Value value, DenseSet<Value> &visited) {
     if (!result)
       return false;
     unsigned idx = result.getResultNumber();
-    return comesFromRemoteLoad(ifOp.thenYield().getOperand(idx), visited) ||
+    bool thenRemote =
+        comesFromRemoteLoad(ifOp.thenYield().getOperand(idx), visited);
+    Block *elseBlock = ifOp.elseBlock();
+    if (!elseBlock)
+      return thenRemote;
+    return thenRemote ||
            comesFromRemoteLoad(ifOp.elseYield().getOperand(idx), visited);
   }
 
   for (Value operand : def->getOperands()) {
     if (comesFromRemoteLoad(operand, visited))
       return true;
+  }
+  return false;
+}
+
+static bool isYieldedToRemoteLoadMergedIf(Value value) {
+  for (OpOperand &use : value.getUses()) {
+    auto yield = dyn_cast<scf::YieldOp>(use.getOwner());
+    if (!yield)
+      continue;
+
+    auto ifOp = dyn_cast<scf::IfOp>(yield->getParentOp());
+    if (!ifOp)
+      continue;
+
+    unsigned idx = use.getOperandNumber();
+    if (idx >= ifOp.getNumResults())
+      continue;
+
+    DenseSet<Value> remoteVisited;
+    if (comesFromRemoteLoad(ifOp.getResult(idx), remoteVisited))
+      return true;
+  }
+  return false;
+}
+
+static bool mergedWithRemoteLoadThroughIf(Value value,
+                                          DenseSet<Value> &visited) {
+  if (!visited.insert(value).second)
+    return false;
+
+  if (isYieldedToRemoteLoadMergedIf(value))
+    return true;
+
+  for (OpOperand &use : value.getUses()) {
+    auto cast = dyn_cast<UnrealizedConversionCastOp>(use.getOwner());
+    if (!cast)
+      continue;
+    for (Value result : cast->getResults())
+      if (mergedWithRemoteLoadThroughIf(result, visited))
+        return true;
   }
   return false;
 }
@@ -113,6 +158,12 @@ public:
 #ifdef __TLE__
       DenseSet<Value> visited;
       if (comesFromRemoteLoad(cvtOp.getSrc(), visited))
+        return;
+      DenseSet<Value> resultVisited;
+      // A cluster-local branch and a cluster-remote branch can merge into the
+      // same dot operand. If any arm comes from a remote load, keep all arms on
+      // the direct register conversion path instead of staging only one arm.
+      if (mergedWithRemoteLoadThroughIf(cvtOp.getResult(), resultVisited))
         return;
 #endif
       if (!cvtNeedsSharedMemory(srcType, dstType))

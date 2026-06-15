@@ -30,6 +30,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "tle/dialect/include/Transforms/Passes.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -44,6 +45,66 @@ namespace mlir::triton::tle {
 
 #define GEN_PASS_DEF_TRITONTLELOWERTMACOPY
 #include "tle/dialect/include/Transforms/Passes.h.inc"
+
+namespace {
+
+static LogicalResult verifyTmaCopyTypes(TMACopyOp op, TensorDescType descTy,
+                                        MemDescType memDescTy, Value desc,
+                                        StringRef direction) {
+  RankedTensorType blockTy = descTy.getSignlessBlockType();
+  ArrayRef<int64_t> blockShape = blockTy.getShape();
+  ArrayRef<int64_t> memShape = memDescTy.getShape();
+
+  if (blockShape.size() > memShape.size()) {
+    unsigned rankDiff = blockShape.size() - memShape.size();
+    for (unsigned i = 0; i < rankDiff; ++i) {
+      if (blockShape[i] != 1) {
+        return op.emitOpError(direction)
+               << " requires tensor descriptor block shape " << blockShape
+               << " to match memdesc shape " << memShape
+               << " except for unit leading dimensions";
+      }
+    }
+    blockShape = blockShape.take_back(memShape.size());
+  }
+
+  if (blockShape.size() != memShape.size())
+    return op.emitOpError(direction)
+           << " requires tensor descriptor rank " << blockShape.size()
+           << " to match memdesc rank " << memShape.size();
+
+  if (blockShape != memShape)
+    return op.emitOpError(direction)
+           << " requires tensor descriptor block shape " << blockShape
+           << " to match memdesc shape " << memShape;
+
+  if (blockTy.getElementType() != memDescTy.getElementType())
+    return op.emitOpError(direction)
+           << " requires tensor descriptor element type "
+           << blockTy.getElementType() << " to match memdesc element type "
+           << memDescTy.getElementType();
+
+  if (!isa<SharedEncodingTrait>(memDescTy.getEncoding()))
+    return op.emitOpError(direction)
+           << " requires a shared-memory encoding on the destination memdesc";
+
+  auto memTensorTy =
+      RankedTensorType::get(memDescTy.getShape(), memDescTy.getElementType(),
+                            memDescTy.getEncoding());
+  Attribute expectedEncoding = getEncodingFromDescriptor(op, memTensorTy, desc);
+  if (expectedEncoding != memDescTy.getEncoding())
+    return op.emitOpError(direction)
+           << " requires tensor descriptor shared encoding " << expectedEncoding
+           << " to match memdesc encoding " << memDescTy.getEncoding();
+
+  unsigned expectedIndices = descTy.getBlockType().getRank();
+  if (op.getIndices().size() != expectedIndices)
+    return op.emitOpError(direction)
+           << " requires " << expectedIndices << " TMA coordinates, but got "
+           << op.getIndices().size();
+
+  return success();
+}
 
 class TMACopyLowering : public OpRewritePattern<TMACopyOp> {
 public:
@@ -77,11 +138,16 @@ public:
     if (direction == TransferDirection::GM_TO_SHARMEMORY) {
       // Load from global memory to shared memory
       auto srcType = cast<TensorDescType>(op.getSrc().getType());
-      auto tensorType = srcType.getBlockType();
 
       // Use the existing shared memory allocation (should use #shared encoding
       // like Gluon)
       Value dstMemDesc = op.getDst();
+      auto dstType = cast<MemDescType>(dstMemDesc.getType());
+      if (failed(verifyTmaCopyTypes(op, srcType, dstType, op.getSrc(),
+                                    "global-to-shared TMA copy")))
+        return failure();
+      auto tensorType = RankedTensorType::get(
+          dstType.getShape(), dstType.getElementType(), dstType.getEncoding());
 
       // Create minimal mbarrier allocation with #shared2 encoding (similar to
       // our current implementation)
@@ -127,7 +193,12 @@ public:
     } else {
       // Store from shared memory to global memory
       auto dstType = cast<TensorDescType>(op.getDst().getType());
-      auto tensorType = dstType.getBlockType();
+      auto srcType = cast<MemDescType>(op.getSrc().getType());
+      if (failed(verifyTmaCopyTypes(op, dstType, srcType, op.getDst(),
+                                    "shared-to-global TMA copy")))
+        return failure();
+      auto tensorType = RankedTensorType::get(
+          srcType.getShape(), srcType.getElementType(), srcType.getEncoding());
 
       // Fence shared memory before store
       rewriter.create<triton::nvidia_gpu::FenceAsyncSharedOp>(loc, false);
@@ -138,8 +209,11 @@ public:
                                          op.getIndices());
 
       // Perform async TMA copy from shared to global memory
-      rewriter.create<triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp>(
-          op.getLoc(), op.getDst(), indices, op.getSrc());
+      auto tmaStore =
+          rewriter.create<triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp>(
+              op.getLoc(), op.getDst(), indices, op.getSrc());
+      tmaStore->setAttr(kTleTMAStoreExplicitCommitAttr, rewriter.getUnitAttr());
+      rewriter.create<TMAStoreCommitGroupOp>(loc);
 
       // Wait for store completion
       rewriter.create<triton::nvidia_gpu::TMAStoreWaitOp>(loc, 0);
@@ -150,6 +224,8 @@ public:
     return success();
   }
 };
+
+} // namespace
 
 class TritonTleLowerTmaCopy
     : public impl::TritonTleLowerTmaCopyBase<TritonTleLowerTmaCopy> {

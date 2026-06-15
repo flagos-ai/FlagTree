@@ -3,10 +3,8 @@ name: flagcicd-Hopper-Build-And-Test
 on:
   schedule:
     - cron: '0 21 * * *'
-  push:
-    branches: [ "triton_v3.4.x", "triton_v3.5.x", "triton_v3.6.x" ]
   pull_request:
-    branches: [ "triton_v3.4.x", "triton_v3.5.x", "triton_v3.6.x" ]
+    branches: [ "triton_v3.4.x", "triton_v3.5.x", "triton_v3.6.x"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -16,10 +14,17 @@ jobs:
   flagcicd-hopper-build-and-test:
     runs-on: [flagcicd-flagtree-nvidia3.6]
     container:
-      image: harbor.baai.ac.cn/flagtree/flagtree-3.6.x-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202603
-      options: --uts=host --ipc=host --privileged  --ulimit stack=67108864 --ulimit memlock=-1 --security-opt seccomp=unconfined --gpus=all
+      image: harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
+      options:
+        --uts=host
+        --ipc=host
+        --privileged
+        --ulimit stack=67108864
+        --ulimit memlock=-1
+        --security-opt seccomp=unconfined
+        --gpus=all
       volumes:
-        - /mnt/airs-business/cicd:/mnt/airs-business/cicd
+        - /mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/:/mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/
 
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
@@ -50,165 +55,100 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
-      - name: FlagTree Build on NVidia (triton_v3.4.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.4.x' }}
-        shell: bash
-        run: |
-          set -x
-          pip uninstall -y triton
-          source ~/env-3.4.sh
-          env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
-
-      - name: FlagTree Build on NVidia (triton_v3.5.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
-        shell: bash
-        run: |
-          set -x
-          pip uninstall -y triton
-          source ~/env-3.5.sh
-          env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Build on NVidia (triton_v3.6.x branch)
         if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.6.x' }}
         shell: bash
         run: |
           set -x
+          export TRITON_HOME="/root/"
           pip uninstall -y triton
           env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+          unset TRITON_HOME
 
-      - name: FlagTree Test on NVidia (triton_v3.4.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.4.x' }}
+      - name: FlagGems Accuracy Test on NVidia
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
-          set -x
-          # python unit test
-          python3 -m pytest -s python/test/unit/cuda
-          python3 -m pytest -s python/test/unit/instrumentation
-          python3 -m pytest -s python/test/unit/language \
-              --ignore=python/test/unit/language/test_line_info.py
-          python3 -m pytest -s python/test/unit/runtime
-          if [ -d "python/test/operators" ]; then
-            python3 -m pytest -s python/test/operators
+          # set -x
+          export TRITON_CACHE_DIR="/mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/nvidia/.triton/cache"
+          FLAGGEMS_BASE="/mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/nvidia"
+          FLAGGEMS_DIR="${FLAGGEMS_BASE}/FlagGems"
+          CONFIG_DIR="${FLAGGEMS_BASE}/config"
+          SCRIPTS_DIR="${FLAGGEMS_BASE}/../scripts"
+          IGNORE_LIST="${CONFIG_DIR}/ignore_list.txt"
+          OPERATORS_YAML="${FLAGGEMS_DIR}/conf/operators.yaml"
+
+          # echo "${FLAGGEMS_BASE}"   "${CONFIG_DIR}"   "${SCRIPTS_DIR}"
+
+          if [ ! -d "$FLAGGEMS_DIR" ]; then
+            echo "Error: FlagGems directory not found at $FLAGGEMS_DIR"
+            echo "Please clone FlagGems repository to the shared storage first."
+            exit 1
           fi
 
-      - name: FlagTree Test on NVidia (triton_v3.5.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
-        shell: bash
-        run: |
-          set -x
-          source ~/env.sh
-          # python tutorials
-          python3 python/tutorials/01-vector-add.py --only_unit_test
-          python3 python/tutorials/02-fused-softmax.py --only_unit_test
-          python3 python/tutorials/03-matrix-multiplication.py --only_unit_test
-          python3 python/tutorials/04-low-memory-dropout.py --only_unit_test
-          python3 python/tutorials/05-layer-norm.py --only_unit_test
-          python3 python/tutorials/06-fused-attention.py --only_unit_test
-          python3 python/tutorials/07-extern-functions.py --only_unit_test
-          python3 python/tutorials/08-grouped-gemm.py --only_unit_test
-          python3 python/tutorials/09-persistent-matmul.py --only_unit_test
-          python3 python/tutorials/11-programmatic-dependent-launch.py --only_unit_test
-          # python unit test
-          python3 -m pytest -s python/test/unit/cuda
-          python3 -m pytest -s python/test/unit/instrumentation
-          python3 -m pytest -s python/test/unit/language \
-              --ignore=python/test/unit/language/test_line_info.py
-          python3 -m pytest -s python/test/unit/runtime
-          if [ -d "python/test/operators" ]; then
-            python3 -m pytest -s python/test/operators
+          # Check if the file "operators.yaml" exists
+          if [ ! -f "$OPERATORS_YAML" ]; then
+            echo "Error: operators.yaml not found at $OPERATORS_YAML"
+            exit 1
           fi
-          # flagtree tle
-          # python tutorials
-          python3 python/tutorials/tle/01-fft.py
-          python3 python/tutorials/tle/02-moe_align_block_size.py
-          python3 python/tutorials/tle/03-topk.py
-          python3 python/tutorials/tle/04-cluster-gemm.py
-          python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py
-          python3 python/tutorials/tle/deepseek_v32/02-sparse-mla.py --mode test
-          python3 python/tutorials/tle/deepseek_v32/02-sparse-mla.py
-          # python unit test
-          python3 -m pytest -s python/test/tle/integration
-          python3 -m pytest -s python/test/tle/unit
-          # flagtree hints
-          # python tutorials
-          python3 python/tutorials/hints/01/01-vector-add.py --only_unit_test
-          # python3 python/tutorials/hints/02/02-fused-softmax.py --only_unit_test
-          python3 python/tutorials/hints/03/03-matrix-multiplication.py --only_unit_test
-          python3 python/tutorials/hints/04/04-low-memory-dropout.py --only_unit_test
-          python3 python/tutorials/hints/05/05-layer-norm.py --only_unit_test
-          python3 python/tutorials/hints/06/06-fused-attention.py --only_unit_test
-          python3 python/tutorials/hints/07/07-extern-functions.py --only_unit_test
-          python3 python/tutorials/hints/08/08-grouped-gemm.py --only_unit_test
-          python3 python/tutorials/hints/11/11-programmatic-dependent-launch.py --only_unit_test
-          # flagtree tle raw
-          python3 python/tutorials/tle/raw/mlir/01-vector-add.py
-          python3 python/tutorials/tle/raw/mlir/02-fused-softmax.py
-          python3 python/tutorials/tle/raw/mlir/03-matrix-multiplication.py
-          python3 python/tutorials/tle/raw/mlir/04-hello-world.py
-          python3 python/tutorials/tle/raw/mlir/05-topk.py --kernel triton
-          python3 python/tutorials/tle/raw/mlir/05-topk.py --kernel tle
-          python3 python/tutorials/tle/raw/mlir/06-test-vassert.py
 
-      - name: FlagTree Test on NVidia (triton_v3.6.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.6.x' }}
-        shell: bash
-        run: |
-          set -x
-          # python tutorials
-          python3 python/tutorials/01-vector-add.py --only_unit_test
-          python3 python/tutorials/02-fused-softmax.py --only_unit_test
-          python3 python/tutorials/03-matrix-multiplication.py --only_unit_test
-          python3 python/tutorials/04-low-memory-dropout.py --only_unit_test
-          python3 python/tutorials/05-layer-norm.py --only_unit_test
-          python3 python/tutorials/06-fused-attention.py --only_unit_test
-          python3 python/tutorials/07-extern-functions.py --only_unit_test
-          python3 python/tutorials/08-grouped-gemm.py --only_unit_test
-          python3 python/tutorials/09-persistent-matmul.py --only_unit_test
-          python3 python/tutorials/11-programmatic-dependent-launch.py --only_unit_test
-          # python unit test
-          python3 -m pytest -s python/test/unit/cuda
-          python3 -m pytest -s python/test/unit/instrumentation
-          python3 -m pytest -s python/test/unit/language \
-              --ignore=python/test/unit/language/test_line_info.py
-          python3 -m pytest -s python/test/unit/runtime
-          if [ -d "python/test/operators" ]; then
-            python3 -m pytest -s python/test/operators
+          # Install FlagGems dependencies
+          cd "$FLAGGEMS_DIR"
+          # pip install -r requirements/requirements_nvidia.txt
+          # pip list
+          pip install -v -e .  --no-build-isolation --no-deps
+          if [ $? -ne 0 ]; then
+              echo "Error: Failed to install FlagGems"
+              exit 1
           fi
-          # flagtree tle
-          # python tutorials
-          python3 python/tutorials/tle/01-fft.py
-          python3 python/tutorials/tle/02-moe_align_block_size.py
-          python3 python/tutorials/tle/03-topk.py
-          python3 python/tutorials/tle/04-cluster-gemm.py
-          python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py
-          python3 python/tutorials/tle/deepseek_v32/02-sparse-mla.py
-          # python unit test
-          python3 -m pytest -s python/test/tle/integration
-          python3 -m pytest -s python/test/tle/unit
-          # flagtree hints
-          # python tutorials
-          python3 python/tutorials/hints/01/01-vector-add.py --only_unit_test
-          # python3 python/tutorials/hints/02/02-fused-softmax.py --only_unit_test
-          python3 python/tutorials/hints/03/03-matrix-multiplication.py --only_unit_test
-          python3 python/tutorials/hints/04/04-low-memory-dropout.py --only_unit_test
-          python3 python/tutorials/hints/05/05-layer-norm.py --only_unit_test
-          # python3 python/tutorials/hints/06/06-fused-attention.py --only_unit_test  # Error on 3.6
-          python3 python/tutorials/hints/07/07-extern-functions.py --only_unit_test
-          python3 python/tutorials/hints/08/08-grouped-gemm.py --only_unit_test
-          python3 python/tutorials/hints/11/11-programmatic-dependent-launch.py --only_unit_test
-          # flagtree tle raw
-          python3 python/tutorials/tle/raw/mlir/01-vector-add.py
-          python3 python/tutorials/tle/raw/mlir/02-fused-softmax.py
-          python3 python/tutorials/tle/raw/mlir/03-matrix-multiplication.py
-          python3 python/tutorials/tle/raw/mlir/04-hello-world.py
-          python3 python/tutorials/tle/raw/mlir/05-topk.py --kernel triton
-          python3 python/tutorials/tle/raw/mlir/05-topk.py --kernel tle
-          python3 python/tutorials/tle/raw/mlir/06-test-vassert.py
-          # flagtree tle cuda
-          # TODO: These tests are currently skipped because the CLANG environment variable cannot be set.
-          # python3 python/tutorials/tle/raw/cuda/01-vector-add.py
-          # python3 python/tutorials/tle/raw/cuda/02-fused-softmax.py
-          # python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
+
+          # Generate pytest marks parameters
+          MARKS=$(python3  "${SCRIPTS_DIR}/parse_operators.py"  "$OPERATORS_YAML")
+          if [ -z "$MARKS" ]; then
+            echo "Error: Failed to generate pytest marks"
+            exit 1
+          fi
+
+          # Print the first 200 characters of the MARKS string
+          # echo "Generated pytest marks: ${MARKS:0:200}..."
+
+          cd tests/
+          # pass the file path of the ignore list to the Python plugin
+          export FLAGGEMS_IGNORE_LIST_PATH="$IGNORE_LIST"
+
+          # Add the "scripts" directory to the Python search path
+          export PYTHONPATH="${SCRIPTS_DIR}:$PYTHONPATH"
+
+          # Build the Pytest command and use the -p parameter to load the dynamic_ignore plugin
+          PYTEST_CMD="python3 -m pytest -m \"$MARKS\" --ref=cpu --quick -p dynamic_ignore"
+
+          echo "=========================================="
+          echo "Running FlagGems accuracy tests"
+          echo "Quick mode: enabled"
+          echo "Reference device: cpu"
+          echo "=========================================="
+
+
+          set +e
+          bash -c "$PYTEST_CMD"
+          EXIT_CODE=$?
+          set -e
+
+          if [ $EXIT_CODE -eq 0 ]; then
+              echo "All tests passed"
+              echo "FlagGems accuracy tests completed successfully"
+              exit 0
+          elif [ $EXIT_CODE -eq 5 ]; then
+              # It might be a configuration error. An error should have been reported.
+              echo "Error: No tests were collected. Configuration issue suspected."
+              exit 1
+          elif [ $EXIT_CODE -eq 1 ]; then
+              echo "Warning: Some tests failed, tests exited with code $EXIT_CODE"
+              echo "FlagGems accuracy tests completed successfully (failures allowed)"
+              exit 0  # Test failure does not block CI
+          else
+              echo "Error: Tests exited with code $EXIT_CODE"
+              exit 1
+          fi

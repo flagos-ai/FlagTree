@@ -1,6 +1,9 @@
 #include "TritonMUSAGPUToLLVM/Allocation.h"
 #include "TritonMUSAGPUToLLVM/Passes.h"
 #include "TritonMUSAGPUToLLVM/TargetInfo.h"
+#ifdef __TLE__
+#include "Dialect/MUSATLE/IR/Dialect.h"
+#endif
 #include "triton/Analysis/Allocation.h"
 #include "triton/Conversion/TritonGPUToLLVM/AllocateSharedMemoryUtility.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -194,26 +197,42 @@ static unsigned getNumScratchElemsSwizzledCvt(RankedTensorType srcTy,
 
 static unsigned getMusaScratchSizeInBytes(Operation *op,
                                           const TargetInfoBase &targetInfo) {
+#ifdef __TLE__
+  if (auto extract = dyn_cast<triton::musa_tle::ExtractTileOp>(op)) {
+    auto resultTy = cast<RankedTensorType>(extract.getResult().getType());
+    return product<int64_t>(resultTy.getShape()) * getBitwidth(resultTy) / 8;
+  }
+  if (auto insert = dyn_cast<triton::musa_tle::InsertTileOp>(op)) {
+    auto tileTy = cast<RankedTensorType>(insert.getTile().getType());
+    return product<int64_t>(tileTy.getShape()) * getBitwidth(tileTy) / 8;
+  }
+#endif
+
   auto cvtOp = dyn_cast<ConvertLayoutOp>(op);
   if (!cvtOp)
     return defaultAllocationAnalysisScratchSizeFn(op);
 
   auto srcTy = cvtOp.getSrc().getType();
   auto dstTy = cvtOp.getType();
-  if (!cvtNeedsSharedMemory(srcTy, dstTy))
-    return 0;
 
   Attribute srcLayout = srcTy.getEncoding();
   Attribute dstLayout = dstTy.getEncoding();
-  if (useMusaReplicatedScratch(srcLayout, dstLayout) &&
-      !isSqmmaAccumulatorToBlockedLike(srcLayout, dstLayout))
-    return getFullLogicalScratchBytes(srcTy);
+  if (useMusaReplicatedScratch(srcLayout, dstLayout)) {
+    if (!isSqmmaAccumulatorToBlockedLike(srcLayout, dstLayout))
+      return getFullLogicalScratchBytes(srcTy);
+
+    bool separateRepScratch =
+        mlir::triton::musa_gpu::needsMusaRepDisjointGenericScratch(srcTy, dstTy,
+                                                                   targetInfo);
+    auto elems = getNumScratchElemsSwizzledCvt(srcTy, dstTy, targetInfo,
+                                               separateRepScratch);
+    return elems * getBitwidth(srcTy) / 8;
+  }
 
   if (useConservativeCarrierScratch(srcTy, dstTy))
     return getFullLogicalScratchBytes(srcTy);
 
-  if (isSqmmaAccumulatorToBlockedLike(srcLayout, dstLayout) ||
-      useMusaSqmmaBlockSwizzling(srcTy, dstTy) ||
+  if (useMusaSqmmaBlockSwizzling(srcTy, dstTy) ||
       useMusaGenericBlockSwizzling(srcTy, dstTy)) {
     bool separateRepScratch =
         mlir::triton::musa_gpu::needsMusaRepDisjointGenericScratch(srcTy, dstTy,
@@ -222,6 +241,9 @@ static unsigned getMusaScratchSizeInBytes(Operation *op,
                                                separateRepScratch);
     return elems * getBitwidth(srcTy) / 8;
   }
+
+  if (!cvtNeedsSharedMemory(srcTy, dstTy))
+    return 0;
 
   return defaultAllocationAnalysisScratchSizeFn(op);
 }

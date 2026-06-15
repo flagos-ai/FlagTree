@@ -268,8 +268,45 @@ def TritonTleLowerTmaCopy
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::tle::TleDialect",
                            "mlir::scf::SCFDialect",
                            "mlir::arith::ArithDialect"];
+}
+
+def TritonTleScheduleTmaStoreSync
+    : Pass<"triton-tle-schedule-tma-store-sync", "mlir::ModuleOp"> {
+  let summary = "schedule explicit TLE TMA store commit and wait operations";
+
+  let description = [{
+    This pass owns synchronization for TLE shared-to-global TMA stores lowered
+    by ``triton-tle-lower-tma-copy``. It groups adjacent TLE TMA stores behind a
+    single explicit ``tle.tma_store.commit_group`` and sinks
+    ``ttng.async_tma_store_wait`` to the first operation that can reuse or
+    release the source shared-memory buffer. Native Triton TMA stores keep their
+    standard implicit commit behavior.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::nvws::NVWSDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+
+def TritonTleLowerPipeToNvws
+    : Pass<"triton-tle-lower-pipe-to-nvws", "mlir::ModuleOp"> {
+  let summary = "lower CTA SMEM TLE pipe operations to NVWS token operations";
+
+  let description = [{
+    This pass lowers the strict CTA-scoped SMEM SPSC pipe IR produced by
+    tle.pipe to NVWS token operations. Close-aware waits are backed by a
+    per-pipe SMEM close-tag ring, separate from the NVWS full/empty token.
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvws::NVWSDialect"];
 }
 
 def TritonTleLowerExtractTile

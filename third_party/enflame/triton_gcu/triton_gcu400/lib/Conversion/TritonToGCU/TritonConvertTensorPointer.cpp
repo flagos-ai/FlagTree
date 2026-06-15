@@ -16,6 +16,7 @@
 #include <memory>
 #include <stack>
 
+#include "Constants.h"
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -370,6 +371,9 @@ ConvertTensorPointerPass::rewriteLoadStoreOp(OpBuilder &builder, Operation *op,
         loadOp.getLoc(), newPtr, newMask, newOther, loadOp.getCache(),
         loadOp.getEvict(), loadOp.getIsVolatile());
     op->getResult(0).replaceAllUsesWith(newResult);
+    if (loadOp->hasAttr(kLoadAsync)) {
+      newResult->setAttr(kLoadAsync, loadOp->getAttr(kLoadAsync));
+    }
   } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
     builder.create<triton::StoreOp>(storeOp.getLoc(), newPtr,
                                     storeOp.getValue(), newMask,

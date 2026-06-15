@@ -317,6 +317,7 @@ class CUDABackend(BaseBackend):
             passes.ttir.add_triton_licm(pm)
             passes.common.add_canonicalizer(pm)
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
+            tle.passes.add_lower_pipe_to_nvws(pm)
             nvidia.passes.hopper.add_hopper_warpspec(pm, opt.num_stages, dump_enabled)
             tle.passes.add_downgrade_invalid_async_copy(pm)
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
@@ -353,6 +354,7 @@ class CUDABackend(BaseBackend):
         if capability // 10 >= 9:
             # flagtree tle: Apply TLE TMA copy lowering before standard NVIDIA TMA lowering
             tle.passes.add_lower_tma_copy(pm)
+            tle.passes.add_schedule_tma_store_sync(pm)
             nvidia.passes.ttnvgpuir.add_tma_lowering(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         nvidia.passes.ttnvgpuir.add_interleave_tmem(pm)

@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef KURANA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
-#define KURANA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
+#ifndef KURAMA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
+#define KURAMA_TRITON_GPU_OP_TO_GCU_CONVERSION_H
 
 #include <map>
 #include <string>
@@ -67,6 +67,18 @@ void populateMakeRangeOpToGCUPatterns(
 void populateTTSmemOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
+    std::map<Operation *, Operation *> &replaced2Origin,
+    triton::gcu::PrivateTagPool &pTagPool);
+
+void populateDistributedOpToGCUPatterns(
+    const TypeConverter &converter, RewritePatternSet &patterns,
+    gcu::FirstLastUserAnalysis &userAnalysis,
+    std::map<Operation *, Operation *> &replaced2Origin,
+    triton::gcu::PrivateTagPool &pTagPool);
+
+void populateTleOpToGCUPatterns(
+    const TypeConverter &converter, RewritePatternSet &patterns,
+    ConversionTarget &target, gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateTagPool &pTagPool);
 

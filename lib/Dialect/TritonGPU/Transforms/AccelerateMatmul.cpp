@@ -33,6 +33,61 @@ namespace gpu {
 
 namespace {
 
+#ifdef __TLE__
+static Value getWarpSpecializeCapture(Value value) {
+  auto blockArg = dyn_cast<BlockArgument>(value);
+  if (!blockArg)
+    return value;
+
+  Block *block = blockArg.getOwner();
+  auto partitions =
+      dyn_cast_or_null<WarpSpecializePartitionsOp>(block->getParentOp());
+  if (!partitions)
+    return value;
+
+  auto wsOp = dyn_cast<WarpSpecializeOp>(partitions->getParentOp());
+  if (!wsOp)
+    return value;
+
+  unsigned argNo = blockArg.getArgNumber();
+  OperandRange captures = wsOp.getExplicitCaptures();
+  if (argNo >= captures.size())
+    return value;
+  return captures[argNo];
+}
+
+static Value getUnderlyingMemDesc(Value value) {
+  while (true) {
+    value = getWarpSpecializeCapture(value);
+    if (auto index = value.getDefiningOp<MemDescIndexOp>()) {
+      value = index.getSrc();
+      continue;
+    }
+    if (auto subslice = value.getDefiningOp<MemDescSubsliceOp>()) {
+      value = subslice.getSrc();
+      continue;
+    }
+    if (auto trans = value.getDefiningOp<MemDescTransOp>()) {
+      value = trans.getSrc();
+      continue;
+    }
+    if (auto reshape = value.getDefiningOp<MemDescReshapeOp>()) {
+      value = reshape.getSrc();
+      continue;
+    }
+    if (auto reinterpret = value.getDefiningOp<MemDescReinterpretOp>()) {
+      value = reinterpret.getSrc();
+      continue;
+    }
+    return value;
+  }
+}
+
+static bool isBackedByLocalAlloc(Value value) {
+  return getUnderlyingMemDesc(value).getDefiningOp<LocalAllocOp>() != nullptr;
+}
+#endif
+
 // Get the highest version supported for the hardware and the dot.
 static int getMMAVersionSafe(int computeCapability, DotOp op) {
   // List supported mma version in order of preference.
@@ -252,7 +307,7 @@ getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter, int opIdx,
   if (auto localLoad = arg.getDefiningOp<LocalLoadOp>()) {
     if (!localLoad.getToken()) {
       Value src = localLoad.getSrc();
-      if (src.getDefiningOp<LocalAllocOp>()) {
+      if (isBackedByLocalAlloc(src)) {
         auto srcType = dyn_cast<MemDescType>(src.getType());
         if (srcType && srcType.getShape() == newType.getShape() &&
             srcType.getElementType() == newType.getElementType() &&

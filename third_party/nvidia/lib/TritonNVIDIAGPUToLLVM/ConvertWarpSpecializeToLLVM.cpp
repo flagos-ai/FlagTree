@@ -106,6 +106,17 @@ static void createAllBarrier(TritonLLVMIRRewriter &b, unsigned barIdx) {
 // elideTrivialCaptures
 //===----------------------------------------------------------------------===//
 
+#ifdef __TLE__
+static bool isCtaInvariantSpecialRegister(Operation *op) {
+  return isa<NVVM::BlockIdXOp, NVVM::BlockIdYOp, NVVM::BlockIdZOp,
+             NVVM::GridDimXOp, NVVM::GridDimYOp, NVVM::GridDimZOp,
+             NVVM::ClusterIdXOp, NVVM::ClusterIdYOp, NVVM::ClusterIdZOp,
+             NVVM::ClusterDimXOp, NVVM::ClusterDimYOp, NVVM::ClusterDimZOp,
+             NVVM::BlockInClusterIdXOp, NVVM::BlockInClusterIdYOp,
+             NVVM::BlockInClusterIdZOp>(op);
+}
+#endif
+
 static LogicalResult findTrivialSubcomputation(LLVM::LLVMFuncOp func,
                                                Value capture,
                                                SetVector<Operation *> &ops) {
@@ -122,6 +133,14 @@ static LogicalResult findTrivialSubcomputation(LLVM::LLVMFuncOp func,
     }
 
     Operation *op = capture.getDefiningOp();
+#ifdef __TLE__
+    // Special-register reads such as ctaid/nctaid are CTA-invariant values.
+    // If they were explicitly captured by a warp-specialize op, preserve that
+    // capture instead of rematerializing the read and its index arithmetic into
+    // every partition.
+    if (isCtaInvariantSpecialRegister(op))
+      return failure();
+#endif
     // Check if the defining op can be rematerialized. At the LLVM level,
     // checking for pure is probably a good enough heuristic.
     if (isPure(op)) {
@@ -176,6 +195,77 @@ static void elideTrivialCaptures(LLVM::LLVMFuncOp func,
     }
   }
 }
+
+#ifdef __TLE__
+static bool isHoistableCtaUniformLeaf(Operation *op) {
+  return isCtaInvariantSpecialRegister(op) || isa<LLVM::ConstantOp>(op);
+}
+
+static LogicalResult findCtaUniformSubcomputation(LLVM::LLVMFuncOp func,
+                                                  Value capture,
+                                                  SetVector<Operation *> &ops) {
+  SetVector<Value> worklist;
+  worklist.insert(capture);
+  for (unsigned i = 0; i != worklist.size(); ++i) {
+    Value capture = worklist[i];
+    if (auto arg = dyn_cast<BlockArgument>(capture)) {
+      if (arg.getOwner() == &func.getBody().front())
+        continue;
+      return failure();
+    }
+
+    Operation *op = capture.getDefiningOp();
+    if (!op)
+      return failure();
+    if (!op->getBlock() || op->getParentOfType<LLVM::LLVMFuncOp>() != func)
+      return failure();
+
+    // Only CTA-uniform special-register leaves may be hoisted into the common
+    // warp-specialize header. Thread/lane/warp id reads are pure too, but they
+    // are not CTA-uniform and must not be turned into shared partition values.
+    if (op->getNumOperands() == 0 && !isHoistableCtaUniformLeaf(op))
+      return failure();
+
+    if (!isCtaInvariantSpecialRegister(op) && !isPure(op))
+      return failure();
+
+    ops.insert(op);
+    worklist.insert(op->operand_begin(), op->operand_end());
+  }
+
+  return success(ops.size() <= 16);
+}
+
+static void hoistCtaUniformCapturesToHeader(LLVM::LLVMFuncOp func,
+                                            ArrayRef<WarpSpecializeOp> wsOps,
+                                            Block *header) {
+  SetVector<Operation *> subgraph;
+  for (WarpSpecializeOp wsOp : wsOps) {
+    llvm::BitVector toErase(wsOp.getNumOperands());
+    for (auto [i, capture] : llvm::enumerate(wsOp.getExplicitCaptures())) {
+      subgraph.clear();
+      if (failed(findCtaUniformSubcomputation(func, capture, subgraph)))
+        continue;
+      toErase.set(i);
+      subgraph = topologicalSort(subgraph);
+
+      Operation *terminator = header->getTerminator();
+      for (Operation *op : subgraph) {
+        if (op->getBlock() == header)
+          continue;
+        op->moveBefore(terminator);
+      }
+
+      for (Region *region : wsOp.getPartitionRegions())
+        region->getArgument(i).replaceAllUsesWith(capture);
+    }
+
+    wsOp->eraseOperands(toErase);
+    for (Region *region : wsOp.getPartitionRegions())
+      region->front().eraseArguments(toErase);
+  }
+}
+#endif
 
 //===----------------------------------------------------------------------===//
 // lowerWarpSpecialize
@@ -380,6 +470,9 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
        llvm::zip(header->getArguments(), entry->getArguments()))
     oldArg.replaceAllUsesWith(arg);
   entry->eraseArguments([](auto) { return true; });
+#ifdef __TLE__
+  hoistCtaUniformCapturesToHeader(func, wsOps, header);
+#endif
   b.setInsertionPointToStart(entry);
   if (maxnreg)
     createRegRealloc(b, maxnreg.getInt(), defRegs);

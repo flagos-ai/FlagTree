@@ -380,6 +380,7 @@ class CodeGenerator(ast.NodeVisitor):
 
         self.lscope = {}
         self.jit_fn = jit_fn
+        self.flagtree_line_hints = {}
         # TODO: we currently generate illegal names for non-kernel functions involving constexprs!
         if is_kernel:
             function_name = function_name[function_name.rfind('.') + 1:]
@@ -1413,7 +1414,9 @@ class CodeGenerator(ast.NodeVisitor):
                                       module_map=self.builder.module_map, caller_context=caller_context,
                                       is_gluon=self.is_gluon)
             try:
-                generator.visit(fn.parse())
+                tree = fn.parse()
+                generator.flagtree_line_hints = getattr(tree.body[0], 'line_flagtree_hints', {}) or {}
+                generator.visit(tree)
             except Exception as e:
                 # Wrap the error in the callee with the location of the call.
                 if knobs.compilation.front_end_debugging:
@@ -1743,7 +1746,9 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
     generator = CodeGenerator(context, prototype, gscope=fn.get_capture_scope(), function_name=fn.repr(proxy),
                               jit_fn=fn, is_kernel=True, file_name=file_name, begin_line=begin_line, options=options,
                               codegen_fns=codegen_fns, module_map=module_map, module=module, is_gluon=fn.is_gluon())
-    generator.visit(fn.parse())
+    tree = fn.parse()
+    generator.flagtree_line_hints = getattr(tree.body[0], 'line_flagtree_hints', {}) or {}
+    generator.visit(tree)
     module = generator.module
     # module takes ownership of the context
     module.context = context

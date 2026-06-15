@@ -1,6 +1,7 @@
 #include "TleTileToLLVMUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 using namespace mlir;
@@ -80,7 +81,8 @@ SmallVector<unsigned> getShapePerCTATile(RankedTensorType type) {
 // multi-dimensional "global data start index" in the tensor.
 SmallVector<Value> computeThreadOffsets(Location loc,
                                         ConversionPatternRewriter &rewriter,
-                                        RankedTensorType tensorType) {
+                                        RankedTensorType tensorType,
+                                        const TargetInfoBase &targetInfo) {
   auto bl = cast<ttg::BlockedEncodingAttr>(tensorType.getEncoding());
   auto sizePerThread = bl.getSizePerThread();
   auto threadsPerWarp = bl.getThreadsPerWarp();
@@ -89,7 +91,11 @@ SmallVector<Value> computeThreadOffsets(Location loc,
   int rank = tensorType.getRank();
 
   auto i32Ty = rewriter.getIntegerType(32);
-  Value threadId = rewriter.create<NVVM::ThreadIdXOp>(loc, i32Ty);
+  Value threadId;
+  if (targetInfo.isHCU())
+    threadId = getThreadId(rewriter, loc);
+  else
+    threadId = rewriter.create<NVVM::ThreadIdXOp>(loc, i32Ty);
 
   unsigned warpSizeVal = 1;
   for (auto t : threadsPerWarp)

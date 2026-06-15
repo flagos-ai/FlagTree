@@ -8,6 +8,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/MTVM/MTVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "passes.h"
 #include "llvm/IR/CallingConv.h"
@@ -20,6 +21,13 @@
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
+
+#ifdef __TLE__
+void init_triton_musa_tle_ir(py::module m);
+void init_triton_musa_tle_frontend_passes_ttgpuir(py::module m);
+void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m);
+void register_triton_musa_tle_dialects(mlir::DialectRegistry &registry);
+#endif
 
 namespace {
 
@@ -101,7 +109,7 @@ bool moduleUsesMulhiHelper(const llvm::Module &module) {
 
 } // namespace
 
-void init_triton_musa_passes_ttgpuir(py::module &&m) {
+void init_triton_musa_passes_ttgpuir(py::module m) {
   using namespace mlir::triton;
   m.def("add_mtgpu_to_llvm", [](mlir::PassManager &pm, int32_t capability) {
     pm.addPass(mlir::triton::createConvertMTGPUToLLVMPass(capability));
@@ -137,15 +145,20 @@ void init_triton_musa_passes_ttgpuir(py::module &&m) {
                      mlir::createTritonMUSAGPUOptimizeDescriptorEncoding);
   ADD_PASS_WRAPPER_0("add_optimize_sqmma_accumulator_layout",
                      mlir::createTritonMUSAGPUOptimizeSqmmaAccumulatorLayout);
-#ifdef __TLE__
-  ADD_PASS_WRAPPER_0("add_tle_lower_async_load",
-                     mlir::createTritonMUSAGPUTLELowerAsyncLoad);
-#endif // __TLE__
 }
 
 void init_triton_mthreads(py::module &&m) {
+#ifdef __TLE__
+  init_triton_musa_tle_ir(m.def_submodule("ir"));
+#endif // __TLE__
+
   auto passes = m.def_submodule("passes");
-  init_triton_musa_passes_ttgpuir(passes.def_submodule("ttgpuir"));
+  auto ttgpuir = passes.def_submodule("ttgpuir");
+  init_triton_musa_passes_ttgpuir(ttgpuir);
+#ifdef __TLE__
+  init_triton_musa_tle_frontend_passes_ttgpuir(ttgpuir);
+  init_triton_musa_tle_dialect_passes_ttgpuir(ttgpuir);
+#endif // __TLE__
 
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
@@ -153,7 +166,11 @@ void init_triton_mthreads(py::module &&m) {
     registry
         .insert<mlir::triton::mtgpu::MTGPUDialect,
                 mlir::triton::musa::MUSADialect, mlir::vector::VectorDialect>();
+#ifdef __TLE__
+    register_triton_musa_tle_dialects(registry);
+#endif
     mlir::registerLLVMDialectTranslation(registry);
+    mlir::registerMTVMDialectTranslation(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });

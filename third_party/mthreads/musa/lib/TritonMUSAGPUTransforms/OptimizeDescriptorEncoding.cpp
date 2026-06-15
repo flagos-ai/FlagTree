@@ -472,18 +472,6 @@ static void compactUnusedHostTensorDescABI(tt::FuncOp func) {
     unsigned abiArgs = 1;
     if (matchesExpandedTensorDescABI(entry, i, rank)) {
       abiArgs = 1 + 2 * rank;
-      bool suffixUnused = true;
-      for (unsigned j = 0; j < 2 * rank; ++j) {
-        if (!entry.getArgument(i + 1 + j).use_empty()) {
-          suffixUnused = false;
-          break;
-        }
-      }
-      if (suffixUnused) {
-        abiArgs = 1;
-        for (unsigned j = 0; j < 2 * rank; ++j)
-          eraseMask.set(i + 1 + j);
-      }
     }
     descABIArgs.push_back(abiArgs);
     i += abiArgs == 1 ? 1 : abiArgs;
@@ -553,8 +541,8 @@ public:
     rewriter.setInsertionPoint(cvt);
     Value newCvt = ttg::ConvertLayoutOp::create(rewriter, cvt.getLoc(),
                                                 newCvtTy, fpToFp.getSrc());
-    Value newFpToFp =
-        tt::FpToFpOp::create(rewriter, fpToFp.getLoc(), dstTy, newCvt);
+    Value newFpToFp = tt::FpToFpOp::create(rewriter, fpToFp.getLoc(), dstTy,
+                                           newCvt, fpToFp.getRoundingAttr());
     rewriter.replaceOp(cvt, newFpToFp);
     return success();
   }

@@ -5,6 +5,14 @@ from .core import (
     insert_tile,
     load,
 )
+from .pipe import (
+    pipe,
+    pipe_reader,
+    pipe_slot,
+    pipe_value,
+    pipe_wait_result,
+    pipe_writer,
+)
 from .distributed import (
     B,
     P,
@@ -30,6 +38,12 @@ __all__ = [
     "cumsum",
     "extract_tile",
     "insert_tile",
+    "pipe",
+    "pipe_reader",
+    "pipe_slot",
+    "pipe_value",
+    "pipe_wait_result",
+    "pipe_writer",
     "device_mesh",
     "S",
     "P",

@@ -1,26 +1,12 @@
-import os
-
 import pytest
 import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
-from triton._C import libtriton
-from triton.backends.compiler import GPUTarget
-from triton.compiler import ASTSource
 
-if not hasattr(libtriton, "mthreads"):
-    pytest.skip("musa backend not built in libtriton", allow_module_level=True)
+from test_tle_utils import compile_musa, require_mthreads_libtriton
 
-
-def _musa_target():
-    arch = os.environ.get("TRITON_OVERRIDE_ARCH") or os.environ.get("TRITON_MUSA_ARCH") or "ph1"
-    return GPUTarget("musa", arch, 32)
-
-
-def _compile_musa(fn, signature, constexprs=None):
-    src = ASTSource(fn=fn, signature=signature, constexprs=constexprs or {})
-    return triton.compile(src, target=_musa_target())
+require_mthreads_libtriton()
 
 
 @triton.jit
@@ -56,7 +42,7 @@ def _tle_load_mask_other_kernel(x_ptr, out_ptr, n: tl.constexpr, BLOCK: tl.const
 
 @pytest.mark.parametrize("is_async", [False, True])
 def test_tle_load_async_copy_codegen(is_async):
-    compiled = _compile_musa(
+    compiled = compile_musa(
         _tle_load_asm_kernel,
         signature={"x_ptr": "*fp32", "out_ptr": "*fp32", "BLOCK": "constexpr", "IS_ASYNC": "constexpr"},
         constexprs={"BLOCK": 64, "IS_ASYNC": is_async},
@@ -80,7 +66,7 @@ def test_tle_load_async_copy_codegen(is_async):
     ],
 )
 def test_tle_load_async_unsupported_widths_fall_back(signature, block, expect_async):
-    compiled = _compile_musa(
+    compiled = compile_musa(
         _tle_load_hinted_asm_kernel,
         signature={"x_ptr": signature, "out_ptr": signature, "BLOCK": "constexpr"},
         constexprs={"BLOCK": block},
@@ -92,7 +78,7 @@ def test_tle_load_async_unsupported_widths_fall_back(signature, block, expect_as
 
 
 def test_tle_load_async_survives_block_ptr_rewrite():
-    compiled = _compile_musa(
+    compiled = compile_musa(
         _tle_load_block_ptr_asm_kernel,
         signature={"x_ptr": "*fp32", "out_ptr": "*fp32"},
     )

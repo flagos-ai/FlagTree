@@ -164,9 +164,15 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
       auto buffer =
           rewriter.create<gcu::PtrToMemRefOp>(loc, memType, adaptor.getPtr());
 
+      bool needScalarFence = loadOp.getIsVolatile() ||
+                             loadOp.getCache() == triton::CacheModifier::CG ||
+                             loadOp.getCache() == triton::CacheModifier::CV;
+
       auto scalarV = rewriter.create<scf::IfOp>(
           loc, mask,
           [&](OpBuilder &builder, Location loc) {
+            if (needScalarFence)
+              doMemFence(builder, loadOp.getOperation());
             builder.create<scf::YieldOp>(
                 loc, ValueRange{builder.create<memref::LoadOp>(
                          loc, buffer, ValueRange{zero})});
@@ -264,14 +270,23 @@ struct TritonStoreOpLowering : SharedConversionPattern<triton::StoreOp> {
           adaptor.getMask()
               ? adaptor.getMask()
               : rewriter.create<arith::ConstantIntOp>(loc, 1, 1).getResult();
-      auto isThread0 = rewriter.create<arith::CmpIOp>(
+      auto masterWarpId = getMasterThreadId(storeOp.getOperation());
+      auto isMasterThread = rewriter.create<arith::CmpIOp>(
           loc, arith::CmpIPredicate::eq,
-          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x), zero);
-      mask = rewriter.create<arith::AndIOp>(loc, mask, isThread0);
+          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+          rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+      mask = rewriter.create<arith::AndIOp>(loc, mask, isMasterThread);
+
+      bool needScalarFence = storeOp.getCache() == triton::CacheModifier::CG ||
+                             storeOp.getCache() == triton::CacheModifier::CS ||
+                             storeOp.getCache() == triton::CacheModifier::WT;
+
       rewriter.create<scf::IfOp>(
           loc, mask, [&](OpBuilder &builder, Location loc) {
             builder.create<memref::StoreOp>(loc, adaptor.getValue(), buffer,
                                             ValueRange{zero});
+            if (needScalarFence)
+              doMemFence(builder, storeOp.getOperation());
             builder.create<scf::YieldOp>(loc);
           });
       leaveTritionOp(rewriter, storeOp.getOperation());

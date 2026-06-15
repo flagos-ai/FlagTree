@@ -216,8 +216,10 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
   }
 
   // Compute per-thread offsets for source and tile.
-  auto srcThreadOffsets = computeThreadOffsets(loc, rewriter, srcTy);
-  auto tileThreadOffsets = computeThreadOffsets(loc, rewriter, tileTy);
+  auto srcThreadOffsets =
+      computeThreadOffsets(loc, rewriter, srcTy, targetInfo);
+  auto tileThreadOffsets =
+      computeThreadOffsets(loc, rewriter, tileTy, targetInfo);
 
   auto smemPtrTy =
       LLVM::LLVMPointerType::get(ctx, targetInfo.getSharedAddressSpace());
@@ -284,7 +286,10 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
     rewriter.create<LLVM::StoreOp>(loc, tileVals[i], sp, elemBytes);
   }
   // Synchronize threads after tile store.
-  rewriter.create<NVVM::Barrier0Op>(loc);
+  if (targetInfo.isHCU())
+    targetInfo.barrier(loc, rewriter, /*isWarpSync=*/false);
+  else
+    rewriter.create<NVVM::Barrier0Op>(loc);
 
   auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
   SmallVector<Value> resultVals;
@@ -334,7 +339,10 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
     resultVals.push_back(merged);
   }
 
-  rewriter.create<NVVM::Barrier0Op>(loc);
+  if (targetInfo.isHCU())
+    targetInfo.barrier(loc, rewriter, /*isWarpSync=*/false);
+  else
+    rewriter.create<NVVM::Barrier0Op>(loc);
   // Synchronize threads after tile load.
   Value ret = packLLElements(loc, typeConverter, resultVals, rewriter, dstTy);
   rewriter.replaceOp(op, ret);

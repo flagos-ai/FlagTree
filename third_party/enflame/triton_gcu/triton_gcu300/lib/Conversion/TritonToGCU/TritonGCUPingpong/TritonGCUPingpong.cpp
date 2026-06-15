@@ -82,20 +82,6 @@ static bool preCondition(scf::ForOp forOp) {
   return true;
 }
 
-// static void tryAndPipelineOuterLoop(scf::ForOp forOp) {
-//   mlir::triton::gcu::PipeliningOption options;
-//   bool foundSchedule = false;
-//   // Limit 2 stages to not require extra shared memory.
-//   foundSchedule = gcu::getOuterLoopSchedule(forOp, /*numStage=*/2, options);
-//   if (!foundSchedule)
-//     return;
-//   IRRewriter rewriter(forOp->getContext());
-//   rewriter.setInsertionPoint(forOp);
-//   FailureOr<scf::ForOp> newForOp =
-//       mlir::triton::gcu::pipelineForLoop(rewriter, forOp, options);
-//   (void)newForOp;
-// }
-
 static bool pipelineLoop(scf::ForOp forOp, int numStages) {
   mlir::triton::gcu::PipeliningOption options;
   if (!preCondition(forOp))
@@ -234,13 +220,9 @@ void TritonGCUPingpongPass::runOnOperation() {
     LLVM_DEBUG({ llvm::dbgs() << "no loops \n"; });
     return;
   }
-  llvm::SmallSetVector<scf::ForOp, 8> outerLoops;
   for (scf::ForOp forOp : loops) {
-    auto outerLoop = dyn_cast<scf::ForOp>(forOp->getParentOp());
     int loopNumStages = getNumStagesOrDefault(forOp);
-    bool pipelined = pipelineLoop(forOp, loopNumStages);
-    if (pipelined && outerLoop && getNumStagesOrDefault(outerLoop) > 2)
-      outerLoops.insert(outerLoop);
+    pipelineLoop(forOp, loopNumStages);
   }
 
   // Clean up arithmetic before applying the next level of pipelining to
@@ -251,21 +233,4 @@ void TritonGCUPingpongPass::runOnOperation() {
   arithDialect->getCanonicalizationPatterns(patterns);
   if (applyPatternsGreedily(getOperation(), std::move(patterns)).failed())
     return signalPassFailure();
-
-  // Try to pipeline the outer loop to overlap the prologue and epilogue of
-  // the inner loop.
-  // for (scf::ForOp outerLoop : outerLoops)
-  //   tryAndPipelineOuterLoop(outerLoop);
-
-  // Re-collect loop ops todo support store latter
-  // loops.clear();
-  // getOperation()->walk([&](scf::ForOp forOp) {
-  //   // Bail out for loops with num_stage <= 1.
-  //   if (getNumStagesOrDefault(forOp) > 1)
-  //     loops.push_back(forOp);
-  // });
-
-  // for (scf::ForOp forOp : loops) {
-  //   mlir::triton::pipelineTMAStores(forOp);
-  // }
 }

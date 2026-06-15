@@ -78,36 +78,6 @@ Value createConstantZero(OpBuilder &builder, Location loc, Type elemType) {
   return Value();
 }
 
-Value createConstantNaN(OpBuilder &builder, Location loc, Type elemType) {
-  const llvm::fltSemantics *sem = nullptr;
-  if (elemType.isF32()) {
-    sem = &llvm::APFloatBase::IEEEsingle();
-  } else if (elemType.isBF16()) {
-    sem = &llvm::APFloatBase::BFloat();
-  } else if (elemType.isF16()) {
-    sem = &llvm::APFloatBase::IEEEhalf();
-  } else if (elemType.isF64()) {
-    sem = &llvm::APFloatBase::IEEEdouble();
-  } else if (llvm::isa<Float8E4M3B11FNUZType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E4M3B11FNUZ();
-  } else if (llvm::isa<Float8E4M3FNUZType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E4M3FNUZ();
-  } else if (llvm::isa<Float8E5M2FNUZType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E5M2FNUZ();
-  } else if (llvm::isa<Float8E4M3FNType>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E4M3FN();
-  } else if (llvm::isa<Float8E5M2Type>(elemType)) {
-    sem = &llvm::APFloatBase::Float8E5M2();
-  } else {
-    std::string o;
-    llvm::raw_string_ostream os(o);
-    elemType.print(os);
-    llvm_unreachable((o + " is unsupported").c_str());
-  }
-  return builder.create<arith::ConstantFloatOp>(
-      loc, dyn_cast<FloatType>(elemType), APFloat::getNaN(*sem));
-}
-
 Value createConstantInf(OpBuilder &builder, Location loc, Type elemType,
                         bool isNegative) {
   const llvm::fltSemantics *sem = nullptr;

@@ -5,6 +5,7 @@ from .core import (
     copy,
     memory_space,
     local_ptr,
+    warp_specialize,
 )
 from .types import (layout, shared_layout, swizzled_shared_layout, tensor_memory_layout, nv_mma_shared_layout, scope,
                     buffered_tensor, buffered_tensor_type, smem, tmem)
@@ -17,6 +18,7 @@ __all__ = [
     "alloc",
     "copy",
     "local_ptr",
+    "warp_specialize",
     "storage_kind",
     "layout",
     "memory_space",

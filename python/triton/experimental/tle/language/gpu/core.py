@@ -4,6 +4,8 @@ import triton.language.core as tl
 from typing import Optional, Sequence
 from enum import Enum
 from . import types as tle
+from .mthreads import copy as mthreads_copy
+from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
 
 from triton.language.core import (
     constexpr,
@@ -28,6 +30,142 @@ class pipeline(range):
 
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
+
+
+class WarpSpecializeCallerContext:
+
+    def __init__(self, num_warps: int):
+        self.num_warps = num_warps
+
+    def mangle(self):
+        return f"_TLEWSNW{self.num_warps}"
+
+    def initialize_callee(self, fn, builder):
+        fn.set_attr("ttg.num-warps", builder.get_int32_attr(self.num_warps))
+
+
+def _as_call_args(args):
+    args = tl._unwrap_if_constexpr(args)
+    if isinstance(args, tl.tuple):
+        args = tuple(args.values)
+    elif isinstance(args, tuple):
+        args = args
+    else:
+        raise ValueError(f"warp_specialize function arguments must be a tuple, got {type(args).__name__}")
+
+    def normalize(arg):
+        if isinstance(arg, (tl.dtype, float, int, bool)):
+            return tl.constexpr(arg)
+        return arg
+
+    return tuple(normalize(arg) for arg in args)
+
+
+def _as_result_values(results):
+    if results is None:
+        return tuple()
+    if isinstance(results, tl.tuple):
+        return tuple(results.values)
+    if isinstance(results, tuple):
+        return results
+    return (results, )
+
+
+def _warp_specialize_capture_key(handle):
+    try:
+        hash(handle)
+    except TypeError:
+        return id(handle)
+    return handle
+
+
+def _deduplicate_warp_specialize_captures(worker_items):
+    capture_handles = []
+    capture_indices = {}
+    deduplicated_items = []
+    for worker_fn, worker_args, flattened in worker_items:
+        remapped = []
+        for handle in flattened:
+            key = _warp_specialize_capture_key(handle)
+            index = capture_indices.get(key)
+            if index is None:
+                index = len(capture_handles)
+                capture_indices[key] = index
+                capture_handles.append(handle)
+            remapped.append(index)
+        deduplicated_items.append((worker_fn, worker_args, flattened, remapped))
+    return capture_handles, deduplicated_items
+
+
+@tl.builtin
+def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _semantic=None, _generator=None):
+    """
+    Create an explicit GPU warp-specialized region.
+
+    ``functions_and_args[0]`` is emitted into the default partition. Later
+    entries are emitted into worker partitions, with their warp counts and
+    requested register counts provided by ``worker_num_warps`` and
+    ``worker_num_regs``.
+    """
+    if _generator is None:
+        raise ValueError("warp_specialize requires a Triton code generator")
+    functions_and_args = tl._unwrap_if_constexpr(functions_and_args)
+    worker_num_warps = [tl._unwrap_if_constexpr(w) for w in tl._unwrap_if_constexpr(worker_num_warps)]
+    worker_num_regs = [tl._unwrap_if_constexpr(r) for r in tl._unwrap_if_constexpr(worker_num_regs)]
+    if len(functions_and_args) < 1:
+        raise ValueError("warp_specialize requires at least a default partition function")
+    num_partitions = len(functions_and_args) - 1
+    if num_partitions != len(worker_num_warps):
+        raise ValueError(
+            f"warp_specialize got {num_partitions} worker functions but {len(worker_num_warps)} warp counts")
+    if num_partitions != len(worker_num_regs):
+        raise ValueError(
+            f"warp_specialize got {num_partitions} worker functions but {len(worker_num_regs)} register counts")
+
+    builder = _semantic.builder
+    insert_pt = builder.get_insertion_point()
+
+    default_fn, default_args = functions_and_args[0]
+    default_args = _as_call_args(default_args)
+    default_block = builder.new_block()
+    builder.set_insertion_point_to_start(default_block)
+    default_results = _generator.call_JitFunction(default_fn, default_args, kwargs={})
+    default_result_values = _as_result_values(default_results)
+    default_result_handles = flatten_values_to_ir(default_result_values)
+    builder.create_warp_yield(default_result_handles)
+    result_types = [result.get_type() for result in default_result_handles]
+
+    worker_items = []
+    for worker_fn, worker_args in functions_and_args[1:]:
+        worker_args = _as_call_args(worker_args)
+        flattened = flatten_values_to_ir(worker_args)
+        worker_items.append((worker_fn, worker_args, flattened))
+    worker_arg_handles, worker_items = _deduplicate_warp_specialize_captures(worker_items)
+
+    builder.restore_insertion_point(insert_pt)
+    ws_op = builder.create_warp_specialize(result_types, worker_arg_handles, worker_num_warps)
+    ws_op.get_default_region().push_back(default_block)
+    ws_op.set_requested_registers(worker_num_regs)
+
+    builder.create_block_with_parent(ws_op.get_partition_op_holder(), [])
+    partitions_op = builder.create_warp_specialize_partitions(num_partitions)
+    partition_arg_types = [arg.get_type() for arg in worker_arg_handles]
+    for idx, (worker_fn, worker_args, flattened, remapped) in enumerate(worker_items):
+        block = builder.create_block_with_parent(partitions_op.get_region(idx), partition_arg_types)
+        block_args = [block.get_argument(remapped[j]) for j in builtins.range(len(flattened))]
+        block_values = tuple(unflatten_ir_values(block_args, [arg.type for arg in worker_args]))
+        caller_context = WarpSpecializeCallerContext(worker_num_warps[idx])
+        _generator.call_JitFunction(worker_fn, block_values, kwargs={}, caller_context=caller_context)
+        builder.create_warp_return()
+
+    builder.set_insertion_point_after(ws_op.get_operation())
+    if not default_result_values:
+        return None
+    result_handles = [ws_op.get_result(i) for i in builtins.range(len(result_types))]
+    result_values = tuple(unflatten_ir_values(result_handles, [value.type for value in default_result_values]))
+    if len(result_values) == 1:
+        return result_values[0]
+    return result_values
 
 
 @tl.builtin
@@ -86,6 +224,7 @@ def alloc(
     if not isinstance(scope, tle.scope):
         raise ValueError(f"Storage type must be tle.scope, but got {type(scope)}")
 
+    layout = tl._unwrap_if_constexpr(layout)
     if layout is not None and not isinstance(layout, tle.shared_layout):
         # Handle constexpr None
         if hasattr(layout, 'value') and layout.value is None:
@@ -111,9 +250,6 @@ def alloc(
         full_shape = unwrapped_shape
         dtype = tl._unwrap_if_constexpr(dtype)
         elem_type = dtype.to_ir(_semantic.builder)
-
-        # Parse layout (if constexpr)
-        layout = tl._unwrap_if_constexpr(layout)
 
         if layout is None:
             if storage == tle.smem:
@@ -225,6 +361,7 @@ def copy(
         TMA copy with offsets:
             tle.copy(tma_desc, local_buf, [64, 64], [x_offset, y_offset])
     """
+    mthreads_enabled = mthreads_copy.enabled()
 
     def normcopy(
         src: tl.tensor,
@@ -233,6 +370,8 @@ def copy(
         direction,
         _semantic=None,
     ) -> None:
+        if mthreads_enabled:
+            mthreads_copy.validate_normal_copy(src, dst, shape, direction)
 
         # Semantic analysis
         try:
@@ -254,8 +393,10 @@ def copy(
 
         try:
             if direction == CopyDirection.GM_TO_LOCAL:
+                # None fills the FlagTree hints slot; TLE copy has no hints to pass.
+                load_extra_args = () if mthreads_enabled else (None, )
                 tt_load = _semantic.load(src, mask, other, boundary_check, padding_option, cache_modifier,
-                                         eviction_policy, volatile, None)
+                                         eviction_policy, volatile, *load_extra_args)
                 local_ptrs = local_ptr(dst, _make_full_indices(dst, _semantic), _semantic=_semantic)
                 _semantic.store(local_ptrs, tt_load, mask, boundary_check, cache_modifier, eviction_policy)
             else:
@@ -357,6 +498,8 @@ def copy(
             raise ValueError(f"Shape parameter must be tuple or list, but got {type(shape)}")
     if is_normcopy:
         return normcopy(src, dst, shape, direction, _semantic)
+    if mthreads_enabled:
+        return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, _semantic)
     else:
         return tmacopy(src, dst, direction, shape, offsets, _semantic)
 

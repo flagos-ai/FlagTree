@@ -25,8 +25,8 @@ namespace triton {
 namespace gcu {
 
 std::optional<int64_t> getIntAttr(const OpFoldResult ofr) {
-  if (llvm::isa<Attribute>(ofr) && isa<IntegerAttr>(ofr.get<Attribute>()))
-    return dyn_cast<IntegerAttr>(ofr.get<Attribute>()).getInt();
+  if (llvm::isa<Attribute>(ofr) && isa<IntegerAttr>(cast<Attribute>(ofr)))
+    return dyn_cast<IntegerAttr>(cast<Attribute>(ofr)).getInt();
 
   return std::nullopt;
 }
@@ -229,7 +229,7 @@ OpFoldResult mulOFRValue(OpBuilder &builder, Location loc,
   auto mulOp = builder.create<arith::MulIOp>(
       loc,
       builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-                                         lhs.get<Value>()),
+                                         cast<Value>(lhs)),
       builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhs));
   return mulOp.getResult();
 }

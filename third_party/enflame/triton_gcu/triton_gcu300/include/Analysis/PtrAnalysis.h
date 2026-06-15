@@ -84,7 +84,8 @@ struct PtrState {
                 const PtrState &rhsState);
 
   // set state for srcState
-  void setState(OpBuilder &builder, Location loc, const PtrState &srcState);
+  void setState(OpBuilder & /*builder*/, Location /*loc*/,
+                const PtrState &srcState);
 
   PtrInfo getPtrInfo(OpBuilder &builder, Location loc, const MaskState &mstate);
 };
@@ -99,9 +100,9 @@ public:
 
   // Operand is a block argument
   static void
-  visitBlockArgument(PatternRewriter &rewriter, Location loc, BlockArgument arg,
-                     PtrState &state,
-                     llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+  visitBlockArgument(PatternRewriter & /*rewriter*/, Location /*loc*/,
+                     BlockArgument arg, PtrState &state,
+                     llvm::SmallDenseMap<Value, PtrState> & /*knownPtrs*/);
 
   // Operand is the result of arith.constant that is a splat
   // Main assumptions:
@@ -113,7 +114,7 @@ public:
   static void
   visitOperandConstSplat(PatternRewriter &rewriter, Location loc,
                          arith::ConstantOp op, PtrState &state,
-                         llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+                         llvm::SmallDenseMap<Value, PtrState> & /*knownPtrs*/);
 
   // Operand is the result of arith.addi. Process both arguments and insert any
   // arith.addi instruction as needed.
@@ -195,9 +196,9 @@ public:
   //  offset[0] = start
   //  strides[0] = ceiling( (end - start) / shape[0] )
   static void
-  visitOperandMakeRange(PatternRewriter &rewriter, Location loc,
+  visitOperandMakeRange(PatternRewriter &rewriter, Location /*loc*/,
                         triton::MakeRangeOp rangeOp, PtrState &state,
-                        llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+                        llvm::SmallDenseMap<Value, PtrState> & /*knownPtrs*/);
 
   // Operand is the result of expand_dims
   // Main assumptions:
@@ -311,7 +312,7 @@ public:
                     llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // bypass ForOp not include ld/st.
-  static bool byPassForOp(PatternRewriter &rewriter, scf::ForOp op,
+  static bool byPassForOp(PatternRewriter & /*rewriter*/, scf::ForOp op,
                           const SmallVector<Operation *, 8> &candidateOps);
   // Parse the state of ForOp, insert any instruction needed to calculate
   // strides and offsets, build PtrState for this operand, and record PtrState
@@ -331,8 +332,9 @@ public:
                              llvm::SmallDenseMap<Value, MaskState> &knownMasks);
 
   // Parse the iter arg of ForOp, fold away unused ones.
-  static void foldAwayForOp(PatternRewriter &rewriter, scf::ForOp op,
-                            llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+  static void
+  foldAwayForOp(PatternRewriter & /*rewriter*/, scf::ForOp op,
+                llvm::SmallDenseMap<Value, PtrState> & /*knownPtrs*/);
 
   // Collect candidate load/store op which could be converted to dma.
   static void collectCandidateLoadStoreOps(

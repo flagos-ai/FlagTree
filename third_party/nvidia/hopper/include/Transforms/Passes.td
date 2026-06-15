@@ -72,7 +72,8 @@ def NVGPUTestWSCodePartition: Pass<"nvgpu-test-ws-code-partition", "mlir::Module
 
   let description = "This pass generates warp specialized code baed on task id attributes.";
 
-  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+  let dependentDialects = ["mlir::gpu::GPUDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect",
                            "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
                            "mlir::triton::nvws::NVWSDialect"];
@@ -86,6 +87,22 @@ def NVGPUTestWSCodePartition: Pass<"nvgpu-test-ws-code-partition", "mlir::Module
     Option<"requestedRegisters", "requested-registers",
            "int32_t", /*default*/"232",
            "number of register requested for computation group">
+  ];
+}
+
+def NVGPUTestWSLowerToken: Pass<"nvgpu-test-ws-lower-token", "mlir::ModuleOp"> {
+  let summary = "test warp specialization token lowering";
+
+  let description = "This pass lowers NVWS synchronization tokens to mbarriers.";
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::nvws::NVWSDialect"];
+  let options = [
+    Option<"numConsumerGroups", "num-consumer-groups",
+           "int32_t", /*default*/"1",
+           "number of consumer warp groups for warp specialization">
   ];
 }
 

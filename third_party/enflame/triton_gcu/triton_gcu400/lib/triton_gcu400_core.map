@@ -1,0 +1,13 @@
+{
+  global:
+    gcu400_pipeline_add_pass;
+    gcu400_pipeline_create;
+    gcu400_pipeline_destroy;
+    gcu400_pipeline_run;
+    gcu400_run_opt;
+    gcu400_string_free;
+    gcu400_pipeline_last_error;
+    gcu400_opt_main;
+  local:
+    *;
+};

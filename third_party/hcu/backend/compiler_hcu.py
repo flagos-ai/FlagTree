@@ -1,5 +1,5 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
-from triton._C.libtriton import ir, passes, llvm, hcu, distributed
+from triton._C.libtriton import ir, passes, llvm, hcu, distributed, tle
 from triton import knobs
 from triton.runtime.errors import HSACOError
 from dataclasses import dataclass
@@ -406,6 +406,10 @@ class HIPBackend(BaseBackend):
         pm.enable_debug()
         passes.ttir.add_convert_to_ttgpuir(pm, f"hip:{options.arch}", options.num_warps, options.warp_size,
                                            options.num_ctas)
+        # flagtree tle: lower tle.extract_tile
+        tle.passes.add_lower_extract_tile(pm)
+        # flagtree tle: lower tle.insert_tile
+        tle.passes.add_lower_insert_tile(pm)
         # TritonDistributed Extension
         # distributed.passes.ttir.add_convert_to_ttgpuir_ext(pm, f"hip:{options.arch}", options.num_warps,
         #                                                    options.warp_size, options.num_ctas)

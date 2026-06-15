@@ -1,3 +1,9 @@
+if(FLAGTREE_TLE)
+  set(NVHopperTransformsTleLibs
+    TritonTLEAnalysis
+  )
+endif()
+
 add_triton_library(NVHopperTransforms
   WarpSpecialization.cpp
   WarpSpecialization/CodePartitionUtility.cpp
@@ -16,6 +22,7 @@ add_triton_library(NVHopperTransforms
   NVHopperTransformsIncGen
 
   LINK_LIBS PUBLIC
+  ${NVHopperTransformsTleLibs}
   TritonIR
   TritonGPUIR
   MLIRTransformUtils

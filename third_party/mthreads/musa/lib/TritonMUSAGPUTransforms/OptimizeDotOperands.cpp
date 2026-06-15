@@ -58,56 +58,116 @@ invertTrailingPermutation(ArrayRef<int64_t> allocShape,
   return result;
 }
 
+static bool isDotLikeUserForSwizzle(Operation *op) {
+  return isa<tt::DotOp, tt::musa::WmmaDotOp>(op);
+}
+
+static void resetWmmaLayoutForMaterializedTranspose(Value dotOperand,
+                                                    Operation *user) {
+  auto wmma = dyn_cast<tt::musa::WmmaDotOp>(user);
+  if (!wmma)
+    return;
+
+  if (wmma.getA() == dotOperand)
+    wmma.setLayoutA(triton::musa::SQMMALayout::row);
+  if (wmma.getB() == dotOperand)
+    wmma.setLayoutB(triton::musa::SQMMALayout::col);
+}
+
+static RankedTensorType getSharedLayoutSourceType(tt::TransOp trans) {
+  RankedTensorType srcTy = trans.getSrc().getType();
+  if (auto srcCvt = trans.getSrc().getDefiningOp<ttg::ConvertLayoutOp>())
+    srcTy = srcCvt.getSrc().getType();
+  return srcTy;
+}
+
+static FailureOr<Value> createSwizzledTransLocalLoad(
+    tt::TransOp trans, Value src, RankedTensorType srcTy,
+    RankedTensorType sharedLoadTy, PatternRewriter &rewriter) {
+  auto cvtEncoding =
+      dyn_cast<ttg::DotOperandEncodingAttr>(sharedLoadTy.getEncoding());
+  if (!cvtEncoding)
+    return failure();
+
+  auto *ctx = rewriter.getContext();
+  auto oldCGALayout = ttg::getCGALayout(srcTy.getEncoding());
+  auto newLl =
+      transposeLinearLayout(oldCGALayout.getLinearLayout(), trans.getOrder());
+  auto newCGALayout = ttg::CGAEncodingAttr::get(ctx, std::move(newLl));
+  auto newInnerCvtEnc = triton::musa::composeMusaOperandSharedLayout(
+      cvtEncoding, srcTy.getShape(),
+      /*order=*/ttg::getOrderForMemory(srcTy), newCGALayout,
+      srcTy.getElementType(),
+      /*needTrans=*/true);
+  if (!newInnerCvtEnc)
+    return failure();
+
+  rewriter.setInsertionPoint(trans);
+  auto sharedMemorySpace = ttg::SharedMemorySpaceAttr::get(ctx);
+  auto alloc = ttg::LocalAllocOp::create(
+      rewriter, trans.getLoc(),
+      ttg::MemDescType::get(srcTy.getShape(), srcTy.getElementType(),
+                            *newInnerCvtEnc, sharedMemorySpace),
+      src);
+  auto newTrans = ttg::MemDescTransOp::create(rewriter, trans.getLoc(), alloc,
+                                              ArrayRef<int32_t>({1, 0}));
+  return ttg::LocalLoadOp::create(rewriter, trans.getLoc(), sharedLoadTy,
+                                  newTrans)
+      .getResult();
+}
+
 class SwizzleShmemConvert : public OpRewritePattern<ttg::ConvertLayoutOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(ttg::ConvertLayoutOp cvtOp,
                                 PatternRewriter &rewriter) const override {
-    if (!cvtOp->hasOneUse() || !isa<tt::DotOp>(cvtOp->use_begin()->getOwner()))
+    if (!cvtOp->hasOneUse() ||
+        !isDotLikeUserForSwizzle(cvtOp->use_begin()->getOwner()))
       return failure();
     auto trans = cvtOp.getSrc().getDefiningOp<tt::TransOp>();
     if (!trans || trans.getOrder() != ArrayRef<int32_t>{1, 0} ||
         !trans->hasOneUse())
       return failure();
 
-    RankedTensorType srcTy = trans.getSrc().getType();
-    if (auto srcCvt = trans.getSrc().getDefiningOp<ttg::ConvertLayoutOp>())
-      srcTy = srcCvt.getSrc().getType();
-
     RankedTensorType sharedLoadTy = cvtOp.getType();
-    auto cvtEncoding =
-        dyn_cast<ttg::DotOperandEncodingAttr>(sharedLoadTy.getEncoding());
-    if (!cvtEncoding)
+    auto localLoad = createSwizzledTransLocalLoad(
+        trans, trans.getSrc(), getSharedLayoutSourceType(trans), sharedLoadTy,
+        rewriter);
+    if (failed(localLoad))
       return failure();
 
-    auto *ctx = getContext();
-    auto oldCGALayout = ttg::getCGALayout(srcTy.getEncoding());
-    auto newLl =
-        transposeLinearLayout(oldCGALayout.getLinearLayout(), trans.getOrder());
-    auto newCGALayout = ttg::CGAEncodingAttr::get(ctx, std::move(newLl));
-    auto newInnerCvtEnc = triton::musa::composeMusaOperandSharedLayout(
-        cvtEncoding, srcTy.getShape(),
-        /*order=*/ttg::getOrderForMemory(srcTy), newCGALayout,
-        srcTy.getElementType(),
-        /*needTrans=*/true);
-    if (!newInnerCvtEnc)
+    resetWmmaLayoutForMaterializedTranspose(cvtOp.getResult(),
+                                            cvtOp->use_begin()->getOwner());
+
+    rewriter.modifyOpInPlace(
+        cvtOp, [&]() { cvtOp.getSrcMutable().assign(*localLoad); });
+    return success();
+  }
+};
+
+class SwizzleShmemTrans : public OpRewritePattern<tt::TransOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tt::TransOp trans,
+                                PatternRewriter &rewriter) const override {
+    if (!trans->hasOneUse() ||
+        !isDotLikeUserForSwizzle(trans->use_begin()->getOwner()))
+      return failure();
+    if (trans.getOrder() != ArrayRef<int32_t>{1, 0})
       return failure();
 
-    rewriter.setInsertionPoint(trans);
-    auto sharedMemorySpace = ttg::SharedMemorySpaceAttr::get(ctx);
-    auto alloc = ttg::LocalAllocOp::create(
-        rewriter, trans.getLoc(),
-        ttg::MemDescType::get(srcTy.getShape(), srcTy.getElementType(),
-                              *newInnerCvtEnc, sharedMemorySpace),
-        trans.getSrc());
-    auto newTrans = ttg::MemDescTransOp::create(rewriter, trans.getLoc(), alloc,
-                                                ArrayRef<int32_t>({1, 0}));
-    auto localLoadOp = ttg::LocalLoadOp::create(rewriter, trans.getLoc(),
-                                                sharedLoadTy, newTrans);
-    rewriter.modifyOpInPlace(cvtOp, [&]() {
-      cvtOp.getSrcMutable().assign(localLoadOp.getResult());
-    });
+    RankedTensorType sharedLoadTy = trans.getType();
+    auto localLoad = createSwizzledTransLocalLoad(
+        trans, trans.getSrc(), getSharedLayoutSourceType(trans), sharedLoadTy,
+        rewriter);
+    if (failed(localLoad))
+      return failure();
+
+    resetWmmaLayoutForMaterializedTranspose(trans.getResult(),
+                                            trans->use_begin()->getOwner());
+    rewriter.replaceOp(trans, *localLoad);
     return success();
   }
 };
@@ -225,7 +285,8 @@ struct TritonMUSAGPUOptimizeDotOperandsPass
       return signalPassFailure();
 
     RewritePatternSet patterns(context);
-    patterns.add<SwizzleShmemConvert, NormalizeDescriptorTransLocalAlloc,
+    patterns.add<SwizzleShmemConvert, SwizzleShmemTrans,
+                 NormalizeDescriptorTransLocalAlloc,
                  NormalizeDescriptorReshapeLocalAlloc>(context);
     ttg::ConvertLayoutOp::getCanonicalizationPatterns(patterns, context);
     if (failed(applyPatternsGreedily(mod, std::move(patterns))))

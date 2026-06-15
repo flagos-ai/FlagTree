@@ -23,6 +23,24 @@ namespace mlir {
 namespace triton {
 namespace nvidia_gpu {
 
+#ifdef __TLE__
+static constexpr llvm::StringLiteral
+    kTleWgmmaAccumulatorChainCAttr("tle.wgmma_accumulator_chain_c");
+
+static Value skipNoopDefs(Value value) {
+  while (Operation *def = value.getDefiningOp()) {
+    if (!isNoop(def) || def->getNumOperands() != 1 || def->getNumResults() != 1)
+      break;
+    value = def->getOperand(0);
+  }
+  return value;
+}
+
+static WarpGroupDotOp getAccumulatorChainSourceDot(WarpGroupDotOp dot) {
+  return skipNoopDefs(dot.getC()).getDefiningOp<WarpGroupDotOp>();
+}
+#endif
+
 #define GEN_PASS_DEF_TRITONGPUFENCEINSERTION
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h.inc"
 
@@ -100,8 +118,15 @@ public:
 
       // If the previous op is already a fence, this one isn't needed.
 #ifdef __TLE__
-      if (hasEquivalentPreviousFence(fence))
+      if (hasEquivalentPreviousFence(fence)) {
+        Operation *previousFence = fence->getPrevNode();
+        closeOpenWgmmaCommitGroupBefore(previousFence);
+        materializeAccumulatorChainBeforeLateFence(dotOp, previousFence);
         fence->erase();
+      } else {
+        closeOpenWgmmaCommitGroupBefore(fence);
+        materializeAccumulatorChainBeforeLateFence(dotOp, fence);
+      }
 #else
       if (auto lastFence =
               dyn_cast_or_null<FenceAsyncSharedOp>(fence->getPrevNode())) {
@@ -117,6 +142,81 @@ public:
 
 private:
 #ifdef __TLE__
+  void materializeAccumulatorChainBeforeLateFence(DotOpInterface dotOp,
+                                                  Operation *fence) const {
+    auto targetDot = dyn_cast<WarpGroupDotOp>(dotOp.getOperation());
+    if (!targetDot || !targetDot->hasAttr(kTleWgmmaAccumulatorChainCAttr))
+      return;
+    if (!fence || fence->getBlock() != targetDot->getBlock() ||
+        !fence->isBeforeInBlock(targetDot))
+      return;
+
+    WarpGroupDotOp sourceDot = getAccumulatorChainSourceDot(targetDot);
+    if (!sourceDot || sourceDot->getBlock() != targetDot->getBlock() ||
+        !sourceDot->isBeforeInBlock(fence))
+      return;
+
+    unsigned commitsThroughSourceGroup = 0;
+    for (Operation *op = sourceDot->getNextNode(); op && op != fence;
+         op = op->getNextNode()) {
+      if (isa<WarpGroupDotWaitOp>(op))
+        return;
+      if (isa<WarpGroupDotCommitOp>(op))
+        ++commitsThroughSourceGroup;
+    }
+
+    // FenceInsertion runs after the WGMMA wait scheduler. If it inserts a
+    // shared-operand fence in front of a dot that was previously allowed to use
+    // a pending accumulator as C, the pass has created a new ptxas-visible
+    // accumulator pipeline boundary. Materialize the source accumulator before
+    // that boundary and rewrite the later dot to consume the waited value. This
+    // keeps the invariant used by the scheduler: non-WGMMA sync/fence ops may
+    // overlap pending WGMMA work, but a later WGMMA cannot reuse the same
+    // accumulator across that boundary until a matching wait has closed the
+    // hardware stage.
+    OpBuilder builder(fence);
+    SmallVector<Value, 4> waitOperands;
+    waitOperands.push_back(sourceDot.getResult());
+    for (Value operand : sourceDot->getOperands()) {
+      if (!isa<ttg::MemDescType>(operand.getType()))
+        continue;
+      if (!llvm::is_contained(waitOperands, operand))
+        waitOperands.push_back(operand);
+    }
+
+    unsigned pendings =
+        commitsThroughSourceGroup > 0 ? commitsThroughSourceGroup - 1 : 0;
+    auto wait = WarpGroupDotWaitOp::create(builder, fence->getLoc(),
+                                           waitOperands, pendings);
+    targetDot.getCMutable().assign(wait.getResult(0));
+    targetDot->removeAttr(kTleWgmmaAccumulatorChainCAttr);
+  }
+
+  void closeOpenWgmmaCommitGroupBefore(Operation *boundary) const {
+    if (!boundary)
+      return;
+
+    // FenceInsertion runs after the WGMMA scheduler in the NVIDIA pipeline.
+    // A fence inserted at this point must still obey the same invariant as
+    // scheduler-visible fences: a WGMMA commit group is a contiguous launch
+    // region. If the fence lands after async WGMMA launches but before their
+    // commit, close the group before the fence. This is only a commit boundary;
+    // materializeAccumulatorChainBeforeLateFence handles the separate case
+    // where the late fence splits an already-scheduled accumulator chain.
+    for (Operation *prev = boundary->getPrevNode(); prev;
+         prev = prev->getPrevNode()) {
+      if (isa<WarpGroupDotCommitOp, WarpGroupDotWaitOp>(prev))
+        return;
+      if (auto dot = dyn_cast<WarpGroupDotOp>(prev)) {
+        if (!dot.getIsAsync())
+          return;
+        OpBuilder builder(boundary);
+        WarpGroupDotCommitOp::create(builder, boundary->getLoc());
+        return;
+      }
+    }
+  }
+
   void findAsyncCopyToSharedUsers(Value value, DenseSet<Value> &visitedValues,
                                   llvm::SetVector<Operation *> &result) {
     if (!visitedValues.insert(value).second)
@@ -133,6 +233,52 @@ private:
       }
     }
   }
+
+#ifdef __TLE__
+  void
+  findLocalStoresThroughMemDescViews(Value value,
+                                     DenseSet<Value> &visitedValues,
+                                     llvm::SetVector<Operation *> &result) {
+    if (!visitedValues.insert(value).second)
+      return;
+    for (Operation *user : value.getUsers()) {
+      if (isa<ttg::LocalStoreOp>(user)) {
+        result.insert(user);
+        continue;
+      }
+      if (user->hasTrait<OpTrait::MemDescViewTrait>()) {
+        for (Value viewResult : user->getResults())
+          findLocalStoresThroughMemDescViews(viewResult, visitedValues, result);
+      }
+    }
+  }
+
+  void findLocalStoresInRegionThroughMemDescViews(
+      Value value, Region *region, llvm::SetVector<Operation *> &result) {
+    llvm::SetVector<Value> aliases;
+    aliases.insert(value);
+
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      region->walk([&](Operation *op) {
+        if (!op->hasTrait<OpTrait::MemDescViewTrait>())
+          return;
+        if (!llvm::any_of(op->getOperands(), [&](Value operand) {
+              return aliases.count(operand);
+            }))
+          return;
+        for (Value viewResult : op->getResults())
+          changed |= aliases.insert(viewResult);
+      });
+    }
+
+    region->walk([&](ttg::LocalStoreOp store) {
+      if (aliases.count(store.getDst()))
+        result.insert(store);
+    });
+  }
+#endif
 
   bool valueDefinedInside(Value value, Operation *ancestor) const {
     if (Operation *def = value.getDefiningOp())
@@ -196,6 +342,13 @@ private:
         if (localAlloc.getSrc()) {
           result.insert(op);
         }
+#ifdef __TLE__
+        DenseSet<Value> visitedStoreValues;
+        findLocalStoresThroughMemDescViews(localAlloc.getResult(),
+                                           visitedStoreValues, result);
+        if (!result.empty())
+          return;
+#endif
         // Check if there are local_store ops that write to that buffer.
         for (auto user : localAlloc.getResult().getUsers()) {
           while (user->hasOneUse() &&
@@ -224,6 +377,14 @@ private:
 
     // reach BlockArgument
     BlockArgument arg = cast<BlockArgument>(operand);
+#ifdef __TLE__
+    DenseSet<Value> visitedStoreValues;
+    findLocalStoresThroughMemDescViews(arg, visitedStoreValues, result);
+    findLocalStoresInRegionThroughMemDescViews(arg, arg.getOwner()->getParent(),
+                                               result);
+    if (!result.empty())
+      return;
+#endif
     unsigned argNum = arg.getArgNumber();
     Operation *argOwner = arg.getOwner()->getParentOp();
     // look through ForOp iter argument

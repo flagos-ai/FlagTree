@@ -42,6 +42,7 @@ add_triton_library(TritonHCUGPUToLLVM
     LINK_LIBS PUBLIC
     TritonGPUToLLVM
     TritonHCUGPUIR
+    TritonTLETransforms
     LLVMCore
     LLVMPasses
     LLVMSupport

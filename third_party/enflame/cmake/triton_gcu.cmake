@@ -1,170 +1,150 @@
 # For Triton
+#
+# Staged pipeline matches kurama/cmake/triton_gcu.cmake:
+# same macro names and call order; implementations differ (FetchContent vs in-tree).
 
-# ######################################################
-# Parallel jobs for nested cmake --build; use env MAX_JOBS when set, else default -j4
-if(DEFINED ENV{MAX_JOBS} AND NOT "$ENV{MAX_JOBS}" STREQUAL "")
-  set(JOB_SETTING "-j$ENV{MAX_JOBS}")
-else()
-  set(JOB_SETTING "-j4")
-endif()
-
-# ######################################################
-# Get LLVM for triton
+include(triton_gcu_common)
 include(triton_gcu_llvm)
-include(triton_gcu_llvm_config)
 
-# Disable warnings that show up in external code (gtest;pybind11)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-but-set-parameter -Wno-attributes")
-include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
-include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib)
-include_directories(${CMAKE_CURRENT_BINARY_DIR}/include) # Tablegen'd files
+macro(triton_gcu_local_triton_source)
+  set(third_party_triton_${arch}_fetch_src "${CMAKE_SOURCE_DIR}")
+  file(GLOB_RECURSE third_party_triton_${arch}_src "${CMAKE_SOURCE_DIR}/include/*" "${CMAKE_SOURCE_DIR}/lib/*" "${CMAKE_SOURCE_DIR}/third_party/f2reduce/*" "${CMAKE_SOURCE_DIR}/third_party/proton/*")
+endmacro()
 
-# 使用本地的 triton 文件，不需要下载（使用根目录的 triton）
-set(third_party_triton_${arch}_fetch_src "${CMAKE_SOURCE_DIR}")
-set(third_party_triton_${arch}_fetch_bin "${CMAKE_CURRENT_BINARY_DIR}/third_party_triton_${arch}_bin")
-file(GLOB_RECURSE third_party_triton_${arch}_src "${CMAKE_SOURCE_DIR}/include/*" "${CMAKE_SOURCE_DIR}/lib/*" "${CMAKE_SOURCE_DIR}/third_party/f2reduce/*" "${CMAKE_SOURCE_DIR}/third_party/proton/*")
+# --- Stages (keep names aligned with kurama for side-by-side review) ---
 
-include(${CMAKE_CURRENT_LIST_DIR}/triton_${arch}.cmake)
+macro(triton_gcu_stage_init)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-but-set-parameter -Wno-attributes")
+  set(_triton_build_target triton_build_in_flagtree)
+  set(third_party_triton_${arch}_fetch_bin "${CMAKE_BINARY_DIR}/triton_bin")
+  triton_gcu_local_triton_source()
 
-file(MAKE_DIRECTORY ${third_party_triton_${arch}_fetch_bin})
+  triton_gcu_add_llvm_triton_enflame_base_include_directories(${arch} "${MLIR_INCLUDE_DIRS}" "${LLVM_INCLUDE_DIRS}")
 
-list(APPEND triton_cmake_args -DMLIR_DIR=${MLIR_DIR})
-list(APPEND triton_cmake_args -DLLVM_LIBRARY_DIR=${LLVM_LIBRARY_DIR})
-list(APPEND triton_cmake_args -DTRITON_BUILD_UT=OFF)
-list(APPEND triton_cmake_args -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER})
-list(APPEND triton_cmake_args -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
-list(APPEND triton_cmake_args -DCMAKE_BUILD_TYPE=Release)
+  # In flagtree Triton is built in-tree: CMAKE_SOURCE_DIR IS the Triton root.
+  # All variables that setup_triton_fetch would set via PARENT_SCOPE are defined
+  # here instead (macros share the caller's scope, avoiding PARENT_SCOPE issues).
+  set(TRITON_SOURCE_DIR ${CMAKE_SOURCE_DIR})
+  set(TRITON_BINARY_DIR ${CMAKE_BINARY_DIR})
+  set(TRITON_BUILD_TARGET "triton_build_in_flagtree")
+  set(TRITON_OUTPUT_FILES "")
+  set(TRITON_CORE_LIBS
+    TritonIR
+    TritonGPUIR
+    TritonGPUTransforms
+    TritonTransforms
+    TritonToTritonGPU
+    TritonAnalysis
+    TritonGPUToLLVM
+    TritonLLVMIR
+    TritonTools
+    GluonIR
+    GluonTransforms
+  )
+  include_directories(SYSTEM ${TRITON_SOURCE_DIR}/include)
+  include_directories(SYSTEM ${TRITON_BINARY_DIR}/include)
+endmacro()
 
-# 删除${third_party_triton_${arch}_fetch_src}/include/triton/Dialect/Triton/IR/TritonOps.td中HasParent<"ModuleOp">这一行
-execute_process(
-  COMMAND sed -i "\\#HasParent<\"ModuleOp\">#d"
-            ${third_party_triton_${arch}_fetch_src}/include/triton/Dialect/Triton/IR/TritonOps.td
-            #ERROR_QUIET
-)
+macro(triton_gcu_stage_nested_upstream_triton_build)
+  if(TARGET ${_triton_build_target})
+    message(STATUS "[triton-${arch}] reuse ${_triton_build_target}")
+  else()
+    file(MAKE_DIRECTORY ${third_party_triton_${arch}_fetch_bin})
 
-# 行首添加return failure(); 对func body增加注释
-execute_process(
-  COMMAND sed -i "s/\\/\\/ Prevent LLVM's inliner to inline this function/return failure();\\/*/"
-            ${third_party_triton_${arch}_fetch_src}/lib/Conversion/TritonGPUToLLVM/FuncOpToLLVM.cpp
-            #ERROR_QUIET
-)
-execute_process(
-  COMMAND sed -i "s/return success();/*\\//"
-            ${third_party_triton_${arch}_fetch_src}/lib/Conversion/TritonGPUToLLVM/FuncOpToLLVM.cpp
-            #ERROR_QUIET
-)
+    triton_gcu_append_nested_triton_cmake_args(triton_cmake_args "${MLIR_DIR}" "${LLVM_LIBRARY_DIR}")
+    triton_gcu_apply_common_triton_upstream_patches("${third_party_triton_${arch}_fetch_src}")
 
-# 立即修复 Passes.h 中的 NVWS 依赖问题（移除不存在的 NVIDIA 特定头文件）
-execute_process(
-    COMMAND sed -i "\\#nvidia/include/Dialect/NVWS/IR/Dialect.h#d"
-            ${third_party_triton_${arch}_fetch_src}/include/triton/Dialect/TritonGPU/Transforms/Passes.h
-            #ERROR_QUIET
-)
+    execute_process(
+      COMMAND sed -i "/auto dTy = cast<ShapedType>(\\$_op.getD().getType());/d"
+                ${third_party_triton_${arch}_fetch_src}/include/triton/Dialect/Triton/IR/TritonOpInterfaces.td
+      ERROR_QUIET
+    )
 
-# 修复 Passes.td 中的 NVWS dialect 引用（移除 tablegen 定义中的 NVWS）
-execute_process(
-    COMMAND sed -i "/nvws::NVWSDialect/d"
-            ${third_party_triton_${arch}_fetch_src}/include/triton/Dialect/TritonGPU/Transforms/Passes.td
-            #ERROR_QUIET
-)
+    add_custom_command(
+      OUTPUT ${triton_${arch}_objs}
+      COMMAND sed -i "s/-Wno-covered-switch-default//g" ${third_party_triton_${arch}_fetch_src}/CMakeLists.txt
+      COMMAND find ${third_party_triton_${arch}_fetch_src} -name "CMakeLists.txt" -exec sed -i "s/-Wno-covered-switch-default//g" {} +
+      COMMAND cmake -S ${third_party_triton_${arch}_fetch_src} -B ${third_party_triton_${arch}_fetch_bin} ${triton_cmake_args} -DTRITON_CODEGEN_BACKENDS='nvidia\;amd' -DCMAKE_CXX_FLAGS='-Wno-reorder -Wno-error=comment -Wno-unknown-warning-option' -G Ninja
+      COMMAND cmake --build ${third_party_triton_${arch}_fetch_bin} --target all ${JOB_SETTING}
+      DEPENDS ${third_party_triton_${arch}_src}
+    )
 
-# 删除 TritonOpInterfaces.td 中未使用的 dTy 变量声明（避免 unused-variable 警告）
-execute_process(
-    COMMAND sed -i "/auto dTy = cast<ShapedType>(\\$_op.getD().getType());/d"
-            ${third_party_triton_${arch}_fetch_src}/include/triton/Dialect/Triton/IR/TritonOpInterfaces.td
-            #ERROR_QUIET
-)
+    add_custom_target(${_triton_build_target} ALL DEPENDS ${triton_${arch}_objs})
+    message(STATUS "[triton-${arch}] created ${_triton_build_target}")
+  endif()
 
-add_custom_command(
-    OUTPUT  ${triton_${arch}_objs}
-    COMMAND sed -i "s/-Wno-covered-switch-default//g" ${third_party_triton_${arch}_fetch_src}/CMakeLists.txt
-    COMMAND find ${third_party_triton_${arch}_fetch_src} -name "CMakeLists.txt" -exec sed -i "s/-Wno-covered-switch-default//g" {} +
-    COMMAND cmake -S ${third_party_triton_${arch}_fetch_src} -B ${third_party_triton_${arch}_fetch_bin} ${triton_cmake_args} -DTRITON_CODEGEN_BACKENDS='nvidia\;amd' -DCMAKE_CXX_FLAGS='-Wno-reorder -Wno-error=comment -Wno-unknown-warning-option' -G Ninja
-    COMMAND cmake --build ${third_party_triton_${arch}_fetch_bin} --target all ${JOB_SETTING}
-    DEPENDS ${third_party_triton_${arch}_src}
-)
-set(mlir_register_libs MLIRRegisterAllDialects MLIRRegisterAllExtensions MLIRRegisterAllPasses)
+  add_custom_target(third_party_triton_${arch}_fetch_build ALL)
+  add_dependencies(third_party_triton_${arch}_fetch_build ${_triton_build_target})
+endmacro()
 
-add_custom_target(third_party_triton_${arch}_fetch_build ALL DEPENDS ${triton_${arch}_objs})
+macro(triton_gcu_stage_enflame_subdirectory_and_extra_deps)
+  triton_gcu_add_triton_enflame_subdirectory_bundle(${arch} "${third_party_triton_${arch}_fetch_src}" "${third_party_triton_${arch}_fetch_bin}")
+endmacro()
 
-add_library(triton_${arch} INTERFACE)
-add_dependencies(triton_${arch} third_party_triton_${arch}_fetch_build)
+macro(triton_gcu_stage_triton_opt_link_and_compile)
+  triton_gcu_add_triton_opt_toolchain(${arch})
 
-message(STATUS "third_party_triton_${arch}_fetch_bin is {third_party_triton_${arch}_fetch_bin}")
+  target_link_options(triton-${arch}-opt PRIVATE -Wl,--allow-multiple-definition)
 
-include_directories(${third_party_triton_${arch}_fetch_src}/include)
-include_directories(${third_party_triton_${arch}_fetch_bin}/include) # Tablegen'd files
+  target_link_libraries(triton-${arch}-opt PRIVATE
+    TleIR
+    TleToLLVM
+    TritonTLETransforms
+    TritonGPUTransforms
+  )
+endmacro()
 
-set(MLIR_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
+macro(triton_gcu_stage_unittests)
+  # Kurama registers gtests here; flagtree has no triton_gcu unit tests in-tree.
+endmacro()
 
-#add_subdirectory(${third_party_triton_${arch}_fetch_src}/include ${third_party_triton_${arch}_fetch_bin}/include)
-#add_subdirectory(${third_party_triton_${arch}_fetch_src}/third_party/f2reduce ${third_party_triton_${arch}_fetch_bin}/third_party/f2reduce)
 
-include_directories(${third_party_triton_${arch}_fetch_src})
-include_directories(${third_party_triton_${arch}_fetch_bin}/lib/Dialect/Triton/Transforms) # TritonCombine.inc
-#add_subdirectory(${third_party_triton_${arch}_fetch_src}/lib ${third_party_triton_${arch}_fetch_bin}/lib)
-# include_directories(${CMAKE_CURRENT_BINARY_DIR}/kernels)
+# -----------------------------------------------------------------------------
+# Function: setup_triton_fetch
+# -----------------------------------------------------------------------------
+# Sets up Triton source fetch and build configuration (organized by commit).
+# If the same commit was already fetched and built, this function skips the work.
+#
+# Parameters:
+#   TRITON_COMMIT     : Triton commit hash/tag
+#   MLIR_DIR          : MLIR cmake directory
+#   LLVM_LIBRARY_DIR  : LLVM library directory
+#   OBJECT_FILES      : List of Triton object files to build
+#   GIT_URL_DIR       : Base git URL directory for cloning triton.git
+#   MLIR_TABLEGEN_EXE : Path to mlir-tblgen executable
+#
+# Exports to PARENT_SCOPE:
+#   TRITON_BUILD_TARGET : Name of the build target
+#   TRITON_SOURCE_DIR   : Triton source directory
+#   TRITON_BINARY_DIR   : Triton build directory
+#   TRITON_OUTPUT_FILES : Triton object files (absolute paths)
+#   TRITON_OBJECT_LIB   : CMake OBJECT library target name (nested Triton objs; triton_upstream_objs_<arch>)
+#   TRITON_ORIG_VERSION : Extracted Triton version
+#
+function(setup_triton_fetch)
+  cmake_parse_arguments(ARG "" "TRITON_COMMIT;MLIR_DIR;LLVM_LIBRARY_DIR;GIT_URL_DIR;MLIR_TABLEGEN_EXE" "OBJECT_FILES" ${ARGN})
+  set(TRITON_SOURCE_DIR ${CMAKE_SOURCE_DIR} PARENT_SCOPE)
+  set(TRITON_BINARY_DIR ${CMAKE_BINARY_DIR} PARENT_SCOPE)
+  set(TRITON_BUILD_TARGET "triton_build_in_flagtree" PARENT_SCOPE)
+  # In flagtree, Triton is built in-tree as OBJECT libraries rather than
+  # via nested build .o files.  TRITON_OUTPUT_FILES is intentionally empty;
+  # TRITON_CORE_LIBS carries the in-tree OBJECT library targets that the
+  # core shared library must link against.
+  set(TRITON_OUTPUT_FILES "" PARENT_SCOPE)
+  set(TRITON_CORE_LIBS
+    TritonIR
+    TritonGPUIR
+    TritonGPUTransforms
+    TritonTransforms
+    TritonToTritonGPU
+    TritonAnalysis
+    TritonGPUToLLVM
+    TritonLLVMIR
+    TritonTools
+    GluonIR
+    GluonTransforms
+    PARENT_SCOPE
+  )
+endfunction()
 
-add_subdirectory(include)
-add_subdirectory(lib)
-
-get_property(mlir_dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
-get_property(mlir_conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
-get_property(mlir_translation_libs GLOBAL PROPERTY MLIR_TRANSLATION_LIBS)
-get_property(mlir_extension_libs GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
-
-add_llvm_executable(triton-${arch}-opt triton-${arch}-opt.cpp PARTIAL_SOURCES_INTENDED)
-set_target_properties(triton-${arch}-opt PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-
-llvm_update_compile_flags(triton-${arch}-opt)
-
-# Allow multiple definitions due to nested build generating duplicate symbols
-target_link_options(triton-${arch}-opt PRIVATE -Wl,--allow-multiple-definition)
-
-target_link_libraries(triton-${arch}-opt PRIVATE
-  GCUIR${arch}
-  MemrefExtIR${arch}
-  MathExtIR${arch}
-  TritonGCUIR_${arch}
-  MLIRTritonToGCU_${arch}
-  MLIRTritonGCUTransforms_${arch}
-  ${mlir_dialect_libs}
-  ${mlir_conversion_libs}
-  ${mlir_translation_libs}
-  ${mlir_extension_libs}
-  # TLE libraries (needed by nested build objects)
-  TleIR
-  TleToLLVM
-  TritonTLETransforms
-  # Triton GPU transforms (for ProcessSharedMemoryHint pass)
-  TritonGPUTransforms
-  # MLIR core
-  MLIROptLib
-  MLIRPass
-  MLIRTransforms
-  # MLIR registration (needed by RegisterGCUDialects.h)
-  MLIRRegisterAllDialects
-  MLIRRegisterAllExtensions
-  MLIRRegisterAllPasses
-  ${triton_${arch}_objs}
-)
-
-add_dependencies(triton-${arch}-opt triton_${arch})
-
-mlir_check_all_link_libraries(triton-${arch}-opt)
-
-target_compile_options(obj.TritonGCUAnalysis_${arch} PUBLIC $<$<CXX_COMPILER_ID:GNU>:-Wno-sign-compare -Wno-deprecated-declarations -Wno-unused-variable -Wno-parentheses -Wno-error=comment>)
-target_compile_options(obj.MLIRTritonToGCU_${arch} PUBLIC $<$<CXX_COMPILER_ID:GNU>:-Wno-sign-compare -Wno-unused-variable -Wno-deprecated-declarations -Wno-reorder -Wno-unused-but-set-variable -Wno-error=comment>)
-target_compile_options(obj.TritonGCUIR_${arch} PUBLIC $<$<CXX_COMPILER_ID:GNU>:-Wno-sign-compare -Wno-unused-variable -Wno-error=comment>)
-target_compile_options(triton-${arch}-opt PUBLIC $<$<CXX_COMPILER_ID:GNU>:-Wno-sign-compare -Wno-unused-variable -Wno-reorder -Wno-error=comment>)
-target_compile_options(obj.TritonGCUAnalysis_${arch} PUBLIC $<$<CXX_COMPILER_ID:Clang>:-Wno-sign-compare -Wno-deprecated-declarations -Wno-unused-variable -Wno-parentheses -Wno-error=comment>)
-
-set(KURAMA_TOOLS_TARGET
-        triton-${arch}-opt
-)
-
-add_custom_target(triton-${arch}-tools ALL DEPENDS
-        ${KURAMA_TOOLS_TARGET}
-)
+triton_gcu_pipeline(${arch} 0 "${project_git_url_dir}" "${MLIR_DIR}" "${LLVM_LIBRARY_DIR}" "${MLIR_INCLUDE_DIRS}" "${LLVM_INCLUDE_DIRS}")
