@@ -56,6 +56,8 @@ class TOPSJITFunction(object):
         self.fn: Final[Any] = fn
         self.arch: Final[str] = arch or _get_gcu_arch()
         self.extra_flags: Final[List[str]] = extra_flags or []
+        self.region_dialect: Final[str] = "tops"
+        self.arg_dialect: Final[str] = "llvm"
         self.__triton_builtin__: Final[bool] = True
 
         if file is not None:
@@ -170,6 +172,16 @@ class TOPSJITFunction(object):
             print(result)
             print("// ---- end ----")
         return result
+
+    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = ""):
+        return builder.create_tle_raw_region_by_llvm_func(
+            llvm,
+            self.region_dialect,
+            self.arg_dialect,
+            handles,
+            alias_indices,
+            hint,
+        )
 
     def make_llvm(self, mlir_context) -> str:
         llvm_ir_text = self._compile_tops_to_llvm_ir()

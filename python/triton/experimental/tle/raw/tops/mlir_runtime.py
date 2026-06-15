@@ -36,6 +36,8 @@ class TOPSMLIRJITFunction(object):
         self.fn: Final[Any] = fn
         self.arch: Final[str] = arch
         self.use_gcu_opt: Final[bool] = use_gcu_opt
+        self.region_dialect: Final[str] = "tops"
+        self.arg_dialect: Final[str] = "llvm"
         self.pipeline: Final[List[str]] = ([*pipeline] if pipeline is not None else [
             "convert-vector-to-scf{target-rank=1}",
             "convert-scf-to-cf",
@@ -342,6 +344,16 @@ class TOPSMLIRJITFunction(object):
             return text
         body = "\n".join(lines[start:end])
         return f"module {{\n{body}\n}}\n"
+
+    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = ""):
+        return builder.create_tle_raw_region_by_llvm_func(
+            llvm,
+            self.region_dialect,
+            self.arg_dialect,
+            handles,
+            alias_indices,
+            hint,
+        )
 
     def make_llvm(self, context=None) -> str:
         if self.use_gcu_opt and os.path.isfile(_GCU_COMPILER_OPT):
