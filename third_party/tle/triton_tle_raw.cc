@@ -24,42 +24,35 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
         return builder.create<LLVM::ExtractValueOp>(val, SmallVector{idx});
       });
 }
+
+StringAttr getOptionalStringAttr(OpBuilder &builder, std::string_view value) {
+  if (value.empty())
+    return StringAttr();
+  return builder.getStringAttr(value);
+}
+
+void setDeferredMetadataAttrs(tle::DSLRegionOp op, OpBuilder &builder,
+                              std::string_view sourceId) {
+  if (!sourceId.empty())
+    op->setAttr("tle_raw.source_id", builder.getStringAttr(sourceId));
+}
+
+tle::DSLRegionOp createDSLRegionOp(TritonOpBuilder &self,
+                                   ArrayRef<Type> outputTys,
+                                   ArrayRef<Value> operands,
+                                   std::string_view regionDialect,
+                                   std::string_view argDialect,
+                                   ArrayRef<int64_t> aliasOperandIndices,
+                                   std::string_view hint) {
+  OpBuilder &builder = self.getBuilder();
+  SmallVector<int32_t> outputIndices(aliasOperandIndices.begin(),
+                                     aliasOperandIndices.end());
+  return self.create<tle::DSLRegionOp>(outputTys, operands, regionDialect,
+                                       argDialect, outputIndices,
+                                       getOptionalStringAttr(builder, hint));
+}
 } // namespace
 
-// Create a DSLRegionOp that wraps an LLVM function, performing type conversion
-// from Triton IR types to LLVM types based on EDSL function declarations.
-//
-// Overview:
-// 1. Parse the LLVM IR text and extract the target function using Triton's MLIR
-// context
-// 2. Create a DSLRegionOp with EDSL function parameter types stored in
-// attributes
-// 3. Perform argument type conversion: TT IR types -> LLVM types (via extract
-// operations)
-//    - DSLRegionOp's operands are TT IR types (tensor, pointer, scalar)
-//    - EDSL function declarations (stored in edsl_param_types attribute)
-//    specify expected types
-//    - LLVM function arguments are already in LLVM types
-//    - We need to verify consistency: TT type -> EDSL param type -> LLVM func
-//    arg type
-//
-// Example type conversion for tensor:
-//   - TT IR: tensor<128xi32> (RankedTensorType)
-//   - EDSL param type: "memref<?xi32, 3>" (stored in edsl_param_types
-//   attribute)
-//   - LLVM func: 5 args = allocated_ptr<3>, aligned_ptr<3>, offset, size[0],
-//   stride[0]
-//   - Conversion: Extract tensor into 5 LLVM values using
-//   ExtractAllocatedPtrOp, etc.
-//
-// Example type conversion for scalar:
-//   - TT IR: i32 (IntegerType)
-//   - EDSL param type: "i32"
-//   - LLVM func: 1 arg = i32
-//   - Conversion: Use block argument directly
-// Analyze the LLVM IR text and compute alias operand indices without creating
-// any ops. This is exposed as a separate pybinding so Python can obtain
-// aliased_args before calling createTLERawRegionByLLVMFunc.
 std::vector<int64_t>
 computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
                            const std::vector<Value> &args) {
@@ -95,8 +88,11 @@ computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
 
 tle::DSLRegionOp
 createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             std::string_view regionDialect,
+                             std::string_view argDialect,
                              const std::vector<Value> &args,
-                             const std::vector<int64_t> &aliasOperandIndices) {
+                             const std::vector<int64_t> &aliasOperandIndices,
+                             std::string_view hint) {
   ParserConfig config(self.getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(text, config);
   assert(module && "Failed to parse LLVM IR text");
@@ -133,7 +129,6 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
       curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName());
   assert(funcOp && "callee function not found in current module");
 
-  // Use the externally provided aliasOperandIndices to determine output types.
   Type retTy = funcOp.getFunctionType().getReturnType();
   SmallVector<Type> outputTys =
       isa<LLVM::LLVMVoidType>(retTy)
@@ -143,8 +138,9 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
             });
 
   SmallVector<Value> operands(args.begin(), args.end());
-  tle::DSLRegionOp dslRegionOp =
-      self.create<tle::DSLRegionOp>(outputTys, operands);
+  tle::DSLRegionOp dslRegionOp = createDSLRegionOp(
+      self, outputTys, operands, regionDialect, argDialect, aliasOperandIndices,
+      hint);
   OpBuilder::InsertionGuard guard(builder);
   Region &body = dslRegionOp.getBody();
   SmallVector<Type> operandTys = llvm::map_to_vector(
@@ -192,5 +188,37 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
       }
     }
   }
+  return dslRegionOp;
+}
+
+tle::DSLRegionOp
+createTLERawRegionDeferred(TritonOpBuilder &self, std::string_view sourceId,
+                           std::string_view regionDialect,
+                           std::string_view argDialect,
+                           const std::vector<Value> &args,
+                           const std::vector<int64_t> &aliasOperandIndices,
+                           std::string_view hint) {
+  OpBuilder &builder = self.getBuilder();
+  SmallVector<Type> outputTys = llvm::map_to_vector(
+      aliasOperandIndices,
+      [&](int64_t idx) -> Type { return args[idx].getType(); });
+  SmallVector<Value> operands(args.begin(), args.end());
+  tle::DSLRegionOp dslRegionOp = createDSLRegionOp(
+      self, outputTys, operands, regionDialect, argDialect, aliasOperandIndices,
+      hint);
+  setDeferredMetadataAttrs(dslRegionOp, builder, sourceId);
+
+  OpBuilder::InsertionGuard guard(builder);
+  Region &body = dslRegionOp.getBody();
+  SmallVector<Type> operandTys = llvm::map_to_vector(
+      operands, [](Value value) -> Type { return value.getType(); });
+  Block *newBlock = builder.createBlock(
+      &body, {}, operandTys,
+      SmallVector<Location>(operandTys.size(), self.getLastLoc()));
+  builder.setInsertionPointToStart(newBlock);
+  SmallVector<Value> yields;
+  for (int64_t idx : aliasOperandIndices)
+    yields.push_back(newBlock->getArgument(idx));
+  builder.create<tle::YieldOp>(self.getLastLoc(), yields);
   return dslRegionOp;
 }

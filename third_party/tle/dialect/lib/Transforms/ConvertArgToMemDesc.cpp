@@ -68,30 +68,13 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   for (const auto &operand : op->getOperands()) {
     if (RankedTensorType tensorTy =
             dyn_cast<RankedTensorType>(operand.getType())) {
-      Operation *defOp = operand.getDefiningOp();
       PatternRewriter::InsertionGuard guard(rewriter);
-
-      ttg::LocalAllocOp allocOp;
-      auto forOp = dyn_cast<scf::ForOp>(op->getParentOp());
-      if (forOp && isSingleForLoop(forOp) && isFromIterArg(operand, forOp)) {
-        rewriter.setInsertionPoint(forOp);
-        allocOp = rewriter.create<ttg::LocalAllocOp>(op->getLoc(),
-                                                     getPlainMemDesc(tensorTy));
-
-        auto blockArg = dyn_cast<BlockArgument>(operand);
-        auto iterArgIdx = blockArg.getArgNumber() - forOp.getNumInductionVars();
-        rewriter.create<ttg::LocalStoreOp>(
-            op->getLoc(), forOp.getInitArgs()[iterArgIdx], allocOp);
-        rewriter.setInsertionPointAfter(forOp);
-        rewriter.create<ttg::LocalDeallocOp>(op->getLoc(), allocOp);
-      } else {
-        rewriter.setInsertionPoint(op);
-        allocOp = rewriter.create<ttg::LocalAllocOp>(op->getLoc(),
-                                                     getPlainMemDesc(tensorTy));
-        rewriter.create<ttg::LocalStoreOp>(op->getLoc(), operand, allocOp);
-        rewriter.setInsertionPointAfter(op);
-        rewriter.create<ttg::LocalDeallocOp>(op->getLoc(), allocOp);
-      }
+      rewriter.setInsertionPoint(op);
+      ttg::LocalAllocOp allocOp = rewriter.create<ttg::LocalAllocOp>(
+          op->getLoc(), getPlainMemDesc(tensorTy));
+      rewriter.create<ttg::LocalStoreOp>(op->getLoc(), operand, allocOp);
+      rewriter.setInsertionPointAfter(op);
+      rewriter.create<ttg::LocalDeallocOp>(op->getLoc(), allocOp);
 
       newOperands.push_back(allocOp);
       mapper.map(operand, allocOp);
@@ -122,8 +105,11 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   if (!hasConversion) {
     return failure();
   }
-  tle::DSLRegionOp newOp =
-      rewriter.create<tle::DSLRegionOp>(op.getLoc(), newRetTys, newOperands);
+  tle::DSLRegionOp newOp = rewriter.create<tle::DSLRegionOp>(
+      op.getLoc(), newRetTys, newOperands, op.getRegionDialectAttr(),
+      op.getArgDialectAttr(), op.getOutputOperandIndicesAttr(),
+      op->getAttrOfType<StringAttr>("hint"));
+  newOp->setAttrs(op->getAttrs());
   PatternRewriter::InsertionGuard guard(rewriter);
   for (auto [idx, oldBlock] : llvm::enumerate(op.getBody().getBlocks())) {
     Block *newBlock = nullptr;

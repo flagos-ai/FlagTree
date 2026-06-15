@@ -65,8 +65,19 @@ computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
 
 extern tle::DSLRegionOp
 createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             std::string_view regionDialect,
+                             std::string_view argDialect,
                              const std::vector<Value> &args,
-                             const std::vector<int64_t> &aliasOperandIndices);
+                             const std::vector<int64_t> &aliasOperandIndices,
+                             std::string_view hint);
+
+extern tle::DSLRegionOp
+createTLERawRegionDeferred(TritonOpBuilder &self, std::string_view sourceId,
+                           std::string_view regionDialect,
+                           std::string_view argDialect,
+                           const std::vector<Value> &args,
+                           const std::vector<int64_t> &aliasOperandIndices,
+                           std::string_view hint);
 
 void init_triton_tle_ir(py::module &&m) {
 
@@ -322,7 +333,15 @@ void init_tle_raw_ir(py::module &&m) {
   builder_cls->def("compute_alias_operand_indices",
                    &computeAliasOperandIndices);
   builder_cls->def("create_tle_raw_region_by_llvm_func",
-                   &createTLERawRegionByLLVMFunc);
+                   &createTLERawRegionByLLVMFunc, py::arg("text"),
+                   py::arg("region_dialect"), py::arg("arg_dialect"),
+                   py::arg("args"), py::arg("output_operand_indices"),
+                   py::arg("hint") = "");
+  builder_cls->def("create_tle_raw_region_deferred",
+                   &createTLERawRegionDeferred, py::arg("source_id"),
+                   py::arg("region_dialect"), py::arg("arg_dialect"),
+                   py::arg("args"), py::arg("output_operand_indices"),
+                   py::arg("hint") = "");
   builder_cls->def("get_context", &TritonOpBuilder::getContext);
 }
 
