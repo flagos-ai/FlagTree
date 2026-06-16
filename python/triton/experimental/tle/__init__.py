@@ -1,6 +1,5 @@
 # flagtree tle
 from . import language
-from .language import *
 
 try:
     from . import raw
@@ -10,7 +9,6 @@ except (ModuleNotFoundError, ImportError):
 __all__ = [
     "language",
 ]
-__all__.extend(language.__all__)
 
 if raw is not None:
     __all__.append("raw")
