@@ -45,6 +45,8 @@ docker exec -it ${CONTAINER} /bin/bash
 mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.5.1.tar.gz
 tar zxvf mthreads-llvm22-x64_v0.5.1.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads_local_binary_v0.6.0.tar.gz
+tar zxvf mthreads_local_binary_v0.6.0.tar.gz
 ```
 
 #### 1.3 手动下载 Triton 依赖库
