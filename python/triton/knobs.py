@@ -369,6 +369,7 @@ class compilation_knobs(base_knobs):
 class autotuning_knobs(base_knobs):
     cache: env_bool = env_bool("TRITON_CACHE_AUTOTUNING")
     print: env_bool = env_bool("TRITON_PRINT_AUTOTUNING")
+    use_backend_autotuning: env_bool = env_bool("FLAGTREE_USE_BACKEND_AUTOTUNING")
 
 
 class LaunchHook(Protocol):

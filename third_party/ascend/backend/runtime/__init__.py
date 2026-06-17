@@ -24,6 +24,8 @@ from .autotuner import get_max_configs, max_autotune
 def _patch_autotune():
     try:
         import triton
+        if not triton.knobs.autotuning.use_backend_autotuning:
+            return
     except ImportError:
         return
 
