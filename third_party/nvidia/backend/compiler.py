@@ -439,7 +439,8 @@ class CUDABackend(BaseBackend):
         passes.common.add_symbol_dce(pm)
         passes.convert.add_nvvm_to_llvm(pm)
 
-        if not knobs.compilation.disable_line_info and not knobs.compilation.dump_ir_extract_di_local_variables:
+        use_clang = os.getenv("USE_CLANG", '').lower() in ('1', 'true')
+        if not knobs.compilation.disable_line_info and not knobs.compilation.dump_ir_extract_di_local_variables and not use_clang:
             passes.llvmir.add_di_scope(pm)
 
         if CUDABackend.instrumentation:
@@ -504,12 +505,25 @@ class CUDABackend(BaseBackend):
 
     def make_ptx(self, src, metadata, opt, capability):
         ptx_version = get_ptx_version_from_options(opt, self.target.arch)
-
         triple = 'nvptx64-nvidia-cuda'
         proc = sm_arch_from_capability(capability)
-        features = get_features(opt, self.target.arch)
-        flags = ["nvptx-mad-wide-opt"]
-        ret = llvm.translate_to_asm(src, triple, proc, features, flags, opt.enable_fp_fusion, False)
+
+        use_clang = os.getenv("USE_CLANG", '').lower() in ('1', 'true')
+        if use_clang:
+            with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.llir') as fsrc:
+                fsrc.write(src)
+                fsrc.flush()
+                fptx = fsrc.name + '.ptx'
+                llc = os.getenv("llc", "llc")
+                llc_cmd = [llc, '-march=nvptx64', f'-mcpu={proc}', f'-mattr=+ptx{ptx_version}', fsrc.name, '-o', fptx]
+                build = subprocess.run(llc_cmd, capture_output=True)
+                assert build.returncode == 0, (f"llc failed\nstderr:\n{build.stderr.decode()}")
+            with open(fptx, 'r') as f:
+                ret = f.read()
+        else:
+            features = get_features(opt, self.target.arch)
+            flags = ["nvptx-mad-wide-opt"]
+            ret = llvm.translate_to_asm(src, triple, proc, features, flags, opt.enable_fp_fusion, False)
         # Find kernel names (there should only be one)
         names = re.findall(r".visible .entry ([a-zA-Z_][a-zA-Z0-9_]*)", ret)
         assert len(names) == 1
@@ -536,6 +550,8 @@ class CUDABackend(BaseBackend):
             fsrc.flush()
             fbin = fsrc.name + '.o'
 
+            use_nvcc = os.getenv("USE_NVCC", '').lower() in ('1', 'true')
+            os.environ.pop("USE_NVCC", None)
             debug_info = []
             if knobs.compilation.disable_line_info:
                 # This option is ignored if used without -lineinfo
@@ -556,9 +572,11 @@ class CUDABackend(BaseBackend):
             # Accept more ptxas options if provided
             ptx_extra_options = opt.ptx_options.split(" ") if opt.ptx_options else []
 
+            # If use nvshmem, we need to compile the ptx file into a relocatable object file and then link it with nvshmem library
+            compile_only = ["-c"] if use_nvcc else []
             ptxas_cmd = [
-                ptxas, *debug_info, *fmad, '-v', *disable_opt, *ptx_extra_options, f'--gpu-name={arch}', fsrc.name,
-                '-o', fbin
+                ptxas, *compile_only, *debug_info, *fmad, '-v', *disable_opt, *ptx_extra_options, f'--gpu-name={arch}',
+                fsrc.name, '-o', fbin
             ]
             try:
                 subprocess.run(ptxas_cmd, check=True, close_fds=False, stderr=flog)
@@ -598,8 +616,33 @@ please share the reproducer above with Triton project.
 """)
                 raise PTXASError(error)
 
-            with open(fbin, 'rb') as f:
-                cubin = f.read()
+            if use_nvcc:
+                NVLINK = os.getenv("NVLINK", "nvlink")
+                fbin_combined = fbin + ".combined.cubin"
+                cuda_cubin = os.getenv("CUDA_CUBIN")
+                nvlink_cmds = [
+                    NVLINK,
+                    f"-arch={arch}",
+                    fbin,
+                    cuda_cubin,
+                    "-o",
+                    fbin_combined,
+                ]
+                try:
+                    subprocess.run(nvlink_cmds, check=True, close_fds=False, stderr=flog)
+                except Exception as e:
+                    import logging
+                    logging.error(f"error runing nvlink: {nvlink_cmds}")
+                    logging.exception(e)
+
+            if use_nvcc:
+                with open(fbin_combined, 'rb') as f:
+                    cubin = f.read()
+                if os.path.exists(fbin_combined):
+                    os.remove(fbin_combined)
+            else:
+                with open(fbin, 'rb') as f:
+                    cubin = f.read()
             if os.path.exists(fbin):
                 os.remove(fbin)
         return cubin

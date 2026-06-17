@@ -46,3 +46,8 @@ def call_smem(func, args, _semantic=None):
         return buffer_tensors[0]
     else:
         return tl.tuple(buffer_tensors)
+
+
+@builtin
+def call_nvshmem(func, outputs, inputs, _semantic=None):
+    func.make_cubin()
