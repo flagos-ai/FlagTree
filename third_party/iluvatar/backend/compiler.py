@@ -263,6 +263,10 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
+        if hasattr(iluvatar.passes, "tle"):
+            iluvatar.passes.tle.add_insert_local_pointer_barriers(pm)
+            iluvatar.passes.tle.add_optimize_local_pointer_loads(pm)
+            iluvatar.passes.tle.add_optimize_local_pointer_stores(pm)
         iluvatar.passes.ttgpuir.add_accelerate_matmul(pm, opt.use_sme)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         iluvatar.passes.ttgpuir.add_mma_reduce_thread_locality(pm)

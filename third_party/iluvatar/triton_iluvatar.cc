@@ -1,4 +1,7 @@
 #include "TritonILUVATARGPUToLLVM/Passes.h"
+#ifdef __ILUVATAR_TLE__
+#include "Dialect.h"
+#endif
 // #include "cublas_instance.h"
 #include "TritonILUVATARGPUTransforms/Passes.h"
 
@@ -52,6 +55,11 @@
 #include <system_error>
 
 namespace py = pybind11;
+
+#ifdef __ILUVATAR_TLE__
+void init_triton_iluvatar_tle_ir(py::module m);
+void init_triton_iluvatar_tle_passes(py::module m);
+#endif
 
 static std::unique_ptr<llvm::TargetMachine>
 createTargetMachine(llvm::Module *module, std::string proc,
@@ -314,8 +322,15 @@ void init_triton_iluvatar_passes_ttgpuir(py::module &&m) {
 }
 
 void init_triton_iluvatar(py::module &&m) {
+#ifdef __ILUVATAR_TLE__
+  init_triton_iluvatar_tle_ir(m.def_submodule("ir"));
+#endif
+
   auto passes = m.def_submodule("passes");
   init_triton_iluvatar_passes_ttgpuir(passes.def_submodule("ttgpuir"));
+#ifdef __ILUVATAR_TLE__
+  init_triton_iluvatar_tle_passes(passes.def_submodule("tle"));
+#endif
 
   m.attr("TARGET_TRIPLE") = "bi-iluvatar-ilurt";
   m.attr("CALLING_CONV_ILUVATAR_KERNEL") =
@@ -325,6 +340,9 @@ void init_triton_iluvatar(py::module &&m) {
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
     registry.insert<mlir::triton::iluvatargpu::TritonILUVATARGPUDialect>();
+#ifdef __ILUVATAR_TLE__
+    mlir::triton::iluvatar_tle::registerDialects(registry);
+#endif
     mlir::registerNVVMDialectTranslation(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();

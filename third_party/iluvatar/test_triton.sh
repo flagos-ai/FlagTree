@@ -1,4 +1,6 @@
 #!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FLAGTREE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DATE=`date +%Y%m%d%H%M%S`
 LOG_DIR="logs/${DATE}"
 mkdir -p ${LOG_DIR}
@@ -11,6 +13,13 @@ check_status()
     if ((${PIPESTATUS[0]} != 0)); then
         EXIT_STATUS=1
     fi
+}
+iluvatar_tle_enabled()
+{
+    case "${FLAGTREE_ILUVATAR_TLE:-}" in
+        1|ON|on|true|TRUE) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 export CUDA_VISIBLE_DEVICES=0
 
@@ -90,6 +99,15 @@ timeout ${TIMEOUT} pytest -v python/test/unit/test_debug.py -o junit_suite_name=
 # PUNICA_TEST_LEVEL=quick timeout ${TIMEOUT} pytest -v python/test/unit/integrations/vllm/punica_lora/test_punica_ops.py -o junit_suite_name="test_punica_lora" --junitxml=${LOG_DIR}_xml/___test_punica_lora.xml 2>&1 | tee ${LOG_DIR}/test_punica_lora.log; check_status
 # timeout ${TIMEOUT} pytest -v python/test/unit/integrations/sglang/flash_mla/test_flash_mla_ut.py -o junit_suite_name="test_flash_mla" --junitxml=${LOG_DIR}_xml/___test_flash_mla.xml 2>&1 | tee ${LOG_DIR}/test_flash_mla.log; check_status
 # timeout ${TIMEOUT} pytest -v python/test/unit/integrations/inductor/test_bucketize_matmul.py -o junit_suite_name="test_bucketize_matmul" --junitxml=${LOG_DIR}_xml/___test_bucketize_matmul.xml 2>&1 | tee ${LOG_DIR}/test_bucketize_matmul.log; check_status
+
+if iluvatar_tle_enabled; then
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/integration/test_tle_local_store.py -o junit_suite_name="test_tle_local_store" --junitxml=${LOG_DIR}_xml/___test_tle_local_store.xml 2>&1 | tee ${LOG_DIR}/test_tle_local_store.log; check_status
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_tle_gpu_local_ptr.py -o junit_suite_name="test_tle_gpu_local_ptr" --junitxml=${LOG_DIR}_xml/___test_tle_gpu_local_ptr.xml 2>&1 | tee ${LOG_DIR}/test_tle_gpu_local_ptr.log; check_status
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_extract_tile_static_index.py -o junit_suite_name="test_extract_tile_static_index" --junitxml=${LOG_DIR}_xml/___test_extract_tile_static_index.xml 2>&1 | tee ${LOG_DIR}/test_extract_tile_static_index.log; check_status
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_extract_tile_dynamic_index.py -o junit_suite_name="test_extract_tile_dynamic_index" --junitxml=${LOG_DIR}_xml/___test_extract_tile_dynamic_index.xml 2>&1 | tee ${LOG_DIR}/test_extract_tile_dynamic_index.log; check_status
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_insert_tile_static_index.py -o junit_suite_name="test_insert_tile_static_index" --junitxml=${LOG_DIR}_xml/___test_insert_tile_static_index.xml 2>&1 | tee ${LOG_DIR}/test_insert_tile_static_index.log; check_status
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_insert_tile_dynamic_index.py -o junit_suite_name="test_insert_tile_dynamic_index" --junitxml=${LOG_DIR}_xml/___test_insert_tile_dynamic_index.xml 2>&1 | tee ${LOG_DIR}/test_insert_tile_dynamic_index.log; check_status
+fi
 
 timeout ${TIMEOUT} python3 util_auto_analysis.py ${LOG_DIR}; check_status
 

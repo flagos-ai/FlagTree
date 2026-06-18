@@ -1,3 +1,9 @@
+if(FLAGTREE_ILUVATAR_TLE)
+    set(_ILUVATAR_TLE_LIBS IluvatarTleIR)
+else()
+    set(_ILUVATAR_TLE_LIBS "")
+endif()
+
 if(TRITON_BUILD_PROTON)
     set(_ILUVATAR_PROTON_LIBS ProtonIR)
 else()
@@ -19,4 +25,5 @@ add_triton_library(TritonToTritonGPU
     TritonIR
     ${_ILUVATAR_PROTON_LIBS}
     TritonGPUIR
+    ${_ILUVATAR_TLE_LIBS}
 )

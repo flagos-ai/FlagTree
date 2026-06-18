@@ -14,6 +14,7 @@ add_triton_library(TritonIR
   DEPENDS
   TritonTableGen
   TritonCanonicalizeIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR

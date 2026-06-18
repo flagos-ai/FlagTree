@@ -1,4 +1,7 @@
 #pragma once
+#ifdef __ILUVATAR_TLE__
+#include "Dialect.h"
+#endif
 #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "amd/include/TritonAMDGPUTransforms/Passes.h"
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
@@ -62,7 +65,9 @@ void registerTestScopeIdAllocationPass();
 } // namespace mlir
 
 inline void registerTritonDialects(mlir::DialectRegistry &registry) {
+#ifndef __ILUVATAR_TLE__
   mlir::registerAllPasses();
+#endif
   mlir::triton::registerTritonPasses();
   mlir::triton::gpu::registerTritonGPUPasses();
   mlir::triton::nvidia_gpu::registerTritonNvidiaGPUPasses();
@@ -148,4 +153,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::proton::ProtonDialect,
       mlir::triton::proton::gpu::ProtonGPUDialect, mlir::ROCDL::ROCDLDialect,
       mlir::triton::gluon::GluonDialect>();
+#ifdef __ILUVATAR_TLE__
+  mlir::triton::iluvatar_tle::registerDialects(registry);
+#endif
 }

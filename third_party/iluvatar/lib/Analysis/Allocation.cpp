@@ -16,6 +16,10 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
+#ifdef __ILUVATAR_TLE__
+#include "IR/Dialect.h"
+#endif
+
 #define DEBUG_TYPE "allocation-shared-memory"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
@@ -108,6 +112,16 @@ unsigned defaultAllocationAnalysisScratchSizeFn(Operation *op) {
     constexpr int32_t kTMASize = 128;
     return kTMASize;
   }
+#ifdef __ILUVATAR_TLE__
+  if (auto extractTile = dyn_cast<iluvatar_tle::ExtractTileOp>(op)) {
+    auto dstTy = extractTile.getType();
+    return dstTy.getNumElements() * getBitwidth(dstTy) / 8;
+  }
+  if (auto insertTile = dyn_cast<iluvatar_tle::InsertTileOp>(op)) {
+    auto tileTy = cast<RankedTensorType>(insertTile.getTile().getType());
+    return tileTy.getNumElements() * getBitwidth(tileTy) / 8;
+  }
+#endif
   return 0;
 }
 

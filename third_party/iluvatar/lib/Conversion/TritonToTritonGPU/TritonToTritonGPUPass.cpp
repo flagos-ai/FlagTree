@@ -3,6 +3,9 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#ifdef __ILUVATAR_TLE__
+#include "IR/Dialect.h"
+#endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -793,6 +796,17 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
   patterns.add<CFCondBranchPattern, CFBranchPattern>(typeConverter, context);
 }
 
+#ifdef __ILUVATAR_TLE__
+void populateIluvatarTlePatterns(TritonGPUTypeConverter &typeConverter,
+                                 RewritePatternSet &patterns) {
+  MLIRContext *context = patterns.getContext();
+  patterns.add<GenericOpPattern<triton::iluvatar_tle::ExtractTileOp>,
+               GenericOpPattern<triton::iluvatar_tle::InsertTileOp>,
+               GenericOpPattern<triton::iluvatar_tle::LocalPointersOp>>(
+      typeConverter, context);
+}
+#endif
+
 class ConvertTritonToTritonGPU
     : public triton::impl::ConvertTritonToTritonGPUBase<
           ConvertTritonToTritonGPU> {
@@ -823,6 +837,9 @@ public:
     //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
+#ifdef __ILUVATAR_TLE__
+    populateIluvatarTlePatterns(typeConverter, patterns);
+#endif
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
 
     Builder b(&getContext());

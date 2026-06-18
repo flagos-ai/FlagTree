@@ -1,5 +1,9 @@
 #include "TritonILUVATARGPUToLLVM/Passes.h"
 
+#ifdef __ILUVATAR_TLE__
+#include "Conversion/TleToLLVM.h"
+#include "Dialect.h"
+#endif
 #include "Dialect/TritonILUVATARGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TargetInfo.h"
@@ -53,6 +57,9 @@ public:
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
     addIllegalDialect<triton::nvidia_gpu::TritonNvidiaGPUDialect>();
     addIllegalDialect<mlir::gpu::GPUDialect>();
+#ifdef __ILUVATAR_TLE__
+    mlir::triton::iluvatar_tle::addIllegalDialects(*this);
+#endif
     addLegalOp<mlir::UnrealizedConversionCastOp>();
   }
 };
@@ -69,6 +76,9 @@ struct ConvertTritonILUVATARGPUToLLVM
     registry
         .insert<LLVM::LLVMDialect, NVVM::NVVMDialect, mlir::ROCDL::ROCDLDialect,
                 mlir::triton::iluvatargpu::TritonILUVATARGPUDialect>();
+#ifdef __ILUVATAR_TLE__
+    mlir::triton::iluvatar_tle::registerDialects(registry);
+#endif
   }
 
   void runOnOperation() override {
@@ -155,6 +165,10 @@ struct ConvertTritonILUVATARGPUToLLVM
       populateFunc(typeConverter, patterns, targetInfo, benefit);
     };
 
+#ifdef __ILUVATAR_TLE__
+    mlir::triton::iluvatar_tle::populateTleToLLVMPatterns(
+        typeConverter, targetInfo, patterns, commonBenefit);
+#endif
     mlir::triton::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, commonBenefit);
     ILUVATAR::populateDotOpToLLVMPatterns(typeConverter, patterns,

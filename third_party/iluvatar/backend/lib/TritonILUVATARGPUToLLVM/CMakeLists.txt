@@ -1,3 +1,9 @@
+if(FLAGTREE_ILUVATAR_TLE)
+    set(_ILUVATAR_TLE_LIBS IluvatarTleToLLVM)
+else()
+    set(_ILUVATAR_TLE_LIBS "")
+endif()
+
 add_triton_library(TritonILUVATARGPUToLLVM
     AtomicRMWOpsEmitter.cpp
     MaskedOpsToLLVM.cpp
@@ -19,6 +25,7 @@ add_triton_library(TritonILUVATARGPUToLLVM
     TritonGPUToLLVM
     TritonILUVATARGPUIR
     TritonILUVATARUtils
+    ${_ILUVATAR_TLE_LIBS}
     MLIRUBToLLVM
     LLVMCore
     LLVMPasses
