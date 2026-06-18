@@ -204,3 +204,95 @@ def subview(src: buffer, offsets: List[tl.tensor], sizes: List[tl.constexpr], st
     # create buffer_type with strides
     buffer_ty = buffer_type(element_ty=src.dtype, shape=sizes_int, space=src.space, strides=result_memory_strides)
     return buffer(result_handle, buffer_ty)
+
+
+# ==============================================================================
+# TileIR semantic functions — emit tile.* ops
+# ==============================================================================
+
+def tile_alloc(etype: tl.dtype, shape: List[tl.constexpr], address_space: address_space, builder: ir.builder) -> buffer:
+    """Allocate a buffer using tile.alloc."""
+    shape = tl._unwrap_shape(shape)
+    if not isinstance(shape, (tuple, list)):
+        raise TypeError("shape must be list/tuple")
+    etype = tl._constexpr_to_value(etype)
+    address_space = tl._constexpr_to_value(address_space)
+    element_ty_ir = etype.to_ir(builder)
+    addr_space_attr = (address_space.to_ir(builder) if address_space else builder.dsa_get_null_attr())
+    tile_buf_ty = builder.tile_get_buffer_type(shape, element_ty_ir, addr_space_attr)
+    handle = builder.create_tile_alloc(tile_buf_ty)
+    buffer_ty = buffer_type(element_ty=etype, shape=shape, space=address_space)
+    return buffer(handle, buffer_ty)
+
+
+def tile_copy(src, dst, shape: List[Union[tl.constexpr, int]], inter_no_alias: bool, builder: ir.builder):
+    """Copy data using tile.copy."""
+    shape = [scalar_constant(x, tl.int32, builder) for x in shape]
+    builder.create_tile_copy(src.handle, dst.handle, [s.handle for s in shape], inter_no_alias)
+
+
+def tile_subview(src: buffer, offsets: List[tl.tensor], sizes: List[tl.constexpr], strides: List[tl.constexpr],
+                 builder: ir.builder) -> buffer:
+    """Extract subview using tile.subview."""
+    new_offsets = [offset.handle for offset in offsets]
+    sizes_int = tl._unwrap_shape(sizes)
+    strides_int = tl._unwrap_shape(strides)
+
+    result_handle = builder.create_tile_subview(src.handle, new_offsets, sizes_int, strides_int)
+
+    if src.strides:
+        src_memory_strides = src.strides
+    else:
+        src_memory_strides = []
+        stride = 1
+        for dim_size in reversed(src.shape):
+            if dim_size < 0:
+                raise ValueError("Cannot compute strides for buffer with dynamic dimensions")
+            src_memory_strides.insert(0, stride)
+            stride *= dim_size
+
+    result_memory_strides = []
+    for src_stride, subview_stride in zip(src_memory_strides, strides_int):
+        result_memory_strides.append(src_stride * subview_stride)
+
+    buffer_ty = buffer_type(element_ty=src.dtype, shape=sizes_int, space=src.space, strides=result_memory_strides)
+    return buffer(result_handle, buffer_ty)
+
+
+def tile_to_tensor(memref: buffer, writable: bool, builder: ir.builder, target_shape=None) -> tl.tensor:
+    """Convert buffer to tensor view using tile.to_tensor."""
+    if not isinstance(memref, buffer):
+        raise TypeError("memref must be buffer")
+
+    shape = memref.shape
+    if target_shape:
+        shape = tl._unwrap_shape(target_shape)
+    if not isinstance(shape, (tuple, list)):
+        raise TypeError("shape must be list/tuple")
+    tensor_type = tl.block_type(memref.dtype, shape)
+
+    handle = builder.create_tile_to_tensor(memref.handle, writable)
+    return tl.tensor(handle, tensor_type)
+
+
+def set_flag(producer_pipe, consumer_pipe, event_id, builder: ir.builder):
+    """Cross-engine set_flag using tile.set_flag."""
+    builder.create_tile_set_flag(int(producer_pipe), int(consumer_pipe), int(event_id))
+
+
+def wait_flag(producer_pipe, consumer_pipe, event_id, builder: ir.builder):
+    """Cross-engine wait_flag using tile.wait_flag."""
+    builder.create_tile_wait_flag(int(producer_pipe), int(consumer_pipe), int(event_id))
+
+
+def pipe_barrier(pipe, builder: ir.builder):
+    """Intra-engine pipe_barrier using tile.pipe_barrier."""
+    builder.create_tile_pipe_barrier(int(pipe))
+
+
+def tile_gm_offset(base, indices: List[tl.tensor], strides: List[tl.tensor], builder: ir.builder) -> tl.tensor:
+    """Compute GM offset using tile.gm_offset."""
+    idx_handles = [i.handle for i in indices]
+    stride_handles = [s.handle for s in strides]
+    handle = builder.create_tile_gm_offset(base.handle, idx_handles, stride_handles)
+    return tl.tensor(handle, tl.pointer_type(base.dtype))

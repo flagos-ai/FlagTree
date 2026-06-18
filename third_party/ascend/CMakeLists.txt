@@ -90,3 +90,4 @@ endif()
 if(TRITON_BUILD_UT)
   add_subdirectory(unittest)
 endif()
+# add_subdirectory(ClearL2Cache)  # disabled: find_package(ASC) has no ASCConfig.cmake on this CANN

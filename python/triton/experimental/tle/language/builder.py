@@ -53,5 +53,17 @@ def setup_unified_builder_with_tle_builder(main_builder, buffer_builder):
         "create_dsa_extract_slice",
         "create_dsa_insert_slice",
         "create_dsa_subview",
+        # TileIR methods
+        'tile_get_buffer_type',
+        'tile_get_tensor_type',
+        'create_tile_alloc',
+        'create_tile_copy',
+        'create_tile_subview',
+        'create_tile_to_tensor',
+        'create_tile_store_tensor',
+        'create_tile_set_flag',
+        'create_tile_wait_flag',
+        'create_tile_pipe_barrier',
+        'create_tile_gm_offset',
     ]
     attach_builder_methods_with_tle_builder(main_builder, buffer_builder, buffer_methods)

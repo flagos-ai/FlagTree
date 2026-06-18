@@ -9,6 +9,10 @@
 
 #include "tle/dsa/dialect/include/IR/Dialect.h"
 
+#include "npu/Dialect/TileIR/IR/TileIRDialect.h"
+
+#include "bishengir/Dialect/HIVM/IR/HIVM.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -23,12 +27,49 @@ namespace py = pybind11;
 
 constexpr unsigned kIntegerAttrBitWidth = 64;
 
-void init_tle_dsa_ir(py::module &&m) {
-  auto *builder_cls = ir::getBuilderClass();
+// Convert an address-space attribute to a TileIR MemorySpace enum. The DSA
+// layer passes a hivm::AddressSpaceAttr (from ascend's get_target_attribute);
+// decode it so buffers carry their real space (L1/L0A/...). Falls back to UB.
+static mlir::triton::tile::MemorySpace attrToMemSpace(Attribute attr) {
+  using MS = mlir::triton::tile::MemorySpace;
+  if (auto as = attr.dyn_cast_or_null<mlir::hivm::AddressSpaceAttr>()) {
+    switch (as.getAddressSpace()) {
+    case mlir::hivm::AddressSpace::GM:  return MS::GM;
+    case mlir::hivm::AddressSpace::L1:  return MS::L1;
+    case mlir::hivm::AddressSpace::L0A: return MS::L0A;
+    case mlir::hivm::AddressSpace::L0B: return MS::L0B;
+    case mlir::hivm::AddressSpace::L0C: return MS::L0C;
+    case mlir::hivm::AddressSpace::UB:  return MS::UB;
+    default: return MS::UB;
+    }
+  }
+  // Legacy / string-based fallback.
+  if (auto strAttr = attr.dyn_cast_or_null<StringAttr>()) {
+    auto name = strAttr.getValue();
+    if (name == "GM")  return MS::GM;
+    if (name == "L1")  return MS::L1;
+    if (name == "L0A") return MS::L0A;
+    if (name == "L0B") return MS::L0B;
+    if (name == "L0C") return MS::L0C;
+    if (name == "UB")  return MS::UB;
+  }
+  return MS::UB;
+}
 
-  builder_cls
-      ->def("dsa_get_null_attr",
-            [](TritonOpBuilder &self) { return Attribute(); })
+void init_tle_dsa_ir(py::module &&m) {
+  m.def("load_dialects", [](MLIRContext &context) {
+    DialectRegistry registry;
+    registry.insert<memref::MemRefDialect>();
+    registry.insert<bufferization::BufferizationDialect>();
+    registry.insert<triton::tle::TleDialect>();
+    context.appendDialectRegistry(registry);
+    context.loadAllAvailableDialects();
+  });
+
+  auto tle_cls = py::class_<TritonOpBuilder>(
+      m, "tle_builder", py::module_local(), py::dynamic_attr())
+      .def(py::init<mlir::MLIRContext *>())
+      .def("dsa_get_null_attr", [](TritonOpBuilder &self) { return Attribute(); })
       .def("dsa_get_buffer_type",
            [](TritonOpBuilder &self, std::vector<int64_t> &shape,
               Type &elementType, const Attribute &memorySpace) -> Type {
@@ -309,4 +350,121 @@ void init_tle_dsa_ir(py::module &&m) {
              return self.create<triton::tle::ExternCallOp>(
                  retTypes, argList, libName, libPath, symbol, isPure);
            });
+
+  // ============================================================================
+  // TileIR builder methods — create tile.* dialect ops
+  // ============================================================================
+
+  // Helper: load TileIR dialect into context
+  m.def("load_tile_dialects", [](MLIRContext &context) {
+    DialectRegistry registry;
+    registry.insert<mlir::triton::tile::TileIRDialect>();
+    context.appendDialectRegistry(registry);
+    context.loadAllAvailableDialects();
+  });
+
+  // TileIR buffer / tensor type construction
+  tle_cls.def("tile_get_buffer_type",
+       [](TritonOpBuilder &self, std::vector<int64_t> &shape,
+          Type &elementType, const Attribute &memorySpace) -> Type {
+         auto memSpace = attrToMemSpace(memorySpace);
+         auto *ctx = self.getBuilder().getContext();
+         return mlir::triton::tile::BufType::get(ctx, shape, elementType, memSpace);
+       })
+  .def("tile_get_tensor_type",
+       [](TritonOpBuilder &self, std::vector<int64_t> &shape,
+          Type &elementType, const Attribute &memorySpace) -> Type {
+         auto memSpace = attrToMemSpace(memorySpace);
+         auto *ctx = self.getBuilder().getContext();
+         return mlir::triton::tile::TensorType::get(ctx, shape, elementType, memSpace);
+       })
+
+  // tile.alloc — result type carries the memory space; pass it as the $space attr
+  .def("create_tile_alloc",
+       [](TritonOpBuilder &self, Type tileBufType) -> Value {
+         auto bufType = mlir::cast<mlir::triton::tile::BufType>(tileBufType);
+         return self.create<mlir::triton::tile::AllocOp>(
+             tileBufType, bufType.getMemorySpace(),
+             /*shape=*/mlir::ArrayAttr(), /*dtype=*/mlir::TypeAttr(),
+             /*policy=*/mlir::triton::tile::PolicyAttr(),
+             /*layout=*/mlir::triton::tile::LayoutAttr(),
+             /*lifetime=*/mlir::triton::tile::LifetimeAttr(),
+             /*comment=*/mlir::StringAttr());
+       })
+  // tile.copy — shape extents are informational at this layer; the op itself
+  // takes only src/dst (+ optional engine/layout attrs).
+  .def("create_tile_copy",
+       [](TritonOpBuilder &self, Value &src, Value &dst,
+          std::vector<Value> & /*shape*/, bool inter_no_alias) -> void {
+         auto op = self.create<mlir::triton::tile::CopyOp>(
+             src, dst, /*engine=*/mlir::triton::tile::EngineAttr(),
+             /*src_layout=*/mlir::triton::tile::LayoutAttr(),
+             /*dst_nz_layout=*/mlir::triton::tile::NZLayoutAttr(),
+             /*transpose=*/mlir::UnitAttr(), /*comment=*/mlir::StringAttr());
+         if (inter_no_alias) {
+           op->setAttr("inter_no_alias", self.getBuilder().getBoolAttr(true));
+         }
+       })
+  // tile.subview — result buffer type = sizes + source elt/space
+  .def("create_tile_subview",
+       [](TritonOpBuilder &self, Value source, std::vector<Value> &offsets,
+          const std::vector<int64_t> &sizes,
+          const std::vector<int64_t> &strides) -> Value {
+         auto *ctx = self.getBuilder().getContext();
+         auto srcBuf = mlir::cast<mlir::triton::tile::BufType>(source.getType());
+         auto resTy = mlir::triton::tile::BufType::get(
+             ctx, sizes, srcBuf.getElementType(), srcBuf.getMemorySpace());
+         auto op = self.create<mlir::triton::tile::SubViewOp>(
+             resTy, source, offsets,
+             self.getBuilder().getI64ArrayAttr(sizes),
+             self.getBuilder().getI64ArrayAttr(strides));
+         return op.getResult();
+       })
+  // tile.to_tensor — result is a standard ranked tensor (so tt.dot etc. accept
+  // it), mirroring the source buffer's shape and element type.
+  .def("create_tile_to_tensor",
+       [](TritonOpBuilder &self, Value &src, bool /*writable*/) -> Value {
+         auto srcBuf = mlir::cast<mlir::triton::tile::BufType>(src.getType());
+         auto resTy = mlir::RankedTensorType::get(srcBuf.getShape(),
+                                                  srcBuf.getElementType());
+         auto op = self.create<mlir::triton::tile::ToTensorOp>(resTy, src);
+         return op.getResult();
+       })
+  // tile.store_tensor
+  .def("create_tile_store_tensor",
+       [](TritonOpBuilder &self, Value &src, Value &dst) -> void {
+         self.create<mlir::triton::tile::StoreTensorOp>(src, dst);
+       })
+  // tile.set_flag
+  .def("create_tile_set_flag",
+       [](TritonOpBuilder &self, int64_t producer, int64_t consumer,
+          int64_t event) -> void {
+         self.create<mlir::triton::tile::SetFlagOp>(
+             static_cast<mlir::triton::tile::Pipe>(producer),
+             static_cast<mlir::triton::tile::Pipe>(consumer),
+             static_cast<mlir::triton::tile::EventID>(event));
+       })
+  // tile.wait_flag
+  .def("create_tile_wait_flag",
+       [](TritonOpBuilder &self, int64_t producer, int64_t consumer,
+          int64_t event) -> void {
+         self.create<mlir::triton::tile::WaitFlagOp>(
+             static_cast<mlir::triton::tile::Pipe>(producer),
+             static_cast<mlir::triton::tile::Pipe>(consumer),
+             static_cast<mlir::triton::tile::EventID>(event));
+       })
+  // tile.pipe_barrier
+  .def("create_tile_pipe_barrier",
+       [](TritonOpBuilder &self, int64_t pipe) -> void {
+         self.create<mlir::triton::tile::PipeBarrierOp>(
+             static_cast<mlir::triton::tile::Pipe>(pipe));
+       })
+  // tile.gm_offset — result pointer type matches the base
+  .def("create_tile_gm_offset",
+       [](TritonOpBuilder &self, Value &base, std::vector<Value> &indices,
+          std::vector<Value> &strides) -> Value {
+         auto op = self.create<mlir::triton::tile::GmOffsetOp>(
+             base.getType(), base, indices, strides);
+         return op.getResult();
+       });
 }
