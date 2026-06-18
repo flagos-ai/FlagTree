@@ -160,6 +160,8 @@ static void setDeferredRawPendingSources(py::dict sources) {
       rawEntry.externFuncName = entry["extern_func_name"].cast<std::string>();
     }
     rawEntry.source = entry["source"].cast<std::string>();
+    if (entry.contains("llvm_ir"))
+      rawEntry.llvmIr = entry["llvm_ir"].cast<std::string>();
     if (entry.contains("hint"))
       rawEntry.hint = entry["hint"].cast<std::string>();
     mlir::triton::nvidia::tle_raw::getDeferredRawSourceRegistry()[key] =

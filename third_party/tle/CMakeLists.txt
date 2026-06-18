@@ -5,14 +5,14 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/dialect/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/dialect/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/utils/include)
 add_subdirectory(dialect)
+add_subdirectory(utils)
 if(TRITON_BUILD_PYTHON_MODULE)
   add_triton_plugin(TritonTLE
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle_raw.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils/lib/Protocol.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils/lib/AnalyzeReturnType.cpp
     LINK_LIBS
     MLIRTargetLLVMIRImport
+    TritonTLERawUtils
     TritonTLETransforms
     TritonIR
     )

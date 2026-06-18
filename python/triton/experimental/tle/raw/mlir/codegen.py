@@ -17,6 +17,7 @@ class MLIRCodeGenerator(ast.NodeVisitor):
         lscope: Dict[str, Any] = None,
         gscope: Dict[str, Any] = {},
         context: Optional[ir.Context] = None,
+        func_name_override: Optional[str] = None,
         *args,
         **kwargs,
     ) -> None:
@@ -29,6 +30,7 @@ class MLIRCodeGenerator(ast.NodeVisitor):
         self.context: Final[ir.Context] = ir.Context() if context is None else context
         self.context.allow_unregistered_dialects = True
         self.module: Optional[ir.Module] = None
+        self.func_name_override: Final[Optional[str]] = func_name_override
 
     def call_function(self, fn, args: Sequence[Any], kwargs: Dict[str, Any]) -> Any:
         return fn(*args, **kwargs)
@@ -102,7 +104,8 @@ class MLIRCodeGenerator(ast.NodeVisitor):
                 elif isinstance(ret_ann, ast.Tuple):
                     output_tys += [ir.Type.parse(elt.slice.value) for elt in ret_ann.elts]
             fnty: ir.FunctionType = ir.FunctionType.get(operand_tys, output_tys)
-            fn: func.FuncOp = func.FuncOp(node.name, fnty, visibility="public")
+            func_name = self.func_name_override or node.name
+            fn: func.FuncOp = func.FuncOp(func_name, fnty, visibility="public")
             block: ir.Block = fn.add_entry_block()
             for k, arg in zip(map(lambda arg: arg.arg, node.args.args), block.arguments):
                 self.lscope[k] = arg

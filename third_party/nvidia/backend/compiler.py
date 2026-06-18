@@ -428,7 +428,7 @@ class CUDABackend(BaseBackend):
             finish_deferred_raw_materialize,
             deferred_raw_materialize,
         )
-        deferred_raw_materialize(pm)
+        deferred_raw_materialize(pm, mod)
         # Inline TLE DSL regions before TritonGPU->LLVM lowering so no
         # `tle.dsl_region` op survives into the conversion pipeline.
         tle.raw_passes.add_tle_dsl_region_inline(pm)

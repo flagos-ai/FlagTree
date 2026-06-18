@@ -12,6 +12,7 @@ struct DeferredRawSourceEntry {
   std::string regionDialect;
   std::optional<std::string> externFuncName;
   std::string source;
+  std::string llvmIr;
   std::string hint;
 };
 

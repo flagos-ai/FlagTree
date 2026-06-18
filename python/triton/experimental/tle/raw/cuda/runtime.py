@@ -115,3 +115,19 @@ class CUDAJITFunction(object):
         llvm_context = llvm.context()
         module = parse_llvm_ir(_sanitize_clang_ir(build.stdout.decode()), llvm_context, mlir_context)
         return f"{module}"
+
+
+def compile_deferred_pending_source(entry: dict, *, context) -> str:
+    source_text = entry["source"]
+
+    class _CudaSourceFile:
+        def read_text(self):
+            return source_text
+
+    cuda_fn = CUDAJITFunction(
+        fn=None,
+        file=_CudaSourceFile(),
+        extern_func_name=entry.get("extern_func_name"),
+        deferred=True,
+    )
+    return cuda_fn.make_llvm(context)
