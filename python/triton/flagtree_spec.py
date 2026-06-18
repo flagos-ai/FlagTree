@@ -45,7 +45,7 @@ def spec_path(path_list: list):
         return
     triton_root = current_path[:idx + len(marker)]
     rel_path = current_path[idx + 1 + len(marker):]
-    backend_path = os.path.join(triton_root, "backends", FLAGTREE_BACKEND, "spec", "triton", rel_path)
+    backend_path = os.path.join(triton_root, "spec", FLAGTREE_BACKEND, rel_path)
     if os.path.isdir(backend_path) and backend_path not in path_list:
         path_list.insert(0, backend_path)
 
