@@ -6,13 +6,12 @@ import inspect
 import hashlib
 import json
 from functools import cached_property
-import itertools
 
-from typing import Any, Dict, Tuple, List, Optional, List
+from typing import Dict, Tuple, Optional, List
 
 from .. import knobs
 from .jit import KernelInterface, JITFunction
-from .errors import OutOfResources, PTXASError
+from .errors import OutOfResources
 from .driver import driver
 from .cache import get_cache_manager, triton_key
 from triton._C.libtriton import get_cache_invalidating_env_vars

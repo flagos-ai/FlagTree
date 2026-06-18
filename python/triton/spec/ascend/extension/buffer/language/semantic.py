@@ -61,7 +61,7 @@ def to_buffer(
     if isinstance(bind_buffer, bl.buffer):
         builder.create_bind_buffer(tensor.handle, bind_buffer.handle)
         return bind_buffer
-    if not (bind_buffer is None):
+    if bind_buffer is not None:
         raise ValueError("bind_buffer must be a buffer or None")
     address_space = tl._unwrap_if_constexpr(address_space)
     addr_space_attr = (address_space.to_ir(builder) if address_space else builder.get_null_attr())

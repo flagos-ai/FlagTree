@@ -38,8 +38,8 @@ def check_npu_smi_device():
             output = result.stdout.lower()
             return "ascend910_95" in output or "ascend950" in output or "910_958b" in output
         return False
-    except Exception as e:
-        logger.warning(f"can not use command: npu-smi info")
+    except Exception:
+        logger.warning("can not use command: npu-smi info")
         return False
 
 

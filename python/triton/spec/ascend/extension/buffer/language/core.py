@@ -260,7 +260,7 @@ def check_subview(src, offsets, sizes, strides):
     src_strides = [1] * length
     if length == 1:
         if offset[0] % base_byte != 0:
-            raise TypeError(f"all strides should be 1 and the offset value should be 32-bytes aligned.")
+            raise TypeError("all strides should be 1 and the offset value should be 32-bytes aligned.")
         return
     for i in range(length - 2, -1, -1):
         src_strides[i] = src_strides[i + 1] * src.shape[i + 1]
@@ -276,7 +276,7 @@ def check_subview(src, offsets, sizes, strides):
     stride_1 = all(s == 1 for s in strides)
     is_unaligned = result_offset % base_byte != 0 or is_unaligned or not stride_1
     if is_unaligned:
-        raise TypeError(f"all strides should be 1 and the offset value should be 32-bytes aligned.")
+        raise TypeError("all strides should be 1 and the offset value should be 32-bytes aligned.")
 
 
 @builtin

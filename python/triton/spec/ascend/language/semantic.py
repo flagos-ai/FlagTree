@@ -515,7 +515,7 @@ class TritonSemantic(Generic[TensorTy]):
         input_sca_ty = input.type.scalar
         if hasattr(input, 'was_bool_to_int8'):
             if input.type.scalar.is_int8():
-                raise TypeError(f"unexpected type bool")
+                raise TypeError("unexpected type bool")
         if input_sca_ty.is_ptr():
             raise ValueError("wrong type argument to unary minus (" + input_sca_ty.__repr__() + ")")
         _0 = self.tensor(self.builder.get_null_value(input_sca_ty.to_ir(self.builder)), input_sca_ty)
@@ -1633,13 +1633,13 @@ class TritonSemantic(Generic[TensorTy]):
         assert lhs.type.is_block() and rhs.type.is_block()
         if is_compile_on_910_95:
             assert lhs.dtype in [tl.float16, tl.bfloat16, tl.uint8, tl.float8e5,
-                                 tl.float8e4nv], f"lhs matrix dtype must be in [bf16, fp16, uint8, e5m2, e4m3]"
+                                 tl.float8e4nv], "lhs matrix dtype must be in [bf16, fp16, uint8, e5m2, e4m3]"
             assert rhs.dtype in [tl.float16, tl.bfloat16, tl.uint8, tl.float8e5,
-                                 tl.float8e4nv], f"rhs matrix dtype must be in [bf16, fp16, uint8, e5m2, e4m3]"
+                                 tl.float8e4nv], "rhs matrix dtype must be in [bf16, fp16, uint8, e5m2, e4m3]"
         else:
-            assert lhs.dtype == tl.bfloat16 or lhs.dtype == tl.float16, f"lhs matrix dtype must be bf16 or fp16"
-            assert rhs.dtype == tl.bfloat16 or lhs.dtype == tl.float16, f"rhs matrix dtype must be bf16 or fp16"
-        assert lhs.dtype == rhs.dtype, f"lhs rhs matrix must get same dtype"
+            assert lhs.dtype == tl.bfloat16 or lhs.dtype == tl.float16, "lhs matrix dtype must be bf16 or fp16"
+            assert rhs.dtype == tl.bfloat16 or lhs.dtype == tl.float16, "rhs matrix dtype must be bf16 or fp16"
+        assert lhs.dtype == rhs.dtype, "lhs rhs matrix must get same dtype"
         #TODO: validate types.
         lhs_rank = len(lhs.shape)
         rhs_rank = len(rhs.shape)
@@ -1657,10 +1657,10 @@ class TritonSemantic(Generic[TensorTy]):
         rhs_scale_is_none = rhs_scale is None or (isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None)
         lhs_scale_is_none = lhs_scale is None or (isinstance(lhs_scale, tl.constexpr) and lhs_scale.value is None)
         assert isinstance(lhs_scale, tl.tensor) and (lhs_scale.dtype == tl.int8 or lhs_scale.dtype
-                                                     == tl.uint8), f"lhs_scale must be int8 or uint8 tensor"
+                                                     == tl.uint8), "lhs_scale must be int8 or uint8 tensor"
         if not rhs_scale_is_none:
             assert isinstance(rhs_scale, tl.tensor) and (rhs_scale.dtype == tl.int8 or rhs_scale.dtype
-                                                         == tl.uint8), f"rhs_scale must be int8 or uint8 tensor"
+                                                         == tl.uint8), "rhs_scale must be int8 or uint8 tensor"
         lhs = self._bitcast_to_fp_type(lhs, lhs_format)
         rhs = self._bitcast_to_fp_type(rhs, rhs_format)
         assert lhs_k_pack or lhs_format == "e2m1", "only mxfp4 inputs can be packed along a dimension different than K"

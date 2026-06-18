@@ -730,7 +730,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
 
     def create_annotation_mark(self, ptr_data, hint_name: str, hint_val):
         if hint_name == "overflow_mode":
-            raise ValueError(f"overflow_mode is not supported in interpreter mode, may have accuracy issues")
+            raise ValueError("overflow_mode is not supported in interpreter mode, may have accuracy issues")
         else:
             warnings.warn(f"compile_hint '{hint_name}' is not supported in interpreter mode, just pass it", UserWarning,
                           stacklevel=2)

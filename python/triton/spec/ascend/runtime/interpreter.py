@@ -30,10 +30,10 @@ def _try_import_ascend():
         from . import ascend_interpreter
         AscendInterpreterBuilder = ascend_interpreter.AscendInterpreterBuilder
         _has_ascend_support = True
-    except ImportError as e:
+    except ImportError:
         _has_ascend_support = False
         AscendInterpreterBuilder = None
-    except Exception as e:
+    except Exception:
         # Catch other exceptions (like circular import) and log them
         _has_ascend_support = False
         AscendInterpreterBuilder = None

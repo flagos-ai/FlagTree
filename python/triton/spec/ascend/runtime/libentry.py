@@ -33,23 +33,12 @@ import weakref
 import ast
 from collections import OrderedDict
 from typing import (
-    Any,
-    Callable,
     Dict,
-    Final,
-    Iterator,
-    List,
     Optional,
-    Tuple,
-    Type,
-    Union,
-    overload,
 )
 
 import triton
-from triton._C import libentryC
 import torch
-import torch_npu
 
 torch_device_fn = torch.npu
 
