@@ -1091,7 +1091,7 @@ class TritonSemantic(Generic[TensorTy]):
                              "pointers or loading a scalar. Because the compiler does not know the boundary; please "
                              "use block pointers (defined by `make_block_ptr`) instead")
 
-        if mask is not None and other is None and care_padding == True:
+        if mask is not None and other is None and care_padding == True:  # noqa: E712
             # Get element type to determine default padding value
             elt_ty = ptr.type.scalar.element_ty
             # Use 0.0 for floating point types, 0 for integer types
@@ -1583,7 +1583,7 @@ class TritonSemantic(Generic[TensorTy]):
 
         M = lhs.type.shape[-2]
         N = rhs.type.shape[-1]
-        K = lhs.type.shape[-1]
+        K = lhs.type.shape[-1]  # noqa: F841
         B = lhs.type.shape[0] if lhs_rank == 3 else None
         ret_ty = tl.block_type(ret_scalar_ty, [B, M, N] if B else [M, N])
         if acc is None:

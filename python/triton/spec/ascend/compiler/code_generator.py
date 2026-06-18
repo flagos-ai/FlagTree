@@ -38,8 +38,8 @@ def check_identifier_legality(name, type):
 WITH_DISPATCH = {}
 
 # Import and register Ascend extension dispatch handlers
-from triton.language.extra.cann.extension.dispatch import ASCEND_WITH_DISPATCH
-from triton.language.extra.cann.extension.builder import setup_unified_builder
+from triton.language.extra.cann.extension.dispatch import ASCEND_WITH_DISPATCH  # noqa: E402
+from triton.language.extra.cann.extension.builder import setup_unified_builder  # noqa: E402
 
 WITH_DISPATCH.update(ASCEND_WITH_DISPATCH)
 
@@ -1205,7 +1205,7 @@ class CodeGenerator(ast.NodeVisitor):
             warp_specialize = iterator.warp_specialize
             disable_licm = iterator.disable_licm
             if (IteratorClass is extension.parallel):
-                bind_sub_block = iterator.bind_sub_block
+                bind_sub_block = iterator.bind_sub_block  # noqa: F841
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
