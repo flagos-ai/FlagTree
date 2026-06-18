@@ -43,8 +43,7 @@ def _compile_pending_raw_sources(mod: Any, pending: dict[str, dict[str, Any]]) -
             from triton.experimental.tle.raw.mlir.runtime import compile_deferred_pending_source
             payload["llvm_ir"] = compile_deferred_pending_source(payload, context=context)
         else:
-            raise RuntimeError(
-                f"deferred raw materialize does not support region_dialect={region_dialect!r}")
+            raise RuntimeError(f"deferred raw materialize does not support region_dialect={region_dialect!r}")
         compiled[source_id] = payload
     return compiled
 

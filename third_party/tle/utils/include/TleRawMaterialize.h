@@ -12,7 +12,8 @@ class TritonOpBuilder;
 
 namespace mlir::triton::tle::raw {
 
-OwningOpRef<ModuleOp> parseLLVMModule(MLIRContext *context, llvm::StringRef text);
+OwningOpRef<ModuleOp> parseLLVMModule(MLIRContext *context,
+                                      llvm::StringRef text);
 
 LLVM::LLVMFuncOp findExternalLLVMFunc(ModuleOp module,
                                       std::optional<llvm::StringRef> name);
@@ -25,8 +26,7 @@ LogicalResult buildDSLRegionBodyFromLLVMFunc(TritonOpBuilder &builder,
                                              tle::DSLRegionOp dslRegionOp,
                                              LLVM::LLVMFuncOp funcOp);
 
-LogicalResult materializeDeferredDSLRegion(ModuleOp module,
-                                           tle::DSLRegionOp op,
+LogicalResult materializeDeferredDSLRegion(ModuleOp module, tle::DSLRegionOp op,
                                            llvm::StringRef llvmIr,
                                            llvm::StringRef externFuncName);
 

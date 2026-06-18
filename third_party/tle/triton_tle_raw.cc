@@ -1,11 +1,11 @@
 #include "ir.h"
 
+#include "IR/Dialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/AsmState.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/utils/include/AnalyzeReturnType.h"
 #include "tle/utils/include/TleRawMaterialize.h"
-#include "IR/Dialect.h"
-#include "mlir/IR/AsmState.h"
 #include "llvm/ADT/STLExtras.h"
 
 using namespace mlir;
@@ -79,8 +79,8 @@ tle::DSLRegionOp createTLERawRegionByLLVMFunc(
   }
   ModuleOp curModule = cast<ModuleOp>(curOp);
 
-  auto funcOpOrErr = tle::raw::cloneLLVMSymbolsAndLookupFunc(curModule,
-                                                             module.get(), {});
+  auto funcOpOrErr =
+      tle::raw::cloneLLVMSymbolsAndLookupFunc(curModule, module.get(), {});
   assert(succeeded(funcOpOrErr));
   LLVM::LLVMFuncOp funcOp = *funcOpOrErr;
 

@@ -143,8 +143,7 @@ LogicalResult buildDSLRegionBodyFromLLVMFunc(TritonOpBuilder &builder,
   return success();
 }
 
-LogicalResult materializeDeferredDSLRegion(ModuleOp module,
-                                           tle::DSLRegionOp op,
+LogicalResult materializeDeferredDSLRegion(ModuleOp module, tle::DSLRegionOp op,
                                            llvm::StringRef llvmIr,
                                            llvm::StringRef externFuncName) {
   OwningOpRef<ModuleOp> parsedModule =
@@ -152,8 +151,8 @@ LogicalResult materializeDeferredDSLRegion(ModuleOp module,
   if (!parsedModule)
     return failure();
 
-  auto funcOpOrErr = cloneLLVMSymbolsAndLookupFunc(
-      module, parsedModule.get(), externFuncName);
+  auto funcOpOrErr =
+      cloneLLVMSymbolsAndLookupFunc(module, parsedModule.get(), externFuncName);
   if (failed(funcOpOrErr))
     return failure();
 

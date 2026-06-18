@@ -121,6 +121,7 @@ def compile_deferred_pending_source(entry: dict, *, context) -> str:
     source_text = entry["source"]
 
     class _CudaSourceFile:
+
         def read_text(self):
             return source_text
 

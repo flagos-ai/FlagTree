@@ -130,8 +130,7 @@ def matmul_kernel(
                                nv_mma_shared_layout=False)
         tle_gpu.copy(b_ptrs, b_smem, shape=[BLOCK_SIZE_K, BLOCK_SIZE_N])
         if DEFERRED:
-            acc_smem = tle_raw.call_smem(
-                edsl_deferred, [acc_smem, a_smem, b_smem], output_indices=[0])
+            acc_smem = tle_raw.call_smem(edsl_deferred, [acc_smem, a_smem, b_smem], output_indices=[0])
         else:
             acc_smem = tle_raw.call_smem(edsl_eager, [acc_smem, a_smem, b_smem])
         a_ptrs += BLOCK_SIZE_K * stride_ak

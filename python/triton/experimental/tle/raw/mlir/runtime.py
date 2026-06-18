@@ -10,6 +10,7 @@ from mlir.passmanager import PassManager
 
 from .codegen import MLIRCodeGenerator
 from triton.experimental.tle.raw.source_store import register_source
+
 _pending_jit_fn_key = "mlir_jit_fn"
 
 
@@ -116,7 +117,6 @@ class MLIRJITFunction(object):
 def compile_deferred_pending_source(entry: dict, *, context) -> str:
     mlir_jit_fn = entry.get(_pending_jit_fn_key)
     if not isinstance(mlir_jit_fn, MLIRJITFunction):
-        raise RuntimeError(
-            "deferred tle_raw MLIR source is missing its jit handle; "
-            "re-register via MLIRJITFunction.register_pending_source()")
+        raise RuntimeError("deferred tle_raw MLIR source is missing its jit handle; "
+                           "re-register via MLIRJITFunction.register_pending_source()")
     return mlir_jit_fn.make_llvm(context)
