@@ -714,6 +714,7 @@ def _create_remote_pointers_tensor(
     _semantic,
     dtype: tl.dtype = None,
     space: str = "cluster",
+    offset: int | tl.tensor | None = None,
 ) -> tl.tensor:
     builder = _semantic.builder
 
@@ -734,7 +735,27 @@ def _create_remote_pointers_tensor(
         remote_type = tl.block_type(remote_ptr_dtype, list(tensor.shape)).to_ir(builder)
     else:
         remote_type = remote_ptr_dtype.to_ir(builder)
-    remote_op = builder.create_remote_pointers(remote_type, tensor.handle, shard_id_tensor.handle, space)
+
+    offset_tensor = None
+    if offset is not None:
+        offset_tensor = offset if isinstance(offset, tl.tensor) else _semantic.to_tensor(offset)
+        if not offset_tensor.dtype.is_int():
+            raise TypeError(f"offset must be an integer scalar or tensor, got {offset_tensor.dtype}")
+        if offset_tensor.shape not in ((), tuple(tensor.shape)):
+            raise ValueError(f"offset must be scalar or match tensor shape, got shape {offset_tensor.shape}")
+        # Normalize to i64 to match the MLIR verifier expectation.
+        # Use tl.cast with explicit _semantic because .to() is a builtin and
+        # must receive _semantic when called outside the JIT compiler's
+        # automatic injection (e.g. inside this helper).
+        if offset_tensor.dtype != tl.int64:
+            offset_tensor = tl.cast(offset_tensor, tl.int64, _semantic=_semantic)
+
+    if offset_tensor is not None:
+        remote_op = builder.create_remote_pointers(
+            remote_type, tensor.handle, shard_id_tensor.handle, space, offset_tensor.handle)
+    else:
+        remote_op = builder.create_remote_pointers(
+            remote_type, tensor.handle, shard_id_tensor.handle, space)
     if tensor.type.is_block():
         return tl.tensor(remote_op.get_result(0), tl.block_type(remote_ptr_dtype, list(tensor.shape)))
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
@@ -777,6 +798,7 @@ def _remote_pointer(
     space: str = "cluster",
     scope: device_mesh | None = None,
     dtype: tl.dtype = None,
+    offset: int | tl.tensor | None = None,
     _semantic=None,
 ) -> tl.tensor:
 
@@ -796,14 +818,16 @@ def _remote_pointer(
         linear_shard_id = _normalize_compile_time_remote_shard_id(shard_id, scope)
         shard_id_tensor = _semantic.to_tensor(int(linear_shard_id))
         shard_id_tensor = _normalize_runtime_remote_shard_id_tensor(shard_id_tensor)
-        return _create_remote_pointers_tensor(tensor, shard_id_tensor, _semantic, dtype=dtype, space=space)
+        return _create_remote_pointers_tensor(
+            tensor, shard_id_tensor, _semantic, dtype=dtype, space=space, offset=offset)
 
     # Runtime shard id path. This materializes a TLE op that carries the
     # runtime i32 shard id through lowering.
     shard_id_tensor = shard_id if isinstance(shard_id, tl.tensor) else _semantic.to_tensor(shard_id)
     shard_id_tensor = _normalize_runtime_remote_shard_id_tensor(shard_id_tensor)
 
-    return _create_remote_pointers_tensor(tensor, shard_id_tensor, _semantic, dtype=dtype, space=space)
+    return _create_remote_pointers_tensor(
+        tensor, shard_id_tensor, _semantic, dtype=dtype, space=space, offset=offset)
 
 
 @tl.builtin
@@ -813,6 +837,7 @@ def remote(
     scope: device_mesh | None = None,
     space: str = "cluster",
     dtype: tl.dtype = None,
+    offset: int | tl.tensor | None = None,
     _semantic=None,
 ):
     """
@@ -827,6 +852,12 @@ def remote(
     `shard_id` is the target block id inside the current thread block cluster.
     When `scope` is provided, launch cluster dimensions are inferred from that
     mesh and this mode requires `num_ctas=1` (one program maps to one block).
+
+    `offset` is an optional element offset relative to the target shard's
+    memory base address. It is only supported for `space="device"` and is
+    internally converted to a byte offset before being passed to
+    `flagcxGetIntraPointerC`. It may be a Python `int` (compile-time constant)
+    or a scalar `tl.tensor` (runtime value).
     """
     shard_id = tl._unwrap_if_constexpr(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
@@ -838,11 +869,16 @@ def remote(
     # Direct pointer path: support local_ptr scalar/tensor values and return
     # remote pointer with preserved shape.
     if isinstance(tensor, tl.tensor):
-        return _remote_pointer(tensor, shard_id, scope=scope, space=space, _semantic=_semantic, dtype=dtype)
+        return _remote_pointer(tensor, shard_id, scope=scope, space=space,
+                               _semantic=_semantic, dtype=dtype, offset=offset)
 
     # Buffered tensor path: carry remote metadata and let `local_ptr` materialize
     # remote pointers later.
     if _is_buffered_tensor_like(tensor):
+        if offset is not None:
+            raise NotImplementedError(
+                "offset is not supported for buffered_tensor in tle.remote; "
+                "use tle.remote(in_ptr, ..., offset=...) with a pointer tensor instead")
         if (hasattr(tensor, "_tle_remote_shard_id") or hasattr(tensor, "_tle_remote_scope")
                 or hasattr(tensor.type, "_tle_remote_shard_id") or hasattr(tensor.type, "_tle_remote_scope")):
             raise ValueError("remote(buffered_tensor, ...) cannot be applied twice; "

@@ -1,6 +1,9 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 
+#include <optional>
+
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
@@ -19,6 +22,25 @@ using namespace mlir;
 namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
 
+// Extract pointee type from tle.remote_pointers result type.
+static Type getRemotePointeeType(Type resultTy) {
+  if (auto tensorTy = dyn_cast<RankedTensorType>(resultTy))
+    resultTy = tensorTy.getElementType();
+  if (auto ptrTy = dyn_cast<triton::PointerType>(resultTy))
+    return ptrTy.getPointeeType();
+  return Type();
+}
+
+// Return bit width for scalar int/float types, or std::nullopt otherwise.
+static std::optional<int> getScalarBitWidth(Type ty) {
+  if (auto intTy = dyn_cast<IntegerType>(ty))
+    return intTy.getWidth();
+  if (auto floatTy = dyn_cast<FloatType>(ty))
+    return floatTy.getWidth();
+  return std::nullopt;
+}
+
+// Map a shared-memory pointer (addrspace=3) to a cluster-shared pointer (addrspace=7).
 Value mapSharedToClusterPointer(ConversionPatternRewriter &rewriter,
                                 Location loc, Value ptr, Value ctaId) {
   auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(ptr.getType());
@@ -37,13 +59,15 @@ Value mapSharedToClusterPointer(ConversionPatternRewriter &rewriter,
   return NVVM::MapaOp::create(rewriter, loc, clusterPtrTy, ptr, ctaId);
 }
 
+
+
+// Declare the external flagcxGetIntraPointerC function in the LLVM IR module.
 static LLVM::LLVMFuncOp getOrInsertGetPeerPointer(ModuleOp module,
                                                   MLIRContext *ctx) {
 
   const char *funcName = "flagcxGetIntraPointerC";
   if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
     return func;
-
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
   auto floatTy = Float32Type::get(ctx);
@@ -55,6 +79,7 @@ static LLVM::LLVMFuncOp getOrInsertGetPeerPointer(ModuleOp module,
   OpBuilder builder(module.getBodyRegion());
   auto func =
       builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName, funcType);
+
 
   func.setLinkage(LLVM::Linkage::External);
   return func;
@@ -352,7 +377,8 @@ LogicalResult lowerClusterSpace(Location loc, ValueRange srcElems,
 }
 
 LogicalResult lowerDeviceSpace(Location loc, ValueRange srcElems,
-                               ValueRange shardElems,
+                               ValueRange shardElems, Value offsetVal,
+                               int elemBytes,
                                ConversionPatternRewriter &rewriter,
                                SmallVectorImpl<Value> &resultPtrs) {
   ModuleOp module =
@@ -364,8 +390,31 @@ LogicalResult lowerDeviceSpace(Location loc, ValueRange srcElems,
   auto func = getOrInsertGetPeerPointer(module, rewriter.getContext());
 
   Value memPtr = srcElems[0];
-  Value offset = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
   Value peer = shardElems[0];
+
+  auto i64Ty = rewriter.getI64Type();
+
+  Value offsetI64;
+  if (offsetVal) {
+    auto offsetIntTy = dyn_cast<IntegerType>(offsetVal.getType());
+    if (!offsetIntTy)
+      return failure();
+    if (offsetIntTy.getWidth() < 64)
+      offsetI64 = rewriter.create<arith::ExtSIOp>(loc, i64Ty, offsetVal);
+    else if (offsetIntTy.getWidth() > 64)
+      offsetI64 = rewriter.create<arith::TruncIOp>(loc, i64Ty, offsetVal);
+    else
+      offsetI64 = offsetVal;
+  } else {
+    offsetI64 = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
+  }
+
+  Value byteOffset = offsetI64;
+  if (elemBytes != 1) {
+    Value elemBytesVal =
+        rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
+    byteOffset = rewriter.create<arith::MulIOp>(loc, offsetI64, elemBytesVal);
+  }
 
   auto intTy = dyn_cast<IntegerType>(memPtr.getType());
   if (!intTy || intTy.getWidth() != 64)
@@ -386,14 +435,13 @@ LogicalResult lowerDeviceSpace(Location loc, ValueRange srcElems,
 
   auto getPeerPtrCall = rewriter.create<LLVM::CallOp>(
       loc, TypeRange{func.getFunctionType().getReturnType()},
-      FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr, offset, peer});
+      FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr, byteOffset, peer});
 
   Value peerPtr = getPeerPtrCall.getResult();
   auto peerPtrTy = dyn_cast<LLVM::LLVMPointerType>(peerPtr.getType());
 
   if (!isGlobalAddrSpace(peerPtrTy))
     return failure();
-
   resultPtrs.push_back(peerPtr);
 
   return success();
@@ -434,6 +482,14 @@ struct RemotePointersOpConversion
 
     auto space = adaptor.getSpace();
 
+    Value offsetVal;
+    if (adaptor.getOffset()) {
+      auto offsetElems = unpackLLElements(loc, adaptor.getOffset(), rewriter);
+      if (offsetElems.size() != 1)
+        return reportFailure("offset must be scalar");
+      offsetVal = offsetElems[0];
+    }
+
     SmallVector<Value> mappedPtrs;
     if (space == "cluster") {
       if (failed(lowerClusterSpace(loc, srcElems, shardElems, rewriter,
@@ -441,8 +497,19 @@ struct RemotePointersOpConversion
         return rewriter.notifyMatchFailure(op, "cluster lowering failed");
       }
     } else if (space == "device") {
-      if (failed(lowerDeviceSpace(loc, srcElems, shardElems, rewriter,
-                                  mappedPtrs))) {
+      int elemBytes = 1;
+      if (offsetVal) {
+        Type resultPointeeTy = getRemotePointeeType(op.getType());
+        if (!resultPointeeTy)
+          return reportFailure("result must be tt.ptr or tensor<tt.ptr>");
+        auto elemBits = getScalarBitWidth(resultPointeeTy);
+        if (!elemBits.has_value())
+          return reportFailure(
+              "result pointee type must be scalar int or float");
+        elemBytes = elemBits.value() / 8;
+      }
+      if (failed(lowerDeviceSpace(loc, srcElems, shardElems, offsetVal,
+                                  elemBytes, rewriter, mappedPtrs))) {
         return rewriter.notifyMatchFailure(op, "device lowering failed");
       }
     } else if (space == "node") {
