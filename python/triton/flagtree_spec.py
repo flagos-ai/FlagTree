@@ -16,18 +16,12 @@ def _triton_root() -> str | None:
 def _get_spec_module():
     global _spec_module
     from ._flagtree_backend import FLAGTREE_BACKEND
-    if not FLAGTREE_BACKEND:
-        return None
-    triton_root = _triton_root()
-    if triton_root is None:
-        return None
-    spec_dir = os.path.join(triton_root, "backends", FLAGTREE_BACKEND, "spec")
-    if not os.path.isdir(spec_dir):
-        return None
     if _spec_module is not None:
         return _spec_module
+    if not FLAGTREE_BACKEND:
+        return None
     try:
-        _spec_module = importlib.import_module(f"triton.backends.{FLAGTREE_BACKEND}.spec")
+        _spec_module = importlib.import_module(f"triton.spec.{FLAGTREE_BACKEND}")
     except ImportError:
         return None
     return _spec_module
