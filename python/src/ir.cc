@@ -1673,6 +1673,14 @@ void init_triton_ir(py::module &&m) {
              return self.create<ExternElementwiseOp>(retType, argList, libName,
                                                      libPath, symbol, isPure);
            })
+      .def("create_extern_call",
+           [](TritonOpBuilder &self, const std::string &libName,
+              const std::string &libPath, const std::string &symbol,
+              std::vector<Value> &argList, const std::vector<Type> &retTypes,
+              bool isPure) -> OpState {
+             return self.create<ExternCallOp>(retTypes, argList, libName,
+                                              libPath, symbol, isPure);
+           })
       // Built-in instruction
       .def("create_get_program_id",
            [](TritonOpBuilder &self, int axis) -> Value {
