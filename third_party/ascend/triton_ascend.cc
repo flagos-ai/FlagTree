@@ -14,7 +14,7 @@
 #include "ascend/include/TritonToAnnotation/Passes.h"
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToHIVM/Passes.h"
-#include "ascend/include/TileIRToHIVM/Passes.h"
+// #include "ascend/include/TileIRToHIVM/Passes.h"
 #include "ascend/include/TritonToLLVM/Passes.h"
 #include "incubated/Conversion/DiscreteMaskAccessConversion/Passes.h"
 #include "incubated/Conversion/TritonToLinalgIncubated/Passes.h"
@@ -30,6 +30,8 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <pybind11/pybind11.h>
+
+#include "llvm/Config/llvm-config.h"
 
 namespace py = pybind11;
 using namespace ir;
@@ -323,14 +325,18 @@ void init_triton_ascend_ir(py::module &&m) {
 
              return op->getResult(0);
            })
-      // Add an annotation
-      .def("create_annotation",
-           [](TritonOpBuilder &self, Value &ptr, const std::string &attrKey,
-              Attribute &attrVal) {
-             auto annotationOp = self.create<triton::ascend::AnnotationOp>(ptr);
-             annotationOp->setAttr(self.getBuilder().getStringAttr(attrKey),
-                                   attrVal);
+      .def("create_tanh",
+           [](TritonOpBuilder &self, Value &val) -> Value {
+             return self.create<math::TanhOp>(val);
            });
+      // Add an annotation
+  // .def("create_annotation",
+  //      [](TritonOpBuilder &self, Value &ptr, const std::string &attrKey,
+  //         Attribute &attrVal) {
+  //        auto annotationOp = self.create<triton::ascend::AnnotationOp>(ptr);
+  //        annotationOp->setAttr(self.getBuilder().getStringAttr(attrKey),
+  //                              attrVal);
+  //      });
 }
 
 void init_triton_ascend_passes_ttir(py::module &&m) {
@@ -340,16 +346,25 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
     pm.addPass(mlir::triton::createAutoBlockifyPass(opts));
   });
 
+#if LLVM_VERSION_MAJOR >= 22
+  m.def("add_triton_to_structure",
+        [](mlir::PassManager &pm, bool enableMaskFallbackConversion,
+           bool optimizeDynamicOffset, bool compileOn91095) {
+          pm.addPass(mlir::triton::createTritonToStructuredIncubatedPass(
+              enableMaskFallbackConversion, optimizeDynamicOffset, compileOn91095));
+        });
+#else
   m.def("add_triton_to_structure",
         [](mlir::PassManager &pm, bool enableMaskFallbackConversion,
            bool optimizeDynamicOffset) {
           pm.addPass(mlir::triton::createTritonToStructuredIncubatedPass(
               enableMaskFallbackConversion, optimizeDynamicOffset));
         });
+#endif
 
-  m.def("add_triton_to_annotation", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::createTritonToAnnotationPass());
-  });
+  // m.def("add_triton_to_annotation", [](mlir::PassManager &pm) {
+  //   pm.addPass(mlir::triton::createTritonToAnnotationPass());
+  // });
 
   m.def("add_triton_to_linalg",
         [](mlir::PassManager &pm, bool globalKernel, bool namedOps,
@@ -388,9 +403,9 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
     pm.addPass(mlir::triton::createTritonToHIVMPass());
   });
 
-  m.def("add_tileir_to_hivm", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::createTileIRToHIVMPass());
-  });
+  // m.def("add_tileir_to_hivm", [](mlir::PassManager &pm) {
+  //   pm.addPass(mlir::triton::createTileIRToHIVMPass());
+  // });
 
   m.def("add_triton_to_llvm", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createTritonToLLVMPass());

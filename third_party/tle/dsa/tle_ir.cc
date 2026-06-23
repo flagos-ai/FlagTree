@@ -9,7 +9,7 @@
 
 #include "tle/dsa/dialect/include/IR/Dialect.h"
 
-#include "npu/Dialect/TileIR/IR/TileIRDialect.h"
+#include "mlir-ext/Dialect/TileIR/IR/TileIRDialect.h"
 
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 

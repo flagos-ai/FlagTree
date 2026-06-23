@@ -17,9 +17,9 @@
 #
 set -euo pipefail
 
-# --- repo root (this script lives in <repo>/skill/script/) -------------------
+# --- repo root (this script lives in <repo>/script/) --------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # --- configurable knobs ------------------------------------------------------
 PYTHON="${PYTHON:-/root/miniconda3/envs/dlcompiler/bin/python}"
@@ -34,13 +34,17 @@ SP="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
 # TileIR dialect and TileIRToHIVM (see top-level CMakeLists.txt).
 export FLAGTREE_BACKEND=ascend
 # Use the bundled clang 21 (system clang is too old for the LLVM-21 headers).
+export CC="$LLVM_SYSPATH/bin/clang"
+export CXX="$LLVM_SYSPATH/bin/clang++"
 export PATH="$LLVM_SYSPATH/bin:$PATH"
 export LIBRARY_PATH="$LLVM_SYSPATH/lib:${LIBRARY_PATH:-}"
 export LD_LIBRARY_PATH="$LLVM_SYSPATH/lib:${LD_LIBRARY_PATH:-}"
 export TRITON_BUILD_PROTON=OFF
 export TRITON_OFFLINE_BUILD=1
 
-export TRITON_APPEND_CMAKE_ARGS="-DLLVM_ENABLE_WERROR=OFF \
+export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_C_COMPILER=$LLVM_SYSPATH/bin/clang \
+  -DCMAKE_CXX_COMPILER=$LLVM_SYSPATH/bin/clang++ \
+  -DLLVM_ENABLE_WERROR=OFF \
   -DLLVM_USE_LINKER=lld \
   -DCMAKE_CXX_FLAGS=-Wno-error=dangling-assignment-gsl \
   -DCMAKE_EXE_LINKER_FLAGS=-L$LLVM_SYSPATH/lib \
