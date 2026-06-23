@@ -480,7 +480,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         (*ld)(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
 #else
       auto *addrOpr =
-          ptxBuilder.newAddrOperand(ptrElems[vecStart], "1", in_off);
+          ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
       // Create L2 cache policy register if needed
       Value l2PolicyReg =
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
@@ -723,7 +723,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
             .maybePredicate(pred, "b");
 #else
       auto *asmAddr =
-          ptxBuilder.newAddrOperand(ptrElems[vecStart], "1", in_off);
+          ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
       // Create L2 cache policy register if needed
       Value l2PolicyReg =
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
@@ -981,8 +981,8 @@ public:
 
     auto valElements = unpackLLElements(loc, llVal, rewriter);
     auto ptrElements = unpackLLElements(loc, llPtr, rewriter);
-    const bool isSharedPtr = isSharedPointerValue(ptrElements);
 #ifdef __TLE__
+    const bool isSharedPtr = isSharedPointerValue(ptrElements);
     const bool isClusterSharedPtr =
         inferPtrAddrSpace(ptrElements).value_or(1) ==
         static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster);
