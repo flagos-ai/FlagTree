@@ -1,14 +1,13 @@
 // Copyright 2026- Xcoresigma Technology Co., Ltd
 
-#ifndef TRITON_TLE_OPS
-#define TRITON_TLE_OPS
+#ifndef TRITON_TLE_DSA_OPS
+#define TRITON_TLE_DSA_OPS
 
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
-include "triton/Dialect/Triton/IR/TritonTypeInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
-include "tle/dsa/dialect/include/IR/TleDialect.td"
+include "tle/dsa/dialect/include/IR/TleDSADialect.td"
 
 //
 // Op Base

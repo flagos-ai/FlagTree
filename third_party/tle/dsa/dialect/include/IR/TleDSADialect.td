@@ -1,7 +1,7 @@
 // Copyright 2026- Xcoresigma Technology Co., Ltd
 
-#ifndef TRITON_TLE_DIALECT
-#define TRITON_TLE_DIALECT
+#ifndef TRITON_TLE_DSA_DIALECT
+#define TRITON_TLE_DSA_DIALECT
 
 include "mlir/IR/OpBase.td"
 

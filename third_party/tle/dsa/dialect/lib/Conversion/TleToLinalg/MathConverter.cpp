@@ -1,6 +1,6 @@
 // Copyright 2026- Xcoresigma Technology Co., Ltd
 #include "tle/dsa/dialect/include/Conversion/TleToLinalg/MathConverter.h"
-#include "tle/dsa/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/Dialect.h"
 
 namespace TleMathConverter {
 

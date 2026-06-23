@@ -7,8 +7,10 @@ add_triton_library(TleIR
 
   DEPENDS
   TleTableGen
+  TleDSATableGen
 
   LINK_LIBS PUBLIC
+  TleDSAIR
   TritonIR
   TritonGPUIR
 )

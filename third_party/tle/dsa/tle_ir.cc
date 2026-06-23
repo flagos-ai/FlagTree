@@ -16,36 +16,26 @@
 #include "mlir/IR/Types.h"
 
 #include "ir.h"
+#include <stdexcept>
 
 using namespace mlir;
 namespace py = pybind11;
 
 constexpr unsigned kIntegerAttrBitWidth = 64;
 
-struct DSAOpBuilder : public TritonOpBuilder {};
+void init_tle_dsa_ir(py::module &&m) {
+  auto *builder_cls = ir::getBuilderClass();
 
-void init_triton_tle(py::module &&m) {
-  m.def("load_dialects", [](MLIRContext &context) {
-    DialectRegistry registry;
-    registry.insert<memref::MemRefDialect>();
-    registry.insert<bufferization::BufferizationDialect>();
-    registry.insert<triton::tle::TleDialect>();
-    context.appendDialectRegistry(registry);
-    context.loadAllAvailableDialects();
-  });
-
-  py::class_<DSAOpBuilder, TritonOpBuilder>(
-      m, "tle_builder", py::module_local(), py::dynamic_attr())
-      .def(py::init<mlir::MLIRContext *>())
-      .def("dsa_get_null_attr", [](DSAOpBuilder &self) { return Attribute(); })
+  builder_cls
+      ->def("dsa_get_null_attr", [](TritonOpBuilder &self) { return Attribute(); })
       .def("dsa_get_buffer_type",
-           [](DSAOpBuilder &self, std::vector<int64_t> &shape,
+           [](TritonOpBuilder &self, std::vector<int64_t> &shape,
               Type &elementType, const Attribute &memorySpace) -> Type {
              return MemRefType::get(shape, elementType,
                                     MemRefLayoutAttrInterface{}, memorySpace);
            })
       .def("dsa_get_buffer_type_with_strides",
-           [](DSAOpBuilder &self, std::vector<int64_t> &shape,
+           [](TritonOpBuilder &self, std::vector<int64_t> &shape,
               Type &elementType, const std::vector<int64_t> &strides,
               const Attribute &memorySpace) -> Type {
              // create a layout with strides, using dynamic offset
@@ -54,13 +44,13 @@ void init_triton_tle(py::module &&m) {
              return MemRefType::get(shape, elementType, layout, memorySpace);
            })
       .def("create_dsa_alloc",
-           [](DSAOpBuilder &self, Type memrefType) -> Value {
+           [](TritonOpBuilder &self, Type memrefType) -> Value {
              return self.create<memref::AllocOp>(
                  mlir::cast<MemRefType>(memrefType));
            })
       // Add copy op
       .def("create_dsa_copy",
-           [](DSAOpBuilder &self, Value &src, Value &dst,
+           [](TritonOpBuilder &self, Value &src, Value &dst,
               std::vector<Value> &shape, bool inter_no_alias) -> void {
              auto copyOp = self.create<triton::tle::DSACopyOp>(src, dst, shape);
              if (inter_no_alias) {
@@ -70,37 +60,37 @@ void init_triton_tle(py::module &&m) {
            })
       // Add op
       .def("create_dsa_add",
-           [](DSAOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
+           [](TritonOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
              self.create<triton::tle::DSAAddOp>(lhs, rhs, res);
            })
       // Sub op
       .def("create_dsa_sub",
-           [](DSAOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
+           [](TritonOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
              self.create<triton::tle::DSASubOp>(lhs, rhs, res);
            })
       // Mul op
       .def("create_dsa_mul",
-           [](DSAOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
+           [](TritonOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
              self.create<triton::tle::DSAMulOp>(lhs, rhs, res);
            })
       // Div op
       .def("create_dsa_div",
-           [](DSAOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
+           [](TritonOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
              self.create<triton::tle::DSADivOp>(lhs, rhs, res);
            })
       // Max op
       .def("create_dsa_max",
-           [](DSAOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
+           [](TritonOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
              self.create<triton::tle::DSAMaxOp>(lhs, rhs, res);
            })
       // Min op
       .def("create_dsa_min",
-           [](DSAOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
+           [](TritonOpBuilder &self, Value &lhs, Value &rhs, Value &res) -> void {
              self.create<triton::tle::DSAMinOp>(lhs, rhs, res);
            })
       // Dot op
       /// .def("create_dsa_dot",
-      ///      [](DSAOpBuilder &self, Value &inA, Value &inB, Value &res,
+      ///      [](TritonOpBuilder &self, Value &inA, Value &inB, Value &res,
       ///         std::vector<int64_t> &size, bool &initC, bool &traA, bool
       ///         &traB, bool &enable_hf32) -> void {
       ///        auto &builder = self.getBuilder();
@@ -117,7 +107,7 @@ void init_triton_tle(py::module &&m) {
       ///                              traA_attr, traB_attr, enable_hf32_attr);
       ///      })
       .def("dsa_to_buffer",
-           [](DSAOpBuilder &self, Value &src,
+           [](TritonOpBuilder &self, Value &src,
               const Attribute &addressSpace) -> Value {
              auto tensorType = dyn_cast<RankedTensorType>(src.getType());
              if (!tensorType) {
@@ -126,20 +116,23 @@ void init_triton_tle(py::module &&m) {
              auto memrefType = MemRefType::get(
                  tensorType.getShape(), tensorType.getElementType(),
                  MemRefLayoutAttrInterface{}, addressSpace);
-             return self.create<bufferization::ToMemrefOp>(memrefType, src);
+             return self.create<bufferization::ToBufferOp>(memrefType, src);
            })
       .def("dsa_to_tensor",
-           [](DSAOpBuilder &self, Value &src, bool writable) -> Value {
+           [](TritonOpBuilder &self, Value &src, bool writable) -> Value {
              const auto &memrefType = mlir::cast<MemRefType>(src.getType());
+             auto tensorType = RankedTensorType::get(memrefType.getShape(),
+                                                     memrefType.getElementType());
              auto hasAddressSpace = memrefType.getMemorySpace();
              if (hasAddressSpace) {
-               return self.create<bufferization::ToTensorOp>(src, true,
+               return self.create<bufferization::ToTensorOp>(tensorType, src, true,
                                                              writable);
              }
-             return self.create<bufferization::ToTensorOp>(src, true, writable);
+             return self.create<bufferization::ToTensorOp>(tensorType, src, true,
+                                                           writable);
            })
       .def("create_dsa_extract_scalar",
-           [](DSAOpBuilder &self, Value &src,
+           [](TritonOpBuilder &self, Value &src,
               std::vector<Value> &indices) -> Value {
              llvm::SmallVector<Value> arg_indices;
              for (const auto &i : indices) {
@@ -156,7 +149,7 @@ void init_triton_tle(py::module &&m) {
              return ret;
            })
       .def("create_dsa_extract_slice",
-           [](DSAOpBuilder &self, Value &ful, std::vector<Value> &offs_vec,
+           [](TritonOpBuilder &self, Value &ful, std::vector<Value> &offs_vec,
               std::vector<int> &sizs_vec, std::vector<int> &strd_vec) -> Value {
              llvm::SmallVector<Value> offsets;
              for (const auto &o : offs_vec) {
@@ -189,7 +182,7 @@ void init_triton_tle(py::module &&m) {
                                                         sizes, strides);
            })
       .def("create_dsa_insert_slice",
-           [](DSAOpBuilder &self, Value &ful, Value &sub,
+           [](TritonOpBuilder &self, Value &ful, Value &sub,
               std::vector<Value> &offs_vec, std::vector<int> &sizs_vec,
               std::vector<int> &strd_vec) -> Value {
              llvm::SmallVector<Value> offsets;
@@ -223,7 +216,7 @@ void init_triton_tle(py::module &&m) {
              return ret;
            })
       .def("create_dsa_subview",
-           [](DSAOpBuilder &self, Value source, std::vector<Value> &offsets,
+           [](TritonOpBuilder &self, Value source, std::vector<Value> &offsets,
               const std::vector<int64_t> &sizes,
               const std::vector<int64_t> &strides) -> Value {
              SmallVector<mlir::OpFoldResult> mixedOffsets;

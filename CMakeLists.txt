@@ -362,12 +362,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
   list(APPEND TRITON_PLUGIN_NAMES "proton")
   add_subdirectory(third_party/proton/Dialect)
 
-  # add TLE plugin
-  # just support ascend backend so far
-  if(FLAGTREE_BACKEND STREQUAL "ascend")
-    list(APPEND TRITON_PLUGIN_NAMES "tle")
-    add_subdirectory(third_party/tle/dsa)
-  endif()
+  # The 3.2 DSA CMake tree defines the same TLE dialect/plugin targets as
+  # third_party/tle on 3.5, so do not add it as a second CMake subdirectory.
+  # DSA Python sources are packaged separately via setup_tools/utils/ascend.py.
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)

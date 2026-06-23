@@ -2,8 +2,7 @@
 
 from typing import List, Union
 from triton.language import core as tl
-from triton.language.semantic import (
-    binary_op_type_checking_impl, )
+from triton.language import semantic as tl_semantic
 from triton._C.libtriton import ir
 from .types import buffer, buffer_type, address_space
 
@@ -27,6 +26,11 @@ def scalar_constant(value, dtype: tl.dtype, builder: ir.builder) -> tl.tensor:
         return tl.tensor(value.handle, dtype)
 
 
+def _binary_op_type_checking(input: tl.tensor, other: tl.tensor, builder: ir.builder):
+    semantic = tl_semantic.TritonSemantic(builder)
+    return semantic.binary_op_type_checking_impl(input, other, True, True)
+
+
 def copy(src, dst, shape: List[Union[tl.constexpr, int]], inter_no_alias: bool, builder: ir.builder):
     """
     Generate tt.copy(src, dst, shape) and return dst-like tensor.
@@ -37,32 +41,32 @@ def copy(src, dst, shape: List[Union[tl.constexpr, int]], inter_no_alias: bool, 
 
 
 def add(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
-    input, other = binary_op_type_checking_impl(input, other, builder, True, True)
+    input, other = _binary_op_type_checking(input, other, builder)
     builder.create_dsa_add(input.handle, other.handle, result.handle)
 
 
 def sub(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
-    input, other = binary_op_type_checking_impl(input, other, builder, True, True)
+    input, other = _binary_op_type_checking(input, other, builder)
     builder.create_dsa_sub(input.handle, other.handle, result.handle)
 
 
 def mul(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
-    input, other = binary_op_type_checking_impl(input, other, builder, True, True)
+    input, other = _binary_op_type_checking(input, other, builder)
     builder.create_dsa_mul(input.handle, other.handle, result.handle)
 
 
 def div(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
-    input, other = binary_op_type_checking_impl(input, other, builder, True, True)
+    input, other = _binary_op_type_checking(input, other, builder)
     builder.create_dsa_div(input.handle, other.handle, result.handle)
 
 
 def max(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
-    input, other = binary_op_type_checking_impl(input, other, builder, True, True)
+    input, other = _binary_op_type_checking(input, other, builder)
     builder.create_dsa_max(input.handle, result.handle)
 
 
 def min(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
-    input, other = binary_op_type_checking_impl(input, other, builder, True, True)
+    input, other = _binary_op_type_checking(input, other, builder)
     builder.create_dsa_min(input.handle, other.handle, result.handle)
 
 
@@ -70,8 +74,8 @@ def alloc(etype: tl.dtype, shape: List[tl.constexpr], address_space: address_spa
     shape = tl._unwrap_shape(shape)
     if not isinstance(shape, (tuple, list)):
         raise TypeError("shape must be list/tuple")
-    etype = tl._constexpr_to_value(etype)
-    address_space = tl._constexpr_to_value(address_space)
+    etype = tl._unwrap_if_constexpr(etype)
+    address_space = tl._unwrap_if_constexpr(address_space)
     element_ty_ir = etype.to_ir(builder)
     addr_space_attr = (address_space.to_ir(builder) if address_space else builder.dsa_get_null_attr())
     memref_ty = builder.dsa_get_buffer_type(shape, element_ty_ir, addr_space_attr)
@@ -93,7 +97,7 @@ def to_buffer(
     #     return bind_buffer
     if bind_buffer is not None:
         raise ValueError("bind_buffer must be a buffer or None")
-    address_space = tl._constexpr_to_value(address_space)
+    address_space = tl._unwrap_if_constexpr(address_space)
     addr_space_attr = (address_space.to_ir(builder) if address_space else builder.dsa_get_null_attr())
     handle = builder.dsa_to_buffer(tensor.handle, addr_space_attr)
     buffer_ty = buffer_type(element_ty=tensor.dtype, shape=tensor.shape, space=address_space)

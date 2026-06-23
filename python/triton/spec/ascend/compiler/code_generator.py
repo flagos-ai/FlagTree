@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from types import ModuleType
 
 
-from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, List
 import importlib
 
 

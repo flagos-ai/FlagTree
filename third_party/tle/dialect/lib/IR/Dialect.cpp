@@ -18,5 +18,6 @@ void TleDialect::initialize() {
 #define GET_OP_LIST
 #include "tle/dialect/include/IR/Ops.cpp.inc"
       >();
+  dsaInitialize();
 }
 } // namespace mlir::triton::tle

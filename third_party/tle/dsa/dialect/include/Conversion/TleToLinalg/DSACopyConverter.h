@@ -14,7 +14,7 @@
 
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 
-#include "tle/dsa/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/Dialect.h"
 
 namespace TleCopyConverter {
 

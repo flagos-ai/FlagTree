@@ -13,4 +13,10 @@
 
 #define GET_OP_CLASSES
 #include "tle/dialect/include/IR/Ops.h.inc"
+
+#define GET_ATTRDEF_CLASSES
+#include "tle/dsa/dialect/include/IR/TleDSAAttrDefs.h.inc"
+
+#define GET_OP_CLASSES
+#include "tle/dsa/dialect/include/IR/TleDSAOps.h.inc"
 #endif

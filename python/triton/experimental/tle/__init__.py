@@ -72,19 +72,22 @@ code_generator = importlib.import_module("triton.compiler.code_generator", packa
 
 class TleCodeGenerator(code_generator.CodeGenerator):
 
-    def __init__(self, context, prototype, gscope, attributes, constants, function_name, jit_fn: JITFunction, options,
-                 codegen_fns, module_map, module=None, is_kernel=False, function_types: Optional[Dict] = None,
-                 noinline=False, file_name: Optional[str] = None, begin_line=0):
-        super().__init__(context, prototype, gscope, attributes, constants, function_name, jit_fn, options, codegen_fns,
-                         module_map, module, is_kernel, function_types, noinline, file_name, begin_line)
-        self.tle_builder = tle_ir.tle_builder(context)
-        self.tle_builder.set_loc(file_name, begin_line, 0)
+    def __init__(self, context, prototype, gscope, function_name, jit_fn: JITFunction, *, options, codegen_fns,
+                 module_map, is_gluon, module=None, is_kernel=False, function_types: Optional[Dict] = None,
+                 noinline=False, caller_context=None, file_name: Optional[str] = None, begin_line=0):
+        super().__init__(context, prototype, gscope, function_name, jit_fn, options=options, codegen_fns=codegen_fns,
+                         module_map=module_map, is_gluon=is_gluon, module=module, is_kernel=is_kernel,
+                         function_types=function_types, noinline=noinline, caller_context=caller_context,
+                         file_name=file_name, begin_line=begin_line)
 
         # Stack to keep track of active `with`-hints (e.g., tle.hint(...))
         # Each entry is a dict mapping hint names to literal values.
         self.with_hints = []
 
-        setup_unified_builder_with_tle_builder(self.builder, self.tle_builder)
+        if not is_gluon:
+            self.tle_builder = self.builder
+        else:
+            self.tle_builder = None
 
     @override
     def visit_With(self, node):

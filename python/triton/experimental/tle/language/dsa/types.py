@@ -33,13 +33,13 @@ class buffer_type(tl.dtype):
 
     def to_ir(self, builder: ir.builder) -> ir.type:
         element_ty_ir = self.element_ty.to_ir(builder)
-        addr_space_attr = self.space.to_ir(builder) if self.space else builder.get_null_attr()
+        addr_space_attr = self.space.to_ir(builder) if self.space else builder.dsa_get_null_attr()
 
         # use the method with strides if strides is not empty
         if self.strides:
             return builder.dsa_get_buffer_type_with_strides(self.shape, element_ty_ir, self.strides, addr_space_attr)
         else:
-            return builder.dsa_get_buffer_ty(self.shape, element_ty_ir, addr_space_attr)
+            return builder.dsa_get_buffer_type(self.shape, element_ty_ir, addr_space_attr)
 
     def __str__(self):
         return self.name
@@ -66,7 +66,7 @@ class buffer_type(tl.dtype):
 # -----------------------
 
 
-class buffer(tl._value):
+class buffer(tl.base_value):
     """Represents a region of memory.
 
     :code:`buffer` is the fundamental data structure for Triton programs using
@@ -86,12 +86,16 @@ class buffer(tl._value):
 
     def __init__(self, handle, buffer_ty: buffer_type):
         """Not called by user code."""
-        super().__init__(handle)
+        super().__init__()
+        self.handle = handle
         self.type = buffer_ty
         self.dtype = buffer_ty.element_ty.scalar
         self.shape = buffer_ty.shape
         self.space = buffer_ty.space
         self.strides = buffer_ty.strides
+
+    def _flatten_ir(self, handles) -> None:
+        handles.append(self.handle)
 
     def __str__(self) -> str:
         # ex. "<16x32xfloat32, address_space>"

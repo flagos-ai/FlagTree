@@ -25,8 +25,12 @@
 #include "Python.h"
 #include "Transforms/Passes.h"
 #include "ir.h" // TritonOpBuilder
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinDialect.h"
@@ -52,6 +56,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
 #include <cstdint>
+#include <stdexcept>
 
 namespace py = pybind11;
 using namespace mlir;
@@ -290,6 +295,8 @@ void init_llvm(py::module &&m) {
         });
 }
 
+void init_tle_dsa_ir(py::module &&m);
+
 void init_triton_tle(py::module &&m) {
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
@@ -301,6 +308,7 @@ void init_triton_tle(py::module &&m) {
   });
 
   init_triton_tle_ir(m.def_submodule("ir"));
+  init_tle_dsa_ir(m.def_submodule("dsa_ir"));
   init_triton_tle_passes(m.def_submodule("passes"));
   init_tle_raw_ir(m.def_submodule("raw_ir"));
   init_tle_raw_passes(m.def_submodule("raw_passes"));
