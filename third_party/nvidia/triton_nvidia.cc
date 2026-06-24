@@ -7,8 +7,10 @@
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "nvidia/hopper/include/Transforms/Passes.h"
 #include "nvidia/include/Dialect/NVWS/Transforms/Passes.h"
+#ifdef __TLE__
 #include "nvidia/tle_raw/include/DeferredRawSourceRegistry.h"
 #include "nvidia/tle_raw/include/Passes.h"
+#endif
 #include "passes.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
@@ -146,6 +148,7 @@ static void checkMatmulConstraints(const std::string &A_dtype,
   }
 }
 
+#ifdef __TLE__
 static void setDeferredRawPendingSources(py::dict sources) {
   mlir::triton::nvidia::tle_raw::clearDeferredRawSourceRegistry();
   for (auto item : sources) {
@@ -176,6 +179,7 @@ void init_nvidia_tle_raw_passes(py::module &&m) {
           pm.addPass(mlir::createNvidiaMaterializeDeferredRaw());
         });
 }
+#endif
 
 void init_triton_nvidia(py::module &&m) {
   auto passes = m.def_submodule("passes");
@@ -183,7 +187,9 @@ void init_triton_nvidia(py::module &&m) {
   init_triton_nvidia_passes_ttgpuir(passes.def_submodule("ttgpuir"));
   init_triton_nvidia_passes_ttnvgpuir(passes.def_submodule("ttnvgpuir"));
   init_triton_hopper_passes(passes.def_submodule("hopper"));
+#ifdef __TLE__
   init_nvidia_tle_raw_passes(passes.def_submodule("tle_raw"));
+#endif
 
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {

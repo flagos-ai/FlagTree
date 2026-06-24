@@ -4,6 +4,7 @@ add_triton_library(NvidiaTLERawTransforms
 
   DEPENDS
   NvidiaTLERawTransformsIncGen
+  TleTableGen
 
   LINK_LIBS PUBLIC
   TleIR
