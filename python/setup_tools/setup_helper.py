@@ -533,6 +533,24 @@ cache.store(
     post_hook=set_llvm_env,
 )
 
+# metax
+cache.store(
+    file="metax-llvm19",
+    condition=("metax" == flagtree_backend),
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metax-llvm19-3.8.0.6-x86_64_v0.6.0.tar.gz",
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=set_llvm_env,
+)
+
+cache.store(
+    file="metaxTritonPlugin.so",
+    condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
+    url=
+    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.0.tar.gz",
+    copy_dst_path=f"third_party/{flagtree_backend}",
+    md5_digest="efb25d51",
+)
+
 # thrive
 cache.store(
     file="llvm-f6ded0be-ubuntu-x64",

@@ -1,7 +1,13 @@
 add_subdirectory(include)
 add_subdirectory(lib)
 
-set(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/backend/lib")
+if(FLAGTREE_PLUGIN)
+  set(PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
+elseif(EDITABLE_MODE)
+  set(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+else()
+  set(PLUGIN_DIR "$ENV{HOME}/.flagtree/${FLAGTREE_BACKEND}")
+endif()
 
 if(TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_PLUGIN)
