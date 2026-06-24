@@ -242,7 +242,7 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure]> {
     Tle_LocalPointerResultType:$src,
     TT_Int:$shard_id,
     StrAttr:$space,
-    Optional<TT_Int>:$offset
+    Optional<TT_IntLike>:$offset
   );
 
   let results = (outs Tle_LocalPointerResultType:$result);
