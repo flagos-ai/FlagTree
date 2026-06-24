@@ -128,6 +128,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             passes.common.add_cse(pm)
             passes.common.add_canonicalizer(pm)
 
+        ascend.passes.ttir.add_tileir_to_hivm(pm)
         ascend.passes.ttir.add_triton_to_structure(pm, enable_mask_fallback_conversion, optimize_dynamic_offset)
         ascend.passes.ttir.add_discrete_mask_access_conversion(pm, compile_on_910_95, force_simt_template,
                                                                enable_sync_block_lock)

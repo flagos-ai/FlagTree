@@ -365,6 +365,17 @@ def tile_pipe_barrier(pipe, _builder=None):
 
 
 @builtin
+def tensor_to_tile(src: tl.tensor, space: address_space = None, _builder=None) -> buffer:
+    """Convert a tt.ptr/tensor to a !tile.buf in the given memory space.
+
+    Uses tile.copy to load data from the tensor pointer into a newly
+    allocated tile.buf, then returns the buffer.
+    If space is not specified, defaults to GM (global memory).
+    """
+    return tle_semantic.tensor_to_tile(src, space, _builder)
+
+
+@builtin
 def tile_gm_offset(base, indices, strides, _builder=None) -> tl.tensor:
     """Compute a GM pointer with multi-dimensional offsets (TileIR tile.gm_offset)."""
     return tle_semantic.tile_gm_offset(base, indices, strides, _builder)

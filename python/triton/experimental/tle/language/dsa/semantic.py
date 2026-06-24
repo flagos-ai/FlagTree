@@ -290,6 +290,34 @@ def pipe_barrier(pipe, builder: ir.builder):
     builder.create_tile_pipe_barrier(int(pipe))
 
 
+def tensor_to_tile(src: tl.tensor, space: address_space, builder: ir.builder) -> buffer:
+    """Convert a tt.ptr/tensor to a !tile.buf.
+
+    Wraps the tensor handle as a buffer — the actual data copy is done
+    by tile_copy.  If space is given, allocates a new buffer first.
+    """
+    shape = getattr(src, 'shape', None)
+    if not shape or not isinstance(shape, (tuple, list)):
+        # Block pointer / scalar: wrap as-is without shape
+        buffer_ty = buffer_type(element_ty=src.dtype, shape=[], space=space)
+        return buffer(src.handle, buffer_ty)
+
+    if space is not None:
+        space = tl._constexpr_to_value(space)
+        addr_space_attr = space.to_ir(builder)
+        element_ty_ir = src.dtype.to_ir(builder)
+        shape = list(shape)
+        tile_buf_ty = builder.tile_get_buffer_type(shape, element_ty_ir, addr_space_attr)
+        buf_handle = builder.create_tile_alloc(tile_buf_ty)
+        builder.create_tile_copy(src.handle, buf_handle, [], False)
+        buffer_ty = buffer_type(element_ty=src.dtype, shape=shape, space=space)
+        return buffer(buf_handle, buffer_ty)
+    else:
+        shape = list(shape)
+        buffer_ty = buffer_type(element_ty=src.dtype, shape=shape, space=None)
+        return buffer(src.handle, buffer_ty)
+
+
 def tile_gm_offset(base, indices: List[tl.tensor], strides: List[tl.tensor], builder: ir.builder) -> tl.tensor:
     """Compute GM offset using tile.gm_offset."""
     idx_handles = [i.handle for i in indices]
