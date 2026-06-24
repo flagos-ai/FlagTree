@@ -545,8 +545,7 @@ cache.store(
 cache.store(
     file="metaxTritonPlugin.so",
     condition=("metax" == flagtree_backend) and (not configs.flagtree_plugin),
-    url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.0.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.0.tar.gz",
     copy_dst_path=f"third_party/{flagtree_backend}",
     md5_digest="efb25d51",
 )
