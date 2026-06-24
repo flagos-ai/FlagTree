@@ -740,9 +740,12 @@ def _create_remote_pointers_tensor(
     if offset is not None:
         offset_tensor = offset if isinstance(offset, tl.tensor) else _semantic.to_tensor(offset)
         if not offset_tensor.dtype.is_int():
-            raise TypeError(f"offset must be an integer scalar or tensor, got {offset_tensor.dtype}")
-        if offset_tensor.shape not in ((), tuple(tensor.shape)):
-            raise ValueError(f"offset must be scalar or match tensor shape, got shape {offset_tensor.shape}")
+            raise TypeError(f"offset must be an integer scalar, got {offset_tensor.dtype}")
+        # flagcxGetIntraPointerC accepts a single int64_t offset, so only
+        # scalar offsets (shape == ()) are allowed. Non-scalar tensor offsets
+        # are rejected here before reaching the C++ builder.
+        if offset_tensor.shape != ():
+            raise ValueError(f"offset must be a scalar integer, got shape {offset_tensor.shape}")
         # Normalize to i64 to match the MLIR verifier expectation.
         # Use tl.cast with explicit _semantic because .to() is a builtin and
         # must receive _semantic when called outside the JIT compiler's
@@ -853,11 +856,11 @@ def remote(
     When `scope` is provided, launch cluster dimensions are inferred from that
     mesh and this mode requires `num_ctas=1` (one program maps to one block).
 
-    `offset` is an optional element offset relative to the target shard's
-    memory base address. It is only supported for `space="device"` and is
-    internally converted to a byte offset before being passed to
+    `offset` is an optional scalar element offset relative to the target
+    shard's memory base address. It is only supported for `space="device"`
+    and is internally converted to a byte offset before being passed to
     `flagcxGetIntraPointerC`. It may be a Python `int` (compile-time constant)
-    or a scalar `tl.tensor` (runtime value).
+    or a scalar `tl.tensor` (runtime value, shape == ()).
     """
     shard_id = tl._unwrap_if_constexpr(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
