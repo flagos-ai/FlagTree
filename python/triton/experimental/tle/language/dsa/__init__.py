@@ -18,6 +18,16 @@ from .core import (
     insert_slice,
     extract_element,
     subview,
+    tile_alloc,
+    tile_copy,
+    tile_subview,
+    tile_to_tensor,
+    tile_set_flag,
+    tile_wait_flag,
+    tile_pipe_barrier,
+    tile_gm_offset,
+    tile_cube_launch,
+    tile_cube_wait,
 )
 
 from . import ascend
@@ -40,5 +50,15 @@ __all__ = [
     "insert_slice",
     "extract_element",
     "subview",
+    "tile_alloc",
+    "tile_copy",
+    "tile_subview",
+    "tile_to_tensor",
+    "tile_set_flag",
+    "tile_wait_flag",
+    "tile_pipe_barrier",
+    "tile_gm_offset",
+    "tile_cube_launch",
+    "tile_cube_wait",
     "ascend",
 ]

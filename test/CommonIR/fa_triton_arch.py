@@ -46,11 +46,10 @@ EVT_MTE3_MTE2 = ("vector", "cube", 0, PIPE.PIPE_MTE3, PIPE.PIPE_MTE2)  # Vec1 wr
 EVT_MTE2_V    = ("cube", "vector", 1, PIPE.PIPE_MTE2, PIPE.PIPE_V)     # data loaded -> Vector computes
 EVT_V_MTE3    = ("vector", "cube", 2, PIPE.PIPE_V, PIPE.PIPE_MTE3)     # Vector done -> store / next
 
-# NOTE: TileIR has tile.cube_launch / tile.cube_wait ops, but the tle tile-DSA
-# layer does not expose builder bindings for them yet. The async Cube matmul is
-# therefore expressed here as a synchronous tl.dot + tl.store (it still produces
-# correct results; it just drops the launch/wait overlap). Replace with real
-# tile.cube_launch/cube_wait DSA bindings once they exist.
+# NOTE: The tle tile-DSA layer now has minimal tile.cube_launch / tile.cube_wait
+# builder bindings. This architecture dump still keeps Cube matmul as
+# synchronous tl.dot + tl.store until the final cube token semantics and
+# TileIRToHIVM lowering pipeline are confirmed.
 
 
 # =============================================================================
@@ -158,7 +157,8 @@ def flash_attention_fwd_3task_kernel(
             tile_copy(tensor_to_tile(k_bp), k_l1, [CBN, CD])
             tile_copy(q_l1, l0a0, [CBM, CD])
             tile_copy(k_l1, l0b0, [CBN, CD])   # NOTE: tile.copy has no transpose flag yet
-            # S = Q·Kᵀ : matmul stand-in for tile.cube_launch (no DSA binding yet).
+            # S = Q·Kᵀ : matmul stand-in for tile.cube_launch while cube token
+            # semantics and backend lowering are still being confirmed.
             # NOTE: tt.dot requires standard ranked tensors — a !tile.tensor (from
             # tile.to_tensor) is rejected by the verifier — so the dot runs on tt
             # tensors loaded from GM, not on the !tile.* staging buffers above.
