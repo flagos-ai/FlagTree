@@ -240,6 +240,7 @@ PLUGIN_EXPORT void init_triton_metax(py::module &&m) {
           std::ifstream _fatbin(_fbin, std::ios::binary);
           std::string fatbin(std::istreambuf_iterator<char>(_fatbin), {});
           _fatbin.close();
+          py::gil_scoped_acquire acquire;
           py::bytes bytes(fatbin);
           return std::move(bytes);
         });
