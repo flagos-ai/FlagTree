@@ -22,6 +22,10 @@ def scalar_constant(value, dtype: tl.dtype, builder: ir.builder) -> tl.tensor:
         value = builder.get_int32(value)
         return tl.tensor(value, dtype)
 
+    if isinstance(value, int):
+        value = builder.get_int32(value)
+        return tl.tensor(value, dtype)
+
     if value.dtype.is_int():
         return tl.tensor(value.handle, dtype)
 
@@ -62,7 +66,7 @@ def div(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.build
 
 def max(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
     input, other = _binary_op_type_checking(input, other, builder)
-    builder.create_dsa_max(input.handle, result.handle)
+    builder.create_dsa_max(input.handle, other.handle, result.handle)
 
 
 def min(input: tl.tensor, other: tl.tensor, result: tl.tensor, builder: ir.builder):
@@ -90,7 +94,8 @@ def to_buffer(
     bind_buffer: buffer,
     builder: ir.builder,
 ) -> buffer:
-    if not isinstance(tensor.shape, (tuple, list)) or not tensor.shape:
+    shape = tl._unwrap_shape(tensor.shape)
+    if not isinstance(shape, (tuple, list)) or not shape:
         raise TypeError("scalar type cannot be converted to buffer")
     # if isinstance(bind_buffer, buffer):
     #     builder.create_bind_buffer(tensor.handle, bind_buffer.handle)
@@ -100,7 +105,7 @@ def to_buffer(
     address_space = tl._unwrap_if_constexpr(address_space)
     addr_space_attr = (address_space.to_ir(builder) if address_space else builder.dsa_get_null_attr())
     handle = builder.dsa_to_buffer(tensor.handle, addr_space_attr)
-    buffer_ty = buffer_type(element_ty=tensor.dtype, shape=tensor.shape, space=address_space)
+    buffer_ty = buffer_type(element_ty=tensor.dtype, shape=shape, space=address_space)
     return buffer(handle, buffer_ty)
 
 
@@ -132,27 +137,31 @@ def to_tensor(memref: buffer, writable: bool, builder: ir.builder, target_shape=
 
 def insert_slice(ful: tl.tensor, sub: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int],
                  builder: ir.builder) -> tl.tensor:
+    sizes_int = tl._unwrap_shape(sizes)
+    strides_int = tl._unwrap_shape(strides)
     assert (len(ful.shape) == len(offsets))
-    assert (len(ful.shape) == len(sizes))
-    assert (len(ful.shape) == len(strides))
-    assert (all([s >= 1 for s in sizes]))
-    assert (all([s >= 0 for s in strides]))
+    assert (len(ful.shape) == len(sizes_int))
+    assert (len(ful.shape) == len(strides_int))
+    assert (all([s >= 1 for s in sizes_int]))
+    assert (all([s >= 0 for s in strides_int]))
     new_offsets = [o.handle for o in offsets]
     ret_type = tl.block_type(ful.type.scalar, ful.shape)
-    out = builder.create_dsa_insert_slice(ful.handle, sub.handle, new_offsets, sizes, strides)
+    out = builder.create_dsa_insert_slice(ful.handle, sub.handle, new_offsets, sizes_int, strides_int)
     return tl.tensor(out, ret_type)
 
 
 def extract_slice(ful: tl.tensor, offsets: List[tl.tensor], sizes: List[int], strides: List[int],
                   builder: ir.builder) -> tl.tensor:
+    sizes_int = tl._unwrap_shape(sizes)
+    strides_int = tl._unwrap_shape(strides)
     assert (len(ful.shape) == len(offsets))
-    assert (len(ful.shape) == len(sizes))
-    assert (len(ful.shape) == len(strides))
-    assert (all([s >= 1 for s in sizes]))
-    assert (all([s >= 0 for s in strides]))
+    assert (len(ful.shape) == len(sizes_int))
+    assert (len(ful.shape) == len(strides_int))
+    assert (all([s >= 1 for s in sizes_int]))
+    assert (all([s >= 0 for s in strides_int]))
     new_offsets = [o.handle for o in offsets]
-    ret_type = tl.block_type(ful.type.scalar, sizes)
-    out = builder.create_dsa_extract_slice(ful.handle, new_offsets, sizes, strides)
+    ret_type = tl.block_type(ful.type.scalar, sizes_int)
+    out = builder.create_dsa_extract_slice(ful.handle, new_offsets, sizes_int, strides_int)
     return tl.tensor(out, ret_type)
 
 

@@ -1,4 +1,4 @@
-#include "ir.h"
+#include "./ir.h"
 
 #include <optional>
 #include <pybind11/cast.h>
@@ -28,6 +28,7 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Transforms/LocationSnapshot.h"
 
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Gluon/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -40,8 +41,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
-
-#include "ir.h"
 
 void setAsyncTaskIds(mlir::Operation *op,
                      llvm::ArrayRef<AsyncTaskId> asyncTaskIds) {
@@ -370,12 +369,12 @@ void init_triton_ir(py::module &&m) {
 
   m.def("load_dialects", [](MLIRContext &context) {
     DialectRegistry registry;
-    registry.insert<TritonDialect, ::mlir::triton::gpu::TritonGPUDialect,
-                    ::mlir::triton::instrument::TritonInstrumentDialect,
-                    math::MathDialect, arith::ArithDialect, scf::SCFDialect,
-                    ::mlir::gpu::GPUDialect, cf::ControlFlowDialect,
-                    LLVM::LLVMDialect, mlir::ub::UBDialect,
-                    mlir::triton::gluon::GluonDialect>();
+    registry.insert<
+        TritonDialect, ::mlir::triton::gpu::TritonGPUDialect,
+        ::mlir::triton::instrument::TritonInstrumentDialect, math::MathDialect,
+        arith::ArithDialect, scf::SCFDialect, ::mlir::gpu::GPUDialect,
+        cf::ControlFlowDialect, LLVM::LLVMDialect, mlir::ub::UBDialect,
+        mlir::triton::gluon::GluonDialect, mlir::triton::tle::TleDialect>();
     mlir::LLVM::registerInlinerInterface(registry);
     registerBuiltinDialectTranslation(registry);
     registerLLVMDialectTranslation(registry);

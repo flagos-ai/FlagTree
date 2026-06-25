@@ -295,7 +295,9 @@ void init_llvm(py::module &&m) {
         });
 }
 
+#ifdef __TLE_DSA__
 void init_tle_dsa_ir(py::module &&m);
+#endif
 
 void init_triton_tle(py::module &&m) {
   // load dialects
@@ -308,7 +310,9 @@ void init_triton_tle(py::module &&m) {
   });
 
   init_triton_tle_ir(m.def_submodule("ir"));
+#ifdef __TLE_DSA__
   init_tle_dsa_ir(m.def_submodule("dsa_ir"));
+#endif
   init_triton_tle_passes(m.def_submodule("passes"));
   init_tle_raw_ir(m.def_submodule("raw_ir"));
   init_tle_raw_passes(m.def_submodule("raw_passes"));

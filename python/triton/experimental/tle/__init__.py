@@ -96,8 +96,10 @@ class TleCodeGenerator(code_generator.CodeGenerator):
 
         # extract tle hints
         hints = {}
+        is_tle_hint = False
         if isinstance(context, ast.Call):
             if isinstance(context.func, ast.Attribute) and context.func.attr == "hint":
+                is_tle_hint = True
                 for kw in context.keywords:
                     if not isinstance(kw.value, ast.Constant):
                         raise self._unsupported(node,
@@ -107,7 +109,13 @@ class TleCodeGenerator(code_generator.CodeGenerator):
         # append hints to with_hints anyway, to indicate that we're in the with scope
         self.with_hints.append(hints)
 
-        super().visit_With(node)
+        if is_tle_hint:
+            # tle.dsa.hint() is a marker for TLE codegen, not a runtime context
+            # manager. Do not visit the context expression, otherwise the dummy
+            # Python function is called and raises.
+            self.visit_compound_statement(node.body)
+        else:
+            super().visit_With(node)
 
         # pop hints to indicate that we're out of the with scope
         self.with_hints.pop()

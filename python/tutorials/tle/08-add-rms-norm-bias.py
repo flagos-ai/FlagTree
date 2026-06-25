@@ -29,7 +29,6 @@ import torch
 import triton
 import triton.language as tl
 from triton.backends.ascend.testing import do_bench_npu
-import triton.experimental.tle as tle
 
 enable_vllm = True
 try:
@@ -71,7 +70,7 @@ def add_rms_norm_bias_kernel(
 
     base_row = pid * N_ROWS
     rows = min(base_row + N_ROWS, MAX_ROWS) - base_row
-    for row_off in tle.dsa.parallel(0, rows, 1):
+    for row_off in tl.range(0, rows, 1):
         cols = row_off * NUM_COLUMNS + col_off
         x = tl.load(X + cols)
         r = tl.load(R + cols)

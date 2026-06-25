@@ -242,6 +242,10 @@ def hint(**kwargs):
     raise RuntimeError("tle.hint() cannot be called directly.")
 
 
+setattr(hint, TRITON_BUILTIN, True)
+setattr(hint, TLE_BUILTIN, True)
+
+
 @builtin
 def insert_slice(ful: tensor, sub: tensor, offsets: List[tensor], sizes: List[int], strides: List[int],
                  _semantic=None) -> tensor:

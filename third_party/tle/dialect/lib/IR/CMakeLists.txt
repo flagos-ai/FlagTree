@@ -7,10 +7,10 @@ add_triton_library(TleIR
 
   DEPENDS
   TleTableGen
-  TleDSATableGen
+  ${TLE_DSA_IR_DEPENDS}
 
   LINK_LIBS PUBLIC
-  TleDSAIR
+  ${TLE_DSA_IR_LINK_LIBS}
   TritonIR
   TritonGPUIR
 )

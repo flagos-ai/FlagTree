@@ -26,11 +26,10 @@ def get_package_dir():
     package_dict["triton/extension/buffer"] = f"{ascend_ext_base}/buffer"
     package_dict["triton/extension/buffer/language"] = f"{ascend_ext_base}/buffer/language"
 
-
     # flagtree tle ascend
     flagtree_tle_ascend_base = "../python/triton/experimental/tle/language/dsa"
     package_dict["triton/experimental/tle/language/dsa/ascend"] = f"{flagtree_tle_ascend_base}/ascend"
-    
+
     return package_dict
 
 

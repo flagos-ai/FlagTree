@@ -55,6 +55,9 @@ add_triton_plugin(TritonAscend
   ${_MLIRMeshDialect_LIB}
 )
 
+target_include_directories(TritonAscend BEFORE PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
+
 option(TRITON_ENABLE_COVERAGE_LLVM_COV "Enable code llvm-cov coverage tool for Ascend plugin " OFF)
 if(TRITON_ENABLE_COVERAGE_LLVM_COV)
   message(STATUS "Enabling llvm-cov coverage tool flags for TritonAscend")
