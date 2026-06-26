@@ -40,6 +40,7 @@ class FlagtreeConfigs:
         "cambricon": "mlu",
         "thrive": "thrive",
         "metax": "metax",
+        "sunrise": "sunrise",
     }))
 
     def __post_init__(self):

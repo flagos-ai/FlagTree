@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_RemoveLayoutConversion
+
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -1879,3 +1885,5 @@ public:
 };
 
 } // namespace mlir::triton::gpu
+
+#endif

@@ -10,6 +10,23 @@ set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
+project(triton CXX C)
+include(CTest)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+# Options
+option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
+if(FLAGTREE_BACKEND)
+  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" OFF)
+  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" OFF)
+else()
+  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
+  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
+endif()
+option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
+set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
+
 # FLAGTREE Options
 set(FLAGTREE_BACKEND "$ENV{FLAGTREE_BACKEND}")
 if(FLAGTREE_BACKEND)
@@ -50,14 +67,22 @@ elseif(FLAGTREE_BACKEND STREQUAL "metax")
   set(FLAGTREE_TLE OFF)
   remove_definitions(-D__TLE__)
   list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
+  find_package(Python3 3.10 REQUIRED COMPONENTS Development.Module Interpreter)
 endif()
 set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
 if(FLAGTREE_PLUGIN)
   add_definitions(-D__FLAGTREE_PLUGIN__)
 endif()
 
-project(triton CXX C)
-include(CTest)
+# FLAGTREE SPEC LIB GET FUNC
+function(get_flagtree_backend_lib lib_name output_lib)
+  set(ret FlagTree_${FLAGTREE_BACKEND}_${lib_name})
+  if(NOT TARGET ${ret})
+    set(ret "")
+  endif()
+  set(${output_lib} ${ret} PARENT_SCOPE)
+endfunction()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -76,6 +101,18 @@ if(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "metax")
   list(APPEND TRITON_CODEGEN_BACKENDS "nvidia")
   list(APPEND TRITON_CODEGEN_BACKENDS "amd")
 endif()
+
+# FLAGTREE SPEC TD FILE GET FUNC
+function(set_flagtree_backend_td output_td td_filename)
+  set(ret ${td_filename})
+  file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)
+  set(BACKEND_SPEC_TD ${BACKEND_SPEC_ROOT}/${relative_path}/${td_filename})
+  if(EXISTS ${BACKEND_SPEC_TD})
+    set(ret ${BACKEND_SPEC_TD})
+  endif()
+  set(${output_td} ${ret} PARENT_SCOPE)
+endfunction()
 
 if(TRITON_BUILD_WITH_CCACHE)
   find_program(CCACHE_PROGRAM ccache)
@@ -131,7 +168,14 @@ if(TRITON_BUILD_UT)
 endif()
 
 # Compiler flags
-set(BACKEND_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/include)
+set(FLAGTREE_BACKEND_DIR ${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND})
+## flagtree spec include dir
+set(BACKEND_SPEC_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/backend/spec/include)
+if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_SPEC_INCLUDE_DIR})
+  include_directories(${BACKEND_SPEC_INCLUDE_DIR})
+endif()
+## flagtree third_party include dir
+set(BACKEND_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/include)
 if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
   include_directories(${BACKEND_INCLUDE_DIR})
 else()
@@ -464,6 +508,49 @@ if(TRITON_BUILD_PYTHON_MODULE)
   elseif(FLAGTREE_BACKEND STREQUAL "hcu")
     list(APPEND TRITON_PLUGIN_NAMES "distributed")
     add_subdirectory(test)
+  elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
+    set(TRITON_LIBRARIES
+      ${triton_libs}
+      ${triton_plugins}
+      # mlir
+      # MLIRAMDGPUDialect
+      # MLIRNVVMDialect
+      MLIRSTVMDialect  # STVM
+      MLIRNVVMToLLVMIRTranslation
+      MLIRSTVMToLLVMIRTranslation
+      MLIRGPUToNVVMTransforms
+      MLIRGPUToSTVMTransforms
+      MLIRGPUToGPURuntimeTransforms
+      MLIRGPUTransforms
+      MLIRIR
+      MLIRControlFlowToLLVM
+      MLIRBytecodeWriter
+      MLIRPass
+      MLIRTransforms
+      MLIRLLVMDialect
+      MLIRSupport
+      MLIRTargetLLVMIRExport
+      MLIRMathToLLVM
+      # MLIRROCDLToLLVMIRTranslation
+      MLIRGPUDialect
+      MLIRSCFToControlFlow
+      MLIRIndexToLLVM
+      MLIRGPUToROCDLTransforms
+      MLIRUBToLLVM
+      # LLVM
+      LLVMPasses
+      # LLVMNVPTXCodeGen
+      # LLVMAMDGPUCodeGen
+      # LLVMAMDGPUAsmParser
+      LLVMSTCUCodeGen
+      LLVMSTCUAsmParser
+      LLVMAArch64CodeGen
+      LLVMAArch64AsmParser
+      LLVMRISCVCodeGen
+      LLVMRISCVAsmParser
+      Python3::Module
+      pybind11::headers
+  )
   endif()
 
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
@@ -508,7 +595,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
                   ${PYTHON_SRC_PATH}/specialize.cc)
 
   # Link triton with its dependencies
-  target_link_libraries(triton PRIVATE ${TRITON_LIBRARIES})
+  target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})
   if(WIN32)
     target_link_libraries(triton PRIVATE ${CMAKE_DL_LIBS})
     set_target_properties(triton PROPERTIES SUFFIX ".pyd")
@@ -540,6 +627,8 @@ if (UNIX AND NOT APPLE)
       get_filename_component(_flagtree_llvm_archive_name "${_flagtree_llvm_archive}" NAME)
       set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,${_flagtree_llvm_archive_name}")
     endforeach()
+  elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--export-dynamic")
   else()
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
   endif()
@@ -572,7 +661,7 @@ find_package(Threads REQUIRED)
 
 add_subdirectory(third_party/f2reduce)
 
-if(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(aipu|tsingmicro|enflame|rpu|thrive|metax)$")
+if(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(aipu|tsingmicro|enflame|rpu|thrive|metax|sunrise)$")
   add_subdirectory(bin)
   if(FLAGTREE_TLE)
     flagtree_add_tle_generated_header_dependencies()

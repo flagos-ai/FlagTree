@@ -166,13 +166,14 @@ class PromoteLocalStoreStagingPass
         auto stage = builder.create<ttg::LocalAllocOp>(
             store.getLoc(), store.getDst().getType(), store.getSrc());
 
+        Operation *storeOp = store.getOperation();
         dst.replaceUsesWithIf(stage.getResult(), [&](OpOperand &use) {
           Operation *owner = use.getOwner();
-          if (owner == store.getOperation())
+          if (owner == storeOp)
             return false;
           if (!forOp->isAncestor(owner))
             return false;
-          return domInfo.properlyDominates(store.getOperation(), owner);
+          return domInfo.properlyDominates(storeOp, owner);
         });
 
         store.erase();

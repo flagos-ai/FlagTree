@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_triton_Dialect_TritonGPU_IR_sunrise_Dialect
+
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <cstdint>
@@ -4011,3 +4017,5 @@ std::optional<int> triton::gpu::getWarpSpecializeTag(Operation *op) {
   }
   return std::nullopt;
 }
+
+#endif

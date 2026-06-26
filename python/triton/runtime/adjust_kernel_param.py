@@ -1121,6 +1121,11 @@ def analyze_kernel_dependencies(jit_fn, pre_hook_fn: object | None = None) -> tu
         tma_m_map, tma_k_map = analyzer.analyze_tma_dot_dim(tma_map)  # BS_M: {A}, BS_K: {A, B}
         # Analyzer 4: tl.dot M/N/K via load_map
         ge_m_map, ge_k_map, ge_n_map = analyzer.analyze_general_dot_dim(load_map)  # BS_M: {A}, BS_K: {A, B}, BS_N: {B}
+        # clear load_map without any adjustment while dot analyzing encounters a special case,
+        # or the later adjustment of load_map may lead to the BS_X below the dot lower bound.
+        # for example: tl.dot(tl.load(A + offset0), tl.load(A + offset1))
+        if analyzer.dot_calls and not ge_k_map:
+            load_map.clear()
         # cache
         _analysis_cache[cache_key] = (load_map, tma_map, tma_m_map, tma_k_map, ge_m_map, ge_k_map, ge_n_map)
 
@@ -1319,6 +1324,17 @@ def auto_adjust_block_sizes(nargs, fn, configs, current, config):
                 print("[AABS] 4. adjust bs in tl.dot with general tl.load")
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_m_map, 16)
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_n_map, 16)
+        if FLAGTREE_BACKEND == "sunrise":
+            # sunrise min_dot_size = (M=8, N=8, K=16/4) (see sunrise compiler.py
+            # min_dot_size). The tl.load shrink path above can lower a BLOCK that
+            # also feeds tl.dot below the dot lower bound; bump M/N/K back up to
+            # at least min_dot_size so AABS never produces a config that violates
+            # the dot constraint checked in semantic.py.
+            if knobs.autotuning.print:
+                print("[AABS] 4. adjust bs in tl.dot with general tl.load")
+            adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_k_map, 16)
+            adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_m_map, 8)
+            adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_n_map, 8)
 
     if knobs.autotuning.print:
         nargs_str = ''

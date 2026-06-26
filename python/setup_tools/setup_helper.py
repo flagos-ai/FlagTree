@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+import sysconfig
 import functools
 from pathlib import Path
 import hashlib
@@ -32,10 +33,18 @@ def install_extension(*args, **kargs):
 
 
 def get_backend_cmake_args(*args, **kargs):
+    if "editable_wheel" in sys.argv:
+        editable = True
+    else:
+        editable = False
+    handle_plugin_backend(editable)
     try:
-        return configs.activated_module.get_backend_cmake_args(*args, **kargs)
+        cmake_args = configs.activated_module.get_backend_cmake_args(*args, **kargs)
     except Exception:
-        return []
+        cmake_args = []
+    if editable:
+        cmake_args += ["-DEDITABLE_MODE=ON"]
+    return cmake_args
 
 
 def get_device_name():
@@ -234,6 +243,7 @@ class FlagTreeCache:
     def get(self, file_name) -> Path:
         return self.cache_files[file_name]
 
+cache = FlagTreeCache()
 
 # -----flagtree-tle-raw-----flagtree-mlir---
 
@@ -347,7 +357,7 @@ class CommonUtils:
         package_dict = {}
         if flagtree_backend and flagtree_backend not in configs.plugin_backends:
             connection = []
-            backend_triton_path = f"../third_party/{flagtree_backend}/python/"
+            backend_triton_path = f"./third_party/{flagtree_backend}/python/"
             for package in packages:
                 if CommonUtils.skip_package_dir(package):
                     continue
@@ -367,7 +377,33 @@ def handle_flagtree_backend():
         print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
         configs.extend_backends.append(flagtree_backend)
         if "editable_wheel" in sys.argv and flagtree_backend not in configs.plugin_backends:
-            ext_sourcedir = os.path.abspath(f"../third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
+            ext_sourcedir = os.path.abspath(f"./third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
+
+
+def handle_plugin_backend(editable):
+    plugin_mode = os.getenv("FLAGTREE_PLUGIN")
+    if (plugin_mode and plugin_mode.upper() not in ["0", "OFF"]) or not flagtree_backend:
+        return
+    flagtree_backend_dir = cache.sub_dirs[flagtree_backend]
+    flagtree_plugin_so = flagtree_backend + "TritonPlugin.so"
+    src_build_plugin_path = flagtree_backend_dir / flagtree_plugin_so
+    if not src_build_plugin_path.exists():
+        return
+    if flagtree_backend in ["iluvatar", "mthreads", "sunrise"]:
+        if editable is False:
+            dst_build_plugin_dir = Path(sysconfig.get_path("purelib")) / "triton" / "_C"
+            if not os.path.exists(dst_build_plugin_dir):
+                os.makedirs(dst_build_plugin_dir)
+            dst_build_plugin_path = dst_build_plugin_dir / flagtree_plugin_so
+            shutil.copy(src_build_plugin_path, dst_build_plugin_path)
+        if flagtree_backend in ("mthreads",):
+            dst_install_plugin_dir = Path(
+                __file__).resolve().parent.parent.parent / "third_party" / flagtree_backend / "python" / "triton" / "_C"
+        else:
+            dst_install_plugin_dir = Path(__file__).resolve().parent.parent / "triton" / "_C"
+        if not os.path.exists(dst_install_plugin_dir):
+            os.makedirs(dst_install_plugin_dir)
+        shutil.copy(src_build_plugin_path, dst_install_plugin_dir)
 
 
 def set_env(env_dict: dict):
@@ -558,3 +594,41 @@ cache.store(
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )
+
+# sunrise
+def sunrise_cp_bc_files(path):
+    # mkdir -p third_party/sunrise/backend/lib
+    lib_dir = Path("third_party/sunrise/backend/lib")
+    os.makedirs(lib_dir, exist_ok=True)
+    # cp ${LLVM_SYSPATH}/stpu/bitcode/*.bc third_party/sunrise/backend/lib
+    bc_dir = Path(path) / "stpu" / "bitcode"
+    for bc_file in bc_dir.glob("*.bc"):
+        shutil.copy(bc_file, lib_dir)
+
+
+def sunrise_set_llvm_env(path):
+    set_llvm_env(path)
+    sunrise_cp_bc_files(path)
+
+
+def sunrise_pre_llvm_env():
+    llvm_path = os.environ.get('LLVM_SYSPATH', '')
+    ret = llvm_path != ''
+    if ret:
+        sunrise_cp_bc_files(llvm_path)
+    return ret
+
+
+cache.store(
+    file="sunrise_llvm22_dev_release",
+    condition=("sunrise" == flagtree_backend),
+    url= None,
+    pre_hook=sunrise_pre_llvm_env,
+    post_hook=sunrise_set_llvm_env,
+)
+
+cache.store(
+    file="sunriseTritonPlugin.so",
+    condition=("sunrise" == flagtree_backend) and (not configs.flagtree_plugin),
+    url=None,
+    copy_dst_path=f"third_party/{flagtree_backend}")
