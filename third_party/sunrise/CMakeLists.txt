@@ -2,7 +2,7 @@ add_compile_options("-Wno-deprecated-declarations")
 add_compile_options("-Wno-error=deprecated-declarations")
 
 option(EDITABLE_MODE "Build in developer (editable) mode" OFF)
-set(SUNRISE_PLUGIN_DIR ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
+set(SUNRISE_PLUGIN_DIR "$ENV{FLAGTREE_CACHE_DIR}/sunrise")
 
 if(TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_PLUGIN)
