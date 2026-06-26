@@ -154,7 +154,14 @@ def extract_tle_hints_scope(generator: TleCodeGenerator):
 triton_compiler.compile = tle_patch_for_triton_compile()
 code_generator.CodeGenerator = TleCodeGenerator
 
-from .language import dsa
+
+def __getattr__(name):
+    if name == "dsa":
+        from .language import dsa
+        globals()[name] = dsa
+        return dsa
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "device_mesh",
