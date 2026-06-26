@@ -62,7 +62,10 @@ FlagTree extension components are currently available on some backends:
 
 ## TLE (Triton Language Extensions)
 
-Triton provides strong productivity for kernel development, but heterogeneous AI chips and deeper performance tuning scenarios need more explicit control over distributed execution, memory access patterns, and hardware-specific primitives. TLE extends Triton in a layered way to bridge this gap while keeping compatibility with existing Triton workflows.
+If you want to use TLE on the NVIDIA backend, please use the triton_v3.6.x branch. It is not currently supported on the main branch (Triton 3.0/3.1).
+For other backends, please refer to the table above.
+Triton provides strong productivity for kernel development, but heterogeneous AI chips and deeper performance tuning scenarios need more explicit control over distributed execution, memory access patterns, and hardware-specific primitives.
+TLE extends Triton in a layered way to bridge this gap while keeping compatibility with existing Triton workflows.
 
 Key advantages of TLE:
 
