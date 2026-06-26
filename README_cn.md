@@ -201,7 +201,7 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |enflame   |python3.12 -m pip install flagtree===0.5.0+enflame3.5 $RES      |3.5|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |enflame   |python3.10 -m pip install flagtree===0.4.0+enflame3.3 $RES      |3.3|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 
-flagtree 历史版本可以在 https://resource.flagos.net/#browse/search/pypi/=assets.attributes.pypi.description%3Dflagtree 查询
+flagtree 历史版本可以在 https://resource.flagos.net/#browse/search/pypi/=repository_name%3Dflagos-pypi-hosted%20AND%20name.raw%3Dflagtree 查询
 
 ## 关于贡献
 
