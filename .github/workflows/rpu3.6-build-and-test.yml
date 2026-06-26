@@ -58,13 +58,15 @@ jobs:
         run: |
           set -x
           # Clean build on the board: drop the previous build tree so nothing is
-          # stale, then build/install. ccache (configured in the board's env.sh)
-          # keeps the rebuild fast.
+          # stale, then build/install. The build dir is ./build at the repo root
+          # (setup.py lives here, not under python/), so clean that -- otherwise
+          # it persists across runs and fills the board disk. ccache (configured
+          # in the board's env.sh) keeps the rebuild fast.
           ssh -tt -o BatchMode=yes -o StrictHostKeyChecking=no rpuboard 'set -e
             cd ~/FlagTree-ci
             source ~/env.sh
             export FLAGTREE_BACKEND=rpu
-            rm -rf python/build
+            rm -rf build
             MAX_JOBS=8 pip3 install --user --force-reinstall . --no-build-isolation'
 
       - name: FlagTree Test on RPU board (via SSH)
