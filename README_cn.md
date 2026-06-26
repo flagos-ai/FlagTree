@@ -90,6 +90,7 @@ TLE 的主要优势包括：
 
 ## 新特性
 
+* 2026/06/26 [metax](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/metax/) 后端升级到 Triton 3.6，加入 CI/CD。
 * 2026/06/10 新增接入 [rpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/rpu/) 后端（对应 Triton 3.6），加入 CI/CD。
 * 2026/06/08 [ascend](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/ascend/) 后端升级到 Triton 3.5，加入 CI/CD。
 * 2026/06/03 新增接入 ARM64 [cpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/cpu/) 后端（对应 Triton 3.3）。
@@ -185,6 +186,7 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |mthreads  |python3.10 -m pip install flagtree===0.5.1+mthreads3.2 $RES     |3.2|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |mthreads  |python3.10 -m pip install flagtree===0.5.1+mthreads3.1 $RES     |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |xpu       |python3.10 -m pip install flagtree===0.5.1+xpu3.0 $RES          |3.0|GLIBC_2.31<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
+|metax     |python3.12 -m pip install flagtree===0.6.0rc1+metax3.6 $RES     |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |metax     |python3.12 -m pip install flagtree===0.5.1+metax3.0 $RES        |3.0|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |hcu       |python3.10 -m pip install flagtree===0.6.0rc1+hcu3.6 $RES       |3.6|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |hcu       |python3.10 -m pip install flagtree===0.5.1+hcu3.1 $RES          |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
