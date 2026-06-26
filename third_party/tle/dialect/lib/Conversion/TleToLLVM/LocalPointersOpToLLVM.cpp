@@ -395,18 +395,18 @@ LogicalResult lowerDeviceSpace(Location loc, ValueRange srcElems,
   auto i64Ty = rewriter.getI64Type();
 
   Value offsetI64;
-  if (offsetVal) {
+  if (offsetVal && offsetVal.getType() != i64Ty) {
     auto offsetIntTy = dyn_cast<IntegerType>(offsetVal.getType());
     if (!offsetIntTy)
       return failure();
     if (offsetIntTy.getWidth() < 64)
       offsetI64 = rewriter.create<arith::ExtSIOp>(loc, i64Ty, offsetVal);
-    else if (offsetIntTy.getWidth() > 64)
-      offsetI64 = rewriter.create<arith::TruncIOp>(loc, i64Ty, offsetVal);
     else
-      offsetI64 = offsetVal;
+      offsetI64 = rewriter.create<arith::TruncIOp>(loc, i64Ty, offsetVal);
+  } else if (offsetVal) {
+    offsetI64 = offsetVal;
   } else {
-    offsetI64 = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
+    return failure();
   }
 
   Value byteOffset = offsetI64;

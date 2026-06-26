@@ -736,8 +736,13 @@ def _create_remote_pointers_tensor(
     else:
         remote_type = remote_ptr_dtype.to_ir(builder)
 
-    offset_tensor = None
-    if offset is not None:
+    if space != "device" and offset is not None:
+        raise ValueError(
+            f"offset is only supported for device space remote pointers, got space={space!r}")
+
+    if space == "device":
+        if offset is None:
+            raise ValueError("device space remote pointers require an offset")
         offset_tensor = offset if isinstance(offset, tl.tensor) else _semantic.to_tensor(offset)
         if not offset_tensor.dtype.is_int():
             raise TypeError(f"offset must be an integer scalar, got {offset_tensor.dtype}")
@@ -752,8 +757,6 @@ def _create_remote_pointers_tensor(
         # automatic injection (e.g. inside this helper).
         if offset_tensor.dtype != tl.int64:
             offset_tensor = tl.cast(offset_tensor, tl.int64, _semantic=_semantic)
-
-    if offset_tensor is not None:
         remote_op = builder.create_remote_pointers(
             remote_type, tensor.handle, shard_id_tensor.handle, space, offset_tensor.handle)
     else:
