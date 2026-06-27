@@ -199,9 +199,20 @@ def to_tensor(memref: buffer, writable: bool = True, target_shape=None, _semanti
 
 @builtin
 def subview(src: buffer, offsets: List[tl.constexpr], sizes: List[tl.constexpr], strides: List[tl.constexpr],
-            _semantic=None) -> buffer:
+            _builder=None) -> buffer:
     '''
     Creates a subview of the source buffer with the specified offsets, sizes, and strides.
+
+    :param src: The source buffer to create a subview from.
+    :type src: buffer
+    :param offsets: Offsets in each dimension. Items may be constexpr/int literals or dynamic tl.tensor values.
+    :type offsets: List
+    :param sizes: A list of non-negative integers representing the sizes in each dimension.
+    :type sizes: List[tl.constexpr]
+    :param strides: A list of non-negative integers representing the strides in each dimension.
+    :type strides: List[tl.constexpr]
+    :return: A new buffer representing the subview of the source buffer.
+    :rtype: buffer
     '''
     new_sizes = []
     for i, size in enumerate(sizes):
@@ -303,7 +314,7 @@ def tile_copy(src, dst, shape, inter_no_alias=False, _builder=None):
 
 
 @builtin
-def tile_subview(src: buffer, offsets: List[tl.constexpr], sizes: List[tl.constexpr], strides: List[tl.constexpr],
+def tile_subview(src: buffer, offsets: List, sizes: List[tl.constexpr], strides: List[tl.constexpr],
                  _builder=None) -> buffer:
     """Extract a subview from a buffer using TileIR tile.subview op."""
     new_sizes = []

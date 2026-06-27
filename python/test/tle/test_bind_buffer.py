@@ -144,6 +144,23 @@ def subview_constexpr_buffer(SIZE: tl.constexpr):
 
 
 @triton.jit
+def method_subview_multibuffer():
+    slot_id = tl.program_id(0)
+    buf = tle.dsa.alloc(shape=[2, 64, 128], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+    slot = buf.subview([slot_id, 0, 0], [1, 64, 128], [1, 1, 1])
+    slot.to_tensor(writable=False)
+
+
+@triton.jit
+def method_subview_after_to_buffer(x):
+    offsets = tl.arange(0, 32)
+    values = tl.load(x + offsets)
+    buf = tle.dsa.to_buffer(values, tle.dsa.ascend.UB)
+    slot = buf.subview([tl.program_id(0)], [1], [1])
+    slot.to_tensor(writable=False)
+
+
+@triton.jit
 def cube_launch_wait(out):
     a = tle.dsa.tile_alloc(shape=[16, 16], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.L1)
     b = tle.dsa.tile_alloc(shape=[16, 16], dtype=tl.float16, mem_addr_space=tle.dsa.ascend.L1)
@@ -269,6 +286,26 @@ def test_subview_constexpr_sizes_stay_ranked():
     assert "tensor<32x32x32x32xf32>" not in mlir
 
 
+def test_buffer_method_subview_multibuffer_preserves_slot_dim():
+    mlir = compile_kernel(method_subview_multibuffer, {}, {})
+    compact_mlir = mlir.replace(" ", "")
+    assert_public_dsa_uses_tileir(mlir)
+    assert "tile.subview" in mlir
+    assert "[[1, 64, 128]]" in mlir
+    assert "<[1,64,128],f32,ub>" in compact_mlir
+    assert "tensor<1x64x128xf32>" in mlir
+    assert "tle.dsa_subview" not in mlir
+
+
+def test_buffer_method_subview_after_to_buffer_tensor():
+    mlir = compile_kernel(method_subview_after_to_buffer, {"x": "*fp32"}, {})
+    assert "tile.alloc" in mlir
+    assert "tile.store_tensor" in mlir
+    assert "tile.subview" in mlir
+    assert "tensor<1xf32>" in mlir
+    assert_no_legacy_dsa_memory_ir(mlir)
+
+
 def test_tile_cube_launch_wait_smoke():
     mlir = compile_kernel(cube_launch_wait, {"out": "*fp32"}, {})
     assert "tile.cube_launch" in mlir
@@ -305,6 +342,8 @@ if __name__ == "__main__":
     extract_element_mlir = compile_kernel(extract_element_tensor, {"x": "*fp32", "out": "*fp32"}, {})
     top_level_tile_mlir = compile_kernel(top_level_tile_dsl, {"x": "*fp32"}, {})
     subview_constexpr_mlir = compile_kernel(subview_constexpr_buffer, {}, {"SIZE": 32})
+    method_subview_mlir = compile_kernel(method_subview_multibuffer, {}, {})
+    to_buffer_method_subview_mlir = compile_kernel(method_subview_after_to_buffer, {"x": "*fp32"}, {})
     cube_launch_mlir = compile_kernel(cube_launch_wait, {"out": "*fp32"}, {})
     sync_flags_mlir = compile_kernel(tile_sync_flags, {}, {})
     gm_offset_mlir = compile_kernel(gm_offset_copy, {"x": "*fp32", "out": "*fp32"}, {"BLOCK": 32})
@@ -326,6 +365,10 @@ if __name__ == "__main__":
     assert "tile.pipe_barrier" in top_level_tile_mlir
     assert "tensor<32x32xf32>" in subview_constexpr_mlir
     assert "tensor<32x32x32x32xf32>" not in subview_constexpr_mlir
+    assert "tile.subview" in method_subview_mlir
+    assert "tensor<1x64x128xf32>" in method_subview_mlir
+    assert "tile.store_tensor" in to_buffer_method_subview_mlir
+    assert "tile.subview" in to_buffer_method_subview_mlir
     assert "tile.cube_launch" in cube_launch_mlir
     assert "tile.cube_wait" in cube_launch_mlir
     assert "tile.set_flag" in sync_flags_mlir
@@ -341,6 +384,8 @@ if __name__ == "__main__":
     print(extract_element_mlir)
     print(top_level_tile_mlir)
     print(subview_constexpr_mlir)
+    print(method_subview_mlir)
+    print(to_buffer_method_subview_mlir)
     print(cube_launch_mlir)
     print(sync_flags_mlir)
     print(gm_offset_mlir)

@@ -2,6 +2,27 @@ from triton._C.libtriton import ir
 
 from typing import List
 import triton.language.core as tl
+from functools import wraps
+
+
+TRITON_BUILTIN = "__triton_builtin__"
+TLE_BUILTIN = "__tle_builtin__"
+
+
+def builtin(fn):
+    """Mark buffer member helpers as Triton/TLE builtins."""
+    assert callable(fn)
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if "_builder" not in kwargs or kwargs["_builder"] is None:
+            raise ValueError("Did you forget to add @triton.jit ? "
+                             "(`_builder` argument must be provided outside of JIT functions.)")
+        return fn(*args, **kwargs)
+
+    setattr(wrapper, TRITON_BUILTIN, True)
+    setattr(wrapper, TLE_BUILTIN, True)
+    return wrapper
 
 
 class address_space:
@@ -106,3 +127,14 @@ class buffer(tl.base_value):
         if self.space:
             res += ', ' + str(self.space)
         return res + '>'
+
+    @builtin
+    def subview(self, offsets: List, sizes: List[tl.constexpr], strides: List[tl.constexpr],
+                _builder=None) -> 'buffer':
+        from .core import subview
+        return subview(self, offsets, sizes, strides, _builder=_builder)
+
+    @builtin
+    def to_tensor(self, writable=True, target_shape=None, _builder=None) -> tl.tensor:
+        from .core import to_tensor
+        return to_tensor(self, writable=writable, target_shape=target_shape, _builder=_builder)
