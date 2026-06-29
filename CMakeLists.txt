@@ -10,11 +10,6 @@ set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-project(triton CXX C)
-include(CTest)
-
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-
 # FLAGTREE Options
 set(FLAGTREE_BACKEND "$ENV{FLAGTREE_BACKEND}")
 if(FLAGTREE_BACKEND)
@@ -83,6 +78,9 @@ function(set_flagtree_backend_td output_td td_filename)
   endif()
   set(${output_td} ${ret} PARENT_SCOPE)
 endfunction()
+
+project(triton CXX C)
+include(CTest)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
