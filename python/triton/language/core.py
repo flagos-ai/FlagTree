@@ -3380,6 +3380,59 @@ def dispatch(func, lib_name: str, lib_path: str, args: list, arg_type_symbol_dic
         return tensor(func(lib_name, lib_path, symbol, arg_list, ret_type.to_ir(builder), is_pure), ret_type)
 
 
+def dispatch_ec(func, lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: dict, is_pure: bool,
+                _semantic=None):
+    '''
+        Dispatch a function to a library
+        :param func: the function to dispatch
+        :param lib_name: the name of the library
+        :param lib_path: the path of the library
+        :param args: the arguments of the function
+        :param arg_type_symbol_dict: the type of the arguments
+        :param ret_shape: the shape of the return value
+        :param _semantic: the builder
+        :return: the return value of the function
+    '''
+    if len(arg_type_symbol_dict) == 0:
+        raise ValueError("arg_type_symbol_dict is empty")
+
+    num_args = len(list(arg_type_symbol_dict.keys())[0])
+    if len(args) != num_args:
+        raise ValueError(f"length of input args does not match."
+                         f"Expect {len(args)}, got {num_args}")
+
+    arg_types = []
+    arg_list = []
+    for arg in args:
+        if isinstance(arg, tensor):
+            arg_types.append(arg.dtype)
+            arg_list.append(arg.handle)
+        else:
+            arg_types.append(type(arg))
+            arg_list.append(arg)
+    arg_types = tuple(arg_types)
+
+    if arg_types not in arg_type_symbol_dict:
+        raise ValueError(f"input arg type does not match."
+                         f"Expect one of {arg_type_symbol_dict.keys()}, got {arg_types}")
+    else:
+        symbol = arg_type_symbol_dict[arg_types][0]
+        ret_types = arg_type_symbol_dict[arg_types][1]
+        if not isinstance(ret_types, (builtins.list, builtins.tuple)):
+            ret_types = [ret_types]
+
+        if symbol == "":
+            raise ValueError("Symbol can not be empty")
+        call = func(lib_name, lib_path, symbol, arg_list, [ret_type.to_ir(_semantic.builder) for ret_type in ret_types],
+                    is_pure)
+
+        if len(ret_types) == 0:
+            return tensor(call, void)
+        if len(ret_types) == 1:
+            return tensor(call.get_result(0), ret_types[0])
+        return tuple(tensor(call.get_result(i), ty) for i, ty in enumerate(ret_types))
+
+
 @builtin
 def extern_elementwise(lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: dict, is_pure: bool,
                        _semantic=None):
@@ -3421,6 +3474,41 @@ def extern_elementwise(lib_name: str, lib_path: str, args: list, arg_type_symbol
             ret_type = broadcast_arg.type.with_element_ty(ret_type)
     func = _semantic.builder.create_extern_elementwise
     return dispatch(func, lib_name, lib_path, dispatch_args, arg_type_symbol_dict, ret_type, is_pure, _semantic)
+
+
+@builtin
+def extern_call(lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: dict, is_pure: bool, _semantic=None):
+    '''
+        Dispatch an function to a library
+        :param lib_name: the name of the library
+        :param lib_path: the path of the library
+        :param args: the arguments of the function
+        :param arg_type_symbol_dict: the type of the arguments
+        :param is_pure: whether the function is pure
+        :param _semantic: the semantic
+        :return: the return value of the function
+    '''
+    dispatch_args = args.copy()
+    all_scalar = True
+    arg_types = []
+    for i in builtins.range(len(dispatch_args)):
+        dispatch_args[i] = _semantic.to_tensor(dispatch_args[i])
+        arg_types.append(dispatch_args[i].dtype)
+        if dispatch_args[i].type.is_block():
+            all_scalar = False
+    if not all_scalar:
+        raise ValueError("extern call only support inputs with scalr type")
+
+    if len(arg_type_symbol_dict) == 0:
+        raise ValueError("arg_type_symbol_dict is empty")
+
+    num_args = len(list(arg_type_symbol_dict.keys())[0])
+    if len(args) != num_args:
+        raise ValueError(f"length of input args does not match."
+                         f"Expect {len(args)}, got {num_args}")
+
+    func = _semantic.builder.create_extern_call
+    return dispatch_ec(func, lib_name, lib_path, dispatch_args, arg_type_symbol_dict, is_pure, _semantic)
 
 
 def binary_op_type_legalization(lhs, rhs, semantic):
