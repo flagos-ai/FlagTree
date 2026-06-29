@@ -21,6 +21,7 @@
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #endif
 #include "third_party/hcu/include/Analysis/AxisInfoExt.h"
 #include "third_party/hcu/include/Dialect/TritonHCUGPU/IR/Dialect.h"
@@ -211,6 +212,9 @@ struct ConvertTritonHCUGPUToLLVM
           patternBenefitPrioritizeOverLLVMConversions);
       mlir::triton::tle::populateInsertTileOpToLLVMPatterns(
           typeConverter, tlePatterns, targetInfo,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
+          typeConverter, targetInfo, tlePatterns,
           patternBenefitPrioritizeOverLLVMConversions);
       if (failed(
               applyPartialConversion(mod, tleTarget, std::move(tlePatterns))))

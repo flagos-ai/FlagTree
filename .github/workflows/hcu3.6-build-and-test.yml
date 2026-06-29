@@ -47,3 +47,8 @@ jobs:
           set -x
           source ~/env.sh
           python3 -m pytest -s third_party/hcu/python/test/unit
+          python3 -m pytest -s python/test/tle/integration/test_tle_local_store.py
+          python3 -m pytest -s python/test/tle/integration/test_tle_gemm.py
+          python3 -m pytest -s python/test/tle/integration/test_tle_pipeline_e2e.py
+          python3 -m pytest -s python/test/tle/unit/test_tle_gpu_local_ptr.py
+          python3 -m pytest -s python/test/tle/unit/test_tle_gpu_slot.py
