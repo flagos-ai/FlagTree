@@ -15,18 +15,6 @@ include(CTest)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-# Options
-option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
-if(FLAGTREE_BACKEND)
-  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" OFF)
-  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" OFF)
-else()
-  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
-  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
-endif()
-option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
-set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
-
 # FLAGTREE Options
 set(FLAGTREE_BACKEND "$ENV{FLAGTREE_BACKEND}")
 if(FLAGTREE_BACKEND)
@@ -84,6 +72,18 @@ function(get_flagtree_backend_lib lib_name output_lib)
   set(${output_lib} ${ret} PARENT_SCOPE)
 endfunction()
 
+# FLAGTREE SPEC TD FILE GET FUNC
+function(set_flagtree_backend_td output_td td_filename)
+  set(ret ${td_filename})
+  file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)
+  set(BACKEND_SPEC_TD ${BACKEND_SPEC_ROOT}/${relative_path}/${td_filename})
+  if(EXISTS ${BACKEND_SPEC_TD})
+    set(ret ${BACKEND_SPEC_TD})
+  endif()
+  set(${output_td} ${ret} PARENT_SCOPE)
+endfunction()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # Options
@@ -101,18 +101,6 @@ if(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "metax")
   list(APPEND TRITON_CODEGEN_BACKENDS "nvidia")
   list(APPEND TRITON_CODEGEN_BACKENDS "amd")
 endif()
-
-# FLAGTREE SPEC TD FILE GET FUNC
-function(set_flagtree_backend_td output_td td_filename)
-  set(ret ${td_filename})
-  file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
-  get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)
-  set(BACKEND_SPEC_TD ${BACKEND_SPEC_ROOT}/${relative_path}/${td_filename})
-  if(EXISTS ${BACKEND_SPEC_TD})
-    set(ret ${BACKEND_SPEC_TD})
-  endif()
-  set(${output_td} ${ret} PARENT_SCOPE)
-endfunction()
 
 if(TRITON_BUILD_WITH_CCACHE)
   find_program(CCACHE_PROGRAM ccache)

@@ -16,7 +16,7 @@ from distutils.command.clean import clean
 from pathlib import Path
 from typing import Optional
 
-from setuptools import Extension, find_namespace_packages, setup
+from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 from setuptools.command.develop import develop
@@ -686,7 +686,7 @@ def get_package_dirs():
 
 
 def get_packages():
-    yield from find_namespace_packages(where="python", include=["triton", "triton.*"])
+    yield from find_packages(where="python", include=["triton", "triton.*"])
 
     for backend in backends:
         yield f"triton.backends.{backend.name}"
