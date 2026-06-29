@@ -19,9 +19,9 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Pass/Pass.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
-#include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #endif
 #include "third_party/hcu/include/Analysis/AxisInfoExt.h"
 #include "third_party/hcu/include/Dialect/TritonHCUGPU/IR/Dialect.h"
