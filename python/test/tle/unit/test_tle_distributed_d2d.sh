@@ -17,7 +17,7 @@ export FLAGCX_USE_HETERO_COMM=1
 export FLAGCX_MEM_ENABLE=1
 export FLAGCX_VMM_ENABLE=0
 export FLAGCX_P2P_DISABLE=1
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+#export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # Need to preload customized gloo library specified for FlagCX linkage
 #export LD_PRELOAD=/usr/local/lib/libgloo.so
 #export LD_PRELOAD=/usr/local/nccl/build/lib/libnccl.so
