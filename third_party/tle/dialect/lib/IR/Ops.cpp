@@ -816,7 +816,7 @@ LogicalResult RemotePointersOp::verify() {
   if (!getShardId().getType().isInteger(32))
     return emitOpError() << "expects shard_id to be i32";
 
-  bool hasOffset = getOffset().has_value();
+  bool hasOffset = getOffset() != nullptr;
   if (spaceAttr == "device") {
     if (!hasOffset)
       return emitOpError() << "device space remote pointers require an offset";
@@ -827,7 +827,7 @@ LogicalResult RemotePointersOp::verify() {
   }
 
   if (hasOffset) {
-    Type offsetTy = getOffset()->getType();
+    Type offsetTy = getOffset().getType();
     if (auto tensorTy = dyn_cast<RankedTensorType>(offsetTy)) {
       if (!tensorTy.getShape().empty())
         return emitOpError() << "expects offset to be a scalar";
