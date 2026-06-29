@@ -1,8 +1,11 @@
 add_compile_options("-Wno-deprecated-declarations")
 add_compile_options("-Wno-error=deprecated-declarations")
 
-option(EDITABLE_MODE "Build in developer (editable) mode" OFF)
-set(SUNRISE_PLUGIN_DIR "$ENV{FLAGTREE_CACHE_DIR}/sunrise")
+if(DEFINED ENV{FLAGTREE_CACHE_DIR} AND NOT "$ENV{FLAGTREE_CACHE_DIR}" STREQUAL "")
+  set(SUNRISE_PLUGIN_DIR "$ENV{FLAGTREE_CACHE_DIR}/sunrise")
+else()
+  set(SUNRISE_PLUGIN_DIR "$ENV{HOME}/.flagtree/sunrise")
+endif()
 
 if(TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_PLUGIN)
@@ -11,29 +14,16 @@ if(TRITON_BUILD_PYTHON_MODULE)
       SHARED_LIB sunriseTritonPlugin
     )
   else()
-    if(EDITABLE_MODE)
-      find_library(sunriseTritonPluginLib
-      NAMES
-        sunriseTritonPlugin.so
-      PATHS
-        ${SUNRISE_PLUGIN_DIR}
-      REQUIRED
-      )
-      add_triton_plugin(TritonSunrise
-        SHARED_LIB ${sunriseTritonPluginLib}
-      )
-    else()
-      find_library(sunriseTritonPluginLib
-        NAMES
-          sunriseTritonPlugin.so
-        PATHS
-          ${SUNRISE_PLUGIN_DIR}
-        REQUIRED
-      )
-      add_triton_plugin(TritonSunrise
-        SHARED_LIB ${sunriseTritonPluginLib}
-      )
-    endif()
+    find_library(sunriseTritonPluginLib
+    NAMES
+      sunriseTritonPlugin.so
+    PATHS
+      ${SUNRISE_PLUGIN_DIR}
+    REQUIRED
+    )
+    add_triton_plugin(TritonSunrise
+      SHARED_LIB ${sunriseTritonPluginLib}
+    )
   endif()
 endif()
 

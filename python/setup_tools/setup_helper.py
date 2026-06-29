@@ -595,40 +595,19 @@ cache.store(
     post_hook=set_llvm_env,
 )
 
-# sunrise
-def sunrise_cp_bc_files(path):
-    # mkdir -p third_party/sunrise/backend/lib
-    lib_dir = Path("third_party/sunrise/backend/lib")
-    os.makedirs(lib_dir, exist_ok=True)
-    # cp ${LLVM_SYSPATH}/stpu/bitcode/*.bc third_party/sunrise/backend/lib
-    bc_dir = Path(path) / "stpu" / "bitcode"
-    for bc_file in bc_dir.glob("*.bc"):
-        shutil.copy(bc_file, lib_dir)
-
-
-def sunrise_set_llvm_env(path):
-    set_llvm_env(path)
-    sunrise_cp_bc_files(path)
-
-
-def sunrise_pre_llvm_env():
-    llvm_path = os.environ.get('LLVM_SYSPATH', '')
-    ret = llvm_path != ''
-    if ret:
-        sunrise_cp_bc_files(llvm_path)
-    return ret
 
 
 cache.store(
     file="sunrise_llvm22_dev_release",
     condition=("sunrise" == flagtree_backend),
-    url= None, # TODO
-    pre_hook=sunrise_pre_llvm_env,
-    post_hook=sunrise_set_llvm_env,
+    url= "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-34b694004c-triton-v3.6.x.tar.gz",
+    pre_hook=lambda: check_env('LLVM_SYSPATH'),
+    post_hook=lambda path: [f(path) for f in (set_llvm_env, utils.activate("sunrise").sunrise_cp_bc_files)],
 )
 
 cache.store(
     file="sunriseTritonPlugin.so",
     condition=("sunrise" == flagtree_backend) and (not configs.flagtree_plugin),
-    url=None, # TODO
-    copy_dst_path=f"third_party/{flagtree_backend}")
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunrise-plugin-triton-v3.6.x.tar.gz",
+    md5_digest="3526d699",
+)

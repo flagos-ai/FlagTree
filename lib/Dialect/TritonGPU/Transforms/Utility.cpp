@@ -2,7 +2,7 @@
 #include "flagtree_spec.h"
 #endif
 
-#ifndef FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_Utility
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility
 
 #include "triton/Analysis/Utility.h"
 

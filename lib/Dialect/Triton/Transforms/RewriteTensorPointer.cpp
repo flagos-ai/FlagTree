@@ -2,7 +2,7 @@
 #include "flagtree_spec.h"
 #endif
 
-#ifndef FLAGTREE_SPEC_triton_Dialect_Triton_Transforms_sunrise_RewriteTensorPointer
+#ifndef FLAGTREE_SPEC_Dialect_Triton_Transforms_RewriteTensorPointer
 
 #include <stack>
 

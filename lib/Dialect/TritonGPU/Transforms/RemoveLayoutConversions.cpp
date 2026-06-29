@@ -2,7 +2,7 @@
 #include "flagtree_spec.h"
 #endif
 
-#ifndef FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_RemoveLayoutConversion
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_RemoveLayoutConversion
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"

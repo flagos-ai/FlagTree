@@ -29,7 +29,7 @@
 #include "flagtree_spec.h"
 #endif
 
-#ifndef FLAGTREE_SPEC_triton_Dialect_TritonGPU_Transforms_sunrise_Prefetch
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Prefetch
 
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
