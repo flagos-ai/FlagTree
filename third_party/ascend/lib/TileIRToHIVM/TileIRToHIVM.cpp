@@ -28,7 +28,9 @@
 //   Step 2: tile.to_tensor → RAUW: replace all uses of result with src operand,
 //           then erase. The src is now memref (from Step 1), consumers get
 //           memref instead of tensor, bridged by UnrealizedConversionCast.
-//   Step 3: tile.copy → hivm.copy (memref in, memref out)
+//   Step 3: tile.copy → hivm.copy (tile.* src, on-chip DMA)
+//                    or memref.copy (!tt.ptr src, GM↔local DMA; the ptr is
+//                    bridged to memref via UnrealizedConversionCast)
 //   Step 4: tile.load/store → hivm.load/store
 //   Step 5: sync ops → hivm sync ops
 //===----------------------------------------------------------------------===//
@@ -180,20 +182,27 @@ struct TileToTensorEliminate : OpRewritePattern<tile::ToTensorOp> {
 };
 
 // =============================================================================
-// Step 3: tile.copy → hivm.copy
-//   Skip tile.copy with !tt.ptr source — those are GM→local DMAs that must be
-//   handled after !tt.ptr→memref conversion (triton_to_linalg_incubated).
+// Step 3: tile.copy → hivm.copy / memref.copy
+//   - tile.* source  → hivm.copy (on-chip buffer DMA)
+//   - !tt.ptr source → memref.copy (GM→local DMA; the ptr is converted to
+//     memref via UnrealizedConversionCast, and the copy bridges GM↔on-chip)
 // =============================================================================
 struct TileCopyToHIVM : OpRewritePattern<tile::CopyOp> {
   using OpRewritePattern<tile::CopyOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(tile::CopyOp op,
                                 PatternRewriter &rewriter) const final {
-    // Skip !tt.ptr sources — they need to be lowered after tt.ptr→memref.
-    if (isa<triton::PointerType>(op.getSrc().getType()))
-      return failure();
     Value srcMem = getAsMemRef(op.getSrc(), rewriter);
     Value dstMem = getAsMemRef(op.getDst(), rewriter);
+
+    // !tt.ptr source → memref.copy (GM↔local DMA).  The ptr is not yet a
+    // memref, so getAsMemRef bridges it with UnrealizedConversionCast.
+    if (isa<triton::PointerType>(op.getSrc().getType())) {
+      rewriter.replaceOpWithNewOp<memref::CopyOp>(op, srcMem, dstMem);
+      return success();
+    }
+
+    // Regular tile.* source → hivm.copy (on-chip DMA)
     rewriter.create<hivm::CopyOp>(op.getLoc(), TypeRange{}, srcMem, dstMem);
     rewriter.eraseOp(op);
     return success();
