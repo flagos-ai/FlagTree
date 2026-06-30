@@ -1,6 +1,6 @@
 [[中文版](./install_tsingmicro_cn.md)|English]
 
-## 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/) (Triton 3.5)
+## 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/) (Triton 3.3)
 
 - Based on Triton 3.3, x64
 - Available for TX81

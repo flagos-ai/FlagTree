@@ -1,6 +1,6 @@
 [中文版|[English](./install_rpu.md)]
 
-## 💫 Huixi Intelligence（辉羲智能）[rpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/rpu/)
+## 💫 Huixi Intelligence（辉羲智能）[rpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/rpu/) (Triton 3.6)
 
 - 对应的 Triton 版本为 3.6，基于 aarch64 平台
 
