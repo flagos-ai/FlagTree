@@ -1,4 +1,4 @@
-#include "tle/dialect/include/Conversion/TleToLLVM/GetLocalPeOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
 #include "tle/dialect/include/Tools/FlagcxUtils.h"
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"

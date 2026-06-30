@@ -8,7 +8,12 @@ include "triton/Dialect/Triton/IR/TritonInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUTypes.td"
-include "tle/dialect/include/IR/TleOps.td"
+
+class Tle_Op<string mnemonic, list<Trait> traits = []>
+    : Op<Tle_Dialect, mnemonic,
+         !listconcat(traits, [VerifyTensorLayoutsTrait])> {}
+
+def Tle_LocalPointerResultType : AnyTypeOf<[TT_Tensor, TT_Ptr, TT_Int]>;
 
 def Tle_GetLocalRankOp : Tle_Op<"get local rank"> {
   let summary = "Get local rank";

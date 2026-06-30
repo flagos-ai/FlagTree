@@ -10,7 +10,7 @@
 
 #ifdef FLAGCX_ENABLED
 #define GET_OP_CLASSES
-#include "tle/dialect/include/IR/Ops.cpp.inc"
+#include "tle/dialect/include/IR/FlagCxOps.cpp.inc"
 #endif
 
 namespace mlir::triton::tle {
@@ -27,7 +27,7 @@ void TleDialect::initialize() {
 #ifdef FLAGCX_ENABLED
   addOperations<
 #define GET_OP_LIST
-#include "tle/dialect/include/IR/Ops.cpp.inc"
+#include "tle/dialect/include/IR/FlagCxOps.cpp.inc"
       >();
 #endif
 }

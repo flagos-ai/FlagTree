@@ -14,6 +14,8 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
+namespace mlir::triton::tle {
+
 LogicalResult GetLocalRankOp::verify() {
   auto resultTy = getResult().getType();
 
@@ -22,3 +24,5 @@ LogicalResult GetLocalRankOp::verify() {
 
   return success();
 }
+
+} // namespace mlir::triton::tle

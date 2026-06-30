@@ -112,6 +112,10 @@ public:
           return hasLegalRegions && typeConverter.isLegal(op);
         });
     addLegalOp<tle::RemotePointersOp>();
+    addLegalOp<tle::GetDeviceIdOp>();
+    // addIllegalOp<tle::GetLocalRankOp>();
+    // // addLegalOp<tle::GetDeviceIdOp>();
+    // addLegalOp<tle::GetNumPesOp>();
     // Allow non-TLE ops to remain during this partial conversion.
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
@@ -198,11 +202,12 @@ struct ConvertTritonGPUToLLVM
     }
 #ifdef FLAGCX_ENABLED
     {
-      mlir::triton::tle::populateGetDeviceIdToLLVMPatterns(typeConverter,
-                                                           patterns, benefit);
-
       mlir::triton::tle::populateGetDeviceIdOpToFlagCxPatterns(
           typeConverter, patterns, benefit);
+      mlir::triton::tle::populateGetLocalRankOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
+      mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(typeConverter,
+                                                           patterns, benefit);
     }
 #endif
 

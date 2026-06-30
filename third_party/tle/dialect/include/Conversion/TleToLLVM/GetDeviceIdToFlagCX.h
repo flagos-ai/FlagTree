@@ -1,5 +1,7 @@
+#ifndef TLE_CONVERSION_TLETOLLVM_GETDEVICEIDTOFLAGCX_H
+#define TLE_CONVERSION_TLETOLLVM_GETDEVICEIDTOFLAGCX_H
+
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
-// #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 
 namespace mlir::triton::tle {
 
@@ -8,3 +10,5 @@ void populateGetDeviceIdOpToFlagCxPatterns(LLVMTypeConverter &typeConverter,
                                            PatternBenefit benefit);
 
 } // namespace mlir::triton::tle
+
+#endif

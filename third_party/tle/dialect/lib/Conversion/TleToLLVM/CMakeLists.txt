@@ -11,7 +11,7 @@ set(TLE_TO_LLVM_SRC
     WGMMAFenceOpToLLVM.cpp
 )
 
-if(FLAGCX_ENABLE)
+if(FLAGCX_ENABLED)
  list(APPEND TLE_TO_LLVM_SRC
   GetDeviceIdToFlagCX.cpp
   GetLocalRankOpToLLVM.cpp

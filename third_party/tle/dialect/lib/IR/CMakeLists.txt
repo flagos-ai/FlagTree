@@ -7,7 +7,7 @@ set(TLE_IR_SRC
   VerfiyUtils.cpp
 )
 
-if(FLAGCX_ENABLE)
+if(FLAGCX_ENABLED)
  list(APPEND TLE_IR_SRC
   FlagCxOps.cpp
 )
