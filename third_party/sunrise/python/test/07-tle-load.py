@@ -25,8 +25,7 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 @triton.jit
-def tle_load_add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr,
-                        IS_ASYNC: tl.constexpr):
+def tle_load_add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr, IS_ASYNC: tl.constexpr):
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < n_elements
@@ -52,8 +51,7 @@ def test_tle_load_add(n_elements, is_async):
 
 
 @triton.jit
-def tle_load_2d_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr,
-                       IS_ASYNC: tl.constexpr):
+def tle_load_2d_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, IS_ASYNC: tl.constexpr):
     offs_m = tl.arange(0, M)
     offs_n = tl.arange(0, N)
     ptrs = x_ptr + offs_m[:, None] * N + offs_n[None, :]

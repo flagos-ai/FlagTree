@@ -47,8 +47,7 @@ def extract_tile_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, TM: tl
 
 
 @triton.jit
-def insert_tile_kernel(x_ptr, y_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, TM: tl.constexpr,
-                       TN: tl.constexpr):
+def insert_tile_kernel(x_ptr, y_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, TM: tl.constexpr, TN: tl.constexpr):
     offs_m = tl.arange(0, M)
     offs_n = tl.arange(0, N)
     x = tl.load(x_ptr + offs_m[:, None] * N + offs_n[None, :])
@@ -66,8 +65,7 @@ def insert_tile_kernel(x_ptr, y_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, 
 # Dynamic (runtime) index -> SMEM relay path
 # ---------------------------------------------------------------------------
 @triton.jit
-def extract_tile_dyn_kernel(x_ptr, out_ptr, idx, M: tl.constexpr, N: tl.constexpr, TM: tl.constexpr,
-                            TN: tl.constexpr):
+def extract_tile_dyn_kernel(x_ptr, out_ptr, idx, M: tl.constexpr, N: tl.constexpr, TM: tl.constexpr, TN: tl.constexpr):
     offs_m = tl.arange(0, M)
     offs_n = tl.arange(0, N)
     x = tl.load(x_ptr + offs_m[:, None] * N + offs_n[None, :])
@@ -82,8 +80,8 @@ def extract_tile_dyn_kernel(x_ptr, out_ptr, idx, M: tl.constexpr, N: tl.constexp
 
 
 @triton.jit
-def insert_tile_dyn_kernel(x_ptr, y_ptr, out_ptr, idx, M: tl.constexpr, N: tl.constexpr,
-                           TM: tl.constexpr, TN: tl.constexpr):
+def insert_tile_dyn_kernel(x_ptr, y_ptr, out_ptr, idx, M: tl.constexpr, N: tl.constexpr, TM: tl.constexpr,
+                           TN: tl.constexpr):
     offs_m = tl.arange(0, M)
     offs_n = tl.arange(0, N)
     x = tl.load(x_ptr + offs_m[:, None] * N + offs_n[None, :])
@@ -198,8 +196,7 @@ def test_insert_tile_dynamic_index(ti, tj):
 # This is a different SMEM-path entry than the dynamic-index tests above.
 # ---------------------------------------------------------------------------
 @triton.jit
-def extract_tile_thin_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, TM: tl.constexpr,
-                             TN: tl.constexpr):
+def extract_tile_thin_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, TM: tl.constexpr, TN: tl.constexpr):
     offs_m = tl.arange(0, M)
     offs_n = tl.arange(0, N)
     x = tl.load(x_ptr + offs_m[:, None] * N + offs_n[None, :])

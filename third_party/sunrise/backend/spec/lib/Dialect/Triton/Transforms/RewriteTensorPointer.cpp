@@ -41,10 +41,11 @@ public:
   RewritedInfo(Value base, const SmallVector<Value> &shape,
                const SmallVector<Value> &strides,
                const SmallVector<Value> &offsets,
-               const ArrayRef<int64_t> &tensorShape,
-               bool hasRowStride, unsigned rowStrideParamIndex)
+               const ArrayRef<int64_t> &tensorShape, bool hasRowStride,
+               unsigned rowStrideParamIndex)
       : base(base), shape(shape), strides(strides), offsets(offsets),
-        tensorShape(tensorShape), hasRowStride(hasRowStride), rowStrideParamIndex(rowStrideParamIndex) {
+        tensorShape(tensorShape), hasRowStride(hasRowStride),
+        rowStrideParamIndex(rowStrideParamIndex) {
     assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
            shape.size() == tensorShape.size());
   }
@@ -200,19 +201,19 @@ public:
 };
 
 // 成功返回true
-bool findRowStrideParamIndexFromValue(Value v, unsigned* paramIdx) {
-  Operation* op = v.getDefiningOp();
-  while(op != nullptr) {
-    if(op->getOperands().size() < 1) {
+bool findRowStrideParamIndexFromValue(Value v, unsigned *paramIdx) {
+  Operation *op = v.getDefiningOp();
+  while (op != nullptr) {
+    if (op->getOperands().size() < 1) {
       return false;
     }
     v = op->getOperands()[0];
     op = v.getDefiningOp();
   }
-  if(auto blockArg = dyn_cast<BlockArgument>(v)) {
+  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
     *paramIdx = blockArg.getArgNumber();
-    Block* parentBlock = blockArg.getOwner();
-    if(parentBlock->isEntryBlock()) {
+    Block *parentBlock = blockArg.getOwner();
+    if (parentBlock->isEntryBlock()) {
       return true;
     }
   }
@@ -272,8 +273,9 @@ public:
     unsigned rowStrideParamIdx = 0;
     bool hasRowStride = false;
     auto strides = op.getStrides();
-    if(strides.size() == 2) {
-      hasRowStride = findRowStrideParamIndexFromValue(strides[0], &rowStrideParamIdx);
+    if (strides.size() == 2) {
+      hasRowStride =
+          findRowStrideParamIndexFromValue(strides[0], &rowStrideParamIdx);
     }
 
     // Save information
@@ -352,8 +354,10 @@ public:
           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
           loadOp.getFlagtreeHintsAttr()); // flagtree hints
       MLIRContext *ctx = builder.getContext();
-      if(info.getHasRowStride() == true) {
-        newResult->setAttr("sunrise.rowStrideParamIdx", IntegerAttr::get(IntegerType::get(ctx, 32), info.getRowStrideParamIndex()));
+      if (info.getHasRowStride() == true) {
+        newResult->setAttr("sunrise.rowStrideParamIdx",
+                           IntegerAttr::get(IntegerType::get(ctx, 32),
+                                            info.getRowStrideParamIndex()));
       }
       op->getResult(0).replaceAllUsesWith(newResult);
     } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
@@ -601,17 +605,18 @@ public:
     }
 
     // 此时loadOp不再有boundaryCheck，根据参数个数判断是否有mask
-    getOperation()->walk([](Operation* op){
-      if(isa<triton::LoadOp>(*op) == false) {
+    getOperation()->walk([](Operation *op) {
+      if (isa<triton::LoadOp>(*op) == false) {
         return;
       }
       OpBuilder builder(op);
       MLIRContext *ctx = builder.getContext();
       int hasOriMask = 0;
-      if(op->getNumOperands() > 1) {
+      if (op->getNumOperands() > 1) {
         hasOriMask = 1;
       }
-      op->setAttr("sunrise.hasOriMask", IntegerAttr::get(IntegerType::get(ctx, 32), hasOriMask));
+      op->setAttr("sunrise.hasOriMask",
+                  IntegerAttr::get(IntegerType::get(ctx, 32), hasOriMask));
     });
   }
 };

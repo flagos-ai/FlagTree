@@ -1474,50 +1474,95 @@ LogicalResult AMDWmmaEncodingAttr::verify(
 
 Attribute SunriseMmaEncodingAttr::parse(AsmParser &parser, Type type) {
   DictionaryAttr dict;
-  if (parser.parseLess().failed()) { return {}; }
-  if (parser.parseAttribute(dict).failed()) { return {};}
-  if (parser.parseGreater().failed()) {return {};}
+  if (parser.parseLess().failed()) {
+    return {};
+  }
+  if (parser.parseAttribute(dict).failed()) {
+    return {};
+  }
+  if (parser.parseGreater().failed()) {
+    return {};
+  }
 
   unsigned versionMajor = 0;
   unsigned versionMinor = 0;
 
   SmallVector<unsigned> warpsPerCTA;
   SunriseMmaEncodingAttr::TMMAOutLayout outLayout;
-  unsigned outLayoutUint = static_cast<unsigned>(SunriseMmaEncodingAttr::TMMAOutLayout::NotAvailable);
+  unsigned outLayoutUint = static_cast<unsigned>(
+      SunriseMmaEncodingAttr::TMMAOutLayout::NotAvailable);
   unsigned inputElemBitWidth = 0;
   unsigned outputElemBitWidth = 0;
   bool isACol = false, isBCol = false;
   Attribute ctaAttr = nullptr;
 
   for (const NamedAttribute &attr : dict) {
-    if (attr.getName() == "versionMajor") { if (parseUInt(parser, attr, versionMajor, "versionMajor").failed()) {return {};} }
-    if (attr.getName() == "versionMinor") { if (parseUInt(parser, attr, versionMinor, "versionMinor").failed()) {return {};} }
-    if (attr.getName() == "warpsPerCTA") { if (parseIntArrayAttr(parser, attr, warpsPerCTA, "warpsPerCTA").failed()) {return {};} }
-    if (attr.getName() == "CGALayout") { ctaAttr = attr.getValue(); continue; }
-    if (attr.getName() == "outLayout") { if(parseUInt(parser, attr, outLayoutUint, "outLayout").failed()) {return {}; } }
-    if (attr.getName() == "inputElemBitWidth") { if(parseUInt(parser, attr, inputElemBitWidth, "inputElemBitWidth").failed()) {return {}; } }
-    if (attr.getName() == "outputElemBitWidth") { if(parseUInt(parser, attr, outputElemBitWidth, "outputElemBitWidth").failed()) {return {}; } }
-    if (attr.getName() == "isACol") { if(parseBool(parser, attr, isACol, "isACol").failed()) {return {}; } }
-    if (attr.getName() == "isBCol") { if(parseBool(parser, attr, isBCol, "isBCol").failed()) {return {}; } }
+    if (attr.getName() == "versionMajor") {
+      if (parseUInt(parser, attr, versionMajor, "versionMajor").failed()) {
+        return {};
+      }
+    }
+    if (attr.getName() == "versionMinor") {
+      if (parseUInt(parser, attr, versionMinor, "versionMinor").failed()) {
+        return {};
+      }
+    }
+    if (attr.getName() == "warpsPerCTA") {
+      if (parseIntArrayAttr(parser, attr, warpsPerCTA, "warpsPerCTA")
+              .failed()) {
+        return {};
+      }
+    }
+    if (attr.getName() == "CGALayout") {
+      ctaAttr = attr.getValue();
+      continue;
+    }
+    if (attr.getName() == "outLayout") {
+      if (parseUInt(parser, attr, outLayoutUint, "outLayout").failed()) {
+        return {};
+      }
+    }
+    if (attr.getName() == "inputElemBitWidth") {
+      if (parseUInt(parser, attr, inputElemBitWidth, "inputElemBitWidth")
+              .failed()) {
+        return {};
+      }
+    }
+    if (attr.getName() == "outputElemBitWidth") {
+      if (parseUInt(parser, attr, outputElemBitWidth, "outputElemBitWidth")
+              .failed()) {
+        return {};
+      }
+    }
+    if (attr.getName() == "isACol") {
+      if (parseBool(parser, attr, isACol, "isACol").failed()) {
+        return {};
+      }
+    }
+    if (attr.getName() == "isBCol") {
+      if (parseBool(parser, attr, isBCol, "isBCol").failed()) {
+        return {};
+      }
+    }
   }
   outLayout = static_cast<SunriseMmaEncodingAttr::TMMAOutLayout>(outLayoutUint);
 
   std::optional<CTAEncodingAttr> CTALayout =
-    parseCTAAttr(parser, ctaAttr, /*rank=*/warpsPerCTA.size());
+      parseCTAAttr(parser, ctaAttr, /*rank=*/warpsPerCTA.size());
   if (!CTALayout.has_value())
     return {};
 
   return parser.getChecked<SunriseMmaEncodingAttr>(
-      parser.getContext(), versionMajor, versionMinor, warpsPerCTA, *CTALayout, outLayout, inputElemBitWidth, outputElemBitWidth, isACol, isBCol);
+      parser.getContext(), versionMajor, versionMinor, warpsPerCTA, *CTALayout,
+      outLayout, inputElemBitWidth, outputElemBitWidth, isACol, isBCol);
 }
 
 void SunriseMmaEncodingAttr::print(AsmPrinter &printer) const {
   printer << "<{"
           << "versionMajor = " << getVersionMajor()
-          << ", versionMinor = " << getVersionMinor()
-          << ", warpsPerCTA = [" << ArrayRef(getWarpsPerCTA()) << "]"
-          << ", isACol = " << getIsACol()
-          << ", isBCol = " << getIsBCol()
+          << ", versionMinor = " << getVersionMinor() << ", warpsPerCTA = ["
+          << ArrayRef(getWarpsPerCTA()) << "]"
+          << ", isACol = " << getIsACol() << ", isBCol = " << getIsBCol()
           << ", inputElemBitWidth = " << getInputElemBitWidth()
           << ", outputElemBitWidth = " << getOutputElemBitWidth();
   maybePrintCTALayout(getContext(), printer, getCTALayout(),
@@ -1532,7 +1577,6 @@ void SunriseMmaEncodingAttr::print(AsmPrinter &printer) const {
 
   printer << "}>";
 }
-
 
 //===----------------------------------------------------------------------===//
 // Sliced Encoding
@@ -2452,28 +2496,38 @@ SunriseMmaEncodingAttr::getRepOrderForOperand(int opIdx) const {
   return getOrderForDotOperand(opIdx, getRank(), /*kContig*/ true);
 }
 
-SmallVector<unsigned>
-SunriseMmaEncodingAttr::getInstrShapeForOperand(unsigned opIdx, unsigned elemBitWdith) const { // MK, KN
+SmallVector<unsigned> SunriseMmaEncodingAttr::getInstrShapeForOperand(
+    unsigned opIdx, unsigned elemBitWdith) const { // MK, KN
   // A, B矩阵每个warp加载的尺寸
   int packPer32bit = 32 / this->getInputElemBitWidth();
-  if(opIdx == 0) {
-    switch(elemBitWdith) {
-      case 32: return {8, 4};
-      case 16: return {8, 8};
-      case 8: return {8, 16};
-      case 4: return {8, 32};
-      default: llvm_unreachable("unsupported packPer32bit");
+  if (opIdx == 0) {
+    switch (elemBitWdith) {
+    case 32:
+      return {8, 4};
+    case 16:
+      return {8, 8};
+    case 8:
+      return {8, 16};
+    case 4:
+      return {8, 32};
+    default:
+      llvm_unreachable("unsupported packPer32bit");
+    }
+  } else {
+    switch (elemBitWdith) {
+    case 32:
+      return {4, 8};
+    case 16:
+      return {8, 8};
+    case 8:
+      return {16, 8};
+    case 4:
+      return {32, 8};
+    default:
+      llvm_unreachable("unsupported packPer32bit");
     }
   }
-  else {
-    switch(elemBitWdith) {
-      case 32: return {4, 8};
-      case 16: return {8, 8};
-      case 8: return {16, 8};
-      case 4: return {32, 8};
-      default: llvm_unreachable("unsupported packPer32bit");
-    }
-  }  return {0, 0};
+  return {0, 0};
 }
 
 SmallVector<unsigned>
@@ -2482,13 +2536,22 @@ SunriseMmaEncodingAttr::getShapePerCTATileForOperand(unsigned opIdx) const {
   unsigned k = 0; // mma指令k维度的元素个数
   int elemBitWidth = this->getInputElemBitWidth();
   switch (elemBitWidth) {
-  case 4:   k = 32; break;
-  case 8:   k = 16; break;
-  case 16:  k = 8;  break;
-  case 32:  k = 4;  break;
+  case 4:
+    k = 32;
+    break;
+  case 8:
+    k = 16;
+    break;
+  case 16:
+    k = 8;
+    break;
+  case 32:
+    k = 4;
+    break;
   default:
-    llvm::report_fatal_error("SunriseMmaEncodingAttr::getShapePerCTATileForOperand "
-                             "unsuppored inputElemBitWidth");
+    llvm::report_fatal_error(
+        "SunriseMmaEncodingAttr::getShapePerCTATileForOperand "
+        "unsuppored inputElemBitWidth");
   }
   auto shapePerCTATile = getShapePerCTATile();
   SmallVector<unsigned> ret;
@@ -2513,14 +2576,19 @@ SmallVector<unsigned> SunriseMmaEncodingAttr::getShapePerCTATile() const {
 // 获取mma的两个输入a、b的每个维度的切割数，即每个维度有几个CTATile
 // 【注意】两个a和b的元素类型应该一致
 // 返回值：[repM, repK]或[repK, repN]
-SmallVector<int64_t> SunriseMmaEncodingAttr::getRepForOperand(ArrayRef<int64_t> operandShape,
-                                      Type elemType, int opIdx) const {
+SmallVector<int64_t>
+SunriseMmaEncodingAttr::getRepForOperand(ArrayRef<int64_t> operandShape,
+                                         Type elemType, int opIdx) const {
   int instrM = 8, instrN = 8, instrK = 0;
-  if(elemType.isF32() || elemType.isInteger(32))  { instrK = 4; }
-  else if(elemType.isF16() || elemType.isBF16())    { instrK = 8; }
-  else if(elemType.isInteger(8)) { instrK = 16; }
-  else if(elemType.isInteger(4)) { instrK = 32; }
-  else {
+  if (elemType.isF32() || elemType.isInteger(32)) {
+    instrK = 4;
+  } else if (elemType.isF16() || elemType.isBF16()) {
+    instrK = 8;
+  } else if (elemType.isInteger(8)) {
+    instrK = 16;
+  } else if (elemType.isInteger(4)) {
+    instrK = 32;
+  } else {
     llvm::report_fatal_error("unsupported tensor data type for tmma!");
     return {};
   }
@@ -2529,11 +2597,11 @@ SmallVector<int64_t> SunriseMmaEncodingAttr::getRepForOperand(ArrayRef<int64_t> 
   SmallVector<int64_t> ret;
   if (opIdx == 0)
     ret = {std::max<int64_t>(1, operandShape[0] / (instrM * warpsPerCTA[0])),
-            std::max<int64_t>(1, operandShape[1] / instrK)};
+           std::max<int64_t>(1, operandShape[1] / instrK)};
   else {
     assert(opIdx == 1);
     ret = {std::max<int64_t>(1, operandShape[0] / instrK),
-            std::max<int64_t>(1, operandShape[1] / (instrN * warpsPerCTA[1]))};
+           std::max<int64_t>(1, operandShape[1] / (instrN * warpsPerCTA[1]))};
   }
   return ret;
 }

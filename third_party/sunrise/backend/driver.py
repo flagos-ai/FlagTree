@@ -17,6 +17,7 @@ libdevice_dir = os.path.join(dirname, "lib")
 libraries = ['tang', 'tangrt_shared']
 arch = platform.machine()
 
+
 @functools.lru_cache()
 def libtang_dirs():
     if env_libtang_path := knobs.env_opt_str("TRITON_LIBTANG_PATH"):
@@ -98,6 +99,7 @@ def ty_to_cpp(ty):
         "fp64": "double",
     }[ty]
 
+
 FLOAT_STORAGE_TYPE = {
     "fp16": "uint16_t",
     "bf16": "uint16_t",
@@ -115,7 +117,9 @@ FLOAT_PACK_FUNCTION = {
 
 _BASE_ARGS_FORMAT = "iiiKKOOOOO"
 
+
 def make_launcher(constants, signature, warp_size, tensordesc_meta):
+
     def _expand_signature(signature):
         output = []
         # Expand tensor descriptor arguments into base pointer, shape, and
@@ -446,6 +450,7 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
 """
     return src
 
+
 def wrap_handle_tensordesc(launcher, signature, tensordesc_meta):
     has_tensor_desc_arg = any(isinstance(sig, str) and sig.startswith("tensordesc") for sig in signature.values())
     if not has_tensor_desc_arg:
@@ -472,6 +477,7 @@ def wrap_handle_tensordesc(launcher, signature, tensordesc_meta):
 
     return inner
 
+
 class SunriseLauncher(object):
 
     def __init__(self, src, metadata):
@@ -494,6 +500,7 @@ class SunriseLauncher(object):
         self.profile_scratch_align = metadata.profile_scratch_align
 
     def __call__(self, gridX, gridY, gridZ, stream, function, *args):
+
         def allocate_scratch(size, align, allocator):
             if size > 0:
                 grid_size = gridX * gridY * gridZ
@@ -504,7 +511,7 @@ class SunriseLauncher(object):
 
         profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
                                            _allocation._profile_allocator)
-        self.launch(gridX, gridY, gridZ, stream, function, profile_scratch,*args)
+        self.launch(gridX, gridY, gridZ, stream, function, profile_scratch, *args)
 
 
 class SunriseDriver(GPUDriver):
@@ -519,7 +526,6 @@ class SunriseDriver(GPUDriver):
         self.get_current_stream = lambda dev_idx: torch.ptpu.current_stream(dev_idx).ptpu_stream
         self.get_current_device = torch.ptpu.current_device
         self.set_current_device = torch.ptpu.set_device
-
 
     def get_current_target(self):
         arch = knobs.runtime.override_arch

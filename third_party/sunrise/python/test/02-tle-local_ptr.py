@@ -58,8 +58,8 @@ def shared_roundtrip_kernel(
     src_rows = src_ptr + xstride * xoffs[:, None]
     dst_rows = dst_ptr + xstride * xoffs[:, None]
 
-    smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                         nv_mma_shared_layout=False)
 
     row_ids = tl.arange(0, XBLOCK)[:, None]
     col_ids = tl.arange(0, YBLOCK)[None, :]
@@ -71,8 +71,8 @@ def shared_roundtrip_kernel(
         yoffs = tl.arange(0, YBLOCK) + yoff
         gval = tl.load(src_rows + yoffs[None, :])
 
-        tl.store(smem_ptrs, gval)        # vectorized shared store (guarded)
-        sval = tl.load(smem_ptrs)        # vectorized shared load (guarded)
+        tl.store(smem_ptrs, gval)  # vectorized shared store (guarded)
+        sval = tl.load(smem_ptrs)  # vectorized shared load (guarded)
 
         tl.store(dst_rows + yoffs[None, :], sval * 2.0)
 

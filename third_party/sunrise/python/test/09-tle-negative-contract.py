@@ -81,8 +81,7 @@ def test_extract_tile_not_divisible_raises():
 #     check that fires before any NVWS lowering) ---
 @triton.jit
 def _pipe_bad_capacity(out_ptr):
-    buf = tle.gpu.alloc([1, 16, 16], dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc([1, 16, 16], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     # capacity must be > 0 -> ValueError
     _ = tle.pipe(capacity=0, data=buf)
     tl.store(out_ptr + tl.arange(0, 16), tl.zeros([16], tl.float32))
@@ -97,8 +96,7 @@ def test_pipe_bad_capacity_raises():
 # --- tle.pipe: scope must be 'cta' in the MVP ---
 @triton.jit
 def _pipe_bad_scope(out_ptr):
-    buf = tle.gpu.alloc([2, 16, 16], dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc([2, 16, 16], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     _ = tle.pipe(capacity=2, scope="gpu", data=buf)  # only 'cta' supported
     tl.store(out_ptr + tl.arange(0, 16), tl.zeros([16], tl.float32))
 

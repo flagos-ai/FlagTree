@@ -27,10 +27,10 @@ using namespace mlir::triton;
 using namespace mlir::triton::gpu;
 
 // [Sunrise Optim]  即使前端没手工写 num_warps=1/2,
-// 也会把这类 small rank-1 reduce (size <= 128) 自动从坏的 4/8-warp 配置拉回到 2-warp。
-static bool shouldClampSunriseNumWarpsForSmallReduce(ModuleOp mod,
-                                                     StringRef target,
-                                                     mlir::Pass::Option<int32_t> &numWarps) {
+// 也会把这类 small rank-1 reduce (size <= 128) 自动从坏的 4/8-warp 配置拉回到
+// 2-warp。
+static bool shouldClampSunriseNumWarpsForSmallReduce(
+    ModuleOp mod, StringRef target, mlir::Pass::Option<int32_t> &numWarps) {
   int32_t clampedNumWarps = numWarps.getValue();
   if (!target.starts_with("tang:") || clampedNumWarps <= 2)
     return false;
@@ -46,7 +46,8 @@ static bool shouldClampSunriseNumWarpsForSmallReduce(ModuleOp mod,
     if (!reduce)
       return WalkResult::advance();
 
-    auto operandTy = dyn_cast<RankedTensorType>(reduce.getOperands()[0].getType());
+    auto operandTy =
+        dyn_cast<RankedTensorType>(reduce.getOperands()[0].getType());
     if (!operandTy || operandTy.getRank() != 1 || reduce.getAxis() != 0)
       return WalkResult::advance();
 
@@ -1008,7 +1009,8 @@ public:
 
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
-    shouldClampSunriseNumWarpsForSmallReduce(mod, this->target.getValue(), numWarps);
+    shouldClampSunriseNumWarpsForSmallReduce(mod, this->target.getValue(),
+                                             numWarps);
     // type converter
     TritonGPUTypeConverter typeConverter(context, numWarps, threadsPerWarp,
                                          numCTAs, enableSourceRemat);

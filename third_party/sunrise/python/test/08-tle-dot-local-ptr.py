@@ -28,8 +28,7 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 @triton.jit
-def gemm_local_ptr_kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr,
-                          K: tl.constexpr):
+def gemm_local_ptr_kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
     offs_m = tl.arange(0, M)
     offs_n = tl.arange(0, N)
     offs_k = tl.arange(0, K)
@@ -40,8 +39,7 @@ def gemm_local_ptr_kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr,
 
     # Stage A through a shared-memory buffer via local_ptr (the TLE path), then
     # read it back and feed tl.dot. This forces local store -> barrier -> load.
-    a_smem = tle.gpu.alloc([M, K], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
-                           nv_mma_shared_layout=False)
+    a_smem = tle.gpu.alloc([M, K], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     row = tl.broadcast_to(tl.arange(0, M)[:, None], (M, K))
     col = tl.broadcast_to(tl.arange(0, K)[None, :], (M, K))
     a_ptrs = tle.gpu.local_ptr(a_smem, (row, col))
@@ -66,8 +64,7 @@ def test_gemm_local_ptr(M, N, K):
 
 
 @triton.jit
-def gemm_plain_kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr,
-                      K: tl.constexpr):
+def gemm_plain_kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
     offs_m = tl.arange(0, M)
     offs_n = tl.arange(0, N)
     offs_k = tl.arange(0, K)

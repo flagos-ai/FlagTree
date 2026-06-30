@@ -27,8 +27,7 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 @triton.jit
-def cumsum_kernel(x_ptr, exclusive_ptr, total_ptr, n, BLOCK: tl.constexpr,
-                  REVERSE: tl.constexpr):
+def cumsum_kernel(x_ptr, exclusive_ptr, total_ptr, n, BLOCK: tl.constexpr, REVERSE: tl.constexpr):
     offs = tl.arange(0, BLOCK)
     mask = offs < n
     x = tl.load(x_ptr + offs, mask=mask, other=0)

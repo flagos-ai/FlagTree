@@ -169,7 +169,8 @@ LogicalResult Prefetcher::initialize() {
           dyn_cast<AMDMfmaEncodingAttr>(getEncoding(dotOp.getResult()));
       auto dstTmmaEnc =
           dyn_cast<SunriseMmaEncodingAttr>(getEncoding(dotOp.getResult()));
-      if (!dstTmmaEnc && !dstMfmaEnc && (!dstMmaEnc || dstMmaEnc.getVersionMajor() != 2))
+      if (!dstTmmaEnc && !dstMfmaEnc &&
+          (!dstMmaEnc || dstMmaEnc.getVersionMajor() != 2))
         // Don't rewrite if any other type is found.
         return failure();
       dotsInFor.push_back(dotOp);

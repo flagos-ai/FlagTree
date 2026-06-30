@@ -243,6 +243,7 @@ class FlagTreeCache:
     def get(self, file_name) -> Path:
         return self.cache_files[file_name]
 
+
 cache = FlagTreeCache()
 
 # -----flagtree-tle-raw-----flagtree-mlir---
@@ -396,7 +397,7 @@ def handle_plugin_backend(editable):
                 os.makedirs(dst_build_plugin_dir)
             dst_build_plugin_path = dst_build_plugin_dir / flagtree_plugin_so
             shutil.copy(src_build_plugin_path, dst_build_plugin_path)
-        if flagtree_backend in ("mthreads",):
+        if flagtree_backend in ("mthreads", ):
             dst_install_plugin_dir = Path(
                 __file__).resolve().parent.parent.parent / "third_party" / flagtree_backend / "python" / "triton" / "_C"
         else:
@@ -595,12 +596,10 @@ cache.store(
     post_hook=set_llvm_env,
 )
 
-
-
 cache.store(
     file="sunrise_llvm22_dev_release",
     condition=("sunrise" == flagtree_backend),
-    url= "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-34b694004c-triton-v3.6.x.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-34b694004c-triton-v3.6.x.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=lambda path: [f(path) for f in (set_llvm_env, utils.activate("sunrise").sunrise_cp_bc_files)],
 )

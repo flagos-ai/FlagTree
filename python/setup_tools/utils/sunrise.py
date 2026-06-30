@@ -2,6 +2,7 @@ import os
 import shutil
 from pathlib import Path
 
+
 # sunrise
 def sunrise_cp_bc_files(path):
     # mkdir -p third_party/sunrise/backend/lib

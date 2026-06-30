@@ -53,8 +53,8 @@ def copy_roundtrip_kernel(
     a_rows = a_ptr + xstride * xoffs[:, None]
     c_rows = c_ptr + xstride * xoffs[:, None]
 
-    smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                         nv_mma_shared_layout=False)
 
     row_ids = tl.arange(0, XBLOCK)[:, None]
     col_ids = tl.arange(0, YBLOCK)[None, :]
@@ -113,8 +113,8 @@ def copy_gm_to_local_kernel(
     a_rows = a_ptr + xstride * xoffs[:, None]
     c_rows = c_ptr + xstride * xoffs[:, None]
 
-    smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                         nv_mma_shared_layout=False)
     row_ids = tl.broadcast_to(tl.arange(0, XBLOCK)[:, None], (XBLOCK, YBLOCK))
     col_ids = tl.broadcast_to(tl.arange(0, YBLOCK)[None, :], (XBLOCK, YBLOCK))
     smem_ptrs = tle.gpu.local_ptr(smem, (row_ids, col_ids))

@@ -1885,12 +1885,13 @@ void init_triton_ir(py::module &&m) {
 
       ;
 
-  static unsigned g_passGroupNumber=1;
+  static unsigned g_passGroupNumber = 1;
   py::class_<PassManager>(m, "pass_manager", py::module_local())
       .def(py::init<MLIRContext *>())
-      .def( "get_dump_dir_name", [](PassManager &self) -> std::string {
-        return std::to_string(g_passGroupNumber++);
-      })
+      .def("get_dump_dir_name",
+           [](PassManager &self) -> std::string {
+             return std::to_string(g_passGroupNumber++);
+           })
       .def("enable_debug",
            [](PassManager &self) -> bool {
              auto *context = self.getContext();
@@ -1919,27 +1920,25 @@ void init_triton_ir(py::module &&m) {
 
                  return false;
                };
-                if(std::string("1") == getenv("MLIR_DUMP_FILE_TREE")) {
-                  std::string dumpDirName = std::to_string(g_passGroupNumber++);
-                  auto returnTrue = [](Pass *, Operation *) { return true; };
-                  self.enableIRPrintingToFileTree(
-                      /*shouldPrintBeforePass=*/returnTrue,
-                      /*shouldPrintAfterPass=*/nullptr,
-                      /*printModuleScope=*/true,
-                      /*printAfterOnlyOnChange=*/true,
-                      /*printAfterOnlyOnFailure*/ false,
-                      /*printTreeDir*/ dumpDirName,
-                      printingFlags);
-                }
-                else {
-                  self.enableIRPrinting(
-                      /*shouldPrintBeforePass=*/printAlways,
-                      /*shouldPrintAfterPass=*/printAlways,
-                      /*printModuleScope=*/true,
-                      /*printAfterOnlyOnChange=*/ true,
-                      /*printAfterOnlyOnFailure*/ true, mlir_dumps_or_dbgs(),
-                      printingFlags);
-                }
+               if (std::string("1") == getenv("MLIR_DUMP_FILE_TREE")) {
+                 std::string dumpDirName = std::to_string(g_passGroupNumber++);
+                 auto returnTrue = [](Pass *, Operation *) { return true; };
+                 self.enableIRPrintingToFileTree(
+                     /*shouldPrintBeforePass=*/returnTrue,
+                     /*shouldPrintAfterPass=*/nullptr,
+                     /*printModuleScope=*/true,
+                     /*printAfterOnlyOnChange=*/true,
+                     /*printAfterOnlyOnFailure*/ false,
+                     /*printTreeDir*/ dumpDirName, printingFlags);
+               } else {
+                 self.enableIRPrinting(
+                     /*shouldPrintBeforePass=*/printAlways,
+                     /*shouldPrintAfterPass=*/printAlways,
+                     /*printModuleScope=*/true,
+                     /*printAfterOnlyOnChange=*/true,
+                     /*printAfterOnlyOnFailure*/ true, mlir_dumps_or_dbgs(),
+                     printingFlags);
+               }
              }
              return haveDump;
            })
