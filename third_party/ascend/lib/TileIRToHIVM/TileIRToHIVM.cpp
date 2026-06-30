@@ -46,6 +46,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/Support/LogicalResult.h"
 
 using namespace mlir;
@@ -332,7 +333,63 @@ void TileIRToHIVMPass::runOnOperation() {
                TileCubeWaitToHIVM, TileGmOffsetToHIVM>(&getContext());
 
   if (failed(applyPatternsAndFoldGreedily(module, std::move(patterns))))
-    signalPassFailure();
+    return signalPassFailure();
+
+  // Step N: After all tile ops are lowered, convert !tile.buf types remaining
+  // in tt.func signatures and tt.call ops (these arise when tile.alloc results
+  // are passed across function boundaries).
+  module.walk([](triton::FuncOp funcOp) {
+    auto funcType = funcOp.getFunctionType();
+    bool changed = false;
+
+    // Convert input types
+    SmallVector<Type> newInputs;
+    for (auto ty : funcType.getInputs()) {
+      if (auto bufTy = dyn_cast<tile::BufType>(ty)) {
+        newInputs.push_back(convertBufToMemRef(bufTy));
+        changed = true;
+      } else {
+        newInputs.push_back(ty);
+      }
+    }
+
+    // Convert result types
+    SmallVector<Type> newResults;
+    for (auto ty : funcType.getResults()) {
+      if (auto bufTy = dyn_cast<tile::BufType>(ty)) {
+        newResults.push_back(convertBufToMemRef(bufTy));
+        changed = true;
+      } else {
+        newResults.push_back(ty);
+      }
+    }
+
+    if (!changed)
+      return;
+
+    // Update function type
+    auto newFuncType = FunctionType::get(funcOp.getContext(), newInputs, newResults);
+    funcOp.setFunctionType(newFuncType);
+
+    // Update block argument types
+    if (!funcOp.empty()) {
+      Block &entry = funcOp.front();
+      for (unsigned i = 0; i < entry.getNumArguments(); ++i) {
+        if (auto bufTy = dyn_cast<tile::BufType>(entry.getArgument(i).getType())) {
+          entry.getArgument(i).setType(convertBufToMemRef(bufTy));
+        }
+      }
+    }
+  });
+
+  // Update tt.call result types to match new function signatures.
+  module.walk([](triton::CallOp callOp) {
+    for (unsigned i = 0; i < callOp->getNumResults(); ++i) {
+      if (auto bufTy = dyn_cast<tile::BufType>(callOp->getResult(i).getType())) {
+        callOp->getResult(i).setType(convertBufToMemRef(bufTy));
+      }
+    }
+  });
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>

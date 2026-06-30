@@ -35,9 +35,10 @@ def mangle_ty(ty):
     # Lazy imports to avoid circular dependencies at module import time.
     from triton import language
     from triton.extension.buffer.language import core as bl
+    from triton.experimental.tle.language.dsa.types import buffer_type as tle_buffer_type
 
     # Buffer types are Python-side dtypes; handle them first.
-    if isinstance(ty, bl.buffer_type):
+    if isinstance(ty, (bl.buffer_type, tle_buffer_type)):
         elt = mangle_ty(ty.element_ty)
         shape = "_".join(map(str, ty.shape))
         return f"B{elt}S{shape}S"

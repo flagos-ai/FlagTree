@@ -24,10 +24,9 @@ def create_dsa_method_wrapper_with_tle_builder(main_builder, delegate_builder, m
 def attach_builder_methods_with_tle_builder(main_builder, delegate_builder, method_names):
     """Attach multiple methods from a delegate builder to the main builder."""
     for method_name in method_names:
-        wrapper = create_dsa_method_wrapper_with_tle_builder(main_builder, delegate_builder, method_name)
-
         if hasattr(main_builder, method_name):
-            raise AttributeError(f"Method '{method_name}' already exists in the main builder.")
+            continue  # skip methods already attached (e.g. by buffer_builder setup)
+        wrapper = create_dsa_method_wrapper_with_tle_builder(main_builder, delegate_builder, method_name)
         setattr(main_builder, method_name, wrapper)
 
 
