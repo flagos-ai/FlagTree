@@ -256,10 +256,10 @@ def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
   let hasVerifier = 1;
 }
 
-def Tle_GetLocalPeOp : Tle_Op<"get_local_pe"> {
+def Tle_GetDeviceIdOp : Tle_Op<"get_device_id"> {
   let summary = "Get local PE id";
   let arguments = (ins
-    Tle_LocalPointerResultType:$src
+     AnyType:$input
   );
   let results = (outs I32:$result);
   let hasVerifier = 1;

@@ -6,9 +6,9 @@
 
 namespace mlir::triton::tle {
 
-void populateGetLocalPeOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                        RewritePatternSet &patterns,
-                                        PatternBenefit benefit);
+void populateGetLocalRankOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                          RewritePatternSet &patterns,
+                                          PatternBenefit benefit);
 void populateGetNumPesOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                        RewritePatternSet &patterns,
                                        PatternBenefit benefit);

@@ -25,7 +25,8 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
-#include "tle/dialect/include/Conversion/TleToLLVM/GetLocalPeOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/GetLocalRankOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
@@ -175,10 +176,8 @@ struct ConvertTritonGPUToLLVM
                                                       benefit);
       mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
           typeConverter, patterns, benefit);
-      mlir::triton::tle::populateGetLocalPeOpToLLVMPatterns(
-          typeConverter, patterns, benefit + 1);
-      mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(
-          typeConverter, patterns, benefit + 1);
+      // mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(
+      //     typeConverter, patterns, benefit + 1);
       mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
           typeConverter, targetInfo, patterns, benefit);
       mlir::triton::tle::populateExtractTileOpToLLVMPatterns(
@@ -197,7 +196,18 @@ struct ConvertTritonGPUToLLVM
         return signalPassFailure();
       }
     }
+#ifdef FLAGCX_ENABLED
+    {
+      mlir::triton::tle::populateGetDeviceIdToLLVMPatterns(typeConverter,
+                                                           patterns, benefit);
+
+      mlir::triton::tle::populateGetDeviceIdOpToFlagCxPatterns(
+          typeConverter, patterns, benefit);
+    }
 #endif
+
+#endif
+
     mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit);
     mlir::triton::NVIDIA::populateTensorMemorySubviewOpToLLVMPattern(

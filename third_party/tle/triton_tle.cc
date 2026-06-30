@@ -421,7 +421,7 @@ void init_triton_tle_ir(py::module &&m) {
       .def("get_my_pe",
            [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {
              auto &builder = self.getBuilder();
-             return self.create<tle::GetLocalPeOp>(resultTy, src);
+             return self.create<tle::GetDeviceIdOp>(resultTy, src);
            })
       .def("get_n_pes",
            [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {

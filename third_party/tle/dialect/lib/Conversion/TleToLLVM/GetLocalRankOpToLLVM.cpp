@@ -1,4 +1,4 @@
-#include "tle/dialect/include/Conversion/TleToLLVM/GetLocalPeOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/GetLocalRankOpToLLVM.h"
 #include "tle/dialect/include/Tools/FlagcxUtils.h"
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
@@ -44,18 +44,18 @@ struct GetNumPesOpConversion : public ConvertOpToLLVMPattern<tle::GetNumPesOp> {
   }
 };
 
-struct GetLocalPeOpConversion
-    : public ConvertOpToLLVMPattern<tle::GetLocalPeOp> {
-  GetLocalPeOpConversion(LLVMTypeConverter &typeConverter,
-                         PatternBenefit benefit)
+struct GetLocalRankOpConversion
+    : public ConvertOpToLLVMPattern<tle::GetLocalRankOp> {
+  GetLocalRankOpConversion(LLVMTypeConverter &typeConverter,
+                           PatternBenefit benefit)
       : ConvertOpToLLVMPattern(typeConverter, benefit) {}
 
   LogicalResult
-  matchAndRewrite(tle::GetLocalPeOp op, OpAdaptor adaptor,
+  matchAndRewrite(tle::GetLocalRankOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     auto reportFailure = [&](StringRef msg) -> LogicalResult {
-      llvm::errs() << "[GetLocalPeOpConversion] " << msg << "\n";
+      llvm::errs() << "[GetLocalRankOpConversion] " << msg << "\n";
       return failure();
     };
     auto loc = op.getLoc();
@@ -72,10 +72,10 @@ struct GetLocalPeOpConversion
 };
 
 } // namespace
-void tle::populateGetLocalPeOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                             RewritePatternSet &patterns,
-                                             PatternBenefit benefit) {
-  patterns.add<GetLocalPeOpConversion>(typeConverter, benefit);
+void tle::populateGetLocalRankOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                               RewritePatternSet &patterns,
+                                               PatternBenefit benefit) {
+  patterns.add<GetLocalRankOpConversion>(typeConverter, benefit);
 }
 
 void tle::populateGetNumPesOpToLLVMPatterns(LLVMTypeConverter &typeConverter,

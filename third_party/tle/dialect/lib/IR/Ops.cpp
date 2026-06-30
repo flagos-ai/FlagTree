@@ -535,7 +535,7 @@ LogicalResult PackOp::verify() {
   return success();
 }
 
-LogicalResult GetLocalPeOp::verify() {
+LogicalResult GetDeviceIdOp::verify() {
   auto resultTy = getResult().getType();
 
   if (!resultTy.isInteger(32))
