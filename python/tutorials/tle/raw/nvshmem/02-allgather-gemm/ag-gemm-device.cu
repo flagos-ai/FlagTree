@@ -16,8 +16,9 @@ enum {
   NVSHMEM_SIGNAL_SET = 9,
 };
 
-extern "C" __device__ void ag_mark_local_ready(uint64_t *ready, int rank,
-                                               int num_chunks) {
+extern "C" __device__ __attribute__((always_inline)) void
+ag_mark_local_ready(__attribute__((address_space(1))) uint64_t *ready, int rank,
+                    int num_chunks) {
   int chunk_id = (int)blockIdx.x;
   if (chunk_id >= num_chunks) {
     return;
@@ -30,8 +31,9 @@ extern "C" __device__ void ag_mark_local_ready(uint64_t *ready, int rank,
 }
 
 // One Triton program publishes one chunk of this rank's A slice to one peer.
-extern "C" __device__ void
-ag_publish_local_chunk(__half *workspace, uint64_t *ready,
+extern "C" __device__ __attribute__((always_inline)) void
+ag_publish_local_chunk(__attribute__((address_space(1))) __half *workspace,
+                       __attribute__((address_space(1))) uint64_t *ready,
                        int elements_per_rank, int elements_per_chunk,
                        int num_chunks, int rank, int world_size) {
   int block_id = (int)blockIdx.x;
@@ -52,7 +54,9 @@ ag_publish_local_chunk(__half *workspace, uint64_t *ready,
 }
 
 // The GEMM program waits for the source chunk whose A rows it will consume.
-extern "C" __device__ void ag_wait_ready(uint64_t *ready, int signal_index) {
+extern "C" __device__ __attribute__((always_inline)) void
+ag_wait_ready(__attribute__((address_space(1))) uint64_t *ready,
+              int signal_index) {
   if (threadIdx.x == 0) {
     nvshmem_signal_wait_until(ready + signal_index, NVSHMEM_CMP_GE, 1);
   }
