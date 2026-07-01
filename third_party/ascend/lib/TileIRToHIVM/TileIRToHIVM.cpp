@@ -28,9 +28,9 @@
 //   Step 2: tile.to_tensor → RAUW: replace all uses of result with src operand,
 //           then erase. The src is now memref (from Step 1), consumers get
 //           memref instead of tensor, bridged by UnrealizedConversionCast.
-//   Step 3: tile.copy → hivm.copy (tile.* src, on-chip DMA)
-//                    or memref.copy (!tt.ptr src, GM↔local DMA; the ptr is
-//                    bridged to memref via UnrealizedConversionCast)
+//   Step 3: tile.copy/tile.store_tensor → hivm.copy.  !tt.ptr sources are treated as GM memrefs
+//           via UnrealizedConversionCast so later passes still see a DMA op
+//           rather than a generic memref.copy.
 //   Step 4: tile.load/store → hivm.load/store
 //   Step 5: sync ops → hivm sync ops
 //===----------------------------------------------------------------------===//
@@ -40,6 +40,7 @@
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "mlir-ext/Dialect/TileIR/IR/TileIRDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -113,15 +114,27 @@ static Value getAsMemRef(Value val, PatternRewriter &rewriter) {
     targetTy = convertBufToMemRef(bufTy);
   else if (auto tensorTy = dyn_cast<tile::TensorType>(val.getType()))
     targetTy = convertTensorToMemRef(tensorTy);
-  else if (auto rankedTy = dyn_cast<RankedTensorType>(val.getType()))
-    targetTy = MemRefType::get(rankedTy.getShape(), rankedTy.getElementType());
+  else if (auto rankedTy = dyn_cast<RankedTensorType>(val.getType())) {
+    auto elemTy = rankedTy.getElementType();
+    if (auto ptrElemTy = dyn_cast<triton::PointerType>(elemTy)) {
+      auto gmSpace = hivm::AddressSpaceAttr::get(val.getType().getContext(),
+                                                 hivm::AddressSpace::GM);
+      targetTy = MemRefType::get(rankedTy.getShape(), ptrElemTy.getPointeeType(),
+                                 MemRefLayoutAttrInterface{}, gmSpace);
+    } else {
+      targetTy = MemRefType::get(rankedTy.getShape(), elemTy);
+    }
+  }
   else if (auto ptrTy = dyn_cast<triton::PointerType>(val.getType())) {
     // tt.ptr<tensor<...>> → memref<...>
     auto pointeeTy = ptrTy.getPointeeType();
+    auto gmSpace = hivm::AddressSpaceAttr::get(val.getType().getContext(), hivm::AddressSpace::GM);
     if (auto rankedTy = dyn_cast<RankedTensorType>(pointeeTy))
-      targetTy = MemRefType::get(rankedTy.getShape(), rankedTy.getElementType());
+      targetTy = MemRefType::get(rankedTy.getShape(), rankedTy.getElementType(),
+                                 MemRefLayoutAttrInterface{}, gmSpace);
     else
-      targetTy = MemRefType::get({ShapedType::kDynamic}, pointeeTy);
+      targetTy = MemRefType::get({ShapedType::kDynamic}, pointeeTy,
+                                 MemRefLayoutAttrInterface{}, gmSpace);
   } else
     return val;
   return rewriter.create<UnrealizedConversionCastOp>(
@@ -183,10 +196,10 @@ struct TileToTensorEliminate : OpRewritePattern<tile::ToTensorOp> {
 };
 
 // =============================================================================
-// Step 3: tile.copy → hivm.copy / memref.copy
+// Step 3: tile.copy → hivm.copy
 //   - tile.* source  → hivm.copy (on-chip buffer DMA)
-//   - !tt.ptr source → memref.copy (GM→local DMA; the ptr is converted to
-//     memref via UnrealizedConversionCast, and the copy bridges GM↔on-chip)
+//   - !tt.ptr source → hivm.copy (GM→local DMA; the ptr is converted to a
+//     GM memref via UnrealizedConversionCast)
 // =============================================================================
 struct TileCopyToHIVM : OpRewritePattern<tile::CopyOp> {
   using OpRewritePattern<tile::CopyOp>::OpRewritePattern;
@@ -196,14 +209,29 @@ struct TileCopyToHIVM : OpRewritePattern<tile::CopyOp> {
     Value srcMem = getAsMemRef(op.getSrc(), rewriter);
     Value dstMem = getAsMemRef(op.getDst(), rewriter);
 
-    // !tt.ptr source → memref.copy (GM↔local DMA).  The ptr is not yet a
-    // memref, so getAsMemRef bridges it with UnrealizedConversionCast.
-    if (isa<triton::PointerType>(op.getSrc().getType())) {
-      rewriter.replaceOpWithNewOp<memref::CopyOp>(op, srcMem, dstMem);
-      return success();
+    rewriter.create<hivm::CopyOp>(op.getLoc(), TypeRange{}, srcMem, dstMem);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct TileStoreTensorToHIVM : OpRewritePattern<tile::StoreTensorOp> {
+  using OpRewritePattern<tile::StoreTensorOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tile::StoreTensorOp op,
+                                PatternRewriter &rewriter) const final {
+    Value dstMem = getAsMemRef(op.getDst(), rewriter);
+    Value srcMem = op.getSrc();
+    if (!isa<MemRefType>(srcMem.getType())) {
+      auto tensorTy = dyn_cast<RankedTensorType>(srcMem.getType());
+      if (!tensorTy)
+        return failure();
+      auto memrefTy =
+          MemRefType::get(tensorTy.getShape(), tensorTy.getElementType());
+      srcMem = rewriter.create<bufferization::ToMemrefOp>(
+          op.getLoc(), memrefTy, srcMem);
     }
 
-    // Regular tile.* source → hivm.copy (on-chip DMA)
     rewriter.create<hivm::CopyOp>(op.getLoc(), TypeRange{}, srcMem, dstMem);
     rewriter.eraseOp(op);
     return success();
@@ -328,7 +356,7 @@ void TileIRToHIVMPass::runOnOperation() {
   // then tile.copy (now seeing memref operands) → hivm.copy, etc.
   RewritePatternSet patterns(&getContext());
   patterns.add<TileAllocToMemRef, TileToTensorEliminate, TileCopyToHIVM,
-               TileLoadToHIVM, TileStoreToHIVM,
+               TileStoreTensorToHIVM, TileLoadToHIVM, TileStoreToHIVM,
                TileSetFlagToHIVM, TileWaitFlagToHIVM, TilePipeBarrierToHIVM,
                TileCubeWaitToHIVM, TileGmOffsetToHIVM>(&getContext());
 

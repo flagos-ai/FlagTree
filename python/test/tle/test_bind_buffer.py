@@ -137,6 +137,15 @@ def top_level_tile_dsl(x):
 
 
 @triton.jit
+def tle_scope_region(x):
+    offsets = tl.arange(0, 32)
+    with tle.scope(core_mode="cube"):
+        buf = tle.dsa.alloc(shape=[32], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+        tle.dsa.copy(tl.load(x + offsets), buf, [32])
+        tle.dsa.to_tensor(buf, writable=False)
+
+
+@triton.jit
 def subview_constexpr_buffer(SIZE: tl.constexpr):
     buf = tle.dsa.alloc(shape=[64, 64], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     sub = tle.dsa.subview(buf, [0, 0], [SIZE, SIZE], [1, 1])
@@ -275,6 +284,13 @@ def test_top_level_tile_dsl_exports():
     assert "tile.copy" in mlir
     assert "tile.pipe_barrier" in mlir
     assert "tle.dsa_copy" not in mlir
+
+
+def test_tle_scope_frontend_marker_does_not_emit_scope_op():
+    mlir = compile_kernel(tle_scope_region, {"x": "*fp32"}, {})
+    assert_public_dsa_uses_tileir(mlir)
+    assert "tile.copy" in mlir
+    assert "scope.scope" not in mlir
 
 
 def test_subview_constexpr_sizes_stay_ranked():

@@ -10,22 +10,21 @@
 //
 // TileIRToHIVM leaves two flavours of unrealized casts in the module:
 //
-//   Pattern A: !tt.ptr<tensor<TxS,E>> -> memref<TxS,E>
-//     used to feed memref.copy %cast, %dst (GM -> on-chip DMA stand-in).
+//   Pattern A: !tt.ptr<tensor<TxS,E>> -> memref<TxS,E,#gm>
+//     used to feed hivm.copy %cast, %dst (GM -> on-chip DMA).
 //     Replaced with:
 //        %t = tt.load %ptr : !tt.ptr<tensor<TxS,E>>
 //        %m = bufferization.to_memref %t : memref<TxS,E>
-//        memref.copy %m, %dst
+//        hivm.copy %m, %dst
 //     `triton-to-linalg-incubated` knows how to lower tt.load + a derived
 //     make_tensor_ptr into a memref.subview/copy chain, after which the
 //     temporary bufferization.to_memref folds away.
 //
 //   Pattern B: memref<TxS,E, #space> -> tensor<TxS,E>
 //     used to feed tt.dot from on-chip allocations.  Replaced with:
-//        %g = memref.memory_space_cast %m : memref<TxS,E,#space> to memref<TxS,E>
-//        %t = bufferization.to_tensor %g restrict
-//     (when the source memref already has the default address space, the
-//      memory_space_cast is skipped).
+//        %t = bufferization.to_tensor %m restrict
+//     The source memory space is intentionally preserved; downstream Huawei IR
+//     lowering must not see an extra memref.memory_space_cast here.
 //
 // After running these two patterns we additionally invoke
 // reconcileUnrealizedCasts on the module to remove any remaining one-to-one
@@ -128,18 +127,9 @@ struct LowerMemrefCastToTensor
       return failure();
 
     Location loc = op.getLoc();
-    Value src = in;
-    // Drop any non-default address space attribute (linalg / bufferization
-    // require the default address space on the memref feeding to_tensor).
-    if (memrefTy.getMemorySpace()) {
-      auto generic = MemRefType::get(memrefTy.getShape(),
-                                     memrefTy.getElementType(),
-                                     memrefTy.getLayout());
-      src = rewriter.create<memref::MemorySpaceCastOp>(loc, generic, src);
-    }
-    // %t = bufferization.to_tensor %g restrict
+    // %t = bufferization.to_tensor %m restrict
     Value asTensor = rewriter.create<bufferization::ToTensorOp>(
-        loc, tensorOut, src, /*restrict=*/true, /*writable=*/false);
+        loc, tensorOut, in, /*restrict=*/true, /*writable=*/false);
     rewriter.replaceOp(op, asTensor);
     return success();
   }

@@ -17,8 +17,8 @@ def EraseLinalgCasts : Pass<"erase-linalg-casts", "mlir::ModuleOp"> {
     The TileIRToHIVM pass converts:
       * tile.alloc          -> memref.alloc(addrspace)
       * tile.to_tensor      -> unrealized_conversion_cast (memref -> tensor)
-      * tile.copy %ptr,%dst -> memref.copy with
-                               unrealized_conversion_cast (!tt.ptr<tensor<>> -> memref)
+      * tile.copy %ptr,%dst -> hivm.copy with
+                               unrealized_conversion_cast (!tt.ptr<tensor<>> -> memref<..., #gm>)
     Those unrealized casts confuse the triton-to-linalg-incubated pass, which
     leaves orphan "unresolved materialization" errors.  This pass rewrites the
     two cast patterns into legitimate MLIR ops:
@@ -28,8 +28,7 @@ def EraseLinalgCasts : Pass<"erase-linalg-casts", "mlir::ModuleOp"> {
                         %m = bufferization.to_memref %t
       Pattern B  unrealized_conversion_cast %m   : memref<TxS,E,space>
                                                   to tensor<TxS,E>
-        replaced with:  %mg = memref.memory_space_cast %m (drop space)
-                        %t  = bufferization.to_tensor %mg restrict
+        replaced with:  %t = bufferization.to_tensor %m restrict
     Any other one-to-one unrealized casts that form A->B->A chains are folded
     away by ReconcileUnrealizedCasts at the end.
   }];
