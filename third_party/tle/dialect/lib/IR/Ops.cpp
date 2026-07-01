@@ -788,15 +788,17 @@ LogicalResult RemotePointersOp::verify() {
       return failure();
 
     if (srcIsTensor != resultIsTensor)
-      return emitOpError() << "expects src/result to both be scalar pointers or "
-                              "both be pointer tensors";
+      return emitOpError()
+             << "expects src/result to both be scalar pointers or "
+                "both be pointer tensors";
     if (srcIsTensor) {
       if (srcShape != resultShape)
         return emitOpError() << "expects src/result pointer tensor shapes to "
                                 "match";
       if (srcEncoding && resultEncoding && srcEncoding != resultEncoding)
-        return emitOpError() << "expects src/result pointer tensor encodings to "
-                                "match";
+        return emitOpError()
+               << "expects src/result pointer tensor encodings to "
+                  "match";
     }
     if (srcPtrTy.getPointeeType() != resultPtrTy.getPointeeType())
       return emitOpError() << "expects src/result pointer pointee types to "

@@ -40,7 +40,8 @@ static std::optional<int> getScalarBitWidth(Type ty) {
   return std::nullopt;
 }
 
-// Map a shared-memory pointer (addrspace=3) to a cluster-shared pointer (addrspace=7).
+// Map a shared-memory pointer (addrspace=3) to a cluster-shared pointer
+// (addrspace=7).
 Value mapSharedToClusterPointer(ConversionPatternRewriter &rewriter,
                                 Location loc, Value ptr, Value ctaId) {
   auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(ptr.getType());
@@ -58,8 +59,6 @@ Value mapSharedToClusterPointer(ConversionPatternRewriter &rewriter,
       LLVM::LLVMPointerType::get(rewriter.getContext(), clusterSharedAddrSpace);
   return NVVM::MapaOp::create(rewriter, loc, clusterPtrTy, ptr, ctaId);
 }
-
-
 
 // Declare the external flagcxGetIntraPointerC function in the LLVM IR module.
 static LLVM::LLVMFuncOp getOrInsertGetPeerPointer(ModuleOp module,
@@ -79,7 +78,6 @@ static LLVM::LLVMFuncOp getOrInsertGetPeerPointer(ModuleOp module,
   OpBuilder builder(module.getBodyRegion());
   auto func =
       builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName, funcType);
-
 
   func.setLinkage(LLVM::Linkage::External);
   return func;
