@@ -535,6 +535,24 @@ LogicalResult PackOp::verify() {
   return success();
 }
 
+LogicalResult GetDeviceIdOp::verify() {
+  auto resultTy = getResult().getType();
+
+  if (!resultTy.isInteger(32))
+    return emitOpError("result type must be i32");
+
+  return success();
+}
+
+LogicalResult GetNumPesOp::verify() {
+  auto resultTy = getResult().getType();
+
+  if (!resultTy.isInteger(32))
+    return emitOpError("result type must be i32");
+
+  return success();
+}
+
 LogicalResult LocalPointersOp::verify() {
   auto memDescTy = dyn_cast<triton::gpu::MemDescType>(getSrc().getType());
   if (!memDescTy)

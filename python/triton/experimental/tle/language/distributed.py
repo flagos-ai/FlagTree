@@ -27,6 +27,24 @@ def _as_positive_int(value: Any, label: str) -> int:
     return value
 
 
+# Get the current device id
+@tl.builtin
+def _get_local_rank(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
+    builder = _semantic.builder
+    ret_ir_ty = ret_dtype.to_ir(builder)
+    result = builder.get_device_id(ret_ir_ty, dev_mem_ptr.handle)
+    return tl.tensor(result, ret_dtype)
+
+
+# The number of devices in the world
+@tl.builtin
+def n_pes(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
+    builder = _semantic.builder
+    ret_ir_ty = ret_dtype.to_ir(builder)
+    result = builder.get_n_pes(ret_ir_ty, dev_mem_ptr.handle)
+    return tl.tensor(result, ret_dtype)
+
+
 @dataclass
 class MeshConfig:
     """
@@ -557,6 +575,7 @@ def _resolve_launch_axis(mesh: device_mesh, axis: str | int) -> int:
 def shard_id(
     mesh: device_mesh,
     axis: str | int,
+    comm_ptr=None,
     _semantic=None,
 ):
     """
@@ -567,6 +586,9 @@ def shard_id(
     """
     mesh = tl._unwrap_if_constexpr(mesh)
     axis = tl._unwrap_if_constexpr(axis)
+
+    if comm_ptr is not None:
+        return _get_local_rank(comm_ptr, _semantic=_semantic, ret_dtype=tl.int32)
 
     if not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh, got {type(mesh).__name__}")

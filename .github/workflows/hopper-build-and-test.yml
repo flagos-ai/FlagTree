@@ -187,8 +187,10 @@ jobs:
           # python unit test
           python3 -m pytest -s python/test/tle/integration
           python3 -m pytest -s python/test/tle/unit \
-              --ignore=python/test/tle/unit/test_tle_distributed_d2d.py
-          bash python/test/tle/unit/test_tle_distributed_d2d.sh
+              --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
+              --ignore=python/test/tle/unit/test_tle_get_local_pe.py
+          CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_distributed_d2d.sh
+          CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_get_local_pe.sh
           # flagtree hints
           # python tutorials
           python3 python/tutorials/hints/01/01-vector-add.py --only_unit_test

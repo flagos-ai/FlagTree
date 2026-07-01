@@ -422,6 +422,16 @@ void init_triton_tle_ir(py::module &&m) {
           },
           py::arg("resultTy"), py::arg("src"), py::arg("shardId"),
           py::arg("space"), py::arg("offset") = py::none())
+      .def("get_device_id",
+           [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {
+             auto &builder = self.getBuilder();
+             return self.create<tle::GetDeviceIdOp>(resultTy, src);
+           })
+      .def("get_n_pes",
+           [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {
+             auto &builder = self.getBuilder();
+             return self.create<tle::GetNumPesOp>(resultTy, src);
+           })
       .def("get_memdesc_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
               Type &elementType, Attribute &encoding,
