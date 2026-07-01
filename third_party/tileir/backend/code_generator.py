@@ -34,6 +34,8 @@ from triton.runtime.jit import (
 )
 
 from triton.backends.tileir.conf import TileIREnvConf
+from triton.backends.tileir.extend_semantic import CudaTileSemantic
+
 
 def mangle_fn(name, arg_tys, caller_context):
     # doesn't mangle ret type, which must be a function of arg tys
@@ -46,6 +48,7 @@ def mangle_fn(name, arg_tys, caller_context):
         ret += caller_context.mangle()
     return ret
 
+
 def tileir_mangle_ty(ty):
     return ty.mangle()
 
@@ -53,9 +56,7 @@ def tileir_mangle_ty(ty):
 def tileir_mangle_fn(name, arg_tys, constants):
     # doesn't mangle ret type, which must be a function of arg tys
     mangled_arg_names = "_".join([tileir_mangle_ty(ty) for ty in arg_tys])
-    mangled_constants = "_".join(
-        [f"{i}c{repr(constants[i])}" for i in sorted(constants)]
-    )
+    mangled_constants = "_".join([f"{i}c{repr(constants[i])}" for i in sorted(constants)])
     mangled_constants = mangled_constants.replace(".", "_d_")
     mangled_constants = mangled_constants.replace("'", "_sq_")
     # [ and ] are not allowed in LLVM identifiers
@@ -101,6 +102,8 @@ class TileIRCodeGenerator(CodeGenerator):
             file_name=file_name,
             begin_line=begin_line,
         )
+        self.semantic = CudaTileSemantic(self.builder)
+
     def get_used_vars(self, stmt):
         used_vars = dict()
         for node in ast.walk(stmt):
@@ -131,7 +134,7 @@ class TileIRCodeGenerator(CodeGenerator):
         if not self.module.has_function(fn_name):
             # If the callee is not set, we use the same debug setting as the caller
             file_name, begin_line = get_jit_fn_file_line(fn)
-            prototype = ASTFunction([], arg_types, dict())
+            prototype = ASTFunction([], arg_types, dict(), dict())
             # TileIR backend does not support noinline mode currently
             if fn.noinline:
                 import warnings
@@ -198,7 +201,7 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
     for path, value in src.constants.items():
         apply_constexpr_types(arg_types, list(path)[::-1], value)
 
-    prototype = ASTFunction([], arg_types, src.attrs)
+    prototype = ASTFunction([], arg_types, src.constants, src.attrs)
     file_name, begin_line = get_jit_fn_file_line(fn)
     # query function representation
     from collections import namedtuple
@@ -207,7 +210,10 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
     signature = src.signature
 
     tileir_additonal_suffix = ""
-    proxy = namedtuple("SpecializationProxy", ["constants", "signature",])(constants, signature)
+    proxy = namedtuple("SpecializationProxy", [
+        "constants",
+        "signature",
+    ])(constants, signature)
     generator = TileIRCodeGenerator(
         context,
         prototype,

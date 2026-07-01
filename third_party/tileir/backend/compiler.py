@@ -5,7 +5,8 @@ from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton.backends.tileir.conf import TileIREnvConf
 from triton._C.libtriton import ir, passes, tileir
 
-from dataclasses import dataclass
+# flagtree: added `field` import for the lazy tileiras lookup default_factory below.
+from dataclasses import dataclass, field
 import functools
 from typing import Any, Dict, Tuple, Optional
 from types import ModuleType
@@ -69,7 +70,12 @@ class TileIROptions:
     occupancy: int = 1
     # tileir use enable_fp_fusion to control the fma fusion, see <tileir_link>
     enable_fp_fusion: bool = True
-    tileir_tileiras_path: str = TileIREnvConf.get_tileiras_path()
+    # flagtree: defer the tileiras lookup to instantiation time so that merely
+    # importing the tileir backend doesn't require the binary to be present
+    # (e.g. AMD-only builds, CUDA < 13, or systems where tileiras isn't on PATH).
+    # Upstream fork calls get_tileiras_path() at class-definition time and
+    # raises on import when tileiras is missing.
+    tileir_tileiras_path: str = field(default_factory=TileIREnvConf.get_tileiras_path)
 
     # type and precision control, compatibility with other backend
     supported_fp8_dtypes: Tuple[str] = ("fp8e5", "fp8e4b15")
@@ -113,9 +119,7 @@ class TileIROptions:
         return TileIREnvConf.enable_approx()
 
     def __post_init__(self):
-        assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, (
-            "num_warps must be a power of 2"
-        )
+        assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, ("num_warps must be a power of 2")
 
     def hash(self):
         hash_dict = dict(self.__dict__)
@@ -132,6 +136,28 @@ def get_tileir_version():
 
 
 class TileIRBackend(BaseBackend):
+
+    @classmethod
+    def route_target(cls, target, jit_fn):
+        from triton.backends.tileir.router import pick_target_for_kernel
+
+        candidate = pick_target_for_kernel(target, jit_fn)
+        return candidate if candidate != target else None
+
+    @classmethod
+    def get_language_extension(cls):
+        from triton.backends.tileir import extend_core
+
+        return extend_core
+
+    def make_ir(self, src, options, codegen_fns, module_map, context):
+        if hasattr(src, "fn"):
+            from triton.backends.tileir.code_generator import ast_to_ttir
+
+            return ast_to_ttir(src.fn, src, context=context, options=options, codegen_fns=codegen_fns,
+                               module_map=module_map)
+        return super().make_ir(src, options, codegen_fns, module_map, context)
+
     def get_module_map(self):
         from triton.language.extra.cuda import libdevice
 
@@ -154,14 +180,7 @@ class TileIRBackend(BaseBackend):
 
     def parse_options(self, opts) -> Any:
         args = {"arch": os.getenv("TRITON_OVERRIDE_ARCH", f"sm{self.target.arch}")}
-        args.update(
-            {
-                k: opts[k]
-                for k in TileIROptions.__dataclass_fields__.keys()
-                if k in opts
-                if opts[k] is not None
-            }
-        )
+        args.update({k: opts[k] for k in TileIROptions.__dataclass_fields__.keys() if k in opts if opts[k] is not None})
         capability = int(self._parse_arch(args["arch"]))
         if "supported_fp8_dtypes" not in args:
             supported_fp8_dtypes = set(TileIROptions.supported_fp8_dtypes)
@@ -173,7 +192,7 @@ class TileIRBackend(BaseBackend):
 
         if "deprecated_fp8_dot_operand_dtypes" not in args:
             if capability >= 90:
-                args["deprecated_fp8_dot_operand_dtypes"] = ("fp8e4b15",)
+                args["deprecated_fp8_dot_operand_dtypes"] = ("fp8e4b15", )
 
         if "enable_fp_fusion" not in args:
             args["enable_fp_fusion"] = os.getenv("TRITON_DEFAULT_FP_FUSION", "1") == "1"
@@ -192,9 +211,8 @@ class TileIRBackend(BaseBackend):
 
         capability = int(self._parse_arch(options.arch))
         codegen_fns = {
-            "convert_custom_types": cuda.convert_custom_float8_sm80
-            if capability >= 80
-            else cuda.convert_custom_float8_sm70,
+            "convert_custom_types":
+            cuda.convert_custom_float8_sm80 if capability >= 80 else cuda.convert_custom_float8_sm70,
             "min_dot_size": lambda lhs, rhs: (1, 1, 1),
         }
         return codegen_fns
@@ -220,54 +238,57 @@ class TileIRBackend(BaseBackend):
 
         # Use temp file for cubin output to avoid race conditions.
         with (
-            tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".log") as flog,
-            tempfile.NamedTemporaryFile(delete=False, suffix=".cubin") as fbin,
+                tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".log") as flog,
+                tempfile.NamedTemporaryFile(delete=False, suffix=".cubin") as fbin,
         ):
             tileiras_cmd.append(bytecode_file)
             tileiras_cmd.append(f"-o")
             tileiras_cmd.append(fbin.name)
 
             try:
-                subprocess.run(tileiras_cmd, check=True, close_fds=False, stderr=flog)
-            except subprocess.CalledProcessError as e:
-                with open(flog.name) as log_file:
-                    log = log_file.read()
+                try:
+                    subprocess.run(tileiras_cmd, check=True, close_fds=False, stderr=flog)
+                except subprocess.CalledProcessError as e:
+                    with open(flog.name) as log_file:
+                        log = log_file.read()
+
+                    if "uses too much shared data" in log:
+                        pattern = r"0x([0-9a-fA-F]+) bytes, 0x([0-9a-fA-F]+) max"
+                        match = re.search(pattern, log)
+                        if match:
+                            used_smem = int(match.group(1), 16)
+                            max_smem = int(match.group(2), 16)
+                            raise OutOfResources(used_smem, max_smem, "shared memory")
+                    if "allocated tmem out of resource" in log:
+                        # "allocated tmem out of resource: <used> vs <max>"
+                        pattern = (r"allocated tmem out of resource:\s*([0-9]+)\s*vs\s*([0-9]+)")
+                        match = re.search(pattern, log)
+                        if match:
+                            used_tmem = int(match.group(1))
+                            max_tmem = int(match.group(2))
+                            raise OutOfResources(used_tmem, max_tmem, "tensor memory")
+                    error = f"`tileiras` failed with error code {e.returncode}"
+                    raise RuntimeError(f"{error}\n"
+                                       f"`tileiras` stderr:\n{log}\n"
+                                       f"Repro command: {' '.join(str(item) for item in tileiras_cmd)}\n")
+                with open(fbin.name, "rb") as f:
+                    cubin = f.read()
+            finally:
+                # flagtree: clean up both temp files on every path (success or error).
+                # Previously the .log file leaked on success — long-running workloads
+                # that JIT many kernels would accumulate one .log per compile in /tmp.
                 if os.path.exists(flog.name):
                     os.remove(flog.name)
-
-                if "uses too much shared data" in log:
-                    pattern = r"0x([0-9a-fA-F]+) bytes, 0x([0-9a-fA-F]+) max"
-                    match = re.search(pattern, log)
-                    if match:
-                        used_smem = int(match.group(1), 16)
-                        max_smem = int(match.group(2), 16)
-                        raise OutOfResources(used_smem, max_smem, "shared memory")
-                if "allocated tmem out of resource" in log:
-                    # "allocated tmem out of resource: <used> vs <max>"
-                    pattern = (
-                        r"allocated tmem out of resource:\s*([0-9]+)\s*vs\s*([0-9]+)"
-                    )
-                    match = re.search(pattern, log)
-                    if match:
-                        used_tmem = int(match.group(1))
-                        max_tmem = int(match.group(2))
-                        raise OutOfResources(used_tmem, max_tmem, "tensor memory")
-                error = f"`tileiras` failed with error code {e.returncode}"
-                raise RuntimeError(
-                    f"{error}\n"
-                    f"`tileiras` stderr:\n{log}\n"
-                    f"Repro command: {' '.join(str(item) for item in tileiras_cmd)}\n"
-                )
-            with open(fbin.name, "rb") as f:
-                cubin = f.read()
-            if os.path.exists(fbin.name):
-                os.remove(fbin.name)
+                if os.path.exists(fbin.name):
+                    os.remove(fbin.name)
         return cubin
 
     @staticmethod
     def make_ttir(mod, metadata, opt: TileIROptions, capability):
         # TODO: check these transform passes
-        metadata["name"] = mod.name
+        # flagtree: the upstream-newer fork uses mod.name; flagtree's MLIR API
+        # (older) exposes the entry function name via get_entry_func_name().
+        metadata["name"] = mod.get_entry_func_name()
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
@@ -307,9 +328,11 @@ class TileIRBackend(BaseBackend):
         tileir.passes.add_strip_debuginfo(pm)
         pm.run(mod, "make_tileir")
         if not tileir.only_contain_legal_dialects(mod):
-            raise RuntimeError(
-                "Triton ttir to tileir ir failed. Some ttir ops cannot be converted to tileir."
-            )
+            if os.environ.get("FLAGTREE_TILEIR_DUMP_FAILED_IR", "0") == "1":
+                safe_name = re.sub(r"[^a-zA-Z0-9_]+", "_", metadata.get("name", "unknown"))
+                with open(f"/tmp/flagtree_tileir_failed_{safe_name}.mlir", "w") as f:
+                    f.write(str(mod))
+            raise RuntimeError("Triton ttir to tileir ir failed. Some ttir ops cannot be converted to tileir.")
 
         pattern = r"entry @([a-zA-Z0-9_]*)\("
         match = re.findall(pattern, mod.__str__())
@@ -319,20 +342,17 @@ class TileIRBackend(BaseBackend):
 
     @staticmethod
     def make_cubin(mod, metadata, opt: TileIROptions, capability):
+        # TileIR kernels use statically allocated shared memory and request no
+        # dynamic shared memory from the CUDA launcher.
+        metadata["shared"] = 0
         return TileIRBackend.call_tileiras(mod, metadata, opt, capability)
 
     def add_stages(self, stages, options, language):
         assert language == Language.TRITON, "Only TRITON language is supported for now"
         capability = int(self._parse_arch(options.arch))
-        stages["ttir"] = lambda src, metadata: self.make_ttir(
-            src, metadata, options, capability
-        )
-        stages["tileir"] = lambda src, metadata: self.make_tileir(
-            src, metadata, options, capability
-        )
-        stages["cubin"] = lambda src, metadata: self.make_cubin(
-            src, metadata, options, capability
-        )
+        stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options, capability)
+        stages["tileir"] = lambda src, metadata: self.make_tileir(src, metadata, options, capability)
+        stages["cubin"] = lambda src, metadata: self.make_cubin(src, metadata, options, capability)
 
     @functools.lru_cache()
     def hash(self):

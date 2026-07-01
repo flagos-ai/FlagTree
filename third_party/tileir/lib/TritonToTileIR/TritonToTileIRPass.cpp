@@ -225,7 +225,7 @@ public:
     newPrefix += "\n";
 
     cuda_tile::PrintTkoOp::create(rewriter, op.getLoc(), newPrefix, args,
-                                           /*token=*/Value());
+                                  /*token=*/Value());
     rewriter.eraseOp(op);
     return success();
   }
@@ -336,16 +336,13 @@ void createTargetOp(ConversionPatternRewriter &rewriter, triton::FuncOp op,
   TargetOp newOp;
   if constexpr (std::is_same_v<TargetOp, cuda_tile::EntryOp>) {
     llvm::StringRef archPrefix = "sm_";
-        auto numCTAAttr =
-            rewriter.getNamedAttr("num_cta_in_cga",
-                                  rewriter.getI32IntegerAttr(numCTAInCGA));
-        auto occupancyAttr =
-            rewriter.getNamedAttr("occupancy",
-                                  rewriter.getI32IntegerAttr(occupancy));
-        auto hintEntry = rewriter.getNamedAttr(
-            (archPrefix + llvm::Twine(computeCapability)).str(),
-            DictionaryAttr::get(ctx,
-                                {numCTAAttr, occupancyAttr}));
+    auto numCTAAttr = rewriter.getNamedAttr(
+        "num_cta_in_cga", rewriter.getI32IntegerAttr(numCTAInCGA));
+    auto occupancyAttr = rewriter.getNamedAttr(
+        "occupancy", rewriter.getI32IntegerAttr(occupancy));
+    auto hintEntry = rewriter.getNamedAttr(
+        (archPrefix + llvm::Twine(computeCapability)).str(),
+        DictionaryAttr::get(ctx, {numCTAAttr, occupancyAttr}));
     cuda_tile::OptimizationHintsAttr optHint =
         cuda_tile::OptimizationHintsAttr::get(
             ctx, DictionaryAttr::get(ctx, {hintEntry}));
@@ -398,9 +395,19 @@ public:
     // type converter will convert it to TileType<int> in the
     // convertSignatureArgs API.
     SmallVector<Type> modifiedInputs = llvm::to_vector(type.getInputs());
-    for (auto &inType : modifiedInputs) {
-      if (isa<triton::TensorDescType>(inType))
-        inType = rewriter.getI32Type();
+    for (size_t i = 0; i < modifiedInputs.size(); ++i) {
+      if (auto tensorDescType =
+              dyn_cast<triton::TensorDescType>(modifiedInputs[i])) {
+        auto pointeeType = tensorDescType.getBlockType().getElementType();
+        if (auto intTy = dyn_cast<mlir::IntegerType>(pointeeType)) {
+          pointeeType =
+              mlir::IntegerType::get(rewriter.getContext(), intTy.getWidth(),
+                                     mlir::IntegerType::Signless);
+        }
+        modifiedInputs[i] = rewriter.getI32Type();
+        if (i + 1 < modifiedInputs.size())
+          modifiedInputs[i + 1] = triton::PointerType::get(pointeeType, 1);
+      }
     }
 
     SmallVector<Type, 1> newResults;
@@ -524,8 +531,8 @@ public:
       for (size_t i = 0; i < tileSizes.size(); i++)
         viewShapeVec.push_back(tileSizes[i]);
     } else {
-      return rewriter.notifyMatchFailure(
-          op.getLoc(), "expect a partition view type");
+      return rewriter.notifyMatchFailure(op.getLoc(),
+                                         "expect a partition view type");
     }
 
     auto tileShape = op.getResult().getType().getShape();
@@ -595,8 +602,8 @@ public:
             cuda_tile::Signedness::Signed));
       }
     } else {
-      return rewriter.notifyMatchFailure(
-          op.getLoc(), "expect a partition view type");
+      return rewriter.notifyMatchFailure(op.getLoc(),
+                                         "expect a partition view type");
     }
 
     auto optHint = mlir::triton::utils::convertNumStagesToOptHint(
@@ -612,7 +619,6 @@ public:
     return success();
   }
 };
-
 
 /// Convert an expand dims to a reshape by adding a new dimension (1) at a given
 /// position.
@@ -917,8 +923,7 @@ public:
       rewriter.replaceOpWithNewOp<cuda_tile::ExpOp>(op, adaptor.getSrcs()[0]);
       return success();
     } else if (symbol == "__nv_fast_expf") {
-          rewriter.replaceOpWithNewOp<cuda_tile::ExpOp>(
-              op, adaptor.getSrcs()[0]);
+      rewriter.replaceOpWithNewOp<cuda_tile::ExpOp>(op, adaptor.getSrcs()[0]);
       return success();
     } else if (symbol == "__nv_exp2" || symbol == "__nv_exp2f") {
       rewriter.replaceOpWithNewOp<cuda_tile::Exp2Op>(op, adaptor.getSrcs()[0]);
@@ -942,12 +947,10 @@ public:
       rewriter.replaceOpWithNewOp<cuda_tile::FloorOp>(op, adaptor.getSrcs()[0]);
       return success();
     } else if (symbol == "__nv_tanhf" || symbol == "__nv_tanh") {
-      rewriter.replaceOpWithNewOp<cuda_tile::TanHOp>(
-          op, adaptor.getSrcs()[0]);
+      rewriter.replaceOpWithNewOp<cuda_tile::TanHOp>(op, adaptor.getSrcs()[0]);
       return success();
     } else if (symbol == "__nv_fast_tanhf") {
-      rewriter.replaceOpWithNewOp<cuda_tile::TanHOp>(
-          op, adaptor.getSrcs()[0]);
+      rewriter.replaceOpWithNewOp<cuda_tile::TanHOp>(op, adaptor.getSrcs()[0]);
       return success();
     }
     return rewriter.notifyMatchFailure(
@@ -955,6 +958,81 @@ public:
                         "cuda_tile lowering: ") +
                 symbol +
                 ". Please add a rewrite in ConvertExternElementwiseOp.");
+  }
+};
+
+class ConvertErfOp : public OpConversionPattern<math::ErfOp> {
+public:
+  using OpConversionPattern<math::ErfOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(math::ErfOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value x = adaptor.getOperand();
+    auto xType = cast<cuda_tile::TileType>(x.getType());
+    Type floatElemType = xType.getElementType();
+    if (!floatElemType.isF32() && !floatElemType.isF64()) {
+      return rewriter.notifyMatchFailure(
+          op, "math.erf expects f32/f64 input for TileIR lowering");
+    }
+
+    auto rmNearestEven = cuda_tile::RoundingModeAttr::get(
+        rewriter.getContext(), cuda_tile::RoundingMode::NEAREST_EVEN);
+    auto splatFloat = [&](double value) -> Value {
+      auto elementType = cast<FloatType>(xType.getElementType());
+      auto scalarAttr = rewriter.getFloatAttr(elementType, value);
+      auto denseAttr = cast<DenseIntOrFPElementsAttr>(
+          DenseElementsAttr::get(xType, scalarAttr));
+      return cuda_tile::ConstantOp::create(rewriter, loc, xType, denseAttr);
+    };
+    auto addf = [&](Value a, Value b) -> Value {
+      return cuda_tile::AddFOp::create(rewriter, loc, a, b, rmNearestEven,
+                                       /*flush_to_zero=*/nullptr);
+    };
+    auto subf = [&](Value a, Value b) -> Value {
+      return cuda_tile::SubFOp::create(rewriter, loc, a, b, rmNearestEven,
+                                       /*flush_to_zero=*/nullptr);
+    };
+    auto mulf = [&](Value a, Value b) -> Value {
+      return cuda_tile::MulFOp::create(rewriter, loc, a, b, rmNearestEven,
+                                       /*flush_to_zero=*/nullptr);
+    };
+    auto divf = [&](Value a, Value b) -> Value {
+      return cuda_tile::DivFOp::create(rewriter, loc, a, b, rmNearestEven,
+                                       /*flush_to_zero=*/nullptr);
+    };
+
+    Value zero = splatFloat(0.0);
+    Value one = splatFloat(1.0);
+    Value half = splatFloat(0.5);
+
+    Value ax = cuda_tile::AbsFOp::create(rewriter, loc, x);
+    Value t = divf(one, addf(one, mulf(half, ax)));
+
+    Value p = splatFloat(0.17087277);
+    p = addf(splatFloat(-0.82215223), mulf(t, p));
+    p = addf(splatFloat(1.48851587), mulf(t, p));
+    p = addf(splatFloat(-1.13520398), mulf(t, p));
+    p = addf(splatFloat(0.27886807), mulf(t, p));
+    p = addf(splatFloat(-0.18628806), mulf(t, p));
+    p = addf(splatFloat(0.09678418), mulf(t, p));
+    p = addf(splatFloat(0.37409196), mulf(t, p));
+    p = addf(splatFloat(1.00002368), mulf(t, p));
+
+    Value negAx2 = subf(zero, mulf(ax, ax));
+    Value expArg = addf(addf(negAx2, splatFloat(-1.26551223)), mulf(t, p));
+    Value tau = mulf(t, cuda_tile::ExpOp::create(rewriter, loc, expArg));
+    Value erfAbs = subf(one, tau);
+
+    Value isNeg = cuda_tile::CmpFOp::create(
+        rewriter, loc, cuda_tile::ComparisonPredicate::LESS_THAN,
+        cuda_tile::ComparisonOrdering::ORDERED, x, zero);
+    Value negErfAbs = subf(zero, erfAbs);
+    Value res =
+        cuda_tile::SelectOp::create(rewriter, loc, isNeg, negErfAbs, erfAbs);
+    rewriter.replaceOp(op, res);
+    return success();
   }
 };
 
@@ -1840,15 +1918,15 @@ public:
       arrayOfi32Shape.push_back(i64Shape);
     }
 
-        auto tilePartViewTy = cuda_tile::PartitionViewType::get(
-            ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape), tensorViewTy,
-            dimMap,
-            cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
-    
-        auto partViewOp = cuda_tile::MakePartitionViewOp::create(
-            rewriter, loc, tilePartViewTy, makeTensorViewOp);
-    
-        rewriter.replaceOp(op, partViewOp);
+    auto tilePartViewTy = cuda_tile::PartitionViewType::get(
+        ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape), tensorViewTy,
+        dimMap,
+        cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
+
+    auto partViewOp = cuda_tile::MakePartitionViewOp::create(
+        rewriter, loc, tilePartViewTy, makeTensorViewOp);
+
+    rewriter.replaceOp(op, partViewOp);
     return success();
   }
 };
@@ -2045,7 +2123,6 @@ class ConvertDotOp : public OpConversionPattern<triton::DotOp> {
     return success();
   }
 };
-
 
 class ConvertTransOp : public OpConversionPattern<triton::TransOp> {
 public:
@@ -2407,6 +2484,7 @@ void populateTTirToCudaTileConversionPatternsAndLegality(
     ConvertCmpIOp,
     ConvertConstantOp,
     ConvertDotOp,
+    ConvertErfOp,
     ConvertExpandDimsOp,
     ConvertExternElementwiseOp,
     ConvertForOp,
@@ -2639,7 +2717,7 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
             shape.push_back(funcOp.getArgument(i + j + 1));
           i = i + rank;
           SmallVector<Value> stride;
-          for (size_t j = 0; j < rank; j++)
+          for (size_t j = 0; j + 1 < rank; j++)
             stride.push_back(funcOp.getArgument(i + j + 1));
           i = i + rank - 1;
 
@@ -2657,7 +2735,7 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
           // which is the TMA hardware limit for stride. This ensures that if
           // users explicitly want to use TMA for this operation, the stride
           // parameters will satisfy TMA descriptor encoding requirements.
-          for (int i = 0; i < stride.size() - 1; i++)
+          for (int i = 0; i < stride.size(); i++)
             wrappedDynStrides.push_back(
                 wrapIntoScalarTile(rewriter, stride[i],
                                    /*attachAlignment=*/align_byte, kMaxStride));
@@ -2701,18 +2779,18 @@ static void convertTmaDescriptorOps(Operation *op, TypeConverter &converter) {
           SmallVector<int32_t> dimMap(rank);
           std::iota(dimMap.begin(), dimMap.end(), 0);
 
-              auto tilePartViewTy = cuda_tile::PartitionViewType::get(
-                  ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape),
-                  tensorViewTy, dimMap,
-                  cuda_tile::PaddingValueAttr::get(ctx,
-                                                   cuda_tile::PaddingValue::zero));
-          
-              auto partViewOp = cuda_tile::MakePartitionViewOp::create(
-                  rewriter, loc, tilePartViewTy, makeTensorViewOp);
-          
-              auto castBackToTensorDescriptorOp =
-                  UnrealizedConversionCastOp::create(rewriter, loc, tensorDescType,
-                                                     partViewOp.getResult());
+          auto tilePartViewTy = cuda_tile::PartitionViewType::get(
+              ctx, rewriter.getDenseI32ArrayAttr(arrayOfi32Shape), tensorViewTy,
+              dimMap,
+              cuda_tile::PaddingValueAttr::get(ctx,
+                                               cuda_tile::PaddingValue::zero));
+
+          auto partViewOp = cuda_tile::MakePartitionViewOp::create(
+              rewriter, loc, tilePartViewTy, makeTensorViewOp);
+
+          auto castBackToTensorDescriptorOp =
+              UnrealizedConversionCastOp::create(rewriter, loc, tensorDescType,
+                                                 partViewOp.getResult());
 
           rewriter.replaceAllUsesWith(
               tensorDesc, castBackToTensorDescriptorOp.getResult(0));

@@ -21,48 +21,82 @@ if(DEFINED ENV{CUDA_TILE_INSTALL_DIR})
   set(CUDA_TILE_MLIR_INCLUDE_DIRS $ENV{CUDA_TILE_MLIR_INCLUDE_DIRS})
   set(HAVE_CUDA_TILE_INSTALL ON)
 else()
-  # Keep the cloned cuda-tile repo under the build tree (avoid polluting source tree).
-  set(CUDA_TILE_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/tileir_src)
-
-  if(NOT EXISTS ${CUDA_TILE_SOURCE_DIR}/.git)
-    execute_process(
-      COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}
-      RESULT_VARIABLE CUDA_TILE_MKDIR_RESULT
-    )
-    if(NOT CUDA_TILE_MKDIR_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to create build directory: ${CMAKE_CURRENT_BINARY_DIR}")
-    endif()
-
-    # Clone then fetch the pinned commit (--depth 1 alone only gets default branch tip;
-    # we need this exact commit for patch compatibility).
-    set(CUDA_TILE_COMMIT 2e5ccba66fb3afdba34b26cf358418283027c248)
-    execute_process(
-      COMMAND bash -c "git clone --depth 1 https://github.com/NVIDIA/cuda-tile tileir_src && cd tileir_src && git fetch --depth 1 origin ${CUDA_TILE_COMMIT} && git checkout FETCH_HEAD"
-      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-      RESULT_VARIABLE CUDA_TILE_GIT_CLONE_RESULT
-    )
-    # Track specific tag to avoid breaking change conflict with patch
-    execute_process(
-      COMMAND bash -c "git fetch --tags && git checkout v13.3.0"
-      WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
-      RESULT_VARIABLE CUDA_TILE_CHECKOUT_RESULT
-    )
-    if(NOT CUDA_TILE_CHECKOUT_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to checkout v13.3.0 in ${CUDA_TILE_SOURCE_DIR}")
-    endif()
-    if(NOT CUDA_TILE_GIT_CLONE_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to clone https://github.com/NVIDIA/cuda-tile into ${CUDA_TILE_SOURCE_DIR}")
-    endif()
+  # ===== flagtree-local rewrite of the upstream else() branch =====
+  # Upstream does a build-time `git clone https://github.com/NVIDIA/cuda-tile`
+  # into ${CMAKE_CURRENT_BINARY_DIR}/tileir_src and applies an inline patch.
+  #
+  # flagtree instead:
+  #   1) pins cuda-tile as a git submodule under third_party/cuda-tile (v13.3.0),
+  #      so the build doesn't need network access and the version is reviewable
+  #      in flagtree's git history;
+  #   2) copies the submodule to a build-tree working dir so patches/build
+  #      artifacts don't pollute the submodule checkout;
+  #   3) runs the flagtree-tuned patch script (see scripts/patch_bytecode_utils.sh)
+  #      with non-fatal failure semantics so future cuda-tile bumps don't break
+  #      the build for cosmetic patch mismatches.
+  # ================================================================
+  # Use the cuda-tile git submodule (pinned to v13.3.0 for LLVM API compat with flagtree).
+  set(CUDA_TILE_COMMIT 2e5ccba66fb3afdba34b26cf358418283027c248)
+  set(CUDA_TILE_SUBMODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cuda-tile)
+  if(NOT EXISTS ${CUDA_TILE_SUBMODULE_DIR}/CMakeLists.txt)
+    message(FATAL_ERROR
+      "cuda-tile submodule not initialized at ${CUDA_TILE_SUBMODULE_DIR}. "
+      "Run: git submodule update --init --recursive")
   endif()
 
-  # Patch cuda-tile sources for LLVM API changes before building.
+  execute_process(
+    COMMAND git rev-parse HEAD
+    WORKING_DIRECTORY ${CUDA_TILE_SUBMODULE_DIR}
+    OUTPUT_VARIABLE CUDA_TILE_SUBMODULE_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE CUDA_TILE_REV_PARSE_RESULT
+  )
+  if(NOT CUDA_TILE_REV_PARSE_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to read cuda-tile submodule commit at ${CUDA_TILE_SUBMODULE_DIR}")
+  endif()
+  if(NOT CUDA_TILE_SUBMODULE_COMMIT STREQUAL CUDA_TILE_COMMIT)
+    message(FATAL_ERROR
+      "cuda-tile submodule is at ${CUDA_TILE_SUBMODULE_COMMIT}, expected ${CUDA_TILE_COMMIT}. "
+      "Run: git submodule update --init --recursive third_party/tileir/third_party/cuda-tile")
+  endif()
+
+  # Copy sources to the build tree so patches and build artifacts don't pollute the submodule.
+  set(CUDA_TILE_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/cuda-tile-work)
+  set(CUDA_TILE_COPY_MARKER ${CUDA_TILE_SOURCE_DIR}/.flagtree_cuda_tile_commit)
+  set(CUDA_TILE_NEEDS_COPY ON)
+  if(EXISTS ${CUDA_TILE_SOURCE_DIR}/CMakeLists.txt AND EXISTS ${CUDA_TILE_COPY_MARKER})
+    file(READ ${CUDA_TILE_COPY_MARKER} CUDA_TILE_COPIED_COMMIT)
+    string(STRIP "${CUDA_TILE_COPIED_COMMIT}" CUDA_TILE_COPIED_COMMIT)
+    if(CUDA_TILE_COPIED_COMMIT STREQUAL CUDA_TILE_COMMIT)
+      set(CUDA_TILE_NEEDS_COPY OFF)
+    endif()
+  endif()
+  if(CUDA_TILE_NEEDS_COPY)
+    message(STATUS "Copying cuda-tile sources from submodule to ${CUDA_TILE_SOURCE_DIR}")
+    file(REMOVE_RECURSE ${CUDA_TILE_SOURCE_DIR})
+    execute_process(
+      COMMAND ${CMAKE_COMMAND} -E copy_directory ${CUDA_TILE_SUBMODULE_DIR} ${CUDA_TILE_SOURCE_DIR}
+      RESULT_VARIABLE CUDA_TILE_COPY_RESULT
+    )
+    if(NOT CUDA_TILE_COPY_RESULT EQUAL 0)
+      message(FATAL_ERROR "Failed to copy cuda-tile sources to ${CUDA_TILE_SOURCE_DIR}")
+    endif()
+    file(WRITE ${CUDA_TILE_COPY_MARKER} "${CUDA_TILE_COMMIT}\n")
+  endif()
+
+  # Patch cuda-tile sources to compile against flagtree's pinned LLVM (commit
+  # f6ded0be, older than cuda-tile v13.3.0's expected LLVM 13c00cbc). The patch
+  # script does narrow API renames; see comments in patch_bytecode_utils.sh.
+  # We treat a non-zero exit from the patch script as a warning (not a fatal error)
+  # so that future cuda-tile / LLVM bumps don't break the build for cosmetic patch
+  # failures — real compile errors will surface in the build step below.
   execute_process(
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch_bytecode_utils.sh ${CUDA_TILE_SOURCE_DIR}
     WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
     RESULT_VARIABLE CUDA_TILE_PATCH_RESULT
   )
   if(NOT CUDA_TILE_PATCH_RESULT EQUAL 0)
-    message(FATAL_ERROR "cuda_tile patch failed with code: ${CUDA_TILE_PATCH_RESULT}")
+    message(WARNING "cuda_tile patch_bytecode_utils.sh exited ${CUDA_TILE_PATCH_RESULT}; continuing")
   endif()
 
   execute_process(

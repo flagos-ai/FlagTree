@@ -8,7 +8,10 @@ import shutil
 from pathlib import Path
 import tempfile
 import threading
-import torch
+# flagtree: do NOT import torch at module level. Backend discovery imports this module
+# even when tileir is inactive (e.g. AMD-only systems, CUDA-less environments). Top-level
+# `import torch` would cause `import triton` to fail with ModuleNotFoundError on those
+# systems. All functions that need torch already do their own lazy `import torch`.
 from triton.backends.nvidia.driver import (
     library_dirs,
     include_dirs,
@@ -24,13 +27,13 @@ from triton.backends.driver import GPUDriver
 from triton.backends.tileir.conf import TileIREnvConf
 from triton.tools.tensor_descriptor import TensorDescriptor
 
-
 # ------------------------
 # Utils
 # ------------------------
 
 
 class TileIRUtils(object):
+
     def __new__(cls):
         if not hasattr(cls, "instance"):
             cls.instance = super(TileIRUtils, cls).__new__(cls)
@@ -57,7 +60,11 @@ class TileIRUtils(object):
         self.init_tileir_function(tile_mod)
 
     def init_tileir_function(self, mod):
-        self.load_binary = mod.load_tileir_binary
+        self._load_binary = mod.load_tileir_binary
+
+    def load_binary(self, name, kernel, shared, device):
+        module, function, n_regs, n_spills, _static_smem, n_max_threads = self._load_binary(name, kernel, device)
+        return module, function, n_regs, n_spills, n_max_threads
 
     def init_nvidia_function(self, mod):
         self.get_device_properties = mod.get_device_properties
@@ -68,7 +75,6 @@ class TileIRUtils(object):
 # ------------------------
 # Launcher
 # ------------------------
-
 
 dirname = os.path.dirname(__file__)
 
@@ -87,12 +93,12 @@ FLOAT_PACK_FUNCTION = {
     "fp64": "pack_fp64",
 }
 
-
 _BASE_ARGS_FORMAT = "iiiKKpOOOO"
 _BASE_ARGS_FORMAT_LEN = len(_BASE_ARGS_FORMAT)
 
 
 def make_launcher(constants, signature):
+
     def _flatten_signature(sig, output):
         # Flatten tuples
         if isinstance(sig, tuple):
@@ -139,11 +145,7 @@ def make_launcher(constants, signature):
     for sig in signature.values():
         _flatten_signature(sig, flat_signature)
     signature = {i: s for i, s in enumerate(flat_signature)}
-    args_list = (
-        ", " + ", ".join(f"&_arg{i}" for i, ty in signature.items())
-        if len(signature) > 0
-        else ""
-    )
+    args_list = (", " + ", ".join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else "")
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors, such as tensor descriptors for CUDA.
     arg_decl_list = []
@@ -366,7 +368,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
   {newline.join(float_storage_decls)}
   Py_BEGIN_ALLOW_THREADS;
-  
+
   _launch(numTilesX, numTilesY, numTilesZ, launch_pdl, (CUstream)_stream, (CUfunction)_function{", " + ", ".join(internal_args_list) if len(internal_args_list) > 0 else ""});
   Py_END_ALLOW_THREADS;
   if (PyErr_Occurred()) {{
@@ -425,15 +427,19 @@ def make_tensordesc_arg(arg):
     assert strides[-1] == 1
     # The 0 is a placeholder that replaces the tensordesc type when passing to kernel.
     # nvidia oss backend passes tensordesc directly, but tileir needs to decompose it.
-    result = [0, data_ptr, *shape, *strides]
+    result = [0, data_ptr, *shape, *strides[:-1]]
     return result
 
 
 def wrap_handle_tensordesc(launcher):
+
     def inner(*args):
-        # 9 is the metadata arguments in `args` defined in `make_launcher`
-        meta_args = args[:9]
-        raw_kernel_args = args[9:]
+        # flagtree: upstream used `args[:9]`, but TileIRLauncher.__call__ unconditionally
+        # inserts `launch_pdl` at position 5 before invoking self.launch — making metadata
+        # 10 args, not 9. Slicing at 9 mis-routed launch_exit_hook as the first kernel
+        # argument and shifted every TensorDescriptor argument by one slot.
+        meta_args = args[:10]
+        raw_kernel_args = args[10:]
         final_args = []
         for i, arg in enumerate(raw_kernel_args):
             if isinstance(arg, TensorDescriptor):
@@ -446,13 +452,12 @@ def wrap_handle_tensordesc(launcher):
 
 
 class TileIRLauncher(object):
+
     def __init__(self, src, metadata):
-        ids = {
-            "ids_of_const_exprs": src.fn.constexprs if hasattr(src, "fn") else tuple()
-        }
+        ids = {"ids_of_const_exprs": src.fn.constexprs if hasattr(src, "fn") else tuple()}
 
         constants = src.constants if hasattr(src, "constants") else dict()
-        arg_idx = lambda x: (src.fn.arg_names.index(x),) if isinstance(x, str) else x
+        arg_idx = lambda x: (src.fn.arg_names.index(x), ) if isinstance(x, str) else x
         constants = {arg_idx(idx): value for idx, value in constants.items()}
         signature = {idx: value for idx, value in src.signature.items()}
         has_tensordesc = any("tensordesc" in value for value in signature.values())
@@ -468,21 +473,24 @@ class TileIRLauncher(object):
                     dtype = value.split("<")[1].split("[")[0]
                     post_signature[key] = "i32"
                     post_signature[f"{key}_ptr"] = f"*{dtype}"
-                    # add shape and stride to signature
+                    # add shape and dynamic stride args to signature; the last
+                    # stride is statically known to be 1.
                     for idx in range(len(shape)):
                         post_signature[f"{key}_shape_{idx}"] = "i32"
-                    for idx in range(len(shape)):
+                    for idx in range(len(shape) - 1):
                         post_signature[f"{key}_stride_{idx}"] = "i64"
                 else:
                     post_signature[key] = value
             self.signature = post_signature
         else:
             self.signature = signature
+        if os.environ.get("FLAGTREE_TILEIR_DUMP_SIGNATURE", "0") == "1":
+            with open("/tmp/flagtree_tileir_signature.txt", "a") as f:
+                f.write(f"src_signature={signature}\n")
+                f.write(f"launcher_signature={self.signature}\n")
         self.constants = constants
         src = make_launcher(self.constants, self.signature)
-        mod = compile_module_from_src(
-            src, "__triton_launcher", library_dirs(), include_dirs, libraries
-        )
+        mod = compile_module_from_src(src, "__triton_launcher", library_dirs(), include_dirs, libraries)
         if has_tensordesc:
             self.launch = wrap_handle_tensordesc(mod.launch)
         else:
@@ -497,18 +505,17 @@ class TileIRLauncher(object):
         num_launch_args = 9
         num_params = len(args) - num_launch_args
         if num_params < self.ori_signature_len:
-            extra_args = [
-                self.constants[(i,)] for i in range(num_params, self.ori_signature_len)
-            ]
+            extra_args = [self.constants[(i, )] for i in range(num_params, self.ori_signature_len)]
             model_args = args + tuple(extra_args)
         else:
             model_args = args
-        model_args = model_args[:5] + (self.launch_pdl,) + model_args[5:]
+        model_args = model_args[:5] + (self.launch_pdl, ) + model_args[5:]
 
         self.launch(*model_args, **kwargs)
 
 
 class TileIRDriver(GPUDriver):
+
     def __init__(self):
         self.utils = TileIRUtils()  # TODO: make static
         self.launcher_cls = TileIRLauncher
@@ -533,16 +540,17 @@ class TileIRDriver(GPUDriver):
 
     @staticmethod
     def is_active():
-        try:
-            import torch
-
-            return (
-                torch.cuda.is_available()
-                and os.environ.get("ENABLE_TILE", "0") == "1"
-                and (torch.version.hip is None)
-            )
-        except ImportError:
-            return False
+        # TileIR is selected per kernel through the backend routing hook. The
+        # global active driver remains CudaDriver for CUDA device/stream queries;
+        # Triton's target-driver lookup instantiates TileIRDriver only for a
+        # TileIR-compiled kernel.
+        #
+        # The upstream triton-to-tile-ir fork returned True when ENABLE_TILE=1 to
+        # make the driver replace CudaDriver wholesale. In flagtree that would
+        # produce a "2 active drivers" runtime error (since CudaDriver also reports
+        # active on CUDA hosts), and is unnecessary — our per-kernel routing already
+        # handles backend selection without changing the global active driver.
+        return False
 
     def map_python_to_cpp_type(self, ty: str) -> str:
         return ty_to_cpp(ty)
@@ -565,4 +573,6 @@ class TileIRDriver(GPUDriver):
         cache.zero_()
 
 
-GlobalTileIRDriver = TileIRDriver()
+# The upstream fork eagerly constructs `GlobalTileIRDriver = TileIRDriver()` here.
+# FlagTree resolves target drivers lazily, avoiding CUDA probing and extension builds
+# during a plain `import triton` on AMD-only or CUDA-less systems.
