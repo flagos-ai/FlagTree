@@ -33,7 +33,7 @@ def lsa_read_kernel(
 
 
 def main():
-    mem_pool = tle.get_mem_pool() 
+    mem_pool = tle.get_mem_pool()
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -49,14 +49,14 @@ def main():
         # symmetric window / flagcxGetIntraPointerC requires 4KB page aligned
         # buffers. Clone to force reallocation with proper alignment.
         buf_tensor = (torch.arange(N, dtype=torch.float32, device="cuda") + rank * 1000).clone()
-    
+
     print(f"[Rank {rank}] buf_tensor info: "
           f"data_ptr={buf_tensor.data_ptr():#x}, "
           f"is_contiguous={buf_tensor.is_contiguous()}, "
           f"storage_offset={buf_tensor.storage_offset()}, "
           f"stride={buf_tensor.stride()}, "
           f"sample={buf_tensor[:4].tolist()}")
-    
+
     dev_mem_ptr = tle.create_comm_tensor(buf_tensor)
 
     print(f"[Rank {rank}] dev_mem_ptr={dev_mem_ptr:#x}")
@@ -65,7 +65,7 @@ def main():
 
     dist.barrier()
 
-    grid = (N,)
+    grid = (N, )
     lsa_read_kernel[grid](
         dev_mem_ptr,
         output,
