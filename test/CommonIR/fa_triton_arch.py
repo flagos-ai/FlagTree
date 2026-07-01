@@ -43,12 +43,12 @@ EVT_V_MTE3    = ("vector", "cube", 2, PIPE.PIPE_V, PIPE.PIPE_MTE3)     # Vector 
 # first iteration's wait passes; every subsequent set is preceded by the
 # matching wait in the same slot, keeping each id in strictly alternating
 # set→wait→set→... state.
-SEM_S_READY  = 0  # C -> V : workspace_s has data
-SEM_S_FREE   = 1  # V -> C : workspace_s slot free
-SEM_P_READY  = 2  # V -> C : workspace_p has data
-SEM_P_FREE   = 3  # C -> V : workspace_p slot free
-SEM_PV_READY = 4  # C -> V : workspace_pv has data
-SEM_PV_FREE  = 5  # V -> C : workspace_pv slot free
+SEM_S_READY : tl.constexpr = tl.constexpr(0)  # C -> V : workspace_s has data
+SEM_S_FREE  : tl.constexpr = tl.constexpr(1)  # V -> C : workspace_s slot free
+SEM_P_READY : tl.constexpr = tl.constexpr(2)  # V -> C : workspace_p has data
+SEM_P_FREE  : tl.constexpr = tl.constexpr(3)  # C -> V : workspace_p slot free
+SEM_PV_READY: tl.constexpr = tl.constexpr(4)  # C -> V : workspace_pv has data
+SEM_PV_FREE : tl.constexpr = tl.constexpr(5)  # V -> C : workspace_pv slot free
 
 
 # NOTE: The tle tile-DSA layer now has minimal tile.cube_launch / tile.cube_wait
@@ -72,15 +72,15 @@ CBN = tl.constexpr(BLOCK_N)
 CD = tl.constexpr(DIM)
 
 # ---- arch22 "3-task" schedule constants -----------------------------------
-RING = 3   # depth of the task ring  (the "3-task" of the schedule)
+RING: tl.constexpr = tl.constexpr(3)  # depth of the task ring  (the "3-task" of the schedule)
 
 # ---- cross-core semaphore IDs ----------------------------------------------
-SEM_S_READY  = 0   # C->V : workspace_s (S)   has data
-SEM_S_FREE   = 1   # V->C : workspace_s slot  free
-SEM_P_READY  = 2   # V->C : workspace_p (P)   has data
-SEM_P_FREE   = 3   # C->V : workspace_p slot  free
-SEM_PV_READY = 4   # C->V : workspace_pv (PV) has data
-SEM_PV_FREE  = 5   # V->C : workspace_pv slot  free
+SEM_S_READY : tl.constexpr = tl.constexpr(0)  # C->V : workspace_s (S)   has data
+SEM_S_FREE  : tl.constexpr = tl.constexpr(1)  # V->C : workspace_s slot  free
+SEM_P_READY : tl.constexpr = tl.constexpr(2)  # V->C : workspace_p (P)   has data
+SEM_P_FREE  : tl.constexpr = tl.constexpr(3)  # C->V : workspace_p slot  free
+SEM_PV_READY: tl.constexpr = tl.constexpr(4)  # C->V : workspace_pv (PV) has data
+SEM_PV_FREE : tl.constexpr = tl.constexpr(5)  # V->C : workspace_pv slot  free
 
 
 # =============================================================================
@@ -100,7 +100,9 @@ def _mm1_qkt(
     # strides
     sQb, sQh, sQs, sQd,
     sKb, sKh, sKs, sKd,
-    S, CB: tl.constexpr,
+    S,
+    CB: tl.constexpr,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, DIM: tl.constexpr,
 ):
     """MM1: compute S = Q * K^T for CB KV blocks and store into workspace_s.
 
@@ -152,7 +154,9 @@ def _mm2_pv(
     prev_ring_slot,
     # strides
     sKb, sKh, sKs, sKd,
-    S, CB: tl.constexpr,
+    S,
+    CB: tl.constexpr,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, DIM: tl.constexpr,
 ):
     """MM2: compute O_part = P * V for CB blocks and store into workspace_pv.
 
@@ -207,6 +211,7 @@ def _vec1_softmax(
     block_start, conbined_block_num, num_seq_blocks,
     g,
     CB: tl.constexpr,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, HALF_M: tl.constexpr,
 ):
     """Vec1: online softmax over CB score blocks -> workspace_p + rescale/expsum.
 
@@ -310,6 +315,7 @@ def _vec2_accumulate(
     acc_o, softmax_denom,
     sOb, sOh, sOs, sOd,
     S, CB: tl.constexpr, NUM_KV_BLOCKS: tl.constexpr,
+    BLOCK_M: tl.constexpr, DIM: tl.constexpr, HALF_M: tl.constexpr,
 ):
     """Vec2: rescale acc_o with each new KV block's P*V; finalize on last block.
 
@@ -399,6 +405,10 @@ def flash_attention_fwd_3task_kernel(
     CB:        tl.constexpr,   # KV blocks per task (combine_batch)
     NUM_KV_BLOCKS: tl.constexpr,   # = num_kv_blocks  (used in causal mask)
     IS_CAUSAL: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    DIM:     tl.constexpr,
+    HALF_M:  tl.constexpr,
 ):
     cid = tl.program_id(0)
     vid = tl.program_id(1)   # vector sub-core ID (0 or 1)
@@ -464,6 +474,7 @@ def flash_attention_fwd_3task_kernel(
                     sQb, sQh, sQs, sQd,
                     sKb, sKh, sKs, sKd,
                     S, CB,
+                    BLOCK_M, BLOCK_N, DIM,
                 )
 
             # ===== MM2(g-1): O_part = P*V for CB blocks -> workspace_pv[cid,(g-1)%RING,:] =====
@@ -485,6 +496,7 @@ def flash_attention_fwd_3task_kernel(
                     prev_ring_slot,
                     sKb, sKh, sKs, sKd,
                     S, CB,
+                    BLOCK_M, BLOCK_N, DIM,
                 )
 
             if g == num_global_tasks:
@@ -512,6 +524,7 @@ def flash_attention_fwd_3task_kernel(
                     sm_scale,
                     IS_CAUSAL, block_start, conbined_block_num, num_seq_blocks,
                     g, CB,
+                    BLOCK_M, BLOCK_N, HALF_M,
                 )
 
             # ===== Vec2(g-1): acc_o = acc_o*rescale + pv_acc; finalize at last KV block =====
@@ -533,6 +546,7 @@ def flash_attention_fwd_3task_kernel(
                     acc_o, softmax_denom,
                     sOb, sOh, sOs, sOd,
                     S, CB, NUM_KV_BLOCKS,
+                    BLOCK_M, DIM, HALF_M,
                 )
 
             if g == num_global_tasks:
@@ -577,6 +591,10 @@ def _dump_signature():
     for n in i32_names:
         sig[n] = "i32"
     sig["IS_CAUSAL"] = "constexpr"
+    sig["BLOCK_M"]   = "constexpr"
+    sig["BLOCK_N"]   = "constexpr"
+    sig["DIM"]       = "constexpr"
+    sig["HALF_M"]    = "constexpr"
     return sig
 
 
@@ -605,7 +623,10 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
     cb = combine_batch
     conbined_block_num = num_kv_blocks // combine_batch
     signature = _dump_signature()
-    constants = {"CB": combine_batch, "NUM_KV_BLOCKS": num_kv_blocks, "IS_CAUSAL": is_causal}
+    constants = {
+        "CB": combine_batch, "NUM_KV_BLOCKS": num_kv_blocks, "IS_CAUSAL": is_causal,
+        "BLOCK_M": 128, "BLOCK_N": 128, "DIM": 128, "HALF_M": 64,
+    }
 
     src = ASTSource(flash_attention_fwd_3task_kernel, signature, constants)
     context = ir.context()
@@ -926,7 +947,7 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
 # =============================================================================
 #  Host launcher
 # =============================================================================
-def flash_attention_fwd(q, k, v, is_causal=False):
+def flash_attention_fwd(q, k, v, combine_batch, is_causal=False):
     B, Hq, S, D = q.shape
     Hkv = k.shape[1]
     assert D == DIM and S % BLOCK_N == 0 and Hq % Hkv == 0
@@ -945,9 +966,10 @@ def flash_attention_fwd(q, k, v, is_causal=False):
 
     out = torch.empty_like(q)
     # GM ping-pong workspaces (taskId % 2), one slice per core.
-    workspace_s = torch.empty((NUM_CORES, PP, BLOCK_M, BLOCK_N), dtype=torch.float32, device=q.device)
-    workspace_p = torch.empty((NUM_CORES, PP, BLOCK_M, BLOCK_N), dtype=q.dtype,        device=q.device)
-    workspace_pv = torch.empty((NUM_CORES, PP, BLOCK_M, DIM),     dtype=torch.float32, device=q.device)
+    # workspace_s: MM1 output (Q*K^T), fp16 matching tl.dot out_dtype
+    workspace_s = torch.empty((NUM_CORES, RING, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
+    workspace_p = torch.empty((NUM_CORES, RING, BLOCK_M, BLOCK_N), dtype=q.dtype,        device=q.device)
+    workspace_pv = torch.empty((NUM_CORES, RING, BLOCK_M, DIM),     dtype=torch.float16, device=q.device)
     workspace_rescale = torch.empty((NUM_CORES, RING, CB, 2, HALF_M), dtype=torch.float32, device=q.device)
     workspace_expsum  = torch.empty((NUM_CORES, RING, CB, 2, HALF_M), dtype=torch.float32, device=q.device)
     sm_scale = (1.0 / D) ** 0.5
@@ -965,6 +987,10 @@ def flash_attention_fwd(q, k, v, is_causal=False):
         CB=CB,
         NUM_KV_BLOCKS=num_kv_blocks,
         IS_CAUSAL=is_causal,
+        BLOCK_M=128,
+        BLOCK_N=128,
+        DIM=128,
+        HALF_M=64,
     )
     return out
 
@@ -989,28 +1015,23 @@ if __name__ == "__main__":
                         help="Dump Linalg IR (full lowering through linalg, casts eliminated) to PATH and exit; no device needed.")
     args = parser.parse_args()
 
+    B, S, H, D = args.B, args.S, args.H, args.D
+    combine_batch = S // BLOCK_N
     # ---- dump intermediate TileIR and exit (no device required) ----
     if args.dump_mlir is not None:
-        B, S, H, D = args.B, args.S, args.H, args.D
-        n_iters = S // BLOCK_N
-        dump_tileir(path=(args.dump_mlir or None), combine_batch=n_iters, is_causal=args.causal)
+        dump_tileir(path=(args.dump_mlir or None), combine_batch=combine_batch, is_causal=args.causal)
         raise SystemExit(0)
 
     # ---- dump HIVM IR after full lowering pipeline (no device required) ----
     if args.dump_ir is not None:
-        B, S, H, D = args.B, args.S, args.H, args.D
-        n_iters = S // BLOCK_N
-        dump_hivm(path=(args.dump_ir or None), combine_batch=n_iters, is_causal=args.causal)
+        dump_hivm(path=(args.dump_ir or None), combine_batch=combine_batch, is_causal=args.causal)
         raise SystemExit(0)
 
     # ---- dump Linalg IR after full TileIR→Linalg lowering (no device required) ----
     if args.dump_linalg is not None:
-        B, S, H, D = args.B, args.S, args.H, args.D
-        n_iters = S // BLOCK_N
-        dump_linalg(path=(args.dump_linalg or None), combine_batch=n_iters, is_causal=args.causal)
+        dump_linalg(path=(args.dump_linalg or None), combine_batch=combine_batch, is_causal=args.causal)
         raise SystemExit(0)
 
-    B, S, H, D = args.B, args.S, args.H, args.D
     Q_H = args.q_heads or H
     KV_H = args.kv_heads or H
 
@@ -1020,7 +1041,7 @@ if __name__ == "__main__":
     k = torch.randn((B, KV_H, S, D), dtype=torch.float16, device=device)
     v = torch.randn((B, KV_H, S, D), dtype=torch.float16, device=device)
 
-    out = flash_attention_fwd(q, k, v, is_causal=args.causal)
+    out = flash_attention_fwd(q, k, v, combine_batch, is_causal=args.causal)
 
     if not args.no_check:
         def ref(q, k, v):
