@@ -87,6 +87,7 @@ export LLVM_SYSPATH=~/.flagtree/tsingmicro/tsingmicro-llvm21-glibc2.30-glibcxx3.
 export LLVM_BINARY_DIR=${LLVM_SYSPATH}/bin
 export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH
 export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
+export PATH=${LLVM_BINARY_DIR}:${PATH}
 ```
 
 ```shell
