@@ -40,6 +40,12 @@ jobs:
           source ~/env.sh
           export FLAGTREE_BACKEND=tsingmicro
           export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
+          export TX8_DEPS_ROOT=~/.flagtree/tsingmicro/tx8_deps
+          export LLVM_SYSPATH=~/.flagtree/tsingmicro/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.10-x64
+          export LLVM_BINARY_DIR=${LLVM_SYSPATH}/bin
+          export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH
+          export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
+          export PATH=${LLVM_BINARY_DIR}:${PATH}
           cd python
           python3 -m pip install . --no-build-isolation
 
