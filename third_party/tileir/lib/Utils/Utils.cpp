@@ -62,7 +62,7 @@ cvtNumStagesToOptHintAttr(MLIRContext *ctx, int computeCapability,
           mlir::NamedAttribute(
               arch, mlir::DictionaryAttr::get(
                         ctx, mlir::NamedAttribute(
-                                     mlir::StringAttr::get(ctx, "latency"),
+                                 mlir::StringAttr::get(ctx, "latency"),
                                  mlir::IntegerAttr::get(
                                      IntegerType::get(ctx, 32), numStages))))));
 }

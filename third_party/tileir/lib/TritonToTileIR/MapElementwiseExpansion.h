@@ -2,7 +2,8 @@
 //
 // Declares pre-processing utilities for tt.map_elementwise:
 //   - ifConvertMapElementwiseRegions: scf.if → arith.select at scalar level
-//   - expandMapElementwiseOps: tensor-level expansion for all map_elementwise ops
+//   - expandMapElementwiseOps: tensor-level expansion for all map_elementwise
+//   ops
 //
 // These are pure IR rewrites that run before dialect conversion.
 //

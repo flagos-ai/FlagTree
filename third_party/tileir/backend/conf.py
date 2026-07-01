@@ -4,6 +4,7 @@ import triton
 
 
 class TileIREnvConf:
+
     @staticmethod
     def enable_approx():
         # Enable approximate calculation, trading off numerical precision for performance gains
@@ -46,10 +47,8 @@ class TileIREnvConf:
 
         tileiras_path = which("tileiras")
         if tileiras_path is None:
-            raise RuntimeError(
-                "tileiras not found: TRITON_TILEIRAS_PATH unset, no bundled "
-                "binary, and not in PATH"
-            )
+            raise RuntimeError("tileiras not found: TRITON_TILEIRAS_PATH unset, no bundled "
+                               "binary, and not in PATH")
         return tileiras_path
 
     @staticmethod

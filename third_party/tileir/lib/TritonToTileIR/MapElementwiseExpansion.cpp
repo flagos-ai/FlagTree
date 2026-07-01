@@ -39,16 +39,16 @@ using namespace mlir;
 //===----------------------------------------------------------------------===//
 
 // Forward declaration for mutual recursion.
-static LogicalResult liftBodyOp(
-    Operation &bodyOp, OpBuilder &builder, Location loc,
-    IRMapping &mapping, ArrayRef<int64_t> shape, Attribute encoding);
+static LogicalResult liftBodyOp(Operation &bodyOp, OpBuilder &builder,
+                                Location loc, IRMapping &mapping,
+                                ArrayRef<int64_t> shape, Attribute encoding);
 
 // Lift a scalar value to tensor: if already tensor, return as-is.
 // If scalar (e.g., hoisted constant or block argument from outside),
 // insert tt.splat to broadcast to the target tensor shape.
-static Value liftToTensor(
-    Value val, OpBuilder &builder, Location loc, IRMapping &mapping,
-    ArrayRef<int64_t> shape, Attribute encoding) {
+static Value liftToTensor(Value val, OpBuilder &builder, Location loc,
+                          IRMapping &mapping, ArrayRef<int64_t> shape,
+                          Attribute encoding) {
   Value mapped = mapping.lookupOrDefault(val);
   if (isa<RankedTensorType>(mapped.getType()))
     return mapped;
@@ -61,9 +61,10 @@ static Value liftToTensor(
 
 // Recursively lift all ops in a region body (single block) to tensor level.
 // Returns the lifted values corresponding to the scf.yield operands.
-static SmallVector<Value> liftRegionBody(
-    Region &region, OpBuilder &builder, Location loc,
-    IRMapping &mapping, ArrayRef<int64_t> shape, Attribute encoding) {
+static SmallVector<Value> liftRegionBody(Region &region, OpBuilder &builder,
+                                         Location loc, IRMapping &mapping,
+                                         ArrayRef<int64_t> shape,
+                                         Attribute encoding) {
   assert(region.hasOneBlock() && "expected single-block region");
   Block &body = region.front();
   for (auto &op : body.without_terminator()) {
@@ -84,9 +85,9 @@ static SmallVector<Value> liftRegionBody(
 //   - arith::ConstantOp → DenseElementsAttr splat
 //   - scf::IfOp → recursive expansion into arith.select
 //   - generic ops → remap operands to tensor, create new op with tensor types
-static LogicalResult liftBodyOp(
-    Operation &bodyOp, OpBuilder &builder, Location loc,
-    IRMapping &mapping, ArrayRef<int64_t> shape, Attribute encoding) {
+static LogicalResult liftBodyOp(Operation &bodyOp, OpBuilder &builder,
+                                Location loc, IRMapping &mapping,
+                                ArrayRef<int64_t> shape, Attribute encoding) {
 
   // Skip terminators handled by callers
   if (isa<triton::MapElementwiseReturnOp, scf::YieldOp>(&bodyOp))
@@ -95,8 +96,8 @@ static LogicalResult liftBodyOp(
   // (1) arith::ConstantOp → DenseElementsAttr splat
   if (auto constOp = dyn_cast<arith::ConstantOp>(&bodyOp)) {
     auto scalarAttr = cast<TypedAttr>(constOp.getValue());
-    auto tensorType = RankedTensorType::get(
-        shape, scalarAttr.getType(), encoding);
+    auto tensorType =
+        RankedTensorType::get(shape, scalarAttr.getType(), encoding);
     auto splatAttr = DenseElementsAttr::get(tensorType, scalarAttr);
     auto newConst = arith::ConstantOp::create(builder, loc, splatAttr);
     mapping.map(constOp.getResult(), newConst.getResult());
@@ -105,30 +106,27 @@ static LogicalResult liftBodyOp(
 
   // (2) scf::IfOp → lift both branches, emit arith.select
   if (auto ifOp = dyn_cast<scf::IfOp>(&bodyOp)) {
-    Value condTensor =
-        liftToTensor(ifOp.getCondition(), builder, loc, mapping, shape,
-                     encoding);
+    Value condTensor = liftToTensor(ifOp.getCondition(), builder, loc, mapping,
+                                    shape, encoding);
 
     // Process then region
     IRMapping thenMapping(mapping);
-    SmallVector<Value> thenVals =
-        liftRegionBody(ifOp.getThenRegion(), builder, loc, thenMapping,
-                       shape, encoding);
+    SmallVector<Value> thenVals = liftRegionBody(
+        ifOp.getThenRegion(), builder, loc, thenMapping, shape, encoding);
     if (thenVals.empty() && ifOp.getNumResults() > 0)
       return failure();
 
     // Process else region
     IRMapping elseMapping(mapping);
-    SmallVector<Value> elseVals =
-        liftRegionBody(ifOp.getElseRegion(), builder, loc, elseMapping,
-                       shape, encoding);
+    SmallVector<Value> elseVals = liftRegionBody(
+        ifOp.getElseRegion(), builder, loc, elseMapping, shape, encoding);
     if (elseVals.empty() && ifOp.getNumResults() > 0)
       return failure();
 
     // Emit arith.select for each result
     for (auto [i, oldRes] : llvm::enumerate(ifOp.getResults())) {
-      auto sel = arith::SelectOp::create(
-          builder, loc, condTensor, thenVals[i], elseVals[i]);
+      auto sel = arith::SelectOp::create(builder, loc, condTensor, thenVals[i],
+                                         elseVals[i]);
       mapping.map(oldRes, sel.getResult());
     }
     return success();
@@ -177,7 +175,8 @@ static LogicalResult scalarIfConvert(Region &region) {
   SmallVector<scf::IfOp> ifOps;
   body.walk([&](scf::IfOp ifOp) { ifOps.push_back(ifOp); });
 
-  // Process innermost first (walk visits outer before inner, reverse fixes this)
+  // Process innermost first (walk visits outer before inner, reverse fixes
+  // this)
   for (auto ifOp : llvm::reverse(ifOps)) {
     OpBuilder builder(ifOp);
     Location loc = ifOp.getLoc();
@@ -201,8 +200,8 @@ static LogicalResult scalarIfConvert(Region &region) {
     // Create arith.select for each result
     SmallVector<Value> selectResults;
     for (auto [tv, ev] : llvm::zip(thenVals, elseVals)) {
-      auto sel = arith::SelectOp::create(
-          builder, loc, ifOp.getCondition(), tv, ev);
+      auto sel =
+          arith::SelectOp::create(builder, loc, ifOp.getCondition(), tv, ev);
       selectResults.push_back(sel.getResult());
     }
 
@@ -224,17 +223,17 @@ static LogicalResult scalarIfConvert(Region &region) {
 // For K=1: just return the input (no split needed).
 // For K=2: one tt.split → 2 results.
 // For K>2: split into halves, recurse on each half.
-static SmallVector<Value> recursiveSplit(
-    OpBuilder &builder, Location loc, Value tensor, int K) {
+static SmallVector<Value> recursiveSplit(OpBuilder &builder, Location loc,
+                                         Value tensor, int K) {
   if (K == 1) {
     // Last dim is 1, drop it via reshape
     auto srcType = cast<RankedTensorType>(tensor.getType());
     auto srcShape = srcType.getShape();
     SmallVector<int64_t> newShape(srcShape.begin(), srcShape.end() - 1);
-    auto newType = RankedTensorType::get(
-        newShape, srcType.getElementType(), srcType.getEncoding());
-    Value reshaped = triton::ReshapeOp::create(
-        builder, loc, newType, tensor).getResult();
+    auto newType = RankedTensorType::get(newShape, srcType.getElementType(),
+                                         srcType.getEncoding());
+    Value reshaped =
+        triton::ReshapeOp::create(builder, loc, newType, tensor).getResult();
     return {reshaped};
   }
 
@@ -254,15 +253,17 @@ static SmallVector<Value> recursiveSplit(
 
   auto reshapedType = RankedTensorType::get(
       reshapedShape, srcType.getElementType(), srcType.getEncoding());
-  Value reshaped = triton::ReshapeOp::create(
-      builder, loc, reshapedType, tensor).getResult();
+  Value reshaped =
+      triton::ReshapeOp::create(builder, loc, reshapedType, tensor).getResult();
 
   // Split [.., M, K/2, 2] → lhs: [.., M, K/2], rhs: [.., M, K/2]
   auto splitOp = triton::SplitOp::create(builder, loc, reshaped);
 
   // Recurse on each half
-  SmallVector<Value> lhsResults = recursiveSplit(builder, loc, splitOp.getOutLHS(), K / 2);
-  SmallVector<Value> rhsResults = recursiveSplit(builder, loc, splitOp.getOutRHS(), K / 2);
+  SmallVector<Value> lhsResults =
+      recursiveSplit(builder, loc, splitOp.getOutLHS(), K / 2);
+  SmallVector<Value> rhsResults =
+      recursiveSplit(builder, loc, splitOp.getOutRHS(), K / 2);
 
   // Interleave: [lhs0, rhs0, lhs1, rhs1, ...] to maintain element order
   SmallVector<Value> results;
@@ -277,23 +278,25 @@ static SmallVector<Value> recursiveSplit(
 // Input: K tensors of shape [.., M].
 // Output: tensor of shape [.., M, K].
 // Reverses the recursiveSplit operation.
-static Value recursiveJoin(
-    OpBuilder &builder, Location loc, ArrayRef<Value> tensors, int K,
-    RankedTensorType finalType) {
+static Value recursiveJoin(OpBuilder &builder, Location loc,
+                           ArrayRef<Value> tensors, int K,
+                           RankedTensorType finalType) {
   if (K == 1) {
     // Add back last dim via reshape: [.., M] → [.., M, 1]
     auto srcType = cast<RankedTensorType>(tensors[0].getType());
     auto srcShape = srcType.getShape();
     SmallVector<int64_t> newShape(srcShape.begin(), srcShape.end());
     newShape.push_back(1);
-    auto newType = RankedTensorType::get(
-        newShape, srcType.getElementType(), srcType.getEncoding());
-    return triton::ReshapeOp::create(builder, loc, newType, tensors[0]).getResult();
+    auto newType = RankedTensorType::get(newShape, srcType.getElementType(),
+                                         srcType.getEncoding());
+    return triton::ReshapeOp::create(builder, loc, newType, tensors[0])
+        .getResult();
   }
 
   if (K == 2) {
     // Base case: binary join
-    return triton::JoinOp::create(builder, loc, tensors[0], tensors[1]).getResult();
+    return triton::JoinOp::create(builder, loc, tensors[0], tensors[1])
+        .getResult();
   }
 
   // Recursive case: de-interleave into even/odd halves, recurse, join
@@ -319,12 +322,15 @@ static Value recursiveJoin(
   // Reshape to collapse the last two dims
   auto joinedType = cast<RankedTensorType>(joined.getResult().getType());
   auto joinedShape = joinedType.getShape();
-  SmallVector<int64_t> collapsedShape(joinedShape.begin(), joinedShape.end() - 2);
+  SmallVector<int64_t> collapsedShape(joinedShape.begin(),
+                                      joinedShape.end() - 2);
   collapsedShape.push_back(joinedShape[joinedShape.size() - 2] * 2);
 
   auto collapsedType = RankedTensorType::get(
       collapsedShape, joinedType.getElementType(), joinedType.getEncoding());
-  return triton::ReshapeOp::create(builder, loc, collapsedType, joined.getResult()).getResult();
+  return triton::ReshapeOp::create(builder, loc, collapsedType,
+                                   joined.getResult())
+      .getResult();
 }
 
 //===----------------------------------------------------------------------===//
@@ -333,15 +339,16 @@ static Value recursiveJoin(
 
 static bool regionHasScfIf(Region &region) {
   bool found = false;
-  region.walk([&](scf::IfOp) { found = true; return WalkResult::interrupt(); });
+  region.walk([&](scf::IfOp) {
+    found = true;
+    return WalkResult::interrupt();
+  });
   return found;
 }
 
 static LogicalResult expandMapElementwiseOpsImpl(Operation *rootOp) {
   SmallVector<triton::MapElementwiseOp> opsToExpand;
-  rootOp->walk([&](triton::MapElementwiseOp op) {
-    opsToExpand.push_back(op);
-  });
+  rootOp->walk([&](triton::MapElementwiseOp op) { opsToExpand.push_back(op); });
 
   for (auto op : opsToExpand) {
     auto &region = op.getScalarOp();
@@ -374,8 +381,8 @@ static LogicalResult expandMapElementwiseOpsImpl(Operation *rootOp) {
         mapping.map(arg, src);
 
       for (auto &bodyOp : body.without_terminator()) {
-        if (failed(liftBodyOp(bodyOp, builder, loc, mapping, origShape,
-                              encoding)))
+        if (failed(
+                liftBodyOp(bodyOp, builder, loc, mapping, origShape, encoding)))
           return failure();
       }
 
@@ -417,8 +424,9 @@ static LogicalResult expandMapElementwiseOpsImpl(Operation *rootOp) {
 
         auto reshapedType = RankedTensorType::get(
             reshapedShape, srcType.getElementType(), srcType.getEncoding());
-        Value reshaped = triton::ReshapeOp::create(
-            builder, loc, reshapedType, src).getResult();
+        Value reshaped =
+            triton::ReshapeOp::create(builder, loc, reshapedType, src)
+                .getResult();
 
         // Recursively split into K sub-tensors
         splitResults[i] = recursiveSplit(builder, loc, reshaped, pack);
@@ -460,18 +468,21 @@ static LogicalResult expandMapElementwiseOpsImpl(Operation *rootOp) {
         // Collect the K sub-element results for this output
         SmallVector<Value> subResults;
         for (int p = 0; p < pack; p++) {
-          subResults.push_back(
-              liftToTensor(retVals[outIdx * pack + p], builder, loc, mapping,
-                           subShape, subEncoding));
+          subResults.push_back(liftToTensor(retVals[outIdx * pack + p], builder,
+                                            loc, mapping, subShape,
+                                            subEncoding));
         }
 
         // Join K sub-tensors → [.., N/K, K]
-        auto outputType = cast<RankedTensorType>(op->getResult(outIdx).getType());
-        Value joined = recursiveJoin(builder, loc, subResults, pack, outputType);
+        auto outputType =
+            cast<RankedTensorType>(op->getResult(outIdx).getType());
+        Value joined =
+            recursiveJoin(builder, loc, subResults, pack, outputType);
 
         // Reshape [.., N/K, K] → [.., N]
-        Value result = triton::ReshapeOp::create(
-            builder, loc, outputType, joined).getResult();
+        Value result =
+            triton::ReshapeOp::create(builder, loc, outputType, joined)
+                .getResult();
         results.push_back(result);
       }
 
@@ -504,4 +515,3 @@ LogicalResult expandMapElementwiseOps(Operation *rootOp) {
 
 } // namespace triton
 } // namespace mlir
-

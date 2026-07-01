@@ -152,14 +152,13 @@ module @test_barrier_layer_norm_bwd{
 // CHECK: }
 // CHECK: %[[RESULT9:.*]], %[[TOKEN9:.*]] = load_ptr_tko {{.*}}token=%[[TOKEN8]]
 // CHECK: %[[IF:.*]]:3 = if %{{.*}} {
-// CHECK:   %[[RMW_RES:.*]], %[[RMW_TOKEN:.*]] = atomic_rmw_tko {{.*}} token=%[[TOKEN9]] 
-// CHECK:   yield %{{.*}}, %{{.*}}, %[[RMW_TOKEN]] 
+// CHECK:   %[[RMW_RES:.*]], %[[RMW_TOKEN:.*]] = atomic_rmw_tko {{.*}} token=%[[TOKEN9]]
+// CHECK:   yield %{{.*}}, %{{.*}}, %[[RMW_TOKEN]]
 // CHECK: } else {
-// CHECK:   %[[LOAD1_RES:.*]], %[[LOAD1_TOKEN:.*]] = load_ptr_tko {{.*}} token=%[[TOKEN9]] 
-// CHECK:   %[[LOAD2_RES:.*]], %[[LOAD2_TOKEN:.*]] = load_ptr_tko {{.*}} token=%[[LOAD1_TOKEN]] 
-// CHECK:   yield %{{.*}}, %{{.*}}, %[[LOAD2_TOKEN]] 
+// CHECK:   %[[LOAD1_RES:.*]], %[[LOAD1_TOKEN:.*]] = load_ptr_tko {{.*}} token=%[[TOKEN9]]
+// CHECK:   %[[LOAD2_RES:.*]], %[[LOAD2_TOKEN:.*]] = load_ptr_tko {{.*}} token=%[[LOAD1_TOKEN]]
+// CHECK:   yield %{{.*}}, %{{.*}}, %[[LOAD2_TOKEN]]
 // CHECK: }
 // CHECK: %[[TOKEN10:.*]] = store_ptr_tko {{.*}} token=%[[IF]]#2
 // CHECK: %[[TOKEN11:.*]] = store_ptr_tko {{.*}} token=%[[TOKEN10]]
 // CHECK: %[[RESULT12:.*]], %[[TOKEN12:.*]] = atomic_rmw_tko {{.*}} token=%[[TOKEN11]]
-

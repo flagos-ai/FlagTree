@@ -33,4 +33,4 @@ set_target_properties(check-triton-cuda-tile PROPERTIES FOLDER "Tests")
 
 add_lit_testsuites(triton-cuda-tile ${CMAKE_CURRENT_SOURCE_DIR}
   DEPENDS ${TRITON_CUDA_TILE_TEST_DEPENDS}
-) 
+)

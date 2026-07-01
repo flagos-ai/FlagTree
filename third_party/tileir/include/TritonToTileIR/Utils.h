@@ -152,7 +152,7 @@ public:
                                       cuda_tile::RoundingMode::NEAREST_EVEN);
           } else if constexpr (std::is_same_v<TritonOp, math::ExpOp>) {
             assert(operands.size() == 1 && "expect single operand for exp");
-                return CudaTileOp::create(builder, loc, operands[0]);
+            return CudaTileOp::create(builder, loc, operands[0]);
           } else if constexpr (std::is_same_v<TritonOp, math::Exp2Op>) {
             assert(operands.size() == 1 && "expect single operand for ex2");
             bool isF32 = getElementTypeOrSelf(op.getResult().getType()).isF32();

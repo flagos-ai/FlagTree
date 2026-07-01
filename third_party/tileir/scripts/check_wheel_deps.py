@@ -9,11 +9,10 @@ import sys
 import zipfile
 from pathlib import Path
 
-
 REQUIRED = [
-    "tileiras",   # backend/bin/tileiras
-    "ptxas",      # backend/bin/ptxas
-    "libnvvm.so", # backend/lib/nvvm/.../libnvvm.so
+    "tileiras",  # backend/bin/tileiras
+    "ptxas",  # backend/bin/ptxas
+    "libnvvm.so",  # backend/lib/nvvm/.../libnvvm.so
 ]
 
 

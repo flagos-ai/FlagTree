@@ -425,9 +425,9 @@ CudaTileTypeConverter::CudaTileTypeConverter() {
     }
     auto shapeAttr = DenseI32ArrayAttr::get(ctx, arrayOfi32Shape);
 
-        return cuda_tile::PartitionViewType::get(
-            ctx, shapeAttr, tensorViewTy, dimMap,
-            cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
+    return cuda_tile::PartitionViewType::get(
+        ctx, shapeAttr, tensorViewTy, dimMap,
+        cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
   });
   addConversion([](cuda_tile::TensorViewType type) { return type; });
   addConversion([](cuda_tile::PartitionViewType type) { return type; });

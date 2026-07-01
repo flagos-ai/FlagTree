@@ -14,7 +14,7 @@ The **occupancy** hint accepts an integer N from 1 to 32, indicating that the pr
 
 Unlike the Triton PTX backend, the CUDA Tile IR Backend disables approx and ftz by default. Setting `TILEIR_ENABLE_APPROX=1` and `TILEIR_ENABLE_FTZ=1` can provide performance improvements in certain workloads (with precision degradation within acceptable ranges), such as **`attention`** and its variant kernels.
 
-Note that the TileIR compiler (`tileiras`) shipping in CUDA 13.1 does not automatically optimize `exp.approx -> ex2 + mulf`.  For performance and precision parity with the Triton PTX backend, please explicitly rewrite `expOp` to use `ex2 + mulf` instead. 
+Note that the TileIR compiler (`tileiras`) shipping in CUDA 13.1 does not automatically optimize `exp.approx -> ex2 + mulf`.  For performance and precision parity with the Triton PTX backend, please explicitly rewrite `expOp` to use `ex2 + mulf` instead.
 
 #### opt-level
 
@@ -68,11 +68,11 @@ sudo nvidia-smi -i 0 -pm 1; sudo nvidia-smi -i 0 -pl 1000; sudo nvidia-smi -i 0 
 
 ![Fused Attention Backward Benchmark](./fused-attention-bwd.png)
 
-### Persistent Matmul (09-persistent-matmul.py) 
+### Persistent Matmul (09-persistent-matmul.py)
 
 > TFLOPS by Proton
 
-#### NVIDIA PTX backend 
+#### NVIDIA PTX backend
 
 | Kernel Name | K=512 | K=1024 | K=1536 | K=2048 | K=2560 | K=3072 | K=3584 | K=4096 | K=4608 | K=5120 | K=5632 | K=6144 | K=6656 | K=7168 | K=7680 | K=8192 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|

@@ -2,6 +2,7 @@ from triton.errors import TritonError
 
 
 class HitFallback(TritonError):
+
     def __init__(self, required, name):
         self.required = required
         self.name = name

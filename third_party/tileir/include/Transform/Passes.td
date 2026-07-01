@@ -35,9 +35,9 @@ def RewriteAssumeWithCudaTile : Pass</*cli-arg*/"rewrite-assume-with-cuda-tile",
     assume div_by<8 : i64>, %46 : tile<i32>
     ```
 
-    There may be more patterns in the future.   
+    There may be more patterns in the future.
     If there are no patterns matched, the llvm.intr.assume will be removed without any new op.
-    
+
     This transformation allows the compiler to better understand alignment assumptions
     and potentially generate more efficient code.
   }];
