@@ -9,6 +9,7 @@ llvm-project-*/
 # Triton Python module builds
 python/build/
 python/dist/
+python/_deps/
 python/triton*.egg-info/
 python/triton_kernels/triton*.egg-info/
 
@@ -24,6 +25,10 @@ python/triton/FLAGTREE_BACKEND
 third_party/mthreads/python/triton/_C/*.so
 third_party/mthreads/python/triton/FileCheck
 third_party/mthreads/python/*.egg-info
+third_party/xpu/python/triton/_C/*.so
+third_party/xpu/python/triton/FileCheck
+third_party/xpu/python/triton/instrumentation/*.so
+third_party/xpu/python/*.egg-info
 third_party/nvidia/backend/flagcx*
 third_party/nvidia/backend/lib/libflagcx*
 
@@ -118,3 +123,8 @@ AGENTS.md
 
 # MTHREADS LOCAL BINARY
 third_party/mthreads/backend/bin/
+
+# XPU local/generated dependency trees
+third_party/xpu.bak/
+third_party/xpu/backend/xpu3/
+.comate/

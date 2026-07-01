@@ -37,6 +37,12 @@ class Backend:
 
 def _discover_backends() -> dict[str, Backend]:
     backends = dict()
+    active_backend = os.environ.get("FLAGTREE_BACKEND", "")
+    if not active_backend:
+        from triton._flagtree_backend import FLAGTREE_BACKEND  # type: ignore
+
+        active_backend = FLAGTREE_BACKEND
+
     # Fast path: optionally skip entry point discovery (which can be slow) and
     # discover only in-tree backends under the `triton.backends` namespace.
     skip_entrypoints_env = os.environ.get("TRITON_BACKENDS_IN_TREE", "")
@@ -56,6 +62,14 @@ def _discover_backends() -> dict[str, Backend]:
 
     # Default path: discover via entry points for out-of-tree/downstream plugins.
     for ep in entry_points().select(group="triton.backends"):
+        # ==================== FLAGTREE XPU SYNC MARK ====================
+        # Editable XPU development environments can also have a reference
+        # `triton` package installed. Its entry points advertise amd/nvidia/xcn
+        # backends that are not present in this FlagTree checkout, so restrict
+        # discovery to the active FlagTree backend when one is selected.
+        # ==================== FLAGTREE XPU SYNC MARK ====================
+        if active_backend and ep.name != active_backend:
+            continue
         compiler = importlib.import_module(f"{ep.value}.compiler")
         driver = importlib.import_module(f"{ep.value}.driver")
         backends[ep.name] = Backend(_find_concrete_subclasses(compiler, BaseBackend),  # type: ignore

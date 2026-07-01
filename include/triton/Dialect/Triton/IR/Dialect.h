@@ -27,11 +27,17 @@ namespace triton {
 struct GlobalMemory : public SideEffects::Resource::Base<GlobalMemory> {
   StringRef getName() final { return "<GlobalMemory>"; }
 };
-#ifdef __TLE__
+// NOTE: SharedMemory must be declared unconditionally. It is referenced by
+// `def SharedMemory : Resource<"::mlir::triton::SharedMemory">` in TritonOps.td
+// and by the MemRead/MemWrite<SharedMemory> side effects on AtomicRMWOp /
+// AtomicCASOp, both of which TableGen emits unconditionally (the surrounding
+// `// flagtree tle` markers are comments, not preprocessor guards). Guarding
+// this struct behind `#ifdef __TLE__` therefore breaks every non-TLE build with
+// "mlir::triton::SharedMemory has not been declared". Keep it unguarded so the
+// C++ declaration matches what TableGen generates.
 struct SharedMemory : public SideEffects::Resource::Base<SharedMemory> {
   StringRef getName() final { return "<SharedMemory>"; }
 };
-#endif
 
 class DialectInferLayoutInterface
     : public DialectInterface::Base<DialectInferLayoutInterface> {

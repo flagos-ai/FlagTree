@@ -19,3 +19,5 @@ add_triton_library(TritonGPUIR
   TritonTools
   ${_EXTRA_LINK_LIBS}
 )
+
+add_dependencies(TritonGPUIR TritonGPUCTAAttrIncGen)
