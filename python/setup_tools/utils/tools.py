@@ -22,7 +22,7 @@ def _get_flagtree_root() -> str:
 
 @dataclass
 class FlagtreeConfigs:
-    default_backends: tuple = ("nvidia", "amd")
+    default_backends: tuple = ("nvidia", "amd", "tileir")
     plugin_backends: tuple = ("cambricon", "ascend", "aipu", "tsingmicro", "enflame", "hcu", "thrive")
     use_cuda_toolkit_backends: tuple = ('aipu', )
     language_extra_backends: tuple = ('xpu', 'mthreads', "cambricon")
@@ -46,6 +46,9 @@ class FlagtreeConfigs:
     def __post_init__(self):
         self.flagtree_submodule_dir = os.path.join(self.flagtree_root_dir, "third_party")
         self.activated_module = self._activate_device_module()
+
+    def non_tileir_default_backends(self):
+        return tuple(backend for backend in self.default_backends if backend != "tileir")
 
     def _activate_device_module(self, suffix=".py"):
         backend = self.flagtree_backend or "default"
