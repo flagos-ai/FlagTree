@@ -27,28 +27,12 @@ def _as_positive_int(value: Any, label: str) -> int:
     return value
 
 
-@tl.builtin
-def signal(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
-    builder = _semantic.builder
-    ret_ir_ty = ret_dtype.to_ir(builder)
-    result = builder.get_n_pes(ret_ir_ty, dev_mem_ptr)
-    return tl.tensor(result, ret_dtype)
-
-
-@tl.builtin
-def wait(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
-    builder = _semantic.builder
-    ret_ir_ty = ret_dtype.to_ir(builder)
-    result = builder.get_n_pes(ret_ir_ty, dev_mem_ptr)
-    return tl.tensor(result, ret_dtype)
-
-
 # Get the current device id
 @tl.builtin
-def my_pe(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
+def _get_local_rank(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
     builder = _semantic.builder
     ret_ir_ty = ret_dtype.to_ir(builder)
-    result = builder.get_my_pe(ret_ir_ty, dev_mem_ptr.handle)
+    result = builder.get_device_id(ret_ir_ty, dev_mem_ptr.handle)
     return tl.tensor(result, ret_dtype)
 
 
@@ -591,6 +575,7 @@ def _resolve_launch_axis(mesh: device_mesh, axis: str | int) -> int:
 def shard_id(
     mesh: device_mesh,
     axis: str | int,
+    comm_ptr=None,
     _semantic=None,
 ):
     """
@@ -601,6 +586,9 @@ def shard_id(
     """
     mesh = tl._unwrap_if_constexpr(mesh)
     axis = tl._unwrap_if_constexpr(axis)
+
+    if comm_ptr is not None:
+        return _get_local_rank(comm_ptr, _semantic=_semantic, ret_dtype=tl.int32)
 
     if not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh, got {type(mesh).__name__}")

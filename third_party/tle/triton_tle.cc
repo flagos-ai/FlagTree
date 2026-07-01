@@ -418,7 +418,7 @@ void init_triton_tle_ir(py::module &&m) {
              return self.create<tle::RemotePointersOp>(resultTy, src, shardId,
                                                        space_attr);
            })
-      .def("get_my_pe",
+      .def("get_device_id",
            [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {
              auto &builder = self.getBuilder();
              return self.create<tle::GetDeviceIdOp>(resultTy, src);

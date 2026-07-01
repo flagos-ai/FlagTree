@@ -32,8 +32,6 @@ from .distributed import (
     _resolve_launch_axis,
     shard_id,
     sharding,
-    my_pe,
-    n_pes,
 )
 from . import communication
 from .communication import get_mem_pool, create_comm_tensor, cleanup_communicator
@@ -70,8 +68,6 @@ __all__ = [
     "get_mem_pool",
     "create_comm_tensor",
     "cleanup_communicator",
-    "my_pe",
-    "n_pes",
 ]
 
 from . import distributed, gpu, raw
