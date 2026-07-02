@@ -87,6 +87,13 @@ jobs:
             echo "✅ flagtree===${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
+          export TX8_DEPS_ROOT=~/.flagtree/tsingmicro/tx8_deps  # tsingmicro3.3
+          export LLVM_SYSPATH=~/.flagtree/tsingmicro/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.10-x64
+          export LLVM_BINARY_DIR=${LLVM_SYSPATH}/bin
+          export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH
+          export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
+          export PATH=${LLVM_BINARY_DIR}:${PATH}
+
           cd python
           rm -rf ./build ./*.egg-info
           { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null

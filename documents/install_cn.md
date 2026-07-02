@@ -1,4 +1,4 @@
-[中文版|[English](./install.md)]
+[中文版|[English](./install_en.md)]
 
 ## 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
 
@@ -12,12 +12,12 @@
 
 ```shell
 # Plan A: docker pull (35.5GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-cuda12.9-ubuntu24.04:202605-3.6-base
 docker pull ${IMAGE}
 # Plan B: docker load (16GB)
-IMAGE=flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202605-3.6-base.tar.gz
-docker load -i flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202605-3.6-base.tar.gz
+IMAGE=flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-cuda12.9-ubuntu24.04:202605-3.6-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-cuda12.9-ubuntu24.04.202605-3.6-base.tar.gz
+docker load -i flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-cuda12.9-ubuntu24.04.202605-3.6-base.tar.gz
 ```
 
 ```shell
