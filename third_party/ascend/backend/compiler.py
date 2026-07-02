@@ -624,7 +624,7 @@ def _compile_linalg_to_npu_bin(linalg: str, metadata, opt):
         metadata["num_stages"] = 1
         metadata["multibuffer"] = False
         metadata["enable_tuning_mode"] = True
-        metadata["enable_ubuf_saving"] = True
+        metadata["enable_ubuf_saving"] = None
         metadata["unit_flag"] = False
         metadata["enable_auto_bind_sub_block"] = True
         metadata["enable_hivm_auto_cv_balance"] = False
