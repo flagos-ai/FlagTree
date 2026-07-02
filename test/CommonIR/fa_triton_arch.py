@@ -127,7 +127,7 @@ def _mm1_qkt(
         tile_copy(k_bp, k_l1, [CBN, CD])
 
         # attn_score = Q * K^T using L1 buffers
-        attn_score = tl.dot(tile_to_tensor(q_l1, writable=False),
+        attn_score_l0c = tl.dot(tile_to_tensor(q_l1, writable=False),
                             tile_to_tensor(k_l1, writable=False),
                             out_dtype=tl.float16)
 
@@ -136,7 +136,7 @@ def _mm1_qkt(
                            + ring_slot  * CB * BLOCK_M * BLOCK_N
                            + cb_idx  * BLOCK_M * BLOCK_N),
             (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
-        tl.store(score_store_bp, attn_score)
+        tl.store(score_store_bp, attn_score_l0c)
 
     # all CB S-blocks written -> notify Vec1
     sync_block_set("cube", "vector", SEM_S_READY, PIPE.PIPE_FIX, PIPE.PIPE_MTE2)
