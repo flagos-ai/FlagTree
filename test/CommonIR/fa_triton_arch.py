@@ -183,7 +183,7 @@ def _mm2_pv(
         tile_copy(prob_load_bp, p_l1, [CBM, CBN])
 
         # pv_part = P * V using L1 buffers
-        pv_part = tl.dot(tile_to_tensor(p_l1, writable=False),
+        pv_part_l0c = tl.dot(tile_to_tensor(p_l1, writable=False),
                          tile_to_tensor(v_l1, writable=False),
                          out_dtype=tl.float16)
 
@@ -192,7 +192,7 @@ def _mm2_pv(
                             + prev_ring_slot * CB * BLOCK_M * DIM
                             + cb_idx * BLOCK_M * DIM,
             (BLOCK_M, DIM), (DIM, 1), (0, 0), (BLOCK_M, DIM), (1, 0))
-        tl.store(pv_store_bp, pv_part)
+        tl.store(pv_store_bp, pv_part_l0c)
 
     # all CB P*V blocks done -> notify Vec2; release workspace_p[prev_ring_slot]
     sync_block_set("cube", "vector", SEM_P_FREE,  PIPE.PIPE_MTE2, PIPE.PIPE_MTE3)
