@@ -361,7 +361,31 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_distributed_barrier",
            [](TritonOpBuilder &self) -> void {
              self.create<tle::DistributedBarrierOp>(
-                 StringAttr(), IntegerAttr(), DenseI32ArrayAttr(),
+                 Value(), StringAttr(), StringAttr(), StringAttr(),
+                 StringAttr(), IntegerAttr(), IntegerAttr(),
+                 DenseI32ArrayAttr(), DenseI32ArrayAttr(), DenseI32ArrayAttr());
+           })
+      .def("create_distributed_barrier",
+           [](TritonOpBuilder &self, Value src, size_t barrier_index = 0,
+              const std::string &space = "device",
+              const std::string &groupKind = "block",
+              const std::string &order = "acqrel",
+              const std::string &barrierType = "sync") -> void {
+             auto &builder = self.getBuilder();
+             auto *ctx = builder.getContext();
+             auto getOptStrAttr = [&](const std::string &s) -> StringAttr {
+               return s.empty() ? StringAttr() : builder.getStringAttr(s);
+             };
+             auto spaceAttr = getOptStrAttr(space);
+             auto kindAttr = getOptStrAttr(groupKind);
+             auto orderAttr = getOptStrAttr(order);
+             auto barrierTypeAttr = getOptStrAttr(barrierType);
+             auto barrierIndexAttr =
+                 builder.getI32IntegerAttr(static_cast<int32_t>(barrier_index));
+
+             self.create<tle::DistributedBarrierOp>(
+                 src, spaceAttr, barrierTypeAttr, orderAttr, kindAttr,
+                 barrierIndexAttr, IntegerAttr(), DenseI32ArrayAttr(),
                  DenseI32ArrayAttr(), DenseI32ArrayAttr());
            })
       .def(
@@ -399,7 +423,8 @@ void init_triton_tle_ir(py::module &&m) {
             }
 
             self.create<tle::DistributedBarrierOp>(
-                kindAttr, rankAttr, shapeAttr, axesAttr, maskAttr);
+                Value(), StringAttr(), StringAttr(), StringAttr(), kindAttr,
+                IntegerAttr(), rankAttr, shapeAttr, axesAttr, maskAttr);
           },
           py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
           py::arg("group_mask"))

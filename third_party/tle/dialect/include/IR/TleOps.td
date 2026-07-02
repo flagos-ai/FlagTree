@@ -227,13 +227,17 @@ def Tle_TMAStoreCommitGroupOp
 def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
                                       [MemoryEffects<[MemRead, MemWrite]>]> {
   let arguments = (ins
+    Optional<AnyType>:$src,
+    OptionalAttr<StrAttr>:$space,
+    OptionalAttr<StrAttr>:$barrier_type,
+    OptionalAttr<StrAttr>:$order,
     OptionalAttr<StrAttr>:$group_kind,
+    OptionalAttr<I32Attr>:$barrier_index,
     OptionalAttr<I32Attr>:$group_rank,
     OptionalAttr<DenseI32ArrayAttr>:$group_shape,
     OptionalAttr<DenseI32ArrayAttr>:$group_axes,
     OptionalAttr<DenseI32ArrayAttr>:$group_mask
   );
-  let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
 
@@ -264,6 +268,7 @@ def Tle_GetDeviceIdOp : Tle_Op<"get_device_id"> {
   let results = (outs I32:$result);
   let hasVerifier = 1;
 }
+
 
 def Tle_DSLRegionOp : Tle_Op<"dsl_region", [IsolatedFromAbove, MemDescViewTrait,
                                             DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
