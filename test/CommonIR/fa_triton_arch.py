@@ -91,7 +91,7 @@ SEM_PV_FREE : tl.constexpr = tl.constexpr(5)  # V->C : workspace_pv slot  free
 def _mm1_qkt(
     # inputs
     Q, K,
-    q_l1, k_l1, attn_score_l0c,
+    q_l1, k_l1,
     workspace_s,
     # task geometry
     cid, idx_in_conbine, global_head_idx, batch_idx, head_idx, kv_head_idx,
@@ -117,7 +117,7 @@ def _mm1_qkt(
             Q + batch_idx * sQb + head_idx * sQh, (S, DIM), (sQs, sQd),
             (global_head_idx * BLOCK_M, 0), (BLOCK_M, DIM), (1, 0))
         tile_copy(q_bp, q_l1, [CBM, CD])
-
+    attn_score_l0c = tl.zeros((BLOCK_M, BLOCK_N), tl.float32)
     for cb_idx in range(CB):
         kv_idx = idx_in_conbine * CB + cb_idx
 
@@ -128,15 +128,14 @@ def _mm1_qkt(
 
         # attn_score = Q * K^T using L1 buffers
         attn_score_l0c = tl.dot(tile_to_tensor(q_l1, writable=False),
-                            tile_to_tensor(k_l1, writable=False),
-                            out_dtype=tl.float16)
+                            tile_to_tensor(k_l1, writable=False), attn_score_l0c)
 
         score_store_bp = tl.make_block_ptr(
             workspace_s + (cid * RING * CB * BLOCK_M * BLOCK_N
                            + ring_slot  * CB * BLOCK_M * BLOCK_N
                            + cb_idx  * BLOCK_M * BLOCK_N),
             (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
-        tl.store(score_store_bp, attn_score_l0c)
+        tl.store(score_store_bp, attn_score_l0c.to(workspace_s.dtype.element_ty))
 
     # all CB S-blocks written -> notify Vec1
     sync_block_set("cube", "vector", SEM_S_READY, PIPE.PIPE_FIX, PIPE.PIPE_MTE2)
@@ -146,7 +145,7 @@ def _mm1_qkt(
 def _mm2_pv(
     # inputs
     V,
-    v_l1, p_l1, pv_part_l0c,
+    v_l1, p_l1,
     workspace_p, workspace_pv,
     # task geometry
     cid, prev_idx_in_conbine, prev_batch_idx, kv_prev_head_idx,
@@ -167,6 +166,7 @@ def _mm2_pv(
     # wait workspace_pv[prev_ring_slot] slot free (Vec2 released after accumulating)
     sync_block_wait("vector", "cube", SEM_PV_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
 
+    pv_part_l0c = tl.zeros((BLOCK_M, DIM), tl.float32)
     for cb_idx in range(CB):
         prev_kv_idx = prev_idx_in_conbine * CB + cb_idx
 
@@ -185,14 +185,14 @@ def _mm2_pv(
         # pv_part = P * V using L1 buffers
         pv_part_l0c = tl.dot(tile_to_tensor(p_l1, writable=False),
                          tile_to_tensor(v_l1, writable=False),
-                         out_dtype=tl.float16)
+                         pv_part_l0c)
 
         pv_store_bp = tl.make_block_ptr(
             workspace_pv + cid * RING * CB * BLOCK_M * DIM
                             + prev_ring_slot * CB * BLOCK_M * DIM
                             + cb_idx * BLOCK_M * DIM,
             (BLOCK_M, DIM), (DIM, 1), (0, 0), (BLOCK_M, DIM), (1, 0))
-        tl.store(pv_store_bp, pv_part_l0c)
+        tl.store(pv_store_bp, pv_part_l0c.to(workspace_pv.dtype.element_ty))
 
     # all CB P*V blocks done -> notify Vec2; release workspace_p[prev_ring_slot]
     sync_block_set("cube", "vector", SEM_P_FREE,  PIPE.PIPE_MTE2, PIPE.PIPE_MTE3)
@@ -419,8 +419,6 @@ def flash_attention_fwd_3task_kernel(
     v_l1 = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, L1)
     p_l1 = tile_alloc([BLOCK_M, BLOCK_N], Q.dtype.element_ty, L1)
 
-    s_l0c = tile_alloc([BLOCK_M, BLOCK_N], tl.float32,         L0C)  # MM1 out
-    pv_l0c = tile_alloc([BLOCK_M, DIM],     tl.float32,         L0C)  # MM2 out
 
     # -- Vector side (UB registers): full online-softmax state ---------------
     # acc_o and running max span the full BLOCK_M rows; state per (ring_slot, cb_idx)
@@ -441,7 +439,8 @@ def flash_attention_fwd_3task_kernel(
         # -----------------------------------------------------------------
         #  Cube scope
         # -----------------------------------------------------------------
-        with tle.scope(core_mode="cube"):
+        with True:
+        #with tle.scope(core_mode="cube"):
             if g == 0:
                 # ---- init: one SEM_P_FREE token so Vec1 can write workspace_p on first tick ----
                 sync_block_set("cube", "vector", SEM_P_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_MTE3)
@@ -459,7 +458,7 @@ def flash_attention_fwd_3task_kernel(
 
                 _mm1_qkt(
                     Q, K,
-                    q_l1, k_l1, s_l0c,
+                    q_l1, k_l1,
                     workspace_s,
                     cid, idx_in_conbine, global_head_idx, batch_idx, head_idx, kv_head_idx,
                     ring_slot,
@@ -482,7 +481,7 @@ def flash_attention_fwd_3task_kernel(
 
                 _mm2_pv(
                     V,
-                    v_l1, p_l1, pv_l0c,
+                    v_l1, p_l1,
                     workspace_p, workspace_pv,
                     cid, prev_idx_in_conbine, prev_batch_idx, kv_prev_head_idx,
                     prev_ring_slot,
@@ -498,7 +497,8 @@ def flash_attention_fwd_3task_kernel(
         # -----------------------------------------------------------------
         #  Vector scope
         # -----------------------------------------------------------------
-        with tle.scope(core_mode="vector"):
+        with True:
+        #with tle.scope(core_mode="vector"):
             if g == 0:
                 # ---- init: one SEM_S_FREE and one SEM_PV_FREE token so MM1/MM2 can run on first tick ----
                 sync_block_set("vector", "cube", SEM_S_FREE,  PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
