@@ -441,8 +441,7 @@ def flash_attention_fwd_3task_kernel(
         # -----------------------------------------------------------------
         #  Cube scope
         # -----------------------------------------------------------------
-        #with al.scope(core_mode="cube"):
-        with True:
+        with tle.scope(core_mode="cube"):
             if g == 0:
                 # ---- init: one SEM_P_FREE token so Vec1 can write workspace_p on first tick ----
                 sync_block_set("cube", "vector", SEM_P_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_MTE3)
@@ -499,8 +498,7 @@ def flash_attention_fwd_3task_kernel(
         # -----------------------------------------------------------------
         #  Vector scope
         # -----------------------------------------------------------------
-        #with al.scope(core_mode="vector"):
-        with True:
+        with tle.scope(core_mode="vector"):
             if g == 0:
                 # ---- init: one SEM_S_FREE and one SEM_PV_FREE token so MM1/MM2 can run on first tick ----
                 sync_block_set("vector", "cube", SEM_S_FREE,  PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
