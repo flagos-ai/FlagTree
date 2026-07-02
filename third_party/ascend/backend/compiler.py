@@ -1,4 +1,4 @@
-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -66,6 +66,15 @@ from triton.backends.compiler import (
 from triton.runtime import driver
 from triton.runtime.cache import get_dump_manager
 from triton.tools.get_ascend_devices import is_compile_on_910_95
+
+
+# Environment variable to replace intermediate linalg IR with an external file.
+# When set, the compilation pipeline reads the specified .mlir file and uses it
+# instead of the IR generated from the frontend, enabling external IR injection
+# for debugging and validation.
+_TLE_REPLACE_IR_FILE = os.environ.get("TLE_REPLACE_IR_FILE", None)
+if _TLE_REPLACE_IR_FILE is not None:
+    os.environ["TRITON_ALWAYS_COMPILE"] = "1"
 
 
 # TODO: materialize the concrete min shape
@@ -514,6 +523,16 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
                 _compile_option_list += \
                     [f"--link-aicore-bitcode={bitcode}"]
 
+        disable_auto_cv_work_space_manage = metadata.get("disable_auto_cv_work_space_manage")
+        if disable_auto_cv_work_space_manage is not None:
+            _compile_option_list += \
+                [f"--disable-auto-cv-work-space-manage={disable_auto_cv_work_space_manage}"]
+
+        enable_tuning_mode = metadata.get("enable_tuning_mode")
+        if enable_tuning_mode is not None:
+            _compile_option_list += \
+                [f"--enable-tuning-mode={enable_tuning_mode}"]
+
         enable_auto_blockify = metadata["enable_auto_blockify"]
         if _is_auto_map_parallel_blocks_enabled():
             if (enable_auto_blockify is None or enable_auto_blockify):
@@ -580,6 +599,43 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             __get_metadata_attr_by_callback(lib, "_infer_sync_block_lock_init_function", metadata, "lock_init_val")
 
         return Path(bin_path).read_bytes()
+
+
+def _compile_linalg_to_npu_bin(linalg: str, metadata, opt):
+    """Compile linalg IR to NPU binary with optional external IR replacement.
+
+    When the environment variable TLE_REPLACE_IR_FILE is set, replaces the
+    intermediate linalg IR with the content of the specified file before
+    compilation. This enables injecting externally generated IR into the
+    compilation pipeline for debugging and validation.
+
+    Delegates to the appropriate platform-specific compilation function
+    (910_95 or A2_A3) after the replacement.
+    """
+    if _TLE_REPLACE_IR_FILE is not None:
+        replace_path = Path(_TLE_REPLACE_IR_FILE)
+        if not replace_path.is_file():
+            raise FileNotFoundError(
+                f"TLE_REPLACE_IR_FILE={_TLE_REPLACE_IR_FILE} does not exist"
+            )
+        print(f"[TLE] Replacing linalg IR with external file: {_TLE_REPLACE_IR_FILE}")
+        linalg = replace_path.read_text()
+        # Override compile options for externally injected IR
+        metadata["num_stages"] = 1
+        metadata["multibuffer"] = False
+        metadata["enable_tuning_mode"] = True
+        metadata["enable_ubuf_saving"] = True
+        metadata["unit_flag"] = False
+        metadata["enable_auto_bind_sub_block"] = True
+        metadata["enable_hivm_auto_cv_balance"] = False
+        metadata["limit_auto_multi_buffer_only_for_local_buffer"] = False
+        metadata["disable_auto_inject_block_sync"] = True
+        metadata["disable_auto_cv_work_space_manage"] = True
+
+    if opt.compile_on_910_95:
+        return linalg_to_bin_enable_npu_compile_910_95(linalg, metadata, opt)
+    else:
+        return linalg_to_bin_enable_npu_compile_A2_A3(linalg, metadata, opt)
 
 
 def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
@@ -728,6 +784,16 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
         if disable_size_align_for_cast is not None:
             _compile_option_list += \
                 [f"--disable-size-align-for-cast={disable_size_align_for_cast}"]
+
+        disable_auto_cv_work_space_manage = metadata.get("disable_auto_cv_work_space_manage")
+        if disable_auto_cv_work_space_manage is not None:
+            _compile_option_list += \
+                [f"--disable-auto-cv-work-space-manage={disable_auto_cv_work_space_manage}"]
+
+        enable_tuning_mode = metadata.get("enable_tuning_mode")
+        if enable_tuning_mode is not None:
+            _compile_option_list += \
+                [f"--enable-tuning-mode={enable_tuning_mode}"]
 
         if _is_auto_map_parallel_blocks_enabled():
             _compile_option_list += ["--enable-auto-blockify-loop"]
@@ -1034,12 +1100,8 @@ class AscendBackend(BaseBackend):
                 stages["mlirbc"] = lambda src, metadata: linalg_to_bc_by_triton_mlir_opt(src, metadata, options)
                 # Step 2: Convert Bytecode back to MLIR text using bishengir-opt
                 stages["bcmlir"] = lambda src, metadata: bc_to_linalg_by_bishengir_opt(src, metadata, options)
-            if options.compile_on_910_95:
-                stages["npubin"] = (
-                    lambda src, metadata: linalg_to_bin_enable_npu_compile_910_95(src, metadata, options))
-            else:
-                stages["npubin"] = (
-                    lambda src, metadata: linalg_to_bin_enable_npu_compile_A2_A3(src, metadata, options))
+            stages["npubin"] = (
+                lambda src, metadata: _compile_linalg_to_npu_bin(src, metadata, options))
         else:
             raise NotImplementedError(f"Backend '{self.target.backend}' is not supported. "
                                       "Please ensure the target backend is set to 'npu'.")
