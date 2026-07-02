@@ -24,7 +24,7 @@ def _get_flagtree_root() -> str:
 class FlagtreeConfigs:
     default_backends: tuple = ("nvidia", "amd", "tileir")
     plugin_backends: tuple = ("cambricon", "ascend", "aipu", "tsingmicro", "enflame", "hcu", "thrive")
-    use_cuda_toolkit_backends: tuple = ('aipu', )
+    use_cuda_toolkit_backends: tuple = ('aipu', 'tileir')
     language_extra_backends: tuple = ('xpu', 'mthreads', "cambricon")
     ext_sourcedir: str = "triton/_C/"
     flagtree_root_dir: str = field(default_factory=_get_flagtree_root)

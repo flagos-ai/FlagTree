@@ -32,7 +32,8 @@ FlagTree's normal NVIDIA assemblers, managed by `setup.py` at:
 - `third_party/nvidia/backend/bin/ptxas`
 - `third_party/nvidia/backend/bin/ptxas-blackwell`
 
-Initialize the submodule before building:
+The pinned cuda-tile submodule is required. Initialize it explicitly before
+every fresh local or CI build:
 
 ```bash
 git submodule update --init --recursive \

@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   tileir-build-and-test:
-    runs-on: hopper
+    runs-on: tileir3.6
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
@@ -31,6 +31,11 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: tileir
+
+      - name: Initialize TileIR submodule
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: git submodule update --init --recursive third_party/tileir/third_party/cuda-tile
 
       - name: FlagTree Build on TileIR
         if: steps.check_backend.outputs.should_skip != 'true'

@@ -650,7 +650,7 @@ def download_and_copy_dependencies():
 
 
 if helper.flagtree_backend:
-    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise"):
+    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir"):
         default_backends = helper.configs.non_tileir_default_backends()
         backends = [
             *BackendInstaller.copy(default_backends + tuple(helper.configs.extend_backends)),
