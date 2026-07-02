@@ -1,0 +1,7 @@
+# Prebuilt SDNN objects and archives (downloaded via setup_helper.py)
+*.o
+libTritonSharedForXPU.a
+lib/Analysis/NewAnalysis/SDNN/libTritonXPUAnalysisSDNN.a
+
+# Download cache from BOS (xpu-sdnn-objects_*.tar.gz)
+xpu-sdnn-objects

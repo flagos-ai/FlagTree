@@ -427,7 +427,9 @@ class CMakeBuild(build_ext):
         build_ext.finalize_options(self)
 
     def run(self):
-        download_and_copy_dependencies()
+        active_backend = os.environ.get("FLAGTREE_BACKEND", "")
+        if active_backend not in ("xpu", ):
+            download_and_copy_dependencies()
 
         try:
             out = subprocess.check_output(["cmake", "--version"])

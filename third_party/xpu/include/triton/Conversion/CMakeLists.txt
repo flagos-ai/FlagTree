@@ -1,0 +1,2 @@
+add_subdirectory(TritonXPUToLLVM)
+add_subdirectory(TritonToTritonXPU)

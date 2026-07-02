@@ -25,6 +25,9 @@ set(FLAGCX_ENABLED ON)
 endif()
 
 set(FLAGTREE_TLE ON)
+if(FLAGTREE_BACKEND STREQUAL "xpu")
+  set(FLAGTREE_TLE OFF)
+endif()
 if(FLAGTREE_TLE)
   add_definitions(-D__TLE__)
   list(APPEND LLVM_TABLEGEN_FLAGS -D__TLE__)
@@ -171,6 +174,15 @@ endif()
 ## flagtree third_party include dir
 set(BACKEND_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/include)
 if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
+  # XPU backend Analysis headers (Utility.h, etc.) are structurally different
+  # from the main-tree headers (not a superset), so core lib compilation needs
+  # the main-tree include as well.  XPU's own sub-cmake uses
+  # include_directories(BEFORE ...) to ensure XPU targets pick up the XPU
+  # versions first.  Other backends provide superset headers and do not need
+  # this.
+  if(FLAGTREE_BACKEND STREQUAL "xpu")
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+  endif()
   include_directories(${BACKEND_INCLUDE_DIR})
 else()
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -279,10 +291,10 @@ endfunction()
 # Disable warnings that show up in external code (gtest;pybind11)
 if(NOT MSVC)
   if(FLAGTREE_BACKEND)
-    if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax)$")
+    if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu)$")
       # Suppress visibility warnings in gluon_ir.cc (GCC 13+ -Wattributes on pybind11 hidden types)
       # Also suppress -Wcomment for generated TritonGPUAttrDefs.h.inc (ASCII diagrams in TableGen output)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-attributes -Wno-comment")
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-attributes -Wno-comment -Wno-error=odr")
     else()
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default")
     endif()
@@ -307,11 +319,36 @@ include_directories(${PROJECT_SOURCE_DIR}/third_party)
 include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
 
 # link_directories(${LLVM_LIBRARY_DIR})
-if (FLAGTREE_BACKEND MATCHES "^(cambricon|aipu|tsingmicro|enflame|rpu|thrive)$")
+if (FLAGTREE_BACKEND MATCHES "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive)$")
   include_directories(${PROJECT_SOURCE_DIR}/include)
   include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+  if(FLAGTREE_BACKEND STREQUAL "xpu")
+    include_directories(${PROJECT_SOURCE_DIR}/third_party/nvidia/include)
+    include_directories(${PROJECT_BINARY_DIR}/third_party/nvidia/include) # Tablegen'd files
+    add_subdirectory(third_party/nvidia/include)
+    include_directories(${PROJECT_SOURCE_DIR}/third_party/amd/include)
+    include_directories(${PROJECT_BINARY_DIR}/third_party/amd/include) # Tablegen'd files
+    add_subdirectory(third_party/amd/include)
+  endif()
   add_subdirectory(include)
   add_subdirectory(lib)
+  if(FLAGTREE_BACKEND STREQUAL "xpu")
+    add_subdirectory(third_party/nvidia/lib/Dialect/NVGPU/IR)
+    add_subdirectory(third_party/nvidia/lib/Dialect/NVWS/IR)
+    add_subdirectory(third_party/nvidia/lib/Dialect/NVWS/Transforms)
+    add_subdirectory(third_party/amd/lib/Dialect/TritonAMDGPU)
+    foreach(_flagtree_xpu_core_target IN ITEMS
+        TritonGPUTransforms)
+      if(TARGET ${_flagtree_xpu_core_target})
+        add_dependencies(${_flagtree_xpu_core_target}
+          NVGPUTableGen
+          NVGPUAttrDefsIncGen
+          NVWSTableGen
+          NVWSAttrDefsIncGen
+          NVWSTransformsIncGen)
+      endif()
+    endforeach()
+  endif()
 elseif(NOT FLAGTREE_BACKEND)
   add_subdirectory(include)
   add_subdirectory(lib)
@@ -362,7 +399,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
     add_definitions(-D__PROTON__)
     add_subdirectory(third_party/proton)
   endif()
-  # We always build proton dialect
+  # We always build proton dialect because core Triton conversion libraries link
+  # ProtonIR. XPU-specific Proton GPU lowering wrappers are disabled inside the
+  # Proton plugin instead of skipping the whole dialect.
   if(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "hcu")
     list(APPEND TRITON_PLUGIN_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")
     include_directories(${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND})
@@ -492,6 +531,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
       LLVMPasses
       LLVMXPUCodeGen
       LLVMXPUAsmParser
+
+      # NVIDIA compat (PTXAsmFormat for TritonInstrumentToLLVM)
+      TritonNVIDIACompat
     )
   elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
     list(APPEND TRITON_LIBRARIES
@@ -581,12 +623,23 @@ if(TRITON_BUILD_PYTHON_MODULE)
   add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
   add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                   ${PYTHON_SRC_PATH}/ir.cc
-                  ${PYTHON_SRC_PATH}/gluon_ir.cc
-                  ${PYTHON_SRC_PATH}/linear_layout.cc
                   ${PYTHON_SRC_PATH}/passes.cc
                   ${PYTHON_SRC_PATH}/interpreter.cc
-                  ${PYTHON_SRC_PATH}/llvm.cc
-                  ${PYTHON_SRC_PATH}/specialize.cc)
+                  ${PYTHON_SRC_PATH}/llvm.cc)
+  if(EXISTS "${PYTHON_SRC_PATH}/gluon_ir.cc")
+    target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/gluon_ir.cc)
+  endif()
+  if(EXISTS "${PYTHON_SRC_PATH}/linear_layout.cc")
+    target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/linear_layout.cc)
+  endif()
+  if(EXISTS "${PYTHON_SRC_PATH}/specialize.cc")
+    target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/specialize.cc)
+  endif()
+  if(FLAGTREE_BACKEND STREQUAL "xpu")
+    target_sources(triton PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xpu/python/src/mlir_pass_abi_shim.cc)
+    add_dependencies(triton TritonAMDGPUTableGen TritonAMDGPUAttrDefsIncGen)
+    target_link_libraries(triton PRIVATE TritonAMDGPUIR TritonAMDUtils)
+  endif()
 
   # Link triton with its dependencies
   target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})
