@@ -87,17 +87,39 @@ def tensor_from_pointer(pointer, shape, dtype, device):
     return torch.empty(0, dtype=dtype, device=device).set_(storage).view(shape)
 
 
+def _env_flag_enabled(name):
+    value = os.environ.get(name, "")
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def prepare_clang_bitcode(
     common,
     local_rank,
     bitcode_path,
+    source_path,
     dialect_function,
     public_api_names=None,
 ):
     bitcode_path = Path(bitcode_path).expanduser().resolve()
+    source_path = Path(source_path).expanduser().resolve()
+    assert source_path.is_file(), f"missing device source: {source_path}"
+
+    force = _env_flag_enabled("FORCE_BITCODE")
+    should_build = force or not bitcode_path.is_file()
+    reason = "forced" if force else "missing bitcode"
+
+    if not should_build and source_path.stat().st_mtime_ns > bitcode_path.stat().st_mtime_ns:
+        should_build = True
+        reason = "device source is newer"
+
     if local_rank == 0:
-        generated = dialect_function.make_bc(public_api_names)
-        assert generated == bitcode_path
+        if should_build:
+            print(f"[build] {bitcode_path} ({reason})", flush=True)
+            generated = dialect_function.make_bc(public_api_names)
+            assert generated == bitcode_path
+        else:
+            print(f"[reuse] {bitcode_path}", flush=True)
+
     common.nvshmem_barrier_all_wrapper()
     assert bitcode_path.is_file(), f"missing device bitcode: {bitcode_path}"
     return {bitcode_path.stem: str(bitcode_path)}
