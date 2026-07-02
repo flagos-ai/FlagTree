@@ -796,6 +796,7 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
       ④b inline + canonicalize           — clean up before linalg
       ⑤ add_triton_to_linalg_incubated       — Triton→Linalg (may create
                                            unresolved materialization casts)
+      ⑤c fold_staging_copy               — merge redundant GBM→staging→cbuf pairs
       ⑤b fold memref→ptr→memref chains   — eliminate casts created by ⑤
       ⑥ final canonicalize + CSE + DCE   — erase dead ops
 
@@ -906,6 +907,17 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
         print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: partial conversion "
               f"(this is expected — the pass creates cast chains that need "
               f"post-processing)", flush=True)
+
+    # ── ⑤c Fold staging memref.alloc + memref.copy pairs ─────────────────
+    #     TritonToLinalgIncubated creates staging allocs (default address
+    #     space) for tt.load -> memref.copy chains.  When the downstream
+    #     copy target has an explicit memory space (e.g. cbuf), the staging
+    #     is redundant.  This pass merges the two copies into one direct
+    #     GBM -> on-chip transfer, eliminating an alloc + copy + annotation.
+    pm = ir.pass_manager(context); pm.enable_debug()
+    ascend.passes.ttir.add_fold_staging_copy(pm)
+    pm.run(module)
+    print(f"[dump_linalg] ⑤c fold_staging_copy: verify={module.verify()}", flush=True)
 
     # ── ⑤b Run erase-linalg-casts one more time to reconcile any
     #     unrealized_conversion_cast ops that the partial linalg conversion

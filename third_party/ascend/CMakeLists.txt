@@ -51,6 +51,7 @@ add_triton_plugin(TritonAscend
   LINK_LIBS
   TritonToLinalgIncubated
   EraseLinalgCasts
+  FoldStagingCopy
   BiShengIRScopeDialect
   BiShengIRHIVMDialect
   ${_MLIRMeshDialect_LIB}

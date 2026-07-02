@@ -22,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # --- configurable knobs ------------------------------------------------------
-PYTHON="${PYTHON:-/root/miniconda3/envs/dlcompiler/bin/python}"
+PYTHON="${PYTHON:-$(which python3)}"
 export LLVM_SYSPATH="${LLVM_SYSPATH:-/root/.flagtree/ascend/llvm-a66376b0-ubuntu-aarch64-python311-compat}"
 export MAX_JOBS="${MAX_JOBS:-32}"
 
