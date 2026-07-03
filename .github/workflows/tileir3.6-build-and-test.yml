@@ -32,11 +32,6 @@ jobs:
         with:
           backend: tileir
 
-      - name: Initialize TileIR submodule
-        if: steps.check_backend.outputs.should_skip != 'true'
-        shell: bash
-        run: git submodule update --init --recursive third_party/tileir/third_party/cuda-tile
-
       - name: FlagTree Build on TileIR
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
@@ -47,7 +42,7 @@ jobs:
           env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
           /usr/local/cuda/bin/tileiras --version
           rm -rf ~/.triton/cache
-          MAX_JOBS=32 CMAKE_BUILD_PARALLEL_LEVEL=32 \
+          FLAGTREE_BACKEND=tileir MAX_JOBS=32 CMAKE_BUILD_PARALLEL_LEVEL=32 \
           TRITON_PTXAS_PATH="$PWD/third_party/nvidia/backend/bin/ptxas" \
           TRITON_PTXAS_BLACKWELL_PATH="$PWD/third_party/nvidia/backend/bin/ptxas-blackwell" \
           python3 -m pip install . --no-build-isolation

@@ -19,6 +19,8 @@
 
 When `FLAGTREE_BACKEND` is not set, FlagTree builds the default in-tree backend
 set, including `nvidia`, `amd`, and `tileir`.
+Setting `FLAGTREE_BACKEND=tileir` selects TileIR explicitly while retaining the
+NVIDIA and AMD backends required for per-kernel fallback.
 
 TileIR requires CUDA TileIR tooling from CTK 13.3. The validated toolchain is:
 
@@ -32,8 +34,9 @@ FlagTree's normal NVIDIA assemblers, managed by `setup.py` at:
 - `third_party/nvidia/backend/bin/ptxas`
 - `third_party/nvidia/backend/bin/ptxas-blackwell`
 
-The pinned cuda-tile submodule is required. Initialize it explicitly before
-every fresh local or CI build:
+`pip install` and `pip install -e` initialize the pinned cuda-tile submodule
+automatically through `setup.py`; no manual submodule command is needed. If you
+invoke CMake directly without `setup.py`, initialize the submodule first:
 
 ```bash
 git submodule update --init --recursive \
