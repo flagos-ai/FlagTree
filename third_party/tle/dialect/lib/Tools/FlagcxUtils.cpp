@@ -61,8 +61,8 @@ LLVM::CallOp getNumPesFunCall(mlir::Location loc,
 
 LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
                                 ConversionPatternRewriter &rewriter, Value comm,
-                                IntegerAttr barrier_index, IntegerAttr coopKind,
-                                IntegerAttr order, StringAttr barrierType) {
+                                size_t barrier_index, size_t coopKind,
+                                size_t order, llvm::StringRef barrierType) {
   auto ctx = rewriter.getContext();
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
@@ -71,11 +71,11 @@ LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i1Ty = IntegerType::get(ctx, 1);
   auto funcName = "";
-  if (barrierType.getValue() == "arrive") {
+  if (barrierType == "arrive") {
     funcName = "getIntraBarrierArriveSignalFunction";
-  } else if (barrierType.getValue() == "wait") {
+  } else if (barrierType == "wait") {
     funcName = "getIntraBarrierWaitSignalFunction";
-  } else if (barrierType.getValue() == "sync") {
+  } else if (barrierType == "sync") {
     funcName = "getIntraBarrierSyncSignalFunction";
   } else {
     llvm_unreachable("Unknown barrier type");

@@ -681,8 +681,9 @@ LogicalResult ExclusiveCumsumOp::verify() {
 LogicalResult DistributedBarrierOp::verify() {
   auto *op = getOperation();
   auto spaceAttr = op->getAttrOfType<StringAttr>("space");
-  if (spaceAttr && spaceAttr.getValue() != "device")
-    return DistributedBarrier::verifyDeviceSpace(op);
+
+  if (spaceAttr && spaceAttr.getValue() == "device")
+    return DistributedBarrier::verifyDeviceSpace(op, getSrc());
 
   auto kindAttr = op->getAttrOfType<StringAttr>("group_kind");
   auto rankAttr = op->getAttrOfType<IntegerAttr>("group_rank");

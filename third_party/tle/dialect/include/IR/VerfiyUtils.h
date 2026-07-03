@@ -18,7 +18,7 @@ llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result);
 }
 
 namespace DistributedBarrier {
-llvm::LogicalResult verifyDeviceSpace(mlir::Operation *op);
+llvm::LogicalResult verifyDeviceSpace(mlir::Operation *op, mlir::Value src);
 }
 
 } // namespace mlir::triton::tle

@@ -16,4 +16,9 @@ LLVM::CallOp getNumPesFunCall(mlir::Location loc,
                               ConversionPatternRewriter &rewriter,
                               Value memPtrInt);
 
+LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
+                                ConversionPatternRewriter &rewriter, Value comm,
+                                size_t barrier_index, size_t coopKind,
+                                size_t order, llvm::StringRef barrierType);
+
 } // namespace mlir::triton::tle

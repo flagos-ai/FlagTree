@@ -180,8 +180,6 @@ struct ConvertTritonGPUToLLVM
                                                       benefit);
       mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
           typeConverter, patterns, benefit);
-      // mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(
-      //     typeConverter, patterns, benefit + 1);
       mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
           typeConverter, targetInfo, patterns, benefit);
       mlir::triton::tle::populateExtractTileOpToLLVMPatterns(
@@ -208,6 +206,8 @@ struct ConvertTritonGPUToLLVM
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(typeConverter,
                                                            patterns, benefit);
+      mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
     }
 #endif
 
