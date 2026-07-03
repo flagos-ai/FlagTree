@@ -28,7 +28,7 @@ triton_compiler = importlib.import_module("triton.compiler", package=__package__
 
 
 class scope:
-    """Frontend-only marker for `with tle.scope(core_mode=...)`."""
+    """Scope marker for `with tle.scope(core_mode=...)`."""
 
     def __init__(self, *, core_mode):
         if core_mode not in ("cube", "vector"):
@@ -55,6 +55,12 @@ def _validate_tle_scope(context):
     value = keywords["core_mode"]
     if not isinstance(value, ast.Constant) or value.value not in ("cube", "vector"):
         raise ValueError('tle.scope() core_mode must be the literal "cube" or "vector"')
+
+
+def _emit_tle_scope(generator, node):
+    from triton.language.extra.cann.extension.code_generator import handle_scope_with
+
+    return handle_scope_with(generator, node)
 
 
 def tle_patch_for_triton_compile():
@@ -124,7 +130,7 @@ class TleCodeGenerator(code_generator.CodeGenerator):
         try:
             if _is_tle_attr_call(context, "scope") and self.visit(context.func) is scope:
                 _validate_tle_scope(context)
-                return self.visit_compound_statement(node.body)
+                return _emit_tle_scope(self, node)
             return super().visit_With(node)
         finally:
             # pop hints to indicate that we're out of the with scope

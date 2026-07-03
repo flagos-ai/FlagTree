@@ -286,11 +286,12 @@ def test_top_level_tile_dsl_exports():
     assert "tle.dsa_copy" not in mlir
 
 
-def test_tle_scope_frontend_marker_does_not_emit_scope_op():
+def test_tle_scope_emits_scope_op():
     mlir = compile_kernel(tle_scope_region, {"x": "*fp32"}, {})
     assert_public_dsa_uses_tileir(mlir)
     assert "tile.copy" in mlir
-    assert "scope.scope" not in mlir
+    assert "scope.scope" in mlir
+    assert "tcore_type = #hivm.tcore_type<CUBE>" in mlir
 
 
 def test_subview_constexpr_sizes_stay_ranked():
