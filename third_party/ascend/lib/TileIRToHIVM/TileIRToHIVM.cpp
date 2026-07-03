@@ -28,9 +28,10 @@
 //   Step 2: tile.to_tensor → RAUW: replace all uses of result with src operand,
 //           then erase. The src is now memref (from Step 1), consumers get
 //           memref instead of tensor, bridged by UnrealizedConversionCast.
-//   Step 3: tile.copy/tile.store_tensor → hivm.copy.  !tt.ptr sources are treated as GM memrefs
-//           via UnrealizedConversionCast so later passes still see a DMA op
-//           rather than a generic memref.copy.
+//   Step 3: tile.copy → hivm.copy (tile.* src, on-chip DMA)
+//                    or memref.copy (!tt.ptr src, GM↔local DMA; the ptr is
+//                    bridged to memref via UnrealizedConversionCast)
+//           tile.store_tensor → hivm.copy.
 //   Step 4: tile.load/store → hivm.load/store
 //   Step 5: sync ops → hivm sync ops
 //===----------------------------------------------------------------------===//
@@ -141,6 +142,14 @@ static Value getAsMemRef(Value val, PatternRewriter &rewriter) {
       val.getLoc(), targetTy, val)->getResult(0);
 }
 
+static bool isTritonPointerLike(Type ty) {
+  if (isa<triton::PointerType>(ty))
+    return true;
+  if (auto rankedTy = dyn_cast<RankedTensorType>(ty))
+    return isa<triton::PointerType>(rankedTy.getElementType());
+  return false;
+}
+
 static hivm::PIPE mapPipe(int64_t tilePipe) {
   switch (static_cast<tile::Pipe>(tilePipe)) {
   case tile::Pipe::PIPE_M:    return hivm::PIPE::PIPE_M;
@@ -196,10 +205,9 @@ struct TileToTensorEliminate : OpRewritePattern<tile::ToTensorOp> {
 };
 
 // =============================================================================
-// Step 3: tile.copy → hivm.copy
+// Step 3: tile.copy → hivm.copy / memref.copy
 //   - tile.* source  → hivm.copy (on-chip buffer DMA)
-//   - !tt.ptr source → hivm.copy (GM→local DMA; the ptr is converted to a
-//     GM memref via UnrealizedConversionCast)
+//   - !tt.ptr source → memref.copy (GM→local DMA; later passes lower it)
 // =============================================================================
 struct TileCopyToHIVM : OpRewritePattern<tile::CopyOp> {
   using OpRewritePattern<tile::CopyOp>::OpRewritePattern;
@@ -208,6 +216,11 @@ struct TileCopyToHIVM : OpRewritePattern<tile::CopyOp> {
                                 PatternRewriter &rewriter) const final {
     Value srcMem = getAsMemRef(op.getSrc(), rewriter);
     Value dstMem = getAsMemRef(op.getDst(), rewriter);
+
+    if (isTritonPointerLike(op.getSrc().getType())) {
+      rewriter.replaceOpWithNewOp<memref::CopyOp>(op, srcMem, dstMem);
+      return success();
+    }
 
     rewriter.create<hivm::CopyOp>(op.getLoc(), TypeRange{}, srcMem, dstMem);
     rewriter.eraseOp(op);

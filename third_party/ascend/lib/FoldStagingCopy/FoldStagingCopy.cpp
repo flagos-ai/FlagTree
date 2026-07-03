@@ -44,6 +44,7 @@
 
 #include "ascend/include/FoldStagingCopy/Passes.h"
 
+#include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -54,6 +55,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 using namespace mlir;
+namespace hivm = mlir::hivm;
 
 namespace mlir {
 namespace triton {
@@ -69,6 +71,19 @@ static bool isAnnotationMark(Operation *op) {
   return op->getName().getStringRef() == "annotation.mark";
 }
 
+static Value castDefaultMemrefToGM(Value value, Location loc,
+                                   PatternRewriter &rewriter) {
+  auto memrefTy = dyn_cast<MemRefType>(value.getType());
+  if (!memrefTy || memrefTy.getMemorySpace())
+    return value;
+
+  auto gmSpace =
+      hivm::AddressSpaceAttr::get(rewriter.getContext(), hivm::AddressSpace::GM);
+  auto gmTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
+                              memrefTy.getLayout(), gmSpace);
+  return rewriter.create<memref::MemorySpaceCastOp>(loc, gmTy, value);
+}
+
 //===----------------------------------------------------------------------===//
 // Rewrite pattern: fold staging alloc + copy1 + to_tensor + copy2
 //===----------------------------------------------------------------------===//
@@ -78,6 +93,9 @@ struct FoldStagingCopyPattern : public OpRewritePattern<memref::CopyOp> {
   LogicalResult matchAndRewrite(memref::CopyOp copyOp,
                                 PatternRewriter &rewriter) const override {
     Value stage = copyOp.getSource();
+    auto stageCast = stage.getDefiningOp<memref::MemorySpaceCastOp>();
+    if (stageCast)
+      stage = stageCast.getSource();
     Value dst = copyOp.getTarget();
 
     // ① Destination must have an explicit memory space (on-chip buffer).
@@ -85,13 +103,16 @@ struct FoldStagingCopyPattern : public OpRewritePattern<memref::CopyOp> {
     if (!dstType || !dstType.getMemorySpace())
       return failure();
 
-    // ② Source must be a memref.alloc in default address space.
+    // ② Source must be a staging memref.alloc in default/GM address space.
     auto stageAlloc = stage.getDefiningOp<memref::AllocOp>();
     if (!stageAlloc)
       return failure();
     auto stageType = stageAlloc.getType();
-    if (stageType.getMemorySpace())
-      return failure(); // already has an explicit space — not a staging alloc
+    if (auto stageSpace = stageType.getMemorySpace()) {
+      auto stageAddr = dyn_cast<hivm::AddressSpaceAttr>(stageSpace);
+      if (!stageAddr || stageAddr.getAddressSpace() != hivm::AddressSpace::GM)
+        return failure();
+    }
 
     // ③ Enumerate the source copy: memref.copy %src, %stage.
     //    Collect all users of %stage to verify the expected pattern.
@@ -117,6 +138,8 @@ struct FoldStagingCopyPattern : public OpRewritePattern<memref::CopyOp> {
           otherUses.push_back(user);
         else
           stageMark = user;
+      } else if (stageCast && user == stageCast.getOperation()) {
+        continue;
       } else if (auto tt = dyn_cast<bufferization::ToTensorOp>(user)) {
         if (toTensor)
           otherUses.push_back(user);
@@ -142,7 +165,7 @@ struct FoldStagingCopyPattern : public OpRewritePattern<memref::CopyOp> {
     }
 
     Location loc = copyOp.getLoc();
-    Value src = srcCopy.getSource();
+    Value src = castDefaultMemrefToGM(srcCopy.getSource(), loc, rewriter);
     Value dstCbuf = dst;
 
     // ④ Create the merged copy: memref.copy %src, %dst(#space)
@@ -184,6 +207,8 @@ struct FoldStagingCopyPattern : public OpRewritePattern<memref::CopyOp> {
     // ⑧ Erase the dead ops.
     rewriter.eraseOp(copyOp);
     rewriter.eraseOp(srcCopy);
+    if (stageCast)
+      rewriter.eraseOp(stageCast);
     if (stageMark)
       rewriter.eraseOp(stageMark);
     if (tensorMark)
