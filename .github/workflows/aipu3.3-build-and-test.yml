@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   aipu-build-and-test:
-    runs-on: aipu
+    runs-on: aipu3.3
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
