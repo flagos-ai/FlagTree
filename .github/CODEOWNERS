@@ -2,20 +2,20 @@
 # the repo. Unless a later match takes precedence,
 # @global-owner1 and @global-owner2 will be requested for
 # review when someone opens a pull request.
-*       @zhzhcookie
+* @menchunlei @zhzhcookie @sunnycase
 
 # --------
 # Setup
 # --------
-setup.py @Galaxy1458
-python/setup_tools/** @Galaxy1458
+setup.py @Galaxy1458 @zhzhcookie
+python/setup_tools/** @Galaxy1458 @zhzhcookie
 
 # -----------
 # tle
 # -----------
-python/test/tle @sunnycase @Galaxy1458
-python/triton/experimental/tle @sunnycase @Galaxy1458
-third_party/tle @sunnycase @Galaxy1458
+python/test/tle @sunnycase @Galaxy1458 @i3wanna2
+python/triton/experimental/tle @sunnycase @Galaxy1458 @i3wanna2
+third_party/tle @sunnycase @Galaxy1458 @i3wanna2
 
 # -----------
 # third_party
