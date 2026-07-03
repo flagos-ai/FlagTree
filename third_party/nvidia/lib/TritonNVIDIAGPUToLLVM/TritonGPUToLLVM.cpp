@@ -25,6 +25,7 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/DeviceIntraBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/GetLocalRankOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
@@ -206,7 +207,7 @@ struct ConvertTritonGPUToLLVM
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(typeConverter,
                                                            patterns, benefit);
-      mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
+      mlir::triton::tle::populateDeviceIntraBarrierOpToLLVMPatterns(
           typeConverter, patterns, benefit);
     }
 #endif
