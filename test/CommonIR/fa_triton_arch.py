@@ -613,7 +613,7 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
     signature = _dump_signature()
     constants = {
         "CB": combine_batch, "NUM_KV_BLOCKS": num_kv_blocks, "IS_CAUSAL": is_causal,
-        "BLOCK_M": 128, "BLOCK_N": 128, "DIM": 128,
+        "BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N, "DIM": DIM,
     }
 
     src = ASTSource(flash_attention_fwd_3task_kernel, signature, constants)
@@ -942,6 +942,9 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
         f.write(mlir)
     print(f"[dump_linalg] verify={ok}; wrote Linalg IR ({len(mlir)} chars) to {path}")
     return mlir
+
+
+# def gen_bin():
 
 
 # =============================================================================

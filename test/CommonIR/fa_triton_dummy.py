@@ -2,6 +2,7 @@ import argparse
 import os
 
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 
@@ -53,6 +54,12 @@ CD = tl.constexpr(DIM)
 # ---- arch22 "3-task" schedule constants -----------------------------------
 RING: tl.constexpr = tl.constexpr(3)  # depth of the task ring  (the "3-task" of the schedule)
 
+np.random.seed(21)
+DEVICE = "npu"
+torch.manual_seed(20)
+torch_npu.npu.set_device(0)
+torch.set_printoptions(sci_mode=False, precision=4, linewidth=300)
+
 
 # =============================================================================
 #  Dummy kernel: contains only the prologue up to (but not including) the
@@ -78,6 +85,7 @@ def flash_attention_fwd_3task_kernel(
     num_kv_blocks,            # KV blocks per output tile  (= seq_len // BLOCK_N)
     conbined_block_num,       # tasks per output tile      (= num_kv_blocks // CB)
     block_num_per_core, rem_block_num,
+    _pad0, _pad1, _pad2,     # dead args matching linalg IR layout (arg35-37)
     CB:            tl.constexpr,   # KV blocks per task (combine_batch)
     NUM_KV_BLOCKS: tl.constexpr,   # = num_kv_blocks  (used in causal mask)
     IS_CAUSAL:     tl.constexpr,
@@ -86,7 +94,6 @@ def flash_attention_fwd_3task_kernel(
     DIM:           tl.constexpr,
 ):
     cid = tl.program_id(0)
-    '''
     # ---- static task distribution  (== AICPU GetFASectionInfo metadata) ----
     block_start       = cid * block_num_per_core + tl.where(cid < rem_block_num, cid, rem_block_num)
     block_num         = block_num_per_core + tl.where(cid < rem_block_num, 1, 0)
@@ -104,16 +111,11 @@ def flash_attention_fwd_3task_kernel(
     s_l0c  = tile_alloc([BLOCK_M, BLOCK_N], tl.float32, L0C)  # MM1 out
     pv_l0c = tile_alloc([BLOCK_M, DIM],     tl.float32, L0C)  # MM2 out
 
-    # -- Vector side (UB registers): full online-softmax state ---------------
-    # acc_o and running max span the full BLOCK_M rows; state per (ring_slot, cb_idx)
-    # stored as flat GM-backed workspaces; running max uses a ping-pong register
-    # pair (one per kv parity).
-    acc_o         = tl.zeros((BLOCK_M, DIM), tl.float32)
-    softmax_denom = tl.zeros((BLOCK_M, 1),   tl.float32)   # running denominator
-    # neg_max_even/odd: running -max*scale for even/odd kv index, reset each tile
-    neg_max_even  = tl.full((BLOCK_M, 1), 2**30, tl.float32)
-    neg_max_odd   = tl.full((BLOCK_M, 1), 2**30, tl.float32)
-    '''
+    # Scope markers to trigger mix-mode (cube+vector) compilation
+    with tle.scope(core_mode="cube"):
+        pass
+    with tle.scope(core_mode="vector"):
+        pass
 
 
 # =============================================================================
@@ -517,9 +519,9 @@ def flash_attention_fwd(q, k, v, combine_batch, is_causal=False):
     out = torch.empty_like(q)
     # GM ping-pong workspaces (taskId % 2), one slice per core.
     # workspace_s: MM1 output (Q*K^T), fp16 matching tl.dot out_dtype
-    workspace_s       = torch.empty((NUM_CORES, RING, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
-    workspace_p       = torch.empty((NUM_CORES, RING, BLOCK_M, BLOCK_N), dtype=q.dtype,        device=q.device)
-    workspace_pv      = torch.empty((NUM_CORES, RING, BLOCK_M, DIM),     dtype=torch.float16, device=q.device)
+    workspace_s       = torch.empty((NUM_CORES, RING, CB, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
+    workspace_p       = torch.empty((NUM_CORES, RING, CB, BLOCK_M, BLOCK_N), dtype=q.dtype,        device=q.device)
+    workspace_pv      = torch.empty((NUM_CORES, RING, CB, BLOCK_M, DIM),     dtype=torch.float16, device=q.device)
     workspace_rescale = torch.empty((NUM_CORES, RING, CB, BLOCK_M),      dtype=torch.float32, device=q.device)
     workspace_expsum  = torch.empty((NUM_CORES, RING, CB, BLOCK_M),      dtype=torch.float32, device=q.device)
     sm_scale = (1.0 / D) ** 0.5
@@ -534,12 +536,13 @@ def flash_attention_fwd(q, k, v, combine_batch, is_causal=False):
         out.stride(0), out.stride(1), out.stride(2), out.stride(3),
         num_seq_blocks, Hq, Hq // Hkv,
         num_kv_blocks, conbined_block_num, block_num_per_core, rem_block_num,
+        0, 0, 0,  # _pad0, _pad1, _pad2 — dead args for linalg IR layout
         CB=CB,
         NUM_KV_BLOCKS=num_kv_blocks,
         IS_CAUSAL=is_causal,
-        BLOCK_M=128,
-        BLOCK_N=128,
-        DIM=128,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        DIM=DIM,
     )
     return out
 
@@ -606,3 +609,4 @@ if __name__ == "__main__":
         print("Test Passed!")
     else:
         print("Reference check skipped.")
+        print(f"out nan: {out.isnan().any().item()}, max: {out.abs().max().item()}, sample: {out[0,0,0,:4]}")
