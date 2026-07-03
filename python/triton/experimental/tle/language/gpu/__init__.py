@@ -9,7 +9,6 @@ from .core import (
 )
 from .types import (layout, shared_layout, swizzled_shared_layout, tensor_memory_layout, nv_mma_shared_layout, scope,
                     buffered_tensor, buffered_tensor_type, smem, tmem)
-from . import tile
 
 # Backward-compat alias expected by existing tests/tutorials.
 storage_kind = memory_space
@@ -32,5 +31,4 @@ __all__ = [
     "buffered_tensor_type",
     "smem",
     "tmem",
-    "tile",
 ]

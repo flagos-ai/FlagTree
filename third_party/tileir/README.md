@@ -95,7 +95,7 @@ result is:
 ```text
 non-`cuda` Triton target                      -> unchanged
 `cuda` target, Triton kernel uses no TLE      -> TileIR
-`cuda` target, supported TLE subset only      -> TileIR
+`cuda` target, supported top-level `tle` subset only -> TileIR
 `cuda` target, other or unknown TLE usage     -> native NVIDIA
 ```
 
@@ -145,9 +145,9 @@ Compared with the imported upstream commit, FlagTree modifies 8 files and adds
   TileIR or native NVIDIA per kernel.
 - **TLE frontend:** Added `backend/extend_core.py` and
   `backend/extend_semantic.py`; `CudaTileSemantic` extends `TritonSemantic` with
-  view/token operations. Modified `backend/code_generator.py` to use it for
-  TileIR kernels and `triton_tileir.cc` to expose the corresponding C++ builder
-  methods.
+  the view/token operations exposed as `tle.<name>` through `tl.ext`. Modified
+  `backend/code_generator.py` to use it for TileIR kernels and
+  `triton_tileir.cc` to expose the corresponding C++ builder methods.
 - **Lowering:** Modified `lib/TritonToTileIR/TritonToTileIRPass.cpp` to add
   `math.erf` lowering and align flattened TensorDescriptor arguments with
   FlagTree's ABI.

@@ -12,7 +12,8 @@ the default, and tutorial 03 also accepts `--cache-dir`.
 
 Tests:
 
-- TileIR TLE view-token APIs: `make_view`, `load_view_tko`, `store_view_tko`
+- TileIR TLE view-token APIs: `tle.make_view`, `tle.load_view_tko`,
+  `tle.store_view_tko`
 - memory token chaining
 - expected native NVIDIA failure when TileIR routing is disabled
 

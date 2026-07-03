@@ -24,14 +24,14 @@ from triton.compiler.errors import CompilationError  # noqa: E402
 @triton.jit
 def _copy_with_token_kernel(x, y, n_elements, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(0)
-    x_view = tle.gpu.tile.make_view(
+    x_view = tle.make_view(
         base=x,
         shapes=[n_elements],
         strides=[1],
         tile_shape=[BLOCK_SIZE],
         tile_dim_map=[0],
     )
-    y_view = tle.gpu.tile.make_view(
+    y_view = tle.make_view(
         base=y,
         shapes=[n_elements],
         strides=[1],
@@ -39,8 +39,8 @@ def _copy_with_token_kernel(x, y, n_elements, BLOCK_SIZE: tl.constexpr):
         tile_dim_map=[0],
     )
 
-    start_token = tle.gpu.tile.create_mem_token()
-    values, load_token = tle.gpu.tile.load_view_tko(
+    start_token = tle.create_mem_token()
+    values, load_token = tle.load_view_tko(
         x_view,
         [pid],
         memToken=start_token,
@@ -48,8 +48,8 @@ def _copy_with_token_kernel(x, y, n_elements, BLOCK_SIZE: tl.constexpr):
         scope="device",
         has_result_token=True,
     )
-    joined = tle.gpu.tile.join_mem_tokens(start_token, load_token)
-    store_token = tle.gpu.tile.store_view_tko(
+    joined = tle.join_mem_tokens(start_token, load_token)
+    store_token = tle.store_view_tko(
         y_view,
         values + 1.0,
         [pid],
@@ -60,7 +60,7 @@ def _copy_with_token_kernel(x, y, n_elements, BLOCK_SIZE: tl.constexpr):
     )
     # The second store writes the same tile after the first store token to
     # demonstrate token-ordered memory side effects.
-    tle.gpu.tile.store_view_tko(
+    tle.store_view_tko(
         y_view,
         values + 2.0,
         [pid],

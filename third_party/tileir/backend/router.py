@@ -2,7 +2,7 @@
 
 Activation:
     FLAGTREE_USE_TILEIR=1   — opt non-TLE kernels into the TileIR compile path.
-                              Kernels that only use the supported tle.gpu.tile
+                              Kernels that only use the supported top-level TLE
                               subset also use TileIR; other TLE kernels fall back
                               to the nvidia backend.
     FLAGTREE_TILEIR_VERBOSE=1 — print routing decisions to stderr for debugging.
@@ -25,8 +25,8 @@ from triton.backends.compiler import GPUTarget
 # Routing operates on target labels, so only ``cuda`` is valid here.
 _CUDA_TARGET = "cuda"
 _TILEIR_EXT_MODULE = "triton.backends.tileir.extend_core"
-_TLE_TILE_MODULE = "triton.experimental.tle.language.gpu.tile"
-_TILEIR_SUPPORTED_TLE_TILE_ATTRS = frozenset({
+_TLE_LANGUAGE_MODULE = "triton.experimental.tle.language"
+_TILEIR_SUPPORTED_TLE_ATTRS = frozenset({
     "make_tensor_view",
     "make_partition_view",
     "make_view",
@@ -66,8 +66,8 @@ def _kernel_name(jit_fn) -> str:
 def kernel_tle_usage(jit_fn) -> TLEUsage:
     """Heuristic detection of TLE usage in a JIT'd function's source.
 
-    ``TLEUsage.TILEIR_SUBSET`` means every detected TLE operation is under
-    ``tle.gpu.tile`` and belongs to the TileIR-supported TKO view/token subset.
+    ``TLEUsage.TILEIR_SUBSET`` means every detected TLE operation belongs to
+    the TileIR-supported top-level TKO view/token subset.
     Any other TLE usage keeps the kernel on the native NVIDIA path.
 
     Result is cached on the JITFunction instance via ``_flagtree_tle_usage``.
@@ -97,9 +97,7 @@ def kernel_uses_tle(jit_fn) -> bool:
 def _global_obj_kind(obj) -> str | None:
     if isinstance(obj, ModuleType):
         module_name = getattr(obj, "__name__", "")
-        if module_name == _TLE_TILE_MODULE:
-            return "tle_tile_module"
-        if module_name == "triton.experimental.tle.language":
+        if module_name == _TLE_LANGUAGE_MODULE:
             return "tle_language_module"
         if module_name.startswith("triton.experimental.tle."):
             return "tle_other_module"
@@ -107,12 +105,8 @@ def _global_obj_kind(obj) -> str | None:
 
     obj_module = getattr(obj, "__module__", "")
     obj_name = getattr(obj, "__name__", "")
-    if obj_module == _TILEIR_EXT_MODULE and obj_name in _TILEIR_SUPPORTED_TLE_TILE_ATTRS:
+    if obj_module == _TILEIR_EXT_MODULE and obj_name in _TILEIR_SUPPORTED_TLE_ATTRS:
         return "supported_function"
-    if obj_module.startswith(_TLE_TILE_MODULE):
-        if obj_name in _TILEIR_SUPPORTED_TLE_TILE_ATTRS:
-            return "supported_function"
-        return "unsupported_function"
     if obj_module.startswith("triton.experimental.tle."):
         return "unsupported_function"
     return None
@@ -126,12 +120,11 @@ def _scan_source_for_tle(src: str, global_ns=None) -> TLEUsage:
     except SyntaxError:
         # `inspect.getsource` of a decorated function may include the decorator;
         # if ast can't parse, fall back to a substring check.
-        if any(f"tile.{name}" in src or f"tle.gpu.tile.{name}" in src for name in _TILEIR_SUPPORTED_TLE_TILE_ATTRS):
+        if any(f"tle.{name}" in src for name in _TILEIR_SUPPORTED_TLE_ATTRS):
             return TLEUsage.TILEIR_SUBSET
         return TLEUsage.OTHER if "tle." in src or "triton.experimental.tle" in src else TLEUsage.NONE
 
     tle_aliases = {"tle"}
-    tile_module_aliases = set()
     imported_supported = False
     imported_other = False
 
@@ -142,19 +135,19 @@ def _scan_source_for_tle(src: str, global_ns=None) -> TLEUsage:
                 for n in node.names:
                     if n.name == "tle":
                         tle_aliases.add(n.asname or n.name)
-            elif mod == "triton.experimental.tle.language.gpu" and any(n.name == "tile" for n in node.names):
+            elif mod == "triton.experimental.tle" and any(n.name == "language" for n in node.names):
                 for n in node.names:
-                    if n.name == "tile":
-                        tile_module_aliases.add(n.asname or n.name)
+                    if n.name == "language":
+                        tle_aliases.add(n.asname or n.name)
                     elif n.name == "*":
                         imported_other = True
                     else:
                         imported_other = True
-            elif mod == _TLE_TILE_MODULE:
+            elif mod == _TLE_LANGUAGE_MODULE:
                 for n in node.names:
                     if n.name == "*":
                         imported_other = True
-                    elif n.name in _TILEIR_SUPPORTED_TLE_TILE_ATTRS:
+                    elif n.name in _TILEIR_SUPPORTED_TLE_ATTRS:
                         imported_supported = True
                     else:
                         imported_other = True
@@ -162,12 +155,7 @@ def _scan_source_for_tle(src: str, global_ns=None) -> TLEUsage:
                 imported_other = True
         elif isinstance(node, ast.Import):
             for n in node.names:
-                if n.name == "triton.experimental.tle.language.gpu.tile":
-                    if n.asname:
-                        tile_module_aliases.add(n.asname)
-                    else:
-                        imported_other = True
-                elif n.name == "triton.experimental.tle.language":
+                if n.name == _TLE_LANGUAGE_MODULE:
                     if n.asname:
                         tle_aliases.add(n.asname)
                     else:
@@ -189,13 +177,10 @@ def _scan_source_for_tle(src: str, global_ns=None) -> TLEUsage:
         attrs.reverse()
         kind = _global_obj_kind(global_ns.get(base.id)) if global_ns else None
         is_tle_language = base.id in tle_aliases or kind == "tle_language_module"
-        is_tile_module = base.id in tile_module_aliases or kind == "tle_tile_module"
         is_tle_other_module = kind == "tle_other_module"
-        if is_tle_language and len(attrs) == 3 and attrs[:2] == ["gpu", "tile"]:
-            return "supported" if attrs[2] in _TILEIR_SUPPORTED_TLE_TILE_ATTRS else "other"
-        if is_tile_module and len(attrs) == 1:
-            return "supported" if attrs[0] in _TILEIR_SUPPORTED_TLE_TILE_ATTRS else "other"
-        if is_tle_language or is_tile_module or is_tle_other_module:
+        if is_tle_language and len(attrs) == 1:
+            return "supported" if attrs[0] in _TILEIR_SUPPORTED_TLE_ATTRS else "other"
+        if is_tle_language or is_tle_other_module:
             return "other"
         return None
 
