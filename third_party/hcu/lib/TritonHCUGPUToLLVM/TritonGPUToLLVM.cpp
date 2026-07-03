@@ -19,6 +19,7 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Pass/Pass.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
@@ -214,6 +215,9 @@ struct ConvertTritonHCUGPUToLLVM
           typeConverter, tlePatterns, targetInfo,
           patternBenefitPrioritizeOverLLVMConversions);
       mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
+          typeConverter, targetInfo, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateExclusiveCumsumOpToLLVMPatterns(
           typeConverter, targetInfo, tlePatterns,
           patternBenefitPrioritizeOverLLVMConversions);
       if (failed(

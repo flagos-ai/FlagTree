@@ -234,6 +234,15 @@ bool canUseBufferOps(Value ptr,
   // pointer(splatted) and non-uniform offset addition
 
   LDBG("Buffer op checks for: " << ptr);
+  // flagtree tle:
+  // tt.load(smem_ptr + offsets) matches the buffer op rewrite pattern,
+  // check the ptr's address space to avoid incorrectly matching a
+  // shared-memory write as a buffer store.
+  if (auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType()))
+    if (auto ptrTy = dyn_cast<triton::PointerType>(tensorTy.getElementType()))
+      if (ptrTy.getAddressSpace() == 3) // 3 = shared/LDS
+        return false;
+
   auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
   if (!addPtrOp)
     return false;

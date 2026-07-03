@@ -165,11 +165,18 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
                          rewriter.getIntegerAttr(type::u1Ty(ctx), 1));
       newFuncOp.setLinkage(LLVM::Linkage::External);
     } else {
+#if __TLE__
+      auto noinlineAttr = newFuncOp->getAttrOfType<BoolAttr>("noinline");
+      if (noinlineAttr && !noinlineAttr.getValue())
+        newFuncOp.setPassthroughAttr(
+            ArrayAttr::get(ctx, rewriter.getStringAttr("alwaysinline")));
+#else
       // The noinline attribute will be used by the LLVM codegen to prevent
       // inlining.
       // https://github.com/llvm/llvm-project/blob/main/mlir/lib/Dialect/LLVMIR/IR/LLVMInlining.cpp#L267
       newFuncOp.setPassthroughAttr(
           ArrayAttr::get(ctx, rewriter.getStringAttr("noinline")));
+#endif
       newFuncOp.setLinkage(LLVM::Linkage::Internal);
     }
 

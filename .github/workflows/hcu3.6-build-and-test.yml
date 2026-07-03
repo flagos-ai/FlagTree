@@ -50,5 +50,13 @@ jobs:
           python3 -m pytest -s python/test/tle/integration/test_tle_local_store.py
           python3 -m pytest -s python/test/tle/integration/test_tle_gemm.py
           python3 -m pytest -s python/test/tle/integration/test_tle_pipeline_e2e.py
+          python3 -m pytest -s python/test/tle/integration/test_tle_topk_smem_fallback.py
           python3 -m pytest -s python/test/tle/unit/test_tle_gpu_local_ptr.py
           python3 -m pytest -s python/test/tle/unit/test_tle_gpu_slot.py
+          python3 -m pytest -s python/test/tle/unit/test_tle_cumsum.py
+          python3 -m pytest -s python/test/tle/unit/test_extract_tile_dynamic_index.py
+          python3 -m pytest -s python/test/tle/unit/test_extract_tile_static_index.py
+          python3 -m pytest -s python/test/tle/unit/test_insert_tile_dynamic_index.py
+          python3 -m pytest -s python/test/tle/unit/test_insert_tile_static_index.py
+          python3 python/tutorials/tle/01-fft.py
+          python3 python/tutorials/tle/03-topk.py
