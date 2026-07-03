@@ -447,21 +447,16 @@ def handle_plugin_backend(editable):
     src_build_plugin_path = flagtree_backend_dir / flagtree_plugin_so
     if not src_build_plugin_path.exists():
         return
-    if flagtree_backend in ["iluvatar", "mthreads", "sunrise"]:
-        if editable is False:
-            dst_build_plugin_dir = Path(sysconfig.get_path("purelib")) / "triton" / "_C"
-            if not os.path.exists(dst_build_plugin_dir):
-                os.makedirs(dst_build_plugin_dir)
-            dst_build_plugin_path = dst_build_plugin_dir / flagtree_plugin_so
-            shutil.copy(src_build_plugin_path, dst_build_plugin_path)
-        if flagtree_backend in ("mthreads", ):
-            dst_install_plugin_dir = Path(
-                __file__).resolve().parent.parent.parent / "third_party" / flagtree_backend / "python" / "triton" / "_C"
-        else:
-            dst_install_plugin_dir = Path(__file__).resolve().parent.parent / "triton" / "_C"
-        if not os.path.exists(dst_install_plugin_dir):
-            os.makedirs(dst_install_plugin_dir)
-        shutil.copy(src_build_plugin_path, dst_install_plugin_dir)
+    if editable is False:
+        dst_build_plugin_dir = Path(sysconfig.get_path("purelib")) / "triton" / "_C"
+        if not os.path.exists(dst_build_plugin_dir):
+            os.makedirs(dst_build_plugin_dir)
+        dst_build_plugin_path = dst_build_plugin_dir / flagtree_plugin_so
+        shutil.copy(src_build_plugin_path, dst_build_plugin_path)
+    dst_install_plugin_dir = Path(__file__).resolve().parent.parent / "triton" / "_C"
+    if not os.path.exists(dst_install_plugin_dir):
+        os.makedirs(dst_install_plugin_dir)
+    shutil.copy(src_build_plugin_path, dst_install_plugin_dir)
 
 
 def set_env(env_dict: dict):
@@ -712,6 +707,7 @@ cache.store(
     post_hook=set_llvm_env,
 )
 
+# sunrise
 cache.store(
     file="sunrise_llvm22_dev_release",
     condition=("sunrise" == flagtree_backend),
