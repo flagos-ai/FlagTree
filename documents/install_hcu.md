@@ -88,6 +88,8 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 Refer to [Tests of hcu3.6 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/hcu3.6-build-and-test.yml)
 
+---
+
 ## 💫 HYGON（海光信息）[hcu](/third_party/hcu/) (Triton 3.1)
 
 - Based on Triton 3.1, x64

@@ -182,9 +182,7 @@ RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simpl
 |后端       |安装命令（版本号对应 git tag）|Triton<br>版本|libc.so & libstdc++.so|
 |:---------|:---------|:---------|:---------|
 |nvidia    |python3.12 -m pip install flagtree===0.6.0 $RES                 |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|nvidia    |python3.12 -m pip install flagtree===0.5.0+3.5 $RES             |3.5|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|nvidia    |python3.12 -m pip install flagtree===0.4.0+3.3 $RES             |3.3|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
-|nvidia    |python3.12 -m pip install flagtree===0.5.0+3.1 $RES             |3.1|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
+|iluvatar  |python3.12 -m pip install flagtree===0.6.0+iluvatar3.6 $RES     |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |iluvatar  |python3.12 -m pip install flagtree===0.5.1+iluvatar3.1 $RES     |3.1|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
 |iluvatar  |python3.10 -m pip install flagtree===0.5.1+iluvatar3.1 $RES     |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
 |mthreads  |python3.10 -m pip install flagtree===0.6.0+mthreads3.6 $RES     |3.6|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|

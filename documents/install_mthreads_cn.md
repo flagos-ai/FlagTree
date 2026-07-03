@@ -94,6 +94,8 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 参考 [Tests of mthreads3.6 backend](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/.github/workflows/mthreads3.6-build-and-test.yml)
 
+---
+
 ## 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/mthreads/) (Triton 3.2)
 
 - 对应的 Triton 版本为 3.2，基于 x64 平台
@@ -187,6 +189,8 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ### 3. 测试验证
 
 参考 [Tests of mthreads3.2 backend](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/.github/workflows/mthreads-build-and-test.yml)
+
+---
 
 ## 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/) (Triton 3.1)
 

@@ -90,6 +90,8 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 参考 [Tests of metax3.6 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/metax3.6-build-and-test.yml)
 
+---
+
 ## 💫 MetaX（沐曦股份）[metax](/third_party/metax/) (Triton 3.0)
 
 - 对应的 Triton 版本为 3.0，基于 x64 平台
