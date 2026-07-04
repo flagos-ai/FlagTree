@@ -327,6 +327,38 @@ static PyObject *copyMemory(PyObject *self, PyObject *args) {
   return Py_None;
 }
 
+static const std::unordered_map<std::string, rtLimitType_t> LimitTypeMap = {
+    {"LOW_POWER_TIMEOUT", rtLimitType_t::RT_LIMIT_TYPE_LOW_POWER_TIMEOUT},
+    {"WARP_STACK_SIZE", rtLimitType_t::RT_LIMIT_TYPE_SIMT_STACK_SIZE},
+    {"DVG_WARP_STACK_SIZE",
+     rtLimitType_t::RT_LIMIT_TYPE_SIMT_DVG_WARP_STACK_SIZE},
+    {"STACK_SIZE", rtLimitType_t::RT_LIMIT_TYPE_STACK_SIZE}};
+
+static PyObject *setDeviceLimit(PyObject *self, PyObject *args) {
+  int device; // device ID
+  const char *type_str;
+  uint32_t val;
+  if (!PyArg_ParseTuple(args, "isI", &device, &type_str, &val)) {
+    return NULL;
+  }
+
+  auto it = LimitTypeMap.find(type_str);
+  if (it == LimitTypeMap.end()) {
+    printf("Invalid limit type: %s.\n", type_str);
+    return NULL;
+  }
+
+  rtError_t rtRet = rtDeviceSetLimit(device, it->second, val);
+  if (rtRet != RT_ERROR_NONE) {
+    printf("rtDeviceSetLimit failed, 0x%x\n", rtRet);
+    return NULL;
+  }
+  if (PyErr_Occurred()) {
+    return NULL;
+  }
+  return Py_None;
+}
+
 static PyMethodDef NpuUtilsMethods[] = {
     {"load_kernel_binary", loadKernelBinary, METH_VARARGS,
      "Load NPU kernel binary into NPU driver"},

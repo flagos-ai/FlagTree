@@ -153,6 +153,18 @@ Greatest absolute difference: nan at index (0, 0, 5, 16)
 
 ## 问题分析
 
+### 已解决：IR引入scope后报 "expect '=' after SSA name" 错误
+
+升级至 CANN 9.1.0(?) 可以解决问题
+
+### 已解决：bishengir-compile Core Dump
+
+升级至 CANN 9.1.0(?) 可以解决问题
+
+### 已解决：`RT_LIMIT_TYPE_SIMT_WARP_STACK_SIZE` not found
+
+CANN 9(?)重命名了这个enum名，新名字是`RT_LIMIT_TYPE_SIMT_STACK_SIZE`
+
 ### 已解决: MTE DDR Out-of-Range (arg layout 不匹配)
 
 **根因**: Runtime JIT 打包 args 结构为:
