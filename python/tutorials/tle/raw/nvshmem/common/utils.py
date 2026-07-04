@@ -6,6 +6,20 @@ import torch
 import datetime
 import triton.knobs as knobs
 
+import warnings
+try:
+    from cuda.bindings import driver as cuda
+    from cuda.bindings import runtime as cudart
+except ImportError:
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"The cuda\.(cuda|cudart) module is deprecated.*",
+            category=FutureWarning,
+        )
+        from cuda import cuda as cuda
+        from cuda import cudart as cudart
+
 
 def load_library(library_path):
     library_path = Path(library_path).expanduser().resolve()
@@ -123,3 +137,58 @@ def prepare_clang_bitcode(
     common.nvshmem_barrier_all_wrapper()
     assert bitcode_path.is_file(), f"missing device bitcode: {bitcode_path}"
     return {bitcode_path.stem: str(bitcode_path)}
+
+
+def CUDA_CHECK(err):
+    if isinstance(err, cuda.CUresult):
+        if err != cuda.CUresult.CUDA_SUCCESS:
+            raise RuntimeError(f"Cuda Error: {err}: {cuda.cuGetErrorName(err)}")
+    elif isinstance(err, cudart.cudaError_t):
+        if err != cudart.cudaError_t.cudaSuccess:
+            raise RuntimeError(f"Cuda Error: {err}: {cudart.cudaGetErrorString(err)}")
+    else:
+        raise RuntimeError(f"Unknown error type: {err}")
+
+
+def _set_signal_cuda_ptr(signal_ptr, signal, stream):
+    (err, ) = cuda.cuStreamWriteValue64(
+        stream.cuda_stream,
+        signal_ptr,
+        signal,
+        cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
+    )
+    CUDA_CHECK(err)
+
+
+def print_perf(
+    name: str,
+    value: float,
+    group,
+    rank: int,
+    world_size: int,
+    unit: str = "ms",
+):
+    for index in range(world_size):
+        torch.distributed.barrier(group=group)
+        if rank == index:
+            print(f"{name} #{rank}: {value:.3f} {unit}", flush=True)
+
+
+def print_perf_mean(
+    name: str,
+    value: float,
+    group,
+    rank: int,
+    world_size: int,
+    unit: str = "ms",
+):
+    device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
+    value_tensor = torch.tensor(float(value), device=device, dtype=torch.float64)
+    torch.distributed.all_reduce(
+        value_tensor,
+        op=torch.distributed.ReduceOp.SUM,
+        group=group,
+    )
+    mean_value = (value_tensor / world_size).item()
+    if rank == 0:
+        print(f"{name} mean: {mean_value:.3f} {unit}", flush=True)

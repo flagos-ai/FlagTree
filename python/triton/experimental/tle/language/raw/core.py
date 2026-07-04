@@ -70,12 +70,14 @@ def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic):
         source_id = func.register_pending_source(hint=hint)
         dsl_region_op = func.create_region_deferred(_semantic.builder, source_id, handles, alias_indices, hint)
     else:
-        if func.compiler.lower() == "nvcc" or (func.compiler.lower() == "clang" and func.target.lower() == "bc"):
-            patch_hash_method_for_pointer_type()
-            module = import_from_path(func.extern_file)
-            target_fn = getattr(module, func.extern_func_name)
-            ret = target_fn(*args, _semantic=_semantic)
-            return ret
+        if func.compiler is not None:
+            if func.compiler.lower() == "nvcc" or (func.compiler.lower() == "clang" and func.target is not None
+                                                   and func.target.lower() == "bc"):
+                patch_hash_method_for_pointer_type()
+                module = import_from_path(func.extern_file)
+                target_fn = getattr(module, func.extern_func_name)
+                ret = target_fn(*args, _semantic=_semantic)
+                return ret
 
         handles = [arg.handle for arg in args]
         context = _semantic.builder.get_context()

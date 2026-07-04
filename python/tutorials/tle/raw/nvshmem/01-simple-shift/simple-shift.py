@@ -9,6 +9,7 @@ from triton.experimental.tle.raw import dialect
 from common.utils import (
     install_cumodule_hook,
     load_library,
+    tensor_from_pointer,
     prepare_clang_bitcode,
 )
 
@@ -28,18 +29,6 @@ def simple_shift(*args, **kwargs):
 @triton.jit
 def simple_shift_kernel(destination_ptr, ):
     tle_raw.call(simple_shift, [destination_ptr])
-
-
-def tensor_from_pointer(pointer, shape, dtype, device):
-    num_elements = 1
-    for extent in shape:
-        num_elements *= extent
-    storage = torch._C._construct_storage_from_data_pointer(
-        pointer.value,
-        device,
-        num_elements * dtype.itemsize,
-    )
-    return torch.empty(0, dtype=dtype, device=device).set_(storage).view(shape)
 
 
 def simpe_shift():
@@ -79,6 +68,7 @@ def simpe_shift():
         common_lib,
         mype_in_node.value,
         Path(__file__).with_name("simple-shift-device.bc"),
+        Path(__file__).with_name("simple-shift-device.cu"),
         simple_shift,
     )
 

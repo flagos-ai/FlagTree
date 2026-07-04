@@ -16,12 +16,10 @@
     }                                                                          \
   } while (0)
 
-extern "C" int ag_gemm_workspace_create(int elements_per_rank, int num_chunks,
-                                        void **workspace, uint64_t **ready,
-                                        int *mype, int *npes, int *mype_in_node,
-                                        int *npes_in_node) {
-  if (elements_per_rank <= 0 || num_chunks <= 0 || workspace == nullptr ||
-      ready == nullptr) {
+extern "C" int ag_gemm_workspace_create(int elements_per_rank, void **workspace,
+                                        uint64_t **ready, int *mype, int *npes,
+                                        int *mype_in_node, int *npes_in_node) {
+  if (elements_per_rank <= 0 || workspace == nullptr || ready == nullptr) {
     return -1;
   }
 
@@ -33,8 +31,7 @@ extern "C" int ag_gemm_workspace_create(int elements_per_rank, int num_chunks,
 
   size_t workspace_bytes = (size_t)(*npes) * elements_per_rank * sizeof(__half);
   *workspace = nvshmem_malloc(workspace_bytes);
-  *ready = (uint64_t *)nvshmem_calloc((size_t)(*npes) * num_chunks,
-                                      sizeof(uint64_t));
+  *ready = (uint64_t *)nvshmem_calloc((size_t)(*npes), sizeof(uint64_t));
   if (*workspace == nullptr || *ready == nullptr) {
     if (*ready != nullptr) {
       nvshmem_free(*ready);
@@ -55,4 +52,12 @@ extern "C" int ag_gemm_workspace_destroy(void *workspace, void *ready) {
   nvshmem_free(ready);
   nvshmem_free(workspace);
   return 0;
+}
+
+extern "C" void *ag_gemm_peer_workspace_ptr(void *workspace, int peer) {
+  return nvshmem_ptr(workspace, peer);
+}
+
+extern "C" uint64_t *ag_gemm_peer_ready_ptr(uint64_t *ready, int peer) {
+  return (uint64_t *)nvshmem_ptr(ready, peer);
 }

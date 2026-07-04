@@ -78,7 +78,6 @@ for np in "${NPS[@]}"; do
             --arch "$ARCH" \
             "$TARGET" \
             --m-per-rank "$m_per_rank" \
-            --chunk-m "$m_per_rank" \
             --n-per-rank "$n_per_rank" \
             --k "$k" \
             --mode check
@@ -91,7 +90,6 @@ for np in "${NPS[@]}"; do
             --arch "$ARCH" \
             "$TARGET" \
             --m-per-rank "$m_per_rank" \
-            --chunk-m "$m_per_rank" \
             --n-per-rank "$n_per_rank" \
             --k "$k" \
             --mode perf

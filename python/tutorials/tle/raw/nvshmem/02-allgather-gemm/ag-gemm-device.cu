@@ -17,43 +17,33 @@ enum {
 };
 
 extern "C" __device__ __attribute__((always_inline)) void
-ag_mark_local_ready(__attribute__((address_space(1))) uint64_t *ready, int rank,
-                    int num_chunks) {
-  int chunk_id = (int)blockIdx.x;
-  if (chunk_id >= num_chunks) {
-    return;
-  }
+ag_mark_local_ready(__attribute__((address_space(1))) uint64_t *ready,
+                    int rank) {
   if (threadIdx.x == 0) {
     __threadfence_system();
-    ready[(size_t)rank * num_chunks + chunk_id] = 1;
+    ready[(size_t)rank] = 1;
   }
   __syncthreads();
 }
 
-// One Triton program publishes one chunk of this rank's A slice to one peer.
 extern "C" __device__ __attribute__((always_inline)) void
-ag_publish_local_chunk(__attribute__((address_space(1))) __half *workspace,
-                       __attribute__((address_space(1))) uint64_t *ready,
-                       int elements_per_rank, int elements_per_chunk,
-                       int num_chunks, int rank, int world_size) {
-  int block_id = (int)blockIdx.x;
-  int peer_offset = block_id / num_chunks + 1;
-  int chunk_id = block_id % num_chunks;
+ag_publish_local_rank(__attribute__((address_space(1))) __half *workspace,
+                      __attribute__((address_space(1))) uint64_t *ready,
+                      int elements_per_rank, int rank, int world_size) {
+  int peer_offset = (int)blockIdx.x + 1;
   if (peer_offset >= world_size) {
     return;
   }
 
   int peer = (rank + peer_offset) % world_size;
-  __half *local_chunk = workspace + (size_t)rank * elements_per_rank +
-                        (size_t)chunk_id * elements_per_chunk;
-  uint64_t *chunk_ready = ready + (size_t)rank * num_chunks + chunk_id;
+  __half *local_rank = workspace + (size_t)rank * elements_per_rank;
+  uint64_t *rank_ready = ready + (size_t)rank;
 
-  nvshmemx_putmem_signal_nbi_block(local_chunk, local_chunk,
-                                   (size_t)elements_per_chunk * sizeof(__half),
-                                   chunk_ready, 1, NVSHMEM_SIGNAL_SET, peer);
+  nvshmemx_putmem_signal_nbi_block(local_rank, local_rank,
+                                   (size_t)elements_per_rank * sizeof(__half),
+                                   rank_ready, 1, NVSHMEM_SIGNAL_SET, peer);
 }
 
-// The GEMM program waits for the source chunk whose A rows it will consume.
 extern "C" __device__ __attribute__((always_inline)) void
 ag_wait_ready(__attribute__((address_space(1))) uint64_t *ready,
               int signal_index) {

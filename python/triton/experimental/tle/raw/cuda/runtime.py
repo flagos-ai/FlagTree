@@ -165,7 +165,8 @@ class CUDAJITFunction(object):
         self.deferred: Final[bool] = kwargs.get("deferred", False)
         self.__triton_builtin__: Final[bool] = True
 
-        if self.compiler.lower() == "nvcc" and knobs.runtime.add_stages_inspection_hook is None:
+        if self.compiler is not None and self.compiler.lower(
+        ) == "nvcc" and knobs.runtime.add_stages_inspection_hook is None:
             nvcc_cuda_hook = partial(make_cubin_inspection_hook, self)
             knobs.runtime.add_stages_inspection_hook = nvcc_cuda_hook
 
