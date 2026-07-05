@@ -60,9 +60,9 @@ SEM_PV_FREE : tl.constexpr = tl.constexpr(5)  # V -> C : workspace_pv slot free
 #  Compile-time configuration
 # =============================================================================
 NUM_CORES = 24
-BLOCK_M = 128
-BLOCK_N = 128
-DIM = 128
+BLOCK_M = 32
+BLOCK_N = 32
+DIM = 32
 
 # constexpr shape literals for tile.copy (semantic.copy runs scalar_constant on
 # each extent, which requires tl.constexpr rather than a plain int).
@@ -118,6 +118,7 @@ def _mm1_qkt(
             (global_head_idx * BLOCK_M, 0), (BLOCK_M, DIM), (1, 0))
         tile_copy(q_bp, q_l1, [CBM, CD])
     attn_score_l0c = tl.zeros((BLOCK_M, BLOCK_N), tl.float32)
+    prev_score_ub = tl.zeros((BLOCK_M, BLOCK_N), tl.float32)
     for cb_idx in range(CB):
         kv_idx = idx_in_conbine * CB + cb_idx
 
@@ -126,16 +127,21 @@ def _mm1_qkt(
             (kv_idx * BLOCK_N, 0), (BLOCK_N, DIM), (1, 0))
         tile_copy(k_bp, k_l1, [CBN, CD])
 
-        # attn_score = Q * K^T using L1 buffers
+        # attn_score = Q * K^T using L1 buffers (accumulates in L0C)
         attn_score_l0c = tl.dot(tile_to_tensor(q_l1, writable=False),
                             tile_to_tensor(k_l1, writable=False), attn_score_l0c)
+
+        # L0C accumulates cumulatively; subtract previous to get per-block score
+        cur_score_ub = attn_score_l0c.to(tl.float32)
+        delta_score = cur_score_ub - prev_score_ub
+        prev_score_ub = cur_score_ub
 
         score_store_bp = tl.make_block_ptr(
             workspace_s + (cid * RING * CB * BLOCK_M * BLOCK_N
                            + ring_slot  * CB * BLOCK_M * BLOCK_N
                            + cb_idx  * BLOCK_M * BLOCK_N),
             (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
-        tl.store(score_store_bp, attn_score_l0c.to(workspace_s.dtype.element_ty))
+        tl.store(score_store_bp, delta_score.to(workspace_s.dtype.element_ty))
 
     # all CB S-blocks written -> notify Vec1
     sync_block_set("cube", "vector", SEM_S_READY, PIPE.PIPE_FIX, PIPE.PIPE_MTE2)
@@ -167,6 +173,7 @@ def _mm2_pv(
     sync_block_wait("vector", "cube", SEM_PV_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
 
     pv_part_l0c = tl.zeros((BLOCK_M, DIM), tl.float32)
+    prev_pv_ub = tl.zeros((BLOCK_M, DIM), tl.float32)
     for cb_idx in range(CB):
         prev_kv_idx = prev_idx_in_conbine * CB + cb_idx
 
@@ -182,17 +189,22 @@ def _mm2_pv(
             (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
         tile_copy(prob_load_bp, p_l1, [CBM, CBN])
 
-        # pv_part = P * V using L1 buffers
+        # pv_part = P * V using L1 buffers (accumulates in L0C)
         pv_part_l0c = tl.dot(tile_to_tensor(p_l1, writable=False),
                          tile_to_tensor(v_l1, writable=False),
                          pv_part_l0c)
+
+        # L0C accumulates cumulatively; subtract previous to get per-block P*V
+        cur_pv_ub = pv_part_l0c.to(tl.float32)
+        delta_pv = cur_pv_ub - prev_pv_ub
+        prev_pv_ub = cur_pv_ub
 
         pv_store_bp = tl.make_block_ptr(
             workspace_pv + cid * RING * CB * BLOCK_M * DIM
                             + prev_ring_slot * CB * BLOCK_M * DIM
                             + cb_idx * BLOCK_M * DIM,
             (BLOCK_M, DIM), (DIM, 1), (0, 0), (BLOCK_M, DIM), (1, 0))
-        tl.store(pv_store_bp, pv_part_l0c.to(workspace_pv.dtype.element_ty))
+        tl.store(pv_store_bp, delta_pv.to(workspace_pv.dtype.element_ty))
 
     # all CB P*V blocks done -> notify Vec2; release workspace_p[prev_ring_slot]
     sync_block_set("cube", "vector", SEM_P_FREE,  PIPE.PIPE_MTE2, PIPE.PIPE_MTE3)
@@ -990,9 +1002,9 @@ def flash_attention_fwd(q, k, v, combine_batch, is_causal=False):
         CB=CB,
         NUM_KV_BLOCKS=num_kv_blocks,
         IS_CAUSAL=is_causal,
-        BLOCK_M=128,
-        BLOCK_N=128,
-        DIM=128,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        DIM=DIM,
     )
     return out
 
@@ -1004,7 +1016,7 @@ if __name__ == "__main__":
     parser.add_argument("--H", type=int, default=16)
     parser.add_argument("--q-heads", type=int, default=None)
     parser.add_argument("--kv-heads", type=int, default=None)
-    parser.add_argument("--D", type=int, default=128)
+    parser.add_argument("--D", type=int, default=DIM)
     parser.add_argument("--causal", action="store_true")
     parser.add_argument("--no-check", action="store_true")
     parser.add_argument("--combine-batch", type=int, default=8,
@@ -1018,7 +1030,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     B, S, H, D = args.B, args.S, args.H, args.D
-    combine_batch = S // BLOCK_N
+    combine_batch = args.combine_batch
     # ---- dump intermediate TileIR and exit (no device required) ----
     if args.dump_mlir is not None:
         dump_tileir(path=(args.dump_mlir or None), combine_batch=combine_batch, is_causal=args.causal)

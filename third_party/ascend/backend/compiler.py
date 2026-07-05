@@ -93,7 +93,10 @@ def make_ttir(mod, metadata, opt):
     passes.common.add_canonicalizer(pm)
     passes.ttir.add_reorder_broadcast(pm)
     passes.common.add_cse(pm)
-    passes.common.add_licm(pm)
+    # NOTE: LICM is intentionally omitted — it hoists tile.to_tensor above
+    # tile.copy in loops, breaking the read-after-write ordering required by
+    # Ascend's buffer semantics. This causes "operand does not dominate this use"
+    # errors in bishengir downstream.
     passes.common.add_symbol_dce(pm)
     passes.ttir.add_loop_unroll(pm)
     pm.run(mod)
@@ -138,6 +141,9 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             passes.common.add_canonicalizer(pm)
 
         ascend.passes.ttir.add_tileir_to_hivm(pm)
+        ascend.passes.ttir.add_erase_linalg_casts(pm)
+        passes.common.add_canonicalizer(pm)
+
         ascend.passes.ttir.add_triton_to_structure(pm, enable_mask_fallback_conversion, optimize_dynamic_offset)
         ascend.passes.ttir.add_discrete_mask_access_conversion(pm, compile_on_910_95, force_simt_template,
                                                                enable_sync_block_lock)
@@ -148,8 +154,22 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         ascend.passes.ttir.add_triton_to_llvm(pm)
         ascend.passes.ttir.add_bubble_up_operation(pm)
         ascend.passes.ttir.add_triton_to_structure(pm, enable_mask_fallback_conversion, optimize_dynamic_offset)
+
+        passes.common.add_inliner(pm)
+        passes.common.add_canonicalizer(pm)
+
         ascend.passes.ttir.add_triton_to_linalg(pm, False, named_ops, enable_nd2nz_on_vector, enable_select_analysis,
                                                 compile_on_910_95)
+        # ── ⑤c Fold staging copies ──────────────────────────────────────────
+        ascend.passes.ttir.add_fold_staging_copy(pm)
+
+        # ── ⑤b Erase linalg casts (post) ────────────────────────────────────
+        ascend.passes.ttir.add_erase_linalg_casts(pm)
+
+        passes.common.add_canonicalizer(pm)
+        passes.common.add_cse(pm)
+        passes.common.add_symbol_dce(pm)
+
         if metadata["enable_dynamic_cv_pipeline"]:
             ascend.passes.ttir.add_dynamic_cv_pipeline(pm, compile_on_910_95)
 
@@ -812,6 +832,9 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
         if opt.debug:
             print(f"[DEBUG] cmd_list: {' '.join(cmd_list)}")
 
+        import shutil
+        shutil.copy2(ttadapter_path, "/tmp/debug_kernel_input.mlir")
+
         try:
             ret = subprocess.run(cmd_list, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         except subprocess.CalledProcessError as e:
@@ -821,6 +844,12 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
 
         if opt.debug:
             _save_npuir_debug_output(ret.stdout, ret.stderr, tmpdir, metadata["hash"])
+
+        if "--mlir-print-ir-after-all" in _compile_option_list:
+            dump_path = os.environ.get("BISHENGIR_DUMP_PATH", os.path.join(tmpdir, "bishengir_pass_dump.log"))
+            with open(dump_path, "w") as f:
+                f.write(ret.stderr.decode("utf-8", errors="replace"))
+            print(f"[bishengir] Pass IR dump written to: {dump_path}")
 
         stdout_str = ret.stdout.decode('utf-8') if ret.stdout else ''
         match = re.search(r'UB\s+size\s*=\s*(\d+)\s*bits', stdout_str)
