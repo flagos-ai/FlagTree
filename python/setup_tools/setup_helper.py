@@ -711,7 +711,7 @@ cache.store(
 cache.store(
     file="sunrise_llvm22_dev_release",
     condition=("sunrise" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-34b694004c-triton-v3.6.x.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-1fdc1dfa-triton-v3.6.x.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=lambda path: [f(path) for f in (set_llvm_env, utils.activate("sunrise").sunrise_cp_bc_files)],
 )
@@ -719,6 +719,6 @@ cache.store(
 cache.store(
     file="sunriseTritonPlugin.so",
     condition=("sunrise" == flagtree_backend) and (not configs.flagtree_plugin),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunrise-plugin-triton-v3.6.x.tar.gz",
-    md5_digest="3526d699",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin_v0.6.0.tar.gz",
+    md5_digest="f3c65d44",
 )
