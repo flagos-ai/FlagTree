@@ -7,7 +7,6 @@ def install_extension(*args, **kargs):
     _python_dir = Path(__file__).parent.parent.parent
     src_triton_dir = _python_dir / "../third_party/metax/python/triton"
     dst_triton_dir = _python_dir / "triton"
-    shutil.copy(src_triton_dir / "knobs.py", dst_triton_dir / "knobs.py")
 
     # copy runtime/driver.py
     shutil.copy(src_triton_dir / "runtime/driver.py", dst_triton_dir / "runtime/driver.py")
