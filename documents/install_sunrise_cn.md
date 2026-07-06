@@ -19,10 +19,10 @@ TODO
 
 ```shell
 mkdir -p ~/.flagtree/sunrise; cd ~/.flagtree/sunrise
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-34b694004c-triton-v3.6.x.tar.gz
-tar zxvf llvm-34b694004c-triton-v3.6.x.tar.gz
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunrise-plugin-triton-v3.6.x.tar.gz
-tar zxvf sunrise-plugin-triton-v3.6.x.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-1fdc1dfa-triton-v3.6.x.tar.gz
+tar zxvf llvm-1fdc1dfa-triton-v3.6.x.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin_v0.6.0.tar.gz
+tar zxvf sunriseTritonPlugin_v0.6.0.tar.gz
 ```
 
 #### 1.3 手动下载 Triton 依赖库
