@@ -225,17 +225,15 @@ def TT_AdvanceOp : TT_Op<"advance",
 //
 def TT_LoadOp : TT_Op<"load", [
   // SameLoadStoreOperandsAndResultShape,
-  // SameLoadStoreOperandsAndResultEncoding,
+  SameLoadStoreOperandsAndResultEncoding,
   AttrSizedOperandSegments,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
   DeclareOpInterfaceMethods<InferTypeOpInterface>,
   TypesMatchWith<"result matches ptr type", "ptr", "result", "getPointeeType($_self)">,
-  TypesMatchWith<"mask type matches ptr type", "ptr", "mask", "getI1SameShape(getPointeeType($_self))",
-                //  "($_op.getOperands().size() <= 1) || std::equal_to<>()">,
-                "($_op.getOperands().size() != 3) || std::equal_to<>()">,
-  TypesMatchWith<"other matches ptr type", "ptr", "other", "getPointeeType($_self)",
-                //  "($_op.getOperands().size() <= 2) || std::equal_to<>()">
-                "($_op.getOperands().size() != 3) || std::equal_to<>()">
+  OptionalTypesMatchWith<"mask type matches ptr type", "ptr", "mask",
+                         "getI1SameShape(getPointeeType($_self))">,
+  OptionalTypesMatchWith<"other matches ptr type", "ptr", "other",
+                         "getPointeeType($_self)">
 ]> {
     let summary = "Load from a tensor of pointers or from a tensor pointer";
 
@@ -273,7 +271,21 @@ def TT_LoadOp : TT_Op<"load", [
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
                        "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
+        // Iluvatar SME load: ptr + inputStride (forces the SME path)
+        OpBuilder<(ins "Value":$ptr, "triton::CacheModifier":$cache,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       "Value":$inputStride)>,
+        // Iluvatar masked SME load: ptr + mask + other + inputStride
+        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
+                       "triton::CacheModifier":$cache, "triton::EvictionPolicy":$evict,
+                       "bool":$isVolatile, "Value":$inputStride)>,
+        // Full builder with inputStride
+        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
+                       "ArrayRef<int32_t>":$boundaryCheck,
+                       "std::optional<triton::PaddingOption>":$padding,
+                       "triton::CacheModifier":$cache, "triton::EvictionPolicy":$evict,
+                       "bool":$isVolatile, "Value":$inputStride)>
     ];
 
     // // Specify `cacheModifier` and `evictionPolicy` explicitly in the

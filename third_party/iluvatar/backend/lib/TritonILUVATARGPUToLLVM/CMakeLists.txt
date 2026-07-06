@@ -12,9 +12,11 @@ add_triton_library(TritonILUVATARGPUToLLVM
     DotOpToLLVM.cpp
     ElementwiseOpToLLVM.cpp
     LoadStoreOpToLLVM.cpp
+    MembarUtility.cpp
     TritonGPUToLLVM.cpp
     Utility.cpp
     TargetInfo.cpp
+    TargetUtils.cpp
     SPMDOpToLLVM.cpp
 
     DEPENDS

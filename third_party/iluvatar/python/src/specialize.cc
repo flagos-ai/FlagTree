@@ -244,7 +244,12 @@ std::pair<py::object, py::object> handle_long_type(PyObject *backend,
   if (overflow == 0) {
     type_str = (val >= INT32_MIN && val <= INT32_MAX) ? i32_str : i64_str;
     if (specialize_value) {
+#ifdef __ILUVATAR__
+      // corex global ld/st is 32-bit, so 4-byte alignment is sufficient
+      key_obj = (align && ((val & 3) == 0)) ? D_str : empty_str;
+#else
       key_obj = (align && ((val & 15) == 0)) ? D_str : empty_str;
+#endif
     }
   } else {
     unsigned long long val_64 = PyLong_AsUnsignedLongLong(arg);
@@ -260,7 +265,12 @@ std::pair<py::object, py::object> handle_long_type(PyObject *backend,
     }
     type_str = u64_str;
     if (specialize_value) {
+#ifdef __ILUVATAR__
+      // corex global ld/st is 32-bit, so 4-byte alignment is sufficient
+      key_obj = (align && ((val_64 & 3) == 0)) ? D_str : empty_str;
+#else
       key_obj = (align && ((val_64 & 15) == 0)) ? D_str : empty_str;
+#endif
     }
   }
   if (!key_obj) {
@@ -324,7 +334,12 @@ std::pair<py::object, py::object> handle_tensor(PyObject *backend,
     if (PyErr_Occurred())
       return {};
 
+#ifdef __ILUVATAR__
+    // corex global ld/st is 32-bit, so 4-byte alignment is sufficient
+    auto key_obj = (align && ((data_ptr & 3) == 0)) ? D_str : empty_str;
+#else
     auto key_obj = (align && ((data_ptr & 15) == 0)) ? D_str : empty_str;
+#endif
     key = from_borrowed_ref(key_obj);
   } else {
     PyObject *args[3] = {backend, arg, align ? Py_True : Py_False};

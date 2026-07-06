@@ -341,7 +341,7 @@ void init_gluon_ir(py::module &&m) {
              auto ctaLayout = buildCtaLayoutAttr(ctx, cgaBases, rank);
              return self.getChecked<ttg::BlockedEncodingAttr>(
                  ctx, sizePerThread, threadsPerWarp, warpsPerCta, order,
-                 ctaLayout, /*isSme=*/false,
+                 ctaLayout, /*isSme=*/false, /*smeMask=*/false,
                  /*smeWarpsPerCTA=*/ArrayRef<unsigned>());
            })
       .def("get_slice_layout",

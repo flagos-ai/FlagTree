@@ -106,7 +106,7 @@ def sm_arch_from_capability(capability: int):
 
 
 @dataclass(frozen=True)
-class CUDAOptions:
+class CorexOptions:
     num_warps: int = 4
     num_ctas: int = 1
     num_stages: int = 3
@@ -121,7 +121,9 @@ class CUDAOptions:
     enable_reflect_ftz: bool = True  # ftz in libdevice
     launch_cooperative_grid: bool = False
     launch_pdl: bool = False
-    supported_fp8_dtypes: Tuple[str] = ("fp8e5", "fp8e4b15")
+    # OCP only: fp8e5 always; fp8e4nv added for sm71 (ivcore11 SW) / sm89+.
+    # fp8e4b15 is NVIDIA PTX-asm software format — not supported on Iluvatar.
+    supported_fp8_dtypes: Tuple[str] = ("fp8e5", )
     deprecated_fp8_dot_operand_dtypes: Tuple[str] = ()
     default_dot_input_precision: str = "tf32"
     allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "ieee", 'bf16x3', 'bf16x6')
@@ -152,12 +154,12 @@ class CUDAOptions:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-class CUDABackend(BaseBackend):
+class CorexBackend(BaseBackend):
     instrumentation = None
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == 'corex'
+        return target.backend in ('corex', 'cuda')
 
     def _parse_arch(self, arch):
         pattern = r"^sm(\d+)$"
@@ -171,6 +173,8 @@ class CUDABackend(BaseBackend):
         return f"cuda:{capability}"
 
     def __init__(self, target: GPUTarget) -> None:
+        if target.backend == 'cuda':
+            target = GPUTarget('corex', target.arch, target.warp_size)
         super().__init__(target)
         self.binary_ext = "cubin"
 
@@ -180,7 +184,7 @@ class CUDABackend(BaseBackend):
             opts["debug"] = True
 
         args = {'arch': knobs.runtime.override_arch or f"sm{self.target.arch}"}
-        args.update({k: opts[k] for k in CUDAOptions.__dataclass_fields__.keys() if k in opts if opts[k] is not None})
+        args.update({k: opts[k] for k in CorexOptions.__dataclass_fields__.keys() if k in opts if opts[k] is not None})
         capability = int(self._parse_arch(args["arch"]))
 
         if args.get("num_ctas", 1) > 1 and capability < 90:
@@ -189,21 +193,18 @@ class CUDABackend(BaseBackend):
                               f"Please set num_ctas=1 or target an SM90+ GPU."))
 
         if "supported_fp8_dtypes" not in args:
-            supported_fp8_dtypes = set(CUDAOptions.supported_fp8_dtypes)
-            if capability >= 89:
+            supported_fp8_dtypes = set(CorexOptions.supported_fp8_dtypes)
+            # ivcore11 (sm71): software FP8; ivcore30 will use native HW when mapped.
+            if capability >= 89 or capability == 71:
                 supported_fp8_dtypes.add("fp8e4nv")
             args["supported_fp8_dtypes"] = tuple(sorted(supported_fp8_dtypes))
-
-        if "deprecated_fp8_dot_operand_dtypes" not in args:
-            if capability >= 90:
-                args["deprecated_fp8_dot_operand_dtypes"] = ("fp8e4b15", )
 
         if "enable_fp_fusion" not in args:
             args["enable_fp_fusion"] = knobs.language.default_fp_fusion
 
         args["max_num_imprecise_acc_default"] = 2**30 if capability == 90 else 0
 
-        return CUDAOptions(**args)
+        return CorexOptions(**args)
 
     def pack_metadata(self, metadata):
         return (
@@ -228,8 +229,8 @@ class CUDABackend(BaseBackend):
 
     def load_dialects(self, ctx):
         iluvatar.load_dialects(ctx)
-        if CUDABackend.instrumentation:
-            CUDABackend.instrumentation.load_dialects(ctx)
+        if CorexBackend.instrumentation:
+            CorexBackend.instrumentation.load_dialects(ctx)
 
     @staticmethod
     def make_ttir(mod, metadata, opt, capability):
@@ -272,6 +273,7 @@ class CUDABackend(BaseBackend):
         iluvatar.passes.ttgpuir.add_mma_reduce_thread_locality(pm)
         iluvatar.passes.ttgpuir.add_optimize_epilogue(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 71)
+        iluvatar.passes.ttgpuir.add_matmul_smeload(pm, capability)
         passes.ttir.add_loop_aware_cse(pm)
         if capability // 10 in [7, 8, 9]:
             passes.ttgpuir.add_fuse_nested_loops(pm)
@@ -281,6 +283,7 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
             passes.ttgpuir.add_schedule_loops(pm)
+            passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
         elif capability // 10 >= 10:
             passes.ttgpuir.add_fuse_nested_loops(pm)
             passes.common.add_canonicalizer(pm)
@@ -299,7 +302,6 @@ class CUDABackend(BaseBackend):
             passes.ttir.add_triton_licm(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_loop_aware_cse(pm)
-        iluvatar.passes.ttgpuir.add_matmul_smeload(pm, capability)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_prefetch(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 71)
@@ -350,8 +352,8 @@ class CUDABackend(BaseBackend):
             # Call ConcurrencySanitizerPass here, before allocating global scratch memory but after allocating tensor and shared
             passes.ttgpuir.add_concurrency_sanitizer(pm)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
-        if CUDABackend.instrumentation:
-            CUDABackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
+        if CorexBackend.instrumentation:
+            CorexBackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
         proc = sm_arch_from_capability(capability)
         iluvatar.passes.ttgpuir.add_to_llvmir(pm, proc, options.enable_reflect_ftz)
         passes.common.add_canonicalizer(pm)
@@ -364,8 +366,8 @@ class CUDABackend(BaseBackend):
         if not knobs.compilation.disable_line_info and not knobs.compilation.dump_ir_extract_di_local_variables:
             passes.llvmir.add_di_scope(pm)
 
-        if CUDABackend.instrumentation:
-            CUDABackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
+        if CorexBackend.instrumentation:
+            CorexBackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
 
         pm.run(mod, 'make_llir')
 

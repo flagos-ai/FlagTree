@@ -14,6 +14,13 @@
 namespace mlir {
 namespace triton {
 
+static bool isPointerLikeType(Type type) {
+  if (isa<PointerType>(type))
+    return true;
+  auto tensorType = dyn_cast<RankedTensorType>(type);
+  return tensorType && isa<PointerType>(tensorType.getElementType());
+}
+
 // Parser & printer for assembly forms
 ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
   // Parse operands
@@ -27,49 +34,103 @@ ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
   // Operand types
   SmallVector<Type> operandTypes;
 
-  // Parse `optional(type(ptr)) -> type(result)`
-  Type ptrType, resultType;
-  if (parser.parseType(resultType))
+  // Parse `optional(type(ptr)) -> type(result)`.
+  //
+  // For compatibility with the upstream textual form, a pointer-like type
+  // without an arrow is interpreted as the pointer operand type.  Otherwise,
+  // the type is interpreted as the result type and the pointer type is
+  // inferred.  The explicit arrow remains necessary for tensor pointers,
+  // whose operand and result types cannot be inferred from one another.
+  Type parsedType, ptrType, resultType;
+  if (parser.parseType(parsedType))
     return failure();
   if (parser.parseOptionalArrow().succeeded()) {
-    ptrType = resultType;
+    ptrType = parsedType;
     if (parser.parseType(resultType))
       return failure();
     operandTypes.push_back(ptrType);
     result.addTypes(resultType);
+  } else if (isPointerLikeType(parsedType)) {
+    ptrType = parsedType;
+    resultType = getPointeeType(parsedType);
+    operandTypes.push_back(ptrType);
+    result.addTypes(resultType);
   } else {
+    resultType = parsedType;
     operandTypes.push_back(getPointerTypeSameShape(resultType));
     result.addTypes(resultType);
   }
 
-  // Determine `mask` and `other`
-  int hasMask = 0, hasOther = 0;
-  if (allOperands.size() == 3) {
-    operandTypes.push_back(getI1SameShape(resultType));
+  auto operandSegmentSizesAttrName =
+      LoadOp::getOperandSegmentSizesAttrName(result.name);
+
+  // Determine `mask`, `other`, and `inputStride`. Legacy assembly uses the
+  // upstream convention where two operands mean ptr+mask. Explicit segment
+  // sizes are used only for inputStride forms that would otherwise be
+  // ambiguous, such as ptr+inputStride.
+  int hasMask = 0, hasOther = 0, hasStride = 0;
+  bool hasExplicitSegmentSizes = false;
+  if (Attribute segmentAttr =
+          result.attributes.get(operandSegmentSizesAttrName)) {
+    auto segmentSizes = mlir::dyn_cast<DenseI32ArrayAttr>(segmentAttr);
+    if (!segmentSizes)
+      return parser.emitError(allOperandLoc)
+             << "expected DenseI32ArrayAttr for tt.load operand segment sizes";
+    hasExplicitSegmentSizes = true;
+
+    auto sizes = segmentSizes.asArrayRef();
+    if (sizes.size() != 4)
+      return parser.emitError(allOperandLoc)
+             << "expected four operand segment sizes for tt.load";
+    if (sizes[0] != 1 || sizes[1] < 0 || sizes[1] > 1 || sizes[2] < 0 ||
+        sizes[2] > 1 || sizes[3] < 0 || sizes[3] > 1)
+      return parser.emitError(allOperandLoc)
+             << "invalid operand segment sizes for tt.load";
+    if (sizes[2] && !sizes[1])
+      return parser.emitError(allOperandLoc)
+             << "tt.load other operand requires a mask operand";
+    int32_t numSegmentOperands = 0;
+    for (int32_t size : sizes)
+      numSegmentOperands += size;
+    if (numSegmentOperands != static_cast<int32_t>(allOperands.size()))
+      return parser.emitError(allOperandLoc)
+             << "operand count does not match tt.load operand segment sizes";
+
+    hasMask = sizes[1];
+    hasOther = sizes[2];
+    hasStride = sizes[3];
+  } else if (allOperands.size() == 2) {
     hasMask = 1;
-  }
-  if (allOperands.size() == 3) {
-    operandTypes.push_back(resultType);
+  } else if (allOperands.size() == 3) {
+    hasMask = 1;
     hasOther = 1;
+  } else if (allOperands.size() == 4) {
+    hasMask = 1;
+    hasOther = 1;
+    hasStride = 1;
+  } else if (allOperands.size() != 1) {
+    return parser.emitError(allOperandLoc)
+           << "unexpected number of operands for tt.load";
   }
-  // Determine `inputStride`
-  int hasStride = 0;
-  if (allOperands.size() == 2) {
+
+  if (hasMask)
+    operandTypes.push_back(getI1SameShape(resultType));
+  if (hasOther)
+    operandTypes.push_back(resultType);
+  if (hasStride)
     operandTypes.push_back(
         IntegerType::get(parser.getBuilder().getContext(), 32));
-    hasStride = 1;
-  }
 
   if (parser.resolveOperands(allOperands, operandTypes, allOperandLoc,
                              result.operands))
     return failure();
 
-  // Deduce `operandSegmentSizes` from the number of the operands
-  auto operandSegmentSizesAttrName =
-      LoadOp::getOperandSegmentSizesAttrName(result.name);
-  result.addAttribute(operandSegmentSizesAttrName,
-                      parser.getBuilder().getDenseI32ArrayAttr(
-                          {1, hasMask, hasOther, hasStride}));
+  if (!hasExplicitSegmentSizes) {
+    // Deduce `operandSegmentSizes` from the number of the operands.
+    result.addAttribute(operandSegmentSizesAttrName,
+                        parser.getBuilder().getDenseI32ArrayAttr(
+                            {1, hasMask, hasOther, hasStride}));
+  }
 
   return success();
 }
@@ -78,16 +139,24 @@ void LoadOp::print(OpAsmPrinter &printer) {
   printer << " ";
   printer << getOperation()->getOperands();
 
-  // `operandSegmentSizes` can be deduced, so we don't print it.
-  printer.printOptionalAttrDict(getOperation()->getAttrs(),
-                                {getOperandSegmentSizesAttrName()});
+  SmallVector<StringRef, 1> elidedAttrs;
+  // `operandSegmentSizes` can be deduced unless inputStride is present without
+  // `other`, e.g. ptr+inputStride or ptr+mask+inputStride.
+  if (!getInputStride() || getOther())
+    elidedAttrs.push_back(getOperandSegmentSizesAttrName());
+  printer.printOptionalAttrDict(getOperation()->getAttrs(), elidedAttrs);
 
   // `type(ptr) -> type(result)`
   printer << " : ";
-  // `type(ptr)` is optional during parsing, we only print for tensor pointers
+  // Tensor pointers have a different operand/result type and therefore need
+  // the explicit arrow.  For ordinary pointers, print the pointer type to
+  // match the canonical upstream TTIR/TTGIR form.
   if (isTensorPointerType(getPtr().getType())) {
     printer.printStrippedAttrOrType(getPtr().getType());
     printer << " -> ";
+  } else if (isPointerLikeType(getPtr().getType())) {
+    printer.printStrippedAttrOrType(getPtr().getType());
+    return;
   }
   printer.printStrippedAttrOrType(getResult().getType());
 }
@@ -174,6 +243,68 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
   state.addAttribute(
       getOperandSegmentSizesAttrName(state.name),
       builder.getDenseI32ArrayAttr({1, (mask ? 1 : 0), (other ? 1 : 0), 0}));
+  state.addAttribute(
+      getBoundaryCheckAttrName(state.name),
+      DenseI32ArrayAttr::get(builder.getContext(), boundaryCheck));
+  if (padding.has_value()) {
+    state.addAttribute(
+        getPaddingAttrName(state.name),
+        PaddingOptionAttr::get(builder.getContext(), padding.value()));
+  }
+  state.addAttribute(getCacheAttrName(state.name),
+                     CacheModifierAttr::get(builder.getContext(), cache));
+  state.addAttribute(getEvictAttrName(state.name),
+                     EvictionPolicyAttr::get(builder.getContext(), evict));
+  state.addAttribute(getIsVolatileAttrName(state.name),
+                     builder.getBoolAttr(isVolatile));
+
+  // Result type
+  Type resultType = getLoadOpResultType(builder, ptr.getType());
+  state.addTypes({resultType});
+}
+
+// Iluvatar SME load: ptr + inputStride (single-segment optional operand).
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
+                   CacheModifier cache, EvictionPolicy evict, bool isVolatile,
+                   Value inputStride) {
+  LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{},
+                /*boundaryCheck=*/ArrayRef<int32_t>{}, /*padding=*/std::nullopt,
+                cache, evict, isVolatile, inputStride);
+}
+
+// Iluvatar masked SME load: ptr + mask + other + inputStride.
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
+                   Value mask, Value other, CacheModifier cache,
+                   EvictionPolicy evict, bool isVolatile, Value inputStride) {
+  LoadOp::build(builder, state, ptr, mask, other,
+                /*boundaryCheck=*/ArrayRef<int32_t>{},
+                /*padding=*/std::nullopt, cache, evict, isVolatile,
+                inputStride);
+}
+
+// Full builder carrying inputStride. Mirrors the non-stride full builder above
+// but adds the single optional inputStride operand/segment.
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
+                   Value mask, Value other, ArrayRef<int32_t> boundaryCheck,
+                   std::optional<PaddingOption> padding, CacheModifier cache,
+                   EvictionPolicy evict, bool isVolatile, Value inputStride) {
+  // Operands
+  state.addOperands(ptr);
+  if (mask) {
+    state.addOperands(mask);
+    if (other) {
+      state.addOperands(other);
+    }
+  }
+  if (inputStride) {
+    state.addOperands(inputStride);
+  }
+
+  // Attributes
+  state.addAttribute(
+      getOperandSegmentSizesAttrName(state.name),
+      builder.getDenseI32ArrayAttr(
+          {1, (mask ? 1 : 0), (other ? 1 : 0), (inputStride ? 1 : 0)}));
   state.addAttribute(
       getBoundaryCheckAttrName(state.name),
       DenseI32ArrayAttr::get(builder.getContext(), boundaryCheck));

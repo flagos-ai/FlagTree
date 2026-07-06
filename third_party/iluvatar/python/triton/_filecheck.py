@@ -16,7 +16,7 @@ from triton._C.libtriton import ir
 # ===-----------------------------------------------------------------------===#
 
 # Stub target for testing the frontend.
-stub_target = GPUTarget("cuda", 100, 32)
+stub_target = GPUTarget("corex", 71, 64)
 
 triton_dir = os.path.dirname(__file__)
 filecheck_path = os.path.join(triton_dir, "FileCheck")

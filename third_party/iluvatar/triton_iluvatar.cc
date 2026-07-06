@@ -1,4 +1,5 @@
 #include "TritonILUVATARGPUToLLVM/Passes.h"
+#include "triton/Tools/LLVMWarningFilter.h"
 #ifdef __ILUVATAR_TLE__
 #include "Dialect.h"
 #endif
@@ -363,6 +364,7 @@ void init_triton_iluvatar(py::module &&m) {
           py::gil_scoped_release allow_threads;
           // create LLVM module from C++
           llvm::LLVMContext context;
+          mlir::triton::tools::installLLVMWarningFilter(context);
           std::unique_ptr<llvm::MemoryBuffer> buffer =
               llvm::MemoryBuffer::getMemBuffer(llvmIR.c_str());
           llvm::SMDiagnostic error;

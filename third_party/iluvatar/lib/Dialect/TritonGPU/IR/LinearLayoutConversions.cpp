@@ -54,7 +54,8 @@ SmallVector<StringAttr> permuteDimNames(const SmallVector<StringAttr> &names,
 }
 
 LinearLayout swizzledSharedToLinearLayout(ArrayRef<int64_t> shape,
-                                          SwizzledSharedEncodingAttr shared) {
+                                          SwizzledSharedEncodingAttr shared,
+                                          bool useI8RowXfb8Surrogate = false) {
   MLIRContext *ctx = shared.getContext();
 
   auto shapePerCTA = getShapePerCTA(shared, shape);
@@ -90,10 +91,9 @@ LinearLayout swizzledSharedToLinearLayout(ArrayRef<int64_t> shape,
   //    granularity and the `smeContigElems = 16` constant are specific to the
   //    rowxfb16/colxfb16 intrinsics and are NOT valid for other widths.
   //  * int8 col-major (colxfb8) is GF(2)-linear and handled in the dedicated
-  //    `elemBitWidth == 8` branch below. int8 row-major (rowxfb8) is a
-  //    bijection but NOT GF(2)-linear, so it cannot be represented as a
-  //    LinearLayout and remains disabled in jit.py::get_corex_sme (see sme.cu /
-  //    docs).
+  //    `elemBitWidth == 8` branch below. int8 row-major (rowxfb8) needs the
+  //    private linear surrogate plus physical-address correction used only by
+  //    LocalLoadOpConversion; it must not enter generic toLinearLayout().
   //
   // SME rowxfb16/colxfb16 write each 16 x 64B tile with a 2x4 -> 4x2
   // block-transpose at the bf16x2/f16x2 granularity.
@@ -108,8 +108,29 @@ LinearLayout swizzledSharedToLinearLayout(ArrayRef<int64_t> shape,
   // Therefore the offset bit order is:
   //   bit order: row0, col[0:4], row1, row2, row3, row2^col4,
   //              col[5:], row[4:].
-  if (shared.getUseTcu() && elemBitWidth == 8 && shared.getOrder()[0] == 0 &&
-      numCols >= 64 && numRows >= 16) {
+  if (useI8RowXfb8Surrogate) {
+    assert(shared.getUseTcu() && elemBitWidth == 8 &&
+           shared.getOrder()[0] != 0 && numCols >= 64 && numRows >= 16);
+    // GF(2)-linear part of int8 rowxfb8. The exact hardware map differs only
+    // when offset bits 6 and 8 are both set; the physical local-load path
+    // corrects that by toggling bit 7. Keep this surrogate private so generic
+    // layout conversion never treats the non-linear hardware map as exact.
+    bases2D.push_back({1, 0});
+    bases2D.push_back({2, 0});
+    bases2D.push_back({0, 1});
+    bases2D.push_back({0, 2});
+    bases2D.push_back({0, 4});
+    bases2D.push_back({0, 8});
+    bases2D.push_back({4, 0});
+    bases2D.push_back({8, 0});
+    bases2D.push_back({12, 16});
+    bases2D.push_back({8, 32});
+    for (int b = 64; b < numCols; b *= 2)
+      bases2D.push_back({0, b});
+    for (int b = 16; b < numRows; b *= 2)
+      bases2D.push_back({b, 0});
+  } else if (shared.getUseTcu() && elemBitWidth == 8 &&
+             shared.getOrder()[0] == 0 && numCols >= 64 && numRows >= 16) {
     // int8 col-major (colxfb8). The first 10 bases are the 16x64 hardware tile
     // dump; inter-tile bits follow lowerSmeStore's col-major placement: dim0
     // (colDim/contiguous) first, then dim1 (rowDim/strided).
@@ -246,6 +267,14 @@ LinearLayout swizzledSharedToLinearLayout(ArrayRef<int64_t> shape,
 }
 
 } // namespace
+
+#ifdef __ILUVATAR__
+LinearLayout iluvatarRowXfb8ToLinearLayout(ArrayRef<int64_t> shape,
+                                           SwizzledSharedEncodingAttr shared) {
+  return swizzledSharedToLinearLayout(shape, shared,
+                                      /*useI8RowXfb8Surrogate=*/true);
+}
+#endif
 
 // Returns the layout of a single core matrix which tiles the nvmma layout
 LinearLayout getCoreMatrixLinearLayout(NVMMASharedEncodingAttr shared,

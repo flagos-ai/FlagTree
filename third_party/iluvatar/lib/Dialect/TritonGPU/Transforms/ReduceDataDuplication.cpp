@@ -1,6 +1,7 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
@@ -42,8 +43,36 @@ public:
           dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstType.getEncoding());
       if (!dstDotOp)
         return;
-      if (!cvtNeedsSharedMemory(srcType, dstType))
+      auto srcBlocked =
+          dyn_cast<triton::gpu::BlockedEncodingAttr>(srcType.getEncoding());
+      bool forceSharedForSme =
+          srcBlocked && srcBlocked.getIsSme() && dstDotOp.getUseSme() != 0;
+      if (!cvtNeedsSharedMemory(srcType, dstType) && !forceSharedForSme)
         return;
+      // SME operands are forced through shared memory. Reuse an identical
+      // dominating materialization so multiple dot sites (e.g. a loop and its
+      // remainder) share one local_load. Besides avoiding duplication, the
+      // multiple users prevent ReorderInstructions from sinking the load into
+      // the loop and extending the source memdesc lifetime across the loop.
+      if (forceSharedForSme) {
+        DominanceInfo domInfo(mod);
+        for (Operation *user : cvtOp.getSrc().getUsers()) {
+          auto existingAlloc = dyn_cast<LocalAllocOp>(user);
+          if (!existingAlloc)
+            continue;
+          for (Operation *allocUser : existingAlloc.getResult().getUsers()) {
+            auto existingLoad = dyn_cast<LocalLoadOp>(allocUser);
+            if (!existingLoad || existingLoad.getType() != dstType)
+              continue;
+            if (!domInfo.properlyDominates(existingLoad.getOperation(),
+                                           cvtOp.getOperation()))
+              continue;
+            cvtOp.replaceAllUsesWith(existingLoad.getResult());
+            cvtOp.erase();
+            return;
+          }
+        }
+      }
       auto order = getOrderForMemory(srcType);
       auto sharedMemorySpace =
           triton::gpu::SharedMemorySpaceAttr::get(srcType.getContext());

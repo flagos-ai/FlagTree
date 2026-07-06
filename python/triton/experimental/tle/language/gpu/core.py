@@ -954,10 +954,16 @@ def copy(
 
         try:
             if direction == CopyDirection.GM_TO_LOCAL:
-                # None fills the FlagTree hints slot; TLE copy has no hints to pass.
-                load_extra_args = () if (mthreads_enabled or iluvatar_enabled) else (None, )
-                tt_load = _semantic.load(src, mask, other, boundary_check, padding_option, cache_modifier,
-                                         eviction_policy, volatile, *load_extra_args)
+                if iluvatar_enabled:
+                    # Iluvatar's semantic.load carries an extra `stride` (SME) slot
+                    # right after `other`; TLE copy never uses the SME path.
+                    tt_load = _semantic.load(src, mask, other, None, boundary_check, padding_option, cache_modifier,
+                                             eviction_policy, volatile)
+                else:
+                    # None fills the FlagTree hints slot; TLE copy has no hints to pass.
+                    load_extra_args = () if mthreads_enabled else (None, )
+                    tt_load = _semantic.load(src, mask, other, boundary_check, padding_option, cache_modifier,
+                                             eviction_policy, volatile, *load_extra_args)
                 local_ptrs = local_ptr(dst, _make_full_indices(dst, _semantic), _semantic=_semantic)
                 _semantic.store(local_ptrs, tt_load, mask, boundary_check, cache_modifier, eviction_policy)
             else:

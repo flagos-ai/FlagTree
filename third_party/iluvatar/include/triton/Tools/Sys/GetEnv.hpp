@@ -49,6 +49,7 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "USE_IR_LOC",
 #ifdef __ILUVATAR__
     "ILUIR_ENABLE_DUMP",
+    "TRITON_STORE_STP",
 #endif
     "NVPTX_ENABLE_DUMP",
     "ALLOW_LHS_TMEM_LAYOUT_CONVERSION",
@@ -62,6 +63,9 @@ inline const std::set<std::string> CACHE_NEUTRAL_ENV_VARS = {
     // clang-format off
     "TRITON_REPRODUCER_PATH",
     "TRITON_ENABLE_PYTHON_STACKTRACE",
+#ifdef __ILUVATAR__
+    "TRITON_ENABLE_LOOP_UNROLL_WARNING",
+#endif
     // clang-format on
 };
 

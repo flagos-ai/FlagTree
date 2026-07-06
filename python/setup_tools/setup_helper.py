@@ -563,6 +563,8 @@ download_flagtree_third_party("tileir", condition=(flagtree_backend == "tileir")
 
 handle_flagtree_backend()
 
+register_backend_cache()
+
 # iluvatar
 cache.store(
     file="iluvatar-llvm22-x86_64",
@@ -571,13 +573,6 @@ cache.store(
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )
-
-cache.store(
-    file="iluvatarTritonPlugin.so", condition=("iluvatar" == flagtree_backend) and (not configs.flagtree_plugin), url=
-    "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.30-glibcxx3.4.28-cxxabi1.3.12-ubuntu-x86_64_v0.3.0.tar.gz",
-    copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="015b9af8")
-
-register_backend_cache()
 
 # mthreads
 cache.store(
