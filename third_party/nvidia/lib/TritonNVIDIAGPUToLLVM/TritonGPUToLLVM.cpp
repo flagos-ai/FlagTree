@@ -114,9 +114,7 @@ public:
         });
     addLegalOp<tle::RemotePointersOp>();
     addLegalOp<tle::GetDeviceIdOp>();
-    // addIllegalOp<tle::GetLocalRankOp>();
-    // // addLegalOp<tle::GetDeviceIdOp>();
-    // addLegalOp<tle::GetNumPesOp>();
+    addLegalOp<tle::DistributedBarrierOp>();
     // Allow non-TLE ops to remain during this partial conversion.
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
@@ -195,12 +193,7 @@ struct ConvertTritonGPUToLLVM
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateTMAStoreCommitGroupOpToLLVMPatterns(
           typeConverter, patterns, benefit);
-      if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
-        return signalPassFailure();
-      }
-    }
 #ifdef FLAGCX_ENABLED
-    {
       mlir::triton::tle::populateGetDeviceIdOpToFlagCxPatterns(
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateGetLocalRankOpToLLVMPatterns(
@@ -208,10 +201,12 @@ struct ConvertTritonGPUToLLVM
       mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(typeConverter,
                                                            patterns, benefit);
       mlir::triton::tle::populateDeviceIntraBarrierOpToLLVMPatterns(
-          typeConverter, patterns, benefit);
-    }
+          typeConverter, patterns, benefit + 1);
 #endif
-
+      if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
+        return signalPassFailure();
+      }
+    }
 #endif
 
     mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMPatterns(

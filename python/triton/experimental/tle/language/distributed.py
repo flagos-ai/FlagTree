@@ -5,7 +5,7 @@ import copy
 from dataclasses import dataclass, asdict
 from itertools import product
 from typing import Any, Iterable, Mapping, Sequence, List, Tuple, Union, Optional, Dict
-
+from enum import Enum
 import triton.language.core as tl
 
 Axis = Tuple[str, int]
@@ -44,6 +44,24 @@ def n_pes(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
     result = builder.get_n_pes(ret_ir_ty, dev_mem_ptr.handle)
     return tl.tensor(result, ret_dtype)
 
+
+class BarrierKind(str, Enum):
+    ARRIVE = "arrive"
+    WAIT = "wait"
+    SYNC = "sync"
+
+class MemoryOrder(str, Enum):
+    RELAXED = "relaxed"
+    ACQUIRE = "acquire"
+    RELEASE = "release"
+    ACQ_REL = "acq_rel"
+
+class GroupKind(str, Enum):
+    THREAD = "thread"
+    WARP = "warp"
+    BLOCK = "block"
+    TILE_SPAN = "tile_span"
+    LANES = "lanes"
 
 @dataclass
 class MeshConfig:
@@ -612,9 +630,25 @@ def shard_id(
         coord = _semantic.mod(coord, dim)
     return coord
 
+def _parse_device_barrier_args(argType) -> str:
+    argType = tl._unwrap_if_constexpr(argType)
+    argTypes = (BarrierKind, GroupKind, MemoryOrder)
+    if isinstance(argType, argTypes):
+        return argType.value
+    else:
+        return str(argType).lower()
 
 @tl.builtin
-def distributed_barrier(mesh: device_mesh | None = None, _semantic=None):
+def distributed_barrier(
+    mesh: device_mesh | None = None, 
+    space: str = None,
+    comm_ptr=None,
+    barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+    group_kind : str | GroupKind = GroupKind.BLOCK,
+    index: int | None = 0,
+    order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+    _semantic=None
+):
     """
     M3 entrypoint: distributed synchronization primitive.
 
@@ -626,7 +660,23 @@ def distributed_barrier(mesh: device_mesh | None = None, _semantic=None):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
     subgroup = None
     use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
-
+    
+    if space or comm_ptr:
+        if space and space != "device" and comm_ptr:
+            raise ValueError(f"{space} space and comm_ptr cannot be used together")
+        if space and space == "device" and not comm_ptr:
+            raise NotImplementedError(f"distributed_barrier with space={space} must have comm_ptr arg")
+        builder = _semantic.builder
+        builder.create_distributed_barrier(
+            src=comm_ptr.handle,
+            barrier_index=index or 0,
+            space=_parse_device_barrier_args(space),
+            group_kind=_parse_device_barrier_args(group_kind),
+            order=_parse_device_barrier_args(order),
+            barrier_kind=_parse_device_barrier_args(barrier_kind),
+        )
+        return None
+            
     if use_grid:
         if mesh is not None:
             _apply_mesh_grid_launch(mesh, _semantic)

@@ -462,11 +462,12 @@ struct DistributedBarrierOpConversion
     auto newOrderAttr = rewriter.getI32IntegerAttr(order);
     auto barrierTypeAttr = op.getBarrierTypeAttr();
     auto multimemAttr = rewriter.getBoolAttr(false);
-
+    # ifdef FLAGCX_ENABLED
+    llvm::errs() << "replaceOpWithNewOp Lowering DeviceIntraBarrierOp to FlagCx function call\n";
     rewriter.replaceOpWithNewOp<tle::DeviceIntraBarrierOp>(
         op, comm, barrierTypeAttr, coopKindAttr, indexAttr, multimemAttr,
         newOrderAttr);
-
+    # endif
     return success();
   }
   LogicalResult
