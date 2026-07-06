@@ -365,29 +365,30 @@ void init_triton_tle_ir(py::module &&m) {
                  StringAttr(), IntegerAttr(), IntegerAttr(),
                  DenseI32ArrayAttr(), DenseI32ArrayAttr(), DenseI32ArrayAttr());
            })
-      .def("create_distributed_barrier",
-           [](TritonOpBuilder &self, Value src, size_t barrier_index = 0,
-              const std::string &space = "device",
-              const std::string &group_kind = "block",
-              const std::string &order = "acqrel",
-              const std::string &barrier_kind = "sync") -> void {
-             auto &builder = self.getBuilder();
-             auto *ctx = builder.getContext();
-             auto getOptStrAttr = [&](const std::string &s) -> StringAttr {
-               return s.empty() ? StringAttr() : builder.getStringAttr(s);
-             };
-             auto spaceAttr = getOptStrAttr(space);
-             auto kindAttr = getOptStrAttr(group_kind);
-             auto orderAttr = getOptStrAttr(order);
-             auto barrierTypeAttr = getOptStrAttr(barrier_kind);
-             auto barrierIndexAttr =
-                 builder.getI32IntegerAttr(static_cast<int32_t>(barrier_index));
+      .def(
+          "create_distributed_barrier",
+          [](TritonOpBuilder &self, Value src, size_t barrier_index = 0,
+             const std::string &space = "device",
+             const std::string &group_kind = "block",
+             const std::string &order = "acqrel",
+             const std::string &barrier_kind = "sync") -> void {
+            auto &builder = self.getBuilder();
+            auto *ctx = builder.getContext();
+            auto getOptStrAttr = [&](const std::string &s) -> StringAttr {
+              return s.empty() ? StringAttr() : builder.getStringAttr(s);
+            };
+            auto spaceAttr = getOptStrAttr(space);
+            auto kindAttr = getOptStrAttr(group_kind);
+            auto orderAttr = getOptStrAttr(order);
+            auto barrierTypeAttr = getOptStrAttr(barrier_kind);
+            auto barrierIndexAttr =
+                builder.getI32IntegerAttr(static_cast<int32_t>(barrier_index));
 
-             self.create<tle::DistributedBarrierOp>(
-                 src, spaceAttr, barrierTypeAttr, orderAttr, kindAttr,
-                 barrierIndexAttr, IntegerAttr(), DenseI32ArrayAttr(),
-                 DenseI32ArrayAttr(), DenseI32ArrayAttr());
-           },
+            self.create<tle::DistributedBarrierOp>(
+                src, spaceAttr, barrierTypeAttr, orderAttr, kindAttr,
+                barrierIndexAttr, IntegerAttr(), DenseI32ArrayAttr(),
+                DenseI32ArrayAttr(), DenseI32ArrayAttr());
+          },
           py::arg("src"), py::arg("barrier_index"), py::arg("space"),
           py::arg("group_kind"), py::arg("order"), py::arg("barrier_kind"))
       .def(

@@ -8,7 +8,8 @@ DEVICE_MESH = tle.device_mesh(tle.MeshConfig(device=2))
 
 @triton.jit
 def _remote_peer_d2d_kernel(dev_comm_dptr, dev_mem_dptr, out_ptr, mesh: tl.constexpr, BLOCK: tl.constexpr):
-    tle.distributed_barrier(comm_ptr=dev_comm_dptr, space="device", group_kind="block", order="acqrel", barrier_kind="sync")
+    tle.distributed_barrier(comm_ptr=dev_comm_dptr, space="device", group_kind="block", order="acqrel",
+                            barrier_kind="sync")
 
 
 class TestDeviceToDevice:
@@ -35,7 +36,7 @@ class TestDeviceToDevice:
             num_ctas=1,
             num_warps=4,
         )
-        # assert "remote_pointers" in compiled.asm["ttgir"]
+        assert "remote_pointers" in compiled.asm["ttgir"]
         # assert "flagcxGetIntraPointerC" in compiled.asm['ptx']
 
         _remote_peer_d2d_kernel[(grid, )](dev_comm_dptr=dev_comm_dptr, dev_mem_dptr=dev_mem_dptr, out_ptr=y,

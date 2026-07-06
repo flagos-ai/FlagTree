@@ -32,11 +32,11 @@ struct DeviceIntraBarrierOpConversion
     auto loc = op.getLoc();
 
     auto indexValue = op.getIndexAttr().getInt();
-    
+
     auto coopValue = op.getCoopKindAttr().getInt();
-    
+
     auto orderValue = op.getOrderAttr().getInt();
-    
+
     auto barrierType = op.getBarrierTypeAttr().getValue();
 
     if (!llvm::is_contained(std::array<size_t, 5>{0, 1, 2, 3, 4}, coopValue))
@@ -44,7 +44,7 @@ struct DeviceIntraBarrierOpConversion
 
     if (!llvm::is_contained(std::array<size_t, 4>{0, 1, 2, 3}, orderValue))
       return rewriter.notifyMatchFailure(op, "invalid coop_kind");
-    
+
     llvm::errs() << "Lowering DeviceIntraBarrierOp to FlagCx function call\n";
     tle::getBarrierFuncCall(loc, rewriter, adaptor.getComm(), indexValue,
                             coopValue, orderValue, barrierType);

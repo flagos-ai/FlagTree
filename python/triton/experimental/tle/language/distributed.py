@@ -50,11 +50,13 @@ class BarrierKind(str, Enum):
     WAIT = "wait"
     SYNC = "sync"
 
+
 class MemoryOrder(str, Enum):
     RELAXED = "relaxed"
     ACQUIRE = "acquire"
     RELEASE = "release"
     ACQ_REL = "acq_rel"
+
 
 class GroupKind(str, Enum):
     THREAD = "thread"
@@ -62,6 +64,7 @@ class GroupKind(str, Enum):
     BLOCK = "block"
     TILE_SPAN = "tile_span"
     LANES = "lanes"
+
 
 @dataclass
 class MeshConfig:
@@ -630,6 +633,7 @@ def shard_id(
         coord = _semantic.mod(coord, dim)
     return coord
 
+
 def _parse_device_barrier_args(argType) -> str:
     argType = tl._unwrap_if_constexpr(argType)
     argTypes = (BarrierKind, GroupKind, MemoryOrder)
@@ -638,17 +642,12 @@ def _parse_device_barrier_args(argType) -> str:
     else:
         return str(argType).lower()
 
+
 @tl.builtin
-def distributed_barrier(
-    mesh: device_mesh | None = None, 
-    space: str = None,
-    comm_ptr=None,
-    barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-    group_kind : str | GroupKind = GroupKind.BLOCK,
-    index: int | None = 0,
-    order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-    _semantic=None
-):
+def distributed_barrier(mesh: device_mesh | None = None, space: str = None, comm_ptr=None,
+                        barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                        group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
+                        order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None):
     """
     M3 entrypoint: distributed synchronization primitive.
 
@@ -660,7 +659,7 @@ def distributed_barrier(
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
     subgroup = None
     use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
-    
+
     if space or comm_ptr:
         if space and space != "device" and comm_ptr:
             raise ValueError(f"{space} space and comm_ptr cannot be used together")
@@ -676,7 +675,7 @@ def distributed_barrier(
             barrier_kind=_parse_device_barrier_args(barrier_kind),
         )
         return None
-            
+
     if use_grid:
         if mesh is not None:
             _apply_mesh_grid_launch(mesh, _semantic)
