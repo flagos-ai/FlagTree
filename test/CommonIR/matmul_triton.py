@@ -10,7 +10,7 @@ import triton.language as tl
 # Original project licensed under the MIT License.
 
 import triton.experimental.tle as tle  # noqa: F401  (registers tile/tle dialects)
-from triton.experimental.tle.language.dsa.ascend import L1, L0C  # noqa: F401
+from triton.experimental.tle.language.dsa.ascend import L1  # noqa: F401
 from triton.experimental.tle.language.dsa import tile_alloc, tile_copy, tile_to_tensor, tile_subview  # noqa: F401
 
 # =============================================================================
@@ -125,7 +125,7 @@ def matmul_kernel(
     NUM_BLOCKS    = NUM_BLOCKS_M * NUM_BLOCKS_N
     NUM_K_BLOCKS  = tl.cdiv(K, BLOCK_K)
     # prologue + main loop + epilogue:
-    #   片上内存：A/B 输入放 L1，C 输出累加放 L0C。
+    #   片上内存：A/B 输入放 L1，C 输出累加在寄存器（tl.zeros / tl.dot）。
     #   iter 步长 = NUM_CORES * NUM_K_BLOCKS，保证同一 core 连续消费同一输出块的全部 K 切片。
 
     # ① 片上工作集
@@ -133,7 +133,6 @@ def matmul_kernel(
     # slot s 的行偏移 = s * BLOCK_M（A）或 s * BLOCK_K（B）。
     mat_a_l1   = tile_alloc([3 * BLOCK_M, BLOCK_K], mat_a.dtype.element_ty, L1)
     mat_b_l1   = tile_alloc([3 * BLOCK_K, BLOCK_N], mat_b.dtype.element_ty, L1)
-    mat_c_l0c  = tile_alloc([BLOCK_M, BLOCK_N],     tl.float32,              L0C)
 
     iter_start = pid * NUM_K_BLOCKS
     iter_end   = NUM_BLOCKS * NUM_K_BLOCKS
@@ -164,7 +163,6 @@ def matmul_kernel(
     m_start = task_m * BLOCK_M
     n_start = task_n * BLOCK_N
     prev_block_idx = iter_start // NUM_K_BLOCKS
-    mat_c_acc = tile_to_tensor(mat_c_l0c, writable=True)
     mat_c_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
     tile_copy(tl.make_block_ptr(
@@ -211,10 +209,9 @@ def matmul_kernel(
         if iter // NUM_K_BLOCKS != prev_block_idx:
             tl.store(tl.make_block_ptr(
                 mat_c, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0)),
-                tile_to_tensor(mat_c_l0c, writable=False).to(mat_c.dtype.element_ty))
+                mat_c_acc.to(mat_c.dtype.element_ty))
             m_start = m_nxt1
             n_start = n_nxt1
-            mat_c_acc = tile_to_tensor(mat_c_l0c, writable=True)
             mat_c_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
             prev_block_idx = iter // NUM_K_BLOCKS
 
@@ -247,10 +244,9 @@ def matmul_kernel(
     if (iter_end - iter_step) // NUM_K_BLOCKS != prev_block_idx:
         tl.store(tl.make_block_ptr(
             mat_c, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0)),
-            tile_to_tensor(mat_c_l0c, writable=False).to(mat_c.dtype.element_ty))
+            mat_c_acc.to(mat_c.dtype.element_ty))
         m_start = m_nxt1
         n_start = n_nxt1
-        mat_c_acc = tile_to_tensor(mat_c_l0c, writable=True)
         mat_c_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     mat_c_acc = tl.dot(tile_to_tensor(_a_slot(s_ep), writable=False),
                        tile_to_tensor(_b_slot(s_ep), writable=False),
@@ -259,7 +255,7 @@ def matmul_kernel(
     # 写回最后一个输出块
     tl.store(tl.make_block_ptr(
         mat_c, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0)),
-        tile_to_tensor(mat_c_l0c, writable=False).to(mat_c.dtype.element_ty))
+        mat_c_acc.to(mat_c.dtype.element_ty))
 
 
 def call(mat_a, mat_b):

@@ -45,6 +45,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -177,6 +178,52 @@ struct TileAllocToMemRef : OpRewritePattern<tile::AllocOp> {
                                 PatternRewriter &rewriter) const final {
     auto bufTy = op.getResult().getType();
     rewriter.replaceOpWithNewOp<memref::AllocOp>(op, convertBufToMemRef(bufTy));
+    return success();
+  }
+};
+
+// =============================================================================
+// step 1.5
+// =============================================================================
+
+struct TileSubviewToMemrefSubview : public OpRewritePattern<tile::SubViewOp> {
+  using OpRewritePattern<tile::SubViewOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tile::SubViewOp op,
+                                PatternRewriter &rewriter) const override {
+    // 1. Convert the source buffer and deduce the result type
+    Value sourceMemRef = getAsMemRef(op.getSource(), rewriter);
+    auto sourceMemRefType = sourceMemRef.getType().cast<MemRefType>();
+
+    // 2. Map dynamic offsets directly to OpFoldResult
+    SmallVector<OpFoldResult> mixedOffsets = llvm::to_vector<4>(
+        llvm::map_range(op.getOffsets(), [](Value v) { return OpFoldResult(v); }));
+
+    // 3. Unpack static sizes and strides into OpFoldResult arrays
+    SmallVector<OpFoldResult> mixedSizes = getAsOpFoldResult(op.getSizesAttr());
+    SmallVector<OpFoldResult> mixedStrides = getAsOpFoldResult(op.getStridesAttr());
+
+    auto targetShape = op.getType().getShape();
+    auto inferredType = memref::SubViewOp::inferRankReducedResultType(
+        targetShape,
+        sourceMemRefType,
+        mixedOffsets,
+        mixedSizes,
+        mixedStrides
+    ).cast<MemRefType>();
+
+    // 4. Replace the old op with the standard memref.subview
+    auto memrefSubview = rewriter.create<memref::SubViewOp>(
+        op.getLoc(),
+        inferredType,
+        sourceMemRef,
+        mixedOffsets,
+        mixedSizes,
+        mixedStrides
+    );
+
+    rewriter.replaceOp(op, memrefSubview.getResult());
+
     return success();
   }
 };
@@ -368,8 +415,8 @@ void TileIRToHIVMPass::runOnOperation() {
   // framework: tile.alloc → memref.alloc replaces !tile.buf with memref,
   // then tile.copy (now seeing memref operands) → hivm.copy, etc.
   RewritePatternSet patterns(&getContext());
-  patterns.add<TileAllocToMemRef, TileToTensorEliminate, TileCopyToHIVM,
-               TileStoreTensorToHIVM, TileLoadToHIVM, TileStoreToHIVM,
+  patterns.add<TileAllocToMemRef, TileSubviewToMemrefSubview, TileToTensorEliminate,
+               TileCopyToHIVM, TileStoreTensorToHIVM, TileLoadToHIVM, TileStoreToHIVM,
                TileSetFlagToHIVM, TileWaitFlagToHIVM, TilePipeBarrierToHIVM,
                TileCubeWaitToHIVM, TileGmOffsetToHIVM>(&getContext());
 
