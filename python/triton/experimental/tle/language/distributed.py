@@ -643,6 +643,28 @@ def _parse_device_barrier_args(argType) -> str:
         return str(argType).lower()
 
 
+def check_and_handle_device_intra_barrier(space: str = None, comm_ptr=None,
+                                          barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                                          group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
+                                          order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None):
+    if space or comm_ptr:
+        if space and space != "device" and comm_ptr:
+            raise ValueError(f"{space} space and comm_ptr cannot be used together")
+        if space and space == "device" and not comm_ptr:
+            raise NotImplementedError(f"distributed_barrier with space={space} must have comm_ptr arg")
+        builder = _semantic.builder
+        builder.create_distributed_barrier(
+            src=comm_ptr.handle,
+            barrier_index=index or 0,
+            space=_parse_device_barrier_args("device"),
+            group_kind=_parse_device_barrier_args(group_kind),
+            order=_parse_device_barrier_args(order),
+            barrier_kind=_parse_device_barrier_args(barrier_kind),
+        )
+        return True
+    return False
+
+
 @tl.builtin
 def distributed_barrier(mesh: device_mesh | None = None, space: str = None, comm_ptr=None,
                         barrier_kind: BarrierKind | str = BarrierKind.SYNC,
@@ -660,20 +682,8 @@ def distributed_barrier(mesh: device_mesh | None = None, space: str = None, comm
     subgroup = None
     use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
 
-    if space or comm_ptr:
-        if space and space != "device" and comm_ptr:
-            raise ValueError(f"{space} space and comm_ptr cannot be used together")
-        if space and space == "device" and not comm_ptr:
-            raise NotImplementedError(f"distributed_barrier with space={space} must have comm_ptr arg")
-        builder = _semantic.builder
-        builder.create_distributed_barrier(
-            src=comm_ptr.handle,
-            barrier_index=index or 0,
-            space=_parse_device_barrier_args(space),
-            group_kind=_parse_device_barrier_args(group_kind),
-            order=_parse_device_barrier_args(order),
-            barrier_kind=_parse_device_barrier_args(barrier_kind),
-        )
+    if check_and_handle_device_intra_barrier(space=space, comm_ptr=comm_ptr, barrier_kind=barrier_kind,
+                                             group_kind=group_kind, index=index, order=order, _semantic=_semantic):
         return None
 
     if use_grid:

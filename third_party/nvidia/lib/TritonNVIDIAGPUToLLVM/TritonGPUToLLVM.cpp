@@ -114,7 +114,9 @@ public:
         });
     addLegalOp<tle::RemotePointersOp>();
     addLegalOp<tle::GetDeviceIdOp>();
-    addLegalOp<tle::DistributedBarrierOp>();
+    // addIllegalOp<tle::DeviceIntraBarrierOp>();
+    // addIllegalOp<tle::DistributedBarrierOp>();
+    // addLegalOp<tle::DeviceIntraBarrierOp>();
     // Allow non-TLE ops to remain during this partial conversion.
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
@@ -201,7 +203,7 @@ struct ConvertTritonGPUToLLVM
       mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(typeConverter,
                                                            patterns, benefit);
       mlir::triton::tle::populateDeviceIntraBarrierOpToLLVMPatterns(
-          typeConverter, patterns, benefit + 1);
+          typeConverter, patterns, benefit);
 #endif
       if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
         return signalPassFailure();

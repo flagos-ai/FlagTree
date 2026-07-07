@@ -21,7 +21,7 @@ namespace tle = mlir::triton::tle;
 
 constexpr llvm::StringLiteral kSpaceAttr = "space";
 constexpr llvm::StringLiteral kOrderAttr = "order";
-constexpr llvm::StringLiteral kIndexAttr = "index";
+constexpr llvm::StringLiteral kIndexAttr = "barrier_index";
 constexpr llvm::StringLiteral kGroupKindAttr = "group_kind";
 constexpr llvm::StringLiteral kGroupShapeAttr = "group_shape";
 constexpr llvm::StringLiteral kGroupMaskAttr = "group_mask";
@@ -427,11 +427,12 @@ struct DistributedBarrierOpConversion
   }
 
   LogicalResult
-  lowerDeviceSpaceBarrier(tle::DistributedBarrierOp op,
+  lowerDeviceSpaceBarrier(tle::DistributedBarrierOp op, OpAdaptor adaptor,
                           ConversionPatternRewriter &rewriter) const {
     auto kindAttr = op->getAttrOfType<StringAttr>(kGroupKindAttr);
     auto orderAttr = op->getAttrOfType<StringAttr>(kOrderAttr);
     auto indexAttr = op->getAttrOfType<IntegerAttr>(kIndexAttr);
+    auto loc = op.getLoc();
     auto getCoopKindValue = [](StringRef kind) -> int32_t {
       return llvm::StringSwitch<int32_t>(kind)
           .Case("thread", 0)
@@ -457,14 +458,13 @@ struct DistributedBarrierOpConversion
     if (order < 0)
       return rewriter.notifyMatchFailure(op, "invalid order");
 
-    auto comm = op.getSrc();
+    auto srcElems = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    auto comm = srcElems[0];
     auto coopKindAttr = rewriter.getI32IntegerAttr(coopKind);
     auto newOrderAttr = rewriter.getI32IntegerAttr(order);
     auto barrierTypeAttr = op.getBarrierTypeAttr();
     auto multimemAttr = rewriter.getBoolAttr(false);
 #ifdef FLAGCX_ENABLED
-    llvm::errs() << "replaceOpWithNewOp Lowering DeviceIntraBarrierOp to "
-                    "FlagCx function call\n";
     rewriter.replaceOpWithNewOp<tle::DeviceIntraBarrierOp>(
         op, comm, barrierTypeAttr, coopKindAttr, indexAttr, multimemAttr,
         newOrderAttr);
@@ -476,7 +476,7 @@ struct DistributedBarrierOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     if (auto spaceAttr = op->getAttrOfType<StringAttr>(kSpaceAttr))
       if (spaceAttr.getValue() == "device")
-        return lowerDeviceSpaceBarrier(op, rewriter);
+        return lowerDeviceSpaceBarrier(op, adaptor, rewriter);
 
     if (auto kindAttr = op->getAttrOfType<StringAttr>(kGroupKindAttr)) {
       if (kindAttr.getValue() == "grid")

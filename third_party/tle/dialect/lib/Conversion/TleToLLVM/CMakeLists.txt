@@ -11,10 +11,10 @@ set(TLE_TO_LLVM_SRC
     WGMMAFenceOpToLLVM.cpp
 )
 
-add_subdirectory(FlagCxOpToLLVM)
 
 if(FLAGCX_ENABLED)
- list(APPEND TLE_TO_LLVM_SRC
+add_subdirectory(FlagCxOpToLLVM)
+list(APPEND TLE_TO_LLVM_SRC
   GetDeviceIdToFlagCX.cpp
   GetLocalRankOpToLLVM.cpp
 )

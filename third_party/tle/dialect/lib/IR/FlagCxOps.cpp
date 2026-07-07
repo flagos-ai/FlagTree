@@ -14,6 +14,21 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
+enum class CoopKind : int32_t {
+  Thread = 0,
+  Warp = 1,
+  Block = 2,
+  TileSpan = 3,
+  Lanes = 4,
+};
+
+enum class MemoryOrder : int32_t {
+  Relaxed = 0,
+  Acquire = 1,
+  Release = 2,
+  AcqRel = 3,
+};
+
 namespace mlir::triton::tle {
 
 LogicalResult GetLocalRankOp::verify() {
@@ -27,50 +42,73 @@ LogicalResult GetLocalRankOp::verify() {
 
 LogicalResult DeviceIntraBarrierOp::verify() {
   auto *op = getOperation();
-  auto spaceAttr = op->getAttrOfType<StringAttr>("space");
-  if (spaceAttr && spaceAttr.getValue() != "device")
-    return success();
-  auto emitInvalidAttr = [&](StringRef attrName, StringRef value,
-                             StringRef expected) -> LogicalResult {
+
+  auto barrierTypeAttr = getBarrierTypeAttr();
+  auto coopKindAttr = getCoopKindAttr();
+  auto orderAttr = getOrderAttr();
+
+  auto emitInvalidIntAttr = [&](StringRef attrName, int64_t value,
+                                StringRef expected) -> LogicalResult {
+    return op->emitOpError() << "invalid " << attrName << " (" << value
+                             << "), expected one of: " << expected;
+  };
+
+  auto emitInvalidStrAttr = [&](StringRef attrName, StringRef value,
+                                StringRef expected) -> LogicalResult {
     return op->emitOpError() << "invalid " << attrName << " '" << value
                              << "', expected one of: " << expected;
   };
-  auto kindAttr = op->getAttrOfType<StringAttr>("group_kind");
-  auto barrierTypeAttr = op->getAttrOfType<StringAttr>("barrier_type");
-  auto orderAttr = op->getAttrOfType<StringAttr>("order");
 
-  bool kindValid = llvm::StringSwitch<bool>(kindAttr.getValue())
-                       .Case("thread", true)
-                       .Case("warp", true)
-                       .Case("block", true)
-                       .Case("tile_span", true)
-                       .Case("lanes", true)
-                       .Default(false);
+  // barrier_type
+  if (barrierTypeAttr) {
+    StringRef barrierType = barrierTypeAttr.getValue();
 
-  if (!kindValid) {
-    return emitInvalidAttr("group_kind", kindAttr.getValue(),
-                           "thread, warp, block, tile_span, lanes");
+    bool valid = llvm::StringSwitch<bool>(barrierType)
+                     .Case("arrive", true)
+                     .Case("wait", true)
+                     .Case("sync", true)
+                     .Default(false);
+
+    if (!valid)
+      return emitInvalidStrAttr("barrier_type", barrierType,
+                                "arrive, wait, sync");
   }
-  bool barrierTypeValid = llvm::StringSwitch<bool>(barrierTypeAttr.getValue())
-                              .Case("arrive", true)
-                              .Case("wait", true)
-                              .Case("sync", true)
-                              .Default(false);
-  if (!barrierTypeValid) {
-    return emitInvalidAttr("barrier_type", barrierTypeAttr.getValue(),
-                           "arrive, wait, sync");
+
+  // coop_kind
+  if (coopKindAttr) {
+    auto coopKind = static_cast<CoopKind>(coopKindAttr.getInt());
+
+    switch (coopKind) {
+    case CoopKind::Thread:
+    case CoopKind::Warp:
+    case CoopKind::Block:
+    case CoopKind::TileSpan:
+    case CoopKind::Lanes:
+      break;
+    default:
+      return emitInvalidIntAttr(
+          "coop_kind", coopKindAttr.getInt(),
+          "Thread(0), Warp(1), Block(2), TileSpan(3), Lanes(4)");
+    }
   }
-  bool orderValid = llvm::StringSwitch<bool>(orderAttr.getValue())
-                        .Case("acqrel", true)
-                        .Case("acquire", true)
-                        .Case("release", true)
-                        .Case("relaxed", true)
-                        .Default(false);
-  if (!orderValid) {
-    return emitInvalidAttr("order", orderAttr.getValue(),
-                           "relaxed, acqrel, acquire, release");
+
+  // order
+  if (orderAttr) {
+    auto order = static_cast<MemoryOrder>(orderAttr.getInt());
+
+    switch (order) {
+    case MemoryOrder::Relaxed:
+    case MemoryOrder::Acquire:
+    case MemoryOrder::Release:
+    case MemoryOrder::AcqRel:
+      break;
+    default:
+      return emitInvalidIntAttr(
+          "order", orderAttr.getInt(),
+          "Relaxed(0), Acquire(1), Release(2), AcqRel(3)");
+    }
   }
+
   return success();
 }
-
 } // namespace mlir::triton::tle
