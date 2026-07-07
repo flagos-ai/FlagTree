@@ -105,7 +105,7 @@ def matmul_add_residual_kernel(
                 residual, (M, N), (N, 1),
                 (m_start, n_start),
                 (BLOCK_M, BLOCK_N), (1, 0)))
-        mat_c_acc = mat_c_acc + residual_tile.to(tl.float32)
+        mat_c_acc += residual_tile.to(tl.float32)
 
         # Store result back to GM
         tl.store(
