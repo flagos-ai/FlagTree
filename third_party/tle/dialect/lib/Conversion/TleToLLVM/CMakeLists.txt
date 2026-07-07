@@ -16,7 +16,6 @@ if(FLAGCX_ENABLED)
 add_subdirectory(FlagCxOpToLLVM)
 list(APPEND TLE_TO_LLVM_SRC
   GetDeviceIdToFlagCX.cpp
-  GetLocalRankOpToLLVM.cpp
 )
 endif()
 

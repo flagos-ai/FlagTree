@@ -1,4 +1,4 @@
-#include "tle/dialect/include/Conversion/TleToLLVM/GetLocalRankOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetLocalRankOpToLLVM.h"
 #include "tle/dialect/include/Tools/FlagcxUtils.h"
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
