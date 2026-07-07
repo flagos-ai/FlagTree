@@ -104,12 +104,12 @@ If your network connection is available, you also do not need to perform the lat
 
 ```shell
 # Plan A: docker pull (22.7GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-hcu-py310-torch2.4.1-ubuntu22.04:202603
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-hcu3.0-py310-torch2.4.1-ubuntu22.04:202603
 docker pull ${IMAGE}
 # Plan B: docker load (5.7GB)
-IMAGE=flagtree-hcu-py310-torch2.4.1-ubuntu22.04:202603
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu-py310-torch2.4.1-ubuntu22.04.202603.tar.gz
-docker load -i flagtree-hcu-py310-torch2.4.1-ubuntu22.04.202603.tar.gz
+IMAGE=flagtree-hcu3.0-py310-torch2.4.1-ubuntu22.04:202603
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu3.0-py310-torch2.4.1-ubuntu22.04.202603.tar.gz
+docker load -i flagtree-hcu3.0-py310-torch2.4.1-ubuntu22.04.202603.tar.gz
 ```
 
 ```shell
