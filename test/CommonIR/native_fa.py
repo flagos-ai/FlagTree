@@ -336,47 +336,51 @@ def flash_attention_fwd_serial_kernel(
         kv_head_idx       = head_idx // gqa_group
 
         # MM1: Q * K^T -> workspace_s
-        _mm1_qkt(
-            Q, K,
-            workspace_s,
-            cid, idx_in_conbine, global_head_idx, batch_idx, head_idx, kv_head_idx,
-            sQb, sQh, sQs, sQd,
-            sKb, sKh, sKs, sKd,
-            S, CB,
-            BLOCK_M, BLOCK_N, DIM,
-        )
+        with tle.scope(core_mode="cube"):
+            _mm1_qkt(
+                Q, K,
+                workspace_s,
+                cid, idx_in_conbine, global_head_idx, batch_idx, head_idx, kv_head_idx,
+                sQb, sQh, sQs, sQd,
+                sKb, sKh, sKs, sKd,
+                S, CB,
+                BLOCK_M, BLOCK_N, DIM,
+            )
 
         # Vec1: softmax(workspace_s) -> workspace_p
-        neg_max_even, neg_max_odd = _vec1_softmax(
-            workspace_s, workspace_p, workspace_rescale, workspace_expsum,
-            cid, idx_in_conbine,
-            neg_max_even, neg_max_odd,
-            sm_scale,
-            IS_CAUSAL, block_start, conbined_block_num, num_seq_blocks,
-            g, CB,
-            BLOCK_M, BLOCK_N,
-        )
+        with tle.scope(core_mode="vector"):
+            neg_max_even, neg_max_odd = _vec1_softmax(
+                workspace_s, workspace_p, workspace_rescale, workspace_expsum,
+                cid, idx_in_conbine,
+                neg_max_even, neg_max_odd,
+                sm_scale,
+                IS_CAUSAL, block_start, conbined_block_num, num_seq_blocks,
+                g, CB,
+                BLOCK_M, BLOCK_N,
+            )
 
         # MM2: P * V -> workspace_pv
-        _mm2_pv(
-            V,
-            workspace_p, workspace_pv,
-            cid, idx_in_conbine, batch_idx, kv_head_idx,
-            sKb, sKh, sKs, sKd,
-            S, CB,
-            BLOCK_M, BLOCK_N, DIM,
-        )
+        with tle.scope(core_mode="cube"):
+            _mm2_pv(
+                V,
+                workspace_p, workspace_pv,
+                cid, idx_in_conbine, batch_idx, kv_head_idx,
+                sKb, sKh, sKs, sKd,
+                S, CB,
+                BLOCK_M, BLOCK_N, DIM,
+            )
 
         # Vec2: accumulate pv into acc_o; write output on last block
-        acc_o, softmax_denom = _vec2_accumulate(
-            Out,
-            workspace_pv, workspace_rescale, workspace_expsum,
-            cid, idx_in_conbine, global_head_idx, batch_idx, head_idx,
-            acc_o, softmax_denom,
-            sOb, sOh, sOs, sOd,
-            S, CB, NUM_KV_BLOCKS,
-            BLOCK_M, DIM,
-        )
+        with tle.scope(core_mode="vector"):
+            acc_o, softmax_denom = _vec2_accumulate(
+                Out,
+                workspace_pv, workspace_rescale, workspace_expsum,
+                cid, idx_in_conbine, global_head_idx, batch_idx, head_idx,
+                acc_o, softmax_denom,
+                sOb, sOh, sOs, sOd,
+                S, CB, NUM_KV_BLOCKS,
+                BLOCK_M, DIM,
+            )
 
 
 # =============================================================================
