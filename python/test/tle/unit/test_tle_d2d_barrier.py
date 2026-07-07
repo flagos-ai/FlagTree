@@ -7,7 +7,19 @@ DEVICE_MESH = tle.device_mesh(tle.MeshConfig(device=2))
 
 
 @triton.jit
-def _barrier_d2d_kernel(dev_comm_dptr, dev_mem_dptr, out_ptr, mesh: tl.constexpr, BLOCK: tl.constexpr):
+def _barrier_d2d_kernel(dev_comm_dptr, dev_mem_ptr, out_ptr, mesh: tl.constexpr, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    local_rank = tle.shard_id(mesh, 'device', comm_ptr=dev_comm_dptr)
+    n_rank = mesh.shape[0]
+    peer = (local_rank + 1) % n_rank  # noqa: F841
+    remote_mem = tle.remote(
+        dev_mem_ptr,
+        space="device",
+        dtype=tl.float32,
+        shard_id=peer,
+        offset=pid,
+    )
+    tl.load(remote_mem)
     tle.distributed_barrier(comm_ptr=dev_comm_dptr, space="device", group_kind="block", order="acqrel",
                             barrier_kind="sync")
 
@@ -28,7 +40,7 @@ class TestD2DBarrier:
 
         compiled = _barrier_d2d_kernel.warmup(
             dev_comm_dptr=dev_comm_dptr,
-            dev_mem_dptr=dev_mem_dptr,
+            dev_mem_ptr=dev_mem_dptr,
             out_ptr=y,
             mesh=DEVICE_MESH,
             BLOCK=block,
@@ -39,7 +51,7 @@ class TestD2DBarrier:
         assert "distributed_barrier" in compiled.asm["ttgir"]
         assert "flagcxIntraBarrier" in compiled.asm['ptx']
 
-        _barrier_d2d_kernel[(grid, )](dev_comm_dptr=dev_comm_dptr, dev_mem_dptr=dev_mem_dptr, out_ptr=y,
+        _barrier_d2d_kernel[(grid, )](dev_comm_dptr=dev_comm_dptr, dev_mem_ptr=dev_mem_dptr, out_ptr=y,
                                       mesh=DEVICE_MESH, BLOCK=block)
 
         tle.cleanup_communicator()

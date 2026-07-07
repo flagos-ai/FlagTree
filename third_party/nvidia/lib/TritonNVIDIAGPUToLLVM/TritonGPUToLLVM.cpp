@@ -113,10 +113,6 @@ public:
           return hasLegalRegions && typeConverter.isLegal(op);
         });
     addLegalOp<tle::RemotePointersOp>();
-    addLegalOp<tle::GetDeviceIdOp>();
-    // addIllegalOp<tle::DeviceIntraBarrierOp>();
-    // addIllegalOp<tle::DistributedBarrierOp>();
-    // addLegalOp<tle::DeviceIntraBarrierOp>();
     // Allow non-TLE ops to remain during this partial conversion.
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
