@@ -1,0 +1,146 @@
+#include "TleTileToLLVMUtils.h"
+
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+
+using namespace mlir;
+
+namespace mlir::triton::iluvatar_tle {
+
+namespace ttg = mlir::triton::gpu;
+
+SmallVector<unsigned> getCTATileOrder(RankedTensorType type) {
+  if (auto blockedLayout =
+          dyn_cast<ttg::BlockedEncodingAttr>(type.getEncoding())) {
+    auto order = blockedLayout.getOrder();
+    return SmallVector<unsigned>(order.begin(), order.end());
+  }
+
+  unsigned rank = type.getRank();
+  SmallVector<unsigned> order;
+  order.reserve(rank);
+  for (unsigned i = 0; i < rank; ++i)
+    order.push_back(rank - 1 - i);
+  return order;
+}
+
+SmallVector<unsigned> delinearize(unsigned linearIndex,
+                                  ArrayRef<unsigned> shape,
+                                  ArrayRef<unsigned> order) {
+  SmallVector<unsigned> result(shape.size(), 0);
+  unsigned idx = linearIndex;
+  for (size_t i = 0; i < order.size(); ++i) {
+    unsigned dim = order[i];
+    result[dim] = idx % shape[dim];
+    idx /= shape[dim];
+  }
+  return result;
+}
+
+unsigned linearize(ArrayRef<unsigned> coords, ArrayRef<unsigned> shape,
+                   ArrayRef<unsigned> order) {
+  unsigned result = 0;
+  unsigned stride = 1;
+  for (size_t i = 0; i < order.size(); ++i) {
+    unsigned dim = order[i];
+    result += coords[dim] * stride;
+    stride *= shape[dim];
+  }
+  return result;
+}
+
+SmallVector<unsigned> getShapePerCTATile(RankedTensorType type) {
+  auto encoding = type.getEncoding();
+  if (!encoding)
+    llvm_unreachable("tile op requires tensor with encoding");
+
+  auto shape = type.getShape();
+  if (auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(encoding)) {
+    auto sizePerThread = blocked.getSizePerThread();
+    auto threadsPerWarp = blocked.getThreadsPerWarp();
+    auto warpsPerCTA = blocked.getWarpsPerCTA();
+
+    SmallVector<unsigned> result;
+    result.reserve(shape.size());
+    for (size_t i = 0; i < shape.size(); ++i) {
+      result.push_back(static_cast<unsigned>(sizePerThread[i]) *
+                       static_cast<unsigned>(threadsPerWarp[i]) *
+                       static_cast<unsigned>(warpsPerCTA[i]));
+    }
+    return result;
+  }
+
+  llvm_unreachable("tile op only supports BlockedEncoding");
+}
+
+SmallVector<Value> computeThreadOffsets(Location loc,
+                                        ConversionPatternRewriter &rewriter,
+                                        RankedTensorType tensorType) {
+  auto bl = cast<ttg::BlockedEncodingAttr>(tensorType.getEncoding());
+  auto sizePerThread = bl.getSizePerThread();
+  auto threadsPerWarp = bl.getThreadsPerWarp();
+  auto warpsPerCTA = bl.getWarpsPerCTA();
+  auto order = bl.getOrder();
+  int rank = tensorType.getRank();
+
+  auto i32Ty = rewriter.getIntegerType(32);
+  Value threadId = NVVM::ThreadIdXOp::create(rewriter, loc, i32Ty);
+
+  unsigned warpSizeVal = 1;
+  for (auto t : threadsPerWarp)
+    warpSizeVal *= t;
+  Value warpSizeV = LLVM::ConstantOp::create(
+      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)warpSizeVal));
+
+  Value laneId =
+      LLVM::URemOp::create(rewriter, loc, i32Ty, threadId, warpSizeV);
+  Value warpId =
+      LLVM::UDivOp::create(rewriter, loc, i32Ty, threadId, warpSizeV);
+
+  SmallVector<Value> laneInDim(rank);
+  {
+    Value rem = laneId;
+    for (int i = 0; i < rank; ++i) {
+      unsigned dim = order[i];
+      unsigned count = threadsPerWarp[dim];
+      Value cv = LLVM::ConstantOp::create(
+          rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)count));
+      laneInDim[dim] = LLVM::URemOp::create(rewriter, loc, i32Ty, rem, cv);
+      rem = LLVM::UDivOp::create(rewriter, loc, i32Ty, rem, cv);
+    }
+  }
+
+  SmallVector<Value> warpInDim(rank);
+  {
+    Value rem = warpId;
+    for (int i = 0; i < rank; ++i) {
+      unsigned dim = order[i];
+      unsigned count = warpsPerCTA[dim];
+      Value cv = LLVM::ConstantOp::create(
+          rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)count));
+      warpInDim[dim] = LLVM::URemOp::create(rewriter, loc, i32Ty, rem, cv);
+      rem = LLVM::UDivOp::create(rewriter, loc, i32Ty, rem, cv);
+    }
+  }
+
+  SmallVector<Value> threadOffsets(rank);
+  for (int d = 0; d < rank; ++d) {
+    Value tpw = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty,
+        rewriter.getI32IntegerAttr((int32_t)threadsPerWarp[d]));
+    Value spt = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty,
+        rewriter.getI32IntegerAttr((int32_t)sizePerThread[d]));
+    Value warpContrib =
+        LLVM::MulOp::create(rewriter, loc, i32Ty, warpInDim[d], tpw);
+    Value threadCoord =
+        LLVM::AddOp::create(rewriter, loc, i32Ty, warpContrib, laneInDim[d]);
+    threadOffsets[d] =
+        LLVM::MulOp::create(rewriter, loc, i32Ty, threadCoord, spt);
+  }
+
+  return threadOffsets;
+}
+
+} // namespace mlir::triton::iluvatar_tle

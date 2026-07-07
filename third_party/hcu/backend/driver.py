@@ -882,7 +882,10 @@ class HIPDriver(GPUDriver):
     def get_active_torch_device(self):
         import torch
         # when using hip devices, the device string in pytorch is "cuda"
-        return torch.device("cuda", self.get_current_device())
+        try:
+            return torch.device("cuda", self.get_current_device())
+        except RuntimeError:
+            return ""
 
     def get_benchmarker(self):
         from triton.testing import do_bench

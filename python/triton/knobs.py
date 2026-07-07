@@ -541,6 +541,17 @@ class hcu_knobs(base_knobs):
     scalarize_packed_fops: env_bool = env_bool("AMDGCN_SCALARIZE_PACKED_FOPS")
 
 
+# flagtree metax
+class metax_knobs(base_knobs):
+    maca_path = env_str("MACA_PATH", "/opt/maca/").get()
+    use_maca: bool = maca_path is not None and os.path.exists(maca_path)
+    # compiler related path
+    mxgpu_llvm_path = os.path.join(maca_path, "mxgpu_llvm", "bin") if maca_path else None
+    mlir_translate_path = os.path.join(mxgpu_llvm_path, "mlir-translate") if mxgpu_llvm_path and use_maca else None
+    mxcc_path = os.path.join(mxgpu_llvm_path, "mxcc") if mxgpu_llvm_path and use_maca else None
+    mlir_opt_path = os.path.join(maca_path, "mxgpu_llvm", "bin", "mlir-opt") if use_maca else None
+
+
 class proton_knobs(base_knobs):
     disable: env_bool = env_bool("TRITON_PROTON_DISABLE", False)
     cupti_lib_dir: env_str = env_str(
@@ -559,6 +570,7 @@ language = language_knobs()
 nvidia = nvidia_knobs()
 amd = amd_knobs()
 hcu = hcu_knobs()
+metax = metax_knobs()
 proton = proton_knobs()
 
 

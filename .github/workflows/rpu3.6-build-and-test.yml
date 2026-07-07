@@ -7,8 +7,15 @@ on:
     branches: [ "triton_v3.6.x" ]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Serialize ALL runs on the single shared RPU board with one fixed, board-wide
+  # group (NOT per-PR): only one job may drive the board at a time. Different PRs
+  # -- and manual re-runs -- otherwise race, sharing ~/FlagTree-ci (rsync
+  # --delete), the build dir, and /dev/rpu, which caused flaky failures. Queue
+  # (cancel-in-progress: false) so an in-flight board test is never interrupted
+  # mid-run (a cancelled smoke can orphan a launch_kernel_runner that wedges
+  # /dev/rpu for the next job).
+  group: rpu3.6-board
+  cancel-in-progress: false
 
 # The RPU CI runner is a small x86 host that orchestrates the build/test on a
 # separate aarch64 RPU board over SSH. The board cannot be reached directly
@@ -47,10 +54,18 @@ jobs:
         run: |
           set -x
           # Exact mirror to the board (--delete removes files deleted upstream;
-          # .git is not needed for the build).
-          rsync -az --delete --exclude '.git' \
-            -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no' \
-            ./ rpuboard:~/FlagTree-ci/
+          # .git is not needed for the build). Retry: the board's sshd can drop
+          # the connection during key exchange under load
+          # (kex_exchange_identification: Connection closed), which is transient.
+          n=0
+          until rsync -az --delete --exclude '.git' \
+              -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=20' \
+              ./ rpuboard:~/FlagTree-ci/; do
+            n=$((n+1))
+            if [ "$n" -ge 6 ]; then echo "::error::rsync to board failed after $n attempts"; exit 1; fi
+            echo "sync attempt $n failed (transient SSH drop?); retrying in $((n*15))s"
+            sleep $((n*15))
+          done
 
       - name: FlagTree Build on RPU board (via SSH)
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -62,12 +77,25 @@ jobs:
           # (setup.py lives here, not under python/), so clean that -- otherwise
           # it persists across runs and fills the board disk. ccache (configured
           # in the board's env.sh) keeps the rebuild fast.
-          ssh -tt -o BatchMode=yes -o StrictHostKeyChecking=no rpuboard 'set -e
-            cd ~/FlagTree-ci
-            source ~/env.sh
-            export FLAGTREE_BACKEND=rpu
-            rm -rf build
-            MAX_JOBS=8 pip3 install --user --force-reinstall . --no-build-isolation'
+          # Retry only on SSH connection errors (exit 255 = kex drop under
+          # load); a real build failure returns a different code and is NOT
+          # retried. The build is idempotent (rm -rf build), so a reconnect is
+          # safe.
+          n=0
+          while :; do
+            rc=0
+            ssh -tt -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=20 rpuboard 'set -e
+              cd ~/FlagTree-ci
+              source ~/env.sh
+              export FLAGTREE_BACKEND=rpu
+              rm -rf build
+              MAX_JOBS=8 pip3 install --user --force-reinstall . --no-build-isolation' || rc=$?
+            if [ "$rc" -ne 255 ]; then exit "$rc"; fi
+            n=$((n+1))
+            if [ "$n" -ge 6 ]; then echo "::error::ssh to board failed (connection) after $n attempts"; exit 255; fi
+            echo "ssh connection dropped (rc=255); retrying $n in $((n*15))s"
+            sleep $((n*15))
+          done
 
       - name: FlagTree Test on RPU board (via SSH)
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -77,18 +105,35 @@ jobs:
           # Unit suite, then the on-board launch_kernel dispatch smoke. The smoke
           # uses --require-board so a misconfigured board (missing toolchain /
           # runtime / /dev/rpu) fails the job instead of silently skipping.
-          ssh -tt -o BatchMode=yes -o StrictHostKeyChecking=no rpuboard 'set -e
+          # Retry only on SSH connection errors (255 = kex drop under load); a
+          # real test failure returns a different code and is NOT retried. Unit +
+          # smoke are idempotent (the smoke reaps first), so a reconnect re-runs
+          # safely.
+          n=0
+          while :; do
+            rc=0
+            ssh -tt -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=20 rpuboard 'set -e
             cd ~/FlagTree-ci
             source ~/env.sh
-            # Reap any leaked launch_kernel_runner from an earlier wedged run:
-            # an orphan holding /dev/rpu leaves run_work stuck in the RPU queue
-            # and makes every dispatch here time out. Only kill ones alive far
-            # longer than the 120s per-case cap -- a healthy dispatch finishes
-            # in seconds, so this never touches a concurrent job on the shared
-            # board.
-            for pid in $(pgrep -f launch_kernel_runner 2>/dev/null); do
-              et=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d " ")
-              if [ -n "$et" ] && [ "$et" -gt 130 ]; then sudo -n kill -9 "$pid" 2>/dev/null || true; fi
+            # Reap any leaked launch_kernel_runner before the smoke: an orphan
+            # from a prior run holding /dev/rpu leaves run_work stuck in the RPU
+            # queue and makes every dispatch here time out. Runs are serialized
+            # board-wide (see workflow `concurrency: rpu3.6-board`), so no
+            # concurrent job owns a runner -- reap ALL of them, not just old
+            # ones. (The previous 130s age guard left a gap: a runner orphaned
+            # <130s before the next run survived and wedged it.) Match on the
+            # real executable via /proc/PID/exe so this never kills its own
+            # reap shell, whose cmdline also contains "launch_kernel_runner".
+            for pid in $(ls /proc 2>/dev/null | grep -E "^[0-9]+$"); do
+              case "$(readlink /proc/$pid/exe 2>/dev/null)" in
+                */launch_kernel_runner) sudo -n kill -9 "$pid" 2>/dev/null || true ;;
+              esac
             done
             pytest -q third_party/rpu/python/test/unit
-            python3 third_party/rpu/python/test/board/lk_board_smoke.py --require-board -v'
+            python3 third_party/rpu/python/test/board/lk_board_smoke.py --require-board -v' || rc=$?
+            if [ "$rc" -ne 255 ]; then exit "$rc"; fi
+            n=$((n+1))
+            if [ "$n" -ge 6 ]; then echo "::error::ssh to board failed (connection) after $n attempts"; exit 255; fi
+            echo "ssh connection dropped (rc=255); retrying $n in $((n*15))s"
+            sleep $((n*15))
+          done

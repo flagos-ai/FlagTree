@@ -1,0 +1,86 @@
+name: Iluvatar3.6-Build-And-Test
+
+on:
+  push:
+    branches: [ "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "triton_v3.6.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  iluvatar-build-and-test:
+    runs-on: iluvatar3.6
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: iluvatar
+
+      - name: FlagTree Build on Iluvatar
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=iluvatar
+          export TRITON_OFFLINE_BUILD=1
+          export TRITON_BUILD_PROTON=OFF
+          export TRITON_ILU_BUILD_GLUON=OFF
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on Iluvatar
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source ~/env.sh
+
+          pip3 install "pytest==9.1.1"
+
+          for pkg in hypothesis absl-py scipy pytest-forked; do
+            pip3 list "$pkg" | grep "$pkg" || pip3 install "$pkg"
+          done
+
+          if [[ "$(uname -m)" == "aarch64" ]]; then
+            libgomp_path=$(find /usr/lib /usr/lib64 /lib /lib64 -type f -name 'libgomp.so*' 2>/dev/null | head -n 1)
+            if [[ -n "$libgomp_path" ]]; then
+              export LD_PRELOAD="$libgomp_path${LD_PRELOAD:+:$LD_PRELOAD}"
+            fi
+          fi
+
+          # triton unit test
+          UMD_CUDAMODULELOADING=0 pytest -v third_party/iluvatar/python/test/unit/language/test_core.py
+          pytest -v third_party/iluvatar/python/test/unit/language/test_subprocess.py
+          pytest -v third_party/iluvatar/python/test/unit/operators/test_blocksparse.py
+          pytest -v third_party/iluvatar/python/test/unit/operators/test_cross_entropy.py
+          pytest -v third_party/iluvatar/python/test/unit/operators/test_dot_trans.py
+          pytest -v third_party/iluvatar/python/test/unit/operators/test_flash_attention.py
+          pytest -v third_party/iluvatar/python/test/unit/operators/test_inductor.py
+          pytest -v third_party/iluvatar/python/test/unit/operators/test_matmul.py
+          pytest -v third_party/iluvatar/python/test/unit/test_debug.py
+
+          # TLE unit test
+          pytest -v python/test/tle/integration/test_tle_local_store.py
+          pytest -v python/test/tle/unit/test_tle_gpu_local_ptr.py
+          pytest -v python/test/tle/unit/test_extract_tile_static_index.py
+          pytest -v python/test/tle/unit/test_extract_tile_dynamic_index.py
+          pytest -v python/test/tle/unit/test_insert_tile_static_index.py
+          pytest -v python/test/tle/unit/test_insert_tile_dynamic_index.py
+
+          # TLE tutorials unit tests
+          python3 python/tutorials/tle/01-fft.py --only_unit_test

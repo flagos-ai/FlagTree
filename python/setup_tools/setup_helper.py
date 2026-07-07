@@ -447,21 +447,16 @@ def handle_plugin_backend(editable):
     src_build_plugin_path = flagtree_backend_dir / flagtree_plugin_so
     if not src_build_plugin_path.exists():
         return
-    if flagtree_backend in ["iluvatar", "mthreads", "sunrise"]:
-        if editable is False:
-            dst_build_plugin_dir = Path(sysconfig.get_path("purelib")) / "triton" / "_C"
-            if not os.path.exists(dst_build_plugin_dir):
-                os.makedirs(dst_build_plugin_dir)
-            dst_build_plugin_path = dst_build_plugin_dir / flagtree_plugin_so
-            shutil.copy(src_build_plugin_path, dst_build_plugin_path)
-        if flagtree_backend in ("mthreads", ):
-            dst_install_plugin_dir = Path(
-                __file__).resolve().parent.parent.parent / "third_party" / flagtree_backend / "python" / "triton" / "_C"
-        else:
-            dst_install_plugin_dir = Path(__file__).resolve().parent.parent / "triton" / "_C"
-        if not os.path.exists(dst_install_plugin_dir):
-            os.makedirs(dst_install_plugin_dir)
-        shutil.copy(src_build_plugin_path, dst_install_plugin_dir)
+    if editable is False:
+        dst_build_plugin_dir = Path(sysconfig.get_path("purelib")) / "triton" / "_C"
+        if not os.path.exists(dst_build_plugin_dir):
+            os.makedirs(dst_build_plugin_dir)
+        dst_build_plugin_path = dst_build_plugin_dir / flagtree_plugin_so
+        shutil.copy(src_build_plugin_path, dst_build_plugin_path)
+    dst_install_plugin_dir = Path(__file__).resolve().parent.parent / "triton" / "_C"
+    if not os.path.exists(dst_install_plugin_dir):
+        os.makedirs(dst_install_plugin_dir)
+    shutil.copy(src_build_plugin_path, dst_install_plugin_dir)
 
 
 def set_env(env_dict: dict):
@@ -512,9 +507,9 @@ handle_flagtree_backend()
 
 # iluvatar
 cache.store(
-    file="iluvatar-llvm18-x86_64",
+    file="iluvatar-llvm22-x86_64",
     condition=("iluvatar" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm18-x86_64_v0.3.0.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm22-x86_64_v0.6.0.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=set_llvm_env,
 )
@@ -712,10 +707,11 @@ cache.store(
     post_hook=set_llvm_env,
 )
 
+# sunrise
 cache.store(
     file="sunrise_llvm22_dev_release",
     condition=("sunrise" == flagtree_backend),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-34b694004c-triton-v3.6.x.tar.gz",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-1fdc1dfa-triton-v3.6.x.tar.gz",
     pre_hook=lambda: check_env('LLVM_SYSPATH'),
     post_hook=lambda path: [f(path) for f in (set_llvm_env, utils.activate("sunrise").sunrise_cp_bc_files)],
 )
@@ -723,6 +719,6 @@ cache.store(
 cache.store(
     file="sunriseTritonPlugin.so",
     condition=("sunrise" == flagtree_backend) and (not configs.flagtree_plugin),
-    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunrise-plugin-triton-v3.6.x.tar.gz",
-    md5_digest="3526d699",
+    url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin_v0.6.0.tar.gz",
+    md5_digest="f3c65d44",
 )

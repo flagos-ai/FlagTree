@@ -501,6 +501,20 @@ class nvidia_knobs(base_knobs):
     libcuda_path: env_opt_str = env_opt_str("TRITON_LIBCUDA_PATH")
 
 
+@functools.lru_cache()
+def _corex_home_default() -> str:
+    import shutil
+    ixsmi = shutil.which("ixsmi")
+    if ixsmi:
+        return os.path.dirname(os.path.dirname(os.path.realpath(ixsmi)))
+    return "/usr/local/corex"
+
+
+class iluvatar_knobs(base_knobs):
+    libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
+    libcuda_path: env_str_callable_default = env_str_callable_default("TRITON_LIBCUDA_PATH", _corex_home_default)
+
+
 class amd_knobs(base_knobs):
     use_buffer_ops: env_bool = env_bool("AMDGCN_USE_BUFFER_OPS", True)
     # Note: This requires use_buffer_ops be true to have any effect
@@ -516,16 +530,6 @@ class amd_knobs(base_knobs):
 
     use_async_copy: env_bool = env_bool("TRITON_HIP_USE_ASYNC_COPY")
     scalarize_packed_fops: env_bool = env_bool("AMDGCN_SCALARIZE_PACKED_FOPS")
-
-
-class metax_knobs(base_knobs):
-    maca_path = env_str("MACA_PATH", "/opt/maca/").get()
-    use_maca: bool = maca_path is not None and os.path.exists(maca_path)
-    # compiler related path
-    mxgpu_llvm_path = os.path.join(maca_path, "mxgpu_llvm", "bin") if maca_path else None
-    mlir_translate_path = os.path.join(mxgpu_llvm_path, "mlir-translate") if mxgpu_llvm_path and use_maca else None
-    mxcc_path = os.path.join(mxgpu_llvm_path, "mxcc") if mxgpu_llvm_path and use_maca else None
-    mlir_opt_path = os.path.join(maca_path, "mxgpu_llvm", "bin", "mlir-opt") if use_maca else None
 
 
 class proton_knobs(base_knobs):
@@ -544,7 +548,7 @@ autotuning = autotuning_knobs()
 runtime = runtime_knobs()
 language = language_knobs()
 nvidia = nvidia_knobs()
-metax = metax_knobs()
+iluvatar = iluvatar_knobs()
 amd = amd_knobs()
 proton = proton_knobs()
 
