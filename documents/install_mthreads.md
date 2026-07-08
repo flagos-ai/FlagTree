@@ -37,6 +37,12 @@ docker run -dit \
     -v /data:/data -v /home:/home -v /tmp:/tmp \
     -w /root --name ${CONTAINER} ${IMAGE} bash
 docker exec -it ${CONTAINER} /bin/bash
+
+python3 -c "import torch"
+# If "ImportError: libmusa.so.4: cannot open shared object file: No such file or directory" occurs,
+# create a symbolic link as follows.
+cd /usr/lib/x86_64-linux-gnu/
+ln -s libmusa.so.4.3.3 libmusa.so.4
 ```
 
 #### 1.2 Manually download the FlagTree dependencies

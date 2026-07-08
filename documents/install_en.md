@@ -1,6 +1,6 @@
 [[中文版](./install_cn.md)|English]
 
-## 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
+## 💫 NVIDIA [nvidia](/third_party/nvidia/)
 
 - Based on Triton 3.1/3.2/3.3/3.4/3.5/3.6, x64
 

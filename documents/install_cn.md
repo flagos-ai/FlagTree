@@ -1,6 +1,6 @@
 [中文版|[English](./install_en.md)]
 
-## 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
+## 💫 NVIDIA [nvidia](/third_party/nvidia/)
 
 - 对应的 Triton 版本为 3.1/3.2/3.3/3.4/3.5/3.6，基于 x64 平台
 
