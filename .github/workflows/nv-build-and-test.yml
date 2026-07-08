@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   nv-build-and-test:
-    runs-on: flagtree-nvidia
+    runs-on: nvidia3.3
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
