@@ -69,8 +69,8 @@ class FlagcxRuntimeConfig:
             self.include_path = self._get_include_paths()[path_order]
 
     def _check_path_available(self, paths):
-        available_paths = [Path(p) for p in paths if p and p.exists()]
-        if len(paths) == 0:
+        available_paths = [Path(p) for p in paths if p and Path(p).exists()]
+        if len(available_paths) == 0:
             raise RuntimeError(f"There are no available {self.bt_name} path in this {available_paths}")
         return available_paths
 
