@@ -1,5 +1,8 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#ifdef __TLE__
+#include "TleWGMMAAnalysis.h"
+#endif
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -34,14 +37,44 @@ namespace gpu {
 #define GEN_PASS_DEF_TRITONGPUPIPELINE
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
 
-static void pipelineWgmma(ModuleOp moduleOp, unsigned numStages) {
+#ifdef __TLE__
+static constexpr llvm::StringLiteral
+    kTleWgmmaPipelineModeAttr("tle.wgmma_pipeline_mode");
+static constexpr llvm::StringLiteral kTleWgmmaCompilerAutoMode("compiler_auto");
+static constexpr llvm::StringLiteral kTleWgmmaUserPromiseMode("user_promise");
+#endif
+
+static LogicalResult pipelineWgmma(ModuleOp moduleOp, unsigned numStages) {
+#ifdef __TLE__
+  StringRef mode = kTleWgmmaCompilerAutoMode;
+  if (auto attr =
+          moduleOp->getAttrOfType<StringAttr>(kTleWgmmaPipelineModeAttr))
+    mode = attr.getValue();
+
+  if (mode != kTleWgmmaCompilerAutoMode && mode != kTleWgmmaUserPromiseMode) {
+    moduleOp.emitError("TLE WGMMA pipeline mode module attribute '")
+        << kTleWgmmaPipelineModeAttr << "' must be '"
+        << kTleWgmmaCompilerAutoMode << "' or '" << kTleWgmmaUserPromiseMode
+        << "', got '" << mode << "'";
+    return failure();
+  }
+#endif
+
   SmallVector<scf::ForOp> loops;
   moduleOp->walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
 
   for (scf::ForOp forOp : loops) {
-    if (getNumStagesOrDefault(forOp, numStages) >= 1)
+    if (getNumStagesOrDefault(forOp, numStages) >= 1) {
+#ifdef __TLE__
+      if (mode == kTleWgmmaUserPromiseMode) {
+        mlir::triton::gpu::detail::scheduleTleWgmmaUserPromisePipeline(forOp);
+        continue;
+      }
+#endif
       mlir::triton::asyncLaunchDots(forOp);
+    }
   }
+  return success();
 }
 
 static bool hasMMAv5WaitsInLastStage(scf::ForOp forOp,
@@ -194,7 +227,8 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
     // Cleanup the IR from the pipeline attributes.
     removePipeliningAttributes(moduleOp);
 
-    pipelineWgmma(moduleOp, numStages);
+    if (failed(pipelineWgmma(moduleOp, numStages)))
+      return signalPassFailure();
 
     // schedule the waits
     mlir::triton::updateWaits(getOperation());

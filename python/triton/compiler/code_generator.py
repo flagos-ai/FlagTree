@@ -397,6 +397,7 @@ class CodeGenerator(ast.NodeVisitor):
         self.local_defs: Dict[str, tensor] = {}
         self.dereference_name: Callable[[str], Any] = self._define_name_lookup()
         self.fn = None
+        self.used_vars = set()
         # Are we currently visiting an ast.arg's default value?  These have some
         # special handling.
         self.visiting_arg_default_value = False
@@ -808,6 +809,7 @@ class CodeGenerator(ast.NodeVisitor):
     def visit_Name(self, node):
         if type(node.ctx) is ast.Store:
             return node.id
+        self.used_vars.add(node.id)
         return self.dereference_name(node.id)
 
     def visit_Store(self, node):
@@ -1434,6 +1436,70 @@ class CodeGenerator(ast.NodeVisitor):
             return None
         handles = [call_op.get_result(i) for i in range(call_op.get_num_results())]
         return next(unflatten_ir_values(handles, [callee_ret_type]))
+
+    def inline_JitFunction(self, fn: JITFunction, args, kwargs, caller_context=None):
+        """Inline a JITFunction body into the current insertion block.
+
+        This is intentionally narrower than a general inliner: it is used by
+        TLE warp-specialize regions so partition-local lowering can see the
+        body directly instead of a helper ``tt.call`` boundary.
+        """
+        bound_args = inspect.getcallargs(fn.fn, *args, **kwargs)
+        ordered_args = [bound_args[name] for name in fn.arg_names]
+        for i, arg in enumerate(ordered_args):
+            if isinstance(arg, (language.dtype, float, int, bool, JITFunction)):
+                ordered_args[i] = language.core.constexpr(arg)
+
+        parsed = fn.parse()
+        if isinstance(parsed, ast.Module):
+            if len(parsed.body) != 1 or not isinstance(parsed.body[0], ast.FunctionDef):
+                raise ValueError("inline_JitFunction expects a single function definition")
+            fn_def = parsed.body[0]
+        else:
+            fn_def = parsed
+        if not isinstance(fn_def, ast.FunctionDef):
+            raise ValueError("inline_JitFunction expects a function definition")
+
+        mapped_gscope = {}
+        for k, v in fn.get_capture_scope().items():
+            if isinstance(v, ModuleType):
+                mapped_gscope[k] = self.builder.module_map.get(v.__name__, v)
+                continue
+            module_name = getattr(v, "__module__", "")
+            if module_name in self.builder.module_map:
+                mapped_gscope[k] = getattr(self.builder.module_map[module_name], v.__name__)
+            else:
+                mapped_gscope[k] = v
+
+        prev_gscope = self.gscope
+        prev_lscope = self.lscope
+        prev_defs = self.local_defs
+        prev_caller_context = self.caller_context
+        try:
+            self.gscope = mapped_gscope
+            self.lscope = {}
+            self.local_defs = {}
+            self.caller_context = caller_context or self.caller_context
+            for arg_name, arg_value in zip(fn.arg_names, ordered_args):
+                self.set_value(arg_name, arg_value)
+
+            def decay_return(value):
+                if isinstance(value, language.tuple):
+                    return _apply_to_tuple_values(value, decay_return)
+                if isinstance(value, (language.constexpr, int, float)):
+                    return self.semantic.to_tensor(value)
+                return value
+
+            for stmt in fn_def.body:
+                if isinstance(stmt, ast.Return):
+                    return decay_return(self.visit(stmt.value)) if stmt.value is not None else None
+                self.visit(stmt)
+            return None
+        finally:
+            self.gscope = prev_gscope
+            self.lscope = prev_lscope
+            self.local_defs = prev_defs
+            self.caller_context = prev_caller_context
 
     def call_Function(self, node, fn, args, kws):
         # 4. Get current line number and hints

@@ -60,6 +60,7 @@ private:
 };
 
 void scheduleTleWgmmaAsyncLaunch(scf::ForOp forOp);
+void scheduleTleWgmmaUserPromisePipeline(scf::ForOp forOp);
 
 } // namespace mlir::triton::gpu::detail
 

@@ -21,6 +21,11 @@ def _is_enflame_backend():
     return target.backend == "gcu"
 
 
+def _is_nvidia_backend():
+    target = triton.runtime.driver.active.get_current_target()
+    return target.backend == "cuda"
+
+
 def _has_hopper_gpu() -> bool:
     if _is_enflame_backend():
         # Assume Enflame backend has Hopper support for testing purposes
@@ -97,6 +102,55 @@ def elementwise_add(A, B, C, XBLOCK=32, YBLOCK=64):
     return elementwise_tma_add_kernel[grid](A, B, C, xnumel, ynumel, XBLOCK, YBLOCK)
 
 
+@triton.jit
+def elementwise_tma_add_explicit_barrier_kernel(
+    a_desc,
+    b_desc,
+    c_desc,
+    xnumel,
+    ynumel,
+    XBLOCK: tl.constexpr,
+    YBLOCK: tl.constexpr,
+    TILE_BYTES: tl.constexpr,
+):
+    pid = tl.program_id(0)
+
+    a_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+    b_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+    c_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+
+    row_ids = tl.arange(0, XBLOCK)[:, None]
+    col_ids = tl.arange(0, YBLOCK)[None, :]
+    row_ids = tl.broadcast_to(row_ids, (XBLOCK, YBLOCK))
+    col_ids = tl.broadcast_to(col_ids, (XBLOCK, YBLOCK))
+    a_smem_ptrs = tle.gpu.local_ptr(a_smem, (row_ids, col_ids))
+    b_smem_ptrs = tle.gpu.local_ptr(b_smem, (row_ids, col_ids))
+    c_smem_ptrs = tle.gpu.local_ptr(c_smem, (row_ids, col_ids))
+
+    a_bar = tle.gpu.alloc_barrier(expect_bytes=TILE_BYTES)
+    b_bar = tle.gpu.alloc_barrier(expect_bytes=TILE_BYTES)
+
+    for yoff in range(0, ynumel, YBLOCK):
+        phase = (yoff // YBLOCK) & 1
+        tle.gpu.copy(a_desc, a_smem, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff], barrier=a_bar)
+        tle.gpu.copy(b_desc, b_smem, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff], barrier=b_bar)
+        tle.gpu.barrier_wait(a_bar, phaseIdx=phase)
+        tle.gpu.barrier_wait(b_bar, phaseIdx=phase)
+
+        aval = tl.load(a_smem_ptrs)
+        bval = tl.load(b_smem_ptrs)
+        c_val = aval + bval
+        tl.store(c_smem_ptrs, c_val)
+        tle.gpu.copy(c_smem, c_desc, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff])
+
+
+def elementwise_add_explicit_barrier(A, B, C, XBLOCK=32, YBLOCK=64):
+    xnumel, ynumel = 512, 512
+    grid = (triton.cdiv(xnumel, XBLOCK), )
+    return elementwise_tma_add_explicit_barrier_kernel[grid](A, B, C, xnumel, ynumel, XBLOCK, YBLOCK,
+                                                             XBLOCK * YBLOCK * 4)
+
+
 class TestTLETmaCopy:
     """TLE TMA Copy Integration Tests"""
 
@@ -119,6 +173,28 @@ class TestTLETmaCopy:
         elementwise_add(a_tma, b_tma, c_tma, XBLOCK, YBLOCK)
 
         # Verify results
+        expected = a + b
+        torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.skipif(not _is_nvidia_backend(), reason="Explicit TMA completion barriers require NVIDIA backend")
+    def test_tma_copy_explicit_barrier(self):
+        """Test TMA load with user-provided completion barriers."""
+        torch.manual_seed(43)
+
+        xnumel, ynumel = 512, 512
+        XBLOCK, YBLOCK = 32, 64
+
+        a = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+        b = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+        c = torch.empty_like(a, device="cuda", dtype=torch.float32)
+
+        from triton.tools.tensor_descriptor import TensorDescriptor
+        a_tma = TensorDescriptor.from_tensor(a, block_shape=[XBLOCK, YBLOCK])
+        b_tma = TensorDescriptor.from_tensor(b, block_shape=[XBLOCK, YBLOCK])
+        c_tma = TensorDescriptor.from_tensor(c, block_shape=[XBLOCK, YBLOCK])
+
+        elementwise_add_explicit_barrier(a_tma, b_tma, c_tma, XBLOCK, YBLOCK)
+
         expected = a + b
         torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
 

@@ -36,6 +36,7 @@ jobs:
       - name: Set safe directory
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third_party/tileir/third_party/cuda-tile"
 
       - name: Check if backend-relevant files changed
         id: check_backend

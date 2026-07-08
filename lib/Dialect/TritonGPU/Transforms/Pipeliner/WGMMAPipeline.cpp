@@ -671,6 +671,105 @@ findPendingGroupForValue(Value value,
   return std::nullopt;
 }
 
+static ttng::WarpGroupDotWaitOp getDefiningPositivePendingWait(Value value) {
+  while (Operation *def = value.getDefiningOp()) {
+    if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(def)) {
+      if (wait.getPendings() > 0)
+        return wait;
+      return {};
+    }
+    if (!isNoop(def) || def->getNumOperands() != 1 || def->getNumResults() != 1)
+      return {};
+    value = def->getOperand(0);
+  }
+  return {};
+}
+
+static bool isMaterializedByWaitZero(Value value,
+                                     llvm::SmallDenseSet<Value, 8> &visited) {
+  if (!visited.insert(value).second)
+    return true;
+
+  bool hasUse = false;
+  for (OpOperand &use : value.getUses()) {
+    hasUse = true;
+    Operation *user = use.getOwner();
+
+    if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(user)) {
+      if (wait.getPendings() == 0)
+        continue;
+      return false;
+    }
+
+    if (isNoop(user) && user->getNumResults() == 1) {
+      if (!isMaterializedByWaitZero(user->getResult(0), visited))
+        return false;
+      continue;
+    }
+
+    return false;
+  }
+
+  return hasUse;
+}
+
+static bool isMaterializedByWaitZero(Value value) {
+  llvm::SmallDenseSet<Value, 8> visited;
+  return isMaterializedByWaitZero(value, visited);
+}
+
+static std::optional<unsigned>
+findYieldOperandForPendingGroup(scf::YieldOp yield,
+                                const PendingSharedWgmmaGroup &pending) {
+  std::optional<unsigned> yieldIndex;
+  for (auto indexed : llvm::enumerate(yield.getOperands())) {
+    unsigned index = static_cast<unsigned>(indexed.index());
+    Value yielded = indexed.value();
+    ttng::WarpGroupDotWaitOp wait = getDefiningPositivePendingWait(yielded);
+    if (!wait)
+      continue;
+
+    bool carriesPending =
+        llvm::any_of(pending.dots, [&](ttng::WarpGroupDotOp dot) {
+          return valueDependsOn(yielded, dot.getResult());
+        });
+    if (!carriesPending)
+      continue;
+
+    if (yieldIndex && *yieldIndex != index)
+      return std::nullopt;
+    yieldIndex = index;
+  }
+  return yieldIndex;
+}
+
+static bool canCarryPendingGroupsThroughForYield(
+    scf::YieldOp yield, ArrayRef<PendingSharedWgmmaGroup> pendingGroups) {
+  auto forOp = dyn_cast<scf::ForOp>(yield->getParentOp());
+  if (!forOp || forOp.getBody() != yield->getBlock())
+    return false;
+  if (pendingGroups.empty())
+    return false;
+
+  llvm::SmallDenseSet<unsigned, 4> carriedYieldIndices;
+  for (const PendingSharedWgmmaGroup &pending : pendingGroups) {
+    std::optional<unsigned> yieldIndex =
+        findYieldOperandForPendingGroup(yield, pending);
+    if (!yieldIndex)
+      return false;
+    carriedYieldIndices.insert(*yieldIndex);
+  }
+
+  for (unsigned yieldIndex : carriedYieldIndices) {
+    if (yieldIndex >= forOp.getNumResults())
+      return false;
+    if (!isMaterializedByWaitZero(forOp.getResult(yieldIndex)))
+      return false;
+  }
+
+  return true;
+}
+
 static bool
 isAllowedAccumulatorChainUse(Operation *op, OpOperand &use,
                              const TleWgmmaScheduleAnalysis &analysis) {
@@ -909,10 +1008,14 @@ static void scheduleTleWgmmaWaitsInBlock(
   Operation *terminator = block->getTerminator();
   if (!terminator)
     return;
-  if (deferLoopCarriedYield && isa<scf::YieldOp>(terminator)) {
-    if (!pendingGroups.empty())
+  if (auto yield = dyn_cast<scf::YieldOp>(terminator)) {
+    // Preserve explicit TLE accumulator pipelining across the loop backedge
+    // when the loop result is closed by a matching wait_group 0 outside.
+    if (deferLoopCarriedYield &&
+        canCarryPendingGroupsThroughForYield(yield, pendingGroups)) {
       insertWgmmaDepthWaitAfterLastPendingDot(pendingGroups);
-    return;
+      return;
+    }
   }
   drainForMaterializedOperands(terminator, analysis, pendingGroups);
   if (!pendingGroups.empty())

@@ -90,6 +90,82 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
 #smem = #ttg.shared_memory
 
 module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @carry_pending_wgmma_to_loop_result_wait0
+  tt.func @carry_pending_wgmma_to_loop_result_wait0(
+      %a: !ttg.memdesc<64x64xbf16, #shared, #smem>,
+      %b: !ttg.memdesc<64x64xbf16, #shared1, #smem, mutable>,
+      %out: tensor<64x64x!tt.ptr<f32>, #mma>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %zero = arith.constant dense<0.000000e+00> : tensor<64x64xf32, #mma>
+    %b_view = tle.memdesc_wgmma_view %b {order = array<i32: 1, 0>} : !ttg.memdesc<64x64xbf16, #shared1, #smem, mutable> -> !ttg.memdesc<64x64xbf16, #shared1, #smem>
+    // CHECK: %[[RES:.+]] = scf.for
+    %res = scf.for %iv = %c0 to %c8 step %c1 iter_args(%acc = %zero) -> (tensor<64x64xf32, #mma>) {
+      // CHECK: %[[DOT:.+]] = ttng.warp_group_dot
+      %dot = ttng.warp_group_dot %a, %b_view, %acc {inputPrecision = 0 : i32, isAsync = true} : !ttg.memdesc<64x64xbf16, #shared, #smem> * !ttg.memdesc<64x64xbf16, #shared1, #smem> -> tensor<64x64xf32, #mma>
+      // CHECK-NEXT: ttng.warp_group_dot_commit
+      // CHECK-NEXT: %[[WAIT1:.+]] = ttng.warp_group_dot_wait %[[DOT]]
+      // CHECK-SAME: {pendings = 1 : i32}
+      %wait1 = ttng.warp_group_dot_wait %dot {pendings = 1 : i32} : tensor<64x64xf32, #mma>
+      // CHECK-NOT: ttng.warp_group_dot_wait
+      // CHECK: scf.yield %[[WAIT1]]
+      scf.yield %wait1 : tensor<64x64xf32, #mma>
+    }
+    // CHECK: %[[WAIT0:.+]] = ttng.warp_group_dot_wait %[[RES]]
+    // CHECK-SAME: {pendings = 0 : i32}
+    %wait0 = ttng.warp_group_dot_wait %res {pendings = 0 : i32} : tensor<64x64xf32, #mma>
+    // CHECK: tt.store %{{.*}}, %[[WAIT0]]
+    tt.store %out, %wait0 : tensor<64x64x!tt.ptr<f32>, #mma>
+    tt.return
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 64, 16]}>
+#shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>
+#shared1 = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = true, elementBitWidth = 16}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @pending_loop_result_without_wait0_drains_before_yield
+  tt.func @pending_loop_result_without_wait0_drains_before_yield(
+      %a: !ttg.memdesc<64x64xbf16, #shared, #smem>,
+      %b: !ttg.memdesc<64x64xbf16, #shared1, #smem, mutable>,
+      %out: tensor<64x64x!tt.ptr<f32>, #mma>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %zero = arith.constant dense<0.000000e+00> : tensor<64x64xf32, #mma>
+    %b_view = tle.memdesc_wgmma_view %b {order = array<i32: 1, 0>} : !ttg.memdesc<64x64xbf16, #shared1, #smem, mutable> -> !ttg.memdesc<64x64xbf16, #shared1, #smem>
+    // CHECK: %[[RES:.+]] = scf.for
+    %res = scf.for %iv = %c0 to %c8 step %c1 iter_args(%acc = %zero) -> (tensor<64x64xf32, #mma>) {
+      // CHECK: %[[DOT:.+]] = ttng.warp_group_dot
+      %dot = ttng.warp_group_dot %a, %b_view, %acc {inputPrecision = 0 : i32, isAsync = true} : !ttg.memdesc<64x64xbf16, #shared, #smem> * !ttg.memdesc<64x64xbf16, #shared1, #smem> -> tensor<64x64xf32, #mma>
+      // CHECK-NEXT: ttng.warp_group_dot_commit
+      // CHECK-NEXT: %[[WAIT1:.+]] = ttng.warp_group_dot_wait %[[DOT]]
+      // CHECK-SAME: {pendings = 1 : i32}
+      %wait1 = ttng.warp_group_dot_wait %dot {pendings = 1 : i32} : tensor<64x64xf32, #mma>
+      // CHECK: %[[YIELD_WAIT:.+]]:{{.*}} = ttng.warp_group_dot_wait %[[WAIT1]]
+      // CHECK-SAME: {pendings = 0 : i32}
+      // CHECK: scf.yield %[[YIELD_WAIT]]#0
+      scf.yield %wait1 : tensor<64x64xf32, #mma>
+    }
+    // CHECK: tt.store %{{.*}}, %[[RES]]
+    tt.store %out, %res : tensor<64x64x!tt.ptr<f32>, #mma>
+    tt.return
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 64, 16]}>
+#shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>
+#shared1 = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = true, elementBitWidth = 16}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @defer_wait_for_three_dot_wgmma_c_chain
   tt.func @defer_wait_for_three_dot_wgmma_c_chain(
       %a0: !ttg.memdesc<64x64xbf16, #shared, #smem>,

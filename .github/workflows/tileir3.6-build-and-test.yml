@@ -1,0 +1,70 @@
+name: TileIR3.6-Build-And-Test
+
+on:
+  push:
+    branches: [ "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "triton_v3.6.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tileir-build-and-test:
+    runs-on: tileir3.6
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: tileir
+
+      - name: FlagTree Build on TileIR
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton || true
+          source ~/env-3.6.sh
+          env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
+          /usr/local/cuda/bin/tileiras --version
+          rm -rf ~/.triton/cache
+          FLAGTREE_BACKEND=tileir MAX_JOBS=32 CMAKE_BUILD_PARALLEL_LEVEL=32 \
+          TRITON_PTXAS_PATH="$PWD/third_party/nvidia/backend/bin/ptxas" \
+          TRITON_PTXAS_BLACKWELL_PATH="$PWD/third_party/nvidia/backend/bin/ptxas-blackwell" \
+          python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on TileIR
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source ~/env-3.6.sh
+          rm -rf /tmp/flagtree_tileir_ci_01_cache /tmp/flagtree_tileir_ci_02_cache
+          TRITON_CACHE_DIR=/tmp/flagtree_tileir_ci_01_cache \
+            python3 python/tutorials/tileir/01-load-view-token-ordering.py
+          TRITON_CACHE_DIR=/tmp/flagtree_tileir_ci_02_cache \
+            python3 python/tutorials/tileir/02-mixed-kernel-routing.py
+          python3 python/tutorials/tileir/03-triton-tileir-benchmarks.py \
+            --case all \
+            --ci-subset \
+            --path both \
+            --warmup 1 \
+            --rep 1 \
+            --min-rep 1 \
+            --initial-rep 1 \
+            --cache-dir /tmp/flagtree_tileir_ci_03_cache \
+            --clear-cache

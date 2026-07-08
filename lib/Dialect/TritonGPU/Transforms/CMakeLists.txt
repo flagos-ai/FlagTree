@@ -3,6 +3,7 @@ if(FLAGTREE_TLE)
   list(APPEND TritonGPUTransformsTleSources
     ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/lib/Transforms/EncodingRematerialization.cpp
     Pipeliner/TleWGMMAAnalysis.cpp
+    Pipeliner/TleWGMMAUserPromisePipeline.cpp
   )
 endif()
 
