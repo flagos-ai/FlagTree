@@ -25,8 +25,7 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
-#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/DeviceIntraBarrierOpToLLVM.h"
-#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetLocalRankOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
@@ -191,16 +190,10 @@ struct ConvertTritonGPUToLLVM
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateTMAStoreCommitGroupOpToLLVMPatterns(
           typeConverter, patterns, benefit);
-#ifdef FLAGCX_ENABLED
-      mlir::triton::tle::populateGetDeviceIdOpToFlagCxPatterns(
-          typeConverter, patterns, benefit);
-      mlir::triton::tle::populateGetLocalRankOpToLLVMPatterns(
-          typeConverter, patterns, benefit);
-      mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(typeConverter,
-                                                           patterns, benefit);
-      mlir::triton::tle::populateDeviceIntraBarrierOpToLLVMPatterns(
-          typeConverter, patterns, benefit);
-#endif
+      // FlagCX ops are lowered to LLVM.
+      mlir::triton::tle::populateFlagCxOpToLLVMPatterns(typeConverter, patterns,
+                                                        benefit);
+
       if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
         return signalPassFailure();
       }

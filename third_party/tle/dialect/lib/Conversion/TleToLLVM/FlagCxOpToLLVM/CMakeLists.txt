@@ -1,6 +1,7 @@
 set(FLAGCX_TO_LLVM_SRC
     DeviceIntraBarrierOpToLLVM.cpp
     GetLocalRankOpToLLVM.cpp
+    FlagCxOpToLLVM.cpp
 )
 
 add_triton_library(FlagCxToLLVM
