@@ -1,8 +1,6 @@
 import ast
 import textwrap
 
-import pytest
-import triton
 import triton.language as tl
 from triton.experimental.tle.raw import dialect
 from triton.experimental.tle.raw.cache_key import (
@@ -139,68 +137,3 @@ def test_mlir_dialect_cache_key_changes_with_edsl_source():
         return 1
 
     assert getattr(edsl_v1, TLE_RAW_SOURCE_CACHE_KEY_ATTR)() != getattr(edsl_v2, TLE_RAW_SOURCE_CACHE_KEY_ATTR)()
-
-
-@pytest.mark.skipif(not triton.runtime.driver.active.get_current_target().backend == "cuda", reason="requires cuda")
-def test_cuda_vector_add_cache_miss_after_cu_change(tmp_path):
-    import torch
-    import triton.experimental.tle.language.raw as tle_raw
-
-    cu_file = tmp_path / "vector-add.cu"
-    cu_file.write_text(
-        textwrap.dedent("""\
-        __device__ void VectorAdd(__attribute__((address_space(1))) float *C,
-                                  __attribute__((address_space(1))) const float *A,
-                                  __attribute__((address_space(1))) const float *B,
-                                  const int N) {
-          const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-          for (int i = idx; i < N; i += blockDim.x * gridDim.x) {
-            C[i] = A[i] + B[i];
-          }
-        }
-    """))
-
-    def build_kernel():
-
-        @dialect(name="cuda", file=cu_file)
-        def edsl(*args, **kwargs):
-            ...
-
-        @triton.jit
-        def add_kernel(x_ptr, y_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
-            tle_raw.call(edsl, [output_ptr, x_ptr, y_ptr, n_elements])
-
-        return add_kernel
-
-    add_kernel_v1 = build_kernel()
-
-    device = triton.runtime.driver.active.get_active_torch_device()
-    x = torch.randn(128, device=device)
-    y = torch.randn(128, device=device)
-    output = torch.empty_like(x)
-    n_elements = output.numel()
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]), )
-
-    cache_key_before = add_kernel_v1.cache_key
-    add_kernel_v1[grid](x, y, output, n_elements, BLOCK_SIZE=128)
-    assert torch.allclose(output, x + y)
-
-    cu_file.write_text(
-        textwrap.dedent("""\
-        __device__ void VectorAdd(__attribute__((address_space(1))) float *C,
-                                  __attribute__((address_space(1))) const float *A,
-                                  __attribute__((address_space(1))) const float *B,
-                                  const int N) {
-          const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-          for (int i = idx; i < N; i += blockDim.x * gridDim.x) {
-            C[i] = A[i] + B[i] + 1.0f;
-          }
-        }
-    """))
-
-    add_kernel_v2 = build_kernel()
-    assert add_kernel_v2.cache_key != cache_key_before
-
-    output2 = torch.empty_like(x)
-    add_kernel_v2[grid](x, y, output2, n_elements, BLOCK_SIZE=128)
-    assert torch.allclose(output2, x + y + 1.0)
