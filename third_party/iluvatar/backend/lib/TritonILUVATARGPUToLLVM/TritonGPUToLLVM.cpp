@@ -65,6 +65,10 @@ public:
 #ifdef __ILUVATAR_TLE__
     mlir::triton::iluvatar_tle::addIllegalDialects(*this);
 #endif
+    addLegalOp<triton::gpu::WarpSpecializeOp>();
+    addLegalOp<triton::gpu::WarpYieldOp>();
+    addLegalOp<triton::gpu::WarpSpecializePartitionsOp>();
+    addLegalOp<triton::gpu::WarpReturnOp>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
   }
 };
@@ -185,8 +189,8 @@ struct ConvertTritonILUVATARGPUToLLVM
     ILUVATAR::populateLoadStoreOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, axisInfoAnalysis, ILUVATARBenefit);
     ILUVATAR::populateMaskedOpsToLLVMPatterns(patterns, targetInfo);
-    // ILUVATAR::populateBarrierOpToLLVMPatterns(typeConverter, patterns,
-    // ILUVATARBenefit);
+    ILUVATAR::populateBarrierOpToLLVMPatterns(typeConverter, patterns,
+                                              ILUVATARBenefit, targetInfo);
     // ILUVATAR::populateTensorPtrOpsToLLVMPatterns(typeConverter, patterns,
     //                                         ILUVATARBenefit);
 

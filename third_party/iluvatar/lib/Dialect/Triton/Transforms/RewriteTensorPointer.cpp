@@ -345,7 +345,7 @@ public:
     // Create a new operation
     if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
 #if defined(__ILUVATAR__)
-      Value newResult;
+      triton::LoadOp newResult;
       Value resStride = info.getContiguousStride();
       if (resStride) {
         Value inputStride = arith::TruncIOp::create(
@@ -364,6 +364,9 @@ public:
       auto newResult = triton::LoadOp::create(
           builder, loadOp.getLoc(), newPtr, newMask, newOther,
           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+#endif
+#ifdef __ILUVATAR_TLE__
+      tle::copyAsyncLoadAttr(loadOp, newResult);
 #endif
       op->getResult(0).replaceAllUsesWith(newResult);
     } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {

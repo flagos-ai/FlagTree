@@ -6,6 +6,8 @@ endif()
 
 add_triton_library(TritonILUVATARGPUToLLVM
     AtomicRMWOpsEmitter.cpp
+    BarrierOpToLLVM.cpp
+    ConvertWarpSpecializeToLLVM.cpp
     MaskedOpsToLLVM.cpp
     DotOpToLLVM/FMA.cpp
     DotOpToLLVM/TCU.cpp
@@ -29,6 +31,7 @@ add_triton_library(TritonILUVATARGPUToLLVM
     TritonILUVATARUtils
     ${_ILUVATAR_TLE_LIBS}
     MLIRUBToLLVM
+    MLIRReconcileUnrealizedCasts
     LLVMCore
     LLVMPasses
     LLVMSupport

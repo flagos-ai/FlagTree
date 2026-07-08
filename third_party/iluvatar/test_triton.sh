@@ -106,6 +106,15 @@ if iluvatar_tle_enabled; then
     timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_extract_tile_dynamic_index.py -o junit_suite_name="test_extract_tile_dynamic_index" --junitxml=${LOG_DIR}_xml/___test_extract_tile_dynamic_index.xml 2>&1 | tee ${LOG_DIR}/test_extract_tile_dynamic_index.log; check_status
     timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_insert_tile_static_index.py -o junit_suite_name="test_insert_tile_static_index" --junitxml=${LOG_DIR}_xml/___test_insert_tile_static_index.xml 2>&1 | tee ${LOG_DIR}/test_insert_tile_static_index.log; check_status
     timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_insert_tile_dynamic_index.py -o junit_suite_name="test_insert_tile_dynamic_index" --junitxml=${LOG_DIR}_xml/___test_insert_tile_dynamic_index.xml 2>&1 | tee ${LOG_DIR}/test_insert_tile_dynamic_index.log; check_status
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_tle.py -o junit_suite_name="test_tle" --junitxml=${LOG_DIR}_xml/___test_tle.xml 2>&1 | tee ${LOG_DIR}/test_tle.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_copy.py -o junit_suite_name="test_tle_copy" --junitxml=${LOG_DIR}_xml/___test_tle_copy.xml 2>&1 | tee ${LOG_DIR}/test_tle_copy.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_async_load.py -o junit_suite_name="test_tle_async_load" --junitxml=${LOG_DIR}_xml/___test_tle_async_load.xml 2>&1 | tee ${LOG_DIR}/test_tle_async_load.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_memory_space.py -o junit_suite_name="test_tle_memory_space" --junitxml=${LOG_DIR}_xml/___test_tle_memory_space.xml 2>&1 | tee ${LOG_DIR}/test_tle_memory_space.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_cumsum.py -o junit_suite_name="test_tle_cumsum" --junitxml=${LOG_DIR}_xml/___test_tle_cumsum.xml 2>&1 | tee ${LOG_DIR}/test_tle_cumsum.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_pipeline.py -o junit_suite_name="test_tle_pipeline" --junitxml=${LOG_DIR}_xml/___test_tle_pipeline.xml 2>&1 | tee ${LOG_DIR}/test_tle_pipeline.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_pipeline_e2e.py -o junit_suite_name="test_tle_pipeline_e2e" --junitxml=${LOG_DIR}_xml/___test_tle_pipeline_e2e.xml 2>&1 | tee ${LOG_DIR}/test_tle_pipeline_e2e.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_warp_specialize.py -o junit_suite_name="test_tle_warp_specialize" --junitxml=${LOG_DIR}_xml/___test_tle_warp_specialize.xml 2>&1 | tee ${LOG_DIR}/test_tle_warp_specialize.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_pipe.py -o junit_suite_name="test_tle_pipe" --junitxml=${LOG_DIR}_xml/___test_tle_pipe.xml 2>&1 | tee ${LOG_DIR}/test_tle_pipe.log; check_status
 fi
 
 timeout ${TIMEOUT} python3 util_auto_analysis.py ${LOG_DIR}; check_status

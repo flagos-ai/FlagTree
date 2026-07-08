@@ -16,6 +16,15 @@ import subprocess
 from pathlib import Path
 
 
+def has_tle_pass(pass_name: Optional[str] = None) -> bool:
+    tle_passes = getattr(iluvatar.passes, "tle", None)
+    if tle_passes is None:
+        return False
+    if pass_name is None:
+        return True
+    return hasattr(tle_passes, pass_name)
+
+
 def min_dot_size(target: GPUTarget):
 
     def check_dot_compatibility(lhs_type, rhs_type) -> Tuple[int, int, int]:  # [m, n, k]
@@ -264,10 +273,20 @@ class CorexBackend(BaseBackend):
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
-        if hasattr(iluvatar.passes, "tle"):
+        if has_tle_pass():
+            if has_tle_pass("add_optimize_local_pointer_async_stores"):
+                iluvatar.passes.tle.add_optimize_local_pointer_async_stores(pm)
+            if has_tle_pass("add_early_assign_memory_space"):
+                iluvatar.passes.tle.add_early_assign_memory_space(pm)
+            if has_tle_pass("add_optimize_exclusive_cumsum_layouts"):
+                iluvatar.passes.tle.add_optimize_exclusive_cumsum_layouts(pm)
+            if has_tle_pass("add_lower_exclusive_cumsum"):
+                iluvatar.passes.tle.add_lower_exclusive_cumsum(pm)
             iluvatar.passes.tle.add_insert_local_pointer_barriers(pm)
             iluvatar.passes.tle.add_optimize_local_pointer_loads(pm)
             iluvatar.passes.tle.add_optimize_local_pointer_stores(pm)
+            if has_tle_pass("add_lower_pipe_to_barriers"):
+                iluvatar.passes.tle.add_lower_pipe_to_barriers(pm)
         iluvatar.passes.ttgpuir.add_accelerate_matmul(pm, opt.use_sme)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         iluvatar.passes.ttgpuir.add_mma_reduce_thread_locality(pm)
@@ -305,6 +324,8 @@ class CorexBackend(BaseBackend):
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_prefetch(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 71)
+        if has_tle_pass("add_lower_async_load"):
+            iluvatar.passes.tle.add_lower_async_load(pm)
         passes.ttgpuir.add_coalesce_async_copy(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
@@ -358,6 +379,9 @@ class CorexBackend(BaseBackend):
         iluvatar.passes.ttgpuir.add_to_llvmir(pm, proc, options.enable_reflect_ftz)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
+        # [WA] On ivcore11 this relies on a shared-memory software barrier
+        # because the architecture lacks hardware named barriers and setmaxnreg.
+        iluvatar.passes.ttgpuir.add_warp_specialize_to_llvm(pm, proc)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
