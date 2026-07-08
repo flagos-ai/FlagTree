@@ -119,12 +119,11 @@ def matmul_add_residual_kernel(
 # =============================================================================
 #  Host-side launch
 # =============================================================================
-def call(mat_a, mat_b, residual):
+def call(mat_a, mat_b, residual, num_cores=_DEFAULT_NUM_CORES):
     m = mat_a.shape[0]
     k = mat_a.shape[1]
     n = mat_b.shape[1]
     mat_c = torch.empty(m, n, dtype=mat_a.dtype, device=mat_a.device)
-    num_cores = get_number_cores()
     matmul_add_residual_kernel[(num_cores,)](
         mat_a, mat_b, mat_c, residual,
         m, n, k, num_cores,
@@ -362,7 +361,7 @@ if __name__ == "__main__":
     mat_b    = torch.randn((K, N), dtype=torch.float16, device=device)
     residual = torch.randn((M, N), dtype=torch.float16, device=device)
 
-    mat_c = call(mat_a, mat_b, residual)
+    mat_c = call(mat_a, mat_b, residual, num_cores)
 
     if not args.no_check:
         ref = (torch.matmul(mat_a.float(), mat_b.float()) + residual.float()).to(torch.float16)

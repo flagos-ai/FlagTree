@@ -136,12 +136,11 @@ def matmul_kernel(
 # =============================================================================
 #  Host-side launch
 # =============================================================================
-def call(mat_a, mat_b):
+def call(mat_a, mat_b, num_cores=_DEFAULT_NUM_CORES):
     m = mat_a.shape[0]
     k = mat_a.shape[1]
     n = mat_b.shape[1]
     mat_c = torch.empty(m, n, dtype=mat_a.dtype, device=mat_a.device)
-    num_cores = get_number_cores()
     matmul_kernel[(num_cores,)](mat_a, mat_b, mat_c, m, n, k, num_cores,
                                BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
     return mat_c
@@ -374,7 +373,7 @@ if __name__ == "__main__":
     mat_a = torch.randn((M, K), dtype=torch.float16, device=device)
     mat_b = torch.randn((K, N), dtype=torch.float16, device=device)
 
-    mat_c = call(mat_a, mat_b)
+    mat_c = call(mat_a, mat_b, num_cores)
 
     if not args.no_check:
         ref = torch.matmul(mat_a.float(), mat_b.float()).to(torch.float16)

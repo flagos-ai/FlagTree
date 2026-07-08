@@ -258,7 +258,7 @@ def matmul_kernel(
         mat_c_acc.to(mat_c.dtype.element_ty))
 
 
-def call(mat_a, mat_b):
+def call(mat_a, mat_b, num_cores=_DEFAULT_NUM_CORES):
     m = mat_a.shape[0]
     k = mat_a.shape[1]
     n = mat_b.shape[1]
@@ -269,7 +269,6 @@ def call(mat_a, mat_b):
     BLOCK_N = 256
     BLOCK_K = 256
     """
-    num_cores = get_number_cores()
     matmul_kernel[(num_cores,)](mat_a, mat_b, mat_c, m, n, k, num_cores)
     # print(f"matmul_kernel best config {matmul_kernel.best_config}", flush = True)
     return mat_c
@@ -561,7 +560,7 @@ if __name__ == "__main__":
     mat_a = torch.randn((M, K), dtype=torch.float16, device=device)
     mat_b = torch.randn((K, N), dtype=torch.float16, device=device)
 
-    mat_c = call(mat_a, mat_b)
+    mat_c = call(mat_a, mat_b, num_cores)
 
     if not args.no_check:
         ref = torch.matmul(mat_a.float(), mat_b.float()).to(torch.float16)
