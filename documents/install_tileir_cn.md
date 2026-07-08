@@ -21,7 +21,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-py312-2.13.0a
 docker load -i flagtree-py312-2.13.0a0_8145d630e8.nv26.06-cuda13.3-ubuntu24.04.202607-3.6-base.tar.gz
 ```
 
-本镜像亦可用于 nvidia 后端。
+本镜像亦可用于 `nvidia` 后端。
 
 ```shell
 CONTAINER=flagtree-dev-xxx
