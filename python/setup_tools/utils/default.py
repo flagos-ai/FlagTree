@@ -7,7 +7,7 @@ global registrar
 
 
 def printinfo(msgs):
-    print(f" [TLE-DIST-INFO]: {msgs}. \n")
+    print(f" [TLE-DIST-INFO]: {msgs}.")
 
 
 class FlagCXRegistrar:
@@ -16,6 +16,29 @@ class FlagCXRegistrar:
         self.bitcode_name = "libflagcx_device.bc"
         self.shared_lib_name = "libflagcx.so"
         self._set_path(external)
+
+    def _is_flagcx_recompile_required(self):
+        ENVS = ("FLAGCX_RECOMPILE", "DIST_RECOMPILE")
+        for env in ENVS:
+            env_value = os.environ.get(env, "0")
+            if env_value in ("1", "true", "True", "ON"):
+                printinfo(f"Recompiling FlagCX due to {env}={env_value}\n ")
+                return env_value
+        return False
+
+    def _is_cache_available(self):
+        ENVS = ("FLAGCX_CACHE", "DIST_CACHE")
+
+        for env in ENVS:
+            env_value = os.environ.get(env, "1")
+            if env_value in ("0", "false", "False", "OFF", "clean"):
+                printinfo(f"Skipping using cache at {self.cache_lib_dir} due to {env}={env_value}\n ")
+            if env_value in ("clean"):
+                shutil.rmtree(self.cache_lib_dir, ignore_errors=True)
+                os.makedirs(self.cache_lib_dir, exist_ok=True)
+                printinfo(f"Cache {self.cache_lib_dir} cleaned due to {env}={env_value}\n ")
+            return False
+        return True
 
     def _set_path(self, external):
         submodule = external['backend']
@@ -50,15 +73,18 @@ class FlagCXRegistrar:
 
     def _compile_and_cache(self):
         cmds = self.get_compile_cmds()
+        is_unused_cache = self._is_cache_available()
+        is_recompile = self._is_flagcx_recompile_required()
+        is_unused_cache = is_unused_cache or is_recompile
 
         for lib_name, cmd in cmds.items():
             cache_path = getattr(self, f"{lib_name.split('.')[0]}_cache_path")
             src_path = getattr(self, f"{lib_name.split('.')[0]}_src_path")
             runtime_path = self._get_runtime_path(lib_name)
-            if cache_path.exists():
+            if cache_path.exists() and not is_unused_cache:
                 printinfo(f"{lib_name} already exists in cache, skipping compilation ...")
                 shutil.copy(cache_path, runtime_path)
-            elif src_path.exists():
+            elif src_path.exists() and not is_recompile:
                 printinfo(f"{lib_name} already exists in build directory, copying to cache...")
                 shutil.copy(src_path, cache_path)
                 shutil.copy(src_path, runtime_path)
@@ -73,7 +99,7 @@ class FlagCXRegistrar:
                 shutil.copy(src_path, cache_path)
                 shutil.copy(src_path, runtime_path)
                 printinfo(f"{lib_name} copied from {src_path} to cache at {cache_path}")
-                printinfo(f"[32m{lib_name} copied from {src_path} to cache at {runtime_path}")
+                printinfo(f"{lib_name} copied from {src_path} to cache at {runtime_path}")
 
     def _copy_required_files(self):
         dst = Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "flagcx_wrapper.py"

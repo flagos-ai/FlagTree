@@ -33,9 +33,12 @@ static inline LLVM::LLVMFuncOp createFuncInstance(const char *funcName,
   return func;
 }
 
-static inline Value getFlagcxMemPtr(mlir::Location loc,
-                                    ConversionPatternRewriter &rewriter,
-                                    Value memPtrInt) {
+// The frontend passes the FlagCX global memory/communication pointer as an
+// integer. Convert it back to an LLVM pointer in global address space (AS1)
+// before passing it to device/runtime functions.
+static inline Value getFlagcxMemOrCommPtr(mlir::Location loc,
+                                          ConversionPatternRewriter &rewriter,
+                                          Value memPtrInt) {
   auto ctx = rewriter.getContext();
   auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
   return rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, memPtrInt);
@@ -53,7 +56,7 @@ LLVM::CallOp getNumPesFunCall(mlir::Location loc,
   auto func = createFuncInstance(
       runtimeNames.lookup("getNumPesFunction").data(), module, {PtrTy}, i32Ty);
 
-  auto comm_dev_ptr = getFlagcxMemPtr(loc, rewriter, memPtrInt);
+  auto comm_dev_ptr = getFlagcxMemOrCommPtr(loc, rewriter, memPtrInt);
   return rewriter.create<LLVM::CallOp>(
       loc, TypeRange{func.getFunctionType().getReturnType()},
       FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr});
@@ -84,7 +87,7 @@ LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
   auto func = createFuncInstance(runtimeNames.lookup(funcName).data(), module,
                                  {PtrTy, i32Ty, i32Ty, i1Ty, i32Ty}, i32Ty);
 
-  auto comm_dev_ptr = getFlagcxMemPtr(loc, rewriter, comm);
+  auto comm_dev_ptr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
   auto falseVal =
       rewriter.create<LLVM::ConstantOp>(loc, i1Ty, rewriter.getBoolAttr(false));
   auto barrierIndexVal =
@@ -110,7 +113,7 @@ LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
   auto func = createFuncInstance(
       runtimeNames.lookup("getLocalPeFunction").data(), module, {PtrTy}, i32Ty);
 
-  auto comm_dev_ptr = getFlagcxMemPtr(loc, rewriter, memPtrInt);
+  auto comm_dev_ptr = getFlagcxMemOrCommPtr(loc, rewriter, memPtrInt);
   return rewriter.create<LLVM::CallOp>(
       loc, TypeRange{func.getFunctionType().getReturnType()},
       FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr});

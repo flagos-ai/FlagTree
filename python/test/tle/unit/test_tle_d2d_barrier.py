@@ -2,16 +2,19 @@ import triton.experimental.tle.language as tle
 import torch
 import triton
 import triton.language as tl
+import torch.distributed as dist
 
 DEVICE_MESH = tle.device_mesh(tle.MeshConfig(device=2))
+N = 8
 
 
 @triton.jit
-def _barrier_d2d_kernel(dev_comm_dptr, dev_mem_ptr, out_ptr, mesh: tl.constexpr, BLOCK: tl.constexpr):
+def _barrier_d2d_kernel(dev_comm_dptr, dev_mem_ptr, out_ptr, mesh: tl.constexpr):
     pid = tl.program_id(0)
     local_rank = tle.shard_id(mesh, 'device', comm_ptr=dev_comm_dptr)
     n_rank = mesh.shape[0]
     peer = (local_rank + 1) % n_rank  # noqa: F841
+
     remote_mem = tle.remote(
         dev_mem_ptr,
         space="device",
@@ -19,42 +22,68 @@ def _barrier_d2d_kernel(dev_comm_dptr, dev_mem_ptr, out_ptr, mesh: tl.constexpr,
         shard_id=peer,
         offset=pid,
     )
-    tl.load(remote_mem)
+    val = tl.load(remote_mem)
+    tl.store(out_ptr + pid, val)
     tle.distributed_barrier(comm_ptr=dev_comm_dptr, space="device", group_kind="block", order="acqrel",
                             barrier_kind="sync")
+
+
+def _ir_verify(dev_comm_dptr, dev_mem_dptr, output, grid):
+    compiled = _barrier_d2d_kernel.warmup(
+        dev_comm_dptr=dev_comm_dptr,
+        dev_mem_ptr=dev_mem_dptr,
+        out_ptr=output,
+        mesh=DEVICE_MESH,
+        grid=(grid, ),
+        num_ctas=1,
+        num_warps=4,
+    )
+    assert "distributed_barrier" in compiled.asm["ttgir"]
+    assert "remote_pointer" in compiled.asm["ttgir"]
+    assert "flagcxIntraBarrier" in compiled.asm['ptx']
+    assert "flagcxGetIntraPointerC" in compiled.asm['ptx']
+    assert "flagcxDevCommGetIntraRank" in compiled.asm['ptx']
+
+
+def _runtime_verify(dev_comm_dptr, dev_mem_dptr, output, grid, rank, world_size):
+    dist.barrier()
+    _barrier_d2d_kernel[grid](dev_comm_dptr=dev_comm_dptr, dev_mem_ptr=dev_mem_dptr, out_ptr=output, mesh=DEVICE_MESH)
+
+    torch.cuda.synchronize()
+
+    import sys
+    peer_rank = (rank + 1) % world_size
+    expected = torch.arange(N, dtype=torch.float32, device="cuda") + peer_rank * 1000
+    if torch.allclose(output, expected):
+        print(f"[Rank {rank}] [PASSED] read peer rank {peer_rank}")
+        print(f"[Rank {rank}] sample output[:4] = {output[:4].tolist()}")
+    else:
+        print(f"[Rank {rank}] [FAILED] read peer rank {peer_rank}")
+        print(f"[Rank {rank}] expected[:4] = {expected[:4].tolist()}")
+        print(f"[Rank {rank}] output[:4] = {output[:4].tolist()}")
+        sys.exit(1)
+
+    tle.cleanup_communicator()
 
 
 class TestD2DBarrier:
 
     def test_tle_d2d_barrier(self):
-        block = 64
-        grid = 2
+        grid = (N, )
 
-        N = 64
-
-        with torch.cuda.use_mem_pool(tle.get_mem_pool()):
-            x = torch.randn((N, N), dtype=torch.float32, device="cuda")
-        y = torch.empty_like(x)
+        mem_pool = tle.get_mem_pool()
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+        with torch.cuda.use_mem_pool(mem_pool):
+            x = (torch.arange(N, dtype=torch.float32, device="cuda") + rank * 1000).clone()
 
         dev_comm_dptr, dev_mem_dptr = tle.create_comm_tensor(x)
+        output = torch.zeros(N, dtype=torch.float32, device="cuda")
 
-        compiled = _barrier_d2d_kernel.warmup(
-            dev_comm_dptr=dev_comm_dptr,
-            dev_mem_ptr=dev_mem_dptr,
-            out_ptr=y,
-            mesh=DEVICE_MESH,
-            BLOCK=block,
-            grid=(grid, ),
-            num_ctas=1,
-            num_warps=4,
-        )
-        assert "distributed_barrier" in compiled.asm["ttgir"]
-        assert "flagcxIntraBarrier" in compiled.asm['ptx']
+        _ir_verify(dev_comm_dptr, dev_mem_dptr, output, grid)
 
-        _barrier_d2d_kernel[(grid, )](dev_comm_dptr=dev_comm_dptr, dev_mem_ptr=dev_mem_dptr, out_ptr=y,
-                                      mesh=DEVICE_MESH, BLOCK=block)
-
-        tle.cleanup_communicator()
+        _runtime_verify(dev_comm_dptr, dev_mem_dptr, output, grid, rank, world_size)
 
 
-TestD2DBarrier().test_tle_d2d_barrier()
+if __name__ == "__main__":
+    TestD2DBarrier().test_tle_d2d_barrier()
