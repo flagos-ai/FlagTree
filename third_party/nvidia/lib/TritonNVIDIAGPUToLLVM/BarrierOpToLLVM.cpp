@@ -279,6 +279,41 @@ struct ArriveBarrierOpConversion
     return success();
   }
 };
+
+#if defined(__TLE__) && !defined(__HCU__)
+struct NamedBarrierArriveOpConversion
+    : public ConvertOpToLLVMPattern<triton::nvidia_gpu::NamedBarrierArriveOp> {
+  using ConvertOpToLLVMPattern<
+      triton::nvidia_gpu::NamedBarrierArriveOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::nvidia_gpu::NamedBarrierArriveOp op,
+                  OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    LLVM::createLLVMIntrinsicCallOp(
+        rewriter, op.getLoc(), "llvm.nvvm.barrier.cta.arrive.aligned.count",
+        TypeRange{}, {adaptor.getBar(), adaptor.getNumThreads()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct NamedBarrierWaitOpConversion
+    : public ConvertOpToLLVMPattern<triton::nvidia_gpu::NamedBarrierWaitOp> {
+  using ConvertOpToLLVMPattern<
+      triton::nvidia_gpu::NamedBarrierWaitOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::nvidia_gpu::NamedBarrierWaitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    LLVM::createLLVMIntrinsicCallOp(
+        rewriter, op.getLoc(), "llvm.nvvm.barrier.cta.sync.aligned.count",
+        TypeRange{}, {adaptor.getBar(), adaptor.getNumThreads()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+#endif
 } // namespace
 
 void mlir::triton::NVIDIA::populateBarrierOpToLLVMPatterns(
@@ -290,4 +325,8 @@ void mlir::triton::NVIDIA::populateBarrierOpToLLVMPatterns(
   patterns.add<WaitBarrierOpConversion>(typeConverter, benefit, targetInfo);
   patterns.add<BarrierExpectConversion>(typeConverter, benefit);
   patterns.add<ArriveBarrierOpConversion>(typeConverter, benefit);
+#if defined(__TLE__) && !defined(__HCU__)
+  patterns.add<NamedBarrierArriveOpConversion>(typeConverter, benefit);
+  patterns.add<NamedBarrierWaitOpConversion>(typeConverter, benefit);
+#endif
 }

@@ -2,7 +2,7 @@ from __future__ import annotations
 import hashlib
 import json
 from .._C.libtriton import get_cache_invalidating_env_vars, ir
-from ..backends import backends
+from ..backends import get_backend, get_driver
 from ..backends.compiler import Language
 from ..backends.compiler import BaseBackend, GPUTarget
 from .. import __version__, knobs
@@ -301,7 +301,7 @@ def compile(src, target=None, options=None, _env_vars=None):
     codegen_fns = backend.get_codegen_implementation(options)
     module_map = backend.get_module_map()
     try:
-        module = src.make_ir(target, options, codegen_fns, module_map, context)
+        module = backend.make_ir(src, options, codegen_fns, module_map, context)
     except Exception as e:
         filter_traceback(e)
         raise
@@ -361,11 +361,7 @@ def compile(src, target=None, options=None, _env_vars=None):
 
 
 def make_backend(target: GPUTarget) -> BaseBackend:
-    actives = [x.compiler for x in backends.values() if x.compiler.supports_target(target)]
-    if len(actives) != 1:
-        raise RuntimeError(
-            f"{len(actives)} compatible backends for target ({target.backend}) ({actives}). There should only be one.")
-    return actives[0](target)
+    return get_backend(target).compiler(target)
 
 
 class LazyDict:
@@ -437,6 +433,10 @@ class CompiledKernel:
         self.function = None
         self._run = None
 
+    def _get_kernel_driver(self):
+        """Return the runtime driver paired with this kernel's compile target."""
+        return get_driver(self.metadata.target, driver.active)
+
     def _init_handles(self):
         if self.module is not None:
             return
@@ -452,10 +452,11 @@ class CompiledKernel:
             raise err
 
         device = driver.active.get_current_device()
+        kernel_driver = self._get_kernel_driver()
         # create launcher
-        self._run = driver.active.launcher_cls(self.src, self.metadata)
-        # not enough shared memory to run the kernel
+        self._run = kernel_driver.launcher_cls(self.src, self.metadata)
         max_shared = max_shared_mem(device)
+        # not enough shared memory to run the kernel
         if self.metadata.shared > max_shared:
             raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
         if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
@@ -466,9 +467,9 @@ class CompiledKernel:
         if knobs.runtime.kernel_load_start_hook is not None:
             knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
         # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
-        self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = driver.active.utils.load_binary(
+        self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = kernel_driver.utils.load_binary(
             self.name, self.kernel, self.metadata.shared, device)
-        warp_size = driver.active.get_current_target().warp_size
+        warp_size = self.metadata.target.warp_size
         if self.metadata.num_warps * warp_size > self.n_max_threads:
             raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
         if knobs.runtime.kernel_load_end_hook is not None:

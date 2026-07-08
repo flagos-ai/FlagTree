@@ -353,6 +353,24 @@ def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier"> {
 }
 #endif
 
+#ifdef __TLE__
+def TTNG_NamedBarrierArriveOp : TTNG_Op<"arrive_barrier_named", []> {
+  let summary = "named barrier arrive";
+
+  let arguments = (ins I32:$bar, I32:$numThreads);
+
+  let assemblyFormat = "$bar `,` $numThreads attr-dict `:` type(operands)";
+}
+
+def TTNG_NamedBarrierWaitOp : TTNG_Op<"wait_barrier_named", []> {
+  let summary = "named barrier wait";
+
+  let arguments = (ins I32:$bar, I32:$numThreads);
+
+  let assemblyFormat = "$bar `,` $numThreads attr-dict `:` type(operands)";
+}
+#endif
+
 def TTNG_AsyncCopyMbarrierArriveOp : TTNG_Op<"async_copy_mbarrier_arrive"> {
   let summary = "arrive on mbarrier once all previously issued copies are completed";
   let arguments = (ins

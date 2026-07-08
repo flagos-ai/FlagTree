@@ -12,6 +12,7 @@ Tests core functionality of TLE module, including:
 
 import pytest
 import torch
+import inspect
 import triton.language as tl
 import triton.experimental.tle.language as tle
 from triton.language.core import base_value
@@ -157,6 +158,7 @@ class TestBufferedTensor:
         def __init__(self, handle, ty):
             self.handle = handle
             self.type = ty
+            self.dtype = ty
 
     class _FakeBlockType:
 
@@ -173,10 +175,14 @@ class TestBufferedTensor:
             self.memdesc_index_args = None
             self.swizzled_encoding_args = None
             self.pipe_create_args = None
+            self.tma_copy_args = None
             self.pipe_ops = []
 
         def get_half_ty(self):
             return "fp16"
+
+        def get_int64_ty(self):
+            return "i64"
 
         def make_swizzled_shared_encoding_attr(self, vector_size, per_phase, max_phase, order, ctas_per_cga,
                                                cta_split_num, cta_order):
@@ -199,6 +205,9 @@ class TestBufferedTensor:
         def create_memdesc_index(self, result_ty, src, index):
             self.memdesc_index_args = (result_ty, src, index)
             return "slot_handle"
+
+        def create_tma_copy(self, src, dst, offsets, barrier=None, expect_bytes=-1):
+            self.tma_copy_args = (src, dst, list(offsets), barrier, expect_bytes)
 
         def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, reader_names, one_shot):
             self.pipe_create_args = (list(fields), capacity, scope, pipe_name, list(field_names), list(reader_names),
@@ -240,6 +249,9 @@ class TestBufferedTensor:
             if isinstance(value, int):
                 return TestBufferedTensor._FakeTensor(f"stage_{value}", tl.int32)
             raise TypeError(f"unsupported fake tensor input: {value!r}")
+
+        def _convert_to_ir_values(self, values, require_i64=False):
+            return [self.to_tensor(value).handle for value in values]
 
     def _make_buffer(self, shape):
         semantic = self._FakeSemantic()
@@ -306,6 +318,77 @@ class TestBufferedTensor:
 
         with pytest.raises(ValueError, match="int32"):
             buffer.slot(stage, _semantic=semantic)
+
+
+class TestTmaCopyBarrierFrontend:
+    """Test TMA copy explicit completion barrier validation."""
+
+    def _make_desc_buffer_semantic(self, shape):
+        semantic = TestBufferedTensor._FakeSemantic()
+        layout = tle.gpu.swizzled_shared_layout.make_default(len(shape))
+        buffer = tle.gpu.buffered_tensor("smem", tl.float16, shape, tle.gpu.smem, layout, semantic)
+        desc = object.__new__(tl.tensor_descriptor)
+        desc.handle = "desc"
+        desc.shape = list(shape)
+        return desc, buffer, semantic
+
+    def _make_barrier(self, semantic, expect_bytes, num_barriers=1, shape=None):
+        layout = tle.gpu.swizzled_shared_layout.make_default(2)
+        return tle.gpu.barrier(
+            "bar",
+            num_barriers,
+            1,
+            tle.gpu.PENDING,
+            expect_bytes,
+            layout,
+            semantic,
+            shape=list(shape if shape is not None else [num_barriers, 1]),
+            allocation_key="bar",
+        )
+
+    def test_copy_accepts_explicit_tma_completion_barrier(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        barrier = self._make_barrier(semantic, 512, shape=[1, 1])
+
+        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+
+        assert semantic.builder.tma_copy_args == ("desc", "smem", ["stage_0", "stage_0"], "slot_handle", 512)
+        assert semantic._tle_barrier_backend_uses == {("bar", 0): "mbarrier"}
+
+    def test_copy_barrier_requires_barrier_value(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+
+        with pytest.raises(ValueError, match="expects tle.gpu barrier"):
+            tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier="bar", _semantic=semantic)
+
+    def test_copy_barrier_requires_expect_bytes(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        barrier = self._make_barrier(semantic, None)
+
+        with pytest.raises(ValueError, match="expect_bytes"):
+            tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+
+    def test_copy_barrier_requires_indexed_barrier_array(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        barrier = self._make_barrier(semantic, 512, num_barriers=2, shape=[2, 1])
+
+        with pytest.raises(ValueError, match="arrays must be indexed"):
+            tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+
+    def test_copy_barrier_rejects_tma_store(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        barrier = self._make_barrier(semantic, 512)
+
+        with pytest.raises(ValueError, match="global-to-shared"):
+            tle.gpu.copy(buffer, desc, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+
+    def test_copy_barrier_rejects_mixed_backend(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        barrier = self._make_barrier(semantic, 512)
+        semantic._tle_barrier_backend_uses = {("bar", 0): "named"}
+
+        with pytest.raises(ValueError, match="cannot mix"):
+            tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
 
 
 class TestPipeFrontend:
@@ -515,6 +598,14 @@ class TestIntegration:
         assert hasattr(tle.gpu, 'pipeline')
         assert hasattr(tle.gpu, 'storage_kind')
         assert hasattr(tle.gpu, 'buffered_tensor')
+        assert hasattr(tle.gpu, 'alloc_barriers')
+        assert hasattr(tle.gpu, 'alloc_barrier')
+        assert hasattr(tle.gpu, 'barrier_wait')
+        assert hasattr(tle.gpu, 'barrier_arrive')
+        assert hasattr(tle.gpu, 'PENDING')
+        assert hasattr(tle.gpu, 'READY')
+        assert not hasattr(tle.gpu, 'barrier_expect_bytes')
+        assert "barrier" in inspect.signature(tle.gpu.copy).parameters
 
     def test_tle_functions_have_docstrings(self):
         """Test TLE functions have docstrings"""

@@ -198,6 +198,138 @@ LogicalResult WGMMASharedOperandFenceOp::verify() {
   return success();
 }
 
+LogicalResult WGMMAOp::verify() {
+  auto aType = cast<triton::gpu::TensorOrMemDesc>(getA().getType());
+  auto bType = cast<triton::gpu::MemDescType>(getB().getType());
+  auto cType = cast<RankedTensorType>(getC().getType());
+  auto dType = cast<RankedTensorType>(getD().getType());
+
+  if (aType.getRank() != 2 || bType.getRank() != 2 || cType.getRank() != 2)
+    return emitOpError("expects rank-2 A, B, and accumulator operands");
+  if (!isa<triton::gpu::SharedMemorySpaceAttr>(bType.getMemorySpace()))
+    return emitOpError("expects shared-memory B descriptor");
+  if (auto aMemDescType =
+          dyn_cast<triton::gpu::MemDescType>(getA().getType())) {
+    if (!isa<triton::gpu::SharedMemorySpaceAttr>(aMemDescType.getMemorySpace()))
+      return emitOpError("expects shared-memory A descriptor");
+  }
+
+  ArrayRef<int64_t> aShape = aType.getShape();
+  ArrayRef<int64_t> bShape = bType.getShape();
+  ArrayRef<int64_t> cShape = cType.getShape();
+  ArrayRef<int64_t> dShape = dType.getShape();
+  if (aShape[1] != bShape[0])
+    return emitOpError("expects A and B K dimensions to match");
+  if (cShape[0] != aShape[0] || cShape[1] != bShape[1])
+    return emitOpError("expects accumulator shape to be MxN from A and B");
+  if (dShape != cShape)
+    return emitOpError("expects result shape to match accumulator shape");
+
+  if (aShape[0] < 64 || aShape[0] % 64 != 0)
+    return emitOpError("expects M dimension to be divisible by 64");
+  if (bShape[1] < 8 || bShape[1] % 8 != 0)
+    return emitOpError("expects N dimension to be divisible by 8");
+  if (aShape[1] < 16)
+    return emitOpError("expects K dimension to be at least 16");
+  return success();
+}
+
+LogicalResult WGMMAWaitOp::verify() {
+  auto pendings = getOperation()->getAttrOfType<IntegerAttr>("pendings");
+  if (pendings.getInt() < 0)
+    return emitOpError("expects non-negative pendings");
+  return success();
+}
+
+static LogicalResult
+verifyBarrierMemDesc(Operation *op, triton::gpu::MemDescType type, bool array) {
+  if (!type.getElementType().isInteger(64))
+    return op->emitOpError("expects i64 barrier storage");
+  if (!isa<triton::gpu::SharedMemorySpaceAttr>(type.getMemorySpace()))
+    return op->emitOpError("expects shared-memory barrier storage");
+  if (!type.getMutableMemory())
+    return op->emitOpError("expects mutable barrier storage");
+
+  ArrayRef<int64_t> shape = type.getShape();
+  if (array) {
+    if (shape.size() != 2 || shape[0] <= 0 || shape[1] != 1)
+      return op->emitOpError("expects barrier array type shaped Nx1xi64");
+  } else {
+    if (shape != ArrayRef<int64_t>({1}))
+      return op->emitOpError("expects barrier slot type shaped 1xi64");
+  }
+  return success();
+}
+
+static LogicalResult verifyBarrierBackend(Operation *op, StringRef backend,
+                                          bool hasPhase, int64_t namedId,
+                                          int64_t namedNumThreads) {
+  static constexpr int64_t kFirstVirtualNamedBarrierId = 16;
+  if (backend == "mbarrier") {
+    if (!hasPhase)
+      return op->emitOpError("mbarrier backend requires phase");
+    return success();
+  }
+  if (backend != "named")
+    return op->emitOpError("backend must be 'mbarrier' or 'named'");
+  if (hasPhase)
+    return op->emitOpError("named barrier backend does not accept phase");
+  bool isPhysicalNamedId = namedId >= 1 && namedId <= 15;
+  bool isVirtualNamedId = namedId >= kFirstVirtualNamedBarrierId;
+  if (!isPhysicalNamedId && !isVirtualNamedId)
+    return op->emitOpError("named barrier id must be a physical id in range "
+                           "[1, 15] or a TLE virtual id >= ")
+           << kFirstVirtualNamedBarrierId;
+  if (namedNumThreads <= 0)
+    return op->emitOpError("named barrier thread count must be positive");
+  return success();
+}
+
+LogicalResult BarrierAllocOp::verify() {
+  if (failed(verifyBarrierMemDesc(getOperation(), getResult().getType(),
+                                  /*array=*/true)))
+    return failure();
+  auto resultTy = getResult().getType();
+  if (getNumBarriers() <= 0)
+    return emitOpError("num_barriers must be positive");
+  if (getArriveCount() <= 0)
+    return emitOpError("arrive_count must be positive");
+  if (getInitPolarity() != 0 && getInitPolarity() != 1)
+    return emitOpError("init_polarity must be 0 or 1");
+  if (getNumBarriers() != resultTy.getShape()[0])
+    return emitOpError("num_barriers must match result leading dimension");
+  if (auto expectBytes =
+          getOperation()->getAttrOfType<IntegerAttr>("expect_bytes")) {
+    if (expectBytes.getInt() <= 0)
+      return emitOpError("expect_bytes must be positive when present");
+  }
+  return success();
+}
+
+LogicalResult BarrierWaitOp::verify() {
+  if (failed(verifyBarrierMemDesc(getOperation(), getBarrier().getType(),
+                                  /*array=*/false)))
+    return failure();
+  StringRef backend =
+      getOperation()->getAttrOfType<StringAttr>("backend").getValue();
+  return verifyBarrierBackend(getOperation(), backend, bool(getPhase()),
+                              getNamedId(), getNamedNumThreads());
+}
+
+LogicalResult BarrierArriveOp::verify() {
+  if (failed(verifyBarrierMemDesc(getOperation(), getBarrier().getType(),
+                                  /*array=*/false)))
+    return failure();
+  if (getArriveCount() <= 0)
+    return emitOpError("arrive_count must be positive");
+  StringRef backend =
+      getOperation()->getAttrOfType<StringAttr>("backend").getValue();
+  if (backend == "named" && getArriveCount() != 1)
+    return emitOpError("named barrier arrive requires arrive_count = 1");
+  return verifyBarrierBackend(getOperation(), backend, bool(getPhase()),
+                              getNamedId(), getNamedNumThreads());
+}
+
 static bool isAsciiIdentStart(char c) {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
 }

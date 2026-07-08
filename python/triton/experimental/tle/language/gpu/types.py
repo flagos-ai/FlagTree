@@ -25,6 +25,9 @@ class scope():
 smem = scope('share_memory')
 tmem = scope('tensor_memory')
 
+PENDING = "pending"
+READY = "ready"
+
 
 def _storage_to_memdesc_space(storage: scope) -> str:
     if storage is smem:
@@ -188,14 +191,18 @@ class nv_mma_shared_layout(shared_layout):
     """
 
     def make_permute(self, dims):
-        permuted_order = tuple(self.order[d] for d in dims)
+        permuted_shape = [self.shape[d] for d in dims]
+        permuted_order = [self.order[d] for d in dims]
+        permuted_num_ctas_per_cga = [self.numCTAsPerCGA[d] for d in dims]
+        permuted_num_cta_split = [self.numCTASplit[d] for d in dims]
+        permuted_num_cta_order = [self.numCTAOrder[d] for d in dims]
         return nv_mma_shared_layout(
-            self.shape,
+            permuted_shape,
             permuted_order,
             self.elemType,
-            self.numCTAsPerCGA,
-            self.numCTASplit,
-            self.numCTAOrder,
+            permuted_num_ctas_per_cga,
+            permuted_num_cta_split,
+            permuted_num_cta_order,
             self.fp4Padded,
             self.swizzled,
         )
@@ -418,6 +425,148 @@ class buffered_tensor_type(tl.block_type):
 
     def _flatten_ir(self, handles) -> None:
         handles.append(self.handle)
+
+
+class barrier(tl.base_value):
+    """A TLE GPU barrier array or a single indexed barrier slot."""
+
+    def __init__(
+        self,
+        handle,
+        num_barriers: int,
+        arrive_count: int,
+        init: str,
+        expect_bytes: Optional[int],
+        layout: shared_layout,
+        semantic: TritonSemantic,
+        *,
+        shape: Optional[List[int]] = None,
+        static_index: Optional[int] = None,
+        named_base_id: int = 0,
+        allocation_key=None,
+    ):
+        super().__init__()
+        self.handle = handle
+        self.num_barriers = num_barriers
+        self.arrive_count = arrive_count
+        self.init = init
+        self.expect_bytes = expect_bytes
+        self.layout = layout
+        self.static_index = static_index
+        self.named_base_id = named_base_id
+        self.allocation_key = allocation_key
+        self.shape = list(shape if shape is not None else [num_barriers, 1])
+        self.type = barrier_type(num_barriers, arrive_count, init, expect_bytes, layout, semantic, shape=self.shape,
+                                 static_index=static_index, named_base_id=named_base_id, allocation_key=allocation_key)
+
+    @property
+    def is_slot(self) -> bool:
+        return self.shape == [1]
+
+    def _flatten_ir(self, handles) -> None:
+        handles.append(self.handle)
+
+    @tl.builtin
+    def __getitem__(self, index, _semantic=None):
+        if self.is_slot:
+            raise ValueError("tle.gpu barrier slot cannot be indexed again")
+
+        raw_index = tl._unwrap_if_constexpr(index)
+        static_index = raw_index if isinstance(raw_index, int) else None
+        if static_index is not None and (static_index < 0 or static_index >= self.num_barriers):
+            raise ValueError(f"barrier index {static_index} out of bounds for {self.num_barriers} barriers")
+
+        index_tensor = _semantic.to_tensor(index)
+        if getattr(index_tensor.type, "is_block", lambda: False)():
+            raise ValueError("barrier index must be a scalar integer")
+        if not getattr(index_tensor.type, "is_int", lambda: False)():
+            raise ValueError(f"barrier index must be integer, got {index_tensor.type}")
+        if index_tensor.dtype != tl.int32:
+            index_tensor = index_tensor.to(tl.int32, _semantic=_semantic)
+
+        slot_layout = _make_slot_layout(self.layout, [1])
+        slot_ty = barrier_type(self.num_barriers, self.arrive_count, self.init, self.expect_bytes, slot_layout,
+                               _semantic, shape=[1], static_index=static_index, named_base_id=self.named_base_id,
+                               allocation_key=self.allocation_key)
+        slot_handle = _semantic.builder.create_memdesc_index(slot_ty.to_ir(_semantic.builder), self.handle,
+                                                             index_tensor.handle)
+        return barrier(slot_handle, self.num_barriers, self.arrive_count, self.init, self.expect_bytes, slot_layout,
+                       _semantic, shape=[1], static_index=static_index, named_base_id=self.named_base_id,
+                       allocation_key=self.allocation_key)
+
+
+class barrier_type(tl.block_type):
+
+    def __init__(
+        self,
+        num_barriers: int,
+        arrive_count: int,
+        init: str,
+        expect_bytes: Optional[int],
+        layout: shared_layout,
+        semantic: TritonSemantic,
+        *,
+        shape: Optional[List[int]] = None,
+        static_index: Optional[int] = None,
+        named_base_id: int = 0,
+        allocation_key=None,
+    ):
+        self.num_barriers = num_barriers
+        self.arrive_count = arrive_count
+        self.init = init
+        self.expect_bytes = expect_bytes
+        self.layout = layout
+        self.semantic = semantic
+        self.shape = list(shape if shape is not None else [num_barriers, 1])
+        self.static_index = static_index
+        self.named_base_id = named_base_id
+        self.allocation_key = allocation_key
+        super().__init__(tl.int64, self.shape)
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[barrier, int]:
+        value = barrier(
+            handles[cursor],
+            self.num_barriers,
+            self.arrive_count,
+            self.init,
+            self.expect_bytes,
+            self.layout,
+            self.semantic,
+            shape=self.shape,
+            static_index=self.static_index,
+            named_base_id=self.named_base_id,
+            allocation_key=self.allocation_key,
+        )
+        return value, cursor + 1
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        out.append(self.to_ir(builder))
+
+    def to_ir(self, builder: ir.builder) -> None:
+        builder = self.semantic.builder
+        return builder.get_memdesc_type(
+            self.shape,
+            tl.int64.to_ir(builder),
+            self.layout.to_ir(builder),
+            _storage_to_memdesc_space(smem),
+            self.shape,
+        )
+
+    def mangle(self) -> str:
+        expect = "none" if self.expect_bytes is None else str(self.expect_bytes)
+        index = "array" if self.static_index is None else str(self.static_index)
+        shape = "_".join(map(str, self.shape))
+        return f"barrier_{shape}_{self.num_barriers}_{self.arrive_count}_{self.init}_{expect}_{index}_{self.named_base_id}"
+
+    def __str__(self) -> str:
+        return (f"barrier<{self.shape}, arrive_count={self.arrive_count}, init={self.init}, "
+                f"expect_bytes={self.expect_bytes}>")
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.shape == other.shape and self.num_barriers == other.num_barriers
+                and self.arrive_count == other.arrive_count and self.init == other.init
+                and self.expect_bytes == other.expect_bytes and self.layout == other.layout
+                and self.static_index == other.static_index and self.named_base_id == other.named_base_id)
 
 
 class pipe_slot_type(tl.base_type):

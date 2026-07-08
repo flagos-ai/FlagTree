@@ -154,6 +154,51 @@ void init_triton_tle_ir(py::module &&m) {
                  context, blockM, blockN, colStride, CTASplitM, CTASplitN,
                  /*twoCTAs=*/false));
            })
+      .def("make_nv_mma_encoding_attr",
+           [](TritonOpBuilder &self, Value opndA, Value opndAcc,
+              unsigned versionMajor, unsigned versionMinor,
+              unsigned moduleNumWarps) {
+             auto context = self.getBuilder().getContext();
+             auto dtypeA =
+                 cast<ttg::TensorOrMemDesc>(opndA.getType()).getElementType();
+             auto retType = cast<RankedTensorType>(opndAcc.getType());
+             Operation *parentOp =
+                 self.getBuilder().getInsertionBlock()->getParentOp();
+             unsigned numWarps =
+                 ttg::maybeLookupNumWarps(parentOp).value_or(moduleNumWarps);
+             auto instrShape = mmaVersionToInstrShape(
+                 versionMajor, retType.getShape(), dtypeA, numWarps);
+
+             // Match the current Hopper WGMMA lowering convention: partition
+             // the accumulator rows across the warp group.
+             SmallVector<unsigned, 2> warpsPerCTA = {numWarps, 1};
+             SmallVector<unsigned, 2> CTAsPerCGA = {1, 1};
+             SmallVector<unsigned, 2> CTASplitNum = {1, 1};
+             SmallVector<unsigned, 2> CTAOrder = {1, 0};
+             auto CTALayout = ttg::CTAEncodingAttr::fromSplitParams(
+                 context, CTAsPerCGA, CTASplitNum, CTAOrder);
+             return mlir::cast<Attribute>(ttg::NvidiaMmaEncodingAttr::get(
+                 context, versionMajor, versionMinor, warpsPerCTA, CTALayout,
+                 instrShape));
+           })
+      .def("make_dot_operand_encoding_attr",
+           [](TritonOpBuilder &self, Value opnd, unsigned opIdx,
+              Attribute parentEnc) -> Attribute {
+             auto context = self.getBuilder().getContext();
+             auto eltType =
+                 cast<RankedTensorType>(opnd.getType()).getElementType();
+             return ttg::DotOperandEncodingAttr::get(context, opIdx, parentEnc,
+                                                     eltType);
+           })
+      .def("get_block_ty_with_encoding",
+           [](TritonOpBuilder &self, Type &elementType,
+              std::vector<int64_t> &shape, Attribute &encoding) -> Type {
+             return RankedTensorType::get(shape, elementType, encoding);
+           })
+      .def("create_convert_layout",
+           [](TritonOpBuilder &self, Type resultTy, Value value) -> Value {
+             return self.create<ttg::ConvertLayoutOp>(resultTy, value);
+           })
       .def("create_local_alloc",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
               Type &elementType, Attribute &encoding) -> mlir::Value {
@@ -171,9 +216,37 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_tma_copy",
            [](TritonOpBuilder &self, Value src, Value dst,
               std::vector<Value> &indices) {
+#ifdef __HCU__
              self.create<ttg::TMACopyOp>(src, dst, indices);
+#else
+             self.create<ttg::TMACopyOp>(src, dst, indices, Value(),
+                                         IntegerAttr());
+#endif
              return;
            })
+      .def(
+          "create_tma_copy",
+          [](TritonOpBuilder &self, Value src, Value dst,
+             std::vector<Value> &indices, py::object barrier,
+             int32_t expectBytes) {
+#ifdef __HCU__
+            if (!barrier.is_none() || expectBytes > 0)
+              throw py::value_error(
+                  "TMA completion barrier is only supported on NVIDIA backend");
+            self.create<ttg::TMACopyOp>(src, dst, indices);
+#else
+             auto &builder = self.getBuilder();
+             Value barrierValue;
+             if (!barrier.is_none())
+               barrierValue = py::cast<Value>(barrier);
+             IntegerAttr expectBytesAttr;
+             if (expectBytes > 0)
+               expectBytesAttr = builder.getI32IntegerAttr(expectBytes);
+             self.create<ttg::TMACopyOp>(src, dst, indices, barrierValue,
+                                         expectBytesAttr);
+#endif
+            return;
+          })
       .def("create_local_load",
            [](TritonOpBuilder &self, Type resultTy, Value memDesc) -> Value {
              return self.create<ttg::LocalLoadOp>(resultTy, memDesc);
@@ -181,6 +254,41 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_local_store",
            [](TritonOpBuilder &self, Value &dst, Value &regValues) -> void {
              self.create<ttg::LocalStoreOp>(regValues, dst);
+           })
+      .def("create_tle_wgmma",
+           [](TritonOpBuilder &self, mlir::Value &a, mlir::Value &b,
+              mlir::Value &c, triton::InputPrecision inputPrecision,
+              int maxNumImpreciseAcc, bool isAsync) -> mlir::Value {
+             return self.create<tle::WGMMAOp>(c.getType(), a, b, c,
+                                              inputPrecision,
+                                              maxNumImpreciseAcc, isAsync);
+           })
+      .def("create_tle_wgmma_wait",
+           [](TritonOpBuilder &self, mlir::Value &input,
+              unsigned pendings) -> mlir::Value {
+             auto pendingsAttr = self.getBuilder().getI32IntegerAttr(pendings);
+             return self
+                 .create<tle::WGMMAWaitOp>(input.getType(), input, pendingsAttr)
+                 .getOutput();
+           })
+      .def("create_warp_group_dot",
+           [](TritonOpBuilder &self, mlir::Value &a, mlir::Value &b,
+              mlir::Value &c, triton::InputPrecision inputPrecision,
+              int maxNumImpreciseAcc, bool isAsync) -> mlir::Value {
+             return self.create<ttng::WarpGroupDotOp>(
+                 c.getType(), a, b, c, Value(), inputPrecision,
+                 maxNumImpreciseAcc, isAsync);
+           })
+      .def("create_warp_group_dot_wait",
+           [](TritonOpBuilder &self, std::vector<Value> inputs,
+              unsigned pendings) -> std::vector<Value> {
+             auto waitOp =
+                 self.create<ttng::WarpGroupDotWaitOp>(inputs, pendings);
+             std::vector<Value> outputs;
+             outputs.reserve(waitOp->getNumResults());
+             for (Value result : waitOp->getResults())
+               outputs.push_back(result);
+             return outputs;
            })
       .def("create_local_pointers",
            [](TritonOpBuilder &self, Type resultTy, Value memDesc,
@@ -197,6 +305,62 @@ void init_triton_tle_ir(py::module &&m) {
            [](TritonOpBuilder &self, Type resultType, Value src,
               Value index) -> Value {
              return self.create<ttg::MemDescIndexOp>(resultType, src, index);
+           })
+      .def("create_memdesc_trans",
+           [](TritonOpBuilder &self, Value src,
+              std::vector<int> &order) -> Value {
+             return self.create<ttg::MemDescTransOp>(src, order);
+           })
+      .def("create_barrier_alloc",
+           [](TritonOpBuilder &self, Type resultType, int32_t numBarriers,
+              int32_t arriveCount, int32_t initPolarity,
+              int32_t expectBytes) -> Value {
+             auto &builder = self.getBuilder();
+             IntegerAttr expectBytesAttr;
+             if (expectBytes > 0)
+               expectBytesAttr = builder.getI32IntegerAttr(expectBytes);
+             return self.create<tle::BarrierAllocOp>(
+                 resultType, builder.getI32IntegerAttr(numBarriers),
+                 builder.getI32IntegerAttr(arriveCount),
+                 builder.getI32IntegerAttr(initPolarity), expectBytesAttr);
+           })
+      .def("create_barrier_wait_mbarrier",
+           [](TritonOpBuilder &self, Value barrier, Value phase) -> void {
+             auto &builder = self.getBuilder();
+             self.create<tle::BarrierWaitOp>(
+                 barrier, phase, builder.getStringAttr("mbarrier"),
+                 builder.getI32IntegerAttr(0), builder.getI32IntegerAttr(0));
+           })
+      .def("create_barrier_wait_named",
+           [](TritonOpBuilder &self, Value barrier, int32_t namedId,
+              int32_t numThreads) -> void {
+             auto &builder = self.getBuilder();
+             self.create<tle::BarrierWaitOp>(
+                 barrier, Value(), builder.getStringAttr("named"),
+                 builder.getI32IntegerAttr(namedId),
+                 builder.getI32IntegerAttr(numThreads));
+           })
+      .def("create_barrier_arrive_mbarrier",
+           [](TritonOpBuilder &self, Value barrier, int32_t arriveCount,
+              py::object phase) -> void {
+             auto &builder = self.getBuilder();
+             Value phaseValue;
+             if (!phase.is_none())
+               phaseValue = py::cast<Value>(phase);
+             self.create<tle::BarrierArriveOp>(
+                 barrier, phaseValue, builder.getStringAttr("mbarrier"),
+                 builder.getI32IntegerAttr(arriveCount),
+                 builder.getI32IntegerAttr(0), builder.getI32IntegerAttr(0));
+           })
+      .def("create_barrier_arrive_named",
+           [](TritonOpBuilder &self, Value barrier, int32_t namedId,
+              int32_t numThreads) -> void {
+             auto &builder = self.getBuilder();
+             self.create<tle::BarrierArriveOp>(
+                 barrier, Value(), builder.getStringAttr("named"),
+                 builder.getI32IntegerAttr(1),
+                 builder.getI32IntegerAttr(namedId),
+                 builder.getI32IntegerAttr(numThreads));
            })
       .def("create_memdesc_subslice",
            [](TritonOpBuilder &self, Type resultType, Value src,
@@ -525,8 +689,12 @@ void init_triton_tle_passes(py::module &&m) {
                      tle::createTritonTleLowerExclusiveCumsum);
   ADD_PASS_WRAPPER_0("add_lower_async_load",
                      tle::createTritonTleLowerAsyncLoad);
+  ADD_PASS_WRAPPER_0("add_lower_wgmma", tle::createTritonTleLowerWGMMA);
   ADD_PASS_WRAPPER_0("add_lower_pipe_to_nvws",
                      tle::createTritonTleLowerPipeToNvws);
+  ADD_PASS_WRAPPER_0("add_lower_barriers", tle::createTritonTleLowerBarriers);
+  ADD_PASS_WRAPPER_0("add_allocate_named_barriers",
+                     tle::createTritonTleAllocateNamedBarriers);
   ADD_PASS_WRAPPER_0("add_lower_tma_copy", tle::createTritonTleLowerTmaCopy);
   ADD_PASS_WRAPPER_0("add_schedule_tma_store_sync",
                      tle::createTritonTleScheduleTmaStoreSync);

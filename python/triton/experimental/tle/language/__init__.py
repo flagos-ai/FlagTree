@@ -1,4 +1,6 @@
 # flagtree tle
+import triton.language as _language
+
 from .core import (
     cumsum,
     extract_tile,
@@ -35,6 +37,28 @@ from .distributed import (
 )
 from . import communication
 from .communication import get_mem_pool, create_comm_tensor, cleanup_communicator
+
+_EXTENSION_APIS = frozenset({
+    "make_tensor_view",
+    "make_partition_view",
+    "make_view",
+    "dim",
+    "load_view_tko",
+    "store_view_tko",
+    "create_mem_token",
+    "join_mem_tokens",
+})
+
+
+# Keep ordinary TLE imports independent of backend-specific extensions.
+def __getattr__(name):
+    if name not in _EXTENSION_APIS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    language_extensions = getattr(_language, "ext", None)
+    if language_extensions is None:
+        raise RuntimeError(f"tle.{name} requires a backend providing tl.ext.{name}")
+    return getattr(language_extensions, name)
+
 
 __all__ = [
     "load",

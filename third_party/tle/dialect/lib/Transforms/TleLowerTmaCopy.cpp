@@ -149,48 +149,76 @@ public:
       auto tensorType = RankedTensorType::get(
           dstType.getShape(), dstType.getElementType(), dstType.getEncoding());
 
-      // Create minimal mbarrier allocation with #shared2 encoding (similar to
-      // our current implementation)
-      auto mbarrierCTALayout = gpu::CTAEncodingAttr::fromSplitParams(
-          tensorType.getContext(), {1}, {1}, {0});
-      auto mbarrierEncoding = gpu::SwizzledSharedEncodingAttr::get(
-          tensorType.getContext(), 1, 1, 1, {0}, mbarrierCTALayout);
-      Attribute sharedMemorySpace =
-          triton::gpu::SharedMemorySpaceAttr::get(op.getContext());
-
-      gpu::MemDescType mbarrierMemDescType =
-          gpu::MemDescType::get({1}, rewriter.getI64Type(), mbarrierEncoding,
-                                sharedMemorySpace, /*mutableMemory=*/true);
-
-      Value mbarrierAlloc =
-          rewriter.create<gpu::LocalAllocOp>(loc, mbarrierMemDescType);
-      rewriter.create<InitBarrierOp>(loc, mbarrierAlloc, 1);
-
-      // Calculate size in bytes
-      auto encoding = getEncodingFromDescriptor(op, tensorType, op.getSrc());
-      auto shapePerCTA = getShapePerCTA(encoding, tensorType.getShape());
-      int sizeInBytes = product(shapePerCTA) *
-                        tensorType.getElementType().getIntOrFloatBitWidth() / 8;
-
       Value pred = rewriter.create<arith::ConstantIntOp>(loc, 1, 1);
-      rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(loc, mbarrierAlloc,
-                                                           sizeInBytes, pred);
 
       // Create TMA indices
       auto indices = translateTMAIndices(rewriter, op.getLoc(),
                                          srcType.getBlockType().getEncoding(),
                                          op.getIndices());
 
-      // Perform async TMA copy from global to existing shared memory
-      rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
-          op.getLoc(), op.getSrc(), indices, mbarrierAlloc, dstMemDesc, pred);
+#if !defined(__HCU__)
+      if (Value userBarrier = op.getBarrier()) {
+        auto expectBytes =
+            op->getAttrOfType<IntegerAttr>(op.getExpectBytesAttrName());
+        if (!expectBytes || expectBytes.getInt() <= 0)
+          return op.emitOpError("with explicit completion barrier requires "
+                                "positive expect_bytes");
+        rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(
+            loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()), pred);
+        rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
+            op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc, pred);
+      } else {
+        if (op->hasAttr(op.getExpectBytesAttrName()))
+          return op.emitOpError("expect_bytes requires an explicit completion "
+                                "barrier");
+#endif
 
-      // Wait for completion and invalidate barrier
-      Value phase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
-      rewriter.create<WaitBarrierOp>(loc, mbarrierAlloc, phase);
-      rewriter.create<InvalBarrierOp>(loc, mbarrierAlloc);
+        // Create minimal mbarrier allocation with #shared2 encoding (similar to
+        // our current implementation)
+        auto mbarrierCTALayout = gpu::CTAEncodingAttr::fromSplitParams(
+            tensorType.getContext(), {1}, {1}, {0});
+        auto mbarrierEncoding = gpu::SwizzledSharedEncodingAttr::get(
+            tensorType.getContext(), 1, 1, 1, {0}, mbarrierCTALayout);
+        Attribute sharedMemorySpace =
+            triton::gpu::SharedMemorySpaceAttr::get(op.getContext());
+
+        gpu::MemDescType mbarrierMemDescType =
+            gpu::MemDescType::get({1}, rewriter.getI64Type(), mbarrierEncoding,
+                                  sharedMemorySpace, /*mutableMemory=*/true);
+
+        Value mbarrierAlloc =
+            rewriter.create<gpu::LocalAllocOp>(loc, mbarrierMemDescType);
+        rewriter.create<InitBarrierOp>(loc, mbarrierAlloc, 1);
+
+        // Calculate size in bytes
+        auto encoding = getEncodingFromDescriptor(op, tensorType, op.getSrc());
+        auto shapePerCTA = getShapePerCTA(encoding, tensorType.getShape());
+        int sizeInBytes = product(shapePerCTA) *
+                          tensorType.getElementType().getIntOrFloatBitWidth() /
+                          8;
+
+        rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(loc, mbarrierAlloc,
+                                                             sizeInBytes, pred);
+
+        // Perform async TMA copy from global to existing shared memory
+        rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
+            op.getLoc(), op.getSrc(), indices, mbarrierAlloc, dstMemDesc, pred);
+
+        // Wait for completion and invalidate barrier
+        Value phase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
+        rewriter.create<WaitBarrierOp>(loc, mbarrierAlloc, phase);
+        rewriter.create<InvalBarrierOp>(loc, mbarrierAlloc);
+#if !defined(__HCU__)
+      }
+#endif
 
     } else {
+#if !defined(__HCU__)
+      if (op.getBarrier())
+        return op.emitOpError(
+            "barrier is only supported for global-to-shared TMA copy");
+#endif
+
       // Store from shared memory to global memory
       auto dstType = cast<TensorDescType>(op.getDst().getType());
       auto srcType = cast<MemDescType>(op.getSrc().getType());

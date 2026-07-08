@@ -1,0 +1,5 @@
+{
+  "copy": {
+    "cuda_dep": "cuda_dep_${arch}"
+  }
+}

@@ -12,8 +12,11 @@ add_triton_library(TritonTLETransforms
   TleDowngradeInvalidAsyncCopy.cpp
   TleOptimizeExclusiveCumsumLayouts.cpp
   TleLowerExclusiveCumsum.cpp
+  TleLowerWGMMA.cpp
   TleLowerAsyncLoad.cpp
   TleLowerPipeToNvws.cpp
+  TleLowerBarriers.cpp
+  TleAllocateNamedBarriers.cpp
   TleTileToLLVMUtils.cpp
   ExtractTileToLLVM.cpp
   InsertTileToLLVM.cpp

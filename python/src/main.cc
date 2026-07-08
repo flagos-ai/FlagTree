@@ -4,16 +4,24 @@
 
 namespace py = pybind11;
 
+// flagtree: extended from FOR_EACH_5 to FOR_EACH_8 to give headroom for the
+// expanded backend set (nvidia + amd + tileir + proton + tle = 5 by default;
+// can be 6+ with TRITON_PLUGIN_DIRS or FLAGTREE_BACKEND=thrive/aipu/...).
+// Stopping at 5 caused the C preprocessor to emit an undefined FOR_EACH_N
+// when TRITON_BACKENDS_TUPLE grew past 5 entries.
 #define FOR_EACH_1(MACRO, X) MACRO(X)
 #define FOR_EACH_2(MACRO, X, ...) MACRO(X) FOR_EACH_1(MACRO, __VA_ARGS__)
 #define FOR_EACH_3(MACRO, X, ...) MACRO(X) FOR_EACH_2(MACRO, __VA_ARGS__)
 #define FOR_EACH_4(MACRO, X, ...) MACRO(X) FOR_EACH_3(MACRO, __VA_ARGS__)
 #define FOR_EACH_5(MACRO, X, ...) MACRO(X) FOR_EACH_4(MACRO, __VA_ARGS__)
+#define FOR_EACH_6(MACRO, X, ...) MACRO(X) FOR_EACH_5(MACRO, __VA_ARGS__)
+#define FOR_EACH_7(MACRO, X, ...) MACRO(X) FOR_EACH_6(MACRO, __VA_ARGS__)
+#define FOR_EACH_8(MACRO, X, ...) MACRO(X) FOR_EACH_7(MACRO, __VA_ARGS__)
 
 #define FOR_EACH_NARG(...) FOR_EACH_NARG_(__VA_ARGS__, FOR_EACH_RSEQ_N())
 #define FOR_EACH_NARG_(...) FOR_EACH_ARG_N(__VA_ARGS__)
-#define FOR_EACH_ARG_N(_1, _2, _3, _4, _5, N, ...) N
-#define FOR_EACH_RSEQ_N() 5, 4, 3, 2, 1, 0
+#define FOR_EACH_ARG_N(_1, _2, _3, _4, _5, _6, _7, _8, N, ...) N
+#define FOR_EACH_RSEQ_N() 8, 7, 6, 5, 4, 3, 2, 1, 0
 
 #define CONCATENATE(x, y) CONCATENATE1(x, y)
 #define CONCATENATE1(x, y) x##y
