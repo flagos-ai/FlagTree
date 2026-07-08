@@ -47,28 +47,21 @@ namespace mlir::triton::gpu {
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
-// The enhancement phases are gated at build time. The NVIDIA backend
-// defines these macros from CMake (on by default).
-#ifdef TRITON_RLC_ENABLE_COST_BASED_RESOLUTION
+// Master build-time switch for the enhancement phases. The NVIDIA backend
+// defines __FLAGTREE_RLC_ENHANCE__ from CMake (on by default); every other
+// backend leaves it undefined, keeping the pass at its original behavior.
+#ifdef __FLAGTREE_RLC_ENHANCE__
+static constexpr bool kFlagtreeRlcEnhance = true;
+#else
+static constexpr bool kFlagtreeRlcEnhance = false;
+#endif
+
+// Per-phase switches, on by default; each is AND-ed with the master switch at
+// its use site. Flip one to false here to disable that single phase.
 static constexpr bool kEnableCostBasedResolution = true;
-#else
-static constexpr bool kEnableCostBasedResolution = false;
-#endif
-#ifdef TRITON_RLC_ENABLE_BACKWARD_PROPAGATION
 static constexpr bool kEnableBackwardPropagation = true;
-#else
-static constexpr bool kEnableBackwardPropagation = false;
-#endif
-#ifdef TRITON_RLC_ENABLE_SMALL_COMPONENT_SOLVING
 static constexpr bool kEnableSmallComponentSolving = true;
-#else
-static constexpr bool kEnableSmallComponentSolving = false;
-#endif
-#ifdef TRITON_RLC_ENABLE_STORE_LAYOUT_REMATERIALIZATION
 static constexpr bool kEnableStoreLayoutRematerialization = true;
-#else
-static constexpr bool kEnableStoreLayoutRematerialization = false;
-#endif
 
 namespace {
 
@@ -4496,9 +4489,10 @@ public:
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
 
-    bool costBased = kEnableCostBasedResolution;
-    bool backwardProp = kEnableBackwardPropagation;
-    bool smallComponentSolving = kEnableSmallComponentSolving;
+    bool costBased = kFlagtreeRlcEnhance && kEnableCostBasedResolution;
+    bool backwardProp = kFlagtreeRlcEnhance && kEnableBackwardPropagation;
+    bool smallComponentSolving =
+        kFlagtreeRlcEnhance && kEnableSmallComponentSolving;
     if (!costBased) {
       backwardProp = false;
       smallComponentSolving = false;
@@ -4533,7 +4527,8 @@ public:
 
     cleanupConvertOps();
 
-    bool storeLayoutRemat = kEnableStoreLayoutRematerialization;
+    bool storeLayoutRemat =
+        kFlagtreeRlcEnhance && kEnableStoreLayoutRematerialization;
     bool changed = false;
     do {
       changed = false;
