@@ -76,6 +76,11 @@ _TLE_REPLACE_IR_FILE = os.environ.get("TLE_REPLACE_IR_FILE", None)
 if _TLE_REPLACE_IR_FILE is not None:
     os.environ["TRITON_ALWAYS_COMPILE"] = "1"
 
+# Environment variable to override compile options with a fixed custom set.
+# When set to "1", metadata compile options are replaced with predefined values
+# that disable most automatic optimizations (useful for debugging/validation).
+_USE_CUSTOM_COMPILE_OPT = os.environ.get("USE_CUSTOM_COMPILE_OPT", None) or os.environ.get("_USE_CUSTOM_COMPILE_OPT", None)
+
 
 # TODO: materialize the concrete min shape
 def min_dot_size(target: GPUTarget):
@@ -641,6 +646,18 @@ def _compile_linalg_to_npu_bin(linalg: str, metadata, opt):
         print(f"[TLE] Replacing linalg IR with external file: {_TLE_REPLACE_IR_FILE}")
         linalg = replace_path.read_text()
         # Override compile options for externally injected IR
+        metadata["num_stages"] = 1
+        metadata["multibuffer"] = False
+        metadata["enable_tuning_mode"] = True
+        metadata["enable_ubuf_saving"] = None
+        metadata["unit_flag"] = False
+        metadata["enable_auto_bind_sub_block"] = True
+        metadata["enable_hivm_auto_cv_balance"] = False
+        metadata["limit_auto_multi_buffer_only_for_local_buffer"] = False
+        metadata["disable_auto_inject_block_sync"] = True
+        metadata["disable_auto_cv_work_space_manage"] = True
+
+    if _USE_CUSTOM_COMPILE_OPT is not None:
         metadata["num_stages"] = 1
         metadata["multibuffer"] = False
         metadata["enable_tuning_mode"] = True
