@@ -20,6 +20,11 @@ def _is_enflame_backend():
     return target.backend == "gcu"
 
 
+def _is_hcu_backend():
+    target = triton.runtime.driver.active.get_current_target()
+    return target.backend == "hip"
+
+
 def _require_cuda():
     try:
         if _is_enflame_backend():
@@ -376,6 +381,13 @@ class TestTLELocalPointerKernel:
         if _is_enflame_backend():
             gcuir = compiled.asm["gcuir"]
             line = next((line for line in gcuir.splitlines() if "tle.local_pointers" in line), None)
+            if line is not None:
+                line_lhs = line.split(":", 1)[0]
+                assert "tle.local_pointers" in line_lhs
+                assert "," not in line_lhs
+        elif _is_hcu_backend():
+            ttgir = compiled.asm["ttgir"]
+            line = next((line for line in ttgir.splitlines() if "tle.local_pointers" in line), None)
             if line is not None:
                 line_lhs = line.split(":", 1)[0]
                 assert "tle.local_pointers" in line_lhs
