@@ -133,7 +133,7 @@ shown above.
 
 **FlagTree-local changes**
 
-Compared with the imported upstream commit, FlagTree modifies 8 files and adds
+Compared with the imported upstream commit, FlagTree modifies 9 files and adds
 4 entries:
 
 - **Build and provenance:** Modified `README.md`, `CMakeLists.txt`, and
@@ -151,6 +151,8 @@ Compared with the imported upstream commit, FlagTree modifies 8 files and adds
 - **Lowering:** Modified `lib/TritonToTileIR/TritonToTileIRPass.cpp` to add
   `math.erf` lowering and align flattened TensorDescriptor arguments with
   FlagTree's ABI.
+- **Release builds:** Modified `lib/TritonToTileIR/Utils.cpp` so its unsupported
+  reduction-type path remains unreachable when `NDEBUG` removes assertions.
 - **Runtime:** Upstream activates `TileIRDriver` globally with `ENABLE_TILE=1`
   and creates it during import. Modified `backend/driver.py` so it is not a
   global active driver and is created only for a kernel routed to TileIR. The
