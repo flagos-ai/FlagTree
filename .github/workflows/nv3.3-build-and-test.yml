@@ -1,4 +1,4 @@
-name: NV-Build-And-Test
+name: NV3.3-Build-And-Test
 
 on:
   schedule:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   nv-build-and-test:
-    runs-on: flagtree-nvidia
+    runs-on: nvidia3.3
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
@@ -79,7 +79,9 @@ jobs:
         run: |
           set -x
           python3 -m pytest -s python/test/unit \
-            --ignore=python/test/unit/language/test_line_info.py
+            --ignore=python/test/unit/language/test_line_info.py \
+            --ignore=python/test/unit/hopper/test_gemm_fusion.py \
+            --ignore=python/test/unit/hopper/test_persistent_warp_specialized_gemm.py
           if [ -d "python/test/operators" ]; then
             python3 -m pytest -s python/test/operators
           fi

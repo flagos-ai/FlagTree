@@ -66,7 +66,7 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.6.x-linux-x6
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3.10 -m pip install flagtree===0.6.0rc1+hcu3.6 $RES
+python3.10 -m pip install flagtree===0.6.0+hcu3.6 $RES
 ```
 
 安装 `flagtree` 后，可通过下列命令查看：
@@ -88,6 +88,8 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 参考 [Tests of hcu3.6 backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/hcu3.6-build-and-test.yml)
 
+---
+
 ## 💫 HYGON（海光信息）[hcu](/third_party/hcu/) (Triton 3.1)
 
 - 对应的 Triton 版本为 3.1，基于 x64 平台
@@ -102,12 +104,12 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ```shell
 # Plan A: docker pull (22.7GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-hcu-py310-torch2.4.1-ubuntu22.04:202603
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-hcu3.0-py310-torch2.4.1-ubuntu22.04:202603
 docker pull ${IMAGE}
 # Plan B: docker load (5.7GB)
-IMAGE=flagtree-hcu-py310-torch2.4.1-ubuntu22.04:202603
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu-py310-torch2.4.1-ubuntu22.04.202603.tar.gz
-docker load -i flagtree-hcu-py310-torch2.4.1-ubuntu22.04.202603.tar.gz
+IMAGE=flagtree-hcu3.0-py310-torch2.4.1-ubuntu22.04:202603
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-hcu3.0-py310-torch2.4.1-ubuntu22.04.202603.tar.gz
+docker load -i flagtree-hcu3.0-py310-torch2.4.1-ubuntu22.04.202603.tar.gz
 ```
 
 ```shell

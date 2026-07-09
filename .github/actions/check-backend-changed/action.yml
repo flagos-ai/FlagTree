@@ -59,7 +59,7 @@ runs:
               break
             fi
             # Check if the file is a documentation file (same logic as check-docs-only)
-            if [[ ! "$file" =~ CMakeLists\.txt$ ]] && [[ "$file" =~ (\.(md|yml|txt)$|CODEOWNERS$) ]]; then
+            if [[ ! "$file" =~ CMakeLists\.txt$ ]] && [[ "$file" =~ (\.(md|yml|txt|png|jpg|jpeg|gif|svg|ico|webp)$|CODEOWNERS$) ]]; then
               echo "'$file' -> Doc file, not relevant to CI decision"
               continue
             fi

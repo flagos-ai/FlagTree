@@ -1,6 +1,6 @@
 [[中文版](./install_cn.md)|English]
 
-## 💫 NVIDIA & AMD [nvidia](/third_party/nvidia/) & [amd](/third_party/amd/)
+## 💫 NVIDIA [nvidia](/third_party/nvidia/)
 
 - Based on Triton 3.1/3.2/3.3/3.4/3.5/3.6, x64
 
@@ -12,12 +12,12 @@ If your network connection is available, you do not need to perform the later st
 
 ```shell
 # Plan A: docker pull (35.5GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-cuda12.9-ubuntu24.04:202605-3.6-base
 docker pull ${IMAGE}
 # Plan B: docker load (16GB)
-IMAGE=flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202605-3.6-base.tar.gz
-docker load -i flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04.202605-3.6-base.tar.gz
+IMAGE=flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-cuda12.9-ubuntu24.04:202605-3.6-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-cuda12.9-ubuntu24.04.202605-3.6-base.tar.gz
+docker load -i flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-cuda12.9-ubuntu24.04.202605-3.6-base.tar.gz
 ```
 
 ```shell
@@ -113,7 +113,7 @@ Note that the script will prompt for manual confirmation during execution.
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3.12 -m pip install flagtree===0.6.0rc2 $RES
+python3.12 -m pip install flagtree===0.6.0 $RES
 ```
 
 After installing `flagtree`, you can check it with:

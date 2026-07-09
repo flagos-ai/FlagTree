@@ -28,19 +28,6 @@ def ext_Autotuner_bench(autotuner):
     autotuner.cache_fn_map[cache_key][1].append(so_path)
 
 
-def ext_Autotuner_key(autotuner, _args, *args):
-    key = [_args[i] for i in autotuner.key_idx]
-    divisibility = 16
-    for arg in args:
-        if hasattr(arg, "data_ptr"):
-            key.append(arg.dtype)
-            key.append(arg.data_ptr() % divisibility == 0)
-        elif isinstance(arg, int):
-            key.append(arg)
-    key = tuple(key)
-    return key
-
-
 def build_best_config_hash(args_names, key):
     import os
     import hashlib

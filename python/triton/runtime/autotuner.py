@@ -155,9 +155,6 @@ class Autotuner(KernelInterface):
                 if hasattr(arg, "dtype"):
                     key.append(str(arg.dtype))
             key = tuple(key)
-            # flagtree backend specialization
-            from triton.runtime.driver import spec
-            key = spec("ext_Autotuner_key", self, _args, *args) or key
             if key not in self.cache:
                 # prune configs
                 used_cached_result = False

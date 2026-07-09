@@ -37,6 +37,12 @@ docker run -dit \
     -v /data:/data -v /home:/home -v /tmp:/tmp \
     -w /root --name ${CONTAINER} ${IMAGE} bash
 docker exec -it ${CONTAINER} /bin/bash
+
+python3 -c "import torch"
+# If "ImportError: libmusa.so.4: cannot open shared object file: No such file or directory" occurs,
+# create a symbolic link as follows.
+cd /usr/lib/x86_64-linux-gnu/
+ln -s libmusa.so.4.3.3 libmusa.so.4
 ```
 
 #### 1.2 手动下载 FlagTree 依赖库
@@ -72,7 +78,7 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.6.x-linux-x6
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3.10 -m pip install flagtree===0.6.0rc2+mthreads3.6 $RES
+python3.10 -m pip install flagtree===0.6.0+mthreads3.6 $RES
 ```
 
 安装 `flagtree` 后，可通过下列命令查看：
@@ -93,6 +99,8 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ### 3. 测试验证
 
 参考 [Tests of mthreads3.6 backend](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/.github/workflows/mthreads3.6-build-and-test.yml)
+
+---
 
 ## 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/mthreads/) (Triton 3.2)
 
@@ -187,6 +195,8 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ### 3. 测试验证
 
 参考 [Tests of mthreads3.2 backend](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/.github/workflows/mthreads-build-and-test.yml)
+
+---
 
 ## 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/) (Triton 3.1)
 

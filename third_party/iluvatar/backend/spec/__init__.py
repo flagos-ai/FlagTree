@@ -33,7 +33,6 @@ __all__ = [
     "atomic_add_int64",
     "add_Autotuner_attributes",
     "ext_Autotuner_bench",
-    "ext_Autotuner_key",
     "handle_only_save_best_config_cache",
     "get_cc",
     "get_temp_path_in_FileCacheManager_put",
