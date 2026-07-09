@@ -44,6 +44,7 @@ static llvm::DenseSet<Operation *> addedAssertOps;
 static int64_t kIndentSpaceNum = 0;
 
 static void printBeforeVisit(Operation *op) {
+  (void)op;
   auto spaces = std::string(kIndentSpaceNum, ' ');
   kIndentSpaceNum += 3;
 
@@ -57,6 +58,7 @@ static void printBeforeVisit(Operation *op) {
 }
 
 static void printAfterVisit(Operation *op) {
+  (void)op;
   kIndentSpaceNum -= 3;
   auto spaces = std::string(kIndentSpaceNum, ' ');
 
@@ -189,7 +191,7 @@ void PtrState::divState(OpBuilder &builder, Location loc,
   }
 }
 
-void PtrState::setState(OpBuilder &builder, Location loc,
+void PtrState::setState(OpBuilder & /*builder*/, Location /*loc*/,
                         const PtrState &srcState) {
   if (srcState.source)
     this->source = srcState.source;
@@ -407,8 +409,8 @@ void PtrAnalysis::visitOperand(
 }
 
 void PtrAnalysis::visitBlockArgument(
-    PatternRewriter &rewriter, Location loc, BlockArgument blockArg,
-    PtrState &state, llvm::SmallDenseMap<Value, PtrState> &knownPtrs) {
+    PatternRewriter & /*rewriter*/, Location /*loc*/, BlockArgument blockArg,
+    PtrState &state, llvm::SmallDenseMap<Value, PtrState> & /*knownPtrs*/) {
   assert(state.isEmpty());
 
   assert(!isa<scf::ForOp>(blockArg.getOwner()->getParentOp()));
@@ -417,7 +419,7 @@ void PtrAnalysis::visitBlockArgument(
 
 void PtrAnalysis::visitOperandConstSplat(
     PatternRewriter &rewriter, Location loc, arith::ConstantOp op,
-    PtrState &state, llvm::SmallDenseMap<Value, PtrState> &knownPtrs) {
+    PtrState &state, llvm::SmallDenseMap<Value, PtrState> & /*knownPtrs*/) {
   assert(state.isEmpty());
 
   // this condition is to handle cases where tt.broadcast and tt.splat are
@@ -510,8 +512,8 @@ void PtrAnalysis::visitOperandSelect(
 }
 
 void PtrAnalysis::visitOperandMakeRange(
-    PatternRewriter &rewriter, Location loc, triton::MakeRangeOp rangeOp,
-    PtrState &state, llvm::SmallDenseMap<Value, PtrState> &knownPtrs) {
+    PatternRewriter &rewriter, Location /*loc*/, triton::MakeRangeOp rangeOp,
+    PtrState &state, llvm::SmallDenseMap<Value, PtrState> & /*knownPtrs*/) {
   assert(state.isEmpty());
 
   auto shape = cast<ShapedType>(rangeOp.getType()).getShape();
@@ -821,7 +823,7 @@ void PtrAnalysis::rewriteYieldOp(
             op.getLoc(), rewriter.getIndexAttr(0));
         operands.push_back(constOp.getResult());
       } else {
-        operands.push_back(s.get<Value>());
+        operands.push_back(cast<Value>(s));
       }
     }
 
@@ -829,7 +831,7 @@ void PtrAnalysis::rewriteYieldOp(
       assert(!getIntAttr(s) &&
              "PtrState strides for yield within for loop not expected to be "
              "attribute.");
-      operands.push_back(s.get<Value>());
+      operands.push_back(cast<Value>(s));
     }
   }
 
@@ -843,7 +845,7 @@ void PtrAnalysis::rewriteYieldOp(
         operands.push_back(constOp.getResult());
         state.start = constOp.getResult();
       } else {
-        operands.push_back(state.start.get<Value>());
+        operands.push_back(cast<Value>(state.start));
       }
     }
     if (state.end) {
@@ -854,7 +856,7 @@ void PtrAnalysis::rewriteYieldOp(
         operands.push_back(constOp.getResult());
         state.end = constOp.getResult();
       } else {
-        operands.push_back(state.end.get<Value>());
+        operands.push_back(cast<Value>(state.end));
       }
     }
   }
@@ -865,7 +867,7 @@ void PtrAnalysis::rewriteYieldOp(
   assert(op->getNumResults() == 0);
 }
 
-bool PtrAnalysis::byPassForOp(PatternRewriter &rewriter, scf::ForOp op,
+bool PtrAnalysis::byPassForOp(PatternRewriter & /*rewriter*/, scf::ForOp op,
                               const SmallVector<Operation *, 8> &candidateOps) {
   bool bypass = true;
 
@@ -877,7 +879,7 @@ bool PtrAnalysis::byPassForOp(PatternRewriter &rewriter, scf::ForOp op,
                                  loadstoreOp.getOperation());
                    return iter == candidateOps.end();
                  })
-                 .Default([&](auto op) { return true; });
+                 .Default([&](auto /*op*/) { return true; });
     return !bypass ? WalkResult::interrupt() : WalkResult::advance();
   });
 
@@ -956,7 +958,7 @@ LogicalResult PtrAnalysis::rewriteForOp(
         newInitArgs.push_back(constOp.getResult());
         state.offsets[j] = constOp.getResult();
       } else {
-        newInitArgs.push_back(s.get<Value>());
+        newInitArgs.push_back(cast<Value>(s));
       }
     }
 
@@ -968,7 +970,7 @@ LogicalResult PtrAnalysis::rewriteForOp(
         newInitArgs.push_back(constOp.getResult());
         state.strides[j] = constOp.getResult();
       } else {
-        newInitArgs.push_back(s.get<Value>());
+        newInitArgs.push_back(cast<Value>(s));
       }
     }
   }
@@ -983,7 +985,7 @@ LogicalResult PtrAnalysis::rewriteForOp(
         newInitArgs.push_back(constOp.getResult());
         state.start = constOp.getResult();
       } else {
-        newInitArgs.push_back(state.start.get<Value>());
+        newInitArgs.push_back(cast<Value>(state.start));
       }
     }
 
@@ -995,7 +997,7 @@ LogicalResult PtrAnalysis::rewriteForOp(
         newInitArgs.push_back(constOp.getResult());
         state.end = constOp.getResult();
       } else {
-        newInitArgs.push_back(state.end.get<Value>());
+        newInitArgs.push_back(cast<Value>(state.end));
       }
     }
     (void)i;
@@ -1006,7 +1008,7 @@ LogicalResult PtrAnalysis::rewriteForOp(
   auto newOp = rewriter.create<scf::ForOp>(
       op.getLoc(), op.getLowerBound(), op.getUpperBound(), op.getStep(),
       newInitArgs,
-      [&](OpBuilder &builder, Location loc, Value iv, ValueRange args) {
+      [&](OpBuilder &builder, Location /*loc*/, Value iv, ValueRange args) {
         IRMapping mapping;
         mapping.map(op.getInductionVar(), iv);
         mapping.map(op.getInitArgs(), newInitArgs);
@@ -1096,8 +1098,8 @@ LogicalResult PtrAnalysis::rewriteForOp(
 }
 
 void PtrAnalysis::foldAwayForOp(
-    PatternRewriter &rewriter, scf::ForOp forOp,
-    llvm::SmallDenseMap<Value, PtrState> &knownPtrs) {
+    PatternRewriter & /*rewriter*/, scf::ForOp forOp,
+    llvm::SmallDenseMap<Value, PtrState> & /*knownPtrs*/) {
   LLVM_DEBUG(llvm::dbgs() << "foldAwayForOp: \n");
   for (auto it : llvm::zip(forOp.getInitArgs(), forOp.getRegionIterArgs(),
                            forOp.getResults(), forOp.getYieldedValues())) {
@@ -1130,7 +1132,7 @@ bool checkElemType(Type t) {
     return false;
 
   auto tensorType = dyn_cast<TensorType>(t);
-  auto bitwidth = 32;
+  unsigned bitwidth = 32;
   if (!triton::gcu::get_bool_env("ENABLE_I64_CHECK", true))
     bitwidth = 64;
   if (!tensorType.getElementType().isIntOrFloat() ||
@@ -1214,9 +1216,9 @@ bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads) {
     return bypass;
   }
   TypeSwitch<Operation *>(v.getDefiningOp())
-      .Case<triton::LoadOp>([&](auto op) { bypass = true; })
+      .Case<triton::LoadOp>([&](auto /*op*/) { bypass = true; })
       .Case<arith::ConstantOp, arith::ConstantIndexOp, triton::MakeRangeOp>(
-          [&](auto op) { bypass = false; })
+          [&](auto /*op*/) { bypass = false; })
       .Case<triton::AddPtrOp>([&](triton::AddPtrOp op) {
         bypass = isPtrFromLoad(op.getPtr(), valueFromLoads) ||
                  isPtrFromLoad(op.getOffset(), valueFromLoads);
@@ -1235,7 +1237,8 @@ bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads) {
             arith::RemUIOp, arith::MinSIOp, arith::FPToSIOp, arith::FPToUIOp,
             triton::DotOp, triton::ReduceOp, triton::ReshapeOp,
             triton::gpu::ConvertLayoutOp, triton::ScanOp, triton::HistogramOp,
-            triton::CatOp>([&](auto op) {
+            triton::CatOp, triton::IntToPtrOp>([&](auto op) {
+        (void)op;
         // Now bypass SelectOP, SubIOp, DivSIOp, RemSIOp and RemUIOp.
         // Optimization will be considered in subsequent steps
         LLVM_DEBUG(llvm::dbgs() << "bypass from :"
@@ -1243,6 +1246,7 @@ bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads) {
         bypass = true;
       })
       .Case<scf::ForOp, scf::IfOp, scf::WhileOp>([&](auto op) {
+        (void)op;
         // Now bypass ForOp, WhileOp, IfOp op
         LLVM_DEBUG(llvm::dbgs() << "bypass from :"
                                 << op->getName().getStringRef().str() << "\n");
@@ -1418,9 +1422,9 @@ bool isMaskCandidate(Value v, llvm::DenseMap<Value, bool> &valueToCandiates) {
 
   candidate = false;
   TypeSwitch<Operation *>(v.getDefiningOp())
-      .Case<triton::LoadOp>([&](auto op) { candidate = false; })
+      .Case<triton::LoadOp>([&](auto /*op*/) { candidate = false; })
       .Case<arith::ConstantOp, arith::ConstantIndexOp, triton::MakeRangeOp>(
-          [&](auto op) { candidate = true; })
+          [&](auto /*op*/) { candidate = true; })
       .Case<triton::ExpandDimsOp, triton::BitcastOp, triton::BroadcastOp>(
           [&](auto op) {
             candidate = isMaskCandidate(op.getSrc(), valueToCandiates);
@@ -1437,6 +1441,7 @@ bool isMaskCandidate(Value v, llvm::DenseMap<Value, bool> &valueToCandiates) {
             triton::ReduceOp, triton::DotOp, triton::ReshapeOp,
             triton::gpu::ConvertLayoutOp, triton::ScanOp, triton::HistogramOp,
             triton::CatOp>([&](auto op) {
+        (void)op;
         // bypass DivSIOp, which is completely discontiguous index operation,
         // and cannot be converted to dte
         LLVM_DEBUG(llvm::dbgs() << "bypass from :"
@@ -1444,6 +1449,7 @@ bool isMaskCandidate(Value v, llvm::DenseMap<Value, bool> &valueToCandiates) {
         candidate = false;
       })
       .Case<scf::ForOp, scf::IfOp, scf::WhileOp>([&](auto op) {
+        (void)op;
         // bypass ForOp, IfOp, WhileOp,
         // which is maybe discontiguous index operation.
         LLVM_DEBUG(llvm::dbgs() << "bypass from :"
@@ -1459,7 +1465,9 @@ bool isMaskCandidate(Value v, llvm::DenseMap<Value, bool> &valueToCandiates) {
         if (op.getPredicate() == arith::CmpIPredicate::slt ||
             op.getPredicate() == arith::CmpIPredicate::ult ||
             op.getPredicate() == arith::CmpIPredicate::sge ||
-            op.getPredicate() == arith::CmpIPredicate::uge) {
+            op.getPredicate() == arith::CmpIPredicate::uge ||
+            op.getPredicate() == arith::CmpIPredicate::sgt ||
+            op.getPredicate() == arith::CmpIPredicate::ugt) {
           if (auto tensorType = dyn_cast<TensorType>(op.getLhs().getType())) {
             auto shape = tensorType.getShape();
             if (shape.size() >= 2 &&

@@ -29,6 +29,9 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
+#ifdef __TLE__
+#include "llvm/ADT/StringRef.h"
+#endif
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h.inc"
 #include "nvidia/include/Dialect/NVGPU/IR/OpsEnums.h.inc"
 
@@ -40,7 +43,16 @@
 
 namespace mlir {
 namespace triton {
+#ifdef __TLE__
+namespace nvgpu {
+inline constexpr llvm::StringLiteral
+    kTleWgmmaOperandADescImmAttr("tle.wgmma_operand_a_desc_imm");
+inline constexpr llvm::StringLiteral
+    kTleWgmmaOperandBDescImmAttr("tle.wgmma_operand_b_desc_imm");
+} // namespace nvgpu
+#else
 namespace nvgpu {} // namespace nvgpu
+#endif
 } // namespace triton
 } // namespace mlir
 

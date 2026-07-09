@@ -133,6 +133,13 @@ int getDefUseStageDiff(Operation *op, scf::ForOp forOp,
   return useStage.value() - defStage;
 }
 
+#ifdef __TLE__
+static bool isTleTileStylePipelineLoop(scf::ForOp forOp) {
+  auto attr = forOp->getAttrOfType<IntegerAttr>("tle.tile_style_pipeline");
+  return attr && attr.getInt() != 0;
+}
+#endif
+
 void replaceAllUsesDominatedBy(Operation *domOp, Value newValue, Value oldValue,
                                DominanceInfo &domInfo) {
   if (newValue == oldValue)
@@ -490,8 +497,23 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
           contiguity = vec;
         }
       }
+      bool requiresAdditionalBuffer = loadRequiresAdditionalBuffer(&op);
+#ifdef __TLE__
+      bool useTileStylePipeline = isTleTileStylePipelineLoop(forOp);
+      bool keepInRegistersForTileStyle =
+          useTileStylePipeline && !requiresAdditionalBuffer;
+      if (keepInRegistersForTileStyle) {
+        canUseAsyncCp = false;
+      }
+#endif
       if (canUseAsyncCp || isTMALoad(&op)) {
-        if (loadRequiresAdditionalBuffer(&op)) {
+#ifdef __TLE__
+        if (useTileStylePipeline && schedule[&op].first == 0 && stageDiff > 1 &&
+            requiresAdditionalBuffer) {
+          stageDiff -= 1;
+        }
+#endif
+        if (requiresAdditionalBuffer) {
           // Allocate additional buffer required by the wgmma pipelining.
           stageDiff += 1;
         }
@@ -500,6 +522,10 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
         asyncLoad.contiguity = contiguity;
         asyncLoad.sharedEncoding = sharedEncoding;
       } else if (stageDiff > 1) {
+#ifdef __TLE__
+        if (keepInRegistersForTileStyle)
+          continue;
+#endif
         // Distance-1 loads can in most cases be pipelined in registers without
         // any performance degradation, as the schedule will usually reorder the
         // user and the producer so there is no liverange overlap, and no copy

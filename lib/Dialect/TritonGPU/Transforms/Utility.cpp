@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility
+
 #include "triton/Analysis/Utility.h"
 
 #include <fstream>
@@ -13,6 +19,9 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#endif
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttg-utility"
@@ -1579,6 +1588,17 @@ void replaceUsesAndPropagateType(
     } else if (auto trans = dyn_cast<ttg::MemDescTransOp>(user)) {
       newVal = ttg::MemDescTransOp::create(builder, trans.getLoc(), val,
                                            trans.getOrder());
+#ifdef __TLE__
+    } else if (auto view = dyn_cast<triton::tle::MemDescWGMMAViewOp>(user)) {
+      ttg::MemDescType oldType = view.getType();
+      bool isMutable = cast<ttg::MemDescType>(val.getType()).getMutableMemory();
+      Type newDstType = ttg::MemDescType::get(
+          oldType.getShape(), oldType.getElementType(), oldType.getEncoding(),
+          oldType.getMemorySpace(), isMutable, oldType.getAllocShape());
+      builder.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+      newVal = triton::tle::MemDescWGMMAViewOp::create(
+          builder, view.getLoc(), newDstType, val, view.getOrder());
+#endif
     } else if (auto reshape = dyn_cast<ttg::MemDescReshapeOp>(user)) {
       auto shape = reshape.getType().getShape();
       newVal =
@@ -1594,6 +1614,40 @@ void replaceUsesAndPropagateType(
   }
 
   // Perform late replacement.
+#ifdef __TLE__
+  SmallVector<OpOperand *> nonWaitOperandsToReplace;
+  SmallVector<std::pair<ttng::WarpGroupDotWaitOp, SmallVector<unsigned>>>
+      waitOperandsToReplace;
+  for (OpOperand *operand : operandsToReplace) {
+    if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(operand->getOwner())) {
+      auto existing = llvm::find_if(waitOperandsToReplace, [&](auto &entry) {
+        return entry.first == wait;
+      });
+      if (existing == waitOperandsToReplace.end()) {
+        waitOperandsToReplace.push_back({wait, {}});
+        waitOperandsToReplace.back().second.push_back(
+            operand->getOperandNumber());
+        continue;
+      }
+      existing->second.push_back(operand->getOperandNumber());
+    } else {
+      nonWaitOperandsToReplace.push_back(operand);
+    }
+  }
+  for (OpOperand *operand : nonWaitOperandsToReplace)
+    operand->set(val);
+  for (auto &[wait, operandNumbers] : waitOperandsToReplace) {
+    // Need to update the return type on the wait op as well.
+    builder.setInsertionPointAfter(wait);
+    auto operands = llvm::to_vector(wait.getOperands());
+    for (unsigned operandNumber : operandNumbers)
+      operands[operandNumber] = val;
+    auto newWait = ttng::WarpGroupDotWaitOp::create(
+        builder, wait.getLoc(), operands, wait.getPendings());
+    wait.replaceAllUsesWith(newWait.getResults());
+    wait.erase();
+  }
+#else
   for (OpOperand *operand : operandsToReplace) {
     if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(operand->getOwner())) {
       // Need to update the return type on the wait op as well
@@ -1608,6 +1662,7 @@ void replaceUsesAndPropagateType(
       operand->set(val);
     }
   }
+#endif
 
   // Perform late op erasure.
   for (Operation *op : opsToDelete)
@@ -1724,3 +1779,5 @@ LogicalResult verifyBarrierType(Operation *op,
 }
 
 } // namespace mlir::triton
+
+#endif

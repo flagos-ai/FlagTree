@@ -56,9 +56,13 @@ void FirstLastUserAnalysis::getUsersForLast(
 
     if (user->getParentRegion() == opRegion) {
       blockList.insert(user->getBlock());
-      if (isMustAliasOp(user) || llvm::isa<scf::WhileOp>(user)) {
+      if (isMustAliasOp(use)) {
         userList.insert(std::make_pair(user, number));
         aliasList.insert(std::make_pair(user, number));
+      } else if (llvm::isa<scf::WhileOp>(user)) {
+        userList.insert(std::make_pair(user, number));
+        if (number < user->getNumResults())
+          aliasList.insert(std::make_pair(user, number));
       } else if (llvm::isa<scf::ForOp>(user)) {
         auto forOp = dyn_cast<scf::ForOp>(user);
         auto numControl = forOp.getNumControlOperands();
@@ -75,11 +79,20 @@ void FirstLastUserAnalysis::getUsersForLast(
       auto parent = user->getParentOp();
 
       std::pair<Operation *, int> curUser = std::make_pair(nullptr, -1);
-      if (isMustAliasOp(user) || llvm::isa<scf::WhileOp>(user)) {
+      if (isMustAliasOp(use)) {
         auto result = user->getResults()[number];
         curUser = getLastUserOfValue(result, postDomInfo);
         if (lastUserMap.count(result) == 0)
           lastUserMap[result] = curUser;
+      } else if (llvm::isa<scf::WhileOp>(user)) {
+        if (number < user->getNumResults()) {
+          auto result = user->getResults()[number];
+          curUser = getLastUserOfValue(result, postDomInfo);
+          if (lastUserMap.count(result) == 0)
+            lastUserMap[result] = curUser;
+        } else {
+          curUser = std::make_pair(user, number);
+        }
       } else if (llvm::isa<scf::ForOp>(user)) {
         auto forOp = dyn_cast<scf::ForOp>(user);
         auto numControl = forOp.getNumControlOperands();
@@ -160,6 +173,9 @@ FirstLastUserAnalysis::getLastUserOfValue(mlir::Value value,
     for (auto tmp : tmpList) {
       if (llvm::isa<scf::IfOp, scf::IndexSwitchOp, scf::ForOp, scf::WhileOp>(
               tmp.first)) {
+        assert(tmp.second >= 0 &&
+               static_cast<unsigned>(tmp.second) < tmp.first->getNumResults() &&
+               "alias index out of range for op results");
         getUsersForLast(tmp.first->getResults()[tmp.second], opRegion,
                         postDomInfo, userList, blockList, aliasList);
       } else {
@@ -262,7 +278,7 @@ void FirstLastUserAnalysis::getUsersForFisrt(
     if (user->getParentRegion() == opRegion) {
       userList.insert(std::make_pair(user, number));
       blockList.insert(user->getBlock());
-      if (isMustAliasOp(user)) {
+      if (isMustAliasOp(use)) {
         aliasList.insert(std::make_pair(user, number));
       }
     } else {
@@ -391,6 +407,9 @@ FirstLastUserAnalysis::getLastUser(mlir::Value value, mlir::Region *opRegion) {
     for (auto tmp : tmpList) {
       if (llvm::isa<scf::IfOp, scf::IndexSwitchOp, scf::ForOp, scf::WhileOp>(
               tmp.first)) {
+        assert(tmp.second >= 0 &&
+               static_cast<unsigned>(tmp.second) < tmp.first->getNumResults() &&
+               "alias index out of range for op results");
         getUsersForLast(tmp.first->getResults()[tmp.second], opRegion,
                         postDominators, userList, blockList, aliasList);
       } else {
@@ -476,7 +495,6 @@ FirstLastUserAnalysis::getLastUser(mlir::Value value, mlir::Region *opRegion) {
       }
     }
   }
-
   return lastUser;
 }
 
@@ -492,7 +510,7 @@ void FirstLastUserAnalysis::start() {
                   triton::AddPtrOp, triton::LoadOp>(_op) &&
         llvm::any_of(_op->getResultTypes(), llvm::IsaPred<RankedTensorType>)) {
       LLVM_DEBUG({ llvm::dbgs() << "_op:" << *_op << "\n"; });
-      int i = 0;
+      [[maybe_unused]] int i = 0;
       for (auto v : _op->getResults()) {
         LLVM_DEBUG({ llvm::dbgs() << "i:" << i++ << "\n"; });
         if (lastUserMap.count(v) == 0)
@@ -516,7 +534,7 @@ void FirstLastUserAnalysis::start() {
                          triton::ReduceOp, triton::MakeRangeOp,
                          triton::gcu::ElementwiseFusionRegionOp>(_op)) {
       LLVM_DEBUG({ llvm::dbgs() << "_op:" << *_op << "\n"; });
-      int i = 0;
+      [[maybe_unused]] int i = 0;
       for (auto v : _op->getResults()) {
         LLVM_DEBUG({ llvm::dbgs() << "i:" << i++ << "\n"; });
         if (lastUserMap.count(v) == 0)
@@ -532,9 +550,13 @@ void FirstLastUserAnalysis::start() {
         });
       }
     } else if (llvm::isa<triton::TransOp, triton::gpu::ConvertLayoutOp,
-                         triton::gcu::LoadOp, triton::gpu::LocalLoadOp>(_op)) {
+                         triton::gcu::LoadOp, triton::gpu::LocalLoadOp,
+                         triton::gcu::SliceFromLocalOp,
+                         triton::gcu::DesliceToLocalOp>(_op) ||
+               _op->getName().getStringRef() == "tle.extract_tile" ||
+               _op->getName().getStringRef() == "tle.insert_tile") {
       LLVM_DEBUG({ llvm::dbgs() << "_op:" << *_op << "\n"; });
-      int i = 0;
+      [[maybe_unused]] int i = 0;
       for (auto v : _op->getResults()) {
         LLVM_DEBUG({ llvm::dbgs() << "i:" << i++ << "\n"; });
         if (lastUserMap.count(v) == 0)
@@ -555,6 +577,24 @@ void FirstLastUserAnalysis::start() {
                          << "\n";
           } else {
             llvm::dbgs() << "firstUserMap[v].first is nullptr\n";
+          }
+        });
+      }
+    } else if (llvm::any_of(_op->getResultTypes(),
+                            llvm::IsaPred<RankedTensorType>)) {
+      LLVM_DEBUG({ llvm::dbgs() << "_op:" << *_op << "\n"; });
+      [[maybe_unused]] int i = 0;
+      for (auto v : _op->getResults()) {
+        LLVM_DEBUG({ llvm::dbgs() << "i:" << i++ << "\n"; });
+        if (lastUserMap.count(v) == 0)
+          lastUserMap[v] = getLastUserOfValue(v, postDominators);
+
+        LLVM_DEBUG({
+          if (lastUserMap[v].first) {
+            llvm::dbgs() << "lastUserMap[v].first :" << *lastUserMap[v].first
+                         << "\n";
+          } else {
+            llvm::dbgs() << "lastUserMap[v].first is nullptr" << "\n";
           }
         });
       }

@@ -1,0 +1,61 @@
+name: Sunrise-Build-And-Test
+
+on:
+  push:
+    branches: [ "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "triton_v3.6.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sunrise-build-and-test:
+    runs-on: sunrise3.6
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          # source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: sunrise
+
+      - name: FlagTree Build on Sunrise
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          pip uninstall -y triton
+          export TRITON_BUILD_WITH_CLANG_LLD=1
+          export TRITON_OFFLINE_BUILD=1
+          export TRITON_BUILD_PROTON=OFF
+          export FLAGTREE_BACKEND=sunrise
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: FlagTree Test on Sunrise
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export LD_LIBRARY_PATH=/usr/local/tangrt/lib/linux-x86_64/stub:${LD_LIBRARY_PATH}
+          python3 -m pytest third_party/sunrise/python/test/01-vector-add.py
+          python3 -m pytest third_party/sunrise/python/test/02-tle-local_ptr.py
+          python3 -m pytest third_party/sunrise/python/test/03-tle-extract_insert_tile.py
+          python3 -m pytest third_party/sunrise/python/test/04-tle-hint-shared-memory.py
+          python3 -m pytest third_party/sunrise/python/test/05-tle-copy-normcopy.py
+          python3 -m pytest third_party/sunrise/python/test/06-tle-cumsum.py
+          python3 -m pytest third_party/sunrise/python/test/07-tle-load.py
+          python3 -m pytest third_party/sunrise/python/test/08-tle-dot-local-ptr.py
+          python3 -m pytest third_party/sunrise/python/test/09-tle-negative-contract.py

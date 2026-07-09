@@ -15,6 +15,7 @@ import signal
 import os
 import subprocess
 from pathlib import Path
+from .distributed import Distributed
 
 
 def min_dot_size(target: GPUTarget):
@@ -138,6 +139,8 @@ class CUDAOptions:
         if not extern_libs.get('libdevice', None):
             extern_libs['libdevice'] = knobs.nvidia.libdevice_path or str(default_libdir / 'libdevice.10.bc')
 
+        # flagtree tle distributed: Add distributed bitcode library(libflagcx_device.bc) if distributed features are enabled.
+        extern_libs.update(Distributed().get_extern_libs())
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
                "num_warps must be a power of 2"
@@ -284,6 +287,12 @@ class CUDABackend(BaseBackend):
         tle.passes.add_lower_extract_tile(pm)
         # flagtree tle: lower tle.insert_tile
         tle.passes.add_lower_insert_tile(pm)
+        # Canonicalize static gmem->local_ptr(shared) chunk copies after TTIR
+        # has been converted to TTGPU encodings, but before local-pointer
+        # lowering obscures the load->store pattern. This rewrites the
+        # source-level chunk staging into direct async copies targeting
+        # memdesc subviews of the final shared operand buffer.
+        tle.passes.add_optimize_local_pointer_async_stores(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_process_shared_memory_hint(pm)  # flagtree hints
@@ -300,19 +309,26 @@ class CUDABackend(BaseBackend):
         tle.passes.add_optimize_local_pointer_stores(pm)
         # end flagtree tle
         passes.ttgpuir.add_accelerate_matmul(pm)
+        tle.passes.add_lower_wgmma(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
+        tle.passes.add_promote_local_store_staging(pm)
         nvidia.passes.ttnvgpuir.add_optimize_descriptor_encoding(pm)
         passes.ttir.add_loop_aware_cse(pm)
+        tle.passes.add_lower_barriers(pm)
         if capability // 10 in [8, 9]:
             passes.ttgpuir.add_fuse_nested_loops(pm)
             passes.common.add_canonicalizer(pm)
             passes.ttir.add_triton_licm(pm)
             passes.common.add_canonicalizer(pm)
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
+            tle.passes.add_lower_pipe_to_nvws(pm)
             nvidia.passes.hopper.add_hopper_warpspec(pm, opt.num_stages, dump_enabled)
+            tle.passes.add_downgrade_invalid_async_copy(pm)
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
             passes.ttgpuir.add_schedule_loops(pm)
+            tle.passes.add_tile_style_pipeline_schedule(pm)
+            tle.passes.add_materialize_tile_style_pipeline(pm)
             passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
         elif capability // 10 >= 10:
             passes.ttgpuir.add_fuse_nested_loops(pm)
@@ -321,6 +337,7 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_optimize_accumulator_init(pm)
             passes.ttgpuir.add_hoist_tmem_alloc(pm, False)
             nvidia.passes.ttnvgpuir.add_promote_lhs_to_tmem(pm)
+            tle.passes.add_downgrade_invalid_async_copy(pm)
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
             passes.ttgpuir.add_schedule_loops(pm)
             passes.ttgpuir.add_warp_specialize(pm, opt.num_stages)
@@ -337,10 +354,12 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_prefetch(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
         passes.ttgpuir.add_coalesce_async_copy(pm)
+        tle.passes.add_downgrade_invalid_async_copy(pm)
         nvidia.passes.ttnvgpuir.add_optimize_tmem_layouts(pm)
         if capability // 10 >= 9:
             # flagtree tle: Apply TLE TMA copy lowering before standard NVIDIA TMA lowering
             tle.passes.add_lower_tma_copy(pm)
+            tle.passes.add_schedule_tma_store_sync(pm)
             nvidia.passes.ttnvgpuir.add_tma_lowering(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         nvidia.passes.ttnvgpuir.add_interleave_tmem(pm)
@@ -352,6 +371,9 @@ class CUDABackend(BaseBackend):
         passes.common.add_symbol_dce(pm)
         nvidia.passes.ttnvgpuir.add_fence_insertion(pm, capability)
         nvidia.passes.ttnvgpuir.add_lower_mma(pm)
+        # Materialize physical named barrier ids in the user-visible TTGIR
+        # after warp-specialization structure is known.
+        tle.passes.add_allocate_named_barriers(pm)
         passes.common.add_sccp(pm)
         passes.common.add_cse(pm)
         passes.common.add_canonicalizer(pm)
@@ -406,9 +428,17 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_concurrency_sanitizer(pm)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         nvidia.passes.ttnvgpuir.add_proxy_fence_insertion(pm, capability)
+        # Materialize deferred tle_raw sources before inlining DSL regions.
+        from .deferred_raw import (
+            finish_deferred_raw_materialize,
+            deferred_raw_materialize,
+        )
+        deferred_raw_materialize(pm, mod)
         # Inline TLE DSL regions before TritonGPU->LLVM lowering so no
         # `tle.dsl_region` op survives into the conversion pipeline.
         tle.raw_passes.add_tle_dsl_region_inline(pm)
+        # Keep this as an idempotent guard for externally provided TTGIR.
+        tle.passes.add_allocate_named_barriers(pm)
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         if CUDABackend.instrumentation:
             CUDABackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
@@ -429,6 +459,7 @@ class CUDABackend(BaseBackend):
             CUDABackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
 
         pm.run(mod, 'make_llir')
+        finish_deferred_raw_materialize()
 
         if knobs.compilation.dump_ir_extract_di_local_variables:
             # comments below on why separate it

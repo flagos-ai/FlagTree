@@ -31,8 +31,40 @@ LogicalResult HistogramOp::verify() {
       getResult().getType().getShape()[0] == 0)
     return emitOpError()
            << "histogram only supports 1D output with a ​size greater than 0";
+  if (getUseMradix()) {
+    auto outType = getResult().getType();
+    if (!outType.hasStaticShape()) {
+      return emitOpError()
+             << "histogram only supports use mradix with static output shape";
+    }
+    if (!(outType.getShape()[0] > 0 && outType.getShape()[0] <= 32)) {
+      return emitOpError()
+             << "histogram only supports use mradix with numBins in (0, 32]";
+    }
+
+    if (!(getOperand().getType().getElementType().isInteger(32) &&
+          getResult().getType().getElementType().isInteger(32))) {
+      return emitOpError()
+             << "histogram only supports use mradix with i32 element types";
+    }
+  }
   return success();
 }
 
+LogicalResult InclusiveScanOp::verify() {
+  auto resultType = getResult().getType();
+  auto operandType = getOperand().getType();
+  if (resultType.getRank() != 1)
+    return emitOpError() << "only 1D memrefs are supported (result rank="
+                         << resultType.getRank() << ")";
+  if (operandType.getRank() != 1)
+    return emitOpError() << "only 1D memrefs are supported (operand rank="
+                         << operandType.getRank() << ")";
+  if (resultType.getShape() != operandType.getShape())
+    return emitOpError() << "result and operand must have the same shape";
+  if (getUseMiota() && !operandType.getElementType().isInteger(32))
+    return emitOpError() << "miota acceleration requires i32 element type";
+  return success();
+}
 } // namespace math_ext
 } // namespace mlir

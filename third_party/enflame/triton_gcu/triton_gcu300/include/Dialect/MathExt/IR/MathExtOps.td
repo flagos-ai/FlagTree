@@ -52,8 +52,46 @@ def MathExt_HistogramOp : MathExt_Op<"histogram", [MemoryEffectsOpInterface]> {
     Return the histogram of the input tensor. The number of bins is equal to
     the dimension of the output tensor. Each bins has a width of 1 and bins
     start at 0.
+
+    Optional attributes:
+    - `use_mradix`: Use mradix hardware acceleration for radix sort.
+      Requires operand element type to be i32 with shape in (0, 32].
   }];
-  let arguments = (ins AnyMemRef:$result, AnyMemRef:$operand);
+  let arguments = (ins AnyMemRef:$result, AnyMemRef:$operand, OptionalAttr<UnitAttr>:$use_mradix);
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(1),
+                           SideEffects::DefaultResource::get());
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+  let hasVerifier = 1;
+}
+
+//
+// InclusiveScan Op
+//
+def MathExt_InclusiveScanOp : MathExt_Op<"inclusive_scan", [MemoryEffectsOpInterface]> {
+  let summary = "Inclusive prefix sum (1D only)";
+  let description = [{
+    Compute inclusive prefix sum (cumulative sum) of a 1D input memref and
+    store the result in the output memref. Both result and operand must be
+    rank-1 memrefs with the same shape.
+
+    Optional attributes:
+    - `use_miota`: Use miota hardware acceleration for bool-valued add-scan.
+      Requires operand element type to be i32 with values in {0, 1}.
+    - `reverse`: Compute reverse (right-to-left) inclusive prefix sum.
+  }];
+  let arguments = (ins
+    AnyMemRef:$result,
+    AnyMemRef:$operand,
+    OptionalAttr<UnitAttr>:$use_miota,
+    OptionalAttr<UnitAttr>:$reverse
+  );
   let extraClassDeclaration = [{
     void getEffects(
         SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &

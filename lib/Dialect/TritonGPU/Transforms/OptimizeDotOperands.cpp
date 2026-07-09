@@ -1,3 +1,4 @@
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
@@ -10,6 +11,12 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "llvm/ADT/DenseSet.h"
+#endif
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
 #include <memory>
@@ -17,6 +24,176 @@
 namespace mlir::triton::gpu {
 
 namespace {
+
+#ifdef __TLE__
+static Value getWarpSpecializeCapture(Value value) {
+  auto blockArg = dyn_cast<BlockArgument>(value);
+  if (!blockArg)
+    return value;
+
+  Block *block = blockArg.getOwner();
+  auto partitions =
+      dyn_cast_or_null<WarpSpecializePartitionsOp>(block->getParentOp());
+  if (!partitions)
+    return value;
+
+  auto wsOp = dyn_cast<WarpSpecializeOp>(partitions->getParentOp());
+  if (!wsOp)
+    return value;
+
+  unsigned argNo = blockArg.getArgNumber();
+  OperandRange captures = wsOp.getExplicitCaptures();
+  if (argNo >= captures.size())
+    return value;
+  return captures[argNo];
+}
+
+static Value stripMemDescViews(Value value) {
+  while (true) {
+    value = getWarpSpecializeCapture(value);
+    if (auto index = value.getDefiningOp<MemDescIndexOp>()) {
+      value = index.getSrc();
+      continue;
+    }
+    if (auto subslice = value.getDefiningOp<MemDescSubsliceOp>()) {
+      value = subslice.getSrc();
+      continue;
+    }
+    if (auto trans = value.getDefiningOp<MemDescTransOp>()) {
+      value = trans.getSrc();
+      continue;
+    }
+    if (auto reshape = value.getDefiningOp<MemDescReshapeOp>()) {
+      value = reshape.getSrc();
+      continue;
+    }
+    if (auto reinterpret = value.getDefiningOp<MemDescReinterpretOp>()) {
+      value = reinterpret.getSrc();
+      continue;
+    }
+    if (auto view = value.getDefiningOp<triton::tle::MemDescWGMMAViewOp>()) {
+      value = view.getSrc();
+      continue;
+    }
+    return value;
+  }
+}
+
+static bool isBackedByLocalAlloc(Value value, llvm::DenseSet<Value> &active);
+
+static bool isForIterArgBackedByLocalAlloc(BlockArgument arg,
+                                           llvm::DenseSet<Value> &active) {
+  auto forOp = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp());
+  if (!forOp)
+    return false;
+
+  unsigned argNo = arg.getArgNumber();
+  if (argNo == 0)
+    return false;
+  unsigned iterIdx = argNo - 1;
+  if (iterIdx >= forOp.getInitArgs().size())
+    return false;
+
+  if (!isBackedByLocalAlloc(forOp.getInitArgs()[iterIdx], active))
+    return false;
+
+  auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  if (!yield || iterIdx >= yield.getNumOperands())
+    return false;
+
+  return isBackedByLocalAlloc(yield.getOperand(iterIdx), active);
+}
+
+static bool isForResultBackedByLocalAlloc(scf::ForOp forOp, unsigned resultIdx,
+                                          llvm::DenseSet<Value> &active) {
+  if (resultIdx >= forOp.getInitArgs().size())
+    return false;
+  if (!isBackedByLocalAlloc(forOp.getInitArgs()[resultIdx], active))
+    return false;
+
+  auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  if (!yield || resultIdx >= yield.getNumOperands())
+    return false;
+
+  return isBackedByLocalAlloc(yield.getOperand(resultIdx), active);
+}
+
+static bool isIfResultBackedByLocalAlloc(scf::IfOp ifOp, unsigned resultIdx,
+                                         llvm::DenseSet<Value> &active) {
+  if (resultIdx >= ifOp.thenYield().getNumOperands() ||
+      resultIdx >= ifOp.elseYield().getNumOperands())
+    return false;
+
+  return isBackedByLocalAlloc(ifOp.thenYield().getOperand(resultIdx), active) &&
+         isBackedByLocalAlloc(ifOp.elseYield().getOperand(resultIdx), active);
+}
+
+static bool isBackedByLocalAlloc(Value value, llvm::DenseSet<Value> &active) {
+  value = stripMemDescViews(value);
+  if (!active.insert(value).second)
+    return true;
+
+  if (value.getDefiningOp<LocalAllocOp>())
+    return true;
+
+  if (auto select = value.getDefiningOp<arith::SelectOp>())
+    return isBackedByLocalAlloc(select.getTrueValue(), active) &&
+           isBackedByLocalAlloc(select.getFalseValue(), active);
+
+  if (auto arg = dyn_cast<BlockArgument>(value))
+    return isForIterArgBackedByLocalAlloc(arg, active);
+
+  auto result = dyn_cast<OpResult>(value);
+  if (!result)
+    return false;
+
+  if (auto forOp = dyn_cast<scf::ForOp>(result.getOwner()))
+    return isForResultBackedByLocalAlloc(forOp, result.getResultNumber(),
+                                         active);
+  if (auto ifOp = dyn_cast<scf::IfOp>(result.getOwner()))
+    return isIfResultBackedByLocalAlloc(ifOp, result.getResultNumber(), active);
+
+  return false;
+}
+
+static bool isBackedByLocalAlloc(Value value) {
+  llvm::DenseSet<Value> active;
+  return isBackedByLocalAlloc(value, active);
+}
+
+static void
+preserveWarpGroupDotAttrs(triton::nvidia_gpu::WarpGroupDotOp oldDot,
+                          triton::nvidia_gpu::WarpGroupDotOp newDot) {
+  newDot->setAttrs(oldDot->getAttrDictionary());
+}
+
+static SmallVector<int64_t> getPermutedAllocShape(MemDescType srcTy,
+                                                  ArrayRef<int32_t> order) {
+  SmallVector<int64_t> allocShape =
+      applyPermutation(srcTy.getAllocShape().take_back(order.size()), order);
+  allocShape.insert(allocShape.begin(), srcTy.getAllocShape().begin(),
+                    srcTy.getAllocShape().end() - order.size());
+  return allocShape;
+}
+
+static bool supportsWGMMAOperandTranspose(Type elementType) {
+  return elementType.isF16() || elementType.isBF16();
+}
+
+static bool isLegalWGMMAOperandDescriptorLayout(MemDescType type,
+                                                int operandIdx) {
+  auto nvmma = dyn_cast<NVMMASharedEncodingAttr>(type.getEncoding());
+  if (!nvmma || supportsWGMMAOperandTranspose(type.getElementType()))
+    return true;
+
+  if (operandIdx == 0)
+    return !nvmma.getTransposed();
+  if (operandIdx == 1)
+    return nvmma.getTransposed();
+  return false;
+}
+#endif
+
 // Given
 //   dot(convert(trans(src)) #dot_operand) ->
 //   dot(convert(local_load(trans(alloc(src)))))
@@ -75,7 +252,7 @@ public:
       auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
       if (srcMemDescTy && srcMemDescTy.getShape() == srcTy.getShape() &&
           srcMemDescTy.getElementType() == srcTy.getElementType() &&
-          srcMemDesc.getDefiningOp<LocalAllocOp>()) {
+          isBackedByLocalAlloc(srcMemDesc)) {
         auto updatedMemDescTy = MemDescType::get(
             srcMemDescTy.getShape(), srcMemDescTy.getElementType(),
             newInnerCvtEnc, srcMemDescTy.getMemorySpace(),
@@ -137,6 +314,42 @@ public:
     auto allocEncoding = cast<NVMMASharedEncodingAttr>(allocType.getEncoding());
     RankedTensorType srcTy = trans.getSrc().getType();
 
+#ifdef __TLE__
+    auto srcLocalLoad = trans.getSrc().getDefiningOp<LocalLoadOp>();
+    if (srcLocalLoad && !srcLocalLoad.getToken()) {
+      Value srcMemDesc = srcLocalLoad.getSrc();
+      auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
+      if (srcMemDescTy && srcMemDescTy.getShape() == srcTy.getShape() &&
+          srcMemDescTy.getElementType() == srcTy.getElementType() &&
+          isBackedByLocalAlloc(srcMemDesc)) {
+        if (!supportsWGMMAOperandTranspose(srcMemDescTy.getElementType()))
+          return failure();
+        Attribute viewEncoding;
+        Dialect &srcDialect = srcMemDescTy.getEncoding().getDialect();
+        auto srcInferLayoutInterface =
+            cast<DialectInferLayoutInterface>(&srcDialect);
+        if (failed(srcInferLayoutInterface->inferTransOpEncoding(
+                srcMemDescTy.getEncoding(), srcMemDescTy.getShape(),
+                trans.getOrder(), viewEncoding, allocOp.getLoc()))) {
+          return failure();
+        }
+
+        auto viewShape =
+            applyPermutation(srcMemDescTy.getShape(), trans.getOrder());
+        SmallVector<int64_t> viewAllocShape =
+            getPermutedAllocShape(srcMemDescTy, trans.getOrder());
+        auto viewType =
+            MemDescType::get(viewShape, srcMemDescTy.getElementType(),
+                             viewEncoding, srcMemDescTy.getMemorySpace(),
+                             srcMemDescTy.getMutableMemory(), viewAllocShape);
+        rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+        rewriter.replaceOpWithNewOp<triton::tle::MemDescWGMMAViewOp>(
+            allocOp, viewType, srcMemDesc, ArrayRef<int32_t>({1, 0}));
+        return success();
+      }
+    }
+#endif
+
     auto ctx = getContext();
     Dialect &dialect = allocEncoding.getDialect();
     auto inferLayoutInterface = cast<DialectInferLayoutInterface>(&dialect);
@@ -157,6 +370,481 @@ public:
     return success();
   }
 };
+
+#ifdef __TLE__
+// Rewrite
+//
+//   memdesc_trans(local_alloc(local_load(existing_smem)))
+//
+// to
+//
+//   tle.memdesc_wgmma_view(existing_smem)
+//
+// This is the canonicalized form of local_alloc(trans(local_load(...))).
+class FuseCanonicalizedTransMMAV3Plus
+    : public OpRewritePattern<MemDescTransOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(MemDescTransOp transOp,
+                                PatternRewriter &rewriter) const override {
+    auto allocOp = transOp.getSrc().getDefiningOp<LocalAllocOp>();
+    if (!allocOp || !allocOp.getSrc())
+      return failure();
+
+    auto localLoad = allocOp.getSrc().getDefiningOp<LocalLoadOp>();
+    if (!localLoad || localLoad.getToken())
+      return failure();
+
+    auto transTy = cast<MemDescType>(transOp.getType());
+    if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(
+            transTy.getEncoding()))
+      return failure();
+
+    Value srcMemDesc = localLoad.getSrc();
+    auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
+    auto localLoadTy = dyn_cast<RankedTensorType>(localLoad.getType());
+    if (!srcMemDescTy || !localLoadTy)
+      return failure();
+
+    if (srcMemDescTy.getShape() != localLoadTy.getShape() ||
+        srcMemDescTy.getElementType() != localLoadTy.getElementType())
+      return failure();
+    if (!supportsWGMMAOperandTranspose(srcMemDescTy.getElementType()))
+      return failure();
+    if (!isBackedByLocalAlloc(srcMemDesc))
+      return failure();
+
+    // The descriptor view models `trans(local_load(srcMemDesc))` directly over
+    // the original slot.  Do not inherit the canonical staging trans result
+    // encoding: AccelerateMatmul may represent the staging path as a
+    // transposed local_alloc followed by a memdesc_trans back to the logical
+    // dot shape, while the WGMMA descriptor must keep the source-derived
+    // transposed shared encoding.
+    Attribute viewEncoding;
+    Dialect &srcDialect = srcMemDescTy.getEncoding().getDialect();
+    auto srcInferLayoutInterface =
+        cast<DialectInferLayoutInterface>(&srcDialect);
+    if (failed(srcInferLayoutInterface->inferTransOpEncoding(
+            srcMemDescTy.getEncoding(), srcMemDescTy.getShape(),
+            transOp.getOrder(), viewEncoding, transOp.getLoc())))
+      return failure();
+
+    if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(viewEncoding))
+      return failure();
+
+    auto viewShape =
+        applyPermutation(srcMemDescTy.getShape(), transOp.getOrder());
+    auto viewTy = MemDescType::get(
+        viewShape, srcMemDescTy.getElementType(), viewEncoding,
+        srcMemDescTy.getMemorySpace(), srcMemDescTy.getMutableMemory(),
+        getPermutedAllocShape(srcMemDescTy, transOp.getOrder()));
+    rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+    rewriter.setInsertionPoint(transOp);
+    auto view = triton::tle::MemDescWGMMAViewOp::create(
+        rewriter, transOp.getLoc(), viewTy, srcMemDesc, transOp.getOrder());
+    (void)view;
+    mlir::triton::replaceUsesAndPropagateType(rewriter, transOp, view);
+    if (transOp->use_empty())
+      rewriter.eraseOp(transOp);
+    if (allocOp->use_empty())
+      rewriter.eraseOp(allocOp);
+    if (localLoad->use_empty())
+      rewriter.eraseOp(localLoad);
+    return success();
+  }
+};
+
+// Rewrite
+//
+//   warp_group_dot(local_alloc(trans(local_load(existing_smem))), b, acc)
+//
+// to
+//
+//   warp_group_dot(tle.memdesc_wgmma_view(existing_smem), b, acc)
+//
+// and propagate the view through any wait operands. This catches pipelined
+// WGMMA A/B operands whose staging alloc has more than one use.
+class ReuseTransposedLocalLoadAllocAsWGMMAOperand
+    : public OpRewritePattern<LocalAllocOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LocalAllocOp allocOp,
+                                PatternRewriter &rewriter) const override {
+    if (!allocOp.getSrc())
+      return failure();
+
+    auto trans = allocOp.getSrc().getDefiningOp<TransOp>();
+    if (!trans || trans.getOrder() != ArrayRef<int32_t>({1, 0}))
+      return failure();
+
+    auto localLoad = trans.getSrc().getDefiningOp<LocalLoadOp>();
+    if (!localLoad || localLoad.getToken())
+      return failure();
+
+    Value srcMemDesc = localLoad.getSrc();
+    if (!isBackedByLocalAlloc(srcMemDesc))
+      return failure();
+
+    auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
+    auto localLoadTy = dyn_cast<RankedTensorType>(localLoad.getType());
+    auto allocTy = dyn_cast<MemDescType>(allocOp.getType());
+    if (!srcMemDescTy || !localLoadTy || !allocTy)
+      return failure();
+
+    if (srcMemDescTy.getShape() != localLoadTy.getShape() ||
+        srcMemDescTy.getElementType() != localLoadTy.getElementType())
+      return failure();
+    if (!supportsWGMMAOperandTranspose(srcMemDescTy.getElementType()))
+      return failure();
+
+    auto transposedShape =
+        applyPermutation(srcMemDescTy.getShape(), trans.getOrder());
+    if (allocTy.getShape() != ArrayRef<int64_t>(transposedShape) ||
+        allocTy.getElementType() != srcMemDescTy.getElementType() ||
+        allocTy.getMemorySpace() != srcMemDescTy.getMemorySpace())
+      return failure();
+
+    if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(
+            allocTy.getEncoding()))
+      return failure();
+
+    if (!llvm::all_of(allocOp->getUsers(), [](Operation *user) {
+          return isa<triton::nvidia_gpu::WarpGroupDotOp,
+                     triton::nvidia_gpu::WarpGroupDotWaitOp>(user);
+        }))
+      return failure();
+
+    Attribute viewEncoding;
+    Dialect &srcDialect = srcMemDescTy.getEncoding().getDialect();
+    auto srcInferLayoutInterface =
+        cast<DialectInferLayoutInterface>(&srcDialect);
+    if (failed(srcInferLayoutInterface->inferTransOpEncoding(
+            srcMemDescTy.getEncoding(), srcMemDescTy.getShape(),
+            trans.getOrder(), viewEncoding, allocOp.getLoc())))
+      return failure();
+
+    if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(viewEncoding))
+      return failure();
+
+    rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+    rewriter.setInsertionPoint(allocOp);
+    auto viewTy = MemDescType::get(
+        transposedShape, srcMemDescTy.getElementType(), viewEncoding,
+        srcMemDescTy.getMemorySpace(), srcMemDescTy.getMutableMemory(),
+        getPermutedAllocShape(srcMemDescTy, trans.getOrder()));
+    auto view = triton::tle::MemDescWGMMAViewOp::create(
+        rewriter, allocOp.getLoc(), viewTy, srcMemDesc, trans.getOrder());
+    mlir::triton::replaceUsesAndPropagateType(rewriter, allocOp, view);
+
+    if (allocOp->use_empty())
+      rewriter.eraseOp(allocOp);
+    if (trans->use_empty())
+      rewriter.eraseOp(trans);
+    if (localLoad->use_empty())
+      rewriter.eraseOp(localLoad);
+    return success();
+  }
+};
+
+// Rewrite
+//
+//   warp_group_dot(convert_layout(trans(local_load(existing_smem))), b, acc)
+//
+// to
+//
+//   warp_group_dot(tle.memdesc_wgmma_view(existing_smem), b, acc)
+//
+// before the transposed tensor is materialized into a WGMMA staging allocation.
+class ReuseTransposedLocalLoadConvertAsWGMMAA
+    : public OpRewritePattern<triton::nvidia_gpu::WarpGroupDotOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::nvidia_gpu::WarpGroupDotOp dotOp,
+                                PatternRewriter &rewriter) const override {
+    auto cvt = dotOp.getA().getDefiningOp<ConvertLayoutOp>();
+    if (!cvt)
+      return failure();
+
+    auto trans = cvt.getSrc().getDefiningOp<TransOp>();
+    if (!trans || trans.getOrder() != ArrayRef<int32_t>({1, 0}))
+      return failure();
+
+    auto localLoad = trans.getSrc().getDefiningOp<LocalLoadOp>();
+    if (!localLoad || localLoad.getToken())
+      return failure();
+
+    Value srcMemDesc = localLoad.getSrc();
+    if (!isBackedByLocalAlloc(srcMemDesc))
+      return failure();
+
+    auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
+    auto localLoadTy = dyn_cast<RankedTensorType>(localLoad.getType());
+    auto cvtTy = dyn_cast<RankedTensorType>(cvt.getType());
+    if (!srcMemDescTy || !localLoadTy || !cvtTy)
+      return failure();
+
+    if (srcMemDescTy.getShape() != localLoadTy.getShape() ||
+        srcMemDescTy.getElementType() != localLoadTy.getElementType())
+      return failure();
+    if (!supportsWGMMAOperandTranspose(srcMemDescTy.getElementType()))
+      return failure();
+
+    auto transposedShape =
+        applyPermutation(srcMemDescTy.getShape(), trans.getOrder());
+    if (cvtTy.getShape() != ArrayRef<int64_t>(transposedShape) ||
+        cvtTy.getElementType() != srcMemDescTy.getElementType())
+      return failure();
+
+    Attribute viewEncoding;
+    Dialect &srcDialect = srcMemDescTy.getEncoding().getDialect();
+    auto srcInferLayoutInterface =
+        cast<DialectInferLayoutInterface>(&srcDialect);
+    if (failed(srcInferLayoutInterface->inferTransOpEncoding(
+            srcMemDescTy.getEncoding(), srcMemDescTy.getShape(),
+            trans.getOrder(), viewEncoding, dotOp.getLoc())))
+      return failure();
+
+    if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(viewEncoding))
+      return failure();
+
+    rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+    rewriter.setInsertionPoint(dotOp);
+    auto viewTy = MemDescType::get(
+        transposedShape, srcMemDescTy.getElementType(), viewEncoding,
+        srcMemDescTy.getMemorySpace(), srcMemDescTy.getMutableMemory(),
+        getPermutedAllocShape(srcMemDescTy, trans.getOrder()));
+    auto view = triton::tle::MemDescWGMMAViewOp::create(
+        rewriter, dotOp.getLoc(), viewTy, srcMemDesc, trans.getOrder());
+    auto newDot = triton::nvidia_gpu::WarpGroupDotOp::create(
+        rewriter, dotOp.getLoc(), dotOp.getD().getType(), view, dotOp.getB(),
+        dotOp.getC(), dotOp.getUseC(), dotOp.getInputPrecision(),
+        dotOp.getMaxNumImpreciseAcc(), dotOp.getIsAsync());
+    preserveWarpGroupDotAttrs(dotOp, newDot);
+    rewriter.replaceOp(dotOp, newDot.getD());
+
+    if (cvt->use_empty())
+      rewriter.eraseOp(cvt);
+    if (trans->use_empty())
+      rewriter.eraseOp(trans);
+    if (localLoad->use_empty())
+      rewriter.eraseOp(localLoad);
+    return success();
+  }
+};
+
+// Rewrite
+//
+//   warp_group_dot(
+//     local_load(local_alloc(trans(local_load(existing_smem)))),
+//     b,
+//     acc)
+//
+// to
+//
+//   warp_group_dot(tle.memdesc_wgmma_view(existing_smem), b, acc)
+//
+// AccelerateMatmul may materialize transposed WGMMA A through a shared staging
+// alloc plus a register local_load. WGMMA A accepts shared descriptors, so keep
+// the original slot and expose only a descriptor view.
+class ReuseTransposedLocalLoadAllocAsWGMMAA
+    : public OpRewritePattern<triton::nvidia_gpu::WarpGroupDotOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::nvidia_gpu::WarpGroupDotOp dotOp,
+                                PatternRewriter &rewriter) const override {
+    auto localLoad = dotOp.getA().getDefiningOp<LocalLoadOp>();
+    if (!localLoad || localLoad.getToken())
+      return failure();
+
+    auto allocOp = localLoad.getSrc().getDefiningOp<LocalAllocOp>();
+    if (!allocOp || !allocOp.getSrc())
+      return failure();
+
+    auto trans = allocOp.getSrc().getDefiningOp<TransOp>();
+    if (!trans || trans.getOrder() != ArrayRef<int32_t>({1, 0}))
+      return failure();
+
+    auto srcLocalLoad = trans.getSrc().getDefiningOp<LocalLoadOp>();
+    if (!srcLocalLoad || srcLocalLoad.getToken())
+      return failure();
+
+    Value srcMemDesc = srcLocalLoad.getSrc();
+    if (!isBackedByLocalAlloc(srcMemDesc))
+      return failure();
+
+    auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
+    auto srcLocalLoadTy = dyn_cast<RankedTensorType>(srcLocalLoad.getType());
+    auto allocTy = dyn_cast<MemDescType>(allocOp.getType());
+    auto localLoadTy = dyn_cast<RankedTensorType>(localLoad.getType());
+    if (!srcMemDescTy || !srcLocalLoadTy || !allocTy || !localLoadTy)
+      return failure();
+
+    if (srcMemDescTy.getShape() != srcLocalLoadTy.getShape() ||
+        srcMemDescTy.getElementType() != srcLocalLoadTy.getElementType())
+      return failure();
+    if (!supportsWGMMAOperandTranspose(srcMemDescTy.getElementType()))
+      return failure();
+
+    auto transposedShape =
+        applyPermutation(srcMemDescTy.getShape(), trans.getOrder());
+    if (allocTy.getShape() != ArrayRef<int64_t>(transposedShape) ||
+        localLoadTy.getShape() != ArrayRef<int64_t>(transposedShape) ||
+        allocTy.getElementType() != srcMemDescTy.getElementType() ||
+        localLoadTy.getElementType() != srcMemDescTy.getElementType() ||
+        allocTy.getMemorySpace() != srcMemDescTy.getMemorySpace())
+      return failure();
+
+    Attribute viewEncoding;
+    Dialect &srcDialect = srcMemDescTy.getEncoding().getDialect();
+    auto srcInferLayoutInterface =
+        cast<DialectInferLayoutInterface>(&srcDialect);
+    if (failed(srcInferLayoutInterface->inferTransOpEncoding(
+            srcMemDescTy.getEncoding(), srcMemDescTy.getShape(),
+            trans.getOrder(), viewEncoding, allocOp.getLoc())))
+      return failure();
+
+    if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(viewEncoding))
+      return failure();
+
+    rewriter.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+    rewriter.setInsertionPoint(dotOp);
+    auto viewTy = MemDescType::get(
+        transposedShape, srcMemDescTy.getElementType(), viewEncoding,
+        srcMemDescTy.getMemorySpace(), srcMemDescTy.getMutableMemory(),
+        getPermutedAllocShape(srcMemDescTy, trans.getOrder()));
+    auto view = triton::tle::MemDescWGMMAViewOp::create(
+        rewriter, allocOp.getLoc(), viewTy, srcMemDesc, trans.getOrder());
+    auto newDot = triton::nvidia_gpu::WarpGroupDotOp::create(
+        rewriter, dotOp.getLoc(), dotOp.getD().getType(), view, dotOp.getB(),
+        dotOp.getC(), dotOp.getUseC(), dotOp.getInputPrecision(),
+        dotOp.getMaxNumImpreciseAcc(), dotOp.getIsAsync());
+    preserveWarpGroupDotAttrs(dotOp, newDot);
+    rewriter.replaceOp(dotOp, newDot.getD());
+
+    if (localLoad->use_empty())
+      rewriter.eraseOp(localLoad);
+    if (allocOp->use_empty())
+      rewriter.eraseOp(allocOp);
+    if (trans->use_empty())
+      rewriter.eraseOp(trans);
+    if (srcLocalLoad->use_empty())
+      rewriter.eraseOp(srcLocalLoad);
+    return success();
+  }
+};
+
+// Rewrite
+//
+//   warp_group_dot(local_load(existing_smem), b, acc)
+//
+// to
+//
+//   warp_group_dot(existing_smem, b, acc)
+//
+// WGMMA supports A in shared memory as well as registers. This is a
+// descriptor-only reuse for TLE kernels that already staged the full A tile in
+// shared memory.
+class ReuseLocalLoadAsWGMMAA
+    : public OpRewritePattern<triton::nvidia_gpu::WarpGroupDotOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::nvidia_gpu::WarpGroupDotOp dotOp,
+                                PatternRewriter &rewriter) const override {
+    auto localLoad = dotOp.getA().getDefiningOp<LocalLoadOp>();
+    if (!localLoad || localLoad.getToken())
+      return failure();
+
+    Value srcMemDesc = localLoad.getSrc();
+    if (!isBackedByLocalAlloc(srcMemDesc))
+      return failure();
+
+    auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
+    auto localLoadTy = dyn_cast<RankedTensorType>(localLoad.getType());
+    if (!srcMemDescTy || !localLoadTy)
+      return failure();
+
+    if (srcMemDescTy.getShape() != localLoadTy.getShape() ||
+        srcMemDescTy.getElementType() != localLoadTy.getElementType())
+      return failure();
+
+    if (!isa<NVMMASharedEncodingAttr, SharedLinearEncodingAttr>(
+            srcMemDescTy.getEncoding()))
+      return failure();
+    if (!isLegalWGMMAOperandDescriptorLayout(srcMemDescTy, /*operandIdx=*/0))
+      return failure();
+
+    auto newDot = triton::nvidia_gpu::WarpGroupDotOp::create(
+        rewriter, dotOp.getLoc(), dotOp.getD().getType(), srcMemDesc,
+        dotOp.getB(), dotOp.getC(), dotOp.getUseC(), dotOp.getInputPrecision(),
+        dotOp.getMaxNumImpreciseAcc(), dotOp.getIsAsync());
+    preserveWarpGroupDotAttrs(dotOp, newDot);
+    rewriter.replaceOp(dotOp, newDot.getD());
+    return success();
+  }
+};
+
+// Rewrite
+//
+//   warp_group_dot(a, local_alloc(local_load(existing_smem)), acc)
+//
+// to
+//
+//   warp_group_dot(a, existing_smem, acc)
+//
+// This catches WGMMA B operands that were materialized before pipe lowering
+// could expose the underlying local_alloc-backed pipe slot.
+class ReuseLocalLoadAllocAsWGMMAB
+    : public OpRewritePattern<triton::nvidia_gpu::WarpGroupDotOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::nvidia_gpu::WarpGroupDotOp dotOp,
+                                PatternRewriter &rewriter) const override {
+    auto allocOp = dotOp.getB().getDefiningOp<LocalAllocOp>();
+    if (!allocOp || !allocOp.getSrc())
+      return failure();
+
+    auto localLoad = allocOp.getSrc().getDefiningOp<LocalLoadOp>();
+    if (!localLoad || localLoad.getToken())
+      return failure();
+
+    Value srcMemDesc = localLoad.getSrc();
+    if (!isBackedByLocalAlloc(srcMemDesc))
+      return failure();
+
+    auto srcMemDescTy = dyn_cast<MemDescType>(srcMemDesc.getType());
+    auto allocTy = dyn_cast<MemDescType>(allocOp.getType());
+    if (!srcMemDescTy || !allocTy)
+      return failure();
+
+    if (srcMemDescTy.getShape() != allocTy.getShape() ||
+        srcMemDescTy.getElementType() != allocTy.getElementType() ||
+        srcMemDescTy.getMemorySpace() != allocTy.getMemorySpace() ||
+        srcMemDescTy.getEncoding() != allocTy.getEncoding())
+      return failure();
+    if (!isLegalWGMMAOperandDescriptorLayout(srcMemDescTy, /*operandIdx=*/1))
+      return failure();
+
+    if (!llvm::all_of(allocOp->getUsers(), [](Operation *user) {
+          return isa<triton::nvidia_gpu::WarpGroupDotOp,
+                     triton::nvidia_gpu::WarpGroupDotWaitOp>(user);
+        }))
+      return failure();
+
+    mlir::triton::replaceUsesAndPropagateType(rewriter, allocOp, srcMemDesc);
+    if (allocOp->use_empty())
+      rewriter.eraseOp(allocOp);
+    if (localLoad->use_empty())
+      rewriter.eraseOp(localLoad);
+    return success();
+  }
+};
+#endif
 
 // Rewrite
 //
@@ -355,6 +1043,12 @@ public:
   using impl::TritonGPUOptimizeDotOperandsBase<
       TritonGPUOptimizeDotOperandsPass>::TritonGPUOptimizeDotOperandsBase;
 
+#ifdef __TLE__
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<triton::tle::TleDialect>();
+  }
+#endif
+
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
@@ -367,6 +1061,13 @@ public:
     mlir::RewritePatternSet patterns(context);
     patterns.add<SwizzleShmemConvert>(context);
     patterns.add<FuseTransMMAV3Plus, ReshapeMemDesc>(context);
+#ifdef __TLE__
+    patterns.add<FuseCanonicalizedTransMMAV3Plus,
+                 ReuseTransposedLocalLoadAllocAsWGMMAOperand,
+                 ReuseTransposedLocalLoadConvertAsWGMMAA,
+                 ReuseTransposedLocalLoadAllocAsWGMMAA, ReuseLocalLoadAsWGMMAA,
+                 ReuseLocalLoadAllocAsWGMMAB>(context);
+#endif
     patterns.add<UseShmemForScales>(context);
     ConvertLayoutOp::getCanonicalizationPatterns(patterns, context);
     if (failed(applyPatternsGreedily(m, std::move(patterns))))

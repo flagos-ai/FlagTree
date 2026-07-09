@@ -5,15 +5,25 @@ add_triton_library(TritonTLETransforms
   TleInsertLocalPointerBarriers.cpp
   TleOptimizeLocalPointerLoads.cpp
   TleOptimizeLocalPointerStores.cpp
+  TleOptimizeLocalPointerAsyncStores.cpp
+  TlePromoteLocalStoreStaging.cpp
+  TleTileStylePipelineSchedule.cpp
+  TleMaterializeTileStylePipeline.cpp
+  TleDowngradeInvalidAsyncCopy.cpp
   TleOptimizeExclusiveCumsumLayouts.cpp
   TleLowerExclusiveCumsum.cpp
+  TleLowerWGMMA.cpp
   TleLowerAsyncLoad.cpp
+  TleLowerPipeToNvws.cpp
+  TleLowerBarriers.cpp
+  TleAllocateNamedBarriers.cpp
   TleTileToLLVMUtils.cpp
   ExtractTileToLLVM.cpp
   InsertTileToLLVM.cpp
   TleLowerExtractTile.cpp
   TleLowerInsertTile.cpp
   TleLowerTmaCopy.cpp
+  TleScheduleTmaStoreSync.cpp
   ConvertArgToMemDesc.cpp
   RemoveRedundantCopy.cpp
   DSLRegionInline.cpp
@@ -23,8 +33,11 @@ add_triton_library(TritonTLETransforms
   TritonTLETransformsIncGen
 
   LINK_LIBS PUBLIC
+  TritonTLEAnalysis
   TritonGPUIR
   TritonAnalysis
+  TritonIR
+  NVWSIR
 )
 
 target_include_directories(TritonTLETransforms PUBLIC

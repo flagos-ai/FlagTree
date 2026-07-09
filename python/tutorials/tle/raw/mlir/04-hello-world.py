@@ -1,13 +1,17 @@
+import os
+import re
+import subprocess
+import sys
+
+import torch
 import triton
+import triton.experimental.tle.language.raw as tle_raw
+from mlir import ir
+from mlir.dialects import nvvm
 from triton.experimental.tle.raw import dialect
 from triton.experimental.tle.raw.mlir import vprintf
-import triton.experimental.tle.language.raw as tle_raw
-import torch
 
-from mlir.dialects import nvvm
-from mlir import ir
-
-DEVICE = triton.runtime.driver.active.get_active_torch_device()
+HELLO_RE = re.compile(r"Hello from bidx \d+, tidx \d+")
 
 
 @dialect(name="mlir")
@@ -27,5 +31,27 @@ def hello():
     torch.cuda.synchronize()
 
 
+def _self_check():
+    env = os.environ.copy()
+    env["TLE_HELLO_WORLD_CHILD"] = "1"
+    result = subprocess.run([sys.executable, os.path.abspath(__file__)], capture_output=True, text=True, env=env)
+
+    sys.stderr.write(result.stderr)
+    if result.returncode or not HELLO_RE.findall(result.stdout):
+        print("❌ self-check failed")
+        return 1
+
+    print("✅ Hello world test passed!")
+    return 0
+
+
+def main():
+    if os.environ.get("TLE_HELLO_WORLD_CHILD") == "1":
+        hello()
+        return 0
+
+    return _self_check()
+
+
 if __name__ == "__main__":
-    hello()
+    sys.exit(main())

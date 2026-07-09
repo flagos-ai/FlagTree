@@ -1,0 +1,77 @@
+# syntax=docker/dockerfile:1
+# Multi-stage build: wheel (CI) or source (default/development)
+#
+# Usage:
+#   CI (wheel):   docker build --target wheel ...
+#   Dev (source): docker build --target source ...
+#   Default:      docker build ...  (uses source)
+
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.08-py3
+ARG TRITON_SRC_DIR=/workspace/triton-src
+
+####################
+# Stage 1: Base (shared)
+####################
+FROM ${BASE_IMAGE} AS base
+
+ARG TRITON_SRC_DIR
+# Uninstall preinstalled triton variants to avoid conflicts
+RUN pip uninstall -y triton triton-nightly pytorch-triton || true
+
+# Install gcc-13/g++-13 (used by CC/CXX during build) and ccache, then clean cache
+# Also install git + git-lfs for repos that rely on LFS objects.
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        software-properties-common ca-certificates gnupg curl git && \
+    curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | bash && \
+    add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        gcc-13 g++-13 ccache git-lfs && \
+    git lfs install --system && \
+    rm -rf /var/lib/apt/lists/*
+
+# Configure ccache for faster rebuilds
+ENV CCACHE_DIR=/ccache
+ENV PATH=/usr/lib/ccache:$PATH
+
+# Bring in partial CUDA 13.1 deps directory (includes tileiras) and expose its bin
+COPY cuda_dep /opt/cuda_dep
+ENV CUDA_HOME=/opt/cuda_dep/
+ENV TRITON_TILEIRAS_PATH=/opt/cuda_dep/bin
+# Install build dependencies BEFORE copying source for better cache efficiency
+# These match pyproject.toml [build-system] requires
+RUN pip install "setuptools>=40.8.0" "cmake>=3.20,<4.0" "ninja>=1.11.1" "pybind11>=2.13.1"
+
+# Copy source (this layer changes frequently, so keep it late)
+COPY src ${TRITON_SRC_DIR}
+
+WORKDIR ${TRITON_SRC_DIR}
+# Remove host build cache to prevent CMake source/build dir mismatch
+RUN rm -rf ${TRITON_SRC_DIR}/build || true
+
+####################
+# Stage 2: Wheel install (CI – Python 3.12 x86_64)
+####################
+FROM base AS wheel
+
+ARG TRITON_SRC_DIR
+# Copy and install pre-built wheel (e.g. nvtriton-*-cp312-cp312-linux_x86_64.whl)
+COPY wheel/*.whl /tmp/
+RUN pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
+
+# Copy source so /workspace/triton-src exists for make test-* and test discovery
+COPY src ${TRITON_SRC_DIR}
+
+####################
+# Stage 3: Source install (default for docker build) – just the install step
+####################
+FROM base AS source
+
+# Use --no-build-isolation so cmake path in build.ninja points to installed cmake
+# (not temporary pip-build-env path that gets cleaned up)
+# Use editable install so:
+# 1. Python uses source directory directly (tests can import each other)
+# 2. Compiled .so files are placed in source directory
+# 3. No version mismatch between installed and source triton
+RUN CC="gcc-13" CXX="g++-13" pip install -e . --no-build-isolation

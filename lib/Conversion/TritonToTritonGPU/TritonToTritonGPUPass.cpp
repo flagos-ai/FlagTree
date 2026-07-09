@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Conversion_TritonToTritonGPU_TritonToTritonGPUPass
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
@@ -40,8 +46,13 @@ template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
   matchAndRewrite(Op op, typename Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Type> retTypes;
+#ifdef __TLE__
+    if (failed(
+            this->getTypeConverter()->convertTypes(op->getResults(), retTypes)))
+#else
     if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(),
                                                       retTypes)))
+#endif
       return failure();
     rewriter.replaceOpWithNewOp<Op>(op, retTypes, adaptor.getOperands(),
                                     op->getAttrs());
@@ -57,7 +68,12 @@ public:
   LogicalResult
   matchAndRewrite(arith::ConstantOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Type retType = getTypeConverter()->convertType(op.getType());
+    Type retType =
+#ifdef __TLE__
+        getTypeConverter()->convertType(op.getResult());
+#else
+        getTypeConverter()->convertType(op.getType());
+#endif
     auto retShapedType = cast<ShapedType>(retType);
     auto value = dyn_cast<DenseElementsAttr>(adaptor.getValue());
     if (isa<RankedTensorType>(retShapedType)) {
@@ -296,7 +312,11 @@ struct TritonCatPattern : public OpConversionPattern<triton::CatOp> {
     // For now, this behaves like generic, but this
     // will evolve when we add support for `can_reorder=False`.
     auto retType = cast<RankedTensorType>(
+#ifdef __TLE__
+        this->getTypeConverter()->convertType(op.getResult()));
+#else
         this->getTypeConverter()->convertType(op.getType()));
+#endif
     auto retEncoding =
         cast<triton::gpu::BlockedEncodingAttr>(retType.getEncoding());
     auto lhsType = adaptor.getLhs().getType();
@@ -488,7 +508,11 @@ struct TritonMapElementwisePattern
                   ConversionPatternRewriter &rewriter) const override {
     auto converter = getTypeConverter();
     SmallVector<Type> resultTys;
+#ifdef __TLE__
+    auto err = converter->convertTypes(op.getResults(), resultTys);
+#else
     auto err = converter->convertTypes(op.getResults().getType(), resultTys);
+#endif
     if (failed(err)) {
       return err;
     }
@@ -647,8 +671,13 @@ struct SCFForPattern : public OpConversionPattern<scf::ForOp> {
     newOp->setOperands(adaptor.getOperands());
     // Update the result types to the new converted types.
     SmallVector<Type> newResultTypes;
+#ifdef __TLE__
+    for (Value result : op.getResults()) {
+      Type newType = typeConverter->convertType(result);
+#else
     for (Type type : op.getResultTypes()) {
       Type newType = typeConverter->convertType(type);
+#endif
       if (!newType)
         return rewriter.notifyMatchFailure(op, "not a 1:1 type conversion");
       newResultTypes.push_back(newType);
@@ -681,8 +710,13 @@ public:
     // wrong type on the SSA values! These edge cases are also why we cannot
     // safely use the TypeConverter::convertTypes helper here.
     SmallVector<Type> newResultTypes;
+#ifdef __TLE__
+    for (Value result : op.getResults()) {
+      Type newType = typeConverter->convertType(result);
+#else
     for (auto type : op.getResultTypes()) {
       Type newType = typeConverter->convertType(type);
+#endif
       if (!newType)
         return rewriter.notifyMatchFailure(op, "not a 1:1 type conversion");
       newResultTypes.push_back(newType);
@@ -718,7 +752,11 @@ public:
     auto *converter = getTypeConverter();
     assert(converter);
     SmallVector<Type> newResultTypes;
+#ifdef __TLE__
+    if (failed(converter->convertTypes(op.getResults(), newResultTypes)))
+#else
     if (failed(converter->convertTypes(op.getResultTypes(), newResultTypes)))
+#endif
       return failure();
 
     auto newOp = scf::WhileOp::create(rewriter, op.getLoc(), newResultTypes,
@@ -819,7 +857,11 @@ public:
     }
     newOp->setOperands(adaptor.getOperands());
     for (OpResult result : newOp->getResults()) {
+#ifdef __TLE__
+      result.setType(getTypeConverter()->convertType(result));
+#else
       result.setType(getTypeConverter()->convertType(result.getType()));
+#endif
     }
 
     rewriter.replaceOp(op, newOp->getResults());
@@ -907,6 +949,7 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
            TleInsertTileOpPattern, GenericOpPattern<tle::LocalPointersOp>,
            GenericOpPattern<tle::RemotePointersOp>,
            GenericOpPattern<tle::ExclusiveCumsumOp>,
+           GenericOpPattern<tle::WGMMAOp>, GenericOpPattern<tle::WGMMAWaitOp>,
            GenericOpPattern<tle::DistributedBarrierOp>,
            GenericOpPattern<tle::YieldOp>,
            GenericOpPattern<tle::ExtractAllocatedPtrOp>,
@@ -966,3 +1009,5 @@ public:
 };
 
 } // namespace
+
+#endif

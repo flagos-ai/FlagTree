@@ -1,0 +1,155 @@
+name: flagcicd-Hopper-Build-And-Test
+
+on:
+  schedule:
+    - cron: '0 21 * * *'
+  pull_request:
+    branches: [ "triton_v3.4.x", "triton_v3.5.x", "triton_v3.6.x"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flagcicd-hopper-build-and-test:
+    runs-on: [flagcicd-flagtree-nvidia3.6]
+    container:
+      image: harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
+      options:
+        --uts=host
+        --ipc=host
+        --privileged
+        --ulimit stack=67108864
+        --ulimit memlock=-1
+        --security-opt seccomp=unconfined
+        --gpus=all
+      volumes:
+        - /mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/:/mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/
+
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Set safe directory
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third_party/tileir/third_party/cuda-tile"
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: nvidia
+
+      - name: Detect Target Branch
+        shell: bash
+        run: |
+          set -x
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET_BRANCH="${{ github.base_ref }}"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+          fi
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$TARGET_BRANCH"
+
+
+      - name: FlagTree Build on NVidia (triton_v3.6.x branch)
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.6.x' }}
+        shell: bash
+        run: |
+          set -x
+          export TRITON_HOME="/root/"
+          pip uninstall -y triton
+          env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+          unset TRITON_HOME
+
+      - name: FlagGems Accuracy Test on NVidia
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        shell: bash
+        run: |
+          # set -x
+          export TRITON_CACHE_DIR="/mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/nvidia/.triton/cache"
+          FLAGGEMS_BASE="/mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/nvidia"
+          FLAGGEMS_DIR="${FLAGGEMS_BASE}/FlagGems"
+          CONFIG_DIR="${FLAGGEMS_BASE}/config"
+          SCRIPTS_DIR="${FLAGGEMS_BASE}/../scripts"
+          IGNORE_LIST="${CONFIG_DIR}/ignore_list.txt"
+          OPERATORS_YAML="${FLAGGEMS_DIR}/conf/operators.yaml"
+
+          # echo "${FLAGGEMS_BASE}"   "${CONFIG_DIR}"   "${SCRIPTS_DIR}"
+
+          if [ ! -d "$FLAGGEMS_DIR" ]; then
+            echo "Error: FlagGems directory not found at $FLAGGEMS_DIR"
+            echo "Please clone FlagGems repository to the shared storage first."
+            exit 1
+          fi
+
+          # Check if the file "operators.yaml" exists
+          if [ ! -f "$OPERATORS_YAML" ]; then
+            echo "Error: operators.yaml not found at $OPERATORS_YAML"
+            exit 1
+          fi
+
+          # Install FlagGems dependencies
+          cd "$FLAGGEMS_DIR"
+          # pip install -r requirements/requirements_nvidia.txt
+          # pip list
+          pip install -v -e .  --no-build-isolation --no-deps
+          if [ $? -ne 0 ]; then
+              echo "Error: Failed to install FlagGems"
+              exit 1
+          fi
+
+          # Generate pytest marks parameters
+          MARKS=$(python3  "${SCRIPTS_DIR}/parse_operators.py"  "$OPERATORS_YAML")
+          if [ -z "$MARKS" ]; then
+            echo "Error: Failed to generate pytest marks"
+            exit 1
+          fi
+
+          # Print the first 200 characters of the MARKS string
+          # echo "Generated pytest marks: ${MARKS:0:200}..."
+
+          cd tests/
+          # pass the file path of the ignore list to the Python plugin
+          export FLAGGEMS_IGNORE_LIST_PATH="$IGNORE_LIST"
+
+          # Add the "scripts" directory to the Python search path
+          export PYTHONPATH="${SCRIPTS_DIR}:$PYTHONPATH"
+
+          # Build the Pytest command and use the -p parameter to load the dynamic_ignore plugin
+          PYTEST_CMD="python3 -m pytest -m \"$MARKS\" --ref=cpu --quick -p dynamic_ignore"
+
+          echo "=========================================="
+          echo "Running FlagGems accuracy tests"
+          echo "Quick mode: enabled"
+          echo "Reference device: cpu"
+          echo "=========================================="
+
+
+          set +e
+          bash -c "$PYTEST_CMD"
+          EXIT_CODE=$?
+          set -e
+
+          if [ $EXIT_CODE -eq 0 ]; then
+              echo "All tests passed"
+              echo "FlagGems accuracy tests completed successfully"
+              exit 0
+          elif [ $EXIT_CODE -eq 5 ]; then
+              # It might be a configuration error. An error should have been reported.
+              echo "Error: No tests were collected. Configuration issue suspected."
+              exit 1
+          elif [ $EXIT_CODE -eq 1 ]; then
+              echo "Warning: Some tests failed, tests exited with code $EXIT_CODE"
+              echo "FlagGems accuracy tests completed successfully (failures allowed)"
+              exit 0  # Test failure does not block CI
+          else
+              echo "Error: Tests exited with code $EXIT_CODE"
+              exit 1
+          fi

@@ -1,6 +1,9 @@
 #include "PatternTritonGPUOpToLLVM.h"
 #include "Utility.h"
 
+#ifdef __TLE__
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#endif
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 
 using namespace mlir;
@@ -156,6 +159,21 @@ struct WarpGroupDotWaitOpConversion
     return success();
   }
 };
+
+#ifdef __TLE__
+struct WarpGroupDotCommitOpConversion
+    : public ConvertOpToLLVMPattern<triton::nvidia_gpu::WarpGroupDotCommitOp> {
+  using ConvertOpToLLVMPattern<
+      triton::nvidia_gpu::WarpGroupDotCommitOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::nvidia_gpu::WarpGroupDotCommitOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<NVVM::WgmmaGroupSyncAlignedOp>(op);
+    return success();
+  }
+};
+#endif
 } // namespace
 
 void mlir::triton::NVIDIA::populateDotOpToLLVMPatterns(
@@ -164,6 +182,9 @@ void mlir::triton::NVIDIA::populateDotOpToLLVMPatterns(
   patterns.add<DotOpConversion>(typeConverter, computeCapability, benefit);
   patterns.add<WarpGroupDotOpConversion>(typeConverter, benefit);
   patterns.add<WarpGroupDotWaitOpConversion>(typeConverter, benefit);
+#ifdef __TLE__
+  patterns.add<WarpGroupDotCommitOpConversion>(typeConverter, benefit);
+#endif
   patterns.add<ScaledDotOpConversion>(typeConverter, computeCapability,
                                       benefit);
 }

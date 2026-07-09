@@ -16,20 +16,38 @@ if(FLAGTREE_BACKEND)
     add_definitions(-DFLAGTREE_BACKEND=\"${FLAGTREE_BACKEND}\")
 endif()
 
+set(FLAGCX_ENABLED OFF)
+set(FLAGCX_SUPPORT_BACKENDS nvidia)
+if (NOT FLAGTREE_BACKEND OR
+   "${FLAGTREE_BACKEND}" IN_LIST FLAGCX_SUPPORT_BACKENDS)
+add_compile_definitions(FLAGCX_ENABLED)
+set(FLAGCX_ENABLED ON)
+endif()
+
 set(FLAGTREE_TLE ON)
-add_definitions(-D__TLE__)
+if(FLAGTREE_BACKEND STREQUAL "xpu")
+  set(FLAGTREE_TLE OFF)
+endif()
+if(FLAGTREE_TLE)
+  add_definitions(-D__TLE__)
+  list(APPEND LLVM_TABLEGEN_FLAGS -D__TLE__)
+endif()
 if(NOT FLAGTREE_BACKEND)
   add_definitions(-D__NVIDIA__)
   add_definitions(-D__AMD__)
 elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
   add_definitions(-D__ILUVATAR__)
-  remove_definitions(-D_GLIBCXX_USE_CXX11_ABI=1)
-  add_definitions(-D_GLIBCXX_USE_CXX11_ABI=0)
+  set(FLAGTREE_TLE OFF)
+  set(FLAGTREE_ILUVATAR_TLE ON)
+  add_definitions(-D__ILUVATAR_TLE__)
+  remove_definitions(-D__TLE__)
+  list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
 elseif(FLAGTREE_BACKEND STREQUAL "mthreads")
   set(ENV{PATH} "$ENV{LLVM_SYSPATH}/bin:$ENV{PATH}")
   set(CMAKE_C_COMPILER clang)
   set(CMAKE_CXX_COMPILER clang++)
-  set(ENV{FLAGTREE_PLUGIN} $ENV{FLAGTREE_BACKEND})
+  set(FLAGTREE_TLE OFF)
+  set(FLAGTREE_MTHREADS_TLE ON)
 elseif(FLAGTREE_BACKEND STREQUAL "aipu")
   set(CMAKE_C_COMPILER clang-16)
   set(CMAKE_CXX_COMPILER clang++-16)
@@ -38,11 +56,42 @@ elseif(FLAGTREE_BACKEND STREQUAL "aipu")
 elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
   set(CMAKE_C_COMPILER clang)
   set(CMAKE_CXX_COMPILER clang++)
+elseif(FLAGTREE_BACKEND STREQUAL "hcu")
+  add_definitions(-D__HCU__)
+elseif(FLAGTREE_BACKEND STREQUAL "metax")
+  add_definitions(-DUSE_MACA)
+  # TODO(metax): support TLE
+  set(FLAGTREE_TLE OFF)
+  remove_definitions(-D__TLE__)
+  list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
+  find_package(Python3 3.10 REQUIRED COMPONENTS Development.Module Interpreter)
 endif()
 set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
 if(FLAGTREE_PLUGIN)
   add_definitions(-D__FLAGTREE_PLUGIN__)
 endif()
+
+# FLAGTREE SPEC LIB GET FUNC
+function(get_flagtree_backend_lib lib_name output_lib)
+  set(ret FlagTree_${FLAGTREE_BACKEND}_${lib_name})
+  if(NOT TARGET ${ret})
+    set(ret "")
+  endif()
+  set(${output_lib} ${ret} PARENT_SCOPE)
+endfunction()
+
+# FLAGTREE SPEC TD FILE GET FUNC
+function(set_flagtree_backend_td output_td td_filename)
+  set(ret ${td_filename})
+  file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)
+  set(BACKEND_SPEC_TD ${BACKEND_SPEC_ROOT}/${relative_path}/${td_filename})
+  if(EXISTS ${BACKEND_SPEC_TD})
+    set(ret ${BACKEND_SPEC_TD})
+  endif()
+  set(${output_td} ${ret} PARENT_SCOPE)
+endfunction()
 
 project(triton CXX C)
 include(CTest)
@@ -60,6 +109,10 @@ else()
 endif()
 option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
 set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
+if(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "metax")
+  list(APPEND TRITON_CODEGEN_BACKENDS "nvidia")
+  list(APPEND TRITON_CODEGEN_BACKENDS "amd")
+endif()
 
 if(TRITON_BUILD_WITH_CCACHE)
   find_program(CCACHE_PROGRAM ccache)
@@ -115,8 +168,24 @@ if(TRITON_BUILD_UT)
 endif()
 
 # Compiler flags
-set(BACKEND_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/include)
+set(FLAGTREE_BACKEND_DIR ${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND})
+## flagtree spec include dir
+set(BACKEND_SPEC_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/backend/spec/include)
+if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_SPEC_INCLUDE_DIR})
+  include_directories(${BACKEND_SPEC_INCLUDE_DIR})
+endif()
+## flagtree third_party include dir
+set(BACKEND_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/include)
 if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
+  # XPU backend Analysis headers (Utility.h, etc.) are structurally different
+  # from the main-tree headers (not a superset), so core lib compilation needs
+  # the main-tree include as well.  XPU's own sub-cmake uses
+  # include_directories(BEFORE ...) to ensure XPU targets pick up the XPU
+  # versions first.  Other backends provide superset headers and do not need
+  # this.
+  if(FLAGTREE_BACKEND STREQUAL "xpu")
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+  endif()
   include_directories(${BACKEND_INCLUDE_DIR})
 else()
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -175,6 +244,41 @@ function(add_triton_library name)
   llvm_update_compile_flags(${name})
 endfunction()
 
+function(flagtree_add_tle_generated_header_dependencies)
+  if(NOT TARGET TleTableGen)
+    return()
+  endif()
+
+  set(_flagtree_tle_codegen_deps TleTableGen)
+  if(TARGET TritonTLETransformsIncGen)
+    list(APPEND _flagtree_tle_codegen_deps TritonTLETransformsIncGen)
+  endif()
+
+  # Native compiler targets include TLE generated headers under __TLE__ guards.
+  # The TLE dialect is added after the core libraries, so the dependency must be
+  # attached explicitly once the TLE tablegen targets exist; otherwise a clean
+  # parallel build can compile those libraries before the generated .inc files.
+  foreach(_flagtree_tle_header_target IN ITEMS
+      TritonAnalysis
+      TritonToTritonGPU
+      TritonGPUTransforms
+      TritonNvidiaGPUTransforms
+      TritonNVIDIAGPUToLLVM
+      TritonGPUToLLVM
+      NVHopperTransforms
+      triton
+      triton-opt
+      triton-reduce
+      triton-lsp
+      triton-llvm-opt
+      triton-tensor-layout)
+    if(TARGET ${_flagtree_tle_header_target})
+      add_dependencies(${_flagtree_tle_header_target}
+        ${_flagtree_tle_codegen_deps})
+    endif()
+  endforeach()
+endfunction()
+
 set_property(GLOBAL PROPERTY TRITON_PLUGINS "")
 function(add_triton_plugin name)
   cmake_parse_arguments(ARG "" "SHARED_LIB" "LINK_LIBS" ${ARGN})
@@ -190,10 +294,12 @@ endfunction()
 # Disable warnings that show up in external code (gtest;pybind11)
 if(NOT MSVC)
   if(FLAGTREE_BACKEND)
-    if(FLAGTREE_BACKEND STREQUAL "enflame")
-      # For enflame backend, suppress visibility warnings in gluon_ir.cc
+    if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir)$")
+      # Suppress visibility warnings in gluon_ir.cc (GCC 13+ -Wattributes on pybind11 hidden types)
       # Also suppress -Wcomment for generated TritonGPUAttrDefs.h.inc (ASCII diagrams in TableGen output)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-attributes -Wno-comment")
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-attributes -Wno-comment -Wno-error=odr")
+    elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default -Wno-deprecated-declarations -Wno-attributes")
     else()
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default")
     endif()
@@ -218,11 +324,50 @@ include_directories(${PROJECT_SOURCE_DIR}/third_party)
 include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
 
 # link_directories(${LLVM_LIBRARY_DIR})
-if (FLAGTREE_BACKEND MATCHES "^(cambricon|aipu|tsingmicro|enflame)$")
+if (FLAGTREE_BACKEND MATCHES "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir)$")
   include_directories(${PROJECT_SOURCE_DIR}/include)
   include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+  if(FLAGTREE_BACKEND STREQUAL "xpu")
+    include_directories(${PROJECT_SOURCE_DIR}/third_party/nvidia/include)
+    include_directories(${PROJECT_BINARY_DIR}/third_party/nvidia/include) # Tablegen'd files
+    add_subdirectory(third_party/nvidia/include)
+    include_directories(${PROJECT_SOURCE_DIR}/third_party/amd/include)
+    include_directories(${PROJECT_BINARY_DIR}/third_party/amd/include) # Tablegen'd files
+    add_subdirectory(third_party/amd/include)
+  endif()
   add_subdirectory(include)
   add_subdirectory(lib)
+  if(FLAGTREE_BACKEND STREQUAL "xpu")
+    add_subdirectory(third_party/nvidia/lib/Dialect/NVGPU/IR)
+    add_subdirectory(third_party/nvidia/lib/Dialect/NVWS/IR)
+    add_subdirectory(third_party/nvidia/lib/Dialect/NVWS/Transforms)
+    add_subdirectory(third_party/amd/lib/Dialect/TritonAMDGPU)
+    foreach(_flagtree_xpu_core_target IN ITEMS
+        TritonGPUTransforms)
+      if(TARGET ${_flagtree_xpu_core_target})
+        add_dependencies(${_flagtree_xpu_core_target}
+          NVGPUTableGen
+          NVGPUAttrDefsIncGen
+          NVWSTableGen
+          NVWSAttrDefsIncGen
+          NVWSTransformsIncGen)
+      endif()
+    endforeach()
+  endif()
+elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
+  set(TRITON_CORE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iluvatar)
+  set(TRITON_CORE_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/third_party/iluvatar)
+  option(TRITON_BUILD_GLUON "Build the Gluon IR Python bindings (gluon_ir.cc)" OFF)
+  include_directories(${TRITON_CORE_SOURCE_DIR}/include)
+  include_directories(${TRITON_CORE_BINARY_DIR}/include)
+  include_directories(${TRITON_CORE_SOURCE_DIR}/backend/include)
+  include_directories(${TRITON_CORE_BINARY_DIR}/backend/include)
+  if(FLAGTREE_ILUVATAR_TLE)
+    include_directories(${TRITON_CORE_SOURCE_DIR}/tle/include)
+    include_directories(${TRITON_CORE_BINARY_DIR}/tle/include)
+  endif()
+  add_subdirectory(${TRITON_CORE_SOURCE_DIR}/include ${TRITON_CORE_BINARY_DIR}/include)
+  add_subdirectory(${TRITON_CORE_SOURCE_DIR}/lib ${TRITON_CORE_BINARY_DIR}/lib)
 elseif(NOT FLAGTREE_BACKEND)
   add_subdirectory(include)
   add_subdirectory(lib)
@@ -237,6 +382,15 @@ endif()
 
 
 # -----
+# triton distributed
+if(TRITON_BUILD_PYTHON_MODULE AND FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "hcu")
+  message(STATUS "Adding Python module for TritonDistributed")
+  set(PYTHON_DIST_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/python/src/dist)
+  add_triton_plugin(TritonDistributed ${PYTHON_DIST_SRC_PATH}/triton_distributed.cc
+                                      ${PYTHON_DIST_SRC_PATH}/passes.cc
+                                      ${PYTHON_DIST_SRC_PATH}/ir.cc)
+  target_link_libraries(TritonDistributed PRIVATE DistributedIR SIMTIR ProtonIR Python3::Module pybind11::headers)
+endif()
 
 # ------
 if(TRITON_BUILD_PYTHON_MODULE)
@@ -264,13 +418,33 @@ if(TRITON_BUILD_PYTHON_MODULE)
     add_definitions(-D__PROTON__)
     add_subdirectory(third_party/proton)
   endif()
-  # We always build proton dialect
-  list(APPEND TRITON_PLUGIN_NAMES "proton")
-  add_subdirectory(third_party/proton/Dialect)
+  # We always build proton dialect because core Triton conversion libraries link
+  # ProtonIR. XPU-specific Proton GPU lowering wrappers are disabled inside the
+  # Proton plugin instead of skipping the whole dialect.
+  if(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "hcu")
+    list(APPEND TRITON_PLUGIN_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")
+    include_directories(${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND})
+    add_subdirectory(third_party/hcu/proton/Dialect)
+    add_subdirectory(third_party/nvidia)
+  elseif(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "mthreads")
+    include_directories(${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND})
+    add_subdirectory(third_party/mthreads/proton/Dialect)
+  elseif(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "iluvatar")
+    if (TRITON_BUILD_PROTON)
+      list(APPEND TRITON_PLUGIN_NAMES "proton")
+      add_subdirectory(third_party/proton/Dialect)
+    endif()
+  else()
+    list(APPEND TRITON_PLUGIN_NAMES "proton")
+    add_subdirectory(third_party/proton/Dialect)
+  endif()
 
   # Add TLE plugin
-  list(APPEND TRITON_PLUGIN_NAMES "tle")
-  add_subdirectory(third_party/tle)
+  if(FLAGTREE_TLE)
+    list(APPEND TRITON_PLUGIN_NAMES "tle")
+    add_subdirectory(third_party/tle)
+    flagtree_add_tle_generated_header_dependencies()
+  endif()
 
   if (DEFINED TRITON_PLUGIN_DIRS)
     foreach(PLUGIN_DIR ${TRITON_PLUGIN_DIRS})
@@ -381,6 +555,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
       LLVMPasses
       LLVMXPUCodeGen
       LLVMXPUAsmParser
+
+      # NVIDIA compat (PTXAsmFormat for TritonInstrumentToLLVM)
+      TritonNVIDIACompat
     )
   elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
     list(APPEND TRITON_LIBRARIES
@@ -388,6 +565,52 @@ if(TRITON_BUILD_PYTHON_MODULE)
       LLVMRISCVCodeGen
       LLVMRISCVAsmParser
     )
+  elseif(FLAGTREE_BACKEND STREQUAL "hcu")
+    list(APPEND TRITON_PLUGIN_NAMES "distributed")
+    add_subdirectory(test)
+  elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
+    set(TRITON_LIBRARIES
+      ${triton_libs}
+      ${triton_plugins}
+      # mlir
+      # MLIRAMDGPUDialect
+      # MLIRNVVMDialect
+      MLIRSTVMDialect  # STVM
+      MLIRNVVMToLLVMIRTranslation
+      MLIRSTVMToLLVMIRTranslation
+      MLIRGPUToNVVMTransforms
+      MLIRGPUToSTVMTransforms
+      MLIRGPUToGPURuntimeTransforms
+      MLIRGPUTransforms
+      MLIRIR
+      MLIRControlFlowToLLVM
+      MLIRBytecodeWriter
+      MLIRPass
+      MLIRTransforms
+      MLIRLLVMDialect
+      MLIRSupport
+      MLIRTargetLLVMIRExport
+      MLIRMathToLLVM
+      # MLIRROCDLToLLVMIRTranslation
+      MLIRGPUDialect
+      MLIRSCFToControlFlow
+      MLIRIndexToLLVM
+      MLIRGPUToROCDLTransforms
+      MLIRUBToLLVM
+      # LLVM
+      LLVMPasses
+      # LLVMNVPTXCodeGen
+      # LLVMAMDGPUCodeGen
+      # LLVMAMDGPUAsmParser
+      LLVMSTCUCodeGen
+      LLVMSTCUAsmParser
+      LLVMAArch64CodeGen
+      LLVMAArch64AsmParser
+      LLVMRISCVCodeGen
+      LLVMRISCVAsmParser
+      Python3::Module
+      pybind11::headers
+  )
   endif()
 
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
@@ -422,17 +645,46 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   set(TRITON_BACKENDS_TUPLE "(${TRITON_BACKENDS_TUPLE})")
   add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
-  add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
-                  ${PYTHON_SRC_PATH}/ir.cc
-                  ${PYTHON_SRC_PATH}/gluon_ir.cc
-                  ${PYTHON_SRC_PATH}/linear_layout.cc
-                  ${PYTHON_SRC_PATH}/passes.cc
-                  ${PYTHON_SRC_PATH}/interpreter.cc
-                  ${PYTHON_SRC_PATH}/llvm.cc
-                  ${PYTHON_SRC_PATH}/specialize.cc)
+  if(FLAGTREE_BACKEND STREQUAL "iluvatar")
+    set(TRITON_ILU_PYTHON_SRCS
+                    ${PYTHON_SRC_PATH}/main.cc
+                    ${PYTHON_SRC_PATH}/ir.cc
+                    ${PYTHON_SRC_PATH}/linear_layout.cc
+                    ${PYTHON_SRC_PATH}/passes.cc
+                    ${PYTHON_SRC_PATH}/interpreter.cc
+                    ${PYTHON_SRC_PATH}/llvm.cc
+                    ${PYTHON_SRC_PATH}/specialize.cc)
+    if(TRITON_BUILD_GLUON)
+      list(APPEND TRITON_ILU_PYTHON_SRCS ${PYTHON_SRC_PATH}/gluon_ir.cc)
+    endif()
+    add_library(triton SHARED ${TRITON_ILU_PYTHON_SRCS})
+    if(TRITON_BUILD_GLUON)
+      target_compile_definitions(triton PRIVATE TRITON_BUILD_GLUON)
+    endif()
+  else()
+    add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
+                    ${PYTHON_SRC_PATH}/ir.cc
+                    ${PYTHON_SRC_PATH}/passes.cc
+                    ${PYTHON_SRC_PATH}/interpreter.cc
+                    ${PYTHON_SRC_PATH}/llvm.cc)
+    if(EXISTS "${PYTHON_SRC_PATH}/gluon_ir.cc")
+      target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/gluon_ir.cc)
+    endif()
+    if(EXISTS "${PYTHON_SRC_PATH}/linear_layout.cc")
+      target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/linear_layout.cc)
+    endif()
+    if(EXISTS "${PYTHON_SRC_PATH}/specialize.cc")
+      target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/specialize.cc)
+    endif()
+    if(FLAGTREE_BACKEND STREQUAL "xpu")
+      target_sources(triton PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xpu/python/src/mlir_pass_abi_shim.cc)
+      add_dependencies(triton TritonAMDGPUTableGen TritonAMDGPUAttrDefsIncGen)
+      target_link_libraries(triton PRIVATE TritonAMDGPUIR TritonAMDUtils)
+    endif()
+  endif()
 
   # Link triton with its dependencies
-  target_link_libraries(triton PRIVATE ${TRITON_LIBRARIES})
+  target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})
   if(WIN32)
     target_link_libraries(triton PRIVATE ${CMAKE_DL_LIBS})
     set_target_properties(triton PROPERTIES SUFFIX ".pyd")
@@ -458,7 +710,17 @@ if(TRITON_BUILD_PYTHON_MODULE)
 endif()
 
 if (UNIX AND NOT APPLE)
-  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
+  if(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "metax")
+    file(GLOB _flagtree_llvm_archives CONFIGURE_DEPENDS "${LLVM_LIBRARY_PATH}/libLLVM*.a")
+    foreach(_flagtree_llvm_archive ${_flagtree_llvm_archives})
+      get_filename_component(_flagtree_llvm_archive_name "${_flagtree_llvm_archive}" NAME)
+      set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,${_flagtree_llvm_archive_name}")
+    endforeach()
+  elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--export-dynamic")
+  else()
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
+  endif()
 endif()
 
 if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
@@ -478,16 +740,28 @@ if(NOT TRITON_BUILD_PYTHON_MODULE)
   endforeach()
   add_subdirectory(third_party/proton/Dialect)
   # flagtree tle
-  add_subdirectory(third_party/tle)
+  if(FLAGTREE_TLE)
+    add_subdirectory(third_party/tle)
+    flagtree_add_tle_generated_header_dependencies()
+  endif()
 endif()
 
 find_package(Threads REQUIRED)
 
 add_subdirectory(third_party/f2reduce)
 
-if(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(aipu|tsingmicro|enflame)$")
+if(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(aipu|tsingmicro|enflame|rpu|thrive|metax|sunrise|tileir)$")
   add_subdirectory(bin)
+  if(FLAGTREE_TLE)
+    flagtree_add_tle_generated_header_dependencies()
+  endif()
   add_subdirectory(test)
+elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
+  option(FLAGTREE_ILUVATAR_BUILD_BIN "Build third_party/iluvatar/bin tools and lit tests" OFF)
+  if(FLAGTREE_ILUVATAR_BUILD_BIN)
+    add_subdirectory(${TRITON_CORE_SOURCE_DIR}/bin ${TRITON_CORE_BINARY_DIR}/bin)
+    add_subdirectory(test)
+  endif()
 endif()
 
 if(TRITON_BUILD_UT)

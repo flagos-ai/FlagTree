@@ -77,7 +77,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
       // Test TLE tma_copy operation (shared to global) - should be lowered to NVIDIA async TMA store
       // CHECK: ttng.fence_async_shared
-      // CHECK: ttng.async_tma_copy_local_to_global {{.+}}[{{.+}}] {{.+}}
+      // CHECK: ttng.async_tma_copy_local_to_global {{.+}}[{{.+}}] {{.+}} {tle.tma_store_explicit_commit}
+      // CHECK: tle.tma_store.commit_group
       // CHECK: ttng.async_tma_store_wait
       ttg.tma_copy %c_smem, %c_desc, [%0, %yoff] : !ttg.memdesc<32x64xf32, #shared, #smem, mutable>, !tt.tensordesc<tensor<32x64xf32, #shared>>
     }

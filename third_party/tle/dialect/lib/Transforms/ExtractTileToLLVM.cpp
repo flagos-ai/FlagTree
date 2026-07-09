@@ -168,8 +168,10 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   }
 
   // Compute runtime per-thread offsets for src and dst layouts
-  auto srcThreadOffsets = computeThreadOffsets(loc, rewriter, srcTy);
-  auto dstThreadOffsets = computeThreadOffsets(loc, rewriter, dstTy);
+  auto srcThreadOffsets =
+      computeThreadOffsets(loc, rewriter, srcTy, targetInfo);
+  auto dstThreadOffsets =
+      computeThreadOffsets(loc, rewriter, dstTy, targetInfo);
 
   // ------------------------------------------------------------------
   // Step 1: Allocate SMEM buffer
@@ -280,7 +282,10 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   // ------------------------------------------------------------------
   // Step 4: __syncthreads() -- ensure all writes are visible
   // ------------------------------------------------------------------
-  rewriter.create<NVVM::Barrier0Op>(loc);
+  if (targetInfo.isHCU())
+    targetInfo.barrier(loc, rewriter, /*isWarpSync=*/false);
+  else
+    rewriter.create<NVVM::Barrier0Op>(loc);
 
   // ------------------------------------------------------------------
   // Step 5: Read dst registers from SMEM (FIXED in v4)
@@ -345,7 +350,10 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   // ------------------------------------------------------------------
   // Step 6: __syncthreads() -- allow SMEM reuse after reads complete
   // ------------------------------------------------------------------
-  rewriter.create<NVVM::Barrier0Op>(loc);
+  if (targetInfo.isHCU())
+    targetInfo.barrier(loc, rewriter, /*isWarpSync=*/false);
+  else
+    rewriter.create<NVVM::Barrier0Op>(loc);
 
   // ------------------------------------------------------------------
   // Step 7: Pack result registers

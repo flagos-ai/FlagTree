@@ -1,3 +1,9 @@
+#if __has_include("flagtree_spec.h")
+#include "flagtree_spec.h"
+#endif
+
+#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_LinearLayoutConversion
+
 #include <vector>
 
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -1689,3 +1695,5 @@ chooseMfmaLikeStoreLayout(RankedTensorType valType) {
 }
 
 } // namespace mlir::triton::gpu
+
+#endif

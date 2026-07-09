@@ -1,0 +1,44 @@
+__device__ void
+SoftmaxKernel(__attribute__((address_space(1))) float *output,
+              __attribute__((address_space(1))) const float *input,
+              const int n_rows,
+              const int n_cols,
+              const int input_row_stride,
+              const int output_row_stride) {
+  const int row_idx = blockIdx.x;
+  if (row_idx >= n_rows) return;
+
+  const float *in_row = input + row_idx * input_row_stride;
+  float *out_row = output + row_idx * output_row_stride;
+
+  float max_val = in_row[0];
+  for (int i = 1; i < n_cols; i++) {
+    float v = in_row[i];
+    if (v > max_val) max_val = v;
+  }
+
+  float sum_val = 0.0f;
+  for (int i = 0; i < n_cols; i++) {
+    float x = in_row[i] - max_val;
+    // exp(x) via range reduction: exp(x) = exp(x/16)^16
+    // Taylor for small |y| where y = x/16, |y| <= ~0.7
+    float y = x * 0.0625f;
+    float y2 = y * y;
+    float y3 = y2 * y;
+    float y4 = y2 * y2;
+    float p = 1.0f + y + y2 * 0.5f + y3 * 0.16666667f + y4 * 0.04166667f;
+    // Square 4 times: p^2 -> p^4 -> p^8 -> p^16
+    p = p * p;
+    p = p * p;
+    p = p * p;
+    p = p * p;
+    if (p < 0.0f) p = 0.0f;
+    out_row[i] = p;
+    sum_val += p;
+  }
+
+  float inv_sum = 1.0f / sum_val;
+  for (int i = 0; i < n_cols; i++) {
+    out_row[i] = out_row[i] * inv_sum;
+  }
+}

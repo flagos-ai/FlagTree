@@ -9,6 +9,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "nvidia/lib/TritonNVIDIAGPUToLLVM/Utility.h"
+#ifdef __TLE__
+#include "llvm/ADT/StringExtras.h"
+#endif
 #include "llvm/Support/ErrorHandling.h"
 
 namespace ttn = mlir::triton::nvgpu;
@@ -22,6 +25,20 @@ namespace triton {
 #include "NVGPUToLLVM/Passes.h.inc"
 
 namespace {
+
+#ifdef __TLE__
+static std::optional<uint64_t> getTleWgmmaDescriptorImmediate(Operation *op,
+                                                              StringRef name) {
+  auto attr = op->getAttrOfType<IntegerAttr>(name);
+  if (!attr)
+    return std::nullopt;
+  return static_cast<uint64_t>(attr.getInt());
+}
+
+static std::string formatTlePtxImmediate(uint64_t value) {
+  return "0x" + llvm::utohexstr(value);
+}
+#endif
 
 bool isNumber(const std::string &s) {
   return !s.empty() && std::find_if(s.begin(), s.end(), [](unsigned char c) {
@@ -351,9 +368,27 @@ public:
 
   LogicalResult matchAndRewrite(ttn::WGMMAOp op,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    // Earlier TLE lowering moves accumulator and first-operand prep before the
+    // WGMMA fence. Fuse an adjacent fence into the first MMA asm so later LLVM
+    // codegen cannot reinsert tied-operand moves in that protected window.
+    std::string ptxAsm = getPtxAsm(op);
+    Operation *prev = op->getPrevNode();
+    if (prev && isa<NVVM::WgmmaFenceAlignedOp>(prev)) {
+      // Keep the WGMMA fence in the same inline asm block as the first
+      // wgmma.mma_async. A separate fence op lets later LLVM codegen insert
+      // tied-operand register moves between the fence and the WGMMA asm, which
+      // ptxas treats as accumulator definitions inside the WGMMA pipeline.
+      ptxAsm = "wgmma.fence.sync.aligned;\n\t" + ptxAsm;
+      rewriter.eraseOp(prev);
+    }
+    return rewriteAsPtxAsm(op, rewriter, ptxAsm, getOperandsAndConstraints(op),
+                           getOutputConstraints(op));
+#else
     return rewriteAsPtxAsm(op, rewriter, getPtxAsm(op),
                            getOperandsAndConstraints(op),
                            getOutputConstraints(op));
+#endif
   }
 
   std::vector<std::string> getOutputConstraints(ttn::WGMMAOp op) const {
@@ -463,6 +498,21 @@ public:
     // Operands
     uint32_t asmOpIdx = 0;
     std::string args = "";
+#ifdef __TLE__
+    std::string descriptorPrelude = "";
+    auto buildDescriptorOperand = [&](StringRef regName, uint32_t operandIdx,
+                                      StringRef attrName) -> std::string {
+      std::optional<uint64_t> descriptorImm =
+          getTleWgmmaDescriptorImmediate(op, attrName);
+      if (!descriptorImm)
+        return "$" + std::to_string(operandIdx);
+      descriptorPrelude += ".reg .b64 " + regName.str() + ";\n\t";
+      descriptorPrelude += "add.u64 " + regName.str() + ", $" +
+                           std::to_string(operandIdx) + ", " +
+                           formatTlePtxImmediate(*descriptorImm) + ";\n\t";
+      return regName.str();
+    };
+#endif
 
     // Output and operand C
     uint32_t numCRegs = structTypeOutput.getBody().size();
@@ -486,11 +536,25 @@ public:
       }
       args += "}, ";
     } else {
+#ifdef __TLE__
+      uint32_t opAIdx = asmOpIdx++;
+      args += buildDescriptorOperand("__tle_wgmma_desc_a", opAIdx,
+                                     ttn::kTleWgmmaOperandADescImmAttr) +
+              ", ";
+#else
       args += "$" + std::to_string(asmOpIdx++) + ", ";
+#endif
     }
 
     // Operand B (must be `desc`)
+#ifdef __TLE__
+    uint32_t opBIdx = asmOpIdx++;
+    args += buildDescriptorOperand("__tle_wgmma_desc_b", opBIdx,
+                                   ttn::kTleWgmmaOperandBDescImmAttr) +
+            ", ";
+#else
     args += "$" + std::to_string(asmOpIdx++) + ", ";
+#endif
 
     // `scale-d`
     if (op.getOpC())
@@ -516,6 +580,17 @@ public:
                   std::to_string(k) + "." + stringifyEnum(eltTypeC).str() +
                   "." + stringifyEnum(eltTypeA).str() + "." +
                   stringifyEnum(eltTypeB).str() + " " + args + ";";
+#ifdef __TLE__
+    if (!descriptorPrelude.empty()) {
+      // Descriptor localization must stay in the same PTX block as the WGMMA.
+      // A separate SSA descriptor value can be hoisted and kept live across the
+      // dot region, while a separate opaque asm result can break ptxas' gdesc
+      // pattern recognition. Keeping the canonical add.u64 immediately before
+      // the consuming wgmma preserves both the recognition pattern and the
+      // intended short live range.
+      ptxAsm = "{\n\t" + descriptorPrelude + ptxAsm + "\n}";
+    }
+#endif
     return ptxAsm;
   }
 };

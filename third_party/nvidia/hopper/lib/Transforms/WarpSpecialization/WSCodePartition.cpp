@@ -1179,8 +1179,15 @@ void insertAsyncComm(
         auto consumerReleasePoint =
             consumerReleaseHeuristic(tailProducer, tailConsumer, token.first);
         builder.setInsertionPointAfter(consumerReleasePoint);
+#ifdef __TLE__
         builder.createWithAsyncTaskIds<ttnvws::ConsumerReleaseOp>(
-            consumerReleasePoint->getLoc(), token.second, bufferIdx);
+            consumerReleasePoint->getLoc(), token.second, bufferIdx,
+            ValueRange{}, IntegerAttr());
+#else
+        builder.createWithAsyncTaskIds<ttnvws::ConsumerReleaseOp>(
+            consumerReleasePoint->getLoc(), token.second, bufferIdx,
+            IntegerAttr());
+#endif
         LLVM_DEBUG({
           LDBG("create ConsumerRelease ");
           token.second.dump();

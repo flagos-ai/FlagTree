@@ -74,19 +74,6 @@
 #define DBG_TRITON_IR 1
 using namespace mlir;
 
-Value getPrivateDTETag(OpBuilder &builder, Operation *op) {
-  OpBuilder::InsertionGuard guard(builder);
-  auto func = op->getParentOfType<FunctionOpInterface>();
-  auto firstOp = &func.getFunctionBody().getBlocks().front().front();
-  auto tagType = MemRefType::get(ArrayRef<int64_t>{1}, builder.getI32Type());
-  if (isa<memref::AllocOp>(firstOp) && firstOp->getAttr("gcu.private_tag"))
-    return firstOp->getResult(0);
-  builder.setInsertionPoint(firstOp);
-  auto tag = builder.create<memref::AllocOp>(op->getLoc(), tagType);
-  tag->setAttr("gcu.private_tag", builder.getUnitAttr());
-  return tag;
-}
-
 Value getShareDTETag(OpBuilder &builder, Operation *op) {
   OpBuilder::InsertionGuard guard(builder);
   auto func = op->getParentOfType<FunctionOpInterface>();
@@ -99,13 +86,6 @@ Value getShareDTETag(OpBuilder &builder, Operation *op) {
   builder.setInsertionPoint(secondOp);
   auto tag = builder.create<memref::AllocOp>(op->getLoc(), tagType);
   tag->setAttr("gcu.share_tag", builder.getUnitAttr());
-  return tag;
-}
-
-Value createPrivateDTETag(OpBuilder &builder, Operation *op) {
-  auto tagType = MemRefType::get(ArrayRef<int64_t>{1}, builder.getI32Type());
-  auto tag = builder.create<memref::AllocOp>(op->getLoc(), tagType);
-  tag->setAttr("gcu.private_tag", builder.getUnitAttr());
   return tag;
 }
 
@@ -338,19 +318,6 @@ SmallVector<Value, 4> getElemsPerThread(OpBuilder &builder, Location loc,
   return numElems;
 }
 
-func::FuncOp getOrDefineFunction(gpu::GPUModuleOp moduleOp, Location loc,
-                                 OpBuilder &rewriter, StringRef name,
-                                 FunctionType type) {
-  func::FuncOp ret;
-  if (!(ret = moduleOp.template lookupSymbol<func::FuncOp>(name))) {
-    ConversionPatternRewriter::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(moduleOp.getBody());
-    ret = rewriter.create<func::FuncOp>(loc, name, type);
-    ret.setPrivate();
-  }
-  return ret;
-}
-
 void doSlicePadOrMemsetSlice(OpBuilder &rewriter, Location loc,
                              triton::gcu::PrivateDTETagPool &pTagPool,
                              Operation *op, Value output, Value src,
@@ -438,74 +405,6 @@ Value castToMemref1D(OpBuilder &rewriter, Location loc, Value v,
       MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic},
                       dyn_cast<MemRefType>(v.getType()).getElementType()),
       v, zero, ArrayRef<Value>{totalNumElems}, ArrayRef<Value>{one});
-}
-
-bool isMustAliasOp(mlir::Operation *op) {
-  if (llvm::isa<triton::PtrToIntOp, triton::IntToPtrOp, triton::BitcastOp,
-                gcu::PtrToMemRefOp, gcu::MemRefToPtrOp, gcu::IntToPtrOp,
-                gcu::PtrToIntOp>(op)) {
-    return true;
-  } else if (llvm::isa<triton::gpu::ConvertLayoutOp>(op)) {
-    auto convertLayout = cast<triton::gpu::ConvertLayoutOp>(op);
-    auto src = convertLayout.getSrc();
-    auto srcNumElems = triton::gcu::getElemsPerThread(src.getType());
-    auto dstNumElems = triton::gcu::getElemsPerThread(convertLayout.getType());
-
-    auto srcTy = dyn_cast<RankedTensorType>(src.getType());
-    auto dstTy = dyn_cast<RankedTensorType>(convertLayout.getType());
-    if ((!srcTy) || (!dstTy)) {
-      assert(false && "srcTy or dstTy not a RankedTensorType");
-    }
-
-    Attribute srcLayout = srcTy.getEncoding();
-    Attribute dstLayout = dstTy.getEncoding();
-    if (srcLayout == dstLayout) {
-      return true;
-    }
-    if (srcNumElems == dstNumElems &&
-        src.getType().getShape() == convertLayout.getType().getShape()) {
-      if (!mlir::isa<triton::gpu::SharedEncodingTrait>(srcLayout)) {
-        return true;
-      } else if (isa<triton::gpu::SliceEncodingAttr>(srcLayout) &&
-                 isa<triton::gpu::SliceEncodingAttr>(dstLayout)) {
-        if (cast<triton::gpu::SliceEncodingAttr>(srcLayout).getDim() ==
-            cast<triton::gpu::SliceEncodingAttr>(dstLayout).getDim()) {
-          return true;
-        }
-      }
-    }
-    return false;
-  } else if (isa<triton::ExpandDimsOp>(op)) {
-    auto expandDimOp = cast<triton::ExpandDimsOp>(op);
-    auto srcNumElems =
-        triton::gcu::getElemsPerThread(expandDimOp.getSrc().getType());
-    auto dstNumElems = triton::gcu::getElemsPerThread(expandDimOp.getType());
-    srcNumElems.insert(srcNumElems.begin() + expandDimOp.getAxis(), 1);
-    if (srcNumElems == dstNumElems) {
-      return true;
-    }
-    return false;
-  } else if (isa<triton::ReshapeOp>(op)) {
-    auto reshapeOp = cast<triton::ReshapeOp>(op);
-    auto srcNumElems =
-        triton::gcu::getElemsPerThread(reshapeOp.getSrc().getType());
-    auto dstNumElems = triton::gcu::getElemsPerThread(reshapeOp.getType());
-    if (srcNumElems == dstNumElems) {
-      return true;
-    }
-    return false;
-  } else if (isa<triton::BroadcastOp>(op)) {
-    auto broastOp = cast<triton::BroadcastOp>(op);
-    auto srcNumElems =
-        triton::gcu::getElemsPerThread(broastOp.getSrc().getType());
-    auto dstNumElems = triton::gcu::getElemsPerThread(broastOp.getType());
-    if (srcNumElems == dstNumElems) {
-      return true;
-    }
-    return false;
-  } else {
-    return false;
-  }
 }
 
 // Find last user which is located at parent region of the op
@@ -600,15 +499,6 @@ Value syncAllocOp(OpBuilder &builder, Location &loc,
   }
   addDeallocAfterLastUser(builder, lastUser, output);
   return output;
-}
-
-Value asyncAllocOp(OpBuilder &builder, Operation *ttParent, MemRefType type,
-                   int64_t memoryAlignment) {
-  auto allocOp = builder.create<memref::AllocOp>(ttParent->getLoc(), type);
-  if (memoryAlignment != INVALID_ALIGNMENT) {
-    allocOp->setAttr(kAlignment, builder.getI64IntegerAttr(memoryAlignment));
-  }
-  return allocOp.getResult();
 }
 
 void createPrintfOp(ConversionPatternRewriter &rewriter, Location loc,

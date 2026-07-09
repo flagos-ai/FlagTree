@@ -25,7 +25,6 @@ namespace mlir {
 namespace triton {
 namespace gcu {
 Value createConstantZero(OpBuilder &builder, Location loc, Type elemType);
-Value createConstantNaN(OpBuilder &builder, Location loc, Type elemType);
 Value createConstantInf(OpBuilder &builder, Location loc, Type elemType,
                         bool isNegative = false);
 } // namespace gcu

@@ -122,6 +122,33 @@ public:
     }
     if (isa<tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op))
       return true;
+#ifdef __TLE__
+    bool hasLocalAllocUser = llvm::any_of(op->getUsers(), [&](Operation *user) {
+      return isa<ttg::LocalAllocOp>(user);
+    });
+    if (!hasLocalAllocUser && !canHaveSharedEncoding(cast<tt::LoadOp>(op))) {
+      LDBG("Load " << *op << " cannot have shared encoding");
+      return false;
+    }
+    ttg::SharedEncodingTrait localAllocEnc;
+    if (hasLocalAllocUser) {
+      for (auto user : op->getUsers()) {
+        auto localAlloc = dyn_cast<ttg::LocalAllocOp>(user);
+        if (!localAlloc)
+          continue;
+        auto enc = mlir::cast<ttg::SharedEncodingTrait>(
+            localAlloc.getType().getEncoding());
+        if (!localAllocEnc) {
+          localAllocEnc = enc;
+        }
+        if (enc != localAllocEnc) {
+          // If the load is used by a LocalAllocOp, all the users need to have
+          // the same encoding.
+          return false;
+        }
+      }
+    }
+#else
     if (!canHaveSharedEncoding(cast<tt::LoadOp>(op))) {
       LDBG("Load " << *op << " cannot have shared encoding");
       return false;
@@ -147,6 +174,7 @@ public:
         }
       }
     }
+#endif
 
     if (localAllocEnc) {
       auto registerTy = cast<RankedTensorType>(op->getResultTypes()[0]);

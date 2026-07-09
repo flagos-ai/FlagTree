@@ -98,12 +98,13 @@ public:
     mlir::gpu::GPUModuleOp mod = getOperation();
 
     // Warp number and register count are hardcoded for now.
-    const unsigned fixedNumWarps = 4;
+    // const unsigned fixedNumWarps = 4;
     // const unsigned totalRegCount = 768;
     const unsigned minRegCount = 8;
 
     int numWarps = ttg::lookupNumWarps(mod);
-    int baseNumWarps = numWarps;
+    int defaultNumWarps = 1;
+    int partitionStartId = 0;
 
     // First determine the maximum number of extra warps.
     // Notice: currently only support one WarpSpecializeOp per function.
@@ -112,6 +113,8 @@ public:
       maxExtraWarps = std::max<int>(maxExtraWarps, op.getTotalPartitionWarps());
     });
     LDBG() << "maxExtraWarps: " << maxExtraWarps;
+    if (maxExtraWarps == 0)
+      return;
 
     // Round this up to the nearest warpgroup (multiple of 4) and then pad each
     // `ttg.warp_specialize` to the nearest warpgroup.
@@ -119,15 +122,6 @@ public:
     mod.walk([&](ttg::WarpSpecializeOp op) {
       padToMaxWarpGroups(op, numExtraWarpGroups, numWarps);
     });
-
-    // Determine the maximum number of registers per thread. This may have
-    // been set by the user.
-    // int maxnreg = totalRegCount;
-    // if (auto maxnregAttr =
-    //         mod->getAttrOfType<IntegerAttr>(AttrMaxRegistersName)) {
-    //   maxnreg = maxnregAttr.getInt();
-    // }
-    // LDBG() << "maxnreg: " << maxnreg;
 
     // Define the data structures for the warp group information.
     struct WarpGroupInfo {
@@ -155,7 +149,7 @@ public:
                  [&](auto lhs, auto rhs) { return lhs.second > rhs.second; });
 
       SmallVector<int32_t> startIds(arr.size());
-      int startId = baseNumWarps;
+      int startId = partitionStartId;
       for (auto [i, size] : idxAndSize) {
         startIds[i] = startId;
         startId += size;
@@ -164,7 +158,7 @@ public:
 
       // Require that an estimate has been set and that we have even warpgroups.
       auto regsAttr = op.getRequestedRegisters();
-      if (!regsAttr || op.getTotalPartitionWarps() % fixedNumWarps != 0)
+      if (!regsAttr || op.getTotalPartitionWarps() % numWarps != 0)
         return;
 
       // Group the partitions into warpgroups.
@@ -179,7 +173,7 @@ public:
       // the maximum number of requested registers per warp group.
       SmallVector<WarpGroupInfo> warpGroups;
       for (auto [startId, partition, estRegs, numWarps] : orderedPartitions) {
-        if (startId % fixedNumWarps == 0) {
+        if (startId % numWarps == 0) {
           warpGroups.push_back(WarpGroupInfo{});
         }
         warpGroups.back().partitions.push_back(partition);
@@ -205,25 +199,19 @@ public:
       SmallVector<int32_t> maxnregsPerPartition(1 + arr.size());
       for (const WarpGroupInfo &wg : warpGroups) {
         for (Region *region : wg.partitions) {
-          maxnregsPerPartition[1 + region->getRegionNumber()] =
-              wg.maxRequestedRegs;
+          maxnregsPerPartition[region->getRegionNumber()] = wg.maxRequestedRegs;
         }
       }
 
       // Set the register usage for the default warp group.
-      maxnregsPerPartition.front() = 0;
+      maxnregsPerPartition.back() = 0;
       op.setActualRegisters(maxnregsPerPartition);
-
-      // // Set the initial max number of registers. This is needed for PTXAS to
-      // // cooperate.
-      // mod->setAttr(AttrMaxRegistersName,
-      //              Builder(op.getContext()).getI32IntegerAttr(maxnreg));
     });
 
     Builder b(&getContext());
     mod->setAttr(
         "ttg.total-num-warps",
-        b.getI32IntegerAttr(baseNumWarps + numExtraWarpGroups * numWarps));
+        b.getI32IntegerAttr(defaultNumWarps + numExtraWarpGroups * numWarps));
   }
 };
 

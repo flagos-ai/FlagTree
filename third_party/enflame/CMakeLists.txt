@@ -9,6 +9,7 @@ else()
 endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+include_directories(${CMAKE_SOURCE_DIR}/includexxx)
 
 # Add cmake module path so that include() can find the corresponding files
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -59,8 +60,6 @@ if(HACK_INCLUDE_DIRS)
 
     get_property(inc_dirs DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY INCLUDE_DIRECTORIES)
 
-    list(REMOVE_ITEM inc_dirs "${CMAKE_SOURCE_DIR}/include")
-    list(REMOVE_ITEM inc_dirs "${CMAKE_BINARY_DIR}/include")
     list(REMOVE_ITEM inc_dirs "${CMAKE_SOURCE_DIR}/third_party")
     list(REMOVE_ITEM inc_dirs "${CMAKE_BINARY_DIR}/third_party")
     list(REMOVE_ITEM inc_dirs "${MLIR_INCLUDE_DIRS}")
@@ -68,6 +67,12 @@ if(HACK_INCLUDE_DIRS)
 
     set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY INCLUDE_DIRECTORIES "${include_dirs}")
 endif()
+
+# Install python directory to install prefix
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/
+    DESTINATION python
+    USE_SOURCE_PERMISSIONS
+)
 
 # Add triton_gcu subdirectory build
 add_subdirectory(triton_gcu)

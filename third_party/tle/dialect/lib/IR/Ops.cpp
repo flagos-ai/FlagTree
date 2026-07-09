@@ -1,12 +1,16 @@
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
+#include <cctype>
 #include <limits>
 
+#include "tle/dialect/include/IR/VerfiyUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
@@ -151,6 +155,330 @@ LogicalResult ExtractTileOp::verify() {
   return success();
 }
 
+LogicalResult MemDescWGMMAViewOp::verify() {
+  auto srcType = getSrc().getType();
+  auto resultType = getType();
+  auto order = getOrder();
+
+  if (srcType.getRank() != 2 || resultType.getRank() != 2)
+    return emitOpError("expects rank-2 source and result memdesc types");
+  if (order.size() != static_cast<size_t>(srcType.getRank()))
+    return emitOpError("expects order rank to match source rank");
+  llvm::SmallBitVector seen(order.size());
+  for (int32_t dim : order) {
+    if (dim < 0 || dim >= static_cast<int32_t>(order.size()) || seen[dim])
+      return emitOpError("expects order to be a permutation");
+    seen.set(dim);
+  }
+  if (srcType.getElementType() != resultType.getElementType())
+    return emitOpError("expects source and result element types to match");
+  if (srcType.getMemorySpace() != resultType.getMemorySpace())
+    return emitOpError("expects source and result memory spaces to match");
+  if (!isa<triton::gpu::SharedMemorySpaceAttr>(srcType.getMemorySpace()))
+    return emitOpError("expects shared memory descriptors");
+  if (mlir::product(srcType.getShape()) != mlir::product(resultType.getShape()))
+    return emitOpError("expects source and result to cover the same number of "
+                       "elements");
+  if (!isa<triton::gpu::NVMMASharedEncodingAttr,
+           triton::gpu::SharedLinearEncodingAttr>(resultType.getEncoding()))
+    return emitOpError("expects result to use a WGMMA-compatible shared "
+                       "encoding");
+  return success();
+}
+
+LogicalResult WGMMASharedOperandFenceOp::verify() {
+  if (getDeps().empty())
+    return emitOpError("expects at least one shared-memory operand");
+
+  for (Value dep : getDeps()) {
+    auto type = cast<triton::gpu::MemDescType>(dep.getType());
+    if (!isa<triton::gpu::SharedMemorySpaceAttr>(type.getMemorySpace()))
+      return emitOpError("expects only shared-memory operands");
+  }
+  return success();
+}
+
+LogicalResult WGMMAOp::verify() {
+  auto aType = cast<triton::gpu::TensorOrMemDesc>(getA().getType());
+  auto bType = cast<triton::gpu::MemDescType>(getB().getType());
+  auto cType = cast<RankedTensorType>(getC().getType());
+  auto dType = cast<RankedTensorType>(getD().getType());
+
+  if (aType.getRank() != 2 || bType.getRank() != 2 || cType.getRank() != 2)
+    return emitOpError("expects rank-2 A, B, and accumulator operands");
+  if (!isa<triton::gpu::SharedMemorySpaceAttr>(bType.getMemorySpace()))
+    return emitOpError("expects shared-memory B descriptor");
+  if (auto aMemDescType =
+          dyn_cast<triton::gpu::MemDescType>(getA().getType())) {
+    if (!isa<triton::gpu::SharedMemorySpaceAttr>(aMemDescType.getMemorySpace()))
+      return emitOpError("expects shared-memory A descriptor");
+  }
+
+  ArrayRef<int64_t> aShape = aType.getShape();
+  ArrayRef<int64_t> bShape = bType.getShape();
+  ArrayRef<int64_t> cShape = cType.getShape();
+  ArrayRef<int64_t> dShape = dType.getShape();
+  if (aShape[1] != bShape[0])
+    return emitOpError("expects A and B K dimensions to match");
+  if (cShape[0] != aShape[0] || cShape[1] != bShape[1])
+    return emitOpError("expects accumulator shape to be MxN from A and B");
+  if (dShape != cShape)
+    return emitOpError("expects result shape to match accumulator shape");
+
+  if (aShape[0] < 64 || aShape[0] % 64 != 0)
+    return emitOpError("expects M dimension to be divisible by 64");
+  if (bShape[1] < 8 || bShape[1] % 8 != 0)
+    return emitOpError("expects N dimension to be divisible by 8");
+  if (aShape[1] < 16)
+    return emitOpError("expects K dimension to be at least 16");
+  return success();
+}
+
+LogicalResult WGMMAWaitOp::verify() {
+  auto pendings = getOperation()->getAttrOfType<IntegerAttr>("pendings");
+  if (pendings.getInt() < 0)
+    return emitOpError("expects non-negative pendings");
+  return success();
+}
+
+static LogicalResult
+verifyBarrierMemDesc(Operation *op, triton::gpu::MemDescType type, bool array) {
+  if (!type.getElementType().isInteger(64))
+    return op->emitOpError("expects i64 barrier storage");
+  if (!isa<triton::gpu::SharedMemorySpaceAttr>(type.getMemorySpace()))
+    return op->emitOpError("expects shared-memory barrier storage");
+  if (!type.getMutableMemory())
+    return op->emitOpError("expects mutable barrier storage");
+
+  ArrayRef<int64_t> shape = type.getShape();
+  if (array) {
+    if (shape.size() != 2 || shape[0] <= 0 || shape[1] != 1)
+      return op->emitOpError("expects barrier array type shaped Nx1xi64");
+  } else {
+    if (shape != ArrayRef<int64_t>({1}))
+      return op->emitOpError("expects barrier slot type shaped 1xi64");
+  }
+  return success();
+}
+
+static LogicalResult verifyBarrierBackend(Operation *op, StringRef backend,
+                                          bool hasPhase, int64_t namedId,
+                                          int64_t namedNumThreads) {
+  static constexpr int64_t kFirstVirtualNamedBarrierId = 16;
+  if (backend == "mbarrier") {
+    if (!hasPhase)
+      return op->emitOpError("mbarrier backend requires phase");
+    return success();
+  }
+  if (backend != "named")
+    return op->emitOpError("backend must be 'mbarrier' or 'named'");
+  if (hasPhase)
+    return op->emitOpError("named barrier backend does not accept phase");
+  bool isPhysicalNamedId = namedId >= 1 && namedId <= 15;
+  bool isVirtualNamedId = namedId >= kFirstVirtualNamedBarrierId;
+  if (!isPhysicalNamedId && !isVirtualNamedId)
+    return op->emitOpError("named barrier id must be a physical id in range "
+                           "[1, 15] or a TLE virtual id >= ")
+           << kFirstVirtualNamedBarrierId;
+  if (namedNumThreads <= 0)
+    return op->emitOpError("named barrier thread count must be positive");
+  return success();
+}
+
+LogicalResult BarrierAllocOp::verify() {
+  if (failed(verifyBarrierMemDesc(getOperation(), getResult().getType(),
+                                  /*array=*/true)))
+    return failure();
+  auto resultTy = getResult().getType();
+  if (getNumBarriers() <= 0)
+    return emitOpError("num_barriers must be positive");
+  if (getArriveCount() <= 0)
+    return emitOpError("arrive_count must be positive");
+  if (getInitPolarity() != 0 && getInitPolarity() != 1)
+    return emitOpError("init_polarity must be 0 or 1");
+  if (getNumBarriers() != resultTy.getShape()[0])
+    return emitOpError("num_barriers must match result leading dimension");
+  if (auto expectBytes =
+          getOperation()->getAttrOfType<IntegerAttr>("expect_bytes")) {
+    if (expectBytes.getInt() <= 0)
+      return emitOpError("expect_bytes must be positive when present");
+  }
+  return success();
+}
+
+LogicalResult BarrierWaitOp::verify() {
+  if (failed(verifyBarrierMemDesc(getOperation(), getBarrier().getType(),
+                                  /*array=*/false)))
+    return failure();
+  StringRef backend =
+      getOperation()->getAttrOfType<StringAttr>("backend").getValue();
+  return verifyBarrierBackend(getOperation(), backend, bool(getPhase()),
+                              getNamedId(), getNamedNumThreads());
+}
+
+LogicalResult BarrierArriveOp::verify() {
+  if (failed(verifyBarrierMemDesc(getOperation(), getBarrier().getType(),
+                                  /*array=*/false)))
+    return failure();
+  if (getArriveCount() <= 0)
+    return emitOpError("arrive_count must be positive");
+  StringRef backend =
+      getOperation()->getAttrOfType<StringAttr>("backend").getValue();
+  if (backend == "named" && getArriveCount() != 1)
+    return emitOpError("named barrier arrive requires arrive_count = 1");
+  return verifyBarrierBackend(getOperation(), backend, bool(getPhase()),
+                              getNamedId(), getNamedNumThreads());
+}
+
+static bool isAsciiIdentStart(char c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+static bool isAsciiIdentChar(char c) {
+  return isAsciiIdentStart(c) || (c >= '0' && c <= '9') || c == '_';
+}
+
+static bool isValidPublicPipeName(StringRef name) {
+  if (name.empty() || name == "fields" || name == "readers" ||
+      name.starts_with("_") || !isAsciiIdentStart(name.front()))
+    return false;
+  return llvm::all_of(name.drop_front(), isAsciiIdentChar);
+}
+
+static LogicalResult verifyPipeNameArray(Operation *op, ArrayAttr namesAttr,
+                                         StringRef attrName, bool allowEmpty) {
+  if (!allowEmpty && namesAttr.empty())
+    return op->emitOpError("expects ")
+           << attrName << " to contain at least one name";
+
+  llvm::SmallSet<StringRef, 8> seenNames;
+  for (Attribute attr : namesAttr) {
+    auto nameAttr = dyn_cast<StringAttr>(attr);
+    if (!nameAttr)
+      return op->emitOpError("expects ")
+             << attrName << " to contain only strings";
+    StringRef name = nameAttr.getValue();
+    if (!isValidPublicPipeName(name))
+      return op->emitOpError("expects valid public pipe ")
+             << attrName << " names";
+    if (!seenNames.insert(name).second)
+      return op->emitOpError("expects unique pipe ") << attrName << " names";
+  }
+
+  return success();
+}
+
+static LogicalResult verifyPipeAttrs(Operation *op, OperandRange fields) {
+  auto capacityAttr = op->getAttrOfType<IntegerAttr>("capacity");
+  if (!capacityAttr)
+    return op->emitOpError("requires capacity attribute");
+  int64_t capacity = capacityAttr.getInt();
+  if (capacity <= 0)
+    return op->emitOpError("requires positive capacity");
+
+  auto scopeAttr = op->getAttrOfType<StringAttr>("scope");
+  if (!scopeAttr)
+    return op->emitOpError("requires scope attribute");
+  if (scopeAttr.getValue() != "cta")
+    return op->emitOpError("MVP supports only scope = \"cta\"");
+
+  auto fieldNamesAttr = op->getAttrOfType<ArrayAttr>("field_names");
+  if (!fieldNamesAttr)
+    return op->emitOpError("requires field_names attribute");
+  if (fieldNamesAttr.size() != fields.size())
+    return op->emitOpError("expects field_names size to match field operands");
+
+  if (failed(verifyPipeNameArray(op, fieldNamesAttr, "field", false)))
+    return failure();
+
+  if (auto readersAttr = op->getAttrOfType<ArrayAttr>("readers")) {
+    if (failed(verifyPipeNameArray(op, readersAttr, "reader", false)))
+      return failure();
+  }
+
+  if (auto readerNameAttr = op->getAttrOfType<StringAttr>("reader_name")) {
+    if (!isValidPublicPipeName(readerNameAttr.getValue()))
+      return op->emitOpError("expects valid public pipe reader_name");
+  }
+
+  if (fields.empty())
+    return op->emitOpError("expects at least one pipe field");
+  for (Value field : fields) {
+    auto type = cast<triton::gpu::MemDescType>(field.getType());
+    if (!isa<triton::gpu::SharedMemorySpaceAttr>(type.getMemorySpace()))
+      return op->emitOpError("expects only shared-memory pipe fields");
+    if (type.getRank() < 2)
+      return op->emitOpError("expects pipe fields to have rank >= 2");
+    if (type.getShape()[0] != capacity)
+      return op->emitOpError("expects field leading dimension to equal "
+                             "pipe capacity");
+  }
+  return success();
+}
+
+static LogicalResult verifyPipeStagePhase(Operation *op, Value stage,
+                                          Value phase) {
+  if (!stage.getType().isInteger(32))
+    return op->emitOpError("expects stage to be i32");
+  if (!phase.getType().isInteger(1))
+    return op->emitOpError("expects phase to be i1");
+  return success();
+}
+
+static LogicalResult verifyPipeStage(Operation *op, Value stage) {
+  if (!stage.getType().isInteger(32))
+    return op->emitOpError("expects stage to be i32");
+  return success();
+}
+
+LogicalResult PipeCreateOp::verify() {
+  return verifyPipeAttrs(getOperation(), getFields());
+}
+
+LogicalResult PipeWriterAcquireOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStagePhase(getOperation(), getStage(), getPhase());
+}
+
+LogicalResult PipeWriterCommitOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStage(getOperation(), getStage());
+}
+
+LogicalResult PipeWriterCloseOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStagePhase(getOperation(), getStage(), getPhase());
+}
+
+LogicalResult PipeReaderWaitOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  if (failed(verifyPipeStagePhase(getOperation(), getStage(), getPhase())))
+    return failure();
+  if (!getIsClosed().getType().isInteger(1))
+    return emitOpError("expects is_closed result to be i1");
+  return success();
+}
+
+LogicalResult PipeReaderReleaseOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStage(getOperation(), getStage());
+}
+
+void PipeReaderReleaseOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get());
+  MutableOperandRange fields = getFieldsMutable();
+  for (unsigned i = 0, e = fields.size(); i < e; ++i)
+    effects.emplace_back(MemoryEffects::Free::get(), &fields[i],
+                         triton::gpu::SharedMemory::get());
+}
+
 // ============================================================================
 // InsertTileOp Type Inference + Verification
 // ============================================================================
@@ -284,6 +612,16 @@ LogicalResult InsertTileOp::verify() {
   return success();
 }
 
+void DSLRegionOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  // TODO: Conservative memory effects on all dsl_region ops so empty deferred
+  // bodies are not DCE'd before materialize lowering exists. Narrow this to
+  // alias operands or deferred-only once materialize is implemented.
+  effects.emplace_back(MemoryEffects::Read::get());
+  effects.emplace_back(MemoryEffects::Write::get());
+}
+
 LogicalResult DSLRegionOp::verify() {
   Region &body = getBody();
   const uint32_t numArguments = body.getNumArguments(),
@@ -326,6 +664,24 @@ LogicalResult PackOp::verify() {
     return emitOpError() << "expects input struct to have at least 3 elements, "
                             "with the first two being pointer types.";
   }
+  return success();
+}
+
+LogicalResult GetDeviceIdOp::verify() {
+  auto resultTy = getResult().getType();
+
+  if (!resultTy.isInteger(32))
+    return emitOpError("result type must be i32");
+
+  return success();
+}
+
+LogicalResult GetNumPesOp::verify() {
+  auto resultTy = getResult().getType();
+
+  if (!resultTy.isInteger(32))
+    return emitOpError("result type must be i32");
+
   return success();
 }
 
@@ -538,68 +894,100 @@ LogicalResult DistributedBarrierOp::verify() {
 LogicalResult RemotePointersOp::verify() {
   Type srcTy = getSrc().getType();
   Type resultTy = getResult().getType();
-  auto getPtrInfo = [&](Type ty, triton::PointerType &ptr, bool &isTensor,
-                        ArrayRef<int64_t> &shape,
-                        Attribute &encoding) -> LogicalResult {
-    if (auto tensorTy = dyn_cast<RankedTensorType>(ty)) {
-      ptr = dyn_cast<triton::PointerType>(tensorTy.getElementType());
-      if (!ptr)
+  auto spaceAttr = getSpace();
+  if (spaceAttr == "device") {
+    if (failed(RemotePointers::verifyDeviceSpace(getSrc(), getResult())))
+      return failure();
+  } else {
+    auto getPtrInfo = [&](Type ty, triton::PointerType &ptr, bool &isTensor,
+                          ArrayRef<int64_t> &shape,
+                          Attribute &encoding) -> LogicalResult {
+      if (auto tensorTy = dyn_cast<RankedTensorType>(ty)) {
+        ptr = dyn_cast<triton::PointerType>(tensorTy.getElementType());
+        if (!ptr)
+          return emitOpError()
+                 << "expects tensor src/result element type to be tt.ptr";
+        isTensor = true;
+        shape = tensorTy.getShape();
+        encoding = tensorTy.getEncoding();
+        return success();
+      }
+      if (auto ptrTy = dyn_cast<triton::PointerType>(ty)) {
+        ptr = ptrTy;
+        isTensor = false;
+        shape = ArrayRef<int64_t>();
+        encoding = Attribute();
+        return success();
+      }
+      return emitOpError() << "expects src/result to be tensor<tt.ptr<...>> or "
+                              "tt.ptr";
+    };
+
+    triton::PointerType srcPtrTy;
+    triton::PointerType resultPtrTy;
+    bool srcIsTensor = false;
+    bool resultIsTensor = false;
+    ArrayRef<int64_t> srcShape;
+    ArrayRef<int64_t> resultShape;
+    Attribute srcEncoding;
+    Attribute resultEncoding;
+    if (failed(
+            getPtrInfo(srcTy, srcPtrTy, srcIsTensor, srcShape, srcEncoding)) ||
+        failed(getPtrInfo(resultTy, resultPtrTy, resultIsTensor, resultShape,
+                          resultEncoding)))
+      return failure();
+
+    if (srcIsTensor != resultIsTensor)
+      return emitOpError()
+             << "expects src/result to both be scalar pointers or "
+                "both be pointer tensors";
+    if (srcIsTensor) {
+      if (srcShape != resultShape)
+        return emitOpError() << "expects src/result pointer tensor shapes to "
+                                "match";
+      if (srcEncoding && resultEncoding && srcEncoding != resultEncoding)
         return emitOpError()
-               << "expects tensor src/result element type to be tt.ptr";
-      isTensor = true;
-      shape = tensorTy.getShape();
-      encoding = tensorTy.getEncoding();
-      return success();
+               << "expects src/result pointer tensor encodings to "
+                  "match";
     }
-    if (auto ptrTy = dyn_cast<triton::PointerType>(ty)) {
-      ptr = ptrTy;
-      isTensor = false;
-      shape = ArrayRef<int64_t>();
-      encoding = Attribute();
-      return success();
-    }
-    return emitOpError() << "expects src/result to be tensor<tt.ptr<...>> or "
-                            "tt.ptr";
-  };
-
-  triton::PointerType srcPtrTy;
-  triton::PointerType resultPtrTy;
-  bool srcIsTensor = false;
-  bool resultIsTensor = false;
-  ArrayRef<int64_t> srcShape;
-  ArrayRef<int64_t> resultShape;
-  Attribute srcEncoding;
-  Attribute resultEncoding;
-  if (failed(getPtrInfo(srcTy, srcPtrTy, srcIsTensor, srcShape, srcEncoding)) ||
-      failed(getPtrInfo(resultTy, resultPtrTy, resultIsTensor, resultShape,
-                        resultEncoding)))
-    return failure();
-
-  if (srcIsTensor != resultIsTensor)
-    return emitOpError() << "expects src/result to both be scalar pointers or "
-                            "both be pointer tensors";
-  if (srcIsTensor) {
-    if (srcShape != resultShape)
-      return emitOpError() << "expects src/result pointer tensor shapes to "
+    if (srcPtrTy.getPointeeType() != resultPtrTy.getPointeeType())
+      return emitOpError() << "expects src/result pointer pointee types to "
                               "match";
-    if (srcEncoding && resultEncoding && srcEncoding != resultEncoding)
-      return emitOpError() << "expects src/result pointer tensor encodings to "
-                              "match";
+
+    if (spaceAttr == "cluster" &&
+        srcPtrTy.getAddressSpace() != kSharedMemoryAddressSpace)
+      return emitOpError()
+             << "expects src pointers to live in shared memory (addrspace=3)";
+    if (spaceAttr == "cluster" &&
+        resultPtrTy.getAddressSpace() != kClusterSharedMemoryAddressSpace)
+      return emitOpError()
+             << "expects result pointers to live in cluster shared memory "
+                "(addrspace=7)";
   }
-  if (srcPtrTy.getPointeeType() != resultPtrTy.getPointeeType())
-    return emitOpError() << "expects src/result pointer pointee types to "
-                            "match";
-
-  if (srcPtrTy.getAddressSpace() != kSharedMemoryAddressSpace)
-    return emitOpError()
-           << "expects src pointers to live in shared memory (addrspace=3)";
-  if (resultPtrTy.getAddressSpace() != kClusterSharedMemoryAddressSpace)
-    return emitOpError()
-           << "expects result pointers to live in cluster shared memory "
-              "(addrspace=7)";
 
   if (!getShardId().getType().isInteger(32))
     return emitOpError() << "expects shard_id to be i32";
+
+  bool hasOffset = getOffset() != nullptr;
+  if (spaceAttr == "device") {
+    if (!hasOffset)
+      return emitOpError() << "device space remote pointers require an offset";
+  } else {
+    if (hasOffset)
+      return emitOpError()
+             << "offset is only supported for device space remote pointers";
+  }
+
+  if (hasOffset) {
+    Type offsetTy = getOffset().getType();
+    if (auto tensorTy = dyn_cast<RankedTensorType>(offsetTy)) {
+      if (!tensorTy.getShape().empty())
+        return emitOpError() << "expects offset to be a scalar";
+      offsetTy = tensorTy.getElementType();
+    }
+    if (!offsetTy.isSignlessInteger(64))
+      return emitOpError() << "expects offset to be i64";
+  }
 
   return success();
 }

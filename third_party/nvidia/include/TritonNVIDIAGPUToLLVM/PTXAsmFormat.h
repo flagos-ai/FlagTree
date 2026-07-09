@@ -333,11 +333,13 @@ struct PTXInstrExecution {
 
 struct PTXCpAsyncLoadInstr : PTXInstrBase<PTXCpAsyncLoadInstr> {
   explicit PTXCpAsyncLoadInstr(PTXBuilder *builder,
-                               triton::CacheModifier modifier)
+                               triton::CacheModifier modifier,
+                               bool useL2CachePolicy = false)
       : PTXInstrBase(builder, "cp.async") {
     o(triton::stringifyCacheModifier(modifier).str());
     o("shared");
     o("global");
+    o("L2::cache_hint", useL2CachePolicy);
   }
 };
 

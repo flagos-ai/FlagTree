@@ -15,7 +15,6 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   Utils.cpp
   TritonGCUPingpong/TritonGCUPingpong.cpp
   TritonGCUPingpong/MatmulLoopPipeline.cpp
-  TritonGCUPingpong/OuterLoopPipeline.cpp
   TritonGCUPingpong/PipelineExpander.cpp
   TritonGCUPingpong/PipeliningUtility.cpp
   TritonGPUtoTrtionGCU.cpp
@@ -23,15 +22,15 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   DEPENDS
   TritonGCUTableGen_${arch}
   MLIRTritonGCUConversionPassIncGen_${arch}
-  triton_${arch}
+  triton_gcu300
 
-  MemrefExtIR${arch}
-  MathExtIR${arch}
+  MemrefExtIR_${arch}
+  MathExtIR_${arch}
 
   LINK_LIBS PUBLIC
   TritonGCUAnalysis_${arch}
-  MemrefExtIR${arch}
-  MathExtIR${arch}
+  MemrefExtIR_${arch}
+  MathExtIR_${arch}
   MLIRAffineDialect
   MLIRAffineToStandard
   MLIRArithDialect

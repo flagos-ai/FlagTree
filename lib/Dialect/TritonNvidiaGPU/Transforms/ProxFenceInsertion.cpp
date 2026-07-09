@@ -4,6 +4,9 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#endif
 
 //===----------------------------------------------------------------------===//
 //
@@ -58,8 +61,13 @@ bool isAsyncProxyRead(Operation *op) {
 }
 
 bool ignoreOpForProxyFence(Operation *op) {
-  return isAsyncProxyRead(op) || isAsyncProxyWrite(op) ||
-         isa<triton::nvidia_gpu::ArriveBarrierOp,
+  if (isAsyncProxyRead(op) || isAsyncProxyWrite(op))
+    return true;
+#ifdef __TLE__
+  if (isa<triton::tle::WGMMASharedOperandFenceOp>(op))
+    return true;
+#endif
+  return isa<triton::nvidia_gpu::ArriveBarrierOp,
              triton::nvidia_gpu::TMEMCopyOp, triton::nvidia_gpu::WaitBarrierOp,
              triton::nvidia_gpu::InitBarrierOp,
              triton::nvidia_gpu::InvalBarrierOp>(op);
@@ -96,7 +104,12 @@ void ProxyFenceAnalysis::insertFence(Operation *op, OpBuilder *builder) {
 void ProxyFenceAnalysis::update(Operation *op, BlockInfo *blockInfo,
                                 FuncBlockInfoMapT *funcBlockInfoMap,
                                 OpBuilder *builder) {
+#ifdef __TLE__
+  if (isa<triton::nvidia_gpu::FenceAsyncSharedOp,
+          triton::tle::WGMMASharedOperandFenceOp>(op)) {
+#else
   if (isa<triton::nvidia_gpu::FenceAsyncSharedOp>(op)) {
+#endif
     // If the current op is a fence, we clear previous reads and writes
     blockInfo->sync();
     return;

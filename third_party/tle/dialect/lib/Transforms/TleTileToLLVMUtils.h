@@ -4,6 +4,7 @@
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
+#include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include <cassert>
@@ -36,7 +37,8 @@ llvm::SmallVector<unsigned> getShapePerCTATile(::mlir::RankedTensorType type);
 llvm::SmallVector<::mlir::Value>
 computeThreadOffsets(::mlir::Location loc,
                      ::mlir::ConversionPatternRewriter &rewriter,
-                     ::mlir::RankedTensorType tensorType);
+                     ::mlir::RankedTensorType tensorType,
+                     const ::mlir::triton::TargetInfoBase &targetInfo);
 
 } // namespace mlir::triton::tle
 

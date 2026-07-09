@@ -58,15 +58,22 @@ class HintManager:
             try:
                 module = importlib.import_module("triton.backends.nvidia.nvidia_hint_handler")
                 return module.NvidiaHintHandler()
+            except ImportError:
+                # print(f"[FlagTree] Warning: Failed to load Nvidia Hint Handler: {e}", file=sys.stderr)
+                return BaseHintHandler()
+        elif backend == 'sunrise':
+            try:
+                module = importlib.import_module("triton.backends.sunrise.sunrise_hint_handler")
+                return module.SunriseHintHandler()
             except ImportError as e:
-                print(f"[FlagTree] Warning: Failed to load Nvidia Hint Handler: {e}", file=sys.stderr)
+                print(f"[FlagTree] Warning: Failed to load Sunrise Hint Handler: {e}", file=sys.stderr)
                 return BaseHintHandler()
         else:
             return BaseHintHandler()
 
 
 # supported backend with matched version
-SUPPORTED_BACKENDS = ["aipu", "npu", "cuda"]
+SUPPORTED_BACKENDS = ["aipu", "npu", "cuda", "sunrise"]
 
 # TODO : npu will have conflicts if more backend involved
 # mapping name
@@ -74,6 +81,9 @@ BACKEND_ALIASES = {
     "ascend": "npu",
     "huawei": "npu",
     "nvidia": "cuda",
+    # sunrise: GPUTarget backend name is "tang", torch device type is "ptpu".
+    "tang": "sunrise",
+    "ptpu": "sunrise",
 }
 
 
@@ -87,10 +97,9 @@ def normalize_backend_name(name: str) -> str:
 def hint_get_flagtree_backend() -> str:
     detected_backend = ""
 
-    import torch
-
     # Priority 1: Triton Driver
     try:
+        import torch
         from triton.runtime import driver
         if hasattr(driver, 'active') and hasattr(driver.active, 'get_active_torch_device'):
             device = driver.active.get_active_torch_device()
@@ -100,7 +109,7 @@ def hint_get_flagtree_backend() -> str:
             elif isinstance(device, str):
                 detected_backend = device
     except ImportError:
-        pass
+        return ""
 
     # TODO : some backend may not support priority 1, so keep priority 2 is necessary
     # Priority 2: Torch Global State

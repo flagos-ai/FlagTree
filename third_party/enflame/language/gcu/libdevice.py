@@ -26,8 +26,8 @@ def abs(arg0, _semantic=None):
 def brev(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("int32"), ): ("__nv_brev", core.dtype("int32")),
-            (core.dtype("int64"), ): ("__nv_brevll", core.dtype("int64")),
+            (core.dtype("uint32"), ): ("__nv_brev", core.dtype("uint32")),
+            (core.dtype("uint64"), ): ("__nv_brevll", core.dtype("uint64")),
         }, is_pure=True, _semantic=_semantic)
 
 
@@ -35,8 +35,8 @@ def brev(arg0, _semantic=None):
 def clz(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("int32"), ): ("__nv_clz", core.dtype("int32")),
-            (core.dtype("int64"), ): ("__nv_clzll", core.dtype("int32")),
+            (core.dtype("int32"), ): ("__nv_clz", core.dtype("uint32")),
+            (core.dtype("int64"), ): ("__nv_clzll", core.dtype("uint64")),
         }, is_pure=True, _semantic=_semantic)
 
 

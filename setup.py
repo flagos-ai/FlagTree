@@ -402,6 +402,7 @@ class CMakeBuildPy(build_py):
 
     def run(self) -> None:
         self.run_command('build_ext')
+        helper.write_flagtree_backend_file()
         return super().run()
 
 
@@ -426,7 +427,9 @@ class CMakeBuild(build_ext):
         build_ext.finalize_options(self)
 
     def run(self):
-        download_and_copy_dependencies()
+        active_backend = os.environ.get("FLAGTREE_BACKEND", "")
+        if active_backend not in ("xpu", ):
+            download_and_copy_dependencies()
 
         try:
             out = subprocess.check_output(["cmake", "--version"])
@@ -539,6 +542,10 @@ class CMakeBuild(build_ext):
         if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
             cmake_args += self.get_proton_cmake_args()
 
+        if helper.flagtree_backend == "iluvatar":
+            gluon_flag = "ON" if check_env_flag("TRITON_ILU_BUILD_GLUON") else "OFF"
+            cmake_args += [f"-DTRITON_BUILD_GLUON={gluon_flag}"]
+
         if is_offline_build():
             # unit test builds fetch googletests from GitHub
             cmake_args += ["-DTRITON_BUILD_UT=OFF"]
@@ -643,16 +650,16 @@ def download_and_copy_dependencies():
 
 
 if helper.flagtree_backend:
-    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame"):
+    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir"):
+        default_backends = helper.configs.non_tileir_default_backends()
         backends = [
-            *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
+            *BackendInstaller.copy(default_backends + tuple(helper.configs.extend_backends)),
             *BackendInstaller.copy_externals(),
         ]
     else:
         backends = [*BackendInstaller.copy(helper.configs.extend_backends), *BackendInstaller.copy_externals()]
 else:
-    print(helper.configs.default_backends)
-    backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+    backends = [*BackendInstaller.copy(helper.configs.default_backends), *BackendInstaller.copy_externals()]
 
 #backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
 
@@ -704,8 +711,6 @@ def get_packages():
 
     if helper.flagtree_backend == "xpu":
         yield f"triton.language.extra.xpu"
-    elif helper.flagtree_backend == "mthreads":
-        yield f"triton/language/extra/musa"
 
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         yield "triton.profiler"
@@ -773,6 +778,7 @@ class plugin_develop(develop):
     def run(self):
         helper.uninstall_triton()
         add_links(external_only=False)
+        helper.write_flagtree_backend_file()
         super().run()
 
 
@@ -780,6 +786,7 @@ class plugin_editable_wheel(editable_wheel):
 
     def run(self):
         add_links(external_only=False)
+        helper.write_flagtree_backend_file()
         super().run()
 
 
@@ -856,8 +863,8 @@ def get_flagtree_version():
             return flagtree_ver + get_git_commit_hash().replace("+", ".")
     backend = os.environ.get("FLAGTREE_BACKEND", "")
     if backend:
-        return "0.5.0+" + backend + get_git_commit_hash().replace("+", ".")
-    return "0.5.0" + get_git_commit_hash()
+        return "0.6.0+" + backend + get_git_commit_hash().replace("+", ".")
+    return "0.6.0" + get_git_commit_hash()
 
 
 # Dynamically define supported Python versions and classifiers

@@ -11,7 +11,7 @@ add_mlir_library(TritonGCUAnalysis_${arch}
 
   DEPENDS
   TritonGCUTableGen_${arch}
-  triton_${arch}
+  triton_gcu300
 
   LINK_LIBS PUBLIC
   MLIRAnalysis

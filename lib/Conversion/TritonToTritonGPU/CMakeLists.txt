@@ -4,6 +4,8 @@ else()
     set(_TLE_IR_LIBS "")
 endif()
 
+get_flagtree_backend_lib("TritonToTritonGPU" _EXTRA_LINK_LIBS)
+
 add_triton_library(TritonToTritonGPU
     RelayoutTritonGPU.cpp
     TritonGPUConversion.cpp
@@ -20,4 +22,5 @@ add_triton_library(TritonToTritonGPU
     ProtonIR
     TritonGPUIR
     ${_TLE_IR_LIBS}
+    ${_EXTRA_LINK_LIBS}
 )

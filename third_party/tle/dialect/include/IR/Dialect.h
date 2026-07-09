@@ -13,4 +13,10 @@
 
 #define GET_OP_CLASSES
 #include "tle/dialect/include/IR/Ops.h.inc"
+
+#ifdef FLAGCX_ENABLED
+#define GET_OP_CLASSES
+#include "tle/dialect/include/IR/FlagCxOps.h.inc"
+#endif
+
 #endif

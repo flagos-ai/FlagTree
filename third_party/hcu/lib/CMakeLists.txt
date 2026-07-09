@@ -1,0 +1,5 @@
+add_subdirectory(Analysis)
+add_subdirectory(Dialect)
+add_subdirectory(TritonHCUGPUToLLVM)
+add_subdirectory(TritonHCUGPUDialectToLLVM)
+add_subdirectory(TritonHCUGPUTransforms)

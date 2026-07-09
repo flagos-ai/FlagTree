@@ -22,6 +22,7 @@ Notes
 
 import argparse
 import hashlib
+import math
 import urllib.request
 from functools import lru_cache
 from typing import Optional
@@ -123,7 +124,7 @@ def processHistogramStep(
     s_found_topk_values_ptr,
     s_threshold_bin_idx_ptr,
     s_final_bin_size_ptr,
-    ASSUME_ALIGNED: tl.constexpr,
+    assume_aligned,
     TOPK: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -159,7 +160,7 @@ def processHistogramStep(
     n_vec_full = seq_len // (BLOCK_SIZE * VEC)
     rem_tiles = (seq_len - n_vec_full * BLOCK_SIZE * VEC) // BLOCK_SIZE
 
-    if ASSUME_ALIGNED:
+    if assume_aligned:
         for t in tl.range(0, n_vec_full):
             base = t * BLOCK_SIZE * VEC + lane * VEC
             offs = base[:, None] + vec[None, :]
@@ -286,7 +287,7 @@ def processHistogramStep(
 
     found_ptrs = s_found_topk_values_ptr + zeros
     final_cnt_ptrs = s_final_cnt_ptr + zeros
-    if ASSUME_ALIGNED:
+    if assume_aligned:
         found_ptrs_vec_2d = s_found_topk_values_ptr + zeros_vec_2d
         final_cnt_ptrs_vec_2d = s_final_cnt_ptr + zeros_vec_2d
         for t in tl.range(0, n_vec_full):
@@ -665,7 +666,6 @@ def tle_topk_selector_kernel(
     stride_outm,
     stride_outn,
     seq_len,
-    ASSUME_ALIGNED: tl.constexpr,
     TOPK: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     USE_RADIX_FINAL: tl.constexpr,
@@ -678,7 +678,9 @@ def tle_topk_selector_kernel(
     out_row = out_ptr + pid * stride_outm
     row_len = row_end - row_start
 
-    if ASSUME_ALIGNED:
+    assume_aligned = ((row_start == 0) & (row_end == seq_len) & (stride_xn == 1) & (stride_outn == 1)
+                      & ((seq_len % BLOCK_SIZE) == 0))
+    if assume_aligned:
         tl.assume(row_start == 0)
         tl.assume(row_end == seq_len)
         tl.assume(stride_xn == 1)
@@ -790,7 +792,7 @@ def tle_topk_selector_kernel(
                 s_found_topk_values_ptr,
                 s_threshold_bin_idx_ptr,
                 s_final_bin_size_ptr,
-                ASSUME_ALIGNED=ASSUME_ALIGNED,
+                assume_aligned=assume_aligned,
                 TOPK=TOPK,
                 BLOCK_SIZE=BLOCK_SIZE,
             )
@@ -844,6 +846,254 @@ def tle_topk_selector_kernel(
         mask = pos < TOPK
         out_vals = tl.load(tle.gpu.local_ptr(s_out_indices, (pos, )), mask=mask, other=-1)
         tl.store(out_row + pos * stride_outn, out_vals, mask=mask)
+
+
+# %%
+# TLE kernel (TileLang-style)
+# ---------------------------
+
+
+@triton.jit
+def tle_tilelang_topk_selector_kernel(
+    x_ptr,
+    out_ptr,
+    starts_ptr,
+    ends_ptr,
+    stride_xm,
+    stride_xn,
+    stride_outm,
+    stride_outn,
+    seq_len,
+    TOPK: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    SMEM_INPUT_SIZE: tl.constexpr,
+):
+    # Port of the optional TileLang reference kernel:
+    # - 8-bit radix on float16-hi8 for coarse filtering;
+    # - then 4 rounds of 8-bit radix on uint32 key bytes;
+    # - keep ==threshold candidates in shared memory.
+    pid = tl.program_id(0)
+    row_start = tl.load(starts_ptr + pid).to(tl.int32)
+    row_end = tl.load(ends_ptr + pid).to(tl.int32)
+    row_ptr = x_ptr + pid * stride_xm
+    out_row = out_ptr + pid * stride_outm
+
+    lane = tl.arange(0, BLOCK_SIZE)
+    row_len = row_end - row_start
+
+    # Initialize output to -1 to avoid stale values on partial fills.
+    init_chunks: tl.constexpr = (TOPK + BLOCK_SIZE - 1) // BLOCK_SIZE
+    for t in tl.static_range(init_chunks):
+        pos = t * BLOCK_SIZE + lane
+        tl.store(out_row + pos * stride_outn, -1, mask=pos < TOPK)
+
+    if row_len <= TOPK:
+        # Trivial path: copy all indices in-range and leave the rest as -1.
+        chunks: tl.constexpr = (TOPK + BLOCK_SIZE - 1) // BLOCK_SIZE
+        for t in tl.static_range(chunks):
+            pos = t * BLOCK_SIZE + lane
+            take = pos < row_len
+            tl.store(out_row + pos * stride_outn, (row_start + pos).to(tl.int32), mask=take)
+        return
+
+    RADIX_LOCAL: tl.constexpr = 256
+    HIST_SIZE: tl.constexpr = 512
+    bins = tl.arange(0, RADIX_LOCAL).to(tl.int32)
+    ones = tl.full([BLOCK_SIZE], 1, tl.int32)
+
+    # Shared buffers (match TileLang layout/roles).
+    s_threshold_bin_id = tle.gpu.alloc([1], dtype=tl.int32, layout=None, scope=tle.gpu.smem)
+    # TLE buffered tensors currently require power-of-2 shapes.
+    # Keep the TileLang algorithm's `digit+1` addressing by allocating 512 slots
+    # and using only [0..256].
+    s_histogram = tle.gpu.alloc([HIST_SIZE], dtype=tl.int32, layout=None, scope=tle.gpu.smem)
+    s_num_input = tle.gpu.alloc([2], dtype=tl.int32, layout=None, scope=tle.gpu.smem)
+    s_input_idx = tle.gpu.alloc([2, SMEM_INPUT_SIZE], dtype=tl.int32, layout=None, scope=tle.gpu.smem)
+
+    s_threshold_bin_id_ptr = tle.gpu.local_ptr(s_threshold_bin_id, (0, ))
+    s_num0_ptr = tle.gpu.local_ptr(s_num_input, (0, ))
+    s_num1_ptr = tle.gpu.local_ptr(s_num_input, (1, ))
+    zeros_i32 = tl.zeros([BLOCK_SIZE], dtype=tl.int32)
+    ones_i32 = zeros_i32 + 1
+    s_num0_ptrs = tle.gpu.local_ptr(s_num_input, (zeros_i32, ))
+    s_num1_ptrs = tle.gpu.local_ptr(s_num_input, (ones_i32, ))
+
+    hist_ptrs = tle.gpu.local_ptr(s_histogram, (bins, ))
+    hist_last_ptr = tle.gpu.local_ptr(s_histogram, (RADIX_LOCAL, ))
+
+    # Reset state.
+    tl.store(hist_ptrs, 0)
+    tl.store(hist_last_ptr, 0)
+    tl.store(s_threshold_bin_id_ptr, 0)
+    tl.store(s_num0_ptr, 0)
+    tl.store(s_num1_ptr, 0)
+
+    new_topk = tl.full((), TOPK, tl.int32)
+
+    # -----------------------
+    # Stage 0: fp16-hi8 radix
+    # -----------------------
+    n_tiles = tl.cdiv(seq_len, BLOCK_SIZE)
+    for t in tl.range(0, n_tiles):
+        idx = t * BLOCK_SIZE + lane
+        valid = (idx < row_end) & (idx >= row_start) & (idx < seq_len)
+        x = tl.load(row_ptr + idx * stride_xn, mask=valid, other=float("-inf"))
+        digit = _convert_to_uint16_hi8(x)
+        tl.atomic_add(
+            tle.gpu.local_ptr(s_histogram, (digit, )),
+            ones,
+            mask=valid,
+            sem="relaxed",
+            scope="cta",
+        )
+
+    # Suffix sum (descending cumulative histogram).
+    counts = tl.load(hist_ptrs)
+    suffix = tl.cumsum(counts, axis=0, reverse=True)
+    tl.store(hist_ptrs, suffix)
+    tl.store(hist_last_ptr, 0)
+
+    # threshold bin id: max bin with suffix[bin] > new_topk.
+    thr_bin = tl.max(tl.where(suffix > new_topk, bins, 0), axis=0).to(tl.int32)
+    tl.store(s_threshold_bin_id_ptr, thr_bin)
+
+    thr_bin = tl.load(s_threshold_bin_id_ptr)
+    count_gt = tl.load(tle.gpu.local_ptr(s_histogram, (thr_bin + 1, )))
+    new_topk = new_topk - count_gt
+
+    # Emit all digit > thr_bin to output; keep ==thr candidates in shared memory.
+    for t in tl.range(0, n_tiles):
+        idx = t * BLOCK_SIZE + lane
+        valid = (idx < row_end) & (idx >= row_start) & (idx < seq_len)
+        x = tl.load(row_ptr + idx * stride_xn, mask=valid, other=float("-inf"))
+        digit = _convert_to_uint16_hi8(x)
+
+        take_gt = valid & (digit > thr_bin)
+        pos_gt = tl.atomic_add(
+            tle.gpu.local_ptr(s_histogram, (digit + 1, )),
+            ones,
+            mask=take_gt,
+            sem="relaxed",
+            scope="cta",
+        )
+        tl.store(out_row + pos_gt * stride_outn, idx, mask=take_gt & (pos_gt < TOPK))
+
+        take_eq = valid & (digit == thr_bin) & (new_topk > 0)
+        pos_eq = tl.atomic_add(
+            s_num0_ptrs,
+            ones,
+            mask=take_eq,
+            sem="relaxed",
+            scope="cta",
+        )
+        tl.store(
+            tle.gpu.local_ptr(s_input_idx, (tl.zeros([BLOCK_SIZE], dtype=tl.int32), pos_eq)),
+            idx,
+            mask=take_eq & (pos_eq < SMEM_INPUT_SIZE),
+        )
+
+    # -----------------------------
+    # Stages 1-4: uint32 byte radix
+    # -----------------------------
+    num_in = tl.minimum(tl.load(s_num0_ptr), SMEM_INPUT_SIZE)
+    for round_idx in tl.static_range(0, 4):
+        if new_topk > 0:
+            r_idx = round_idx & 1
+            start_pos = TOPK - new_topk
+
+            # Reset histogram and next candidate count.
+            tl.store(hist_ptrs, 0)
+            tl.store(hist_last_ptr, 0)
+            if r_idx == 0:
+                tl.store(s_num1_ptr, 0)
+                cur_num_ptr = s_num0_ptr
+                nxt_num_ptr = s_num1_ptr
+                nxt_num_ptrs = s_num1_ptrs
+            else:
+                tl.store(s_num0_ptr, 0)
+                cur_num_ptr = s_num1_ptr
+                nxt_num_ptr = s_num0_ptr
+                nxt_num_ptrs = s_num0_ptrs
+
+            num_in = tl.minimum(tl.load(cur_num_ptr), SMEM_INPUT_SIZE)
+            in_tiles = tl.cdiv(num_in, BLOCK_SIZE)
+            shift = 24 - round_idx * 8
+
+            # Count histogram for current candidates.
+            r_full = tl.zeros([BLOCK_SIZE], dtype=tl.int32) + r_idx
+            for t in tl.range(0, in_tiles):
+                pos = t * BLOCK_SIZE + lane
+                valid = pos < num_in
+                idx = tl.load(tle.gpu.local_ptr(s_input_idx, (r_full, pos)), mask=valid, other=0)
+                x = tl.load(row_ptr + idx * stride_xn, mask=valid, other=float("-inf"))
+                key = _convert_to_uint32(x)
+                digit = ((key >> shift) & 0xFF).to(tl.int32)
+                tl.atomic_add(
+                    tle.gpu.local_ptr(s_histogram, (digit, )),
+                    ones,
+                    mask=valid,
+                    sem="relaxed",
+                    scope="cta",
+                )
+
+            # Suffix sum and threshold.
+            counts = tl.load(hist_ptrs)
+            suffix = tl.cumsum(counts, axis=0, reverse=True)
+            tl.store(hist_ptrs, suffix)
+            tl.store(hist_last_ptr, 0)
+            thr_bin = tl.max(tl.where(suffix > new_topk, bins, 0), axis=0).to(tl.int32)
+            tl.store(s_threshold_bin_id_ptr, thr_bin)
+            thr_bin = tl.load(s_threshold_bin_id_ptr)
+            count_gt = tl.load(tle.gpu.local_ptr(s_histogram, (thr_bin + 1, )))
+            new_topk = new_topk - count_gt
+
+            # Select >thr to output; ==thr to next candidate buffer or final output on last round.
+            for t in tl.range(0, in_tiles):
+                pos = t * BLOCK_SIZE + lane
+                valid = pos < num_in
+                idx = tl.load(tle.gpu.local_ptr(s_input_idx, (r_full, pos)), mask=valid, other=0)
+                x = tl.load(row_ptr + idx * stride_xn, mask=valid, other=float("-inf"))
+                key = _convert_to_uint32(x)
+                digit = ((key >> shift) & 0xFF).to(tl.int32)
+
+                take_gt = valid & (digit > thr_bin)
+                pos_gt = tl.atomic_add(
+                    tle.gpu.local_ptr(s_histogram, (digit + 1, )),
+                    ones,
+                    mask=take_gt,
+                    sem="relaxed",
+                    scope="cta",
+                )
+                out_pos = pos_gt + start_pos
+                tl.store(out_row + out_pos * stride_outn, idx, mask=take_gt & (out_pos < TOPK))
+
+                take_eq = valid & (digit == thr_bin) & (new_topk > 0)
+                if round_idx == 3:
+                    pos_eq = tl.atomic_add(
+                        tle.gpu.local_ptr(s_histogram, (digit + 1, )),
+                        ones,
+                        mask=take_eq,
+                        sem="relaxed",
+                        scope="cta",
+                    )
+                    out_pos = pos_eq + start_pos
+                    tl.store(out_row + out_pos * stride_outn, idx, mask=take_eq & (out_pos < TOPK))
+                else:
+                    pos_nxt = tl.atomic_add(
+                        nxt_num_ptrs,
+                        ones,
+                        mask=take_eq,
+                        sem="relaxed",
+                        scope="cta",
+                    )
+                    nxt_full = tl.zeros([BLOCK_SIZE], dtype=tl.int32) + (r_idx ^ 1)
+                    tl.store(
+                        tle.gpu.local_ptr(s_input_idx, (nxt_full, pos_nxt)),
+                        idx,
+                        mask=take_eq & (pos_nxt < SMEM_INPUT_SIZE),
+                    )
+
+            num_in = tl.minimum(tl.load(nxt_num_ptr), SMEM_INPUT_SIZE)
 
 
 @triton.jit
@@ -1078,7 +1328,7 @@ def _tle_process_histogram_step_smem(
     dst_val_ptr,
     dst_count_ptr,
     s_need_fallback_ptr,
-    ASSUME_ALIGNED: tl.constexpr,
+    assume_aligned,
     TOPK: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     SMEM_INPUT_SIZE: tl.constexpr,
@@ -1105,7 +1355,7 @@ def _tle_process_histogram_step_smem(
         tl.store(hist_base_ptr + clear_bins, 0)
 
     if step_idx == 0:
-        if ASSUME_ALIGNED:
+        if assume_aligned:
             n_vec_full = seq_len // (BLOCK_SIZE * VEC)
             rem_tiles = (seq_len - n_vec_full * BLOCK_SIZE * VEC) // BLOCK_SIZE
 
@@ -1232,7 +1482,7 @@ def _tle_process_histogram_step_smem(
     fallback_ptrs_vec_2d = s_need_fallback_ptr + zeros_vec_2d
 
     if step_idx == 0:
-        if ASSUME_ALIGNED:
+        if assume_aligned:
             n_vec_full = seq_len // (BLOCK_SIZE * VEC)
             rem_tiles = (seq_len - n_vec_full * BLOCK_SIZE * VEC) // BLOCK_SIZE
 
@@ -1613,7 +1863,6 @@ def tle_topk_selector_kernel_smem(
     stride_outm,
     stride_outn,
     seq_len,
-    ASSUME_ALIGNED: tl.constexpr,
     TOPK: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     SMEM_INPUT_SIZE: tl.constexpr,
@@ -1627,7 +1876,9 @@ def tle_topk_selector_kernel_smem(
     out_row = out_ptr + pid * stride_outm
     row_len = row_end - row_start
 
-    if ASSUME_ALIGNED:
+    assume_aligned = ((row_start == 0) & (row_end == seq_len) & (stride_xn == 1) & (stride_outn == 1)
+                      & ((seq_len % BLOCK_SIZE) == 0))
+    if assume_aligned:
         tl.assume(row_start == 0)
         tl.assume(row_end == seq_len)
         tl.assume(stride_xn == 1)
@@ -1824,7 +2075,7 @@ def tle_topk_selector_kernel_smem(
                 dst_val_ptr,
                 dst_count_ptr,
                 s_need_fallback_ptr,
-                ASSUME_ALIGNED=ASSUME_ALIGNED,
+                assume_aligned=assume_aligned,
                 TOPK=TOPK,
                 BLOCK_SIZE=BLOCK_SIZE,
                 SMEM_INPUT_SIZE=SMEM_INPUT_SIZE,
@@ -1921,7 +2172,7 @@ def _tle_process_histogram_step_cluster(
     s_final_bin_size_rank0_ptr,
     mesh: tl.constexpr,
     CLUSTER_SIZE: tl.constexpr,
-    ASSUME_ALIGNED: tl.constexpr,
+    assume_aligned,
     TOPK: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -1972,7 +2223,7 @@ def _tle_process_histogram_step_cluster(
     n_vec_full = seq_len // (BLOCK_SIZE * VEC)
     rem_tiles = (seq_len - n_vec_full * BLOCK_SIZE * VEC) // BLOCK_SIZE
 
-    if ASSUME_ALIGNED:
+    if assume_aligned:
         for t in tl.range(0, n_vec_full):
             if (t % CLUSTER_SIZE) == cluster_rank:
                 base = t * BLOCK_SIZE * VEC + lane * VEC
@@ -2111,7 +2362,7 @@ def _tle_process_histogram_step_cluster(
 
     found_ptrs = s_found_topk_values_rank0_ptr + zeros
     final_cnt_ptrs = s_final_cnt_rank0_ptr + zeros
-    if ASSUME_ALIGNED:
+    if assume_aligned:
         found_ptrs_vec_2d = s_found_topk_values_rank0_ptr + zeros_vec_2d
         final_cnt_ptrs_vec_2d = s_final_cnt_rank0_ptr + zeros_vec_2d
         for t in tl.range(0, n_vec_full):
@@ -2356,7 +2607,6 @@ def tle_topk_selector_kernel_smem_cluster(
     seq_len,
     mesh: tl.constexpr,
     CLUSTER_SIZE: tl.constexpr,
-    ASSUME_ALIGNED: tl.constexpr,
     TOPK: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     USE_RADIX_FINAL: tl.constexpr,
@@ -2372,7 +2622,9 @@ def tle_topk_selector_kernel_smem_cluster(
     out_row = out_ptr + pid * stride_outm
     row_len = row_end - row_start
 
-    if ASSUME_ALIGNED:
+    assume_aligned = ((row_start == 0) & (row_end == seq_len) & (stride_xn == 1) & (stride_outn == 1)
+                      & ((seq_len % BLOCK_SIZE) == 0))
+    if assume_aligned:
         tl.assume(row_start == 0)
         tl.assume(row_end == seq_len)
         tl.assume(stride_xn == 1)
@@ -2513,7 +2765,7 @@ def tle_topk_selector_kernel_smem_cluster(
                 s_final_bin_size_rank0_ptr,
                 mesh=mesh,
                 CLUSTER_SIZE=CLUSTER_SIZE,
-                ASSUME_ALIGNED=ASSUME_ALIGNED,
+                assume_aligned=assume_aligned,
                 TOPK=TOPK,
                 BLOCK_SIZE=BLOCK_SIZE,
             )
@@ -2588,7 +2840,6 @@ def triton_topk_selector_kernel(
     stride_c1m,
     stride_c1n,
     seq_len,
-    ASSUME_ALIGNED: tl.constexpr,
     TOPK: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     RADIX_BITS: tl.constexpr,
@@ -2602,7 +2853,9 @@ def triton_topk_selector_kernel(
     cand0_row = cand0_ptr + pid * stride_c0m
     cand1_row = cand1_ptr + pid * stride_c1m
 
-    if ASSUME_ALIGNED:
+    assume_aligned = ((row_start == 0) & (row_end == seq_len) & (stride_xn == 1) & (stride_outn == 1)
+                      & ((seq_len % BLOCK_SIZE) == 0))
+    if assume_aligned:
         tl.assume(row_start == 0)
         tl.assume(row_end == seq_len)
         tl.assume(stride_xn == 1)
@@ -2927,7 +3180,6 @@ def tle_topk_selector(
     topk,
     block_size=1024,
     out: Optional[torch.Tensor] = None,
-    assume_aligned: Optional[bool] = None,
     use_radix_final: Optional[bool] = None,
 ):
     if x.dtype != torch.float32:
@@ -2938,10 +3190,6 @@ def tle_topk_selector(
     tle_block_size = TLE_FIXED_BLOCK_SIZE
     if use_radix_final is None:
         use_radix_final = seq_len >= TLE_RADIX_FINAL_SEQ_LEN_THRESHOLD
-
-    if assume_aligned is None:
-        assume_aligned = (x.is_contiguous() and out.is_contiguous() and (seq_len % tle_block_size == 0)
-                          and torch.all(starts == 0).item() and torch.all(ends == seq_len).item())
 
     batch, seq_len = x.shape
     grid = (batch, )
@@ -2955,7 +3203,6 @@ def tle_topk_selector(
         out.stride(0),
         out.stride(1),
         seq_len,
-        ASSUME_ALIGNED=assume_aligned,
         TOPK=topk,
         BLOCK_SIZE=tle_block_size,
         USE_RADIX_FINAL=use_radix_final,
@@ -2971,7 +3218,6 @@ def tle_topk_selector_1024threads(
     ends,
     topk,
     out: Optional[torch.Tensor] = None,
-    assume_aligned: Optional[bool] = None,
     use_radix_final: Optional[bool] = None,
 ):
     if x.dtype != torch.float32:
@@ -2982,10 +3228,6 @@ def tle_topk_selector_1024threads(
     tle_block_size = 1024
     if use_radix_final is None:
         use_radix_final = seq_len >= TLE_RADIX_FINAL_SEQ_LEN_THRESHOLD
-
-    if assume_aligned is None:
-        assume_aligned = (x.is_contiguous() and out.is_contiguous() and (seq_len % tle_block_size == 0)
-                          and torch.all(starts == 0).item() and torch.all(ends == seq_len).item())
 
     grid = (batch, )
     tle_topk_selector_kernel[grid](
@@ -2998,7 +3240,6 @@ def tle_topk_selector_1024threads(
         out.stride(0),
         out.stride(1),
         seq_len,
-        ASSUME_ALIGNED=assume_aligned,
         TOPK=topk,
         BLOCK_SIZE=tle_block_size,
         USE_RADIX_FINAL=use_radix_final,
@@ -3015,7 +3256,6 @@ def tle_topk_selector_smem(
     topk,
     block_size=1024,
     out: Optional[torch.Tensor] = None,
-    assume_aligned: Optional[bool] = None,
     use_radix_final: Optional[bool] = None,
 ):
     if x.dtype != torch.float32:
@@ -3026,29 +3266,27 @@ def tle_topk_selector_smem(
     tle_block_size = TLE_SMEM_BLOCK_SIZE
     if use_radix_final is None:
         use_radix_final = seq_len >= TLE_RADIX_FINAL_SEQ_LEN_THRESHOLD
-    if assume_aligned is None:
-        assume_aligned = (x.is_contiguous() and out.is_contiguous() and (seq_len % tle_block_size == 0)
-                          and torch.all(starts == 0).item() and torch.all(ends == seq_len).item())
-
     grid = (batch, )
-    tle_topk_selector_kernel_smem[grid](
-        x,
-        out,
-        starts,
-        ends,
-        x.stride(0),
-        x.stride(1),
-        out.stride(0),
-        out.stride(1),
-        seq_len,
-        ASSUME_ALIGNED=assume_aligned,
-        TOPK=topk,
-        BLOCK_SIZE=tle_block_size,
-        SMEM_INPUT_SIZE=TLE_SMEM_INPUT_SIZE,
-        USE_RADIX_FINAL=use_radix_final,
-        num_warps=TLE_SMEM_NUM_WARPS,
-        num_stages=TLE_SMEM_NUM_STAGES,
-    )
+    try:
+        tle_topk_selector_kernel_smem[grid](
+            x,
+            out,
+            starts,
+            ends,
+            x.stride(0),
+            x.stride(1),
+            out.stride(0),
+            out.stride(1),
+            seq_len,
+            TOPK=topk,
+            BLOCK_SIZE=tle_block_size,
+            SMEM_INPUT_SIZE=TLE_SMEM_INPUT_SIZE,
+            USE_RADIX_FINAL=use_radix_final,
+            num_warps=TLE_SMEM_NUM_WARPS,
+            num_stages=TLE_SMEM_NUM_STAGES,
+        )
+    except triton.runtime.errors.OutOfResources:
+        return float("nan")
     return out
 
 
@@ -3059,7 +3297,6 @@ def tle_topk_selector_smem_cluster(
     topk,
     block_size=1024,
     out: Optional[torch.Tensor] = None,
-    assume_aligned: Optional[bool] = None,
     use_radix_final: Optional[bool] = None,
 ):
     if not _supports_tle_cluster_remote():
@@ -3072,10 +3309,6 @@ def tle_topk_selector_smem_cluster(
     tle_block_size = TLE_SMEM_BLOCK_SIZE
     if use_radix_final is None:
         use_radix_final = seq_len >= TLE_RADIX_FINAL_SEQ_LEN_THRESHOLD
-    if assume_aligned is None:
-        assume_aligned = (x.is_contiguous() and out.is_contiguous() and (seq_len % tle_block_size == 0)
-                          and torch.all(starts == 0).item() and torch.all(ends == seq_len).item())
-
     grid = (batch, )
     tle_topk_selector_kernel_smem_cluster[grid](
         x,
@@ -3089,13 +3322,46 @@ def tle_topk_selector_smem_cluster(
         seq_len,
         mesh=BLOCK_CLUSTER_MESH_8,
         CLUSTER_SIZE=TLE_SMEM_CLUSTER_SIZE,
-        ASSUME_ALIGNED=assume_aligned,
         TOPK=topk,
         BLOCK_SIZE=tle_block_size,
         USE_RADIX_FINAL=use_radix_final,
         num_ctas=1,
         num_warps=TLE_SMEM_NUM_WARPS,
         num_stages=TLE_SMEM_NUM_STAGES,
+    )
+    return out
+
+
+def tle_tilelang_topk_selector(
+    x: torch.Tensor,
+    starts: torch.Tensor,
+    ends: torch.Tensor,
+    topk: int,
+    out: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    # TileLang-style selector ported to Triton+TLE (no TileLang dependency).
+    if x.dtype != torch.float32:
+        x = x.float()
+    batch, seq_len = x.shape
+    if out is None:
+        out = torch.full((batch, topk), -1, dtype=torch.int32, device=x.device)
+
+    grid = (batch, )
+    tle_tilelang_topk_selector_kernel[grid](
+        x,
+        out,
+        starts,
+        ends,
+        x.stride(0),
+        x.stride(1),
+        out.stride(0),
+        out.stride(1),
+        seq_len,
+        TOPK=topk,
+        BLOCK_SIZE=1024,
+        SMEM_INPUT_SIZE=TLE_SMEM_INPUT_SIZE,
+        num_warps=1024 // 32,
+        num_stages=1,
     )
     return out
 
@@ -3109,7 +3375,6 @@ def triton_topk_selector(
     out: Optional[torch.Tensor] = None,
     cand0: Optional[torch.Tensor] = None,
     cand1: Optional[torch.Tensor] = None,
-    assume_aligned: Optional[bool] = None,
 ):
     if x.dtype != torch.float32:
         x = x.float()
@@ -3120,10 +3385,6 @@ def triton_topk_selector(
         cand0 = torch.empty((batch, seq_len), dtype=torch.int32, device=x.device)
     if cand1 is None:
         cand1 = torch.empty((batch, seq_len), dtype=torch.int32, device=x.device)
-
-    if assume_aligned is None:
-        assume_aligned = (x.is_contiguous() and out.is_contiguous() and (seq_len % block_size == 0)
-                          and torch.all(starts == 0).item() and torch.all(ends == seq_len).item())
 
     assert cand0.shape == (batch, seq_len) and cand0.dtype == torch.int32 and cand0.is_cuda
     assert cand1.shape == (batch, seq_len) and cand1.dtype == torch.int32 and cand1.is_cuda
@@ -3148,7 +3409,6 @@ def triton_topk_selector(
         cand1.stride(0),
         cand1.stride(1),
         seq_len,
-        ASSUME_ALIGNED=assume_aligned,
         TOPK=topk,
         BLOCK_SIZE=block_size,
         RADIX_BITS=8,
@@ -3162,7 +3422,8 @@ def triton_topk_selector(
 # TRT-LLM CUDA reference (optional)
 # ---------------------------------
 
-TRTLLM_INDEXER_TOPK_KERNEL_URL = ("https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/main/"
+TRTLLM_INDEXER_TOPK_COMMIT = "b882393d697bc485dd16fc11ccbb1fc4e5a1832d"
+TRTLLM_INDEXER_TOPK_KERNEL_URL = (f"https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/{TRTLLM_INDEXER_TOPK_COMMIT}/"
                                   "cpp/tensorrt_llm/kernels/indexerTopK.cu")
 FLASHINFER_TOPK_CUH_URL = ("https://raw.githubusercontent.com/flashinfer-ai/flashinfer/refs/heads/main/"
                            "include/flashinfer/topk.cuh")
@@ -3294,6 +3555,17 @@ inline void sync_check_cuda_error(cudaStream_t) { C10_CUDA_CHECK(cudaGetLastErro
     return shim + src
 
 
+@lru_cache(maxsize=None)
+def _download_trtllm_indexer_topk_source():
+    """Download source once, cache the result."""
+    try:
+        with urllib.request.urlopen(TRTLLM_INDEXER_TOPK_KERNEL_URL, timeout=20) as resp:
+            return resp.read().decode("utf-8")
+    except Exception as ex:
+        print(f"warning: failed to download trtllm indexerTopK.cu: {ex}")
+        return None
+
+
 @lru_cache(maxsize=4)
 def _load_embedded_trtllm_indexer_topk(prefill_threads: int = 512):
     try:
@@ -3302,11 +3574,8 @@ def _load_embedded_trtllm_indexer_topk(prefill_threads: int = 512):
         print(f"warning: cannot import torch cpp_extension for trtllm topk: {ex}")
         return None
 
-    try:
-        with urllib.request.urlopen(TRTLLM_INDEXER_TOPK_KERNEL_URL, timeout=20) as resp:
-            cuda_src = resp.read().decode("utf-8")
-    except Exception as ex:
-        print(f"warning: failed to download trtllm indexerTopK.cu: {ex}")
+    cuda_src = _download_trtllm_indexer_topk_source()
+    if cuda_src is None:
         return None
 
     cuda_src = _patch_trtllm_indexer_topk_source(cuda_src, prefill_threads=prefill_threads)
@@ -3689,11 +3958,12 @@ def _recall(pred, ref):
 
 
 _BENCH_PROVIDERS = (["triton"] + ["trtllm-prefill"] + ["trtllm-prefill-1024threads"] + ["flashinfer-cuda"] +
-                    ["tle-trt"] + ["tle-trt-1024threads"] + ["tle-cluster"] + (["tilelang"] if _HAVE_TILELANG else []))
+                    ["tle-trt"] + ["tle-trt-1024threads"] + ["tle-cluster"] + ["tle-tilelang"] +
+                    (["tilelang"] if _HAVE_TILELANG else []))
 _BENCH_NAMES = (["Triton"] + ["TRTLLM-Prefill"] + ["TRTLLM-Prefill-1024T"] + ["FlashInfer"] + ["TLE-TRT"] +
-                ["TLE-TRT-1024T"] + ["TLE-Cluster"] + (["TileLang"] if _HAVE_TILELANG else []))
+                ["TLE-TRT-1024T"] + ["TLE-Cluster"] + ["TLE-TileLang"] + (["TileLang"] if _HAVE_TILELANG else []))
 _BENCH_STYLES = ([("red", "-")] + [("black", "-")] + [("brown", "-")] + [("gray", "-")] + [("orange", "-")] +
-                 [("olive", "-")] + [("teal", "-")] + ([("blue", "-")] if _HAVE_TILELANG else []))
+                 [("olive", "-")] + [("teal", "-")] + [("pink", "-")] + ([("blue", "-")] if _HAVE_TILELANG else []))
 _BENCH_XVALS = [
     (1, 131072, 2048),
     (1, 262144, 2048),
@@ -3705,6 +3975,7 @@ _BENCH_XVALS = [
     (64, 131072, 2048),
     (64, 524288, 2048),
 ]
+_PERF_TOPK2048_XVALS = [(batch, seq_len, 2048) for batch in (1, 132, 4096) for seq_len in (2048, 4096, 16384, 65536)]
 _TILELANG_SKIP_SEQ_LEN_MIN = 262144
 
 
@@ -3726,7 +3997,6 @@ def benchmark(batch, seq_len, topk, provider, block_size, warmup, rep):
     x = torch.randn(batch, seq_len, device=DEVICE, dtype=torch.float32)
     starts = torch.zeros(batch, dtype=torch.int32, device=DEVICE)
     ends = torch.full((batch, ), seq_len, dtype=torch.int32, device=DEVICE)
-    assume_aligned = (seq_len % block_size == 0)
     quantiles = [0.5, 0.2, 0.8]
 
     if provider == "tle-trt":
@@ -3740,7 +4010,6 @@ def benchmark(batch, seq_len, topk, provider, block_size, warmup, rep):
                 topk,
                 block_size=block_size,
                 out=tle_out,
-                assume_aligned=assume_aligned,
             )
 
     elif provider == "tle-trt-1024threads":
@@ -3753,7 +4022,6 @@ def benchmark(batch, seq_len, topk, provider, block_size, warmup, rep):
                 ends,
                 topk,
                 out=tle_out,
-                assume_aligned=assume_aligned,
             )
 
     elif provider == "tle-cluster":
@@ -3771,7 +4039,18 @@ def benchmark(batch, seq_len, topk, provider, block_size, warmup, rep):
                 topk,
                 block_size=block_size,
                 out=tle_smem_cluster_out,
-                assume_aligned=assume_aligned,
+            )
+
+    elif provider == "tle-tilelang":
+        tle_tl_out = torch.full((batch, topk), -1, dtype=torch.int32, device=x.device)
+
+        def run():
+            tle_tilelang_topk_selector(
+                x,
+                starts,
+                ends,
+                topk,
+                out=tle_tl_out,
             )
 
     elif provider == "triton":
@@ -3789,7 +4068,6 @@ def benchmark(batch, seq_len, topk, provider, block_size, warmup, rep):
                 out=triton_out,
                 cand0=triton_cand0,
                 cand1=triton_cand1,
-                assume_aligned=assume_aligned,
             )
 
     elif provider == "trtllm-decode":
@@ -3876,6 +4154,11 @@ def benchmark(batch, seq_len, topk, provider, block_size, warmup, rep):
     else:
         if not _HAVE_TILELANG:
             return float("nan"), float("nan"), float("nan")
+        # TileLang kernel is unstable on very large batch counts (e.g. batch=4096),
+        # which can trigger CUDA illegal instruction and abort the whole benchmark.
+        # Skip such points instead of crashing the full perf run.
+        if batch >= 4096:
+            return float("nan"), float("nan"), float("nan")
         if seq_len >= _TILELANG_SKIP_SEQ_LEN_MIN:
             return float("nan"), float("nan"), float("nan")
         tilelang_out = torch.zeros((batch, topk), dtype=torch.int32, device=x.device)
@@ -3897,7 +4180,6 @@ def run_correctness(batch, seq_len, topk, block_size):
     x = torch.randn(batch, seq_len, device=DEVICE, dtype=torch.float32)
     starts = torch.zeros(batch, dtype=torch.int32, device=DEVICE)
     ends = torch.full((batch, ), seq_len, dtype=torch.int32, device=DEVICE)
-    assume_aligned = (seq_len % block_size == 0)
 
     ref = _torch_topk_indices(x, starts, ends, topk)
 
@@ -3907,7 +4189,6 @@ def run_correctness(batch, seq_len, topk, block_size):
         ends,
         topk,
         block_size=block_size,
-        assume_aligned=assume_aligned,
     )
     tle_smem_out = tle_topk_selector_smem(
         x,
@@ -3915,7 +4196,6 @@ def run_correctness(batch, seq_len, topk, block_size):
         ends,
         topk,
         block_size=block_size,
-        assume_aligned=assume_aligned,
     )
     tle_smem_cluster_out = None
     if _supports_tle_cluster_remote():
@@ -3925,28 +4205,35 @@ def run_correctness(batch, seq_len, topk, block_size):
             ends,
             topk,
             block_size=block_size,
-            assume_aligned=assume_aligned,
         )
+    tle_tilelang_out = tle_tilelang_topk_selector(x, starts, ends, topk)
 
     print(f"TLE recall vs torch.topk: {_recall(tle_out, ref):.4f}")
-    print(f"TLE-SMEM recall vs torch.topk: {_recall(tle_smem_out, ref):.4f}")
+    if isinstance(tle_smem_out, float) and math.isnan(tle_smem_out):
+        print("TLE-SMEM OOR; skipping TLE-SMEM correctness.")
+    else:
+        print(f"TLE-SMEM recall vs torch.topk: {_recall(tle_smem_out, ref):.4f}")
     if tle_smem_cluster_out is not None:
         print(f"TLE-Cluster recall vs torch.topk: {_recall(tle_smem_cluster_out, ref):.4f}")
     else:
         print("TLE-Cluster not available; skipping cluster correctness.")
+    print(f"TLE-TileLang recall vs torch.topk: {_recall(tle_tilelang_out, ref):.4f}")
     triton_out = triton_topk_selector(
         x,
         starts,
         ends,
         topk,
         block_size=block_size,
-        assume_aligned=assume_aligned,
     )
     print(f"Triton recall vs torch.topk: {_recall(triton_out, ref):.4f}")
     print(f"TLE recall vs Triton: {_recall(tle_out, triton_out):.4f}")
-    print(f"TLE-SMEM recall vs Triton: {_recall(tle_smem_out, triton_out):.4f}")
+    if isinstance(tle_smem_out, float) and math.isnan(tle_smem_out):
+        print("TLE-SMEM OOR; skipping TLE-SMEM vs Triton.")
+    else:
+        print(f"TLE-SMEM recall vs Triton: {_recall(tle_smem_out, triton_out):.4f}")
     if tle_smem_cluster_out is not None:
         print(f"TLE-Cluster recall vs Triton: {_recall(tle_smem_cluster_out, triton_out):.4f}")
+    print(f"TLE-TileLang recall vs Triton: {_recall(tle_tilelang_out, triton_out):.4f}")
 
     trtllm_fn = _load_embedded_trtllm_indexer_topk()
     if trtllm_fn is not None:
@@ -3978,6 +4265,7 @@ def run_correctness(batch, seq_len, topk, block_size):
         tilelang_out = tilelang_topk_selector(x, starts, ends, topk)
         print(f"TileLang recall vs torch.topk: {_recall(tilelang_out, ref):.4f}")
         print(f"TLE recall vs TileLang: {_recall(tle_out, tilelang_out):.4f}")
+        print(f"TLE-TileLang recall vs TileLang: {_recall(tle_tilelang_out, tilelang_out):.4f}")
     else:
         print("TileLang not available; skipping TileLang correctness.")
 
@@ -4013,10 +4301,10 @@ def _parse_providers(raw):
 
 
 def run_bench(block_size, warmup, rep, show_plots, providers=None, bench_x_vals=None, quick_bench=False,
-              max_seq_len=None):
+              max_seq_len=None, perf_topk2048_cases=False):
     bench = benchmark.benchmarks
 
-    x_vals = list(_BENCH_XVALS)
+    x_vals = list(_PERF_TOPK2048_XVALS) if perf_topk2048_cases else list(_BENCH_XVALS)
     if quick_bench:
         x_vals = [v for v in x_vals if v[1] <= 32768]
     if max_seq_len is not None:
@@ -4025,6 +4313,11 @@ def run_bench(block_size, warmup, rep, show_plots, providers=None, bench_x_vals=
         x_vals = list(bench_x_vals)
     if not x_vals:
         raise ValueError("no benchmark x_vals left after filtering")
+
+    if perf_topk2048_cases and providers is None:
+        # Keep perf_topk2048_cases stable by default:
+        # tilelang mixed with other providers can hit illegal-instruction aborts.
+        providers = [p for p in _BENCH_PROVIDERS if p != "tilelang"]
 
     line_vals = list(_BENCH_PROVIDERS)
     line_names = list(_BENCH_NAMES)
@@ -4092,7 +4385,15 @@ def main(argv=None):
         default=None,
         help="filter benchmark cases by seq_len <= max_seq_len",
     )
+    parser.add_argument(
+        "--perf_topk2048_cases",
+        action="store_true",
+        help="run perf-only x-values for topk=2048: bs=1/132/4096 and seq_len=2k/4k/16k/64k",
+    )
     args = parser.parse_args(argv)
+
+    if args.perf_topk2048_cases:
+        args.skip_correctness = True
 
     if not args.skip_correctness:
         run_correctness(
@@ -4114,6 +4415,7 @@ def main(argv=None):
             bench_x_vals=bench_x_vals,
             quick_bench=args.quick_bench,
             max_seq_len=args.max_seq_len,
+            perf_topk2048_cases=args.perf_topk2048_cases,
         )
 
 

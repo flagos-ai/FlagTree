@@ -235,11 +235,17 @@ def NVWS_CreateTokenOp : NVWS_Op<"create_token"> {
 
   let results = (outs TensorOf<[NVWS_TokenType]>:$result);
 
-  let arguments = (ins I32Attr:$numBuffers, NVWS_TokenLoadTypeAttr:$loadType);
+  let arguments = (ins
+    I32Attr:$numBuffers,
+    NVWS_TokenLoadTypeAttr:$loadType,
+    OptionalAttr<I32Attr>:$full_count,
+    OptionalAttr<I32Attr>:$empty_count
+  );
 
   let builders = [OpBuilder<(ins "uint32_t":$numBuffers, "triton::nvws::TokenLoadType":$loadType)>];
 
   let assemblyFormat = "attr-dict `:` type($result)";
+  let hasVerifier = 1;
 }
 
 def NVWS_ProducerAcquireOp : NVWS_Op<"producer_acquire"> {
@@ -261,7 +267,12 @@ def NVWS_ProducerCommitOp : NVWS_Op<"producer_commit"> {
     that the buffers are ready to be consumed.
   }];
 
-  let arguments = (ins TensorOf<[NVWS_TokenType]>:$token, I32:$idx);
+  let arguments = (ins
+    TensorOf<[NVWS_TokenType]>:$token,
+    I32:$idx,
+    DefaultValuedAttr<NVWS_ProducerCommitKindAttr,
+                      "::mlir::triton::nvws::ProducerCommitKind::BarrierArrive">:$commitKind
+  );
 
   let assemblyFormat = "$token `,` $idx attr-dict `:` type(operands)";
 }
@@ -279,15 +290,33 @@ def NVWS_ConsumerWaitOp : NVWS_Op<"consumer_wait"> {
   let assemblyFormat = "$token `,` $idx `,` $phase attr-dict `:` type(operands)";
 }
 
+#ifdef __TLE__
+def NVWS_ConsumerReleaseOp : NVWS_Op<"consumer_release", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+#else
 def NVWS_ConsumerReleaseOp : NVWS_Op<"consumer_release"> {
+#endif
   let summary = "Consumer releases the token";
   let description = [{ The consumer will release the token and signal the producer
     that the buffers are ready to be filled.
   }];
 
-  let arguments = (ins TensorOf<[NVWS_TokenType]>:$token, I32:$idx);
+  let arguments = (ins
+    TensorOf<[NVWS_TokenType]>:$token,
+    I32:$idx,
+#ifdef __TLE__
+    Variadic<TTG_MemDescType>:$releasedFields,
+#endif
+    OptionalAttr<I32Attr>:$release_count
+  );
 
+#ifdef __TLE__
+  let assemblyFormat = "$token `,` $idx (`,` $releasedFields^)? attr-dict `:` type(operands)";
+#else
   let assemblyFormat = "$token `,` $idx attr-dict `:` type(operands)";
+#endif
+  let hasVerifier = 1;
 }
 
 def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;

@@ -29,7 +29,7 @@
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @remove_cumsum_layout_sandwich
-  // CHECK: %[[EX:.*]], %[[TOT:.*]] = "tle.exclusive_cumsum"(%arg0) {{.*}} : (tensor<256xi32, #blocked>) -> (tensor<256xi32, #blocked>, i32)
+  // CHECK: %[[EX:.*]], %[[TOT:.*]] = tle.exclusive_cumsum %arg0 {axis = 0 : i32, reverse = false} : tensor<256xi32, #blocked> -> tensor<256xi32, #blocked>, i32
   // CHECK-NOT: ttg.convert_layout %[[EX]]
   tt.func @remove_cumsum_layout_sandwich(%arg0: tensor<256xi32, #blocked>) -> (tensor<256xi32, #blocked>, i32) {
     %0 = ttg.convert_layout %arg0 : tensor<256xi32, #blocked> -> tensor<256xi32, #blocked1>

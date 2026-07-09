@@ -37,6 +37,13 @@ struct MemDescOperand {
   std::optional<int> offset;
 };
 
+#ifdef __TLE__
+struct LocalizedSMEMDescriptor {
+  Value baseb128;
+  int64_t descriptorImm;
+};
+#endif
+
 // Abstract class to calculate the address of a shared or tensor memory slice.
 class DotOpMmaMemLoader {
 public:
@@ -149,6 +156,28 @@ public:
     return {desc, baseb128, ll};
   }
 
+#ifdef __TLE__
+  LocalizedSMEMDescriptor localizedSmemLoad(int a, int b) const {
+    return {baseb128, getDescriptorOffset(a, b)};
+  }
+
+  // Plain callers still get a fully materialized SSA descriptor. WGMMA lowering
+  // should use localizedSmemLoad instead, so the final WGMMA PTX block can
+  // materialize the descriptor immediately before the instruction that consumes
+  // it. That preserves ptxas' canonical descriptor recognition while avoiding a
+  // long-lived SSA descriptor value under high register pressure.
+  Value smemLoad(int a, int b, ConversionPatternRewriter &rewriter,
+                 Location loc, bool localizeDescriptor = false) const {
+    auto tb = TritonLLVMOpBuilder(loc, rewriter);
+    (void)localizeDescriptor;
+    assert(!localizeDescriptor &&
+           "use localizedSmemLoad for WGMMA descriptor operands");
+    Value descValBase = tb.int_val(64, getDescriptorOffset(a, b));
+    // Add the base address to the descriptor.
+    Value descVal = tb.add(descValBase, baseb128);
+    return descVal;
+  }
+#else
   Value smemLoad(int a, int b, ConversionPatternRewriter &rewriter,
                  Location loc) const {
     auto *ctx = loc.getContext();
@@ -170,6 +199,7 @@ public:
     Value descVal = tb.add(descValBase, baseb128);
     return descVal;
   }
+#endif
   MemDescOperand memLoad(int a, int b, ConversionPatternRewriter &rewriter,
                          Location loc) const override {
     return {smemLoad(a, b, rewriter, loc), std::nullopt};
@@ -181,6 +211,24 @@ private:
   MMASMEMDescriptor desc;
   Value baseb128;
   LinearLayout ll;
+
+#ifdef __TLE__
+  int64_t getDescriptorOffset(int a, int b) const {
+    auto dims = to_vector(ll.getInDimNames());
+    auto *ctx = dims[0].getContext();
+    assert(to_vector(ll.getOutDimNames()) ==
+           llvm::to_vector(
+               ArrayRef<StringAttr>{str_attr("offset"), str_attr("block")}));
+    int32_t totalOffElems = ll.apply({{dims[0], a}, { dims[1], b }})[0].second;
+    int32_t smemByteOffsetb8 = totalOffElems * desc.bitwidth / 8;
+    auto currDesc = desc.descriptor;
+    // Take the next 0/1/2/3 bits after the 128b tile
+    uint32_t mask = (desc.swizzlingByteWidth >> 4) - 1;
+    currDesc.matrixBaseOffset = (smemByteOffsetb8 / 128) & mask;
+    int32_t smemByteOffsetb128 = smemByteOffsetb8 >> 4;
+    return static_cast<int64_t>(currDesc.descriptor + smemByteOffsetb128);
+  }
+#endif
 
   static MMASMEMDescriptor getDescriptor(const LinearLayout &ll,
                                          ArrayRef<unsigned> instrShape,
@@ -249,7 +297,6 @@ private:
           if (llvm::Log2_32(instrShape[leadingDim]) > log2RowsTile) {
             lbo = ll.getBasis(dims[leadingDim], log2RowsTile, kOffset);
           }
-
           auto log2ColsTile = shmemTileInv.getInDimSizeLog2(dims[stridedDim]);
           if (llvm::Log2_32(instrShape[stridedDim]) > log2ColsTile) {
             sbo = ll.getBasis(dims[stridedDim], log2ColsTile, kOffset);

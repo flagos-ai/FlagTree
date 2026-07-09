@@ -9,6 +9,14 @@ mlir_tablegen(Ops.h.inc -gen-op-decls)
 mlir_tablegen(Ops.cpp.inc -gen-op-defs)
 add_mlir_doc(TleOps TleOps dialects/ -gen-op-doc)
 
+if (FLAGCX_ENABLED)
+set(LLVM_TARGET_DEFINITIONS FlagCxOps.td)
+mlir_tablegen(FlagCxOps.h.inc -gen-op-decls)
+mlir_tablegen(FlagCxOps.cpp.inc -gen-op-defs)
+add_mlir_doc(FlagCxOps FlagCxOps dialects/ -gen-op-doc)
+
+endif()
+
 set(LLVM_TARGET_DEFINITIONS TleDialect.td)
 mlir_tablegen(Dialect.h.inc -gen-dialect-decls -dialect=tle)
 mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs -dialect=tle)

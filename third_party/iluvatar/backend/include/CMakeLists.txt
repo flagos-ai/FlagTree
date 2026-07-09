@@ -1,0 +1,3 @@
+add_subdirectory(Dialect)
+add_subdirectory(TritonILUVATARGPUToLLVM)
+add_subdirectory(TritonILUVATARGPUTransforms)

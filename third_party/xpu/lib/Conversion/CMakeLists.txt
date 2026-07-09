@@ -1,0 +1,4 @@
+add_subdirectory(TritonToTritonXPU)
+add_subdirectory(TritonXPUToLLVM)
+add_subdirectory(LinalgToTritonSDNN)
+add_subdirectory(TritonSDNNToLLVM)

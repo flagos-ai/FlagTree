@@ -1,4 +1,7 @@
 #include "mlir/Analysis/SliceAnalysis.h"
+#ifdef __TLE__
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#endif
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -29,6 +32,61 @@ namespace triton {
 namespace gpu {
 
 namespace {
+
+#ifdef __TLE__
+static Value getWarpSpecializeCapture(Value value) {
+  auto blockArg = dyn_cast<BlockArgument>(value);
+  if (!blockArg)
+    return value;
+
+  Block *block = blockArg.getOwner();
+  auto partitions =
+      dyn_cast_or_null<WarpSpecializePartitionsOp>(block->getParentOp());
+  if (!partitions)
+    return value;
+
+  auto wsOp = dyn_cast<WarpSpecializeOp>(partitions->getParentOp());
+  if (!wsOp)
+    return value;
+
+  unsigned argNo = blockArg.getArgNumber();
+  OperandRange captures = wsOp.getExplicitCaptures();
+  if (argNo >= captures.size())
+    return value;
+  return captures[argNo];
+}
+
+static Value getUnderlyingMemDesc(Value value) {
+  while (true) {
+    value = getWarpSpecializeCapture(value);
+    if (auto index = value.getDefiningOp<MemDescIndexOp>()) {
+      value = index.getSrc();
+      continue;
+    }
+    if (auto subslice = value.getDefiningOp<MemDescSubsliceOp>()) {
+      value = subslice.getSrc();
+      continue;
+    }
+    if (auto trans = value.getDefiningOp<MemDescTransOp>()) {
+      value = trans.getSrc();
+      continue;
+    }
+    if (auto reshape = value.getDefiningOp<MemDescReshapeOp>()) {
+      value = reshape.getSrc();
+      continue;
+    }
+    if (auto reinterpret = value.getDefiningOp<MemDescReinterpretOp>()) {
+      value = reinterpret.getSrc();
+      continue;
+    }
+    return value;
+  }
+}
+
+static bool isBackedByLocalAlloc(Value value) {
+  return getUnderlyingMemDesc(value).getDefiningOp<LocalAllocOp>() != nullptr;
+}
+#endif
 
 // Get the highest version supported for the hardware and the dot.
 static int getMMAVersionSafe(int computeCapability, DotOp op) {
@@ -135,6 +193,39 @@ SmallVector<unsigned> warpsPerTileV2(DotOpInterface dotOp,
 SmallVector<unsigned, 2>
 warpsPerTileV3(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
                int numWarps, const SmallVector<unsigned, 3> &instrShape) {
+#ifdef __TLE__
+  auto isChainWrapper = [](Operation *op) {
+    return isa<ConvertLayoutOp, arith::TruncFOp, arith::ExtFOp>(op);
+  };
+
+  auto hasDirectABChainedDotUser = [&](Value v) {
+    SmallVector<Value> worklist = {v};
+    DenseSet<Value> visited;
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+      if (!visited.insert(current).second)
+        continue;
+      for (Operation *user : current.getUsers()) {
+        if (auto dotUser = dyn_cast<DotOpInterface>(user)) {
+          if (dotUser.getA() == current || dotUser.getB() == current)
+            return true;
+          continue;
+        }
+        if (!isChainWrapper(user))
+          continue;
+        for (Value result : user->getResults())
+          worklist.push_back(result);
+      }
+    }
+    return false;
+  };
+
+  // Contains a direct chained dot through the A/B operand path. We prefer to
+  // assign warps to one axis to facilitate use cases like flash attention,
+  // allowing reductions within the same warp.
+  if (hasDirectABChainedDotUser(dotOp.getD()))
+    return {(unsigned)numWarps, 1};
+#else
   SetVector<Operation *> slices;
   mlir::getForwardSlice(dotOp.getD(), &slices);
   // Contains a chained dot. We prefer to assign warps to one axis
@@ -144,6 +235,7 @@ warpsPerTileV3(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
         return isa<mlir::triton::DotOpInterface>(op);
       }) != slices.end())
     return {(unsigned)numWarps, 1};
+#endif
 
   // For MMAv3, the smallest indivisible unit of warp shape is (4, 1).
   SmallVector<unsigned, 2> ret = {4, 1};
@@ -207,6 +299,26 @@ getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter, int opIdx,
       argType.getElementType(), isMMAv5Fp4Padded);
   auto newType = MemDescType::get(argType.getShape(), argType.getElementType(),
                                   newLayout, SharedMemorySpace);
+#ifdef __TLE__
+  // TLE can materialize a full shared-memory tile as:
+  //   tensor = ttg.local_load(existing_smem)
+  // If WGMMA needs the exact same shared layout, reuse the existing allocation
+  // instead of allocating another identical staging buffer.
+  if (auto localLoad = arg.getDefiningOp<LocalLoadOp>()) {
+    if (!localLoad.getToken()) {
+      Value src = localLoad.getSrc();
+      if (isBackedByLocalAlloc(src)) {
+        auto srcType = dyn_cast<MemDescType>(src.getType());
+        if (srcType && srcType.getShape() == newType.getShape() &&
+            srcType.getElementType() == newType.getElementType() &&
+            srcType.getMemorySpace() == newType.getMemorySpace() &&
+            srcType.getEncoding() == newType.getEncoding()) {
+          return src;
+        }
+      }
+    }
+  }
+#endif
   rewriter.setInsertionPointAfterValue(arg);
   return LocalAllocOp::create(rewriter, arg.getLoc(), newType, arg);
 }

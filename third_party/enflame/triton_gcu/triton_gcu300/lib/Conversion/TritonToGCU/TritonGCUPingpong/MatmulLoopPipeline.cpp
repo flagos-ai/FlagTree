@@ -46,21 +46,15 @@
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
-#define int_attr(num) builder.getI64IntegerAttr(num)
-
 using namespace mlir;
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
-namespace ttng = mlir::triton::nvidia_gpu;
 
 namespace {
 
 struct LoadInfo {
-  // Layout of the data in the shared memory.
   Attribute layoutEncoding = nullptr;
   int distToUse = 0;
-  // always preload
-  bool usedByDot = true;
 };
 class CoarseSchedule {
 public:
@@ -406,10 +400,8 @@ assignMemoryLayouts(llvm::SmallVector<std::tuple<Operation *, int, Operation *>>
       // TODO(pawel): err, we'd need to verify that the distance is the same
       continue;
     LoadInfo loadInfo;
-    // for dot
     if (isa<tt::DotOp, triton::gcu::MatmulOp>(use) &&
         isa<triton::gcu::LoadOp>(op)) {
-      loadInfo.usedByDot = true;
       loadInfo.layoutEncoding =
           getSharedEncIfAllUsersAreSameEnc(op->getResult(0)).value_or(nullptr);
     } else if (auto loadOp = dyn_cast<tt::LoadOp>(use)) {
@@ -424,7 +416,6 @@ assignMemoryLayouts(llvm::SmallVector<std::tuple<Operation *, int, Operation *>>
         continue;
       }
     } else {
-      loadInfo.usedByDot = false;
       if (!isa<triton::gcu::LoadOp>(op)) {
         continue;
       }
@@ -732,9 +723,6 @@ struct AsyncLoad {
   AsyncLoad(Operation *loadOp, Value alloc) : loadOp(loadOp), alloc(alloc) {}
   Operation *loadOp;
   Value alloc;
-  Value barrier;
-  Operation *waitOp = nullptr;
-  bool isTMALoad = false;
 };
 
 // Convert load ops into their asyn version and apply multi-buffering based on
@@ -743,8 +731,6 @@ static SmallVector<Value>
 createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
                llvm::MapVector<Operation *, LoadInfo> &loadToInfo,
                SmallVector<Value> &barriers, int numStages) {
-  // Calculate the number of buffers needed for each load.
-  // int numBuffers = 0;
   int numBuffers =
       llvm::max_element(llvm::make_second_range(loadToInfo), [](auto &lhs,
                                                                 auto &rhs) {
@@ -755,7 +741,6 @@ createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
   });
   SmallVector<AsyncLoad> asyncLoads;
   SmallVector<Value> allocs;
-  bool hasTMALoad = false;
   for (auto &[loadOp, info] : loadToInfo) {
     assert(info.layoutEncoding && "LoadOp shared encoding not defined.");
     Value alloc = createAlloc(forOp, loadOp, info.layoutEncoding, numBuffers);
@@ -774,17 +759,11 @@ createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
   Value one = builder.create<arith::ConstantIntOp>(loc, 1, 32);
   Value insertIdx = minusOne;
   Value extractIdx = minusOne;
-  Value phase = Value();
   Value numBuffersVal =
       builder.create<arith::ConstantIntOp>(loc, numBuffers, 32);
   SmallVector<Value> newOperands;
   newOperands.push_back(insertIdx);
   newOperands.push_back(extractIdx);
-  if (hasTMALoad) {
-    LLVM_DEBUG({ llvm::dbgs() << "createAsyncOps:has tma load\n"; });
-    phase = builder.create<arith::ConstantIntOp>(loc, 0, 32);
-    newOperands.push_back(phase);
-  }
   unsigned newOperandIndex = forOp.getBody()->getNumArguments();
   // Patch the loop to add the new loop carried dependencies.
   scf::ForOp newForOp =
@@ -793,12 +772,7 @@ createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
   forOp = newForOp;
   insertIdx = newForOp.getBody()->getArgument(newOperandIndex);
   extractIdx = newForOp.getBody()->getArgument(newOperandIndex + 1);
-  if (phase) {
-    phase = newForOp.getBody()->getArgument(newOperandIndex + 2);
-  }
 
-  // Create two counters for the insert and extract indices to avoid creating
-  // long liverange.
   builder.setInsertionPoint(newForOp.getBody(), newForOp.getBody()->begin());
   insertIdx = builder.create<arith::AddIOp>(loc, insertIdx, one);
   Value cndIns = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
@@ -809,12 +783,6 @@ createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
   Value cndExt = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
                                                extractIdx, numBuffersVal);
   extractIdx = builder.create<arith::SelectOp>(loc, cndExt, extractIdx, zero);
-  if (phase) {
-    Value nextPhase = builder.create<arith::XOrIOp>(loc, phase, one);
-    phase = builder.create<arith::SelectOp>(loc, cndExt, phase, nextPhase);
-  }
-  // createTMABarrierAndWait(forOp, asyncLoads, insertIdx, extractIdx, phase,
-  //                         numBuffers, schedule, barriers, loadToInfo);
 
   // Create a cluster for the prefetches. It may end up being empty, but this
   // is OK.
@@ -830,9 +798,6 @@ createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
     }
   }
   SmallVector<Value> newYieldOperands = {insertIdx, extractIdx};
-  if (phase)
-    newYieldOperands.push_back(phase);
-  // Patch the yield with the updated counters.
   appendToYield(forOp, newYieldOperands);
 
   return allocs;
@@ -854,8 +819,7 @@ bool mlir::triton::gcu::preProcessLoopAndGetSchedule(
     coarseSchedule.dump();
   });
 
-  SmallVector<Value> barriers; // only for TMA
-  // Convert the loads into async loads and create the allocs.
+  SmallVector<Value> barriers;
   SmallVector<Value> allocs =
       createAsyncOps(forOp, coarseSchedule, loadToInfo, barriers, numStages);
 
@@ -906,15 +870,8 @@ bool mlir::triton::gcu::preProcessLoopAndGetSchedule(
   options.annotateFn =
       [](Operation *op, mlir::triton::gcu::PipeliningOption::PipelinerPart part,
          unsigned iteration) {};
-  // Insert a wait 0 after the loop
   OpBuilder builder(forOp);
   builder.setInsertionPointAfter(forOp);
-  // we need skip last async_load_from_global
-  // builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), ValueRange({}), 0);
-  // Invalidate any mbarrier create
-  // no need for gcu
-  // invalidateBarriers(builder, barriers);
-  // Explicitly deallocate allocated tensors after the wait op
   for (auto alloc : allocs)
     builder.create<triton::gcu::BufferDeallocOp>(forOp.getLoc(), alloc);
   return true;

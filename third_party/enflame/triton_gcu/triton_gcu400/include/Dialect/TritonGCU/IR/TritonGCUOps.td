@@ -149,7 +149,6 @@ def TritonGCU_IntToPtrOp : TTGCU_Op<"int2ptr", [Elementwise, Pure]>
 //
 def ElementwiseFusionRegionOp : TTGCU_Op<"elementwise_fusion_region", [
     IsolatedFromAbove,
-    AllShapesMatch<["results"]>,
     RecursiveMemoryEffects,
     SingleBlockImplicitTerminator<"YieldOp">]> {
   let summary = "Elementwise fusion region";
@@ -190,6 +189,38 @@ def TritonGCU_MemDescToPtrOp : TTGCU_Op<"memdesc_to_ptr", [Pure]>
   let arguments = (ins TTG_MemDescType:$src);
   let results = (outs TT_Ptr:$result);
   let assemblyFormat = [{ $src attr-dict `:` type($src) `->` type($result) }];
+}
+
+//
+// RemoteMemDesc Op
+//
+def TritonGCU_RemoteMemDescOp : TTGCU_Op<"remote_memdesc", [Pure]>
+{
+  let summary = "Produce a memdesc that refers to a remote CTA's shared memory";
+  let description = [{
+    Given a local shared-memory memdesc and a scalar shard_id (the target CTA
+    index within the cluster), return a memdesc of the same type that
+    semantically points to the corresponding buffer in the remote CTA's
+    shared memory.
+
+    On GCU 400/410, all CTAs in a cluster share the same DSM address space,
+    so the remote memdesc carries the shard_id for offset computation in
+    later lowering passes (KernelMemAllocPass).
+
+    Example:
+    ```mlir
+    %local = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared, #smem, mutable>
+    %remote = triton_gcu.remote_memdesc %local, %shard_id
+        : !ttg.memdesc<64x64xf32, #shared, #smem, mutable>, i32
+        -> !ttg.memdesc<64x64xf32, #shared, #smem, mutable>
+    %val = ttg.local_load %remote : ... -> tensor<64x64xf32>
+    ```
+  }];
+  let arguments = (ins TTG_MemDescType:$src, I32:$shard_id);
+  let results = (outs TTG_MemDescType:$result);
+  let assemblyFormat = [{
+    $src `,` $shard_id attr-dict `:` type($src) `,` type($shard_id) `->` type($result)
+  }];
 }
 
 //
@@ -256,6 +287,79 @@ def TritonGCU_GatherGlobalToLocalOp : TTGCU_Op<"gather_global_to_local", [
   }];
 }
 
+def TritonGCU_SliceFromLocalOp : TTGCU_Op<"slice_from_local", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Extract a sub-tile from shared memory into a distributed tensor";
+  let description = [{
+    Created by `triton-gcu-local-mem-optimize` when fusing a global load +
+    `tle.extract_tile` into an SMEM relay path. The source is always a
+    `TTG_MemDescType` (shared memory descriptor) populated by
+    `copy_global_to_local` or `gather_global_to_local`.
+
+    Partitions the SMEM buffer into a logical tile grid where
+    `grid[d] = src_shape[d] / tile_shape[d]`, then reads the tile at the
+    given linear index using DTE `SliceStartOp` with warp-aware offsets.
+
+    Example IR:
+    ```mlir
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<64x64xf16, #shared, #smem>
+    triton_gcu.copy_global_to_local %ptr, ..., %smem ...
+    %tile = triton_gcu.slice_from_local %smem[%idx]
+        {tile_shape = array<i64: 32, 64>}
+        : !ttg.memdesc<64x64xf16, #shared, #smem>, i32
+        -> tensor<32x64xf16, #blocked>
+    ```
+  }];
+  let arguments = (ins
+    TTG_MemDescType:$src,
+    AnyTypeOf<[TT_IntLike, Index]>:$index,
+    DenseI64ArrayAttr:$tile_shape,
+    OptionalAttr<DenseI64ArrayAttr>:$tile_strides
+  );
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = [{
+    $src `[` $index `]` attr-dict `:`
+    type($src) `,` type($index) `->` type($result)
+  }];
+}
+
+def TritonGCU_DesliceToLocalOp : TTGCU_Op<"deslice_to_local", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Insert a sub-tile into shared memory and load the full result";
+  let description = [{
+    Created by `triton-gcu-local-mem-optimize` when fusing a global load +
+    `tle.insert_tile` into an SMEM relay path. The source is always a
+    `TTG_MemDescType` (shared memory descriptor) populated by
+    `copy_global_to_local` or `gather_global_to_local`.
+
+    Writes the tile data into the SMEM buffer at the computed warp-aware
+    offset using DTE `DesliceStartOp`, synchronizes via barrier, then
+    loads the full result from SMEM.
+
+    Example IR:
+    ```mlir
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared, #smem>
+    triton_gcu.copy_global_to_local %ptr, ..., %smem ...
+    %out = triton_gcu.deslice_to_local %smem[%idx] = %tile
+        {tile_shape = array<i64: 32, 32>}
+        : !ttg.memdesc<64x64xf32, #shared, #smem>,
+          tensor<32x32xf32, #blocked>, i32
+        -> tensor<64x64xf32, #blocked>
+    ```
+  }];
+  let arguments = (ins
+    TTG_MemDescType:$src,
+    TT_Tensor:$tile,
+    AnyTypeOf<[TT_IntLike, Index]>:$index,
+    DenseI64ArrayAttr:$tile_shape,
+    OptionalAttr<DenseI64ArrayAttr>:$tile_strides
+  );
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = [{
+    $src `[` $index `]` `=` $tile attr-dict `:`
+    type($src) `,` type($tile) `,` type($index) `->` type($result)
+  }];
+}
 
 def TritonGCU_MatmulOp : TTGCU_Op<"matmul", [Pure]> {
     let summary = "matmul";
@@ -340,6 +444,8 @@ def TritonGCU_MaskedLoadOp : TTGCU_Op<"maskedload", [
         return ::mlir::success();
       }
     }];
+
+    let hasCanonicalizeMethod = 1;
 }
 
 def TritonGCU_MaskedStoreOp : TTGCU_Op<"maskedstore", [
@@ -378,6 +484,8 @@ def TritonGCU_MaskedStoreOp : TTGCU_Op<"maskedstore", [
       $ptr `,` $offset `,` $value (`,` $mask^)?
       attr-dict `:` type($ptr) `,` type($offset) `,` type($value) (`,` type($mask)^)?
     }];
+
+    let hasCanonicalizeMethod = 1;
 }
 
 //

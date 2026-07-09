@@ -598,6 +598,40 @@ def TTG_LocalBarrierOp : TTG_Op<"local_barrier"> {
 }
 
 // flagtree tle
+#ifdef __TLE__
+def TTG_TMACopyOp : TTG_Op<"tma_copy", [
+  Pure,
+  MemoryEffects<[MemWrite]>,
+  AttrSizedOperandSegments
+]> {
+  let summary = "self-defined tma_copy operation";
+  let description = [{
+    'ttg.tma_copy' triton copy op is designed to copy data between memory regions.
+    Example:
+    ```mlir
+    ttg.tma_copy %src, %dst, %shape : tensor<128xf32>
+    ```
+
+    A global-to-shared TMA load may optionally carry an explicit completion
+    barrier. In that form, lowering emits barrier_expect and async TMA copy
+    against the provided barrier, while the user controls the wait point.
+  }];
+  let arguments = (ins
+    Arg<TTG_CopyOpType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$src,
+    Arg<TTG_CopyOpType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$dst,
+    Variadic<I32>:$indices,
+    Optional<TTG_MemDescType>:$barrier,
+    OptionalAttr<I32Attr>:$expect_bytes
+  );
+  //assemble
+  let assemblyFormat = [{
+    $src `,` $dst `,` `[` $indices `]`
+    (`,` `barrier` $barrier^)?
+    attr-dict `:` type($src) `,` type($dst)
+    (`,` qualified(type($barrier))^)?
+  }];
+}
+#else
 def TTG_TMACopyOp : TTG_Op<"tma_copy", [Pure, MemoryEffects<[MemWrite]>]> {
   let summary = "self-defined tma_copy operation";
   let description = [{
@@ -615,5 +649,6 @@ def TTG_TMACopyOp : TTG_Op<"tma_copy", [Pure, MemoryEffects<[MemWrite]>]> {
   //assemble
   let assemblyFormat = "$src `,`  $dst `,` `[` $indices `]` attr-dict `:` type($src) `,` type($dst)";
 }
+#endif
 
 #endif // TRITONGPU_OPS

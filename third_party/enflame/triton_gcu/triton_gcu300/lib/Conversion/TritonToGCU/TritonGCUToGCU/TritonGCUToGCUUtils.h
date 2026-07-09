@@ -162,7 +162,7 @@ public:
       return;
 
     auto tags = op2TagInfoMap[op];
-    for (int i = 0; i < tags.size(); ++i) {
+    for (size_t i = 0; i < tags.size(); ++i) {
       bitset[tags[i].getIdxInt()] = false;
     }
     op2TagInfoMap.erase(op);
@@ -204,7 +204,7 @@ public:
       if (!funcOp) {
         llvm::report_fatal_error("can't find func op in GPUModuleOp for tags");
       }
-      if (argPos >= funcOp.getNumArguments()) {
+      if (static_cast<unsigned>(argPos) >= funcOp.getNumArguments()) {
         llvm::report_fatal_error("arg index out of range for tags");
       }
       FunctionType currentType = funcOp.getFunctionType();
@@ -225,7 +225,8 @@ public:
     assert(llvm::isa<FunctionOpInterface>(op) && "not a triton func op");
     auto func = llvm::cast<FunctionOpInterface>(op);
     assert(argNum >= 0 && "arg number is negative");
-    assert(argNum < func.getNumArguments() && "arg number is too big");
+    assert(static_cast<unsigned>(argNum) < func.getNumArguments() &&
+           "arg number is too big");
     funcName2TagArgPos[func.getName()] = argNum;
   }
 
@@ -247,21 +248,14 @@ private:
 
 using namespace mlir;
 
-Value getPrivateDTETag(OpBuilder &builder, Operation *op);
 Value getShareDTETag(OpBuilder &builder, Operation *op);
-Value createPrivateDTETag(OpBuilder &builder, Operation *op);
 
 DenseSet<unsigned> getSlicedAxies(Type type);
 SmallVector<Value, 4> getWarpIds(OpBuilder &builder, Location loc, Type type);
 SmallVector<Value, 4> getElemsPerThread(OpBuilder &builder, Location loc,
                                         Type type);
-func::FuncOp getOrDefineFunction(gpu::GPUModuleOp moduleOp, Location loc,
-                                 OpBuilder &rewriter, StringRef name,
-                                 FunctionType type);
 Value castToMemref1D(OpBuilder &rewriter, Location loc, Value v,
                      Value totalNumElems);
-
-bool isMustAliasOp(mlir::Operation *op);
 
 mlir::Operation *
 promoteLastUser(std::pair<mlir::Operation *, int> &lastUser,
@@ -276,9 +270,6 @@ Value syncAllocOp(OpBuilder &builder, Location &loc,
                   triton::gcu::FirstLastUserAnalysis &userAnalysis,
                   std::map<Operation *, Operation *> &replaced2Origin,
                   MemRefType type, int64_t memoryAlignment = INVALID_ALIGNMENT);
-
-Value asyncAllocOp(OpBuilder &builder, Operation *ttParent, MemRefType type,
-                   int64_t memoryAlignment = INVALID_ALIGNMENT);
 
 void createPrintfOp(ConversionPatternRewriter &rewriter, Location loc,
                     ::llvm::StringRef printOpPrefix, bool hex, Value value);

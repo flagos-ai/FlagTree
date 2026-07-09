@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=40.8.0", "cmake>=3.20,<4.0", "ninja>=1.11.1", "pybind11>=2.13.1"]
+requires = ["setuptools>=40.8.0", "cmake>=3.20,<=4.0.3", "ninja>=1.11.1", "pybind11>=2.13.1"]
 build-backend = "setuptools.build_meta"
 
 [tool.mypy]
@@ -37,4 +37,4 @@ line-length = 120
 ignore = ["E501", "E701", "E731", "E741"]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]
+"__init__.py" = ["F401", "E402"]

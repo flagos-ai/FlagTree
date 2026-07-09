@@ -1,0 +1,5 @@
+add_subdirectory(Analysis)
+add_subdirectory(Dialect)
+add_subdirectory(ProtonToProtonGPU)
+add_subdirectory(ProtonGPUToLLVM)
+# add_subdirectory(compat)

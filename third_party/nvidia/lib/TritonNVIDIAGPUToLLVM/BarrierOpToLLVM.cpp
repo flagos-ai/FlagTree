@@ -235,15 +235,33 @@ struct ArriveBarrierOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     // TODO: Add phase result as needed.
     std::stringstream ptxAsm;
+#ifdef __TLE__
+    if (op.getReleaseFence()) {
+      if (op.getParticipantArrive())
+        ptxAsm << "@$0 membar.cta;\n";
+      else
+        ptxAsm << "membar.cta;\n";
+    }
+#endif
     ptxAsm << "@$0 mbarrier.arrive.shared::cta.b64 _, [$1]";
+#ifdef __TLE__
+    if (!op.getParticipantArrive() && op.getCount() > 1) {
+#else
     if (op.getCount() > 1) {
+#endif
       ptxAsm << ", " << op.getCount();
     }
     ptxAsm << ";";
 
     TritonLLVMOpBuilder b(op.getLoc(), rewriter);
     Value id = getThreadId(rewriter, op.getLoc());
+#ifdef __TLE__
+    Value pred = op.getParticipantArrive()
+                     ? b.icmp_ult(id, b.i32_val(op.getCount()))
+                     : b.icmp_eq(id, b.i32_val(0));
+#else
     Value pred = b.icmp_eq(id, b.i32_val(0));
+#endif
     if (op.getPred())
       pred = b.and_(pred, adaptor.getPred());
 
@@ -261,6 +279,41 @@ struct ArriveBarrierOpConversion
     return success();
   }
 };
+
+#if defined(__TLE__) && !defined(__HCU__)
+struct NamedBarrierArriveOpConversion
+    : public ConvertOpToLLVMPattern<triton::nvidia_gpu::NamedBarrierArriveOp> {
+  using ConvertOpToLLVMPattern<
+      triton::nvidia_gpu::NamedBarrierArriveOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::nvidia_gpu::NamedBarrierArriveOp op,
+                  OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    LLVM::createLLVMIntrinsicCallOp(
+        rewriter, op.getLoc(), "llvm.nvvm.barrier.cta.arrive.aligned.count",
+        TypeRange{}, {adaptor.getBar(), adaptor.getNumThreads()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct NamedBarrierWaitOpConversion
+    : public ConvertOpToLLVMPattern<triton::nvidia_gpu::NamedBarrierWaitOp> {
+  using ConvertOpToLLVMPattern<
+      triton::nvidia_gpu::NamedBarrierWaitOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::nvidia_gpu::NamedBarrierWaitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    LLVM::createLLVMIntrinsicCallOp(
+        rewriter, op.getLoc(), "llvm.nvvm.barrier.cta.sync.aligned.count",
+        TypeRange{}, {adaptor.getBar(), adaptor.getNumThreads()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+#endif
 } // namespace
 
 void mlir::triton::NVIDIA::populateBarrierOpToLLVMPatterns(
@@ -272,4 +325,8 @@ void mlir::triton::NVIDIA::populateBarrierOpToLLVMPatterns(
   patterns.add<WaitBarrierOpConversion>(typeConverter, benefit, targetInfo);
   patterns.add<BarrierExpectConversion>(typeConverter, benefit);
   patterns.add<ArriveBarrierOpConversion>(typeConverter, benefit);
+#if defined(__TLE__) && !defined(__HCU__)
+  patterns.add<NamedBarrierArriveOpConversion>(typeConverter, benefit);
+  patterns.add<NamedBarrierWaitOpConversion>(typeConverter, benefit);
+#endif
 }

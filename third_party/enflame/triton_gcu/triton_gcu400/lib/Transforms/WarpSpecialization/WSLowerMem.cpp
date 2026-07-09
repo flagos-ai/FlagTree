@@ -103,6 +103,7 @@ Operation *optimizeLoadOps(OpBuilderWithAsyncTaskIds &builder,
         loadOp.getLoc(), loadOp.getPtr(), loadOp.getMask(), loadOp.getOther(),
         loadOp.getBoundaryCheck(), loadOp.getPadding(), loadOp.getCache(),
         loadOp.getEvict(), loadOp.getIsVolatile());
+    mem->setAttr("tt.load.async", builder.getBoolAttr(true));
     copy = builder.createWithAsyncTaskIds<ttg::LocalStoreOp>(
         loadOp.getLoc(), mem.getResult(), pipelineBuffer);
   }

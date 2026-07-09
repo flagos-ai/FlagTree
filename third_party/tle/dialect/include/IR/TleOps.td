@@ -7,6 +7,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
 include "tle/dialect/include/IR/TleDialect.td"
 include "tle/dialect/include/IR/TleAttrDefs.td"
+include "triton/Dialect/Triton/IR/TritonAttrDefs.td"
 include "triton/Dialect/Triton/IR/TritonInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td"
@@ -61,8 +62,9 @@ def Tle_InsertTileOp
 
 def Tle_TensorType : AnyTypeOf<[TT_Type, TTG_MemDescType]>;
 def Tle_ArgType : AnyTypeOf<[Tle_TensorType, LLVMPointerType, LLVMStructType]>;
-def Tle_LocalPointerResultType : AnyTypeOf<[TT_Tensor, TT_Ptr]>;
+def Tle_LocalPointerResultType : AnyTypeOf<[TT_Tensor, TT_Ptr, TT_Int]>;
 def Tle_LocalPointerIndexType : AnyTypeOf<[TT_Tensor, TT_Int]>;
+def Tle_WGMMAAType : AnyTypeOf<[TT_FpIntTensor, TTG_MemDescType]>;
 
 def Tle_LocalPointersOp : Tle_Op<"local_pointers", [Pure]> {
   let arguments = (ins TTG_MemDescType:$src,
@@ -71,11 +73,247 @@ def Tle_LocalPointersOp : Tle_Op<"local_pointers", [Pure]> {
   let hasVerifier = 1;
 }
 
+def Tle_MemDescWGMMAViewOp : Tle_Op<"memdesc_wgmma_view", [Pure,
+                                                           MemDescViewTrait,
+                                                           SameOperandsAndResultElementType]> {
+  let summary = "create a WGMMA descriptor view of a shared memory descriptor";
+
+  let description = [{
+    This operation returns a descriptor-only view of an existing shared memory
+    allocation for WGMMA consumers. It does not allocate or move shared memory.
+
+    The result type carries the logical matrix shape and WGMMA shared encoding
+    required by the consumer. The source descriptor provides the underlying
+    storage. The order attribute describes how logical offsets are mapped from
+    the source view to the result view.
+  }];
+
+  let arguments = (
+    ins TTG_MemDescType:$src,
+    DenseI32ArrayAttr:$order
+  );
+
+  let results = (outs TTG_MemDescType:$result);
+
+  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+
+  let hasVerifier = 1;
+}
+
+def Tle_PipeCreateOp : Tle_Op<"pipe.create"> {
+  let summary = "create a typed TLE GPU pipe";
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<ArrayAttr>:$readers,
+    OptionalAttr<BoolAttr>:$one_shot
+  );
+  let assemblyFormat = "$fields attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeWriterAcquireOp : Tle_Op<"pipe.writer_acquire"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeWriterCommitOp : Tle_Op<"pipe.writer_commit"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeWriterCloseOp : Tle_Op<"pipe.writer_close"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeReaderWaitOp : Tle_Op<"pipe.reader_wait"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<StrAttr>:$reader_name
+  );
+  let results = (outs I1:$is_closed);
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeReaderReleaseOp : Tle_Op<"pipe.reader_release", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<StrAttr>:$reader_name
+  );
+  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
 def Tle_ExclusiveCumsumOp : Tle_Op<"exclusive_cumsum", [Pure, SameOperandsAndResultEncoding]> {
   let arguments = (ins TT_Tensor:$src, I32Attr:$axis, BoolAttr:$reverse);
   let results = (outs TT_Tensor:$exclusive, TT_Type:$total);
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($exclusive) `,` type($total)";
   let hasVerifier = 1;
+}
+
+def Tle_WGMMASharedOperandFenceOp : Tle_Op<"wgmma_shared_operand_fence"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$deps,
+    BoolAttr:$bCluster
+  );
+
+  let summary = "fence shared-memory operands before WGMMA async-proxy reads";
+
+  let description = [{
+    Orders prior generic-proxy shared-memory writes to the listed WGMMA shared
+    operands before a following WGMMA reads them through the async proxy.
+  }];
+
+  let assemblyFormat = "$deps attr-dict `:` type($deps)";
+  let hasVerifier = 1;
+}
+
+def Tle_WGMMAOp : Tle_Op<"wgmma", [
+    TypesMatchWith<"result's type matches accumulator's type", "d", "c", "$_self">
+]> {
+  let summary = "TLE dialect-level Hopper WGMMA";
+
+  let description = [{
+    Represents a user-level asynchronous Hopper WGMMA before TritonGPU layout
+    selection for the accumulator is materialized. The `a` operand may be a
+    shared-memory descriptor or an in-register tensor, `b` is a shared-memory
+    descriptor, and the accumulator/result are ordinary tensor values in the
+    surrounding IR layout. `triton-tle-lower-wgmma` rewrites this op to
+    `ttg.convert_layout` plus `ttng.warp_group_dot`.
+  }];
+
+  let arguments = (ins
+    Tle_WGMMAAType:$a,
+    TTG_MemDescType:$b,
+    TT_FpIntTensor:$c,
+    DefaultValuedAttr<TT_InputPrecisionAttr, "::mlir::triton::InputPrecision::IEEE">:$inputPrecision,
+    DefaultValuedAttr<I32Attr, "0">:$maxNumImpreciseAcc,
+    DefaultValuedAttr<BoolAttr, "true">:$isAsync
+  );
+
+  let results = (outs TT_FpIntTensor:$d);
+
+  let assemblyFormat = [{
+    $a`,` $b`,` $c attr-dict `:` type($a) `*`
+    qualified(type($b)) `,` type($c) `->` type($d)
+  }];
+
+  let hasVerifier = 1;
+}
+
+def Tle_WGMMAWaitOp : Tle_Op<"wgmma_wait", [
+    TypesMatchWith<"result's type matches input's type", "output", "input", "$_self">
+]> {
+  let summary = "wait for TLE dialect-level asynchronous Hopper WGMMA";
+
+  let arguments = (ins
+    TT_FpIntTensor:$input,
+    I32Attr:$pendings
+  );
+
+  let results = (outs TT_FpIntTensor:$output);
+
+  let assemblyFormat = "$input attr-dict `:` type($input) `->` type($output)";
+
+  let hasVerifier = 1;
+}
+
+def Tle_BarrierAllocOp : Tle_Op<"barrier.alloc"> {
+  let summary = "create a typed TLE GPU barrier array";
+  let arguments = (ins
+    I32Attr:$num_barriers,
+    I32Attr:$arrive_count,
+    I32Attr:$init_polarity,
+    OptionalAttr<I32Attr>:$expect_bytes
+  );
+  let results = (outs TTG_MemDescType:$result);
+  let assemblyFormat = "attr-dict `:` qualified(type($result))";
+  let hasVerifier = 1;
+}
+
+def Tle_BarrierWaitOp : Tle_Op<"barrier.wait"> {
+  let summary = "wait on a TLE GPU barrier slot";
+  let arguments = (ins
+    TTG_MemDescType:$barrier,
+    Optional<I32>:$phase,
+    StrAttr:$backend,
+    I32Attr:$named_id,
+    I32Attr:$named_num_threads
+  );
+  let assemblyFormat = "$barrier (`,` $phase^)? attr-dict `:` qualified(type($barrier))";
+  let hasVerifier = 1;
+}
+
+def Tle_BarrierArriveOp : Tle_Op<"barrier.arrive"> {
+  let summary = "arrive on a TLE GPU barrier slot";
+  let arguments = (ins
+    TTG_MemDescType:$barrier,
+    Optional<I32>:$phase,
+    StrAttr:$backend,
+    I32Attr:$arrive_count,
+    I32Attr:$named_id,
+    I32Attr:$named_num_threads
+  );
+  let assemblyFormat = "$barrier (`,` $phase^)? attr-dict `:` qualified(type($barrier))";
+  let hasVerifier = 1;
+}
+
+def Tle_TMAStoreCommitGroupOp
+    : Tle_Op<"tma_store.commit_group", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "commit the current TMA store bulk group";
+
+  let description = [{
+    Commits outstanding shared-to-global TMA store messages issued by this
+    agent into the current bulk group.  This op makes TMA store group
+    boundaries explicit in TLE IR so scheduling passes can group adjacent
+    stores and place waits at the latest safe point.
+  }];
+
+  let assemblyFormat = "attr-dict";
 }
 
 def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
@@ -92,15 +330,42 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
 }
 
 def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure]> {
-  let arguments = (ins Tle_LocalPointerResultType:$src, TT_Int:$shard_id);
+  let arguments = (ins
+    Tle_LocalPointerResultType:$src,
+    TT_Int:$shard_id,
+    StrAttr:$space,
+    Optional<TT_IntLike>:$offset
+  );
+
   let results = (outs Tle_LocalPointerResultType:$result);
+  let hasVerifier = 1;
+}
+def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
+  let summary = "Get nume pes";
+  let arguments = (ins
+    Tle_LocalPointerResultType:$src
+  );
+  let results = (outs I32:$result);
+  let hasVerifier = 1;
+}
+
+def Tle_GetDeviceIdOp : Tle_Op<"get_device_id"> {
+  let summary = "Get local PE id";
+  let arguments = (ins
+     AnyType:$input
+  );
+  let results = (outs I32:$result);
   let hasVerifier = 1;
 }
 
 def Tle_DSLRegionOp : Tle_Op<"dsl_region", [IsolatedFromAbove, MemDescViewTrait,
-                                            RecursiveMemoryEffects]> {
+                                            DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let arguments = (ins
-    Variadic<Tle_ArgType>:$inputs
+    Variadic<Tle_ArgType>:$inputs,
+    StrAttr:$region_dialect,
+    StrAttr:$arg_dialect,
+    DenseI32ArrayAttr:$output_operand_indices,
+    OptionalAttr<StrAttr>:$hint
   );
   let results = (outs Variadic<Tle_ArgType>:$outputs);
   let regions = (region AnyRegion:$body);

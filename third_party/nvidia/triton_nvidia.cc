@@ -7,6 +7,10 @@
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "nvidia/hopper/include/Transforms/Passes.h"
 #include "nvidia/include/Dialect/NVWS/Transforms/Passes.h"
+#ifdef __TLE__
+#include "nvidia/tle_raw/include/DeferredRawSourceRegistry.h"
+#include "nvidia/tle_raw/include/Passes.h"
+#endif
 #include "passes.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
@@ -14,6 +18,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
+
+#include "llvm/Support/raw_ostream.h"
 
 namespace py = pybind11;
 namespace ttng = mlir::triton::nvidia_gpu;
@@ -142,12 +148,48 @@ static void checkMatmulConstraints(const std::string &A_dtype,
   }
 }
 
+#ifdef __TLE__
+static void setDeferredRawPendingSources(py::dict sources) {
+  mlir::triton::nvidia::tle_raw::clearDeferredRawSourceRegistry();
+  for (auto item : sources) {
+    std::string key = py::cast<std::string>(item.first);
+    py::dict entry = py::cast<py::dict>(item.second);
+
+    mlir::triton::nvidia::tle_raw::DeferredRawSourceEntry rawEntry;
+    rawEntry.sourceId = key;
+    rawEntry.regionDialect = entry["region_dialect"].cast<std::string>();
+    if (entry.contains("extern_func_name") &&
+        !entry["extern_func_name"].is_none()) {
+      rawEntry.externFuncName = entry["extern_func_name"].cast<std::string>();
+    }
+    rawEntry.source = entry["source"].cast<std::string>();
+    if (entry.contains("llvm_ir"))
+      rawEntry.llvmIr = entry["llvm_ir"].cast<std::string>();
+    if (entry.contains("hint"))
+      rawEntry.hint = entry["hint"].cast<std::string>();
+    mlir::triton::nvidia::tle_raw::getDeferredRawSourceRegistry()[key] =
+        std::move(rawEntry);
+  }
+}
+
+void init_nvidia_tle_raw_passes(py::module &&m) {
+  m.def("deferred_raw_materialize",
+        [](py::dict sources, mlir::PassManager &pm) {
+          setDeferredRawPendingSources(sources);
+          pm.addPass(mlir::createNvidiaMaterializeDeferredRaw());
+        });
+}
+#endif
+
 void init_triton_nvidia(py::module &&m) {
   auto passes = m.def_submodule("passes");
   init_triton_nvidia_passes_nvws(passes.def_submodule("nvws"));
   init_triton_nvidia_passes_ttgpuir(passes.def_submodule("ttgpuir"));
   init_triton_nvidia_passes_ttnvgpuir(passes.def_submodule("ttnvgpuir"));
   init_triton_hopper_passes(passes.def_submodule("hopper"));
+#ifdef __TLE__
+  init_nvidia_tle_raw_passes(passes.def_submodule("tle_raw"));
+#endif
 
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {

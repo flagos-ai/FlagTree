@@ -22,9 +22,9 @@ def _get_flagtree_root() -> str:
 
 @dataclass
 class FlagtreeConfigs:
-    default_backends: tuple = ("nvidia", "amd")
-    plugin_backends: tuple = ("cambricon", "ascend", "aipu", "tsingmicro", "enflame")
-    use_cuda_toolkit_backends: tuple = ('aipu', )
+    default_backends: tuple = ("nvidia", "amd", "tileir")
+    plugin_backends: tuple = ("cambricon", "ascend", "aipu", "tsingmicro", "enflame", "hcu", "thrive")
+    use_cuda_toolkit_backends: tuple = ('aipu', 'tileir')
     language_extra_backends: tuple = ('xpu', 'mthreads', "cambricon")
     ext_sourcedir: str = "triton/_C/"
     flagtree_root_dir: str = field(default_factory=_get_flagtree_root)
@@ -38,11 +38,17 @@ class FlagtreeConfigs:
         "mthreads": "musa",
         "ascend": "ascend",
         "cambricon": "mlu",
+        "thrive": "thrive",
+        "metax": "metax",
+        "sunrise": "sunrise",
     }))
 
     def __post_init__(self):
         self.flagtree_submodule_dir = os.path.join(self.flagtree_root_dir, "third_party")
         self.activated_module = self._activate_device_module()
+
+    def non_tileir_default_backends(self):
+        return tuple(backend for backend in self.default_backends if backend != "tileir")
 
     def _activate_device_module(self, suffix=".py"):
         backend = self.flagtree_backend or "default"
@@ -184,7 +190,7 @@ class DownloadManager:
         except ImportError:
             return False
         retry_count = NetConfig.max_retry
-        has_specialization_commit = module.commit_id is not None
+        has_specialization_commit = module.commit_id
         while (retry_count):
             try:
                 repo = git.Repo.clone_from(module.url, module.dst_path)
@@ -202,10 +208,9 @@ class DownloadManager:
         while (retry_count):
             try:
                 os.system(f"git clone {module.url} {module.dst_path}")
+                import subprocess
                 if has_specialization_commit:
-                    os.system(f"cd {module.dst_path}")
-                    os.system(f"git checkout {module.commit_id}")
-                    os.system("cd -")
+                    subprocess.run(["git", "checkout", module.commit_id], cwd=module.dst_path, check=True)
                 return True
             except Exception:
                 retry_count -= 1

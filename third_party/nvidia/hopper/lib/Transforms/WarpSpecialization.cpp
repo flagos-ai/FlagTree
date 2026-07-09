@@ -1,13 +1,19 @@
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 #include "nvidia/hopper/include/Transforms/Passes.h"
+#include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 #define DEBUG_TYPE "nvgpu-warp-specialization"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
+
+namespace ttg = mlir::triton::gpu;
+namespace ttnvws = mlir::triton::nvws;
 
 namespace mlir {
 
@@ -15,7 +21,12 @@ void doTaskPartition(triton::FuncOp &funcOp, unsigned numWarpGroups);
 int doTaskIdPropagate(triton::FuncOp &funcOp);
 bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups);
 void doCodePartition(triton::FuncOp &funcOp, unsigned numBuffers);
+#ifdef __TLE__
+LogicalResult doTokenLowering(triton::FuncOp &funcOp,
+                              unsigned numConsumerGroups);
+#else
 void doTokenLowering(triton::FuncOp &funcOp, unsigned numConsumerGroups);
+#endif
 
 #define GEN_PASS_DEF_NVGPUWARPSPECIALIZATION
 #include "nvidia/hopper/include/Transforms/Passes.h.inc"
@@ -32,8 +43,22 @@ public:
       if (forOp->hasAttr(mlir::triton::kWarpSpecializeAttrName))
         loops.push_back(forOp);
     });
-    if (loops.empty())
+    if (loops.empty()) {
+      bool hasExplicitWarpSpecialize = false;
+      bool hasNvwsToken = false;
+      funcOp->walk(
+          [&](ttg::WarpSpecializeOp) { hasExplicitWarpSpecialize = true; });
+      funcOp->walk([&](ttnvws::CreateTokenOp) { hasNvwsToken = true; });
+#ifdef __TLE__
+      if (hasExplicitWarpSpecialize && hasNvwsToken &&
+          failed(doTokenLowering(funcOp, /*numConsumerGroups=*/1)))
+        signalPassFailure();
+#else
+      if (hasExplicitWarpSpecialize && hasNvwsToken)
+        doTokenLowering(funcOp, /*numConsumerGroups=*/1);
+#endif
       return;
+    }
 
     int numWarps = mlir::triton::gpu::lookupNumWarps(funcOp);
     if (numWarps != 4)
@@ -96,7 +121,14 @@ public:
           << "// -----// WarpSpec internal IR Dump After: doCodePartition\n"
           << moduleOp << "\n\n\n";
     }
+#ifdef __TLE__
+    if (failed(doTokenLowering(funcOp, numWarpGroups - 1))) {
+      signalPassFailure();
+      return;
+    }
+#else
     doTokenLowering(funcOp, numWarpGroups - 1);
+#endif
     // Clear num_stages to disable SWP.
     funcOp->walk([&](scf::ForOp forOp) {
       forOp->setAttr(mlir::triton::kNumStagesAttrName,
@@ -106,6 +138,27 @@ public:
 
   void runOnOperation() override {
     getOperation()->walk([&](triton::FuncOp funcOp) { runOnFuncOp(funcOp); });
+  }
+};
+
+#define GEN_PASS_DEF_NVGPUTESTWSLOWERTOKEN
+#include "nvidia/hopper/include/Transforms/Passes.h.inc"
+
+class NVGPUTestWSLowerTokenPass
+    : public impl::NVGPUTestWSLowerTokenBase<NVGPUTestWSLowerTokenPass> {
+public:
+  using impl::NVGPUTestWSLowerTokenBase<
+      NVGPUTestWSLowerTokenPass>::NVGPUTestWSLowerTokenBase;
+
+  void runOnOperation() override {
+    getOperation()->walk([&](triton::FuncOp funcOp) {
+#ifdef __TLE__
+      if (failed(doTokenLowering(funcOp, numConsumerGroups)))
+        signalPassFailure();
+#else
+      doTokenLowering(funcOp, numConsumerGroups);
+#endif
+    });
   }
 };
 

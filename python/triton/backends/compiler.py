@@ -27,6 +27,20 @@ class BaseBackend(metaclass=ABCMeta):
         self.target = target
         assert self.supports_target(target)
 
+    @classmethod
+    def route_target(cls, target: GPUTarget, jit_fn):
+        """Return an alternate per-kernel target, or ``None`` to keep ``target``."""
+        return None
+
+    @classmethod
+    def get_language_extension(cls):
+        """Return an optional module contributing symbols to ``triton.language.ext``."""
+        return None
+
+    def make_ir(self, src, options, codegen_fns, module_map, context):
+        """Create the initial IR module for this backend."""
+        return src.make_ir(self.target, options, codegen_fns, module_map, context)
+
     @staticmethod
     @abstractmethod
     def supports_target(target: GPUTarget):
