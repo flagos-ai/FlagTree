@@ -47,22 +47,6 @@ namespace mlir::triton::gpu {
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
-// Master build-time switch for the enhancement phases. The NVIDIA backend
-// defines __FLAGTREE_RLC_ENHANCE__ from CMake (on by default); every other
-// backend leaves it undefined, keeping the pass at its original behavior.
-#ifdef __FLAGTREE_RLC_ENHANCE__
-static constexpr bool kFlagtreeRlcEnhance = true;
-#else
-static constexpr bool kFlagtreeRlcEnhance = false;
-#endif
-
-// Per-phase switches, on by default; each is AND-ed with the master switch at
-// its use site. Flip one to false here to disable that single phase.
-static constexpr bool kEnableCostBasedResolution = true;
-static constexpr bool kEnableBackwardPropagation = true;
-static constexpr bool kEnableSmallComponentSolving = true;
-static constexpr bool kEnableStoreLayoutRematerialization = true;
-
 namespace {
 
 #ifdef __TLE__
@@ -4489,10 +4473,11 @@ public:
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
 
-    bool costBased = kFlagtreeRlcEnhance && kEnableCostBasedResolution;
-    bool backwardProp = kFlagtreeRlcEnhance && kEnableBackwardPropagation;
-    bool smallComponentSolving =
-        kFlagtreeRlcEnhance && kEnableSmallComponentSolving;
+    bool costBased = enableCostBasedResolution;
+    bool backwardProp = enableBackwardPropagation;
+    bool smallComponentSolving = enableSmallComponentSolving;
+    bool storeLayoutRemat = enableStoreLayoutRematerialization;
+
     if (!costBased) {
       backwardProp = false;
       smallComponentSolving = false;
@@ -4527,8 +4512,6 @@ public:
 
     cleanupConvertOps();
 
-    bool storeLayoutRemat =
-        kFlagtreeRlcEnhance && kEnableStoreLayoutRematerialization;
     bool changed = false;
     do {
       changed = false;
