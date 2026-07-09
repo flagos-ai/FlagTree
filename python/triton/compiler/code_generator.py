@@ -1244,6 +1244,7 @@ class CodeGenerator(ast.NodeVisitor):
         flatten = False
         warp_specialize = False
         disable_licm = False
+        reorder = False
         # flagtree tle
         try:
             from ..experimental.tle import language as tle
@@ -1265,6 +1266,7 @@ class CodeGenerator(ast.NodeVisitor):
             flatten = iterator.flatten
             warp_specialize = iterator.warp_specialize
             disable_licm = iterator.disable_licm
+            reorder = getattr(iterator, 'reorder', False)
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1329,6 +1331,8 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
+            if reorder and _unwrap_if_constexpr(loop_unroll_factor) is not None:
+                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)
