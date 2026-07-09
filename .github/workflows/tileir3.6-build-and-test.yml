@@ -37,15 +37,13 @@ jobs:
         shell: bash
         run: |
           set -x
-          pip uninstall -y triton || true
           source ~/env-3.6.sh
-          env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
           /usr/local/cuda/bin/tileiras --version
-          rm -rf ~/.triton/cache
-          FLAGTREE_BACKEND=tileir MAX_JOBS=32 CMAKE_BUILD_PARALLEL_LEVEL=32 \
-          TRITON_PTXAS_PATH="$PWD/third_party/nvidia/backend/bin/ptxas" \
-          TRITON_PTXAS_BLACKWELL_PATH="$PWD/third_party/nvidia/backend/bin/ptxas-blackwell" \
-          python3 -m pip install . --no-build-isolation
+          export FLAGTREE_BACKEND=tileir
+          export CMAKE_BUILD_PARALLEL_LEVEL=32
+          export TRITON_PTXAS_PATH="$PWD/third_party/nvidia/backend/bin/ptxas"
+          export TRITON_PTXAS_BLACKWELL_PATH="$PWD/third_party/nvidia/backend/bin/ptxas-blackwell"
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: FlagTree Test on TileIR
         if: steps.check_backend.outputs.should_skip != 'true'
