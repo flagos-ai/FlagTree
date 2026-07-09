@@ -107,7 +107,7 @@ def elementwise_add(A, B, C, XBLOCK=32, YBLOCK=64):
 class TestTLELocalStore:
     """TLE Local Store Integration Tests"""
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
+    @pytest.mark.skipif(torch.cuda.device_count() == 0, reason="Requires CUDA GPU")
     def test_local_store_basic(self):
         """Test basic local store functionality with element-wise addition"""
         torch.manual_seed(42)  # Ensure reproducibility
