@@ -1810,6 +1810,8 @@ class TritonGPURemoveLayoutConversionsPass
     : public impl::TritonGPURemoveLayoutConversionsBase<
           TritonGPURemoveLayoutConversionsPass> {
 public:
+  using TritonGPURemoveLayoutConversionsBase::
+      TritonGPURemoveLayoutConversionsBase;
   // Cleanup convert ops.
   void cleanupConvertOps() {
     MLIRContext *context = &getContext();
