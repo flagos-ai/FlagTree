@@ -191,9 +191,10 @@ struct ConvertTritonGPUToLLVM
       mlir::triton::tle::populateTMAStoreCommitGroupOpToLLVMPatterns(
           typeConverter, patterns, benefit);
       // FlagCX ops are lowered to LLVM.
+#ifdef FLAGCX_ENABLED
       mlir::triton::tle::populateFlagCxOpToLLVMPatterns(typeConverter, patterns,
                                                         benefit);
-
+#endif
       if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
         return signalPassFailure();
       }
