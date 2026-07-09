@@ -64,6 +64,7 @@ class GroupKind(str, Enum):
     BLOCK = "block"
     TILE_SPAN = "tile_span"
     LANES = "lanes"
+    GRID = "grid"
 
 
 @dataclass
