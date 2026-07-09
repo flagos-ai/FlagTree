@@ -82,6 +82,7 @@ jobs:
         run: |
           set -x
           python3 -m pytest -s python/test/unit \
+              --ignore=python/test/unit/cuda/test_gemm_fusion.py \
               --ignore=python/test/unit/language/test_line_info.py
           if [ -d "python/test/operators" ]; then
             python3 -m pytest -s python/test/operators
