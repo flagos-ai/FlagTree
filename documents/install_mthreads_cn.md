@@ -42,7 +42,7 @@ python3 -c "import torch"
 # If "ImportError: libmusa.so.4: cannot open shared object file: No such file or directory" occurs,
 # create a symbolic link as follows.
 cd /usr/lib/x86_64-linux-gnu/
-ln -s libmusa.so.4.3.3 libmusa.so.4
+ln -s libmusa.so.4.3.* libmusa.so.4
 ```
 
 #### 1.2 手动下载 FlagTree 依赖库
