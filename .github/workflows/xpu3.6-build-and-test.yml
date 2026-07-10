@@ -44,8 +44,13 @@ jobs:
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
+          # active conda
+          source /root/miniconda/etc/profile.d/conda.sh
+          conda activate python310_torch29_cuda
+          # test
           set -x
           source ~/env.sh
+          export XPU_EVENT_KL3_ENABLE=1
           cd third_party/xpu/python/test/unit
           python3 -m pytest -s . \
               --ignore=language/test_compile_errors.py \
