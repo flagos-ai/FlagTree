@@ -81,6 +81,9 @@ if _TLE_REPLACE_IR_FILE is not None:
 # that disable most automatic optimizations (useful for debugging/validation).
 _USE_CUSTOM_COMPILE_OPT = os.environ.get("USE_CUSTOM_COMPILE_OPT", None) or os.environ.get("_USE_CUSTOM_COMPILE_OPT", None)
 
+# Environment variable to skip CSE pass, it may in some case falsely optimized out our ping-pong buffer implementation
+_COMMONIR_SKIP_CSE = os.environ.get("COMMONIR_SKIP_CSE", None)
+
 
 # TODO: materialize the concrete min shape
 def min_dot_size(target: GPUTarget):
@@ -97,7 +100,8 @@ def make_ttir(mod, metadata, opt):
     passes.ttir.add_combine(pm)
     passes.common.add_canonicalizer(pm)
     passes.ttir.add_reorder_broadcast(pm)
-    passes.common.add_cse(pm)
+    if _COMMONIR_SKIP_CSE is None:
+        passes.common.add_cse(pm)
     # NOTE: LICM is intentionally omitted — it hoists tile.to_tensor above
     # tile.copy in loops, breaking the read-after-write ordering required by
     # Ascend's buffer semantics. This causes "operand does not dominate this use"
