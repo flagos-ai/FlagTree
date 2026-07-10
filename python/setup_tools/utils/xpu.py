@@ -264,8 +264,7 @@ def collect_xpu_backend_package_data(backend):
         files.append("driver.c")
     xpu3_dir = Path(backend.backend_dir) / "xpu3"
     if xpu3_dir.is_dir():
-        files.extend(
-            str(path.relative_to(backend.backend_dir)) for path in xpu3_dir.rglob("*") if path.is_file())
+        files.extend(str(path.relative_to(backend.backend_dir)) for path in xpu3_dir.rglob("*") if path.is_file())
     return files
 
 
