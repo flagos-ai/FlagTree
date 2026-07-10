@@ -416,7 +416,7 @@ class CMakeBuildPy(build_py):
                     if files:
                         self.distribution.package_data["triton.backends.xpu"] = files
                     self.package_data = self.distribution.package_data
-                    self.data_files = self.get_data_files()
+                    self.__dict__.pop("data_files", None)
                     break
         ret = super().run()
         # xpu-only: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
