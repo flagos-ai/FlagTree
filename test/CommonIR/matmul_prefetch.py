@@ -21,6 +21,8 @@ BLOCK_M = 128
 BLOCK_N = 256
 BLOCK_K = 128
 
+NUM_SLOT = 1
+
 
 def get_number_cores():
     """Return the number of AI cores to use as the launch grid size."""
@@ -36,9 +38,9 @@ def get_number_cores():
 #
 #  grid = (NUM_CORES,). Each core handles multiple (M_tile, N_tile) output
 #  blocks in round-robin fashion.
-#  L1 buffers allocate 3x space to hold prefetched K-tiles in a rotating manner.
-#  Prologue loads the first 2 K-tiles, then the main loop consumes slot[s]
-#  while prefetching into slot[(s+2)%3].
+#  L1 buffers allocate NUM_SLOT space to hold prefetched K-tiles in a rotating manner.
+#  Prologue loads the first `NUM_SLOT - 1` K-tiles, then the main loop consumes slot[s]
+#  while prefetching into slot[(s+NUM_SLOT-1)%NUM_SLOT].
 # =============================================================================
 @triton.jit
 def matmul_kernel(
@@ -49,6 +51,7 @@ def matmul_kernel(
     N: tl.constexpr,
     K: tl.constexpr,
     NUM_CORES: tl.constexpr,
+    NUM_SLOT: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
@@ -59,9 +62,9 @@ def matmul_kernel(
     NUM_BLOCKS = NUM_BLOCKS_M * NUM_BLOCKS_N
     NUM_K_BLOCKS = tl.cdiv(K, BLOCK_K)
 
-    # On-chip buffers: A/B in L1 with 3x space for rotating prefetch slots
-    mat_a_l1 = tile_alloc([3 * BLOCK_M, BLOCK_K], mat_a.dtype.element_ty, L1)
-    mat_b_l1 = tile_alloc([3 * BLOCK_K, BLOCK_N], mat_b.dtype.element_ty, L1)
+    # On-chip buffers: A/B in L1 with NUM_SLOT space for rotating prefetch slots
+    mat_a_l1 = tile_alloc([NUM_SLOT * BLOCK_M, BLOCK_K], mat_a.dtype.element_ty, L1)
+    mat_b_l1 = tile_alloc([NUM_SLOT * BLOCK_K, BLOCK_N], mat_b.dtype.element_ty, L1)
 
     # Each core processes output blocks in round-robin
     for block_idx in range(pid, NUM_BLOCKS, NUM_CORES):
@@ -73,40 +76,27 @@ def matmul_kernel(
 
         mat_c_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-        # ── Prologue: prefetch K-tiles into slot 0 and slot 1 ──────────────
-        # Slot 0: k_idx = 0
-        tile_copy(tl.make_block_ptr(
-            mat_a, (M, K), (K, 1), (m_start, 0),
-            (BLOCK_M, BLOCK_K), (1, 0)),
-            tile_subview(mat_a_l1, [0 * BLOCK_M, 0], [BLOCK_M, BLOCK_K], [1, 1]),
-            [BLOCK_M, BLOCK_K])
-        tile_copy(tl.make_block_ptr(
-            mat_b, (K, N), (N, 1), (0, n_start),
-            (BLOCK_K, BLOCK_N), (1, 0)),
-            tile_subview(mat_b_l1, [0 * BLOCK_K, 0], [BLOCK_K, BLOCK_N], [1, 1]),
-            [BLOCK_K, BLOCK_N])
-
-        # Slot 1: k_idx = 1 (if exists)
-        if NUM_K_BLOCKS > 1:
+        # ── Prologue: prefetch `NUM_SLOT - 1` K-tiles ──────────────
+        for s in range(NUM_SLOT - 1):
             tile_copy(tl.make_block_ptr(
-                mat_a, (M, K), (K, 1), (m_start, 1 * BLOCK_K),
+                mat_a, (M, K), (K, 1), (m_start, s * BLOCK_K),
                 (BLOCK_M, BLOCK_K), (1, 0)),
-                tile_subview(mat_a_l1, [1 * BLOCK_M, 0], [BLOCK_M, BLOCK_K], [1, 1]),
+                tile_subview(mat_a_l1, [s * BLOCK_M, 0], [BLOCK_M, BLOCK_K], [1, 1]),
                 [BLOCK_M, BLOCK_K])
             tile_copy(tl.make_block_ptr(
-                mat_b, (K, N), (N, 1), (1 * BLOCK_K, n_start),
+                mat_b, (K, N), (N, 1), (s * BLOCK_K, n_start),
                 (BLOCK_K, BLOCK_N), (1, 0)),
-                tile_subview(mat_b_l1, [1 * BLOCK_K, 0], [BLOCK_K, BLOCK_N], [1, 1]),
+                tile_subview(mat_b_l1, [s * BLOCK_K, 0], [BLOCK_K, BLOCK_N], [1, 1]),
                 [BLOCK_K, BLOCK_N])
 
-        # ── Main loop: consume slot[s], prefetch into slot[(s+2)%3] ────────
+        # ── Main loop: consume slot[s], prefetch into slot[(s+NUM_SLOT-1)%NUM_SLOT] ────────
         for k_idx in range(0, NUM_K_BLOCKS):
-            s = k_idx % 3
+            s = k_idx % NUM_SLOT
 
-            # Prefetch: load k_idx+2 into slot (s+2)%3
-            k_pf = k_idx + 2
+            # Prefetch: load k_idx+NUM_SLOT-1 into slot (s+NUM_SLOT-1)%NUM_SLOT
+            k_pf = k_idx + NUM_SLOT - 1
             if k_pf < NUM_K_BLOCKS:
-                s_pf = k_pf % 3
+                s_pf = k_pf % NUM_SLOT
                 tile_copy(tl.make_block_ptr(
                     mat_a, (M, K), (K, 1), (m_start, k_pf * BLOCK_K),
                     (BLOCK_M, BLOCK_K), (1, 0)),
@@ -141,8 +131,8 @@ def call(mat_a, mat_b, num_cores=_DEFAULT_NUM_CORES):
     k = mat_a.shape[1]
     n = mat_b.shape[1]
     mat_c = torch.empty(m, n, dtype=mat_a.dtype, device=mat_a.device)
-    matmul_kernel[(num_cores,)](mat_a, mat_b, mat_c, m, n, k, num_cores,
-                               BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
+    matmul_kernel[(num_cores,)](mat_a, mat_b, mat_c, m, n, k, NUM_CORES=num_cores,
+                                NUM_SLOT=NUM_SLOT, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
     return mat_c
 
 
@@ -191,6 +181,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
         "N": N,
         "K": K,
         "NUM_CORES": NUM_CORES,
+        "NUM_SLOT": NUM_SLOT,
         "BLOCK_M": BLOCK_M,
         "BLOCK_N": BLOCK_N,
         "BLOCK_K": BLOCK_K,
