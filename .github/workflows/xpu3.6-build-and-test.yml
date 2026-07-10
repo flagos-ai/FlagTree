@@ -36,6 +36,10 @@ jobs:
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
+          # active conda
+          source /root/miniconda/etc/profile.d/conda.sh
+          conda activate python310_torch29_cuda
+          # build
           set -x
           export FLAGTREE_BACKEND=xpu
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
