@@ -96,6 +96,14 @@ export FLAGTREE_BACKEND=mthreads
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
+```shell
+# If libjsoncpp.so or librhash.so not found, 
+# Run the following command on the host (Outside the container).
+apt install -y build-essential libc6-dev libjsoncpp25 librhash0
+apt install -y zlib1g zlib1g-dev libxml2 libxml2-dev nlohmann-json3-dev
+apt install -y libhiredis0.14
+```
+
 ### 3. 测试验证
 
 参考 [Tests of mthreads3.6 backend](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/.github/workflows/mthreads3.6-build-and-test.yml)
