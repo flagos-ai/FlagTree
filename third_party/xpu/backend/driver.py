@@ -29,11 +29,12 @@ def get_xpu_library_dirs(arch: int = -1):
     include_dir = [os.path.join(dirname, f"xpu{arch}", "include")]
     libdevice_dir = os.path.join(dirname, f"xpu{arch}", "lib")
     library_dir = os.path.join(dirname, f"xpu{arch}", "so")
+    launch_lib = "liblaunch.a" if os.path.exists(os.path.join(libdevice_dir, "liblaunch.a")) else "launch"
     if os.path.exists(os.path.join(library_dir, "libLaunch_shared.a")) or os.path.exists(
             os.path.join(library_dir, "liblaunch_shared.so")):
-        libraries = ["launch", "xpurt", "launch_shared"]
+        libraries = [launch_lib, "xpurt", "launch_shared"]
     else:
-        libraries = ["launch", "xpurt"]
+        libraries = [launch_lib, "xpurt"]
     return include_dir, [libdevice_dir, library_dir], libraries
 
 
