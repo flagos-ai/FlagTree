@@ -97,7 +97,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
 ```shell
-# If libjsoncpp.so or librhash.so not found, 
+# If libjsoncpp.so or librhash.so not found,
 # Run the following command on the host (Outside the container).
 apt install -y build-essential libc6-dev libjsoncpp25 librhash0
 apt install -y zlib1g zlib1g-dev libxml2 libxml2-dev nlohmann-json3-dev
