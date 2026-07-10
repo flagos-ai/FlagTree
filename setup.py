@@ -406,18 +406,7 @@ class CMakeBuildPy(build_py):
         # Re-apply the fixed xpu runtime .so overlay after cmake: device/CMakeLists.txt
         # copies the stale liblaunch_shared.so/libxpujitc.so into backend/xpu3/so during
         # build_ext, so we overwrite them again before build_py packages the wheel.
-        helper.overlay_backend_runtime_so()
-        if helper.flagtree_backend == "xpu":
-            self.distribution.package_data = self.distribution.package_data or {}
-            for backend in backends:
-                if backend.name == "xpu":
-                    ensure_xpu_launch_static_lib(backend)
-                    files = collect_xpu_backend_package_data(backend)
-                    if files:
-                        self.distribution.package_data["triton.backends.xpu"] = files
-                    self.package_data = self.distribution.package_data
-                    self.__dict__.pop("data_files", None)
-                    break
+        helper.overlay_backend_runtime_so(self, backends)
         ret = super().run()
         # xpu-only: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
         # copies .py by default, so this extension-less marker (read by
@@ -751,49 +740,8 @@ def get_packages():
         yield "triton.profiler"
 
 
-def collect_xpu_backend_package_data(backend):
-    files = []
-    driver_c = os.path.join(backend.backend_dir, "driver.c")
-    if os.path.exists(driver_c):
-        files.append("driver.c")
-    xpu3_dir = os.path.join(backend.backend_dir, "xpu3")
-    if os.path.isdir(xpu3_dir):
-        for root, _, filenames in os.walk(xpu3_dir):
-            for filename in filenames:
-                files.append(os.path.relpath(os.path.join(root, filename), backend.backend_dir))
-    return files
-
-
-def ensure_xpu_launch_static_lib(backend):
-    src = os.path.join(backend.src_dir, "device", "liblaunch.a")
-    if not os.path.exists(src):
-        print(f"[XPU] liblaunch.a not found at {src}; packaged launcher may fail to link", file=sys.stderr)
-        return
-    dst_dir = os.path.join(backend.backend_dir, "xpu3", "lib")
-    os.makedirs(dst_dir, exist_ok=True)
-    dst = os.path.join(dst_dir, "liblaunch.a")
-    shutil.copy2(src, dst)
-    print(f"[XPU] copied liblaunch.a: {src} -> {dst}", file=sys.stderr)
-
-
 def get_package_data():
-    package_data = {}
-    if helper.flagtree_backend == "xpu":
-        # xpu-only: declare the FLAGTREE_BACKEND marker as package data so build_py
-        # copies it into build_lib/triton (and thus into the wheel + final install).
-        # Writing it to the source tree here guarantees the file physically exists
-        # when build_py globs package_data, instead of relying only on a post-run
-        # write into build_lib. Gated to xpu so other backends' wheels are unchanged.
-        helper.write_flagtree_backend_file()
-        package_data["triton"] = ["FLAGTREE_BACKEND"]
-        for backend in backends:
-            if backend.name != "xpu":
-                continue
-            files = collect_xpu_backend_package_data(backend)
-            if files:
-                package_data["triton.backends.xpu"] = files
-            break
-    return package_data
+    return helper.get_backend_package_data(backends)
 
 
 def add_link_to_backends(external_only):

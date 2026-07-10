@@ -257,27 +257,74 @@ def check_pybind11_abi(cache):
     ensure_pybind11_matches_sdnn(scan_dir)
 
 
-def overlay_runtime_so(cache):
+def collect_xpu_backend_package_data(backend):
+    files = []
+    driver_c = Path(backend.backend_dir) / "driver.c"
+    if driver_c.exists():
+        files.append("driver.c")
+    xpu3_dir = Path(backend.backend_dir) / "xpu3"
+    if xpu3_dir.is_dir():
+        files.extend(
+            str(path.relative_to(backend.backend_dir)) for path in xpu3_dir.rglob("*") if path.is_file())
+    return files
+
+
+def ensure_xpu_launch_static_lib(backend):
+    src = Path(backend.src_dir) / "device" / "liblaunch.a"
+    if not src.exists():
+        print(f"[XPU] liblaunch.a not found at {src}; packaged launcher may fail to link", file=sys.stderr)
+        return
+    dst = Path(backend.backend_dir) / "xpu3" / "lib" / "liblaunch.a"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    print(f"[XPU] copied liblaunch.a: {src} -> {dst}", file=sys.stderr)
+
+
+def get_package_data(backends):
+    package_data = {"triton": ["FLAGTREE_BACKEND"]}
+    for backend in backends:
+        if backend.name == "xpu":
+            files = collect_xpu_backend_package_data(backend)
+            if files:
+                package_data["triton.backends.xpu"] = files
+            break
+    return package_data
+
+
+def overlay_runtime_so(cache, build_py_command=None, backends=None):
     """Overwrite third_party/xpu/backend/xpu3/so with the fixed runtime .so set."""
     try:
         src = Path(cache.get("xpu-runtime-so"))
     except KeyError:
-        return
-    if not src.is_dir():
+        src = None
+    if src is None or not src.is_dir():
         print(f"[XPU] runtime-so overlay skipped: {src} not found")
+    else:
+        dst = Path(cache.flagtree_dir) / "third_party" / "xpu" / "backend" / "xpu3" / "so"
+        if dst.exists():
+            shutil.rmtree(dst)
+        os.makedirs(dst, exist_ok=True)
+        for item in os.listdir(src):
+            s = src / item
+            d = dst / item
+            if s.is_dir():
+                shutil.copytree(s, d, symlinks=True)
+            else:
+                shutil.copy2(s, d)
+        print(f"[XPU] runtime-so overlay applied: {src} -> {dst}")
+
+    if build_py_command is None or backends is None:
         return
-    dst = Path(cache.flagtree_dir) / "third_party" / "xpu" / "backend" / "xpu3" / "so"
-    if dst.exists():
-        shutil.rmtree(dst)
-    os.makedirs(dst, exist_ok=True)
-    for item in os.listdir(src):
-        s = src / item
-        d = dst / item
-        if s.is_dir():
-            shutil.copytree(s, d, symlinks=True)
-        else:
-            shutil.copy2(s, d)
-    print(f"[XPU] runtime-so overlay applied: {src} -> {dst}")
+    build_py_command.distribution.package_data = build_py_command.distribution.package_data or {}
+    for backend in backends:
+        if backend.name == "xpu":
+            ensure_xpu_launch_static_lib(backend)
+            files = collect_xpu_backend_package_data(backend)
+            if files:
+                build_py_command.distribution.package_data["triton.backends.xpu"] = files
+            build_py_command.package_data = build_py_command.distribution.package_data
+            build_py_command.__dict__.pop("data_files", None)
+            break
 
 
 _XPU_LIBSTDCXX_PTH_NAME = "zzz_flagtree_xpu_libstdcxx.pth"

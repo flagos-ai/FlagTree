@@ -444,10 +444,18 @@ def check_pybind11_abi():
         hook_call(cache=cache)
 
 
-def overlay_backend_runtime_so():
+def overlay_backend_runtime_so(build_py_command=None, backends=None):
     hook_call = get_hook_instance("overlay_runtime_so")
     if hook_call:
-        hook_call(cache=cache)
+        hook_call(cache=cache, build_py_command=build_py_command, backends=backends)
+
+
+def get_backend_package_data(backends):
+    hook_call = get_hook_instance("get_package_data")
+    if not hook_call:
+        return {}
+    write_flagtree_backend_file()
+    return hook_call(backends)
 
 
 def write_backend_site_pth(dest_dir):
