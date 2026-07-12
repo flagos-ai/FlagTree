@@ -1,4 +1,4 @@
-name: Hopper3.6-Build-And-Test
+name: NV3.6-Build-And-Test
 
 on:
   schedule:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   hopper-build-and-test:
-    runs-on: hopper
+    runs-on: nvidia3.6
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
