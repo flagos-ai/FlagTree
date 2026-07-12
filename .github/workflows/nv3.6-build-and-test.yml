@@ -46,7 +46,7 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
-      - name: FlagTree Build on NVidia
+      - name: Build FlagTree
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
@@ -55,7 +55,7 @@ jobs:
           export USE_FLAGCX=ON
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on NVidia
+      - name: Unit Test
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |

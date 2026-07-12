@@ -32,7 +32,7 @@ jobs:
         with:
           backend: sunrise
 
-      - name: FlagTree Build on Sunrise
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -44,7 +44,7 @@ jobs:
           export FLAGTREE_BACKEND=sunrise
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Sunrise
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

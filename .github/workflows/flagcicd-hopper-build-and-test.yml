@@ -55,7 +55,7 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
 
-      - name: FlagTree Build on NVidia
+      - name: Build FlagTree
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
@@ -66,7 +66,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
           unset TRITON_HOME
 
-      - name: FlagGems Accuracy Test on NVidia
+      - name: FlagGems Accuracy Test
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |

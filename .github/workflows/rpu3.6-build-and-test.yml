@@ -67,7 +67,7 @@ jobs:
             sleep $((n*15))
           done
 
-      - name: FlagTree Build on RPU board (via SSH)
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -97,7 +97,7 @@ jobs:
             sleep $((n*15))
           done
 
-      - name: FlagTree Test on RPU board (via SSH)
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

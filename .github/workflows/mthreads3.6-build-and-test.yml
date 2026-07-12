@@ -32,7 +32,7 @@ jobs:
         with:
           backend: mthreads
 
-      - name: FlagTree Build on Mthreads
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -40,7 +40,7 @@ jobs:
           export FLAGTREE_BACKEND=mthreads
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Mthreads
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

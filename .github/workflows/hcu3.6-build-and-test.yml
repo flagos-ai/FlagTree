@@ -32,7 +32,7 @@ jobs:
         with:
           backend: hcu
 
-      - name: FlagTree Build on Hcu
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -40,7 +40,7 @@ jobs:
           export FLAGTREE_BACKEND=hcu
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Hcu
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

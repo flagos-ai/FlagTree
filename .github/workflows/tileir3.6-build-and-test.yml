@@ -32,7 +32,7 @@ jobs:
         with:
           backend: tileir
 
-      - name: FlagTree Build on TileIR
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -45,7 +45,7 @@ jobs:
           export TRITON_PTXAS_BLACKWELL_PATH="$PWD/third_party/nvidia/backend/bin/ptxas-blackwell"
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on TileIR
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

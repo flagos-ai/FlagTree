@@ -32,7 +32,7 @@ jobs:
         with:
           backend: metax
 
-      - name: FlagTree Build on Metax
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -40,7 +40,7 @@ jobs:
           export FLAGTREE_BACKEND=metax
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Metax
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

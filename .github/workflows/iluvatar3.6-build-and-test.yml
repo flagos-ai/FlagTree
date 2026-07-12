@@ -32,7 +32,7 @@ jobs:
         with:
           backend: iluvatar
 
-      - name: FlagTree Build on Iluvatar
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -43,7 +43,7 @@ jobs:
           export TRITON_ILU_BUILD_GLUON=OFF
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Iluvatar
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

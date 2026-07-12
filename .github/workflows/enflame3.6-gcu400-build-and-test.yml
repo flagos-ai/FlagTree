@@ -44,7 +44,7 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
-      - name: FlagTree Build on Enflame
+      - name: Build FlagTree
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
@@ -54,7 +54,7 @@ jobs:
           export FLAGTREE_BACKEND=enflame
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation --break-system-packages
 
-      - name: FlagTree Test on Enflame
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
