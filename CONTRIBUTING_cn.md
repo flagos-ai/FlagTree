@@ -1,4 +1,4 @@
-[English](./CONTRIBUTING.md)
+[中文版|[English](./CONTRIBUTING.md)]
 
 # FlagTree 贡献者指南
 

@@ -211,7 +211,7 @@ Historical versions of flagtree can be found at https://resource.flagos.net/#bro
 
 ## Contributing
 
-Contributions to FlagTree development are welcome. Please refer to [CONTRIBUTING.md](/CONTRIBUTING_cn.md) for details.
+Contributions to FlagTree development are welcome. Please refer to [CONTRIBUTING.md](/CONTRIBUTING.md) for details.
 
 ## License
 
