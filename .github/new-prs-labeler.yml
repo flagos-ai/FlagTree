@@ -1,0 +1,109 @@
+# Labels applied to PRs based on the files changed.
+# Backend labels are set when any file under the backend's third_party/ directory changes.
+# The DOC label is set when every changed file is a documentation file
+# (matches the same "docs-only" definition used by check-docs-only action:
+#  *.md / *.yml / *.txt / CODEOWNERS, but NOT CMakeLists.txt).
+
+# ---- Backend labels ----
+
+nvidia:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/nvidia/**'
+
+xpu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/xpu/**'
+
+hcu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/hcu/**'
+
+metax:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/metax/**'
+
+iluvatar:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/iluvatar/**'
+
+mthreads:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/mthreads/**'
+
+f2reduce:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/f2reduce/**'
+
+amd:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/amd/**'
+
+cambricon:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/cambricon/**'
+
+proton:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/proton/**'
+
+ascend:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/ascend/**'
+
+tle:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tle/**'
+
+aipu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/aipu/**'
+
+enflame:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/enflame/**'
+
+tsingmicro:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tsingmicro/**'
+
+sunrise:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/sunrise/**'
+
+
+
+# ---- DOC label ----
+# This label is applied ONLY when the PR consists exclusively of documentation.
+# It uses a strict inclusion list combined with an explicit exclusion of build files
+# to ensure no functional code changes are mislabeled as "DOC".
+
+DOC:
+  - all:
+      # Condition A: All must be document file extensions
+      - changed-files:
+          - any-glob-to-all-files:
+              - '**/*.md'
+              - '**/*.yml'
+              - '**/*.txt'
+              - '**/CODEOWNERS'
+
+      # Condition B: Must not contain CMakeLists.txt
+      - changed-files:
+          - all-globs-to-all-files:
+              - '!**/CMakeLists.txt'

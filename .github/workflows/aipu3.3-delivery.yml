@@ -1,4 +1,4 @@
-name: CD-Hcu3.6
+name: CD-AIPU3.3
 
 permissions:
   contents: write
@@ -18,13 +18,13 @@ on:
         default: 'x86_64'
       BRANCH:
         required: true
-        default: 'triton_v3.6.x'
+        default: 'triton_v3.3.x'
       TRITON:
         required: true
-        default: '3.6'
+        default: '3.3'
       BACKEND:
         required: true
-        default: 'hcu'
+        default: 'aipu'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -44,15 +44,15 @@ on:
       BRANCH:
         type: string
         required: true
-        default: 'triton_v3.6.x'
+        default: 'triton_v3.3.x'
       TRITON:
         type: string
         required: true
-        default: '3.6'
+        default: '3.3'
       BACKEND:
         type: string
         required: true
-        default: 'hcu'
+        default: 'aipu'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -63,7 +63,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: hcu3.6-cd
+    runs-on: aipu3.3-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
@@ -108,6 +108,8 @@ jobs:
             echo "✅ flagtree===${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
+          source ~/env_setup.sh  # aipu
+          cd python
           rm -rf ./build ./*.egg-info
           { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
           export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"

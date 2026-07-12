@@ -1,4 +1,4 @@
-name: CD-Hcu3.6
+name: CD-NV3.3
 
 permissions:
   contents: write
@@ -12,19 +12,19 @@ on:
         default: '0.6.0'
       PYTHON_VER:
         required: true
-        default: '3.10'
+        default: '3.12'
       PLATFORM:
         required: true
         default: 'x86_64'
       BRANCH:
         required: true
-        default: 'triton_v3.6.x'
+        default: 'triton_v3.3.x'
       TRITON:
         required: true
-        default: '3.6'
+        default: '3.3'
       BACKEND:
         required: true
-        default: 'hcu'
+        default: 'nvidia'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -36,7 +36,7 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.10'
+        default: '3.12'
       PLATFORM:
         type: string
         required: true
@@ -44,15 +44,15 @@ on:
       BRANCH:
         type: string
         required: true
-        default: 'triton_v3.6.x'
+        default: 'triton_v3.3.x'
       TRITON:
         type: string
         required: true
-        default: '3.6'
+        default: '3.3'
       BACKEND:
         type: string
         required: true
-        default: 'hcu'
+        default: 'nvidia'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -63,15 +63,15 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: hcu3.6-cd
+    runs-on: nvidia3.3-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
         shell: bash
         run: |
           TARGET_BRANCH="${{ github.ref_name }}"
-          if [[ ! "$TARGET_BRANCH" =~ ^(${{ inputs.BRANCH }})$ ]]; then
-            echo "❌ This workflow must be run from branch '${{ inputs.BRANCH }}', but got '${TARGET_BRANCH}'"
+          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3\.(1|2|3)\.x)$ ]]; then
+            echo "❌ This workflow must be run from branch 'triton_v3.1.x'|'triton_v3.2.x'|'triton_v3.3.x', but got '${TARGET_BRANCH}'"
             exit 1
           fi
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
@@ -95,10 +95,12 @@ jobs:
           set -x
           CHIP=""
           TRITON_VER=${{ inputs.TRITON }}
-          export FLAGTREE_BACKEND=${{ inputs.BACKEND }}
+          source ~/env-${TRITON_VER}.sh  # nvidia
+          unset FLAGTREE_BACKEND  # nvidia
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
-          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
+          BACKEND=${{ inputs.BACKEND }}  # nvidia
+          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${BACKEND}${CHIP}${TRITON_VER}"  # nvidia
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
           if python${PYTHON_VER} -m pip download --no-deps "flagtree===${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
@@ -108,6 +110,7 @@ jobs:
             echo "✅ flagtree===${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
+          cd python
           rm -rf ./build ./*.egg-info
           { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
           export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"

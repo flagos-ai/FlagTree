@@ -1,4 +1,4 @@
-name: CD-Hcu3.6
+name: CD-Ascend3.5
 
 permissions:
   contents: write
@@ -12,19 +12,19 @@ on:
         default: '0.6.0'
       PYTHON_VER:
         required: true
-        default: '3.10'
+        default: '3.11'
       PLATFORM:
         required: true
-        default: 'x86_64'
+        default: 'aarch64'
       BRANCH:
         required: true
-        default: 'triton_v3.6.x'
+        default: 'triton_v3.5.x'
       TRITON:
         required: true
-        default: '3.6'
+        default: '3.5'
       BACKEND:
         required: true
-        default: 'hcu'
+        default: 'ascend'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -36,23 +36,23 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.10'
+        default: '3.11'
       PLATFORM:
         type: string
         required: true
-        default: 'x86_64'
+        default: 'aarch64'
       BRANCH:
         type: string
         required: true
-        default: 'triton_v3.6.x'
+        default: 'triton_v3.5.x'
       TRITON:
         type: string
         required: true
-        default: '3.6'
+        default: '3.5'
       BACKEND:
         type: string
         required: true
-        default: 'hcu'
+        default: 'ascend'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -63,7 +63,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: hcu3.6-cd
+    runs-on: ascend3.5-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
@@ -110,6 +110,7 @@ jobs:
 
           rm -rf ./build ./*.egg-info
           { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
+          export PATH=~/.flagtree/ascend/llvm-7d5de303-ubuntu-aarch64-python311-compat/bin/:${PATH}  # clang on ascend3.5
           export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
           env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true

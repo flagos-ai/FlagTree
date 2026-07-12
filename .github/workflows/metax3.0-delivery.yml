@@ -1,4 +1,4 @@
-name: CD-Hcu3.6
+name: CD-Metax3.0
 
 permissions:
   contents: write
@@ -12,19 +12,19 @@ on:
         default: '0.6.0'
       PYTHON_VER:
         required: true
-        default: '3.10'
+        default: '3.12'
       PLATFORM:
         required: true
         default: 'x86_64'
       BRANCH:
         required: true
-        default: 'triton_v3.6.x'
+        default: 'main'
       TRITON:
         required: true
-        default: '3.6'
+        default: '3.0'
       BACKEND:
         required: true
-        default: 'hcu'
+        default: 'metax'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -36,7 +36,7 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.10'
+        default: '3.12'
       PLATFORM:
         type: string
         required: true
@@ -44,15 +44,15 @@ on:
       BRANCH:
         type: string
         required: true
-        default: 'triton_v3.6.x'
+        default: 'main'
       TRITON:
         type: string
         required: true
-        default: '3.6'
+        default: '3.0'
       BACKEND:
         type: string
         required: true
-        default: 'hcu'
+        default: 'metax'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -63,7 +63,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: hcu3.6-cd
+    runs-on: metax3.0-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
@@ -108,6 +108,8 @@ jobs:
             echo "✅ flagtree===${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
+          source ~/env_setup.sh  # metax
+          cd python
           rm -rf ./build ./*.egg-info
           { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
           export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"

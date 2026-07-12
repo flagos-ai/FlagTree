@@ -1,4 +1,4 @@
-name: CD-Hcu3.6
+name: CD-Thrive3.6
 
 permissions:
   contents: write
@@ -24,7 +24,7 @@ on:
         default: '3.6'
       BACKEND:
         required: true
-        default: 'hcu'
+        default: 'thrive'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -52,7 +52,7 @@ on:
       BACKEND:
         type: string
         required: true
-        default: 'hcu'
+        default: 'thrive'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -63,7 +63,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: hcu3.6-cd
+    runs-on: thrive3.6-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch

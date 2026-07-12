@@ -1,4 +1,4 @@
-name: CD-Hcu3.6
+name: CD-NV3.6
 
 permissions:
   contents: write
@@ -12,7 +12,7 @@ on:
         default: '0.6.0'
       PYTHON_VER:
         required: true
-        default: '3.10'
+        default: '3.12'
       PLATFORM:
         required: true
         default: 'x86_64'
@@ -24,7 +24,7 @@ on:
         default: '3.6'
       BACKEND:
         required: true
-        default: 'hcu'
+        default: 'nvidia'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -36,7 +36,7 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.10'
+        default: '3.12'
       PLATFORM:
         type: string
         required: true
@@ -52,7 +52,7 @@ on:
       BACKEND:
         type: string
         required: true
-        default: 'hcu'
+        default: 'nvidia'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -63,7 +63,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: hcu3.6-cd
+    runs-on: nvidia3.6-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
@@ -95,10 +95,16 @@ jobs:
           set -x
           CHIP=""
           TRITON_VER=${{ inputs.TRITON }}
-          export FLAGTREE_BACKEND=${{ inputs.BACKEND }}
+          source ~/env-${TRITON_VER}.sh  # nvidia
+          unset FLAGTREE_BACKEND  # nvidia
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
-          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
+          if [[ "${TRITON_VER}" == "3.6" ]]; then
+            export FLAGTREE_WHEEL_VERSION="${WHL_VER}"
+          else
+            BACKEND=${{ inputs.BACKEND }}  # nvidia
+            export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${BACKEND}${CHIP}${TRITON_VER}"  # nvidia
+          fi
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
           if python${PYTHON_VER} -m pip download --no-deps "flagtree===${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then

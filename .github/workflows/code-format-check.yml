@@ -18,7 +18,7 @@ jobs:
     steps:
     - name: Checkout code
       id: checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         token: ${{ secrets.BOT_PAT_TOKEN || github.token }}
     - name: Code format check

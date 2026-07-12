@@ -16,6 +16,15 @@ on:
       PLATFORM:
         required: true
         default: 'x86_64'
+      BRANCH:
+        required: true
+        default: 'triton_v3.6.x'
+      TRITON:
+        required: true
+        default: '3.6'
+      BACKEND:
+        required: true
+        default: 'xpu'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -32,6 +41,18 @@ on:
         type: string
         required: true
         default: 'x86_64'
+      BRANCH:
+        type: string
+        required: true
+        default: 'triton_v3.6.x'
+      TRITON:
+        type: string
+        required: true
+        default: '3.6'
+      BACKEND:
+        type: string
+        required: true
+        default: 'xpu'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -49,8 +70,8 @@ jobs:
         shell: bash
         run: |
           TARGET_BRANCH="${{ github.ref_name }}"
-          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3.6.x)$ ]]; then
-            echo "❌ This workflow must be run from branch 'triton_v3.6.x', but got '${TARGET_BRANCH}'"
+          if [[ ! "$TARGET_BRANCH" =~ ^(${{ inputs.BRANCH }})$ ]]; then
+            echo "❌ This workflow must be run from branch '${{ inputs.BRANCH }}', but got '${TARGET_BRANCH}'"
             exit 1
           fi
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
@@ -67,14 +88,14 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Xpu (triton_v3.6.x branch)
-        if: ${{ env.TARGET_BRANCH == 'triton_v3.6.x' }}
+      - name: FlagTree bdist_wheel
+        if: ${{ env.TARGET_BRANCH == inputs.BRANCH }}
         shell: bash
         run: |
           set -x
-          TRITON_VER="3.6"
           CHIP=""
-          export FLAGTREE_BACKEND=xpu
+          TRITON_VER=${{ inputs.TRITON }}
+          export FLAGTREE_BACKEND=${{ inputs.BACKEND }}
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
