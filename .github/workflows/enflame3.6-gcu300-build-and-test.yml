@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame36-gcu300-build-and-test:
+  enflame36x-gcu300-unit-test:
     runs-on: "enflame3.6-gcu300"
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

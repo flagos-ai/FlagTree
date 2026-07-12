@@ -6,86 +6,100 @@
 
 # ---- Backend labels ----
 
-nvidia:
+aipu:
   - changed-files:
       - any-glob-to-any-file:
-          - 'third_party/nvidia/**'
-
-xpu:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/xpu/**'
-
-hcu:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/hcu/**'
-
-metax:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/metax/**'
-
-iluvatar:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/iluvatar/**'
-
-mthreads:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/mthreads/**'
-
-f2reduce:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/f2reduce/**'
+          - 'third_party/aipu/**'
 
 amd:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/amd/**'
 
-cambricon:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/cambricon/**'
-
-proton:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/proton/**'
-
 ascend:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/ascend/**'
 
-tle:
+cambricon:
   - changed-files:
       - any-glob-to-any-file:
-          - 'third_party/tle/**'
-
-aipu:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/aipu/**'
+          - 'third_party/cambricon/**'
 
 enflame:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/enflame/**'
 
-tsingmicro:
+f2reduce:
   - changed-files:
       - any-glob-to-any-file:
-          - 'third_party/tsingmicro/**'
+          - 'third_party/f2reduce/**'
+
+hcu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/hcu/**'
+
+iluvatar:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/iluvatar/**'
+
+metax:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/metax/**'
+
+mthreads:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/mthreads/**'
+
+nvidia:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/nvidia/**'
+
+proton:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/proton/**'
+
+rpu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/rpu/**'
 
 sunrise:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/sunrise/**'
 
+thrive:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/thrive/**'
+
+tle:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tle/**'
+
+tileir:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tileir/**'
+
+tsingmicro:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tsingmicro/**'
+
+xpu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/xpu/**'
 
 
 # ---- DOC label ----

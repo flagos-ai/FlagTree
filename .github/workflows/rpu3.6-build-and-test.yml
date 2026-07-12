@@ -25,7 +25,7 @@ concurrency:
 # checks the source out locally, mirrors it to the board, then drives a clean
 # build and the test suite on the board.
 jobs:
-  rpu-build-and-test:
+  rpu36x-unit-test:
     runs-on: rpu3.6
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

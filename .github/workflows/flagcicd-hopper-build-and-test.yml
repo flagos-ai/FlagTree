@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  flagcicd-hopper-build-and-test:
+  flagcicd-nv36x-gems-test:
     runs-on: [flagcicd-flagtree-nvidia3.6]
     container:
       image: harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
