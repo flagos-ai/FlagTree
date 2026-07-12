@@ -1,6 +1,6 @@
 [中文版|[English](./install_rpu.md)]
 
-## 💫 Huixi Intelligence（辉羲智能）[rpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/rpu/)
+## 💫 Huixi Intelligence（辉羲智能）[rpu](/third_party/rpu/) (Triton 3.6)
 
 - 对应的 Triton 版本为 3.6，基于 aarch64 平台
 
@@ -104,4 +104,4 @@ python3 third_party/rpu/python/test/board/lk_board_smoke.py --require-board
 
 它会编译一个小 kernel，在设备上派发执行，并与 numpy golden 结果比对。
 
-参考 [Tests of rpu backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/rpu3.6-build-and-test.yml)
+参考 [Tests of rpu backend](/.github/workflows/rpu3.6-build-and-test.yml)

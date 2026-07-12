@@ -1,0 +1,207 @@
+[中文版|[English](./install_xpu.md)]
+
+## 💫 KLX [xpu](/third_party/xpu/) (Triton 3.6)
+
+- 对应的 Triton 版本为 3.6，基于 x64 平台
+- 可用于 P800
+
+### 1. 构建及运行环境
+
+#### 1.1 使用镜像（P800）
+
+如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
+
+```shell
+# Plan A: docker pull (59.9GB)
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-xpu3.6-py310-torch2.9.0-ubuntu22.04:202606-base
+docker pull ${IMAGE}
+# Plan B: docker load (32GB)
+IMAGE=flagtree-xpu3.6-py310-torch2.9.0-ubuntu22.04:202606-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-xpu3.6-py310-torch2.9.0-ubuntu22.04.202606-base.tar.gz
+docker load -i flagtree-xpu3.6-py310-torch2.9.0-ubuntu22.04.202606-base.tar.gz
+# Confirm pybind11 version
+python3 -c 'import pybind11; print(pybind11.__version__)'  # Should be 3.0.4
+```
+
+```shell
+CONTAINER=flagtree-dev-xxx
+docker run -dit \
+    --net=host --privileged \
+    --ulimit stack=67108864 --ulimit memlock=-1 \
+    --ulimit nofile=120000 --shm-size=256g \
+    --group-add video --cap-add=SYS_PTRACE --cap-add=SYS_ADMIN \
+    --security-opt seccomp=unconfined \
+    --device=/dev/xpu0:/dev/xpu0 --device=/dev/xpu1:/dev/xpu1 \
+    --device=/dev/xpu2:/dev/xpu2 --device=/dev/xpu3:/dev/xpu3 \
+    --device=/dev/xpu4:/dev/xpu4 --device=/dev/xpu5:/dev/xpu5 \
+    --device=/dev/xpu6:/dev/xpu6 --device=/dev/xpu7:/dev/xpu7 \
+    --device=/dev/xpuctrl:/dev/xpuctrl --device /dev/fuse \
+    -v /etc/localtime:/etc/localtime:ro \
+    -v /data:/data -v /home:/home -v /tmp:/tmp \
+    -w /root --name ${CONTAINER} ${IMAGE} bash
+docker exec -it ${CONTAINER} /bin/bash
+```
+
+#### 1.2 手动下载 FlagTree 依赖库
+
+```shell
+mkdir -p ~/.flagtree/xpu; cd ~/.flagtree/xpu
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xre-Linux-x86_64_v0.3.0.tar.gz
+tar zxvf xre-Linux-x86_64_v0.3.0.tar.gz
+wget https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
+tar zxvf xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
+wget https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.2.0.tar.gz
+tar zxvf xpu-sdnn-objects_v0.3.6.2.0.tar.gz
+wget https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-runtime-so_v0.3.6.2.0.tar.gz
+tar zxvf xpu-runtime-so_v0.3.6.2.0.tar.gz
+mkdir llvm_trust
+wget https://klx-sdk-release-public.su.bcebos.com/XTriton/llvm22/20260615/xtdk-llvm22-ubuntu2004_x86_64.tar.gz
+tar zxvf xtdk-llvm22-ubuntu2004_x86_64.tar.gz -C llvm_trust --strip-components=1
+```
+
+#### 1.3 手动下载 Triton 依赖库
+
+镜像中已下载安装 Triton 依赖库。
+如果无需从源码构建 FlagTree 或 Triton，那么无需下载 Triton 依赖库。
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.6 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.6.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.6.x-linux-x64.tar.gz
+```
+
+执行完上述脚本后，原有的 ~/.triton 目录将被重命名，新的 ~/.triton 目录会被创建并存放预下载包。
+注意执行脚本过程中会提示手动确认。
+
+### 2. 安装命令
+
+#### 2.1 免源码安装
+
+```shell
+# Note: First install PyTorch, then execute the following commands
+python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
+RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
+python3.10 -m pip install flagtree===0.6.0+xpu3.6 $RES
+```
+
+安装 `flagtree` 后，可通过下列命令查看：
+
+```shell
+python3 -m pip show flagtree
+```
+
+#### 2.2 从源码构建
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+git checkout -b triton_v3.6.x origin/triton_v3.6.x
+export FLAGTREE_BACKEND=xpu
+MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+```
+
+### 3. 测试验证
+
+测试前需执行 `export XPU_EVENT_KL3_ENABLE=1`
+
+参考 [Tests of xpu3.6 backend](/.github/workflows/xpu3.6-build-and-test.yml)
+
+---
+
+## 💫 KLX [xpu](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/xpu/) (Triton 3.0)
+
+- 对应的 Triton 版本为 3.0，基于 x64 平台
+- 可用于 P800
+
+### 1. 构建及运行环境
+
+#### 1.1 使用镜像（P800）
+
+如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
+
+```shell
+# Plan A: docker pull (44.9GB)
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
+docker pull ${IMAGE}
+# Plan B: docker load (21GB)
+IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-xpu-py310-torch2.5.1-ubuntu20.04.202604-base.tar.gz
+docker load -i flagtree-xpu-py310-torch2.5.1-ubuntu20.04.202604-base.tar.gz
+```
+
+```shell
+CONTAINER=flagtree-dev-xxx
+docker run -dit \
+    --net=host --privileged \
+    --ulimit stack=67108864 --ulimit memlock=-1 \
+    --ulimit nofile=120000 --shm-size=256g \
+    --group-add video --cap-add=SYS_PTRACE --cap-add=SYS_ADMIN \
+    --security-opt seccomp=unconfined \
+    --device=/dev/xpu0:/dev/xpu0 --device=/dev/xpu1:/dev/xpu1 \
+    --device=/dev/xpu2:/dev/xpu2 --device=/dev/xpu3:/dev/xpu3 \
+    --device=/dev/xpu4:/dev/xpu4 --device=/dev/xpu5:/dev/xpu5 \
+    --device=/dev/xpu6:/dev/xpu6 --device=/dev/xpu7:/dev/xpu7 \
+    --device=/dev/xpuctrl:/dev/xpuctrl --device /dev/fuse \
+    -v /etc/localtime:/etc/localtime:ro \
+    -v /data:/data -v /home:/home -v /tmp:/tmp \
+    -w /root --name ${CONTAINER} ${IMAGE} bash
+docker exec -it ${CONTAINER} /bin/bash
+```
+
+#### 1.2 手动下载 FlagTree 依赖库
+
+```shell
+mkdir -p ~/.flagtree/xpu; cd ~/.flagtree/xpu
+wget https://klx-sdk-release-public.su.bcebos.com/v1/triton/flaggems/2025_4_season/llvm/20260304/XTDK-llvm19-ubuntu2004_x86_64.tar.gz
+tar zxvf XTDK-llvm19-ubuntu2004_x86_64.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xre-Linux-x86_64_v0.3.0.tar.gz
+tar zxvf xre-Linux-x86_64_v0.3.0.tar.gz
+wget https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
+tar zxvf xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
+```
+
+#### 1.3 手动下载 Triton 依赖库
+
+镜像中已下载安装 Triton 依赖库。
+如果无需从源码构建 FlagTree 或 Triton，那么无需下载 Triton 依赖库。
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree
+# For Triton 3.1 (x64)
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/build-deps-triton_3.1.x-linux-x64.tar.gz
+sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x64.tar.gz
+```
+
+执行完上述脚本后，原有的 ~/.triton 目录将被重命名，新的 ~/.triton 目录会被创建并存放预下载包。
+注意执行脚本过程中会提示手动确认。
+
+### 2. 安装命令
+
+#### 2.1 免源码安装
+
+```shell
+# Note: First install PyTorch, then execute the following commands
+python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
+RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
+python3.10 -m pip install flagtree===0.5.1+xpu3.0 $RES
+```
+
+安装 `flagtree` 后，可通过下列命令查看：
+
+```shell
+python3 -m pip show flagtree
+```
+
+#### 2.2 从源码构建
+
+```shell
+cd ${YOUR_CODE_DIR}/FlagTree/python
+export FLAGTREE_BACKEND=xpu
+MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+```
+
+### 3. 测试验证
+
+测试前需执行 `export XPU_EVENT_KL3_ENABLE=1`
+
+参考 [Tests of xpu3.0 backend](https://github.com/flagos-ai/flagtree/blob/triton_v3.1.x/.github/workflows/xpu3.0-build-and-test.yml)
