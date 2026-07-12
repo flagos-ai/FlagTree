@@ -62,7 +62,7 @@ The RPU backend is built from source on the board. There is no source-free
 cd ~
 git clone https://github.com/flagos-ai/FlagTree.git
 cd FlagTree
-git checkout -b triton_v3.6.x origin/triton_v3.6.x
+git checkout main
 ```
 
 #### 2.2 Build from source

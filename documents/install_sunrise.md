@@ -61,7 +61,7 @@ python3 -m pip show flagtree
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
-git checkout -b triton_v3.6.x origin/triton_v3.6.x
+git checkout main
 export TRITON_BUILD_WITH_CLANG_LLD=1
 export TRITON_OFFLINE_BUILD=1
 export TRITON_BUILD_PROTON=OFF

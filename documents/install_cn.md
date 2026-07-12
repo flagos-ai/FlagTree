@@ -129,12 +129,12 @@ apt update; apt install zlib1g zlib1g-dev libxml2 libxml2-dev nlohmann-json3-dev
 cd ${YOUR_CODE_DIR}/FlagTree
 python3 -m pip install -r python/requirements.txt
 cd python  # For Triton 3.1, 3.2, 3.3, you need to enter the python directory to build
-git checkout main                                   # For Triton 3.1
+git checkout -b triton_v3.1.x origin/triton_v3.2.x  # For Triton 3.1
 git checkout -b triton_v3.2.x origin/triton_v3.2.x  # For Triton 3.2
 git checkout -b triton_v3.3.x origin/triton_v3.3.x  # For Triton 3.3
 git checkout -b triton_v3.4.x origin/triton_v3.4.x  # For Triton 3.4
 git checkout -b triton_v3.5.x origin/triton_v3.5.x  # For Triton 3.5
-git checkout -b triton_v3.6.x origin/triton_v3.6.x  # For Triton 3.6
+git checkout main                                   # For Triton 3.6
 unset FLAGTREE_BACKEND
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 # If you need to build other backends afterward, you should clear LLVM-related environment variables

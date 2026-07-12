@@ -80,7 +80,7 @@ python3 -m pip show flagtree
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
-git checkout -b triton_v3.6.x origin/triton_v3.6.x
+git checkout main
 export FLAGTREE_BACKEND=tileir
 export CMAKE_BUILD_PARALLEL_LEVEL=32
 export TRITON_PTXAS_PATH="$PWD/third_party/nvidia/backend/bin/ptxas"

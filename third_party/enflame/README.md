@@ -20,7 +20,7 @@ Flagtree Third Party Backend for Enflame accelerators, including core component 
 cd ~
 git clone https://github.com/flagos-ai/FlagTree.git
 cd FlagTree
-git checkout -b triton_v3.6.x origin/triton_v3.6.x
+git checkout main
 ```
 
 ### 2. Pull Software Package

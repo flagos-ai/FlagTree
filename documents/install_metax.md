@@ -81,7 +81,7 @@ python3 -m pip show flagtree
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
-git checkout -b triton_v3.6.x origin/triton_v3.6.x
+git checkout main
 export FLAGTREE_BACKEND=metax
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
@@ -176,6 +176,7 @@ python3 -m pip show flagtree
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
+git checkout -b triton_v3.1.x origin/triton_v3.1.x
 export FLAGTREE_BACKEND=metax
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```

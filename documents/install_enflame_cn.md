@@ -80,7 +80,7 @@ python3 -m pip show flagtree
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
-git checkout -b triton_v3.6.x origin/triton_v3.6.x
+git checkout main
 export FLAGTREE_BACKEND=enflame
 MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packages
 ```

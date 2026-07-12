@@ -123,7 +123,7 @@ shown above.
 
 **FlagTree compatibility**
 
-- Target FlagTree/Triton base: `triton_v3.6.x` / Triton 3.6.0
+- Target FlagTree/Triton base: `main` / Triton 3.6.0
 - FlagTree's pinned LLVM is older than the LLVM expected by cuda-tile v13.3.0.
 - `scripts/patch_bytecode_utils.sh` is a FlagTree-local compatibility patch for
   that LLVM skew. It rewrites cuda-tile source before build, including:
