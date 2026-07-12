@@ -4,9 +4,9 @@ on:
   schedule:
     - cron: '0 21 * * *'
   push:
-    branches: [ "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x" ]
   pull_request:
-    branches: [ "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -46,8 +46,8 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
-      - name: FlagTree Build on NVidia (triton_v3.6.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.6.x' }}
+      - name: FlagTree Build on NVidia
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
           set -x
@@ -55,8 +55,8 @@ jobs:
           export USE_FLAGCX=ON
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on NVidia (triton_v3.6.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.6.x' }}
+      - name: FlagTree Test on NVidia
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
           set -x

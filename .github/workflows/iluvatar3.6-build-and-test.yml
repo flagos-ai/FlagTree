@@ -2,9 +2,9 @@ name: Iluvatar3.6-Build-And-Test
 
 on:
   push:
-    branches: [ "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x" ]
   pull_request:
-    branches: [ "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
