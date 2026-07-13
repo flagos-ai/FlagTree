@@ -124,7 +124,31 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
         return _summarize_statistics(ret, quantiles, return_mode)
 
 
-def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_mode="mean"):
+# flagtree: supports specifying device_type to select runtime_driver
+def _get_runtime_driver_active(device_type: str | None):
+    _DEVICE_TYPE_TO_BACKEND = {
+        "cuda": "nvidia", "nvidia": "nvidia", "hip": "amd", "amd": "amd", "musa": "mthreads", "mthreads": "mthreads"
+    }
+
+    @functools.lru_cache(maxsize=None)
+    def _get_backend_driver(backend_name: str):
+        from .backends import backends as _discovered_backends
+        if backend_name not in _discovered_backends:
+            available = ", ".join(sorted(_discovered_backends.keys()))
+            raise RuntimeError(f"Unsupported device_type/backend '{backend_name}'. "
+                               f"Available Triton backends: [{available}]")
+        driver_cls = _discovered_backends[backend_name].driver
+        if not driver_cls.is_active():
+            raise RuntimeError(f"Backend '{backend_name}' is not active.")
+        return driver_cls()
+
+    if device_type is None:
+        return runtime.driver.active
+    backend_name = _DEVICE_TYPE_TO_BACKEND.get(device_type.lower(), device_type.lower())
+    return _get_backend_driver(backend_name)
+
+
+def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_mode="mean", device_type=None):
     """
     Benchmark the runtime of the provided function. By default, return the median runtime of :code:`fn` along with
     the 20-th and 80-th performance percentile.
@@ -141,22 +165,28 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
     :type quantiles: list[float], optional
     :param return_mode: The statistical measure to return. Options are "min", "max", "mean", "median", or "all". Default is "mean".
     :type return_mode: str
+    # flagtree: add param device_type
+    :param device_type: Optional device/backend selector for benchmarking (e.g. "cuda", "hip", "musa").
+                        When omitted, use the current active Triton driver.
+    :type device_type: str, optional
     """
     assert return_mode in ["min", "max", "mean", "median", "all"]
 
-    di = runtime.driver.active.get_device_interface()
+    # flagtree: supports specifying device_type to select runtime_driver
+    runtime_driver_active = _get_runtime_driver_active(device_type)
+    di = runtime_driver_active.get_device_interface()
 
     fn()
     di.synchronize()
 
-    cache = runtime.driver.active.get_empty_cache_for_benchmark()
+    cache = runtime_driver_active.get_empty_cache_for_benchmark()  # flagtree
 
     # Estimate the runtime of the function
     start_event = di.Event(enable_timing=True)
     end_event = di.Event(enable_timing=True)
     start_event.record()
     for _ in range(5):
-        runtime.driver.active.clear_cache(cache)
+        runtime_driver_active.clear_cache(cache)  # flagtree
         fn()
     end_event.record()
     di.synchronize()
@@ -179,7 +209,7 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
             for x in grad_to_none:
                 x.grad = None
         # we clear the L2 cache before each run
-        runtime.driver.active.clear_cache(cache)
+        runtime_driver_active.clear_cache(cache)  # flagtree
         # record time of `fn`
         start_event[i].record()
         fn()
@@ -235,7 +265,8 @@ def assert_close(x, y, atol=None, rtol=None, err_msg=''):
     # we handle size==1 case separately as we can
     # provide better error message there
     if x.size > 1 or y.size > 1:
-        np.testing.assert_allclose(x, y, atol=atol, rtol=rtol, equal_nan=True)
+        # flagtree: add err_msg param to np.testing.assert_allclose
+        np.testing.assert_allclose(x, y, atol=atol, rtol=rtol, equal_nan=True, err_msg=err_msg)
         return
     if not np.allclose(x, y, atol=atol, rtol=rtol):
         raise AssertionError(f'{err_msg} {x} is not close to {y} (atol={atol}, rtol={rtol})')

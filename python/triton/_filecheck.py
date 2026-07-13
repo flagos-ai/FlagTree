@@ -47,7 +47,7 @@ def run_filecheck(name, module_str, check_template):
 
         try:
             subprocess.check_output(
-                [_get_filecheck_path(), temp_expected, "--input-file", temp_module, "--dump-input-context=50"],
+                [filecheck_path, temp_expected, "--input-file", temp_module, "--dump-input-context=50"],
                 stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError as error:
             decoded = error.output.decode('unicode_escape')
