@@ -18,7 +18,8 @@ from triton._C.libtriton import ir
 # Stub target for testing the frontend.
 # flagtree backend path specialization
 from triton.flagtree_spec import spec
-if not spec("spec_get_stub_target"):
+stub_target = spec("spec_get_stub_target")
+if not stub_target:
     stub_target = GPUTarget("cuda", 100, 32)
 
 triton_dir = os.path.dirname(__file__)
