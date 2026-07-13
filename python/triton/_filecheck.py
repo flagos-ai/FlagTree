@@ -1,7 +1,6 @@
 import functools
 import os
 import inspect
-import shutil
 import subprocess
 import tempfile
 

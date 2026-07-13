@@ -140,5 +140,6 @@ def is_namedtuple(val):
 
 # flagtree backend path specialization
 from triton.flagtree_spec import spec_func
+
 spec_func("apply_with_path")
 spec_func("_tuple_create")
