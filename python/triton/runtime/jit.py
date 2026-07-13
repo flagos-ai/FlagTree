@@ -419,7 +419,10 @@ def create_function_from_signature(sig, kparams, backend):
                         # we do not specialize non-constexpr floats and bools:
                         specialize = False
                 if specialize:
-                    specialization.append(f'("{kp.annotation_type}",) + {ret}[1:]')
+                    # Prefer constexpr over annotation type to avoid downgrading
+                    # compile-time constants to runtime-specialized types
+                    specialization.append(
+                        f'({ret} if {ret}[0] == "constexpr" else ("{kp.annotation_type}",) + {ret}[1:])')
                 else:
                     # skip runtime specialization:
                     specialization.append(f'("{kp.annotation_type}", None)')

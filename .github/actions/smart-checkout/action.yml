@@ -1,0 +1,50 @@
+name: 'Smart Checkout with Retry'
+description: 'Attempts to checkout code with multiple retries and sleep intervals'
+inputs:
+  checkout_version:
+    description: 'The version of actions/checkout to use'
+    required: false
+    default: 'v6'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout code (attempt 1)
+      id: checkout1
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      continue-on-error: true
+
+    - name: Sleep before checkout2
+      if: steps.checkout1.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "First checkout attempt failed. Sleeping for 60 seconds before retry..."
+        sleep 60
+
+    - name: Checkout code (attempt 2)
+      id: checkout2
+      if: steps.checkout1.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      continue-on-error: true
+
+    - name: Sleep before final checkout
+      if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "Second checkout attempt failed. Sleeping for 120 seconds before final retry..."
+        sleep 120
+
+    - name: Checkout code (final attempt)
+      if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Verify checkout success
+      shell: bash
+      if: success()
+      run: echo "Checkout completed successfully"

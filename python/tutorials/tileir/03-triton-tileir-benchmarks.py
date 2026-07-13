@@ -119,34 +119,34 @@ def _build_pair_specs() -> Tuple[PairSpec, ...]:
 
     for kv_len in (1024, 2048, 8192):
         for batch in (1, 1024, 128):
-            for kpe_dim, transpose in ((128, False), (16, True), (32, True), (64, False)):
+            for num_heads, transpose in ((128, False), (16, True), (32, True), (64, False)):
                 _add_pair(
                     specs,
                     "mla_decoding",
                     "Test_MLADecoding",
                     "float16",
-                    f"test_perf[FRAMEWORK-{kv_len}-{batch}-512-64-float16-{kpe_dim}-{transpose}]",
+                    f"test_perf[FRAMEWORK-{kv_len}-{batch}-512-64-float16-{num_heads}-{transpose}]",
                 )
 
     matmul_sizes = (16384, 2048, 256, 4096, 64, 8192)
-    for trans_a in (False, True):
-        for trans_b in (False, True):
+    for trans_b in (False, True):
+        for trans_a in (False, True):
             for dim in matmul_sizes:
                 _add_pair(
                     specs,
                     "matmul",
                     "Test_Matmul",
                     "float32",
-                    f"test_perf[FRAMEWORK-True-False-{trans_a}-{trans_b}-{dim}-{dim}-{dim}-0-0-torch.float32]",
+                    f"test_perf[FRAMEWORK-True-False-{trans_b}-{trans_a}-{dim}-{dim}-{dim}-0-0-torch.float32]",
                 )
-    for trans_a in (False, True):
+    for trans_b in (False, True):
         for dim in matmul_sizes:
             _add_pair(
                 specs,
                 "matmul",
                 "Test_Matmul",
                 "float32",
-                f"test_perf[FRAMEWORK-True-True-{trans_a}-False-{dim}-{dim}-{dim}-0-0-torch.float32]",
+                f"test_perf[FRAMEWORK-True-True-{trans_b}-False-{dim}-{dim}-{dim}-0-0-torch.float32]",
             )
 
     rope_configs = ((32, 32, 128, 1.0), (32, 8, 128, 0.5), (32, 8, 128, 1.0), (32, 8, 256, 0.25))
@@ -462,11 +462,11 @@ def _build_linear_bias_act(fn: str) -> BuiltCase:
         if act_type == "relu":
             return torch.relu(out)
         if act_type == "gelu":
-            return torch.nn.functional.gelu(out)
+            return torch.nn.functional.gelu(out, approximate="tanh")
         return out
 
     return BuiltCase(
-        run=lambda: mod.linear_bias_act_dropout(x, weight, bias, act_type, is_grad_enabled=False),
+        run=lambda: mod.linear_bias_act_dropout(x, weight, bias, act_type),
         ref=ref,
         meta={"x": _meta(x), "weight": _meta(weight), "act_type": act_type, "is_bias": is_bias},
         atol=8e-2,
@@ -484,7 +484,7 @@ def _build_mla(fn: str) -> BuiltCase:
     k = _randn((batch, heads, seq_len, d_model), dtype, scale=0.3)
     v = _randn((batch, heads, seq_len, d_model), dtype, scale=0.3)
     qpe = _randn((batch, heads, seq_len, d_pe), dtype, scale=0.3)
-    kpe = _randn((batch, heads, seq_len, d_pe), dtype, scale=0.3)
+    kpe = _randn((batch, 1, seq_len, d_pe), dtype, scale=0.3)
     scale = 1.0 / math.sqrt(d_model + d_pe)
     return BuiltCase(
         run=lambda: mod.triton_mla(q, k, v, qpe, kpe, is_causal, scale),
@@ -495,16 +495,16 @@ def _build_mla(fn: str) -> BuiltCase:
 
 
 def _build_mla_decoding(fn: str) -> BuiltCase:
-    s_kv, num_batch, num_heads, head_dim, dtype_s, kpe_dim, transpose = _params(fn)
-    s_kv, num_batch, num_heads, head_dim, kpe_dim = map(int, (s_kv, num_batch, num_heads, head_dim, kpe_dim))
+    s_kv, num_batch, block_d, block_kpe, dtype_s, num_heads, transpose = _params(fn)
+    s_kv, num_batch, block_d, block_kpe, num_heads = map(int, (s_kv, num_batch, block_d, block_kpe, num_heads))
     dtype = _dtype(dtype_s)
     transpose = _bool(transpose)
     mod = _import_triton_op("mla_decoding")
-    q = _randn((num_batch, num_heads, head_dim), dtype, scale=0.3)
-    qpe = _randn((num_batch, num_heads, kpe_dim), dtype, scale=0.3)
-    kv = _randn((num_batch, s_kv, head_dim), dtype, scale=0.3)
-    kpe = _randn((num_batch, s_kv, kpe_dim), dtype, scale=0.3)
-    scale = 1.0 / math.sqrt(head_dim + kpe_dim)
+    q = torch.ones((num_batch, num_heads, block_d), device="cuda", dtype=torch.float32).to(dtype)
+    qpe = torch.ones((num_batch, num_heads, block_kpe), device="cuda", dtype=torch.float32).to(dtype)
+    kv = torch.ones((num_batch, s_kv, block_d), device="cuda", dtype=torch.float32).to(dtype)
+    kpe = torch.ones((num_batch, s_kv, block_kpe), device="cuda", dtype=torch.float32).to(dtype)
+    scale = 1.0 / math.sqrt(block_d + block_kpe)
     return BuiltCase(
         run=lambda: mod.mla_decoding(q, qpe, kv, kpe, scale, transpose=transpose),
         ref=None,
@@ -514,14 +514,14 @@ def _build_mla_decoding(fn: str) -> BuiltCase:
 
 
 def _build_matmul(fn: str) -> BuiltCase:
-    use_tma, static_persistent, ta, tb, m, n, k, _offset_a, _offset_b, dtype_s = _params(fn)
+    use_tma, static_persistent, tb, ta, m, n, k, _offset_a, _offset_b, dtype_s = _params(fn)
     use_tma, static_persistent, ta, tb = map(_bool, (use_tma, static_persistent, ta, tb))
     m, n, k = int(m), int(n), int(k)
     dtype = _dtype(dtype_s)
     mod = _import_triton_op("matmul")
     _patch_matmul_empty_prune_fallback(mod)
-    a = _randn((k, m) if ta else (m, k), dtype, scale=0.2)
-    b = _randn((n, k) if tb else (k, n), dtype, scale=0.2)
+    a = _rand((k, m) if ta else (m, k), dtype)
+    b = _rand((n, k) if tb else (k, n), dtype)
     check = dtype not in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None))
     return BuiltCase(
         run=lambda: mod.matmul(a, b, trans_a=ta, trans_b=tb, static_persistent=static_persistent, use_tma=use_tma),
@@ -539,14 +539,15 @@ def _build_rope(fn: str) -> BuiltCase:
     bsz, seq_len, num_q_heads, num_kv_heads, head_dim = map(int, (bsz, seq_len, num_q_heads, num_kv_heads, head_dim))
     partial = float(partial)
     mod = _import_triton_op("rope")
-    q = _randn((bsz, num_q_heads, seq_len, head_dim), dtype)
-    k = _randn((bsz, num_kv_heads, seq_len, head_dim), dtype)
+    q = _randn((bsz, seq_len, num_q_heads, head_dim), dtype).transpose(1, 2)
+    k = _randn((bsz, seq_len, num_kv_heads, head_dim), dtype).transpose(1, 2)
     rope_dim = int(head_dim * partial)
-    pos = torch.arange(seq_len, device="cuda", dtype=torch.float32)[None, :, None]
-    freqs = torch.arange(rope_dim, device="cuda", dtype=torch.float32)[None, None, :] / max(rope_dim, 1)
-    angle = pos * freqs
-    cos = torch.cos(angle).to(dtype)
-    sin = torch.sin(angle).to(dtype)
+    inv_freq = 1.0 / (10000.0**(torch.arange(0, rope_dim, 2, device="cuda", dtype=torch.float32) / rope_dim))
+    freqs = torch.outer(torch.arange(seq_len, device="cuda", dtype=torch.float32), inv_freq)
+    cos_half = torch.cos(freqs).to(dtype)
+    sin_half = torch.sin(freqs).to(dtype)
+    cos = torch.cat((cos_half, cos_half), dim=-1).unsqueeze(0).expand(bsz, -1, -1)
+    sin = torch.cat((sin_half, sin_half), dim=-1).unsqueeze(0).expand(bsz, -1, -1)
     return BuiltCase(
         run=lambda: mod.apply_rope_base(q, k, cos, sin, partial_rotary_factor=partial),
         ref=None,

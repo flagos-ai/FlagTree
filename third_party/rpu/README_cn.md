@@ -24,7 +24,7 @@ Rhino RPU 是**辉羲智能**（Huixi Intelligence，[rhino.auto](https://www.rh
 cd ~
 git clone https://github.com/flagos-ai/FlagTree.git
 cd FlagTree
-git checkout -b triton_v3.6.x origin/triton_v3.6.x
+git checkout main
 ```
 
 ### 2. 安装 RPU 驱动与运行时

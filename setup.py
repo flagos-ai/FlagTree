@@ -403,7 +403,26 @@ class CMakeBuildPy(build_py):
     def run(self) -> None:
         self.run_command('build_ext')
         helper.write_flagtree_backend_file()
-        return super().run()
+        # Re-apply the fixed xpu runtime .so overlay after cmake: device/CMakeLists.txt
+        # copies the stale liblaunch_shared.so/libxpujitc.so into backend/xpu3/so during
+        # build_ext, so we overwrite them again before build_py packages the wheel.
+        helper.overlay_backend_runtime_so(self, backends)
+        ret = super().run()
+        # xpu-only: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
+        # copies .py by default, so this extension-less marker (read by
+        # triton._flagtree_backend to make XPUDriver.is_active() return True
+        # without any env var) was missing from the install, causing
+        # "0 active drivers". Write it into build_lib/triton so it is packaged.
+        if helper.flagtree_backend == "xpu":
+            try:
+                helper.write_flagtree_backend_file(os.path.join(self.build_lib, "triton"))
+            except Exception as _exc:  # noqa: BLE001
+                print(f"[flagtree] could not write build_lib FLAGTREE_BACKEND: {_exc}")
+        # xpu-only: drop a site .pth that preloads a GLIBCXX_3.4.30-capable libstdc++
+        # before torch, so kernel launch needs no manual LD_LIBRARY_PATH/LD_PRELOAD.
+        # Written into build_lib root so it lands at the site-packages root of the wheel.
+        helper.write_backend_site_pth(self.build_lib)
+        return ret
 
 
 class CMakeExtension(Extension):
@@ -428,6 +447,11 @@ class CMakeBuild(build_ext):
 
     def run(self):
         active_backend = os.environ.get("FLAGTREE_BACKEND", "")
+        # xpu: the prebuilt SDNN objects hard-encode a pybind11 ABI; verify the env
+        # pybind11 matches before cmake configures/compiles libtriton, and fail early
+        # with an actionable message otherwise. Done here (build_ext) rather than at
+        # import so non-build commands don't run the check.
+        helper.check_pybind11_abi()
         if active_backend not in ("xpu", ):
             download_and_copy_dependencies()
 
@@ -716,6 +740,10 @@ def get_packages():
         yield "triton.profiler"
 
 
+def get_package_data():
+    return helper.get_backend_package_data(backends)
+
+
 def add_link_to_backends(external_only):
     for backend in backends:
         if external_only and not backend.is_external:
@@ -901,6 +929,7 @@ setup(
     ],
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
+    package_data=get_package_data(),
     entry_points=get_entry_points(),
     include_package_data=True,
     ext_modules=[CMakeExtension("triton", "triton/_C/")],

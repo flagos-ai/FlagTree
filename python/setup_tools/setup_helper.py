@@ -16,43 +16,6 @@ downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
 
-
-def _patch_llvm_exports():
-    """Remove the cmake import-file existence check from LLVMExports.cmake.
-
-    Some trust/xtdk-llvm22 packages export targets whose build-only binaries
-    (llvm-tblgen/opt/llvm-link/...) are not shipped, which makes the cmake
-    "verify imported files exist" loop raise FATAL_ERROR during
-    find_package(MLIR). This patch disables that check.
-
-    Notes:
-    - Idempotent: a `[patched]` marker is written in place of the check block,
-      so re-running on an already-patched file is a no-op.
-    - Harmless when the check block is absent (e.g. the 20260615 package does
-      not register those binaries for checking, so nothing matches).
-    """
-    import re
-    import glob
-    syspath = os.environ.get('LLVM_SYSPATH', '')
-    if not syspath:
-        return
-    marker = "# [patched] import file check disabled - binaries not shipped in trust package"
-    for f in glob.glob(f"{syspath}/lib/cmake/llvm/LLVMExports*.cmake"):
-        with open(f) as fh:
-            content = fh.read()
-        if marker in content:
-            continue  # already patched; stay idempotent
-        # Non-greedy match of a single check block. The block always ends at
-        # the first `unset(_cmake_import_check_targets)`, so `.*?` cannot span
-        # into a following block.
-        patched = re.sub(r'# Loop over all imported files.*?unset\(_cmake_import_check_targets\)', marker, content,
-                         flags=re.DOTALL)
-        if patched != content:
-            with open(f, 'w') as fh:
-                fh.write(patched)
-            print(f"[XPU] patched LLVMExports: {f}")
-
-
 set_llvm_env = lambda path: set_env(
     {
         'LLVM_INCLUDE_DIRS': Path(path) / "include",
@@ -150,6 +113,7 @@ def write_flagtree_backend_file(triton_pkg_dir=None):
     if triton_pkg_dir is None:
         triton_pkg_dir = Path(__file__).resolve().parents[1] / "triton"
     backend_value = os.environ.get("FLAGTREE_BACKEND", "")
+    os.makedirs(triton_pkg_dir, exist_ok=True)
     dest_file = Path(triton_pkg_dir) / "FLAGTREE_BACKEND"
     dest_file.write_text(backend_value)
 
@@ -468,6 +432,38 @@ def check_env(env_val):
     return os.environ.get(env_val, '') != ''
 
 
+def register_backend_cache():
+    hook_call = get_hook_instance("register_cache")
+    if hook_call:
+        hook_call(cache=cache, flagtree_backend=flagtree_backend, check_env=check_env, set_llvm_env=set_llvm_env)
+
+
+def check_pybind11_abi():
+    hook_call = get_hook_instance("check_pybind11_abi")
+    if hook_call:
+        hook_call(cache=cache)
+
+
+def overlay_backend_runtime_so(build_py_command=None, backends=None):
+    hook_call = get_hook_instance("overlay_runtime_so")
+    if hook_call:
+        hook_call(cache=cache, build_py_command=build_py_command, backends=backends)
+
+
+def get_backend_package_data(backends):
+    hook_call = get_hook_instance("get_package_data")
+    if not hook_call:
+        return {}
+    write_flagtree_backend_file()
+    return hook_call(backends)
+
+
+def write_backend_site_pth(dest_dir):
+    hook_call = get_hook_instance("write_site_pth")
+    if hook_call:
+        hook_call(dest_dir)
+
+
 def uninstall_triton():
     is_bdist_wheel = any(cmd in sys.argv for cmd in ['bdist_wheel', 'egg_info', 'sdist'])
     if is_bdist_wheel:
@@ -519,89 +515,7 @@ cache.store(
     "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatarTritonPlugin-cpython3.10-glibc2.30-glibcxx3.4.28-cxxabi1.3.12-ubuntu-x86_64_v0.3.0.tar.gz",
     copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="015b9af8")
 
-# klx xpu - upgraded to trust LLVM (llvm22) for Triton 3.6
-# 20260615 xtdk-llvm22 ships the full xpu3 device-codegen toolchain
-# (clang/ld.lld/xpu3-elfconv/xpu3-elfconv-triton/xpu-kernel.t/llvm-readelf/objdump/objcopy),
-# so kernel launch works. It omits build-only tools (llvm-tblgen/opt/llvm-link/llvm-as/
-# llvm-dis) that LLVMExports.cmake references, so _patch_llvm_exports() disables that check.
-# decompress() renames the extracted top-level dir to the `file=` name, so LLVM_SYSPATH
-# resolves to <cache>/xpu/llvm_trust regardless of the tarball's top-level name.
-cache.store(
-    file="llvm_trust",
-    condition=("xpu" == flagtree_backend),
-    url="https://klx-sdk-release-public.su.bcebos.com/XTriton/llvm22/20260615/xtdk-llvm22-ubuntu2004_x86_64.tar.gz",
-    pre_hook=lambda: check_env('LLVM_SYSPATH'),
-    post_hook=lambda path: (set_llvm_env(path), _patch_llvm_exports()),
-    version="20260615",
-)
-
-cache.store(file="xre-Linux-x86_64", condition=("xpu" == flagtree_backend),
-            url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/xre-Linux-x86_64_v0.3.0.tar.gz",
-            copy_dst_path='python/_deps/xre3', version="v0.3.0")
-
-# xpu device libs (liblaunch_shared.so, libxpujitc.so, LLVM-15, clang-cpp)
-cache.store(file="xpu-device-libs", condition=("xpu" == flagtree_backend),
-            url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz",
-            version="v0.3.6.1.1")
-
-cache.store(files=("liblaunch_shared.so", "libLLVM-15.so", "libclang-cpp.so.15", "libxpujitc.so"),
-            condition=("xpu" == flagtree_backend), copy_src_path=f"{cache.dir_path}/{flagtree_backend}/xpu-device-libs",
-            copy_dst_path=f"third_party/{flagtree_backend}/device")
-
-
-# xpu SDNN prebuilt objects + libTritonSharedForXPU.a (344MB compressed)
-def _install_xpu_sdnn_objects(cached_path):
-    """Copy prebuilt SDNN objects from cache to third_party/xpu/."""
-    flagtree_dir = str(Path(__file__).resolve().parents[2])
-    dst_root = os.path.join(flagtree_dir, "third_party", "xpu")
-    for item in os.listdir(cached_path):
-        src = os.path.join(str(cached_path), item)
-        dst = os.path.join(dst_root, item)
-        if os.path.isdir(src):
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-        else:
-            shutil.copy(src, dst)
-    print(f"[XPU] SDNN prebuilt objects installed to {dst_root}")
-
-
-cache.store(file="xpu-sdnn-objects", condition=("xpu" == flagtree_backend),
-            url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.1.1.tar.gz",
-            post_hook=_install_xpu_sdnn_objects)
-
-# xpu3 bin tools from LLVM (xtdk-llvm22 20260615 ships xpu3-elfconv-triton directly)
-cache.store(
-    files=("clang", "xpu-xxd", "xpu3-elfconv", "xpu3-elfconv-triton", "xpu-kernel.t", "ld.lld", "llvm-readelf",
-           "llvm-objdump", "llvm-objcopy"), condition=("xpu" == flagtree_backend),
-    copy_src_path=f"{os.environ.get('LLVM_SYSPATH','')}/bin", copy_dst_path="third_party/xpu/backend/xpu3/bin")
-
-
-# xpu3-elfconv-triton resolves llvm-readelf/objdump/objcopy from xpu3/ (parent of bin/),
-# see the elfconv script line ~110. Symlink them so the resolver finds them.
-def _link_elfconv_triton():
-    import os
-    xpu3_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "third_party",
-                            "xpu", "backend", "xpu3")
-    bin_dir = os.path.join(xpu3_dir, "bin")
-    for tool in ("llvm-readelf", "llvm-objdump", "llvm-objcopy"):
-        tool_src = os.path.join(bin_dir, tool)
-        tool_dst = os.path.join(xpu3_dir, tool)
-        if os.path.exists(tool_src) and not os.path.exists(tool_dst):
-            os.symlink(os.path.join("bin", tool), tool_dst)
-            print(f"Created symlink: {tool_dst} -> bin/{tool}")
-
-
-if "xpu" == flagtree_backend:
-    _link_elfconv_triton()
-
-# xpu3 builtins + new crt*.o / xpuprintf (trust LLVM additions)
-cache.store(
-    files=("libclang_rt.builtins-xpu3.a", "libclang_rt.builtins-xpu3s.a", "clang_rt.crtbegin-xpu3.o",
-           "clang_rt.crtend-xpu3.o", "libclang_rt.xpuprintf-xpu3.a", "libclang_rt.xpuprintfs-xpu3.a"),
-    condition=("xpu" == flagtree_backend), copy_src_path=f"{os.environ.get('LLVM_SYSPATH','')}/lib/linux",
-    copy_dst_path="third_party/xpu/backend/xpu3/lib/linux")
-
-cache.store(files=("include", "so"), condition=("xpu" == flagtree_backend),
-            copy_src_path=f"{cache.dir_path}/xpu/xre-Linux-x86_64", copy_dst_path="third_party/xpu/backend/xpu3")
+register_backend_cache()
 
 # mthreads
 cache.store(

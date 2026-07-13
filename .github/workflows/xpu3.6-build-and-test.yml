@@ -1,0 +1,65 @@
+name: Xpu3.6-Build-And-Test
+
+on:
+  push:
+    branches: [ "main", "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "main", "triton_v3.6.x" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  xpu36x-unit-test:
+    runs-on: xpu3.6
+    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: xpu
+
+      - name: Build FlagTree
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=xpu
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: Unit Test
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source ~/env.sh
+          export XPU_EVENT_KL3_ENABLE=1
+          cd third_party/xpu/python/test/unit
+          python3 -m pytest -s . \
+              --ignore=language/test_compile_errors.py \
+              --ignore=language/test_random.py \
+              --ignore=runtime/test_bindings.py \
+              --ignore=runtime/test_cache.py \
+              --ignore=runtime/test_subproc.py \
+              -k "not test_decorator_with_def"
+          python3 -m pytest -s runtime/test_cache.py \
+              -k "test_changed_line_numbers_invalidate_cache or \
+                  test_local_shadows_global or \
+                  test_use_builtin or \
+                  test_no_cache_module_as_global or \
+                  test_cache_builtin_as_global or \
+                  test_no_cache_callable or \
+                  test_memory_leak"

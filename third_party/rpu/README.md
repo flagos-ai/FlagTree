@@ -24,7 +24,7 @@ The Rhino RPU is an AI accelerator from **Huixi Intelligence** (辉羲智能, [r
 cd ~
 git clone https://github.com/flagos-ai/FlagTree.git
 cd FlagTree
-git checkout -b triton_v3.6.x origin/triton_v3.6.x
+git checkout main
 ```
 
 ### 2. Install RPU Driver and Runtime

@@ -2,9 +2,9 @@ name: Rpu3.6-Build-And-Test
 
 on:
   push:
-    branches: [ "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x" ]
   pull_request:
-    branches: [ "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x" ]
 
 concurrency:
   # Serialize ALL runs on the single shared RPU board with one fixed, board-wide
@@ -25,7 +25,7 @@ concurrency:
 # checks the source out locally, mirrors it to the board, then drives a clean
 # build and the test suite on the board.
 jobs:
-  rpu-build-and-test:
+  rpu36x-unit-test:
     runs-on: rpu3.6
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
@@ -67,7 +67,7 @@ jobs:
             sleep $((n*15))
           done
 
-      - name: FlagTree Build on RPU board (via SSH)
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -97,7 +97,7 @@ jobs:
             sleep $((n*15))
           done
 
-      - name: FlagTree Test on RPU board (via SSH)
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

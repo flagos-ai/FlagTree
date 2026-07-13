@@ -2,16 +2,16 @@ name: Sunrise-Build-And-Test
 
 on:
   push:
-    branches: [ "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x" ]
   pull_request:
-    branches: [ "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  sunrise-build-and-test:
+  sunrise36x-unit-test:
     runs-on: sunrise3.6
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
@@ -32,7 +32,7 @@ jobs:
         with:
           backend: sunrise
 
-      - name: FlagTree Build on Sunrise
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -44,7 +44,7 @@ jobs:
           export FLAGTREE_BACKEND=sunrise
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Sunrise
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

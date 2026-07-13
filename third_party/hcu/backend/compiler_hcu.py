@@ -418,9 +418,16 @@ class HIPBackend(BaseBackend):
         pm.enable_debug()
         emuTF32 = False
         passes.ttgpuir.add_coalesce(pm)
+        passes.ttgpuir.add_process_shared_memory_hint(pm)  # flagtree hints
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
+        # begin flagtree tle
+        tle.passes.add_select_encodings(pm)
+        tle.passes.add_insert_local_pointer_barriers(pm)
+        tle.passes.add_optimize_local_pointer_loads(pm)
+        tle.passes.add_optimize_local_pointer_stores(pm)
+        # end flagtree tle
         hcu.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack,
                                                  options.mmac_layout_force)
         passes.ttgpuir.add_remove_layout_conversions(pm)

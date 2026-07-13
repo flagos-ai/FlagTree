@@ -1,3 +1,14 @@
+if(FLAGTREE_TLE)
+    set(_TLE_LIBS
+        TritonTLEAnalysis
+        TritonNVIDIAGPUToLLVM
+        TleToLLVM # flagtree tle raw
+        TritonTLETransforms
+    )
+else()
+    set(_TLE_LIBS "")
+endif()
+
 add_triton_library(TritonHCUGPUToLLVM
     AsyncUtility.cpp
     AtomicRMWOpsEmitter.cpp
@@ -43,7 +54,7 @@ add_triton_library(TritonHCUGPUToLLVM
     LINK_LIBS PUBLIC
     TritonGPUToLLVM
     TritonHCUGPUIR
-    TritonTLETransforms
+    ${_TLE_LIBS}
     LLVMCore
     LLVMPasses
     LLVMSupport
