@@ -83,7 +83,5 @@ def init_language():
 
     bind_language_extension_symbols_to_tl(_ext)
 
-
-def spec_get_stub_target() -> GPUTarget:
-    arch = os.environ.get("TRITON_OVERRIDE_ARCH") or os.environ.get("TRITON_MUSA_ARCH") or "ph1"
-    return GPUTarget("musa", arch, 32)
+from ._filecheck import spec_get_stub_target
+from ._utils import apply_with_path, _tuple_create

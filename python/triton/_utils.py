@@ -23,9 +23,13 @@ def set_iterable_path(iterable: IterableType, path: tuple[int, ...], val: Any):
     prev._setitem(path[-1], val)
 
 
-def find_paths_if(iterable: Union[IterableType, Any], pred: Callable[[ObjPath, Any], bool]) -> list[ObjPath]:
+# flagtree: This function was originally defined in find_paths_if
+def is_iterable(x):
     from .language import core
-    is_iterable: Callable[[Any], bool] = lambda x: isinstance(x, (list, tuple, core.tuple, core.tuple_type))
+    return isinstance(x, (list, tuple, core.tuple, core.tuple_type))
+
+
+def find_paths_if(iterable: Union[IterableType, Any], pred: Callable[[ObjPath, Any], bool]) -> list[ObjPath]:
     # We need to use dict so that ordering is maintained, while set doesn't guarantee order
     ret: dict[ObjPath, None] = {}
 
@@ -132,3 +136,9 @@ def get_primitive_bitwidth(dtype: str) -> int:
 
 def is_namedtuple(val):
     return isinstance(val, type) and issubclass(val, tuple) and hasattr(val, "_fields")
+
+
+# flagtree backend path specialization
+from triton.flagtree_spec import spec_func
+spec_func("apply_with_path")
+spec_func("_tuple_create")
