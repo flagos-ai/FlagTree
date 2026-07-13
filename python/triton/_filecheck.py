@@ -17,23 +17,13 @@ from triton._C.libtriton import ir
 # ===-----------------------------------------------------------------------===#
 
 # Stub target for testing the frontend.
-stub_target = GPUTarget("cuda", 100, 32)
+# flagtree backend path specialization
+from triton.flagtree_spec import spec
+if not spec("spec_get_stub_target"):
+    stub_target = GPUTarget("cuda", 100, 32)
 
 triton_dir = os.path.dirname(__file__)
-_filecheck_local = os.path.join(triton_dir, "FileCheck")
-_filecheck_system = shutil.which("FileCheck")
-_filecheck_path = _filecheck_local if os.path.isfile(_filecheck_local) else _filecheck_system
-
-_MISSING_FILECHECK_MSG = ("FileCheck binary not found.  Install it with your package manager\n"
-                          "  (e.g. apt-get install llvm-15-tools) or place it next to this module:\n"
-                          f"  {_filecheck_local}")
-
-
-def _get_filecheck_path():
-    """Return the path to the FileCheck binary, or raise FileNotFoundError."""
-    if _filecheck_path is None:
-        raise FileNotFoundError(_MISSING_FILECHECK_MSG)
-    return _filecheck_path
+filecheck_path = os.path.join(triton_dir, "FileCheck")
 
 
 class MatchError(ValueError):

@@ -4,11 +4,6 @@ __version__ = '3.6.0'
 # ---------------------------------------
 # Note: import order is significant here.
 
-# flagtree backend path specialization
-from .flagtree_spec import spec_path
-
-spec_path(__path__)
-
 # submodules
 from .runtime import (
     autotune,
