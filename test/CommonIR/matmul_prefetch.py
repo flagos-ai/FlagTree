@@ -21,7 +21,7 @@ BLOCK_M = 128
 BLOCK_N = 256
 BLOCK_K = 128
 
-NUM_SLOT = 1
+NUM_SLOT = 3
 
 
 def get_number_cores():
