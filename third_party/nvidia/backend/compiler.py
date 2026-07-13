@@ -37,19 +37,6 @@ def get_ptxas(arch: int) -> knobs.NvidiaTool:
     return knobs.nvidia.ptxas_blackwell if arch >= 100 else knobs.nvidia.ptxas
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() not in {"0", "false", "off", "no"}
-
-
-# flagtree: enable the RemoveLayoutConversions enhancement phases for NVIDIA
-# (on by default, disabled with FLAGTREE_RLC_ENHANCE=0).
-def _add_remove_layout_conversions(pm):
-    passes.ttgpuir.add_remove_layout_conversions(pm, _env_bool("FLAGTREE_RLC_ENHANCE", True))
-
-
 @functools.lru_cache()
 def get_ptxas_version(arch: int = 80):
     mock_ver = knobs.nvidia.mock_ptx_version
@@ -312,7 +299,7 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         # TODO(Qingyi): Move PlanCTAPass to the front of CoalescePass
         nvidia.passes.ttnvgpuir.add_plan_cta(pm)
-        _add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         tle.passes.add_early_assign_memory_space(pm)
         # begin flagtree tle
@@ -323,7 +310,7 @@ class CUDABackend(BaseBackend):
         # end flagtree tle
         passes.ttgpuir.add_accelerate_matmul(pm)
         tle.passes.add_lower_wgmma(pm)
-        _add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
         tle.passes.add_promote_local_store_staging(pm)
         nvidia.passes.ttnvgpuir.add_optimize_descriptor_encoding(pm)
@@ -374,7 +361,7 @@ class CUDABackend(BaseBackend):
             tle.passes.add_lower_tma_copy(pm)
             tle.passes.add_schedule_tma_store_sync(pm)
             nvidia.passes.ttnvgpuir.add_tma_lowering(pm)
-        _add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         nvidia.passes.ttnvgpuir.add_interleave_tmem(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
         passes.ttgpuir.add_reorder_instructions(pm)

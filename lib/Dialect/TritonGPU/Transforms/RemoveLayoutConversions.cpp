@@ -23,24 +23,24 @@
 #include "mlir/Transforms/RegionUtils.h"
 #ifdef __FLAGTREE_RLC_ENHANCE__
 #include "triton/Analysis/AxisInfo.h"
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 #include "triton/Analysis/Utility.h"
 #ifdef __TLE__
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#endif
+#endif // __TLE__
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/TritonGPUInterfaces.h"
 #ifdef __TLE__
 #include "tle/dialect/include/Transforms/EncodingRematerialization.h"
-#endif
+#endif // __TLE__
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <deque>
 #ifdef __FLAGTREE_RLC_ENHANCE__
 #include <optional>
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 
 namespace mlir::triton::gpu {
 
@@ -50,6 +50,7 @@ namespace mlir::triton::gpu {
 #define DEBUG_TYPE "tritongpu-remove-layout-conversions"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
+
 #ifdef __FLAGTREE_RLC_ENHANCE__
 // Per-phase switches, AND-ed with the runtime master switch (rlcEnhance).
 // Backward-propagation and small-component solving depend on cost-based
@@ -58,7 +59,7 @@ static constexpr bool kEnableCostBasedResolution = true;
 static constexpr bool kEnableBackwardPropagation = true;
 static constexpr bool kEnableSmallComponentSolving = true;
 static constexpr bool kEnableStoreLayoutRematerialization = true;
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 
 namespace {
 
@@ -88,8 +89,8 @@ static bool touchesTleRemotePointerPath(Value value, DenseSet<Value> &visited) {
   }
   return false;
 }
-#ifdef __FLAGTREE_RLC_ENHANCE__
 
+#ifdef __FLAGTREE_RLC_ENHANCE__
 // True if `value` sits on a TLE cluster remote-address chain, where cross-CTA
 // addresses are built as tle.local_pointers -> tle.remote_pointers. The
 // pointer/index tensors on that chain carry distributed-addressing semantics
@@ -115,10 +116,10 @@ static bool valueOnTleRemotePointerPath(Value value) {
   }
   return false;
 }
-#endif
-#endif
-#ifdef __FLAGTREE_RLC_ENHANCE__
+#endif // __FLAGTREE_RLC_ENHANCE__
+#endif // __TLE__
 
+#ifdef __FLAGTREE_RLC_ENHANCE__
 static Attribute getTensorEncoding(Value value) {
   auto tensorType = dyn_cast<RankedTensorType>(value.getType());
   return tensorType ? tensorType.getEncoding() : Attribute();
@@ -128,7 +129,7 @@ static bool allResultsHaveNoUses(Operation *op) {
   return llvm::all_of(op->getResults(),
                       [](Value result) { return result.use_empty(); });
 }
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 
 // -----------------------------------------------------------------------------
 //
@@ -173,7 +174,7 @@ static bool allResultsHaveNoUses(Operation *op) {
 //     value's layout (see LayoutRematerialization).
 //
 // Phase 1b and Phase 2 require Phase 1a.
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 class LayoutPropagation {
 public:
   // Structure to keep track of the layout associated to a value.
@@ -190,9 +191,9 @@ public:
         enableBackwardPropagation(backwardProp),
         enableSmallComponentSolving(smallComponentSolving),
         axisInfoAnalysis(axisInfo) {}
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
   LayoutPropagation(FuncOp F) : funcOp(F) {}
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   // Find the anchor ops and set their layout in the data structure.
   void initAnchorLayout();
   // Recursively Propagate the layout to all the users of the anchor ops until
@@ -206,7 +207,7 @@ public:
   SmallVector<Value> propagateToOperands(Value value, LayoutInfo &info);
   // Add candidates for closed local components.
   bool solveSmallComponents();
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   // Set the encoding to all the values and fill out the values with new layout
   // in `changed`.
   void setEncoding(ValueRange values, LayoutInfo &info,
@@ -270,8 +271,7 @@ private:
   bool proposalHasRiskyScalarSideOutput(const Proposal &proposal) const;
   bool proposalHasRankChangingLayoutBridge(const Proposal &proposal) const;
   bool commitProposal(const Proposal &proposal);
-
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   // map from value to layout information.
   llvm::MapVector<Value, LayoutInfo> layouts;
   // map of the values rewrite based on their encoding.
@@ -291,7 +291,7 @@ private:
   DenseSet<Value> backwardTouchedValues;
   // Encoding selected by a closed component proposal.
   DenseMap<Value, Attribute> smallComponentPreferredEncoding;
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 };
 
 class LayoutRematerialization {
@@ -302,9 +302,9 @@ public:
                           bool storeLayoutRemat = false)
       : funcOp(F), enableDuplicableLoadRemat(duplicableLoadRemat),
         enableStoreLayoutRemat(storeLayoutRemat), axisInfoAnalysis(axisInfo) {}
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
   LayoutRematerialization(FuncOp F) : funcOp(F) {}
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 
   // Map the original value to the remat'ed one.
   void addRematValue(Value old, Attribute encoding, Value newV);
@@ -326,7 +326,7 @@ public:
   bool rematerializeWritebackLayout(Operation *writebackOp);
   bool rematerializeLocalStoreLayout();
   bool rematerializeLocalStoreLayout(LocalStoreOp storeOp);
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   // TODO: Merge the three hoistConvert*(); functions as they are duplicate code
   void hoistConvertDotOperand();
   void hoistConvertDotOperand(ConvertLayoutOp convertOp);
@@ -351,9 +351,9 @@ public:
 #ifdef __FLAGTREE_RLC_ENHANCE__
       std::function<bool(Operation *)> stopPropagation = nullptr,
       bool allowDuplicableLoads = false);
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
       std::function<bool(Operation *)> stopPropagation = nullptr);
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 
 private:
   void updateRematMapping(SmallVector<std::tuple<Value, Value>> &values);
@@ -378,7 +378,7 @@ private:
   // Address-pattern analysis for the duplicable-load gate (null when the
   // phase is disabled).
   ModuleAxisInfoAnalysis *axisInfoAnalysis;
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   DominanceInfo domInfo;
   PostDominanceInfo postDomInfo;
 };
@@ -403,17 +403,17 @@ void LayoutRematerialization::cleanup() {
       continue;
     op->erase();
   }
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
   for (Operation *op : llvm::reverse(opToDelete))
     op->erase();
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 }
-#ifdef __FLAGTREE_RLC_ENHANCE__
 
+#ifdef __FLAGTREE_RLC_ENHANCE__
 // Forward declaration (defined further below in the rematerialization section).
 static int64_t getByteCount(Value result, int64_t minElementCount,
                             int64_t minBitWidth);
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
@@ -444,17 +444,17 @@ bool LayoutPropagation::hasLayoutPropagationExtensions() const {
   return enableCostBasedResolution || enableBackwardPropagation ||
          enableSmallComponentSolving;
 }
+#endif // __FLAGTREE_RLC_ENHANCE__
 
-#endif
 void LayoutPropagation::initAnchorLayout() {
   auto addAnchor = [&](Value v) {
     if (auto tensorType = dyn_cast<RankedTensorType>(v.getType())) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
       if (!hasLayoutPropagationExtensions() || tensorType.getEncoding())
         layouts.insert({v, LayoutInfo(tensorType.getEncoding())});
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
       layouts.insert({v, LayoutInfo(tensorType.getEncoding())});
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
     }
   };
 
@@ -503,20 +503,20 @@ static bool isBackwardPropagationForwardUser(Operation *op);
 static void
 collectUseTargets(OpOperand &use, Attribute enc,
                   SmallVectorImpl<std::pair<Value, Attribute>> &targets);
+#endif // __FLAGTREE_RLC_ENHANCE__
 
-#endif
 SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
                                                        LayoutInfo &info) {
   SmallVector<Value> changed;
 #ifdef __FLAGTREE_RLC_ENHANCE__
   bool restrictToBackwardLocalChain = backwardTouchedValues.contains(value);
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   for (OpOperand &use : value.getUses()) {
     Operation *user = use.getOwner();
 #ifdef __FLAGTREE_RLC_ENHANCE__
     if (restrictToBackwardLocalChain && !isBackwardPropagationForwardUser(user))
       continue;
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
     if (auto forOp = dyn_cast<scf::ForOp>(user)) {
       Value arg = forOp.getTiedLoopRegionIterArg(&use);
       Value result = forOp.getTiedLoopResult(&use);
@@ -578,7 +578,7 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
 #ifdef __FLAGTREE_RLC_ENHANCE__
   if (restrictToBackwardLocalChain)
     backwardTouchedValues.insert(changed.begin(), changed.end());
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   return changed;
 }
 
@@ -1698,7 +1698,7 @@ static bool isBackwardPropagationSeedCandidate(ConvertLayoutOp cvtOp) {
   if (valueOnTleRemotePointerPath(src) ||
       valueOnTleRemotePointerPath(cvtOp.getResult()))
     return false;
-#endif
+#endif // __TLE__
   if (!isBackwardPropagationSourceCandidate(src.getDefiningOp()))
     return false;
   if (!hasSingleUse(src) || !hasSingleUse(cvtOp.getResult()))
@@ -2018,7 +2018,7 @@ bool LayoutPropagation::solveSmallComponents() {
     for (auto &it : proposal)
       if (valueOnTleRemotePointerPath(it.first))
         return false;
-#endif
+#endif // __TLE__
     int removedConverts = countConvertsRemovedByProposal(proposal);
     if (removedConverts == 0)
       return false;
@@ -2583,27 +2583,26 @@ bool LayoutPropagation::isExtensionTouchedValue(Value value) const {
   return backwardTouchedValues.contains(value) ||
          smallComponentPreferredEncoding.contains(value);
 }
+#endif // __FLAGTREE_RLC_ENHANCE__
 
-#endif
 void LayoutPropagation::resolveConflicts() {
   for (auto &it : layouts) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
     Value value = it.first;
     Operation *defOp = value.getDefiningOp();
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
     Operation *op = it.first.getDefiningOp();
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
     LayoutInfo &info = it.second;
     if (info.encodings.size() <= 1)
       continue;
 #ifdef __FLAGTREE_RLC_ENHANCE__
-
     if (auto preferred = smallComponentPreferredEncoding.lookup(value)) {
       if (info.encodings.contains(preferred)) {
         info.encodings.clear();
         info.encodings.insert(preferred);
         continue;
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
     // Hacky resolve, prefer block encoding.
     // TODO: add a proper heuristic.
     Attribute encoding = *info.encodings.begin();
@@ -2614,11 +2613,10 @@ void LayoutPropagation::resolveConflicts() {
           (!isLoadOrStore && isa<MmaEncodingTrait>(e))) {
         encoding = e;
         break;
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
       }
     }
 #ifdef __FLAGTREE_RLC_ENHANCE__
-
     if (!enableCostBasedResolution || !isExtensionTouchedValue(value) ||
         !shouldUseCostBasedResolution(info)) {
       Attribute encoding = *info.encodings.begin();
@@ -2680,14 +2678,13 @@ void LayoutPropagation::resolveConflicts() {
         }
       }
     }
-
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
     info.encodings.clear();
 #ifdef __FLAGTREE_RLC_ENHANCE__
     info.encodings.insert(bestEncoding);
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
     info.encodings.insert(encoding);
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   }
 }
 
@@ -2778,7 +2775,7 @@ void LayoutPropagation::rewriteRegion(Region &region) {
             }
           }
         }
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
         for (OpOperand &operand : op.getOpOperands()) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
           if (storeEncoding && isa<RankedTensorType>(operand.get().getType())) {
@@ -2786,7 +2783,7 @@ void LayoutPropagation::rewriteRegion(Region &region) {
             op.setOperand(operand.getOperandNumber(), newOperand);
             continue;
           }
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
           auto it = layouts.find(operand.get());
           if (it == layouts.end())
             continue;
@@ -2809,10 +2806,10 @@ void LayoutPropagation::rewriteRegion(Region &region) {
       continue;
     op->erase();
   }
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
   for (Operation *op : llvm::reverse(opToDelete))
     op->erase();
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 }
 
 void LayoutPropagation::map(Value old, Value newV) {
@@ -2867,12 +2864,12 @@ Operation *LayoutPropagation::cloneElementwise(OpBuilder &rewriter,
     // all-disabled path byte-identical to the original pass.
     if (hasLayoutPropagationExtensions() && isEncodingUniformPureOp(op))
       operandEnc = encoding;
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
     for (auto operand : op->getOperands()) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
       if (operandEnc)
         break;
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
       auto ty =
           dyn_cast<RankedTensorType>(getRewrittenValue(operand).getType());
       if (!ty)
@@ -3114,9 +3111,9 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
     return Attribute();
   }();
   assert(encoding && "rewriteOp called on op with no tracked result encoding");
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
   Attribute encoding = *layouts[op->getResult(0)].encodings.begin();
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   if (auto convertOp = dyn_cast<ConvertLayoutOp>(op)) {
     Attribute srcEncoding = convertOp.getSrc().getType().getEncoding();
     auto it = layouts.find(convertOp.getSrc());
@@ -3129,7 +3126,7 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
     // an identity convert; keep emitting it here (at the original position)
     // and let the canonicalizer fold it, so the surrounding IR stays
     // byte-identical to the baseline whenever no convert is actually removed.
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
     auto newType = tensorType.cloneWithEncoding(encoding);
     auto cvt = ConvertLayoutOp::create(rewriter, op->getLoc(), newType, src);
     map(op->getResult(0), cvt.getResult());
@@ -3166,16 +3163,16 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
       return newOp;
     }
   }
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   if (op->hasTrait<OpTrait::SameOperandsAndResultEncoding>() ||
       op->hasTrait<OpTrait::Elementwise>() ||
       isa<ReduceOp, ExpandDimsOp, ReshapeOp, TransOp, JoinOp, SplitOp, GatherOp,
 #ifdef __FLAGTREE_RLC_ENHANCE__
           ConvertLayoutOp, nvidia_gpu::WarpGroupDotWaitOp>(op) ||
       (hasLayoutPropagationExtensions() && isEncodingUniformPureOp(op))) {
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
           ConvertLayoutOp, nvidia_gpu::WarpGroupDotWaitOp>(op)) {
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
     Operation *newOp = cloneElementwise(rewriter, op, encoding);
     for (auto [oldResult, newResult] :
          llvm::zip(op->getResults(), newOp->getResults())) {
@@ -3203,9 +3200,9 @@ bool canBeRemat(Operation *op) {
     return false;
 
   return true;
-#ifdef __FLAGTREE_RLC_ENHANCE__
 }
 
+#ifdef __FLAGTREE_RLC_ENHANCE__
 // A coalesced ("expensive") load normally blocks rematerialization, except a
 // vector-sized load (<= one 128-bit fragment per thread): the duplicate is one
 // extra L1-resident load, cheaper than the convert's smem round trip. This is
@@ -3222,7 +3219,7 @@ static bool isDuplicableLoadInEncoding(Operation *op, Attribute encoding,
   // it is never duplicable (see valueOnTleRemotePointerPath).
   if (valueOnTleRemotePointerPath(loadOp.getPtr()))
     return false;
-#endif
+#endif // __TLE__
   auto ptrType = dyn_cast<RankedTensorType>(loadOp.getPtr().getType());
   auto resultType = dyn_cast<RankedTensorType>(loadOp.getType());
   if (!ptrType || !resultType)
@@ -3303,8 +3300,8 @@ static bool convertResultReachesAnotherConvert(ConvertLayoutOp convertOp) {
     }
   }
   return false;
-#endif
 }
+#endif // __FLAGTREE_RLC_ENHANCE__
 
 void LayoutRematerialization::updateRematMapping(
     SmallVector<std::tuple<Value, Value>> &values) {
@@ -3545,9 +3542,9 @@ LogicalResult LayoutRematerialization::getRematerializableSlice(
 #ifdef __FLAGTREE_RLC_ENHANCE__
     std::function<bool(Operation *)> stopPropagation,
     bool allowDuplicableLoads) {
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
     std::function<bool(Operation *)> stopPropagation) {
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   LogicalResult result = getConvertBackwardSlice(root, rootEncoding, slice,
                                                  layout, stopPropagation);
   if (result.failed() || slice.empty())
@@ -3583,9 +3580,9 @@ LogicalResult LayoutRematerialization::getRematerializableSlice(
       ArrayRef<int64_t> shape = resultType.getShape();
       if (getTotalElemsPerThread(newEncoding, shape) <
           getTotalElemsPerThread(resultType.getEncoding(), shape))
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
       if (!canBeRemat(op))
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
         return failure();
     }
   }
@@ -3705,19 +3702,19 @@ void LayoutRematerialization::backwardRematerialization(
   // merely move the boundary, so the chain is left for the downstream convert.
   bool allowDuplicableLoads = enableDuplicableLoadRemat &&
                               !convertResultReachesAnotherConvert(convertOp);
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
   // 1. Take a backward slice of all the tensor dependencies that can be
   // rematerialized.
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   SetVector<Value> slice;
   DenseMap<Value, Attribute> layout;
   LogicalResult result = getRematerializableSlice(
 #ifdef __FLAGTREE_RLC_ENHANCE__
       convertOp.getSrcMutable(), targetType.getEncoding(), slice, layout,
       /*stopPropagation=*/nullptr, allowDuplicableLoads);
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
       convertOp.getSrcMutable(), targetType.getEncoding(), slice, layout);
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   if (result.failed()) {
     LDBG("  getRematerializableSlice failed");
     return;
@@ -3843,9 +3840,9 @@ void LayoutRematerialization::backwardRematerialization(
 
   // 3. Rewrite the slice.
   rewriteSlice(slice, layout, convertOp);
-#ifdef __FLAGTREE_RLC_ENHANCE__
 }
 
+#ifdef __FLAGTREE_RLC_ENHANCE__
 // -----------------------------------------------------------------------------
 // Phase 3: store-layout rematerialization
 // -----------------------------------------------------------------------------
@@ -4050,8 +4047,8 @@ bool LayoutRematerialization::rematerializeLocalStoreLayout() {
   for (LocalStoreOp storeOp : stores)
     changed |= rematerializeLocalStoreLayout(storeOp);
   return changed;
-#endif
 }
+#endif // __FLAGTREE_RLC_ENHANCE__
 
 void LayoutRematerialization::hoistConvertDotOperand() {
   // Go through each ConvertLayoutOp.
@@ -4080,7 +4077,7 @@ void LayoutRematerialization::hoistConvertDotOperand(
     if (touchesTleRemotePointerPath(convertOp.getSrc(), visited))
       return;
   }
-#endif
+#endif // __TLE__
 
   auto canBePipelined = [&](ConvertLayoutOp convertOp) {
     // FIXME: Check that the parent is a for loop
@@ -4402,9 +4399,9 @@ void LayoutRematerialization::hoistConvertIntoConditionals(
 
 #ifdef __FLAGTREE_RLC_ENHANCE__
 bool backwardRematerialization(ModuleOp module, bool duplicableLoadRemat) {
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
 bool backwardRematerialization(ModuleOp module) {
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   bool changed = false;
 #ifdef __FLAGTREE_RLC_ENHANCE__
   // The duplicable-load gate consults real address contiguity. Values created
@@ -4415,13 +4412,13 @@ bool backwardRematerialization(ModuleOp module) {
     axisInfoAnalysis.emplace(module);
   ModuleAxisInfoAnalysis *axisInfo =
       axisInfoAnalysis ? &*axisInfoAnalysis : nullptr;
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   module.walk([&](FuncOp funcOp) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
     LayoutRematerialization layoutRemat(funcOp, duplicableLoadRemat, axisInfo);
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
     LayoutRematerialization layoutRemat(funcOp);
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
     changed |= layoutRemat.backwardRematerialization();
     layoutRemat.cleanup();
   });
@@ -4448,7 +4445,8 @@ bool rematerializeStoreLayout(ModuleOp module) {
   });
   return changed;
 }
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
+
 #ifdef __TLE__
 static void eraseOpsCreatedAfter(Operation *previous, Operation *insertBefore) {
   Operation *cur =
@@ -4571,7 +4569,7 @@ bool rematerializeLocalStoreLayoutDemands(ModuleOp module) {
 
   return changed;
 }
-#endif
+#endif // __TLE__
 
 void hoistConvert(ModuleOp module) {
   SmallVector<ConvertLayoutOp> convertOps;
@@ -4599,8 +4597,7 @@ public:
   TritonGPURemoveLayoutConversionsPass() = default;
   explicit TritonGPURemoveLayoutConversionsPass(bool enhance)
       : rlcEnhance(enhance) {}
-
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
   // Cleanup convert ops.
   void cleanupConvertOps() {
     MLIRContext *context = &getContext();
@@ -4644,11 +4641,11 @@ public:
             axisInfo](FuncOp funcOp) {
       LayoutPropagation layoutPropagation(funcOp, costBased, backwardProp,
                                           smallComponentSolving, axisInfo);
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
     // 1. Propagate layout forward starting from "anchor" ops.
     m.walk([](FuncOp funcOp) {
       LayoutPropagation layoutPropagation(funcOp);
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
       layoutPropagation.initAnchorLayout();
       layoutPropagation.propagateLayout();
 #ifdef __FLAGTREE_RLC_ENHANCE__
@@ -4656,7 +4653,7 @@ public:
         layoutPropagation.propagateLayout();
       if (layoutPropagation.solveSmallComponents())
         layoutPropagation.propagateLayout();
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
       layoutPropagation.resolveConflicts();
       layoutPropagation.rewrite();
     });
@@ -4664,9 +4661,9 @@ public:
     LLVM_DEBUG({
 #ifdef __FLAGTREE_RLC_ENHANCE__
       DBGS() << "Module after layout propagation:\n";
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
       DBGS() << "Module after propagating layouts forward:\n";
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
       m.dump();
     });
 
@@ -4684,7 +4681,7 @@ public:
 #else
       // producer operation to avoid having to convert.
       changed = backwardRematerialization(m);
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
       LLVM_DEBUG({
         DBGS() << "Module after backward remat:\n";
         m.dump();
@@ -4693,7 +4690,6 @@ public:
       // Cleanup dummy converts created during backward remat.
       cleanupConvertOps();
 #ifdef __FLAGTREE_RLC_ENHANCE__
-
       // 3. Phase 3: drop store writeback conversions by rematerializing the
       // address/mask chains in the stored value's layout (e.g. MMA matmul
       // writeback). Run inside the fixed-point loop so the new layouts feed
@@ -4709,7 +4705,7 @@ public:
           m.dump();
         });
       }
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 #ifdef __TLE__
       if (m->hasAttr(
               ::mlir::triton::tle::kTleEnableEncodingRematerializationAttr)) {
@@ -4717,13 +4713,13 @@ public:
         changed |= rematerializeLocalStoreLayoutDemands(m);
         cleanupConvertOps();
       }
-#endif
+#endif // __TLE__
     } while (changed);
 #ifdef __FLAGTREE_RLC_ENHANCE__
     // 4. For remaining converts, try to hoist them above cast generating larger
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
     // 3. For remaining converts, try to hoist them above cast generating larger
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
     // size types in order to reduce the cost of the convert op.
     hoistConvert(m);
     LLVM_DEBUG({
@@ -4733,9 +4729,9 @@ public:
 
 #ifdef __FLAGTREE_RLC_ENHANCE__
     // 5. Apply clean up patterns to remove remove dead convert and dead code
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
     // 4. Apply clean up patterns to remove remove dead convert and dead code
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
     // generated by the previous transformations.
     RewritePatternSet cleanUpPatterns2(context);
     populateForOpDeadArgumentElimination(cleanUpPatterns2);
@@ -4751,13 +4747,11 @@ public:
     });
   }
 #ifdef __FLAGTREE_RLC_ENHANCE__
-
 private:
   bool rlcEnhance = false;
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 };
 #ifdef __FLAGTREE_RLC_ENHANCE__
-
 // FlagTree entry point that injects the runtime master switch. The NVIDIA
 // backend calls this with FLAGTREE_RLC_ENHANCE (see passes.cc / compiler.py);
 // other callers use the plain 0-arg factory and keep the original behavior.
@@ -4765,7 +4759,7 @@ std::unique_ptr<::mlir::Pass>
 createTritonGPURemoveLayoutConversionsEnhanced(bool enhance) {
   return std::make_unique<TritonGPURemoveLayoutConversionsPass>(enhance);
 }
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
 
 } // namespace mlir::triton::gpu
 
