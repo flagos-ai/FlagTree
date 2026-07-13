@@ -2590,33 +2590,16 @@ void LayoutPropagation::resolveConflicts() {
 #ifdef __FLAGTREE_RLC_ENHANCE__
     Value value = it.first;
     Operation *defOp = value.getDefiningOp();
-#else  // __FLAGTREE_RLC_ENHANCE__
-    Operation *op = it.first.getDefiningOp();
-#endif // __FLAGTREE_RLC_ENHANCE__
     LayoutInfo &info = it.second;
     if (info.encodings.size() <= 1)
       continue;
-#ifdef __FLAGTREE_RLC_ENHANCE__
     if (auto preferred = smallComponentPreferredEncoding.lookup(value)) {
       if (info.encodings.contains(preferred)) {
         info.encodings.clear();
         info.encodings.insert(preferred);
         continue;
-#else  // __FLAGTREE_RLC_ENHANCE__
-    // Hacky resolve, prefer block encoding.
-    // TODO: add a proper heuristic.
-    Attribute encoding = *info.encodings.begin();
-    bool isLoadOrStore =
-        op && isa<LoadOp, StoreOp, AtomicRMWOp, AtomicCASOp>(op);
-    for (Attribute e : info.encodings) {
-      if ((isLoadOrStore && isa<BlockedEncodingAttr>(e)) ||
-          (!isLoadOrStore && isa<MmaEncodingTrait>(e))) {
-        encoding = e;
-        break;
-#endif // __FLAGTREE_RLC_ENHANCE__
       }
     }
-#ifdef __FLAGTREE_RLC_ENHANCE__
     if (!enableCostBasedResolution || !isExtensionTouchedValue(value) ||
         !shouldUseCostBasedResolution(info)) {
       Attribute encoding = *info.encodings.begin();
@@ -2678,11 +2661,26 @@ void LayoutPropagation::resolveConflicts() {
         }
       }
     }
-#endif // __FLAGTREE_RLC_ENHANCE__
     info.encodings.clear();
-#ifdef __FLAGTREE_RLC_ENHANCE__
     info.encodings.insert(bestEncoding);
 #else  // __FLAGTREE_RLC_ENHANCE__
+    Operation *op = it.first.getDefiningOp();
+    LayoutInfo &info = it.second;
+    if (info.encodings.size() <= 1)
+      continue;
+    // Hacky resolve, prefer block encoding.
+    // TODO: add a proper heuristic.
+    Attribute encoding = *info.encodings.begin();
+    bool isLoadOrStore =
+        op && isa<LoadOp, StoreOp, AtomicRMWOp, AtomicCASOp>(op);
+    for (Attribute e : info.encodings) {
+      if ((isLoadOrStore && isa<BlockedEncodingAttr>(e)) ||
+          (!isLoadOrStore && isa<MmaEncodingTrait>(e))) {
+        encoding = e;
+        break;
+      }
+    }
+    info.encodings.clear();
     info.encodings.insert(encoding);
 #endif // __FLAGTREE_RLC_ENHANCE__
   }
