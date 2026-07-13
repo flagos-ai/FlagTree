@@ -110,13 +110,13 @@ def is_xpu():
     return False if target is None else target.backend == "xpu"
 
 
-# flagtree: mthreads
+# flagtree mthreads
 def is_musa():
     target = get_current_target()
     return False if target is None else target.backend == "musa"
 
 
-# flagtree: mthreads
+# flagtree mthreads
 def is_musa_ph1():
     return is_musa() and torch.musa.get_device_capability() == (3, 1)
 
