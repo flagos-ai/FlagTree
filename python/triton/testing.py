@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, List
 from . import language as tl
 from . import runtime
+from .backends import backends as _available_backends
 
 
 def nvsmi(attrs):
@@ -125,23 +126,23 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
 
 
 # flagtree: supports specifying device_type to select runtime_driver
+@functools.lru_cache(maxsize=None)
+def _get_backend_driver(backend_name: str):
+    if backend_name not in _available_backends:
+        available = ", ".join(sorted(_available_backends.keys()))
+        raise RuntimeError(f"Unsupported device_type/backend '{backend_name}'. "
+                           f"Available Triton backends: [{available}]")
+    driver_cls = _available_backends[backend_name].driver
+    if not driver_cls.is_active():
+        raise RuntimeError(f"Backend '{backend_name}' is not active.")
+    return driver_cls()
+
+
+# flagtree: supports specifying device_type to select runtime_driver
 def _get_runtime_driver_active(device_type: str | None):
     _DEVICE_TYPE_TO_BACKEND = {
         "cuda": "nvidia", "nvidia": "nvidia", "hip": "amd", "amd": "amd", "musa": "mthreads", "mthreads": "mthreads"
     }
-
-    @functools.lru_cache(maxsize=None)
-    def _get_backend_driver(backend_name: str):
-        from .backends import backends as _discovered_backends
-        if backend_name not in _discovered_backends:
-            available = ", ".join(sorted(_discovered_backends.keys()))
-            raise RuntimeError(f"Unsupported device_type/backend '{backend_name}'. "
-                               f"Available Triton backends: [{available}]")
-        driver_cls = _discovered_backends[backend_name].driver
-        if not driver_cls.is_active():
-            raise RuntimeError(f"Backend '{backend_name}' is not active.")
-        return driver_cls()
-
     if device_type is None:
         return runtime.driver.active
     backend_name = _DEVICE_TYPE_TO_BACKEND.get(device_type.lower(), device_type.lower())
