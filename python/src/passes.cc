@@ -17,6 +17,13 @@
 
 namespace py = pybind11;
 
+#ifdef __FLAGTREE_RLC_ENHANCE__
+namespace mlir::triton::gpu {
+std::unique_ptr<mlir::Pass>
+createTritonGPURemoveLayoutConversionsEnhanced(bool enhance);
+} // namespace mlir::triton::gpu
+#endif
+
 void init_triton_analysis(py::module &&m) {
   py::class_<mlir::ModuleAllocation>(m, "allocation", py::module_local())
       .def(py::init<mlir::ModuleOp>());
@@ -78,16 +85,15 @@ void init_triton_passes_ttgpuir(py::module &&m) {
                             createTritonGPUOptimizeDotOperands, bool);
   m.def(
       "add_remove_layout_conversions",
-      [](mlir::PassManager &pm, bool costBased, bool backwardProp,
-         bool smallComponentSolving, bool storeLayoutRemat) {
-        pm.addPass(createTritonGPURemoveLayoutConversions(
-            {costBased, backwardProp, smallComponentSolving,
-             storeLayoutRemat}));
+      [](mlir::PassManager &pm, bool enhance) {
+#ifdef __FLAGTREE_RLC_ENHANCE__
+        pm.addPass(createTritonGPURemoveLayoutConversionsEnhanced(enhance));
+#else
+        (void)enhance;
+        pm.addPass(createTritonGPURemoveLayoutConversions());
+#endif
       },
-      py::arg("pm"), py::arg("enable_cost_based_resolution") = false,
-      py::arg("enable_backward_propagation") = false,
-      py::arg("enable_small_component_solving") = false,
-      py::arg("enable_store_layout_rematerialization") = false);
+      py::arg("pm"), py::arg("enable_rlc_enhance") = false);
   ADD_PASS_WRAPPER_0("add_reduce_data_duplication",
                      createTritonGPUReduceDataDuplication);
   ADD_PASS_WRAPPER_0("add_allocate_warp_groups",

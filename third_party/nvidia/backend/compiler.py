@@ -44,16 +44,10 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "off", "no"}
 
 
-# flagtree: enable RemoveLayoutConversions phases for NVIDIA (env-configurable).
+# flagtree: enable the RemoveLayoutConversions enhancement phases for NVIDIA
+# (on by default, disabled with FLAGTREE_RLC_ENHANCE=0).
 def _add_remove_layout_conversions(pm):
-    master = _env_bool("FLAGTREE_RLC_ENHANCE", True)
-    passes.ttgpuir.add_remove_layout_conversions(
-        pm,
-        master and _env_bool("FLAGTREE_RLC_COST_BASED_RESOLUTION", True),
-        master and _env_bool("FLAGTREE_RLC_BACKWARD_PROPAGATION", True),
-        master and _env_bool("FLAGTREE_RLC_SMALL_COMPONENT_SOLVING", True),
-        master and _env_bool("FLAGTREE_RLC_STORE_LAYOUT_REMATERIALIZATION", True),
-    )
+    passes.ttgpuir.add_remove_layout_conversions(pm, _env_bool("FLAGTREE_RLC_ENHANCE", True))
 
 
 @functools.lru_cache()

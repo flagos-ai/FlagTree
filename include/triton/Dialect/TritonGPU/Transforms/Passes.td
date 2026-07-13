@@ -273,23 +273,6 @@ def TritonGPURemoveLayoutConversions : Pass<"tritongpu-remove-layout-conversions
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
 
-  let options = [
-    Option<"enableCostBasedResolution", "enable-cost-based-resolution",
-           "bool", /*default=*/"false",
-           "Use cost-based conflict resolution instead of heuristic rules">,
-    Option<"enableBackwardPropagation", "enable-backward-propagation",
-           "bool", /*default=*/"false",
-           "Enable backward layout propagation from convert_layout ops">,
-    Option<"enableSmallComponentSolving", "enable-small-component-solving",
-           "bool", /*default=*/"false",
-           "Enable small local layout component solving">,
-    Option<"enableStoreLayoutRematerialization",
-           "enable-store-layout-rematerialization",
-           "bool", /*default=*/"false",
-           "Drop store/atomic writeback convert_layout ops by rematerializing "
-           "their address/mask chains in the value's layout">
-  ];
-
 }
 
 def TritonGPUOptimizeThreadLocality : Pass<"tritongpu-optimize-thread-locality", "mlir::ModuleOp"> {
