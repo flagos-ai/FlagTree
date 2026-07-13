@@ -11,6 +11,7 @@ from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_ma
 from ..runtime.driver import driver
 from ..tools.disasm import get_sass
 from pathlib import Path
+import importlib
 import re
 import functools
 import os
@@ -278,6 +279,13 @@ def compile(src, target=None, options=None, _env_vars=None):
         **options.__dict__,
         **env_vars,
     }
+    # Debug instrumentation consumes these fields during the TTIR stage.  They
+    # must come from GPUTarget: backend options do not define backend_name on
+    # every target (notably Ascend), and filling them after lowering is too late
+    # for both kernel metadata and transfer-backend selection.
+    metadata["backend_name"] = str(target.backend)
+    metadata["debug_backend_name"] = str(target.backend)
+    metadata["debug_target_name"] = str(target.arch)
     metadata["triton_version"] = __version__
     # run compilation pipeline  and populate metadata
     stages = dict()
@@ -343,6 +351,19 @@ def compile(src, target=None, options=None, _env_vars=None):
         module = next_module
         if compilation_listener:
             timer.stage_finished(ext)
+    if str(metadata.get("instrumentation_mode", "")).startswith("debugger"):
+        try:
+            debugger_config = importlib.import_module("triton.runtime.debugger").current_compile_config()
+        except Exception:
+            debugger_config = {}
+
+        metadata.update(debugger_config)
+        metadata.setdefault("debug_enabled", True)
+        metadata.setdefault("debug_protocol_version", 2)
+        metadata.setdefault("debug_kernel_id", int(hash[:8], 16) or 1)
+        metadata.setdefault("debug_backend_name", metadata.get("backend_name", ""))
+        metadata.setdefault("debug_target_name", str(getattr(target, "arch", "")))
+        metadata.setdefault("debug_kernel_name", metadata.get("name", ""))
     # write-back metadata
     metadata_group[metadata_filename] = fn_cache_manager.put(json.dumps(metadata, default=vars), metadata_filename,
                                                              binary=False)
@@ -485,10 +506,27 @@ class CompiledKernel:
         return self._run
 
     def launch_metadata(self, grid, stream, *args):
-        if knobs.runtime.launch_enter_hook is None:
+        debugger_active = False
+        try:
+            debugger_active = importlib.import_module("triton.runtime.debugger").is_active()
+        except Exception:
+            pass
+        if (knobs.runtime.launch_enter_hook is None and not getattr(self.metadata, "debug_enabled", False)
+                and not debugger_active):
             return None
         self._init_handles()
-        ret = LazyDict({"name": self.name, "function": self.function, "stream": stream})
+        grid_size = len(grid)
+        normalized_grid = (
+            int(grid[0]),
+            int(grid[1]) if grid_size > 1 else 1,
+            int(grid[2]) if grid_size > 2 else 1,
+        )
+        ret = LazyDict({
+            "name": self.name,
+            "function": self.function,
+            "stream": stream,
+            "grid": normalized_grid,
+        })
         if not isinstance(self.src, ASTSource) or self.src.fn.launch_metadata is None:
             return ret
         arg_dict = {name: arg for name, arg in zip(self.src.fn.arg_names, args)}
@@ -502,8 +540,44 @@ class CompiledKernel:
             if stream is None:
                 device = driver.active.get_current_device()
                 stream = driver.active.get_current_stream(device)
+            debug_ctx = None
+            launcher_manages_debug = bool(getattr(self._run, "manages_debug_launch", False))
+            records_per_instance = int(getattr(self.metadata, "debug_records_per_instance", 0))
+            has_hidden_arg = (bool(getattr(self.metadata, "debug_launch_hidden_arg", False))
+                              and records_per_instance > 0)
+            if (getattr(self.metadata, "debug_launch_hidden_arg", False) and records_per_instance <= 0):
+                self._run.debug_launch_hidden_arg = False
+                self._run.debug_ctrl_ptr = 0
+            if (getattr(self.metadata, "debug_enabled", False) and has_hidden_arg and not launcher_manages_debug):
+                from triton.runtime.debug_collect_runtime import default_debug_collect_runtime
+
+                grid_size = len(grid)
+                runtime_metadata = {
+                    "grid": (
+                        int(grid[0]),
+                        int(grid[1]) if grid_size > 1 else 1,
+                        int(grid[2]) if grid_size > 2 else 1,
+                    ),
+                    "records_per_instance": records_per_instance,
+                }
+                debug_ctx = default_debug_collect_runtime.prepare(self.metadata, stream, runtime_metadata)
+                self._debug_ctrl_ptr = default_debug_collect_runtime.hidden_arg(debug_ctx)
+            if has_hidden_arg and not launcher_manages_debug:
+                from triton.compiler.flagtree_debug import prepare_launch_debug_ctrl
+
+                prepare_launch_debug_ctrl(self, stream)
             launch_metadata = self.launch_metadata(grid, stream, *args)
-            self.run(grid[0], grid[1], grid[2], stream, self.function, self.packed_metadata, launch_metadata,
-                     knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *args)
+            try:
+                self.run(grid[0], grid[1], grid[2], stream, self.function, self.packed_metadata, launch_metadata,
+                         knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *args)
+                if debug_ctx is not None:
+                    from triton.runtime.debug_collect_runtime import default_debug_collect_runtime
+
+                    default_debug_collect_runtime.export(debug_ctx, stream)
+            finally:
+                if debug_ctx is not None:
+                    from triton.runtime.debug_collect_runtime import default_debug_collect_runtime
+
+                    default_debug_collect_runtime.release(debug_ctx)
 
         return runner

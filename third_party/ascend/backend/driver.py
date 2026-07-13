@@ -108,6 +108,8 @@ class NPULauncher(object):
         signature = {cst_key(key): value for key, value in src.signature.items()}
         wrapper_src = make_launcher(constants, signature, metadata)
         so_launcher_path = make_npu_launcher_stub(header_src, wrapper_src, metadata.debug)
+        self.debug_launch_hidden_arg = bool(getattr(metadata, "debug_launch_hidden_arg", False))
+        self.debug_ctrl_ptr = 0
         # setup for remote run
         # TODO: use a var to pack all vars required to run on a remote machine
         self.mix_mode = metadata.mix_mode
@@ -132,7 +134,10 @@ class NPULauncher(object):
         else:
             if self.compile_only:
                 return
-            profiler_registered = self.launch(*args, **kwargs)
+            launch_args = args
+            if self.debug_launch_hidden_arg:
+                launch_args = (*args, int(self.debug_ctrl_ptr))
+            profiler_registered = self.launch(*launch_args, **kwargs)
             import triton
             triton.backends.ascend.utils.TRITON_PROFILER_REGISTERED = True if profiler_registered == 1 else False
 
@@ -517,12 +522,22 @@ def make_launcher(constants, signature, metadata):
         PyObject* launch_enter_hook, *launch_exit_hook;
         *args_expand
     """
+    debug_launch_hidden_arg = bool(getattr(metadata, "debug_launch_hidden_arg", False))
+    debug_format = "K" if debug_launch_hidden_arg else ""
+    debug_extracted_decl = "uint64_t _debugCtrlPtr = 0;" if debug_launch_hidden_arg else ""
+    debug_parse_arg = ", &_debugCtrlPtr" if debug_launch_hidden_arg else ""
+    debug_launch_arg_decl = ", uint64_t debugCtrlPtr" if debug_launch_hidden_arg else ""
+    debug_struct_field = ("void* debug_ctrl_ptr __attribute__((aligned(8)));" if debug_launch_hidden_arg else "")
+    debug_struct_value = ("reinterpret_cast<void*>(debugCtrlPtr)," if debug_launch_hidden_arg else "")
+    debug_call_arg = ", _debugCtrlPtr" if debug_launch_hidden_arg else ""
+
     args_format = ''.join([format_of(ty) for ty in signature.values()])
-    format = "iiiKKOOOO" + args_format
+    format = "iiiKKOOOO" + args_format + debug_format
     signature = ','.join(map(_serialize_signature, signature.values()))
     signature = list(filter(bool, signature.split(',')))
     signature = {i: s for i, s in enumerate(signature)}
     args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
+    args_list += debug_parse_arg
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors.
     arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items() if ty != "constexpr")
@@ -799,7 +814,7 @@ extern "C" {
 
 {cpp_device_pointer}
 
-static void _launch(const char* kernelName, const void* func, rtStream_t stream, int gridX, int gridY, int gridZ, std::vector<std::vector<int64_t>> &tensorShapes, std::vector<int> &tensorKinds{', ' + arg_decls if len(signature) > 0 else ''}) {{
+static void _launch(const char* kernelName, const void* func, rtStream_t stream, int gridX, int gridY, int gridZ, std::vector<std::vector<int64_t>> &tensorShapes, std::vector<int> &tensorKinds{', ' + arg_decls if len(signature) > 0 else ''}{debug_launch_arg_decl}) {{
   // only 1D parallelization is supported for NPU
   // Pointer type becomes flattend 1-D Memref tuple: base_ptr, data_ptr, offset, shape, stride
   // base_ptr offset shape and stride are not used, arbitrarily set for now
@@ -857,6 +872,7 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
       {'void* syncBlockLock __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
       {'void* workspace_addr __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
       {' '.join(f'{ty_to_cpp(ty)} arg{i} __attribute__((aligned({4 if ty[0] != "*" and ty[-2:] != "64" else 8})));' for i, ty in signature.items() if i not in constants and ty != "constexpr")}
+      {debug_struct_field}
       {' '.join(f'{ty_to_cpp(ty)} grid{mark} __attribute__((aligned(4)));' for mark, ty in grid_info.items())}
       {'void* DTData __attribute__((aligned(8)));' if enable_device_print else ''}
     }} args = {{
@@ -866,6 +882,7 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
       {(lambda _rt: (', '.join(_rt) + ',') if _rt else '')(
         [f'static_cast<{ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if i not in constants and ty != "constexpr"]
       )}
+      {debug_struct_value}
       {', '.join(f'static_cast<{ty_to_cpp(ty)}>(grid{mark})' for mark, ty in grid_info.items())}
       {', static_cast<void*>(DTData)' if enable_device_print else ''}
     }};
@@ -921,6 +938,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   PyObject *launch_exit_hook = NULL;
   std::vector<std::vector<int64_t>> tensorShapes;
 
+  {debug_extracted_decl}
   {newline.join([f"{_extracted_type(ty)} _arg{i};" for i, ty in signature.items()])}
   if(!PyArg_ParseTuple(
       args, \"{format}\",
@@ -963,7 +981,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   // raise exception asap
   {newline.join(ptr_decls)}
-  _launch(kernelName, function, stream, gridX, gridY, gridZ, tensorShapes, tensorKinds{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+  _launch(kernelName, function, stream, gridX, gridY, gridZ, tensorShapes, tensorKinds{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''}{debug_call_arg});
   if (PyErr_Occurred()) {{
     return NULL;
   }}

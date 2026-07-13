@@ -1,0 +1,8 @@
+{
+  "case_id": "shape16",
+  "debug_json_count": 1,
+  "debug_txt_count": 1,
+  "description": "torch.abs pointwise shape=(16,)",
+  "op": "abs",
+  "status": "passed"
+}

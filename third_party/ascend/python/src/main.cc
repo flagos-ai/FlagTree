@@ -45,6 +45,9 @@ void init_triton_interpreter(pybind11::module &&m);
 void init_triton_passes(pybind11::module &&m);
 void init_triton_stacktrace_hook(pybind11::module &m);
 void init_gluon_ir(pybind11::module &&m);
+#if FLAGTREE_ENABLE_DEBUGGER
+void init_triton_debugger(pybind11::module &&m);
+#endif
 FOR_EACH_P(DECLARE_BACKEND, TRITON_BACKENDS_TUPLE)
 
 PYBIND11_MODULE(libtriton, m) {
@@ -57,5 +60,8 @@ PYBIND11_MODULE(libtriton, m) {
   init_triton_interpreter(m.def_submodule("interpreter"));
   init_triton_llvm(m.def_submodule("llvm"));
   init_gluon_ir(m.def_submodule("gluon_ir"));
+#if FLAGTREE_ENABLE_DEBUGGER
+  init_triton_debugger(m.def_submodule("debugger"));
+#endif
   FOR_EACH_P(INIT_BACKEND, TRITON_BACKENDS_TUPLE)
 }

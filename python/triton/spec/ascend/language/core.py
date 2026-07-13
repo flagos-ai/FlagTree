@@ -2158,7 +2158,8 @@ def store_tensor_descriptor(desc: tensor_descriptor_base, offsets: Sequence[cons
 
 @_tensor_member_fn
 @builtin
-def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None):
+def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None,
+          _debug_statement_source=None, _debug_statement_id=None):
     """
     Store a tensor of data into memory locations defined by `pointer`.
 
@@ -2204,7 +2205,8 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
         mask = _semantic.to_tensor(mask)
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
-    return _semantic.store(pointer, value, mask, boundary_check, cache_modifier, eviction_policy)
+    return _semantic.store(pointer, value, mask, boundary_check, cache_modifier, eviction_policy,
+                           _debug_statement_source=_debug_statement_source, _debug_statement_id=_debug_statement_id)
 
 
 @builtin
@@ -2862,6 +2864,27 @@ def debug_barrier(_semantic=None):
     Insert a barrier to synchronize all threads in a block.
     '''
     return _semantic.debug_barrier()
+
+
+@builtin
+def debug_collect_start(level=1, addr_level=None, _semantic=None):
+    '''Begin a FlagTree debug collect region.'''
+    level_v = level.value if isinstance(level, constexpr) else level
+    if not isinstance(level_v, int):
+        raise TypeError("tl.debug_collect_start: level must be an integer")
+
+    addr_level_v = addr_level.value if isinstance(addr_level, constexpr) else addr_level
+    if addr_level_v is not None and not isinstance(addr_level_v, int):
+        raise TypeError("tl.debug_collect_start: addr_level must be an integer")
+    if addr_level_v is not None and not 0 <= addr_level_v <= 2:
+        raise ValueError("tl.debug_collect_start: addr_level must be 0, 1, or 2")
+    return _semantic.debug_collect_start(int(level_v), addr_level_v)
+
+
+@builtin
+def debug_collect_end(_semantic=None):
+    '''End a FlagTree debug collect region.'''
+    return _semantic.debug_collect_end()
 
 
 @builtin

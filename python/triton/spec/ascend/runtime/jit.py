@@ -26,6 +26,61 @@ GLUON_MODULE = "triton.experimental.gluon.language"
 
 T = TypeVar("T")
 
+
+def _apply_compilation_instrumentation_mode(kwargs):
+    if "instrumentation_mode" in kwargs:
+        return
+    mode = getattr(knobs.compilation, "instrumentation_mode", "")
+    if mode:
+        kwargs["instrumentation_mode"] = str(mode)
+
+
+def _disable_flagtree_debug_hidden_arg(kernel):
+    run = getattr(kernel, "run", None)
+    if run is not None:
+        run.debug_launch_hidden_arg = False
+        run.debug_ctrl_ptr = 0
+
+
+def _prepare_flagtree_debug_launch(kernel, stream, launch_metadata, kernel_args):
+    records_per_instance = int(getattr(kernel.metadata, "debug_records_per_instance", 0))
+    if (not getattr(kernel.metadata, "debug_launch_hidden_arg", False) or records_per_instance <= 0):
+        _disable_flagtree_debug_hidden_arg(kernel)
+        if not getattr(kernel.metadata, "debug_enabled", False):
+            return None
+        from triton.runtime import debugger as flagtree_debugger
+
+        return flagtree_debugger.prepare_metadata_only_kernel_launch(kernel.metadata, stream, launch_metadata,
+                                                                     kernel_args)
+
+    from triton.runtime import debugger as flagtree_debugger
+
+    prepared = flagtree_debugger.prepare_kernel_launch(kernel.metadata, stream, launch_metadata, kernel_args)
+    if prepared is not None and prepared.kernel_args:
+        kernel.run.debug_ctrl_ptr = int(prepared.kernel_args[0])
+    return prepared
+
+
+def _finalize_flagtree_debug_launch(prepared, error):
+    if prepared is None:
+        return
+    from triton.runtime import debugger as flagtree_debugger
+
+    final_error = error
+    if final_error is None:
+        try:
+            import torch_npu
+
+            torch_npu.npu.synchronize()
+        except BaseException as exc:
+            final_error = exc
+    try:
+        flagtree_debugger.finalize_prepared_launch(prepared, final_error)
+    finally:
+        if error is None and final_error is not None:
+            raise final_error
+
+
 # -----------------------------------------------------------------------------
 # Dependencies Finder
 # -----------------------------------------------------------------------------
@@ -708,6 +763,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
     def run(self, *args, grid, warmup, **kwargs):
         kwargs["debug"] = kwargs.get("debug", self.debug) or knobs.runtime.debug
+        _apply_compilation_instrumentation_mode(kwargs)
 
         # parse options
         device = driver.active.get_current_device()
@@ -753,9 +809,18 @@ class JITFunction(JITCallable, KernelInterface[T]):
             if hasattr(kernel, "result"):
                 kernel = kernel.result()
             # launch kernel
-            launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
-            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
-                       knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *bound_args.values())
+            kernel_args = list(bound_args.values())
+            launch_metadata = kernel.launch_metadata(grid, stream, *kernel_args)
+            prepared_debug_launch = _prepare_flagtree_debug_launch(kernel, stream, launch_metadata, kernel_args)
+            launch_error = None
+            try:
+                kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
+                           knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *kernel_args)
+            except BaseException as exc:
+                launch_error = exc
+                raise
+            finally:
+                _finalize_flagtree_debug_launch(prepared_debug_launch, launch_error)
         return kernel
 
     def repr(self, _):

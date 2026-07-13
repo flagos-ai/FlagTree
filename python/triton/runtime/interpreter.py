@@ -715,6 +715,12 @@ class InterpreterBuilder:
         # Triton's barrier applies to each program in a grid, so it's a no-op in the interpreter
         pass
 
+    def create_debug_collect_begin(self, level, addr_level=-1):
+        del level, addr_level
+
+    def create_debug_collect_end(self):
+        pass
+
     def create_make_block_ptr(self, base, shape, strides, offsets, block_shape, order):
         # Create new offsets to avoid modifying the original
         new_offsets = [offset.clone() for offset in offsets]

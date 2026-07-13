@@ -485,6 +485,53 @@ class CodeGenerator(ast.NodeVisitor):
         self.lscope[name] = value
         self.local_defs[name] = value
 
+    def _statement_source(self, node):
+        source = None
+        if hasattr(node, "lineno"):
+            try:
+                source = ast.get_source_segment(self.jit_fn.src, node)
+            except Exception:
+                source = None
+        if source is None and hasattr(ast, "unparse"):
+            try:
+                source = ast.unparse(node)
+            except Exception:
+                source = None
+        return "" if source is None else " ".join(source.strip().split())
+
+    def _statement_id(self, node):
+        line = int(self.begin_line + getattr(node, "lineno", 0))
+        col = int(getattr(node, "col_offset", 0))
+        return max(0, min(line * 1000 + min(col, 999), (1 << 31) - 1))
+
+    def _annotate_assignment_value(self, node, name, value, statement_source):
+        if not _is_triton_tensor(value):
+            return
+        handle = getattr(value, "handle", None)
+        if handle is None or not hasattr(handle, "set_attr"):
+            return
+        if statement_source:
+            handle.set_attr("flagtree.debug.triton_statement", self.builder.get_string_attr(statement_source))
+        handle.set_attr("flagtree.debug.statement_result_name", self.builder.get_string_attr(str(name)))
+        handle.set_attr("flagtree.debug.statement_id", self.builder.get_int32_attr(self._statement_id(node)))
+
+    def _annotate_assignment_target(self, node, target, value, statement_source):
+        if isinstance(target, ast.Name):
+            self._annotate_assignment_value(node, target.id, value, statement_source)
+        elif isinstance(target, ast.Tuple):
+            for child, child_value in zip(target.elts, value.values):
+                self._annotate_assignment_target(node, child, child_value, statement_source)
+
+    def _annotate_expression_value(self, node, value, statement_source):
+        if not _is_triton_tensor(value):
+            return
+        handle = getattr(value, "handle", None)
+        if handle is None or not hasattr(handle, "set_attr"):
+            return
+        if statement_source:
+            handle.set_attr("flagtree.debug.triton_statement", self.builder.get_string_attr(statement_source))
+        handle.set_attr("flagtree.debug.statement_id", self.builder.get_int32_attr(self._statement_id(node)))
+
     def _get_insertion_point_and_loc(self, builder=None):
         # XXX: this is a hack to get the location of the insertion point.
         # The insertion point's location could be invalid sometimes,
@@ -727,6 +774,7 @@ class CodeGenerator(ast.NodeVisitor):
                 values = _sanitize_value(self.visit(node.value))
         else:
             values = _sanitize_value(self.visit(node.value))
+        self._annotate_assignment_target(node, target, values, self._statement_source(node))
         self.assignTarget(target, values)
 
     def visit_AugAssign(self, node):
@@ -1403,6 +1451,10 @@ class CodeGenerator(ast.NodeVisitor):
                 extra_kwargs["_semantic"] = self.semantic
             if '_generator' in sig.parameters:
                 extra_kwargs['_generator'] = self
+            if '_debug_statement_source' in sig.parameters:
+                extra_kwargs['_debug_statement_source'] = self._statement_source(node)
+            if '_debug_statement_id' in sig.parameters:
+                extra_kwargs['_debug_statement_id'] = self._statement_id(node)
             try:
                 if fn.__name__ == 'copy':
                     # extract tle hints from the generator to identify if node in the tle hints scope
@@ -1540,7 +1592,9 @@ class CodeGenerator(ast.NodeVisitor):
 
     def visit_Expr(self, node):
         node.value._is_unused = True
-        ast.NodeVisitor.generic_visit(self, node)
+        value = self.visit(node.value)
+        self._annotate_expression_value(node, value, self._statement_source(node))
+        return value
 
     def visit_NoneType(self, node):
         return None

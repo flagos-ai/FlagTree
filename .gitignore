@@ -11,6 +11,7 @@ python/build/
 python/dist/
 python/triton*.egg-info/
 python/triton_kernels/triton*.egg-info/
+*.egg-info/
 
 python/triton/_C/*.pyd
 python/triton/_C/*.so
@@ -90,6 +91,16 @@ docs/sg_execution_times.rst
 
 # macOS
 .DS_Store
+
+# Local source downloads and runtime artifacts
+/.external/
+/*.lock
+/extra-info/
+/kernel_meta/
+/third_party/ascend/AscendNPU-IR/
+/third_party/flir/
+/third_party/Debugger/samples/**/source/generated_kernels/
+/third_party/Debugger/samples/**/source/kernel_sources/
 
 # Agent
 AGENTS.md

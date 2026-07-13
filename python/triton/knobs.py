@@ -363,6 +363,9 @@ class compilation_knobs(base_knobs):
     front_end_debugging: env_bool = env_bool("TRITON_FRONT_END_DEBUGGING")
     allow_non_constexpr_globals: env_bool = env_bool("TRITON_ALLOW_NON_CONSTEXPR_GLOBALS")
     enable_experimental_consan: env_bool = env_bool("TRITON_ENABLE_EXPERIMENTAL_CONSAN")
+    # Backend options include this value so instrumentation mode changes use a
+    # distinct in-memory and on-disk kernel cache entry.
+    instrumentation_mode: str = ""
     listener: Union[CompilationListener, None] = None
 
 

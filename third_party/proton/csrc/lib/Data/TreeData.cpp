@@ -7,12 +7,116 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 
 using json = nlohmann::json;
 
 namespace proton {
+namespace {
+
+bool isStringMetricValue(const MetricValueType &value) {
+  return std::holds_alternative<std::string>(value);
+}
+
+std::string toLowerAscii(std::string value) {
+  for (auto &ch : value) {
+    if (ch >= 'A' && ch <= 'Z')
+      ch = static_cast<char>(ch - 'A' + 'a');
+  }
+  return value;
+}
+
+bool endsWith(const std::string &value, const std::string &suffix) {
+  return value.size() >= suffix.size() &&
+         value.compare(value.size() - suffix.size(), suffix.size(), suffix) ==
+             0;
+}
+
+bool containsAny(const std::string &value,
+                 const std::initializer_list<const char *> &tokens) {
+  for (auto token : tokens) {
+    if (value.find(token) != std::string::npos)
+      return true;
+  }
+  return false;
+}
+
+bool isHatchetMetadataMetricName(const std::string &metricName) {
+  auto name = toLowerAscii(metricName);
+  if (containsAny(name, {"start_time", "end_time", "timestamp", "input_file",
+                         "output_file", "summary_row_index"}))
+    return true;
+  if (endsWith(name, "_id") || endsWith(name, ".id") ||
+      endsWith(name, "_pid") || endsWith(name, ".pid") ||
+      endsWith(name, "_tid") || endsWith(name, ".tid"))
+    return true;
+  return name == "device_id" || name == "stream_id" || name == "pid" ||
+         name == "tid";
+}
+
+bool isHatchetUsefulNumericMetricName(const std::string &metricName) {
+  auto name = toLowerAscii(metricName);
+  if (isHatchetMetadataMetricName(name))
+    return false;
+  return containsAny(name, {"time", "duration", "cycle", "cycles", "bandwidth",
+                            "throughput", "bytes", "flop", "count", "ratio",
+                            "rate", "variance", "_kb", "_mb", "_gb"});
+}
+
+bool isHatchetAggregableMetricName(const std::string &metricName) {
+  auto name = toLowerAscii(metricName);
+  if (!isHatchetUsefulNumericMetricName(name))
+    return false;
+  if (name == "cann.op_summary_begin_time_us" ||
+      name == "cann.op_summary_finish_time_us")
+    return false;
+  if (containsAny(name, {"bandwidth", "throughput", "variance", "util"}))
+    return false;
+  if (endsWith(name, "_ratio") || endsWith(name, ".ratio") ||
+      endsWith(name, "_rate") || endsWith(name, ".rate"))
+    return false;
+  if (name.find("tflop") != std::string::npos && endsWith(name, "_s"))
+    return false;
+  return true;
+}
+
+bool shouldDumpFlexibleMetricToHatchet(const std::string &metricName,
+                                       const MetricValueType &value) {
+  return !isStringMetricValue(value) &&
+         isHatchetUsefulNumericMetricName(metricName);
+}
+
+std::optional<double> metricValueAsDouble(const MetricValueType &value) {
+  return std::visit(
+      [](auto &&v) -> std::optional<double> {
+        using ValueType = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<ValueType, std::string>) {
+          return std::nullopt;
+        } else {
+          return static_cast<double>(v);
+        }
+      },
+      value);
+}
+
+bool pruneEmptyHatchetLeaves(json &node) {
+  if (!node.contains("children") || !node["children"].is_array())
+    return !node.contains("metrics") || node["metrics"].empty();
+
+  auto &children = node["children"];
+  for (auto it = children.begin(); it != children.end();) {
+    if (pruneEmptyHatchetLeaves(*it))
+      it = children.erase(it);
+    else
+      ++it;
+  }
+  return children.empty() &&
+         (!node.contains("metrics") || node["metrics"].empty());
+}
+
+} // namespace
 
 class TreeData::Tree {
 public:
@@ -105,6 +209,48 @@ private:
   // tree node id -> tree node
   std::map<size_t, TreeNode> treeNodeMap;
 };
+
+namespace {
+
+template <typename TreeNodeT>
+std::optional<double> flexibleMetricAsDouble(const TreeNodeT &treeNode,
+                                             const std::string &metricName) {
+  auto it = treeNode.flexibleMetrics.find(metricName);
+  if (it == treeNode.flexibleMetrics.end())
+    return std::nullopt;
+  auto values = it->second.getValues();
+  if (values.empty())
+    return std::nullopt;
+  return metricValueAsDouble(values[0]);
+}
+
+template <typename TreeNodeT>
+void addDerivedCannMetrics(const TreeNodeT &treeNode, json &metrics) {
+  auto durationUs = flexibleMetricAsDouble(treeNode, "cann.task_duration_us");
+  if (!durationUs.has_value() || durationUs.value() <= 0.0)
+    return;
+
+  auto addMetric = [&](const std::string &name, double value) {
+    metrics[name] = value;
+  };
+
+  for (const auto width : {8, 16, 32, 64}) {
+    auto flops =
+        flexibleMetricAsDouble(treeNode, "flops" + std::to_string(width));
+    if (flops.has_value())
+      addMetric("cann.tflop" + std::to_string(width) + "_s",
+                flops.value() / (durationUs.value() * 1.0e-6) / 1.0e12);
+  }
+
+  if (auto flops = flexibleMetricAsDouble(treeNode, "flops"))
+    addMetric("cann.tflop_s",
+              flops.value() / (durationUs.value() * 1.0e-6) / 1.0e12);
+  if (auto bytes = flexibleMetricAsDouble(treeNode, "bytes"))
+    addMetric("cann.estimated_bandwidth_gb_s",
+              bytes.value() / (durationUs.value() * 1.0e-6) / 1.0e9);
+}
+
+} // namespace
 
 void TreeData::enterScope(const Scope &scope) {
   // enterOp and addMetric maybe called from different threads
@@ -205,7 +351,7 @@ void TreeData::dumpHatchet(std::ostream &os) const {
   json output = json::array();
   output.push_back(json::object());
   jsonNodes[Tree::TreeNode::RootId] = &(output.back());
-  std::set<std::string> inclusiveValueNames;
+  std::set<std::string> valueNames;
   std::map<uint64_t, std::set<uint64_t>> deviceIds;
   this->tree->template walk<Tree::WalkPolicy::PreOrder>([&](Tree::TreeNode
                                                                 &treeNode) {
@@ -226,8 +372,6 @@ void TreeData::dumpHatchet(std::ostream &os) const {
             std::get<uint64_t>(kernelMetric->getValue(KernelMetric::DeviceId));
         uint64_t deviceType = std::get<uint64_t>(
             kernelMetric->getValue(KernelMetric::DeviceType));
-        std::string deviceTypeName =
-            getDeviceTypeString(static_cast<DeviceType>(deviceType));
         (*jsonNode)["metrics"]
                    [kernelMetric->getValueName(KernelMetric::Duration)] =
                        duration;
@@ -236,13 +380,9 @@ void TreeData::dumpHatchet(std::ostream &os) const {
                        invocations;
         (*jsonNode)["metrics"]
                    [kernelMetric->getValueName(KernelMetric::DeviceId)] =
-                       std::to_string(deviceId);
-        (*jsonNode)["metrics"]
-                   [kernelMetric->getValueName(KernelMetric::DeviceType)] =
-                       deviceTypeName;
-        inclusiveValueNames.insert(
-            kernelMetric->getValueName(KernelMetric::Duration));
-        inclusiveValueNames.insert(
+                       deviceId;
+        valueNames.insert(kernelMetric->getValueName(KernelMetric::Duration));
+        valueNames.insert(
             kernelMetric->getValueName(KernelMetric::Invocations));
         deviceIds.insert({deviceType, {deviceId}});
       } else if (metricKind == MetricKind::PCSampling) {
@@ -250,7 +390,7 @@ void TreeData::dumpHatchet(std::ostream &os) const {
             std::dynamic_pointer_cast<PCSamplingMetric>(metric);
         for (size_t i = 0; i < PCSamplingMetric::Count; i++) {
           auto valueName = pcSamplingMetric->getValueName(i);
-          inclusiveValueNames.insert(valueName);
+          valueNames.insert(valueName);
           std::visit(
               [&](auto &&value) { (*jsonNode)["metrics"][valueName] = value; },
               pcSamplingMetric->getValues()[i]);
@@ -259,8 +399,6 @@ void TreeData::dumpHatchet(std::ostream &os) const {
         auto cycleMetric = std::dynamic_pointer_cast<CycleMetric>(metric);
         uint64_t duration =
             std::get<uint64_t>(cycleMetric->getValue(CycleMetric::Duration));
-        double normalizedDuration = std::get<double>(
-            cycleMetric->getValue(CycleMetric::NormalizedDuration));
         uint64_t deviceId =
             std::get<uint64_t>(cycleMetric->getValue(CycleMetric::DeviceId));
         uint64_t deviceType =
@@ -268,14 +406,9 @@ void TreeData::dumpHatchet(std::ostream &os) const {
         (*jsonNode)["metrics"]
                    [cycleMetric->getValueName(CycleMetric::Duration)] =
                        duration;
-        (*jsonNode)["metrics"][cycleMetric->getValueName(
-            CycleMetric::NormalizedDuration)] = normalizedDuration;
         (*jsonNode)["metrics"]
                    [cycleMetric->getValueName(CycleMetric::DeviceId)] =
-                       std::to_string(deviceId);
-        (*jsonNode)["metrics"]
-                   [cycleMetric->getValueName(CycleMetric::DeviceType)] =
-                       std::to_string(deviceType);
+                       deviceId;
         deviceIds.insert({deviceType, {deviceId}});
       } else if (metricKind == MetricKind::Flexible) {
         // Flexible metrics are handled in a different way
@@ -285,12 +418,17 @@ void TreeData::dumpHatchet(std::ostream &os) const {
     }
     for (auto [_, flexibleMetric] : treeNode.flexibleMetrics) {
       auto valueName = flexibleMetric.getValueName(0);
-      if (!flexibleMetric.isExclusive(0))
-        inclusiveValueNames.insert(valueName);
+      auto values = flexibleMetric.getValues();
+      if (values.empty() ||
+          !shouldDumpFlexibleMetricToHatchet(valueName, values[0]))
+        continue;
+      if (isHatchetAggregableMetricName(valueName))
+        valueNames.insert(valueName);
       std::visit(
           [&](auto &&value) { (*jsonNode)["metrics"][valueName] = value; },
-          flexibleMetric.getValues()[0]);
+          values[0]);
     }
+    addDerivedCannMetrics(treeNode, (*jsonNode)["metrics"]);
     (*jsonNode)["children"] = json::array();
     auto children = treeNode.children;
     for (auto _ : children) {
@@ -303,8 +441,8 @@ void TreeData::dumpHatchet(std::ostream &os) const {
       idx++;
     }
   });
-  // Hints for all inclusive metrics
-  for (auto valueName : inclusiveValueNames) {
+  pruneEmptyHatchetLeaves(output[Tree::TreeNode::RootId]);
+  for (auto valueName : valueNames) {
     output[Tree::TreeNode::RootId]["metrics"][valueName] = 0;
   }
   // Prepare the device information
@@ -335,7 +473,7 @@ void TreeData::doDump(std::ostream &os, OutputFormat outputFormat) const {
   if (outputFormat == OutputFormat::Hatchet) {
     dumpHatchet(os);
   } else {
-    std::logic_error("Output format not supported");
+    throw std::logic_error("Output format not supported");
   }
 }
 

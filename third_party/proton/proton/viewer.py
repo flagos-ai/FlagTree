@@ -2,6 +2,7 @@ import argparse
 from collections import namedtuple
 import json
 import pandas as pd
+import re
 
 try:
     import hatchet as ht
@@ -23,12 +24,46 @@ def match_available_metrics(metrics, inclusive_metrics, exclusive_metrics):
             for raw_metric in inclusive_metrics + exclusive_metrics:
                 suffix = " (inc)" if raw_metric in inclusive_metrics else ""
                 raw_metric_no_unit = raw_metric.split("(")[0].strip().lower()
-                if metric in (raw_metric, raw_metric_no_unit):
+                if metric in (raw_metric.lower(), raw_metric_no_unit):
                     ret.append(raw_metric + suffix)
                     break
     if len(ret) == 0:
         raise RuntimeError(f"Metric {metric} is not found. Use the --list flag to list available metrics")
     return ret
+
+
+def _metric_base_name(metric):
+    return metric.split("(")[0].strip()
+
+
+def match_raw_metric(metric, inclusive_metrics, exclusive_metrics):
+    metric = metric.lower()
+    for raw_metric in inclusive_metrics + exclusive_metrics:
+        raw_metric_no_unit = _metric_base_name(raw_metric).lower()
+        if metric in (raw_metric.lower(), raw_metric_no_unit):
+            return raw_metric
+    raise RuntimeError(f"Metric {metric} is not found. Use the --list flag to list available metrics")
+
+
+def is_aggregable_metric(metric):
+    name = _metric_base_name(metric).lower()
+    if name in {"cann.op_summary_begin_time_us", "cann.op_summary_finish_time_us"}:
+        return False
+    if any(token in name for token in ("bandwidth", "throughput", "variance", "util")):
+        return False
+    if name.endswith(("_ratio", ".ratio", "_rate", ".rate")):
+        return False
+    if re.search(r"(^|[._])(?:t|g)flop\d*_s$", name):
+        return False
+    return True
+
+
+def clear_internal_values_for_nonaggregable_metric(gf, metric):
+    raw_metric = metric.removesuffix(" (inc)")
+    if is_aggregable_metric(raw_metric) or raw_metric not in gf.dataframe:
+        return
+    internal_nodes = [bool(node.children) for node in gf.dataframe.index]
+    gf.dataframe.loc[internal_nodes, raw_metric] = np.nan
 
 
 def remove_frames(database: json):
@@ -130,16 +165,110 @@ for width in LaunchHook.flops_width:
     derivable_metrics.update({key: FactorDict(factor_name, factor_dict) for key in factor_dict.keys()})
 
 
+def cann_derived_metric_spec(metric):
+    if metric == "cann.tflop_s":
+        return "flops", 1e12
+    match = re.fullmatch(r"cann\.tflop(8|16|32|64)_s", metric)
+    if match:
+        return f"flops{match.group(1)}", 1e12
+    if metric == "cann.estimated_bandwidth_gb_s":
+        return "bytes", 1e9
+    return None
+
+
+def derive_cann_metric(gf, metric, inclusive_metrics, exclusive_metrics):
+    spec = cann_derived_metric_spec(metric)
+    if spec is None:
+        return None
+    numerator_name, scale = spec
+    try:
+        numerator_metric = match_raw_metric(numerator_name, inclusive_metrics, exclusive_metrics)
+        duration_metric = match_raw_metric("cann.task_duration_us", inclusive_metrics, exclusive_metrics)
+    except RuntimeError:
+        return None
+
+    def subtree_sum(metric_name):
+        values = gf.dataframe[metric_name].astype(float)
+        sums = {}
+
+        def visit(node):
+            value = values.loc[node]
+            total = 0.0 if pd.isna(value) else value
+            for child in node.children:
+                total += visit(child)
+            sums[node] = total
+            return total
+
+        for root in gf.graph.roots:
+            visit(root)
+        return pd.Series(
+            [sums.get(node, np.nan) for node in gf.dataframe.index],
+            index=gf.dataframe.index,
+        )
+
+    numerator = subtree_sum(numerator_metric)
+    duration_us = subtree_sum(duration_metric)
+    gf.dataframe[metric] = np.where(
+        (numerator > 0.0) & (duration_us > 0.0),
+        numerator / (duration_us * 1.0e-6) / scale,
+        np.nan,
+    )
+    return metric
+
+
+def get_cann_scope_elapsed_seconds(gf, inclusive_metrics, exclusive_metrics):
+    try:
+        begin_metric = match_raw_metric("cann.op_summary_begin_time_us", inclusive_metrics, exclusive_metrics)
+        finish_metric = match_raw_metric("cann.op_summary_finish_time_us", inclusive_metrics, exclusive_metrics)
+    except RuntimeError:
+        return None
+
+    begin_values = gf.dataframe[begin_metric].astype(float)
+    finish_values = gf.dataframe[finish_metric].astype(float)
+    elapsed_us = {}
+
+    def visit(node):
+        min_begin = None
+        max_finish = None
+        if not node.children:
+            begin = begin_values.loc[node]
+            finish = finish_values.loc[node]
+            min_begin = None if pd.isna(begin) else begin
+            max_finish = None if pd.isna(finish) else finish
+        for child in node.children:
+            child_begin, child_finish = visit(child)
+            if child_begin is not None:
+                min_begin = child_begin if min_begin is None else min(min_begin, child_begin)
+            if child_finish is not None:
+                max_finish = child_finish if max_finish is None else max(max_finish, child_finish)
+        elapsed_us[node] = (max_finish - min_begin
+                            if min_begin is not None and max_finish is not None and max_finish >= min_begin else np.nan)
+        return min_begin, max_finish
+
+    for root in gf.graph.roots:
+        visit(root)
+    return pd.Series(
+        [elapsed_us.get(node, np.nan) * 1.0e-6 for node in gf.dataframe.index],
+        index=gf.dataframe.index,
+    )
+
+
 def derive_metrics(gf, metrics, inclusive_metrics, exclusive_metrics, device_info):
     derived_metrics = []
+    cann_scope_time_seconds = get_cann_scope_elapsed_seconds(gf, inclusive_metrics, exclusive_metrics)
 
     def get_time_seconds(df, metric, factor_dict):
+        if metric == "time" and cann_scope_time_seconds is not None:
+            return cann_scope_time_seconds
         time_metric_name = match_available_metrics(metric, inclusive_metrics, exclusive_metrics)[0]
         time_unit = factor_dict.name + "/" + time_metric_name.split("(")[1].split(")")[0]
         return df[time_metric_name] * factor_dict.factor[time_unit]
 
     for metric in metrics:
-        if metric == "util":  # exclusive
+        cann_metric = derive_cann_metric(gf, metric, inclusive_metrics, exclusive_metrics)
+        if cann_metric is not None:
+            derived_metrics.append(cann_metric)
+        elif metric == "util":  # exclusive
             min_time_bytes = get_min_time_bytes(gf.dataframe, device_info)
             min_time_flops = get_min_time_flops(gf.dataframe, device_info)
             time_sec = get_time_seconds(gf.dataframe, "time", time_factor_dict)
@@ -170,8 +299,10 @@ def derive_metrics(gf, metrics, inclusive_metrics, exclusive_metrics, device_inf
             if is_avg:
                 time_value = time_value / gf.dataframe["count (inc)"]
 
-            gf.dataframe[f"{metric} (inc)"] = time_value / factor_dict.factor[metric_time_unit]
-            derived_metrics.append(f"{metric} (inc)")
+            output_metric = (f"{metric} (cann elapsed)"
+                             if not is_cpu and cann_scope_time_seconds is not None else f"{metric} (inc)")
+            gf.dataframe[output_metric] = time_value / factor_dict.factor[metric_time_unit]
+            derived_metrics.append(output_metric)
         else:
             metric_name_and_unit = metric.split("/")
             metric_name = metric_name_and_unit[0]
@@ -191,6 +322,7 @@ def derive_metrics(gf, metrics, inclusive_metrics, exclusive_metrics, device_inf
                 derived_metrics.append(metric + suffix)
             else:
                 matched_metric_name = match_available_metrics(metric_name, inclusive_metrics, exclusive_metrics)[0]
+                clear_internal_values_for_nonaggregable_metric(gf, matched_metric_name)
                 derived_metrics.append(matched_metric_name)
 
     # Update derived metrics to the graph frame
@@ -244,6 +376,7 @@ def emit_warnings(gf, metrics):
 
 def print_tree(gf, metrics, depth=100, format=None, print_sorted=False):
     gf = format_frames(gf, format)
+    print("Metrics: " + " | ".join(metrics))
     print(gf.tree(metric_column=metrics, expand_name=True, depth=depth, render_header=False))
 
     if print_sorted:

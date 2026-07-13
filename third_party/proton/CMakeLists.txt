@@ -2,6 +2,8 @@ project(Proton LANGUAGES CXX)
 
 set(PROTON_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/csrc")
 set(PROTON_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common")
+set(FLAGTREE_PROFILER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/flagtree_profiler")
+set(FLAGTREE_PROFILER_CSRC_DIR "${FLAGTREE_PROFILER_DIR}/csrc")
 
 # ============ Check for includes =============
 if(NOT CUPTI_INCLUDE_DIR)
@@ -39,6 +41,7 @@ function(add_proton_library name)
       "${JSON_INCLUDE_DIR}"
       "${PROTON_COMMON_DIR}/include"
       "${PROTON_SRC_DIR}/include"
+      "${FLAGTREE_PROFILER_CSRC_DIR}/include"
   )
 
   # If HIP is AMD-based
@@ -51,9 +54,12 @@ endfunction()
 # ============ Add subdirectory with actual code that calls add_proton_library ============
 add_subdirectory("${PROTON_COMMON_DIR}")
 add_subdirectory("${PROTON_SRC_DIR}")
+add_subdirectory("${FLAGTREE_PROFILER_CSRC_DIR}")
 
 # ============ Add subdirectory with proton tests ============
-add_subdirectory(test)
+if(TRITON_BUILD_UT)
+  add_subdirectory(test)
+endif()
 
 # ============ Possibly handle macOS specifics ============
 if(APPLE)
@@ -78,6 +84,9 @@ endforeach()
 add_library(proton SHARED ${_proton_obj_sources})
 
 target_link_libraries(proton PRIVATE Python3::Module)
+if(CMAKE_DL_LIBS)
+  target_link_libraries(proton PRIVATE ${CMAKE_DL_LIBS})
+endif()
 # Apply any macOS linker flags or extra link options
 if(PROTON_PYTHON_LDFLAGS)
   target_link_options(proton PRIVATE ${PROTON_PYTHON_LDFLAGS})

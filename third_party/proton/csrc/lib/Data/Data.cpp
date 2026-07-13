@@ -28,6 +28,21 @@ void Data::dump(const std::string &outputFormat) {
   doDump(*out, outputFormatEnum);
 }
 
+void Data::dumpToPath(const std::string &outputPath,
+                      const std::string &outputFormat) {
+  std::shared_lock<std::shared_mutex> lock(mutex);
+  OutputFormat outputFormatEnum = outputFormat.empty()
+                                      ? getDefaultOutputFormat()
+                                      : parseOutputFormat(outputFormat);
+  std::unique_ptr<std::ostream> out;
+  if (outputPath.empty() || outputPath == "-") {
+    out = std::make_unique<std::ostream>(std::cout.rdbuf());
+  } else {
+    out = std::make_unique<std::ofstream>(outputPath);
+  }
+  doDump(*out, outputFormatEnum);
+}
+
 OutputFormat parseOutputFormat(const std::string &outputFormat) {
   if (toLower(outputFormat) == "hatchet") {
     return OutputFormat::Hatchet;

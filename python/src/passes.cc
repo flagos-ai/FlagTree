@@ -15,6 +15,13 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#if FLAGTREE_ENABLE_DEBUGGER
+#include "Debugger/Instrumentation/Passes.h"
+#include "Debugger/Metadata/Passes.h"
+#include "mlir/IR/BuiltinOps.h"
+#include <cstdint>
+#endif
+
 namespace py = pybind11;
 
 void init_triton_analysis(py::module &&m) {
@@ -119,6 +126,69 @@ void init_gluon_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_inliner", gluon::createGluonInline);
 }
 
+#if FLAGTREE_ENABLE_DEBUGGER
+void init_flagtree_debug_passes(py::module &&m) {
+  using namespace mlir;
+  using namespace mlir::flagtree::debugger;
+  m.def("has_debug_collect_markers",
+        [](ModuleOp mod) { return hasDebugCollectMarkers(mod); });
+  m.def("insert_default_debug_collect_markers", [](ModuleOp mod, int32_t level,
+                                                   int32_t addrLevel) {
+    return succeeded(insertDefaultDebugCollectMarkers(mod, level, addrLevel));
+  });
+  m.def("get_debug_tracked_op_table_json",
+        [](ModuleOp mod) { return getDebugTrackedOpTableJson(mod); });
+  m.def("get_debug_kernel_metadata_json",
+        [](ModuleOp mod) { return getDebugKernelMetadataJson(mod); });
+  m.def("get_debug_kernel_id",
+        [](ModuleOp mod) { return getDebugKernelId(mod); });
+  m.def("get_debug_records_per_instance",
+        [](ModuleOp mod) { return getDebugRecordsPerInstance(mod); });
+  m.def("get_debug_record_size",
+        [](ModuleOp mod) { return getDebugRecordSize(mod); });
+  m.def("get_debug_record_layout",
+        [](ModuleOp mod) { return getDebugRecordLayout(mod); });
+  m.def("get_debug_record_plan_json",
+        [](ModuleOp mod) { return getDebugRecordPlanJson(mod); });
+  m.def("get_debug_full_dump_payload_bytes_per_instance", [](ModuleOp mod) {
+    return getDebugFullDumpPayloadBytesPerInstance(mod);
+  });
+  m.def("get_debug_full_dump_plan_json",
+        [](ModuleOp mod) { return getDebugFullDumpPlanJson(mod); });
+  m.def("set_debug_kernel_id_seed", [](ModuleOp mod, const std::string &seed) {
+    setDebugKernelIdSeed(mod, seed);
+  });
+  m.def("set_debug_hidden_arg_abi_enabled", [](ModuleOp mod, bool enabled) {
+    setDebugHiddenArgAbiEnabled(mod, enabled);
+  });
+  m.def("set_debug_addr_level", [](ModuleOp mod, int32_t addrLevel) {
+    setDebugAddrLevel(mod, addrLevel);
+  });
+  m.def("set_debug_timeline_enabled", [](ModuleOp mod, bool enabled) {
+    setDebugTimelineEnabled(mod, enabled);
+  });
+  m.def("set_debug_timeline_only",
+        [](ModuleOp mod, bool enabled) { setDebugTimelineOnly(mod, enabled); });
+  m.def("assign_debug_collect_scope_ids_without_erase", [](ModuleOp mod) {
+    return succeeded(assignDebugCollectScopeIdsWithoutErase(mod));
+  });
+  m.def("assign_debug_op_ids_and_metadata_without_pass_manager",
+        [](ModuleOp mod) {
+          return succeeded(assignDebugOpIdsAndMetadataWithoutPassManager(mod));
+        });
+  m.def("erase_debug_collect_markers",
+        [](ModuleOp mod) { eraseDebugCollectMarkers(mod); });
+  m.def("has_triton_tensor_pointer_types",
+        [](ModuleOp mod) { return hasTritonTensorPointerTypes(mod); });
+  ADD_PASS_WRAPPER_0("add_resolve_debug_scope", createResolveDebugScopePass);
+  ADD_PASS_WRAPPER_0("add_assign_debug_op_id", createAssignOpIdPass);
+  ADD_PASS_WRAPPER_0("add_insert_instrumentation",
+                     createInsertInstrumentationPass);
+  ADD_PASS_WRAPPER_0("add_simplify_record_memref_writes",
+                     createSimplifyRecordMemrefWritesPass);
+}
+#endif
+
 void init_triton_passes(py::module &&m) {
   init_triton_analysis(m.def_submodule("analysis"));
   init_triton_passes_common(m.def_submodule("common"));
@@ -127,4 +197,7 @@ void init_triton_passes(py::module &&m) {
   init_triton_passes_ttgpuir(m.def_submodule("ttgpuir"));
   init_triton_passes_llvmir(m.def_submodule("llvmir"));
   init_gluon_passes(m.def_submodule("gluon"));
+#if FLAGTREE_ENABLE_DEBUGGER
+  init_flagtree_debug_passes(m.def_submodule("flagtree_debug"));
+#endif
 }

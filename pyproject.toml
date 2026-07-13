@@ -38,3 +38,5 @@ ignore = ["E501", "E701", "E731", "E741"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "E402"]
+"third_party/Debugger/test/python/language/test_module_a_*.py" = ["E402"]
+"third_party/Debugger/test/python/runtime/test_module_a_*.py" = ["E402"]

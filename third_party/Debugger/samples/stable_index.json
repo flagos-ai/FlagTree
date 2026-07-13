@@ -1,0 +1,16 @@
+[
+  {
+    "folder": "001_abs",
+    "op": "abs",
+    "tier": "stable",
+    "kind": "direct_case",
+    "status": "passed"
+  },
+  {
+    "folder": "295_softmax",
+    "op": "softmax",
+    "tier": "stable",
+    "kind": "direct_case",
+    "status": "passed"
+  }
+]

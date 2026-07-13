@@ -46,6 +46,9 @@ public:
   /// Dump the data to the given output format.
   void dump(const std::string &outputFormat);
 
+  void dumpToPath(const std::string &outputPath,
+                  const std::string &outputFormat);
+
 protected:
   /// The actual implementation of the dump operation.
   virtual void doDump(std::ostream &os, OutputFormat outputFormat) const = 0;

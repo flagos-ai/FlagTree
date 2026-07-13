@@ -36,6 +36,8 @@ __all__ = [
     "CompilationError",
     "compile",
     "Config",
+    "disable_debug",
+    "enable_debug",
     "constexpr_function",
     "FutureKernel",
     "heuristics",
@@ -80,3 +82,17 @@ def next_power_of_2(n: int):
     n |= n >> 32
     n += 1
     return n
+
+
+def enable_debug(level: int = 1, addr_level: int = 0):
+    """Enable FlagTree debugger instrumentation for subsequently compiled kernels."""
+    from triton.runtime import debugger
+
+    return debugger.activate(level=level, addr_level=addr_level)
+
+
+def disable_debug():
+    """Disable FlagTree debugger instrumentation."""
+    from triton.runtime import debugger
+
+    return debugger.deactivate()

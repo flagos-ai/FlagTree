@@ -1,4 +1,9 @@
 #pragma once
+#if FLAGTREE_ENABLE_DEBUGGER
+#include "Debugger/IR/Dialect.h"
+#include "Debugger/Instrumentation/Passes.h"
+#include "Debugger/Metadata/Passes.h"
+#endif
 #include "ascend/include/AutoBlockify/Passes.h"
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
 #include "ascend/include/TritonToAnnotation/Passes.h"
@@ -76,6 +81,10 @@ void registerTestScopeIdAllocationPass();
 
 inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerAllPasses();
+#if FLAGTREE_ENABLE_DEBUGGER
+  mlir::flagtree::debugger::registerFlagTreeDebuggerInstrumentationPasses();
+  mlir::flagtree::debugger::registerFlagTreeDebuggerMetadataPasses();
+#endif
   mlir::triton::registerTritonPasses();
   mlir::triton::gpu::registerTritonGPUPasses();
   mlir::triton::nvidia_gpu::registerTritonNvidiaGPUPasses();
@@ -167,6 +176,9 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::amdgpu::TritonAMDGPUDialect,
       mlir::triton::proton::ProtonDialect,
       mlir::triton::proton::gpu::ProtonGPUDialect, mlir::ROCDL::ROCDLDialect,
+#if FLAGTREE_ENABLE_DEBUGGER
+      mlir::flagtree::debugger::FlagTreeDebugDialect,
+#endif
       mlir::triton::gluon::GluonDialect,
       mlir::triton::ascend::TritonAscendDialect, mlir::hivm::HIVMDialect,
       mlir::scope::ScopeDialect, mlir::hacc::HACCDialect,

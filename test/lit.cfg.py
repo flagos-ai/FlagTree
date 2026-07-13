@@ -42,7 +42,7 @@ config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
 config.test_exec_root = os.path.join(config.triton_obj_root, 'test')
-config.triton_tools_dir = os.path.join(config.triton_obj_root, 'bin')
+config.triton_tools_dir = getattr(config, 'triton_tools_dir', os.path.join(config.triton_obj_root, 'bin'))
 config.filecheck_dir = os.path.join(config.triton_obj_root, 'bin', 'FileCheck')
 
 # FileCheck -enable-var-scope is enabled by default in MLIR test

@@ -28,6 +28,9 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Transforms/LocationSnapshot.h"
 
+#if FLAGTREE_ENABLE_DEBUGGER
+#include "Debugger/IR/Dialect.h"
+#endif
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Gluon/IR/Dialect.h"
@@ -374,7 +377,12 @@ void init_triton_ir(py::module &&m) {
         ::mlir::triton::instrument::TritonInstrumentDialect, math::MathDialect,
         arith::ArithDialect, scf::SCFDialect, ::mlir::gpu::GPUDialect,
         cf::ControlFlowDialect, LLVM::LLVMDialect, mlir::ub::UBDialect,
-        mlir::triton::gluon::GluonDialect, mlir::triton::tle::TleDialect>();
+        mlir::triton::gluon::GluonDialect, mlir::triton::tle::TleDialect
+#if FLAGTREE_ENABLE_DEBUGGER
+        ,
+        mlir::flagtree::debugger::FlagTreeDebugDialect
+#endif
+        >();
     mlir::LLVM::registerInlinerInterface(registry);
     registerBuiltinDialectTranslation(registry);
     registerLLVMDialectTranslation(registry);
@@ -1859,6 +1867,29 @@ void init_triton_ir(py::module &&m) {
       // Force GPU barrier
       .def("create_barrier",
            [](TritonOpBuilder &self) { self.create<mlir::gpu::BarrierOp>(); })
+#if FLAGTREE_ENABLE_DEBUGGER
+      .def("create_debug_collect_begin",
+           [](TritonOpBuilder &self, int32_t level) {
+             auto attr = self.getBuilder().getI32IntegerAttr(level);
+             mlir::IntegerAttr addrAttr;
+             self.create<mlir::flagtree::debugger::CollectBeginOp>(
+                 attr, addrAttr, /*scope_id=*/nullptr);
+           })
+      .def("create_debug_collect_begin",
+           [](TritonOpBuilder &self, int32_t level, int32_t addrLevel) {
+             auto attr = self.getBuilder().getI32IntegerAttr(level);
+             mlir::IntegerAttr addrAttr;
+             if (addrLevel >= 0)
+               addrAttr = self.getBuilder().getI32IntegerAttr(addrLevel);
+             self.create<mlir::flagtree::debugger::CollectBeginOp>(
+                 attr, addrAttr, /*scope_id=*/nullptr);
+           })
+      .def("create_debug_collect_end",
+           [](TritonOpBuilder &self) {
+             self.create<mlir::flagtree::debugger::CollectEndOp>(
+                 /*scope_id=*/nullptr);
+           })
+#endif
       // Make a block pointer (tensor pointer in Triton IR)
       .def("create_make_block_ptr",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &shape,

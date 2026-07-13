@@ -1,4 +1,9 @@
 #pragma once
+#if FLAGTREE_ENABLE_DEBUGGER
+#include "Debugger/IR/Dialect.h"
+#include "Debugger/Instrumentation/Passes.h"
+#include "Debugger/Metadata/Passes.h"
+#endif
 #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "amd/include/TritonAMDGPUTransforms/Passes.h"
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
@@ -60,6 +65,10 @@ void registerTestScopeIdAllocationPass();
 
 inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerAllPasses();
+#if FLAGTREE_ENABLE_DEBUGGER
+  mlir::flagtree::debugger::registerFlagTreeDebuggerInstrumentationPasses();
+  mlir::flagtree::debugger::registerFlagTreeDebuggerMetadataPasses();
+#endif
   mlir::triton::registerTritonPasses();
   mlir::triton::gpu::registerTritonGPUPasses();
   mlir::triton::nvidia_gpu::registerTritonNvidiaGPUPasses();
@@ -136,6 +145,9 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::amdgpu::TritonAMDGPUDialect,
       mlir::triton::proton::ProtonDialect,
       mlir::triton::proton::gpu::ProtonGPUDialect, mlir::ROCDL::ROCDLDialect,
+#if FLAGTREE_ENABLE_DEBUGGER
+      mlir::flagtree::debugger::FlagTreeDebugDialect,
+#endif
 #ifdef __TLE__
       mlir::triton::gluon::GluonDialect,
       mlir::triton::tle::TleDialect // flagtree tle raw

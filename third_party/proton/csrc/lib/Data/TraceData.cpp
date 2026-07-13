@@ -5,7 +5,11 @@
 
 #include <algorithm>
 #include <limits>
+#include <map>
+#include <optional>
+#include <set>
 #include <stdexcept>
+#include <unordered_map>
 
 using json = nlohmann::json;
 
@@ -236,6 +240,84 @@ void TraceData::clear() {
 
 namespace {
 
+json metricValueToJson(const MetricValueType &value) {
+  return std::visit([](auto &&v) { return json(v); }, value);
+}
+
+std::string flexibleMetricString(const TraceData::Trace::TraceEvent &event,
+                                 const std::string &name) {
+  auto metricIt = event.flexibleMetrics.find(name);
+  if (metricIt == event.flexibleMetrics.end())
+    return "";
+  auto values = metricIt->second.getValues();
+  if (values.empty())
+    return "";
+  return std::visit(
+      [](auto &&v) -> std::string {
+        using ValueType = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<ValueType, std::string>) {
+          return v;
+        } else {
+          return std::to_string(v);
+        }
+      },
+      values[0]);
+}
+
+std::string
+streamThreadName(size_t streamId,
+                 const std::vector<TraceData::Trace::TraceEvent> &events) {
+  for (const auto &event : events) {
+    auto source = flexibleMetricString(event, "vendor.source");
+    auto synthetic =
+        flexibleMetricString(event, "vendor.synthetic_timeline_event");
+    if (!source.empty() && synthetic == "true")
+      return "CANN " + source;
+  }
+  return "stream " + std::to_string(streamId);
+}
+
+void addMetricArgIfPresent(json &args,
+                           const TraceData::Trace::TraceEvent &event,
+                           const std::string &name) {
+  auto metricIt = event.flexibleMetrics.find(name);
+  if (metricIt == event.flexibleMetrics.end())
+    return;
+  auto values = metricIt->second.getValues();
+  if (!values.empty())
+    args[name] = metricValueToJson(values[0]);
+}
+
+std::optional<double>
+flexibleMetricDouble(const TraceData::Trace::TraceEvent &event,
+                     const std::string &name) {
+  auto metricIt = event.flexibleMetrics.find(name);
+  if (metricIt == event.flexibleMetrics.end())
+    return std::nullopt;
+  auto values = metricIt->second.getValues();
+  if (values.empty())
+    return std::nullopt;
+  return std::visit(
+      [](auto &&v) -> std::optional<double> {
+        using ValueType = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<ValueType, std::string>) {
+          return std::nullopt;
+        } else {
+          return static_cast<double>(v);
+        }
+      },
+      values[0]);
+}
+
+std::optional<uint64_t>
+flexibleMetricUint64(const TraceData::Trace::TraceEvent &event,
+                     const std::string &name) {
+  auto value = flexibleMetricDouble(event, name);
+  if (!value.has_value() || value.value() < 0.0)
+    return std::nullopt;
+  return static_cast<uint64_t>(value.value());
+}
+
 // Structure to pair CycleMetric with its context for processing
 struct CycleMetricWithContext {
   std::shared_ptr<CycleMetric> cycleMetric;
@@ -408,43 +490,103 @@ void dumpKernelMetricTrace(
     std::map<size_t, std::vector<TraceData::Trace::TraceEvent>>
         &streamTraceEvents,
     std::ostream &os) {
-  // for each streamId in ascending order, emit one JSON line
-  for (auto const &[streamId, events] : streamTraceEvents) {
-    json object = {{"displayTimeUnit", "us"}, {"traceEvents", json::array()}};
+  json object = {{"displayTimeUnit", "us"}, {"traceEvents", json::array()}};
+  object["traceEvents"].push_back(
+      {{"name", "process_name"},
+       {"ph", "M"},
+       {"pid", 0},
+       {"args", {{"name", "FlagTree Proton CANN"}}}});
+  std::set<size_t> namedStreamIds;
 
+  for (auto const &[streamId, events] : streamTraceEvents) {
     for (auto const &event : events) {
+      auto syntheticTimelineEvent =
+          flexibleMetricString(event, "vendor.synthetic_timeline_event");
+      if (syntheticTimelineEvent == "true")
+        continue;
+
       auto kernelMetrics = std::dynamic_pointer_cast<KernelMetric>(
           event.metrics.at(MetricKind::Kernel));
       uint64_t startTimeNs =
           std::get<uint64_t>(kernelMetrics->getValue(KernelMetric::StartTime));
       uint64_t endTimeNs =
           std::get<uint64_t>(kernelMetrics->getValue(KernelMetric::EndTime));
-      // Convert nanoseconds to microseconds for Chrome trace format
       double ts = static_cast<double>(startTimeNs - minTimeStamp) / 1000;
       double dur = static_cast<double>(endTimeNs - startTimeNs) / 1000;
+      size_t displayStreamId = streamId;
 
-      auto contextId = event.contextId;
-      auto contexts = trace->getContexts(contextId);
+      auto cannTaskStartUs =
+          flexibleMetricDouble(event, "cann.task_start_time_us");
+      auto cannTaskDurationUs =
+          flexibleMetricDouble(event, "cann.op_summary_task_duration_us");
+      if (cannTaskStartUs.has_value() && cannTaskDurationUs.has_value() &&
+          cannTaskDurationUs.value() > 0.0) {
+        ts = cannTaskStartUs.value() -
+             static_cast<double>(minTimeStamp) / 1000.0;
+        dur = cannTaskDurationUs.value();
+        if (auto cannStreamId = flexibleMetricUint64(event, "cann.stream_id"))
+          displayStreamId = cannStreamId.value();
+      }
+
+      if (namedStreamIds.insert(displayStreamId).second) {
+        auto threadName = displayStreamId == streamId
+                              ? streamThreadName(streamId, events)
+                              : "stream " + std::to_string(displayStreamId);
+        object["traceEvents"].push_back({{"name", "thread_name"},
+                                         {"ph", "M"},
+                                         {"pid", 0},
+                                         {"tid", displayStreamId},
+                                         {"args", {{"name", threadName}}}});
+      }
+
+      auto contexts = trace->getContexts(event.contextId);
 
       json element;
-      element["name"] = contexts.back().name;
-      element["cat"] = "kernel";
+      auto vendorSource = flexibleMetricString(event, "vendor.source");
+      auto runtimeOpName = flexibleMetricString(event, "runtime.op_name");
+      element["name"] =
+          runtimeOpName.empty() ? contexts.back().name : runtimeOpName;
+      element["cat"] =
+          vendorSource.empty() ? "kernel" : "cann_runtime:" + vendorSource;
       element["ph"] = "X";
+      element["pid"] = 0;
       element["ts"] = ts;
       element["dur"] = dur;
-      element["tid"] = streamId; // thread id = stream
+      element["tid"] = displayStreamId;
       json callStack = json::array();
       for (auto const &ctx : contexts) {
         callStack.push_back(ctx.name);
       }
       element["args"]["call_stack"] = std::move(callStack);
+      element["args"]["device_id"] =
+          std::get<uint64_t>(kernelMetrics->getValue(KernelMetric::DeviceId));
+      element["args"]["stream_id"] = streamId;
+      element["args"]["display_stream_id"] = displayStreamId;
+      element["args"]["duration_us"] = dur;
+      addMetricArgIfPresent(element["args"], event, "vendor.source");
+      addMetricArgIfPresent(element["args"], event, "cann.task_type");
+      addMetricArgIfPresent(element["args"], event, "cann.task_duration_us");
+      addMetricArgIfPresent(element["args"], event,
+                            "cann.op_summary_task_duration_us");
+      addMetricArgIfPresent(element["args"], event, "cann.task_wait_time_us");
+      addMetricArgIfPresent(element["args"], event, "cann.aicore_time_us");
+      addMetricArgIfPresent(element["args"], event, "cann.aiv_time_us");
+      addMetricArgIfPresent(element["args"], event, "cann.bandwidth_gb_s");
+      addMetricArgIfPresent(element["args"], event, "cann.memory_access_bytes");
+      if (!event.flexibleMetrics.empty()) {
+        element["args"]["metrics"] = json::object();
+        for (const auto &[_, flexibleMetric] : event.flexibleMetrics) {
+          auto values = flexibleMetric.getValues();
+          if (!values.empty())
+            element["args"]["metrics"][flexibleMetric.getValueName(0)] =
+                metricValueToJson(values[0]);
+        }
+      }
 
       object["traceEvents"].push_back(element);
     }
-
-    // one JSON object per line
-    os << object.dump() << "\n";
   }
+  os << object.dump() << "\n";
 }
 } // namespace
 
@@ -492,13 +634,17 @@ void TraceData::dumpChromeTrace(std::ostream &os) const {
   if (hasKernelMetrics) {
     dumpKernelMetricTrace(trace.get(), minTimeStamp, streamTraceEvents, os);
   }
+  if (!hasCycleMetrics && !hasKernelMetrics) {
+    json object = {{"displayTimeUnit", "us"}, {"traceEvents", json::array()}};
+    os << object.dump() << "\n";
+  }
 }
 
 void TraceData::doDump(std::ostream &os, OutputFormat outputFormat) const {
   if (outputFormat == OutputFormat::ChromeTrace) {
     dumpChromeTrace(os);
   } else {
-    std::logic_error("Output format not supported");
+    throw std::logic_error("Output format not supported");
   }
 }
 

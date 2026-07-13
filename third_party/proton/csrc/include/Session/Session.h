@@ -2,21 +2,24 @@
 #define PROTON_SESSION_SESSION_H_
 
 #include "Context/Context.h"
+#include "Data/Artifacts.h"
 #include "Data/Metric.h"
+#include "Profiler/Vendor/Mode.h"
 #include "Utility/Singleton.h"
-#include <algorithm>
 #include <map>
 #include <memory>
-#include <mutex>
-#include <numeric>
+#include <optional>
 #include <set>
+#include <shared_mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace proton {
 
 class Profiler;
 class Data;
+class VendorAdapter;
 
 /// A session is a collection of profiler, context source, and data objects.
 /// There could be multiple sessions in the system, each can correspond to a
@@ -33,18 +36,26 @@ public:
 
   size_t getContextDepth();
 
+  Profiler *getProfiler() const { return profiler; }
+
 private:
   Session(size_t id, const std::string &path, Profiler *profiler,
           std::unique_ptr<ContextSource> contextSource,
-          std::unique_ptr<Data> data)
+          std::unique_ptr<Data> data, const std::string &profilerName,
+          const std::string &contextSourceName, const std::string &dataName,
+          const std::string &mode, const std::string &hookName = {},
+          const VendorAdapter *vendorAdapter = nullptr,
+          VendorProfilePlan vendorPlan = {},
+          std::unique_ptr<Data> timelineData = nullptr)
       : id(id), path(path), profiler(profiler),
-        contextSource(std::move(contextSource)), data(std::move(data)) {}
+        contextSource(std::move(contextSource)), data(std::move(data)),
+        profilerName(profilerName), contextSourceName(contextSourceName),
+        dataName(dataName), mode(mode), hookName(hookName),
+        vendorAdapter(vendorAdapter), vendorPlan(std::move(vendorPlan)),
+        timelineData(std::move(timelineData)) {}
 
   template <typename T> std::vector<T *> getInterfaces() {
     std::vector<T *> interfaces;
-    // There's an implicit order between contextSource and profiler/data. The
-    // latter two rely on the contextSource to obtain the context, so we need to
-    // add the contextSource first.
     if (auto interface = dynamic_cast<T *>(contextSource.get())) {
       interfaces.push_back(interface);
     }
@@ -54,6 +65,11 @@ private:
     if (auto interface = dynamic_cast<T *>(data.get())) {
       interfaces.push_back(interface);
     }
+    if (timelineData) {
+      if (auto interface = dynamic_cast<T *>(timelineData.get())) {
+        interfaces.push_back(interface);
+      }
+    }
     return interfaces;
   }
 
@@ -62,6 +78,14 @@ private:
   Profiler *profiler{};
   std::unique_ptr<ContextSource> contextSource{};
   std::unique_ptr<Data> data{};
+  std::string profilerName{};
+  std::string contextSourceName{};
+  std::string dataName{};
+  std::string mode{};
+  std::string hookName{};
+  const VendorAdapter *vendorAdapter{};
+  VendorProfilePlan vendorPlan{};
+  std::unique_ptr<Data> timelineData{};
 
   friend class SessionManager;
 };
@@ -76,13 +100,14 @@ public:
   size_t addSession(const std::string &path, const std::string &profilerName,
                     const std::string &profilerPath,
                     const std::string &contextSourceName,
-                    const std::string &dataName, const std::string &mode);
+                    const std::string &dataName, const std::string &mode = {},
+                    const std::string &hookName = {});
 
   void finalizeSession(size_t sessionId, const std::string &outputFormat);
 
   void finalizeAllSessions(const std::string &outputFormat);
 
-  void activateSession(size_t sessionId);
+  void activateSession(size_t sesssionId);
 
   void activateAllSessions();
 
@@ -118,14 +143,13 @@ public:
   void setState(std::optional<Context> context);
 
 private:
-  std::unique_ptr<Session> makeSession(size_t id, const std::string &path,
-                                       const std::string &profilerName,
-                                       const std::string &profilerPath,
-                                       const std::string &contextSourceName,
-                                       const std::string &dataName,
-                                       const std::string &mode);
+  std::unique_ptr<Session>
+  makeSession(size_t id, const std::string &path,
+              const std::string &profilerName, const std::string &profilerPath,
+              const std::string &contextSourceName, const std::string &dataName,
+              const std::string &mode, const std::string &hookName);
 
-  void activateSessionImpl(size_t sessionId);
+  void activateSessionImpl(size_t sesssionId);
 
   void deActivateSessionImpl(size_t sessionId);
 
@@ -141,78 +165,37 @@ private:
 
   void removeSession(size_t sessionId);
 
-  template <typename Interface, typename Counter, bool isRegistering>
-  void updateInterfaceCount(size_t sessionId, Counter &interfaceCounts) {
-    auto interfaces = sessions[sessionId]->getInterfaces<Interface>();
-    for (auto *interface : interfaces) {
-      auto it = std::find_if(
-          interfaceCounts.begin(), interfaceCounts.end(),
-          [interface](const auto &pair) { return pair.first == interface; });
-
-      if (it != interfaceCounts.end()) {
-        if constexpr (isRegistering) {
-          ++it->second;
-        } else {
-          --it->second;
-          if (it->second == 0) {
-            interfaceCounts.erase(it);
-          }
-        }
-      } else if constexpr (isRegistering) {
-        interfaceCounts.emplace_back(interface, 1);
-      }
-    }
-  }
-
   template <typename Interface, typename Counter>
   void registerInterface(size_t sessionId, Counter &interfaceCounts) {
-    updateInterfaceCount<Interface, Counter, true>(sessionId, interfaceCounts);
+    auto interfaces = sessions[sessionId]->getInterfaces<Interface>();
+    for (auto *interface : interfaces) {
+      interfaceCounts[interface] += 1;
+    }
   }
 
   template <typename Interface, typename Counter>
   void unregisterInterface(size_t sessionId, Counter &interfaceCounts) {
-    updateInterfaceCount<Interface, Counter, false>(sessionId, interfaceCounts);
-  }
-
-  template <typename Counter, typename FnT>
-  void executeInterface(Counter &interfaceCounts, FnT &&fn,
-                        bool isReversed = false) {
-    auto process = [&](auto &entry) {
-      if (entry.second > 0) {
-        fn(entry.first);
-      }
-    };
-
-    if (isReversed) {
-      for (auto it = interfaceCounts.rbegin(); it != interfaceCounts.rend();
-           ++it) {
-        process(*it);
-      }
-    } else {
-      for (auto &entry : interfaceCounts) {
-        process(entry);
-      }
+    auto interfaces = sessions[sessionId]->getInterfaces<Interface>();
+    for (auto *interface : interfaces) {
+      interfaceCounts[interface] -= 1;
     }
   }
 
-  mutable std::mutex mutex;
+  mutable std::shared_mutex mutex;
 
   size_t nextSessionId{};
   // path -> session id
   std::map<std::string, size_t> sessionPaths;
   // session id -> active
-  std::map<size_t, bool> sessionActive;
+  std::map<size_t, bool> activeSessions;
   // session id -> session
   std::map<size_t, std::unique_ptr<Session>> sessions;
-  // {scope, active count}
-  std::vector<std::pair<ScopeInterface *, size_t>> scopeInterfaceCounts;
-  // {op, active count}
-  std::vector<std::pair<OpInterface *, size_t>> opInterfaceCounts;
-  // {instrumentation, active count}
-  std::vector<std::pair<InstrumentationInterface *, size_t>>
-      instrumentationInterfaceCounts;
-  // {context source, active count}
-  std::vector<std::pair<ContextSource *, size_t>> contextSourceCounts;
+  // scope -> active count
+  std::map<ScopeInterface *, size_t> scopeInterfaceCounts;
+  // op -> active count
+  std::map<OpInterface *, size_t> opInterfaceCounts;
+  std::map<InstrumentationInterface *, size_t> instrumentationInterfaceCounts;
+  std::map<ContextSource *, size_t> contextSourceCounts;
 };
 
 } // namespace proton

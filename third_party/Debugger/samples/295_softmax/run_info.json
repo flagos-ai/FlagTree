@@ -1,0 +1,8 @@
+{
+  "case_id": "dim1",
+  "debug_json_count": 1,
+  "debug_txt_count": 1,
+  "description": "torch.nn.functional.softmax dim=1",
+  "op": "softmax",
+  "status": "passed"
+}

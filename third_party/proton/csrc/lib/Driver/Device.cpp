@@ -1,4 +1,5 @@
 #include "Device.h"
+#include "Driver/Ascend/AscendApi.h"
 #include "Driver/GPU/CudaApi.h"
 #include "Driver/GPU/HipApi.h"
 
@@ -13,6 +14,9 @@ Device getDevice(DeviceType type, uint64_t index) {
   if (type == DeviceType::HIP) {
     return hip::getDevice(index);
   }
+  if (type == DeviceType::ASCEND) {
+    return ascend::getDevice(index);
+  }
   throw std::runtime_error("DeviceType not supported");
 }
 
@@ -21,6 +25,8 @@ const std::string getDeviceTypeString(DeviceType type) {
     return DeviceTraits<DeviceType::CUDA>::name;
   } else if (type == DeviceType::HIP) {
     return DeviceTraits<DeviceType::HIP>::name;
+  } else if (type == DeviceType::ASCEND) {
+    return DeviceTraits<DeviceType::ASCEND>::name;
   }
   throw std::runtime_error("DeviceType not supported");
 }
