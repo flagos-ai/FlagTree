@@ -6,8 +6,8 @@ from typing import Any, Callable, TYPE_CHECKING, Union, List, Dict
 from triton.flagtree_spec import spec_func
 
 # flagtree backend path specialization
-spec_func("apply_with_path")
-spec_func("_tuple_create")
+apply_with_path = spec_func("apply_with_path")
+_tuple_create = spec_func("_tuple_create")
 
 if TYPE_CHECKING:
     from .language import core
