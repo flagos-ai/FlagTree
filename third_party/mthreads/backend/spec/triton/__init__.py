@@ -6,6 +6,7 @@ FLAGTREE_BACKEND=mthreads. Functions defined here are callable
 via flagtree_spec.spec("function_name", ...).
 """
 
+
 def init_language():
     """Add mthreads-specific symbols to triton.language.
 

@@ -139,6 +139,7 @@ def get_primitive_bitwidth(dtype: str) -> int:
 def is_namedtuple(val):
     return isinstance(val, type) and issubclass(val, tuple) and hasattr(val, "_fields")
 
+
 # flagtree backend path specialization
 apply_with_path = spec_func("apply_with_path")
 _tuple_create = spec_func("_tuple_create")
