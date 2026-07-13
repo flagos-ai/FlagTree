@@ -5,10 +5,6 @@ from typing import Any, Callable, TYPE_CHECKING, Union, List, Dict
 
 from triton.flagtree_spec import spec_func
 
-# flagtree backend path specialization
-apply_with_path = spec_func("apply_with_path")
-_tuple_create = spec_func("_tuple_create")
-
 if TYPE_CHECKING:
     from .language import core
     IterableType = Union[list[Any], tuple[Any, ...], core.tuple, core.tuple_type]
@@ -142,3 +138,7 @@ def get_primitive_bitwidth(dtype: str) -> int:
 
 def is_namedtuple(val):
     return isinstance(val, type) and issubclass(val, tuple) and hasattr(val, "_fields")
+
+# flagtree backend path specialization
+apply_with_path = spec_func("apply_with_path")
+_tuple_create = spec_func("_tuple_create")

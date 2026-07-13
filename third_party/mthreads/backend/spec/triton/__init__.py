@@ -6,13 +6,6 @@ FLAGTREE_BACKEND=mthreads. Functions defined here are callable
 via flagtree_spec.spec("function_name", ...).
 """
 
-# Imported at module level so the JIT code generator can resolve
-# the annotation name from fn.__globals__.  The module is loaded
-# dynamically by flagtree_spec AFTER triton.language is ready, so
-# this is safe against circular imports.
-from triton.language.core import constexpr
-
-
 def init_language():
     """Add mthreads-specific symbols to triton.language.
 
@@ -20,9 +13,13 @@ def init_language():
     triton.language is fully initialized, via:
         spec("init_language")
     """
+    # Delay importing language.core until Triton's language module is ready.
+    # Keep constexpr global so the JIT can resolve the annotation by name.
+    global constexpr
     from triton.flagtree_spec import bind_language_extension_symbols_to_tl
     from triton.runtime.jit import jit as _jit
     from triton.language.core import (
+        constexpr,
         builtin as _builtin,
         static_assert as _static_assert,
         _unwrap_if_constexpr,
