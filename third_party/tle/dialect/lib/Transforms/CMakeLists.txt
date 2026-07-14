@@ -28,6 +28,7 @@ add_triton_library(TritonTLETransforms
   RemoveRedundantCopy.cpp
   DSLRegionInline.cpp
   TleUtility.cpp
+  TleAddDistributedParams.cpp
 
   DEPENDS
   TritonTLETransformsIncGen

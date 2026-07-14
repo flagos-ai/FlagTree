@@ -97,7 +97,7 @@ Attribute getIdentitiesAttr(MLIRContext *context,
     }
   }
 
-  assert(false && "unexpected data type for reduceOp.");
+  llvm_unreachable("unexpected data type for reduceOp.");
 }
 
 bool isI8OrI1ElementTensor(Type type) {

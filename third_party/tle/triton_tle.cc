@@ -660,6 +660,8 @@ void init_triton_tle_ir(py::module &&m) {
 }
 
 void init_triton_tle_passes(py::module &&m) {
+  ADD_PASS_WRAPPER_0("add_params_for_distribution",
+                     tle::createTritonTleAddDistributedParams);
   ADD_PASS_WRAPPER_0("add_early_assign_memory_space",
                      tle::createTritonTleEarlyAssignMemorySpace);
   ADD_PASS_WRAPPER_0("add_select_encodings",

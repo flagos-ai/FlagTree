@@ -656,6 +656,7 @@ class CodeGenerator(ast.NodeVisitor):
         for arg_name, arg_value in zip(arg_names, arg_values):
             self._maybe_set_loc_to_name(arg_value, arg_name)
             self.set_value(arg_name, arg_value)
+            print(f"{arg_name} : {arg_value}")
         insert_pt = self.builder.get_insertion_block()
         self.builder.set_insertion_point_to_start(entry)
         # visit function body

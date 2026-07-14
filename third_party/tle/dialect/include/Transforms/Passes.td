@@ -397,4 +397,30 @@ def TleRemoveRedundantCopy
 
 def TleDSLRegionInline : Pass<"tle-dslregion-inline", "mlir::ModuleOp"> {}
 
+def TritonTleAddDistributedParams
+    : Pass<"triton-tle-add-distributed-params", "mlir::ModuleOp"> {
+
+  let summary = "Add distributed runtime parameters to Triton kernel functions";
+
+  let description = [{
+    This pass updates Triton kernel function signatures by inserting two
+    runtime parameters at the beginning of each kernel function:
+
+      * device_comm_ptr
+      * device_mem_ptr
+
+    These parameters provide device-side communication and runtime state
+    required by distributed TLE operations.
+
+    All call sites and function argument uses are updated accordingly.
+  }];
+
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::triton::TritonDialect"
+  ];
+}
+
+
 #endif // TRITON_TLE_PASSES
