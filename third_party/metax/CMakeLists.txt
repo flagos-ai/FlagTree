@@ -10,7 +10,14 @@ else()
 endif()
 
 if(TRITON_BUILD_PYTHON_MODULE)
+  if(BUILD_MCTLE)
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/plugin)
+    include_directories(${CMAKE_CURRENT_BINARY_DIR}/plugin)
+    add_subdirectory(plugin/mctle)
+  endif()
+
   if(FLAGTREE_PLUGIN)
+    include_directories(plugin)
     add_subdirectory(plugin)
   else()
     find_library(BackendTritonPluginLib
