@@ -15,26 +15,21 @@ namespace ttng = mlir::triton::nvidia_gpu;
 #define GEN_PASS_DEF_TRITONTLEADDDISTRIBUTEDPARAMS
 #include "tle/dialect/include/Transforms/Passes.h.inc"
 
-
-namespace{
+namespace {
 
 struct TritonTleAddDistributedParams
     : public impl::TritonTleAddDistributedParamsBase<
-        TritonTleAddDistributedParams> {
+          TritonTleAddDistributedParams> {
   void runOnOperation() override {
     ModuleOp m = getOperation();
     OpBuilder builder(m.getContext());
 
     m->walk([&, this](triton::FuncOp func) {
-        auto type = func.getFunctionType();
-        llvm::errs() << type << "\n";
+      auto type = func.getFunctionType();
+      llvm::errs() << type << "\n";
     });
-
   }
-
 };
 
-
-
-}
-} // mlir::triton::tle
+} // namespace
+} // namespace mlir::triton::tle
