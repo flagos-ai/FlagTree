@@ -27,11 +27,6 @@ from . import language
 from . import testing
 from . import tools
 
-# flagtree backend language extension
-from .flagtree_spec import spec
-
-spec("init_language")
-
 must_use_result = language.core.must_use_result
 
 __all__ = [

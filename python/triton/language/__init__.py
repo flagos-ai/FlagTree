@@ -1,10 +1,13 @@
 """isort:skip_file"""
 # Import order is significant here.
 
-# flagtree backend path specialization
-from triton.flagtree_spec import spec_path
+from triton.flagtree_spec import spec_path, spec
 
+# flagtree backend path specialization
 spec_path(__path__)
+
+# flagtree backend specialization
+spec("language_extend_globals", globals())
 
 from . import math
 from . import extra
@@ -115,7 +118,6 @@ from .core import (
     store,
     sub,
     tensor,
-    to_tensor,
     trans,
     tuple,
     tuple_type,
@@ -270,7 +272,6 @@ __all__ = [
     "swizzle2d",
     "target_info",
     "tensor",
-    "to_tensor",
     "topk",
     "trans",
     "tuple",
