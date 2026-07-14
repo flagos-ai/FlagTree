@@ -235,7 +235,7 @@ bool canUseBufferOps(Value ptr,
 
   LDBG("Buffer op checks for: " << ptr);
   // flagtree tle:
-  // tt.load(smem_ptr + offsets) matches the buffer op rewrite pattern,
+  // tt.store(smem_ptr + offsets) matches the buffer op rewrite pattern,
   // check the ptr's address space to avoid incorrectly matching a
   // shared-memory write as a buffer store.
   if (auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType()))
