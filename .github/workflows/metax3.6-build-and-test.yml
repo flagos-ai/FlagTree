@@ -95,3 +95,16 @@ jobs:
                 not test_mma_remark and \
                 not test_remark_vectorization and \
                 not test_passing_tuple_to_make_tensor_descriptor"
+
+      - name: FlagTree TLE Tile Unit Test on Metax
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source ~/env.sh
+          cd python/test/tle/unit
+          python3 -m pytest -s \
+            test_extract_tile_dynamic_index.py \
+            test_extract_tile_static_index.py \
+            test_insert_tile_dynamic_index.py \
+            test_insert_tile_static_index.py

@@ -17,11 +17,15 @@
 #include "triton/Tools/LinearLayout.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Support/Casting.h"
 
 namespace mlir {
 
 using namespace triton;
 using namespace triton::gpu;
+#ifdef __MCTLE__
+using namespace triton::mctle;
+#endif
 
 SmallVector<unsigned> ReduceOpHelper::getOrderWithAxisAtBeginning() {
   auto order = toLinearEncoding(srcTy).getOrder();
@@ -853,6 +857,110 @@ bool GatherLoweringHelper::isWarpLocal() {
   return srcLayout.sublayout(kLane, otherDims) ==
          idxLayout.sublayout(kLane, otherDims);
 }
+
+#ifdef __MCTLE__
+SmallVector<int64_t> getTileShape(Operation *op) {
+  SmallVector<int64_t> tileShape;
+  if (auto extractTileOp = dyn_cast<mctle::ExtractTileOp>(op)) {
+    auto attr =
+        dyn_cast<DenseI64ArrayAttr>(extractTileOp->getAttr("tile_shape"));
+    llvm::append_range(tileShape, attr.asArrayRef());
+  } else if (auto insertTileOp = dyn_cast<mctle::InsertTileOp>(op)) {
+    auto tileTy = cast<RankedTensorType>(insertTileOp.getTile().getType());
+    llvm::append_range(tileShape, tileTy.getShape());
+  } else {
+    assert(false && "GetTileShape only support ExtractTileOp or InsertTileOp!");
+  }
+  return tileShape;
+}
+
+std::optional<int64_t> getStaticIndex(Value index) {
+  if (auto c = index.getDefiningOp<arith::ConstantOp>())
+    return cast<IntegerAttr>(c.getValue()).getInt();
+  return std::nullopt;
+}
+
+bool isCTATileAligned(RankedTensorType srcTy, ArrayRef<int64_t> tileShape,
+                      int64_t linearIndex) {
+  auto srcShape = srcTy.getShape();
+  auto ctaTile = getShapePerCTATile(srcTy);
+  int rank = srcShape.size();
+  SmallVector<int64_t> logicalGrid(rank), tileCoords(rank);
+  for (int i = 0; i < rank; ++i)
+    logicalGrid[i] = srcShape[i] / tileShape[i];
+
+  int64_t remain = linearIndex;
+  for (int i = rank - 1; i >= 0; --i) {
+    tileCoords[i] = remain % logicalGrid[i];
+    remain /= logicalGrid[i];
+  }
+
+  for (int i = 0; i < rank; ++i) {
+    int64_t off = tileCoords[i] * tileShape[i];
+    if (tileShape[i] % static_cast<int64_t>(ctaTile[i]) != 0)
+      return false;
+    if (off % static_cast<int64_t>(ctaTile[i]) != 0)
+      return false;
+  }
+
+  return true;
+}
+
+ExtractTileLoweringHelper::ExtractTileLoweringHelper(
+    ExtractTileOp extractTileOp)
+    : op(extractTileOp) {}
+
+unsigned ExtractTileLoweringHelper::getScratchSizeInBytes() {
+  if (isStatic()) {
+    return 0;
+  }
+  auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
+  auto dstTy = cast<RankedTensorType>(op.getType());
+  auto dstShape = dstTy.getShape();
+  auto elemTy = srcTy.getElementType();
+  int64_t elemBytes = ceil<unsigned>(srcTy.getElementTypeBitWidth(), 8);
+
+  int64_t totalDstElems = 1;
+  for (auto dim : dstShape)
+    totalDstElems *= dim;
+  return static_cast<uint64_t>(totalDstElems * elemBytes);
+}
+
+bool ExtractTileLoweringHelper::isStatic() {
+  auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
+  auto staticIndex = getStaticIndex(op.getIndex());
+  auto tileShape = getTileShape(op.getOperation());
+  return staticIndex.has_value() &&
+         isCTATileAligned(srcTy, tileShape, staticIndex.value());
+}
+
+InsertTileLoweringHelper::InsertTileLoweringHelper(InsertTileOp insertTileOp)
+    : op(insertTileOp) {}
+
+unsigned InsertTileLoweringHelper::getScratchSizeInBytes() {
+  if (isStatic()) {
+    return 0;
+  }
+
+  auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
+  auto elemTy = srcTy.getElementType();
+  int64_t elemBytes = ceil<unsigned>(srcTy.getElementTypeBitWidth(), 8);
+
+  int64_t totalDstElems = 1;
+  auto tileShape = getTileShape(op.getOperation());
+  for (auto dim : tileShape)
+    totalDstElems *= dim;
+  return static_cast<uint64_t>(totalDstElems * elemBytes);
+}
+
+bool InsertTileLoweringHelper::isStatic() {
+  auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
+  auto staticIndex = getStaticIndex(op.getIndex());
+  auto tileShape = getTileShape(op.getOperation());
+  return staticIndex.has_value() &&
+         isCTATileAligned(srcTy, tileShape, staticIndex.value());
+}
+#endif
 
 unsigned getNumScratchElements(ArrayRef<unsigned> shape) {
   if (shape.empty())
