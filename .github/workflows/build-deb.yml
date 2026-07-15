@@ -1,13 +1,7 @@
 name: Build Debian Packages
 
-# Packaging is a release artifact, not a PR gate: the full-source wheel
-# build costs ~45 min per run and its ENOSPC flakiness was blocking
-# unrelated PRs. Build on release tags or on demand (workflow_dispatch).
-#
-# FlagTree release tags are unprefixed (0.6.0, 0.6.0rc1); v-prefixed
-# tags stopped after v0.3.0. Backend-variant tags (0.6.0+mthreads3.6)
-# are filtered out at the job level — those releases are not the
-# nvidia package.
+# Release packaging only (no PR trigger). Release tags are unprefixed
+# since 0.3.0, e.g. 0.6.0 / 0.6.0rc1.
 on:
   push:
     tags:
@@ -31,11 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      # The wheel build peaks close to the standard runner's ~14 GB of
-      # free disk (ENOSPC seen on the RPM twin of this workflow);
-      # dropping unused preinstalled toolchains reclaims ~25-30 GB.
-      # Guarded to ephemeral GitHub-hosted VMs only, so a future move to
-      # a self-hosted runner can never wipe a real machine.
+      # The wheel build peaks near the runner's free-disk limit.
+      # Ephemeral GitHub-hosted VMs only — never a self-hosted machine.
       - name: Free runner disk space
         run: |
           if [ "${RUNNER_ENVIRONMENT}" != "github-hosted" ]; then
