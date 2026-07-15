@@ -6,5 +6,5 @@ from .language import language_extend_globals
 
 def triton_extend_globals(globals_dict):
     # NOTE: Must use absolute path import.
-    from triton.compiler.compiler import max_shared_mem
-    globals_dict["max_shared_mem"] = max_shared_mem
+    from triton.compiler.compiler import max_shared_mem  # Triton 3.7
+    globals_dict["max_shared_mem"] = max_shared_mem  # Triton 3.7

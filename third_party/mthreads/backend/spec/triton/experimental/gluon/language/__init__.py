@@ -81,7 +81,7 @@ from ._core import (
     static_range,
     store,
     sub,
-    barrier,
+    barrier,  # Triton 3.7: thread_barrier() => barrier(*, cluster=False)
     to_linear_layout,
     to_tensor,
     warp_specialize,
