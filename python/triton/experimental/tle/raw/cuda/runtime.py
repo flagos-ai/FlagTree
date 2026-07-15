@@ -72,7 +72,8 @@ class CUDAJITFunction(object):
             extra={"source_file": self.source_file},
         )
 
-    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = ""):
+    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
+                              extern_func_name: str = ""):
         return builder.create_tle_raw_region_by_llvm_func(
             llvm,
             self.region_dialect,
@@ -80,6 +81,7 @@ class CUDAJITFunction(object):
             handles,
             alias_indices,
             hint,
+            extern_func_name,
         )
 
     def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):

@@ -3,9 +3,9 @@ from triton.language.core import builtin, constexpr as tl_constexpr, tensor
 from triton.experimental.tle.language.gpu import buffered_tensor
 
 
-def _resolve_alias_indices(func, llvm, handles, output_indices, _semantic):
+def _resolve_alias_indices(func, llvm, handles, output_indices, extern_func_name, _semantic):
     if output_indices is None:
-        return _semantic.builder.compute_alias_operand_indices(llvm, handles)
+        return _semantic.builder.compute_alias_operand_indices(llvm, handles, extern_func_name)
     return output_indices
 
 
@@ -52,8 +52,10 @@ def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic):
     else:
         context = _semantic.builder.get_context()
         llvm = func.make_llvm(context)
-        alias_indices = _resolve_alias_indices(func, llvm, handles, output_indices, _semantic)
-        dsl_region_op = func.create_region_by_llvm(_semantic.builder, llvm, handles, alias_indices, hint)
+        alias_indices = _resolve_alias_indices(func, llvm, handles, output_indices, func.extern_func_name or "",
+                                               _semantic)
+        dsl_region_op = func.create_region_by_llvm(_semantic.builder, llvm, handles, alias_indices, hint,
+                                                   func.extern_func_name or "")
     return _wrap_results(args, alias_indices, dsl_region_op, smem=smem)
 
 

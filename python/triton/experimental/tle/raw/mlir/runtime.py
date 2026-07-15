@@ -99,7 +99,8 @@ class MLIRJITFunction(object):
             hint,
         )
 
-    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = ""):
+    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
+                              extern_func_name: str = ""):
         return builder.create_tle_raw_region_by_llvm_func(
             llvm,
             self.region_dialect,
@@ -107,6 +108,7 @@ class MLIRJITFunction(object):
             handles,
             alias_indices,
             hint,
+            extern_func_name,
         )
 
     @cached_property

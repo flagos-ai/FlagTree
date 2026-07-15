@@ -62,13 +62,16 @@ namespace tle = triton::tle;
 
 extern std::vector<int64_t>
 computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
-                           const std::vector<Value> &args);
+                           const std::vector<Value> &args,
+                           std::string_view funcName);
 
-extern tle::DSLRegionOp createTLERawRegionByLLVMFunc(
-    TritonOpBuilder &self, std::string_view text,
-    std::string_view regionDialect, std::string_view argDialect,
-    const std::vector<Value> &args,
-    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint);
+extern tle::DSLRegionOp
+createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             std::string_view regionDialect,
+                             std::string_view argDialect,
+                             const std::vector<Value> &args,
+                             const std::vector<int64_t> &aliasOperandIndices,
+                             std::string_view hint, std::string_view funcName);
 
 extern tle::DSLRegionOp createTLERawRegionDeferred(
     TritonOpBuilder &self, std::string_view sourceId,
@@ -697,12 +700,13 @@ void init_tle_raw_ir(py::module &&m) {
       .def("dump", &tle::YieldOp::dump);
 
   auto *builder_cls = ir::getBuilderClass();
-  builder_cls->def("compute_alias_operand_indices",
-                   &computeAliasOperandIndices);
-  builder_cls->def(
-      "create_tle_raw_region_by_llvm_func", &createTLERawRegionByLLVMFunc,
-      py::arg("text"), py::arg("region_dialect"), py::arg("arg_dialect"),
-      py::arg("args"), py::arg("output_operand_indices"), py::arg("hint") = "");
+  builder_cls->def("compute_alias_operand_indices", &computeAliasOperandIndices,
+                   py::arg("text"), py::arg("args"), py::arg("func_name") = "");
+  builder_cls->def("create_tle_raw_region_by_llvm_func",
+                   &createTLERawRegionByLLVMFunc, py::arg("text"),
+                   py::arg("region_dialect"), py::arg("arg_dialect"),
+                   py::arg("args"), py::arg("output_operand_indices"),
+                   py::arg("hint") = "", py::arg("func_name") = "");
   builder_cls->def(
       "create_tle_raw_region_deferred", &createTLERawRegionDeferred,
       py::arg("source_id"), py::arg("region_dialect"), py::arg("arg_dialect"),
