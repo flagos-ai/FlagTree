@@ -1,22 +1,17 @@
 name: Build Debian Packages
 
+# Packaging is a release artifact, not a PR gate: the full-source wheel
+# build costs ~45 min per run and its ENOSPC flakiness was blocking
+# unrelated PRs. Build on release tags or on demand (workflow_dispatch).
 on:
   push:
     tags:
       - 'v*'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'packaging/debian/**'
-      - 'python/**'
-      - 'include/**'
-      - 'lib/**'
-      - 'cmake/**'
-      - 'bin/**'
-      - 'CMakeLists.txt'
-      - 'pyproject.toml'
-      - '.github/workflows/build-deb.yml'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-deb:
@@ -28,6 +23,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
+      # The wheel build peaks close to the standard runner's ~14 GB of
+      # free disk (ENOSPC seen on the RPM twin of this workflow);
+      # dropping unused preinstalled toolchains reclaims ~25-30 GB.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
