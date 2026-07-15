@@ -126,10 +126,12 @@ class XPUOptions:
     isCloseDtypeConvert: bool = False
     isCloseInterleave: bool = False
     isCloseMemoryAsync: bool = True
+    isAutoCoreTiling: bool = bool(int(os.environ.get("TRITONXPU_AUTO_CORE_TILING", 0)))
 
     enable_fp_fusion: bool = False
     allow_fp8e4nv: bool = True
     allow_fp8e4b15: bool = False
+    supported_fp8_dtypes: Tuple[str] = ()
     default_dot_input_precision: str = "tf32"
     allowed_dot_input_precisions: Tuple[str] = ("ieee", "tf32")
 
@@ -221,7 +223,20 @@ class XPUBackend(BaseBackend):
     def make_ttxir(mod, metadata, opt):
         metadata["xpu_arch"] = opt.arch
         metadata["is_sdnn"] = opt.is_sdnn or xpu.is_sdnn_kernel(mod)
-        metadata["tensor_args"] = xpu.get_tensor_args(mod, []) if metadata["is_sdnn"] is True else []
+        # tensor_args drives the launch-time scaled-buffer quantization (findmax +
+        # cast_te) in device/xpu3/launch.cpp, which replaces the input pointer with
+        # a fresh quantized buffer and APPENDS a scale param. That is only correct
+        # when the kernel was actually compiled to consume those scale params, i.e.
+        # when TritonConvertTypePass ran in TO_F16 (XMLIR_MATMUL_FAST_MODE=1) or
+        # w4a8 mode and appended the matching max_a_ptr/max_b_ptr arguments (see
+        # ConvertType.cpp convertBF16ToF16/convertI8ToI4). For the default TO_F32
+        # path (plain bf16 dot) no scale param is added, so a non-empty tensor_args
+        # makes launch.cpp append a spurious scale param, shifting gridX/Y/Z and
+        # handing the kernel a wild quantized buffer base -> illegal memory access.
+        # Gate on the same condition that selects the quantizing mode.
+        _needs_scale_args = metadata["use_int4_w4a8"] == True or int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0)) == 1
+        metadata["tensor_args"] = xpu.get_tensor_args(mod, []) if (metadata["is_sdnn"] is True
+                                                                   and _needs_scale_args) else []
         metadata["shared"] = (-1)  # TODO: invalid value, just to keep CompiledKernel _init_handles() success
 
         max_buffer_size = metadata["buffer_size_limit"]
@@ -300,8 +315,8 @@ class XPUBackend(BaseBackend):
                 xpu.passes.ttxpuir.add_tritonxpu_dtype_convert_pass(pm, opt.arch)
             if not metadata["isCloseCoreTiling"]:
                 xpu.passes.ttxpuir.add_tritonxpu_core_tiling_pass(
-                    pm, 0, XPUBackend.buffer_len, core_num,
-                    groups_per_cluster) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                    pm, 0, XPUBackend.buffer_len, core_num, groups_per_cluster,
+                    metadata["isAutoCoreTiling"]) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
             # xpu.passes.ttxpuir.add_tritonxpu_lm_to_sm_pass(pm)
             passes.common.add_cse(pm)
             if not metadata["isCloseOffsetAnalysis"]:
@@ -427,8 +442,15 @@ class XPUBackend(BaseBackend):
     @staticmethod
     def make_llir(mod, metadata, opt):
         XPUBackend.make_ewtable(mod, metadata, opt)
-        metadata["tensor_args"] = xpu.get_tensor_args(mod,
-                                                      metadata["tensor_args"]) if metadata["is_sdnn"] is True else []
+        # Gate tensor_args on the same condition that selects the quantizing
+        # ConvertType mode (see make_ttxir). Only TO_F16 (XMLIR_MATMUL_FAST_MODE=1)
+        # or w4a8 kernels actually consume the launch-appended scale param; for
+        # the default TO_F32 bf16 dot a non-empty tensor_args makes launch.cpp
+        # append a spurious scale param and hand the kernel a wild quantized
+        # buffer base -> illegal memory access.
+        _needs_scale_args = metadata["use_int4_w4a8"] == True or int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0)) == 1
+        metadata["tensor_args"] = xpu.get_tensor_args(mod, metadata["tensor_args"]) if (metadata["is_sdnn"] is True
+                                                                                        and _needs_scale_args) else []
 
         # TritonXPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)

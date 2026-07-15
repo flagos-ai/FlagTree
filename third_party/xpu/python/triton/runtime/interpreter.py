@@ -441,16 +441,17 @@ class InterpreterBuilder:
     # the internal triton's (offset_state, sync_mode) pair.  In the real
     # compilation path (ir.cc) it is converted to an mlir::StringAttr on the
     # LoadOp/StoreOp.  In interpreter mode it is unused and ignored.
-    def create_load(self, ptr, _0, _1, is_volatile, flagtree_hints=None):
+    def create_load(self, ptr, _0, _1, is_volatile, flagtree_hints=None, offset_state=None, sync_mode=None):
         mask = TensorHandle(np.ones_like(ptr.data, dtype=bool), tl.int1)
         other = None
         return self.create_masked_load(ptr, mask, other, _0, _1, is_volatile)
 
-    def create_store(self, ptr, val, _0, _1):
+    def create_store(self, ptr, val, _0, _1, offset_state=None, sync_mode=None):
         mask = TensorHandle(np.ones_like(ptr.data, dtype=bool), tl.int1)
         return self.create_masked_store(ptr, val, mask, None, None)
 
-    def create_masked_load(self, ptrs, mask, other, cache_modifier, eviction_policy, is_volatile, flagtree_hints=None):
+    def create_masked_load(self, ptrs, mask, other, cache_modifier, eviction_policy, is_volatile, flagtree_hints=None,
+                           offset_state=None, sync_mode=None):
         dtype_tt = ptrs.get_element_ty()
         dtype_np = _get_np_dtype(dtype_tt)
         if other is None:
@@ -458,7 +459,8 @@ class InterpreterBuilder:
         ret = _interpreter.load(ptrs.data, mask.data, other.data, dtype_np)
         return TensorHandle(ret, dtype_tt)
 
-    def create_masked_store(self, ptrs, value, mask, cache_modifier, eviction_policy):
+    def create_masked_store(self, ptrs, value, mask, cache_modifier, eviction_policy, offset_state=None,
+                            sync_mode=None):
         return _interpreter.store(ptrs.data, value.data, mask.data)
 
     # casting ops

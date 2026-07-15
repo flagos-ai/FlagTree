@@ -129,9 +129,11 @@ void init_triton_xpu_passes_transform(py::module &&m) {
 
   m.def("add_tritonxpu_core_tiling_pass",
         [](mlir::PassManager &self, bool dump_flag, uint32_t buffer_size,
-           uint32_t core_num, uint32_t groups_per_cluster) {
+           uint32_t core_num, uint32_t groups_per_cluster,
+           bool triton_auto_core_tiling) {
           self.addPass(mlir::triton::xpu::createTritonXPUCoreTiling(
-              {dump_flag, buffer_size, core_num, groups_per_cluster}));
+              {dump_flag, buffer_size, core_num, groups_per_cluster,
+               triton_auto_core_tiling}));
         });
 
   m.def("add_tritonxpu_vectorize_pass",

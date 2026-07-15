@@ -2109,7 +2109,7 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
 
 @builtin
 def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", cache_modifier="", eviction_policy="",
-         volatile=False, flagtree_hints=None, _semantic=None):
+         volatile=False, flagtree_hints=None, offset_state_policy="", mem_sync_mode="", _semantic=None):
     """
     Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
 
@@ -2154,6 +2154,13 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     :type volatile: bool, optional
     :param flagtree_hints: flagtree hints
     :type flagtree_hints: str, optional
+    :param offset_state_policy: XPU-only DMA offset-continuity hint, one of
+        {"", "empty", "unknown", "discrete_same", "continuous", "discrete",
+        "locally_continuous"}. "" lets the XPU offset-analysis pass infer it.
+    :type offset_state_policy: str, optional
+    :param mem_sync_mode: XPU-only memory sync hint, one of {"", "sync",
+        "async"}. "" defaults to sync.
+    :type mem_sync_mode: str, optional
     """
     # `mask` and `other` can be constexpr
     mask = _unwrap_if_constexpr(mask)
@@ -2167,8 +2174,10 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
     volatile = _unwrap_if_constexpr(volatile)
     flagtree_hints = _unwrap_if_constexpr(flagtree_hints)  # flagtree hints
+    offset_state_policy = _unwrap_if_constexpr(offset_state_policy)  # XPU DMA hint
+    mem_sync_mode = _unwrap_if_constexpr(mem_sync_mode)  # XPU sync hint
     return _semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,
-                          volatile, flagtree_hints)
+                          volatile, flagtree_hints, offset_state_policy, mem_sync_mode)
 
 
 @builtin
@@ -2187,7 +2196,8 @@ def store_tensor_descriptor(desc: tensor_descriptor_base, offsets: Sequence[cons
 
 @_tensor_member_fn
 @builtin
-def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None):
+def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", offset_state_policy="",
+          mem_sync_mode="", _semantic=None):
     """
     Store a tensor of data into memory locations defined by `pointer`.
 
@@ -2225,6 +2235,13 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
         stands for cache write-through, see `cache operator <https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#cache-operators>`_ for more details.
     :param eviction_policy: changes eviction policy in NVIDIA PTX
     :type eviction_policy: str, optional, should be one of {"", "evict_first", "evict_last"}
+    :param offset_state_policy: XPU-only DMA offset-continuity hint, one of
+        {"", "empty", "unknown", "discrete_same", "continuous", "discrete",
+        "locally_continuous"}. "" lets the XPU offset-analysis pass infer it.
+    :type offset_state_policy: str, optional
+    :param mem_sync_mode: XPU-only memory sync hint, one of {"", "sync",
+        "async"}. "" defaults to sync.
+    :type mem_sync_mode: str, optional
     """
     # `value` can be constexpr
     value = _semantic.to_tensor(value)
@@ -2233,7 +2250,10 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
         mask = _semantic.to_tensor(mask)
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
-    return _semantic.store(pointer, value, mask, boundary_check, cache_modifier, eviction_policy)
+    offset_state_policy = _unwrap_if_constexpr(offset_state_policy)  # XPU DMA hint
+    mem_sync_mode = _unwrap_if_constexpr(mem_sync_mode)  # XPU sync hint
+    return _semantic.store(pointer, value, mask, boundary_check, cache_modifier, eviction_policy, offset_state_policy,
+                           mem_sync_mode)
 
 
 @builtin

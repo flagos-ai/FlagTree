@@ -50,6 +50,25 @@ namespace tt = triton;
 namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 
+// FlagTree XPU: attach the XPU memory-access hints (offset_state_policy /
+// mem_sync_mode) as generic discardable attributes on a freshly created
+// load/store op. These attributes carry the internal-Triton XPU performance
+// hints (continuous/discrete DMA, sync/async) WITHOUT adding any attribute to
+// the shared main-tree TritonOps.td/TritonAttrDefs.td (Q0a: no new main-tree
+// attr). The XPU CreateGM2LM pass reads `xpu.offset_state_policy` (already) and
+// `xpu.mem_sync_mode` (added) and forwards them onto the XPU-local dialect ops.
+// Non-XPU backends never look at these attributes, and this file is the XPU
+// vendored ir.cc, so the main-tree ir.cc stays untouched.
+static void setXpuMemHints(mlir::Operation *op, mlir::MLIRContext *ctx,
+                           const std::optional<std::string> &offsetStatePolicy,
+                           const std::optional<std::string> &memSyncMode) {
+  if (offsetStatePolicy && !offsetStatePolicy->empty())
+    op->setAttr("xpu.offset_state_policy",
+                mlir::StringAttr::get(ctx, *offsetStatePolicy));
+  if (memSyncMode && !memSyncMode->empty())
+    op->setAttr("xpu.mem_sync_mode", mlir::StringAttr::get(ctx, *memSyncMode));
+}
+
 llvm::raw_fd_ostream &mlir_dumps() {
   std::error_code EC;
   static llvm::raw_fd_ostream S(::triton::tools::getStrEnv("MLIR_DUMP_PATH"),
@@ -1472,81 +1491,118 @@ void init_triton_ir(py::module &&m) {
           "create_load",
           [](TritonOpBuilder &self, Value &ptrs, CacheModifier cacheModifier,
              EvictionPolicy evictionPolicy, bool isVolatile,
-             std::optional<std::string> flagtree_hints) -> Value {
+             std::optional<std::string> flagtree_hints,
+             std::optional<std::string> offset_state_policy,
+             std::optional<std::string> mem_sync_mode) -> Value {
             auto hintsAttr =
                 flagtree_hints
                     ? mlir::StringAttr::get(self.getContext(), *flagtree_hints)
                     : mlir::StringAttr::get(self.getContext(), "");
-            return self.create<LoadOp>(ptrs, cacheModifier, evictionPolicy,
-                                       isVolatile, hintsAttr);
+            auto op = self.create<LoadOp>(ptrs, cacheModifier, evictionPolicy,
+                                          isVolatile, hintsAttr);
+            setXpuMemHints(op, self.getContext(), offset_state_policy,
+                           mem_sync_mode);
+            return op;
           },
           py::arg("ptrs"), py::arg("cacheModifier"), py::arg("evictionPolicy"),
-          py::arg("isVolatile"), py::arg("flagtree_hints") = std::nullopt)
+          py::arg("isVolatile"), py::arg("flagtree_hints") = std::nullopt,
+          py::arg("offset_state_policy") = std::nullopt,
+          py::arg("mem_sync_mode") = std::nullopt)
       .def(
           "create_store",
           [](TritonOpBuilder &self, Value &ptrs, Value &value,
-             CacheModifier cacheModifier,
-             EvictionPolicy evictionPolicy) -> void {
-            self.create<StoreOp>(ptrs, value, cacheModifier, evictionPolicy);
+             CacheModifier cacheModifier, EvictionPolicy evictionPolicy,
+             std::optional<std::string> offset_state_policy,
+             std::optional<std::string> mem_sync_mode) -> void {
+            auto op = self.create<StoreOp>(ptrs, value, cacheModifier,
+                                           evictionPolicy);
+            setXpuMemHints(op, self.getContext(), offset_state_policy,
+                           mem_sync_mode);
           },
           py::arg("ptrs"), py::arg("value"), py::arg("cacheModifier"),
-          py::arg("evictionPolicy"))
+          py::arg("evictionPolicy"),
+          py::arg("offset_state_policy") = std::nullopt,
+          py::arg("mem_sync_mode") = std::nullopt)
       .def(
           "create_tensor_pointer_load",
           [](TritonOpBuilder &self, Value &ptr,
              std::vector<int32_t> &boundaryCheck,
              std::optional<PaddingOption> paddingOption,
              CacheModifier cacheModifier, EvictionPolicy evictionPolicy,
-             bool isVolatile,
-             std::optional<std::string> flagtree_hints) -> Value {
+             bool isVolatile, std::optional<std::string> flagtree_hints,
+             std::optional<std::string> offset_state_policy,
+             std::optional<std::string> mem_sync_mode) -> Value {
             auto hintsAttr =
                 flagtree_hints
                     ? mlir::StringAttr::get(self.getContext(), *flagtree_hints)
                     : mlir::StringAttr::get(self.getContext(), "");
-            return self.create<LoadOp>(ptr, boundaryCheck, paddingOption,
-                                       cacheModifier, evictionPolicy,
-                                       isVolatile, hintsAttr);
+            auto op = self.create<LoadOp>(ptr, boundaryCheck, paddingOption,
+                                          cacheModifier, evictionPolicy,
+                                          isVolatile, hintsAttr);
+            setXpuMemHints(op, self.getContext(), offset_state_policy,
+                           mem_sync_mode);
+            return op;
           },
           py::arg("ptr"), py::arg("boundaryCheck"), py::arg("paddingOption"),
           py::arg("cacheModifier"), py::arg("evictionPolicy"),
-          py::arg("isVolatile"), py::arg("flagtree_hints") = std::nullopt)
+          py::arg("isVolatile"), py::arg("flagtree_hints") = std::nullopt,
+          py::arg("offset_state_policy") = std::nullopt,
+          py::arg("mem_sync_mode") = std::nullopt)
       .def(
           "create_tensor_pointer_store",
           [](TritonOpBuilder &self, Value &ptr, Value &val,
              std::vector<int32_t> &boundaryCheck, CacheModifier cacheModifier,
-             EvictionPolicy evictionPolicy) -> void {
-            self.create<StoreOp>(ptr, val, boundaryCheck, cacheModifier,
-                                 evictionPolicy);
+             EvictionPolicy evictionPolicy,
+             std::optional<std::string> offset_state_policy,
+             std::optional<std::string> mem_sync_mode) -> void {
+            auto op = self.create<StoreOp>(ptr, val, boundaryCheck,
+                                           cacheModifier, evictionPolicy);
+            setXpuMemHints(op, self.getContext(), offset_state_policy,
+                           mem_sync_mode);
           },
           py::arg("ptr"), py::arg("val"), py::arg("boundaryCheck"),
-          py::arg("cacheModifier"), py::arg("evictionPolicy"))
+          py::arg("cacheModifier"), py::arg("evictionPolicy"),
+          py::arg("offset_state_policy") = std::nullopt,
+          py::arg("mem_sync_mode") = std::nullopt)
       .def(
           "create_masked_load",
           [](TritonOpBuilder &self, Value &ptrs, Value &mask,
              std::optional<Value> &other, CacheModifier cacheModifier,
              EvictionPolicy evictionPolicy, bool isVolatile,
-             std::optional<std::string> flagtree_hints) -> Value {
+             std::optional<std::string> flagtree_hints,
+             std::optional<std::string> offset_state_policy,
+             std::optional<std::string> mem_sync_mode) -> Value {
             auto hintsAttr =
                 flagtree_hints
                     ? mlir::StringAttr::get(self.getContext(), *flagtree_hints)
                     : mlir::StringAttr::get(self.getContext(), "");
-            return self.create<LoadOp>(ptrs, mask, other.value_or(Value()),
-                                       cacheModifier, evictionPolicy,
-                                       isVolatile, hintsAttr);
+            auto op = self.create<LoadOp>(ptrs, mask, other.value_or(Value()),
+                                          cacheModifier, evictionPolicy,
+                                          isVolatile, hintsAttr);
+            setXpuMemHints(op, self.getContext(), offset_state_policy,
+                           mem_sync_mode);
+            return op;
           },
           py::arg("ptrs"), py::arg("mask"), py::arg("other"),
           py::arg("cacheModifier"), py::arg("evictionPolicy"),
-          py::arg("isVolatile"), py::arg("flagtree_hints") = std::nullopt)
+          py::arg("isVolatile"), py::arg("flagtree_hints") = std::nullopt,
+          py::arg("offset_state_policy") = std::nullopt,
+          py::arg("mem_sync_mode") = std::nullopt)
       .def(
           "create_masked_store",
           [](TritonOpBuilder &self, Value &ptrs, Value &val, Value &mask,
-             CacheModifier cacheModifier,
-             EvictionPolicy evictionPolicy) -> void {
-            self.create<StoreOp>(ptrs, val, mask, cacheModifier,
-                                 evictionPolicy);
+             CacheModifier cacheModifier, EvictionPolicy evictionPolicy,
+             std::optional<std::string> offset_state_policy,
+             std::optional<std::string> mem_sync_mode) -> void {
+            auto op = self.create<StoreOp>(ptrs, val, mask, cacheModifier,
+                                           evictionPolicy);
+            setXpuMemHints(op, self.getContext(), offset_state_policy,
+                           mem_sync_mode);
           },
           py::arg("ptrs"), py::arg("val"), py::arg("mask"),
-          py::arg("cacheModifier"), py::arg("evictionPolicy"))
+          py::arg("cacheModifier"), py::arg("evictionPolicy"),
+          py::arg("offset_state_policy") = std::nullopt,
+          py::arg("mem_sync_mode") = std::nullopt)
       .def("create_tensor_descriptor_type",
            [](TritonOpBuilder &self, Type blockTy, bool isSigned) -> Type {
              auto ctx = self.getContext();

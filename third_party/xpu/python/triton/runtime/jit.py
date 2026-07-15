@@ -669,7 +669,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         Precompute as much as possible.
         """
         from ..compiler import CompiledKernel, compile, ASTSource, make_backend
-        target = driver.active.get_current_target()
+        target = driver.active.get_current_target_inside()
         backend = make_backend(target)
         self.CompiledKernel = CompiledKernel
         self.compile = compile
