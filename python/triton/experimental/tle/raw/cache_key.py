@@ -94,6 +94,16 @@ def compute_tle_raw_source_cache_key(
     return hasher.hexdigest()
 
 
+def compute_tle_raw_host_cache_key(source: Union[str, Path], arch: str) -> str:
+    """Hash CUDA host source files."""
+    source_path = Path(source).resolve()
+    hasher = hashlib.sha256()
+    hasher.update(_read_source(source_path).encode())
+    hasher.update(str(arch).encode())
+
+    return hasher.hexdigest()
+
+
 def bind_tle_raw_source_cache_key(edsl: Any, **dialect_kwargs) -> None:
     """Attach __triton_tle_raw_source_cache_key__ to a @dialect edsl object."""
     if getattr(edsl, TLE_RAW_SOURCE_CACHE_KEY_ATTR, None) is not None:

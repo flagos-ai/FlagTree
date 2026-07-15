@@ -6,16 +6,22 @@ import struct
 from pathlib import Path
 import subprocess
 from typing import Any, Final
+import ctypes
+from triton import knobs
 
 import torch
 
 from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
 from triton.experimental.tle.raw.source_store import register_source
+from triton.experimental.tle.raw.nvshmem.utils import get_nvshmem_home
 
 # TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 CLANG = os.getenv("CLANG", "clang")
 CLANG_FLAGS = shlex.split(os.getenv("CLANG_FLAGS", ""))
+
+_cumodule_hook_installed = False
+_nvshmemx_cumodule_init = None
 
 
 def _sanitize_clang_ir(ir: str) -> str:
@@ -46,10 +52,43 @@ def _get_cuda_gpu_arch() -> str:
     return f"--cuda-gpu-arch=sm_{major}{minor}"
 
 
+def _get_nvshmemx_cumodule_init():
+    global _nvshmemx_cumodule_init
+    if _nvshmemx_cumodule_init is not None:
+        return _nvshmemx_cumodule_init
+
+    nvshmem_home = get_nvshmem_home()
+    library = ctypes.CDLL(str(Path(nvshmem_home) / "lib" / "libnvshmem_host.so"))
+    fn = library.nvshmemx_cumodule_init
+    fn.argtypes = [ctypes.c_void_p]
+    fn.restype = ctypes.c_int
+    _nvshmemx_cumodule_init = fn
+    return fn
+
+
+def _install_cumodule_hook():
+    global _cumodule_hook_installed
+    if _cumodule_hook_installed:
+        return
+
+    def hook(*args, **kwargs):
+        key = kwargs["key"]
+        function = kwargs["fn"].jit_function
+        device = kwargs["compile"]["device"]
+        kernel = function.device_caches[device][0].get(key)
+        assert kernel is not None
+        kernel._init_handles()
+        result = _get_nvshmemx_cumodule_init()(ctypes.c_void_p(kernel.module))
+        assert result == 0, f"nvshmemx_cumodule_init failed: {result}"
+
+    knobs.runtime.jit_post_compile_hook = hook
+    _cumodule_hook_installed = True
+
+
 class CUDAJITFunction(object):
 
     def __init__(self, fn: Any, file: Path, *args, **kwargs) -> None:
-        super().__init__(*args, **{k: v for k, v in kwargs.items() if k not in ("extern_func_name", "deferred")})
+        super().__init__()
         self.fn: Final[Any] = fn
         self.code: Final[str] = file.read_text()
         self.region_dialect: Final[str] = "cuda"
@@ -59,6 +98,9 @@ class CUDAJITFunction(object):
         self.extern_func_name = kwargs.get("extern_func_name", None)
         self.deferred: Final[bool] = kwargs.get("deferred", False)
         self.__triton_builtin__: Final[bool] = True
+
+        if "nvshmem" in self.code:
+            _install_cumodule_hook()
 
     def register_pending_source(self, *, hint: str = "") -> str:
         if not self.extern_func_name:
