@@ -29,7 +29,7 @@
 %define __requires_exclude libcuda\\.so|libnvidia.*
 
 Name:           python3-flagtree-%{flagtree_backend}
-Version:        0.5.0
+Version:        0.6.0
 Release:        1%{?dist}
 Summary:        FlagTree compiler with %{flagtree_backend} backend
 License:        MIT AND Apache-2.0 WITH LLVM-exception AND BSD-3-Clause AND LicenseRef-NVIDIA-CUDA-EULA
@@ -102,6 +102,14 @@ if [ -z "$WHEEL" ]; then
     exit 1
 fi
 
+# Guard against Version drifting from the wheel again (0.5.0 rpms used
+# to ship a 0.6.0 wheel).
+WHEEL_VER=$(basename "$WHEEL" | cut -d- -f2)
+if [ "$WHEEL_VER" != "%{version}" ]; then
+    echo "ERROR: wheel version $WHEEL_VER != spec Version %{version}" >&2
+    exit 1
+fi
+
 PYDIR=%{buildroot}%{python3_sitearch}
 mkdir -p "$PYDIR" %{buildroot}%{_bindir}
 
@@ -134,6 +142,10 @@ install -D -m 0644 %{SOURCE0} %{buildroot}%{_licensedir}/%{name}/LICENSE
 %{_bindir}/proton*
 
 %changelog
+* Wed Jul 15 2026 FlagOS Contributors <contact@flagos.io> - 0.6.0-1
+- Sync package version with the flagtree wheel (0.6.0).
+- Fail the install step when the wheel version does not match the spec.
+
 * Mon Apr 27 2026 FlagOS Contributors <contact@flagos.io> - 0.5.0-1
 - Initial RPM packaging.
 - Package the %{flagtree_backend} backend variant.
