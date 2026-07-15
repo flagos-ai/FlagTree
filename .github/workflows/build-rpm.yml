@@ -31,9 +31,15 @@ jobs:
     steps:
       # The wheel build peaks close to the standard runner's ~14 GB of
       # free disk (ENOSPC seen in both matrix targets); dropping unused
-      # preinstalled toolchains reclaims ~25-30 GB.
+      # preinstalled toolchains reclaims ~25-30 GB. Guarded to ephemeral
+      # GitHub-hosted VMs only, so a future move to a self-hosted runner
+      # can never wipe a real machine.
       - name: Free runner disk space
         run: |
+          if [ "${RUNNER_ENVIRONMENT}" != "github-hosted" ]; then
+            echo "Not a GitHub-hosted runner; skipping disk cleanup."
+            exit 0
+          fi
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force
           df -h /
