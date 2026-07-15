@@ -86,6 +86,12 @@ RUN rpmbuild -ba /root/rpmbuild/SPECS/flagtree.spec \
         --define "wheel_dir /wheels" && \
     ls -lh /root/rpmbuild/RPMS/x86_64/
 
+# Smoke test: install the freshly built rpm and import the package.
+# Catches the "installs fine, fails at import" class (missing libs,
+# bad rpath, glibc mismatch) that rpmbuild alone cannot see.
+RUN dnf install -y /root/rpmbuild/RPMS/x86_64/python3-flagtree-*.x86_64.rpm && \
+    python3 -c "import triton; print(getattr(triton, '__version__', 'import ok'))"
+
 # ---------- Stage 3: extract just the rpms ----------
 FROM scratch AS rpm-output
 COPY --from=rpm-assembler /root/rpmbuild/RPMS/x86_64/python3-flagtree-*.rpm /output/
