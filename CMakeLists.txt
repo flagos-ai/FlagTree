@@ -113,9 +113,38 @@ include(AddMLIR)
 # Utilities
 function(add_triton_object name)
   cmake_parse_arguments(ARG "" "" "DEPENDS;LINK_LIBS" ${ARGN})
+
+  # FLAGTREE SPEC SOURCE OVERRIDE:
+  # For a per-backend whole-file replacement of a main-tree source, drop a copy
+  # (derived from the FlagTree source file + backend edits) at
+  #   third_party/${FLAGTREE_BACKEND}/backend/spec/<path-relative-to-project>/<file>
+  # This lets the backend compile its own version of a shared .cpp WITHOUT
+  # editing the pristine main-tree file (mirrors set_flagtree_backend_td for .td).
+  # EXISTS-gated: no effect for backends / files without an override file.
+  set(_flagtree_srcs "")
+  foreach(_src ${ARG_UNPARSED_ARGUMENTS})
+    set(_resolved "${_src}")
+    if(FLAGTREE_BACKEND)
+      if(IS_ABSOLUTE "${_src}")
+        set(_abs "${_src}")
+      else()
+        set(_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
+      endif()
+      file(RELATIVE_PATH _rel "${PROJECT_SOURCE_DIR}" "${_abs}")
+      if(NOT _rel MATCHES "^\\.\\.")
+        set(_spec "${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/backend/spec/${_rel}")
+        if(EXISTS "${_spec}")
+          set(_resolved "${_spec}")
+          message(STATUS "[FlagTree spec] source override: ${_rel} -> ${_spec}")
+        endif()
+      endif()
+    endif()
+    list(APPEND _flagtree_srcs "${_resolved}")
+  endforeach()
+
   add_library(${name} OBJECT)
   target_sources(${name}
-    PRIVATE ${ARG_UNPARSED_ARGUMENTS}
+    PRIVATE ${_flagtree_srcs}
     INTERFACE $<TARGET_OBJECTS:${name}>
   )
 
