@@ -23,11 +23,13 @@ struct TritonXPUCoreTilingPass
 
   TritonXPUCoreTilingPass() = default;
   TritonXPUCoreTilingPass(bool dumpFlag, unsigned bufferSize, unsigned coreNum,
-                          unsigned groupsPerCluster) {
+                          unsigned groupsPerCluster,
+                          bool tritonAutoCoreTiling) {
     this->dumpFlag = dumpFlag;
     this->bufferSize = bufferSize;
     this->coreNum = coreNum;
     this->groupsPerCluster = groupsPerCluster;
+    this->tritonAutoCoreTiling = tritonAutoCoreTiling;
   }
 
   inline bool isAxisNone(triton::ReduceOp &reduceOp) {
@@ -714,6 +716,53 @@ struct TritonXPUCoreTilingPass
     });
   }
 
+  void computeAutoGroupsPerCluster(ModuleOp &mod) {
+    int64_t maxNumElements = 0;
+    unsigned maxN = 0;
+    unsigned maxElemBytes = 0;
+
+    auto updateMaxTensor = [&](Type type) {
+      auto tensorType = dyn_cast<RankedTensorType>(type);
+      if (!tensorType || tensorType.getShape().size() != 2)
+        return;
+
+      auto elemTy = tensorType.getElementType();
+      if (!elemTy.isIntOrFloat())
+        return;
+
+      auto shape = tensorType.getShape();
+      if (shape[0] <= 0 || shape[1] <= 0)
+        return;
+
+      int64_t numElements = shape[0] * shape[1];
+      if (numElements <= maxNumElements)
+        return;
+
+      maxNumElements = numElements;
+      maxN = shape[1];
+      maxElemBytes = std::max<unsigned>(elemTy.getIntOrFloatBitWidth() / 8, 1);
+    };
+
+    mod.walk([&](Operation *op) {
+      if (isa<triton::xpu::ConvertLayoutOp, triton::ExpandDimsOp,
+              triton::xpu::BroadcastOp>(op))
+        return;
+      for (auto result : op->getResults())
+        updateMaxTensor(result.getType());
+      for (auto operand : op->getOperands())
+        updateMaxTensor(operand.getType());
+    });
+
+    if (!maxNumElements)
+      return;
+
+    unsigned elemNumPerBuffer =
+        std::max<unsigned>(this->bufferSize / maxElemBytes, 1);
+    unsigned ngroupnum = roundupPow2(ceil<unsigned>(maxN, elemNumPerBuffer));
+    ngroupnum = std::min<unsigned>(ngroupnum, this->coreNum);
+    this->groupsPerCluster = this->coreNum / ngroupnum;
+  }
+
   void addTensorColSizeForMemoryOp(ModuleOp &mod, MLIRContext *context) {
     mod.walk([&](triton::xpu::GM2LMOp gm2lmOp) {
       auto resTy = cast<RankedTensorType>(gm2lmOp.getResult().getType());
@@ -789,6 +838,12 @@ struct TritonXPUCoreTilingPass
   void runOnOperation() override {
     mlir::MLIRContext *context = &getContext();
     mlir::ModuleOp mod = getOperation();
+
+    if (this->tritonAutoCoreTiling) {
+      computeAutoGroupsPerCluster(mod);
+      LLVM_DEBUG(llvm::dbgs() << "CoreTiling AutoTiling: "
+                              << this->groupsPerCluster << "\n");
+    }
 
     // Step 1. Check If Can Be Optimized
     if (!canBeOptimized(mod) && this->groupsPerCluster == 1)

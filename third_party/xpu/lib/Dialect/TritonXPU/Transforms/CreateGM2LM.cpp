@@ -38,6 +38,20 @@ static int getXPUOffsetStatePolicy(Operation *op) {
   return -2;
 }
 
+// FlagTree XPU: read the caller-supplied `xpu.mem_sync_mode` generic
+// discardable attribute (set by the XPU vendored ir.cc from the tl.load/
+// tl.store `mem_sync_mode` kwarg). Defaults to SYNC when absent/unrecognized.
+// This keeps the shared main-tree op definitions untouched (Q0a) while
+// forwarding the internal-Triton XPU sync hint onto the XPU-local dialect ops.
+static mlir::triton::MemorySyncMode getXPUMemSyncMode(Operation *op) {
+  auto attr = op->getAttr("xpu.mem_sync_mode");
+  if (auto strAttr = mlir::dyn_cast_or_null<StringAttr>(attr)) {
+    if (strAttr.getValue() == "async")
+      return mlir::triton::MemorySyncMode::ASYNC;
+  }
+  return mlir::triton::MemorySyncMode::SYNC;
+}
+
 bool replaceAtomicOp(mlir::ModuleOp m) {
   bool getAtomicRMWOp = false;
 
@@ -138,6 +152,13 @@ Attribute getOneCoreGEncoding(Operation *op, ArrayRef<int64_t> shape) {
   return newEncoding;
 }
 
+Attribute getOneCoreSliceParentEncoding(Operation *op, ArrayRef<int64_t> shape,
+                                        unsigned dim) {
+  llvm::SmallVector<int64_t> parentShape(shape.begin(), shape.end());
+  parentShape.insert(parentShape.begin() + dim, 1);
+  return getOneCoreGEncoding(op, parentShape);
+}
+
 bool atomicSimulation(mlir::ModuleOp m) {
 
   // Step 1. Replace AtomicRMWOp with GM2LMOp + Arith.xxx + LM2GMOp
@@ -168,7 +189,8 @@ bool atomicSimulation(mlir::ModuleOp m) {
                     sliceEncoding.getParent());
 
             if (parentEncoding) {
-              auto newParentEncoding = getOneCoreGEncoding(op, shape);
+              auto newParentEncoding = getOneCoreSliceParentEncoding(
+                  op, shape, sliceEncoding.getDim());
               newEncoding = triton::gpu::SliceEncodingAttr::get(
                   op->getContext(), sliceEncoding.getDim(),
                   cast<triton::gpu::DistributedEncodingTrait>(
@@ -355,7 +377,8 @@ void oneCoreCalculationEncodingSet(mlir::ModuleOp m) {
               sliceEncoding.getParent());
 
           if (parentEncoding) {
-            auto newParentEncoding = getOneCoreGEncoding(op, shape);
+            auto newParentEncoding = getOneCoreSliceParentEncoding(
+                op, shape, sliceEncoding.getDim());
             newEncoding = triton::gpu::SliceEncodingAttr::get(
                 op->getContext(), sliceEncoding.getDim(),
                 cast<triton::gpu::DistributedEncodingTrait>(
@@ -516,7 +539,7 @@ struct TritonXPUCreateGM2LMPass
       auto newLoadOp = builder.create<triton::xpu::LoadOp>(
           loc, loadOp.getType(), loadOp.getPtr(), loadOp.getMask(),
           loadOp.getOther(), Value(), 1, -1, false, false, false,
-          mlir::triton::MemorySyncMode::SYNC);
+          getXPUMemSyncMode(loadOp));
       loadOp.replaceAllUsesWith(newLoadOp.getResult());
       opToErase.insert(loadOp);
       offsetStateMap[newLoadOp] = getXPUOffsetStatePolicy(loadOp);
@@ -527,7 +550,7 @@ struct TritonXPUCreateGM2LMPass
       OpBuilder builder(storeOp);
       auto newStoreOp = builder.create<triton::xpu::StoreOp>(
           loc, storeOp.getPtr(), storeOp.getValue(), storeOp.getMask(), Value(),
-          -1, false, Dtype::UNKNOWN, mlir::triton::MemorySyncMode::SYNC);
+          -1, false, Dtype::UNKNOWN, getXPUMemSyncMode(storeOp));
       opToErase.insert(storeOp);
       offsetStateMap[newStoreOp] = getXPUOffsetStatePolicy(storeOp);
     });

@@ -205,7 +205,10 @@ def TritonXPUCoreTiling : Pass<"tritonxpu-core-tiling", "mlir::ModuleOp"> {
             "core num">,
     Option<"groupsPerCluster", "groups-per-cluster",
             "uint32_t", /*default*/"1",
-            "groups per cluster">
+            "groups per cluster">,
+    Option<"tritonAutoCoreTiling", "triton-auto-core-tiling",
+            "bool", /*default*/"0",
+            "auto compute groupsPerCluster from largest 2d tensor">
   ];
 }
 
