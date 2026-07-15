@@ -31,6 +31,7 @@ class LoopUnrollPass : public impl::TritonLoopUnrollBase<LoopUnrollPass> {
     return 1;
   }
 
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
   // Returns true if unrolling by the given factor will fully eliminate the
   // loop.
   bool willFullyUnroll(scf::ForOp forOp, int64_t unrollFactor) {
@@ -45,7 +46,10 @@ class LoopUnrollPass : public impl::TritonLoopUnrollBase<LoopUnrollPass> {
     if (step <= 0 || ub <= lb)
       return false;
     int64_t tripCount = llvm::divideCeil(ub - lb, step);
-    return tripCount > 0 && tripCount <= unrollFactor;
+    // The main loop after partial unroll has tripCount / unrollFactor
+    // iterations. If that is <= 1, MLIR will eliminate it by inlining the
+    // body, so from our perspective the main loop is fully unrolled.
+    return tripCount > 0 && tripCount / unrollFactor <= 1;
   }
 
   bool hasReorderAttr(scf::ForOp forOp) {
@@ -96,7 +100,7 @@ class LoopUnrollPass : public impl::TritonLoopUnrollBase<LoopUnrollPass> {
 
     for (Operation *load : loads) {
       loadCluster.insert(load);
-      collectDepsInBlock(load, block, loadCluster); // * 收集load元素的依赖
+      collectDepsInBlock(load, block, loadCluster);
     }
 
     LDBG("Full-unroll reorder: load cluster size: "
@@ -122,10 +126,13 @@ class LoopUnrollPass : public impl::TritonLoopUnrollBase<LoopUnrollPass> {
 
     LDBG("Full-unroll reorder complete");
   }
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
 
   const char *loopUnrollFactorAttrName = "tt.loop_unroll_factor";
   const char *pipelineStagesAttrName = "tt.num_stages";
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
   const char *reorderAttrName = "tt.reorder";
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
 
 public:
   void runOnOperation() override {
@@ -140,10 +147,13 @@ public:
     auto ctx = getOperation()->getContext();
     for (auto loop : loops) {
       auto unrollFactor = getUnrollFactorOrDefault(loop);
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
       bool needsReorder = hasReorderAttr(loop);
       bool fullyUnrolls = willFullyUnroll(loop, unrollFactor);
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
 
       loop->removeAttr(loopUnrollFactorAttrName);
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
       if (needsReorder)
         loop->removeAttr(reorderAttrName);
 
@@ -151,12 +161,14 @@ public:
       // if the loop gets fully eliminated.
       Block *parentBlock = loop->getBlock();
       Operation *opBeforeLoop = loop->getPrevNode(); // may be nullptr
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
 
       LDBG("Unrolling loop by " << unrollFactor << " times\n" << loop);
       auto resultLoops = loopUnrollByFactor(loop, unrollFactor);
 
       if (failed(resultLoops))
         continue;
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
       if (needsReorder) {
         if (fullyUnrolls) {
           // Full unroll: the loop has been completely eliminated.
@@ -181,6 +193,7 @@ public:
           }
         }
       }
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
 
       // Do not pipeline the epilog loop.
       if (succeeded(resultLoops) && resultLoops->epilogueLoopOp) {
