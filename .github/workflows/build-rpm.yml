@@ -3,10 +3,16 @@ name: Build RPM Packages
 # Packaging is a release artifact, not a PR gate: the full-source wheel
 # build costs ~45 min x 2 runners and its ENOSPC flakiness was blocking
 # unrelated PRs. Build on release tags or on demand (workflow_dispatch).
+#
+# FlagTree release tags are unprefixed (0.6.0, 0.6.0rc1); v-prefixed
+# tags stopped after v0.3.0. Backend-variant tags (0.6.0+mthreads3.6)
+# are filtered out at the job level — '+' cannot appear in an RPM
+# Version and those releases are not the nvidia package.
 on:
   push:
     tags:
-      - 'v*'
+      - '[0-9]*'
+      - 'v[0-9]*'
   workflow_dispatch:
 
 concurrency:
@@ -15,6 +21,8 @@ concurrency:
 
 jobs:
   build-rpm:
+    # Skip backend-variant tags like 0.6.0+mthreads3.6.
+    if: ${{ github.event_name != 'push' || !contains(github.ref_name, '+') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
