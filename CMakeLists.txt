@@ -36,6 +36,7 @@ if(NOT FLAGTREE_BACKEND)
   add_definitions(-D__NVIDIA__)
   add_definitions(-D__AMD__)
   add_definitions(-D__FLAGTREE_REORDER_LOOP_LOADS__)
+  add_definitions(-D__FLAGTREE_RLC_ENHANCE__)
 elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
   add_definitions(-D__ILUVATAR__)
   set(FLAGTREE_TLE OFF)
@@ -61,7 +62,11 @@ elseif(FLAGTREE_BACKEND STREQUAL "hcu")
   add_definitions(-D__HCU__)
 elseif(FLAGTREE_BACKEND STREQUAL "metax")
   add_definitions(-DUSE_MACA)
-  # TODO(metax): support TLE
+  # metax use mctle to replace tle
+  option(BUILD_MCTLE "use maca triton language extensions" ON)
+  list(APPEND TRITON_PLUGIN_NAMES "mctle")
+  add_definitions(-D__MCTLE__)
+
   set(FLAGTREE_TLE OFF)
   remove_definitions(-D__TLE__)
   list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
@@ -323,6 +328,11 @@ else()
 endif()
 include_directories(${PROJECT_SOURCE_DIR}/third_party)
 include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
+
+if(BUILD_MCTLE)
+  include_directories(${PROJECT_SOURCE_DIR}/third_party/metax/plugin)
+  include_directories(${PROJECT_BINARY_DIR}/third_party/metax/plugin)
+endif()
 
 # link_directories(${LLVM_LIBRARY_DIR})
 if (FLAGTREE_BACKEND MATCHES "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir)$")
@@ -612,6 +622,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
       Python3::Module
       pybind11::headers
   )
+  elseif(FLAGTREE_BACKEND STREQUAL "metax" AND BUILD_MCTLE)
+    list(APPEND TRITON_LIBRARIES MLIRTargetLLVMIRImport)
   endif()
 
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64

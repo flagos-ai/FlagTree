@@ -5,6 +5,11 @@ try:
     enable_dist = True
 except ImportError:
     enable_dist = False
+try:
+    from triton._C.libtriton import mctle
+    enable_mctle = True
+except ImportError:
+    enable_mctle = False
 from triton import knobs
 
 from dataclasses import dataclass, field
@@ -218,6 +223,8 @@ class MACABackend(BaseBackend):
 
     def load_dialects(self, ctx):
         metax.load_dialects(ctx)
+        if enable_mctle:
+            mctle.load_dialects(ctx)
         if enable_dist:
             distributed.ir.load_dialects(ctx)
 
@@ -264,6 +271,13 @@ class MACABackend(BaseBackend):
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
+        if enable_mctle:
+            #mctle.passes.add_reject_dot_op(pm)
+            mctle.passes.add_early_assign_memory_space(pm)
+            mctle.passes.add_select_encodings(pm)
+            mctle.passes.add_insert_local_pointer_barriers(pm)
+            mctle.passes.add_optimize_local_pointer_loads(pm)
+            mctle.passes.add_optimize_local_pointer_stores(pm)
         if opt.pipeline == "cpasync" or opt.pipeline == "cpasync-mixed":
             disable_prefetch = True
             metax.passes.ttgpuir.add_tritonmetaxgpu_change_layout_for_int8_pass(pm, opt.num_stages, opt.pipeline)

@@ -1,0 +1,53 @@
+#!/usr/bin/make -f
+export DH_VERBOSE = 1
+
+# FlagTree backend selected at build time. Only "nvidia" is wired up for now.
+FLAGTREE_BACKEND ?= nvidia
+
+# Path to the pre-built wheel produced by helpers/build-flagtree.sh.
+# Defaulted so debuild without -e still works when WHEEL_DIR is exported.
+WHEEL_DIR ?= $(CURDIR)/dist
+PKG = python3-flagtree-$(FLAGTREE_BACKEND)
+PYDIR = debian/$(PKG)/usr/lib/python3/dist-packages
+
+%:
+	dh $@ --with python3
+
+# The wheel is built outside dpkg-buildpackage by build-flagtree.sh.
+# Rebuilding from source inside dh would re-run the 30+ minute compile,
+# duplicate work, and require LLVM/CUDA in the build env. So we no-op.
+override_dh_auto_configure:
+override_dh_auto_build:
+override_dh_auto_test:
+
+override_dh_auto_install:
+	@wheel="$$(ls -1 $(WHEEL_DIR)/flagtree-*.whl 2>/dev/null | head -1)"; \
+	if [ -z "$$wheel" ]; then \
+		echo "ERROR: no flagtree-*.whl found under $(WHEEL_DIR)"; \
+		echo "Run packaging/debian/build-helpers/build-flagtree.sh first."; \
+		exit 1; \
+	fi; \
+	mkdir -p $(PYDIR); \
+	python3 -m pip install --no-deps --no-compile --no-index \
+		--break-system-packages \
+		--target=$(PYDIR) "$$wheel"
+	# Move console scripts out of dist-packages/bin into /usr/bin
+	if [ -d $(PYDIR)/bin ]; then \
+		mkdir -p debian/$(PKG)/usr/bin; \
+		mv $(PYDIR)/bin/* debian/$(PKG)/usr/bin/; \
+		rmdir $(PYDIR)/bin; \
+	fi
+	# Strip *.dist-info/RECORD entries that reference removed bin/ paths,
+	# otherwise dh_python3 warns. Easiest: drop RECORD; pip doesn't need it.
+	rm -f $(PYDIR)/flagtree-*.dist-info/RECORD
+
+override_dh_shlibdeps:
+	# triton/_C/*.so link against libcuda.so etc. Those libs are not present
+	# at packaging time and cannot be expressed via shlibs anyway, so skip
+	# automatic ${shlibs:Depends} lookup for them.
+	dh_shlibdeps -- --ignore-missing-info
+
+override_dh_strip:
+	# Stripping the embedded LLVM-built .so files breaks Triton's runtime,
+	# which expects symbols for JIT codegen lookups.
+	dh_strip --no-automatic-dbgsym -X libtriton -X libproton

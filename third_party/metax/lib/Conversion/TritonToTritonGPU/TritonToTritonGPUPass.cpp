@@ -3,6 +3,9 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#ifdef __MCTLE__
+#include "mctle/dialect/include/IR/Dialect.h"
+#endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -827,6 +830,84 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
   patterns.add<CFCondBranchPattern, CFBranchPattern>(typeConverter, context);
 }
 
+#ifdef __MCTLE__
+namespace tle = triton::mctle;
+class TleExtractTileOpPattern : public OpConversionPattern<tle::ExtractTileOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tle::ExtractTileOp op, tle::ExtractTileOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto srcType = dyn_cast<RankedTensorType>(adaptor.getSrc().getType());
+    if (!srcType) {
+      return op.emitError("source must be a ranked tensor");
+    }
+    auto srcEnc = srcType.getEncoding();
+    if (!srcEnc) {
+      return op.emitError("source tensor must have encoding attribute");
+    }
+    Type retType = op.getType().cloneWithEncoding(srcEnc);
+
+    auto newOp = rewriter.replaceOpWithNewOp<tle::ExtractTileOp>(
+        op, retType, adaptor.getSrc(), adaptor.getIndex());
+
+    if (auto tileShapeAttr = op->getAttr("tile_shape"))
+      newOp->setAttr("tile_shape", tileShapeAttr);
+
+    addNamedAttrs(newOp, adaptor.getAttributes());
+    return success();
+  }
+};
+
+// insert_tile op pattern
+class TleInsertTileOpPattern : public OpConversionPattern<tle::InsertTileOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tle::InsertTileOp op, tle::InsertTileOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    auto srcType = dyn_cast<RankedTensorType>(adaptor.getSrc().getType());
+    if (!srcType) {
+      return op.emitError("source must be a ranked tensor");
+    }
+
+    auto srcEnc = srcType.getEncoding();
+    if (!srcEnc) {
+      return op.emitError("source tensor must have encoding attribute");
+    }
+
+    auto tileType = dyn_cast<RankedTensorType>(adaptor.getTile().getType());
+    if (!tileType) {
+      return op.emitError("tile must be a ranked tensor");
+    }
+
+    auto tileEnc = tileType.getEncoding();
+    if (!tileEnc) {
+      return op.emitError("tile tensor must have encoding attribute");
+    }
+
+    Type retType = op.getType().cloneWithEncoding(srcEnc);
+
+    auto newOp = rewriter.replaceOpWithNewOp<tle::InsertTileOp>(
+        op, retType, adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex());
+
+    addNamedAttrs(newOp, adaptor.getAttributes());
+
+    return success();
+  }
+};
+
+void populateTileRawPatterns(TritonGPUTypeConverter &typeConverter,
+                             RewritePatternSet &patterns) {
+  MLIRContext *context = patterns.getContext();
+  patterns.add<TleExtractTileOpPattern, TleInsertTileOpPattern,
+               GenericOpPattern<tle::LocalPointersOp>>(typeConverter, context);
+}
+#endif
+
 class ConvertTritonToTritonGPU
     : public triton::impl::ConvertTritonToTritonGPUBase<
           ConvertTritonToTritonGPU> {
@@ -857,6 +938,9 @@ public:
     //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
+#ifdef __MCTLE__
+    populateTileRawPatterns(typeConverter, patterns);
+#endif
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
 
     Builder b(&getContext());
