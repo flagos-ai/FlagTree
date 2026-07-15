@@ -8,7 +8,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
 #include "llvm/ADT/SetVector.h"
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
 #include "llvm/Support/Debug.h"
 
 namespace mlir::triton {
@@ -151,7 +153,6 @@ public:
       bool needsReorder = hasReorderAttr(loop);
       bool fullyUnrolls = willFullyUnroll(loop, unrollFactor);
 #endif // __FLAGTREE_REORDER_LOOP_LOADS__
-
       loop->removeAttr(loopUnrollFactorAttrName);
 #ifdef __FLAGTREE_REORDER_LOOP_LOADS__
       if (needsReorder)
@@ -162,13 +163,11 @@ public:
       Block *parentBlock = loop->getBlock();
       Operation *opBeforeLoop = loop->getPrevNode(); // may be nullptr
 #endif // __FLAGTREE_REORDER_LOOP_LOADS__
-
       LDBG("Unrolling loop by " << unrollFactor << " times\n" << loop);
       auto resultLoops = loopUnrollByFactor(loop, unrollFactor);
-
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
       if (failed(resultLoops))
         continue;
-#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
       if (needsReorder) {
         if (fullyUnrolls) {
           // Full unroll: the loop has been completely eliminated.
@@ -194,7 +193,6 @@ public:
         }
       }
 #endif // __FLAGTREE_REORDER_LOOP_LOADS__
-
       // Do not pipeline the epilog loop.
       if (succeeded(resultLoops) && resultLoops->epilogueLoopOp) {
         (*resultLoops->epilogueLoopOp)
