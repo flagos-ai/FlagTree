@@ -102,6 +102,15 @@ include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR}/include)
 
 add_subdirectory(device)
 add_subdirectory(include)
+
+# [internal bc5e33a6 sync] The XPU-owned TritonGPUIR Dialect.cpp replacement
+# includes TritonXPU Dialect.h. Keep this backend-specific dependency here so
+# the generated XPU attribute-interface header exists before that main target
+# compiles, without changing main-tree CMake files.
+if(TARGET TritonGPUIR)
+  add_dependencies(TritonGPUIR TritonXPUAttrDefsIncGen)
+endif()
+
 add_subdirectory(lib)
 
 # ==================== FLAGTREE XPU SYNC MARK ====================
