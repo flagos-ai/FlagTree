@@ -357,11 +357,7 @@ def XPU_VVOR_F_MHOp : XPU_IntrOp<"vvor_f_mh_rn", [], 0> {
                          LLVM_AnyVector:$c);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, i32Ty, i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vvor_f_mh_rn", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$mask, $a, $b, $c});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu2_vvor_f_mh_rn, {$mask, $a, $b, $c});
     }];
 }
 
