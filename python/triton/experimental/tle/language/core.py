@@ -22,6 +22,8 @@
 import builtins
 import triton.language.core as tl
 
+from ..._tle_capabilities import check_supported
+
 
 def _tle_pick_sum_dtype(in_dtype, dtype):
     if dtype is not None:
@@ -99,6 +101,7 @@ def cumsum(input, axis=0, reverse=False, dtype: tl.constexpr = None, _semantic=N
     - :code:`exclusive_sum[i] = sum(input[:i])` (or reverse-exclusive when ``reverse=True``)
     - :code:`total_sum = sum(input)`
     """
+    check_supported("tle.cumsum", semantic=_semantic)
     axis = tl._unwrap_if_constexpr(axis)
     reverse = tl._unwrap_if_constexpr(reverse)
     dtype = tl._unwrap_if_constexpr(dtype)

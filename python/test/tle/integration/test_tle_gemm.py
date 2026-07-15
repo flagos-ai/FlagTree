@@ -115,9 +115,13 @@ class TestTLEGEMM:
         # Execute TLE GEMM computation
         tle_gemm(a, b, c, BLOCK_M, BLOCK_N, BLOCK_K)
 
-        # Verify results
+        # Verify results — third_party backends (PPU etc.) have slightly different
+        # dot accumulation precision vs NVIDIA; use a looser tolerance there.
         expected = torch.matmul(a, b)
-        torch.testing.assert_close(c, expected, atol=1e-4, rtol=1e-4)
+        backend = triton.runtime.driver.active.get_current_target().backend
+        atol = 1e-4 if backend == "cuda" else 1e-3
+        rtol = 1e-4 if backend == "cuda" else 1e-3
+        torch.testing.assert_close(c, expected, atol=atol, rtol=rtol)
 
 
 if __name__ == "__main__":

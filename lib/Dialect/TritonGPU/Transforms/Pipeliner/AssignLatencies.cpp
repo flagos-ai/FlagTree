@@ -145,7 +145,7 @@ public:
         return false;
       }
     }
-    if (isa<tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op))
+    if (isa<tt::DescriptorLoadOp, tt::DescriptorGatherOp, tt::AIULoadOp>(op))
       return true;
 #ifdef __TLE__
     bool hasLocalAllocUser = llvm::any_of(op->getUsers(), [&](Operation *user) {
@@ -200,6 +200,30 @@ public:
       }
     }
 #endif
+
+    // PPU-specific: skip pipelining if load shape is smaller than the MMA
+    // instr-shape on any tile dim. Brings better FA-bwd performance.
+    if (auto dot = dyn_cast<tt::DotOp>(finalUser)) {
+      if (auto dotEnc = dyn_cast<ttg::PPUMmaEncodingAttr>(
+              dot.getResult().getType().getEncoding())) {
+        auto loadTy = dyn_cast<RankedTensorType>(op->getResultTypes()[0]);
+        if (!loadTy)
+          return false;
+        auto mmaInstrShape = dotEnc.getInstrShape();
+        if (loadTy.getRank() < (int64_t)mmaInstrShape.size())
+          return false;
+        bool ok = true;
+        for (size_t i = 0; i < mmaInstrShape.size(); i++) {
+          if (loadTy.getShape()[loadTy.getRank() - mmaInstrShape.size() + i] <
+              (int64_t)mmaInstrShape[i]) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok)
+          return false;
+      }
+    }
 
     if (localAllocEnc) {
       auto registerTy = cast<RankedTensorType>(op->getResultTypes()[0]);
@@ -345,7 +369,7 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
       [&](Operation *op, Operation *finalUser, int distance) {
         if (!seen.insert(op).second || excluded.count(op))
           return;
-        if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op)) {
+        if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp, tt::AIULoadOp>(op)) {
           if (!AssignLoadLatencies::isPipeliningBeneficial(
                   op, finalUser, axisInfoAnalysis, filterSmall))
             return;
@@ -398,7 +422,7 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
   // that are not directly used by dot ops.
   if (pipelineWithoutDot) {
     for (Operation &op : forOp.getBody()->without_terminator()) {
-      if (!isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op))
+      if (!isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp, tt::AIULoadOp>(op))
         dfs(&op, &op, 0);
     }
   }

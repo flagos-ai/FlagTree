@@ -142,6 +142,12 @@ chooseDsReadTrLayout(Attribute enc, ArrayRef<int64_t> shape,
                      int32_t elemBitWidth, unsigned instBitWidth,
                      unsigned numLanesInShuffleGroup);
 
+// The primary goal of this function is to efficiently load 2D tiles of a
+// tensor from shared memory using the `ldmatrix` instruction.
+LinearLayout choosePPULdMatrixLayout(Attribute enc, ArrayRef<int64_t> shape,
+                                     bool needTrans, int32_t elemBitWidth,
+                                     bool Opb8bLdmatrix);
+
 // Create LinearLayout for scale in scaled mfma.
 LinearLayout chooseScaledMfmaScaleLayout(MLIRContext *ctx, int dotOperandIdx,
                                          ArrayRef<int64_t> dotOperandShape,

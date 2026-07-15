@@ -43,11 +43,16 @@
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
 #endif
+#ifdef __PPU__
+#include "Dialect/TritonPPUGPU/IR/Dialect.h"
+#include "TritonPPUGPUToLLVM/AIUUtility.h"
+#endif
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include <queue>
 
+#undef DEBUG_TYPE
 #define DEBUG_TYPE "triton-loop-pipeline"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
@@ -243,6 +248,10 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     return op;
 #ifdef __TLE__
   if (op->getName().getStringRef() == "tle.distributed_barrier")
+    return op;
+#endif
+#ifdef __PPU__
+  if (isa<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(op))
     return op;
 #endif
   if (op->hasTrait<OpTrait::LocalLoadTrait>())
@@ -568,6 +577,10 @@ bool mlir::triton::isTMALoad(Operation *op) {
   return isa<tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op);
 }
 
+bool mlir::triton::isAIULoad(Operation *op) {
+  return isa<tt::AIULoadOp>(op);
+}
+
 bool mlir::triton::canBeAsyncLoad(Operation *op) {
   if (mlir::triton::isTMALoad(op)) {
     return true;
@@ -690,6 +703,32 @@ ttg::SharedEncodingTrait mlir::triton::getSharedEncoding(Operation *op) {
     }
     return ttng::getEncodingFromDescriptor(op, ty, desc);
   }
+
+#ifdef __PPU__
+  if (isAIULoad(op)) {
+    auto aiuOp = cast<tt::AIULoadOp>(op);
+    SmallVector<unsigned> order(aiuOp.getOrder().begin(), aiuOp.getOrder().end());
+    int numWarps = ttg::lookupNumWarps(op);
+    auto tileShape = ty.getShape();
+    size_t rank = tileShape.size();
+    auto elemBytes = ty.getElementTypeBitWidth() / 8;
+    auto tileC = tileShape[rank - 1];
+    auto tileW = tileShape[rank - 2];
+    if (order[rank - 1] != 0) {
+      tileC = tileShape[rank - 2];
+      tileW = tileShape[rank - 1];
+    }
+    auto mod = op->getParentOfType<ModuleOp>();
+    assert(mod && "Parent ModuleOp not found for AIULoadOp");
+    auto computeCapability = getPPUComputeCapability(mod);
+    unsigned version = (computeCapability == 80) ? 1 : 2;
+    SmallVector<unsigned> aiuLoad = mlir::LLVM::PPU::AIULoadStrategy(
+        numWarps, tileW, tileC, elemBytes, version);
+
+    return ttg::PPUAIUSharedEncodingAttr::get(ty.getContext(), version, aiuLoad,
+                                              order, ctaLayout);
+  }
+#endif
 
   if (localAllocEnc)
     return localAllocEnc;

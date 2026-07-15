@@ -230,6 +230,9 @@ SmallVector<unsigned> getOrder(SharedEncodingTrait layout,
   if (auto sharedLayout = dyn_cast<AMDRotatingSharedEncodingAttr>(layout)) {
     return llvm::to_vector(sharedLayout.getOrder());
   }
+  if (auto sharedLayout = mlir::dyn_cast<PPUAIUSharedEncodingAttr>(layout)) {
+    return llvm::to_vector(sharedLayout.getOrder());
+  }
   llvm::report_fatal_error("Unimplemented usage of getOrder for MemDescType");
   return {};
 }
@@ -1267,6 +1270,148 @@ void NvidiaMmaEncodingAttr::print(AsmPrinter &printer) const {
                       /*rank=*/getRank());
 
   printer << ", instrShape = [" << getInstrShape() << "]}>";
+}
+
+//===----------------------------------------------------------------------===//
+// PPUMma encoding
+//===----------------------------------------------------------------------===//
+
+Attribute PPUMmaEncodingAttr::parse(AsmParser &parser, Type type) {
+  if (parser.parseLess().failed())
+    return {};
+  DictionaryAttr dict;
+  if (parser.parseAttribute(dict).failed())
+    return {};
+  if (parser.parseGreater().failed())
+    return {};
+
+  unsigned versionMajor = 0;
+  unsigned versionMinor = 0;
+  SmallVector<unsigned> warpsPerCTA;
+  SmallVector<unsigned> instrShape;
+  Attribute ctaAttr = nullptr;
+  unsigned vecSize = 2;
+
+  for (const NamedAttribute &attr : dict) {
+    if (attr.getName() == "versionMajor") {
+      if (parseUInt(parser, attr, versionMajor, "versionMajor").failed())
+        return {};
+    }
+    if (attr.getName() == "versionMinor") {
+      if (parseUInt(parser, attr, versionMinor, "versionMinor").failed())
+        return {};
+    }
+    if (attr.getName() == "warpsPerCTA") {
+      if (parseIntArrayAttr(parser, attr, warpsPerCTA, "warpsPerCTA").failed())
+        return {};
+    }
+    if (attr.getName() == "CGALayout") {
+      ctaAttr = attr.getValue();
+      continue;
+    }
+    if (attr.getName() == "instrShape") {
+      if (parseIntArrayAttr(parser, attr, instrShape, "instrShape").failed()) {
+        return {};
+      }
+    }
+    if (attr.getName() == "vecSize") {
+      if (parseUInt(parser, attr, vecSize, "vecSize").failed())
+        return {};
+    }
+  }
+
+  std::optional<CTAEncodingAttr> CTALayout =
+      parseCTAAttr(parser, ctaAttr, /*rank=*/warpsPerCTA.size());
+  if (!CTALayout.has_value())
+    return {};
+
+  return parser.getChecked<PPUMmaEncodingAttr>(
+      parser.getContext(), versionMajor, versionMinor, warpsPerCTA, *CTALayout,
+      instrShape, vecSize);
+}
+
+void PPUMmaEncodingAttr::print(AsmPrinter &printer) const {
+  printer << "<{"
+          << "versionMajor = " << getVersionMajor()
+          << ", versionMinor = " << getVersionMinor()
+          << ", warpsPerCTA = [" << ArrayRef(getWarpsPerCTA()) << "]";
+
+  maybePrintCTALayout(getContext(), printer, getCTALayout(),
+                      /*rank=*/getRank());
+
+  printer << ", instrShape = [" << getInstrShape() << "]}>"
+          << ", vecSize = " << getVecSize() << "}>";
+}
+
+//===----------------------------------------------------------------------===//
+// PPUAIUShared encoding
+//===----------------------------------------------------------------------===//
+
+bool PPUAIUSharedEncodingAttr::isPPU0010() const {
+  return getVersionMajor() == 1;
+}
+
+bool PPUAIUSharedEncodingAttr::isPPU0015() const {
+  return getVersionMajor() == 2;
+}
+
+Attribute PPUAIUSharedEncodingAttr::parse(AsmParser &parser, Type type) {
+  if (parser.parseLess().failed())
+    return {};
+  // Parse the data as a dictionary
+  DictionaryAttr dict;
+  if (parser.parseAttribute(dict).failed())
+    return {};
+  if (parser.parseGreater().failed())
+    return {};
+
+  unsigned versionMajor = 0;
+  SmallVector<unsigned> AIUStrategy;
+  SmallVector<unsigned> order;
+  Attribute ctaAttr = nullptr;
+  unsigned kOffset = 0;
+
+  for (const NamedAttribute &attr : dict) {
+    if (attr.getName() == "versionMajor") {
+      if (parseUInt(parser, attr, versionMajor, "versionMajor").failed())
+        return {};
+    } else if (attr.getName() == "AIUStrategy") {
+      if (parseIntArrayAttr(parser, attr, AIUStrategy, "AIUStrategy").failed())
+        return {};
+    } else if (attr.getName() == "order") {
+      if (parseIntArrayAttr(parser, attr, order, "order").failed())
+        return {};
+    } else if (attr.getName() == "CGALayout") {
+      ctaAttr = attr.getValue();
+    } else if (attr.getName() == "kOffset") {
+      if (parseUInt(parser, attr, kOffset, "kOffset").failed())
+        return {};
+    } else {
+      parser.emitError(parser.getNameLoc(), "unexpected key: ")
+          << attr.getName().strref();
+      return {};
+    }
+  }
+  std::optional<CTAEncodingAttr> CTALayout =
+      parseCTAAttr(parser, ctaAttr, /*rank=*/order.size());
+  if (!CTALayout.has_value())
+    return {};
+
+  return parser.getChecked<PPUAIUSharedEncodingAttr>(
+      parser.getContext(), versionMajor, AIUStrategy, order, *CTALayout,
+      kOffset);
+}
+
+void PPUAIUSharedEncodingAttr::print(AsmPrinter &printer) const {
+  printer << "<{" << "versionMajor = " << getVersionMajor()
+          << ", AIUStrategy = [" << getAIUStrategy() << "]" << ", order = ["
+          << getOrder() << "]";
+  maybePrintCTALayout(getContext(), printer, getCTALayout(),
+                      /*rank=*/getOrder().size());
+  if (getKOffset() != 0) {
+    printer << ", kOffset = " << getKOffset();
+  }
+  printer << "}>";
 }
 
 //===----------------------------------------------------------------------===//
@@ -2464,6 +2609,70 @@ NvidiaMmaEncodingAttr::getRepForOperand(ArrayRef<int64_t> shape, int bitwidth,
 }
 
 //===----------------------------------------------------------------------===//
+// PPUMma encoding
+//===----------------------------------------------------------------------===//
+
+bool PPUMmaEncodingAttr::isPPU0010() const { return getVersionMajor() == 1; }
+
+bool PPUMmaEncodingAttr::isPPU0015() const { return getVersionMajor() == 2; }
+
+SmallVector<unsigned> PPUMmaEncodingAttr::getRepOrder() const {
+  return getMatrixOrder(getRank(), /*rowMajor*/ true);
+}
+
+SmallVector<unsigned>
+PPUMmaEncodingAttr::getRepOrderForOperand(int opIdx) const {
+  return getOrderForDotOperand(opIdx, getRank(), /*kContig*/ true);
+}
+
+SmallVector<int64_t>
+PPUMmaEncodingAttr::getRepForOperand(ArrayRef<int64_t> shape, int bitwidth,
+                                        int kWidth, int opIdx) const {
+  assert(kWidth >= std::max(32 / bitwidth, 1) &&
+         "kWidth must be >= max(32 / bitwidth, 1) for this function to be "
+         "well-defined");
+  auto rank = shape.size();
+  // Broadcast long K
+  auto warpsPerCTA = to_vector(getWarpsPerCTA());
+  auto kDim = opIdx == 0 ? rank - 1 : rank - 2;
+  warpsPerCTA[kDim] = 1;
+
+  SmallVector<int> tileSize;
+  if (rank == 3) {
+    tileSize.push_back(1);
+  }
+  // warpSizeK * (warpRepK * VecBitWidth)
+  // auto tileBitWidthK = (isAmpere() && bitwidth == 64) ? (4 * 256) : (4 * 64);
+  auto tileBitWidthK = 4 * 64;
+  if (opIdx == 0) {
+    // m x k
+    tileSize.push_back(16);
+    tileSize.push_back(tileBitWidthK / bitwidth);
+  } else {
+    // k x n
+    // Hopper path never uses the n value, since this method is only invoked
+    // for in-RF (dotOpEnc) operands, but WGMMA only supports in A to be in RF
+    // so it's fine if the n is incorrect here
+    tileSize.push_back(tileBitWidthK / bitwidth);
+    if (isPPU0010() || isPPU0015()) {
+      tileSize.push_back(16);
+    } else {
+      tileSize.push_back(8);
+    }
+  }
+
+  SmallVector<int64_t> numRep;
+  // Lezcano: This is odd. Why do we always return a vector of size 3?
+  if (rank != 3) {
+    numRep.push_back(1);
+  }
+  for (auto [s, size, warp] : llvm::zip(shape, tileSize, warpsPerCTA)) {
+    numRep.push_back(std::max<int64_t>(1, s / (size * warp)));
+  }
+  return numRep;
+}
+
+//===----------------------------------------------------------------------===//
 // DotOperand Encoding
 //===----------------------------------------------------------------------===//
 
@@ -2494,7 +2703,7 @@ CTAEncodingAttr DotOperandEncodingAttr::getCTALayout() const {
 }
 LogicalResult DotOperandEncodingAttr::verify(
     ::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
-    unsigned opIdx, Attribute parent, unsigned kWidth) {
+    unsigned opIdx, Attribute parent, unsigned kWidth, bool isChained) {
   if (opIdx != 0 && opIdx != 1) {
     return emitError() << "ttg.dot_op opIdx parameter can be 0 or 1, got: "
                        << opIdx;
@@ -2502,6 +2711,17 @@ LogicalResult DotOperandEncodingAttr::verify(
   if (!parent) {
     return emitError() << "ttg.dot_op parent parameter cannot be null";
   }
+
+  if (auto parentAttr = mlir::dyn_cast<PPUMmaEncodingAttr>(parent)) {
+    if (kWidth != 0 && !(parentAttr.isPPU0010() || parentAttr.isPPU0015()))
+      return emitError() << "ttg.dot_op kWidth parameter can only be non-zero "
+                            "for PPU MMA parent";
+    if (kWidth == 0 && (parentAttr.isPPU0010() || parentAttr.isPPU0015()))
+      return emitError()
+             << "ttg.dot_op kWidth parameter is mandatory for PPU MMA parent";
+    return success();
+  }
+
   if (auto parentAttr = mlir::dyn_cast<NvidiaMmaEncodingAttr>(parent)) {
     if (kWidth != 0 && !(parentAttr.isAmpere() || parentAttr.isHopper()))
       return emitError() << "ttg.dot_op kWidth parameter can only be "

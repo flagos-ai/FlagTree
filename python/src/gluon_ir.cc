@@ -405,9 +405,9 @@ void init_gluon_ir(py::module &&m) {
            })
       .def("get_dot_operand_layout",
            [](GluonOpBuilder &self, unsigned opIdx, Attribute parent,
-              unsigned kWidth) -> Attribute {
+              unsigned kWidth, bool isChained) -> Attribute {
              return self.getChecked<ttg::DotOperandEncodingAttr>(
-                 self.getContext(), opIdx, parent, kWidth);
+                 self.getContext(), opIdx, parent, kWidth, isChained);
            })
       .def("get_mma_layout",
            [](GluonOpBuilder &self, std::vector<unsigned> &version,

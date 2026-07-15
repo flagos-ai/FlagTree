@@ -28,6 +28,8 @@ from typing import Any, Iterable, Mapping, Sequence, List, Tuple, Union, Optiona
 from enum import Enum
 import triton.language.core as tl
 
+from ..._tle_capabilities import check_supported
+
 Axis = Tuple[str, int]
 AxesLike = Union[int, List[Axis]]
 
@@ -641,6 +643,7 @@ def shard_id(
     `axis` can be axis name (`str`) or axis index (`int`, supports negative).
     The returned value is a scalar int32 tensor.
     """
+    check_supported("tle.shard_id", semantic=_semantic)
     mesh = tl._unwrap_if_constexpr(mesh)
     axis = tl._unwrap_if_constexpr(axis)
 
@@ -710,6 +713,7 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space
     - cluster mesh: cluster/submesh synchronization
     - block mesh: cooperative grid synchronization
     """
+    check_supported("tle.distributed_barrier", semantic=_semantic)
     mesh = tl._unwrap_if_constexpr(mesh)
     if mesh is not None and not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
@@ -978,6 +982,7 @@ def remote(
     `flagcxGetIntraPointerC`. It may be a Python `int` (compile-time constant)
     or a scalar `tl.tensor` (runtime value, shape == ()).
     """
+    check_supported("tle.remote", semantic=_semantic)
     shard_id = tl._unwrap_if_constexpr(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
     if scope is not None and not isinstance(scope, device_mesh):

@@ -202,8 +202,12 @@ def test_tle_cumsum_exclusive_and_total(dtype, n, block, reverse, num_warps):
         torch.testing.assert_close(total[0], expected_total)
 
 
-@pytest.mark.skipif(_is_enflame_backend(), reason="PTX-specific regression guard not applicable on Enflame GCU")
-@pytest.mark.skipif(_is_hcu_backend(), reason="PTX-specific regression guard not applicable on HCU")
+def _is_nvidia_backend():
+    target = triton.runtime.driver.active.get_current_target()
+    return target.backend == "cuda"
+
+
+@pytest.mark.skipif(not _is_nvidia_backend(), reason="PTX-specific regression guard only applies to NVIDIA backend")
 def test_tle_cumsum_ptx_fastpath_regression_guard():
     block = 512
     x = torch.randint(-1024, 1024, (block, ), device="cuda", dtype=torch.int32)

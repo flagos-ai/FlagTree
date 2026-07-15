@@ -583,6 +583,13 @@ class nvidia_knobs(base_knobs):
     tle_raw_clang_flags: env_opt_str = env_opt_str("CLANG_FLAGS")
 
 
+class ppu_knobs(base_knobs):
+    disable_ppu_llc_opt: env_bool = env_bool("DISABLE_PPU_LLC_OPT")
+    ppu_llc_options: env_opt_str = env_opt_str("PPU_LLC_OPTIONS")
+    dump_compile_log: env_bool = env_bool("TRITON_DUMP_COMPILE_LOG")
+    libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
+
+
 class amd_knobs(base_knobs):
     use_buffer_ops: env_bool = env_bool("AMDGCN_USE_BUFFER_OPS", True)
     # Note: This requires use_buffer_ops be true to have any effect
@@ -688,6 +695,7 @@ autotuning = autotuning_knobs()
 runtime = runtime_knobs()
 language = language_knobs()
 nvidia = nvidia_knobs()
+ppu = ppu_knobs()
 amd = amd_knobs()
 hcu = hcu_knobs()  # flagtree hcu
 metax = metax_knobs()  # flagtree metax

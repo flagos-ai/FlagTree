@@ -1,0 +1,126 @@
+# Copyright (c) 2026 T-Head Semiconductor Co., Ltd. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+from triton.language import core
+
+
+@core.extern
+def globaltimer(_semantic=None):
+    return core.inline_asm_elementwise("ppu.mov.u64 $0, %globaltimer;", "=l", [], dtype=core.int64, is_pure=False, pack=1,
+                                       _semantic=_semantic)
+
+
+@core.extern
+def smid(_semantic=None):
+    return core.inline_asm_elementwise("ppu.mov.u32 $0, %smid;", "=r", [], dtype=core.int32, is_pure=True, pack=1,
+                                       _semantic=_semantic)
+
+
+@core.builtin
+def num_threads(_semantic=None):
+    return core.constexpr(_semantic.builder.options.num_warps * 32)
+
+
+@core.builtin
+def num_warps(_semantic=None):
+    return core.constexpr(_semantic.builder.options.num_warps)
+
+
+# ----- FP8E4M3B15 ------
+# This data-type is a variant of the standard FP8E4M3 format.
+# It was designed for fast software conversion to FP16 on
+# GPUs that do not support it natively.
+# This is the same format as FP8E4M3Nv, but:
+#   - the exponent bias is 15 instead of 7
+#   - 0xff and 0x7f are mapped to +-1.750 instead of +-nan
+@core.builtin
+def convert_fp8e4b15_to_float16(arg, _semantic=None):
+    return core.inline_asm_elementwise(
+        "{                                      \n"
+        ".reg .b32 a<2>, b<2>;                  \n"
+        "ppu.prmt.b32 a0, 0, $2, 0x5746;            \n"
+        "ppu.and.b32 b0, a0, 0x7f007f00;            \n"
+        "ppu.and.b32 b1, a0, 0x00ff00ff;            \n"
+        "ppu.and.b32 a1, a0, 0x00800080;            \n"
+        "ppu.shr.b32  b0, b0, 1;                    \n"
+        "ppu.add.u32 b1, b1, a1;                    \n"
+        "ppu.lop3.b32 $0, b0, 0x80008000, a0, 0xf8; \n"
+        "ppu.shl.b32 $1, b1, 7;                     \n"
+        "}                                      \n", "=r,=r,r", [arg], dtype=core.float16, is_pure=True, pack=4,
+        _semantic=_semantic)
+
+
+@core.builtin
+def convert_float16_to_fp8e4b15(arg, has_minx2, _semantic=None):
+    asm = """{
+            .reg .pred p<4>;
+            .reg .b32 a<2>, b<2>;
+            .reg .b16 c<4>;
+            .reg .b16 max_val_f16;
+            .reg .b32 max_val_f16x2;
+            ppu.mov.b16 max_val_f16,   0x3F00;
+            ppu.mov.b32 max_val_f16x2, 0x3F003F00;
+            ppu.and.b32 a0, $1, 0x7fff7fff;
+            ppu.and.b32 a1, $2, 0x7fff7fff;"""
+    if has_minx2:
+        asm += """ppu.min.f16x2 a0, a0, max_val_f16x2;
+                  ppu.min.f16x2 a1, a1, max_val_f16x2;"""
+    else:
+        asm += """ppu.setp.lt.f16x2  p0|p1, a0, max_val_f16x2;
+                  ppu.setp.lt.f16x2  p2|p3, a1, max_val_f16x2;
+                  ppu.mov.b32 {c0, c1}, a0;
+                  ppu.mov.b32 {c2, c3}, a1;
+                  ppu.selp.b16  c0, c0, max_val_f16, p0;
+                  ppu.selp.b16  c1, c1, max_val_f16, p1;
+                  ppu.selp.b16  c2, c2, max_val_f16, p2;
+                  ppu.selp.b16  c3, c3, max_val_f16, p3;
+                  ppu.mov.b32 a0, {c0, c1};
+                  ppu.mov.b32 a1, {c2, c3};"""
+    asm += """ppu.mad.lo.u32 a0, a0, 2, 0x00800080;
+              ppu.mad.lo.u32 a1, a1, 2, 0x00800080;
+              ppu.lop3.b32 b0, $1, 0x80008000, a0, 0xea;
+              ppu.lop3.b32 b1, $2, 0x80008000, a1, 0xea;
+              ppu.prmt.b32 $0, b0, b1, 0x7531;
+              }"""
+    return core.inline_asm_elementwise(asm, "=r,r,r", [arg], dtype=core.float8e4b15, is_pure=True, pack=4,
+                                       _semantic=_semantic)
+
+
+@core.builtin
+def convert_custom_float8_internal(arg, dst_ty, fp_downcast_rounding, has_minx2, _semantic=None):
+    if arg.type.scalar.is_fp8e4b15():
+        upcast_val = convert_fp8e4b15_to_float16(arg, _semantic=_semantic)
+        if dst_ty.scalar.is_fp32():
+            upcast_val = upcast_val.to(core.float32, _semantic=_semantic)
+        return upcast_val
+
+    assert arg.type.scalar.is_fp16() or arg.type.scalar.is_fp32()
+    downcast_val = arg
+    if arg.type.scalar.is_fp32():
+        downcast_val = downcast_val.to(core.float16, fp_downcast_rounding="rtz", _semantic=_semantic)
+    downcast_val = convert_float16_to_fp8e4b15(downcast_val, has_minx2=has_minx2, _semantic=_semantic)
+    return downcast_val
+
+
+@core.builtin
+def convert_custom_float8(arg, dst_ty, fp_downcast_rounding=None, _semantic=None):
+    return convert_custom_float8_internal(arg, dst_ty, fp_downcast_rounding, has_minx2=True, _semantic=_semantic)
+
