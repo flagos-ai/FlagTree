@@ -41,8 +41,8 @@ docker exec -it ${CONTAINER} /bin/bash
 mkdir -p ~/.flagtree/metax; cd ~/.flagtree/metax
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metax-llvm19-3.8.0.6-x86_64_v0.6.0.tar.gz
 tar zxvf metax-llvm19-3.8.0.6-x86_64_v0.6.0.tar.gz
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.0.tar.gz
-tar zxvf metaxTritonPlugin-cpython3.12-x86_64_v0.6.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.1.tar.gz
+tar zxvf metaxTritonPlugin-cpython3.12-x86_64_v0.6.1.tar.gz
 ```
 
 #### 1.3 手动下载 Triton 依赖库
