@@ -110,7 +110,7 @@ TLE 的主要优势包括：
 * 2026/01/23 新增接入 [sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/) 后端（对应 Triton 3.4），加入 CI/CD。
 * 2026/01/08 添加 [HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)、[TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE)、[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw) 等新功能 WIKI。
 * 2025/12/08 新增接入 [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) 后端（对应 Triton 3.3），加入 CI/CD。
-* 2025/11/26 添加 FlagTree 后端特化统一设计文档 [FlagTree_Backend_Specialization](/documents/decoupling/)。
+* 2025/11/26 添加 FlagTree 后端特化统一设计文档 [FlagTree-Backend-Specialization](https://github.com/flagos-ai/FlagTree/wiki/FlagTree-Backend-Specialization)。
 * 2025/10/28 提供离线构建支持（预下载依赖包），改善网络环境受限时的构建体验，使用方法见后文。
 * 2025/09/30 在 GPGPU 上支持编译指导 shared memory。
 * 2025/09/29 SDK 存储迁移至金山云，大幅提升下载稳定性。

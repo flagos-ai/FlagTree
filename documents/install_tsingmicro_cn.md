@@ -13,12 +13,12 @@
 
 ```shell
 # Plan A: docker pull (13.2GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04:202606-clean
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04:20260604163331-clean
 docker pull ${IMAGE}
 # Plan B: docker load (5.5GB)
-IMAGE=flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04:202606-clean
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04.202606-clean.tar.gz
-docker load -i flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04.202606-clean.tar.gz
+IMAGE=flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04:20260604163331-clean
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04.20260604163331-clean.tar.gz
+docker load -i flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04.20260604163331-clean.tar.gz
 ```
 
 ```shell
