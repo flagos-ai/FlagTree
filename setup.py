@@ -367,11 +367,14 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
     dst_path = os.path.join(base_dir, "third_party", "nvidia", "backend", dst_path)  # final binary path
     src_path = os.path.join(tmp_path, src_path)
     download = not os.path.exists(src_path)
-    if os.path.exists(dst_path) and system == "Linux" and shutil.which(dst_path) is not None:
-        curr_version = subprocess.check_output([dst_path, "--version"]).decode("utf-8").strip()
-        curr_version = re.search(r"V([.|\d]+)", curr_version)
-        assert curr_version is not None, f"No version information for {dst_path}"
-        download = download or curr_version.group(1) != version
+    # flagtree: check the cached binary version in ~/.triton, skip download if it matches
+    if os.path.exists(src_path) and system == "Linux" and shutil.which(src_path) is not None:
+        try:
+            cache_version = subprocess.check_output([src_path, "--version"]).decode("utf-8").strip()
+            cache_version = re.search(r"V([.|\d]+)", cache_version).group(1)
+            download = download or cache_version != version
+        except Exception:
+            download = True
     if download:
         print(f'{YELLOW}downloading and extracting {url} ... {NC}', file=sys.stderr, flush=True)
         with open_url(url) as url_file, tarfile.open(fileobj=url_file, mode="r|*") as tar_file:
