@@ -4,9 +4,9 @@ on:
   schedule:
     - cron: '0 21 * * *'
   push:
-    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x" ]
+    branches: [ "triton_v3.1.x", "triton_v3.2.x", "triton_v3.3.x" ]
   pull_request:
-    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x" ]
+    branches: [ "triton_v3.1.x", "triton_v3.2.x", "triton_v3.3.x" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -46,8 +46,8 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
-      - name: FlagTree Build on NVidia (main branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'main' }}
+      - name: FlagTree Build on NVidia (triton_v3.1.x branch)
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.1.x' }}
         shell: bash
         run: |
           set -x
