@@ -1,3 +1,4 @@
+from .cache_key import bind_tle_raw_source_cache_key
 from .cuda import CUDAJITFunction
 
 registry = {"cuda": CUDAJITFunction}
@@ -28,6 +29,7 @@ def dialect(
             from .mlir import MLIRJITFunction
             registry[name] = MLIRJITFunction
         edsl = registry[name](fn, **kwargs)
+        bind_tle_raw_source_cache_key(edsl, name=name, **kwargs)
         return edsl
 
     return decorator

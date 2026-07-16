@@ -1,0 +1,48 @@
+Source: flagtree
+Section: python
+Priority: optional
+Maintainer: FlagOS Contributors <contact@flagos.io>
+Build-Depends: debhelper-compat (= 13),
+               python3-all,
+               python3-pip,
+               python3-setuptools,
+               python3-wheel,
+               dh-python
+Standards-Version: 4.6.2
+Homepage: https://github.com/flagos-ai/FlagTree
+Vcs-Browser: https://github.com/flagos-ai/FlagTree
+Vcs-Git: https://github.com/flagos-ai/FlagTree.git
+Rules-Requires-Root: no
+X-Build-Environment: This package wraps a pre-built FlagTree wheel into a .deb.
+ The wheel is produced in a backend-specific container (see
+ packaging/debian/build-helpers/Dockerfile.deb) which provides LLVM, CMake,
+ Ninja and the chip vendor toolchain. The Build-Depends above are only what
+ dpkg-buildpackage needs to assemble the .deb after the wheel is built.
+
+Package: python3-flagtree-nvidia
+Architecture: amd64
+Depends: python3:any,
+         ${shlibs:Depends},
+         ${misc:Depends},
+         python3-filelock,
+         python3-setuptools
+# python3-torch is intentionally NOT declared. The distro 'python3-torch'
+# is CPU-only and unsuitable for GPU workloads; users install matching
+# CUDA torch via pip — see packaging/INSTALL.md once published.
+Recommends: python3-numpy
+Provides: python3-flagtree, python3-triton
+Conflicts: python3-triton, python3-flagtree-iluvatar, python3-flagtree-mthreads,
+           python3-flagtree-metax, python3-flagtree-amd, python3-flagtree-cambricon,
+           python3-flagtree-hcu, python3-flagtree-xpu
+Replaces: python3-triton
+# Note: Breaks: without a version is equivalent to Conflicts:; using
+# Conflicts: above is enough (Debian Policy §7.4).
+Description: FlagTree compiler with NVIDIA backend
+ FlagTree is a unified compiler supporting multiple AI chip backends for
+ custom Deep Learning operations, forked from triton-lang/triton.
+ .
+ This package contains the FlagTree Python distribution built with the NVIDIA
+ backend enabled. It installs into the "triton" Python namespace and conflicts
+ with the upstream python3-triton package.
+ .
+ Requires CUDA runtime to execute kernels on NVIDIA GPUs at runtime.

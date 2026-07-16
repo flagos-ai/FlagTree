@@ -1,0 +1,88 @@
+# Two-stage RPM build: produce the wheel and assemble the RPM on the same
+# RPM-family base image. The wheel's Python ABI tag must match the Python
+# interpreter used by rpmbuild/pip in the assembler stage.
+#
+# COPY-narrowing in wheel-builder mirrors Dockerfile.deb — packaging-only
+# edits do NOT invalidate the wheel cache.
+
+ARG RPM_BASE_IMAGE=fedora:43
+
+# ---------- Stage 1: build the wheel ----------
+FROM ${RPM_BASE_IMAGE} AS wheel-builder
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ENV PIP_ROOT_USER_ACTION=ignore
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+        python3 python3-pip python3-devel python3-setuptools python3-wheel \
+        gcc gcc-c++ make cmake ninja-build git \
+        zlib-devel libxml2-devel \
+        wget curl ca-certificates \
+    && dnf clean all
+
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel build
+
+WORKDIR /src
+# Dependency layer first so source edits don't invalidate it.
+COPY python/requirements.txt /src/python/requirements.txt
+RUN python3 -m pip install --no-cache-dir -r python/requirements.txt
+
+# Narrow COPY: only the paths the wheel build needs, so packaging-only
+# edits (specs, debian/, helpers) do NOT invalidate the ~50 min wheel
+# layer. setup.py / pyproject.toml / MANIFEST.in live at the repo root
+# since the post-#607 restructure.
+COPY python /src/python
+COPY third_party /src/third_party
+COPY include /src/include
+COPY lib /src/lib
+COPY cmake /src/cmake
+COPY bin /src/bin
+COPY test /src/test
+COPY unittest /src/unittest
+COPY CMakeLists.txt pyproject.toml setup.py MANIFEST.in LICENSE README.md /src/
+
+# FLAGTREE_DEFAULT_BACKENDS=nvidia,amd matches the historical package
+# contents and keeps the tileir backend (GCC >= 13 + cuda-tile
+# submodule) out of the distro build.
+RUN unset FLAGTREE_BACKEND && \
+    FLAGTREE_DEFAULT_BACKENDS=nvidia,amd \
+    MAX_JOBS=4 python3 -m pip wheel . --no-build-isolation --no-deps -w /wheels -v && \
+    ls -lh /wheels/ && \
+    test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)"
+
+# ---------- Stage 2: assemble the .rpm ----------
+FROM ${RPM_BASE_IMAGE} AS rpm-assembler
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ENV PIP_ROOT_USER_ACTION=ignore
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+        rpm-build rpmdevtools \
+        python3 python3-pip python3-devel python3-setuptools python3-wheel \
+    && dnf clean all
+
+RUN rpmdev-setuptree
+
+# openEuler images define %dist as empty (official .oe* tags are
+# injected by EulerMaker); reconstruct it so local/CI builds get
+# distro-tagged Release fields like official packages.
+RUN if [ -z "$(rpm --eval '%{?dist}')" ]; then \
+        . /etc/os-release && \
+        case "${ID}" in \
+            openEuler) echo "%dist .oe$(echo "${VERSION_ID}" | tr -d '.')" >> /root/.rpmmacros ;; \
+        esac; \
+    fi
+
+COPY packaging/rpm/specs/flagtree.spec /root/rpmbuild/SPECS/
+COPY LICENSE /root/rpmbuild/SOURCES/LICENSE
+COPY --from=wheel-builder /wheels /wheels
+
+RUN rpmbuild -ba /root/rpmbuild/SPECS/flagtree.spec \
+        --define "flagtree_backend nvidia" \
+        --define "wheel_dir /wheels" && \
+    ls -lh /root/rpmbuild/RPMS/x86_64/
+
+# ---------- Stage 3: extract just the rpms ----------
+FROM scratch AS rpm-output
+COPY --from=rpm-assembler /root/rpmbuild/RPMS/x86_64/python3-flagtree-*.rpm /output/
+COPY --from=rpm-assembler /root/rpmbuild/SRPMS/python3-flagtree-*.src.rpm /output/

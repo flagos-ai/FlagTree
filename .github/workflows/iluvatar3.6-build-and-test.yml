@@ -2,16 +2,16 @@ name: Iluvatar3.6-Build-And-Test
 
 on:
   push:
-    branches: [ "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x" ]
   pull_request:
-    branches: [ "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  iluvatar-build-and-test:
+  iluvatar36x-unit-test:
     runs-on: iluvatar3.6
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
@@ -32,7 +32,7 @@ jobs:
         with:
           backend: iluvatar
 
-      - name: FlagTree Build on Iluvatar
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -43,7 +43,7 @@ jobs:
           export TRITON_ILU_BUILD_GLUON=OFF
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
-      - name: FlagTree Test on Iluvatar
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

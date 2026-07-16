@@ -4,9 +4,9 @@ on:
   schedule:
     - cron: '0 21 * * *'
   push:
-    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x", "triton_v3.4.x", "triton_v3.5.x", "triton_v3.6.x"]
+    branches: [ "main", "triton_v3.1.x", "triton_v3.2.x", "triton_v3.3.x", "triton_v3.4.x", "triton_v3.5.x", "triton_v3.6.x"]
   pull_request:
-    branches: [ "main", "triton_v3.2.x", "triton_v3.3.x", "triton_v3.4.x", "triton_v3.5.x", "triton_v3.6.x"]
+    branches: [ "main", "triton_v3.1.x", "triton_v3.2.x", "triton_v3.3.x", "triton_v3.4.x", "triton_v3.5.x", "triton_v3.6.x"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -18,7 +18,7 @@ jobs:
     steps:
     - name: Checkout code
       id: checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         token: ${{ secrets.BOT_PAT_TOKEN || github.token }}
     - name: Code format check

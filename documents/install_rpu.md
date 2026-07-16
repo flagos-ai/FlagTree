@@ -1,6 +1,6 @@
 [[中文版](./install_rpu_cn.md)|English]
 
-## 💫 Huixi Intelligence（辉羲智能）[rpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.6.x/third_party/rpu/)
+## 💫 Huixi Intelligence（辉羲智能）[rpu](/third_party/rpu/) (Triton 3.6)
 
 - Based on Triton 3.6, aarch64
 
@@ -62,7 +62,7 @@ The RPU backend is built from source on the board. There is no source-free
 cd ~
 git clone https://github.com/flagos-ai/FlagTree.git
 cd FlagTree
-git checkout -b triton_v3.6.x origin/triton_v3.6.x
+git checkout main
 ```
 
 #### 2.2 Build from source
@@ -116,4 +116,4 @@ python3 third_party/rpu/python/test/board/lk_board_smoke.py --require-board
 It compiles a small kernel, dispatches it on the device, and compares the result
 to a numpy golden.
 
-Refer to [Tests of rpu backend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.6.x/.github/workflows/rpu3.6-build-and-test.yml)
+Refer to [Tests of rpu backend](/.github/workflows/rpu3.6-build-and-test.yml)

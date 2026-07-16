@@ -1,17 +1,15 @@
-name: flagcicd-Hopper-Build-And-Test
+name: FlagCICD-NV3.6-Build-And-Test
 
 on:
-  schedule:
-    - cron: '0 21 * * *'
   pull_request:
-    branches: [ "triton_v3.4.x", "triton_v3.5.x", "triton_v3.6.x"]
+    branches: [ "main", "triton_v3.6.x"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  flagcicd-hopper-build-and-test:
+  flagcicd-nv36x-gems-test:
     runs-on: [flagcicd-flagtree-nvidia3.6]
     container:
       image: harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.8.0a0_5228986c39.nv25.05-ubuntu24.04:202605-3.6-base
@@ -57,8 +55,8 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
 
-      - name: FlagTree Build on NVidia (triton_v3.6.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.6.x' }}
+      - name: Build FlagTree
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
           set -x
@@ -68,7 +66,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
           unset TRITON_HOME
 
-      - name: FlagGems Accuracy Test on NVidia
+      - name: FlagGems Accuracy Test
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |

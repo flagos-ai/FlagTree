@@ -22,18 +22,19 @@ def get_xpu_library_dirs(arch: int = -1):
     if arch == -1:
         include_dir = [os.path.join(dirname, "xpu3", "include")]
         libdevice_dir = os.path.join(dirname, "xpu3", "lib")
-        library_dir = os.path.join(dirname, f"xpu3", "so")
+        library_dir = os.path.join(dirname, "xpu3", "so")
         libraries = ["xpurt"]
         return include_dir, [libdevice_dir, library_dir], libraries
 
     include_dir = [os.path.join(dirname, f"xpu{arch}", "include")]
     libdevice_dir = os.path.join(dirname, f"xpu{arch}", "lib")
     library_dir = os.path.join(dirname, f"xpu{arch}", "so")
+    launch_lib = "liblaunch.a" if os.path.exists(os.path.join(libdevice_dir, "liblaunch.a")) else "launch"
     if os.path.exists(os.path.join(library_dir, "libLaunch_shared.a")) or os.path.exists(
             os.path.join(library_dir, "liblaunch_shared.so")):
-        libraries = ["launch", "xpurt", "launch_shared"]
+        libraries = [launch_lib, "xpurt", "launch_shared"]
     else:
-        libraries = ["launch", "xpurt"]
+        libraries = [launch_lib, "xpurt"]
     return include_dir, [libdevice_dir, library_dir], libraries
 
 
@@ -55,6 +56,9 @@ def get_xpu_spec(xpu_arch, is_sdnn=False):
 
 def compile_module_from_src(src, name, arch: int = -1):
     _print_startup_banner_once()
+    # Ensure a GLIBCXX_3.4.30-capable libstdc++ is loaded before the launcher .so
+    # is dlopened, so no manual LD_LIBRARY_PATH/LD_PRELOAD is needed at runtime.
+    _preload_libstdcxx()
     # Fold the backend install dir into the cache key. The launcher .so bakes
     # this dir into its RUNPATH (see _xpu_runtime_rpath_flags), so a cached
     # launcher built under a different install path would point at a stale/
@@ -146,10 +150,70 @@ def _flatten_library_dirs(library_dirs):
     return flat
 
 
+@functools.lru_cache(maxsize=1)
+def _compatible_libstdcxx():
+    """Locate a libstdc++.so.6 that exports GLIBCXX_3.4.30.
+
+    The prebuilt liblaunch_shared.so requires GLIBCXX_3.4.30, which the system
+    libstdc++ (e.g. Ubuntu 20.04 => 3.4.28) does not provide. The active Python
+    environment (conda/venv) ships a newer libstdc++, so resolve it from the
+    interpreter prefixes. Returns an absolute path or None.
+    """
+    import glob
+    candidates = []
+    for prefix in (sys.prefix, sys.base_prefix):
+        libdir = os.path.join(prefix, "lib")
+        candidates.append(os.path.join(libdir, "libstdc++.so.6"))
+        candidates.extend(sorted(glob.glob(os.path.join(libdir, "libstdc++.so.6.*"))))
+    seen = set()
+    for cand in candidates:
+        if cand in seen or not os.path.isfile(cand):
+            continue
+        seen.add(cand)
+        try:
+            with open(cand, "rb") as f:
+                blob = f.read()
+        except OSError:
+            continue
+        if b"GLIBCXX_3.4.30" in blob:
+            return cand
+    return None
+
+
+_libstdcxx_preloaded = False
+
+
+def _preload_libstdcxx():
+    """Preload a GLIBCXX_3.4.30-capable libstdc++ into the global namespace.
+
+    Must run before the launcher .so is dlopened so its (and liblaunch_shared.so's)
+    NEEDED libstdc++.so.6 binds to this newer library instead of the system one.
+    Idempotent and best-effort; failures are non-fatal.
+    """
+    global _libstdcxx_preloaded
+    if _libstdcxx_preloaded:
+        return
+    path = _compatible_libstdcxx()
+    if path is None:
+        return
+    try:
+        import ctypes
+        ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+        _libstdcxx_preloaded = True
+    except OSError:
+        pass
+
+
 def _xpu_runtime_rpath_flags(library_dirs):
     flags = []
     seen = set()
-    for libdir in _flatten_library_dirs(library_dirs):
+    dirs = list(_flatten_library_dirs(library_dirs))
+    # Bake the env libstdc++ dir into the launcher RUNPATH so a cached launcher
+    # resolves GLIBCXX_3.4.30 without any manual LD_LIBRARY_PATH/LD_PRELOAD.
+    _libcxx = _compatible_libstdcxx()
+    if _libcxx is not None:
+        dirs.append(os.path.dirname(_libcxx))
+    for libdir in dirs:
         if not libdir or libdir in seen:
             continue
         seen.add(libdir)

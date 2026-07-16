@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <numeric>
 
+#ifdef __MCTLE__
+#include "mctle/dialect/include/IR/Dialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#endif
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
@@ -86,9 +90,19 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
   addIllegalOp<scf::ExecuteRegionOp, scf::ParallelOp, scf::ReduceOp,
                scf::ReduceReturnOp>();
 
+#ifdef __MCTLE__
+  addDynamicallyLegalOp<triton::gpu::LocalAllocOp, triton::gpu::LocalStoreOp,
+                        triton::gpu::LocalLoadOp>(
+      [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
+#endif
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
-                             scf::SCFDialect, ub::UBDialect>(
+                             scf::SCFDialect, ub::UBDialect
+#ifdef __MCTLE__
+                             ,
+                             LLVM::LLVMDialect
+#endif
+                             >(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
 
   // We have requirements for the data layouts
@@ -111,6 +125,15 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     }
     return true;
   });
+#ifdef __MCTLE__
+  addDynamicallyLegalDialect<triton::mctle::McTleDialect>([&](Operation *op) {
+    bool hasLegalRegions = true;
+    for (auto &region : op->getRegions()) {
+      hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
+    }
+    return hasLegalRegions && typeConverter.isLegal(op);
+  });
+#endif
 }
 
 bool TritonGPUConversionTarget::isDynamicallyLegal(

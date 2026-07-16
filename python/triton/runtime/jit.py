@@ -123,6 +123,12 @@ class DependenciesFinder(ast.NodeVisitor):
         if val is None or type(val) is ModuleType:
             return
 
+        # flagtree tle raw
+        tle_raw_source_cache_key = getattr(val, "__triton_tle_raw_source_cache_key__", None)
+        if tle_raw_source_cache_key is not None:
+            part = (tle_raw_source_cache_key() if callable(tle_raw_source_cache_key) else tle_raw_source_cache_key)
+            self.hasher.update(str(part).encode("utf-8"))
+
         if getattr(val, "__triton_aggregate__", False):
             for attr in val.hash_attrs:
                 self.record_reference(attr)
@@ -414,7 +420,10 @@ def create_function_from_signature(sig, kparams, backend):
                         # we do not specialize non-constexpr floats and bools:
                         specialize = False
                 if specialize:
-                    specialization.append(f'("{kp.annotation_type}",) + {ret}[1:]')
+                    # Prefer constexpr over annotation type to avoid downgrading
+                    # compile-time constants to runtime-specialized types
+                    specialization.append(
+                        f'({ret} if {ret}[0] == "constexpr" else ("{kp.annotation_type}",) + {ret}[1:])')
                 else:
                     # skip runtime specialization:
                     specialization.append(f'("{kp.annotation_type}", None)')
