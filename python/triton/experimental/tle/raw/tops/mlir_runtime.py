@@ -53,6 +53,8 @@ class TOPSMLIRJITFunction(object):
         ctx = ir.Context() if context is None else context
         ctx.allow_unregistered_dialects = True
         self.context: Final[ir.Context] = ctx
+        self.extern_func_name: Final[Optional[str]] = kwargs.get("extern_func_name")
+        self.deferred: Final[bool] = kwargs.get("deferred", False)
         self.__triton_builtin__: Final[bool] = True
 
     def __deepcopy__(self, memo: Dict[int, Any]) -> TOPSMLIRJITFunction:
@@ -345,7 +347,8 @@ class TOPSMLIRJITFunction(object):
         body = "\n".join(lines[start:end])
         return f"module {{\n{body}\n}}\n"
 
-    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = ""):
+    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
+                              extern_func_name: str = ""):
         return builder.create_tle_raw_region_by_llvm_func(
             llvm,
             self.region_dialect,
@@ -353,6 +356,7 @@ class TOPSMLIRJITFunction(object):
             handles,
             alias_indices,
             hint,
+            extern_func_name,
         )
 
     def make_llvm(self, context=None) -> str:

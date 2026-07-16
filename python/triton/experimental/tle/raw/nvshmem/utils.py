@@ -14,21 +14,42 @@ import shlex
 from triton.runtime.cache import get_cache_manager
 from triton.experimental.tle.raw.cache_key import compute_tle_raw_host_cache_key
 
-try:
-    from cuda.bindings import driver as cuda
-    from cuda.bindings import runtime as cudart
-except ImportError:
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"The cuda\.(cuda|cudart) module is deprecated.*",
-            category=FutureWarning,
-        )
-        from cuda import cuda as cuda
-        from cuda import cudart as cudart
+_cuda = None
+_cudart = None
+
+
+def _get_cuda_modules():
+    global _cuda, _cudart
+    if _cuda is not None and _cudart is not None:
+        return _cuda, _cudart
+    try:
+        from cuda.bindings import driver as cuda
+        from cuda.bindings import runtime as cudart
+    except ImportError:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"The cuda\.(cuda|cudart) module is deprecated.*",
+                category=FutureWarning,
+            )
+            from cuda import cuda as cuda
+            from cuda import cudart as cudart
+    _cuda = cuda
+    _cudart = cudart
+    return _cuda, _cudart
+
+
+
+def __getattr__(name):
+    # Preserve `from ...utils import cuda/cudart` after lazy-loading.
+    if name in ("cuda", "cudart"):
+        cuda, cudart = _get_cuda_modules()
+        return cuda if name == "cuda" else cudart
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def CUDA_CHECK(err):
+    cuda, cudart = _get_cuda_modules()
     if isinstance(err, cuda.CUresult):
         if err != cuda.CUresult.CUDA_SUCCESS:
             raise RuntimeError(f"Cuda Error: {err}: {cuda.cuGetErrorName(err)}")
@@ -213,6 +234,7 @@ def tensor_from_pointer(pointer, shape, dtype, device):
 
 
 def set_signal_cuda_ptr(signal_ptr, signal, stream):
+    cuda, _ = _get_cuda_modules()
     (err, ) = cuda.cuStreamWriteValue64(
         stream.cuda_stream,
         signal_ptr,

@@ -14,7 +14,6 @@ import torch
 from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
 from triton.experimental.tle.raw.source_store import register_source
-from triton.experimental.tle.raw.nvshmem.utils import get_nvshmem_home
 
 # TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 CLANG = os.getenv("CLANG", "clang")
@@ -56,6 +55,8 @@ def _get_nvshmemx_cumodule_init():
     global _nvshmemx_cumodule_init
     if _nvshmemx_cumodule_init is not None:
         return _nvshmemx_cumodule_init
+
+    from triton.experimental.tle.raw.nvshmem.utils import get_nvshmem_home
 
     nvshmem_home = get_nvshmem_home()
     library = ctypes.CDLL(str(Path(nvshmem_home) / "lib" / "libnvshmem_host.so"))
