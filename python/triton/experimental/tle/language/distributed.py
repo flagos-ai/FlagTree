@@ -63,7 +63,7 @@ class MemoryOrder(str, Enum):
     RELAXED = "relaxed"
     ACQUIRE = "acquire"
     RELEASE = "release"
-    ACQ_REL = "acq_rel"
+    ACQ_REL = "acqrel"
 
 
 class GroupKind(str, Enum):
@@ -656,7 +656,6 @@ def check_and_handle_device_intra_barrier(space: str = None, comm_ptr=None,
                                           barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                                           group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
                                           order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None):
-
     if space and space in ("device", "node"):
         builder = _semantic.builder
         ptr = _parse_src_arg(builder, comm_ptr)
@@ -673,10 +672,11 @@ def check_and_handle_device_intra_barrier(space: str = None, comm_ptr=None,
 
 
 @tl.builtin
-def distributed_barrier(mesh: device_mesh | None = None, space: str = None, comm_ptr=None,
+def distributed_barrier(mesh: device_mesh | None = None, comm_ptr=None, space: str = None,
+                        group_kind: str | GroupKind = GroupKind.BLOCK,
                         barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-                        group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
-                        order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None):
+                        order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None,
+                        index: int | None = 0):
     """
     M3 entrypoint: distributed synchronization primitive.
 

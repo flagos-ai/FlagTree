@@ -506,8 +506,8 @@ struct RemotePointersOpConversion
     auto mem = getDistDevicePtr(op, srcElems);
 
     if (space == "cluster") {
-      if (failed(
-              lowerClusterSpace(loc, mem, shardElems, rewriter, mappedPtrs))) {
+      if (failed(lowerClusterSpace(loc, srcElems, shardElems, rewriter,
+                                   mappedPtrs))) {
         return rewriter.notifyMatchFailure(op, "cluster lowering failed");
       }
     } else if (space == "device") {

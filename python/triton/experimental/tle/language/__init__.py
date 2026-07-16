@@ -23,6 +23,9 @@ from .distributed import (
     ShardingSpec,
     device_mesh,
     MeshConfig,
+    BarrierKind,
+    MemoryOrder,
+    GroupKind,
     distributed_barrier,
     distributed_dot,
     _infer_submesh_barrier_group,
@@ -92,6 +95,9 @@ __all__ = [
     "get_mem_pool",
     "create_comm_tensor",
     "cleanup_communicator",
+    "BarrierKind",
+    "MemoryOrder",
+    "GroupKind",
 ]
 
 from . import distributed, gpu, raw

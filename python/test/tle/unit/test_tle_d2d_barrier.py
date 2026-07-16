@@ -24,8 +24,7 @@ def _barrier_d2d_kernel(dev_comm_dptr, dev_mem_ptr, out_ptr, mesh: tl.constexpr)
     )
     val = tl.load(remote_mem)
     tl.store(out_ptr + pid, val)
-    tle.distributed_barrier(comm_ptr=dev_comm_dptr, space="device", group_kind="block", order="acqrel",
-                            barrier_kind="sync")
+    tle.distributed_barrier(comm_ptr=dev_comm_dptr, space="device")
 
 
 def _ir_verify(dev_comm_dptr, dev_mem_dptr, output, grid):
