@@ -1,0 +1,124 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: flagtree
+Upstream-Contact: FlagOS Contributors <contact@flagos.io>
+Source: https://github.com/flagos-ai/FlagTree
+
+Files: *
+Copyright: 2018-2020 Philippe Tillet
+           2020-2022 OpenAI
+           2025-     FlagTree Project Management Committee
+License: MIT
+Comment: Original Triton compiler, forked into FlagTree as a unified
+ multi-backend compiler for AI accelerators.
+
+# --- Bundled / vendored components shipped inside the .deb ----------
+#
+# The wheel built from this source tree statically embeds several
+# upstream artifacts that are downloaded at build time. They ship inside
+# /usr/lib/python3/dist-packages/triton/ in the assembled .deb. Their
+# licenses are listed below for attribution.
+
+Files: usr/lib/python3/dist-packages/triton/_C/libtriton.so
+       usr/lib/python3/dist-packages/triton/_C/libproton.so
+Copyright: 2003-2024 LLVM contributors
+License: Apache-2.0-with-LLVM-exception
+Comment: Statically linked LLVM (commit 10dc3a8e, ~LLVM 18 era), pulled
+ at build time from the OpenAI Triton llvm-builds CDN. See
+ https://oaitriton.blob.core.windows.net/public/llvm-builds/ for the
+ binary distribution and https://github.com/llvm/llvm-project for the
+ source corresponding to the embedded commit.
+
+Files: usr/lib/python3/dist-packages/triton/backends/nvidia/bin/ptxas
+       usr/lib/python3/dist-packages/triton/backends/nvidia/bin/cuobjdump
+Copyright: NVIDIA Corporation
+License: NVIDIA-CUDA-EULA
+Comment: NVIDIA CUDA Toolkit components (PTX assembler and cubin object
+ dump) downloaded at build time from anaconda.org/nvidia. Distribution
+ is governed by the NVIDIA CUDA Toolkit End User License Agreement at
+ https://docs.nvidia.com/cuda/eula/. These files are NOT under a
+ DFSG-free license; downstream packagers targeting Debian/Ubuntu main
+ should split or unbundle them before re-distribution there.
+
+Files: usr/lib/python3/dist-packages/pybind11/*
+Copyright: 2016 Wenzel Jakob <wenzel.jakob@epfl.ch>, All rights reserved.
+License: BSD-3-clause
+Comment: pybind11 2.11.1, header-only library used to expose the C++
+ dialect to Python. Embedded at build time from the upstream Triton
+ build-deps tarball.
+
+# --- License texts ----------------------------------------------------
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining
+ a copy of this software and associated documentation files (the
+ "Software"), to deal in the Software without restriction, including
+ without limitation the rights to use, copy, modify, merge, publish,
+ distribute, sublicense, and/or sell copies of the Software, and to
+ permit persons to whom the Software is furnished to do so, subject to
+ the following conditions:
+ .
+ The above copyright notice and this permission notice shall be
+ included in all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License: Apache-2.0-with-LLVM-exception
+ Licensed under the Apache License, Version 2.0 (the "License") with
+ the LLVM Exception; you may not use these files except in compliance
+ with the License. The full LLVM Exception text is at
+ https://llvm.org/LICENSE.txt and reads, in summary: object code may
+ be incorporated into a software product without obligation to
+ distribute the corresponding source for those exception-covered files.
+ .
+ The full Apache 2.0 text is at https://www.apache.org/licenses/LICENSE-2.0
+ and on Debian systems also at /usr/share/common-licenses/Apache-2.0.
+
+License: NVIDIA-CUDA-EULA
+ Subject to the terms and conditions of the NVIDIA CUDA Toolkit End
+ User License Agreement (EULA), available at:
+ https://docs.nvidia.com/cuda/eula/index.html
+ .
+ The EULA permits redistribution of the listed runtime components
+ alongside applications that use them. It does NOT grant rights to
+ modify or reverse-engineer those components.
+ .
+ This license is NOT compatible with the Debian Free Software
+ Guidelines (DFSG) — packages that include these files cannot enter
+ Debian or Ubuntu main archives. They are acceptable in vendor-hosted
+ distributions and Debian non-free.
+
+License: BSD-3-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ .
+   1. Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+ .
+   2. Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+ .
+   3. Neither the name of the copyright holder nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+ DAMAGE.
