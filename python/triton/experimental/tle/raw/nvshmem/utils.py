@@ -39,7 +39,6 @@ def _get_cuda_modules():
     return _cuda, _cudart
 
 
-
 def __getattr__(name):
     # Preserve `from ...utils import cuda/cudart` after lazy-loading.
     if name in ("cuda", "cudart"):
