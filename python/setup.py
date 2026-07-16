@@ -308,7 +308,7 @@ def download_and_copy(name, src_path, dst_path, variable, version, url_func):
     src_path = src_path(platform_name, version) if callable(src_path) else src_path
     src_path = os.path.join(tmp_path, src_path)
     download = not os.path.exists(src_path)
-    # flagtree: check the cached binary version in ~/.triton, skip download if it matches
+    # FlagTree: check the cached binary version in ~/.triton, skip download if it matches
     if os.path.exists(src_path) and system == "Linux" and shutil.which(src_path) is not None:
         try:
             cache_version = subprocess.check_output([src_path, "--version"]).decode("utf-8").strip()
