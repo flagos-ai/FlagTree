@@ -18,7 +18,6 @@ extern "C" void simple_shift_before_launch(int *mype, int *npes,
                                            int *mype_in_node, int *npes_in_node,
                                            cudaStream_t *stream, int **dst,
                                            int **data_h) {
-  nvshmem_init();
   *mype = nvshmem_my_pe();
   *npes = nvshmem_n_pes();
   *mype_in_node = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE);
@@ -42,6 +41,4 @@ extern "C" void simple_shift_after_launch(cudaStream_t stream, void *dst,
 
   nvshmem_free(dst);
   free(data_h);
-
-  nvshmem_finalize();
 }
