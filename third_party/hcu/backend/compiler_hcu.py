@@ -563,6 +563,7 @@ class HIPBackend(BaseBackend):
         ##    For now it is used as a controller for developers only.
         __HIP_FTZ = True
         hcu.passes.ttgpuir.add_to_llvmir(pm, options.arch, __HIP_FTZ)
+        hcu.passes.ttgpuir.set_func_inline_attrs(pm, options.arch)
         # TritonDistributed Extension: distributed -> llvm
         distributed.passes.ttgpuir.hcu.add_distributed_to_llvm(pm, options.arch, __HIP_FTZ)
         passes.common.add_canonicalizer(pm)
