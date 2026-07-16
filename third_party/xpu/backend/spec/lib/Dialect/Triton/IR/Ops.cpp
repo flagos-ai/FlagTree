@@ -408,14 +408,15 @@ LogicalResult DotScaledOp::verify() {
 }
 
 //-- MakeRangeOp --
-OpFoldResult MakeRangeOp::fold(FoldAdaptor adaptor) {
-  // make_range(start, start + 1) -> constant(start)
-  if (adaptor.getStart() + 1 == adaptor.getEnd()) {
-    auto shapedType = cast<ShapedType>(getType());
-    return SplatElementsAttr::get(shapedType, adaptor.getStartAttr());
-  }
-  return {};
-}
+// XPU: disable folding of `make_range(start, start+1)` to a constant splat.
+// On XPU, MakeRangeOp lowering (see
+// third_party/xpu/lib/Conversion/TritonXPUToLLVM/MakeRangeOpToLLVM.cpp) is
+// what injects the `core_id` based offset so that each of the 64 cores in a
+// cluster computes a distinct index. If we fold size-1 ranges away upstream
+// (in tt.make_range), the XPU pattern never runs, no `core_id` is emitted,
+// and all 64 cores in a cluster end up computing the same address. Mirrors
+// the 3.0 fork where this fold is intentionally disabled.
+OpFoldResult MakeRangeOp::fold(FoldAdaptor adaptor) { return {}; }
 
 LogicalResult MakeRangeOp::verify() {
   int64_t start = getStartAttr().getInt();
