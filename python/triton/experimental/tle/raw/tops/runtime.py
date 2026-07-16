@@ -52,12 +52,14 @@ class TOPSJITFunction(object):
 
     def __init__(self, fn: Any, file: Optional[Path] = None, arch: Optional[str] = None,
                  extra_flags: Optional[List[str]] = None, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, **{k: v for k, v in kwargs.items() if k not in ("extern_func_name", "deferred")})
         self.fn: Final[Any] = fn
         self.arch: Final[str] = arch or _get_gcu_arch()
         self.extra_flags: Final[List[str]] = extra_flags or []
         self.region_dialect: Final[str] = "tops"
         self.arg_dialect: Final[str] = "llvm"
+        self.extern_func_name: Final[Optional[str]] = kwargs.get("extern_func_name")
+        self.deferred: Final[bool] = kwargs.get("deferred", False)
         self.__triton_builtin__: Final[bool] = True
 
         if file is not None:
