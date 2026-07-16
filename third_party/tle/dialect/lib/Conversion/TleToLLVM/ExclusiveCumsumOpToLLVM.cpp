@@ -106,6 +106,10 @@ static Value createWarpScanStepI32(Location loc,
     Value added = createAdd(loc, rewriter, shuffled, val, elemTy);
     return b.select(pred, added, val);
   } else {
+    auto intTy = dyn_cast<IntegerType>(val.getType());
+    if (!intTy || intTy.getWidth() != 32)
+      return Value();
+
     mlir::triton::PTXBuilder ptxBuilder;
     auto *out = ptxBuilder.newOperand("=r", /*init=*/false);
     auto *in = ptxBuilder.newOperand(val, "r");
