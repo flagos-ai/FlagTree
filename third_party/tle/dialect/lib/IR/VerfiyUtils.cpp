@@ -19,6 +19,8 @@ namespace RemotePointers {
 llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result) {
   // flagcxGetIntraPointerC accept raw device pointers represented as signless
   // i64 values.
+  if (!src)
+    return success();
   if (!src.getType().isSignlessInteger(64))
     return failure();
 
@@ -39,7 +41,7 @@ llvm::LogicalResult verifyDeviceSpace(mlir::Operation *op, mlir::Value src) {
   auto barrierTypeAttr = op->getAttrOfType<StringAttr>("barrier_type");
   auto orderAttr = op->getAttrOfType<StringAttr>("order");
 
-  if (src && kindAttr && barrierTypeAttr && orderAttr)
+  if (kindAttr && barrierTypeAttr && orderAttr)
     return success();
   else
     return op->emitOpError()

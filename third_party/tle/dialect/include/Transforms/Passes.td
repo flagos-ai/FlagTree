@@ -416,8 +416,6 @@ def TritonTleAddDistributedParams
   }];
 
   let dependentDialects = [
-    "mlir::func::FuncDialect",
-    "mlir::arith::ArithDialect",
     "mlir::triton::TritonDialect"
   ];
 }

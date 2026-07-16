@@ -205,4 +205,7 @@ def create_comm_tensor(buf_tensor):
 
     # Synchronize all ranks before kernel launch
     dist.barrier()
+
+    from triton.runtime import DistributedRtContext
+    DistributedRtContext(dev_comm_dptr.value, dev_mem_dptr.value)
     return dev_comm_dptr.value, dev_mem_dptr.value

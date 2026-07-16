@@ -3,6 +3,7 @@ from triton._C.libtriton import ir, passes, llvm, nvidia
 from triton._C.libtriton import tle
 from triton import knobs
 from triton.runtime.errors import PTXASError
+from triton.runtime._distributed import DistributedRtContext
 
 from dataclasses import dataclass
 import functools
@@ -279,6 +280,8 @@ class CUDABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         dump_enabled = pm.enable_debug()
         emuTF32 = (capability // 10 >= 8)
+        if DistributedRtContext().is_lite_mode:
+            tle.passes.add_params_for_distribution(pm)
         passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 32, opt.num_ctas)
         # flagtree tle raw
         tle.raw_passes.add_tle_convert_arg_to_memdesc(pm)

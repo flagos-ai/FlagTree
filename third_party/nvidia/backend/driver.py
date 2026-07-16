@@ -215,6 +215,9 @@ def make_launcher(constants, signature, tensordesc_meta):
     flat_signature = []
     for sig in signature.values():
         _flatten_signature(sig, flat_signature)
+    #adxx
+    # flat_signature.insert(0, "*i64")   # dev_comm_ptr
+    # flat_signature.insert(1, "*i64")   # dev_mem_ptr
     signature = {i: s for i, s in enumerate(flat_signature)}
     args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
     # Record the end of regular arguments;
@@ -257,7 +260,9 @@ def make_launcher(constants, signature, tensordesc_meta):
         for i, ty in signature.items()
         if ty in FLOAT_STORAGE_TYPE
     ]
+
     params = [f"&arg{i}" for i, ty in signature.items() if ty != "constexpr"]
+
     params.append("&global_scratch")
     params.append("&profile_scratch")
     tle_cpp_define = "#define __TLE__ 1"

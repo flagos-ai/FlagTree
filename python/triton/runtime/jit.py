@@ -20,6 +20,7 @@ from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
 from .cache import get_cache_key
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl
+from ._distributed import DistributedRtContext
 
 TRITON_MODULE = "triton.language"
 GLUON_MODULE = "triton.experimental.gluon.language"
@@ -706,6 +707,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
     def run(self, *args, grid, warmup, **kwargs):
         kwargs["debug"] = kwargs.get("debug", self.debug) or knobs.runtime.debug
         kwargs["instrumentation_mode"] = knobs.compilation.instrumentation_mode
+        # DistributedRtContext().add_args_to_jitfunction(kwargs=kwargs, params=self.params)
 
         # parse options
         device = driver.active.get_current_device()
@@ -727,7 +729,6 @@ class JITFunction(JITCallable, KernelInterface[T]):
         if kernel is None:
             options, signature, constexprs, attrs = self._pack_args(backend, kwargs, bound_args, specialization,
                                                                     options)
-
             kernel = self._do_compile(key, signature, device, constexprs, options, attrs, warmup)
             if kernel is None:
                 return None
@@ -752,8 +753,15 @@ class JITFunction(JITCallable, KernelInterface[T]):
                 kernel = kernel.result()
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
-            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
-                       knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *bound_args.values())
+
+            dist_param = []
+            ctx = DistributedRtContext()
+            if ctx.is_lite_mode:
+                dist_param += [ctx.comm_ptr, ctx.mem_ptr]
+            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata,
+                       launch_metadata, knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *dist_param,
+                       *bound_args.values())
+
         return kernel
 
     def repr(self, _):
@@ -771,7 +779,6 @@ class JITFunction(JITCallable, KernelInterface[T]):
         self.do_not_specialize_on_alignment = do_not_specialize_on_alignment
         self._repr = repr
         self.launch_metadata = launch_metadata
-
         self.params = []
         for i, param in enumerate(self.signature.parameters.values()):
             dns = i in do_not_specialize or param.name in do_not_specialize

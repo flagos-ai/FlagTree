@@ -374,7 +374,7 @@ LogicalResult lowerClusterSpace(Location loc, ValueRange srcElems,
   return success();
 }
 
-LogicalResult lowerDeviceSpace(Location loc, ValueRange srcElems,
+LogicalResult lowerDeviceSpace(Location loc, Value mem_ptr,
                                ValueRange shardElems, Value offsetVal,
                                int elemBytes,
                                ConversionPatternRewriter &rewriter,
@@ -387,7 +387,7 @@ LogicalResult lowerDeviceSpace(Location loc, ValueRange srcElems,
   }
   auto func = getOrInsertGetPeerPointer(module, rewriter.getContext());
 
-  Value memPtr = srcElems[0];
+  Value memPtr = mem_ptr;
   Value peer = shardElems[0];
 
   auto i64Ty = rewriter.getI64Type();
@@ -452,6 +452,15 @@ LogicalResult lowerNodeSpace(Location loc, ValueRange srcElems,
   return failure(); // Not implemented yet
 }
 
+Value getDistDevicePtr(tle::RemotePointersOp op, SmallVector<Value> &srcElems) {
+  if (!srcElems.empty())
+    return srcElems[0];
+  else {
+    auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
+    return func.getArgument(1);
+  }
+}
+
 struct RemotePointersOpConversion
     : public ConvertOpToLLVMPattern<tle::RemotePointersOp> {
   RemotePointersOpConversion(LLVMTypeConverter &typeConverter,
@@ -467,18 +476,23 @@ struct RemotePointersOpConversion
       llvm::errs() << "[RemotePointersOpConversion] " << msg << "\n";
       return rewriter.notifyMatchFailure(op, msg);
     };
-    auto srcElems = unpackLLElements(loc, adaptor.getSrc(), rewriter);
-    if (srcElems.empty())
+
+    SmallVector<Value> srcElems;
+    auto space = adaptor.getSpace();
+
+    if (adaptor.getSrc())
+      srcElems = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+
+    if (space != "device" && srcElems.empty())
       return reportFailure("expected non-empty source pointer elements");
 
     auto shardElems = unpackLLElements(loc, adaptor.getShardId(), rewriter);
     if (shardElems.empty())
       return reportFailure("expected non-empty shard_id elements");
-    if (shardElems.size() != 1 && shardElems.size() != srcElems.size())
+    if (space != "device" && shardElems.size() != 1 &&
+        shardElems.size() != srcElems.size())
       return reportFailure(
           "shard_id must be scalar or match source pointer element count");
-
-    auto space = adaptor.getSpace();
 
     Value offsetVal;
     if (adaptor.getOffset()) {
@@ -489,9 +503,11 @@ struct RemotePointersOpConversion
     }
 
     SmallVector<Value> mappedPtrs;
+    auto mem = getDistDevicePtr(op, srcElems);
+
     if (space == "cluster") {
-      if (failed(lowerClusterSpace(loc, srcElems, shardElems, rewriter,
-                                   mappedPtrs))) {
+      if (failed(
+              lowerClusterSpace(loc, mem, shardElems, rewriter, mappedPtrs))) {
         return rewriter.notifyMatchFailure(op, "cluster lowering failed");
       }
     } else if (space == "device") {
@@ -506,19 +522,17 @@ struct RemotePointersOpConversion
               "result pointee type must be scalar int or float");
         elemBytes = elemBits.value() / 8;
       }
-      if (failed(lowerDeviceSpace(loc, srcElems, shardElems, offsetVal,
-                                  elemBytes, rewriter, mappedPtrs))) {
+      if (failed(lowerDeviceSpace(loc, mem, shardElems, offsetVal, elemBytes,
+                                  rewriter, mappedPtrs))) {
         return rewriter.notifyMatchFailure(op, "device lowering failed");
       }
     } else if (space == "node") {
-      if (failed(lowerNodeSpace(loc, srcElems, shardElems, rewriter,
-                                mappedPtrs))) {
+      if (failed(lowerNodeSpace(loc, mem, shardElems, rewriter, mappedPtrs))) {
         return rewriter.notifyMatchFailure(op, "node lowering failed");
       }
     } else {
       return reportFailure("unsupported remote space: " + space.str());
     }
-
     Value packed =
         packLLElements(loc, typeConverter, mappedPtrs, rewriter, op.getType());
     rewriter.replaceOp(op, packed);

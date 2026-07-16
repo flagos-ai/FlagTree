@@ -53,20 +53,18 @@ struct GetLocalRankOpConversion
   LogicalResult
   matchAndRewrite(tle::GetLocalRankOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-
     auto reportFailure = [&](StringRef msg) -> LogicalResult {
       llvm::errs() << "[GetLocalRankOpConversion] " << msg << "\n";
       return failure();
     };
     auto loc = op.getLoc();
-    auto srcElems = unpackLLElements(loc, adaptor.getSrc(), rewriter);
-    auto getLocalPeCall = tle::getLocalPeFuncCall(loc, rewriter, srcElems[0]);
+    auto comm = op.getSrc();
+    auto getLocalPeCall = tle::getLocalPeFuncCall(loc, rewriter, comm);
 
     Value localPe = getLocalPeCall.getResult();
     if (!localPe.getType().isInteger(32))
       return reportFailure("expected i32 result");
     rewriter.replaceOp(op, localPe);
-
     return success();
   }
 };

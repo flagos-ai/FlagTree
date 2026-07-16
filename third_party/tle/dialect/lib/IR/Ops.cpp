@@ -897,13 +897,13 @@ LogicalResult DistributedBarrierOp::verify() {
 }
 
 LogicalResult RemotePointersOp::verify() {
-  Type srcTy = getSrc().getType();
-  Type resultTy = getResult().getType();
   auto spaceAttr = getSpace();
   if (spaceAttr == "device") {
     if (failed(RemotePointers::verifyDeviceSpace(getSrc(), getResult())))
       return failure();
   } else {
+    Type srcTy = getSrc().getType();
+    Type resultTy = getResult().getType();
     auto getPtrInfo = [&](Type ty, triton::PointerType &ptr, bool &isTensor,
                           ArrayRef<int64_t> &shape,
                           Attribute &encoding) -> LogicalResult {

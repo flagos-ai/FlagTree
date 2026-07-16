@@ -27,12 +27,20 @@ def _as_positive_int(value: Any, label: str) -> int:
     return value
 
 
+def _parse_src_arg(builder, src):
+    if src is None:
+        return src
+    else:
+        return src.handle
+
+
 # Get the current device id
 @tl.builtin
-def _get_local_rank(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
+def _get_local_rank(dev_comm_ptr, _semantic=None, ret_dtype=tl.int32):
     builder = _semantic.builder
     ret_ir_ty = ret_dtype.to_ir(builder)
-    result = builder.get_device_id(ret_ir_ty, dev_mem_ptr.handle)
+    ptr = _parse_src_arg(builder, dev_comm_ptr)
+    result = builder.get_device_id(ret_ir_ty, ptr)
     return tl.tensor(result, ret_dtype)
 
 
@@ -609,7 +617,7 @@ def shard_id(
     mesh = tl._unwrap_if_constexpr(mesh)
     axis = tl._unwrap_if_constexpr(axis)
 
-    if comm_ptr is not None:
+    if axis in ("device", "node"):
         return _get_local_rank(comm_ptr, _semantic=_semantic, ret_dtype=tl.int32)
 
     if not isinstance(mesh, device_mesh):
@@ -648,14 +656,12 @@ def check_and_handle_device_intra_barrier(space: str = None, comm_ptr=None,
                                           barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                                           group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
                                           order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None):
-    if space or comm_ptr:
-        if space and space != "device" and comm_ptr:
-            raise ValueError(f"{space} space and comm_ptr cannot be used together")
-        if space and space == "device" and not comm_ptr:
-            raise NotImplementedError(f"distributed_barrier with space={space} must have comm_ptr arg")
+
+    if space and space in ("device", "node"):
         builder = _semantic.builder
+        ptr = _parse_src_arg(builder, comm_ptr)
         builder.create_distributed_barrier(
-            src=comm_ptr.handle,
+            src=ptr,
             barrier_index=index or 0,
             space=_parse_device_barrier_args("device"),
             group_kind=_parse_device_barrier_args(group_kind),
@@ -813,7 +819,7 @@ def _create_remote_pointers_tensor(
         "cluster": (dtype, 7),
         "device": (dtype, 1),
     }.get(space))
-    if tensor.type.is_block():
+    if tensor and tensor.type.is_block():
         remote_type = tl.block_type(remote_ptr_dtype, list(tensor.shape)).to_ir(builder)
     else:
         remote_type = remote_ptr_dtype.to_ir(builder)
@@ -838,11 +844,12 @@ def _create_remote_pointers_tensor(
         # automatic injection (e.g. inside this helper).
         if offset_tensor.dtype != tl.int64:
             offset_tensor = tl.cast(offset_tensor, tl.int64, _semantic=_semantic)
-        remote_op = builder.create_remote_pointers(remote_type, tensor.handle, shard_id_tensor.handle, space,
+        ptr = _parse_src_arg(builder, tensor)
+        remote_op = builder.create_remote_pointers(remote_type, ptr, shard_id_tensor.handle, space,
                                                    offset_tensor.handle)
     else:
         remote_op = builder.create_remote_pointers(remote_type, tensor.handle, shard_id_tensor.handle, space)
-    if tensor.type.is_block():
+    if tensor and tensor.type.is_block():
         return tl.tensor(remote_op.get_result(0), tl.block_type(remote_ptr_dtype, list(tensor.shape)))
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
 
@@ -888,7 +895,7 @@ def _remote_pointer(
     _semantic=None,
 ) -> tl.tensor:
 
-    if not isinstance(tensor, tl.tensor):
+    if not isinstance(tensor, tl.tensor) and space not in ("device", "node"):
         raise TypeError(f"tensor must be tl.tensor, got {type(tensor).__name__}")
 
     space = tl._unwrap_if_constexpr(space)
@@ -917,8 +924,8 @@ def _remote_pointer(
 
 @tl.builtin
 def remote(
-    tensor,
-    shard_id,
+    tensor=None,
+    shard_id=None,
     scope: device_mesh | None = None,
     space: str = "cluster",
     dtype: tl.dtype = None,
@@ -953,7 +960,7 @@ def remote(
 
     # Direct pointer path: support local_ptr scalar/tensor values and return
     # remote pointer with preserved shape.
-    if isinstance(tensor, tl.tensor):
+    if isinstance(tensor, tl.tensor) or (tensor is None and space in ("device", "node")):
         return _remote_pointer(tensor, shard_id, scope=scope, space=space, _semantic=_semantic, dtype=dtype,
                                offset=offset)
 

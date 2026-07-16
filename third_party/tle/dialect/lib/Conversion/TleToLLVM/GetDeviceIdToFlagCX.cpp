@@ -30,10 +30,21 @@ struct GetDeviceIdOpConversion
   matchAndRewrite(tle::GetDeviceIdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Value src = adaptor.getInput();
+    auto comm = Value();
+    auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
+    if (!func) {
+      return rewriter.notifyMatchFailure(
+          op, "expected parent LLVM::LLVMFuncOp, but none was found. ");
+    }
 
+    if (auto src = adaptor.getInput())
+      comm = src;
+    else
+      comm = func.getArgument(0);
+
+    rewriter.modifyOpInPlace(op, [&]() { op->insertOperands(0, comm); });
     auto localRank = rewriter.create<tle::GetLocalRankOp>(
-        op.getLoc(), rewriter.getI32Type(), src);
-
+        op.getLoc(), rewriter.getI32Type(), comm);
     rewriter.replaceOp(op, localRank.getResult());
 
     return success();

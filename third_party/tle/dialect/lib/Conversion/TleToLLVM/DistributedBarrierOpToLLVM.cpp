@@ -458,8 +458,14 @@ struct DistributedBarrierOpConversion
     if (order < 0)
       return rewriter.notifyMatchFailure(op, "invalid order");
 
-    auto srcElems = unpackLLElements(loc, adaptor.getSrc(), rewriter);
-    auto comm = srcElems[0];
+    auto comm = Value();
+    if (auto src = adaptor.getSrc()) {
+      auto srcElems = unpackLLElements(loc, src, rewriter);
+      comm = srcElems[0];
+    } else {
+      auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
+      comm = func.getArgument(0);
+    }
     auto coopKindAttr = rewriter.getI32IntegerAttr(coopKind);
     auto newOrderAttr = rewriter.getI32IntegerAttr(order);
     auto barrierTypeAttr = op.getBarrierTypeAttr();

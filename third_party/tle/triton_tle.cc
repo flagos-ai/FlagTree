@@ -531,8 +531,8 @@ void init_triton_tle_ir(py::module &&m) {
            })
       .def(
           "create_distributed_barrier",
-          [](TritonOpBuilder &self, Value src, size_t barrier_index = 0,
-             const std::string &space = "device",
+          [](TritonOpBuilder &self, std::optional<Value> src,
+             size_t barrier_index = 0, const std::string &space = "device",
              const std::string &group_kind = "block",
              const std::string &order = "acqrel",
              const std::string &barrier_kind = "sync") -> void {
@@ -549,12 +549,13 @@ void init_triton_tle_ir(py::module &&m) {
                 builder.getI32IntegerAttr(static_cast<int32_t>(barrier_index));
 
             self.create<tle::DistributedBarrierOp>(
-                src, spaceAttr, barrierTypeAttr, orderAttr, kindAttr,
-                barrierIndexAttr, IntegerAttr(), DenseI32ArrayAttr(),
+                src.value_or(Value()), spaceAttr, barrierTypeAttr, orderAttr,
+                kindAttr, barrierIndexAttr, IntegerAttr(), DenseI32ArrayAttr(),
                 DenseI32ArrayAttr(), DenseI32ArrayAttr());
           },
-          py::arg("src"), py::arg("barrier_index"), py::arg("space"),
-          py::arg("group_kind"), py::arg("order"), py::arg("barrier_kind"))
+          py::arg("src") = py::none(), py::arg("barrier_index"),
+          py::arg("space"), py::arg("group_kind"), py::arg("order"),
+          py::arg("barrier_kind"))
       .def(
           "create_distributed_barrier",
           [](TritonOpBuilder &self, const std::string &groupKind,
@@ -597,8 +598,8 @@ void init_triton_tle_ir(py::module &&m) {
           py::arg("group_mask"))
       .def(
           "create_remote_pointers",
-          [](TritonOpBuilder &self, Type resultTy, Value src, Value shardId,
-             const std::string &space,
+          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> &src,
+             Value shardId, const std::string &space,
              std::optional<Value> &offset) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
@@ -609,15 +610,21 @@ void init_triton_tle_ir(py::module &&m) {
                   ". Expected one of: cluster, device, node.");
             }
             auto space_attr = builder.getStringAttr(space);
+
             return self.create<tle::RemotePointersOp>(
-                resultTy, src, shardId, space_attr, offset.value_or(Value()));
+                resultTy, src.value_or(Value()), shardId, space_attr,
+                offset.value_or(Value()));
           },
-          py::arg("resultTy"), py::arg("src"), py::arg("shardId"),
+          py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
           py::arg("space"), py::arg("offset") = py::none())
       .def("get_device_id",
-           [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {
+           [](TritonOpBuilder &self, Type resultTy,
+              std::optional<Value> src) -> Value {
              auto &builder = self.getBuilder();
-             return self.create<tle::GetDeviceIdOp>(resultTy, src);
+             auto ptr = Value();
+             if (src.has_value())
+               ptr = src.value();
+             return self.create<tle::GetDeviceIdOp>(resultTy, ptr);
            })
       .def("get_n_pes",
            [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {

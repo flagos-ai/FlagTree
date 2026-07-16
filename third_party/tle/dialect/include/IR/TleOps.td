@@ -333,9 +333,9 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
   let hasVerifier = 1;
 }
 
-def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure]> {
+def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure, AttrSizedOperandSegments]> {
   let arguments = (ins
-    Tle_LocalPointerResultType:$src,
+    Optional<Tle_LocalPointerResultType>:$src,
     TT_Int:$shard_id,
     StrAttr:$space,
     Optional<TT_IntLike>:$offset
@@ -356,7 +356,7 @@ def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
 def Tle_GetDeviceIdOp : Tle_Op<"get_device_id"> {
   let summary = "Get local PE id";
   let arguments = (ins
-     AnyType:$input
+     Optional<AnyType>:$input
   );
   let results = (outs I32:$result);
   let hasVerifier = 1;
