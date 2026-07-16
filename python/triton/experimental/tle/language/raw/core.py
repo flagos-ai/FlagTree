@@ -52,10 +52,10 @@ def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic):
     else:
         context = _semantic.builder.get_context()
         llvm = func.make_llvm(context)
-        alias_indices = _resolve_alias_indices(func, llvm, handles, output_indices, func.extern_func_name or "",
-                                               _semantic)
+        extern_func_name = getattr(func, "extern_func_name", None) or ""
+        alias_indices = _resolve_alias_indices(func, llvm, handles, output_indices, extern_func_name, _semantic)
         dsl_region_op = func.create_region_by_llvm(_semantic.builder, llvm, handles, alias_indices, hint,
-                                                   func.extern_func_name or "")
+                                                   extern_func_name)
     return _wrap_results(args, alias_indices, dsl_region_op, smem=smem)
 
 
