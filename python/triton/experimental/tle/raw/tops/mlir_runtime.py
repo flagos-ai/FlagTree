@@ -13,11 +13,12 @@ from mlir import ir
 from mlir.passmanager import PassManager
 
 from ..mlir.codegen import MLIRCodeGenerator
+from triton.experimental.tle.raw.runtime import RawJITFunction
 
 _GCU_COMPILER_OPT = "/opt/triton_gcu/bin/gcu-compiler-opt"
 
 
-class TOPSMLIRJITFunction(object):
+class TOPSMLIRJITFunction(RawJITFunction):
     """TLE-Raw dialect for TOPS MLIR EDSL: writes MLIR that lowers to GCU-compatible LLVM IR.
 
     Usage:
@@ -32,8 +33,7 @@ class TOPSMLIRJITFunction(object):
 
     def __init__(self, fn: Any, pipeline: Optional[List[str]] = None, context: Optional[ir.Context] = None,
                  arch: str = "gcu400", use_gcu_opt: bool = True, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.fn: Final[Any] = fn
+        super().__init__(fn, **kwargs)
         self.arch: Final[str] = arch
         self.use_gcu_opt: Final[bool] = use_gcu_opt
         self.region_dialect: Final[str] = "tops"
@@ -53,9 +53,6 @@ class TOPSMLIRJITFunction(object):
         ctx = ir.Context() if context is None else context
         ctx.allow_unregistered_dialects = True
         self.context: Final[ir.Context] = ctx
-        self.extern_func_name: Final[Optional[str]] = kwargs.get("extern_func_name")
-        self.deferred: Final[bool] = kwargs.get("deferred", False)
-        self.__triton_builtin__: Final[bool] = True
 
     def __deepcopy__(self, memo: Dict[int, Any]) -> TOPSMLIRJITFunction:
         return self.__class__(
@@ -349,15 +346,7 @@ class TOPSMLIRJITFunction(object):
 
     def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
                               extern_func_name: str = ""):
-        return builder.create_tle_raw_region_by_llvm_func(
-            llvm,
-            self.region_dialect,
-            self.arg_dialect,
-            handles,
-            alias_indices,
-            hint,
-            extern_func_name,
-        )
+        return super().create_region_by_llvm(builder, llvm, handles, alias_indices, hint, extern_func_name)
 
     def make_llvm(self, context=None) -> str:
         if self.use_gcu_opt and os.path.isfile(_GCU_COMPILER_OPT):

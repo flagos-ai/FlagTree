@@ -14,6 +14,7 @@ import torch
 from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
 from triton.experimental.tle.raw.source_store import register_source
+from triton.experimental.tle.raw.runtime import RawJITFunction
 
 # TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
 CLANG = os.getenv("CLANG", "clang")
@@ -86,19 +87,15 @@ def _install_cumodule_hook():
     _cumodule_hook_installed = True
 
 
-class CUDAJITFunction(object):
+class CUDAJITFunction(RawJITFunction):
 
     def __init__(self, fn: Any, file: Path, *args, **kwargs) -> None:
-        super().__init__()
-        self.fn: Final[Any] = fn
+        super().__init__(fn, **kwargs)
         self.code: Final[str] = file.read_text()
         self.region_dialect: Final[str] = "cuda"
         self.lowered_region_dialect: Final[str] = "llvm"
         self.arg_dialect: Final[str] = "llvm"
         self.source_file: Final[str] = str(file)
-        self.extern_func_name = kwargs.get("extern_func_name", None)
-        self.deferred: Final[bool] = kwargs.get("deferred", False)
-        self.__triton_builtin__: Final[bool] = True
 
         if "nvshmem" in self.code:
             _install_cumodule_hook()
@@ -117,15 +114,7 @@ class CUDAJITFunction(object):
 
     def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
                               extern_func_name: str = ""):
-        return builder.create_tle_raw_region_by_llvm_func(
-            llvm,
-            self.region_dialect,
-            self.arg_dialect,
-            handles,
-            alias_indices,
-            hint,
-            extern_func_name,
-        )
+        return super().create_region_by_llvm(builder, llvm, handles, alias_indices, hint, extern_func_name)
 
     def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):
         return builder.create_tle_raw_region_deferred(
