@@ -12,6 +12,7 @@
 如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
+tsm_smi  # SMI V260604163331.01
 # Plan A: docker pull (13.2GB)
 IMAGE=harbor.baai.ac.cn/flagtree/flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04:20260604163331-clean
 docker pull ${IMAGE}
