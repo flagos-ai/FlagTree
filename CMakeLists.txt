@@ -237,7 +237,9 @@ function(add_triton_object name)
   set(_flagtree_srcs "")
   foreach(_src ${ARG_UNPARSED_ARGUMENTS})
     set(_resolved "${_src}")
-    if(FLAGTREE_BACKEND)
+    # Backends with a dedicated spec target use that target instead of a source
+    # override; otherwise the same replacement object would be linked twice.
+    if(FLAGTREE_BACKEND AND NOT TARGET "FlagTree_${FLAGTREE_BACKEND}_${name}")
       if(IS_ABSOLUTE "${_src}")
         set(_abs "${_src}")
       else()
