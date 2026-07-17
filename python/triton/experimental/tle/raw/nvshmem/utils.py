@@ -149,10 +149,12 @@ def _compile_cuda_host_to_cache(
     temporary_path = Path(temporary.name)
     temporary.close()
     nvcc, _ = get_nvcc()
+    lib_dir = nvshmem_home / "lib"
     host_lib = resolve_nvshmem_host_library(nvshmem_home)
-    device_lib = nvshmem_home / "lib" / "libnvshmem_device.a"
+    device_lib = lib_dir / "libnvshmem_device.a"
     if not device_lib.is_file():
-        raise RuntimeError(f"Cannot find libnvshmem_device.a under {nvshmem_home / 'lib'}")
+        raise RuntimeError(f"Cannot find libnvshmem_device.a under {lib_dir}")
+    # nvcc cannot take .so as a positional input; use -L/-l (-l: for versioned SONAME).
     command = [
         nvcc,
         "-shared",
@@ -161,8 +163,13 @@ def _compile_cuda_host_to_cache(
         "-rdc=true",
         f"-arch={arch}",
         f"-I{nvshmem_home / 'include'}",
-        str(host_lib),
-        str(device_lib),
+        f"-L{lib_dir}",
+        f"-l:{host_lib.name}",
+        "-lnvshmem_device",
+        "-Xlinker",
+        "-rpath",
+        "-Xlinker",
+        str(lib_dir),
         "-o",
         str(temporary_path),
         str(source_path),
