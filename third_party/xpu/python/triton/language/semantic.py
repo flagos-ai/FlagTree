@@ -1086,10 +1086,16 @@ class TritonSemantic(Generic[TensorTy]):
                 self.builder.create_load(ptr.handle, cache, eviction, is_volatile, flagtree_hints, offset_state_policy,
                                          mem_sync_mode), dst_ty)
         else:
-            ret = self.tensor(
+            # XPU masked loads do not consume the Triton `other` operand in
+            # the device load itself. Materialize its semantics in frontend IR
+            # before lowering to GM2LM.
+            load_value = self.tensor(
                 self.builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache,
                                                 eviction, is_volatile, flagtree_hints, offset_state_policy,
                                                 mem_sync_mode), dst_ty)
+            if other is None:
+                other = self.full([], 0, elt_ty)
+            ret = self.where(mask, load_value, other)
         if is_bool:
             ret = self.cast(ret, tl.int1)
         return ret

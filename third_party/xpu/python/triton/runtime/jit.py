@@ -714,6 +714,10 @@ class JITFunction(JITCallable, KernelInterface[T]):
             hook(*args, **kwargs)
 
         kernel_cache, kernel_key_cache, target, backend, binder = self.device_caches[device]
+        # XPU bakes the launch grid into XPUOptions during compilation. Keep
+        # compilation metadata consistent with the grid used at launch.
+        if backend.binary_ext == 'xpubin':
+            kwargs['grid'] = grid
         # specialization is list[tuple[str, Any]], where first element of tuple is
         # the type and the second parameter is the 'specialization' value.
         bound_args, specialization, options = binder(*args, **kwargs)

@@ -601,13 +601,7 @@ class XPUBackend(BaseBackend):
         def float_mod(input, other, _semantic):
             from triton.language.extra.xpu.libdevice import fmod
 
-            r = fmod(input, other, _semantic=_semantic)
-            zero = _semantic.full([], 0.0, input.type.scalar)
-            needs_fixup = _semantic.and_(
-                _semantic.not_equal(r, zero),
-                _semantic.xor_(_semantic.less_than(input, zero), _semantic.less_than(other, zero)),
-            )
-            return _semantic.where(needs_fixup, _semantic.add(r, other, sanitize_overflow=False), r)
+            return fmod(input, other, _semantic=_semantic)
 
         codegen_fns = {
             "min_dot_size": lambda lhsType, rhsType: (1, 1, 1),
