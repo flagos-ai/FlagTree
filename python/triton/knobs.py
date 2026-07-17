@@ -501,6 +501,8 @@ class nvidia_knobs(base_knobs):
     libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
     libcuda_path: env_opt_str = env_opt_str("TRITON_LIBCUDA_PATH")
 
+    nvshmem_home: env_opt_str = env_opt_str("NVSHMEM_HOME")
+
 
 class amd_knobs(base_knobs):
     use_buffer_ops: env_bool = env_bool("AMDGCN_USE_BUFFER_OPS", True)

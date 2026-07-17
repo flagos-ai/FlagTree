@@ -140,7 +140,7 @@ class CUDAOptions:
             extern_libs['libdevice'] = knobs.nvidia.libdevice_path or str(default_libdir / 'libdevice.10.bc')
 
         # TODO: change it to use @dialect library=nvshmem as the condition for loading libnvshmem_device
-        nvshmem_home = os.getenv("NVSHMEM_HOME")
+        nvshmem_home = knobs.nvidia.nvshmem_home
         if nvshmem_home and (not extern_libs.get('libnvshmem_device', None)):
             extern_libs['libnvshmem_device'] = str(Path(nvshmem_home) / 'lib' / 'libnvshmem_device.bc')
 
