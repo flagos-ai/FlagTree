@@ -761,7 +761,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
                 kernel = kernel.result()
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
-
+            # flagtree tle distributed
             dist_param = []
             ctx = DistributedRtContext()
             if ctx.is_lite_mode:
