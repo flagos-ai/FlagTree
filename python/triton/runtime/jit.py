@@ -737,7 +737,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         if kernel is None:
             options, signature, constexprs, attrs = self._pack_args(backend, kwargs, bound_args, specialization,
                                                                     options)
-            
+
             kernel = self._do_compile(key, signature, device, constexprs, options, attrs, warmup)
             if kernel is None:
                 return None
