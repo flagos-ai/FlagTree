@@ -737,6 +737,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         if kernel is None:
             options, signature, constexprs, attrs = self._pack_args(backend, kwargs, bound_args, specialization,
                                                                     options)
+            
             kernel = self._do_compile(key, signature, device, constexprs, options, attrs, warmup)
             if kernel is None:
                 return None
@@ -761,7 +762,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
                 kernel = kernel.result()
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
-            # flagtree tle distributed
+            # flagtree tle distributed: Add dist_param to kernel.run
             dist_param = []
             ctx = DistributedRtContext()
             if ctx.is_lite_mode:
