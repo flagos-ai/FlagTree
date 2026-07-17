@@ -1,20 +1,125 @@
 # Labels applied to PRs based on the files changed.
-# Backend labels are set when any file under the backend's third_party/ directory changes.
-# The DOC label is set when every changed file is a documentation file
-# (matches the same "docs-only" definition used by check-docs-only action:
-#  *.md / *.yml / *.txt / CODEOWNERS, but NOT CMakeLists.txt).
+# See: https://github.com/actions/labeler
 
-# ---- Backend labels ----
+# ============================================================
+# 1. DOC - Pure text/documentation changes (can skip CI tests)
+#    Condition: Only contains md, rst, txt, png, jpg files
+#    Exclude: CMakeLists.txt, CMakeCache.txt, cpp, h, py, sh, yml, yaml
+# ============================================================
 
-aipu:
+DOC:
+  - all:
+      - changed-files:
+          - any-glob-to-all-files:
+              - '**/*.md'
+              - '**/*.rst'
+              - '**/*.txt'
+              - '**/*.png'
+              - '**/*.jpg'
+
+      - changed-files:
+          - all-globs-to-all-files:
+              - '!**/CMakeLists.txt'
+              - '!**/CMakeCache.txt'
+
+      - changed-files:
+          - all-globs-to-all-files:
+              - '!**/*.cpp'
+              - '!**/*.h'
+              - '!**/*.py'
+              - '!**/*.sh'
+              - '!**/*.yml'
+              - '!**/*.yaml'
+
+# ============================================================
+# 2. CI - CI related files (everything under .github except delivery and build workflows)
+# ============================================================
+
+CI:
+  - all:
+      - changed-files:
+          - any-glob-to-any-file:
+              - '.github/**'
+      - changed-files:
+          - all-globs-to-all-files:
+              - '!.github/workflows/*delivery.yml'
+              - '!.github/workflows/*-delivery.yml'
+              - '!.github/workflows/build-*.yml'
+
+# ============================================================
+# 3. CD - Delivery/release workflows
+# ============================================================
+
+CD:
   - changed-files:
       - any-glob-to-any-file:
-          - 'third_party/aipu/**'
+          - '.github/workflows/*delivery.yml'
+          - '.github/workflows/*-delivery.yml'
+
+# ============================================================
+# 4. core - C++ core compiler code
+# ============================================================
+
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'bin/**'
+          - 'include/**'
+          - 'lib/**'
+
+# ============================================================
+# 5. python - Python code
+# ============================================================
+
+python:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'python/**'
+
+# ============================================================
+# 6. test - Test code (python/test is a subset of python)
+# ============================================================
+
+test:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'test/**'
+          - 'unittest/**'
+          - 'python/test/**'
+
+# ============================================================
+# 7. build - Build system
+# ============================================================
+
+build:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/CMakeLists.txt'
+          - '**/CMakeCache.txt'
+          - 'cmake/**'
+          - 'packaging/**'
+          - 'pyproject.toml'
+          - 'setup.py'
+          - '.github/workflows/build-*.yml'
+
+# ============================================================
+# 8. Backend labels - Backend platforms
+# ============================================================
+
+nvidia:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/nvidia/**'
 
 amd:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/amd/**'
+
+xpu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/xpu/**'
 
 ascend:
   - changed-files:
@@ -26,98 +131,93 @@ cambricon:
       - any-glob-to-any-file:
           - 'third_party/cambricon/**'
 
-enflame:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/enflame/**'
-
-f2reduce:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/f2reduce/**'
-
-hcu:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/hcu/**'
-
 iluvatar:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/iluvatar/**'
-
-metax:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/metax/**'
 
 mthreads:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/mthreads/**'
 
-nvidia:
+metax:
   - changed-files:
       - any-glob-to-any-file:
-          - 'third_party/nvidia/**'
+          - 'third_party/metax/**'
 
-proton:
+enflame:
   - changed-files:
       - any-glob-to-any-file:
-          - 'third_party/proton/**'
-
-rpu:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/rpu/**'
-
-sunrise:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/sunrise/**'
-
-thrive:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/thrive/**'
-
-tle:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/tle/**'
-
-tileir:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/tileir/**'
+          - 'third_party/enflame/**'
 
 tsingmicro:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tsingmicro/**'
 
-xpu:
+aipu:
   - changed-files:
       - any-glob-to-any-file:
-          - 'third_party/xpu/**'
+          - 'third_party/aipu/**'
 
+hcu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/hcu/**'
 
-# ---- DOC label ----
-# This label is applied ONLY when the PR consists exclusively of documentation.
-# It uses a strict inclusion list combined with an explicit exclusion of build files
-# to ensure no functional code changes are mislabeled as "DOC".
+sunrise:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/sunrise/**'
 
-DOC:
-  - all:
-      # Condition A: All must be document file extensions
-      - changed-files:
-          - any-glob-to-all-files:
-              - '**/*.md'
-              - '**/*.yml'
-              - '**/*.txt'
-              - '**/CODEOWNERS'
+proton:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/proton/**'
 
-      # Condition B: Must not contain CMakeLists.txt
-      - changed-files:
-          - all-globs-to-all-files:
-              - '!**/CMakeLists.txt'
+tle:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tle/**'
+
+f2reduce:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/f2reduce/**'
+
+rpu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/rpu/**'
+
+thrive:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/thrive/**'
+
+tileir:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tileir/**'
+
+cpu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/cpu/**'
+
+tle_arm64:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tle_arm64/**'
+
+# ============================================================
+# 9. tool - Script tools
+# ============================================================
+
+tool:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'utils/**'
+          - 'scripts/**'
+          - 'skills/**'
