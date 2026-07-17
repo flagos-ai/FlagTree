@@ -99,7 +99,6 @@ jobs:
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_get_local_pe.sh
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_d2d_barrier.sh
           ## flagtree hints python tutorials
-
           python3 python/tutorials/hints/01/01-vector-add.py --only_unit_test
           # python3 python/tutorials/hints/02/02-fused-softmax.py --only_unit_test
           python3 python/tutorials/hints/03/03-matrix-multiplication.py --only_unit_test
