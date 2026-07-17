@@ -90,12 +90,27 @@ def resolve_nvshmem_host_library(nvshmem_home: Path | None = None) -> Path:
     raise RuntimeError(f"Cannot find libnvshmem_host.so[.3] under {lib_dir}")
 
 
-def resolve_nvshmem_device_bitcode(nvshmem_home: Path | None = None) -> Path | None:
+def resolve_nvshmem_device_bitcode(nvshmem_home: Path | None = None, arch: str | int | None = None) -> Path | None:
+    """Resolve device bitcode: unified .bc, else per-SM .bc (NVSHMEM >= ~3.7)."""
     home = Path(nvshmem_home) if nvshmem_home is not None else try_get_nvshmem_home()
     if home is None:
         return None
-    path = home / "lib" / "libnvshmem_device.bc"
-    return path if path.is_file() else None
+    lib_dir = home / "lib"
+    unified = lib_dir / "libnvshmem_device.bc"
+    if unified.is_file():
+        return unified
+    # arch: sm90 / sm_90a / 90 -> try exact then next-lower known ships
+    if isinstance(arch, int):
+        sm = arch
+    else:
+        s = str(arch or "").lower().replace("sm_", "").replace("sm", "").rstrip("a")
+        sm = int(s) if s.isdigit() else None
+    sms = (90, 89, 80, 75, 70)
+    for n in ([sm] + [x for x in sms if sm is not None and x < sm]) if sm is not None else sms:
+        path = lib_dir / f"libnvshmem_device_sm_{n}.bc"
+        if path.is_file():
+            return path
+    return None
 
 
 @functools.lru_cache()

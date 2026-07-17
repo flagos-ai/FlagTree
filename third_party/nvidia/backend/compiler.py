@@ -145,7 +145,7 @@ class CUDAOptions:
         if not extern_libs.get('libnvshmem_device', None):
             try:
                 from triton.experimental.tle.raw.nvshmem.utils import resolve_nvshmem_device_bitcode
-                nvshmem_bc = resolve_nvshmem_device_bitcode()
+                nvshmem_bc = resolve_nvshmem_device_bitcode(arch=self.arch)
             except Exception:
                 nvshmem_bc = None
             if nvshmem_bc is not None:
