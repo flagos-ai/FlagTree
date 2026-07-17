@@ -40,8 +40,7 @@ else()
   set(CUDA_TILE_SUBMODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cuda-tile)
   if(NOT EXISTS ${CUDA_TILE_SUBMODULE_DIR}/CMakeLists.txt)
     message(FATAL_ERROR
-      "cuda-tile submodule not initialized at ${CUDA_TILE_SUBMODULE_DIR}. "
-      "Run: git submodule update --init --recursive")
+      "cuda-tile submodule not initialized at ${CUDA_TILE_SUBMODULE_DIR}. ")
   endif()
 
   execute_process(

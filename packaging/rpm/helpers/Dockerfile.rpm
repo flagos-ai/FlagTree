@@ -41,11 +41,9 @@ COPY test /src/test
 COPY unittest /src/unittest
 COPY CMakeLists.txt pyproject.toml setup.py MANIFEST.in LICENSE README.md /src/
 
-# FLAGTREE_DEFAULT_BACKENDS=nvidia,amd matches the historical package
-# contents and keeps the tileir backend (GCC >= 13 + cuda-tile
+# Keep the tileir backend (GCC >= 13 + cuda-tile
 # submodule) out of the distro build.
 RUN unset FLAGTREE_BACKEND && \
-    FLAGTREE_DEFAULT_BACKENDS=nvidia,amd \
     MAX_JOBS=4 python3 -m pip wheel . --no-build-isolation --no-deps -w /wheels -v && \
     ls -lh /wheels/ && \
     test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)"
