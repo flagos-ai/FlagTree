@@ -25,6 +25,7 @@ from triton.experimental.tle.raw.nvshmem.utils import (
 def _device_dialect(function_name):
     return dialect(
         name="cuda",
+        library="nvshmem",
         compiler="clang",
         file=Path(__file__).parent / "ag-gemm-device.cu",
         extern_func_name=function_name,

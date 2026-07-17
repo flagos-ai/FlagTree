@@ -12,6 +12,7 @@ class RawJITFunction:
         self.fn = fn
         self.extern_func_name = kwargs.get("extern_func_name", "")
         self.deferred = kwargs.get("deferred", False)
+        self.library = kwargs.get("library", "") or ""
         self.__triton_builtin__ = True
 
     def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",

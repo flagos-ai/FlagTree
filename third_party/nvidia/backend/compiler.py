@@ -139,17 +139,18 @@ class CUDAOptions:
         if not extern_libs.get('libdevice', None):
             extern_libs['libdevice'] = knobs.nvidia.libdevice_path or str(default_libdir / 'libdevice.10.bc')
 
-        # TODO: change it to use @dialect library=nvshmem as the condition for loading libnvshmem_device
-        # knobs.nvidia.nvshmem_home (NVSHMEM_HOME) is honored inside get_nvshmem_home();
-        # otherwise fall back to pip nvidia.nvshmem auto-discovery.
-        if not extern_libs.get('libnvshmem_device', None):
-            try:
-                from triton.experimental.tle.raw.nvshmem.utils import resolve_nvshmem_device_bitcode
+        # flagtree tle raw: libnvshmem_device when @dialect(library="nvshmem") enabled in utils.
+        try:
+            from triton.experimental.tle.raw.nvshmem.utils import (
+                is_nvshmem_device_bc_enabled,
+                resolve_nvshmem_device_bitcode,
+            )
+            if is_nvshmem_device_bc_enabled():
                 nvshmem_bc = resolve_nvshmem_device_bitcode(arch=self.arch)
-            except Exception:
-                nvshmem_bc = None
-            if nvshmem_bc is not None:
-                extern_libs['libnvshmem_device'] = str(nvshmem_bc)
+                if nvshmem_bc is not None:
+                    extern_libs.update({"libnvshmem_device": str(nvshmem_bc)})
+        except Exception:
+            pass
 
         # flagtree tle distributed: Add distributed bitcode library(libflagcx_device.bc) if distributed features are enabled.
         extern_libs.update(Distributed().get_extern_libs())
@@ -440,7 +441,7 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_concurrency_sanitizer(pm)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         nvidia.passes.ttnvgpuir.add_proxy_fence_insertion(pm, capability)
-        # Materialize deferred tle_raw sources before inlining DSL regions.
+        # flagtree tle raw: Materialize deferred tle_raw sources before inlining DSL regions.
         from .deferred_raw import (
             finish_deferred_raw_materialize,
             deferred_raw_materialize,

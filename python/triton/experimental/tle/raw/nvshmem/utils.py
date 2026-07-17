@@ -90,6 +90,27 @@ def resolve_nvshmem_host_library(nvshmem_home: Path | None = None) -> Path:
     raise RuntimeError(f"Cannot find libnvshmem_host.so[.3] under {lib_dir}")
 
 
+# Set by @dialect(..., library="nvshmem"); CUDA backend links device .bc only when True.
+_nvshmem_device_bc_enabled: bool = False
+
+
+def enable_nvshmem_device_bc(enabled: bool = True) -> None:
+    global _nvshmem_device_bc_enabled
+    _nvshmem_device_bc_enabled = bool(enabled)
+
+
+def is_nvshmem_device_bc_enabled() -> bool:
+    return _nvshmem_device_bc_enabled
+
+
+def get_nvshmem_extern_libs(arch: str | int | None = None) -> dict[str, str]:
+    """Return {libnvshmem_device: path} when enabled; else {}."""
+    if not is_nvshmem_device_bc_enabled():
+        return {}
+    bc = resolve_nvshmem_device_bitcode(arch=arch)
+    return {"libnvshmem_device": str(bc)} if bc is not None else {}
+
+
 def resolve_nvshmem_device_bitcode(nvshmem_home: Path | None = None, arch: str | int | None = None) -> Path | None:
     """Resolve device bitcode: unified .bc, else per-SM .bc (NVSHMEM >= ~3.7)."""
     home = Path(nvshmem_home) if nvshmem_home is not None else try_get_nvshmem_home()

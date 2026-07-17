@@ -210,7 +210,10 @@ class CUDAJITFunction(RawJITFunction):
         self.arg_dialect: Final[str] = "llvm"
         self.source_file: Final[str] = str(file)
 
-        if "nvshmem" in self.code:
+        if self.library == "nvshmem":
+            from triton.experimental.tle.raw.nvshmem.utils import enable_nvshmem_device_bc
+            enable_nvshmem_device_bc(True)
+        if self.library == "nvshmem" or "nvshmem" in self.code:
             _install_cumodule_hook()
 
     def register_pending_source(self, *, hint: str = "") -> str:

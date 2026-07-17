@@ -18,6 +18,7 @@ from triton.experimental.tle.raw.nvshmem.utils import (
 
 @dialect(
     name="cuda",
+    library="nvshmem",
     compiler="clang",
     file=(Path(__file__).parent / "simple-shift-device.cu"),
     extern_func_name="simple_shift",
