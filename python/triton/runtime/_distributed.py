@@ -22,8 +22,6 @@ class DistributedRtContext:
 
     def get_packed_data(self):
         return int(self._mem_ptr), int(self._comm_ptr)
-        import torch
-        return torch.tensor([int(self._mem_ptr), int(self._comm_ptr)], device='cuda', dtype=torch.int64)
 
     @property
     def comm_ptr(self) -> int | None:
