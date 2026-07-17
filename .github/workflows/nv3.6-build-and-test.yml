@@ -114,7 +114,9 @@ jobs:
           python3 python/tutorials/tle/raw/mlir/05-topk.py --kernel tle
           python3 python/tutorials/tle/raw/mlir/06-test-vassert.py
           ## flagtree tle cuda
-          # TODO: These tests are currently skipped because the CLANG environment variable cannot be set.
-          # python3 python/tutorials/tle/raw/cuda/01-vector-add.py
-          # python3 python/tutorials/tle/raw/cuda/02-fused-softmax.py
-          # python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
+          python3 python/tutorials/tle/raw/cuda/01-vector-add.py
+          python3 python/tutorials/tle/raw/cuda/02-fused-softmax.py
+          python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
+          ## flagtree tle nvshmem
+          torchrun --nproc_per_node=2 python/tutorials/tle/raw/nvshmem/01-simple-shift/simple-shift.py
+          torchrun --nproc_per_node=2 python/tutorials/tle/raw/nvshmem/02-allgather-gemm/ag-gemm.py
