@@ -480,7 +480,7 @@ struct RemotePointersOpConversion
     SmallVector<Value> srcElems;
     auto space = adaptor.getSpace();
 
-    if (adaptor.getSrc())
+    if (auto src = adaptor.getSrc())
       srcElems = unpackLLElements(loc, adaptor.getSrc(), rewriter);
 
     if (space != "device" && srcElems.empty())

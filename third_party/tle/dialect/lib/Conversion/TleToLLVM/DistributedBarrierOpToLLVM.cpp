@@ -42,6 +42,16 @@ constexpr int32_t kGridScratchAlignment = 4;
 constexpr int32_t kGridScratchBytes = 4;
 constexpr int32_t kGridArrivedOffsetBytes = 0;
 
+Value getDistDevicePtr(tle::DistributedBarrierOp op,
+                       SmallVector<Value> &srcElems) {
+  if (!srcElems.empty())
+    return srcElems[0];
+  else {
+    auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
+    return func.getArgument(1);
+  }
+}
+
 FailureOr<int32_t> getOrCreateSubmeshScratchOffset(ModuleOp mod) {
   if (auto existing =
           mod->getAttrOfType<IntegerAttr>(kSubmeshScratchOffsetAttr)) {
@@ -433,6 +443,7 @@ struct DistributedBarrierOpConversion
     auto orderAttr = op->getAttrOfType<StringAttr>(kOrderAttr);
     auto indexAttr = op->getAttrOfType<IntegerAttr>(kIndexAttr);
     auto loc = op.getLoc();
+    SmallVector<Value> srcElems;
     auto getCoopKindValue = [](StringRef kind) -> int32_t {
       return llvm::StringSwitch<int32_t>(kind)
           .Case("thread", 0)
@@ -458,14 +469,10 @@ struct DistributedBarrierOpConversion
     if (order < 0)
       return rewriter.notifyMatchFailure(op, "invalid order");
 
-    auto comm = Value();
-    if (auto src = adaptor.getSrc()) {
-      auto srcElems = unpackLLElements(loc, src, rewriter);
-      comm = srcElems[0];
-    } else {
-      auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
-      comm = func.getArgument(0);
-    }
+    if (auto src = adaptor.getSrc())
+      srcElems = unpackLLElements(loc, src, rewriter);
+
+    auto comm = getDistDevicePtr(op, srcElems);
     auto coopKindAttr = rewriter.getI32IntegerAttr(coopKind);
     auto newOrderAttr = rewriter.getI32IntegerAttr(order);
     auto barrierTypeAttr = op.getBarrierTypeAttr();

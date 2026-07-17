@@ -621,10 +621,8 @@ void init_triton_tle_ir(py::module &&m) {
            [](TritonOpBuilder &self, Type resultTy,
               std::optional<Value> src) -> Value {
              auto &builder = self.getBuilder();
-             auto ptr = Value();
-             if (src.has_value())
-               ptr = src.value();
-             return self.create<tle::GetDeviceIdOp>(resultTy, ptr);
+             return self.create<tle::GetDeviceIdOp>(resultTy,
+                                                    src.value_or(Value()));
            })
       .def("get_n_pes",
            [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {

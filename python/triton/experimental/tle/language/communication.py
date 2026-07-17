@@ -168,7 +168,7 @@ def init_communicator():
     _init_communicator_ = True
 
 
-def create_comm_tensor(buf_tensor):
+def create_dist_tensor(buf_tensor):
     global comm, rank, dev_mem, dev_comm, win
     buf_ptr = buf_tensor.data_ptr()
     buf_size = buf_tensor.numel() * buf_tensor.element_size()
@@ -207,5 +207,5 @@ def create_comm_tensor(buf_tensor):
     dist.barrier()
 
     from triton.runtime import DistributedRtContext
-    DistributedRtContext(dev_comm_dptr.value, dev_mem_dptr.value)
-    return dev_comm_dptr.value, dev_mem_dptr.value
+    ctx = DistributedRtContext(dev_mem_dptr.value, dev_comm_dptr.value)
+    return ctx

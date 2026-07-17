@@ -23,7 +23,7 @@ class TestLocalPeCount:
         with torch.cuda.use_mem_pool(tle.get_mem_pool()):
             x = torch.randn((N, N), dtype=torch.float32, device="cuda")
         y = torch.empty_like(x)
-        dev_comm_dptr, dev_mem_dptr = tle.create_comm_tensor(x)
+        dev_comm_dptr, dev_mem_dptr = tle.create_dist_tensor(x)
 
         compiled = _tle_local_pe_kernel.warmup(
             dev_comm_dptr=dev_comm_dptr,

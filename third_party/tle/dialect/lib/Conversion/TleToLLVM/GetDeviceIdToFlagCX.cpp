@@ -20,6 +20,15 @@ using namespace mlir;
 namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
 
+Value getDistDevicePtr(tle::GetDeviceIdOp op, SmallVector<Value> &srcElems) {
+  if (!srcElems.empty())
+    return srcElems[0];
+  else {
+    auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
+    return func.getArgument(1);
+  }
+}
+
 struct GetDeviceIdOpConversion
     : public ConvertOpToLLVMPattern<tle::GetDeviceIdOp> {
   GetDeviceIdOpConversion(LLVMTypeConverter &typeConverter,
@@ -29,19 +38,16 @@ struct GetDeviceIdOpConversion
   LogicalResult
   matchAndRewrite(tle::GetDeviceIdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Value src = adaptor.getInput();
-    auto comm = Value();
+    auto loc = op.getLoc();
+    SmallVector<Value> srcElems;
+    if (auto src = adaptor.getInput())
+      srcElems = unpackLLElements(loc, src, rewriter);
     auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
     if (!func) {
       return rewriter.notifyMatchFailure(
           op, "expected parent LLVM::LLVMFuncOp, but none was found. ");
     }
-
-    if (auto src = adaptor.getInput())
-      comm = src;
-    else
-      comm = func.getArgument(0);
-
+    auto comm = getDistDevicePtr(op, srcElems);
     rewriter.modifyOpInPlace(op, [&]() { op->insertOperands(0, comm); });
     auto localRank = rewriter.create<tle::GetLocalRankOp>(
         op.getLoc(), rewriter.getI32Type(), comm);

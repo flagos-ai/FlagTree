@@ -57,7 +57,7 @@ def main():
           f"stride={buf_tensor.stride()}, "
           f"sample={buf_tensor[:4].tolist()}")
 
-    dev_comm_ptr, dev_mem_ptr = tle.create_comm_tensor(buf_tensor)
+    dev_comm_ptr, dev_mem_ptr = tle.create_dist_tensor(buf_tensor)
 
     print(f"[Rank {rank}] dev_comm_ptr={dev_comm_ptr:#x}, dev_mem_ptr={dev_mem_ptr:#x}")
 

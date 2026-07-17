@@ -17,12 +17,8 @@
 namespace mlir::triton::tle {
 namespace RemotePointers {
 llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result) {
-  // flagcxGetIntraPointerC accept raw device pointers represented as signless
-  // i64 values.
   if (!src)
     return success();
-  if (!src.getType().isSignlessInteger(64))
-    return failure();
 
   if (auto tensorTy = dyn_cast<RankedTensorType>(result.getType())) {
     auto ptr = dyn_cast<triton::PointerType>(tensorTy.getElementType());

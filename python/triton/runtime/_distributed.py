@@ -20,6 +20,11 @@ class DistributedRtContext:
         self._mem_ptr = _mem_ptr
         self._initialized = True
 
+    def get_packed_data(self):
+        return int(self._mem_ptr), int(self._comm_ptr)
+        import torch
+        return torch.tensor([int(self._mem_ptr), int(self._comm_ptr)], device='cuda', dtype=torch.int64)
+
     @property
     def comm_ptr(self) -> int | None:
         """Communication runtime pointer."""
@@ -43,6 +48,9 @@ class DistributedRtContext:
         }
         inner_action = self._init_count == 1
         return inner_action and user_action
+
+    def __getitem__(self, index=0):
+        return list(self._get_needed_params().values())[index]
 
     def add_args_to_jitfunction(self, **kwargs):
         params = kwargs['params']  # list

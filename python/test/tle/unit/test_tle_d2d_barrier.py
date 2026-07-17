@@ -8,15 +8,15 @@ DEVICE_MESH = tle.device_mesh(tle.MeshConfig(device=2))
 N = 8
 
 
-@triton.jit
-def _barrier_d2d_kernel(dev_comm_dptr, dev_mem_ptr, out_ptr, mesh: tl.constexpr):
+@triton.jit()
+def _barrier_d2d_kernel(out_ptr, device_dptr: tl.constexpr, mesh: tl.constexpr):
     pid = tl.program_id(0)
-    local_rank = tle.shard_id(mesh, 'device', comm_ptr=dev_comm_dptr)
+    local_rank = tle.shard_id(mesh, 'device', device_dptr=device_dptr)
     n_rank = mesh.shape[0]
     peer = (local_rank + 1) % n_rank  # noqa: F841
 
     remote_mem = tle.remote(
-        dev_mem_ptr,
+        device_dptr,
         space="device",
         dtype=tl.float32,
         shard_id=peer,
@@ -24,13 +24,12 @@ def _barrier_d2d_kernel(dev_comm_dptr, dev_mem_ptr, out_ptr, mesh: tl.constexpr)
     )
     val = tl.load(remote_mem)
     tl.store(out_ptr + pid, val)
-    tle.distributed_barrier(comm_ptr=dev_comm_dptr, space="device")
+    tle.distributed_barrier(device_dptr=device_dptr, space="device")
 
 
-def _ir_verify(dev_comm_dptr, dev_mem_dptr, output, grid):
+def _ir_verify(output, device_dptr, grid):
     compiled = _barrier_d2d_kernel.warmup(
-        dev_comm_dptr=dev_comm_dptr,
-        dev_mem_ptr=dev_mem_dptr,
+        device_dptr=device_dptr,
         out_ptr=output,
         mesh=DEVICE_MESH,
         grid=(grid, ),
@@ -44,9 +43,9 @@ def _ir_verify(dev_comm_dptr, dev_mem_dptr, output, grid):
     assert "flagcxDevCommGetIntraRank" in compiled.asm['ptx']
 
 
-def _runtime_verify(dev_comm_dptr, dev_mem_dptr, output, grid, rank, world_size):
+def _runtime_verify(output, device_dptr, grid, rank, world_size):
     dist.barrier()
-    _barrier_d2d_kernel[grid](dev_comm_dptr=dev_comm_dptr, dev_mem_ptr=dev_mem_dptr, out_ptr=output, mesh=DEVICE_MESH)
+    _barrier_d2d_kernel[grid](device_dptr=device_dptr, out_ptr=output, mesh=DEVICE_MESH)
 
     torch.cuda.synchronize()
 
@@ -76,12 +75,12 @@ class TestD2DBarrier:
         with torch.cuda.use_mem_pool(mem_pool):
             x = (torch.arange(N, dtype=torch.float32, device="cuda") + rank * 1000).clone()
 
-        dev_comm_dptr, dev_mem_dptr = tle.create_comm_tensor(x)
+        device_dptr = tle.create_dist_tensor(x)
         output = torch.zeros(N, dtype=torch.float32, device="cuda")
 
-        _ir_verify(dev_comm_dptr, dev_mem_dptr, output, grid)
+        _ir_verify(output, device_dptr, grid)
 
-        _runtime_verify(dev_comm_dptr, dev_mem_dptr, output, grid, rank, world_size)
+        _runtime_verify(output, device_dptr, grid, rank, world_size)
 
 
 if __name__ == "__main__":

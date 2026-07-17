@@ -7,6 +7,7 @@ from itertools import product
 from typing import Any, Iterable, Mapping, Sequence, List, Tuple, Union, Optional, Dict
 from enum import Enum
 import triton.language.core as tl
+from triton.runtime import DistributedRtContext
 
 Axis = Tuple[str, int]
 AxesLike = Union[int, List[Axis]]
@@ -27,19 +28,22 @@ def _as_positive_int(value: Any, label: str) -> int:
     return value
 
 
-def _parse_src_arg(builder, src):
-    if src is None:
-        return src
-    else:
+def _parse_src_arg(builder, src, index=0):
+    src = tl._unwrap_if_constexpr(src)
+    if isinstance(src, DistributedRtContext):
+        return builder.get_int64(src[index])
+    elif src:
         return src.handle
+    else:
+        return None
 
 
 # Get the current device id
 @tl.builtin
-def _get_local_rank(dev_comm_ptr, _semantic=None, ret_dtype=tl.int32):
+def _get_local_rank(device_dptr, _semantic=None, ret_dtype=tl.int32):
     builder = _semantic.builder
     ret_ir_ty = ret_dtype.to_ir(builder)
-    ptr = _parse_src_arg(builder, dev_comm_ptr)
+    ptr = _parse_src_arg(builder, device_dptr, 1)
     result = builder.get_device_id(ret_ir_ty, ptr)
     return tl.tensor(result, ret_dtype)
 
@@ -605,7 +609,7 @@ def _resolve_launch_axis(mesh: device_mesh, axis: str | int) -> int:
 def shard_id(
     mesh: device_mesh,
     axis: str | int,
-    comm_ptr=None,
+    device_dptr=None,
     _semantic=None,
 ):
     """
@@ -618,7 +622,7 @@ def shard_id(
     axis = tl._unwrap_if_constexpr(axis)
 
     if axis in ("device", "node"):
-        return _get_local_rank(comm_ptr, _semantic=_semantic, ret_dtype=tl.int32)
+        return _get_local_rank(device_dptr, _semantic=_semantic, ret_dtype=tl.int32)
 
     if not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh, got {type(mesh).__name__}")
@@ -652,13 +656,13 @@ def _parse_device_barrier_args(argType) -> str:
         return str(argType).lower()
 
 
-def check_and_handle_device_intra_barrier(space: str = None, comm_ptr=None,
+def check_and_handle_device_intra_barrier(space: str = None, device_dptr=None,
                                           barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                                           group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
                                           order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None):
     if space and space in ("device", "node"):
         builder = _semantic.builder
-        ptr = _parse_src_arg(builder, comm_ptr)
+        ptr = _parse_src_arg(builder, device_dptr, 1)
         builder.create_distributed_barrier(
             src=ptr,
             barrier_index=index or 0,
@@ -672,7 +676,7 @@ def check_and_handle_device_intra_barrier(space: str = None, comm_ptr=None,
 
 
 @tl.builtin
-def distributed_barrier(mesh: device_mesh | None = None, comm_ptr=None, space: str = None,
+def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space: str = None,
                         group_kind: str | GroupKind = GroupKind.BLOCK,
                         barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                         order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None,
@@ -689,7 +693,7 @@ def distributed_barrier(mesh: device_mesh | None = None, comm_ptr=None, space: s
     subgroup = None
     use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
 
-    if check_and_handle_device_intra_barrier(space=space, comm_ptr=comm_ptr, barrier_kind=barrier_kind,
+    if check_and_handle_device_intra_barrier(space=space, device_dptr=device_dptr, barrier_kind=barrier_kind,
                                              group_kind=group_kind, index=index, order=order, _semantic=_semantic):
         return None
 
@@ -819,7 +823,7 @@ def _create_remote_pointers_tensor(
         "cluster": (dtype, 7),
         "device": (dtype, 1),
     }.get(space))
-    if tensor and tensor.type.is_block():
+    if space == 'cluster' and tensor and tensor.type.is_block():
         remote_type = tl.block_type(remote_ptr_dtype, list(tensor.shape)).to_ir(builder)
     else:
         remote_type = remote_ptr_dtype.to_ir(builder)
@@ -844,12 +848,12 @@ def _create_remote_pointers_tensor(
         # automatic injection (e.g. inside this helper).
         if offset_tensor.dtype != tl.int64:
             offset_tensor = tl.cast(offset_tensor, tl.int64, _semantic=_semantic)
-        ptr = _parse_src_arg(builder, tensor)
+        ptr = _parse_src_arg(builder, tensor, 0)
         remote_op = builder.create_remote_pointers(remote_type, ptr, shard_id_tensor.handle, space,
                                                    offset_tensor.handle)
     else:
         remote_op = builder.create_remote_pointers(remote_type, tensor.handle, shard_id_tensor.handle, space)
-    if tensor and tensor.type.is_block():
+    if space == "cluster" and tensor and tensor.type.is_block():
         return tl.tensor(remote_op.get_result(0), tl.block_type(remote_ptr_dtype, list(tensor.shape)))
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
 
@@ -924,7 +928,7 @@ def _remote_pointer(
 
 @tl.builtin
 def remote(
-    tensor=None,
+    tensor=tl.tensor | None,
     shard_id=None,
     scope: device_mesh | None = None,
     space: str = "cluster",
@@ -960,7 +964,7 @@ def remote(
 
     # Direct pointer path: support local_ptr scalar/tensor values and return
     # remote pointer with preserved shape.
-    if isinstance(tensor, tl.tensor) or (tensor is None and space in ("device", "node")):
+    if isinstance(tensor, tl.tensor) or (space in ("device", "node")):
         return _remote_pointer(tensor, shard_id, scope=scope, space=space, _semantic=_semantic, dtype=dtype,
                                offset=offset)
 

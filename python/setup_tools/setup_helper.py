@@ -499,7 +499,7 @@ cache = FlagTreeCache()
 
 download_flagtree_third_party("flagcx", condition=(not flagtree_backend), hook="handle_flagcx", required=True)
 
-download_flagtree_third_party("tileir", condition=(not flagtree_backend), required=True)
+download_flagtree_third_party("tileir", condition=(flagtree_backend == "tileir"), required=True)
 
 handle_flagtree_backend()
 
