@@ -209,13 +209,12 @@ def make_launcher(constants, signature, tensordesc_meta):
 
     expand_signature = _expand_signature(signature.values())
     signature = {i: s for i, s in enumerate(expand_signature)}
-
     args_format = ''.join([format_of(ty) for ty in signature.values()])
     format = _BASE_ARGS_FORMAT + args_format
-
     flat_signature = []
     for sig in signature.values():
         _flatten_signature(sig, flat_signature)
+    # flagtree tle distributed
     if DistributedRtContext().is_lite_mode:
         flat_signature.insert(0, "*i64")  # flagcx_dev_comm_ptr
         flat_signature.insert(1, "*i64")  # flagcx_dev_comm_ptr
