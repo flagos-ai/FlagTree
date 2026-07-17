@@ -61,14 +61,41 @@ def CUDA_CHECK(err):
 
 @functools.lru_cache()
 def get_nvshmem_home() -> Path:
-    if (nvshmem_home := os.getenv("NVSHMEM_HOME")) is not None:
-        return Path(nvshmem_home)
+    from triton import knobs
+    if knobs.nvidia.nvshmem_home is not None:
+        return Path(knobs.nvidia.nvshmem_home)
 
     try:
         import nvidia.nvshmem
         return Path(nvidia.nvshmem.__path__[0])
     except Exception:
         raise RuntimeError("Cannot resolve NVSHMEM_HOME: environment variable not set and nvidia.nvshmem not found")
+
+
+def try_get_nvshmem_home() -> Path | None:
+    try:
+        return get_nvshmem_home()
+    except RuntimeError:
+        return None
+
+
+def resolve_nvshmem_host_library(nvshmem_home: Path | None = None) -> Path:
+    """Prefer unversioned .so; fall back to .so.N (pip wheels often omit the symlink)."""
+    home = Path(nvshmem_home) if nvshmem_home is not None else get_nvshmem_home()
+    lib_dir = home / "lib"
+    for name in ("libnvshmem_host.so", "libnvshmem_host.so.3"):
+        path = lib_dir / name
+        if path.exists():
+            return path
+    raise RuntimeError(f"Cannot find libnvshmem_host.so[.3] under {lib_dir}")
+
+
+def resolve_nvshmem_device_bitcode(nvshmem_home: Path | None = None) -> Path | None:
+    home = Path(nvshmem_home) if nvshmem_home is not None else try_get_nvshmem_home()
+    if home is None:
+        return None
+    path = home / "lib" / "libnvshmem_device.bc"
+    return path if path.is_file() else None
 
 
 @functools.lru_cache()
@@ -122,6 +149,10 @@ def _compile_cuda_host_to_cache(
     temporary_path = Path(temporary.name)
     temporary.close()
     nvcc, _ = get_nvcc()
+    host_lib = resolve_nvshmem_host_library(nvshmem_home)
+    device_lib = nvshmem_home / "lib" / "libnvshmem_device.a"
+    if not device_lib.is_file():
+        raise RuntimeError(f"Cannot find libnvshmem_device.a under {nvshmem_home / 'lib'}")
     command = [
         nvcc,
         "-shared",
@@ -130,9 +161,8 @@ def _compile_cuda_host_to_cache(
         "-rdc=true",
         f"-arch={arch}",
         f"-I{nvshmem_home / 'include'}",
-        f"-L{nvshmem_home / 'lib'}",
-        "-lnvshmem_host",
-        "-lnvshmem_device",
+        str(host_lib),
+        str(device_lib),
         "-o",
         str(temporary_path),
         str(source_path),

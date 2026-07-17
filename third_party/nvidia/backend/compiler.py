@@ -140,9 +140,16 @@ class CUDAOptions:
             extern_libs['libdevice'] = knobs.nvidia.libdevice_path or str(default_libdir / 'libdevice.10.bc')
 
         # TODO: change it to use @dialect library=nvshmem as the condition for loading libnvshmem_device
-        nvshmem_home = knobs.nvidia.nvshmem_home
-        if nvshmem_home and (not extern_libs.get('libnvshmem_device', None)):
-            extern_libs['libnvshmem_device'] = str(Path(nvshmem_home) / 'lib' / 'libnvshmem_device.bc')
+        # knobs.nvidia.nvshmem_home (NVSHMEM_HOME) is honored inside get_nvshmem_home();
+        # otherwise fall back to pip nvidia.nvshmem auto-discovery.
+        if not extern_libs.get('libnvshmem_device', None):
+            try:
+                from triton.experimental.tle.raw.nvshmem.utils import resolve_nvshmem_device_bitcode
+                nvshmem_bc = resolve_nvshmem_device_bitcode()
+            except Exception:
+                nvshmem_bc = None
+            if nvshmem_bc is not None:
+                extern_libs['libnvshmem_device'] = str(nvshmem_bc)
 
         # flagtree tle distributed: Add distributed bitcode library(libflagcx_device.bc) if distributed features are enabled.
         extern_libs.update(Distributed().get_extern_libs())

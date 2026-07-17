@@ -1,27 +1,134 @@
 from __future__ import annotations
+
+import ctypes
+import functools
 import os
 import re
 import shlex
+import shutil
 import struct
-from pathlib import Path
 import subprocess
+from pathlib import Path
 from typing import Any, Final
-import ctypes
-from triton import knobs
 
 import torch
-
+from triton import knobs
 from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
-from triton.experimental.tle.raw.source_store import register_source
 from triton.experimental.tle.raw.runtime import RawJITFunction
+from triton.experimental.tle.raw.source_store import register_source
 
-# TODO: We use cli tools to compile CUDA code temporarily, and plan to replace it with LLVM components Python bindings in the future.
-CLANG = os.getenv("CLANG", "clang")
-CLANG_FLAGS = shlex.split(os.getenv("CLANG_FLAGS", ""))
+# TODO: Temporarily shell out to clang; replace with LLVM Python bindings later.
+_MIN_CLANG_MAJOR = 20
 
-_cumodule_hook_installed = False
-_nvshmemx_cumodule_init = None
+# ---------------------------------------------------------------------------
+# Clang toolchain: knobs override -> discover, always version-check (>= 20)
+# ---------------------------------------------------------------------------
+
+
+def _parse_clang_major(clang: str) -> int | None:
+    try:
+        out = subprocess.check_output([clang, "--version"], text=True, stderr=subprocess.STDOUT)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    match = re.search(r"clang version (\d+)\.", out)
+    if match is None:
+        match = re.search(r"version (\d+)\.", out)
+    return int(match.group(1)) if match else None
+
+
+def _clang_meets_min_version(clang: str) -> bool:
+    major = _parse_clang_major(clang)
+    return major is not None and major >= _MIN_CLANG_MAJOR
+
+
+def _discover_clang_binaries() -> list[str]:
+    """Prefer newer versioned binaries, then plain ``clang``."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for name in ("clang-22", "clang-21", "clang-20", "clang"):
+        path = shutil.which(name)
+        if path is None:
+            continue
+        resolved = str(Path(path).resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        found.append(path)
+    return found
+
+
+@functools.lru_cache()
+def _resolve_clang() -> str:
+    """Use user CLANG if usable; otherwise discover. Every candidate is version-checked."""
+    tried: list[str] = []
+    user_clang = knobs.nvidia.tle_raw_clang
+    if user_clang:
+        tried.append(user_clang)
+        if _clang_meets_min_version(user_clang):
+            return user_clang
+
+    for candidate in _discover_clang_binaries():
+        if candidate in tried:
+            continue
+        tried.append(candidate)
+        if _clang_meets_min_version(candidate):
+            return candidate
+
+    detail = ", ".join(tried) if tried else "<none>"
+    raise RuntimeError(f"TLE raw CUDA requires clang >= {_MIN_CLANG_MAJOR}. "
+                       f"Tried: {detail}. Install clang-20+ or set CLANG to a suitable binary.")
+
+
+# ---------------------------------------------------------------------------
+# Clang compile flags (--cuda-path, includes, optional CLANG_FLAGS)
+# ---------------------------------------------------------------------------
+
+
+def _cuda_home() -> Path:
+    return Path(os.getenv("CUDA_HOME", "/usr/local/cuda"))
+
+
+def _nvidia_backend_include() -> Path | None:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "third_party" / "nvidia" / "backend" / "include"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _default_clang_flags() -> list[str]:
+    cuda_home = _cuda_home()
+    flags = [f"--cuda-path={cuda_home}", f"-I{cuda_home / 'include'}"]
+    backend_include = _nvidia_backend_include()
+    if backend_include is not None:
+        flags.append(f"-I{backend_include}")
+    try:
+        from triton.experimental.tle.raw.nvshmem.utils import try_get_nvshmem_home
+        nvshmem_home = try_get_nvshmem_home()
+        if nvshmem_home is not None:
+            flags.append(f"-I{nvshmem_home / 'include'}")
+    except Exception:
+        pass
+    return flags
+
+
+def _clang_flags() -> list[str]:
+    extra = knobs.nvidia.tle_raw_clang_flags or ""
+    return [*_default_clang_flags(), *shlex.split(extra)]
+
+
+def _get_cuda_gpu_arch() -> str:
+    arch = os.getenv("TLE_CUDA_ARCH")
+    if arch:
+        return f"--cuda-gpu-arch={arch}"
+    major, minor = torch.cuda.get_device_capability()
+    return f"--cuda-gpu-arch=sm_{major}{minor}"
+
+
+# ---------------------------------------------------------------------------
+# Sanitize clang LLVM IR for this Triton's parser
+# ---------------------------------------------------------------------------
 
 
 def _sanitize_clang_ir(ir: str) -> str:
@@ -44,12 +151,12 @@ def _sanitize_clang_ir(ir: str) -> str:
     return re.sub(r"f0x([0-9A-Fa-f]+)", _replace_hex_float, ir)
 
 
-def _get_cuda_gpu_arch() -> str:
-    arch = os.getenv("TLE_CUDA_ARCH")
-    if arch:
-        return f"--cuda-gpu-arch={arch}"
-    major, minor = torch.cuda.get_device_capability()
-    return f"--cuda-gpu-arch=sm_{major}{minor}"
+# ---------------------------------------------------------------------------
+# NVSHMEM: post-compile cumodule init hook
+# ---------------------------------------------------------------------------
+
+_cumodule_hook_installed = False
+_nvshmemx_cumodule_init = None
 
 
 def _get_nvshmemx_cumodule_init():
@@ -57,10 +164,11 @@ def _get_nvshmemx_cumodule_init():
     if _nvshmemx_cumodule_init is not None:
         return _nvshmemx_cumodule_init
 
-    from triton.experimental.tle.raw.nvshmem.utils import get_nvshmem_home
-
-    nvshmem_home = get_nvshmem_home()
-    library = ctypes.CDLL(str(Path(nvshmem_home) / "lib" / "libnvshmem_host.so"))
+    from triton.experimental.tle.raw.nvshmem.utils import (
+        get_nvshmem_home,
+        resolve_nvshmem_host_library,
+    )
+    library = ctypes.CDLL(str(resolve_nvshmem_host_library(get_nvshmem_home())))
     fn = library.nvshmemx_cumodule_init
     fn.argtypes = [ctypes.c_void_p]
     fn.restype = ctypes.c_int
@@ -85,6 +193,11 @@ def _install_cumodule_hook():
 
     knobs.runtime.jit_post_compile_hook = hook
     _cumodule_hook_installed = True
+
+
+# ---------------------------------------------------------------------------
+# Dialect runtime
+# ---------------------------------------------------------------------------
 
 
 class CUDAJITFunction(RawJITFunction):
@@ -129,7 +242,7 @@ class CUDAJITFunction(RawJITFunction):
     def make_llvm(self, mlir_context) -> str:
         build = subprocess.run(
             [
-                CLANG,
+                _resolve_clang(),
                 "-x",
                 "cuda",
                 "--cuda-device-only",
@@ -140,7 +253,7 @@ class CUDAJITFunction(RawJITFunction):
                 "-",
                 "-o",
                 "-",
-                *CLANG_FLAGS,
+                *_clang_flags(),
             ],
             input=self.code.encode(),
             capture_output=True,

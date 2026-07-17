@@ -502,6 +502,9 @@ class nvidia_knobs(base_knobs):
     libcuda_path: env_opt_str = env_opt_str("TRITON_LIBCUDA_PATH")
 
     nvshmem_home: env_opt_str = env_opt_str("NVSHMEM_HOME")
+    # TLE-raw CUDA: optional overrides; version / discovery live in tle/raw/cuda/runtime.py
+    tle_raw_clang: env_opt_str = env_opt_str("CLANG")
+    tle_raw_clang_flags: env_opt_str = env_opt_str("CLANG_FLAGS")
 
 
 class amd_knobs(base_knobs):
