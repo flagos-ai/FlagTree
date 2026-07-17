@@ -7,7 +7,6 @@ from itertools import product
 from typing import Any, Iterable, Mapping, Sequence, List, Tuple, Union, Optional, Dict
 from enum import Enum
 import triton.language.core as tl
-from triton.runtime import DistributedRtContext
 
 Axis = Tuple[str, int]
 AxesLike = Union[int, List[Axis]]
@@ -29,13 +28,17 @@ def _as_positive_int(value: Any, label: str) -> int:
 
 
 def _parse_src_arg(builder, src, index=0):
-    src = tl._unwrap_if_constexpr(src)
-    if isinstance(src, DistributedRtContext):
-        return builder.get_int64(src[index])
-    elif src:
+    try:
+        from triton.runtime import DistributedRtContext
+        src = tl._unwrap_if_constexpr(src)
+        if isinstance(src, DistributedRtContext):
+            return builder.get_int64(src[index])
+        elif src:
+            return src.handle
+        else:
+            return None
+    except Exception:
         return src.handle
-    else:
-        return None
 
 
 # Get the current device id
