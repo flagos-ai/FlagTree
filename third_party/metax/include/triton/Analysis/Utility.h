@@ -5,6 +5,9 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#ifdef __MCTLE__
+#include "mctle/dialect/include/IR/Dialect.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Tools/LinearLayout.h"
 
@@ -171,6 +174,34 @@ private:
   RankedTensorType srcTy;
   RankedTensorType dstTy;
 };
+
+#ifdef __MCTLE__
+class ExtractTileLoweringHelper {
+public:
+  ExtractTileLoweringHelper(triton::mctle::ExtractTileOp extractTileOp);
+
+  // Get the shared memory scratch size required by this op.
+  unsigned getScratchSizeInBytes();
+  // Determine whether the extractTile will use SMEM.
+  bool isStatic();
+
+private:
+  triton::mctle::ExtractTileOp op;
+};
+
+class InsertTileLoweringHelper {
+public:
+  InsertTileLoweringHelper(triton::mctle::InsertTileOp insertTile);
+
+  // Get the shared memory scratch size required by this op.
+  unsigned getScratchSizeInBytes();
+  // Determine whether the insertTile will use SMEM.
+  bool isStatic();
+
+private:
+  triton::mctle::InsertTileOp op;
+};
+#endif
 
 // This struct represents the factorization of a warp-local layout conversion
 // into three components: a register-only permutation, a lane-only permutation,

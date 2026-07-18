@@ -46,6 +46,7 @@ add_triton_library(TritonHCUGPUToLLVM
     ElementwiseOpHCUToLLVM.cpp
     MlsOpToLLVM.cpp
     ConvertWarpSpecializeToLLVM.cpp
+    SetFuncInlineAttrs.cpp
 
     DEPENDS
     TritonHCUGPUConversionPassIncGen

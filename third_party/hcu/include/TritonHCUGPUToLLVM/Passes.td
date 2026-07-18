@@ -118,4 +118,24 @@ def HCUGPUConvertWarpSpecializeToLLVM : Pass<"triton-hcugpu-convert-warp-special
     ];
 }
 
+def TritonHCUGPUSetFuncInlineAttrs : Pass<"tritonhcugpu-set-func-inline-attrs", "mlir::ModuleOp"> {
+  let summary = "Rewrite noinline/alwaysinline passthrough attrs on lowered LLVM funcs";
+  let description = [{
+    This pass runs after ConvertTritonHCUGPUToLLVM. It inspects LLVM::LLVMFuncOp
+    ops with internal linkage (i.e. non-kernel helper functions) and rewrites
+    their `passthrough` attribute:
+      - If the func carries a `noinline` bool attr with value `false`, it is
+        marked `alwaysinline` instead of the default `noinline`.
+      - Otherwise it keeps the default `noinline` behavior so the LLVM
+        backend inliner does not inline large helper functions by default.
+  }];
+  let constructor = "mlir::triton::HCU::createTritonHCUGPUSetFuncInlineAttrsPass(\"\")";
+  let dependentDialects = ["mlir::LLVM::LLVMDialect"];
+
+  let options = [
+      Option<"arch", "arch", "std::string", /*default*/"\"\"",
+             "gfx target device architecture, e.g., gfx942">,
+  ];
+}
+
 #endif

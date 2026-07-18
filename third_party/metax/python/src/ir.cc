@@ -46,6 +46,15 @@
 #define PLUGIN_EXPORT __attribute__((visibility("default")))
 #endif
 
+#ifdef __MCTLE__
+// Pointer to the TritonOpBuilder class, used to register IR ops for third-party
+// dialects.
+static pybind11::class_<TritonOpBuilder> *builderClassPtr = nullptr;
+namespace ir {
+pybind11::class_<TritonOpBuilder> *getBuilderClass() { return builderClassPtr; }
+} // namespace ir
+#endif
+
 namespace {
 
 namespace py = pybind11;
@@ -806,9 +815,12 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
 
   py::class_<OpBuilder::InsertPoint>(m, "InsertPoint", py::module_local());
 
-  py::class_<TritonOpBuilder>(m, "builder", py::module_local(),
-                              py::dynamic_attr())
-      .def(py::init<MLIRContext *>())
+  static py::class_<TritonOpBuilder> builderClass(
+      m, "builder", py::module_local(), py::dynamic_attr());
+#ifdef __MCTLE__
+  builderClassPtr = &builderClass;
+#endif
+  builderClass.def(py::init<MLIRContext *>())
       .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
       // getters
       .def("create_module",

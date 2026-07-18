@@ -34,6 +34,9 @@ createOptimizeLDSUsagePass(StringRef arch, int32_t customLDSLimit = 0);
 
 void runScalarizePackedFOpsPass(llvm::Function &F);
 
+std::unique_ptr<OperationPass<ModuleOp>>
+createTritonHCUGPUSetFuncInlineAttrsPass(StringRef arch = "");
+
 } // namespace mlir::triton::HCU
 
 namespace mlir::triton {

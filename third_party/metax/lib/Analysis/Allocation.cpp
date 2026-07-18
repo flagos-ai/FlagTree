@@ -9,6 +9,9 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __MCTLE__
+#include "mctle/dialect/include/IR/Dialect.h"
+#endif
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/GenericSwizzling.h"
 #include "triton/Tools/LayoutUtils.h"
@@ -124,6 +127,16 @@ unsigned defaultAllocationAnalysisScratchSizeFn(Operation *op) {
     constexpr int32_t kTMASize = 128;
     return kTMASize;
   }
+#ifdef __MCTLE__
+  if (auto extractTileOp = dyn_cast<mctle::ExtractTileOp>(op)) {
+    ExtractTileLoweringHelper helper(extractTileOp);
+    return helper.getScratchSizeInBytes();
+  }
+  if (auto insertTileOp = dyn_cast<mctle::InsertTileOp>(op)) {
+    InsertTileLoweringHelper helper(insertTileOp);
+    return helper.getScratchSizeInBytes();
+  }
+#endif
   return 0;
 }
 

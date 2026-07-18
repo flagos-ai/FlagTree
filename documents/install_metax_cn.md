@@ -1,3 +1,25 @@
+<!--
+ Copyright 2026 FlagOS Contributors
+
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+ -->
+
 [中文版|[English](./install_metax.md)]
 
 ## 💫 MetaX（沐曦股份）[metax](/third_party/metax/) (Triton 3.6)
@@ -41,8 +63,8 @@ docker exec -it ${CONTAINER} /bin/bash
 mkdir -p ~/.flagtree/metax; cd ~/.flagtree/metax
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metax-llvm19-3.8.0.6-x86_64_v0.6.0.tar.gz
 tar zxvf metax-llvm19-3.8.0.6-x86_64_v0.6.0.tar.gz
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.0.tar.gz
-tar zxvf metaxTritonPlugin-cpython3.12-x86_64_v0.6.0.tar.gz
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.1.tar.gz
+tar zxvf metaxTritonPlugin-cpython3.12-x86_64_v0.6.1.tar.gz
 ```
 
 #### 1.3 手动下载 Triton 依赖库

@@ -1,3 +1,23 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 name: Hcu3.6-Build-And-Test
 
 on:
@@ -50,5 +70,13 @@ jobs:
           python3 -m pytest -s python/test/tle/integration/test_tle_local_store.py
           python3 -m pytest -s python/test/tle/integration/test_tle_gemm.py
           python3 -m pytest -s python/test/tle/integration/test_tle_pipeline_e2e.py
+          python3 -m pytest -s python/test/tle/integration/test_tle_topk_smem_fallback.py
           python3 -m pytest -s python/test/tle/unit/test_tle_gpu_local_ptr.py
           python3 -m pytest -s python/test/tle/unit/test_tle_gpu_slot.py
+          python3 -m pytest -s python/test/tle/unit/test_tle_cumsum.py
+          python3 -m pytest -s python/test/tle/unit/test_extract_tile_dynamic_index.py
+          python3 -m pytest -s python/test/tle/unit/test_extract_tile_static_index.py
+          python3 -m pytest -s python/test/tle/unit/test_insert_tile_dynamic_index.py
+          python3 -m pytest -s python/test/tle/unit/test_insert_tile_static_index.py
+          python3 python/tutorials/tle/01-fft.py
+          python3 python/tutorials/tle/03-topk.py
