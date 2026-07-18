@@ -1,3 +1,9 @@
+flagtree (0.6.0-1) unstable; urgency=medium
+
+  * Sync package version with the flagtree wheel (0.6.0).
+
+ -- FlagOS Contributors <contact@flagos.io>  Wed, 15 Jul 2026 08:00:00 +0000
+
 flagtree (0.5.0-1) unstable; urgency=medium
 
   * Initial Debian packaging.

@@ -72,11 +72,15 @@ COPY CMakeLists.txt pyproject.toml setup.py MANIFEST.in LICENSE README.md /src/
 # FLAGTREE_DEFAULT_BACKENDS=nvidia,amd matches the historical package
 # contents and keeps the tileir backend (GCC >= 13 + cuda-tile
 # submodule) out of the distro build.
+# The trailing rm keeps only /wheels in this layer: the CMake build
+# tree and the LLVM tarball cache (~/.triton) would otherwise add
+# several GB and push CI runners into ENOSPC.
 RUN unset FLAGTREE_BACKEND && \
     FLAGTREE_DEFAULT_BACKENDS=nvidia,amd \
     MAX_JOBS=4 python -m pip wheel . --no-build-isolation --no-deps -w /wheels -v && \
     ls -lh /wheels/ && \
-    test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)"
+    test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)" && \
+    rm -rf /src/build /root/.triton
 
 # ---------- Stage 2: assemble the .deb ----------
 FROM ${DEB_BASE_IMAGE} AS deb-assembler
@@ -105,6 +109,14 @@ RUN dpkg-buildpackage -us -uc -b && \
 # (unused-license-paragraph, no-manual-page, missing-build-dependency, etc.)
 # in the build log without failing the build.
 RUN lintian --info --display-info /python3-flagtree-*.deb || true
+
+# Smoke test: install the freshly built deb and import the package.
+# Catches the "installs fine, fails at import" class (missing libs,
+# bad rpath, glibc mismatch) that dpkg-buildpackage alone cannot see.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends /python3-flagtree-*.deb && \
+    python3 -c "import triton; print(getattr(triton, '__version__', 'import ok'))" && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---------- Stage 3: just the .deb output ----------
 FROM scratch AS deb-output

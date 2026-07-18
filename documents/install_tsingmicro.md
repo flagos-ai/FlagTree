@@ -1,3 +1,25 @@
+<!--
+ Copyright 2026 FlagOS Contributors
+
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+ -->
+
 [[中文版](./install_tsingmicro_cn.md)|English]
 
 ## 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/) (Triton 3.3)
@@ -12,13 +34,14 @@
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
+tsm_smi  # SMI V260604163331.01
 # Plan A: docker pull (13.2GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04:202606-clean
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04:20260604163331-clean
 docker pull ${IMAGE}
 # Plan B: docker load (5.5GB)
-IMAGE=flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04:202606-clean
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04.202606-clean.tar.gz
-docker load -i flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04.202606-clean.tar.gz
+IMAGE=flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04:20260604163331-clean
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04.20260604163331-clean.tar.gz
+docker load -i flagtree-tsingmicro3.3-py310-torch2.7.0-ubuntu22.04.20260604163331-clean.tar.gz
 ```
 
 ```shell

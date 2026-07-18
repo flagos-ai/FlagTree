@@ -1,7 +1,29 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 from __future__ import annotations
 
 from functools import reduce
 from typing import Any, Callable, TYPE_CHECKING, Union, List, Dict
+
+from triton.flagtree_spec import spec_func
 
 if TYPE_CHECKING:
     from .language import core
@@ -23,9 +45,13 @@ def set_iterable_path(iterable: IterableType, path: tuple[int, ...], val: Any):
     prev._setitem(path[-1], val)
 
 
-def find_paths_if(iterable: Union[IterableType, Any], pred: Callable[[ObjPath, Any], bool]) -> list[ObjPath]:
+# flagtree: This function was originally defined in find_paths_if
+def is_iterable(x):
     from .language import core
-    is_iterable: Callable[[Any], bool] = lambda x: isinstance(x, (list, tuple, core.tuple, core.tuple_type))
+    return isinstance(x, (list, tuple, core.tuple, core.tuple_type))
+
+
+def find_paths_if(iterable: Union[IterableType, Any], pred: Callable[[ObjPath, Any], bool]) -> list[ObjPath]:
     # We need to use dict so that ordering is maintained, while set doesn't guarantee order
     ret: dict[ObjPath, None] = {}
 
@@ -132,3 +158,8 @@ def get_primitive_bitwidth(dtype: str) -> int:
 
 def is_namedtuple(val):
     return isinstance(val, type) and issubclass(val, tuple) and hasattr(val, "_fields")
+
+
+# flagtree backend func specialization
+apply_with_path = spec_func("apply_with_path")
+_tuple_create = spec_func("_tuple_create")

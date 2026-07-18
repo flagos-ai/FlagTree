@@ -1,3 +1,25 @@
+<!--
+ Copyright 2026 FlagOS Contributors
+
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+ -->
+
 [<img width="2182" height="602" alt="github+banner-20260130" src=".github/assets/banner-20260130.png" />](https://flagos.io/)
 [中文版|[English](./README.md)]
 
@@ -110,7 +132,7 @@ TLE 的主要优势包括：
 * 2026/01/23 新增接入 [sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/) 后端（对应 Triton 3.4），加入 CI/CD。
 * 2026/01/08 添加 [HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)、[TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE)、[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw) 等新功能 WIKI。
 * 2025/12/08 新增接入 [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) 后端（对应 Triton 3.3），加入 CI/CD。
-* 2025/11/26 添加 FlagTree 后端特化统一设计文档 [FlagTree_Backend_Specialization](/documents/decoupling/)。
+* 2025/11/26 添加 FlagTree 后端特化统一设计文档 [FlagTree-Backend-Specialization](https://github.com/flagos-ai/FlagTree/wiki/FlagTree-Backend-Specialization)。
 * 2025/10/28 提供离线构建支持（预下载依赖包），改善网络环境受限时的构建体验，使用方法见后文。
 * 2025/09/30 在 GPGPU 上支持编译指导 shared memory。
 * 2025/09/29 SDK 存储迁移至金山云，大幅提升下载稳定性。

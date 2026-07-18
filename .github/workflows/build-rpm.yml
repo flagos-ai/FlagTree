@@ -1,25 +1,48 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 name: Build RPM Packages
 
+# PRs trigger this only for packaging-file changes; source changes do
+# not (the full wheel build is too heavy for a general PR gate).
+# Release tags are unprefixed since 0.3.0, e.g. 0.6.0 / 0.6.0rc1.
 on:
   push:
     tags:
-      - 'v*'
+      - '[0-9]*'
+      - 'v[0-9]*'
   pull_request:
     branches: [main]
     paths:
       - 'packaging/rpm/**'
-      - 'python/**'
-      - 'include/**'
-      - 'lib/**'
-      - 'cmake/**'
-      - 'bin/**'
-      - 'CMakeLists.txt'
-      - 'pyproject.toml'
       - '.github/workflows/build-rpm.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-rpm:
+    # Skip backend-variant tags like 0.6.0+mthreads3.6.
+    if: ${{ github.event_name != 'push' || !contains(github.ref_name, '+') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -34,6 +57,18 @@ jobs:
             base_image: openeuler/openeuler:24.03-lts
             artifact: flagtree-nvidia-oe2403-rpm-packages
     steps:
+      # The wheel build peaks near the runner's free-disk limit.
+      # Ephemeral GitHub-hosted VMs only — never a self-hosted machine.
+      - name: Free runner disk space
+        run: |
+          if [ "${RUNNER_ENVIRONMENT}" != "github-hosted" ]; then
+            echo "Not a GitHub-hosted runner; skipping disk cleanup."
+            exit 0
+          fi
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:

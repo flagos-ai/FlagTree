@@ -1,3 +1,23 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 from __future__ import annotations
 
 import functools
@@ -214,6 +234,72 @@ class env_nvidia_tool(env_base[str, NvidiaTool]):
             if tool := NvidiaTool.from_path(path):
                 return tool
 
+        raise RuntimeError(f"Cannot find {self.binary}")
+
+
+# flagtree mthreads
+@dataclass
+class MUSATool:
+    path: str
+    version: str
+
+    @staticmethod
+    @functools.lru_cache
+    def from_path(path: str) -> Optional["MUSATool"]:
+        import shutil
+        if not path:
+            return None
+        resolved = pathlib.Path(path).expanduser()
+        if not resolved.is_file():
+            which = shutil.which(str(resolved))
+            if which is None:
+                return None
+            resolved = pathlib.Path(which)
+        try:
+            result = subprocess.check_output([str(resolved), "--version"], stderr=subprocess.STDOUT)
+        except (subprocess.CalledProcessError, FileNotFoundError, PermissionError, OSError):
+            return None
+        version_lines = result.decode("utf-8", errors="replace").splitlines()
+        version = next((line.strip() for line in version_lines if line.strip()), "")
+        return MUSATool(str(resolved), version)
+
+
+class env_musa_tool(env_base[str, MUSATool]):
+
+    def __init__(self, key: str, binary: str) -> None:
+        self.binary = binary + sysconfig.get_config_var("EXE")
+        super().__init__(key)
+
+    def _candidate_paths(self, path: Optional[str]) -> list[str]:
+        import shutil
+        candidates = []
+        if path:
+            candidates.append(path)
+
+        toolchain_path = getenv("TRITON_MUSA_TOOLCHAIN_PATH")
+        if toolchain_path:
+            candidates.append(os.path.join(toolchain_path, self.binary))
+
+        mtcc_bin_path = getenv("MTCC_BIN_PATH")
+        if mtcc_bin_path:
+            candidates.append(os.path.join(mtcc_bin_path, self.binary))
+
+        musa_home = getenv("MUSA_HOME") or getenv("MUSA_ROOT")
+        if musa_home:
+            candidates.append(os.path.join(musa_home, "bin", self.binary))
+
+        if which := shutil.which(self.binary):
+            candidates.append(which)
+
+        return candidates
+
+    def get(self) -> MUSATool:
+        return self.transform(getenv(self.key))
+
+    def transform(self, path: Optional[str]) -> MUSATool:
+        for candidate in self._candidate_paths(path):
+            if tool := MUSATool.from_path(candidate):
+                return tool
         raise RuntimeError(f"Cannot find {self.binary}")
 
 
@@ -553,12 +639,52 @@ class metax_knobs(base_knobs):
     mlir_opt_path = os.path.join(maca_path, "mxgpu_llvm", "bin", "mlir-opt") if use_maca else None
 
 
+# flagtree mthreads
+class musa_knobs(base_knobs):
+    toolchain_path: env_opt_str = env_opt_str("TRITON_MUSA_TOOLCHAIN_PATH")
+    llc_path: env_opt_str = env_opt_str("TRITON_MUSA_LLC_PATH")
+    lld_path: env_opt_str = env_opt_str("TRITON_MUSA_LLD_PATH")
+    llc_asm_path: env_opt_str = env_opt_str("TRITON_MUSA_LLC_ASM_PATH")
+    llc: env_musa_tool = env_musa_tool("TRITON_MUSA_LLC_PATH", "llc")
+    lld: env_musa_tool = env_musa_tool("TRITON_MUSA_LLD_PATH", "ld.lld")
+    llc_asm: env_musa_tool = env_musa_tool("TRITON_MUSA_LLC_ASM_PATH", "llc")
+    llc_options: env_opt_str = env_opt_str("TRITON_MUSA_LLC_OPTIONS")
+    enable_llc_opt: env_bool = env_bool("TRITON_MUSA_ENABLE_LLC_OPT")
+    enable_fp8_burst2: env_bool = env_bool("TRITON_MUSA_ENABLE_FP8_BURST2")
+    enable_llvm_compat: env_bool = env_bool("TRITON_MUSA_ENABLE_LLVM_COMPAT", True)
+    dump_llir: env_bool = env_bool("TRITON_MUSA_DUMP_LLIR")
+    dump_muasm: env_bool = env_bool("TRITON_MUSA_DUMP_MUASM")
+    dump_toolchain_log: env_bool = env_bool("TRITON_MUSA_DUMP_TOOLCHAIN_LOG")
+    replace_llir: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_LLIR")
+    replace_mubin: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_MUBIN")
+    libdevice_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBDEVICE_PATH")
+
+
 class proton_knobs(base_knobs):
     disable: env_bool = env_bool("TRITON_PROTON_DISABLE", False)
     cupti_lib_dir: env_str = env_str(
         "TRITON_CUPTI_LIB_PATH",
         str(pathlib.Path(__file__).parent.absolute() / "backends" / "nvidia" / "lib" / "cupti"))
+    profile_buffer_size: env_int = env_int("TRITON_PROFILE_BUFFER_SIZE", 64 * 1024 * 1024)  # Triton 3.7
     enable_nvtx: env_bool = env_bool("TRITON_ENABLE_NVTX", True)
+    # This knob is effective only on Blackwell+ GPUs.
+    #
+    # When enabled, the profiling session must start after CUDA driver
+    # initialization but before the CUDA context is created.
+    #
+    # You can ensure this in one of the following ways:
+    #
+    # 1) Use the `proton` CLI tool to launch the Python script, e.g.:
+    #    `TRITON_ENABLE_HW_TRACE=1 proton python my_script.py`
+    #
+    # 2) Call `proton.start()` immediately after importing Proton, e.g.:
+    #    ```python
+    #    import triton
+    #    import triton.profiler as proton
+    #    triton.knobs.proton.enable_hw_trace = True
+    #    proton.start(hook="triton")
+    #    ```
+    enable_hw_trace: env_bool = env_bool("TRITON_ENABLE_HW_TRACE", False)  # Triton 3.7
 
 
 build = build_knobs()
@@ -570,8 +696,9 @@ runtime = runtime_knobs()
 language = language_knobs()
 nvidia = nvidia_knobs()
 amd = amd_knobs()
-hcu = hcu_knobs()
-metax = metax_knobs()
+hcu = hcu_knobs()  # flagtree hcu
+metax = metax_knobs()  # flagtree metax
+musa = musa_knobs()  # flagtree mthreads
 proton = proton_knobs()
 
 

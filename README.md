@@ -110,7 +110,7 @@ The following uses the mm operator under some shapes called in the Qwen model as
 * 2026/01/23 Added the [sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/) backend integration (based on Triton 3.4) and added CI/CD.
 * 2026/01/08 Added wiki pages for new features [HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS), [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE), [TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw).
 * 2025/12/08 Added the [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) backend integration (based on Triton 3.3) and added CI/CD.
-* 2025/11/26 Added FlagTree_Backend_Specialization Unified Design Document [FlagTree_Backend_Specialization](/documents/decoupling/).
+* 2025/11/26 Added FlagTree_Backend_Specialization Unified Design Document [FlagTree-Backend-Specialization](https://github.com/flagos-ai/FlagTree/wiki/FlagTree-Backend-Specialization).
 * 2025/10/28 Added support for the offline build with pre-downloaded dependency packages, improving the build experience in restricted environments. See the usage instructions below.
 * 2025/09/30 Added support for shared memory flagtree_hints on GPGPU.
 * 2025/09/29 Migrated the SDK storage to ksyuncs, improving download stability.
