@@ -21,6 +21,26 @@
 import triton.language as tl
 from triton.language.core import builtin, constexpr as tl_constexpr, tensor
 from triton.experimental.tle.language.gpu import buffered_tensor
+import importlib.util
+
+
+def _pointer_type_hash(self):
+    return hash((self.name, self.element_ty, "tt_ptr"))
+
+
+def patch_hash_method_for_pointer_type():
+    elem_dtype_list = tl.core.dtype.SINT_TYPES + tl.core.dtype.UINT_TYPES + tl.core.dtype.FP_TYPES + tl.core.dtype.OTHER_TYPES
+    for elem_dtype in elem_dtype_list:
+        ptr_ty = type(tl.core.pointer_type(tl.core.dtype(elem_dtype)))
+        ptr_ty.__hash__ = _pointer_type_hash
+
+
+def import_from_path(file_path):
+    module_name = f"_imported_{abs(hash(file_path))}"
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _resolve_alias_indices(func, llvm, handles, output_indices, _semantic):
@@ -62,14 +82,24 @@ def _normalize_hint(hint):
 
 def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic):
     hint = _normalize_hint(hint)
-    handles = [arg.handle for arg in args]
     if getattr(func, "deferred", False):
+        handles = [arg.handle for arg in args]
         if output_indices is None:
             raise RuntimeError("deferred tle_raw.call requires explicit output_indices=")
         alias_indices = output_indices
         source_id = func.register_pending_source(hint=hint)
         dsl_region_op = func.create_region_deferred(_semantic.builder, source_id, handles, alias_indices, hint)
     else:
+        if func.compiler is not None:
+            if func.compiler.lower() == "nvcc" or (func.compiler.lower() == "clang" and func.target is not None
+                                                   and func.target.lower() == "bc"):
+                patch_hash_method_for_pointer_type()
+                module = import_from_path(func.extern_file)
+                target_fn = getattr(module, func.extern_func_name)
+                ret = target_fn(*args, _semantic=_semantic)
+                return ret
+
+        handles = [arg.handle for arg in args]
         context = _semantic.builder.get_context()
         llvm = func.make_llvm(context)
         alias_indices = _resolve_alias_indices(func, llvm, handles, output_indices, _semantic)

@@ -866,6 +866,32 @@ def TT_MapElementwiseReturnOp: TT_Op<"map_elementwise.return",
 }
 
 //
+// External Call op
+//
+def TT_ExternCallOp : TT_Op<"extern_call", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+  ConditionallySpeculatable,
+]> {
+
+    let description = [{
+        call an external function $symbol implemented in $libpath/$libname with $args
+        return $libpath/$libname:$symbol($args...)
+    }];
+
+    let arguments = (ins Variadic<TT_Type>:$srcs, StrAttr:$libname, StrAttr:$libpath, StrAttr:$symbol, BoolAttr:$pure);
+
+    let results = (outs Variadic<TT_Type>:$result);
+
+    let assemblyFormat = "operands attr-dict `:` functional-type(operands, $result)";
+
+    let extraClassDeclaration = [{
+      // Interface method for ConditionallySpeculatable.
+      Speculation::Speculatability getSpeculatability();
+    }];
+
+}
+
+//
 // External Elementwise op
 //
 def TT_ExternElementwiseOp : TT_Op<"extern_elementwise", [Elementwise,
