@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-
 """Independent relu / maximum / reduce_sum_axis / broadcast_add kernels.
 
 These exercise the executable-IR direct lowering path (no plan/DSL mirror).

@@ -18,6 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+
 def compiler_extend_globals(globals_dict):
     # NOTE: Must use absolute path import.
     from triton.compiler.compiler import max_shared_mem

@@ -19,7 +19,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-
 """
 Sanity check that wheel contains tileir backend deps (tileiras, ptxas, nvvm).
 Usage: python check_wheel_deps.py [path/to/wheel.whl]

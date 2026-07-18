@@ -18,6 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+
 def language_extend_globals(globals_dict):
     # NOTE: Must use absolute path import.
     from triton.language.standard import squeeze, unsqueeze  # Triton 3.7

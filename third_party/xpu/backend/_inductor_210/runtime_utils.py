@@ -18,6 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+
 # Borrowed From Pytorch(v2.5.0-rc9) torch/_inductor/runtime/runtime_utils.py
 def get_first_attr(obj, *attrs):
     """

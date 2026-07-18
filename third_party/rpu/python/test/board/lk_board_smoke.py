@@ -19,7 +19,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-
 """Standalone launch_kernel (LK) board smoke test for the RPU backend.
 
 This validates ONLY the on-board ``launch_kernel`` dispatch path and nothing
