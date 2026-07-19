@@ -83,3 +83,6 @@ shape 为 `(1048576, 1)` 和 `(1, 32)`，dtype 为 BF16，random seed 为 0。
 
 详细命令、artifact hashes、设备结果和交叉矩阵见
 `../../docs/llvm-codegen-validation.md`。
+
+本次 Triton 3.6 clean build、wheel 验证、150-run FlagGems 回归及 pristine
+internal 对照结果见 `../../docs/triton-3.6-validation.md`。
