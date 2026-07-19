@@ -71,6 +71,18 @@ bool replaceAtomicOp(mlir::ModuleOp m) {
 
     Operation *arithOp;
     switch (atomic_rmw_op) {
+    case RMWOp::XCHG: {
+      if (atomicRMWOp->hasAttr("xpu.atomic_mul")) {
+        Type elementType = getElementTypeOrSelf(val.getType());
+        if (mlir::isa<FloatType>(elementType))
+          arithOp = builder.create<arith::MulFOp>(loc, loadOp.getResult(), val);
+        else
+          arithOp = builder.create<arith::MulIOp>(loc, loadOp.getResult(), val);
+        break;
+      }
+      assert(0 && "The RMWOp::XCHG is not supported in RMWOp");
+      break;
+    }
     case RMWOp::AND: {
       arithOp = builder.create<arith::AndIOp>(loc, loadOp.getResult(), val);
       break;
@@ -107,12 +119,8 @@ bool replaceAtomicOp(mlir::ModuleOp m) {
       arithOp = builder.create<arith::MinUIOp>(loc, loadOp.getResult(), val);
       break;
     }
-    case RMWOp::XCHG: {
-      assert(0 && "The RMWOp::XCHG is not supported in RMWOp");
-      break;
-    }
     default: {
-      assert(0 && "The atomic_rmw_op only could be 1-10 in RMWOp");
+      assert(0 && "Unsupported atomic RMW operation");
     }
     }
 

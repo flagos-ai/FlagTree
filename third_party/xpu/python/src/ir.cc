@@ -1724,6 +1724,23 @@ void init_triton_ir(py::module &&m) {
              return self.create<AtomicRMWOp>(dstType, rmwOp, ptr, val, mask,
                                              sem, scope);
            })
+      .def("create_atomic_mul",
+           [](TritonOpBuilder &self, bool isFloating, Value &ptr, Value &val,
+              Value &mask, MemSemantic sem, MemSyncScope scope) -> Value {
+             Type dstType;
+             if (auto srcTensorType =
+                     dyn_cast<RankedTensorType>(ptr.getType())) {
+               Type dstElemType =
+                   cast<PointerType>(srcTensorType.getElementType())
+                       .getPointeeType();
+               dstType = srcTensorType.clone(dstElemType);
+             } else {
+               auto ptrType = cast<PointerType>(getElementTypeOrSelf(ptr));
+               dstType = ptrType.getPointeeType();
+             }
+             return self.create<AtomicRMWOp>(dstType, RMWOp::XCHG, ptr, val,
+                                             mask, sem, scope);
+           })
       // External
       .def("create_extern_elementwise",
            [](TritonOpBuilder &self, const std::string &libName,

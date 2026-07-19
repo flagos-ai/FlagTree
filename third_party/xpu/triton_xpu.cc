@@ -11,6 +11,7 @@
 #include "mlir/IR/BuiltinOps.h"                     // mlir::ModuleOp
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Support/TypeID.h"
 
 #include "llvm/ADT/SmallVector.h" // llvm::SmallVector
 #include "llvm/IR/CallingConv.h"
@@ -28,6 +29,15 @@
 
 #include "triton/Target/LLVMXPU/LLVMXPUToLLVMIRTranslation.h"  // registerLLVMXPUDialectTranslation
 // clang-format on
+
+namespace mlir::triton {
+class GeluOp;
+}
+
+// The prebuilt TritonShared archive references this legacy op, which is not
+// declared by the current FlagTree Triton dialect.
+MLIR_DECLARE_EXPLICIT_TYPE_ID(mlir::triton::GeluOp)
+MLIR_DEFINE_EXPLICIT_TYPE_ID(mlir::triton::GeluOp)
 
 namespace py = pybind11;
 

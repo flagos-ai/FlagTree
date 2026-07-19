@@ -1163,6 +1163,9 @@ class tensor(base_value):
     def atomic_min(self, val, mask=None, sem=None, scope=None) -> tensor:
         ...
 
+    def atomic_mul(self, val, mask=None, sem=None, scope=None) -> tensor:
+        ...
+
     def atomic_and(self, val, mask=None, sem=None, scope=None) -> tensor:
         ...
 
@@ -2436,6 +2439,17 @@ def atomic_min(pointer, val, mask=None, sem=None, scope=None, _semantic=None):
     scope = _unwrap_if_constexpr(scope)
     mask = _unwrap_if_constexpr(mask)
     return _semantic.atomic_min(pointer, val, mask, sem, scope)
+
+
+@_tensor_member_fn
+@builtin
+@_add_atomic_docstr("multiply")
+def atomic_mul(pointer, val, mask=None, sem=None, scope=None, _semantic=None):
+    val = _semantic.to_tensor(val)
+    sem = _unwrap_if_constexpr(sem)
+    scope = _unwrap_if_constexpr(scope)
+    mask = _unwrap_if_constexpr(mask)
+    return _semantic.atomic_mul(pointer, val, mask, sem, scope)
 
 
 @_tensor_member_fn

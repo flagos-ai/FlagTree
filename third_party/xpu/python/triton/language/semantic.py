@@ -1086,16 +1086,17 @@ class TritonSemantic(Generic[TensorTy]):
                 self.builder.create_load(ptr.handle, cache, eviction, is_volatile, flagtree_hints, offset_state_policy,
                                          mem_sync_mode), dst_ty)
         else:
-            # XPU masked loads do not consume the Triton `other` operand in
-            # the device load itself. Materialize its semantics in frontend IR
-            # before lowering to GM2LM.
             load_value = self.tensor(
                 self.builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache,
                                                 eviction, is_volatile, flagtree_hints, offset_state_policy,
                                                 mem_sync_mode), dst_ty)
-            if other is None:
-                other = self.full([], 0, elt_ty)
-            ret = self.where(mask, load_value, other)
+            import os
+            if bool(os.environ.get("TRITONXPU_OTHER_SIM", False)):
+                if other is None:
+                    other = self.full([], 0, elt_ty)
+                ret = self.where(mask, load_value, other)
+            else:
+                ret = load_value
         if is_bool:
             ret = self.cast(ret, tl.int1)
         return ret
@@ -1530,6 +1531,15 @@ class TritonSemantic(Generic[TensorTy]):
         return self.tensor(
             self.builder.create_atomic_rmw(ir.ATOMIC_OP.XCHG, ptr.handle, val.handle, mask.handle, sem, scope),
             val.type)
+
+    def atomic_mul(self, ptr: TensorTy, val: TensorTy, mask: TensorTy, sem: str, scope: str) -> TensorTy:
+        ptr, val, mask = self.atom_red_typechecking_impl(ptr, val, mask, 'mul')
+        sem = self._str_to_sem(sem)
+        scope = self._str_to_scope(scope)
+        sca_ty = val.type.scalar
+        result = self.builder.create_atomic_mul(sca_ty.is_floating(), ptr.handle, val.handle, mask.handle, sem, scope)
+        result.set_attr("xpu.atomic_mul", self.builder.get_unit_attr())
+        return self.tensor(result, val.type)
 
 # ===----------------------------------------------------------------------===//
 #                               Linear Algebra
