@@ -16,6 +16,7 @@ Please use GitHub Issues to report bugs. When reporting a bug, include:
 
 When submitting a pull request, contributors should describe the changes made and the rationale behind them.
 If possible, provide corresponding tests and add them to `.github/workflow/`.
+Please refer to `documents/CopyrightNoticeGuidelines.md` when adding the copyright notice.
 Pull requests require approval from at least __ONE__ team member before merging and must pass all continuous integration checks.
 The best Pull Request has 1,000 review comments, discussions, and revisions; the next one has 100.
 
