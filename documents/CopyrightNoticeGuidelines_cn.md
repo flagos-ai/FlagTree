@@ -45,7 +45,7 @@
 
 - \*\.txt（包括 CMakeLists\.txt）、\*\.md、\*\.rst、\*\.png、\*\.jpg、\*\.yml、\*\.json、\*\.cmake、\*\.html、\*\.sh、\*\.bash、CODEOWNERS
 
-- docs/\*\*、documents/\*\*、skills/\*\*、packaging/\*\*、reports/\*\*、scripts/\*\* 
+- docs/\*\*、documents/\*\*、skills/\*\*、packaging/\*\*、reports/\*\*、scripts/\*\*
 
 - \.clang\-format、\.dockerignore、\.editorconfig、\.git\-blame\-ignore\-revs、\.gitattributes、\.gitignore、\.pre\-commit\-config\.yaml
 
@@ -61,7 +61,7 @@
 
 - \*\.in
 
-- test/\*\*、unittest/\*\*、utils/\*\* 
+- test/\*\*、unittest/\*\*、utils/\*\*
 
 策略：不修改文件，不做任何标注
 
