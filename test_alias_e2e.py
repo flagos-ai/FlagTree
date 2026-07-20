@@ -8,7 +8,7 @@ BLOCK = 128
 
 
 @triton.jit
-def alias_e2e_kernel(in_ptr, out_ptr, N: tl.constexpr):
+def alias_e2e_kernel(in_ptr, out_ptr, N, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < N
@@ -35,7 +35,7 @@ if __name__ == "__main__":
     y = torch.empty(N, device="cuda", dtype=torch.float32)
 
     grid = (triton.cdiv(N, BLOCK),)
-    alias_e2e_kernel[grid](x, y, N)
+    alias_e2e_kernel[grid](x, y, N, BLOCK=BLOCK)
     torch.cuda.synchronize()
 
     max_diff = (x - y).abs().max().item()
