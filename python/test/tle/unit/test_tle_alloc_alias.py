@@ -119,7 +119,7 @@ class TestAllocAlias:
         """Bytes are a compile-time argument."""
         buffer, semantic = self._make_buffer([4, 16, 32])
 
-        with pytest.raises(ValueError, match="aborted"):
+        with pytest.raises(ValueError, match="compile-time integer"):
             tle.gpu.alloc(
                 (2, 16, 16),
                 tl.float16,
