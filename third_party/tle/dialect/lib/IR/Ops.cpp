@@ -186,6 +186,41 @@ LogicalResult MemDescWGMMAViewOp::verify() {
   return success();
 }
 
+LogicalResult MemDescAliasOp::verify() {
+  auto srcType = getSrc().getType();
+  auto resultType = getType();
+  int64_t offsetBytes = getOffsetBytesAttr().getInt();
+
+  if (srcType.getMemorySpace() != resultType.getMemorySpace())
+    return emitOpError("expects source and result memory spaces to match");
+  if (!isa<triton::gpu::SharedMemorySpaceAttr>(srcType.getMemorySpace()))
+    return emitOpError("expects shared memory descriptors");
+  if (resultType.getMutableMemory() && !srcType.getMutableMemory())
+    return emitOpError("cannot create a mutable alias from an immutable source");
+  if (offsetBytes < 0)
+    return emitOpError("expects non-negative offset_bytes");
+  if (offsetBytes > std::numeric_limits<int32_t>::max())
+    return emitOpError("expects offset_bytes to fit in i32 for shared memory "
+                       "lowering");
+
+  int64_t resultElementBytes = (resultType.getElementTypeBitWidth() + 7) / 8;
+  if (resultElementBytes <= 0)
+    return emitOpError("expects byte-addressable result element type");
+  if (offsetBytes % resultElementBytes != 0)
+    return emitOpError("expects offset_bytes to be aligned to the result "
+                       "element byte width");
+
+  std::optional<int64_t> srcBytes = getStaticMemDescByteSize(srcType);
+  std::optional<int64_t> resultBytes = getStaticMemDescByteSize(resultType);
+  if (!srcBytes || !resultBytes)
+    return emitOpError("expects static source and result memdesc byte sizes");
+  if (*resultBytes > *srcBytes ||
+      offsetBytes > *srcBytes - *resultBytes)
+    return emitOpError("result byte range must fit within the source view");
+
+  return success();
+}
+
 LogicalResult WGMMASharedOperandFenceOp::verify() {
   if (getDeps().empty())
     return emitOpError("expects at least one shared-memory operand");

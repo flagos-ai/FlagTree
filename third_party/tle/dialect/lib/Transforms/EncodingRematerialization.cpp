@@ -1,6 +1,7 @@
 #include "tle/dialect/include/Transforms/EncodingRematerialization.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -92,6 +93,10 @@ static Value getSharedMemDescRoot(Value value) {
     }
     if (auto subslice = current.getDefiningOp<MemDescSubsliceOp>()) {
       current = stripConvertLayouts(subslice.getSrc());
+      continue;
+    }
+    if (auto alias = current.getDefiningOp<tle::MemDescAliasOp>()) {
+      current = stripConvertLayouts(alias.getSrc());
       continue;
     }
     if (auto reinterpret = current.getDefiningOp<MemDescReinterpretOp>()) {

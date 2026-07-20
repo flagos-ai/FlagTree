@@ -91,6 +91,10 @@ static Value stripProducerMemDescViews(Value value) {
       current = subslice.getSrc();
       continue;
     }
+    if (auto alias = current.getDefiningOp<MemDescAliasOp>()) {
+      current = alias.getSrc();
+      continue;
+    }
     if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
       current = index.getSrc();
       continue;
@@ -109,7 +113,7 @@ static bool isTleOp(Operation *op) {
 }
 
 static bool isTileProducerViewLikeOp(Operation *op) {
-  return isa<ttg::MemDescIndexOp, ttg::MemDescSubsliceOp>(op) ||
+  return isa<ttg::MemDescIndexOp, ttg::MemDescSubsliceOp, MemDescAliasOp>(op) ||
          op->getName().getStringRef() == "tle.memdesc_wgmma_view";
 }
 

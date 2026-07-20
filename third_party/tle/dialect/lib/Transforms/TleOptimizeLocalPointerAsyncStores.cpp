@@ -192,6 +192,10 @@ static Value getMemDescRoot(Value value) {
       current = subslice.getSrc();
       continue;
     }
+    if (auto alias = current.getDefiningOp<MemDescAliasOp>()) {
+      current = alias.getSrc();
+      continue;
+    }
     break;
   }
   return current;

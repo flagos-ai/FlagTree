@@ -59,6 +59,10 @@ static Value stripMemDescViews(Value value) {
       value = subslice.getSrc();
       continue;
     }
+    if (auto alias = value.getDefiningOp<tle::MemDescAliasOp>()) {
+      value = alias.getSrc();
+      continue;
+    }
     if (auto trans = value.getDefiningOp<MemDescTransOp>()) {
       value = trans.getSrc();
       continue;

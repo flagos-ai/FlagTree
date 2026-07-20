@@ -12,6 +12,7 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipelineExpander.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
@@ -454,7 +455,8 @@ static std::optional<int> dotCanBeProperlyAsync(ttng::WarpGroupDotOp dotOp,
     // allowed in between.
     Value transitiveOperand = operand;
     while (isa_and_nonnull<ttg::ConvertLayoutOp, ttg::MemDescTransOp,
-                           ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp>(
+                           ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp,
+                           mlir::triton::tle::MemDescAliasOp>(
                transitiveOperand.getDefiningOp()) ||
            isa<BlockArgument>(transitiveOperand)) {
       auto blockArg = dyn_cast<BlockArgument>(transitiveOperand);
