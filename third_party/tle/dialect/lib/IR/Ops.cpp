@@ -186,6 +186,26 @@ LogicalResult MemDescWGMMAViewOp::verify() {
   return success();
 }
 
+static std::optional<int64_t>
+getStaticMemDescByteSize(triton::gpu::MemDescType type) {
+  int64_t numElements = 1;
+  for (int64_t dim : type.getShape()) {
+    if (ShapedType::isDynamic(dim) || dim < 0)
+      return std::nullopt;
+    if (dim != 0 && numElements > std::numeric_limits<int64_t>::max() / dim)
+      return std::nullopt;
+    numElements *= dim;
+  }
+
+  int64_t elementBits = type.getElementTypeBitWidth();
+  int64_t elementBytes = (elementBits + 7) / 8;
+  if (elementBytes <= 0)
+    return std::nullopt;
+  if (numElements > std::numeric_limits<int64_t>::max() / elementBytes)
+    return std::nullopt;
+  return numElements * elementBytes;
+}
+
 LogicalResult MemDescAliasOp::verify() {
   auto srcType = getSrc().getType();
   auto resultType = getType();
