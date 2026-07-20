@@ -20,6 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+
 def precompile_hook(*args, **kargs):
     default_backends = kargs["default_backends"]
     default_backends_list = [*default_backends, "flir"]
