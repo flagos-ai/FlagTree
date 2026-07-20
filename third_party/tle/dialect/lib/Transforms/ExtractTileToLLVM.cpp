@@ -1,6 +1,4 @@
 /*
- * Copyright 2018-2020 Philippe Tillet
- * Copyright 2020-2022 OpenAI
  * Copyright 2025-     FlagOS Contributors
  *
  * Permission is hereby granted, free of charge, to any person obtaining
@@ -22,6 +20,7 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+
 
 #include "TleTileToLLVMUtils.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"

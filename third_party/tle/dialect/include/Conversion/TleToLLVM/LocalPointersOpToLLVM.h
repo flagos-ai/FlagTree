@@ -1,6 +1,4 @@
 /*
- * Copyright 2018-2020 Philippe Tillet
- * Copyright 2020-2022 OpenAI
  * Copyright 2025-     FlagOS Contributors
  *
  * Permission is hereby granted, free of charge, to any person obtaining
