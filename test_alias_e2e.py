@@ -16,7 +16,7 @@ def alias_e2e_kernel(in_ptr, out_ptr, N, BLOCK: tl.constexpr):
     # 1. 分配 v_smem 并写入输入数据
     v_smem = tle.gpu.alloc([BLOCK], dtype=tl.float32, scope=tle.gpu.smem)
     vals = tl.load(in_ptr + offs, mask=mask)
-    tle.gpu.copy(v_smem, vals)
+    tle.gpu.copy(vals, v_smem, [BLOCK])
 
     # 2. alias: o_smem 复用 v_smem 的物理内存，偏移 0 字节
     o_smem = tle.gpu.alloc(
@@ -25,7 +25,8 @@ def alias_e2e_kernel(in_ptr, out_ptr, N, BLOCK: tl.constexpr):
     )
 
     # 3. 从 o_smem 读回 —— 如果 alias 正确，应该和写入 v_smem 的值一致
-    result = tle.gpu.copy(o_smem)
+    result = tl.zeros([BLOCK], dtype=tl.float32)
+    tle.gpu.copy(o_smem, result, [BLOCK])
     tl.store(out_ptr + offs, result, mask=mask)
 
 
