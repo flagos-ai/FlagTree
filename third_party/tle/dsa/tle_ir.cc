@@ -212,7 +212,6 @@ void init_tle_dsa_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &ful, std::vector<Value> &offs_vec,
               std::vector<int> &sizs_vec, std::vector<int> &strd_vec) -> Value {
              llvm::SmallVector<Value> offsets;
-             llvm::SmallVector<int64_t> staticOffsets;
              for (const auto &o : offs_vec) {
                auto oTy = o.getType();
                if (!oTy.isIndex()) {
@@ -222,40 +221,33 @@ void init_tle_dsa_ir(py::module &&m) {
                } else {
                  offsets.push_back(o);
                }
-               staticOffsets.push_back(ShapedType::kDynamic);
              }
              llvm::SmallVector<OpFoldResult> mixedOffsets;
              for (Value offset : offsets) {
                mixedOffsets.push_back(offset);
              }
              llvm::SmallVector<OpFoldResult> mixedSizes;
-             llvm::SmallVector<int64_t> staticSizes;
              llvm::SmallVector<int64_t> retSizes;
              for (const auto &s : sizs_vec) {
                mixedSizes.push_back(self.getBuilder().getIndexAttr(s));
-               staticSizes.push_back(s);
                retSizes.push_back(s);
              }
              llvm::SmallVector<OpFoldResult> mixedStrides;
-             llvm::SmallVector<int64_t> staticStrides;
              for (const auto &s : strd_vec) {
                mixedStrides.push_back(self.getBuilder().getIndexAttr(s));
-               staticStrides.push_back(ShapedType::kDynamic);
              }
              auto retTy = RankedTensorType::get(
                  retSizes,
                  cast<RankedTensorType>(ful.getType()).getElementType());
 
              return self.create<tensor::ExtractSliceOp>(
-                 retTy, ful, mixedOffsets, mixedSizes, mixedStrides,
-                 staticOffsets, staticSizes, staticStrides);
+                 retTy, ful, mixedOffsets, mixedSizes, mixedStrides);
            })
       .def("create_dsa_insert_slice",
            [](TritonOpBuilder &self, Value &ful, Value &sub,
               std::vector<Value> &offs_vec, std::vector<int> &sizs_vec,
               std::vector<int> &strd_vec) -> Value {
              llvm::SmallVector<Value> offsets;
-             llvm::SmallVector<int64_t> staticOffsets;
              for (const auto &o : offs_vec) {
                auto oTy = o.getType();
                if (!oTy.isIndex()) {
@@ -265,27 +257,21 @@ void init_tle_dsa_ir(py::module &&m) {
                } else {
                  offsets.push_back(o);
                }
-               staticOffsets.push_back(ShapedType::kDynamic);
              }
              llvm::SmallVector<OpFoldResult> mixedOffsets;
              for (Value offset : offsets) {
                mixedOffsets.push_back(offset);
              }
              llvm::SmallVector<OpFoldResult> mixedSizes;
-             llvm::SmallVector<int64_t> staticSizes;
              for (const auto &s : sizs_vec) {
-               staticSizes.push_back(s);
                mixedSizes.push_back(self.getBuilder().getIndexAttr(s));
              }
              llvm::SmallVector<OpFoldResult> mixedStrides;
-             llvm::SmallVector<int64_t> staticStrides;
              for (const auto &s : strd_vec) {
                mixedStrides.push_back(self.getBuilder().getIndexAttr(s));
-               staticStrides.push_back(ShapedType::kDynamic);
              }
              auto ret = self.create<tensor::InsertSliceOp>(
-                 sub, ful, mixedOffsets, mixedSizes, mixedStrides,
-                 staticOffsets, staticSizes, staticStrides);
+                 sub, ful, mixedOffsets, mixedSizes, mixedStrides);
              return ret;
            })
       .def("create_dsa_subview",
