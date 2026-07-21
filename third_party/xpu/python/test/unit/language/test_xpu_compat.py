@@ -45,10 +45,8 @@ def libdevice_kernel(lhs, rhs, dst, n_elements: tl.constexpr, BLOCK: tl.constexp
 def _extern_functions():
     tree = ast.parse(_libdevice_path().read_text())
     return [
-        node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and any(isinstance(decorator, ast.Attribute) and decorator.attr == "extern" for decorator in node.decorator_list)
+        node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            isinstance(decorator, ast.Attribute) and decorator.attr == "extern" for decorator in node.decorator_list)
     ]
 
 
@@ -80,10 +78,7 @@ def test_xpu_libdevice_extern_calls_use_semantic():
 
 
 def test_build_extern_generates_semantic_stubs():
-    source = (
-        Path(__file__).resolve().parents[6]
-        / "third_party/xpu/python/triton/tools/build_extern.py"
-    ).read_text()
+    source = (Path(__file__).resolve().parents[6] / "third_party/xpu/python/triton/tools/build_extern.py").read_text()
     assert "_builder" not in source
     assert "_semantic=None" in source
     assert "_semantic=_semantic" in source
@@ -108,17 +103,14 @@ def test_xpu_large_tensor_override_is_vendored():
 
 
 def test_xpu_masked_load_materializes_other_in_frontend():
-    semantic = (
-        Path(__file__).resolve().parents[6]
-        / "third_party/xpu/python/triton/language/semantic.py"
-    ).read_text()
+    semantic = (Path(__file__).resolve().parents[6] / "third_party/xpu/python/triton/language/semantic.py").read_text()
     assert "load_value = self.tensor(" in semantic
     assert "ret = self.where(mask, load_value, other)" in semantic
 
 
 def test_xpu_launch_grid_is_compilation_option(device):
     block = 32
-    grid = (5,)
+    grid = (5, )
     dst = torch.empty(block, dtype=torch.int32, device=device)
     grid_kernel[grid](dst, BLOCK=block)
     torch.testing.assert_close(dst, torch.zeros_like(dst), rtol=0, atol=0)
@@ -138,7 +130,7 @@ def test_xpu_float_mod_matches_fmod(device):
     lhs = torch.tensor(lhs_np, device=device)
     rhs = torch.tensor(rhs_np, device=device)
     dst = torch.empty_like(lhs)
-    fmod_kernel[(1,)](lhs, rhs, dst, n_elements=lhs.numel(), BLOCK=8)
+    fmod_kernel[(1, )](lhs, rhs, dst, n_elements=lhs.numel(), BLOCK=8)
     torch.testing.assert_close(dst.cpu(), torch.from_numpy(np.fmod(lhs_np, rhs_np)), rtol=0, atol=0)
 
 
@@ -146,5 +138,5 @@ def test_xpu_representative_libdevice_externs(device):
     lhs = torch.tensor([1.25, 2.5, 4.0, 8.0], dtype=torch.float32, device=device)
     rhs = torch.tensor([2.0, 4.0, 8.0, 16.0], dtype=torch.float32, device=device)
     dst = torch.empty_like(lhs)
-    libdevice_kernel[(1,)](lhs, rhs, dst, n_elements=lhs.numel(), BLOCK=8)
+    libdevice_kernel[(1, )](lhs, rhs, dst, n_elements=lhs.numel(), BLOCK=8)
     assert torch.isfinite(dst).all()
