@@ -53,7 +53,7 @@ export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_C_COMPILER=$LLVM_SYSPATH/bin/clang \
   -Dnanobind_DIR=$SP/nanobind/cmake"
 
 # --- build -------------------------------------------------------------------
-cd "$REPO_ROOT/python"
+cd "$REPO_ROOT"
 
 if [[ "${CLEAN:-0}" == "1" ]]; then
   echo ">>> CLEAN=1: removing python/build (forces a fresh cmake configure)"
