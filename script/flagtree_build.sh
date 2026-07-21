@@ -12,7 +12,7 @@
 #
 # Env overrides (defaults shown):
 #   PYTHON       = /root/miniconda3/envs/dlcompiler/bin/python
-#   LLVM_SYSPATH = /root/.flagtree/ascend/llvm-a66376b0-ubuntu-aarch64-python311-compat
+#   LLVM_SYSPATH = /root/.flagtree/ascend/llvm-7d5de303-ubuntu-aarch64-python311-compat
 #   MAX_JOBS     = 32
 #
 set -euo pipefail
@@ -23,7 +23,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # --- configurable knobs ------------------------------------------------------
 PYTHON="${PYTHON:-$(which python3)}"
-export LLVM_SYSPATH="${LLVM_SYSPATH:-/root/.flagtree/ascend/llvm-a66376b0-ubuntu-aarch64-python311-compat}"
+export LLVM_SYSPATH="${LLVM_SYSPATH:-/root/.flagtree/ascend/llvm-7d5de303-ubuntu-aarch64-python311-compat}"
 export MAX_JOBS="${MAX_JOBS:-32}"
 
 # Python site-packages that provides pybind11 / nanobind cmake configs.
