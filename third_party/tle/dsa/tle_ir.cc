@@ -32,6 +32,7 @@ constexpr unsigned kIntegerAttrBitWidth = 64;
 // decode it so buffers carry their real space (L1/L0A/...). Falls back to UB.
 static mlir::triton::tile::MemorySpace attrToMemSpace(Attribute attr) {
   using MS = mlir::triton::tile::MemorySpace;
+#ifndef __LLVM_MAJOR_VERSION_22_COMPATIBLE__
   if (auto as = attr.dyn_cast_or_null<mlir::hivm::AddressSpaceAttr>()) {
     switch (as.getAddressSpace()) {
     case mlir::hivm::AddressSpace::GM:  return MS::GM;
@@ -53,6 +54,29 @@ static mlir::triton::tile::MemorySpace attrToMemSpace(Attribute attr) {
     if (name == "L0C") return MS::L0C;
     if (name == "UB")  return MS::UB;
   }
+#else
+  if (auto as = llvm::dyn_cast_or_null<mlir::hivm::AddressSpaceAttr>(attr)) {
+    switch (as.getAddressSpace()) {
+    case mlir::hivm::AddressSpace::GM:  return MS::GM;
+    case mlir::hivm::AddressSpace::L1:  return MS::L1;
+    case mlir::hivm::AddressSpace::L0A: return MS::L0A;
+    case mlir::hivm::AddressSpace::L0B: return MS::L0B;
+    case mlir::hivm::AddressSpace::L0C: return MS::L0C;
+    case mlir::hivm::AddressSpace::UB:  return MS::UB;
+    default: return MS::UB;
+    }
+  }
+  // Legacy / string-based fallback.
+  if (auto strAttr = llvm::dyn_cast_or_null<StringAttr>(attr)) {
+    auto name = strAttr.getValue();
+    if (name == "GM")  return MS::GM;
+    if (name == "L1")  return MS::L1;
+    if (name == "L0A") return MS::L0A;
+    if (name == "L0B") return MS::L0B;
+    if (name == "L0C") return MS::L0C;
+    if (name == "UB")  return MS::UB;
+  }
+#endif
   return MS::UB;
 }
 

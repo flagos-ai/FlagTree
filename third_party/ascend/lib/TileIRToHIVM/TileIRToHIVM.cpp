@@ -193,7 +193,11 @@ struct TileSubviewToMemrefSubview : public OpRewritePattern<tile::SubViewOp> {
                                 PatternRewriter &rewriter) const override {
     // 1. Convert the source buffer and deduce the result type
     Value sourceMemRef = getAsMemRef(op.getOperand(0), rewriter);
+#ifndef __LLVM_MAJOR_VERSION_22_COMPATIBLE__
     auto sourceMemRefType = sourceMemRef.getType().cast<MemRefType>();
+#else
+    auto sourceMemRefType = mlir::cast<MemRefType>(sourceMemRef.getType());
+#endif
 
     // 2. Map dynamic offsets directly to OpFoldResult
     SmallVector<OpFoldResult> mixedOffsets = llvm::to_vector<4>(
@@ -204,6 +208,7 @@ struct TileSubviewToMemrefSubview : public OpRewritePattern<tile::SubViewOp> {
     SmallVector<OpFoldResult> mixedStrides = getAsOpFoldResult(op.getStridesAttr());
 
     auto targetShape = op.getType().getShape();
+#ifndef __LLVM_MAJOR_VERSION_22_COMPATIBLE__
     auto inferredType = memref::SubViewOp::inferRankReducedResultType(
       targetShape,
       sourceMemRefType,
@@ -211,6 +216,15 @@ struct TileSubviewToMemrefSubview : public OpRewritePattern<tile::SubViewOp> {
       mixedSizes,
       mixedStrides
     ).cast<MemRefType>();
+#else
+    auto inferredType = mlir::cast<MemRefType>(memref::SubViewOp::inferRankReducedResultType(
+      targetShape,
+      sourceMemRefType,
+      mixedOffsets,
+      mixedSizes,
+      mixedStrides
+    ));
+#endif
 
     // 4. Replace the old op with the standard memref.subview
     auto memrefSubview = rewriter.create<memref::SubViewOp>(
@@ -288,8 +302,13 @@ struct TileStoreTensorToHIVM : OpRewritePattern<tile::StoreTensorOp> {
         return failure();
       auto memrefTy =
           MemRefType::get(tensorTy.getShape(), tensorTy.getElementType());
+#ifndef __LLVM_MAJOR_VERSION_22_COMPATIBLE__
       srcMem = rewriter.create<bufferization::ToMemrefOp>(
           op.getLoc(), memrefTy, srcMem);
+#else
+      srcMem = rewriter.create<bufferization::ToBufferOp>(
+          op.getLoc(), memrefTy, srcMem);
+#endif
     }
 
     rewriter.create<hivm::CopyOp>(op.getLoc(), TypeRange{}, srcMem, dstMem);

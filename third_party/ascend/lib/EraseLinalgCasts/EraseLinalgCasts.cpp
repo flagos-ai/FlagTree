@@ -97,8 +97,13 @@ struct LowerPtrTensorCastToMemref
         triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL,
         /*isVolatile=*/false);
     // %m = bufferization.to_memref %t
+#ifndef __LLVM_MAJOR_VERSION_22_COMPATIBLE__
     Value asMemref =
         rewriter.create<bufferization::ToMemrefOp>(loc, outMemref, loaded);
+#else
+    Value asMemref =
+        rewriter.create<bufferization::ToBufferOp>(loc, outMemref, loaded);
+#endif
     rewriter.replaceOp(op, asMemref);
     return success();
   }
