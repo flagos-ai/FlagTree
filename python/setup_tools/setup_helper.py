@@ -385,6 +385,10 @@ class SpecPackageHelper:
     def get_excluded_packages():
         return ["triton.spec", "triton.spec.*"]
 
+    @staticmethod
+    def get_excluded_package_data():
+        return {"triton": ["spec/*"]}
+
 
 class CommonUtils:
 
