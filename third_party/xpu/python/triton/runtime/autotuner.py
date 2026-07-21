@@ -154,6 +154,7 @@ class Autotuner(KernelInterface):
                              " Make sure that you don't re-define auto-tuned symbols.")
         # augment meta-parameters with tunable ones
         current = dict(meta, **config.all_kwargs())
+        original_current = current.copy()
         # flagtree aabs: auto_adjust_block_sizes
         if knobs.autotuning.adjust_block_size:
 
@@ -168,37 +169,46 @@ class Autotuner(KernelInterface):
             jit_fn = _unwrap_to_jitfunction(self.fn)
             if jit_fn is not None:
                 auto_adjust_block_sizes(self.nargs, jit_fn, self.configs, current, config)
-        meta_key = tuple(sorted(current.items()))
-        if meta_key in self.seen_tuned_metas:
-            return self.seen_tuned_metas[meta_key]  # flagtree aabs: deduplicate tuned meta
-        full_nargs = {**self.nargs, **current}
 
-        def kernel_call():
-            if config.pre_hook:
-                config.pre_hook(full_nargs)
-            self.pre_hook(full_nargs)
-            try:
-                self.fn.run(
-                    *args,
-                    **current,
-                )
-            except Exception as e:
+        def benchmark(tuned_meta):
+            meta_key = tuple(sorted(tuned_meta.items()))
+            if meta_key in self.seen_tuned_metas:
+                return self.seen_tuned_metas[meta_key]
+            full_nargs = {**self.nargs, **tuned_meta}
+
+            def kernel_call():
+                if config.pre_hook:
+                    config.pre_hook(full_nargs)
+                self.pre_hook(full_nargs)
                 try:
-                    self.post_hook(full_nargs, exception=e)
-                finally:
-                    # Throw exception raised by `self.fn.run`
-                    raise
+                    self.fn.run(
+                        *args,
+                        **tuned_meta,
+                    )
+                except Exception as e:
+                    try:
+                        self.post_hook(full_nargs, exception=e)
+                    finally:
+                        # Throw exception raised by `self.fn.run`
+                        raise
 
-            self.post_hook(full_nargs, exception=None)
+                self.post_hook(full_nargs, exception=None)
 
-        try:
-            rett = self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
-        except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
-            if verbose:
-                print(f"Autotuning failed with {e}")
-            rett = [float("inf"), float("inf"), float("inf")]
+            try:
+                rett = self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
+            except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
+                if verbose:
+                    print(f"Autotuning failed with {e}")
+                rett = [float("inf"), float("inf"), float("inf")]
+            self.seen_tuned_metas[meta_key] = rett
+            return rett
 
-        self.seen_tuned_metas[meta_key] = rett  # flagtree aabs: deduplicate tuned meta
+        rett = benchmark(current)
+        if current != original_current and all(timing == float("inf") for timing in rett):
+            rett = benchmark(original_current)
+            if not all(timing == float("inf") for timing in rett):
+                for key in config.kwargs.keys() & original_current.keys():
+                    config.kwargs[key] = original_current[key]
         return rett
 
     def check_disk_cache(self, tuning_key, configs, bench_fn):
