@@ -1,6 +1,7 @@
 # flagtree tle
 from .core import (
     pipeline,
+    range,
     alloc,
     alloc_barrier,
     alloc_barriers,
@@ -21,6 +22,7 @@ storage_kind = memory_space
 
 __all__ = [
     "pipeline",
+    "range",
     "alloc",
     "alloc_barrier",
     "alloc_barriers",

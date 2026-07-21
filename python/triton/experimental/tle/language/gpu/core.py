@@ -12,6 +12,7 @@ from triton.language.core import (
     constexpr,
     tensor,
     range,
+    range as _tl_range,
 )
 
 # Address space 3 matches the shared-memory space used in TritonGPU lowering.
@@ -50,6 +51,28 @@ class pipeline(range):
 
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
+
+
+class range(_tl_range):
+    """
+    FlagTree/TLE extension of :func:`triton.language.range`.
+
+    Behaves exactly like ``tl.range`` but adds the ``reorder`` hint, a TLE-specific
+    extension that is intentionally kept out of the upstream Triton primitive.
+
+    :param reorder: If ``True`` (and ``loop_unroll_factor`` is set), instructs the
+        FlagTree ``reorder-loop-loads`` optimization to cluster loads produced by the
+        unrolled loop body ahead of the remaining ops, improving memory-latency hiding.
+        Requires a FlagTree build with ``__FLAGTREE_REORDER_LOOP_LOADS__`` enabled.
+    :type reorder: bool
+    """
+
+    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
+                 disallow_acc_multi_buffer=False, flatten=False, warp_specialize=False, disable_licm=False,
+                 reorder=False):
+        super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor, disallow_acc_multi_buffer, flatten,
+                         warp_specialize, disable_licm)
+        self.reorder = reorder
 
 
 class WarpSpecializeCallerContext:

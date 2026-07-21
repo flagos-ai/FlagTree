@@ -1249,10 +1249,12 @@ class CodeGenerator(ast.NodeVisitor):
         try:
             from ..experimental.tle import language as tle
             tle_pipeline = tle.gpu.pipeline
+            tle_range = tle.range  # flagtree reorder-loop-loads
         except ImportError:
             tle_pipeline = None
+            tle_range = None
 
-        if IteratorClass in [language.range, tle_pipeline]:
+        if IteratorClass in [language.range, tle_pipeline, tle_range]:  # flagtree reorder-loop-loads
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now

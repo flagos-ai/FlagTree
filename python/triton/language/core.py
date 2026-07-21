@@ -3287,8 +3287,7 @@ class range(base_value):
     """
 
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
-                 disallow_acc_multi_buffer=False, flatten=False, warp_specialize=False, disable_licm=False,
-                 reorder=False):  # flagtree reorder-loop-loads
+                 disallow_acc_multi_buffer=False, flatten=False, warp_specialize=False, disable_licm=False):
         if step is None:
             self.step = constexpr(1)
         else:
@@ -3305,7 +3304,6 @@ class range(base_value):
         self.flatten = flatten
         self.warp_specialize = warp_specialize
         self.disable_licm = disable_licm
-        self.reorder = reorder  # flagtree reorder-loop-loads
 
     def __iter__(self):
         raise RuntimeError("tl.range can only be used in @triton.jit'd functions")

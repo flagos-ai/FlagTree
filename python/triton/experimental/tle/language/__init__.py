@@ -95,3 +95,8 @@ __all__ = [
 ]
 
 from . import distributed, gpu, raw
+
+# TLE-specific loop iterator: tl.range plus the `reorder` extension hint.
+from .gpu import range
+
+__all__.append("range")
