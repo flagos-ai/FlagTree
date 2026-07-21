@@ -6,6 +6,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/utils/include)
 if(FLAGTREE_BACKEND STREQUAL "ascend")
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/dsa/dialect/include)
   include_directories(${CMAKE_CURRENT_BINARY_DIR}/dsa/dialect/include)
+  include_directories(${CMAKE_SOURCE_DIR}/third_party/flir/include)
+  include_directories(${CMAKE_BINARY_DIR}/third_party/flir/include)
   set(TLE_DSA_PLUGIN_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/dsa/tle_ir.cc)
   set(TLE_DSA_PLUGIN_DEPENDS
     TleDSATableGen
