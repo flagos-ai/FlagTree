@@ -20,7 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from triton.flagtree_spec import spec_path, spec
+from triton._flagtree_spec import spec_path, spec
 
 # flagtree backend path specialization
 spec_path(__path__)

@@ -22,7 +22,7 @@
 """isort:skip_file"""
 __version__ = '3.6.0'
 
-from triton.flagtree_spec import spec
+from triton._flagtree_spec import spec
 
 # ---------------------------------------
 # Note: import order is significant here.
