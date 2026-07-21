@@ -348,21 +348,12 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
     pm.addPass(mlir::triton::createAutoBlockifyPass(opts));
   });
 
-#if LLVM_VERSION_MAJOR >= 22
-  m.def("add_triton_to_structure",
-        [](mlir::PassManager &pm, bool enableMaskFallbackConversion,
-           bool optimizeDynamicOffset, bool compileOn91095) {
-          pm.addPass(mlir::triton::createTritonToStructuredIncubatedPass(
-              enableMaskFallbackConversion, optimizeDynamicOffset, compileOn91095));
-        });
-#else
   m.def("add_triton_to_structure",
         [](mlir::PassManager &pm, bool enableMaskFallbackConversion,
            bool optimizeDynamicOffset) {
           pm.addPass(mlir::triton::createTritonToStructuredIncubatedPass(
               enableMaskFallbackConversion, optimizeDynamicOffset));
         });
-#endif
 
   // m.def("add_triton_to_annotation", [](mlir::PassManager &pm) {
   //   pm.addPass(mlir::triton::createTritonToAnnotationPass());
