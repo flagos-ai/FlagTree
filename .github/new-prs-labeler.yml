@@ -30,7 +30,6 @@ CORE:
           - 'cmake/**'
           - 'include/**'
           - 'lib/**'
-          - 'packaging/**'
           - 'python/**'
           - 'scripts/**'
           - 'test/**'
@@ -39,6 +38,11 @@ CORE:
           - 'third_party/proton/**'
           - 'third_party/tle/**'
           - 'third_party/f2reduce/**'
+          - 'CMakeLists.txt'
+          - 'Makefile'
+          - 'MANIFEST.in'
+          - 'pyproject.toml'
+          - 'setup.py'
 
 # ==========================================
 # 2. CI/CD Labels
@@ -48,8 +52,13 @@ CORE:
 CI/CD:
   - changed-files:
       - any-glob-to-any-file:
-          - '.github/workflows/**'
           - '.github/actions/**'
+          - '.github/workflows/**'
+          - '.github/CODEOWNERS'
+          - '.github/dependabot.yml'
+          - '.github/new-prs-labeler.yml'
+          - '.github/PULL_REQUEST_TEMPLATE.md'
+          - 'packaging/**'
 
 # ==========================================
 # 3. Documentation Labels (DOC)
@@ -67,7 +76,7 @@ DOC:
           - '**/*.jpeg'
           - '**/*.gif'
           - '**/*.ico'
-          - '**/CODEOWNERS'
+          - 'LICENSE'
 
 # ==========================================
 # 4. Backend Labels
