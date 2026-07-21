@@ -744,8 +744,7 @@ def get_package_dirs():
 
 def get_packages():
     # flagtree backend specialization: add excluded packages
-    yield from find_packages(where="python",
-                             include=["triton", "triton.*"],
+    yield from find_packages(where="python", include=["triton", "triton.*"],
                              exclude=helper.SpecPackageHelper.get_excluded_packages())
 
     # flagtree backend specialization

@@ -367,8 +367,7 @@ class SpecPackageHelper:
     @staticmethod
     def get_spec_packages():
         spec_install_dir = os.path.join("python", "triton", "spec")
-        spec_links = sorted((entry for entry in os.scandir(spec_install_dir)
-                             if entry.is_symlink() and entry.is_dir()),
+        spec_links = sorted((entry for entry in os.scandir(spec_install_dir) if entry.is_symlink() and entry.is_dir()),
                             key=lambda entry: entry.name)
         for spec_link in spec_links:
             name = spec_link.name
