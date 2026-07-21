@@ -715,6 +715,9 @@ else:
 def get_package_dirs():
     yield ("", "python")
 
+    # flagtree backend specialization
+    yield from helper.SpecPackageHelper.get_spec_packages()
+
     for backend in backends:
         # we use symlinks for external plugins
         if backend.is_external:
@@ -740,7 +743,14 @@ def get_package_dirs():
 
 
 def get_packages():
-    yield from find_packages(where="python", include=["triton", "triton.*"])
+    # flagtree backend specialization: add excluded packages
+    yield from find_packages(where="python",
+                             include=["triton", "triton.*"],
+                             exclude=helper.SpecPackageHelper.get_excluded_packages())
+
+    # flagtree backend specialization
+    for package, _source_dir in helper.SpecPackageHelper.get_spec_packages():
+        yield package
 
     for backend in backends:
         yield f"triton.backends.{backend.name}"

@@ -361,6 +361,31 @@ def try_setup_flagtree_mlir(pkg_name: str = "mlir") -> bool:
 # --------------------------
 
 
+# flagtree backend specialization
+class SpecPackageHelper:
+
+    @staticmethod
+    def get_spec_packages():
+        spec_install_dir = os.path.join("python", "triton", "spec")
+        spec_links = sorted((entry for entry in os.scandir(spec_install_dir)
+                             if entry.is_symlink() and entry.is_dir()),
+                            key=lambda entry: entry.name)
+        for spec_link in spec_links:
+            name = spec_link.name
+            source_dir = spec_link.path
+            for root, dirs, _files in os.walk(source_dir):
+                dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
+                relative_dir = os.path.relpath(root, source_dir)
+                package = f"triton.spec.{name}"
+                if relative_dir != ".":
+                    package += "." + relative_dir.replace(os.sep, ".")
+                yield package, root
+
+    @staticmethod
+    def get_excluded_packages():
+        return ["triton.spec", "triton.spec.*"]
+
+
 class CommonUtils:
 
     @staticmethod
