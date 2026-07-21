@@ -13,12 +13,12 @@
 
 ```shell
 # Plan A: docker pull (24.9GB)
-IMAGE=harbor.baai.ac.cn/flagtree/flagtree-py312-2.13.0a0_8145d630e8.nv26.06-cuda13.3-ubuntu24.04:202607-3.6-base
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.13.0a0_8145d630e8.nv26.06-cuda13.3-ubuntu24.04:202607-3.6-base
 docker pull ${IMAGE}
 # Plan B: docker load (10GB)
-IMAGE=flagtree-py312-2.13.0a0_8145d630e8.nv26.06-cuda13.3-ubuntu24.04:202607-3.6-base
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-py312-2.13.0a0_8145d630e8.nv26.06-cuda13.3-ubuntu24.04.202607-3.6-base.tar.gz
-docker load -i flagtree-py312-2.13.0a0_8145d630e8.nv26.06-cuda13.3-ubuntu24.04.202607-3.6-base.tar.gz
+IMAGE=flagtree-py312-torch2.13.0a0_8145d630e8.nv26.06-cuda13.3-ubuntu24.04:202607-3.6-base
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/flagtree-py312-torch2.13.0a0_8145d630e8.nv26.06-cuda13.3-ubuntu24.04.202607-3.6-base.tar.gz
+docker load -i flagtree-py312-torch2.13.0a0_8145d630e8.nv26.06-cuda13.3-ubuntu24.04.202607-3.6-base.tar.gz
 ```
 
 本镜像亦可用于 `nvidia` 后端。
