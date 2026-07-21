@@ -289,7 +289,7 @@ def collect_xpu_backend_package_data(backend):
 
 
 def ensure_xpu_launch_static_lib(backend):
-    src = Path(backend.src_dir) / "device" / "liblaunch.a"
+    src = Path(backend.src_dir) / "device" / "xpu3" / "liblaunch.a"
     if not src.exists():
         print(f"[XPU] liblaunch.a not found at {src}; packaged launcher may fail to link", file=sys.stderr)
         return
