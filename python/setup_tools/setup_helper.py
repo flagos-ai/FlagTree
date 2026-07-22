@@ -367,6 +367,8 @@ class SpecPackageHelper:
     @staticmethod
     def get_spec_packages():
         spec_install_dir = os.path.join("python", "triton", "spec")
+        yield "triton.spec", spec_install_dir
+
         spec_dirs = sorted(
             (entry for entry in os.scandir(spec_install_dir) if entry.is_dir() and entry.name != "__pycache__"),
             key=lambda entry: entry.name)
