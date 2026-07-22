@@ -582,6 +582,7 @@ class MUSAOptions:
     num_stages: int = 3
     warp_size: int = 32
     maxnreg: Optional[int] = None
+    cluster_dims: tuple = (1, 1, 1)    # flagtree mthreads3.2
     enable_fp_fusion: bool = True
     launch_cooperative_grid: bool = False
     supported_fp8_dtypes: Tuple[str, ...] = ("fp8e5", )
