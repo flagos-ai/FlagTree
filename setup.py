@@ -770,6 +770,7 @@ def get_packages():
     # yield these directories to avoid warnings
     yield "triton._C"
     yield "triton._C.libtriton"
+    yield "triton.tools.triton_to_gluon_translater"
 
     for backend in backends:
         # flagtree: extend yield "triton.backends.{backend.name}"
