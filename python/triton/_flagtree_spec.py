@@ -64,8 +64,8 @@ def spec_path(path_list: list):
         path_list.insert(0, backend_path)
 
 
-# flagtree backend specialization
-def spec(function_name: str, *args, **kwargs):
+# flagtree backend call specialization
+def spec_call(function_name: str, *args, **kwargs):
     mod = _get_spec_module()
     if mod is not None and hasattr(mod, function_name):
         return getattr(mod, function_name)(*args, **kwargs)

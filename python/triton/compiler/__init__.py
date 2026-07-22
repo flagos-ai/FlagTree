@@ -20,7 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from triton._flagtree_spec import spec_path, spec
+from triton._flagtree_spec import spec_call, spec_path
 
 # flagtree backend path specialization
 spec_path(__path__)
@@ -28,8 +28,8 @@ spec_path(__path__)
 from .compiler import CompiledKernel, ASTSource, IRSource, compile, make_backend, LazyDict, get_cache_key
 from .errors import CompilationError
 
-# flagtree backend specialization
-spec("compiler_extend_globals", globals())
+# flagtree backend call specialization
+spec_call("compiler_extend_globals", globals())
 
 __all__ = [
     "compile", "make_backend", "ASTSource", "IRSource", "CompiledKernel", "CompilationError", "LazyDict",
