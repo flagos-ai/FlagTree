@@ -7,7 +7,7 @@ from ..backends.compiler import Language
 from ..backends.compiler import BaseBackend, GPUTarget
 from .. import __version__, knobs
 from ..runtime.autotuner import OutOfResources
-from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key
+from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key, triton_key
 from ..runtime.driver import driver
 from ..tools.disasm import get_sass
 from pathlib import Path
@@ -414,6 +414,11 @@ def _raise_error(err, *args, **kwargs):
 
 
 class CompiledKernel:
+
+    # flagtree: compatibility for Torch Inductor versions that still read launch hooks
+    # from CompiledKernel. Triton 3.7 owns these hooks under knobs.runtime.
+    launch_enter_hook = knobs.runtime.launch_enter_hook
+    launch_exit_hook = knobs.runtime.launch_exit_hook
 
     def __init__(self, src, metadata_group, hash):
         from collections import namedtuple
