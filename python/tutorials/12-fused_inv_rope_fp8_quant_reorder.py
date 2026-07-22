@@ -42,11 +42,18 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems.runtime import torch_device_fn
-from flag_gems.utils.device_info import get_device_capability
 import triton.experimental.tle.language as tle
 
-if torch_device_fn.is_available() and get_device_capability() >= (9, 0):
+
+def is_cuda():
+    return triton.runtime.driver.active.get_current_target().backend == "cuda"
+
+
+def supports_fp8():
+    return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
+
+
+if supports_fp8():
     SUPPORTED_FP8_DTYPE = torch.float8_e4m3fn
 else:
     SUPPORTED_FP8_DTYPE = torch.float32
@@ -562,8 +569,8 @@ def test_fused_inv_rope_fp8_quant(
         print("Correctness test passed!")
     else:
         print("FP8 not supported on this device, using float32 (no quantization)")
-        torch.testing.assert_close(fp8_fused_reshaped, fp8_ref_reshaped, rtol=1e-3, atol=1e-3)
-        torch.testing.assert_close(scale_fused_reshaped, scale_ref_reshaped, rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(fp8_fused_reshaped, fp8_ref_reshaped, rtol=0.0, atol=0.0)
+        torch.testing.assert_close(scale_fused_reshaped, scale_ref_reshaped, rtol=0.0, atol=0.0)
         print("Correctness test passed (float32 mode)!")
 
 
@@ -619,9 +626,6 @@ def benchmark(num_tokens, n_groups, heads_per_group, head_dim, nope_dim, rope_di
     else:
         fn = lambda: reference_inv_rope_fp8_quant(o, positions, cos_sin_cache, n_groups, heads_per_group, nope_dim,
                                                   rope_dim, quant_group_size)
-    for _ in range(50):
-        fn()
-    torch_device_fn.synchronize()
 
     ms, ms_min, ms_max = triton.testing.do_bench_cudagraph(
         fn,
