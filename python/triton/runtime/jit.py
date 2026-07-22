@@ -157,6 +157,13 @@ class DependenciesFinder(ast.NodeVisitor):
             return
 
         if getattr(val, "__triton_builtin__", False):
+            # TLE-Raw dialect objects (e.g. TOPSJITFunction, CUDAJITFunction,
+            # MLIRJITFunction) carry a cache_key that hashes their external
+            # source file content.  Fold it into the dependency hash so that
+            # editing the .tops/.cu/.mlir file invalidates the compile cache.
+            dialect_cache_key = getattr(val, "cache_key", None)
+            if dialect_cache_key is not None:
+                self.hasher.update(dialect_cache_key.encode("utf-8"))
             return
 
         # Stubs that aren't real functions

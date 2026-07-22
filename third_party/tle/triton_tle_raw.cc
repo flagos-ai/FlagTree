@@ -30,6 +30,7 @@
 #include "tle/utils/include/AnalyzeReturnType.h"
 #include "tle/utils/include/TleRawMaterialize.h"
 #include "llvm/ADT/STLExtras.h"
+#include <vector>
 #include <optional>
 
 using namespace mlir;
@@ -49,9 +50,16 @@ std::optional<llvm::StringRef> getOptionalFuncName(std::string_view value) {
 }
 
 void setDeferredMetadataAttrs(tle::DSLRegionOp op, OpBuilder &builder,
-                              std::string_view sourceId) {
+                              std::string_view sourceId,
+                              std::string_view dsl_file_name,
+                              std::string_view extern_func_name) {
   if (!sourceId.empty())
     op->setAttr("tle_raw.source_id", builder.getStringAttr(sourceId));
+  if (!dsl_file_name.empty())
+    op->setAttr("tle_raw.dsl_file_name", builder.getStringAttr(dsl_file_name));
+  if (!extern_func_name.empty())
+    op->setAttr("tle_raw.extern_func_name",
+                builder.getStringAttr(extern_func_name));
 }
 
 tle::DSLRegionOp createDSLRegionOp(
@@ -140,7 +148,8 @@ tle::DSLRegionOp createTLERawRegionDeferred(
     TritonOpBuilder &self, std::string_view sourceId,
     std::string_view regionDialect, std::string_view argDialect,
     const std::vector<Value> &args,
-    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint) {
+    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint,
+    std::string_view dsl_file_name, std::string_view extern_func_name) {
   OpBuilder &builder = self.getBuilder();
   SmallVector<Type> outputTys =
       llvm::map_to_vector(aliasOperandIndices, [&](int64_t idx) -> Type {
@@ -150,7 +159,8 @@ tle::DSLRegionOp createTLERawRegionDeferred(
   tle::DSLRegionOp dslRegionOp =
       createDSLRegionOp(self, outputTys, operands, regionDialect, argDialect,
                         aliasOperandIndices, hint);
-  setDeferredMetadataAttrs(dslRegionOp, builder, sourceId);
+  setDeferredMetadataAttrs(dslRegionOp, builder, sourceId, dsl_file_name,
+                           extern_func_name);
 
   OpBuilder::InsertionGuard guard(builder);
   Region &body = dslRegionOp.getBody();
