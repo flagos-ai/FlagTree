@@ -79,7 +79,22 @@ DOC:
           - 'LICENSE'
 
 # ==========================================
-# 4. Backend Labels
+# 4. Git Configuration Labels (GIT)
+# Applied if Git-related configuration files are modified.
+# ==========================================
+GIT:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.clang-format'
+          - '.dockerignore'
+          - '.editorconfig'
+          - '.gitattributes'
+          - '.git-blame-ignore-revs'
+          - '.gitignore'
+          - '.pre-commit-config.yaml'
+
+# ==========================================
+# 5. Backend Labels
 # Rule: Applied if files under third_party/{backend}
 # or .github/workflows/{backend}* are modified.
 # ==========================================
