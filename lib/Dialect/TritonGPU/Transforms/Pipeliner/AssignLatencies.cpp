@@ -201,30 +201,6 @@ public:
     }
 #endif
 
-    // PPU-specific: skip pipelining if load shape is smaller than the MMA
-    // instr-shape on any tile dim. Brings better FA-bwd performance.
-    if (auto dot = dyn_cast<tt::DotOp>(finalUser)) {
-      if (auto dotEnc = dyn_cast<ttg::PPUMmaEncodingAttr>(
-              dot.getResult().getType().getEncoding())) {
-        auto loadTy = dyn_cast<RankedTensorType>(op->getResultTypes()[0]);
-        if (!loadTy)
-          return false;
-        auto mmaInstrShape = dotEnc.getInstrShape();
-        if (loadTy.getRank() < (int64_t)mmaInstrShape.size())
-          return false;
-        bool ok = true;
-        for (size_t i = 0; i < mmaInstrShape.size(); i++) {
-          if (loadTy.getShape()[loadTy.getRank() - mmaInstrShape.size() + i] <
-              (int64_t)mmaInstrShape[i]) {
-            ok = false;
-            break;
-          }
-        }
-        if (!ok)
-          return false;
-      }
-    }
-
     if (localAllocEnc) {
       auto registerTy = cast<RankedTensorType>(op->getResultTypes()[0]);
       auto vecBytes = getCopyVecBytes(registerTy, localAllocEnc);

@@ -144,7 +144,6 @@ class HGGCOptions:
     sanitize_overflow: bool = True
     arch: str = None
     instrumentation_mode: str = ""
-    ppu_hint: Tuple[str] = ()
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / 'lib'
@@ -421,10 +420,6 @@ class PPUBackend(BaseBackend):
             if not k.is_declaration() and k.is_external_linkage():
                 ppu.set_reqntid(k)
                 ppu.set_smemsize(k, shared_size)
-                if options.ppu_hint == "fwd":
-                    ppu.set_attn_fwd(k)
-                elif options.ppu_hint == "bwd":
-                    ppu.set_attn_bwd(k)
 
         if options.extern_libs and ppu.has_extern_deps(llvm_mod):
             paths = [path for (name, path) in options.extern_libs]

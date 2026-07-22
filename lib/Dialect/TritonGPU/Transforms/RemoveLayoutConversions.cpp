@@ -4181,19 +4181,6 @@ void LayoutRematerialization::hoistConvertDotOperand(
     if (!type)
       continue;
     auto newType = type.cloneWithEncoding(layout[loadOp->getResult(0)]);
-
-    // To maximize ldmatrix utilization, convertlayout will not be hoisted
-    // if the dst encoding changes from dotoperand to non-dotoperand
-    Attribute oldDstLayout = targetType.getEncoding();
-    Attribute newDstLayout = newType.getEncoding();
-    if ((isa<DotOperandEncodingAttr>(oldDstLayout) &&
-         isa<PPUMmaEncodingAttr>(
-             cast<DotOperandEncodingAttr>(oldDstLayout).getParent())) &&
-        !(isa<DotOperandEncodingAttr>(newDstLayout) &&
-          isa<PPUMmaEncodingAttr>(
-              cast<DotOperandEncodingAttr>(newDstLayout).getParent())))
-      return;
-
     auto newConvertOp = ConvertLayoutOp::create(builder, convertOp.getLoc(),
                                                 newType, loadOp->getResult(0));
     mapping.map(loadOp->getResult(0), newConvertOp.getResult());

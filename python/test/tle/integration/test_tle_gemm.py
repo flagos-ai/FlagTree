@@ -14,6 +14,7 @@ import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton._flagtree_backend import FLAGTREE_BACKEND
 # Disable TF32, force pure FP32 accumulation
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
@@ -115,13 +116,12 @@ class TestTLEGEMM:
         # Execute TLE GEMM computation
         tle_gemm(a, b, c, BLOCK_M, BLOCK_N, BLOCK_K)
 
-        # Verify results — third_party backends (PPU etc.) have slightly different
-        # dot accumulation precision vs NVIDIA; use a looser tolerance there.
+        # Verify results
         expected = torch.matmul(a, b)
-        backend = triton.runtime.driver.active.get_current_target().backend
-        atol = 1e-4 if backend == "cuda" else 1e-3
-        rtol = 1e-4 if backend == "cuda" else 1e-3
-        torch.testing.assert_close(c, expected, atol=atol, rtol=rtol)
+        if FLAGTREE_BACKEND == "ppu":
+            torch.testing.assert_close(c, expected, atol=1e-3, rtol=1e-3)
+        else:
+            torch.testing.assert_close(c, expected, atol=1e-4, rtol=1e-4)
 
 
 if __name__ == "__main__":
