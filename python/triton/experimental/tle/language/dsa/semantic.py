@@ -166,8 +166,8 @@ def tile_alloc(etype: tl.dtype, shape: List[tl.constexpr], address_space: addres
     shape = tl._unwrap_shape(shape)
     if not isinstance(shape, (tuple, list)):
         raise TypeError("shape must be list/tuple")
-    etype = tl._constexpr_to_value(etype)
-    address_space = tl._constexpr_to_value(address_space)
+    etype = tl._unwrap_if_constexpr(etype)
+    address_space = tl._unwrap_if_constexpr(address_space)
     element_ty_ir = etype.to_ir(builder)
     addr_space_attr = (address_space.to_ir(builder) if address_space else builder.dsa_get_null_attr())
     tile_buf_ty = builder.tile_get_buffer_type(shape, element_ty_ir, addr_space_attr)
@@ -207,7 +207,7 @@ def tile_to_buffer(
             raise ValueError(f"bind_buffer shape {bind_buffer.shape} does not match tensor shape {list(shape)}")
         dst = bind_buffer
     else:
-        address_space = tl._constexpr_to_value(address_space)
+        address_space = tl._unwrap_if_constexpr(address_space)
         dst = tile_alloc(tensor.dtype, shape, address_space, builder)
 
     tile_store_tensor(tensor, dst, builder)
@@ -286,7 +286,7 @@ def tensor_to_tile(src: tl.tensor, space: address_space, builder: ir.builder) ->
         return buffer(src.handle, buffer_ty)
 
     if space is not None:
-        space = tl._constexpr_to_value(space)
+        space = tl._unwrap_if_constexpr(space)
         addr_space_attr = space.to_ir(builder)
         element_ty_ir = src.dtype.to_ir(builder)
         shape = list(shape)
