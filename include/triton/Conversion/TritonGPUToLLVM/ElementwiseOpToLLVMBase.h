@@ -120,7 +120,8 @@ public:
     auto invReg = inv.sublayout(dims, {kReg});
     auto bases_inv = invReg.getBases();
     for (auto [c, d] : llvm::zip(constancy, dims)) {
-      assert(llvm::isPowerOf2_32(c));
+      if (!llvm::isPowerOf2_32(c))
+        return resultVals;
       for (int i = 0; i < llvm::Log2_32(c); i++) {
         bases_inv[d][i] = {0};
       }
