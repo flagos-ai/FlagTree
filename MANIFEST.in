@@ -14,3 +14,4 @@ include Makefile
 include python/build_helpers.py
 include python/requirements.txt
 include python/test-requirements.txt
+global-exclude *.py[cod]

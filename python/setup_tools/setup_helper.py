@@ -384,9 +384,18 @@ class SpecPackageHelper:
     def get_excluded_packages():
         return ["triton.spec", "triton.spec.*"]
 
-    @staticmethod
-    def get_excluded_package_data():
-        return {"triton": ["spec/*"]}
+
+def get_excluded_package_data():
+    cache_patterns = [
+        "__pycache__/*",
+        "**/__pycache__/*",
+        "*.py[cod]",
+        "**/*.py[cod]",
+    ]
+    return {
+        "": cache_patterns,
+        "triton": ["spec/*"],
+    }
 
 
 class CommonUtils:

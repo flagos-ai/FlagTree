@@ -968,8 +968,7 @@ setup(
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
     package_data=get_package_data(),
-    # flagtree backend specialization
-    exclude_package_data=helper.SpecPackageHelper.get_excluded_package_data(),
+    exclude_package_data=helper.get_excluded_package_data(),
     entry_points=get_entry_points(),
     include_package_data=True,
     ext_modules=[CMakeExtension("triton", "triton/_C/")],
