@@ -751,6 +751,11 @@ def get_packages():
     for package, _source_dir in helper.SpecPackageHelper.get_spec_packages():
         yield package
 
+    # flagtree: these directories are without __init__.py
+    # yield these directories to avoid warnings
+    yield "triton._C"
+    yield "triton._C.libtriton"
+
     for backend in backends:
         yield f"triton.backends.{backend.name}"
 
