@@ -716,8 +716,7 @@ else:
 def get_backend_packages(backend):
     package_prefix = f"triton.backends.{backend.name}"
     for root, dirs, _files in os.walk(backend.backend_dir):
-        dirs[:] = sorted(directory for directory in dirs
-                         if directory != "__pycache__" and directory.isidentifier())
+        dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__" and directory.isidentifier())
         relative_dir = os.path.relpath(root, backend.backend_dir)
         package = package_prefix
         if relative_dir != ".":
