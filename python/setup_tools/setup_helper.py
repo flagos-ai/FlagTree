@@ -372,7 +372,7 @@ class SpecPackageHelper:
             key=lambda entry: entry.name)
         for spec_dir in spec_dirs:
             name = spec_dir.name
-            source_dir = os.path.relpath(os.path.realpath(spec_dir.path))
+            source_dir = spec_dir.path
             for root, dirs, _files in os.walk(source_dir):
                 dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
                 relative_dir = os.path.relpath(root, source_dir)
