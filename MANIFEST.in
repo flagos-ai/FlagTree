@@ -15,4 +15,5 @@ include python/build_helpers.py
 include python/requirements.txt
 include python/test-requirements.txt
 prune python/triton/backends/*
+exclude python/triton/spec/*
 global-exclude *.py[cod]
