@@ -84,126 +84,108 @@ DOC:
 # or .github/workflows/{backend}* are modified.
 # ==========================================
 
-# Aipu
 aipu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/aipu/**'
           - '.github/workflows/aipu*'
 
-# AMD
 amd:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/amd/**'
           - '.github/workflows/amd*'
 
-# Ascend
 ascend:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/ascend/**'
           - '.github/workflows/ascend*'
 
-# Cambricon
 cambricon:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/cambricon/**'
           - '.github/workflows/cambricon*'
 
-# CPU
 cpu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/cpu/**'
           - '.github/workflows/cpu*'
 
-# Enflame
 enflame:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/enflame/**'
           - '.github/workflows/enflame*'
 
-# HCU
 hcu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/hcu/**'
           - '.github/workflows/hcu*'
 
-# Iluvatar
 iluvatar:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/iluvatar/**'
           - '.github/workflows/iluvatar*'
 
-# Metax
 metax:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/metax/**'
           - '.github/workflows/metax*'
 
-# Mthreads
 mthreads:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/mthreads/**'
           - '.github/workflows/mthreads*'
 
-# NVIDIA
 nvidia:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/nvidia/**'
           - '.github/workflows/nv*'
 
-# RPU
 rpu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/rpu/**'
           - '.github/workflows/rpu*'
 
-# Sunrise
 sunrise:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/sunrise/**'
           - '.github/workflows/sunrise*'
 
-# Thrive
 thrive:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/thrive/**'
           - '.github/workflows/thrive*'
 
-# TileIR
 tileir:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tileir/**'
           - '.github/workflows/tileir*'
 
-# TLE ARM64
 tle_arm64:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tle_arm64/**'
           - '.github/workflows/tle_arm64*'
 
-# Tsingmicro
 tsingmicro:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tsingmicro/**'
           - '.github/workflows/tsingmicro*'
 
-# XPU
 xpu:
   - changed-files:
       - any-glob-to-any-file:
