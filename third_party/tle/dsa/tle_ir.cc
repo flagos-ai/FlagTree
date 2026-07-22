@@ -90,10 +90,9 @@ void init_tle_dsa_ir(py::module &&m) {
     context.loadAllAvailableDialects();
   });
 
-  auto tle_cls = py::class_<TritonOpBuilder>(
-      m, "tle_builder", py::module_local(), py::dynamic_attr())
-      .def(py::init<mlir::MLIRContext *>())
-      .def("dsa_get_null_attr", [](TritonOpBuilder &self) { return Attribute(); })
+  auto *tle_cls = ir::getBuilderClass();
+
+  tle_cls->def("dsa_get_null_attr", [](TritonOpBuilder &self) { return Attribute(); })
       .def("dsa_get_buffer_type",
            [](TritonOpBuilder &self, std::vector<int64_t> &shape,
               Type &elementType, const Attribute &memorySpace) -> Type {
@@ -377,7 +376,7 @@ void init_tle_dsa_ir(py::module &&m) {
   });
 
   // TileIR buffer / tensor type construction
-  tle_cls.def("tile_get_buffer_type",
+  tle_cls->def("tile_get_buffer_type",
        [](TritonOpBuilder &self, std::vector<int64_t> &shape,
           Type &elementType, const Attribute &memorySpace) -> Type {
          auto memSpace = attrToMemSpace(memorySpace);
