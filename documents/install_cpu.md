@@ -1,4 +1,4 @@
-# 💫 ARM64 CPU [cpu](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x/third_party/cpu/) & [tle_arm64](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x/third_party/tle_arm64/) (Triton 3.3)
+# 💫 ARM64 CPU [cpu](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x/third_party/cpu/)3.3
 
 - Triton version 3.3, based on LLVM **a66376b0**, aarch64 platform
 - Target: AArch64 Linux with NEON / SVE2 + i8mm (e.g. Armv9-A Cortex-A720)

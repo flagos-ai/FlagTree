@@ -1,4 +1,4 @@
-# 💫 Huixi Intelligence（辉羲智能）[rpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/rpu/) (Triton 3.6)
+# 💫 Huixi Intelligence（辉羲智能）[rpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/rpu/)3.6
 
 - Based on Triton 3.6, aarch64
 

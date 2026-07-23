@@ -1,4 +1,4 @@
-# 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/) (Triton 3.6)
+# 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/)3.6
 
 - Based on Triton 3.6, x64
 - Available for S4000/S5000
@@ -108,7 +108,7 @@ Refer to [Tests of mthreads3.6 backend](https://github.com/flagos-ai/FlagTree/tr
 
 ---
 
-# 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/mthreads/) (Triton 3.2)
+# 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/mthreads/)3.2
 
 - Based on Triton 3.2, x64
 - Available for S4000/S5000
@@ -204,7 +204,7 @@ Refer to [Tests of mthreads3.2 backend](https://github.com/flagos-ai/FlagTree/tr
 
 ---
 
-# 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/mthreads/) (Triton 3.1)
+# 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/mthreads/)3.1
 
 - Based on Triton 3.1, x64/aarch64
 - Available for S4000/S5000

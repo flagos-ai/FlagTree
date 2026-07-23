@@ -1,4 +1,4 @@
-# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/main/third_party/enflame/) (Triton 3.6)
+# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/main/third_party/enflame/)3.6
 
 - Based on Triton 3.6, x64
 - Available for GCU300 (S60), GCU400 (L300/L600)
@@ -89,7 +89,7 @@ Refer to [Tests of enflame3.6 backend](https://github.com/flagos-ai/FlagTree/tre
 
 ---
 
-# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/) (Triton 3.5)
+# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/enflame/)3.5
 
 - Based on Triton 3.5, x64
 - Available for GCU300 (S60), GCU400 (L300/L600)
@@ -180,7 +180,7 @@ Refer to [Tests of enflame3.5 backend](https://github.com/flagos-ai/FlagTree/blo
 
 ---
 
-# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) (Triton 3.3)
+# 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/)3.3
 
 - Based on Triton 3.3, x64
 - Available for GCU300 (S60)

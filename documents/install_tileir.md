@@ -1,4 +1,4 @@
-# 💫 NVIDIA TileIR [tileir](https://github.com/flagos-ai/FlagTree/tree/main/third_party/tileir/) (Triton 3.6)
+# 💫 NVIDIA TileIR [tileir](https://github.com/flagos-ai/FlagTree/tree/main/third_party/tileir/)3.6
 
 - Based on Triton 3.6, x64
 - Available for Hopper/Blackwell

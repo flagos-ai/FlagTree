@@ -1,4 +1,4 @@
-# 💫 MetaX（沐曦股份）[metax](https://github.com/flagos-ai/FlagTree/tree/main/third_party/metax/) (Triton 3.6)
+# 💫 MetaX（沐曦股份）[metax](https://github.com/flagos-ai/FlagTree/tree/main/third_party/metax/)3.6
 
 - Based on Triton 3.6, x64
 - Available for C550
@@ -90,7 +90,7 @@ Refer to [Tests of metax3.6 backend](https://github.com/flagos-ai/FlagTree/tree/
 
 ---
 
-# 💫 MetaX（沐曦股份）[metax](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/metax/) (Triton 3.0)
+# 💫 MetaX（沐曦股份）[metax](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/metax/)3.0
 
 - Based on Triton 3.0, x64
 - Available for C550

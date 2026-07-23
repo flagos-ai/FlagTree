@@ -1,4 +1,4 @@
-# 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend) (Triton 3.5)
+# 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend)3.5
 
 - Based on Triton 3.5, aarch64
 - Available for 910B, 910C
@@ -123,7 +123,7 @@ Refer to [Tests of ascend3.5 backend](https://github.com/flagos-ai/FlagTree/blob
 
 ---
 
-# 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend) (Triton 3.2)
+# 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend)3.2
 
 - Based on Triton 3.2, aarch64
 - Available for 910B, 910C

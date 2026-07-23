@@ -1,4 +1,4 @@
-# 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/) (Triton 3.6)
+# 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/)3.6
 
 - Based on Triton 3.6, x64
 - Available for P800
@@ -106,7 +106,7 @@ Refer to [Tests of xpu3.6 backend](https://github.com/flagos-ai/FlagTree/tree/ma
 
 ---
 
-# 💫 KLX [xpu](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/xpu/) (Triton 3.0)
+# 💫 KLX [xpu](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/xpu/)3.0
 
 - Based on Triton 3.0, x64
 - Available for P800

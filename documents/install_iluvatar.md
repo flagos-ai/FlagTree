@@ -1,4 +1,4 @@
-# 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/) (Triton 3.6)
+# 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/)3.6
 
 - Based on Triton 3.6, x64
 - Available for MR-V100, BI-V150
@@ -88,7 +88,7 @@ Refer to [Tests of iluvatar3.6 backend](https://github.com/flagos-ai/FlagTree/tr
 
 ---
 
-# 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/iluvatar/) (Triton 3.1)
+# 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/iluvatar/)3.1
 
 - Based on Triton 3.1, x64
 - Available for MR-V100, BI-V150

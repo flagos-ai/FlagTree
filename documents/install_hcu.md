@@ -1,4 +1,4 @@
-# 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/) (Triton 3.6)
+# 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/)3.6
 
 - Based on Triton 3.6, x64
 - Available for K100/BW1000
@@ -88,7 +88,7 @@ Refer to [Tests of hcu3.6 backend](https://github.com/flagos-ai/FlagTree/tree/ma
 
 ---
 
-# 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/hcu/) (Triton 3.1)
+# 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/hcu/)3.1
 
 - Based on Triton 3.1, x64
 - Available for K100/BW1000
