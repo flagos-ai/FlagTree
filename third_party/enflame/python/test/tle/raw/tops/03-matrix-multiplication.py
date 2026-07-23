@@ -20,7 +20,7 @@ import triton.experimental.tle.language.raw as tle_raw
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
-@dialect(name="tops", file=Path(__file__).parent / "03-matrix-multiplication.tops")
+@dialect(name="tops", file=Path(__file__).parent / "03-matrix-multiplication.tops",extern_func_name="MatMulKernel", deferred=True)
 def edsl(*args, **kwargs):
     ...
 
@@ -35,7 +35,7 @@ def matmul_kernel(
     K,
     BLOCK_SIZE: tl.constexpr,
 ):
-    tle_raw.call(edsl, [c_ptr, a_ptr, b_ptr, M, N, K])
+    tle_raw.call(edsl, [c_ptr, a_ptr, b_ptr, M, N, K], output_indices=[0])
 
 
 def matmul(a, b):
