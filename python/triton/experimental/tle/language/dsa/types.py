@@ -80,6 +80,11 @@ class buffer_type(tl.dtype):
     def __ne__(self, other) -> bool:
         return not self.__eq__(other)
 
+    def mangle(self) -> str:
+        elt = self.element_ty.mangle()
+        shape = "_".join(map(str, self.shape))
+        return f"B{elt}S{shape}S"
+
     @property
     def scalar(self):
         return self.element_ty
