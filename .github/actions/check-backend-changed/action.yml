@@ -46,7 +46,9 @@ runs:
 
         # Check if the workflow is triggered by a Pull Request event
         if [ "${{ github.event_name }}" == "pull_request" ]; then
-          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }})
+          # Use three-dot syntax to compare the merge base (common ancestor) with the HEAD commit
+          # This ensures we only detect files changed in this PR, excluding changes already merged to base branch
+          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }})
         else
           # Handle 'push' events (or other events where 'base_ref' isn't applicable)
           # Check if the 'before' SHA is all zeros, which indicates a newly created/pushed branch
