@@ -23,8 +23,8 @@
 
 #include "tle/dialect/include/IR/Dialect.h"
 #include "mlir/Support/LLVM.h"
-#include "triton/Dialect/Triton/IR/Interfaces.h"
 #include "tle/dialect/include/IR/Dialect.cpp.inc"
+#include "triton/Dialect/Triton/IR/Interfaces.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "tle/dialect/include/IR/TleAttrDefs.cpp.inc"
