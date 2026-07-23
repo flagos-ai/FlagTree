@@ -14,7 +14,7 @@ obtained from the vendor. Build and test directly on the board.
 
 ## 1. Build and run environment
 
-### 1.1 Hardware and OS
+**1.1 Hardware and OS**
 
 - An R1 SoC board running aarch64 Linux that exposes the RPU device node
   `/dev/rpu` (kernel module loaded).
@@ -28,7 +28,7 @@ the R1 SoC board. Verify the device node:
 ls /dev/rpu
 ```
 
-### 1.2 RPU driver and runtime (vendor-provided)
+**1.2 RPU driver and runtime (vendor-provided)**
 
 Install, per the vendor's instructions:
 
@@ -36,7 +36,7 @@ Install, per the vendor's instructions:
 - the `rhino-launch-kernel` runtime library (`librhino_launch.so`), used by the
   on-board launch_kernel test.
 
-### 1.3 RPU LLVM toolchain (vendor-provided)
+**1.3 RPU LLVM toolchain (vendor-provided)**
 
 The RPU backend uses a custom LLVM as its `.rpubin` emitter. Point
 `RPU_LLVM_ROOT` at the toolchain install prefix (the directory containing
@@ -54,7 +54,7 @@ export RPU_LLVM_ROOT=/opt/rpu/llvm
 The RPU backend is built from source on the board. There is no source-free
 (pip wheel) installation.
 
-### 2.1 Pull the source code
+**2.1 Pull the source code**
 
 ```shell
 cd ~
@@ -63,7 +63,7 @@ cd FlagTree
 git checkout main
 ```
 
-### 2.2 Build from source
+**2.2 Build from source**
 
 ```shell
 export FLAGTREE_BACKEND=rpu
@@ -84,7 +84,7 @@ the first time setup runs; no manual action is needed.
 
 ## 3. Testing and validation
 
-### 3.1 Unit tests
+**3.1 Unit tests**
 
 The compile tests drive the real toolchain, so set `RPU_LLVM_ROOT` first (the
 directory containing `bin/clang`). If it is unset or its path is missing, the
@@ -96,7 +96,7 @@ export RPU_LLVM_ROOT=/opt/rpu/llvm
 pytest -s third_party/rpu/python/test/unit
 ```
 
-### 3.2 On-board launch_kernel check
+**3.2 On-board launch_kernel check**
 
 This needs the `launch_kernel_runner` CLI, a thin front-end over the
 `rhino-launch-kernel` runtime library. Build it together with the backend by

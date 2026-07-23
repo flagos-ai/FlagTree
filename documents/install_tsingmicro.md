@@ -5,7 +5,7 @@
 
 ## 1. Build and run environment
 
-### 1.1 Use the image (TX81)
+**1.1 Use the image (TX81)**
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -32,7 +32,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+**1.2 Manually download the FlagTree dependencies**
 
 For the tsingmicro backend, the FlagTree dependency library is also required at runtime.
 
@@ -44,7 +44,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_dev_202605
 tar zxvf tx8_depends_dev_20260507_104051_v0.6.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+**1.3 Manually download the Triton dependencies**
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -61,7 +61,7 @@ Note that the script will prompt for manual confirmation during execution.
 
 ## 2. Installation Commands
 
-### 2.1 Source-free Installation
+**2.1 Source-free Installation**
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -76,7 +76,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+**2.2 Build from Source**
 
 Before building and testing, you need to set the following environment variables:
 

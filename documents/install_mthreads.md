@@ -5,7 +5,7 @@
 
 ## 1. Build and run environment
 
-### 1.1 Use the image (Triton 3.6, MTT-S5000)
+**1.1 Use the image (Triton 3.6, MTT-S5000)**
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -43,7 +43,7 @@ cd /usr/lib/x86_64-linux-gnu/
 ln -s libmusa.so.4.3.* libmusa.so.4
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+**1.2 Manually download the FlagTree dependencies**
 
 ```shell
 mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
@@ -53,7 +53,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads_local_binary_
 tar zxvf mthreads_local_binary_v0.6.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+**1.3 Manually download the Triton dependencies**
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -70,7 +70,7 @@ Note that the script will prompt for manual confirmation during execution.
 
 ## 2. Installation Commands
 
-### 2.1 Source-free Installation
+**2.1 Source-free Installation**
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -85,7 +85,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+**2.2 Build from Source**
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -115,7 +115,7 @@ Refer to [Tests of mthreads3.6 backend](https://github.com/flagos-ai/FlagTree/tr
 
 ## 1. Build and run environment
 
-### 1.1 Use the image (Triton 3.2, MTT-S5000)
+**1.1 Use the image (Triton 3.2, MTT-S5000)**
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -147,7 +147,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+**1.2 Manually download the FlagTree dependencies**
 
 ```shell
 mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
@@ -157,7 +157,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-t
 tar zxvf mthreadsTritonPlugin-triton3.2-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-x64_v0.5.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+**1.3 Manually download the Triton dependencies**
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -174,7 +174,7 @@ Note that the script will prompt for manual confirmation during execution.
 
 ## 2. Installation Commands
 
-### 2.1 Source-free Installation
+**2.1 Source-free Installation**
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -189,7 +189,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+**2.2 Build from Source**
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -211,7 +211,7 @@ Refer to [Tests of mthreads3.2 backend](https://github.com/flagos-ai/FlagTree/tr
 
 ## 1. Build and run environment
 
-### 1.1 Use the preinstalled image (Triton 3.1, MTT-S5000)
+**1.1 Use the preinstalled image (Triton 3.1, MTT-S5000)**
 
 If you use this preinstalled image, you do not need to perform the later step 1.x.
 If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
@@ -243,7 +243,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+**1.2 Manually download the FlagTree dependencies**
 
 ```shell
 mkdir -p ~/.flagtree/mthreads; cd ~/.flagtree/mthreads
@@ -261,7 +261,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreadsTritonPlugin-c
 tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-ubuntu-aarch64_v0.4.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+**1.3 Manually download the Triton dependencies**
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -278,7 +278,7 @@ Note that the script will prompt for manual confirmation during execution.
 
 ## 2. Installation Commands
 
-### 2.1 Source-free Installation
+**2.1 Source-free Installation**
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -293,7 +293,7 @@ python3.10 -m pip install flagtree===0.5.1+mthreads3.1 $RES
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+**2.2 Build from Source**
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python

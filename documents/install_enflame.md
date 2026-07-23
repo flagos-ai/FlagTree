@@ -5,7 +5,7 @@
 
 ## 1. Build and run environment
 
-### 1.1 Use the image (Triton 3.6, GCU300/GCU400)
+**1.1 Use the image (Triton 3.6, GCU300/GCU400)**
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -34,7 +34,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+**1.2 Manually download the FlagTree dependencies**
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -42,7 +42,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68
 tar zxvf enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+**1.3 Manually download the Triton dependencies**
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -59,7 +59,7 @@ Note that the script will prompt for manual confirmation during execution.
 
 ## 2. Installation Commands
 
-### 2.1 Source-free Installation
+**2.1 Source-free Installation**
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -74,7 +74,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+**2.2 Build from Source**
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -96,7 +96,7 @@ Refer to [Tests of enflame3.6 backend](https://github.com/flagos-ai/FlagTree/tre
 
 ## 1. Build and run environment
 
-### 1.1 Use the image (Triton 3.5, GCU300/GCU400)
+**1.1 Use the image (Triton 3.5, GCU300/GCU400)**
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -125,7 +125,7 @@ docker start ${CONTAINER}
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+**1.2 Manually download the FlagTree dependencies**
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -133,7 +133,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm22-189e06b
 tar zxvf enflame-llvm22-189e06b-gcc9-x64_v0.4.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+**1.3 Manually download the Triton dependencies**
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -150,7 +150,7 @@ Note that the script will prompt for manual confirmation during execution.
 
 ## 2. Installation Commands
 
-### 2.1 Source-free Installation
+**2.1 Source-free Installation**
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -165,7 +165,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+**2.2 Build from Source**
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -187,7 +187,7 @@ Refer to [Tests of enflame3.5 backend](https://github.com/flagos-ai/FlagTree/blo
 
 ## 1. Build and run environment
 
-### 1.1 Use the image (Triton 3.3, GCU300)
+**1.1 Use the image (Triton 3.3, GCU300)**
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -216,7 +216,7 @@ docker start ${CONTAINER}
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-### 1.2 Manually download the FlagTree dependencies
+**1.2 Manually download the FlagTree dependencies**
 
 ```shell
 mkdir -p ~/.flagtree/enflame; cd ~/.flagtree/enflame
@@ -224,7 +224,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm21-d752c5b
 tar zxvf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 ```
 
-### 1.3 Manually download the Triton dependencies
+**1.3 Manually download the Triton dependencies**
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -241,7 +241,7 @@ Note that the script will prompt for manual confirmation during execution.
 
 ## 2. Installation Commands
 
-### 2.1 Source-free Installation
+**2.1 Source-free Installation**
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -256,7 +256,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-### 2.2 Build from Source
+**2.2 Build from Source**
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python

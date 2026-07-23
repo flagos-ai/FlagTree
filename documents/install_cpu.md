@@ -11,7 +11,7 @@
 
 ## 1. Environment for build and run
 
-### 1.1 System dependencies
+**1.1 System dependencies**
 
 ```shell
 sudo apt-get update && sudo apt-get install -y \
@@ -20,7 +20,7 @@ sudo apt-get update && sudo apt-get install -y \
     ca-certificates curl wget numactl python3-dev python3-pip python3-venv
 ```
 
-### 1.2 Create a virtualenv and install PyTorch
+**1.2 Create a virtualenv and install PyTorch**
 
 ```shell
 python3 -m venv ~/venv-flagtree
@@ -33,7 +33,7 @@ pip install pybind11
 pip install torch==2.10.0+cpu --index-url https://download.pytorch.org/whl/cpu
 ```
 
-### 1.3 LLVM toolchain
+**1.3 LLVM toolchain**
 
 If `oaitriton.blob.core.windows.net` is reachable, the LLVM toolchain is fetched automatically on the
 first build (step 2.2 Step 3) according to `cmake/llvm-hash.txt` (a66376b0) and cached under
@@ -52,11 +52,11 @@ export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 
 ## 2. Installation Commands
 
-### 2.1 Source-free Installation
+**2.1 Source-free Installation**
 
 ⚠️ There is no prebuilt wheel for the ARM64 cpu backend yet; build from source per 2.2 below.
 
-### 2.2 Build from Source
+**2.2 Build from Source**
 
 Three steps: **clone FlagTree → wire up flagtree-cpu via the helper script → build FlagTree**.
 
