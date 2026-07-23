@@ -1,11 +1,11 @@
-## 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend) (Triton 3.5)
+# 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend) (Triton 3.5)
 
 - Based on Triton 3.5, aarch64
 - Available for 910B, 910C
 
-### 1. Build and run environment
+## 1. Build and run environment
 
-#### 1.1 Use the image (910B)
+### 1.1 Use the image (910B)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -38,7 +38,7 @@ docker run -dit -u 0 --user=root \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-#### 1.2 Install CANN
+### 1.2 Install CANN
 
 - A2 CANN is already installed in the 910B image. For 910C, register an account at https://www.hiascend.com/developer/download/community/result?module=cann and download the corresponding `cann-ops` for your platform.
 
@@ -54,7 +54,7 @@ chmod +x Ascend-cann-A3-ops_9.0.0_linux-aarch64.run
 ./Ascend-cann-A3-ops_9.0.0_linux-aarch64.run --install
 ```
 
-#### 1.3 Manually download the FlagTree dependencies
+### 1.3 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/ascend; cd ~/.flagtree/ascend
@@ -73,7 +73,7 @@ git clone https://gitcode.com/Ascend/AscendNPU-IR.git
 git checkout 4c304921
 ```
 
-#### 1.4 Manually download the Triton dependencies
+### 1.4 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -88,9 +88,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.5.x-linux-aa
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-### 2. Installation Commands
+## 2. Installation Commands
 
-#### 2.1 Source-free Installation
+### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -105,7 +105,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-#### 2.2 Build from Source
+### 2.2 Build from Source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -115,7 +115,7 @@ export FLAGTREE_BACKEND=ascend
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
-### 3. Testing and validation
+## 3. Testing and validation
 
 Before testing, you need to execute `source /usr/local/Ascend/ascend-toolkit/set_env.sh`
 
@@ -123,14 +123,14 @@ Refer to [Tests of ascend3.5 backend](https://github.com/flagos-ai/FlagTree/blob
 
 ---
 
-## 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend) (Triton 3.2)
+# 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.2.x/third_party/ascend) (Triton 3.2)
 
 - Based on Triton 3.2, aarch64
 - Available for 910B, 910C
 
-### 1. Build and run environment
+## 1. Build and run environment
 
-#### 1.1 Use the preinstalled image (910C)
+### 1.1 Use the preinstalled image (910C)
 
 If you use this preinstalled image, you do not need to perform the later step 1.x for 910C, and for 910B you only need to perform step 1.2.
 If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
@@ -164,7 +164,7 @@ docker run -dit -u 0 --user=root \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-#### 1.2 Install CANN
+### 1.2 Install CANN
 
 - A3 CANN is already installed in the 910C image. For 910B, register an account at https://www.hiascend.com/developer/download/community/result?module=cann and download the corresponding `cann-ops` for your platform.
 
@@ -180,7 +180,7 @@ chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
 ./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
 ```
 
-#### 1.3 Manually download the FlagTree dependencies
+### 1.3 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/ascend; cd ~/.flagtree/ascend
@@ -201,7 +201,7 @@ git clone https://gitcode.com/Ascend/AscendNPU-IR.git
 git checkout 5a3921f8
 ```
 
-#### 1.4 Manually download the Triton dependencies
+### 1.4 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the preinstalled image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -216,9 +216,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.2.x-linux-aa
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-### 2. Installation Commands
+## 2. Installation Commands
 
-#### 2.1 Source-free Installation
+### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -233,7 +233,7 @@ python3.11 -m pip install flagtree===0.6.0+ascend3.2 $RES
 python3 -m pip show flagtree
 ```
 
-#### 2.2 Build from Source
+### 2.2 Build from Source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -242,7 +242,7 @@ export FLAGTREE_BACKEND=ascend
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
-### 3. Testing and validation
+## 3. Testing and validation
 
 Before testing, you need to execute `source /usr/local/Ascend/ascend-toolkit/set_env.sh`
 

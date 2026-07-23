@@ -1,11 +1,11 @@
-## 💫 MetaX（沐曦股份）[metax](https://github.com/flagos-ai/FlagTree/tree/main/third_party/metax/) (Triton 3.6)
+# 💫 MetaX（沐曦股份）[metax](https://github.com/flagos-ai/FlagTree/tree/main/third_party/metax/) (Triton 3.6)
 
 - Based on Triton 3.6, x64
 - Available for C550
 
-### 1. Build and run environment
+## 1. Build and run environment
 
-#### 1.1 Use the image (C550)
+### 1.1 Use the image (C550)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -33,7 +33,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-#### 1.2 Manually download the FlagTree dependencies
+### 1.2 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/metax; cd ~/.flagtree/metax
@@ -43,7 +43,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpyt
 tar zxvf metaxTritonPlugin-cpython3.12-x86_64_v0.6.1.tar.gz
 ```
 
-#### 1.3 Manually download the Triton dependencies
+### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -58,9 +58,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.6.x-linux-x6
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-### 2. Installation Commands
+## 2. Installation Commands
 
-#### 2.1 Source-free Installation
+### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -75,7 +75,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-#### 2.2 Build from Source
+### 2.2 Build from Source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -84,20 +84,20 @@ export FLAGTREE_BACKEND=metax
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
-### 3. Testing and validation
+## 3. Testing and validation
 
 Refer to [Tests of metax3.6 backend](https://github.com/flagos-ai/FlagTree/tree/main/.github/workflows/metax3.6-build-and-test.yml)
 
 ---
 
-## 💫 MetaX（沐曦股份）[metax](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/metax/) (Triton 3.0)
+# 💫 MetaX（沐曦股份）[metax](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/metax/) (Triton 3.0)
 
 - Based on Triton 3.0, x64
 - Available for C550
 
-### 1. Build and run environment
+## 1. Build and run environment
 
-#### 1.1 Use the preinstalled image (C550)
+### 1.1 Use the preinstalled image (C550)
 
 If you use this preinstalled image, you do not need to perform the later step 1.x.
 If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
@@ -126,7 +126,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-#### 1.2 Manually download the FlagTree dependencies
+### 1.2 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/metax; cd ~/.flagtree/metax
@@ -138,7 +138,7 @@ tar zxvf ext_maca_mathlib_bc_v0.5.0.tar.gz
 tar xvf maca-llvm-metax20250708.521-x86_64.tar.xz
 ```
 
-#### 1.3 Manually download the Triton dependencies
+### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the preinstalled image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -153,9 +153,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x6
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-### 2. Installation Commands
+## 2. Installation Commands
 
-#### 2.1 Source-free Installation
+### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -170,7 +170,7 @@ python3.12 -m pip install flagtree===0.5.1+metax3.0 $RES
 python3 -m pip show flagtree
 ```
 
-#### 2.2 Build from Source
+### 2.2 Build from Source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -179,6 +179,6 @@ export FLAGTREE_BACKEND=metax
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
-### 3. Testing and validation
+## 3. Testing and validation
 
 Refer to [Tests of metax3.0 backend](https://github.com/flagos-ai/flagtree/blob/triton_v3.1.x/.github/workflows/metax3.0-build-and-test.yml)

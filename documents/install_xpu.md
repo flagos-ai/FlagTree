@@ -1,11 +1,11 @@
-## 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/) (Triton 3.6)
+# 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/) (Triton 3.6)
 
 - Based on Triton 3.6, x64
 - Available for P800
 
-### 1. Build and run environment
+## 1. Build and run environment
 
-#### 1.1 Use the image (P800)
+### 1.1 Use the image (P800)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -40,7 +40,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-#### 1.2 Manually download the FlagTree dependencies
+### 1.2 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/xpu; cd ~/.flagtree/xpu
@@ -57,7 +57,7 @@ wget https://klx-sdk-release-public.su.bcebos.com/XTriton/llvm22/20260615/xtdk-l
 tar zxvf xtdk-llvm22-ubuntu2004_x86_64.tar.gz -C llvm_trust --strip-components=1
 ```
 
-#### 1.3 Manually download the Triton dependencies
+### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -72,9 +72,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.6.x-linux-x6
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-### 2. Installation Commands
+## 2. Installation Commands
 
-#### 2.1 Source-free Installation
+### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -89,7 +89,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-#### 2.2 Build from Source
+### 2.2 Build from Source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -98,7 +98,7 @@ export FLAGTREE_BACKEND=xpu
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
-### 3. Testing and validation
+## 3. Testing and validation
 
 Before testing, you need to execute `export XPU_EVENT_KL3_ENABLE=1`
 
@@ -106,14 +106,14 @@ Refer to [Tests of xpu3.6 backend](https://github.com/flagos-ai/FlagTree/tree/ma
 
 ---
 
-## 💫 KLX [xpu](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/xpu/) (Triton 3.0)
+# 💫 KLX [xpu](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/xpu/) (Triton 3.0)
 
 - Based on Triton 3.0, x64
 - Available for P800
 
-### 1. Build and run environment
+## 1. Build and run environment
 
-#### 1.1 Use the image (P800)
+### 1.1 Use the image (P800)
 
 If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -146,7 +146,7 @@ docker run -dit \
 docker exec -it ${CONTAINER} /bin/bash
 ```
 
-#### 1.2 Manually download the FlagTree dependencies
+### 1.2 Manually download the FlagTree dependencies
 
 ```shell
 mkdir -p ~/.flagtree/xpu; cd ~/.flagtree/xpu
@@ -158,7 +158,7 @@ wget https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-device-libs-ubuntu
 tar zxvf xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
 ```
 
-#### 1.3 Manually download the Triton dependencies
+### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
 If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
@@ -173,9 +173,9 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x6
 After executing the above script, the original ~/.triton directory will be renamed, and a new ~/.triton directory will be created to store the pre-downloaded packages.
 Note that the script will prompt for manual confirmation during execution.
 
-### 2. Installation Commands
+## 2. Installation Commands
 
-#### 2.1 Source-free Installation
+### 2.1 Source-free Installation
 
 ```shell
 # Note: First install PyTorch, then execute the following commands
@@ -190,7 +190,7 @@ After installing `flagtree`, you can check it with:
 python3 -m pip show flagtree
 ```
 
-#### 2.2 Build from Source
+### 2.2 Build from Source
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree/python
@@ -199,7 +199,7 @@ export FLAGTREE_BACKEND=xpu
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
-### 3. Testing and validation
+## 3. Testing and validation
 
 Before testing, you need to execute `export XPU_EVENT_KL3_ENABLE=1`
 

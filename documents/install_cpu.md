@@ -1,4 +1,4 @@
-## 💫 ARM64 CPU [cpu](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x/third_party/cpu/) & [tle_arm64](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x/third_party/tle_arm64/) (Triton 3.3)
+# 💫 ARM64 CPU [cpu](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x/third_party/cpu/) & [tle_arm64](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x/third_party/tle_arm64/) (Triton 3.3)
 
 - Triton version 3.3, based on LLVM **a66376b0**, aarch64 platform
 - Target: AArch64 Linux with NEON / SVE2 + i8mm (e.g. Armv9-A Cortex-A720)
@@ -9,9 +9,9 @@
   the `third_party/tle_arm64` plugin as `create_cpu_*` builder methods.
 - No docker image is provided yet; install from source as below.
 
-### 1. Environment for build and run
+## 1. Environment for build and run
 
-#### 1.1 System dependencies
+### 1.1 System dependencies
 
 ```shell
 sudo apt-get update && sudo apt-get install -y \
@@ -20,7 +20,7 @@ sudo apt-get update && sudo apt-get install -y \
     ca-certificates curl wget numactl python3-dev python3-pip python3-venv
 ```
 
-#### 1.2 Create a virtualenv and install PyTorch
+### 1.2 Create a virtualenv and install PyTorch
 
 ```shell
 python3 -m venv ~/venv-flagtree
@@ -33,7 +33,7 @@ pip install pybind11
 pip install torch==2.10.0+cpu --index-url https://download.pytorch.org/whl/cpu
 ```
 
-#### 1.3 LLVM toolchain
+### 1.3 LLVM toolchain
 
 If `oaitriton.blob.core.windows.net` is reachable, the LLVM toolchain is fetched automatically on the
 first build (step 2.2 Step 3) according to `cmake/llvm-hash.txt` (a66376b0) and cached under
@@ -50,13 +50,13 @@ export LLVM_INCLUDE_DIRS=$LLVM_SYSPATH/include
 export LLVM_LIBRARY_DIR=$LLVM_SYSPATH/lib
 ```
 
-### 2. Installation Commands
+## 2. Installation Commands
 
-#### 2.1 Source-free Installation
+### 2.1 Source-free Installation
 
 ⚠️ There is no prebuilt wheel for the ARM64 cpu backend yet; build from source per 2.2 below.
 
-#### 2.2 Build from Source
+### 2.2 Build from Source
 
 Three steps: **clone FlagTree → wire up flagtree-cpu via the helper script → build FlagTree**.
 
@@ -115,7 +115,7 @@ you can additionally pass `TRITON_OFFLINE_BUILD=1` if you want to assert no netw
 > If you build another backend in the same shell afterward, clear the LLVM-related environment
 > variables first: `unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR FLAGTREE_BACKEND`
 
-### 3. Testing and validation
+## 3. Testing and validation
 
 ⚠️ Before running anything that JIT-compiles kernels (the validation scripts below, and model
 inference in general), export `FLAGTREE_BACKEND=cpu` — at runtime it enables the ARM `-march`
@@ -169,9 +169,9 @@ ref = (x.float() / torch.sqrt((x.float()**2).mean() + 1e-6)) * w.float()
 print("max err:", (out.float() - ref).abs().max().item(), "-> OK")
 ```
 
-## Q&A
+# Q&A
 
-### Question: Performance is only half on a big.LITTLE SoC?
+## Question: Performance is only half on a big.LITTLE SoC?
 
 Answer: On heterogeneous SoCs (e.g. Cortex-A720 big + A520 little), always pin to the **big cores only**
 with `taskset` — little cores entering the OMP thread pool stall on the barrier and cost ~2x overall.
@@ -185,7 +185,7 @@ done
 taskset -c 0,1,6,7,8,9,10,11 python your_inference.py ...
 ```
 
-### Question: Runtime reports version GLIBC / GLIBCXX not found?
+## Question: Runtime reports version GLIBC / GLIBCXX not found?
 
 Answer: Check the versions supported by your environment and LD_PRELOAD if needed (aarch64 paths):
 
@@ -196,14 +196,14 @@ export LD_PRELOAD=/lib/aarch64-linux-gnu/libc.so.6           # if GLIBC not foun
 export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libstdc++.so.6  # if GLIBCXX not found
 ```
 
-### Question: kernel compilation fails with `kernel.s: Error: junk at end of line, first unrecognized character is `"``?
+## Question: kernel compilation fails with `kernel.s: Error: junk at end of line, first unrecognized character is `"``?
 
 Answer: `FLAGTREE_BACKEND=cpu` is not exported in the current shell. It is not only a build-time
 switch — runtime JIT compilation of `kernel.s` also depends on it (it enables stripping of LLVM
 `.file`/`.loc` debug directives that the GNU assembler rejects, plus the ARM `-march` flags).
 Export it and re-run.
 
-### Question: `import triton.language.extra.cpu.tle_ops` fails with "No module named ..."?
+## Question: `import triton.language.extra.cpu.tle_ops` fails with "No module named ..."?
 
 Answer: The Step 2 symlinks are incomplete. Re-run `bash python/scripts/link_flagtree_cpu.sh` — it is
 idempotent and exits non-zero if any expected symlink fails to resolve.
