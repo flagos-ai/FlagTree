@@ -199,7 +199,7 @@ def to_tensor(memref: buffer, writable: bool = True, target_shape=None, _semanti
 
 @builtin
 def subview(src: buffer, offsets: List[tl.constexpr], sizes: List[tl.constexpr], strides: List[tl.constexpr],
-            _builder=None) -> buffer:
+            _semantic=None) -> buffer:
     '''
     Creates a subview of the source buffer with the specified offsets, sizes, and strides.
 
