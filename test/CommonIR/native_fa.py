@@ -134,9 +134,9 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
     O_ptr = Out + off_z * stride_ob + off_h * stride_oh
 
     # ---- allocate L1 buffers for Q, K, V ----
-    q_l1 = tile_alloc([tl.constexpr(BLOCK_M), tl.constexpr(HEAD_DIM)], tl.float16, L1)
-    k_l1 = tile_alloc([tl.constexpr(BLOCK_N), tl.constexpr(HEAD_DIM)], tl.float16, L1)
-    v_l1 = tile_alloc([tl.constexpr(BLOCK_N), tl.constexpr(HEAD_DIM)], tl.float16, L1)
+    q_l1 = tile_alloc([tl.constexpr(BLOCK_M), tl.constexpr(HEAD_DIM)], tl.float16, tle.language.dsa.ascend.L1)
+    k_l1 = tile_alloc([tl.constexpr(BLOCK_N), tl.constexpr(HEAD_DIM)], tl.float16, tle.language.dsa.ascend.L1)
+    v_l1 = tile_alloc([tl.constexpr(BLOCK_N), tl.constexpr(HEAD_DIM)], tl.float16, tle.language.dsa.ascend.L1)
 
     # DMA Q tile into L1 once; it stays resident for the full KV loop
     q_bp = tl.make_block_ptr(Q_ptr, (N_CTX, HEAD_DIM), (stride_qm, stride_qd),

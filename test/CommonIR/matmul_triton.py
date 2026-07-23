@@ -131,8 +131,8 @@ def matmul_kernel(
     # ① 片上工作集
     # A/B 各申请一整块 L1（3 倍行），用 tile_subview 按行偏移取出 3 个 slot 的子视图。
     # slot s 的行偏移 = s * BLOCK_M（A）或 s * BLOCK_K（B）。
-    mat_a_l1   = tile_alloc([3 * BLOCK_M, BLOCK_K], mat_a.dtype.element_ty, L1)
-    mat_b_l1   = tile_alloc([3 * BLOCK_K, BLOCK_N], mat_b.dtype.element_ty, L1)
+    mat_a_l1   = tile_alloc([3 * BLOCK_M, BLOCK_K], mat_a.dtype.element_ty, tle.language.dsa.ascend.L1)
+    mat_b_l1   = tile_alloc([3 * BLOCK_K, BLOCK_N], mat_b.dtype.element_ty, tle.language.dsa.ascend.L1)
 
     iter_start = pid * NUM_K_BLOCKS
     iter_end   = NUM_BLOCKS * NUM_K_BLOCKS

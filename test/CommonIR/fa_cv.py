@@ -388,10 +388,10 @@ def flash_attention_fwd_serial_kernel(
     # =========================================================================
     #  ① on-chip working set
     # =========================================================================
-    q_l1 = tile_alloc([BLOCK_M, DIM],     Q.dtype.element_ty, L1)
-    k_l1 = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, L1)
-    v_l1 = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, L1)
-    p_l1 = tile_alloc([BLOCK_M, BLOCK_N], Q.dtype.element_ty, L1)
+    q_l1 = tile_alloc([BLOCK_M, DIM],     Q.dtype.element_ty, tle.language.dsa.ascend.L1)
+    k_l1 = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, tle.language.dsa.ascend.L1)
+    v_l1 = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, tle.language.dsa.ascend.L1)
+    p_l1 = tile_alloc([BLOCK_M, BLOCK_N], Q.dtype.element_ty, tle.language.dsa.ascend.L1)
 
     # Vector-side online-softmax accumulator (registers)
     acc_o         = tl.zeros((BLOCK_M, DIM), tl.float32)

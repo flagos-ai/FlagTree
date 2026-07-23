@@ -182,8 +182,8 @@ def matmul_add_residual_cv_kernel(
     NUM_BLOCKS   = NUM_BLOCKS_M * NUM_BLOCKS_N
 
     # On-chip buffers for cube engine
-    a_l1 = tile_alloc([BLOCK_M, BLOCK_K], mat_a.dtype.element_ty, L1)
-    b_l1 = tile_alloc([BLOCK_K, BLOCK_N], mat_b.dtype.element_ty, L1)
+    a_l1 = tile_alloc([BLOCK_M, BLOCK_K], mat_a.dtype.element_ty, tle.language.dsa.ascend.L1)
+    b_l1 = tile_alloc([BLOCK_K, BLOCK_N], mat_b.dtype.element_ty, tle.language.dsa.ascend.L1)
 
     # =========================================================================
     #  init: pre-arm one SEM_WS_FREE token so the cube engine can enter its
