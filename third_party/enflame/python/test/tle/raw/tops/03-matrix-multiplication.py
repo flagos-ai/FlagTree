@@ -20,7 +20,8 @@ import triton.experimental.tle.language.raw as tle_raw
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
-@dialect(name="tops", file=Path(__file__).parent / "03-matrix-multiplication.tops",extern_func_name="MatMulKernel", deferred=True)
+@dialect(name="tops", file=Path(__file__).parent / "03-matrix-multiplication.tops", extern_func_name="MatMulKernel",
+         deferred=True)
 def edsl(*args, **kwargs):
     ...
 
