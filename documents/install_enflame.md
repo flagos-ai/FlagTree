@@ -1,6 +1,4 @@
-[[中文版](./install_enflame_cn.md)|English]
-
-## 💫 Enflame（燧原）[enflame](/third_party/enflame/) (Triton 3.6)
+## 💫 Enflame（燧原）[enflame](https://github.com/flagos-ai/FlagTree/tree/main/third_party/enflame/) (Triton 3.6)
 
 - Based on Triton 3.6, x64
 - Available for GCU300 (S60), GCU400 (L300/L600)
@@ -47,7 +45,7 @@ tar zxvf enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -87,7 +85,7 @@ MAX_JOBS=8 python3 -m pip install . --no-build-isolation -v --break-system-packa
 
 ### 3. Testing and validation
 
-Refer to [Tests of enflame3.6 backend](/.github/workflows/enflame3.6-gcu400-build-and-test.yml)
+Refer to [Tests of enflame3.6 backend](https://github.com/flagos-ai/FlagTree/tree/main/.github/workflows/enflame3.6-gcu400-build-and-test.yml)
 
 ---
 
@@ -138,7 +136,7 @@ tar zxvf enflame-llvm22-189e06b-gcc9-x64_v0.4.0.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -229,7 +227,7 @@ tar zxvf enflame-llvm21-d752c5b-gcc9-x64_v0.3.0.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree

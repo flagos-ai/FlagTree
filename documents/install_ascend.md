@@ -1,5 +1,3 @@
-[[中文版](./install_ascend_cn.md)|English]
-
 ## 💫 Huawei Ascend（华为昇腾）[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend) (Triton 3.5)
 
 - Based on Triton 3.5, aarch64
@@ -78,7 +76,7 @@ git checkout 4c304921
 #### 1.4 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -134,7 +132,6 @@ Refer to [Tests of ascend3.5 backend](https://github.com/flagos-ai/FlagTree/blob
 
 #### 1.1 Use the preinstalled image (910C)
 
-This preinstalled image is created by executing the later step 1.x based on [Dockerfile-ubuntu22.04-python3.11-ascend](/dockerfiles/Dockerfile-ubuntu22.04-python3.11-ascend) and installing FlagTree.
 If you use this preinstalled image, you do not need to perform the later step 1.x for 910C, and for 910B you only need to perform step 1.2.
 If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
@@ -207,7 +204,7 @@ git checkout 5a3921f8
 #### 1.4 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the preinstalled image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree

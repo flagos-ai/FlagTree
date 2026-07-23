@@ -1,6 +1,4 @@
-[[中文版](./install_xpu_cn.md)|English]
-
-## 💫 KLX [xpu](/third_party/xpu/) (Triton 3.6)
+## 💫 KLX [xpu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/xpu/) (Triton 3.6)
 
 - Based on Triton 3.6, x64
 - Available for P800
@@ -62,7 +60,7 @@ tar zxvf xtdk-llvm22-ubuntu2004_x86_64.tar.gz -C llvm_trust --strip-components=1
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -104,7 +102,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 Before testing, you need to execute `export XPU_EVENT_KL3_ENABLE=1`
 
-Refer to [Tests of xpu3.6 backend](/.github/workflows/xpu3.6-build-and-test.yml)
+Refer to [Tests of xpu3.6 backend](https://github.com/flagos-ai/FlagTree/tree/main/.github/workflows/xpu3.6-build-and-test.yml)
 
 ---
 
@@ -163,7 +161,7 @@ tar zxvf xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree

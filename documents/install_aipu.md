@@ -1,5 +1,3 @@
-[[中文版](./install_aipu_cn.md)|English]
-
 ## 💫 ARM China（安谋科技）[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)
 
 - Based on Triton 3.3, x64/arm64
@@ -44,7 +42,7 @@ tar zxvf llvm-a66376b0-ubuntu-x64-clang16-lld16_v0.4.0.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the preinstalled image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree

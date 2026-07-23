@@ -1,6 +1,4 @@
-[[中文版](./install_tileir_cn.md)|English]
-
-## 💫 NVIDIA TileIR [tileir](/third_party/tileir/) (Triton 3.6)
+## 💫 NVIDIA TileIR [tileir](https://github.com/flagos-ai/FlagTree/tree/main/third_party/tileir/) (Triton 3.6)
 
 - Based on Triton 3.6, x64
 - Available for Hopper/Blackwell
@@ -47,7 +45,7 @@ python3.12 -m pip install mlir $RES
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -90,4 +88,4 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ### 3. Testing and validation
 
-Refer to [Tests of tileir3.6 backend](/.github/workflows/tileir3.6-build-and-test.yml)
+Refer to [Tests of tileir3.6 backend](https://github.com/flagos-ai/FlagTree/tree/main/.github/workflows/tileir3.6-build-and-test.yml)

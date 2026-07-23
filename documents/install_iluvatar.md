@@ -1,6 +1,4 @@
-[[中文版](./install_iluvatar_cn.md)|English]
-
-## 💫 ILUVATAR（天数智芯）[iluvatar](/third_party/iluvatar/) (Triton 3.6)
+## 💫 ILUVATAR（天数智芯）[iluvatar](https://github.com/flagos-ai/FlagTree/tree/main/third_party/iluvatar/) (Triton 3.6)
 
 - Based on Triton 3.6, x64
 - Available for MR-V100, BI-V150
@@ -47,7 +45,7 @@ tar zxvf iluvatar-llvm22-x86_64_v0.6.0.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -86,7 +84,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ### 3. Testing and validation
 
-Refer to [Tests of iluvatar3.6 backend](/.github/workflows/iluvatar3.6-build-and-test.yml)
+Refer to [Tests of iluvatar3.6 backend](https://github.com/flagos-ai/FlagTree/tree/main/.github/workflows/iluvatar3.6-build-and-test.yml)
 
 ---
 
@@ -152,7 +150,7 @@ tar zxvf "${PLUGIN_TGZ}"
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree

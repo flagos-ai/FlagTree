@@ -1,6 +1,4 @@
-[[中文版](./install_cn.md)|English]
-
-## 💫 NVIDIA [nvidia](/third_party/nvidia/)
+## 💫 NVIDIA [nvidia](https://github.com/flagos-ai/FlagTree/tree/main/third_party/nvidia/)
 
 - Based on Triton 3.1/3.2/3.3/3.4/3.5/3.6, x64
 
@@ -75,7 +73,7 @@ python3.12 -m pip install mlir $RES
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -142,7 +140,7 @@ unset LLVM_SYSPATH LLVM_INCLUDE_DIRS LLVM_LIBRARY_DIR
 
 ### 3. Testing and validation
 
-Refer to [Tests of nvidia3.6 backend](.github/workflows/hopper-build-and-test.yml)
+Refer to [Tests of nvidia3.6 backend](https://github.com/flagos-ai/FlagTree/tree/main/.github/workflows/hopper-build-and-test.yml)
 
 ## Q&A
 

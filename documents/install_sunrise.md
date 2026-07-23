@@ -1,6 +1,4 @@
-[[中文版](./install_sunrise_cn.md)|English]
-
-## 💫 Sunrise（曦望芯科）[sunrise](/third_party/sunrise/) (Triton 3.6)
+## 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/main/third_party/sunrise/) (Triton 3.6)
 
 - Based on Triton 3.6, x64
 - Available for S2
@@ -28,7 +26,7 @@ tar zxvf sunriseTritonPlugin_v0.6.0.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -71,7 +69,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ### 3. Testing and validation
 
-Refer to [Tests of sunrise3.6 backend](/.github/workflows/sunrise-build-and-test.yml)
+Refer to [Tests of sunrise3.6 backend](https://github.com/flagos-ai/FlagTree/tree/main/.github/workflows/sunrise-build-and-test.yml)
 
 
 ## 💫 Sunrise（曦望芯科）[sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/) (Triton 3.4)
@@ -102,7 +100,7 @@ tar zxvf sunriseTritonPlugin-cpython3.10-glibc2.39-glibcxx3.4.33-x86_64_v0.4.0.t
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree

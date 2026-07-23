@@ -1,5 +1,3 @@
-[[中文版](./install_cpu_cn.md)|English]
-
 ## 💫 ARM64 CPU [cpu](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x/third_party/cpu/) & [tle_arm64](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x/third_party/tle_arm64/) (Triton 3.3)
 
 - Triton version 3.3, based on LLVM **a66376b0**, aarch64 platform

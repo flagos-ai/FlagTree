@@ -1,6 +1,4 @@
-[[中文版](./install_mthreads_cn.md)|English]
-
-## 💫 Moore Threads（摩尔线程）[mthreads](/third_party/mthreads/) (Triton 3.6)
+## 💫 Moore Threads（摩尔线程）[mthreads](https://github.com/flagos-ai/FlagTree/tree/main/third_party/mthreads/) (Triton 3.6)
 
 - Based on Triton 3.6, x64
 - Available for S4000/S5000
@@ -58,7 +56,7 @@ tar zxvf mthreads_local_binary_v0.6.0.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -106,7 +104,7 @@ apt install -y libhiredis0.14
 
 ### 3. Testing and validation
 
-Refer to [Tests of mthreads3.6 backend](/.github/workflows/mthreads3.6-build-and-test.yml)
+Refer to [Tests of mthreads3.6 backend](https://github.com/flagos-ai/FlagTree/tree/main/.github/workflows/mthreads3.6-build-and-test.yml)
 
 ---
 
@@ -162,7 +160,7 @@ tar zxvf mthreadsTritonPlugin-triton3.2-cpython3.10-glibc2.35-glibcxx3.4.30-cxxa
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -266,7 +264,7 @@ tar zxvf mthreadsTritonPlugin-cpython3.10-glibc2.35-glibcxx3.4.30-cxxabi1.3.13-u
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree

@@ -1,5 +1,3 @@
-[[中文版](./install_tsingmicro_cn.md)|English]
-
 ## 💫 Tsingmicro（清微智能）[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/) (Triton 3.3)
 
 - Based on Triton 3.3, x64
@@ -49,7 +47,7 @@ tar zxvf tx8_depends_dev_20260507_104051_v0.6.0.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree

@@ -1,6 +1,4 @@
-[[中文版](./install_hcu_cn.md)|English]
-
-## 💫 HYGON（海光信息）[hcu](/third_party/hcu/) (Triton 3.6)
+## 💫 HYGON（海光信息）[hcu](https://github.com/flagos-ai/FlagTree/tree/main/third_party/hcu/) (Triton 3.6)
 
 - Based on Triton 3.6, x64
 - Available for K100/BW1000
@@ -46,7 +44,7 @@ tar zxvf hcu-llvm22-b0ca808-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.5.0.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
@@ -86,7 +84,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 ### 3. Testing and validation
 
-Refer to [Tests of hcu3.6 backend](/.github/workflows/hcu3.6-build-and-test.yml)
+Refer to [Tests of hcu3.6 backend](https://github.com/flagos-ai/FlagTree/tree/main/.github/workflows/hcu3.6-build-and-test.yml)
 
 ---
 
@@ -137,7 +135,7 @@ tar zxvf hcu-llvm20-df0864e-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.3.0.tar.gz
 #### 1.3 Manually download the Triton dependencies
 
 The Triton dependencies are already downloaded and installed in the preinstalled image.
-If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
+If you do not want to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
 cd ${YOUR_CODE_DIR}/FlagTree
