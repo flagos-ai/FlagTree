@@ -108,12 +108,21 @@ runs:
         #   3. third_party/${BACKEND}/ directory
         #
         # Otherwise, CI will be skipped.
+        #
+        # Documentation files (markdown, images, text files, etc.) are automatically
+        # skipped and do NOT trigger CI, unless they are CMakeLists.txt.
         # ================================================================
         SHOULD_SKIP=true
 
         while IFS= read -r file; do
           # Skip empty lines
           if [ -z "$file" ]; then
+            continue
+          fi
+
+          # Skip documentation files
+          if [[ ! "$file" =~ CMakeLists\.txt$ ]] && [[ "$file" =~ (\.(md|txt|png|jpg|jpeg|gif|svg|ico|webp)$|CODEOWNERS$) ]]; then
+            echo "'$file' -> Doc file, not relevant to CI decision"
             continue
           fi
 
