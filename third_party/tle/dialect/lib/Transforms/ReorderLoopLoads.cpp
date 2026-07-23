@@ -117,20 +117,11 @@ void reorderLoopLoadsAfterUnroll(const UnrolledLoopInfo &info,
                                  Block *parentBlock, Operation *opBeforeLoop,
                                  scf::ForOp originalLoop, bool fullyUnrolls) {
   if (fullyUnrolls) {
-    // Full unroll: the loop has been completely eliminated.
-    // The unrolled ops are now in parentBlock between opBeforeLoop and
-    // the block terminator.
     Operation *rangeBegin =
         opBeforeLoop ? opBeforeLoop->getNextNode() : &parentBlock->front();
     Operation *rangeEnd = parentBlock->getTerminator();
     reorderLoadsInRange(parentBlock, rangeBegin, rangeEnd);
   } else {
-    // Partial unroll: the loop still exists, body has been replicated.
-    // Reorder loads within the loop body.
-    // After partial unroll the original loop is updated in-place, so
-    // `originalLoop` is still valid but its body has been expanded.
-    // However loopUnrollByFactor may return a new main loop op when
-    // there's an epilogue. Use the main loop if available.
     scf::ForOp mainLoop = info.mainLoopOp ? *info.mainLoopOp : originalLoop;
     if (mainLoop) {
       Block *body = mainLoop.getBody();

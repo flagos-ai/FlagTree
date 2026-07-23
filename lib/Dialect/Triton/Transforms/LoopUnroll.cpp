@@ -9,9 +9,6 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #ifdef __FLAGTREE_REORDER_LOOP_LOADS__
-// flagtree tle: reorder-loop-loads is a TLE-owned extension; the implementation
-// lives entirely under third_party/tle and is invoked through this minimal
-// hook.
 #include "tle/dialect/include/Transforms/ReorderLoopLoads.h"
 #endif // __FLAGTREE_REORDER_LOOP_LOADS__
 #include "llvm/Support/Debug.h"
@@ -53,8 +50,6 @@ public:
     for (auto loop : loops) {
       auto unrollFactor = getUnrollFactorOrDefault(loop);
 #ifdef __FLAGTREE_REORDER_LOOP_LOADS__
-      // flagtree tle: capture reorder state + pre-unroll position for the
-      // TLE reorder-loop-loads hook (see third_party/tle).
       bool needsReorder = tle::hasReorderLoopLoadsAttr(loop);
       bool fullyUnrolls = tle::willFullyUnroll(loop, unrollFactor);
 #endif // __FLAGTREE_REORDER_LOOP_LOADS__
