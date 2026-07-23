@@ -421,6 +421,11 @@ def _raise_error(err, *args, **kwargs):
 
 class CompiledKernel:
 
+    # flagtree: compatibility for Torch Inductor versions that still read launch hooks
+    # from CompiledKernel. Triton 3.7 owns these hooks under knobs.runtime.
+    launch_enter_hook = knobs.runtime.launch_enter_hook
+    launch_exit_hook = knobs.runtime.launch_exit_hook
+
     def __init__(self, src, metadata_group, hash):
         from collections import namedtuple
         metadata_path = next((Path(p) for c, p in metadata_group.items() if c.endswith(".json")))

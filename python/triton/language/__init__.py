@@ -22,7 +22,7 @@
 """isort:skip_file"""
 # Import order is significant here.
 
-from triton.flagtree_spec import spec_path, spec
+from triton._flagtree_spec import spec_call, spec_path
 
 # flagtree backend path specialization
 spec_path(__path__)
@@ -163,8 +163,8 @@ from .random import (
 )
 from . import target_info
 
-# flagtree backend specialization
-spec("language_extend_globals", globals())
+# flagtree backend call specialization
+spec_call("language_extend_globals", globals())
 
 __all__ = [
     "PropagateNan",
