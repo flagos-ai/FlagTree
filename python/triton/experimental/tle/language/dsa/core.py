@@ -298,24 +298,24 @@ def extract_element(src, indice, _semantic=None, _generator=None):
 # ==============================================================================
 
 @builtin
-def tile_alloc(shape: List[tl.constexpr], dtype: tl.dtype, mem_addr_space: address_space, _builder=None) -> buffer:
+def tile_alloc(shape: List[tl.constexpr], dtype: tl.dtype, mem_addr_space: address_space, _semantic=None, _generator=None) -> buffer:
     """Allocate a buffer in a specific memory space (TileIR path)."""
     assert (mem_addr_space is not None)
-    return tle_semantic.tile_alloc(dtype, shape, mem_addr_space, _builder)
+    return tle_semantic.tile_alloc(dtype, shape, mem_addr_space, _semantic.builder)
 
 
 @builtin
-def tile_copy(src, dst, shape, inter_no_alias=False, _builder=None):
+def tile_copy(src, dst, shape, inter_no_alias=False, _semantic=None, _generator=None):
     """Copy data using TileIR tile.copy op."""
     assert len(shape) != 0, "Can't deduce copy extents from args"
-    shape = _constexpr_to_value(shape)
-    inter_no_alias = _constexpr_to_value(inter_no_alias)
-    tle_semantic.tile_copy(src, dst, shape, inter_no_alias, _builder)
+    shape = _unwrap_if_constexpr(shape)
+    inter_no_alias = _unwrap_if_constexpr(inter_no_alias)
+    tle_semantic.tile_copy(src, dst, shape, inter_no_alias, _semantic.builder)
 
 
 @builtin
 def tile_subview(src: buffer, offsets: List, sizes: List[tl.constexpr], strides: List[tl.constexpr],
-                 _builder=None) -> buffer:
+                 _semantic=None, _generator=None) -> buffer:
     """Extract a subview from a buffer using TileIR tile.subview op."""
     new_sizes = []
     for i, size in enumerate(sizes):
@@ -340,71 +340,71 @@ def tile_subview(src: buffer, offsets: List, sizes: List[tl.constexpr], strides:
         if isinstance(offset, tl.constexpr):
             if offset < 0:
                 raise ValueError(f"Offset value must be non-negative, got {offset}")
-            new_offsets.append(tl_semantic.to_tensor(offset, _builder))
+            new_offsets.append(_semantic.to_tensor(offset, _semantic.builder))
         elif isinstance(offset, int):
             if offset < 0:
                 raise ValueError(f"Offset value must be non-negative, got {offset}")
-            new_offsets.append(tl_semantic.to_tensor(tl.constexpr(offset), _builder))
+            new_offsets.append(_semantic.to_tensor(tl.constexpr(offset), _semantic.builder))
         else:
             new_offsets.append(offset)
 
-    return tle_semantic.tile_subview(src, new_offsets, new_sizes, new_strides, _builder)
+    return tle_semantic.tile_subview(src, new_offsets, new_sizes, new_strides, _semantic.builder)
 
 
 @builtin
-def tile_to_tensor(memref: buffer, writable: bool = True, target_shape=None, _builder=None) -> tl.tensor:
+def tile_to_tensor(memref: buffer, writable: bool = True, target_shape=None, _semantic=None, _generator=None) -> tl.tensor:
     """Create a tl.tensor from a buffer (TileIR path)."""
-    return tle_semantic.tile_to_tensor(memref, writable, _builder, target_shape=target_shape)
+    return tle_semantic.tile_to_tensor(memref, writable, _semantic.builder, target_shape=target_shape)
 
 
 @builtin
-def tile_set_flag(producer_pipe, consumer_pipe, event_id, _builder=None):
+def tile_set_flag(producer_pipe, consumer_pipe, event_id, _semantic=None, _generator=None):
     """Set a cross-engine synchronization flag (TileIR tile.set_flag)."""
-    tle_semantic.set_flag(producer_pipe, consumer_pipe, event_id, _builder)
+    tle_semantic.set_flag(producer_pipe, consumer_pipe, event_id, _semantic.builder)
 
 
 @builtin
-def tile_wait_flag(producer_pipe, consumer_pipe, event_id, _builder=None):
+def tile_wait_flag(producer_pipe, consumer_pipe, event_id, _semantic=None, _generator=None):
     """Wait for a cross-engine synchronization flag (TileIR tile.wait_flag)."""
-    tle_semantic.wait_flag(producer_pipe, consumer_pipe, event_id, _builder)
+    tle_semantic.wait_flag(producer_pipe, consumer_pipe, event_id, _semantic.builder)
 
 
 @builtin
-def tile_pipe_barrier(pipe, _builder=None):
+def tile_pipe_barrier(pipe, _semantic=None, _generator=None):
     """Insert an intra-engine pipeline barrier (TileIR tile.pipe_barrier)."""
-    tle_semantic.pipe_barrier(pipe, _builder)
+    tle_semantic.pipe_barrier(pipe, _semantic.builder)
 
 
 @builtin
-def tensor_to_tile(src: tl.tensor, space: address_space = None, _builder=None) -> buffer:
+def tensor_to_tile(src: tl.tensor, space: address_space = None, _semantic=None, _generator=None) -> buffer:
     """Convert a tt.ptr/tensor to a !tile.buf in the given memory space.
 
     Uses tile.copy to load data from the tensor pointer into a newly
     allocated tile.buf, then returns the buffer.
     If space is not specified, defaults to GM (global memory).
     """
-    return tle_semantic.tensor_to_tile(src, space, _builder)
+    return tle_semantic.tensor_to_tile(src, space, _semantic.builder)
 
 
 @builtin
-def tile_gm_offset(base, indices, strides, _builder=None) -> tl.tensor:
+def tile_gm_offset(base, indices, strides, _semantic=None, _generator=None) -> tl.tensor:
     """Compute a GM pointer with multi-dimensional offsets (TileIR tile.gm_offset)."""
-    return tle_semantic.tile_gm_offset(base, indices, strides, _builder)
+    return tle_semantic.tile_gm_offset(base, indices, strides, _semantic.builder)
 
 
 @builtin
 def tile_cube_launch(a: buffer, b: buffer, acc: buffer, stage_a: buffer, stage_b: buffer, dst,
                      transpose_a: bool = False, transpose_b: bool = False, init: bool = False,
-                     mma: str = "", _builder=None):
+                     mma: str = "", _semantic=None, _generator=None):
     """Launch a Cube matmul using TileIR tile.cube_launch."""
-    transpose_a = _constexpr_to_value(transpose_a)
-    transpose_b = _constexpr_to_value(transpose_b)
-    init = _constexpr_to_value(init)
-    mma = _constexpr_to_value(mma)
-    tle_semantic.tile_cube_launch(a, b, acc, stage_a, stage_b, dst, transpose_a, transpose_b, init, mma, _builder)
+    transpose_a = _unwrap_if_constexpr(transpose_a)
+    transpose_b = _unwrap_if_constexpr(transpose_b)
+    init = _unwrap_if_constexpr(init)
+    mma = _unwrap_if_constexpr(mma)
+    tle_semantic.tile_cube_launch(a, b, acc, stage_a, stage_b, dst, transpose_a, transpose_b, init, mma, _semantic.builder)
 
 
 @builtin
-def tile_cube_wait(_builder=None):
+def tile_cube_wait(_semantic=None, _generator=None):
     """Wait for TileIR Cube work using tile.cube_wait."""
-    tle_semantic.tile_cube_wait(_builder)
+    tle_semantic.tile_cube_wait(_semantic.builder)
